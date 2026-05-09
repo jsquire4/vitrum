@@ -1,0 +1,24 @@
+{
+  "name": "vitrum",
+  "version": "0.0.0",
+  "private": true,
+  "description": "WebGPU + WebGL2 path tracing & global illumination engine for the browser. Workspace root.",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "examples/*",
+    "tools/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "license": "MIT",
+  "author": "jsquire4",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsquire4/vitrum.git"
+  }
+}
