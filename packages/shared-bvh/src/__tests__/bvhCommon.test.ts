@@ -1,15 +1,14 @@
 /**
  * Regression tests for the Tier 2 shared `buildSceneBVH` core.
  *
- * Promoted from per-branch `buildSceneBvhEmitters.test.ts` files (DDGI's
- * `49f4c5b`, RC's `0e67583`) — both branches independently re-derived the
- * same single-root + reorder-invariant matId invariants that this module
- * canonicalises.
+ * Promoted from per-engine `buildSceneBvhEmitters.test.ts` files (DDGI's
+ * and RC's) — both engines independently re-derived the same single-root
+ * + reorder-invariant matId invariants that this module canonicalises.
  *
  * Two interlocking concerns guarded:
  *
  * (a) SINGLE-ROOT INVARIANT. The WGSL `bvhIntersectFirstHit` traversal
- *     used by every walkaround branch takes a single root buffer pointer
+ *     used by every walkaround engine takes a single root buffer pointer
  *     (`bvh._roots[0]`). By default three-mesh-bvh builds ONE root per
  *     material group (one root per source mesh in our case), so the
  *     traversal would see only the first source mesh's triangles — every
@@ -36,12 +35,10 @@
 
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import { faceToGeometry } from '@/geometry/triangulation/faceToGeometry';
 import {
   buildSceneBVH,
   type SceneBVHCommonResult,
-} from '@/rendering/scene/walkaround/lib/bvhCommon';
-import type { VertexData } from '@/types/geometry';
+} from '../bvhCommon.js';
 
 // MeshBVH exposes _roots at runtime but it's not in the .d.ts. We need
 // the runtime field to assert the root count.
@@ -49,19 +46,118 @@ interface BvhWithRoots {
   _roots: ArrayBuffer[];
 }
 
-function hexBoundary(cx: number, cy: number, r: number): VertexData[] {
-  const verts: VertexData[] = [];
+// ──────────────────────────────────────────────────────────────────────────
+// Local geometry helpers (replace host-app faceToGeometry / VertexData)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build 6 hex boundary vertices (flat-top, centred at cx/cy, radius r) in
+ * the order expected by extrudeHexGeometry below.
+ */
+function hexBoundaryXY(
+  cx: number,
+  cy: number,
+  r: number,
+): Array<{ x: number; y: number }> {
+  const verts: Array<{ x: number; y: number }> = [];
   for (let i = 0; i < 6; i++) {
     const a = -Math.PI / 2 + (i * Math.PI) / 3;
-    verts.push({
-      id: `v${i}`,
-      x: cx + r * Math.cos(a),
-      y: cy + r * Math.sin(a),
-      halfEdgeId: null,
-    });
+    verts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
   }
   return verts;
 }
+
+/**
+ * Build an extruded hexagonal prism geometry from 6 boundary vertices.
+ * The prism extends depthZ units in the +Z direction.
+ *
+ * Layout: front face (z=0), back face (z=depth), 6 side quads.
+ * All faces are triangulated; geometry is indexed; normals computed.
+ *
+ * The test only needs a mesh with a valid position attribute and index —
+ * the exact triangulation is not tested here.
+ */
+function extrudeHexGeometry(
+  boundary: Array<{ x: number; y: number }>,
+  depthZ: number,
+): THREE.BufferGeometry {
+  const n = boundary.length; // 6
+  // Front face (z=0): centre + 6 boundary verts → n vertices
+  // Back  face (z=d): centre + 6 boundary verts → n vertices
+  // Side quads: 6 quads × 4 verts = 24 vertices (unshared for clean normals)
+  const frontVerts = n + 1;  // 7
+  const backVerts  = n + 1;  // 7
+  const sideVerts  = n * 4;  // 24
+  const totalVerts = frontVerts + backVerts + sideVerts; // 38
+
+  const positions = new Float32Array(totalVerts * 3);
+  let vi = 0;
+
+  const write = (x: number, y: number, z: number): number => {
+    const idx = vi++;
+    positions[idx * 3 + 0] = x;
+    positions[idx * 3 + 1] = y;
+    positions[idx * 3 + 2] = z;
+    return idx;
+  };
+
+  // Front face centre + ring
+  const fCenter = write(0, 0, 0);
+  const fRing: number[] = [];
+  for (const { x, y } of boundary) fRing.push(write(x, y, 0));
+
+  // Back face centre + ring
+  const bCenter = write(0, 0, depthZ);
+  const bRing: number[] = [];
+  for (const { x, y } of boundary) bRing.push(write(x, y, depthZ));
+
+  // Side quads (4 unique verts each, so normals are per-face)
+  const sideBase: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const ni = (i + 1) % n;
+    sideBase.push(
+      write(boundary[i]!.x,  boundary[i]!.y,  0),
+      write(boundary[ni]!.x, boundary[ni]!.y, 0),
+      write(boundary[ni]!.x, boundary[ni]!.y, depthZ),
+      write(boundary[i]!.x,  boundary[i]!.y,  depthZ),
+    );
+  }
+
+  // Indices
+  const tris: number[] = [];
+
+  // Front face: fan from centre
+  for (let i = 0; i < n; i++) {
+    tris.push(fCenter, fRing[i]!, fRing[(i + 1) % n]!);
+  }
+  // Back face: fan (reverse winding)
+  for (let i = 0; i < n; i++) {
+    tris.push(bCenter, bRing[(i + 1) % n]!, bRing[i]!);
+  }
+  // Side quads: 2 tris each
+  for (let i = 0; i < n; i++) {
+    const b = i * 4;
+    const v0 = sideBase[b]!;
+    const v1 = sideBase[b + 1]!;
+    const v2 = sideBase[b + 2]!;
+    const v3 = sideBase[b + 3]!;
+    tris.push(v0, v1, v2, v0, v2, v3);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  // UV required so StaticGeometryGenerator doesn't reject mixed-attribute
+  // merges when this geometry is combined with primitives that have UV
+  // (e.g. THREE.PlaneGeometry). Values are zero — not used by BVH tests.
+  geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(totalVerts * 2), 2));
+  geo.setIndex(tris);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Scene construction
+// ──────────────────────────────────────────────────────────────────────────
 
 interface SceneBuildResult {
   scene: THREE.Scene;
@@ -90,15 +186,14 @@ function buildHoneycombScene(opts: { includeFloor: boolean }): SceneBuildResult 
     for (let col = 0; col < 5; col++) {
       const ccx = col * wHex + (row % 2 === 0 ? 0 : wHex / 2);
       const ccy = row * h;
-      const boundary = hexBoundary(ccx, ccy, radius);
-      const geo = faceToGeometry(boundary, depthInches, false);
-      if (!geo) continue;
+      const boundary = hexBoundaryXY(ccx, ccy, radius);
+      const geo = extrudeHexGeometry(boundary, depthInches);
       const mat = new THREE.MeshPhysicalMaterial({ transmission: 0.7 });
       const mesh = new THREE.Mesh(geo, mat);
       scene.add(mesh);
       meshOrder.push(mesh);
       expectedKindPerMesh.push('glass');
-      vertCountPerMesh.push((geo.attributes.position as THREE.BufferAttribute).count);
+      vertCountPerMesh.push((geo.attributes['position'] as THREE.BufferAttribute).count);
     }
   }
   if (opts.includeFloor) {
@@ -112,7 +207,7 @@ function buildHoneycombScene(opts: { includeFloor: boolean }): SceneBuildResult 
     scene.add(floorMesh);
     meshOrder.push(floorMesh);
     expectedKindPerMesh.push('floor');
-    vertCountPerMesh.push((floorGeo.attributes.position as THREE.BufferAttribute).count);
+    vertCountPerMesh.push((floorGeo.attributes['position'] as THREE.BufferAttribute).count);
   }
   scene.updateMatrixWorld(true);
   return { scene, meshOrder, expectedKindPerMesh, vertCountPerMesh };
@@ -174,6 +269,10 @@ function countGlassTris(result: SceneBVHCommonResult): number {
   return count;
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Tests
+// ──────────────────────────────────────────────────────────────────────────
+
 describe('buildSceneBVH — single-root + per-tri matId survives BVH index reorder', () => {
   it('20 hex panels alone — single-root BVH, all glass tris correctly classified', () => {
     const { scene, expectedKindPerMesh, vertCountPerMesh } =
@@ -189,7 +288,7 @@ describe('buildSceneBVH — single-root + per-tri matId survives BVH index reord
       result, expectedKindPerMesh, vertCountPerMesh,
     );
     expect(correct).toBe(total);
-    expect(total).toBeGreaterThan(150); // ~400 tris for 20 extruded hex cells
+    expect(total).toBeGreaterThan(150); // 20 extruded hex cells → many tris
   });
 
   it('20 hex panels + tessellated floor — single-root BVH with 100% correct matId assignment', () => {
@@ -204,7 +303,7 @@ describe('buildSceneBVH — single-root + per-tri matId survives BVH index reord
       result, expectedKindPerMesh, vertCountPerMesh,
     );
     expect(correct).toBe(total);
-    expect(total).toBeGreaterThan(2000); // 400 glass + 2048 floor
+    expect(total).toBeGreaterThan(2000); // hex panels + 2048 floor tris
   });
 
   it('glass-triangle count matches floor-less baseline when floor is present', () => {
@@ -338,7 +437,7 @@ describe('buildSceneBVH — proxyMeshNames substitution', () => {
     const { scene } = buildHoneycombScene({ includeFloor: true });
     const result = buildSceneBVH(scene); // no proxy
     const triCount = result.indices.length / 3;
-    // 20 hex panels (~400 tris) + 32×32 floor (2048 tris) >> 1000.
+    // 20 hex panels + 32×32 floor (2048 tris) >> 1000.
     expect(triCount).toBeGreaterThan(2000);
   });
 });

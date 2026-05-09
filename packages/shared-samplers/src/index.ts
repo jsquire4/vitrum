@@ -1,8 +1,8 @@
-// @vitrum/shared-samplers — stub. Not yet implemented.
+// @vitrum/shared-samplers — sampling utilities for path tracers and walkaround engines.
 //
-// Migration plan + scope: see plan/library-architecture.md and
-// plan/phase-6-roadmap.md.
-//
-// This package's tracking task: see Phase 6 sprints.
+// Phase 1 deliverable: Hammersley QMC sequence + sphere sampling WGSL fragment.
+// Future Phase 6 sprints add: Sobol QMC (Sprint 3), light tree CDF (Sprint 3),
+// HG phase function (Sprint 7), Jakob+Hanika spectral upsampling (Sprint 8b),
+// Welford variance struct (Sprint 9 rider).
 
-export {};
+export * from './wgsl/hammersley.wgsl.js';

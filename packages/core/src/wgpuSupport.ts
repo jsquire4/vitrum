@@ -1,5 +1,3 @@
-// Temporary placement — moves to @vitrum/shared-bvh in Phase 1 Step 2.
-
 export interface WgpuProbeResult {
   supported: boolean;
   vendor?: string;

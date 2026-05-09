@@ -101,6 +101,8 @@ Rationale for the existing order:
 
 **Risks:** Low. The file is clean per the path-tracer-library-readiness audit ("confirmed clean").
 
+**Note added in Step 2:** Step 1 also fixed `wgpuSupport.ts`'s permanent home as `@vitrum/core` (correction to plan Section 4.2 — see note below that section's file table).
+
 ---
 
 ### 4.2 `@vitrum/shared-bvh`
@@ -111,9 +113,10 @@ Rationale for the existing order:
 |---|---|
 | `walkaround/lib/bvhCommon.ts` | `packages/shared-bvh/src/bvhCommon.ts` |
 | `walkaround/lib/bvhCommon.test.ts` | `packages/shared-bvh/src/__tests__/bvhCommon.test.ts` |
-| `walkaround/lib/wgpuSupport.ts` | `packages/shared-bvh/src/wgpuSupport.ts` |
 | `walkaround/wgsl/octahedral.wgsl.ts` | `packages/shared-bvh/src/wgsl/octahedral.wgsl.ts` |
 | `walkaround/sceneBvh.ts` | `packages/shared-bvh/src/sceneBvh.ts` |
+
+> **Note on `wgpuSupport.ts`**: Originally listed in this section per the legacy directory layout (it lived next to `bvhCommon.ts`). On Phase 1 Step 2 dispatch we verified by grep that no file in `_staging/` consumes `wgpuSupport` beyond the now-extracted `gpuDetection.ts`. Since `wgpuSupport` is a pure WebGPU capability utility (probeWebGPU, isSwiftShaderAdapter, classifyAdapter — no BVH coupling), it permanently lives in `@vitrum/core` (where Step 1 placed it). The plan correction was applied during Step 2.
 
 **Files NOT extracted (stay host-only):**
 

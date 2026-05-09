@@ -65,7 +65,7 @@ export interface SceneBVHCommonResult {
    *   f32[3..5]  bounds.max xyz
    *   u32[6]     rightChildOrTriOffset (RELATIVE to current node index for
    *              internal nodes; absolute for leaves on three-mesh-bvh
-   *              0.9.x — see §3.3 / Q8)
+   *              0.9.x)
    *   u32[7]     splitAxisOrTriCount  (LEAFNODE_MASK_32 | count for leaves)
    *
    * Returned as Float32Array for direct DMA to a WebGPU storage buffer.
@@ -118,7 +118,7 @@ export interface SceneBVHCommonOpts {
   /**
    * Caller-supplied filter — returns true for Object3D's whose geometry
    * should contribute to the BVH. Defaults to MeshStandard + MeshPhysical
-   * meshes (the convention 2-of-3 walkaround branches use today).
+   * meshes (the convention 2-of-3 walkaround engines use today).
    */
   filter?: (obj: THREE.Object3D) => boolean;
 
@@ -129,7 +129,7 @@ export interface SceneBVHCommonOpts {
    * Per WGSL spec, `array<vec3<f32>>` has alignment 16 and size 12 →
    * stride = roundUp(16, 12) = 16. Reading a tightly-packed 12-byte
    * positions array as `array<vec3f>` from WGSL garbles every vertex
-   * past index 0 (the visible "scrambled geometry" symptom — see §3.2).
+   * past index 0 (the visible "scrambled geometry" symptom).
    */
   positionStride?: 3 | 4;
 
@@ -161,6 +161,16 @@ export interface SceneBVHCommonOpts {
 
 // ──────────────────────────────────────────────────────────────────────────
 // Default filter: MeshStandard + MeshPhysical visible meshes.
+//
+// B6 KNOWN LIMITATION: MeshStandardMaterial is a sentinel for "any
+// opaque surface" in the original scene (stained-glass studio). Edge
+// materials (lead came beads, solder beads) are created as
+// MeshStandardMaterial, so they pass this filter and enter the BVH,
+// bloating leaf count and risking shadow-ray self-intersection at
+// panel edges. The fix is to stamp `userData.excludeFromBVH = true`
+// in the edge material factory and reject it here, but that requires
+// a host-app callsite change. Documented as a known rider; do not fix
+// inside this library without coordinating the host callsite change.
 // ──────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_FILTER = (obj: THREE.Object3D): boolean => {
@@ -207,7 +217,7 @@ function snapshotPreBuildMaterials(
   // One entry per unique THREE.Material across all source meshes, in
   // mesh-traversal order. Multi-material meshes (e.g. GlassMesh's
   // [front, front, back] array) collapse to their primary (index-0)
-  // material — this matches the conventions 2-of-3 walkaround branches
+  // material — this matches the conventions 2-of-3 walkaround engines
   // use today.
   const matLut: THREE.Material[] = [];
   const matMap = new Map<THREE.Material, number>();
@@ -291,11 +301,11 @@ export function buildSceneBVH(
   }
 
   // ── 0a. Hide environment / backdrop meshes from BVH traversal ──────────
-  // Sky domes (drei <Sky>), Environment probes, and other backdrop
-  // objects have very large bounding spheres (radius > 1000 world units).
-  // They are visual-only and must NOT enter the BVH — their huge extents
-  // break the BVH bounds, and ray-BVH traversal almost never intersects
-  // sky geometry from inside the room anyway. Temporarily set them
+  // Sky domes, Environment probes, and other backdrop objects have very
+  // large bounding spheres (radius > 1000 world units). They are
+  // visual-only and must NOT enter the BVH — their huge extents break
+  // the BVH bounds, and ray-BVH traversal almost never intersects sky
+  // geometry from inside the scene anyway. Temporarily set them
   // invisible so traverseVisible skips them.
   const tempHidden: THREE.Object3D[] = [];
   if (Number.isFinite(skyHideRadius)) {
@@ -319,8 +329,8 @@ export function buildSceneBVH(
   }
 
   // ── 0b. BVH proxy substitution for densely-tessellated flat surfaces ─
-  // Visual mesh ≠ ray-trace mesh — see §3.4 inventory entry. Per-branch
-  // opt-in via `proxyMeshNames`; defaults to empty set (no substitution).
+  // Visual mesh ≠ ray-trace mesh. Per-engine opt-in via `proxyMeshNames`;
+  // defaults to empty set (no substitution).
   const proxySwaps: {
     mesh: THREE.Mesh;
     original: THREE.BufferGeometry;
@@ -372,7 +382,7 @@ export function buildSceneBVH(
   // ── 2. Generate merged geometry ────────────────────────────────────────
   const sgg = new StaticGeometryGenerator(meshes);
   // Always include normals; UVs are optional but cheap to carry for
-  // callers that want them downstream (the ReSTIR branch packs UV into
+  // callers that want them downstream (the ReSTIR engine packs UV into
   // position.w as a sibling step).
   sgg.attributes = ['position', 'normal', 'uv'];
   // applyWorldTransforms is true by default in three-mesh-bvh's

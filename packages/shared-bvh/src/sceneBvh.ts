@@ -2,15 +2,15 @@
  * SceneBvh — unified BVH over the raster scene for DDGI probe ray tracing.
  *
  * Thin DDGI wrapper around the Tier 2 shared `buildSceneBVH` core
- * (`./lib/bvhCommon.ts`). The class shell remains in DDGI for one reason
- * the per-frame `useDDGI.ts` loop depends on:
+ * (`./bvhCommon.ts`). The class shell remains in shared-bvh for one reason
+ * the per-frame DDGI loop depends on:
  *
  *   - Geometry-version dirty tracking — `update(scene)` walks the visible
  *     meshes once per frame and only rebuilds the BVH when the cumulative
  *     `BufferAttribute.version + mesh.id` sum changes. The shared core is
  *     a pure builder (no dirty cache) by design — see
- *     `lib/useSceneBVH.ts` for the canonical React-side debounce; DDGI
- *     uses this lower-level cache because it runs inside `useFrame`.
+ *     `useSceneBVH` in the host app for the canonical React-side debounce;
+ *     DDGI uses this lower-level cache because it runs inside `useFrame`.
  *
  * GPU buffer layout matches what the inline WGSL in probeUpdateRays.wgsl.ts
  * expects (same layout as three-mesh-bvh's bvhIntersectFirstHit WGSL).
@@ -18,7 +18,7 @@
  */
 
 import * as THREE from 'three';
-import { buildSceneBVH } from './lib/bvhCommon';
+import { buildSceneBVH } from './bvhCommon.js';
 
 export interface SceneBvhBuffers {
   /** Flat BVHNode array — bounds (6 f32) + rightChild/triOffset (u32) +
