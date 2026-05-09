@@ -18,6 +18,7 @@ Sprint 0 is complete. Verified state:
 - `@vitrum/three-bindings/src/index.ts` — stub (`sceneFromThreeJS` throws).
 - All 8 package `package.json` files wired in npm workspace.
 - `tsc --noEmit` clean across workspace.
+- Contract refinement (commits `dde8df0` and `980e5cb`): `FrameInput.quality` interface added; `EngineOptions` cleaned up; pt-webgl device narrowed to `THREE.WebGLRenderer`. These changes resolve Q-PT-2 and Q-PT-4 from this plan.
 
 The 2 remaining Sprint 0 checklist items (host-app bridge hooks, Sprint 0 committed with doc update) are explicitly deferred to the first host-app integration (no host app currently imports `@vitrum/*`).
 
@@ -252,7 +253,7 @@ This is the highest-priority extraction for Phase 6 because Sprint 1 lands here.
 
 **`ptIblBaker.ts`:**
 - Depends on `SkyParams` → replace as above.
-- Accepts `THREE.WebGLRenderer` (verified: line 108 `renderer: THREE.WebGLRenderer`). This is a DECISION-PENDING-USER (Q-PT-2 below).
+- Accepts `THREE.WebGLRenderer` (verified: line 108 `renderer: THREE.WebGLRenderer`). Resolved as RD-9: the pt-webgl factory contract narrows `device` to `THREE.WebGLRenderer`.
 
 **Sun geometry constants from `lighting/renderers/sunPathTraced.tsx`:**
 - `PT_SUN_DISTANCE`, `SUN_ANGULAR_RADIUS`, `PT_SUN_DISC_DIAMETER`, `PT_SUN_AREA_INTENSITY` → `packages/pt-webgl/src/sunGeometry.ts`. These are pure constants with no React coupling.
@@ -269,8 +270,8 @@ This is the highest-priority extraction for Phase 6 because Sprint 1 lands here.
 **Effort:** 2–4 days. The split of `lightingIntensityTable.ts` and the `SkyParams` collapse are the riskiest steps.
 
 **Risks:** Medium.
-- The `ptIblBaker.ts` / `THREE.WebGLRenderer` coupling is the hardest coupling to break (DECISION-PENDING-USER Q-PT-2).
-- Q-PT-4: `PT_PREVIEW` ↔ `PT_FINAL` mode switching requires `Engine.updateOptions()` or `reset(newOptions)`. The current contract has neither. This needs resolution before Sprint 1 — see Decision-Pending-User section.
+- The `ptIblBaker.ts` / `THREE.WebGLRenderer` coupling is resolved: Q-PT-2 locked as RD-9; `device: THREE.WebGLRenderer` is the pt-webgl contract.
+- Q-PT-4 resolved by deletion (RD-10): quality dials live on `FrameInput.quality`; `Engine` has no `updateOptions()` and none is needed.
 
 ---
 
@@ -282,7 +283,13 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 
 | Source | Target |
 |---|---|
-| `walkaround/engines/restir/WalkaroundGPUPipeline.ts` | `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` |
+| `walkaround/engines/restir/WalkaroundGPUPipeline.ts` | `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` (~350 LOC, public API) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/resourceManager.ts` (~200 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/bindGroupLayouts.ts` (~250 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/bindGroupBuilders.ts` (~200 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts` (~200 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (~100 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/uboUpdater.ts` (~60 LOC) | Split per RD-11 |
 | `walkaround/engines/restir/bvhCompute.ts` | `packages/walkaround-hybrid/src/restir/bvhCompute.ts` |
 | `walkaround/engines/restir/shaders/common.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/common.wgsl.ts` |
 | `walkaround/engines/restir/shaders/ris.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/ris.wgsl.ts` |
@@ -301,9 +308,9 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 | `walkaround/wgsl/probeUpdateBlend.wgsl.ts` | `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts` |
 | `walkaround/lib/nodeMaterialUpgrade.ts` | `packages/walkaround-hybrid/src/lib/nodeMaterialUpgrade.ts` |
 
-**RC subsystem (see DECISION-PENDING-USER Q-WA-3):**
+**RC subsystem (resolved by RD-12):**
 - `walkaround/cascadePyramid.ts`, `walkaround/cascadeDispatch.ts`, `walkaround/useCascadeBuffers.ts`, `walkaround/bvhCompute.ts`, `walkaround/applyDDGIShading.ts`, `walkaround/giReceiver.ts`, `walkaround/walkaroundDiffuseLighting.ts`
-- These belong in `@vitrum/walkaround-hybrid` IF the RC engine is extracted. Deferred pending Q-WA-3 decision.
+- These extract into `@vitrum/walkaround-hybrid` with a TSL→raw WebGPU conversion per RD-12. Missing shaders must be staged first (RD-13).
 
 **Files NOT extracted (stay host-only):**
 
@@ -321,7 +328,7 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 - Already exports `HYBRID_WEBGPU_REQUIRED_LIMITS` as a library-grade constant (verified: line 53). This becomes a top-level export of `@vitrum/walkaround-hybrid`.
 - `PipelineFrameInputs.sunDirection` / `.sunIntensity` rename to `primaryLightDir` / `primaryLightIntensity` per C1 in path-tracer-library-readiness.md.
 - Export `HYBRID_WEBGPU_REQUIRED_LIMITS` from the package's `index.ts`.
-- The god-file split is DECISION-PENDING-USER (Q-WA-6). See below.
+- The god-file split is resolved as RD-11: 7 sub-modules extracted during walkaround-hybrid extraction. See Section 5.
 
 **`probeUpdatePass.ts`:**
 - Imports `LightSource from '../lighting/lightSourceTypes'` (verified: line 21). Replace with a package-internal `DDGILight` interface defining only the fields actually used. Verified fields used: `l.kind` (string: `'sun' | 'fixture' | 'teaLight'`), `l.intensity`, and via unsafe cast `l.position`. This interface should be declared in `packages/walkaround-hybrid/src/ddgi/types.ts`. LOC count verified: 615 lines (not the "400–600" estimate — exact count is 615).
@@ -347,11 +354,11 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 
 **Dependencies:** `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`.
 
-**Effort:** 5–10 days. The de-React-ification of `useHybridLayeredGI.ts` and `useDDGI.ts` is the most difficult transformation.
+**Effort:** 8–12 days. The de-React-ification of `useHybridLayeredGI.ts` and `useDDGI.ts` is the most difficult transformation; the `WalkaroundGPUPipeline.ts` 7-way split (RD-11) adds 3–5 days, and the RC TSL→raw WebGPU conversion (RD-12) adds ~5 days.
 
 **Risks:** High.
-- Q-WA-2 (missing RC shaders — confirmed blocking; see below).
-- Q-WA-7 (TSL vs raw WebGPU in `cascadeDispatch.ts` — confirmed).
+- RISK-1 (missing RC shaders) — mitigated by RD-13; shader staging is a hard prerequisite.
+- RISK-2 (TSL vs raw WebGPU) — residual risk after RD-12 protocol; see Section 9 RISK-7.
 - Q-WA-9 (`three/webgpu` peer dep on DDGI path — confirmed, accepted).
 
 ---
@@ -405,98 +412,50 @@ Verified by `wc -l`. Count confirmed.
 Verified by reading lines 370–410. The `_uploadLights` method switches on `l.kind` (string union `'sun' | 'fixture' | 'teaLight'`) and uses `l.intensity` and `(l as unknown as { position? }).position`. A package-internal `DDGILight` interface with `kind: string`, `intensity: number`, `position?: { x: number; y: number; z: number }` is sufficient.
 
 **RD-7: Plan docs do NOT prescribe a concrete split for `WalkaroundGPUPipeline.ts`.**  
-Confirmed by reading `glorious-hybrid.md` and `layered-hybrid-v2.md`. Neither document prescribes splitting the god file into sub-modules. The split proposal is analyst-inferred only. This is DECISION-PENDING-USER (Q-WA-6).
+Confirmed by reading `glorious-hybrid.md` and `layered-hybrid-v2.md`. Neither document prescribes splitting the god file into sub-modules. The split proposal is analyst-inferred only. Resolved as RD-11 (user sign-off received 2026-05-09).
 
 **RD-8: `cascadeDispatch.ts` uses TSL (confirmed).**  
-Verified by reading the file: imports `StorageBufferAttribute, WebGPURenderer` from `three/webgpu` and `storage, sampler, texture, instanceIndex` from `three/tsl` (lines 18–20). This is a different paradigm from `WalkaroundGPUPipeline.ts`'s raw WebGPU. Confirms Q-WA-7 is real and requires a decision.
+Verified by reading the file: imports `StorageBufferAttribute, WebGPURenderer` from `three/webgpu` and `storage, sampler, texture, instanceIndex` from `three/tsl` (lines 18–20). This is a different paradigm from `WalkaroundGPUPipeline.ts`'s raw WebGPU. Resolved by RD-12 (TSL→raw WebGPU conversion during extraction).
+
+**RD-9: Q-PT-2 — pt-webgl device handle is `THREE.WebGLRenderer`.**  
+Resolved 2026-05-09. The pt-webgl backend wraps three-gpu-pathtracer (which requires a `THREE.WebGLRenderer`) and bakes IBL via `ptIblBaker.ts` (which also requires it). Pretending the factory could narrow `EngineOptions.device` to a raw `WebGLRenderingContext` was a Sprint 0 stub-time simplification; the honest contract for pt-webgl is `device: THREE.WebGLRenderer`. The `device: unknown` field on core `EngineOptions` stays opaque so each backend narrows independently — pt-webgpu (future) will narrow to `GPUDevice`. Committed `980e5cb`.
+
+**RD-10: Q-PT-4 — Quality dials live on `FrameInput.quality`, not `EngineOptions`.**  
+Resolved by deletion 2026-05-09. The `Engine` interface has no `updateOptions()` method because there's nothing to mutate. Per-frame quality dials (`samplesTarget`, `bounces`, `filteredGlossyFactor`, `resolutionFactor`) live on a new `FrameQualitySettings` interface on `FrameInput.quality`. PT_PREVIEW vs PT_FINAL is two different per-frame payloads to the same engine instance, not a mode-switch event. Walkaround real-time, hero render, and offline encoders all compose under the same model. `EngineOptions` now holds only immutable creation-time config: device, structural caps (`maxBounces`/`maxSamplesPerPixel` for buffer allocation), denoiser pipeline, extensions. Committed `dde8df0`.
+
+**RD-11: Q-WA-6 — Split `WalkaroundGPUPipeline.ts` during extraction.**  
+Resolved 2026-05-09. The 1287-LOC god file is decomposed into 7 sub-modules during the walkaround-hybrid extraction (NOT a follow-on refactor sprint). Target structure under `packages/walkaround-hybrid/src/pipeline/`:
+- `WalkaroundGPUPipeline.ts` (stripped, ~350 LOC) — public API: ctor, `initialize()`, `renderFrame()`, `dispose()`, `updateEmitters()`, `setDDGIInputs()`
+- `resourceManager.ts` (~200 LOC) — `uploadBuffer()`, all `createBuffer`/`createTexture` calls, dispose
+- `bindGroupLayouts.ts` (~250 LOC) — `get*BindGroupLayout()` private methods
+- `bindGroupBuilders.ts` (~200 LOC) — `build*BindGroup()` private methods
+- `pipelineCompiler.ts` (~200 LOC) — `compilePipelines()` shader module + pipeline creation
+- `timestampQueries.ts` (~100 LOC) — `tsWrites()`, `kickTimestampReadback()`
+- `uboUpdater.ts` (~60 LOC) — `updateUBO()` + UBO layout constant
+
+Adds 3–5 days to the walkaround-hybrid extraction phase. Each sub-module is extracted with a one-to-one functional correspondence to its source section in the god file — no semantic changes. The pre-extraction file is the ground-truth reference for behavior parity.
+
+**RD-12: Q-WA-3 — RC subsystem extracts with TSL→raw WebGPU conversion; residual-risk documented.**  
+Resolved 2026-05-09. RC stays in scope for extraction. The TSL → raw WebGPU conversion happens during the walkaround-hybrid extraction phase, NOT as a deferred sprint. Conversion protocol:
+
+1. **Ground-truth capture**: use Three.js's TSL→WGSL compiler (headless, in a Node script) to compile the existing TSL nodes in `cascadeDispatch.ts` to WGSL strings. The compiler output is the ground-truth shader code. The conversion writes those WGSL strings as static constants and replaces TSL `compute()` dispatches with raw `device.createComputePipeline()` + `passEncoder.dispatchWorkgroups()`.
+
+2. **Headless validation tests**: unit tests verify the converted resource binding layouts match the TSL-compiled layouts (entry counts, binding indices, type/usage flags). Tests also assert dispatch dimensions match the original TSL workgroup config.
+
+3. **Code review**: every TSL primitive used (`storage()`, `wgslFn`, `instanceIndex`, `texture()`, `sampler()`, etc.) gets a documented one-to-one mapping to its raw WebGPU equivalent in a new file `packages/walkaround-hybrid/src/rc/TSL_TO_RAW_MAPPING.md`. The mapping doc is written BEFORE conversion code lands; reviewers check the conversion against the mapping.
+
+4. **Residual-risk disclaimer**: `packages/walkaround-hybrid/README.md` includes a known-issue note: "The RC subsystem was ported from a TSL-based implementation to raw WebGPU during extraction without GPU render verification. While the TSL→WGSL ground-truth was captured via the framework's own compiler and resource bindings are unit-tested, subtle behavioral correctness (workgroup sizing, dispatch dimensions, cascade indexing, merge-pass color space) has not been visually verified against the original. Library consumers running RC for the first time should A/B against a known-good reference. Issues filed against the RC path should be triaged with this in mind."
+
+Adds ~5 days to the walkaround-hybrid extraction phase, plus a 30-minute action item (RD-13 below) to stage missing shaders.
+
+**RD-13: Missing RC shaders must be staged from the host app before walkaround-hybrid extraction begins.**  
+Resolved 2026-05-09 as an action item, not a decision. `cascadeDispatch.ts` imports `../../shaders/walkaround/probeRayCast.wgsl` and `cascadeMerge.wgsl` (verified). These files are NOT in `_staging/`; they live in the host app's `shaders/walkaround/` directory. Action: locate them, copy to `_staging/legacy-source/src/rendering/scene/walkaround/shaders/` (preserving the relative import path), then proceed with extraction. Estimated cost: 30 minutes. This is a hard prerequisite for the RC conversion in RD-12.
 
 ---
 
 ### DECISION-PENDING-USER items
 
 These require user sign-off before the relevant extraction step proceeds.
-
----
-
-**DECISION-PENDING-USER: Q-PT-2 — IBL baker and the `THREE.WebGLRenderer` requirement**
-
-**Problem**: `ptIblBaker.ts` (line 108) accepts `renderer: THREE.WebGLRenderer` — not a raw `WebGLRenderingContext`. The current `createPTEngine_WebGL2` factory accepts `WebGL2RenderingContext`. The baker needs the full renderer object because it uses `CubeCamera`, `WebGLRenderTarget`, and `renderer.render()`.
-
-**Option A**: Engine factory accepts both — add an optional `renderer?: THREE.WebGLRenderer` to `PTEngineWebGL2Options`. The engine holds the renderer reference and passes it to the baker internally.  
-_Pros_: Minimal change to the existing stub; backwards-compatible.  
-_Cons_: `@vitrum/pt-webgl` now carries `three` as a required peer dep (it already would for the PT pipeline anyway, but the factory contract exposes it).
-
-**Option B**: Baker is a standalone exported function; host passes the renderer separately.  
-_Pros_: Factory contract stays clean (just `WebGL2RenderingContext`); baker is composable.  
-_Cons_: Host must thread the renderer through two separate API calls.
-
-**Option C**: Engine creates its own `THREE.WebGLRenderer` from the raw `WebGLRenderingContext`.  
-_Pros_: Clean factory contract.  
-_Cons_: Engine would own the renderer lifecycle, violating the "host owns lifecycle" design principle.
-
-**Recommendation**: Option A. `@vitrum/pt-webgl` already depends on `three` (the fork wraps Three.js internals); adding `renderer?: THREE.WebGLRenderer` to options is the least-disruptive path.
-
----
-
-**DECISION-PENDING-USER: Q-PT-4 — PT_PREVIEW ↔ PT_FINAL switching and the Engine contract**
-
-**Problem**: The host currently switches between `PT_PREVIEW` and `PT_FINAL` config by re-mounting the `<Pathtracer>` component with different props. After extraction, the `Engine` contract has `reset()` but no `updateOptions()` method. Without one, the host must `dispose()` + recreate the engine on mode switch — which reloads BVH/shaders and causes a visible stall.
-
-**Option A**: Add `updateOptions(opts: Partial<EngineOptions>): void` to the `Engine` interface in `@vitrum/core`.  
-_Pros_: Clean contract; backends implement for the fields they support.  
-_Cons_: Any addition to `@vitrum/core`'s `Engine` interface is a breaking change for all future backends.
-
-**Option B**: Add `reset(opts?: Partial<EngineOptions>): void` overload semantics — existing `reset()` clears accumulator; `reset(newOpts)` also patches config.  
-_Pros_: Builds on existing method; less surface area.  
-_Cons_: Overloads on presence/absence of argument are ambiguous TypeScript.
-
-**Option C**: Keep `Engine` contract unchanged; expose a `PTEngineWebGL2` subclass method `applyConfig(cfg: PTPipelineConfig)` not on the `Engine` interface.  
-_Pros_: No core contract change; implementation detail of the backend.  
-_Cons_: Host must hold a `PTEngineWebGL2` reference, not the `Engine` interface — leaks the backend type.
-
-**Recommendation**: Option A. The Sprint 0 doc explicitly lists `updateOptions()` (via `updatePrimitive`/`updateEmitter` analogues) as a known TBD. A general `updateOptions()` on `Engine` is the honest contract extension. Sprint 1 kickoff is the right moment to lock this.
-
----
-
-**DECISION-PENDING-USER: Q-WA-3 — RC subsystem extraction scope**
-
-**Problem**: The Radiance Cascade engine (`cascadeDispatch.ts`, `cascadePyramid.ts`, `useCascadeBuffers.ts`, outer `bvhCompute.ts`, `applyDDGIShading.ts`, `giReceiver.ts`, `walkaroundDiffuseLighting.ts`) is used by the standalone `'rc'` walkaround engine (`RcStage.tsx`) but is classified as "Path A orphan" in `layered-hybrid-v2.md`. The active hybrid engine (`HybridLayeredStage`) runs RC as a compute prerequisite — but is blocked on Q-WA-2 (missing shaders).
-
-**Additional blocker**: `cascadeDispatch.ts` uses TSL (`storage()`, `wgslFn`, `compute()`) — different paradigm from `WalkaroundGPUPipeline.ts`'s raw WebGPU. Verified by reading the file. This means `@vitrum/walkaround-hybrid` would carry both a raw-WebGPU path (ReSTIR) and a TSL path (RC), or the TSL path must be rewritten to raw WebGPU during extraction.
-
-**Option A**: Extract RC subsystem as-is into `@vitrum/walkaround-hybrid` (accept TSL peer dep).  
-_Pros_: Preserves the standalone `'rc'` engine; RC composition in hybrid works when missing shaders are staged.  
-_Cons_: TSL + raw WebGPU coexistence is messy; blocked on Q-WA-2.
-
-**Option B**: Defer RC extraction to a separate sprint after hybrid-hybrid core is extracted. Stage it under `packages/walkaround-hybrid/src/rc/` but don't wire it up until Q-WA-2 is resolved.  
-_Pros_: Unblocks DDGI + ReSTIR extraction immediately; RC staging happens in parallel.  
-_Cons_: The standalone `'rc'` engine remains host-side longer.
-
-**Option C**: Do not extract RC. Mark the standalone `'rc'` walkaround engine as host-only; document that Phase 6 Sprint 9 walkaround work targets only the hybrid path.  
-_Pros_: Simplest; Q-WA-2 and Q-WA-7 become non-issues.  
-_Cons_: Loses library-grade RC; future walkaround improvements must stay in the host app for the RC path.
-
-**Recommendation**: Option B. Extract DDGI + ReSTIR first (they're independent of the missing shaders). Stage RC files in `packages/walkaround-hybrid/src/rc/` but mark them `// NOT YET WIRED` until Q-WA-2 shaders are staged and Q-WA-7 is resolved.
-
----
-
-**DECISION-PENDING-USER: Q-WA-6 — WalkaroundGPUPipeline god-file split**
-
-**Problem**: `WalkaroundGPUPipeline.ts` is 1287 LOC verified. The analyst proposed splitting it into 7 sub-modules. This split is not prescribed by any plan document (confirmed by reading `glorious-hybrid.md` and `layered-hybrid-v2.md`).
-
-**Option A**: Extract as-is (one file). Split can be done as a follow-on refactor sprint.  
-_Pros_: Fastest path to extraction; no risk of semantic changes during split.  
-_Cons_: The god file grows as Phase 6 sprints add features; refactoring later under active development is harder.
-
-**Option B**: Split during extraction per the analyst's proposed module boundaries (7 sub-modules: stripped public API, resourceManager, bindGroupLayouts, bindGroupBuilders, pipelineCompiler, timestampQueries, uboUpdater).  
-_Pros_: Clean architecture for future Phase 6 work; each Sprint lands in a bounded file.  
-_Cons_: Adds 3–5 days to extraction; introduces risk of semantic changes during a structural move.
-
-**Option C**: Partial split — extract only `timestampQueries.ts` and `uboUpdater.ts` (the cleanest, most self-contained pieces, ~160 LOC total) and leave the rest as-is.  
-_Pros_: Some benefit, bounded risk.  
-_Cons_: Doesn't address the core complexity issue.
-
-**Recommendation**: Option A for now. The god file is well-tested; the extraction itself is the priority. Schedule the split as a dedicated Phase 6 Sprint after extraction completes and before Sprint 9 (walkaround adaptive sampling) lands new code in this file.
 
 ---
 
@@ -543,13 +502,14 @@ These are independent (pt-webgl doesn't need three-bindings; three-bindings does
 
 Stub `@vitrum/shared-denoisers` with barrel exports for atrous and temporalAccum WGSL (empty string constants initially). This unblocks walkaround-hybrid's `tsc --noEmit` clean.
 
-### Phase 4 — walkaround-hybrid (serial, 5–10 days, after Phase 1 + Phase 3)
+### Phase 4 — walkaround-hybrid (serial, 10–14 days, after Phase 1 + Phase 3)
 
 ```
+Step 0:  Stage missing RC shaders (RD-13) — 30 min
 Step 1:  Extract DDGI subsystem (probeUpdatePass, probeGrid, ddgiAtlasLayout, ddgiSampleWgsl, wgsl/) (2–3 days)
-Step 2:  Extract ReSTIR pipeline (WalkaroundGPUPipeline + its shaders) (2–4 days)
+Step 2:  Extract ReSTIR pipeline + WalkaroundGPUPipeline 7-way split (RD-11) (4–6 days)
 Step 3:  De-React useHybridLayeredGI → HybridEngine class (2–3 days)
-Step 4:  RC subsystem staging (per Q-WA-3 decision) (1–2 days if Option B)
+Step 4:  RC subsystem extraction + TSL→raw WebGPU conversion (RD-12) (~5 days)
 ```
 
 Steps 1–3 can overlap partially (DDGI and ReSTIR shaders are independent), but `HybridEngine.ts` depends on both being stable.
@@ -564,11 +524,11 @@ Move atrous + temporalAccum WGSL from `walkaround-hybrid/src/shaders/` to `share
 Days 1–2:   shared-bvh + shared-samplers + core rider
 Days 2–6:   [Track A] three-bindings  |  [Track B] pt-webgl
 Day 3:      shared-denoisers stub (parallel with Track A/B)
-Days 6–16:  walkaround-hybrid (serial, 4 steps)
-Day 16:     shared-denoisers full migration
+Days 6–20:  walkaround-hybrid (serial, 5 steps including RD-11 split + RD-12 RC conversion)
+Day 21:     shared-denoisers full migration
 ```
 
-**Estimated total elapsed time: 14–18 days** with the parallel Phase 2 tracks.
+**Estimated total elapsed time: 19–23 days** with the parallel Phase 2 tracks.
 
 ---
 
@@ -613,17 +573,17 @@ After all extractions complete:
 
 ## 9. Open Risks
 
-### RISK-1 (HIGH): Missing RC shaders block RC extraction — confirmed
+### RISK-1 (HIGH → MITIGATED): Missing RC shaders block RC extraction — confirmed
 
 `cascadeDispatch.ts` imports `probeRayCast.wgsl` and `cascadeMerge.wgsl` from `../../shaders/walkaround/` (verified lines 24–25). These paths are NOT relative to `_staging/` — they reference the host app's shader directory. Neither file exists anywhere under `_staging/` (verified by filesystem search). The RC extraction (and RC integration into the hybrid engine) is hard-blocked until these files are staged from the host app. This does not block DDGI + ReSTIR extraction.
 
-**Mitigation**: Stage these two WGSL files from the host app before beginning Step 4 of walkaround-hybrid extraction.
+**Mitigated 2026-05-09**: RD-13 added as a hard prerequisite to walkaround-hybrid extraction; shader staging is a 30-minute task before extraction begins. Tracking item: confirm the shaders are located + copied as the first step of walkaround-hybrid extraction (Phase 4 Step 0).
 
-### RISK-2 (HIGH): TSL vs. raw WebGPU paradigm in RC subsystem — confirmed
+### RISK-2 (HIGH → MEDIUM): TSL vs. raw WebGPU paradigm in RC subsystem — confirmed
 
-`cascadeDispatch.ts` uses Three.js TSL (`storage()`, `compute()`, `wgslFn`) while `WalkaroundGPUPipeline.ts` uses raw WebGPU (`device.createShaderModule()`, `GPUComputePipeline`). Both paradigms cannot coexist cleanly in a library without accepting Three.js WebGPU renderer as a required peer dep for ALL walkaround-hybrid consumers (including those that only want ReSTIR). Decision pending Q-WA-3.
+`cascadeDispatch.ts` uses Three.js TSL (`storage()`, `compute()`, `wgslFn`) while `WalkaroundGPUPipeline.ts` uses raw WebGPU (`device.createShaderModule()`, `GPUComputePipeline`). Both paradigms cannot coexist cleanly in a library without accepting Three.js WebGPU renderer as a required peer dep for ALL walkaround-hybrid consumers (including those that only want ReSTIR).
 
-**Mitigation**: Q-WA-3 Option B (stage RC separately, wire up after decision) keeps this from blocking DDGI + ReSTIR extraction.
+**Resolved 2026-05-09**: RD-12 specifies the TSL→raw WebGPU conversion protocol (ground-truth capture + headless validation + mapping doc + residual-risk disclaimer). Risk reclassified to MEDIUM because GPU render verification isn't possible at extraction time; conversion correctness depends on the protocol's discipline. Residual risk tracked as RISK-7.
 
 ### RISK-3 (MEDIUM): `probeUpdatePass.ts` Three.js WebGPU renderer internals coupling
 
@@ -631,11 +591,9 @@ Verified: `probeUpdatePass.ts` imports `StorageTexture from 'three/webgpu'` (lin
 
 **Mitigation**: Document clearly in the package README that `three/webgpu` is required for DDGI. ReSTIR-only usage path (if the user creates the `GPUDevice` themselves) should not require importing Three.js — keep the DDGI initialization optional via a gate in `HybridEngine.ts`.
 
-### RISK-4 (MEDIUM): Engine contract missing `updateOptions()` for PT_PREVIEW ↔ PT_FINAL switching
+### RISK-4 (MEDIUM → CLOSED): Engine contract missing `updateOptions()` for PT_PREVIEW ↔ PT_FINAL switching
 
-Sprint 1 requires mode-switching. Current `Engine` interface has only `reset()`. If Q-PT-4 Option A is selected, a contract change must land before Sprint 1 implementation. A contract change in `@vitrum/core` breaks all downstream stubs.
-
-**Mitigation**: Resolve Q-PT-4 first; update `@vitrum/core`, then update all stubs (they all throw anyway). This is a 1-day coordination task, not a risk to the overall timeline.
+**Resolved 2026-05-09 by deletion**: RD-10 moves quality dials to `FrameInput.quality`, eliminating the need for `updateOptions()` entirely. Risk closed.
 
 ### RISK-5 (LOW-MEDIUM): Stale plan-section references in extracted files
 
@@ -646,6 +604,12 @@ Sprint 1 requires mode-switching. Current `Engine` interface has only `reset()`.
 ### RISK-6 (LOW): `_staging/` contains no RC `.tsx` React stages
 
 The RC stages (`RcStage.tsx`, `HybridLayeredStage.tsx`, etc.) are not in `_staging/`. The analyst and this plan treat them as host-only. Confirmed: the `_staging/` file listing shows no `.tsx` files at all. The staging directory correctly contains only library-candidate files.
+
+### RISK-7 (HIGH): RC TSL→raw WebGPU conversion correctness without GPU render verification
+
+RD-12's protocol (ground-truth capture, unit tests, code review, README disclaimer) is the mitigation, but residual risk remains — subtle correctness bugs (workgroup sizing, cascade indexing, dispatch dimensions, merge-pass color space) may not surface until library consumers render. The TSL→WGSL compiler output is the ground truth for shader code, and binding layout unit tests catch structural mismatches, but end-to-end behavioral correctness is unverified at extraction time.
+
+**Mitigation**: Clearly documented limitation in `packages/walkaround-hybrid/README.md` (per RD-12). A/B verification against a known-good reference scheduled for whenever GPU access becomes available. Issues filed against the RC path should be triaged with this in mind.
 
 ---
 
@@ -683,15 +647,21 @@ The RC stages (`RcStage.tsx`, `HybridLayeredStage.tsx`, etc.) are not in `_stagi
 | `walkaround/useDDGI.ts` | `@vitrum/walkaround-hybrid/src/ddgi/DDGI.ts` | Extract + de-React |
 | `walkaround/useHybridLayeredGI.ts` | `@vitrum/walkaround-hybrid/src/HybridEngine.ts` | Extract + de-React |
 | `walkaround/useSceneBVH.ts` | Host-only (RC's older hook) | Do not extract |
-| `walkaround/cascadePyramid.ts` | `@vitrum/walkaround-hybrid/src/rc/cascadePyramid.ts` (staged, not wired) | Pending Q-WA-3 |
-| `walkaround/cascadeDispatch.ts` | `@vitrum/walkaround-hybrid/src/rc/cascadeDispatch.ts` (staged, not wired) | Pending Q-WA-2 + Q-WA-3 |
-| `walkaround/useCascadeBuffers.ts` | `@vitrum/walkaround-hybrid/src/rc/useCascadeBuffers.ts` | Pending Q-WA-3 |
-| `walkaround/bvhCompute.ts` | `@vitrum/walkaround-hybrid/src/rc/bvhCompute.ts` | Pending Q-WA-3 |
-| `walkaround/applyDDGIShading.ts` | `@vitrum/walkaround-hybrid/src/rc/applyDDGIShading.ts` | Pending Q-WA-3 |
-| `walkaround/giReceiver.ts` | `@vitrum/walkaround-hybrid/src/rc/giReceiver.ts` | Pending Q-WA-3 |
-| `walkaround/walkaroundDiffuseLighting.ts` | `@vitrum/walkaround-hybrid/src/rc/walkaroundDiffuseLighting.ts` | Pending Q-WA-3 |
+| `walkaround/cascadePyramid.ts` | `@vitrum/walkaround-hybrid/src/rc/cascadePyramid.ts` | Extract + TSL→raw conversion (RD-12) |
+| `walkaround/cascadeDispatch.ts` | `@vitrum/walkaround-hybrid/src/rc/cascadeDispatch.ts` | Extract + TSL→raw conversion (RD-12) |
+| `walkaround/useCascadeBuffers.ts` | `@vitrum/walkaround-hybrid/src/rc/useCascadeBuffers.ts` | Extract + TSL→raw conversion (RD-12) |
+| `walkaround/bvhCompute.ts` | `@vitrum/walkaround-hybrid/src/rc/bvhCompute.ts` | Extract + TSL→raw conversion (RD-12) |
+| `walkaround/applyDDGIShading.ts` | `@vitrum/walkaround-hybrid/src/rc/applyDDGIShading.ts` | Extract + TSL→raw conversion (RD-12) |
+| `walkaround/giReceiver.ts` | `@vitrum/walkaround-hybrid/src/rc/giReceiver.ts` | Extract + TSL→raw conversion (RD-12) |
+| `walkaround/walkaroundDiffuseLighting.ts` | `@vitrum/walkaround-hybrid/src/rc/walkaroundDiffuseLighting.ts` | Extract + TSL→raw conversion (RD-12) |
 | `walkaround/engineRegistry.ts` | Host-only (Redux) | Do not extract |
-| `walkaround/engines/restir/WalkaroundGPUPipeline.ts` | `@vitrum/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` | Extract (god-file split pending Q-WA-6) |
+| `walkaround/engines/restir/WalkaroundGPUPipeline.ts` | `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` (~350 LOC) | Extract + 7-way split (RD-11) |
+| | `packages/walkaround-hybrid/src/pipeline/resourceManager.ts` (~200 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/bindGroupLayouts.ts` (~250 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/bindGroupBuilders.ts` (~200 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts` (~200 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (~100 LOC) | Split per RD-11 |
+| | `packages/walkaround-hybrid/src/pipeline/uboUpdater.ts` (~60 LOC) | Split per RD-11 |
 | `walkaround/engines/restir/bvhCompute.ts` | `@vitrum/walkaround-hybrid/src/restir/bvhCompute.ts` | Extract |
 | `walkaround/engines/restir/walkaroundBridgeTypes.ts` | Host-only (window globals) | Do not extract |
 | `walkaround/engines/restir/shaders/common.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/common.wgsl.ts` | Extract |
@@ -702,3 +672,5 @@ The RC stages (`RcStage.tsx`, `HybridLayeredStage.tsx`, etc.) are not in `_stagi
 | `walkaround/engines/restir/shaders/composite.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/composite.wgsl.ts` | Extract |
 | `walkaround/engines/restir/shaders/atrous.wgsl.ts` | `@vitrum/shared-denoisers/src/wgsl/atrous.wgsl.ts` | Extract (after walkaround-hybrid stable) |
 | `walkaround/engines/restir/shaders/temporalAccum.wgsl.ts` | `@vitrum/shared-denoisers/src/wgsl/temporalAccum.wgsl.ts` | Extract (after walkaround-hybrid stable) |
+| (host) `shaders/walkaround/probeRayCast.wgsl` | `_staging/legacy-source/src/rendering/scene/walkaround/shaders/probeRayCast.wgsl` then → `@vitrum/walkaround-hybrid/src/rc/wgsl/probeRayCast.wgsl` | Stage then extract (RD-13) |
+| (host) `shaders/walkaround/cascadeMerge.wgsl` | `_staging/legacy-source/src/rendering/scene/walkaround/shaders/cascadeMerge.wgsl` then → `@vitrum/walkaround-hybrid/src/rc/wgsl/cascadeMerge.wgsl` | Stage then extract (RD-13) |
