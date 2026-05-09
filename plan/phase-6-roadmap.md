@@ -75,6 +75,8 @@ When a feature is needed in BOTH modes, that's two implementations, not one. Eac
 
 Legend: ✓ = in scope; — = explicitly out of scope; **fork** = patch to `github:jsquire4/three-gpu-pathtracer`.
 
+**External RFEs (01–05):** Land **contract stubs** in `@vitrum/core` + `three-bindings` during **Phase 0–A**; implementation tracks **§13.2** in [`plan/cursor-recommended-plan.md`](./cursor-recommended-plan.md) (Sprints 4–9 + gates).
+
 ---
 
 ## 4. Sprint plan

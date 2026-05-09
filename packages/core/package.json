@@ -13,6 +13,9 @@
   },
   "license": "MIT",
   "peerDependencies": {},
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "devDependencies": {
     "@webgpu/types": "^0.1.40",
     "typescript": "^5.5.0"

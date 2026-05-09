@@ -1,5 +1,12 @@
 // @vitrum/walkaround-hybrid — WebGPU layered DDGI + RC + ReSTIR DI engine.
 
+// Host / binding seams (THREE coupling documented for future non-THREE graphs)
+export type {
+  WalkaroundBVHSceneRoot,
+  WalkaroundDDGIScene,
+  WalkaroundThreeHostScene,
+} from './hostScene/types.js';
+
 // Engine class (the public Engine implementation)
 export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
 export type { HybridEngineOptions } from './HybridEngine.js';

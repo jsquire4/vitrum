@@ -113,10 +113,29 @@ export interface Viewport {
 // ────────────────────────────────────────────────────────────────────────────
 
 export interface FrameOutput {
-  /** Primary radiance buffer — the final converged-or-converging color image.
-   *  Format depends on backend: WebGPU returns a `GPUTexture`, WebGL2 returns
-   *  the renderer's framebuffer or a `WebGLTexture` handle. */
-  readonly primaryRadiance: BackendTexture;
+  /**
+   * Primary radiance buffer — the final converged-or-converging color image.
+   * Format depends on backend: WebGPU returns a `GPUTexture`, WebGL2 returns
+   * the renderer's framebuffer or a `WebGLTexture` handle.
+   *
+   * **Skip frames:** When `samplesAccumulated === 0`, the engine elected to
+   * skip this frame (e.g. frame-rate throttle, pipeline not yet ready, paused
+   * state). On skip frames `primaryRadiance` is `null` — hosts MUST check
+   * `samplesAccumulated > 0` before treating `primaryRadiance` as a valid
+   * texture handle. Example guard:
+   *
+   * ```ts
+   * const out = engine.renderFrame(input);
+   * if (out.samplesAccumulated > 0 && out.primaryRadiance != null) {
+   *   // safe to use out.primaryRadiance
+   * }
+   * ```
+   *
+   * Walkaround engines set `samplesAccumulated = 1` on every rendered frame
+   * (they resample rather than accumulate). `samplesAccumulated = 0` is the
+   * universal "skip frame" sentinel.
+   */
+  readonly primaryRadiance: BackendTexture | null;
 
   // ── Optional G-buffer (Phase 6 sprint 5 introduces these) ──────────────
   /** Encoded normal + linear depth. RGBA16F: xyz = world-space normal,

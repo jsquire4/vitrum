@@ -13,11 +13,10 @@
  *
  * RC subsystem note:
  *   The RC cascade compute was removed from the hybrid engine in 2026-05-08
- *   as part of the render-mode-hierarchy restructure (the hybrid shade pass
- *   discarded Lo_rc). The standalone 'rc' walkaround engine still uses the
- *   cascade subsystem; those modules (cascadeDispatch, cascadePyramid,
- *   useCascadeBuffers) remain live for it.
- *   TODO Step 4: re-wire RC composition here when the RC cascade is extracted.
+ *   (shade pass no longer samples Lo_rc). Standalone RC still uses
+ *   `rc/cascadeDispatch` and friends. Re-integrating RC into this class is
+ *   **tracked design work** — see [plan/walkaround-without-three.md](../../../plan/walkaround-without-three.md)
+ *   (“RC re-composition”) for steps and constraints; it is not a one-line TODO.
  *
  * Debug globals:
  *   The original hook wrote to `window.__WGPU__.walkaround` and
@@ -93,7 +92,7 @@ export interface HybridEngineOptions extends EngineOptions {
   /** Sky-dome irradiance scalar paired with skyTint. */
   readonly skyIrradiance: number;
 
-  /** THREE.Scene reference, used for BVH construction. */
+  /** `THREE.Scene` for ReSTIR BVH build and DDGI traversal (see `hostScene/types.ts`). */
   readonly threeScene: THREE.Scene;
 
   /** Light list for DDGI probe update pass. */
