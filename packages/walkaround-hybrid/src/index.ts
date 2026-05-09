@@ -1,6 +1,14 @@
 // @vitrum/walkaround-hybrid — WebGPU layered DDGI + RC + ReSTIR DI engine.
 
-// DDGI subsystem
+// Engine class (the public Engine implementation)
+export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
+export type { HybridEngineOptions } from './HybridEngine.js';
+
+// DDGI subsystem (class-based, de-React-ified)
+export { DDGI } from './ddgi/DDGI.js';
+export type { DDGIOptions, DDGIFrameInputs } from './ddgi/DDGI.js';
+
+// DDGI subsystem (lower-level)
 export { ProbeUpdatePass } from './ddgi/probeUpdatePass.js';
 export type { ProbeUpdatePassOptions } from './ddgi/probeUpdatePass.js';
 export { ProbeGrid } from './ddgi/probeGrid.js';
