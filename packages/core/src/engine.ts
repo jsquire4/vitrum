@@ -54,11 +54,17 @@ export interface EngineCapabilities {
    *  frame (walkaround-style real-time). */
   readonly accumulates: boolean;
 
-  /** Maximum samples this engine accumulates before stopping (PT) or
-   *  Infinity (walkaround that resamples every frame). */
+  /** Structural cap: the maximum samples-per-pixel this engine instance was
+   *  allocated for. PT engines stop accumulating at this ceiling; walkaround
+   *  engines report Infinity (they resample every frame rather than
+   *  accumulating). Per-frame `FrameInput.quality.samplesTarget` is clamped
+   *  to this value. */
   readonly maxSamplesPerPixel: number;
 
-  /** Maximum bounces per path. */
+  /** Structural cap: the maximum bounces per path this engine instance was
+   *  allocated for. Determined at engine creation by `EngineOptions.maxBounces`
+   *  (or the backend's default if omitted). Per-frame
+   *  `FrameInput.quality.bounces` is clamped to this value. */
   readonly maxBounces: number;
 
   /** Set of analytic-primitive `kind` values this engine supports. */
@@ -72,6 +78,14 @@ export interface EngineCapabilities {
 // Engine — the public façade
 // ────────────────────────────────────────────────────────────────────────────
 
+/** There is intentionally NO `updateOptions()` method on this interface.
+ *  Per-frame quality dials (samplesTarget, bounces, resolutionFactor,
+ *  filteredGlossyFactor) live on `FrameInput.quality`. The host changes them
+ *  by passing a different quality payload each frame — not by mutating the
+ *  engine. Creation-time configuration (`EngineOptions`) is immutable for the
+ *  engine's lifetime. If a structural change is needed (different denoiser
+ *  pipeline, different structural caps), the host disposes the engine and
+ *  creates a fresh one. */
 export interface Engine {
   readonly state: EngineState;
   readonly capabilities: EngineCapabilities;
@@ -97,7 +111,8 @@ export interface Engine {
    *  buffers. The host owns frame cadence; this method is the host's "tick."
    *
    *  PT-style engines: each call accumulates one sample into the running
-   *  buffer. Returns when `samplesAccumulated >= maxSamplesPerPixel`.
+   *  buffer. `FrameOutput.isConverged` flips true when `samplesAccumulated`
+   *  reaches `min(input.quality.samplesTarget ?? Infinity, capabilities.maxSamplesPerPixel)`.
    *
    *  Walkaround-style engines: each call computes one fresh frame; output
    *  buffer is overwritten. */
@@ -139,24 +154,46 @@ export type EngineFactory<TOptions extends EngineOptions = EngineOptions> = (
   opts: TOptions,
 ) => Promise<Engine>;
 
+/** Immutable creation-time configuration passed to an engine factory. Once
+ *  the engine exists, this configuration does not change.
+ *
+ *  Per-frame quality dials — samplesTarget, bounces, resolutionFactor,
+ *  filteredGlossyFactor — are NOT engine identity and do NOT belong here.
+ *  They live on `FrameInput.quality` and are supplied by the host each frame.
+ *
+ *  What belongs here: the device handle (engine is bound to one device for
+ *  its lifetime), the denoiser pipeline structure (changing it requires
+ *  shader recompilation, i.e. a new engine), structural buffer-allocation
+ *  caps (`maxBounces`, `maxSamplesPerPixel` — allocators may use these to
+ *  size accumulator precision or sample-counter types), and extensions
+ *  (backend-specific creation-time config). */
 export interface EngineOptions {
   /** The graphics device handle. Backend-specific type is enforced via
    *  package-level overloads. */
   readonly device: unknown;
 
-  // ── Convergence parameters (PT engines) ─────────────────────────────────
-  readonly samplesPerPixel?: number;
+  // ── Structural caps (buffer allocation upper bounds) ─────────────────────
+  /** Structural cap on per-path bounce count. Backends may use this to size
+   *  path-state buffers or accumulator array dimensions. Per-frame
+   *  `FrameInput.quality.bounces` is clamped to this value.
+   *  Default: backend-specific (e.g., pt-webgl defaults to 12). */
   readonly maxBounces?: number;
-  readonly filteredGlossyFactor?: number;
+
+  /** Structural cap on samples-per-pixel. Backends may use this to choose
+   *  accumulator precision (e.g., FP16 vs FP32) or size sample-counter
+   *  types. Per-frame `FrameInput.quality.samplesTarget` is clamped to this
+   *  value. Default: backend-specific (e.g., pt-webgl defaults to 4096). */
+  readonly maxSamplesPerPixel?: number;
 
   // ── Denoiser composition ────────────────────────────────────────────────
+  /** Denoiser pipeline wired at engine creation. Changing the denoiser
+   *  requires recompiling shaders and resizing auxiliary buffers — so it is
+   *  a creation-time structural decision, not a per-frame dial. */
   readonly denoiser?: 'none' | 'atrous' | 'svgf' | 'bmfr' | 'oidn-final';
 
-  // ── Internal resolution scaling ─────────────────────────────────────────
-  readonly resolutionFactor?: number;     // 0.5 = render at half-res, upscale
-
   // ── Backend-specific extensions ─────────────────────────────────────────
-  /** Engines look up extension keys here for backend-specific config that
-   *  doesn't fit the generic options. Backends document their own keys. */
+  /** Engines look up extension keys here for backend-specific creation-time
+   *  config that doesn't fit the generic options. Backends document their own
+   *  keys. */
   readonly extensions?: Readonly<Record<string, unknown>>;
 }

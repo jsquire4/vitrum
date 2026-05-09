@@ -5,10 +5,47 @@
 // orbit; the frame seed is per-frame because the QMC sequence advances; the
 // shutter time is per-frame because motion blur samples within an interval.
 //
+// Quality dials (samplesTarget, bounces, resolutionFactor, etc.) are ALSO
+// per-frame. The host owns quality — it changes quality by passing a different
+// `FrameInput.quality` payload, not by calling a mutation on the engine.
+// This is what makes PT_PREVIEW and PT_FINAL two different payloads to the
+// same engine instance, not a mode-switch event.
+//
 // This split is what makes `engine.setScene(scene)` cheap — the scene only
 // changes when geometry/materials/lights change. Frame state is hot.
 
 import type { Mat4, Vec3 } from './scene.js';
+
+// ────────────────────────────────────────────────────────────────────────────
+// Per-frame quality settings (host → engine, every frame)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Per-frame quality dials. The host owns these — they are NOT engine state.
+ *  PT preview, PT final, walkaround real-time, and offline hero render all use
+ *  the same engine instance with different quality payloads per frame.
+ *
+ *  Engines clamp values against `EngineCapabilities.maxBounces` and
+ *  `EngineCapabilities.maxSamplesPerPixel` (structural caps fixed at engine
+ *  creation). Out-of-range values are clamped, not errors. */
+export interface FrameQualitySettings {
+  /** Convergence target. PT engines accumulate until samplesAccumulated >=
+   *  samplesTarget, then flip `FrameOutput.isConverged = true`. Walkaround
+   *  engines ignore (they resample every frame). Default: engine-specific. */
+  readonly samplesTarget?: number;
+
+  /** Per-frame bounce count. Must be <= EngineCapabilities.maxBounces.
+   *  Default: engine-specific (typically the cap). */
+  readonly bounces?: number;
+
+  /** Glossy filtering strength (three-gpu-pathtracer fork concept). 0 = off
+   *  (physically correct), 1 = aggressive firefly suppression. Backends that
+   *  don't support glossy filtering ignore this. */
+  readonly filteredGlossyFactor?: number;
+
+  /** Internal render resolution factor in (0, 1]. Engines render at
+   *  `viewport.width * resolutionFactor` and upscale. Default: 1.0. */
+  readonly resolutionFactor?: number;
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Frame inputs (host → engine, every frame)
@@ -40,6 +77,14 @@ export interface FrameInput {
    *  but uncorrelated. */
   readonly frameSeed: number;
 
+  // ── Optional: per-frame quality dials ──────────────────────────────────
+  /** Quality settings for this frame. The host passes different payloads to
+   *  switch between PT preview, PT final, hero render, and walkaround modes —
+   *  without recreating the engine. When omitted, each dial falls back to its
+   *  engine-specific default (typically the structural cap for bounces, 1.0
+   *  for resolutionFactor). */
+  readonly quality?: FrameQualitySettings;
+
   // ── Optional: motion blur ───────────────────────────────────────────────
   /** Shutter time in [0, 1], representing a position within a single shutter
    *  interval. Engines that report `capabilities.supportsMotionBlur = true`
@@ -56,8 +101,8 @@ export interface FrameInput {
 
 export interface Viewport {
   /** Physical pixel dimensions (DPR-applied). Engines render at this
-   *  resolution; engines that downscale internally do so via their own
-   *  `resolutionFactor` config, not by the host pre-applying DPR. */
+   *  resolution; engines that downscale internally do so via
+   *  `FrameInput.quality.resolutionFactor`, not by the host pre-applying DPR. */
   readonly width: number;
   readonly height: number;
   readonly devicePixelRatio: number;

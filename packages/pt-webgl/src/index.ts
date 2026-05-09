@@ -12,40 +12,40 @@ export interface PTEngineWebGL2Options extends EngineOptions {
   readonly device: WebGLRenderingContext | WebGL2RenderingContext;
 }
 
-const CAPABILITIES: EngineCapabilities = {
-  supportsIncrementalScene: false,
-  supportsMotionBlur: false,
-  supportsAuxBuffers: false,
-  accumulates: true,
-  maxSamplesPerPixel: 4096,
-  maxBounces: 12,
-  supportedAnalyticShapes: new Set<string>(),
-  supportedEmitterKinds: new Set<string>([
-    'directional',
-    'rect-area',
-    'disc-area',
-    'point',
-    'spot',
-    'mesh-area',
-  ]),
-};
+/** Default structural caps for the pt-webgl backend. These match the
+ *  three-gpu-pathtracer fork's shader-compile-time limits. Override via
+ *  `PTEngineWebGL2Options.maxBounces` / `.maxSamplesPerPixel` at engine
+ *  creation if your use case needs different allocation bounds. */
+const DEFAULT_MAX_BOUNCES = 12;
+const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 
 class PTEngineWebGL2 implements Engine {
   #state: EngineState = 'initializing';
 
-  /** Stored for Sprint 1 render wiring. */
-  readonly samplesPerPixel: number;
-  readonly maxBounces: number;
-  readonly denoiser: EngineOptions['denoiser'];
-  readonly resolutionFactor: number | undefined;
-  readonly extensions: Readonly<Record<string, unknown>> | undefined;
+  /** Structural cap: per-path bounce limit chosen at engine creation.
+   *  Exposed via `capabilities.maxBounces`. Per-frame
+   *  `FrameInput.quality.bounces` is clamped to this value during Sprint 1
+   *  render wiring. */
+  readonly #maxBouncesLimit: number;
+
+  /** Structural cap: samples-per-pixel ceiling chosen at engine creation.
+   *  Exposed via `capabilities.maxSamplesPerPixel`. Per-frame
+   *  `FrameInput.quality.samplesTarget` is clamped to this value during
+   *  Sprint 1 render wiring. */
+  readonly #maxSamplesLimit: number;
+
+  /** Denoiser pipeline wired at engine creation. Changing this requires
+   *  shader recompilation — the host must dispose and recreate the engine. */
+  readonly #denoiser: EngineOptions['denoiser'];
+
+  /** Backend-specific creation-time extensions. */
+  readonly #extensions: Readonly<Record<string, unknown>> | undefined;
 
   constructor(opts: PTEngineWebGL2Options) {
-    this.samplesPerPixel = opts.samplesPerPixel ?? 1;
-    this.maxBounces = opts.maxBounces ?? 5;
-    this.denoiser = opts.denoiser;
-    this.resolutionFactor = opts.resolutionFactor;
-    this.extensions = opts.extensions;
+    this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
+    this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
+    this.#denoiser = opts.denoiser;
+    this.#extensions = opts.extensions;
   }
 
   get state(): EngineState {
@@ -53,7 +53,23 @@ class PTEngineWebGL2 implements Engine {
   }
 
   get capabilities(): EngineCapabilities {
-    return CAPABILITIES;
+    return {
+      supportsIncrementalScene: false,
+      supportsMotionBlur: false,
+      supportsAuxBuffers: false,
+      accumulates: true,
+      maxSamplesPerPixel: this.#maxSamplesLimit,
+      maxBounces: this.#maxBouncesLimit,
+      supportedAnalyticShapes: new Set<string>(),
+      supportedEmitterKinds: new Set<string>([
+        'directional',
+        'rect-area',
+        'disc-area',
+        'point',
+        'spot',
+        'mesh-area',
+      ]),
+    };
   }
 
   /** Called by the factory immediately after construction. */
@@ -116,24 +132,20 @@ export async function createPTEngine_WebGL2(
     );
   }
 
-  const spp = opts.samplesPerPixel;
-  if (spp !== undefined && spp < 1) {
+  // Structural cap validations — these govern buffer allocation, not per-frame
+  // behavior. Per-frame quality (samplesTarget, bounces, resolutionFactor)
+  // is validated at renderFrame time in Sprint 1.
+  const maxBounces = opts.maxBounces;
+  if (maxBounces !== undefined && maxBounces < 1) {
     throw new RangeError(
-      `createPTEngine_WebGL2: samplesPerPixel must be >= 1 (got ${spp})`,
+      `createPTEngine_WebGL2: maxBounces structural cap must be >= 1 (got ${maxBounces})`,
     );
   }
 
-  const bounces = opts.maxBounces;
-  if (bounces !== undefined && bounces < 0) {
+  const maxSpp = opts.maxSamplesPerPixel;
+  if (maxSpp !== undefined && maxSpp < 1) {
     throw new RangeError(
-      `createPTEngine_WebGL2: maxBounces must be >= 0 (got ${bounces})`,
-    );
-  }
-
-  const rf = opts.resolutionFactor;
-  if (rf !== undefined && (rf <= 0 || rf > 1)) {
-    throw new RangeError(
-      `createPTEngine_WebGL2: resolutionFactor must be in (0, 1] (got ${rf})`,
+      `createPTEngine_WebGL2: maxSamplesPerPixel structural cap must be >= 1 (got ${maxSpp})`,
     );
   }
 
