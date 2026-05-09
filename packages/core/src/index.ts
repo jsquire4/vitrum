@@ -7,3 +7,7 @@
 export * from './scene.js';
 export * from './frame.js';
 export * from './engine.js';
+// Explicit named exports — _resetCacheUnsafe is intentionally excluded
+// (test-only; accessible only via gpuDetection.test-utils.ts).
+export type { GpuDetection } from './gpuDetection.js';
+export { detectGpu } from './gpuDetection.js';

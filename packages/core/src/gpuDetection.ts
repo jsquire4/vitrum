@@ -1,6 +1,6 @@
 /**
  * gpuDetection — fail-fast hardware-GPU detection for the hybrid stage.
- * Adapts the shared `lib/wgpuSupport.probeWebGPU()` Tier-2 result into
+ * Adapts the shared `wgpuSupport.probeWebGPU()` Tier-2 result into
  * the `GpuDetection` shape that `probeUpdatePass` and the e2e chroma
  * spec gate consume on `window.__WG__`.
  *
@@ -11,7 +11,7 @@
  * `probeWebGPU()` directly via the lib.
  */
 
-import { probeWebGPU } from './lib/wgpuSupport';
+import { probeWebGPU } from './wgpuSupport.js';
 
 /**
  * GpuDetection — the canonical `__WG__` shape consumed by every walkaround
@@ -69,19 +69,15 @@ export function detectGpu(): Promise<GpuDetection> {
 // needs it (active code uses `await detectGpu()` instead).
 
 /**
- * Test-only — reset the memoized detection cache + clear `window.__WG__`.
+ * Internal-use-only reset hook. The double-underscore prefix signals
+ * that this must not be called by production code. Test code reaches it
+ * through `gpuDetection.test-utils.ts`, which re-exports it under a
+ * descriptive name that makes the test-only intent explicit at the call site.
  *
- * **Production code must never import this.** The double-underscore
- * prefix is the convention for test-only exports throughout this codebase;
- * any lint pre-commit hook should treat `__resetGpuDetectionForTests` as
- * a tripwire if imported outside `*.test.ts` / `*.spec.ts` files.
- *
- * Cost on production: 7 lines of inert code + zero runtime cost (function
- * is never called). Kept in this module rather than a sibling
- * .test-utils.ts file because the cache it resets is module-private; a
- * sibling file would need either a setter export or duplicated cache state.
+ * Kept here rather than in the test-utils file because `cached` is
+ * module-private; a sibling file cannot close over it.
  */
-export function __resetGpuDetectionForTests(): void {
+export function _resetCacheUnsafe(): void {
   cached = null;
   if (typeof window !== 'undefined') {
     delete window.__WG__;
