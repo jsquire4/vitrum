@@ -1,3 +1,13 @@
+import {
+  PerspectiveCamera,
+  WebGLRenderer,
+  Scene as ThreeScene,
+  type Material as TMaterial,
+  type Mesh as TMesh,
+  type Object3D,
+} from 'three';
+import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
+import { WebGLPathTracer } from 'three-gpu-pathtracer';
 import type {
   Engine,
   EngineCapabilities,
@@ -6,51 +16,56 @@ import type {
 } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
-import type * as THREE from 'three';
+import { applyFrameToPerspectiveCamera } from './frameCamera.js';
+import { vitrumSceneToThree } from './sceneToThree.js';
+
+export { vitrumSceneToThree } from './sceneToThree.js';
+export { applyFrameToPerspectiveCamera } from './frameCamera.js';
 
 export interface PTEngineWebGL2Options extends EngineOptions {
-  // Device handle is the host's `THREE.WebGLRenderer`. The pt-webgl backend
-  // wraps three-gpu-pathtracer + bakes procedural-sky IBL; both require the
-  // renderer instance, not a raw GL context. Each backend narrows
-  // `EngineOptions.device` to its own requirement. The renderer's underlying
-  // GL context must be WebGL2.
-  readonly device: THREE.WebGLRenderer;
+  readonly device: WebGLRenderer;
 }
 
-/** Default structural caps for the pt-webgl backend. These match the
- *  three-gpu-pathtracer fork's shader-compile-time limits. Override via
- *  `PTEngineWebGL2Options.maxBounces` / `.maxSamplesPerPixel` at engine
- *  creation if your use case needs different allocation bounds. */
 const DEFAULT_MAX_BOUNCES = 12;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
+
+function disposeObject3DTree(obj: Object3D): void {
+  obj.traverse((o) => {
+    const mesh = o as TMesh;
+    if (mesh.isMesh === true) {
+      mesh.geometry?.dispose();
+      const m = mesh.material as TMaterial | TMaterial[] | undefined;
+      if (Array.isArray(m)) m.forEach((x) => x.dispose?.());
+      else m?.dispose?.();
+    }
+  });
+}
+
+interface PTEngineWebGL2Init {
+  readonly renderer: WebGLRenderer;
+  readonly pathTracer: WebGLPathTracer;
+  readonly camera: PerspectiveCamera;
+}
 
 class PTEngineWebGL2 implements Engine {
   #state: EngineState = 'initializing';
 
-  /** Structural cap: per-path bounce limit chosen at engine creation.
-   *  Exposed via `capabilities.maxBounces`. Per-frame
-   *  `FrameInput.quality.bounces` is clamped to this value during Sprint 1
-   *  render wiring. */
-  readonly #maxBouncesLimit: number;
+  readonly #renderer: WebGLRenderer;
+  readonly #pathTracer: WebGLPathTracer;
+  readonly #camera: PerspectiveCamera;
 
-  /** Structural cap: samples-per-pixel ceiling chosen at engine creation.
-   *  Exposed via `capabilities.maxSamplesPerPixel`. Per-frame
-   *  `FrameInput.quality.samplesTarget` is clamped to this value during
-   *  Sprint 1 render wiring. */
+  readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
 
-  /** Denoiser pipeline wired at engine creation. Changing this requires
-   *  shader recompilation — the host must dispose and recreate the engine. */
-  readonly #denoiser: EngineOptions['denoiser'];
+  #vitrumScene: Scene | null = null;
+  #threeSceneRoot: ThreeScene | null = null;
 
-  /** Backend-specific creation-time extensions. */
-  readonly #extensions: Readonly<Record<string, unknown>> | undefined;
-
-  constructor(opts: PTEngineWebGL2Options) {
+  constructor(opts: PTEngineWebGL2Options, gpu: PTEngineWebGL2Init) {
     this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
-    this.#denoiser = opts.denoiser;
-    this.#extensions = opts.extensions;
+    this.#renderer = gpu.renderer;
+    this.#pathTracer = gpu.pathTracer;
+    this.#camera = gpu.camera;
   }
 
   get state(): EngineState {
@@ -77,7 +92,6 @@ class PTEngineWebGL2 implements Engine {
     };
   }
 
-  /** Called by the factory immediately after construction. */
   _markReady(): void {
     this.#state = 'ready';
   }
@@ -86,49 +100,100 @@ class PTEngineWebGL2 implements Engine {
     if (this.#state === 'disposed') {
       throw new Error(`${method}: engine is disposed`);
     }
+    if (this.#vitrumScene == null) {
+      throw new Error(`${method}: call setScene() before ${method}`);
+    }
   }
 
-  setScene(_scene: Scene): void {
-    this.#assertLive('setScene');
-    throw new Error('Not implemented: setScene');
+  setScene(scene: Scene): void {
+    if (this.#state === 'disposed') {
+      throw new Error('setScene: engine is disposed');
+    }
+    if (this.#threeSceneRoot != null) {
+      disposeObject3DTree(this.#threeSceneRoot);
+    }
+    this.#vitrumScene = scene;
+    const threeScene = vitrumSceneToThree(scene);
+    this.#threeSceneRoot = threeScene;
+    this.#pathTracer.setScene(threeScene, this.#camera);
   }
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {
     this.#assertLive('updatePrimitive');
-    throw new Error('Not implemented: updatePrimitive');
+    throw new Error('Not implemented: updatePrimitive (pt-webgl requires full setScene)');
   }
 
   updateEmitter(_id: string, _patch: Partial<SceneEmitter>): void {
     this.#assertLive('updateEmitter');
-    throw new Error('Not implemented: updateEmitter');
+    throw new Error('Not implemented: updateEmitter (pt-webgl requires full setScene)');
   }
 
-  renderFrame(_input: FrameInput): FrameOutput {
+  renderFrame(input: FrameInput): FrameOutput {
     this.#assertLive('renderFrame');
-    throw new Error('Not implemented: renderFrame');
+    if (this.#state === 'paused') {
+      const spp = Math.round(this.#pathTracer.samples);
+      const cap = this.#maxSamplesLimit;
+      return {
+        primaryRadiance: this.#pathTracer.target.texture,
+        samplesAccumulated: spp,
+        isConverged: spp >= cap,
+      };
+    }
+
+    applyFrameToPerspectiveCamera(this.#camera, input);
+    this.#pathTracer.setCamera(this.#camera);
+
+    const q = input.quality ?? {};
+    const b = Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit);
+    const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
+    this.#pathTracer.bounces = b;
+    this.#pathTracer.transmissiveBounces = Math.min(b, 12);
+    this.#pathTracer.filterGlossyFactor = q.filteredGlossyFactor ?? 0;
+
+    const factor = q.resolutionFactor ?? 1;
+    const w = Math.max(1, Math.floor(input.viewport.width * factor));
+    const h = Math.max(1, Math.floor(input.viewport.height * factor));
+    this.#renderer.setSize(w, h, false);
+
+    this.#pathTracer.renderSample();
+    const spp = Math.round(this.#pathTracer.samples);
+    return {
+      primaryRadiance: this.#pathTracer.target.texture,
+      samplesAccumulated: spp,
+      isConverged: spp >= targetSpp,
+    };
   }
 
   reset(): void {
-    this.#assertLive('reset');
-    // No accumulator state yet; Sprint 1 will reset sample counter here
+    if (this.#state === 'disposed') return;
+    this.#pathTracer.reset();
   }
 
   pause(): void {
-    this.#assertLive('pause');
+    if (this.#state === 'disposed') {
+      throw new Error('pause: engine is disposed');
+    }
     this.#state = 'paused';
   }
 
   resume(): void {
-    this.#assertLive('resume');
+    if (this.#state === 'disposed') {
+      throw new Error('resume: engine is disposed');
+    }
     this.#state = 'ready';
   }
 
   dispose(): void {
+    if (this.#state === 'disposed') return;
+    if (this.#threeSceneRoot != null) {
+      disposeObject3DTree(this.#threeSceneRoot);
+      this.#threeSceneRoot = null;
+    }
+    this.#pathTracer.dispose();
     this.#state = 'disposed';
   }
 }
 
-// ── Extracted utility modules ────────────────────────────────────────────────
 export * from './constants.js';
 export * from './sunGeometry.js';
 export { bakeSkyEquirect, clearSkyEquirectCache, _skyEquirectCacheSize } from './iblBaker.js';
@@ -144,16 +209,10 @@ export {
   pointIntensityFromLumens,
   rectAreaIntensityFromLumens,
 } from './lightingIntensityTable.js';
-// ────────────────────────────────────────────────────────────────────────────
 
 export async function createPTEngine_WebGL2(
   opts: PTEngineWebGL2Options,
 ): Promise<Engine> {
-  // Duck-type check: opts.device must look like a THREE.WebGLRenderer.
-  // We can't use `instanceof THREE.WebGLRenderer` without a runtime three import,
-  // so we verify by structural presence and then assert the underlying GL context
-  // is WebGL2. This rejects: (a) null/undefined, (b) objects without .getContext(),
-  // (c) WebGL1 contexts.
   if (opts.device == null || typeof (opts.device as { getContext?: unknown }).getContext !== 'function') {
     throw new TypeError(
       'createPTEngine_WebGL2: device must be a THREE.WebGLRenderer instance (got null/undefined or an object without a getContext() method)',
@@ -166,9 +225,6 @@ export async function createPTEngine_WebGL2(
     );
   }
 
-  // Structural cap validations — these govern buffer allocation, not per-frame
-  // behavior. Per-frame quality (samplesTarget, bounces, resolutionFactor)
-  // is validated at renderFrame time in Sprint 1.
   const maxBounces = opts.maxBounces;
   if (maxBounces !== undefined && maxBounces < 1) {
     throw new RangeError(
@@ -183,10 +239,19 @@ export async function createPTEngine_WebGL2(
     );
   }
 
-  const engine = new PTEngineWebGL2(opts);
+  const renderer = opts.device as WebGLRenderer;
+  RectAreaLightUniformsLib.init();
 
-  // Sprint 1 async GPU init (BVH upload, shader compile) goes here
+  const pathTracer = new WebGLPathTracer(renderer);
+  pathTracer.renderDelay = 0;
+  pathTracer.minSamples = 1;
+  pathTracer.dynamicLowRes = false;
+  pathTracer.multipleImportanceSampling = true;
+  pathTracer.tiles.set(1, 1);
+
+  const camera = new PerspectiveCamera();
+
+  const engine = new PTEngineWebGL2(opts, { renderer, pathTracer, camera });
   engine._markReady();
-
   return engine;
 }

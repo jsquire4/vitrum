@@ -1,5 +1,7 @@
 # @vitrum/walkaround-hybrid
 
+**Stability:** pre-alpha — `HybridEngine` and shader/pipeline APIs may change until the extraction milestones in `plan/generalized-library-milestones.md` are closed.
+
 WebGPU layered DDGI + RC + ReSTIR DI engine.
 
 Provides a class-based `Engine` implementation (`HybridEngine`) that composes:

@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vitrum — Cornell box (pt-webgl)</title>
+    <style>
+      body {
+        margin: 0;
+        background: #111;
+        color: #ccc;
+        font-family: system-ui, sans-serif;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #status {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        font-size: 12px;
+        opacity: 0.85;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div id="status">Initializing…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
