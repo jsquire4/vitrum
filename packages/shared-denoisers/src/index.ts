@@ -1,8 +1,8 @@
-// @vitrum/shared-denoisers — stub. Not yet implemented.
+// @vitrum/shared-denoisers — denoiser building blocks (à-trous, SVGF, BMFR, OIDN bridge).
 //
-// Migration plan + scope: see plan/library-architecture.md and
-// plan/phase-6-roadmap.md.
-//
-// This package's tracking task: see Phase 6 sprints.
+// Phase 5 deliverable: atrous + temporalAccum WGSL fragments. Future Phase 6
+// sprints add: SVGF (Sprint 10a), BMFR candidate (Sprint 10a), OIDN ONNX
+// final-pass bridge (Sprint 10b).
 
-export {};
+export * from './wgsl/atrous.wgsl.js';
+export * from './wgsl/temporalAccum.wgsl.js';

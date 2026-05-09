@@ -12,7 +12,8 @@
  * On big camera motion the alpha is set to 1.0 by the caller, so
  * variance clamping is bypassed (no history blend).
  *
- * Phase 5 will relocate this file to @vitrum/shared-denoisers.
+ * Canonical home: @vitrum/shared-denoisers. Consumed by
+ * @vitrum/walkaround-hybrid's pipelineCompiler via the package export.
  *
  * Reference: Karis, "High-Quality Temporal Supersampling" (Unreal 4),
  * SIGGRAPH 2014.

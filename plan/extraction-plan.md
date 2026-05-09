@@ -390,6 +390,8 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 
 **Risks:** Low once walkaround-hybrid is stable.
 
+**Status**: complete 2026-05-09 (Phase 5).
+
 ---
 
 ## 5. Resolved Decisions vs. Deferred Questions
@@ -517,7 +519,7 @@ Step 4:  RC subsystem extraction + TSL→raw WebGPU conversion (RD-12) (~5 days)
 
 Steps 1–3 can overlap partially (DDGI and ReSTIR shaders are independent), but `HybridEngine.ts` depends on both being stable.
 
-### Phase 5 — shared-denoisers full migration (0.5 days, after Phase 4)
+### Phase 5 — shared-denoisers full migration (0.5 days, after Phase 4) — COMPLETE 2026-05-09
 
 Move atrous + temporalAccum WGSL from `walkaround-hybrid/src/shaders/` to `shared-denoisers`; update imports.
 

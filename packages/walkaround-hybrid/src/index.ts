@@ -36,8 +36,7 @@ export { RIS_WGSL } from './shaders/ris.wgsl.js';
 export { TEMPORAL_WGSL } from './shaders/temporal.wgsl.js';
 export { SPATIAL_WGSL } from './shaders/spatial.wgsl.js';
 export { SHADE_WGSL } from './shaders/shade.wgsl.js';
-export { ATROUS_WGSL } from './shaders/atrous.wgsl.js';
-export { TEMPORAL_ACCUM_WGSL } from './shaders/temporalAccum.wgsl.js';
+export { ATROUS_WGSL, TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
 export { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from './shaders/composite.wgsl.js';
 
 // Shared lib utilities

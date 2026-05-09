@@ -6,7 +6,8 @@
     "paths": {
       "@vitrum/core": ["packages/core/src/index.ts"],
       "@vitrum/shared-bvh": ["packages/shared-bvh/src/index.ts"],
-      "@vitrum/shared-samplers": ["packages/shared-samplers/src/index.ts"]
+      "@vitrum/shared-samplers": ["packages/shared-samplers/src/index.ts"],
+      "@vitrum/shared-denoisers": ["packages/shared-denoisers/src/index.ts"]
     }
   },
   "include": ["packages/*/src"]

@@ -4,9 +4,8 @@
  * Edge-aware (edge-stopped) À-trous wavelet filter. 3 iterations with
  * stepWidth ∈ {1, 2, 4}. Guided by G-buffer normal + depth + albedo.
  *
- * Phase 5 will relocate this file to @vitrum/shared-denoisers. While it
- * lives here it is an internal walkaround-hybrid module, not re-exported
- * from the package index.
+ * Canonical home: @vitrum/shared-denoisers. Consumed by
+ * @vitrum/walkaround-hybrid's pipelineCompiler via the package export.
  *
  * References:
  *   Dammertz et al. "Edge-Avoiding À-Trous Wavelet Transform" HPG 2010.

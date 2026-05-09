@@ -15,8 +15,8 @@ import { RIS_WGSL } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_WGSL } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
-import { ATROUS_WGSL } from '../shaders/atrous.wgsl.js';
-import { TEMPORAL_ACCUM_WGSL } from '../shaders/temporalAccum.wgsl.js';
+import { ATROUS_WGSL } from '@vitrum/shared-denoisers';
+import { TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
 import { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from '../shaders/composite.wgsl.js';
 import {
   getFrameBindGroupLayout,
