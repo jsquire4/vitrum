@@ -1,7 +1,7 @@
 // @vitrum/three-bindings — stub. Not yet implemented.
 //
-// Migration plan + scope: see vitrum/plan/library-architecture.md and
-// stainedGlass/plan/phase-6-roadmap.md.
+// Migration plan + scope: see plan/library-architecture.md and
+// plan/phase-6-roadmap.md.
 //
 // This package's tracking task: see Phase 6 sprints.
 

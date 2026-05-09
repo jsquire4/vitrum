@@ -1,11 +1,11 @@
-# `_staging/` — code imported from stainedGlass for decomposition
+# `_staging/` — legacy source for decomposition
 
-This directory holds renderer-related source files copied from `~/projects/stainedGlass/` for decomposition into the proper `@vitrum/*` packages. **Nothing here is the canonical implementation yet.** Files here are read-only reference; the agent's job is to extract them into `packages/<name>/src/` with whatever restructuring + renaming + interface-fitting is appropriate.
+This directory holds renderer source files imported from a host application that previously embedded the engine code directly. **Nothing here is the canonical implementation yet.** Files are read-only reference; the agent's job is to extract them into `packages/<name>/src/` with whatever restructuring + renaming + interface-fitting is appropriate.
 
-## What was copied
+## What's in `legacy-source/`
 
 ```
-_staging/from-stainedglass/src/rendering/scene/
+legacy-source/src/rendering/scene/
 ├── walkaround/                          # ← @vitrum/walkaround-hybrid (the crown jewel)
 │   ├── HybridLayeredStage.tsx           # React stage wrapper — extract host-agnostic engine
 │   ├── WalkaroundStage.tsx              # Older walkaround stage; may be deprecated by HybridLayered
@@ -21,7 +21,7 @@ _staging/from-stainedglass/src/rendering/scene/
 │   │   └── restir/                      # ReSTIR DI engine — main implementation
 │   │       ├── RestirStage.tsx
 │   │       ├── WalkaroundDebugBridge.tsx
-│   │       ├── WalkaroundGPUPipeline.ts # The 1287-LOC god file (sweep finding Theme A)
+│   │       ├── WalkaroundGPUPipeline.ts # The 1287-LOC god file (a known refactoring target)
 │   │       ├── bvhCompute.ts            # Different from outer bvhCompute — engine-specific
 │   │       └── shaders/                 # WGSL shader code
 │   ├── giReceiver.ts
@@ -30,7 +30,7 @@ _staging/from-stainedglass/src/rendering/scene/
 │   │   ├── bvhCommon.ts                 # ← @vitrum/shared-bvh
 │   │   ├── bvhCommon.test.ts            # tests come along too
 │   │   ├── nodeMaterialUpgrade.ts
-│   │   ├── useSceneBVH.ts               # Note: also in outer dir — sweep flagged duplicate
+│   │   ├── useSceneBVH.ts               # Note: also in outer dir — pick one
 │   │   └── wgpuSupport.ts
 │   ├── probeGrid.ts                     # DDGI probe grid math
 │   ├── probeUpdatePass.ts
@@ -46,12 +46,12 @@ _staging/from-stainedglass/src/rendering/scene/
 │       ├── probeUpdateBlend.wgsl.ts
 │       └── probeUpdateRays.wgsl.ts
 │
-├── PathTracingLayer.tsx                 # ← @vitrum/pt-webgl host wrapper. Phase 4 patch lives here.
+├── PathTracingLayer.tsx                 # ← @vitrum/pt-webgl host wrapper.
 ├── PathtracerSceneSync.tsx              # Scene → setScene plumbing
 ├── PathtracerDebugBridge.tsx            # window.__PT__ debug bridge — keep dev-only
 ├── PTStage.tsx                          # React stage wrapper
-├── PTPostProcessing.tsx                 # Bloom + DoF + CA + Vignette + Grain — could go to a shared post pkg
-├── PTDeviceLostBoundary.tsx             # React error boundary — host concern, leave in stainedGlass
+├── PTPostProcessing.tsx                 # Bloom + DoF + CA + Vignette + Grain
+├── PTDeviceLostBoundary.tsx             # React error boundary — host concern
 ├── cameraLookPresets.ts                 # Three documentary/cinematic/architectural presets
 ├── pathtracerConstants.ts               # PT_PREVIEW + PT_FINAL configs
 ├── ptDebounce.ts                        # Camera-change debounce
@@ -69,10 +69,10 @@ _staging/from-stainedglass/src/rendering/scene/
 │       └── sunPathTraced.tsx            # ShapedAreaLight sun (Phase 1 deliverable)
 ```
 
-## What was deliberately NOT copied
+## What was deliberately NOT included
 
-- **The vendor fork at `~/projects/stainedGlass/vendor/three-gpu-pathtracer/`** — that's a separate git repo (github.com/jsquire4/three-gpu-pathtracer). When `@vitrum/pt-webgl` first wraps it, decide whether to git-submodule it into vitrum, leave it as a sibling repo and reference via npm path, or move it into vitrum's directory tree and lose the git history. Not yours to decide unilaterally — surface the option to the user.
-- **Domain-specific code** — anything stainedGlass-shaped (`src/rendering/glass/`, `src/rendering/edges/`, panel/cell/came concepts). That belongs in a future `stained-glass-physics` package, not vitrum.
+- **The vendor fork** — lives at `~/projects/three-gpu-pathtracer/` as a sibling repo (remote: `github.com/jsquire4/three-gpu-pathtracer`). When `@vitrum/pt-webgl` first wraps it, decide whether to git-submodule it, leave it as a sibling repo and reference via `file:` npm path, or move its source under vitrum's tree (and lose the independent git history). Surface the choice to the user.
+- **Domain-specific code** — anything specific to a particular content domain (panel/cell/came/glass-material concepts). That belongs in a future domain-specific package, not vitrum.
 - **App lifecycle / React glue** — `StudioScene.tsx`, `StudioCameraRig.tsx`, `StageOrbitControls.tsx`, etc. are host concerns. The host calls `engine.renderFrame()`; the host is not the engine.
 - **Tests** — `*.test.ts` files mostly travelled with their source (e.g., `bvhCommon.test.ts`). When you extract a file to `packages/X/src/`, move its test to `packages/X/src/__tests__/` (or `packages/X/test/`).
 
@@ -83,9 +83,9 @@ The agent should:
 1. **Read each file's responsibilities** (`grep -l <thing>` against `_staging/`).
 2. **Decide the target package** per file (most files have hints in the tree above).
 3. **Copy + adapt** into `packages/<name>/src/`. Adaptations include:
-   - Replace stainedGlass-specific imports (`@/store/...`, `@/types/properties`) with engine-agnostic equivalents
-   - Replace `__WGPU__` global bridge with library-internal device handle
-   - Replace React lifecycle assumptions with explicit lifecycle methods on the `Engine` interface
+   - Replace host-app-specific imports (e.g., `@/store/...`, `@/types/properties`) with engine-agnostic equivalents from `@vitrum/core`
+   - Replace any `window.__WGPU__` global bridge with a library-internal device handle held by the engine instance
+   - Replace React lifecycle assumptions (mount/unmount, useEffect) with explicit lifecycle methods on the `Engine` interface (`init`, `setScene`, `renderFrame`, `pause`, `resume`, `dispose`)
    - Preserve tests, citations, and historical comments
 4. **Verify**: run `tsc --noEmit` after each package's extraction; package compiles in isolation against `@vitrum/core`.
 5. **Delete from `_staging/`** as files migrate, so `_staging/` shrinks toward empty. Empty `_staging/` = extraction phase complete.
@@ -98,7 +98,7 @@ Per `plan/sprint-0-api-contract.md` Sprint 0 step 2 onwards, in dependency order
 2. **`@vitrum/shared-samplers`** — `walkaround/wgsl/hammersley.wgsl.ts`, anything sampling-related lifted from RestirStage's WGSL. Foundation.
 3. **`@vitrum/three-bindings`** — needs to be sketched first to unblock everything else. Walks a `THREE.Scene` and emits a `Scene` per `@vitrum/core/scene.ts`.
 4. **`@vitrum/pt-webgl`** — wraps the existing PathTracingLayer + the fork. Engine-stub already exists; flesh out.
-5. **`@vitrum/walkaround-hybrid`** — the big one. Lifts most of `walkaround/` into the package. The `WalkaroundGPUPipeline` god file should be split per Theme A of the correctness sweep.
+5. **`@vitrum/walkaround-hybrid`** — the big one. Lifts most of `walkaround/` into the package. The `WalkaroundGPUPipeline` god file should be split per the locked refactoring plan in `plan/glorious-hybrid.md`.
 6. **`@vitrum/shared-denoisers`** — extract à-trous + variance accumulator into a denoiser interface. Future SVGF/BMFR/OIDN bridge plug into the same interface.
 
 ## Tracking

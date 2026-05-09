@@ -1,0 +1,12 @@
+{
+  "name": "@vitrum-examples/cornell-box",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cornell box validation scene for vitrum engines.",
+  "type": "module",
+  "main": "src/index.ts",
+  "license": "MIT",
+  "dependencies": {
+    "@vitrum/core": "0.0.0"
+  }
+}

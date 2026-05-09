@@ -1,7 +1,7 @@
 # Sprint 0 — Library API contract
 
 **Status**: in progress (initial draft committed 2026-05-09)
-**Effort**: 2–3 days from kickoff to first stainedGlass-app integration test
+**Effort**: 2–3 days from kickoff to first host-app integration test
 
 ## Goal
 
@@ -30,9 +30,9 @@ Create `@vitrum/three-bindings/src/index.ts` exporting:
 - `sceneFromThreeJS(threeScene: THREE.Scene): Scene` — walks the scene graph, converts every `THREE.Mesh`/`THREE.Light` to the corresponding `@vitrum/core` type
 - Initially throws on unsupported types (instanced meshes, custom shaders); each Phase 6 sprint adds support
 
-### Step 4 — stainedGlass migration scaffold (~0.5 day)
+### Step 4 — host-app migration scaffold (~0.5 day)
 
-In the stainedGlass repo, add a `src/rendering/vitrum-bridge/` directory containing:
+The host application (whichever app first consumes vitrum) gets a `src/rendering/vitrum-bridge/` directory containing:
 - `useVitrumPTEngine.ts` — React hook that mirrors the current `usePathtracer` lifecycle but creates an `@vitrum/pt-webgl` engine instead of a raw three-gpu-pathtracer instance
 - `useVitrumWalkaroundEngine.ts` — same for walkaround-hybrid
 
@@ -40,8 +40,8 @@ Both hooks throw initially (the engines don't render yet). The point is to fix t
 
 ### Step 5 — verification (~0.5 day)
 
-- Run stainedGlass `npm install` with vitrum linked via npm workspaces (or `file:` protocol)
-- Verify `import { Scene } from '@vitrum/core'` compiles in stainedGlass
+- Run the host app `npm install` with vitrum linked via npm workspaces (or `file:` protocol)
+- Verify `import { Scene } from '@vitrum/core'` compiles in the host app
 - Verify `tsc --noEmit` is clean across the entire workspace
 - Add a `tools/benchmark-runner` placeholder so future sprints can drop benchmarks in
 
@@ -59,7 +59,7 @@ Both hooks throw initially (the engines don't render yet). The point is to fix t
 - [x] plan/library-architecture.md (this file's sibling)
 - [ ] `@vitrum/pt-webgl/src/index.ts` stub implementing Engine interface (throws)
 - [ ] `@vitrum/three-bindings/src/index.ts` stub
-- [ ] stainedGlass `src/rendering/vitrum-bridge/` placeholder hooks
+- [ ] host-app `src/rendering/vitrum-bridge/` placeholder hooks
 - [ ] `tsc --noEmit` clean across workspace
 - [ ] Sprint 0 committed; Phase 6 doc updated to reference vitrum packages
 
@@ -75,7 +75,7 @@ These are explicitly TBD until Phase 6 sprints expose the requirements. Sprint 0
 
 ## What Sprint 0 explicitly does NOT do
 
-- Move any actual stainedGlass engine code into vitrum packages. That's Phase 6 sprints' job, one feature at a time.
-- Pull `vendor/three-gpu-pathtracer` out of stainedGlass into vitrum. That happens when `@vitrum/pt-webgl` first actually uses it (Sprint 1 or 2).
-- Replace stainedGlass's PathTracingLayer / WalkaroundStage React components. They keep working as-is until the migration shim hooks (`useVitrumPTEngine`, `useVitrumWalkaroundEngine`) reach feature parity.
+- Move any actual engine code from `_staging/legacy-source/` into vitrum packages. That's Phase 6 sprints' job, one feature at a time.
+- Wire `~/projects/three-gpu-pathtracer` (sibling fork repo) into `@vitrum/pt-webgl`. That happens when `@vitrum/pt-webgl` first actually uses it (Sprint 1 or 2).
+- Replace the host application's PathTracingLayer / WalkaroundStage React components. They keep working as-is until the migration shim hooks (`useVitrumPTEngine`, `useVitrumWalkaroundEngine`) reach feature parity.
 - Publish anything to npm. Local-only until prime time.

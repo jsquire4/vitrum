@@ -4,7 +4,7 @@
 
 1. **The contract is the thing that's fixed.** Backends are swappable; scene bindings are swappable; denoisers are composable. The public types in `@vitrum/core` are the load-bearing interface.
 2. **The host owns lifecycle.** Engine accepts a device handle but does not own the device. Engine accepts frame inputs but does not own the cadence. This is the design choice that makes `@vitrum/*` survive Canvas remounts and other host-level lifecycle churn.
-3. **Generalize over time.** Today's contract handles what stainedGlass needs. Each Phase 6 sprint generalizes one more dimension. The `Material.extensions`, `EngineOptions.extensions`, and `AnalyticShape` discriminated union are the explicit extension points where generalization happens without breaking the contract.
+3. **Generalize over time.** Today's contract handles the most pressing concrete needs. Each Phase 6 sprint generalizes one more dimension. The `Material.extensions`, `EngineOptions.extensions`, and `AnalyticShape` discriminated union are the explicit extension points where generalization happens without breaking the contract.
 4. **No upstream PRs (yet).** While vitrum is pre-prime-time, fork patches stay in `vendor/three-gpu-pathtracer` (consumed by `@vitrum/pt-webgl`). Upstream contribution is a v1+ concern.
 
 ## Package responsibilities
@@ -70,13 +70,13 @@
 
 ### `@vitrum/walkaround-hybrid`
 
-**Owns**: the WebGPU layered DDGI + RC + ReSTIR DI compute pipeline (the crown jewel — currently in stainedGlass's `walkaround/engines/restir/`). Implements the `Engine` contract for real-time GI use cases.
+**Owns**: the WebGPU layered DDGI + RC + ReSTIR DI compute pipeline (the crown jewel — see `_staging/legacy-source/src/rendering/scene/walkaround/engines/restir/`). Implements the `Engine` contract for real-time GI use cases.
 
 **Depends on**: `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`.
 
-## How stainedGlass consumes vitrum
+## How a host application consumes vitrum
 
-After extraction, the stainedGlass app's rendering layer becomes:
+After extraction, a host app's rendering layer looks like:
 
 ```typescript
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
@@ -95,7 +95,7 @@ const output = ptEngine.renderFrame({
 });
 ```
 
-The stainedGlass app retains:
+The host application retains:
 - Domain composition logic (panel cell layout, came/solder generation, glass material profiles)
 - Three.js scene assembly
 - React lifecycle wrapping (`PathTracingLayer`, `WalkaroundStage`, etc. become thin host wrappers around `@vitrum/*` engines)
@@ -103,11 +103,11 @@ The stainedGlass app retains:
 
 Everything else moves to `@vitrum/*`.
 
-## Migration plan from current stainedGlass code
+## Migration plan from the imported legacy source
 
 Phase 6 Sprint 0 (next, 2–3 days) defines the contract and creates the package skeletons. This is already done — see `packages/core/src/*.ts`.
 
-Subsequent sprints land their deliverables in vitrum packages, not stainedGlass app code:
+Subsequent sprints land their deliverables in vitrum packages, not the host app's source tree:
 
 | Sprint | Work | Lands in |
 |---|---|---|
@@ -129,7 +129,7 @@ Subsequent sprints land their deliverables in vitrum packages, not stainedGlass 
 | 13 | Custom WebGPU neural denoiser | `@vitrum/research/` then `@vitrum/shared-denoisers` |
 | 6.5 | ReSTIR BDPT in walkaround | `@vitrum/walkaround-hybrid` extension or `@vitrum/walkaround-restir-bdpt` |
 
-The stainedGlass app's `src/rendering/scene/walkaround/engines/restir/` directory eventually empties as its files move to `@vitrum/walkaround-hybrid`. Same for the PT pipeline files. The app's role narrows to "domain composition + UI + scene assembly."
+The host application's renderer subdirectory eventually empties as its files move to vitrum packages. Same for the PT pipeline files. The host's role narrows to "domain composition + UI + scene assembly."
 
 ## Versioning + release strategy
 
@@ -137,4 +137,4 @@ Pre-1.0: every release is a snapshot. Breaking changes in the core contract are 
 
 Post-1.0: the public façade in `@vitrum/core` follows semver strictly. Backend implementations may release independently as they mature.
 
-Local-only until prime time: no npm publish until the contract has been stable for at least 2 quarters of stainedGlass consumption without breaking changes. Until then, packages are linked via `npm workspaces` (i.e., `file:../packages/core`).
+Local-only until prime time: no npm publish until the contract has been stable for at least 2 quarters of host-app consumption without breaking changes. Until then, packages are linked via `npm workspaces` (i.e., `file:../packages/core`).

@@ -6,7 +6,7 @@ WebGPU + WebGL2 path tracing & global illumination engine for the browser. Backe
 
 ## What is this
 
-`vitrum` is the engine half of a SOTA browser rendering project. It is being extracted from the [stainedGlass](../stainedGlass) renderer (its proving-ground host application) into a reusable, host-agnostic library.
+`vitrum` is a WebGPU + WebGL2 path tracing `vitrum` is the engine half of a SOTA browser rendering project. It is being developed under a host application that exercises the hard cases into a reusable, host-agnostic library. global illumination engine for the browser. Host-agnostic, scene-binding-agnostic.
 
 The white-whale ambition: own the entire SOTA-browser-rendering stack — from BVH construction to physically-based path tracing to real-time global illumination to denoising — under one consistent API contract.
 

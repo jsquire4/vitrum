@@ -6,13 +6,13 @@
 
 ## Strategic frame: this is library extraction, not app feature work
 
-The stainedGlass app is the proving-ground host for a SOTA browser-based renderer being extracted into a separate library: **`vitrum`** at `~/projects/vitrum/`. Per `plan/library-architecture.md` in that repo, every Phase 6 sprint deliverable lands in a `@vitrum/*` package, not in stainedGlass app code. The stainedGlass app re-imports from `@vitrum/*` to demonstrate.
+This roadmap drives Phase 6 work in vitrum. Every Phase 6 sprint deliverable lands in a `@vitrum/*` package per `plan/library-architecture.md`. A host application consumes the packages via `import { ... } from '@vitrum/core'` etc.
 
 **Why this matters for sprint planning**: the cells-go-grey / Canvas-key-remount bug class isn't a sprint; it's resolved by the library API contract (`vitrum/packages/core/src/engine.ts`) which decouples engine lifetime from host React mount lifetime. Sprint 0 (the new prerequisite) draws that contract.
 
 ## Sprint 0 — Library API contract (NEW, prerequisite, in progress)
 
-See `~/projects/vitrum/plan/sprint-0-api-contract.md` for the full breakdown. Summary: 2–3 days, lands the public types + lifecycle contract in `@vitrum/core`, stubs the backends, scaffolds the stainedGlass migration shim. After Sprint 0, every Phase 6 sprint below has a clear vitrum-package destination.
+See `plan/sprint-0-api-contract.md` for the full breakdown. Summary: 2–3 days, lands the public types + lifecycle contract in `@vitrum/core`, stubs the backends, scaffolds the host-app migration shim. After Sprint 0, every Phase 6 sprint below has a clear vitrum-package destination.
 
 ---
 

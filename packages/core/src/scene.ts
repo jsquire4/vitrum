@@ -5,12 +5,12 @@
 // ENVIRONMENT (the world's hemispheric light source). The camera lives in
 // FrameInput because it changes per-frame; the scene itself is camera-free.
 //
-// The general case is the union of every shape we might support. Today
-// stainedGlass uses: triangle meshes (glass cells, walls, floor) + analytic
-// primitives (came/solder, after Phase 6 sprint 5 lands them). Tomorrow we'll
-// add instanced meshes and particle clouds. Each shape kind is a discriminated
-// union member; backends pattern-match on `kind` and ignore unknown kinds (with
-// a warning, not a crash) so the type can grow without breaking older backends.
+// The general case is the union of every shape we might support. The current
+// concrete needs are triangle meshes (panels, walls, floors) and analytic
+// primitives (architectural-pattern shapes such as H-channel came rails;
+// Phase 6 sprint 5 lands them). Future kinds extend the discriminated union
+// without breaking older backends — backends pattern-match on `kind` and
+// ignore unknown kinds with a warning, not a crash.
 
 // ────────────────────────────────────────────────────────────────────────────
 // Math primitives (these are exported for hosts to construct against)
@@ -32,11 +32,11 @@ export type SceneNodeId = string;
 // Material
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Generic PBR material — superset of the fields stainedGlass uses today, with
- *  optional Disney-BSDF lobes for backends that support them. The `extensions`
- *  field is the escape hatch: backends can read backend-specific data from it
+/** Generic PBR material — superset of the standard PBR fields with optional
+ *  Disney-BSDF lobes for backends that support them. The `extensions` field
+ *  is the escape hatch: backends can read backend-specific data from it
  *  without polluting the core type (e.g., normalMap-perturbed shadow ray
- *  parameters, our Phase 4 contribution).
+ *  parameters, the Phase 4 contribution).
  *
  *  Texture handles are opaque to core. The scene-binding layer (e.g.,
  *  @vitrum/three-bindings) is responsible for converting host textures to
@@ -149,7 +149,7 @@ export type AnalyticShape =
   | 'box'              // params: [cx, cy, cz, hx, hy, hz]
   | 'capsule'          // params: [ax, ay, az, bx, by, bz, radius]
   | 'cylinder'         // params: [cx, cy, cz, radius, halfHeight]
-  | 'h-channel-came';  // params: [length, railWidth, blockHeight, webThickness] — stainedGlass-specific, Phase 6 sprint 5
+  | 'h-channel-came';  // params: [length, railWidth, blockHeight, webThickness] — H-channel rail primitive, Phase 6 sprint 5
 
 export type ScenePrimitive =
   | MeshPrimitive
@@ -217,7 +217,8 @@ export interface MeshAreaEmitter extends EmitterBase {
   readonly kind: 'mesh-area';
   /** References a `MeshPrimitive` in the scene by id. The emitter samples
    *  surface points on that mesh; the mesh's material's emissive contributes
-   *  to the radiance. Used for stainedGlass panel cells. */
+   *  to the radiance. Used for textured panel cells (e.g., stained-glass
+   *  cells where each cell contributes its baked emissive). */
   readonly meshId: SceneNodeId;
 }
 
