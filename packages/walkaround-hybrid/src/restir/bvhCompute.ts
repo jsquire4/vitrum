@@ -2,10 +2,10 @@
  * bvhCompute.ts — Build scene BVH + emitter list storage buffers for the
  * ReSTIR compute pipeline.
  *
- * §4 of the walkaround plan. This is the JavaScript side; the WGSL shaders
- * consume the buffers via `ptr<storage, array<BVHNode>, read>` etc.
+ * This is the JavaScript side; the WGSL shaders consume the buffers via
+ * `ptr<storage, array<BVHNode>, read>` etc.
  *
- * Node packing format matches `common_functions.wgsl.js` BVHNode struct:
+ * Node packing format matches common.wgsl.ts BVHNode struct:
  *   struct BVHNode {
  *     bounds: BVHBoundingBox,                // 6 × f32  = 24 bytes (min xyz, max xyz)
  *     rightChildOrTriangleOffset: u32,       //            4 bytes
@@ -15,12 +15,8 @@
  * Layout matches three-mesh-bvh's internal 8×u32 = 32-byte node format so we
  * can DMA the raw buffer without re-packing.
  *
- * ── Tier 2 migration ────────────────────────────────────────────────────────
- * The shared BVH-build core (ensureIndexed, sky-hide, proxy substitution,
- * group-collapse single-root build, BVH-invariant per-vertex matId snapshot,
- * stride-3 vs stride-4 layout, materials LUT) lives in
- * `./lib/bvhCommon.ts`. This module wraps that core with ReSTIR-specific
- * post-packing:
+ * This module wraps the shared BVH-build core (@vitrum/shared-bvh) with
+ * ReSTIR-specific post-packing:
  *   - UV-pack-into-position-w (compute-cast 8-storage-buffer-per-stage limit
  *     workaround — uses the .w slot left zero by the shared stride-4 path).
  *   - bvhIndex.w RGBA8 + texType packing (4-bit transmission + 4-bit
@@ -29,7 +25,7 @@
  */
 
 import * as THREE from 'three';
-import { buildSceneBVH as buildSharedBVH } from '../../lib/bvhCommon';
+import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
 
 /**
  * Apply Beer-Lambert through-medium attenuation to a glass material's
@@ -38,14 +34,6 @@ import { buildSceneBVH as buildSharedBVH } from '../../lib/bvhCommon';
  * radiance at normal incidence (modulo fresnel).
  *
  *   tinted = pow(attenuationColor, thickness / attenuationDistance)
- *
- * Step 2 of the render-mode-hierarchy restructure (2026-05-08): walkaround
- * previously packed `attenuationColor` directly into the BVH (~6× under-
- * saturated for cathedral cells with attDist=0.5mm, thickness=3mm). PT
- * computes the Beer-Lambert factor implicitly via three.js's transmission +
- * thickness + attenuationDistance integrator; this helper makes walkaround
- * pre-bake the same factor so its packed albedo matches PT's transmitted
- * radiance.
  *
  * Returns the original color when thickness or attenuationDistance is
  * missing/non-finite — preserves legacy behavior for materials that
@@ -89,10 +77,6 @@ interface StorageBufferHandle {
  * identical flat hexagons.
  *
  * IDs 0..7 are populated; 8..15 are reserved.
- *
- * The string-to-id mapping itself is declared at the createBakedGlassMaterial
- * site (it stamps `material.userData.surfaceTextureId` for us); this comment
- * is the reference for the WGSL decoder in shade.wgsl.
  */
 
 export interface SceneBVHBuffers {
@@ -132,8 +116,7 @@ export interface SceneBVHBuffers {
    * shape; do NOT upload its cpuData to the GPU and do NOT read from
    * any binding pointed at it.
    *
-   * Slated for removal in the C1b coordinated rename / surface cleanup
-   * (sweep, plan/path-tracer-library-readiness.md).
+   * Slated for removal in a future coordinated rename / surface cleanup.
    */
   materialColors: StorageBufferHandle;
   /** EmitterTri[] — 64-byte emitter struct per emissive triangle. */
@@ -148,18 +131,7 @@ export interface SceneBVHBuffers {
 }
 
 /**
- * EmitterTri struct layout (64 bytes):
- *   vertexA:  vec3f  (12 bytes)
- *   pad0:     f32    ( 4 bytes — alignment)
- *   vertexB:  vec3f  (12 bytes)
- *   pad1:     f32    ( 4 bytes)
- *   vertexC:  vec3f  (12 bytes)
- *   area:     f32    ( 4 bytes)
- *   normal:   vec3f  (12 bytes)
- *   power:    f32    ( 4 bytes)   <- luminance × area
- *   color:    vec3f  (12 bytes)   <- Le (emitted radiance color)
- *   intensity:f32    ( 4 bytes)   <- sun intensity multiplier or 1.0
- * Total: 80 bytes — we pack tighter at 64 bytes by dropping pads:
+ * EmitterTri struct layout (80 bytes, 16-byte aligned):
  *   0..11  : vertexA (12 bytes)
  *   12..23 : vertexB (12 bytes)
  *   24..35 : vertexC (12 bytes)
@@ -167,36 +139,11 @@ export interface SceneBVHBuffers {
  *   48..51 : area    ( 4 bytes)
  *   52..63 : color   (12 bytes)  ← r,g,b in f32
  *   64..67 : intensity (4 bytes)
- * That's 68 bytes — round to 80 bytes (5 × vec4f) for 16-byte alignment.
+ * Padded to 80 bytes (5 × vec4f) for 16-byte alignment.
  */
 const EMITTER_STRIDE = 80; // bytes per emitter, 16-byte aligned
 const EMITTER_FLOATS = EMITTER_STRIDE / 4; // 20 f32 per emitter
 
-/**
- * Object names whose geometry should be substituted with a 1×1-segment
- * proxy plane during BVH build.  Post-roommesh-merge, LivingRoomShell
- * tessellates the floor + ceiling at 32×32 = 2048 tris each (visual
- * fidelity for caustic-receiver micro-grid + DDGI's probe-grid compute).
- * Walking that as ray-trace geometry for ReSTIR's per-pixel BVH at
- * 3840×1902 × N rays/pixel exceeds the Windows TDR budget (~2 s) and the
- * GPU device hangs (DXGI_ERROR_DEVICE_HUNG → black canvas).
- *
- * The fix is the canonical Unreal/Unity PT-engine pattern: visual
- * geometry ≠ ray-trace geometry. The visual mesh stays at 32×32
- * (untouched on the raster path and DDGI). For BVH build, the shared
- * `lib/bvhCommon` substitutes a 1×1-segment proxy plane covering the
- * SAME world bounds (same width/height in local space, same matrixWorld)
- * so the merged BVH walks 2 tris instead of 2048 per surface.
- *
- * Selectivity rules (intentional & narrow):
- *   ✅ floor    — flat plane, uniform up-normal, dense mesh adds no ray value
- *   ✅ ceiling  — flat plane, uniform down-normal, same as floor
- *   ❌ walls    — ExtrudeGeometry with hole cutouts for windows/doors;
- *                 visual = ray (lose opening discrimination otherwise)
- *   ❌ panel    — emitter list keys off per-cell material colors; ANY
- *                 reduction here defeats the entire purpose
- * Default-deny: surfaces not in the allowlist below keep visual = ray.
- */
 /**
  * Default proxy-mesh allowlist for the stained-glass-app demo. Library
  * consumers will typically override via the `proxyMeshNames` opt to
@@ -228,9 +175,8 @@ export function buildSceneBVH(
      * raster but where ray-trace per-triangle cost outweighs the
      * shadow-resolution gain.
      *
-     * Defaults to `DEFAULT_PROXY_MESH_NAMES` (the stained-glass-app
-     * demo's surface_floor_living + surface_ceiling_living). Library
-     * consumers should pass their own scene's mesh names.
+     * Defaults to `DEFAULT_PROXY_MESH_NAMES`. Library consumers should
+     * pass their own scene's mesh names.
      */
     proxyMeshNames?: Set<string>;
   } = {},
@@ -252,10 +198,7 @@ export function buildSceneBVH(
     proxyMeshNames: options.proxyMeshNames ?? DEFAULT_PROXY_MESH_NAMES,
     // Permissive filter — accept every visible mesh, including came/
     // solder beads. They render as opaque dark geometry and cast
-    // proper shadows in the path trace, restoring the panel structure
-    // the user reported missing 2026-05-08. (B6 sweep had excluded
-    // them for ~10-20K BVH-tri perf reasons; that trade was undone in
-    // favor of fidelity.)
+    // proper shadows in the path trace, restoring the panel structure.
     filter: (obj: THREE.Object3D) => obj instanceof THREE.Mesh,
   });
 
@@ -300,8 +243,7 @@ export function buildSceneBVH(
 
   // ── 5. UV buffer (separate; CPU-side debug + future use) ────────────────
   // The GPU consumes UV via `bvh_position[*].w`; this is the contract-
-  // preserving CPU-side handle.  Source UV from the merged geometry on the
-  // BVH instance (so we don't depend on `mergedGeometry` lifecycle yet).
+  // preserving CPU-side handle.
   const uvAttr = shared.bvh.geometry.attributes['uv'] as
     | THREE.BufferAttribute
     | undefined;
@@ -309,11 +251,7 @@ export function buildSceneBVH(
     ? new Float32Array(uvAttr.array)
     : new Float32Array(vertCount * 2);
 
-  // triangleMaterialIds — pass through the shared per-tri matId LUT.  Note
-  // that this index space is "unique-material LUT index" (lib/bvhCommon's
-  // contract), not "per-mesh-traversal-order index" as before — but the
-  // only consumer in ReSTIR is CPU-side debug (it is not bound as a GPU
-  // storage buffer), so the change is observationally identical.
+  // triangleMaterialIds — pass through the shared per-tri matId LUT.
   const triMatIds = new Uint32Array(shared.triMaterialId);
 
   // ── 6. Return buffers ────────────────────────────────────────────────────
@@ -322,12 +260,6 @@ export function buildSceneBVH(
   // The triangleMaterialIds field carries the CPU-side u32[] for emitter building;
   // it is NOT uploaded to the GPU as a separate buffer.
   // materialColors is NOT a separate GPU buffer — colors are packed into bvhIndex[*].w.
-  //
-  // Defensive `.slice(0)` on shared.bvhNodes / shared.normals buffers — both
-  // are owned by the lib/ result internally; copying detaches us from any
-  // future lib-side mutation AND narrows TS's `ArrayBufferLike` (which
-  // includes SharedArrayBuffer) down to the concrete `ArrayBuffer` the
-  // StorageBufferHandle contract requires.
   return {
     bvhNodes: {
       cpuData: shared.bvhNodes.buffer.slice(0) as ArrayBuffer,
@@ -385,7 +317,7 @@ export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Per-branch sibling functions (technique-specific packing on top of shared core)
+// Per-engine sibling functions (technique-specific packing on top of shared core)
 // ──────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -451,12 +383,6 @@ function packUVIntoPositionW(
  *    7..4  : transmission * 15 (4 bits — coarse but enough for the
  *             trans>0.625 / glass-vs-opaque test the shadow ray uses)
  *    3..0  : surfaceTextureId (0..15; 0..7 used today, 8..15 reserved)
- *
- * Pre-fix: the low byte was `trans * 255` and there was no texture-type
- * signal at all.  WGSL primary glass hits could only emit the cell's
- * attenuationColor as a flat fill, so red waterglass + red ripple
- * rendered as identical flat hexagons regardless of authored texture —
- * exactly the "agents are cheesing — flat solid-color cells" complaint.
  */
 function packBVHIndexW(
   indices: Uint32Array,
@@ -491,28 +417,16 @@ function packBVHIndexW(
       // the cell's actual color is carried by the texture map AND by
       // `material.attenuationColor` (= baseColor; drives Beer-Lambert
       // absorption).  Reading `material.color` here packs WHITE into
-      // bvhIndex[*].w for every glass triangle, which is what made the
-      // panel render as pure white in the ReSTIR shade pass and produced
-      // an emitter list whose Le for every glass cell collapsed to white
-      // × white × trans × sunInt × sunDot — i.e. the panel emits white
-      // light regardless of cell colour, killing every chromatic signal
-      // the ReSTIR pipeline is supposed to carry to the floor.
-      //
-      // For transmissive materials we therefore prefer `attenuationColor`
-      // (which is always set to the user-authored baseColor) when it is
-      // present; for opaque materials the legacy `material.color` path is
-      // still correct (room walls, wood frame, floor — none of which use
-      // the textured-glass white-color trick).
+      // bvhIndex[*].w for every glass triangle, producing an emitter list
+      // whose Le for every glass cell collapsed to white regardless of cell
+      // colour. For transmissive materials we therefore prefer `attenuationColor`.
       const isTransmissive = transmission > 0.01;
       const attenColor = (physMat as { attenuationColor?: THREE.Color }).attenuationColor;
       // bvhIndex.w holds the RAW attenuation color (no Beer-Lambert).
       // This is what receivers in the room sample via emitter Le and
-      // bvhTraceTintedVisibility — applying Beer-Lambert here would
-      // dim every wall/floor pixel by the same 6× factor that turns
-      // glass cells deep saturated, leaving the room pitch black.
-      // The Beer-Lambert *visible* color (what the shader uses for
-      // Lo_emit on a primary glass hit) lives in a parallel
-      // bvh_beer buffer — see packBVHBeerColors.
+      // bvhTraceTintedVisibility. The Beer-Lambert *visible* color
+      // (what the shader uses for Lo_emit on a primary glass hit) lives
+      // in a parallel bvh_beer buffer.
       const color =
         (isTransmissive && attenColor)
           ? attenColor
@@ -521,20 +435,12 @@ function packBVHIndexW(
       g = Math.round(color.g * 255) & 0xFF;
       b = Math.round(color.b * 255) & 0xFF;
       // Look up authored surfaceTexture id from the material's userData.
-      // Materials carry a `surfaceTextureId` u4 written by createBakedGlassMaterial
-      // (or fallback to 0='smooth' for non-glass / opaque materials).
       // texTypeId now uses only 3 bits (0-7); bit 3 of the nybble is the
-      // isMetal flag — repurposed from the previously-unused texTypeId 8-15
-      // range. Came beads + solder set metalness > 0.5; glass + walls + floor
-      // set metalness < 0.5.
+      // isMetal flag.
       const surfTex = (mat.userData as { surfaceTextureId?: number } | undefined)?.surfaceTextureId;
       texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
       // Any non-zero metalness counts as "metal" for noisy-direct skip.
-      // Came finishes range 0.0 (heavily oxidized) to 1.0 (fresh polished);
-      // a 0.5 threshold missed default maturePatina (0.10) and aged finishes.
-      // Glass + walls + floor + ceiling all use metalness=0, so they don't
-      // get incorrectly flagged. Threshold 1e-4 to avoid float-equality
-      // weirdness on materials that explicitly write metalness=0.
+      // Threshold 1e-4 to avoid float-equality weirdness.
       const metalness = (stdMat?.metalness ?? 0) as number;
       isMetal = metalness > 1e-4 ? 1 : 0;
     }
@@ -549,10 +455,8 @@ function packBVHIndexW(
  * Pack the Beer-Lambert visible color per triangle into a parallel u32 buffer.
  *
  * For transmissive materials: pow(attenuationColor, thickness/attenuationDistance)
- * mirrors PT's medium absorption at normal incidence — cathedral cells
- * (attDist=0.5mm, thickness=3mm) get pow'd by 6, producing the deep
- * saturation PT renders. For opaque materials: identical to the raw
- * material color (no absorption to apply).
+ * mirrors PT's medium absorption at normal incidence. For opaque materials:
+ * identical to the raw material color (no absorption to apply).
  *
  * Read by shade.wgsl Lo_emit on a primary glass hit. NOT used by:
  *   - emitter Le (emitter list keeps raw attCol so receivers in the
@@ -597,7 +501,7 @@ function packBVHBeerColors(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Emitter list construction (§4.3–§4.4)
+// Emitter list construction
 // ──────────────────────────────────────────────────────────────────────────────
 
 function luminance(r: number, g: number, b: number): number {
@@ -614,8 +518,8 @@ function luminance(r: number, g: number, b: number): number {
  *   1. emissive (luminance > 0 AND emissiveIntensity > 0): treat as
  *      direct light source; intensity = emissiveIntensity.
  *   2. transmissive (transmission > 0.1) AND `userData.skipEmitter` not
- *      set: treat as a sun-attenuated secondary emitter when the sun is
- *      roughly behind the glass (sunDot > 0.05).
+ *      set: treat as a sun-attenuated secondary emitter when the primary
+ *      light is roughly behind the glass (primaryLightDot > 0.05).
  *   3. otherwise: skip.
  *
  * Power = luminance(Le) × area; emitters with power < 1e-8 are dropped.
@@ -668,11 +572,7 @@ function buildEmitterList(
     _ab.subVectors(_vb, _va);
     _ac.subVectors(_vc, _va);
     _cross.crossVectors(_ab, _ac);
-    // Sweep finding Bug 12: previously `_cross.x / (area * 2)` worked
-    // only by accident — `_cross.length() = 2 × area` so dividing by
-    // `area * 2` happened to be the unit-vector normalization. Anyone
-    // refactoring the area variable away would silently break the
-    // normal. Use the cross length directly + reuse for area.
+    // Use the cross length directly + reuse for area.
     const crossLen = _cross.length();
     if (crossLen < 1e-8) continue;
     const area = crossLen * 0.5;
@@ -680,9 +580,7 @@ function buildEmitterList(
     let nx = _cross.x * invLen;
     let ny = _cross.y * invLen;
     let nz = _cross.z * invLen;
-    // Stride-4 normals: read .xyz only.  Treat any non-zero vertex normal as
-    // "available" — the shared lib zero-fills normals only when the source
-    // geometry had no normal attribute at all.
+    // Stride-4 normals: read .xyz only.
     const n0x = normals[i0 * 4]!;
     const n0y = normals[i0 * 4 + 1]!;
     const n0z = normals[i0 * 4 + 2]!;
@@ -703,9 +601,6 @@ function buildEmitterList(
 
     // Check emissive materials.
     const meshMat = mat as THREE.MeshStandardMaterial;
-    // Only treat as an emissive light source if the emissive color has actual luminance
-    // (emissive defaults to black + emissiveIntensity defaults to 1, so checking
-    // emissiveIntensity alone would always pass for MeshPhysicalMaterial glass faces).
     const emissiveLum = meshMat.emissive
       ? 0.2126 * meshMat.emissive.r + 0.7152 * meshMat.emissive.g + 0.0722 * meshMat.emissive.b
       : 0;
@@ -715,43 +610,29 @@ function buildEmitterList(
       cb = meshMat.emissive.b * meshMat.emissiveIntensity;
       intensity = meshMat.emissiveIntensity;
     } else {
-      // Check transmission (stained glass as emitter — §4.4).
+      // Check transmission (stained glass as emitter).
       const physMat = mat as THREE.MeshPhysicalMaterial;
       if (physMat.transmission && physMat.transmission > 0.1) {
         // ── Skip-emitter override (interior glass) ────────────────────────
         // Materials can opt out of emitter classification by stamping
         // userData.skipEmitter = true.  Used by interior glass that is
         // sealed inside the room enclosure (sun never reaches it) but
-        // the buildEmitterList "transmission > 0.1 + sunDot > 0.05" gate
-        // would otherwise treat as a secondary emitter — which is
-        // physically wrong AND drowns out the actual sun-exposed panel
-        // cells in the reservoir CDF (door's halfLight glass: 4 white
-        // emitters at ~14-19 power each, ~40 % of the total emitter
-        // budget in the canonical room).
+        // the buildEmitterList "transmission > 0.1 + primaryLightDot > 0.05"
+        // gate would otherwise treat as a secondary emitter.
         const skipEmitter = (mat.userData as { skipEmitter?: boolean } | undefined)?.skipEmitter === true;
         if (skipEmitter) continue;
 
         // Face is transmissive. Treat it as a secondary emitter using
-        // |cos(sun, panel-normal-axis)| — bidirectional, because a
+        // |cos(primaryLight, panel-normal-axis)| — bidirectional, because a
         // transmissive panel emits from BOTH faces (light entering one
-        // side exits the other). The previous signed -dot test was a
-        // sun-catcher-mode artifact assuming the viewer is always
-        // opposite the sun across the panel; in walkaround room mode
-        // the viewer-side flips, and a signed gate would mark only
-        // half the panel triangles as emitters — the half NOT facing
-        // the camera, so ReSTIR DI sampled emitters that radiate AWAY
-        // from the room interior. The receiver-side panel-front Lo_emit
-        // and the room-side Lo_direct now agree on which cells emit.
+        // side exits the other).
         const lightDir = options.primaryLightDir ?? new THREE.Vector3(0, 1, 0);
         const sunDot = Math.abs(lightDir.x * nx + lightDir.y * ny + lightDir.z * nz);
 
         if (sunDot > 0.05) {
           // Emitter Le uses RAW attenuationColor (no Beer-Lambert).
-          // ReSTIR DI samples this Le when shading non-glass receivers
-          // (floor caustics, wall fill); applying Beer-Lambert here
-          // would 6× dim every receiver pixel. The Beer-Lambert
-          // visible color is computed separately in bvh_beer for the
-          // primary-hit Lo_emit term only.
+          // ReSTIR DI samples this Le when shading non-glass receivers;
+          // applying Beer-Lambert here would dim every receiver pixel.
           const baseColor = physMat.color ?? new THREE.Color(1, 1, 1);
           const attenColor = physMat.attenuationColor ?? new THREE.Color(1, 1, 1);
           const sunIrradiance = options.primaryLightIntensity ?? 3.0;

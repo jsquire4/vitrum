@@ -1,14 +1,14 @@
 /**
- * RIS (Resampled Importance Sampling) compute pass — §5.2 of the walkaround plan.
+ * RIS (Resampled Importance Sampling) compute pass.
  *
- * Samples M_LIGHT=32 direct light candidates + M_BRDF=1 BRDF candidate per pixel,
+ * Samples M_LIGHT=64 direct light candidates + M_BRDF=1 BRDF candidate per pixel,
  * selects the best via weighted reservoir sampling (RIS), then applies a visibility
  * test to finalize the W weight.
  *
  * This pass does primary ray casting to find the hit surface (no separate G-buffer
- * raster pass needed). This is the §10.7 fallback: use manual device.createShaderModule()
+ * raster pass needed) — primary-ray-cast mode using manual device.createShaderModule()
  * with full primary-ray cast instead of a rasterized G-buffer, which is simpler and
- * provably correct for an initial honest implementation.
+ * provably correct.
  *
  * Bind groups: see WalkaroundGPUPipeline bind group layouts.
  *   @group(0): frame (placeholder G-buffer textures + reservoirs)
@@ -87,8 +87,7 @@ fn storeReservoirDI(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32, r:
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
 // they are prepended to RIS_WGSL at compile time (see
-// WalkaroundGPUPipeline shader-module concat). Local copies of the same
-// math were deleted 2026-05-07 sweep.
+// WalkaroundGPUPipeline shader-module concat).
 
 // ============================================================
 // Emitter target function (unshadowed)
@@ -146,7 +145,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   if (!hit.didHit) {
     // Sky pixel -- write sky color directly to HDR output, empty reservoir.
     // skyTint × skyIrradiance from UBO (computeLightingState); replaces
-    // hardcoded (0.4, 0.6, 1.0) × 0.8.
+    // hardcoded sky color.
     storeReservoirDI(&currentReservoir, pixelIdx, emptyReservoirDI());
     let skyColor = ubo.skyTint * ubo.skyIrradiance;
     textureStore(hdrColorOut, gid.xy, vec4f(skyColor, 1.0));

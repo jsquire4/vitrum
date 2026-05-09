@@ -5,28 +5,17 @@
  *
  *   accum = current * alpha + clamped_prev * (1 - alpha)
  *
- * **Variance-clamped history** (added 2026-05-08 for the user-reported
- * "sparkle around came/solder" + "rays fading and respawning" symptom).
- * The naive EMA blends the previous frame BLINDLY with the current,
- * which means at silhouette edges (came-glass boundary) the prev-frame
- * value can carry a color very different from what's currently visible
- * — the noise pattern flickers between "what was here last frame" and
- * "what's here now." Variance clamping fixes this by computing the local
- * color statistics (mean ± k·std_dev) over a 3×3 current-frame
- * neighborhood and clamping the prev-frame value into that range BEFORE
- * blending. Pixels at edges retain their crispness because:
- *   - Glass-side pixels have neighborhoods of similar bright-colored
- *     samples → prev-frame clamped to bright color
- *   - Came-side pixels have neighborhoods of dark metallic samples →
- *     prev-frame clamped to dark
- * The boundary stops accumulating cross-talk between the two regions.
+ * Variance-clamped history: computes the local color statistics (mean ± k·std_dev)
+ * over a 3×3 current-frame neighborhood and clamps the prev-frame value into
+ * that range BEFORE blending. Pixels at edges retain their crispness.
  *
  * On big camera motion the alpha is set to 1.0 by the caller, so
  * variance clamping is bypassed (no history blend).
  *
+ * Phase 5 will relocate this file to @vitrum/shared-denoisers.
+ *
  * Reference: Karis, "High-Quality Temporal Supersampling" (Unreal 4),
- * SIGGRAPH 2014. The variance-clamping technique is now standard in
- * temporal denoisers (Lumen, NRD, etc.).
+ * SIGGRAPH 2014.
  */
 
 export const TEMPORAL_ACCUM_WGSL = /* wgsl */`
@@ -61,10 +50,7 @@ fn temporalAccumMain(@builtin(global_invocation_id) gid: vec3u) {
   // Was 5×5; reduced to 3×3 to shrink the rim-brightening artifact at
   // caustic boundaries. With 5×5, an edge pixel's neighborhood spans 2px
   // into the bright caustic interior, pulling prev-frame value up to
-  // bright max. The temporal blend then over-weights the rim, reading
-  // as 3D-shaded volume on what should be flat caustic patches.
-  // 3×3 keeps the clamp's role (suppress slow-motion ghosting without
-  // motion vectors) but limits the rim radius to ≤1px.
+  // bright max. 3×3 keeps the clamp's role but limits the rim radius to ≤1px.
   var aabbMin = vec3f(1e10);
   var aabbMax = vec3f(-1e10);
   let dimsI = vec2i(dims);

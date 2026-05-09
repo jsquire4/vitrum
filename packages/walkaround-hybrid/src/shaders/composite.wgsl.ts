@@ -47,12 +47,7 @@ fn linearToSRGB(c: vec3f) -> vec3f {
 
 // ACES filmic tone mapping — Narkowicz 2015 RRT+ODT fit, applied per-channel.
 // Matches three.js's ACESFilmicToneMapping (the R3F default that PT and raster
-// inherit). Step 3 of the render-mode-hierarchy restructure (2026-05-08):
-// retired the chromaticity-preserving variant in favor of three.js parity —
-// now that Step 2 bakes Beer-Lambert into the BVH glass color, peak HDR is
-// physical and ACES's per-channel highlight roll-off behaves the same way
-// PT renders the same scene. Same curve as src/.../tone_mapping/aces.glsl.js
-// in three.js.
+// inherit). Same curve as src/.../tone_mapping/aces.glsl.js in three.js.
 fn acesFilm(rgb: vec3f) -> vec3f {
   let a = 2.51;
   let b = 0.03;
@@ -70,20 +65,13 @@ fn fragMain(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
   let px = vec2u(u32(fragCoord.x), u32(fragCoord.y));
   let hdr = textureLoad(denoisedTex, px, 0).rgb;
 
-  // ── Tone mapping ────────────────────────────────────────────────────────
   // Per-channel ACES at exposure 1.0 — matches three.js's R3F default
   // toneMapping=ACESFilmic + toneMappingExposure=1.0 that PT and raster use.
-  // Step 3 of the restructure: walkaround had been running with a custom
-  // luminance-preserving variant + exposure 0.4 to fight under-saturated
-  // cells, but Step 2's Beer-Lambert bake removed the underlying cause —
-  // cells now reach peak HDR at physical magnitudes and ACES rolls off
-  // identically across all three modes.
   let tonemapped = acesFilm(max(vec3f(0.0), hdr));
 
   // Apply sRGB gamma encoding before writing to the 8-bit swap-chain.
   // The swap-chain format is bgra8unorm (NOT bgra8unorm-srgb), so the GPU
   // does NOT auto-convert on store — we must apply the curve manually.
-  // Skipping this step makes the output appear ~5× too dark on all mid-tones.
   let srgb = linearToSRGB(tonemapped);
   return vec4f(srgb, 1.0);
 }

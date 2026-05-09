@@ -1,19 +1,13 @@
 /**
- * Spatial reuse compute pass — §5.4 of the walkaround plan.
+ * Spatial reuse compute pass.
  *
  * Combines 5 spatially-neighboring reservoirs via Poisson-disk offsets (30px radius).
  * Reads from currentReservoir, writes to spatialReservoir.
  * Two separable passes are run by the orchestrator (using the same shader twice).
  *
- * Primary-ray-cast mode (§10.7): no G-buffer rasterization.  We re-cast primary
+ * Primary-ray-cast mode: no G-buffer rasterization.  We re-cast primary
  * rays here for the center pixel + each neighbor so the target function p̂ is
- * evaluated at the CORRECT surface, not at the world origin.  Pre-fix this pass
- * read placeholder G-buffer textures (constant 0.5/1.0/0.0 for all pixels) and
- * approximated `pos = vec3f(0.0)` and `normal = (0,0,1)` everywhere — which
- * collapsed the geometric similarity gate into a no-op AND corrupted the
- * reservoir with samples picked for an entirely fictional surface, producing
- * heavy fireflies in the final composite (the "Monte Carlo noise" reported in
- * hardware-GPU validation).
+ * evaluated at the CORRECT surface, not at the world origin.
  */
 
 export const SPATIAL_WGSL = /* wgsl */ `
@@ -54,11 +48,10 @@ struct WalkaroundUBO {
 
 const RESERVOIR_DI_STRIDE = 4u;
 // NEIGHBORS = 5 (restored — was briefly 3 for perf). The spatial-2
-// pass was also restored alongside (see WalkaroundGPUPipeline.ts).
+// pass was also restored alongside.
 // Per-pixel spatial-reuse drives the soft falloff / AO-like coherence
 // that makes the rendering feel grounded; cutting it for perf
-// produced the visible "sparkles around came/solder" that user
-// flagged 2026-05-08. Larger budget but fidelity wins.
+// produced visible "sparkles around came/solder".
 const NEIGHBORS = 5u;
 const RADIUS = 30.0;
 const M_SCALE = 4u;
@@ -74,8 +67,7 @@ fn storeR_rw(buf: ptr<storage, array<u32>, read_write>, idx: u32, r: ReservoirDI
 }
 
 // PrimarySurface — what we know about the surface a pixel sees, derived
-// from re-casting that pixel's primary ray through the BVH.  Replaces the
-// pre-fix placeholder G-buffer reads.
+// from re-casting that pixel's primary ray through the BVH.
 struct PrimarySurface {
   hit:    bool,
   pos:    vec3f,

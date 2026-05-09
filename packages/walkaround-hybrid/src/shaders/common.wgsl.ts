@@ -1,19 +1,18 @@
 /**
  * Common WGSL code shared across all ReSTIR compute passes.
- * Exported as a TypeScript string so Vite bundles it without a GLSL plugin.
+ * Exported as a TypeScript string so the bundler inlines it without a GLSL plugin.
  *
  * Includes:
  *   - PCG random number generator
  *   - BRDF utilities (GGX BRDF evaluation + sampling)
  *   - BVH struct definitions (matching three-mesh-bvh's WGSL layout)
- *   - Reservoir struct + pack/unpack helpers (§5.1, §14.2)
- *   - Emitter struct + sampling helpers (§4.3)
+ *   - Reservoir struct + pack/unpack helpers
+ *   - Emitter struct + sampling helpers
  *   - G-buffer unpack helpers
  *
  * References:
  *   - three-mesh-bvh/src/webgpu/common_functions.wgsl.js — BVHNode struct
  *   - C-none/Web-RTRT reservoir.wgsl — encode/decode helpers
- *   - §5.1, §5.2, §6.1.2 — reservoir + Jacobian spec
  */
 
 export const COMMON_WGSL = /* wgsl */ `
@@ -31,15 +30,13 @@ const LEAFNODE_FLAG = 0xFFFF0000u;
 // Distance² floor for the emitter geometry term G = (n_l·ω) / dist².
 // Without it, a receiving pixel that sits within ~2" of a panel-cell
 // emitter sees G=400+, blowing the wall to near-saturation and
-// producing the "sunlight-from-above-the-panel" illusion the user
-// flagged 2026-05-08. 4.0 (= 2-inch min) sits below visible viewing
-// distances so it's invisible at normal viewing.
+// producing the "sunlight-from-above-the-panel" illusion.
 //
 // CRITICAL: this floor must be applied in BOTH the RIS reservoir
-// construction (ris.wgsl.ts computePHat + M_LIGHT loop) AND shade's
-// direct-light evaluation (shade.wgsl.ts) so the importance-sampled
+// construction (ris.wgsl computePHat + M_LIGHT loop) AND shade's
+// direct-light evaluation (shade.wgsl) so the importance-sampled
 // p̂ matches the evaluated p̂. Drift was the variance source called
-// out by the 2026-05-08 sweep finding Bug 3.
+// out by the sweep finding Bug 3.
 const EMITTER_DIST2_FLOOR = 4.0;
 
 // Emitter geometry term G with the same dist² clamp applied at
@@ -89,7 +86,7 @@ struct HitResult {
 };
 
 // ============================================================
-// Emitter struct (S.4.3, S.14.2 -- 80 bytes per emitter, 16-byte aligned)
+// Emitter struct (80 bytes per emitter, 16-byte aligned)
 // ============================================================
 struct EmitterTri {
   vA:        vec3f,   // bytes 0-11
@@ -119,7 +116,7 @@ struct GBufferSample {
 };
 
 // ============================================================
-// ReSTIR DI Reservoir (S.5.1, S.14.2 -- 16 bytes)
+// ReSTIR DI Reservoir (16 bytes)
 // ============================================================
 struct ReservoirDI {
   lightId: u32,
@@ -141,7 +138,7 @@ fn updateReservoirDI(r: ptr<function, ReservoirDI>, lid: u32, w: f32, rng: ptr<f
 }
 
 // ============================================================
-// ReSTIR GI Reservoir (S.6 -- 80 bytes, co-located at pixel offset after DI)
+// ReSTIR GI Reservoir (80 bytes, co-located at pixel offset after DI)
 // ============================================================
 struct ReservoirGI {
   xv:      vec3f,   // visible point (primary hit)
@@ -340,10 +337,6 @@ fn bvhIntersectAny(
       // three-mesh-bvh stores rightChildOrTriOffset as a RELATIVE offset (in
       // node units) from the current node, NOT an absolute node index.  The
       // left child is always nodeIdx+1 (the immediately-following node).
-      // Pre-fix the right child was used as an absolute index, which only
-      // happened to work for the root (nodeIdx=0) — every interior subtree
-      // below the root walked into the wrong subtree, which is why the floor
-      // proxy + most of the scene were never intersected by primary rays.
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
       if (stackPtr < 62u) {
         stack[stackPtr] = rightChild; stackPtr++;
@@ -354,12 +347,12 @@ fn bvhIntersectAny(
   return false;
 }
 
-// Per-channel visibility (vec3f) along a ray.  Used for SUN-aware shadow
+// Per-channel visibility (vec3f) along a ray.  Used for sun-aware shadow
 // queries that must tint the sunlight by every glass slab the shadow
 // ray passes through, instead of either:
 //   (a) the bool bvhIntersectAny path, which skips ALL glass tris and
-//       therefore hands the floor full white sunlight even when red /
-//       blue / green panel cells are in the path; or
+//       therefore hands the floor full white sunlight even when colored
+//       panel cells are in the path; or
 //   (b) the opaque-shadow path, which would treat glass as a wall and
 //       black-out the floor caustic entirely.
 //
@@ -368,24 +361,10 @@ fn bvhIntersectAny(
 //   for each tri the ray hits along [0, tMax):
 //     if opaque  → return vec3f(0.0)   (fully shadowed)
 //     if glass   → visibility *= attenuationColor * trans
-//                  (Beer-Lambert simplified to a per-cell tint factor —
-//                  full Beer = exp(-thickness/attenDist × log(albedo))
-//                  but we stop at the per-cell attenuation factor so the
-//                  shader avoids a per-glass-slab thickness lookup)
 //   return visibility
 //
 // tMax lets the caller cap the ray at e.g. the distance to a sampled
-// emitter point.  For sun-shadow queries pass a large value (INFINITY);
-// for explicit emitter queries pass dist - epsilon so the test stops
-// at the emitter rather than going beyond it.
-//
-// Pre-fix: walkaround had no per-channel visibility helper, so caustics
-// on the receiver (e.g. floor inside the room) were modelled ONLY via
-// the cell-as-emitter pathway in the BVH.  That pathway gives the
-// floor light, but the floor's primary sample picks a SINGLE emitter
-// per pixel — a cell — so cross-cell tint blending (sun → through-multiple-
-// glass-cells) never happens.  This helper enables the proper sun → floor
-// glass-tinted shadow path used by the new direct-sun term in shade.wgsl.
+// emitter point.  For directional-light queries pass a large value (INFINITY).
 fn bvhTraceTintedVisibility(
   bvh_index:    ptr<storage, array<vec4u>,    read>,
   bvh_position: ptr<storage, array<vec4f>,    read>,
@@ -430,14 +409,7 @@ fn bvhTraceTintedVisibility(
           let trans4 = (idxEntry.w >> 4u) & 0xFu;
           if (trans4 > 4u) {
             // Glass hit — multiply visibility by sqrt(Beer-Lambert × trans × texMod).
-            // Two hits per cell crossing → sqrt²= the full one-cell
-            // Beer-Lambert factor. surfaceTextureMod (waterglass, ripple,
-            // etc.) is now safe to include here: the atrous chromaticity
-            // edge-stop discriminates by hue not magnitude, so per-pixel
-            // luminance variation from texMod no longer cross-bleeds
-            // between distinct cells. Same procedural pattern that
-            // appears on the cell's visible face also modulates its
-            // caustic projection — hammered cells cast hammered caustics.
+            // Two hits per cell crossing → sqrt²= the full one-cell Beer-Lambert factor.
             let matCol = decodeMaterialColor(idxEntry.w);
             let beerPacked = (*bvh_beer)[triIdx];
             let beerColor = vec3f(
@@ -548,9 +520,7 @@ fn bvhIntersectFirstHit(
           result.bary = vec3f(bw, u, v);
           result.normal = safe_normalize(cross(ab, ac));
           // Decode + interpolate per-vertex UV (packed 16:16 unorm in .w of
-          // each bvh_position entry).  Barycentric blend gives the
-          // interpolated UV at the hit point — fed to the procedural surface
-          // pattern functions in the shade pass.
+          // each bvh_position entry).
           let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
           let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
           let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
@@ -559,8 +529,7 @@ fn bvhIntersectFirstHit(
       }
     } else {
       // Interior node: rightChildOrTriOffset is a RELATIVE offset (node units)
-      // from this node, NOT an absolute node index.  See bvhIntersectAny
-      // above for the longer comment on the pre-fix bug.
+      // from this node, NOT an absolute node index.
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
       if (stackPtr < 62u) {
         stack[stackPtr] = rightChild; stackPtr++;
@@ -584,8 +553,7 @@ fn decodeMaterialColor(packed: u32) -> vec4f {
 }
 
 // Decode the authored surface-texture id from bvhIndex[triIdx].w.
-// Now uses only 3 bits (bits 0-2) — bit 3 of the low nybble was
-// repurposed as isMetal (see decodeIsMetal).
+// Uses only 3 bits (bits 0-2) — bit 3 of the low nybble is isMetal.
 //   0=smooth 1=hammered 2=ripple 3=granite
 //   4=baroque 5=waterglass 6=catspaw 7=flemish
 fn decodeSurfaceTextureId(packed: u32) -> u32 {
@@ -621,7 +589,7 @@ fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) ->
 }
 
 // ============================================================
-// Emitter sampling helpers (S.5.2)
+// Emitter sampling helpers
 // ============================================================
 
 // Sample a point on an emitter triangle; returns {pos, normal, area, Le, pdfArea}.
@@ -669,7 +637,7 @@ fn sampleEmitterIdx(
 }
 
 // ============================================================
-// Jacobian reconnection shift (S.6.1.2)
+// Jacobian reconnection shift
 // ============================================================
 fn jacobianReconnectionShift(
   xv_r: vec3f, nv_r: vec3f,  // current pixel primary hit + normal
@@ -700,10 +668,7 @@ fn jacobianReconnectionShift(
 // Camera helpers (shared by RIS / temporal / spatial / shade)
 // ============================================================
 // Invert a 4x4 matrix (standard cofactor method).  Used to unproject screen
-// coords → world rays for primary-ray-cast mode (§10.7).  Pre-fix this lived
-// duplicated in ris.wgsl and shade.wgsl; consolidating here lets temporal +
-// spatial re-cast their own primary rays so they have correct pos/normal,
-// rather than reading bogus G-buffer placeholder textures.
+// coords → world rays for primary-ray-cast mode.
 fn invertMat4_common(m: mat4x4f) -> mat4x4f {
   let a00 = m[0][0]; let a01 = m[0][1]; let a02 = m[0][2]; let a03 = m[0][3];
   let a10 = m[1][0]; let a11 = m[1][1]; let a12 = m[1][2]; let a13 = m[1][3];
@@ -731,7 +696,7 @@ fn invertMat4_common(m: mat4x4f) -> mat4x4f {
 // Generate a world-space primary ray for pixel (px, py) given the inverse
 // view-projection matrix.  Ray origin = camera position; direction unprojects
 // the pixel center through near→far in NDC.  Used by ALL passes that need
-// to cast primary rays (RIS, shade, post-fix temporal+spatial).
+// to cast primary rays (RIS, shade, temporal, spatial).
 fn generatePrimaryRay_common(
   px: u32, py: u32, w: u32, h: u32,
   camPos: vec3f, invVP: mat4x4f,
@@ -749,36 +714,19 @@ fn generatePrimaryRay_common(
 }
 
 // ============================================================
-// Procedural surface-texture pattern functions (S.13 walkaround)
+// Procedural surface-texture pattern functions
 // ============================================================
 //
 // One function per authored surface-texture name.  Each takes the hit's
 // interpolated UV (already in [0,1]) and returns a scalar modulation
-// factor in roughly [0.4, 1.4] — multiplied into the cell's emission
-// to produce visible per-pixel colour variation that matches what a
-// real stained-glass surface would do under directional sunlight.
-//
-// Pre-fix: every glass primary hit emitted a flat (albedo × trans ×
-// sunInt × sunDot) regardless of authored surfaceTexture, so cells
-// with the same baseColor but different texture (red waterglass vs
-// red ripple vs red hammered) all rendered as identical flat hexagons.
+// factor — multiplied into the cell's emission to produce visible
+// per-pixel colour variation.
 //
 // These functions are faithful WGSL re-implementations of the GLSL
-// surface bakers (src/rendering/glass/baking/bakers/surface/*.ts) —
-// the same trig + noise math, just evaluated per-shader-invocation
-// instead of per-texel-during-bake.  They DO NOT hardcode colours;
-// they only produce the *pattern*, which the shade pass multiplies
-// into the per-cell baseColor it decoded from bvhIndex.
-//
-// Range targets (validated against the baker GLSL):
-//   smooth      → flat 1.0 (no modulation)
-//   hammered    → ~0.6..1.4 (peened metallic peaks/valleys)
-//   ripple      → ~0.4..1.4 (concentric rings)
-//   granite     → ~0.6..1.3 (high-frequency bumpy noise)
-//   baroque     → ~0.5..1.4 (broad organic swirls)
-//   waterglass  → ~0.5..1.4 (sum of four sine waves, the canonical pattern)
-//   catspaw     → ~0.6..1.3 (clusters of round paw-like spots)
-//   flemish     → ~0.5..1.4 (elongated horizontal striations)
+// surface bakers — the same trig + noise math, evaluated per-shader-
+// invocation instead of per-texel-during-bake.  They DO NOT hardcode
+// colours; they only produce the *pattern*, which the shade pass
+// multiplies into the per-cell baseColor it decoded from bvhIndex.
 
 fn _hash21(p: vec2f) -> f32 {
   // Quick deterministic 2D-to-1D hash, range ~[0,1).
@@ -811,10 +759,7 @@ fn _fbm(p: vec2f) -> f32 {
 }
 
 fn _waterglassMod(uv: vec2f) -> f32 {
-  // Mirrors waterglass.ts wgSum(): four sine waves at differing
-  // orientations.  The bake stored gradient → normal map; for shade
-  // we return the sum directly as a brightness modulation.
-  let k = 12.0;  // matches default uFrequency*uScale
+  let k = 12.0;
   let w1 = sin(uv.x * k * 4.0 + uv.y * 2.0) * 0.4;
   let w2 = sin(uv.y * k * 5.0 - uv.x * 1.5) * 0.3;
   let w3 = sin((uv.x + uv.y) * k * 3.0) * 0.2;
@@ -823,8 +768,6 @@ fn _waterglassMod(uv: vec2f) -> f32 {
 }
 
 fn _rippleMod(uv: vec2f) -> f32 {
-  // Concentric rings around a fixed centre, slightly offset to
-  // emphasise their presence away from the cell mid-line.
   let p = uv - vec2f(0.5);
   let r = length(p) * 22.0;
   let s = sin(r);
@@ -832,46 +775,41 @@ fn _rippleMod(uv: vec2f) -> f32 {
 }
 
 fn _hammeredMod(uv: vec2f) -> f32 {
-  // Peened metal: closely-packed dimples (Voronoi-like via noise).
   let n = _vnoise(uv * 14.0);
   let n2 = _vnoise(uv * 28.0 + vec2f(11.0, 7.0));
   return 0.85 + (n - 0.5) * 0.7 + (n2 - 0.5) * 0.25;
 }
 
 fn _graniteMod(uv: vec2f) -> f32 {
-  // High-frequency speckle for crushed-stone look.
   let n = _vnoise(uv * 32.0);
   let n2 = _vnoise(uv * 64.0 + vec2f(3.0, 9.0));
   return 0.85 + (n - 0.5) * 0.45 + (n2 - 0.5) * 0.2;
 }
 
 fn _baroqueMod(uv: vec2f) -> f32 {
-  // Broad swirling flow — fbm warped by another fbm sample.
   let warp = vec2f(_fbm(uv * 2.0), _fbm(uv * 2.0 + vec2f(7.3, 1.7)));
   let v = _fbm(uv * 3.5 + warp * 1.5);
   return 0.7 + v * 0.7;
 }
 
 fn _catspawMod(uv: vec2f) -> f32 {
-  // Clustered round spots — sin × cos lattice plus low-frequency noise.
   let lattice = sin(uv.x * 18.0) * sin(uv.y * 18.0);
   let n = _vnoise(uv * 8.0);
   return 0.95 + lattice * 0.25 + (n - 0.5) * 0.3;
 }
 
 fn _flemishMod(uv: vec2f) -> f32 {
-  // Long horizontal striations + low noise hum.
   let stripes = sin(uv.y * 28.0 + sin(uv.x * 6.0) * 1.2);
   let n = _vnoise(uv * vec2f(20.0, 4.0));
   return 0.9 + stripes * 0.3 + (n - 0.5) * 0.25;
 }
 
 /**
- * Procedural surface modulation factor for a stained-glass cell.
+ * Procedural surface modulation factor for a glass cell.
  * Returns a single scalar that the shade pass multiplies into the
  * cell's emitted radiance, producing visible per-pixel patterns.
  *
- * Result is clamped to [0.4, 1.5] so cells stay distinguishably
+ * Result is clamped to [0.2, 1.8] so cells stay distinguishably
  * coloured (no full black-out, no over-bright NaN-prone values).
  */
 fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
@@ -887,11 +825,7 @@ fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
     case 7u: { m = _flemishMod(uv); }
     default: { m = 1.0; }
   }
-  // Wider clamp range [0.2, 1.8] (was [0.4, 1.5]) for more dramatic
-  // per-pixel texture modulation (waterglass swirls, ripple bands,
-  // baroque streaks visibly stronger). User reported textures
-  // weren't rendering well 2026-05-08; the previous narrow range
-  // muted intra-cell variation to barely-perceptible levels.
+  // Wider clamp range [0.2, 1.8] for more dramatic per-pixel texture modulation.
   return clamp(m, 0.2, 1.8);
 }
 

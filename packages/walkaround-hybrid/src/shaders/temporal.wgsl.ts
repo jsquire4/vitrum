@@ -1,17 +1,15 @@
 /**
- * Temporal reuse compute pass — §5.3 of the walkaround plan.
+ * Temporal reuse compute pass.
  *
  * Projects current pixel through previous MVP to find the previous-frame
  * reservoir, then combines via GRIS with M-clamp = 20.
  *
- * Primary-ray-cast mode (§10.7): no G-buffer rasterization.  We re-cast the
+ * Primary-ray-cast mode: no G-buffer rasterization.  We re-cast the
  * primary ray here to get the world-space hit `pos` and `normal`, then
  * reproject `pos` through the previous-frame view+projection matrix to find
  * the previous pixel.  This replaces the placeholder motion-vector texture
  * (which returned a constant offset, making temporal look-up land in the
- * wrong screen quadrant for ~all pixels).  Pre-fix this pass also used
- * `pos = vec3f(0.0)` in p̂ eval, corrupting every reservoir with samples
- * picked for an entirely fictional surface.
+ * wrong screen quadrant for ~all pixels).
  */
 
 export const TEMPORAL_WGSL = /* wgsl */ `
@@ -175,10 +173,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   // Note: there is no explicit disocclusion gate here.  The implicit gate is
   // the p̂ re-evaluation below — if the previous reservoir's lightId is
   // occluded or back-facing at the current surface, p̂≈0 and the sample
-  // contributes ~nothing (w_prev → 0).  A true disocclusion gate would
-  // require persisting the prev frame's hit pos/normal per pixel; we do not
-  // pay that storage cost here because the GRIS estimator naturally rejects
-  // mismatched samples through p̂.
+  // contributes ~nothing (w_prev → 0).
 
   // M-clamp previous reservoir.
   prev.M = min(prev.M, M_CLAMP);
