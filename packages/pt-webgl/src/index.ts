@@ -128,6 +128,24 @@ class PTEngineWebGL2 implements Engine {
   }
 }
 
+// ── Extracted utility modules ────────────────────────────────────────────────
+export * from './constants.js';
+export * from './sunGeometry.js';
+export { bakeSkyEquirect, clearSkyEquirectCache, _skyEquirectCacheSize } from './iblBaker.js';
+export { debounceMsForEditRate, PT_DEBOUNCE_MS_NORMAL, PT_DEBOUNCE_MS_BURST } from './debounce.js';
+export { computeLightingState } from './lightingState.js';
+export type { LightingState, LightingStateInputs } from './lightingState.js';
+export { skyParamsFor, worldSunPosition, SUN_LIGHT_DISTANCE } from './skyParams.js';
+export type { SkyParams } from './skyParams.js';
+export {
+  COLOR_TEMP_HEX,
+  SUN_INTENSITY,
+  getSunIntensity,
+  pointIntensityFromLumens,
+  rectAreaIntensityFromLumens,
+} from './lightingIntensityTable.js';
+// ────────────────────────────────────────────────────────────────────────────
+
 export async function createPTEngine_WebGL2(
   opts: PTEngineWebGL2Options,
 ): Promise<Engine> {

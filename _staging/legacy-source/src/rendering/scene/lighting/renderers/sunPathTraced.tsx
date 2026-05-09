@@ -40,6 +40,9 @@ interface Props {
   src: SunLight;
 }
 
+// These constants are now exported from `@vitrum/pt-webgl/sunGeometry`; update
+// the import when host integration begins.
+
 /**
  * PT_SUN_DISTANCE: how far to push the area-light sun. Far enough that
  * rays from any room point are approximately parallel (room dims are

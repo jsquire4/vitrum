@@ -1,31 +1,33 @@
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import type { SkyParams } from './skyParams';
+import type { SkyParams } from './skyParams.js';
 
 /**
  * Bake the analytic Preetham sky shader into a CPU-readable equirect
  * `DataTexture` suitable for both:
  *   - `scene.environment` under three-gpu-pathtracer's `WebGLPathTracer`
- *     (env importance sampling reads `image.data` to build CDF/PDF
- *     tables — see EquirectHdrInfoUniform.updateFrom)
+ *     (env importance sampling reads `image.data` to build CDF/PDF tables)
  *   - raster reflections via three's MeshStandardMaterial envMap path
- *     (the renderer auto-PMREMs an equirect texture assigned to
- *     `scene.environment`)
+ *     (the renderer auto-PMREMs an equirect texture assigned to `scene.environment`)
  *
  * Pipeline: Sky → CubeCamera → 2D equirect render target → readPixels
- * → `DataTexture(Uint16Array, RGBA, HalfFloat)`. The Float buffer is
- * the keepalive; intermediate GPU targets are disposed inside the bake
- * function. Earlier versions returned a PMREMGenerator-prefiltered
- * cubemap, which is GPU-only — `image.data` was undefined and crashed
- * `EquirectHdrInfoUniform.updateFrom` the first time PT tried to sample
- * the environment.
+ * → `DataTexture(Uint16Array, RGBA, HalfFloat)`. The Float buffer is the
+ * keepalive; intermediate GPU targets are disposed inside the bake function.
+ *
+ * Q-PT-1 resolution (Option A — raw non-unit Preetham position):
+ * THREE.Sky.uniforms.sunPosition expects the raw non-unit Preetham sun position
+ * vector, not a unit direction. ProceduralSkyEnvironment.sunDirection is a unit
+ * vector and is therefore insufficient; the baker takes SkyParams directly so
+ * callers can pass the raw arc position (magnitude ~1.12–1.41). Passing a unit
+ * direction would shift the Preetham atmospheric scattering computation and
+ * change sky color across the day cycle.
  *
  * Cache: bake outputs are keyed by quantised SkyParams (1 decimal on
- * sun-position components, 2 decimals on scalar params). Cycle of
- * timeOfDay [0,1] produces ~25 unique sun-position buckets at .toFixed(1)
- * precision; the LRU cache holds 32 entries (≥ 1 day cycle + the
- * static night entry) so a typical timeOfDay slider drag stays within
- * the cache.
+ * sun-position components, 2 decimals on scalar params). Cycle of timeOfDay
+ * [0,1] produces ~25 unique sun-position buckets at .toFixed(1) precision; the
+ * LRU cache holds 32 entries (≥ 1 day cycle + the static night entry).
+ *
+ * The caller MUST NOT dispose the returned texture — eviction handles disposal.
  */
 
 const CUBE_SIZE = 256;
@@ -35,9 +37,9 @@ const EQUIRECT_HEIGHT = 256;
 const CACHE_CAPACITY = 32;
 
 interface CachedBake {
-  /** CPU-readable equirect HDR — `image.data` is a `Uint16Array`
-   *  (HalfFloat). `EquirectHdrInfoUniform.updateFrom` reads this on the
-   *  PT side; raster uses it directly via three's auto-PMREM. */
+  /** CPU-readable equirect HDR — `image.data` is a `Uint16Array` (HalfFloat).
+   *  `EquirectHdrInfoUniform.updateFrom` reads this on the PT side; raster
+   *  uses it directly via three's auto-PMREM. */
   texture: THREE.DataTexture;
 }
 
@@ -45,11 +47,10 @@ const cache = new Map<string, CachedBake>();
 
 function quantiseKey(params: SkyParams): string {
   const [sx, sy, sz] = params.sunPosition;
-  // Sun-position uses .toFixed(1) for cache-friendly bucketing
-  // across timeOfDay scrubs (full day cycle ≈ 25 unique buckets).
-  // Scalar atmospheric params use .toFixed(2) — turbidity/rayleigh
-  // vary slowly with timeOfDay and the higher precision keeps each
-  // distinct atmospheric look in its own bucket.
+  // Sun-position uses .toFixed(1) for cache-friendly bucketing across timeOfDay
+  // scrubs (full day cycle ≈ 25 unique buckets). Scalar atmospheric params use
+  // .toFixed(2) — they vary slowly and the higher precision keeps each distinct
+  // atmospheric look in its own bucket.
   return [
     sx.toFixed(1),
     sy.toFixed(1),
@@ -99,12 +100,6 @@ const CUBE_TO_EQUIRECT_VERT = /* glsl */ `
   }
 `;
 
-/**
- * Render the analytic sky into a CPU-readable equirect `DataTexture`.
- * Returns the SAME texture instance for repeated calls with equivalent
- * SkyParams (within the quantisation precision); the caller MUST NOT
- * dispose the returned texture — eviction handles disposal.
- */
 export function bakeSkyEquirect(
   renderer: THREE.WebGLRenderer,
   params: SkyParams,
@@ -112,20 +107,22 @@ export function bakeSkyEquirect(
   const key = quantiseKey(params);
   const cached = cache.get(key);
   if (cached) {
+    // Move to end of insertion order (LRU promotion).
     cache.delete(key);
     cache.set(key, cached);
     return cached.texture;
   }
 
-  // 1. Procedural sky → cube target via CubeCamera (existing approach).
+  // 1. Procedural sky → cube target via CubeCamera.
   const sky = new Sky();
   sky.scale.setScalar(SKY_MESH_SCALE);
   const u = sky.material.uniforms;
-  u.turbidity.value = params.turbidity;
-  u.rayleigh.value = params.rayleigh;
-  u.mieCoefficient.value = params.mieCoefficient;
-  u.mieDirectionalG.value = params.mieDirectionalG;
-  u.sunPosition.value.set(...params.sunPosition);
+  // THREE.Sky always has these uniforms — non-null assertions are safe here.
+  u['turbidity']!.value = params.turbidity;
+  u['rayleigh']!.value = params.rayleigh;
+  u['mieCoefficient']!.value = params.mieCoefficient;
+  u['mieDirectionalG']!.value = params.mieDirectionalG;
+  u['sunPosition']!.value.set(...params.sunPosition);
 
   const tempScene = new THREE.Scene();
   tempScene.add(sky);
@@ -197,8 +194,7 @@ export function bakeSkyEquirect(
   dataTex.colorSpace = THREE.NoColorSpace;
   dataTex.needsUpdate = true;
 
-  // 5. Tear down GPU intermediates — the DataTexture (with CPU buffer)
-  //    is the survivor.
+  // 5. Tear down GPU intermediates — the DataTexture (with CPU buffer) survives.
   quadMat.dispose();
   quadGeom.dispose();
   equirectRT.dispose();
@@ -213,10 +209,8 @@ export function bakeSkyEquirect(
   return dataTex;
 }
 
-/**
- * Drop every cached sky bake. Call on app teardown / hot-reload to
- * release the DataTexture buffers.
- */
+/** Drop every cached sky bake. Call on app teardown / hot-reload to release
+ *  the DataTexture buffers. */
 export function clearSkyEquirectCache(): void {
   for (const entry of cache.values()) {
     entry.texture.dispose();
@@ -224,9 +218,7 @@ export function clearSkyEquirectCache(): void {
   cache.clear();
 }
 
-/**
- * Inspect cache size — for tests and debug overlays only.
- */
+/** Inspect cache size — for tests and debug overlays only. */
 export function _skyEquirectCacheSize(): number {
   return cache.size;
 }

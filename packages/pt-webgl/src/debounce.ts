@@ -1,12 +1,9 @@
-// Slice 3.4 — rate-aware debounce window for PathtracerSceneSync.
+// Rate-aware debounce window for path-tracer scene sync.
 //
-// Each Redux mutation that touches the lit scene re-fires the sync
-// effect; the previous fixed 50ms debounce coalesced bursts well in
-// the steady state but compounded the device-hang risk during rapid
-// SceneControl edits (every slider tick on intensity / colour / time
-// becomes a setScene call). When the recent edit rate exceeds the
-// threshold, we extend the debounce so the BVH rebuild waits for the
-// burst to settle.
+// When the recent edit rate exceeds the threshold (rapid slider edits on
+// intensity / colour / time-of-day), extend the debounce so the BVH rebuild
+// waits for the burst to settle — reducing the device-hang risk during rapid
+// SceneControl edits.
 
 export const PT_DEBOUNCE_MS_NORMAL = 50;
 export const PT_DEBOUNCE_MS_BURST = 250;
