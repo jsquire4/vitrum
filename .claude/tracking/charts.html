@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code — vitrum tracking</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          background: #0f1117; color: #e2e8f0; padding: 24px; }
+  h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 4px; color: #f8fafc; }
+  .subtitle { font-size: 0.8rem; color: #64748b; margin-bottom: 24px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+             gap: 12px; margin-bottom: 28px; }
+  .stat { background: #1e2330; border: 1px solid #2d3748; border-radius: 10px;
+           padding: 14px 16px; }
+  .stat-label { font-size: 0.7rem; color: #64748b; text-transform: uppercase;
+                  letter-spacing: 0.05em; margin-bottom: 4px; }
+  .stat-value { font-size: 1.4rem; font-weight: 700; color: #f8fafc; }
+  .stat-sub { font-size: 0.7rem; color: #94a3b8; margin-top: 2px; }
+  .section { margin-bottom: 36px; }
+  .section-header { font-size: 0.75rem; font-weight: 600; color: #64748b;
+                     text-transform: uppercase; letter-spacing: 0.08em;
+                     padding: 0 0 10px 12px; margin-bottom: 16px;
+                     border-bottom: 1px solid #2d3748; }
+  .section-header.cost  { border-left: 3px solid #6366f1; color: #818cf8; }
+  .section-header.time  { border-left: 3px solid #34d399; color: #34d399; }
+  .section-header.prompts { border-left: 3px solid #a78bfa; color: #a78bfa; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .card { background: #1e2330; border: 1px solid #2d3748; border-radius: 10px;
+           padding: 16px; }
+  .card.wide { grid-column: 1 / -1; }
+  .card h2 { font-size: 0.78rem; font-weight: 600; color: #94a3b8;
+               text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 14px; }
+  canvas { max-height: 240px; }
+  .wide canvas { max-height: 200px; }
+  .notice { font-size: 0.78rem; color: #94a3b8; background: #1e2330;
+             border: 1px solid #3b4a6b; border-left: 3px solid #6366f1;
+             border-radius: 6px; padding: 10px 14px; margin-bottom: 20px; }
+  .notice strong { color: #e2e8f0; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<h1>Claude Code — vitrum</h1>
+<p class="subtitle">Updated after every session &mdash; open in browser to view</p>
+<p class="notice">&#9432; Cost figures are <strong>API list-price equivalents</strong> (what pay-as-you-go API customers would be charged). If you are on a Max subscription, these are <em>not</em> amounts billed to you.</p>
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-label">API list-price equivalent</div>
+    <div class="stat-value">$7.61</div>
+    <div class="stat-sub">across 1 day (not billed)</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Sessions</div>
+    <div class="stat-value">1</div>
+    <div class="stat-sub">18 prompts total</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Output tokens</div>
+    <div class="stat-value">15,233</div>
+    <div class="stat-sub">&nbsp;</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Cache read share</div>
+    <div class="stat-value">65.5%</div>
+    <div class="stat-sub">of all tokens</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Active time</div>
+    <div class="stat-value">0m 40s</div>
+    <div class="stat-sub">avg 0m 2s / prompt</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Key prompts captured</div>
+    <div class="stat-value">0</div>
+    <div class="stat-sub">of 1 total prompts</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Prompt efficiency</div>
+    <div class="stat-value">0%</div>
+    <div class="stat-sub">key / non-trivial (higher = better)</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header cost">Cost &amp; Usage</div>
+  <div class="grid">
+
+    <div class="card wide">
+      <h2>Cumulative cost</h2>
+      <canvas id="cumul"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Cost per day</h2>
+      <canvas id="costDay"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Prompts per day</h2>
+      <canvas id="sessDay"></canvas>
+    </div>
+
+    <div class="card wide">
+      <h2>Cost by model</h2>
+      <canvas id="modelStack"></canvas>
+    </div>
+
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header prompts">Key Prompts</div>
+  <div class="grid">
+
+    <div class="card wide">
+      <h2>Prompts per day</h2>
+      <canvas id="promptsVsTotal"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Efficiency per day (%)</h2>
+      <canvas id="promptEfficiency"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Category breakdown</h2>
+      <canvas id="promptDonut"></canvas>
+    </div>
+
+    <div class="card wide">
+      <h2>Categories per day</h2>
+      <canvas id="promptStack"></canvas>
+    </div>
+
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-header time">Time</div>
+  <div class="grid">
+
+    <div class="card">
+      <h2>Duration per day</h2>
+      <canvas id="durationDay"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Avg duration per day</h2>
+      <canvas id="avgDurationDay"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Tokens per minute</h2>
+      <canvas id="tokensPerMin"></canvas>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+        <h2 style="margin-bottom:0">Prompt length distribution</h2>
+        <select id="durRange" style="background:#0f1521;color:#94a3b8;border:1px solid #2d3748;
+          border-radius:6px;padding:4px 8px;font-size:0.75rem;cursor:pointer">
+          <option value="30s" selected>0–30s</option>
+          <option value="60s">0–60s</option>
+          <option value="30m">0–30m</option>
+          <option value="60m">0–60m</option>
+        </select>
+      </div>
+      <canvas id="durationDist"></canvas>
+    </div>
+
+    <div class="card wide">
+      <h2>Cumulative time</h2>
+      <canvas id="cumulTime"></canvas>
+    </div>
+
+    <div class="card wide">
+      <h2>Time vs cost</h2>
+      <canvas id="timeVsCost"></canvas>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const DATES = ["2026-05-09"];
+const COST_BY_DATE = [7.6081];
+const SESSIONS_BY_DATE = [18];
+const OUTPUT_BY_DATE = [15233];
+const OPUS_BY_DATE = [7.6081];
+const SONNET_BY_DATE = [0];
+const CUMUL_LABELS = ["2026-05-09 ae1be6c3#0", "2026-05-09 ae1be6c3#1", "2026-05-09 ae1be6c3#2", "2026-05-09 ae1be6c3#3", "2026-05-09 ae1be6c3#4", "2026-05-09 ae1be6c3#5", "2026-05-09 ae1be6c3#6", "2026-05-09 ae1be6c3#7", "2026-05-09 ae1be6c3#8", "2026-05-09 ae1be6c3#9", "2026-05-09 ae1be6c3#10", "2026-05-09 ae1be6c3#11", "2026-05-09 ae1be6c3#12", "2026-05-09 ae1be6c3#13", "2026-05-09 ae1be6c3#14", "2026-05-09 ae1be6c3#15", "2026-05-09 ae1be6c3#16", "2026-05-09 ae1be6c3#17"];
+const CUMUL_VALUES = [0.3148, 0.6296, 0.6986, 0.7676, 0.8366, 1.3993, 1.962, 2.5247, 3.0874, 3.6501, 4.2128, 4.7755, 5.3382, 5.9009, 6.4636, 6.8451, 7.2266, 7.6081];
+const MODEL_LABELS = ["claude-opus-4-7"];
+const MODEL_COSTS = [7.6081];
+const MODEL_SESSIONS = [18];
+const PROMPT_DATES = [];
+const PROMPT_TOTALS = [];
+const PROMPT_CAT_DATASETS = [];
+const DONUT_LABELS = [];
+const DONUT_VALUES = [];
+const DONUT_COLORS = [];
+const ALL_PROMPT_DATES = ["2026-05-09"];
+const TOTAL_MSGS_BY_DATE = [1];
+const TRIVIAL_BY_DATE = [1];
+const KEY_PROMPTS_BY_DATE = [0];
+const EFFICIENCY_BY_DATE = [null];
+const DURATION_BY_DATE = [40];
+const CUMUL_DURATION = [3, 4, 4, 4, 14, 14, 14, 14, 14, 14, 14, 14, 26, 28, 28, 28, 40, 40];
+const AVG_DURATION_BY_DATE = [2];
+const SCATTER_DATA = [{"x": 3, "y": 0.3148, "label": "2026-05-09 ae1be6#0"}, {"x": 1, "y": 0.3148, "label": "2026-05-09 ae1be6#1"}, {"x": 10, "y": 0.069, "label": "2026-05-09 ae1be6#4"}, {"x": 12, "y": 0.5627, "label": "2026-05-09 ae1be6#12"}, {"x": 2, "y": 0.5627, "label": "2026-05-09 ae1be6#13"}, {"x": 12, "y": 0.3815, "label": "2026-05-09 ae1be6#16"}];
+const TPM_DATA = [{"x": 3, "y": 3080.0, "label": "2026-05-09 ae1be6#0"}, {"x": 1, "y": 9240.0, "label": "2026-05-09 ae1be6#1"}, {"x": 10, "y": 1446.0, "label": "2026-05-09 ae1be6#4"}, {"x": 12, "y": 6060.0, "label": "2026-05-09 ae1be6#12"}, {"x": 2, "y": 36360.0, "label": "2026-05-09 ae1be6#13"}, {"x": 12, "y": 3470.0, "label": "2026-05-09 ae1be6#16"}];
+const DUR_HIST_RANGES = {"30s": {"labels": ["0\u20135s", "5\u201310s", "10\u201315s", "15\u201320s", "20\u201325s", "25\u201330s", "30s+"], "values": [3, 0, 3, 0, 0, 0, 0]}, "60s": {"labels": ["0\u201310s", "10\u201320s", "20\u201330s", "30\u201340s", "40\u201350s", "50\u201360s", "60s+"], "values": [3, 3, 0, 0, 0, 0, 0]}, "30m": {"labels": ["0\u20135m", "5\u201310m", "10\u201315m", "15\u201320m", "20\u201325m", "25\u201330m", "30m+"], "values": [6, 0, 0, 0, 0, 0, 0]}, "60m": {"labels": ["0\u201310m", "10\u201320m", "20\u201330m", "30\u201340m", "40\u201350m", "50\u201360m", "60m+"], "values": [6, 0, 0, 0, 0, 0, 0]}};
+
+function formatDuration(s) {
+  if (s <= 0) return '0s';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.round(s % 60);
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm' + (sec > 0 ? ' ' + sec + 's' : '');
+  return sec + 's';
+}
+
+const GRID = '#2d3748';
+const TEXT = '#94a3b8';
+const baseOpts = {
+  responsive: true,
+  maintainAspectRatio: true,
+  plugins: { legend: { labels: { color: TEXT, boxWidth: 12, font: { size: 11 } } } },
+  scales: {
+    x: { ticks: { color: TEXT, font: { size: 10 } }, grid: { color: GRID } },
+    y: { ticks: { color: TEXT, font: { size: 10 } }, grid: { color: GRID } }
+  }
+};
+
+// Cumulative cost line
+new Chart(document.getElementById('cumul'), {
+  type: 'line',
+  data: {
+    labels: CUMUL_LABELS,
+    datasets: [{ label: 'Cumulative cost ($)', data: CUMUL_VALUES,
+      borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.15)',
+      fill: true, tension: 0.3, pointRadius: 2 }]
+  },
+  options: { ...baseOpts, plugins: { ...baseOpts.plugins,
+    tooltip: { callbacks: { label: ctx => ' $' + ctx.parsed.y.toFixed(2) } } } }
+});
+
+// Cost per day bar
+new Chart(document.getElementById('costDay'), {
+  type: 'bar',
+  data: {
+    labels: DATES,
+    datasets: [{ label: 'Cost ($)', data: COST_BY_DATE,
+      backgroundColor: '#6366f1', borderRadius: 4 }]
+  },
+  options: { ...baseOpts, plugins: { ...baseOpts.plugins,
+    tooltip: { callbacks: { label: ctx => ' $' + ctx.parsed.y.toFixed(2) } } } }
+});
+
+// Prompts per day
+new Chart(document.getElementById('sessDay'), {
+  type: 'bar',
+  data: {
+    labels: DATES,
+    datasets: [{ label: 'Prompts', data: SESSIONS_BY_DATE,
+      backgroundColor: '#22d3ee', borderRadius: 4 }]
+  },
+  options: baseOpts
+});
+
+// Model stacked per day
+new Chart(document.getElementById('modelStack'), {
+  type: 'bar',
+  data: {
+    labels: DATES,
+    datasets: [
+      { label: 'Opus', data: OPUS_BY_DATE, backgroundColor: '#f59e0b', borderRadius: 2 },
+      { label: 'Sonnet', data: SONNET_BY_DATE, backgroundColor: '#6366f1', borderRadius: 2 }
+    ]
+  },
+  options: { ...baseOpts, scales: { ...baseOpts.scales, x: { ...baseOpts.scales.x, stacked: true },
+    y: { ...baseOpts.scales.y, stacked: true } },
+    plugins: { ...baseOpts.plugins,
+      tooltip: { callbacks: { label: ctx => ' $' + ctx.parsed.y.toFixed(2) } } } }
+});
+
+// Session duration per day
+new Chart(document.getElementById('durationDay'), {
+  type: 'bar',
+  data: {
+    labels: DATES,
+    datasets: [{ label: 'Duration', data: DURATION_BY_DATE,
+      backgroundColor: '#f59e0b', borderRadius: 4 }]
+  },
+  options: { ...baseOpts,
+    scales: { ...baseOpts.scales,
+      y: { ...baseOpts.scales.y,
+        ticks: { ...baseOpts.scales.y.ticks, callback: v => formatDuration(v) } } },
+    plugins: { ...baseOpts.plugins,
+      tooltip: { callbacks: { label: ctx => ' ' + formatDuration(ctx.parsed.y) } } } }
+});
+
+// Avg session duration per day
+new Chart(document.getElementById('avgDurationDay'), {
+  type: 'line',
+  data: {
+    labels: DATES,
+    datasets: [{ label: 'Avg duration', data: AVG_DURATION_BY_DATE,
+      borderColor: '#a78bfa', backgroundColor: 'rgba(167,139,250,0.15)',
+      fill: true, tension: 0.3, pointRadius: 3 }]
+  },
+  options: { ...baseOpts,
+    scales: { ...baseOpts.scales,
+      y: { ...baseOpts.scales.y,
+        ticks: { ...baseOpts.scales.y.ticks, callback: v => formatDuration(v) } } },
+    plugins: { ...baseOpts.plugins,
+      tooltip: { callbacks: { label: ctx => ' ' + formatDuration(ctx.parsed.y) } } } }
+});
+
+// Cumulative time line
+new Chart(document.getElementById('cumulTime'), {
+  type: 'line',
+  data: {
+    labels: CUMUL_LABELS,
+    datasets: [{ label: 'Cumulative time', data: CUMUL_DURATION,
+      borderColor: '#22d3ee', backgroundColor: 'rgba(34,211,238,0.15)',
+      fill: true, tension: 0.3, pointRadius: 2 }]
+  },
+  options: { ...baseOpts,
+    scales: { ...baseOpts.scales,
+      y: { ...baseOpts.scales.y,
+        ticks: { ...baseOpts.scales.y.ticks, callback: v => formatDuration(v) } } },
+    plugins: { ...baseOpts.plugins,
+      tooltip: { callbacks: { label: ctx => ' ' + formatDuration(ctx.parsed.y) } } } }
+});
+
+// Time vs cost scatter
+new Chart(document.getElementById('timeVsCost'), {
+  type: 'scatter',
+  data: {
+    datasets: [{ label: 'Prompt', data: SCATTER_DATA,
+      backgroundColor: '#34d399', pointRadius: 5, pointHoverRadius: 7 }]
+  },
+  options: { ...baseOpts,
+    scales: { ...baseOpts.scales,
+      x: { ...baseOpts.scales.x, type: 'linear', min: 0,
+        ticks: { ...baseOpts.scales.x.ticks, callback: v => formatDuration(v) },
+        title: { display: true, text: 'Duration', color: TEXT, font: { size: 10 } } },
+      y: { ...baseOpts.scales.y,
+        ticks: { ...baseOpts.scales.y.ticks, callback: v => '$' + v.toFixed(2) },
+        title: { display: true, text: 'Cost (USD)', color: TEXT, font: { size: 10 } } } },
+    plugins: { ...baseOpts.plugins,
+      tooltip: { callbacks: {
+        label: ctx => {
+          const d = ctx.raw;
+          return ` ${d.label}: ${formatDuration(d.x)} / $${d.y.toFixed(4)}`;
+        }
+      } } } }
+});
+
+// Tokens per minute scatter
+new Chart(document.getElementById('tokensPerMin'), {
+  type: 'scatter',
+  data: {
+    datasets: [{ label: 'Prompt', data: TPM_DATA,
+      backgroundColor: '#818cf8', pointRadius: 5, pointHoverRadius: 7 }]
+  },
+  options: { ...baseOpts,
+    scales: { ...baseOpts.scales,
+      x: { ...baseOpts.scales.x, type: 'linear', min: 0,
+        ticks: { ...baseOpts.scales.x.ticks, callback: v => formatDuration(v) },
+        title: { display: true, text: 'Duration', color: TEXT, font: { size: 10 } } },
+      y: { ...baseOpts.scales.y,
+        title: { display: true, text: 'Output tokens / min', color: TEXT, font: { size: 10 } } } },
+    plugins: { ...baseOpts.plugins,
+      tooltip: { callbacks: {
+        label: ctx => {
+          const d = ctx.raw;
+          return ` ${d.label}: ${formatDuration(d.x)} — ${d.y} tok/min`;
+        }
+      } } } }
+});
+
+// Prompt length distribution histogram
+const durChart = new Chart(document.getElementById('durationDist'), {
+  type: 'bar',
+  data: {
+    labels: DUR_HIST_RANGES['30s'].labels,
+    datasets: [{ label: 'Prompts', data: DUR_HIST_RANGES['30s'].values,
+      backgroundColor: '#34d399', borderRadius: 4 }]
+  },
+  options: { ...baseOpts,
+    plugins: { ...baseOpts.plugins, legend: { display: false } },
+    scales: { ...baseOpts.scales,
+      y: { ...baseOpts.scales.y, ticks: { ...baseOpts.scales.y.ticks, stepSize: 1 } } } }
+});
+document.getElementById('durRange').addEventListener('change', function() {
+  const r = DUR_HIST_RANGES[this.value];
+  durChart.data.labels = r.labels;
+  durChart.data.datasets[0].data = r.values;
+  durChart.update();
+});
+
+// Total vs key prompts per day
+new Chart(document.getElementById('promptsVsTotal'), {
+  type: 'bar',
+  data: {
+    labels: ALL_PROMPT_DATES,
+    datasets: [
+      { label: 'Total prompts', data: TOTAL_MSGS_BY_DATE,
+         backgroundColor: 'rgba(148,163,184,0.35)', borderRadius: 4 },
+      { label: 'Trivial prompts', data: TRIVIAL_BY_DATE,
+         backgroundColor: '#34d399', borderRadius: 4 },
+      { label: 'Key prompts', data: KEY_PROMPTS_BY_DATE,
+         backgroundColor: '#a78bfa', borderRadius: 4 }
+    ]
+  },
+  options: baseOpts
+});
+
+// Efficiency % per day
+new Chart(document.getElementById('promptEfficiency'), {
+  type: 'line',
+  data: {
+    labels: ALL_PROMPT_DATES,
+    datasets: [{ label: 'Efficiency (%)', data: EFFICIENCY_BY_DATE,
+      borderColor: '#f59e0b', backgroundColor: 'rgba(245,158,11,0.15)',
+      fill: true, tension: 0.3, pointRadius: 3, spanGaps: true }]
+  },
+  options: { ...baseOpts, plugins: { ...baseOpts.plugins,
+    tooltip: { callbacks: { label: ctx => ' ' + ctx.parsed.y + '%' } } },
+    scales: { ...baseOpts.scales,
+      y: { ...baseOpts.scales.y, min: 0, max: 100,
+            ticks: { ...baseOpts.scales.y.ticks, callback: v => v + '%' } } } }
+});
+
+// Category doughnut
+new Chart(document.getElementById('promptDonut'), {
+  type: 'doughnut',
+  data: {
+    labels: DONUT_LABELS,
+    datasets: [{ data: DONUT_VALUES, backgroundColor: DONUT_COLORS,
+      borderWidth: 2, borderColor: '#1e2330' }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: {
+      legend: { position: 'right', labels: { color: TEXT, boxWidth: 12, font: { size: 11 } } }
+    }
+  }
+});
+
+// Category stacked per day
+new Chart(document.getElementById('promptStack'), {
+  type: 'bar',
+  data: {
+    labels: PROMPT_DATES,
+    datasets: PROMPT_CAT_DATASETS
+  },
+  options: { ...baseOpts,
+    scales: {
+      x: { ...baseOpts.scales.x, stacked: true },
+      y: { ...baseOpts.scales.y, stacked: true }
+    }
+  }
+});
+</script>
+</body>
+</html>
