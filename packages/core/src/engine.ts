@@ -145,11 +145,13 @@ export interface Engine {
 // Backend factory contract
 // ────────────────────────────────────────────────────────────────────────────
 
-/** All engine-creation factories follow this shape. The `device` is opaque;
- *  WebGL2 backends accept a `WebGLRenderingContext` (or compatible), WebGPU
- *  backends accept a `GPUDevice`, etc. The factory rejects unsupported
- *  device types at the type-system level via overload signatures in each
- *  backend's package. */
+/** All engine-creation factories follow this shape. The `device` is opaque at
+ *  the core level; each backend narrows `device` to its own concrete type.
+ *  Examples: `@vitrum/pt-webgl` narrows to `THREE.WebGLRenderer` (the backend
+ *  wraps three-gpu-pathtracer and bakes IBL); `@vitrum/pt-webgpu` narrows to
+ *  `GPUDevice` (the backend uses compute shaders with no Three.js coupling).
+ *  Each backend's package documents its concrete device type via the options
+ *  interface that extends `EngineOptions`. */
 export type EngineFactory<TOptions extends EngineOptions = EngineOptions> = (
   opts: TOptions,
 ) => Promise<Engine>;

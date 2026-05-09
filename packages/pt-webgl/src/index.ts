@@ -6,10 +6,15 @@ import type {
 } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
+import type * as THREE from 'three';
 
 export interface PTEngineWebGL2Options extends EngineOptions {
-  // WebGL2 required — three-gpu-pathtracer's BVH texture lookup uses `textureGather`
-  readonly device: WebGLRenderingContext | WebGL2RenderingContext;
+  // Device handle is the host's `THREE.WebGLRenderer`. The pt-webgl backend
+  // wraps three-gpu-pathtracer + bakes procedural-sky IBL; both require the
+  // renderer instance, not a raw GL context. Each backend narrows
+  // `EngineOptions.device` to its own requirement. The renderer's underlying
+  // GL context must be WebGL2.
+  readonly device: THREE.WebGLRenderer;
 }
 
 /** Default structural caps for the pt-webgl backend. These match the
@@ -126,9 +131,20 @@ class PTEngineWebGL2 implements Engine {
 export async function createPTEngine_WebGL2(
   opts: PTEngineWebGL2Options,
 ): Promise<Engine> {
-  if (!(opts.device instanceof WebGL2RenderingContext)) {
+  // Duck-type check: opts.device must look like a THREE.WebGLRenderer.
+  // We can't use `instanceof THREE.WebGLRenderer` without a runtime three import,
+  // so we verify by structural presence and then assert the underlying GL context
+  // is WebGL2. This rejects: (a) null/undefined, (b) objects without .getContext(),
+  // (c) WebGL1 contexts.
+  if (opts.device == null || typeof (opts.device as { getContext?: unknown }).getContext !== 'function') {
     throw new TypeError(
-      'createPTEngine_WebGL2: device must be a WebGL2RenderingContext; WebGL1 is not supported',
+      'createPTEngine_WebGL2: device must be a THREE.WebGLRenderer instance (got null/undefined or an object without a getContext() method)',
+    );
+  }
+  const glContext = (opts.device as { getContext(): unknown }).getContext();
+  if (!(glContext instanceof WebGL2RenderingContext)) {
+    throw new TypeError(
+      'createPTEngine_WebGL2: device.getContext() must return a WebGL2RenderingContext; WebGL1 is not supported',
     );
   }
 
