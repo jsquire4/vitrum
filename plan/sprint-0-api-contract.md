@@ -57,11 +57,13 @@ Both hooks throw initially (the engines don't render yet). The point is to fix t
 - [x] CREDITS.md with foundational citations
 - [x] README.md with architecture overview
 - [x] plan/library-architecture.md (this file's sibling)
-- [ ] `@vitrum/pt-webgl/src/index.ts` stub implementing Engine interface (throws)
-- [ ] `@vitrum/three-bindings/src/index.ts` stub
+- [x] `@vitrum/pt-webgl/src/index.ts` stub implementing Engine interface (throws)
+- [x] `@vitrum/three-bindings/src/index.ts` stub
 - [ ] host-app `src/rendering/vitrum-bridge/` placeholder hooks
-- [ ] `tsc --noEmit` clean across workspace
+- [x] `tsc --noEmit` clean across workspace
 - [ ] Sprint 0 committed; Phase 6 doc updated to reference vitrum packages
+
+> **Note — host-app scaffold deferred**: there is no host application currently importing `@vitrum/*`. The `vitrum-bridge/` hooks (`useVitrumPTEngine`, `useVitrumWalkaroundEngine`) will be created in whichever host-app repo first consumes vitrum packages; this item is N/A until that integration begins.
 
 ## Open contract decisions to revisit
 
