@@ -11,17 +11,20 @@
  * has custom @group/@binding layouts that don't compose naturally with
  * three.js's binding system. The WebGPU backend's `device` property is
  * used directly.
+ *
+ * Three.js WebGPU coupling (RISK-3): StorageTexture is imported from
+ * 'three/webgpu' and renderer.backend.device is accessed directly. This
+ * package therefore carries 'three/webgpu' as a peer dep on the DDGI path.
  */
 
 import * as THREE from 'three';
 import type { StorageTexture } from 'three/webgpu';
-import type { SceneBvh } from './sceneBvh';
-import type { SceneBvhBuffers } from './sceneBvh';
-import type { ProbeGrid } from './probeGrid';
-import type { LightSource } from '../lighting/lightSourceTypes';
-import { PROBE_UPDATE_RAYS_WGSL } from './wgsl/probeUpdateRays.wgsl';
-import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl';
-import { detectGpu } from './gpuDetection';
+import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
+import type { ProbeGrid } from './probeGrid.js';
+import type { DDGILight } from './types.js';
+import { PROBE_UPDATE_RAYS_WGSL } from './wgsl/probeUpdateRays.wgsl.js';
+import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
+import { detectGpu } from '@vitrum/core';
 
 // 192 rays per probe (was 96). Per-probe ray count drives DDGI
 // irradiance convergence quality — more rays per update = smoother
@@ -60,6 +63,20 @@ interface GPUResources {
   linearSampler: GPUSampler;
 }
 
+/** Options accepted by ProbeUpdatePass constructor. */
+export interface ProbeUpdatePassOptions {
+  /**
+   * When true, exposes DDGI internal state to `window.__DDGI__` for
+   * debugging and e2e inspection. Defaults to false.
+   *
+   * Gate rationale (Q-WA-3): the original source used an unconditional
+   * window global assignment. A constructor option is the simplest
+   * library-safe pattern — consumers opt in explicitly rather than
+   * having a debug global appear unconditionally in production builds.
+   */
+  debug?: boolean;
+}
+
 export class ProbeUpdatePass {
   private _bvh:  SceneBvh;
   private _grid: ProbeGrid;
@@ -67,26 +84,27 @@ export class ProbeUpdatePass {
   private _lastBvhVersion = -1;
   private _frameIndex = 0;
   private _maxProbes = 0;
-  private _lights: LightSource[] = [];
+  private _lights: DDGILight[] = [];
+  private _debug: boolean;
   // Multiplier applied to every light's intensity when packing the
-  // probe-update light UBO. Defaults to 1 so unrelated callers
-  // pre-2026-05-08 keep the original behaviour. The hybrid pipeline
-  // calls setSunIntensityMultiplier(5.0) so DDGI's per-probe Le
-  // matches the same primaryLightIntensity used by shade.wgsl —
-  // without this, DDGI runs at 1/5 the magnitude of Lo_emit and
-  // walls render dark.
+  // probe-update light UBO. Defaults to 1 so unrelated callers keep the
+  // original behaviour. The hybrid pipeline calls setSunIntensityMultiplier(5.0)
+  // so DDGI's per-probe Le matches the same primaryLightIntensity used by
+  // shade.wgsl — without this, DDGI runs at 1/5 the magnitude of Lo_emit
+  // and walls render dark.
   private _sunIntensityMul = 1;
 
-  constructor(bvh: SceneBvh, grid: ProbeGrid) {
+  constructor(bvh: SceneBvh, grid: ProbeGrid, opts: ProbeUpdatePassOptions = {}) {
     this._bvh  = bvh;
     this._grid = grid;
+    this._debug = opts.debug ?? false;
   }
 
-  setLights(lights: LightSource[]): void {
+  setLights(lights: DDGILight[]): void {
     this._lights = lights;
   }
 
-  /** Multiplier on the sun's Redux-stored intensity. Hybrid pipeline
+  /** Multiplier on the sun's stored intensity. Hybrid pipeline
    *  calls this with primaryLightIntensity (5.0) so DDGI's bake of
    *  the sun's Le matches shade.wgsl's Lo_emit. */
   setSunIntensityMultiplier(mul: number): void {
@@ -98,12 +116,12 @@ export class ProbeUpdatePass {
    * Tries the renderer's WebGPU backend first; falls back to navigator.gpu.
    */
   async init(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }): Promise<boolean> {
-    // Hardware-GPU gate (Option F). detectGpu() publishes window.__WG__
-    // BEFORE we touch the device, so e2e validation can read the flag
-    // even if we refuse to proceed. SwiftShader (Chromium's software
-    // rasterizer) compiles WGSL but produces low-chroma "almost passes"
-    // — fail-fast here so validation rounds never silently mistake
-    // software output for hardware-GPU output.
+    // Hardware-GPU gate. detectGpu() publishes window.__WG__ BEFORE we
+    // touch the device, so e2e validation can read the flag even if we
+    // refuse to proceed. SwiftShader (Chromium's software rasterizer)
+    // compiles WGSL but produces low-chroma "almost passes" — fail-fast
+    // here so validation rounds never silently mistake software output
+    // for hardware-GPU output.
     const gpu = await detectGpu();
     if (gpu.isWebGPU && !gpu.isHardwareGpu) {
       console.error(
@@ -282,6 +300,15 @@ export class ProbeUpdatePass {
     // Swap ping-pong atlases.
     this._grid.swap();
     this._frameIndex++;
+
+    // Expose internal state for debug/e2e inspection when opted in.
+    if (this._debug && typeof window !== 'undefined') {
+      (window as unknown as Record<string, unknown>)['__DDGI__'] = {
+        frameIndex: this._frameIndex,
+        probeCount,
+        activeCount: activeProbes.length,
+      };
+    }
   }
 
   private _rebuildBvhBuffers(
@@ -370,18 +397,13 @@ export class ProbeUpdatePass {
       const ubase = base;
       if (l.kind === 'sun') {
         udata[ubase] = 0; // LIGHT_SUN
-        // Sun direction derived from the active sun position — stored as the direction to the sun.
-        // For now use a default upward-tilted direction; the real sun light uses DirectionalLight.
-        const sunLight = document.querySelector?.('canvas');
-        void sunLight;
-        // Default sun direction (should be overridden via setLightUniforms).
+        // Apply the hybrid pipeline's primaryLightIntensity multiplier
+        // so DDGI's per-probe Le bake matches shade.wgsl's Lo_emit.
+        // Without this, the stored l.intensity (typically 1.0) makes
+        // DDGI 1/5 the magnitude of the rest of the renderer.
         data[base + 4] = 0;    // pos.x
         data[base + 5] = 0;    // pos.y
         data[base + 6] = 0;    // pos.z
-        // Apply the hybrid pipeline's primaryLightIntensity multiplier
-        // so DDGI's per-probe Le bake matches shade.wgsl's Lo_emit.
-        // Without this, Redux's stored l.intensity (typically 1.0) makes
-        // DDGI 1/5 the magnitude of the rest of the renderer.
         data[base + 7] = l.intensity * this._sunIntensityMul; // intensity
         data[base + 8] = 0;    // dir.x
         data[base + 9] = -1;   // dir.y (sun is from above)
@@ -393,7 +415,7 @@ export class ProbeUpdatePass {
         data[base + 15] = 0;   // outerCone (unused for sun)
       } else if (l.kind === 'fixture' || l.kind === 'teaLight') {
         udata[ubase] = 1; // LIGHT_POINT
-        const pos = (l as unknown as { position?: { x: number; y: number; z: number } }).position;
+        const pos = l.position;
         data[base + 4]  = pos?.x ?? 0;
         data[base + 5]  = pos?.y ?? 0;
         data[base + 6]  = pos?.z ?? 0;
@@ -447,14 +469,17 @@ export class ProbeUpdatePass {
   ): GPUTexture {
     if (this._textureCache.has(tex)) return this._textureCache.get(tex)!;
 
+    // StorageTexture.image is typed as `{}` in three/webgpu — cast to access
+    // width/height which are set by Three.js's WebGPU backend at runtime.
+    const img = tex.image as { width?: number; height?: number };
     const gpuTex = device.createTexture({
-      size: [tex.image?.width ?? 80, tex.image?.height ?? 480, 1],
+      size: [img.width ?? 80, img.height ?? 480, 1],
       format,
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
 
     // Store tex dimensions on the texture for use in WGSL.
-    tex.image = { width: gpuTex.width, height: gpuTex.height };
+    tex.image = { width: gpuTex.width, height: gpuTex.height } as {};
 
     this._textureCache.set(tex, gpuTex);
     return gpuTex;
@@ -575,8 +600,8 @@ export class ProbeUpdatePass {
   }
 
   /**
-   * Phase 1.2B-wire — expose the cached read-side GPUTextures so external
-   * consumers (HybridLayeredStage) can bind them into ReSTIR's shade pass
+   * Expose the cached read-side GPUTextures so external consumers
+   * (e.g. the hybrid pipeline) can bind them into the ReSTIR shade pass
    * via WalkaroundGPUPipeline.setDDGIInputs(...). Returns null if compute
    * hasn't yet allocated the textures (called before first runFrame).
    *

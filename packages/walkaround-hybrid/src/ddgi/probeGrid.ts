@@ -13,7 +13,7 @@ import * as THREE from 'three';
 import { StorageTexture } from 'three/webgpu';
 // Atlas-layout constants imported from the canonical source so producer
 // and consumers (ddgiSampleWgsl.ts + shade.wgsl.ts) stay in lockstep.
-import { IRR_CELL, VIS_CELL, BORDER } from './ddgiAtlasLayout';
+import { IRR_CELL, VIS_CELL, BORDER } from './ddgiAtlasLayout.js';
 
 export interface ProbeGridDims {
   x: number;

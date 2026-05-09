@@ -8,7 +8,7 @@
  * Bindings are independent so the two pipelines don't share layouts.
  */
 
-import { OCTAHEDRAL_WGSL } from './octahedral.wgsl';
+import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
 
 // Common header shared by both shaders
 const COMMON = /* wgsl */`
@@ -174,8 +174,8 @@ fn probeUpdateBlendVisibility(
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
     let ray = rayResults[rIdx];
-    // Backface hits encode negative distance (DDGI §4). Skip them in the
-    // visibility depth estimate — they represent hits from inside geometry
+    // Backface hits encode negative distance (DDGI paper convention). Skip them in
+    // the visibility depth estimate — they represent hits from inside geometry
     // and should not influence mean/depth² (they'd incorrectly tighten the
     // Chebyshev test and cause light leaking through back-faces).
     if (ray.hitDistance < 0.0) { continue; }

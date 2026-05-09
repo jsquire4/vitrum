@@ -4,7 +4,9 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@vitrum/core": ["packages/core/src/index.ts"]
+      "@vitrum/core": ["packages/core/src/index.ts"],
+      "@vitrum/shared-bvh": ["packages/shared-bvh/src/index.ts"],
+      "@vitrum/shared-samplers": ["packages/shared-samplers/src/index.ts"]
     }
   },
   "include": ["packages/*/src"]

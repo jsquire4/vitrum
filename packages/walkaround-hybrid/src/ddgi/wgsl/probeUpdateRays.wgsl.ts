@@ -6,8 +6,8 @@
  * Pass 2 (the atlas blend pass).
  */
 
-import { HAMMERSLEY_WGSL } from './hammersley.wgsl';
-import { OCTAHEDRAL_WGSL } from './octahedral.wgsl';
+import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
+import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
 
 export const PROBE_UPDATE_RAYS_WGSL = /* wgsl */`
 
@@ -29,7 +29,6 @@ const BVH_STACK_DEPTH: u32 = 60u;
 // the probe's irradiance estimate — this prevents bright sky from totally
 // drowning out indirect-bounce contribution and matches the perceptual
 // cell-vibrance balance dialed in during the 2026-05 caustic sweep.
-// Sweep finding (correctness 2026-05-08 Bug 7): was a magic 0.7 inline.
 const GLASS_TRANSMISSION_PROBE_SCALE: f32 = 0.7;
 
 // -----------------------------------------------------------------
@@ -271,25 +270,12 @@ fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
 //   - Hit glass        -> tint * transmission, then continue past the slab
 //                        and recurse (bounded to 3 glass crossings).
 //
-// Pre-fix: evalSunLight called bvhTraceFirstHit once and applied a single
-// (attenuationColor * transmission) multiplier on the FIRST hit. That
-// works for one glass slab but gives a binary in-shadow / sun result for
-// any receiver behind two or more glass cells along the sun path --
-// caustics on the floor under stacked panel cells were either fully lit
-// (single glass tint) or fully dark (opaque first hit) instead of
-// accumulating through the chain.
-//
-// This helper mirrors RC's traceSunVisibility (probeRayCast.wgsl.ts:144)
-// and ReSTIR's bvhTraceTintedVisibility (common.wgsl.ts:367) -- same
-// 3-crossing bound, same accumulation pattern.
-//
 // Beer-Lambert simplification: DDGI's DDGIMaterial struct does not carry
 // the per-tri thickness / attenuationDistance needed for full
-// exp(-attenColor * thickness / attenDist).  We use the same simplified
-// per-cell tint the pre-fix code used (attenuationColor * transmission)
-// for byte-compatibility with the legacy single-hit path.  Full
-// Beer-Lambert can be added later if DDGIMaterial gains thickness +
-// attenDist fields.
+// exp(-attenColor * thickness / attenDist). We use a simplified per-cell
+// tint (attenuationColor * transmission) for byte-compatibility with the
+// legacy single-hit path. Full Beer-Lambert can be added later if
+// DDGIMaterial gains thickness + attenDist fields.
 fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
   var visibility = vec3f(1.0);
   var rayOrigin  = origin;

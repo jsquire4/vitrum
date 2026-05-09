@@ -16,7 +16,7 @@
  *  - In-atlas stride between adjacent probe cells = CELL + BORDER.
  *
  * The WGSL helpers `octahedralAtlasUv*` in
- * walkaround/wgsl/octahedral.wgsl.ts encode this same arithmetic for the
+ * ddgi/wgsl/probeUpdateRays.wgsl.ts encode this same arithmetic for the
  * compute side; if those helpers ever change, this module + both
  * sampler-string consumers must change in lockstep.
  */

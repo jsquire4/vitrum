@@ -11,6 +11,11 @@
  * Tier 2 shared GI primitive. Consumed by DDGI (probe shading injection)
  * and RC (GI receiver wrapping). ReSTIR bypasses raster materials entirely
  * (compute-cast primary).
+ *
+ * Cross-subsystem usage note: this utility is consumed by applyDDGIShading.ts
+ * (DDGI path, Step 4 of walkaround-hybrid extraction) and giReceiver.ts
+ * (RC path, Step 4). Extracting it here makes it available to both once
+ * those files are extracted.
  */
 
 import * as THREE from 'three';
