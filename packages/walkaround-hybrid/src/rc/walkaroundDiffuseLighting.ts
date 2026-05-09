@@ -1,15 +1,20 @@
 /**
- * Walkaround GI lighting node (§8).
+ * Walkaround GI lighting node.
  *
  * Builds a TSL node that samples the C0 cascade at a fragment's world
  * position and folds radiance against the surface BRDF. Injected into
- * MeshPhysicalNodeMaterial.lightingNode.
+ * MeshPhysicalNodeMaterial.lightingNode (via giReceiver.ts).
  *
  * The cascade is stored as a flat StorageBufferAttribute:
  *   index = (px + py*PX + pz*PX*PY) * raysPerProbe + rayBinIdx
  *
  * Sampling is 8-corner trilinear over probe grid × exact ray bin.
  * 16 oct-decode directions × cosine weight gives diffuse GI.
+ *
+ * Extracted from `_staging/legacy-source/src/rendering/scene/walkaround/walkaroundDiffuseLighting.ts`.
+ * TSL imports preserved per extraction plan Option (i) — this is a Three.js NodeMaterial
+ * customization hook built with TSL's Fn() node system.
+ * Requires `three/tsl` as peer dep.
  */
 
 import {
@@ -18,8 +23,8 @@ import {
   dot, max, clamp,
   storage,
 } from 'three/tsl';
-import type { CascadeBuffers } from './cascadePyramid';
-import { CASCADE_DIMS } from './cascadePyramid';
+import type { CascadeBuffers } from './cascadePyramid.js';
+import { CASCADE_DIMS } from './cascadePyramid.js';
 
 /** Octahedron decode: 2D unit-square uv → unit direction. */
 function octDirForIndex(idx: number, gridSize: number): [number, number, number] {
@@ -38,7 +43,6 @@ function octDirForIndex(idx: number, gridSize: number): [number, number, number]
   return [nx / len, ny / len, nz / len];
 }
 
-/** TSL scalar float uniform helper that supports .value mutation. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyNode = any;
 
@@ -61,7 +65,7 @@ export function buildWalkaroundLightingNode(
   const c0Dim = CASCADE_DIMS[0];
   const RAYS   = c0Dim.rays;                         // 16
   const GRID   = Math.round(Math.sqrt(RAYS));        // 4
-  const [PX, PY, PZ] = c0Dim.probes;                 // see CASCADE_DIMS in cascadePyramid.ts
+  const [PX, PY, PZ] = c0Dim.probes;
 
   // Precompute oct-decoded directions for all 16 bins as constants.
   const DIRS: [number, number, number][] = [];
@@ -79,31 +83,26 @@ export function buildWalkaroundLightingNode(
 
   // C0 storage reference. Use cascadeBuffers.gpuCascades[0] — the same
   // StorageBufferAttribute instance that cascadeDispatch writes into.
-  // Both paths share a single GPU buffer; the compute mutates the
-  // Float32Array contents in place each frame, so the bound storage
-  // node sees fresh radiance without needing a node-graph swap.
+  // Both paths share a single GPU buffer; the compute mutates contents
+  // in place each frame.
   // If the StorageBufferAttribute INSTANCE itself changes (e.g. room
-  // bounds resize → useCascadeBuffers reallocates), the caller must
-  // call buildWalkaroundLightingNode again to rebuild the node graph
-  // — the storage reference is captured by the Fn closure at build
-  // time and cannot be patched in place.
+  // bounds resize → CascadeBufferManager reallocates), the caller must
+  // call buildWalkaroundLightingNode again to rebuild the node graph.
   const c0Attr  = cascadeBuffers.gpuCascades[0]!;
-  const c0Storage = storage(c0Attr, 'vec4f', c0Attr.count).toReadOnly();
+  // AnyNode cast: storage() from three/tsl has conservative typings that don't
+  // accept the StorageBufferAttribute + string-type combo at strict TSC level.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c0Storage = (storage as any)(c0Attr, 'vec4f', c0Attr.count).toReadOnly() as AnyNode;
 
   // Build the diffuse GI term: sum over 16 C0 directions weighted by cosine.
   // Trilinear probe interpolation via 8-corner loop (unrolled outside for TSL).
-  //
-  // We use the TSL Fn() helper to construct a node function. The implementation
-  // does trilinear sampling of the C0 buffer at the fragment's world position.
   const giDiffuseNode = Fn(() => {
     const diffuse = vec3(0, 0, 0).toVar('rcDiffuse');
 
-    // Fragment probe UV coords (normalized probe grid position).
     const wPosX = positionWorld.x.sub(uOriginX).div(uSizeX);
     const wPosY = positionWorld.y.sub(uOriginY).div(uSizeY);
     const wPosZ = positionWorld.z.sub(uOriginZ).div(uSizeZ);
 
-    // Probe grid float coords (center at 0.5 per cell).
     const gridFx = wPosX.mul(float(PX)).sub(0.5);
     const gridFy = wPosY.mul(float(PY)).sub(0.5);
     const gridFz = wPosZ.mul(float(PZ)).sub(0.5);
@@ -114,56 +113,45 @@ export function buildWalkaroundLightingNode(
     const fy = gridFy.sub(gridFy.floor());
     const fz = gridFz.sub(gridFz.floor());
 
-    // Sum over 16 direction bins.
     for (let d = 0; d < RAYS; d++) {
       const dir = DIRS[d]!;
-      // Cosine-weighted contribution.
       const nDotL = max(float(0), dot(normalWorld, vec3(dir[0], dir[1], dir[2])));
 
-      // Trilinear interpolation over 8 corners.
       const sample = vec3(0, 0, 0).toVar(`rcSample${d}`);
 
       for (let dz = 0; dz < 2; dz++) {
         for (let dy = 0; dy < 2; dy++) {
           for (let dx = 0; dx < 2; dx++) {
-            // Clamped probe index for corner.
-            const cx = clamp(gridIx.add(float(dx)).toInt(), 0, PX - 1);
-            const cy = clamp(gridIy.add(float(dy)).toInt(), 0, PY - 1);
-            const cz = clamp(gridIz.add(float(dz)).toInt(), 0, PZ - 1);
+            // AnyNode casts: TSL clamp() / toInt() / mul() have strict typed overloads
+            // that don't model mixed-int-float chains well at TSC level.
+            const cx = clamp(gridIx.add(float(dx)).toInt() as AnyNode, 0 as AnyNode, (PX - 1) as AnyNode) as AnyNode;
+            const cy = clamp(gridIy.add(float(dy)).toInt() as AnyNode, 0 as AnyNode, (PY - 1) as AnyNode) as AnyNode;
+            const cz = clamp(gridIz.add(float(dz)).toInt() as AnyNode, 0 as AnyNode, (PZ - 1) as AnyNode) as AnyNode;
 
-            // probeIdx = cx + cy*PX + cz*PX*PY
-            const probeIdx = cx
-              .add(cy.mul(PX))
-              .add(cz.mul(PX * PY));
-            // outIdx = probeIdx * RAYS + d
-            const outIdx = probeIdx.mul(RAYS).add(d);
+            const probeIdx = (cx as AnyNode)
+              .add((cy as AnyNode).mul(PX))
+              .add((cz as AnyNode).mul(PX * PY));
+            const outIdx = (probeIdx as AnyNode).mul(RAYS).add(d);
 
-            // Trilinear weight.
             const wx = dx === 0 ? float(1).sub(fx) : fx;
             const wy = dy === 0 ? float(1).sub(fy) : fy;
             const wz = dz === 0 ? float(1).sub(fz) : fz;
-            const w  = wx.mul(wy).mul(wz);
+            const w  = (wx as AnyNode).mul(wy).mul(wz);
 
-            // Sample from C0 buffer.
-            const rad = c0Storage.element(outIdx).xyz;
-            sample.addAssign(rad.mul(w));
+            const rad = (c0Storage as AnyNode).element(outIdx).xyz;
+            (sample as AnyNode).addAssign(rad.mul(w));
           }
         }
       }
 
-      // Accumulate cosine-weighted radiance.
-      diffuse.addAssign(sample.mul(nDotL));
+      (diffuse as AnyNode).addAssign((sample as AnyNode).mul(nDotL));
     }
 
-    // Monte-Carlo normalization for uniform full-sphere sampling with N directions:
-    // PDF = 1/(4π) per sample, so estimator = (4π/N) × Σ L_i × max(0, cos θ_i).
-    // The max(0, ...) clamp zero-weights the lower hemisphere; directions on the
-    // full sphere still contribute the correct 4π solid angle factor.
-    return diffuse.mul(4.0 * Math.PI / RAYS);
+    // Monte-Carlo normalization: PDF = 1/(4π) per sample.
+    return (diffuse as AnyNode).mul(4.0 * Math.PI / RAYS);
   })();
 
   return {
     lightingNode: giDiffuseNode,
   };
 }
-

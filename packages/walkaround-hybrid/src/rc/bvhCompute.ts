@@ -1,36 +1,37 @@
 /**
  * BVH build + GPU buffer packing — RC cascade-pipeline edition.
  *
- * Thin adapter over the shared `lib/bvhCommon` builder:
- *   1. Calls `buildSharedBVH({positionStride: 4})` to produce a single-root
+ * Thin adapter over `@vitrum/shared-bvh`'s `buildSceneBVH`:
+ *   1. Calls `buildSceneBVH({positionStride: 4})` to produce a single-root
  *      MeshBVH + raw typed arrays (positions / indices / normals /
  *      triMaterialId) plus a deduped `materials: THREE.Material[]` list
- *      in mesh-traversal order. All the heavy lifting (ensureIndexed,
- *      pre-build per-vertex matId snapshot, group collapse, BVH-invariant
- *      reorder safety) lives in the shared module.
+ *      in mesh-traversal order.
  *   2. Wraps the typed arrays in `StorageBufferAttribute` so the cascade
- *      compute pipeline (`cascadeDispatch.ts`) can bind them as TSL
- *      `storage()` nodes.
+ *      compute pipeline (`cascadeDispatch.ts`) can access them via the
+ *      Three.js WebGPU renderer backend.
  *   3. Packs RC's MaterialEntry flat-struct (16 floats per material) for
  *      the cascade compute SSBO layout in `probeRayCast.wgsl.ts`.
  *
  * The flat-struct packing is RC-specific (DDGI uses different per-material
  * binding; ReSTIR packs per-tri colour into bvhIndex.w) and stays in this
- * file rather than in lib/bvhCommon.
+ * file rather than in `@vitrum/shared-bvh`.
  *
  * Re-build policy:
  * - Geometry topology changes (scene mount swap, room swap) → full rebuild.
- * - Material parameter edits (glass color, IOR) → patch materials SSBO only
- *   (planned; today everything rebuilds).
+ * - Material parameter edits → patch materials SSBO only (planned;
+ *   today everything rebuilds).
  *
- * Caller debounces the rebuild call to avoid thrashing on rapid edits —
- * see `useSceneBVH.ts`.
+ * Caller debounces the rebuild call to avoid thrashing on rapid edits.
+ *
+ * Note: `StorageBufferAttribute` from `three/webgpu` is retained here because
+ * the BVH buffers are consumed by the Three.js WebGPU renderer backend in
+ * `cascadeDispatch.ts`.  See TSL_TO_RAW_MAPPING.md for rationale.
  */
 
 import { StorageBufferAttribute } from 'three/webgpu';
 import * as THREE from 'three';
 import type { MeshBVH } from 'three-mesh-bvh';
-import { buildSceneBVH as buildSharedBVH } from './lib/bvhCommon';
+import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
 
 export interface SceneBVH {
   bvh:           MeshBVH;
@@ -59,8 +60,7 @@ export interface BvhBuildOpts {
  *   [12] emissiveR  [13] emissiveG  [14] emissiveB  [15] thickness
  *
  * Empty material list → emits a single zeroed-out entry so the SSBO has at
- * least 16 floats (matches the empty-BVH return shape three-mesh-bvh
- * produces for matless scenes).
+ * least 16 floats.
  */
 function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
   if (materials.length === 0) {
@@ -95,25 +95,17 @@ function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
 
 /**
  * Build a SceneBVH from the current scene graph for the cascade pipeline.
- * Cost: ~50 ms for the honeycomb+room scene (~30K triangles). Caller
- * debounces.
+ * Cost: ~50 ms for ~30K triangle scenes. Caller debounces.
  */
 export function buildSceneBVH(
   scene: THREE.Scene,
   opts: BvhBuildOpts = {},
 ): SceneBVH {
-  // Delegate single-root BVH build + per-vertex matId snapshot to the
-  // shared module. Stride 4 = 16-byte vec3f-aligned layout — required
-  // because the WGSL spec defines `array<vec3f>` storage stride as
-  // roundUp(16, 12) = 16, NOT 12.  The library kernel
-  // `bvhIntersectFirstHit` (three-mesh-bvh/src/webgpu/bvh_ray_functions.
-  // wgsl.js:55) reads positions as `array<vec3f>`, so the CPU-side
-  // buffer MUST be packed at 16 bytes/vertex (xyz + 0-pad).  Stride 3
-  // (12 bytes/vertex) garbles every vertex past index 0 — the same
-  // latent bug ReSTIR's commit d88f6c8 fixed.  StorageBufferAttribute
-  // itemSize 4 below makes TSL bind the buffer with stride 16 so the
-  // GPU read alignment matches.  The .w slot is left zero — the
-  // library reads only .xyz so the padding is invisible.
+  // Delegate single-root BVH build + per-vertex matId snapshot to shared module.
+  // Stride 4 = 16-byte vec3f-aligned layout — required because the WGSL spec
+  // defines `array<vec3f>` storage stride as roundUp(16, 12) = 16, NOT 12.
+  // The library kernel `bvhIntersectFirstHit` reads positions as `array<vec3f>`,
+  // so the CPU-side buffer MUST be packed at 16 bytes/vertex (xyz + 0-pad).
   const result = buildSharedBVH(scene, {
     positionStride: 4,
     ...(opts.filter ? { filter: opts.filter } : {}),

@@ -42,3 +42,40 @@ export { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from './shaders/composite.wg
 
 // Shared lib utilities
 export { upgradeToNodeMaterial } from './lib/nodeMaterialUpgrade.js';
+
+// ─── RC subsystem ─────────────────────────────────────────────────────────────
+// Cascade pyramid storage layout.
+export {
+  CASCADE_DIMS,
+  CASCADE_COUNT,
+  allocateCascades,
+  disposeCascades,
+  fillCascadeDebug,
+} from './rc/cascadePyramid.js';
+export type { CascadeDim, CascadeBuffers } from './rc/cascadePyramid.js';
+
+// RC BVH builder (StorageBufferAttribute-typed adapter over @vitrum/shared-bvh).
+export { buildSceneBVH as buildRCSceneBVH } from './rc/bvhCompute.js';
+export type { SceneBVH as RCSceneBVH, BvhBuildOpts as RCBvhBuildOpts } from './rc/bvhCompute.js';
+
+// Cascade dispatch — raw WebGPU compute (converted from TSL per RD-12).
+export { RCDispatcher, dispatchCascadePasses } from './rc/cascadeDispatch.js';
+export type { RCDispatchOpts } from './rc/cascadeDispatch.js';
+
+// Cascade buffer manager (de-React-ified from useCascadeBuffers).
+export { CascadeBufferManager } from './rc/cascadeBuffers.js';
+
+// GI receiver material wrapper (TSL-preserved; requires three/webgpu + three/tsl).
+export { GIReceiver } from './rc/giReceiver.js';
+export type { GIReceiverExclusionPredicate, GIReceiverOptions } from './rc/giReceiver.js';
+
+// Walkaround diffuse lighting node (TSL-preserved; requires three/tsl).
+export { buildWalkaroundLightingNode } from './rc/walkaroundDiffuseLighting.js';
+export type { WalkaroundLightingNodes } from './rc/walkaroundDiffuseLighting.js';
+
+// DDGI shading injection (TSL-preserved; requires three/webgpu + three/tsl).
+export { applyDDGIShading } from './rc/applyDDGIShading.js';
+
+// Raw WGSL shader strings (for host inspection or headless testing).
+export { PROBE_RAY_CAST_WGSL } from './rc/wgsl/probeRayCast.wgsl.js';
+export { CASCADE_MERGE_WGSL } from './rc/wgsl/cascadeMerge.wgsl.js';

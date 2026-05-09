@@ -1,27 +1,29 @@
 /**
- * Cascade pyramid storage layout (§5.1).
+ * Cascade pyramid storage layout.
  *
- * Cascade dimensions are paper-derived from Sannikov's conservation law:
+ * Cascade dimensions derived from Sannikov's conservation law:
  *   R_k ∝ (L_k / s_k)²  (ray count tracks solid-angle resolution at interval distance)
  *
  * C0 anchor: s_0 = 3" (Nyquist from ~3" panel pieces).
  * Probes: ceil(192/3) × ceil(108/3) × ceil(168/3) = 64 × 36 × 56.
  * Interval base b = 3 (room-diagonal fit in 4 finite cascades).
  * Conservation-law check: b=3 means (L_k/s_k) grows by 1.5×, so strict conservation
- * wants R_k × 9 per cascade; we keep × 4 for perf (documented angular under-resolution,
- * §5.1.d).
+ * wants R_k × 9 per cascade; we keep × 4 for perf (documented angular under-resolution).
  *
  * Storage: each cascade is a flat Float32Array (4 floats per direction-bin: rgba).
  * Packed layout: [probeX * probeY * probeZ * raysPerProbe] × 4 floats.
  * Probe index: probeIdx = px + py*PX + pz*PX*PY.
  * Direction bin index: probeIdx * raysPerProbe + rayIdx.
+ *
+ * Note: `gpuCascades` uses `StorageBufferAttribute` from `three/webgpu` because the
+ * C0 buffer is consumed by the TSL `walkaroundDiffuseLighting.ts` node via `storage()`.
+ * The `RCDispatcher` (cascadeDispatch.ts) accesses the same GPU buffers through the
+ * Three.js WebGPU renderer backend.  See TSL_TO_RAW_MAPPING.md for rationale.
  */
 
 import * as THREE from 'three';
 import { StorageBufferAttribute } from 'three/webgpu';
 
-// Tunables — see §5.1 table. The build-loop adjusts these if fps budget is exceeded.
-//
 // Performance budget: total compute invocations ≤ 200K for 30fps on RTX-class hardware
 // (assuming ~3 BVH traversals per probe-ray + merge overhead).
 // Previous (paper-derived) dimensions: C0=64×36×56×16 = 2.06M rays (too slow: ~4fps measured).
@@ -66,7 +68,8 @@ export interface CascadeBuffers {
 
 /**
  * Allocate cascade storage on the CPU.
- * We use plain Float32Array since StorageBufferAttribute binding happens in cascadeDispatch.
+ * StorageBufferAttribute GPU-side buffers are allocated by the Three.js WebGPU
+ * renderer the first time they are uploaded.
  */
 export function allocateCascades(bounds: THREE.Box3): CascadeBuffers {
   const size   = bounds.getSize(new THREE.Vector3());
@@ -75,8 +78,7 @@ export function allocateCascades(bounds: THREE.Box3): CascadeBuffers {
     const len = cascadeBufferSize(c);
     return new Float32Array(len);
   });
-  // Create GPU-side StorageBufferAttribute wrappers alongside the CPU arrays.
-  // Using itemSize=4 (vec4f: r,g,b,a per ray). count = total rays per cascade.
+  // itemSize=4 (vec4f: r,g,b,a per ray). count = total rays per cascade.
   const gpuCascades = cascades.map((arr) => new StorageBufferAttribute(arr, 4));
   return { cascades, gpuCascades, probeOriginWorld: origin, roomSize: size };
 }
@@ -87,8 +89,8 @@ export function disposeCascades(b: CascadeBuffers): void {
 }
 
 /**
- * Fill cascade k with a constant test colour.
- * M2 smoke test — verifies the data path without trusting ray-cast math.
+ * Fill all cascades with constant test colours.
+ * Smoke-test path — verifies the data path without trusting ray-cast math.
  * Cascade 0 = warm red, 1 = orange, 2 = yellow, 3 = green, 4 = blue.
  */
 const DEBUG_COLORS: [number, number, number][] = [
@@ -102,7 +104,7 @@ const DEBUG_COLORS: [number, number, number][] = [
 export function fillCascadeDebug(b: CascadeBuffers): void {
   CASCADE_DIMS.forEach((c, k) => {
     const buf   = b.cascades[k];
-    if (!buf) return; // disposed or partially-allocated cascades — skip
+    if (!buf) return;
     const color = DEBUG_COLORS[k] ?? [0.5, 0.5, 0.5];
     const total = cascadeTotalRays(c);
     for (let i = 0; i < total; i++) {
