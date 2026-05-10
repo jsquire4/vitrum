@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-09
 **Requester:** stainedGlass app (`~/projects/stainedGlass`)
-**Status:** NOT APPLIED. No Sprint 12 patch markers found in the fork.
+**Status:** APPLIED IN LOCAL FORK (runtime verification pending).
 
 ---
 

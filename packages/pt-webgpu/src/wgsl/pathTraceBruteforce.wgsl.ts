@@ -97,6 +97,65 @@ fn sampleMaterialSpectralMu(matId: u32, wavelength01: f32) -> f32 {
   return mix(a, b, t);
 }
 
+fn cMul(a: vec2f, b: vec2f) -> vec2f {
+  return vec2f(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+fn cDiv(a: vec2f, b: vec2f) -> vec2f {
+  let d = max(dot(b, b), 1e-8);
+  return vec2f(
+    (a.x * b.x + a.y * b.y) / d,
+    (a.y * b.x - a.x * b.y) / d,
+  );
+}
+
+fn thinFilmTmmRt(matId: u32, layerCount: u32, wavelengthNm: f32, substrateIor: f32, viewCos: f32) -> vec2f {
+  if (layerCount == 0u) {
+    return vec2f(0.0, 1.0);
+  }
+  let lambdaUm = max(wavelengthNm * 0.001, 1e-5);
+  let eta0 = 1.0;
+  let etaS = max(substrateIor, 1.0);
+  let angleScale = clamp(viewCos, 0.05, 1.0);
+  var m11 = vec2f(1.0, 0.0);
+  var m12 = vec2f(0.0, 0.0);
+  var m21 = vec2f(0.0, 0.0);
+  var m22 = vec2f(1.0, 0.0);
+  for (var i = 0u; i < THIN_FILM_LAYER_LIMIT; i = i + 1u) {
+    if (i >= layerCount) {
+      break;
+    }
+    let layerBase = THIN_FILM_SCALAR_BASE + i * 2u;
+    let layerIor = max(materialScalar(matId, layerBase), 1.0);
+    let layerThicknessUm = max(materialScalar(matId, layerBase + 1u) * 0.001, 0.0);
+    let delta = 2.0 * PI * layerIor * layerThicknessUm * angleScale / lambdaUm;
+    let c = cos(delta);
+    let s = sin(delta);
+    let a11 = vec2f(c, 0.0);
+    let a12 = vec2f(0.0, -s / layerIor);
+    let a21 = vec2f(0.0, -layerIor * s);
+    let a22 = vec2f(c, 0.0);
+    let nm11 = cMul(m11, a11) + cMul(m12, a21);
+    let nm12 = cMul(m11, a12) + cMul(m12, a22);
+    let nm21 = cMul(m21, a11) + cMul(m22, a21);
+    let nm22 = cMul(m21, a12) + cMul(m22, a22);
+    m11 = nm11;
+    m12 = nm12;
+    m21 = nm21;
+    m22 = nm22;
+  }
+  let eta0m11 = m11 * eta0;
+  let eta0etaSm12 = m12 * (eta0 * etaS);
+  let etaSm22 = m22 * etaS;
+  let den = eta0m11 + eta0etaSm12 + m21 + etaSm22;
+  let numR = eta0m11 + eta0etaSm12 - m21 - etaSm22;
+  let r = cDiv(numR, den);
+  let t = cDiv(vec2f(2.0 * eta0, 0.0), den);
+  let R = clamp(dot(r, r), 0.0, 1.0);
+  let T = clamp((etaS / eta0) * dot(t, t), 0.0, 1.0);
+  return vec2f(R, T);
+}
+
 fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
   let uv = (vec2f(f32(px), f32(py)) + jitter) / vec2f(f32(params.width), f32(params.height));
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
@@ -1320,28 +1379,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       firstHitDepth = hit.dist;
     }
     let wo = -ray.direction;
+    var thinFilmReflectTint = vec3f(1.0);
+    var thinFilmTransmitTint = vec3f(1.0);
     if (thinFilmEnabled) {
       let viewCos = clamp(dot(normal, wo), 0.0, 1.0);
-      var phase = 0.0;
-      var usedLayers = 0.0;
-      for (var layerIdx = 0u; layerIdx < THIN_FILM_LAYER_LIMIT; layerIdx = layerIdx + 1u) {
-        if (layerIdx >= u32(max(m6.y, 0.0))) {
-          break;
-        }
-        let layerBase = THIN_FILM_SCALAR_BASE + layerIdx * 2u;
-        let layerIor = max(materialScalar(matId, layerBase), 1.0);
-        let layerThicknessNm = max(materialScalar(matId, layerBase + 1u), 0.0);
-        phase = phase + layerThicknessNm * 0.01 * (1.0 - viewCos) * layerIor;
-        usedLayers = usedLayers + 1.0;
-      }
-      phase = phase / max(usedLayers, 1.0);
-      let tint = vec3f(
-        0.5 + 0.5 * cos(phase),
-        0.5 + 0.5 * cos(phase + 2.094),
-        0.5 + 0.5 * cos(phase + 4.188)
-      );
-      let filmStrength = clamp((0.12 + 0.06 * usedLayers) * (1.0 - roughness), 0.0, 0.45);
-      baseColor = mix(baseColor, baseColor * tint, filmStrength);
+      let layerCount = u32(max(m6.y, 0.0));
+      let rtR = thinFilmTmmRt(matId, layerCount, 630.0, ior, viewCos);
+      let rtG = thinFilmTmmRt(matId, layerCount, 540.0, ior, viewCos);
+      let rtB = thinFilmTmmRt(matId, layerCount, 460.0, ior, viewCos);
+      thinFilmReflectTint = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
+      thinFilmTransmitTint = clamp(vec3f(rtR.y, rtG.y, rtB.y), vec3f(0.0), vec3f(1.0));
+      let layerStrength = clamp(0.12 + 0.06 * f32(layerCount), 0.0, 0.55);
+      let filmStrength = clamp(layerStrength * (1.0 - roughness), 0.0, 0.6);
+      baseColor = mix(baseColor, baseColor * thinFilmReflectTint, filmStrength);
     }
     let throughputAtVertex = throughput;
     if (transmission > 0.0) {
@@ -1522,7 +1572,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       ray.origin = hitPos + offsetN * 1e-3;
       sampledDir = glossyReflectionSample(&rng, outDir, roughness * 0.5);
       ray.direction = sampledDir;
-      throughput = throughput * mix(vec3f(1.0), baseColor, 0.15) / max(transProb, 1e-4);
+      throughput = throughput * mix(vec3f(1.0), baseColor, 0.15) * thinFilmTransmitTint / max(transProb, 1e-4);
     } else if (chooseSpecular) {
       let refl = reflect(ray.direction, normal);
       ray.origin = hitPos + normal * 1e-3;

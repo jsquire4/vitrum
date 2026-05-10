@@ -7,6 +7,9 @@
 - pt-webgpu now includes HDRI CPU-payload importance sampling and reciprocal environment MIS.
 - pt-webgpu `causticStrategy` now reports the selected strategy and dispatches mode-distinct shader branches (`none` / `manifold-nee` / `photon-map`).
 - pt-webgl `causticStrategy` now reports the selected strategy and drives fork-side mode-distinct behavior paths.
+- Fork thin-film stack payload now carries per-layer extinction plus stack incident-IOR/angle flags, and BSDF uses `thinFilmTMM` (no cosine-tint fallback in the path).
+- Fork hero-wavelength dispersion now applies per-material dispersion magnitude instead of only global Cauchy terms.
+- pt-webgpu thin-film shading now uses transfer-matrix stack evaluation (RGB wavelength probes) instead of phase-cosine tinting.
 - Final GPU render/perf validation remains pending and tracked in `plan/gap-closure-verification-2026-05-10.md`.
 
 ## RFE-07 Sprint 7 Volume Scattering: APPLIED
