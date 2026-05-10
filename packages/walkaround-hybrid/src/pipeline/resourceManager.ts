@@ -48,6 +48,39 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
 }
 
 /**
+ * Build the DDGI "placeholder" UBO data — the zero-grid uniform that causes
+ * shade.wgsl's `isDDGIWired()` check to return false (dimsX ≤ 1).
+ *
+ * DDGIGridUniform layout (64 bytes = 16 × f32):
+ *   f32[0..2]  origin xyz   — (0,0,0)
+ *   f32[3]     spacing      — 24 (matches probeGrid default, irrelevant when wired=false)
+ *   u32[4..6]  dims xyz     — (1,1,1) — dimsX=1 gates isDDGIWired() to false
+ *   u32[7]     padding      — 0
+ *   f32[8..11] irrW,irrH,visW,visH — 1×1 (match 1×1 placeholder textures)
+ *   f32[12..15] reserved    — 0
+ *
+ * This is the canonical, single definition of the placeholder UBO layout.
+ * Both `createFrameResources` and `WalkaroundGPUPipeline.setDDGIInputs(null)`
+ * call this function rather than duplicating the pack inline.
+ *
+ * The returned `Float32Array` is freshly allocated each call. For the hot path
+ * in `setDDGIInputs(null)`, callers should cache the result — see
+ * `WalkaroundGPUPipeline._ddgiPlaceholderUBO`.
+ */
+export function buildDDGIPlaceholderUBO(): Float32Array {
+  const placeholder = new Float32Array(16);
+  placeholder[3] = 24;                              // spacing (default probe spacing)
+  new Uint32Array(placeholder.buffer)[4] = 1;       // dimsX — isDDGIWired() checks dimsX > 1u
+  new Uint32Array(placeholder.buffer)[5] = 1;       // dimsY
+  new Uint32Array(placeholder.buffer)[6] = 1;       // dimsZ
+  placeholder[8]  = 1;                              // irrW (matches 1×1 placeholder texture)
+  placeholder[9]  = 1;                              // irrH
+  placeholder[10] = 1;                              // visW
+  placeholder[11] = 1;                              // visH
+  return placeholder;
+}
+
+/**
  * Create all per-frame GPU resources for the pipeline. Called once from
  * `initialize()` after BVH upload and before shader compilation.
  */
@@ -169,16 +202,7 @@ export function createFrameResources(device: GPUDevice, W: number, H: number): F
   // which checks dimsX > 1u; the placeholder writes dimsX=1 so the gate
   // returns false and Lo_ddgi=0 until setDDGIInputs() supplies real
   // grid params from HybridLayeredStage.
-  const defaultDdgiUbo = new Float32Array(16);
-  defaultDdgiUbo[3] = 24; // spacing
-  new Uint32Array(defaultDdgiUbo.buffer)[4] = 1; // dimsX
-  new Uint32Array(defaultDdgiUbo.buffer)[5] = 1; // dimsY
-  new Uint32Array(defaultDdgiUbo.buffer)[6] = 1; // dimsZ
-  defaultDdgiUbo[8]  = 1; // irrW
-  defaultDdgiUbo[9]  = 1; // irrH
-  defaultDdgiUbo[10] = 1; // visW
-  defaultDdgiUbo[11] = 1; // visH
-  device.queue.writeBuffer(ddgiUboBuffer, 0, defaultDdgiUbo.buffer);
+  device.queue.writeBuffer(ddgiUboBuffer, 0, buildDDGIPlaceholderUBO().buffer);
 
   return {
     reservoirCurrentBuffer,

@@ -106,19 +106,6 @@ export interface SceneBVHBuffers {
    * as primary color for ALL primary hits.
    */
   bvhBeerColors: StorageBufferHandle;
-  /**
-   * @deprecated SENTINEL — always a 4-byte zero-length placeholder.
-   *
-   * Material colors are now packed into bvhIndex[*].w (RGBA8 + texType
-   * bits, see SURFACE_TEXTURE_BITS) to fit inside the 8-storage-buffer-
-   * per-shader-stage device limit. This field exists only for layout
-   * compatibility with callers that still iterate the SceneBVHBuffers
-   * shape; do NOT upload its cpuData to the GPU and do NOT read from
-   * any binding pointed at it.
-   *
-   * Slated for removal in a future coordinated rename / surface cleanup.
-   */
-  materialColors: StorageBufferHandle;
   /** EmitterTri[] — 64-byte emitter struct per emissive triangle. */
   emitters: StorageBufferHandle;
   /** f32[] — CDF over emitter power (same length as emitters). */
@@ -143,6 +130,16 @@ export interface SceneBVHBuffers {
  */
 const EMITTER_STRIDE = 80; // bytes per emitter, 16-byte aligned
 const EMITTER_FLOATS = EMITTER_STRIDE / 4; // 20 f32 per emitter
+
+/**
+ * Default warm-gray RGB fallback color for triangles with no resolvable
+ * material color (≈ 0.60, 0.58, 0.55 linear). Used in two packing functions
+ * (packBVHIndexW and packBVHBeerColors) — extracted to a single constant so
+ * a palette change touches one place. (WARM complexity fix.)
+ */
+const WARM_GRAY_DEFAULT_R = 153;
+const WARM_GRAY_DEFAULT_G = 148;
+const WARM_GRAY_DEFAULT_B = 140;
 
 /**
  * Default proxy-mesh allowlist for the stained-glass-app demo. Library
@@ -259,7 +256,7 @@ export function buildSceneBVH(
   //   [0..2] = vertex indices, [3] = packed RGBA8 material color + transmission.
   // The triangleMaterialIds field carries the CPU-side u32[] for emitter building;
   // it is NOT uploaded to the GPU as a separate buffer.
-  // materialColors is NOT a separate GPU buffer — colors are packed into bvhIndex[*].w.
+  // materialColors was removed (M-1 cleanup) — colors are packed into bvhIndex[*].w.
   return {
     bvhNodes: {
       cpuData: shared.bvhNodes.buffer.slice(0) as ArrayBuffer,
@@ -287,13 +284,6 @@ export function buildSceneBVH(
       cpuData: beerBuf.buffer,
       byteLength: beerBuf.byteLength,
       count: triCount,
-    },
-    // materialColors: packed into bvhIndex[triIdx].w — no separate GPU buffer needed.
-    materialColors: {
-      // Sentinel: zero-length buffer. The GPU uses bvhIndex[*].w instead.
-      cpuData: new ArrayBuffer(4),
-      byteLength: 4,
-      count: 0,
     },
     emitters: {
       cpuData: emitterFloats.buffer,
@@ -402,7 +392,7 @@ function packBVHIndexW(
 
     const matId = triMaterialId[t]!;
     const mat = materials[matId];
-    let r = 153, g = 148, b = 140; // warm gray default (0.6, 0.58, 0.55 × 255)
+    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
     let transmission = 0;
     let texTypeId = 0;
     let isMetal = 0;
@@ -474,7 +464,7 @@ function packBVHBeerColors(
   for (let t = 0; t < triCount; t++) {
     const matId = triMaterialId[t]!;
     const mat = materials[matId];
-    let r = 153, g = 148, b = 140;
+    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
     if (mat) {
       const physMat = mat as THREE.MeshPhysicalMaterial;
       const stdMat  = mat as THREE.MeshStandardMaterial;

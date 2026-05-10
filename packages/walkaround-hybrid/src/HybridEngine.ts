@@ -30,6 +30,7 @@ import * as THREE from 'three';
 import type {
   Engine,
   EngineCapabilities,
+  EngineFactory,
   EngineOptions,
   EngineState,
 } from '@vitrum/core';
@@ -161,6 +162,11 @@ export class HybridEngine implements Engine {
   private _bvhBuffers:  SceneBVHBuffers | null       = null;
   private _pipelineReady                             = false;
 
+  // ── Scene (from @vitrum/core contract) ────────────────────────────────
+  /** Last scene passed via setScene(). Stored for Sprint 1 BVH migration.
+   *  Currently the BVH builder reads _threeScene directly (Sprint 0 gap). */
+  private _lastScene: Scene | null = null;
+
   // ── DDGI subsystem ─────────────────────────────────────────────────────
   private _ddgi:    DDGI;
   private _ddgiOn:  boolean = true;
@@ -230,14 +236,31 @@ export class HybridEngine implements Engine {
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
    *
-   * Per the Engine contract: `supportsIncrementalScene = false`, so the host
-   * must call `setScene` for every topology change. This engine ignores the
-   * @vitrum/core Scene argument for the BVH build — it traverses the
-   * THREE.Scene passed at construction time (the live Three.js graph is the
-   * source of truth for geometry). The `_scene` parameter is accepted to
-   * satisfy the interface but is not inspected.
+   * **THREE.Scene coupling gap (Sprint 0 limitation — tracked for Sprint 1):**
+   * The `@vitrum/core` contract requires `setScene` to rebuild the BVH from
+   * the *passed* `@vitrum/core Scene` object. However, `buildSceneBVH` (in
+   * `restir/bvhCompute.ts`) and the DDGI subsystem both consume `THREE.Scene`
+   * directly — they walk the live Three.js object graph for geometry and probe
+   * traversal. Bridging this fully requires Sprint 1 work to migrate the BVH
+   * builder to accept `@vitrum/core Scene.primitives` as its geometry source.
+   *
+   * Until Sprint 1: the BVH is built from `this._threeScene` (passed at
+   * construction). The `scene` argument is stored in `_lastScene` so Sprint 1
+   * can wire it into the BVH path without a constructor-side change.
+   *
+   * **Host guidance:** When scene topology changes, call:
+   *   ```ts
+   *   engine.setScene(sceneFromThreeJS(updatedThreeScene));
+   *   ```
+   * This triggers a BVH rebuild. The `@vitrum/core Scene` is stored and will
+   * become the authoritative BVH input once the Sprint 1 migration lands.
+   *
+   * @param scene - The `@vitrum/core` scene converted via `sceneFromThreeJS`.
+   *                Stored for Sprint 1. BVH currently reads `_threeScene`.
    */
-  setScene(_scene: Scene): void {
+  setScene(scene: Scene): void {
+    this._lastScene = scene;
+
     // Tear down the existing pipeline, reinitialise asynchronously.
     this._teardownPipeline();
     void this._initPipeline();
@@ -456,16 +479,40 @@ export class HybridEngine implements Engine {
 
   // ── Pause / resume ─────────────────────────────────────────────────────
 
+  /**
+   * Pause per-frame compute. Engine state transitions from `'ready'` →
+   * `'paused'`. Calls in any other live state (e.g. `'initializing'`,
+   * `'uninitialized'`) are no-ops; calls after `'disposed'` throw.
+   *
+   * Aligns with `PTEngineWebGL2.pause()`: both throw on disposed, both
+   * no-op when the state transition doesn't apply.
+   */
   pause(): void {
+    if (this._state === 'disposed') {
+      throw new Error('pause: engine is disposed');
+    }
     if (this._state === 'ready') {
       this._state = 'paused';
     }
+    // no-op in 'uninitialized' | 'initializing' | 'paused'
   }
 
+  /**
+   * Resume per-frame compute. Engine state transitions from `'paused'` →
+   * `'ready'`. Calls in any other live state are no-ops; calls after
+   * `'disposed'` throw.
+   *
+   * Aligns with `PTEngineWebGL2.resume()`: both throw on disposed, both
+   * no-op when the state transition doesn't apply.
+   */
   resume(): void {
+    if (this._state === 'disposed') {
+      throw new Error('resume: engine is disposed');
+    }
     if (this._state === 'paused') {
       this._state = 'ready';
     }
+    // no-op in 'uninitialized' | 'initializing' | 'ready'
   }
 
   // ── Layer toggles (host-accessible debug interface) ────────────────────
@@ -593,11 +640,9 @@ export class HybridEngine implements Engine {
         }
 
         // Wire the sun intensity multiplier into DDGI so its Le bake
-        // matches shade.wgsl's Lo_emit.
-        if ('setSunIntensityMultiplier' in this._ddgi.pass) {
-          (this._ddgi.pass as unknown as { setSunIntensityMultiplier: (m: number) => void })
-            .setSunIntensityMultiplier(this._primaryLightIntensity);
-        }
+        // matches shade.wgsl's Lo_emit. `setSunIntensityMultiplier` is a
+        // public method on ProbeUpdatePass — no cast needed.
+        this._ddgi.pass.setSunIntensityMultiplier(this._primaryLightIntensity);
 
         this._pipeline     = pipeline;
         this._pipelineReady = true;
@@ -611,7 +656,15 @@ export class HybridEngine implements Engine {
           });
         }
       } catch (err) {
-        console.error('[HybridEngine] init failed:', err);
+        // Transition to 'disposed' so hosts polling engine.state can detect
+        // the failure. The engine is now unusable — the host must dispose and
+        // recreate. Using 'disposed' (not a new 'error' state) is consistent
+        // with the existing EngineState type and avoids adding a new variant.
+        // (M-8 fix: previously the engine stayed in 'initializing' forever.)
+        if (!this._disposed) {
+          this._state = 'disposed';
+        }
+        console.error('[HybridEngine] init failed — engine state set to disposed. Recreate the engine to retry.', err);
       }
     };
 
@@ -633,9 +686,9 @@ export class HybridEngine implements Engine {
  *
  * @param opts  Creation-time options. `opts.device` must be a live GPUDevice.
  */
-export async function createWalkaroundEngine_Hybrid(
+export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> = async (
   opts: HybridEngineOptions,
-): Promise<Engine> {
+): Promise<Engine> => {
   // Duck-type GPUDevice validation — `instanceof GPUDevice` is not reliable
   // across realms; checking for a known required method is more robust.
   if (

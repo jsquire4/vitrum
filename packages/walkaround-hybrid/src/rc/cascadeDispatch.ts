@@ -314,6 +314,61 @@ export class RCDispatcher {
   }
 
   /**
+   * Resolve the environment texture GPU binding. Accesses the Three.js WebGPU
+   * renderer's internal `backend.get(texture)` handle to find the uploaded
+   * `GPUTexture`. Falls back to a 1×1 black placeholder when the renderer has
+   * not yet uploaded the env texture (common on first frame).
+   *
+   * Extracted from `_buildHandles` to keep the 173-line setup method readable.
+   * (WARM-3 fix: was embedded mid-function between BVH extraction and cast loop.)
+   */
+  private _buildEnvBinding(
+    device: GPUDevice,
+    opts: RCDispatchOpts,
+  ): { envTextureView: GPUTextureView; envSampler: GPUSampler } {
+    const fallbackEnv = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+    fallbackEnv.needsUpdate = true;
+    const envThree = opts.envEquirect ?? fallbackEnv;
+    // Access the Three.js WebGPU renderer's internal texture handle.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyGl = opts.gl as any;
+    const backend = anyGl.backend;
+    const envGpuData = backend.get(envThree) as { texture?: GPUTexture } | undefined;
+    const envGpuTex  = envGpuData?.texture;
+
+    if (envGpuTex) {
+      return {
+        envTextureView: envGpuTex.createView({ label: 'rc-env-view' }),
+        envSampler: device.createSampler({
+          label:        'rc-env-sampler',
+          magFilter:    'linear',
+          minFilter:    'linear',
+          addressModeU: 'repeat',
+          addressModeV: 'clamp-to-edge',
+        }),
+      };
+    }
+
+    // Fallback: create a 1×1 placeholder until the renderer uploads the env texture.
+    const placeholderTex = device.createTexture({
+      label:  'rc-env-placeholder',
+      size:   [1, 1],
+      format: 'rgba8unorm',
+      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: placeholderTex },
+      new Uint8Array([0, 0, 0, 255]),
+      { bytesPerRow: 4 },
+      [1, 1],
+    );
+    return {
+      envTextureView: placeholderTex.createView({ label: 'rc-env-placeholder-view' }),
+      envSampler: device.createSampler({ label: 'rc-env-placeholder-sampler' }),
+    };
+  }
+
+  /**
    * Build all pipelines and bind groups (one-time setup).
    * Called lazily on first `dispatchFrame()`.
    */
@@ -348,46 +403,7 @@ export class RCDispatcher {
     const triMatBuf   = gpuBufferOf(sceneBVH.triMaterialId);
 
     // Env texture + sampler.
-    const fallbackEnv = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
-    fallbackEnv.needsUpdate = true;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const envThree = opts.envEquirect ?? fallbackEnv;
-    // Access the Three.js WebGPU renderer's internal texture handle.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const anyGl = opts.gl as any;
-    const backend = anyGl.backend;
-    const envGpuData = backend.get(envThree) as { texture?: GPUTexture } | undefined;
-    const envGpuTex  = envGpuData?.texture;
-
-    let envTextureView: GPUTextureView;
-    let envSampler: GPUSampler;
-
-    if (envGpuTex) {
-      envTextureView = envGpuTex.createView({ label: 'rc-env-view' });
-      envSampler = device.createSampler({
-        label:        'rc-env-sampler',
-        magFilter:    'linear',
-        minFilter:    'linear',
-        addressModeU: 'repeat',
-        addressModeV: 'clamp-to-edge',
-      });
-    } else {
-      // Fallback: create a 1×1 placeholder until the renderer uploads the env texture.
-      const placeholderTex = device.createTexture({
-        label:  'rc-env-placeholder',
-        size:   [1, 1],
-        format: 'rgba8unorm',
-        usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-      });
-      device.queue.writeTexture(
-        { texture: placeholderTex },
-        new Uint8Array([0, 0, 0, 255]),
-        { bytesPerRow: 4 },
-        [1, 1],
-      );
-      envTextureView = placeholderTex.createView({ label: 'rc-env-placeholder-view' });
-      envSampler = device.createSampler({ label: 'rc-env-placeholder-sampler' });
-    }
+    const { envTextureView, envSampler } = this._buildEnvBinding(device, opts);
 
     // ── Cast passes (one per cascade) ──────────────────────────────────────
     const castPasses: CastPassHandles[] = [];

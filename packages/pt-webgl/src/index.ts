@@ -11,6 +11,7 @@ import { WebGLPathTracer } from 'three-gpu-pathtracer';
 import type {
   Engine,
   EngineCapabilities,
+  EngineFactory,
   EngineOptions,
   EngineState,
 } from '@vitrum/core';
@@ -227,9 +228,9 @@ export {
   rectAreaIntensityFromLumens,
 } from './lightingIntensityTable.js';
 
-export async function createPTEngine_WebGL2(
+export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async (
   opts: PTEngineWebGL2Options,
-): Promise<Engine> {
+): Promise<Engine> => {
   if (opts.device == null || typeof (opts.device as { getContext?: unknown }).getContext !== 'function') {
     throw new TypeError(
       'createPTEngine_WebGL2: device must be a THREE.WebGLRenderer instance (got null/undefined or an object without a getContext() method)',

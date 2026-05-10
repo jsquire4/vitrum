@@ -38,6 +38,14 @@ const RAYS_PER_PROBE = 192;
 // ProbeRay struct: 12 floats / 2 u32 → 16 × 4 bytes = 64 bytes each
 const PROBE_RAY_STRIDE_BYTES = 64;
 
+// DDGI material buffer sizing constants.
+// `materialsBuf` holds one DDGIMaterial struct per material slot.
+// DDGIMaterial WGSL layout: 64 bytes = 16 × f32 (std140, see _uploadMaterials).
+/** Maximum number of distinct materials the DDGI probe pass supports. */
+const DDGI_MAX_MATERIALS = 64;
+/** Byte stride of one DDGIMaterial struct (must match the WGSL layout). */
+const DDGI_MATERIAL_STRIDE_BYTES = 64;
+
 
 interface GPUResources {
   device: GPUDevice;
@@ -204,7 +212,7 @@ export class ProbeUpdatePass {
       idxBuf:         makeBuffer(12, RO),
       normBuf:        makeBuffer(12, RO),
       matIdBuf:       makeBuffer(4,  RO),
-      materialsBuf:   makeBuffer(64 * 64, UB),
+      materialsBuf:   makeBuffer(DDGI_MAX_MATERIALS * DDGI_MATERIAL_STRIDE_BYTES, UB),
       lightsBuf:      makeBuffer(16 * 80 + 16, UB),
       gridParamsBuf:  makeBuffer(64, UB),
       frameParamsBuf: makeBuffer(32, UB),
@@ -334,7 +342,6 @@ export class ProbeUpdatePass {
   }
 
   private _uploadMaterials(device: GPUDevice, mats: THREE.Material[]): void {
-    const MAX = 64;
     // DDGIMaterial WGSL layout (std140, 64 bytes = 16 floats per entry):
     //   offset  0: baseColor: vec3f  (12 bytes) + _pad0: f32 (4) = 16 bytes
     //   offset 16: emissive: vec3f   (12 bytes) + roughness: f32 (4) = 16 bytes
@@ -342,11 +349,11 @@ export class ProbeUpdatePass {
     //   offset 48: attenuationColor: vec3f (12 bytes) + flags: u32 (4) = 16 bytes
     // Total: 64 bytes. Using exactly 16 floats per entry to match the WGSL stride.
     const ENTRY = 16; // floats per material entry — matches DDGIMaterial size (64 bytes)
-    const data = new Float32Array(MAX * ENTRY);
+    const data = new Float32Array(DDGI_MAX_MATERIALS * ENTRY);
     // Use a u32 view to write the flags field as an actual u32
     // (flags is declared as u32 in WGSL; writing float 1.0 would give 0x3F800000 ≠ 1).
     const u32view = new Uint32Array(data.buffer);
-    const matsToUse = mats.slice(0, MAX);
+    const matsToUse = mats.slice(0, DDGI_MAX_MATERIALS);
     matsToUse.forEach((mat, i) => {
       const base = i * ENTRY;
       const m = mat as THREE.MeshPhysicalMaterial;

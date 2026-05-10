@@ -27,6 +27,7 @@ import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
 import {
   uploadBuffer,
+  buildDDGIPlaceholderUBO,
   createFrameResources,
   destroyFrameResources,
   type FrameResources,
@@ -76,6 +77,15 @@ import {
 export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
   maxStorageBuffersPerShaderStage: 16,
 };
+
+/**
+ * Camera squared-distance threshold for temporal accumulator reset.
+ * Tuned to OrbitControls damping: after a drag release, damping continues
+ * to move the camera by ~0.1–0.5" per frame for ~30 frames before settling.
+ * Threshold 1.0 lets damping ride through to α=0.1 while still resetting
+ * history on actual pan/orbit. (WARM-4 fix: was inline magic literal `1.0`.)
+ */
+const CAMERA_MOVE_RESET_THRESHOLD_SQ = 1.0;
 
 export interface PipelineFrameInputs {
   /** Camera view matrix (column-major mat4x4f, 16 floats). The pipeline
@@ -157,6 +167,11 @@ export class WalkaroundGPUPipeline {
   private _ddgiIrrTex: GPUTexture | null = null;
   private _ddgiVisTex: GPUTexture | null = null;
 
+  // Cached DDGI placeholder UBO — reused by setDDGIInputs(null) so we don't
+  // allocate a fresh Float32Array(16) every frame when DDGI is disabled.
+  // Populated lazily on first setDDGIInputs(null) call.
+  private _ddgiPlaceholderUBO: Float32Array | null = null;
+
   // Compiled compute + render pipelines
   private risPipeline!: GPUComputePipeline;
   private temporalPipeline!: GPUComputePipeline;
@@ -205,7 +220,7 @@ export class WalkaroundGPUPipeline {
     this.bvhUvBuffer       = uploadBuffer(d, bvhBuffers.bvhUvs.cpuData,       GPUBufferUsage.STORAGE);
     this.emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
     this.emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
-    // triangleMatIds and materialColors are packed into bvhIndex[*].w — no separate GPU buffers.
+    // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
     this.res = createFrameResources(d, W, H);
@@ -389,11 +404,8 @@ export class WalkaroundGPUPipeline {
     const dz = inputs.cameraPos[2] - this.lastCameraPos[2];
     const camMoveSq = dx * dx + dy * dy + dz * dz;
     const isFirstFrame = this.accumFrameIndex === 0;
-    // Threshold tuned to OrbitControls damping. After the user releases a
-    // drag, damping continues to update the camera by ~0.1-0.5" per frame
-    // for ~30 frames before settling. Threshold 1.0 lets damping ride
-    // through to α=0.1 while still resetting history on actual pan/orbit.
-    const isMoving = camMoveSq > 1.0;
+    // See CAMERA_MOVE_RESET_THRESHOLD_SQ for tuning rationale.
+    const isMoving = camMoveSq > CAMERA_MOVE_RESET_THRESHOLD_SQ;
     const alpha = (isFirstFrame || isMoving) ? 1.0 : 0.1;
     if (isMoving) this.accumFrameIndex = 0;
     this.lastCameraPos = [...inputs.cameraPos];
@@ -499,16 +511,12 @@ export class WalkaroundGPUPipeline {
       this._ddgiVisTex = null;
       // Restore placeholder UBO (dims=1×1×1) so shade.wgsl's
       // isDDGIWired() check returns false and Lo_ddgi drops to zero.
-      const placeholder = new Float32Array(16);
-      placeholder[3] = 24;
-      new Uint32Array(placeholder.buffer)[4] = 1;
-      new Uint32Array(placeholder.buffer)[5] = 1;
-      new Uint32Array(placeholder.buffer)[6] = 1;
-      placeholder[8]  = 1;
-      placeholder[9]  = 1;
-      placeholder[10] = 1;
-      placeholder[11] = 1;
-      this.device.queue.writeBuffer(this.res.ddgiUboBuffer, 0, placeholder.buffer);
+      // Cache the placeholder to avoid allocating Float32Array(16) every
+      // frame when DDGI is disabled (HOT-1 fix).
+      if (this._ddgiPlaceholderUBO === null) {
+        this._ddgiPlaceholderUBO = buildDDGIPlaceholderUBO();
+      }
+      this.device.queue.writeBuffer(this.res.ddgiUboBuffer, 0, this._ddgiPlaceholderUBO.buffer);
     } else {
       this._ddgiIrrTex = inputs.irradianceTex;
       this._ddgiVisTex = inputs.visibilityTex;
