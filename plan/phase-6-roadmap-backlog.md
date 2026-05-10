@@ -27,7 +27,7 @@
 
 - [ ] **3.1** Mixture PDF (BSDF + env + light) replaces binary branch (shader verified).
 - [ ] **3.2** Light-tree CDF on scene CPU; binary search in GLSL.
-- [ ] **3.3** Back-face NEE resample up to 4×.
+- [x] **3.3** Back-face NEE resample up to 4× (`three-gpu-pathtracer` commit `e656a73`).
 - [ ] **3.4** Variance benchmark: ≥3× floor-pixel stddev reduction vs baseline at 192 spp (`plan/sprint-3-benchmark.md`).
 
 ## Sprint 4 — BSDF cost reduction (PT)
