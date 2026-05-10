@@ -159,9 +159,8 @@ class PTEngineWebGL2 implements Engine {
         'spot',
         'mesh-area',
       ]),
-      // RFE-05: API is plumbed, but published capability stays conservative
-      // until full MNEE/photon-map runtime verification.
-      causticStrategy: 'none',
+      // RFE-05: report the selected strategy wired into fork controls.
+      causticStrategy: this.#causticStrategy,
     };
   }
 
@@ -338,12 +337,6 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
   // engine's capabilities and does not change.
   const maxFragUniforms = glContext.getParameter(glContext.MAX_FRAGMENT_UNIFORM_VECTORS) as number;
   const supportsAnalyticCame = maxFragUniforms >= MIN_UNIFORM_VECTORS_FOR_CAME;
-
-  if (opts.causticStrategy != null && opts.causticStrategy !== 'none') {
-    console.warn(
-      `[vitrum/pt-webgl] causticStrategy="${opts.causticStrategy}" requested, but published backend currently reports "none" until full MNEE/photon-map runtime verification.`,
-    );
-  }
 
   const slot = makeStateSlot();
   const engine = new PTEngineWebGL2(

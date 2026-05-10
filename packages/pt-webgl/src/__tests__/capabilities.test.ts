@@ -66,26 +66,19 @@ describe('pt-webgl capabilities', () => {
       .WebGL2RenderingContext = FakeWebGL2RenderingContext;
   });
 
-  it('reports conservative caustic capability even when strategy is requested', async () => {
+  it('reports requested caustic capability when strategy is configured', async () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererStub() as never,
       causticStrategy: 'manifold-nee',
     });
-    expect(engine.capabilities.causticStrategy).toBe('none');
+    expect(engine.capabilities.causticStrategy).toBe('manifold-nee');
   });
 
-  it('warns when non-none caustic strategy is requested', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    try {
-      await createPTEngine_WebGL2({
-        device: makeRendererStub() as never,
-        causticStrategy: 'photon-map',
-      });
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('causticStrategy="photon-map" requested'),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
+  it('supports photon-map capability reporting path', async () => {
+    const engine = await createPTEngine_WebGL2({
+      device: makeRendererStub() as never,
+      causticStrategy: 'photon-map',
+    });
+    expect(engine.capabilities.causticStrategy).toBe('photon-map');
   });
 });
