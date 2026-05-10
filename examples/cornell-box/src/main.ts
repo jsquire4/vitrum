@@ -156,7 +156,8 @@ function parseCaptureConfig(): CaptureConfig {
     maxInteractiveHeight: preset?.maxH ?? DEFAULT_INTERACTIVE_MAX_H,
     denoiseDisplay: parseDenoiseDisplay(params),
     oidnModelUrl: params.get('vitrumOidnModel'),
-    pixelAdaptiveSampling: !isCapture && params.get('vitrumAdaptive') !== '0',
+    // Opt-in: additive Σ/count + tile-variance repeats are still experimental in WebGL2.
+    pixelAdaptiveSampling: !isCapture && params.get('vitrumAdaptive') === '1',
     pixelAdaptiveCadence: parsePositiveInt(params.get('vitrumAdaptiveCadence'), 4),
   };
 }
