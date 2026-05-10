@@ -181,7 +181,10 @@ class PTEngineWebGL2 implements Engine {
     this.#vitrumScene = scene;
     const threeScene = vitrumSceneToThree(scene);
     this.#threeSceneRoot = threeScene;
-    this.#pathTracer.setScene(threeScene, this.#camera);
+    this.#pathTracer.setScene(
+      threeScene as unknown as Parameters<WebGLPathTracer['setScene']>[0],
+      this.#camera as unknown as Parameters<WebGLPathTracer['setScene']>[1],
+    );
     driveForkMaterialUniforms(this.#pathTracer, threeScene);
   }
 
@@ -208,7 +211,9 @@ class PTEngineWebGL2 implements Engine {
     }
 
     applyFrameToPerspectiveCamera(this.#camera, input);
-    this.#pathTracer.setCamera(this.#camera);
+    this.#pathTracer.setCamera(
+      this.#camera as unknown as Parameters<WebGLPathTracer['setCamera']>[0],
+    );
 
     const q = input.quality ?? {};
     const b = Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit);
@@ -309,7 +314,9 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
   const renderer = opts.device as WebGLRenderer;
   RectAreaLightUniformsLib.init();
 
-  const pathTracer = new WebGLPathTracer(renderer);
+  const pathTracer = new WebGLPathTracer(
+    renderer as unknown as ConstructorParameters<typeof WebGLPathTracer>[0],
+  );
   pathTracer.renderDelay = 0;
   pathTracer.minSamples = 1;
   pathTracer.dynamicLowRes = false;
