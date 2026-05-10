@@ -1,4 +1,12 @@
-# external_requests/ Implementation Status — 2026-05-09
+# external_requests/ Implementation Status — 2026-05-10
+
+## 2026-05-10 closure update
+
+- Sprint 12 Gap §5 (spectral attenuation Beer-Lambert) is now APPLIED in fork codepaths.
+- RFE-03 layered BSDF implementation is landed in fork material packing + BSDF selection path.
+- pt-webgpu now includes HDRI CPU-payload importance sampling and reciprocal environment MIS.
+- pt-webgpu `causticStrategy` now maps to active `'manifold-nee'` and `'photon-map'` approximation paths (runtime-unverified).
+- Final GPU render/perf validation remains pending and tracked in `plan/gap-closure-verification-2026-05-10.md`.
 
 ## RFE-07 Sprint 7 Volume Scattering: APPLIED
 
@@ -33,7 +41,7 @@
   - Main loop spectral accumulation — APPLIED (`sampleHeroWavelength` seeds payload; contribution sites derive `throughputRgb` via `wavelengthToRGB`)
   - BSDF hero-wavelength IOR switchover from 3-channel to continuous Cauchy — APPLIED for transmission branch (`dispersionTransmissionDirection` now uses `cauchyIORatLambda(heroWavelength, A, B, C)`)
   - Thin-film stack TMM evaluation (35-layer TiO₂/SiO₂) — APPLIED in fork; runtime visual/perf verification pending
-  - Spectral attenuation Beer-Lambert RFE-01 (not started — depends on payload restructure)
+  - Spectral attenuation Beer-Lambert RFE-01 — APPLIED (runtime visual/perf verification pending)
 
 ## RFE-09 pt-webgl Material -> Fork Uniform Bridge: APPLIED (runtime-unverified)
 
@@ -96,8 +104,8 @@ Specific risks:
 - Sprint 12 `sampleHeroWavelength` GLSL uses a fixed-iteration binary search (7
   iterations, covers 128 > 82 entries). This is correct but if WebGL rejects the
   loop with a non-constant bound, the loop bound `7` may need to be a `#define`.
-- Sprint 12 payload conversion is incomplete: `RenderState` and primary contribution paths
-  now uses scalar throughput + hero wavelength through BSDF sampling/eval paths, but
+- Sprint 12 payload conversion code path is landed: `RenderState` and primary contribution
+  paths now use scalar throughput + hero wavelength through BSDF sampling/eval paths, but
   final validation still requires GPU visual/perf A/B on representative scenes.
 - Float32Array uniform upload for `uCmfX[81]` etc.: Three.js MaterialBase handles
   array uniforms via `setValues`; verify the uniform binding actually sets all 81
@@ -105,6 +113,7 @@ Specific risks:
 
 ## Vitrum library impact
 
-None — fork patches landed in fork only. Vitrum library types and code are unchanged.
-Tests: 542 pass (all workspaces, `npm test --workspaces --if-present`).
-TypeScript: `npx tsc --noEmit -p .` — clean, no errors.
+Vitrum-side bridge and `pt-webgpu` changes are now included in addition to fork patches.
+Tests: workspace tests pass via `npm test --workspaces --if-present`.
+TypeScript: workspace typecheck has known pre-existing `@vitrum/pt-webgl` type mismatches;
+`@vitrum/pt-webgpu` and other touched packages typecheck clean.

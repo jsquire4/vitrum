@@ -1,18 +1,20 @@
 {
   "name": "@vitrum/pt-webgpu",
   "version": "0.0.0",
-  "description": "Stub — not yet implemented. See plan/library-architecture.md for design.",
+  "description": "WebGPU-native path tracing backend scaffold for @vitrum/core.",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "license": "MIT",
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@vitrum/core": "file:../core"
   },
   "devDependencies": {
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^1.6.1"
   }
 }

@@ -266,7 +266,7 @@ etc.). Visual A/B verification required after each; reference renders saved to
 ## Stats
 
 - **Vitrum library packages**: 8 (core, three-bindings, shared-bvh, shared-samplers,
-  shared-denoisers, pt-webgl, pt-webgpu stub, walkaround-hybrid)
+  shared-denoisers, pt-webgl, pt-webgpu prototype, walkaround-hybrid)
 - **Total tests**: 542 passing (22 test files across 6 packages)
   - pt-webgl: 18
   - shared-bvh: 11
@@ -332,10 +332,11 @@ etc.). Visual A/B verification required after each; reference renders saved to
   The write path is Sprint 10a's responsibility (`varianceUpdateKernel` or inline in
   SVGF temporal pass). Until Sprint 10a's walkaround integration lands, adaptive
   sampling has no input signal to tier pixels on.
-- **`core` and `pt-webgpu` have no tests**: `@vitrum/core` is pure types (no runtime
-  behavior to test). `@vitrum/pt-webgpu` is a stub that throws `Not implemented` on
-  all methods. Neither omission is a risk at this stage but should be revisited when
-  either package gains real implementation.
+- **`core` remains type-only; `pt-webgpu` has moved to prototype status**:
+  `@vitrum/core` is pure types (no runtime behavior to test). `@vitrum/pt-webgpu`
+  now includes a pre-alpha implementation (progressive accumulation, CPU-built BVH,
+  GPU traversal, directional/point direct lighting) and package-level tests; GPU
+  visual verification and fidelity parity are still pending.
 
 ---
 

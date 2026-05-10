@@ -21,7 +21,7 @@ The package layout reflects the architectural separation between **what the engi
 @vitrum/shared-samplers         Sobol, Hammersley, light tree, mixture PDF
 @vitrum/shared-denoisers        À-trous, SVGF, BMFR, OIDN bridge
 @vitrum/pt-webgl                WebGL2 path-tracer backend (wraps three-gpu-pathtracer fork)
-@vitrum/pt-webgpu               WebGPU-native path-tracer backend (Phase 7+, the white whale)
+@vitrum/pt-webgpu               WebGPU-native path-tracer backend (pre-alpha prototype; active development)
 @vitrum/walkaround-hybrid       WebGPU layered DDGI + RC + ReSTIR DI engine
 ```
 

@@ -1,6 +1,6 @@
 # Layered BSDF — Two-Sided / Front-Back-Asymmetric Material
 
-**Status:** Proposed
+**Status:** Applied (runtime-unverified)
 **Originating need:** Consumer materials that have physically distinct optical properties on their front and back faces — absorbing surface layers, diffusion coatings, or asymmetric films — cannot be represented by the current symmetric `Material` interface.
 **Priority:** Medium (originating use case deferred; primitive is broadly applicable to asymmetric dielectrics)
 

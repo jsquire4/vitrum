@@ -1,10 +1,12 @@
 import {
   PerspectiveCamera,
+} from 'three';
+import type {
   WebGLRenderer,
   Scene as ThreeScene,
-  type Material as TMaterial,
-  type Mesh as TMesh,
-  type Object3D,
+  Material as TMaterial,
+  Mesh as TMesh,
+  Object3D,
 } from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { WebGLPathTracer } from 'three-gpu-pathtracer';
@@ -19,6 +21,7 @@ import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
+import { driveForkMaterialUniforms } from './forkUniformBridge.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Device-tier threshold for analytic came (Sprint 5)
@@ -76,7 +79,9 @@ function disposeObject3DTree(obj: Object3D): void {
     if (mesh.isMesh === true) {
       mesh.geometry?.dispose();
       const m = mesh.material as TMaterial | TMaterial[] | undefined;
-      if (Array.isArray(m)) m.forEach((x) => x.dispose?.());
+      if (Array.isArray(m)) m.forEach((x) => {
+        x.dispose?.();
+      });
       else m?.dispose?.();
     }
   });
@@ -177,6 +182,7 @@ class PTEngineWebGL2 implements Engine {
     const threeScene = vitrumSceneToThree(scene);
     this.#threeSceneRoot = threeScene;
     this.#pathTracer.setScene(threeScene, this.#camera);
+    driveForkMaterialUniforms(this.#pathTracer, threeScene);
   }
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {

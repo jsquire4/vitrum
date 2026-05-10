@@ -2,10 +2,10 @@
 
 **Date:** 2026-05-09
 **Requester:** stainedGlass app (`~/projects/stainedGlass`)
-**Status:** APPLIED (runtime-unverified). The bridge now has an explicit end-to-end path:
+**Status:** APPLIED (runtime-unverified). The bridge/fork split is now explicit:
 - `userData.vitrum*` stamps are packed per material in fork `MaterialsTexture`.
-- BSDF/SSS/dispersion read per-material scalar drives from the packed material payload.
-- `@vitrum/pt-webgl` host bridge uploads CMF/CDF spectral tables on scene set.
+- BSDF/SSS/dispersion/thin-film/layered paths read per-material payload values.
+- `@vitrum/pt-webgl` host bridge uploads global CMF/CDF spectral tables on scene set and does not override per-material scalar uniforms.
 
 ---
 

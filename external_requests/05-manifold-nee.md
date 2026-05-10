@@ -1,6 +1,6 @@
 # Manifold Next-Event Estimation for Specular Caustics
 
-**Status:** Proposed
+**Status:** Applied (runtime-unverified)
 **Originating need:** Scenes containing refractive objects between light sources and diffuse receivers (e.g., glass panels casting colored caustics onto a room floor) produce near-zero contribution from standard NEE because the refraction geometry must be solved before a valid shadow ray can be constructed.
 **Priority:** Medium (biased photon mapping is a viable fallback)
 

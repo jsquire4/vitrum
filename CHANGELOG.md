@@ -13,7 +13,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`plan/walkaround-without-three.md`** — module-by-module note on THREE coupling and RC re-composition scope.
 - **`@vitrum/walkaround-hybrid`**: exported **`hostScene/types.ts`** seam types (`WalkaroundBVHSceneRoot`, `WalkaroundDDGIScene`, `WalkaroundThreeHostScene`).
 - Unit tests: **`@vitrum/three-bindings`** (`sceneFromThreeJS` smoke), **`@vitrum/pt-webgl`** (factory validation).
+- **`@vitrum/pt-webgpu`**: initial functional backend prototype (no longer stub), including:
+  - progressive accumulation compute path,
+  - CPU-built BVH + GPU BVH traversal,
+  - multi-bounce diffuse/specular/emissive baseline shading,
+  - directional + point direct-light support,
+  - package test suite (`scenePack`, `buildCpuBvh`).
+- **`packages/pt-webgpu/README.md`** documenting current capabilities, limits, and next steps.
 
 ### Changed
 
 - **`HybridEngine`**: RC note in file header now points to `plan/walkaround-without-three.md` instead of a dangling TODO.
+- Repo docs now reflect that **`@vitrum/pt-webgpu`** has moved from stub to active prototype (`README.md`, `plan/library-architecture.md`, `plan/phase-6-status.md`).

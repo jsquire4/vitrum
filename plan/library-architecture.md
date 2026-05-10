@@ -62,9 +62,9 @@
 
 **Depends on**: `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `three`, `three-gpu-pathtracer` (our fork).
 
-### `@vitrum/pt-webgpu` *(future, Phase 7+)*
+### `@vitrum/pt-webgpu` *(prototype, evolving toward Phase 7 goals)*
 
-**Owns**: a from-scratch WebGPU-native path-tracer backend. Designed to support hero-wavelength spectral, full Disney BSDF, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
+**Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active pre-alpha prototype (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
 
 **Depends on**: `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`. Notably NOT three-gpu-pathtracer.
 

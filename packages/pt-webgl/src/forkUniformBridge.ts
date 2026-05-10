@@ -1,4 +1,4 @@
-import { Mesh, type MeshPhysicalMaterial, type Scene as ThreeScene, type Vector3Tuple } from 'three';
+import { Mesh, type MeshPhysicalMaterial, type Scene as ThreeScene } from 'three';
 import { CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE } from '@vitrum/shared-samplers';
 import { rgbToSpectralCoefficients } from '@vitrum/shared-samplers';
 import {
@@ -137,9 +137,7 @@ export function driveForkMaterialUniforms(pathTracer: unknown, scene: ThreeScene
   const tracer = pathTracer as { _pathTracer?: { material?: PathTracerMaterialLike } };
   const material = tracer._pathTracer?.material ?? null;
   if (material == null) return;
-
-  const sources = materialSourcesFromScene(scene);
-  const source = dominantSource(sources);
+  void scene;
   const yCdf = buildYCdf(CIE_Y_TABLE);
 
   setUniform(material, 'uCmfX', CIE_X_TABLE);
@@ -148,69 +146,6 @@ export function driveForkMaterialUniforms(pathTracer: unknown, scene: ThreeScene
   setUniform(material, 'uYCmfCdf', yCdf);
   // Trapezoidal integral in table-space; shader/host treat this as relative normalization constant.
   setUniform(material, 'uYCmfIntegral', 106.857);
-
-  if (source == null) {
-    setUniform(material, 'u_volumeDensity', 0);
-    setUniform(material, 'u_sssSigmaT', 0);
-    setUniform(material, 'u_anisotropyG', 0);
-    setUniform(material, 'u_scatterAlbedo', [0.8, 0.85, 0.9] as Vector3Tuple);
-    setUniform(material, 'u_sssAlbedo', [0.9, 0.9, 0.9] as Vector3Tuple);
-    setUniform(material, 'u_sssAnisotropyG', 0);
-    setUniform(material, 'u_ior0', 1.5);
-    setUniform(material, 'u_dispersionStrength', 0);
-    setUniform(material, 'u_jakobCoeffs', [0, 0, 0] as Vector3Tuple);
-    setUniform(material, 'iorCauchyA', 1.5);
-    setUniform(material, 'iorCauchyB', 0);
-    setUniform(material, 'iorCauchyC', 0);
-    setUniform(material, 'uThinFilmEnabled', 0);
-    setUniform(material, 'uThinFilmLayerCount', 0);
-    setUniform(material, 'uThinFilmLayerIors', new Float32Array(35));
-    setUniform(material, 'uThinFilmLayerThicknessNm', new Float32Array(35));
-    // TODO: gated on RFE-13 — spectral Beer-Lambert per-λ attenuation upload.
-    // Once RFE-13 (ray-payload restructure) lands, upload vitrumSpectralAttenuation
-    // curve values here to drive the Beer-Lambert extinction path in the shader.
-    return;
-  }
-
-  const dispersionStrength = dispersionStrengthFromAbbe(source.ior, source.abbe);
-  const [c0, c1, c2] = rgbToSpectralCoefficients(
-    source.baseColor[0],
-    source.baseColor[1],
-    source.baseColor[2],
-  );
-
-  setUniform(material, 'u_volumeDensity', source.scatteringCoeff);
-  setUniform(material, 'u_sssSigmaT', source.scatteringCoeff);
-  setUniform(material, 'u_anisotropyG', source.scatteringAnisotropy);
-  setUniform(material, 'u_scatterAlbedo', (source.scatteringCoeffRgb ?? [0.9, 0.9, 0.9]) as Vector3Tuple);
-  // u_sssAlbedo = single-scatter albedo (σ_s / σ_t per channel); u_sssAnisotropyG mirrors u_anisotropyG.
-  setUniform(material, 'u_sssAlbedo', (source.scatteringCoeffRgb ?? [0.9, 0.9, 0.9]) as Vector3Tuple);
-  setUniform(material, 'u_sssAnisotropyG', source.scatteringAnisotropy);
-  setUniform(material, 'u_ior0', source.ior);
-  setUniform(material, 'u_dispersionStrength', dispersionStrength);
-  setUniform(material, 'u_jakobCoeffs', [c0, c1, c2] as Vector3Tuple);
-  setUniform(material, 'iorCauchyA', source.ior);
-  setUniform(material, 'iorCauchyB', dispersionStrength * 1e-6);
-  setUniform(material, 'iorCauchyC', 0);
-
-  const layerIors = new Float32Array(35);
-  const layerThicknessNm = new Float32Array(35);
-  let layerCount = 0;
-  const layers = source.thinFilmStack?.layers ?? [];
-  for (let i = 0; i < Math.min(35, layers.length); i += 1) {
-    const layer = layers[i];
-    if (layer == null) continue;
-    layerIors[i] = layer.ior;
-    layerThicknessNm[i] = layer.thicknessNm;
-    layerCount += 1;
-  }
-  setUniform(material, 'uThinFilmEnabled', layerCount > 0 ? 1 : 0);
-  setUniform(material, 'uThinFilmLayerCount', layerCount);
-  setUniform(material, 'uThinFilmLayerIors', layerIors);
-  setUniform(material, 'uThinFilmLayerThicknessNm', layerThicknessNm);
-
-  // TODO: gated on RFE-13 — spectral Beer-Lambert per-λ attenuation upload.
-  // Once RFE-13 (ray-payload restructure) lands, read source.spectralAttenuation
-  // (vitrumSpectralAttenuation userData key) and upload it to the fork's
-  // spectral extinction uniform so the Beer-Lambert path activates per wavelength.
+  // RFE-09 stabilization: per-material scalar drives now come from the fork
+  // MaterialsTexture packing path. The bridge only uploads global spectral tables.
 }
