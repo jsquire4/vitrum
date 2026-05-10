@@ -33,6 +33,9 @@ interface CaptureConfig {
   readonly isCapture: boolean;
   readonly autoStart: boolean;
   readonly qualityMode: PTEngineWebGL2QualityMode;
+  /** Interactive resize cap (capture mode uses explicit width/height). */
+  readonly maxInteractiveWidth: number;
+  readonly maxInteractiveHeight: number;
 }
 
 function parsePositiveInt(value: string | null, fallback: number): number {
@@ -43,12 +46,43 @@ function parsePositiveInt(value: string | null, fallback: number): number {
 const DEFAULT_MANUAL_SPP = 1024;
 const DEFAULT_CAPTURE_SPP = 256;
 const SMOKE_SPP_THRESHOLD = 16;
-const MAX_INTERACTIVE_WIDTH = 1920;
-const MAX_INTERACTIVE_HEIGHT = 1080;
+const DEFAULT_INTERACTIVE_MAX_W = 1920;
+const DEFAULT_INTERACTIVE_MAX_H = 1080;
+
+type InteractivePresetId = 'preview' | 'quality' | 'hero' | 'final4k';
+
+interface InteractivePreset {
+  readonly maxW: number;
+  readonly maxH: number;
+  readonly spp: number;
+  readonly bounces: number;
+  readonly qualityMode: PTEngineWebGL2QualityMode;
+}
+
+const INTERACTIVE_PRESETS: Record<InteractivePresetId, InteractivePreset> = {
+  preview: { maxW: 1280, maxH: 720, spp: 512, bounces: 6, qualityMode: 'interactive' },
+  quality: { maxW: 1920, maxH: 1080, spp: 1024, bounces: 8, qualityMode: 'interactive' },
+  hero: { maxW: 2560, maxH: 1440, spp: 512, bounces: 10, qualityMode: 'final' },
+  final4k: { maxW: 3840, maxH: 2160, spp: 8192, bounces: 12, qualityMode: 'final' },
+};
 
 function parseQualityMode(value: string | null, isCapture: boolean): PTEngineWebGL2QualityMode {
   if (value === 'interactive' || value === 'final' || value === 'capture' || value === 'safe') return value;
   return isCapture ? 'capture' : 'interactive';
+}
+
+/** Defaults when vitrumBounces is omitted: diffuse box converges quickly; glass/caustics need depth. */
+function defaultBouncesForScenario(scenarioId: string): number {
+  if (scenarioId.includes('caustic') || scenarioId.includes('parity')) return 12;
+  if (
+    scenarioId.includes('spectral') ||
+    scenarioId.includes('thinfilm') ||
+    scenarioId.includes('dispersion')
+  ) {
+    return 10;
+  }
+
+  return 6;
 }
 
 function fitWithin(width: number, height: number, maxWidth: number, maxHeight: number): readonly [number, number] {
@@ -73,21 +107,38 @@ function parseCaptureConfig(): CaptureConfig {
   const causticStrategy =
     caustic === 'manifold-nee' || caustic === 'photon-map' ? caustic : 'none';
   const isCapture = params.has('vitrumScenario');
-  const qualityMode = parseQualityMode(params.get('vitrumQuality'), isCapture);
+  const scenarioId = params.get('vitrumScenario') ?? 'cornell-box';
+  const presetParam = params.get('vitrumPreset');
+  const preset: InteractivePreset | undefined =
+    !isCapture && presetParam != null && presetParam in INTERACTIVE_PRESETS
+      ? INTERACTIVE_PRESETS[presetParam as InteractivePresetId]
+      : undefined;
+
+  const qualityMode = params.has('vitrumQuality')
+    ? parseQualityMode(params.get('vitrumQuality'), isCapture)
+    : isCapture
+      ? 'capture'
+      : (preset?.qualityMode ?? 'interactive');
+
   return {
-    scenarioId: params.get('vitrumScenario') ?? 'cornell-box',
+    scenarioId,
     seed: parsePositiveInt(params.get('vitrumSeed'), 12345),
     width: parsePositiveInt(params.get('vitrumWidth'), window.innerWidth || 1280),
     height: parsePositiveInt(params.get('vitrumHeight'), window.innerHeight || 720),
-    bounces: parsePositiveInt(params.get('vitrumBounces'), 8),
+    bounces: parsePositiveInt(
+      params.get('vitrumBounces'),
+      preset?.bounces ?? defaultBouncesForScenario(scenarioId),
+    ),
     samplesTarget: parsePositiveInt(
       params.get('vitrumSpp'),
-      isCapture ? DEFAULT_CAPTURE_SPP : DEFAULT_MANUAL_SPP,
+      isCapture ? DEFAULT_CAPTURE_SPP : (preset?.spp ?? DEFAULT_MANUAL_SPP),
     ),
     causticStrategy,
     isCapture,
     autoStart: params.get('vitrumAutoStart') === '1',
     qualityMode,
+    maxInteractiveWidth: preset?.maxW ?? DEFAULT_INTERACTIVE_MAX_W,
+    maxInteractiveHeight: preset?.maxH ?? DEFAULT_INTERACTIVE_MAX_H,
   };
 }
 
@@ -265,7 +316,7 @@ async function main(): Promise<void> {
     const displayH = config.isCapture ? config.height : window.innerHeight;
     const [w, h] = config.isCapture
       ? [displayW, displayH]
-      : fitWithin(displayW, displayH, MAX_INTERACTIVE_WIDTH, MAX_INTERACTIVE_HEIGHT);
+      : fitWithin(displayW, displayH, config.maxInteractiveWidth, config.maxInteractiveHeight);
     renderWidth = w;
     renderHeight = h;
     camera.aspect = w / h;
