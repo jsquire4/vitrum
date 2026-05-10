@@ -22,6 +22,8 @@ vi.mock('three-gpu-pathtracer', () => {
     minSamples = 0;
     dynamicLowRes = false;
     multipleImportanceSampling = false;
+    tileRepeatFactors: Uint8Array | null = null;
+    configureAdditiveAccumulation = vi.fn();
     readonly tiles = { set: vi.fn() };
     readonly _pathTracer = {
       material: {

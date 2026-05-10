@@ -16,6 +16,16 @@
         width: 100vw;
         height: 100vh;
       }
+      /* Overlay for bilateral / OIDN preview — PT accumulation stays on #c underneath. */
+      #denoise {
+        display: none;
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 2;
+        pointer-events: none;
+      }
       #status {
         position: fixed;
         left: 12px;
@@ -42,6 +52,7 @@
   </head>
   <body>
     <canvas id="c"></canvas>
+    <canvas id="denoise" aria-hidden="true"></canvas>
     <button id="start" type="button">Start WebGL render</button>
     <div id="status">Initializing…</div>
     <script type="module" src="/src/main.ts"></script>

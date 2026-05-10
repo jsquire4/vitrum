@@ -3,10 +3,15 @@
  */
 
 import type { FrameInput, Mat4, Vec3 } from '@vitrum/core';
-import type { PTEngineWebGL2FrameOutput, PTEngineWebGL2QualityMode } from '@vitrum/pt-webgl';
+import type {
+  PTEngineWebGL2,
+  PTEngineWebGL2FrameOutput,
+  PTEngineWebGL2QualityMode,
+} from '@vitrum/pt-webgl';
 import * as THREE from 'three';
-import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
+import { createPTEngine_WebGL2, readAccumulationRgbFloat } from '@vitrum/pt-webgl';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
+import { BilateralPreviewCanvas, writeTonemappedRgbToCanvas, type DenoiseDisplayMode } from './denoiseDisplay.js';
 
 declare global {
   // Optional capture harness hooks read by tools/benchmark-runner/capture-adapter-playwright.mjs.
@@ -36,6 +41,10 @@ interface CaptureConfig {
   /** Interactive resize cap (capture mode uses explicit width/height). */
   readonly maxInteractiveWidth: number;
   readonly maxInteractiveHeight: number;
+  readonly denoiseDisplay: DenoiseDisplayMode;
+  readonly oidnModelUrl: string | null;
+  readonly pixelAdaptiveSampling: boolean;
+  readonly pixelAdaptiveCadence: number;
 }
 
 function parsePositiveInt(value: string | null, fallback: number): number {
@@ -101,6 +110,12 @@ function getWebGLRendererLabel(renderer: THREE.WebGLRenderer): string {
   return typeof fallback === 'string' ? fallback : 'unknown WebGL renderer';
 }
 
+function parseDenoiseDisplay(params: URLSearchParams): DenoiseDisplayMode {
+  const v = params.get('vitrumDisplay');
+  if (v === 'bilateral' || v === 'oidn') return v;
+  return 'raw';
+}
+
 function parseCaptureConfig(): CaptureConfig {
   const params = new URLSearchParams(window.location.search);
   const caustic = params.get('vitrumCaustic');
@@ -139,6 +154,10 @@ function parseCaptureConfig(): CaptureConfig {
     qualityMode,
     maxInteractiveWidth: preset?.maxW ?? DEFAULT_INTERACTIVE_MAX_W,
     maxInteractiveHeight: preset?.maxH ?? DEFAULT_INTERACTIVE_MAX_H,
+    denoiseDisplay: parseDenoiseDisplay(params),
+    oidnModelUrl: params.get('vitrumOidnModel'),
+    pixelAdaptiveSampling: !isCapture && params.get('vitrumAdaptive') !== '0',
+    pixelAdaptiveCadence: parsePositiveInt(params.get('vitrumAdaptiveCadence'), 4),
   };
 }
 
@@ -291,7 +310,7 @@ async function main(): Promise<void> {
   const vitrumScene = sceneFromThreeJS(threeScene);
 
   setStatus('Creating path-tracing engine...');
-  const engine = await createPTEngine_WebGL2({
+  const engine = (await createPTEngine_WebGL2({
     device: renderer,
     maxBounces: config.bounces,
     maxSamplesPerPixel: config.samplesTarget,
@@ -300,8 +319,11 @@ async function main(): Promise<void> {
       'vitrum.ptWebgl.spectralRendering': spectralRendering,
       'vitrum.ptWebgl.qualityMode': config.qualityMode,
       'vitrum.ptWebgl.radianceClamp': 0,
+      'vitrum.ptWebgl.pixelAdaptiveSampling': config.pixelAdaptiveSampling,
+      'vitrum.ptWebgl.pixelAdaptiveCadence': config.pixelAdaptiveCadence,
+      'vitrum.ptWebgl.additiveAccumulation': config.pixelAdaptiveSampling,
     },
-  });
+  })) as PTEngineWebGL2;
   setStatus('Uploading scene to path tracer...');
   engine.setScene(vitrumScene);
 
@@ -329,6 +351,14 @@ async function main(): Promise<void> {
   }
   resize();
   if (!config.isCapture) window.addEventListener('resize', resize);
+
+  const denoiseCanvas = document.querySelector<HTMLCanvasElement>('#denoise');
+  let bilateral: BilateralPreviewCanvas | null = null;
+  if (denoiseCanvas != null && config.denoiseDisplay === 'bilateral') {
+    bilateral = new BilateralPreviewCanvas(denoiseCanvas);
+  }
+  let oidnStarted = false;
+  let lastDivideByAlpha = false;
 
   function loop(): void {
     if (frame === 0) {
@@ -360,6 +390,45 @@ async function main(): Promise<void> {
       ? String(out.samplesAccumulated)
       : out.samplesAccumulated.toFixed(2);
     const telemetry = out.telemetry;
+    lastDivideByAlpha = telemetry?.additiveAccumulation ?? false;
+
+    if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {
+      canvas.style.visibility = 'hidden';
+      denoiseCanvas.style.display = 'block';
+      bilateral.render(engine.getAccumulationRenderTarget().texture as THREE.Texture, renderWidth, renderHeight);
+    } else if (config.denoiseDisplay !== 'oidn') {
+      canvas.style.visibility = 'visible';
+      if (denoiseCanvas != null) denoiseCanvas.style.display = 'none';
+    }
+
+    if (
+      config.denoiseDisplay === 'oidn' &&
+      denoiseCanvas != null &&
+      config.oidnModelUrl != null &&
+      config.oidnModelUrl.length > 0 &&
+      out.isConverged &&
+      !oidnStarted
+    ) {
+      oidnStarted = true;
+      void (async () => {
+        try {
+          const { denoiseFinal } = await import('@vitrum/shared-denoisers');
+          const rt = engine.getAccumulationRenderTarget();
+          const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
+          const dod = await denoiseFinal(
+            { color: rgb, width: renderWidth, height: renderHeight },
+            { modelUrl: config.oidnModelUrl! },
+          );
+          canvas.style.visibility = 'hidden';
+          writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
+        } catch (err) {
+          console.warn('[vitrum-cornell] OIDN failed — install onnxruntime-web and supply vitrumOidnModel URL.', err);
+          canvas.style.visibility = 'visible';
+          oidnStarted = false;
+        }
+      })();
+    }
+
     const perfLabel = telemetry == null
       ? rendererLabel
       : [
@@ -368,6 +437,8 @@ async function main(): Promise<void> {
         `${telemetry.samplesPerFrame}spf`,
         `${telemetry.tileSize}x${telemetry.tileSize} tiles`,
         telemetry.sppPerSecond == null ? null : `${telemetry.sppPerSecond.toFixed(1)} spp/s`,
+        telemetry.additiveAccumulation ? 'sum/count HDR' : null,
+        telemetry.pixelAdaptiveSampling ? 'pixel-adaptive tiles' : null,
         telemetry.guardrail,
       ].filter(Boolean).join(' — ');
     const completionLabel = samplesTarget <= SMOKE_SPP_THRESHOLD

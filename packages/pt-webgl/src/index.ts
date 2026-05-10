@@ -3,6 +3,7 @@ import {
 } from 'three';
 import type {
   WebGLRenderer,
+  WebGLRenderTarget,
   Scene as ThreeScene,
   Material as TMaterial,
   Mesh as TMesh,
@@ -22,6 +23,11 @@ import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
+import {
+  MAX_TILE_GRID,
+  TileVariancePass,
+  computeAdaptiveTileRepeatFactors,
+} from './adaptiveTileWeights.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Device-tier threshold for analytic came (Sprint 5)
@@ -41,6 +47,12 @@ import { driveForkMaterialUniforms } from './forkUniformBridge.js';
  */
 const MIN_UNIFORM_VECTORS_FOR_CAME = 256;
 
+export {
+  MAX_TILE_GRID,
+  TileVariancePass,
+  computeAdaptiveTileRepeatFactors,
+} from './adaptiveTileWeights.js';
+export { readAccumulationRgbFloat } from './readbackHdr.js';
 export { vitrumSceneToThree } from '@vitrum/three-bindings';
 export { applyFrameToPerspectiveCamera } from './frameCamera.js';
 export { packCameUBO } from './cameUniformUploader.js';
@@ -72,6 +84,8 @@ export interface PTEngineWebGL2Telemetry {
   readonly estimatedRenderTargetBytes: number;
   readonly renderTargetBudgetBytes: number;
   readonly guardrail: string | null;
+  readonly additiveAccumulation: boolean;
+  readonly pixelAdaptiveSampling: boolean;
 }
 
 export type PTEngineWebGL2FrameOutput = FrameOutput & {
@@ -261,7 +275,7 @@ interface PTEngineWebGL2Init {
   readonly supportsAnalyticCame: boolean;
 }
 
-class PTEngineWebGL2 implements Engine {
+export class PTEngineWebGL2 implements Engine {
   readonly #slot: StateSlot;
 
   readonly #renderer: WebGLRenderer;
@@ -288,6 +302,11 @@ class PTEngineWebGL2 implements Engine {
   #lastRenderHeight = 0;
   #contextLost = false;
   #lastTelemetry: PTEngineWebGL2Telemetry | undefined;
+  #additiveAccumulation = false;
+  #pixelAdaptiveSampling = false;
+  #pixelAdaptiveCadence = 4;
+  #tileVariancePass: TileVariancePass | null = null;
+  #tileFactorsScratch: Uint8Array = new Uint8Array(MAX_TILE_GRID * MAX_TILE_GRID);
 
   constructor(opts: PTEngineWebGL2Options, gpu: PTEngineWebGL2Init, slot: StateSlot) {
     this.#slot = slot;
@@ -310,6 +329,19 @@ class PTEngineWebGL2 implements Engine {
     this.#camera = gpu.camera;
     this.#supportsAnalyticCame = gpu.supportsAnalyticCame;
     this.#limits = this.#detectDeviceLimits();
+    const adaptiveRequested = opts.extensions?.['vitrum.ptWebgl.pixelAdaptiveSampling'] === true;
+    this.#additiveAccumulation =
+      opts.extensions?.['vitrum.ptWebgl.additiveAccumulation'] === true || adaptiveRequested;
+    this.#pixelAdaptiveSampling = adaptiveRequested;
+    this.#pixelAdaptiveCadence = Math.max(
+      1,
+      extensionNumber(opts.extensions, 'vitrum.ptWebgl.pixelAdaptiveCadence', 4),
+    );
+    this.#tileFactorsScratch.fill(1);
+    if (this.#pixelAdaptiveSampling) {
+      this.#tileVariancePass = new TileVariancePass(MAX_TILE_GRID);
+    }
+    gpu.pathTracer.configureAdditiveAccumulation(this.#additiveAccumulation, this.#additiveAccumulation);
     this.#renderer.domElement?.addEventListener?.('webglcontextlost', () => {
       this.#contextLost = true;
       this.#samplesPerFrame = 1;
@@ -554,6 +586,29 @@ class PTEngineWebGL2 implements Engine {
     const sppBefore = spp;
     const batchStart = nowMs();
     const samplesThisFrame = Math.min(this.#samplesPerFrame, Math.max(0, Math.ceil(targetSpp - spp)));
+
+    const tilesX = Math.max(1, Math.floor(this.#pathTracer.tiles.x));
+    const tilesY = Math.max(1, Math.floor(this.#pathTracer.tiles.y));
+    const tileCount = tilesX * tilesY;
+
+    if (this.#pixelAdaptiveSampling && this.#additiveAccumulation && this.#tileVariancePass != null) {
+      if (sppBefore >= 2 && sppBefore % this.#pixelAdaptiveCadence === 0) {
+        computeAdaptiveTileRepeatFactors(
+          this.#tileVariancePass,
+          this.#renderer,
+          this.#pathTracer.target.texture as unknown as import('three').Texture,
+          w,
+          h,
+          tilesX,
+          tilesY,
+          this.#tileFactorsScratch,
+        );
+        this.#pathTracer.tileRepeatFactors = this.#tileFactorsScratch.subarray(0, tileCount);
+      }
+    } else if (!this.#pixelAdaptiveSampling) {
+      this.#pathTracer.tileRepeatFactors = null;
+    }
+
     for (let i = 0; i < samplesThisFrame && spp < targetSpp; i += 1) {
       this.#pathTracer.renderSample();
       spp = this.#pathTracer.samples;
@@ -580,6 +635,8 @@ class PTEngineWebGL2 implements Engine {
       guardrail: this.#contextLost
         ? 'webgl context loss observed; scheduler reduced workload'
         : sizePlan.guardrail,
+      additiveAccumulation: this.#additiveAccumulation,
+      pixelAdaptiveSampling: this.#pixelAdaptiveSampling,
     };
     return {
       primaryRadiance: this.#pathTracer.target.texture,
@@ -592,6 +649,15 @@ class PTEngineWebGL2 implements Engine {
   reset(): void {
     if (this.#slot.get() === 'disposed') return;
     this.#pathTracer.reset();
+  }
+
+  /**
+   * HDR accumulation buffer backing `primaryRadiance` / fork canvas preview.
+   * Texels are running averages unless additive accumulation is enabled (then RGB sum / alpha count).
+   */
+  getAccumulationRenderTarget(): WebGLRenderTarget {
+    this.#assertLive('getAccumulationRenderTarget');
+    return this.#pathTracer.target as unknown as WebGLRenderTarget;
   }
 
   pause(): void {
@@ -610,6 +676,10 @@ class PTEngineWebGL2 implements Engine {
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
+    if (this.#tileVariancePass != null) {
+      this.#tileVariancePass.dispose();
+      this.#tileVariancePass = null;
+    }
     if (this.#threeSceneRoot != null) {
       disposeObject3DTree(this.#threeSceneRoot);
       this.#threeSceneRoot = null;
