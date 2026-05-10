@@ -29,6 +29,8 @@ export const PT_RESOLUTION_FACTOR = 1.0;
  */
 export const PT_PREVIEW_RESOLUTION_FACTOR = 0.5;
 export const PT_LOW_RES_SCALE = 0.25;
+/** Sprint 1: host post-processing warmup gate (skip while spp < 8). */
+export const PT_POSTPROCESS_WARMUP_SAMPLES = 8;
 
 // Timing budgets (PT_HONEYCOMB_TIMING_BUDGET_MS etc.) are intentionally not
 // extracted — they are e2e test gate parameters, not engine configuration.

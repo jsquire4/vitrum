@@ -540,6 +540,26 @@ describe('HybridEngine — setPPGEnabled lifecycle (Sprint 11)', () => {
     // This test documents the intent; actual type-check is `npx tsc --noEmit`.
     expect(true).toBe(true);
   });
+
+  it('setPPGEnabled triggers reset when the value changes', async () => {
+    const { HybridEngine } = await import('../src/HybridEngine.js');
+    const reset = vi.fn();
+    const mock = {
+      _ppgEnabled: false,
+      _debug: false,
+      reset,
+    };
+
+    (HybridEngine.prototype.setPPGEnabled as (this: unknown, on: boolean) => void)
+      .call(mock, true);
+    expect((mock as { _ppgEnabled: boolean })._ppgEnabled).toBe(true);
+    expect(reset).toHaveBeenCalledTimes(1);
+
+    // No-op when unchanged.
+    (HybridEngine.prototype.setPPGEnabled as (this: unknown, on: boolean) => void)
+      .call(mock, true);
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── 8. PPG exports from package index ────────────────────────────────────────

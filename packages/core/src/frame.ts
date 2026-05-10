@@ -164,6 +164,12 @@ export interface FrameOutput {
    *  the post-processing pipeline. PT engines flip this at sample target;
    *  walkaround engines flip it once temporal accumulation has stabilized. */
   readonly isConverged: boolean;
+
+  /** Optional host hint for post-processing warmup gates. When true, the
+   *  backend recommends skipping expensive post effects for this frame
+   *  (typical use: first N samples after reset in PT preview). Hosts that
+   *  don't implement post-processing can ignore this field. */
+  readonly suggestSkipPostProcess?: boolean;
 }
 
 /** Opaque texture handle. The shape varies per backend; hosts pass it back

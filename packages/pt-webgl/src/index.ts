@@ -19,6 +19,7 @@ import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
+import { PT_POSTPROCESS_WARMUP_SAMPLES } from './constants.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Device-tier threshold for analytic came (Sprint 5)
@@ -189,6 +190,7 @@ class PTEngineWebGL2 implements Engine {
         primaryRadiance: this.#pathTracer.target.texture,
         samplesAccumulated: spp,
         isConverged: spp >= cap,
+        suggestSkipPostProcess: spp < PT_POSTPROCESS_WARMUP_SAMPLES,
       };
     }
 
@@ -209,10 +211,12 @@ class PTEngineWebGL2 implements Engine {
 
     this.#pathTracer.renderSample();
     const spp = Math.round(this.#pathTracer.samples);
+    const converged = spp >= targetSpp;
     return {
       primaryRadiance: this.#pathTracer.target.texture,
       samplesAccumulated: spp,
-      isConverged: spp >= targetSpp,
+      isConverged: converged,
+      suggestSkipPostProcess: !converged && spp < PT_POSTPROCESS_WARMUP_SAMPLES,
     };
   }
 

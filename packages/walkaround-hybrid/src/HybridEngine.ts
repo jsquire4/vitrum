@@ -111,9 +111,9 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    * When true, the engine allocates the three PPG storage buffers
    * (cellBuffer, leafBuffer, sampleBuffer) during pipeline initialisation.
-   * The buffers are ready for binding but the update/sample dispatch passes
-   * are NOT wired in Sprint 11 — see `plan/sprint-11-ppg-integration.md`
-   * for the deferred integration spec.
+   * The buffers are ready for binding and now apply immediately via
+   * `setPPGEnabled()` + automatic reset. PPG shader dispatch remains
+   * follow-up work tracked in `plan/sprint-11-ppg-integration.md`.
    *
    * Defaults to false — no behavioural change for existing consumers.
    *
@@ -564,17 +564,8 @@ export class HybridEngine implements Engine {
   /**
    * Enable or disable PPG (path guiding) for subsequent frames.
    *
-   * **Sprint 11 behaviour (structural prep — dispatch not wired):**
-   * This method records the intent but does NOT yet trigger a pipeline
-   * reinitialisation or change GPU dispatch. The PPG buffers are only
-   * allocated if `ppgEnabled: true` was passed at construction time, or
-   * if the engine is reset after calling this method.
-   *
-   * To allocate PPG buffers at runtime:
-   * ```ts
-   * engine.setPPGEnabled(true);
-   * engine.reset(); // triggers pipeline reinit with ppgEnabled = true
-   * ```
+   * The setting takes effect immediately by rebuilding the pipeline so
+   * frame resources are reallocated with/without PPG buffers.
    *
    * The no-op guarantee: calling `setPPGEnabled(false)` when PPG was never
    * enabled has zero cost and no side effects. Existing consumers that never
@@ -588,12 +579,12 @@ export class HybridEngine implements Engine {
    * @since Sprint 11, 2026-05-09
    */
   setPPGEnabled(on: boolean): void {
+    if (this._ppgEnabled === on) return;
     this._ppgEnabled = on;
-    // No-op for dispatch in Sprint 11 — integration deferred.
-    // When Sprint 11 integration lands, this will also toggle the
-    // ppgUpdate + ppgSample passes in the pipeline's renderFrame dispatch.
+    // Reinitialize so createFrameResources receives the new ppgEnabled flag.
+    this.reset();
     if (this._debug) {
-      console.log('[hybrid:debug] setPPGEnabled', { on, willTakeEffectOnNextReset: true });
+      console.log('[hybrid:debug] setPPGEnabled', { on, reinitialized: true });
     }
   }
 
@@ -729,7 +720,11 @@ export class HybridEngine implements Engine {
 
         const pipeline = new WalkaroundGPUPipeline(device, this._width, this._height);
         const pipelineStart = performance.now();
-        await pipeline.initialize(bvh, getPreferredSwapChainFormat());
+        await pipeline.initialize(
+          bvh,
+          getPreferredSwapChainFormat(),
+          { ppgEnabled: this._ppgEnabled },
+        );
         const pipelineMs = performance.now() - pipelineStart;
 
         if (this._disposed) {
