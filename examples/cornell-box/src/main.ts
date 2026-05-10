@@ -3,6 +3,7 @@
  */
 
 import type { FrameInput, Mat4, Vec3 } from '@vitrum/core';
+import type { PTEngineWebGL2FrameOutput, PTEngineWebGL2QualityMode } from '@vitrum/pt-webgl';
 import * as THREE from 'three';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
@@ -13,6 +14,8 @@ declare global {
   var VITRUM_CAPTURE_READY: boolean | undefined;
   // eslint-disable-next-line no-var
   var VITRUM_MS_PER_SAMPLE: number | undefined;
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_TELEMETRY: Record<string, unknown> | undefined;
 }
 
 function mat4FromThree(m: THREE.Matrix4): Mat4 {
@@ -28,6 +31,8 @@ interface CaptureConfig {
   readonly samplesTarget: number;
   readonly causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
   readonly isCapture: boolean;
+  readonly autoStart: boolean;
+  readonly qualityMode: PTEngineWebGL2QualityMode;
 }
 
 function parsePositiveInt(value: string | null, fallback: number): number {
@@ -35,20 +40,54 @@ function parsePositiveInt(value: string | null, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+const DEFAULT_MANUAL_SPP = 1024;
+const DEFAULT_CAPTURE_SPP = 256;
+const SMOKE_SPP_THRESHOLD = 16;
+const MAX_INTERACTIVE_WIDTH = 1920;
+const MAX_INTERACTIVE_HEIGHT = 1080;
+
+function parseQualityMode(value: string | null, isCapture: boolean): PTEngineWebGL2QualityMode {
+  if (value === 'interactive' || value === 'final' || value === 'capture' || value === 'safe') return value;
+  return isCapture ? 'capture' : 'interactive';
+}
+
+function fitWithin(width: number, height: number, maxWidth: number, maxHeight: number): readonly [number, number] {
+  const scale = Math.min(1, maxWidth / Math.max(width, 1), maxHeight / Math.max(height, 1));
+  return [Math.max(1, Math.floor(width * scale)), Math.max(1, Math.floor(height * scale))] as const;
+}
+
+function getWebGLRendererLabel(renderer: THREE.WebGLRenderer): string {
+  const gl = renderer.getContext();
+  const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+  if (debugInfo != null) {
+    const unmasked = gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+    if (typeof unmasked === 'string' && unmasked.length > 0) return unmasked;
+  }
+  const fallback = gl.getParameter(gl.RENDERER);
+  return typeof fallback === 'string' ? fallback : 'unknown WebGL renderer';
+}
+
 function parseCaptureConfig(): CaptureConfig {
   const params = new URLSearchParams(window.location.search);
   const caustic = params.get('vitrumCaustic');
   const causticStrategy =
     caustic === 'manifold-nee' || caustic === 'photon-map' ? caustic : 'none';
+  const isCapture = params.has('vitrumScenario');
+  const qualityMode = parseQualityMode(params.get('vitrumQuality'), isCapture);
   return {
     scenarioId: params.get('vitrumScenario') ?? 'cornell-box',
     seed: parsePositiveInt(params.get('vitrumSeed'), 12345),
     width: parsePositiveInt(params.get('vitrumWidth'), window.innerWidth || 1280),
     height: parsePositiveInt(params.get('vitrumHeight'), window.innerHeight || 720),
     bounces: parsePositiveInt(params.get('vitrumBounces'), 8),
-    samplesTarget: parsePositiveInt(params.get('vitrumSpp'), 48),
+    samplesTarget: parsePositiveInt(
+      params.get('vitrumSpp'),
+      isCapture ? DEFAULT_CAPTURE_SPP : DEFAULT_MANUAL_SPP,
+    ),
     causticStrategy,
-    isCapture: params.has('vitrumScenario'),
+    isCapture,
+    autoStart: params.get('vitrumAutoStart') === '1',
+    qualityMode,
   };
 }
 
@@ -56,6 +95,12 @@ function applyScenarioMaterialTweaks(
   material: THREE.MeshPhysicalMaterial,
   config: CaptureConfig,
 ): void {
+  if (config.scenarioId.includes('caustic')) {
+    material.transmission = 0.5;
+    material.ior = 1.5;
+    material.thickness = 0.25;
+  }
+
   if (config.scenarioId.includes('spectral') || config.scenarioId.includes('thinfilm')) {
     material.transmission = 0.75;
     material.ior = 1.52;
@@ -100,10 +145,10 @@ function buildCornellScene(config: CaptureConfig): THREE.Scene {
   const red = new THREE.MeshPhysicalMaterial({ color: 0xab3a2f, roughness: 1, metalness: 0 });
   const green = new THREE.MeshPhysicalMaterial({ color: 0x2d7a3e, roughness: 1, metalness: 0 });
   const glass = new THREE.MeshPhysicalMaterial({
-    color: 0xddeeff,
-    roughness: 0.08,
+    color: 0x9aa5ad,
+    roughness: 0.75,
     metalness: 0,
-    transmission: 0.5,
+    transmission: 0,
     ior: 1.5,
     thickness: 0.25,
   });
@@ -143,16 +188,50 @@ function buildCornellScene(config: CaptureConfig): THREE.Scene {
 async function main(): Promise<void> {
   const canvas = document.querySelector<HTMLCanvasElement>('#c');
   const statusEl = document.querySelector<HTMLDivElement>('#status');
+  const startButton = document.querySelector<HTMLButtonElement>('#start');
   if (!canvas || !statusEl) throw new Error('missing #c or #status');
   const config = parseCaptureConfig();
+  const spectralRendering =
+    config.scenarioId.includes('spectral') ||
+    config.scenarioId.includes('thinfilm') ||
+    config.scenarioId.includes('dispersion');
+  let lastStatusText = '';
+  const setStatus = (message: string): void => {
+    if (message === lastStatusText) return;
+    lastStatusText = message;
+    statusEl.textContent = message;
+  };
   globalThis.VITRUM_CAPTURE_READY = false;
   globalThis.VITRUM_MS_PER_SAMPLE = undefined;
+  globalThis.VITRUM_CAPTURE_TELEMETRY = undefined;
 
+  if (!config.autoStart) {
+    setStatus('Ready. Press Start WebGL render.');
+    if (startButton) startButton.hidden = false;
+    canvas.style.cursor = 'pointer';
+    await new Promise<void>((resolve) => {
+      const start = () => {
+        if (startButton) startButton.hidden = true;
+        canvas.style.cursor = 'default';
+        resolve();
+      };
+      canvas.addEventListener('click', start, { once: true });
+      statusEl.addEventListener('click', start, { once: true });
+      startButton?.addEventListener('click', start, { once: true });
+    });
+  } else if (startButton) {
+    startButton.hidden = true;
+  }
+
+  setStatus('Creating WebGL renderer...');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
-  renderer.setPixelRatio(config.isCapture ? 1 : Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(1);
   renderer.setClearColor(0x111111, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  const rendererLabel = getWebGLRendererLabel(renderer);
+  console.info(`[vitrum-capture] WebGL renderer: ${rendererLabel}`);
 
+  setStatus('Creating camera and scene...');
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
   camera.position.set(-0.05, 0, 2.75);
   camera.lookAt(-0.05, -0.15, 0);
@@ -160,21 +239,35 @@ async function main(): Promise<void> {
   const threeScene = buildCornellScene(config);
   const vitrumScene = sceneFromThreeJS(threeScene);
 
+  setStatus('Creating path-tracing engine...');
   const engine = await createPTEngine_WebGL2({
     device: renderer,
     maxBounces: config.bounces,
     maxSamplesPerPixel: config.samplesTarget,
     causticStrategy: config.causticStrategy,
+    extensions: {
+      'vitrum.ptWebgl.spectralRendering': spectralRendering,
+      'vitrum.ptWebgl.qualityMode': config.qualityMode,
+      'vitrum.ptWebgl.radianceClamp': 0,
+    },
   });
+  setStatus('Uploading scene to path tracer...');
   engine.setScene(vitrumScene);
 
   let frame = 0;
   const startMs = performance.now();
   const samplesTarget = config.samplesTarget;
+  let renderWidth = 1;
+  let renderHeight = 1;
 
   function resize(): void {
-    const w = config.isCapture ? config.width : window.innerWidth;
-    const h = config.isCapture ? config.height : window.innerHeight;
+    const displayW = config.isCapture ? config.width : window.innerWidth;
+    const displayH = config.isCapture ? config.height : window.innerHeight;
+    const [w, h] = config.isCapture
+      ? [displayW, displayH]
+      : fitWithin(displayW, displayH, MAX_INTERACTIVE_WIDTH, MAX_INTERACTIVE_HEIGHT);
+    renderWidth = w;
+    renderHeight = h;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     if (config.isCapture) {
@@ -187,15 +280,18 @@ async function main(): Promise<void> {
   if (!config.isCapture) window.addEventListener('resize', resize);
 
   function loop(): void {
+    if (frame === 0) {
+      setStatus('Rendering first sample...');
+    }
     camera.updateMatrixWorld();
     const input: FrameInput = {
       viewMatrix: mat4FromThree(camera.matrixWorldInverse),
       projMatrix: mat4FromThree(camera.projectionMatrix),
       cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
       viewport: {
-        width: canvas.width,
-        height: canvas.height,
-        devicePixelRatio: window.devicePixelRatio,
+        width: renderWidth,
+        height: renderHeight,
+        devicePixelRatio: 1,
       },
       frameIndex: frame,
       frameSeed: (frame * 9973 + config.seed) >>> 0,
@@ -207,14 +303,37 @@ async function main(): Promise<void> {
       },
     };
 
-    const out = engine.renderFrame(input);
+    const out = engine.renderFrame(input) as PTEngineWebGL2FrameOutput;
     frame++;
-    statusEl.textContent = `${config.scenarioId} (${config.causticStrategy}) SPP: ${out.samplesAccumulated} / ${samplesTarget}${out.isConverged ? ' — converged' : ''}`;
+    const displayedSpp = Number.isInteger(out.samplesAccumulated)
+      ? String(out.samplesAccumulated)
+      : out.samplesAccumulated.toFixed(2);
+    const telemetry = out.telemetry;
+    const perfLabel = telemetry == null
+      ? rendererLabel
+      : [
+        rendererLabel,
+        `${telemetry.renderWidth}x${telemetry.renderHeight}`,
+        `${telemetry.samplesPerFrame}spf`,
+        `${telemetry.tileSize}x${telemetry.tileSize} tiles`,
+        telemetry.sppPerSecond == null ? null : `${telemetry.sppPerSecond.toFixed(1)} spp/s`,
+        telemetry.guardrail,
+      ].filter(Boolean).join(' — ');
+    const completionLabel = samplesTarget <= SMOKE_SPP_THRESHOLD
+      ? ' — smoke complete (grainy by design)'
+      : ' — converged';
+    setStatus(`${config.scenarioId} (${config.causticStrategy}, ${config.qualityMode}) SPP: ${displayedSpp} / ${samplesTarget}${out.isConverged ? completionLabel : ''} — ${perfLabel}`);
     if (!out.isConverged) {
       requestAnimationFrame(loop);
     } else {
       globalThis.VITRUM_MS_PER_SAMPLE = (performance.now() - startMs) / Math.max(out.samplesAccumulated, 1);
+      globalThis.VITRUM_CAPTURE_TELEMETRY = {
+        ...telemetry,
+        msPerSample: globalThis.VITRUM_MS_PER_SAMPLE,
+        samplesAccumulated: out.samplesAccumulated,
+      };
       globalThis.VITRUM_CAPTURE_READY = true;
+      console.info(`[vitrum-capture] converged ${config.scenarioId} in ${globalThis.VITRUM_MS_PER_SAMPLE.toFixed(2)} ms/sample`);
     }
   }
 

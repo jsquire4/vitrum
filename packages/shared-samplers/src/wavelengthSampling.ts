@@ -15,8 +15,9 @@
  *
  * Reconstruction: the spectral radiance L(λ) at a single hero wavelength is
  * converted to a CIE XYZ colour via:
- *   XYZ += L(λ) × [x̄(λ), ȳ(λ), z̄(λ)] / pdf(λ)
- * (Monte Carlo estimator of the spectral integral).
+ *   XYZ += L(λ) × [x̄(λ), ȳ(λ), z̄(λ)] / (pdf(λ) × ∫Y dλ)
+ * (Monte Carlo estimator of the spectral integral normalized to Y ≈ 1 for a
+ * flat unit spectrum).
  * The XYZ is then converted to linear sRGB for display accumulation.
  *
  * References:
@@ -131,7 +132,7 @@ export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number
  * contribution to accumulate into the framebuffer.
  *
  * The estimator is:
- *   RGB += [x̄(λ), ȳ(λ), z̄(λ)] · throughput / pdfLambda
+ *   RGB += [x̄(λ), ȳ(λ), z̄(λ)] · throughput / (pdfLambda × Y_CMF_INTEGRAL)
  * converted from CIE XYZ to linear sRGB.
  *
  * The D65 illuminant is baked into the `throughput` value by convention: the
@@ -152,7 +153,7 @@ export function wavelengthToRGB(
   if (pdfLambda <= 0) return [0, 0, 0] as const;
 
   const [x, y, z] = sampleCMF(lambdaNm);
-  const weight = throughput / pdfLambda;
+  const weight = throughput / (pdfLambda * Y_INTEGRAL);
   const [r, g, b] = xyzToLinearSRGB(x * weight, y * weight, z * weight);
   return [r, g, b] as const;
 }

@@ -16,6 +16,8 @@ function makeStubPathTracer() {
           uCmfZ: { value: null as unknown },
           uYCmfCdf: { value: null as unknown },
           uYCmfIntegral: { value: 0 },
+          uSpectralRendering: { value: -1 },
+          uRadianceClamp: { value: -1 },
         },
       },
     },
@@ -41,6 +43,8 @@ describe('driveForkMaterialUniforms', () => {
     expect(uniforms.uCmfZ.value).toBeInstanceOf(Float32Array);
     expect(uniforms.uYCmfCdf.value).toBeInstanceOf(Float32Array);
     expect(uniforms.uYCmfIntegral.value).toBeCloseTo(106.857);
+    expect(uniforms.uSpectralRendering.value).toBe(0);
+    expect(uniforms.uRadianceClamp.value).toBe(0);
     expect(uniforms.uCausticStrategy.value).toBe(1);
     expect(uniforms.uMneeMaxIterations.value).toBe(12);
     expect(uniforms.uMneeMaxChainLength.value).toBe(4);
@@ -75,6 +79,23 @@ describe('driveForkMaterialUniforms', () => {
     expect(uniforms.uCausticStrategy.value).toBe(0);
     expect(uniforms.uMneeMaxIterations.value).toBe(6);
     expect(uniforms.uMneeMaxChainLength.value).toBe(2);
+  });
+
+  it('enables experimental hero-wavelength reconstruction when requested', () => {
+    const scene = new Scene();
+    scene.add(new Mesh(new BoxGeometry(1, 1, 1), new MeshPhysicalMaterial({ color: 0xffffff })));
+
+    const pathTracer = makeStubPathTracer();
+    driveForkMaterialUniforms(pathTracer, scene, {
+      strategy: 'none',
+      mneeMaxIterations: 6,
+      mneeMaxChainLength: 2,
+      spectralRendering: true,
+      radianceClamp: 8,
+    });
+
+    expect(pathTracer._pathTracer.material.uniforms.uSpectralRendering.value).toBe(1);
+    expect(pathTracer._pathTracer.material.uniforms.uRadianceClamp.value).toBe(8);
   });
 
   it('handles mixed-material scenes without clobbering scalar controls', () => {

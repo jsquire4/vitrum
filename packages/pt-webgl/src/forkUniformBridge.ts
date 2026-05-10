@@ -13,6 +13,8 @@ export interface ForkBridgeCausticOptions {
   readonly strategy: 'none' | 'manifold-nee' | 'photon-map';
   readonly mneeMaxIterations: number;
   readonly mneeMaxChainLength: number;
+  readonly spectralRendering?: boolean;
+  readonly radianceClamp?: number;
 }
 
 function sanitizePositiveFinite(value: number, fallback: number, max: number): number {
@@ -64,6 +66,8 @@ export function driveForkMaterialUniforms(
   setUniform(material, 'uYCmfCdf', yCdf);
   // Trapezoidal integral in table-space; shader/host treat this as relative normalization constant.
   setUniform(material, 'uYCmfIntegral', 106.857);
+  setUniform(material, 'uSpectralRendering', causticOptions?.spectralRendering === true ? 1 : 0);
+  setUniform(material, 'uRadianceClamp', causticOptions?.radianceClamp ?? 0);
   if (causticOptions != null) {
     const strategyCode =
       causticOptions.strategy === 'manifold-nee'

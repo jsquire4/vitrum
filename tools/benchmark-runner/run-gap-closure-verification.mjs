@@ -18,6 +18,15 @@ const captureEnabled = process.env.VITRUM_GPU_CAPTURE === '1';
 const captureCommand = process.env.VITRUM_CAPTURE_CMD ?? '';
 const allowBaselineGen = process.env.VITRUM_ALLOW_BASELINE_GEN === '1';
 const failOnIdentical = process.env.VITRUM_FAIL_ON_IDENTICAL_HASH === '1';
+const smokeCapture = process.env.VITRUM_CAPTURE_SMOKE === '1';
+const captureProcessTimeoutMs = Math.max(
+  5_000,
+  Number(process.env.VITRUM_CAPTURE_PROCESS_TIMEOUT_MS ?? '120000'),
+);
+const smokeMaxWidth = Math.max(1, Number(process.env.VITRUM_SMOKE_MAX_WIDTH ?? '320'));
+const smokeMaxHeight = Math.max(1, Number(process.env.VITRUM_SMOKE_MAX_HEIGHT ?? '180'));
+const smokeMaxSpp = Math.max(1, Number(process.env.VITRUM_SMOKE_MAX_SPP ?? '8'));
+const smokeMaxBounces = Math.max(1, Number(process.env.VITRUM_SMOKE_MAX_BOUNCES ?? '4'));
 
 async function fileExists(path) {
   try {
@@ -38,17 +47,21 @@ async function readPerfSidecar(imagePath) {
   if (!(await fileExists(sidecarPath))) return null;
   try {
     const parsed = JSON.parse(await readFile(sidecarPath, 'utf8'));
-    return typeof parsed.msPerSample === 'number' && Number.isFinite(parsed.msPerSample)
-      ? parsed.msPerSample
-      : null;
+    return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
     return null;
   }
 }
 
-async function writePerfSidecar(imagePath, msPerSample) {
-  if (typeof msPerSample !== 'number' || !Number.isFinite(msPerSample)) return;
-  await writeFile(`${imagePath}.json`, `${JSON.stringify({ msPerSample }, null, 2)}\n`, 'utf8');
+async function writePerfSidecar(imagePath, telemetry) {
+  if (telemetry == null) return;
+  if (typeof telemetry === 'number' && Number.isFinite(telemetry)) {
+    await writeFile(`${imagePath}.json`, `${JSON.stringify({ msPerSample: telemetry }, null, 2)}\n`, 'utf8');
+    return;
+  }
+  if (typeof telemetry === 'object') {
+    await writeFile(`${imagePath}.json`, `${JSON.stringify(telemetry, null, 2)}\n`, 'utf8');
+  }
 }
 
 function parseResolution(resolution) {
@@ -64,12 +77,28 @@ function scenarioVariants(scenario) {
   return ['candidate'];
 }
 
-function runCommand(command, env) {
+function captureScenarioSettings(scenario) {
+  if (!smokeCapture) return scenario;
+  const { width, height } = parseResolution(scenario.resolution);
+  const scale = Math.min(1, smokeMaxWidth / Math.max(width, 1), smokeMaxHeight / Math.max(height, 1));
+  const cappedWidth = Math.max(1, Math.floor(width * scale));
+  const cappedHeight = Math.max(1, Math.floor(height * scale));
+  return {
+    ...scenario,
+    resolution: `${cappedWidth}x${cappedHeight}`,
+    bounces: Math.min(scenario.bounces, smokeMaxBounces),
+    spp: Math.min(scenario.spp, smokeMaxSpp),
+  };
+}
+
+function runCommand(command, env, timeoutMs) {
   return new Promise((resolveResult) => {
+    let settled = false;
     const child = spawn(command, {
       cwd: repoRoot,
       env: { ...process.env, ...env },
       shell: true,
+      detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -80,18 +109,53 @@ function runCommand(command, env) {
     child.stderr.on('data', (chunk) => {
       stderr += String(chunk);
     });
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      stderr += `\nCapture process timed out after ${timeoutMs}ms.`;
+      if (process.platform === 'win32') {
+        child.kill('SIGTERM');
+      } else {
+        try {
+          process.kill(-child.pid, 'SIGTERM');
+        } catch {
+          child.kill('SIGTERM');
+        }
+      }
+      setTimeout(() => {
+        if (process.platform !== 'win32') {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            // Process group already exited.
+          }
+        }
+      }, 2_000).unref();
+      resolveResult({
+        code: -1,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        timedOut: true,
+      });
+    }, timeoutMs);
+    timeout.unref();
     child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
       resolveResult({
         code: code ?? -1,
         stdout: stdout.trim(),
         stderr: stderr.trim(),
+        timedOut: false,
       });
     });
   });
 }
 
 async function runCapture(scenario, variant, outputImagePath) {
-  const { width, height } = parseResolution(scenario.resolution);
+  const effectiveScenario = captureScenarioSettings(scenario);
+  const { width, height } = parseResolution(effectiveScenario.resolution);
   if (!captureEnabled) {
     return {
       ok: false,
@@ -108,15 +172,15 @@ async function runCapture(scenario, variant, outputImagePath) {
     };
   }
   const run = await runCommand(captureCommand, {
-    VITRUM_SCENARIO_ID: scenario.scenarioId,
-    VITRUM_SEED: String(scenario.seed),
+    VITRUM_SCENARIO_ID: effectiveScenario.scenarioId,
+    VITRUM_SEED: String(effectiveScenario.seed),
     VITRUM_WIDTH: String(width),
     VITRUM_HEIGHT: String(height),
-    VITRUM_BOUNCES: String(scenario.bounces),
-    VITRUM_SPP: String(scenario.spp),
+    VITRUM_BOUNCES: String(effectiveScenario.bounces),
+    VITRUM_SPP: String(effectiveScenario.spp),
     VITRUM_CAUSTIC_STRATEGY: variant,
     VITRUM_OUTPUT_PNG: outputImagePath,
-  });
+  }, captureProcessTimeoutMs);
   const imageExists = await fileExists(outputImagePath);
   if (run.code !== 0 || !imageExists) {
     return {
@@ -126,7 +190,7 @@ async function runCapture(scenario, variant, outputImagePath) {
     };
   }
 
-  let perfMsPerSample = null;
+  let perfTelemetry = null;
   if (run.stdout) {
     const lines = run.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
     const jsonLine = lines.find((line) => line.startsWith('{') && line.endsWith('}'));
@@ -134,7 +198,7 @@ async function runCapture(scenario, variant, outputImagePath) {
       try {
         const parsed = JSON.parse(jsonLine);
         if (typeof parsed.msPerSample === 'number' && Number.isFinite(parsed.msPerSample)) {
-          perfMsPerSample = parsed.msPerSample;
+          perfTelemetry = parsed;
         }
       } catch {
         // ignore malformed telemetry
@@ -145,7 +209,8 @@ async function runCapture(scenario, variant, outputImagePath) {
     ok: true,
     status: 'captured',
     reason: run.stderr || 'capture complete',
-    perfMsPerSample,
+    perfMsPerSample: perfTelemetry?.msPerSample ?? null,
+    perfTelemetry,
   };
 }
 
@@ -161,7 +226,7 @@ async function evaluateScenario(scenario) {
     await mkdir(baselineDir, { recursive: true });
     baselineCaptureInfo = await runCapture(scenario, 'baseline', baselineImagePath);
     if (baselineCaptureInfo.ok) {
-      await writePerfSidecar(baselineImagePath, baselineCaptureInfo.perfMsPerSample);
+      await writePerfSidecar(baselineImagePath, baselineCaptureInfo.perfTelemetry);
     }
   }
   const baselineExists = await fileExists(baselineImagePath);
@@ -181,9 +246,11 @@ async function evaluateScenario(scenario) {
   }
 
   const baselineHash = await sha256(baselineImagePath);
-  const perfBaseline = baselineCaptureInfo?.perfMsPerSample ?? (await readPerfSidecar(baselineImagePath));
+  const baselineTelemetry = baselineCaptureInfo?.perfTelemetry ?? (await readPerfSidecar(baselineImagePath));
+  const perfBaseline = baselineTelemetry?.msPerSample ?? null;
   let aggregateCandidateHash = '';
   const perfSamples = [];
+  const perfTelemetrySamples = [];
   const modeSummaries = [];
   for (const variant of variants) {
     const outputImagePath = resolve(scenarioDir, `${variant}.png`);
@@ -205,6 +272,10 @@ async function evaluateScenario(scenario) {
     if (capture.perfMsPerSample != null) {
       perfSamples.push(capture.perfMsPerSample);
     }
+    if (capture.perfTelemetry != null) {
+      perfTelemetrySamples.push({ variant, ...capture.perfTelemetry });
+      await writePerfSidecar(outputImagePath, capture.perfTelemetry);
+    }
     modeSummaries.push(`${variant}:${variantHash.slice(0, 12)}`);
   }
 
@@ -223,6 +294,10 @@ async function evaluateScenario(scenario) {
     deltaSummary: `variants[${modeSummaries.join(', ')}]`,
     perfBaselineMsPerSample: perfBaseline,
     perfCandidateMsPerSample: perfCandidate,
+    perfTelemetry: {
+      baseline: baselineTelemetry,
+      candidates: perfTelemetrySamples,
+    },
     passFail: failedByHash ? 'FAIL' : 'PASS',
   };
 }

@@ -24,6 +24,7 @@ function captureUrlWithScenarioParams() {
     if (h) u.searchParams.set('vitrumHeight', h);
     if (bounces) u.searchParams.set('vitrumBounces', bounces);
     if (spp) u.searchParams.set('vitrumSpp', spp);
+    u.searchParams.set('vitrumAutoStart', '1');
     if (caustic && caustic !== 'candidate' && caustic !== 'baseline') {
       u.searchParams.set('vitrumCaustic', caustic);
     }
@@ -47,7 +48,13 @@ try {
   process.exit(3);
 }
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({
+  headless: true,
+  args: [
+    '--disable-dev-shm-usage',
+    '--js-flags=--max-old-space-size=1024',
+  ],
+});
 try {
   const page = await browser.newPage({
     viewport: {
@@ -76,13 +83,18 @@ try {
 
   const telemetry = await page
     .evaluate(() => {
-      const value = (globalThis).VITRUM_MS_PER_SAMPLE;
-      return typeof value === 'number' && Number.isFinite(value) ? value : null;
+      const msPerSample = (globalThis).VITRUM_MS_PER_SAMPLE;
+      const extra = (globalThis).VITRUM_CAPTURE_TELEMETRY;
+      if (typeof msPerSample !== 'number' || !Number.isFinite(msPerSample)) return null;
+      return {
+        ...(extra && typeof extra === 'object' ? extra : {}),
+        msPerSample,
+      };
     })
     .catch(() => null);
 
   if (telemetry != null) {
-    console.log(JSON.stringify({ msPerSample: telemetry }));
+    console.log(JSON.stringify(telemetry));
   }
 } finally {
   await browser.close();

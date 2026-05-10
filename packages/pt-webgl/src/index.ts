@@ -52,6 +52,171 @@ export interface PTEngineWebGL2Options extends EngineOptions {
 
 const DEFAULT_MAX_BOUNCES = 12;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
+const DEFAULT_TILE_SIZE = 3;
+
+export type PTEngineWebGL2QualityMode = 'interactive' | 'final' | 'capture' | 'safe';
+
+export interface PTEngineWebGL2Telemetry {
+  readonly qualityMode: PTEngineWebGL2QualityMode;
+  readonly renderer: string;
+  readonly requestedWidth: number;
+  readonly requestedHeight: number;
+  readonly renderWidth: number;
+  readonly renderHeight: number;
+  readonly samplesPerFrame: number;
+  readonly tileSize: number;
+  readonly batchMs: number;
+  readonly msPerSample: number | null;
+  readonly sppDelta: number;
+  readonly sppPerSecond: number | null;
+  readonly estimatedRenderTargetBytes: number;
+  readonly renderTargetBudgetBytes: number;
+  readonly guardrail: string | null;
+}
+
+export type PTEngineWebGL2FrameOutput = FrameOutput & {
+  readonly telemetry?: PTEngineWebGL2Telemetry | undefined;
+};
+
+interface DeviceLimits {
+  readonly maxTextureSize: number;
+  readonly maxRenderbufferSize: number;
+  readonly renderer: string;
+}
+
+interface RenderSizePlan {
+  readonly width: number;
+  readonly height: number;
+  readonly estimatedBytes: number;
+  readonly guardrail: string | null;
+}
+
+interface SchedulerOptions {
+  readonly qualityMode: PTEngineWebGL2QualityMode;
+  readonly adaptive: boolean;
+  readonly targetBatchMs: number;
+  readonly minSamplesPerFrame: number;
+  readonly maxSamplesPerFrame: number;
+  readonly initialSamplesPerFrame: number;
+  readonly initialTileSize: number;
+  readonly maxTileSize: number;
+  readonly renderTargetBudgetBytes: number;
+}
+
+const BYTES_PER_RGBA16F_PIXEL = 8;
+const ESTIMATED_RENDER_TARGET_COUNT = 4;
+const DEFAULT_RENDER_TARGET_OVERHEAD_BYTES = 64 * 1024 * 1024;
+
+function extensionNumber(
+  extensions: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+  fallback: number,
+): number {
+  const value = extensions?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function extensionBoolean(
+  extensions: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = extensions?.[key];
+  return typeof value === 'boolean' ? value : fallback;
+}
+
+function extensionQualityMode(
+  extensions: Readonly<Record<string, unknown>> | undefined,
+): PTEngineWebGL2QualityMode {
+  const value = extensions?.['vitrum.ptWebgl.qualityMode'];
+  return value === 'interactive' || value === 'final' || value === 'capture' || value === 'safe'
+    ? value
+    : 'capture';
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function defaultSchedulerOptions(
+  extensions: Readonly<Record<string, unknown>> | undefined,
+): SchedulerOptions {
+  const qualityMode = extensionQualityMode(extensions);
+  const modeDefaults: Record<PTEngineWebGL2QualityMode, Omit<SchedulerOptions, 'qualityMode'>> = {
+    interactive: {
+      adaptive: true,
+      targetBatchMs: 20,
+      minSamplesPerFrame: 1,
+      maxSamplesPerFrame: 32,
+      initialSamplesPerFrame: 4,
+      initialTileSize: 1,
+      maxTileSize: 4,
+      renderTargetBudgetBytes: 1024 * 1024 * 1024,
+    },
+    final: {
+      adaptive: true,
+      targetBatchMs: 80,
+      minSamplesPerFrame: 1,
+      maxSamplesPerFrame: 64,
+      initialSamplesPerFrame: 8,
+      initialTileSize: 1,
+      maxTileSize: 4,
+      renderTargetBudgetBytes: 2 * 1024 * 1024 * 1024,
+    },
+    capture: {
+      adaptive: false,
+      targetBatchMs: 0,
+      minSamplesPerFrame: 1,
+      maxSamplesPerFrame: 1,
+      initialSamplesPerFrame: 1,
+      initialTileSize: DEFAULT_TILE_SIZE,
+      maxTileSize: DEFAULT_TILE_SIZE,
+      renderTargetBudgetBytes: 512 * 1024 * 1024,
+    },
+    safe: {
+      adaptive: true,
+      targetBatchMs: 8,
+      minSamplesPerFrame: 1,
+      maxSamplesPerFrame: 4,
+      initialSamplesPerFrame: 1,
+      initialTileSize: DEFAULT_TILE_SIZE,
+      maxTileSize: 4,
+      renderTargetBudgetBytes: 256 * 1024 * 1024,
+    },
+  };
+  const base = modeDefaults[qualityMode];
+  const requestedSamplesPerFrame = extensionNumber(
+    extensions,
+    'vitrum.ptWebgl.samplesPerFrame',
+    base.initialSamplesPerFrame,
+  );
+  const requestedTileSize = extensionNumber(extensions, 'vitrum.ptWebgl.tileSize', base.initialTileSize);
+  const maxSamplesPerFrame = clampInt(
+    extensionNumber(extensions, 'vitrum.ptWebgl.maxSamplesPerFrame', base.maxSamplesPerFrame),
+    base.minSamplesPerFrame,
+    128,
+  );
+  return {
+    qualityMode,
+    adaptive: extensionBoolean(extensions, 'vitrum.ptWebgl.adaptiveScheduler', base.adaptive),
+    targetBatchMs: Math.max(0, extensionNumber(extensions, 'vitrum.ptWebgl.targetBatchMs', base.targetBatchMs)),
+    minSamplesPerFrame: base.minSamplesPerFrame,
+    maxSamplesPerFrame,
+    initialSamplesPerFrame: clampInt(requestedSamplesPerFrame, base.minSamplesPerFrame, maxSamplesPerFrame),
+    initialTileSize: clampInt(requestedTileSize, 1, base.maxTileSize),
+    maxTileSize: clampInt(extensionNumber(extensions, 'vitrum.ptWebgl.maxTileSize', base.maxTileSize), 1, 8),
+    renderTargetBudgetBytes: Math.max(
+      64 * 1024 * 1024,
+      extensionNumber(extensions, 'vitrum.ptWebgl.renderTargetBudgetBytes', base.renderTargetBudgetBytes),
+    ),
+  };
+}
 
 /**
  * Internal state-setter token. The factory constructs a `StateSlot`, passes it
@@ -109,9 +274,20 @@ class PTEngineWebGL2 implements Engine {
   readonly #causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
+  readonly #spectralRendering: boolean;
+  readonly #radianceClamp: number;
+  readonly #limits: DeviceLimits;
+  readonly #schedulerOptions: SchedulerOptions;
 
   #vitrumScene: Scene | null = null;
   #threeSceneRoot: ThreeScene | null = null;
+  #cameraSignature = '';
+  #samplesPerFrame: number;
+  #tileSize: number;
+  #lastRenderWidth = 0;
+  #lastRenderHeight = 0;
+  #contextLost = false;
+  #lastTelemetry: PTEngineWebGL2Telemetry | undefined;
 
   constructor(opts: PTEngineWebGL2Options, gpu: PTEngineWebGL2Init, slot: StateSlot) {
     this.#slot = slot;
@@ -121,10 +297,27 @@ class PTEngineWebGL2 implements Engine {
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     this.#mneeMaxIterations = Math.max(1, opts.mneeMaxIterations ?? 8);
     this.#mneeMaxChainLength = Math.max(1, opts.mneeMaxChainLength ?? 3);
+    this.#spectralRendering = opts.extensions?.['vitrum.ptWebgl.spectralRendering'] === true;
+    const requestedRadianceClamp = opts.extensions?.['vitrum.ptWebgl.radianceClamp'];
+    this.#radianceClamp = typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
+      ? Math.max(0, requestedRadianceClamp)
+      : 0;
+    this.#schedulerOptions = defaultSchedulerOptions(opts.extensions);
+    this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
+    this.#tileSize = this.#schedulerOptions.initialTileSize;
     this.#renderer = gpu.renderer;
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
     this.#supportsAnalyticCame = gpu.supportsAnalyticCame;
+    this.#limits = this.#detectDeviceLimits();
+    this.#renderer.domElement?.addEventListener?.('webglcontextlost', () => {
+      this.#contextLost = true;
+      this.#samplesPerFrame = 1;
+      this.#tileSize = Math.max(this.#tileSize, DEFAULT_TILE_SIZE);
+    });
+    this.#pathTracer.renderDelay = 0;
+    this.#pathTracer.minSamples = 0;
+    this.#pathTracer.fadeDuration = 0;
   }
 
   get state(): EngineState {
@@ -170,6 +363,101 @@ class PTEngineWebGL2 implements Engine {
     }
   }
 
+  #detectDeviceLimits(): DeviceLimits {
+    const gl = this.#renderer.getContext();
+    const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+    const rendererFromDebug = debugInfo == null
+      ? null
+      : gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+    const rendererFallback = gl.getParameter(gl.RENDERER);
+    const maxTextureSize = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE));
+    const maxRenderbufferSize = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
+    return {
+      maxTextureSize: Number.isFinite(maxTextureSize) && maxTextureSize > 0 ? maxTextureSize : 4096,
+      maxRenderbufferSize: Number.isFinite(maxRenderbufferSize) && maxRenderbufferSize > 0
+        ? maxRenderbufferSize
+        : 4096,
+      renderer: typeof rendererFromDebug === 'string' && rendererFromDebug.length > 0
+        ? rendererFromDebug
+        : typeof rendererFallback === 'string'
+          ? rendererFallback
+          : 'unknown WebGL renderer',
+    };
+  }
+
+  #estimateRenderTargetBytes(width: number, height: number): number {
+    return (
+      width *
+      height *
+      BYTES_PER_RGBA16F_PIXEL *
+      ESTIMATED_RENDER_TARGET_COUNT +
+      DEFAULT_RENDER_TARGET_OVERHEAD_BYTES
+    );
+  }
+
+  #planRenderSize(width: number, height: number): RenderSizePlan {
+    const requestedWidth = Math.max(1, Math.floor(width));
+    const requestedHeight = Math.max(1, Math.floor(height));
+    const maxDimension = Math.max(1, Math.min(this.#limits.maxTextureSize, this.#limits.maxRenderbufferSize));
+    let scale = Math.min(1, maxDimension / requestedWidth, maxDimension / requestedHeight);
+    let guardrail: string | null = scale < 1
+      ? `capped to WebGL max render dimension ${maxDimension}`
+      : null;
+    let plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
+    let plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
+    let estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
+    if (estimatedBytes > this.#schedulerOptions.renderTargetBudgetBytes) {
+      const targetBytes = Math.max(
+        1,
+        this.#schedulerOptions.renderTargetBudgetBytes - DEFAULT_RENDER_TARGET_OVERHEAD_BYTES,
+      );
+      const pixelBytes = Math.max(1, plannedWidth * plannedHeight * BYTES_PER_RGBA16F_PIXEL * ESTIMATED_RENDER_TARGET_COUNT);
+      const memoryScale = Math.min(1, Math.sqrt(targetBytes / pixelBytes));
+      scale *= memoryScale;
+      plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
+      plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
+      estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
+      guardrail = guardrail == null
+        ? `downscaled to fit ${Math.round(this.#schedulerOptions.renderTargetBudgetBytes / 1024 / 1024)} MiB render-target budget`
+        : `${guardrail}; downscaled to fit render-target budget`;
+    }
+    return {
+      width: plannedWidth,
+      height: plannedHeight,
+      estimatedBytes,
+      guardrail,
+    };
+  }
+
+  #updateScheduler(batchMs: number): void {
+    if (!this.#schedulerOptions.adaptive || this.#schedulerOptions.targetBatchMs <= 0) return;
+    if (this.#contextLost) {
+      this.#samplesPerFrame = 1;
+      this.#tileSize = Math.min(this.#schedulerOptions.maxTileSize, Math.max(this.#tileSize, DEFAULT_TILE_SIZE));
+      return;
+    }
+    const target = this.#schedulerOptions.targetBatchMs;
+    if (batchMs > target * 1.35) {
+      this.#samplesPerFrame = Math.max(
+        this.#schedulerOptions.minSamplesPerFrame,
+        Math.floor(this.#samplesPerFrame * 0.5),
+      );
+      if (batchMs > target * 2 && this.#tileSize < this.#schedulerOptions.maxTileSize) {
+        this.#tileSize += 1;
+      }
+      return;
+    }
+    if (batchMs < target * 0.55 && this.#samplesPerFrame < this.#schedulerOptions.maxSamplesPerFrame) {
+      this.#samplesPerFrame = Math.min(
+        this.#schedulerOptions.maxSamplesPerFrame,
+        Math.max(this.#samplesPerFrame + 1, Math.ceil(this.#samplesPerFrame * 1.2)),
+      );
+      if (batchMs < target * 0.25 && this.#tileSize > this.#schedulerOptions.initialTileSize) {
+        this.#tileSize -= 1;
+      }
+    }
+  }
+
   setScene(scene: Scene): void {
     if (this.#slot.get() === 'disposed') {
       throw new Error('setScene: engine is disposed');
@@ -178,6 +466,7 @@ class PTEngineWebGL2 implements Engine {
       disposeObject3DTree(this.#threeSceneRoot);
     }
     this.#vitrumScene = scene;
+    this.#cameraSignature = '';
     const threeScene = vitrumSceneToThree(scene);
     this.#threeSceneRoot = threeScene;
     this.#pathTracer.setScene(
@@ -188,6 +477,8 @@ class PTEngineWebGL2 implements Engine {
       strategy: this.#causticStrategy,
       mneeMaxIterations: this.#mneeMaxIterations,
       mneeMaxChainLength: this.#mneeMaxChainLength,
+      spectralRendering: this.#spectralRendering,
+      radianceClamp: this.#radianceClamp,
     });
   }
 
@@ -201,22 +492,39 @@ class PTEngineWebGL2 implements Engine {
     throw new Error('Not implemented: updateEmitter (pt-webgl requires full setScene)');
   }
 
-  renderFrame(input: FrameInput): FrameOutput {
+  #makeCameraSignature(input: FrameInput): string {
+    const viewport = input.viewport;
+    return [
+      ...input.viewMatrix,
+      ...input.projMatrix,
+      ...input.cameraPosition,
+      viewport.width,
+      viewport.height,
+      viewport.devicePixelRatio,
+    ].join(',');
+  }
+
+  renderFrame(input: FrameInput): PTEngineWebGL2FrameOutput {
     this.#assertLive('renderFrame');
     if (this.#slot.get() === 'paused') {
-      const spp = Math.round(this.#pathTracer.samples);
+      const spp = this.#pathTracer.samples;
       const cap = this.#maxSamplesLimit;
       return {
         primaryRadiance: this.#pathTracer.target.texture,
         samplesAccumulated: spp,
         isConverged: spp >= cap,
+        telemetry: this.#lastTelemetry,
       };
     }
 
-    applyFrameToPerspectiveCamera(this.#camera, input);
-    this.#pathTracer.setCamera(
-      this.#camera as unknown as Parameters<WebGLPathTracer['setCamera']>[0],
-    );
+    const cameraSignature = this.#makeCameraSignature(input);
+    if (cameraSignature !== this.#cameraSignature) {
+      applyFrameToPerspectiveCamera(this.#camera, input);
+      this.#pathTracer.setCamera(
+        this.#camera as unknown as Parameters<WebGLPathTracer['setCamera']>[0],
+      );
+      this.#cameraSignature = cameraSignature;
+    }
 
     const q = input.quality ?? {};
     const b = Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit);
@@ -226,16 +534,58 @@ class PTEngineWebGL2 implements Engine {
     this.#pathTracer.filterGlossyFactor = q.filteredGlossyFactor ?? 0;
 
     const factor = q.resolutionFactor ?? 1;
-    const w = Math.max(1, Math.floor(input.viewport.width * factor));
-    const h = Math.max(1, Math.floor(input.viewport.height * factor));
-    this.#renderer.setSize(w, h, false);
+    const requestedWidth = Math.max(1, Math.floor(input.viewport.width * factor));
+    const requestedHeight = Math.max(1, Math.floor(input.viewport.height * factor));
+    const sizePlan = this.#planRenderSize(requestedWidth, requestedHeight);
+    const w = sizePlan.width;
+    const h = sizePlan.height;
+    if (this.#tileSize <= 1 || w * h <= 640 * 360) {
+      this.#pathTracer.tiles.set(1, 1);
+    } else {
+      this.#pathTracer.tiles.set(this.#tileSize, this.#tileSize);
+    }
+    if (w !== this.#lastRenderWidth || h !== this.#lastRenderHeight) {
+      this.#renderer.setSize(w, h, false);
+      this.#lastRenderWidth = w;
+      this.#lastRenderHeight = h;
+    }
 
-    this.#pathTracer.renderSample();
-    const spp = Math.round(this.#pathTracer.samples);
+    let spp = this.#pathTracer.samples;
+    const sppBefore = spp;
+    const batchStart = nowMs();
+    const samplesThisFrame = Math.min(this.#samplesPerFrame, Math.max(0, Math.ceil(targetSpp - spp)));
+    for (let i = 0; i < samplesThisFrame && spp < targetSpp; i += 1) {
+      this.#pathTracer.renderSample();
+      spp = this.#pathTracer.samples;
+    }
+    const batchMs = Math.max(0, nowMs() - batchStart);
+    const sppDelta = Math.max(0, spp - sppBefore);
+    this.#updateScheduler(batchMs);
+    const msPerSample = sppDelta > 0 ? batchMs / sppDelta : null;
+    this.#lastTelemetry = {
+      qualityMode: this.#schedulerOptions.qualityMode,
+      renderer: this.#limits.renderer,
+      requestedWidth,
+      requestedHeight,
+      renderWidth: w,
+      renderHeight: h,
+      samplesPerFrame: samplesThisFrame,
+      tileSize: this.#tileSize <= 1 || w * h <= 640 * 360 ? 1 : this.#tileSize,
+      batchMs,
+      msPerSample,
+      sppDelta,
+      sppPerSecond: sppDelta > 0 && batchMs > 0 ? (sppDelta * 1000) / batchMs : null,
+      estimatedRenderTargetBytes: sizePlan.estimatedBytes,
+      renderTargetBudgetBytes: this.#schedulerOptions.renderTargetBudgetBytes,
+      guardrail: this.#contextLost
+        ? 'webgl context loss observed; scheduler reduced workload'
+        : sizePlan.guardrail,
+    };
     return {
       primaryRadiance: this.#pathTracer.target.texture,
       samplesAccumulated: spp,
       isConverged: spp >= targetSpp,
+      telemetry: this.#lastTelemetry,
     };
   }
 

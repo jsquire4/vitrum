@@ -28,6 +28,9 @@ Optional:
 - `VITRUM_BASELINE_DIR=tools/reference-renders/baseline`
 - `VITRUM_ALLOW_BASELINE_GEN=1` (auto-generate missing baselines)
 - `VITRUM_FAIL_ON_IDENTICAL_HASH=1` (strictly fail if before/after hashes match)
+- `VITRUM_CAPTURE_SMOKE=1` (cap scenarios for local sanity checks; defaults to
+  320×180, 8 SPP, 4 bounces)
+- `VITRUM_CAPTURE_PROCESS_TIMEOUT_MS=120000` (hard-kill a stuck browser capture)
 
 When a baseline capture emits `{"msPerSample": number}` on stdout, the runner stores
 it beside the baseline PNG as `<scenario>.png.json` and reuses it as
@@ -54,10 +57,15 @@ Example (Playwright adapter in this folder):
 
 ```bash
 VITRUM_GPU_CAPTURE=1 \
+VITRUM_CAPTURE_SMOKE=1 \
 VITRUM_CAPTURE_CMD="node ./tools/benchmark-runner/capture-adapter-playwright.mjs" \
 VITRUM_CAPTURE_URL="http://127.0.0.1:5173/" \
 npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner
 ```
+
+For formal acceptance captures, omit `VITRUM_CAPTURE_SMOKE=1` and run on a
+machine/browser profile with confirmed GPU acceleration. The full scenario matrix
+uses 1280×720 / 512–1024 SPP and can exhaust software WebGL implementations.
 
 ## Scenario preset registry
 

@@ -355,6 +355,12 @@ describe('wavelengthToRGB', () => {
     expect(g).toBeCloseTo(0, 10);
     expect(b).toBeCloseTo(0, 10);
   });
+
+  it('normalizes unit throughput to display-scale values', () => {
+    const { lambdaNm, pdf } = sampleHeroWavelength(0.5);
+    const [r, g, b] = wavelengthToRGB(lambdaNm, 1, pdf);
+    expect(Math.max(Math.abs(r), Math.abs(g), Math.abs(b))).toBeLessThan(3);
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
