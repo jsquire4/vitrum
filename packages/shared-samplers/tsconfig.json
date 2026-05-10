@@ -7,5 +7,5 @@
       "@vitrum/core": ["../core/src/index.ts"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "__tests__"]
 }
