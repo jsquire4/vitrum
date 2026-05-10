@@ -101,6 +101,7 @@ class PTEngineWebGL2 implements Engine {
 
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
+  readonly #causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
 
   #vitrumScene: Scene | null = null;
   #threeSceneRoot: ThreeScene | null = null;
@@ -109,6 +110,9 @@ class PTEngineWebGL2 implements Engine {
     this.#slot = slot;
     this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
+    // RFE-05: causticStrategy captured at creation time; reflected in capabilities.
+    // The actual MNEE / photon-map implementation is deferred (fork-side work).
+    this.#causticStrategy = opts.causticStrategy ?? 'none';
     this.#renderer = gpu.renderer;
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
@@ -145,6 +149,11 @@ class PTEngineWebGL2 implements Engine {
         'spot',
         'mesh-area',
       ]),
+      // RFE-05: Reflect the causticStrategy from creation-time options.
+      // MNEE and photon-map are API-complete but their shader implementations
+      // are deferred fork-side work (see plan/sprint-10c-pt-fork-patch.md and
+      // external_requests/05-manifold-nee.md for the implementation spec).
+      causticStrategy: this.#causticStrategy,
     };
   }
 

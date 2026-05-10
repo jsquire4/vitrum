@@ -255,6 +255,12 @@ export class HybridEngine implements Engine {
       // Emitter kinds handled by DDGI _uploadLights: sun, fixture, teaLight
       // mapped to core taxonomy: directional, point
       supportedEmitterKinds:     new Set<string>(['directional', 'point']),
+      // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
+      // compatible with the walkaround engine's frame cadence. The walkaround
+      // engine always reports 'none'; see external_requests/05-manifold-nee.md
+      // §4 ("walkaround-hybrid" backend guidance) for the approved approximation
+      // path when real-time caustic approximations are added in a future sprint.
+      causticStrategy: 'none',
     };
   }
 

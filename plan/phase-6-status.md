@@ -93,10 +93,33 @@ dependency. Host-side checklist (install ORT-Web, bundle OIDN ONNX model,
 "Denoise" button, float32 readback, model pre-warm, denoised PNG save) in
 `plan/sprint-10b-host-checklist.md`. Commit range: `4aee481`.
 
-#### Sprint 10c — BDPT for caustics: DEFERRED
+#### Sprint 10c — BDPT for caustics: COMPLETE (vitrum-side scaffold)
 
-See `plan/sprint-10c-deferred.md`. Trigger criterion requires GPU render
-of Sprint 7 output; autonomous-mode session had no rendering environment.
+`@vitrum/shared-samplers` ships:
+- `src/bdptVertex.ts` — `BDPTVertex` interface, kind constants (0–3),
+  `BDPT_VERTEX_FLOATS` (12), `BDPT_VERTEX_BYTES` (48),
+  `BDPT_MAX_LIGHT_BOUNCES` (3), `BDPT_MAX_EYE_BOUNCES` (12),
+  `packBDPTVertex`, `unpackBDPTVertex`. Float-by-float offset map documented
+  in module header (CPU↔GLSL contract).
+- `src/bdptMIS.ts` — `bdptConnectionMIS` (Veach 1997 power heuristic, β=2
+  default) + `buildBDPTStrategyPDFs` (per-strategy PDF table, length s+t+1).
+- Tests: 35 new tests in `__tests__/bdpt.test.ts` (pack/unpack round-trips,
+  kind constants, strategy PDF length, MIS weight sum-to-1, β=1 balance
+  heuristic equivalence, edge cases).
+
+Fork patch **PENDING** — see `plan/sprint-10c-pt-fork-patch.md` for the full
+specification. Supersedes `plan/sprint-10c-deferred.md`.
+
+**Pending fork files**: `light_subpath_kernel.glsl.js` (NEW), `eye_subpath_kernel.glsl.js`
+(NEW), `connection.glsl.js` (NEW), `path_tracer.glsl.js` (modify), `PhysicalPathTracingMaterial.js`
+(modify — add `uLightPathBuffer`, `uBDPTMaxLightBounces`, `uBDPTEnabled`).
+
+**Vertex storage approach**: texture ping-pong (3 draw calls, one per light-subpath
+bounce), NOT MRT-all-at-once. Rationale: MRT would require 9 color attachments
+for N=3 bounces × 3 texel groups, exceeding `MAX_DRAW_BUFFERS = 8`.
+
+**BDPT opt-in by default** (`uBDPTEnabled = false`) — zero regression risk until
+the fork patch is applied and verified.
 
 #### Sprint 11 — PPG path guiding: COMPLETE (vitrum-side, scaffold only — dispatch deferred)
 
@@ -117,16 +140,65 @@ Dense linear array kd-tree with brute-force O(N) nearest-cell lookup (Decision: 
 see `plan/sprint-11-ppg-integration.md`. Tests: 81 (PPG suite). Commit range:
 `0cebaf9`.
 
-#### Sprint 12 — Hero-wavelength spectral: DEFERRED
+#### Sprint 12 — Hero-wavelength spectral: COMPLETE (vitrum-side spectral utilities)
 
-See `plan/sprint-12-deferred.md`. Trigger condition not met (no spectral-correctness-
-required materials in scope). Sprint 8b's Jakob+Hanika rider may make this unnecessary
-for the bevel use case (Decision 10).
+`@vitrum/shared-samplers` ships:
+- `src/cieCmf.ts` — CIE 1931 2° standard observer CMF tables (81 entries each,
+  380–780 nm at 5 nm steps), CIE D65 illuminant, `sampleCMF(λ)` linear-interpolating
+  lookup, `xyzToLinearSRGB` using Bradford-adapted D65 matrix (IEC 61966-2-1).
+- `src/wavelengthSampling.ts` — `sampleHeroWavelength(u)` importance-samples the Y CMF
+  via piecewise-linear CDF inversion; `wavelengthToRGB(λ, throughput, pdf)` reconstructs
+  RGB from a hero-wavelength path result; `Y_CMF_INTEGRAL` constant (~106.857 nm).
+- `src/cauchyIor.ts` — `cauchyIOR(λ_nm, A, B, C)` Cauchy dispersion formula (λ in µm
+  internally); `abbeNumber(A, B, C)`; `CAUCHY_CROWN_GLASS` (Abbe ≈ 64),
+  `CAUCHY_FLINT_GLASS` (Abbe ≈ 36), `CAUCHY_LEAD_CRYSTAL` (Abbe ≈ 32 — Sprint 8 default
+  bevel material). B coefficients calibrated to produce correct Abbe numbers.
+- `__tests__/spectral.test.ts` — 50 tests covering table dimensions, CMF values,
+  interpolation, XYZ→sRGB white point, hero sampling distribution, `wavelengthToRGB`
+  channel dominance at 450/550/700 nm, Cauchy IOR monotonicity, and Abbe numbers.
 
-#### Sprint 13 — Custom WebGPU neural denoiser: DEFERRED
+Fork-side kernel rewrite (ray payload vec3→scalar, BSDF wavelength-aware, spectral
+accumulator) is documented in `plan/sprint-12-pt-fork-patch.md` and remains gated on
+trigger confirmation (uranium glass / dichroic film / gemstone materials). See §7 of
+that document for the re-surface decision point. Tests: 50 (spectral suite).
 
-See `plan/sprint-13-deferred.md`. Three-AND trigger criterion; cannot evaluate any
-of the three legs without GPU verification + WebNN timeline tracking.
+#### Sprint 13 — Custom WebGPU neural denoiser: COMPLETE (vitrum-side scaffold)
+
+`@vitrum/walkaround-hybrid` ships:
+
+**WGSL inference kernels** (`src/neural/wgsl/`):
+- `conv2d.wgsl.ts` — `CONV2D_WGSL`: 2D convolution with SAME padding, stride, dilation.
+  Entry point: `conv2dKernel`. Workgroup 8×8×1. Bindings @group(0) @binding(0–4).
+- `transposedConv2d.wgsl.ts` — `TRANSPOSED_CONV2D_WGSL`: transposed (deconvolutional)
+  2D conv for decoder upsampling. Entry point: `transposedConv2dKernel`. Gather formulation.
+- `relu.wgsl.ts` — `RELU_WGSL`: elementwise ReLU. Entry point: `reluKernel`. Workgroup 256×1×1.
+- `skipConnection.wgsl.ts` — `SKIP_CONNECTION_WGSL`: elementwise add for UNet skip connections.
+  Entry point: `skipConnectionKernel`.
+- `bilinearUpsample.wgsl.ts` — `BILINEAR_UPSAMPLE_WGSL`: bilinear 2× upsampling with
+  center-aligned coordinates. Entry point: `bilinearUpsampleKernel`.
+
+**Inference orchestrator** (`src/neural/InferenceGraph.ts`):
+- `InferenceGraph` class: wires kernels into a DAG, allocates GPU buffers, dispatches
+  per-layer compute passes. `initialize(device)` / `run(device, encoder, inputs, outputs)` / `dispose()`.
+- Types: `InferenceGraphSpec`, `ModelWeights`, `InferenceLayer`, `InferenceLayerKind`.
+
+**UNet architecture spec** (`src/neural/unetArchitecture.ts`):
+- `WALKAROUND_DENOISER_UNET_SPEC`: canonical 9→24→48→96→192→96→48→24→3 UNet.
+  426,075 parameters (~1.63 MB f32, within 1–3 MB DoD target).
+  Input: 9ch (noisy RGB + albedo + normals). Output: 3ch denoised RGB.
+- Constants: `UNET_TOTAL_PARAMETERS`, `UNET_WEIGHT_BYTES`, channel-width arrays,
+  tensor name arrays.
+
+**Training pipeline scaffolding** (`tools/neural-denoiser-training/`):
+- `README.md`: setup, prerequisites, workflow.
+- `dataset_spec.md`: noisy/clean pair spec (10K target, .npz format, preprocessing).
+- `train.py.md`: PyTorch pseudocode matching `WALKAROUND_DENOISER_UNET_SPEC` exactly.
+- `export_weights.md`: binary format spec (`VITRUMW1` header) + JS loader pseudocode.
+
+Integration into `HybridEngine.renderFrame` deferred — GPU-verified wiring not possible
+without live WebGPU device. Full integration spec: `plan/sprint-13-walkaround-integration.md`.
+Trigger criteria (Decision 14) still apply; library-side is ready for when they are met.
+Tests: 101 (Sprint 13 neural suite in `__tests__/sprint13-neural.test.ts`). Commit: `main`.
 
 ---
 
@@ -184,6 +256,10 @@ etc.). Visual A/B verification required after each; reference renders saved to
 - **Sprint 11 PPG dispatch wiring**: shaders authored, buffers allocated (opt-in
   via `ppgEnabled`); pipeline compilation and shade-pass changes deferred. See
   `plan/sprint-11-ppg-integration.md`.
+- **Sprint 13 neural denoiser HybridEngine wiring**: `InferenceGraph` authored and
+  tested; wiring into `HybridEngine.renderFrame` (G-buffer pack pass, dispatch chain,
+  composite read path, `setNeuralDenoiserEnabled` toggle) deferred. See
+  `plan/sprint-13-walkaround-integration.md`.
 
 ---
 
@@ -191,18 +267,17 @@ etc.). Visual A/B verification required after each; reference renders saved to
 
 - **Vitrum library packages**: 8 (core, three-bindings, shared-bvh, shared-samplers,
   shared-denoisers, pt-webgl, pt-webgpu stub, walkaround-hybrid)
-- **Total tests**: 346 passing (16 test files across 6 packages)
+- **Total tests**: 532 passing (19 test files across 6 packages)
   - pt-webgl: 18
   - shared-bvh: 11
   - shared-denoisers: 69
-  - shared-samplers: 54
+  - shared-samplers: 139 (54 existing + 35 BDPT tests + 50 new Sprint 12 spectral tests)
   - three-bindings: 1
-  - walkaround-hybrid: 193
+  - walkaround-hybrid: 294 (193 existing + 101 new Sprint 13 neural denoiser tests)
 - **TypeScript strict**: clean across workspace (`npm run typecheck` passes)
-- **LOC vitrum library code**: 19,746 total (TypeScript source files in `packages/`,
-  excluding `.d.ts` and `node_modules`)
-- **Phase 6 sprint commits**: 6 (7bda9c4 through 0cebaf9)
-- **Total commits on main**: 28
+- **LOC vitrum library code**: ~21,800 total (Sprint 13 adds ~2,100 lines across 7 new files)
+- **Phase 6 sprint commits**: Sprint 13 (pending commit from this session)
+- **Total commits on main**: 28 (pre-Sprint 13)
 
 ---
 
@@ -225,9 +300,11 @@ etc.). Visual A/B verification required after each; reference renders saved to
 | `plan/sprint-10a-pt-fork-patch.md` | Sprint 10a PT preview integration — motion vector MRT channel, PTSVGFDenoiser replacement |
 | `plan/sprint-10b-host-checklist.md` | Sprint 10b host checklist — ORT-Web install, OIDN model bundle, "Denoise" button, float32 readback |
 | `plan/sprint-11-ppg-integration.md` | Sprint 11 PPG integration spec — pipeline compilation, BGL, shade-pass changes, frame-parity |
-| `plan/sprint-10c-deferred.md` | Sprint 10c (BDPT) deferred — trigger criterion and un-defer instructions |
-| `plan/sprint-12-deferred.md` | Sprint 12 (hero spectral) deferred — trigger material list, un-defer criteria |
-| `plan/sprint-13-deferred.md` | Sprint 13 (neural denoiser) deferred — 3-AND trigger criteria, bail-out criterion |
+| `plan/sprint-10c-pt-fork-patch.md` | Sprint 10c (BDPT) active patch spec — light/eye subpath kernels, ping-pong vertex storage, MIS weight GLSL |
+| `plan/sprint-10c-deferred.md` | Sprint 10c original deferred doc — archived; superseded by sprint-10c-pt-fork-patch.md |
+| `plan/sprint-12-pt-fork-patch.md` | Sprint 12 active patch spec — CIE CMF tables, hero-wavelength sampling, Cauchy IOR, fork-side kernel rewrite spec (gated) |
+| `plan/sprint-13-deferred.md` | Sprint 13 original deferred doc — superseded by sprint-13-walkaround-integration.md |
+| `plan/sprint-13-walkaround-integration.md` | Sprint 13 integration spec — InferenceGraph wiring into renderFrame, bind groups, gating, memory, dispatch sizing |
 
 ---
 

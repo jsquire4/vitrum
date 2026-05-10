@@ -394,6 +394,9 @@ These are gated behind explicit **trigger criteria**, not automatically schedule
 
 **Decision point** (sign-off needed before Sprint 12): is the visible improvement over RGB-as-3λ worth the kernel rewrite + ongoing fork maintenance burden? **User noted "more realistic" preference for RGB-as-3λ**; revisit only if specific spectral materials are added to the project.
 
+**Jakob+Hanika precomputed table** (tracked item — L-1 from audit 2026-05-09):
+The placeholder implementation in `packages/shared-samplers/src/jakobHanika.ts` carries a `TODO` noting that the full 24 MB precomputed coefficient table (rgl.epfl.ch/publications/Jakob2019Spectral) would improve banding on extreme chromatic colors. Before Sprint 12, confirm the distribution license for the Mitsuba 3 table files (`mitsuba-renderer/mitsuba3` repo, `resources/data/spectral/`) — if MIT, a direct TypeScript port of the lookup replaces the analytic 3-band approximation at zero visual cost. If non-commercial only, use the analytic Cauchy fallback and document the limitation.
+
 ---
 
 ### Sprint 13 — Custom WebGPU neural denoiser (6–8 weeks)

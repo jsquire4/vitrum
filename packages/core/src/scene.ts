@@ -32,6 +32,131 @@ export type SceneNodeId = string;
 // Material
 // ────────────────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────────────────
+// Spectral rendering types (RFE-01)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A spectral reflectance or attenuation curve sampled at uniformly spaced
+ * wavelengths across the visible range (or a portion of it).
+ *
+ * `wavelengthStart` / `wavelengthEnd` are in nanometers (e.g. 380 / 700).
+ * `values` are per-sample coefficients (units depend on usage context —
+ * for spectralAttenuation: μ(λ) in inverse scene-length-units matching
+ * attenuationDistance). Must have ≥ 3 entries; the engine linearly
+ * interpolates between samples.
+ *
+ * Reference: Wilkie et al., "Hero Wavelength Spectral Sampling," EGSR 2014.
+ */
+export interface SpectralCurve {
+  readonly wavelengthStart: number;  // nm, e.g. 380
+  readonly wavelengthEnd: number;    // nm, e.g. 700
+  readonly values: Float32Array;     // μ(λ) in units matching attenuationDistance; length ≥ 3
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Layered BSDF types (RFE-03)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Describes a thin absorbing layer applied to one face of a dielectric surface.
+ * Models a surface-fused coating or diffusion-tinted region that modulates
+ * transmitted and reflected radiance independently from the bulk material.
+ *
+ * The layer is treated as an infinitesimally thin absorber applied BEFORE
+ * the bulk BSDF is evaluated — incoming radiance is multiplied by
+ * `transmission` before entering the bulk, and outgoing radiance is multiplied
+ * by `transmission` before exiting. This is the simplified (non-multiple-
+ * scattering) form of Belcour 2018's atomic decomposition.
+ *
+ * Reference: Belcour, "Efficient Rendering of Layered Materials using an
+ * Atomic Decomposition with Statistical Operators," ACM TOG (SIGGRAPH 2018).
+ */
+export interface SurfaceAbsorptionLayer {
+  /**
+   * Per-channel (RGB) transmission of the thin absorbing layer.
+   * [1, 1, 1] = no absorption (identity layer).
+   * [0, 0, 0] = fully opaque mask.
+   * Each component ∈ [0, 1].
+   */
+  readonly transmission: Vec3;
+
+  /**
+   * Optional roughness override for this face's surface.
+   * When set, replaces Material.roughness for this face only.
+   * Range: [0, 1].
+   */
+  readonly roughness?: number;
+
+  /**
+   * Optional normal map texture for this face only.
+   * Useful when the two faces have different surface treatments.
+   */
+  readonly normalMap?: TextureRef;
+  readonly normalScale?: number;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Multi-layer thin-film types (RFE-04)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A single layer in a thin-film optical stack.
+ * The stack is ordered from topmost (air-adjacent) layer to
+ * bottom (substrate-adjacent) layer.
+ *
+ * Reference: Born & Wolf, "Principles of Optics" (1959/1999);
+ * Macleod, "Thin-Film Optical Filters," 4th ed. (2010) — Abeles TMM formalism.
+ */
+export interface ThinFilmLayer {
+  /** Refractive index of this layer (real part). */
+  readonly ior: number;
+  /**
+   * Extinction coefficient (imaginary part of complex IOR).
+   * 0 for dielectric layers; > 0 for lossy or metallic layers.
+   */
+  readonly extinctionCoefficient?: number;
+  /** Physical layer thickness in nanometers. */
+  readonly thicknessNm: number;
+}
+
+/**
+ * A multi-layer thin-film stack evaluated via the Transfer Matrix Method
+ * (Abeles formalism). The engine computes per-wavelength reflectance and
+ * transmittance by multiplying the 2×2 characteristic matrices of each layer.
+ * The resulting spectral R(λ) and T(λ) are convolved with CIE CMFs to produce
+ * the RGB BSDF weight used at each shade point.
+ *
+ * When `thinFilmStack` is present on a Material, it overrides the single-layer
+ * iridescence model (iridescence / iridescenceIor / iridescenceThicknessRange).
+ */
+export interface ThinFilmStack {
+  /**
+   * Ordered array of thin-film layers, topmost first (closest to incident
+   * medium, usually air). The substrate IOR is taken from Material.ior.
+   * Minimum: 1 layer. Backends may cap for performance (e.g., 64 layers).
+   */
+  readonly layers: ReadonlyArray<ThinFilmLayer>;
+
+  /**
+   * IOR of the incident medium (the medium the ray arrives from).
+   * Typically 1.0 (air). Default: 1.0.
+   */
+  readonly incidentIor?: number;
+
+  /**
+   * If true, evaluate TMM per viewing angle (cos θ from Snell's law through
+   * each layer). This produces the correct viewing-angle-dependent spectral
+   * shift. If false, evaluate at normal incidence only (faster, less accurate
+   * for grazing angles). Default: true.
+   */
+  readonly angleDependent?: boolean;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Material
+// ────────────────────────────────────────────────────────────────────────────
+
 /** Generic PBR material — superset of the standard PBR fields with optional
  *  Disney-BSDF lobes for backends that support them. The `extensions` field
  *  is the escape hatch: backends can read backend-specific data from it
@@ -76,6 +201,107 @@ export interface Material {
   iridescence?: number;
   iridescenceIor?: number;
   iridescenceThicknessRange?: Vec2;
+
+  // ── Spectral attenuation (RFE-01) ──────────────────────────────────────
+  /**
+   * Spectral attenuation coefficient table, sampled at uniformly spaced
+   * wavelengths. Each entry is μ(λ) in inverse scene-length-units (matching
+   * attenuationDistance units).
+   *
+   * When present, the engine uses per-wavelength Beer-Lambert instead of the
+   * RGB approximation. Length must be >= 3; typical use is 8–32 samples
+   * spanning 380–700 nm. The engine linearly interpolates between samples.
+   *
+   * When absent and attenuationColor is present, engine falls back to the
+   * existing RGB Beer-Lambert approximation.
+   *
+   * Reference: Wilkie et al., "Hero Wavelength Spectral Sampling," EGSR 2014.
+   */
+  spectralAttenuation?: SpectralCurve;
+
+  /**
+   * Abbe number V_d = (n_d − 1) / (n_F − n_C) for wavelength-dependent IOR.
+   * Higher values = lower dispersion. When set, the engine computes
+   * wavelength-dependent IOR via the two-term Cauchy approximation and uses
+   * hero-wavelength sampling so each path traces a single wavelength.
+   * Range: 20 (dense flint, high dispersion) to 90 (crown glass, low).
+   * Default: undefined (no dispersion).
+   *
+   * Reference: OpenPBR Surface v1.1.1 `transmission_dispersion_abbe_number`.
+   */
+  dispersionAbbeNumber?: number;
+
+  // ── Volume scattering (RFE-02) ──────────────────────────────────────────
+  /**
+   * Scattering coefficient σ_s, in inverse scene-length-units (matching
+   * attenuationDistance units). The total extinction coefficient is
+   * σ_t = σ_a + σ_s, where σ_a is derived from attenuationDistance.
+   *
+   * When scatteringCoefficient > 0 and transmission > 0, the backend
+   * activates volumetric path tracing (delta tracking) for rays passing
+   * through this medium.
+   *
+   * Reference: Novák et al., "Monte Carlo Methods for Volumetric Light
+   * Transport Simulation," CGF 2018 (delta tracking / null-collision).
+   */
+  scatteringCoefficient?: number;
+
+  /**
+   * Henyey-Greenstein phase function asymmetry parameter g ∈ (−1, 1).
+   *   g = 0:   isotropic scatter.
+   *   g > 0:   forward-biased scatter (biological tissue ~0.9).
+   *   g < 0:   backward-biased scatter (retroreflective powders).
+   * Default: 0 (isotropic) when scatteringCoefficient is set.
+   *
+   * Reference: Henyey & Greenstein, "Diffuse Radiation in the Galaxy," 1941.
+   */
+  scatteringAnisotropy?: number;
+
+  /**
+   * Per-channel (RGB) scattering coefficients. When present, overrides the
+   * scalar scatteringCoefficient with wavelength-dependent values, producing
+   * chromatic scattering (e.g., sky-blue tint in forward-scattered white light).
+   * Units and defaults same as scatteringCoefficient.
+   *
+   * Reference: OpenPBR Surface v1.1.1 `transmission_scatter`,
+   * Standard Surface `transmission_scatter`.
+   */
+  scatteringCoefficientRGB?: Vec3;
+
+  // ── Per-face BSDF asymmetry / layered BSDF (RFE-03) ────────────────────
+  /**
+   * Thin absorbing layer applied to the front (outward-normal) face.
+   * "Front" is the face whose normal points in the direction used to define
+   * the mesh's vertex normals.
+   *
+   * When present, the BSDF for rays hitting this face is:
+   *   L_front = SurfaceAbsorptionLayer.transmission ⊙ L_bulk
+   * where L_bulk is the standard Material BSDF evaluation.
+   *
+   * Reference: Belcour, "Efficient Rendering of Layered Materials using an
+   * Atomic Decomposition with Statistical Operators," ACM TOG (SIGGRAPH 2018).
+   */
+  frontLayer?: SurfaceAbsorptionLayer;
+
+  /**
+   * Thin absorbing layer applied to the back (inward-normal) face.
+   * Symmetric semantics to frontLayer.
+   */
+  backLayer?: SurfaceAbsorptionLayer;
+
+  // ── Multi-layer thin-film interference / TMM (RFE-04) ──────────────────
+  /**
+   * Multi-layer thin-film stack evaluated via the Transfer Matrix Method.
+   * When present, overrides the single-layer iridescence model
+   * (iridescence / iridescenceIor / iridescenceThicknessRange).
+   * The TMM result is applied as a wavelength-dependent BSDF weight
+   * on the specular lobe.
+   *
+   * Reference: Born & Wolf, "Principles of Optics" (Abeles TMM);
+   * Belcour & Barla, "A Practical Extension to Microfacet Theory for the
+   * Modeling of Varying Iridescence," ACM TOG (SIGGRAPH 2017).
+   */
+  thinFilmStack?: ThinFilmStack;
 
   // ── Backend escape hatch ────────────────────────────────────────────────
   /** Backends may read keyed fields from here for backend-specific features.

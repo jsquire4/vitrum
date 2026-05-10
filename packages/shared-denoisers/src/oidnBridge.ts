@@ -206,6 +206,18 @@ export function clearOIDNCache(): void {
 // Internal helpers
 // ============================================================
 
+// ── Layout transform helpers ─────────────────────────────────────────────────
+//
+// Exported with an underscore prefix to signal internal / test-only status
+// (not part of the public API surface). Direct export allows unit testing
+// the layout transform without running ONNX inference.
+//
+// AUDIT FIX M-3 (2026-05-09): These were previously unexported and only
+// "tested" indirectly via denoiseFinal's return type. A layout-transpose bug
+// would silently produce scrambled output. Now exported for direct round-trip
+// verification in oidnBridge.test.ts.
+export { _hwcToNchw, _nchwToHwc };
+
 /**
  * Lazily import onnxruntime-web.
  *

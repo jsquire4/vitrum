@@ -72,6 +72,17 @@ export interface EngineCapabilities {
 
   /** Set of emitter `kind` values this engine supports. */
   readonly supportedEmitterKinds: ReadonlySet<string>;
+
+  // ── Specular caustics (RFE-05) ──────────────────────────────────────────
+  /**
+   * Whether this engine instance was created with a caustic strategy.
+   * 'none' means standard NEE only; consumers should not expect fast
+   * caustic convergence. Other values indicate the active strategy.
+   *
+   * Reference: Hanika, Droske, Fascione, "Manifold Next Event Estimation,"
+   * CGF 34(4), 2015.
+   */
+  readonly causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -192,6 +203,50 @@ export interface EngineOptions {
    *  requires recompiling shaders and resizing auxiliary buffers — so it is
    *  a creation-time structural decision, not a per-frame dial. */
   readonly denoiser?: 'none' | 'atrous' | 'svgf' | 'bmfr' | 'oidn-final';
+
+  // ── Specular caustics strategy (RFE-05) ────────────────────────────────
+  /**
+   * Strategy for handling specular-chain caustic paths (LS+E, LSS+E, …).
+   *
+   * 'none':          No special caustic handling. Standard NEE only. Caustics
+   *                  accumulate slowly via BSDF-sampled paths (may require many
+   *                  thousands of samples to converge).
+   *
+   * 'manifold-nee':  Manifold Next-Event Estimation (Hanika et al. 2015).
+   *                  At each diffuse vertex, launch a manifold walk to find
+   *                  valid specular connections to sampled light positions.
+   *                  Unbiased. Adds per-shading-event cost proportional to
+   *                  the number of specular interfaces (typically 2–5 Newton
+   *                  steps per walk attempt). May fail for highly curved or
+   *                  rough specular surfaces.
+   *
+   * 'photon-map':    Biased photon mapping for caustics. Trace forward photons
+   *                  from lights; store caustic photons in a spatial data
+   *                  structure; use density estimation at diffuse shading points
+   *                  to reconstruct caustic radiance. Biased but robust.
+   *
+   * Default: 'none'.
+   *
+   * Reference: Hanika, Droske, Fascione, "Manifold Next Event Estimation,"
+   * Computer Graphics Forum 34(4), 2015. DOI: 10.1111/cgf.12681.
+   */
+  readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
+
+  /**
+   * MNEE: maximum number of Newton iterations per manifold walk attempt.
+   * Higher values improve convergence for curved surfaces at greater per-vertex
+   * cost. Typical range: 4–12. Default: 8.
+   * Ignored when causticStrategy !== 'manifold-nee'.
+   */
+  readonly mneeMaxIterations?: number;
+
+  /**
+   * MNEE: maximum number of specular vertices in a chain that MNEE will
+   * attempt to connect. Longer chains are expensive; capping at 3–4 covers
+   * most architectural cases (one or two refractive surfaces).
+   * Default: 3. Ignored when causticStrategy !== 'manifold-nee'.
+   */
+  readonly mneeMaxChainLength?: number;
 
   // ── Backend-specific extensions ─────────────────────────────────────────
   /** Engines look up extension keys here for backend-specific creation-time

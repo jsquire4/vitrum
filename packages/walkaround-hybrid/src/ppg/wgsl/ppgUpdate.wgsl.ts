@@ -160,8 +160,19 @@ fn ppgDirToBinIdx(dir: vec3f) -> u32 {
 
 // Compute flat index into ppgLeafData for (leafIdx, binIdx, field).
 // field: 0 = radianceSum, 1 = sampleCount.
+//
+// Stride derivation (matches ppgSample.wgsl PPGDirectionalLeaf layout):
+//   PPGDirectionalLeaf = 256 bytes = 64 u32 slots per leaf.
+//   PPG_LEAF_BYTE_STRIDE (types.ts:129) = 256 bytes = 64 × sizeof(u32).
+//   Each bin occupies 2 u32 slots (radianceSum + sampleCount).
+//   → leafIdx * 64u + binIdx * 2u + field
+//
+// AUDIT FIX H-1 (2026-05-09): was "leafIdx * 32u", which addressed 128-byte
+// offsets while ppgSample.wgsl expects 256-byte (64-slot) offsets. For any
+// scene with more than one occupied PPG cell the old formula corrupted
+// directional bin data in all cells beyond cell 0.
 fn ppgLeafSlot(leafIdx: u32, binIdx: u32, field: u32) -> u32 {
-  return leafIdx * 32u + binIdx * 2u + field;
+  return leafIdx * 64u + binIdx * 2u + field;
 }
 
 // ============================================================
@@ -192,7 +203,10 @@ fn ppgUpdateKernel(@builtin(global_invocation_id) id: vec3<u32>) {
   let binIdx = ppgDirToBinIdx(normalize(s.incidentDir));
 
   // Atomic accumulate in fixed-point.
-  let lumFixed = u32(clamp(lum * PPG_RADIANCE_SCALE, 0.0, f32(0xFFFFFFu)));
+  // Max representable radiance = 2^32 / PPG_RADIANCE_SCALE = 4294967295 / 65536 ≈ 65536 nits.
+  // AUDIT FIX H-2 (2026-05-09): was f32(0xFFFFFFu) = 16,777,215 → max ≈ 256 nits, saturating
+  // HDR emitters (sun-through-glass can exceed 1000 nits). Corrected to full u32 range.
+  let lumFixed = u32(clamp(lum * PPG_RADIANCE_SCALE, 0.0, f32(0xFFFFFFFFu)));
   let radianceSlot = ppgLeafSlot(leafIdx, binIdx, 0u);
   let countSlot    = ppgLeafSlot(leafIdx, binIdx, 1u);
 

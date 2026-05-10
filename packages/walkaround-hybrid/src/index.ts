@@ -86,6 +86,39 @@ export { applyDDGIShading } from './rc/applyDDGIShading.js';
 export { PROBE_RAY_CAST_WGSL } from './rc/wgsl/probeRayCast.wgsl.js';
 export { CASCADE_MERGE_WGSL } from './rc/wgsl/cascadeMerge.wgsl.js';
 
+// ─── Sprint 13 — Neural denoiser ─────────────────────────────────────────────
+// InferenceGraph: WebGPU compute-shader inference graph for UNet-style neural denoising.
+// Mode scope: walkaround only (PT final uses Sprint 10b OIDN).
+
+// Inference graph orchestrator and types.
+export { InferenceGraph } from './neural/InferenceGraph.js';
+export type {
+  InferenceLayer,
+  InferenceLayerKind,
+  InferenceGraphSpec,
+  ModelWeights,
+} from './neural/InferenceGraph.js';
+
+// UNet architecture spec and constants.
+export {
+  WALKAROUND_DENOISER_UNET_SPEC,
+  UNET_INPUT_CHANNELS,
+  UNET_OUTPUT_CHANNELS,
+  UNET_ENCODER_CHANNELS,
+  UNET_DECODER_CHANNELS,
+  UNET_TOTAL_PARAMETERS,
+  UNET_WEIGHT_BYTES,
+  UNET_INPUT_TENSOR_NAMES,
+  UNET_OUTPUT_TENSOR_NAMES,
+} from './neural/unetArchitecture.js';
+
+// WGSL primitive kernels (exported for host inspection and headless testing).
+export { CONV2D_WGSL } from './neural/wgsl/conv2d.wgsl.js';
+export { TRANSPOSED_CONV2D_WGSL } from './neural/wgsl/transposedConv2d.wgsl.js';
+export { RELU_WGSL } from './neural/wgsl/relu.wgsl.js';
+export { SKIP_CONNECTION_WGSL } from './neural/wgsl/skipConnection.wgsl.js';
+export { BILINEAR_UPSAMPLE_WGSL } from './neural/wgsl/bilinearUpsample.wgsl.js';
+
 // ─── Sprint 11 — PPG (path guiding) ──────────────────────────────────────────
 // PPG is walkaround-only. WebGL2 PT has no compute shaders and cannot
 // maintain the kd-tree update pass.
