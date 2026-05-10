@@ -24,6 +24,8 @@ export interface BGLCache {
   hybridLayers?: GPUBindGroupLayout;
   sampleBudget?: GPUBindGroupLayout;
   resolve?: GPUBindGroupLayout;
+  svgfVariance?: GPUBindGroupLayout;
+  svgfAtrous?: GPUBindGroupLayout;
 }
 
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
@@ -182,4 +184,38 @@ export function getResolveBindGroupLayout(device: GPUDevice, cache: BGLCache): G
     ],
   });
   return cache.resolve;
+}
+
+export function getSVGFVarianceBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.svgfVariance) return cache.svgfVariance;
+  cache.svgfVariance = device.createBindGroupLayout({
+    label: 'svgf-variance-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
+      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.svgfVariance;
+}
+
+export function getSVGFAtrousBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.svgfAtrous) return cache.svgfAtrous;
+  cache.svgfAtrous = device.createBindGroupLayout({
+    label: 'svgf-atrous-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.svgfAtrous;
 }

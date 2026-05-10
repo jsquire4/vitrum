@@ -62,6 +62,8 @@ export interface FrameResources {
   resolvedTexture: GPUTexture;
   /** Motion-vector placeholder (rg32float). Currently zero-filled each frame. */
   motionVectorsTexture: GPUTexture;
+  /** Sprint 10a — SVGF per-pixel variance estimate output (rg32float). */
+  svgfVarianceTexture: GPUTexture;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -455,6 +457,12 @@ export function createFrameResources(
     format: 'rg32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
+  const svgfVarianceTexture = device.createTexture({
+    label: 'svgf-variance',
+    size: [W, H],
+    format: 'rg32float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   // Sprint 11 — PPG buffers (opt-in via ppgEnabled, default: disabled).
   // No behavioural change for existing callers when ppgEnabled is false/unset.
@@ -486,6 +494,7 @@ export function createFrameResources(
     sampleTierTexture,
     resolvedTexture,
     motionVectorsTexture,
+    svgfVarianceTexture,
     ...ppgExt,
   };
 }
@@ -513,6 +522,7 @@ export function destroyFrameResources(r: FrameResources): void {
   r.sampleTierTexture.destroy();
   r.resolvedTexture.destroy();
   r.motionVectorsTexture.destroy();
+  r.svgfVarianceTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

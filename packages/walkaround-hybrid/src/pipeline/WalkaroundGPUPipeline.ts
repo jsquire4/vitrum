@@ -39,12 +39,13 @@ import {
   buildFrameBindGroup,
   buildSceneBindGroup,
   buildUboBindGroup,
-  buildAtrousBindGroup,
   buildAccumBindGroup,
   buildHybridLayersBindGroup,
   buildCompositeBindGroup,
   buildSampleBudgetBindGroup,
   buildResolveBindGroup,
+  buildSVGFVarianceBindGroup,
+  buildSVGFAtrousBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
 import {
@@ -187,7 +188,8 @@ export class WalkaroundGPUPipeline {
   private temporalPipeline!: GPUComputePipeline;
   private spatialPipeline!: GPUComputePipeline;
   private shadePipeline!: GPUComputePipeline;
-  private atrousPipeline!: GPUComputePipeline;
+  private svgfVariancePipeline!: GPUComputePipeline;
+  private svgfAtrousPipeline!: GPUComputePipeline;
   private accumPipeline!: GPUComputePipeline;
   private sampleBudgetPipeline!: GPUComputePipeline;
   private resolvePipeline!: GPUComputePipeline;
@@ -198,7 +200,8 @@ export class WalkaroundGPUPipeline {
   private bglCache: BGLCache = {};
 
   // Lazily-created per-builder UBO buffers
-  private atrousUboRef: UboRef = { buf: undefined };
+  private svgfVarianceUboRef: UboRef = { buf: undefined };
+  private svgfAtrousUboRef: UboRef = { buf: undefined };
   private accumUboRef: UboRef  = { buf: undefined };
   private sampleBudgetUboRef: UboRef = { buf: undefined };
   private sampleCountUboRef: UboRef = { buf: undefined };
@@ -253,7 +256,8 @@ export class WalkaroundGPUPipeline {
     this.temporalPipeline  = compiled.temporalPipeline;
     this.spatialPipeline   = compiled.spatialPipeline;
     this.shadePipeline     = compiled.shadePipeline;
-    this.atrousPipeline    = compiled.atrousPipeline;
+    this.svgfVariancePipeline = compiled.svgfVariancePipeline;
+    this.svgfAtrousPipeline = compiled.svgfAtrousPipeline;
     this.accumPipeline     = compiled.accumPipeline;
     this.sampleBudgetPipeline = compiled.sampleBudgetPipeline;
     this.resolvePipeline = compiled.resolvePipeline;
@@ -391,26 +395,48 @@ export class WalkaroundGPUPipeline {
       pass.end();
     }
 
-    // Pass 5: À-trous denoiser — 3 iterations (stepWidths 1, 2, 4).
-    // Consumes the real per-pixel normal+depth G-buffer written by the shade
-    // pass so edge-stopping weights fire correctly. 3 iters gives a 1-2px
-    // collective softening across all colors equally (σc=0.05 still blocks
-    // distinct-cell color jumps). Caustic shapes stay distinct.
+    // Pass 5: SVGF variance + 5 à-trous iterations.
     const wgX16 = Math.ceil(W / 16);
     const wgY16 = Math.ceil(H / 16);
-    let inputTex = this.res.hdrColorTexture;
     const gNormalDepthView = this.res.gNormalDepthTexture.createView();
-
-    for (let iter = 0; iter < 3; iter++) {
-      const stepWidth = 1 << iter;
-      const outputTex = iter % 2 === 0 ? this.res.denoisedPingTexture : this.res.denoisedPongTexture;
-      const bgAtrous = buildAtrousBindGroup(
-        d, this.bglCache, this.atrousUboRef,
-        inputTex.createView(), outputTex.createView(),
-        gNormalDepthView, gNormalDepthView, stepWidth,
+    const readAccum  = this.accumPingPongIndex === 0 ? this.res.accumTextureA : this.res.accumTextureB;
+    const writeAccum = this.accumPingPongIndex === 0 ? this.res.accumTextureB : this.res.accumTextureA;
+    {
+      const bgVar = buildSVGFVarianceBindGroup(
+        d,
+        this.bglCache,
+        this.svgfVarianceUboRef,
+        {
+          inputColor: this.res.hdrColorTexture.createView(),
+          prevRadiance: readAccum.createView(),
+          gbufNormal: gNormalDepthView,
+          gbufDepth: gNormalDepthView,
+          motionVectors: this.res.motionVectorsTexture.createView(),
+          varianceIn: this.res.varianceBuffer.createView(),
+          varianceOut: this.res.svgfVarianceTexture.createView(),
+          frameCount: this.accumFrameIndex,
+        },
       );
-      const pass = encoder.beginComputePass(computeDesc(`atrous-${iter}`, 5 + iter));
-      pass.setPipeline(this.atrousPipeline);
+      const pass = encoder.beginComputePass(computeDesc('svgf-variance', 5));
+      pass.setPipeline(this.svgfVariancePipeline);
+      pass.setBindGroup(0, bgVar);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+
+    let inputTex = this.res.hdrColorTexture;
+    for (let iter = 0; iter < 5; iter++) {
+      const outputTex = iter % 2 === 0 ? this.res.denoisedPingTexture : this.res.denoisedPongTexture;
+      const bgAtrous = buildSVGFAtrousBindGroup(d, this.bglCache, this.svgfAtrousUboRef, {
+        inputColor: inputTex.createView(),
+        outputColor: outputTex.createView(),
+        gbufNormal: gNormalDepthView,
+        gbufDepth: gNormalDepthView,
+        varianceMap: this.res.svgfVarianceTexture.createView(),
+        iteration: iter,
+      });
+      const pass = encoder.beginComputePass(computeDesc(`svgf-atrous-${iter}`, 6 + iter));
+      pass.setPipeline(this.svgfAtrousPipeline);
       pass.setBindGroup(0, bgAtrous);
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
@@ -422,7 +448,7 @@ export class WalkaroundGPUPipeline {
     // units) reset the accumulator to avoid ghosting; otherwise α=0.1
     // (10% new, 90% history) — ~30-frame EMA window. α=0.1 is the better
     // speed/clarity trade at the current signed-sunDot chroma coverage.
-    const atrousFinalTex = this.res.denoisedPingTexture;
+    const atrousFinalTex = inputTex;
     const dx = inputs.cameraPos[0] - this.lastCameraPos[0];
     const dy = inputs.cameraPos[1] - this.lastCameraPos[1];
     const dz = inputs.cameraPos[2] - this.lastCameraPos[2];
@@ -434,8 +460,6 @@ export class WalkaroundGPUPipeline {
     if (isMoving) this.accumFrameIndex = 0;
     this.lastCameraPos = [...inputs.cameraPos];
 
-    const readAccum  = this.accumPingPongIndex === 0 ? this.res.accumTextureA : this.res.accumTextureB;
-    const writeAccum = this.accumPingPongIndex === 0 ? this.res.accumTextureB : this.res.accumTextureA;
     {
       const bgAccum = buildAccumBindGroup(
         d, this.bglCache, this.accumUboRef,
@@ -444,7 +468,7 @@ export class WalkaroundGPUPipeline {
         writeAccum.createView(),
         alpha,
       );
-      const pass = encoder.beginComputePass(computeDesc('temporalAccum', 8));
+      const pass = encoder.beginComputePass(computeDesc('temporalAccum', 11));
       pass.setPipeline(this.accumPipeline);
       pass.setBindGroup(0, bgAccum);
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
@@ -470,7 +494,7 @@ export class WalkaroundGPUPipeline {
           sampleCount: Math.max(this.accumFrameIndex, 1),
         },
       );
-      const pass = encoder.beginComputePass(computeDesc('sampleBudget', 9));
+      const pass = encoder.beginComputePass(computeDesc('sampleBudget', 12));
       pass.setPipeline(this.sampleBudgetPipeline);
       pass.setBindGroup(0, bgSampleBudget);
       pass.dispatchWorkgroups(wgX, wgY, 1);
@@ -493,7 +517,7 @@ export class WalkaroundGPUPipeline {
           frameParity: this.frameCount & 1,
         },
       );
-      const pass = encoder.beginComputePass(computeDesc('resolve', 10));
+      const pass = encoder.beginComputePass(computeDesc('resolve', 13));
       pass.setPipeline(this.resolvePipeline);
       pass.setBindGroup(0, bgResolve);
       pass.dispatchWorkgroups(wgX, wgY, 1);
@@ -504,7 +528,7 @@ export class WalkaroundGPUPipeline {
     const finalTex = this.res.resolvedTexture;
     const bgComposite = buildCompositeBindGroup(d, this.bglCache, finalTex.createView(), this.res.compositeLinearSampler);
     {
-      const tsComp = tsWrites(this.tsState.querySet, 11);
+      const tsComp = tsWrites(this.tsState.querySet, 14);
       const pass = encoder.beginRenderPass({
         label: 'composite',
         colorAttachments: [{
@@ -557,11 +581,12 @@ export class WalkaroundGPUPipeline {
     this.emitterCdfBuffer?.destroy();
     this.cellPowerBuffer?.destroy();
     if (this.res) destroyFrameResources(this.res);
-    this.atrousUboRef.buf?.destroy();
     this.accumUboRef.buf?.destroy();
     this.sampleBudgetUboRef.buf?.destroy();
     this.sampleCountUboRef.buf?.destroy();
     this.resolveUboRef.buf?.destroy();
+    this.svgfVarianceUboRef.buf?.destroy();
+    this.svgfAtrousUboRef.buf?.destroy();
     disposeTimestampState(this.tsState);
   }
 

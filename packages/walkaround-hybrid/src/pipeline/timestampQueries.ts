@@ -1,9 +1,9 @@
 /**
  * GPU timestamp query helpers — DEV-only, feature-gated.
  *
- * 12 passes per frame: ris, temporal, spatial-1, spatial-2, shade,
- * atrous-0..2 (3 iterations, stepWidths 1/2/4), temporalAccum,
- * sampleBudget, resolve, composite.
+ * 15 passes per frame: ris, temporal, spatial-1, spatial-2, shade,
+ * svgf-variance, svgf-atrous-0..4, temporalAccum, sampleBudget,
+ * resolve, composite.
  *
  * Uses a ping-pong pair of readback buffers so one can be in-flight
  * (mapped/mapping) while the next frame writes into the other, avoiding
@@ -12,7 +12,8 @@
 
 export const PASS_LABELS = [
   'ris', 'temporal', 'spatial-1', 'spatial-2', 'shade',
-  'atrous-0', 'atrous-1', 'atrous-2',
+  'svgf-variance',
+  'svgf-atrous-0', 'svgf-atrous-1', 'svgf-atrous-2', 'svgf-atrous-3', 'svgf-atrous-4',
   'temporalAccum', 'sampleBudget', 'resolve', 'composite',
 ] as const;
 

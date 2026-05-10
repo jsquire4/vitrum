@@ -81,7 +81,7 @@
 
 ## Sprint 10a — SVGF (walkaround + PT preview)
 
-- [ ] **10a.1** Walkaround à-trous replaced by SVGF.
+- [x] **10a.1** Walkaround à-trous replaced by SVGF (variance pass + 5 SVGF à-trous iterations wired in `WalkaroundGPUPipeline`).
 - [ ] **10a.2** PT preview spatial path uses SVGF-class filter.
 - [ ] **10a.3** A/B: 8 samples ≈ 64-sample reference on diffuse.
 

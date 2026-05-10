@@ -17,6 +17,7 @@ import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { ATROUS_WGSL } from '@vitrum/shared-denoisers';
 import { TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
+import { SVGF_WGSL } from '@vitrum/shared-denoisers';
 import { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from '../shaders/composite.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_WGSL } from '../shaders/resolve.wgsl.js';
@@ -30,6 +31,8 @@ import {
   getHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getSVGFVarianceBindGroupLayout,
+  getSVGFAtrousBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -38,7 +41,8 @@ export interface CompiledPipelines {
   temporalPipeline: GPUComputePipeline;
   spatialPipeline: GPUComputePipeline;
   shadePipeline: GPUComputePipeline;
-  atrousPipeline: GPUComputePipeline;
+  svgfVariancePipeline: GPUComputePipeline;
+  svgfAtrousPipeline: GPUComputePipeline;
   accumPipeline: GPUComputePipeline;
   sampleBudgetPipeline: GPUComputePipeline;
   resolvePipeline: GPUComputePipeline;
@@ -56,6 +60,7 @@ export async function compilePipelines(
   const spatialSM  = device.createShaderModule({ label: 'spatial',  code: COMMON_WGSL + SPATIAL_WGSL });
   const shadeSM    = device.createShaderModule({ label: 'shade',    code: COMMON_WGSL + SHADE_WGSL });
   const atrousSM   = device.createShaderModule({ label: 'atrous',   code: COMMON_WGSL + ATROUS_WGSL });
+  const svgfSM     = device.createShaderModule({ label: 'svgf', code: SVGF_WGSL });
   const compVertSM = device.createShaderModule({ label: 'comp-vert', code: COMPOSITE_VERT_WGSL });
   const compFragSM = device.createShaderModule({ label: 'comp-frag', code: COMPOSITE_FRAG_WGSL });
   const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: COMMON_WGSL + SAMPLE_BUDGET_WGSL });
@@ -64,7 +69,7 @@ export async function compilePipelines(
   // Check for compile errors on every shader module before proceeding.
   const modules: [string, GPUShaderModule][] = [
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
-    ['shade', shadeSM], ['atrous', atrousSM],
+    ['shade', shadeSM], ['atrous', atrousSM], ['svgf', svgfSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
     ['sample-budget', sampleBudgetSM], ['resolve', resolveSM],
   ];
@@ -115,6 +120,12 @@ export async function compilePipelines(
   const resolveLayout = device.createPipelineLayout({
     bindGroupLayouts: [getResolveBindGroupLayout(device, bglCache)],
   });
+  const svgfVarianceLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getSVGFVarianceBindGroupLayout(device, bglCache)],
+  });
+  const svgfAtrousLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getSVGFAtrousBindGroupLayout(device, bglCache)],
+  });
 
   // Compile compute pipelines in parallel.
   const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
@@ -128,6 +139,17 @@ export async function compilePipelines(
   const atrousPipeline = await device.createComputePipelineAsync({
     label: 'atrous', layout: atrousLayout,
     compute: { module: atrousSM, entryPoint: 'atrousMain' },
+  });
+  void atrousPipeline; // retained for fallback experimentation; SVGF is default runtime path.
+  const svgfVariancePipeline = await device.createComputePipelineAsync({
+    label: 'svgfVariance',
+    layout: svgfVarianceLayout,
+    compute: { module: svgfSM, entryPoint: 'svgfVarianceMain' },
+  });
+  const svgfAtrousPipeline = await device.createComputePipelineAsync({
+    label: 'svgfAtrous',
+    layout: svgfAtrousLayout,
+    compute: { module: svgfSM, entryPoint: 'svgfAtrousMain' },
   });
 
   const accumSM = device.createShaderModule({ label: 'accum', code: TEMPORAL_ACCUM_WGSL });
@@ -166,7 +188,8 @@ export async function compilePipelines(
     temporalPipeline,
     spatialPipeline,
     shadePipeline,
-    atrousPipeline,
+    svgfVariancePipeline,
+    svgfAtrousPipeline,
     accumPipeline,
     sampleBudgetPipeline,
     resolvePipeline,

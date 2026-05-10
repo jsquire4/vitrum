@@ -20,8 +20,17 @@ import {
   getHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getSVGFVarianceBindGroupLayout,
+  getSVGFAtrousBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
+import {
+  SVGF_DEFAULT_UNIFORMS,
+  SVGF_UNIFORMS_SIZE_BYTES,
+  SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
+  packSVGFUniforms,
+  packSVGFVarianceUniforms,
+} from '@vitrum/shared-denoisers';
 
 // ── Frame bind group ─────────────────────────────────────────────────────────
 
@@ -317,6 +326,95 @@ export function buildResolveBindGroup(
       { binding: 2, resource: r.prevView },
       { binding: 3, resource: r.motionView },
       { binding: 4, resource: r.resolvedOutView },
+    ],
+  });
+}
+
+export interface SVGFVarianceBindGroupResources {
+  inputColor: GPUTextureView;
+  prevRadiance: GPUTextureView;
+  gbufNormal: GPUTextureView;
+  gbufDepth: GPUTextureView;
+  motionVectors: GPUTextureView;
+  varianceIn: GPUTextureView;
+  varianceOut: GPUTextureView;
+  frameCount: number;
+}
+
+export function buildSVGFVarianceBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  uboRef: UboRef,
+  r: SVGFVarianceBindGroupResources,
+): GPUBindGroup {
+  if (!uboRef.buf) {
+    uboRef.buf = device.createBuffer({
+      size: SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+  const buf = new ArrayBuffer(SVGF_VARIANCE_UNIFORMS_SIZE_BYTES);
+  packSVGFVarianceUniforms({ frameCount: r.frameCount >>> 0 }, buf);
+  device.queue.writeBuffer(uboRef.buf, 0, buf);
+
+  return device.createBindGroup({
+    label: 'svgf-variance-bg',
+    layout: getSVGFVarianceBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: r.inputColor },
+      { binding: 1, resource: r.prevRadiance },
+      { binding: 2, resource: r.gbufNormal },
+      { binding: 3, resource: r.gbufDepth },
+      { binding: 4, resource: r.motionVectors },
+      { binding: 5, resource: r.varianceIn },
+      { binding: 6, resource: r.varianceOut },
+      { binding: 7, resource: { buffer: uboRef.buf } },
+    ],
+  });
+}
+
+export interface SVGFAtrousBindGroupResources {
+  inputColor: GPUTextureView;
+  outputColor: GPUTextureView;
+  gbufNormal: GPUTextureView;
+  gbufDepth: GPUTextureView;
+  varianceMap: GPUTextureView;
+  iteration: number;
+}
+
+export function buildSVGFAtrousBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  uboRef: UboRef,
+  r: SVGFAtrousBindGroupResources,
+): GPUBindGroup {
+  if (!uboRef.buf) {
+    uboRef.buf = device.createBuffer({
+      size: SVGF_UNIFORMS_SIZE_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+  const buf = new ArrayBuffer(SVGF_UNIFORMS_SIZE_BYTES);
+  packSVGFUniforms(
+    {
+      iteration: r.iteration >>> 0,
+      sigmaColor: SVGF_DEFAULT_UNIFORMS.sigmaColor,
+      sigmaNormal: SVGF_DEFAULT_UNIFORMS.sigmaNormal,
+      sigmaDepth: SVGF_DEFAULT_UNIFORMS.sigmaDepth,
+    },
+    buf,
+  );
+  device.queue.writeBuffer(uboRef.buf, 0, buf);
+  return device.createBindGroup({
+    label: `svgf-atrous-bg-${r.iteration}`,
+    layout: getSVGFAtrousBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: r.inputColor },
+      { binding: 1, resource: r.outputColor },
+      { binding: 2, resource: r.gbufNormal },
+      { binding: 3, resource: r.gbufDepth },
+      { binding: 4, resource: r.varianceMap },
+      { binding: 5, resource: { buffer: uboRef.buf } },
     ],
   });
 }
