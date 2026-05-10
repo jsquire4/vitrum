@@ -214,7 +214,11 @@ export class WalkaroundGPUPipeline {
   }
 
   /** Upload BVH data + compile shaders. Must be called once before renderFrame. */
-  async initialize(bvhBuffers: SceneBVHBuffers, swapChainFormat: GPUTextureFormat = 'bgra8unorm'): Promise<void> {
+  async initialize(
+    bvhBuffers: SceneBVHBuffers,
+    swapChainFormat: GPUTextureFormat = 'bgra8unorm',
+    options?: { ppgEnabled?: boolean },
+  ): Promise<void> {
     const d = this.device;
     const { width: W, height: H } = this;
     this._swapChainFormat = swapChainFormat;
@@ -234,7 +238,7 @@ export class WalkaroundGPUPipeline {
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
-    this.res = createFrameResources(d, W, H);
+    this.res = createFrameResources(d, W, H, { ppgEnabled: options?.ppgEnabled ?? false });
 
     // ── Compile shaders ───────────────────────────────────────────────────
     const compiled = await compilePipelines(d, this.bglCache, swapChainFormat);

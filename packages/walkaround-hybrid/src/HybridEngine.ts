@@ -41,6 +41,7 @@ import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { buildSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 
 /** Per-frame target interval (60 FPS soft-cap). */
 const TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -93,7 +94,7 @@ export interface HybridEngineOptions extends EngineOptions {
   /** Sky-dome irradiance scalar paired with skyTint. */
   readonly skyIrradiance: number;
 
-  /** `THREE.Scene` for ReSTIR BVH build and DDGI traversal (see `hostScene/types.ts`). */
+  /** Host `THREE.Scene` — BVH / DDGI fallback when `setScene` has no mesh primitives. */
   readonly threeScene: THREE.Scene;
 
   /** Light list for DDGI probe update pass. */
@@ -110,9 +111,9 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    * When true, the engine allocates the three PPG storage buffers
    * (cellBuffer, leafBuffer, sampleBuffer) during pipeline initialisation.
-   * The buffers are ready for binding but the update/sample dispatch passes
-   * are NOT wired in Sprint 11 — see `plan/sprint-11-ppg-integration.md`
-   * for the deferred integration spec.
+   * The buffers are ready for binding and now apply immediately via
+   * `setPPGEnabled()` + automatic reset. PPG shader dispatch remains
+   * follow-up work tracked in `plan/sprint-11-ppg-integration.md`.
    *
    * Defaults to false — no behavioural change for existing consumers.
    *
@@ -190,9 +191,13 @@ export class HybridEngine implements Engine {
   private _pipelineReady                             = false;
 
   // ── Scene (from @vitrum/core contract) ────────────────────────────────
-  /** Last scene passed via setScene(). Stored for Sprint 1 BVH migration.
-   *  Currently the BVH builder reads _threeScene directly (Sprint 0 gap). */
+  /** Last scene passed via `setScene()`. When it contains `mesh` primitives,
+   *  ReSTIR BVH + DDGI probe walks use `vitrumSceneToThree(this._lastScene)`. */
   private _lastScene: Scene | null = null;
+
+  /** Owned `THREE.Scene` from `vitrumSceneToThree` when BVH/DDGI follow the core
+   *  contract; disposed on pipeline teardown. Null when falling back to ctor `threeScene`. */
+  private _ddgiTraversalScene: THREE.Scene | null = null;
 
   // ── DDGI subsystem ─────────────────────────────────────────────────────
   private _ddgi:    DDGI;
@@ -270,27 +275,17 @@ export class HybridEngine implements Engine {
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
    *
-   * **THREE.Scene coupling gap (Sprint 0 limitation — tracked for Sprint 1):**
-   * The `@vitrum/core` contract requires `setScene` to rebuild the BVH from
-   * the *passed* `@vitrum/core Scene` object. However, `buildSceneBVH` (in
-   * `restir/bvhCompute.ts`) and the DDGI subsystem both consume `THREE.Scene`
-   * directly — they walk the live Three.js object graph for geometry and probe
-   * traversal. Bridging this fully requires Sprint 1 work to migrate the BVH
-   * builder to accept `@vitrum/core Scene.primitives` as its geometry source.
+   * **BVH + DDGI geometry:** When `setScene` receives a `Scene` with at least
+   * one `mesh` primitive, ReSTIR `buildSceneBVH` and DDGI probe traversal use
+   * `vitrumSceneToThree` (same path as `pt-webgl`). Otherwise the ctor
+   * `threeScene` is the BVH + DDGI source (hosts with only Three.js graphs).
    *
-   * Until Sprint 1: the BVH is built from `this._threeScene` (passed at
-   * construction). The `scene` argument is stored in `_lastScene` so Sprint 1
-   * can wire it into the BVH path without a constructor-side change.
+   * **Host guidance:** For one `Scene` driving both `pt-webgl` and this engine,
+   * pass `setScene(sceneFromThreeJS(yourThreeScene))` and keep ctor `threeScene`
+   * in sync for the non-mesh case and for auxiliary Object3D state you have not
+   * serialized into the core `Scene`.
    *
-   * **Host guidance:** When scene topology changes, call:
-   *   ```ts
-   *   engine.setScene(sceneFromThreeJS(updatedThreeScene));
-   *   ```
-   * This triggers a BVH rebuild. The `@vitrum/core Scene` is stored and will
-   * become the authoritative BVH input once the Sprint 1 migration lands.
-   *
-   * @param scene - The `@vitrum/core` scene converted via `sceneFromThreeJS`.
-   *                Stored for Sprint 1. BVH currently reads `_threeScene`.
+   * @param scene - The `@vitrum/core` scene (e.g. from `sceneFromThreeJS`).
    */
   setScene(scene: Scene): void {
     this._lastScene = scene;
@@ -406,7 +401,7 @@ export class HybridEngine implements Engine {
         backend: { device: this._device, isWebGPUBackend: true as const },
       };
       void this._ddgi.updateFrame({
-        scene:   this._threeScene,
+        scene:   this._ddgiTraversalScene ?? this._threeScene,
         renderer: rendererAdapter,
         enabled: true,
       });
@@ -568,17 +563,8 @@ export class HybridEngine implements Engine {
   /**
    * Enable or disable PPG (path guiding) for subsequent frames.
    *
-   * **Sprint 11 behaviour (structural prep — dispatch not wired):**
-   * This method records the intent but does NOT yet trigger a pipeline
-   * reinitialisation or change GPU dispatch. The PPG buffers are only
-   * allocated if `ppgEnabled: true` was passed at construction time, or
-   * if the engine is reset after calling this method.
-   *
-   * To allocate PPG buffers at runtime:
-   * ```ts
-   * engine.setPPGEnabled(true);
-   * engine.reset(); // triggers pipeline reinit with ppgEnabled = true
-   * ```
+   * The setting takes effect immediately by rebuilding the pipeline so
+   * frame resources are reallocated with/without PPG buffers.
    *
    * The no-op guarantee: calling `setPPGEnabled(false)` when PPG was never
    * enabled has zero cost and no side effects. Existing consumers that never
@@ -592,12 +578,12 @@ export class HybridEngine implements Engine {
    * @since Sprint 11, 2026-05-09
    */
   setPPGEnabled(on: boolean): void {
+    if (this._ppgEnabled === on) return;
     this._ppgEnabled = on;
-    // No-op for dispatch in Sprint 11 — integration deferred.
-    // When Sprint 11 integration lands, this will also toggle the
-    // ppgUpdate + ppgSample passes in the pipeline's renderFrame dispatch.
+    // Reinitialize so createFrameResources receives the new ppgEnabled flag.
+    this.reset();
     if (this._debug) {
-      console.log('[hybrid:debug] setPPGEnabled', { on, willTakeEffectOnNextReset: true });
+      console.log('[hybrid:debug] setPPGEnabled', { on, reinitialized: true });
     }
   }
 
@@ -636,6 +622,21 @@ export class HybridEngine implements Engine {
 
   // ── Private helpers ────────────────────────────────────────────────────
 
+  /** True when `_lastScene` supplies at least one triangle mesh primitive. */
+  private _coreSceneSuppliesMeshes(): boolean {
+    const s = this._lastScene;
+    return s != null && s.primitives.some((p) => p.kind === 'mesh');
+  }
+
+  /**
+   * Scene-readiness for BVH build: core mesh payload **or** ctor `isSceneReady`
+   * heuristic on the host `threeScene` (proxy-heavy hosts may rely on the latter).
+   */
+  private _sceneReadyForBvh(): boolean {
+    if (this._coreSceneSuppliesMeshes()) return true;
+    return this._isSceneReady();
+  }
+
   private _teardownPipeline(): void {
     this._pipelineReady = false;
     if (this._pipeline) {
@@ -645,6 +646,10 @@ export class HybridEngine implements Engine {
     if (this._bvhBuffers) {
       disposeSceneBVH(this._bvhBuffers);
       this._bvhBuffers = null;
+    }
+    if (this._ddgiTraversalScene) {
+      disposeVitrumThreeSceneRoot(this._ddgiTraversalScene);
+      this._ddgiTraversalScene = null;
     }
     if (this._state !== 'disposed') {
       this._state = 'initializing';
@@ -673,7 +678,7 @@ export class HybridEngine implements Engine {
       while (!this._disposed) {
         const elapsed = Date.now() - pollStart;
         if (elapsed >= 5_000) break;
-        if (this._isSceneReady()) break;
+        if (this._sceneReadyForBvh()) break;
         await new Promise<void>((r) => setTimeout(r, 50));
         pollIters++;
       }
@@ -691,7 +696,13 @@ export class HybridEngine implements Engine {
 
       try {
         const bvhStart = performance.now();
-        const bvh = buildSceneBVH([this._threeScene], {
+        const bvhRoot: THREE.Object3D = this._coreSceneSuppliesMeshes()
+          ? vitrumSceneToThree(this._lastScene!)
+          : this._threeScene;
+        if (bvhRoot !== this._threeScene) {
+          this._ddgiTraversalScene = bvhRoot as THREE.Scene;
+        }
+        const bvh = buildSceneBVH([bvhRoot], {
           primaryLightDir:       new THREE.Vector3(...this._primaryLightDir),
           primaryLightIntensity: this._primaryLightIntensity,
         });
@@ -708,7 +719,11 @@ export class HybridEngine implements Engine {
 
         const pipeline = new WalkaroundGPUPipeline(device, this._width, this._height);
         const pipelineStart = performance.now();
-        await pipeline.initialize(bvh, getPreferredSwapChainFormat());
+        await pipeline.initialize(
+          bvh,
+          getPreferredSwapChainFormat(),
+          { ppgEnabled: this._ppgEnabled },
+        );
         const pipelineMs = performance.now() - pipelineStart;
 
         if (this._disposed) {
@@ -787,6 +802,8 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> =
   // _initPipeline is fire-and-forget; the engine transitions to 'ready'
   // when the BVH poll + pipeline compile finishes. The host polls
   // engine.state or observes renderFrame returning samplesAccumulated=0.
-  engine.setScene({} as Scene);
+  // Bootstrap with a valid empty scene (no primitives, no emitters) so the
+  // scene-readiness poll falls through to the host threeScene heuristic.
+  engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
   return engine;
 }

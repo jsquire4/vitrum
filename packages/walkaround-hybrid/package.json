@@ -14,7 +14,8 @@
     "@vitrum/core": "file:../core",
     "@vitrum/shared-bvh": "file:../shared-bvh",
     "@vitrum/shared-samplers": "file:../shared-samplers",
-    "@vitrum/shared-denoisers": "file:../shared-denoisers"
+    "@vitrum/shared-denoisers": "file:../shared-denoisers",
+    "@vitrum/three-bindings": "file:../three-bindings"
   },
   "peerDependencies": {
     "three": ">=0.160.0"

@@ -1,0 +1,30 @@
+{
+  "name": "@vitrum-examples/two-engines-one-scene",
+  "version": "0.0.0",
+  "private": true,
+  "description": "G2 demo: one @vitrum/core Scene → pt-webgl + walkaround-hybrid (WebGPU).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@vitrum-examples/shared": "file:../shared",
+    "@vitrum/core": "file:../../packages/core",
+    "@vitrum/pt-webgl": "file:../../packages/pt-webgl",
+    "@vitrum/three-bindings": "file:../../packages/three-bindings",
+    "@vitrum/walkaround-hybrid": "file:../../packages/walkaround-hybrid",
+    "three": "^0.184.0",
+    "three-gpu-pathtracer": "file:../../../three-gpu-pathtracer",
+    "three-mesh-bvh": "^0.7.4",
+    "xatlas-web": "^0.1.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.3.3",
+    "vite": "^5.4.0"
+  }
+}
