@@ -61,7 +61,7 @@ Both hooks throw initially (the engines don't render yet). The point is to fix t
 - [x] `@vitrum/three-bindings/src/index.ts` stub
 - [ ] host-app `src/rendering/vitrum-bridge/` placeholder hooks
 - [x] `tsc --noEmit` clean across workspace
-- [ ] Sprint 0 committed; Phase 6 doc updated to reference vitrum packages
+- [x] Phase 6 tracking: [`plan/phase-6-roadmap-backlog.md`](./phase-6-roadmap-backlog.md) + per-sprint `plan/sprint-<N>-benchmark.md` stubs
 
 > **Note — host-app scaffold deferred**: there is no host application currently importing `@vitrum/*`. The `vitrum-bridge/` hooks (`useVitrumPTEngine`, `useVitrumWalkaroundEngine`) will be created in whichever host-app repo first consumes vitrum packages; this item is N/A until that integration begins.
 

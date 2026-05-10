@@ -4,6 +4,8 @@
 **Created**: 2026-05-09 (revised same day after library-extraction reframe)
 **Branch**: `main` (Phase 1–5 of photorealism plan shipped 2026-05-09; sweep findings closed)
 
+**Checklist backlog** (DoD items, benchmark links): [`plan/phase-6-roadmap-backlog.md`](./phase-6-roadmap-backlog.md)
+
 ## Strategic frame: this is library extraction, not app feature work
 
 This roadmap drives Phase 6 work in vitrum. Every Phase 6 sprint deliverable lands in a `@vitrum/*` package per `plan/library-architecture.md`. A host application consumes the packages via `import { ... } from '@vitrum/core'` etc.
@@ -500,7 +502,7 @@ Sprint 13  (30-40d)   Neural denoise   ─── conditional on SVGF gap
 
 ## 9. Verification protocol
 
-To prevent the half-implementation trap, **every sprint has a verification step** that exercises the feature in its mode-scoped target. Verifications captured in `plan/sprint-<N>-benchmark.md` per sprint. The benchmark file template:
+To prevent the half-implementation trap, **every sprint has a verification step** that exercises the feature in its mode-scoped target. Verifications are tracked in `plan/sprint-<N>-benchmark.md` (see [`plan/phase-6-roadmap-backlog.md`](./phase-6-roadmap-backlog.md) for DoD ↔ sprint mapping). The benchmark file template:
 
 ```
 # Sprint N benchmark

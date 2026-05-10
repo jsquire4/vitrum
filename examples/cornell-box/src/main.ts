@@ -1,11 +1,20 @@
 /**
  * Minimal Cornell box in three.js → @vitrum/core Scene → pt-webgl path tracer.
+ *
+ * Query: `?hdri=venice_sunset` (see `OUTDOOR_HDRI_PRESETS` in `@vitrum/pt-webgl` for ids)
+ * loads a Poly Haven 1k HDR for `scene.environment` / background.
  */
 
 import type { FrameInput, Mat4 } from '@vitrum/core';
 import { buildCornellBoxThreeScene } from '@vitrum-examples/shared';
 import * as THREE from 'three';
-import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import {
+  createPTEngine_WebGL2,
+  findHdriPresetById,
+  loadHdriEquirect,
+  PT_PREVIEW_OPTIONS,
+} from '@vitrum/pt-webgl';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 
 function mat4FromThree(m: THREE.Matrix4): Mat4 {
@@ -30,12 +39,41 @@ async function main(): Promise<void> {
   camera.lookAt(-0.05, -0.15, 0);
 
   const threeScene = buildCornellBoxThreeScene();
+
+  const hdriParam =
+    typeof globalThis.location !== 'undefined'
+      ? new URLSearchParams(globalThis.location.search).get('hdri')
+      : null;
+  if (hdriParam) {
+    const preset = findHdriPresetById(hdriParam);
+    if (preset) {
+      try {
+        const envMap = await loadHdriEquirect(preset.url);
+        threeScene.environment = envMap;
+        threeScene.background = envMap;
+      } catch (err) {
+        console.warn('HDRI load failed', preset.id, err);
+      }
+    }
+  }
+
   const vitrumScene = sceneFromThreeJS(threeScene);
 
   const engine = await createPTEngine_WebGL2({ device: renderer });
   engine.setScene(vitrumScene);
 
-  let frame = 0;
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.15;
+  controls.target.set(-0.05, -0.15, 0);
+  controls.update();
+
+  let frameSeq = 0;
+  controls.addEventListener('change', () => {
+    engine.reset();
+    frameSeq = 0;
+  });
+
   const samplesTarget = 48;
 
   function resize(): void {
@@ -49,6 +87,7 @@ async function main(): Promise<void> {
   window.addEventListener('resize', resize);
 
   function loop(): void {
+    controls.update();
     camera.updateMatrixWorld();
     const input: FrameInput = {
       viewMatrix: mat4FromThree(camera.matrixWorldInverse),
@@ -59,22 +98,18 @@ async function main(): Promise<void> {
         height: c.height,
         devicePixelRatio: window.devicePixelRatio,
       },
-      frameIndex: frame,
-      frameSeed: (frame * 9973 + 12345) >>> 0,
+      frameIndex: frameSeq,
+      frameSeed: (frameSeq * 9973 + 12345) >>> 0,
       quality: {
+        ...PT_PREVIEW_OPTIONS,
         samplesTarget,
-        bounces: 8,
-        resolutionFactor: 1,
-        filteredGlossyFactor: 0.5,
       },
     };
 
     const out = engine.renderFrame(input);
-    frame++;
+    frameSeq++;
     status.textContent = `SPP: ${out.samplesAccumulated} / ${samplesTarget}${out.isConverged ? ' — converged' : ''}`;
-    if (!out.isConverged) {
-      requestAnimationFrame(loop);
-    }
+    requestAnimationFrame(loop);
   }
 
   requestAnimationFrame(loop);

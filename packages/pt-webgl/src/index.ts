@@ -247,6 +247,7 @@ class PTEngineWebGL2 implements Engine {
 }
 
 export * from './constants.js';
+export * from './hdriPresets.js';
 export * from './sunGeometry.js';
 export { bakeSkyEquirect, clearSkyEquirectCache } from './iblBaker.js';
 export { debounceMsForEditRate, PT_DEBOUNCE_MS_NORMAL, PT_DEBOUNCE_MS_BURST } from './debounce.js';
