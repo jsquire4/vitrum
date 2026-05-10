@@ -25,8 +25,9 @@
  *   Sprint 10a SVGF will replace the simple reprojection with a variance-guided
  *   version once motion vectors are verified available from the host.
  *
- * Integration status: DEFERRED — shader is complete and runnable but is NOT
- * wired into the dispatch pipeline. See plan/sprint-9-walkaround-integration.md.
+ * Integration status: WIRED — dispatched in WalkaroundGPUPipeline before
+ * composite. Reads current denoised radiance + previous accumulation and
+ * writes full-resolution resolved output.
  *
  * @version 1 (Sprint 9, 2026-05-09)
  */

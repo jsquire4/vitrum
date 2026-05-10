@@ -18,6 +18,8 @@ import {
   getAccumBindGroupLayout,
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
+  getSampleBudgetBindGroupLayout,
+  getResolveBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -239,6 +241,82 @@ export function buildCompositeBindGroup(
     entries: [
       { binding: 0, resource: texView },
       { binding: 1, resource: compositeLinearSampler },
+    ],
+  });
+}
+
+export interface SampleBudgetBindGroupResources {
+  varianceView: GPUTextureView;
+  sampleTierView: GPUTextureView;
+  thresholdLow: number;
+  thresholdHigh: number;
+  width: number;
+  height: number;
+  sampleCount: number;
+}
+
+export function buildSampleBudgetBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  uboRef: UboRef,
+  sampleCountRef: UboRef,
+  r: SampleBudgetBindGroupResources,
+): GPUBindGroup {
+  if (!uboRef.buf) {
+    uboRef.buf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  }
+  if (!sampleCountRef.buf) {
+    sampleCountRef.buf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  }
+  const uboF32 = new Float32Array([r.thresholdLow, r.thresholdHigh, 0, 0]);
+  const uboU32 = new Uint32Array(uboF32.buffer);
+  uboU32[2] = r.width >>> 0;
+  uboU32[3] = r.height >>> 0;
+  device.queue.writeBuffer(uboRef.buf, 0, uboF32);
+  device.queue.writeBuffer(sampleCountRef.buf, 0, new Uint32Array([r.sampleCount >>> 0, 0, 0, 0]));
+
+  return device.createBindGroup({
+    label: 'sample-budget-bg',
+    layout: getSampleBudgetBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: { buffer: uboRef.buf } },
+      { binding: 1, resource: r.varianceView },
+      { binding: 2, resource: r.sampleTierView },
+      { binding: 3, resource: { buffer: sampleCountRef.buf } },
+    ],
+  });
+}
+
+export interface ResolveBindGroupResources {
+  currentView: GPUTextureView;
+  prevView: GPUTextureView;
+  motionView: GPUTextureView;
+  resolvedOutView: GPUTextureView;
+  width: number;
+  height: number;
+  frameParity: number;
+}
+
+export function buildResolveBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  uboRef: UboRef,
+  r: ResolveBindGroupResources,
+): GPUBindGroup {
+  if (!uboRef.buf) {
+    uboRef.buf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  }
+  const u = new Uint32Array([r.width >>> 0, r.height >>> 0, r.frameParity >>> 0, 0]);
+  device.queue.writeBuffer(uboRef.buf, 0, u);
+  return device.createBindGroup({
+    label: 'resolve-bg',
+    layout: getResolveBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: { buffer: uboRef.buf } },
+      { binding: 1, resource: r.currentView },
+      { binding: 2, resource: r.prevView },
+      { binding: 3, resource: r.motionView },
+      { binding: 4, resource: r.resolvedOutView },
     ],
   });
 }

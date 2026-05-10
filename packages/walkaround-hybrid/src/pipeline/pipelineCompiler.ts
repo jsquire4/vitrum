@@ -18,6 +18,8 @@ import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { ATROUS_WGSL } from '@vitrum/shared-denoisers';
 import { TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
 import { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from '../shaders/composite.wgsl.js';
+import { SAMPLE_BUDGET_WGSL } from '../shaders/sampleBudget.wgsl.js';
+import { RESOLVE_WGSL } from '../shaders/resolve.wgsl.js';
 import {
   getFrameBindGroupLayout,
   getSceneBindGroupLayout,
@@ -26,6 +28,8 @@ import {
   getAccumBindGroupLayout,
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
+  getSampleBudgetBindGroupLayout,
+  getResolveBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -36,6 +40,8 @@ export interface CompiledPipelines {
   shadePipeline: GPUComputePipeline;
   atrousPipeline: GPUComputePipeline;
   accumPipeline: GPUComputePipeline;
+  sampleBudgetPipeline: GPUComputePipeline;
+  resolvePipeline: GPUComputePipeline;
   compositePipeline: GPURenderPipeline;
 }
 
@@ -52,12 +58,15 @@ export async function compilePipelines(
   const atrousSM   = device.createShaderModule({ label: 'atrous',   code: COMMON_WGSL + ATROUS_WGSL });
   const compVertSM = device.createShaderModule({ label: 'comp-vert', code: COMPOSITE_VERT_WGSL });
   const compFragSM = device.createShaderModule({ label: 'comp-frag', code: COMPOSITE_FRAG_WGSL });
+  const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: COMMON_WGSL + SAMPLE_BUDGET_WGSL });
+  const resolveSM = device.createShaderModule({ label: 'resolve', code: RESOLVE_WGSL });
 
   // Check for compile errors on every shader module before proceeding.
   const modules: [string, GPUShaderModule][] = [
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
+    ['sample-budget', sampleBudgetSM], ['resolve', resolveSM],
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
@@ -100,6 +109,12 @@ export async function compilePipelines(
   const compositeLayout = device.createPipelineLayout({
     bindGroupLayouts: [getCompositeBindGroupLayout(device, bglCache)],
   });
+  const sampleBudgetLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getSampleBudgetBindGroupLayout(device, bglCache)],
+  });
+  const resolveLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getResolveBindGroupLayout(device, bglCache)],
+  });
 
   // Compile compute pipelines in parallel.
   const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
@@ -119,6 +134,16 @@ export async function compilePipelines(
   const accumPipeline = await device.createComputePipelineAsync({
     label: 'temporalAccum', layout: accumLayout,
     compute: { module: accumSM, entryPoint: 'temporalAccumMain' },
+  });
+  const sampleBudgetPipeline = await device.createComputePipelineAsync({
+    label: 'sampleBudget',
+    layout: sampleBudgetLayout,
+    compute: { module: sampleBudgetSM, entryPoint: 'sampleBudgetKernel' },
+  });
+  const resolvePipeline = await device.createComputePipelineAsync({
+    label: 'resolve',
+    layout: resolveLayout,
+    compute: { module: resolveSM, entryPoint: 'resolveKernel' },
   });
 
   // Composite render pipeline.
@@ -143,6 +168,8 @@ export async function compilePipelines(
     shadePipeline,
     atrousPipeline,
     accumPipeline,
+    sampleBudgetPipeline,
+    resolvePipeline,
     compositePipeline,
   };
 }

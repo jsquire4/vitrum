@@ -43,6 +43,8 @@ import {
   buildAccumBindGroup,
   buildHybridLayersBindGroup,
   buildCompositeBindGroup,
+  buildSampleBudgetBindGroup,
+  buildResolveBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
 import {
@@ -187,6 +189,8 @@ export class WalkaroundGPUPipeline {
   private shadePipeline!: GPUComputePipeline;
   private atrousPipeline!: GPUComputePipeline;
   private accumPipeline!: GPUComputePipeline;
+  private sampleBudgetPipeline!: GPUComputePipeline;
+  private resolvePipeline!: GPUComputePipeline;
   private compositePipeline!: GPURenderPipeline;
   private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
 
@@ -196,6 +200,9 @@ export class WalkaroundGPUPipeline {
   // Lazily-created per-builder UBO buffers
   private atrousUboRef: UboRef = { buf: undefined };
   private accumUboRef: UboRef  = { buf: undefined };
+  private sampleBudgetUboRef: UboRef = { buf: undefined };
+  private sampleCountUboRef: UboRef = { buf: undefined };
+  private resolveUboRef: UboRef = { buf: undefined };
 
   // GPU timestamp query state (DEV-only, feature-gated)
   private tsState: TimestampState = makeTimestampState();
@@ -248,6 +255,8 @@ export class WalkaroundGPUPipeline {
     this.shadePipeline     = compiled.shadePipeline;
     this.atrousPipeline    = compiled.atrousPipeline;
     this.accumPipeline     = compiled.accumPipeline;
+    this.sampleBudgetPipeline = compiled.sampleBudgetPipeline;
+    this.resolvePipeline = compiled.resolvePipeline;
     this.compositePipeline = compiled.compositePipeline;
 
     // ── Timestamp queries (DEV-only, feature-gated) ──────────────────────
@@ -444,11 +453,58 @@ export class WalkaroundGPUPipeline {
     this.accumPingPongIndex = 1 - this.accumPingPongIndex;
     this.accumFrameIndex++;
 
-    // Pass 6: Composite render pass — blit accumulated HDR to swap-chain.
-    const finalTex = writeAccum;
+    // Pass 5.6: Variance-driven sample budget pass (writes per-pixel tiers).
+    {
+      const bgSampleBudget = buildSampleBudgetBindGroup(
+        d,
+        this.bglCache,
+        this.sampleBudgetUboRef,
+        this.sampleCountUboRef,
+        {
+          varianceView: this.res.varianceBuffer.createView(),
+          sampleTierView: this.res.sampleTierTexture.createView(),
+          thresholdLow: 0.01,
+          thresholdHigh: 0.10,
+          width: W,
+          height: H,
+          sampleCount: Math.max(this.accumFrameIndex, 1),
+        },
+      );
+      const pass = encoder.beginComputePass(computeDesc('sampleBudget', 9));
+      pass.setPipeline(this.sampleBudgetPipeline);
+      pass.setBindGroup(0, bgSampleBudget);
+      pass.dispatchWorkgroups(wgX, wgY, 1);
+      pass.end();
+    }
+
+    // Pass 5.7: Checkerboard resolve + temporal reprojection.
+    {
+      const bgResolve = buildResolveBindGroup(
+        d,
+        this.bglCache,
+        this.resolveUboRef,
+        {
+          currentView: atrousFinalTex.createView(),
+          prevView: readAccum.createView(),
+          motionView: this.res.motionVectorsTexture.createView(),
+          resolvedOutView: this.res.resolvedTexture.createView(),
+          width: W,
+          height: H,
+          frameParity: this.frameCount & 1,
+        },
+      );
+      const pass = encoder.beginComputePass(computeDesc('resolve', 10));
+      pass.setPipeline(this.resolvePipeline);
+      pass.setBindGroup(0, bgResolve);
+      pass.dispatchWorkgroups(wgX, wgY, 1);
+      pass.end();
+    }
+
+    // Pass 6: Composite render pass — blit resolved HDR to swap-chain.
+    const finalTex = this.res.resolvedTexture;
     const bgComposite = buildCompositeBindGroup(d, this.bglCache, finalTex.createView(), this.res.compositeLinearSampler);
     {
-      const tsComp = tsWrites(this.tsState.querySet, 9);
+      const tsComp = tsWrites(this.tsState.querySet, 11);
       const pass = encoder.beginRenderPass({
         label: 'composite',
         colorAttachments: [{
@@ -503,6 +559,9 @@ export class WalkaroundGPUPipeline {
     if (this.res) destroyFrameResources(this.res);
     this.atrousUboRef.buf?.destroy();
     this.accumUboRef.buf?.destroy();
+    this.sampleBudgetUboRef.buf?.destroy();
+    this.sampleCountUboRef.buf?.destroy();
+    this.resolveUboRef.buf?.destroy();
     disposeTimestampState(this.tsState);
   }
 

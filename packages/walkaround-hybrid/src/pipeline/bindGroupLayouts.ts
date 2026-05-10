@@ -22,6 +22,8 @@ export interface BGLCache {
   composite?: GPUBindGroupLayout;
   accum?: GPUBindGroupLayout;
   hybridLayers?: GPUBindGroupLayout;
+  sampleBudget?: GPUBindGroupLayout;
+  resolve?: GPUBindGroupLayout;
 }
 
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
@@ -151,4 +153,33 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
     ],
   });
   return cache.hybridLayers;
+}
+
+export function getSampleBudgetBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.sampleBudget) return cache.sampleBudget;
+  cache.sampleBudget = device.createBindGroupLayout({
+    label: 'sample-budget-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'read-only', format: 'rg32float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32uint' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.sampleBudget;
+}
+
+export function getResolveBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.resolve) return cache.resolve;
+  cache.resolve = device.createBindGroupLayout({
+    label: 'resolve-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'read-only', format: 'rgba16float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'read-only', format: 'rgba16float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'read-only', format: 'rg32float' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+    ],
+  });
+  return cache.resolve;
 }

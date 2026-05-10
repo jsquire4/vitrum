@@ -47,9 +47,8 @@ export interface FrameResources {
    * squared deltas). Variance = M2 / (n - 1) where n is the sample count
    * passed per-frame as a uniform.
    *
-   * Allocated here (low-risk, Sprint 10a SVGF will also use it). NOT written
-   * by any dispatch in Sprint 9; Sprint 10a SVGF and the deferred
-   * sprint-9-walkaround-integration will wire the write path.
+   * Allocated here and consumed by Sprint 9's sample-budget dispatch; Sprint 10a
+   * SVGF also samples this buffer for variance-guided filtering.
    *
    * See: packages/walkaround-hybrid/src/shaders/common.wgsl.ts — WelfordVariance
    * struct, welfordUpdate, welfordVariance for the matching WGSL definition.
@@ -57,6 +56,12 @@ export interface FrameResources {
    * @since Sprint 9, 2026-05-09
    */
   varianceBuffer: GPUTexture;
+  /** Sprint 9 — per-pixel tier output (r32uint) written by sampleBudget pass. */
+  sampleTierTexture: GPUTexture;
+  /** Sprint 9 — checkerboard resolve output (rgba16float), consumed by composite. */
+  resolvedTexture: GPUTexture;
+  /** Motion-vector placeholder (rg32float). Currently zero-filled each frame. */
+  motionVectorsTexture: GPUTexture;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -430,9 +435,26 @@ export function createFrameResources(
   device.queue.writeBuffer(ddgiUboBuffer, 0, buildDDGIPlaceholderUBO().buffer);
 
   // Sprint 9 — Per-pixel Welford variance buffer (RG32Float, r=mean g=M2).
-  // Allocated here; no compute pass writes to it in Sprint 9. Sprint 10a SVGF
-  // and the deferred sprint-9-walkaround-integration will wire the write path.
+  // Sprint 9 runtime path reads this for sample-tier classification.
   const varianceBuffer = createVarianceBuffer(device, W, H);
+  const sampleTierTexture = device.createTexture({
+    label: 'sample-tier',
+    size: [W, H],
+    format: 'r32uint',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const resolvedTexture = device.createTexture({
+    label: 'resolved-radiance',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+  });
+  const motionVectorsTexture = device.createTexture({
+    label: 'motion-vectors',
+    size: [W, H],
+    format: 'rg32float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   // Sprint 11 — PPG buffers (opt-in via ppgEnabled, default: disabled).
   // No behavioural change for existing callers when ppgEnabled is false/unset.
@@ -461,6 +483,9 @@ export function createFrameResources(
     ddgiPlaceholderRg16f,
     ddgiUboBuffer,
     varianceBuffer,
+    sampleTierTexture,
+    resolvedTexture,
+    motionVectorsTexture,
     ...ppgExt,
   };
 }
@@ -485,6 +510,9 @@ export function destroyFrameResources(r: FrameResources): void {
   r.ddgiPlaceholderRg16f.destroy();
   r.ddgiUboBuffer.destroy();
   r.varianceBuffer.destroy();  // Sprint 9 — Welford variance buffer
+  r.sampleTierTexture.destroy();
+  r.resolvedTexture.destroy();
+  r.motionVectorsTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

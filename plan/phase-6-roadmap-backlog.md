@@ -74,8 +74,8 @@
 
 - [x] **9.1** Welford variance buffer (RG32Float) allocated by walkaround `createVarianceBuffer`.
 - [x] **9.2** Versioned `WelfordVariance` struct in `common.wgsl` with structural tests.
-- [ ] **9.3** Per-pixel sample tier from variance.
-- [ ] **9.4** Checkerboard temporal upsampling + reprojection.
+- [x] **9.3** Per-pixel sample tier from variance (`sampleBudgetKernel`) is wired and dispatched each frame.
+- [x] **9.4** Checkerboard temporal upsampling + reprojection (`resolveKernel`) is wired and dispatched before composite.
 - [ ] **9.5** A/B: ≥30% noise reduction at 16 samples.
 - [ ] **9.6** Motion: ghosting within acceptable bound.
 

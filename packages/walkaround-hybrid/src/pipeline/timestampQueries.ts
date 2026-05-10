@@ -1,8 +1,9 @@
 /**
  * GPU timestamp query helpers — DEV-only, feature-gated.
  *
- * 10 passes per frame: ris, temporal, spatial-1, spatial-2, shade,
- * atrous-0..2 (3 iterations, stepWidths 1/2/4), temporalAccum, composite.
+ * 12 passes per frame: ris, temporal, spatial-1, spatial-2, shade,
+ * atrous-0..2 (3 iterations, stepWidths 1/2/4), temporalAccum,
+ * sampleBudget, resolve, composite.
  *
  * Uses a ping-pong pair of readback buffers so one can be in-flight
  * (mapped/mapping) while the next frame writes into the other, avoiding
@@ -12,7 +13,7 @@
 export const PASS_LABELS = [
   'ris', 'temporal', 'spatial-1', 'spatial-2', 'shade',
   'atrous-0', 'atrous-1', 'atrous-2',
-  'temporalAccum', 'composite',
+  'temporalAccum', 'sampleBudget', 'resolve', 'composite',
 ] as const;
 
 export type PassLabel = typeof PASS_LABELS[number];

@@ -19,10 +19,9 @@
  * blending is perceptually stable on a calibrated display; variance > 0.10
  * produces visible noise even through the à-trous denoiser.
  *
- * Integration status: DEFERRED — shader is complete and runnable but is NOT
- * wired into the dispatch pipeline. Sprint 10a or a follow-up GPU-verification
- * sprint will insert this pass between the temporal accumulator and the next
- * RIS pass. See plan/sprint-9-walkaround-integration.md for wiring details.
+ * Integration status: WIRED — dispatched in WalkaroundGPUPipeline after
+ * temporal accumulation. Current pipeline writes tiers each frame; a later
+ * optimization pass will consume these tiers to modulate ray counts.
  *
  * Dependencies: COMMON_WGSL (WelfordVariance struct, welfordVariance fn).
  *
