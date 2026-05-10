@@ -19,7 +19,7 @@
 ## Sprint 2 — Per-cell luminance precompute
 
 - [x] **2.1** Walkaround: `cellPower` buffer populated/uploaded in `buildSceneBVH` + `WalkaroundGPUPipeline.initialize`.
-- [ ] **2.2** PT fork: `light.power` in lights texture.
+- [x] **2.2** PT fork: `light.power` in lights texture (`three-gpu-pathtracer` commit `5388ef0`, packed in `s2.a` and read in GLSL `Light` struct).
 - [x] **2.3** Round-trip: doubling `Le[i]` doubles `cellPower[i]` (walkaround unit test in `sprint2-cellPower.test.ts`).
 - [x] **2.4** No intentional visual delta (foundation-only CPU/GPU buffer prep in walkaround path).
 
