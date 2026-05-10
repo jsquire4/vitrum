@@ -20,8 +20,28 @@ import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree } from './sceneToThree.js';
 
+// ────────────────────────────────────────────────────────────────────────────
+// Device-tier threshold for analytic came (Sprint 5)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimum value of gl.MAX_FRAGMENT_UNIFORM_VECTORS required to enable the
+ * analytic H-channel came intersection path in the fork shader.
+ *
+ * The came UBO packs up to 500 segments × 16 floats + 200 nodes × 4 floats
+ * = 8800 floats, but the shader itself only declares a small fixed number of
+ * uniform vector slots for the came struct arrays.  Low-end GPUs that report
+ * MAX_FRAGMENT_UNIFORM_VECTORS < 256 (the WebGL minimum guarantee is 16, the
+ * common low-end desktop/mobile floor is 256) lack the budget for the came
+ * UBO binding.  On those devices the analytic path is disabled and the BVH
+ * mesh came geometry is used as fallback (Decision 6 in the roadmap).
+ */
+const MIN_UNIFORM_VECTORS_FOR_CAME = 256;
+
 export { vitrumSceneToThree } from './sceneToThree.js';
 export { applyFrameToPerspectiveCamera } from './frameCamera.js';
+export { packCameUBO } from './cameUniformUploader.js';
+export type { CameSegment, CameNode, CameUploadOptions, CamePackedUBO } from './cameUniformUploader.js';
 
 export interface PTEngineWebGL2Options extends EngineOptions {
   readonly device: WebGLRenderer;
@@ -66,6 +86,9 @@ interface PTEngineWebGL2Init {
   readonly renderer: WebGLRenderer;
   readonly pathTracer: WebGLPathTracer;
   readonly camera: PerspectiveCamera;
+  /** True when the GL context reports MAX_FRAGMENT_UNIFORM_VECTORS >= 256.
+   *  Controls whether 'h-channel-came' is included in supportedAnalyticShapes. */
+  readonly supportsAnalyticCame: boolean;
 }
 
 class PTEngineWebGL2 implements Engine {
@@ -74,6 +97,7 @@ class PTEngineWebGL2 implements Engine {
   readonly #renderer: WebGLRenderer;
   readonly #pathTracer: WebGLPathTracer;
   readonly #camera: PerspectiveCamera;
+  readonly #supportsAnalyticCame: boolean;
 
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
@@ -88,6 +112,7 @@ class PTEngineWebGL2 implements Engine {
     this.#renderer = gpu.renderer;
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
+    this.#supportsAnalyticCame = gpu.supportsAnalyticCame;
   }
 
   get state(): EngineState {
@@ -95,6 +120,15 @@ class PTEngineWebGL2 implements Engine {
   }
 
   get capabilities(): EngineCapabilities {
+    // Analytic H-channel came is enabled only when the GL context has
+    // sufficient fragment uniform vectors (Sprint 5 device-tier fallback).
+    // On low-end GPUs (MAX_FRAGMENT_UNIFORM_VECTORS < 256) the came UBO
+    // is too expensive; mesh-came geometry in the BVH is used as fallback.
+    const analyticShapes = new Set<string>();
+    if (this.#supportsAnalyticCame) {
+      analyticShapes.add('h-channel-came');
+    }
+
     return {
       supportsIncrementalScene: false,
       supportsMotionBlur: false,
@@ -102,7 +136,7 @@ class PTEngineWebGL2 implements Engine {
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
-      supportedAnalyticShapes: new Set<string>(),
+      supportedAnalyticShapes: analyticShapes,
       supportedEmitterKinds: new Set<string>([
         'directional',
         'rect-area',
@@ -269,8 +303,19 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
 
   const camera = new PerspectiveCamera();
 
+  // Sprint 5 device-tier fallback: query MAX_FRAGMENT_UNIFORM_VECTORS once at
+  // engine creation.  This parameter is fixed for a GL context's lifetime so
+  // there's no need to query it per-frame.  The result is baked into the
+  // engine's capabilities and does not change.
+  const maxFragUniforms = glContext.getParameter(glContext.MAX_FRAGMENT_UNIFORM_VECTORS) as number;
+  const supportsAnalyticCame = maxFragUniforms >= MIN_UNIFORM_VECTORS_FOR_CAME;
+
   const slot = makeStateSlot();
-  const engine = new PTEngineWebGL2(opts, { renderer, pathTracer, camera }, slot);
+  const engine = new PTEngineWebGL2(
+    opts,
+    { renderer, pathTracer, camera, supportsAnalyticCame },
+    slot,
+  );
   slot.set('ready');
   return engine;
 }

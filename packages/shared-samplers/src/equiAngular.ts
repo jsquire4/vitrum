@@ -1,0 +1,118 @@
+/**
+ * equiAngular.ts — Equi-angular sampling for volume single-scatter NEE.
+ *
+ * Equi-angular sampling (also known as the "Szécsi trick" or Kulla-Conty
+ * distance sampling) samples a scatter distance along a ray weighted toward
+ * the point on the ray closest to a point light source.  This dramatically
+ * reduces variance when the light is close to the ray compared to uniform
+ * distance sampling, which concentrates samples near t=0 regardless of
+ * light position.
+ *
+ * Algorithm (Kulla & Conty 2012, §3):
+ *   Given a ray with origin o and unit direction d, and a point light at p:
+ *   1. Project p onto the ray: t_closest = dot(p - o, d)
+ *      (the parameter where the ray passes closest to p)
+ *   2. Compute the perpendicular distance from p to the ray:
+ *      D = ||(p - o) - t_closest * d||
+ *   3. The equi-angular distribution parameterizes t by angle θ ∈ (-π/2, π/2):
+ *      t(θ) = D · tan(θ) + t_closest
+ *   4. Sample θ uniformly in (θ_min, θ_max) where θ_min = atan2(-t_closest, D),
+ *      θ_max = atan2(t_max - t_closest, D):
+ *      θ_sampled = θ_min + u × (θ_max - θ_min)
+ *      t_sampled  = D · tan(θ_sampled) + t_closest
+ *   5. PDF: p(t) = D / ((1 + ((t - t_closest)/D)²) · (θ_max - θ_min) · D²)
+ *            = 1 / (D · (θ_max - θ_min) · (1 + ((t - t_closest)/D)²))
+ *
+ * Volume scope: uniform homogeneous medium only (per Decision 7 in the roadmap).
+ * Per-region density volumes are explicitly out of scope for Sprint 7.
+ *
+ * References:
+ *   Kulla & Conty 2012, "Importance Sampling Techniques for Path Tracing
+ *   in Participating Media", EGSR.  (Often credited as "Kulla-Conty" in
+ *   renderer literature; Szécsi popularised the same idea independently in
+ *   real-time contexts.)
+ *
+ *   Pharr, Jakob, Humphreys "Physically Based Rendering" 4th ed., §14.1.2.
+ *
+ *   Phase 6 Sprint 7 spec: plan/phase-6-roadmap.md §Sprint 7.
+ *   Fork GLSL mirror: plan/sprint-7-pt-fork-patch.md §volume_march.glsl.js.
+ */
+
+// ────────────────────────────────────────────────────────────────────────────
+// Public API
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Result of equi-angular distance sampling.
+ */
+export interface EquiAngularSample {
+  /** Sampled distance along the ray from rayOrigin.
+   *  Always in [0, ∞).  Callers should clamp to scene max-t before use. */
+  readonly t: number;
+  /** Probability density of the sampled distance [m⁻¹] (in terms of arc-length
+   *  along the ray, NOT solid angle).  Use this for MIS balance with
+   *  exponential-distance sampling. */
+  readonly pdf: number;
+}
+
+/**
+ * Sample a scatter distance along the ray using equi-angular sampling toward
+ * a point light.
+ *
+ * The sample is drawn from the full unbounded ray (t ∈ [0, ∞)).  The PDF
+ * integrates to 1 over [0, ∞) in the limit t_max → ∞ but is computed for
+ * the finite interval [0, t_max] with t_max clamped to a large scene bound
+ * internally.  In practice the caller should use the returned t without
+ * further clamping unless the ray has hit a surface at t < returned t.
+ *
+ * @param u         - Uniform random in [0, 1).
+ * @param rayOrigin - World-space ray origin.
+ * @param rayDir    - World-space ray direction (unit vector).
+ * @param lightPos  - World-space position of the point light.
+ * @returns         Sampled (t, pdf) pair.
+ */
+export function sampleEquiAngular(
+  u: number,
+  rayOrigin: readonly [number, number, number],
+  rayDir: readonly [number, number, number],
+  lightPos: readonly [number, number, number],
+): EquiAngularSample {
+  // Step 1: project light onto ray
+  const deltaX = lightPos[0] - rayOrigin[0];
+  const deltaY = lightPos[1] - rayOrigin[1];
+  const deltaZ = lightPos[2] - rayOrigin[2];
+
+  // t at closest approach: t_c = dot(lightPos - rayOrigin, rayDir)
+  const tClosest = deltaX * rayDir[0] + deltaY * rayDir[1] + deltaZ * rayDir[2];
+
+  // Step 2: perpendicular distance D = ||(lightPos - rayOrigin) - t_c * rayDir||
+  const perpX = deltaX - tClosest * rayDir[0];
+  const perpY = deltaY - tClosest * rayDir[1];
+  const perpZ = deltaZ - tClosest * rayDir[2];
+  const D = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
+
+  // Degenerate: light is on the ray.  Fall back to uniform sampling from t=0
+  // to a fixed range of 100 scene units.
+  if (D < 1e-6) {
+    const tFallback = u * 100;
+    return { t: tFallback, pdf: 1 / 100 };
+  }
+
+  // Step 3: angular extents.  We sample from t=0 to a large t_max (1e6).
+  // In practice the caller clips to the actual scene-hit distance.
+  const T_MAX = 1e6;
+  const thetaMin = Math.atan2(-tClosest, D);
+  const thetaMax = Math.atan2(T_MAX - tClosest, D);
+  const thetaRange = thetaMax - thetaMin;
+
+  // Step 4: uniform sample in angular space
+  const theta = thetaMin + u * thetaRange;
+  const t = D * Math.tan(theta) + tClosest;
+
+  // Step 5: PDF in t-space
+  // p(t) = 1 / (D · thetaRange · (1 + ((t - t_closest)/D)²))
+  const ratio = (t - tClosest) / D;
+  const pdf = 1 / (D * thetaRange * (1 + ratio * ratio));
+
+  return { t: Math.max(0, t), pdf };
+}
