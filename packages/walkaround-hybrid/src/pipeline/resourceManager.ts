@@ -10,7 +10,19 @@
  * buffers, HDR color textures, ping-pong textures, accum textures, UBO,
  * samplers, DDGI placeholders). Returns a typed bundle so the caller can
  * store each handle as a private field.
+ *
+ * `createPPGBuffers` allocates the three PPG storage buffers (Sprint 11).
+ * Gated by `ppgEnabled` option — no allocation when PPG is disabled so
+ * the default engine behaviour is unchanged.
  */
+
+import {
+  PPG_MAX_SPATIAL_CELLS,
+  PPG_CELL_BYTE_STRIDE,
+  PPG_LEAF_BYTE_STRIDE,
+  PPG_DIRECTIONS,
+} from '../ppg/types.js';
+import type { PPGBufferOptions } from '../ppg/types.js';
 
 export interface FrameResources {
   reservoirCurrentBuffer: GPUBuffer;
@@ -45,6 +57,144 @@ export interface FrameResources {
    * @since Sprint 9, 2026-05-09
    */
   varianceBuffer: GPUTexture;
+
+  /**
+   * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
+   * is true in the options passed to `createFrameResources`. When PPG is
+   * disabled (the default), this field is absent — all existing consumers
+   * are unaffected.
+   *
+   * See `createPPGBuffers` for the allocation details and byte-layout rationale.
+   *
+   * exactOptionalPropertyTypes: the field is entirely absent (not undefined)
+   * when PPG is disabled — consumers must use `'ppgBuffers' in res` to check.
+   *
+   * @since Sprint 11, 2026-05-09
+   */
+  readonly ppgBuffers?: PPGBuffers;
+}
+
+/**
+ * GPU buffer bundle allocated by `createPPGBuffers`. All three buffers are
+ * needed together to run the PPG sample + update passes.
+ *
+ * @since Sprint 11, 2026-05-09
+ */
+export interface PPGBuffers {
+  /**
+   * Spatial cell buffer — one PPGSpatialCell per active cell.
+   *
+   * Size: `maxCells × PPG_CELL_BYTE_STRIDE` (32 bytes/cell).
+   * Usage: STORAGE | COPY_DST | COPY_SRC
+   *   - STORAGE: both ppgSample (read) and ppgUpdate (read) shaders bind it.
+   *   - COPY_DST: host uploads initial cell positions on init or scene change.
+   *   - COPY_SRC: allows CPU readback for test validation.
+   */
+  cellBuffer: GPUBuffer;
+
+  /**
+   * Directional leaf buffer — one PPGDirectionalLeaf per spatial cell.
+   *
+   * Size: `maxCells × PPG_LEAF_BYTE_STRIDE` (256 bytes/leaf).
+   * Half of each leaf (128 bytes) holds 16 atomic-u32 pairs
+   * (radianceSum_fixed + sampleCount per bin); the other 128 bytes are
+   * reserved for future split-tracking fields.
+   * Usage: STORAGE | COPY_DST | COPY_SRC
+   *   - STORAGE: ppgSample (read) and ppgUpdate (read_write/atomic) bind it.
+   *   - COPY_DST: cleared to zero on init; updated per-frame by ppgUpdate.
+   *   - COPY_SRC: CPU readback for test validation.
+   */
+  leafBuffer: GPUBuffer;
+
+  /**
+   * Per-frame path-completion sample buffer.
+   *
+   * Receives PPGPathSample records written by the shade pass (one record per
+   * completed indirect bounce). Consumed by the ppgUpdate compute pass on
+   * the next even frame. Size = `maxCells × 48 bytes` (one sample-record
+   * slot per cell — in practice the shade pass fills far fewer than maxCells
+   * samples per frame, but headroom is allocated so the buffer never overflows
+   * without bounds-checking).
+   * Usage: STORAGE | COPY_DST | COPY_SRC
+   */
+  sampleBuffer: GPUBuffer;
+
+  /** Maximum number of spatial cells this buffer set was allocated for. */
+  readonly maxCells: number;
+}
+
+/**
+ * Allocate the three PPG storage buffers for the walkaround engine.
+ *
+ * Called from `createFrameResources` when `ppgEnabled` is true, or
+ * from `HybridEngine.setPPGEnabled(true)` if PPG is toggled at runtime.
+ * (Sprint 11: runtime toggle is a no-op for dispatch; buffers are allocated
+ * and available but the update/sample passes are not yet wired.)
+ *
+ * Buffer sizing:
+ *   - cellBuffer:   maxCells × 32 bytes  = 320 KB at default 10K cap.
+ *   - leafBuffer:   maxCells × 256 bytes = 2.56 MB at default 10K cap.
+ *   - sampleBuffer: maxCells × 48 bytes  = 480 KB at default 10K cap.
+ * Total: ~3.36 MB — negligible alongside the main BVH + reservoir buffers.
+ *
+ * WebGPU minimum buffer size is 4 bytes; all allocations are well above that.
+ *
+ * @param device   - Live GPUDevice.
+ * @param options  - Optional overrides (see PPGBufferOptions).
+ * @returns        Three allocated PPGBuffers, zero-initialised by the GPU driver.
+ *
+ * @since Sprint 11, 2026-05-09
+ */
+export function createPPGBuffers(device: GPUDevice, options?: PPGBufferOptions): PPGBuffers {
+  const maxCells = options?.maxCells ?? PPG_MAX_SPATIAL_CELLS;
+
+  const storageUsage =
+    GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+
+  // Each leaf occupies PPG_LEAF_BYTE_STRIDE bytes (256), of which 128 are used
+  // for the 16 atomic-u32-pair bins; 128 bytes are reserved.
+  // The leaf count equals maxCells (1:1 cell-to-leaf mapping in Sprint 11).
+  const leafCount = maxCells;
+
+  // sampleBuffer: one PPGPathSample (48 bytes) per cell as an upper bound.
+  const PPG_PATH_SAMPLE_BYTE_STRIDE = 48;
+
+  const cellBuffer = device.createBuffer({
+    label: 'ppg-cell-buffer',
+    size: Math.max(maxCells * PPG_CELL_BYTE_STRIDE, 16),
+    usage: storageUsage,
+  });
+
+  const leafBuffer = device.createBuffer({
+    label: 'ppg-leaf-buffer',
+    size: Math.max(leafCount * PPG_LEAF_BYTE_STRIDE, 16),
+    usage: storageUsage,
+  });
+
+  const sampleBuffer = device.createBuffer({
+    label: 'ppg-sample-buffer',
+    size: Math.max(maxCells * PPG_PATH_SAMPLE_BYTE_STRIDE, 16),
+    usage: storageUsage,
+  });
+
+  // Suppress unused-import lint: PPG_DIRECTIONS is part of the public type
+  // contract surfaced through tests; referenced here to keep the import live.
+  void PPG_DIRECTIONS;
+
+  return { cellBuffer, leafBuffer, sampleBuffer, maxCells };
+}
+
+/**
+ * Destroy all buffers in a PPGBuffers bundle. Safe to call from dispose()
+ * or when PPG is toggled off. Nullability is not enforced here — callers
+ * guard with `if (ppgBuffers)`.
+ *
+ * @since Sprint 11, 2026-05-09
+ */
+export function destroyPPGBuffers(buffers: PPGBuffers): void {
+  buffers.cellBuffer.destroy();
+  buffers.leafBuffer.destroy();
+  buffers.sampleBuffer.destroy();
 }
 
 /**
@@ -128,10 +278,38 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
 }
 
 /**
+ * Options for `createFrameResources`.
+ *
+ * @since Sprint 11, 2026-05-09 (ppgEnabled added)
+ */
+export interface FrameResourceOptions {
+  /**
+   * When true, allocates the three PPG storage buffers (cellBuffer, leafBuffer,
+   * sampleBuffer). Defaults to false — existing callers are unaffected.
+   *
+   * PPG buffers add ~3.36 MB of GPU memory at the default 10K cell cap.
+   * The Sprint 11 default is disabled; only opt-in consumers (tests or
+   * hosts that explicitly set `ppgEnabled: true` in HybridEngineOptions)
+   * will allocate them.
+   *
+   * @since Sprint 11
+   */
+  ppgEnabled?: boolean;
+}
+
+/**
  * Create all per-frame GPU resources for the pipeline. Called once from
  * `initialize()` after BVH upload and before shader compilation.
+ *
+ * Pass `{ ppgEnabled: true }` to also allocate PPG buffers (Sprint 11).
+ * The default is `ppgEnabled: false` — no behavioural change for existing callers.
  */
-export function createFrameResources(device: GPUDevice, W: number, H: number): FrameResources {
+export function createFrameResources(
+  device: GPUDevice,
+  W: number,
+  H: number,
+  options?: FrameResourceOptions,
+): FrameResources {
   // Reservoir DI: 16 bytes/pixel (4 × u32)
   const RESERVOIR_STRIDE = 16;
   const totalReservoirBytes = Math.max(W * H * RESERVOIR_STRIDE, 256);
@@ -256,6 +434,15 @@ export function createFrameResources(device: GPUDevice, W: number, H: number): F
   // and the deferred sprint-9-walkaround-integration will wire the write path.
   const varianceBuffer = createVarianceBuffer(device, W, H);
 
+  // Sprint 11 — PPG buffers (opt-in via ppgEnabled, default: disabled).
+  // No behavioural change for existing callers when ppgEnabled is false/unset.
+  // Use a conditional spread so the ppgBuffers key is absent (not undefined)
+  // which satisfies exactOptionalPropertyTypes.
+  const ppgExt: Pick<FrameResources, 'ppgBuffers'> =
+    options?.ppgEnabled === true
+      ? { ppgBuffers: createPPGBuffers(device) }
+      : {};
+
   return {
     reservoirCurrentBuffer,
     reservoirPreviousBuffer,
@@ -274,6 +461,7 @@ export function createFrameResources(device: GPUDevice, W: number, H: number): F
     ddgiPlaceholderRg16f,
     ddgiUboBuffer,
     varianceBuffer,
+    ...ppgExt,
   };
 }
 
@@ -297,4 +485,7 @@ export function destroyFrameResources(r: FrameResources): void {
   r.ddgiPlaceholderRg16f.destroy();
   r.ddgiUboBuffer.destroy();
   r.varianceBuffer.destroy();  // Sprint 9 — Welford variance buffer
+  if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
+    destroyPPGBuffers(r.ppgBuffers);
+  }
 }

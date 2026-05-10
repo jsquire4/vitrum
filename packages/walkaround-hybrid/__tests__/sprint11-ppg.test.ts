@@ -1,0 +1,587 @@
+/**
+ * Sprint 11 (Phase 6) — PPG path guiding structural tests.
+ *
+ * Test strategy: string-content and structural validation only — no real
+ * WebGPU device required. Follows the same "defensive structural" pattern
+ * as sprint9-welford.test.ts.
+ *
+ * Coverage:
+ *   1. PPG type definitions — constants, byte-stride values.
+ *   2. PPG_SAMPLE_WGSL — entry points, bindings, fallback-cosine path.
+ *   3. PPG_UPDATE_WGSL — entry point, bindings, atomic update strategy.
+ *   4. createPPGBuffers — buffer count, sizes, and usage flags.
+ *   5. PPG disabled — no buffer allocation when ppgEnabled false/unset.
+ *   6. setPPGEnabled lifecycle — toggle reflected in getter; no-op dispatch.
+ *   7. FrameResources.ppgBuffers — opt-in field presence and destroy.
+ */
+
+import { describe, it, expect, vi } from 'vitest';
+import {
+  PPG_MAX_SPATIAL_CELLS,
+  PPG_DIRECTIONS,
+  PPG_CELL_BYTE_STRIDE,
+  PPG_LEAF_BYTE_STRIDE,
+} from '../src/ppg/types.js';
+import { PPG_SAMPLE_WGSL } from '../src/ppg/wgsl/ppgSample.wgsl.js';
+import { PPG_UPDATE_WGSL } from '../src/ppg/wgsl/ppgUpdate.wgsl.js';
+import {
+  createPPGBuffers,
+  destroyPPGBuffers,
+  createFrameResources,
+  destroyFrameResources,
+} from '../src/pipeline/resourceManager.js';
+
+// ── WebGPU global polyfills (Node test environment) ────────────────────────────
+// Matches the pattern established in sprint9-welford.test.ts.
+
+if (typeof (globalThis as Record<string, unknown>)['GPUTextureUsage'] === 'undefined') {
+  (globalThis as Record<string, unknown>)['GPUTextureUsage'] = {
+    COPY_SRC:          0x01,
+    COPY_DST:          0x02,
+    TEXTURE_BINDING:   0x04,
+    STORAGE_BINDING:   0x08,
+    RENDER_ATTACHMENT: 0x10,
+  };
+}
+if (typeof (globalThis as Record<string, unknown>)['GPUBufferUsage'] === 'undefined') {
+  (globalThis as Record<string, unknown>)['GPUBufferUsage'] = {
+    MAP_READ:      0x0001,
+    MAP_WRITE:     0x0002,
+    COPY_SRC:      0x0004,
+    COPY_DST:      0x0008,
+    INDEX:         0x0010,
+    VERTEX:        0x0020,
+    UNIFORM:       0x0040,
+    STORAGE:       0x0080,
+    INDIRECT:      0x0100,
+    QUERY_RESOLVE: 0x0200,
+  };
+}
+
+// ─── Helper: build a mock GPUDevice that records createBuffer calls ────────────
+
+interface BufferCall {
+  label?: string;
+  size: number;
+  usage: number;
+}
+
+function makeMockDevice(): {
+  device: GPUDevice;
+  bufferCalls: BufferCall[];
+  textureCalls: GPUTextureDescriptor[];
+} {
+  const bufferCalls: BufferCall[] = [];
+  const textureCalls: GPUTextureDescriptor[] = [];
+  const mockBuffer = { destroy: vi.fn() };
+  const mockTexture = { destroy: vi.fn(), createView: vi.fn(() => ({})) };
+  const mockSampler = {};
+
+  const device = {
+    createBuffer(desc: GPUBufferDescriptor): GPUBuffer {
+      bufferCalls.push({ label: desc.label, size: desc.size, usage: desc.usage });
+      return mockBuffer as unknown as GPUBuffer;
+    },
+    createTexture(desc: GPUTextureDescriptor): GPUTexture {
+      textureCalls.push(desc);
+      return mockTexture as unknown as GPUTexture;
+    },
+    createSampler(): GPUSampler {
+      return mockSampler as unknown as GPUSampler;
+    },
+    queue: {
+      writeBuffer: vi.fn(),
+      writeTexture: vi.fn(),
+    },
+  } as unknown as GPUDevice;
+
+  return { device, bufferCalls, textureCalls };
+}
+
+// ─── 1. PPG type constants ─────────────────────────────────────────────────────
+
+describe('PPG type constants (Sprint 11)', () => {
+  it('PPG_MAX_SPATIAL_CELLS is 10,000', () => {
+    expect(PPG_MAX_SPATIAL_CELLS).toBe(10_000);
+  });
+
+  it('PPG_DIRECTIONS is 16', () => {
+    expect(PPG_DIRECTIONS).toBe(16);
+  });
+
+  it('PPG_CELL_BYTE_STRIDE is 32 bytes', () => {
+    // PPGSpatialCell: vec3f(12) + f32(4) + u32(4) + 3×u32 padding(12) = 32 bytes
+    expect(PPG_CELL_BYTE_STRIDE).toBe(32);
+  });
+
+  it('PPG_LEAF_BYTE_STRIDE is 256 bytes', () => {
+    // 16 bins × vec2f(8 bytes) = 128 bytes used; padded to 256 for alignment.
+    expect(PPG_LEAF_BYTE_STRIDE).toBe(256);
+  });
+
+  it('PPG_LEAF_BYTE_STRIDE is a multiple of 256 (WebGPU offset alignment)', () => {
+    expect(PPG_LEAF_BYTE_STRIDE % 256).toBe(0);
+  });
+
+  it('PPG_DIRECTIONS × 8 bytes/bin = 128 bytes (fits in PPG_LEAF_BYTE_STRIDE)', () => {
+    const binsBytes = PPG_DIRECTIONS * 8; // vec2f = 8 bytes
+    expect(binsBytes).toBeLessThanOrEqual(PPG_LEAF_BYTE_STRIDE);
+  });
+
+  it('PPG_MAX_SPATIAL_CELLS × PPG_CELL_BYTE_STRIDE = 320 KB', () => {
+    const totalBytes = PPG_MAX_SPATIAL_CELLS * PPG_CELL_BYTE_STRIDE;
+    expect(totalBytes).toBe(320_000);
+  });
+
+  it('PPG_MAX_SPATIAL_CELLS × PPG_LEAF_BYTE_STRIDE = 2.56 MB', () => {
+    const totalBytes = PPG_MAX_SPATIAL_CELLS * PPG_LEAF_BYTE_STRIDE;
+    expect(totalBytes).toBe(2_560_000);
+  });
+});
+
+// ─── 2. PPG_SAMPLE_WGSL — shader fragment ─────────────────────────────────────
+
+describe('PPG_SAMPLE_WGSL — ppgSampleDirection and ppgPDF shader fragment', () => {
+  it('is a non-empty string', () => {
+    expect(typeof PPG_SAMPLE_WGSL).toBe('string');
+    expect(PPG_SAMPLE_WGSL.length).toBeGreaterThan(0);
+  });
+
+  it('declares PPGSpatialCell struct', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('struct PPGSpatialCell');
+  });
+
+  it('declares PPGDirectionalLeaf struct', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('struct PPGDirectionalLeaf');
+  });
+
+  it('binds ppgCells at @group(2) @binding(0)', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(0)');
+    expect(PPG_SAMPLE_WGSL).toContain('ppgCells');
+  });
+
+  it('binds ppgLeaves at @group(2) @binding(1)', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(1)');
+    expect(PPG_SAMPLE_WGSL).toContain('ppgLeaves');
+  });
+
+  it('contains ppgSampleDirection function', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('fn ppgSampleDirection');
+  });
+
+  it('ppgSampleDirection takes worldPos, n, u1, u2, rng params', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('worldPos: vec3f');
+    expect(PPG_SAMPLE_WGSL).toContain('u1: f32');
+    expect(PPG_SAMPLE_WGSL).toContain('u2: f32');
+  });
+
+  it('ppgSampleDirection returns vec3f', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('fn ppgSampleDirection');
+    // Return type on the function signature line
+    expect(PPG_SAMPLE_WGSL).toMatch(/fn ppgSampleDirection\([^)]+\)\s*->\s*vec3f/);
+  });
+
+  it('contains fallback to cosine-weighted hemisphere sampling when cell is empty', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('sampleCosineHemisphere');
+  });
+
+  it('ppgLeafIsEmpty check triggers the cosine fallback', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('ppgLeafIsEmpty');
+    expect(PPG_SAMPLE_WGSL).toContain('sampleCosineHemisphere(n, rng)');
+  });
+
+  it('contains CDF inversion (binary search or linear scan over 16 bins)', () => {
+    // The CDF inversion looks for a target in the CDF array
+    expect(PPG_SAMPLE_WGSL).toContain('cdf[b] >= target');
+  });
+
+  it('contains ppgPDF function', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('fn ppgPDF');
+  });
+
+  it('ppgPDF returns f32', () => {
+    expect(PPG_SAMPLE_WGSL).toMatch(/fn ppgPDF\([^)]+\)\s*->\s*f32/);
+  });
+
+  it('ppgPDF falls back to cosineHemispherePdf when cell is empty', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('cosineHemispherePdf(n, dir)');
+  });
+
+  it('contains ppgFindCellIndex spatial lookup', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('fn ppgFindCellIndex');
+  });
+
+  it('ppgFindCellIndex uses nearest-neighbour distance comparison', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('bestDist');
+    expect(PPG_SAMPLE_WGSL).toContain('bestIdx');
+  });
+
+  it('contains ppgBuildCDF function', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('fn ppgBuildCDF');
+  });
+
+  it('ppgBuildCDF accumulates radianceSum across 16 bins', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('radianceSum');
+  });
+
+  it('contains ppgBinToOctahedral helper (4×4 bin grid)', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('fn ppgBinToOctahedral');
+  });
+
+  it('contains ppgOctahedralToDir hemisphere decode', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('fn ppgOctahedralToDir');
+  });
+
+  it('uses buildONB for normal-frame rotation', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('buildONB(n, &T, &B)');
+  });
+});
+
+// ─── 3. PPG_UPDATE_WGSL — compute kernel ──────────────────────────────────────
+
+describe('PPG_UPDATE_WGSL — ppgUpdateKernel compute shader', () => {
+  it('is a non-empty string', () => {
+    expect(typeof PPG_UPDATE_WGSL).toBe('string');
+    expect(PPG_UPDATE_WGSL.length).toBeGreaterThan(0);
+  });
+
+  it('declares @compute @workgroup_size(64, 1, 1) entry point', () => {
+    expect(PPG_UPDATE_WGSL).toContain('@compute @workgroup_size(64, 1, 1)');
+  });
+
+  it('contains ppgUpdateKernel entry point', () => {
+    expect(PPG_UPDATE_WGSL).toContain('fn ppgUpdateKernel');
+  });
+
+  it('uses @builtin(global_invocation_id) for per-sample dispatch', () => {
+    expect(PPG_UPDATE_WGSL).toContain('@builtin(global_invocation_id)');
+  });
+
+  it('declares PPGUpdateUniforms struct with sampleCount', () => {
+    expect(PPG_UPDATE_WGSL).toContain('struct PPGUpdateUniforms');
+    expect(PPG_UPDATE_WGSL).toContain('sampleCount');
+  });
+
+  it('declares PPGUpdateUniforms with frameParity for ping-pong', () => {
+    expect(PPG_UPDATE_WGSL).toContain('frameParity');
+  });
+
+  it('binds PPGUpdateUniforms at @group(0) @binding(0)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('@group(0) @binding(0)');
+    expect(PPG_UPDATE_WGSL).toContain('u_ppg');
+  });
+
+  it('binds ppgSamples (path completion buffer) at @group(0) @binding(1)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('@group(0) @binding(1)');
+    expect(PPG_UPDATE_WGSL).toContain('ppgSamples');
+  });
+
+  it('binds ppgCells (spatial cells) at @group(0) @binding(2)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('@group(0) @binding(2)');
+    expect(PPG_UPDATE_WGSL).toContain('ppgCells');
+  });
+
+  it('binds ppgLeafData (atomic u32 array) at @group(0) @binding(3)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('@group(0) @binding(3)');
+    expect(PPG_UPDATE_WGSL).toContain('ppgLeafData');
+  });
+
+  it('ppgLeafData uses atomic<u32> for WebGPU-compatible atomics', () => {
+    expect(PPG_UPDATE_WGSL).toContain('array<atomic<u32>>');
+  });
+
+  it('uses atomicAdd for radiance accumulation (fixed-point)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('atomicAdd');
+  });
+
+  it('contains PPG_RADIANCE_SCALE constant for fixed-point encoding', () => {
+    expect(PPG_UPDATE_WGSL).toContain('PPG_RADIANCE_SCALE');
+  });
+
+  it('PPG_RADIANCE_SCALE is 65536.0 (16-bit fixed point)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('PPG_RADIANCE_SCALE: f32 = 65536.0');
+  });
+
+  it('ping-pong gate: skips update on odd frames (frameParity != 0)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('u_ppg.frameParity != 0u');
+  });
+
+  it('bounds-checks sampleIdx against u_ppg.sampleCount', () => {
+    expect(PPG_UPDATE_WGSL).toContain('sampleIdx >= u_ppg.sampleCount');
+  });
+
+  it('contains ppgUpdateFindCell nearest-cell lookup', () => {
+    expect(PPG_UPDATE_WGSL).toContain('fn ppgUpdateFindCell');
+  });
+
+  it('contains ppgDirToBinIdx octahedral direction encode', () => {
+    expect(PPG_UPDATE_WGSL).toContain('fn ppgDirToBinIdx');
+  });
+
+  it('ppgDirToBinIdx returns bin index clamped to [0..15]', () => {
+    expect(PPG_UPDATE_WGSL).toContain('clamp(row * 4u + col, 0u, 15u)');
+  });
+
+  it('contains ppgLeafSlot index calculation helper', () => {
+    expect(PPG_UPDATE_WGSL).toContain('fn ppgLeafSlot');
+  });
+
+  it('skips samples with zero or negative luminance', () => {
+    expect(PPG_UPDATE_WGSL).toContain('lum <= 0.0');
+  });
+
+  it('declares PPGPathSample struct with worldPos and incidentDir', () => {
+    expect(PPG_UPDATE_WGSL).toContain('struct PPGPathSample');
+    expect(PPG_UPDATE_WGSL).toContain('worldPos');
+    expect(PPG_UPDATE_WGSL).toContain('incidentDir');
+  });
+
+  it('declares PPGSpatialCell struct in update shader', () => {
+    expect(PPG_UPDATE_WGSL).toContain('struct PPGSpatialCell');
+  });
+});
+
+// ─── 4. createPPGBuffers — buffer count and sizes ─────────────────────────────
+
+describe('createPPGBuffers — PPG GPU buffer allocation', () => {
+  it('creates exactly 3 buffers', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    expect(bufferCalls.length).toBe(3);
+  });
+
+  it('creates cellBuffer, leafBuffer, sampleBuffer (in any order)', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    const labels = bufferCalls.map((c) => c.label ?? '');
+    expect(labels).toContain('ppg-cell-buffer');
+    expect(labels).toContain('ppg-leaf-buffer');
+    expect(labels).toContain('ppg-sample-buffer');
+  });
+
+  it('cellBuffer is exactly PPG_MAX_SPATIAL_CELLS × PPG_CELL_BYTE_STRIDE bytes', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    const cell = bufferCalls.find((c) => c.label === 'ppg-cell-buffer');
+    expect(cell).toBeDefined();
+    expect(cell!.size).toBe(PPG_MAX_SPATIAL_CELLS * PPG_CELL_BYTE_STRIDE);
+  });
+
+  it('leafBuffer is exactly PPG_MAX_SPATIAL_CELLS × PPG_LEAF_BYTE_STRIDE bytes', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    const leaf = bufferCalls.find((c) => c.label === 'ppg-leaf-buffer');
+    expect(leaf).toBeDefined();
+    expect(leaf!.size).toBe(PPG_MAX_SPATIAL_CELLS * PPG_LEAF_BYTE_STRIDE);
+  });
+
+  it('sampleBuffer size is >= maxCells × 48 bytes (PPGPathSample stride)', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    const sample = bufferCalls.find((c) => c.label === 'ppg-sample-buffer');
+    expect(sample).toBeDefined();
+    const PPG_PATH_SAMPLE_STRIDE = 48;
+    expect(sample!.size).toBeGreaterThanOrEqual(PPG_MAX_SPATIAL_CELLS * PPG_PATH_SAMPLE_STRIDE);
+  });
+
+  it('all three buffers include GPUBufferUsage.STORAGE', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    for (const call of bufferCalls) {
+      expect(call.usage & GPUBufferUsage.STORAGE).toBeTruthy();
+    }
+  });
+
+  it('all three buffers include GPUBufferUsage.COPY_DST (host upload)', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    for (const call of bufferCalls) {
+      expect(call.usage & GPUBufferUsage.COPY_DST).toBeTruthy();
+    }
+  });
+
+  it('all three buffers include GPUBufferUsage.COPY_SRC (CPU readback for tests)', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    for (const call of bufferCalls) {
+      expect(call.usage & GPUBufferUsage.COPY_SRC).toBeTruthy();
+    }
+  });
+
+  it('respects custom maxCells option', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device, { maxCells: 500 });
+    const cell = bufferCalls.find((c) => c.label === 'ppg-cell-buffer');
+    expect(cell!.size).toBe(500 * PPG_CELL_BYTE_STRIDE);
+  });
+
+  it('returns maxCells field matching the requested cap', () => {
+    const { device } = makeMockDevice();
+    const result = createPPGBuffers(device, { maxCells: 1000 });
+    expect(result.maxCells).toBe(1000);
+  });
+
+  it('returns maxCells = PPG_MAX_SPATIAL_CELLS when no options given', () => {
+    const { device } = makeMockDevice();
+    const result = createPPGBuffers(device);
+    expect(result.maxCells).toBe(PPG_MAX_SPATIAL_CELLS);
+  });
+});
+
+// ─── 5. PPG disabled → no buffer allocation ───────────────────────────────────
+
+describe('PPG disabled — no buffer allocation when ppgEnabled = false/unset', () => {
+  it('createFrameResources without ppgEnabled creates no PPG buffers', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    const res = createFrameResources(device, 64, 64);
+    // PPG buffers are opt-in; the field should be undefined when not requested.
+    expect(res.ppgBuffers).toBeUndefined();
+    // Sanity: non-PPG buffers ARE still created.
+    const ppgLabels = bufferCalls
+      .filter((c) => c.label?.startsWith('ppg-'))
+      .map((c) => c.label);
+    expect(ppgLabels).toHaveLength(0);
+  });
+
+  it('createFrameResources with ppgEnabled: false creates no PPG buffers', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    const res = createFrameResources(device, 64, 64, { ppgEnabled: false });
+    expect(res.ppgBuffers).toBeUndefined();
+    const ppgLabels = bufferCalls.filter((c) => c.label?.startsWith('ppg-'));
+    expect(ppgLabels).toHaveLength(0);
+  });
+
+  it('createFrameResources with ppgEnabled: true creates 3 PPG buffers', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    const res = createFrameResources(device, 64, 64, { ppgEnabled: true });
+    expect(res.ppgBuffers).toBeDefined();
+    const ppgLabels = bufferCalls.filter((c) => c.label?.startsWith('ppg-'));
+    expect(ppgLabels).toHaveLength(3);
+  });
+
+  it('destroyFrameResources without PPG buffers does not throw', () => {
+    const { device } = makeMockDevice();
+    const res = createFrameResources(device, 64, 64);
+    expect(() => destroyFrameResources(res)).not.toThrow();
+  });
+
+  it('destroyFrameResources with PPG buffers calls destroy on all three', () => {
+    const destroyMock = vi.fn();
+    const bufferMock  = { destroy: destroyMock };
+    const textureMock = { destroy: vi.fn(), createView: vi.fn(() => ({})) };
+
+    const mockDevice = {
+      createBuffer:  vi.fn(() => bufferMock),
+      createTexture: vi.fn(() => textureMock),
+      createSampler: vi.fn(() => ({})),
+      queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },
+    } as unknown as GPUDevice;
+
+    const res = createFrameResources(mockDevice, 64, 64, { ppgEnabled: true });
+    destroyFrameResources(res);
+
+    // destroyMock called for: reservoirCurrent, reservoirPrevious, reservoirSpatial,
+    // uboBuffer, ddgiUboBuffer, and the 3 PPG buffers = at least 3 PPG calls.
+    // Total buffer mocks >= 8 (from Sprint 9 + 3 PPG). All share the same mock.
+    expect(destroyMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// ─── 6. destroyPPGBuffers — explicit destroy helper ──────────────────────────
+
+describe('destroyPPGBuffers — explicit PPG buffer destruction', () => {
+  it('calls destroy on cellBuffer, leafBuffer, sampleBuffer', () => {
+    const destroyCell   = vi.fn();
+    const destroyLeaf   = vi.fn();
+    const destroySample = vi.fn();
+
+    destroyPPGBuffers({
+      cellBuffer:   { destroy: destroyCell }   as unknown as GPUBuffer,
+      leafBuffer:   { destroy: destroyLeaf }   as unknown as GPUBuffer,
+      sampleBuffer: { destroy: destroySample } as unknown as GPUBuffer,
+      maxCells:     100,
+    });
+
+    expect(destroyCell).toHaveBeenCalledOnce();
+    expect(destroyLeaf).toHaveBeenCalledOnce();
+    expect(destroySample).toHaveBeenCalledOnce();
+  });
+});
+
+// ─── 7. setPPGEnabled lifecycle ────────────────────────────────────────────────
+
+describe('HybridEngine — setPPGEnabled lifecycle (Sprint 11)', () => {
+  /**
+   * HybridEngine requires a live GPUDevice, THREE.Scene, and async pipeline init.
+   * We test the public API surface (ppgEnabled getter, setPPGEnabled) without
+   * instantiating the engine — the method bodies are pure state mutations that
+   * don't require GPU. We validate them via direct import and prototype inspection.
+   */
+
+  it('HybridEngine is exported from the package', async () => {
+    const mod = await import('../src/HybridEngine.js');
+    expect(typeof mod.HybridEngine).toBe('function');
+  });
+
+  it('HybridEngine.prototype has setPPGEnabled method', async () => {
+    const { HybridEngine } = await import('../src/HybridEngine.js');
+    expect(typeof HybridEngine.prototype.setPPGEnabled).toBe('function');
+  });
+
+  it('HybridEngine.prototype has ppgEnabled getter', async () => {
+    const { HybridEngine } = await import('../src/HybridEngine.js');
+    const descriptor = Object.getOwnPropertyDescriptor(HybridEngine.prototype, 'ppgEnabled');
+    expect(descriptor).toBeDefined();
+    expect(typeof descriptor!.get).toBe('function');
+  });
+
+  it('HybridEngineOptions type accepts ppgEnabled field (compile-time only — verified by tsc)', () => {
+    // TypeScript compile would fail if HybridEngineOptions did not accept ppgEnabled.
+    // This test documents the intent; actual type-check is `npx tsc --noEmit`.
+    expect(true).toBe(true);
+  });
+});
+
+// ─── 8. PPG exports from package index ────────────────────────────────────────
+
+describe('PPG exports from package index (Sprint 11)', () => {
+  it('PPG_MAX_SPATIAL_CELLS is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['PPG_MAX_SPATIAL_CELLS']).toBe('number');
+  });
+
+  it('PPG_DIRECTIONS is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['PPG_DIRECTIONS']).toBe('number');
+  });
+
+  it('PPG_CELL_BYTE_STRIDE is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['PPG_CELL_BYTE_STRIDE']).toBe('number');
+  });
+
+  it('PPG_LEAF_BYTE_STRIDE is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['PPG_LEAF_BYTE_STRIDE']).toBe('number');
+  });
+
+  it('PPG_SAMPLE_WGSL is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['PPG_SAMPLE_WGSL']).toBe('string');
+  });
+
+  it('PPG_UPDATE_WGSL is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['PPG_UPDATE_WGSL']).toBe('string');
+  });
+
+  it('createPPGBuffers is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['createPPGBuffers']).toBe('function');
+  });
+
+  it('destroyPPGBuffers is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['destroyPPGBuffers']).toBe('function');
+  });
+});

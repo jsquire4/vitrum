@@ -85,3 +85,24 @@ export { applyDDGIShading } from './rc/applyDDGIShading.js';
 // Raw WGSL shader strings (for host inspection or headless testing).
 export { PROBE_RAY_CAST_WGSL } from './rc/wgsl/probeRayCast.wgsl.js';
 export { CASCADE_MERGE_WGSL } from './rc/wgsl/cascadeMerge.wgsl.js';
+
+// ─── Sprint 11 — PPG (path guiding) ──────────────────────────────────────────
+// PPG is walkaround-only. WebGL2 PT has no compute shaders and cannot
+// maintain the kd-tree update pass.
+
+// Type definitions (CPU-side) + GPU layout constants.
+export type { PPGDirectionalBin, PPGQuadTreeNode, PPGSpatialCell, PPGBufferOptions } from './ppg/types.js';
+export {
+  PPG_MAX_SPATIAL_CELLS,
+  PPG_DIRECTIONS,
+  PPG_CELL_BYTE_STRIDE,
+  PPG_LEAF_BYTE_STRIDE,
+} from './ppg/types.js';
+
+// WGSL shader fragments (authored; dispatch deferred — see sprint-11-ppg-integration.md).
+export { PPG_SAMPLE_WGSL } from './ppg/wgsl/ppgSample.wgsl.js';
+export { PPG_UPDATE_WGSL } from './ppg/wgsl/ppgUpdate.wgsl.js';
+
+// Buffer allocation helpers.
+export { createPPGBuffers, destroyPPGBuffers } from './pipeline/resourceManager.js';
+export type { PPGBuffers, FrameResourceOptions } from './pipeline/resourceManager.js';

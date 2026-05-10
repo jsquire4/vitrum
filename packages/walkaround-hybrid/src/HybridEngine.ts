@@ -104,6 +104,21 @@ export interface HybridEngineOptions extends EngineOptions {
    * `window.__DDGI__` inside `typeof window !== 'undefined'` guards.
    */
   readonly debug?: boolean;
+
+  /**
+   * Sprint 11 — Enable PPG (path guiding) buffer allocation.
+   *
+   * When true, the engine allocates the three PPG storage buffers
+   * (cellBuffer, leafBuffer, sampleBuffer) during pipeline initialisation.
+   * The buffers are ready for binding but the update/sample dispatch passes
+   * are NOT wired in Sprint 11 — see `plan/sprint-11-ppg-integration.md`
+   * for the deferred integration spec.
+   *
+   * Defaults to false — no behavioural change for existing consumers.
+   *
+   * @since Sprint 11, 2026-05-09
+   */
+  readonly ppgEnabled?: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -157,6 +172,18 @@ export class HybridEngine implements Engine {
   private readonly _debug:                boolean;
   private readonly _maxBounces:           number;
 
+  // ── Sprint 11 — PPG state ──────────────────────────────────────────────
+  /**
+   * Whether PPG buffers are allocated. Set at construction from
+   * `HybridEngineOptions.ppgEnabled`. May be toggled post-construction
+   * via `setPPGEnabled()`, but the buffer allocation change only takes
+   * effect on the next `reset()` / `setScene()` cycle (reinitialisation
+   * required to resize GPU allocations).
+   *
+   * Default: false — no behavioural change for existing consumers.
+   */
+  private _ppgEnabled: boolean;
+
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
   private _bvhBuffers:  SceneBVHBuffers | null       = null;
@@ -209,6 +236,7 @@ export class HybridEngine implements Engine {
     this._skyIrradiance         = opts.skyIrradiance;
     this._debug                 = opts.debug ?? false;
     this._maxBounces            = opts.maxBounces ?? 4;
+    this._ppgEnabled            = opts.ppgEnabled ?? false;
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
 
     this._ddgi = new DDGI({ debug: this._debug });
@@ -527,6 +555,54 @@ export class HybridEngine implements Engine {
    */
   setLayerEnabled(layer: string, enabled: boolean): void {
     this._layerEnabled.set(layer, enabled);
+  }
+
+  // ── Sprint 11 — PPG toggle ─────────────────────────────────────────────
+
+  /**
+   * Enable or disable PPG (path guiding) for subsequent frames.
+   *
+   * **Sprint 11 behaviour (structural prep — dispatch not wired):**
+   * This method records the intent but does NOT yet trigger a pipeline
+   * reinitialisation or change GPU dispatch. The PPG buffers are only
+   * allocated if `ppgEnabled: true` was passed at construction time, or
+   * if the engine is reset after calling this method.
+   *
+   * To allocate PPG buffers at runtime:
+   * ```ts
+   * engine.setPPGEnabled(true);
+   * engine.reset(); // triggers pipeline reinit with ppgEnabled = true
+   * ```
+   *
+   * The no-op guarantee: calling `setPPGEnabled(false)` when PPG was never
+   * enabled has zero cost and no side effects. Existing consumers that never
+   * call this method are unaffected.
+   *
+   * **Sprint 11 integration spec** (`plan/sprint-11-ppg-integration.md`)
+   * defines when this toggle will wire the actual compute dispatch.
+   *
+   * @param on - true to enable PPG buffer allocation on next reinit; false to disable.
+   *
+   * @since Sprint 11, 2026-05-09
+   */
+  setPPGEnabled(on: boolean): void {
+    this._ppgEnabled = on;
+    // No-op for dispatch in Sprint 11 — integration deferred.
+    // When Sprint 11 integration lands, this will also toggle the
+    // ppgUpdate + ppgSample passes in the pipeline's renderFrame dispatch.
+    if (this._debug) {
+      console.log('[hybrid:debug] setPPGEnabled', { on, willTakeEffectOnNextReset: true });
+    }
+  }
+
+  /**
+   * Returns whether PPG is currently enabled.
+   * Reflects the last call to `setPPGEnabled` or the `ppgEnabled` constructor option.
+   *
+   * @since Sprint 11, 2026-05-09
+   */
+  get ppgEnabled(): boolean {
+    return this._ppgEnabled;
   }
 
   // ── Dispose ────────────────────────────────────────────────────────────
