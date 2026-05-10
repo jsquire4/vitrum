@@ -29,6 +29,10 @@ Optional:
 - `VITRUM_ALLOW_BASELINE_GEN=1` (auto-generate missing baselines)
 - `VITRUM_FAIL_ON_IDENTICAL_HASH=1` (strictly fail if before/after hashes match)
 
+When a baseline capture emits `{"msPerSample": number}` on stdout, the runner stores
+it beside the baseline PNG as `<scenario>.png.json` and reuses it as
+`perfBaselineMsPerSample` on later runs.
+
 The capture adapter command receives scenario parameters via env vars:
 
 - `VITRUM_SCENARIO_ID`
@@ -55,5 +59,18 @@ VITRUM_CAPTURE_URL="http://127.0.0.1:5173/" \
 npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner
 ```
 
-When GPU capture is disabled or adapter inputs are missing, each scenario is
-emitted as `BLOCKED` with explicit blocker reasons and null hash/perf fields.
+## Scenario preset registry
+
+`scenario-presets.mjs` exports `GAP_CLOSURE_SCENARIOS` (mirrors
+`plan/gap-closure-acceptance-matrix.md`). Host capture pages can read
+`vitrumScenario`, `vitrumSeed`, `vitrumWidth`, `vitrumHeight`, `vitrumBounces`,
+`vitrumSpp`, and `vitrumCaustic` query parameters appended by
+`capture-adapter-playwright.mjs`.
+
+## Fork shader regression (no GPU)
+
+From the vitrum repo root (with sibling `three-gpu-pathtracer` checkout):
+
+```bash
+npm run fork-shader-smoke
+```

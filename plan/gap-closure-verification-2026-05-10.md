@@ -41,7 +41,7 @@ Runtime execution attempts performed in this wave:
 Deterministic artifact manifest for the acceptance matrix:
 
 - `plan/gap-closure-artifacts-2026-05-10.json`
-- Status: `blocked` for all scenarios in this environment (null hash/perf fields, blocker recorded).
+- Status: `BLOCKED` for all scenarios in this environment (null hash/perf fields, blocker recorded).
 
 | Scenario ID | Status | Evidence collected now | Remaining evidence |
 |---|---|---|---|

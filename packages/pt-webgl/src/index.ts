@@ -117,9 +117,7 @@ class PTEngineWebGL2 implements Engine {
     this.#slot = slot;
     this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
-    // RFE-05: preserve requested strategy in uniform plumbing, but do not
-    // advertise support in published capabilities until the fork ships a real
-    // MNEE/photon-map implementation.
+    // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     this.#mneeMaxIterations = Math.max(1, opts.mneeMaxIterations ?? 8);
     this.#mneeMaxChainLength = Math.max(1, opts.mneeMaxChainLength ?? 3);
@@ -159,7 +157,6 @@ class PTEngineWebGL2 implements Engine {
         'spot',
         'mesh-area',
       ]),
-      // RFE-05: report the selected strategy wired into fork controls.
       causticStrategy: this.#causticStrategy,
     };
   }

@@ -2,14 +2,11 @@
 
 ## 2026-05-10 closure update
 
-- Sprint 12 Gap §5 (spectral attenuation Beer-Lambert) is now APPLIED in fork codepaths.
-- RFE-03 layered BSDF implementation is landed in fork material packing + BSDF selection path.
-- pt-webgpu now includes HDRI CPU-payload importance sampling and reciprocal environment MIS.
-- pt-webgpu `causticStrategy` now reports the selected strategy and dispatches mode-distinct shader branches (`none` / `manifold-nee` / `photon-map`).
-- pt-webgl `causticStrategy` now reports the selected strategy and drives fork-side mode-distinct behavior paths.
-- Fork thin-film stack payload now carries per-layer extinction plus stack incident-IOR/angle flags, and BSDF uses `thinFilmTMM` (no cosine-tint fallback in the path).
-- Fork hero-wavelength dispersion now applies per-material dispersion magnitude instead of only global Cauchy terms.
-- pt-webgpu thin-film shading now uses transfer-matrix stack evaluation (RGB wavelength probes) instead of phase-cosine tinting.
+- Fork Sprint 12 Gap §5 (spectral attenuation Beer-Lambert) **uses packed per-material spectral μ(λ)** from `MaterialsTexture` texels 20–27 inside `transmissionAttenuationHero` (hero-wavelength exp(−μ·d)); RGB fallback remains when no spectral curve is packed.
+- Fork **direct-light / `bsdfResult`** now threads **`state.wavelength`** into `bsdfEval` (removed hard-coded 550 nm).
+- Fork **`transmissionEval`** PDF now follows the **Walter et al. EGSR07** microfacet BTDF Jacobian form (`ggxPDF(wo,wh) / (η wi·wh + wo·wh)²`), replacing the incorrect Fresnel-only stub.
+- pt-webgpu **material packing stride** is now **22 vec4s/material** with **thin-film layer triplets** `(ior, thicknessNm, extinctionCoefficient)`, stack **`incidentIor`** + **`angleDependent`**, and **bounded multi-light storage buffers** (`point` / `spot` / `rect-area` / `mesh-area`) bound at `@binding(20–23)` with counts in `FrameParams`.
+- Vitrum **`npm run fork-shader-smoke`** invokes the fork `scripts/shader-smoke-check.js`; Playwright capture adapter appends **`vitrumScenario` / `vitrumSeed` / …** query params for host pages.
 - Final GPU render/perf validation remains pending and tracked in `plan/gap-closure-verification-2026-05-10.md`.
 
 ## RFE-07 Sprint 7 Volume Scattering: APPLIED

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Mesh } from 'three';
-import { vitrumSceneToThree } from '../sceneToThree.js';
+import { vitrumSceneToThree } from '../vitrumSceneToThree.js';
 
-describe('vitrumSceneToThree layered userData', () => {
+describe('vitrumSceneToThree RFE userData stamping', () => {
   it('stamps frontLayer/backLayer metadata for fork packing', () => {
     const scene = vitrumSceneToThree({
       primitives: [
@@ -46,9 +46,9 @@ describe('vitrumSceneToThree layered userData', () => {
     const front = material?.userData?.['vitrumFrontLayer'] as { transmission?: number[]; roughness?: number };
     const back = material?.userData?.['vitrumBackLayer'] as { transmission?: number[] };
 
-    expect(front.transmission).toEqual([0.2, 0.3, 0.4]);
-    expect(front.roughness).toBeCloseTo(0.6);
-    expect(back.transmission).toEqual([0.9, 0.9, 0.9]);
+    expect(front?.transmission).toEqual([0.2, 0.3, 0.4]);
+    expect(front?.roughness).toBeCloseTo(0.6);
+    expect(back?.transmission).toEqual([0.9, 0.9, 0.9]);
   });
 
   it('stamps mixed spectral/scattering/layer/thin-film metadata together', () => {

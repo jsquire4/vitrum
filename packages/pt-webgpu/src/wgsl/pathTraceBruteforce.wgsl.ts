@@ -23,6 +23,10 @@ struct FrameParams {
   maxBounces: u32,
   bvhNodeCount: u32,
   analyticCount: u32,
+  pointLightCount: u32,
+  spotLightCount: u32,
+  rectAreaLightCount: u32,
+  meshAreaLightCount: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   pointLightPos: vec4f,
@@ -65,13 +69,17 @@ struct FrameParams {
 @group(0) @binding(17) var<storage, read> analyticWorldToLocal: array<vec4f>;
 @group(0) @binding(18) var<storage, read> environmentMapTexels: array<vec4f>;
 @group(0) @binding(19) var<storage, read> environmentMapCdf: array<f32>;
+@group(0) @binding(20) var<storage, read> pointLights: array<vec4f>;
+@group(0) @binding(21) var<storage, read> spotLights: array<vec4f>;
+@group(0) @binding(22) var<storage, read> rectAreaLights: array<vec4f>;
+@group(0) @binding(23) var<storage, read> meshAreaLights: array<vec4f>;
 
 const LEAFNODE_FLAG = 0xffff0000u;
-const MATERIAL_VEC4_STRIDE = 20u;
+const MATERIAL_VEC4_STRIDE = 22u;
 const MATERIAL_SCALAR_STRIDE = MATERIAL_VEC4_STRIDE * 4u;
 const THIN_FILM_LAYER_LIMIT = 8u;
 const THIN_FILM_SCALAR_BASE = 28u;
-const SPECTRAL_SCALAR_BASE = 44u;
+const SPECTRAL_SCALAR_BASE = 52u;
 const SPECTRAL_SAMPLE_COUNT = 32u;
 
 fn materialScalar(matId: u32, scalarOffset: u32) -> f32 {
@@ -109,14 +117,23 @@ fn cDiv(a: vec2f, b: vec2f) -> vec2f {
   );
 }
 
-fn thinFilmTmmRt(matId: u32, layerCount: u32, wavelengthNm: f32, substrateIor: f32, viewCos: f32) -> vec2f {
+fn thinFilmTmmRt(
+  matId: u32,
+  layerCount: u32,
+  wavelengthNm: f32,
+  substrateIor: f32,
+  incidentIor: f32,
+  angleDependent: bool,
+  viewCos: f32,
+) -> vec2f {
   if (layerCount == 0u) {
     return vec2f(0.0, 1.0);
   }
   let lambdaUm = max(wavelengthNm * 0.001, 1e-5);
-  let eta0 = 1.0;
+  let eta0 = max(incidentIor, 1.0);
   let etaS = max(substrateIor, 1.0);
-  let angleScale = clamp(viewCos, 0.05, 1.0);
+  let angleScale = select(1.0, clamp(viewCos, 0.05, 1.0), angleDependent);
+  var absorbAccum = 1.0;
   var m11 = vec2f(1.0, 0.0);
   var m12 = vec2f(0.0, 0.0);
   var m21 = vec2f(0.0, 0.0);
@@ -125,9 +142,11 @@ fn thinFilmTmmRt(matId: u32, layerCount: u32, wavelengthNm: f32, substrateIor: f
     if (i >= layerCount) {
       break;
     }
-    let layerBase = THIN_FILM_SCALAR_BASE + i * 2u;
+    let layerBase = THIN_FILM_SCALAR_BASE + i * 3u;
     let layerIor = max(materialScalar(matId, layerBase), 1.0);
     let layerThicknessUm = max(materialScalar(matId, layerBase + 1u) * 0.001, 0.0);
+    let layerK = max(materialScalar(matId, layerBase + 2u), 0.0);
+    absorbAccum = absorbAccum * exp(-4.0 * PI * layerK * layerThicknessUm * angleScale / lambdaUm);
     let delta = 2.0 * PI * layerIor * layerThicknessUm * angleScale / lambdaUm;
     let c = cos(delta);
     let s = sin(delta);
@@ -153,7 +172,7 @@ fn thinFilmTmmRt(matId: u32, layerCount: u32, wavelengthNm: f32, substrateIor: f
   let t = cDiv(vec2f(2.0 * eta0, 0.0), den);
   let R = clamp(dot(r, r), 0.0, 1.0);
   let T = clamp((etaS / eta0) * dot(t, t), 0.0, 1.0);
-  return vec2f(R, T);
+  return vec2f(R, T * absorbAccum);
 }
 
 fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
@@ -312,9 +331,10 @@ fn evaluateBrdf(baseColor: vec3f, roughness: f32, metallic: f32, normal: vec3f, 
 }
 
 fn brdfDirectionalPdf(baseColor: vec3f, roughness: f32, metallic: f32, transmission: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
-  let nDotL = max(dot(normal, wi), 0.0);
-  let nDotV = max(dot(normal, wo), 0.0);
-  if (nDotL <= 1e-5 || nDotV <= 1e-5) {
+  let wiDotN = dot(normal, wi);
+  let woDotN = dot(normal, wo);
+  let nDotV = max(woDotN, 0.0);
+  if (nDotV <= 1e-5) {
     return 0.0;
   }
   let h = safe_normalize(wi + wo);
@@ -323,10 +343,22 @@ fn brdfDirectionalPdf(baseColor: vec3f, roughness: f32, metallic: f32, transmiss
   let f0 = mix(vec3f(0.04), baseColor, metallic);
   let fresnel = fresnelSchlick(vDotH, f0);
   let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
+  let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
   let baseDiffProb = max(0.0, (1.0 - metallic) * (1.0 - transmission));
-  let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
+  let sumProb = max(baseSpecProb + baseTransProb + baseDiffProb, 1e-4);
   let specProb = baseSpecProb / sumProb;
+  let transProb = baseTransProb / sumProb;
   let diffProb = baseDiffProb / sumProb;
+  let sameHemisphere = wiDotN * woDotN > 0.0;
+  if (!sameHemisphere) {
+    let nDotT = max(abs(wiDotN), 1e-5);
+    let pdfTransApprox = nDotT * INV_PI;
+    return max(transProb * pdfTransApprox, 1e-8);
+  }
+  let nDotL = max(wiDotN, 0.0);
+  if (nDotL <= 1e-5) {
+    return 0.0;
+  }
   let alpha = max(roughness * roughness, 1e-3);
   let d = ggxD(nDotH, alpha);
   let pdfSpec = d * nDotH / max(4.0 * vDotH, 1e-6);
@@ -1333,7 +1365,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let m4Index = m0Index + 4u;
     let m5Index = m0Index + 5u;
     let m6Index = m0Index + 6u;
-    let m19Index = m0Index + 19u;
+    let m19Index = m0Index + 21u;
     let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
     let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
     let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
@@ -1357,6 +1389,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let backLayerTx = m5.rgb;
     let backLayerRoughness = m5.w;
     let thinFilmEnabled = m6.x > 0.5;
+    let thinFilmLayerCountU = u32(max(m6.y, 0.0));
+    let thinFilmIncidentIor = max(m6.z, 1.0);
+    let thinFilmAngleDependent = m6.w > 0.5;
     let spectralAvgMu = max(m19.x, 0.0);
     let spectralSampleCount = u32(max(m19.w, 0.0));
 
@@ -1383,13 +1418,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var thinFilmTransmitTint = vec3f(1.0);
     if (thinFilmEnabled) {
       let viewCos = clamp(dot(normal, wo), 0.0, 1.0);
-      let layerCount = u32(max(m6.y, 0.0));
-      let rtR = thinFilmTmmRt(matId, layerCount, 630.0, ior, viewCos);
-      let rtG = thinFilmTmmRt(matId, layerCount, 540.0, ior, viewCos);
-      let rtB = thinFilmTmmRt(matId, layerCount, 460.0, ior, viewCos);
+      let rtR = thinFilmTmmRt(matId, thinFilmLayerCountU, 630.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
+      let rtG = thinFilmTmmRt(matId, thinFilmLayerCountU, 540.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
+      let rtB = thinFilmTmmRt(matId, thinFilmLayerCountU, 460.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
       thinFilmReflectTint = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
       thinFilmTransmitTint = clamp(vec3f(rtR.y, rtG.y, rtB.y), vec3f(0.0), vec3f(1.0));
-      let layerStrength = clamp(0.12 + 0.06 * f32(layerCount), 0.0, 0.55);
+      let layerStrength = clamp(0.12 + 0.06 * f32(thinFilmLayerCountU), 0.0, 0.55);
       let filmStrength = clamp(layerStrength * (1.0 - roughness), 0.0, 0.6);
       baseColor = mix(baseColor, baseColor * thinFilmReflectTint, filmStrength);
     }
@@ -1422,18 +1456,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (params.lightDir.w > 1e-6) {
       lightCount = lightCount + 1u;
     }
-    if (params.pointLightPos.w > 0.5) {
-      lightCount = lightCount + 1u;
-    }
-    if (params.spotLightPos.w > 0.5) {
-      lightCount = lightCount + 1u;
-    }
-    if (params.rectAreaPos.w > 0.5) {
-      lightCount = lightCount + 1u;
-    }
-    if (params.meshAreaTriA.w > 0.5) {
-      lightCount = lightCount + 1u;
-    }
+    lightCount = lightCount + params.pointLightCount;
+    lightCount = lightCount + params.spotLightCount;
+    lightCount = lightCount + params.rectAreaLightCount;
+    lightCount = lightCount + params.meshAreaLightCount;
     if (hasEnvironmentMap() || params.environmentSun.w > 1e-6) {
       lightCount = lightCount + 1u;
     }
@@ -1453,9 +1479,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         }
         current = current + 1u;
       }
-      if (params.pointLightPos.w > 0.5) {
+      for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
         if (current == picked) {
-          let toPoint = params.pointLightPos.xyz - hitPos;
+          let base = pi * 2u;
+          let lp = pointLights[base].xyz;
+          let rad = pointLights[base + 1u].rgb;
+          let toPoint = lp - hitPos;
           let dist2 = max(dot(toPoint, toPoint), 1e-5);
           let dist = sqrt(dist2);
           let wi = toPoint / dist;
@@ -1463,40 +1492,104 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           if (!traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-            directLi = throughput * brdf * nDotL * (params.pointLightRadiance.rgb / dist2);
+            directLi = throughput * brdf * nDotL * (rad / dist2);
           }
         }
         current = current + 1u;
       }
-      if (params.spotLightPos.w > 0.5) {
+      for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
         if (current == picked) {
-          let toSpot = params.spotLightPos.xyz - hitPos;
+          let sb = si * 3u;
+          let spos = spotLights[sb].xyz;
+          let saxis = spotLights[sb + 1u];
+          let srad = spotLights[sb + 2u].rgb;
+          let spotDir = safe_normalize(saxis.xyz);
+          let cosOuter = saxis.w;
+          let toSpot = spos - hitPos;
           let dist2 = max(dot(toSpot, toSpot), 1e-5);
           let dist = sqrt(dist2);
           let wi = toSpot / dist;
-          let coneCos = dot(-wi, safe_normalize(params.spotLightDirection.xyz));
-          if (coneCos >= params.spotLightDirection.w) {
+          let coneCos = dot(-wi, spotDir);
+          if (coneCos >= cosOuter) {
             let spotShadowRay = Ray(hitPos + normal * 1e-3, wi);
             if (!traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
               let nDotL = max(0.0, dot(normal, wi));
-              let softness = smoothstep(params.spotLightDirection.w, 1.0, coneCos);
+              let softness = smoothstep(cosOuter, 1.0, coneCos);
               let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-              directLi = throughput * brdf * nDotL * softness * (params.spotLightRadiance.rgb / dist2);
+              directLi = throughput * brdf * nDotL * softness * (srad / dist2);
             }
           }
         }
         current = current + 1u;
       }
-      if (params.rectAreaPos.w > 0.5) {
+      for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
         if (current == picked) {
-          sampleRectAreaLight(&rng, hitPos, normal, wo, baseColor, roughness, metallic, transmission, throughput, &directLi);
+          let rb = ri * 4u;
+          let rpos = rectAreaLights[rb].xyz;
+          let ru = rectAreaLights[rb + 1u].xyz;
+          let rv = rectAreaLights[rb + 2u].xyz;
+          let rr = rectAreaLights[rb + 3u].rgb;
+          let u = rand_f32(&rng) * 2.0 - 1.0;
+          let v = rand_f32(&rng) * 2.0 - 1.0;
+          let lpos = rpos + ru * u + rv * v;
+          let toLight = lpos - hitPos;
+          let dist2 = max(dot(toLight, toLight), 1e-6);
+          let dist = sqrt(dist2);
+          let wi = toLight / dist;
+          let nDotL = max(dot(normal, wi), 0.0);
+          if (nDotL > 0.0) {
+            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let lightNormal = safe_normalize(cross(ru, rv));
+            let cosLight = max(dot(lightNormal, -wi), 0.0);
+            if (cosLight > 0.0) {
+              let area = max(4.0 * length(cross(ru, rv)), 1e-6);
+              let lightPdf = dist2 / max(cosLight * area, 1e-6);
+              let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, wi);
+              let misWeight = powerHeuristic(lightPdf, brdfPdf);
+              let shadowRay = Ray(hitPos + normal * 1e-3, wi);
+              if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+                directLi = throughput * brdf * nDotL * rr * misWeight / max(lightPdf, 1e-6);
+              }
+            }
+          }
         }
         current = current + 1u;
       }
-      if (params.meshAreaTriA.w > 0.5 && current == picked) {
-        sampleMeshAreaLight(&rng, hitPos, normal, wo, baseColor, roughness, metallic, transmission, throughput, &directLi);
-      }
-      if (params.meshAreaTriA.w > 0.5) {
+      for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
+        if (current == picked) {
+          let mb = mi * 4u;
+          let a = meshAreaLights[mb].xyz;
+          let b = meshAreaLights[mb + 1u].xyz;
+          let c = meshAreaLights[mb + 2u].xyz;
+          let mr = meshAreaLights[mb + 3u].rgb;
+          let r1 = rand_f32(&rng);
+          let r2 = rand_f32(&rng);
+          let su = sqrt(r1);
+          let uu = 1.0 - su;
+          let vv = r2 * su;
+          let ww = 1.0 - uu - vv;
+          let lpos = a * uu + b * vv + c * ww;
+          let toLight = lpos - hitPos;
+          let dist2 = max(dot(toLight, toLight), 1e-6);
+          let dist = sqrt(dist2);
+          let wi = toLight / dist;
+          let nDotL = max(dot(normal, wi), 0.0);
+          if (nDotL > 0.0) {
+            let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+            let lightNormal = safe_normalize(cross(b - a, c - a));
+            let cosLight = max(dot(lightNormal, -wi), 0.0);
+            if (cosLight > 0.0) {
+              let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
+              let lightPdf = dist2 / max(cosLight * area, 1e-6);
+              let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, wi);
+              let misWeight = powerHeuristic(lightPdf, brdfPdf);
+              let shadowRay = Ray(hitPos + normal * 1e-3, wi);
+              if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+                directLi = throughput * brdf * nDotL * mr * misWeight / max(lightPdf, 1e-6);
+              }
+            }
+          }
+        }
         current = current + 1u;
       }
       if ((hasEnvironmentMap() || params.environmentSun.w > 1e-6) && current == picked) {

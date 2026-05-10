@@ -49,7 +49,7 @@ describe('buildPackedScene', () => {
     expect(packed.bvhNodes.length).toBeGreaterThanOrEqual(8);
     expect(packed.bvhNodes.length % 8).toBe(0);
     // Twenty vec4s per material.
-    expect(packed.materials.length).toBe(80);
+    expect(packed.materials.length).toBe(88);
     // base rgb + roughness
     expect(packed.materials[0]).toBeCloseTo(0.25);
     expect(packed.materials[1]).toBeCloseTo(0.5);
@@ -134,6 +134,37 @@ describe('buildPackedScene', () => {
     expect(packed.pointLightRadiance[0]).toBeCloseTo(4);
     expect(packed.pointLightRadiance[1]).toBeCloseTo(8);
     expect(packed.pointLightRadiance[2]).toBeCloseTo(2);
+  });
+
+  it('packs multiple point lights with counts (bounded arrays)', () => {
+    const base = makeScene();
+    const scene: Scene = {
+      ...base,
+      emitters: [
+        ...base.emitters,
+        {
+          kind: 'point',
+          id: 'p1',
+          position: [1, 0, 0],
+          color: [1, 0, 0],
+          intensity: 1,
+        },
+        {
+          kind: 'point',
+          id: 'p2',
+          position: [0, 2, 0],
+          color: [0, 1, 0],
+          intensity: 2,
+        },
+      ],
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.pointLightCount).toBe(2);
+    expect(packed.pointLightsData[0]).toBeCloseTo(1);
+    expect(packed.pointLightsData[4]).toBeCloseTo(1);
+    expect(packed.pointLightsData[8]).toBeCloseTo(0);
+    expect(packed.pointLightsData[12]).toBeCloseTo(0);
+    expect(packed.pointLightsData[13]).toBeCloseTo(2);
   });
 
   it('packs first spot light', () => {
@@ -224,7 +255,7 @@ describe('buildPackedScene', () => {
       environment: { kind: 'none' },
     };
     const packed = buildPackedScene(scene);
-    expect(packed.materials.length).toBe(80);
+    expect(packed.materials.length).toBe(88);
     // scattering payload
     expect(packed.materials[10]).toBeCloseTo(0.8);
     expect(packed.materials[11]).toBeCloseTo(0.4);
@@ -243,20 +274,24 @@ describe('buildPackedScene', () => {
     // thin film + spectral summaries
     expect(packed.materials[24]).toBeCloseTo(1);
     expect(packed.materials[25]).toBeCloseTo(2);
-    // thin-film bounded layer payload begins at index 28.
+    expect(packed.materials[26]).toBeCloseTo(1);
+    expect(packed.materials[27]).toBeCloseTo(0);
+    // thin-film bounded layer payload begins at index 28 (ior, thicknessNm, extinction)×layers.
     expect(packed.materials[28]).toBeCloseTo(2.1);
     expect(packed.materials[29]).toBeCloseTo(70);
-    expect(packed.materials[30]).toBeCloseTo(1.45);
-    expect(packed.materials[31]).toBeCloseTo(110);
-    // spectral fixed-grid payload begins at index 44.
-    expect(packed.materials[44]).toBeCloseTo(0.1);
-    expect(packed.materials[45]).toBeGreaterThanOrEqual(0.1);
-    expect(packed.materials[75]).toBeCloseTo(0.4, 1);
-    // spectral metadata at indices 76..79.
-    expect(packed.materials[76]).toBeGreaterThan(0);
-    expect(packed.materials[77]).toBeCloseTo(0.1);
-    expect(packed.materials[78]).toBeCloseTo(0.4);
-    expect(packed.materials[79]).toBeCloseTo(32);
+    expect(packed.materials[30]).toBeCloseTo(0);
+    expect(packed.materials[31]).toBeCloseTo(1.45);
+    expect(packed.materials[32]).toBeCloseTo(110);
+    expect(packed.materials[33]).toBeCloseTo(0);
+    // spectral fixed-grid payload begins at index 52.
+    expect(packed.materials[52]).toBeCloseTo(0.1);
+    expect(packed.materials[53]).toBeGreaterThanOrEqual(0.1);
+    expect(packed.materials[83]).toBeCloseTo(0.4, 1);
+    // spectral metadata at indices 84..87.
+    expect(packed.materials[84]).toBeGreaterThan(0);
+    expect(packed.materials[85]).toBeCloseTo(0.1);
+    expect(packed.materials[86]).toBeCloseTo(0.4);
+    expect(packed.materials[87]).toBeCloseTo(32);
   });
 
   it('clamps mixed-material payload inputs to safe ranges', () => {
@@ -299,8 +334,8 @@ describe('buildPackedScene', () => {
     expect(packed.materials[23]).toBeCloseTo(0);
     expect(packed.materials[28]).toBeGreaterThanOrEqual(1);
     expect(packed.materials[29]).toBeGreaterThanOrEqual(0);
-    expect(packed.materials[44]).toBeGreaterThanOrEqual(0);
-    expect(packed.materials[77]).toBeGreaterThanOrEqual(0);
+    expect(packed.materials[52]).toBeGreaterThanOrEqual(0);
+    expect(packed.materials[85]).toBeGreaterThanOrEqual(0);
   });
 
   it('derives procedural sky environment params', () => {

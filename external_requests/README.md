@@ -6,7 +6,7 @@ Numbered specs propose **API and algorithm** extensions to vitrum. They are **no
 
 | # | Document | Status | Topic (short) |
 |---|----------|--------|----------------|
-| 01 | [01-spectral-rendering.md](./01-spectral-rendering.md) | Accepted | Spectral attenuation/dispersion in progress (runtime closure pending) |
+| 01 | [01-spectral-rendering.md](./01-spectral-rendering.md) | Accepted | Spectral attenuation + dispersion: fork Beer–Lambert uses packed μ(λ); GPU acceptance still pending |
 | 04 | [04-multilayer-thinfilm.md](./04-multilayer-thinfilm.md) | Accepted | Multi-layer thin film (TMM) in progress |
 | 08 | [08-sprint12-spectral-accumulator-fork-patch.md](./08-sprint12-spectral-accumulator-fork-patch.md) | Accepted | Sprint 12 spectral accumulator integration in progress |
 

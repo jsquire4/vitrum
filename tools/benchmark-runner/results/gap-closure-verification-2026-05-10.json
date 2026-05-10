@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-05-10T09:06:42.883Z",
+  "generatedAt": "2026-05-10T19:34:16.150Z",
   "deterministicScenarioSetVersion": "gap-closure-acceptance-matrix-2026-05-10",
   "environment": {
     "platform": "linux",
     "node": "v20.18.2",
-    "gpuCaptureEnabled": false,
-    "captureCommandConfigured": false,
-    "allowBaselineGeneration": false
+    "gpuCaptureEnabled": true,
+    "captureCommandConfigured": true,
+    "allowBaselineGeneration": true
   },
   "results": [
     {
@@ -15,10 +15,10 @@
       "resolution": "1280x720",
       "bounces": 8,
       "spp": 512,
-      "status": "blocked-missing-baseline",
+      "status": "capture-failed",
       "beforeImageHash": null,
       "afterImageHash": null,
-      "deltaSummary": "Missing baseline image at /home/jsquire4/projects/vitrum/tools/reference-renders/baseline/rfe03-layered-front-back.png. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.",
+      "deltaSummary": "adapter exit=3; imageExists=false; stderr=Playwright is not installed in this workspace. Install it, or provide a different VITRUM_CAPTURE_CMD adapter.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /home/jsquire4/projects/vitrum/tools/benchmark-runner/capture-adapter-playwright.mjs",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
       "passFail": "BLOCKED"
@@ -29,10 +29,10 @@
       "resolution": "1280x720",
       "bounces": 8,
       "spp": 512,
-      "status": "blocked-missing-baseline",
+      "status": "capture-failed",
       "beforeImageHash": null,
       "afterImageHash": null,
-      "deltaSummary": "Missing baseline image at /home/jsquire4/projects/vitrum/tools/reference-renders/baseline/rfe07-11-sss-mixed-panels.png. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.",
+      "deltaSummary": "adapter exit=3; imageExists=false; stderr=Playwright is not installed in this workspace. Install it, or provide a different VITRUM_CAPTURE_CMD adapter.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /home/jsquire4/projects/vitrum/tools/benchmark-runner/capture-adapter-playwright.mjs",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
       "passFail": "BLOCKED"
@@ -43,10 +43,10 @@
       "resolution": "1280x720",
       "bounces": 10,
       "spp": 1024,
-      "status": "blocked-missing-baseline",
+      "status": "capture-failed",
       "beforeImageHash": null,
       "afterImageHash": null,
-      "deltaSummary": "Missing baseline image at /home/jsquire4/projects/vitrum/tools/reference-renders/baseline/rfe08-13-spectral-payload.png. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.",
+      "deltaSummary": "adapter exit=3; imageExists=false; stderr=Playwright is not installed in this workspace. Install it, or provide a different VITRUM_CAPTURE_CMD adapter.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /home/jsquire4/projects/vitrum/tools/benchmark-runner/capture-adapter-playwright.mjs",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
       "passFail": "BLOCKED"
@@ -57,10 +57,10 @@
       "resolution": "1280x720",
       "bounces": 10,
       "spp": 1024,
-      "status": "blocked-missing-baseline",
+      "status": "capture-failed",
       "beforeImageHash": null,
       "afterImageHash": null,
-      "deltaSummary": "Missing baseline image at /home/jsquire4/projects/vitrum/tools/reference-renders/baseline/rfe14-thinfilm-angle-shift.png. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.",
+      "deltaSummary": "adapter exit=3; imageExists=false; stderr=Playwright is not installed in this workspace. Install it, or provide a different VITRUM_CAPTURE_CMD adapter.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /home/jsquire4/projects/vitrum/tools/benchmark-runner/capture-adapter-playwright.mjs",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
       "passFail": "BLOCKED"
@@ -71,10 +71,10 @@
       "resolution": "1024x1024",
       "bounces": 8,
       "spp": 256,
-      "status": "blocked-missing-baseline",
+      "status": "capture-failed",
       "beforeImageHash": null,
       "afterImageHash": null,
-      "deltaSummary": "Missing baseline image at /home/jsquire4/projects/vitrum/tools/reference-renders/baseline/rfe09-bridge-global-cmf.png. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.",
+      "deltaSummary": "adapter exit=3; imageExists=false; stderr=Playwright is not installed in this workspace. Install it, or provide a different VITRUM_CAPTURE_CMD adapter.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /home/jsquire4/projects/vitrum/tools/benchmark-runner/capture-adapter-playwright.mjs",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
       "passFail": "BLOCKED"
@@ -85,10 +85,15 @@
       "resolution": "1280x720",
       "bounces": 10,
       "spp": 1024,
-      "status": "blocked-missing-baseline",
+      "causticVariants": [
+        "none",
+        "manifold-nee",
+        "photon-map"
+      ],
+      "status": "capture-failed",
       "beforeImageHash": null,
       "afterImageHash": null,
-      "deltaSummary": "Missing baseline image at /home/jsquire4/projects/vitrum/tools/reference-renders/baseline/rfe05-caustic-strategy.png. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.",
+      "deltaSummary": "adapter exit=3; imageExists=false; stderr=Playwright is not installed in this workspace. Install it, or provide a different VITRUM_CAPTURE_CMD adapter.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /home/jsquire4/projects/vitrum/tools/benchmark-runner/capture-adapter-playwright.mjs",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
       "passFail": "BLOCKED"
@@ -99,10 +104,10 @@
       "resolution": "1280x720",
       "bounces": 8,
       "spp": 512,
-      "status": "blocked-missing-baseline",
+      "status": "capture-failed",
       "beforeImageHash": null,
       "afterImageHash": null,
-      "deltaSummary": "Missing baseline image at /home/jsquire4/projects/vitrum/tools/reference-renders/baseline/ptwgpu-parity-material-fields.png. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.",
+      "deltaSummary": "adapter exit=3; imageExists=false; stderr=Playwright is not installed in this workspace. Install it, or provide a different VITRUM_CAPTURE_CMD adapter.\nError [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright' imported from /home/jsquire4/projects/vitrum/tools/benchmark-runner/capture-adapter-playwright.mjs",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
       "passFail": "BLOCKED"

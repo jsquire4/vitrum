@@ -4,16 +4,9 @@ import { constants as fsConstants } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { GAP_CLOSURE_SCENARIOS } from './scenario-presets.mjs';
 
-const scenarios = [
-  { scenarioId: 'rfe03-layered-front-back', seed: 1337, resolution: '1280x720', bounces: 8, spp: 512 },
-  { scenarioId: 'rfe07-11-sss-mixed-panels', seed: 2027, resolution: '1280x720', bounces: 8, spp: 512 },
-  { scenarioId: 'rfe08-13-spectral-payload', seed: 4242, resolution: '1280x720', bounces: 10, spp: 1024 },
-  { scenarioId: 'rfe14-thinfilm-angle-shift', seed: 9001, resolution: '1280x720', bounces: 10, spp: 1024 },
-  { scenarioId: 'rfe09-bridge-global-cmf', seed: 31415, resolution: '1024x1024', bounces: 8, spp: 256 },
-  { scenarioId: 'rfe05-caustic-strategy', seed: 27182, resolution: '1280x720', bounces: 10, spp: 1024 },
-  { scenarioId: 'ptwgpu-parity-material-fields', seed: 777, resolution: '1280x720', bounces: 8, spp: 512 },
-];
+const scenarios = GAP_CLOSURE_SCENARIOS;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -40,6 +33,24 @@ async function sha256(path) {
   return createHash('sha256').update(data).digest('hex');
 }
 
+async function readPerfSidecar(imagePath) {
+  const sidecarPath = `${imagePath}.json`;
+  if (!(await fileExists(sidecarPath))) return null;
+  try {
+    const parsed = JSON.parse(await readFile(sidecarPath, 'utf8'));
+    return typeof parsed.msPerSample === 'number' && Number.isFinite(parsed.msPerSample)
+      ? parsed.msPerSample
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writePerfSidecar(imagePath, msPerSample) {
+  if (typeof msPerSample !== 'number' || !Number.isFinite(msPerSample)) return;
+  await writeFile(`${imagePath}.json`, `${JSON.stringify({ msPerSample }, null, 2)}\n`, 'utf8');
+}
+
 function parseResolution(resolution) {
   const [w, h] = resolution.split('x').map((v) => Number(v));
   return {
@@ -49,9 +60,7 @@ function parseResolution(resolution) {
 }
 
 function scenarioVariants(scenario) {
-  if (scenario.scenarioId === 'rfe05-caustic-strategy') {
-    return ['none', 'manifold-nee', 'photon-map'];
-  }
+  if (Array.isArray(scenario.causticVariants) && scenario.causticVariants.length > 0) return scenario.causticVariants;
   return ['candidate'];
 }
 
@@ -151,6 +160,9 @@ async function evaluateScenario(scenario) {
   if (!baselineExistsBefore && allowBaselineGen) {
     await mkdir(baselineDir, { recursive: true });
     baselineCaptureInfo = await runCapture(scenario, 'baseline', baselineImagePath);
+    if (baselineCaptureInfo.ok) {
+      await writePerfSidecar(baselineImagePath, baselineCaptureInfo.perfMsPerSample);
+    }
   }
   const baselineExists = await fileExists(baselineImagePath);
   if (!baselineExists) {
@@ -169,6 +181,7 @@ async function evaluateScenario(scenario) {
   }
 
   const baselineHash = await sha256(baselineImagePath);
+  const perfBaseline = baselineCaptureInfo?.perfMsPerSample ?? (await readPerfSidecar(baselineImagePath));
   let aggregateCandidateHash = '';
   const perfSamples = [];
   const modeSummaries = [];
@@ -182,7 +195,7 @@ async function evaluateScenario(scenario) {
         beforeImageHash: baselineHash,
         afterImageHash: null,
         deltaSummary: `Capture for variant "${variant}" failed: ${capture.reason}`,
-        perfBaselineMsPerSample: null,
+        perfBaselineMsPerSample: perfBaseline,
         perfCandidateMsPerSample: null,
         passFail: 'BLOCKED',
       };
@@ -208,7 +221,7 @@ async function evaluateScenario(scenario) {
     beforeImageHash: baselineHash,
     afterImageHash: afterHash,
     deltaSummary: `variants[${modeSummaries.join(', ')}]`,
-    perfBaselineMsPerSample: null,
+    perfBaselineMsPerSample: perfBaseline,
     perfCandidateMsPerSample: perfCandidate,
     passFail: failedByHash ? 'FAIL' : 'PASS',
   };

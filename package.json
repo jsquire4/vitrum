@@ -14,7 +14,9 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present"
+    "clean": "npm run clean --workspaces --if-present",
+    "fork-shader-smoke": "node ./scripts/run-fork-shader-smoke.mjs",
+    "release:dry-run": "npm pack --dry-run --workspaces --if-present"
   },
   "devDependencies": {
     "typescript": "^5.5.0"

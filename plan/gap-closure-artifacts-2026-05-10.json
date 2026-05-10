@@ -14,7 +14,7 @@
       "deltaSummary": "blocked",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
-      "passFail": "blocked"
+      "passFail": "BLOCKED"
     },
     {
       "scenarioId": "rfe07-11-sss-mixed-panels",
@@ -27,7 +27,7 @@
       "deltaSummary": "blocked",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
-      "passFail": "blocked"
+      "passFail": "BLOCKED"
     },
     {
       "scenarioId": "rfe08-13-spectral-payload",
@@ -40,7 +40,7 @@
       "deltaSummary": "blocked",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
-      "passFail": "blocked"
+      "passFail": "BLOCKED"
     },
     {
       "scenarioId": "rfe14-thinfilm-angle-shift",
@@ -53,7 +53,7 @@
       "deltaSummary": "blocked",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
-      "passFail": "blocked"
+      "passFail": "BLOCKED"
     },
     {
       "scenarioId": "rfe09-bridge-global-cmf",
@@ -66,7 +66,7 @@
       "deltaSummary": "blocked",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
-      "passFail": "blocked"
+      "passFail": "BLOCKED"
     },
     {
       "scenarioId": "rfe05-caustic-strategy",
@@ -79,7 +79,7 @@
       "deltaSummary": "blocked",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
-      "passFail": "blocked"
+      "passFail": "BLOCKED"
     },
     {
       "scenarioId": "ptwgpu-parity-material-fields",
@@ -92,7 +92,7 @@
       "deltaSummary": "blocked",
       "perfBaselineMsPerSample": null,
       "perfCandidateMsPerSample": null,
-      "passFail": "blocked"
+      "passFail": "BLOCKED"
     }
   ]
 }

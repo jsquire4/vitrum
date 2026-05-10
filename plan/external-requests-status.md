@@ -148,11 +148,11 @@ in external_requests/04-multilayer-thinfilm.md §3.
 - `EngineCapabilities.causticStrategy: 'none' | 'manifold-nee' | 'photon-map'`
   added (required field — all backends must report their strategy).
 - **`@vitrum/pt-webgl`**: `PTEngineWebGL2` stores `causticStrategy` from opts
-  and forwards it into fork uniform plumbing, but published capabilities
-  conservatively report `'none'` until fork-side MNEE/photon-map logic lands.
+  and forwards it into fork uniform plumbing; published capabilities report the
+  selected strategy while docs keep quality/perf claims gated on runtime captures.
 - **`@vitrum/pt-webgpu`**: `PTEngineWebGPU` parses `causticStrategy` and forwards
-  strategy IDs into internal frame params, while published capabilities also
-  conservatively report `'none'` pending runtime-verified quality/perf closure.
+  strategy IDs into internal frame params; published capabilities report the
+  selected strategy while runtime quality/perf remains acceptance-gated.
 - **`@vitrum/walkaround-hybrid`**: `HybridEngine.capabilities.causticStrategy`
   hardcoded to `'none'` with comment explaining why real-time caustic strategies
   are incompatible with the walkaround engine's frame cadence.

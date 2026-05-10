@@ -12,6 +12,10 @@ WebGL2 **path tracing** backend implementing `@vitrum/core`’s **`Engine`** con
 
 Adjust the relative path if your checkout layout differs. The intended layout is `vitrum/` and `three-gpu-pathtracer/` as **sibling** directories under the same parent.
 
+This package is marked `private` while the dependency is a sibling `file:` pin.
+For public npm release, replace this with a published fork package or a
+commit-pinned git dependency and remove `private`.
+
 Peers: `three`, `three-mesh-bvh` (required by the path tracer). Optional: `xatlas-web` (UV unwrap path in the upstream library).
 
 ## API
