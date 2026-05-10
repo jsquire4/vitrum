@@ -13,6 +13,16 @@ additions to `@vitrum/core`. All are contract-complete (types + capabilities
 wiring); backend shader implementations remain deferred to their respective
 sprint fork-patch documents.
 
+## 2026-05-10 parity addendum
+
+- `@vitrum/pt-webgl` and `@vitrum/pt-webgpu` now report the selected `causticStrategy`
+  in capabilities and drive mode-distinct shader paths.
+- `@vitrum/pt-webgpu` material payload moved from summary-only spectral/thin-film packing
+  to a bounded rich layout (8 thin-film layers, 32 spectral samples per material).
+- Runtime image/perf capture for acceptance-matrix scenarios remains blocked by harness
+  availability in this environment; see `plan/gap-closure-verification-2026-05-10.md`
+  and `plan/gap-closure-artifacts-2026-05-10.json`.
+
 4 audit findings from `plan/sprints-1-11-audit.md` remediated in the same
 pass (H-1, H-2, M-3, L-1, L-3).
 
@@ -87,9 +97,9 @@ existing infrastructure.
   single-bounce approximation.
 - Exported automatically via `export * from './scene.js'`.
 
-**Deferred**: Backend shader implementation (~20–30 GLSL lines at shade time).
-No sprint doc exists yet — backend work is straightforward once fork patches
-for earlier sprints are applied.
+**Deferred**: Backend shader implementation (~20–30 GLSL lines at shade time)
+is tracked in `plan/sprint-14-layered-bsdf-fork-patch.md`; runtime verification
+remains pending.
 
 **Tests added**: None needed — pure types.
 
@@ -124,7 +134,7 @@ in external_requests/04-multilayer-thinfilm.md §3.
 
 ## RFE-05 — Manifold NEE / Specular Caustics Strategy
 
-**Status**: Implemented (contract layer + capabilities wiring)
+**Status**: Partial (contract layer complete; backend implementation deferred)
 
 **What was requested**: `causticStrategy`, `mneeMaxIterations`,
 `mneeMaxChainLength` on `EngineOptions`; `causticStrategy` on
@@ -138,8 +148,11 @@ in external_requests/04-multilayer-thinfilm.md §3.
 - `EngineCapabilities.causticStrategy: 'none' | 'manifold-nee' | 'photon-map'`
   added (required field — all backends must report their strategy).
 - **`@vitrum/pt-webgl`**: `PTEngineWebGL2` stores `causticStrategy` from opts
-  and reflects it in `capabilities.causticStrategy`. Factory comment documents
-  that MNEE/photon-map are API-complete but fork-side implementation is deferred.
+  and forwards it into fork uniform plumbing, but published capabilities
+  conservatively report `'none'` until fork-side MNEE/photon-map logic lands.
+- **`@vitrum/pt-webgpu`**: `PTEngineWebGPU` parses `causticStrategy` and forwards
+  strategy IDs into internal frame params, while published capabilities also
+  conservatively report `'none'` pending runtime-verified quality/perf closure.
 - **`@vitrum/walkaround-hybrid`**: `HybridEngine.capabilities.causticStrategy`
   hardcoded to `'none'` with comment explaining why real-time caustic strategies
   are incompatible with the walkaround engine's frame cadence.
@@ -152,9 +165,8 @@ in external_requests/04-multilayer-thinfilm.md §3.
 **Deferred**: MNEE Newton iteration solver and photon-map forward-trace pass
 are ~300–500 lines each of GLSL/WGSL. Spec in external_requests/05-manifold-nee.md.
 
-**Tests added**: None needed — the new field is reflected in capabilities.
-Existing pt-webgl and walkaround tests confirm the engine still constructs
-without error (the capabilities object shape is now correct for tsc).
+**Tests added**: None needed — contract fields are type-level and engine
+construction coverage remains in existing pt-webgl/walkaround tests.
 
 ---
 

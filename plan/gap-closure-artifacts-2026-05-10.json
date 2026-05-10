@@ -1,0 +1,98 @@
+{
+  "date": "2026-05-10",
+  "harnessStatus": "blocked",
+  "blocker": "No runnable vitrum GPU capture harness in this workspace; fork screenshot harness expects legacy localhost:1234 flow and does not execute the vitrum acceptance-matrix scenarios.",
+  "scenarios": [
+    {
+      "scenarioId": "rfe03-layered-front-back",
+      "seed": 1337,
+      "resolution": "1280x720",
+      "bounces": 8,
+      "spp": 512,
+      "beforeImageHash": null,
+      "afterImageHash": null,
+      "deltaSummary": "blocked",
+      "perfBaselineMsPerSample": null,
+      "perfCandidateMsPerSample": null,
+      "passFail": "blocked"
+    },
+    {
+      "scenarioId": "rfe07-11-sss-mixed-panels",
+      "seed": 2027,
+      "resolution": "1280x720",
+      "bounces": 8,
+      "spp": 512,
+      "beforeImageHash": null,
+      "afterImageHash": null,
+      "deltaSummary": "blocked",
+      "perfBaselineMsPerSample": null,
+      "perfCandidateMsPerSample": null,
+      "passFail": "blocked"
+    },
+    {
+      "scenarioId": "rfe08-13-spectral-payload",
+      "seed": 4242,
+      "resolution": "1280x720",
+      "bounces": 10,
+      "spp": 1024,
+      "beforeImageHash": null,
+      "afterImageHash": null,
+      "deltaSummary": "blocked",
+      "perfBaselineMsPerSample": null,
+      "perfCandidateMsPerSample": null,
+      "passFail": "blocked"
+    },
+    {
+      "scenarioId": "rfe14-thinfilm-angle-shift",
+      "seed": 9001,
+      "resolution": "1280x720",
+      "bounces": 10,
+      "spp": 1024,
+      "beforeImageHash": null,
+      "afterImageHash": null,
+      "deltaSummary": "blocked",
+      "perfBaselineMsPerSample": null,
+      "perfCandidateMsPerSample": null,
+      "passFail": "blocked"
+    },
+    {
+      "scenarioId": "rfe09-bridge-global-cmf",
+      "seed": 31415,
+      "resolution": "1024x1024",
+      "bounces": 8,
+      "spp": 256,
+      "beforeImageHash": null,
+      "afterImageHash": null,
+      "deltaSummary": "blocked",
+      "perfBaselineMsPerSample": null,
+      "perfCandidateMsPerSample": null,
+      "passFail": "blocked"
+    },
+    {
+      "scenarioId": "rfe05-caustic-strategy",
+      "seed": 27182,
+      "resolution": "1280x720",
+      "bounces": 10,
+      "spp": 1024,
+      "beforeImageHash": null,
+      "afterImageHash": null,
+      "deltaSummary": "blocked",
+      "perfBaselineMsPerSample": null,
+      "perfCandidateMsPerSample": null,
+      "passFail": "blocked"
+    },
+    {
+      "scenarioId": "ptwgpu-parity-material-fields",
+      "seed": 777,
+      "resolution": "1280x720",
+      "bounces": 8,
+      "spp": 512,
+      "beforeImageHash": null,
+      "afterImageHash": null,
+      "deltaSummary": "blocked",
+      "perfBaselineMsPerSample": null,
+      "perfCandidateMsPerSample": null,
+      "passFail": "blocked"
+    }
+  ]
+}

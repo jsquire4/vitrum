@@ -102,7 +102,13 @@ class PTEngineWebGPU implements Engine {
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
-      supportedAnalyticShapes: new Set<string>(),
+      supportedAnalyticShapes: new Set<string>([
+        'sphere',
+        'box',
+        'capsule',
+        'cylinder',
+        'h-channel-came',
+      ]),
       supportedEmitterKinds: new Set<string>(['directional', 'point', 'spot', 'rect-area', 'mesh-area']),
       causticStrategy: this.#causticStrategy,
     };
@@ -370,7 +376,11 @@ class PTEngineWebGPU implements Engine {
     paramsF32[33] = this.#sceneBuffers.spotLightRadiance[1];
     paramsF32[34] = this.#sceneBuffers.spotLightRadiance[2];
     paramsF32[35] =
-      this.#causticStrategy === 'manifold-nee' ? 1 : this.#causticStrategy === 'photon-map' ? 2 : 0;
+      this.#causticStrategy === 'manifold-nee'
+        ? 1
+        : this.#causticStrategy === 'photon-map'
+          ? 2
+          : 0;
     paramsF32[36] = this.#sceneBuffers.environmentTint[0];
     paramsF32[37] = this.#sceneBuffers.environmentTint[1];
     paramsF32[38] = this.#sceneBuffers.environmentTint[2];
@@ -531,17 +541,11 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
       `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to prototype limit ${PROTOTYPE_MAX_BOUNCES}.`,
     );
   }
-  if (opts.causticStrategy != null && opts.causticStrategy !== 'none') {
-    console.warn(
-      `[vitrum/pt-webgpu] causticStrategy="${opts.causticStrategy}" uses an approximation path in this backend slice.`,
-    );
-  }
   if (opts.denoiser != null && opts.denoiser !== 'none') {
     console.warn(
       `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but prototype backend has no denoiser integration yet.`,
     );
   }
-
   const slot = makeStateSlot();
   const engine = new PTEngineWebGPU(opts, slot);
   slot.set('ready');

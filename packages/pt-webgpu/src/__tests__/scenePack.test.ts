@@ -48,8 +48,8 @@ describe('buildPackedScene', () => {
     expect(packed.normals.length).toBe(12);
     expect(packed.bvhNodes.length).toBeGreaterThanOrEqual(8);
     expect(packed.bvhNodes.length % 8).toBe(0);
-    // Three vec4s per material.
-    expect(packed.materials.length).toBe(12);
+    // Twenty vec4s per material.
+    expect(packed.materials.length).toBe(80);
     // base rgb + roughness
     expect(packed.materials[0]).toBeCloseTo(0.25);
     expect(packed.materials[1]).toBeCloseTo(0.5);
@@ -60,9 +60,11 @@ describe('buildPackedScene', () => {
     expect(packed.materials[5]).toBeCloseTo(0.2);
     expect(packed.materials[6]).toBeCloseTo(0.0);
     expect(packed.materials[7]).toBeCloseTo(0.2);
-    // transmission + ior
+    // transmission + ior + scattering payload
     expect(packed.materials[8]).toBeCloseTo(0.0);
     expect(packed.materials[9]).toBeCloseTo(1.5);
+    expect(packed.materials[10]).toBeCloseTo(0.0);
+    expect(packed.materials[11]).toBeCloseTo(0.0);
     expect(packed.hasPointLight).toBe(false);
     expect(packed.environmentSunStrength).toBe(0);
   });
@@ -183,6 +185,122 @@ describe('buildPackedScene', () => {
     expect(packed.meshAreaRadiance[0]).toBeCloseTo(3);
     expect(packed.meshAreaRadiance[1]).toBeCloseTo(1.5);
     expect(packed.meshAreaRadiance[2]).toBeCloseTo(6);
+  });
+
+  it('packs layered, spectral, scattering, and thin-film payload summaries', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'tri',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [0.4, 0.5, 0.6],
+            roughness: 0.35,
+            metallic: 0.1,
+            transmission: 1,
+            ior: 1.52,
+            scatteringCoefficient: 0.8,
+            scatteringAnisotropy: 0.4,
+            scatteringCoefficientRGB: [0.2, 0.3, 0.4],
+            frontLayer: { transmission: [0.9, 0.8, 0.7], roughness: 0.15 },
+            backLayer: { transmission: [0.7, 0.8, 0.9], roughness: 0.45 },
+            thinFilmStack: {
+              layers: [
+                { ior: 2.1, thicknessNm: 70 },
+                { ior: 1.45, thicknessNm: 110 },
+              ],
+            },
+            spectralAttenuation: {
+              wavelengthStart: 380,
+              wavelengthEnd: 700,
+              values: new Float32Array([0.1, 0.2, 0.3, 0.4]),
+            },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.materials.length).toBe(80);
+    // scattering payload
+    expect(packed.materials[10]).toBeCloseTo(0.8);
+    expect(packed.materials[11]).toBeCloseTo(0.4);
+    expect(packed.materials[12]).toBeCloseTo(0.2);
+    expect(packed.materials[13]).toBeCloseTo(0.3);
+    expect(packed.materials[14]).toBeCloseTo(0.4);
+    // front/back layers
+    expect(packed.materials[16]).toBeCloseTo(0.9);
+    expect(packed.materials[17]).toBeCloseTo(0.8);
+    expect(packed.materials[18]).toBeCloseTo(0.7);
+    expect(packed.materials[19]).toBeCloseTo(0.15);
+    expect(packed.materials[20]).toBeCloseTo(0.7);
+    expect(packed.materials[21]).toBeCloseTo(0.8);
+    expect(packed.materials[22]).toBeCloseTo(0.9);
+    expect(packed.materials[23]).toBeCloseTo(0.45);
+    // thin film + spectral summaries
+    expect(packed.materials[24]).toBeCloseTo(1);
+    expect(packed.materials[25]).toBeCloseTo(2);
+    // thin-film bounded layer payload begins at index 28.
+    expect(packed.materials[28]).toBeCloseTo(2.1);
+    expect(packed.materials[29]).toBeCloseTo(70);
+    expect(packed.materials[30]).toBeCloseTo(1.45);
+    expect(packed.materials[31]).toBeCloseTo(110);
+    // spectral fixed-grid payload begins at index 44.
+    expect(packed.materials[44]).toBeCloseTo(0.1);
+    expect(packed.materials[45]).toBeGreaterThanOrEqual(0.1);
+    expect(packed.materials[75]).toBeCloseTo(0.4, 1);
+    // spectral metadata at indices 76..79.
+    expect(packed.materials[76]).toBeGreaterThan(0);
+    expect(packed.materials[77]).toBeCloseTo(0.1);
+    expect(packed.materials[78]).toBeCloseTo(0.4);
+    expect(packed.materials[79]).toBeCloseTo(32);
+  });
+
+  it('clamps mixed-material payload inputs to safe ranges', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'tri-clamped',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [0.5, 0.6, 0.7],
+            roughness: 0.3,
+            metallic: 0.05,
+            transmission: 1,
+            frontLayer: { transmission: [-0.2, 0.5, 1.4], roughness: 1.6 },
+            backLayer: { transmission: [2, 0.25, -5], roughness: -2 },
+            thinFilmStack: {
+              layers: [{ ior: -3, thicknessNm: -40 }],
+            },
+            spectralAttenuation: {
+              wavelengthStart: 380,
+              wavelengthEnd: 780,
+              values: new Float32Array([-1, 0.2, -0.3, 0.4]),
+            },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(scene);
+    expect(packed.materials[16]).toBeCloseTo(0);
+    expect(packed.materials[17]).toBeCloseTo(0.5);
+    expect(packed.materials[18]).toBeCloseTo(1);
+    expect(packed.materials[19]).toBeCloseTo(1);
+    expect(packed.materials[20]).toBeCloseTo(1);
+    expect(packed.materials[22]).toBeCloseTo(0);
+    expect(packed.materials[23]).toBeCloseTo(0);
+    expect(packed.materials[28]).toBeGreaterThanOrEqual(1);
+    expect(packed.materials[29]).toBeGreaterThanOrEqual(0);
+    expect(packed.materials[44]).toBeGreaterThanOrEqual(0);
+    expect(packed.materials[77]).toBeGreaterThanOrEqual(0);
   });
 
   it('derives procedural sky environment params', () => {

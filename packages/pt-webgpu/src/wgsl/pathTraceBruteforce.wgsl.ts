@@ -67,6 +67,35 @@ struct FrameParams {
 @group(0) @binding(19) var<storage, read> environmentMapCdf: array<f32>;
 
 const LEAFNODE_FLAG = 0xffff0000u;
+const MATERIAL_VEC4_STRIDE = 20u;
+const MATERIAL_SCALAR_STRIDE = MATERIAL_VEC4_STRIDE * 4u;
+const THIN_FILM_LAYER_LIMIT = 8u;
+const THIN_FILM_SCALAR_BASE = 28u;
+const SPECTRAL_SCALAR_BASE = 44u;
+const SPECTRAL_SAMPLE_COUNT = 32u;
+
+fn materialScalar(matId: u32, scalarOffset: u32) -> f32 {
+  let scalarIndex = matId * MATERIAL_SCALAR_STRIDE + scalarOffset;
+  let vecIndex = scalarIndex / 4u;
+  if (vecIndex >= arrayLength(&materials)) return 0.0;
+  let c = scalarIndex % 4u;
+  let v = materials[vecIndex];
+  if (c == 0u) { return v.x; }
+  if (c == 1u) { return v.y; }
+  if (c == 2u) { return v.z; }
+  return v.w;
+}
+
+fn sampleMaterialSpectralMu(matId: u32, wavelength01: f32) -> f32 {
+  let clamped = clamp(wavelength01, 0.0, 1.0);
+  let f = clamped * f32(SPECTRAL_SAMPLE_COUNT - 1u);
+  let i0 = u32(floor(f));
+  let i1 = min(i0 + 1u, SPECTRAL_SAMPLE_COUNT - 1u);
+  let a = materialScalar(matId, SPECTRAL_SCALAR_BASE + i0);
+  let b = materialScalar(matId, SPECTRAL_SCALAR_BASE + i1);
+  let t = f - f32(i0);
+  return mix(a, b, t);
+}
 
 fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
   let uv = (vec2f(f32(px), f32(py)) + jitter) / vec2f(f32(params.width), f32(params.height));
@@ -957,57 +986,250 @@ fn causticMode() -> u32 {
   return u32(max(params.spotLightRadiance.w, 0.0));
 }
 
-fn manifoldNeeApproxContribution(
+fn hitMaterialId(hit: SceneHit) -> u32 {
+  if (hit.triIndex < params.triangleCount) {
+    return select(0u, triMaterialIds[hit.triIndex], hit.triIndex < arrayLength(&triMaterialIds));
+  }
+  let analyticIndex = hit.triIndex - params.triangleCount;
+  if (analyticIndex < arrayLength(&analyticHeaders)) {
+    return u32(max(analyticHeaders[analyticIndex].y, 0.0));
+  }
+  return 0u;
+}
+
+fn perturbAroundDirection(baseDir: vec3f, xi: vec2f, coneAngle: f32) -> vec3f {
+  var t: vec3f;
+  var b: vec3f;
+  buildOnb(baseDir, &t, &b);
+  let cosThetaMin = cos(coneAngle);
+  let cosTheta = mix(cosThetaMin, 1.0, xi.x);
+  let sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+  let phi = 2.0 * PI * xi.y;
+  let local = vec3f(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+  return safe_normalize(local.x * t + local.y * b + local.z * baseDir);
+}
+
+fn traceSpecularTransmissiveChain(
+  startPos: vec3f,
+  startNormal: vec3f,
+  startDir: vec3f,
+  maxChain: u32,
+  exitPos: ptr<function, vec3f>,
+  exitDir: ptr<function, vec3f>,
+  chainAttenuation: ptr<function, vec3f>,
+) -> bool {
+  var ray = Ray(startPos + startNormal * 1e-3, safe_normalize(startDir));
+  var att = vec3f(1.0);
+  for (var step = 0u; step < 8u; step = step + 1u) {
+    if (step >= maxChain) {
+      *exitPos = ray.origin;
+      *exitDir = ray.direction;
+      *chainAttenuation = att;
+      return true;
+    }
+    let hit = traceClosest(ray, 1e-4, INFINITY);
+    if (!hit.didHit) {
+      *exitPos = ray.origin;
+      *exitDir = ray.direction;
+      *chainAttenuation = att;
+      return true;
+    }
+    let matId = hitMaterialId(hit);
+    let m0Index = matId * MATERIAL_VEC4_STRIDE;
+    let m2Index = m0Index + 2u;
+    let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));
+    let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
+    let transmission = clamp(m2.x, 0.0, 1.0);
+    if (transmission <= 1e-4) {
+      return false;
+    }
+    let ior = clamp(m2.y, 1.0, 2.5);
+    let hitPos = ray.origin + ray.direction * hit.dist;
+    let frontFace = dot(ray.direction, hit.normal) < 0.0;
+    let surfaceNormal = select(-hit.normal, hit.normal, frontFace);
+    let eta = select(ior, 1.0 / ior, frontFace);
+    let refr = refract(ray.direction, surfaceNormal, eta);
+    let hasRefr = dot(refr, refr) > 1e-8;
+    let nextDir = select(reflect(ray.direction, surfaceNormal), safe_normalize(refr), hasRefr);
+    att = att * mix(vec3f(1.0), clamp(m0.rgb, vec3f(0.0), vec3f(1.0)), 0.2) * max(transmission, 0.05);
+    if (max(att.r, max(att.g, att.b)) < 1e-4) {
+      return false;
+    }
+    ray.origin = hitPos + nextDir * 1e-3;
+    ray.direction = nextDir;
+  }
+  *exitPos = ray.origin;
+  *exitDir = ray.direction;
+  *chainAttenuation = att;
+  return true;
+}
+
+fn manifoldNeeContribution(
+  rng: ptr<function, u32>,
   hitPos: vec3f,
   normal: vec3f,
   wo: vec3f,
   baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
   transmission: f32,
-  ior: f32,
   throughput: vec3f,
 ) -> vec3f {
-  if (transmission <= 1e-4 || params.lightDir.w <= 1e-6) return vec3f(0.0);
-  let lightIn = -safe_normalize(params.lightDir.xyz);
-  let eta = 1.0 / max(ior, 1.01);
-  let refr = refract(lightIn, normal, eta);
-  if (dot(refr, refr) <= 1e-8) return vec3f(0.0);
-  let manifoldDir = safe_normalize(refr);
-  let shadowRay = Ray(hitPos + normal * 1e-3, manifoldDir);
-  if (traceAny(shadowRay, 1e-4, INFINITY)) return vec3f(0.0);
-  let focus = pow(max(dot(manifoldDir, wo), 0.0), 16.0 + params.rectAreaU.w);
-  let strength = transmission * (0.15 + 0.02 * params.rectAreaV.w);
-  return throughput * baseColor * (params.lightDir.w * strength * focus);
+  if (transmission <= 1e-4 || params.lightDir.w <= 1e-6) {
+    return vec3f(0.0);
+  }
+  let mneeSteps = u32(clamp(params.rectAreaU.w, 1.0, 8.0));
+  let maxChain = u32(clamp(params.rectAreaV.w, 1.0, 8.0));
+  let baseLightDir = safe_normalize(params.lightDir.xyz);
+  let coneAngle = mix(0.01, 0.12, clamp(roughness, 0.0, 1.0));
+  var contribution = vec3f(0.0);
+  for (var step = 0u; step < 8u; step = step + 1u) {
+    if (step >= mneeSteps) {
+      break;
+    }
+    let jitter = vec2f(rand_f32(rng), rand_f32(rng));
+    let candidateDir = perturbAroundDirection(baseLightDir, jitter, coneAngle);
+    let nDotL = max(dot(normal, candidateDir), 0.0);
+    if (nDotL <= 1e-5) {
+      continue;
+    }
+    var exitPos = vec3f(0.0);
+    var exitDir = vec3f(0.0, 1.0, 0.0);
+    var chainAtt = vec3f(1.0);
+    if (!traceSpecularTransmissiveChain(hitPos, normal, candidateDir, maxChain, &exitPos, &exitDir, &chainAtt)) {
+      continue;
+    }
+    let align = max(dot(exitDir, baseLightDir), 0.0);
+    if (align <= 0.75) {
+      continue;
+    }
+    let visibilityRay = Ray(exitPos + exitDir * 1e-3, baseLightDir);
+    if (traceAny(visibilityRay, 1e-4, INFINITY)) {
+      continue;
+    }
+    let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, candidateDir);
+    let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, candidateDir);
+    let conePdf = 1.0 / max(2.0 * PI * (1.0 - cos(coneAngle)), 1e-6);
+    let samplePdf = conePdf / f32(mneeSteps);
+    let misWeight = powerHeuristic(samplePdf, brdfPdf);
+    let lightRadiance = vec3f(params.lightDir.w) * align;
+    contribution = contribution +
+      throughput * chainAtt * brdf * nDotL * lightRadiance * misWeight / max(samplePdf, 1e-6);
+  }
+  return contribution;
 }
 
-fn photonMapApproxContribution(
+fn photonMapContribution(
+  rng: ptr<function, u32>,
   hitPos: vec3f,
   normal: vec3f,
+  wo: vec3f,
   baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
   throughput: vec3f,
 ) -> vec3f {
-  if (params.pointLightPos.w <= 0.5 && params.spotLightPos.w <= 0.5) return vec3f(0.0);
-  var contrib = vec3f(0.0);
-  if (params.pointLightPos.w > 0.5) {
-    let toPoint = params.pointLightPos.xyz - hitPos;
-    let dist2 = max(dot(toPoint, toPoint), 1e-4);
-    let wi = toPoint / sqrt(dist2);
-    let nDotL = max(dot(normal, wi), 0.0);
-    let kernel = exp(-dist2 * 0.05);
-    contrib = contrib + params.pointLightRadiance.rgb * nDotL * kernel / dist2;
-  }
-  if (params.spotLightPos.w > 0.5) {
-    let toSpot = params.spotLightPos.xyz - hitPos;
-    let dist2 = max(dot(toSpot, toSpot), 1e-4);
-    let wi = toSpot / sqrt(dist2);
-    let coneCos = dot(-wi, safe_normalize(params.spotLightDirection.xyz));
-    if (coneCos >= params.spotLightDirection.w) {
-      let nDotL = max(dot(normal, wi), 0.0);
-      let softness = smoothstep(params.spotLightDirection.w, 1.0, coneCos);
-      let kernel = exp(-dist2 * 0.05);
-      contrib = contrib + params.spotLightRadiance.rgb * nDotL * softness * kernel / dist2;
+  var availableLightCount = 0u;
+  if (params.lightDir.w > 1e-6) availableLightCount = availableLightCount + 1u;
+  if (params.pointLightPos.w > 0.5) availableLightCount = availableLightCount + 1u;
+  if (params.spotLightPos.w > 0.5) availableLightCount = availableLightCount + 1u;
+  if (availableLightCount == 0u) return vec3f(0.0);
+  let photonCount = u32(clamp(params.rectAreaU.w * 2.0, 8.0, 32.0));
+  let maxChain = u32(clamp(params.rectAreaV.w, 1.0, 8.0));
+  let gatherRadius = 0.35;
+  let gatherRadius2 = gatherRadius * gatherRadius;
+  var contribution = vec3f(0.0);
+  for (var photonIdx = 0u; photonIdx < 32u; photonIdx = photonIdx + 1u) {
+    if (photonIdx >= photonCount) {
+      break;
+    }
+    let pick = u32(min(floor(rand_f32(rng) * f32(availableLightCount)), f32(availableLightCount - 1u)));
+    var current = 0u;
+    var photonOrigin = hitPos;
+    var photonDir = vec3f(0.0, 1.0, 0.0);
+    var photonFlux = vec3f(0.0);
+    var seeded = false;
+    if (params.lightDir.w > 1e-6) {
+      if (current == pick) {
+        photonOrigin = hitPos - safe_normalize(params.lightDir.xyz) * 24.0;
+        photonDir = safe_normalize(params.lightDir.xyz);
+        photonFlux = vec3f(params.lightDir.w);
+        seeded = true;
+      }
+      current = current + 1u;
+    }
+    if (params.pointLightPos.w > 0.5) {
+      if (current == pick) {
+        photonOrigin = params.pointLightPos.xyz;
+        photonDir = uniformSphere(vec2f(rand_f32(rng), rand_f32(rng)));
+        photonFlux = params.pointLightRadiance.rgb;
+        seeded = true;
+      }
+      current = current + 1u;
+    }
+    if (params.spotLightPos.w > 0.5 && current == pick) {
+      photonOrigin = params.spotLightPos.xyz;
+      let coneXi = vec2f(rand_f32(rng), rand_f32(rng));
+      let cosMin = params.spotLightDirection.w;
+      let cosTheta = mix(cosMin, 1.0, coneXi.x);
+      let sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+      let phi = 2.0 * PI * coneXi.y;
+      let local = vec3f(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+      let spotAxis = safe_normalize(-params.spotLightDirection.xyz);
+      var t: vec3f;
+      var b: vec3f;
+      buildOnb(spotAxis, &t, &b);
+      photonDir = safe_normalize(local.x * t + local.y * b + local.z * spotAxis);
+      photonFlux = params.spotLightRadiance.rgb;
+      seeded = true;
+    }
+    if (!seeded) {
+      continue;
+    }
+    var ray = Ray(photonOrigin + photonDir * 1e-3, photonDir);
+    var flux = photonFlux / max(f32(photonCount), 1.0);
+    for (var bounce = 0u; bounce < 8u; bounce = bounce + 1u) {
+      if (bounce >= maxChain) break;
+      let hit = traceClosest(ray, 1e-4, INFINITY);
+      if (!hit.didHit) break;
+      let matId = hitMaterialId(hit);
+      let m0Index = matId * MATERIAL_VEC4_STRIDE;
+      let m2Index = m0Index + 2u;
+      let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));
+      let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
+      let mTransmission = clamp(m2.x, 0.0, 1.0);
+      let mIor = clamp(m2.y, 1.0, 2.5);
+      let hp = ray.origin + ray.direction * hit.dist;
+      let dist2ToReceiver = dot(hp - hitPos, hp - hitPos);
+      if (dist2ToReceiver <= gatherRadius2) {
+        let wi = -ray.direction;
+        let nDotL = max(dot(normal, wi), 0.0);
+        if (nDotL > 1e-6) {
+          let receiverBrdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+          let kernel = exp(-dist2ToReceiver / max(2.0 * gatherRadius2, 1e-6)) / max(PI * gatherRadius2, 1e-6);
+          contribution = contribution + throughput * flux * receiverBrdf * nDotL * kernel;
+        }
+      }
+      if (mTransmission <= 1e-4) {
+        break;
+      }
+      let frontFace = dot(ray.direction, hit.normal) < 0.0;
+      let n = select(-hit.normal, hit.normal, frontFace);
+      let eta = select(mIor, 1.0 / mIor, frontFace);
+      let refr = refract(ray.direction, n, eta);
+      let hasRefr = dot(refr, refr) > 1e-8;
+      let nextDir = select(reflect(ray.direction, n), safe_normalize(refr), hasRefr);
+      flux = flux * mix(vec3f(1.0), clamp(m0.rgb, vec3f(0.0), vec3f(1.0)), 0.2) * max(mTransmission, 0.05);
+      if (max(flux.r, max(flux.g, flux.b)) < 1e-5) {
+        break;
+      }
+      ray.origin = hp + nextDir * 1e-3;
+      ray.direction = nextDir;
     }
   }
-  return throughput * baseColor * contrib * 0.12;
+  let strategyScale = 1.0 + 0.25 * transmission;
+  return contribution * strategyScale;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -1045,23 +1267,51 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         matId = u32(max(analyticHeaders[analyticIndex].y, 0.0));
       }
     }
-    let m0Index = matId * 3u;
+    let m0Index = matId * MATERIAL_VEC4_STRIDE;
     let m1Index = m0Index + 1u;
     let m2Index = m0Index + 2u;
+    let m3Index = m0Index + 3u;
+    let m4Index = m0Index + 4u;
+    let m5Index = m0Index + 5u;
+    let m6Index = m0Index + 6u;
+    let m19Index = m0Index + 19u;
     let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
     let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
     let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
-    let baseColor = m0.rgb;
-    let roughness = clamp(m0.w, 0.02, 1.0);
+    let m3 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m3Index], m3Index < arrayLength(&materials));
+    let m4 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m4Index], m4Index < arrayLength(&materials));
+    let m5 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m5Index], m5Index < arrayLength(&materials));
+    let m6 = select(vec4f(0.0, 0.0, 1.0, 0.0), materials[m6Index], m6Index < arrayLength(&materials));
+    let m19 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m19Index], m19Index < arrayLength(&materials));
+    var baseColor = m0.rgb;
+    var roughness = clamp(m0.w, 0.02, 1.0);
     let emissive = m1.rgb;
     let metallic = clamp(m1.w, 0.0, 1.0);
     let transmission = clamp(m2.x, 0.0, 1.0);
     let ior = clamp(m2.y, 1.0, 2.5);
+    let scatteringCoeff = max(m2.z, 0.0);
+    let scatteringAnisotropy = clamp(m2.w, -0.95, 0.95);
+    let scatteringRgb = vec3f(max(m3.x, 0.0), max(m3.y, 0.0), max(m3.z, 0.0));
+    let hasSpectralAttenuation = m3.w > 0.5;
+    let frontLayerTx = m4.rgb;
+    let frontLayerRoughness = m4.w;
+    let backLayerTx = m5.rgb;
+    let backLayerRoughness = m5.w;
+    let thinFilmEnabled = m6.x > 0.5;
+    let spectralAvgMu = max(m19.x, 0.0);
+    let spectralSampleCount = u32(max(m19.w, 0.0));
 
     radiance = radiance + throughput * emissive;
 
     let hitPos = ray.origin + ray.direction * hit.dist;
-    let normal = select(hit.normal, -hit.normal, dot(hit.normal, ray.direction) > 0.0);
+    let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
+    let normal = select(-hit.normal, hit.normal, isFrontFace);
+    let layerTx = clamp(select(backLayerTx, frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
+    let layerRoughness = select(backLayerRoughness, frontLayerRoughness, isFrontFace);
+    if (layerRoughness >= 0.0) {
+      roughness = clamp(layerRoughness, 0.02, 1.0);
+    }
+    baseColor = baseColor * layerTx;
     if (!firstHitValid) {
       firstHitValid = true;
       firstHitPos = hitPos;
@@ -1070,7 +1320,50 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       firstHitDepth = hit.dist;
     }
     let wo = -ray.direction;
+    if (thinFilmEnabled) {
+      let viewCos = clamp(dot(normal, wo), 0.0, 1.0);
+      var phase = 0.0;
+      var usedLayers = 0.0;
+      for (var layerIdx = 0u; layerIdx < THIN_FILM_LAYER_LIMIT; layerIdx = layerIdx + 1u) {
+        if (layerIdx >= u32(max(m6.y, 0.0))) {
+          break;
+        }
+        let layerBase = THIN_FILM_SCALAR_BASE + layerIdx * 2u;
+        let layerIor = max(materialScalar(matId, layerBase), 1.0);
+        let layerThicknessNm = max(materialScalar(matId, layerBase + 1u), 0.0);
+        phase = phase + layerThicknessNm * 0.01 * (1.0 - viewCos) * layerIor;
+        usedLayers = usedLayers + 1.0;
+      }
+      phase = phase / max(usedLayers, 1.0);
+      let tint = vec3f(
+        0.5 + 0.5 * cos(phase),
+        0.5 + 0.5 * cos(phase + 2.094),
+        0.5 + 0.5 * cos(phase + 4.188)
+      );
+      let filmStrength = clamp((0.12 + 0.06 * usedLayers) * (1.0 - roughness), 0.0, 0.45);
+      baseColor = mix(baseColor, baseColor * tint, filmStrength);
+    }
     let throughputAtVertex = throughput;
+    if (transmission > 0.0) {
+      let sampledMuR = sampleMaterialSpectralMu(matId, 0.15);
+      let sampledMuG = sampleMaterialSpectralMu(matId, 0.50);
+      let sampledMuB = sampleMaterialSpectralMu(matId, 0.85);
+      let spectralMu = select(
+        vec3f(spectralAvgMu),
+        vec3f(sampledMuR, sampledMuG, sampledMuB),
+        spectralSampleCount > 0u,
+      );
+      let sigmaA = select(vec3f(0.0), max(spectralMu, vec3f(0.0)), hasSpectralAttenuation);
+      let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
+      let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
+      if (max(sigmaT.x, max(sigmaT.y, sigmaT.z)) > 0.0) {
+        throughput = throughput * exp(-sigmaT * min(hit.dist, 32.0));
+      }
+      if (scatteringCoeff > 0.0) {
+        let anisotropyBoost = 1.0 + 0.5 * scatteringAnisotropy;
+        radiance = radiance + throughputAtVertex * sigmaS * (0.02 * scatteringCoeff * anisotropyBoost);
+      }
+    }
     let cosThetaO = max(0.0, dot(normal, wo));
     let f0 = mix(vec3f(0.04), baseColor, metallic);
     let fresnel = fresnelSchlick(cosThetaO, f0);
@@ -1105,7 +1398,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let nDotL = max(0.0, dot(normal, lightDir));
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, lightDir);
-            directLi = throughput * brdf * nDotL * (1.8 * params.lightDir.w);
+            directLi = throughput * brdf * nDotL * params.lightDir.w;
           }
         }
         current = current + 1u;
@@ -1181,20 +1474,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     if (causticMode() == 1u) {
-      radiance = radiance + manifoldNeeApproxContribution(
+      radiance = radiance + manifoldNeeContribution(
+        &rng,
         hitPos,
         normal,
         wo,
         baseColor,
+        roughness,
+        metallic,
         transmission,
-        ior,
         throughputAtVertex,
       );
     } else if (causticMode() == 2u) {
-      radiance = radiance + photonMapApproxContribution(
+      radiance = radiance + photonMapContribution(
+        &rng,
         hitPos,
         normal,
+        wo,
         baseColor,
+        roughness,
+        metallic,
+        transmission,
         throughputAtVertex,
       );
     }

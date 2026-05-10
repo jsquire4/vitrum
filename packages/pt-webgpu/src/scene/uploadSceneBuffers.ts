@@ -8,7 +8,7 @@ export interface PackedSceneData {
   readonly normals: Float32Array; // vec4f packed
   readonly indices: Uint32Array; // vec4u packed (xyz used)
   readonly triMaterialIds: Uint32Array;
-  readonly materials: Float32Array; // 2 * vec4f per material
+  readonly materials: Float32Array; // MATERIAL_VEC4_STRIDE * vec4f per material
   readonly bvhNodes: Float32Array; // 8 floats (32 bytes) per node
   readonly analyticHeaders: Float32Array; // vec4f per analytic primitive: [shapeId, materialId, paramsOffset, 0]
   readonly analyticParams: Float32Array; // vec4f array, two vec4f per analytic primitive (8 floats)
@@ -46,6 +46,13 @@ export interface PackedSceneData {
   readonly environmentMapTexels: Float32Array; // rgba = radiance.rgb + pdfOmega
   readonly environmentMapCdf: Float32Array; // length N + 1
 }
+
+const THIN_FILM_LAYER_LIMIT = 8;
+const SPECTRAL_SAMPLE_COUNT = 32;
+const MATERIAL_VEC4_STRIDE = 20;
+const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
+const SPECTRAL_LAMBDA_MIN_NM = 380;
+const SPECTRAL_LAMBDA_MAX_NM = 780;
 
 export interface UploadedSceneBuffers {
   readonly triangleCount: number;
@@ -108,20 +115,23 @@ function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBuffer
   return buffer;
 }
 
-function materialToPackedVec4s(material: Material): readonly [
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-  number,
-] {
+function sampleSpectralCurve(curve: Material['spectralAttenuation'], lambdaNm: number): number {
+  if (curve == null || curve.values.length === 0) return 0;
+  const start = curve.wavelengthStart;
+  const end = curve.wavelengthEnd;
+  const denom = Math.max(end - start, 1e-6);
+  const t = Math.min(1, Math.max(0, (lambdaNm - start) / denom));
+  const f = t * (curve.values.length - 1);
+  const i0 = Math.floor(f);
+  const i1 = Math.min(i0 + 1, curve.values.length - 1);
+  const a = curve.values[i0] ?? 0;
+  const b = curve.values[i1] ?? a;
+  return a + (b - a) * (f - i0);
+}
+
+function materialToPackedVec4s(material: Material): number[] {
+  const finite = (v: number, fallback = 0): number => (Number.isFinite(v) ? v : fallback);
+  const clamp01 = (v: number): number => Math.min(1, Math.max(0, finite(v)));
   const base = material.baseColor;
   const emissive = material.emissive ?? [0, 0, 0];
   const emissiveIntensity = material.emissiveIntensity ?? 1;
@@ -129,7 +139,58 @@ function materialToPackedVec4s(material: Material): readonly [
   const metallic = material.metallic ?? 0;
   const transmission = material.transmission ?? 0;
   const ior = material.ior ?? 1.5;
-  return [
+  const scatteringCoeff = material.scatteringCoefficient ?? 0;
+  const scatteringAnisotropy = material.scatteringAnisotropy ?? 0;
+  const scatteringRgb = material.scatteringCoefficientRGB ?? [
+    scatteringCoeff,
+    scatteringCoeff,
+    scatteringCoeff,
+  ];
+  const frontLayerRaw = material.frontLayer?.transmission ?? [1, 1, 1];
+  const frontLayerTx: readonly [number, number, number] = [
+    clamp01(frontLayerRaw[0] ?? 1),
+    clamp01(frontLayerRaw[1] ?? 1),
+    clamp01(frontLayerRaw[2] ?? 1),
+  ];
+  const frontLayerRoughness =
+    material.frontLayer?.roughness == null ? -1 : clamp01(material.frontLayer.roughness);
+  const backLayerRaw = material.backLayer?.transmission ?? [1, 1, 1];
+  const backLayerTx: readonly [number, number, number] = [
+    clamp01(backLayerRaw[0] ?? 1),
+    clamp01(backLayerRaw[1] ?? 1),
+    clamp01(backLayerRaw[2] ?? 1),
+  ];
+  const backLayerRoughness =
+    material.backLayer?.roughness == null ? -1 : clamp01(material.backLayer.roughness);
+  const thinFilmLayers = material.thinFilmStack?.layers ?? [];
+  const thinFilmLayerCount = Math.min(thinFilmLayers.length, THIN_FILM_LAYER_LIMIT);
+  const thinFilmEnabled = thinFilmLayerCount > 0 ? 1 : 0;
+  const spectralCurve = material.spectralAttenuation;
+  let spectralSampleCount = 0;
+  let spectralAvgMu = 0;
+  let spectralMinMu = Number.POSITIVE_INFINITY;
+  let spectralMaxMu = Number.NEGATIVE_INFINITY;
+  const spectralSamples = new Array<number>(SPECTRAL_SAMPLE_COUNT).fill(0);
+  if (spectralCurve != null && spectralCurve.values.length > 0) {
+    spectralSampleCount = SPECTRAL_SAMPLE_COUNT;
+    let sum = 0;
+    for (let i = 0; i < SPECTRAL_SAMPLE_COUNT; i += 1) {
+      const t = i / Math.max(SPECTRAL_SAMPLE_COUNT - 1, 1);
+      const lambda = SPECTRAL_LAMBDA_MIN_NM + t * (SPECTRAL_LAMBDA_MAX_NM - SPECTRAL_LAMBDA_MIN_NM);
+      const v = Math.max(sampleSpectralCurve(spectralCurve, lambda), 0);
+      spectralSamples[i] = v;
+      sum += v;
+      spectralMinMu = Math.min(spectralMinMu, v);
+      spectralMaxMu = Math.max(spectralMaxMu, v);
+    }
+    spectralAvgMu = sum / SPECTRAL_SAMPLE_COUNT;
+    if (!Number.isFinite(spectralMinMu)) spectralMinMu = 0;
+    if (!Number.isFinite(spectralMaxMu)) spectralMaxMu = 0;
+  } else {
+    spectralMinMu = 0;
+    spectralMaxMu = 0;
+  }
+  const packed = [
     base[0],
     base[1],
     base[2],
@@ -140,9 +201,36 @@ function materialToPackedVec4s(material: Material): readonly [
     metallic,
     transmission,
     ior,
+    scatteringCoeff,
+    scatteringAnisotropy,
+    scatteringRgb[0],
+    scatteringRgb[1],
+    scatteringRgb[2],
+    spectralSampleCount > 0 ? 1 : 0,
+    frontLayerTx[0],
+    frontLayerTx[1],
+    frontLayerTx[2],
+    frontLayerRoughness,
+    backLayerTx[0],
+    backLayerTx[1],
+    backLayerTx[2],
+    backLayerRoughness,
+    thinFilmEnabled,
+    thinFilmLayerCount,
     0,
     0,
   ];
+  for (let i = 0; i < THIN_FILM_LAYER_LIMIT; i += 1) {
+    if (i < thinFilmLayerCount) {
+      const layer = thinFilmLayers[i];
+      packed.push(Math.max(finite(layer?.ior ?? 1, 1), 1), Math.max(finite(layer?.thicknessNm ?? 0), 0));
+    } else {
+      packed.push(0, 0);
+    }
+  }
+  packed.push(...spectralSamples);
+  packed.push(spectralAvgMu, spectralMinMu, spectralMaxMu, spectralSampleCount);
+  return packed;
 }
 
 const IDENTITY_MAT4 = new Float32Array([
@@ -653,7 +741,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   return {
     triangleCount: packed.triangleCount,
     bvhNodeCount: Math.floor(packed.bvhNodes.length / 8),
-    materialCount: Math.floor(packed.materials.length / 12),
+    materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),
     analyticCount: packed.analyticCount,
     directionalLight: packed.directionalLight,
     directionalIrradiance: packed.directionalIrradiance,

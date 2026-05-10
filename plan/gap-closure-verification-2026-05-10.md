@@ -1,35 +1,68 @@
 # Gap Closure Verification Report (2026-05-10)
 
-## Mechanical Checks
+## Mechanical Checks (Executed)
 
-- `npm test --workspaces --if-present` (vitrum): PASS.
-- `npm run typecheck` (vitrum): PARTIAL PASS.
-  - Pre-existing `@vitrum/pt-webgl` type mismatch errors remain in `packages/pt-webgl/src/index.ts`.
-  - `@vitrum/pt-webgpu` typecheck is clean.
-- `npm run lint` (three-gpu-pathtracer fork): PASS with pre-existing warnings in `src/utils/UVUnwrapper.js`.
+- `npm test --workspace @vitrum/pt-webgl`: PASS.
+- `npm test --workspace @vitrum/pt-webgpu`: PASS.
+- `npm run typecheck` (workspace): PASS.
+- `node ./scripts/shader-smoke-check.js` (`three-gpu-pathtracer` fork): PASS.
+- `npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner`: PASS (artifact generated, fail-closed `BLOCKED` statuses without GPU harness).
 
-## Runtime / GPU Verification Matrix
+## Code Closure Summary (This Execution Wave)
 
-The implementation wave is complete, but this environment did not provide a runtime GPU render harness for before/after image capture and perf timing. Final closure scenes are therefore tracked as **code-complete, runtime-verification pending**.
+- `pt-webgl` now reports selected `causticStrategy` in capabilities and forwards strategy controls through `forkUniformBridge`.
+- Fork shader now implements deterministic mode-distinct caustic branches with bounded loops:
+  - `manifold-nee`: refractive-chain walk with iteration + chain caps.
+  - `photon-map`: deterministic refracted-cone density estimate.
+- Fork regression guard added:
+  - `scripts/check-caustic-strategy-regression.js`
+  - script ensures required uniforms/branches exist and legacy ad-hoc gains are absent.
+- `pt-webgpu` now uses a bounded rich material payload contract (20 vec4 per material):
+  - thin-film: up to 8 per-layer `(ior, thicknessNm)` pairs,
+  - spectral attenuation: fixed 32-sample grid + metadata,
+  - layered/scattering fields preserved.
+- WGSL now consumes per-layer/per-sample payload directly and re-enables strategy-specific caustic paths.
+- New/updated tests cover payload contract + strategy capability signaling:
+  - `scenePack.test.ts`, `factoryCapabilities.test.ts`, `wgslContract.test.ts`.
 
-| Scenario ID | Target | Status | Notes |
+## Runtime / GPU Artifact Matrix
+
+The required deterministic scenario set is defined in `plan/gap-closure-acceptance-matrix.md`.
+
+Runtime execution attempts performed in this wave:
+
+- Fork dependencies installed (`npm install`) to enable browser capture scripts.
+- Fork strategy regression check executed (`npm run check-caustic-strategy`): PASS.
+- Fork screenshot harness attempted:
+  - `node ./scripts/update-screenshots.js -o ./screenshots/current -s khronos-DragonAttenuation -h true`
+  - result: `ERR_CONNECTION_REFUSED` due harness expecting `localhost:1234` while current Vite server is `localhost:5173`.
+- No vitrum-native GPU capture runner currently maps acceptance-matrix scenario IDs to deterministic render jobs in this workspace.
+
+Deterministic artifact manifest for the acceptance matrix:
+
+- `plan/gap-closure-artifacts-2026-05-10.json`
+- Status: `blocked` for all scenarios in this environment (null hash/perf fields, blocker recorded).
+
+| Scenario ID | Status | Evidence collected now | Remaining evidence |
 |---|---|---|---|
-| `rfe09-bridge` | pt-webgl bridge vs per-material packed scalars | Pending GPU run | CPU tests confirm bridge scope reduced to global spectral tables. |
-| `rfe11-translucent-bit` | Mixed-material SSS gating via packed flag | Pending GPU run | Shader/packing path landed in fork. |
-| `rfe13-payload` | Hero-wavelength scalar payload visual/perf validation | Pending GPU run | Core transport path code-complete. |
-| `rfe14-thinfilm` | 35-layer TMM angle-shift scene | Pending GPU run | Per-material stack path code-complete. |
-| `rfe03-layered` | Front/back layer asymmetry A/B | Pending GPU run | Front/back transmission + roughness override landed. |
-| `rfe05-caustics` | Strategy toggles for manifold-nee and photon-map | Pending GPU run | Both strategy code paths wired and selectable. |
-| `ptwgpu-env-mis` | HDRI + reciprocal env MIS parity | Pending GPU run | HDRI importance path + env MIS landed. |
+| `rfe03-layered-front-back` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
+| `rfe07-11-sss-mixed-panels` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
+| `rfe08-13-spectral-payload` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
+| `rfe14-thinfilm-angle-shift` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
+| `rfe09-bridge-global-cmf` | Blocked in this environment | Unit tests + build pass | Uniform runtime snapshots + A/B |
+| `rfe05-caustic-strategy` | Blocked in this environment | Strategy wiring + mode branches + tests present | 3-mode captures + perf |
+| `ptwgpu-parity-material-fields` | Blocked in this environment | Rich payload + shader consumption + tests | A/B hashes + perf |
 
-## Required Runtime Artifact Checklist
+## Artifact Bundle Format (to be populated during GPU run)
 
-For each pending scenario, record:
+For each scenario:
 
-1. scene ID and deterministic seed
-2. settings (`bounces`, spp target, resolution)
-3. baseline image hash
-4. candidate image hash
-5. visual delta summary
-6. perf summary (ms/frame or spp/sec)
-7. pass/fail vs acceptance criterion
+1. `scenarioId`
+2. `seed`
+3. `settings` (`resolution`, `bounces`, `spp`)
+4. `beforeImageHash`
+5. `afterImageHash`
+6. `deltaSummary`
+7. `perfBaselineMsPerSample`
+8. `perfCandidateMsPerSample`
+9. `passFail`

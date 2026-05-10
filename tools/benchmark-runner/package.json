@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "benchmark": "echo 'benchmark-runner not yet implemented'"
+    "benchmark": "node ./run-gap-closure-verification.mjs",
+    "benchmark:gap-closure": "node ./run-gap-closure-verification.mjs"
   }
 }

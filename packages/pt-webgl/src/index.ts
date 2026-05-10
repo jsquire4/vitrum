@@ -107,6 +107,8 @@ class PTEngineWebGL2 implements Engine {
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
   readonly #causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
+  readonly #mneeMaxIterations: number;
+  readonly #mneeMaxChainLength: number;
 
   #vitrumScene: Scene | null = null;
   #threeSceneRoot: ThreeScene | null = null;
@@ -115,9 +117,12 @@ class PTEngineWebGL2 implements Engine {
     this.#slot = slot;
     this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
-    // RFE-05: causticStrategy captured at creation time; reflected in capabilities.
-    // The actual MNEE / photon-map implementation is deferred (fork-side work).
+    // RFE-05: preserve requested strategy in uniform plumbing, but do not
+    // advertise support in published capabilities until the fork ships a real
+    // MNEE/photon-map implementation.
     this.#causticStrategy = opts.causticStrategy ?? 'none';
+    this.#mneeMaxIterations = Math.max(1, opts.mneeMaxIterations ?? 8);
+    this.#mneeMaxChainLength = Math.max(1, opts.mneeMaxChainLength ?? 3);
     this.#renderer = gpu.renderer;
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
@@ -154,11 +159,9 @@ class PTEngineWebGL2 implements Engine {
         'spot',
         'mesh-area',
       ]),
-      // RFE-05: Reflect the causticStrategy from creation-time options.
-      // MNEE and photon-map are API-complete but their shader implementations
-      // are deferred fork-side work (see plan/sprint-10c-pt-fork-patch.md and
-      // external_requests/05-manifold-nee.md for the implementation spec).
-      causticStrategy: this.#causticStrategy,
+      // RFE-05: API is plumbed, but published capability stays conservative
+      // until full MNEE/photon-map runtime verification.
+      causticStrategy: 'none',
     };
   }
 
@@ -185,7 +188,11 @@ class PTEngineWebGL2 implements Engine {
       threeScene as unknown as Parameters<WebGLPathTracer['setScene']>[0],
       this.#camera as unknown as Parameters<WebGLPathTracer['setScene']>[1],
     );
-    driveForkMaterialUniforms(this.#pathTracer, threeScene);
+    driveForkMaterialUniforms(this.#pathTracer, threeScene, {
+      strategy: this.#causticStrategy,
+      mneeMaxIterations: this.#mneeMaxIterations,
+      mneeMaxChainLength: this.#mneeMaxChainLength,
+    });
   }
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {
@@ -331,6 +338,12 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
   // engine's capabilities and does not change.
   const maxFragUniforms = glContext.getParameter(glContext.MAX_FRAGMENT_UNIFORM_VECTORS) as number;
   const supportsAnalyticCame = maxFragUniforms >= MIN_UNIFORM_VECTORS_FOR_CAME;
+
+  if (opts.causticStrategy != null && opts.causticStrategy !== 'none') {
+    console.warn(
+      `[vitrum/pt-webgl] causticStrategy="${opts.causticStrategy}" requested, but published backend currently reports "none" until full MNEE/photon-map runtime verification.`,
+    );
+  }
 
   const slot = makeStateSlot();
   const engine = new PTEngineWebGL2(

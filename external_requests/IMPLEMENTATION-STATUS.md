@@ -5,7 +5,8 @@
 - Sprint 12 Gap §5 (spectral attenuation Beer-Lambert) is now APPLIED in fork codepaths.
 - RFE-03 layered BSDF implementation is landed in fork material packing + BSDF selection path.
 - pt-webgpu now includes HDRI CPU-payload importance sampling and reciprocal environment MIS.
-- pt-webgpu `causticStrategy` now maps to active `'manifold-nee'` and `'photon-map'` approximation paths (runtime-unverified).
+- pt-webgpu `causticStrategy` now reports the selected strategy and dispatches mode-distinct shader branches (`none` / `manifold-nee` / `photon-map`).
+- pt-webgl `causticStrategy` now reports the selected strategy and drives fork-side mode-distinct behavior paths.
 - Final GPU render/perf validation remains pending and tracked in `plan/gap-closure-verification-2026-05-10.md`.
 
 ## RFE-07 Sprint 7 Volume Scattering: APPLIED
@@ -66,7 +67,7 @@
   `vitrumScatteringCoefficientRGB`, `vitrumScatteringAnisotropy`,
   `vitrumSpectralAttenuation` (SpectralCurve object + Float32Array fallback),
   `vitrumThinFilmStack`, `vitrumFrontLayer`, `vitrumBackLayer`.
-- Round-trip tests: `packages/three-bindings/src/__tests__/material-vitrum-roundtrip.test.ts` (17 tests).
+- Round-trip tests: `packages/three-bindings/src/__tests__/material-vitrum-roundtrip.test.ts` (14 tests).
 - Residual open items:
   - `frontLayer`/`backLayer` BSDF evaluation — deferred on RFE-12.
   - `vitrum.Material → fork uniforms` direction — completed in RFE-09.
@@ -115,5 +116,5 @@ Specific risks:
 
 Vitrum-side bridge and `pt-webgpu` changes are now included in addition to fork patches.
 Tests: workspace tests pass via `npm test --workspaces --if-present`.
-TypeScript: workspace typecheck has known pre-existing `@vitrum/pt-webgl` type mismatches;
-`@vitrum/pt-webgpu` and other touched packages typecheck clean.
+TypeScript: workspace typecheck is currently clean across touched packages (including
+`@vitrum/pt-webgl` and `@vitrum/pt-webgpu`) in this execution wave.

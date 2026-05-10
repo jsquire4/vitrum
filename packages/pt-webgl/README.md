@@ -19,9 +19,10 @@ Peers: `three`, `three-mesh-bvh` (required by the path tracer). Optional: `xatla
 - **`createPTEngine_WebGL2({ device })`** — `device` is a `THREE.WebGLRenderer` with a **WebGL2** context.
 - **`setScene(scene)`** — accepts a `@vitrum/core` `Scene` (e.g. from `sceneFromThreeJS` in `@vitrum/three-bindings`).
 - **`renderFrame(FrameInput)`** — drives **three-gpu-pathtracer**’s `WebGLPathTracer` (samples, bounces, resolution).
+- **`causticStrategy` options** — bridged to fork-facing uniforms (`none`, `manifold-nee`, `photon-map`) with mode-distinct shader behavior. `EngineCapabilities.causticStrategy` reports the selected strategy.
 
 Helpers: **`vitrumSceneToThree`**, **`applyFrameToPerspectiveCamera`** for advanced integration.
 
 ## Stability
 
-**Pre-alpha** — public `Engine` shapes follow `@vitrum/core`; implementation details and supported scene subset may change. Unsupported primitives/emitters are skipped or called out in console warnings.
+**Pre-alpha** — public `Engine` shapes follow `@vitrum/core`; implementation details and supported scene subset may change. Unsupported primitives/emitters are skipped or called out in console warnings. Runtime visual/perf verification for the latest RFE paths remains required before release use.
