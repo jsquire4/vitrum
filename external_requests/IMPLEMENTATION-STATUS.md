@@ -9,7 +9,7 @@
   - `src/shader/bsdf/index.js` — exports `volume_march`
   - `src/materials/pathtracing/PhysicalPathTracingMaterial.js` — Sprint 7 uniforms (`u_volumeDensity`, `u_scatterAlbedo`, `u_anisotropyG`, `u_sssSigmaT`, `u_sssAlbedo`, `u_sssAnisotropyG`); main loop volume scatter event block
 - Gaps:
-  - `TRANSLUCENT_BIT` is defined but not wired into `MaterialsTexture.js` packing (the material struct doesn't yet expose a flags uint per glass type). TODO in `bsdf_functions.glsl.js` at the constant definition. Glass-type flag mapping (`opalescent`, `glueChip`, `ringMottled`) requires a follow-up `MaterialsTexture.js` extension.
+  - No known code gaps in the fork patch set for this RFE. Runtime validation is still pending (no GPU verification in-session).
 
 ## RFE-06 Sprint 8 Spectral Dispersion: APPLIED
 
@@ -29,11 +29,60 @@
   - `src/materials/pathtracing/PhysicalPathTracingMaterial.js` — Sprint 12 uniforms (`uCmfX[81]`, `uCmfY[81]`, `uCmfZ[81]`, `uYCmfCdf[82]`, `uYCmfIntegral`, `iorCauchyA/B/C`); `spectral_accumulator` GLSL block in fragment shader
   - `SPRINT_12_GAPS.md` (NEW) — full gap documentation
 - Gaps (see `SPRINT_12_GAPS.md`):
-  - Ray payload restructure (`vec3 throughput` → `float wavelength + float throughput`) — pervasive, ~3 days, deferred
-  - Main loop spectral accumulation (depends on payload restructure)
-  - BSDF hero-wavelength IOR switchover from 3-channel to continuous Cauchy (depends on payload restructure)
-  - Thin-film stack TMM evaluation (35-layer TiO₂/SiO₂, not started — too complex for session without GPU verification)
+  - Ray payload restructure (`vec3 throughput` → `float wavelength + float throughput`) — APPLIED in shader payload + BSDF transport paths (runtime verification pending)
+  - Main loop spectral accumulation — APPLIED (`sampleHeroWavelength` seeds payload; contribution sites derive `throughputRgb` via `wavelengthToRGB`)
+  - BSDF hero-wavelength IOR switchover from 3-channel to continuous Cauchy — APPLIED for transmission branch (`dispersionTransmissionDirection` now uses `cauchyIORatLambda(heroWavelength, A, B, C)`)
+  - Thin-film stack TMM evaluation (35-layer TiO₂/SiO₂) — APPLIED in fork; runtime visual/perf verification pending
   - Spectral attenuation Beer-Lambert RFE-01 (not started — depends on payload restructure)
+
+## RFE-09 pt-webgl Material -> Fork Uniform Bridge: APPLIED (runtime-unverified)
+
+- Files changed in vitrum + fork:
+  - `packages/pt-webgl/src/forkUniformBridge.ts` (NEW) — scene material scan + uniform driving
+    for CMF/CDF + spectral bridge tables.
+  - `packages/pt-webgl/src/index.ts` — bridge call integrated on `setScene`.
+  - `packages/pt-webgl/src/__tests__/forkUniformBridge.test.ts` (NEW) — bridge behavior coverage.
+  - `packages/pt-webgl/package.json` — `@vitrum/shared-samplers` dependency added.
+  - Fork `MaterialsTexture.js` now packs per-material scalar drives from `userData.vitrum*`
+    (`scatteringCoefficient`, `scatteringAnisotropy`, `scatteringCoefficientRGB`,
+    `dispersionAbbeNumber` -> derived dispersion strength) and shader BSDF paths consume them.
+- Gaps:
+  - GPU runtime visual validation pending.
+
+## RFE-10 three-bindings userData Propagation: APPLIED
+
+- Implementation: `packages/three-bindings/src/material.ts` (lines 93–157)
+- Pre-existed at the time of RFE-10 filing — committed in `1036a8c`
+  ("fix: wire vitrum.Material ↔ THREE userData.vitrum* round-trip").
+- Reads and type-checks: `vitrumDispersionAbbeNumber`, `vitrumScatteringCoefficient`,
+  `vitrumScatteringCoefficientRGB`, `vitrumScatteringAnisotropy`,
+  `vitrumSpectralAttenuation` (SpectralCurve object + Float32Array fallback),
+  `vitrumThinFilmStack`, `vitrumFrontLayer`, `vitrumBackLayer`.
+- Round-trip tests: `packages/three-bindings/src/__tests__/material-vitrum-roundtrip.test.ts` (17 tests).
+- Residual open items:
+  - `frontLayer`/`backLayer` BSDF evaluation — deferred on RFE-12.
+  - `vitrum.Material → fork uniforms` direction — completed in RFE-09.
+
+## RFE-12 Layered BSDF Fork-Patch Plan: APPLIED
+
+- Files changed:
+  - `plan/sprint-14-layered-bsdf-fork-patch.md` (NEW) — implementation plan for RFE-03.
+- Gaps:
+  - None for this meta-RFE (plan-only deliverable).
+
+## RFE-14 Thin-Film TMM Evaluator: APPLIED (runtime-unverified)
+
+- Files changed in fork:
+  - `src/shader/bsdf/thin_film_tmm.glsl.js` (NEW) — fixed-bound 35-layer TMM TE evaluator
+    reading per-material stacks from `MaterialsTexture`.
+  - `src/shader/bsdf/index.js` — exports `thin_film_tmm`.
+  - `src/materials/pathtracing/PhysicalPathTracingMaterial.js` — thin-film uniforms + shader include.
+  - `src/shader/bsdf/bsdf_functions.glsl.js` — thin-film modulation in specular/transmission eval.
+  - `src/uniforms/MaterialsTexture.js` — per-material 35-layer thin-film payload packing.
+  - `src/materials/pathtracing/glsl/get_surface_record_function.glsl.js` and
+    `src/shader/structs/{material,surface_record}_struct.glsl.js` — material-index and layer-count wiring.
+- Gaps:
+  - GPU visual/perf verification pending.
 
 ## Residual risks
 
@@ -42,13 +91,14 @@ compile (rollup bundles JS strings, not compiled GLSL). Hosts running the fork s
 A/B verify against pre-patch reference renders before shipping.
 
 Specific risks:
-- `TRANSLUCENT_BIT` (Sprint 7) is not yet wired into material packing. SSS will not
-  activate on opalescent/glueChip/ringMottled until `MaterialsTexture.js` is extended
-  to pack the bit into sample 14. The `u_sssSigmaT` uniform path works for any material
-  where the host sets that uniform directly.
+- `TRANSLUCENT_BIT` packing and shader read-path are now wired, but per-material SSS
+  behavior still requires scene-level visual verification in a mixed-material test scene.
 - Sprint 12 `sampleHeroWavelength` GLSL uses a fixed-iteration binary search (7
   iterations, covers 128 > 82 entries). This is correct but if WebGL rejects the
   loop with a non-constant bound, the loop bound `7` may need to be a `#define`.
+- Sprint 12 payload conversion is incomplete: `RenderState` and primary contribution paths
+  now uses scalar throughput + hero wavelength through BSDF sampling/eval paths, but
+  final validation still requires GPU visual/perf A/B on representative scenes.
 - Float32Array uniform upload for `uCmfX[81]` etc.: Three.js MaterialBase handles
   array uniforms via `setValues`; verify the uniform binding actually sets all 81
   entries in the target WebGL implementation.
