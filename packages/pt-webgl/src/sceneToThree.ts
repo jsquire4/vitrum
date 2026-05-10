@@ -96,6 +96,12 @@ function vitrumMaterialToThree(m: VitrumMaterial): MeshPhysicalMaterial {
   if (m.metallicMap != null && isTexture(m.metallicMap)) mat.metalnessMap = m.metallicMap;
   if (m.emissiveMap != null && isTexture(m.emissiveMap)) mat.emissiveMap = m.emissiveMap;
   if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
+  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) {
+    mat.userData['vitrumSpectral'] = {
+      ...(m.spectralAttenuation != null ? { spectralAttenuation: m.spectralAttenuation } : {}),
+      ...(m.dispersionAbbeNumber != null ? { dispersionAbbeNumber: m.dispersionAbbeNumber } : {}),
+    };
+  }
   return mat;
 }
 

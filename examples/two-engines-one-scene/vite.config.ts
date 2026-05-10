@@ -10,10 +10,11 @@ export default defineConfig({
       '@vitrum/core': path.resolve(repoRoot, 'packages/core/src/index.ts'),
       '@vitrum/pt-webgl': path.resolve(repoRoot, 'packages/pt-webgl/src/index.ts'),
       '@vitrum/three-bindings': path.resolve(repoRoot, 'packages/three-bindings/src/index.ts'),
+      '@vitrum/walkaround-hybrid': path.resolve(repoRoot, 'packages/walkaround-hybrid/src/index.ts'),
       '@vitrum-examples/shared': path.resolve(repoRoot, 'examples/shared/src/index.ts'),
     },
   },
   server: {
-    port: 5174,
+    port: 5175,
   },
 });

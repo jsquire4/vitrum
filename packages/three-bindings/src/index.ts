@@ -1,8 +1,8 @@
 /**
  * @vitrum/three-bindings — THREE.Scene → @vitrum/core Scene adapter.
  *
- * Public API: `sceneFromThreeJS`. Only this function is exported from the
- * package barrel. All sub-converters live in dedicated modules:
+ * Public API: `sceneFromThreeJS` plus Tier 1 extension constants (`spectral.ts`).
+ * All sub-converters live in dedicated modules:
  *
  *   material.ts   — convertMaterial (MeshStandard + MeshPhysical)
  *   mesh.ts       — convertMesh + geometry attribute extractors
@@ -15,6 +15,8 @@ import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { convertMesh } from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
+
+export { VITRUM_SPECTRAL_EXTENSION_KEY } from './spectral.js';
 
 /**
  * Converts a THREE.Scene into a @vitrum/core Scene.

@@ -28,6 +28,16 @@ export type Mat4 = Float32Array;
  *  graph uses — three.js `Object3D.uuid`, integer counters, etc. */
 export type SceneNodeId = string;
 
+/**
+ * Spectral coefficient table μ(λ) for Beer–Lambert attenuation (inverse scene units).
+ * Tier 1 hook for `external_requests/01-spectral-rendering.md`.
+ */
+export interface SpectralCurve {
+  readonly wavelengthStart: number;
+  readonly wavelengthEnd: number;
+  readonly values: Float32Array;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Material
 // ────────────────────────────────────────────────────────────────────────────
@@ -56,6 +66,18 @@ export interface Material {
   attenuationColor?: Vec3;       // Beer-Lambert: color the medium absorbs to
   attenuationDistance?: number;  // Beer-Lambert: depth at which attenuationColor reached
   thickness?: number;            // Beer-Lambert: actual slab thickness
+
+  /**
+   * Per-wavelength absorption table; when set, spectral Beer–Lambert replaces
+   * the RGB-only approximation for participating media.
+   */
+  spectralAttenuation?: SpectralCurve;
+
+  /**
+   * Abbe number V_d for Cauchy-style wavelength-dependent IOR. Undefined = no
+   * dispersion (RGB IOR only). Hero-wavelength backends consume this field.
+   */
+  dispersionAbbeNumber?: number;
 
   // ── Texture maps (opaque handles, see TextureRef) ───────────────────────
   baseColorMap?: TextureRef;

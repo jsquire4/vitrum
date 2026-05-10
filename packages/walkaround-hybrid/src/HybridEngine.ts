@@ -137,6 +137,13 @@ function defaultIsSceneReady(scene: THREE.Scene): boolean {
   return total >= 200;
 }
 
+/** Valid empty scene for factory bootstrap before the host calls `setScene`. */
+const HYBRID_FACTORY_BOOT_SCENE: Scene = {
+  primitives: [],
+  emitters: [],
+  environment: { kind: 'none' },
+};
+
 /** Get the preferred swap-chain format from the browser GPU. */
 function getPreferredSwapChainFormat(): GPUTextureFormat {
   return (typeof navigator !== 'undefined' && 'gpu' in navigator
@@ -781,6 +788,6 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> =
   // _initPipeline is fire-and-forget; the engine transitions to 'ready'
   // when the BVH poll + pipeline compile finishes. The host polls
   // engine.state or observes renderFrame returning samplesAccumulated=0.
-  engine.setScene({} as Scene);
+  engine.setScene(HYBRID_FACTORY_BOOT_SCENE);
   return engine;
 }

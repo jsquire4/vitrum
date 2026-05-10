@@ -25,6 +25,12 @@
 
 **Why separate**: `@vitrum/core` doesn't know about three.js. A future babylon binding, glTF binding, or raw-buffer binding implements the same `Scene`-construction contract.
 
+### `@vitrum/babylon-bindings` *(stub)*
+
+**Owns**: reserved adapter path Babylon → `@vitrum/core` `Scene` (see `plan/binding-babylon-sketch.md`). **`sceneFromBabylonScene`** throws until implementation is scheduled.
+
+**Depends on**: `@vitrum/core` only (no `@babylonjs/core` peer yet).
+
 ### `@vitrum/shared-bvh`
 
 **Owns**: software BVH compute. Two implementations: WebGPU compute pipeline (used by walkaround engines) and WebGL2 fragment-shader-readable texture (used by the WebGL2 PT backend, wrapping three-mesh-bvh's BVH but exposed via vitrum's contract).

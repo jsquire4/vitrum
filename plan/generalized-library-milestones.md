@@ -27,8 +27,9 @@ Phase 7+ items (`@vitrum/pt-webgpu` MVP) are **not** required for this milestone
 
 - **`@vitrum/walkaround-hybrid`**: Substantial **`HybridEngine`** + pipeline; implements **`Engine`**; still **three.js-leaning** internally (acceptable for Milestone M2 below).
 - **`@vitrum/pt-webgl`**: **`WebGLPathTracer`** wired; **`setScene` / `renderFrame`** implemented; fork via **`file:../../../three-gpu-pathtracer`** (see package README).
-- **`_staging/`**: Mostly **host React** reference; staging README maps files to package vs host ownership; duplicate PT tables removed where superseded.
-- **`examples/cornell-box`**: **Vite** demo — THREE → `sceneFromThreeJS` → `createPTEngine_WebGL2`.
+- **`_staging/`**: **`legacy-source/`** removed (M3); remaining README only — reference code lives in git history.
+- **`examples/cornell-box`**: **Vite** demo — shared Cornell → `sceneFromThreeJS` → `createPTEngine_WebGL2`.
+- **`examples/two-engines-one-scene`**: **G2** — same **`Scene`** passed to **`pt-webgl`** and **`walkaround-hybrid`** (WebGPU panel optional).
 - **RFEs / contract growth**: Follow [cursor-recommended-plan.md](./cursor-recommended-plan.md) §13 (Tier 1 types early; Tier 2 implementation in Phase C sprints).
 
 ---
@@ -101,11 +102,11 @@ Phase 7+ items (`@vitrum/pt-webgpu` MVP) are **not** required for this milestone
 
 **Optional sketch (non-blocking):**
 
-- Add **`plan/binding-babylon-sketch.md`** or a **`@vitrum/babylon-bindings` empty package** — **no full implementation** until M1–M3 are stable; the point is to **pressure-test** `Scene` field names.
+- **`@vitrum/babylon-bindings`** stub package (`sceneFromBabylonScene` throws) — **no Babylon dependency** until M1–M3 are stable; see **`plan/binding-babylon-sketch.md`**.
 
 **DoD:** Architecture review note: “what would break if THREE disappeared from walkaround?” has concrete answers per module.
 
-**Done in repo:** [plan/walkaround-without-three.md](./walkaround-without-three.md), [plan/binding-babylon-sketch.md](./binding-babylon-sketch.md), `packages/walkaround-hybrid/src/hostScene/types.ts`, `HybridEngine` RC header cross-link.
+**Done in repo:** [plan/walkaround-without-three.md](./walkaround-without-three.md), [plan/binding-babylon-sketch.md](./binding-babylon-sketch.md), `packages/walkaround-hybrid/src/hostScene/types.ts`, `HybridEngine` RC header cross-link, **`@vitrum/babylon-bindings`** stub.
 
 ---
 
