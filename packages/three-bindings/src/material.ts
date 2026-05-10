@@ -8,7 +8,7 @@
  */
 
 import type * as THREE from 'three';
-import type { Material, Vec3 } from '@vitrum/core';
+import type { Material, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Internal type aliases
@@ -88,6 +88,71 @@ export function convertMaterial(m: ThreeStdMat): Material {
     // THREE uses iridescenceIOR (caps); core uses iridescenceIor (camelCase).
     base.iridescenceIor = p.iridescenceIOR;
     base.iridescenceThicknessRange = p.iridescenceThicknessRange;
+  }
+
+  // ── userData.vitrum* stamps (RFE-06..08 / RFE-03) ──────────────────────────
+  // The host stamps these on THREE materials so backends can read them via the
+  // vitrum.Material contract. We project them unconditionally here; each guard
+  // preserves exactOptionalPropertyTypes (no field set = field absent).
+  const ud = (p.userData ?? {}) as Record<string, unknown>;
+
+  // RFE-06 (Sprint 8 — chromatic dispersion, Abbe number)
+  if (typeof ud['vitrumDispersionAbbeNumber'] === 'number') {
+    base.dispersionAbbeNumber = ud['vitrumDispersionAbbeNumber'];
+  }
+
+  // RFE-07 (Sprint 7 — volume scattering + HG anisotropy)
+  if (typeof ud['vitrumScatteringCoefficient'] === 'number') {
+    base.scatteringCoefficient = ud['vitrumScatteringCoefficient'];
+  }
+  if (
+    Array.isArray(ud['vitrumScatteringCoefficientRGB']) &&
+    (ud['vitrumScatteringCoefficientRGB'] as unknown[]).length === 3
+  ) {
+    base.scatteringCoefficientRGB = ud['vitrumScatteringCoefficientRGB'] as unknown as Vec3;
+  }
+  if (typeof ud['vitrumScatteringAnisotropy'] === 'number') {
+    base.scatteringAnisotropy = ud['vitrumScatteringAnisotropy'];
+  }
+
+  // RFE-08 (Sprint 12 — hero-wavelength spectral attenuation curve)
+  // The host stamp is a SpectralCurve object: { wavelengthStart, wavelengthEnd, values }.
+  // We accept both a full SpectralCurve object and, for back-compat, a plain
+  // Float32Array treated as 380–780 nm / 81-sample curve.
+  const rawSpectral = ud['vitrumSpectralAttenuation'];
+  if (rawSpectral != null) {
+    if (
+      typeof rawSpectral === 'object' &&
+      !Array.isArray(rawSpectral) &&
+      'wavelengthStart' in (rawSpectral as object) &&
+      'wavelengthEnd' in (rawSpectral as object) &&
+      'values' in (rawSpectral as object)
+    ) {
+      base.spectralAttenuation = rawSpectral as SpectralCurve;
+    } else if (rawSpectral instanceof Float32Array && rawSpectral.length >= 3) {
+      // Raw Float32Array fallback: assume 380–780 nm range.
+      base.spectralAttenuation = {
+        wavelengthStart: 380,
+        wavelengthEnd: 780,
+        values: rawSpectral,
+      };
+    }
+  }
+
+  // RFE-08 (Sprint 12 — multi-layer thin-film stack)
+  const rawThinFilm = ud['vitrumThinFilmStack'];
+  if (rawThinFilm != null && typeof rawThinFilm === 'object' && !Array.isArray(rawThinFilm)) {
+    base.thinFilmStack = rawThinFilm as ThinFilmStack;
+  }
+
+  // RFE-03 (Sprint X — per-face surface absorption layers)
+  const rawFront = ud['vitrumFrontLayer'];
+  if (rawFront != null && typeof rawFront === 'object' && !Array.isArray(rawFront)) {
+    base.frontLayer = rawFront as SurfaceAbsorptionLayer;
+  }
+  const rawBack = ud['vitrumBackLayer'];
+  if (rawBack != null && typeof rawBack === 'object' && !Array.isArray(rawBack)) {
+    base.backLayer = rawBack as SurfaceAbsorptionLayer;
   }
 
   return base;

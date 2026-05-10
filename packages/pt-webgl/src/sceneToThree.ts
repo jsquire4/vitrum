@@ -96,6 +96,44 @@ function vitrumMaterialToThree(m: VitrumMaterial): MeshPhysicalMaterial {
   if (m.metallicMap != null && isTexture(m.metallicMap)) mat.metalnessMap = m.metallicMap;
   if (m.emissiveMap != null && isTexture(m.emissiveMap)) mat.emissiveMap = m.emissiveMap;
   if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
+
+  // ── Stamp userData.vitrum* so fork shaders (Sprints 7/8/12) can read them ──
+  // Each field is only stamped when the vitrum.Material field is defined.
+  const ud: Record<string, unknown> = mat.userData ?? {};
+
+  // RFE-06 (Sprint 8 — chromatic dispersion)
+  if (m.dispersionAbbeNumber !== undefined) {
+    ud['vitrumDispersionAbbeNumber'] = m.dispersionAbbeNumber;
+  }
+
+  // RFE-07 (Sprint 7 — volume scattering)
+  if (m.scatteringCoefficient !== undefined) {
+    ud['vitrumScatteringCoefficient'] = m.scatteringCoefficient;
+  }
+  if (m.scatteringCoefficientRGB !== undefined) {
+    ud['vitrumScatteringCoefficientRGB'] = m.scatteringCoefficientRGB;
+  }
+  if (m.scatteringAnisotropy !== undefined) {
+    ud['vitrumScatteringAnisotropy'] = m.scatteringAnisotropy;
+  }
+
+  // RFE-08 (Sprint 12 — spectral attenuation + thin-film stack)
+  if (m.spectralAttenuation !== undefined) {
+    ud['vitrumSpectralAttenuation'] = m.spectralAttenuation;
+  }
+  if (m.thinFilmStack !== undefined) {
+    ud['vitrumThinFilmStack'] = m.thinFilmStack;
+  }
+
+  // RFE-03 (per-face surface absorption layers)
+  if (m.frontLayer !== undefined) {
+    ud['vitrumFrontLayer'] = m.frontLayer;
+  }
+  if (m.backLayer !== undefined) {
+    ud['vitrumBackLayer'] = m.backLayer;
+  }
+
+  mat.userData = ud;
   return mat;
 }
 
