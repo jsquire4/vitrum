@@ -4,6 +4,25 @@
 **Created**: 2026-05-09
 **Applies to**: `@vitrum/walkaround-hybrid` only (walkaround-only per the Sprint 11 DoD).
 
+## BLOCKING CONDITIONS — must resolve before wiring dispatch
+
+> **These are hard blockers. Do not wire the PPG dispatch (Steps 1–6 below) until all are resolved.**
+
+### BLOCK-1 — `ppgFindCellIndex` is O(N) brute force — unacceptable for live dispatch
+
+`ppgSample.wgsl.ts:ppgFindCellIndex` performs a linear scan over all `PPG_MAX_SPATIAL_CELLS`
+(up to 10,000) cells per shader invocation. At walkaround resolution (1920×1080, checkerboard
+= 50% pixels, 2 bounces), this is approximately **10,000 × 1,080 × 960 = 10.4 billion
+comparisons per frame**. At 8 ns/comparison (GPU SIMD), worst-case cost is ~83 seconds per
+frame — clearly unsuitable.
+
+**Required fix:** Replace the brute-force scan in `ppgFindCellIndex` with a proper kd-tree
+binary descent (O(log N), ~13 comparisons for 10K cells — a 769× reduction). See §kd-tree
+storage layout below for the design decision record.
+
+The current implementation is authored for structural correctness only and is explicitly tagged
+with a TODO comment in the WGSL source. Do not remove that comment until the kd-tree is in place.
+
 ## What was built in Sprint 11
 
 | Artifact | Location | Status |

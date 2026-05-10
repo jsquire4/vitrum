@@ -129,4 +129,25 @@ describe('mixturePdf', () => {
   it('throws on length mismatch', () => {
     expect(() => mixturePdf([0.5], [1.0, 2.0])).toThrow();
   });
+
+  it('throws when all probabilities are zero — MIS denominator guard (M-5)', () => {
+    // All-zero probabilities produce a zero mixture PDF. Any caller computing
+    // weight = f / mixturePdf(...) would divide by zero. The function throws
+    // rather than silently returning 0.
+    expect(() => mixturePdf([0, 0, 0], [1.0, 2.0, 3.0])).toThrowError(
+      /MIS strategy weights cannot all be zero/,
+    );
+  });
+
+  it('throws when all probabilities are zero even with nonzero PDFs (M-5)', () => {
+    // Verifies the check is on the probability sum, not the PDF values.
+    expect(() => mixturePdf([0.0], [999.0])).toThrowError(
+      /MIS strategy weights cannot all be zero/,
+    );
+  });
+
+  it('does NOT throw when at least one probability is nonzero', () => {
+    // Defensive: a mix of zero and nonzero probabilities is valid.
+    expect(() => mixturePdf([0.0, 0.5, 0.5], [1.0, 2.0, 3.0])).not.toThrow();
+  });
 });

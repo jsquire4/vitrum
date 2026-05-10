@@ -83,24 +83,44 @@ export function packSVGFVarianceUniforms(
 /**
  * Uniforms for one SVGF à-trous wavelet iteration (svgfAtrousMain).
  *
- * The host dispatches svgfAtrousMain 5 times, incrementing `iteration`
- * from 0 to 4 and ping-ponging the color texture between passes.
+ * The host dispatches svgfAtrousMain N times (typically 5), incrementing
+ * `iteration` from 0 to N-1 and ping-ponging the color texture between
+ * passes. There is no maxIterations uniform — the host controls the total
+ * iteration count by varying the dispatch count. See `SVGFUniforms.iteration`
+ * for details on the per-dispatch iteration index.
  *
- * Default σ values follow Schied 2017 Table 1:
- *   sigmaColor  = 10.0  — normalized luminance tolerance per unit variance
+ * Default σ values and their provenance:
+ *   sigmaColor  = 10.0  — tuned for stained-glass scenes' high-chroma
+ *                          transmissive spectral range. Schied 2017 Table 1
+ *                          specifies σ_l = 4.0; this engine uses 10.0 to
+ *                          accommodate the wider chromaticity variance of
+ *                          glass panels. Revisit if visible over-blur appears
+ *                          on caustic edges in lower-chroma scenes.
  *   sigmaNormal = 128.0 — high exponent → preserves sharp surface boundaries
+ *                          (Schied 2017 Table 1)
  *   sigmaDepth  = 1.0   — world-unit depth tolerance
+ *                          (Schied 2017 Table 1)
  *
  * Hosts may tune σ values per scene. Recommend starting with defaults and
  * reducing sigmaColor when caustic edges over-blur on glass surfaces.
  */
 export interface SVGFUniforms {
-  /** À-trous iteration index (0–4). Step width = 2^iteration pixels. */
+  /**
+   * À-trous iteration index for the current dispatch (0-based, unbounded).
+   * Step width = 2^iteration pixels. The host increments this value on each
+   * successive dispatch of svgfAtrousMain — typically 0, 1, 2, 3, 4 for the
+   * standard 5-pass à-trous filter. The total number of passes is determined
+   * by the host's dispatch count, not by any shader uniform; there is no
+   * maxIterations field. A host targeting 3 passes (for mobile perf) simply
+   * dispatches 3 times with iteration = 0, 1, 2.
+   */
   readonly iteration: number;
   /**
    * Color edge-stop σ. Higher values → less color sensitivity → more blur.
    * Variance-modulated in the shader: effective tolerance = sigmaColor * sqrt(variance).
-   * Default: 10.0 (Schied 2017 Table 1).
+   * Default: 10.0. NOTE: Schied 2017 Table 1 specifies σ_l = 4.0; this engine uses
+   * 10.0, tuned for high-chroma transmissive scenes (stained glass). Not a direct
+   * paper value — see SVGF_DEFAULT_UNIFORMS for full rationale.
    */
   readonly sigmaColor: number;
   /**
@@ -112,7 +132,7 @@ export interface SVGFUniforms {
   /**
    * Depth edge-stop σ in world units. Controls blending across depth
    * discontinuities. Tune relative to scene scale.
-   * Default: 1.0.
+   * Default: 1.0 (Schied 2017 Table 1).
    */
   readonly sigmaDepth: number;
 }
@@ -225,10 +245,22 @@ export interface SVGFAtrousBindGroupLayout {
 // ============================================================
 
 /**
- * SVGF default edge-stopping σ parameters from Schied 2017 Table 1.
+ * SVGF default edge-stopping σ parameters.
  *
- * These are the suggested starting values. Hosts should tune them
- * based on scene content:
+ * sigmaNormal (128.0) and sigmaDepth (1.0) follow Schied 2017 Table 1 directly.
+ *
+ * sigmaColor (10.0) deviates from the paper's σ_l = 4.0. The higher value was
+ * tuned for stained-glass scenes whose high spectral chromaticity produces wider
+ * luminance variance per pixel than typical diffuse scenes, causing excessive
+ * edge-stop rejection at σ_l = 4.0. If scenes with subtler chromaticity show
+ * over-blurring at caustic boundaries, reduce sigmaColor toward 4.0.
+ *
+ * Iteration count note: the host controls the total number of à-trous passes by
+ * varying the dispatch count — there is no maxIterations uniform. The `iteration`
+ * field in SVGFUniforms is the per-dispatch index. See SVGFUniforms.iteration.
+ *
+ * Hosts may tune σ values per scene. Recommend starting with defaults and
+ * reducing sigmaColor when caustic edges over-blur on glass surfaces.
  *   - Reduce sigmaColor for scenes with fine caustic detail (glass, came edges).
  *   - Reduce sigmaNormal for architectural scenes with many planar surfaces.
  *   - Adjust sigmaDepth relative to scene scale (larger rooms → larger depth σ).

@@ -109,9 +109,25 @@ fn ppgOctahedralToDir(oct: vec2f) -> vec3f {
 }
 
 // Find the nearest PPG spatial cell to worldPos.
-// Uses a brute-force linear scan — O(maxCells). A proper kd-tree index is
-// deferred to post-Sprint-11 optimisation. For 10K cells and typical shader
-// occupancy this is acceptable during the structural-prep phase.
+//
+// ┌─────────────────────────────────────────────────────────────────────────┐
+// │ BLOCKING CONDITION — DO NOT DISPATCH WITHOUT RESOLVING                  │
+// │                                                                         │
+// │ This function uses an O(N) brute-force linear scan over all             │
+// │ PPG_MAX_SPATIAL_CELLS (up to 10,000) cells per shader invocation.      │
+// │ At typical walkaround resolution (1920×1080, checkerboard, 2 bounces), │
+// │ this is ~10K × 1080 × 960 ≈ 10.4 billion comparisons per frame —      │
+// │ completely unsuitable for live GPU dispatch.                            │
+// │                                                                         │
+// │ REQUIRED before wiring Sprint 11 dispatch:                              │
+// │   Replace this scan with proper kd-tree binary descent (O(log N)).     │
+// │   See plan/sprint-11-ppg-integration.md §kd-tree storage layout for    │
+// │   the design decision record and post-Sprint-11 optimisation priority.  │
+// │                                                                         │
+// │ The current code is authored for structural correctness only.           │
+// └─────────────────────────────────────────────────────────────────────────┘
+// TODO(post-Sprint-11): Replace brute-force O(N) scan with kd-tree binary descent.
+//   Ref: plan/sprint-11-ppg-integration.md §kd-tree storage layout.
 fn ppgFindCellIndex(worldPos: vec3f) -> u32 {
   let cellCount = arrayLength(&ppgCells);
   if (cellCount == 0u) { return 0u; }

@@ -81,6 +81,9 @@ export function powerHeuristic(pdf1: number, pdf2: number, beta: number = 2): nu
  * @param pdfs          - PDF of each strategy at the sampled direction (length N)
  * @returns combined mixture PDF value (≥ 0)
  * @throws if arrays have different lengths or are empty
+ * @throws if all probabilities are zero — a MIS weight denominator of 0 indicates
+ *   no active sampling strategy, which is a caller logic error. At least one strategy
+ *   must have a non-zero selection probability.
  */
 export function mixturePdf(
   probabilities: readonly number[],
@@ -91,6 +94,16 @@ export function mixturePdf(
   }
   if (probabilities.length !== pdfs.length) {
     throw new Error('mixturePdf: probabilities and pdfs must have the same length');
+  }
+  let probSum = 0;
+  for (let i = 0; i < probabilities.length; i++) {
+    probSum += probabilities[i] ?? 0;
+  }
+  if (probSum === 0) {
+    throw new Error(
+      'mixturePdf: MIS strategy weights cannot all be zero — at least one strategy must have non-zero probability. ' +
+      'A zero-denominator mixture PDF would cause division by zero in MIS weight computation.',
+    );
   }
   let result = 0;
   for (let i = 0; i < probabilities.length; i++) {

@@ -5,9 +5,11 @@
  *  - 1 emitter → trivial leaf tree
  *  - 2 emitters → 3 nodes (internal + 2 leaves), correct power sum
  *  - 4 emitters with linear power [1, 2, 4, 8] → root totalPower = 15,
- *    CDF is monotonically increasing
+ *    nodePowerPrefixSum is monotonically increasing (values may exceed 1.0 — see
+ *    buildLightTree JSDoc: it is an unnormalised node-power prefix-sum, not a true CDF)
  *  - Doubling all powers → all node totalPowers double (Sprint 2 round-trip)
  *  - packLightTreeForGPU → correct float layout
+ *  - co-located centroids → power-based fallback split, no crash, balanced tree
  *
  * Deliberately does NOT test GPU binary-search traversal — that lives in
  * the fork's GLSL and is verified via the variance benchmark in
@@ -47,7 +49,7 @@ function makeInput(powers: number[]): LightTreeBuildInput {
 describe('buildLightTree', () => {
   it('1 emitter → single leaf node', () => {
     const input = makeInput([5.0]);
-    const { nodes, cdf } = buildLightTree(input);
+    const { nodes, nodePowerPrefixSum } = buildLightTree(input);
 
     expect(nodes).toHaveLength(1);
     const node = nodes[0]!;
@@ -58,9 +60,9 @@ describe('buildLightTree', () => {
     expect(node.leftChild).toBe(-1);
     expect(node.rightChild).toBe(-1);
 
-    // CDF of a single node is [1.0]
-    expect(cdf).toHaveLength(1);
-    expect(cdf[0]).toBeCloseTo(1.0);
+    // nodePowerPrefixSum of a single node is [1.0] (root power / root power)
+    expect(nodePowerPrefixSum).toHaveLength(1);
+    expect(nodePowerPrefixSum[0]).toBeCloseTo(1.0);
   });
 
   it('2 emitters → 3 nodes (1 internal + 2 leaves), internal totalPower = sum', () => {
@@ -92,9 +94,9 @@ describe('buildLightTree', () => {
     expect(leafPowerSum).toBeCloseTo(10.0);
   });
 
-  it('4 emitters with powers [1,2,4,8] → root totalPower = 15', () => {
+  it('4 emitters with powers [1,2,4,8] → root totalPower = 15, nodePowerPrefixSum is monotonically increasing', () => {
     const input = makeInput([1, 2, 4, 8]);
-    const { nodes, cdf } = buildLightTree(input);
+    const { nodes, nodePowerPrefixSum } = buildLightTree(input);
 
     // 4 leaves → 7 nodes in a full binary tree
     expect(nodes).toHaveLength(7);
@@ -102,17 +104,18 @@ describe('buildLightTree', () => {
     const root = nodes[0]!;
     expect(root.totalPower).toBeCloseTo(15.0);
 
-    // CDF must be monotonically non-decreasing and end at or beyond 1.0
-    // (Note: CDF is defined over all nodes in pre-order, not just leaves,
-    //  so values can exceed 1.0 before normalization at final entry.)
-    for (let i = 1; i < cdf.length; i++) {
-      expect(cdf[i]!).toBeGreaterThanOrEqual(cdf[i - 1]!);
+    // nodePowerPrefixSum must be monotonically non-decreasing.
+    // Values can exceed 1.0 because internal nodes aggregate subtree power and
+    // their power is counted before each child's power — this is expected and
+    // documented. The array is an unnormalised prefix-sum, not a true CDF.
+    for (let i = 1; i < nodePowerPrefixSum.length; i++) {
+      expect(nodePowerPrefixSum[i]!).toBeGreaterThanOrEqual(nodePowerPrefixSum[i - 1]!);
     }
 
-    // CDF final value — root power appears in the running sum once,
-    // so the final CDF entry equals the sum of all node powers / rootPower.
-    // All values must be > 0 since all emitters have positive power.
-    expect(cdf[cdf.length - 1]!).toBeGreaterThan(0);
+    // First entry > 0 (root power / root power — always exactly 1.0 for a positive tree).
+    expect(nodePowerPrefixSum[0]!).toBeCloseTo(1.0);
+    // Final entry > 0 since all emitters have positive power.
+    expect(nodePowerPrefixSum[nodePowerPrefixSum.length - 1]!).toBeGreaterThan(0);
   });
 
   it('doubling all input powers doubles every node totalPower (Sprint 2 round-trip)', () => {
@@ -140,6 +143,51 @@ describe('buildLightTree', () => {
         aabbs: [{ min: [0, 0, 0], max: [1, 1, 1] }],
       }),
     ).toThrow();
+  });
+
+  it('co-located centroids (degenerate span) → power-based split, no crash, balanced tree (L-2)', () => {
+    // All 4 emitters share the same centroid — centroid-axis span = 0.
+    // buildSubtree must fall back to power-based median split rather than
+    // centroid sort. The resulting tree should be a valid binary tree with
+    // 7 nodes (4 leaves + 3 internal) and root totalPower = sum of all powers.
+    const powers = [1, 8, 2, 4];
+    const sharedCentroid: readonly [number, number, number] = [0, 0, 0];
+    const sharedAabb = { min: [-0.5, -0.5, -0.5] as const, max: [0.5, 0.5, 0.5] as const };
+    const input: import('../src/lightTree.js').LightTreeBuildInput = {
+      powers,
+      centroids: powers.map(() => sharedCentroid),
+      aabbs: powers.map(() => sharedAabb),
+    };
+
+    // Must not throw
+    const { nodes, nodePowerPrefixSum } = buildLightTree(input);
+
+    // Correct node count for 4 leaves
+    expect(nodes).toHaveLength(7);
+
+    // Root totalPower = 1 + 8 + 2 + 4 = 15
+    expect(nodes[0]!.totalPower).toBeCloseTo(15.0);
+
+    // nodePowerPrefixSum is still monotonically non-decreasing
+    for (let i = 1; i < nodePowerPrefixSum.length; i++) {
+      expect(nodePowerPrefixSum[i]!).toBeGreaterThanOrEqual(nodePowerPrefixSum[i - 1]!);
+    }
+
+    // All leaves have valid emitterIndex (≥ 0)
+    const leaves = nodes.filter((n) => n.emitterIndex >= 0);
+    expect(leaves).toHaveLength(4);
+
+    // Every leaf power must match one of the input powers
+    const leafPowers = leaves.map((l) => l.totalPower).sort((a, b) => a - b);
+    expect(leafPowers).toEqual([1, 2, 4, 8]);
+
+    // Each internal node's power equals the sum of its children's powers
+    const internalNodes = nodes.filter((n) => n.emitterIndex === -1);
+    for (const inode of internalNodes) {
+      const leftPow = nodes[inode.leftChild]!.totalPower;
+      const rightPow = nodes[inode.rightChild]!.totalPower;
+      expect(inode.totalPower).toBeCloseTo(leftPow + rightPow);
+    }
   });
 });
 

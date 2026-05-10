@@ -142,15 +142,32 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
   const spanX = cMaxX - cMinX;
   const spanY = cMaxY - cMinY;
   const spanZ = cMaxZ - cMinZ;
-  const axis = spanX >= spanY && spanX >= spanZ ? 0 : spanY >= spanZ ? 1 : 2;
 
-  // Sort along longest axis
-  const sorted = items.slice().sort((a, b) => a.centroid[axis] - b.centroid[axis]);
+  let leftItems: BuildItem[];
+  let rightItems: BuildItem[];
 
-  // Split at median (equal partition — sufficient for typical emitter counts <100)
-  const mid = Math.floor(sorted.length / 2);
-  const leftItems = sorted.slice(0, mid);
-  const rightItems = sorted.slice(mid);
+  if (Math.max(spanX, spanY, spanZ) < 1e-4) {
+    // Degenerate case: all emitter centroids are co-located (e.g. a single stained-glass
+    // panel with all triangles modelled at one point). Centroid-axis sorting is meaningless
+    // here — fall back to a power-based median split so that the tree remains balanced and
+    // descends correctly by power weighting. The spatial heuristic will be ineffective for
+    // this subtree (no spatial separation), but the GPU traversal degrades gracefully to
+    // pure power-weighted sampling.
+    const sorted = items.slice().sort((a, b) => b.power - a.power); // descending power
+    const mid = Math.floor(sorted.length / 2);
+    leftItems = sorted.slice(0, mid);
+    rightItems = sorted.slice(mid);
+  } else {
+    const axis = spanX >= spanY && spanX >= spanZ ? 0 : spanY >= spanZ ? 1 : 2;
+
+    // Sort along longest axis
+    const sorted = items.slice().sort((a, b) => a.centroid[axis] - b.centroid[axis]);
+
+    // Split at median (equal partition — sufficient for typical emitter counts <100)
+    const mid = Math.floor(sorted.length / 2);
+    leftItems = sorted.slice(0, mid);
+    rightItems = sorted.slice(mid);
+  }
 
   // Compute union AABB of this node's entire item set
   const { min: aabbMin, max: aabbMax } = unionAabb(items);
@@ -190,25 +207,33 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
 /**
  * Build a binary light tree where each internal node sums child powers.
  *
- * CDF traversal: the GPU traversal descends toward the heavier-power child
- * with probability proportional to child power, then corrects for spatial
- * proximity at the leaf. The CDF returned here is a flat prefix-sum over
- * node total powers for stochastic root-to-leaf descent in CPU testing.
- * The GPU consumes the packed node array directly.
+ * GPU traversal: descends toward the heavier-power child with probability
+ * proportional to child power, then corrects for spatial proximity at the
+ * leaf. The GPU consumes the packed node array directly via `packLightTreeForGPU`.
  *
- * CDF layout: length = 2 * leafCount - 1 (one entry per node, pre-order).
- * Each entry is the cumulative fraction of total power up to and including
- * this node's subtree power. The GPU doesn't consume this CDF — it does
- * its own binary traversal from the root. This CDF is provided for CPU-side
- * verification.
+ * `nodePowerPrefixSum` layout: length = nodeCount (one entry per node, pre-order).
+ * Each entry is the running prefix sum of `totalPower` values across the
+ * pre-order node array, normalised by `root.totalPower`. Because internal nodes
+ * aggregate subtree power, their contribution is counted once in the running sum
+ * before each leaf's power is also counted — so entries routinely exceed 1.0 for
+ * trees with more than one leaf. This is NOT a true probability CDF (which would
+ * be normalised to [0, 1] and built only over leaves). It is an unnormalised
+ * prefix-sum provided for CPU-side structural verification and monotonicity checks.
+ * The GPU does its own binary descent from the root and does not consume this array.
  *
  * @throws if powers/centroids/aabbs arrays have mismatched lengths
  * @throws if any array is empty
  */
 export function buildLightTree(input: LightTreeBuildInput): {
   nodes: LightTreeNode[];
-  /** Flat CDF for stochastic root-to-leaf descent. Length = nodeCount. */
-  cdf: Float32Array;
+  /**
+   * Unnormalised node-power prefix-sum for CPU-side verification.
+   * Length = nodeCount (pre-order). Values can exceed 1.0 because internal
+   * nodes aggregate subtree power, so their power is counted before each
+   * child's power is also counted. This is NOT a true CDF — do not use it
+   * for uniform random sampling without first filtering to leaf nodes only.
+   */
+  nodePowerPrefixSum: Float32Array;
 } {
   const { powers, centroids, aabbs } = input;
   const n = powers.length;
@@ -235,17 +260,19 @@ export function buildLightTree(input: LightTreeBuildInput): {
   const nodes: LightTreeNode[] = [];
   buildSubtree(items, nodes);
 
-  // Compute CDF over nodes in array order (pre-order traversal).
-  // Root node holds total power; each node's fraction is its totalPower / root.totalPower.
+  // Compute unnormalised node-power prefix-sum over pre-order node array.
+  // Each entry is the running sum of totalPower values normalised by root.totalPower.
+  // Because internal nodes aggregate subtree power, values exceed 1.0 for trees
+  // with more than one leaf — this is intentional (see JSDoc above).
   const rootPower = nodes[0]!.totalPower;
-  const cdf = new Float32Array(nodes.length);
+  const nodePowerPrefixSum = new Float32Array(nodes.length);
   let running = 0;
   for (let i = 0; i < nodes.length; i++) {
     running += nodes[i]!.totalPower;
-    cdf[i] = rootPower > 0 ? running / rootPower : 0;
+    nodePowerPrefixSum[i] = rootPower > 0 ? running / rootPower : 0;
   }
 
-  return { nodes, cdf };
+  return { nodes, nodePowerPrefixSum };
 }
 
 /**
