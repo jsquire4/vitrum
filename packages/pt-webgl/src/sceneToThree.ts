@@ -141,11 +141,11 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.position.copy(_u);
       L.target.position.set(0, 0, 0);
       L.add(L.target);
-      // Sprint 2: directional has no surface area → cellPower = 0 (sentinel).
+      // Directional has no surface area → cellPower = 0 (sentinel).
       // Sun irradiance is infinite-distance; power per unit area is not
-      // meaningful in the same way as a finite-area emitter. Sprint 3's
-      // light tree should treat cellPower=0 as "always-sample-via-env" or
-      // exclude from the light tree CDF and handle separately.
+      // meaningful in the same way as a finite-area emitter. The fork-side
+      // light tree (Sprint 3 fork patch) should treat cellPower=0 as
+      // "always-sample-via-env" or exclude from the light tree CDF entirely.
       L.userData['cellPower'] = 0;
       return L;
     }

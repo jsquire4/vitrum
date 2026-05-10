@@ -20,20 +20,21 @@ Read in this order to onboard:
 
 ## What's done
 
-- Sprint 0 step 1: `@vitrum/core` types committed (Scene, Material, ScenePrimitive, SceneEmitter, SceneEnvironment, FrameInput, FrameOutput, Engine, EngineCapabilities, EngineState, EngineFactory, EngineOptions).
-- Monorepo scaffold: 8 package skeletons (`core`, `three-bindings`, `shared-bvh`, `shared-samplers`, `shared-denoisers`, `pt-webgl`, `pt-webgpu`, `walkaround-hybrid`).
-- Plan docs in place: library-architecture, sprint-0, phase-6-roadmap.
-- `_staging/legacy-source/` holds 61 files of pre-extraction renderer source for decomposition into proper packages — see `_staging/README.md` for the per-file target package map.
+- **Sprint 0 – Sprint 13**: Phase 6 library work complete through Sprint 13. All 542 tests pass; `tsc --noEmit` clean across workspace.
+- **Packages fully implemented**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (SVGF, OIDN bridge), `pt-webgl` (wraps three-gpu-pathtracer fork), `walkaround-hybrid` (DDGI + RC + ReSTIR + PPG + neural denoiser scaffold).
+- **Extraction complete**: `_staging/legacy-source/` contains only host-app React/Redux files that are intentionally not extracted (see `_staging/README.md`).
+- **External RFEs 01–05**: contract-layer additions to `@vitrum/core` complete.
+- **Audit + remediation**: Sprints 1–11 audit findings all addressed (see `plan/sprints-1-11-audit.md`).
+- **Selective merge from `feat/plan-gaps`**: additive plan and benchmark docs merged into main.
 
-## What's next (Sprint 0 remaining work)
+## What's next (Phase 6 remaining work)
 
-Per `plan/sprint-0-api-contract.md`:
+The vitrum library side is complete. Remaining work requires GPU verification:
 
-1. `@vitrum/pt-webgl/src/index.ts` stub — implements the `Engine` interface, every method throws `Not implemented` initially. Accepts a `WebGLRenderingContext` via a `createPTEngine_WebGL2(options)` factory. Returns sensible `EngineCapabilities`.
-2. `@vitrum/three-bindings/src/index.ts` stub — `sceneFromThreeJS(threeScene: THREE.Scene): Scene`.
-3. `tsc --noEmit` clean across workspace.
-
-Sprint 0 then closes; Phase 6 Sprint 1 begins.
+1. **Apply fork patches** (Sprints 2–8, 10a) to `~/projects/three-gpu-pathtracer/` in sprint order — see `plan/phase-6-status.md` § "Fork patches needed".
+2. **Wire deferred integrations** (Sprints 9 adaptive sampling, 10a SVGF walkaround, 11 PPG dispatch) — integration specs in their respective `plan/sprint-N-walkaround-integration.md` docs.
+3. **Host-side changes** — Sprint 1 checklist through Sprint 11 PPG dispatch; see `plan/phase-6-status.md` § "Host-side changes needed".
+4. **Re-evaluate Sprint 10c / 12 / 13 triggers** — documented in `plan/phase-6-status.md` § "Resumption checklist".
 
 ## Sibling repository: the path-tracer fork
 

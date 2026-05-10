@@ -75,7 +75,7 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
       }
       primitives.push(convertMesh(mesh));
 
-      // Sprint 2/3 will detect emissive meshes as MeshAreaEmitters when the light-tree work begins.
+      // Emissive meshes as MeshAreaEmitters are not yet detected; add as a future enhancement.
       return;
     }
 

@@ -62,7 +62,7 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
 
   // Multi-material meshes: warn and fall back to first material.
-  // Sprint 2 will add geometry-group splitting so each group gets its material.
+  // Geometry-group splitting (each group gets its own material) is a future enhancement.
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
       `@vitrum/three-bindings: unsupported multi-material mesh at "${label}" (${obj.material.length} materials). ` +

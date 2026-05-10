@@ -46,13 +46,14 @@
  *   - This placeholder: 3-band linear rainbow.  Visually plausible for bevel
  *     dispersion; may show banding artifacts on extreme chromatic colors.
  *
- * TODO (Sprint 12 or earlier):
- *   Integrate the full precomputed table if the distribution license is
+ * TODO (post-Sprint-12):
+ *   Integrate the full precomputed table once the distribution license is
  *   confirmed.  The public mitsuba-renderer repo at
  *   github.com/mitsuba-renderer/mitsuba3 contains a C++ implementation of the
  *   table lookup at `src/render/film.cpp` and the table at
  *   `resources/data/spectral/`.  A TypeScript port of the lookup is
- *   straightforward once the table is available.
+ *   straightforward once the table is available. See plan/phase-6-status.md
+ *   Known Issues for tracking.
  *
  * References:
  *   Jakob, Hanika 2019, "A Low-Dimensional Function Space for Efficient

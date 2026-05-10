@@ -1,6 +1,6 @@
 # Extraction Plan — `_staging/legacy-source/` → `@vitrum/*`
 
-**Status**: planning  
+**Status**: COMPLETE (Phases 1–5 done; host-only files remain in `_staging/` by design)  
 **Date**: 2026-05-09  
 **Depends on**: Sprint 0 complete (checked: `packages/core/src/*.ts` locked, `packages/pt-webgl/src/index.ts` stub committed, `tsc --noEmit` clean)  
 **Author**: planning agent, spot-checked against actual files per CLAUDE.md verification protocol
@@ -460,23 +460,13 @@ Resolved 2026-05-09 as an action item, not a decision. `cascadeDispatch.ts` impo
 
 ### DECISION-PENDING-USER items
 
-These require user sign-off before the relevant extraction step proceeds.
+All decisions resolved. No pending items remain.
 
 ---
 
-**DECISION-PENDING-USER: Q-PT-1 — IBL baker sun position: unit vs. non-unit Preetham**
+**~~DECISION-PENDING-USER:~~ RESOLVED: Q-PT-1 — IBL baker sun position: unit vs. non-unit Preetham**
 
-**Problem**: `ptIblBaker.ts` takes `SkyParams` which includes a raw (non-unit) `sunPosition` from the Preetham sky model. Core's `ProceduralSkyEnvironment` (when it exists) would likely carry a unit `sunDirection`. The baker's shader may require the non-unit position for Preetham's atmospheric scattering math.
-
-**Option A**: Core's `ProceduralSkyEnvironment` exposes a raw Preetham sun position (non-unit); baker uses it directly.  
-_Pros_: Correct for Preetham math.  
-_Cons_: Pollutes the core type with a Preetham-specific convention.
-
-**Option B**: Core carries a unit `sunDirection`; baker converts internally (`sunDirection.multiplyScalar(someDistance)`).  
-_Pros_: Clean core contract.  
-_Cons_: Requires verifying the baker shader doesn't depend on the non-unit distance.
-
-**Recommendation**: Option B pending verification of the baker's GLSL. Read `ptIblBaker.ts`'s shader code (particularly `CUBE_TO_EQUIRECT_FRAG`) before locking. The equirect bake shader (verified lines 74–101) uses cube-map texture lookup — it doesn't use `sunPosition` directly in the fragment shader. The Preetham parameters feed the `Sky` object's uniforms; Three.js `Sky` accepts its own positional parameters. This suggests Option B is viable, but the Sky uniform setup code in `ptIblBaker.ts` (not yet read) must be checked.
+**Resolution (Option A)**: `SkyParams` is kept as a `@vitrum/pt-webgl`-internal type carrying a raw non-unit Preetham `sunPosition`. `ProceduralSkyEnvironment` in `@vitrum/core` carries a unit `sunDirection` — clean core contract maintained. `iblBaker.ts` takes `SkyParams` directly rather than converting, because `THREE.Sky.uniforms.sunPosition` expects the raw non-unit Preetham vector. Documented in `packages/pt-webgl/src/skyParams.ts` module header. Extraction complete.
 
 ---
 

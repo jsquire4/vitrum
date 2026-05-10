@@ -113,13 +113,12 @@ export interface SceneBVHBuffers {
   /**
    * f32[] — per-emitter total radiant flux (same length as emitters).
    *
-   * Sprint 2 (Phase 6): Foundation for the Sprint 3 light tree.
    * cellPower[i] = luminance(Le[i]) × area[i] for mesh/triangle-area
    * emitters, matching the formula used to build the power-CDF.
-   *
-   * Sprint 3 will upload this to a GPU storage buffer and build a light
-   * tree CDF over it for power-weighted importance sampling. Sprint 2
-   * makes the buffer available; it is NOT yet consumed by any shader.
+   * The Sprint 3 light tree (shared-samplers `buildLightTreeCDF`) reads
+   * this buffer as its `powers` input for power-weighted importance
+   * sampling. Not yet consumed by any WGSL shader — GPU-side consumption
+   * is deferred pending walkaround dispatch integration (Sprint 9/10).
    *
    * Sentinels: the dummy emitter (inserted when no real emitters exist)
    * has cellPower = 0.5 (its synthetic power value). This keeps the
@@ -311,9 +310,9 @@ export function buildSceneBVH(
       byteLength: cdfArray.byteLength,
       count: emitterCount,
     },
-    // Sprint 2 (Phase 6): per-emitter radiant flux (f32[], same length as emitters).
-    // Sprint 3 light tree reads this to build power-weighted selection CDF.
-    // Not yet consumed by any WGSL shader — foundation only.
+    // Per-emitter radiant flux (f32[], same length as emitters).
+    // Sprint 3 light tree (shared-samplers buildLightTreeCDF) uses this as its
+    // `powers` input. Not yet consumed by any WGSL shader — GPU dispatch deferred.
     cellPower: {
       cpuData: cellPowerArray.buffer,
       byteLength: cellPowerArray.byteLength,
@@ -714,11 +713,11 @@ function buildEmitterList(
     cdfArray[i] = runningSum / totalEmissivePower;
   }
 
-  // Sprint 2 (Phase 6): per-emitter total radiant flux buffer.
+  // Per-emitter total radiant flux buffer.
   // cellPower[i] = luminance(Le[i]) × area[i] — the same value used to
-  // build the CDF above. Exposed as a separate buffer so Sprint 3's light
-  // tree can rebuild the CDF with power-weighted selection without
-  // re-running the full emitter build.
+  // build the CDF above. Exposed as a separate buffer so the Sprint 3
+  // light tree (buildLightTreeCDF in @vitrum/shared-samplers) can consume
+  // it as a power input without re-running the full emitter build.
   const cellPowerArray = new Float32Array(emitterCount);
   for (let i = 0; i < emitterCount; i++) {
     cellPowerArray[i] = emitterData[i]!.power;

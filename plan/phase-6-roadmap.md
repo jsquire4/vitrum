@@ -1,6 +1,6 @@
 # Phase 6 Roadmap — PT Production Frontier
 
-**Status**: planning, Sprint 0 in progress
+**Status**: Sprints 0–13 COMPLETE (vitrum library-side). Fork patches and host-side integration pending GPU verification — see `plan/phase-6-status.md`.
 **Created**: 2026-05-09 (revised same day after library-extraction reframe)
 **Branch**: `main` (Phase 1–5 of photorealism plan shipped 2026-05-09; sweep findings closed)
 
@@ -10,9 +10,9 @@ This roadmap drives Phase 6 work in vitrum. Every Phase 6 sprint deliverable lan
 
 **Why this matters for sprint planning**: the cells-go-grey / Canvas-key-remount bug class isn't a sprint; it's resolved by the library API contract (`vitrum/packages/core/src/engine.ts`) which decouples engine lifetime from host React mount lifetime. Sprint 0 (the new prerequisite) draws that contract.
 
-## Sprint 0 — Library API contract (NEW, prerequisite, in progress)
+## Sprint 0 — Library API contract (COMPLETE)
 
-See `plan/sprint-0-api-contract.md` for the full breakdown. Summary: 2–3 days, lands the public types + lifecycle contract in `@vitrum/core`, stubs the backends, scaffolds the host-app migration shim. After Sprint 0, every Phase 6 sprint below has a clear vitrum-package destination.
+See `plan/sprint-0-api-contract.md` for the full breakdown. Sprint 0 landed the public types + lifecycle contract in `@vitrum/core`, pt-webgl and three-bindings stubs, and a clean `tsc --noEmit` across the workspace.
 
 ---
 

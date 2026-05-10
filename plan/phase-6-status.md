@@ -2,7 +2,7 @@
 
 **Date**: 2026-05-09
 **Branch**: main
-**Commits**: 7bda9c4..0cebaf9 (6 Phase 6 sprint commits; 28 total on main)
+**Commits**: 7bda9c4..4c44923 (Sprints 1–13 + audit remediation + selective merge; 33 total on main)
 
 ---
 
@@ -108,7 +108,7 @@ dependency. Host-side checklist (install ORT-Web, bundle OIDN ONNX model,
   heuristic equivalence, edge cases).
 
 Fork patch **PENDING** — see `plan/sprint-10c-pt-fork-patch.md` for the full
-specification. Supersedes `plan/sprint-10c-deferred.md`.
+specification (includes trigger criterion in Appendix A).
 
 **Pending fork files**: `light_subpath_kernel.glsl.js` (NEW), `eye_subpath_kernel.glsl.js`
 (NEW), `connection.glsl.js` (NEW), `path_tracer.glsl.js` (modify), `PhysicalPathTracingMaterial.js`
@@ -267,17 +267,17 @@ etc.). Visual A/B verification required after each; reference renders saved to
 
 - **Vitrum library packages**: 8 (core, three-bindings, shared-bvh, shared-samplers,
   shared-denoisers, pt-webgl, pt-webgpu stub, walkaround-hybrid)
-- **Total tests**: 532 passing (19 test files across 6 packages)
+- **Total tests**: 542 passing (22 test files across 6 packages)
   - pt-webgl: 18
   - shared-bvh: 11
-  - shared-denoisers: 69
-  - shared-samplers: 139 (54 existing + 35 BDPT tests + 50 new Sprint 12 spectral tests)
+  - shared-denoisers: 75 (69 + 6 new HWC↔NCHW round-trip tests from audit remediation M-3)
+  - shared-samplers: 143 (54 existing + 35 BDPT tests + 50 new Sprint 12 spectral tests + 4 from audit remediation)
   - three-bindings: 1
   - walkaround-hybrid: 294 (193 existing + 101 new Sprint 13 neural denoiser tests)
 - **TypeScript strict**: clean across workspace (`npm run typecheck` passes)
 - **LOC vitrum library code**: ~21,800 total (Sprint 13 adds ~2,100 lines across 7 new files)
-- **Phase 6 sprint commits**: Sprint 13 (pending commit from this session)
-- **Total commits on main**: 28 (pre-Sprint 13)
+- **Phase 6 sprint commits**: complete through Sprint 13 + audit remediation + selective merge
+- **Total commits on main**: 33
 
 ---
 
@@ -300,10 +300,8 @@ etc.). Visual A/B verification required after each; reference renders saved to
 | `plan/sprint-10a-pt-fork-patch.md` | Sprint 10a PT preview integration — motion vector MRT channel, PTSVGFDenoiser replacement |
 | `plan/sprint-10b-host-checklist.md` | Sprint 10b host checklist — ORT-Web install, OIDN model bundle, "Denoise" button, float32 readback |
 | `plan/sprint-11-ppg-integration.md` | Sprint 11 PPG integration spec — pipeline compilation, BGL, shade-pass changes, frame-parity |
-| `plan/sprint-10c-pt-fork-patch.md` | Sprint 10c (BDPT) active patch spec — light/eye subpath kernels, ping-pong vertex storage, MIS weight GLSL |
-| `plan/sprint-10c-deferred.md` | Sprint 10c original deferred doc — archived; superseded by sprint-10c-pt-fork-patch.md |
+| `plan/sprint-10c-pt-fork-patch.md` | Sprint 10c (BDPT) active patch spec — light/eye subpath kernels, ping-pong vertex storage, MIS weight GLSL; Appendix A preserves original trigger criterion |
 | `plan/sprint-12-pt-fork-patch.md` | Sprint 12 active patch spec — CIE CMF tables, hero-wavelength sampling, Cauchy IOR, fork-side kernel rewrite spec (gated) |
-| `plan/sprint-13-deferred.md` | Sprint 13 original deferred doc — superseded by sprint-13-walkaround-integration.md |
 | `plan/sprint-13-walkaround-integration.md` | Sprint 13 integration spec — InferenceGraph wiring into renderFrame, bind groups, gating, memory, dispatch sizing |
 
 ---

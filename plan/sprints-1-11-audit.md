@@ -1,8 +1,13 @@
 # Phase 6 Sprints 1–11 Audit — 2026-05-09
 
+> **REMEDIATED** — All findings addressed in commit `6a0da62` (fix: remediate remaining
+> audit findings — M-1, M-2, M-4, M-5, M-6, L-2) and commit `2cf887a` (HIGH findings H-1,
+> H-2, M-3, L-1, L-3 fixed in the same session). Tests grew from 346 → 542 (22 test files).
+> This document is preserved as a historical record of pre-remediation findings.
+
 ## Summary
 - Findings: HIGH=2, MEDIUM=6, LOW=3
-- Tests: 346 passing (193 walkaround + 69 shared-denoisers + 54 shared-samplers + 18 pt-webgl + 11 shared-bvh + 1 three-bindings)
+- Tests at audit time: 346 passing (193 walkaround + 69 shared-denoisers + 54 shared-samplers + 18 pt-webgl + 11 shared-bvh + 1 three-bindings)
 - tsc: clean (exit 0, no diagnostics)
 
 ---
