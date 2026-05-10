@@ -8,6 +8,7 @@
  *   mesh.ts       — convertMesh + geometry attribute extractors
  *   lights.ts     — convertLight (directional, rect-area, point, spot)
  *   environment.ts — resolveEnvironment (HDRI vs none)
+ *   vitrumSceneToThree.ts — core Scene → THREE (for pt-webgl + walkaround BVH)
  */
 
 import type * as THREE from 'three';
@@ -17,6 +18,7 @@ import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
 
 export { VITRUM_SPECTRAL_EXTENSION_KEY } from './spectral.js';
+export { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from './vitrumSceneToThree.js';
 
 /**
  * Converts a THREE.Scene into a @vitrum/core Scene.

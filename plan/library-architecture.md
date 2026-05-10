@@ -19,7 +19,7 @@
 
 ### `@vitrum/three-bindings`
 
-**Owns**: adapter from a `THREE.Scene` to `@vitrum/core`'s `Scene`. Material translation (Three.js `MeshPhysicalMaterial` → `@vitrum/core`'s `Material`). Texture handle wrapping. Light translation.
+**Owns**: adapter from a `THREE.Scene` to `@vitrum/core`'s `Scene`. Material translation (Three.js `MeshPhysicalMaterial` → `@vitrum/core`'s `Material`). Texture handle wrapping. Light translation. **`vitrumSceneToThree`** — the inverse bridge (core `Scene` → `THREE.Scene`) for PT sync and hybrid BVH when the host drives the core contract.
 
 **Depends on**: `@vitrum/core`, `three`.
 

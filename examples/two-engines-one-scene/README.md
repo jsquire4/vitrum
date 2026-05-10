@@ -20,4 +20,4 @@ npm run dev
 
 Use a Chromium build with WebGPU enabled for the lower panel.
 
-**Note:** `HybridEngine` still builds its BVH from the constructor `threeScene` (see `HybridEngine` docstring); hosts must keep that graph in sync with the `Scene` from `sceneFromThreeJS` until the Sprint 1 BVH migration lands.
+**Note:** `HybridEngine` builds ReSTIR BVH and DDGI probes from **`vitrumSceneToThree(setScene(...))`** when the core scene includes mesh primitives (G2 path). The ctor `threeScene` remains the fallback and should stay in sync for host-only data.

@@ -14,13 +14,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`@vitrum/walkaround-hybrid`**: exported **`hostScene/types.ts`** seam types (`WalkaroundBVHSceneRoot`, `WalkaroundDDGIScene`, `WalkaroundThreeHostScene`).
 - Unit tests: **`@vitrum/three-bindings`** (`sceneFromThreeJS` smoke), **`@vitrum/pt-webgl`** (factory validation).
 - **`@vitrum/core`**: Tier 1 **`SpectralCurve`** + optional **`Material.spectralAttenuation`** / **`dispersionAbbeNumber`** (RFE 01 contract surface).
-- **`@vitrum/three-bindings`**: **`VITRUM_SPECTRAL_EXTENSION_KEY`** stub export.
+- **`@vitrum/three-bindings`**: **`VITRUM_SPECTRAL_EXTENSION_KEY`** stub export; **`vitrumSceneToThree`** / **`disposeVitrumThreeSceneRoot`** (core → THREE for PT + hybrid BVH/DDGI).
 - **`@vitrum/babylon-bindings`**: stub package with **`sceneFromBabylonScene`** (`Not implemented`).
 - **`examples/shared`**, **`examples/two-engines-one-scene`** — shared Cornell builder and **G2** demo (one `Scene` → pt-webgl + walkaround-hybrid).
 - **`@vitrum/pt-webgl`**: Cornell → core **golden summary** unit test; spectral fields forwarded on **`MeshPhysicalMaterial.userData.vitrumSpectral`**.
 
 ### Changed
 
+- **`HybridEngine`**: when `setScene` supplies mesh primitives, ReSTIR BVH and DDGI use **`vitrumSceneToThree`** (shared with `pt-webgl` via `@vitrum/three-bindings`); ctor `threeScene` is the fallback.
+- **`@vitrum/pt-webgl`**: **`vitrumSceneToThree`** re-exported from **`@vitrum/three-bindings`** (implementation moved).
 - **`createWalkaroundEngine_Hybrid`**: factory bootstraps with a valid empty **`Scene`** instead of `{} as Scene`.
 - **`examples/cornell-box`**: uses **`@vitrum-examples/shared`** for the Cornell THREE scene.
 - **`_staging/`**: **`legacy-source/`** tree removed; README points at git history and packages.

@@ -18,7 +18,7 @@ import type {
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
-import { vitrumSceneToThree } from './sceneToThree.js';
+import { vitrumSceneToThree } from '@vitrum/three-bindings';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Device-tier threshold for analytic came (Sprint 5)
@@ -38,7 +38,7 @@ import { vitrumSceneToThree } from './sceneToThree.js';
  */
 const MIN_UNIFORM_VECTORS_FOR_CAME = 256;
 
-export { vitrumSceneToThree } from './sceneToThree.js';
+export { vitrumSceneToThree } from '@vitrum/three-bindings';
 export { applyFrameToPerspectiveCamera } from './frameCamera.js';
 export { packCameUBO } from './cameUniformUploader.js';
 export type { CameSegment, CameNode, CameUploadOptions, CamePackedUBO } from './cameUniformUploader.js';

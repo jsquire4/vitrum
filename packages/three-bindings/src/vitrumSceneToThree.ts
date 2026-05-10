@@ -1,26 +1,10 @@
 /**
- * Builds a THREE.Scene consumable by three-gpu-pathtracer from a @vitrum/core Scene.
+ * Build a `THREE.Scene` from a `@vitrum/core` `Scene` (mesh + principal emitters + HDRI).
  *
- * Supports mesh primitives and directional / rect-area / point / spot emitters, plus
- * HDRI environments when `SceneEnvironment.hdri` is already a THREE texture.
- * Other primitive / emitter / env kinds are skipped with a console warning.
+ * Used by `@vitrum/pt-webgl` (path-tracer sync) and `@vitrum/walkaround-hybrid`
+ * (ReSTIR BVH when the host drives `setScene` via the core contract).
  *
- * Sprint 2 (Phase 6): each THREE light object created from a SceneEmitter has
- * `userData.cellPower` set to the emitter's total radiant flux:
- *   cellPower = luminance(color × intensity) × area
- *
- * Area conventions per emitter kind:
- *   directional — no surface; cellPower = 0 (sentinel, documented below).
- *   disc-area   — area = π × radius².
- *   rect-area   — area = 4 × |uAxis × vAxis| (uAxis/vAxis are half-extent vectors).
- *   point       — no surface; cellPower = luminance(color × intensity) (point flux).
- *   spot        — no surface; cellPower = luminance(color × intensity) (point flux).
- *   mesh-area   — cellPower is 0 at emitter-creation time; the BVH build computes
- *                 the true per-triangle power directly from mesh geometry.
- *
- * The three-gpu-pathtracer fork patch (plan/sprint-2-pt-fork-patch.md) will read
- * `light.userData.cellPower` when constructing the lights texture. Until that patch
- * lands, the field is carried silently on the userData object.
+ * Sprint 2: each THREE light has `userData.cellPower` (radiant-flux helper).
  */
 
 import type {
@@ -54,10 +38,6 @@ function isNoneEnv(env: VitrumScene['environment']): env is NoneEnvironment {
   return env.kind === 'none';
 }
 
-/**
- * Standard photometric luminance weights (Rec. 709).
- * Used to convert an RGB radiance to a scalar power value for cellPower.
- */
 function luminance(color: Vec3, intensity: number): number {
   return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) * intensity;
 }
@@ -147,11 +127,6 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.position.copy(_u);
       L.target.position.set(0, 0, 0);
       L.add(L.target);
-      // Sprint 2: directional has no surface area → cellPower = 0 (sentinel).
-      // Sun irradiance is infinite-distance; power per unit area is not
-      // meaningful in the same way as a finite-area emitter. Sprint 3's
-      // light tree should treat cellPower=0 as "always-sample-via-env" or
-      // exclude from the light tree CDF and handle separately.
       L.userData['cellPower'] = 0;
       return L;
     }
@@ -170,7 +145,9 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       _y.copy(vVec).normalize();
       _z.crossVectors(_x, _y);
       if (_z.lengthSq() < 1e-12) {
-        console.warn(`@vitrum/pt-webgl: rect-area emitter "${e.id}" has degenerate u/v axes; skipping`);
+        console.warn(
+          `@vitrum/three-bindings: rect-area emitter "${e.id}" has degenerate u/v axes; skipping`,
+        );
         return null;
       }
       _z.normalize();
@@ -180,10 +157,6 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.matrix.setPosition(L.position);
       L.matrixAutoUpdate = false;
       L.matrixWorld.copy(L.matrix);
-      // Sprint 2: rect-area cellPower = luminance(color×intensity) × area.
-      // uAxis and vAxis are HALF-extent vectors per @vitrum/core/scene.ts:
-      //   "uAxis: Vec3 // half-width vector"
-      // Full area = 4 × |uAxis × vAxis|  (2× width × 2× height = 4 × half-cross).
       const crossLen = _z.crossVectors(
         _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]),
         _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]),
@@ -201,8 +174,6 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       );
       L.name = String(e.id);
       L.position.set(e.position[0], e.position[1], e.position[2]);
-      // Sprint 2: point emitters have no surface area; treat luminous
-      // intensity as the power value (point flux convention).
       L.userData['cellPower'] = luminance(e.color, e.intensity);
       return L;
     }
@@ -224,14 +195,12 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
         e.position[2] - dir[2] * 10,
       );
       L.add(L.target);
-      // Sprint 2: spot emitters have no surface area; treat luminous
-      // intensity as the power value (point flux convention, same as point).
       L.userData['cellPower'] = luminance(e.color, e.intensity);
       return L;
     }
     default: {
       console.warn(
-        `@vitrum/pt-webgl: emitter kind "${(e as SceneEmitter).kind}" not implemented for three-gpu-pathtracer path — skipped`,
+        `@vitrum/three-bindings: emitter kind "${(e as SceneEmitter).kind}" not implemented for vitrumSceneToThree — skipped`,
       );
       return null;
     }
@@ -251,20 +220,23 @@ function applyEnvironment(threeScene: Scene, env: VitrumScene['environment']): v
       threeScene.environmentIntensity = env.intensity ?? 1;
     } else {
       console.warn(
-        '@vitrum/pt-webgl: HDRI environment requires THREE.Texture handle; got opaque TextureRef — using black background',
+        '@vitrum/three-bindings: HDRI environment requires THREE.Texture handle; got opaque TextureRef — using black background',
       );
       threeScene.background = new Color(0, 0, 0);
       threeScene.environment = null;
     }
     return;
   }
-  console.warn('@vitrum/pt-webgl: procedural-sky environment not wired in pt-webgl — use HDRI or none');
+  console.warn(
+    '@vitrum/three-bindings: procedural-sky environment not wired — use HDRI or none',
+  );
   threeScene.background = new Color(0.02, 0.02, 0.03);
   threeScene.environment = null;
 }
 
 /**
- * @param vitrumScene Source scene from @vitrum/core or @vitrum/three-bindings
+ * Convert a `@vitrum/core` scene graph into a throwaway or persistent `THREE.Scene`
+ * (meshes + lights + environment handles).
  */
 export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
   const threeScene = new Scene();
@@ -273,7 +245,7 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
       threeScene.add(meshPrimitiveToThree(p));
     } else {
       console.warn(
-        `@vitrum/pt-webgl: primitive kind "${(p as ScenePrimitive).kind}" skipped (mesh-only in this slice)`,
+        `@vitrum/three-bindings: primitive kind "${(p as ScenePrimitive).kind}" skipped (mesh-only in this slice)`,
       );
     }
   }
@@ -283,4 +255,20 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
   }
   applyEnvironment(threeScene, vitrumScene.environment);
   return threeScene;
+}
+
+/** Dispose geometries/materials under a root built by {@link vitrumSceneToThree}. */
+export function disposeVitrumThreeSceneRoot(root: Object3D): void {
+  root.traverse((o) => {
+    const mesh = o as Mesh;
+    if (mesh.isMesh === true) {
+      mesh.geometry?.dispose();
+      const m = mesh.material;
+      if (Array.isArray(m)) {
+        for (const x of m) x?.dispose?.();
+      } else {
+        m?.dispose?.();
+      }
+    }
+  });
 }
