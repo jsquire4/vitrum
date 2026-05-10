@@ -4,6 +4,23 @@
  * Supports mesh primitives and directional / rect-area / point / spot emitters, plus
  * HDRI environments when `SceneEnvironment.hdri` is already a THREE texture.
  * Other primitive / emitter / env kinds are skipped with a console warning.
+ *
+ * Sprint 2 (Phase 6): each THREE light object created from a SceneEmitter has
+ * `userData.cellPower` set to the emitter's total radiant flux:
+ *   cellPower = luminance(color × intensity) × area
+ *
+ * Area conventions per emitter kind:
+ *   directional — no surface; cellPower = 0 (sentinel, documented below).
+ *   disc-area   — area = π × radius².
+ *   rect-area   — area = 4 × |uAxis × vAxis| (uAxis/vAxis are half-extent vectors).
+ *   point       — no surface; cellPower = luminance(color × intensity) (point flux).
+ *   spot        — no surface; cellPower = luminance(color × intensity) (point flux).
+ *   mesh-area   — cellPower is 0 at emitter-creation time; the BVH build computes
+ *                 the true per-triangle power directly from mesh geometry.
+ *
+ * The three-gpu-pathtracer fork patch (plan/sprint-2-pt-fork-patch.md) will read
+ * `light.userData.cellPower` when constructing the lights texture. Until that patch
+ * lands, the field is carried silently on the userData object.
  */
 
 import type {
@@ -13,6 +30,7 @@ import type {
   MeshPrimitive,
   Material as VitrumMaterial,
   NoneEnvironment,
+  Vec3,
 } from '@vitrum/core';
 import {
   BufferGeometry,
@@ -34,6 +52,14 @@ import type { Texture } from 'three';
 
 function isNoneEnv(env: VitrumScene['environment']): env is NoneEnvironment {
   return env.kind === 'none';
+}
+
+/**
+ * Standard photometric luminance weights (Rec. 709).
+ * Used to convert an RGB radiance to a scalar power value for cellPower.
+ */
+function luminance(color: Vec3, intensity: number): number {
+  return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) * intensity;
 }
 
 function vitrumMaterialToThree(m: VitrumMaterial): MeshPhysicalMaterial {
@@ -115,19 +141,27 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.position.copy(_u);
       L.target.position.set(0, 0, 0);
       L.add(L.target);
+      // Sprint 2: directional has no surface area → cellPower = 0 (sentinel).
+      // Sun irradiance is infinite-distance; power per unit area is not
+      // meaningful in the same way as a finite-area emitter. Sprint 3's
+      // light tree should treat cellPower=0 as "always-sample-via-env" or
+      // exclude from the light tree CDF and handle separately.
+      L.userData['cellPower'] = 0;
       return L;
     }
     case 'rect-area': {
-      const w = 2 * _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]).length();
-      const h = 2 * _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]).length();
+      const uVec = _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]);
+      const vVec = _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]);
+      const w = 2 * uVec.length();
+      const h = 2 * vVec.length();
       const L = new RectAreaLight(
         new Color(e.color[0], e.color[1], e.color[2]),
         e.intensity,
         Math.max(w, 1e-6),
         Math.max(h, 1e-6),
       );
-      _x.copy(_u).normalize();
-      _y.copy(_v).normalize();
+      _x.copy(uVec).normalize();
+      _y.copy(vVec).normalize();
       _z.crossVectors(_x, _y);
       if (_z.lengthSq() < 1e-12) {
         console.warn(`@vitrum/pt-webgl: rect-area emitter "${e.id}" has degenerate u/v axes; skipping`);
@@ -140,6 +174,16 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.matrix.setPosition(L.position);
       L.matrixAutoUpdate = false;
       L.matrixWorld.copy(L.matrix);
+      // Sprint 2: rect-area cellPower = luminance(color×intensity) × area.
+      // uAxis and vAxis are HALF-extent vectors per @vitrum/core/scene.ts:
+      //   "uAxis: Vec3 // half-width vector"
+      // Full area = 4 × |uAxis × vAxis|  (2× width × 2× height = 4 × half-cross).
+      const crossLen = _z.crossVectors(
+        _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]),
+        _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]),
+      ).length();
+      const rectArea = 4 * crossLen;
+      L.userData['cellPower'] = luminance(e.color, e.intensity) * rectArea;
       return L;
     }
     case 'point': {
@@ -151,6 +195,9 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       );
       L.name = String(e.id);
       L.position.set(e.position[0], e.position[1], e.position[2]);
+      // Sprint 2: point emitters have no surface area; treat luminous
+      // intensity as the power value (point flux convention).
+      L.userData['cellPower'] = luminance(e.color, e.intensity);
       return L;
     }
     case 'spot': {
@@ -171,6 +218,9 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
         e.position[2] - dir[2] * 10,
       );
       L.add(L.target);
+      // Sprint 2: spot emitters have no surface area; treat luminous
+      // intensity as the power value (point flux convention, same as point).
+      L.userData['cellPower'] = luminance(e.color, e.intensity);
       return L;
     }
     default: {

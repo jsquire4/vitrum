@@ -110,7 +110,23 @@ export interface SceneBVHBuffers {
   emitters: StorageBufferHandle;
   /** f32[] — CDF over emitter power (same length as emitters). */
   emitterCdf: StorageBufferHandle;
-  /** Number of entries in the emitters / cdf arrays. */
+  /**
+   * f32[] — per-emitter total radiant flux (same length as emitters).
+   *
+   * Sprint 2 (Phase 6): Foundation for the Sprint 3 light tree.
+   * cellPower[i] = luminance(Le[i]) × area[i] for mesh/triangle-area
+   * emitters, matching the formula used to build the power-CDF.
+   *
+   * Sprint 3 will upload this to a GPU storage buffer and build a light
+   * tree CDF over it for power-weighted importance sampling. Sprint 2
+   * makes the buffer available; it is NOT yet consumed by any shader.
+   *
+   * Sentinels: the dummy emitter (inserted when no real emitters exist)
+   * has cellPower = 0.5 (its synthetic power value). This keeps the
+   * buffer non-empty so a zero-emitter scene doesn't break the bind group.
+   */
+  cellPower: StorageBufferHandle;
+  /** Number of entries in the emitters / cdf / cellPower arrays. */
   emitterCount: number;
   totalEmissivePower: number;
   /** Merged geometry (CPU side, for debug / re-upload). */
@@ -228,7 +244,7 @@ export function buildSceneBVH(
   );
 
   // ── 4. Build emitter list (transmissive + emissive triangles) ──────────
-  const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(
+  const { emitterFloats, cdfArray, cellPowerArray, totalEmissivePower } = buildEmitterList(
     shared.indices,
     shared.positions, // stride-4; emitter math reads .xyz only
     shared.normals,
@@ -293,6 +309,14 @@ export function buildSceneBVH(
     emitterCdf: {
       cpuData: cdfArray.buffer,
       byteLength: cdfArray.byteLength,
+      count: emitterCount,
+    },
+    // Sprint 2 (Phase 6): per-emitter radiant flux (f32[], same length as emitters).
+    // Sprint 3 light tree reads this to build power-weighted selection CDF.
+    // Not yet consumed by any WGSL shader — foundation only.
+    cellPower: {
+      cpuData: cellPowerArray.buffer,
+      byteLength: cellPowerArray.byteLength,
       count: emitterCount,
     },
     emitterCount,
@@ -690,5 +714,15 @@ function buildEmitterList(
     cdfArray[i] = runningSum / totalEmissivePower;
   }
 
-  return { emitterFloats, cdfArray, totalEmissivePower };
+  // Sprint 2 (Phase 6): per-emitter total radiant flux buffer.
+  // cellPower[i] = luminance(Le[i]) × area[i] — the same value used to
+  // build the CDF above. Exposed as a separate buffer so Sprint 3's light
+  // tree can rebuild the CDF with power-weighted selection without
+  // re-running the full emitter build.
+  const cellPowerArray = new Float32Array(emitterCount);
+  for (let i = 0; i < emitterCount; i++) {
+    cellPowerArray[i] = emitterData[i]!.power;
+  }
+
+  return { emitterFloats, cdfArray, cellPowerArray, totalEmissivePower };
 }

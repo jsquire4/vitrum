@@ -154,6 +154,14 @@ export class WalkaroundGPUPipeline {
   private bvhUvBuffer!: GPUBuffer;
   private emitterBuffer!: GPUBuffer;
   private emitterCdfBuffer!: GPUBuffer;
+  /**
+   * Sprint 2 (Phase 6): per-emitter total radiant flux buffer (f32[]).
+   * cellPower[i] = luminance(Le[i]) × area[i] for each emitter triangle.
+   * Uploaded once at initialize time alongside the emitter CDF. Sprint 3's
+   * light tree will build a power-weighted CDF over this buffer; Sprint 2
+   * just makes it available in the pipeline. Not yet bound to any shader.
+   */
+  private cellPowerBuffer!: GPUBuffer;
 
   // Per-frame GPU resources (created by resourceManager.createFrameResources)
   private res!: FrameResources;
@@ -220,6 +228,9 @@ export class WalkaroundGPUPipeline {
     this.bvhUvBuffer       = uploadBuffer(d, bvhBuffers.bvhUvs.cpuData,       GPUBufferUsage.STORAGE);
     this.emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
     this.emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
+    // Sprint 2 (Phase 6): cellPower[i] = luminance(Le[i]) * area[i].
+    // Not yet bound to any WGSL shader — Sprint 3 light tree will consume it.
+    this.cellPowerBuffer   = uploadBuffer(d, bvhBuffers.cellPower.cpuData,    GPUBufferUsage.STORAGE);
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
@@ -484,6 +495,7 @@ export class WalkaroundGPUPipeline {
     this.bvhUvBuffer?.destroy();
     this.emitterBuffer?.destroy();
     this.emitterCdfBuffer?.destroy();
+    this.cellPowerBuffer?.destroy();
     if (this.res) destroyFrameResources(this.res);
     this.atrousUboRef.buf?.destroy();
     this.accumUboRef.buf?.destroy();

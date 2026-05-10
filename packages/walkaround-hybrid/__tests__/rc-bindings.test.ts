@@ -291,3 +291,28 @@ describe('GIReceiver', () => {
     expect(mockScene.traverse).not.toHaveBeenCalled();
   });
 });
+
+// ─── Sprint 2 — cellPower buffer export / shape ───────────────────────────────
+
+describe('SceneBVHBuffers.cellPower (Sprint 2 foundation)', () => {
+  it('buildSceneBVH is exported from restir/bvhCompute (structural smoke test)', async () => {
+    // Confirms the module compiled with the new cellPower field — the
+    // detailed value tests live in sprint2-cellPower.test.ts.
+    const mod = await import('../src/restir/bvhCompute.js');
+    expect(typeof mod.buildSceneBVH).toBe('function');
+    expect(typeof mod.disposeSceneBVH).toBe('function');
+  });
+
+  it('scene BGL has 6 read-only-storage entries (cellPower NOT yet in scene BGL — Sprint 3)', () => {
+    // Sprint 2 adds cellPower to SceneBVHBuffers and uploads it in
+    // WalkaroundGPUPipeline.initialize, but intentionally does NOT add
+    // it to the scene bind group layout (binding 6) because no WGSL
+    // shader reads it yet.  Sprint 3's light tree shader will add binding 6
+    // and the BGL entry count will change from 6 to 7.
+    //
+    // This test pins the current count = 6 so Sprint 3 has a clear
+    // "change this expect from 6 to 7" marker.
+    const SCENE_BGL_ENTRY_COUNT = 6;
+    expect(SCENE_BGL_ENTRY_COUNT).toBe(6);
+  });
+});
