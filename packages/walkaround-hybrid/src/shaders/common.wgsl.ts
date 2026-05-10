@@ -714,6 +714,47 @@ fn generatePrimaryRay_common(
 }
 
 // ============================================================
+// WelfordVariance — per-pixel running variance state.
+//
+// Decision 13 (locked 2026-05-09): versioned named struct prevents
+// Sprints 10a / 11 / 13 from independently re-declaring incompatible
+// variants. Layout pinned here. All future sprints that need per-pixel
+// variance MUST import this struct from COMMON_WGSL rather than
+// declaring their own.
+//
+// Layout (RG32Float texel):
+//   r = mean (running average of luminance)
+//   g = M2  (sum of squared deltas; variance = M2 / (n - 1))
+//
+// n is implicit from sample counter — host passes per-frame sample-count
+// uniform, shaders compute variance = welford.g / (n - 1).
+//
+// @version 1 (Sprint 9, 2026-05-09) — do not change field order without
+// bumping this version comment and updating all Sprint 10a/11/13 bindings.
+// ============================================================
+struct WelfordVariance {
+  mean: f32,
+  m2:   f32,
+};
+
+// Online Welford update for one new sample.
+// prev: current running state, sample: new luminance value, n: new sample count (1-based).
+// Returns: updated state.
+fn welfordUpdate(prev: WelfordVariance, sample: f32, n: u32) -> WelfordVariance {
+  let delta = sample - prev.mean;
+  let mean  = prev.mean + delta / f32(n);
+  let m2    = prev.m2   + delta * (sample - mean);
+  return WelfordVariance(mean, m2);
+}
+
+// Compute unbiased sample variance from the Welford state.
+// Returns 0 for n < 2 (not enough samples for a meaningful estimate).
+fn welfordVariance(state: WelfordVariance, n: u32) -> f32 {
+  if (n < 2u) { return 0.0; }
+  return state.m2 / f32(n - 1u);
+}
+
+// ============================================================
 // Procedural surface-texture pattern functions
 // ============================================================
 //

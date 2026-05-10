@@ -29,6 +29,22 @@ export interface FrameResources {
   ddgiPlaceholderRgba16f: GPUTexture;
   ddgiPlaceholderRg16f: GPUTexture;
   ddgiUboBuffer: GPUBuffer;
+  /**
+   * Sprint 9 — Per-pixel Welford variance buffer (RG32Float storage texture).
+   * Layout per texel: r = mean (running luminance average), g = M2 (sum of
+   * squared deltas). Variance = M2 / (n - 1) where n is the sample count
+   * passed per-frame as a uniform.
+   *
+   * Allocated here (low-risk, Sprint 10a SVGF will also use it). NOT written
+   * by any dispatch in Sprint 9; Sprint 10a SVGF and the deferred
+   * sprint-9-walkaround-integration will wire the write path.
+   *
+   * See: packages/walkaround-hybrid/src/shaders/common.wgsl.ts — WelfordVariance
+   * struct, welfordUpdate, welfordVariance for the matching WGSL definition.
+   *
+   * @since Sprint 9, 2026-05-09
+   */
+  varianceBuffer: GPUTexture;
 }
 
 /**
@@ -78,6 +94,37 @@ export function buildDDGIPlaceholderUBO(): Float32Array {
   placeholder[10] = 1;                              // visW
   placeholder[11] = 1;                              // visH
   return placeholder;
+}
+
+/**
+ * Create a per-pixel Welford variance buffer (RG32Float storage texture).
+ *
+ * Sprint 9 — Decision 13 (locked 2026-05-09): the WelfordVariance struct
+ * in common.wgsl.ts pins the layout to RG32Float (r=mean, g=M2). This helper
+ * creates the matching GPU texture so the layout is enforced in one place.
+ *
+ * Usage flags:
+ *   - STORAGE_BINDING: the temporal accumulator (Sprint 10a) will write to it
+ *     via a compute pass; the sample-budget shader reads from it.
+ *   - TEXTURE_BINDING: Sprint 10a's SVGF spatial filter reads variance as a
+ *     sampled texture.
+ *   - COPY_SRC: allows CPU readback for test validation (caustic harness).
+ *
+ * @param device - Live GPUDevice.
+ * @param w      - Render-surface pixel width.
+ * @param h      - Render-surface pixel height.
+ * @returns      A GPUTexture ready to be bound as a storage/sampled texture.
+ */
+export function createVarianceBuffer(device: GPUDevice, w: number, h: number): GPUTexture {
+  return device.createTexture({
+    label: 'welford-variance',
+    size: [w, h],
+    format: 'rg32float',
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC,
+  });
 }
 
 /**
@@ -204,6 +251,11 @@ export function createFrameResources(device: GPUDevice, W: number, H: number): F
   // grid params from HybridLayeredStage.
   device.queue.writeBuffer(ddgiUboBuffer, 0, buildDDGIPlaceholderUBO().buffer);
 
+  // Sprint 9 — Per-pixel Welford variance buffer (RG32Float, r=mean g=M2).
+  // Allocated here; no compute pass writes to it in Sprint 9. Sprint 10a SVGF
+  // and the deferred sprint-9-walkaround-integration will wire the write path.
+  const varianceBuffer = createVarianceBuffer(device, W, H);
+
   return {
     reservoirCurrentBuffer,
     reservoirPreviousBuffer,
@@ -221,6 +273,7 @@ export function createFrameResources(device: GPUDevice, W: number, H: number): F
     ddgiPlaceholderRgba16f,
     ddgiPlaceholderRg16f,
     ddgiUboBuffer,
+    varianceBuffer,
   };
 }
 
@@ -243,4 +296,5 @@ export function destroyFrameResources(r: FrameResources): void {
   r.ddgiPlaceholderRgba16f.destroy();
   r.ddgiPlaceholderRg16f.destroy();
   r.ddgiUboBuffer.destroy();
+  r.varianceBuffer.destroy();  // Sprint 9 — Welford variance buffer
 }
