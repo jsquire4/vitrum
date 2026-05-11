@@ -270,8 +270,8 @@ describe('packSVGFVarianceUniforms', () => {
 // ── SVGF_DEFAULT_UNIFORMS sanity checks ──────────────────────────────────────
 
 describe('SVGF_DEFAULT_UNIFORMS', () => {
-  it('sigmaColor default is 10.0 (Schied 2017 Table 1)', () => {
-    expect(SVGF_DEFAULT_UNIFORMS.sigmaColor).toBe(10.0);
+  it('sigmaColor default is 4.0 (tightened from Schied 2017 Table 1\'s 10.0 — reduces over-blur across luminance boundaries on bright surfaces with partial occlusion; needed to suppress ReSTIR-DI flicker in walkaround Cornell scenes)', () => {
+    expect(SVGF_DEFAULT_UNIFORMS.sigmaColor).toBe(4.0);
   });
 
   it('sigmaNormal default is 128.0 (Schied 2017 Table 1)', () => {

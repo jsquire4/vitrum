@@ -701,11 +701,15 @@ export class WalkaroundGPUPipeline {
       );
     }
 
-    // alpha=0.05 (was 0.1) gives ~95% history weight per frame. Slows
-    // convergence on legitimate changes but the camera-motion path resets
-    // accumFrameIndex anyway, so this only affects static-camera frames
-    // where slower integration is the right trade-off (less flicker).
-    const alpha = this._accumFrameIndex === 0 ? 1.0 : 0.05;
+    // alpha=0.02 (was 0.1, then 0.05) gives ~98% history weight per frame.
+    // Slower convergence to legitimate changes, but the camera-motion path
+    // resets accumFrameIndex and forces alpha=1.0, so motion responsiveness
+    // is unchanged. Aggressive history blending is the cheapest knob to
+    // reduce ReSTIR-DI variance on static-camera frames, especially on
+    // bright surfaces with partial light-source occlusion (floor near the
+    // Cornell boxes), where stochastic light-point selection introduces
+    // binary visibility signal per frame.
+    const alpha = this._accumFrameIndex === 0 ? 1.0 : 0.02;
     this._lastCameraPos = [...inputs.cameraPos];
 
     {

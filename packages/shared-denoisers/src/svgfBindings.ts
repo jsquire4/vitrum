@@ -272,7 +272,7 @@ export interface SVGFAtrousBindGroupLayout {
  *   - Adjust sigmaDepth relative to scene scale (larger rooms → larger depth σ).
  */
 export const SVGF_DEFAULT_UNIFORMS: Omit<SVGFUniforms, 'iteration'> = {
-  sigmaColor:  10.0,
+  sigmaColor:  4.0,
   sigmaNormal: 128.0,
   sigmaDepth:  1.0,
 } as const;

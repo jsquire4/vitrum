@@ -353,10 +353,21 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let combined = Lo_emit + Lo_direct + Lo_sunCaustic
                + Lo_skyAperture * 0.08
                + Lo_ddgi * DDGI_DIFFUSE_BLEND;
+  // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
+  // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of
+  // a wall, near-zero RIS pdf). These propagate through SVGF (which would
+  // smear them spatially) and the temporal accumulator (slow to bleed off).
+  // Cap per-channel: physical max for an albedo-1 diffuse surface viewing
+  // Le=12 ≈ 4/π × 12 ≈ 15. We clamp at 4 to suppress the grazing-edge
+  // singularities (~2.8 measured at the red-wall edge stripe) while leaving
+  // legitimately bright surfaces (light source itself: Lo_emit) intact —
+  // those go through a separate Lo_emit branch that bypasses the BRDF
+  // singularity entirely.
+  let clamped = min(combined, vec3f(4.0));
   // Write LINEAR HDR radiance to hdrColorOut — do NOT tone-map here.
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.
   // @@PPG_RECORD_INSERT@@
-  textureStore(hdrColorOut, gid.xy, vec4f(combined, 1.0));
+  textureStore(hdrColorOut, gid.xy, vec4f(clamped, 1.0));
 }
 `;

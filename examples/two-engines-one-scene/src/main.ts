@@ -304,9 +304,15 @@ async function main(): Promise<void> {
           height: canvasWgpu.height,
           threeScene,
           primaryLightDir,
-          primaryLightIntensity: 5,
+          // Cornell box is an indoor scene with one area light at the top.
+          // Sun (`primaryLightIntensity`) and sky (`skyIrradiance`) belong
+          // to the original stained-glass-studio context the engine was
+          // built around; firing them for Cornell adds spurious extra
+          // illumination (notably a bright peach stripe at the red-wall
+          // edge from grazing-angle sun shading + skyAperture probes).
+          primaryLightIntensity: 0,
           skyTint: [0.55, 0.72, 1.0],
-          skyIrradiance: 0.35,
+          skyIrradiance: 0,
           isSceneReady: () => true,
           denoiser: FLAGS.denoiser,
           ppgEnabled: FLAGS.ppgEnabled,
