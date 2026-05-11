@@ -127,6 +127,15 @@ export interface FrameResources {
    * (direct-only) so the denoiser sees the channel it's tuned for.
    */
   hdrTotalTexture: GPUTexture;
+  /**
+   * Sprint 18 — indirect-channel à-trous ping-pong pair.  Four iterations
+   * with widening step (1, 2, 4, 8) on hdrIndirectTexture produce a smooth
+   * indirect signal that the indirect-combine pass sums with the direct
+   * SVGF output.  Broader sigmas than the direct chain — indirect is
+   * already temporally smoothed by ReSTIR-GI and tolerates wider blurs.
+   */
+  indirectDenoisedPingTexture: GPUTexture;
+  indirectDenoisedPongTexture: GPUTexture;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -510,6 +519,19 @@ export function createFrameResources(
     format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
+  // Sprint 18 — indirect-channel à-trous ping-pong pair.
+  const indirectDenoisedPingTexture = device.createTexture({
+    label: 'indirectDenoisedPing',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const indirectDenoisedPongTexture = device.createTexture({
+    label: 'indirectDenoisedPong',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   // G-buffer (normal + depth) — written by shade, read by atrous denoiser.
   const gNormalDepthTexture = device.createTexture({
@@ -759,6 +781,8 @@ export function createFrameResources(
     hdrIndirectTexture,
     combinedDenoisedTexture,
     hdrTotalTexture,
+    indirectDenoisedPingTexture,
+    indirectDenoisedPongTexture,
     ...ppgExt,
   };
 }
@@ -797,6 +821,8 @@ export function destroyFrameResources(r: FrameResources): void {
   r.hdrIndirectTexture.destroy();
   r.combinedDenoisedTexture.destroy();
   r.hdrTotalTexture.destroy();
+  r.indirectDenoisedPingTexture.destroy();
+  r.indirectDenoisedPongTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

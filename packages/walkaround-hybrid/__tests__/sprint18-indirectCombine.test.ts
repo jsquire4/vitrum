@@ -47,26 +47,15 @@ describe('Sprint 18 — indirect-combine WGSL', () => {
     expect(INDIRECT_COMBINE_WGSL).toContain('@workgroup_size(16, 16, 1)');
   });
 
-  it('binds denoisedDirect, hdrIndirect, gNormalDepth, and combinedOut', () => {
+  it('binds denoisedDirect, denoisedIndirect, gNormalDepth, and combinedOut', () => {
     expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(0) var ic_denoisedDirect');
-    expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(1) var ic_hdrIndirect');
+    expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(1) var ic_denoisedIndirect');
     expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(2) var ic_gNormalDepth');
     expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(3) var ic_combinedOut');
   });
 
-  it('uses a 5x5 bilateral kernel (radius 2) with depth + normal edge stops', () => {
-    expect(INDIRECT_COMBINE_WGSL).toContain('IC_RADIUS:        i32 = 2');
-    expect(INDIRECT_COMBINE_WGSL).toContain('IC_SIGMA_DEPTH:');
-    expect(INDIRECT_COMBINE_WGSL).toContain('IC_SIGMA_NORMAL:');
-  });
-
-  it('combines direct + smoothed indirect into the output texture', () => {
-    expect(INDIRECT_COMBINE_WGSL).toMatch(/let combined\s*=\s*direct\s*\+\s*indirectSmooth/);
-    expect(INDIRECT_COMBINE_WGSL).toMatch(/textureStore\(ic_combinedOut/);
-  });
-
-  it('passes through center indirect on sky-miss pixels (depth < 1e-4)', () => {
-    expect(INDIRECT_COMBINE_WGSL).toMatch(/centerDepth\s*<\s*1e-4/);
+  it('sums denoised direct + denoised indirect into the combined texture', () => {
+    expect(INDIRECT_COMBINE_WGSL).toMatch(/textureStore\(ic_combinedOut,\s*gid\.xy,\s*vec4f\(direct\s*\+\s*indirect/);
   });
 });
 

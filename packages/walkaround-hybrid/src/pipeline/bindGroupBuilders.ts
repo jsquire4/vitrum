@@ -138,6 +138,43 @@ export function buildUboBindGroup(
 /** Mutable wrapper so the UBO buffer is lazily created once and reused. */
 export interface UboRef { buf: GPUBuffer | undefined }
 
+/**
+ * Atrous edge-stop sigmas. Defaults are the direct-channel tuning
+ * (tight stops to preserve hard shadow boundaries); the Sprint 18
+ * indirect chain overrides these with broader values since the indirect
+ * signal is already temporally smoothed by ReSTIR-GI and tolerates
+ * wider blurs across depth / normal / chroma transitions.
+ */
+export interface AtrousSigmas {
+  sigmaN: number;
+  sigmaZ: number;
+  sigmaC: number;
+}
+
+/** Direct-channel default — tight stops, preserves shadow / caustic edges. */
+export const ATROUS_DIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
+  sigmaN: 128.0,
+  sigmaZ: 5.0,
+  sigmaC: 0.05,
+});
+
+/**
+ * Indirect-channel sigmas. Broader on every axis because ReSTIR-GI already
+ * smooths the indirect signal temporally + spatially; the remaining 2×2 quad
+ * variance (from half-res GI reservoir reads) just needs a wide low-pass.
+ *   σn=32  → still rejects perpendicular surfaces but happily blurs through
+ *            mild curvature.
+ *   σz=20  → ~4× the direct depth tolerance — fine for indirect, which has
+ *            no hard-shadow edges to preserve.
+ *   σc=0.5 → ~10× direct's color tolerance — allows blur across color-bleed
+ *            transitions which are low-frequency anyway.
+ */
+export const ATROUS_INDIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
+  sigmaN: 32.0,
+  sigmaZ: 20.0,
+  sigmaC: 0.5,
+});
+
 export function buildAtrousBindGroup(
   device: GPUDevice,
   cache: BGLCache,
@@ -147,6 +184,7 @@ export function buildAtrousBindGroup(
   gNormalView: GPUTextureView,
   gDepthView: GPUTextureView,
   stepWidth: number,
+  sigmas: Readonly<AtrousSigmas> = ATROUS_DIRECT_SIGMAS,
 ): GPUBindGroup {
   if (!uboRef.buf) {
     uboRef.buf = device.createBuffer({
@@ -154,22 +192,7 @@ export function buildAtrousBindGroup(
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
-  // sigmaN=128, sigmaZ=5.0, sigmaC=0.05 are tuned for an HDR-linear ReSTIR
-  // à-trous denoiser at this scene's scale (camera-relative ray distances
-  // ~30..200 units). The shade pass writes a real per-pixel normal+depth
-  // G-buffer into `gNormalDepthTexture`, so the normal-based edge-stop
-  // (`pow(dot(n,n)^k, sigmaN)`) and depth-based stop (`exp(-|Δz|/sigmaZ)`)
-  // are meaningful.
-  //   σn=128 → tight normal-stop; only near-coplanar surfaces blur together.
-  //   σz=5   → tolerates ~5 unit depth differences (one floor-tile receding
-  //            from camera at stepWidth=16); rejects floor↔wall transitions.
-  //   σc=0.05 → handles low-chroma-delta caustic boundaries. At 0.15, RED
-  //            caustics on warm-oak floor blocked cleanly, but BLUE/GREEN
-  //            caustics had small Δc — atrous bled cool-tinted caustic into
-  //            the warm floor. At σc=0.05: Δ=0.36 blue-caustic-vs-warm-floor
-  //            weighs ≈ 0 (blocked); Δ=0.05 within-patch noise still weighs
-  //            ≈ 0.37 so within-patch denoising continues.
-  const uboData = new Float32Array([stepWidth, 128.0, 5.0, 0.05]);
+  const uboData = new Float32Array([stepWidth, sigmas.sigmaN, sigmas.sigmaZ, sigmas.sigmaC]);
   device.queue.writeBuffer(uboRef.buf, 0, uboData);
 
   return device.createBindGroup({

@@ -50,6 +50,10 @@ export type PassLabel =
   | 'atrous-0'
   | 'atrous-1'
   | 'atrous-2'
+  | 'atrous-indirect-0'
+  | 'atrous-indirect-1'
+  | 'atrous-indirect-2'
+  | 'atrous-indirect-3'
   | 'indirect-combine'
   | 'temporalAccum'
   | 'resolve'
@@ -65,9 +69,12 @@ export type PassLabel =
  *          23 (Sprint 17: gi-temporal + gi-spatial-1 + gi-spatial-2) →
  *          24 (Sprint 18: indirect-combine) →
  *          22 (Original #7: trim 2 dead svgf-atrous slots — iter count
- *          dropped from 5 to 3 in shared-denoisers but layout was stale).
+ *          dropped from 5 to 3 in shared-denoisers but layout was stale) →
+ *          26 (Sprint 18 follow-up: per-channel SVGF — replace the
+ *          embedded bilateral in indirect-combine with a real 4-iter
+ *          atrous chain (atrous-indirect-0..3) on the indirect channel).
  */
-export const MAX_PASS_COUNT = 22;
+export const MAX_PASS_COUNT = 26;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -121,9 +128,16 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   } else {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');
   }
-  // Sprint 18 — per-channel combine bilaterally blurs hdrIndirect and
-  // sums with the direct-SVGF output before temporalAccum reads it.
-  labels.push('indirect-combine');
+  // Sprint 18 — indirect-channel atrous chain (4 iter, widening step 1,2,4,8)
+  // on hdrIndirectTexture, then indirect-combine sums denoisedDirect +
+  // denoisedIndirect into combinedDenoisedTexture for temporalAccum.
+  labels.push(
+    'atrous-indirect-0',
+    'atrous-indirect-1',
+    'atrous-indirect-2',
+    'atrous-indirect-3',
+    'indirect-combine',
+  );
   // Sprint 9 — resolve sits between temporalAccum and composite so the
   // composite blit reads from the resolved (checkerboard-filled) texture.
   labels.push('temporalAccum', 'resolve', 'composite');

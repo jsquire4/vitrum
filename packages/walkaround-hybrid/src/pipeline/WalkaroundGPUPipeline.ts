@@ -60,6 +60,7 @@ import {
   buildTemporalGiBindGroup,
   buildSpatialGiBindGroup,
   buildIndirectCombineBindGroup,
+  ATROUS_INDIRECT_SIGMAS,
   type UboRef,
 } from './bindGroupBuilders.js';
 // Note: we deliberately do NOT import `runSvgfWebGPU` from shared-denoisers.
@@ -274,6 +275,9 @@ export class WalkaroundGPUPipeline {
   // dispose() walks all seven via the `_perPassUboRefs` array below so
   // adding a new UBO only requires registering it there.
   private _atrousUboRef: UboRef = { buf: undefined };
+  /** Sprint 18 — separate UBO for the indirect-channel atrous chain so it
+   *  doesn't race the direct chain's per-iteration sigma writes. */
+  private _atrousIndirectUboRef: UboRef = { buf: undefined };
   private _accumUboRef: UboRef  = { buf: undefined };
   private _welfordUboRef: UboRef = { buf: undefined };
   private _svgfVarianceUboRef: UboRef = { buf: undefined };
@@ -287,6 +291,7 @@ export class WalkaroundGPUPipeline {
   private get _perPassUboRefs(): readonly UboRef[] {
     return [
       this._atrousUboRef,
+      this._atrousIndirectUboRef,
       this._accumUboRef,
       this._welfordUboRef,
       this._svgfVarianceUboRef,
@@ -890,16 +895,20 @@ export class WalkaroundGPUPipeline {
       );
     }
 
-    // Sprint 18 — per-channel combine. The SVGF/atrous chain above ran on
-    // hdrColorTexture (now direct-only). Bilaterally blur hdrIndirectTexture
-    // with broader sigmas, sum the two, write to combinedDenoisedTexture,
-    // and feed that into temporalAccum below.
+    // Sprint 18 — per-channel denoise + combine. Direct (denoisedOut from
+    // the SVGF/atrous chain above) is already smoothed. Run the indirect
+    // channel through its own 4-iteration à-trous chain (steps 1, 2, 4, 8)
+    // with broader sigmas tuned for ReSTIR-GI's pre-smoothed signal. Then
+    // sum the two channels into combinedDenoisedTexture for temporalAccum.
+    const denoisedIndirect = this._dispatchAtrousIndirect(
+      encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
+    );
     const combinedTex = this._res.combinedDenoisedTexture;
     {
       const bgCombine = buildIndirectCombineBindGroup(
         d, this._bglCache,
         denoisedOut.createView(),
-        this._res.hdrIndirectTexture.createView(),
+        denoisedIndirect.createView(),
         gNormalDepthView,
         combinedTex.createView(),
       );
@@ -1136,6 +1145,44 @@ export class WalkaroundGPUPipeline {
         gNormalDepthView, gNormalDepthView, stepWidth,
       );
       const pass = encoder.beginComputePass(computeDesc(`atrous-${iter}` as PassLabel));
+      pass.setPipeline(this._atrousPipeline);
+      pass.setBindGroup(0, bgAtrous);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+      inputTex = outputTex;
+    }
+    return inputTex;
+  }
+
+  /**
+   * Sprint 18 — indirect-channel à-trous dispatch. Four iterations with
+   * widening step (1, 2, 4, 8) on hdrIndirectTexture, written into an
+   * indirect ping-pong pair. Uses broader sigmas than the direct chain
+   * (see ATROUS_INDIRECT_SIGMAS) since ReSTIR-GI temporal+spatial reuse
+   * has already smoothed the indirect signal and remaining noise is just
+   * the 2×2 quad variance from the half-res reservoir read in shade.
+   */
+  private _dispatchAtrousIndirect(
+    encoder: GPUCommandEncoder,
+    gNormalDepthView: GPUTextureView,
+    wgX16: number,
+    wgY16: number,
+    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
+  ): GPUTexture {
+    const d = this._device;
+    let inputTex = this._res.hdrIndirectTexture;
+    for (let iter = 0; iter < 4; iter++) {
+      const stepWidth = 1 << iter;
+      const outputTex = iter % 2 === 0
+        ? this._res.indirectDenoisedPingTexture
+        : this._res.indirectDenoisedPongTexture;
+      const bgAtrous = buildAtrousBindGroup(
+        d, this._bglCache, this._atrousIndirectUboRef,
+        inputTex.createView(), outputTex.createView(),
+        gNormalDepthView, gNormalDepthView, stepWidth,
+        ATROUS_INDIRECT_SIGMAS,
+      );
+      const pass = encoder.beginComputePass(computeDesc(`atrous-indirect-${iter}` as PassLabel));
       pass.setPipeline(this._atrousPipeline);
       pass.setBindGroup(0, bgAtrous);
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
