@@ -324,8 +324,11 @@ export class PTEngineWebGL2 implements Engine {
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
     this.#causticStrategy = opts.causticStrategy ?? 'none';
-    this.#mneeMaxIterations = Math.max(1, opts.mneeMaxIterations ?? 8);
-    this.#mneeMaxChainLength = Math.max(1, opts.mneeMaxChainLength ?? 3);
+    const causticOpts = opts.causticOptions ?? {};
+    const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
+    const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
+    this.#mneeMaxIterations = Math.max(1, mneeIter);
+    this.#mneeMaxChainLength = Math.max(1, mneeChain);
     this.#spectralRendering = opts.extensions?.['vitrum.ptWebgl.spectralRendering'] === true;
     const requestedRadianceClamp = opts.extensions?.['vitrum.ptWebgl.radianceClamp'];
     this.#radianceClamp = typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)

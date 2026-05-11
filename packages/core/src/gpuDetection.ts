@@ -32,8 +32,9 @@ export interface GpuDetection {
   adapterKind: WgpuAdapterKind;
   /**
    * @deprecated Use {@link adapterKind} (`adapterKind !== 'swiftshader'`).
-   * `true` when WebGPU is supported and the adapter is not SwiftShader,
-   * including the fingerprinting `unknown` case.
+   * Scheduled for removal in Phase 7 / Sprint 1 once host call sites migrate
+   * to `adapterKind`. `true` when WebGPU is supported and the adapter is not
+   * SwiftShader, including the fingerprinting `unknown` case.
    */
   isHardwareGpu: boolean;
   /** GPUAdapterInfo.vendor (lowercased) — '' if unavailable. */

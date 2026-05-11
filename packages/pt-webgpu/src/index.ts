@@ -91,8 +91,11 @@ class PTEngineWebGPU implements Engine {
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, PROTOTYPE_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
-    this.#mneeMaxIterations = Math.max(1, opts.mneeMaxIterations ?? 8);
-    this.#mneeMaxChainLength = Math.max(1, opts.mneeMaxChainLength ?? 3);
+    const causticOpts = opts.causticOptions ?? {};
+    const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
+    const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
+    this.#mneeMaxIterations = Math.max(1, mneeIter);
+    this.#mneeMaxChainLength = Math.max(1, mneeChain);
   }
 
   get state(): EngineState {

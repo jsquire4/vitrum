@@ -29,10 +29,6 @@ export type Mat4 = Float32Array;
 export type SceneNodeId = string;
 
 // ────────────────────────────────────────────────────────────────────────────
-// Material
-// ────────────────────────────────────────────────────────────────────────────
-
-// ────────────────────────────────────────────────────────────────────────────
 // Spectral rendering types (RFE-01)
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -163,11 +159,12 @@ export interface ThinFilmStack {
  *  without polluting the core type (e.g., normalMap-perturbed shadow ray
  *  parameters, the Phase 4 contribution).
  *
- *  **Mutability:** primitive and emitter types expose `readonly material:
- *  Material` to mean the *slot* is not reassigned through the contract API, not
- *  that the `Material` object is deeply immutable. Hosts may reuse one
- *  `Material` across many primitives and mutate fields between frames when the
- *  binding layer or engine snapshots propagate those changes.
+ *  **Mutability contract:** primitive and emitter types expose `readonly material:
+ *  Material` — the *slot* is not reassigned through the contract API. To change
+ *  any material field after `setScene`, hosts MUST call `engine.updatePrimitive`
+ *  (or `updateEmitter`) with the patched material. Backends are not required to
+ *  detect in-place mutations and will not generally rescan unchanged slots,
+ *  matching the existing incremental-update contract on `Engine`.
  *
  *  Texture handles are opaque to core. The scene-binding layer (e.g.,
  *  @vitrum/three-bindings) is responsible for converting host textures to

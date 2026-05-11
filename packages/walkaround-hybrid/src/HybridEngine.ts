@@ -39,7 +39,8 @@ import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import { buildSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
+import { packDDGIGridParams } from './pipeline/resourceManager.js';
+import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import { aabbFromBvhPositions, buildPpgUniformGridCells } from './ppg/ppgCellUpload.js';
@@ -290,6 +291,12 @@ export class HybridEngine implements Engine {
 
     this.capabilities = {
       supportsIncrementalScene:  false,
+      // supportsMotionBlur === false. WalkaroundGPUPipeline does allocate a
+      // motionVectorTexture, but it's for SVGF temporal reprojection (encoded
+      // as `motion-vectors-zero` — a 2D screen-space delta), not for accumu-
+      // lating samples across a shutter interval. True motion-blur SPP
+      // accumulation is incompatible with the walkaround engine's per-frame
+      // cadence — see resourceManager.ts ("motion-vectors-zero" label).
       supportsMotionBlur:        false,
       supportsAuxBuffers:        false,
       accumulates:               false,
@@ -397,8 +404,11 @@ export class HybridEngine implements Engine {
 
     const t0 = now;
 
-    const swapView   = input.swapChainView;
-    const swapFmt    = input.swapChainFormat ?? getPreferredSwapChainFormat();
+    // Core's FrameInput types swap-chain fields opaquely (BackendTexture /
+    // BackendTextureFormat). The walkaround backend requires WebGPU; cast at
+    // this boundary so the rest of HybridEngine works with concrete types.
+    const swapView   = input.swapChainView as GPUTextureView | undefined;
+    const swapFmt    = (input.swapChainFormat as GPUTextureFormat | undefined) ?? getPreferredSwapChainFormat();
 
     if (!swapView) {
       if (dbg) dbg.skipNoSwapView++;
@@ -442,15 +452,11 @@ export class HybridEngine implements Engine {
     // The host MUST NOT call ddgi.updateFrame() separately.
     const ddgiLayerOn = this._ddgiOn && (this._layerEnabled.get('ddgi') ?? true);
     if (ddgiLayerOn) {
-      // Construct a minimal renderer-adapter so ProbeUpdatePass can access the
-      // device on its lazy-init path. HybridEngine owns the device directly,
-      // so we synthesise the Three.js WebGPU backend shape it expects.
-      const rendererAdapter = {
-        backend: { device: this._device, isWebGPUBackend: true as const },
-      };
+      // DDGIFrameInputs now accepts a DDGIDeviceHandle (`device` or a
+      // Three.js renderer adapter). HybridEngine owns the device directly.
       void this._ddgi.updateFrame({
         scene:   this._ddgiTraversalScene ?? this._threeScene,
-        renderer: rendererAdapter,
+        device:  this._device,
         enabled: true,
       });
     }
@@ -461,22 +467,7 @@ export class HybridEngine implements Engine {
     } else if (this._ddgi.ready) {
       const atlas = this._ddgi.pass.getReadAtlasGPUTextures?.();
       if (atlas) {
-        const p = this._ddgi.probeGrid.params;
-        const gridParams = new ArrayBuffer(64);
-        const f32 = new Float32Array(gridParams);
-        const u32 = new Uint32Array(gridParams);
-        f32[0] = p.origin.x;
-        f32[1] = p.origin.y;
-        f32[2] = p.origin.z;
-        f32[3] = p.spacing;
-        u32[4] = p.dims.x;
-        u32[5] = p.dims.y;
-        u32[6] = p.dims.z;
-        u32[7] = 0;
-        f32[8]  = p.irradianceAtlasW;
-        f32[9]  = p.irradianceAtlasH;
-        f32[10] = p.visibilityAtlasW;
-        f32[11] = p.visibilityAtlasH;
+        const gridParams = packDDGIGridParams(this._ddgi.probeGrid.params);
         pipeline.setDDGIInputs({
           irradianceTex: atlas.irradiance,
           visibilityTex: atlas.visibility,
@@ -711,7 +702,12 @@ export class HybridEngine implements Engine {
       });
     }
 
-    const buildBVHWhenReady = async () => {
+    this._state = 'initializing';
+
+    // Fire-and-forget: the engine transitions to 'ready' when the BVH and
+    // pipeline finish setting up, or to 'error' on failure. Callers do not
+    // await this — the engine state machine is the synchronization point.
+    void (async () => {
       // Poll until scene has enough geometry (or 5s timeout).
       const pollStart = Date.now();
       let pollIters = 0;
@@ -742,7 +738,7 @@ export class HybridEngine implements Engine {
         if (bvhRoot !== this._threeScene) {
           this._ddgiTraversalScene = bvhRoot as THREE.Scene;
         }
-        const bvh = buildSceneBVH([bvhRoot], {
+        const bvh = buildReSTIRSceneBVH([bvhRoot], {
           primaryLightDir:       new THREE.Vector3(...this._primaryLightDir),
           primaryLightIntensity: this._primaryLightIntensity,
         });
@@ -810,10 +806,7 @@ export class HybridEngine implements Engine {
           err,
         );
       }
-    };
-
-    this._state = 'initializing';
-    void buildBVHWhenReady();
+    })();
   }
 }
 

@@ -207,8 +207,16 @@ export class InferenceGraph {
       this._layers.push({ pipeline, weightBuffer, biasBuffer, uniformBuffer });
 
       // Register intermediate output tensor.
+      //
+      // Contract for intermediate buffers (elementCount: 0, buffer: null):
+      // these placeholders mark every layer's named output. The host is
+      // expected to supply the *real* GPUBuffer for each intermediate via the
+      // `outputs` argument of `run()`, OR mutate `this._tensors.get(name)`
+      // before calling `run()` to attach a buffer. `run()` resolves names by
+      // looking in `inputs`, then `this._tensors`, then `outputs`; if any
+      // intermediate is still null at dispatch time, `run()` throws with the
+      // missing tensor name.
       if (!this._tensors.has(layer.output)) {
-      // Dimensions for intermediate buffers — host supplies concrete GPUBuffers via `outputs` in run().
         this._tensors.set(layer.output, { elementCount: 0, buffer: null });
       }
     }
@@ -301,6 +309,13 @@ export class InferenceGraph {
         });
       }
 
+      // Bind-group cache stability assumption: once cached, the layer's
+      // input/output GPUBuffers must not change between frames. The graph
+      // is initialized for a fixed scene size and a fixed tensor topology;
+      // callers that resize the render target or swap input/output buffers
+      // MUST drop the cache (call `dispose()` and rebuild) — otherwise the
+      // cached BindGroup binds stale resources and the pass either reads
+      // wrong data or trips a use-after-destroy on the buffer.
       const bg =
         this._cachedBindGroups[i] ??
         device.createBindGroup({

@@ -137,7 +137,13 @@ export const UNET_OUTPUT_TENSOR_NAMES = ['denoisedColor'] as const;
  *   These are NOT inferred from tensor shapes at spec-definition time; the host
  *   must compute and set them based on the actual render resolution before calling
  *   InferenceGraph.run(). Defaults shown assume 1080p (1920×1080). Update for other
- *   resolutions. See plan/sprint-13-walkaround-integration.md §Dispatch Sizing.
+ *   resolutions via {@link buildUNetSpec}. See
+ *   plan/sprint-13-walkaround-integration.md §Dispatch Sizing.
+ *
+ * @internal Use {@link buildUNetSpec} when dispatching at non-1080p resolutions.
+ * Direct use of this constant assumes a 1920×1080 input — at other resolutions
+ * the workgroup count is wrong and the denoiser will either thrash or under-
+ * dispatch pixels.
  */
 export const WALKAROUND_DENOISER_UNET_SPEC: InferenceGraphSpec = {
   inputTensors:  [...UNET_INPUT_TENSOR_NAMES],
@@ -403,3 +409,75 @@ export const WALKAROUND_DENOISER_UNET_SPEC: InferenceGraphSpec = {
     },
   ],
 };
+
+// Base resolution at which the static WALKAROUND_DENOISER_UNET_SPEC was authored.
+const UNET_SPEC_BASE_WIDTH = 1920;
+const UNET_SPEC_BASE_HEIGHT = 1080;
+
+/**
+ * Produce a UNetSpec with dispatch dims and per-layer inputH/inputW scaled
+ * for the given render resolution. The static {@link WALKAROUND_DENOISER_UNET_SPEC}
+ * is authored for 1920×1080; calling this with non-1080p dims rescales:
+ *
+ *  - spatial inputH/inputW per layer (each scaled by its level's stride factor)
+ *  - dispatchX/dispatchY for spatial (8-thread) kernels — `ceil(W/8) × ceil(H/8)`
+ *  - dispatchX for flat (256-thread) kernels — `ceil(H × W × C / 256)`
+ *
+ * The dispatch math below mirrors what the static spec encodes at 1080p.
+ * Channel counts and kernel/stride/dilation are intentionally not scaled.
+ */
+export function buildUNetSpec(width: number, height: number): InferenceGraphSpec {
+  if (width === UNET_SPEC_BASE_WIDTH && height === UNET_SPEC_BASE_HEIGHT) {
+    return WALKAROUND_DENOISER_UNET_SPEC;
+  }
+
+  const spatialKinds = new Set(['conv2d', 'transposed_conv2d']);
+
+  const layers: InferenceGraphSpec['layers'] = WALKAROUND_DENOISER_UNET_SPEC.layers.map(
+    (layer) => {
+      const p = layer.params ?? {};
+      const baseInputH = Number(p['inputH'] ?? UNET_SPEC_BASE_HEIGHT);
+      const baseInputW = Number(p['inputW'] ?? UNET_SPEC_BASE_WIDTH);
+      const baseInputC = Number(p['inputC'] ?? 1);
+      const scaleY = baseInputH / UNET_SPEC_BASE_HEIGHT;
+      const scaleX = baseInputW / UNET_SPEC_BASE_WIDTH;
+      const inputH = Math.max(1, Math.round(height * scaleY));
+      const inputW = Math.max(1, Math.round(width * scaleX));
+
+      let dispatchX: number;
+      let dispatchY: number;
+      let dispatchZ: number;
+      if (spatialKinds.has(layer.kind)) {
+        // Spatial 8×8 thread blocks; Z is the layer's output channel count.
+        const outputC = Number(p['outputC'] ?? baseInputC);
+        dispatchX = Math.ceil(inputW / 8);
+        dispatchY = Math.ceil(inputH / 8);
+        dispatchZ = outputC;
+      } else {
+        // Flat 256-thread kernels (relu / skipConnection / bilinearUpsample).
+        const total = inputH * inputW * baseInputC;
+        dispatchX = Math.ceil(total / 256);
+        dispatchY = 1;
+        dispatchZ = 1;
+      }
+
+      return {
+        ...layer,
+        params: {
+          ...p,
+          inputH,
+          inputW,
+          dispatchX,
+          dispatchY,
+          dispatchZ,
+        },
+      };
+    },
+  );
+
+  return {
+    inputTensors:  WALKAROUND_DENOISER_UNET_SPEC.inputTensors,
+    outputTensors: WALKAROUND_DENOISER_UNET_SPEC.outputTensors,
+    layers,
+  };
+}

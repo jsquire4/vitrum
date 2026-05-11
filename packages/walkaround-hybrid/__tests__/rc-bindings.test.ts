@@ -295,11 +295,11 @@ describe('GIReceiver', () => {
 // ─── Sprint 2 — cellPower buffer export / shape ───────────────────────────────
 
 describe('SceneBVHBuffers.cellPower (Sprint 2 foundation)', () => {
-  it('buildSceneBVH is exported from restir/bvhCompute (structural smoke test)', async () => {
+  it('buildReSTIRSceneBVH is exported from restir/bvhCompute (structural smoke test)', async () => {
     // Confirms the module compiled with the new cellPower field — the
     // detailed value tests live in sprint2-cellPower.test.ts.
     const mod = await import('../src/restir/bvhCompute.js');
-    expect(typeof mod.buildSceneBVH).toBe('function');
+    expect(typeof mod.buildReSTIRSceneBVH).toBe('function');
     expect(typeof mod.disposeSceneBVH).toBe('function');
   });
 

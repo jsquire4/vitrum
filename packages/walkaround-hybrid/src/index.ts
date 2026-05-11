@@ -31,7 +31,7 @@ export {
 } from './pipeline/WalkaroundGPUPipeline.js';
 export type { PipelineFrameInputs } from './pipeline/WalkaroundGPUPipeline.js';
 export {
-  buildSceneBVH,
+  buildReSTIRSceneBVH,
   disposeSceneBVH,
 } from './restir/bvhCompute.js';
 export type { SceneBVHBuffers } from './restir/bvhCompute.js';
@@ -60,7 +60,7 @@ export {
 export type { CascadeDim, CascadeBuffers } from './rc/cascadePyramid.js';
 
 // RC BVH builder (StorageBufferAttribute-typed adapter over @vitrum/shared-bvh).
-export { buildSceneBVH as buildRCSceneBVH } from './rc/bvhCompute.js';
+export { buildRCSceneBVH } from './rc/bvhCompute.js';
 export type { SceneBVH as RCSceneBVH, BvhBuildOpts as RCBvhBuildOpts } from './rc/bvhCompute.js';
 
 // Cascade dispatch — raw WebGPU compute (converted from TSL per RD-12).
@@ -101,6 +101,7 @@ export type {
 // UNet architecture spec and constants.
 export {
   WALKAROUND_DENOISER_UNET_SPEC,
+  buildUNetSpec,
   UNET_INPUT_CHANNELS,
   UNET_OUTPUT_CHANNELS,
   UNET_ENCODER_CHANNELS,

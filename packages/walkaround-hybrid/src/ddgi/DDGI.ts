@@ -54,10 +54,17 @@ export interface DDGIFrameInputs {
    */
   scene: THREE.Scene;
   /**
-   * The WebGPU renderer object. Must expose `backend?.device` (GPUDevice)
-   * for the ProbeUpdatePass init path.
+   * Raw WebGPU device. Supply this when the host owns the device directly
+   * (e.g. HybridEngine). Either `device` or `renderer` must be present.
    */
-  renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } };
+  device?: GPUDevice;
+  /**
+   * Legacy Three.js WebGPURenderer-shaped object. Supported for standalone
+   * DDGI consumers that wrap a Three.js renderer. Either `device` or
+   * `renderer` must be present — when both are supplied, `renderer.backend.
+   * device` takes precedence (matches the original behaviour).
+   */
+  renderer?: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } };
   /**
    * Whether DDGI compute is enabled this frame. When false, updateFrame
    * returns immediately without dispatching any GPU work.
@@ -128,10 +135,22 @@ export class DDGI {
 
     const t0 = now;
 
+    // Resolve renderer-adapter shape from either `device` or `renderer`.
+    // Existing renderer wins for back-compat with three.js standalone hosts.
+    const rendererAdapter =
+      inputs.renderer ??
+      (inputs.device
+        ? { backend: { device: inputs.device, isWebGPUBackend: true as const } }
+        : undefined);
+    if (!rendererAdapter) {
+      console.warn('[DDGI] updateFrame called without device or renderer; skipping.');
+      return;
+    }
+
     // Initialize GPU on first enabled frame (only try once).
     if (!this._inited) {
       this._inited = true;
-      const ok = await this._pass.init(inputs.renderer);
+      const ok = await this._pass.init(rendererAdapter);
       this._gpuOk = ok;
       if (!ok) {
         console.warn('[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).');
@@ -161,7 +180,7 @@ export class DDGI {
       const offset = this._frame % STRIDE;
       this._frame++;
       try {
-        await this._pass.runFrame(inputs.renderer, offset, STRIDE);
+        await this._pass.runFrame(rendererAdapter, offset, STRIDE);
       } catch (e) {
         console.error('[DDGI] runFrame error:', e);
       }

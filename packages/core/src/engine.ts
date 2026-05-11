@@ -236,20 +236,23 @@ export interface EngineOptions {
   readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
 
   /**
-   * MNEE: maximum number of Newton iterations per manifold walk attempt.
-   * Higher values improve convergence for curved surfaces at greater per-vertex
-   * cost. Typical range: 4–12. Default: 8.
-   * Ignored when causticStrategy !== 'manifold-nee'.
+   * Caustic-strategy-specific tuning knobs. Backends ignore entries that don't
+   * apply to the selected `causticStrategy`.
+   *
+   * Known keys:
+   *  - `mneeMaxIterations` (number, default 8) — MNEE Newton iterations per
+   *    manifold walk attempt. Active when `causticStrategy === 'manifold-nee'`.
+   *  - `mneeMaxChainLength` (number, default 3) — Maximum specular vertices
+   *    in an MNEE chain. Active when `causticStrategy === 'manifold-nee'`.
+   *
+   * The signature is open-ended so new strategies (photon-map params, etc.)
+   * can add keys without churning the core contract.
    */
-  readonly mneeMaxIterations?: number;
-
-  /**
-   * MNEE: maximum number of specular vertices in a chain that MNEE will
-   * attempt to connect. Longer chains are expensive; capping at 3–4 covers
-   * most architectural cases (one or two refractive surfaces).
-   * Default: 3. Ignored when causticStrategy !== 'manifold-nee'.
-   */
-  readonly mneeMaxChainLength?: number;
+  readonly causticOptions?: Readonly<{
+    mneeMaxIterations?: number;
+    mneeMaxChainLength?: number;
+    [key: string]: unknown;
+  }>;
 
   // ── Backend-specific extensions ─────────────────────────────────────────
   /** Engines look up extension keys here for backend-specific creation-time

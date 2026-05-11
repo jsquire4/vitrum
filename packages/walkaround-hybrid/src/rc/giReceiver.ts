@@ -35,14 +35,10 @@ const OUTPUT_COLOR_SPACE  = THREE.SRGBColorSpace;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyNode = any;
 
-/** Tag applied to materials that have been wrapped with GI. */
-const GI_TAG = Symbol('walkaroundGI');
-
-interface GIMaterial {
-  mat: MeshPhysicalNodeMaterial;
-  originalMat: THREE.Material;
-  [GI_TAG]?: boolean;
-}
+/** Tag applied to materials that have been wrapped with GI. Stored in
+ *  userData so the brand survives across Three.js material clones and
+ *  doesn't require Symbol-keyed casts at every check site. */
+const GI_TAG_USERDATA_KEY = '__vitrum_gi_wrapped' as const;
 
 /**
  * Predicate for skipping a mesh when wrapping the scene with GI receivers.
@@ -112,8 +108,12 @@ function makeGIReceiverMaterial(
   (nm as MeshPhysicalNodeMaterial & { outputNode: unknown }).outputNode =
     renderOutput(output, OUTPUT_TONE_MAPPING, OUTPUT_COLOR_SPACE);
 
-  (nm as unknown as GIMaterial)[GI_TAG] = true;
+  nm.userData[GI_TAG_USERDATA_KEY] = true;
   return nm;
+}
+
+function isGIWrapped(mat: THREE.Material): boolean {
+  return Boolean(mat.userData?.[GI_TAG_USERDATA_KEY]);
 }
 
 export interface GIReceiverOptions {
@@ -164,7 +164,7 @@ export class GIReceiver {
         THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial;
 
       // Don't double-wrap.
-      if ((mat as unknown as GIMaterial)[GI_TAG]) return;
+      if (isGIWrapped(mat)) return;
 
       const wrapped = makeGIReceiverMaterial(mat, giNode);
       this._wrappedMeshes.set(obj, obj.material as THREE.Material);

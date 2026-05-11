@@ -55,6 +55,64 @@ function getPositions(
  * Build a kd-tree over cell indices [0 .. count-1] and return packed GPU bytes.
  * Root node index is always **0** (pre-order flat allocation).
  */
+/**
+ * Recursively partition `sub` (cell-index list) and append nodes to `nodes`
+ * in pre-order. Returns the index of the root of the subtree it produced.
+ *
+ * Extracted from the previous inner closure so each build call gets a fresh
+ * `nodes` array via the wrapping function — easier to test, easier to read
+ * (the closure captured `nodes` + `positions` implicitly).
+ */
+function buildKdSubtree(
+  sub: number[],
+  positions: Float32Array,
+  nodes: KdGpuNode[],
+): number {
+  if (sub.length === 1) {
+    const cellIdx = sub[0]!;
+    const idx = nodes.length;
+    nodes.push({
+      child0: 0,
+      child1: 0,
+      meta: PPG_KD_LEAF_FLAG | (cellIdx >>> 0),
+      split: 0,
+    });
+    return idx;
+  }
+
+  let axis = 0;
+  let bestSpan = -1;
+  for (let a = 0; a < 3; a++) {
+    let minV = Infinity;
+    let maxV = -Infinity;
+    for (const i of sub) {
+      const v = positions[i * 3 + a]!;
+      minV = Math.min(minV, v);
+      maxV = Math.max(maxV, v);
+    }
+    const span = maxV - minV;
+    if (span > bestSpan) {
+      bestSpan = span;
+      axis = a;
+    }
+  }
+
+  sub.sort((ia, ib) => positions[ia * 3 + axis]! - positions[ib * 3 + axis]!);
+  const mid = Math.floor(sub.length / 2);
+  const left = sub.slice(0, mid);
+  const right = sub.slice(mid);
+  const ia = left[left.length - 1]!;
+  const ib = right[0]!;
+  const split = 0.5 * (positions[ia * 3 + axis]! + positions[ib * 3 + axis]!);
+
+  const myIdx = nodes.length;
+  nodes.push({ child0: 0, child1: 0, meta: 0, split: 0 });
+  const leftChild = buildKdSubtree(left, positions, nodes);
+  const rightChild = buildKdSubtree(right, positions, nodes);
+  nodes[myIdx] = { child0: leftChild, child1: rightChild, meta: axis & 3, split };
+  return myIdx;
+}
+
 export function buildPpgKdTreeGpuBytes(
   cells: ReadonlyArray<{ readonly position: readonly [number, number, number] }>,
   count: number,
@@ -66,53 +124,7 @@ export function buildPpgKdTreeGpuBytes(
   const indices: number[] = Array.from({ length: count }, (_, i) => i);
   const nodes: KdGpuNode[] = [];
 
-  function build(sub: number[]): number {
-    if (sub.length === 1) {
-      const cellIdx = sub[0]!;
-      const idx = nodes.length;
-      nodes.push({
-        child0: 0,
-        child1: 0,
-        meta: PPG_KD_LEAF_FLAG | (cellIdx >>> 0),
-        split: 0,
-      });
-      return idx;
-    }
-
-    let axis = 0;
-    let bestSpan = -1;
-    for (let a = 0; a < 3; a++) {
-      let minV = Infinity;
-      let maxV = -Infinity;
-      for (const i of sub) {
-        const v = positions[i * 3 + a]!;
-        minV = Math.min(minV, v);
-        maxV = Math.max(maxV, v);
-      }
-      const span = maxV - minV;
-      if (span > bestSpan) {
-        bestSpan = span;
-        axis = a;
-      }
-    }
-
-    sub.sort((ia, ib) => positions[ia * 3 + axis]! - positions[ib * 3 + axis]!);
-    const mid = Math.floor(sub.length / 2);
-    const left = sub.slice(0, mid);
-    const right = sub.slice(mid);
-    const ia = left[left.length - 1]!;
-    const ib = right[0]!;
-    const split = 0.5 * (positions[ia * 3 + axis]! + positions[ib * 3 + axis]!);
-
-    const myIdx = nodes.length;
-    nodes.push({ child0: 0, child1: 0, meta: 0, split: 0 });
-    const leftChild = build(left);
-    const rightChild = build(right);
-    nodes[myIdx] = { child0: leftChild, child1: rightChild, meta: axis & 3, split };
-    return myIdx;
-  }
-
-  build(indices);
+  buildKdSubtree(indices, positions, nodes);
 
   const nodeBytes = nodes.length * PPG_KD_NODE_BYTE_STRIDE;
   const cap = PPG_KD_MAX_NODES * PPG_KD_NODE_BYTE_STRIDE;

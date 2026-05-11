@@ -70,57 +70,38 @@ function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
   for (let i = 0; i < materials.length; i++) {
     const mat = materials[i]!;
     const o = i * 16;
+    // Read MeshStandard-shaped fields (color/roughness/metalness/emissive)
+    // from the casted material — these are present on both
+    // MeshStandardMaterial and MeshPhysicalMaterial, and fall back to
+    // safe defaults when the cast lacks them.
+    const std = mat as Partial<THREE.MeshStandardMaterial>;
+    out[o + 0] = std.color?.r ?? 0.8;
+    out[o + 1] = std.color?.g ?? 0.8;
+    out[o + 2] = std.color?.b ?? 0.8;
+    out[o + 3] = 1.0;
+    out[o + 4] = 0;
+    out[o + 5] = 1.5;
+    out[o + 6] = 1;
+    out[o + 7] = 1;
+    out[o + 8] = 1;
+    out[o + 9] = 1e9;
+    out[o + 10] = std.roughness ?? 1;
+    out[o + 11] = std.metalness ?? 0;
+    const emI = std.emissiveIntensity ?? 1;
+    out[o + 12] = (std.emissive?.r ?? 0) * emI;
+    out[o + 13] = (std.emissive?.g ?? 0) * emI;
+    out[o + 14] = (std.emissive?.b ?? 0) * emI;
+    out[o + 15] = 0.1;
+
+    // Physical-only overrides: transmission, IOR, attenuation, thickness.
     if (mat instanceof THREE.MeshPhysicalMaterial) {
-      out[o + 0] = mat.color?.r ?? 0.8;
-      out[o + 1] = mat.color?.g ?? 0.8;
-      out[o + 2] = mat.color?.b ?? 0.8;
-      out[o + 3] = 1.0;
       out[o + 4] = mat.transmission ?? 0;
       out[o + 5] = mat.ior ?? 1.5;
       out[o + 6] = mat.attenuationColor?.r ?? 1;
       out[o + 7] = mat.attenuationColor?.g ?? 1;
       out[o + 8] = mat.attenuationColor?.b ?? 1;
       out[o + 9] = mat.attenuationDistance ?? 1e9;
-      out[o + 10] = mat.roughness ?? 1;
-      out[o + 11] = mat.metalness ?? 0;
-      out[o + 12] = (mat.emissive?.r ?? 0) * (mat.emissiveIntensity ?? 1);
-      out[o + 13] = (mat.emissive?.g ?? 0) * (mat.emissiveIntensity ?? 1);
-      out[o + 14] = (mat.emissive?.b ?? 0) * (mat.emissiveIntensity ?? 1);
       out[o + 15] = mat.thickness ?? 0.1;
-    } else if (mat instanceof THREE.MeshStandardMaterial) {
-      out[o + 0] = mat.color?.r ?? 0.8;
-      out[o + 1] = mat.color?.g ?? 0.8;
-      out[o + 2] = mat.color?.b ?? 0.8;
-      out[o + 3] = 1.0;
-      out[o + 4] = 0;
-      out[o + 5] = 1.5;
-      out[o + 6] = 1;
-      out[o + 7] = 1;
-      out[o + 8] = 1;
-      out[o + 9] = 1e9;
-      out[o + 10] = mat.roughness ?? 1;
-      out[o + 11] = mat.metalness ?? 0;
-      out[o + 12] = (mat.emissive?.r ?? 0) * (mat.emissiveIntensity ?? 1);
-      out[o + 13] = (mat.emissive?.g ?? 0) * (mat.emissiveIntensity ?? 1);
-      out[o + 14] = (mat.emissive?.b ?? 0) * (mat.emissiveIntensity ?? 1);
-      out[o + 15] = 0.1;
-    } else {
-      out[o + 0] = 0.8;
-      out[o + 1] = 0.8;
-      out[o + 2] = 0.8;
-      out[o + 3] = 1.0;
-      out[o + 4] = 0;
-      out[o + 5] = 1.5;
-      out[o + 6] = 1;
-      out[o + 7] = 1;
-      out[o + 8] = 1;
-      out[o + 9] = 1e9;
-      out[o + 10] = 1;
-      out[o + 11] = 0;
-      out[o + 12] = 0;
-      out[o + 13] = 0;
-      out[o + 14] = 0;
-      out[o + 15] = 0.1;
     }
   }
   return out;
@@ -130,7 +111,7 @@ function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
  * Build a SceneBVH from the current scene graph for the cascade pipeline.
  * Cost: ~50 ms for ~30K triangle scenes. Caller debounces.
  */
-export function buildSceneBVH(
+export function buildRCSceneBVH(
   scene: THREE.Scene,
   opts: BvhBuildOpts = {},
 ): SceneBVH {

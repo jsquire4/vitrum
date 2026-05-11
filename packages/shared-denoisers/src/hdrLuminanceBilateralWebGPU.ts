@@ -94,8 +94,9 @@ export async function runHdrLuminanceBilateralWebGPU(
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
-  const bpp = 16;
-  const bytesPerRow = alignedTextureCopyBytesPerRow(w, bpp);
+  // rgba32float texels are 16 bytes (4 × f32).
+  const RGBA32F_BPP = 16;
+  const bytesPerRow = alignedTextureCopyBytesPerRow(w, RGBA32F_BPP);
   const uploadSize = bytesPerRow * h;
   const upload = new Float32Array(uploadSize / 4);
   for (let y = 0; y < h; y += 1) {
@@ -114,9 +115,11 @@ export async function runHdrLuminanceBilateralWebGPU(
     rowsPerImage: h,
   }, [w, h]);
 
+  // BilateralParams UBO: 4 × f32 = 16 bytes.
+  const HDR_BILATERAL_UBO_SIZE_BYTES = 16;
   const ubo = device.createBuffer({
     label: 'hdr-bilateral-ubo',
-    size: 16,
+    size: HDR_BILATERAL_UBO_SIZE_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
   const uboData = new Float32Array(4);
@@ -140,15 +143,15 @@ export async function runHdrLuminanceBilateralWebGPU(
   pass.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
   pass.end();
 
-  const readbackBytesPerRow = alignedTextureCopyBytesPerRow(w, bpp);
+  // Readback uses the same stride as the upload — single source.
   const readbackBuffer = device.createBuffer({
-    size: readbackBytesPerRow * h,
+    size: bytesPerRow * h,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
 
   encoder.copyTextureToBuffer(
     { texture: texOut },
-    { buffer: readbackBuffer, bytesPerRow: readbackBytesPerRow },
+    { buffer: readbackBuffer, bytesPerRow },
     [w, h],
   );
   device.queue.submit([encoder.finish()]);
@@ -158,7 +161,7 @@ export async function runHdrLuminanceBilateralWebGPU(
 
   const out = new Float32Array(w * h * 3);
   for (let y = 0; y < h; y += 1) {
-    const rowOff = (y * readbackBytesPerRow) / 4;
+    const rowOff = (y * bytesPerRow) / 4;
     for (let x = 0; x < w; x += 1) {
       const di = (y * w + x) * 3;
       const si = rowOff + x * 4;

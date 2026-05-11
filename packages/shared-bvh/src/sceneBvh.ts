@@ -75,6 +75,12 @@ export class SceneBvh {
   /**
    * Walk `scene`, collect **visible** meshes (same as `buildSceneBVH`'s
    * `traverseVisible`), rebuild BVH if dirty.
+   *
+   * IMPORTANT: both the version-hash traversal and the actual build pass
+   * MUST use the same filter predicate (`DDGI_MESH_FILTER`). Divergence
+   * would cause the dirty check to track a different mesh set than was
+   * built, producing false-negatives (missed rebuilds) when meshes leave
+   * one filter set but stay in the other.
    */
   update(scene: THREE.Scene): void {
     // Collect filtered meshes once for the dirty check. The shared core
@@ -90,6 +96,11 @@ export class SceneBvh {
     // Geometry-version dirty check — sum of every mesh's
     // (position-attribute version + mesh.id). Cheap to compute, stable
     // across frames where no geometry actually changed.
+    //
+    // Note: additive hash has a collision risk if a geometry's version
+    // shifts in the opposite direction of mesh.id changes (false-negatives
+    // / missed rebuilds). Upgrade to XOR / FNV-style if that proves
+    // problematic in practice.
     let version = 0;
     for (const m of meshes) {
       const posAttr = m.geometry.attributes['position'] as THREE.BufferAttribute;

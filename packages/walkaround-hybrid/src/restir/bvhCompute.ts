@@ -151,7 +151,7 @@ const WARM_GRAY_DEFAULT_G = 148;
 const WARM_GRAY_DEFAULT_B = 140;
 
 /** Build the full scene BVH + emitter list from a set of Object3D roots. */
-export function buildSceneBVH(
+export function buildReSTIRSceneBVH(
   sceneRoots: THREE.Object3D[],
   options: {
     /** Primary directional light direction (world-space, normalized). Used
@@ -204,7 +204,7 @@ export function buildSceneBVH(
   // unpack per-vertex UV without spending another storage-buffer slot.
   const positionsWithUV = packUVIntoPositionW(
     shared.positions,
-    shared.bvh.geometry.attributes['uv'] as THREE.BufferAttribute | undefined,
+    shared.uvAttribute,
     vertCount,
   );
 
@@ -237,9 +237,7 @@ export function buildSceneBVH(
   // ── 5. UV buffer (separate; CPU-side debug + future use) ────────────────
   // The GPU consumes UV via `bvh_position[*].w`; this is the contract-
   // preserving CPU-side handle.
-  const uvAttr = shared.bvh.geometry.attributes['uv'] as
-    | THREE.BufferAttribute
-    | undefined;
+  const uvAttr = shared.uvAttribute;
   const uvBuf = uvAttr
     ? new Float32Array(uvAttr.array)
     : new Float32Array(vertCount * 2);
@@ -378,6 +376,39 @@ function packUVIntoPositionW(
  *             trans>0.625 / glass-vs-opaque test the shadow ray uses)
  *    3..0  : surfaceTextureId (0..15; 0..7 used today, 8..15 reserved)
  */
+/**
+ * Resolve a triangle's RGB color for packing. Shared between packBVHIndexW
+ * (raw attenuation color) and packBVHBeerColors (Beer-Lambert tinted).
+ *
+ * For transmissive materials with an attenuationColor:
+ *   applyBeer === true  → returns Beer-Lambert tinted color (panels darken
+ *                          by sqrt(absorption) per cell crossing)
+ *   applyBeer === false → returns the RAW attenuation color (used as Le by
+ *                          downstream receivers; Beer-Lambert is applied
+ *                          per-hit by the shader instead of baked in)
+ *
+ * For opaque materials: returns the THREE.Color (or attenuation isn't
+ * applicable); `applyBeer` is ignored.
+ */
+function resolveTriColor(mat: THREE.Material, applyBeer: boolean): THREE.Color {
+  const physMat = mat as THREE.MeshPhysicalMaterial;
+  const stdMat  = mat as THREE.MeshStandardMaterial;
+  const transmission = (physMat.transmission ?? 0) as number;
+  const isTransmissive = transmission > 0.01;
+  const attenColor = (physMat as { attenuationColor?: THREE.Color }).attenuationColor;
+  if (isTransmissive && attenColor) {
+    if (applyBeer) {
+      return applyBeerLambert(
+        attenColor,
+        (physMat as { thickness?: number }).thickness,
+        (physMat as { attenuationDistance?: number }).attenuationDistance,
+      );
+    }
+    return attenColor;
+  }
+  return physMat.color ?? stdMat?.color ?? new THREE.Color(0.6, 0.58, 0.55);
+}
+
 function packBVHIndexW(
   indices: Uint32Array,
   triMaterialId: Uint32Array,
@@ -404,27 +435,12 @@ function packBVHIndexW(
       const physMat = mat as THREE.MeshPhysicalMaterial;
       const stdMat  = mat as THREE.MeshStandardMaterial;
       transmission = (physMat.transmission ?? 0) as number;
-      // ── Glass color resolution ──────────────────────────────────────────
-      //
-      // For textured cathedral glass `createBakedGlassMaterial` sets
-      // `material.color = white(1,1,1)` when a baked `map` is present —
-      // the cell's actual color is carried by the texture map AND by
-      // `material.attenuationColor` (= baseColor; drives Beer-Lambert
-      // absorption).  Reading `material.color` here packs WHITE into
-      // bvhIndex[*].w for every glass triangle, producing an emitter list
-      // whose Le for every glass cell collapsed to white regardless of cell
-      // colour. For transmissive materials we therefore prefer `attenuationColor`.
-      const isTransmissive = transmission > 0.01;
-      const attenColor = (physMat as { attenuationColor?: THREE.Color }).attenuationColor;
       // bvhIndex.w holds the RAW attenuation color (no Beer-Lambert).
       // This is what receivers in the room sample via emitter Le and
       // bvhTraceTintedVisibility. The Beer-Lambert *visible* color
-      // (what the shader uses for Lo_emit on a primary glass hit) lives
-      // in a parallel bvh_beer buffer.
-      const color =
-        (isTransmissive && attenColor)
-          ? attenColor
-          : (physMat.color ?? stdMat?.color ?? new THREE.Color(0.6, 0.58, 0.55));
+      // (used by Lo_emit on a primary glass hit) lives in the parallel
+      // bvh_beer buffer (see packBVHBeerColors).
+      const color = resolveTriColor(mat, /* applyBeer */ false);
       r = Math.round(color.r * 255) & 0xFF;
       g = Math.round(color.g * 255) & 0xFF;
       b = Math.round(color.b * 255) & 0xFF;
@@ -470,21 +486,7 @@ function packBVHBeerColors(
     const mat = materials[matId];
     let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
     if (mat) {
-      const physMat = mat as THREE.MeshPhysicalMaterial;
-      const stdMat  = mat as THREE.MeshStandardMaterial;
-      const transmission = (physMat.transmission ?? 0) as number;
-      const isTransmissive = transmission > 0.01;
-      const attenColor = (physMat as { attenuationColor?: THREE.Color }).attenuationColor;
-      const tinted = (isTransmissive && attenColor)
-        ? applyBeerLambert(
-            attenColor,
-            (physMat as { thickness?: number }).thickness,
-            (physMat as { attenuationDistance?: number }).attenuationDistance,
-          )
-        : null;
-      const color =
-        tinted
-          ?? (physMat.color ?? stdMat?.color ?? new THREE.Color(0.6, 0.58, 0.55));
+      const color = resolveTriColor(mat, /* applyBeer */ true);
       r = Math.round(Math.min(1, color.r) * 255) & 0xFF;
       g = Math.round(Math.min(1, color.g) * 255) & 0xFF;
       b = Math.round(Math.min(1, color.b) * 255) & 0xFF;

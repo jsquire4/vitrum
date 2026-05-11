@@ -45,7 +45,7 @@ export const CIE_TABLE_LENGTH = 81;
 // Public domain. Source: CIE 015:2018.
 
 /** CIE 1931 x̄(λ) color-matching function, 380–780 nm at 5 nm steps. */
-export const CIE_X_TABLE = new Float32Array([
+export const CIE_X_TABLE: Readonly<Float32Array> = new Float32Array([
   /* 380 */ 0.001368, /* 385 */ 0.002236, /* 390 */ 0.004243, /* 395 */ 0.007650,
   /* 400 */ 0.014310, /* 405 */ 0.023190, /* 410 */ 0.043510, /* 415 */ 0.077630,
   /* 420 */ 0.134380, /* 425 */ 0.214770, /* 430 */ 0.283900, /* 435 */ 0.328500,
@@ -70,7 +70,7 @@ export const CIE_X_TABLE = new Float32Array([
 ]);
 
 /** CIE 1931 ȳ(λ) color-matching function (luminous efficiency), 380–780 nm at 5 nm steps. */
-export const CIE_Y_TABLE = new Float32Array([
+export const CIE_Y_TABLE: Readonly<Float32Array> = new Float32Array([
   /* 380 */ 0.000039, /* 385 */ 0.000064, /* 390 */ 0.000120, /* 395 */ 0.000217,
   /* 400 */ 0.000396, /* 405 */ 0.000640, /* 410 */ 0.001210, /* 415 */ 0.002180,
   /* 420 */ 0.004000, /* 425 */ 0.007300, /* 430 */ 0.011600, /* 435 */ 0.016840,
@@ -95,7 +95,7 @@ export const CIE_Y_TABLE = new Float32Array([
 ]);
 
 /** CIE 1931 z̄(λ) color-matching function, 380–780 nm at 5 nm steps. */
-export const CIE_Z_TABLE = new Float32Array([
+export const CIE_Z_TABLE: Readonly<Float32Array> = new Float32Array([
   /* 380 */ 0.006450, /* 385 */ 0.010550, /* 390 */ 0.020050, /* 395 */ 0.036210,
   /* 400 */ 0.067850, /* 405 */ 0.110200, /* 410 */ 0.207400, /* 415 */ 0.371300,
   /* 420 */ 0.645600, /* 425 */ 1.039050, /* 430 */ 1.385600, /* 435 */ 1.622960,
@@ -125,7 +125,7 @@ export const CIE_Z_TABLE = new Float32Array([
 // Source: CIE 15:2004 Table T.1.
 
 /** CIE D65 standard illuminant (6500 K daylight), 380–780 nm at 5 nm steps. */
-export const CIE_D65_TABLE = new Float32Array([
+export const CIE_D65_TABLE: Readonly<Float32Array> = new Float32Array([
   /*380*/  49.9755, /*385*/  52.3118, /*390*/  54.6482, /*395*/  68.7015,
   /*400*/  82.7549, /*405*/  87.1204, /*410*/  91.4860, /*415*/  92.4589,
   /*420*/  93.4318, /*425*/  90.0570, /*430*/  86.6823, /*435*/  95.7736,

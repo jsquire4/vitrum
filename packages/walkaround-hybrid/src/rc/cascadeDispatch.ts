@@ -427,6 +427,11 @@ export class RCDispatcher {
       });
 
       // Per-pass uniform buffer for CascadeUniforms (40 floats = 160 bytes).
+      // envIntensity is fixed at 1.0 by design: tone mapping is applied per-
+      // material downstream, and environment-level scaling is intentionally
+      // not exposed at the RC dispatch level. If a future requirement needs
+      // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
+      // through.
       const uniformRaw = new Float32Array(40);
       buildCascadeUniformDataInto(uniformRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed);
       const uniformBuf = device.createBuffer({
@@ -516,6 +521,11 @@ export class RCDispatcher {
 // ─── Backward-compatible functional API ──────────────────────────────────────
 // Mirrors the original `dispatchCascadePasses(opts)` signature for drop-in use.
 
+// Single-canvas-scoped by design: this functional API serves the legacy /
+// single-host call sites where there is exactly one RC canvas per page.
+// Multi-canvas / multi-instance hosts should instantiate `RCDispatcher`
+// directly (the class is exported) — a shared dispatcher would otherwise
+// share state across canvases that should be independent.
 const _sharedDispatcher = new RCDispatcher();
 
 /**

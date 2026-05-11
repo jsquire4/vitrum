@@ -33,13 +33,56 @@ import {
   Vector3,
 } from 'three';
 import type { Texture } from 'three';
+import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
+import { luminance as rec709Luminance } from './math.js';
 
 function isNoneEnv(env: VitrumScene['environment']): env is NoneEnvironment {
   return env.kind === 'none';
 }
 
 function luminance(color: Vec3, intensity: number): number {
-  return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) * intensity;
+  return rec709Luminance(color[0], color[1], color[2], intensity);
+}
+
+/** Apply all texture-map fields from a vitrum Material onto a Three material. */
+function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
+  if (m.baseColorMap != null && isTexture(m.baseColorMap)) mat.map = m.baseColorMap;
+  if (m.normalMap != null && isTexture(m.normalMap)) {
+    mat.normalMap = m.normalMap;
+    mat.normalScale.set(m.normalScale ?? 1, m.normalScale ?? 1);
+  }
+  if (m.roughnessMap != null && isTexture(m.roughnessMap)) mat.roughnessMap = m.roughnessMap;
+  if (m.metallicMap != null && isTexture(m.metallicMap)) mat.metalnessMap = m.metallicMap;
+  if (m.emissiveMap != null && isTexture(m.emissiveMap)) mat.emissiveMap = m.emissiveMap;
+  if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
+}
+
+/** Stamp vitrum-specific extension fields into `mat.userData` using the
+ *  canonical keys from `userDataKeys.ts`. Each field is set only when the
+ *  source field is defined, so callers without the new RFEs get a clean
+ *  userData object (no phantom keys). */
+function stampVitrumUserData(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
+  const ud: Record<string, unknown> = mat.userData ?? {};
+
+  // RFE-06 (Sprint 8 — chromatic dispersion)
+  if (m.dispersionAbbeNumber !== undefined) {
+    ud[K.DISPERSION_ABBE] = m.dispersionAbbeNumber;
+  }
+
+  // RFE-07 (Sprint 7 — volume scattering)
+  if (m.scatteringCoefficient !== undefined) ud[K.SCATTERING_COEFF] = m.scatteringCoefficient;
+  if (m.scatteringCoefficientRGB !== undefined) ud[K.SCATTERING_RGB] = m.scatteringCoefficientRGB;
+  if (m.scatteringAnisotropy !== undefined) ud[K.SCATTERING_ANISO] = m.scatteringAnisotropy;
+
+  // RFE-08 (Sprint 12 — spectral attenuation + thin-film stack)
+  if (m.spectralAttenuation !== undefined) ud[K.SPECTRAL_ATTEN] = m.spectralAttenuation;
+  if (m.thinFilmStack !== undefined) ud[K.THIN_FILM_STACK] = m.thinFilmStack;
+
+  // RFE-03 (per-face surface absorption layers)
+  if (m.frontLayer !== undefined) ud[K.FRONT_LAYER] = m.frontLayer;
+  if (m.backLayer !== undefined) ud[K.BACK_LAYER] = m.backLayer;
+
+  mat.userData = ud;
 }
 
 /** Additive diffuse emission from `mesh-area` emitters referencing this mesh (`color * intensity`). */
@@ -72,53 +115,8 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
     if (m.attenuationDistance != null) mat.attenuationDistance = m.attenuationDistance;
     if (m.thickness != null) mat.thickness = m.thickness;
   }
-  if (m.baseColorMap != null && isTexture(m.baseColorMap)) mat.map = m.baseColorMap;
-  if (m.normalMap != null && isTexture(m.normalMap)) {
-    mat.normalMap = m.normalMap;
-    mat.normalScale.set(m.normalScale ?? 1, m.normalScale ?? 1);
-  }
-  if (m.roughnessMap != null && isTexture(m.roughnessMap)) mat.roughnessMap = m.roughnessMap;
-  if (m.metallicMap != null && isTexture(m.metallicMap)) mat.metalnessMap = m.metallicMap;
-  if (m.emissiveMap != null && isTexture(m.emissiveMap)) mat.emissiveMap = m.emissiveMap;
-  if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
-  // ── Stamp userData.vitrum* so fork shaders (Sprints 7/8/12) can read them ──
-  // Each field is set only when the vitrum.Material field is defined, so callers
-  // that lack the new RFE fields get a clean userData object (no phantom keys).
-  const ud: Record<string, unknown> = mat.userData ?? {};
-
-  // RFE-06 (Sprint 8 — chromatic dispersion)
-  if (m.dispersionAbbeNumber !== undefined) {
-    ud['vitrumDispersionAbbeNumber'] = m.dispersionAbbeNumber;
-  }
-
-  // RFE-07 (Sprint 7 — volume scattering)
-  if (m.scatteringCoefficient !== undefined) {
-    ud['vitrumScatteringCoefficient'] = m.scatteringCoefficient;
-  }
-  if (m.scatteringCoefficientRGB !== undefined) {
-    ud['vitrumScatteringCoefficientRGB'] = m.scatteringCoefficientRGB;
-  }
-  if (m.scatteringAnisotropy !== undefined) {
-    ud['vitrumScatteringAnisotropy'] = m.scatteringAnisotropy;
-  }
-
-  // RFE-08 (Sprint 12 — spectral attenuation + thin-film stack)
-  if (m.spectralAttenuation !== undefined) {
-    ud['vitrumSpectralAttenuation'] = m.spectralAttenuation;
-  }
-  if (m.thinFilmStack !== undefined) {
-    ud['vitrumThinFilmStack'] = m.thinFilmStack;
-  }
-
-  // RFE-03 (per-face surface absorption layers)
-  if (m.frontLayer !== undefined) {
-    ud['vitrumFrontLayer'] = m.frontLayer;
-  }
-  if (m.backLayer !== undefined) {
-    ud['vitrumBackLayer'] = m.backLayer;
-  }
-
-  mat.userData = ud;
+  applyTextureMaps(mat, m);
+  stampVitrumUserData(mat, m);
   return mat;
 }
 
@@ -137,7 +135,7 @@ function meshPrimitiveToThree(p: MeshPrimitive, meshAreaRadianceRgb?: Vec3): Mes
   const mesh = new Mesh(geo, mat);
   mesh.name = String(p.id);
   const m = new Matrix4();
-  if (p.transform) m.fromArray(Array.from(p.transform));
+  if (p.transform) m.fromArray(p.transform);
   else m.identity();
   mesh.matrix.copy(m);
   mesh.matrixWorld.copy(m);
@@ -180,6 +178,12 @@ function meshEmitterBoostByPrimitiveId(scene: VitrumScene): Map<string, [number,
  * the same π·radius² footprint as an ideal disc (different sampling density).
  */
 function discAreaEmitterToRectThree(e: Extract<SceneEmitter, { kind: 'disc-area' }>): RectAreaLight | null {
+  console.warn(
+    `[vitrum/three-bindings] DiscAreaEmitter "${e.id}" converted to RectAreaLight ` +
+      `(area-preserving rectangle approximation; Three has no native disc-area light). ` +
+      `Round-tripping the scene through sceneFromThreeJS will yield a RectAreaEmitter, ` +
+      `not a DiscAreaEmitter.`,
+  );
   const n = _z.set(e.normal[0], e.normal[1], e.normal[2]);
   if (n.length() < 1e-8) {
     console.warn(

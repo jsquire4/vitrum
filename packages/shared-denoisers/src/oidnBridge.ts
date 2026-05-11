@@ -187,14 +187,17 @@ export async function denoiseFinal(
     ]);
   }
 
-  const results = await (session as { run: (feeds: Record<string, unknown>) => Promise<Record<string, { data: Float32Array }>> }).run(feeds);
+  const results = await (session as _OrtSession).run(feeds);
 
   const outputPrimaryKey = tn.output ?? 'output';
-  const outputTensor = results[outputPrimaryKey] ?? results['output'] ?? results['color'];
+  // `tn.output ?? 'output'` covers both the explicit-name path and the
+  // 'output' fallback in a single lookup; 'color' remains as a secondary
+  // alias some legacy models use.
+  const outputTensor = results[outputPrimaryKey] ?? results['color'];
   if (outputTensor == null) {
     throw new Error(
       `[oidnBridge] ONNX model output not found. ` +
-      `Expected output named '${outputPrimaryKey}', 'output', or 'color'. Got keys: ${Object.keys(results).join(', ')}`,
+      `Expected output named '${outputPrimaryKey}' or 'color'. Got keys: ${Object.keys(results).join(', ')}`,
     );
   }
 
@@ -266,6 +269,13 @@ interface _OrtModule {
   InferenceSession: {
     create: (modelUrl: string, options: Record<string, unknown>) => Promise<unknown>;
   };
+}
+
+/** Subset of onnxruntime-web's InferenceSession we depend on. */
+interface _OrtSession {
+  run: (
+    feeds: Record<string, unknown>,
+  ) => Promise<Record<string, { data: Float32Array }>>;
 }
 
 async function _loadORT(): Promise<_OrtModule> {

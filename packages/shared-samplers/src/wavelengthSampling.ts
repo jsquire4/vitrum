@@ -41,23 +41,24 @@ import {
 
 // ── Build CDF from Y table at module load ─────────────────────────────────────
 // This is a one-time O(N) cost; the resulting CDF is used for all sampling.
-
-/** Integral of Y CMF over [380, 780] nm via trapezoidal rule at 5 nm steps. */
-const Y_INTEGRAL: number = (() => {
-  let s = 0;
-  for (let i = 0; i < CIE_TABLE_LENGTH; i++) {
-    const w = i === 0 || i === CIE_TABLE_LENGTH - 1 ? 0.5 : 1.0;
-    s += w * (CIE_Y_TABLE[i] ?? 0);
-  }
-  return s * CIE_LAMBDA_STEP;
-})();
+// Both Y_INTEGRAL and Y_CDF are derived from the same trapezoidal pass, so
+// they are computed together to remove the ordering hazard of two sequential
+// dependent IIFEs.
 
 /**
- * Normalised CDF of the Y CMF.  CDF[i] is the probability that a sample drawn
- * from pdf(λ) ∝ Y(λ) has index < i (i.e. wavelength < 380 + 5·i nm).
- * Length = CIE_TABLE_LENGTH + 1 (CDF[0] = 0, CDF[N] = 1 by construction).
+ * Y_INTEGRAL: Integral of Y CMF over [380, 780] nm via trapezoidal rule at 5 nm steps.
+ * Y_CDF:     Normalised CDF of the Y CMF. CDF[i] is the probability that a sample
+ *            drawn from pdf(λ) ∝ Y(λ) has index < i (wavelength < 380 + 5·i nm).
+ *            Length = CIE_TABLE_LENGTH + 1 (CDF[0] = 0, CDF[N] = 1 by construction).
  */
-const Y_CDF: Float64Array = (() => {
+const { Y_INTEGRAL, Y_CDF }: { Y_INTEGRAL: number; Y_CDF: Float64Array } = (() => {
+  let integral = 0;
+  for (let i = 0; i < CIE_TABLE_LENGTH; i++) {
+    const w = i === 0 || i === CIE_TABLE_LENGTH - 1 ? 0.5 : 1.0;
+    integral += w * (CIE_Y_TABLE[i] ?? 0);
+  }
+  integral *= CIE_LAMBDA_STEP;
+
   const cdf = new Float64Array(CIE_TABLE_LENGTH + 1);
   cdf[0] = 0;
   for (let i = 1; i <= CIE_TABLE_LENGTH; i++) {
@@ -65,12 +66,12 @@ const Y_CDF: Float64Array = (() => {
     const yCurr = i < CIE_TABLE_LENGTH ? (CIE_Y_TABLE[i] ?? 0) : 0;
     cdf[i] = (cdf[i - 1] ?? 0) + (yPrev + yCurr) * 0.5 * CIE_LAMBDA_STEP;
   }
-  // Normalise
-  const total = cdf[CIE_TABLE_LENGTH] ?? Y_INTEGRAL;
+  const total = cdf[CIE_TABLE_LENGTH] ?? integral;
   for (let i = 0; i <= CIE_TABLE_LENGTH; i++) {
     cdf[i] = (cdf[i] ?? 0) / total;
   }
-  return cdf;
+
+  return { Y_INTEGRAL: integral, Y_CDF: cdf };
 })();
 
 // ── Public API ────────────────────────────────────────────────────────────────

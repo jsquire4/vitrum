@@ -158,20 +158,21 @@ function fitCoefficients(r: number, g: number, b: number): [number, number, numb
   //   Row 1: [ -5e-2,   23/300,  -4/150    ]  =  [ -0.05, 0.07666, -0.02666 ]
   //   Row 2: [ 4e-5,   -2/30000,  4/150000 ]  =  [ 4e-5, -6.666e-5, 2.666e-5 ]
 
-  // row 0: coefficients for c0
-  const v00 =  15.4;
-  const v01 = -21.0;
-  const v02 =  6.6;
+  // row 0: coefficients for c0 — derived from 3-node Vandermonde inverse
+  // with nodes [LAMBDA_B=450, LAMBDA_G=550, LAMBDA_R=700] nm.
+  const v00 =  15.4;                              // =  154 / 10
+  const v01 = -21.0;                              // = -210 / 10
+  const v02 =  6.6;                               // =   66 / 10
 
   // row 1: coefficients for c1
-  const v10 = -5.0e-2;
-  const v11 =  7.666_666_666_666_666_7e-2;
-  const v12 = -2.666_666_666_666_666_7e-2;
+  const v10 = -5.0e-2;                            // = -5 / 100
+  const v11 =  7.666_666_666_666_666_7e-2;        // = 23 / 300
+  const v12 = -2.666_666_666_666_666_7e-2;        // = -4 / 150
 
   // row 2: coefficients for c2
-  const v20 =  4.0e-5;
-  const v21 = -6.666_666_666_666_666_7e-5;
-  const v22 =  2.666_666_666_666_666_7e-5;
+  const v20 =  4.0e-5;                            // = 4 / 100000
+  const v21 = -6.666_666_666_666_666_7e-5;        // = -2 / 30000
+  const v22 =  2.666_666_666_666_666_7e-5;        // = 4 / 150000
 
   const c0 = v00 * y[0]! + v01 * y[1]! + v02 * y[2]!;
   const c1 = v10 * y[0]! + v11 * y[1]! + v12 * y[2]!;
@@ -195,6 +196,10 @@ function fitCoefficients(r: number, g: number, b: number): [number, number, numb
  * where sigmoid(x) = 0.5 + x / (2·√(1 + x²)).
  *
  * ⚠️ Not the paper’s precomputed table — see file-level documentation.
+ *
+ * @internal Placeholder approximation. Slated for replacement by the
+ *           paper's precomputed table in Sprint 12. New code should call the
+ *           stable alias `rgbToSpectralCoefficients` defined below.
  *
  * @param r - Red channel, linear sRGB [0, 1].
  * @param g - Green channel, linear sRGB [0, 1].
@@ -258,7 +263,9 @@ export const VISIBLE_LAMBDA_MIN = LAMBDA_MIN;
 export const VISIBLE_LAMBDA_MAX = LAMBDA_MAX;
 
 /**
- * @deprecated Use {@link rgbToApproxSpectralCoefficients}. Name retained for
- * backward compatibility; this implementation is the compact approximation only.
+ * Stable public alias for the RGB→spectral coefficient fit. Use this name
+ * in production code; `rgbToApproxSpectralCoefficients` is the current
+ * approximation-only implementation and is marked @internal — the
+ * precomputed-table replacement is scheduled to swap in via Sprint 12.
  */
 export const rgbToSpectralCoefficients = rgbToApproxSpectralCoefficients;

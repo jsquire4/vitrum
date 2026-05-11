@@ -19,6 +19,11 @@ export function resolveEnvironment(threeScene: THREE.Scene): SceneEnvironment {
   if (threeScene.environment != null) {
     return { kind: 'hdri', hdri: threeScene.environment };
   }
+  // TODO: ProceduralSkyEnvironment is not handled here. A THREE.Sky object
+  // with uniforms { turbidity, mieCoefficient, mieDirectionalG, rayleigh }
+  // would feed this branch. See core/scene.ts ProceduralSkyEnvironment for
+  // the expected fields and how the resolved environment is consumed
+  // downstream.
   // A solid-color background is not an IBL source — treat as no environment.
   return { kind: 'none' };
 }

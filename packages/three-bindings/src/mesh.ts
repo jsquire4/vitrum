@@ -7,8 +7,43 @@
  */
 
 import type * as THREE from 'three';
-import type { MeshPrimitive, Mat4 } from '@vitrum/core';
+import type { MeshPrimitive, Mat4, SceneEmitter } from '@vitrum/core';
 import { convertMaterial } from './material.js';
+import { luminance } from './math.js';
+
+/**
+ * Detect emissive meshes that should be treated as area-light emitters.
+ * Returns a SceneEmitter when the mesh's material has non-zero emissive
+ * luminance; null otherwise. Callers strip the emissive contribution from
+ * the corresponding MeshPrimitive material so emission is not double-counted.
+ */
+export function emissiveMeshAreaEmitter(mesh: THREE.Mesh): SceneEmitter | null {
+  const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  if (rawMat == null) return null;
+  const asStd = rawMat as THREE.MeshStandardMaterial & { emissiveIntensity?: number };
+  if (asStd.emissive == null) return null;
+  const ei = asStd.emissiveIntensity ?? 1;
+  const em = asStd.emissive;
+  if (luminance(em.r, em.g, em.b, ei) < 1e-7) return null;
+  return {
+    kind: 'mesh-area',
+    id: `mesh-emissive-${mesh.uuid}`,
+    meshId: mesh.uuid,
+    color: [em.r, em.g, em.b],
+    intensity: ei,
+    castShadow: true,
+  };
+}
+
+/** Returns a copy of `prim` with the emissive contribution zeroed so the
+ *  same surface is not double-counted as both a path-traced emissive
+ *  surface and a sampled area-light emitter. */
+export function stripEmissive(prim: MeshPrimitive): MeshPrimitive {
+  return {
+    ...prim,
+    material: { ...prim.material, emissive: [0, 0, 0], emissiveIntensity: 0 },
+  };
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Attribute extractors

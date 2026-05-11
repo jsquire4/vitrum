@@ -298,6 +298,38 @@ export function buildDDGIPlaceholderUBO(): Float32Array {
 }
 
 /**
+ * Pack live DDGI grid params into the canonical 64-byte UBO layout expected
+ * by shade.wgsl. Single source of truth; HybridEngine.renderFrame() used to
+ * inline this packing, which drifted vs. buildDDGIPlaceholderUBO above.
+ */
+export function packDDGIGridParams(p: {
+  origin: { x: number; y: number; z: number };
+  spacing: number;
+  dims: { x: number; y: number; z: number };
+  irradianceAtlasW: number;
+  irradianceAtlasH: number;
+  visibilityAtlasW: number;
+  visibilityAtlasH: number;
+}): ArrayBuffer {
+  const buf = new ArrayBuffer(64);
+  const f32 = new Float32Array(buf);
+  const u32 = new Uint32Array(buf);
+  f32[0] = p.origin.x;
+  f32[1] = p.origin.y;
+  f32[2] = p.origin.z;
+  f32[3] = p.spacing;
+  u32[4] = p.dims.x;
+  u32[5] = p.dims.y;
+  u32[6] = p.dims.z;
+  u32[7] = 0;
+  f32[8]  = p.irradianceAtlasW;
+  f32[9]  = p.irradianceAtlasH;
+  f32[10] = p.visibilityAtlasW;
+  f32[11] = p.visibilityAtlasH;
+  return buf;
+}
+
+/**
  * Create a per-pixel Welford variance buffer (RG32Float storage texture).
  *
  * Sprint 9 — Decision 13 (locked 2026-05-09): the WelfordVariance struct

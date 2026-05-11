@@ -2,10 +2,10 @@
  * Sprint 2 (Phase 6) — cellPower foundation tests.
  *
  * Verifies that `SceneBVHBuffers.cellPower` is correctly populated by
- * `buildSceneBVH` in `restir/bvhCompute.ts`.
+ * `buildReSTIRSceneBVH` in `restir/bvhCompute.ts`.
  *
  * Test strategy: construct synthetic THREE.Mesh objects with emissive
- * materials (so they contribute emitters), call buildSceneBVH, and assert
+ * materials (so they contribute emitters), call buildReSTIRSceneBVH, and assert
  * on the cellPower array. No real WebGPU device is required — these are
  * CPU-side unit tests on the Float32Array produced before GPU upload.
  *
@@ -16,7 +16,7 @@
 
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import { buildSceneBVH } from '../src/restir/bvhCompute.js';
+import { buildReSTIRSceneBVH } from '../src/restir/bvhCompute.js';
 
 // ── Geometry helpers ──────────────────────────────────────────────────────────
 
@@ -74,7 +74,7 @@ describe('Sprint 2 — SceneBVHBuffers.cellPower structure', () => {
     scene.add(makeSquareMesh(2, mat));
     scene.updateMatrixWorld(true);
 
-    const buffers = buildSceneBVH([scene]);
+    const buffers = buildReSTIRSceneBVH([scene]);
     expect(buffers).toHaveProperty('cellPower');
   });
 
@@ -87,7 +87,7 @@ describe('Sprint 2 — SceneBVHBuffers.cellPower structure', () => {
     scene.add(makeSquareMesh(1, mat));
     scene.updateMatrixWorld(true);
 
-    const buffers = buildSceneBVH([scene]);
+    const buffers = buildReSTIRSceneBVH([scene]);
     const cp = buffers.cellPower;
     expect(cp).toHaveProperty('cpuData');
     expect(cp).toHaveProperty('byteLength');
@@ -104,7 +104,7 @@ describe('Sprint 2 — SceneBVHBuffers.cellPower structure', () => {
     scene.add(makeSquareMesh(3, mat));
     scene.updateMatrixWorld(true);
 
-    const buffers = buildSceneBVH([scene]);
+    const buffers = buildReSTIRSceneBVH([scene]);
     expect(buffers.cellPower.count).toBe(buffers.emitterCdf.count);
   });
 
@@ -117,7 +117,7 @@ describe('Sprint 2 — SceneBVHBuffers.cellPower structure', () => {
     scene.add(makeSquareMesh(2, mat));
     scene.updateMatrixWorld(true);
 
-    const buffers = buildSceneBVH([scene]);
+    const buffers = buildReSTIRSceneBVH([scene]);
     const view = new Float32Array(buffers.cellPower.cpuData);
     for (let i = 0; i < buffers.emitterCount; i++) {
       expect(view[i]).toBeGreaterThanOrEqual(0);
@@ -138,7 +138,7 @@ describe('Sprint 2 — cellPower linear scaling (DoD round-trip test)', () => {
    * differently). Using an emissive material avoids the sunDot dependency.
    */
   it('doubling emissiveIntensity doubles total cellPower', () => {
-    function buildScene(intensity: number): ReturnType<typeof buildSceneBVH> {
+    function buildScene(intensity: number): ReturnType<typeof buildReSTIRSceneBVH> {
       const mat = new THREE.MeshStandardMaterial({
         emissive: new THREE.Color(1, 1, 1),
         emissiveIntensity: intensity,
@@ -146,7 +146,7 @@ describe('Sprint 2 — cellPower linear scaling (DoD round-trip test)', () => {
       const scene = new THREE.Scene();
       scene.add(makeSquareMesh(2, mat));
       scene.updateMatrixWorld(true);
-      return buildSceneBVH([scene]);
+      return buildReSTIRSceneBVH([scene]);
     }
 
     const b1 = buildScene(1);
@@ -167,7 +167,7 @@ describe('Sprint 2 — cellPower linear scaling (DoD round-trip test)', () => {
   });
 
   it('halving emissive color halves total cellPower', () => {
-    function buildScene(emissive: THREE.Color): ReturnType<typeof buildSceneBVH> {
+    function buildScene(emissive: THREE.Color): ReturnType<typeof buildReSTIRSceneBVH> {
       const mat = new THREE.MeshStandardMaterial({
         emissive,
         emissiveIntensity: 2,
@@ -175,7 +175,7 @@ describe('Sprint 2 — cellPower linear scaling (DoD round-trip test)', () => {
       const scene = new THREE.Scene();
       scene.add(makeSquareMesh(2, mat));
       scene.updateMatrixWorld(true);
-      return buildSceneBVH([scene]);
+      return buildReSTIRSceneBVH([scene]);
     }
 
     const b1 = buildScene(new THREE.Color(1, 1, 1));   // luminance ≈ 1.0
@@ -208,7 +208,7 @@ describe('Sprint 2 — cellPower values match luminance × area formula', () => 
     scene.add(makeSquareMesh(2, mat));
     scene.updateMatrixWorld(true);
 
-    const buffers = buildSceneBVH([scene]);
+    const buffers = buildReSTIRSceneBVH([scene]);
     const view = new Float32Array(buffers.cellPower.cpuData);
 
     // Total expected power = luminance(R*intensity, G*intensity, B*intensity) × area
@@ -234,7 +234,7 @@ describe('Sprint 2 — cellPower with no emitters (dummy emitter path)', () => {
     scene.add(makeSquareMesh(1, mat));
     scene.updateMatrixWorld(true);
 
-    const buffers = buildSceneBVH([scene]);
+    const buffers = buildReSTIRSceneBVH([scene]);
     // Dummy sentinel is always inserted; count = 1.
     expect(buffers.emitterCount).toBe(1);
     expect(buffers.cellPower.count).toBe(1);

@@ -69,6 +69,45 @@ function svgfPipelines(device: GPUDevice): SvgfPipelineBundle {
   return bundle;
 }
 
+// Bytes-per-pixel constants for the formats we upload to.
+const RGBA32F_BPP = 16 as const;
+const RGBA16F_BPP = 8 as const;
+const RG32F_BPP = 8 as const;
+
+/**
+ * Generic stride-aware texture upload helper.
+ *
+ * Allocates a row-padded staging buffer (driver requires 256-byte aligned
+ * bytesPerRow on writeTexture) using the supplied typed-array ctor, lets
+ * the caller fill it, then forwards to writeTexture. All six previous
+ * format-specific helpers below funnel through this primitive.
+ *
+ * The `fill` callback receives the destination row stride in *elements*
+ * (not bytes), so it can compute per-row offsets without re-deriving the
+ * alignment math at every call site.
+ */
+function uploadTexture2D<T extends Float32Array | Uint8Array>(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+  bpp: number,
+  TypedArrayCtor: new (lengthInElements: number) => T,
+  bytesPerElement: number,
+  fill: (buf: T, rowStrideElements: number) => void,
+): void {
+  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
+  const rowStrideElements = bpr / bytesPerElement;
+  const upload = new TypedArrayCtor(rowStrideElements * height);
+  fill(upload, rowStrideElements);
+  device.queue.writeTexture(
+    { texture },
+    upload.buffer as GPUAllowSharedBufferSource,
+    { bytesPerRow: bpr, rowsPerImage: height },
+    [width, height],
+  );
+}
+
 function fillRgba32fTexture(
   device: GPUDevice,
   texture: GPUTexture,
@@ -76,23 +115,18 @@ function fillRgba32fTexture(
   height: number,
   rgbaPerPixel: readonly [number, number, number, number],
 ): void {
-  const bpp = 16;
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const upload = new Float32Array((bpr / 4) * height);
-  for (let y = 0; y < height; y += 1) {
-    const row = (y * bpr) / 4;
-    for (let x = 0; x < width; x += 1) {
-      const o = row + x * 4;
-      upload[o] = rgbaPerPixel[0]!;
-      upload[o + 1] = rgbaPerPixel[1]!;
-      upload[o + 2] = rgbaPerPixel[2]!;
-      upload[o + 3] = rgbaPerPixel[3]!;
+  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
+    for (let y = 0; y < height; y += 1) {
+      const row = y * rowStride;
+      for (let x = 0; x < width; x += 1) {
+        const o = row + x * 4;
+        buf[o] = rgbaPerPixel[0]!;
+        buf[o + 1] = rgbaPerPixel[1]!;
+        buf[o + 2] = rgbaPerPixel[2]!;
+        buf[o + 3] = rgbaPerPixel[3]!;
+      }
     }
-  }
-  device.queue.writeTexture({ texture }, upload.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr, rowsPerImage: height }, [
-    width,
-    height,
-  ]);
+  });
 }
 
 function uploadRgbAsRgba32f(
@@ -102,24 +136,19 @@ function uploadRgbAsRgba32f(
   width: number,
   height: number,
 ): void {
-  const bpp = 16;
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const upload = new Float32Array((bpr / 4) * height);
-  for (let y = 0; y < height; y += 1) {
-    const row = (y * bpr) / 4;
-    for (let x = 0; x < width; x += 1) {
-      const si = (y * width + x) * 3;
-      const o = row + x * 4;
-      upload[o] = rgb[si] ?? 0;
-      upload[o + 1] = rgb[si + 1] ?? 0;
-      upload[o + 2] = rgb[si + 2] ?? 0;
-      upload[o + 3] = 1;
+  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
+    for (let y = 0; y < height; y += 1) {
+      const row = y * rowStride;
+      for (let x = 0; x < width; x += 1) {
+        const si = (y * width + x) * 3;
+        const o = row + x * 4;
+        buf[o] = rgb[si] ?? 0;
+        buf[o + 1] = rgb[si + 1] ?? 0;
+        buf[o + 2] = rgb[si + 2] ?? 0;
+        buf[o + 3] = 1;
+      }
     }
-  }
-  device.queue.writeTexture({ texture }, upload.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr, rowsPerImage: height }, [
-    width,
-    height,
-  ]);
+  });
 }
 
 function uploadRgbAsRgba16f(
@@ -129,42 +158,32 @@ function uploadRgbAsRgba16f(
   width: number,
   height: number,
 ): void {
-  const bpp = 8;
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const upload = new Uint8Array(bpr * height);
-  const dv = new DataView(upload.buffer);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const si = (y * width + x) * 3;
-      const byte = y * bpr + x * 8;
-      dv.setUint16(byte + 0, float32ToFloat16Bits(rgb[si] ?? 0), true);
-      dv.setUint16(byte + 2, float32ToFloat16Bits(rgb[si + 1] ?? 0), true);
-      dv.setUint16(byte + 4, float32ToFloat16Bits(rgb[si + 2] ?? 0), true);
-      dv.setUint16(byte + 6, float32ToFloat16Bits(1), true);
+  uploadTexture2D(device, texture, width, height, RGBA16F_BPP, Uint8Array, 1, (buf, rowStrideBytes) => {
+    const dv = new DataView(buf.buffer);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const si = (y * width + x) * 3;
+        const byte = y * rowStrideBytes + x * 8;
+        dv.setUint16(byte + 0, float32ToFloat16Bits(rgb[si] ?? 0), true);
+        dv.setUint16(byte + 2, float32ToFloat16Bits(rgb[si + 1] ?? 0), true);
+        dv.setUint16(byte + 4, float32ToFloat16Bits(rgb[si + 2] ?? 0), true);
+        dv.setUint16(byte + 6, float32ToFloat16Bits(1), true);
+      }
     }
-  }
-  device.queue.writeTexture({ texture }, upload.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr, rowsPerImage: height }, [
-    width,
-    height,
-  ]);
+  });
 }
 
 function fillRg32f(device: GPUDevice, texture: GPUTexture, width: number, height: number, r: number, g: number): void {
-  const bpp = 8;
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const upload = new Float32Array((bpr / 4) * height);
-  for (let y = 0; y < height; y += 1) {
-    const row = (y * bpr) / 4;
-    for (let x = 0; x < width; x += 1) {
-      const o = row + x * 2;
-      upload[o] = r;
-      upload[o + 1] = g;
+  uploadTexture2D(device, texture, width, height, RG32F_BPP, Float32Array, 4, (buf, rowStride) => {
+    for (let y = 0; y < height; y += 1) {
+      const row = y * rowStride;
+      for (let x = 0; x < width; x += 1) {
+        const o = row + x * 2;
+        buf[o] = r;
+        buf[o + 1] = g;
+      }
     }
-  }
-  device.queue.writeTexture({ texture }, upload.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr, rowsPerImage: height }, [
-    width,
-    height,
-  ]);
+  });
 }
 
 /** Linear depth → rgba32float texel `.r` (matches SVGF gbufferDepth sampling). */
@@ -175,24 +194,19 @@ function uploadLinearDepthAsRgba32f(
   width: number,
   height: number,
 ): void {
-  const bpp = 16;
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const upload = new Float32Array((bpr / 4) * height);
-  for (let y = 0; y < height; y += 1) {
-    const row = (y * bpr) / 4;
-    for (let x = 0; x < width; x += 1) {
-      const si = y * width + x;
-      const o = row + x * 4;
-      upload[o] = depth[si] ?? 0;
-      upload[o + 1] = 0;
-      upload[o + 2] = 0;
-      upload[o + 3] = 0;
+  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
+    for (let y = 0; y < height; y += 1) {
+      const row = y * rowStride;
+      for (let x = 0; x < width; x += 1) {
+        const si = y * width + x;
+        const o = row + x * 4;
+        buf[o] = depth[si] ?? 0;
+        buf[o + 1] = 0;
+        buf[o + 2] = 0;
+        buf[o + 3] = 0;
+      }
     }
-  }
-  device.queue.writeTexture({ texture }, upload.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr, rowsPerImage: height }, [
-    width,
-    height,
-  ]);
+  });
 }
 
 /** Interleaved RG floats per pixel → rg32float texture (motion or Welford RG). */
@@ -203,22 +217,17 @@ function uploadInterleavedRgAsRg32f(
   width: number,
   height: number,
 ): void {
-  const bpp = 8;
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const upload = new Float32Array((bpr / 4) * height);
-  for (let y = 0; y < height; y += 1) {
-    const row = (y * bpr) / 4;
-    for (let x = 0; x < width; x += 1) {
-      const si = (y * width + x) * 2;
-      const o = row + x * 2;
-      upload[o] = rg[si] ?? 0;
-      upload[o + 1] = rg[si + 1] ?? 0;
+  uploadTexture2D(device, texture, width, height, RG32F_BPP, Float32Array, 4, (buf, rowStride) => {
+    for (let y = 0; y < height; y += 1) {
+      const row = y * rowStride;
+      for (let x = 0; x < width; x += 1) {
+        const si = (y * width + x) * 2;
+        const o = row + x * 2;
+        buf[o] = rg[si] ?? 0;
+        buf[o + 1] = rg[si + 1] ?? 0;
+      }
     }
-  }
-  device.queue.writeTexture({ texture }, upload.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr, rowsPerImage: height }, [
-    width,
-    height,
-  ]);
+  });
 }
 
 /**
@@ -375,8 +384,12 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
 
   const { variance: variancePipeline, atrous: atrousPipeline } = svgfPipelines(device);
 
+  // G-buffer inputs are written via writeTexture and read as texture_2d<f32>
+  // inside the compute shaders. They are never used as render attachments,
+  // so RENDER_ATTACHMENT is omitted. COPY_SRC stays so test / debug readbacks
+  // remain possible without re-allocating with new flags.
   const texRgba32Usage =
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT;
+    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
 
   const inputColor = device.createTexture({
     label: 'svgf-input-color',
@@ -489,63 +502,69 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
     ],
   });
 
+  // Pre-allocate one UBO per à-trous iteration so each pass reads its own
+  // uniforms. With a shared UBO + per-iter writeBuffer, the driver can re-
+  // order writes vs dispatches and produce wrong stepWidth per pass; per-iter
+  // UBOs are tiny (32 B × N) and remove that hazard. Write all UBOs once,
+  // then batch every pass (variance + N × atrous) into a single encoder /
+  // single queue.submit — replaces what used to be up to 13 separate submits.
+  const atrousUbos: GPUBuffer[] = [];
+  const atrousScratch = new ArrayBuffer(SVGF_UNIFORMS_SIZE_BYTES);
+  for (let iter = 0; iter < atrousIterations; iter += 1) {
+    const ubo = device.createBuffer({
+      label: `svgf-atrous-ubo-${iter}`,
+      size: SVGF_UNIFORMS_SIZE_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    packSVGFUniforms(
+      { iteration: iter, sigmaColor, sigmaNormal, sigmaDepth },
+      atrousScratch,
+    );
+    device.queue.writeBuffer(ubo, 0, atrousScratch);
+    atrousUbos.push(ubo);
+  }
+
+  uploadRgbAsRgba16f(device, colorPingA, opts.rgb, w, h);
+
+  // Build the alternating bind groups up front: A→B for even iterations,
+  // B→A for odd. Each pair is paired with its iteration's UBO.
+  const atrousBindGroups: GPUBindGroup[] = atrousUbos.map((ubo, iter) => {
+    const isEven = iter % 2 === 0;
+    return device.createBindGroup({
+      layout: atrousPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: (isEven ? colorPingA : colorPingB).createView() },
+        { binding: 1, resource: (isEven ? colorPingB : colorPingA).createView() },
+        { binding: 2, resource: gbufferNormal.createView() },
+        { binding: 3, resource: gbufferDepth.createView() },
+        { binding: 4, resource: varianceOut.createView() },
+        { binding: 5, resource: { buffer: ubo } },
+      ],
+    });
+  });
+
   const wg = SVGF_COMPUTE_WORKGROUP_SIZE;
-  const encV = device.createCommandEncoder();
-  const passV = encV.beginComputePass();
+  const encoder = device.createCommandEncoder({ label: 'svgf-batched' });
+
+  const passV = encoder.beginComputePass();
   passV.setPipeline(variancePipeline);
   passV.setBindGroup(0, varianceBind);
   passV.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
   passV.end();
-  device.queue.submit([encV.finish()]);
-
-  uploadRgbAsRgba16f(device, colorPingA, opts.rgb, w, h);
-
-  const atrousUbo = device.createBuffer({
-    label: 'svgf-atrous-ubo',
-    size: SVGF_UNIFORMS_SIZE_BYTES,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  const atrousScratch = new ArrayBuffer(SVGF_UNIFORMS_SIZE_BYTES);
-
-  let readTex = colorPingA;
-  let writeTex = colorPingB;
 
   for (let iter = 0; iter < atrousIterations; iter += 1) {
-    packSVGFUniforms(
-      {
-        iteration: iter,
-        sigmaColor,
-        sigmaNormal,
-        sigmaDepth,
-      },
-      atrousScratch,
-    );
-    device.queue.writeBuffer(atrousUbo, 0, atrousScratch);
-
-    const atrousBind = device.createBindGroup({
-      layout: atrousPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: readTex.createView() },
-        { binding: 1, resource: writeTex.createView() },
-        { binding: 2, resource: gbufferNormal.createView() },
-        { binding: 3, resource: gbufferDepth.createView() },
-        { binding: 4, resource: varianceOut.createView() },
-        { binding: 5, resource: { buffer: atrousUbo } },
-      ],
-    });
-
-    const encA = device.createCommandEncoder();
-    const passA = encA.beginComputePass();
+    const passA = encoder.beginComputePass();
     passA.setPipeline(atrousPipeline);
-    passA.setBindGroup(0, atrousBind);
+    passA.setBindGroup(0, atrousBindGroups[iter]!);
     passA.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
     passA.end();
-    device.queue.submit([encA.finish()]);
-
-    const nextRead = writeTex;
-    writeTex = readTex;
-    readTex = nextRead;
   }
+
+  device.queue.submit([encoder.finish()]);
+
+  // After N iterations, the last write went into colorPingB when N is odd,
+  // colorPingA when N is even (the loop's pre-fix swap convention).
+  const readTex = atrousIterations % 2 === 0 ? colorPingA : colorPingB;
 
   const finalTex = readTex;
   const rgbOut = await readRgba16fToRgbFloat(device, finalTex, w, h);
@@ -560,7 +579,7 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
   colorPingA.destroy();
   colorPingB.destroy();
   varianceUbo.destroy();
-  atrousUbo.destroy();
+  for (const ubo of atrousUbos) ubo.destroy();
   destroyEphemeral?.();
 
   return rgbOut;

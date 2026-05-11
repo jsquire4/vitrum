@@ -119,6 +119,12 @@ export interface SceneBVHCommonResult {
    */
   materials: THREE.Material[];
 
+  /** Merged-geometry UV attribute when one was present on the source meshes,
+   *  otherwise `undefined`. Exposed here so callers (e.g. ReSTIR's bvhCompute)
+   *  don't reach into `bvh.geometry.attributes['uv']` directly — that private
+   *  field can change shape across three-mesh-bvh releases. */
+  uvAttribute?: THREE.BufferAttribute;
+
   /** World-space bounding box of the merged geometry. */
   boundingBox: THREE.Box3;
 }
@@ -322,6 +328,11 @@ export function buildSceneBVH(
   // invisible so traverseVisible skips them.
   const tempHidden: THREE.Object3D[] = [];
   if (Number.isFinite(skyHideRadius)) {
+    // Hoist scratch vectors outside the traversal — was allocating
+    // three THREE.Vector3 + one Quaternion per visible mesh per build.
+    const _decompPos = new THREE.Vector3();
+    const _decompQuat = new THREE.Quaternion();
+    const _decompScale = new THREE.Vector3();
     for (const root of roots) {
       root.traverseVisible((obj) => {
         const mesh = obj as THREE.Mesh;
@@ -330,9 +341,8 @@ export function buildSceneBVH(
         if (!geo) return;
         if (!geo.boundingSphere) geo.computeBoundingSphere();
         const radius = geo.boundingSphere?.radius ?? 0;
-        const worldScale = new THREE.Vector3();
-        mesh.matrixWorld.decompose(new THREE.Vector3(), new THREE.Quaternion(), worldScale);
-        const worldRadius = radius * Math.max(worldScale.x, worldScale.y, worldScale.z);
+        mesh.matrixWorld.decompose(_decompPos, _decompQuat, _decompScale);
+        const worldRadius = radius * Math.max(_decompScale.x, _decompScale.y, _decompScale.z);
         if (worldRadius > skyHideRadius) {
           obj.visible = false;
           tempHidden.push(obj);
@@ -517,6 +527,8 @@ export function buildSceneBVH(
   merged.computeBoundingBox();
   const boundingBox = merged.boundingBox!.clone();
 
+  const uvAttribute = merged.attributes['uv'] as THREE.BufferAttribute | undefined;
+
   return {
     bvh,
     bvhNodes,
@@ -526,6 +538,7 @@ export function buildSceneBVH(
     triMaterialId,
     normals,
     materials,
+    ...(uvAttribute != null ? { uvAttribute } : {}),
     boundingBox,
   };
 }

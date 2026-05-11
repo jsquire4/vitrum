@@ -9,6 +9,12 @@
 
 import type * as THREE from 'three';
 import type { Material, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
+import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
+
+/** THREE.MeshPhysicalMaterial default index of refraction. Used as the
+ *  "no-op" guard so callers that did not customize IOR don't generate
+ *  noisy override stamps on the vitrum side. */
+const THREE_PHYSICAL_DEFAULT_IOR = 1.5;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Internal type aliases
@@ -62,7 +68,7 @@ export function convertMaterial(m: ThreeStdMat): Material {
 
   const p = m;
   if (p.transmission !== 0) base.transmission = p.transmission;
-  if (p.ior !== 1.5) base.ior = p.ior;
+  if (p.ior !== THREE_PHYSICAL_DEFAULT_IOR) base.ior = p.ior;
 
   if (p.attenuationDistance !== Infinity) {
     base.attenuationColor = colorToVec3(p.attenuationColor);
@@ -97,29 +103,33 @@ export function convertMaterial(m: ThreeStdMat): Material {
   const ud = (p.userData ?? {}) as Record<string, unknown>;
 
   // RFE-06 (Sprint 8 — chromatic dispersion, Abbe number)
-  if (typeof ud['vitrumDispersionAbbeNumber'] === 'number') {
-    base.dispersionAbbeNumber = ud['vitrumDispersionAbbeNumber'];
+  const rawDispersion = ud[K.DISPERSION_ABBE];
+  if (typeof rawDispersion === 'number') {
+    base.dispersionAbbeNumber = rawDispersion;
   }
 
   // RFE-07 (Sprint 7 — volume scattering + HG anisotropy)
-  if (typeof ud['vitrumScatteringCoefficient'] === 'number') {
-    base.scatteringCoefficient = ud['vitrumScatteringCoefficient'];
+  const rawScatCoeff = ud[K.SCATTERING_COEFF];
+  if (typeof rawScatCoeff === 'number') {
+    base.scatteringCoefficient = rawScatCoeff;
   }
+  const rawScatRgb = ud[K.SCATTERING_RGB];
   if (
-    Array.isArray(ud['vitrumScatteringCoefficientRGB']) &&
-    (ud['vitrumScatteringCoefficientRGB'] as unknown[]).length === 3
+    Array.isArray(rawScatRgb) &&
+    (rawScatRgb as unknown[]).length === 3
   ) {
-    base.scatteringCoefficientRGB = ud['vitrumScatteringCoefficientRGB'] as unknown as Vec3;
+    base.scatteringCoefficientRGB = rawScatRgb as unknown as Vec3;
   }
-  if (typeof ud['vitrumScatteringAnisotropy'] === 'number') {
-    base.scatteringAnisotropy = ud['vitrumScatteringAnisotropy'];
+  const rawScatAniso = ud[K.SCATTERING_ANISO];
+  if (typeof rawScatAniso === 'number') {
+    base.scatteringAnisotropy = rawScatAniso;
   }
 
   // RFE-08 (Sprint 12 — hero-wavelength spectral attenuation curve)
   // The host stamp is a SpectralCurve object: { wavelengthStart, wavelengthEnd, values }.
   // We accept both a full SpectralCurve object and, for back-compat, a plain
   // Float32Array treated as 380–780 nm / 81-sample curve.
-  const rawSpectral = ud['vitrumSpectralAttenuation'];
+  const rawSpectral = ud[K.SPECTRAL_ATTEN];
   if (rawSpectral != null) {
     if (
       typeof rawSpectral === 'object' &&
@@ -131,6 +141,14 @@ export function convertMaterial(m: ThreeStdMat): Material {
       base.spectralAttenuation = rawSpectral as SpectralCurve;
     } else if (rawSpectral instanceof Float32Array && rawSpectral.length >= 3) {
       // Raw Float32Array fallback: assume 380–780 nm range.
+      // Deprecated path — kept for back-compat with hosts that stamp the
+      // userData curve as a bare Float32Array. New code should write
+      // `{ wavelengthStart, wavelengthEnd, values: Float32Array }`.
+      console.warn(
+        '[vitrum/three-bindings] SpectralCurve as Float32Array is deprecated. ' +
+          'Use { wavelengthStart, wavelengthEnd, values: Float32Array } instead. ' +
+          'Scheduled for removal in Phase 7 / Sprint 1.',
+      );
       base.spectralAttenuation = {
         wavelengthStart: 380,
         wavelengthEnd: 780,
@@ -140,17 +158,17 @@ export function convertMaterial(m: ThreeStdMat): Material {
   }
 
   // RFE-08 (Sprint 12 — multi-layer thin-film stack)
-  const rawThinFilm = ud['vitrumThinFilmStack'];
+  const rawThinFilm = ud[K.THIN_FILM_STACK];
   if (rawThinFilm != null && typeof rawThinFilm === 'object' && !Array.isArray(rawThinFilm)) {
     base.thinFilmStack = rawThinFilm as ThinFilmStack;
   }
 
   // RFE-03 (Sprint X — per-face surface absorption layers)
-  const rawFront = ud['vitrumFrontLayer'];
+  const rawFront = ud[K.FRONT_LAYER];
   if (rawFront != null && typeof rawFront === 'object' && !Array.isArray(rawFront)) {
     base.frontLayer = rawFront as SurfaceAbsorptionLayer;
   }
-  const rawBack = ud['vitrumBackLayer'];
+  const rawBack = ud[K.BACK_LAYER];
   if (rawBack != null && typeof rawBack === 'object' && !Array.isArray(rawBack)) {
     base.backLayer = rawBack as SurfaceAbsorptionLayer;
   }

@@ -12,9 +12,11 @@ export interface WgpuProbeResult {
    */
   adapterKind?: WgpuAdapterKind;
   /**
-   * @deprecated Prefer {@link adapterKind}. When present, `true` means not
-   * SwiftShader (`adapterKind !== 'swiftshader'`), including the fingerprinting
-   * `unknown` case where the real GPU is still treated as usable.
+   * @deprecated Prefer {@link adapterKind}. Scheduled for removal in Phase 7 /
+   * Sprint 1 once host call sites migrate to `adapterKind`. When present,
+   * `true` means not SwiftShader (`adapterKind !== 'swiftshader'`), including
+   * the fingerprinting `unknown` case where the real GPU is still treated as
+   * usable.
    */
   isHardwareGpu?: boolean;
 }
@@ -94,19 +96,6 @@ async function readAdapterInfo(
 }
 
 /**
- * Synchronous check — only verifies the API exists. Use this for conditional
- * rendering; use `probeWebGPU()` for full adapter capability detection.
- */
-function isWebGPUSupported(): boolean {
-  return (
-    typeof navigator !== 'undefined' &&
-    'gpu' in navigator &&
-    navigator.gpu !== undefined &&
-    navigator.gpu !== null
-  );
-}
-
-/**
  * Async probe — requests a high-performance adapter and returns limits +
  * features for the spike validation (§14.1) and the 0.75× resolution
  * fallback decision (§11.3).
@@ -115,7 +104,9 @@ function isWebGPUSupported(): boolean {
  * so callers don't need try/catch.
  */
 export async function probeWebGPU(): Promise<WgpuProbeResult> {
-  if (!isWebGPUSupported()) return { supported: false };
+  if (typeof navigator === 'undefined' || !('gpu' in navigator) || !navigator.gpu) {
+    return { supported: false };
+  }
 
   try {
     const adapter = await navigator.gpu.requestAdapter({

@@ -92,11 +92,16 @@ export interface FrameInput {
   readonly shutterTime?: number;
 
   // ── Optional: backend-specific output target ────────────────────────────
-  /** WebGPU swap-chain texture view to render into. Required for WebGPU
-   *  backends; ignored by WebGL backends (which write to their own
-   *  framebuffer and the host reads via `FrameOutput.primaryRadiance`). */
-  readonly swapChainView?: GPUTextureView;
-  readonly swapChainFormat?: GPUTextureFormat;
+  /** Backend-opaque swap-chain target. WebGPU backends (`@vitrum/pt-webgpu`,
+   *  `@vitrum/walkaround-hybrid`) expect a `GPUTextureView`. WebGL backends
+   *  ignore both fields and write to their own framebuffer; the host then
+   *  reads via `FrameOutput.primaryRadiance`. Typed as opaque so the
+   *  backend-agnostic core does not pull in WebGPU type declarations.
+   *  Backends document what they require and cast at the boundary. */
+  readonly swapChainView?: BackendTexture;
+  /** Backend-opaque swap-chain format. WebGPU backends expect a
+   *  `GPUTextureFormat` string literal; WebGL backends ignore. */
+  readonly swapChainFormat?: BackendTextureFormat;
 }
 
 export interface Viewport {
@@ -170,3 +175,8 @@ export interface FrameOutput {
  *  through `engine.renderFrame` outputs into post-processing chains, save
  *  pipelines, etc. without inspecting it. */
 export type BackendTexture = unknown;
+
+/** Opaque texture-format token. Backend-specific (e.g. WebGPU uses
+ *  `GPUTextureFormat` string literals); the core contract treats it as
+ *  opaque so backend types don't bleed in here. */
+export type BackendTextureFormat = unknown;
