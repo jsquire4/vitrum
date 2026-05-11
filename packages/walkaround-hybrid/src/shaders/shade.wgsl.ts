@@ -339,16 +339,18 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Gated on isDDGIWired() so the placeholder atlas (dimsX=1) is ignored.
   var Lo_ddgi = vec3f(0.0);
   if (!isGlass && isDDGIWired()) {
-    // ddgiSample returns the per-hemisphere weighted-average radiance
-    // (Lambert-weighted by ray cos with the atlas pixel direction). It is
-    // an average, not an integral. The Lambertian diffuse equation wants
-    // outgoing = albedo * irradiance (irradiance has units of W/m^2).
-    // To go from average radiance to irradiance we'd multiply by the
-    // hemisphere solid angle (2pi), and to convert that to outgoing
-    // radiance we'd divide by pi (Lambertian normalisation) — net 2.0.
-    // Without this scaling the consumed signal lands ~3x too dim and the
-    // color bleed is below the visible threshold against direct light.
-    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 2.0;
+    // The DDGI atlas blend uses pow(w, 8) directional kernel (see
+    // probeUpdateBlend.wgsl). That kernel narrows the lobe — preserving
+    // directional colour separation against Cornell-style gray-vs-coloured-
+    // wall hemispheres — but the resulting weighted average has roughly
+    // 1/N magnitude relative to the unweighted hemisphere irradiance,
+    // where N is the effective lobe-coverage factor (~8 for pow8).
+    // The 4.0 multiplier compensates so the indirect contribution
+    // visually balances against ReSTIR DI's direct term on diffuse
+    // surfaces. 16x was over-bright (boxes saturated white) and made
+    // cell-grid artefacts visible in lit regions; 4x preserves visible
+    // colour bleed without overwhelming direct lighting.
+    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 4.0;
   }
 
   // Active terms (current pipeline state):

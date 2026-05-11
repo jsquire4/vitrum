@@ -108,7 +108,13 @@ export class ProbeGrid {
   ): boolean {
     const size = new THREE.Vector3();
     boundingBox.getSize(size);
-    const autoSpacing = Math.max(size.x, size.y, size.z) / 4;
+    // Target ~13 probes along the longest axis (`/ 12`). The denser the
+    // grid, the smaller the trilinear-interp blocks visible at shadow
+    // boundaries. At 5×5×5 the 0.5-unit cells produce screen-visible
+    // block stair-step shadows on a 2-unit Cornell box; at 13³ the cells
+    // are ~0.17 units which sit below the resolution-limited blur of the
+    // 8-probe stencil, hiding the grid.
+    const autoSpacing = Math.max(size.x, size.y, size.z) / 12;
     const PROBE_SPACING = spacingInches ?? autoSpacing;
 
     const nx = Math.max(3, Math.ceil(size.x / PROBE_SPACING) + 1);

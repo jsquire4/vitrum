@@ -119,16 +119,17 @@ fn probeUpdateBlendIrradiance(
     // interpolation in shade.wgsl correctly drops these probes from the
     // 8-probe stencil.
     if (ray.hitDistance < 0.05) { continue; }
-    // Lambert weighting (was pow(w, 50)): with only 192 rays distributed
-    // uniformly over a sphere, the highly-concentrated pow(50) kernel left
-    // most atlas pixels with no ray within its narrow lobe — the integrated
-    // signal collapsed onto a handful of poorly-aligned rays and the atlas
-    // peaked at ~0.05 instead of the expected ~0.3 for direct-lit walls.
-    // Lambert (max(0, dot)) integrates the full upper hemisphere per atlas
-    // pixel — standard DDGI convention (Majercik et al. 2019 §3.4).
+    // Mid-sharp directional kernel: pow(w, 8) preserves directional colour
+    // separation (a -X atlas pixel sees mostly rays going -X — hitting the
+    // red wall in Cornell — rather than averaging across the whole upper
+    // hemisphere where gray ceiling/floor surfaces with higher albedo
+    // dominate the average and bleach the colour signal). pow(50) was too
+    // narrow for our 192-ray budget (most pixels had no aligned ray),
+    // Lambert was too broad. pow(8) lands the lobe FWHM at ~25° — wide
+    // enough that each atlas pixel sees ~5 aligned rays for stable values.
     let w = max(0.0, dot(dir, ray.direction));
     if (w < 1e-3) { continue; }
-    let weight = w;
+    let weight = pow(w, 8.0);
     newColor    = newColor + ray.hitRadiance * weight;
     totalWeight = totalWeight + weight;
   }
@@ -198,6 +199,14 @@ fn probeUpdateBlendVisibility(
     // and should not influence mean/depth² (they'd incorrectly tighten the
     // Chebyshev test and cause light leaking through back-faces).
     if (ray.hitDistance < 0.0) { continue; }
+    // Self-intersection filter — match the irradiance blend pass. Probes
+    // inside opaque meshes record distance near zero in every direction,
+    // which pegs the mean and variance in the visibility atlas to ~0.
+    // The shade-side ddgiSample uses these for Chebyshev visibility;
+    // a 0-mean/0-variance entry propagates corrupt depth into trilinear
+    // neighbours (the bordered atlas samples in zero corners of an
+    // inside-box probe cell). Skip these the same way as the irradiance pass.
+    if (ray.hitDistance < 0.05) { continue; }
     let w = max(0.0, dot(dir, ray.direction));
     if (w < 1e-3) { continue; }
     let weight  = pow(w, 50.0);
