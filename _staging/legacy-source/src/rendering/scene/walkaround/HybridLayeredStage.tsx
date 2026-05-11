@@ -203,6 +203,7 @@ export function HybridLayeredStage({
   const wgGate = useRef<WgWalkaroundBridge | null>(null);
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const check = () => {
       if (cancelled) return;
       const g = window.__WG__;
@@ -210,10 +211,16 @@ export function HybridLayeredStage({
         wgGate.current = g;
         return;
       }
-      Promise.resolve().then(check);
+      // Yield to the event loop. The previous `Promise.resolve().then(check)`
+      // form spun in the microtask queue and starved animation frames + layout
+      // work while waiting for the WebGPU bridge to publish.
+      timer = setTimeout(check, 16);
     };
     check();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (timer != null) clearTimeout(timer);
+    };
   }, []);
 
   const wgpuDevice: GPUDevice | null = (() => {
@@ -278,6 +285,9 @@ export function HybridLayeredStage({
   }, [camera, frameLayout.cx, frameLayout.cy, refuseToMount, space.kind]);
 
   // ── Stained-glass-app scene-readiness predicate ──────────────────
+  // TODO(extract): duplicated in walkaround/engines/restir/RestirStage.tsx.
+  // When the host app extraction resumes, move both copies into a shared
+  // `createIsSceneReadyPredicate(scene, roomKey)` utility in lib/.
   const isSceneReady = useMemo(() => () => {
     let hasFaceGeo = false;
     let hasRoomFloor = false;
@@ -339,6 +349,11 @@ export function HybridLayeredStage({
   // 600ms timer), but if its DEP REFERENCES tick faster than 600ms we
   // never fire the timer at all → forever-stalled pipeline. See
   // [hybrid:debug] logs in console.
+  //
+  // The ref allocation must run unconditionally to satisfy React's hooks
+  // rules (useRef may not be conditionally called). Mutation + logging is
+  // DEV-guarded below; the prod cost of this ref is a single empty object
+  // per stage instance.
   const debugDepsRef = useRef<{ graph: unknown; properties: unknown; fires: number }>({
     graph: graphFaces, properties, fires: 0,
   });

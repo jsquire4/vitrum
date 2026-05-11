@@ -1867,6 +1867,22 @@ Separate the cancellable async RGBELoader path (keyed on `outdoorUrl`) from the 
 
 ---
 
+### Phase 8 — applied vs deferred
+
+Items 8.7 (TODO markers added at both duplicate sites), 8.8 (microtask
+spin → setTimeout in both files), 8.9 (documented React-hooks-rules
+constraint on conditional useRef), 8.11 (useMemo for activeSun) are
+landed in this pass.
+
+Items 8.1, 8.2, 8.3, 8.4, 8.5, 8.6, 8.10, 8.12, 8.13 — all extract-to-
+hook or extract-to-component refactors of `_staging/legacy-source/` React
+code — are deferred. The plan note at the top of Phase 8 stands: those
+files are intentionally unextracted host-app code; the extraction is
+out-of-scope until the host app resumes active development. When that
+happens, this section serves as the punch list.
+
+---
+
 ## Phase 9 — Deferred Sprint Integrations
 
 These items were explicitly scoped out of earlier sprints. They are not structural cleanups — they are functional wiring work that must happen before the library's walkaround pipeline is end-to-end operational.
@@ -1911,6 +1927,51 @@ These items were explicitly scoped out of earlier sprints. They are not structur
 5. Run a GPU smoke test confirming `PPG_SAMPLE_WGSL` and `PPG_UPDATE_WGSL` compile with the finalized group numbers.
 
 **Dependency:** Requires Phase 4.37 (`renderFrame()` extraction) and Phase 4.51 (PPG splice replacement with explicit markers) to be done first so the integration work lands in clean, well-bounded code.
+
+---
+
+### Phase 9 status after this pass
+
+- **9.1 Sprint 9 adaptive sampling** — DEFERRED. The shaders are in
+  `deferred/` (Phase 2.13) and Phase 2.13 already replaced their
+  `[INLINE-COPY]` Welford with the canonical `${WELFORD_VARIANCE_WGSL}`
+  injection from Phase 1.5. Wiring the dispatch into the pipeline
+  requires a real-device GPU smoke run — the new wgslSmoke.gpu.test
+  added in Phase 4.76 only catches syntactic regressions, not semantic
+  drift in a brand-new compute-pass insertion. Next pass should land
+  the dispatch + an integration test that asserts the new passes
+  appear in the encoder timestamp queries.
+
+- **9.2 Sprint 10a SVGF walkaround** — DONE.
+  - Phase 1.4 settled the G-buffer normal encoding contract (raw → 0..1
+    encoded with `xyz * 2.0 - 1.0` decode on the consumer side); the
+    spec file `plan/sprint-5-mrt-gbuffer-spec.md` was updated to match
+    the actual shade.wgsl encoding.
+  - The SVGF dispatch path (welford-temporal + svgf-variance + N×
+    svgf-atrous) is wired in `WalkaroundGPUPipeline._dispatchSVGF`
+    (extracted in Phase 4.37) and routes through dedicated bind-group
+    builders (Phase 4.39).
+  - Frame-count tracking is live: `_accumFrameIndex` is passed to
+    `packSVGFVarianceUniforms` and to the welford UBO every frame; the
+    `SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT = 4` threshold is enforced
+    inside the WGSL shader.
+  - `dispose()` tears down all SVGF UBOs unconditionally now that
+    Phase 4.38 moved their allocation into `initialize()`.
+
+- **9.3 Sprint 11 PPG dispatch** — PARTIAL.
+  - The `@group(2)` placeholder is annotated with the explicit
+    Sprint-11-integration TODO in `sprint11-ppg.test.ts` (Phase 3.9).
+  - The PPG dispatch is already wired in `WalkaroundGPUPipeline`
+    (the `ppgUpdatePipeline` runs after the shade pass when
+    `ppgEnabled === true`) and uses the explicit
+    `// @@PPG_BINDINGS_INSERT@@` markers from Phase 4.51.
+  - The remaining work is finalising the production `@group` number
+    (group 2 in code is a placeholder name — the WGSL declares
+    `@group(2) @binding(...)` and the host bind group matches). Once
+    the production layout is locked, `@group(2)` may stay or move to
+    a different number, and the test assertion + WGSL declarations
+    must be updated in the same commit. Closing this fully needs a
+    real-device GPU verification pass.
 
 ---
 

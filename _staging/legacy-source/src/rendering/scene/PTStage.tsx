@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Environment } from '@react-three/drei';
 import { useThree } from '@react-three/fiber';
 import { useSelector } from 'react-redux';
@@ -67,13 +67,13 @@ export function PTStage({
   // suppress the directional and mount <SunPathTraced /> in its place.
   const lightAllIds = useSelector(selectLightAllIds);
   const lightsById = useSelector(selectLightsById);
-  const activeSun: SunLight | null = (() => {
+  const activeSun: SunLight | null = useMemo(() => {
     for (const id of lightAllIds) {
       const l = lightsById[id];
       if (l?.kind === 'sun' && l.on) return l;
     }
     return null;
-  })();
+  }, [lightAllIds, lightsById]);
   // suppressSun semantics: studio/sunset HDRIs carry a baked sun lobe so
   // the directional sun would double-count. The same gate applies to
   // the PT area-light sun. Phase 1.2: when an outdoor HDRI is loaded

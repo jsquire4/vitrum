@@ -3,7 +3,7 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { GAP_CLOSURE_SCENARIOS } from './scenario-presets.mjs';
 
 const scenarios = GAP_CLOSURE_SCENARIOS;
@@ -12,7 +12,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const baselineDir = resolve(repoRoot, process.env.VITRUM_BASELINE_DIR ?? 'tools/reference-renders/baseline');
 const captureDir = resolve(here, 'results/captures');
-const outputPath = resolve(here, 'results/gap-closure-verification-2026-05-10.json');
+// Date is derived at run time so the artifact name reflects when the
+// verification actually ran. Override with VITRUM_RESULT_DATE for
+// deterministic reproductions (e.g. golden-result tests).
+const resultDate = (process.env.VITRUM_RESULT_DATE ?? new Date().toISOString().slice(0, 10));
+const outputPath = resolve(here, `results/gap-closure-verification-${resultDate}.json`);
 
 const captureEnabled = process.env.VITRUM_GPU_CAPTURE === '1';
 const captureCommand = process.env.VITRUM_CAPTURE_CMD ?? '';
@@ -92,65 +96,9 @@ function captureScenarioSettings(scenario) {
 }
 
 function runCommand(command, env, timeoutMs) {
-  return new Promise((resolveResult) => {
-    let settled = false;
-    const child = spawn(command, {
-      cwd: repoRoot,
-      env: { ...process.env, ...env },
-      shell: true,
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      stderr += `\nCapture process timed out after ${timeoutMs}ms.`;
-      if (process.platform === 'win32') {
-        child.kill('SIGTERM');
-      } else {
-        try {
-          process.kill(-child.pid, 'SIGTERM');
-        } catch {
-          child.kill('SIGTERM');
-        }
-      }
-      setTimeout(() => {
-        if (process.platform !== 'win32') {
-          try {
-            process.kill(-child.pid, 'SIGKILL');
-          } catch {
-            // Process group already exited.
-          }
-        }
-      }, 2_000).unref();
-      resolveResult({
-        code: -1,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        timedOut: true,
-      });
-    }, timeoutMs);
-    timeout.unref();
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolveResult({
-        code: code ?? -1,
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        timedOut: false,
-      });
-    });
-  });
+  // Thin adapter over the shared helper for back-compat with existing
+  // call sites; new code should call `runCommandWithTimeout` directly.
+  return runCommandWithTimeout(command, { cwd: repoRoot, env, timeoutMs });
 }
 
 async function runCapture(scenario, variant, outputImagePath) {
@@ -302,10 +250,38 @@ async function evaluateScenario(scenario) {
   };
 }
 
+// Bounded concurrency: GPU capture serializes through a single browser
+// instance, so scenarios run sequentially when VITRUM_GPU_CAPTURE=1 to avoid
+// driver contention. CPU-only verification (no capture) parallelizes
+// freely. Override via VITRUM_GAP_CONCURRENCY (positive integer).
+const defaultConcurrency = captureEnabled ? 1 : Math.max(1, scenarios.length);
+const concurrency = Math.max(
+  1,
+  Number(process.env.VITRUM_GAP_CONCURRENCY ?? defaultConcurrency) || 1,
+);
 const entries = [];
-for (const scenario of scenarios) {
-  // eslint-disable-next-line no-await-in-loop
-  entries.push(await evaluateScenario(scenario));
+if (concurrency <= 1) {
+  for (const scenario of scenarios) {
+    // eslint-disable-next-line no-await-in-loop
+    entries.push(await evaluateScenario(scenario));
+  }
+} else if (concurrency >= scenarios.length) {
+  entries.push(...(await Promise.all(scenarios.map(evaluateScenario))));
+} else {
+  // Bounded pool: run `concurrency` workers that pull from a shared queue.
+  const queue = scenarios.slice();
+  const results = new Array(scenarios.length);
+  let nextIdx = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (true) {
+      const scenario = queue.shift();
+      if (!scenario) return;
+      const idx = nextIdx++;
+      results[idx] = await evaluateScenario(scenario);
+    }
+  });
+  await Promise.all(workers);
+  entries.push(...results);
 }
 
 const report = {

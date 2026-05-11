@@ -9,6 +9,7 @@ export default defineConfig({
     alias: {
       '@vitrum/core': path.resolve(repoRoot, 'packages/core/src/index.ts'),
       '@vitrum/pt-webgl': path.resolve(repoRoot, 'packages/pt-webgl/src/index.ts'),
+      '@vitrum/shared-denoisers': path.resolve(repoRoot, 'packages/shared-denoisers/src/index.ts'),
       '@vitrum/three-bindings': path.resolve(repoRoot, 'packages/three-bindings/src/index.ts'),
     },
   },

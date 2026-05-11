@@ -8,53 +8,53 @@ if (!outputPng) {
 }
 
 const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5173/';
+
+/**
+ * Mapping table: ENV name → URL query key + optional validator.
+ * The validator returns true when the env value should be forwarded as-is,
+ * or false to skip. Default validator: non-empty string.
+ */
+const ENV_TO_QUERY = [
+  { env: 'VITRUM_SCENARIO_ID',         query: 'vitrumScenario' },
+  { env: 'VITRUM_SEED',                query: 'vitrumSeed' },
+  { env: 'VITRUM_WIDTH',               query: 'vitrumWidth' },
+  { env: 'VITRUM_HEIGHT',              query: 'vitrumHeight' },
+  { env: 'VITRUM_BOUNCES',             query: 'vitrumBounces' },
+  { env: 'VITRUM_SPP',                 query: 'vitrumSpp' },
+  {
+    env: 'VITRUM_CAUSTIC_STRATEGY',
+    query: 'vitrumCaustic',
+    validate: (v) => v !== 'candidate' && v !== 'baseline',
+  },
+  {
+    env: 'VITRUM_DISPLAY',
+    query: 'vitrumDisplay',
+    validate: (v) => ['raw', 'bilateral', 'oidn', 'wgsl', 'svgf'].includes(v),
+  },
+  { env: 'VITRUM_OIDN_MODEL',          query: 'vitrumOidnModel' },
+  { env: 'VITRUM_WGSL_SIGMA',          query: 'vitrumWgslSigma' },
+  {
+    env: 'VITRUM_WEBGPU_SHARED',
+    query: 'vitrumWebGpuShared',
+    validate: (v) => v === '0' || v === '1',
+  },
+  { env: 'VITRUM_SVGF_ATROUS',         query: 'vitrumSvgfAtrous' },
+];
+
 function captureUrlWithScenarioParams() {
-  const scenarioId = process.env.VITRUM_SCENARIO_ID;
-  const seed = process.env.VITRUM_SEED;
-  const w = process.env.VITRUM_WIDTH;
-  const h = process.env.VITRUM_HEIGHT;
-  const bounces = process.env.VITRUM_BOUNCES;
-  const spp = process.env.VITRUM_SPP;
-  const caustic = process.env.VITRUM_CAUSTIC_STRATEGY;
-  /** Matches Cornell query `vitrumDisplay` (raw | bilateral | oidn | wgsl | svgf). */
-  const display = process.env.VITRUM_DISPLAY;
-  /** ONNX model URL for OIDN (`vitrumOidnModel`). */
-  const oidnModel = process.env.VITRUM_OIDN_MODEL;
-  /** WebGPU bilateral sigma (`vitrumWgslSigma`). */
-  const wgslSigma = process.env.VITRUM_WGSL_SIGMA;
-  /** `0` disables shared WebGPU device (`vitrumWebGpuShared`). */
-  const webgpuShared = process.env.VITRUM_WEBGPU_SHARED;
-  const svgfFrames = process.env.VITRUM_SVGF_FRAME_COUNT ?? process.env.VITRUM_SVGF_FRAMES;
-  const svgfAtrous = process.env.VITRUM_SVGF_ATROUS;
   try {
     const u = new URL(captureUrlBase);
-    if (scenarioId) u.searchParams.set('vitrumScenario', scenarioId);
-    if (seed) u.searchParams.set('vitrumSeed', seed);
-    if (w) u.searchParams.set('vitrumWidth', w);
-    if (h) u.searchParams.set('vitrumHeight', h);
-    if (bounces) u.searchParams.set('vitrumBounces', bounces);
-    if (spp) u.searchParams.set('vitrumSpp', spp);
+    for (const { env, query, validate } of ENV_TO_QUERY) {
+      const val = process.env[env];
+      if (!val || val.length === 0) continue;
+      if (validate && !validate(val)) continue;
+      u.searchParams.set(query, val);
+    }
     u.searchParams.set('vitrumAutoStart', '1');
-    if (caustic && caustic !== 'candidate' && caustic !== 'baseline') {
-      u.searchParams.set('vitrumCaustic', caustic);
-    }
-    if (display === 'raw' || display === 'bilateral' || display === 'oidn' || display === 'wgsl' || display === 'svgf') {
-      u.searchParams.set('vitrumDisplay', display);
-    }
-    if (oidnModel != null && oidnModel.length > 0) {
-      u.searchParams.set('vitrumOidnModel', oidnModel);
-    }
-    if (wgslSigma != null && wgslSigma.length > 0) {
-      u.searchParams.set('vitrumWgslSigma', wgslSigma);
-    }
-    if (webgpuShared === '0' || webgpuShared === '1') {
-      u.searchParams.set('vitrumWebGpuShared', webgpuShared);
-    }
-    if (svgfFrames != null && svgfFrames.length > 0) {
+    // Special case: SVGF frame count accepts two env aliases.
+    const svgfFrames = process.env.VITRUM_SVGF_FRAME_COUNT ?? process.env.VITRUM_SVGF_FRAMES;
+    if (svgfFrames && svgfFrames.length > 0) {
       u.searchParams.set('vitrumSvgfFrameCount', svgfFrames);
-    }
-    if (svgfAtrous != null && svgfAtrous.length > 0) {
-      u.searchParams.set('vitrumSvgfAtrous', svgfAtrous);
     }
     return u.toString();
   } catch {
@@ -75,11 +75,14 @@ try {
   process.exit(3);
 }
 
+const jsHeapMb = Number(process.env.VITRUM_JS_HEAP_MB ?? '4096');
 const browser = await chromium.launch({
   headless: true,
   args: [
     '--disable-dev-shm-usage',
-    '--js-flags=--max-old-space-size=1024',
+    // 1 GiB default is too small for the OIDN model + large viewport reads;
+    // raise to 4 GiB by default and let the env override either direction.
+    `--js-flags=--max-old-space-size=${jsHeapMb}`,
   ],
 });
 try {

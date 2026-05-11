@@ -66,9 +66,23 @@ interface CaptureConfig {
   readonly pixelAdaptiveCadence: number;
 }
 
-function parsePositiveMegapixels(value: string | null, fallback: number): number {
+/** Parse a numeric URL param with shared validation rules. */
+function parseNumber(
+  value: string | null,
+  fallback: number,
+  opts: { integer?: boolean; min?: number } = {},
+): number {
   const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  if (!Number.isFinite(n)) return fallback;
+  const min = opts.min ?? -Infinity;
+  if (n < min) return fallback;
+  return opts.integer ? Math.floor(n) : n;
+}
+
+function parsePositiveMegapixels(value: string | null, fallback: number): number {
+  // Positive (strictly greater than 0).
+  const n = parseNumber(value, fallback);
+  return n > 0 ? n : fallback;
 }
 
 function resolveScenarioId(raw: string): string {
@@ -94,18 +108,17 @@ function clampMegapixels(w: number, h: number, maxMegapixels: number): readonly 
 }
 
 function parsePositiveFloat(value: string | null, fallback: number): number {
-  const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  const n = parseNumber(value, fallback);
+  return n > 0 ? n : fallback;
 }
 
 function parsePositiveInt(value: string | null, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+  const n = parseNumber(value, fallback, { integer: true });
+  return n > 0 ? n : fallback;
 }
 
 function parseNonNegativeInt(value: string | null, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+  return parseNumber(value, fallback, { integer: true, min: 0 });
 }
 
 function clampInt(n: number, lo: number, hi: number): number {
@@ -546,96 +559,107 @@ async function main(): Promise<void> {
       if (denoiseCanvas != null) denoiseCanvas.style.display = 'none';
     }
 
-    if (
-      config.denoiseDisplay === 'oidn' &&
-      denoiseCanvas != null &&
-      config.oidnModelUrl != null &&
-      config.oidnModelUrl.length > 0 &&
-      out.isConverged &&
-      !oidnStarted &&
-      convergedFrame != null
-    ) {
-      oidnStarted = true;
+    /**
+     * Run a denoise mode end-to-end: read accum RGB, call the supplied
+     * denoise async fn, swap canvas → denoise canvas, finalize capture.
+     * Resets the `started` flag on failure so the user can retry.
+     */
+    const triggerDenoise = (
+      mode: 'oidn' | 'wgsl' | 'svgf',
+      successLabel: string,
+      startedRef: { value: boolean },
+      succeededRef: { value: boolean },
+      warnText: string,
+      denoise: (rgb: Float32Array) => Promise<Float32Array>,
+    ): void => {
+      if (denoiseCanvas == null || !out.isConverged || startedRef.value || convergedFrame == null) {
+        return;
+      }
+      startedRef.value = true;
       const capFrame = convergedFrame;
       void (async () => {
         try {
-          const { denoiseFinal } = await import('@vitrum/shared-denoisers');
           const rt = engine.getAccumulationRenderTarget();
           const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
-          const dod = await denoiseFinal(
-            { color: rgb, width: renderWidth, height: renderHeight },
-            { modelUrl: config.oidnModelUrl! },
-          );
+          const dod = await denoise(rgb);
           canvas.style.visibility = 'hidden';
           denoiseCanvas.style.display = 'block';
           writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
-          oidnDisplaySucceeded = true;
+          succeededRef.value = true;
           updateCaptureCanvasHint();
-          finalizeVitrumCapture('oidn', capFrame);
+          finalizeVitrumCapture(successLabel, capFrame);
         } catch (err) {
-          console.warn('[vitrum-cornell] OIDN failed — install onnxruntime-web and supply vitrumOidnModel URL.', err);
+          console.warn(warnText, err);
           canvas.style.visibility = 'visible';
-          oidnStarted = false;
-          oidnDisplaySucceeded = false;
+          startedRef.value = false;
+          succeededRef.value = false;
           updateCaptureCanvasHint();
-          finalizeVitrumCapture('oidn-failed', capFrame);
+          finalizeVitrumCapture(`${mode}-failed`, capFrame);
         }
       })();
-    }
+    };
 
+    const oidnStartedRef = { value: oidnStarted };
+    const oidnSucceededRef = { value: oidnDisplaySucceeded };
     if (
-      config.denoiseDisplay === 'wgsl' &&
-      denoiseCanvas != null &&
-      out.isConverged &&
-      !wgslStarted &&
-      convergedFrame != null
+      config.denoiseDisplay === 'oidn' &&
+      config.oidnModelUrl != null &&
+      config.oidnModelUrl.length > 0
     ) {
-      wgslStarted = true;
-      const capFrame = convergedFrame;
-      void (async () => {
-        try {
+      triggerDenoise(
+        'oidn',
+        'oidn',
+        oidnStartedRef,
+        oidnSucceededRef,
+        '[vitrum-cornell] OIDN failed — install onnxruntime-web and supply vitrumOidnModel URL.',
+        async (rgb) => {
+          const { denoiseFinal } = await import('@vitrum/shared-denoisers');
+          return denoiseFinal(
+            { color: rgb, width: renderWidth, height: renderHeight },
+            { modelUrl: config.oidnModelUrl! },
+          );
+        },
+      );
+    }
+    oidnStarted = oidnStartedRef.value;
+    oidnDisplaySucceeded = oidnSucceededRef.value;
+
+    const wgslStartedRef = { value: wgslStarted };
+    const wgslSucceededRef = { value: wgslDisplaySucceeded };
+    if (config.denoiseDisplay === 'wgsl') {
+      triggerDenoise(
+        'wgsl',
+        'wgsl-hdr-bilateral',
+        wgslStartedRef,
+        wgslSucceededRef,
+        '[vitrum-cornell] WebGPU HDR bilateral failed — raw canvas unchanged.',
+        async (rgb) => {
           const { runHdrLuminanceBilateralWebGPU } = await import('@vitrum/shared-denoisers');
-          const rt = engine.getAccumulationRenderTarget();
-          const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
-          const dod = await runHdrLuminanceBilateralWebGPU({
+          return runHdrLuminanceBilateralWebGPU({
             rgb,
             width: renderWidth,
             height: renderHeight,
             sigmaLuminance: config.wgslSigma,
             reuseSharedWebGpuDevice: config.webGpuReuseSharedDevice,
           });
-          canvas.style.visibility = 'hidden';
-          denoiseCanvas.style.display = 'block';
-          writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
-          wgslDisplaySucceeded = true;
-          updateCaptureCanvasHint();
-          finalizeVitrumCapture('wgsl-hdr-bilateral', capFrame);
-        } catch (err) {
-          console.warn('[vitrum-cornell] WebGPU HDR bilateral failed — raw canvas unchanged.', err);
-          canvas.style.visibility = 'visible';
-          wgslStarted = false;
-          wgslDisplaySucceeded = false;
-          updateCaptureCanvasHint();
-          finalizeVitrumCapture('wgsl-failed', capFrame);
-        }
-      })();
+        },
+      );
     }
+    wgslStarted = wgslStartedRef.value;
+    wgslDisplaySucceeded = wgslSucceededRef.value;
 
-    if (
-      config.denoiseDisplay === 'svgf' &&
-      denoiseCanvas != null &&
-      out.isConverged &&
-      !svgfStarted &&
-      convergedFrame != null
-    ) {
-      svgfStarted = true;
-      const capFrame = convergedFrame;
-      void (async () => {
-        try {
+    const svgfStartedRef = { value: svgfStarted };
+    const svgfSucceededRef = { value: svgfDisplaySucceeded };
+    if (config.denoiseDisplay === 'svgf') {
+      triggerDenoise(
+        'svgf',
+        'svgf',
+        svgfStartedRef,
+        svgfSucceededRef,
+        '[vitrum-cornell] SVGF WebGPU failed — raw canvas unchanged.',
+        async (rgb) => {
           const { runSvgfWebGPU } = await import('@vitrum/shared-denoisers');
-          const rt = engine.getAccumulationRenderTarget();
-          const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
-          const dod = await runSvgfWebGPU({
+          return runSvgfWebGPU({
             rgb,
             width: renderWidth,
             height: renderHeight,
@@ -643,22 +667,11 @@ async function main(): Promise<void> {
             atrousIterations: config.svgfAtrousIterations,
             reuseSharedWebGpuDevice: config.webGpuReuseSharedDevice,
           });
-          canvas.style.visibility = 'hidden';
-          denoiseCanvas.style.display = 'block';
-          writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
-          svgfDisplaySucceeded = true;
-          updateCaptureCanvasHint();
-          finalizeVitrumCapture('svgf', capFrame);
-        } catch (err) {
-          console.warn('[vitrum-cornell] SVGF WebGPU failed — raw canvas unchanged.', err);
-          canvas.style.visibility = 'visible';
-          svgfStarted = false;
-          svgfDisplaySucceeded = false;
-          updateCaptureCanvasHint();
-          finalizeVitrumCapture('svgf-failed', capFrame);
-        }
-      })();
+        },
+      );
     }
+    svgfStarted = svgfStartedRef.value;
+    svgfDisplaySucceeded = svgfSucceededRef.value;
 
     const perfLabel = telemetry == null
       ? rendererLabel

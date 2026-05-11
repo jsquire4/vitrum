@@ -50,14 +50,10 @@ async function main(): Promise<void> {
   const statusEl = document.querySelector<HTMLDivElement>('#status');
   if (!canvasPt || !canvasWgpu || !statusEl) throw new Error('missing DOM nodes');
 
-  const ptCanvas = canvasPt;
-  const wgpuCanvas = canvasWgpu;
-  const st = statusEl;
-
   const lines: [string, string] = ['', ''];
 
   function refreshStatus(): void {
-    st.textContent = lines.join('\n').trim() || '…';
+    statusEl.textContent = lines.join('\n').trim() || '…';
   }
 
   const threeScene = buildCornellBoxThreeScene();
@@ -68,7 +64,7 @@ async function main(): Promise<void> {
   camera.lookAt(-0.05, -0.15, 0);
 
   // ── WebGL2 path trace ─────────────────────────────────────────────────
-  const renderer = new THREE.WebGLRenderer({ canvas: ptCanvas, antialias: false, alpha: false });
+  const renderer = new THREE.WebGLRenderer({ canvas: canvasPt, antialias: false, alpha: false });
   renderer.setPixelRatio(1);
   renderer.setClearColor(0x111111, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -80,10 +76,10 @@ async function main(): Promise<void> {
   const samplesTarget = 32;
 
   function resizePt(): void {
-    resizeCanvasToDisplaySize(ptCanvas);
-    camera.aspect = ptCanvas.width / Math.max(ptCanvas.height, 1);
+    resizeCanvasToDisplaySize(canvasPt);
+    camera.aspect = canvasPt.width / Math.max(canvasPt.height, 1);
     camera.updateProjectionMatrix();
-    renderer.setSize(ptCanvas.width, ptCanvas.height, false);
+    renderer.setSize(canvasPt.width, canvasPt.height, false);
   }
 
   resizePt();
@@ -96,8 +92,8 @@ async function main(): Promise<void> {
       projMatrix: mat4FromThree(camera.projectionMatrix),
       cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
       viewport: {
-        width: ptCanvas.width,
-        height: ptCanvas.height,
+        width: canvasPt.width,
+        height: canvasPt.height,
         devicePixelRatio: window.devicePixelRatio,
       },
       frameIndex: ptFrame,
@@ -120,93 +116,100 @@ async function main(): Promise<void> {
   requestAnimationFrame(ptLoop);
 
   // ── WebGPU walkaround (optional) ───────────────────────────────────────
-  if (!navigator.gpu) {
-    lines[1] = 'Walkaround: no WebGPU — skipped (PT demonstrates shared Scene).';
-    refreshStatus();
-  } else {
+  // Flatten the three nested guards into early returns inside an IIFE so the
+  // happy path (configure → init engine → animation loop) lives at the
+  // outer indentation level. The IIFE keeps the late-binding `lines[1]`
+  // updates in scope.
+  await (async (): Promise<void> => {
+    if (!navigator.gpu) {
+      lines[1] = 'Walkaround: no WebGPU — skipped (PT demonstrates shared Scene).';
+      refreshStatus();
+      return;
+    }
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) {
       lines[1] = 'Walkaround: no GPU adapter.';
       refreshStatus();
-    } else {
-      const device = await adapter.requestDevice();
-      const format = navigator.gpu.getPreferredCanvasFormat();
-      const ctx = wgpuCanvas.getContext('webgpu');
-      if (!ctx) {
-        lines[1] = 'Walkaround: getContext("webgpu") failed.';
-        refreshStatus();
-      } else {
-        const gpuCtx = ctx;
-        function configureWgpu(): void {
-          resizeCanvasToDisplaySize(wgpuCanvas);
-          gpuCtx.configure({
-            device,
-            format,
-            alphaMode: 'premultiplied',
-          });
-        }
-
-        configureWgpu();
-
-        const raw: [number, number, number] = [0.35, 1, 0.2];
-        const len = Math.hypot(raw[0], raw[1], raw[2]);
-        const primaryLightDir: [number, number, number] = [raw[0] / len, raw[1] / len, raw[2] / len];
-
-        const hybrid = await createWalkaroundEngine_Hybrid({
-          device,
-          width: wgpuCanvas.width,
-          height: wgpuCanvas.height,
-          threeScene,
-          primaryLightDir,
-          primaryLightIntensity: 5,
-          skyTint: [0.55, 0.72, 1.0],
-          skyIrradiance: 0.35,
-          isSceneReady: () => true,
-        });
-        hybrid.setScene(vitrumScene);
-
-        const ready = await waitEngineReady(hybrid, 45_000);
-        if (!ready) {
-          lines[1] = `Walkaround: still ${hybrid.state} after timeout (try smaller scene or check GPU).`;
-          refreshStatus();
-        } else {
-          lines[1] = 'Walkaround: rendering';
-          refreshStatus();
-          let wFrame = 0;
-          function wgpuLoop(): void {
-            configureWgpu();
-            camera.aspect = wgpuCanvas.width / Math.max(wgpuCanvas.height, 1);
-            camera.updateProjectionMatrix();
-            camera.updateMatrixWorld();
-            const view = gpuCtx.getCurrentTexture().createView();
-            const input: FrameInput = {
-              viewMatrix: mat4FromThree(camera.matrixWorldInverse),
-              projMatrix: mat4FromThree(camera.projectionMatrix),
-              cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
-              viewport: {
-                width: wgpuCanvas.width,
-                height: wgpuCanvas.height,
-                devicePixelRatio: window.devicePixelRatio,
-              },
-              frameIndex: wFrame,
-              frameSeed: (wFrame * 1664525 + 1013904223) >>> 0,
-              swapChainView: view,
-              swapChainFormat: format,
-              quality: { bounces: 4 },
-            };
-            hybrid.renderFrame(input);
-            wFrame++;
-            requestAnimationFrame(wgpuLoop);
-          }
-          requestAnimationFrame(wgpuLoop);
-        }
-
-        window.addEventListener('resize', () => {
-          configureWgpu();
-        });
-      }
+      return;
     }
-  }
+    const device = await adapter.requestDevice();
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    const ctx = canvasWgpu.getContext('webgpu');
+    if (!ctx) {
+      lines[1] = 'Walkaround: getContext("webgpu") failed.';
+      refreshStatus();
+      return;
+    }
+    const gpuCtx = ctx;
+
+    function configureWgpu(): void {
+      resizeCanvasToDisplaySize(canvasWgpu);
+      gpuCtx.configure({
+        device,
+        format,
+        alphaMode: 'premultiplied',
+      });
+    }
+    configureWgpu();
+
+    const raw: [number, number, number] = [0.35, 1, 0.2];
+    const len = Math.hypot(raw[0], raw[1], raw[2]);
+    const primaryLightDir: [number, number, number] = [raw[0] / len, raw[1] / len, raw[2] / len];
+
+    const hybrid = await createWalkaroundEngine_Hybrid({
+      device,
+      width: canvasWgpu.width,
+      height: canvasWgpu.height,
+      threeScene,
+      primaryLightDir,
+      primaryLightIntensity: 5,
+      skyTint: [0.55, 0.72, 1.0],
+      skyIrradiance: 0.35,
+      isSceneReady: () => true,
+    });
+    hybrid.setScene(vitrumScene);
+
+    const ready = await waitEngineReady(hybrid, 45_000);
+    if (!ready) {
+      lines[1] = `Walkaround: still ${hybrid.state} after timeout (try smaller scene or check GPU).`;
+      refreshStatus();
+      return;
+    }
+    lines[1] = 'Walkaround: rendering';
+    refreshStatus();
+
+    let wFrame = 0;
+    function wgpuLoop(): void {
+      configureWgpu();
+      camera.aspect = canvasWgpu.width / Math.max(canvasWgpu.height, 1);
+      camera.updateProjectionMatrix();
+      camera.updateMatrixWorld();
+      const view = gpuCtx.getCurrentTexture().createView();
+      const input: FrameInput = {
+        viewMatrix: mat4FromThree(camera.matrixWorldInverse),
+        projMatrix: mat4FromThree(camera.projectionMatrix),
+        cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
+        viewport: {
+          width: canvasWgpu.width,
+          height: canvasWgpu.height,
+          devicePixelRatio: window.devicePixelRatio,
+        },
+        frameIndex: wFrame,
+        frameSeed: (wFrame * 1664525 + 1013904223) >>> 0,
+        swapChainView: view,
+        swapChainFormat: format,
+        quality: { bounces: 4 },
+      };
+      hybrid.renderFrame(input);
+      wFrame++;
+      requestAnimationFrame(wgpuLoop);
+    }
+    requestAnimationFrame(wgpuLoop);
+
+    window.addEventListener('resize', () => {
+      configureWgpu();
+    });
+  })();
 
   window.addEventListener('resize', resizePt);
 }

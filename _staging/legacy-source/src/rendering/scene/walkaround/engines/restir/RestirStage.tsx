@@ -174,6 +174,7 @@ export function RestirStage({
   const [wgGate, setWgGate] = useState<WgWalkaroundBridge | null>(null);
   useEffect(() => {
     let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const check = () => {
       if (cancelled) return;
       const g = window.__WG__;
@@ -181,11 +182,15 @@ export function RestirStage({
         setWgGate(g);
         return;
       }
-      // Factory hasn't published yet — try again on the next microtask.
-      Promise.resolve().then(check);
+      // Factory hasn't published yet — yield to event loop instead of
+      // spinning the microtask queue, which would starve animation frames.
+      timer = setTimeout(check, 16);
     };
     check();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (timer != null) clearTimeout(timer);
+    };
   }, []);
 
   const refuseToMount = wgGate !== null && wgGate.isWebGPU && wgGate.isHardwareGpu === false;
@@ -274,6 +279,10 @@ export function RestirStage({
      * 60-tri threshold before any panel face committed. The fix forces
      * the gate to wait for actual GlassMesh meshes.
      */
+    // TODO(extract): this predicate is duplicated verbatim in
+    // walkaround/HybridLayeredStage.tsx. When the host app extraction
+    // resumes, move both copies into a shared `createIsSceneReadyPredicate
+    // (scene, roomKey)` utility in lib/.
     const isSceneReady = (): boolean => {
       let hasFaceGeo = false;
       let hasRoomFloor = false;
