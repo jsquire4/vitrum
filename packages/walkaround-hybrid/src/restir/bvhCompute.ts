@@ -197,13 +197,20 @@ export function buildReSTIRSceneBVH(
   );
 
   // ── 4. Build emitter list (transmissive + emissive triangles) ──────────
+  // Non-mesh scene lights (THREE.RectAreaLight from
+  // `vitrumSceneToThree`'s `'rect-area'` emitter branch) are NOT in the
+  // BVH and would not be discovered by the per-triangle material walk.
+  // Collect them as explicit emitter triangles so ReSTIR DI can sample
+  // them.
+  const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots);
+
   const { emitterFloats, cdfArray, cellPowerArray, totalEmissivePower } = buildEmitterList(
     shared.indices,
     shared.positions, // stride-4; emitter math reads .xyz only
     shared.normals,
     shared.triMaterialId,
     shared.materials,
-    options,
+    { ...options, extraEmitters },
   );
   const emitterCount = cdfArray.length;
 
@@ -265,5 +272,94 @@ export function buildReSTIRSceneBVH(
 /** Dispose CPU-side geometry + GPU buffers (call on unmount). */
 export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
   buffers.mergedGeometry.dispose();
+}
+
+/**
+ * Walk the scene roots for `THREE.RectAreaLight` instances and convert each
+ * to a pair of emitter triangles (front-emitting along the light's local -Z
+ * face, matching THREE.RectAreaLight's convention).
+ *
+ * Folds `light.intensity` into Le so the WGSL shade kernel (which reads only
+ * `EmitterTri.Le` for radiance and ignores the legacy `intensity` slot) sees
+ * the correct power.
+ */
+function collectRectAreaLightEmitterTris(
+  sceneRoots: THREE.Object3D[],
+): {
+  vA: [number, number, number];
+  vB: [number, number, number];
+  vC: [number, number, number];
+  normal: [number, number, number];
+  area: number;
+  Le: [number, number, number];
+}[] {
+  const out: {
+    vA: [number, number, number];
+    vB: [number, number, number];
+    vC: [number, number, number];
+    normal: [number, number, number];
+    area: number;
+    Le: [number, number, number];
+  }[] = [];
+  const _ll = new THREE.Vector3();
+  const _lr = new THREE.Vector3();
+  const _ur = new THREE.Vector3();
+  const _ul = new THREE.Vector3();
+  const _normal = new THREE.Vector3();
+  const _ab = new THREE.Vector3();
+  const _ac = new THREE.Vector3();
+
+  for (const root of sceneRoots) {
+    root.updateMatrixWorld(true);
+    root.traverseVisible((obj) => {
+      if (!(obj instanceof THREE.RectAreaLight)) return;
+      const light = obj;
+      const wHalf = light.width * 0.5;
+      const hHalf = light.height * 0.5;
+
+      _ll.set(-wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
+      _lr.set( wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
+      _ur.set( wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
+      _ul.set(-wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
+
+      // Triangle area: half the rect parallelogram (one rect = 2 tris).
+      _ab.subVectors(_lr, _ll);
+      _ac.subVectors(_ur, _ll);
+      _normal.crossVectors(_ab, _ac);
+      const crossLen = _normal.length();
+      if (crossLen < 1e-8) return;
+
+      // Emission direction is THREE.RectAreaLight's local -Z, transformed
+      // by the light's world basis. The geometric face normal from the
+      // vertex cross product points along local +Z (away from emission),
+      // so we cannot use it directly — sample-cosine tests in the shade
+      // kernel would reject every surface in front of the light.
+      _normal.setFromMatrixColumn(light.matrixWorld, 2).normalize().negate();
+
+      const triArea = crossLen * 0.5;
+      const c = light.color;
+      const I = light.intensity;
+      const Le: [number, number, number] = [c.r * I, c.g * I, c.b * I];
+      const N: [number, number, number] = [_normal.x, _normal.y, _normal.z];
+
+      out.push({
+        vA: [_ll.x, _ll.y, _ll.z],
+        vB: [_lr.x, _lr.y, _lr.z],
+        vC: [_ur.x, _ur.y, _ur.z],
+        normal: N,
+        area: triArea,
+        Le,
+      });
+      out.push({
+        vA: [_ll.x, _ll.y, _ll.z],
+        vB: [_ur.x, _ur.y, _ur.z],
+        vC: [_ul.x, _ul.y, _ul.z],
+        normal: N,
+        area: triArea,
+        Le,
+      });
+    });
+  }
+  return out;
 }
 

@@ -92,6 +92,25 @@ function classifyTriangleEmitter(
 export interface EmitterListOptions {
   primaryLightDir?: THREE.Vector3;
   primaryLightIntensity?: number;
+  /**
+   * Additional emitter triangles from non-mesh sources (e.g. THREE.RectAreaLight
+   * or other scene-graph lights that do not appear in the BVH). These are
+   * appended verbatim AFTER the BVH-iteration produces its own emitter list,
+   * and suppress the synthetic-placeholder fallback when present.
+   *
+   * The caller is responsible for folding any per-light intensity into
+   * `Le` (the WGSL `EmitterTri.Le` field is the only radiance source the
+   * shade kernel reads — the `intensity` field is legacy and ignored by
+   * WGSL).
+   */
+  extraEmitters?: ReadonlyArray<{
+    vA: [number, number, number];
+    vB: [number, number, number];
+    vC: [number, number, number];
+    normal: [number, number, number];
+    area: number;
+    Le: [number, number, number];
+  }>;
 }
 
 export function buildEmitterList(
@@ -189,6 +208,23 @@ export function buildEmitterList(
       intensity,
       power,
     });
+  }
+
+  if (options.extraEmitters) {
+    for (const ex of options.extraEmitters) {
+      const lum = luminance(ex.Le[0], ex.Le[1], ex.Le[2]);
+      const power = lum * ex.area;
+      if (power < 1e-8) continue;
+      emitterData.push({
+        triIdx: -1,
+        vA: ex.vA, vB: ex.vB, vC: ex.vC,
+        normal: ex.normal,
+        area: ex.area,
+        color: ex.Le,
+        intensity: 1,
+        power,
+      });
+    }
   }
 
   if (emitterData.length === 0) {
