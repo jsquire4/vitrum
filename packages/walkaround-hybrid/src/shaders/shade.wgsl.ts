@@ -339,17 +339,15 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Gated on isDDGIWired() so the placeholder atlas (dimsX=1) is ignored.
   var Lo_ddgi = vec3f(0.0);
   if (!isGlass && isDDGIWired()) {
-    // Low DDGI contribution (0.05x). At higher gains the probe-grid cell
-    // pattern is screen-visible as splotchy patches on smooth walls and
-    // blocky shadows on the floor — even though the atlas is temporally
-    // stable, the discretized hemispheres of adjacent probes produce
-    // brightness banding. 0.05x lets the colour-bleed signal in atlas
-    // pass through dimly without crossing the perceptual threshold for
-    // the cell-grid pattern. Production engines layer DDGI under
-    // screen-space refinement or stochastic probe sampling to fully hide
-    // the grid; without those, the choice is contribution magnitude vs
-    // visible artefacts.
-    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 0.05;
+    // DDGI off (× 0). After reducing SVGF atrous iterations from 5 to 3
+    // (to fix blocky penumbra), the wide-kernel step-16 iter-4 pass no
+    // longer masks the DDGI probe-grid cell pattern, so even × 0.05
+    // showed splotchy patches on smooth walls. Until DDGI ships with
+    // stochastic atlas sampling or screen-space refinement to hide the
+    // grid, contribute zero. Walls and shadows render cleanly with
+    // direct-only lighting; Cornell colour bleed is missing but no
+    // perceptual artefacts.
+    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 0.0;
   }
 
   // Active terms (current pipeline state):
