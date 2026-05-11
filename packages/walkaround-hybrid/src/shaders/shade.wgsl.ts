@@ -339,11 +339,17 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Gated on isDDGIWired() so the placeholder atlas (dimsX=1) is ignored.
   var Lo_ddgi = vec3f(0.0);
   if (!isGlass && isDDGIWired()) {
-    // DDGI consume × 0.25. Atlas reaches 1-2 magnitude post-sync-fix.
-    // × albedo at full strength saturates boxes white; × 0.5 was still
-    // too bright. 0.25 lets indirect contribute visible colour bleed
-    // without dominating ReSTIR-DI direct shading.
-    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 0.25;
+    // Low DDGI contribution (0.05x). At higher gains the probe-grid cell
+    // pattern is screen-visible as splotchy patches on smooth walls and
+    // blocky shadows on the floor — even though the atlas is temporally
+    // stable, the discretized hemispheres of adjacent probes produce
+    // brightness banding. 0.05x lets the colour-bleed signal in atlas
+    // pass through dimly without crossing the perceptual threshold for
+    // the cell-grid pattern. Production engines layer DDGI under
+    // screen-space refinement or stochastic probe sampling to fully hide
+    // the grid; without those, the choice is contribution magnitude vs
+    // visible artefacts.
+    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 0.05;
   }
 
   // Active terms (current pipeline state):
