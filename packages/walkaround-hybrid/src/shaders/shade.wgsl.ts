@@ -339,18 +339,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Gated on isDDGIWired() so the placeholder atlas (dimsX=1) is ignored.
   var Lo_ddgi = vec3f(0.0);
   if (!isGlass && isDDGIWired()) {
-    // The DDGI atlas blend uses pow(w, 8) directional kernel (see
-    // probeUpdateBlend.wgsl). That kernel narrows the lobe — preserving
-    // directional colour separation against Cornell-style gray-vs-coloured-
-    // wall hemispheres — but the resulting weighted average has roughly
-    // 1/N magnitude relative to the unweighted hemisphere irradiance,
-    // where N is the effective lobe-coverage factor (~8 for pow8).
-    // The 4.0 multiplier compensates so the indirect contribution
-    // visually balances against ReSTIR DI's direct term on diffuse
-    // surfaces. 16x was over-bright (boxes saturated white) and made
-    // cell-grid artefacts visible in lit regions; 4x preserves visible
-    // colour bleed without overwhelming direct lighting.
-    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 4.0;
+    // DDGI consume × 0.25. Atlas reaches 1-2 magnitude post-sync-fix.
+    // × albedo at full strength saturates boxes white; × 0.5 was still
+    // too bright. 0.25 lets indirect contribute visible colour bleed
+    // without dominating ReSTIR-DI direct shading.
+    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 0.25;
   }
 
   // Active terms (current pipeline state):

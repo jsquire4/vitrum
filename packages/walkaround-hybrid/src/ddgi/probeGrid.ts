@@ -121,9 +121,13 @@ export class ProbeGrid {
     const ny = Math.max(3, Math.ceil(size.y / PROBE_SPACING) + 1);
     const nz = Math.max(3, Math.ceil(size.z / PROBE_SPACING) + 1);
 
-    // Hard cap to keep atlas sizes reasonable.
+    // Hard cap to keep atlas sizes reasonable. Y was previously capped at 10
+    // for the original studio scene (low ceilings), but that left the upper
+    // half of taller rooms (e.g. the Cornell box at y∈[-1,+1] with spacing
+    // 0.17 → ny=13) without probe coverage — ceiling and light source
+    // unobserved, indirect bounce died, no colour bleed. Match X/Z at 16.
     const cx = Math.min(nx, 16);
-    const cy = Math.min(ny, 10);
+    const cy = Math.min(ny, 16);
     const cz = Math.min(nz, 16);
 
     const changed =

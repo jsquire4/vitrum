@@ -479,7 +479,29 @@ fn probeUpdateRays(
           indirect = textureSampleLevel(irradiancePrev, irradianceSamp, iUv, 0.0).rgb;
         }
 
-        let albedo   = mat.baseColor;
+        // Atlas stores radiance LEAVING the hit surface (= incoming
+        // radiance at the probe). For Lambertian diffuse surfaces, that
+        // is direct + indirect, modulated by the HIT surface albedo,
+        // and divided by pi. The shade-side ddgiSampleFromBindings then
+        // multiplies by the receiver's albedo to compute outgoing
+        // radiance at the shaded point.
+        //
+        // Cornell-specific observation: the hit-surface albedo on coloured
+        // walls (red 0.4, green 0.2) is much lower than on grey walls
+        // (~0.8), so a hemisphere-averaging blend mixes coloured-wall hits
+        // at half-amplitude with grey-wall hits at full amplitude. The
+        // colour signal gets bleached. We compensate by storing radiance
+        // BEFORE the albedo modulation when the hit is on a heavily-
+        // saturated surface (luminance(albedo) << max(albedo)), so the
+        // colour chromaticity survives the average. The shade kernel
+        // still multiplies by the receiver's albedo so the physical
+        // diffuse-reflection equation holds for the dominant grey-surface
+        // case.
+        // Standard Lambertian outgoing radiance from the hit surface
+        // (= incoming radiance at the probe). The atlas now accumulates
+        // properly via the read→write copy fix in probeUpdatePass.ts,
+        // so the kludgey saturation boost is no longer needed.
+        let albedo = mat.baseColor;
         var radiance = (direct + indirect) * albedo / PI;
 
         if ((mat.flags & 1u) != 0u) {

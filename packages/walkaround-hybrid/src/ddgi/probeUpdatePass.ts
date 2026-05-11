@@ -355,6 +355,29 @@ export class ProbeUpdatePass {
     // Run compute passes.
     const encoder = device.createCommandEncoder();
     this._runRaysPass(encoder, activeProbes.length, irrReadTex);
+
+    // CRITICAL: copy read→write so inactive probes' cells stay in sync.
+    // Without this, the per-frame ping-pong (`swap()` below) combined with
+    // round-robin updates (STRIDE=8, only 1/8 of probes active per frame)
+    // produces a structural bug: every probe always writes to the SAME
+    // atlas (parity-matched by probeIdx % STRIDE × frame % 2), and reads
+    // its `prev` from the OTHER atlas which it never writes to → prev=0.
+    // Hysteresis 0.97 with prev=0 collapses the EMA to 0.03 × newColor,
+    // a 33× attenuation that explains why DDGI atlas peaked at ~0.05
+    // despite per-ray red-wall radiance of ~6.0. Copying read→write
+    // before blend means inactive probes' cells already hold the latest
+    // value (from when they were last active, one full STRIDE cycle ago).
+    encoder.copyTextureToTexture(
+      { texture: irrReadTex },
+      { texture: irrWriteTex },
+      { width: irrReadTex.width, height: irrReadTex.height, depthOrArrayLayers: 1 },
+    );
+    encoder.copyTextureToTexture(
+      { texture: visReadTex },
+      { texture: visWriteTex },
+      { width: visReadTex.width, height: visReadTex.height, depthOrArrayLayers: 1 },
+    );
+
     this._runBlendIrrPass(encoder, activeProbes.length, irrReadTex, irrWriteTex);
     this._runBlendVisPass(encoder, activeProbes.length, visReadTex, visWriteTex);
     device.queue.submit([encoder.finish()]);
@@ -465,16 +488,27 @@ export class ProbeUpdatePass {
 
   private _uploadFrameParams(device: GPUDevice): void {
     // 8 floats / 32 bytes; aliased u32 view shares the storage:
-    //   data[0..2]  → randomRotation: vec3f  (random per-frame Y rotation)
+    //   data[0..2]  → randomRotation: vec3f  (per-frame ray-direction jitter)
     //   u32[3]      → frameIndex: u32
     //   u32[4]      → probeCount: u32
     //   u32[5]      → probesPerFrame: u32 (ceil(probeCount / 4))
     //   data[6..7]  → pad to 32 bytes (std140 vec4 alignment)
+    //
+    // randomRotation is FIXED (not Math.random() per frame). The previous
+    // per-frame jitter rotated all probes' rays by different random angles
+    // each frame, so every probe's newColor changed each update — the
+    // EMA (0.97 hysteresis) couldn't fully suppress the per-frame variance,
+    // producing visible perpetual screen-wide flicker that "worsened on
+    // refresh and settled but never stopped". For a static Cornell scene
+    // fixed rotation gives identical newColor across updates → atlas
+    // converges to one stable value. Trade-off: ray-direction aliasing
+    // (192 fixed directions). Acceptable here; matters for dynamic scenes,
+    // where blue-noise per-probe-fixed-across-frames would be the cure.
     const data = new Float32Array(8);
     const u32 = new Uint32Array(data.buffer);
-    data[0] = Math.random() * Math.PI * 2;
-    data[1] = Math.random() * Math.PI * 2;
-    data[2] = Math.random() * Math.PI * 2;
+    data[0] = 0;
+    data[1] = 0;
+    data[2] = 0;
     u32[3] = this._frameIndex;
     u32[4] = this._grid.probeCount;
     u32[5] = Math.ceil(this._grid.probeCount / 4);
@@ -505,7 +539,15 @@ export class ProbeUpdatePass {
     const gpuTex = device.createTexture({
       size: [slot.width, slot.height, 1],
       format,
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      // COPY_SRC | COPY_DST so the host can keep the two ping-pong atlases
+      // synchronised via `copyTextureToTexture` at the start of each blend
+      // dispatch (inactive probes' cells must mirror the read texture or
+      // the round-robin EMA collapses to 3% of newColor per cycle).
+      usage:
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC |
+        GPUTextureUsage.COPY_DST,
     });
 
     this._textureCache.set(slot, gpuTex);
