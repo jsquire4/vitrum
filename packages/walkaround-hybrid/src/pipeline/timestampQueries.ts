@@ -1,42 +1,117 @@
 /**
  * GPU timestamp query helpers — DEV-only, feature-gated.
  *
- * 15 timestamp slots cover both denoisers + optional PPG:
- *   • SVGF: ris…shade (0–4), ppg-update (5), welford + svgf-var + five à-trous
- *     (6–12), temporalAccum (13), composite (14). When PPG is off, slot 5 is unused.
- *   • Legacy à-trous: 0–4, ppg-update (5), three à-trous (6–8), temporalAccum (9),
- *     composite (10); slots 11–14 unused (readback skips empty begin/end pairs).
+ * The number and ordering of timestamp slots depends on frame configuration
+ * (whether PPG is enabled and which denoiser is active). `buildPassLayout`
+ * returns a deterministic `PassLabel` → slot-index map per frame, and the
+ * querySet is sized to the worst-case slot count so a single allocation
+ * survives every configuration.
+ *
+ * Configurations (slot count in parentheses):
+ *   • PPG off, legacy atrous (10): ris…shade, atrous-0..2, temporalAccum, composite
+ *   • PPG on,  legacy atrous (11): + ppg-update
+ *   • PPG off, SVGF          (14): ris…shade, welford-temporal, svgf-variance, svgf-atrous-0..4, temporalAccum, composite
+ *   • PPG on,  SVGF          (15): + ppg-update
  *
  * Uses a ping-pong pair of readback buffers so one can be in-flight
  * (mapped/mapping) while the next frame writes into the other, avoiding
  * the "buffer in use" stall a single readback buffer would cause.
  */
 
-export const PASS_LABELS = [
-  'ris', 'temporal', 'spatial-1', 'spatial-2', 'shade',
-  'ppg-update',
-  'denoise-5', 'denoise-6', 'denoise-7', 'denoise-8', 'denoise-9', 'denoise-10', 'denoise-11',
-  'temporalAccum', 'composite',
-] as const;
-
-export type PassLabel = typeof PASS_LABELS[number];
-export const PASS_COUNT = PASS_LABELS.length;
+export type PassLabel =
+  | 'ris'
+  | 'temporal'
+  | 'spatial-1'
+  | 'spatial-2'
+  | 'shade'
+  | 'ppg-update'
+  | 'welford-temporal'
+  | 'svgf-variance'
+  | 'svgf-atrous-0'
+  | 'svgf-atrous-1'
+  | 'svgf-atrous-2'
+  | 'svgf-atrous-3'
+  | 'svgf-atrous-4'
+  | 'atrous-0'
+  | 'atrous-1'
+  | 'atrous-2'
+  | 'temporalAccum'
+  | 'composite';
 
 /**
- * Build the optional timestampWrites struct for a pass at the given
- * pipeline-level pass index. Returns undefined when timestamp queries
- * aren't enabled, so the spread trick used in renderFrame doesn't
- * degrade pass descriptors on adapters without the feature.
+ * Maximum slot count across all supported configurations. Used to size the
+ * GPU querySet + resolve/readback buffers so allocation survives every
+ * runtime layout.
+ */
+export const MAX_PASS_COUNT = 15;
+
+export interface PassLayoutOptions {
+  readonly ppgEnabled: boolean;
+  readonly denoiserMode: 'svgf' | 'atrous';
+}
+
+export interface PassLayout {
+  /** Slot index for the given label. Throws if the label is not active in this layout. */
+  readonly index: (label: PassLabel) => number;
+  /** Total slots used by this layout. Always ≤ MAX_PASS_COUNT. */
+  readonly slotCount: number;
+  /** Ordered slot labels (length === slotCount), used to label readback timings. */
+  readonly labels: readonly PassLabel[];
+}
+
+export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
+  const labels: PassLabel[] = ['ris', 'temporal', 'spatial-1', 'spatial-2', 'shade'];
+  if (opts.ppgEnabled) labels.push('ppg-update');
+  if (opts.denoiserMode === 'svgf') {
+    labels.push(
+      'welford-temporal',
+      'svgf-variance',
+      'svgf-atrous-0',
+      'svgf-atrous-1',
+      'svgf-atrous-2',
+      'svgf-atrous-3',
+      'svgf-atrous-4',
+    );
+  } else {
+    labels.push('atrous-0', 'atrous-1', 'atrous-2');
+  }
+  labels.push('temporalAccum', 'composite');
+
+  const indexMap = new Map<PassLabel, number>();
+  labels.forEach((label, i) => indexMap.set(label, i));
+
+  return {
+    index: (label) => {
+      const i = indexMap.get(label);
+      if (i === undefined) {
+        throw new Error(
+          `pass label "${label}" is not active in this layout (ppg=${opts.ppgEnabled}, denoiser=${opts.denoiserMode})`,
+        );
+      }
+      return i;
+    },
+    slotCount: labels.length,
+    labels,
+  };
+}
+
+/**
+ * Build the optional timestampWrites struct for a pass. Returns undefined
+ * when timestamp queries aren't enabled, so the spread trick used in
+ * renderFrame doesn't degrade pass descriptors on adapters without the
+ * feature.
  */
 export function tsWrites(
   querySet: GPUQuerySet | null,
-  passIndex: number,
+  layout: PassLayout,
+  label: PassLabel,
 ): GPUComputePassTimestampWrites | undefined {
   if (!querySet) return undefined;
+  const i = layout.index(label);
   return {
     querySet,
-    beginningOfPassWriteIndex: passIndex * 2,
-    endOfPassWriteIndex: passIndex * 2 + 1,
+    beginningOfPassWriteIndex: i * 2,
+    endOfPassWriteIndex: i * 2 + 1,
   };
 }
 
@@ -81,7 +156,7 @@ export function initTimestampQueries(
   if (!isDev) return;
 
   if (device.features.has('timestamp-query')) {
-    const N = PASS_COUNT;
+    const N = MAX_PASS_COUNT;
     state.querySet = device.createQuerySet({ type: 'timestamp', count: N * 2 });
     state.resolveBuffer = device.createBuffer({
       size: N * 2 * 8,
@@ -100,7 +175,7 @@ export function initTimestampQueries(
     const adapterInfo = (device as unknown as { adapterInfo?: { timestampPeriod?: number } }).adapterInfo;
     state.periodNs = adapterInfo?.timestampPeriod ?? 1.0;
     console.log('[hybrid:debug] timestamp queries enabled',
-      { passes: N, periodNs: state.periodNs });
+      { maxPasses: N, periodNs: state.periodNs });
   } else {
     console.log('[hybrid:debug] timestamp queries unavailable on this adapter; falling back to JS-submit timing only');
   }
@@ -109,10 +184,14 @@ export function initTimestampQueries(
 /**
  * Read back the most recent timestamp results into `state.lastGpuTimings`.
  * Async, fire-and-forget — uses ping-pong to avoid stalling the next frame.
+ * `labels` is captured in the closure so async resolution always uses the
+ * label set that was active when this readback was kicked, even if the
+ * pipeline reconfigures between the kick and the mapAsync resolution.
  */
 export function kickTimestampReadback(
   state: TimestampState,
   frameCount: number,
+  labels: readonly PassLabel[],
 ): void {
   if (!state.resolveBuffer || !state.readbackA || !state.readbackB) return;
   if (state.readbackInFlight) return; // prior readback still pending
@@ -121,7 +200,6 @@ export function kickTimestampReadback(
   const slot: 'A' | 'B' = frameCount % 2 === 0 ? 'A' : 'B';
   state.readbackInFlight = slot;
   const periodNs = state.periodNs;
-  const labels = PASS_LABELS;
   const N = labels.length;
 
   target.mapAsync(GPUMapMode.READ).then(() => {
@@ -164,18 +242,18 @@ export function resolveTimestamps(
   encoder: GPUCommandEncoder,
   state: TimestampState,
   frameCount: number,
+  slotCount: number,
 ): void {
   if (!state.querySet || !state.resolveBuffer) return;
 
-  const N = PASS_COUNT;
   const target = frameCount % 2 === 0 ? state.readbackA : state.readbackB;
   const slot: 'A' | 'B' = frameCount % 2 === 0 ? 'A' : 'B';
 
   // Skip resolve+copy if the target buffer is still mapped from a prior
   // readback (i.e. its slot matches `readbackInFlight`).
   if (target && state.readbackInFlight !== slot) {
-    encoder.resolveQuerySet(state.querySet, 0, N * 2, state.resolveBuffer, 0);
-    encoder.copyBufferToBuffer(state.resolveBuffer, 0, target, 0, N * 2 * 8);
+    encoder.resolveQuerySet(state.querySet, 0, slotCount * 2, state.resolveBuffer, 0);
+    encoder.copyBufferToBuffer(state.resolveBuffer, 0, target, 0, slotCount * 2 * 8);
   }
 }
 

@@ -77,7 +77,10 @@ import {
   resolveTimestamps,
   disposeTimestampState,
   makeTimestampState,
+  buildPassLayout,
   type TimestampState,
+  type PassLabel,
+  type PassLayout,
 } from './timestampQueries.js';
 
 /**
@@ -452,7 +455,10 @@ export class WalkaroundGPUPipeline {
     const bgUbo   = buildUboBindGroup(d, this._bglCache, this._res.uboBuffer);
 
     // ── Dispatch compute passes ───────────────────────────────────────────
-    const denoiseBase = this._ppgEnabled ? 6 : 5;
+    const passLayout = buildPassLayout({
+      ppgEnabled: this._ppgEnabled,
+      denoiserMode: this._denoiserMode === 'svgf' ? 'svgf' : 'atrous',
+    });
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
 
@@ -467,15 +473,17 @@ export class WalkaroundGPUPipeline {
 
     // Helper: build a GPUComputePassDescriptor without an undefined timestampWrites
     // property — required by exactOptionalPropertyTypes. We spread the optional
-    // timestampWrites field only when it has a value.
-    const computeDesc = (label: string, passIdx: number): GPUComputePassDescriptor => {
-      const ts = tsWrites(this._tsState.querySet, passIdx);
+    // timestampWrites field only when it has a value. The label is the pass's
+    // PassLabel; slot index is resolved through passLayout so it stays in sync
+    // with the GPU timing readback labels.
+    const computeDesc = (label: PassLabel): GPUComputePassDescriptor => {
+      const ts = tsWrites(this._tsState.querySet, passLayout, label);
       return ts ? { label, timestampWrites: ts } : { label };
     };
 
     // Pass 1: RIS (primary ray cast + reservoir sampling)
     {
-      const pass = encoder.beginComputePass(computeDesc('ris', 0));
+      const pass = encoder.beginComputePass(computeDesc('ris'));
       pass.setPipeline(this._risPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
@@ -486,7 +494,7 @@ export class WalkaroundGPUPipeline {
 
     // Pass 2: Temporal reuse
     {
-      const pass = encoder.beginComputePass(computeDesc('temporal', 1));
+      const pass = encoder.beginComputePass(computeDesc('temporal'));
       pass.setPipeline(this._temporalPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
@@ -499,7 +507,7 @@ export class WalkaroundGPUPipeline {
     // on Lovelace was ~22ms each. With NEIGHBORS=5, each pass is heavier
     // but the visual win is the dominant variance reducer in the pipeline.
     {
-      const pass = encoder.beginComputePass(computeDesc('spatial-1', 2));
+      const pass = encoder.beginComputePass(computeDesc('spatial-1'));
       pass.setPipeline(this._spatialPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
@@ -508,7 +516,7 @@ export class WalkaroundGPUPipeline {
       pass.end();
     }
     {
-      const pass = encoder.beginComputePass(computeDesc('spatial-2', 3));
+      const pass = encoder.beginComputePass(computeDesc('spatial-2'));
       pass.setPipeline(this._spatialPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
@@ -549,7 +557,7 @@ export class WalkaroundGPUPipeline {
         : {}),
     });
     {
-      const pass = encoder.beginComputePass(computeDesc('shade', 4));
+      const pass = encoder.beginComputePass(computeDesc('shade'));
       pass.setPipeline(this._shadePipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
@@ -581,7 +589,7 @@ export class WalkaroundGPUPipeline {
       });
       const wgPpg = Math.max(1, Math.ceil(sampleCapacity / 64));
       {
-        const pass = encoder.beginComputePass(computeDesc('ppg-update', 5));
+        const pass = encoder.beginComputePass(computeDesc('ppg-update'));
         pass.setPipeline(this._ppgUpdatePipeline);
         pass.setBindGroup(0, bgPpgUpdate);
         pass.dispatchWorkgroups(wgPpg, 1, 1);
@@ -610,21 +618,17 @@ export class WalkaroundGPUPipeline {
 
     if (this._denoiserMode === 'svgf') {
       denoisedOut = this._dispatchSVGF(
-        encoder, denoiseBase, gNormalDepthView, readAccum, isMoving, wgX16, wgY16, computeDesc,
+        encoder, gNormalDepthView, readAccum, isMoving, wgX16, wgY16, computeDesc,
       );
       this._welfordPing = 1 - this._welfordPing;
     } else {
       denoisedOut = this._dispatchAtrousLegacy(
-        encoder, denoiseBase, gNormalDepthView, wgX16, wgY16, computeDesc,
+        encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
       );
     }
 
     const alpha = this._accumFrameIndex === 0 ? 1.0 : 0.1;
     this._lastCameraPos = [...inputs.cameraPos];
-
-    const accumPassIdx = this._denoiserMode === 'svgf'
-      ? denoiseBase + 2 + SVGF_DEFAULT_ATROUS_ITERATIONS
-      : denoiseBase + 3;
 
     {
       const bgAccum = buildAccumBindGroup(
@@ -634,7 +638,7 @@ export class WalkaroundGPUPipeline {
         writeAccum.createView(),
         alpha,
       );
-      const pass = encoder.beginComputePass(computeDesc('temporalAccum', accumPassIdx));
+      const pass = encoder.beginComputePass(computeDesc('temporalAccum'));
       pass.setPipeline(this._accumPipeline);
       pass.setBindGroup(0, bgAccum);
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
@@ -647,7 +651,7 @@ export class WalkaroundGPUPipeline {
     const finalTex = writeAccum;
     const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.compositeLinearSampler);
     {
-      const tsComp = tsWrites(this._tsState.querySet, accumPassIdx + 1);
+      const tsComp = tsWrites(this._tsState.querySet, passLayout, 'composite');
       const pass = encoder.beginRenderPass({
         label: 'composite',
         colorAttachments: [{
@@ -665,7 +669,7 @@ export class WalkaroundGPUPipeline {
     }
 
     // Resolve timestamps + copy into the inactive readback buffer.
-    resolveTimestamps(encoder, this._tsState, this._frameCount);
+    resolveTimestamps(encoder, this._tsState, this._frameCount, passLayout.slotCount);
 
     d.queue.submit([encoder.finish()]);
 
@@ -679,7 +683,9 @@ export class WalkaroundGPUPipeline {
     d.queue.submit([enc2.finish()]);
 
     // Kick async readback of the timestamp buffer we just copied into.
-    kickTimestampReadback(this._tsState, this._frameCount);
+    // Pass the layout labels so the async callback labels each slot
+    // correctly even if the pipeline reconfigures between frames.
+    kickTimestampReadback(this._tsState, this._frameCount, passLayout.labels);
     // Mirror public telemetry fields from the state object so callers
     // can read them as before.
     this.lastGpuTimings      = this._tsState.lastGpuTimings;
@@ -695,13 +701,12 @@ export class WalkaroundGPUPipeline {
    */
   private _dispatchSVGF(
     encoder: GPUCommandEncoder,
-    denoiseBase: number,
     gNormalDepthView: GPUTextureView,
     readAccum: GPUTexture,
     isMoving: boolean,
     wgX16: number,
     wgY16: number,
-    computeDesc: (label: string, passIdx: number) => GPUComputePassDescriptor,
+    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
   ): GPUTexture {
     const d = this._device;
     const wf = this._welfordPipeline!;
@@ -717,7 +722,7 @@ export class WalkaroundGPUPipeline {
 
     const hdrColorView = this._res.hdrColorTexture.createView();
     {
-      const pass = encoder.beginComputePass(computeDesc('welford-temporal', denoiseBase + 0));
+      const pass = encoder.beginComputePass(computeDesc('welford-temporal'));
       pass.setPipeline(wf);
       pass.setBindGroup(0, buildWelfordBindGroup(
         d, wf, hdrColorView, welfordRead.createView(), welfordWrite.createView(),
@@ -733,7 +738,7 @@ export class WalkaroundGPUPipeline {
     d.queue.writeBuffer(this._svgfVarianceUboRef.buf!, 0, varUboBytes);
 
     {
-      const pass = encoder.beginComputePass(computeDesc('svgf-variance', denoiseBase + 1));
+      const pass = encoder.beginComputePass(computeDesc('svgf-variance'));
       pass.setPipeline(sv);
       pass.setBindGroup(0, buildSVGFVarianceBindGroup(
         d, sv,
@@ -761,7 +766,7 @@ export class WalkaroundGPUPipeline {
       );
       d.queue.writeBuffer(this._svgfAtrousUboRef.buf!, 0, atrousUboBytes);
       const outTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
-      const pass = encoder.beginComputePass(computeDesc(`svgf-atrous-${iter}`, denoiseBase + 2 + iter));
+      const pass = encoder.beginComputePass(computeDesc(`svgf-atrous-${iter}` as PassLabel));
       pass.setPipeline(sa);
       pass.setBindGroup(0, buildSVGFAtrousBindGroup(
         d, sa,
@@ -781,11 +786,10 @@ export class WalkaroundGPUPipeline {
    */
   private _dispatchAtrousLegacy(
     encoder: GPUCommandEncoder,
-    denoiseBase: number,
     gNormalDepthView: GPUTextureView,
     wgX16: number,
     wgY16: number,
-    computeDesc: (label: string, passIdx: number) => GPUComputePassDescriptor,
+    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
   ): GPUTexture {
     const d = this._device;
     let inputTex = this._res.hdrColorTexture;
@@ -797,7 +801,7 @@ export class WalkaroundGPUPipeline {
         inputTex.createView(), outputTex.createView(),
         gNormalDepthView, gNormalDepthView, stepWidth,
       );
-      const pass = encoder.beginComputePass(computeDesc(`atrous-${iter}`, denoiseBase + iter));
+      const pass = encoder.beginComputePass(computeDesc(`atrous-${iter}` as PassLabel));
       pass.setPipeline(this._atrousPipeline);
       pass.setBindGroup(0, bgAtrous);
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
