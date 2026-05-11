@@ -57,6 +57,8 @@ import {
   buildResolveBindGroup,
   buildGTAOBindGroup,
   buildGTAOUpsampleBindGroup,
+  buildTemporalGiBindGroup,
+  buildSpatialGiBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
 // Note: we deliberately do NOT import `runSvgfWebGPU` from shared-denoisers.
@@ -223,6 +225,8 @@ export class WalkaroundGPUPipeline {
   private _gtaoPipeline!: GPUComputePipeline;
   private _gtaoUpsamplePipeline!: GPUComputePipeline;
   private _risGiPipeline!: GPUComputePipeline;
+  private _temporalGiPipeline!: GPUComputePipeline;
+  private _spatialGiPipeline!: GPUComputePipeline;
   /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
   private _ppgEnabled = false;
   private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
@@ -372,6 +376,8 @@ export class WalkaroundGPUPipeline {
     this._gtaoPipeline         = compiled.gtaoPipeline;
     this._gtaoUpsamplePipeline = compiled.gtaoUpsamplePipeline;
     this._risGiPipeline        = compiled.risGiPipeline;
+    this._temporalGiPipeline   = compiled.temporalGiPipeline;
+    this._spatialGiPipeline    = compiled.spatialGiPipeline;
     if (this._denoiserMode === 'svgf' && (
       !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
     )) {
@@ -690,6 +696,53 @@ export class WalkaroundGPUPipeline {
       pass.end();
     }
 
+    // Sprint 17 — GI temporal reuse + two spatial passes (ping-pong).
+    // All three run half-res (W/2 × H/2) using dedicated single-group BGLs.
+    {
+      const halfWg  = Math.ceil((Math.floor(W / 2)) / 8);
+      const halfWgY = Math.ceil((Math.floor(H / 2)) / 8);
+
+      const bgTemporalGi = buildTemporalGiBindGroup(
+        d, this._bglCache,
+        this._res.reservoirGiCurrentBuffer,
+        this._res.reservoirGiPreviousBuffer,
+        this._res.uboBuffer,
+      );
+      const tPass = encoder.beginComputePass(computeDesc('gi-temporal'));
+      tPass.setPipeline(this._temporalGiPipeline);
+      tPass.setBindGroup(0, bgTemporalGi);
+      tPass.dispatchWorkgroups(halfWg, halfWgY, 1);
+      tPass.end();
+
+      // Spatial pass 1: current → spatial.
+      const bgSpatial1 = buildSpatialGiBindGroup(
+        d, this._bglCache,
+        this._res.reservoirGiCurrentBuffer,
+        this._res.reservoirGiSpatialBuffer,
+        this._res.uboBuffer,
+        'spatial-gi-bg-1',
+      );
+      const s1 = encoder.beginComputePass(computeDesc('gi-spatial-1'));
+      s1.setPipeline(this._spatialGiPipeline);
+      s1.setBindGroup(0, bgSpatial1);
+      s1.dispatchWorkgroups(halfWg, halfWgY, 1);
+      s1.end();
+
+      // Spatial pass 2: spatial → current.
+      const bgSpatial2 = buildSpatialGiBindGroup(
+        d, this._bglCache,
+        this._res.reservoirGiSpatialBuffer,
+        this._res.reservoirGiCurrentBuffer,
+        this._res.uboBuffer,
+        'spatial-gi-bg-2',
+      );
+      const s2 = encoder.beginComputePass(computeDesc('gi-spatial-2'));
+      s2.setPipeline(this._spatialGiPipeline);
+      s2.setBindGroup(0, bgSpatial2);
+      s2.dispatchWorkgroups(halfWg, halfWgY, 1);
+      s2.end();
+    }
+
     {
       const pass = encoder.beginComputePass(computeDesc('shade'));
       pass.setPipeline(this._shadePipeline);
@@ -894,11 +947,18 @@ export class WalkaroundGPUPipeline {
     d.queue.submit([encoder.finish()]);
 
     // Swap reservoir ping-pong for next frame (copy current → previous).
+    // Sprint 17 — also copy GI reservoir current → previous for next-frame
+    // temporal reuse. Both copies submitted in the same command encoder.
     const enc2 = d.createCommandEncoder({ label: 'reservoir-swap' });
     enc2.copyBufferToBuffer(
       this._res.reservoirCurrentBuffer, 0,
       this._res.reservoirPreviousBuffer, 0,
       this._res.reservoirCurrentBuffer.size,
+    );
+    enc2.copyBufferToBuffer(
+      this._res.reservoirGiCurrentBuffer, 0,
+      this._res.reservoirGiPreviousBuffer, 0,
+      this._res.reservoirGiCurrentBuffer.size,
     );
     d.queue.submit([enc2.finish()]);
 

@@ -20,6 +20,8 @@ import { RESOLVE_WGSL } from '../shaders/resolve.wgsl.js';
 import { GTAO_WGSL } from '../shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../shaders/gtaoUpsample.wgsl.js';
 import { RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
+import { TEMPORAL_GI_WGSL } from '../shaders/temporalGi.wgsl.js';
+import { SPATIAL_GI_WGSL } from '../shaders/spatialGi.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import {
@@ -47,6 +49,8 @@ import {
   getResolveBindGroupLayout,
   getGTAOBindGroupLayout,
   getGTAOUpsampleBindGroupLayout,
+  getTemporalGiBindGroupLayout,
+  getSpatialGiBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -75,6 +79,10 @@ export interface CompiledPipelines {
   gtaoUpsamplePipeline: GPUComputePipeline;
   /** Sprint 16 — ReSTIR-GI RIS pass (half-res). */
   risGiPipeline: GPUComputePipeline;
+  /** Sprint 17 — GI temporal-reuse pass. */
+  temporalGiPipeline: GPUComputePipeline;
+  /** Sprint 17 — GI spatial-reuse pass (run twice with ping-pong). */
+  spatialGiPipeline: GPUComputePipeline;
 }
 
 export async function compilePipelines(
@@ -192,6 +200,15 @@ export async function compilePipelines(
   const gtaoUpsampleLayout = device.createPipelineLayout({
     bindGroupLayouts: [getGTAOUpsampleBindGroupLayout(device, bglCache)],
   });
+  // Sprint 17 — GI temporal + spatial passes each use a single dedicated
+  // bind group at group(0). No frame/scene/ubo groups — these passes are
+  // pure reservoir-buffer ops + a small uniform read.
+  const temporalGiLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getTemporalGiBindGroupLayout(device, bglCache)],
+  });
+  const spatialGiLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getSpatialGiBindGroupLayout(device, bglCache)],
+  });
 
   // Compile compute pipelines in parallel.
   const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
@@ -246,6 +263,26 @@ export async function compilePipelines(
     label: 'risGi', layout: shadeLayout,
     compute: { module: risGiSM, entryPoint: 'risGiMain' },
   });
+
+  // Sprint 17 — GI temporal + spatial reuse pipelines.
+  const temporalGiSM = device.createShaderModule({
+    label: 'temporalGi',
+    code: COMMON_WGSL + TEMPORAL_GI_WGSL,
+  });
+  const spatialGiSM = device.createShaderModule({
+    label: 'spatialGi',
+    code: COMMON_WGSL + SPATIAL_GI_WGSL,
+  });
+  const [temporalGiPipeline, spatialGiPipeline] = await Promise.all([
+    device.createComputePipelineAsync({
+      label: 'temporalGi', layout: temporalGiLayout,
+      compute: { module: temporalGiSM, entryPoint: 'temporalGiMain' },
+    }),
+    device.createComputePipelineAsync({
+      label: 'spatialGi', layout: spatialGiLayout,
+      compute: { module: spatialGiSM, entryPoint: 'spatialGiMain' },
+    }),
+  ]);
 
   let welfordPipeline: GPUComputePipeline | undefined;
   let svgfVariancePipeline: GPUComputePipeline | undefined;
@@ -313,6 +350,8 @@ export async function compilePipelines(
     gtaoPipeline,
     gtaoUpsamplePipeline,
     risGiPipeline,
+    temporalGiPipeline,
+    spatialGiPipeline,
     denoiserMode,
     ppgEnabled: ppgOn,
     ...(welfordPipeline !== undefined &&

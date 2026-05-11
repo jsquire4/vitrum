@@ -23,6 +23,8 @@ import {
   getResolveBindGroupLayout,
   getGTAOBindGroupLayout,
   getGTAOUpsampleBindGroupLayout,
+  getTemporalGiBindGroupLayout,
+  getSpatialGiBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -418,6 +420,45 @@ export function buildGTAOUpsampleBindGroup(
       { binding: 0, resource: aoHalfReadView },
       { binding: 1, resource: gNormalDepthView },
       { binding: 2, resource: aoFullWriteView },
+    ],
+  });
+}
+
+// ── GI temporal + spatial bind groups (Sprint 17) ────────────────────────────
+
+export function buildTemporalGiBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  reservoirGiCurrent: GPUBuffer,
+  reservoirGiPrevious: GPUBuffer,
+  uboBuffer: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'temporal-gi-bg',
+    layout: getTemporalGiBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: { buffer: reservoirGiCurrent } },
+      { binding: 1, resource: { buffer: reservoirGiPrevious } },
+      { binding: 2, resource: { buffer: uboBuffer } },
+    ],
+  });
+}
+
+export function buildSpatialGiBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  inBuffer: GPUBuffer,
+  outBuffer: GPUBuffer,
+  uboBuffer: GPUBuffer,
+  label: string,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label,
+    layout: getSpatialGiBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: { buffer: inBuffer } },
+      { binding: 1, resource: { buffer: outBuffer } },
+      { binding: 2, resource: { buffer: uboBuffer } },
     ],
   });
 }

@@ -32,6 +32,10 @@ export interface BGLCache {
   gtao?: GPUBindGroupLayout;
   /** Sprint 15 — GTAO bilateral upsample pass bind group layout. */
   gtaoUpsample?: GPUBindGroupLayout;
+  /** Sprint 17 — GI temporal-reuse pass bind group layout. */
+  temporalGi?: GPUBindGroupLayout;
+  /** Sprint 17 — GI spatial-reuse pass bind group layout. */
+  spatialGi?: GPUBindGroupLayout;
 }
 
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
@@ -267,6 +271,53 @@ export function getGTAOUpsampleBindGroupLayout(
     ],
   });
   return cache.gtaoUpsample;
+}
+
+/**
+ * Sprint 17 — temporal GI BGL. Matches `temporalGi.wgsl.ts`:
+ *   0 — reservoirGiCurrent  (storage, read_write)
+ *   1 — reservoirGiPrevious (storage, read)
+ *   2 — WalkaroundUBO       (uniform)
+ */
+export function getTemporalGiBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.temporalGi) return cache.temporalGi;
+  cache.temporalGi = device.createBindGroupLayout({
+    label: 'temporal-gi-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.temporalGi;
+}
+
+/**
+ * Sprint 17 — spatial GI BGL. Two ping-pong bind groups share this layout:
+ *   pass 1 → in = reservoirGiCurrent, out = reservoirGiSpatial
+ *   pass 2 → in = reservoirGiSpatial, out = reservoirGiCurrent
+ * Matches `spatialGi.wgsl.ts`:
+ *   0 — input  reservoir (storage, read)
+ *   1 — output reservoir (storage, read_write)
+ *   2 — WalkaroundUBO    (uniform)
+ */
+export function getSpatialGiBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.spatialGi) return cache.spatialGi;
+  cache.spatialGi = device.createBindGroupLayout({
+    label: 'spatial-gi-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.spatialGi;
 }
 
 /** Hybrid layer bind group with PPG training (4–5) + guiding read paths (6–9). */

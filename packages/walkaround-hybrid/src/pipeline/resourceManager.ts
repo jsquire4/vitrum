@@ -91,9 +91,19 @@ export interface FrameResources {
    * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
    * Layout: RESERVOIR_GI_STRIDE = 20 u32 (80 bytes) per pixel.
    * Size: (W/2) × (H/2) × 80 bytes. At 2688×1344 → ~58 MB.
-   * Written by `risGiMain`; read by `shade.wgsl` for `Lo_indirect`.
+   * Written by `risGiMain`; read by temporal/spatial passes and shade.
    */
   reservoirGiCurrentBuffer: GPUBuffer;
+  /**
+   * Sprint 17 — previous-frame GI reservoir (temporal reuse input).
+   * Updated at end-of-frame via copyBufferToBuffer(current → previous).
+   */
+  reservoirGiPreviousBuffer: GPUBuffer;
+  /**
+   * Sprint 17 — spatial-reuse scratch GI reservoir. Ping-ponged with
+   * `reservoirGiCurrentBuffer` across the two spatial passes.
+   */
+  reservoirGiSpatialBuffer: GPUBuffer;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -658,6 +668,19 @@ export function createFrameResources(
     size: Math.max(256, reservoirGiSize),
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
   });
+  // Sprint 17 — temporal + spatial reservoir buffers. Both same size as
+  // current; previous is read-only during temporal reuse, copied at end of
+  // frame; spatial is scratch for the two ping-ponged spatial passes.
+  const reservoirGiPreviousBuffer = device.createBuffer({
+    label: 'reservoir-gi-previous',
+    size: Math.max(256, reservoirGiSize),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+  });
+  const reservoirGiSpatialBuffer = device.createBuffer({
+    label: 'reservoir-gi-spatial',
+    size: Math.max(256, reservoirGiSize),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+  });
 
   return {
     reservoirCurrentBuffer,
@@ -686,6 +709,8 @@ export function createFrameResources(
     aoFullTexture,
     gtaoUboBuffer,
     reservoirGiCurrentBuffer,
+    reservoirGiPreviousBuffer,
+    reservoirGiSpatialBuffer,
     ...ppgExt,
   };
 }
@@ -719,6 +744,8 @@ export function destroyFrameResources(r: FrameResources): void {
   r.aoFullTexture.destroy();
   r.gtaoUboBuffer.destroy();
   r.reservoirGiCurrentBuffer.destroy();
+  r.reservoirGiPreviousBuffer.destroy();
+  r.reservoirGiSpatialBuffer.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

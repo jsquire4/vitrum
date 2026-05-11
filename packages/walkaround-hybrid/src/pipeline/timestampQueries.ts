@@ -29,6 +29,9 @@ export type PassLabel =
   | 'spatial-1'
   | 'spatial-2'
   | 'gi-ris'
+  | 'gi-temporal'
+  | 'gi-spatial-1'
+  | 'gi-spatial-2'
   | 'shade'
   | 'ppg-update'
   | 'gtao'
@@ -53,9 +56,10 @@ export type PassLabel =
  * runtime layout.
  *
  * History: 15 (base) → 17 (Sprint 9: sample-budget + resolve) →
- *          19 (Sprint 15: gtao + gtao-upsample) → 20 (Sprint 16: gi-ris).
+ *          19 (Sprint 15: gtao + gtao-upsample) → 20 (Sprint 16: gi-ris) →
+ *          23 (Sprint 17: gi-temporal + gi-spatial-1 + gi-spatial-2).
  */
-export const MAX_PASS_COUNT = 20;
+export const MAX_PASS_COUNT = 23;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -80,6 +84,12 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
     // Sprint 16 — ReSTIR-GI RIS runs after the DI spatial passes and
     // before shade so shade can consume the GI reservoir for Lo_indirect.
     'gi-ris',
+    // Sprint 17 — GI temporal reuse + two ping-pong spatial passes. The
+    // shade pass reads the *current* GI reservoir, which after both spatial
+    // passes contains the spatially+temporally fused estimate.
+    'gi-temporal',
+    'gi-spatial-1',
+    'gi-spatial-2',
     'shade',
   ];
   if (opts.ppgEnabled) labels.push('ppg-update');

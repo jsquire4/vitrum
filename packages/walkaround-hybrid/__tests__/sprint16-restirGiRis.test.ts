@@ -96,7 +96,7 @@ describe('Sprint 16 — ReservoirGI byte-pack helpers (common.wgsl)', () => {
 });
 
 describe('Sprint 16 — pass-layout placement', () => {
-  it('inserts gi-ris between spatial-2 and shade in every layout variant', () => {
+  it('gi-ris sits directly after spatial-2 and before shade in every layout variant', () => {
     for (const ppgEnabled of [false, true]) {
       for (const denoiserMode of ['svgf', 'atrous'] as const) {
         const layout = buildPassLayout({ ppgEnabled, denoiserMode });
@@ -105,12 +105,14 @@ describe('Sprint 16 — pass-layout placement', () => {
         const shade = layout.labels.indexOf('shade');
         expect(spatial2).toBeGreaterThanOrEqual(0);
         expect(giRis).toBe(spatial2 + 1);
-        expect(shade).toBe(giRis + 1);
+        // Sprint 17 inserts gi-temporal + gi-spatial-1 + gi-spatial-2 between
+        // gi-ris and shade; shade still trails the full GI block.
+        expect(shade).toBeGreaterThan(giRis);
       }
     }
   });
 
-  it('MAX_PASS_COUNT accommodates the new slot (≥ 20)', () => {
+  it('MAX_PASS_COUNT accommodates the gi-ris slot (≥ 20)', () => {
     expect(MAX_PASS_COUNT).toBeGreaterThanOrEqual(20);
   });
 });
