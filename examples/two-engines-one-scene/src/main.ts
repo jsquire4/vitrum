@@ -5,16 +5,14 @@
 import type { Engine, FrameInput, Mat4, Scene } from '@vitrum/core';
 import { buildCornellBoxThreeScene } from '@vitrum-examples/shared';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
-// @vitrum/pt-webgpu is wired here as a third engine option (toggle with
-// ?engine=pt-webgpu in the URL once the host UI exposes it). For now the
-// import alone serves as the integration anchor — confirming pt-webgpu's
-// package surface is exported and consumable from a real example.
+// pt-webgpu drives the bottom canvas headlessly (no swap-chain present;
+// pt-webgpu accumulates to an internal HDR texture, leaving the host to
+// implement display). The engine drive verifies WGSL params layout,
+// scene buffer uploads, and the path-trace dispatch on real hardware.
 import { createPTEngine_WebGPU } from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import { createWalkaroundEngine_Hybrid, HYBRID_WEBGPU_REQUIRED_LIMITS } from '@vitrum/walkaround-hybrid';
 
-// Mark as touched so the import is preserved through tree-shaking until the
-// host adds the UI toggle. Logged once at module load.
 if (typeof console !== 'undefined' && console.debug) {
   console.debug('[two-engines] pt-webgpu factory loaded:', typeof createPTEngine_WebGPU);
 }
@@ -44,13 +42,27 @@ async function waitEngineReady(engine: Engine, timeoutMs: number): Promise<boole
   return false;
 }
 
-async function main(): Promise<void> {
-  const canvasPt = document.querySelector<HTMLCanvasElement>('#c-pt');
-  const canvasWgpu = document.querySelector<HTMLCanvasElement>('#c-wgpu');
-  const statusEl = document.querySelector<HTMLDivElement>('#status');
-  if (!canvasPt || !canvasWgpu || !statusEl) throw new Error('missing DOM nodes');
+function nonNull<T>(v: T | null, name: string): T {
+  if (v == null) throw new Error(`Missing DOM node: ${name}`);
+  return v;
+}
 
-  const lines: [string, string] = ['', ''];
+async function main(): Promise<void> {
+  const canvasPt    = nonNull(document.querySelector<HTMLCanvasElement>('#c-pt'), '#c-pt');
+  const canvasWgpu  = nonNull(document.querySelector<HTMLCanvasElement>('#c-wgpu'), '#c-wgpu');
+  const canvasPtGpu = nonNull(document.querySelector<HTMLCanvasElement>('#c-ptgpu'), '#c-ptgpu');
+  const statusEl    = nonNull(document.querySelector<HTMLDivElement>('#status'), '#status');
+
+  const lines: [string, string, string] = ['', '', ''];
+
+  // Expose engine telemetry as window.__vitrum so the validation harness
+  // (driven via Claude-in-Chrome or DevTools) can poll without touching DOM.
+  const telemetry: {
+    ptWebgl?: { state: string; spp: number; target: number; converged: boolean };
+    walkaround?: { state: string; frame: number; debugTimingsLen: number };
+    ptWebgpu?: { state: string; spp: number; target: number; converged: boolean };
+  } = {};
+  (globalThis as unknown as { __vitrum: typeof telemetry }).__vitrum = telemetry;
 
   function refreshStatus(): void {
     statusEl.textContent = lines.join('\n').trim() || '…';
@@ -108,6 +120,12 @@ async function main(): Promise<void> {
 
     const out = ptEngine.renderFrame(input);
     ptFrame++;
+    telemetry.ptWebgl = {
+      state: ptEngine.state,
+      spp: out.samplesAccumulated,
+      target: samplesTarget,
+      converged: out.isConverged,
+    };
     lines[0] = `PT: SPP ${out.samplesAccumulated}/${samplesTarget}${out.isConverged ? ' ✓' : ''}`;
     refreshStatus();
     if (!out.isConverged) requestAnimationFrame(ptLoop);
@@ -207,6 +225,12 @@ async function main(): Promise<void> {
       };
       hybrid.renderFrame(input);
       wFrame++;
+      const hyb = hybrid as unknown as { debugTimings?: ReadonlyArray<{ t: number; ms: number }> };
+      telemetry.walkaround = {
+        state: hybrid.state,
+        frame: wFrame,
+        debugTimingsLen: hyb.debugTimings?.length ?? 0,
+      };
       requestAnimationFrame(wgpuLoop);
     }
     requestAnimationFrame(wgpuLoop);
@@ -214,6 +238,57 @@ async function main(): Promise<void> {
     window.addEventListener('resize', () => {
       configureWgpu();
     });
+
+    // ── pt-webgpu (headless validation drive) ──────────────────────────────
+    // Shares the same GPUDevice as the walkaround pipeline. Runs in its own
+    // RAF loop until samplesTarget is reached. The bottom canvas is left
+    // unconfigured — pt-webgpu writes to its internal HDR accum and does
+    // not present to a swap chain.
+    try {
+      resizeCanvasToDisplaySize(canvasPtGpu);
+      const ptGpuEngine = await createPTEngine_WebGPU({ device });
+      ptGpuEngine.setScene(vitrumScene);
+      const ptGpuSamplesTarget = 32;
+      let ptGpuFrame = 0;
+      function ptGpuLoop(): void {
+        if (ptGpuEngine.state !== 'ready') {
+          lines[2] = `pt-webgpu: state=${ptGpuEngine.state}`;
+          refreshStatus();
+          requestAnimationFrame(ptGpuLoop);
+          return;
+        }
+        camera.updateMatrixWorld();
+        const input: FrameInput = {
+          viewMatrix: mat4FromThree(camera.matrixWorldInverse),
+          projMatrix: mat4FromThree(camera.projectionMatrix),
+          cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
+          viewport: {
+            width: canvasPtGpu.width,
+            height: canvasPtGpu.height,
+            devicePixelRatio: window.devicePixelRatio,
+          },
+          frameIndex: ptGpuFrame,
+          frameSeed: (ptGpuFrame * 6364136223846793005 + 1442695040888963407) >>> 0,
+          quality: { samplesTarget: ptGpuSamplesTarget, bounces: 4, resolutionFactor: 1 },
+        };
+        const out = ptGpuEngine.renderFrame(input);
+        ptGpuFrame++;
+        telemetry.ptWebgpu = {
+          state: ptGpuEngine.state,
+          spp: out.samplesAccumulated,
+          target: ptGpuSamplesTarget,
+          converged: out.isConverged,
+        };
+        lines[2] = `pt-webgpu: SPP ${out.samplesAccumulated}/${ptGpuSamplesTarget}${out.isConverged ? ' ✓' : ''}`;
+        refreshStatus();
+        if (!out.isConverged) requestAnimationFrame(ptGpuLoop);
+      }
+      requestAnimationFrame(ptGpuLoop);
+    } catch (e) {
+      lines[2] = `pt-webgpu: init failed — ${String(e)}`;
+      console.error('[two-engines] pt-webgpu init failed', e);
+      refreshStatus();
+    }
   })();
 
   window.addEventListener('resize', resizePt);

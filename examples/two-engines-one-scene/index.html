@@ -16,7 +16,7 @@
       }
       .wrap {
         display: grid;
-        grid-template-rows: auto 1fr 1fr;
+        grid-template-rows: auto 1fr 1fr 1fr;
         min-height: 100vh;
       }
       h1 {
@@ -62,7 +62,7 @@
   </head>
   <body>
     <div class="wrap">
-      <h1>Same <code>Scene</code> — WebGL2 path trace (top) · WebGPU walkaround (bottom)</h1>
+      <h1>Same <code>Scene</code> — pt-webgl (top) · walkaround-hybrid (middle) · pt-webgpu (bottom)</h1>
       <div class="panel">
         <h2>pt-webgl</h2>
         <canvas id="c-pt"></canvas>
@@ -70,6 +70,10 @@
       <div class="panel">
         <h2>walkaround-hybrid</h2>
         <canvas id="c-wgpu"></canvas>
+      </div>
+      <div class="panel">
+        <h2>pt-webgpu</h2>
+        <canvas id="c-ptgpu"></canvas>
       </div>
     </div>
     <div id="status">Initializing…</div>
