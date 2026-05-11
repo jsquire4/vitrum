@@ -459,6 +459,7 @@ export function buildSceneBVH(
   // by routing through the typed-array constructor — it accepts either
   // shape and copies in both branches.
   const bvhNodes = packRootBuffer(bvh._roots[0]!);
+  normalizeBvhInteriorOffsets(bvhNodes);
 
   // ── 6. Extract positions / normals / indices ──────────────────────────
   const posAttr = merged.attributes['position'] as THREE.BufferAttribute;
@@ -590,4 +591,64 @@ function packRootBuffer(root0: ArrayBuffer | ArrayBufferView): Float32Array {
   // underlying buffer kind (ArrayBuffer or SharedArrayBuffer).
   const view = root0 as Float32Array;
   return new Float32Array(view);
+}
+
+/**
+ * Normalise the interior-node `rightChildOrTriOffset` field to the
+ * canonical "relative node index" encoding that all downstream WGSL
+ * shaders assume (`right_child = nodeIdx + offset`).
+ *
+ * three-mesh-bvh changed the packed-buffer layout between 0.7.x and
+ * 0.9.x:
+ *  - 0.7.x stores the **absolute u32 index** of the right child
+ *    (`uint32Array[stride4 + 6] = nextUnusedPointer / 4`). Values are
+ *    multiples of 8 (= UINT32_PER_NODE) and grow with tree size.
+ *  - 0.9.x stores the **relative node index**
+ *    (`uint32Array[node32 + 6] = rightNodeIdx - currentNodeIdx`). Values
+ *    are always strictly less than `totalNodes`.
+ *
+ * The host application (and `three-gpu-pathtracer`) pin 0.7.x; Vite's
+ * `dedupe` collapses shared-bvh's `^0.9.9` declaration down to that
+ * 0.7.x at bundle time. Rather than dictating which version the host
+ * picks, this helper detects the source layout from the data itself
+ * and rewrites in-place so the GPU layout is invariant.
+ *
+ * Detection rule: under 0.9.x the stored relative offset MUST be less
+ * than `totalNodes` (definitionally — it is a node-index delta inside
+ * the same buffer). Under 0.7.x the stored absolute u32 index is the
+ * right child's node index × UINT32_PER_NODE, so it ranges up to
+ * `(totalNodes - 1) × 8`. So: `firstInteriorOffset >= totalNodes`
+ * unambiguously identifies the 0.7.x layout.
+ *
+ * Leaf nodes are untouched — both versions store the triangle offset
+ * in the same field with identical semantics.
+ */
+function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
+  const UINT32_PER_NODE = 8;
+  const LEAFNODE_FLAG = 0xFFFF;
+  const u32 = new Uint32Array(bvhNodes.buffer, bvhNodes.byteOffset, bvhNodes.length);
+  const totalNodes = bvhNodes.length / UINT32_PER_NODE;
+  if (totalNodes <= 1) return;
+
+  let needsConversion = false;
+  for (let i = 0; i < totalNodes; i++) {
+    const base = i * UINT32_PER_NODE;
+    const splitOrCount = u32[base + 7]!;
+    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    if (isLeaf) continue;
+    const value = u32[base + 6]!;
+    if (value >= totalNodes) { needsConversion = true; }
+    break;
+  }
+  if (!needsConversion) return;
+
+  for (let i = 0; i < totalNodes; i++) {
+    const base = i * UINT32_PER_NODE;
+    const splitOrCount = u32[base + 7]!;
+    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    if (isLeaf) continue;
+    const absoluteU32Idx = u32[base + 6]!;
+    const absoluteNodeIdx = absoluteU32Idx / UINT32_PER_NODE;
+    u32[base + 6] = absoluteNodeIdx - i;
+  }
 }

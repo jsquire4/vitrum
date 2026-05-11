@@ -745,7 +745,9 @@ export class WalkaroundGPUPipeline {
       const pass = encoder.beginComputePass(computeDesc('resolve'));
       pass.setPipeline(this._resolvePipeline);
       pass.setBindGroup(0, bgResolve);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      // resolve.wgsl uses @workgroup_size(8, 8, 1) — dispatch with wgX/wgY
+      // (ceil(W/8), ceil(H/8)) NOT the 16×16-sized wgX16/wgY16.
+      pass.dispatchWorkgroups(wgX, wgY, 1);
       pass.end();
     }
 
