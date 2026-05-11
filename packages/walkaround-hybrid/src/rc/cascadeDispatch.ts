@@ -36,6 +36,13 @@ import type { SceneBVH } from './bvhCompute.js';
 import { PROBE_RAY_CAST_WGSL } from './wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from './wgsl/cascadeMerge.wgsl.js';
 
+/** Narrow view of three.js WebGPU backend for raw buffer + texture binding. */
+interface WebGPUBackendView {
+  readonly isWebGPUBackend?: boolean;
+  readonly device?: GPUDevice;
+  get?: (resource: unknown) => unknown;
+}
+
 // ─── Internal types ───────────────────────────────────────────────────────────
 
 interface CastPassHandles {
@@ -207,14 +214,13 @@ export class RCDispatcher {
     }
 
     // Guard: compute dispatch requires a real WebGPU backend.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const anyGl = gl as any;
-    if (anyGl.backend?.isWebGPUBackend !== true) {
+    const backend = (gl as WebGPURenderer).backend as WebGPUBackendView | undefined;
+    if (backend?.isWebGPUBackend !== true || backend.device == null) {
       this._debugFill(cascadeBuffers);
       return;
     }
 
-    const device: GPUDevice = anyGl.backend.device as GPUDevice;
+    const device: GPUDevice = backend.device;
 
     // Lazy init.
     if (!this._handles) {
@@ -329,11 +335,8 @@ export class RCDispatcher {
     const fallbackEnv = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
     fallbackEnv.needsUpdate = true;
     const envThree = opts.envEquirect ?? fallbackEnv;
-    // Access the Three.js WebGPU renderer's internal texture handle.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const anyGl = opts.gl as any;
-    const backend = anyGl.backend;
-    const envGpuData = backend.get(envThree) as { texture?: GPUTexture } | undefined;
+    const backend = opts.gl.backend as WebGPUBackendView | undefined;
+    const envGpuData = backend?.get?.(envThree) as { texture?: GPUTexture } | undefined;
     const envGpuTex  = envGpuData?.texture;
 
     if (envGpuTex) {

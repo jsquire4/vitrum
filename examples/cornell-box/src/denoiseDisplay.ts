@@ -60,7 +60,7 @@ void main() {
 }
 `;
 
-export type DenoiseDisplayMode = 'raw' | 'bilateral' | 'oidn';
+export type DenoiseDisplayMode = 'raw' | 'bilateral' | 'oidn' | 'wgsl' | 'svgf';
 
 export class BilateralPreviewCanvas {
   readonly renderer: THREE.WebGLRenderer;

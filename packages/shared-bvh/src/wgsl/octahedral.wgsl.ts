@@ -1,30 +1,14 @@
 /**
  * Octahedral encoding / decoding and atlas UV helpers for DDGI probe maps.
- * Per Cigolle et al. "A Survey of Efficient Representations for Independent
- * Unit Vectors." JCGT 2014.
+ * Encode/decode core is shared with `@vitrum/shared-samplers` / pt-webgpu.
+ * Per Cigolle et al. JCGT 2014.
  */
 
-export const OCTAHEDRAL_WGSL = /* wgsl */`
+import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
-// Encode a unit direction to octahedral coordinates in [-1,1]^2.
-fn octEncode(dir: vec3f) -> vec2f {
-  let n = dir / (abs(dir.x) + abs(dir.y) + abs(dir.z));
-  if (n.z >= 0.0) {
-    return n.xy;
-  }
-  // Fold the lower hemisphere.
-  return (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
-}
-
-// Decode octahedral coordinates [-1,1]^2 to a unit direction.
-fn octDecode(oct: vec2f) -> vec3f {
-  let n = vec3f(oct, 1.0 - abs(oct.x) - abs(oct.y));
-  if (n.z < 0.0) {
-    let xy = (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
-    return normalize(vec3f(xy, n.z));
-  }
-  return normalize(n);
-}
+export const OCTAHEDRAL_WGSL =
+  OCTAHEDRAL_CORE_WGSL.trimEnd() +
+  /* wgsl */ `
 
 // Compute the atlas UV for a probe's irradiance texel.
 // probeIdx  = flat probe index (x + y*dimsX + z*dimsX*dimsY)

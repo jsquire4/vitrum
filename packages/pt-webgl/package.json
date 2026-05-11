@@ -16,7 +16,7 @@
     "@vitrum/shared-samplers": "file:../shared-samplers",
     "@vitrum/three-bindings": "file:../three-bindings",
     "three-gpu-pathtracer": "file:../../../three-gpu-pathtracer",
-    "three-mesh-bvh": "^0.7.4",
+    "three-mesh-bvh": ">=0.7.4",
     "xatlas-web": "^0.1.0"
   },
   "peerDependencies": {
@@ -24,6 +24,7 @@
     "three-mesh-bvh": ">=0.7.4"
   },
   "devDependencies": {
+    "@types/node": "^25.6.2",
     "@types/three": "^0.184.1",
     "three": "^0.184.0",
     "typescript": "^5.5.0",

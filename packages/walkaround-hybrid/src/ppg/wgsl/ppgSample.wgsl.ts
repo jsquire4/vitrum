@@ -9,9 +9,9 @@
  * but NOT dispatched; dispatch wiring is the Sprint 11 integration task.
  *
  * Algorithm:
- *   1. Binary kd-tree descent using the world-space hit position to find the
- *      nearest spatial cell (brute-force linear scan over ppgCells — a proper
- *      kd-tree index is deferred to post-Sprint 11 optimisation).
+ *   1. Nearest spatial cell: kd-tree NN traversal (O(log N) typical) over
+ *      `ppgKdNodes`; falls back to linear scan when the buffer holds the
+ *      disabled sentinel (see `encodePpgKdDisabledRoot` on the host).
  *   2. Read the cell's directional leaf (16 bins stored as vec2f pairs).
  *   3. Build CDF over the 16 bins using the accumulated radianceSum.
  *   4. Sample a bin using the provided uniform [0,1) random value u2.
@@ -60,6 +60,16 @@ struct PPGDirectionalLeaf {
   _reserved: array<vec2f, 16>,  // reserved — do not read
 };
 
+// 16-byte kd-tree node (matches buildPpgKdTree.ts / types.ts).
+// Internal: meta = axis (0..2), child0/child1 = child node indices, split = plane.
+// Leaf: meta has high bit set; low bits = cell index into ppgCells.
+struct PPGKdNode {
+  child0: u32,
+  child1: u32,
+  meta:   u32,
+  split:  f32,
+};
+
 // ============================================================
 // PPG bind group (group injected by pipelineCompiler — deferred)
 // ============================================================
@@ -72,8 +82,9 @@ struct PPGDirectionalLeaf {
 // For now, use group(2) as a placeholder (consistent with Sprint 9 resolve
 // shader convention — lowest unused group in shade.wgsl).
 
-@group(2) @binding(0) var<storage, read> ppgCells:  array<PPGSpatialCell>;
+@group(2) @binding(0) var<storage, read> ppgCells:   array<PPGSpatialCell>;
 @group(2) @binding(1) var<storage, read> ppgLeaves: array<PPGDirectionalLeaf>;
+@group(2) @binding(2) var<storage, read> ppgKdNodes: array<PPGKdNode>;
 
 // ============================================================
 // Internal helpers
@@ -108,27 +119,13 @@ fn ppgOctahedralToDir(oct: vec2f) -> vec3f {
   return normalize(n);
 }
 
-// Find the nearest PPG spatial cell to worldPos.
-//
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │ BLOCKING CONDITION — DO NOT DISPATCH WITHOUT RESOLVING                  │
-// │                                                                         │
-// │ This function uses an O(N) brute-force linear scan over all             │
-// │ PPG_MAX_SPATIAL_CELLS (up to 10,000) cells per shader invocation.      │
-// │ At typical walkaround resolution (1920×1080, checkerboard, 2 bounces), │
-// │ this is ~10K × 1080 × 960 ≈ 10.4 billion comparisons per frame —      │
-// │ completely unsuitable for live GPU dispatch.                            │
-// │                                                                         │
-// │ REQUIRED before wiring Sprint 11 dispatch:                              │
-// │   Replace this scan with proper kd-tree binary descent (O(log N)).     │
-// │   See plan/sprint-11-ppg-integration.md §kd-tree storage layout for    │
-// │   the design decision record and post-Sprint-11 optimisation priority.  │
-// │                                                                         │
-// │ The current code is authored for structural correctness only.           │
-// └─────────────────────────────────────────────────────────────────────────┘
-// TODO(post-Sprint-11): Replace brute-force O(N) scan with kd-tree binary descent.
-//   Ref: plan/sprint-11-ppg-integration.md §kd-tree storage layout.
-fn ppgFindCellIndex(worldPos: vec3f) -> u32 {
+fn ppgAxisComp(v: vec3f, axis: u32) -> f32 {
+  if (axis == 0u) { return v.x; }
+  if (axis == 1u) { return v.y; }
+  return v.z;
+}
+
+fn ppgFindCellIndexBrute(worldPos: vec3f) -> u32 {
   let cellCount = arrayLength(&ppgCells);
   if (cellCount == 0u) { return 0u; }
 
@@ -144,6 +141,88 @@ fn ppgFindCellIndex(worldPos: vec3f) -> u32 {
     }
   }
   return bestIdx;
+}
+
+// Nearest-neighbour kd-tree traversal (iterative, stack prunes far subtree).
+fn ppgKdFindCell(worldPos: vec3f) -> u32 {
+  let nk = arrayLength(&ppgKdNodes);
+  let cellCount = arrayLength(&ppgCells);
+  if (nk == 0u || cellCount == 0u) { return 0u; }
+  let root = ppgKdNodes[0];
+  if (root.child0 == 0xFFFFFFFFu && root.child1 == 0xFFFFFFFFu) {
+    return ppgFindCellIndexBrute(worldPos);
+  }
+
+  var bestIdx  = 0u;
+  var bestDist2 = 1e38;
+
+  var stN: array<u32, 48>;
+  var stK: array<u32, 48>;
+  var stFar: array<u32, 48>;
+  var stD2: array<f32, 48>;
+  var sp = 0u;
+
+  stN[sp] = 0u;
+  stK[sp] = 0u;
+  stFar[sp] = 0u;
+  stD2[sp] = 0.0;
+  sp = sp + 1u;
+
+  while (sp > 0u) {
+    sp = sp - 1u;
+    if (stK[sp] == 1u) {
+      if (stD2[sp] < bestDist2 && sp < 48u) {
+        stN[sp] = stFar[sp];
+        stK[sp] = 0u;
+        sp = sp + 1u;
+      }
+      continue;
+    }
+
+    let nid = stN[sp];
+    if (nid >= nk) { continue; }
+    let node = ppgKdNodes[nid];
+    let meta = node.meta;
+    if ((meta & 0x80000000u) != 0u) {
+      let cellIdx = meta & 0x7FFFFFFFu;
+      if (cellIdx < cellCount) {
+        let d = ppgCells[cellIdx].position - worldPos;
+        let dist2 = dot(d, d);
+        if (dist2 < bestDist2) {
+          bestDist2 = dist2;
+          bestIdx = cellIdx;
+        }
+      }
+      continue;
+    }
+
+    let axis = meta & 3u;
+    let split = node.split;
+    let c0 = node.child0;
+    let c1 = node.child1;
+    let d0 = ppgAxisComp(worldPos, axis) - split;
+    let d2plane = d0 * d0;
+    let nearI = select(c1, c0, d0 < 0.0);
+    let farI = select(c0, c1, d0 < 0.0);
+
+    if (sp + 2u > 48u) {
+      return ppgFindCellIndexBrute(worldPos);
+    }
+    stFar[sp] = farI;
+    stD2[sp] = d2plane;
+    stK[sp] = 1u;
+    sp = sp + 1u;
+    stN[sp] = nearI;
+    stK[sp] = 0u;
+    stFar[sp] = 0u;
+    stD2[sp] = 0.0;
+    sp = sp + 1u;
+  }
+  return bestIdx;
+}
+
+fn ppgFindCellIndex(worldPos: vec3f) -> u32 {
+  return ppgKdFindCell(worldPos);
 }
 
 // Build CDF (prefix-sum) over the 16 bins.

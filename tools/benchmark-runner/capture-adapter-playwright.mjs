@@ -16,6 +16,16 @@ function captureUrlWithScenarioParams() {
   const bounces = process.env.VITRUM_BOUNCES;
   const spp = process.env.VITRUM_SPP;
   const caustic = process.env.VITRUM_CAUSTIC_STRATEGY;
+  /** Matches Cornell query `vitrumDisplay` (raw | bilateral | oidn | wgsl | svgf). */
+  const display = process.env.VITRUM_DISPLAY;
+  /** ONNX model URL for OIDN (`vitrumOidnModel`). */
+  const oidnModel = process.env.VITRUM_OIDN_MODEL;
+  /** WebGPU bilateral sigma (`vitrumWgslSigma`). */
+  const wgslSigma = process.env.VITRUM_WGSL_SIGMA;
+  /** `0` disables shared WebGPU device (`vitrumWebGpuShared`). */
+  const webgpuShared = process.env.VITRUM_WEBGPU_SHARED;
+  const svgfFrames = process.env.VITRUM_SVGF_FRAME_COUNT ?? process.env.VITRUM_SVGF_FRAMES;
+  const svgfAtrous = process.env.VITRUM_SVGF_ATROUS;
   try {
     const u = new URL(captureUrlBase);
     if (scenarioId) u.searchParams.set('vitrumScenario', scenarioId);
@@ -28,12 +38,29 @@ function captureUrlWithScenarioParams() {
     if (caustic && caustic !== 'candidate' && caustic !== 'baseline') {
       u.searchParams.set('vitrumCaustic', caustic);
     }
+    if (display === 'raw' || display === 'bilateral' || display === 'oidn' || display === 'wgsl' || display === 'svgf') {
+      u.searchParams.set('vitrumDisplay', display);
+    }
+    if (oidnModel != null && oidnModel.length > 0) {
+      u.searchParams.set('vitrumOidnModel', oidnModel);
+    }
+    if (wgslSigma != null && wgslSigma.length > 0) {
+      u.searchParams.set('vitrumWgslSigma', wgslSigma);
+    }
+    if (webgpuShared === '0' || webgpuShared === '1') {
+      u.searchParams.set('vitrumWebGpuShared', webgpuShared);
+    }
+    if (svgfFrames != null && svgfFrames.length > 0) {
+      u.searchParams.set('vitrumSvgfFrameCount', svgfFrames);
+    }
+    if (svgfAtrous != null && svgfAtrous.length > 0) {
+      u.searchParams.set('vitrumSvgfAtrous', svgfAtrous);
+    }
     return u.toString();
   } catch {
     return captureUrlBase;
   }
 }
-const captureSelector = process.env.VITRUM_CAPTURE_SELECTOR ?? 'canvas';
 const settleMs = Number(process.env.VITRUM_CAPTURE_SETTLE_MS ?? '2500');
 const timeoutMs = Number(process.env.VITRUM_CAPTURE_TIMEOUT_MS ?? '30000');
 
@@ -76,7 +103,17 @@ try {
       await page.waitForTimeout(1500);
     });
 
-  const locator = page.locator(captureSelector).first();
+  const selectorFromEnv = process.env.VITRUM_CAPTURE_SELECTOR;
+  // Cornell sets globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR when raw vs denoise canvas should be snapped.
+  const selector =
+    selectorFromEnv != null && selectorFromEnv.length > 0
+      ? selectorFromEnv
+      : await page.evaluate(() => {
+          const s = globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR;
+          return typeof s === 'string' && s.length > 0 ? s : 'canvas';
+        });
+
+  const locator = page.locator(selector).first();
   await locator.waitFor({ timeout: Math.max(1000, timeoutMs / 2) });
   await mkdir(dirname(outputPng), { recursive: true });
   await locator.screenshot({ path: outputPng });

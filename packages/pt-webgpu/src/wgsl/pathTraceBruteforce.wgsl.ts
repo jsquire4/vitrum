@@ -1,6 +1,5 @@
 import { PT_WEBGPU_COMMON_WGSL } from './common.wgsl.js';
-import { HAMMERSLEY_WGSL } from './hammersley.wgsl.js';
-import { OCTAHEDRAL_WGSL } from './octahedral.wgsl.js';
+import { HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 /**
  * First-pass path tracing kernel:
@@ -12,7 +11,7 @@ import { OCTAHEDRAL_WGSL } from './octahedral.wgsl.js';
 export const PT_WEBGPU_TRACE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_COMMON_WGSL}
 ${HAMMERSLEY_WGSL}
-${OCTAHEDRAL_WGSL}
+${OCTAHEDRAL_CORE_WGSL}
 
 struct FrameParams {
   width: u32,
@@ -723,89 +722,114 @@ fn intersectHChannelLocal(ray: Ray, lengthX: f32, railWidth: f32, blockHeight: f
   return bestT;
 }
 
-fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
-  var hit: SceneHit;
-  hit.didHit = false;
-  hit.dist = tMax;
-  hit.triIndex = 0u;
-  hit.normal = vec3f(0.0, 1.0, 0.0);
+// Mesh BVH traversal — closest: shrinking ray interval (hit.dist) for slab tests
+// and full SceneHit on triangles; false uses fixed tMaxBound and returns
+// true on first triangle hit in (tMin, tMaxBound).
+fn traceMeshBvh(
+  ray: Ray,
+  tMin: f32,
+  tMaxBound: f32,
+  closest: bool,
+  hit: ptr<function, SceneHit>,
+) -> bool {
+  if (params.bvhNodeCount == 0u || arrayLength(&bvhNodes) == 0u) {
+    return false;
+  }
+  if (closest) {
+    (*hit).didHit = false;
+    (*hit).dist = tMaxBound;
+    (*hit).triIndex = 0u;
+    (*hit).normal = vec3f(0.0, 1.0, 0.0);
+  }
 
-  if (params.bvhNodeCount > 0u && arrayLength(&bvhNodes) > 0u) {
-    var stack: array<u32, 64>;
-    var stackPtr = 0u;
-    stack[stackPtr] = 0u;
-    stackPtr = stackPtr + 1u;
+  var stack: array<u32, 64>;
+  var stackPtr = 0u;
+  stack[stackPtr] = 0u;
+  stackPtr = stackPtr + 1u;
 
-    while (stackPtr > 0u) {
-      stackPtr = stackPtr - 1u;
-      let nodeIdx = stack[stackPtr];
-      if (nodeIdx >= min(params.bvhNodeCount, arrayLength(&bvhNodes))) {
-        continue;
-      }
-      let node = bvhNodes[nodeIdx];
-      let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-      let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-      if (!intersectAabb(ray, bmin, bmax, tMin, hit.dist)) {
-        continue;
-      }
+  while (stackPtr > 0u) {
+    stackPtr = stackPtr - 1u;
+    let nodeIdx = stack[stackPtr];
+    if (nodeIdx >= min(params.bvhNodeCount, arrayLength(&bvhNodes))) {
+      continue;
+    }
+    let node = bvhNodes[nodeIdx];
+    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
+    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
+    let farBound = select(tMaxBound, (*hit).dist, closest);
+    if (!intersectAabb(ray, bmin, bmax, tMin, farBound)) {
+      continue;
+    }
 
-      let splitOrCount = node.splitAxisOrTriCount;
-      if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
-        let count = splitOrCount & 0x0000ffffu;
-        let start = node.rightChildOrTriOffset;
-        for (var i = 0u; i < count; i = i + 1u) {
-          let t = start + i;
-          if (t >= min(params.triangleCount, arrayLength(&indices))) {
-            continue;
-          }
-          let tri = indices[t];
-          if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
-            continue;
-          }
-          let a = positions[tri.x].xyz;
-          let b = positions[tri.y].xyz;
-          let c = positions[tri.z].xyz;
-          let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
-          if (hitT > tMin && hitT < hit.dist) {
-            let p = ray.origin + ray.direction * hitT;
-            let ab = b - a;
-            let ac = c - a;
-            let ap = p - a;
-            let d00 = dot(ab, ab);
-            let d01 = dot(ab, ac);
-            let d11 = dot(ac, ac);
-            let d20 = dot(ap, ab);
-            let d21 = dot(ap, ac);
-            let denom = max(d00 * d11 - d01 * d01, 1e-8);
-            let v = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-            let w = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-            let u = max(0.0, 1.0 - v - w);
-            var shadeNormal = safe_normalize(cross(ab, ac));
-            if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
-              let na = normals[tri.x].xyz;
-              let nb = normals[tri.y].xyz;
-              let nc = normals[tri.z].xyz;
-              shadeNormal = safe_normalize(na * u + nb * v + nc * w);
-            }
-            hit.didHit = true;
-            hit.dist = hitT;
-            hit.triIndex = t;
-            hit.normal = shadeNormal;
-          }
+    let splitOrCount = node.splitAxisOrTriCount;
+    if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
+      let count = splitOrCount & 0x0000ffffu;
+      let start = node.rightChildOrTriOffset;
+      let triFar = select(tMaxBound, (*hit).dist, closest);
+      for (var i = 0u; i < count; i = i + 1u) {
+        let t = start + i;
+        if (t >= min(params.triangleCount, arrayLength(&indices))) {
+          continue;
         }
-      } else {
-        let leftChild = nodeIdx + 1u;
-        let rightChild = node.rightChildOrTriOffset;
-        if (stackPtr + 2u < 64u) {
-          stack[stackPtr] = rightChild;
-          stackPtr = stackPtr + 1u;
-          stack[stackPtr] = leftChild;
-          stackPtr = stackPtr + 1u;
+        let tri = indices[t];
+        if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+          continue;
         }
+        let a = positions[tri.x].xyz;
+        let b = positions[tri.y].xyz;
+        let c = positions[tri.z].xyz;
+        let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
+        if (hitT > tMin && hitT < triFar) {
+          if (!closest) {
+            return true;
+          }
+          let p = ray.origin + ray.direction * hitT;
+          let ab = b - a;
+          let ac = c - a;
+          let ap = p - a;
+          let d00 = dot(ab, ab);
+          let d01 = dot(ab, ac);
+          let d11 = dot(ac, ac);
+          let d20 = dot(ap, ab);
+          let d21 = dot(ap, ac);
+          let denom = max(d00 * d11 - d01 * d01, 1e-8);
+          let v = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
+          let w = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
+          let u = max(0.0, 1.0 - v - w);
+          var shadeNormal = safe_normalize(cross(ab, ac));
+          if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
+            let na = normals[tri.x].xyz;
+            let nb = normals[tri.y].xyz;
+            let nc = normals[tri.z].xyz;
+            shadeNormal = safe_normalize(na * u + nb * v + nc * w);
+          }
+          (*hit).didHit = true;
+          (*hit).dist = hitT;
+          (*hit).triIndex = t;
+          (*hit).normal = shadeNormal;
+        }
+      }
+    } else {
+      let leftChild = nodeIdx + 1u;
+      let rightChild = node.rightChildOrTriOffset;
+      if (stackPtr + 2u < 64u) {
+        stack[stackPtr] = rightChild;
+        stackPtr = stackPtr + 1u;
+        stack[stackPtr] = leftChild;
+        stackPtr = stackPtr + 1u;
       }
     }
   }
+  return false;
+}
 
+fn traceAnalyticShapes(
+  ray: Ray,
+  tMin: f32,
+  tMaxBound: f32,
+  closest: bool,
+  hit: ptr<function, SceneHit>,
+) -> bool {
   let analyticTotal = min(params.analyticCount, arrayLength(&analyticHeaders));
   for (var ai = 0u; ai < analyticTotal; ai = ai + 1u) {
     let header = analyticHeaders[ai];
@@ -847,114 +871,34 @@ fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
     let localHitPos = localRay.origin + localRay.direction * localT;
     let worldHitPos = transformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
     let worldT = dot(worldHitPos - ray.origin, ray.direction);
-    if (worldT > tMin && worldT < hit.dist) {
-      hit.didHit = true;
-      hit.dist = worldT;
-      hit.triIndex = params.triangleCount + ai;
-      hit.normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localN);
+    let bound = select(tMaxBound, (*hit).dist, closest);
+    if (worldT > tMin && worldT < bound) {
+      if (!closest) {
+        return true;
+      }
+      (*hit).didHit = true;
+      (*hit).dist = worldT;
+      (*hit).triIndex = params.triangleCount + ai;
+      (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localN);
     }
   }
+  return false;
+}
+
+fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
+  var hit: SceneHit;
+  _ = traceMeshBvh(ray, tMin, tMax, true, &hit);
+  _ = traceAnalyticShapes(ray, tMin, tMax, true, &hit);
   return hit;
 }
 
 fn traceAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
-  if (params.bvhNodeCount > 0u && arrayLength(&bvhNodes) > 0u) {
-    var stack: array<u32, 64>;
-    var stackPtr = 0u;
-    stack[stackPtr] = 0u;
-    stackPtr = stackPtr + 1u;
-
-    while (stackPtr > 0u) {
-      stackPtr = stackPtr - 1u;
-      let nodeIdx = stack[stackPtr];
-      if (nodeIdx >= min(params.bvhNodeCount, arrayLength(&bvhNodes))) {
-        continue;
-      }
-      let node = bvhNodes[nodeIdx];
-      let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-      let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-      if (!intersectAabb(ray, bmin, bmax, tMin, tMax)) {
-        continue;
-      }
-
-      let splitOrCount = node.splitAxisOrTriCount;
-      if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
-        let count = splitOrCount & 0x0000ffffu;
-        let start = node.rightChildOrTriOffset;
-        for (var i = 0u; i < count; i = i + 1u) {
-          let t = start + i;
-          if (t >= min(params.triangleCount, arrayLength(&indices))) {
-            continue;
-          }
-          let tri = indices[t];
-          if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
-            continue;
-          }
-          let a = positions[tri.x].xyz;
-          let b = positions[tri.y].xyz;
-          let c = positions[tri.z].xyz;
-          let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
-          if (hitT > tMin && hitT < tMax) {
-            return true;
-          }
-        }
-      } else {
-        let leftChild = nodeIdx + 1u;
-        let rightChild = node.rightChildOrTriOffset;
-        if (stackPtr + 2u < 64u) {
-          stack[stackPtr] = rightChild;
-          stackPtr = stackPtr + 1u;
-          stack[stackPtr] = leftChild;
-          stackPtr = stackPtr + 1u;
-        }
-      }
-    }
+  var hit: SceneHit;
+  if (traceMeshBvh(ray, tMin, tMax, false, &hit)) {
+    return true;
   }
-
-  let analyticTotal = min(params.analyticCount, arrayLength(&analyticHeaders));
-  for (var ai = 0u; ai < analyticTotal; ai = ai + 1u) {
-    let header = analyticHeaders[ai];
-    let shapeId = u32(max(header.x, 0.0));
-    let paramOffset = u32(max(header.z, 0.0));
-    let matBase = ai * 4u;
-    if (matBase + 3u >= arrayLength(&analyticWorldToLocal) || matBase + 3u >= arrayLength(&analyticLocalToWorld)) {
-      continue;
-    }
-    let w2l0 = analyticWorldToLocal[matBase];
-    let w2l1 = analyticWorldToLocal[matBase + 1u];
-    let w2l2 = analyticWorldToLocal[matBase + 2u];
-    let w2l3 = analyticWorldToLocal[matBase + 3u];
-    let l2w0 = analyticLocalToWorld[matBase];
-    let l2w1 = analyticLocalToWorld[matBase + 1u];
-    let l2w2 = analyticLocalToWorld[matBase + 2u];
-    let l2w3 = analyticLocalToWorld[matBase + 3u];
-    var localRay: Ray;
-    localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
-    localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
-    var localN = vec3f(0.0, 1.0, 0.0);
-    var localT = INFINITY;
-    let p0 = select(vec4f(0.0), analyticParams[paramOffset], paramOffset < arrayLength(&analyticParams));
-    let p1 = select(vec4f(0.0), analyticParams[paramOffset + 1u], paramOffset + 1u < arrayLength(&analyticParams));
-    if (shapeId == SHAPE_SPHERE) {
-      localT = intersectSphereLocal(localRay, p0.xyz, max(p0.w, 1e-4), &localN);
-    } else if (shapeId == SHAPE_BOX) {
-      localT = intersectAabbDetailed(localRay, p0.xyz - p1.xyz, p0.xyz + p1.xyz, 1e-4, INFINITY, &localN);
-    } else if (shapeId == SHAPE_CAPSULE) {
-      localT = intersectCapsuleLocal(localRay, p0.xyz, p1.xyz, max(p1.w, 1e-4), &localN);
-    } else if (shapeId == SHAPE_CYLINDER) {
-      localT = intersectCylinderLocal(localRay, p0.xyz, max(p0.w, 1e-4), max(p1.x, 1e-4), &localN);
-    } else if (shapeId == SHAPE_H_CHANNEL_CAME) {
-      localT = intersectHChannelLocal(localRay, p0.x, p0.y, p0.z, p0.w, &localN);
-    }
-    if (localT <= tMin || localT >= INFINITY) {
-      continue;
-    }
-    let localHitPos = localRay.origin + localRay.direction * localT;
-    let worldHitPos = transformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
-    let worldT = dot(worldHitPos - ray.origin, ray.direction);
-    if (worldT > tMin && worldT < tMax) {
-      return true;
-    }
+  if (traceAnalyticShapes(ray, tMin, tMax, false, &hit)) {
+    return true;
   }
   return false;
 }

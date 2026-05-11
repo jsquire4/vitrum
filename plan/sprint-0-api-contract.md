@@ -59,11 +59,19 @@ Both hooks throw initially (the engines don't render yet). The point is to fix t
 - [x] plan/library-architecture.md (this file's sibling)
 - [x] `@vitrum/pt-webgl/src/index.ts` stub implementing Engine interface (throws)
 - [x] `@vitrum/three-bindings/src/index.ts` stub
-- [ ] host-app `src/rendering/vitrum-bridge/` placeholder hooks
+- [x] host-app `src/rendering/vitrum-bridge/` placeholder hooks
+  - `useVitrumPTEngine` — fully wired (not a stub; PathTracingLayer uses it)
+  - `useVitrumBlitPass`, `VitrumSceneSync`, `VitrumPTDebugBridge` — shipped
+  - `useVitrumWalkaroundEngine` — lifecycle hook (quantized timeOfDay rebuild key)
+  - **Note**: PT bridge is beyond placeholder — PathTracingLayer now uses it in production
 - [x] `tsc --noEmit` clean across workspace
-- [ ] Sprint 0 committed; Phase 6 doc updated to reference vitrum packages
+- [x] Sprint 0 committed (`00fe478` on `feat/vitrum-integration` in stainedGlass)
 
-> **Note — host-app scaffold deferred**: there is no host application currently importing `@vitrum/*`. The `vitrum-bridge/` hooks (`useVitrumPTEngine`, `useVitrumWalkaroundEngine`) will be created in whichever host-app repo first consumes vitrum packages; this item is N/A until that integration begins.
+> **Dynamic lighting limitation**: `HybridEngine` stores `primaryLightDir`, `skyTint`,
+> etc. as creation-time fields. `useVitrumWalkaroundEngine` works around this by
+> quantizing timeOfDay to 8 buckets and recreating the engine on bucket boundaries.
+> Sprint N: add `HybridEngine.updateLighting(state)` to enable real-time scrubbing
+> without engine recreation.
 
 ## Open contract decisions to revisit
 

@@ -27,6 +27,7 @@ import {
   MAX_TILE_GRID,
   TileVariancePass,
   computeAdaptiveTileRepeatFactors,
+  linearTileIndexFromVarianceReadPixelsPy,
 } from './adaptiveTileWeights.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -51,8 +52,18 @@ export {
   MAX_TILE_GRID,
   TileVariancePass,
   computeAdaptiveTileRepeatFactors,
+  linearTileIndexFromVarianceReadPixelsPy,
 } from './adaptiveTileWeights.js';
-export { readAccumulationRgbFloat } from './readbackHdr.js';
+export { ZERO_SAMPLE_COUNT_EPSILON } from './accumulationSampleEpsilon.js';
+export { readAccumulationRgbFloat, accumulationFloatRgbaToRgb } from './readbackHdr.js';
+export {
+  HDR_ACCUM_GOLDEN_BASE64,
+  HDR_ACCUM_GOLDEN_EXPECTED_RGB_DIVIDE,
+  HDR_ACCUM_GOLDEN_PIXEL_COUNT,
+  HDR_ACCUM_GOLDEN_BYTE_LENGTH,
+  decodeHdrAccumGoldenBin,
+  hdrAccumGoldenBinFromBase64,
+} from './hdrGoldenFixture.js';
 export { vitrumSceneToThree } from '@vitrum/three-bindings';
 export { applyFrameToPerspectiveCamera } from './frameCamera.js';
 export { packCameUBO } from './cameUniformUploader.js';
@@ -562,7 +573,7 @@ export class PTEngineWebGL2 implements Engine {
     const b = Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit);
     const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
     this.#pathTracer.bounces = b;
-    this.#pathTracer.transmissiveBounces = Math.min(b, 12);
+    this.#pathTracer.transmissiveBounces = Math.min(b, this.#maxBouncesLimit);
     this.#pathTracer.filterGlossyFactor = q.filteredGlossyFactor ?? 0;
 
     const factor = q.resolutionFactor ?? 1;

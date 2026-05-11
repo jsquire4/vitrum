@@ -10,9 +10,10 @@
  *   2. PPG_SAMPLE_WGSL — entry points, bindings, fallback-cosine path.
  *   3. PPG_UPDATE_WGSL — entry point, bindings, atomic update strategy.
  *   4. createPPGBuffers — buffer count, sizes, and usage flags.
- *   5. PPG disabled — no buffer allocation when ppgEnabled false/unset.
- *   6. setPPGEnabled lifecycle — toggle reflected in getter; no-op dispatch.
- *   7. FrameResources.ppgBuffers — opt-in field presence and destroy.
+ *   5. buildPpgKdTreeGpuBytes / ppgNearestCellIndexKd vs brute parity.
+ *   6. PPG disabled — no buffer allocation when ppgEnabled false/unset.
+ *   7. setPPGEnabled lifecycle — toggle reflected in getter; no-op dispatch.
+ *   8. FrameResources.ppgBuffers — opt-in field presence and destroy.
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -21,7 +22,15 @@ import {
   PPG_DIRECTIONS,
   PPG_CELL_BYTE_STRIDE,
   PPG_LEAF_BYTE_STRIDE,
+  PPG_KD_MAX_NODES,
+  PPG_KD_NODE_BYTE_STRIDE,
 } from '../src/ppg/types.js';
+import {
+  buildPpgKdTreeGpuBytes,
+  encodePpgKdDisabledRoot,
+  ppgNearestCellIndexBrute,
+  ppgNearestCellIndexKd,
+} from '../src/ppg/buildPpgKdTree.js';
 import { PPG_SAMPLE_WGSL } from '../src/ppg/wgsl/ppgSample.wgsl.js';
 import { PPG_UPDATE_WGSL } from '../src/ppg/wgsl/ppgUpdate.wgsl.js';
 import {
@@ -139,6 +148,53 @@ describe('PPG type constants (Sprint 11)', () => {
   });
 });
 
+// ── PPG kd-tree CPU query parity (matches WGSL traversal) ───────────────────
+
+describe('buildPpgKdTreeGpuBytes / ppgNearestCellIndexKd', () => {
+  function makeCells(
+    count: number,
+    pos: (i: number) => [number, number, number],
+  ): { position: [number, number, number] }[] {
+    return Array.from({ length: count }, (_, i) => ({ position: pos(i) }));
+  }
+
+  it('disabled sentinel: kd query matches brute force', () => {
+    const cells = makeCells(5, (i) => [i * 1.1, i * 0.7, i * -0.3]);
+    const disabled = encodePpgKdDisabledRoot();
+    for (let t = 0; t < 20; t++) {
+      const qx = Math.sin(t) * 3;
+      const qy = Math.cos(t * 0.7) * 2;
+      const qz = t * 0.15;
+      const b = ppgNearestCellIndexBrute(cells, cells.length, qx, qy, qz);
+      const k = ppgNearestCellIndexKd(disabled, cells, cells.length, qx, qy, qz);
+      expect(k).toBe(b);
+    }
+  });
+
+  it('built tree matches brute for random queries (small N)', () => {
+    const cells = makeCells(24, (i) => [
+      Math.sin(i * 1.7) * 10,
+      Math.cos(i * 0.91) * 8,
+      (i % 7) * 1.3 - 3,
+    ]);
+    const gpu = buildPpgKdTreeGpuBytes(cells, cells.length);
+    for (let s = 0; s < 50; s++) {
+      const qx = (Math.sin(s * 2.1) + 0.3) * 12;
+      const qy = (Math.cos(s * 1.05) - 0.2) * 9;
+      const qz = s * 0.21 - 5;
+      const b = ppgNearestCellIndexBrute(cells, cells.length, qx, qy, qz);
+      const k = ppgNearestCellIndexKd(gpu, cells, cells.length, qx, qy, qz);
+      expect(k).toBe(b);
+    }
+  });
+
+  it('count <= 0 yields index 0 from kd query', () => {
+    const cells = makeCells(2, () => [0, 0, 0]);
+    const gpu = buildPpgKdTreeGpuBytes(cells, 0);
+    expect(ppgNearestCellIndexKd(gpu, cells, 0, 1, 2, 3)).toBe(0);
+  });
+});
+
 // ─── 2. PPG_SAMPLE_WGSL — shader fragment ─────────────────────────────────────
 
 describe('PPG_SAMPLE_WGSL — ppgSampleDirection and ppgPDF shader fragment', () => {
@@ -163,6 +219,11 @@ describe('PPG_SAMPLE_WGSL — ppgSampleDirection and ppgPDF shader fragment', ()
   it('binds ppgLeaves at @group(2) @binding(1)', () => {
     expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(1)');
     expect(PPG_SAMPLE_WGSL).toContain('ppgLeaves');
+  });
+
+  it('binds ppgKdNodes at @group(2) @binding(2)', () => {
+    expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(2)');
+    expect(PPG_SAMPLE_WGSL).toContain('ppgKdNodes');
   });
 
   it('contains ppgSampleDirection function', () => {
@@ -286,6 +347,11 @@ describe('PPG_UPDATE_WGSL — ppgUpdateKernel compute shader', () => {
     expect(PPG_UPDATE_WGSL).toContain('ppgLeafData');
   });
 
+  it('binds ppgKdNodes at @group(0) @binding(4)', () => {
+    expect(PPG_UPDATE_WGSL).toContain('@group(0) @binding(4)');
+    expect(PPG_UPDATE_WGSL).toContain('ppgKdNodes');
+  });
+
   it('ppgLeafData uses atomic<u32> for WebGPU-compatible atomics', () => {
     expect(PPG_UPDATE_WGSL).toContain('array<atomic<u32>>');
   });
@@ -310,8 +376,9 @@ describe('PPG_UPDATE_WGSL — ppgUpdateKernel compute shader', () => {
     expect(PPG_UPDATE_WGSL).toContain('sampleIdx >= u_ppg.sampleCount');
   });
 
-  it('contains ppgUpdateFindCell nearest-cell lookup', () => {
+  it('contains ppgUpdateFindCell routed through kd traversal', () => {
     expect(PPG_UPDATE_WGSL).toContain('fn ppgUpdateFindCell');
+    expect(PPG_UPDATE_WGSL).toContain('ppgUpdateKdFindCell');
   });
 
   it('contains ppgDirToBinIdx octahedral direction encode', () => {
@@ -344,19 +411,21 @@ describe('PPG_UPDATE_WGSL — ppgUpdateKernel compute shader', () => {
 // ─── 4. createPPGBuffers — buffer count and sizes ─────────────────────────────
 
 describe('createPPGBuffers — PPG GPU buffer allocation', () => {
-  it('creates exactly 3 buffers', () => {
+  it('creates exactly 5 buffers', () => {
     const { device, bufferCalls } = makeMockDevice();
     createPPGBuffers(device);
-    expect(bufferCalls.length).toBe(3);
+    expect(bufferCalls.length).toBe(5);
   });
 
-  it('creates cellBuffer, leafBuffer, sampleBuffer (in any order)', () => {
+  it('creates cellBuffer, leafBuffer, sampleBuffer, sampleHeadBuffer, kdBuffer (in any order)', () => {
     const { device, bufferCalls } = makeMockDevice();
     createPPGBuffers(device);
     const labels = bufferCalls.map((c) => c.label ?? '');
     expect(labels).toContain('ppg-cell-buffer');
     expect(labels).toContain('ppg-leaf-buffer');
     expect(labels).toContain('ppg-sample-buffer');
+    expect(labels).toContain('ppg-sample-head');
+    expect(labels).toContain('ppg-kd-buffer');
   });
 
   it('cellBuffer is exactly PPG_MAX_SPATIAL_CELLS × PPG_CELL_BYTE_STRIDE bytes', () => {
@@ -384,7 +453,36 @@ describe('createPPGBuffers — PPG GPU buffer allocation', () => {
     expect(sample!.size).toBeGreaterThanOrEqual(PPG_MAX_SPATIAL_CELLS * PPG_PATH_SAMPLE_STRIDE);
   });
 
-  it('all three buffers include GPUBufferUsage.STORAGE', () => {
+  it('kdBuffer is PPG_KD_MAX_NODES × PPG_KD_NODE_BYTE_STRIDE bytes', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    const kd = bufferCalls.find((c) => c.label === 'ppg-kd-buffer');
+    expect(kd).toBeDefined();
+    expect(kd!.size).toBe(PPG_KD_MAX_NODES * PPG_KD_NODE_BYTE_STRIDE);
+  });
+
+  it('sampleHeadBuffer is 16 bytes (atomic head + alignment)', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    const head = bufferCalls.find((c) => c.label === 'ppg-sample-head');
+    expect(head).toBeDefined();
+    expect(head!.size).toBe(16);
+  });
+
+  it('writes disabled kd sentinel on init', () => {
+    const { device, bufferCalls } = makeMockDevice();
+    createPPGBuffers(device);
+    expect(bufferCalls.length).toBe(5);
+    const mockQueue = device.queue as unknown as { writeBuffer: ReturnType<typeof vi.fn> };
+    expect(mockQueue.writeBuffer).toHaveBeenCalled();
+    const disabled = encodePpgKdDisabledRoot();
+    const matchCall = mockQueue.writeBuffer.mock.calls.find(
+      (call: unknown[]) => (call[2] as Uint8Array).byteLength === disabled.byteLength,
+    );
+    expect(matchCall).toBeDefined();
+  });
+
+  it('all PPG buffers include GPUBufferUsage.STORAGE', () => {
     const { device, bufferCalls } = makeMockDevice();
     createPPGBuffers(device);
     for (const call of bufferCalls) {
@@ -392,7 +490,7 @@ describe('createPPGBuffers — PPG GPU buffer allocation', () => {
     }
   });
 
-  it('all three buffers include GPUBufferUsage.COPY_DST (host upload)', () => {
+  it('all PPG buffers include GPUBufferUsage.COPY_DST (host upload)', () => {
     const { device, bufferCalls } = makeMockDevice();
     createPPGBuffers(device);
     for (const call of bufferCalls) {
@@ -400,7 +498,7 @@ describe('createPPGBuffers — PPG GPU buffer allocation', () => {
     }
   });
 
-  it('all three buffers include GPUBufferUsage.COPY_SRC (CPU readback for tests)', () => {
+  it('all PPG buffers include GPUBufferUsage.COPY_SRC (CPU readback for tests)', () => {
     const { device, bufferCalls } = makeMockDevice();
     createPPGBuffers(device);
     for (const call of bufferCalls) {
@@ -451,12 +549,12 @@ describe('PPG disabled — no buffer allocation when ppgEnabled = false/unset', 
     expect(ppgLabels).toHaveLength(0);
   });
 
-  it('createFrameResources with ppgEnabled: true creates 3 PPG buffers', () => {
+  it('createFrameResources with ppgEnabled: true creates 5 PPG buffers', () => {
     const { device, bufferCalls } = makeMockDevice();
     const res = createFrameResources(device, 64, 64, { ppgEnabled: true });
     expect(res.ppgBuffers).toBeDefined();
     const ppgLabels = bufferCalls.filter((c) => c.label?.startsWith('ppg-'));
-    expect(ppgLabels).toHaveLength(3);
+    expect(ppgLabels).toHaveLength(5);
   });
 
   it('destroyFrameResources without PPG buffers does not throw', () => {
@@ -465,7 +563,7 @@ describe('PPG disabled — no buffer allocation when ppgEnabled = false/unset', 
     expect(() => destroyFrameResources(res)).not.toThrow();
   });
 
-  it('destroyFrameResources with PPG buffers calls destroy on all three', () => {
+  it('destroyFrameResources with PPG buffers calls destroy on all five PPG GPU buffers', () => {
     const destroyMock = vi.fn();
     const bufferMock  = { destroy: destroyMock };
     const textureMock = { destroy: vi.fn(), createView: vi.fn(() => ({})) };
@@ -480,31 +578,36 @@ describe('PPG disabled — no buffer allocation when ppgEnabled = false/unset', 
     const res = createFrameResources(mockDevice, 64, 64, { ppgEnabled: true });
     destroyFrameResources(res);
 
-    // destroyMock called for: reservoirCurrent, reservoirPrevious, reservoirSpatial,
-    // uboBuffer, ddgiUboBuffer, and the 3 PPG buffers = at least 3 PPG calls.
-    // Total buffer mocks >= 8 (from Sprint 9 + 3 PPG). All share the same mock.
-    expect(destroyMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // destroyMock called for shared buffer mock across many creates;
+    // at least 5 PPG buffer destroys when PPG is enabled.
+    expect(destroyMock.mock.calls.length).toBeGreaterThanOrEqual(5);
   });
 });
 
 // ─── 6. destroyPPGBuffers — explicit destroy helper ──────────────────────────
 
 describe('destroyPPGBuffers — explicit PPG buffer destruction', () => {
-  it('calls destroy on cellBuffer, leafBuffer, sampleBuffer', () => {
+  it('calls destroy on cellBuffer, leafBuffer, sampleBuffer, sampleHeadBuffer, kdBuffer', () => {
     const destroyCell   = vi.fn();
     const destroyLeaf   = vi.fn();
     const destroySample = vi.fn();
+    const destroyHead   = vi.fn();
+    const destroyKd     = vi.fn();
 
     destroyPPGBuffers({
-      cellBuffer:   { destroy: destroyCell }   as unknown as GPUBuffer,
-      leafBuffer:   { destroy: destroyLeaf }   as unknown as GPUBuffer,
-      sampleBuffer: { destroy: destroySample } as unknown as GPUBuffer,
-      maxCells:     100,
+      cellBuffer:        { destroy: destroyCell }   as unknown as GPUBuffer,
+      leafBuffer:        { destroy: destroyLeaf }   as unknown as GPUBuffer,
+      sampleBuffer:      { destroy: destroySample } as unknown as GPUBuffer,
+      sampleHeadBuffer:  { destroy: destroyHead }   as unknown as GPUBuffer,
+      kdBuffer:          { destroy: destroyKd }     as unknown as GPUBuffer,
+      maxCells:          100,
     });
 
     expect(destroyCell).toHaveBeenCalledOnce();
     expect(destroyLeaf).toHaveBeenCalledOnce();
     expect(destroySample).toHaveBeenCalledOnce();
+    expect(destroyHead).toHaveBeenCalledOnce();
+    expect(destroyKd).toHaveBeenCalledOnce();
   });
 });
 
@@ -583,5 +686,15 @@ describe('PPG exports from package index (Sprint 11)', () => {
   it('destroyPPGBuffers is exported from package index', async () => {
     const mod = await import('../src/index.js');
     expect(typeof (mod as Record<string, unknown>)['destroyPPGBuffers']).toBe('function');
+  });
+
+  it('writePpgKdTree is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['writePpgKdTree']).toBe('function');
+  });
+
+  it('buildPpgKdTreeGpuBytes is exported from package index', async () => {
+    const mod = await import('../src/index.js');
+    expect(typeof (mod as Record<string, unknown>)['buildPpgKdTreeGpuBytes']).toBe('function');
   });
 });

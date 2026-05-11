@@ -19,7 +19,7 @@ The package layout reflects the architectural separation between **what the engi
 @vitrum/three-bindings          three.js scene → @vitrum/core Scene adapter
 @vitrum/shared-bvh              Software BVH compute (WebGPU + WebGL2)
 @vitrum/shared-samplers         Sobol, Hammersley, light tree, mixture PDF
-@vitrum/shared-denoisers        À-trous, SVGF, BMFR, OIDN bridge
+@vitrum/shared-denoisers        À-trous, SVGF, spatial filter, OIDN bridge (BMFR not shipped)
 @vitrum/pt-webgl                WebGL2 path-tracer backend (wraps three-gpu-pathtracer fork)
 @vitrum/pt-webgpu               WebGPU-native path-tracer backend (pre-alpha prototype; active development)
 @vitrum/walkaround-hybrid       WebGPU layered DDGI + RC + ReSTIR DI engine
@@ -33,7 +33,7 @@ That contract is what dissolves the "render mode toggle remounts the Canvas, acc
 
 ## What's already novel here
 
-- **Layered hybrid GI in one WebGPU compute pipeline** — DDGI + Radiance Cascades + ReSTIR DI in additive composition. First of its kind in browser rendering.
+- **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI), ReSTIR DI (and recomposed radiance-cascade work is tracked for `HybridEngine`; see [packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md)). RC tooling also ships standalone under `packages/walkaround-hybrid/src/rc/`.
 - **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE. Originated as a patch on three-gpu-pathtracer; will land in `@vitrum/pt-webgl` and `@vitrum/pt-webgpu`.
 - **Hybrid analytic-CSG + BVH-mesh intersection** — closed-form quadrics (came/solder, gemstones) + triangle meshes (glass, panels, room) in the same path-tracing kernel. Production renderers usually pick one or the other.
 

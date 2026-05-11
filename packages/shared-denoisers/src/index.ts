@@ -1,4 +1,5 @@
-// @vitrum/shared-denoisers — denoiser building blocks (à-trous, SVGF, BMFR, OIDN bridge).
+// @vitrum/shared-denoisers — denoiser building blocks (à-trous, SVGF, OIDN bridge).
+// BMFR remains a roadmap candidate; no BMFR module is exported from this package.
 //
 // Phase 5 deliverable: atrous + temporalAccum WGSL fragments.
 // Sprint 6 (Phase 6): 37-tap hexagonal-kernel edge-stopping spatial filter.
@@ -11,7 +12,20 @@ export { SPATIAL_FILTER_WGSL } from './wgsl/spatialFilter.wgsl.js';
 export type { SpatialFilterBindGroupLayout } from './wgsl/spatialFilter.wgsl.js';
 
 // Sprint 10a — SVGF
-export { SVGF_WGSL } from './wgsl/svgf.wgsl.js';
+export {
+  SVGF_WGSL,
+  SVGF_COMPUTE_WORKGROUP_SIZE,
+} from './wgsl/svgf.wgsl.js';
+export {
+  SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT,
+  SVGF_DEFAULT_ATROUS_ITERATIONS,
+  SVGF_MAX_ATROUS_ITERATIONS,
+  SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
+} from './svgfConstants.js';
+export {
+  WEBGPU_COPY_BYTES_PER_ROW_ALIGNMENT,
+  alignedTextureCopyBytesPerRow,
+} from './webGpuTextureCopy.js';
 export {
   SVGF_UNIFORMS_SIZE_BYTES,
   SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
@@ -36,3 +50,25 @@ export type {
   OIDNDenoiseInputs,
   OIDNDenoiseOptions,
 } from './oidnBridge.js';
+
+// HDR bilateral (WebGPU compute, luminance edge-stop — no G-buffer)
+export {
+  HDR_LUMINANCE_BILATERAL_WGSL,
+  HDR_LUMINANCE_BILATERAL_ENTRY,
+  HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE,
+} from './wgsl/hdrLuminanceBilateral.wgsl.js';
+export {
+  runHdrLuminanceBilateralWebGPU,
+  HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE,
+} from './hdrLuminanceBilateralWebGPU.js';
+export type { HdrLuminanceBilateralWebGPUOptions } from './hdrLuminanceBilateralWebGPU.js';
+
+// Half-precision helpers + SVGF WebGPU host path (synthetic G-buffer).
+export { float16BitsToFloat32, float32ToFloat16Bits } from './halfFloat.js';
+export {
+  runSvgfWebGPU,
+  assertSvgfWebGPUBufferShapes,
+  SVGF_SYNTHETIC_GBUFFER_DEFAULTS,
+} from './svgfWebGPU.js';
+export type { SvgfWebGPUOptions, SvgfSyntheticGbufferFallback } from './svgfWebGPU.js';
+export { getSharedWebGPUDevice, disposeSharedWebGPUDevice } from './sharedWebGpuDevice.js';

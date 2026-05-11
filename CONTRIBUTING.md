@@ -9,9 +9,13 @@
 
 ## GPU / reference renders
 
-- Gap-closure harness: `tools/benchmark-runner` (`npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner`).
-- Reference PNG baselines: `tools/reference-renders/baseline/` (not checked in
-  until generated; use `VITRUM_ALLOW_BASELINE_GEN=1` when captures are enabled).
+- Gap-closure harness: `npm run benchmark:gap-closure` (runs
+  `@vitrum/benchmark-runner`). See [tools/benchmark-runner/README.md](tools/benchmark-runner/README.md).
+- Reference PNG baselines: `tools/reference-renders/baseline/` — see
+  [tools/reference-renders/README.md](tools/reference-renders/README.md).
+- Strict gate (exit non-zero unless every scenario is `PASS`):
+  `VITRUM_STRICT_GAP_CLOSURE=1` (requires committed baselines and, when
+  `VITRUM_GPU_CAPTURE=1`, a working `VITRUM_CAPTURE_CMD`).
 
 ## Pull requests
 

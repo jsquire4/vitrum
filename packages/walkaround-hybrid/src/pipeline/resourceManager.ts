@@ -11,7 +11,7 @@
  * samplers, DDGI placeholders). Returns a typed bundle so the caller can
  * store each handle as a private field.
  *
- * `createPPGBuffers` allocates the three PPG storage buffers (Sprint 11).
+ * `createPPGBuffers` allocates the PPG storage buffers (Sprint 11).
  * Gated by `ppgEnabled` option — no allocation when PPG is disabled so
  * the default engine behaviour is unchanged.
  */
@@ -21,8 +21,11 @@ import {
   PPG_CELL_BYTE_STRIDE,
   PPG_LEAF_BYTE_STRIDE,
   PPG_DIRECTIONS,
+  PPG_KD_MAX_NODES,
+  PPG_KD_NODE_BYTE_STRIDE,
 } from '../ppg/types.js';
 import type { PPGBufferOptions } from '../ppg/types.js';
+import { encodePpgKdDisabledRoot, buildPpgKdTreeGpuBytes } from '../ppg/buildPpgKdTree.js';
 
 export interface FrameResources {
   reservoirCurrentBuffer: GPUBuffer;
@@ -43,20 +46,16 @@ export interface FrameResources {
   ddgiUboBuffer: GPUBuffer;
   /**
    * Sprint 9 — Per-pixel Welford variance buffer (RG32Float storage texture).
-   * Layout per texel: r = mean (running luminance average), g = M2 (sum of
-   * squared deltas). Variance = M2 / (n - 1) where n is the sample count
-   * passed per-frame as a uniform.
-   *
-   * Allocated here (low-risk, Sprint 10a SVGF will also use it). NOT written
-   * by any dispatch in Sprint 9; Sprint 10a SVGF and the deferred
-   * sprint-9-walkaround-integration will wire the write path.
-   *
-   * See: packages/walkaround-hybrid/src/shaders/common.wgsl.ts — WelfordVariance
-   * struct, welfordUpdate, welfordVariance for the matching WGSL definition.
-   *
-   * @since Sprint 9, 2026-05-09
+   * Ping-pong pair with {@link varianceBufferAux} when the SVGF path runs
+   * `welfordTemporalMain` each frame.
    */
   varianceBuffer: GPUTexture;
+  /** Second Welford ping-pong half (SVGF path only). */
+  varianceBufferAux: GPUTexture;
+  /** SVGF variance-estimation output (.r = scalar variance, .g = frame tag). */
+  svgfVarianceEstimateTexture: GPUTexture;
+  /** Screen-space motion (RG32F); zeros until a motion-vector pass exists. */
+  motionVectorTexture: GPUTexture;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -75,7 +74,7 @@ export interface FrameResources {
 }
 
 /**
- * GPU buffer bundle allocated by `createPPGBuffers`. All three buffers are
+ * GPU buffer bundle allocated by `createPPGBuffers`. All buffers are
  * needed together to run the PPG sample + update passes.
  *
  * @since Sprint 11, 2026-05-09
@@ -119,29 +118,42 @@ export interface PPGBuffers {
    */
   sampleBuffer: GPUBuffer;
 
+  /**
+   * Atomic slot counter for training samples (cleared each frame before shade).
+   * sizeof = 16 bytes for WebGPU min buffer alignment.
+   */
+  sampleHeadBuffer: GPUBuffer;
+
+  /**
+   * kd-tree over spatial cell centroids (16-byte nodes, see `buildPpgKdTree.ts`).
+   * Initialised with a sentinel that forces brute-force lookup in WGSL until
+   * the host uploads `buildPpgKdTreeGpuBytes(...)`.
+   */
+  kdBuffer: GPUBuffer;
+
   /** Maximum number of spatial cells this buffer set was allocated for. */
   readonly maxCells: number;
 }
 
 /**
- * Allocate the three PPG storage buffers for the walkaround engine.
+ * Allocate PPG storage buffers for the walkaround engine.
  *
  * Called from `createFrameResources` when `ppgEnabled` is true, or
  * from `HybridEngine.setPPGEnabled(true)` if PPG is toggled at runtime.
- * (Sprint 11: runtime toggle is a no-op for dispatch; buffers are allocated
- * and available but the update/sample passes are not yet wired.)
  *
  * Buffer sizing:
  *   - cellBuffer:   maxCells × 32 bytes  = 320 KB at default 10K cap.
  *   - leafBuffer:   maxCells × 256 bytes = 2.56 MB at default 10K cap.
  *   - sampleBuffer: maxCells × 48 bytes  = 480 KB at default 10K cap.
- * Total: ~3.36 MB — negligible alongside the main BVH + reservoir buffers.
+ *   - sampleHeadBuffer: 16 bytes (atomic counter + alignment).
+ *   - kdBuffer:     ≤ (2×maxCells+8) × 16 bytes (~321 KB at 10K cap).
+ * Total: ~3.7 MB — negligible alongside the main BVH + reservoir buffers.
  *
  * WebGPU minimum buffer size is 4 bytes; all allocations are well above that.
  *
  * @param device   - Live GPUDevice.
  * @param options  - Optional overrides (see PPGBufferOptions).
- * @returns        Three allocated PPGBuffers, zero-initialised by the GPU driver.
+ * @returns        Allocated PPGBuffers (cells, leaves, samples, sample head, kd-tree).
  *
  * @since Sprint 11, 2026-05-09
  */
@@ -177,11 +189,48 @@ export function createPPGBuffers(device: GPUDevice, options?: PPGBufferOptions):
     usage: storageUsage,
   });
 
+  const kdByteSize = Math.max(PPG_KD_MAX_NODES * PPG_KD_NODE_BYTE_STRIDE, 16);
+  const kdBuffer = device.createBuffer({
+    label: 'ppg-kd-buffer',
+    size: kdByteSize,
+    usage: storageUsage,
+  });
+  const sampleHeadBuffer = device.createBuffer({
+    label: 'ppg-sample-head',
+    size: 16,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  device.queue.writeBuffer(sampleHeadBuffer, 0, new Uint32Array(4));
+  const kdSentinel = encodePpgKdDisabledRoot();
+  device.queue.writeBuffer(
+    kdBuffer,
+    0,
+    kdSentinel.buffer as ArrayBuffer,
+    kdSentinel.byteOffset,
+    kdSentinel.byteLength,
+  );
+
   // Suppress unused-import lint: PPG_DIRECTIONS is part of the public type
   // contract surfaced through tests; referenced here to keep the import live.
   void PPG_DIRECTIONS;
 
-  return { cellBuffer, leafBuffer, sampleBuffer, maxCells };
+  return { cellBuffer, leafBuffer, sampleBuffer, sampleHeadBuffer, kdBuffer, maxCells };
+}
+
+export function writePpgKdTree(
+  queue: GPUQueue,
+  kdBuffer: GPUBuffer,
+  cells: ReadonlyArray<{ readonly position: readonly [number, number, number] }>,
+  activeCellCount: number,
+): void {
+  const bytes = buildPpgKdTreeGpuBytes(cells, activeCellCount);
+  queue.writeBuffer(
+    kdBuffer,
+    0,
+    bytes.buffer as ArrayBuffer,
+    bytes.byteOffset,
+    bytes.byteLength,
+  );
 }
 
 /**
@@ -195,6 +244,8 @@ export function destroyPPGBuffers(buffers: PPGBuffers): void {
   buffers.cellBuffer.destroy();
   buffers.leafBuffer.destroy();
   buffers.sampleBuffer.destroy();
+  buffers.sampleHeadBuffer.destroy();
+  buffers.kdBuffer.destroy();
 }
 
 /**
@@ -284,10 +335,10 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
  */
 export interface FrameResourceOptions {
   /**
-   * When true, allocates the three PPG storage buffers (cellBuffer, leafBuffer,
-   * sampleBuffer). Defaults to false — existing callers are unaffected.
+   * When true, allocates PPG storage buffers (cellBuffer, leafBuffer,
+   * sampleBuffer, sampleHeadBuffer, kdBuffer). Defaults to false — existing callers are unaffected.
    *
-   * PPG buffers add ~3.36 MB of GPU memory at the default 10K cell cap.
+   * PPG buffers add about 3.7 MB of GPU memory at the default 10K cell cap.
    * The Sprint 11 default is disabled; only opt-in consumers (tests or
    * hosts that explicitly set `ppgEnabled: true` in HybridEngineOptions)
    * will allocate them.
@@ -429,10 +480,30 @@ export function createFrameResources(
   // grid params from HybridLayeredStage.
   device.queue.writeBuffer(ddgiUboBuffer, 0, buildDDGIPlaceholderUBO().buffer);
 
-  // Sprint 9 — Per-pixel Welford variance buffer (RG32Float, r=mean g=M2).
-  // Allocated here; no compute pass writes to it in Sprint 9. Sprint 10a SVGF
-  // and the deferred sprint-9-walkaround-integration will wire the write path.
+  // Sprint 9 / 10a — Welford ping-pong + SVGF variance map + motion placeholder.
   const varianceBuffer = createVarianceBuffer(device, W, H);
+  const varianceBufferAux = createVarianceBuffer(device, W, H);
+  const svgfVarianceEstimateTexture = device.createTexture({
+    label: 'svgf-variance-estimate',
+    size: [W, H],
+    format: 'rg32float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const motionVectorTexture = device.createTexture({
+    label: 'motion-vectors-zero',
+    size: [W, H],
+    format: 'rg32float',
+    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const rowBytes = 8 * W;
+  const bytesPerRow = Math.max(256, Math.ceil(rowBytes / 256) * 256);
+  const motionZero = new Uint8Array(bytesPerRow * H);
+  device.queue.writeTexture(
+    { texture: motionVectorTexture },
+    motionZero,
+    { offset: 0, bytesPerRow },
+    { width: W, height: H, depthOrArrayLayers: 1 },
+  );
 
   // Sprint 11 — PPG buffers (opt-in via ppgEnabled, default: disabled).
   // No behavioural change for existing callers when ppgEnabled is false/unset.
@@ -461,6 +532,9 @@ export function createFrameResources(
     ddgiPlaceholderRg16f,
     ddgiUboBuffer,
     varianceBuffer,
+    varianceBufferAux,
+    svgfVarianceEstimateTexture,
+    motionVectorTexture,
     ...ppgExt,
   };
 }
@@ -484,7 +558,10 @@ export function destroyFrameResources(r: FrameResources): void {
   r.ddgiPlaceholderRgba16f.destroy();
   r.ddgiPlaceholderRg16f.destroy();
   r.ddgiUboBuffer.destroy();
-  r.varianceBuffer.destroy();  // Sprint 9 — Welford variance buffer
+  r.varianceBuffer.destroy();
+  r.varianceBufferAux.destroy();
+  r.svgfVarianceEstimateTexture.destroy();
+  r.motionVectorTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

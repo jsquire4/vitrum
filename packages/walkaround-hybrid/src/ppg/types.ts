@@ -129,6 +129,22 @@ export const PPG_CELL_BYTE_STRIDE = 32;
 export const PPG_LEAF_BYTE_STRIDE = 256;
 
 /**
+ * Single 16-byte GPU node for the PPG spatial kd-tree (see `buildPpgKdTree.ts`).
+ * Layout matches WGSL `struct PPGKdNode` in `ppgSample.wgsl.ts`.
+ */
+export const PPG_KD_NODE_BYTE_STRIDE = 16;
+
+/**
+ * High bit set ⇒ leaf in kd-tree `meta` field; low 31 bits = cell index.
+ */
+export const PPG_KD_LEAF_FLAG = 0x8000_0000;
+
+/**
+ * Upper bound on kd-tree node count for a full cell budget (complete binary-ish tree).
+ */
+export const PPG_KD_MAX_NODES = PPG_MAX_SPATIAL_CELLS * 2 + 8;
+
+/**
  * Options for `createPPGBuffers`. Matches the Sprint 11 integration spec.
  *
  * All fields optional — defaults match the Sprint 11 DoD values.

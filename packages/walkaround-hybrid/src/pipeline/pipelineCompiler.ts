@@ -15,8 +15,17 @@ import { RIS_WGSL } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_WGSL } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
-import { ATROUS_WGSL } from '@vitrum/shared-denoisers';
-import { TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
+import {
+  injectPpgBindingsIntoShadeWgsl,
+  injectPpgRecordBeforeHdrStore,
+} from '../shaders/shadePpgTrain.wgsl.js';
+import {
+  injectPpgGuideBounceIntoShadeWgsl,
+  injectPpgGuideDeclsIntoShadeWgsl,
+} from '../shaders/shadePpgGuide.wgsl.js';
+import { PPG_UPDATE_WGSL } from '../ppg/wgsl/ppgUpdate.wgsl.js';
+import { ATROUS_WGSL, SVGF_WGSL, TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
+import { WELFORD_TEMPORAL_WGSL } from '../shaders/welfordTemporal.wgsl.js';
 import { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from '../shaders/composite.wgsl.js';
 import {
   getFrameBindGroupLayout,
@@ -26,6 +35,7 @@ import {
   getAccumBindGroupLayout,
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
+  getHybridLayersBindGroupLayoutWithPpg,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -37,27 +47,62 @@ export interface CompiledPipelines {
   atrousPipeline: GPUComputePipeline;
   accumPipeline: GPUComputePipeline;
   compositePipeline: GPURenderPipeline;
+  denoiserMode: 'atrous' | 'svgf';
+  welfordPipeline?: GPUComputePipeline;
+  svgfVariancePipeline?: GPUComputePipeline;
+  svgfAtrousPipeline?: GPUComputePipeline;
+  /** Sprint 11 — path guiding training (shade writes samples; dispatch follows). */
+  ppgEnabled: boolean;
+  ppgUpdatePipeline?: GPUComputePipeline;
 }
 
 export async function compilePipelines(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
+  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'svgf'; ppgEnabled?: boolean },
 ): Promise<CompiledPipelines> {
+  const denoiserMode = opts?.denoiser ?? 'svgf';
+  const ppgOn = opts?.ppgEnabled === true;
   // Compile all shader modules (common WGSL is prepended to each ReSTIR pass).
   const risSM      = device.createShaderModule({ label: 'ris',      code: COMMON_WGSL + RIS_WGSL });
   const temporalSM = device.createShaderModule({ label: 'temporal', code: COMMON_WGSL + TEMPORAL_WGSL });
   const spatialSM  = device.createShaderModule({ label: 'spatial',  code: COMMON_WGSL + SPATIAL_WGSL });
-  const shadeSM    = device.createShaderModule({ label: 'shade',    code: COMMON_WGSL + SHADE_WGSL });
+  const shadeWgslBody = ppgOn
+    ? injectPpgRecordBeforeHdrStore(
+        injectPpgGuideBounceIntoShadeWgsl(
+          injectPpgGuideDeclsIntoShadeWgsl(
+            injectPpgBindingsIntoShadeWgsl(SHADE_WGSL),
+          ),
+        ),
+      )
+    : SHADE_WGSL;
+  const shadeSM    = device.createShaderModule({ label: 'shade',    code: COMMON_WGSL + shadeWgslBody });
   const atrousSM   = device.createShaderModule({ label: 'atrous',   code: COMMON_WGSL + ATROUS_WGSL });
   const compVertSM = device.createShaderModule({ label: 'comp-vert', code: COMPOSITE_VERT_WGSL });
   const compFragSM = device.createShaderModule({ label: 'comp-frag', code: COMPOSITE_FRAG_WGSL });
 
+  const ppgUpdateSM = ppgOn
+    ? device.createShaderModule({ label: 'ppg-update', code: COMMON_WGSL + PPG_UPDATE_WGSL })
+    : null;
+
   // Check for compile errors on every shader module before proceeding.
+  const welfordSM =
+    denoiserMode === 'svgf'
+      ? device.createShaderModule({ label: 'welford-temporal', code: COMMON_WGSL + WELFORD_TEMPORAL_WGSL })
+      : null;
+  const svgfSM =
+    denoiserMode === 'svgf'
+      ? device.createShaderModule({ label: 'svgf', code: SVGF_WGSL })
+      : null;
+
   const modules: [string, GPUShaderModule][] = [
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
+    ...(welfordSM ? [['welford', welfordSM] as [string, GPUShaderModule]] : []),
+    ...(svgfSM ? [['svgf', svgfSM] as [string, GPUShaderModule]] : []),
+    ...(ppgUpdateSM ? [['ppg-update', ppgUpdateSM] as [string, GPUShaderModule]] : []),
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
@@ -88,7 +133,9 @@ export async function compilePipelines(
       getFrameBindGroupLayout(device, bglCache),
       getSceneBindGroupLayout(device, bglCache),
       getUboBindGroupLayout(device, bglCache),
-      getHybridLayersBindGroupLayout(device, bglCache),
+      ppgOn
+        ? getHybridLayersBindGroupLayoutWithPpg(device, bglCache)
+        : getHybridLayersBindGroupLayout(device, bglCache),
     ],
   });
   const atrousLayout = device.createPipelineLayout({
@@ -115,6 +162,36 @@ export async function compilePipelines(
     compute: { module: atrousSM, entryPoint: 'atrousMain' },
   });
 
+  let welfordPipeline: GPUComputePipeline | undefined;
+  let svgfVariancePipeline: GPUComputePipeline | undefined;
+  let svgfAtrousPipeline: GPUComputePipeline | undefined;
+  if (denoiserMode === 'svgf' && welfordSM && svgfSM) {
+    welfordPipeline = await device.createComputePipelineAsync({
+      label: 'welford-temporal',
+      layout: 'auto',
+      compute: { module: welfordSM, entryPoint: 'welfordTemporalMain' },
+    });
+    svgfVariancePipeline = await device.createComputePipelineAsync({
+      label: 'svgf-variance',
+      layout: 'auto',
+      compute: { module: svgfSM, entryPoint: 'svgfVarianceMain' },
+    });
+    svgfAtrousPipeline = await device.createComputePipelineAsync({
+      label: 'svgf-atrous',
+      layout: 'auto',
+      compute: { module: svgfSM, entryPoint: 'svgfAtrousMain' },
+    });
+  }
+
+  let ppgUpdatePipeline: GPUComputePipeline | undefined;
+  if (ppgOn && ppgUpdateSM) {
+    ppgUpdatePipeline = await device.createComputePipelineAsync({
+      label: 'ppg-update',
+      layout: 'auto',
+      compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateKernel' },
+    });
+  }
+
   const accumSM = device.createShaderModule({ label: 'accum', code: TEMPORAL_ACCUM_WGSL });
   const accumPipeline = await device.createComputePipelineAsync({
     label: 'temporalAccum', layout: accumLayout,
@@ -134,7 +211,9 @@ export async function compilePipelines(
     primitive: { topology: 'triangle-list' },
   });
 
-  console.log('[ReSTIR] All pipelines compiled successfully');
+  if (opts?.verbose) {
+    console.log('[ReSTIR] All pipelines compiled successfully');
+  }
 
   return {
     risPipeline,
@@ -144,5 +223,13 @@ export async function compilePipelines(
     atrousPipeline,
     accumPipeline,
     compositePipeline,
+    denoiserMode,
+    ppgEnabled: ppgOn,
+    ...(welfordPipeline !== undefined &&
+    svgfVariancePipeline !== undefined &&
+    svgfAtrousPipeline !== undefined
+      ? { welfordPipeline, svgfVariancePipeline, svgfAtrousPipeline }
+      : {}),
+    ...(ppgUpdatePipeline !== undefined ? { ppgUpdatePipeline } : {}),
   };
 }

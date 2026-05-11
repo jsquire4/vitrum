@@ -19,6 +19,7 @@ import {
   packSVGFUniforms,
   packSVGFVarianceUniforms,
 } from '../src/svgfBindings.js';
+import { SVGF_FRAME_COUNT_INPUT_GUARD_MAX, SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT } from '../src/svgfConstants.js';
 
 // ── SVGF_WGSL content tests ──────────────────────────────────────────────────
 
@@ -39,6 +40,11 @@ describe('SVGF_WGSL', () => {
   it('declares @compute @workgroup_size(16, 16, 1) for both entry points', () => {
     const matches = [...SVGF_WGSL.matchAll(/@compute @workgroup_size\(16, 16, 1\)/g)];
     expect(matches.length).toBe(2);
+  });
+
+  it('injects temporal variance frame threshold matching svgfConstants', () => {
+    expect(SVGF_WGSL).toContain(`SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT}u`);
+    expect(SVGF_WGSL).toContain('if (frameCount < SVGF_TEMPORAL_VARIANCE_MIN_FRAMES)');
   });
 
   // Variance pass bindings
@@ -120,7 +126,7 @@ describe('SVGF_WGSL', () => {
 
   // Variance-guided behavior
   it('uses spatial 3×3 neighborhood for low frame counts', () => {
-    expect(SVGF_WGSL).toContain('frameCount < 4u');
+    expect(SVGF_WGSL).toContain('if (frameCount < SVGF_TEMPORAL_VARIANCE_MIN_FRAMES)');
   });
 
   it('falls back to Welford variance for stable temporal history', () => {
@@ -251,6 +257,13 @@ describe('packSVGFVarianceUniforms', () => {
     packSVGFVarianceUniforms({ frameCount: 0 }, buf);
     const view = new DataView(buf);
     expect(view.getUint32(0, true)).toBe(0);
+  });
+
+  it('saturates frameCount at SVGF_FRAME_COUNT_INPUT_GUARD_MAX', () => {
+    const buf = new ArrayBuffer(SVGF_VARIANCE_UNIFORMS_SIZE_BYTES);
+    packSVGFVarianceUniforms({ frameCount: SVGF_FRAME_COUNT_INPUT_GUARD_MAX + 9 }, buf);
+    const view = new DataView(buf);
+    expect(view.getUint32(0, true)).toBe(SVGF_FRAME_COUNT_INPUT_GUARD_MAX);
   });
 });
 

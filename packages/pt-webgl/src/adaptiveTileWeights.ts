@@ -17,6 +17,7 @@ import {
   Vector2,
   WebGLRenderTarget,
 } from 'three';
+import { ZERO_SAMPLE_COUNT_EPSILON } from './accumulationSampleEpsilon.js';
 
 const TILE_VARIANCE_VS = /* glsl */ `
 varying vec2 vUv;
@@ -58,8 +59,8 @@ void main() {
       vec2 p = base + ( vec2( float( dx ), float( dy ) ) + vec2( 0.5 ) ) / vec2( float( STEP ) ) * tileSize;
       ivec2 ip = ivec2( clamp( floor( p ), vec2( 0.0 ), uTexSize - vec2( 1.0 ) ) );
       vec4 t = texelFetch( uAccum, ip, 0 );
-      vec3 rgb = t.rgb / max( t.a, 1e-6 );
-      float L = lum( rgb );
+      float cnt = t.a;
+      float L = cnt > ${ZERO_SAMPLE_COUNT_EPSILON} ? lum( t.rgb / cnt ) : 0.0;
       mean += L;
       meanSq += L * L;
       n += 1.0;
@@ -134,6 +135,20 @@ export class TileVariancePass {
   }
 }
 
+/**
+ * Maps readRenderTargetPixels row index `py` (bottom row = 0) into the same linear
+ * tile index order used by PathTracingRenderer.tileRepeatFactors (`ty * tilesX + px`).
+ */
+export function linearTileIndexFromVarianceReadPixelsPy(
+  py: number,
+  px: number,
+  tilesX: number,
+  tilesY: number,
+): number {
+  const tyTopDown = tilesY - 1 - py;
+  return tyTopDown * tilesX + px;
+}
+
 function classifyVariances(variances: Float32Array, tileCount: number, out: Uint8Array): void {
   if (tileCount <= 0) return;
   const sorted = new Float32Array(tileCount);
@@ -185,8 +200,7 @@ export function computeAdaptiveTileRepeatFactors(
   for (let py = 0; py < tilesY; py += 1) {
     for (let px = 0; px < tilesX; px += 1) {
       const src = (py * tilesX + px) * 4;
-      const tyTopDown = tilesY - 1 - py;
-      variances[tyTopDown * tilesX + px] = buf[src] ?? 0;
+      variances[linearTileIndexFromVarianceReadPixelsPy(py, px, tilesX, tilesY)] = buf[src] ?? 0;
     }
   }
 

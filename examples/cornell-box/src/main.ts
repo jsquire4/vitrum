@@ -11,6 +11,12 @@ import type {
 import * as THREE from 'three';
 import { createPTEngine_WebGL2, readAccumulationRgbFloat } from '@vitrum/pt-webgl';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
+import {
+  HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE,
+  SVGF_DEFAULT_ATROUS_ITERATIONS,
+  SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
+  SVGF_MAX_ATROUS_ITERATIONS,
+} from '@vitrum/shared-denoisers';
 import { BilateralPreviewCanvas, writeTonemappedRgbToCanvas, type DenoiseDisplayMode } from './denoiseDisplay.js';
 
 declare global {
@@ -21,6 +27,9 @@ declare global {
   var VITRUM_MS_PER_SAMPLE: number | undefined;
   // eslint-disable-next-line no-var
   var VITRUM_CAPTURE_TELEMETRY: Record<string, unknown> | undefined;
+  /** Preferred screenshot target when capture runs after VITRUM_CAPTURE_READY (see adapter env override). */
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_CANVAS_SELECTOR: string | undefined;
 }
 
 function mat4FromThree(m: THREE.Matrix4): Mat4 {
@@ -41,15 +50,73 @@ interface CaptureConfig {
   /** Interactive resize cap (capture mode uses explicit width/height). */
   readonly maxInteractiveWidth: number;
   readonly maxInteractiveHeight: number;
+  /** Upper bound on render pixels (w×h) for VRAM / scheduler guardrail. */
+  readonly maxMegapixels: number;
   readonly denoiseDisplay: DenoiseDisplayMode;
   readonly oidnModelUrl: string | null;
+  /** σ for WebGPU luminance bilateral (`vitrumDisplay=wgsl`). */
+  readonly wgslSigma: number;
+  /** SVGF variance uniform `frameCount`; temporal Welford branch uses SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT from `@vitrum/shared-denoisers`. Aliases: `vitrumSvgfFrames`. Capped at SVGF_FRAME_COUNT_INPUT_GUARD_MAX. Without real `welfordMeanM2`, temporal variance sees zeros (demo only). */
+  readonly svgfFrameCount: number;
+  /** SVGF à-trous dispatch count (step widths 1…2^n). Clamped 1–SVGF_MAX_ATROUS_ITERATIONS in library and URL parser. Query: `vitrumSvgfAtrous`. */
+  readonly svgfAtrousIterations: number;
+  /** When false (`vitrumWebGpuShared=0`), each WebGPU denoise pass uses a throwaway device. */
+  readonly webGpuReuseSharedDevice: boolean;
   readonly pixelAdaptiveSampling: boolean;
   readonly pixelAdaptiveCadence: number;
+}
+
+function parsePositiveMegapixels(value: string | null, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function resolveScenarioId(raw: string): string {
+  const aliases: Record<string, string> = {
+    cornell: 'cornell-box',
+    glass: 'cornell-glass',
+    caustic: 'cornell-caustic',
+    spectral: 'cornell-spectral',
+    layered: 'cornell-layered',
+    sss: 'cornell-sss',
+    parity: 'cornell-parity',
+  };
+  return aliases[raw] ?? raw;
+}
+
+/** Shrinks [w,h] so w×h ≤ maxMegapixels·1e6 (aspect preserved). */
+function clampMegapixels(w: number, h: number, maxMegapixels: number): readonly [number, number] {
+  const maxPx = maxMegapixels * 1_000_000;
+  const px = w * h;
+  if (px <= maxPx || px <= 0) return [w, h] as const;
+  const s = Math.sqrt(maxPx / px);
+  return [Math.max(1, Math.floor(w * s)), Math.max(1, Math.floor(h * s))] as const;
+}
+
+function parsePositiveFloat(value: string | null, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function parsePositiveInt(value: string | null, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function parseNonNegativeInt(value: string | null, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+function clampInt(n: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, n));
+}
+
+/** À-trous iterations for SVGF (query `vitrumSvgfAtrous`); clamps to SVGF_MAX_ATROUS_ITERATIONS. */
+function parseSvgfAtrousIterations(value: string | null, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return clampInt(Math.floor(parsed), 1, SVGF_MAX_ATROUS_ITERATIONS);
 }
 
 const DEFAULT_MANUAL_SPP = 1024;
@@ -58,7 +125,14 @@ const SMOKE_SPP_THRESHOLD = 16;
 const DEFAULT_INTERACTIVE_MAX_W = 1920;
 const DEFAULT_INTERACTIVE_MAX_H = 1080;
 
-type InteractivePresetId = 'preview' | 'quality' | 'hero' | 'final4k';
+type InteractivePresetId =
+  | 'draft'
+  | 'preview'
+  | 'quality'
+  | 'hero'
+  | 'studio'
+  | 'final4k'
+  | 'overnight';
 
 interface InteractivePreset {
   readonly maxW: number;
@@ -69,10 +143,13 @@ interface InteractivePreset {
 }
 
 const INTERACTIVE_PRESETS: Record<InteractivePresetId, InteractivePreset> = {
+  draft: { maxW: 960, maxH: 540, spp: 128, bounces: 4, qualityMode: 'interactive' },
   preview: { maxW: 1280, maxH: 720, spp: 512, bounces: 6, qualityMode: 'interactive' },
   quality: { maxW: 1920, maxH: 1080, spp: 1024, bounces: 8, qualityMode: 'interactive' },
   hero: { maxW: 2560, maxH: 1440, spp: 512, bounces: 10, qualityMode: 'final' },
+  studio: { maxW: 2560, maxH: 1440, spp: 2048, bounces: 10, qualityMode: 'final' },
   final4k: { maxW: 3840, maxH: 2160, spp: 8192, bounces: 12, qualityMode: 'final' },
+  overnight: { maxW: 3840, maxH: 2160, spp: 16384, bounces: 14, qualityMode: 'final' },
 };
 
 function parseQualityMode(value: string | null, isCapture: boolean): PTEngineWebGL2QualityMode {
@@ -112,7 +189,7 @@ function getWebGLRendererLabel(renderer: THREE.WebGLRenderer): string {
 
 function parseDenoiseDisplay(params: URLSearchParams): DenoiseDisplayMode {
   const v = params.get('vitrumDisplay');
-  if (v === 'bilateral' || v === 'oidn') return v;
+  if (v === 'bilateral' || v === 'oidn' || v === 'wgsl' || v === 'svgf') return v;
   return 'raw';
 }
 
@@ -122,7 +199,10 @@ function parseCaptureConfig(): CaptureConfig {
   const causticStrategy =
     caustic === 'manifold-nee' || caustic === 'photon-map' ? caustic : 'none';
   const isCapture = params.has('vitrumScenario');
-  const scenarioId = params.get('vitrumScenario') ?? 'cornell-box';
+  const scenarioRaw = params.get('vitrumScenario');
+  const scenarioId = resolveScenarioId(
+    scenarioRaw != null && scenarioRaw.trim().length > 0 ? scenarioRaw.trim() : 'cornell-box',
+  );
   const presetParam = params.get('vitrumPreset');
   const preset: InteractivePreset | undefined =
     !isCapture && presetParam != null && presetParam in INTERACTIVE_PRESETS
@@ -154,8 +234,16 @@ function parseCaptureConfig(): CaptureConfig {
     qualityMode,
     maxInteractiveWidth: preset?.maxW ?? DEFAULT_INTERACTIVE_MAX_W,
     maxInteractiveHeight: preset?.maxH ?? DEFAULT_INTERACTIVE_MAX_H,
+    maxMegapixels: parsePositiveMegapixels(params.get('vitrumMaxMp'), 24),
     denoiseDisplay: parseDenoiseDisplay(params),
     oidnModelUrl: params.get('vitrumOidnModel'),
+    wgslSigma: parsePositiveFloat(params.get('vitrumWgslSigma'), HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE),
+    svgfFrameCount: Math.min(
+      parseNonNegativeInt(params.get('vitrumSvgfFrameCount') ?? params.get('vitrumSvgfFrames'), 0),
+      SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
+    ),
+    svgfAtrousIterations: parseSvgfAtrousIterations(params.get('vitrumSvgfAtrous'), SVGF_DEFAULT_ATROUS_ITERATIONS),
+    webGpuReuseSharedDevice: params.get('vitrumWebGpuShared') !== '0',
     // Opt-in: additive Σ/count + tile-variance repeats are still experimental in WebGL2.
     pixelAdaptiveSampling: !isCapture && params.get('vitrumAdaptive') === '1',
     pixelAdaptiveCadence: parsePositiveInt(params.get('vitrumAdaptiveCadence'), 4),
@@ -224,6 +312,13 @@ function buildCornellScene(config: CaptureConfig): THREE.Scene {
     thickness: 0.25,
   });
   applyScenarioMaterialTweaks(glass, config);
+  if (config.scenarioId.includes('glass')) {
+    glass.transmission = 0.93;
+    glass.roughness = 0.06;
+    glass.metalness = 0;
+    glass.thickness = 0.35;
+    glass.ior = 1.52;
+  }
 
   const mk = (geo: THREE.BufferGeometry, mat: THREE.MeshPhysicalMaterial, pos: Vec3, scale: Vec3) => {
     const mesh = new THREE.Mesh(geo, mat);
@@ -275,6 +370,7 @@ async function main(): Promise<void> {
   globalThis.VITRUM_CAPTURE_READY = false;
   globalThis.VITRUM_MS_PER_SAMPLE = undefined;
   globalThis.VITRUM_CAPTURE_TELEMETRY = undefined;
+  globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#c';
 
   if (!config.autoStart) {
     setStatus('Ready. Press Start WebGL render.');
@@ -337,9 +433,10 @@ async function main(): Promise<void> {
   function resize(): void {
     const displayW = config.isCapture ? config.width : window.innerWidth;
     const displayH = config.isCapture ? config.height : window.innerHeight;
-    const [w, h] = config.isCapture
+    const [w0, h0] = config.isCapture
       ? [displayW, displayH]
       : fitWithin(displayW, displayH, config.maxInteractiveWidth, config.maxInteractiveHeight);
+    const [w, h] = clampMegapixels(w0, h0, config.maxMegapixels);
     renderWidth = w;
     renderHeight = h;
     camera.aspect = w / h;
@@ -359,7 +456,51 @@ async function main(): Promise<void> {
     bilateral = new BilateralPreviewCanvas(denoiseCanvas);
   }
   let oidnStarted = false;
+  let wgslStarted = false;
+  let svgfStarted = false;
+  let oidnDisplaySucceeded = false;
+  let wgslDisplaySucceeded = false;
+  let svgfDisplaySucceeded = false;
   let lastDivideByAlpha = false;
+  /** Last converged frame output — async denoisers finalize capture using this. */
+  let convergedFrame: PTEngineWebGL2FrameOutput | null = null;
+
+  function updateCaptureCanvasHint(): void {
+    if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {
+      globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#denoise';
+      return;
+    }
+    if (config.denoiseDisplay === 'oidn' && oidnDisplaySucceeded && denoiseCanvas != null) {
+      globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#denoise';
+      return;
+    }
+    if (config.denoiseDisplay === 'wgsl' && wgslDisplaySucceeded && denoiseCanvas != null) {
+      globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#denoise';
+      return;
+    }
+    if (config.denoiseDisplay === 'svgf' && svgfDisplaySucceeded && denoiseCanvas != null) {
+      globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#denoise';
+      return;
+    }
+    globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#c';
+  }
+
+  function finalizeVitrumCapture(reason: string, out: PTEngineWebGL2FrameOutput): void {
+    if (globalThis.VITRUM_CAPTURE_READY === true) return;
+    globalThis.VITRUM_MS_PER_SAMPLE = (performance.now() - startMs) / Math.max(out.samplesAccumulated, 1);
+    globalThis.VITRUM_CAPTURE_TELEMETRY = {
+      ...out.telemetry,
+      msPerSample: globalThis.VITRUM_MS_PER_SAMPLE,
+      samplesAccumulated: out.samplesAccumulated,
+      denoiseDisplay: config.denoiseDisplay,
+      captureCanvasSelector: globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR ?? '#c',
+      captureFinalizeReason: reason,
+    };
+    globalThis.VITRUM_CAPTURE_READY = true;
+    console.info(
+      `[vitrum-capture] ready (${reason}) ${config.scenarioId} in ${globalThis.VITRUM_MS_PER_SAMPLE.toFixed(2)} ms/sample`,
+    );
+  }
 
   function loop(): void {
     if (frame === 0) {
@@ -392,12 +533,15 @@ async function main(): Promise<void> {
       : out.samplesAccumulated.toFixed(2);
     const telemetry = out.telemetry;
     lastDivideByAlpha = telemetry?.additiveAccumulation ?? false;
+    if (out.isConverged) {
+      convergedFrame = out;
+    }
 
     if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {
       canvas.style.visibility = 'hidden';
       denoiseCanvas.style.display = 'block';
       bilateral.render(engine.getAccumulationRenderTarget().texture as THREE.Texture, renderWidth, renderHeight);
-    } else if (config.denoiseDisplay !== 'oidn') {
+    } else if (config.denoiseDisplay !== 'oidn' && config.denoiseDisplay !== 'wgsl' && config.denoiseDisplay !== 'svgf') {
       canvas.style.visibility = 'visible';
       if (denoiseCanvas != null) denoiseCanvas.style.display = 'none';
     }
@@ -408,9 +552,11 @@ async function main(): Promise<void> {
       config.oidnModelUrl != null &&
       config.oidnModelUrl.length > 0 &&
       out.isConverged &&
-      !oidnStarted
+      !oidnStarted &&
+      convergedFrame != null
     ) {
       oidnStarted = true;
+      const capFrame = convergedFrame;
       void (async () => {
         try {
           const { denoiseFinal } = await import('@vitrum/shared-denoisers');
@@ -421,11 +567,95 @@ async function main(): Promise<void> {
             { modelUrl: config.oidnModelUrl! },
           );
           canvas.style.visibility = 'hidden';
+          denoiseCanvas.style.display = 'block';
           writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
+          oidnDisplaySucceeded = true;
+          updateCaptureCanvasHint();
+          finalizeVitrumCapture('oidn', capFrame);
         } catch (err) {
           console.warn('[vitrum-cornell] OIDN failed — install onnxruntime-web and supply vitrumOidnModel URL.', err);
           canvas.style.visibility = 'visible';
           oidnStarted = false;
+          oidnDisplaySucceeded = false;
+          updateCaptureCanvasHint();
+          finalizeVitrumCapture('oidn-failed', capFrame);
+        }
+      })();
+    }
+
+    if (
+      config.denoiseDisplay === 'wgsl' &&
+      denoiseCanvas != null &&
+      out.isConverged &&
+      !wgslStarted &&
+      convergedFrame != null
+    ) {
+      wgslStarted = true;
+      const capFrame = convergedFrame;
+      void (async () => {
+        try {
+          const { runHdrLuminanceBilateralWebGPU } = await import('@vitrum/shared-denoisers');
+          const rt = engine.getAccumulationRenderTarget();
+          const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
+          const dod = await runHdrLuminanceBilateralWebGPU({
+            rgb,
+            width: renderWidth,
+            height: renderHeight,
+            sigmaLuminance: config.wgslSigma,
+            reuseSharedWebGpuDevice: config.webGpuReuseSharedDevice,
+          });
+          canvas.style.visibility = 'hidden';
+          denoiseCanvas.style.display = 'block';
+          writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
+          wgslDisplaySucceeded = true;
+          updateCaptureCanvasHint();
+          finalizeVitrumCapture('wgsl-hdr-bilateral', capFrame);
+        } catch (err) {
+          console.warn('[vitrum-cornell] WebGPU HDR bilateral failed — raw canvas unchanged.', err);
+          canvas.style.visibility = 'visible';
+          wgslStarted = false;
+          wgslDisplaySucceeded = false;
+          updateCaptureCanvasHint();
+          finalizeVitrumCapture('wgsl-failed', capFrame);
+        }
+      })();
+    }
+
+    if (
+      config.denoiseDisplay === 'svgf' &&
+      denoiseCanvas != null &&
+      out.isConverged &&
+      !svgfStarted &&
+      convergedFrame != null
+    ) {
+      svgfStarted = true;
+      const capFrame = convergedFrame;
+      void (async () => {
+        try {
+          const { runSvgfWebGPU } = await import('@vitrum/shared-denoisers');
+          const rt = engine.getAccumulationRenderTarget();
+          const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
+          const dod = await runSvgfWebGPU({
+            rgb,
+            width: renderWidth,
+            height: renderHeight,
+            frameCount: config.svgfFrameCount,
+            atrousIterations: config.svgfAtrousIterations,
+            reuseSharedWebGpuDevice: config.webGpuReuseSharedDevice,
+          });
+          canvas.style.visibility = 'hidden';
+          denoiseCanvas.style.display = 'block';
+          writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
+          svgfDisplaySucceeded = true;
+          updateCaptureCanvasHint();
+          finalizeVitrumCapture('svgf', capFrame);
+        } catch (err) {
+          console.warn('[vitrum-cornell] SVGF WebGPU failed — raw canvas unchanged.', err);
+          canvas.style.visibility = 'visible';
+          svgfStarted = false;
+          svgfDisplaySucceeded = false;
+          updateCaptureCanvasHint();
+          finalizeVitrumCapture('svgf-failed', capFrame);
         }
       })();
     }
@@ -438,8 +668,11 @@ async function main(): Promise<void> {
         `${telemetry.samplesPerFrame}spf`,
         `${telemetry.tileSize}x${telemetry.tileSize} tiles`,
         telemetry.sppPerSecond == null ? null : `${telemetry.sppPerSecond.toFixed(1)} spp/s`,
+        telemetry.estimatedRenderTargetBytes == null
+          ? null
+          : `~${(telemetry.estimatedRenderTargetBytes / (1024 * 1024)).toFixed(0)} MiB RT`,
         telemetry.additiveAccumulation ? 'sum/count HDR' : null,
-        telemetry.pixelAdaptiveSampling ? 'pixel-adaptive tiles' : null,
+        telemetry.pixelAdaptiveSampling ? 'pixel-adaptive sum/count (experimental)' : null,
         telemetry.guardrail,
       ].filter(Boolean).join(' — ');
     const completionLabel = samplesTarget <= SMOKE_SPP_THRESHOLD
@@ -448,15 +681,20 @@ async function main(): Promise<void> {
     setStatus(`${config.scenarioId} (${config.causticStrategy}, ${config.qualityMode}) SPP: ${displayedSpp} / ${samplesTarget}${out.isConverged ? completionLabel : ''} — ${perfLabel}`);
     if (!out.isConverged) {
       requestAnimationFrame(loop);
-    } else {
-      globalThis.VITRUM_MS_PER_SAMPLE = (performance.now() - startMs) / Math.max(out.samplesAccumulated, 1);
-      globalThis.VITRUM_CAPTURE_TELEMETRY = {
-        ...telemetry,
-        msPerSample: globalThis.VITRUM_MS_PER_SAMPLE,
-        samplesAccumulated: out.samplesAccumulated,
-      };
-      globalThis.VITRUM_CAPTURE_READY = true;
-      console.info(`[vitrum-capture] converged ${config.scenarioId} in ${globalThis.VITRUM_MS_PER_SAMPLE.toFixed(2)} ms/sample`);
+      return;
+    }
+
+    updateCaptureCanvasHint();
+
+    const awaitsPostDenoise =
+      (config.denoiseDisplay === 'oidn' &&
+        config.oidnModelUrl != null &&
+        config.oidnModelUrl.length > 0) ||
+      config.denoiseDisplay === 'wgsl' ||
+      config.denoiseDisplay === 'svgf';
+
+    if (!awaitsPostDenoise) {
+      finalizeVitrumCapture('path-traced', out);
     }
   }
 

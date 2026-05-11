@@ -17,6 +17,25 @@ import { convertMesh } from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
 
+function emissiveMeshAreaEmitter(mesh: THREE.Mesh): SceneEmitter | null {
+  const rawMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  if (rawMat == null) return null;
+  const asStd = rawMat as THREE.MeshStandardMaterial & { emissiveIntensity?: number };
+  if (asStd.emissive == null) return null;
+  const ei = asStd.emissiveIntensity ?? 1;
+  const em = asStd.emissive;
+  const lum = (0.2126 * em.r + 0.7152 * em.g + 0.0722 * em.b) * ei;
+  if (lum < 1e-7) return null;
+  return {
+    kind: 'mesh-area',
+    id: `mesh-emissive-${mesh.uuid}`,
+    meshId: mesh.uuid,
+    color: [em.r, em.g, em.b],
+    intensity: ei,
+    castShadow: true,
+  };
+}
+
 export { VITRUM_SPECTRAL_EXTENSION_KEY } from './spectral.js';
 export { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from './vitrumSceneToThree.js';
 
@@ -73,9 +92,22 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
           `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are added per Phase 6 sprint.`,
         );
       }
-      primitives.push(convertMesh(mesh));
-
-      // Emissive meshes as MeshAreaEmitters are not yet detected; add as a future enhancement.
+      const prim = convertMesh(mesh);
+      const meshEmitter = emissiveMeshAreaEmitter(mesh);
+      if (meshEmitter != null) {
+        emitters.push(meshEmitter);
+        const m = prim.material;
+        primitives.push({
+          ...prim,
+          material: {
+            ...m,
+            emissive: [0, 0, 0],
+            emissiveIntensity: 0,
+          },
+        });
+        return;
+      }
+      primitives.push(prim);
       return;
     }
 

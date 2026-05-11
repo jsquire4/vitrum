@@ -163,6 +163,12 @@ export interface ThinFilmStack {
  *  without polluting the core type (e.g., normalMap-perturbed shadow ray
  *  parameters, the Phase 4 contribution).
  *
+ *  **Mutability:** primitive and emitter types expose `readonly material:
+ *  Material` to mean the *slot* is not reassigned through the contract API, not
+ *  that the `Material` object is deeply immutable. Hosts may reuse one
+ *  `Material` across many primitives and mutate fields between frames when the
+ *  binding layer or engine snapshots propagate those changes.
+ *
  *  Texture handles are opaque to core. The scene-binding layer (e.g.,
  *  @vitrum/three-bindings) is responsible for converting host textures to
  *  whatever format the backend expects (typed arrays for upload, GPU texture

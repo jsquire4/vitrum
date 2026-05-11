@@ -1,3 +1,6 @@
+/** Verdict from adapter info — see {@link classifyAdapter}. */
+export type WgpuAdapterKind = 'hardware' | 'swiftshader' | 'unknown';
+
 export interface WgpuProbeResult {
   supported: boolean;
   vendor?: string;
@@ -5,11 +8,13 @@ export interface WgpuProbeResult {
   features?: string[];
   limits?: Record<string, number>;
   /**
-   * True iff the adapter is real hardware (NVIDIA / AMD / Intel / Apple).
-   * False when WebGPU falls back to SwiftShader (`vendor === 'google'`
-   * AND `architecture === 'swiftshader'`) — software rasterizer that
-   * silently returns wrong perf/visual results.  Option F of the
-   * hardware-GPU validation spec gates against this.
+   * Classified from `adapter.info` (with empty vendor/arch treated as unknown).
+   */
+  adapterKind?: WgpuAdapterKind;
+  /**
+   * @deprecated Prefer {@link adapterKind}. When present, `true` means not
+   * SwiftShader (`adapterKind !== 'swiftshader'`), including the fingerprinting
+   * `unknown` case where the real GPU is still treated as usable.
    */
   isHardwareGpu?: boolean;
 }
@@ -43,7 +48,11 @@ export function isSwiftShaderAdapter(info: {
  *                     creation. Treat as unknown rather than falsely flagging false —
  *                     the post-init re-derivation from `backend.adapter` settles it.
  */
-type HardwareVerdict = 'hardware' | 'swiftshader' | 'unknown';
+function classifyAdapter(info: { vendor: string; architecture: string }): WgpuAdapterKind {
+  if (isSwiftShaderAdapter(info)) return 'swiftshader';
+  if (info.vendor.length === 0 && info.architecture.length === 0) return 'unknown';
+  return 'hardware';
+}
 
 /**
  * Read `adapter.info` with up to N retries (8ms each), tolerating Chromium
@@ -52,12 +61,11 @@ type HardwareVerdict = 'hardware' | 'swiftshader' | 'unknown';
  * `adapter.info` is missing entirely.
  */
 async function readAdapterInfo(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  adapter: any,
+  adapter: GPUAdapter,
   retries = 4,
 ): Promise<{ vendor: string; architecture: string }> {
   for (let i = 0; i <= retries; i++) {
-    const info = adapter?.info;
+    const info = adapter.info;
     const vendor = ((info?.vendor ?? '') as string).toString();
     const architecture = ((info?.architecture ?? '') as string).toString();
     if (vendor.length > 0 || architecture.length > 0) {
@@ -68,9 +76,12 @@ async function readAdapterInfo(
   }
   // Last-resort fallback: `requestAdapterInfo()` (deprecated; may exist on
   // older Chromiums where the synchronous `.info` getter was missing).
-  if (typeof adapter?.requestAdapterInfo === 'function') {
+  const legacyAdapter = adapter as GPUAdapter & {
+    requestAdapterInfo?: () => Promise<GPUAdapterInfo>;
+  };
+  if (typeof legacyAdapter.requestAdapterInfo === 'function') {
     try {
-      const info = await adapter.requestAdapterInfo();
+      const info = await legacyAdapter.requestAdapterInfo();
       return {
         vendor: (info?.vendor ?? '').toString(),
         architecture: (info?.architecture ?? '').toString(),
@@ -80,17 +91,6 @@ async function readAdapterInfo(
     }
   }
   return { vendor: '', architecture: '' };
-}
-
-/**
- * Classify adapter info into one of three verdicts. Empty info → 'unknown'
- * (NOT 'swiftshader' and NOT 'hardware') so callers can defer the decision
- * to a post-init re-read of `backend.adapter`.
- */
-function classifyAdapter(info: { vendor: string; architecture: string }): HardwareVerdict {
-  if (isSwiftShaderAdapter(info)) return 'swiftshader';
-  if (info.vendor.length === 0 && info.architecture.length === 0) return 'unknown';
-  return 'hardware';
 }
 
 /**
@@ -118,18 +118,15 @@ export async function probeWebGPU(): Promise<WgpuProbeResult> {
   if (!isWebGPUSupported()) return { supported: false };
 
   try {
-    const gpu = navigator.gpu as GPURequestAdapterOptions extends never
-      ? never
-      : typeof navigator.gpu;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const adapter = await (gpu as any).requestAdapter({
+    const adapter = await navigator.gpu.requestAdapter({
       powerPreference: 'high-performance',
     });
     if (!adapter) return { supported: false };
 
     const limits: Record<string, number> = {};
-    for (const key of Object.keys(adapter.limits)) {
-      const val = (adapter.limits as Record<string, unknown>)[key];
+    const limitsRecord = adapter.limits as unknown as Record<string, unknown>;
+    for (const key of Object.keys(limitsRecord)) {
+      const val = limitsRecord[key];
       if (typeof val === 'number') limits[key] = val;
     }
 
@@ -138,16 +135,14 @@ export async function probeWebGPU(): Promise<WgpuProbeResult> {
     // a follow-up frame). The retry handles that race; falsely flagging
     // empty info as `isHardwareGpu: false` was the bug fixed in this revision.
     const { vendor, architecture } = await readAdapterInfo(adapter);
-    const verdict = classifyAdapter({ vendor, architecture });
-    // Treat 'unknown' as hardware-undetermined: the spike caller (test suite)
-    // currently expects a boolean, so map unknown→true (do not falsely refuse
-    // a likely-real GPU). The mount-time gate in StudioScene's gl factory
-    // re-derives the verdict from `backend.adapter` post-init for the
-    // authoritative answer.
-    const isHardwareGpu = verdict !== 'swiftshader';
+    const adapterKind = classifyAdapter({ vendor, architecture });
+    // Treat 'unknown' as hardware-undetermined: legacy boolean and mount gates
+    // map unknown→true (do not falsely refuse a likely-real GPU).
+    const isHardwareGpu = adapterKind !== 'swiftshader';
 
     return {
       supported: true,
+      adapterKind,
       // exactOptionalPropertyTypes: spread absent-when-empty to avoid
       // assigning `undefined` to optional string fields explicitly.
       ...(vendor ? { vendor } : {}),

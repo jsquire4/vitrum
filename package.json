@@ -16,6 +16,8 @@
     "lint": "npm run lint --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present",
     "fork-shader-smoke": "node ./scripts/run-fork-shader-smoke.mjs",
+    "benchmark:gap-closure": "npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner",
+    "verify:mechanical": "npm run typecheck && npm test && npm run fork-shader-smoke",
     "release:dry-run": "npm pack --dry-run --workspaces --if-present"
   },
   "devDependencies": {

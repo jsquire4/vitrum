@@ -15,8 +15,11 @@
  *   - No GPU verification available in the current build environment; the class
  *     is authored for correctness and exports. Integration into HybridEngine's
  *     renderFrame is deferred — see `plan/sprint-13-walkaround-integration.md`.
- *   - All intermediate tensors (feature maps between layers) are allocated as
- *     plain `GPUBuffer` with STORAGE | COPY_SRC | COPY_DST usage.
+ *   - Intermediate tensors referenced as layer outputs are registered during
+ *     `initialize()`, but buffers are created only once you populate them (this
+ *     scaffold requires every produced tensor—including intermediates—to appear
+ *     in the `outputs` map passed to `run()`, or reuse a GPUBuffer you wired
+ *     manually). No automatic sizing/allocation occurs inside `run()`.
  *   - Layer pipelines are compiled lazily in `initialize()` and cached.
  *
  * Supported layer kinds and their WGSL entry points:
@@ -123,6 +126,8 @@ export class InferenceGraph {
   private _layers: CompiledLayer[] = [];
   /** Whether initialize() has completed. */
   private _ready = false;
+  /** One bind group per layer; reused while pipeline + buffer bindings unchanged. */
+  private _cachedBindGroups: Array<GPUBindGroup | undefined> = [];
 
   constructor(spec: InferenceGraphSpec, weights: ModelWeights) {
     this._spec    = spec;
@@ -144,6 +149,8 @@ export class InferenceGraph {
    */
   async initialize(device: GPUDevice): Promise<void> {
     if (this._ready) return;
+
+    this._cachedBindGroups = [];
 
     // Compile one pipeline per unique layer kind.
     const moduleCache = new Map<string, GPUShaderModule>();
@@ -201,8 +208,7 @@ export class InferenceGraph {
 
       // Register intermediate output tensor.
       if (!this._tensors.has(layer.output)) {
-        // Element count is determined at dispatch time when input dimensions are
-        // known. Store a placeholder; allocate lazily in run().
+      // Dimensions for intermediate buffers — host supplies concrete GPUBuffers via `outputs` in run().
         this._tensors.set(layer.output, { elementCount: 0, buffer: null });
       }
     }
@@ -228,6 +234,17 @@ export class InferenceGraph {
   ): void {
     if (!this._ready) {
       throw new Error('[InferenceGraph] run() called before initialize().');
+    }
+
+    for (const name of this._spec.inputTensors) {
+      if (!inputs.has(name)) {
+        throw new Error(`[InferenceGraph] inputs map missing required tensor "${name}".`);
+      }
+    }
+    for (const name of this._spec.outputTensors) {
+      if (!outputs.has(name)) {
+        throw new Error(`[InferenceGraph] outputs map missing required tensor "${name}".`);
+      }
     }
 
     // Resolve named buffers: inputs, then intermediates, then outputs.
@@ -284,11 +301,15 @@ export class InferenceGraph {
         });
       }
 
-      const bg = device.createBindGroup({
-        label:   `neural/bg/${layer.output}`,
-        layout:  compiled.pipeline.getBindGroupLayout(0),
-        entries,
-      });
+      const bg =
+        this._cachedBindGroups[i] ??
+        device.createBindGroup({
+          label: `neural/bg/${layer.output}`,
+          layout: compiled.pipeline.getBindGroupLayout(0),
+          entries,
+        });
+      this._cachedBindGroups[i] = bg;
+
       pass.setBindGroup(0, bg);
 
       // Workgroup dispatch: spatial layers use (ceil(W/8), ceil(H/8), 1);
@@ -317,6 +338,7 @@ export class InferenceGraph {
     }
     this._layers  = [];
     this._tensors = new Map();
+    this._cachedBindGroups = [];
     this._ready   = false;
   }
 

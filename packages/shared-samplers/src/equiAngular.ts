@@ -56,6 +56,22 @@ export interface EquiAngularSample {
 }
 
 /**
+ * Optional tuning for {@link sampleEquiAngular}.
+ */
+export interface EquiAngularOptions {
+  /**
+   * Upper ray parameter for angular extent (maps to θ_max via atan2).
+   * Default: 1e6 (caller should still clip to scene bounds).
+   */
+  readonly sceneTMax?: number;
+  /**
+   * When the light lies on the ray (D≈0), sample t uniformly on [0, L].
+   * Default: 100 scene units.
+   */
+  readonly degenerateFallbackLength?: number;
+}
+
+/**
  * Sample a scatter distance along the ray using equi-angular sampling toward
  * a point light.
  *
@@ -69,6 +85,7 @@ export interface EquiAngularSample {
  * @param rayOrigin - World-space ray origin.
  * @param rayDir    - World-space ray direction (unit vector).
  * @param lightPos  - World-space position of the point light.
+ * @param opts      - Optional `sceneTMax` / `degenerateFallbackLength`.
  * @returns         Sampled (t, pdf) pair.
  */
 export function sampleEquiAngular(
@@ -76,7 +93,10 @@ export function sampleEquiAngular(
   rayOrigin: readonly [number, number, number],
   rayDir: readonly [number, number, number],
   lightPos: readonly [number, number, number],
+  opts?: EquiAngularOptions,
 ): EquiAngularSample {
+  const sceneTMax = opts?.sceneTMax ?? 1e6;
+  const degenerateFallbackLength = opts?.degenerateFallbackLength ?? 100;
   // Step 1: project light onto ray
   const deltaX = lightPos[0] - rayOrigin[0];
   const deltaY = lightPos[1] - rayOrigin[1];
@@ -91,18 +111,16 @@ export function sampleEquiAngular(
   const perpZ = deltaZ - tClosest * rayDir[2];
   const D = Math.sqrt(perpX * perpX + perpY * perpY + perpZ * perpZ);
 
-  // Degenerate: light is on the ray.  Fall back to uniform sampling from t=0
-  // to a fixed range of 100 scene units.
+  // Degenerate: light is on the ray.  Fall back to uniform sampling on [0, L].
   if (D < 1e-6) {
-    const tFallback = u * 100;
-    return { t: tFallback, pdf: 1 / 100 };
+    const L = degenerateFallbackLength;
+    const tFallback = u * L;
+    return { t: tFallback, pdf: 1 / L };
   }
 
-  // Step 3: angular extents.  We sample from t=0 to a large t_max (1e6).
-  // In practice the caller clips to the actual scene-hit distance.
-  const T_MAX = 1e6;
+  // Step 3: angular extents. Sample from t=0 to sceneTMax along the ray.
   const thetaMin = Math.atan2(-tClosest, D);
-  const thetaMax = Math.atan2(T_MAX - tClosest, D);
+  const thetaMax = Math.atan2(sceneTMax - tClosest, D);
   const thetaRange = thetaMax - thetaMin;
 
   // Step 4: uniform sample in angular space

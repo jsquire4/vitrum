@@ -5,8 +5,8 @@
  * (`./bvhCommon.ts`). The class shell remains in shared-bvh for one reason
  * the per-frame DDGI loop depends on:
  *
- *   - Geometry-version dirty tracking — `update(scene)` walks the visible
- *     meshes once per frame and only rebuilds the BVH when the cumulative
+ *   - Geometry-version dirty tracking — `update(scene)` walks the same
+ *     **visible** mesh set as `buildSceneBVH` and only rebuilds the BVH when
  *     `BufferAttribute.version + mesh.id` sum changes. The shared core is
  *     a pure builder (no dirty cache) by design — see
  *     `useSceneBVH` in the host app for the canonical React-side debounce;
@@ -53,24 +53,35 @@ const DDGI_MESH_FILTER = (obj: THREE.Object3D): boolean => {
   return true;
 };
 
+export interface SceneBvhOptions {
+  /**
+   * Invoked when a BVH rebuild takes longer than 50ms (same threshold as before).
+   * When omitted, a console.warn is emitted (legacy behavior).
+   */
+  readonly onSlowRebuild?: (elapsedMs: number) => void;
+}
+
 export class SceneBvh {
   private _buffers: SceneBvhBuffers | null = null;
   /** Cached geometry version for dirty-checking. */
   private _lastGeometryVersion = -1;
+
+  constructor(private readonly opts: SceneBvhOptions = {}) {}
 
   get buffers(): SceneBvhBuffers | null {
     return this._buffers;
   }
 
   /**
-   * Walk `scene`, collect visible meshes, rebuild BVH if dirty.
+   * Walk `scene`, collect **visible** meshes (same as `buildSceneBVH`'s
+   * `traverseVisible`), rebuild BVH if dirty.
    */
   update(scene: THREE.Scene): void {
     // Collect filtered meshes once for the dirty check. The shared core
     // re-walks scene roots itself, so this list is only used to compute
     // the geometry-version hash — keeping the dirty cache cheap.
     const meshes: THREE.Mesh[] = [];
-    scene.traverse((obj) => {
+    scene.traverseVisible((obj) => {
       if (DDGI_MESH_FILTER(obj)) meshes.push(obj as THREE.Mesh);
     });
 
@@ -107,7 +118,11 @@ export class SceneBvh {
 
     const elapsed = performance.now() - t0;
     if (elapsed > 50) {
-      console.warn(`[DDGI SceneBvh] BVH rebuild took ${elapsed.toFixed(0)}ms (>50ms threshold)`);
+      if (this.opts.onSlowRebuild) {
+        this.opts.onSlowRebuild(elapsed);
+      } else {
+        console.warn(`[DDGI SceneBvh] BVH rebuild took ${elapsed.toFixed(0)}ms (>50ms threshold)`);
+      }
     }
 
     // Forward the shared-core result fields 1:1 — no rename adaptor.

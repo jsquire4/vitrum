@@ -2,11 +2,11 @@
 
 **Stability:** pre-alpha — `HybridEngine` and shader/pipeline APIs may change until the extraction milestones in `plan/generalized-library-milestones.md` are closed.
 
-WebGPU layered DDGI + RC + ReSTIR DI engine.
+WebGPU **ReSTIR DI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass. **Radiance Cascades (RC)** are implemented under `src/rc/` for standalone dispatch and material-wrapper flows; composition back into `HybridEngine`’s shade pass is tracked (see `HybridEngine.ts` file header and [plan/walkaround-without-three.md](../../plan/walkaround-without-three.md)).
 
 Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **DDGI** (Dynamic Diffuse Global Illumination) — probe-atlas irradiance, updated via compute each frame.
-- **RC** (Radiance Cascades) — multi-resolution cascade GI for the standalone walkaround engine path.
+- **RC** (Radiance Cascades) — see `src/rc/` for cascade compute and TSL hooks; not currently added to the `HybridEngine` combined shading sum.
 - **ReSTIR DI** (Reservoir-based Spatiotemporal Importance Resampling) — direct illumination with temporal + spatial reuse.
 
 ## Peer dependencies

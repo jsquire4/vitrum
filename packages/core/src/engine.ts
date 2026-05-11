@@ -30,6 +30,8 @@ export type EngineState =
   | 'initializing'
   | 'ready'
   | 'paused'
+  /** Unrecoverable init/runtime failure — GPU resources torn down; recreate the engine. */
+  | 'error'
   | 'disposed';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -147,8 +149,9 @@ export interface Engine {
 
   /** Free all engine-owned GPU resources. The device handle remains valid;
    *  the host can dispose the device separately if it owns the device's
-   *  lifetime. After dispose, the engine state is 'disposed' and no method
-   *  except `state` and `capabilities` is valid. */
+   *  lifetime. After dispose, the engine state is `'disposed'` and no method
+   *  except `state` and `capabilities` is valid. For engines that surfaced
+   *  `'error'`, callers should dispose before recreating. */
   dispose(): void;
 }
 

@@ -28,22 +28,22 @@ fn uniformSphere(u: vec2f) -> vec3f {
   return vec3f(sinT * cos(phi), sinT * sin(phi), cosT);
 }
 
+// Rodrigues rotation: angleAxis.xyz = axis * angle(radians).
+fn rotateAngleAxis(v: vec3f, angleAxis: vec3f) -> vec3f {
+  let angle = length(angleAxis);
+  if (angle < 1e-6) { return v; }
+  let axis  = angleAxis / angle;
+  let cosA  = cos(angle);
+  let sinA  = sin(angle);
+  return v * cosA + cross(axis, v) * sinA + axis * dot(axis, v) * (1.0 - cosA);
+}
+
 // Stratified sphere direction for ray index i out of numSamples, with
 // an extra per-frame golden-ratio rotation applied.
 fn ddgiRayDirection(i: u32, numSamples: u32, randomRotation: vec3f) -> vec3f {
   let uv  = hammersleyUniform(i, numSamples);
   let dir = uniformSphere(uv);
-
-  // Apply Rodrigues rotation by the per-frame randomRotation vector.
-  // randomRotation.xyz encodes an angle-axis: length = angle (radians),
-  // direction = axis. Using a simple rotation matrix here for clarity.
-  let angle = length(randomRotation);
-  if (angle < 1e-6) { return dir; }
-  let axis  = randomRotation / angle;
-  let cosA  = cos(angle);
-  let sinA  = sin(angle);
-  // Rodrigues formula: v_rot = v*cosA + cross(axis,v)*sinA + axis*dot(axis,v)*(1-cosA)
-  return dir * cosA + cross(axis, dir) * sinA + axis * dot(axis, dir) * (1.0 - cosA);
+  return rotateAngleAxis(dir, randomRotation);
 }
 
 `;

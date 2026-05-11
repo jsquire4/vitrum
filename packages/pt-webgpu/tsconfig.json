@@ -4,7 +4,8 @@
     "outDir": "dist",
     "noEmit": true,
     "paths": {
-      "@vitrum/core": ["../core/src/index.ts"]
+      "@vitrum/core": ["../core/src/index.ts"],
+      "@vitrum/shared-samplers": ["../shared-samplers/src/index.ts"]
     }
   },
   "include": ["src"]

@@ -59,10 +59,8 @@ export function upgradeToNodeMaterial(
   // walks own + inherited enumerable properties. Replicate exactly so
   // transmission, ior, clearcoat, sheen, normalScale, emissive, color,
   // map, etc. all transfer.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const src = mat as any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dst = nodeMat as any;
+  const src = mat as unknown as Record<string, unknown>;
+  const dst = nodeMat as unknown as Record<string, unknown>;
   for (const key in src) {
     dst[key] = src[key];
   }

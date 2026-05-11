@@ -325,3 +325,15 @@ await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
 
 console.log(`Wrote ${outputPath}`);
+
+const strict = process.env.VITRUM_STRICT_GAP_CLOSURE === '1';
+if (strict) {
+  const bad = report.results.filter((r) => r.passFail !== 'PASS');
+  if (bad.length > 0) {
+    console.error(
+      `[gap-closure] VITRUM_STRICT_GAP_CLOSURE=1: ${bad.length} scenario(s) not PASS:`,
+      bad.map((r) => `${r.scenarioId}:${r.passFail}`).join(', '),
+    );
+    process.exit(1);
+  }
+}

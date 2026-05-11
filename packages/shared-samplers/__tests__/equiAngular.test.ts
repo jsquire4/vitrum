@@ -18,6 +18,24 @@ type Vec3 = readonly [number, number, number];
 const ORIGIN: Vec3 = [0, 0, 0];
 const DIR_Z: Vec3 = [0, 0, 1];
 
+describe('sampleEquiAngular — options', () => {
+  it('respects sceneTMax as angular upper bound (u=1 → t ≈ sceneTMax)', () => {
+    const lightPos: Vec3 = [0, 2, 10];
+    const sceneTMax = 42;
+    const { t } = sampleEquiAngular(0.999, ORIGIN, DIR_Z, lightPos, { sceneTMax });
+    expect(t).toBeGreaterThan(0);
+    expect(t).toBeLessThanOrEqual(sceneTMax * 1.01);
+  });
+
+  it('uses degenerateFallbackLength when the light lies on the ray', () => {
+    const lightOnRay: Vec3 = [0, 0, 10];
+    const L = 33;
+    const { t, pdf } = sampleEquiAngular(0.5, ORIGIN, DIR_Z, lightOnRay, { degenerateFallbackLength: L });
+    expect(t).toBeCloseTo(L * 0.5, 6);
+    expect(pdf).toBeCloseTo(1 / L, 6);
+  });
+});
+
 // ── Basic invariants ──────────────────────────────────────────────────────────
 
 describe('sampleEquiAngular — basic invariants', () => {

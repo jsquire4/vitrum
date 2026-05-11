@@ -9,8 +9,8 @@
 
 import type {
   Scene as VitrumScene,
-  ScenePrimitive,
   SceneEmitter,
+  ScenePrimitive,
   MeshPrimitive,
   Material as VitrumMaterial,
   NoneEnvironment,
@@ -42,16 +42,21 @@ function luminance(color: Vec3, intensity: number): number {
   return (0.2126 * color[0] + 0.7152 * color[1] + 0.0722 * color[2]) * intensity;
 }
 
-function vitrumMaterialToThree(m: VitrumMaterial): MeshPhysicalMaterial {
+/** Additive diffuse emission from `mesh-area` emitters referencing this mesh (`color * intensity`). */
+function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysicalMaterial {
   const color = new Color(m.baseColor[0], m.baseColor[1], m.baseColor[2]);
+  const baseIntensity = m.emissiveIntensity ?? 1;
+  const ba = meshAreaRgb ?? [0, 0, 0];
+  const ei = Math.max(baseIntensity, 1e-8);
+  const er = (m.emissive?.[0] ?? 0) * ei + ba[0];
+  const eg = (m.emissive?.[1] ?? 0) * ei + ba[1];
+  const eb = (m.emissive?.[2] ?? 0) * ei + ba[2];
   const mat = new MeshPhysicalMaterial({
     color,
     roughness: m.roughness,
     metalness: m.metallic,
-    emissive: m.emissive
-      ? new Color(m.emissive[0], m.emissive[1], m.emissive[2])
-      : new Color(0, 0, 0),
-    emissiveIntensity: m.emissiveIntensity ?? 1,
+    emissive: new Color(er, eg, eb),
+    emissiveIntensity: 1,
     side: DoubleSide,
   });
   if (m.transmission != null && m.transmission > 0) {
@@ -121,14 +126,14 @@ function isTexture(x: unknown): x is Texture {
   return x != null && typeof x === 'object' && 'isTexture' in x && (x as Texture).isTexture === true;
 }
 
-function meshPrimitiveToThree(p: MeshPrimitive): Mesh {
+function meshPrimitiveToThree(p: MeshPrimitive, meshAreaRadianceRgb?: Vec3): Mesh {
   const geo = new BufferGeometry();
   geo.setAttribute('position', new BufferAttribute(p.positions, 3));
   geo.setAttribute('normal', new BufferAttribute(p.normals, 3));
   if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
   if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
   if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
-  const mat = vitrumMaterialToThree(p.material);
+  const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb);
   const mesh = new Mesh(geo, mat);
   mesh.name = String(p.id);
   const m = new Matrix4();
@@ -145,6 +150,74 @@ const _v = new Vector3();
 const _x = new Vector3();
 const _y = new Vector3();
 const _z = new Vector3();
+
+/** Accumulate diffuse radiance `(color * intensity)` from mesh-area emitters per mesh primitive id. */
+function meshEmitterBoostByPrimitiveId(scene: VitrumScene): Map<string, [number, number, number]> {
+  const map = new Map<string, [number, number, number]>();
+  for (const e of scene.emitters) {
+    if (e.kind !== 'mesh-area') continue;
+    const id = String(e.meshId);
+    const add = [
+      e.color[0] * e.intensity,
+      e.color[1] * e.intensity,
+      e.color[2] * e.intensity,
+    ] as [number, number, number];
+    const prev = map.get(id);
+    if (!prev) {
+      map.set(id, [...add]);
+      continue;
+    }
+    prev[0] += add[0];
+    prev[1] += add[1];
+    prev[2] += add[2];
+  }
+  return map;
+}
+
+/**
+ * Circular disc emitter → approximate axis-aligned-parallelogram rect in three.js.
+ * Half-span along tangent/bitangent is √π·r/2 per axis so the rectangular patch has
+ * the same π·radius² footprint as an ideal disc (different sampling density).
+ */
+function discAreaEmitterToRectThree(e: Extract<SceneEmitter, { kind: 'disc-area' }>): RectAreaLight | null {
+  const n = _z.set(e.normal[0], e.normal[1], e.normal[2]);
+  if (n.length() < 1e-8) {
+    console.warn(
+      `@vitrum/three-bindings: disc-area emitter "${e.id}" has degenerate normal; skipping`,
+    );
+    return null;
+  }
+  n.normalize();
+  let up = _x.set(0, 1, 0);
+  if (Math.abs(n.y) > 0.999) {
+    up.set(1, 0, 0);
+  }
+  const t = _u.copy(up).cross(n);
+  if (t.lengthSq() < 1e-12) return null;
+  t.normalize();
+  const b = _v.copy(n).cross(t).normalize();
+  const s = (Math.sqrt(Math.PI) * e.radius) / 2;
+  const uVec = t.multiplyScalar(s);
+  const vVec = b.multiplyScalar(s);
+  const rectArea = 4 * Math.max(_x.copy(uVec).cross(_y.copy(vVec)).length(), 1e-6);
+  const w = Math.max(2 * uVec.length(), 1e-6);
+  const h = Math.max(2 * vVec.length(), 1e-6);
+  const L = new RectAreaLight(new Color(e.color[0], e.color[1], e.color[2]), e.intensity, w, h);
+  _x.copy(uVec).normalize();
+  _y.copy(vVec).normalize();
+  _z.crossVectors(_x, _y);
+  if (_z.lengthSq() < 1e-12) return null;
+  _z.normalize();
+  const basis = new Matrix4().makeBasis(_x, _y, _z);
+  L.position.set(e.position[0], e.position[1], e.position[2]);
+  L.matrix.copy(basis);
+  L.matrix.setPosition(L.position);
+  L.matrixAutoUpdate = false;
+  L.matrixWorld.copy(L.matrix);
+  L.name = String(e.id);
+  L.userData['cellPower'] = luminance(e.color, e.intensity) * rectArea;
+  return L;
+}
 
 function emitterToThree(e: SceneEmitter): Object3D | null {
   switch (e.kind) {
@@ -230,6 +303,11 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.userData['cellPower'] = luminance(e.color, e.intensity);
       return L;
     }
+    case 'disc-area':
+      return discAreaEmitterToRectThree(e);
+    case 'mesh-area':
+      // Emission is folded into the referenced mesh's material in vitrumSceneToThree().
+      return null;
     default: {
       console.warn(
         `@vitrum/three-bindings: emitter kind "${(e as SceneEmitter).kind}" not implemented for vitrumSceneToThree — skipped`,
@@ -277,9 +355,21 @@ function applyEnvironment(threeScene: Scene, env: VitrumScene['environment']): v
  */
 export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
   const threeScene = new Scene();
+  const meshBoost = meshEmitterBoostByPrimitiveId(vitrumScene);
+  const meshPrimitiveIds = new Set(
+    vitrumScene.primitives.filter((p) => p.kind === 'mesh').map((p) => String(p.id)),
+  );
+  for (const e of vitrumScene.emitters) {
+    if (e.kind === 'mesh-area' && !meshPrimitiveIds.has(String(e.meshId))) {
+      console.warn(
+        `@vitrum/three-bindings: mesh-area emitter "${e.id}" references unknown mesh id "${String(e.meshId)}" — ignored`,
+      );
+    }
+  }
   for (const p of vitrumScene.primitives) {
     if (p.kind === 'mesh') {
-      threeScene.add(meshPrimitiveToThree(p));
+      const add = meshBoost.get(String(p.id));
+      threeScene.add(meshPrimitiveToThree(p, add));
     } else {
       throw new Error(
         `Unsupported @vitrum/core primitive kind "${(p as ScenePrimitive).kind}" in vitrumSceneToThree. Supported types are added per Phase 6 sprint.`,

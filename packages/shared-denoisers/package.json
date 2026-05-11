@@ -1,7 +1,7 @@
 {
   "name": "@vitrum/shared-denoisers",
   "version": "0.0.0",
-  "description": "Denoiser building blocks: à-trous, spatial filter, SVGF, BMFR, OIDN bridge.",
+  "description": "Denoiser building blocks: à-trous, spatial filter, SVGF, OIDN bridge. (BMFR: candidate only — not implemented in this package.)",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",

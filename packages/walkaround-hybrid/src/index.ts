@@ -1,4 +1,4 @@
-// @vitrum/walkaround-hybrid — WebGPU layered DDGI + RC + ReSTIR DI engine.
+// @vitrum/walkaround-hybrid — WebGPU ReSTIR DI + DDGI engine (RC subsystem exported separately; see README).
 
 // Host / binding seams (THREE coupling documented for future non-THREE graphs)
 export type {
@@ -130,6 +130,8 @@ export {
   PPG_DIRECTIONS,
   PPG_CELL_BYTE_STRIDE,
   PPG_LEAF_BYTE_STRIDE,
+  PPG_KD_NODE_BYTE_STRIDE,
+  PPG_KD_MAX_NODES,
 } from './ppg/types.js';
 
 // WGSL shader fragments (authored; dispatch deferred — see sprint-11-ppg-integration.md).
@@ -137,5 +139,21 @@ export { PPG_SAMPLE_WGSL } from './ppg/wgsl/ppgSample.wgsl.js';
 export { PPG_UPDATE_WGSL } from './ppg/wgsl/ppgUpdate.wgsl.js';
 
 // Buffer allocation helpers.
-export { createPPGBuffers, destroyPPGBuffers } from './pipeline/resourceManager.js';
+export {
+  createPPGBuffers,
+  destroyPPGBuffers,
+  writePpgKdTree,
+} from './pipeline/resourceManager.js';
+export {
+  buildPpgKdTreeGpuBytes,
+  encodePpgKdDisabledRoot,
+  ppgNearestCellIndexKd,
+  ppgNearestCellIndexBrute,
+} from './ppg/buildPpgKdTree.js';
+export {
+  aabbFromBvhPositions,
+  buildPpgUniformGridCells,
+  encodePpgCellGpuBytes,
+} from './ppg/ppgCellUpload.js';
+export type { PpgCellPosition } from './ppg/ppgCellUpload.js';
 export type { PPGBuffers, FrameResourceOptions } from './pipeline/resourceManager.js';

@@ -113,6 +113,42 @@ describe('buildPackedScene', () => {
     expect(packed.warnings.some((w) => w.includes('HDRI environment'))).toBe(false);
   });
 
+  it('packs disc-area as rect surrogate with parallelogram area ≈ π·r²', () => {
+    const base = makeScene();
+    const r = 2;
+    const scene: Scene = {
+      ...base,
+      emitters: [
+        {
+          kind: 'disc-area',
+          id: 'd1',
+          position: [0, 3, 0],
+          normal: [0, -1, 0],
+          radius: r,
+          color: [1, 0, 0],
+          intensity: 2,
+        },
+      ],
+    };
+
+    const packed = buildPackedScene(scene);
+    expect(packed.hasRectAreaLight).toBe(true);
+    expect(packed.rectAreaPosition).toEqual([0, 3, 0]);
+    const ux = packed.rectAreaUAxis[0];
+    const uy = packed.rectAreaUAxis[1];
+    const uz = packed.rectAreaUAxis[2];
+    const vx = packed.rectAreaVAxis[0];
+    const vy = packed.rectAreaVAxis[1];
+    const vz = packed.rectAreaVAxis[2];
+    const cx = uy * vz - uz * vy;
+    const cy = uz * vx - ux * vz;
+    const cz = ux * vy - uy * vx;
+    const parallelogramArea = 4 * Math.sqrt(cx * cx + cy * cy + cz * cz);
+    expect(parallelogramArea).toBeCloseTo(Math.PI * r * r, 5);
+    expect(packed.rectAreaRadiance[0]).toBeCloseTo(2);
+    expect(packed.warnings.some((w) => w.includes('ignored'))).toBe(false);
+  });
+
   it('packs first point light', () => {
     const base = makeScene();
     const scene: Scene = {

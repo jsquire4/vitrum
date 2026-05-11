@@ -9,13 +9,18 @@
 // Future: Sobol QMC (Sprint 3 fork-side), Welford variance struct (Sprint 9 rider).
 
 export * from './wgsl/hammersley.wgsl.js';
+export { OCTAHEDRAL_CORE_WGSL } from './wgsl/octahedralCore.wgsl.js';
 export { buildLightTree, packLightTreeForGPU } from './lightTree.js';
 export type { LightTreeNode, LightTreeBuildInput } from './lightTree.js';
 export { balanceHeuristic, powerHeuristic, mixturePdf } from './mixturePdf.js';
 export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';
 export { sampleEquiAngular } from './equiAngular.js';
-export type { EquiAngularSample } from './equiAngular.js';
-export { rgbToSpectralCoefficients, evaluateSpectrum } from './jakobHanika.js';
+export type { EquiAngularSample, EquiAngularOptions } from './equiAngular.js';
+export {
+  rgbToApproxSpectralCoefficients,
+  rgbToSpectralCoefficients,
+  evaluateSpectrum,
+} from './jakobHanika.js';
 // ── Sprint 10c (BDPT) — DEFERRED ──────────────────────────────────────────────
 // Trigger criterion: Sprint 7 hero-render floor-caustic noise exceeds threshold.
 // Until Sprint 10c is officially opened, these exports are present but not

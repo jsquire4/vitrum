@@ -16,10 +16,15 @@ import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.j
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
-import { HAMMERSLEY_WGSL } from './wgsl/hammersley.wgsl.js';
-import { OCTAHEDRAL_WGSL } from './wgsl/octahedral.wgsl.js';
+import {
+  HAMMERSLEY_WGSL,
+  OCTAHEDRAL_CORE_WGSL,
+} from '@vitrum/shared-samplers';
 
-export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_WGSL };
+/** @deprecated Import {@link OCTAHEDRAL_CORE_WGSL} from `@vitrum/shared-samplers`. */
+export const OCTAHEDRAL_WGSL = OCTAHEDRAL_CORE_WGSL;
+
+export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export { summarizeScene };
 export type { SceneSummary };
 
@@ -76,6 +81,9 @@ class PTEngineWebGPU implements Engine {
   #accumWidth = 0;
   #accumHeight = 0;
 
+  /** Reused bind group until scene buffers or accum views are recreated. */
+  #pathTraceBindGroup: GPUBindGroup | null = null;
+
   #paramsBuffer: GPUBuffer | null = null;
   #computePipeline: GPUComputePipeline | null = null;
   #bindGroupLayout: GPUBindGroupLayout | null = null;
@@ -109,7 +117,7 @@ class PTEngineWebGPU implements Engine {
         'cylinder',
         'h-channel-came',
       ]),
-      supportedEmitterKinds: new Set<string>(['directional', 'point', 'spot', 'rect-area', 'mesh-area']),
+      supportedEmitterKinds: new Set<string>(['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area']),
       causticStrategy: this.#causticStrategy,
     };
   }
@@ -216,6 +224,7 @@ class PTEngineWebGPU implements Engine {
     this.#accumWidth = width;
     this.#accumHeight = height;
     this.#samplesAccumulated = 0;
+    this.#pathTraceBindGroup = null;
     this.#clearAccumBuffer();
   }
 
@@ -250,6 +259,7 @@ class PTEngineWebGPU implements Engine {
     const packed = buildPackedScene(scene);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
+    this.#pathTraceBindGroup = null;
     this.#scene = scene;
     const sceneSummary = summarizeScene(scene);
     if (sceneSummary.primitiveCount === 0) {
@@ -285,6 +295,8 @@ class PTEngineWebGPU implements Engine {
     this.#assertLive('renderFrame');
 
     if (this.#slot.get() === 'paused') {
+      const pq = input.quality ?? {};
+      const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
       return {
         primaryRadiance: this.#accumTexture,
         normalDepth: this.#normalDepthTexture ?? undefined,
@@ -292,7 +304,7 @@ class PTEngineWebGPU implements Engine {
         variance: this.#varianceTexture ?? undefined,
         motionVectors: this.#motionVectorsTexture ?? undefined,
         samplesAccumulated: this.#samplesAccumulated,
-        isConverged: this.#samplesAccumulated >= this.#maxSamplesLimit,
+        isConverged: this.#samplesAccumulated >= targetSppPaused,
       };
     }
 
@@ -434,36 +446,40 @@ class PTEngineWebGPU implements Engine {
     paramsF32.set(prevVp, 112);
     this.#device.queue.writeBuffer(this.#paramsBuffer, 0, paramsArrayBuffer);
 
-    const bindGroup = this.#device.createBindGroup({
-      label: 'vitrum.pt-webgpu.pathTrace.bindgroup',
-      layout: this.#bindGroupLayout,
-      entries: [
-        { binding: 0, resource: this.#accumView },
-        { binding: 1, resource: { buffer: this.#paramsBuffer } },
-        { binding: 2, resource: { buffer: this.#accumBuffer } },
-        { binding: 3, resource: { buffer: this.#sceneBuffers.positionsBuffer } },
-        { binding: 4, resource: { buffer: this.#sceneBuffers.indicesBuffer } },
-        { binding: 5, resource: { buffer: this.#sceneBuffers.triMaterialIdsBuffer } },
-        { binding: 6, resource: { buffer: this.#sceneBuffers.materialsBuffer } },
-        { binding: 7, resource: { buffer: this.#sceneBuffers.bvhNodesBuffer } },
-        { binding: 8, resource: { buffer: this.#sceneBuffers.normalsBuffer } },
-        { binding: 9, resource: this.#normalDepthView },
-        { binding: 10, resource: this.#albedoView },
-        { binding: 11, resource: this.#varianceView },
-        { binding: 12, resource: this.#motionVectorsView },
-        { binding: 13, resource: { buffer: this.#varianceMomentsBuffer } },
-        { binding: 14, resource: { buffer: this.#sceneBuffers.analyticHeadersBuffer } },
-        { binding: 15, resource: { buffer: this.#sceneBuffers.analyticParamsBuffer } },
-        { binding: 16, resource: { buffer: this.#sceneBuffers.analyticLocalToWorldBuffer } },
-        { binding: 17, resource: { buffer: this.#sceneBuffers.analyticWorldToLocalBuffer } },
-        { binding: 18, resource: { buffer: this.#sceneBuffers.environmentMapTexelsBuffer } },
-        { binding: 19, resource: { buffer: this.#sceneBuffers.environmentMapCdfBuffer } },
-        { binding: 20, resource: { buffer: this.#sceneBuffers.pointLightsBuffer } },
-        { binding: 21, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
-        { binding: 22, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
-        { binding: 23, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
-      ],
-    });
+    let bindGroup = this.#pathTraceBindGroup;
+    if (bindGroup == null) {
+      bindGroup = this.#device.createBindGroup({
+        label: 'vitrum.pt-webgpu.pathTrace.bindgroup',
+        layout: this.#bindGroupLayout,
+        entries: [
+          { binding: 0, resource: this.#accumView },
+          { binding: 1, resource: { buffer: this.#paramsBuffer } },
+          { binding: 2, resource: { buffer: this.#accumBuffer } },
+          { binding: 3, resource: { buffer: this.#sceneBuffers.positionsBuffer } },
+          { binding: 4, resource: { buffer: this.#sceneBuffers.indicesBuffer } },
+          { binding: 5, resource: { buffer: this.#sceneBuffers.triMaterialIdsBuffer } },
+          { binding: 6, resource: { buffer: this.#sceneBuffers.materialsBuffer } },
+          { binding: 7, resource: { buffer: this.#sceneBuffers.bvhNodesBuffer } },
+          { binding: 8, resource: { buffer: this.#sceneBuffers.normalsBuffer } },
+          { binding: 9, resource: this.#normalDepthView },
+          { binding: 10, resource: this.#albedoView },
+          { binding: 11, resource: this.#varianceView },
+          { binding: 12, resource: this.#motionVectorsView },
+          { binding: 13, resource: { buffer: this.#varianceMomentsBuffer } },
+          { binding: 14, resource: { buffer: this.#sceneBuffers.analyticHeadersBuffer } },
+          { binding: 15, resource: { buffer: this.#sceneBuffers.analyticParamsBuffer } },
+          { binding: 16, resource: { buffer: this.#sceneBuffers.analyticLocalToWorldBuffer } },
+          { binding: 17, resource: { buffer: this.#sceneBuffers.analyticWorldToLocalBuffer } },
+          { binding: 18, resource: { buffer: this.#sceneBuffers.environmentMapTexelsBuffer } },
+          { binding: 19, resource: { buffer: this.#sceneBuffers.environmentMapCdfBuffer } },
+          { binding: 20, resource: { buffer: this.#sceneBuffers.pointLightsBuffer } },
+          { binding: 21, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
+          { binding: 22, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
+          { binding: 23, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
+        ],
+      });
+      this.#pathTraceBindGroup = bindGroup;
+    }
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
@@ -513,6 +529,7 @@ class PTEngineWebGPU implements Engine {
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
     this.#destroyAccumTexture();
+    this.#pathTraceBindGroup = null;
     this.#paramsBuffer?.destroy();
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = null;

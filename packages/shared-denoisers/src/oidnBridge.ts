@@ -81,6 +81,20 @@ export interface OIDNDenoiseInputs {
   readonly height: number;
 }
 
+export interface OIDNModelTensorNames {
+  /** ONNX input name for the noisy color tensor. Default: `"color"`. */
+  readonly color?: string;
+  /** Optional normals aux input name. Default: `"normal"`. */
+  readonly normal?: string;
+  /** Optional albedo aux input name. Default: `"albedo"`. */
+  readonly albedo?: string;
+  /**
+   * Primary output tensor name from the ONNX model.
+   * Default tries `"output"` then `"color"` if unset.
+   */
+  readonly output?: string;
+}
+
 /**
  * Options for the OIDN ONNX bridge.
  */
@@ -104,6 +118,12 @@ export interface OIDNDenoiseOptions {
    * when WebNN causes model compatibility issues on a target browser.
    */
   readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+
+  /**
+   * ONNX graph I/O tensor names — exports vary (TorchScript, ONNXRuntime, OIDN zoo).
+   * Defaults match Intel OIDN ONNX examples; override when Netron shows different keys.
+   */
+  readonly tensorNames?: OIDNModelTensorNames;
 }
 
 // ============================================================
@@ -140,37 +160,44 @@ export async function denoiseFinal(
 
   const { color, normal, albedo, width, height } = inputs;
 
-  // Build ONNX input feeds.  The OIDN UNet expects NCHW layout:
-  //   shape = [1, C, H, W]  where C=3 (RGB channels)
+  const tn = opts.tensorNames ?? {};
+  const colorKey = tn.color ?? 'color';
+  const normalKey = tn.normal ?? 'normal';
+  const albedoKey = tn.albedo ?? 'albedo';
+
   const colorNchw = _hwcToNchw(color, height, width, 3);
   const feeds: Record<string, unknown> = {
-    // OIDN model input name convention: 'color', 'normal', 'albedo'.
-    // Adjust if your ONNX export uses different names.
-    color: new ort.Tensor('float32', colorNchw, [1, 3, height, width]),
+    [colorKey]: new ort.Tensor('float32', colorNchw, [1, 3, height, width]),
   };
 
   if (normal !== undefined) {
-    feeds['normal'] = new ort.Tensor('float32', _hwcToNchw(normal, height, width, 3), [1, 3, height, width]);
+    feeds[normalKey] = new ort.Tensor('float32', _hwcToNchw(normal, height, width, 3), [
+      1,
+      3,
+      height,
+      width,
+    ]);
   }
   if (albedo !== undefined) {
-    feeds['albedo'] = new ort.Tensor('float32', _hwcToNchw(albedo, height, width, 3), [1, 3, height, width]);
+    feeds[albedoKey] = new ort.Tensor('float32', _hwcToNchw(albedo, height, width, 3), [
+      1,
+      3,
+      height,
+      width,
+    ]);
   }
 
-  // Run inference.  The session.run() call is real — it will succeed when
-  // the model file is present and the runtime is initialized.
   const results = await (session as { run: (feeds: Record<string, unknown>) => Promise<Record<string, { data: Float32Array }>> }).run(feeds);
 
-  // OIDN output name convention: 'output' or 'color' depending on export.
-  // Try 'output' first, then 'color'.
-  const outputTensor = results['output'] ?? results['color'];
+  const outputPrimaryKey = tn.output ?? 'output';
+  const outputTensor = results[outputPrimaryKey] ?? results['output'] ?? results['color'];
   if (outputTensor == null) {
     throw new Error(
       `[oidnBridge] ONNX model output not found. ` +
-      `Expected output named 'output' or 'color'. Got keys: ${Object.keys(results).join(', ')}`,
+      `Expected output named '${outputPrimaryKey}', 'output', or 'color'. Got keys: ${Object.keys(results).join(', ')}`,
     );
   }
 
-  // Convert from NCHW [1, 3, H, W] back to HWC [H*W*3] interleaved.
   return _nchwToHwc(outputTensor.data, height, width, 3);
 }
 

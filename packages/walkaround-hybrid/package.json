@@ -1,7 +1,7 @@
 {
   "name": "@vitrum/walkaround-hybrid",
   "version": "0.0.0",
-  "description": "WebGPU layered DDGI + RC + ReSTIR DI engine. See plan/library-architecture.md for design.",
+  "description": "WebGPU ReSTIR DI + DDGI engine (RC tools exported; HybridEngine composition: see README).",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",

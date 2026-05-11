@@ -1,9 +1,9 @@
 /**
- * Ported from stainedGlass walkaround WGSL helpers.
- * Octahedral direction encoding is useful for compact normal/ray direction
- * storage in future temporal caches and aux buffers.
+ * Octahedral encode/decode only (Cigolle et al. JCGT 2014).
+ * Atlas UV helpers live in `@vitrum/shared-bvh` (DDGI probes).
  */
-export const OCTAHEDRAL_WGSL = /* wgsl */ `
+
+export const OCTAHEDRAL_CORE_WGSL = /* wgsl */ `
 fn octEncode(dir: vec3f) -> vec2f {
   let n = dir / (abs(dir.x) + abs(dir.y) + abs(dir.z));
   if (n.z >= 0.0) {

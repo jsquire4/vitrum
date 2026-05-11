@@ -199,6 +199,21 @@ describe('packBDPTVertex / unpackBDPTVertex', () => {
 // ── buildBDPTStrategyPDFs ─────────────────────────────────────────────────────
 
 describe('buildBDPTStrategyPDFs', () => {
+  it('strategy k=s (interior) is the only non-zero row when s>0 and t>0 (simplified PDF model)', () => {
+    const light = [makeVertex({ pdfFwd: 0.6 }), makeVertex({ pdfFwd: 0.7 })];
+    const eye = [makeVertex({ pdfFwd: 0.5 }), makeVertex({ pdfFwd: 0.4 })];
+    const pdfs = buildBDPTStrategyPDFs(light, eye);
+    const s = 2;
+    expect(pdfs.length).toBe(s + 2 + 1);
+    for (let k = 0; k < pdfs.length; k++) {
+      if (k === s) {
+        expect(pdfs[k]).toBeCloseTo(0.6 * 0.7 * 0.5 * 0.4, 6);
+      } else {
+        expect(pdfs[k]).toBe(0);
+      }
+    }
+  });
+
   it('returns length s+t+1 for non-trivial subpaths', () => {
     const light = [makeVertex(), makeVertex()]; // s=2
     const eye = [makeVertex(), makeVertex(), makeVertex()]; // t=3
@@ -258,6 +273,8 @@ describe('buildBDPTStrategyPDFs', () => {
 
 describe('bdptConnectionMIS', () => {
   it('MIS weights sum to 1 across all strategies when all PDFs > 0', () => {
+    // Full Veach / power-heuristic sanity: each strategy gets p_i^β / Σ p_j^β.
+    // With buildBDPTStrategyPDFs most entries are zero; see tests above for sparsity.
     const pdfs = [0.1, 0.5, 0.3, 0.2, 0.4];
     let sum = 0;
     for (let k = 0; k < pdfs.length; k++) {

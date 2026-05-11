@@ -7,7 +7,7 @@
  * Two compute entry points:
  *
  *   svgfVarianceMain — Variance estimation pass.
- *     When temporal history is scarce (frame count < 4), estimates variance
+ *     When temporal history is scarce (frame count below SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT), estimates variance
  *     from a 3×3 spatial neighborhood. When temporal history is stable,
  *     falls back to the Welford running variance already in the variance buffer.
  *     Writes a per-pixel scalar variance estimate into the output.
@@ -58,7 +58,14 @@
  *   Decision 13 — versioned struct pinned Sprint 9 (2026-05-09).
  */
 
+import { SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT } from '../svgfConstants.js';
+
+/** Must match `@workgroup_size` in this module's compute entry points. */
+export const SVGF_COMPUTE_WORKGROUP_SIZE = 16 as const;
+
 export const SVGF_WGSL = /* wgsl */ `
+// Temporal branch threshold — single source: ../svgfConstants.ts SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT
+const SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT}u;
 
 // ============================================================
 // WelfordVariance — local copy matching common.wgsl @version 1
@@ -115,10 +122,10 @@ struct SVGFAtrousUBO {
 // Variance Estimation Pass — svgfVarianceMain
 //
 // Selects the best available variance estimate per pixel:
-//   - frameCount < 4: spatial 3×3 variance from the noisy color buffer.
+//   - frameCount < SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: spatial 3×3 variance from the noisy color buffer.
 //     This covers the first few frames where temporal Welford data is
 //     scarce (mean is still far from steady state).
-//   - frameCount >= 4: Welford variance from the running buffer. This
+//   - frameCount >= SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: Welford variance from the running buffer. This
 //     is a temporally stable estimate that converges over time.
 //
 // Output (varianceOut): RG32Float texture.
@@ -149,7 +156,7 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
 
   var variance: f32;
 
-  if (frameCount < 4u) {
+  if (frameCount < SVGF_TEMPORAL_VARIANCE_MIN_FRAMES) {
     // ── Spatial 3×3 variance from noisy color ────────────────────────────
     // Compute sample mean and sum-of-squared-deviations over a 3×3 window.
     var sum    = 0.0;
@@ -225,8 +232,9 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let cCenter = textureLoad(atrous_inputColor, gid.xy, 0).rgb;
-  let nCenter = textureLoad(atrous_gbufNormal, gid.xy, 0).xyz;
-  let zCenter = textureLoad(atrous_gbufDepth,  gid.xy, 0).r;
+  // Match walkaround atrous.wgsl: packed normal (0..1) → world normal; depth in .w
+  let nCenter = textureLoad(atrous_gbufNormal, gid.xy, 0).xyz * 2.0 - 1.0;
+  let zCenter = textureLoad(atrous_gbufDepth, gid.xy, 0).w;
 
   // Sky / miss pixels pass through unfiltered.
   if (zCenter <= 0.0) {
@@ -257,8 +265,8 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let pu  = vec2u(p);
 
       let cP = textureLoad(atrous_inputColor, pu, 0).rgb;
-      let nP = textureLoad(atrous_gbufNormal, pu, 0).xyz;
-      let zP = textureLoad(atrous_gbufDepth,  pu, 0).r;
+      let nP = textureLoad(atrous_gbufNormal, pu, 0).xyz * 2.0 - 1.0;
+      let zP = textureLoad(atrous_gbufDepth,  pu, 0).w;
 
       let kIdx = u32((dy + 2) * 5 + (dx + 2));
       let h    = SVGF_KERNEL[kIdx];

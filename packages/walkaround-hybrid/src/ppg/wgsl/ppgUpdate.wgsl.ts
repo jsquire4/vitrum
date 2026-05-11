@@ -1,7 +1,7 @@
 /**
  * PPG update shader — Sprint 11.
  *
- * Compute shader for updating the PPG kd-tree with completed-path samples.
+ * Compute shader for updating PPG directional bin statistics from completed-path samples.
  * Reads from a per-frame sample buffer (written by the shade pass) and
  * accumulates radiance into the appropriate cell's directional bin.
  *
@@ -14,8 +14,8 @@
  * Per-frame flow:
  *   1. Each thread handles one path-completion sample from ppgSampleBuffer.
  *   2. Find the nearest PPG spatial cell to the sample's world position
- *      (linear scan — consistent with ppgSample.wgsl.ts's brute-force
- *      approach; optimisation deferred to post-Sprint-11).
+ *      via kd-tree on `ppgKdNodes` (same traversal as `ppgSample.wgsl.ts`);
+ *      falls back to linear scan when the kd buffer holds the disabled sentinel.
  *   3. Encode the sample's incident direction to an octahedral bin index.
  *   4. Atomic-add the sample's radiance into the cell's bin.
  *   5. Atomic-increment the bin's sampleCount.
@@ -63,6 +63,14 @@ struct PPGSpatialCell {
   _pad2z:    u32,
 };
 
+// 16-byte kd-tree node (matches buildPpgKdTree.ts / ppgSample.wgsl.ts).
+struct PPGKdNode {
+  child0: u32,
+  child1: u32,
+  meta:   u32,
+  split:  f32,
+};
+
 // PPGPathSample — one completed-path record written by the shade pass.
 // Layout (48 bytes):
 //   bytes  0-11: worldPos xyz (vec3f)
@@ -108,28 +116,116 @@ struct PPGUpdateUniforms {
 // Each leaf occupies PPG_DIRECTIONS * 2 u32 slots = 16 * 2 * 4 bytes = 128 bytes.
 // This matches the PPG_LEAF_BYTE_STRIDE (256 byte allocation; 128 bytes used).
 @group(0) @binding(3) var<storage, read_write> ppgLeafData: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read>   ppgKdNodes:     array<PPGKdNode>;
 
 // ============================================================
 // Internal helpers
 // ============================================================
 
-// Find the nearest PPG spatial cell to worldPos (brute-force linear scan).
-// Returns the cell index, or 0 if cellCount == 0.
-fn ppgUpdateFindCell(worldPos: vec3f, cellCount: u32) -> u32 {
+fn ppgUpdateAxisComp(v: vec3f, axis: u32) -> f32 {
+  if (axis == 0u) { return v.x; }
+  if (axis == 1u) { return v.y; }
+  return v.z;
+}
+
+// Brute nearest cell over active indices [0 .. cellCount-1] (strict less-than on distance²).
+fn ppgUpdateFindCellBrute(worldPos: vec3f, cellCount: u32) -> u32 {
   if (cellCount == 0u) { return 0u; }
 
   var bestIdx  = 0u;
-  var bestDist = 1e20;
+  var bestDist2 = 1e38;
 
   for (var i = 0u; i < cellCount; i++) {
     let d = ppgCells[i].position - worldPos;
     let dist2 = dot(d, d);
-    if (dist2 < bestDist) {
-      bestDist = dist2;
+    if (dist2 < bestDist2) {
+      bestDist2 = dist2;
       bestIdx  = i;
     }
   }
   return bestIdx;
+}
+
+// kd-tree NN (iterative); matches ppgSample.wgsl.ts ppgKdFindCell but uses
+// uniform cellCount instead of arrayLength(&ppgCells) for valid leaf indices.
+fn ppgUpdateKdFindCell(worldPos: vec3f, cellCount: u32) -> u32 {
+  let nk = arrayLength(&ppgKdNodes);
+  if (nk == 0u || cellCount == 0u) { return 0u; }
+  let root = ppgKdNodes[0];
+  if (root.child0 == 0xFFFFFFFFu && root.child1 == 0xFFFFFFFFu) {
+    return ppgUpdateFindCellBrute(worldPos, cellCount);
+  }
+
+  var bestIdx  = 0u;
+  var bestDist2 = 1e38;
+
+  var stN: array<u32, 48>;
+  var stK: array<u32, 48>;
+  var stFar: array<u32, 48>;
+  var stD2: array<f32, 48>;
+  var sp = 0u;
+
+  stN[sp] = 0u;
+  stK[sp] = 0u;
+  stFar[sp] = 0u;
+  stD2[sp] = 0.0;
+  sp = sp + 1u;
+
+  while (sp > 0u) {
+    sp = sp - 1u;
+    if (stK[sp] == 1u) {
+      if (stD2[sp] < bestDist2 && sp < 48u) {
+        stN[sp] = stFar[sp];
+        stK[sp] = 0u;
+        sp = sp + 1u;
+      }
+      continue;
+    }
+
+    let nid = stN[sp];
+    if (nid >= nk) { continue; }
+    let node = ppgKdNodes[nid];
+    let meta = node.meta;
+    if ((meta & 0x80000000u) != 0u) {
+      let cellIdx = meta & 0x7FFFFFFFu;
+      if (cellIdx < cellCount) {
+        let d = ppgCells[cellIdx].position - worldPos;
+        let dist2 = dot(d, d);
+        if (dist2 < bestDist2) {
+          bestDist2 = dist2;
+          bestIdx = cellIdx;
+        }
+      }
+      continue;
+    }
+
+    let axis = meta & 3u;
+    let split = node.split;
+    let c0 = node.child0;
+    let c1 = node.child1;
+    let d0 = ppgUpdateAxisComp(worldPos, axis) - split;
+    let d2plane = d0 * d0;
+    let nearI = select(c1, c0, d0 < 0.0);
+    let farI = select(c0, c1, d0 < 0.0);
+
+    if (sp + 2u > 48u) {
+      return ppgUpdateFindCellBrute(worldPos, cellCount);
+    }
+    stFar[sp] = farI;
+    stD2[sp] = d2plane;
+    stK[sp] = 1u;
+    sp = sp + 1u;
+    stN[sp] = nearI;
+    stK[sp] = 0u;
+    stFar[sp] = 0u;
+    stD2[sp] = 0.0;
+    sp = sp + 1u;
+  }
+  return bestIdx;
+}
+
+fn ppgUpdateFindCell(worldPos: vec3f, cellCount: u32) -> u32 {
+  return ppgUpdateKdFindCell(worldPos, cellCount);
 }
 
 // Encode a world-space incident direction to a bin index [0..15].

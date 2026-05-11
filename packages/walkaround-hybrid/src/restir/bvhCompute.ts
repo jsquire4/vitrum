@@ -146,27 +146,9 @@ export interface SceneBVHBuffers {
 const EMITTER_STRIDE = 80; // bytes per emitter, 16-byte aligned
 const EMITTER_FLOATS = EMITTER_STRIDE / 4; // 20 f32 per emitter
 
-/**
- * Default warm-gray RGB fallback color for triangles with no resolvable
- * material color (≈ 0.60, 0.58, 0.55 linear). Used in two packing functions
- * (packBVHIndexW and packBVHBeerColors) — extracted to a single constant so
- * a palette change touches one place. (WARM complexity fix.)
- */
 const WARM_GRAY_DEFAULT_R = 153;
 const WARM_GRAY_DEFAULT_G = 148;
 const WARM_GRAY_DEFAULT_B = 140;
-
-/**
- * Default proxy-mesh allowlist for the stained-glass-app demo. Library
- * consumers will typically override via the `proxyMeshNames` opt to
- * supply their own dense-flat-surface mesh names. Empty Set = no
- * substitution (every visible mesh contributes its real geometry to
- * the BVH).
- */
-const DEFAULT_PROXY_MESH_NAMES = new Set<string>([
-  'surface_floor_living',
-  'surface_ceiling_living',
-]);
 
 /** Build the full scene BVH + emitter list from a set of Object3D roots. */
 export function buildSceneBVH(
@@ -187,8 +169,7 @@ export function buildSceneBVH(
      * raster but where ray-trace per-triangle cost outweighs the
      * shadow-resolution gain.
      *
-     * Defaults to `DEFAULT_PROXY_MESH_NAMES`. Library consumers should
-     * pass their own scene's mesh names.
+     * Default: empty Set — no proxy substitution unless the host passes names.
      */
     proxyMeshNames?: Set<string>;
   } = {},
@@ -207,7 +188,7 @@ export function buildSceneBVH(
   // MeshPhysical only) doesn't silently change which meshes contribute.
   const shared = buildSharedBVH(sceneRoots, {
     positionStride: 4,
-    proxyMeshNames: options.proxyMeshNames ?? DEFAULT_PROXY_MESH_NAMES,
+    proxyMeshNames: options.proxyMeshNames ?? new Set<string>(),
     // Permissive filter — accept every visible mesh, including came/
     // solder beads. They render as opaque dark geometry and cast
     // proper shadows in the path trace, restoring the panel structure.

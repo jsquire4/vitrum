@@ -22,6 +22,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
+import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { createVarianceBuffer, createFrameResources } from '../src/pipeline/resourceManager.js';
 
 // ── WebGPU global polyfills (Node test environment) ───────────────────────────
@@ -130,6 +131,18 @@ describe('COMMON_WGSL — WelfordVariance struct (Sprint 9 / Decision 13)', () =
     const f32Fields = (structBody.match(/:\s+f32/g) ?? []).length;
     // Exactly 2 f32 fields = exactly 8 bytes = RG32Float.
     expect(f32Fields).toBe(2);
+  });
+});
+
+// ─── 1b. WELFORD_TEMPORAL_WGSL (Sprint 10a host integration) ─────────────────
+
+describe('WELFORD_TEMPORAL_WGSL — luminance Welford accumulation for SVGF', () => {
+  it('contains welfordTemporalMain entry point', () => {
+    expect(WELFORD_TEMPORAL_WGSL).toContain('fn welfordTemporalMain');
+  });
+
+  it('calls welfordUpdate on non-reset path', () => {
+    expect(WELFORD_TEMPORAL_WGSL).toContain('welfordUpdate(');
   });
 });
 
@@ -452,6 +465,9 @@ describe('FrameResources — varianceBuffer field (Sprint 9)', () => {
     // The varianceBuffer field must be present.
     expect(res).toHaveProperty('varianceBuffer');
     expect(res.varianceBuffer).not.toBeNull();
+    expect(res).toHaveProperty('varianceBufferAux');
+    expect(res).toHaveProperty('svgfVarianceEstimateTexture');
+    expect(res).toHaveProperty('motionVectorTexture');
   });
 
   it('destroyFrameResources calls destroy on varianceBuffer', async () => {

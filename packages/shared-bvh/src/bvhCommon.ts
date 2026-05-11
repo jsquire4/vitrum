@@ -50,6 +50,15 @@ interface BvhWithRoots extends MeshBVH {
   _roots: ArrayBuffer[];
 }
 
+function assertMeshBvhRootsLayout(bvh: MeshBVH): void {
+  const roots = (bvh as BvhWithRoots)._roots;
+  if (!roots || roots.length === 0 || roots[0] == null) {
+    throw new Error(
+      '[@vitrum/shared-bvh] MeshBVH._roots is missing or empty — three-mesh-bvh internal layout likely changed. Pin three-mesh-bvh to the tested ^0.9.x range.',
+    );
+  }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Public types
 // ──────────────────────────────────────────────────────────────────────────
@@ -206,7 +215,11 @@ function ensureIndexed(geo: THREE.BufferGeometry): void {
 }
 
 /** Build the per-vertex → matId map BEFORE the BVH build (vertices are
- *  BVH-invariant). Also returns the mesh-traversal-ordered materials list. */
+ *  BVH-invariant). Also returns the mesh-traversal-ordered materials list.
+ *
+ *  **Multi-material:** if `mesh.material` is an array, only index `0` is used
+ *  for the BVH material snapshot (matches historical walkaround convention).
+ */
 function snapshotPreBuildMaterials(
   meshes: THREE.Mesh[],
   merged: THREE.BufferGeometry,
@@ -419,14 +432,11 @@ export function buildSceneBVH(
 
   // ── 4. Collapse groups + build BVH ────────────────────────────────────
   // Replace per-mesh groups with a single group covering all triangles
-  // so MeshBVH builds ONE unified root. We deliberately do NOT restore
-  // the original groups afterwards — they would be stale (their
-  // start/count ranges no longer match the reordered index buffer).
-  // The vertexMatId map is the sole source of truth for per-triangle
-  // material lookups from here on.
+  // so MeshBVH builds ONE unified root.
   merged.clearGroups();
   merged.addGroup(0, merged.index!.count, 0);
   const bvh = new MeshBVH(merged, { strategy: 0 /* SAH */ }) as BvhWithRoots;
+  assertMeshBvhRootsLayout(bvh);
 
   // ── 5. Pack BVH node array from _roots[0] ─────────────────────────────
   // After the group collapse, _roots is guaranteed length 1. Copy the
@@ -533,6 +543,7 @@ function emptyBVHResult(positionStride: 3 | 4): SceneBVHCommonResult {
   emptyGeo.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2]), 1));
   emptyGeo.addGroup(0, 3, 0);
   const bvh = new MeshBVH(emptyGeo) as BvhWithRoots;
+  assertMeshBvhRootsLayout(bvh);
   return {
     bvh,
     bvhNodes: packRootBuffer(bvh._roots[0]!),

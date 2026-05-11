@@ -1,4 +1,4 @@
-import type { Material, Scene } from '@vitrum/core';
+import type { DiscAreaEmitter, Material, Scene, SceneEmitter } from '@vitrum/core';
 import { transformDirection, transformPoint } from '../math/mat4.js';
 import { invertMat4 } from '../math/mat4.js';
 import { buildCpuBvh } from './buildCpuBvh.js';
@@ -73,6 +73,53 @@ export const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
 export const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
 const SPECTRAL_LAMBDA_MIN_NM = 380;
 const SPECTRAL_LAMBDA_MAX_NM = 780;
+
+/** Map disc emitter to rect-axis payload — half-span √(π)/2·radius on each orthogonal tangent so WGSL quad area (=4|u×v|) equals π·r². Sampling differs from a true disc. */
+function discAreaPackedAsRect(e: DiscAreaEmitter): {
+  readonly position: readonly [number, number, number];
+  readonly uAxis: readonly [number, number, number];
+  readonly vAxis: readonly [number, number, number];
+  readonly radiance: readonly [number, number, number];
+} {
+  const nx = e.normal[0];
+  const ny = e.normal[1];
+  const nz = e.normal[2];
+  const nLen = Math.hypot(nx, ny, nz);
+  const ux = nx / nLen;
+  const uy = ny / nLen;
+  const uz = nz / nLen;
+  let ax = 0;
+  let ay = 1;
+  let az = 0;
+  if (Math.abs(uy) > 0.999) {
+    ax = 1;
+    ay = 0;
+    az = 0;
+  }
+  const tx = ay * uz - az * uy;
+  const ty = az * ux - ax * uz;
+  const tz = ax * uy - ay * ux;
+  const tLen = Math.hypot(tx, ty, tz);
+  const tcx = tx / tLen;
+  const tcy = ty / tLen;
+  const tcz = tz / tLen;
+  const bx = uy * tcz - uz * tcy;
+  const by = uz * tcx - ux * tcz;
+  const bz = ux * tcy - uy * tcx;
+  const s = (Math.sqrt(Math.PI) * e.radius) / 2;
+  const uAxis = [tcx * s, tcy * s, tcz * s] as const;
+  const vAxis = [bx * s, by * s, bz * s] as const;
+  return {
+    position: [e.position[0], e.position[1], e.position[2]],
+    uAxis,
+    vAxis,
+    radiance: [
+      e.color[0] * e.intensity,
+      e.color[1] * e.intensity,
+      e.color[2] * e.intensity,
+    ],
+  };
+}
 
 export interface UploadedSceneBuffers {
   readonly triangleCount: number;
@@ -380,25 +427,45 @@ function firstRectAreaLight(scene: Scene): {
   readonly hasRectAreaLight: boolean;
 } {
   const rect = scene.emitters.find((e) => e.kind === 'rect-area');
-  if (rect == null) {
+  if (rect != null) {
     return {
-      position: [0, 0, 0],
-      uAxis: [0, 0, 0],
-      vAxis: [0, 0, 0],
-      radiance: [0, 0, 0],
-      hasRectAreaLight: false,
+      position: [rect.position[0], rect.position[1], rect.position[2]],
+      uAxis: [rect.uAxis[0], rect.uAxis[1], rect.uAxis[2]],
+      vAxis: [rect.vAxis[0], rect.vAxis[1], rect.vAxis[2]],
+      radiance: [
+        rect.color[0] * rect.intensity,
+        rect.color[1] * rect.intensity,
+        rect.color[2] * rect.intensity,
+      ],
+      hasRectAreaLight: true,
+    };
+  }
+  const disc = scene.emitters.find((e) => e.kind === 'disc-area');
+  if (disc != null) {
+    if (!Number.isFinite(disc.radius) || disc.radius < 1e-8) {
+      return {
+        position: [0, 0, 0],
+        uAxis: [0, 0, 0],
+        vAxis: [0, 0, 0],
+        radiance: [0, 0, 0],
+        hasRectAreaLight: false,
+      };
+    }
+    const d = discAreaPackedAsRect(disc);
+    return {
+      position: d.position,
+      uAxis: [...d.uAxis],
+      vAxis: [...d.vAxis],
+      radiance: [...d.radiance],
+      hasRectAreaLight: true,
     };
   }
   return {
-    position: [rect.position[0], rect.position[1], rect.position[2]],
-    uAxis: [rect.uAxis[0], rect.uAxis[1], rect.uAxis[2]],
-    vAxis: [rect.vAxis[0], rect.vAxis[1], rect.vAxis[2]],
-    radiance: [
-      rect.color[0] * rect.intensity,
-      rect.color[1] * rect.intensity,
-      rect.color[2] * rect.intensity,
-    ],
-    hasRectAreaLight: true,
+    position: [0, 0, 0],
+    uAxis: [0, 0, 0],
+    vAxis: [0, 0, 0],
+    radiance: [0, 0, 0],
+    hasRectAreaLight: false,
   };
 }
 
@@ -661,26 +728,56 @@ function packEmitterArrays(scene: Scene): {
   const rectAreaLightsData = new Float32Array(MAX_RECT_AREA_LIGHTS * RECT_AREA_LIGHT_FLOAT_STRIDE).fill(0);
   let rectAreaLightCount = 0;
   for (const e of scene.emitters) {
-    if (e.kind !== 'rect-area') continue;
+    if (e.kind !== 'rect-area' && e.kind !== 'disc-area') continue;
+
+    let position: readonly [number, number, number];
+    let uAxis: readonly [number, number, number];
+    let vAxis: readonly [number, number, number];
+    let rgb: readonly [number, number, number];
+
+    if (e.kind === 'rect-area') {
+      position = [e.position[0], e.position[1], e.position[2]];
+      uAxis = [e.uAxis[0], e.uAxis[1], e.uAxis[2]];
+      vAxis = [e.vAxis[0], e.vAxis[1], e.vAxis[2]];
+      rgb = [
+        e.color[0] * e.intensity,
+        e.color[1] * e.intensity,
+        e.color[2] * e.intensity,
+      ];
+    } else {
+      if (Number.isFinite(e.radius) && e.radius < 1e-8) {
+        warnings.push(
+          `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has near-zero radius; skipped.`,
+        );
+        continue;
+      }
+      const d = discAreaPackedAsRect(e);
+      position = d.position;
+      uAxis = d.uAxis;
+      vAxis = d.vAxis;
+      rgb = d.radiance;
+    }
+
     if (rectAreaLightCount >= MAX_RECT_AREA_LIGHTS) {
       warnings.push(
-        `@vitrum/pt-webgpu: rect-area lights capped at ${MAX_RECT_AREA_LIGHTS}; emitter "${e.id}" and subsequent omitted.`,
+        `@vitrum/pt-webgpu: rect-/disc-area lights capped at ${MAX_RECT_AREA_LIGHTS}; emitter "${e.id}" and subsequent area emitters omitted.`,
       );
       break;
     }
+
     const o = rectAreaLightCount * RECT_AREA_LIGHT_FLOAT_STRIDE;
-    rectAreaLightsData[o + 0] = e.position[0];
-    rectAreaLightsData[o + 1] = e.position[1];
-    rectAreaLightsData[o + 2] = e.position[2];
-    rectAreaLightsData[o + 4] = e.uAxis[0];
-    rectAreaLightsData[o + 5] = e.uAxis[1];
-    rectAreaLightsData[o + 6] = e.uAxis[2];
-    rectAreaLightsData[o + 8] = e.vAxis[0];
-    rectAreaLightsData[o + 9] = e.vAxis[1];
-    rectAreaLightsData[o + 10] = e.vAxis[2];
-    rectAreaLightsData[o + 12] = e.color[0] * e.intensity;
-    rectAreaLightsData[o + 13] = e.color[1] * e.intensity;
-    rectAreaLightsData[o + 14] = e.color[2] * e.intensity;
+    rectAreaLightsData[o + 0] = position[0];
+    rectAreaLightsData[o + 1] = position[1];
+    rectAreaLightsData[o + 2] = position[2];
+    rectAreaLightsData[o + 4] = uAxis[0];
+    rectAreaLightsData[o + 5] = uAxis[1];
+    rectAreaLightsData[o + 6] = uAxis[2];
+    rectAreaLightsData[o + 8] = vAxis[0];
+    rectAreaLightsData[o + 9] = vAxis[1];
+    rectAreaLightsData[o + 10] = vAxis[2];
+    rectAreaLightsData[o + 12] = rgb[0];
+    rectAreaLightsData[o + 13] = rgb[1];
+    rectAreaLightsData[o + 14] = rgb[2];
     rectAreaLightCount += 1;
   }
 
@@ -740,14 +837,18 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
   const analyticWorldToLocal: number[] = [];
   const warnings: string[] = [];
   for (const emitter of scene.emitters) {
-    if (
-      emitter.kind !== 'directional' &&
-      emitter.kind !== 'point' &&
-      emitter.kind !== 'spot' &&
-      emitter.kind !== 'rect-area' &&
-      emitter.kind !== 'mesh-area'
-    ) {
-      warnings.push(`Emitter "${emitter.id}" (${emitter.kind}) ignored; prototype supports directional, point, spot, rect-area, and mesh-area emitters only.`);
+    const k = emitter.kind;
+    const supported =
+      k === 'directional' ||
+      k === 'point' ||
+      k === 'spot' ||
+      k === 'rect-area' ||
+      k === 'disc-area' ||
+      k === 'mesh-area';
+    if (!supported) {
+      warnings.push(
+        `Emitter "${(emitter as SceneEmitter).id}" (${String(k)}) ignored; prototype supports directional, point, spot, rect-area, disc-area (packed as rect), and mesh-area emitters only.`,
+      );
     }
   }
 

@@ -16,6 +16,9 @@ import { IRR_CELL, VIS_CELL, IRR_STRIDE, VIS_STRIDE } from '../ddgi/ddgiAtlasLay
 // one source of truth (ddgiAtlasLayout.ts).
 export const SHADE_WGSL = /* wgsl */ `
 
+// Blend for diffuse irradiance from DDGI probes (1.0 = full contribution when isDDGIWired()).
+const DDGI_DIFFUSE_BLEND: f32 = 1.0;
+
 @group(0) @binding(0) var gDepth:     texture_2d<f32>;
 @group(0) @binding(1) var gNormal:    texture_2d<f32>;
 @group(0) @binding(2) var gAlbedo:    texture_2d<f32>;
@@ -435,13 +438,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   //   Lo_sunCaustic   sun shadow ray through glass, deterministic
   //   Lo_skyAperture  5-tap sky probe through cutout, scalar luminance
   //
-  // Lo_ddgi is computed above for future re-enable but excluded from
-  // the sum: probe-grid trilinear painted soft cell-tinted blobs
-  // whose magnitude relative to the sharp Lo_sunCaustic varied by
-  // cell color, so warm cells looked sharp and cool cells looked fuzzy.
+  // Lo_ddgi: diffuse irradiance from DDGI atlas × albedo × INV_PI (gated on isDDGIWired()).
   let combined = Lo_emit + Lo_direct + Lo_sunCaustic
                + Lo_skyAperture * 0.08
-               + Lo_ddgi * 0.0;
+               + Lo_ddgi * DDGI_DIFFUSE_BLEND;
   // Write LINEAR HDR radiance to hdrColorOut — do NOT tone-map here.
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.

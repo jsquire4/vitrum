@@ -5,7 +5,7 @@
 1. **The contract is the thing that's fixed.** Backends are swappable; scene bindings are swappable; denoisers are composable. The public types in `@vitrum/core` are the load-bearing interface.
 2. **The host owns lifecycle.** Engine accepts a device handle but does not own the device. Engine accepts frame inputs but does not own the cadence. This is the design choice that makes `@vitrum/*` survive Canvas remounts and other host-level lifecycle churn.
 3. **Generalize over time.** Today's contract handles the most pressing concrete needs. Each Phase 6 sprint generalizes one more dimension. The `Material.extensions`, `EngineOptions.extensions`, and `AnalyticShape` discriminated union are the explicit extension points where generalization happens without breaking the contract.
-4. **No upstream PRs (yet).** While vitrum is pre-prime-time, fork patches stay in `vendor/three-gpu-pathtracer` (consumed by `@vitrum/pt-webgl`). Upstream contribution is a v1+ concern.
+4. **No upstream PRs (yet).** While vitrum is pre-prime-time, `@vitrum/pt-webgl` consumes the sibling-checkout `three-gpu-pathtracer` fork via `file:` (see `packages/pt-webgl/package.json`). Upstream contribution is a v1+ concern.
 
 ## Package responsibilities
 
@@ -51,7 +51,7 @@
 **Owns**:
 - À-trous wavelet (current walkaround denoiser, Phase 6 baseline)
 - SVGF (Phase 6 Sprint 10a)
-- BMFR (Phase 6 Sprint 10a candidate)
+- BMFR (Phase 6 Sprint 10a candidate; **not shipped** in `@vitrum/shared-denoisers` yet)
 - OIDN final-pass via ONNX Runtime Web + WebNN execution provider (Phase 6 Sprint 10b)
 
 **Depends on**: `@vitrum/core`.
@@ -60,13 +60,13 @@
 
 **Owns**: implementation of the `Engine` contract via the forked three-gpu-pathtracer. Today: wraps the WebGL2 PT pipeline. Future: deprecated when `@vitrum/pt-webgpu` reaches feature parity.
 
-**Depends on**: `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `three`, `three-gpu-pathtracer` (our fork).
+**Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), `three-mesh-bvh`. BVH/denoiser building blocks used indirectly via the fork and three.js stack, not as direct `@vitrum/shared-bvh` / `shared-denoisers` dependencies today.
 
 ### `@vitrum/pt-webgpu` *(prototype, evolving toward Phase 7 goals)*
 
 **Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active pre-alpha prototype (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
 
-**Depends on**: `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`. Notably NOT three-gpu-pathtracer.
+**Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`. Notably **not** `three-gpu-pathtracer`; optional denoiser integration may add `@vitrum/shared-denoisers` later.
 
 ### `@vitrum/walkaround-hybrid`
 

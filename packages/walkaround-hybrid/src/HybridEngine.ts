@@ -42,6 +42,7 @@ import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { buildSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
+import { aabbFromBvhPositions, buildPpgUniformGridCells } from './ppg/ppgCellUpload.js';
 
 /** Per-frame target interval (60 FPS soft-cap). */
 const TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -68,11 +69,19 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly isSceneReady?: () => boolean;
 
   /**
-   * Stable signal that triggers pipeline reinitialisation when it changes
-   * (e.g. room loaded/unloaded, fixture swapped). Pass a string/number/null.
-   * The engine calls `reset()` internally when the value changes.
+   * Stable signal sampled at ctor (`pipelineRebuildKey`) and/or dynamically
+   * via {@link getPipelineRebuildKey}. When the effective value changes compared
+   * to the previous frame's sample, {@link HybridEngine.reset} runs so the GPU
+   * pipeline is recreated (same `_lastScene` / `THREE` graph).
    */
   readonly pipelineRebuildKey?: string | number | null;
+
+  /**
+   * Optional callback polled at the **start** of each {@link HybridEngine.renderFrame}
+   * (after state guards). Takes precedence over {@link pipelineRebuildKey} when
+   * supplied. Enables hosts to invalidate the pipeline without `setScene()`.
+   */
+  readonly getPipelineRebuildKey?: () => string | number | null | undefined;
 
   /**
    * Primary directional light direction (world-space, normalised).
@@ -100,6 +109,9 @@ export interface HybridEngineOptions extends EngineOptions {
   /** Light list for DDGI probe update pass. */
   readonly lights?: DDGILight[];
 
+  /** When true, enables informational ReSTIR pipeline logs (initialization / shader compile). */
+  readonly verbose?: boolean;
+
   /**
    * When true, enables debug logging and exposes
    * `window.__DDGI__` inside `typeof window !== 'undefined'` guards.
@@ -107,19 +119,25 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly debug?: boolean;
 
   /**
-   * Sprint 11 — Enable PPG (path guiding) buffer allocation.
+   * Sprint 11 — Enable PPG (path guiding) buffer allocation + training dispatch.
    *
-   * When true, the engine allocates the three PPG storage buffers
-   * (cellBuffer, leafBuffer, sampleBuffer) during pipeline initialisation.
-   * The buffers are ready for binding and now apply immediately via
-   * `setPPGEnabled()` + automatic reset. PPG shader dispatch remains
-   * follow-up work tracked in `plan/sprint-11-ppg-integration.md`.
+   * When true, the engine allocates PPG storage buffers
+   * (cellBuffer, leafBuffer, sampleBuffer, sampleHeadBuffer, kdBuffer) during
+   * pipeline initialisation, injects training writes into the shade pass, and
+   * dispatches `ppgUpdate` after shade. Sampling guided paths from the learned
+   * distribution remains future work.
    *
    * Defaults to false — no behavioural change for existing consumers.
    *
    * @since Sprint 11, 2026-05-09
    */
   readonly ppgEnabled?: boolean;
+
+  /**
+   * Post-shade denoiser: `svgf` (default) — temporal Welford + SVGF à-trous;
+   * `atrous` — legacy three-pass edge-stopping à-trous only.
+   */
+  readonly denoiser?: 'atrous' | 'svgf';
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -152,6 +170,12 @@ function getPreferredSwapChainFormat(): GPUTextureFormat {
 
 export class HybridEngine implements Engine {
 
+  private static _fingerprintRebuildKey(key: string | number | null | undefined): string {
+    if (key === null || key === undefined) return '__null';
+    if (typeof key === 'number') return Number.isNaN(key) ? '__n:NaN' : `__n:${key}`;
+    return `__s:${key}`;
+  }
+
   // ── Engine contract fields ─────────────────────────────────────────────
   private _state: EngineState = 'uninitialized';
   readonly capabilities: EngineCapabilities;
@@ -171,6 +195,7 @@ export class HybridEngine implements Engine {
   private readonly _skyTint:              [number, number, number];
   private readonly _skyIrradiance:        number;
   private readonly _debug:                boolean;
+  private readonly _verbose:             boolean;
   private readonly _maxBounces:           number;
 
   // ── Sprint 11 — PPG state ──────────────────────────────────────────────
@@ -184,6 +209,7 @@ export class HybridEngine implements Engine {
    * Default: false — no behavioural change for existing consumers.
    */
   private _ppgEnabled: boolean;
+  private readonly _denoiser: 'atrous' | 'svgf';
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -228,7 +254,12 @@ export class HybridEngine implements Engine {
   /** Set to true by dispose() to cancel an in-flight async init. */
   private _disposed = false;
 
-  // ── Constructor ────────────────────────────────────────────────────────
+  /** Monotonic fingerprint of {@link HybridEngineOptions.pipelineRebuildKey} /
+   *  {@link HybridEngineOptions.getPipelineRebuildKey} — changes trigger `reset()`. */
+  private _rebuildKeyFingerprintSeen: string;
+
+  private readonly _staticPipelineRebuildKey: string | number | null;
+  private readonly _getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
 
   constructor(opts: HybridEngineOptions) {
     this._device                = opts.device;
@@ -240,9 +271,17 @@ export class HybridEngine implements Engine {
     this._skyTint               = opts.skyTint;
     this._skyIrradiance         = opts.skyIrradiance;
     this._debug                 = opts.debug ?? false;
+    this._verbose               = opts.verbose ?? false;
     this._maxBounces            = opts.maxBounces ?? 4;
     this._ppgEnabled            = opts.ppgEnabled ?? false;
+    this._denoiser             = opts.denoiser ?? 'svgf';
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
+
+    this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
+    this._getPipelineRebuildKey     = opts.getPipelineRebuildKey;
+    this._rebuildKeyFingerprintSeen = HybridEngine._fingerprintRebuildKey(
+      opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
+    );
 
     this._ddgi = new DDGI({ debug: this._debug });
     if (opts.lights && opts.lights.length > 0) {
@@ -328,7 +367,16 @@ export class HybridEngine implements Engine {
       isConverged: false,
     };
 
-    if (this._state === 'paused' || this._state === 'disposed') {
+    if (this._state === 'paused' || this._state === 'disposed' || this._state === 'error') {
+      return skipOutput;
+    }
+
+    const fp = HybridEngine._fingerprintRebuildKey(
+      this._getPipelineRebuildKey?.() ?? this._staticPipelineRebuildKey,
+    );
+    if (fp !== this._rebuildKeyFingerprintSeen) {
+      this._rebuildKeyFingerprintSeen = fp;
+      this.reset();
       return skipOutput;
     }
 
@@ -447,13 +495,8 @@ export class HybridEngine implements Engine {
     const prevProj    = (input.prevProjMatrix ?? input.projMatrix) as Float32Array;
     const camPos      = input.cameraPosition as [number, number, number];
 
-    // Clamp bounces to structural cap.
-    // (Walkaround ignores samplesTarget — it resamples every frame.)
-    const _bounces = Math.min(
-      input.quality?.bounces ?? this._maxBounces,
-      this._maxBounces,
-    );
-    void _bounces; // Walkaround pipeline currently uses a fixed bounce count baked at compile time.
+    // `FrameInput.quality.bounces` is ignored: ReSTIR + shade WGSL use a fixed
+    // path depth baked at shader compile time (see `capabilities.maxBounces`).
 
     pipeline.renderFrame({
       viewMatrix:            new Float32Array(viewMatrix),
@@ -517,8 +560,8 @@ export class HybridEngine implements Engine {
    * no-op when the state transition doesn't apply.
    */
   pause(): void {
-    if (this._state === 'disposed') {
-      throw new Error('pause: engine is disposed');
+    if (this._state === 'disposed' || this._state === 'error') {
+      throw new Error('pause: engine is disposed or in error state');
     }
     if (this._state === 'ready') {
       this._state = 'paused';
@@ -535,8 +578,8 @@ export class HybridEngine implements Engine {
    * no-op when the state transition doesn't apply.
    */
   resume(): void {
-    if (this._state === 'disposed') {
-      throw new Error('resume: engine is disposed');
+    if (this._state === 'disposed' || this._state === 'error') {
+      throw new Error('resume: engine is disposed or in error state');
     }
     if (this._state === 'paused') {
       this._state = 'ready';
@@ -563,17 +606,14 @@ export class HybridEngine implements Engine {
   /**
    * Enable or disable PPG (path guiding) for subsequent frames.
    *
-   * The setting takes effect immediately by rebuilding the pipeline so
-   * frame resources are reallocated with/without PPG buffers.
+   * The setting takes effect on reinitialisation (`reset()`): frame resources
+   * and pipelines are rebuilt with or without PPG training buffers and dispatch.
    *
    * The no-op guarantee: calling `setPPGEnabled(false)` when PPG was never
    * enabled has zero cost and no side effects. Existing consumers that never
    * call this method are unaffected.
    *
-   * **Sprint 11 integration spec** (`plan/sprint-11-ppg-integration.md`)
-   * defines when this toggle will wire the actual compute dispatch.
-   *
-   * @param on - true to enable PPG buffer allocation on next reinit; false to disable.
+   * @param on - true to enable PPG training path on next reinit; false to disable.
    *
    * @since Sprint 11, 2026-05-09
    */
@@ -722,7 +762,7 @@ export class HybridEngine implements Engine {
         await pipeline.initialize(
           bvh,
           getPreferredSwapChainFormat(),
-          { ppgEnabled: this._ppgEnabled },
+          { ppgEnabled: this._ppgEnabled, verbose: this._verbose || this._debug, denoiser: this._denoiser },
         );
         const pipelineMs = performance.now() - pipelineStart;
 
@@ -734,6 +774,15 @@ export class HybridEngine implements Engine {
           }
           pipeline.dispose();
           return;
+        }
+
+        if (this._ppgEnabled) {
+          const maxC = pipeline.ppgAllocatedMaxCells;
+          if (maxC > 0) {
+            const box = aabbFromBvhPositions(bvh.bvhPositions.cpuData, bvh.bvhPositions.count);
+            const cells = buildPpgUniformGridCells(box.min, box.max, maxC);
+            pipeline.uploadPpgCells(cells, cells.length);
+          }
         }
 
         // Wire the sun intensity multiplier into DDGI so its Le bake
@@ -753,15 +802,13 @@ export class HybridEngine implements Engine {
           });
         }
       } catch (err) {
-        // Transition to 'disposed' so hosts polling engine.state can detect
-        // the failure. The engine is now unusable — the host must dispose and
-        // recreate. Using 'disposed' (not a new 'error' state) is consistent
-        // with the existing EngineState type and avoids adding a new variant.
-        // (M-8 fix: previously the engine stayed in 'initializing' forever.)
         if (!this._disposed) {
-          this._state = 'disposed';
+          this._state = 'error';
         }
-        console.error('[HybridEngine] init failed — engine state set to disposed. Recreate the engine to retry.', err);
+        console.error(
+          '[HybridEngine] init failed — engine state set to error. Call dispose() and recreate the engine to retry.',
+          err,
+        );
       }
     };
 

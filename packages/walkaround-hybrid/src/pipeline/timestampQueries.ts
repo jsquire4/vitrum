@@ -1,8 +1,11 @@
 /**
  * GPU timestamp query helpers — DEV-only, feature-gated.
  *
- * 10 passes per frame: ris, temporal, spatial-1, spatial-2, shade,
- * atrous-0..2 (3 iterations, stepWidths 1/2/4), temporalAccum, composite.
+ * 15 timestamp slots cover both denoisers + optional PPG:
+ *   • SVGF: ris…shade (0–4), ppg-update (5), welford + svgf-var + five à-trous
+ *     (6–12), temporalAccum (13), composite (14). When PPG is off, slot 5 is unused.
+ *   • Legacy à-trous: 0–4, ppg-update (5), three à-trous (6–8), temporalAccum (9),
+ *     composite (10); slots 11–14 unused (readback skips empty begin/end pairs).
  *
  * Uses a ping-pong pair of readback buffers so one can be in-flight
  * (mapped/mapping) while the next frame writes into the other, avoiding
@@ -11,7 +14,8 @@
 
 export const PASS_LABELS = [
   'ris', 'temporal', 'spatial-1', 'spatial-2', 'shade',
-  'atrous-0', 'atrous-1', 'atrous-2',
+  'ppg-update',
+  'denoise-5', 'denoise-6', 'denoise-7', 'denoise-8', 'denoise-9', 'denoise-10', 'denoise-11',
   'temporalAccum', 'composite',
 ] as const;
 

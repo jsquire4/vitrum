@@ -23,6 +23,8 @@
  *   Sprint 10a spec: plan/phase-6-roadmap.md §Sprint 10a.
  */
 
+import { SVGF_FRAME_COUNT_INPUT_GUARD_MAX } from './svgfConstants.js';
+
 // ============================================================
 // Variance estimation pass uniforms
 // ============================================================
@@ -34,9 +36,11 @@
  * (when temporal history is sparse) and Welford temporal variance
  * (when the accumulation buffer has settled).
  *
- * The threshold is 4 frames (hard-coded in the shader). Hosts should
- * reset frameCount to 0 on camera move / scene change and increment
- * it each frame thereafter.
+ * The temporal branch activates when frameCount >= SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT
+ * (see svgfConstants.ts; WGSL constant SVGF_TEMPORAL_VARIANCE_MIN_FRAMES). Hosts should
+ * reset frameCount to 0 on camera move / scene change and increment it each frame thereafter.
+ *
+ * Values above SVGF_FRAME_COUNT_INPUT_GUARD_MAX are saturated when packing (host guardrail).
  */
 export interface SVGFVarianceUniforms {
   /** Cumulative frames since the last camera reset. 0 = first frame. */
@@ -68,8 +72,8 @@ export function packSVGFVarianceUniforms(
   offset = 0,
 ): void {
   const view = new DataView(target, offset, SVGF_VARIANCE_UNIFORMS_SIZE_BYTES);
-  // frameCount at offset 0, little-endian u32
-  view.setUint32(0, u.frameCount >>> 0, true);
+  const packedCount = Math.min(Math.max(0, Math.floor(u.frameCount)), SVGF_FRAME_COUNT_INPUT_GUARD_MAX);
+  view.setUint32(0, packedCount >>> 0, true);
   // _pad0, _pad1, _pad2 — zero-filled for determinism
   view.setUint32(4,  0, true);
   view.setUint32(8,  0, true);
@@ -203,6 +207,8 @@ export interface SVGFVarianceBindGroupLayout {
    * binding 5 — Welford variance buffer from Sprint 9 accumulator.
    * Format: rg32float (.r = mean luminance, .g = M2 running sum).
    * @see walkaround-hybrid/src/shaders/common.wgsl.ts — WelfordVariance @version 1
+   *
+   * WebGPU uploads from CPU: `runSvgfWebGPU({ welfordMeanM2 })` expects interleaved RG floats per pixel.
    */
   varianceIn: 'texture_2d<f32>';
   /** binding 6 — estimated variance output.  Format: rg32float (storage write). */

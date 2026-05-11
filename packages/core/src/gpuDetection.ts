@@ -5,13 +5,13 @@
  * spec gate consume on `window.__WG__`.
  *
  * The shared `probeWebGPU()` is canonical; this wrapper exists so the
- * `__WG__` global shape (`isWebGPU` + `isHardwareGpu` + lower-cased
- * `adapterVendor` / `adapterArchitecture`) keeps working for the
+ * `__WG__` global shape (`isWebGPU` + `adapterKind` / `isHardwareGpu` +
+ * lower-cased `adapterVendor` / `adapterArchitecture`) keeps working for the
  * existing chroma precondition gate. New callers should consume
  * `probeWebGPU()` directly via the lib.
  */
 
-import { probeWebGPU } from './wgpuSupport.js';
+import { probeWebGPU, type WgpuAdapterKind } from './wgpuSupport.js';
 
 /**
  * GpuDetection — the canonical `__WG__` shape consumed by every walkaround
@@ -19,13 +19,22 @@ import { probeWebGPU } from './wgpuSupport.js';
  *
  * RC's gl-factory writer publishes `adapterVendor` / `adapterArchitecture`
  * + an optional `adapter: { name }` summary; the other engines publish via
- * `detectGpu()` below. All fields except `isWebGPU` and `isHardwareGpu`
- * are optional because the SwiftShader gate only needs those two.
+ * `detectGpu()` below. `adapterVendor` / `adapterArchitecture` remain
+ * optional because some gates only need `isWebGPU` / `adapterKind`.
  */
 export interface GpuDetection {
   /** True if `navigator.gpu` is exposed AND an adapter was successfully obtained. */
   isWebGPU: boolean;
-  /** True if `isWebGPU` AND the adapter is NOT SwiftShader. */
+  /**
+   * Classified adapter kind from the probe (or `'unknown'` when WebGPU is
+   * unavailable).
+   */
+  adapterKind: WgpuAdapterKind;
+  /**
+   * @deprecated Use {@link adapterKind} (`adapterKind !== 'swiftshader'`).
+   * `true` when WebGPU is supported and the adapter is not SwiftShader,
+   * including the fingerprinting `unknown` case.
+   */
   isHardwareGpu: boolean;
   /** GPUAdapterInfo.vendor (lowercased) — '' if unavailable. */
   adapterVendor?: string;
@@ -33,6 +42,15 @@ export interface GpuDetection {
   adapterArchitecture?: string;
   /** Friendly summary used by RC's gl-factory writer for diagnostic logs. */
   adapter?: { name: string };
+}
+
+/** Options for {@link detectGpu}. */
+export interface DetectGpuOptions {
+  /**
+   * When true (default), assigns `window.__WG__` on first successful probe.
+   * Set false in workers or tests that must not touch `window`.
+   */
+  readonly publishToWindow?: boolean;
 }
 
 declare global {
@@ -46,19 +64,28 @@ let cached: Promise<GpuDetection> | null = null;
 /**
  * Detect whether the runtime is on a real hardware GPU. Memoized — safe
  * to call from multiple call sites; only one adapter is actually requested.
- * The first call also publishes `window.__WG__`.
+ * By default the first call also assigns `window.__WG__` (see
+ * {@link DetectGpuOptions.publishToWindow}). Options apply only to the first
+ * invocation until {@link _resetCacheUnsafe} clears the cache.
  */
-export function detectGpu(): Promise<GpuDetection> {
+export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
   if (cached) return cached;
+  const publishToWindow = options?.publishToWindow !== false;
   cached = (async () => {
     const probe = await probeWebGPU();
+    const adapterKind: WgpuAdapterKind = probe.supported && probe.adapterKind != null
+      ? probe.adapterKind
+      : 'unknown';
     const result: GpuDetection = {
       isWebGPU: probe.supported,
+      adapterKind,
       isHardwareGpu: Boolean(probe.supported && probe.isHardwareGpu !== false),
       adapterVendor: (probe.vendor ?? '').toLowerCase(),
       adapterArchitecture: (probe.architecture ?? '').toLowerCase(),
     };
-    publish(result);
+    if (publishToWindow) {
+      publish(result);
+    }
     return result;
   })();
   return cached;

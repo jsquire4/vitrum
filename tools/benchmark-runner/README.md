@@ -36,6 +36,9 @@ When a baseline capture emits `{"msPerSample": number}` on stdout, the runner st
 it beside the baseline PNG as `<scenario>.png.json` and reuses it as
 `perfBaselineMsPerSample` on later runs.
 
+- `VITRUM_STRICT_GAP_CLOSURE=1` — exit with code `1` if any scenario is not `PASS`
+  (use after baselines exist and captures succeed).
+
 The capture adapter command receives scenario parameters via env vars:
 
 - `VITRUM_SCENARIO_ID`

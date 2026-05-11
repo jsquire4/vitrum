@@ -185,24 +185,23 @@ function fitCoefficients(r: number, g: number, b: number): [number, number, numb
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Jakob+Hanika 2019 spectral upsampling (compact approximation).
+ * Compact RGB→spectral coefficient fit (placeholder vs. full Jakob–Hanika table).
  *
- * Converts an RGB color (sRGB linear, components in [0, 1]) into a 3-coefficient
+ * Converts an RGB color (linear sRGB, components in [0, 1]) into a 3-coefficient
  * polynomial that approximates a smooth reflectance spectrum across [380, 780] nm.
  *
  * The spectrum at wavelength λ (nm) is:
  *   s(λ) = sigmoid(c0 + c1·λ + c2·λ²)
  * where sigmoid(x) = 0.5 + x / (2·√(1 + x²)).
  *
- * ⚠️ This is a placeholder approximation — not the full precomputed table
- * from the paper.  See file-level documentation for details and TODO.
+ * ⚠️ Not the paper’s precomputed table — see file-level documentation.
  *
  * @param r - Red channel, linear sRGB [0, 1].
  * @param g - Green channel, linear sRGB [0, 1].
  * @param b - Blue channel, linear sRGB [0, 1].
  * @returns (c0, c1, c2) polynomial coefficients.
  */
-export function rgbToSpectralCoefficients(
+export function rgbToApproxSpectralCoefficients(
   r: number,
   g: number,
   b: number,
@@ -239,7 +238,7 @@ export function rgbToSpectralCoefficients(
  *
  * s(λ) = sigmoid(c0 + c1·λ + c2·λ²)
  *
- * @param coeffs   - (c0, c1, c2) from rgbToSpectralCoefficients.
+ * @param coeffs   - (c0, c1, c2) from rgbToApproxSpectralCoefficients.
  * @param lambdaNm - Wavelength in nm.  Values outside [380, 780] are accepted
  *                   but may extrapolate beyond the fitted range.
  * @returns Spectral reflectance in [0, 1].
@@ -257,3 +256,9 @@ export function evaluateSpectrum(
 /** Visible range used by this implementation. */
 export const VISIBLE_LAMBDA_MIN = LAMBDA_MIN;
 export const VISIBLE_LAMBDA_MAX = LAMBDA_MAX;
+
+/**
+ * @deprecated Use {@link rgbToApproxSpectralCoefficients}. Name retained for
+ * backward compatibility; this implementation is the compact approximation only.
+ */
+export const rgbToSpectralCoefficients = rgbToApproxSpectralCoefficients;
