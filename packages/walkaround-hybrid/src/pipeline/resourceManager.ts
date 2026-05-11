@@ -88,6 +88,14 @@ export interface FrameResources {
   gtaoUboBuffer: GPUBuffer;
 
   /**
+   * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
+   * Layout: RESERVOIR_GI_STRIDE = 20 u32 (80 bytes) per pixel.
+   * Size: (W/2) × (H/2) × 80 bytes. At 2688×1344 → ~58 MB.
+   * Written by `risGiMain`; read by `shade.wgsl` for `Lo_indirect`.
+   */
+  reservoirGiCurrentBuffer: GPUBuffer;
+
+  /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
    * is true in the options passed to `createFrameResources`. When PPG is
    * disabled (the default), this field is absent — all existing consumers
@@ -642,6 +650,15 @@ export function createFrameResources(
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
+  // Sprint 16 — GI reservoir buffer (half-res). RESERVOIR_GI_STRIDE = 20 u32
+  // (80 bytes) per pixel. Aligned to 256 to match WebGPU storage binding rules.
+  const reservoirGiSize = halfW * halfH * 80;
+  const reservoirGiCurrentBuffer = device.createBuffer({
+    label: 'reservoir-gi-current',
+    size: Math.max(256, reservoirGiSize),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+  });
+
   return {
     reservoirCurrentBuffer,
     reservoirPreviousBuffer,
@@ -668,6 +685,7 @@ export function createFrameResources(
     aoHalfTexture,
     aoFullTexture,
     gtaoUboBuffer,
+    reservoirGiCurrentBuffer,
     ...ppgExt,
   };
 }
@@ -700,6 +718,7 @@ export function destroyFrameResources(r: FrameResources): void {
   r.aoHalfTexture.destroy();
   r.aoFullTexture.destroy();
   r.gtaoUboBuffer.destroy();
+  r.reservoirGiCurrentBuffer.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

@@ -30,6 +30,10 @@ const DDGI_DIFFUSE_BLEND: f32 = 1.0;
 // distance in w.  Authored here in shade and consumed by the à-trous denoiser
 // in the next pass for normal+depth edge stopping.
 @group(0) @binding(10) var gNormalDepthOut: texture_storage_2d<rgba16float, write>;
+// Sprint 16 — ReSTIR-GI half-res reservoir. Written by risGi; read here
+// for the Lo_indirect term. The dispatch grid in shade is full-res, so
+// we sample at (gid.xy / 2) — each 2×2 quad shares one GI reservoir.
+@group(0) @binding(11) var<storage, read_write> reservoirGiCurrent: array<u32>;
 
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
@@ -335,23 +339,36 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     Lo_skyAperture = skyVisAvg * skyTint * skyIrradiance * albedo * INV_PI;
   }
 
-  // --- Indirect lighting (ReSTIR GI -- one indirect bounce) ---
+  // --- Indirect lighting (Sprint 16 — ReSTIR-GI one-bounce resampling) ---
   //
-  // DDGI ambient on opaque receivers — diffuse-indirect irradiance
-  // sampled from the probe atlas, integrated as Lambertian contribution.
-  // Glass primary hits skip this — Lo_emit drives them.
-  // Gated on isDDGIWired() so the placeholder atlas (dimsX=1) is ignored.
-  var Lo_ddgi = vec3f(0.0);
-  if (!isGlass && isDDGIWired()) {
-    // DDGI off (× 0). After reducing SVGF atrous iterations from 5 to 3
-    // (to fix blocky penumbra), the wide-kernel step-16 iter-4 pass no
-    // longer masks the DDGI probe-grid cell pattern, so even × 0.05
-    // showed splotchy patches on smooth walls. Until DDGI ships with
-    // stochastic atlas sampling or screen-space refinement to hide the
-    // grid, contribute zero. Walls and shadows render cleanly with
-    // direct-only lighting; Cornell colour bleed is missing but no
-    // perceptual artefacts.
-    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 0.0;
+  // The trilinear DDGI atlas read had visible cell-grid splotches on
+  // smooth walls (structural single-bounce limitation). ReSTIR-GI runs
+  // a half-res RIS pass that picks ONE probe-direction sample per pixel
+  // by importance, then resamples spatially+temporally (Sprints 17-18).
+  // The result is per-pixel screen-space — the probe grid stops being
+  // the per-pixel basis, so cell artefacts go away.
+  //
+  // Lo_indirect = albedo * Lo * W * cos(N, wi) * INV_PI
+  //   - Lo, W from the GI reservoir (read at gid.xy / 2 — half-res)
+  //   - albedo is the visible point's diffuse colour
+  //   - cos × INV_PI is the receiver Lambertian BRDF response
+  // Gating: glass/metal surfaces skip this (their Lo_emit drives).
+  //         The reservoir was empty-stored by risGi in those cases.
+  var Lo_indirect = vec3f(0.0);
+  if (!isGlass && !isMetal) {
+    let halfDims = dims / 2u;
+    let halfPx = gid.xy / 2u;
+    let giIdx = halfPx.y * halfDims.x + halfPx.x;
+    let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+    if (g.W > 0.0 && g.M > 0u) {
+      let toS = g.xs - pos;
+      let distS = length(toS);
+      if (distS > 1e-4) {
+        let wi = toS / distS;
+        let cosTheta = max(0.0, dot(normal, wi));
+        Lo_indirect = g.Lo * albedo * INV_PI * cosTheta * g.W;
+      }
+    }
   }
 
   // Active terms (current pipeline state):
@@ -375,7 +392,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let ao = select(1.0, clamp(aoRaw, 0.0, 1.0), aoRaw > 0.001);
   let combined = Lo_emit + (Lo_direct + Lo_sunCaustic
                + Lo_skyAperture * 0.08
-               + Lo_ddgi * DDGI_DIFFUSE_BLEND) * ao;
+               + Lo_indirect) * ao;
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
   // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of
   // a wall, near-zero RIS pdf). These propagate through SVGF (which would

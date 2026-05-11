@@ -28,6 +28,7 @@ export type PassLabel =
   | 'temporal'
   | 'spatial-1'
   | 'spatial-2'
+  | 'gi-ris'
   | 'shade'
   | 'ppg-update'
   | 'gtao'
@@ -49,9 +50,12 @@ export type PassLabel =
 /**
  * Maximum slot count across all supported configurations. Used to size the
  * GPU querySet + resolve/readback buffers so allocation survives every
- * runtime layout. Bumped 17 → 19 in Sprint 15 for `gtao` + `gtao-upsample`.
+ * runtime layout.
+ *
+ * History: 15 (base) → 17 (Sprint 9: sample-budget + resolve) →
+ *          19 (Sprint 15: gtao + gtao-upsample) → 20 (Sprint 16: gi-ris).
  */
-export const MAX_PASS_COUNT = 19;
+export const MAX_PASS_COUNT = 20;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -72,7 +76,11 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
     // Sprint 9 — adaptive sampling tier classifier runs before everything
     // else so its r32uint tier output is available for shade in the same frame.
     'sample-budget',
-    'ris', 'temporal', 'spatial-1', 'spatial-2', 'shade',
+    'ris', 'temporal', 'spatial-1', 'spatial-2',
+    // Sprint 16 — ReSTIR-GI RIS runs after the DI spatial passes and
+    // before shade so shade can consume the GI reservoir for Lo_indirect.
+    'gi-ris',
+    'shade',
   ];
   if (opts.ppgEnabled) labels.push('ppg-update');
   // Sprint 15 — GTAO runs after shade (consumes gNormalDepth) and before the

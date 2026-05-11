@@ -36,6 +36,8 @@ export interface FrameBindGroupResources {
   hdrColorTexture: GPUTexture;
   nearestSampler: GPUSampler;
   gNormalDepthTexture: GPUTexture;
+  /** Sprint 16 — half-res GI reservoir (write target for risGi, read for shade). */
+  reservoirGiCurrentBuffer: GPUBuffer;
 }
 
 export function buildFrameBindGroup(
@@ -61,6 +63,10 @@ export function buildFrameBindGroup(
       // declare it (in the BGL) but never reference the symbol, so it's
       // inert for them. Bound to the same texture in every dispatch.
       { binding: 10, resource: r.gNormalDepthTexture.createView() },
+      // Sprint 16 — half-res ReSTIR-GI reservoir. Only risGi writes to it
+      // (and shade reads it); other DI passes declare it via the BGL but
+      // never reference the symbol.
+      { binding: 11, resource: { buffer: r.reservoirGiCurrentBuffer } },
     ],
   });
 }

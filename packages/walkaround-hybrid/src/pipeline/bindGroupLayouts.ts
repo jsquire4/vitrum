@@ -55,6 +55,10 @@ export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
       // spatial / shade) for layout compatibility, but only shade actually
       // writes to it. Bound to the same texture in every dispatch.
       { binding: 10, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      // Sprint 16 — half-res GI reservoir (read_write storage buffer).
+      // Written by risGiMain; read by shade.wgsl to compute Lo_indirect.
+      // Sized for (W/2) × (H/2) × 80 bytes (RESERVOIR_GI_STRIDE × u32).
+      { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
     ],
   });
   return cache.frame;

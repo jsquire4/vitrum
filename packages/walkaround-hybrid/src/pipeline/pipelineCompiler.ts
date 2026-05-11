@@ -19,6 +19,7 @@ import { SAMPLE_BUDGET_WGSL } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_WGSL } from '../shaders/resolve.wgsl.js';
 import { GTAO_WGSL } from '../shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../shaders/gtaoUpsample.wgsl.js';
+import { RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import {
@@ -72,6 +73,8 @@ export interface CompiledPipelines {
   gtaoPipeline: GPUComputePipeline;
   /** Sprint 15 — bilateral upsample from half-res AO to full-res. */
   gtaoUpsamplePipeline: GPUComputePipeline;
+  /** Sprint 16 — ReSTIR-GI RIS pass (half-res). */
+  risGiPipeline: GPUComputePipeline;
 }
 
 export async function compilePipelines(
@@ -230,6 +233,20 @@ export async function compilePipelines(
     }),
   ]);
 
+  // Sprint 16 — ReSTIR-GI RIS pipeline. Reuses the existing shadeLayout
+  // (frame + scene + ubo + hybrid-layers) so it can re-cast the primary ray
+  // (gNormalDepth on group 0), traverse the BVH (group 1), read UBO + AO
+  // (group 2), and sample the DDGI atlas (group 3). The reservoir-gi-current
+  // storage buffer rides on the frame BGL at binding 11.
+  const risGiSM = device.createShaderModule({
+    label: 'risGi',
+    code: COMMON_WGSL + DDGI_SAMPLE_WGSL + RIS_GI_WGSL,
+  });
+  const risGiPipeline = await device.createComputePipelineAsync({
+    label: 'risGi', layout: shadeLayout,
+    compute: { module: risGiSM, entryPoint: 'risGiMain' },
+  });
+
   let welfordPipeline: GPUComputePipeline | undefined;
   let svgfVariancePipeline: GPUComputePipeline | undefined;
   let svgfAtrousPipeline: GPUComputePipeline | undefined;
@@ -295,6 +312,7 @@ export async function compilePipelines(
     resolvePipeline,
     gtaoPipeline,
     gtaoUpsamplePipeline,
+    risGiPipeline,
     denoiserMode,
     ppgEnabled: ppgOn,
     ...(welfordPipeline !== undefined &&

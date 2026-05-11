@@ -222,6 +222,7 @@ export class WalkaroundGPUPipeline {
   private _resolvePipeline!: GPUComputePipeline;
   private _gtaoPipeline!: GPUComputePipeline;
   private _gtaoUpsamplePipeline!: GPUComputePipeline;
+  private _risGiPipeline!: GPUComputePipeline;
   /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
   private _ppgEnabled = false;
   private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
@@ -370,6 +371,7 @@ export class WalkaroundGPUPipeline {
     this._resolvePipeline      = compiled.resolvePipeline;
     this._gtaoPipeline         = compiled.gtaoPipeline;
     this._gtaoUpsamplePipeline = compiled.gtaoUpsamplePipeline;
+    this._risGiPipeline        = compiled.risGiPipeline;
     if (this._denoiserMode === 'svgf' && (
       !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
     )) {
@@ -516,6 +518,7 @@ export class WalkaroundGPUPipeline {
       hdrColorTexture:         this._res.hdrColorTexture,
       nearestSampler:          this._res.nearestSampler,
       gNormalDepthTexture:     this._res.gNormalDepthTexture,
+      reservoirGiCurrentBuffer: this._res.reservoirGiCurrentBuffer,
     });
     const bgScene = buildSceneBindGroup(d, this._bglCache, {
       bvhNodesBuffer:    this._bvhNodesBuffer,
@@ -670,6 +673,23 @@ export class WalkaroundGPUPipeline {
           }
         : {}),
     });
+
+    // Sprint 16 — ReSTIR-GI RIS pass. Half-res dispatch (W/2 × H/2).
+    // Reuses bgFrame (gNormalDepth + reservoirGiCurrent), bgScene (BVH),
+    // bgUbo (camera + ao), bgHybrid (DDGI atlas).
+    {
+      const halfWg = Math.ceil((Math.floor(W / 2)) / 8);
+      const halfWgY = Math.ceil((Math.floor(H / 2)) / 8);
+      const pass = encoder.beginComputePass(computeDesc('gi-ris'));
+      pass.setPipeline(this._risGiPipeline);
+      pass.setBindGroup(0, bgFrame);
+      pass.setBindGroup(1, bgScene);
+      pass.setBindGroup(2, bgUbo);
+      pass.setBindGroup(3, bgHybrid);
+      pass.dispatchWorkgroups(halfWg, halfWgY, 1);
+      pass.end();
+    }
+
     {
       const pass = encoder.beginComputePass(computeDesc('shade'));
       pass.setPipeline(this._shadePipeline);
