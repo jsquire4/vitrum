@@ -222,7 +222,15 @@ export class WalkaroundGPUPipeline {
   // Bind group layout memoisation cache
   private _bglCache: BGLCache = {};
 
-  // Lazily-created per-builder UBO buffers
+  // Per-pass UBO buffers. Two access patterns coexist:
+  //  - Builder-managed (lazy): _atrousUboRef and _accumUboRef are passed
+  //    by reference into buildAtrousBindGroup / buildAccumBindGroup, which
+  //    lazy-allocate on first call so each builder owns its UBO lifetime.
+  //  - Eager: the SVGF and PPG UBOs are allocated in initialize() (gated
+  //    by denoiserMode / ppgEnabled) so renderFrame() can write straight
+  //    into them without first-frame branching.
+  // dispose() walks all seven via the `_perPassUboRefs` array below so
+  // adding a new UBO only requires registering it there.
   private _atrousUboRef: UboRef = { buf: undefined };
   private _accumUboRef: UboRef  = { buf: undefined };
   private _welfordUboRef: UboRef = { buf: undefined };
@@ -230,6 +238,17 @@ export class WalkaroundGPUPipeline {
   private _svgfAtrousUboRef: UboRef = { buf: undefined };
   private _ppgUpdateUboRef: UboRef = { buf: undefined };
   private _ppgShadeMetaUboRef: UboRef = { buf: undefined };
+  private get _perPassUboRefs(): readonly UboRef[] {
+    return [
+      this._atrousUboRef,
+      this._accumUboRef,
+      this._welfordUboRef,
+      this._svgfVarianceUboRef,
+      this._svgfAtrousUboRef,
+      this._ppgUpdateUboRef,
+      this._ppgShadeMetaUboRef,
+    ];
+  }
 
   // GPU timestamp query state (DEV-only, feature-gated)
   private _tsState: TimestampState = makeTimestampState();
@@ -796,13 +815,7 @@ export class WalkaroundGPUPipeline {
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
     if (this._res) destroyFrameResources(this._res);
-    this._atrousUboRef.buf?.destroy();
-    this._accumUboRef.buf?.destroy();
-    this._welfordUboRef.buf?.destroy();
-    this._svgfVarianceUboRef.buf?.destroy();
-    this._svgfAtrousUboRef.buf?.destroy();
-    this._ppgUpdateUboRef.buf?.destroy();
-    this._ppgShadeMetaUboRef.buf?.destroy();
+    for (const ref of this._perPassUboRefs) ref.buf?.destroy();
     disposeTimestampState(this._tsState);
   }
 

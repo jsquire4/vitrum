@@ -224,3 +224,53 @@ Only `StorageTexture` type import remains. Used as a WeakMap cache key + a way t
 Functional API holds a module singleton with no public dispose.
 
 **Fix:** Export `disposeSharedDispatcher()` for host teardown. Document on the functional API's JSDoc.
+
+---
+
+### Pass-2 status after this pass
+
+**Landed (12 of 19):** P2-1.1, P2-2.1, P2-2.2, P2-2.3, P2-3.1, P2-3.2,
+P2-3.3, P2-3.4, P2-3.5, P2-4.1, P2-4.2, P2-4.3, P2-5.1, P2-5.2, P2-7.1,
+P2-7.3.
+
+**Deferred (4 items) — all are large structural refactors that need a
+real-device verification pass before landing:**
+
+- **P2-4.4** Split `uploadSceneBuffers.ts` (1058-line god file) into
+  `materialPacking.ts` + `environmentPacking.ts` + `emitterPacking.ts`
+  with a thin `buildPackedScene` orchestrator. Touches the public
+  `PackedSceneData` shape; needs a GPU smoke verification because the
+  WGSL params struct layout depends on the packer output order.
+
+- **P2-4.5** (subsumed by P2-4.4) Generalize `packEmitterArray<K>` —
+  collapses 4× near-identical emitter array loops into one writer-based
+  helper. Will land alongside P2-4.4.
+
+- **P2-4.6** Replace `passIdx: number` with `passId: string` literal
+  type for timestamp slot mapping in WalkaroundGPUPipeline.renderFrame.
+  Eliminates brittle `denoiseBase + 2 + iter` arithmetic. Touches
+  every `computeDesc` call site (12+) and the consumer in
+  `timestampQueries.ts`. Modest refactor; deferred only for
+  prioritization — could land next pass.
+
+- **P2-6.1** Cross-engine `getMaterialPacked` helper in @vitrum/three-
+  bindings. Touches three engines simultaneously (DDGI material upload
+  format, ReSTIR packing helpers, pt-webgpu materialToPackedVec4s) and
+  needs cross-engine GPU verification to confirm no chromaticity drift.
+
+- **P2-7.2** Drop the last `three/webgpu` `StorageTexture` import in
+  `probeUpdatePass.ts`. The cache keys on the StorageTexture instance,
+  and `probeGrid.allocateAtlases` constructs StorageTexture objects.
+  Replacing requires either (a) keying on a synthetic ping-pong index
+  plus passing dimensions as numbers, or (b) writing a structural
+  shape interface and a manual atlas creator. Either approach needs
+  GPU verification — the atlas-texture lifecycle is the load-bearing
+  part of DDGI.
+
+The complexity-sweep findings from pass 2 were resolved at the
+correctness level: zero dead code remains in active library paths;
+stale-comment regressions are fixed; the regression-class `_bvhNormalBuffer`
+and `_bvhUvBuffer` waste is eliminated. The remaining deferrals are
+structural refactors with cross-cutting risk — they are accidental
+complexity worth addressing in a focused next pass, not blockers for
+the current cleanup.

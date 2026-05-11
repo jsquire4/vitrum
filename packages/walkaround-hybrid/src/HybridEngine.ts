@@ -189,6 +189,18 @@ export class HybridEngine implements Engine {
   private readonly _verbose:             boolean;
   private readonly _maxBounces:           number;
 
+  /** Rolling window of per-frame timings (newest last, cap 240 entries).
+   *  Only populated when `debug === true`. Hosts that want a UI gauge
+   *  should poll {@link debugTimings} instead of reaching into globals. */
+  private readonly _debugTimings: Array<{ t: number; ms: number }> = [];
+
+  /** Read-only snapshot of recent frame timings collected when the engine
+   *  was constructed with `debug: true`. Returns an empty array when debug
+   *  is off (no allocation cost is paid in production). */
+  get debugTimings(): readonly { t: number; ms: number }[] {
+    return this._debugTimings;
+  }
+
   // ── Sprint 11 — PPG state ──────────────────────────────────────────────
   /**
    * Whether PPG buffers are allocated. Set at construction from
@@ -499,14 +511,23 @@ export class HybridEngine implements Engine {
 
     const dt = performance.now() - t0;
 
-    // Write debug frame timing to window.__WGPU__.walkaround if host exposed it.
-    if (this._debug && typeof window !== 'undefined') {
-      const w = window as unknown as { __WGPU__?: { walkaround?: { frameTimings: unknown } } };
-      if (w.__WGPU__?.walkaround) {
-        const ft = w.__WGPU__.walkaround.frameTimings as Array<{ t: number; ms: number }>;
-        if (Array.isArray(ft)) {
-          ft.push({ t: now, ms: dt });
-          if (ft.length > 240) ft.shift();
+    // Record the frame timing on the engine itself; hosts that want to surface
+    // it in dev UI can poll `engine.debugTimings`. The legacy mirror into
+    // window.__WGPU__.walkaround.frameTimings is preserved while
+    // `_staging/legacy-source` host code reads from there — it will be dropped
+    // when the host extraction lands.
+    if (this._debug) {
+      this._debugTimings.push({ t: now, ms: dt });
+      if (this._debugTimings.length > 240) this._debugTimings.shift();
+
+      if (typeof window !== 'undefined') {
+        const w = window as unknown as { __WGPU__?: { walkaround?: { frameTimings: unknown } } };
+        if (w.__WGPU__?.walkaround) {
+          const ft = w.__WGPU__.walkaround.frameTimings as Array<{ t: number; ms: number }>;
+          if (Array.isArray(ft)) {
+            ft.push({ t: now, ms: dt });
+            if (ft.length > 240) ft.shift();
+          }
         }
       }
     }
