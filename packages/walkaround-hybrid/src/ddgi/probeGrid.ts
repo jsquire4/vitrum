@@ -94,16 +94,22 @@ export class ProbeGrid {
    */
   computeFromBounds(
     boundingBox: THREE.Box3,
-    // Default 16" (was 24"). Probe spacing drives diffuse-indirect
-    // resolution — at 24" a 12'×9' room had ~6×4×6 = 144 probes; at
-    // 16" same room has ~9×6×9 = 486 probes (3.4×). Light propagation
-    // detail and shadow boundary sharpness scale with probe density.
+    // Auto-scaled by default: target ~5 probes along the longest scene
+    // axis (spacing = maxSize / 4). The legacy stained-glass studio
+    // scene was authored in inches and runs ~144-foot rooms, so the
+    // historical default of 16 (inches) was fine. The same constant
+    // applied to a 2-unit Cornell box produces a 3×3×3 grid 32× larger
+    // than the scene — only the corner probe is anywhere near the
+    // geometry, indirect-light bleed disappears, surfaces look gray.
+    // Pass undefined to use the auto-derived spacing; pass a number to
+    // pin to a specific value (e.g., the studio context still wants 16).
     // Hard cap (16, 10, 16 = 2560 max) prevents pathological growth.
-    spacingInches = 16,
+    spacingInches?: number,
   ): boolean {
     const size = new THREE.Vector3();
     boundingBox.getSize(size);
-    const PROBE_SPACING = spacingInches;
+    const autoSpacing = Math.max(size.x, size.y, size.z) / 4;
+    const PROBE_SPACING = spacingInches ?? autoSpacing;
 
     const nx = Math.max(3, Math.ceil(size.x / PROBE_SPACING) + 1);
     const ny = Math.max(3, Math.ceil(size.y / PROBE_SPACING) + 1);
@@ -117,11 +123,11 @@ export class ProbeGrid {
     const changed =
       cx !== this.dims.x || cy !== this.dims.y || cz !== this.dims.z ||
       !this.worldOrigin.equals(boundingBox.min) ||
-      this.worldSpacing !== spacingInches;
+      this.worldSpacing !== PROBE_SPACING;
 
     this.dims = { x: cx, y: cy, z: cz };
     this.worldOrigin.copy(boundingBox.min);
-    this.worldSpacing = spacingInches;
+    this.worldSpacing = PROBE_SPACING;
     this.dirty = changed;
     return changed;
   }

@@ -185,6 +185,7 @@ export class HybridEngine implements Engine {
   private readonly _primaryLightIntensity:number;
   private readonly _skyTint:              [number, number, number];
   private readonly _skyIrradiance:        number;
+  private readonly _ctorLights:           readonly DDGILight[];
   private readonly _debug:                boolean;
   private readonly _verbose:             boolean;
   private readonly _maxBounces:           number;
@@ -322,8 +323,9 @@ export class HybridEngine implements Engine {
     );
 
     this._ddgi = new DDGI({ debug: this._debug });
-    if (opts.lights && opts.lights.length > 0) {
-      this._ddgi.setLights(opts.lights);
+    this._ctorLights = opts.lights ?? [];
+    if (this._ctorLights.length > 0) {
+      this._ddgi.setLights(this._ctorLights as DDGILight[]);
     }
 
     this.capabilities = {
@@ -831,6 +833,28 @@ export class HybridEngine implements Engine {
         // public method on ProbeUpdatePass — no cast needed.
         this._ddgi.pass.setSunIntensityMultiplier(this._primaryLightIntensity);
 
+        // Auto-collect THREE.RectAreaLight from the scene as DDGI point
+        // lights (centroid + flux-equivalent intensity). DDGI's per-probe
+        // ray-cast pass uses only 'sun' + 'fixture'/'teaLight' kinds —
+        // without this bridge, rect-area lights from `vitrumSceneToThree`
+        // never reach DDGI's `evalDirectLighting`, so probe rays hitting
+        // walls return zero radiance and the irradiance atlas stays
+        // black → no color bleed onto boxes, surfaces render flat-gray
+        // even with DDGI mechanically running.
+        //
+        // For a 1×1 rect at intensity 12 (Le=(12,12,12) per channel),
+        // the per-area-element flux is Le × dA. A point at the rect
+        // centroid carrying flux ≈ Le × area integrates roughly the same
+        // total downward power; the DDGI atlas captures the qualitative
+        // colour bleed correctly, which is what the indirect bounce
+        // depends on. ReSTIR DI still drives the high-frequency direct
+        // term from the actual rect geometry — DDGI here only feeds the
+        // low-frequency indirect.
+        const ddgiRectLights = collectDDGILightsFromRectAreaLights(bvhRoot);
+        if (ddgiRectLights.length > 0) {
+          this._ddgi.setLights([...this._ctorLights, ...ddgiRectLights]);
+        }
+
         this._pipeline     = pipeline;
         this._state        = 'ready';
 
@@ -860,6 +884,41 @@ export class HybridEngine implements Engine {
     if (typeof key === 'number') return Number.isNaN(key) ? '__n:NaN' : `__n:${key}`;
     return `__s:${key}`;
   }
+}
+
+/**
+ * Walk an Object3D tree for `THREE.RectAreaLight` instances and project each
+ * onto a `DDGILight` point-light approximation so the DDGI probe-update pass
+ * (which only switches on `kind === 'sun' | 'fixture' | 'teaLight'`) can
+ * evaluate direct lighting at probe-ray hit points.
+ *
+ * Approximation rationale: DDGI provides low-frequency indirect bounce — the
+ * actual rect geometry only matters for the high-frequency direct term, which
+ * ReSTIR DI handles separately from the actual emitter triangles. A point at
+ * the rect centroid carrying flux ≈ `color × intensity × area` gives a
+ * qualitatively-correct downward irradiance for probes; colour bleed onto
+ * surrounding walls (the visible signature of Cornell-style scenes) reaches
+ * the irradiance atlas correctly. The remaining factor-of-π errors in
+ * total-flux conversion are negligible against the multiple-of-10 dynamic
+ * range that distinguishes "lit colour bleed" from "atlas reads zero".
+ */
+function collectDDGILightsFromRectAreaLights(root: THREE.Object3D): DDGILight[] {
+  const out: DDGILight[] = [];
+  const _wp = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+  root.traverseVisible((obj) => {
+    if (!(obj instanceof THREE.RectAreaLight)) return;
+    const light = obj;
+    const area = light.width * light.height;
+    _wp.setFromMatrixPosition(light.matrixWorld);
+    out.push({
+      kind: 'fixture',
+      intensity: light.intensity * area,
+      on: true,
+      position: { x: _wp.x, y: _wp.y, z: _wp.z },
+    });
+  });
+  return out;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

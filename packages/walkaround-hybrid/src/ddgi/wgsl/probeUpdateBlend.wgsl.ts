@@ -107,10 +107,28 @@ fn probeUpdateBlendIrradiance(
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
     let ray = rayResults[rIdx];
+    // Skip backface hits (encoded as negative distance per DDGI paper).
     if (ray.hitDistance < 0.0) { continue; }
+    // Skip self-intersection hits — a probe positioned inside an opaque
+    // mesh (e.g. one of the Cornell inner boxes) sees every outgoing ray
+    // hit the surrounding inner-wall surface at distance ≈ 0, contaminating
+    // the atlas with gray near-zero-light surfaces and washing out the
+    // actual wall colour bleed from outside-geometry probes. When all
+    // valid rays for this direction get filtered, totalWeight stays 0 →
+    // newColor=0 → blended decays via hysteresis to 0, and the trilinear
+    // interpolation in shade.wgsl correctly drops these probes from the
+    // 8-probe stencil.
+    if (ray.hitDistance < 0.05) { continue; }
+    // Lambert weighting (was pow(w, 50)): with only 192 rays distributed
+    // uniformly over a sphere, the highly-concentrated pow(50) kernel left
+    // most atlas pixels with no ray within its narrow lobe — the integrated
+    // signal collapsed onto a handful of poorly-aligned rays and the atlas
+    // peaked at ~0.05 instead of the expected ~0.3 for direct-lit walls.
+    // Lambert (max(0, dot)) integrates the full upper hemisphere per atlas
+    // pixel — standard DDGI convention (Majercik et al. 2019 §3.4).
     let w = max(0.0, dot(dir, ray.direction));
     if (w < 1e-3) { continue; }
-    let weight = pow(w, 50.0);
+    let weight = w;
     newColor    = newColor + ray.hitRadiance * weight;
     totalWeight = totalWeight + weight;
   }

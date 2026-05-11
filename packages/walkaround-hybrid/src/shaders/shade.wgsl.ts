@@ -339,7 +339,16 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Gated on isDDGIWired() so the placeholder atlas (dimsX=1) is ignored.
   var Lo_ddgi = vec3f(0.0);
   if (!isGlass && isDDGIWired()) {
-    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * INV_PI;
+    // ddgiSample returns the per-hemisphere weighted-average radiance
+    // (Lambert-weighted by ray cos with the atlas pixel direction). It is
+    // an average, not an integral. The Lambertian diffuse equation wants
+    // outgoing = albedo * irradiance (irradiance has units of W/m^2).
+    // To go from average radiance to irradiance we'd multiply by the
+    // hemisphere solid angle (2pi), and to convert that to outgoing
+    // radiance we'd divide by pi (Lambertian normalisation) — net 2.0.
+    // Without this scaling the consumed signal lands ~3x too dim and the
+    // color bleed is below the visible threshold against direct light.
+    Lo_ddgi = ddgiSampleFromBindings(pos, normal) * albedo * 2.0;
   }
 
   // Active terms (current pipeline state):
