@@ -46,6 +46,7 @@ export type PassLabel =
   | 'atrous-0'
   | 'atrous-1'
   | 'atrous-2'
+  | 'indirect-combine'
   | 'temporalAccum'
   | 'resolve'
   | 'composite';
@@ -57,9 +58,10 @@ export type PassLabel =
  *
  * History: 15 (base) → 17 (Sprint 9: sample-budget + resolve) →
  *          19 (Sprint 15: gtao + gtao-upsample) → 20 (Sprint 16: gi-ris) →
- *          23 (Sprint 17: gi-temporal + gi-spatial-1 + gi-spatial-2).
+ *          23 (Sprint 17: gi-temporal + gi-spatial-1 + gi-spatial-2) →
+ *          24 (Sprint 18: indirect-combine).
  */
-export const MAX_PASS_COUNT = 23;
+export const MAX_PASS_COUNT = 24;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -111,6 +113,9 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   } else {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');
   }
+  // Sprint 18 — per-channel combine bilaterally blurs hdrIndirect and
+  // sums with the direct-SVGF output before temporalAccum reads it.
+  labels.push('indirect-combine');
   // Sprint 9 — resolve sits between temporalAccum and composite so the
   // composite blit reads from the resolved (checkerboard-filled) texture.
   labels.push('temporalAccum', 'resolve', 'composite');

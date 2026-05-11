@@ -102,7 +102,7 @@ describe('Sprint 17 — pass-layout placement', () => {
     }
   });
 
-  it('MAX_PASS_COUNT is 23 (gi-ris + gi-temporal + gi-spatial-1 + gi-spatial-2 on top of Sprint 15)', () => {
-    expect(MAX_PASS_COUNT).toBe(23);
+  it('MAX_PASS_COUNT accommodates the GI block (≥ 23 after Sprint 17)', () => {
+    expect(MAX_PASS_COUNT).toBeGreaterThanOrEqual(23);
   });
 });

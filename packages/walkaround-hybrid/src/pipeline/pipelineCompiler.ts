@@ -22,6 +22,7 @@ import { GTAO_UPSAMPLE_WGSL } from '../shaders/gtaoUpsample.wgsl.js';
 import { RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
 import { TEMPORAL_GI_WGSL } from '../shaders/temporalGi.wgsl.js';
 import { SPATIAL_GI_WGSL } from '../shaders/spatialGi.wgsl.js';
+import { INDIRECT_COMBINE_WGSL } from '../shaders/indirectCombine.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import {
@@ -51,6 +52,7 @@ import {
   getGTAOUpsampleBindGroupLayout,
   getTemporalGiBindGroupLayout,
   getSpatialGiBindGroupLayout,
+  getIndirectCombineBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -83,6 +85,8 @@ export interface CompiledPipelines {
   temporalGiPipeline: GPUComputePipeline;
   /** Sprint 17 — GI spatial-reuse pass (run twice with ping-pong). */
   spatialGiPipeline: GPUComputePipeline;
+  /** Sprint 18 — indirect-blur + combine pass. */
+  indirectCombinePipeline: GPUComputePipeline;
 }
 
 export async function compilePipelines(
@@ -209,6 +213,10 @@ export async function compilePipelines(
   const spatialGiLayout = device.createPipelineLayout({
     bindGroupLayouts: [getSpatialGiBindGroupLayout(device, bglCache)],
   });
+  // Sprint 18 — indirect-combine pass uses a single dedicated bind group.
+  const indirectCombineLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getIndirectCombineBindGroupLayout(device, bglCache)],
+  });
 
   // Compile compute pipelines in parallel.
   const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
@@ -284,6 +292,17 @@ export async function compilePipelines(
     }),
   ]);
 
+  // Sprint 18 — indirect-combine pipeline.
+  const indirectCombineSM = device.createShaderModule({
+    label: 'indirectCombine',
+    code: INDIRECT_COMBINE_WGSL,
+  });
+  const indirectCombinePipeline = await device.createComputePipelineAsync({
+    label: 'indirectCombine',
+    layout: indirectCombineLayout,
+    compute: { module: indirectCombineSM, entryPoint: 'indirectCombineMain' },
+  });
+
   let welfordPipeline: GPUComputePipeline | undefined;
   let svgfVariancePipeline: GPUComputePipeline | undefined;
   let svgfAtrousPipeline: GPUComputePipeline | undefined;
@@ -352,6 +371,7 @@ export async function compilePipelines(
     risGiPipeline,
     temporalGiPipeline,
     spatialGiPipeline,
+    indirectCombinePipeline,
     denoiserMode,
     ppgEnabled: ppgOn,
     ...(welfordPipeline !== undefined &&

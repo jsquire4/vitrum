@@ -106,6 +106,20 @@ export interface FrameResources {
   reservoirGiSpatialBuffer: GPUBuffer;
 
   /**
+   * Sprint 18 — separate indirect-channel HDR target (rgba16float, full-res).
+   * Written by shade as `Lo_indirect * ao`; read by the indirect-combine
+   * pass which bilateral-blurs it with broader sigmas and sums into
+   * `combinedDenoisedTexture`.
+   */
+  hdrIndirectTexture: GPUTexture;
+  /**
+   * Sprint 18 — final per-channel combined output. Written by the
+   * indirect-combine pass; consumed by temporalAccum in place of the
+   * raw direct-denoiser output.
+   */
+  combinedDenoisedTexture: GPUTexture;
+
+  /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
    * is true in the options passed to `createFrameResources`. When PPG is
    * disabled (the default), this field is absent — all existing consumers
@@ -465,6 +479,20 @@ export function createFrameResources(
     format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
+  // Sprint 18 — separate indirect-channel HDR target.
+  const hdrIndirectTexture = device.createTexture({
+    label: 'hdrIndirect',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+  });
+  // Sprint 18 — combined output of indirect-combine pass; fed to temporalAccum.
+  const combinedDenoisedTexture = device.createTexture({
+    label: 'combinedDenoised',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+  });
 
   // G-buffer (normal + depth) — written by shade, read by atrous denoiser.
   const gNormalDepthTexture = device.createTexture({
@@ -711,6 +739,8 @@ export function createFrameResources(
     reservoirGiCurrentBuffer,
     reservoirGiPreviousBuffer,
     reservoirGiSpatialBuffer,
+    hdrIndirectTexture,
+    combinedDenoisedTexture,
     ...ppgExt,
   };
 }
@@ -746,6 +776,8 @@ export function destroyFrameResources(r: FrameResources): void {
   r.reservoirGiCurrentBuffer.destroy();
   r.reservoirGiPreviousBuffer.destroy();
   r.reservoirGiSpatialBuffer.destroy();
+  r.hdrIndirectTexture.destroy();
+  r.combinedDenoisedTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

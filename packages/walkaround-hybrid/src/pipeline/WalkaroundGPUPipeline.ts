@@ -59,6 +59,7 @@ import {
   buildGTAOUpsampleBindGroup,
   buildTemporalGiBindGroup,
   buildSpatialGiBindGroup,
+  buildIndirectCombineBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
 // Note: we deliberately do NOT import `runSvgfWebGPU` from shared-denoisers.
@@ -227,6 +228,7 @@ export class WalkaroundGPUPipeline {
   private _risGiPipeline!: GPUComputePipeline;
   private _temporalGiPipeline!: GPUComputePipeline;
   private _spatialGiPipeline!: GPUComputePipeline;
+  private _indirectCombinePipeline!: GPUComputePipeline;
   /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
   private _ppgEnabled = false;
   private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
@@ -378,6 +380,7 @@ export class WalkaroundGPUPipeline {
     this._risGiPipeline        = compiled.risGiPipeline;
     this._temporalGiPipeline   = compiled.temporalGiPipeline;
     this._spatialGiPipeline    = compiled.spatialGiPipeline;
+    this._indirectCombinePipeline = compiled.indirectCombinePipeline;
     if (this._denoiserMode === 'svgf' && (
       !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
     )) {
@@ -525,6 +528,7 @@ export class WalkaroundGPUPipeline {
       nearestSampler:          this._res.nearestSampler,
       gNormalDepthTexture:     this._res.gNormalDepthTexture,
       reservoirGiCurrentBuffer: this._res.reservoirGiCurrentBuffer,
+      hdrIndirectTexture:      this._res.hdrIndirectTexture,
     });
     const bgScene = buildSceneBindGroup(d, this._bglCache, {
       bvhNodesBuffer:    this._bvhNodesBuffer,
@@ -861,6 +865,27 @@ export class WalkaroundGPUPipeline {
         encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
       );
     }
+
+    // Sprint 18 — per-channel combine. The SVGF/atrous chain above ran on
+    // hdrColorTexture (now direct-only). Bilaterally blur hdrIndirectTexture
+    // with broader sigmas, sum the two, write to combinedDenoisedTexture,
+    // and feed that into temporalAccum below.
+    const combinedTex = this._res.combinedDenoisedTexture;
+    {
+      const bgCombine = buildIndirectCombineBindGroup(
+        d, this._bglCache,
+        denoisedOut.createView(),
+        this._res.hdrIndirectTexture.createView(),
+        gNormalDepthView,
+        combinedTex.createView(),
+      );
+      const pass = encoder.beginComputePass(computeDesc('indirect-combine'));
+      pass.setPipeline(this._indirectCombinePipeline);
+      pass.setBindGroup(0, bgCombine);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+    denoisedOut = combinedTex;
 
     // alpha=0.02 (was 0.1, then 0.05) gives ~98% history weight per frame.
     // Slower convergence to legitimate changes, but the camera-motion path

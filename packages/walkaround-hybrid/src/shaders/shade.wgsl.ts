@@ -34,6 +34,12 @@ const DDGI_DIFFUSE_BLEND: f32 = 1.0;
 // for the Lo_indirect term. The dispatch grid in shade is full-res, so
 // we sample at (gid.xy / 2) — each 2×2 quad shares one GI reservoir.
 @group(0) @binding(11) var<storage, read_write> reservoirGiCurrent: array<u32>;
+// Sprint 18 — split indirect output for per-channel SVGF tuning. The
+// main hdrColorOut carries direct + emit + sun caustic + sky aperture
+// (already AO-modulated). The hdrIndirectOut carries Lo_indirect (× AO)
+// so it can be denoised with broader sigmas before recombination. The
+// combine pass downstream sums denoisedDirect + smoothedIndirect.
+@group(0) @binding(12) var hdrIndirectOut: texture_storage_2d<rgba16float, write>;
 
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
@@ -390,9 +396,18 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   //   the texture is seeded with 1.0 at engine init but defense-in-depth.
   let aoRaw = textureLoad(aoFullTexture, vec2i(gid.xy), 0).r;
   let ao = select(1.0, clamp(aoRaw, 0.0, 1.0), aoRaw > 0.001);
-  let combined = Lo_emit + (Lo_direct + Lo_sunCaustic
-               + Lo_skyAperture * 0.08
-               + Lo_indirect) * ao;
+
+  // Sprint 18 — split the radiance into a direct channel (heads to the
+  // tight-sigma SVGF chain) and an indirect channel (heads to the broader
+  // bilateral blur). The downstream combine pass sums them.
+  //
+  // Direct = emit (light source itself) + direct shadow-mapped terms (× AO).
+  // Indirect = ReSTIR-GI Lo_indirect (× AO). Lo_emit bypasses AO because
+  // the light source itself is never in self-shadow.
+  let directRadiance = Lo_emit + (Lo_direct + Lo_sunCaustic
+                                 + Lo_skyAperture * 0.08) * ao;
+  let indirectRadiance = Lo_indirect * ao;
+
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
   // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of
   // a wall, near-zero RIS pdf). These propagate through SVGF (which would
@@ -403,11 +418,16 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // legitimately bright surfaces (light source itself: Lo_emit) intact —
   // those go through a separate Lo_emit branch that bypasses the BRDF
   // singularity entirely.
-  let clamped = min(combined, vec3f(4.0));
+  let clampedDirect = min(directRadiance, vec3f(4.0));
+  let clampedIndirect = min(indirectRadiance, vec3f(4.0));
+  // PPG record reads the 'combined' variable per its train-record template;
+  // preserve it so guiding sees the full radiance estimate.
+  let combined = clampedDirect + clampedIndirect;
   // Write LINEAR HDR radiance to hdrColorOut — do NOT tone-map here.
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.
   // @@PPG_RECORD_INSERT@@
-  textureStore(hdrColorOut, gid.xy, vec4f(clamped, 1.0));
+  textureStore(hdrColorOut,   gid.xy, vec4f(clampedDirect,   1.0));
+  textureStore(hdrIndirectOut, gid.xy, vec4f(clampedIndirect, 1.0));
 }
 `;

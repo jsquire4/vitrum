@@ -36,6 +36,8 @@ export interface BGLCache {
   temporalGi?: GPUBindGroupLayout;
   /** Sprint 17 — GI spatial-reuse pass bind group layout. */
   spatialGi?: GPUBindGroupLayout;
+  /** Sprint 18 — indirect-blur + combine pass bind group layout. */
+  indirectCombine?: GPUBindGroupLayout;
 }
 
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
@@ -63,6 +65,11 @@ export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
       // Written by risGiMain; read by shade.wgsl to compute Lo_indirect.
       // Sized for (W/2) × (H/2) × 80 bytes (RESERVOIR_GI_STRIDE × u32).
       { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      // Sprint 18 — indirect-channel HDR output (rgba16float storage). Written
+      // by shade as `Lo_indirect × ao`. Other shaders that bind the frame BGL
+      // (ris, temporal, spatial, risGi) do not reference this binding; only
+      // shade declares it, but it must be present in the layout for compat.
+      { binding: 12, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
     ],
   });
   return cache.frame;
@@ -318,6 +325,30 @@ export function getSpatialGiBindGroupLayout(
     ],
   });
   return cache.spatialGi;
+}
+
+/**
+ * Sprint 18 — indirect-combine BGL. Matches `indirectCombine.wgsl.ts`:
+ *   0 — denoisedDirect (rgba16float, sampled, unfilterable)
+ *   1 — hdrIndirect    (rgba16float, sampled, unfilterable)
+ *   2 — gNormalDepth   (rgba16float, sampled, unfilterable)
+ *   3 — combinedOut    (rgba16float, write-only storage)
+ */
+export function getIndirectCombineBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.indirectCombine) return cache.indirectCombine;
+  cache.indirectCombine = device.createBindGroupLayout({
+    label: 'indirect-combine-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+    ],
+  });
+  return cache.indirectCombine;
 }
 
 /** Hybrid layer bind group with PPG training (4–5) + guiding read paths (6–9). */

@@ -25,6 +25,7 @@ import {
   getGTAOUpsampleBindGroupLayout,
   getTemporalGiBindGroupLayout,
   getSpatialGiBindGroupLayout,
+  getIndirectCombineBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -40,6 +41,8 @@ export interface FrameBindGroupResources {
   gNormalDepthTexture: GPUTexture;
   /** Sprint 16 — half-res GI reservoir (write target for risGi, read for shade). */
   reservoirGiCurrentBuffer: GPUBuffer;
+  /** Sprint 18 — indirect-channel HDR output texture (shade write target). */
+  hdrIndirectTexture: GPUTexture;
 }
 
 export function buildFrameBindGroup(
@@ -69,6 +72,9 @@ export function buildFrameBindGroup(
       // (and shade reads it); other DI passes declare it via the BGL but
       // never reference the symbol.
       { binding: 11, resource: { buffer: r.reservoirGiCurrentBuffer } },
+      // Sprint 18 — indirect-channel HDR output. Only shade writes to it;
+      // bound to all frame-BGL pipelines for layout compatibility.
+      { binding: 12, resource: r.hdrIndirectTexture.createView() },
     ],
   });
 }
@@ -459,6 +465,28 @@ export function buildSpatialGiBindGroup(
       { binding: 0, resource: { buffer: inBuffer } },
       { binding: 1, resource: { buffer: outBuffer } },
       { binding: 2, resource: { buffer: uboBuffer } },
+    ],
+  });
+}
+
+// ── Indirect-combine bind group (Sprint 18) ──────────────────────────────────
+
+export function buildIndirectCombineBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  denoisedDirectView: GPUTextureView,
+  hdrIndirectView: GPUTextureView,
+  gNormalDepthView: GPUTextureView,
+  combinedOutView: GPUTextureView,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'indirect-combine-bg',
+    layout: getIndirectCombineBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: denoisedDirectView },
+      { binding: 1, resource: hdrIndirectView },
+      { binding: 2, resource: gNormalDepthView },
+      { binding: 3, resource: combinedOutView },
     ],
   });
 }
