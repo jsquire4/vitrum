@@ -455,6 +455,37 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
+   * Blit the most recent resolvedTexture to the host's swap chain WITHOUT
+   * running the compute pipeline. Used when HybridEngine's 60-FPS throttle
+   * skips a frame — without this, on >60Hz displays the alternate frames'
+   * swap-chain textures would never be written and would present as cleared
+   * black, producing visible dark flashes.
+   */
+  presentLastFrame(swapChainView: GPUTextureView): void {
+    if (!this._initialized) return;
+    const d = this._device;
+    const finalTex = this._res.resolvedTexture;
+    const bgComposite = buildCompositeBindGroup(
+      d, this._bglCache, finalTex.createView(), this._res.compositeLinearSampler,
+    );
+    const encoder = d.createCommandEncoder({ label: 'composite-only' });
+    const pass = encoder.beginRenderPass({
+      label: 'composite-only',
+      colorAttachments: [{
+        view: swapChainView,
+        loadOp: 'clear',
+        storeOp: 'store',
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      }],
+    });
+    pass.setPipeline(this._compositePipeline);
+    pass.setBindGroup(0, bgComposite);
+    pass.draw(3, 1, 0, 0);
+    pass.end();
+    d.queue.submit([encoder.finish()]);
+  }
+
+  /**
    * Run one frame of the ReSTIR compute pipeline + composite render pass.
    * Returns true on success, false if pipeline not ready.
    */

@@ -340,9 +340,21 @@ async function main(): Promise<void> {
 
     if (hybrid && canvasWgpu && gpuCtx) {
       let wFrame = 0;
+      // Track last-seen canvas dimensions so we only reconfigure on resize,
+      // not every frame. Spam-reconfiguring `gpuCtx.configure(...)` every
+      // frame reallocates the swap chain — if the GPU's composite write
+      // lands after the new swap chain is acquired but before this frame's
+      // composite runs, the canvas presents an uninitialised (black) image
+      // for one frame, producing visible dark flashes.
+      let lastW = canvasWgpu.width, lastH = canvasWgpu.height;
       function wgpuLoop(): void {
         if (!hybrid || !canvasWgpu || !gpuCtx) return;
-        configureWgpu();
+        if (canvasWgpu.clientWidth !== lastW / window.devicePixelRatio ||
+            canvasWgpu.clientHeight !== lastH / window.devicePixelRatio) {
+          configureWgpu();
+          lastW = canvasWgpu.width;
+          lastH = canvasWgpu.height;
+        }
         applyCameraMotion();
         camera.aspect = canvasWgpu.width / Math.max(canvasWgpu.height, 1);
         camera.updateProjectionMatrix();

@@ -437,6 +437,16 @@ export class HybridEngine implements Engine {
     if (this._lastFrameTs !== 0 &&
         now - this._lastFrameTs < TARGET_FRAME_INTERVAL_MS) {
       if (dbg) dbg.skipFrameInterval++;
+      // CRITICAL on >60Hz displays: even though the heavy pipeline is
+      // throttled to 60 FPS, the host's rAF still acquires a fresh swap-
+      // chain texture each tick. Without writing to it, the texture is
+      // presented as cleared black → visible dark-flash on every other
+      // frame at 120Hz. Blit the most recent resolvedTexture so the
+      // canvas keeps showing the previous frame.
+      const skipSwapView = input.swapChainView as GPUTextureView | undefined;
+      if (skipSwapView && this._pipeline) {
+        this._pipeline.presentLastFrame(skipSwapView);
+      }
       return skipOutput;
     }
     this._lastFrameTs = now;
