@@ -3,7 +3,7 @@
  */
 
 import type { Engine, FrameInput, Mat4, Scene } from '@vitrum/core';
-import { buildCornellBoxThreeScene } from '@vitrum-examples/shared';
+import { buildComplexThreeScene, buildCornellBoxThreeScene } from '@vitrum-examples/shared';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 // pt-webgpu drives the bottom canvas headlessly (no swap-chain present;
 // pt-webgpu accumulates to an internal HDR texture, leaving the host to
@@ -137,7 +137,9 @@ async function main(): Promise<void> {
     statusEl.textContent = lines.join('\n').trim() || '…';
   }
 
-  const threeScene = buildCornellBoxThreeScene();
+  const threeScene = FLAGS.scene === 'complex'
+    ? buildComplexThreeScene()
+    : buildCornellBoxThreeScene();
   const vitrumScene: Scene = sceneFromThreeJS(threeScene);
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
