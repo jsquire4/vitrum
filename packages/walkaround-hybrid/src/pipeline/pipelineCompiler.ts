@@ -17,6 +17,8 @@ import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_WGSL } from '../shaders/resolve.wgsl.js';
+import { GTAO_WGSL } from '../shaders/gtao.wgsl.js';
+import { GTAO_UPSAMPLE_WGSL } from '../shaders/gtaoUpsample.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import {
@@ -42,6 +44,8 @@ import {
   getHybridLayersBindGroupLayoutWithPpg,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getGTAOBindGroupLayout,
+  getGTAOUpsampleBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -64,6 +68,10 @@ export interface CompiledPipelines {
   sampleBudgetPipeline: GPUComputePipeline;
   /** Sprint 9 — resolve pass (runs between temporalAccum and composite). */
   resolvePipeline: GPUComputePipeline;
+  /** Sprint 15 — half-res GTAO compute pass. */
+  gtaoPipeline: GPUComputePipeline;
+  /** Sprint 15 — bilateral upsample from half-res AO to full-res. */
+  gtaoUpsamplePipeline: GPUComputePipeline;
 }
 
 export async function compilePipelines(
@@ -175,6 +183,12 @@ export async function compilePipelines(
   const resolveLayout = device.createPipelineLayout({
     bindGroupLayouts: [getResolveBindGroupLayout(device, bglCache)],
   });
+  const gtaoLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getGTAOBindGroupLayout(device, bglCache)],
+  });
+  const gtaoUpsampleLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getGTAOUpsampleBindGroupLayout(device, bglCache)],
+  });
 
   // Compile compute pipelines in parallel.
   const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
@@ -199,6 +213,20 @@ export async function compilePipelines(
     device.createComputePipelineAsync({
       label: 'resolve', layout: resolveLayout,
       compute: { module: resolveSM, entryPoint: 'resolveKernel' },
+    }),
+  ]);
+
+  // Sprint 15 — GTAO pipelines.
+  const gtaoSM = device.createShaderModule({ label: 'gtao', code: GTAO_WGSL });
+  const gtaoUpsampleSM = device.createShaderModule({ label: 'gtao-upsample', code: GTAO_UPSAMPLE_WGSL });
+  const [gtaoPipeline, gtaoUpsamplePipeline] = await Promise.all([
+    device.createComputePipelineAsync({
+      label: 'gtao', layout: gtaoLayout,
+      compute: { module: gtaoSM, entryPoint: 'gtaoMain' },
+    }),
+    device.createComputePipelineAsync({
+      label: 'gtao-upsample', layout: gtaoUpsampleLayout,
+      compute: { module: gtaoUpsampleSM, entryPoint: 'gtaoUpsampleMain' },
     }),
   ]);
 
@@ -265,6 +293,8 @@ export async function compilePipelines(
     compositePipeline,
     sampleBudgetPipeline,
     resolvePipeline,
+    gtaoPipeline,
+    gtaoUpsamplePipeline,
     denoiserMode,
     ppgEnabled: ppgOn,
     ...(welfordPipeline !== undefined &&

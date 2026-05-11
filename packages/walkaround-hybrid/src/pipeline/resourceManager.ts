@@ -72,6 +72,22 @@ export interface FrameResources {
   resolvedTexture: GPUTexture;
 
   /**
+   * Sprint 15 — Half-resolution GTAO occlusion factor (r16float). Written by
+   * `gtaoMain`; consumed by `gtaoUpsampleMain` to reconstruct full-res AO.
+   */
+  aoHalfTexture: GPUTexture;
+  /**
+   * Sprint 15 — Full-resolution GTAO occlusion factor (r16float). Written by
+   * `gtaoUpsampleMain`; sampled by `shade.wgsl` to modulate the diffuse
+   * indirect / direct terms. 1-frame lagged from current shade (AO computes
+   * from current frame's gNormalDepth but shade reads the *previous* frame's
+   * AO texture for binding-order simplicity).
+   */
+  aoFullTexture: GPUTexture;
+  /** Sprint 15 — GTAO uniforms (16 bytes: tanFovHalf, radiusPx, intensity, depthThresh). */
+  gtaoUboBuffer: GPUBuffer;
+
+  /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
    * is true in the options passed to `createFrameResources`. When PPG is
    * disabled (the default), this field is absent — all existing consumers
@@ -578,6 +594,54 @@ export function createFrameResources(
       ? { ppgBuffers: createPPGBuffers(device) }
       : {};
 
+  // Sprint 15 — GTAO textures (half-res input, full-res upsampled output).
+  // `aoFullTexture` is initialised to 1.0 by uploading a buffer of f16 ones
+  // so the first frame (before gtao has executed) doesn't darken shade to
+  // black via an uninitialised AO read.
+  const halfW = Math.max(1, Math.floor(W / 2));
+  const halfH = Math.max(1, Math.floor(H / 2));
+  const aoHalfTexture = device.createTexture({
+    label: 'gtao-half',
+    size: [halfW, halfH],
+    format: 'r16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const aoFullTexture = device.createTexture({
+    label: 'gtao-full',
+    size: [W, H],
+    format: 'r16float',
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST,
+  });
+  // Seed aoFullTexture with 1.0 (f16 1.0 = 0x3C00) so first-frame shade
+  // reads return "unoccluded" before gtao writes a real value.
+  {
+    const onesRowBytes = Math.max(256, Math.ceil(W * 2 / 256) * 256);
+    const onesBuf = new Uint8Array(onesRowBytes * H);
+    // f16 1.0 = 0x3C00. r16float stores 2 bytes/texel.
+    for (let y = 0; y < H; y++) {
+      const rowOff = y * onesRowBytes;
+      for (let x = 0; x < W; x++) {
+        const o = rowOff + x * 2;
+        onesBuf[o] = 0x00;
+        onesBuf[o + 1] = 0x3C;
+      }
+    }
+    device.queue.writeTexture(
+      { texture: aoFullTexture },
+      onesBuf,
+      { offset: 0, bytesPerRow: onesRowBytes },
+      { width: W, height: H, depthOrArrayLayers: 1 },
+    );
+  }
+  const gtaoUboBuffer = device.createBuffer({
+    label: 'gtao-ubo',
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+
   return {
     reservoirCurrentBuffer,
     reservoirPreviousBuffer,
@@ -601,6 +665,9 @@ export function createFrameResources(
     motionVectorTexture,
     tierTexture,
     resolvedTexture,
+    aoHalfTexture,
+    aoFullTexture,
+    gtaoUboBuffer,
     ...ppgExt,
   };
 }
@@ -630,6 +697,9 @@ export function destroyFrameResources(r: FrameResources): void {
   r.motionVectorTexture.destroy();
   r.tierTexture.destroy();
   r.resolvedTexture.destroy();
+  r.aoHalfTexture.destroy();
+  r.aoFullTexture.destroy();
+  r.gtaoUboBuffer.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

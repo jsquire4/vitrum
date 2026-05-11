@@ -21,6 +21,8 @@ import {
   getHybridLayersBindGroupLayoutWithPpg,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getGTAOBindGroupLayout,
+  getGTAOUpsampleBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -99,11 +101,15 @@ export function buildUboBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   uboBuffer: GPUBuffer,
+  aoFullView: GPUTextureView,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: 'ubo-bg',
     layout: getUboBindGroupLayout(device, cache),
-    entries: [{ binding: 0, resource: { buffer: uboBuffer } }],
+    entries: [
+      { binding: 0, resource: { buffer: uboBuffer } },
+      { binding: 1, resource: aoFullView },  // Sprint 15 — GTAO occlusion factor
+    ],
   });
 }
 
@@ -368,6 +374,44 @@ export function buildResolveBindGroup(
       { binding: 2, resource: prevRadianceView },
       { binding: 3, resource: motionVectorsView },
       { binding: 4, resource: resolvedWriteView },
+    ],
+  });
+}
+
+// ── GTAO bind groups (Sprint 15) ─────────────────────────────────────────────
+
+export function buildGTAOBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  gNormalDepthView: GPUTextureView,
+  aoHalfWriteView: GPUTextureView,
+  gtaoUbo: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'gtao-bg',
+    layout: getGTAOBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: gNormalDepthView },
+      { binding: 1, resource: aoHalfWriteView },
+      { binding: 2, resource: { buffer: gtaoUbo } },
+    ],
+  });
+}
+
+export function buildGTAOUpsampleBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  aoHalfReadView: GPUTextureView,
+  gNormalDepthView: GPUTextureView,
+  aoFullWriteView: GPUTextureView,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'gtao-upsample-bg',
+    layout: getGTAOUpsampleBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: aoHalfReadView },
+      { binding: 1, resource: gNormalDepthView },
+      { binding: 2, resource: aoFullWriteView },
     ],
   });
 }

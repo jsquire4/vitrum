@@ -30,6 +30,8 @@ export type PassLabel =
   | 'spatial-2'
   | 'shade'
   | 'ppg-update'
+  | 'gtao'
+  | 'gtao-upsample'
   | 'welford-temporal'
   | 'svgf-variance'
   | 'svgf-atrous-0'
@@ -47,9 +49,9 @@ export type PassLabel =
 /**
  * Maximum slot count across all supported configurations. Used to size the
  * GPU querySet + resolve/readback buffers so allocation survives every
- * runtime layout.
+ * runtime layout. Bumped 17 → 19 in Sprint 15 for `gtao` + `gtao-upsample`.
  */
-export const MAX_PASS_COUNT = 17;
+export const MAX_PASS_COUNT = 19;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -73,6 +75,11 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
     'ris', 'temporal', 'spatial-1', 'spatial-2', 'shade',
   ];
   if (opts.ppgEnabled) labels.push('ppg-update');
+  // Sprint 15 — GTAO runs after shade (consumes gNormalDepth) and before the
+  // denoiser passes (whose hdrColor input is already AO-modulated by shade
+  // for the *previous* frame's AO; the current frame's AO becomes input for
+  // the next frame).
+  labels.push('gtao', 'gtao-upsample');
   if (opts.denoiserMode === 'svgf') {
     labels.push(
       'welford-temporal',

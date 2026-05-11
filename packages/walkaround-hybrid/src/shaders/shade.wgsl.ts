@@ -44,6 +44,10 @@ const DDGI_DIFFUSE_BLEND: f32 = 1.0;
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
+// Sprint 15 — GTAO occlusion factor (r16float, full-res, 1-frame lagged).
+// Multiplied into diffuse direct + indirect terms below to darken contact
+// regions. Sky-miss and emissive light sources bypass this multiplier.
+@group(2) @binding(1) var aoFullTexture: texture_2d<f32>;
 
 // DDGI bind group (group 3). Atlas + sampler + grid params UBO bound
 // here; shade reads via ddgiSampleFromBindings. isDDGIWired() checks
@@ -358,9 +362,20 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   //
   // Lo_ddgi: diffuse irradiance from DDGI atlas × albedo × INV_PI (gated on isDDGIWired()).
   // @@PPG_BOUNCE_INSERT@@
-  let combined = Lo_emit + Lo_direct + Lo_sunCaustic
+  //
+  // Sprint 15 — GTAO modulates ALL non-emissive lighting terms.
+  // - Lo_emit is the light source itself; never darken it.
+  // - Direct, sun, sky-aperture, indirect (DDGI) all darken in concave
+  //   contact regions per Jiménez 2016. Sky-miss pixels (centerDepth=0)
+  //   were written 1.0 in gtao.wgsl so they pass through unmodified.
+  // - The select(1.0, ao, ao > 0.001) safe-fallback prevents a corrupt
+  //   first-frame AO sample (NaN, negative, huge) from blanking pixels;
+  //   the texture is seeded with 1.0 at engine init but defense-in-depth.
+  let aoRaw = textureLoad(aoFullTexture, vec2i(gid.xy), 0).r;
+  let ao = select(1.0, clamp(aoRaw, 0.0, 1.0), aoRaw > 0.001);
+  let combined = Lo_emit + (Lo_direct + Lo_sunCaustic
                + Lo_skyAperture * 0.08
-               + Lo_ddgi * DDGI_DIFFUSE_BLEND;
+               + Lo_ddgi * DDGI_DIFFUSE_BLEND) * ao;
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
   // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of
   // a wall, near-zero RIS pdf). These propagate through SVGF (which would

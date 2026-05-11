@@ -28,6 +28,10 @@ export interface BGLCache {
   sampleBudget?: GPUBindGroupLayout;
   /** Sprint 9 — resolve pass bind group layout. */
   resolve?: GPUBindGroupLayout;
+  /** Sprint 15 — GTAO half-res compute pass bind group layout. */
+  gtao?: GPUBindGroupLayout;
+  /** Sprint 15 — GTAO bilateral upsample pass bind group layout. */
+  gtaoUpsample?: GPUBindGroupLayout;
 }
 
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
@@ -78,6 +82,9 @@ export function getUboBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBi
     label: 'ubo-bgl',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      // Sprint 15 — full-res GTAO occlusion factor (r16float), 1-frame lagged.
+      // Sampled in shade to modulate the diffuse / indirect light terms.
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
     ],
   });
   return cache.ubo;
@@ -212,6 +219,50 @@ export function getResolveBindGroupLayout(
     ],
   });
   return cache.resolve;
+}
+
+/**
+ * Sprint 15 — GTAO half-res compute pass BGL. Matches `gtao.wgsl.ts`:
+ *   0 — gNormalDepth (rgba16float, sampled)
+ *   1 — aoHalf out (r16float, write-only storage)
+ *   2 — GTAOUniforms ubo
+ */
+export function getGTAOBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.gtao) return cache.gtao;
+  cache.gtao = device.createBindGroupLayout({
+    label: 'gtao-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r16float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.gtao;
+}
+
+/**
+ * Sprint 15 — GTAO bilateral upsample BGL. Matches `gtaoUpsample.wgsl.ts`:
+ *   0 — aoHalf in (r16float, sampled)
+ *   1 — gNormalDepth (rgba16float, sampled)
+ *   2 — aoFull out (r16float, write-only storage)
+ */
+export function getGTAOUpsampleBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.gtaoUpsample) return cache.gtaoUpsample;
+  cache.gtaoUpsample = device.createBindGroupLayout({
+    label: 'gtao-upsample-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r16float' } },
+    ],
+  });
+  return cache.gtaoUpsample;
 }
 
 /** Hybrid layer bind group with PPG training (4–5) + guiding read paths (6–9). */

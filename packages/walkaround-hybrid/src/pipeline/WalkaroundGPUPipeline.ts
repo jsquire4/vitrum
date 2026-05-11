@@ -55,6 +55,8 @@ import {
   buildSVGFAtrousBindGroup,
   buildSampleBudgetBindGroup,
   buildResolveBindGroup,
+  buildGTAOBindGroup,
+  buildGTAOUpsampleBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
 // Note: we deliberately do NOT import `runSvgfWebGPU` from shared-denoisers.
@@ -218,6 +220,8 @@ export class WalkaroundGPUPipeline {
   // Sprint 9 — adaptive sampling pipelines (always populated).
   private _sampleBudgetPipeline!: GPUComputePipeline;
   private _resolvePipeline!: GPUComputePipeline;
+  private _gtaoPipeline!: GPUComputePipeline;
+  private _gtaoUpsamplePipeline!: GPUComputePipeline;
   /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
   private _ppgEnabled = false;
   private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
@@ -364,6 +368,8 @@ export class WalkaroundGPUPipeline {
     this._ppgUpdatePipeline    = compiled.ppgUpdatePipeline;
     this._sampleBudgetPipeline = compiled.sampleBudgetPipeline;
     this._resolvePipeline      = compiled.resolvePipeline;
+    this._gtaoPipeline         = compiled.gtaoPipeline;
+    this._gtaoUpsamplePipeline = compiled.gtaoUpsamplePipeline;
     if (this._denoiserMode === 'svgf' && (
       !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
     )) {
@@ -519,7 +525,10 @@ export class WalkaroundGPUPipeline {
       emitterCdfBuffer:  this._emitterCdfBuffer,
       bvhBeerBuffer:     this._bvhBeerBuffer,
     });
-    const bgUbo   = buildUboBindGroup(d, this._bglCache, this._res.uboBuffer);
+    const bgUbo   = buildUboBindGroup(
+      d, this._bglCache, this._res.uboBuffer,
+      this._res.aoFullTexture.createView(),
+    );
 
     // ── Dispatch compute passes ───────────────────────────────────────────
     const passLayout = buildPassLayout({
@@ -670,6 +679,54 @@ export class WalkaroundGPUPipeline {
       pass.setBindGroup(3, bgHybrid);
       pass.dispatchWorkgroups(wgX, wgY, 1);
       pass.end();
+    }
+
+    // ── Sprint 15 — GTAO half-res + bilateral upsample ────────────────────
+    // Runs after shade (consumes gNormalDepth) and before the denoiser
+    // passes. The aoFullTexture is sampled by shade for the *next* frame
+    // (so there's a 1-frame lag on AO, invisible for static cameras and
+    // ReSTIR-DI's temporal accumulator absorbs slow camera changes).
+    {
+      // Pack GTAOUniforms (tanFovHalf, radiusPx, intensity, depthThresh).
+      const camY = (inputs.projMatrix[5] ?? 1.0); // (1/tan(fov/2)) at the y-FOV
+      const tanFovHalf = camY > 1e-6 ? 1.0 / camY : 0.5;
+      const gtaoUboBytes = new Float32Array([
+        tanFovHalf, // 0
+        32.0,       // 1: radiusPx (32px contact radius)
+        2.0,        // 2: intensity exponent
+        2.0,        // 3: world-unit depth threshold (scene scale ~2 units)
+      ]);
+      d.queue.writeBuffer(this._res.gtaoUboBuffer, 0, gtaoUboBytes);
+      const halfW = Math.max(1, Math.floor(W / 2));
+      const halfH = Math.max(1, Math.floor(H / 2));
+      const wgGtaoX = Math.ceil(halfW / 8);
+      const wgGtaoY = Math.ceil(halfH / 8);
+      {
+        const bg = buildGTAOBindGroup(
+          d, this._bglCache,
+          this._res.gNormalDepthTexture.createView(),
+          this._res.aoHalfTexture.createView(),
+          this._res.gtaoUboBuffer,
+        );
+        const pass = encoder.beginComputePass(computeDesc('gtao'));
+        pass.setPipeline(this._gtaoPipeline);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(wgGtaoX, wgGtaoY, 1);
+        pass.end();
+      }
+      {
+        const bg = buildGTAOUpsampleBindGroup(
+          d, this._bglCache,
+          this._res.aoHalfTexture.createView(),
+          this._res.gNormalDepthTexture.createView(),
+          this._res.aoFullTexture.createView(),
+        );
+        const pass = encoder.beginComputePass(computeDesc('gtao-upsample'));
+        pass.setPipeline(this._gtaoUpsamplePipeline);
+        pass.setBindGroup(0, bg);
+        pass.dispatchWorkgroups(wgX, wgY, 1);
+        pass.end();
+      }
     }
 
     if (this._ppgEnabled && this._ppgUpdatePipeline && this._res.ppgBuffers && this._ppgUpdateUboRef.buf) {
