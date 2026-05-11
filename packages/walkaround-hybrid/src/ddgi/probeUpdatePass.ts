@@ -21,6 +21,7 @@
  */
 
 import * as THREE from 'three';
+import { extractThreePbrScalars } from '@vitrum/three-bindings';
 import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
@@ -354,6 +355,10 @@ export class ProbeUpdatePass {
     //   offset 32: metalness, ior, transmission, _pad1: 4 × f32 = 16 bytes
     //   offset 48: attenuationColor: vec3f (12 bytes) + flags: u32 (4) = 16 bytes
     // Total: 64 bytes. Using exactly 16 floats per entry to match the WGSL stride.
+    // PBR scalars are extracted via the cross-engine
+    // `extractThreePbrScalars` helper (P2-6.1); DDGI keeps its own defaults
+    // (1.5 IOR / 0.5 roughness / white base / black emissive / white
+    // attenuation) for byte-equivalence with the pre-helper inline pack.
     const ENTRY = 16; // floats per material entry — matches DDGIMaterial size (64 bytes)
     const data = new Float32Array(DDGI_MAX_MATERIALS * ENTRY);
     // Use a u32 view to write the flags field as an actual u32
@@ -362,30 +367,25 @@ export class ProbeUpdatePass {
     const matsToUse = mats.slice(0, DDGI_MAX_MATERIALS);
     matsToUse.forEach((mat, i) => {
       const base = i * ENTRY;
-      const m = mat as THREE.MeshPhysicalMaterial;
-      const color = m.color ?? new THREE.Color(1, 1, 1);
-      data[base + 0] = color.r;
-      data[base + 1] = color.g;
-      data[base + 2] = color.b;
+      const pbr = extractThreePbrScalars(mat);
+      data[base + 0] = pbr.baseColor[0];
+      data[base + 1] = pbr.baseColor[1];
+      data[base + 2] = pbr.baseColor[2];
       data[base + 3] = 0; // _pad0
-      // emissive
-      const em = m.emissive ?? new THREE.Color(0, 0, 0);
-      data[base + 4] = em.r;
-      data[base + 5] = em.g;
-      data[base + 6] = em.b;
-      data[base + 7] = m.roughness ?? 0.5;
-      data[base + 8] = m.metalness ?? 0;
-      data[base + 9] = m.ior ?? 1.5;
-      data[base + 10] = (m as THREE.MeshPhysicalMaterial).transmission ?? 0;
+      data[base + 4] = pbr.emissive[0];
+      data[base + 5] = pbr.emissive[1];
+      data[base + 6] = pbr.emissive[2];
+      data[base + 7] = pbr.roughness;
+      data[base + 8] = pbr.metallic;
+      data[base + 9] = pbr.ior;
+      data[base + 10] = pbr.transmission;
       data[base + 11] = 0; // _pad1
-      const att = (m as THREE.MeshPhysicalMaterial).attenuationColor ?? new THREE.Color(1, 1, 1);
-      data[base + 12] = att.r;
-      data[base + 13] = att.g;
-      data[base + 14] = att.b;
+      data[base + 12] = pbr.attenuationColor[0];
+      data[base + 13] = pbr.attenuationColor[1];
+      data[base + 14] = pbr.attenuationColor[2];
       // flags: bit 0 = isGlass. Written via u32view so the WGSL u32 field reads 0 or 1,
       // not the IEEE-754 bit pattern of float 1.0 (0x3F800000).
-      const isGlass = ((m as THREE.MeshPhysicalMaterial).transmission ?? 0) > 0;
-      u32view[base + 15] = isGlass ? 1 : 0;
+      u32view[base + 15] = pbr.transmission > 0 ? 1 : 0;
     });
     device.queue.writeBuffer(this._gpu!.materialsBuf, 0, data.buffer);
   }

@@ -1238,6 +1238,195 @@ fn photonMapContribution(
   return contribution * strategyScale;
 }
 
+struct DecodedMaterial {
+  baseColor: vec3f,
+  roughness: f32,
+  emissive: vec3f,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  scatteringCoeff: f32,
+  scatteringAnisotropy: f32,
+  scatteringRgb: vec3f,
+  hasSpectralAttenuation: bool,
+  frontLayerTx: vec3f,
+  frontLayerRoughness: f32,
+  backLayerTx: vec3f,
+  backLayerRoughness: f32,
+  thinFilmEnabled: bool,
+  thinFilmLayerCountU: u32,
+  thinFilmIncidentIor: f32,
+  thinFilmAngleDependent: bool,
+  spectralAvgMu: f32,
+  spectralSampleCount: u32,
+}
+
+fn decodeMaterial(matId: u32) -> DecodedMaterial {
+  let m0Index = matId * MATERIAL_VEC4_STRIDE;
+  let m1Index = m0Index + 1u;
+  let m2Index = m0Index + 2u;
+  let m3Index = m0Index + 3u;
+  let m4Index = m0Index + 4u;
+  let m5Index = m0Index + 5u;
+  let m6Index = m0Index + 6u;
+  let m19Index = m0Index + 21u;
+  let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
+  let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
+  let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
+  let m3 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m3Index], m3Index < arrayLength(&materials));
+  let m4 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m4Index], m4Index < arrayLength(&materials));
+  let m5 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m5Index], m5Index < arrayLength(&materials));
+  let m6 = select(vec4f(0.0, 0.0, 1.0, 0.0), materials[m6Index], m6Index < arrayLength(&materials));
+  let m19 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m19Index], m19Index < arrayLength(&materials));
+  var mat: DecodedMaterial;
+  mat.baseColor = m0.rgb;
+  mat.roughness = clamp(m0.w, 0.02, 1.0);
+  mat.emissive = m1.rgb;
+  mat.metallic = clamp(m1.w, 0.0, 1.0);
+  mat.transmission = clamp(m2.x, 0.0, 1.0);
+  mat.ior = clamp(m2.y, 1.0, 2.5);
+  mat.scatteringCoeff = max(m2.z, 0.0);
+  mat.scatteringAnisotropy = clamp(m2.w, -0.95, 0.95);
+  mat.scatteringRgb = vec3f(max(m3.x, 0.0), max(m3.y, 0.0), max(m3.z, 0.0));
+  mat.hasSpectralAttenuation = m3.w > 0.5;
+  mat.frontLayerTx = m4.rgb;
+  mat.frontLayerRoughness = m4.w;
+  mat.backLayerTx = m5.rgb;
+  mat.backLayerRoughness = m5.w;
+  mat.thinFilmEnabled = m6.x > 0.5;
+  mat.thinFilmLayerCountU = u32(max(m6.y, 0.0));
+  mat.thinFilmIncidentIor = max(m6.z, 1.0);
+  mat.thinFilmAngleDependent = m6.w > 0.5;
+  mat.spectralAvgMu = max(m19.x, 0.0);
+  mat.spectralSampleCount = u32(max(m19.w, 0.0));
+  return mat;
+}
+
+struct BounceSample {
+  newRayOrigin: vec3f,
+  newRayDir: vec3f,
+  throughputMul: vec3f,
+  sampledDir: vec3f,
+  sampleAllowsAreaMis: bool,
+}
+
+fn sampleNextBounceDirection(
+  rng: ptr<function, u32>,
+  incomingDir: vec3f,
+  hitPos: vec3f,
+  hitNormal: vec3f,
+  normal: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  fresnel: vec3f,
+  thinFilmTransmitTint: vec3f,
+) -> BounceSample {
+  let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
+  let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
+  let baseDiffProb = max(0.0, (1.0 - metallic) * (1.0 - transmission));
+  let sumProb = max(baseSpecProb + baseTransProb + baseDiffProb, 1e-4);
+  let specProb = baseSpecProb / sumProb;
+  let transProb = baseTransProb / sumProb;
+  let diffProb = baseDiffProb / sumProb;
+  let xi = rand_f32(rng);
+  let chooseTransmission = xi < transProb;
+  let chooseSpecular = !chooseTransmission && (xi < transProb + specProb);
+  var result: BounceSample;
+  result.sampledDir = vec3f(0.0);
+  result.sampleAllowsAreaMis = false;
+  if (chooseTransmission) {
+    let frontFace = dot(incomingDir, hitNormal) < 0.0;
+    let eta = select(ior, 1.0 / ior, frontFace);
+    let refr = refract(incomingDir, normal, eta);
+    let validRefract = dot(refr, refr) > 1e-8;
+    let idealReflect = reflect(incomingDir, normal);
+    let outDir = select(idealReflect, safe_normalize(refr), validRefract);
+    let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
+    result.newRayOrigin = hitPos + offsetN * 1e-3;
+    result.sampledDir = glossyReflectionSample(rng, outDir, roughness * 0.5);
+    result.newRayDir = result.sampledDir;
+    result.throughputMul = mix(vec3f(1.0), baseColor, 0.15) * thinFilmTransmitTint / max(transProb, 1e-4);
+  } else if (chooseSpecular) {
+    let refl = reflect(incomingDir, normal);
+    result.newRayOrigin = hitPos + normal * 1e-3;
+    result.sampledDir = glossyReflectionSample(rng, refl, roughness);
+    result.newRayDir = result.sampledDir;
+    result.sampleAllowsAreaMis = true;
+    result.throughputMul = fresnel / max(specProb, 1e-4);
+  } else {
+    result.newRayOrigin = hitPos + normal * 1e-3;
+    result.sampledDir = cosineHemisphereSample(rng, normal);
+    result.newRayDir = result.sampledDir;
+    result.sampleAllowsAreaMis = true;
+    let kd = (vec3f(1.0) - fresnel) * (1.0 - metallic);
+    result.throughputMul = (kd * baseColor) / max(diffProb, 1e-4);
+  }
+  return result;
+}
+
+struct RRResult {
+  survives: bool,
+  throughputMul: f32,
+}
+
+fn russianRoulette(rng: ptr<function, u32>, throughput: vec3f) -> RRResult {
+  let survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
+  var result: RRResult;
+  if (rand_f32(rng) > survival) {
+    result.survives = false;
+    result.throughputMul = 1.0;
+    return result;
+  }
+  result.survives = true;
+  result.throughputMul = 1.0 / survival;
+  return result;
+}
+
+fn accumulateFrame(
+  gid: vec3u,
+  radiance: vec3f,
+  firstHitValid: bool,
+  firstHitPos: vec3f,
+  firstHitNormal: vec3f,
+  firstHitAlbedo: vec3f,
+  firstHitDepth: f32,
+) {
+  let sampleColor = max(radiance, vec3f(0.0));
+
+  let pixelIndex = gid.y * params.width + gid.x;
+  var accum = accumBuffer[pixelIndex];
+  accum = accum + vec4f(sampleColor, 1.0);
+  accumBuffer[pixelIndex] = accum;
+  let sampleLum = luminance(sampleColor);
+  var moments = varianceMomentsBuffer[pixelIndex];
+  moments.x = moments.x + sampleLum;
+  moments.y = moments.y + sampleLum * sampleLum;
+  moments.z = moments.z + 1.0;
+  varianceMomentsBuffer[pixelIndex] = moments;
+
+  let display = accum.xyz / max(accum.w, 1.0);
+  let count = max(moments.z, 1.0);
+  let mean = moments.x / count;
+  let varL = max(0.0, moments.y / count - mean * mean);
+  textureStore(outputTexture, vec2i(gid.xy), vec4f(display, 1.0));
+  if (firstHitValid) {
+    textureStore(normalDepthTexture, vec2i(gid.xy), vec4f(firstHitNormal, firstHitDepth));
+    textureStore(albedoTexture, vec2i(gid.xy), vec4f(firstHitAlbedo, 1.0));
+    let ndc = projectToNdc(firstHitPos, params.viewProj);
+    let prevNdc = projectToNdc(firstHitPos, params.prevViewProj);
+    let motionPx = (ndc - prevNdc) * 0.5 * vec2f(f32(params.width), f32(params.height));
+    textureStore(motionVectorsTexture, vec2i(gid.xy), vec4f(motionPx, 0.0, 1.0));
+  } else {
+    textureStore(normalDepthTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 0.0));
+    textureStore(albedoTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 0.0));
+    textureStore(motionVectorsTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 1.0));
+  }
+  textureStore(varianceTexture, vec2i(gid.xy), vec4f(varL, varL, varL, 1.0));
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= params.width || gid.y >= params.height) {
@@ -1265,42 +1454,27 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     let matId = hitMaterialId(hit);
-    let m0Index = matId * MATERIAL_VEC4_STRIDE;
-    let m1Index = m0Index + 1u;
-    let m2Index = m0Index + 2u;
-    let m3Index = m0Index + 3u;
-    let m4Index = m0Index + 4u;
-    let m5Index = m0Index + 5u;
-    let m6Index = m0Index + 6u;
-    let m19Index = m0Index + 21u;
-    let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
-    let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
-    let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
-    let m3 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m3Index], m3Index < arrayLength(&materials));
-    let m4 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m4Index], m4Index < arrayLength(&materials));
-    let m5 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m5Index], m5Index < arrayLength(&materials));
-    let m6 = select(vec4f(0.0, 0.0, 1.0, 0.0), materials[m6Index], m6Index < arrayLength(&materials));
-    let m19 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m19Index], m19Index < arrayLength(&materials));
-    var baseColor = m0.rgb;
-    var roughness = clamp(m0.w, 0.02, 1.0);
-    let emissive = m1.rgb;
-    let metallic = clamp(m1.w, 0.0, 1.0);
-    let transmission = clamp(m2.x, 0.0, 1.0);
-    let ior = clamp(m2.y, 1.0, 2.5);
-    let scatteringCoeff = max(m2.z, 0.0);
-    let scatteringAnisotropy = clamp(m2.w, -0.95, 0.95);
-    let scatteringRgb = vec3f(max(m3.x, 0.0), max(m3.y, 0.0), max(m3.z, 0.0));
-    let hasSpectralAttenuation = m3.w > 0.5;
-    let frontLayerTx = m4.rgb;
-    let frontLayerRoughness = m4.w;
-    let backLayerTx = m5.rgb;
-    let backLayerRoughness = m5.w;
-    let thinFilmEnabled = m6.x > 0.5;
-    let thinFilmLayerCountU = u32(max(m6.y, 0.0));
-    let thinFilmIncidentIor = max(m6.z, 1.0);
-    let thinFilmAngleDependent = m6.w > 0.5;
-    let spectralAvgMu = max(m19.x, 0.0);
-    let spectralSampleCount = u32(max(m19.w, 0.0));
+    let mat = decodeMaterial(matId);
+    var baseColor = mat.baseColor;
+    var roughness = mat.roughness;
+    let emissive = mat.emissive;
+    let metallic = mat.metallic;
+    let transmission = mat.transmission;
+    let ior = mat.ior;
+    let scatteringCoeff = mat.scatteringCoeff;
+    let scatteringAnisotropy = mat.scatteringAnisotropy;
+    let scatteringRgb = mat.scatteringRgb;
+    let hasSpectralAttenuation = mat.hasSpectralAttenuation;
+    let frontLayerTx = mat.frontLayerTx;
+    let frontLayerRoughness = mat.frontLayerRoughness;
+    let backLayerTx = mat.backLayerTx;
+    let backLayerRoughness = mat.backLayerRoughness;
+    let thinFilmEnabled = mat.thinFilmEnabled;
+    let thinFilmLayerCountU = mat.thinFilmLayerCountU;
+    let thinFilmIncidentIor = mat.thinFilmIncidentIor;
+    let thinFilmAngleDependent = mat.thinFilmAngleDependent;
+    let spectralAvgMu = mat.spectralAvgMu;
+    let spectralSampleCount = mat.spectralSampleCount;
 
     radiance = radiance + throughput * emissive;
 
@@ -1550,45 +1724,25 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       );
     }
 
-    let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
-    let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
-    let baseDiffProb = max(0.0, (1.0 - metallic) * (1.0 - transmission));
-    let sumProb = max(baseSpecProb + baseTransProb + baseDiffProb, 1e-4);
-    let specProb = baseSpecProb / sumProb;
-    let transProb = baseTransProb / sumProb;
-    let diffProb = baseDiffProb / sumProb;
-    let xi = rand_f32(&rng);
-    let chooseTransmission = xi < transProb;
-    let chooseSpecular = !chooseTransmission && (xi < transProb + specProb);
-    var sampledDir = vec3f(0.0);
-    var sampleAllowsAreaMis = false;
-    if (chooseTransmission) {
-      let frontFace = dot(ray.direction, hit.normal) < 0.0;
-      let eta = select(ior, 1.0 / ior, frontFace);
-      let refr = refract(ray.direction, normal, eta);
-      let validRefract = dot(refr, refr) > 1e-8;
-      let idealReflect = reflect(ray.direction, normal);
-      let outDir = select(idealReflect, safe_normalize(refr), validRefract);
-      let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
-      ray.origin = hitPos + offsetN * 1e-3;
-      sampledDir = glossyReflectionSample(&rng, outDir, roughness * 0.5);
-      ray.direction = sampledDir;
-      throughput = throughput * mix(vec3f(1.0), baseColor, 0.15) * thinFilmTransmitTint / max(transProb, 1e-4);
-    } else if (chooseSpecular) {
-      let refl = reflect(ray.direction, normal);
-      ray.origin = hitPos + normal * 1e-3;
-      sampledDir = glossyReflectionSample(&rng, refl, roughness);
-      ray.direction = sampledDir;
-      sampleAllowsAreaMis = true;
-      throughput = throughput * fresnel / max(specProb, 1e-4);
-    } else {
-      ray.origin = hitPos + normal * 1e-3;
-      sampledDir = cosineHemisphereSample(&rng, normal);
-      ray.direction = sampledDir;
-      sampleAllowsAreaMis = true;
-      let kd = (vec3f(1.0) - fresnel) * (1.0 - metallic);
-      throughput = throughput * (kd * baseColor) / max(diffProb, 1e-4);
-    }
+    let bs = sampleNextBounceDirection(
+      &rng,
+      ray.direction,
+      hitPos,
+      hit.normal,
+      normal,
+      baseColor,
+      roughness,
+      metallic,
+      transmission,
+      ior,
+      fresnel,
+      thinFilmTransmitTint,
+    );
+    ray.origin = bs.newRayOrigin;
+    ray.direction = bs.newRayDir;
+    throughput = throughput * bs.throughputMul;
+    let sampledDir = bs.sampledDir;
+    let sampleAllowsAreaMis = bs.sampleAllowsAreaMis;
 
     if (sampleAllowsAreaMis) {
       radiance = radiance + bsdfAreaLightConnectionContribution(
@@ -1616,44 +1770,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     if (bounce > 2u) {
-      let survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
-      if (rand_f32(&rng) > survival) {
-        break;
-      }
-      throughput = throughput / survival;
+      let rr = russianRoulette(&rng, throughput);
+      if (!rr.survives) { break; }
+      throughput = throughput * rr.throughputMul;
     }
   }
 
-  let sampleColor = max(radiance, vec3f(0.0));
-
-  let pixelIndex = gid.y * params.width + gid.x;
-  var accum = accumBuffer[pixelIndex];
-  accum = accum + vec4f(sampleColor, 1.0);
-  accumBuffer[pixelIndex] = accum;
-  let sampleLum = luminance(sampleColor);
-  var moments = varianceMomentsBuffer[pixelIndex];
-  moments.x = moments.x + sampleLum;
-  moments.y = moments.y + sampleLum * sampleLum;
-  moments.z = moments.z + 1.0;
-  varianceMomentsBuffer[pixelIndex] = moments;
-
-  let display = accum.xyz / max(accum.w, 1.0);
-  let count = max(moments.z, 1.0);
-  let mean = moments.x / count;
-  let varL = max(0.0, moments.y / count - mean * mean);
-  textureStore(outputTexture, vec2i(gid.xy), vec4f(display, 1.0));
-  if (firstHitValid) {
-    textureStore(normalDepthTexture, vec2i(gid.xy), vec4f(firstHitNormal, firstHitDepth));
-    textureStore(albedoTexture, vec2i(gid.xy), vec4f(firstHitAlbedo, 1.0));
-    let ndc = projectToNdc(firstHitPos, params.viewProj);
-    let prevNdc = projectToNdc(firstHitPos, params.prevViewProj);
-    let motionPx = (ndc - prevNdc) * 0.5 * vec2f(f32(params.width), f32(params.height));
-    textureStore(motionVectorsTexture, vec2i(gid.xy), vec4f(motionPx, 0.0, 1.0));
-  } else {
-    textureStore(normalDepthTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 0.0));
-    textureStore(albedoTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 0.0));
-    textureStore(motionVectorsTexture, vec2i(gid.xy), vec4f(0.0, 0.0, 0.0, 1.0));
-  }
-  textureStore(varianceTexture, vec2i(gid.xy), vec4f(varL, varL, varL, 1.0));
+  accumulateFrame(
+    gid,
+    radiance,
+    firstHitValid,
+    firstHitPos,
+    firstHitNormal,
+    firstHitAlbedo,
+    firstHitDepth,
+  );
 }
 `;

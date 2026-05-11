@@ -175,3 +175,100 @@ export function convertMaterial(m: ThreeStdMat): Material {
 
   return base;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Cross-engine PBR-scalar extraction (P2-6.1)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal PBR scalar bag that every walkaround/DDGI/path-tracer engine ends up
+ * needing on the host side when building GPU material buffers. Captures the
+ * "extract THREE PBR fields with `?? default` semantics" shape that was
+ * previously duplicated across engines.
+ *
+ * Use {@link extractThreePbrScalars} to fill this from a THREE material with
+ * caller-supplied defaults. Each consumer maps from the struct into its own
+ * GPU layout — there is no shared packing format, only a shared extraction.
+ *
+ * Fields without a meaningful default on the THREE side are wrapped optional
+ * (`attenuationColor`, `attenuationDistance`, `thickness`) — engines that want
+ * a fallback should `??` at the use site.
+ */
+export interface PbrScalars {
+  readonly baseColor: Vec3;
+  readonly emissive: Vec3;
+  readonly emissiveIntensity: number;
+  readonly roughness: number;
+  readonly metallic: number;
+  readonly transmission: number;
+  readonly ior: number;
+  readonly attenuationColor: Vec3;
+  readonly attenuationDistance: number;
+  readonly thickness: number;
+}
+
+export interface PbrDefaults {
+  readonly baseColor: Vec3;
+  readonly emissive: Vec3;
+  readonly emissiveIntensity: number;
+  readonly roughness: number;
+  readonly metallic: number;
+  readonly transmission: number;
+  readonly ior: number;
+  readonly attenuationColor: Vec3;
+  readonly attenuationDistance: number;
+  readonly thickness: number;
+}
+
+const PBR_DEFAULTS: PbrDefaults = {
+  baseColor: [1, 1, 1],
+  emissive: [0, 0, 0],
+  emissiveIntensity: 1,
+  roughness: 0.5,
+  metallic: 0,
+  transmission: 0,
+  ior: THREE_PHYSICAL_DEFAULT_IOR,
+  attenuationColor: [1, 1, 1],
+  attenuationDistance: Infinity,
+  thickness: 0,
+};
+
+/**
+ * Extract PBR scalars from a THREE material with caller-supplied defaults
+ * for any missing fields. Handles MeshStandardMaterial vs
+ * MeshPhysicalMaterial type narrowing and the various optional fields that
+ * only physical materials carry (transmission, ior, attenuation*, thickness).
+ *
+ * Pass {@link PBR_DEFAULTS_DEFAULT} (or omit) to use the
+ * library-standard defaults; pass a custom defaults bag to keep
+ * byte-equivalent behavior with a legacy engine that diverged from the
+ * standard defaults.
+ */
+export function extractThreePbrScalars(
+  mat: THREE.Material,
+  defaults: Partial<PbrDefaults> = {},
+): PbrScalars {
+  const d = { ...PBR_DEFAULTS, ...defaults };
+  const stdMat = mat as ThreeStdMat;
+  const physMat = mat as ThreePhysMat;
+  const color = stdMat.color;
+  const emissive = stdMat.emissive;
+  return {
+    baseColor: color ? colorToVec3(color) : d.baseColor,
+    emissive: emissive ? colorToVec3(emissive) : d.emissive,
+    emissiveIntensity: stdMat.emissiveIntensity ?? d.emissiveIntensity,
+    roughness: stdMat.roughness ?? d.roughness,
+    metallic: stdMat.metalness ?? d.metallic,
+    transmission: physMat.transmission ?? d.transmission,
+    ior: physMat.ior ?? d.ior,
+    attenuationColor: physMat.attenuationColor
+      ? colorToVec3(physMat.attenuationColor)
+      : d.attenuationColor,
+    attenuationDistance: physMat.attenuationDistance ?? d.attenuationDistance,
+    thickness: physMat.thickness ?? d.thickness,
+  };
+}
+
+/** Library-standard PBR defaults — exposed for engines that want to opt
+ *  into the canonical set rather than maintain their own. */
+export const PBR_DEFAULTS_DEFAULT: PbrDefaults = PBR_DEFAULTS;

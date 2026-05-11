@@ -19,6 +19,13 @@ import { resolveEnvironment } from './environment.js';
 
 export { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from './vitrumSceneToThree.js';
 export { VITRUM_USER_DATA_KEYS } from './userDataKeys.js';
+export {
+  extractThreePbrScalars,
+  PBR_DEFAULTS_DEFAULT,
+  colorToVec3,
+  convertMaterial,
+} from './material.js';
+export type { PbrScalars, PbrDefaults, ThreeStdMat, ThreePhysMat } from './material.js';
 
 /**
  * Converts a THREE.Scene into a @vitrum/core Scene.
