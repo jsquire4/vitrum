@@ -9,7 +9,7 @@
  */
 
 import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
-import { RAYS_PER_PROBE } from '../probeUpdatePass.js';
+import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 // Common header shared by both shaders
 const COMMON = /* wgsl */`

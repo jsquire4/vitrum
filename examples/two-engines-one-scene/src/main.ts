@@ -11,7 +11,7 @@ import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 // package surface is exported and consumable from a real example.
 import { createPTEngine_WebGPU } from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
-import { createWalkaroundEngine_Hybrid } from '@vitrum/walkaround-hybrid';
+import { createWalkaroundEngine_Hybrid, HYBRID_WEBGPU_REQUIRED_LIMITS } from '@vitrum/walkaround-hybrid';
 
 // Mark as touched so the import is preserved through tree-shaking until the
 // host adds the UI toggle. Logged once at module load.
@@ -132,7 +132,12 @@ async function main(): Promise<void> {
       refreshStatus();
       return;
     }
-    const device = await adapter.requestDevice();
+    // The walkaround-hybrid shade pass binds 13+ storage buffers; default
+    // WebGPU device limit is 8. Pass HYBRID_WEBGPU_REQUIRED_LIMITS so the
+    // pipeline layouts validate.
+    const device = await adapter.requestDevice({
+      requiredLimits: HYBRID_WEBGPU_REQUIRED_LIMITS,
+    });
     const format = navigator.gpu.getPreferredCanvasFormat();
     const ctx = canvasWgpu.getContext('webgpu');
     if (!ctx) {

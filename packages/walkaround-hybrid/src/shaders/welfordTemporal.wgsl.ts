@@ -31,7 +31,14 @@ fn welfordTemporalMain(@builtin(global_invocation_id) gid: vec3u) {
 
   let lum = luminance_welford(textureLoad(w_hdr, gid.xy, 0).rgb);
   let raw = textureLoad(w_prev, gid.xy, 0);
-  let prevState = select(WelfordVariance(raw.r, raw.g), WelfordVariance(0.0, 0.0), w_ubo.forceReset != 0u);
+  // WGSL select() only accepts scalar/vecN types — split the struct pick
+  // into per-field selects to keep the same forceReset-zero-state semantic.
+  // The prior single-call select(WelfordVariance, WelfordVariance, bool)
+  // failed to compile on the WebGPU spec validator.
+  let reset = w_ubo.forceReset != 0u;
+  let prevMean = select(raw.r, 0.0, reset);
+  let prevM2   = select(raw.g, 0.0, reset);
+  let prevState = WelfordVariance(prevMean, prevM2);
   let n = max(1u, w_ubo.sampleN);
   let next = welfordUpdate(prevState, lum, n);
   textureStore(w_out, gid.xy, vec4f(next.mean, next.m2, 0.0, 0.0));

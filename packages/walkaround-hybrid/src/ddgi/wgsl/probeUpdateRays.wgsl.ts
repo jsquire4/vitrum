@@ -8,7 +8,7 @@
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
 import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
-import { RAYS_PER_PROBE } from '../probeUpdatePass.js';
+import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 const WG_SIZE = 32;
 const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);

@@ -29,19 +29,15 @@ import { PROBE_UPDATE_RAYS_WGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
 import { packDDGIGridParams } from '../pipeline/resourceManager.js';
 import { detectGpu } from '@vitrum/core';
+import { RAYS_PER_PROBE } from './ddgiConstants.js';
 
-// 192 rays per probe (was 96). Per-probe ray count drives DDGI
-// irradiance convergence quality — more rays per update = smoother
-// per-probe Le. Combined with STRIDE=8 round-robin, each probe sees
-// 192/8 = 24 rays per frame budget. Cost scales linearly: at 540
-// probes (24" spacing) was 540 × 96 = ~52k rays/frame; with 486
-// probes at 16" spacing × 192 = ~93k rays/frame (+80%). DDGI compute
-// pass measured at ~1ms previously; expected ~2ms now — well within
-// budget.
-// Exported so probeUpdateRays.wgsl.ts and probeUpdateBlend.wgsl.ts
-// inject the same value via template literal — eliminates the
-// possibility of CPU/GPU constants diverging.
-export const RAYS_PER_PROBE = 192;
+// Re-export so existing consumers (`import { RAYS_PER_PROBE } from
+// 'walkaround-hybrid/ddgi/probeUpdatePass'`) keep working. The constant
+// lives in `./ddgiConstants.ts` to break the ESM import cycle between
+// this module and its WGSL template files (host imports WGSL, WGSL
+// imports the constant; before extraction the WGSL would read TDZ for
+// `RAYS_PER_PROBE` and throw at evaluation time).
+export { RAYS_PER_PROBE };
 // ProbeRay struct: 12 floats / 2 u32 → 16 × 4 bytes = 64 bytes each
 const PROBE_RAY_STRIDE_BYTES = 64;
 
