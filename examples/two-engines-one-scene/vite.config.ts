@@ -24,6 +24,7 @@ export default defineConfig({
         index: path.resolve(__dirname, 'index.html'),
         ptwebgl: path.resolve(__dirname, 'pt-webgl.html'),
         walkaround: path.resolve(__dirname, 'walkaround.html'),
+        walkaroundWebgl2: path.resolve(__dirname, 'walkaround-webgl2.html'),
         ptwebgpu: path.resolve(__dirname, 'pt-webgpu.html'),
       },
     },

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>vitrum — pt-webgpu</title>
+    <title>vitrum — walkaround (WebGL2 fallback)</title>
     <style>
       * { box-sizing: border-box; }
       body { margin: 0; background: #0a0a0b; color: #c8c8cc; font-family: system-ui, sans-serif; }
@@ -25,12 +25,11 @@
       }
       nav { padding: 6px 14px; font-size: 11px; opacity: 0.6; }
       nav a { color: #aac; margin-right: 12px; }
-      .note { padding: 10px 14px; font-size: 11px; opacity: 0.55; font-style: italic; }
     </style>
   </head>
-  <body data-engine-mode="ptwebgpu">
+  <body data-engine-mode="ptwebgl" data-walkaround-mode="1">
     <div class="wrap">
-      <h1>vitrum — <code>pt-webgpu</code> (WebGPU path tracer, isolated page)</h1>
+      <h1>vitrum — <code>pt-webgl</code> driven as a WebGL2 walkaround (interactive PT, camera motion on)</h1>
       <nav>
         <a href="/">all three</a>
         <a href="/pt-webgl.html">pt-webgl</a>
@@ -38,14 +37,9 @@
         <a href="/walkaround-webgl2.html">walkaround (WebGL2)</a>
         <a href="/pt-webgpu.html">pt-webgpu</a>
       </nav>
-      <div class="note">
-        pt-webgpu accumulates into an internal HDR texture; the canvas
-        below is left unconfigured (no display blit). Validation is by
-        sample-count climb + engine state via window.__vitrum.ptWebgpu.
-      </div>
       <div class="panel">
-        <h2>pt-webgpu (headless)</h2>
-        <canvas id="c-ptgpu"></canvas>
+        <h2>pt-webgl · walkaround (WebGL2)</h2>
+        <canvas id="c-pt"></canvas>
       </div>
     </div>
     <div id="status">Initializing…</div>

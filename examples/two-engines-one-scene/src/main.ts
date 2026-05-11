@@ -74,14 +74,23 @@ async function main(): Promise<void> {
   const bodyMode = (document.body.getAttribute('data-engine-mode') ?? 'all') as
     | 'all' | 'ptwebgl' | 'walkaround' | 'ptwebgpu';
   const mode = (params.get('mode') ?? bodyMode) as typeof bodyMode;
+  // `walkaround-webgl2.html` sets data-walkaround-mode="1" to force pt-webgl
+  // into interactive + camera-motion defaults so the page behaves like a
+  // WebGL2 walkaround (cross-engine fallback for users without WebGPU).
+  // URL params still override (e.g. ?cameraMotion=0 freezes the orbit).
+  const walkaroundFallback = document.body.getAttribute('data-walkaround-mode') === '1';
   const FLAGS = {
     mode,
-    cameraMotion: params.get('cameraMotion') === '1',
+    cameraMotion: params.has('cameraMotion')
+      ? params.get('cameraMotion') === '1'
+      : walkaroundFallback,
     ppgEnabled: params.get('ppgEnabled') === '1',
     denoiser: (params.get('denoiser') ?? 'svgf') as 'svgf' | 'atrous',
-    quality: (params.get('quality') ?? 'capture') as 'interactive' | 'final' | 'capture' | 'safe',
+    quality: (params.get('quality')
+      ?? (walkaroundFallback ? 'interactive' : 'capture')) as 'interactive' | 'final' | 'capture' | 'safe',
     ptWebgpuBounces: parseInt(params.get('ptWebgpuBounces') ?? '4', 10) || 4,
-    samplesTarget: parseInt(params.get('samplesTarget') ?? '32', 10) || 32,
+    samplesTarget: parseInt(params.get('samplesTarget')
+      ?? (walkaroundFallback ? '256' : '32'), 10) || 32,
     scene: (params.get('scene') ?? 'cornell') as 'cornell' | 'complex',
   };
   const RUN = {
