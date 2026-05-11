@@ -102,7 +102,7 @@ describe('Sprint 17 — pass-layout placement', () => {
     }
   });
 
-  it('MAX_PASS_COUNT accommodates the GI block (≥ 23 after Sprint 17)', () => {
-    expect(MAX_PASS_COUNT).toBeGreaterThanOrEqual(23);
+  it('MAX_PASS_COUNT accommodates the GI block (≥ 20 — sample-budget + 4 DI + 4 GI + shade + 2 GTAO + denoiser + indirect-combine + 3 tail)', () => {
+    expect(MAX_PASS_COUNT).toBeGreaterThanOrEqual(20);
   });
 });

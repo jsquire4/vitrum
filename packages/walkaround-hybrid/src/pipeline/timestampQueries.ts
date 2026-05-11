@@ -7,11 +7,17 @@
  * querySet is sized to the worst-case slot count so a single allocation
  * survives every configuration.
  *
- * Configurations (slot count in parentheses):
- *   • PPG off, legacy atrous (12): sample-budget, ris…shade, atrous-0..2, temporalAccum, resolve, composite
- *   • PPG on,  legacy atrous (13): + ppg-update
- *   • PPG off, SVGF          (16): sample-budget, ris…shade, welford-temporal, svgf-variance, svgf-atrous-0..4, temporalAccum, resolve, composite
- *   • PPG on,  SVGF          (17): + ppg-update
+ * Configurations (slot count in parentheses, current as of Sprint 18 +
+ * Original #7 svgf-atrous trim):
+ *   • PPG off, legacy atrous (17): sample-budget, ris, temporal, spatial-1,
+ *       spatial-2, gi-ris, gi-temporal, gi-spatial-1, gi-spatial-2, shade,
+ *       gtao, gtao-upsample, atrous-0..2, indirect-combine, temporalAccum,
+ *       resolve, composite
+ *   • PPG on,  legacy atrous (18): + ppg-update between shade and gtao
+ *   • PPG off, SVGF          (21): sample-budget, …shade, gtao+upsample,
+ *       welford-temporal, svgf-variance, svgf-atrous-0..2, indirect-combine,
+ *       temporalAccum, resolve, composite
+ *   • PPG on,  SVGF          (22): + ppg-update
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes
@@ -41,8 +47,6 @@ export type PassLabel =
   | 'svgf-atrous-0'
   | 'svgf-atrous-1'
   | 'svgf-atrous-2'
-  | 'svgf-atrous-3'
-  | 'svgf-atrous-4'
   | 'atrous-0'
   | 'atrous-1'
   | 'atrous-2'
@@ -59,9 +63,11 @@ export type PassLabel =
  * History: 15 (base) → 17 (Sprint 9: sample-budget + resolve) →
  *          19 (Sprint 15: gtao + gtao-upsample) → 20 (Sprint 16: gi-ris) →
  *          23 (Sprint 17: gi-temporal + gi-spatial-1 + gi-spatial-2) →
- *          24 (Sprint 18: indirect-combine).
+ *          24 (Sprint 18: indirect-combine) →
+ *          22 (Original #7: trim 2 dead svgf-atrous slots — iter count
+ *          dropped from 5 to 3 in shared-denoisers but layout was stale).
  */
-export const MAX_PASS_COUNT = 24;
+export const MAX_PASS_COUNT = 22;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -101,14 +107,16 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   // the next frame).
   labels.push('gtao', 'gtao-upsample');
   if (opts.denoiserMode === 'svgf') {
+    // Iteration count tied to `SVGF_DEFAULT_ATROUS_ITERATIONS = 3` in
+    // shared-denoisers/svgfConstants.ts. The dispatch loop in
+    // WalkaroundGPUPipeline._dispatchSVGF runs the same count; keep these
+    // in sync so the layout has exactly one slot per dispatch.
     labels.push(
       'welford-temporal',
       'svgf-variance',
       'svgf-atrous-0',
       'svgf-atrous-1',
       'svgf-atrous-2',
-      'svgf-atrous-3',
-      'svgf-atrous-4',
     );
   } else {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');
