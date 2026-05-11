@@ -429,7 +429,18 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // those go through a separate Lo_emit branch that bypasses the BRDF
   // singularity entirely.
   let clampedDirect = min(directRadiance, vec3f(4.0));
-  let clampedIndirect = min(indirectRadiance, vec3f(4.0));
+  // Indirect clamp is *much* tighter than direct: the atrous chain's
+  // chromaticity-based color edge-stop preserves bright fireflies (center
+  // bright + neighbour dark = large color delta → neighbours' smoothing
+  // contribution to the bright pixel is suppressed; the spike persists).
+  // Combined with ReSTIR's residual W tail (each W is capped at 4 but
+  // Lo at the reconnection vertex can still be high), spikes pass through
+  // atrous unchanged and admit a multi-percent jolt into the temporal
+  // accumulator even at α=0.01, manifesting as a "dancing" residual noise
+  // pattern.  Cap indirect at 1.0 — well above Cornell's plausible
+  // converged indirect brightness (~0.3 worst case), generous head-room
+  // for legitimate color-bleed peaks, but kills the firefly tail.
+  let clampedIndirect = min(indirectRadiance, vec3f(1.0));
   // PPG record reads the 'combined' variable per its train-record template;
   // preserve it so guiding sees the full radiance estimate.
   let combined = clampedDirect + clampedIndirect;

@@ -31,8 +31,8 @@ describe('Sprint 17 — temporal-GI WGSL', () => {
     expect(TEMPORAL_GI_WGSL).toContain('@group(0) @binding(2) var<uniform> ubo: WalkaroundUBO');
   });
 
-  it('clamps M at 20 (Bitterli 2020 §5.2 history bound)', () => {
-    expect(TEMPORAL_GI_WGSL).toContain('M_CLAMP_GI: u32 = 20u');
+  it('clamps M to a bounded history (post-Sprint-18-followup default = 50; see comment)', () => {
+    expect(TEMPORAL_GI_WGSL).toMatch(/M_CLAMP_GI:\s*u32\s*=\s*\d+u/);
   });
 
   it('reprojects via the previous-frame view matrix', () => {

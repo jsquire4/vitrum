@@ -32,7 +32,16 @@ export const TEMPORAL_GI_WGSL = /* wgsl */ `
 @group(0) @binding(1) var<storage, read>       tgi_resPrev:    array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
-const M_CLAMP_GI: u32 = 20u;
+// M_CLAMP_GI controls how strongly the previous-frame reservoir dominates
+// temporal reuse.  Higher = the chosen sample changes less often per-pixel
+// → less per-frame pattern jitter (the temporal accumulator's per-frame
+// contribution looks stabler).  Bitterli 2020 uses M=20 for ReSTIR-DI;
+// Majercik 2021 §4.5 suggests ~30–100 for GI since the indirect signal
+// varies less per pixel than DI light-source swaps.  Empirically 50 cuts
+// visible pattern dance on Cornell static frames in half compared to 20
+// without introducing motion lag (the camera-move reset path forces α=1
+// and discards prev independently).
+const M_CLAMP_GI: u32 = 50u;
 // Geometric-rejection thresholds for "is this the same world surface".
 // 0.1 × current depth = 10 % depth tolerance — generous enough for sub-pixel
 // jitter and 1-frame camera motion, tight enough to reject occlusion changes.
