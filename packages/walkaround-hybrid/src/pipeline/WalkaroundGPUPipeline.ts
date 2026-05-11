@@ -176,8 +176,6 @@ export class WalkaroundGPUPipeline {
   private _bvhIndexBuffer!: GPUBuffer;
   private _bvhBeerBuffer!: GPUBuffer;
   private _bvhPositionBuffer!: GPUBuffer;
-  private _bvhNormalBuffer!: GPUBuffer;
-  private _bvhUvBuffer!: GPUBuffer;
   private _emitterBuffer!: GPUBuffer;
   private _emitterCdfBuffer!: GPUBuffer;
 
@@ -274,8 +272,10 @@ export class WalkaroundGPUPipeline {
     this._bvhIndexBuffer    = uploadBuffer(d, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
     this._bvhBeerBuffer     = uploadBuffer(d, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
     this._bvhPositionBuffer = uploadBuffer(d, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
-    this._bvhNormalBuffer   = uploadBuffer(d, bvhBuffers.bvhNormals.cpuData,   GPUBufferUsage.STORAGE);
-    this._bvhUvBuffer       = uploadBuffer(d, bvhBuffers.bvhUvs.cpuData,       GPUBufferUsage.STORAGE);
+    // bvhNormals + bvhUvs are CPU-only on the walkaround path: UVs are packed
+    // into bvhPosition[*].w (see restir/packingHelpers.packUVIntoPositionW)
+    // and face normals are reconstructed in shader from the BVH-resolved
+    // primary hit. No need to upload them.
     this._emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
     this._emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
@@ -793,8 +793,6 @@ export class WalkaroundGPUPipeline {
     this._bvhIndexBuffer?.destroy();
     this._bvhBeerBuffer?.destroy();
     this._bvhPositionBuffer?.destroy();
-    this._bvhNormalBuffer?.destroy();
-    this._bvhUvBuffer?.destroy();
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
     if (this._res) destroyFrameResources(this._res);

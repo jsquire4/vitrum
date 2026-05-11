@@ -36,6 +36,59 @@ function luminance(r: number, g: number, b: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+/**
+ * Classify a material + face normal as an emitter, or null if the face
+ * isn't selected. Implements the priority order described in the file
+ * header (emissive > transmissive with skipEmitter override). Extracted so
+ * the per-triangle loop body is "classify → if not null, accumulate."
+ *
+ * `lightDir` should already be the configured primary-light direction;
+ * `intensity` is the configured primary-light irradiance.
+ */
+function classifyTriangleEmitter(
+  mat: THREE.Material,
+  normal: { x: number; y: number; z: number },
+  lightDir: THREE.Vector3,
+  primaryIntensity: number,
+): { color: [number, number, number]; intensity: number } | null {
+  const meshMat = mat as THREE.MeshStandardMaterial;
+  const emissiveLum = meshMat.emissive
+    ? luminance(meshMat.emissive.r, meshMat.emissive.g, meshMat.emissive.b)
+    : 0;
+  if (emissiveLum > 0 && meshMat.emissiveIntensity && meshMat.emissiveIntensity > 0) {
+    return {
+      color: [
+        meshMat.emissive.r * meshMat.emissiveIntensity,
+        meshMat.emissive.g * meshMat.emissiveIntensity,
+        meshMat.emissive.b * meshMat.emissiveIntensity,
+      ],
+      intensity: meshMat.emissiveIntensity,
+    };
+  }
+  const physMat = mat as THREE.MeshPhysicalMaterial;
+  if (!physMat.transmission || physMat.transmission <= 0.1) return null;
+
+  const skipEmitter = (mat.userData as { skipEmitter?: boolean } | undefined)?.skipEmitter === true;
+  if (skipEmitter) return null;
+
+  const sunDot = Math.abs(
+    lightDir.x * normal.x + lightDir.y * normal.y + lightDir.z * normal.z,
+  );
+  if (sunDot <= 0.05) return null;
+
+  const baseColor = physMat.color ?? new THREE.Color(1, 1, 1);
+  const attenColor = physMat.attenuationColor ?? new THREE.Color(1, 1, 1);
+  const trans = physMat.transmission;
+  return {
+    color: [
+      baseColor.r * attenColor.r * trans * primaryIntensity * sunDot,
+      baseColor.g * attenColor.g * trans * primaryIntensity * sunDot,
+      baseColor.b * attenColor.b * trans * primaryIntensity * sunDot,
+    ],
+    intensity: primaryIntensity * trans * sunDot,
+  };
+}
+
 export interface EmitterListOptions {
   primaryLightDir?: THREE.Vector3;
   primaryLightIntensity?: number;
@@ -110,39 +163,17 @@ export function buildEmitterList(
     const mat = materials[matId];
     if (!mat) continue;
 
-    let cr = 0, cg = 0, cb = 0, intensity = 1;
-
-    const meshMat = mat as THREE.MeshStandardMaterial;
-    const emissiveLum = meshMat.emissive
-      ? luminance(meshMat.emissive.r, meshMat.emissive.g, meshMat.emissive.b)
-      : 0;
-    if (emissiveLum > 0 && meshMat.emissiveIntensity && meshMat.emissiveIntensity > 0) {
-      cr = meshMat.emissive.r * meshMat.emissiveIntensity;
-      cg = meshMat.emissive.g * meshMat.emissiveIntensity;
-      cb = meshMat.emissive.b * meshMat.emissiveIntensity;
-      intensity = meshMat.emissiveIntensity;
-    } else {
-      const physMat = mat as THREE.MeshPhysicalMaterial;
-      if (physMat.transmission && physMat.transmission > 0.1) {
-        const skipEmitter = (mat.userData as { skipEmitter?: boolean } | undefined)?.skipEmitter === true;
-        if (skipEmitter) continue;
-
-        const lightDir = options.primaryLightDir ?? new THREE.Vector3(0, 1, 0);
-        const sunDot = Math.abs(lightDir.x * nx + lightDir.y * ny + lightDir.z * nz);
-
-        if (sunDot > 0.05) {
-          const baseColor = physMat.color ?? new THREE.Color(1, 1, 1);
-          const attenColor = physMat.attenuationColor ?? new THREE.Color(1, 1, 1);
-          const sunIrradiance = options.primaryLightIntensity ?? 3.0;
-          const trans = physMat.transmission;
-
-          cr = baseColor.r * attenColor.r * trans * sunIrradiance * sunDot;
-          cg = baseColor.g * attenColor.g * trans * sunIrradiance * sunDot;
-          cb = baseColor.b * attenColor.b * trans * sunIrradiance * sunDot;
-          intensity = sunIrradiance * trans * sunDot;
-        }
-      }
-    }
+    const lightDir = options.primaryLightDir ?? new THREE.Vector3(0, 1, 0);
+    const primaryIntensity = options.primaryLightIntensity ?? 3.0;
+    const classified = classifyTriangleEmitter(
+      mat,
+      { x: nx, y: ny, z: nz },
+      lightDir,
+      primaryIntensity,
+    );
+    if (!classified) continue;
+    const [cr, cg, cb] = classified.color;
+    const intensity = classified.intensity;
 
     const power = luminance(cr, cg, cb) * area;
     if (power < 1e-8) continue;

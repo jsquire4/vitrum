@@ -12,11 +12,13 @@ export interface WgpuProbeResult {
    */
   adapterKind?: WgpuAdapterKind;
   /**
-   * @deprecated Prefer {@link adapterKind}. Scheduled for removal in Phase 7 /
-   * Sprint 1 once host call sites migrate to `adapterKind`. When present,
-   * `true` means not SwiftShader (`adapterKind !== 'swiftshader'`), including
-   * the fingerprinting `unknown` case where the real GPU is still treated as
-   * usable.
+   * @deprecated Prefer {@link adapterKind}. All in-library readers migrated
+   * during pass 2 of the complexity sweep; this field is retained on the
+   * public type only for legacy host integrations in `_staging/legacy-
+   * source/`. Library code MUST NOT add new readers — `adapterKind` is the
+   * single source of truth. When present, `true` means not SwiftShader
+   * (`adapterKind !== 'swiftshader'`), including the fingerprinting
+   * `unknown` case where the real GPU is still treated as usable.
    */
   isHardwareGpu?: boolean;
 }

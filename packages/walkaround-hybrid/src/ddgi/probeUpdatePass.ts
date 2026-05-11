@@ -24,6 +24,7 @@ import type { ProbeGrid } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { PROBE_UPDATE_RAYS_WGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
+import { packDDGIGridParams } from '../pipeline/resourceManager.js';
 import { detectGpu } from '@vitrum/core';
 
 // 192 rays per probe (was 96). Per-probe ray count drives DDGI
@@ -134,7 +135,7 @@ export class ProbeUpdatePass {
     // here so validation rounds never silently mistake software output
     // for hardware-GPU output.
     const gpu = await detectGpu();
-    if (gpu.isWebGPU && !gpu.isHardwareGpu) {
+    if (gpu.isWebGPU && gpu.adapterKind === 'swiftshader') {
       console.error(
         `[DDGI] SwiftShader detected (vendor='${gpu.adapterVendor}', architecture='${gpu.adapterArchitecture}'). ` +
         `Refusing to initialize DDGI on software rasterizer. Launch Chrome with hardware GPU enabled to validate DDGI output.`,
@@ -444,14 +445,21 @@ export class ProbeUpdatePass {
   }
 
   private _uploadGridParams(device: GPUDevice): void {
-    const p = this._grid.buildUniformData();
-    device.queue.writeBuffer(this._gpu!.gridParamsBuf, 0, p.buffer);
+    // Use the canonical packer shared with HybridEngine — single source
+    // for the 64-byte DDGI grid-params UBO layout.
+    const buf = packDDGIGridParams(this._grid.params);
+    device.queue.writeBuffer(this._gpu!.gridParamsBuf, 0, buf);
   }
 
   private _uploadFrameParams(device: GPUDevice): void {
+    // 8 floats / 32 bytes; aliased u32 view shares the storage:
+    //   data[0..2]  → randomRotation: vec3f  (random per-frame Y rotation)
+    //   u32[3]      → frameIndex: u32
+    //   u32[4]      → probeCount: u32
+    //   u32[5]      → probesPerFrame: u32 (ceil(probeCount / 4))
+    //   data[6..7]  → pad to 32 bytes (std140 vec4 alignment)
     const data = new Float32Array(8);
     const u32 = new Uint32Array(data.buffer);
-    // randomRotation: random vec3f for per-frame probe direction rotation.
     data[0] = Math.random() * Math.PI * 2;
     data[1] = Math.random() * Math.PI * 2;
     data[2] = Math.random() * Math.PI * 2;

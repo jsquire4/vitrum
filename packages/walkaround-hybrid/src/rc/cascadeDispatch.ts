@@ -48,9 +48,9 @@ interface WebGPUBackendView {
 interface CastPassHandles {
   pipeline:  GPUComputePipeline;
   /** Uniform buffer (GPUBuffer wrapping a Float32Array aligned to CascadeUniforms). */
-  uniformBuf: GPUBuffer;
+  cascadeParamsBuf: GPUBuffer;
   /** CPU-side backing for the uniform buffer — updated each frame. */
-  uniformRaw: Float32Array;
+  cascadeParamsRaw: Float32Array;
   /** Workgroup dispatch count = ceil(totalRays / 64). */
   dispatchX:  number;
 }
@@ -58,7 +58,7 @@ interface CastPassHandles {
 interface MergePassHandles {
   pipeline:  GPUComputePipeline;
   /** Uniform buffer for MergeUniforms. */
-  uniformBuf: GPUBuffer;
+  cascadeParamsBuf: GPUBuffer;
   mergeRaw:   Float32Array;
   /** Workgroup dispatch count = ceil(totalLower / 64). */
   dispatchX:  number;
@@ -237,9 +237,9 @@ export class RCDispatcher {
     for (let k = 0; k < CASCADE_COUNT; k++) {
       const pass = handles.castPasses[k]!;
       buildCascadeUniformDataInto(
-        pass.uniformRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed,
+        pass.cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed,
       );
-      device.queue.writeBuffer(pass.uniformBuf, 0, pass.uniformRaw.buffer as ArrayBuffer);
+      device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer as ArrayBuffer);
     }
 
     // Encode compute commands.
@@ -270,10 +270,10 @@ export class RCDispatcher {
   dispose(): void {
     if (this._handles) {
       for (const pass of this._handles.castPasses) {
-        pass.uniformBuf.destroy();
+        pass.cascadeParamsBuf.destroy();
       }
       for (const pass of this._handles.mergePasses) {
-        pass.uniformBuf.destroy();
+        pass.cascadeParamsBuf.destroy();
       }
       this._handles = null;
     }
@@ -426,22 +426,25 @@ export class RCDispatcher {
         },
       });
 
-      // Per-pass uniform buffer for CascadeUniforms (40 floats = 160 bytes).
+      // Per-pass STORAGE buffer for CascadeUniforms (40 floats = 160 bytes).
+      // Backed by storage (not UNIFORM) because the 160-byte struct exceeds
+      // the default maxUniformBufferBindingSize on low-end adapters; the
+      // shader binds it as `read-only-storage` which has no such limit.
       // envIntensity is fixed at 1.0 by design: tone mapping is applied per-
       // material downstream, and environment-level scaling is intentionally
       // not exposed at the RC dispatch level. If a future requirement needs
       // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
       // through.
-      const uniformRaw = new Float32Array(40);
-      buildCascadeUniformDataInto(uniformRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed);
-      const uniformBuf = device.createBuffer({
+      const cascadeParamsRaw = new Float32Array(40);
+      buildCascadeUniformDataInto(cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed);
+      const cascadeParamsBuf = device.createBuffer({
         label:  `rc-cast-C${k}-uniforms`,
-        size:   uniformRaw.byteLength,
+        size:   cascadeParamsRaw.byteLength,
         usage:  GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
-      new Float32Array(uniformBuf.getMappedRange()).set(uniformRaw);
-      uniformBuf.unmap();
+      new Float32Array(cascadeParamsBuf.getMappedRange()).set(cascadeParamsRaw);
+      cascadeParamsBuf.unmap();
 
       // Cascade output buffer.
       const cascadeAttr = cascadeBuffers.gpuCascades[k]!;
@@ -460,11 +463,11 @@ export class RCDispatcher {
           { binding: 5, resource: { buffer: cascadeBuf } },
           { binding: 6, resource: envTextureView },
           { binding: 7, resource: envSampler },
-          { binding: 8, resource: { buffer: uniformBuf } },
+          { binding: 8, resource: { buffer: cascadeParamsBuf } },
         ],
       });
 
-      castPasses.push({ pipeline, uniformBuf, uniformRaw, dispatchX: Math.ceil(totalRays / 64) });
+      castPasses.push({ pipeline, cascadeParamsBuf, cascadeParamsRaw, dispatchX: Math.ceil(totalRays / 64) });
       castBindGroups.push(bindGroup);
     }
 
@@ -488,14 +491,14 @@ export class RCDispatcher {
 
       // MergeUniforms buffer (20 floats = 80 bytes).
       const mergeRaw = buildMergeUniformData(lowerDim, upperDim, cascadeBuffers);
-      const uniformBuf = device.createBuffer({
+      const cascadeParamsBuf = device.createBuffer({
         label:  `rc-merge-${lower}-uniforms`,
         size:   mergeRaw.byteLength,
         usage:  GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
-      new Float32Array(uniformBuf.getMappedRange()).set(mergeRaw);
-      uniformBuf.unmap();
+      new Float32Array(cascadeParamsBuf.getMappedRange()).set(mergeRaw);
+      cascadeParamsBuf.unmap();
 
       const lowerBuf = gpuBufferOf(cascadeBuffers.gpuCascades[lower]!);
       const upperBuf = gpuBufferOf(cascadeBuffers.gpuCascades[lower + 1]!);
@@ -506,11 +509,11 @@ export class RCDispatcher {
         entries: [
           { binding: 0, resource: { buffer: upperBuf } },
           { binding: 1, resource: { buffer: lowerBuf } },
-          { binding: 2, resource: { buffer: uniformBuf } },
+          { binding: 2, resource: { buffer: cascadeParamsBuf } },
         ],
       });
 
-      mergePasses.push({ pipeline, uniformBuf, mergeRaw, dispatchX: Math.ceil(totalLower / 64) });
+      mergePasses.push({ pipeline, cascadeParamsBuf, mergeRaw, dispatchX: Math.ceil(totalLower / 64) });
       mergeBindGroups.push(bindGroup);
     }
 
@@ -534,4 +537,16 @@ const _sharedDispatcher = new RCDispatcher();
  */
 export async function dispatchCascadePasses(opts: RCDispatchOpts): Promise<void> {
   return _sharedDispatcher.dispatchFrame(opts);
+}
+
+/**
+ * Tear down GPU resources held by the module-level shared dispatcher used
+ * by `dispatchCascadePasses`. Hosts should call this on canvas unmount or
+ * page teardown to avoid leaking pipelines / bind groups on hot reload.
+ *
+ * No-op if `dispatchCascadePasses` was never called for the current page.
+ * After calling, subsequent `dispatchCascadePasses` calls reinitialize.
+ */
+export function disposeSharedDispatcher(): void {
+  _sharedDispatcher.dispose();
 }

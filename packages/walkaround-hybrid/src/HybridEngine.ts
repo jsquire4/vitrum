@@ -11,12 +11,8 @@
  * Implements `@vitrum/core`'s `Engine` interface so a host can swap this
  * backend interchangeably with `@vitrum/pt-webgl`.
  *
- * RC subsystem note:
- *   The RC cascade compute was removed from the hybrid engine in 2026-05-08
- *   (shade pass no longer samples Lo_rc). Standalone RC still uses
- *   `rc/cascadeDispatch` and friends. Re-integrating RC into this class is
- *   **tracked design work** — see [plan/walkaround-without-three.md](../../../plan/walkaround-without-three.md)
- *   (“RC re-composition”) for steps and constraints; it is not a one-line TODO.
+ * RC subsystem: shade pass does not sample Lo_rc — see
+ * `plan/walkaround-without-three.md` for the re-integration plan.
  *
  * Debug globals:
  *   The original hook wrote to `window.__WGPU__.walkaround` and
@@ -170,12 +166,6 @@ function getPreferredSwapChainFormat(): GPUTextureFormat {
 // ────────────────────────────────────────────────────────────────────────────
 
 export class HybridEngine implements Engine {
-
-  private static _fingerprintRebuildKey(key: string | number | null | undefined): string {
-    if (key === null || key === undefined) return '__null';
-    if (typeof key === 'number') return Number.isNaN(key) ? '__n:NaN' : `__n:${key}`;
-    return `__s:${key}`;
-  }
 
   // ── Engine contract fields ─────────────────────────────────────────────
   private _state: EngineState = 'uninitialized';
@@ -804,6 +794,14 @@ export class HybridEngine implements Engine {
         );
       }
     })();
+  }
+
+  // ── Private static helpers ─────────────────────────────────────────────
+
+  private static _fingerprintRebuildKey(key: string | number | null | undefined): string {
+    if (key === null || key === undefined) return '__null';
+    if (typeof key === 'number') return Number.isNaN(key) ? '__n:NaN' : `__n:${key}`;
+    return `__s:${key}`;
   }
 }
 

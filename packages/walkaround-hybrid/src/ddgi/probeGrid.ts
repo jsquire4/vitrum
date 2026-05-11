@@ -154,33 +154,11 @@ export class ProbeGrid {
     this.dirty = false;
   }
 
-  /**
-   * Build the raw Float32Array for the ProbeGridParams uniform.
-   * Layout (std140 compatible, 32 bytes):
-   *   vec3f origin (12 bytes + 4 pad = 16)
-   *   f32  spacing (4)
-   *   vec3u dims   (12 + 4 pad = 16 — stored as 3 floats)
-   *   f32  _pad
-   *   f32  irrW, irrH, visW, visH
-   */
-  buildUniformData(): Float32Array {
-    if (!this._params) this.allocateAtlases();
-    const p = this._params!;
-    const buf = new Float32Array(16);
-    buf[0] = p.origin.x;
-    buf[1] = p.origin.y;
-    buf[2] = p.origin.z;
-    buf[3] = p.spacing;
-    buf[4] = p.dims.x;
-    buf[5] = p.dims.y;
-    buf[6] = p.dims.z;
-    buf[7] = 0;
-    buf[8]  = p.irradianceAtlasW;
-    buf[9]  = p.irradianceAtlasH;
-    buf[10] = p.visibilityAtlasW;
-    buf[11] = p.visibilityAtlasH;
-    return buf;
-  }
+  // ProbeGrid UBO packing now lives in pipeline/resourceManager.ts as
+  // `packDDGIGridParams(grid.params)` — single source for the 64-byte
+  // layout shared by ProbeUpdatePass (this package) and HybridEngine
+  // (which feeds the same layout into shade.wgsl). Callers that need the
+  // raw bytes should import packDDGIGridParams directly.
 
   get probeCount(): number {
     return this.dims.x * this.dims.y * this.dims.z;

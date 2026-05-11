@@ -66,12 +66,10 @@ export interface SceneBVHBuffers {
   bvhNodes: StorageBufferHandle;
   /** vec3u[] (3×u32) per triangle — vertex indices into bvhPositions. */
   bvhIndex: StorageBufferHandle;
-  /** vec3f[] — vertex positions, world-space. */
+  /** vec3f[] — vertex positions, world-space. .w lane carries the packed
+   *  UV pair via packUVIntoPositionW, so the shaders read both position
+   *  and UV from this single buffer. */
   bvhPositions: StorageBufferHandle;
-  /** vec3f[] — vertex normals, world-space. */
-  bvhNormals: StorageBufferHandle;
-  /** vec2f[] — UV coordinates per vertex. */
-  bvhUvs: StorageBufferHandle;
   /** u32[] — per-triangle material id (kept for CPU-side use). */
   triangleMaterialIds: StorageBufferHandle;
   /**
@@ -97,14 +95,21 @@ export interface SceneBVHBuffers {
    *
    * cellPower[i] = luminance(Le[i]) × area[i] for mesh/triangle-area
    * emitters, matching the formula used to build the power-CDF.
-   * The Sprint 3 light tree (shared-samplers `buildLightTreeCDF`) reads
-   * this buffer as its `powers` input for power-weighted importance
-   * sampling. Not yet consumed by any WGSL shader — GPU-side consumption
-   * is deferred pending walkaround dispatch integration (Sprint 9/10).
+   *
+   * NOT consumed by any live engine in this repo. The intended consumer
+   * is the Sprint 3 light tree (`buildLightTree` in @vitrum/shared-samplers)
+   * as its `powers` input for power-weighted importance sampling, which
+   * is deferred until Sprint 9/10 walkaround dispatch integration.
+   *
+   * The field is retained because:
+   *  - the data is small (one f32 per emitter)
+   *  - the round-trip correctness (Le × area scaling) is asserted by
+   *    `__tests__/sprint2-cellPower.test.ts` and useful as a foundation
+   *  - removing + reinstating would churn the public type
    *
    * Sentinels: the dummy emitter (inserted when no real emitters exist)
-   * has cellPower = 0.5 (its synthetic power value). This keeps the
-   * buffer non-empty so a zero-emitter scene doesn't break the bind group.
+   * has cellPower = 0.5. This keeps the buffer non-empty so a zero-emitter
+   * scene doesn't break the bind group when the light tree is wired in.
    */
   cellPower: StorageBufferHandle;
   /** Number of entries in the emitters / cdf / cellPower arrays. */
@@ -202,14 +207,6 @@ export function buildReSTIRSceneBVH(
   );
   const emitterCount = cdfArray.length;
 
-  // ── 5. UV buffer (separate; CPU-side debug + future use) ────────────────
-  // The GPU consumes UV via `bvh_position[*].w`; this is the contract-
-  // preserving CPU-side handle.
-  const uvAttr = shared.uvAttribute;
-  const uvBuf = uvAttr
-    ? new Float32Array(uvAttr.array)
-    : new Float32Array(vertCount * 2);
-
   // triangleMaterialIds — pass through the shared per-tri matId LUT.
   const triMatIds = new Uint32Array(shared.triMaterialId);
 
@@ -231,12 +228,6 @@ export function buildReSTIRSceneBVH(
       byteLength: positionsWithUV.byteLength,
       count: vertCount,
     },
-    bvhNormals: {
-      cpuData: shared.normals.buffer.slice(0) as ArrayBuffer,
-      byteLength: shared.normals.byteLength,
-      count: vertCount,
-    },
-    bvhUvs: { cpuData: uvBuf.buffer, byteLength: uvBuf.byteLength, count: vertCount },
     triangleMaterialIds: {
       cpuData: triMatIds.buffer,
       byteLength: triMatIds.byteLength,

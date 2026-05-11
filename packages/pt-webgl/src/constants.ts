@@ -18,14 +18,9 @@ export const PT_TARGET_SAMPLES_FIXTURES = 240;
 /**
  * Sprint 1 (Phase 6): Preview uses 3 bounces for ~25–40 fps interactive on
  * desktop. Final uses 10 bounces for production hero renders.
- *
- * PT_BOUNCES is kept as a backward-compat alias for PT_PREVIEW_BOUNCES.
- * New code should reference PT_PREVIEW_BOUNCES or PT_FINAL_BOUNCES directly.
  */
 export const PT_PREVIEW_BOUNCES = 3;
 export const PT_FINAL_BOUNCES   = 10;
-/** @deprecated Use PT_PREVIEW_BOUNCES. Kept for backward compatibility. */
-export const PT_BOUNCES = PT_PREVIEW_BOUNCES;
 
 export const PT_FILTERED_GLOSSY_FACTOR = 0.25;
 export const PT_RESOLUTION_FACTOR = 1.0;

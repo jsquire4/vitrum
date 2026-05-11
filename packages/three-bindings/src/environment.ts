@@ -14,16 +14,20 @@ import type { SceneEnvironment } from '@vitrum/core';
  * - `scene.environment` set → `{ kind: 'hdri', hdri: texture }`.
  * - `scene.background` as a solid Color (no environment map) → `{ kind: 'none' }`.
  * - Nothing set → `{ kind: 'none' }`.
+ *
+ * Asymmetry note: this direction is the THREE → vitrum mapping. The reverse
+ * direction (`vitrumSceneToThree`) DOES handle `ProceduralSkyEnvironment` by
+ * substituting a procedural sky shader and warning. Mapping the reverse here
+ * — turning a `THREE.Sky` mesh / shader into a `ProceduralSkyEnvironment` —
+ * is unimplemented because no host currently constructs three.js scenes from
+ * a `THREE.Sky` source. If a host needs this, read uniforms `{ turbidity,
+ * mieCoefficient, mieDirectionalG, rayleigh }` off the sky material and emit
+ * `{ kind: 'procedural-sky', ... }`. Until then a solid-color background is
+ * not an IBL source — treat as no environment.
  */
 export function resolveEnvironment(threeScene: THREE.Scene): SceneEnvironment {
   if (threeScene.environment != null) {
     return { kind: 'hdri', hdri: threeScene.environment };
   }
-  // TODO: ProceduralSkyEnvironment is not handled here. A THREE.Sky object
-  // with uniforms { turbidity, mieCoefficient, mieDirectionalG, rayleigh }
-  // would feed this branch. See core/scene.ts ProceduralSkyEnvironment for
-  // the expected fields and how the resolved environment is consumed
-  // downstream.
-  // A solid-color background is not an IBL source — treat as no environment.
   return { kind: 'none' };
 }
