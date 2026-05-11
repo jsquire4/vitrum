@@ -264,3 +264,82 @@ export function buildCompositeBindGroup(
     ],
   });
 }
+
+// ── SVGF bind group builders (Sprint 10a) ────────────────────────────────────
+//
+// SVGF pipelines use 'auto' bindgroup layouts, so the layout source is the
+// pipeline itself (via `getBindGroupLayout(0)`) rather than the BGL cache.
+// These builders centralize the layout-binding wiring that previously lived
+// inline inside renderFrame().
+
+export function buildWelfordBindGroup(
+  device: GPUDevice,
+  welfordPipeline: GPUComputePipeline,
+  hdrColor: GPUTextureView,
+  welfordRead: GPUTextureView,
+  welfordWrite: GPUTextureView,
+  ubo: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'welford-bg',
+    layout: welfordPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: hdrColor },
+      { binding: 1, resource: welfordRead },
+      { binding: 2, resource: welfordWrite },
+      { binding: 3, resource: { buffer: ubo } },
+    ],
+  });
+}
+
+export function buildSVGFVarianceBindGroup(
+  device: GPUDevice,
+  variancePipeline: GPUComputePipeline,
+  hdrColor: GPUTextureView,
+  prevAccum: GPUTextureView,
+  gNormalDepth: GPUTextureView,
+  motionVectors: GPUTextureView,
+  welfordWrite: GPUTextureView,
+  varianceEstimate: GPUTextureView,
+  ubo: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'svgf-variance-bg',
+    layout: variancePipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: hdrColor },
+      { binding: 1, resource: prevAccum },
+      // svgf-variance reads the G-buffer twice: once for normal (.xyz),
+      // once for depth (.w). Both slots point at the same texture.
+      { binding: 2, resource: gNormalDepth },
+      { binding: 3, resource: gNormalDepth },
+      { binding: 4, resource: motionVectors },
+      { binding: 5, resource: welfordWrite },
+      { binding: 6, resource: varianceEstimate },
+      { binding: 7, resource: { buffer: ubo } },
+    ],
+  });
+}
+
+export function buildSVGFAtrousBindGroup(
+  device: GPUDevice,
+  atrousPipeline: GPUComputePipeline,
+  inputTex: GPUTextureView,
+  outputTex: GPUTextureView,
+  gNormalDepth: GPUTextureView,
+  varianceEstimate: GPUTextureView,
+  ubo: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'svgf-atrous-bg',
+    layout: atrousPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: inputTex },
+      { binding: 1, resource: outputTex },
+      { binding: 2, resource: gNormalDepth },
+      { binding: 3, resource: gNormalDepth },
+      { binding: 4, resource: varianceEstimate },
+      { binding: 5, resource: { buffer: ubo } },
+    ],
+  });
+}

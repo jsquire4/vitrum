@@ -246,14 +246,10 @@ fn ppgGuidePDF(worldPos: vec3f, n: vec3f, dir: vec3f) -> f32 {
 }
 `;
 
-const TRAIN_HEAD_ANCHOR =
-  '@group(3) @binding(5) var<storage, read_write> ppgTrainHead: array<atomic<u32>>;';
+const GUIDE_DECLS_MARKER = '// @@PPG_GUIDE_DECLS_INSERT@@';
+const BOUNCE_MARKER = '// @@PPG_BOUNCE_INSERT@@';
 
-const COMBINED_ANCHOR = `  let combined = Lo_emit + Lo_direct + Lo_sunCaustic
-               + Lo_skyAperture * 0.08
-               + Lo_ddgi * DDGI_DIFFUSE_BLEND;`;
-
-const COMBINED_REPLACEMENT = `  var Lo_ppgBounce = vec3f(0.0);
+const PPG_BOUNCE_BLOCK = `  var Lo_ppgBounce = vec3f(0.0);
   if (!isGlass && !isMetal && ppgShadeMeta.cellCount > 0u) {
     let uPpgA = rand_f32(&rng);
     let uPpgB = rand_f32(&rng);
@@ -266,22 +262,49 @@ const COMBINED_REPLACEMENT = `  var Lo_ppgBounce = vec3f(0.0);
       let LiSky = ubo.skyTint * ubo.skyIrradiance;
       Lo_ppgBounce = LiSky * albedo * INV_PI * nDotWi / max(pdfPpg, 1e-6);
     }
-  }
-  let combined = Lo_emit + Lo_direct + Lo_sunCaustic
-               + Lo_skyAperture * 0.08
-               + Lo_ddgi * DDGI_DIFFUSE_BLEND
-               + Lo_ppgBounce * PPG_GUIDE_INDIRECT_BLEND;`;
+  }`;
 
+/** Insert PPG guide bindings + helper functions at the
+ *  `// @@PPG_GUIDE_DECLS_INSERT@@` marker. */
 export function injectPpgGuideDeclsIntoShadeWgsl(shadeWgsl: string): string {
-  if (!shadeWgsl.includes(TRAIN_HEAD_ANCHOR)) {
-    throw new Error('[shade PPG guide] train head anchor not found — inject train bindings first');
+  if (!shadeWgsl.includes(GUIDE_DECLS_MARKER)) {
+    throw new Error(
+      `[shade PPG guide] expected marker "${GUIDE_DECLS_MARKER}" not found in shade.wgsl — ` +
+        `re-add it after the PPG_TRAIN_BINDINGS_INSERT marker so guide decls can attach.`,
+    );
   }
-  return shadeWgsl.replace(TRAIN_HEAD_ANCHOR, `${TRAIN_HEAD_ANCHOR}\n${SHADE_PPG_GUIDE_WGSL}`);
+  return shadeWgsl.replace(
+    GUIDE_DECLS_MARKER,
+    `${GUIDE_DECLS_MARKER}\n${SHADE_PPG_GUIDE_WGSL}`,
+  );
 }
 
+/** Insert the PPG bounce computation at the `// @@PPG_BOUNCE_INSERT@@` marker
+ *  AND replace the static `Lo_ddgi * DDGI_DIFFUSE_BLEND` combined sum with a
+ *  variant that also accumulates `Lo_ppgBounce * PPG_GUIDE_INDIRECT_BLEND`. */
 export function injectPpgGuideBounceIntoShadeWgsl(shadeWgsl: string): string {
-  if (!shadeWgsl.includes(COMBINED_ANCHOR)) {
-    throw new Error('[shade PPG guide] combined radiance anchor not found');
+  if (!shadeWgsl.includes(BOUNCE_MARKER)) {
+    throw new Error(
+      `[shade PPG guide] expected marker "${BOUNCE_MARKER}" not found in shade.wgsl — ` +
+        `re-add it immediately above the "let combined = ..." statement.`,
+    );
   }
-  return shadeWgsl.replace(COMBINED_ANCHOR, COMBINED_REPLACEMENT);
+  // 1) splice in the PPG bounce block at the marker.
+  let result = shadeWgsl.replace(
+    BOUNCE_MARKER,
+    `${BOUNCE_MARKER}\n${PPG_BOUNCE_BLOCK}`,
+  );
+  // 2) extend the combined sum (last term: `Lo_ddgi * DDGI_DIFFUSE_BLEND;`).
+  const tail = 'Lo_ddgi * DDGI_DIFFUSE_BLEND;';
+  if (!result.includes(tail)) {
+    throw new Error(
+      `[shade PPG guide] expected combined-sum tail "${tail}" not found in shade.wgsl — ` +
+        `the combined-radiance statement must end with this term so PPG can extend it.`,
+    );
+  }
+  result = result.replace(
+    tail,
+    `Lo_ddgi * DDGI_DIFFUSE_BLEND\n               + Lo_ppgBounce * PPG_GUIDE_INDIRECT_BLEND;`,
+  );
+  return result;
 }

@@ -11,6 +11,29 @@ import type {
 } from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { WebGLPathTracer } from 'three-gpu-pathtracer';
+
+/**
+ * Typed surface of the fork we depend on. WebGLPathTracer's published types
+ * use Three.js Scene/Camera types that diverge slightly between three.js
+ * @types versions; this wrapper interface lets us cast once at construction
+ * and call methods on the wrapper using our local types. Add methods here as
+ * we depend on them — keep the surface minimal.
+ */
+interface WebGLPathTracerCompat {
+  setScene(scene: unknown, camera: unknown): void;
+  setCamera(camera: unknown): void;
+  setSize(width: number, height: number): void;
+  reset(): void;
+  renderSample(): void;
+  dispose?(): void;
+  samples: number;
+  tiles: { setScalar: (n: number) => void };
+  bounces: number;
+  filterGlossyFactor: number;
+  fastUpdate: boolean;
+  _pathTracer?: { material?: { uniforms?: Record<string, { value: unknown }> } };
+  domElement?: HTMLCanvasElement;
+}
 import type {
   Engine,
   EngineCapabilities,
@@ -127,9 +150,19 @@ interface SchedulerOptions {
   readonly renderTargetBudgetBytes: number;
 }
 
+/** RGBA16F texel size: 4 channels × 2 bytes per channel. */
 const BYTES_PER_RGBA16F_PIXEL = 8;
+/** Number of full-resolution render targets the WebGL path tracer allocates:
+ *  primary accumulation, depth, normal, motion vector. */
 const ESTIMATED_RENDER_TARGET_COUNT = 4;
+/** Per-renderer overhead in driver metadata + mip alignment + GL state, used
+ *  to budget memory when computing the host's adaptive render-size plan. */
 const DEFAULT_RENDER_TARGET_OVERHEAD_BYTES = 64 * 1024 * 1024;
+
+/** Below 360p (≈230k pixels) the adaptive-tiling dispatch's per-tile overhead
+ *  dominates the per-pixel cost, so we disable tiling entirely. The threshold
+ *  is the standard SD frame area. */
+const MIN_RESOLUTION_FOR_TILING = 640 * 360;
 
 function extensionNumber(
   extensions: Readonly<Record<string, unknown>> | undefined,
@@ -514,11 +547,9 @@ export class PTEngineWebGL2 implements Engine {
     this.#cameraSignature = '';
     const threeScene = vitrumSceneToThree(scene);
     this.#threeSceneRoot = threeScene;
-    this.#pathTracer.setScene(
-      threeScene as unknown as Parameters<WebGLPathTracer['setScene']>[0],
-      this.#camera as unknown as Parameters<WebGLPathTracer['setScene']>[1],
-    );
-    driveForkMaterialUniforms(this.#pathTracer, threeScene, {
+    const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
+    tracerCompat.setScene(threeScene, this.#camera);
+    driveForkMaterialUniforms(this.#pathTracer, {
       strategy: this.#causticStrategy,
       mneeMaxIterations: this.#mneeMaxIterations,
       mneeMaxChainLength: this.#mneeMaxChainLength,
@@ -565,9 +596,7 @@ export class PTEngineWebGL2 implements Engine {
     const cameraSignature = this.#makeCameraSignature(input);
     if (cameraSignature !== this.#cameraSignature) {
       applyFrameToPerspectiveCamera(this.#camera, input);
-      this.#pathTracer.setCamera(
-        this.#camera as unknown as Parameters<WebGLPathTracer['setCamera']>[0],
-      );
+      (this.#pathTracer as unknown as WebGLPathTracerCompat).setCamera(this.#camera);
       this.#cameraSignature = cameraSignature;
     }
 
@@ -584,7 +613,7 @@ export class PTEngineWebGL2 implements Engine {
     const sizePlan = this.#planRenderSize(requestedWidth, requestedHeight);
     const w = sizePlan.width;
     const h = sizePlan.height;
-    if (this.#tileSize <= 1 || w * h <= 640 * 360) {
+    if (this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING) {
       this.#pathTracer.tiles.set(1, 1);
     } else {
       this.#pathTracer.tiles.set(this.#tileSize, this.#tileSize);
@@ -638,7 +667,7 @@ export class PTEngineWebGL2 implements Engine {
       renderWidth: w,
       renderHeight: h,
       samplesPerFrame: samplesThisFrame,
-      tileSize: this.#tileSize <= 1 || w * h <= 640 * 360 ? 1 : this.#tileSize,
+      tileSize: this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING ? 1 : this.#tileSize,
       batchMs,
       msPerSample,
       sppDelta,

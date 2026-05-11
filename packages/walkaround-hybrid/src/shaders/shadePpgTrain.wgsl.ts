@@ -35,23 +35,36 @@ export const SHADE_PPG_TRAIN_RECORD = /* wgsl */`
   }
 `;
 
-/** Inject PPG structs/bindings after DDGI grid UBO line. */
-export function injectPpgBindingsIntoShadeWgsl(shadeWgsl: string): string {
-  const anchor = '@group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;';
-  if (!shadeWgsl.includes(anchor)) {
-    throw new Error('[shade PPG] anchor for DDGI grid UBO not found');
-  }
-  return shadeWgsl.replace(anchor, `${anchor}\n${SHADE_PPG_TRAIN_STRUCTS}`);
-}
+/** Marker comment used to locate the PPG train-binding injection point. */
+const TRAIN_BINDINGS_MARKER = '// @@PPG_TRAIN_BINDINGS_INSERT@@';
+/** Marker comment used to locate the PPG training-record injection point. */
+const RECORD_MARKER = '// @@PPG_RECORD_INSERT@@';
 
-/** Append atomic training record before final hdr store. */
-export function injectPpgRecordBeforeHdrStore(shadeWgsl: string): string {
-  const needle = 'textureStore(hdrColorOut, gid.xy, vec4f(combined, 1.0));';
-  if (!shadeWgsl.includes(needle)) {
-    throw new Error('[shade PPG] hdrColorOut store anchor not found');
+/** Inject PPG structs/bindings into shade.wgsl at the
+ *  `// @@PPG_TRAIN_BINDINGS_INSERT@@` marker. */
+export function injectPpgBindingsIntoShadeWgsl(shadeWgsl: string): string {
+  if (!shadeWgsl.includes(TRAIN_BINDINGS_MARKER)) {
+    throw new Error(
+      `[shade PPG] expected marker "${TRAIN_BINDINGS_MARKER}" not found in shade.wgsl — ` +
+        `re-add it after the DDGIGridUBO @group(3) binding so PPG train bindings can attach.`,
+    );
   }
   return shadeWgsl.replace(
-    needle,
-    `${SHADE_PPG_TRAIN_RECORD}\n  ${needle}`,
+    TRAIN_BINDINGS_MARKER,
+    `${TRAIN_BINDINGS_MARKER}\n${SHADE_PPG_TRAIN_STRUCTS}`,
+  );
+}
+
+/** Append atomic training record at the `// @@PPG_RECORD_INSERT@@` marker. */
+export function injectPpgRecordBeforeHdrStore(shadeWgsl: string): string {
+  if (!shadeWgsl.includes(RECORD_MARKER)) {
+    throw new Error(
+      `[shade PPG] expected marker "${RECORD_MARKER}" not found in shade.wgsl — ` +
+        `re-add it immediately before the final textureStore(hdrColorOut, ...) call.`,
+    );
+  }
+  return shadeWgsl.replace(
+    RECORD_MARKER,
+    `${SHADE_PPG_TRAIN_RECORD}\n  ${RECORD_MARKER}`,
   );
 }

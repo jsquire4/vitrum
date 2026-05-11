@@ -31,7 +31,7 @@ describe('driveForkMaterialUniforms', () => {
     scene.add(new Mesh(new BoxGeometry(1, 1, 1), mat));
 
     const pathTracer = makeStubPathTracer();
-    driveForkMaterialUniforms(pathTracer, scene, {
+    driveForkMaterialUniforms(pathTracer, {
       strategy: 'manifold-nee',
       mneeMaxIterations: 12,
       mneeMaxChainLength: 4,
@@ -56,7 +56,7 @@ describe('driveForkMaterialUniforms', () => {
     scene.add(new Mesh(new BoxGeometry(1, 1, 1), mat));
 
     const pathTracer = makeStubPathTracer();
-    driveForkMaterialUniforms(pathTracer, scene);
+    driveForkMaterialUniforms(pathTracer);
     const uniforms = pathTracer._pathTracer.material.uniforms;
 
     expect(uniforms.u_volumeDensity.value).toBe(123);
@@ -69,7 +69,7 @@ describe('driveForkMaterialUniforms', () => {
     scene.add(new Mesh(new BoxGeometry(1, 1, 1), mat));
 
     const pathTracer = makeStubPathTracer();
-    driveForkMaterialUniforms(pathTracer, scene, {
+    driveForkMaterialUniforms(pathTracer, {
       strategy: 'none',
       mneeMaxIterations: 6,
       mneeMaxChainLength: 2,
@@ -86,7 +86,7 @@ describe('driveForkMaterialUniforms', () => {
     scene.add(new Mesh(new BoxGeometry(1, 1, 1), new MeshPhysicalMaterial({ color: 0xffffff })));
 
     const pathTracer = makeStubPathTracer();
-    driveForkMaterialUniforms(pathTracer, scene, {
+    driveForkMaterialUniforms(pathTracer, {
       strategy: 'none',
       mneeMaxIterations: 6,
       mneeMaxChainLength: 2,
@@ -125,7 +125,7 @@ describe('driveForkMaterialUniforms', () => {
     scene.add(new Mesh(new BoxGeometry(1, 1, 1), second));
 
     const pathTracer = makeStubPathTracer();
-    driveForkMaterialUniforms(pathTracer, scene, {
+    driveForkMaterialUniforms(pathTracer, {
       strategy: 'photon-map',
       mneeMaxIterations: 10,
       mneeMaxChainLength: 5,

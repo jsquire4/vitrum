@@ -43,6 +43,13 @@ interface CachedBake {
   texture: THREE.DataTexture;
 }
 
+// WARNING: Module-level singleton — shared across all WebGLRenderer instances
+// in the same JS process. A baked sky texture is bound to the GL context that
+// produced it, so consumers that create multiple renderers concurrently MUST
+// not share this cache between them. In normal vitrum hosts there is exactly
+// one renderer per page, so the singleton is safe. In test environments that
+// instantiate multiple renderers serially, call `clearIblBakerCacheForTests`
+// (when added) or run tests in isolated workers.
 const cache = new Map<string, CachedBake>();
 
 function quantiseKey(params: SkyParams): string {

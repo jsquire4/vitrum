@@ -1,5 +1,12 @@
 import type { FrameQualitySettings } from '@vitrum/core';
 
+/**
+ * Default PT sample target for one-shot exports / "render a frame at this
+ * many samples" call sites that do not select a per-scene tier explicitly.
+ * Pinned equal to {@link PT_TARGET_SAMPLES_BASE} so the two names stay in
+ * lock-step; only this constant is referenced by the legacy gap-closure
+ * scripts that pre-date the tiered constants below.
+ */
 export const PT_TARGET_SAMPLES = 192;
 
 /** Per-scene PT sample-target tiers (shaded fixtures need higher counts

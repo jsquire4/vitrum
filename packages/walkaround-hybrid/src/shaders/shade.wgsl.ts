@@ -67,6 +67,8 @@ struct DDGIGridUBO {
   visH:      f32,
 };
 @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
+// @@PPG_TRAIN_BINDINGS_INSERT@@
+// @@PPG_GUIDE_DECLS_INSERT@@
 
 fn isDDGIWired() -> bool {
   // Placeholder UBO is initialized with dims (1,1,1). Any real ProbeGrid
@@ -340,12 +342,14 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   //   Lo_skyAperture  5-tap sky probe through cutout, scalar luminance
   //
   // Lo_ddgi: diffuse irradiance from DDGI atlas × albedo × INV_PI (gated on isDDGIWired()).
+  // @@PPG_BOUNCE_INSERT@@
   let combined = Lo_emit + Lo_direct + Lo_sunCaustic
                + Lo_skyAperture * 0.08
                + Lo_ddgi * DDGI_DIFFUSE_BLEND;
   // Write LINEAR HDR radiance to hdrColorOut — do NOT tone-map here.
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.
+  // @@PPG_RECORD_INSERT@@
   textureStore(hdrColorOut, gid.xy, vec4f(combined, 1.0));
 }
 `;

@@ -50,6 +50,9 @@ import {
   buildAccumBindGroup,
   buildHybridLayersBindGroup,
   buildCompositeBindGroup,
+  buildWelfordBindGroup,
+  buildSVGFVarianceBindGroup,
+  buildSVGFAtrousBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
 import {
@@ -156,27 +159,28 @@ export interface PipelineFrameInputs {
 }
 
 export class WalkaroundGPUPipeline {
-  private device: GPUDevice;
-  private width: number;
-  private height: number;
+  // Private fields use the `_field` underscore prefix, matching HybridEngine.
+  private _device: GPUDevice;
+  private _width: number;
+  private _height: number;
 
   // Static BVH + emitter buffers (uploaded once at initialize time)
-  private bvhNodesBuffer!: GPUBuffer;
-  private bvhIndexBuffer!: GPUBuffer;
-  private bvhBeerBuffer!: GPUBuffer;
-  private bvhPositionBuffer!: GPUBuffer;
-  private bvhNormalBuffer!: GPUBuffer;
-  private bvhUvBuffer!: GPUBuffer;
-  private emitterBuffer!: GPUBuffer;
-  private emitterCdfBuffer!: GPUBuffer;
+  private _bvhNodesBuffer!: GPUBuffer;
+  private _bvhIndexBuffer!: GPUBuffer;
+  private _bvhBeerBuffer!: GPUBuffer;
+  private _bvhPositionBuffer!: GPUBuffer;
+  private _bvhNormalBuffer!: GPUBuffer;
+  private _bvhUvBuffer!: GPUBuffer;
+  private _emitterBuffer!: GPUBuffer;
+  private _emitterCdfBuffer!: GPUBuffer;
 
   // Per-frame GPU resources (created by resourceManager.createFrameResources)
-  private res!: FrameResources;
+  private _res!: FrameResources;
 
   // Temporal accumulator ping-pong state
-  private accumPingPongIndex = 0;       // 0 = read A, write B; 1 = swap
-  private accumFrameIndex = 0;
-  private lastCameraPos: [number, number, number] = [0, 0, 0];
+  private _accumPingPongIndex = 0;       // 0 = read A, write B; 1 = swap
+  private _accumFrameIndex = 0;
+  private _lastCameraPos: [number, number, number] = [0, 0, 0];
 
   // DDGI inputs (layered hybrid). Null → placeholder textures.
   private _ddgiIrrTex: GPUTexture | null = null;
@@ -188,54 +192,54 @@ export class WalkaroundGPUPipeline {
   private _ddgiPlaceholderUBO: Float32Array | null = null;
 
   // Compiled compute + render pipelines
-  private risPipeline!: GPUComputePipeline;
-  private temporalPipeline!: GPUComputePipeline;
-  private spatialPipeline!: GPUComputePipeline;
-  private shadePipeline!: GPUComputePipeline;
-  private atrousPipeline!: GPUComputePipeline;
-  private accumPipeline!: GPUComputePipeline;
-  private compositePipeline!: GPURenderPipeline;
+  private _risPipeline!: GPUComputePipeline;
+  private _temporalPipeline!: GPUComputePipeline;
+  private _spatialPipeline!: GPUComputePipeline;
+  private _shadePipeline!: GPUComputePipeline;
+  private _atrousPipeline!: GPUComputePipeline;
+  private _accumPipeline!: GPUComputePipeline;
+  private _compositePipeline!: GPURenderPipeline;
   /** `svgf` — variance-guided (default). `atrous` — legacy three-pass à-trous only. */
-  private denoiserMode: 'atrous' | 'svgf' = 'svgf';
-  private welfordPipeline: GPUComputePipeline | undefined = undefined;
-  private svgfVariancePipeline: GPUComputePipeline | undefined = undefined;
-  private svgfAtrousPipeline: GPUComputePipeline | undefined = undefined;
+  private _denoiserMode: 'atrous' | 'svgf' = 'svgf';
+  private _welfordPipeline: GPUComputePipeline | undefined = undefined;
+  private _svgfVariancePipeline: GPUComputePipeline | undefined = undefined;
+  private _svgfAtrousPipeline: GPUComputePipeline | undefined = undefined;
   /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
-  private ppgEnabled = false;
-  private ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
+  private _ppgEnabled = false;
+  private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
   /** Valid cell indices are [0 .. {@link _ppgActiveCellCount} - 1] after the last {@link uploadPpgCells}. */
   private _ppgActiveCellCount = 0;
   private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
 
   /** Ping-pong read index for Welford textures (0 = read varianceBuffer). */
-  private welfordPing = 0;
+  private _welfordPing = 0;
 
   // Bind group layout memoisation cache
-  private bglCache: BGLCache = {};
+  private _bglCache: BGLCache = {};
 
   // Lazily-created per-builder UBO buffers
-  private atrousUboRef: UboRef = { buf: undefined };
-  private accumUboRef: UboRef  = { buf: undefined };
-  private welfordUboRef: UboRef = { buf: undefined };
-  private svgfVarianceUboRef: UboRef = { buf: undefined };
-  private svgfAtrousUboRef: UboRef = { buf: undefined };
-  private ppgUpdateUboRef: UboRef = { buf: undefined };
-  private ppgShadeMetaUboRef: UboRef = { buf: undefined };
+  private _atrousUboRef: UboRef = { buf: undefined };
+  private _accumUboRef: UboRef  = { buf: undefined };
+  private _welfordUboRef: UboRef = { buf: undefined };
+  private _svgfVarianceUboRef: UboRef = { buf: undefined };
+  private _svgfAtrousUboRef: UboRef = { buf: undefined };
+  private _ppgUpdateUboRef: UboRef = { buf: undefined };
+  private _ppgShadeMetaUboRef: UboRef = { buf: undefined };
 
   // GPU timestamp query state (DEV-only, feature-gated)
-  private tsState: TimestampState = makeTimestampState();
+  private _tsState: TimestampState = makeTimestampState();
   /** Last successfully-read timestamp values, ms per pass. */
   public lastGpuTimings: Record<string, number> = {};
   /** Frame index of the last completed timestamp read. */
   public lastGpuTimingsFrame: number = -1;
 
-  private frameCount = 0;
-  private initialized = false;
+  private _frameCount = 0;
+  private _initialized = false;
 
   constructor(device: GPUDevice, width: number, height: number) {
-    this.device = device;
-    this.width  = width;
-    this.height = height;
+    this._device = device;
+    this._width  = width;
+    this._height = height;
   }
 
   /**
@@ -243,8 +247,8 @@ export class WalkaroundGPUPipeline {
    * Used by hosts to size CPU cell grids before {@link uploadPpgCells}.
    */
   get ppgAllocatedMaxCells(): number {
-    if (!this.initialized) return 0;
-    return this.res.ppgBuffers?.maxCells ?? 0;
+    if (!this._initialized) return 0;
+    return this._res.ppgBuffers?.maxCells ?? 0;
   }
 
   /** Upload BVH data + compile shaders. Must be called once before renderFrame. */
@@ -253,27 +257,27 @@ export class WalkaroundGPUPipeline {
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
     options?: { ppgEnabled?: boolean; verbose?: boolean; denoiser?: 'atrous' | 'svgf' },
   ): Promise<void> {
-    const d = this.device;
-    const { width: W, height: H } = this;
+    const d = this._device;
+    const { _width: W, _height: H } = this;
     this._swapChainFormat = swapChainFormat;
     this._ppgActiveCellCount = 0;
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
-    this.bvhNodesBuffer    = uploadBuffer(d, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
-    this.bvhIndexBuffer    = uploadBuffer(d, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
-    this.bvhBeerBuffer     = uploadBuffer(d, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
-    this.bvhPositionBuffer = uploadBuffer(d, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
-    this.bvhNormalBuffer   = uploadBuffer(d, bvhBuffers.bvhNormals.cpuData,   GPUBufferUsage.STORAGE);
-    this.bvhUvBuffer       = uploadBuffer(d, bvhBuffers.bvhUvs.cpuData,       GPUBufferUsage.STORAGE);
-    this.emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
-    this.emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
+    this._bvhNodesBuffer    = uploadBuffer(d, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
+    this._bvhIndexBuffer    = uploadBuffer(d, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
+    this._bvhBeerBuffer     = uploadBuffer(d, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
+    this._bvhPositionBuffer = uploadBuffer(d, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
+    this._bvhNormalBuffer   = uploadBuffer(d, bvhBuffers.bvhNormals.cpuData,   GPUBufferUsage.STORAGE);
+    this._bvhUvBuffer       = uploadBuffer(d, bvhBuffers.bvhUvs.cpuData,       GPUBufferUsage.STORAGE);
+    this._emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
+    this._emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
-    this.res = createFrameResources(d, W, H, { ppgEnabled: options?.ppgEnabled ?? false });
+    this._res = createFrameResources(d, W, H, { ppgEnabled: options?.ppgEnabled ?? false });
 
     // ── Compile shaders ───────────────────────────────────────────────────
-    const compiled = await compilePipelines(d, this.bglCache, swapChainFormat, {
+    const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
       denoiser: options?.denoiser ?? 'svgf',
       ppgEnabled: options?.ppgEnabled === true,
@@ -282,33 +286,51 @@ export class WalkaroundGPUPipeline {
       if (!compiled.ppgUpdatePipeline) {
         throw new Error('[ReSTIR] PPG enabled but ppgUpdate pipeline is missing.');
       }
-      if (!('ppgBuffers' in this.res)) {
+      if (!('ppgBuffers' in this._res)) {
         throw new Error('[ReSTIR] PPG enabled but frame resources omit ppgBuffers.');
       }
     }
-    this.risPipeline       = compiled.risPipeline;
-    this.temporalPipeline  = compiled.temporalPipeline;
-    this.spatialPipeline   = compiled.spatialPipeline;
-    this.shadePipeline     = compiled.shadePipeline;
-    this.atrousPipeline    = compiled.atrousPipeline;
-    this.accumPipeline     = compiled.accumPipeline;
-    this.compositePipeline = compiled.compositePipeline;
-    this.denoiserMode      = compiled.denoiserMode;
-    this.welfordPipeline   = compiled.welfordPipeline;
-    this.svgfVariancePipeline = compiled.svgfVariancePipeline;
-    this.svgfAtrousPipeline   = compiled.svgfAtrousPipeline;
-    this.ppgEnabled           = compiled.ppgEnabled;
-    this.ppgUpdatePipeline    = compiled.ppgUpdatePipeline;
-    if (this.denoiserMode === 'svgf' && (
-      !this.welfordPipeline || !this.svgfVariancePipeline || !this.svgfAtrousPipeline
+    this._risPipeline       = compiled.risPipeline;
+    this._temporalPipeline  = compiled.temporalPipeline;
+    this._spatialPipeline   = compiled.spatialPipeline;
+    this._shadePipeline     = compiled.shadePipeline;
+    this._atrousPipeline    = compiled.atrousPipeline;
+    this._accumPipeline     = compiled.accumPipeline;
+    this._compositePipeline = compiled.compositePipeline;
+    this._denoiserMode      = compiled.denoiserMode;
+    this._welfordPipeline   = compiled.welfordPipeline;
+    this._svgfVariancePipeline = compiled.svgfVariancePipeline;
+    this._svgfAtrousPipeline   = compiled.svgfAtrousPipeline;
+    this._ppgEnabled           = compiled.ppgEnabled;
+    this._ppgUpdatePipeline    = compiled.ppgUpdatePipeline;
+    if (this._denoiserMode === 'svgf' && (
+      !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
     )) {
       throw new Error('[ReSTIR] SVGF denoiser requested but pipelines are missing.');
     }
 
     // ── Timestamp queries (DEV-only, feature-gated) ──────────────────────
-    initTimestampQueries(d, this.tsState);
+    initTimestampQueries(d, this._tsState);
 
-    this.initialized = true;
+    // ── Eager UBO allocation ─────────────────────────────────────────────
+    // Allocate all per-frame UBOs upfront so renderFrame() never blocks on
+    // first-frame buffer creation and dispose() never has to guard. Each
+    // UBO is small (≤32B); the total fixed cost is ~200B regardless of
+    // denoiser/PPG mode.
+    const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
+    this._atrousUboRef.buf = d.createBuffer({ label: 'atrous-ubo', size: 16, usage: U });
+    this._accumUboRef.buf  = d.createBuffer({ label: 'accum-ubo',  size: 16, usage: U });
+    if (this._denoiserMode === 'svgf') {
+      this._welfordUboRef.buf       = d.createBuffer({ label: 'welford-ubo',        size: 16, usage: U });
+      this._svgfVarianceUboRef.buf  = d.createBuffer({ label: 'svgf-variance-ubo',  size: SVGF_VARIANCE_UNIFORMS_SIZE_BYTES, usage: U });
+      this._svgfAtrousUboRef.buf    = d.createBuffer({ label: 'svgf-atrous-ubo',    size: SVGF_UNIFORMS_SIZE_BYTES, usage: U });
+    }
+    if (this._ppgEnabled) {
+      this._ppgUpdateUboRef.buf    = d.createBuffer({ label: 'ppg-update-ubo',    size: 16, usage: U });
+      this._ppgShadeMetaUboRef.buf = d.createBuffer({ label: 'ppg-shade-meta',    size: 16, usage: U });
+    }
+
+    this._initialized = true;
     if (options?.verbose) {
       console.log('[ReSTIR] Pipeline initialized', { W, H, bvhNodes: bvhBuffers.bvhNodes.count, emitters: bvhBuffers.emitterCount });
     }
@@ -323,13 +345,13 @@ export class WalkaroundGPUPipeline {
     cells: ReadonlyArray<PpgCellPosition>,
     activeCellCount: number,
   ): void {
-    if (!this.initialized) {
+    if (!this._initialized) {
       throw new Error('[ReSTIR] uploadPpgCells: pipeline not initialized');
     }
-    if (!this.ppgEnabled || !this.res.ppgBuffers) {
+    if (!this._ppgEnabled || !this._res.ppgBuffers) {
       throw new Error('[ReSTIR] uploadPpgCells: PPG is not enabled on this pipeline');
     }
-    const ppg = this.res.ppgBuffers;
+    const ppg = this._res.ppgBuffers;
     if (activeCellCount > ppg.maxCells) {
       throw new RangeError(
         `[ReSTIR] uploadPpgCells: activeCellCount ${activeCellCount} > maxCells ${ppg.maxCells}`,
@@ -341,16 +363,16 @@ export class WalkaroundGPUPipeline {
       );
     }
     const enc = encodePpgCellGpuBytes(cells, activeCellCount, ppg.cellBuffer.size);
-    this.device.queue.writeBuffer(
+    this._device.queue.writeBuffer(
       ppg.cellBuffer,
       0,
       enc.buffer as ArrayBuffer,
       enc.byteOffset,
       enc.byteLength,
     );
-    writePpgKdTree(this.device.queue, ppg.kdBuffer, cells, activeCellCount);
+    writePpgKdTree(this._device.queue, ppg.kdBuffer, cells, activeCellCount);
     const zeros = new Uint8Array(ppg.leafBuffer.size);
-    this.device.queue.writeBuffer(ppg.leafBuffer, 0, zeros);
+    this._device.queue.writeBuffer(ppg.leafBuffer, 0, zeros);
     this._ppgActiveCellCount = activeCellCount;
   }
 
@@ -361,10 +383,10 @@ export class WalkaroundGPUPipeline {
    * `reset()`.
    */
   updateEmitters(bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf'>): void {
-    this.emitterBuffer.destroy();
-    this.emitterCdfBuffer.destroy();
-    this.emitterBuffer    = uploadBuffer(this.device, bvhBuffers.emitters.cpuData,    GPUBufferUsage.STORAGE);
-    this.emitterCdfBuffer = uploadBuffer(this.device, bvhBuffers.emitterCdf.cpuData,  GPUBufferUsage.STORAGE);
+    this._emitterBuffer.destroy();
+    this._emitterCdfBuffer.destroy();
+    this._emitterBuffer    = uploadBuffer(this._device, bvhBuffers.emitters.cpuData,    GPUBufferUsage.STORAGE);
+    this._emitterCdfBuffer = uploadBuffer(this._device, bvhBuffers.emitterCdf.cpuData,  GPUBufferUsage.STORAGE);
   }
 
   /**
@@ -372,44 +394,44 @@ export class WalkaroundGPUPipeline {
    * Returns true on success, false if pipeline not ready.
    */
   renderFrame(inputs: PipelineFrameInputs): boolean {
-    if (!this.initialized) return false;
+    if (!this._initialized) return false;
 
-    const d = this.device;
-    const { width: W, height: H } = this;
+    const d = this._device;
+    const { _width: W, _height: H } = this;
 
     // ── Update UBO ────────────────────────────────────────────────────────
-    updateUBO(d, this.res.uboBuffer, inputs);
+    updateUBO(d, this._res.uboBuffer, inputs);
 
     // ── Build placeholder texture view ────────────────────────────────────
-    const placeholderView = this.res.placeholderTexture.createView();
+    const placeholderView = this._res.placeholderTexture.createView();
 
     // ── Build bind groups ─────────────────────────────────────────────────
-    const bgFrame = buildFrameBindGroup(d, this.bglCache, {
+    const bgFrame = buildFrameBindGroup(d, this._bglCache, {
       placeholderView,
-      reservoirCurrentBuffer:  this.res.reservoirCurrentBuffer,
-      reservoirPreviousBuffer: this.res.reservoirPreviousBuffer,
-      reservoirSpatialBuffer:  this.res.reservoirSpatialBuffer,
-      hdrColorTexture:         this.res.hdrColorTexture,
-      nearestSampler:          this.res.nearestSampler,
-      gNormalDepthTexture:     this.res.gNormalDepthTexture,
+      reservoirCurrentBuffer:  this._res.reservoirCurrentBuffer,
+      reservoirPreviousBuffer: this._res.reservoirPreviousBuffer,
+      reservoirSpatialBuffer:  this._res.reservoirSpatialBuffer,
+      hdrColorTexture:         this._res.hdrColorTexture,
+      nearestSampler:          this._res.nearestSampler,
+      gNormalDepthTexture:     this._res.gNormalDepthTexture,
     });
-    const bgScene = buildSceneBindGroup(d, this.bglCache, {
-      bvhNodesBuffer:    this.bvhNodesBuffer,
-      bvhIndexBuffer:    this.bvhIndexBuffer,
-      bvhPositionBuffer: this.bvhPositionBuffer,
-      emitterBuffer:     this.emitterBuffer,
-      emitterCdfBuffer:  this.emitterCdfBuffer,
-      bvhBeerBuffer:     this.bvhBeerBuffer,
+    const bgScene = buildSceneBindGroup(d, this._bglCache, {
+      bvhNodesBuffer:    this._bvhNodesBuffer,
+      bvhIndexBuffer:    this._bvhIndexBuffer,
+      bvhPositionBuffer: this._bvhPositionBuffer,
+      emitterBuffer:     this._emitterBuffer,
+      emitterCdfBuffer:  this._emitterCdfBuffer,
+      bvhBeerBuffer:     this._bvhBeerBuffer,
     });
-    const bgUbo   = buildUboBindGroup(d, this.bglCache, this.res.uboBuffer);
+    const bgUbo   = buildUboBindGroup(d, this._bglCache, this._res.uboBuffer);
 
     // ── Dispatch compute passes ───────────────────────────────────────────
-    const denoiseBase = this.ppgEnabled ? 6 : 5;
+    const denoiseBase = this._ppgEnabled ? 6 : 5;
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
 
-    if (this.ppgEnabled && this.res.ppgBuffers) {
-      const ppg = this.res.ppgBuffers;
+    if (this._ppgEnabled && this._res.ppgBuffers) {
+      const ppg = this._res.ppgBuffers;
       encoder.clearBuffer(ppg.sampleBuffer, 0, ppg.sampleBuffer.size);
       encoder.clearBuffer(ppg.sampleHeadBuffer, 0, ppg.sampleHeadBuffer.size);
     }
@@ -421,14 +443,14 @@ export class WalkaroundGPUPipeline {
     // property — required by exactOptionalPropertyTypes. We spread the optional
     // timestampWrites field only when it has a value.
     const computeDesc = (label: string, passIdx: number): GPUComputePassDescriptor => {
-      const ts = tsWrites(this.tsState.querySet, passIdx);
+      const ts = tsWrites(this._tsState.querySet, passIdx);
       return ts ? { label, timestampWrites: ts } : { label };
     };
 
     // Pass 1: RIS (primary ray cast + reservoir sampling)
     {
       const pass = encoder.beginComputePass(computeDesc('ris', 0));
-      pass.setPipeline(this.risPipeline);
+      pass.setPipeline(this._risPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
       pass.setBindGroup(2, bgUbo);
@@ -439,7 +461,7 @@ export class WalkaroundGPUPipeline {
     // Pass 2: Temporal reuse
     {
       const pass = encoder.beginComputePass(computeDesc('temporal', 1));
-      pass.setPipeline(this.temporalPipeline);
+      pass.setPipeline(this._temporalPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
       pass.setBindGroup(2, bgUbo);
@@ -452,7 +474,7 @@ export class WalkaroundGPUPipeline {
     // but the visual win is the dominant variance reducer in the pipeline.
     {
       const pass = encoder.beginComputePass(computeDesc('spatial-1', 2));
-      pass.setPipeline(this.spatialPipeline);
+      pass.setPipeline(this._spatialPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
       pass.setBindGroup(2, bgUbo);
@@ -461,7 +483,7 @@ export class WalkaroundGPUPipeline {
     }
     {
       const pass = encoder.beginComputePass(computeDesc('spatial-2', 3));
-      pass.setPipeline(this.spatialPipeline);
+      pass.setPipeline(this._spatialPipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
       pass.setBindGroup(2, bgUbo);
@@ -473,43 +495,36 @@ export class WalkaroundGPUPipeline {
     // Combined hybrid-layers bind group at slot 3 holds DDGI inputs
     // (Lovelace caps maxBindGroups=4 so we can't use slot 4).
     // shade.wgsl gates on isDDGIWired().
-    if (this.ppgEnabled && this.res.ppgBuffers) {
-      if (!this.ppgShadeMetaUboRef.buf) {
-        this.ppgShadeMetaUboRef.buf = d.createBuffer({
-          label: 'ppg-shade-meta',
-          size: 16,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-      }
+    if (this._ppgEnabled && this._res.ppgBuffers && this._ppgShadeMetaUboRef.buf) {
       d.queue.writeBuffer(
-        this.ppgShadeMetaUboRef.buf,
+        this._ppgShadeMetaUboRef.buf,
         0,
         new Uint32Array([this._ppgActiveCellCount, 0, 0, 0]),
       );
     }
-    const bgHybrid = buildHybridLayersBindGroup(d, this.bglCache, {
+    const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
       ddgiIrrTex:              this._ddgiIrrTex,
       ddgiVisTex:              this._ddgiVisTex,
-      ddgiPlaceholderRgba16f:  this.res.ddgiPlaceholderRgba16f,
-      ddgiPlaceholderRg16f:    this.res.ddgiPlaceholderRg16f,
-      nearestSampler:          this.res.nearestSampler,
-      ddgiUboBuffer:           this.res.ddgiUboBuffer,
-      ...(this.ppgEnabled && this.res.ppgBuffers && this.ppgShadeMetaUboRef.buf
+      ddgiPlaceholderRgba16f:  this._res.ddgiPlaceholderRgba16f,
+      ddgiPlaceholderRg16f:    this._res.ddgiPlaceholderRg16f,
+      nearestSampler:          this._res.nearestSampler,
+      ddgiUboBuffer:           this._res.ddgiUboBuffer,
+      ...(this._ppgEnabled && this._res.ppgBuffers && this._ppgShadeMetaUboRef.buf
         ? {
             ppgTrainBuffers: {
-              sampleBuffer:   this.res.ppgBuffers.sampleBuffer,
-              headBuffer:     this.res.ppgBuffers.sampleHeadBuffer,
-              cellBuffer:     this.res.ppgBuffers.cellBuffer,
-              leafBuffer:     this.res.ppgBuffers.leafBuffer,
-              kdBuffer:       this.res.ppgBuffers.kdBuffer,
-              shadeMetaBuffer: this.ppgShadeMetaUboRef.buf,
+              sampleBuffer:   this._res.ppgBuffers.sampleBuffer,
+              headBuffer:     this._res.ppgBuffers.sampleHeadBuffer,
+              cellBuffer:     this._res.ppgBuffers.cellBuffer,
+              leafBuffer:     this._res.ppgBuffers.leafBuffer,
+              kdBuffer:       this._res.ppgBuffers.kdBuffer,
+              shadeMetaBuffer: this._ppgShadeMetaUboRef.buf,
             },
           }
         : {}),
     });
     {
       const pass = encoder.beginComputePass(computeDesc('shade', 4));
-      pass.setPipeline(this.shadePipeline);
+      pass.setPipeline(this._shadePipeline);
       pass.setBindGroup(0, bgFrame);
       pass.setBindGroup(1, bgScene);
       pass.setBindGroup(2, bgUbo);
@@ -518,26 +533,20 @@ export class WalkaroundGPUPipeline {
       pass.end();
     }
 
-    if (this.ppgEnabled && this.ppgUpdatePipeline && this.res.ppgBuffers) {
-      const ppg = this.res.ppgBuffers;
-      if (!this.ppgUpdateUboRef.buf) {
-        this.ppgUpdateUboRef.buf = d.createBuffer({
-          size: 16,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-      }
+    if (this._ppgEnabled && this._ppgUpdatePipeline && this._res.ppgBuffers && this._ppgUpdateUboRef.buf) {
+      const ppg = this._res.ppgBuffers;
       const sampleCapacity = Math.floor(ppg.sampleBuffer.size / 48);
       const uPpg = new Uint32Array([
         sampleCapacity,
-        this.frameCount % 2,
+        this._frameCount % 2,
         this._ppgActiveCellCount,
         0,
       ]);
-      d.queue.writeBuffer(this.ppgUpdateUboRef.buf, 0, uPpg);
+      d.queue.writeBuffer(this._ppgUpdateUboRef.buf, 0, uPpg);
       const bgPpgUpdate = d.createBindGroup({
-        layout: this.ppgUpdatePipeline.getBindGroupLayout(0),
+        layout: this._ppgUpdatePipeline.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: { buffer: this.ppgUpdateUboRef.buf } },
+          { binding: 0, resource: { buffer: this._ppgUpdateUboRef.buf } },
           { binding: 1, resource: { buffer: ppg.sampleBuffer } },
           { binding: 2, resource: { buffer: ppg.cellBuffer } },
           { binding: 3, resource: { buffer: ppg.leafBuffer } },
@@ -547,7 +556,7 @@ export class WalkaroundGPUPipeline {
       const wgPpg = Math.max(1, Math.ceil(sampleCapacity / 64));
       {
         const pass = encoder.beginComputePass(computeDesc('ppg-update', 5));
-        pass.setPipeline(this.ppgUpdatePipeline);
+        pass.setPipeline(this._ppgUpdatePipeline);
         pass.setBindGroup(0, bgPpgUpdate);
         pass.dispatchWorkgroups(wgPpg, 1, 1);
         pass.end();
@@ -555,173 +564,64 @@ export class WalkaroundGPUPipeline {
     }
 
     // ── Camera motion: reset temporal index before denoise / accum ────────
-    const dx = inputs.cameraPos[0] - this.lastCameraPos[0];
-    const dy = inputs.cameraPos[1] - this.lastCameraPos[1];
-    const dz = inputs.cameraPos[2] - this.lastCameraPos[2];
+    const dx = inputs.cameraPos[0] - this._lastCameraPos[0];
+    const dy = inputs.cameraPos[1] - this._lastCameraPos[1];
+    const dz = inputs.cameraPos[2] - this._lastCameraPos[2];
     const camMoveSq = dx * dx + dy * dy + dz * dz;
     const isMoving = camMoveSq > CAMERA_MOVE_RESET_THRESHOLD_SQ;
     if (isMoving) {
-      this.accumFrameIndex = 0;
+      this._accumFrameIndex = 0;
     }
 
     const wgX16 = Math.ceil(W / 16);
     const wgY16 = Math.ceil(H / 16);
-    const gNormalDepthView = this.res.gNormalDepthTexture.createView();
+    const gNormalDepthView = this._res.gNormalDepthTexture.createView();
 
-    const readAccum  = this.accumPingPongIndex === 0 ? this.res.accumTextureA : this.res.accumTextureB;
-    const writeAccum = this.accumPingPongIndex === 0 ? this.res.accumTextureB : this.res.accumTextureA;
+    const readAccum  = this._accumPingPongIndex === 0 ? this._res.accumTextureA : this._res.accumTextureB;
+    const writeAccum = this._accumPingPongIndex === 0 ? this._res.accumTextureB : this._res.accumTextureA;
 
     let denoisedOut: GPUTexture;
 
-    if (this.denoiserMode === 'svgf') {
-      const wf = this.welfordPipeline!;
-      const sv = this.svgfVariancePipeline!;
-      const sa = this.svgfAtrousPipeline!;
-
-      const welfordRead  = this.welfordPing === 0 ? this.res.varianceBuffer : this.res.varianceBufferAux;
-      const welfordWrite = this.welfordPing === 0 ? this.res.varianceBufferAux : this.res.varianceBuffer;
-
-      if (!this.welfordUboRef.buf) {
-        this.welfordUboRef.buf = d.createBuffer({
-          size: 16,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-      }
-      const wU32 = new Uint32Array([this.accumFrameIndex + 1, isMoving ? 1 : 0, 0, 0]);
-      d.queue.writeBuffer(this.welfordUboRef.buf, 0, wU32);
-
-      {
-        const pass = encoder.beginComputePass(computeDesc('welford-temporal', denoiseBase + 0));
-        pass.setPipeline(wf);
-        pass.setBindGroup(0, d.createBindGroup({
-          layout: wf.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: this.res.hdrColorTexture.createView() },
-            { binding: 1, resource: welfordRead.createView() },
-            { binding: 2, resource: welfordWrite.createView() },
-            { binding: 3, resource: { buffer: this.welfordUboRef.buf } },
-          ],
-        }));
-        pass.dispatchWorkgroups(wgX16, wgY16, 1);
-        pass.end();
-      }
-
-      if (!this.svgfVarianceUboRef.buf) {
-        this.svgfVarianceUboRef.buf = d.createBuffer({
-          size: SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-      }
-      const varUboBytes = new ArrayBuffer(SVGF_VARIANCE_UNIFORMS_SIZE_BYTES);
-      packSVGFVarianceUniforms({ frameCount: this.accumFrameIndex }, varUboBytes, 0);
-      d.queue.writeBuffer(this.svgfVarianceUboRef.buf, 0, varUboBytes);
-
-      {
-        const pass = encoder.beginComputePass(computeDesc('svgf-variance', denoiseBase + 1));
-        pass.setPipeline(sv);
-        pass.setBindGroup(0, d.createBindGroup({
-          layout: sv.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: this.res.hdrColorTexture.createView() },
-            { binding: 1, resource: readAccum.createView() },
-            { binding: 2, resource: gNormalDepthView },
-            { binding: 3, resource: gNormalDepthView },
-            { binding: 4, resource: this.res.motionVectorTexture.createView() },
-            { binding: 5, resource: welfordWrite.createView() },
-            { binding: 6, resource: this.res.svgfVarianceEstimateTexture.createView() },
-            { binding: 7, resource: { buffer: this.svgfVarianceUboRef.buf } },
-          ],
-        }));
-        pass.dispatchWorkgroups(wgX16, wgY16, 1);
-        pass.end();
-      }
-
-      if (!this.svgfAtrousUboRef.buf) {
-        this.svgfAtrousUboRef.buf = d.createBuffer({
-          size: SVGF_UNIFORMS_SIZE_BYTES,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-      }
-      const atrousUboBytes = new ArrayBuffer(SVGF_UNIFORMS_SIZE_BYTES);
-      let inputTex: GPUTexture = this.res.hdrColorTexture;
-      const varView = this.res.svgfVarianceEstimateTexture.createView();
-      for (let iter = 0; iter < SVGF_DEFAULT_ATROUS_ITERATIONS; iter++) {
-        packSVGFUniforms(
-          { iteration: iter, ...SVGF_DEFAULT_UNIFORMS },
-          atrousUboBytes,
-          0,
-        );
-        d.queue.writeBuffer(this.svgfAtrousUboRef.buf, 0, atrousUboBytes);
-        const outTex = iter % 2 === 0 ? this.res.denoisedPingTexture : this.res.denoisedPongTexture;
-        const pass = encoder.beginComputePass(computeDesc(`svgf-atrous-${iter}`, denoiseBase + 2 + iter));
-        pass.setPipeline(sa);
-        pass.setBindGroup(0, d.createBindGroup({
-          layout: sa.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: inputTex.createView() },
-            { binding: 1, resource: outTex.createView() },
-            { binding: 2, resource: gNormalDepthView },
-            { binding: 3, resource: gNormalDepthView },
-            { binding: 4, resource: varView },
-            { binding: 5, resource: { buffer: this.svgfAtrousUboRef.buf } },
-          ],
-        }));
-        pass.dispatchWorkgroups(wgX16, wgY16, 1);
-        pass.end();
-        inputTex = outTex;
-      }
-      denoisedOut = inputTex;
-
-      this.welfordPing = 1 - this.welfordPing;
+    if (this._denoiserMode === 'svgf') {
+      denoisedOut = this._dispatchSVGF(
+        encoder, denoiseBase, gNormalDepthView, readAccum, isMoving, wgX16, wgY16, computeDesc,
+      );
+      this._welfordPing = 1 - this._welfordPing;
     } else {
-      let inputTex = this.res.hdrColorTexture;
-      for (let iter = 0; iter < 3; iter++) {
-        const stepWidth = 1 << iter;
-        const outputTex = iter % 2 === 0 ? this.res.denoisedPingTexture : this.res.denoisedPongTexture;
-        const bgAtrous = buildAtrousBindGroup(
-          d, this.bglCache, this.atrousUboRef,
-          inputTex.createView(), outputTex.createView(),
-          gNormalDepthView, gNormalDepthView, stepWidth,
-        );
-        const pass = encoder.beginComputePass(computeDesc(`atrous-${iter}`, denoiseBase + iter));
-        pass.setPipeline(this.atrousPipeline);
-        pass.setBindGroup(0, bgAtrous);
-        pass.dispatchWorkgroups(wgX16, wgY16, 1);
-        pass.end();
-        inputTex = outputTex;
-      }
-      denoisedOut = inputTex;
+      denoisedOut = this._dispatchAtrousLegacy(
+        encoder, denoiseBase, gNormalDepthView, wgX16, wgY16, computeDesc,
+      );
     }
 
-    const alpha = this.accumFrameIndex === 0 ? 1.0 : 0.1;
-    this.lastCameraPos = [...inputs.cameraPos];
+    const alpha = this._accumFrameIndex === 0 ? 1.0 : 0.1;
+    this._lastCameraPos = [...inputs.cameraPos];
 
-    const accumPassIdx = this.denoiserMode === 'svgf'
+    const accumPassIdx = this._denoiserMode === 'svgf'
       ? denoiseBase + 2 + SVGF_DEFAULT_ATROUS_ITERATIONS
       : denoiseBase + 3;
 
     {
       const bgAccum = buildAccumBindGroup(
-        d, this.bglCache, this.accumUboRef,
+        d, this._bglCache, this._accumUboRef,
         denoisedOut.createView(),
         readAccum.createView(),
         writeAccum.createView(),
         alpha,
       );
       const pass = encoder.beginComputePass(computeDesc('temporalAccum', accumPassIdx));
-      pass.setPipeline(this.accumPipeline);
+      pass.setPipeline(this._accumPipeline);
       pass.setBindGroup(0, bgAccum);
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
-    this.accumPingPongIndex = 1 - this.accumPingPongIndex;
-    this.accumFrameIndex++;
+    this._accumPingPongIndex = 1 - this._accumPingPongIndex;
+    this._accumFrameIndex++;
 
     // Pass 6: Composite render pass — blit accumulated HDR to swap-chain.
     const finalTex = writeAccum;
-    const bgComposite = buildCompositeBindGroup(d, this.bglCache, finalTex.createView(), this.res.compositeLinearSampler);
+    const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.compositeLinearSampler);
     {
-      const tsComp = tsWrites(this.tsState.querySet, accumPassIdx + 1);
+      const tsComp = tsWrites(this._tsState.querySet, accumPassIdx + 1);
       const pass = encoder.beginRenderPass({
         label: 'composite',
         colorAttachments: [{
@@ -732,55 +632,173 @@ export class WalkaroundGPUPipeline {
         }],
         ...(tsComp ? { timestampWrites: tsComp } : {}),
       });
-      pass.setPipeline(this.compositePipeline);
+      pass.setPipeline(this._compositePipeline);
       pass.setBindGroup(0, bgComposite);
       pass.draw(3, 1, 0, 0);  // 3 vertices, fullscreen triangle
       pass.end();
     }
 
     // Resolve timestamps + copy into the inactive readback buffer.
-    resolveTimestamps(encoder, this.tsState, this.frameCount);
+    resolveTimestamps(encoder, this._tsState, this._frameCount);
 
     d.queue.submit([encoder.finish()]);
 
     // Swap reservoir ping-pong for next frame (copy current → previous).
     const enc2 = d.createCommandEncoder({ label: 'reservoir-swap' });
     enc2.copyBufferToBuffer(
-      this.res.reservoirCurrentBuffer, 0,
-      this.res.reservoirPreviousBuffer, 0,
-      this.res.reservoirCurrentBuffer.size,
+      this._res.reservoirCurrentBuffer, 0,
+      this._res.reservoirPreviousBuffer, 0,
+      this._res.reservoirCurrentBuffer.size,
     );
     d.queue.submit([enc2.finish()]);
 
     // Kick async readback of the timestamp buffer we just copied into.
-    kickTimestampReadback(this.tsState, this.frameCount);
+    kickTimestampReadback(this._tsState, this._frameCount);
     // Mirror public telemetry fields from the state object so callers
     // can read them as before.
-    this.lastGpuTimings      = this.tsState.lastGpuTimings;
-    this.lastGpuTimingsFrame = this.tsState.lastGpuTimingsFrame;
+    this.lastGpuTimings      = this._tsState.lastGpuTimings;
+    this.lastGpuTimingsFrame = this._tsState.lastGpuTimingsFrame;
 
-    this.frameCount++;
+    this._frameCount++;
     return true;
   }
 
+  /**
+   * SVGF denoise dispatch — welford-temporal → svgf-variance → N × svgf-atrous.
+   * Returns the final atrous output texture to feed into the accumulator.
+   */
+  private _dispatchSVGF(
+    encoder: GPUCommandEncoder,
+    denoiseBase: number,
+    gNormalDepthView: GPUTextureView,
+    readAccum: GPUTexture,
+    isMoving: boolean,
+    wgX16: number,
+    wgY16: number,
+    computeDesc: (label: string, passIdx: number) => GPUComputePassDescriptor,
+  ): GPUTexture {
+    const d = this._device;
+    const wf = this._welfordPipeline!;
+    const sv = this._svgfVariancePipeline!;
+    const sa = this._svgfAtrousPipeline!;
+
+    const welfordRead  = this._welfordPing === 0 ? this._res.varianceBuffer : this._res.varianceBufferAux;
+    const welfordWrite = this._welfordPing === 0 ? this._res.varianceBufferAux : this._res.varianceBuffer;
+
+    // welfordUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'svgf'.
+    const wU32 = new Uint32Array([this._accumFrameIndex + 1, isMoving ? 1 : 0, 0, 0]);
+    d.queue.writeBuffer(this._welfordUboRef.buf!, 0, wU32);
+
+    const hdrColorView = this._res.hdrColorTexture.createView();
+    {
+      const pass = encoder.beginComputePass(computeDesc('welford-temporal', denoiseBase + 0));
+      pass.setPipeline(wf);
+      pass.setBindGroup(0, buildWelfordBindGroup(
+        d, wf, hdrColorView, welfordRead.createView(), welfordWrite.createView(),
+        this._welfordUboRef.buf!,
+      ));
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+
+    // svgfVarianceUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'svgf'.
+    const varUboBytes = new ArrayBuffer(SVGF_VARIANCE_UNIFORMS_SIZE_BYTES);
+    packSVGFVarianceUniforms({ frameCount: this._accumFrameIndex }, varUboBytes, 0);
+    d.queue.writeBuffer(this._svgfVarianceUboRef.buf!, 0, varUboBytes);
+
+    {
+      const pass = encoder.beginComputePass(computeDesc('svgf-variance', denoiseBase + 1));
+      pass.setPipeline(sv);
+      pass.setBindGroup(0, buildSVGFVarianceBindGroup(
+        d, sv,
+        hdrColorView,
+        readAccum.createView(),
+        gNormalDepthView,
+        this._res.motionVectorTexture.createView(),
+        welfordWrite.createView(),
+        this._res.svgfVarianceEstimateTexture.createView(),
+        this._svgfVarianceUboRef.buf!,
+      ));
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+
+    // svgfAtrousUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'svgf'.
+    const atrousUboBytes = new ArrayBuffer(SVGF_UNIFORMS_SIZE_BYTES);
+    let inputTex: GPUTexture = this._res.hdrColorTexture;
+    const varView = this._res.svgfVarianceEstimateTexture.createView();
+    for (let iter = 0; iter < SVGF_DEFAULT_ATROUS_ITERATIONS; iter++) {
+      packSVGFUniforms(
+        { iteration: iter, ...SVGF_DEFAULT_UNIFORMS },
+        atrousUboBytes,
+        0,
+      );
+      d.queue.writeBuffer(this._svgfAtrousUboRef.buf!, 0, atrousUboBytes);
+      const outTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
+      const pass = encoder.beginComputePass(computeDesc(`svgf-atrous-${iter}`, denoiseBase + 2 + iter));
+      pass.setPipeline(sa);
+      pass.setBindGroup(0, buildSVGFAtrousBindGroup(
+        d, sa,
+        inputTex.createView(), outTex.createView(),
+        gNormalDepthView, varView,
+        this._svgfAtrousUboRef.buf!,
+      ));
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+      inputTex = outTex;
+    }
+    return inputTex;
+  }
+
+  /**
+   * Legacy à-trous denoise dispatch — 3 iterations with widening step.
+   */
+  private _dispatchAtrousLegacy(
+    encoder: GPUCommandEncoder,
+    denoiseBase: number,
+    gNormalDepthView: GPUTextureView,
+    wgX16: number,
+    wgY16: number,
+    computeDesc: (label: string, passIdx: number) => GPUComputePassDescriptor,
+  ): GPUTexture {
+    const d = this._device;
+    let inputTex = this._res.hdrColorTexture;
+    for (let iter = 0; iter < 3; iter++) {
+      const stepWidth = 1 << iter;
+      const outputTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
+      const bgAtrous = buildAtrousBindGroup(
+        d, this._bglCache, this._atrousUboRef,
+        inputTex.createView(), outputTex.createView(),
+        gNormalDepthView, gNormalDepthView, stepWidth,
+      );
+      const pass = encoder.beginComputePass(computeDesc(`atrous-${iter}`, denoiseBase + iter));
+      pass.setPipeline(this._atrousPipeline);
+      pass.setBindGroup(0, bgAtrous);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+      inputTex = outputTex;
+    }
+    return inputTex;
+  }
+
   dispose(): void {
-    this.bvhNodesBuffer?.destroy();
-    this.bvhIndexBuffer?.destroy();
-    this.bvhBeerBuffer?.destroy();
-    this.bvhPositionBuffer?.destroy();
-    this.bvhNormalBuffer?.destroy();
-    this.bvhUvBuffer?.destroy();
-    this.emitterBuffer?.destroy();
-    this.emitterCdfBuffer?.destroy();
-    if (this.res) destroyFrameResources(this.res);
-    this.atrousUboRef.buf?.destroy();
-    this.accumUboRef.buf?.destroy();
-    this.welfordUboRef.buf?.destroy();
-    this.svgfVarianceUboRef.buf?.destroy();
-    this.svgfAtrousUboRef.buf?.destroy();
-    this.ppgUpdateUboRef.buf?.destroy();
-    this.ppgShadeMetaUboRef.buf?.destroy();
-    disposeTimestampState(this.tsState);
+    this._bvhNodesBuffer?.destroy();
+    this._bvhIndexBuffer?.destroy();
+    this._bvhBeerBuffer?.destroy();
+    this._bvhPositionBuffer?.destroy();
+    this._bvhNormalBuffer?.destroy();
+    this._bvhUvBuffer?.destroy();
+    this._emitterBuffer?.destroy();
+    this._emitterCdfBuffer?.destroy();
+    if (this._res) destroyFrameResources(this._res);
+    this._atrousUboRef.buf?.destroy();
+    this._accumUboRef.buf?.destroy();
+    this._welfordUboRef.buf?.destroy();
+    this._svgfVarianceUboRef.buf?.destroy();
+    this._svgfAtrousUboRef.buf?.destroy();
+    this._ppgUpdateUboRef.buf?.destroy();
+    this._ppgShadeMetaUboRef.buf?.destroy();
+    disposeTimestampState(this._tsState);
   }
 
   /**
@@ -809,12 +827,12 @@ export class WalkaroundGPUPipeline {
       if (this._ddgiPlaceholderUBO === null) {
         this._ddgiPlaceholderUBO = buildDDGIPlaceholderUBO();
       }
-      this.device.queue.writeBuffer(this.res.ddgiUboBuffer, 0, this._ddgiPlaceholderUBO.buffer);
+      this._device.queue.writeBuffer(this._res.ddgiUboBuffer, 0, this._ddgiPlaceholderUBO.buffer);
     } else {
       this._ddgiIrrTex = inputs.irradianceTex;
       this._ddgiVisTex = inputs.visibilityTex;
       if (inputs.gridParams.byteLength > 0) {
-        this.device.queue.writeBuffer(this.res.ddgiUboBuffer, 0, inputs.gridParams);
+        this._device.queue.writeBuffer(this._res.ddgiUboBuffer, 0, inputs.gridParams);
       }
     }
   }

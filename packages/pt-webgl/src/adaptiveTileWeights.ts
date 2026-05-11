@@ -192,8 +192,8 @@ export function computeAdaptiveTileRepeatFactors(
 
   pass.run(renderer, accumTexture, texWidth, texHeight, tilesX, tilesY);
 
-  const px = tilesX * tilesY * 4;
-  const buf = new Float32Array(px);
+  const pixelCount = tilesX * tilesY * 4;
+  const buf = new Float32Array(pixelCount);
   renderer.readRenderTargetPixels(pass.rt, 0, 0, tilesX, tilesY, buf);
 
   const variances = new Float32Array(tileCount);
