@@ -43,6 +43,8 @@ export interface FrameBindGroupResources {
   reservoirGiCurrentBuffer: GPUBuffer;
   /** Sprint 18 — indirect-channel HDR output texture (shade write target). */
   hdrIndirectTexture: GPUTexture;
+  /** Sprint 18 follow-up — total-radiance HDR output (shade write, welford read). */
+  hdrTotalTexture: GPUTexture;
 }
 
 export function buildFrameBindGroup(
@@ -75,6 +77,8 @@ export function buildFrameBindGroup(
       // Sprint 18 — indirect-channel HDR output. Only shade writes to it;
       // bound to all frame-BGL pipelines for layout compatibility.
       { binding: 12, resource: r.hdrIndirectTexture.createView() },
+      // Sprint 18 follow-up — total-radiance output (welford input).
+      { binding: 13, resource: r.hdrTotalTexture.createView() },
     ],
   });
 }

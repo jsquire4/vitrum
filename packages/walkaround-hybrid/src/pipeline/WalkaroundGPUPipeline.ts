@@ -529,6 +529,7 @@ export class WalkaroundGPUPipeline {
       gNormalDepthTexture:     this._res.gNormalDepthTexture,
       reservoirGiCurrentBuffer: this._res.reservoirGiCurrentBuffer,
       hdrIndirectTexture:      this._res.hdrIndirectTexture,
+      hdrTotalTexture:         this._res.hdrTotalTexture,
     });
     const bgScene = buildSceneBindGroup(d, this._bglCache, {
       bvhNodesBuffer:    this._bvhNodesBuffer,
@@ -1027,11 +1028,16 @@ export class WalkaroundGPUPipeline {
     d.queue.writeBuffer(this._welfordUboRef.buf!, 0, wU32);
 
     const hdrColorView = this._res.hdrColorTexture.createView();
+    // Sprint 18 follow-up — welford reads the total-radiance texture so the
+    // variance and the sample-budget tier derived from it cover both direct
+    // and indirect channels. SVGF variance + atrous still read hdrColorView
+    // (direct-only) so the denoiser sees the channel it is tuned for.
+    const hdrTotalView = this._res.hdrTotalTexture.createView();
     {
       const pass = encoder.beginComputePass(computeDesc('welford-temporal'));
       pass.setPipeline(wf);
       pass.setBindGroup(0, buildWelfordBindGroup(
-        d, wf, hdrColorView, welfordRead.createView(), welfordWrite.createView(),
+        d, wf, hdrTotalView, welfordRead.createView(), welfordWrite.createView(),
         this._welfordUboRef.buf!,
       ));
       pass.dispatchWorkgroups(wgX16, wgY16, 1);

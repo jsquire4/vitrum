@@ -118,6 +118,15 @@ export interface FrameResources {
    * raw direct-denoiser output.
    */
   combinedDenoisedTexture: GPUTexture;
+  /**
+   * Sprint 18 follow-up — total (direct + indirect) HDR signal, written
+   * by shade alongside hdrColor and hdrIndirect.  Used as the welford
+   * input so the per-pixel variance estimate (and the sample-budget
+   * tier derived from it) reflects the full radiance, not just the
+   * direct channel.  SVGF variance / atrous still read hdrColorTexture
+   * (direct-only) so the denoiser sees the channel it's tuned for.
+   */
+  hdrTotalTexture: GPUTexture;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -493,6 +502,14 @@ export function createFrameResources(
     format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
+  // Sprint 18 follow-up — total radiance fed to welford so the tier
+  // classification sees the full signal (direct + indirect).
+  const hdrTotalTexture = device.createTexture({
+    label: 'hdrTotal',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   // G-buffer (normal + depth) — written by shade, read by atrous denoiser.
   const gNormalDepthTexture = device.createTexture({
@@ -741,6 +758,7 @@ export function createFrameResources(
     reservoirGiSpatialBuffer,
     hdrIndirectTexture,
     combinedDenoisedTexture,
+    hdrTotalTexture,
     ...ppgExt,
   };
 }
@@ -778,6 +796,7 @@ export function destroyFrameResources(r: FrameResources): void {
   r.reservoirGiSpatialBuffer.destroy();
   r.hdrIndirectTexture.destroy();
   r.combinedDenoisedTexture.destroy();
+  r.hdrTotalTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

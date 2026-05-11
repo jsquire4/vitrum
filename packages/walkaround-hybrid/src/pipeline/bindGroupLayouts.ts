@@ -70,6 +70,10 @@ export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
       // (ris, temporal, spatial, risGi) do not reference this binding; only
       // shade declares it, but it must be present in the layout for compat.
       { binding: 12, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      // Sprint 18 follow-up — total-radiance HDR output (rgba16float storage).
+      // Written by shade as direct + indirect. Welford reads it so the variance
+      // / tier estimate covers the full signal, not just the direct channel.
+      { binding: 13, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
     ],
   });
   return cache.frame;

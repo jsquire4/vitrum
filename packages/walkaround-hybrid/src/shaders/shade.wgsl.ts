@@ -37,6 +37,10 @@ export const SHADE_WGSL = /* wgsl */ `
 // so it can be denoised with broader sigmas before recombination. The
 // combine pass downstream sums denoisedDirect + smoothedIndirect.
 @group(0) @binding(12) var hdrIndirectOut: texture_storage_2d<rgba16float, write>;
+// Sprint 18 follow-up — total radiance output. Welford reads this so the
+// per-pixel variance estimate and the sample-budget tier reflect the full
+// signal (direct + indirect), not just the direct channel.
+@group(0) @binding(13) var hdrTotalOut: texture_storage_2d<rgba16float, write>;
 
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
@@ -400,7 +404,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.
   // @@PPG_RECORD_INSERT@@
-  textureStore(hdrColorOut,   gid.xy, vec4f(clampedDirect,   1.0));
-  textureStore(hdrIndirectOut, gid.xy, vec4f(clampedIndirect, 1.0));
+  textureStore(hdrColorOut,    gid.xy, vec4f(clampedDirect,            1.0));
+  textureStore(hdrIndirectOut, gid.xy, vec4f(clampedIndirect,          1.0));
+  textureStore(hdrTotalOut,    gid.xy, vec4f(clampedDirect + clampedIndirect, 1.0));
 }
 `;
