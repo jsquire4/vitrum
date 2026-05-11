@@ -12,6 +12,8 @@
  *   C-none/Web-RTRT atrous denoiser implementation.
  */
 
+import { ATROUS_KERNEL_WGSL } from './atrousKernel.wgsl.js';
+
 export const ATROUS_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var inputColor:    texture_2d<f32>;
@@ -32,14 +34,8 @@ struct AtrousUBO {
 };
 @group(0) @binding(4) var<uniform> ubo: AtrousUBO;
 
-// 5x5 B3 spline kernel weights (row-major).
-const KERNEL: array<f32, 25> = array<f32, 25>(
-   1.0/256.0,  4.0/256.0,  6.0/256.0,  4.0/256.0,  1.0/256.0,
-   4.0/256.0, 16.0/256.0, 24.0/256.0, 16.0/256.0,  4.0/256.0,
-   6.0/256.0, 24.0/256.0, 36.0/256.0, 24.0/256.0,  6.0/256.0,
-   4.0/256.0, 16.0/256.0, 24.0/256.0, 16.0/256.0,  4.0/256.0,
-   1.0/256.0,  4.0/256.0,  6.0/256.0,  4.0/256.0,  1.0/256.0,
-);
+// 5x5 B3 spline kernel — injected from shared TS constant (atrousKernel.wgsl.ts).
+${ATROUS_KERNEL_WGSL}
 
 @compute @workgroup_size(16, 16, 1)
 fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -96,6 +92,8 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // normalizing both colors to unit luminance first, we measure
       // hue/saturation difference instead of brightness difference,
       // making σc behave consistently across all cell luminances.
+      // Rec. 709 luminance weights — canonical value; identical copies exist
+      // in svgf.wgsl.ts, spatialFilter.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
       let lumW = vec3f(0.2126, 0.7152, 0.0722);
       let lumP = max(1e-3, dot(cP, lumW));
       let lumC = max(1e-3, dot(cCenter, lumW));

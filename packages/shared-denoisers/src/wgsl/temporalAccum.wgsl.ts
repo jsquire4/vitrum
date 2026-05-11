@@ -5,12 +5,14 @@
  *
  *   accum = current * alpha + clamped_prev * (1 - alpha)
  *
- * Variance-clamped history: computes the local color statistics (mean ± k·std_dev)
- * over a 3×3 current-frame neighborhood and clamps the prev-frame value into
- * that range BEFORE blending. Pixels at edges retain their crispness.
+ * History clamp: computes the AABB min/max of the current 3×3 neighborhood
+ * and clamps the prev-frame value into that range BEFORE blending. Pixels
+ * at edges retain their crispness. (Earlier drafts used k·std_dev clamping;
+ * AccumUBO previously carried a `varianceK` field that the shader never
+ * read — it has been removed in favour of `_pad1`.)
  *
  * On big camera motion the alpha is set to 1.0 by the caller, so
- * variance clamping is bypassed (no history blend).
+ * history clamping is bypassed (no history blend).
  *
  * Canonical home: @vitrum/shared-denoisers. Consumed by
  * @vitrum/walkaround-hybrid's pipelineCompiler via the package export.
@@ -23,9 +25,9 @@ export const TEMPORAL_ACCUM_WGSL = /* wgsl */`
 
 struct AccumUBO {
   alpha: f32,        // [0, 1] blend weight on the current frame
-  varianceK: f32,    // std-dev multiplier for the clamp box (typical 1.0-2.0)
   _pad1: f32,
   _pad2: f32,
+  _pad3: f32,
 };
 
 @group(0) @binding(0) var currentAtrous : texture_2d<f32>;

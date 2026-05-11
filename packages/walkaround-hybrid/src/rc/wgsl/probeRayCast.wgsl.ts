@@ -380,7 +380,7 @@ fn traceSunVisibility(
 // TSL storage ptr params → @group(0)/@binding(N) module-scope vars accessed by reference.
 
 @compute @workgroup_size(64)
-fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) -> void {
+fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
   let index = globalId.x;
   let u = rc_u_arr[0];
   let totalProbes  = u.probeCount.x * u.probeCount.y * u.probeCount.z;

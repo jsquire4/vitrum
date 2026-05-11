@@ -36,7 +36,6 @@ function emissiveMeshAreaEmitter(mesh: THREE.Mesh): SceneEmitter | null {
   };
 }
 
-export { VITRUM_SPECTRAL_EXTENSION_KEY } from './spectral.js';
 export { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from './vitrumSceneToThree.js';
 
 /**

@@ -140,7 +140,9 @@ fn spatialFilterMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let cCenter = textureLoad(inputColor,    gid.xy, 0).rgb;
-  let nCenter = textureLoad(gbufferNormal, gid.xy, 0).xyz;
+  // Normal is stored as (n*0.5+0.5) by the shade pass — decode to [-1,1].
+  // Must match the encoding used by atrous.wgsl.ts.
+  let nCenter = textureLoad(gbufferNormal, gid.xy, 0).xyz * 2.0 - 1.0;
   let zCenter = textureLoad(gbufferDepth,  gid.xy, 0).w;
 
   // Sky / miss pixels (depth == 0) pass through unfiltered.
@@ -165,13 +167,15 @@ fn spatialFilterMain(@builtin(global_invocation_id) gid: vec3u) {
     let pu = vec2u(p);
 
     let cP = textureLoad(inputColor,    pu, 0).rgb;
-    let nP = textureLoad(gbufferNormal, pu, 0).xyz;
+    let nP = textureLoad(gbufferNormal, pu, 0).xyz * 2.0 - 1.0;
     let zP = textureLoad(gbufferDepth,  pu, 0).w;
 
     // ── Edge-stopping weights ──────────────────────────────────────────────
 
     // Color: luminance-normalized chromaticity distance (matches à-trous
     // convention in atrous.wgsl.ts; avoids HDR magnitude bias).
+    // Rec. 709 luminance weights — canonical value; identical copies exist
+    // in svgf.wgsl.ts, atrous.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
     let lumW = vec3f(0.2126, 0.7152, 0.0722);
     let lumP = max(1e-3, dot(cP, lumW));
     let lumC = max(1e-3, dot(cCenter, lumW));
@@ -214,7 +218,9 @@ export interface SpatialFilterBindGroupLayout {
 
   /** binding 2 — G-buffer world-space normal.  Format: rgba16float.
    *  Source: FrameOutput.normalDepth, channels .xyz.
-   *  Per sprint-5-mrt-gbuffer-spec.md: raw Cartesian unit vector in [-1, 1]. */
+   *  Encoding: (normal * 0.5 + 0.5), authored by the shade pass.
+   *  Consumers decode with (xyz * 2.0 - 1.0) — see atrous.wgsl.ts and
+   *  spatialFilter.wgsl.ts for the canonical decode. */
   gbufferNormal: 'texture_2d<f32>';
 
   /** binding 3 — G-buffer linear depth.  Format: rgba16float.

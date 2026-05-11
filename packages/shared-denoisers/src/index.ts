@@ -8,8 +8,12 @@
 
 export * from './wgsl/atrous.wgsl.js';
 export * from './wgsl/temporalAccum.wgsl.js';
-export { SPATIAL_FILTER_WGSL } from './wgsl/spatialFilter.wgsl.js';
-export type { SpatialFilterBindGroupLayout } from './wgsl/spatialFilter.wgsl.js';
+
+// Canonical WelfordVariance — single source for cross-package variance state.
+export {
+  WELFORD_VARIANCE_WGSL,
+  WELFORD_VARIANCE_VERSION,
+} from './wgsl/welfordVariance.wgsl.js';
 
 // Sprint 10a — SVGF
 export {
@@ -22,10 +26,6 @@ export {
   SVGF_MAX_ATROUS_ITERATIONS,
   SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
 } from './svgfConstants.js';
-export {
-  WEBGPU_COPY_BYTES_PER_ROW_ALIGNMENT,
-  alignedTextureCopyBytesPerRow,
-} from './webGpuTextureCopy.js';
 export {
   SVGF_UNIFORMS_SIZE_BYTES,
   SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
@@ -63,12 +63,10 @@ export {
 } from './hdrLuminanceBilateralWebGPU.js';
 export type { HdrLuminanceBilateralWebGPUOptions } from './hdrLuminanceBilateralWebGPU.js';
 
-// Half-precision helpers + SVGF WebGPU host path (synthetic G-buffer).
-export { float16BitsToFloat32, float32ToFloat16Bits } from './halfFloat.js';
+// SVGF WebGPU host path (synthetic G-buffer).
 export {
   runSvgfWebGPU,
   assertSvgfWebGPUBufferShapes,
   SVGF_SYNTHETIC_GBUFFER_DEFAULTS,
 } from './svgfWebGPU.js';
 export type { SvgfWebGPUOptions, SvgfSyntheticGbufferFallback } from './svgfWebGPU.js';
-export { getSharedWebGPUDevice, disposeSharedWebGPUDevice } from './sharedWebGpuDevice.js';

@@ -50,7 +50,7 @@ fn hdrLuminanceBilateralMain(@builtin(global_invocation_id) gid: vec3<u32>) {
       let c = textureLoad(texIn, p, 0).rgb;
       let L = luminance(c);
       let spatial = f32(dx * dx + dy * dy);
-      let ws = exp(-spatial / 18.0);
+      let ws = exp(-spatial / 18.0); // 2 * sigma_spatial^2, sigma_spatial=3 (5x5 kernel radius)
       let wr = exp(-(L - L0) * (L - L0) * invTwoSig2);
       let w = ws * wr;
       acc += c * w;

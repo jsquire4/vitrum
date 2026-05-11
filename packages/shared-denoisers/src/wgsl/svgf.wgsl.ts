@@ -54,11 +54,13 @@
  *   Dammertz, Hanika, Keller "Edge-Avoiding À-Trous Wavelet Transform for
  *   fast Global Illumination Filtering". HPG 2010.
  *
- *   WelfordVariance layout: walkaround-hybrid/src/shaders/common.wgsl.ts
+ *   WelfordVariance layout: canonical in ./welfordVariance.wgsl.ts.
  *   Decision 13 — versioned struct pinned Sprint 9 (2026-05-09).
  */
 
 import { SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT } from '../svgfConstants.js';
+import { WELFORD_VARIANCE_WGSL } from './welfordVariance.wgsl.js';
+import { SVGF_ATROUS_KERNEL_WGSL } from './atrousKernel.wgsl.js';
 
 /** Must match `@workgroup_size` in this module's compute entry points. */
 export const SVGF_COMPUTE_WORKGROUP_SIZE = 16 as const;
@@ -68,34 +70,17 @@ export const SVGF_WGSL = /* wgsl */ `
 const SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT}u;
 
 // ============================================================
-// WelfordVariance — local copy matching common.wgsl @version 1
-//
-// Cross-package WGSL string imports are not supported; this is an exact
-// structural copy of the canonical definition in:
-//   walkaround-hybrid/src/shaders/common.wgsl.ts — WelfordVariance @version 1
-//
-// Layout (RG32Float texel):
-//   r = mean (running average of luminance)
-//   g = M2  (sum of squared deltas; variance = M2 / (n - 1))
-//
-// DO NOT change field order without bumping the @version comment in the
-// canonical source and updating all Sprint 10a / 11 / 13 bindings.
+// WelfordVariance — canonical struct + helpers from welfordVariance.wgsl.ts.
 // ============================================================
-struct WelfordVariance {
-  mean: f32,
-  m2:   f32,
-};
-
-fn welfordVariance(state: WelfordVariance, n: u32) -> f32 {
-  if (n < 2u) { return 0.0; }
-  return state.m2 / f32(n - 1u);
-}
+${WELFORD_VARIANCE_WGSL}
 
 // ============================================================
 // Constants
 // ============================================================
 const PI       = 3.14159265358979;
 const INV_PI   = 0.31830988618;
+// Rec. 709 luminance weights — canonical value; identical copies exist
+// in atrous.wgsl.ts, spatialFilter.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
 const LUM_W    = vec3f(0.2126, 0.7152, 0.0722);
 
 // ============================================================
@@ -217,14 +202,8 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
 @group(0) @binding(4) var atrous_varianceMap: texture_2d<f32>;
 @group(0) @binding(5) var<uniform> atrousUBO: SVGFAtrousUBO;
 
-// 5×5 B3 spline kernel weights (row-major, identical to atrous.wgsl).
-const SVGF_KERNEL: array<f32, 25> = array<f32, 25>(
-   1.0/256.0,  4.0/256.0,  6.0/256.0,  4.0/256.0,  1.0/256.0,
-   4.0/256.0, 16.0/256.0, 24.0/256.0, 16.0/256.0,  4.0/256.0,
-   6.0/256.0, 24.0/256.0, 36.0/256.0, 24.0/256.0,  6.0/256.0,
-   4.0/256.0, 16.0/256.0, 24.0/256.0, 16.0/256.0,  4.0/256.0,
-   1.0/256.0,  4.0/256.0,  6.0/256.0,  4.0/256.0,  1.0/256.0,
-);
+// 5×5 B3 spline kernel — injected from shared TS constant (atrousKernel.wgsl.ts).
+${SVGF_ATROUS_KERNEL_WGSL}
 
 @compute @workgroup_size(16, 16, 1)
 fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {

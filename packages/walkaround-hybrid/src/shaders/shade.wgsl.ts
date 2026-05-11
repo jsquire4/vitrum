@@ -8,12 +8,9 @@
  * This is the primary-ray-cast fallback mode.
  */
 
-import { IRR_CELL, VIS_CELL, IRR_STRIDE, VIS_STRIDE } from '../ddgi/ddgiAtlasLayout.js';
-
-// Atlas-layout constants are template-substituted at module-load time so
-// the producer (probeGrid.allocateAtlases) and the two consumers
-// (this file + ddgi/ddgiSampleWgsl.ts) read the same values from
-// one source of truth (ddgiAtlasLayout.ts).
+// Atlas-layout constants are consumed by ddgiSampleWgsl.ts (the canonical
+// DDGI atlas sampler); shade.wgsl delegates via ddgiSampleFromBindings —
+// no direct constant references needed here.
 export const SHADE_WGSL = /* wgsl */ `
 
 // Blend for diffuse irradiance from DDGI probes (1.0 = full contribution when isDDGIWired()).
@@ -45,20 +42,7 @@ const DDGI_DIFFUSE_BLEND: f32 = 1.0;
 // saturation. bvh_index.w stays raw attCol for receiver paths.
 @group(1) @binding(5) var<storage, read> bvh_beer:     array<u32>;
 
-struct WalkaroundUBO {
-  viewMatrix:      mat4x4f,
-  projMatrix:      mat4x4f,
-  prevViewMatrix:  mat4x4f,
-  cameraPos:       vec3f,
-  frameSeed:       u32,
-  screenSize:      vec2u,
-  emitterCount:    u32,
-  totalEmPower:    f32,
-  sunDirection:    vec3f,
-  sunIntensity:    f32,        // sun irradiance multiplier (matches BVH build)
-  skyTint:         vec3f,      // diffuse sky dome RGB (from computeLightingState)
-  skyIrradiance:   f32,        // sky dome brightness scalar
-};
+// WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
 // DDGI bind group (group 3). Atlas + sampler + grid params UBO bound
@@ -90,111 +74,28 @@ fn isDDGIWired() -> bool {
   return ddgiGrid.dimsX > 1u;
 }
 
-// Inlined DDGI atlas sample. Takes worldPos + surfaceNormal, returns
-// vec3f diffuse-indirect irradiance via trilinear probe blend with
-// Chebyshev visibility test. Math identical to ddgiSampleWgsl.ts —
-// inlined here so shade.wgsl is self-contained.
+// Thin adapter — pipelineCompiler prepends DDGI_SAMPLE_WGSL (the
+// canonical implementation in ddgiSampleWgsl.ts) before SHADE_WGSL, so
+// the ddgiSample helper is in scope. This function exists only to pull
+// the @group(3) bindings into argument form. Single source of math.
 fn ddgiSampleFromBindings(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
-  let gridDims = vec3u(ddgiGrid.dimsX, ddgiGrid.dimsY, ddgiGrid.dimsZ);
-  let gridPos  = (worldPos - ddgiGrid.origin) / ddgiGrid.spacing;
-  let baseIdx3 = vec3i(floor(gridPos));
-  let frac     = fract(gridPos);
-
-  var sumIrr   = vec3f(0.0);
-  var totalWt  = 0.0;
-
-  for (var i = 0u; i < 8u; i = i + 1u) {
-    let co  = vec3u((i & 1u), (i >> 1u) & 1u, (i >> 2u) & 1u);
-    let pi3 = baseIdx3 + vec3i(co);
-    if (any(pi3 < vec3i(0)) || any(pi3 >= vec3i(gridDims))) { continue; }
-
-    let probeFlatIdx = u32(pi3.x)
-                     + u32(pi3.y) * gridDims.x
-                     + u32(pi3.z) * gridDims.x * gridDims.y;
-    let probeWorld   = ddgiGrid.origin + vec3f(pi3) * ddgiGrid.spacing;
-
-    // Trilinear weight.
-    let tw = mix(vec3f(1.0) - frac, frac, vec3f(co));
-    var w  = tw.x * tw.y * tw.z;
-
-    // Smooth backface modulation (DDGI paper Eq. 9).
-    let toProbe   = probeWorld - worldPos;
-    let probeDist = length(toProbe);
-    if (probeDist > 1e-3) {
-      let probeDir = toProbe / probeDist;
-      let nDotP    = dot(surfaceNormal, probeDir);
-      let bw       = pow((nDotP + 1.0) * 0.5, 2.0) + 0.2;
-      w = w * bw;
-    }
-
-    // Octahedral-encode the surface→probe direction (visibility lookup).
-    let probeDirToSurf = normalize(worldPos - probeWorld);
-    let dirV = -probeDirToSurf;
-    let absV = abs(dirV);
-    let nv   = dirV / (absV.x + absV.y + absV.z);
-    var octV: vec2f;
-    if (nv.z >= 0.0) { octV = nv.xy; }
-    else { octV = (1.0 - abs(nv.yx)) * vec2f(sign(nv.x), sign(nv.y)); }
-    octV = octV * 0.5 + 0.5;
-
-    // Visibility atlas UV (cell + 2px border, 1px each side). Strides
-    // come from ddgiAtlasLayout.ts via template substitution.
-    let visStride = ${VIS_STRIDE}u;
-    let visCell   = ${VIS_CELL}u;
-    let visPx     = probeFlatIdx % gridDims.x;
-    let visTmpY   = probeFlatIdx / gridDims.x;
-    let visPy     = visTmpY % gridDims.y;
-    let visPz     = visTmpY / gridDims.y;
-    let visCx     = f32(visPx * visStride) + 1.0 + octV.x * f32(visCell);
-    let visCy     = f32((visPy + visPz * gridDims.y) * visStride) + 1.0 + octV.y * f32(visCell);
-    let visUv     = vec2f(visCx / ddgiGrid.visW, visCy / ddgiGrid.visH);
-    let vis       = textureSampleLevel(ddgiVisibility, ddgiSampler, visUv, 0.0).rg;
-    let mean      = vis.x;
-    let variance  = abs(vis.y - mean * mean);
-    let chebyshev = select(
-      variance / (variance + max(0.0, probeDist - mean) * max(0.0, probeDist - mean)),
-      1.0,
-      probeDist <= mean,
-    );
-    w = w * max(chebyshev, 0.0);
-
-    // Octahedral-encode the surface normal (irradiance lookup).
-    let absN = abs(surfaceNormal);
-    let nN   = surfaceNormal / (absN.x + absN.y + absN.z);
-    var octN: vec2f;
-    if (nN.z >= 0.0) { octN = nN.xy; }
-    else { octN = (1.0 - abs(nN.yx)) * vec2f(sign(nN.x), sign(nN.y)); }
-    octN = octN * 0.5 + 0.5;
-
-    // Irradiance atlas UV (cell + 2px border, 1px each side). Strides
-    // come from ddgiAtlasLayout.ts via template substitution.
-    let irrStride = ${IRR_STRIDE}u;
-    let irrCell   = ${IRR_CELL}u;
-    let irrPx     = probeFlatIdx % gridDims.x;
-    let irrTmpY   = probeFlatIdx / gridDims.x;
-    let irrPy     = irrTmpY % gridDims.y;
-    let irrPz     = irrTmpY / gridDims.y;
-    let irrCx     = f32(irrPx * irrStride) + 1.0 + octN.x * f32(irrCell);
-    let irrCy     = f32((irrPy + irrPz * gridDims.y) * irrStride) + 1.0 + octN.y * f32(irrCell);
-    let irrUv     = vec2f(irrCx / ddgiGrid.irrW, irrCy / ddgiGrid.irrH);
-    let irr       = textureSampleLevel(ddgiIrradiance, ddgiSampler, irrUv, 0.0).rgb;
-
-    sumIrr  = sumIrr + irr * w;
-    totalWt = totalWt + w;
-  }
-
-  if (totalWt < 1e-4) {
-    return vec3f(0.0);
-  }
-  return sumIrr / totalWt;
+  return ddgiSample(
+    worldPos,
+    surfaceNormal,
+    ddgiIrradiance,
+    ddgiVisibility,
+    ddgiSampler,
+    ddgiGrid.origin.x, ddgiGrid.origin.y, ddgiGrid.origin.z,
+    ddgiGrid.spacing,
+    ddgiGrid.dimsX, ddgiGrid.dimsY, ddgiGrid.dimsZ,
+    ddgiGrid.irrW, ddgiGrid.irrH, ddgiGrid.visW, ddgiGrid.visH,
+  );
 }
 
-const RESERVOIR_DI_STRIDE = 4u;
+// RESERVOIR_DI_STRIDE / loadReservoirDI_rw live in COMMON_WGSL.
 
 fn loadSpatialDI(pixelIdx: u32) -> ReservoirDI {
-  let b = pixelIdx * RESERVOIR_DI_STRIDE;
-  return ReservoirDI(spatialReservoir[b], spatialReservoir[b+1u],
-                     bitcast<f32>(spatialReservoir[b+2u]), bitcast<f32>(spatialReservoir[b+3u]));
+  return loadReservoirDI_rw(&spatialReservoir, pixelIdx);
 }
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;

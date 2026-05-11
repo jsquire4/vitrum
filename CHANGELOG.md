@@ -41,7 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`@vitrum/walkaround-hybrid`**: Sprint 11 PPG spatial lookup — kd-tree buffer + GPU traversal in `ppgSample` and `ppgUpdate`; host `writePpgKdTree` and `buildPpgKdTreeGpuBytes` (E6).
 - **Fork (`three-gpu-pathtracer`)**: spectral Beer–Lambert reads packed μ(λ); NEE threads hero wavelength; `transmissionEval` PDF uses Walter-style GGX Jacobian with matching GGX half-vector sampling (shader smoke checks extended).
 - **`@vitrum/walkaround-hybrid`**: RC `cascadeDispatch` / `bvhCompute` / `nodeMaterialUpgrade` typing cleanups (backend view, `instanceof` material packing, `Record` copy).
-- **`@vitrum/babylon-bindings`**: **`experimentalSceneFromBabylonScene`** (explicit stub name; **`sceneFromBabylonScene`** remains a throwing alias marked **`@deprecated`**).
+- **`@vitrum/babylon-bindings`** (removed 2026-05-11): stub package deleted — zero external consumers and no implementation work scheduled. Babylon binding remains a future option via `plan/binding-babylon-sketch.md`.
 - **`@vitrum/pt-webgpu`**: material stride **22** vec4s with thin-film extinction + incident IOR; **multi-light** storage buffers and WGSL direct-light loops; `brdfDirectionalPdf` includes an active transmission-hemisphere term; Playwright adapter passes scenario query params and viewport size from env.
 - **`@vitrum/pt-webgl`**: package is explicitly `private` while it depends on the sibling fork via `file:`.
 - **`@vitrum/three-bindings`**: RFE `userData` stamping tests on production `vitrumSceneToThree`; duplicate `pt-webgl` scene converter removed.

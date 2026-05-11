@@ -24,4 +24,11 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('if (causticMode() == 1u)');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('else if (causticMode() == 2u)');
   });
+
+  it('declares INV_2PI alongside INV_PI for HDRI equirect sampling', () => {
+    // pathTraceBruteforce.wgsl.ts uses INV_2PI for spherical-to-UV mapping;
+    // omitting it would cause a runtime WGSL compile failure for any scene
+    // with an HDRI environment.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const INV_2PI');
+  });
 });

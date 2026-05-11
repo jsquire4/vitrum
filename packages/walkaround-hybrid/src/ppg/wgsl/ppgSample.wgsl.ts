@@ -32,6 +32,8 @@
  * @since Sprint 11, 2026-05-09
  */
 
+import { PPG_COMMON_WGSL } from './ppgCommon.wgsl.js';
+
 export const PPG_SAMPLE_WGSL = /* wgsl */`
 
 // ============================================================
@@ -119,110 +121,12 @@ fn ppgOctahedralToDir(oct: vec2f) -> vec3f {
   return normalize(n);
 }
 
-fn ppgAxisComp(v: vec3f, axis: u32) -> f32 {
-  if (axis == 0u) { return v.x; }
-  if (axis == 1u) { return v.y; }
-  return v.z;
-}
-
-fn ppgFindCellIndexBrute(worldPos: vec3f) -> u32 {
-  let cellCount = arrayLength(&ppgCells);
-  if (cellCount == 0u) { return 0u; }
-
-  var bestIdx  = 0u;
-  var bestDist = 1e20;
-
-  for (var i = 0u; i < cellCount; i++) {
-    let d = ppgCells[i].position - worldPos;
-    let dist2 = dot(d, d);
-    if (dist2 < bestDist) {
-      bestDist = dist2;
-      bestIdx  = i;
-    }
-  }
-  return bestIdx;
-}
-
-// Nearest-neighbour kd-tree traversal (iterative, stack prunes far subtree).
-fn ppgKdFindCell(worldPos: vec3f) -> u32 {
-  let nk = arrayLength(&ppgKdNodes);
-  let cellCount = arrayLength(&ppgCells);
-  if (nk == 0u || cellCount == 0u) { return 0u; }
-  let root = ppgKdNodes[0];
-  if (root.child0 == 0xFFFFFFFFu && root.child1 == 0xFFFFFFFFu) {
-    return ppgFindCellIndexBrute(worldPos);
-  }
-
-  var bestIdx  = 0u;
-  var bestDist2 = 1e38;
-
-  var stN: array<u32, 48>;
-  var stK: array<u32, 48>;
-  var stFar: array<u32, 48>;
-  var stD2: array<f32, 48>;
-  var sp = 0u;
-
-  stN[sp] = 0u;
-  stK[sp] = 0u;
-  stFar[sp] = 0u;
-  stD2[sp] = 0.0;
-  sp = sp + 1u;
-
-  while (sp > 0u) {
-    sp = sp - 1u;
-    if (stK[sp] == 1u) {
-      if (stD2[sp] < bestDist2 && sp < 48u) {
-        stN[sp] = stFar[sp];
-        stK[sp] = 0u;
-        sp = sp + 1u;
-      }
-      continue;
-    }
-
-    let nid = stN[sp];
-    if (nid >= nk) { continue; }
-    let node = ppgKdNodes[nid];
-    let meta = node.meta;
-    if ((meta & 0x80000000u) != 0u) {
-      let cellIdx = meta & 0x7FFFFFFFu;
-      if (cellIdx < cellCount) {
-        let d = ppgCells[cellIdx].position - worldPos;
-        let dist2 = dot(d, d);
-        if (dist2 < bestDist2) {
-          bestDist2 = dist2;
-          bestIdx = cellIdx;
-        }
-      }
-      continue;
-    }
-
-    let axis = meta & 3u;
-    let split = node.split;
-    let c0 = node.child0;
-    let c1 = node.child1;
-    let d0 = ppgAxisComp(worldPos, axis) - split;
-    let d2plane = d0 * d0;
-    let nearI = select(c1, c0, d0 < 0.0);
-    let farI = select(c0, c1, d0 < 0.0);
-
-    if (sp + 2u > 48u) {
-      return ppgFindCellIndexBrute(worldPos);
-    }
-    stFar[sp] = farI;
-    stD2[sp] = d2plane;
-    stK[sp] = 1u;
-    sp = sp + 1u;
-    stN[sp] = nearI;
-    stK[sp] = 0u;
-    stFar[sp] = 0u;
-    stD2[sp] = 0.0;
-    sp = sp + 1u;
-  }
-  return bestIdx;
-}
+// ppgAxisComp / ppgBruteFindCell / ppgKdFindCellShared come from PPG_COMMON_WGSL
+// (injected immediately after this line via the template literal).
+${PPG_COMMON_WGSL}
 
 fn ppgFindCellIndex(worldPos: vec3f) -> u32 {
-  return ppgKdFindCell(worldPos);
+  return ppgKdFindCellShared(worldPos, arrayLength(&ppgCells));
 }
 
 // Build CDF (prefix-sum) over the 16 bins.
@@ -286,9 +190,13 @@ fn ppgSampleDirection(worldPos: vec3f, n: vec3f, u1: f32, u2: f32,
   // Decode bin centre to octahedral UV, then jitter within bin cell.
   let row   = f32(selectedBin / 4u);
   let col   = f32(selectedBin % 4u);
-  // Jitter u1 within the bin's [0, 0.25)² cell.
-  let jitterU = (col + fract(u1 * 4.0)) / 4.0;
-  let jitterV = (row + fract(u1 * 16.0)) / 4.0;
+  // Independent jitter in U and V: u1 drives U, a fresh RNG draw drives V.
+  // Previously both axes were derived from u1 (different frequencies), which
+  // produced correlated samples that visibly clustered inside each bin.
+  let jU      = u1;
+  let jV      = rand_f32(rng);
+  let jitterU = (col + jU) / 4.0;
+  let jitterV = (row + jV) / 4.0;
   let octUV   = vec2f(clamp(jitterU, 0.0, 1.0), clamp(jitterV, 0.0, 1.0));
 
   // Decode to world-space direction (upper hemisphere).

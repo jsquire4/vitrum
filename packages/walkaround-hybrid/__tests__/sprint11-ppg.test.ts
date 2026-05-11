@@ -212,6 +212,11 @@ describe('PPG_SAMPLE_WGSL — ppgSampleDirection and ppgPDF shader fragment', ()
   });
 
   it('binds ppgCells at @group(2) @binding(0)', () => {
+    // TODO(Sprint-11-integration): @group(2) is a placeholder until the PPG
+    // dispatch is wired into the pipeline. When the real group number is
+    // finalized, update both the WGSL `@group(N)` annotations in
+    // ppgSample.wgsl.ts / ppgUpdate.wgsl.ts AND every `@group(2)` assertion
+    // in this test file in the same commit.
     expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(0)');
     expect(PPG_SAMPLE_WGSL).toContain('ppgCells');
   });
@@ -378,7 +383,8 @@ describe('PPG_UPDATE_WGSL — ppgUpdateKernel compute shader', () => {
 
   it('contains ppgUpdateFindCell routed through kd traversal', () => {
     expect(PPG_UPDATE_WGSL).toContain('fn ppgUpdateFindCell');
-    expect(PPG_UPDATE_WGSL).toContain('ppgUpdateKdFindCell');
+    // ppgUpdateFindCell delegates to the canonical shared traversal in PPG_COMMON_WGSL.
+    expect(PPG_UPDATE_WGSL).toContain('ppgKdFindCellShared');
   });
 
   it('contains ppgDirToBinIdx octahedral direction encode', () => {

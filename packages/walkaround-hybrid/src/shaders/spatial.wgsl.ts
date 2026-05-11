@@ -30,23 +30,10 @@ export const SPATIAL_WGSL = /* wgsl */ `
 @group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
 @group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
 
-struct WalkaroundUBO {
-  viewMatrix:      mat4x4f,
-  projMatrix:      mat4x4f,
-  prevViewMatrix:  mat4x4f,
-  cameraPos:       vec3f,
-  frameSeed:       u32,
-  screenSize:      vec2u,
-  emitterCount:    u32,
-  totalEmPower:    f32,
-  sunDirection:    vec3f,
-  sunIntensity:    f32,
-  skyTint:         vec3f,      // diffuse sky dome RGB
-  skyIrradiance:   f32,        // sky dome brightness
-};
+// WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
-const RESERVOIR_DI_STRIDE = 4u;
+// RESERVOIR_DI_STRIDE / loadReservoirDI_rw / storeReservoirDI_rw live in COMMON_WGSL.
 // NEIGHBORS = 5 (restored — was briefly 3 for perf). The spatial-2
 // pass was also restored alongside.
 // Per-pixel spatial-reuse drives the soft falloff / AO-like coherence
@@ -56,29 +43,7 @@ const NEIGHBORS = 5u;
 const RADIUS = 30.0;
 const M_SCALE = 4u;
 
-fn loadR_rw(buf: ptr<storage, array<u32>, read_write>, idx: u32) -> ReservoirDI {
-  let b = idx * RESERVOIR_DI_STRIDE;
-  return ReservoirDI(buf[b], buf[b+1u], bitcast<f32>(buf[b+2u]), bitcast<f32>(buf[b+3u]));
-}
-fn storeR_rw(buf: ptr<storage, array<u32>, read_write>, idx: u32, r: ReservoirDI) {
-  let b = idx * RESERVOIR_DI_STRIDE;
-  buf[b] = r.lightId; buf[b+1u] = r.M;
-  buf[b+2u] = bitcast<u32>(r.w_sum); buf[b+3u] = bitcast<u32>(r.W);
-}
-
-// PrimarySurface — what we know about the surface a pixel sees, derived
-// from re-casting that pixel's primary ray through the BVH.
-struct PrimarySurface {
-  hit:    bool,
-  pos:    vec3f,
-  normal: vec3f,
-  wo:     vec3f,
-  albedo: vec3f,
-  rough:  f32,
-  metal:  f32,
-  depth:  f32,    // along-ray distance, used by the geometric similarity gate
-};
-
+// PrimarySurface struct defined in COMMON_WGSL.
 fn castPrimary(px: vec2u, dims: vec2u, invVP: mat4x4f) -> PrimarySurface {
   var s: PrimarySurface;
   let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, ubo.cameraPos, invVP);
@@ -142,7 +107,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let pixelIdx = gid.y * dims.x + gid.x;
   var rng = pcgInit(gid.x ^ 54321u, gid.y ^ 98765u, ubo.frameSeed ^ 0xCAFEu);
 
-  var r = loadR_rw(&currentReservoir, pixelIdx);
+  var r = loadReservoirDI_rw(&currentReservoir, pixelIdx);
 
   // M-scale down before spatial.
   if (r.M > M_SCALE) {
@@ -158,7 +123,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let center = castPrimary(gid.xy, dims, invVP);
   if (!center.hit) {
     // Sky pixel — no reservoir to combine; pass current through unchanged.
-    storeR_rw(&spatialReservoir, pixelIdx, r);
+    storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
     return;
   }
 
@@ -180,7 +145,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     let normalDot = dot(center.normal, nbr_surf.normal);
     if (depthDiff > depthTol || normalDot < 0.9) { continue; }
 
-    let nbr  = loadR_rw(&currentReservoir, nbrIdx);
+    let nbr  = loadReservoirDI_rw(&currentReservoir, nbrIdx);
     let nbrM = max(1u, nbr.M / M_SCALE);
 
     // Re-evaluate p̂ at the CENTER surface for the neighbor's chosen light.
@@ -198,6 +163,6 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let pHatZ = computePHat_s(r.lightId, center);
   r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
 
-  storeR_rw(&spatialReservoir, pixelIdx, r);
+  storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
 }
 `;

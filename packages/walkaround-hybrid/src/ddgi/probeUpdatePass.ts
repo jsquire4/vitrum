@@ -34,7 +34,10 @@ import { detectGpu } from '@vitrum/core';
 // probes at 16" spacing × 192 = ~93k rays/frame (+80%). DDGI compute
 // pass measured at ~1ms previously; expected ~2ms now — well within
 // budget.
-const RAYS_PER_PROBE = 192;
+// Exported so probeUpdateRays.wgsl.ts and probeUpdateBlend.wgsl.ts
+// inject the same value via template literal — eliminates the
+// possibility of CPU/GPU constants diverging.
+export const RAYS_PER_PROBE = 192;
 // ProbeRay struct: 12 floats / 2 u32 → 16 × 4 bytes = 64 bytes each
 const PROBE_RAY_STRIDE_BYTES = 64;
 

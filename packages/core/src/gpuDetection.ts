@@ -91,26 +91,6 @@ export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
   return cached;
 }
 
-// getCachedGpuDetection — synchronous accessor for the cached detection.
-// Currently unused; de-exported 2026-05-07 sweep. Re-export if a caller
-// needs it (active code uses `await detectGpu()` instead).
-
-/**
- * Internal-use-only reset hook. The double-underscore prefix signals
- * that this must not be called by production code. Test code reaches it
- * through `gpuDetection.test-utils.ts`, which re-exports it under a
- * descriptive name that makes the test-only intent explicit at the call site.
- *
- * Kept here rather than in the test-utils file because `cached` is
- * module-private; a sibling file cannot close over it.
- */
-export function _resetCacheUnsafe(): void {
-  cached = null;
-  if (typeof window !== 'undefined') {
-    delete window.__WG__;
-  }
-}
-
 function publish(result: GpuDetection): void {
   if (typeof window !== 'undefined') {
     window.__WG__ = result;

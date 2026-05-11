@@ -15,6 +15,8 @@ import { RIS_WGSL } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_WGSL } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
+import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
+import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import {
   injectPpgBindingsIntoShadeWgsl,
   injectPpgRecordBeforeHdrStore,
@@ -77,7 +79,7 @@ export async function compilePipelines(
         ),
       )
     : SHADE_WGSL;
-  const shadeSM    = device.createShaderModule({ label: 'shade',    code: COMMON_WGSL + shadeWgslBody });
+  const shadeSM    = device.createShaderModule({ label: 'shade',    code: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + shadeWgslBody });
   const atrousSM   = device.createShaderModule({ label: 'atrous',   code: COMMON_WGSL + ATROUS_WGSL });
   const compVertSM = device.createShaderModule({ label: 'comp-vert', code: COMPOSITE_VERT_WGSL });
   const compFragSM = device.createShaderModule({ label: 'comp-frag', code: COMPOSITE_FRAG_WGSL });

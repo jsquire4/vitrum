@@ -44,46 +44,11 @@ export const RIS_WGSL = /* wgsl */ `
 @group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
 @group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
 
-// Group 2: uniform buffer
-struct WalkaroundUBO {
-  viewMatrix:      mat4x4f,    //  offset 0
-  projMatrix:      mat4x4f,    //  offset 64
-  prevViewMatrix:  mat4x4f,    //  offset 128
-  cameraPos:       vec3f,      //  offset 192
-  frameSeed:       u32,        //  offset 204
-  screenSize:      vec2u,      //  offset 208
-  emitterCount:    u32,        //  offset 216
-  totalEmPower:    f32,        //  offset 220
-  sunDirection:    vec3f,      //  offset 224
-  sunIntensity:    f32,        //  offset 236
-  skyTint:         vec3f,      //  offset 240 — diffuse sky dome RGB
-  skyIrradiance:   f32,        //  offset 252 — sky dome brightness
-};
+// Group 2: uniform buffer (WalkaroundUBO struct defined in COMMON_WGSL)
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
-// ============================================================
-// Reservoir storage helpers (16 bytes per pixel in currentReservoir)
-// Layout: [lightId:u32, M:u32, w_sum_bits:u32, W_bits:u32]
-// ============================================================
-const RESERVOIR_DI_STRIDE = 4u;  // 4 x u32 per pixel
-
-fn loadReservoirDI(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) -> ReservoirDI {
-  let base = pixelIdx * RESERVOIR_DI_STRIDE;
-  var r: ReservoirDI;
-  r.lightId = buf[base + 0u];
-  r.M       = buf[base + 1u];
-  r.w_sum   = bitcast<f32>(buf[base + 2u]);
-  r.W       = bitcast<f32>(buf[base + 3u]);
-  return r;
-}
-
-fn storeReservoirDI(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32, r: ReservoirDI) {
-  let base = pixelIdx * RESERVOIR_DI_STRIDE;
-  buf[base + 0u] = r.lightId;
-  buf[base + 1u] = r.M;
-  buf[base + 2u] = bitcast<u32>(r.w_sum);
-  buf[base + 3u] = bitcast<u32>(r.W);
-}
+// Reservoir storage helpers (RESERVOIR_DI_STRIDE, loadReservoirDI_rw,
+// storeReservoirDI_rw) live in COMMON_WGSL.
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
 // they are prepended to RIS_WGSL at compile time (see
@@ -146,7 +111,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // Sky pixel -- write sky color directly to HDR output, empty reservoir.
     // skyTint × skyIrradiance from UBO (computeLightingState); replaces
     // hardcoded sky color.
-    storeReservoirDI(&currentReservoir, pixelIdx, emptyReservoirDI());
+    storeReservoirDI_rw(&currentReservoir, pixelIdx, emptyReservoirDI());
     let skyColor = ubo.skyTint * ubo.skyIrradiance;
     textureStore(hdrColorOut, gid.xy, vec4f(skyColor, 1.0));
     return;
@@ -218,6 +183,6 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  storeReservoirDI(&currentReservoir, pixelIdx, r);
+  storeReservoirDI_rw(&currentReservoir, pixelIdx, r);
 }
 `;

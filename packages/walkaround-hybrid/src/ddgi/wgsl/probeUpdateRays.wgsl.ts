@@ -8,15 +8,19 @@
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
 import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
+import { RAYS_PER_PROBE } from '../probeUpdatePass.js';
+
+const WG_SIZE = 32;
+const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
 
 export const PROBE_UPDATE_RAYS_WGSL = /* wgsl */`
 
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
 
-const WG_SIZE: u32       = 32u;
-const RAYS_PER_PROBE: u32  = 96u;
-const RAYS_PER_THREAD: u32 = 3u;   // 96 / 32
+const WG_SIZE: u32       = ${WG_SIZE}u;
+const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
+const RAYS_PER_THREAD: u32 = ${RAYS_PER_THREAD}u;   // RAYS_PER_PROBE / WG_SIZE
 const NORMAL_BIAS: f32     = 0.02;   // inches — push ray origin off surface
 const INFINITY: f32        = 1e20;
 const PI: f32              = 3.14159265359;

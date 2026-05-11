@@ -252,8 +252,6 @@ export function assertSvgfWebGPUBufferShapes(opts: SvgfWebGPUOptions): void {
   }
 }
 
-const TEMPORAL_VARIANCE_FRAME_THRESHOLD = 4;
-
 function warnMissingWelfordTemporal(frameCount: number): void {
   if (frameCount < SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT) return;
   if (typeof console === 'undefined' || typeof console.warn !== 'function') return;

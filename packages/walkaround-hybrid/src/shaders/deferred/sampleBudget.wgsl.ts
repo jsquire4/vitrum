@@ -24,10 +24,15 @@
  * sprint will insert this pass between the temporal accumulator and the next
  * RIS pass. See plan/sprint-9-walkaround-integration.md for wiring details.
  *
- * Dependencies: COMMON_WGSL (WelfordVariance struct, welfordVariance fn).
+ * Dependencies: WELFORD_VARIANCE_WGSL (canonical struct + helpers) is injected
+ * below; the shader string is self-contained for standalone validation. When
+ * concatenated alongside COMMON_WGSL the duplicate struct will collide, so use
+ * one or the other — not both.
  *
  * @version 1 (Sprint 9, 2026-05-09)
  */
+
+import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
 
 export const SAMPLE_BUDGET_WGSL = /* wgsl */ `
 
@@ -52,19 +57,8 @@ struct SampleBudgetUniforms {
 // Host writes this as part of the per-frame UBO update.
 @group(0) @binding(3) var<uniform>            u_sampleCount: u32;
 
-// ── WelfordVariance (inlined from COMMON_WGSL) ───────────────────────────────
-//
-// NOTE: In production use, this shader string is concatenated AFTER COMMON_WGSL
-// so WelfordVariance, welfordUpdate, and welfordVariance are available without
-// redeclaration. The inline copy below is for standalone validation only.
-// When concatenated, remove the struct/fn declarations marked [INLINE-COPY].
-
-// [INLINE-COPY] struct WelfordVariance { mean: f32, m2: f32, };
-
-// [INLINE-COPY] fn welfordVariance(state: WelfordVariance, n: u32) -> f32 {
-//   if (n < 2u) { return 0.0; }
-//   return state.m2 / f32(n - 1u);
-// }
+// ── WelfordVariance (canonical, injected from @vitrum/shared-denoisers) ─────
+${WELFORD_VARIANCE_WGSL}
 
 // ── Tier classification ───────────────────────────────────────────────────────
 

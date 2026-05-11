@@ -28,13 +28,12 @@
 
 import { useSelector } from 'react-redux';
 import { useRef, useEffect } from 'react';
-import * as THREE from 'three';
 import { ShapedAreaLight, ShapedAreaLightImpl } from '@react-three/gpu-pathtracer';
 import { selectActiveTimeOfDay } from '@/store/selectors';
 import type { SunLight } from '../lightSourceTypes';
 import { resolveColorHex } from '../lightSourceTypes';
 import { getSunIntensity } from '../../lightingIntensityTable';
-import { worldSunPosition, skyParamsFor, SUN_LIGHT_DISTANCE } from '../../skyParams';
+import { worldSunPosition, skyParamsFor } from '../../skyParams';
 
 interface Props {
   src: SunLight;
@@ -145,8 +144,3 @@ export function SunPathTraced({ src }: Props) {
 // Re-export the constants so PT_IBL_INTENSITY recalibration can
 // reference them (Phase 1.3).
 export { PT_SUN_DISTANCE, PT_SUN_DISC_DIAMETER, PT_SUN_AREA_INTENSITY, SUN_ANGULAR_RADIUS };
-
-// Reserved for future use. Currently SUN_LIGHT_DISTANCE is consumed
-// only by SunRenderer (raster directional). PT path uses PT_SUN_DISTANCE.
-void SUN_LIGHT_DISTANCE;
-void THREE;

@@ -33,54 +33,13 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 @group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
 @group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
 
-struct WalkaroundUBO {
-  viewMatrix:      mat4x4f,
-  projMatrix:      mat4x4f,
-  prevViewMatrix:  mat4x4f,
-  cameraPos:       vec3f,
-  frameSeed:       u32,
-  screenSize:      vec2u,
-  emitterCount:    u32,
-  totalEmPower:    f32,
-  sunDirection:    vec3f,
-  sunIntensity:    f32,
-  skyTint:         vec3f,      // diffuse sky dome RGB
-  skyIrradiance:   f32,        // sky dome brightness
-};
+// WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
-const RESERVOIR_DI_STRIDE = 4u;
+// RESERVOIR_DI_STRIDE / loadReservoirDI_{rw,ro} / storeReservoirDI_rw live in COMMON_WGSL.
 const M_CLAMP = 20u;
 
-fn loadReservoirDI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) -> ReservoirDI {
-  let base = pixelIdx * RESERVOIR_DI_STRIDE;
-  return ReservoirDI(buf[base], buf[base+1u], bitcast<f32>(buf[base+2u]), bitcast<f32>(buf[base+3u]));
-}
-fn loadReservoirDI_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> ReservoirDI {
-  let base = pixelIdx * RESERVOIR_DI_STRIDE;
-  return ReservoirDI(buf[base], buf[base+1u], bitcast<f32>(buf[base+2u]), bitcast<f32>(buf[base+3u]));
-}
-fn storeReservoir_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32, r: ReservoirDI) {
-  let base = pixelIdx * RESERVOIR_DI_STRIDE;
-  buf[base] = r.lightId; buf[base+1u] = r.M;
-  buf[base+2u] = bitcast<u32>(r.w_sum); buf[base+3u] = bitcast<u32>(r.W);
-}
-
-// PrimarySurface — what we know about the surface a pixel sees, derived
-// from re-casting that pixel's primary ray through the BVH.  Replaces the
-// pre-fix placeholder G-buffer reads (which returned a constant value for
-// all pixels and made the similarity gate a no-op).
-struct PrimarySurface {
-  hit:    bool,
-  pos:    vec3f,
-  normal: vec3f,
-  wo:     vec3f,
-  albedo: vec3f,
-  rough:  f32,
-  metal:  f32,
-  depth:  f32,
-};
-
+// PrimarySurface struct defined in COMMON_WGSL.
 fn castPrimary_t(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> PrimarySurface {
   var s: PrimarySurface;
   let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, camPos, invVP);
@@ -153,7 +112,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   let curSurf = castPrimary_t(gid.xy, dims, ubo.cameraPos, invVP);
   if (!curSurf.hit) {
     // Sky pixel — nothing to project; pass-through.
-    storeReservoir_rw(&currentReservoir, pixelIdx, cur);
+    storeReservoirDI_rw(&currentReservoir, pixelIdx, cur);
     return;
   }
 
@@ -163,7 +122,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   // sent prevPx far off-screen for ~half of the frame.
   let prevPx = reprojectToPrev(curSurf.pos, dims);
   if (any(prevPx < vec2i(0)) || any(prevPx >= vec2i(dims))) {
-    storeReservoir_rw(&currentReservoir, pixelIdx, cur);
+    storeReservoirDI_rw(&currentReservoir, pixelIdx, cur);
     return;
   }
 
@@ -194,6 +153,6 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   let pHatZ = computePHat_t(combined.lightId, curSurf);
   combined.W = select(0.0, combined.w_sum / (f32(combined.M) * pHatZ), pHatZ > 0.0);
 
-  storeReservoir_rw(&currentReservoir, pixelIdx, combined);
+  storeReservoirDI_rw(&currentReservoir, pixelIdx, combined);
 }
 `;

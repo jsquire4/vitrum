@@ -20,8 +20,8 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
-import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
-import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
+import { SAMPLE_BUDGET_WGSL } from '../src/shaders/deferred/sampleBudget.wgsl.js';
+import { RESOLVE_WGSL } from '../src/shaders/deferred/resolve.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { createVarianceBuffer, createFrameResources } from '../src/pipeline/resourceManager.js';
 

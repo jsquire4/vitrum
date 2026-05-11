@@ -174,15 +174,12 @@ export function buildAccumBindGroup(
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
-  // varianceK: 1.5 — std-dev multiplier for the temporal-history clamp box.
-  // Karis recommends k=1 in his original temporal-AA writeup; 1.5 is a small
-  // relaxation that lets stable samples blend more smoothly without
-  // re-introducing sparkle/cross-talk at edges. Higher = more history weight
-  // (more smoothing, more sparkle risk), lower = stricter clamp (sharper
-  // edges, more noise).
+  // AccumUBO is now {alpha, _pad1, _pad2, _pad3} — the temporal accum shader
+  // uses an AABB clamp on the 3×3 neighborhood (not k·std_dev), so the former
+  // varianceK slot is unused padding.
   device.queue.writeBuffer(
     uboRef.buf, 0,
-    new Float32Array([alpha, 1.5, 0, 0]),
+    new Float32Array([alpha, 0, 0, 0]),
   );
   return device.createBindGroup({
     label: 'accum-bg',

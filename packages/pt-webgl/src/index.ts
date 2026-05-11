@@ -64,7 +64,6 @@ export {
   decodeHdrAccumGoldenBin,
   hdrAccumGoldenBinFromBase64,
 } from './hdrGoldenFixture.js';
-export { vitrumSceneToThree } from '@vitrum/three-bindings';
 export { applyFrameToPerspectiveCamera } from './frameCamera.js';
 export { packCameUBO } from './cameUniformUploader.js';
 export type { CameSegment, CameNode, CameUploadOptions, CamePackedUBO } from './cameUniformUploader.js';

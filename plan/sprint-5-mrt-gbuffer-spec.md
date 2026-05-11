@@ -22,11 +22,15 @@ Three `WebGLMultipleRenderTargets` texture slots, allocated at engine creation
 
 ### `gNormalDepth` (location 1, RGBA16F)
 
-- **`.rgb` — world-space normal (uncompressed)**  
-  Raw Cartesian unit vector in world space as output by the primary-hit surface
-  record.  Components are in [-1, 1].  NOT octahedral-encoded in Sprint 5
-  (octahedral encoding is a Sprint 9/10a consideration when bandwidth becomes
-  critical — see note below).
+- **`.rgb` — world-space normal (encoded to [0, 1])**  
+  Cartesian unit vector in world space encoded as `(n * 0.5 + 0.5)` by the
+  primary-hit surface record (see `packages/walkaround-hybrid/src/shaders/shade.wgsl.ts`,
+  the `textureStore(gNormalDepthOut, ..., vec4f(normal * 0.5 + 0.5, depthSigned))` write).
+  All consumers MUST decode with `xyz * 2.0 - 1.0` before use; see
+  `atrous.wgsl.ts` and `spatialFilter.wgsl.ts` for the canonical decode pattern.
+  Sky/miss pixels are encoded as `vec3f(0.5, 1.0, 0.5)` which decodes to `(0, 1, 0)` (world-up).
+  NOT octahedral-encoded in Sprint 5 (octahedral encoding is a Sprint 9/10a
+  consideration when bandwidth becomes critical — see note below).
 
 - **`.w` — linear depth (camera-space, always positive)**  
   `linearDepth = -dot(hitPoint_cameraSpace, forwardVec_cameraSpace)`.

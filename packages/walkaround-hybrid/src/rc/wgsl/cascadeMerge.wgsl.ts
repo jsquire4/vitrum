@@ -93,7 +93,7 @@ fn trilinearSampleUpper(
 // TSL instanceIndex → @builtin(global_invocation_id) globalId, index = globalId.x.
 
 @compute @workgroup_size(64)
-fn cascadeMergeKernel(@builtin(global_invocation_id) globalId: vec3u) -> void {
+fn cascadeMergeKernel(@builtin(global_invocation_id) globalId: vec3u) {
   let index = globalId.x;
   let uMerge = rc_m_arr[0];
   let totalLower   = uMerge.lowerProbeCount.x * uMerge.lowerProbeCount.y * uMerge.lowerProbeCount.z;

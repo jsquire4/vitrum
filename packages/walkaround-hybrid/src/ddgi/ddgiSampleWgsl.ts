@@ -130,8 +130,9 @@ fn ddgiSample(
   }
 
   if (totalWeight < 1e-4) {
-    // No probes contributed — return neutral grey indirect.
-    return vec3f(0.05);
+    // No probes contributed — return zero indirect (conservative, matches
+    // shade.wgsl ddgiSampleFromBindings; was vec3f(0.05) prior to consolidation).
+    return vec3f(0.0);
   }
   return sum / totalWeight;
 }

@@ -21,9 +21,6 @@ import {
   OCTAHEDRAL_CORE_WGSL,
 } from '@vitrum/shared-samplers';
 
-/** @deprecated Import {@link OCTAHEDRAL_CORE_WGSL} from `@vitrum/shared-samplers`. */
-export const OCTAHEDRAL_WGSL = OCTAHEDRAL_CORE_WGSL;
-
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export { summarizeScene };
 export type { SceneSummary };

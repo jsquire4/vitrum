@@ -11,6 +11,7 @@
 export const PT_WEBGPU_COMMON_WGSL = /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
+const INV_2PI = 0.15915494309189535;
 const INFINITY = 1e20;
 const TRI_INTERSECT_EPSILON = 1e-5;
 
