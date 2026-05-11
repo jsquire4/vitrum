@@ -189,6 +189,8 @@ async function main(): Promise<void> {
     const len = Math.hypot(raw[0], raw[1], raw[2]);
     const primaryLightDir: [number, number, number] = [raw[0] / len, raw[1] / len, raw[2] / len];
 
+    // Expose the device + engine on window for the diagnostic probe.
+    (globalThis as unknown as { __vitrumDevice: GPUDevice; __vitrumWalkaround?: unknown }).__vitrumDevice = device;
     const hybrid = await createWalkaroundEngine_Hybrid({
       device,
       width: canvasWgpu.width,
@@ -200,6 +202,7 @@ async function main(): Promise<void> {
       skyIrradiance: 0.35,
       isSceneReady: () => true,
     });
+    (globalThis as unknown as { __vitrumWalkaround: typeof hybrid }).__vitrumWalkaround = hybrid;
     hybrid.setScene(vitrumScene);
 
     const ready = await waitEngineReady(hybrid, 45_000);

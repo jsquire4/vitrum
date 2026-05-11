@@ -80,6 +80,7 @@ import {
   disposeTimestampState,
   makeTimestampState,
   buildPassLayout,
+  readTimestampsOnce,
   type TimestampState,
   type PassLabel,
   type PassLayout,
@@ -279,6 +280,23 @@ export class WalkaroundGPUPipeline {
     this._device = device;
     this._width  = width;
     this._height = height;
+  }
+
+  /**
+   * Diagnostic one-shot timestamp readback (P3-Vδ). Bypasses the ping-pong
+   * fire-and-forget infrastructure and synchronously awaits a fresh staging
+   * buffer's mapAsync. Returns per-pass timings + the raw BigInt pairs so
+   * dev panels and validation harnesses can confirm whether timestamps are
+   * landing in the queryset. Cheap to call (one extra encoder + buffer per
+   * invocation) — fine to drive from a 1-Hz telemetry probe.
+   */
+  async readGpuTimingsOnce(): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
+    if (!this._initialized) return { perPass: {}, rawBigints: [] };
+    const layout = buildPassLayout({
+      ppgEnabled: this._ppgEnabled,
+      denoiserMode: this._denoiserMode === 'svgf' ? 'svgf' : 'atrous',
+    });
+    return readTimestampsOnce(this._device, this._tsState, layout);
   }
 
   /**

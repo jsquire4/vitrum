@@ -271,6 +271,55 @@ export function resolveTimestamps(
 }
 
 /**
+ * Synchronous diagnostic readback: creates a fresh staging buffer, copies
+ * the current resolveBuffer into it, awaits the mapAsync, returns the
+ * decoded per-pass timings. Bypasses the ping-pong infrastructure entirely.
+ *
+ * Used by the validation harness to confirm whether timestamps are landing
+ * in the queryset at all (vs the production fire-and-forget path's
+ * readback that may have a state-flow gap).
+ */
+export async function readTimestampsOnce(
+  device: GPUDevice,
+  state: TimestampState,
+  layout: PassLayout,
+): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
+  if (!state.querySet || !state.resolveBuffer) {
+    return { perPass: {}, rawBigints: [] };
+  }
+  const size = layout.slotCount * 2 * 8;
+  const readback = device.createBuffer({
+    label: 'timestamp-readback-debug',
+    size,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const encoder = device.createCommandEncoder({ label: 'timestamp-readback-debug' });
+  encoder.resolveQuerySet(state.querySet, 0, layout.slotCount * 2, state.resolveBuffer, 0);
+  encoder.copyBufferToBuffer(state.resolveBuffer, 0, readback, 0, size);
+  device.queue.submit([encoder.finish()]);
+  await readback.mapAsync(GPUMapMode.READ);
+  const view = new BigInt64Array(readback.getMappedRange().slice(0));
+  readback.unmap();
+  readback.destroy();
+
+  const perPass: Record<string, number> = {};
+  const rawBigints: string[] = [];
+  let total = 0;
+  for (let i = 0; i < layout.slotCount; i++) {
+    const begin = view[i * 2] ?? 0n;
+    const end = view[i * 2 + 1] ?? 0n;
+    rawBigints.push(`${String(begin)}/${String(end)}`);
+    if (end <= begin) continue;
+    const ms = Number(end - begin) * state.periodNs / 1_000_000;
+    const label = layout.labels[i];
+    if (label) perPass[label] = +ms.toFixed(3);
+    total += ms;
+  }
+  perPass['total'] = +total.toFixed(3);
+  return { perPass, rawBigints };
+}
+
+/**
  * Destroy all timestamp query GPU resources. Skips mapped buffers
  * (mapped buffers can't be destroy()'d; the GC reclaims them when
  * their mapped range goes out of scope).

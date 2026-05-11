@@ -298,24 +298,27 @@ export function buildSVGFVarianceBindGroup(
   device: GPUDevice,
   variancePipeline: GPUComputePipeline,
   hdrColor: GPUTextureView,
-  prevAccum: GPUTextureView,
-  gNormalDepth: GPUTextureView,
-  motionVectors: GPUTextureView,
+  _prevAccum: GPUTextureView,
+  _gNormalDepth: GPUTextureView,
+  _motionVectors: GPUTextureView,
   welfordWrite: GPUTextureView,
   varianceEstimate: GPUTextureView,
   ubo: GPUBuffer,
 ): GPUBindGroup {
+  // The svgf-variance kernel reads only inputColor (0), varianceIn (5),
+  // and writes varianceOut (6) + reads varUBO (7). Bindings 1..4 are
+  // DECLARED in the WGSL but UNREFERENCED by the kernel body — Dawn's
+  // `layout: 'auto'` drops unreferenced bindings, so trying to bind
+  // them yields "binding index N not present in the bind group layout"
+  // and the whole command buffer is rejected. The trailing `_` params
+  // are preserved so existing callers keep compiling without churn;
+  // a future cleanup can shrink the signature when the SVGF spatial
+  // term grows to actually consume those buffers.
   return device.createBindGroup({
     label: 'svgf-variance-bg',
     layout: variancePipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: hdrColor },
-      { binding: 1, resource: prevAccum },
-      // svgf-variance reads the G-buffer twice: once for normal (.xyz),
-      // once for depth (.w). Both slots point at the same texture.
-      { binding: 2, resource: gNormalDepth },
-      { binding: 3, resource: gNormalDepth },
-      { binding: 4, resource: motionVectors },
       { binding: 5, resource: welfordWrite },
       { binding: 6, resource: varianceEstimate },
       { binding: 7, resource: { buffer: ubo } },

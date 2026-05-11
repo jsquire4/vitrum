@@ -221,6 +221,22 @@ export class HybridEngine implements Engine {
     return p?.lastGpuTimingsFrame ?? -1;
   }
 
+  /**
+   * Diagnostic one-shot GPU timing readback (P3-Vδ). Bypasses the
+   * production fire-and-forget ping-pong path and synchronously awaits a
+   * fresh staging-buffer mapAsync. Use this from telemetry probes that
+   * need a confirmed-fresh per-pass timing snapshot. Returns empty
+   * objects when the engine isn't ready or the device lacks the
+   * `timestamp-query` feature.
+   */
+  async readGpuTimingsOnce(): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
+    const p = this._pipeline as unknown as {
+      readGpuTimingsOnce?: () => Promise<{ perPass: Record<string, number>; rawBigints: string[] }>;
+    } | null;
+    if (!p?.readGpuTimingsOnce) return { perPass: {}, rawBigints: [] };
+    return p.readGpuTimingsOnce();
+  }
+
   // ── Sprint 11 — PPG state ──────────────────────────────────────────────
   /**
    * Whether PPG buffers are allocated. Set at construction from
