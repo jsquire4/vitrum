@@ -20,7 +20,7 @@ Read in this order to onboard:
 
 ## What's done
 
-- **Sprint 0 – Sprint 13**: Phase 6 library work complete through Sprint 13. All 542 tests pass; `tsc --noEmit` clean across workspace.
+- **Sprint 0 – Sprint 13**: Phase 6 library work complete through Sprint 13. All 661 tests pass (3 skipped — intentional GPU-only paths); `tsc --noEmit` clean across workspace.
 - **Packages fully implemented**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (SVGF, OIDN bridge), `pt-webgl` (wraps three-gpu-pathtracer fork), `walkaround-hybrid` (DDGI + RC + ReSTIR + PPG + neural denoiser scaffold).
 - **Extraction complete**: `_staging/legacy-source/` contains only host-app React/Redux files that are intentionally not extracted (see `_staging/README.md`).
 - **External RFEs 01–05**: contract-layer additions to `@vitrum/core` complete.

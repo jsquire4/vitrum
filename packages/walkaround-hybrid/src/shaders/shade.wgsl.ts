@@ -48,9 +48,9 @@ const DDGI_DIFFUSE_BLEND: f32 = 1.0;
 // DDGI bind group (group 3). Atlas + sampler + grid params UBO bound
 // here; shade reads via ddgiSampleFromBindings. isDDGIWired() checks
 // the placeholder sentinel (dimsX==1 means no real grid bound).
-// NOTE: combined-sum currently EXCLUDES Lo_ddgi as of the per-color
-// asymmetry fix — see the combined-sum comment at the bottom of
-// shadeMain. The DDGI binding stays plumbed for future re-enable.
+// Combined-sum INCLUDES Lo_ddgi at DDGI_DIFFUSE_BLEND = 1.0, gated on
+// non-glass surfaces only and on isDDGIWired() — see the combined-sum
+// statement at the bottom of shadeMain.
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
 @group(3) @binding(2) var ddgiSampler:    sampler;

@@ -27,18 +27,6 @@
 import * as THREE from 'three';
 import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
 
-/**
- * Apply Beer-Lambert through-medium attenuation to a glass material's
- * authored attenuationColor. Returns the color a viewer would see after
- * sun-radiance passes through one panel thickness — i.e. PT's transmitted
- * radiance at normal incidence (modulo fresnel).
- *
- *   tinted = pow(attenuationColor, thickness / attenuationDistance)
- *
- * Returns the original color when thickness or attenuationDistance is
- * missing/non-finite — preserves legacy behavior for materials that
- * haven't yet adopted physical thickness.
- */
 // Packing helpers (applyBeerLambert, packUVIntoPositionW, packBVHIndexW,
 // packBVHBeerColors) live in restir/packingHelpers.ts.
 // Emitter list construction lives in restir/emitterList.ts.

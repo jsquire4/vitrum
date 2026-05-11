@@ -215,7 +215,6 @@ export class HybridEngine implements Engine {
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
   private _bvhBuffers:  SceneBVHBuffers | null       = null;
-  private _pipelineReady                             = false;
 
   // ── Scene (from @vitrum/core contract) ────────────────────────────────
   /** Last scene passed via `setScene()`. When it contains `mesh` primitives,
@@ -669,7 +668,6 @@ export class HybridEngine implements Engine {
   }
 
   private _teardownPipeline(): void {
-    this._pipelineReady = false;
     if (this._pipeline) {
       this._pipeline.dispose();
       this._pipeline = null;
@@ -787,7 +785,6 @@ export class HybridEngine implements Engine {
         this._ddgi.pass.setSunIntensityMultiplier(this._primaryLightIntensity);
 
         this._pipeline     = pipeline;
-        this._pipelineReady = true;
         this._state        = 'ready';
 
         if (this._debug) {
