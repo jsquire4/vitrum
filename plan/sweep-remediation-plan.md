@@ -2070,3 +2070,7 @@ These files were read in full and found to be clean, single-purpose, and well-st
 **@vitrum/walkaround-hybrid:** `ddgi/types.ts`, `ddgiAtlasLayout.ts`, `DDGI.ts`, `probeGrid.ts`, `lib/nodeMaterialUpgrade.ts`, `hostScene/types.ts`, `ppg/types.ts`, `ppg/ppgCellUpload.ts`, `neural/wgsl/` (all 5 kernels), `pipeline/bindGroupLayouts.ts`, `pipeline/bindGroupBuilders.ts`, `pipeline/pipelineCompiler.ts`, `pipeline/resourceManager.ts`, `pipeline/timestampQueries.ts`, `pipeline/uboUpdater.ts`, `shaders/composite.wgsl.ts`, `shaders/welfordTemporal.wgsl.ts`  
 **Examples/Tools:** `examples/shared/`, `scripts/run-fork-shader-smoke.mjs`, `tools/benchmark-runner/scenario-presets.mjs`  
 **Legacy:** `PTDeviceLostBoundary.tsx`, `PTPostProcessing.tsx`, `cameraLookPresets.ts`, `usePTPipelineConfig.ts`, `usePTSampleTarget.ts`, `outdoorHdri.ts`, `outdoorScenePresets.ts`, `engineRegistry.ts`, `WalkaroundDebugBridge.tsx`, `walkaroundBridgeTypes.ts`, `lib/useSceneBVH.ts`
+
+---
+
+Full remediation complete on 2026-05-11 — repo confirmed clean by two-pass sweep + audit.
