@@ -132,25 +132,31 @@ class PTEngineWebGPU implements Engine {
    * exact offsets. Callers must have already validated that #sceneBuffers
    * is non-null (renderFrame's preconditions handle this).
    *
-   * Slot index reference (u32 slots 0..11, then f32 from 12..127):
-   *   u32 0..1   width, height
-   *   u32 2..3   frameIndex, frameSeed
-   *   u32 4..11  triangleCount, activeBounces, bvhNodeCount, analyticCount,
-   *              pointLightCount, spotLightCount, rectAreaLightCount,
-   *              meshAreaLightCount
-   *   f32 12..15 cameraPosition (xyz) + 1.0 padding
-   *   f32 16..19 directionalLight (xyz) + avg irradiance
-   *   f32 20..27 point light (pos + has flag, radiance + avg)
-   *   f32 28..38 spot light (pos, dir, cosAngle, radiance)
-   *   f32 39     caustic strategy code (0=none, 1=manifold-nee, 2=photon-map)
-   *   f32 40..47 environment (tint xyz + hasMap, sun dir xyz + sun strength)
-   *   f32 48..63 rect area light (pos+hasFlag, U+mneeMaxIterations,
-   *              V+mneeMaxChainLength, radiance+hasFlag)
-   *   f32 64..79 mesh area light tri A/B/C (each w-packed with hasFlag or
-   *              HDRI dimensions per the .w-packing convention)
-   *   f32 80..95 invVP matrix
-   *   f32 96..111 VP matrix
-   *   f32 112..127 prev-frame VP matrix
+   * Layout (336 bytes used out of a 512-byte buffer; trailing bytes are zero):
+   *
+   *   u32 slot 0..1   width, height
+   *   u32 slot 2..3   frameIndex, frameSeed
+   *   u32 slot 4..7   triangleCount, activeBounces, bvhNodeCount, analyticCount
+   *   u32 slot 8..11  pointLightCount, spotLightCount, rectAreaLightCount,
+   *                   meshAreaLightCount
+   *   u32 slot 12..13 mneeMaxIterations, mneeMaxChainLength
+   *   u32 slot 14..15 hasEnvironmentMap (0/1), causticStrategy
+   *                   (0=none, 1=manifold-nee, 2=photon-map)
+   *   u32 slot 16..17 environmentMapWidth, environmentMapHeight
+   *   u32 slot 18..19 _pad0, _pad1   (zero; reserved)
+   *
+   *   f32 slot 20..23 cameraPos.xyz + 1.0
+   *   f32 slot 24..27 lightDir.xyz + averageDirectionalIrradiance
+   *   f32 slot 28..31 environmentTint.xyz + 0   (.w unused, write 0)
+   *   f32 slot 32..35 environmentSun.xyz (sun dir) + sun strength
+   *
+   *   f32 slot 36..51 invViewProj (mat4x4f, 16 floats)
+   *   f32 slot 52..67 viewProj    (mat4x4f, 16 floats)
+   *   f32 slot 68..83 prevViewProj(mat4x4f, 16 floats)
+   *
+   * Per-light data lives in dedicated storage buffers at bind slots 20..23;
+   * see `packEmitterArrays` for the layout (8 f32 / point light, 12 / spot,
+   * 16 / rect-area, 16 / mesh-area).
    */
   #buildParamsBuffer(input: FrameInput, width: number, height: number): ArrayBuffer {
     const sb = this.#sceneBuffers!;
@@ -177,100 +183,46 @@ class PTEngineWebGPU implements Engine {
     paramsU32[9] = sb.spotLightCount >>> 0;
     paramsU32[10] = sb.rectAreaLightCount >>> 0;
     paramsU32[11] = sb.meshAreaLightCount >>> 0;
-    paramsF32[12] = input.cameraPosition[0];
-    paramsF32[13] = input.cameraPosition[1];
-    paramsF32[14] = input.cameraPosition[2];
-    paramsF32[15] = 1;
-    paramsF32[16] = sb.directionalLight[0];
-    paramsF32[17] = sb.directionalLight[1];
-    paramsF32[18] = sb.directionalLight[2];
-    paramsF32[19] =
-      (sb.directionalIrradiance[0] +
-        sb.directionalIrradiance[1] +
-        sb.directionalIrradiance[2]) /
-      3;
-    paramsF32[20] = sb.pointLightPosition[0];
-    paramsF32[21] = sb.pointLightPosition[1];
-    paramsF32[22] = sb.pointLightPosition[2];
-    paramsF32[23] = sb.hasPointLight ? 1 : 0;
-    paramsF32[24] = sb.pointLightRadiance[0];
-    paramsF32[25] = sb.pointLightRadiance[1];
-    paramsF32[26] = sb.pointLightRadiance[2];
-    paramsF32[27] = sb.hasPointLight
-      ? (sb.pointLightRadiance[0] +
-          sb.pointLightRadiance[1] +
-          sb.pointLightRadiance[2]) /
-        3
-      : 0;
-    paramsF32[28] = sb.spotLightPosition[0];
-    paramsF32[29] = sb.spotLightPosition[1];
-    paramsF32[30] = sb.spotLightPosition[2];
-    paramsF32[31] = sb.hasSpotLight ? 1 : 0;
-    paramsF32[32] = sb.spotLightDirection[0];
-    paramsF32[33] = sb.spotLightDirection[1];
-    paramsF32[34] = sb.spotLightDirection[2];
-    paramsF32[35] = sb.spotLightCosAngle;
-    paramsF32[36] = sb.spotLightRadiance[0];
-    paramsF32[37] = sb.spotLightRadiance[1];
-    paramsF32[38] = sb.spotLightRadiance[2];
-    paramsF32[39] =
+    paramsU32[12] = this.#mneeMaxIterations >>> 0;
+    paramsU32[13] = this.#mneeMaxChainLength >>> 0;
+    paramsU32[14] = sb.hasEnvironmentMap ? 1 : 0;
+    paramsU32[15] =
       this.#causticStrategy === 'manifold-nee'
         ? 1
         : this.#causticStrategy === 'photon-map'
           ? 2
           : 0;
-    paramsF32[40] = sb.environmentTint[0];
-    paramsF32[41] = sb.environmentTint[1];
-    paramsF32[42] = sb.environmentTint[2];
-    paramsF32[43] = sb.hasEnvironmentMap ? 1 : 0;
-    paramsF32[44] = sb.environmentSunDirection[0];
-    paramsF32[45] = sb.environmentSunDirection[1];
-    paramsF32[46] = sb.environmentSunDirection[2];
-    paramsF32[47] = sb.environmentSunStrength;
-    paramsF32[48] = sb.rectAreaPosition[0];
-    paramsF32[49] = sb.rectAreaPosition[1];
-    paramsF32[50] = sb.rectAreaPosition[2];
-    paramsF32[51] = sb.hasRectAreaLight ? 1 : 0;
-    paramsF32[52] = sb.rectAreaUAxis[0];
-    paramsF32[53] = sb.rectAreaUAxis[1];
-    paramsF32[54] = sb.rectAreaUAxis[2];
-    paramsF32[55] = this.#mneeMaxIterations;
-    paramsF32[56] = sb.rectAreaVAxis[0];
-    paramsF32[57] = sb.rectAreaVAxis[1];
-    paramsF32[58] = sb.rectAreaVAxis[2];
-    paramsF32[59] = this.#mneeMaxChainLength;
-    paramsF32[60] = sb.rectAreaRadiance[0];
-    paramsF32[61] = sb.rectAreaRadiance[1];
-    paramsF32[62] = sb.rectAreaRadiance[2];
-    paramsF32[63] = sb.hasRectAreaLight ? 1 : 0;
-    paramsF32[64] = sb.meshAreaTriA[0];
-    paramsF32[65] = sb.meshAreaTriA[1];
-    paramsF32[66] = sb.meshAreaTriA[2];
-    paramsF32[67] = sb.hasMeshAreaLight ? 1 : 0;
-    paramsF32[68] = sb.meshAreaTriB[0];
-    paramsF32[69] = sb.meshAreaTriB[1];
-    paramsF32[70] = sb.meshAreaTriB[2];
-    // Slot 71: HDRI environment-map width. Packed into the .w lane of
-    // meshAreaTriB (otherwise unused — meshAreaTri positions are vec3) to
-    // save UBO space. WGSL reads this via params.meshAreaTriB.w; see
-    // pathTraceBruteforce.wgsl.ts environmentDimensions().
-    paramsF32[71] = sb.environmentMapWidth;
-    paramsF32[72] = sb.meshAreaTriC[0];
-    paramsF32[73] = sb.meshAreaTriC[1];
-    paramsF32[74] = sb.meshAreaTriC[2];
-    // Slot 75: HDRI environment-map height — same .w-packing convention.
-    paramsF32[75] = sb.environmentMapHeight;
-    paramsF32[76] = sb.meshAreaRadiance[0];
-    paramsF32[77] = sb.meshAreaRadiance[1];
-    paramsF32[78] = sb.meshAreaRadiance[2];
-    paramsF32[79] = sb.hasMeshAreaLight ? 1 : 0;
-    paramsF32.set(invVp, 80); // byte 320 = 12×u32 + 17×vec4f before matrices
-    paramsF32.set(vp, 96);
+    paramsU32[16] = sb.environmentMapWidth >>> 0;
+    paramsU32[17] = sb.environmentMapHeight >>> 0;
+    // Slots 18..19 are padding; the underlying ArrayBuffer is already
+    // zero-initialized so we leave them as-is.
+    paramsF32[20] = input.cameraPosition[0];
+    paramsF32[21] = input.cameraPosition[1];
+    paramsF32[22] = input.cameraPosition[2];
+    paramsF32[23] = 1;
+    paramsF32[24] = sb.directionalLight[0];
+    paramsF32[25] = sb.directionalLight[1];
+    paramsF32[26] = sb.directionalLight[2];
+    paramsF32[27] =
+      (sb.directionalIrradiance[0] +
+        sb.directionalIrradiance[1] +
+        sb.directionalIrradiance[2]) /
+      3;
+    paramsF32[28] = sb.environmentTint[0];
+    paramsF32[29] = sb.environmentTint[1];
+    paramsF32[30] = sb.environmentTint[2];
+    paramsF32[31] = 0;
+    paramsF32[32] = sb.environmentSunDirection[0];
+    paramsF32[33] = sb.environmentSunDirection[1];
+    paramsF32[34] = sb.environmentSunDirection[2];
+    paramsF32[35] = sb.environmentSunStrength;
+    paramsF32.set(invVp, 36);
+    paramsF32.set(vp, 52);
     const prevVp = multiplyMat4(
       input.prevProjMatrix ?? input.projMatrix,
       input.prevViewMatrix ?? input.viewMatrix,
     );
-    paramsF32.set(prevVp, 112);
+    paramsF32.set(prevVp, 68);
     return paramsArrayBuffer;
   }
 

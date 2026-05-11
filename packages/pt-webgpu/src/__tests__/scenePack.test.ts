@@ -65,7 +65,7 @@ describe('buildPackedScene', () => {
     expect(packed.materials[9]).toBeCloseTo(1.5);
     expect(packed.materials[10]).toBeCloseTo(0.0);
     expect(packed.materials[11]).toBeCloseTo(0.0);
-    expect(packed.hasPointLight).toBe(false);
+    expect(packed.pointLightCount).toBe(0);
     expect(packed.environmentSunStrength).toBe(0);
   });
 
@@ -101,9 +101,13 @@ describe('buildPackedScene', () => {
     };
 
     const packed = buildPackedScene(scene);
-    expect(packed.hasRectAreaLight).toBe(true);
-    expect(packed.rectAreaPosition).toEqual([0, 1, 0]);
-    expect(packed.rectAreaRadiance[0]).toBeCloseTo(10);
+    expect(packed.rectAreaLightCount).toBe(1);
+    // rect-area light slot 0 vec4 layout: [position.xyz, _], [uAxis.xyz, _],
+    // [vAxis.xyz, _], [radiance.rgb, _] (stride 16 floats).
+    expect(packed.rectAreaLightsData[0]).toBeCloseTo(0);
+    expect(packed.rectAreaLightsData[1]).toBeCloseTo(1);
+    expect(packed.rectAreaLightsData[2]).toBeCloseTo(0);
+    expect(packed.rectAreaLightsData[12]).toBeCloseTo(10);
     expect(packed.warnings.some((w) => w.includes('rect-area'))).toBe(false);
     expect(packed.hasEnvironmentMap).toBe(true);
     expect(packed.environmentMapWidth).toBe(2);
@@ -132,20 +136,24 @@ describe('buildPackedScene', () => {
     };
 
     const packed = buildPackedScene(scene);
-    expect(packed.hasRectAreaLight).toBe(true);
-    expect(packed.rectAreaPosition).toEqual([0, 3, 0]);
-    const ux = packed.rectAreaUAxis[0];
-    const uy = packed.rectAreaUAxis[1];
-    const uz = packed.rectAreaUAxis[2];
-    const vx = packed.rectAreaVAxis[0];
-    const vy = packed.rectAreaVAxis[1];
-    const vz = packed.rectAreaVAxis[2];
+    expect(packed.rectAreaLightCount).toBe(1);
+    // Slot 0 [0..2] = position.xyz
+    expect(packed.rectAreaLightsData[0]).toBeCloseTo(0);
+    expect(packed.rectAreaLightsData[1]).toBeCloseTo(3);
+    expect(packed.rectAreaLightsData[2]).toBeCloseTo(0);
+    // Slot 0 vec4 layout: [pos,_], [uAxis,_], [vAxis,_], [radiance,_]
+    const ux = packed.rectAreaLightsData[4] ?? 0;
+    const uy = packed.rectAreaLightsData[5] ?? 0;
+    const uz = packed.rectAreaLightsData[6] ?? 0;
+    const vx = packed.rectAreaLightsData[8] ?? 0;
+    const vy = packed.rectAreaLightsData[9] ?? 0;
+    const vz = packed.rectAreaLightsData[10] ?? 0;
     const cx = uy * vz - uz * vy;
     const cy = uz * vx - ux * vz;
     const cz = ux * vy - uy * vx;
     const parallelogramArea = 4 * Math.sqrt(cx * cx + cy * cy + cz * cz);
     expect(parallelogramArea).toBeCloseTo(Math.PI * r * r, 5);
-    expect(packed.rectAreaRadiance[0]).toBeCloseTo(2);
+    expect(packed.rectAreaLightsData[12]).toBeCloseTo(2);
     expect(packed.warnings.some((w) => w.includes('ignored'))).toBe(false);
   });
 
@@ -165,11 +173,14 @@ describe('buildPackedScene', () => {
       ],
     };
     const packed = buildPackedScene(scene);
-    expect(packed.hasPointLight).toBe(true);
-    expect(packed.pointLightPosition).toEqual([2, 3, 4]);
-    expect(packed.pointLightRadiance[0]).toBeCloseTo(4);
-    expect(packed.pointLightRadiance[1]).toBeCloseTo(8);
-    expect(packed.pointLightRadiance[2]).toBeCloseTo(2);
+    expect(packed.pointLightCount).toBe(1);
+    // Point-light stride 8 floats: [position.xyz, _], [radiance.rgb, _].
+    expect(packed.pointLightsData[0]).toBeCloseTo(2);
+    expect(packed.pointLightsData[1]).toBeCloseTo(3);
+    expect(packed.pointLightsData[2]).toBeCloseTo(4);
+    expect(packed.pointLightsData[4]).toBeCloseTo(4);
+    expect(packed.pointLightsData[5]).toBeCloseTo(8);
+    expect(packed.pointLightsData[6]).toBeCloseTo(2);
   });
 
   it('packs multiple point lights with counts (bounded arrays)', () => {
@@ -221,12 +232,16 @@ describe('buildPackedScene', () => {
       ],
     };
     const packed = buildPackedScene(scene);
-    expect(packed.hasSpotLight).toBe(true);
-    expect(packed.spotLightPosition).toEqual([5, 6, 7]);
-    expect(packed.spotLightDirection[1]).toBeCloseTo(-1);
-    expect(packed.spotLightRadiance[0]).toBeCloseTo(4);
-    expect(packed.spotLightRadiance[1]).toBeCloseTo(2);
-    expect(packed.spotLightRadiance[2]).toBeCloseTo(1);
+    expect(packed.spotLightCount).toBe(1);
+    // Spot-light stride 12 floats: [pos.xyz, _], [dir.xyz, cosAngle],
+    // [radiance.rgb, _].
+    expect(packed.spotLightsData[0]).toBeCloseTo(5);
+    expect(packed.spotLightsData[1]).toBeCloseTo(6);
+    expect(packed.spotLightsData[2]).toBeCloseTo(7);
+    expect(packed.spotLightsData[5]).toBeCloseTo(-1);
+    expect(packed.spotLightsData[8]).toBeCloseTo(4);
+    expect(packed.spotLightsData[9]).toBeCloseTo(2);
+    expect(packed.spotLightsData[10]).toBeCloseTo(1);
   });
 
   it('packs first mesh-area emitter triangle sample', () => {
@@ -245,13 +260,21 @@ describe('buildPackedScene', () => {
       ],
     };
     const packed = buildPackedScene(meshAreaScene);
-    expect(packed.hasMeshAreaLight).toBe(true);
-    expect(packed.meshAreaTriA).toEqual([0, 0, 0]);
-    expect(packed.meshAreaTriB).toEqual([1, 0, 0]);
-    expect(packed.meshAreaTriC).toEqual([0, 1, 0]);
-    expect(packed.meshAreaRadiance[0]).toBeCloseTo(3);
-    expect(packed.meshAreaRadiance[1]).toBeCloseTo(1.5);
-    expect(packed.meshAreaRadiance[2]).toBeCloseTo(6);
+    expect(packed.meshAreaLightCount).toBe(1);
+    // Mesh-area stride 16 floats: [triA.xyz, _], [triB.xyz, _], [triC.xyz, _],
+    // [radiance.rgb, _].
+    expect(packed.meshAreaLightsData[0]).toBeCloseTo(0);
+    expect(packed.meshAreaLightsData[1]).toBeCloseTo(0);
+    expect(packed.meshAreaLightsData[2]).toBeCloseTo(0);
+    expect(packed.meshAreaLightsData[4]).toBeCloseTo(1);
+    expect(packed.meshAreaLightsData[5]).toBeCloseTo(0);
+    expect(packed.meshAreaLightsData[6]).toBeCloseTo(0);
+    expect(packed.meshAreaLightsData[8]).toBeCloseTo(0);
+    expect(packed.meshAreaLightsData[9]).toBeCloseTo(1);
+    expect(packed.meshAreaLightsData[10]).toBeCloseTo(0);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(3);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(1.5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(6);
   });
 
   it('packs layered, spectral, scattering, and thin-film payload summaries', () => {

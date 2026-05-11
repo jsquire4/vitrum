@@ -1,4 +1,4 @@
-import type { DiscAreaEmitter, Scene } from '@vitrum/core';
+import type { DiscAreaEmitter, MeshAreaEmitter, Scene } from '@vitrum/core';
 import { transformPoint } from '../math/mat4.js';
 
 export const MAX_POINT_LIGHTS = 16;
@@ -82,146 +82,30 @@ export function defaultDirectionalIrradiance(scene: Scene): readonly [number, nu
   ];
 }
 
-export function firstPointLight(scene: Scene): {
-  readonly position: readonly [number, number, number];
-  readonly radiance: readonly [number, number, number];
-  readonly hasPointLight: boolean;
-} {
-  const point = scene.emitters.find((e) => e.kind === 'point');
-  if (point == null) {
-    return {
-      position: [0, 0, 0],
-      radiance: [0, 0, 0],
-      hasPointLight: false,
-    };
-  }
-  return {
-    position: [point.position[0], point.position[1], point.position[2]],
-    radiance: [
-      point.color[0] * point.intensity,
-      point.color[1] * point.intensity,
-      point.color[2] * point.intensity,
-    ],
-    hasPointLight: true,
-  };
-}
-
-export function firstSpotLight(scene: Scene): {
-  readonly position: readonly [number, number, number];
-  readonly direction: readonly [number, number, number];
-  readonly cosAngle: number;
-  readonly radiance: readonly [number, number, number];
-  readonly hasSpotLight: boolean;
-} {
-  const spot = scene.emitters.find((e) => e.kind === 'spot');
-  if (spot == null) {
-    return {
-      position: [0, 0, 0],
-      direction: [0, -1, 0],
-      cosAngle: 0,
-      radiance: [0, 0, 0],
-      hasSpotLight: false,
-    };
-  }
-  const d = spot.direction;
-  const len = Math.hypot(d[0], d[1], d[2]);
-  const dir: readonly [number, number, number] =
-    len < 1e-8 ? [0, -1, 0] : [d[0] / len, d[1] / len, d[2] / len];
-  return {
-    position: [spot.position[0], spot.position[1], spot.position[2]],
-    direction: dir,
-    cosAngle: Math.cos(spot.angle),
-    radiance: [
-      spot.color[0] * spot.intensity,
-      spot.color[1] * spot.intensity,
-      spot.color[2] * spot.intensity,
-    ],
-    hasSpotLight: true,
-  };
-}
-
-export function firstRectAreaLight(scene: Scene): {
-  readonly position: readonly [number, number, number];
-  readonly uAxis: readonly [number, number, number];
-  readonly vAxis: readonly [number, number, number];
-  readonly radiance: readonly [number, number, number];
-  readonly hasRectAreaLight: boolean;
-} {
-  const rect = scene.emitters.find((e) => e.kind === 'rect-area');
-  if (rect != null) {
-    return {
-      position: [rect.position[0], rect.position[1], rect.position[2]],
-      uAxis: [rect.uAxis[0], rect.uAxis[1], rect.uAxis[2]],
-      vAxis: [rect.vAxis[0], rect.vAxis[1], rect.vAxis[2]],
-      radiance: [
-        rect.color[0] * rect.intensity,
-        rect.color[1] * rect.intensity,
-        rect.color[2] * rect.intensity,
-      ],
-      hasRectAreaLight: true,
-    };
-  }
-  const disc = scene.emitters.find((e) => e.kind === 'disc-area');
-  if (disc != null) {
-    if (!Number.isFinite(disc.radius) || disc.radius < 1e-8) {
-      return {
-        position: [0, 0, 0],
-        uAxis: [0, 0, 0],
-        vAxis: [0, 0, 0],
-        radiance: [0, 0, 0],
-        hasRectAreaLight: false,
-      };
-    }
-    const d = discAreaPackedAsRect(disc);
-    return {
-      position: d.position,
-      uAxis: [...d.uAxis],
-      vAxis: [...d.vAxis],
-      radiance: [...d.radiance],
-      hasRectAreaLight: true,
-    };
-  }
-  return {
-    position: [0, 0, 0],
-    uAxis: [0, 0, 0],
-    vAxis: [0, 0, 0],
-    radiance: [0, 0, 0],
-    hasRectAreaLight: false,
-  };
-}
-
-export function firstMeshAreaLight(scene: Scene): {
+/**
+ * Pack a single mesh-area emitter's first triangle (positions in world space)
+ * and per-emitter radiance. Returns `null` when the emitter's referenced
+ * primitive is missing, not a mesh, or has fewer than one triangle — in those
+ * cases a warning is emitted via the `warnings` accumulator.
+ *
+ * Extracted from the legacy `firstMeshAreaLight` helper so `packEmitterArrays`
+ * can iterate emitters directly without faking a single-emitter scene.
+ */
+function packMeshAreaTriangle(
+  emitter: MeshAreaEmitter,
+  scene: Scene,
+  warnings: string[],
+): {
   readonly triA: readonly [number, number, number];
   readonly triB: readonly [number, number, number];
   readonly triC: readonly [number, number, number];
   readonly radiance: readonly [number, number, number];
-  readonly hasMeshAreaLight: boolean;
-  readonly warnings: readonly string[];
-} {
-  const emitter = scene.emitters.find((e) => e.kind === 'mesh-area');
-  if (emitter == null) {
-    return {
-      triA: [0, 0, 0],
-      triB: [0, 0, 0],
-      triC: [0, 0, 0],
-      radiance: [0, 0, 0],
-      hasMeshAreaLight: false,
-      warnings: [],
-    };
-  }
-
+} | null {
   const primitive = scene.primitives.find((p) => p.id === emitter.meshId);
   if (primitive == null || primitive.kind === 'analytic') {
-    return {
-      triA: [0, 0, 0],
-      triB: [0, 0, 0],
-      triC: [0, 0, 0],
-      radiance: [0, 0, 0],
-      hasMeshAreaLight: false,
-      warnings: [`Mesh-area emitter "${emitter.id}" references missing or non-mesh primitive "${emitter.meshId}".`],
-    };
+    warnings.push(`Mesh-area emitter "${emitter.id}" references missing or non-mesh primitive "${emitter.meshId}".`);
+    return null;
   }
-
   const positions = primitive.positions;
   const indices =
     primitive.indices ??
@@ -231,16 +115,9 @@ export function firstMeshAreaLight(scene: Scene): {
       return generated;
     })();
   if (indices.length < 3 || positions.length < 9) {
-    return {
-      triA: [0, 0, 0],
-      triB: [0, 0, 0],
-      triC: [0, 0, 0],
-      radiance: [0, 0, 0],
-      hasMeshAreaLight: false,
-      warnings: [`Mesh-area emitter "${emitter.id}" references primitive "${emitter.meshId}" with no triangles.`],
-    };
+    warnings.push(`Mesh-area emitter "${emitter.id}" references primitive "${emitter.meshId}" with no triangles.`);
+    return null;
   }
-
   const i0 = indices[0] ?? 0;
   const i1 = indices[1] ?? 0;
   const i2 = indices[2] ?? 0;
@@ -267,8 +144,6 @@ export function firstMeshAreaLight(scene: Scene): {
       emitter.color[1] * emitter.intensity,
       emitter.color[2] * emitter.intensity,
     ],
-    hasMeshAreaLight: true,
-    warnings: [],
   };
 }
 
@@ -398,9 +273,8 @@ export function packEmitterArrays(scene: Scene): {
       );
       break;
     }
-    const packedOne = firstMeshAreaLight({ ...scene, emitters: [emitter] });
-    if (!packedOne.hasMeshAreaLight) {
-      warnings.push(...packedOne.warnings);
+    const packedOne = packMeshAreaTriangle(emitter, scene, warnings);
+    if (packedOne == null) {
       continue;
     }
     const o = meshAreaLightCount * MESH_AREA_LIGHT_FLOAT_STRIDE;

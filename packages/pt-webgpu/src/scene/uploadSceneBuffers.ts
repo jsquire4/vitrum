@@ -7,10 +7,6 @@ import { environmentParams } from './environmentPacking.js';
 import {
   defaultDirectionalIrradiance,
   defaultDirectionalLight,
-  firstMeshAreaLight,
-  firstPointLight,
-  firstRectAreaLight,
-  firstSpotLight,
   packEmitterArrays,
 } from './emitterPacking.js';
 
@@ -41,24 +37,6 @@ export interface PackedSceneData {
   readonly warnings: readonly string[];
   readonly directionalLight: readonly [number, number, number];
   readonly directionalIrradiance: readonly [number, number, number];
-  readonly pointLightPosition: readonly [number, number, number];
-  readonly pointLightRadiance: readonly [number, number, number];
-  readonly hasPointLight: boolean;
-  readonly spotLightPosition: readonly [number, number, number];
-  readonly spotLightDirection: readonly [number, number, number];
-  readonly spotLightCosAngle: number;
-  readonly spotLightRadiance: readonly [number, number, number];
-  readonly hasSpotLight: boolean;
-  readonly rectAreaPosition: readonly [number, number, number];
-  readonly rectAreaUAxis: readonly [number, number, number];
-  readonly rectAreaVAxis: readonly [number, number, number];
-  readonly rectAreaRadiance: readonly [number, number, number];
-  readonly hasRectAreaLight: boolean;
-  readonly meshAreaTriA: readonly [number, number, number];
-  readonly meshAreaTriB: readonly [number, number, number];
-  readonly meshAreaTriC: readonly [number, number, number];
-  readonly meshAreaRadiance: readonly [number, number, number];
-  readonly hasMeshAreaLight: boolean;
   readonly pointLightCount: number;
   readonly spotLightCount: number;
   readonly rectAreaLightCount: number;
@@ -255,14 +233,9 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
   const packedIndices = new Uint32Array(indices);
   const packedTriMaterialIds = new Uint32Array(triMaterialIds);
   const bvhBuild = buildCpuBvh(packedPositions, packedIndices, packedTriMaterialIds);
-  const point = firstPointLight(scene);
-  const spot = firstSpotLight(scene);
-  const rectArea = firstRectAreaLight(scene);
-  const meshArea = firstMeshAreaLight(scene);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);
   warnings.push(...environment.warnings);
-  warnings.push(...meshArea.warnings);
   warnings.push(...emitArrays.warnings);
 
   return {
@@ -281,24 +254,6 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
     warnings,
     directionalLight: defaultDirectionalLight(scene),
     directionalIrradiance: defaultDirectionalIrradiance(scene),
-    pointLightPosition: point.position,
-    pointLightRadiance: point.radiance,
-    hasPointLight: point.hasPointLight,
-    spotLightPosition: spot.position,
-    spotLightDirection: spot.direction,
-    spotLightCosAngle: spot.cosAngle,
-    spotLightRadiance: spot.radiance,
-    hasSpotLight: spot.hasSpotLight,
-    rectAreaPosition: rectArea.position,
-    rectAreaUAxis: rectArea.uAxis,
-    rectAreaVAxis: rectArea.vAxis,
-    rectAreaRadiance: rectArea.radiance,
-    hasRectAreaLight: rectArea.hasRectAreaLight,
-    meshAreaTriA: meshArea.triA,
-    meshAreaTriB: meshArea.triB,
-    meshAreaTriC: meshArea.triC,
-    meshAreaRadiance: meshArea.radiance,
-    hasMeshAreaLight: meshArea.hasMeshAreaLight,
     pointLightCount: emitArrays.pointLightCount,
     spotLightCount: emitArrays.spotLightCount,
     rectAreaLightCount: emitArrays.rectAreaLightCount,

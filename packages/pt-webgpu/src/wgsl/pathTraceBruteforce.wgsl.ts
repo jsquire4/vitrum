@@ -26,23 +26,18 @@ struct FrameParams {
   spotLightCount: u32,
   rectAreaLightCount: u32,
   meshAreaLightCount: u32,
+  mneeMaxIterations: u32,
+  mneeMaxChainLength: u32,
+  hasEnvironmentMap: u32,
+  causticStrategy: u32,
+  environmentMapWidth: u32,
+  environmentMapHeight: u32,
+  _pad0: u32,
+  _pad1: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
-  pointLightPos: vec4f,
-  pointLightRadiance: vec4f,
-  spotLightPos: vec4f,
-  spotLightDirection: vec4f,
-  spotLightRadiance: vec4f,
   environmentTint: vec4f,
   environmentSun: vec4f,
-  rectAreaPos: vec4f,
-  rectAreaU: vec4f,
-  rectAreaV: vec4f,
-  rectAreaRadiance: vec4f,
-  meshAreaTriA: vec4f,
-  meshAreaTriB: vec4f,
-  meshAreaTriC: vec4f,
-  meshAreaRadiance: vec4f,
   invViewProj: mat4x4f,
   viewProj: mat4x4f,
   prevViewProj: mat4x4f,
@@ -196,20 +191,19 @@ fn sampleSky(dir: vec3f) -> vec3f {
   return sky * params.environmentTint.rgb;
 }
 
-// NOTE: HDRI environment dimensions are packed into the .w lanes of the
-// meshAreaTriB / meshAreaTriC vec4 slots in the params UBO (lines [68..75]
-// host-side: paramsF32[71] = envWidth, paramsF32[75] = envHeight). This is a
-// space-saving trick — those .w lanes are otherwise unused because the
-// meshAreaTri positions only need .xyz. Any host-side packer that touches
-// the params buffer MUST preserve this convention. Future cleanup: lift to
-// a dedicated params.environmentDims (vec2u) field once the params struct
-// is repacked.
+// HDRI environment presence + dimensions are now dedicated u32 fields in
+// FrameParams (hasEnvironmentMap / environmentMapWidth / environmentMapHeight).
+// Previously these lived in the .w lanes of meshAreaTri{B,C} / environmentTint —
+// a space-saving hack that has been removed.
+// The second clause below guards the legacy "flag set but dims=0" edge case:
+// if the host writes hasEnvironmentMap=1 but never uploads a non-zero map,
+// we still fall back to the procedural sky.
 fn hasEnvironmentMap() -> bool {
-  return params.environmentTint.w > 0.5 && params.meshAreaTriB.w > 0.5 && params.meshAreaTriC.w > 0.5;
+  return params.hasEnvironmentMap > 0u && params.environmentMapWidth > 0u;
 }
 
 fn environmentDimensions() -> vec2u {
-  return vec2u(u32(params.meshAreaTriB.w), u32(params.meshAreaTriC.w));
+  return vec2u(params.environmentMapWidth, params.environmentMapHeight);
 }
 
 fn sampleEnvironmentColor(dir: vec3f) -> vec3f {
@@ -374,19 +368,20 @@ fn brdfDirectionalPdf(baseColor: vec3f, roughness: f32, metallic: f32, transmiss
 }
 
 fn intersectRectAreaLightRay(rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
-  let uAxis = params.rectAreaU.xyz;
-  let vAxis = params.rectAreaV.xyz;
+  let rectPos = rectAreaLights[0].xyz;
+  let uAxis = rectAreaLights[1].xyz;
+  let vAxis = rectAreaLights[2].xyz;
   let lightNormal = safe_normalize(cross(uAxis, vAxis));
   let denom = dot(lightNormal, rayDir);
   if (abs(denom) < 1e-6) {
     return false;
   }
-  let t = dot(lightNormal, params.rectAreaPos.xyz - rayOrigin) / denom;
+  let t = dot(lightNormal, rectPos - rayOrigin) / denom;
   if (t <= 1e-4) {
     return false;
   }
   let p = rayOrigin + rayDir * t;
-  let rel = p - params.rectAreaPos.xyz;
+  let rel = p - rectPos;
   let uLen2 = max(dot(uAxis, uAxis), 1e-6);
   let vLen2 = max(dot(vAxis, vAxis), 1e-6);
   let uCoord = dot(rel, uAxis) / uLen2;
@@ -405,9 +400,9 @@ fn intersectRectAreaLightRay(rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<funct
 }
 
 fn intersectMeshAreaLightRay(rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
-  let a = params.meshAreaTriA.xyz;
-  let b = params.meshAreaTriB.xyz;
-  let c = params.meshAreaTriC.xyz;
+  let a = meshAreaLights[0].xyz;
+  let b = meshAreaLights[1].xyz;
+  let c = meshAreaLights[2].xyz;
   let t = intersectTriangle(rayOrigin, rayDir, a, b, c);
   if (t <= 1e-4 || t >= INFINITY) {
     return false;
@@ -445,7 +440,7 @@ fn bsdfAreaLightConnectionContribution(
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
-  if (params.rectAreaPos.w > 0.5) {
+  if (params.rectAreaLightCount > 0u) {
     var rectDist = INFINITY;
     var rectPdf = 0.0;
     if (intersectRectAreaLightRay(hitPos + normal * 1e-3, wi, &rectDist, &rectPdf)) {
@@ -453,11 +448,11 @@ fn bsdfAreaLightConnectionContribution(
       if (!traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3)) && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
-        bestEmission = params.rectAreaRadiance.rgb;
+        bestEmission = rectAreaLights[3].rgb;
       }
     }
   }
-  if (params.meshAreaTriA.w > 0.5) {
+  if (params.meshAreaLightCount > 0u) {
     var meshDist = INFINITY;
     var meshPdf = 0.0;
     if (intersectMeshAreaLightRay(hitPos + normal * 1e-3, wi, &meshDist, &meshPdf)) {
@@ -465,7 +460,7 @@ fn bsdfAreaLightConnectionContribution(
       if (!traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3)) && meshDist < bestDist) {
         bestDist = meshDist;
         bestLightPdf = meshPdf;
-        bestEmission = params.meshAreaRadiance.rgb;
+        bestEmission = meshAreaLights[3].rgb;
       }
     }
   }
@@ -954,9 +949,9 @@ fn sampleMeshAreaLight(
   throughput: vec3f,
   radiance: ptr<function, vec3f>,
 ) {
-  let a = params.meshAreaTriA.xyz;
-  let b = params.meshAreaTriB.xyz;
-  let c = params.meshAreaTriC.xyz;
+  let a = meshAreaLights[0].xyz;
+  let b = meshAreaLights[1].xyz;
+  let c = meshAreaLights[2].xyz;
   let r1 = rand_f32(rng);
   let r2 = rand_f32(rng);
   let su = sqrt(r1);
@@ -986,11 +981,11 @@ fn sampleMeshAreaLight(
   if (traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
     return;
   }
-  *radiance = *radiance + throughput * brdf * nDotL * params.meshAreaRadiance.rgb * misWeight / max(lightPdf, 1e-6);
+  *radiance = *radiance + throughput * brdf * nDotL * meshAreaLights[3].rgb * misWeight / max(lightPdf, 1e-6);
 }
 
 fn causticMode() -> u32 {
-  return u32(max(params.spotLightRadiance.w, 0.0));
+  return params.causticStrategy;
 }
 
 fn hitMaterialId(hit: SceneHit) -> u32 {
@@ -1085,8 +1080,8 @@ fn manifoldNeeContribution(
   if (transmission <= 1e-4 || params.lightDir.w <= 1e-6) {
     return vec3f(0.0);
   }
-  let mneeSteps = u32(clamp(params.rectAreaU.w, 1.0, 8.0));
-  let maxChain = u32(clamp(params.rectAreaV.w, 1.0, 8.0));
+  let mneeSteps = clamp(params.mneeMaxIterations, 1u, 8u);
+  let maxChain = clamp(params.mneeMaxChainLength, 1u, 8u);
   let baseLightDir = safe_normalize(params.lightDir.xyz);
   let coneAngle = mix(0.01, 0.12, clamp(roughness, 0.0, 1.0));
   var contribution = vec3f(0.0);
@@ -1139,11 +1134,11 @@ fn photonMapContribution(
 ) -> vec3f {
   var availableLightCount = 0u;
   if (params.lightDir.w > 1e-6) availableLightCount = availableLightCount + 1u;
-  if (params.pointLightPos.w > 0.5) availableLightCount = availableLightCount + 1u;
-  if (params.spotLightPos.w > 0.5) availableLightCount = availableLightCount + 1u;
+  if (params.pointLightCount > 0u) availableLightCount = availableLightCount + 1u;
+  if (params.spotLightCount > 0u) availableLightCount = availableLightCount + 1u;
   if (availableLightCount == 0u) return vec3f(0.0);
-  let photonCount = u32(clamp(params.rectAreaU.w * 2.0, 8.0, 32.0));
-  let maxChain = u32(clamp(params.rectAreaV.w, 1.0, 8.0));
+  let photonCount = u32(clamp(f32(params.mneeMaxIterations) * 2.0, 8.0, 32.0));
+  let maxChain = clamp(params.mneeMaxChainLength, 1u, 8u);
   // Photon-gather radius in world units. Hardcoded at 0.35 for the current
   // calibration scene. Exposed as a named local so the photon density / cell
   // size relationship is easy to tune in one place. Future: lift to a params
@@ -1170,29 +1165,29 @@ fn photonMapContribution(
       }
       current = current + 1u;
     }
-    if (params.pointLightPos.w > 0.5) {
+    if (params.pointLightCount > 0u) {
       if (current == pick) {
-        photonOrigin = params.pointLightPos.xyz;
+        photonOrigin = pointLights[0].xyz;
         photonDir = uniformSphere(vec2f(rand_f32(rng), rand_f32(rng)));
-        photonFlux = params.pointLightRadiance.rgb;
+        photonFlux = pointLights[1].rgb;
         seeded = true;
       }
       current = current + 1u;
     }
-    if (params.spotLightPos.w > 0.5 && current == pick) {
-      photonOrigin = params.spotLightPos.xyz;
+    if (params.spotLightCount > 0u && current == pick) {
+      photonOrigin = spotLights[0].xyz;
       let coneXi = vec2f(rand_f32(rng), rand_f32(rng));
-      let cosMin = params.spotLightDirection.w;
+      let cosMin = spotLights[1].w;
       let cosTheta = mix(cosMin, 1.0, coneXi.x);
       let sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
       let phi = 2.0 * PI * coneXi.y;
       let local = vec3f(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
-      let spotAxis = safe_normalize(-params.spotLightDirection.xyz);
+      let spotAxis = safe_normalize(-spotLights[1].xyz);
       var t: vec3f;
       var b: vec3f;
       buildOnb(spotAxis, &t, &b);
       photonDir = safe_normalize(local.x * t + local.y * b + local.z * spotAxis);
-      photonFlux = params.spotLightRadiance.rgb;
+      photonFlux = spotLights[2].rgb;
       seeded = true;
     }
     if (!seeded) {
