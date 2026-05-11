@@ -116,6 +116,7 @@ export function buildUboBindGroup(
   cache: BGLCache,
   uboBuffer: GPUBuffer,
   aoFullView: GPUTextureView,
+  tierView: GPUTextureView,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: 'ubo-bg',
@@ -123,6 +124,7 @@ export function buildUboBindGroup(
     entries: [
       { binding: 0, resource: { buffer: uboBuffer } },
       { binding: 1, resource: aoFullView },  // Sprint 15 — GTAO occlusion factor
+      { binding: 2, resource: tierView },    // Sprint 9 — adaptive-sampling tier
     ],
   });
 }

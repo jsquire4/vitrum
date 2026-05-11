@@ -42,6 +42,11 @@ export const RIS_GI_WGSL = /* wgsl */ `
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
+// Sprint 9 — adaptive sampling tier (r32uint, full-res). 1 = low variance,
+// 2 = medium, 4 = high. Read at the centre of each half-res 2×2 quad to
+// scale the RIS candidate count: high-variance pixels get more candidates
+// where they're needed, low-variance pixels save the compute.
+@group(2) @binding(2) var gi_tier: texture_2d<u32>;
 
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
@@ -60,7 +65,9 @@ struct DDGIGridUBO {
 };
 @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
 
-const M_GI: u32 = 8u;
+// Base RIS-GI candidate count. Scaled per pixel by adaptive-sampling tier:
+// tier=1 → M_GI_eff = 4; tier=2 → 8 (default); tier=4 → 16.
+const M_GI_BASE: u32 = 8u;
 const RECONNECT_MAX_DIST: f32 = 100.0;
 const NORMAL_BIAS_GI: f32 = 1e-3;
 
@@ -121,6 +128,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   var r: ReservoirGI = emptyReservoirGI();
   r.xv = pos;
   r.nv = normal;
+
+  // Adaptive-sampling tier read at the full-res quad centre. Clamped to
+  // [1,4] in case the sample-budget pass emits a bad/uninitialised value
+  // (first frame writes vec4u(2,0,0,0) by default). M_GI scales linearly.
+  let tier_raw = textureLoad(gi_tier, vec2i(fullPx), 0).r;
+  let tier = clamp(tier_raw, 1u, 4u);
+  let M_GI = M_GI_BASE * tier / 2u;
 
   for (var i: u32 = 0u; i < M_GI; i = i + 1u) {
     // Cosine-weighted hemisphere candidate.

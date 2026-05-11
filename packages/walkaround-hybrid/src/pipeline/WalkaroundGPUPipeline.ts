@@ -541,6 +541,7 @@ export class WalkaroundGPUPipeline {
     const bgUbo   = buildUboBindGroup(
       d, this._bglCache, this._res.uboBuffer,
       this._res.aoFullTexture.createView(),
+      this._res.tierTexture.createView(),
     );
 
     // ── Dispatch compute passes ───────────────────────────────────────────

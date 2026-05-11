@@ -41,8 +41,9 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('@group(3) @binding(3) var<uniform> ddgiGrid');
   });
 
-  it('uses M_GI=8 candidates per pixel (matches Majercik 2021 §4.2)', () => {
-    expect(RIS_GI_WGSL).toContain('M_GI: u32 = 8u');
+  it('uses an adaptive M_GI scaled from the M_GI_BASE=8 candidate count (Majercik 2021 §4.2 + Sprint 9 tier)', () => {
+    expect(RIS_GI_WGSL).toContain('M_GI_BASE: u32 = 8u');
+    expect(RIS_GI_WGSL).toMatch(/let M_GI\s*=\s*M_GI_BASE\s*\*\s*tier/);
   });
 
   it('writes an empty reservoir on primary-ray miss, glass, or metal', () => {

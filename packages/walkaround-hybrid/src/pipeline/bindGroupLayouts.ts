@@ -100,6 +100,13 @@ export function getUboBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBi
       // Sprint 15 — full-res GTAO occlusion factor (r16float), 1-frame lagged.
       // Sampled in shade to modulate the diffuse / indirect light terms.
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      // Sprint 9 / Original-#2 wire-in — per-pixel adaptive-sampling tier
+      // (r32uint, written by sample-budget pass). risGi.wgsl reads it to
+      // scale the RIS-GI candidate count (M_GI) per pixel — high-variance
+      // pixels get more candidates, low-variance pixels get fewer. Other
+      // pipelines that bind this BGL (ris/temporal/spatial/shade) declare
+      // the slot for layout compatibility but do not reference the symbol.
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
     ],
   });
   return cache.ubo;
