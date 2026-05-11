@@ -13,9 +13,6 @@
 // no direct constant references needed here.
 export const SHADE_WGSL = /* wgsl */ `
 
-// Blend for diffuse irradiance from DDGI probes (1.0 = full contribution when isDDGIWired()).
-const DDGI_DIFFUSE_BLEND: f32 = 1.0;
-
 @group(0) @binding(0) var gDepth:     texture_2d<f32>;
 @group(0) @binding(1) var gNormal:    texture_2d<f32>;
 @group(0) @binding(2) var gAlbedo:    texture_2d<f32>;
@@ -59,12 +56,12 @@ const DDGI_DIFFUSE_BLEND: f32 = 1.0;
 // regions. Sky-miss and emissive light sources bypass this multiplier.
 @group(2) @binding(1) var aoFullTexture: texture_2d<f32>;
 
-// DDGI bind group (group 3). Atlas + sampler + grid params UBO bound
-// here; shade reads via ddgiSampleFromBindings. isDDGIWired() checks
-// the placeholder sentinel (dimsX==1 means no real grid bound).
-// Combined-sum INCLUDES Lo_ddgi at DDGI_DIFFUSE_BLEND = 1.0, gated on
-// non-glass surfaces only and on isDDGIWired() — see the combined-sum
-// statement at the bottom of shadeMain.
+// DDGI bind group (group 3). Atlas + sampler + grid params UBO bound here
+// so the pipeline layout matches risGi.wgsl (which is the real consumer of
+// the atlas at the reconnection vertex — Sprint 16 replaced shade's direct
+// atlas read with reservoir consumption). Shade does not reference these
+// bindings; they are declared only to keep the layout valid for layout
+// compatibility checks and to leave the door open for future fallback paths.
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
 @group(3) @binding(2) var ddgiSampler:    sampler;
@@ -83,30 +80,6 @@ struct DDGIGridUBO {
 @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
 // @@PPG_TRAIN_BINDINGS_INSERT@@
 // @@PPG_GUIDE_DECLS_INSERT@@
-
-fn isDDGIWired() -> bool {
-  // Placeholder UBO is initialized with dims (1,1,1). Any real ProbeGrid
-  // produces dims >= 3 (see ProbeGrid.computeFromBounds).
-  return ddgiGrid.dimsX > 1u;
-}
-
-// Thin adapter — pipelineCompiler prepends DDGI_SAMPLE_WGSL (the
-// canonical implementation in ddgiSampleWgsl.ts) before SHADE_WGSL, so
-// the ddgiSample helper is in scope. This function exists only to pull
-// the @group(3) bindings into argument form. Single source of math.
-fn ddgiSampleFromBindings(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
-  return ddgiSample(
-    worldPos,
-    surfaceNormal,
-    ddgiIrradiance,
-    ddgiVisibility,
-    ddgiSampler,
-    ddgiGrid.origin.x, ddgiGrid.origin.y, ddgiGrid.origin.z,
-    ddgiGrid.spacing,
-    ddgiGrid.dimsX, ddgiGrid.dimsY, ddgiGrid.dimsZ,
-    ddgiGrid.irrW, ddgiGrid.irrH, ddgiGrid.visW, ddgiGrid.visH,
-  );
-}
 
 // RESERVOIR_DI_STRIDE / loadReservoirDI_rw live in COMMON_WGSL.
 
@@ -242,7 +215,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   var Lo_skyAperture = vec3f(0.0);
   // Same skip-on-metal rule: through-glass shadow rays from a came
   // bead's irregular surface produce variable visibility per pixel → speckle.
-  // Lo_ddgi handles came illumination.
+  // The ReSTIR-GI Lo_indirect term covers came illumination via the
+  // half-res reservoir read further below.
   if (!isGlass && !isMetal) {
     // Direction TOWARD the sun.  ubo.sunDirection is the unit vector from
     // the world origin toward the sun.
@@ -382,15 +356,14 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   //   Lo_direct       ReSTIR DI, atrous-denoised single sample
   //   Lo_sunCaustic   sun shadow ray through glass, deterministic
   //   Lo_skyAperture  5-tap sky probe through cutout, scalar luminance
-  //
-  // Lo_ddgi: diffuse irradiance from DDGI atlas × albedo × INV_PI (gated on isDDGIWired()).
+  //   Lo_indirect     ReSTIR-GI half-res reservoir read (Sprint 16), per-channel split (Sprint 18)
   // @@PPG_BOUNCE_INSERT@@
   //
   // Sprint 15 — GTAO modulates ALL non-emissive lighting terms.
   // - Lo_emit is the light source itself; never darken it.
-  // - Direct, sun, sky-aperture, indirect (DDGI) all darken in concave
-  //   contact regions per Jiménez 2016. Sky-miss pixels (centerDepth=0)
-  //   were written 1.0 in gtao.wgsl so they pass through unmodified.
+  // - Direct, sun, sky-aperture, indirect all darken in concave contact
+  //   regions per Jiménez 2016. Sky-miss pixels (centerDepth=0) were
+  //   written 1.0 in gtao.wgsl so they pass through unmodified.
   // - The select(1.0, ao, ao > 0.001) safe-fallback prevents a corrupt
   //   first-frame AO sample (NaN, negative, huge) from blanking pixels;
   //   the texture is seeded with 1.0 at engine init but defense-in-depth.
