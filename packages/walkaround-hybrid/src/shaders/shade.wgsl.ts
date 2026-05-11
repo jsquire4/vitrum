@@ -333,25 +333,58 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // the per-pixel basis, so cell artefacts go away.
   //
   // Lo_indirect = albedo * Lo * W * cos(N, wi) * INV_PI
-  //   - Lo, W from the GI reservoir (read at gid.xy / 2 — half-res)
+  //   - Lo, W from the GI reservoir (half-res; bilinear-blend across 4 cells)
   //   - albedo is the visible point's diffuse colour
   //   - cos × INV_PI is the receiver Lambertian BRDF response
   // Gating: glass/metal surfaces skip this (their Lo_emit drives).
   //         The reservoir was empty-stored by risGi in those cases.
+  //
+  // Sprint 18 follow-up — bilinear blend across 4 surrounding half-res
+  // reservoirs.  The original nearest-neighbour read halfPx = gid/2u made
+  // every 2x2 full-res quad share one chosen sample; adjacent quads picked
+  // different random samples, so the indirect signal had a sharp 2-pixel
+  // discontinuity at every quad boundary.  risGi re-rolls samples each frame,
+  // so the discontinuity pattern shifted every frame and the temporal
+  // accumulator could not converge to a fixed point.  Blending 4 neighbours
+  // with bilinear weights at half-res fractional coord (gid*0.5) eliminates
+  // the quad grid.
   var Lo_indirect = vec3f(0.0);
   if (!isGlass && !isMetal) {
     let halfDims = dims / 2u;
-    let halfPx = gid.xy / 2u;
-    let giIdx = halfPx.y * halfDims.x + halfPx.x;
-    let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
-    if (g.W > 0.0 && g.M > 0u) {
+    let halfPxF = vec2f(gid.xy) * 0.5;
+    let hx0 = u32(floor(halfPxF.x));
+    let hy0 = u32(floor(halfPxF.y));
+    let fx = halfPxF.x - f32(hx0);
+    let fy = halfPxF.y - f32(hy0);
+    let bw00 = (1.0 - fx) * (1.0 - fy);
+    let bw10 =        fx  * (1.0 - fy);
+    let bw01 = (1.0 - fx) *        fy;
+    let bw11 =        fx  *        fy;
+    var totalW: f32 = 0.0;
+    for (var k: u32 = 0u; k < 4u; k = k + 1u) {
+      var hx = hx0;
+      var hy = hy0;
+      var bw: f32 = 0.0;
+      if      (k == 0u) { hx = hx0;          hy = hy0;          bw = bw00; }
+      else if (k == 1u) { hx = hx0 + 1u;     hy = hy0;          bw = bw10; }
+      else if (k == 2u) { hx = hx0;          hy = hy0 + 1u;     bw = bw01; }
+      else              { hx = hx0 + 1u;     hy = hy0 + 1u;     bw = bw11; }
+      if (hx >= halfDims.x) { hx = halfDims.x - 1u; }
+      if (hy >= halfDims.y) { hy = halfDims.y - 1u; }
+      if (bw < 1e-5) { continue; }
+      let giIdx = hy * halfDims.x + hx;
+      let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+      if (g.W <= 0.0 || g.M == 0u) { continue; }
       let toS = g.xs - pos;
       let distS = length(toS);
-      if (distS > 1e-4) {
-        let wi = toS / distS;
-        let cosTheta = max(0.0, dot(normal, wi));
-        Lo_indirect = g.Lo * albedo * INV_PI * cosTheta * g.W;
-      }
+      if (distS <= 1e-4) { continue; }
+      let wi = toS / distS;
+      let cosTheta = max(0.0, dot(normal, wi));
+      Lo_indirect = Lo_indirect + g.Lo * albedo * INV_PI * cosTheta * g.W * bw;
+      totalW = totalW + bw;
+    }
+    if (totalW > 1e-3) {
+      Lo_indirect = Lo_indirect / totalW;
     }
   }
 
