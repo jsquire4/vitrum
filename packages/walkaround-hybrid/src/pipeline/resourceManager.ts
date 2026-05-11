@@ -136,6 +136,18 @@ export interface FrameResources {
    */
   indirectDenoisedPingTexture: GPUTexture;
   indirectDenoisedPongTexture: GPUTexture;
+  /**
+   * Sprint 18 follow-up — indirect-channel temporal-accumulator ping-pong.
+   * Inserted between shade and atrous-indirect.  The pre-atrous accumulator
+   * applies a TCBB (temporal color bounding box) clip on the history using
+   * the current frame's 3×3 neighborhood [min, max] to reject fireflies +
+   * anti-ghost, then α-blends with the raw current frame.  atrous-indirect
+   * reads the accumulator output (much more temporally coherent than the
+   * raw indirect signal), so its spatial smoothing actually converges
+   * instead of just reshuffling new noise every frame.
+   */
+  indirectAccumPingTexture: GPUTexture;
+  indirectAccumPongTexture: GPUTexture;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -532,6 +544,19 @@ export function createFrameResources(
     format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
+  // Sprint 18 follow-up — indirect temporal-accumulator ping-pong.
+  const indirectAccumPingTexture = device.createTexture({
+    label: 'indirectAccumPing',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const indirectAccumPongTexture = device.createTexture({
+    label: 'indirectAccumPong',
+    size: [W, H],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   // G-buffer (normal + depth) — written by shade, read by atrous denoiser.
   const gNormalDepthTexture = device.createTexture({
@@ -783,6 +808,8 @@ export function createFrameResources(
     hdrTotalTexture,
     indirectDenoisedPingTexture,
     indirectDenoisedPongTexture,
+    indirectAccumPingTexture,
+    indirectAccumPongTexture,
     ...ppgExt,
   };
 }
@@ -823,6 +850,8 @@ export function destroyFrameResources(r: FrameResources): void {
   r.hdrTotalTexture.destroy();
   r.indirectDenoisedPingTexture.destroy();
   r.indirectDenoisedPongTexture.destroy();
+  r.indirectAccumPingTexture.destroy();
+  r.indirectAccumPongTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }

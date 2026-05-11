@@ -26,6 +26,7 @@ import {
   getTemporalGiBindGroupLayout,
   getSpatialGiBindGroupLayout,
   getIndirectCombineBindGroupLayout,
+  getIndirectTemporalAccumBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -494,6 +495,26 @@ export function buildSpatialGiBindGroup(
       { binding: 0, resource: { buffer: inBuffer } },
       { binding: 1, resource: { buffer: outBuffer } },
       { binding: 2, resource: { buffer: uboBuffer } },
+    ],
+  });
+}
+
+// ── Indirect temporal accumulator (Sprint 18 follow-up) ──────────────────────
+
+export function buildIndirectTemporalAccumBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  currentRawView: GPUTextureView,
+  prevAccumView: GPUTextureView,
+  outAccumView: GPUTextureView,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'indirect-temporal-accum-bg',
+    layout: getIndirectTemporalAccumBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: currentRawView },
+      { binding: 1, resource: prevAccumView },
+      { binding: 2, resource: outAccumView },
     ],
   });
 }

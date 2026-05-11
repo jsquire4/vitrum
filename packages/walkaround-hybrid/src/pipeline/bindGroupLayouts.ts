@@ -38,6 +38,8 @@ export interface BGLCache {
   spatialGi?: GPUBindGroupLayout;
   /** Sprint 18 — indirect-blur + combine pass bind group layout. */
   indirectCombine?: GPUBindGroupLayout;
+  /** Sprint 18 follow-up — indirect-channel pre-atrous temporal accumulator. */
+  indirectTemporalAccum?: GPUBindGroupLayout;
 }
 
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
@@ -336,6 +338,29 @@ export function getSpatialGiBindGroupLayout(
     ],
   });
   return cache.spatialGi;
+}
+
+/**
+ * Sprint 18 follow-up — indirect temporal accumulator BGL.  Matches
+ * `indirectTemporalAccum.wgsl.ts`:
+ *   0 — currentRaw (rgba16float sampled, hdrIndirectTexture)
+ *   1 — prevAccum  (rgba16float sampled, previous frame's accumulator output)
+ *   2 — outAccum   (rgba16float storage write, this frame's accumulator output)
+ */
+export function getIndirectTemporalAccumBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.indirectTemporalAccum) return cache.indirectTemporalAccum;
+  cache.indirectTemporalAccum = device.createBindGroupLayout({
+    label: 'indirect-temporal-accum-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+    ],
+  });
+  return cache.indirectTemporalAccum;
 }
 
 /**

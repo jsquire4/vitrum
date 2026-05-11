@@ -50,6 +50,7 @@ export type PassLabel =
   | 'atrous-0'
   | 'atrous-1'
   | 'atrous-2'
+  | 'indirect-temporal-accum'
   | 'atrous-indirect-0'
   | 'atrous-indirect-1'
   | 'atrous-indirect-2'
@@ -72,9 +73,12 @@ export type PassLabel =
  *          dropped from 5 to 3 in shared-denoisers but layout was stale) →
  *          26 (Sprint 18 follow-up: per-channel SVGF — replace the
  *          embedded bilateral in indirect-combine with a real 4-iter
- *          atrous chain (atrous-indirect-0..3) on the indirect channel).
+ *          atrous chain (atrous-indirect-0..3) on the indirect channel) →
+ *          27 (Sprint 18 follow-up: indirect-temporal-accum — pre-atrous
+ *          temporal accumulator with TCBB clip to kill firefly admit
+ *          + smooth shadow-region blotches before spatial filter).
  */
-export const MAX_PASS_COUNT = 26;
+export const MAX_PASS_COUNT = 27;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -128,10 +132,13 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   } else {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');
   }
-  // Sprint 18 — indirect-channel atrous chain (4 iter, widening step 1,2,4,8)
-  // on hdrIndirectTexture, then indirect-combine sums denoisedDirect +
-  // denoisedIndirect into combinedDenoisedTexture for temporalAccum.
+  // Sprint 18 follow-up — indirect-channel temporal accumulator (TCBB clip
+  // on history + firefly cap on current) runs *before* the atrous chain so
+  // atrous operates on a temporally-coherent signal rather than per-frame
+  // reservoir-sampled noise.  Followed by the 4-iter atrous chain (steps
+  // 1,2,4,8) and the indirect-combine sum.
   labels.push(
+    'indirect-temporal-accum',
     'atrous-indirect-0',
     'atrous-indirect-1',
     'atrous-indirect-2',

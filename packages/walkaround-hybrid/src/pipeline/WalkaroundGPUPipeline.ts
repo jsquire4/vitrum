@@ -60,6 +60,7 @@ import {
   buildTemporalGiBindGroup,
   buildSpatialGiBindGroup,
   buildIndirectCombineBindGroup,
+  buildIndirectTemporalAccumBindGroup,
   ATROUS_INDIRECT_SIGMAS,
   type UboRef,
 } from './bindGroupBuilders.js';
@@ -252,6 +253,9 @@ export class WalkaroundGPUPipeline {
   private _temporalGiPipeline!: GPUComputePipeline;
   private _spatialGiPipeline!: GPUComputePipeline;
   private _indirectCombinePipeline!: GPUComputePipeline;
+  private _indirectTemporalAccumPipeline!: GPUComputePipeline;
+  /** Sprint 18 follow-up — ping-pong index for the indirect temporal accumulator. */
+  private _indirectAccumPingPong = 0;
   /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
   private _ppgEnabled = false;
   private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
@@ -408,6 +412,7 @@ export class WalkaroundGPUPipeline {
     this._temporalGiPipeline   = compiled.temporalGiPipeline;
     this._spatialGiPipeline    = compiled.spatialGiPipeline;
     this._indirectCombinePipeline = compiled.indirectCombinePipeline;
+    this._indirectTemporalAccumPipeline = compiled.indirectTemporalAccumPipeline;
     if (this._denoiserMode === 'svgf' && (
       !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
     )) {
@@ -896,12 +901,38 @@ export class WalkaroundGPUPipeline {
     }
 
     // Sprint 18 — per-channel denoise + combine. Direct (denoisedOut from
-    // the SVGF/atrous chain above) is already smoothed. Run the indirect
-    // channel through its own 4-iteration à-trous chain (steps 1, 2, 4, 8)
-    // with broader sigmas tuned for ReSTIR-GI's pre-smoothed signal. Then
-    // sum the two channels into combinedDenoisedTexture for temporalAccum.
+    // the SVGF/atrous chain above) is already smoothed.
+    //
+    // Sprint 18 follow-up — first run a TCBB-clipped temporal accumulator
+    // on the raw indirect signal so each frame's reservoir-driven jitter
+    // (per-pixel chosen-sample changes) gets averaged out *before* atrous.
+    // Atrous's chromaticity edge-stop preserves bright outliers; doing
+    // temporal smoothing first means atrous sees a far more coherent
+    // signal and its spatial filter actually converges.
+    const indirectAccumOut = this._indirectAccumPingPong === 0
+      ? this._res.indirectAccumPingTexture
+      : this._res.indirectAccumPongTexture;
+    const indirectAccumPrev = this._indirectAccumPingPong === 0
+      ? this._res.indirectAccumPongTexture
+      : this._res.indirectAccumPingTexture;
+    {
+      const bgIta = buildIndirectTemporalAccumBindGroup(
+        d, this._bglCache,
+        this._res.hdrIndirectTexture.createView(),
+        indirectAccumPrev.createView(),
+        indirectAccumOut.createView(),
+      );
+      const pass = encoder.beginComputePass(computeDesc('indirect-temporal-accum'));
+      pass.setPipeline(this._indirectTemporalAccumPipeline);
+      pass.setBindGroup(0, bgIta);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+    this._indirectAccumPingPong = 1 - this._indirectAccumPingPong;
+    // Run the indirect 4-iter atrous chain on the temporally-accumulated
+    // signal rather than the raw frame, then sum with the denoised direct.
     const denoisedIndirect = this._dispatchAtrousIndirect(
-      encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
+      encoder, gNormalDepthView, wgX16, wgY16, computeDesc, indirectAccumOut,
     );
     const combinedTex = this._res.combinedDenoisedTexture;
     {
@@ -1169,9 +1200,10 @@ export class WalkaroundGPUPipeline {
     wgX16: number,
     wgY16: number,
     computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
+    inputTexture: GPUTexture,
   ): GPUTexture {
     const d = this._device;
-    let inputTex = this._res.hdrIndirectTexture;
+    let inputTex = inputTexture;
     for (let iter = 0; iter < 4; iter++) {
       const stepWidth = 1 << iter;
       const outputTex = iter % 2 === 0

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildPassLayout, MAX_PASS_COUNT } from '../src/pipeline/timestampQueries.js';
 
 describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
-  describe('PPG off, SVGF mode (25 slots)', () => {
+  describe('PPG off, SVGF mode (26 slots)', () => {
     const layout = buildPassLayout({ ppgEnabled: false, denoiserMode: 'svgf' });
 
     it('prepends sample-budget at slot 0 (runs before RIS)', () => {
@@ -36,15 +36,16 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('svgf-atrous-2')).toBe(16);
     });
 
-    it('places 4 atrous-indirect slots, then indirect-combine, then temporal+resolve+composite tail', () => {
-      expect(layout.index('atrous-indirect-0')).toBe(17);
-      expect(layout.index('atrous-indirect-1')).toBe(18);
-      expect(layout.index('atrous-indirect-2')).toBe(19);
-      expect(layout.index('atrous-indirect-3')).toBe(20);
-      expect(layout.index('indirect-combine')).toBe(21);
-      expect(layout.index('temporalAccum')).toBe(22);
-      expect(layout.index('resolve')).toBe(23);
-      expect(layout.index('composite')).toBe(24);
+    it('places indirect-temporal-accum, 4 atrous-indirect slots, indirect-combine, then temporal+resolve+composite tail', () => {
+      expect(layout.index('indirect-temporal-accum')).toBe(17);
+      expect(layout.index('atrous-indirect-0')).toBe(18);
+      expect(layout.index('atrous-indirect-1')).toBe(19);
+      expect(layout.index('atrous-indirect-2')).toBe(20);
+      expect(layout.index('atrous-indirect-3')).toBe(21);
+      expect(layout.index('indirect-combine')).toBe(22);
+      expect(layout.index('temporalAccum')).toBe(23);
+      expect(layout.index('resolve')).toBe(24);
+      expect(layout.index('composite')).toBe(25);
     });
 
     it('does not include ppg-update', () => {
@@ -55,13 +56,13 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(() => layout.index('atrous-0')).toThrow(/not active/);
     });
 
-    it('reports 25 slots', () => {
-      expect(layout.slotCount).toBe(25);
-      expect(layout.labels).toHaveLength(25);
+    it('reports 26 slots', () => {
+      expect(layout.slotCount).toBe(26);
+      expect(layout.labels).toHaveLength(26);
     });
   });
 
-  describe('PPG on, SVGF mode (26 slots — full worst-case)', () => {
+  describe('PPG on, SVGF mode (27 slots — full worst-case)', () => {
     const layout = buildPassLayout({ ppgEnabled: true, denoiserMode: 'svgf' });
 
     it('inserts ppg-update at slot 10 between shade and gtao', () => {
@@ -78,21 +79,22 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('svgf-variance')).toBe(14);
       expect(layout.index('svgf-atrous-0')).toBe(15);
       expect(layout.index('svgf-atrous-2')).toBe(17);
-      expect(layout.index('atrous-indirect-0')).toBe(18);
-      expect(layout.index('atrous-indirect-3')).toBe(21);
-      expect(layout.index('indirect-combine')).toBe(22);
-      expect(layout.index('temporalAccum')).toBe(23);
-      expect(layout.index('resolve')).toBe(24);
-      expect(layout.index('composite')).toBe(25);
+      expect(layout.index('indirect-temporal-accum')).toBe(18);
+      expect(layout.index('atrous-indirect-0')).toBe(19);
+      expect(layout.index('atrous-indirect-3')).toBe(22);
+      expect(layout.index('indirect-combine')).toBe(23);
+      expect(layout.index('temporalAccum')).toBe(24);
+      expect(layout.index('resolve')).toBe(25);
+      expect(layout.index('composite')).toBe(26);
     });
 
-    it('reports 26 slots — matches MAX_PASS_COUNT', () => {
-      expect(layout.slotCount).toBe(26);
+    it('reports 27 slots — matches MAX_PASS_COUNT', () => {
+      expect(layout.slotCount).toBe(27);
       expect(layout.slotCount).toBe(MAX_PASS_COUNT);
     });
   });
 
-  describe('PPG off, legacy atrous mode (21 slots)', () => {
+  describe('PPG off, legacy atrous mode (24 slots)', () => {
     const layout = buildPassLayout({ ppgEnabled: false, denoiserMode: 'atrous' });
 
     it('GI block at 5..8; shade at 9; gtao + upsample at 10, 11; atrous-0..2 at 12..14', () => {
@@ -107,25 +109,26 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('atrous-2')).toBe(14);
     });
 
-    it('places atrous-indirect-0..3 then indirect-combine, temporalAccum, resolve, composite at end', () => {
-      expect(layout.index('atrous-indirect-0')).toBe(15);
-      expect(layout.index('atrous-indirect-3')).toBe(18);
-      expect(layout.index('indirect-combine')).toBe(19);
-      expect(layout.index('temporalAccum')).toBe(20);
-      expect(layout.index('resolve')).toBe(21);
-      expect(layout.index('composite')).toBe(22);
+    it('places indirect-temporal-accum, atrous-indirect-0..3, indirect-combine, then temporalAccum/resolve/composite tail', () => {
+      expect(layout.index('indirect-temporal-accum')).toBe(15);
+      expect(layout.index('atrous-indirect-0')).toBe(16);
+      expect(layout.index('atrous-indirect-3')).toBe(19);
+      expect(layout.index('indirect-combine')).toBe(20);
+      expect(layout.index('temporalAccum')).toBe(21);
+      expect(layout.index('resolve')).toBe(22);
+      expect(layout.index('composite')).toBe(23);
     });
 
     it('does not include SVGF labels', () => {
       expect(() => layout.index('welford-temporal')).toThrow(/not active/);
     });
 
-    it('reports 23 slots', () => {
-      expect(layout.slotCount).toBe(23);
+    it('reports 24 slots', () => {
+      expect(layout.slotCount).toBe(24);
     });
   });
 
-  describe('PPG on, legacy atrous mode (24 slots)', () => {
+  describe('PPG on, legacy atrous mode (25 slots)', () => {
     const layout = buildPassLayout({ ppgEnabled: true, denoiserMode: 'atrous' });
 
     it('shade at 9; ppg-update at 10; gtao + upsample at 11, 12; atrous-0..2 at 13..15', () => {
@@ -137,16 +140,17 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('gtao-upsample')).toBe(12);
       expect(layout.index('atrous-0')).toBe(13);
       expect(layout.index('atrous-2')).toBe(15);
-      expect(layout.index('atrous-indirect-0')).toBe(16);
-      expect(layout.index('atrous-indirect-3')).toBe(19);
-      expect(layout.index('indirect-combine')).toBe(20);
-      expect(layout.index('temporalAccum')).toBe(21);
-      expect(layout.index('resolve')).toBe(22);
-      expect(layout.index('composite')).toBe(23);
+      expect(layout.index('indirect-temporal-accum')).toBe(16);
+      expect(layout.index('atrous-indirect-0')).toBe(17);
+      expect(layout.index('atrous-indirect-3')).toBe(20);
+      expect(layout.index('indirect-combine')).toBe(21);
+      expect(layout.index('temporalAccum')).toBe(22);
+      expect(layout.index('resolve')).toBe(23);
+      expect(layout.index('composite')).toBe(24);
     });
 
-    it('reports 24 slots', () => {
-      expect(layout.slotCount).toBe(24);
+    it('reports 25 slots', () => {
+      expect(layout.slotCount).toBe(25);
     });
   });
 
@@ -160,8 +164,8 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       }
     });
 
-    it('MAX_PASS_COUNT is 26 (Sprint 18 follow-up — 4 indirect atrous iters)', () => {
-      expect(MAX_PASS_COUNT).toBe(26);
+    it('MAX_PASS_COUNT is 27 (Sprint 18 follow-up — adds indirect-temporal-accum pre-atrous)', () => {
+      expect(MAX_PASS_COUNT).toBe(27);
     });
   });
 
