@@ -31,16 +31,28 @@ const TRI_INTERSECT_EPSILON = 1e-5;
 const LEAFNODE_FLAG = 0xFFFF0000u;
 
 // Distance² floor for the emitter geometry term G = (n_l·ω) / dist².
-// Without it, a receiving pixel that sits within ~2" of a panel-cell
-// emitter sees G=400+, blowing the wall to near-saturation and
-// producing the "sunlight-from-above-the-panel" illusion.
+// Without it, a receiving pixel that sits within ~2 inches of a panel-cell
+// emitter (a stained-glass scene with cm-scale geometry) sees G=400+,
+// blowing the wall to near-saturation.
+//
+// PREVIOUS value 4.0 was calibrated for that stained-glass scene; for
+// meter-scale scenes (Cornell box, where the area light sits ~1.4 m from
+// the box top and ~2 m from the floor mid, giving dist² in [1.8, 4.0]),
+// a floor of 4.0 clamps the geometry term *for every receiver* by 1.0–2.3×.
+// Verified via magnitude audit: this single constant was responsible for
+// ~50–60% of the scene-wide "things look too dim" symptom for both direct
+// and indirect lighting.
+//
+// New value 0.01 = 10 cm minimum effective distance.  Still prevents the
+// G=400+ blowup at cm-scale emitter contact (any receiver within 1 cm of a
+// panel-cell still sees G clamped), but does not touch any receiver beyond
+// 10 cm — the entire Cornell scene now uses the true 1/dist² falloff.
 //
 // CRITICAL: this floor must be applied in BOTH the RIS reservoir
 // construction (ris.wgsl computePHat + M_LIGHT loop) AND shade's
 // direct-light evaluation (shade.wgsl) so the importance-sampled
-// p̂ matches the evaluated p̂. Drift was the variance source called
-// out by the sweep finding Bug 3.
-const EMITTER_DIST2_FLOOR = 4.0;
+// p̂ matches the evaluated p̂.
+const EMITTER_DIST2_FLOOR = 0.01;
 
 // Sprint 18 follow-up — ReSTIR-GI per-pixel unbiased weight (W) cap.
 //
