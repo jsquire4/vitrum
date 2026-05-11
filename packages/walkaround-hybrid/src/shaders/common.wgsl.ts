@@ -58,13 +58,17 @@ const EMITTER_DIST2_FLOOR = 4.0;
 //      settles to a stable fixed point — the user sees a never-converging
 //      image with shifting bright dots and wavy bands.
 //
-// Capping W at 4 keeps a single sample's contribution bounded — Lo_indirect
-// = Lo · albedo · INV_PI · cosTheta · W ≤ (Le_max ≈ 1) · 1 · INV_PI · 1 · 4
-// ≈ 1.27 per channel, still well above any plausible converged indirect
-// brightness for a Cornell-scale scene.  Strict ReSTIR unbiasedness is
-// traded for variance-bounded convergence; the residual bias is small
-// since W rarely exceeds 4 except on the firefly tail.
-const RESTIR_GI_W_CAP: f32 = 4.0;
+// Capping W at 16 keeps single-sample contribution bounded without biasing
+// the indirect magnitude.  Previous tighter cap of 4 was masking a real
+// firefly source (near-light DDGI atlas spikes) while also truncating the
+// heavy tail of legitimately bright samples — the result was a uniformly
+// dim indirect signal (~17× too low on Cornell white walls) AND visible
+// fireflies, because the cap reduced spike *amplitude* without addressing
+// spike *prevalence*.  The proper fix is upstream: cap irrAtXs at the
+// reconnection vertex (see risGi.wgsl).  W can then breathe at 16, which
+// admits the legitimate variance the unbiased estimator needs while still
+// bounding pathological cases for variance-bounded convergence.
+const RESTIR_GI_W_CAP: f32 = 16.0;
 
 // ============================================================
 // WalkaroundUBO — canonical per-frame uniform layout shared by every

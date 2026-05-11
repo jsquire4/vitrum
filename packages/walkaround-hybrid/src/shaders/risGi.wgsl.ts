@@ -159,7 +159,27 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       // Sample DDGI atlas at the reconnection vertex along its normal —
       // gives the incoming irradiance there. Modulate by the hit surface's
       // albedo / π for Lambertian outgoing radiance toward the visible pt.
-      let irrAtXs = sampleDDGIAtPoint(xs, ns);
+      //
+      // Critical reject + cap: DDGI probes within ~1 spacing of an area
+      // light see Le directly (the probe trace's diffuse hemisphere catches
+      // the light surface) → atlas reads of 5..8 are common.  When a
+      // cosine-hemisphere sample's first BVH hit lands at one of those
+      // probes' world positions, Lo would carry direct-light contribution
+      // — but ReSTIR-DI already accounts for direct light in Lo_direct.
+      // Letting GI also pick those samples double-counts AND produces
+      // per-pixel firefly lock-in (each pixel's reservoir picks a different
+      // near-light vs far-light reconnection sample → 30× p99/p1 spatial
+      // brightness ratio on what should be a uniform wall).
+      //
+      // Reject any reconnection where irrAtXs exceeds the upper bound of
+      // plausible *indirect-only* irradiance for the scene scale (2.0 —
+      // Cornell white walls peak at ~0.8 in pure indirect bouncing; well
+      // below this).  Cap surviving reads at 1.0 as defensive belt-and-
+      // braces.  Rejected candidates simply don't update the reservoir,
+      // so the remaining 7/8 typical samples cover the indirect estimate.
+      let irrRaw = sampleDDGIAtPoint(xs, ns);
+      if (any(irrRaw > vec3f(2.0))) { continue; }
+      let irrAtXs = min(irrRaw, vec3f(1.0));
       let xsMat = decodeMaterialColor(bounceHit.matColorPacked);
       Lo = irrAtXs * xsMat.rgb * INV_PI;
     } else {
