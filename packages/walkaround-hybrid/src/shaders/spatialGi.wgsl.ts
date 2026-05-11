@@ -109,7 +109,8 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let wiF = toSf / distSf;
       let cosThetaF = max(0.0, dot(rOut.nv, wiF));
       let pHatF = luminance(rOut.Lo) * cosThetaF * INV_PI;
-      rOut.W = select(0.0, rOut.w_sum / (f32(rOut.M) * pHatF), pHatF > 1e-9);
+      let W_raw = select(0.0, rOut.w_sum / (f32(rOut.M) * pHatF), pHatF > 1e-9);
+      rOut.W = min(W_raw, RESTIR_GI_W_CAP);
     } else {
       rOut.W = 0.0;
     }

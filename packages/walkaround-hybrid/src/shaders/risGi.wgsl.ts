@@ -196,7 +196,10 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       } else {
         let cosThetaZ = max(0.0, dot(r.nv, wiZ));
         let pHatZ = luminance(r.Lo) * cosThetaZ * INV_PI;
-        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
+        let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
+        // Cap W to bound firefly contribution from tiny pHat denominators
+        // (grazing cos or near-zero Lo luminance). See common.wgsl §RESTIR_GI_W_CAP.
+        r.W = min(W_raw, RESTIR_GI_W_CAP);
       }
     } else {
       r.W = 0.0;

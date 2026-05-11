@@ -42,6 +42,30 @@ const LEAFNODE_FLAG = 0xFFFF0000u;
 // out by the sweep finding Bug 3.
 const EMITTER_DIST2_FLOOR = 4.0;
 
+// Sprint 18 follow-up — ReSTIR-GI per-pixel unbiased weight (W) cap.
+//
+// W = w_sum / (M · p̂(z)) is unbounded when the chosen sample's p̂ at the
+// visible point is small (grazing cosTheta from the visible normal to the
+// reconnection direction, or near-zero luminance after a sky-miss bounce).
+// A single pixel with a tiny p̂ produces a huge spike that:
+//   1. Passes through the per-channel atrous-indirect chain (the spike is
+//      a 1-pixel impulse, which the 5×5 kernel only attenuates to ~1/13 of
+//      its peak per step; spread across 4 iterations the spike becomes a
+//      multi-pixel halo rather than disappearing).
+//   2. Defeats the temporal accumulator: alpha=0.02 means the spike's
+//      contribution to the running average is 2% per frame, but new spikes
+//      arrive on different pixels every ~5 frames, so the average never
+//      settles to a stable fixed point — the user sees a never-converging
+//      image with shifting bright dots and wavy bands.
+//
+// Capping W at 4 keeps a single sample's contribution bounded — Lo_indirect
+// = Lo · albedo · INV_PI · cosTheta · W ≤ (Le_max ≈ 1) · 1 · INV_PI · 1 · 4
+// ≈ 1.27 per channel, still well above any plausible converged indirect
+// brightness for a Cornell-scale scene.  Strict ReSTIR unbiasedness is
+// traded for variance-bounded convergence; the residual bias is small
+// since W rarely exceeds 4 except on the firefly tail.
+const RESTIR_GI_W_CAP: f32 = 4.0;
+
 // ============================================================
 // WalkaroundUBO — canonical per-frame uniform layout shared by every
 // ReSTIR compute pass (ris/temporal/spatial/shade). Defined here so
