@@ -134,8 +134,11 @@ export {
   PPG_KD_MAX_NODES,
 } from './ppg/types.js';
 
-// WGSL shader fragments (authored; dispatch deferred — see sprint-11-ppg-integration.md).
-export { PPG_SAMPLE_WGSL } from './ppg/wgsl/ppgSample.wgsl.js';
+// PPG update-pass WGSL (the live training kernel; dispatched from
+// WalkaroundGPUPipeline when PPG is enabled). The companion sample-pass
+// fragment was deleted in P3-C.2 — `shadePpgGuide.wgsl.ts` provides the
+// guided indirect bounce via marker-injection into shade.wgsl with
+// real @group(3) bindings.
 export { PPG_UPDATE_WGSL } from './ppg/wgsl/ppgUpdate.wgsl.js';
 
 // Buffer allocation helpers.

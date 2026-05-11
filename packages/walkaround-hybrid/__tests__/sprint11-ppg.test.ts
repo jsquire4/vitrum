@@ -7,13 +7,16 @@
  *
  * Coverage:
  *   1. PPG type definitions — constants, byte-stride values.
- *   2. PPG_SAMPLE_WGSL — entry points, bindings, fallback-cosine path.
- *   3. PPG_UPDATE_WGSL — entry point, bindings, atomic update strategy.
- *   4. createPPGBuffers — buffer count, sizes, and usage flags.
- *   5. buildPpgKdTreeGpuBytes / ppgNearestCellIndexKd vs brute parity.
- *   6. PPG disabled — no buffer allocation when ppgEnabled false/unset.
- *   7. setPPGEnabled lifecycle — toggle reflected in getter; no-op dispatch.
- *   8. FrameResources.ppgBuffers — opt-in field presence and destroy.
+ *   2. PPG_UPDATE_WGSL — entry point, bindings, atomic update strategy.
+ *   3. createPPGBuffers — buffer count, sizes, and usage flags.
+ *   4. buildPpgKdTreeGpuBytes / ppgNearestCellIndexKd vs brute parity.
+ *   5. PPG disabled — no buffer allocation when ppgEnabled false/unset.
+ *   6. setPPGEnabled lifecycle — toggle reflected in getter; no-op dispatch.
+ *   7. FrameResources.ppgBuffers — opt-in field presence and destroy.
+ *
+ * (The companion PPG_SAMPLE_WGSL fragment was deleted in P3-C.2;
+ * shadePpgGuide.wgsl.ts handles guided indirect sampling via @group(3)
+ * marker-injection into shade.wgsl.)
  */
 
 import { describe, it, expect, vi } from 'vitest';
@@ -31,7 +34,6 @@ import {
   ppgNearestCellIndexBrute,
   ppgNearestCellIndexKd,
 } from '../src/ppg/buildPpgKdTree.js';
-import { PPG_SAMPLE_WGSL } from '../src/ppg/wgsl/ppgSample.wgsl.js';
 import { PPG_UPDATE_WGSL } from '../src/ppg/wgsl/ppgUpdate.wgsl.js';
 import {
   createPPGBuffers,
@@ -172,115 +174,11 @@ describe('buildPpgKdTreeGpuBytes / ppgNearestCellIndexKd', () => {
   });
 });
 
-// ─── 2. PPG_SAMPLE_WGSL — shader fragment ─────────────────────────────────────
-
-describe('PPG_SAMPLE_WGSL — ppgSampleDirection and ppgPDF shader fragment', () => {
-  it('is a non-empty string', () => {
-    expect(typeof PPG_SAMPLE_WGSL).toBe('string');
-    expect(PPG_SAMPLE_WGSL.length).toBeGreaterThan(0);
-  });
-
-  it('declares PPGSpatialCell struct', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('struct PPGSpatialCell');
-  });
-
-  it('declares PPGDirectionalLeaf struct', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('struct PPGDirectionalLeaf');
-  });
-
-  it('binds ppgCells at @group(2) @binding(0)', () => {
-    // TODO(Sprint-11-integration): @group(2) is a placeholder until the PPG
-    // dispatch is wired into the pipeline. When the real group number is
-    // finalized, update both the WGSL `@group(N)` annotations in
-    // ppgSample.wgsl.ts / ppgUpdate.wgsl.ts AND every `@group(2)` assertion
-    // in this test file in the same commit.
-    expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(0)');
-    expect(PPG_SAMPLE_WGSL).toContain('ppgCells');
-  });
-
-  it('binds ppgLeaves at @group(2) @binding(1)', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(1)');
-    expect(PPG_SAMPLE_WGSL).toContain('ppgLeaves');
-  });
-
-  it('binds ppgKdNodes at @group(2) @binding(2)', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('@group(2) @binding(2)');
-    expect(PPG_SAMPLE_WGSL).toContain('ppgKdNodes');
-  });
-
-  it('contains ppgSampleDirection function', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('fn ppgSampleDirection');
-  });
-
-  it('ppgSampleDirection takes worldPos, n, u1, u2, rng params', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('worldPos: vec3f');
-    expect(PPG_SAMPLE_WGSL).toContain('u1: f32');
-    expect(PPG_SAMPLE_WGSL).toContain('u2: f32');
-  });
-
-  it('ppgSampleDirection returns vec3f', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('fn ppgSampleDirection');
-    // Return type on the function signature line
-    expect(PPG_SAMPLE_WGSL).toMatch(/fn ppgSampleDirection\([^)]+\)\s*->\s*vec3f/);
-  });
-
-  it('contains fallback to cosine-weighted hemisphere sampling when cell is empty', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('sampleCosineHemisphere');
-  });
-
-  it('ppgLeafIsEmpty check triggers the cosine fallback', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('ppgLeafIsEmpty');
-    expect(PPG_SAMPLE_WGSL).toContain('sampleCosineHemisphere(n, rng)');
-  });
-
-  it('contains CDF inversion (binary search or linear scan over 16 bins)', () => {
-    // The CDF inversion looks for a target in the CDF array
-    expect(PPG_SAMPLE_WGSL).toContain('cdf[b] >= target');
-  });
-
-  it('contains ppgPDF function', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('fn ppgPDF');
-  });
-
-  it('ppgPDF returns f32', () => {
-    expect(PPG_SAMPLE_WGSL).toMatch(/fn ppgPDF\([^)]+\)\s*->\s*f32/);
-  });
-
-  it('ppgPDF falls back to cosineHemispherePdf when cell is empty', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('cosineHemispherePdf(n, dir)');
-  });
-
-  it('contains ppgFindCellIndex spatial lookup', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('fn ppgFindCellIndex');
-  });
-
-  it('ppgFindCellIndex uses nearest-neighbour distance comparison', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('bestDist');
-    expect(PPG_SAMPLE_WGSL).toContain('bestIdx');
-  });
-
-  it('contains ppgBuildCDF function', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('fn ppgBuildCDF');
-  });
-
-  it('ppgBuildCDF accumulates radianceSum across 16 bins', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('radianceSum');
-  });
-
-  it('contains ppgBinToOctahedral helper (4×4 bin grid)', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('fn ppgBinToOctahedral');
-  });
-
-  it('contains ppgOctahedralToDir hemisphere decode', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('fn ppgOctahedralToDir');
-  });
-
-  it('uses buildONB for normal-frame rotation', () => {
-    expect(PPG_SAMPLE_WGSL).toContain('buildONB(n, &T, &B)');
-  });
-});
-
-// ─── 3. PPG_UPDATE_WGSL — compute kernel ──────────────────────────────────────
+// ─── 2. PPG_UPDATE_WGSL — compute kernel ──────────────────────────────────────
+//
+// (The companion PPG_SAMPLE_WGSL fragment was deleted in P3-C.2 — its
+// functionality is provided by `shadePpgGuide.wgsl.ts` which injects guided
+// indirect sampling into shade.wgsl with real @group(3) bindings.)
 
 describe('PPG_UPDATE_WGSL — ppgUpdateKernel compute shader', () => {
   it('is a non-empty string', () => {
@@ -664,9 +562,9 @@ describe('PPG exports from package index (Sprint 11)', () => {
     expect(typeof (mod as Record<string, unknown>)['PPG_LEAF_BYTE_STRIDE']).toBe('number');
   });
 
-  it('PPG_SAMPLE_WGSL is exported from package index', async () => {
+  it('PPG_SAMPLE_WGSL is NOT exported (deleted in P3-C.2; superseded by shadePpgGuide.wgsl.ts)', async () => {
     const mod = await import('../src/index.js');
-    expect(typeof (mod as Record<string, unknown>)['PPG_SAMPLE_WGSL']).toBe('string');
+    expect((mod as Record<string, unknown>)['PPG_SAMPLE_WGSL']).toBeUndefined();
   });
 
   it('PPG_UPDATE_WGSL is exported from package index', async () => {
