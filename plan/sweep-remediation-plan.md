@@ -2074,3 +2074,27 @@ These files were read in full and found to be clean, single-purpose, and well-st
 ---
 
 Full remediation complete on 2026-05-11 — repo confirmed clean by two-pass sweep + audit.
+
+---
+
+## P3 follow-up — deferred items landed (2026-05-11)
+
+The Phase 4 / Phase 9 deferrals (4.52 / 4.53 / 4.64 / 4.71 / 9.1 / 9.3) and
+the Pass-2 deferrals (P2-4.4 / P2-4.6 / P2-6.1 / P2-7.2) all landed in the
+P3-* commit series on 2026-05-11. See `plan/p3-validation-matrix.md` for
+the RTX-4090-driven visual verification plan that the user runs via
+Claude-in-Chrome to confirm each deferred-item resolution.
+
+- **4.52 / 4.53** → P3-A.1 commit `e9d52f4` (PTEngineWebGL2 extraction).
+- **4.64** → P3-B.2 commit `f8a36dd` (pathTraceBruteforce main() split).
+- **4.71** → P3-B.1b commit `e9dd0b6` (drop first* + repack FrameParams).
+- **9.1** → P3-C.1 (Sprint 9 adaptive sampling — full integration, real algorithmic change).
+- **9.3** → P3-C.2 commit `24d847a` (delete orphan PPG_SAMPLE_WGSL; live path provided by shadePpgGuide.wgsl.ts).
+- **P2-4.4** → P3-B.1a commit `efdd5e0` (uploadSceneBuffers split).
+- **P2-4.6** → P3-A.2 commit `e9d52f4` (passIdx → named PassLayout; also fixes a latent telemetry-label bug).
+- **P2-6.1** → P3-B.3 commit `f8a36dd` (cross-engine extractThreePbrScalars).
+- **P2-7.2** → P3-B.4 commit `c7f7638` (drop three/webgpu StorageTexture from probeGrid + probeUpdatePass).
+
+P3-V (validation matrix) lives at `plan/p3-validation-matrix.md`. Phase 8
+host-app extractions remain intentionally deferred until the host app
+resumes active development.
