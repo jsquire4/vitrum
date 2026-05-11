@@ -12,15 +12,17 @@
  * three.js's binding system. The WebGPU backend's `device` property is
  * used directly.
  *
- * Three.js WebGPU coupling (RISK-3): StorageTexture is imported from
- * 'three/webgpu' and renderer.backend.device is accessed directly. This
- * package therefore carries 'three/webgpu' as a peer dep on the DDGI path.
+ * three/webgpu coupling: `renderer.backend.device` is accessed directly,
+ * but ProbeGrid atlas slots are now backend-agnostic `AtlasTextureSlot`
+ * records (see probeGrid.ts). The GPU texture per slot is allocated lazily
+ * in `_getOrCreateAtlasTexture` and cached in `_textureCache` keyed on the
+ * slot identity. TSL binding (if applyDDGIShading is in use) is the only
+ * site still importing from three/webgpu.
  */
 
 import * as THREE from 'three';
-import type { StorageTexture } from 'three/webgpu';
 import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
-import type { ProbeGrid } from './probeGrid.js';
+import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { PROBE_UPDATE_RAYS_WGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
@@ -477,29 +479,26 @@ export class ProbeUpdatePass {
     device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data.buffer);
   }
 
-  // Cache: StorageTexture → GPUTexture
-  private _textureCache = new WeakMap<StorageTexture, GPUTexture>();
+  // Cache: AtlasTextureSlot identity → GPUTexture. The slot is a plain
+  // record (just width/height); we use it as a WeakMap key so the
+  // GPUTexture is released when ProbeGrid drops the slot.
+  private _textureCache = new WeakMap<AtlasTextureSlot, GPUTexture>();
 
   private _getOrCreateAtlasTexture(
     device: GPUDevice,
-    tex: StorageTexture,
+    slot: AtlasTextureSlot,
     format: GPUTextureFormat,
   ): GPUTexture {
-    if (this._textureCache.has(tex)) return this._textureCache.get(tex)!;
+    const cached = this._textureCache.get(slot);
+    if (cached) return cached;
 
-    // StorageTexture.image is typed as `{}` in three/webgpu — cast to access
-    // width/height which are set by Three.js's WebGPU backend at runtime.
-    const img = tex.image as { width?: number; height?: number };
     const gpuTex = device.createTexture({
-      size: [img.width ?? 80, img.height ?? 480, 1],
+      size: [slot.width, slot.height, 1],
       format,
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
 
-    // Store tex dimensions on the texture for use in WGSL.
-    tex.image = { width: gpuTex.width, height: gpuTex.height } as {};
-
-    this._textureCache.set(tex, gpuTex);
+    this._textureCache.set(slot, gpuTex);
     return gpuTex;
   }
 

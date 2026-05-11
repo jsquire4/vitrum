@@ -23,12 +23,35 @@
 
 import * as THREE from 'three';
 import type { MeshPhysicalNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu';
+import { StorageTexture } from 'three/webgpu';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyNode = any;
 import { add, vec4, mul, output, materialColor, uniform, texture, positionWorld, normalWorld, wgslFn, renderOutput } from 'three/tsl';
-import type { ProbeGrid } from '../ddgi/probeGrid.js';
+import type { ProbeGrid, AtlasTextureSlot } from '../ddgi/probeGrid.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import { upgradeToNodeMaterial } from '../lib/nodeMaterialUpgrade.js';
+
+// TSL binds textures via three.js Texture handles. ProbeGrid exposes
+// backend-agnostic AtlasTextureSlot records (just width/height) so the
+// compute path (probeUpdatePass) doesn't need to touch three/webgpu.
+// This site is the TSL boundary — we wrap each slot in a StorageTexture
+// here, cached by slot identity so TSL keeps its bindings stable across
+// frames. The wrappers themselves carry no GPU data; three.js's WebGPU
+// backend manages whatever GPUTexture it allocates for them.
+const _slotStorageTextureCache = new WeakMap<AtlasTextureSlot, StorageTexture>();
+function slotToStorageTexture(slot: AtlasTextureSlot): StorageTexture {
+  let tex = _slotStorageTextureCache.get(slot);
+  if (!tex) {
+    tex = new StorageTexture(slot.width, slot.height);
+    tex.format = THREE.RGBAFormat;
+    tex.type = THREE.HalfFloatType;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    _slotStorageTextureCache.set(slot, tex);
+  }
+  return tex;
+}
 
 // WebGPU is configured with NoToneMapping + LinearSRGBColorSpace at the
 // renderer level to keep Three's internal HDR `_frameBufferTarget` from
@@ -66,8 +89,8 @@ export function applyDDGIShading(
 ): void {
   if (!probeGrid.irradianceA || !probeGrid.irradianceB) return;
 
-  const irrTex = probeGrid.irradianceReadTex as unknown as THREE.Texture;
-  const visTex = probeGrid.visibilityReadTex as unknown as THREE.Texture;
+  const irrTex = slotToStorageTexture(probeGrid.irradianceReadTex);
+  const visTex = slotToStorageTexture(probeGrid.visibilityReadTex);
   const p = probeGrid.params;
 
   scene.traverse((obj) => {
