@@ -121,41 +121,15 @@ function discAreaPackedAsRect(e: DiscAreaEmitter): {
   };
 }
 
-export interface UploadedSceneBuffers {
-  readonly triangleCount: number;
+/**
+ * `UploadedSceneBuffers` is `PackedSceneData` plus the matching GPU buffer
+ * handles and derived counts. Embedding `PackedSceneData` directly removes
+ * the ~30-field re-declaration that used to live here and the
+ * field-by-field copy in `uploadPackedScene` (now a single spread).
+ */
+export interface UploadedSceneBuffers extends PackedSceneData {
   readonly bvhNodeCount: number;
   readonly materialCount: number;
-  readonly analyticCount: number;
-  readonly directionalLight: readonly [number, number, number];
-  readonly directionalIrradiance: readonly [number, number, number];
-  readonly pointLightPosition: readonly [number, number, number];
-  readonly pointLightRadiance: readonly [number, number, number];
-  readonly hasPointLight: boolean;
-  readonly spotLightPosition: readonly [number, number, number];
-  readonly spotLightDirection: readonly [number, number, number];
-  readonly spotLightCosAngle: number;
-  readonly spotLightRadiance: readonly [number, number, number];
-  readonly hasSpotLight: boolean;
-  readonly rectAreaPosition: readonly [number, number, number];
-  readonly rectAreaUAxis: readonly [number, number, number];
-  readonly rectAreaVAxis: readonly [number, number, number];
-  readonly rectAreaRadiance: readonly [number, number, number];
-  readonly hasRectAreaLight: boolean;
-  readonly meshAreaTriA: readonly [number, number, number];
-  readonly meshAreaTriB: readonly [number, number, number];
-  readonly meshAreaTriC: readonly [number, number, number];
-  readonly meshAreaRadiance: readonly [number, number, number];
-  readonly hasMeshAreaLight: boolean;
-  readonly pointLightCount: number;
-  readonly spotLightCount: number;
-  readonly rectAreaLightCount: number;
-  readonly meshAreaLightCount: number;
-  readonly environmentTint: readonly [number, number, number];
-  readonly environmentSunDirection: readonly [number, number, number];
-  readonly environmentSunStrength: number;
-  readonly environmentMapWidth: number;
-  readonly environmentMapHeight: number;
-  readonly hasEnvironmentMap: boolean;
   readonly positionsBuffer: GPUBuffer;
   readonly normalsBuffer: GPUBuffer;
   readonly indicesBuffer: GPUBuffer;
@@ -321,21 +295,21 @@ const IDENTITY_MAT4 = new Float32Array([
   0, 0, 0, 1,
 ]);
 
+/** Supported analytic-shape discriminator strings, in numeric-id order.
+ *  The pt-webgpu WGSL shader reads `analyticHeader.x` and switches on these
+ *  integer ids; the array index is the id. Slot 0 is reserved for "unknown". */
+export const PT_WEBGPU_ANALYTIC_SHAPES = [
+  /* 0 */ 'unknown',
+  /* 1 */ 'sphere',
+  /* 2 */ 'box',
+  /* 3 */ 'capsule',
+  /* 4 */ 'cylinder',
+  /* 5 */ 'h-channel-came',
+] as const;
+
 function analyticShapeId(shape: string): number {
-  switch (shape) {
-    case 'sphere':
-      return 1;
-    case 'box':
-      return 2;
-    case 'capsule':
-      return 3;
-    case 'cylinder':
-      return 4;
-    case 'h-channel-came':
-      return 5;
-    default:
-      return 0;
-  }
+  const idx = (PT_WEBGPU_ANALYTIC_SHAPES as readonly string[]).indexOf(shape);
+  return idx > 0 ? idx : 0;
 }
 
 function defaultDirectionalLight(scene: Scene): readonly [number, number, number] {
@@ -551,7 +525,7 @@ function firstMeshAreaLight(scene: Scene): {
   };
 }
 
-function environmentParams(scene: Scene): {
+interface EnvironmentParams {
   readonly tint: readonly [number, number, number];
   readonly sunDirection: readonly [number, number, number];
   readonly sunStrength: number;
@@ -561,38 +535,63 @@ function environmentParams(scene: Scene): {
   readonly hdriTexels: Float32Array;
   readonly hdriCdf: Float32Array;
   readonly warnings: readonly string[];
-} {
+}
+
+/** Empty / no-environment slot — neutral tint, no HDRI sampling. */
+function emptyEnvironmentParams(): EnvironmentParams {
+  return {
+    tint: [1, 1, 1],
+    sunDirection: [0, 1, 0],
+    sunStrength: 0,
+    hdriWidth: 0,
+    hdriHeight: 0,
+    hasHdri: false,
+    hdriTexels: new Float32Array(0),
+    hdriCdf: new Float32Array(0),
+    warnings: [],
+  };
+}
+
+/**
+ * Build environment params from a procedural-sky scene environment.
+ *
+ * The RGB tint is heuristic, not physically derived:
+ *  - Base tint is `[0.9, 0.95, 1.0]` (Rayleigh-skewed blue, slightly green-
+ *    weighted to mimic noon sky chromaticity).
+ *  - `mieCoefficient * 10` is subtracted from the red channel (mie scattering
+ *    biases the dome toward warmer hues by reducing blue dominance, so we
+ *    pull red DOWN to keep the dome blue-ish).
+ *  - Floor of 0.2 prevents the tint from going to black for huge mie values.
+ *  - All channels multiply by `intensity`, the scene-level dome brightness.
+ */
+function buildProceduralSkyEnvironmentParams(
+  env: Extract<Scene['environment'], { kind: 'procedural-sky' }>,
+): EnvironmentParams {
+  const d = env.sunDirection;
+  const len = Math.hypot(d[0], d[1], d[2]);
+  const sunDir: readonly [number, number, number] =
+    len < 1e-8 ? [0, 1, 0] : [d[0] / len, d[1] / len, d[2] / len];
+  const intensity = env.intensity ?? 1;
+  const tintBoost = Math.max(0.2, 1 - env.mieCoefficient * 10);
+  return {
+    tint: [0.9 * tintBoost * intensity, 0.95 * intensity, 1.0 * intensity],
+    sunDirection: sunDir,
+    sunStrength: Math.max(0, intensity),
+    hdriWidth: 0,
+    hdriHeight: 0,
+    hasHdri: false,
+    hdriTexels: new Float32Array(0),
+    hdriCdf: new Float32Array(0),
+    warnings: [],
+  };
+}
+
+function environmentParams(scene: Scene): EnvironmentParams {
   if (scene.environment.kind === 'none') {
-    return {
-      tint: [1, 1, 1],
-      sunDirection: [0, 1, 0],
-      sunStrength: 0,
-      hdriWidth: 0,
-      hdriHeight: 0,
-      hasHdri: false,
-      hdriTexels: new Float32Array(0),
-      hdriCdf: new Float32Array(0),
-      warnings: [],
-    };
+    return emptyEnvironmentParams();
   }
   if (scene.environment.kind === 'procedural-sky') {
-    const d = scene.environment.sunDirection;
-    const len = Math.hypot(d[0], d[1], d[2]);
-    const sunDir: readonly [number, number, number] =
-      len < 1e-8 ? [0, 1, 0] : [d[0] / len, d[1] / len, d[2] / len];
-    const intensity = scene.environment.intensity ?? 1;
-    const tintBoost = Math.max(0.2, 1 - scene.environment.mieCoefficient * 10);
-    return {
-      tint: [0.9 * tintBoost * intensity, 0.95 * intensity, 1.0 * intensity],
-      sunDirection: sunDir,
-      sunStrength: Math.max(0, intensity),
-      hdriWidth: 0,
-      hdriHeight: 0,
-      hasHdri: false,
-      hdriTexels: new Float32Array(0),
-      hdriCdf: new Float32Array(0),
-      warnings: [],
-    };
+    return buildProceduralSkyEnvironmentParams(scene.environment);
   }
   type HdriLike = { width?: number; height?: number; data?: ArrayLike<number> };
   const hdri = scene.environment.hdri as HdriLike;
@@ -1018,40 +1017,9 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
 
   return {
-    triangleCount: packed.triangleCount,
+    ...packed,
     bvhNodeCount: Math.floor(packed.bvhNodes.length / 8),
     materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),
-    analyticCount: packed.analyticCount,
-    directionalLight: packed.directionalLight,
-    directionalIrradiance: packed.directionalIrradiance,
-    pointLightPosition: packed.pointLightPosition,
-    pointLightRadiance: packed.pointLightRadiance,
-    hasPointLight: packed.hasPointLight,
-    spotLightPosition: packed.spotLightPosition,
-    spotLightDirection: packed.spotLightDirection,
-    spotLightCosAngle: packed.spotLightCosAngle,
-    spotLightRadiance: packed.spotLightRadiance,
-    hasSpotLight: packed.hasSpotLight,
-    rectAreaPosition: packed.rectAreaPosition,
-    rectAreaUAxis: packed.rectAreaUAxis,
-    rectAreaVAxis: packed.rectAreaVAxis,
-    rectAreaRadiance: packed.rectAreaRadiance,
-    hasRectAreaLight: packed.hasRectAreaLight,
-    meshAreaTriA: packed.meshAreaTriA,
-    meshAreaTriB: packed.meshAreaTriB,
-    meshAreaTriC: packed.meshAreaTriC,
-    meshAreaRadiance: packed.meshAreaRadiance,
-    hasMeshAreaLight: packed.hasMeshAreaLight,
-    pointLightCount: packed.pointLightCount,
-    spotLightCount: packed.spotLightCount,
-    rectAreaLightCount: packed.rectAreaLightCount,
-    meshAreaLightCount: packed.meshAreaLightCount,
-    environmentTint: packed.environmentTint,
-    environmentSunDirection: packed.environmentSunDirection,
-    environmentSunStrength: packed.environmentSunStrength,
-    environmentMapWidth: packed.environmentMapWidth,
-    environmentMapHeight: packed.environmentMapHeight,
-    hasEnvironmentMap: packed.hasEnvironmentMap,
     positionsBuffer,
     normalsBuffer,
     indicesBuffer,

@@ -55,6 +55,13 @@ import {
   buildSVGFAtrousBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
+// Note: we deliberately do NOT import `runSvgfWebGPU` from shared-denoisers.
+// That entry point is a one-shot CPU-backed path that allocates and frees
+// transient GPU textures per call. This pipeline owns persistent GPU
+// textures across frames (accumA/B, variance ping-pong, denoise pings),
+// so the one-shot API would churn texture allocations every frame and
+// invalidate the bind-group cache. We import only the host-side packing
+// helpers and pipeline constants.
 import {
   packSVGFUniforms,
   packSVGFVarianceUniforms,

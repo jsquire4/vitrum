@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
 import { sceneFromThreeJS } from '../index.js';
 
@@ -41,5 +41,58 @@ describe('sceneFromThreeJS', () => {
     expect(mp.material.emissive).toEqual([0, 0, 0]);
     expect(mp.material.emissiveIntensity ?? -1).toBe(0);
     expect(v.emitters[0]).toMatchObject({ meshId: mesh.uuid });
+  });
+
+  // ── Unsupported types throw ───────────────────────────────────────────────
+  it('throws on InstancedMesh', () => {
+    const s = new THREE.Scene();
+    const im = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshPhysicalMaterial(),
+      1,
+    );
+    s.add(im);
+    expect(() => sceneFromThreeJS(s)).toThrow(/InstancedMesh/);
+  });
+
+  it('throws on SkinnedMesh', () => {
+    const s = new THREE.Scene();
+    const sm = new THREE.SkinnedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshPhysicalMaterial(),
+    );
+    s.add(sm);
+    expect(() => sceneFromThreeJS(s)).toThrow(/SkinnedMesh/);
+  });
+
+  it('throws on ShaderMaterial', () => {
+    const s = new THREE.Scene();
+    const m = new THREE.ShaderMaterial({ vertexShader: '', fragmentShader: '' });
+    s.add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), m));
+    expect(() => sceneFromThreeJS(s)).toThrow(/ShaderMaterial/);
+  });
+
+  // ── Warn paths ─────────────────────────────────────────────────────────────
+  it('warns once for AmbientLight (unsupported-skippable)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const s = new THREE.Scene();
+    s.add(new THREE.AmbientLight(0xffffff, 1));
+    s.add(new THREE.AmbientLight(0xffffff, 1));
+    sceneFromThreeJS(s);
+    // Dedup is per-call: even though we added two AmbientLights, we expect
+    // exactly one warning for the type.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/AmbientLight/);
+    warn.mockRestore();
+  });
+
+  it('warns again on a second sceneFromThreeJS call (per-call dedup, not module-global)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const s = new THREE.Scene();
+    s.add(new THREE.HemisphereLight(0xffffff, 0x000000, 1));
+    sceneFromThreeJS(s);
+    sceneFromThreeJS(s);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 });

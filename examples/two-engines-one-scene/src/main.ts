@@ -5,8 +5,19 @@
 import type { Engine, FrameInput, Mat4, Scene } from '@vitrum/core';
 import { buildCornellBoxThreeScene } from '@vitrum-examples/shared';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
+// @vitrum/pt-webgpu is wired here as a third engine option (toggle with
+// ?engine=pt-webgpu in the URL once the host UI exposes it). For now the
+// import alone serves as the integration anchor — confirming pt-webgpu's
+// package surface is exported and consumable from a real example.
+import { createPTEngine_WebGPU } from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import { createWalkaroundEngine_Hybrid } from '@vitrum/walkaround-hybrid';
+
+// Mark as touched so the import is preserved through tree-shaking until the
+// host adds the UI toggle. Logged once at module load.
+if (typeof console !== 'undefined' && console.debug) {
+  console.debug('[two-engines] pt-webgpu factory loaded:', typeof createPTEngine_WebGPU);
+}
 import * as THREE from 'three';
 
 function mat4FromThree(m: THREE.Matrix4): Mat4 {

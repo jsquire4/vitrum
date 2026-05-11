@@ -93,6 +93,11 @@ export async function compilePipelines(
     denoiserMode === 'svgf'
       ? device.createShaderModule({ label: 'welford-temporal', code: COMMON_WGSL + WELFORD_TEMPORAL_WGSL })
       : null;
+  // SVGF_WGSL is self-contained: it declares its own PI, INV_PI, LUM_W, and
+  // WelfordVariance struct (via WELFORD_VARIANCE_WGSL). Do NOT prepend
+  // COMMON_WGSL here — it would cause WGSL redeclaration errors on those
+  // names. The welford-temporal pass DOES need COMMON_WGSL (for the BVH /
+  // shared math helpers), which is why those two diverge.
   const svgfSM =
     denoiserMode === 'svgf'
       ? device.createShaderModule({ label: 'svgf', code: SVGF_WGSL })

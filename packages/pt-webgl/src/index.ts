@@ -295,6 +295,11 @@ function makeStateSlot(initial: EngineState = 'initializing'): StateSlot {
   };
 }
 
+/**
+ * Walk a Three.js subtree and dispose every Mesh's geometry + material(s).
+ * Module-private — only `PTEngineWebGL2` uses this on the converted scene
+ * root it owns (no external consumer should depend on it).
+ */
 function disposeObject3DTree(obj: Object3D): void {
   obj.traverse((o) => {
     const mesh = o as TMesh;
@@ -507,6 +512,39 @@ export class PTEngineWebGL2 implements Engine {
     };
   }
 
+  /**
+   * Run a variance-aware adaptive tile-repeat pass at most once every
+   * `#pixelAdaptiveCadence` samples. Writes the resulting per-tile repeat
+   * factors to `#pathTracer.tileRepeatFactors`. Falls back to clearing the
+   * factors when adaptive sampling is disabled.
+   */
+  #updateAdaptiveTileFactors(
+    sppBefore: number,
+    tilesX: number,
+    tilesY: number,
+    tileCount: number,
+    w: number,
+    h: number,
+  ): void {
+    if (this.#pixelAdaptiveSampling && this.#additiveAccumulation && this.#tileVariancePass != null) {
+      if (sppBefore >= 2 && sppBefore % this.#pixelAdaptiveCadence === 0) {
+        computeAdaptiveTileRepeatFactors(
+          this.#tileVariancePass,
+          this.#renderer,
+          this.#pathTracer.target.texture as unknown as import('three').Texture,
+          w,
+          h,
+          tilesX,
+          tilesY,
+          this.#tileFactorsScratch,
+        );
+        this.#pathTracer.tileRepeatFactors = this.#tileFactorsScratch.subarray(0, tileCount);
+      }
+    } else if (!this.#pixelAdaptiveSampling) {
+      this.#pathTracer.tileRepeatFactors = null;
+    }
+  }
+
   #updateScheduler(batchMs: number): void {
     if (!this.#schedulerOptions.adaptive || this.#schedulerOptions.targetBatchMs <= 0) return;
     if (this.#contextLost) {
@@ -633,23 +671,7 @@ export class PTEngineWebGL2 implements Engine {
     const tilesY = Math.max(1, Math.floor(this.#pathTracer.tiles.y));
     const tileCount = tilesX * tilesY;
 
-    if (this.#pixelAdaptiveSampling && this.#additiveAccumulation && this.#tileVariancePass != null) {
-      if (sppBefore >= 2 && sppBefore % this.#pixelAdaptiveCadence === 0) {
-        computeAdaptiveTileRepeatFactors(
-          this.#tileVariancePass,
-          this.#renderer,
-          this.#pathTracer.target.texture as unknown as import('three').Texture,
-          w,
-          h,
-          tilesX,
-          tilesY,
-          this.#tileFactorsScratch,
-        );
-        this.#pathTracer.tileRepeatFactors = this.#tileFactorsScratch.subarray(0, tileCount);
-      }
-    } else if (!this.#pixelAdaptiveSampling) {
-      this.#pathTracer.tileRepeatFactors = null;
-    }
+    this.#updateAdaptiveTileFactors(sppBefore, tilesX, tilesY, tileCount, w, h);
 
     for (let i = 0; i < samplesThisFrame && spp < targetSpp; i += 1) {
       this.#pathTracer.renderSample();

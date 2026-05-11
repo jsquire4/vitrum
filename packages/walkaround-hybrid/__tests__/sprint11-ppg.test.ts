@@ -40,32 +40,9 @@ import {
   destroyFrameResources,
 } from '../src/pipeline/resourceManager.js';
 
-// ── WebGPU global polyfills (Node test environment) ────────────────────────────
-// Matches the pattern established in sprint9-welford.test.ts.
-
-if (typeof (globalThis as Record<string, unknown>)['GPUTextureUsage'] === 'undefined') {
-  (globalThis as Record<string, unknown>)['GPUTextureUsage'] = {
-    COPY_SRC:          0x01,
-    COPY_DST:          0x02,
-    TEXTURE_BINDING:   0x04,
-    STORAGE_BINDING:   0x08,
-    RENDER_ATTACHMENT: 0x10,
-  };
-}
-if (typeof (globalThis as Record<string, unknown>)['GPUBufferUsage'] === 'undefined') {
-  (globalThis as Record<string, unknown>)['GPUBufferUsage'] = {
-    MAP_READ:      0x0001,
-    MAP_WRITE:     0x0002,
-    COPY_SRC:      0x0004,
-    COPY_DST:      0x0008,
-    INDEX:         0x0010,
-    VERTEX:        0x0020,
-    UNIFORM:       0x0040,
-    STORAGE:       0x0080,
-    INDIRECT:      0x0100,
-    QUERY_RESOLVE: 0x0200,
-  };
-}
+// WebGPU global polyfills for the Node test environment.
+import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
+installWebGPUPolyfills();
 
 // ─── Helper: build a mock GPUDevice that records createBuffer calls ────────────
 
@@ -482,9 +459,22 @@ describe('createPPGBuffers — PPG GPU buffer allocation', () => {
     const mockQueue = device.queue as unknown as { writeBuffer: ReturnType<typeof vi.fn> };
     expect(mockQueue.writeBuffer).toHaveBeenCalled();
     const disabled = encodePpgKdDisabledRoot();
-    const matchCall = mockQueue.writeBuffer.mock.calls.find(
-      (call: unknown[]) => (call[2] as Uint8Array).byteLength === disabled.byteLength,
-    );
+    const matchCall = mockQueue.writeBuffer.mock.calls.find((call: unknown[]) => {
+      // writeBuffer's data argument can be an ArrayBuffer or a typed-array
+      // view; normalize to Uint8Array to compare bytes uniformly.
+      const data = call[2] as ArrayBuffer | ArrayBufferView;
+      const buf =
+        data instanceof ArrayBuffer
+          ? new Uint8Array(data)
+          : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      // Assert content equality, not just length — catches a regression where
+      // some other 16-byte payload accidentally matches the sentinel's size.
+      if (buf.byteLength !== disabled.byteLength) return false;
+      for (let i = 0; i < disabled.length; i++) {
+        if (buf[i] !== disabled[i]) return false;
+      }
+      return true;
+    });
     expect(matchCall).toBeDefined();
   });
 

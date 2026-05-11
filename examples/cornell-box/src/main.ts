@@ -10,7 +10,7 @@ import type {
 } from '@vitrum/pt-webgl';
 import * as THREE from 'three';
 import { createPTEngine_WebGL2, readAccumulationRgbFloat } from '@vitrum/pt-webgl';
-import { sceneFromThreeJS } from '@vitrum/three-bindings';
+import { sceneFromThreeJS, VITRUM_USER_DATA_KEYS as K } from '@vitrum/three-bindings';
 import {
   HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE,
   SVGF_DEFAULT_ATROUS_ITERATIONS,
@@ -266,7 +266,7 @@ function applyScenarioMaterialTweaks(
     material.thickness = 0.4;
     material.attenuationDistance = 1.5;
     material.attenuationColor.setRGB(0.72, 0.9, 1.0);
-    material.userData['vitrumSpectralAttenuation'] = {
+    material.userData[K.SPECTRAL_ATTEN] = {
       wavelengthStart: 380,
       wavelengthEnd: 780,
       values: new Float32Array([
@@ -276,7 +276,7 @@ function applyScenarioMaterialTweaks(
         0.1, 0.09, 0.085, 0.08, 0.078, 0.076, 0.074, 0.072,
       ]),
     };
-    material.userData['vitrumThinFilmStack'] = {
+    material.userData[K.THIN_FILM_STACK] = {
       incidentIor: 1.0,
       angleDependent: true,
       layers: [
@@ -287,14 +287,14 @@ function applyScenarioMaterialTweaks(
   }
 
   if (config.scenarioId.includes('layered')) {
-    material.userData['vitrumFrontLayer'] = { transmission: [0.95, 0.8, 0.65], roughness: 0.18 };
-    material.userData['vitrumBackLayer'] = { transmission: [0.65, 0.8, 0.95], roughness: 0.28 };
+    material.userData[K.FRONT_LAYER] = { transmission: [0.95, 0.8, 0.65], roughness: 0.18 };
+    material.userData[K.BACK_LAYER] = { transmission: [0.65, 0.8, 0.95], roughness: 0.28 };
   }
 
   if (config.scenarioId.includes('sss')) {
-    material.userData['vitrumScatteringCoefficient'] = 0.18;
-    material.userData['vitrumScatteringCoefficientRGB'] = [0.16, 0.2, 0.24];
-    material.userData['vitrumScatteringAnisotropy'] = 0.35;
+    material.userData[K.SCATTERING_COEFF] = 0.18;
+    material.userData[K.SCATTERING_RGB] = [0.16, 0.2, 0.24];
+    material.userData[K.SCATTERING_ANISO] = 0.35;
   }
 }
 

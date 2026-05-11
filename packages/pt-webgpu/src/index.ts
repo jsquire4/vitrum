@@ -11,7 +11,7 @@ import type {
   ScenePrimitive,
 } from '@vitrum/core';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
-import { buildPackedScene, uploadPackedScene, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
+import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
@@ -110,13 +110,8 @@ class PTEngineWebGPU implements Engine {
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
-      supportedAnalyticShapes: new Set<string>([
-        'sphere',
-        'box',
-        'capsule',
-        'cylinder',
-        'h-channel-came',
-      ]),
+      // Slot 0 is the "unknown" sentinel; supported shapes start at index 1.
+      supportedAnalyticShapes: new Set<string>(PT_WEBGPU_ANALYTIC_SHAPES.slice(1)),
       supportedEmitterKinds: new Set<string>(['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area']),
       causticStrategy: this.#causticStrategy,
     };
@@ -129,6 +124,154 @@ class PTEngineWebGPU implements Engine {
     if (this.#scene == null) {
       throw new Error(`${method}: call setScene() before ${method}`);
     }
+  }
+
+  /**
+   * Pack the per-frame uniform buffer (512 bytes, vec4-aligned). Layout is
+   * pinned and pathTraceBruteforce.wgsl's `params` struct reads from these
+   * exact offsets. Callers must have already validated that #sceneBuffers
+   * is non-null (renderFrame's preconditions handle this).
+   *
+   * Slot index reference (u32 slots 0..11, then f32 from 12..127):
+   *   u32 0..1   width, height
+   *   u32 2..3   frameIndex, frameSeed
+   *   u32 4..11  triangleCount, activeBounces, bvhNodeCount, analyticCount,
+   *              pointLightCount, spotLightCount, rectAreaLightCount,
+   *              meshAreaLightCount
+   *   f32 12..15 cameraPosition (xyz) + 1.0 padding
+   *   f32 16..19 directionalLight (xyz) + avg irradiance
+   *   f32 20..27 point light (pos + has flag, radiance + avg)
+   *   f32 28..38 spot light (pos, dir, cosAngle, radiance)
+   *   f32 39     caustic strategy code (0=none, 1=manifold-nee, 2=photon-map)
+   *   f32 40..47 environment (tint xyz + hasMap, sun dir xyz + sun strength)
+   *   f32 48..63 rect area light (pos+hasFlag, U+mneeMaxIterations,
+   *              V+mneeMaxChainLength, radiance+hasFlag)
+   *   f32 64..79 mesh area light tri A/B/C (each w-packed with hasFlag or
+   *              HDRI dimensions per the .w-packing convention)
+   *   f32 80..95 invVP matrix
+   *   f32 96..111 VP matrix
+   *   f32 112..127 prev-frame VP matrix
+   */
+  #buildParamsBuffer(input: FrameInput, width: number, height: number): ArrayBuffer {
+    const sb = this.#sceneBuffers!;
+    const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
+    const invVp = invertMat4(vp) ?? new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+
+    const paramsArrayBuffer = new ArrayBuffer(512);
+    const paramsU32 = new Uint32Array(paramsArrayBuffer);
+    const paramsF32 = new Float32Array(paramsArrayBuffer);
+    paramsU32[0] = width;
+    paramsU32[1] = height;
+    paramsU32[2] = input.frameIndex >>> 0;
+    paramsU32[3] = input.frameSeed >>> 0;
+    paramsU32[4] = sb.triangleCount >>> 0;
+    paramsU32[5] = this.#activeBounces >>> 0;
+    paramsU32[6] = sb.bvhNodeCount >>> 0;
+    paramsU32[7] = sb.analyticCount >>> 0;
+    paramsU32[8] = sb.pointLightCount >>> 0;
+    paramsU32[9] = sb.spotLightCount >>> 0;
+    paramsU32[10] = sb.rectAreaLightCount >>> 0;
+    paramsU32[11] = sb.meshAreaLightCount >>> 0;
+    paramsF32[12] = input.cameraPosition[0];
+    paramsF32[13] = input.cameraPosition[1];
+    paramsF32[14] = input.cameraPosition[2];
+    paramsF32[15] = 1;
+    paramsF32[16] = sb.directionalLight[0];
+    paramsF32[17] = sb.directionalLight[1];
+    paramsF32[18] = sb.directionalLight[2];
+    paramsF32[19] =
+      (sb.directionalIrradiance[0] +
+        sb.directionalIrradiance[1] +
+        sb.directionalIrradiance[2]) /
+      3;
+    paramsF32[20] = sb.pointLightPosition[0];
+    paramsF32[21] = sb.pointLightPosition[1];
+    paramsF32[22] = sb.pointLightPosition[2];
+    paramsF32[23] = sb.hasPointLight ? 1 : 0;
+    paramsF32[24] = sb.pointLightRadiance[0];
+    paramsF32[25] = sb.pointLightRadiance[1];
+    paramsF32[26] = sb.pointLightRadiance[2];
+    paramsF32[27] = sb.hasPointLight
+      ? (sb.pointLightRadiance[0] +
+          sb.pointLightRadiance[1] +
+          sb.pointLightRadiance[2]) /
+        3
+      : 0;
+    paramsF32[28] = sb.spotLightPosition[0];
+    paramsF32[29] = sb.spotLightPosition[1];
+    paramsF32[30] = sb.spotLightPosition[2];
+    paramsF32[31] = sb.hasSpotLight ? 1 : 0;
+    paramsF32[32] = sb.spotLightDirection[0];
+    paramsF32[33] = sb.spotLightDirection[1];
+    paramsF32[34] = sb.spotLightDirection[2];
+    paramsF32[35] = sb.spotLightCosAngle;
+    paramsF32[36] = sb.spotLightRadiance[0];
+    paramsF32[37] = sb.spotLightRadiance[1];
+    paramsF32[38] = sb.spotLightRadiance[2];
+    paramsF32[39] =
+      this.#causticStrategy === 'manifold-nee'
+        ? 1
+        : this.#causticStrategy === 'photon-map'
+          ? 2
+          : 0;
+    paramsF32[40] = sb.environmentTint[0];
+    paramsF32[41] = sb.environmentTint[1];
+    paramsF32[42] = sb.environmentTint[2];
+    paramsF32[43] = sb.hasEnvironmentMap ? 1 : 0;
+    paramsF32[44] = sb.environmentSunDirection[0];
+    paramsF32[45] = sb.environmentSunDirection[1];
+    paramsF32[46] = sb.environmentSunDirection[2];
+    paramsF32[47] = sb.environmentSunStrength;
+    paramsF32[48] = sb.rectAreaPosition[0];
+    paramsF32[49] = sb.rectAreaPosition[1];
+    paramsF32[50] = sb.rectAreaPosition[2];
+    paramsF32[51] = sb.hasRectAreaLight ? 1 : 0;
+    paramsF32[52] = sb.rectAreaUAxis[0];
+    paramsF32[53] = sb.rectAreaUAxis[1];
+    paramsF32[54] = sb.rectAreaUAxis[2];
+    paramsF32[55] = this.#mneeMaxIterations;
+    paramsF32[56] = sb.rectAreaVAxis[0];
+    paramsF32[57] = sb.rectAreaVAxis[1];
+    paramsF32[58] = sb.rectAreaVAxis[2];
+    paramsF32[59] = this.#mneeMaxChainLength;
+    paramsF32[60] = sb.rectAreaRadiance[0];
+    paramsF32[61] = sb.rectAreaRadiance[1];
+    paramsF32[62] = sb.rectAreaRadiance[2];
+    paramsF32[63] = sb.hasRectAreaLight ? 1 : 0;
+    paramsF32[64] = sb.meshAreaTriA[0];
+    paramsF32[65] = sb.meshAreaTriA[1];
+    paramsF32[66] = sb.meshAreaTriA[2];
+    paramsF32[67] = sb.hasMeshAreaLight ? 1 : 0;
+    paramsF32[68] = sb.meshAreaTriB[0];
+    paramsF32[69] = sb.meshAreaTriB[1];
+    paramsF32[70] = sb.meshAreaTriB[2];
+    // Slot 71: HDRI environment-map width. Packed into the .w lane of
+    // meshAreaTriB (otherwise unused — meshAreaTri positions are vec3) to
+    // save UBO space. WGSL reads this via params.meshAreaTriB.w; see
+    // pathTraceBruteforce.wgsl.ts environmentDimensions().
+    paramsF32[71] = sb.environmentMapWidth;
+    paramsF32[72] = sb.meshAreaTriC[0];
+    paramsF32[73] = sb.meshAreaTriC[1];
+    paramsF32[74] = sb.meshAreaTriC[2];
+    // Slot 75: HDRI environment-map height — same .w-packing convention.
+    paramsF32[75] = sb.environmentMapHeight;
+    paramsF32[76] = sb.meshAreaRadiance[0];
+    paramsF32[77] = sb.meshAreaRadiance[1];
+    paramsF32[78] = sb.meshAreaRadiance[2];
+    paramsF32[79] = sb.hasMeshAreaLight ? 1 : 0;
+    paramsF32.set(invVp, 80); // byte 320 = 12×u32 + 17×vec4f before matrices
+    paramsF32.set(vp, 96);
+    const prevVp = multiplyMat4(
+      input.prevProjMatrix ?? input.projMatrix,
+      input.prevViewMatrix ?? input.viewMatrix,
+    );
+    paramsF32.set(prevVp, 112);
+    return paramsArrayBuffer;
   }
 
   #destroyAccumTexture(): void {
@@ -273,21 +416,15 @@ class PTEngineWebGPU implements Engine {
 
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
     this.#assertLive('updatePrimitive');
-    const scene = this.#scene;
-    if (scene == null) {
-      throw new Error('updatePrimitive: call setScene() before updatePrimitive');
-    }
-    const nextScene = patchPrimitiveInScene(scene, id, patch);
+    // #assertLive already throws when #scene is null; the non-null assertion
+    // captures that invariant for the type checker.
+    const nextScene = patchPrimitiveInScene(this.#scene!, id, patch);
     this.setScene(nextScene);
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
     this.#assertLive('updateEmitter');
-    const scene = this.#scene;
-    if (scene == null) {
-      throw new Error('updateEmitter: call setScene() before updateEmitter');
-    }
-    const nextScene = patchEmitterInScene(scene, id, patch);
+    const nextScene = patchEmitterInScene(this.#scene!, id, patch);
     this.setScene(nextScene);
   }
 
@@ -332,118 +469,7 @@ class PTEngineWebGPU implements Engine {
       throw new Error('renderFrame: failed to initialize WebGPU pipeline resources');
     }
 
-    const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
-    const invVp = invertMat4(vp) ?? new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]);
-
-    const paramsArrayBuffer = new ArrayBuffer(512);
-    const paramsU32 = new Uint32Array(paramsArrayBuffer);
-    const paramsF32 = new Float32Array(paramsArrayBuffer);
-    paramsU32[0] = width;
-    paramsU32[1] = height;
-    paramsU32[2] = input.frameIndex >>> 0;
-    paramsU32[3] = input.frameSeed >>> 0;
-    paramsU32[4] = this.#sceneBuffers.triangleCount >>> 0;
-    paramsU32[5] = this.#activeBounces >>> 0;
-    paramsU32[6] = this.#sceneBuffers.bvhNodeCount >>> 0;
-    paramsU32[7] = this.#sceneBuffers.analyticCount >>> 0;
-    paramsU32[8] = this.#sceneBuffers.pointLightCount >>> 0;
-    paramsU32[9] = this.#sceneBuffers.spotLightCount >>> 0;
-    paramsU32[10] = this.#sceneBuffers.rectAreaLightCount >>> 0;
-    paramsU32[11] = this.#sceneBuffers.meshAreaLightCount >>> 0;
-    paramsF32[12] = input.cameraPosition[0];
-    paramsF32[13] = input.cameraPosition[1];
-    paramsF32[14] = input.cameraPosition[2];
-    paramsF32[15] = 1;
-    paramsF32[16] = this.#sceneBuffers.directionalLight[0];
-    paramsF32[17] = this.#sceneBuffers.directionalLight[1];
-    paramsF32[18] = this.#sceneBuffers.directionalLight[2];
-    paramsF32[19] =
-      (this.#sceneBuffers.directionalIrradiance[0] +
-        this.#sceneBuffers.directionalIrradiance[1] +
-        this.#sceneBuffers.directionalIrradiance[2]) /
-      3;
-    paramsF32[20] = this.#sceneBuffers.pointLightPosition[0];
-    paramsF32[21] = this.#sceneBuffers.pointLightPosition[1];
-    paramsF32[22] = this.#sceneBuffers.pointLightPosition[2];
-    paramsF32[23] = this.#sceneBuffers.hasPointLight ? 1 : 0;
-    paramsF32[24] = this.#sceneBuffers.pointLightRadiance[0];
-    paramsF32[25] = this.#sceneBuffers.pointLightRadiance[1];
-    paramsF32[26] = this.#sceneBuffers.pointLightRadiance[2];
-    paramsF32[27] = this.#sceneBuffers.hasPointLight
-      ? (this.#sceneBuffers.pointLightRadiance[0] +
-          this.#sceneBuffers.pointLightRadiance[1] +
-          this.#sceneBuffers.pointLightRadiance[2]) /
-        3
-      : 0;
-    paramsF32[28] = this.#sceneBuffers.spotLightPosition[0];
-    paramsF32[29] = this.#sceneBuffers.spotLightPosition[1];
-    paramsF32[30] = this.#sceneBuffers.spotLightPosition[2];
-    paramsF32[31] = this.#sceneBuffers.hasSpotLight ? 1 : 0;
-    paramsF32[32] = this.#sceneBuffers.spotLightDirection[0];
-    paramsF32[33] = this.#sceneBuffers.spotLightDirection[1];
-    paramsF32[34] = this.#sceneBuffers.spotLightDirection[2];
-    paramsF32[35] = this.#sceneBuffers.spotLightCosAngle;
-    paramsF32[36] = this.#sceneBuffers.spotLightRadiance[0];
-    paramsF32[37] = this.#sceneBuffers.spotLightRadiance[1];
-    paramsF32[38] = this.#sceneBuffers.spotLightRadiance[2];
-    paramsF32[39] =
-      this.#causticStrategy === 'manifold-nee'
-        ? 1
-        : this.#causticStrategy === 'photon-map'
-          ? 2
-          : 0;
-    paramsF32[40] = this.#sceneBuffers.environmentTint[0];
-    paramsF32[41] = this.#sceneBuffers.environmentTint[1];
-    paramsF32[42] = this.#sceneBuffers.environmentTint[2];
-    paramsF32[43] = this.#sceneBuffers.hasEnvironmentMap ? 1 : 0;
-    paramsF32[44] = this.#sceneBuffers.environmentSunDirection[0];
-    paramsF32[45] = this.#sceneBuffers.environmentSunDirection[1];
-    paramsF32[46] = this.#sceneBuffers.environmentSunDirection[2];
-    paramsF32[47] = this.#sceneBuffers.environmentSunStrength;
-    paramsF32[48] = this.#sceneBuffers.rectAreaPosition[0];
-    paramsF32[49] = this.#sceneBuffers.rectAreaPosition[1];
-    paramsF32[50] = this.#sceneBuffers.rectAreaPosition[2];
-    paramsF32[51] = this.#sceneBuffers.hasRectAreaLight ? 1 : 0;
-    paramsF32[52] = this.#sceneBuffers.rectAreaUAxis[0];
-    paramsF32[53] = this.#sceneBuffers.rectAreaUAxis[1];
-    paramsF32[54] = this.#sceneBuffers.rectAreaUAxis[2];
-    paramsF32[55] = this.#mneeMaxIterations;
-    paramsF32[56] = this.#sceneBuffers.rectAreaVAxis[0];
-    paramsF32[57] = this.#sceneBuffers.rectAreaVAxis[1];
-    paramsF32[58] = this.#sceneBuffers.rectAreaVAxis[2];
-    paramsF32[59] = this.#mneeMaxChainLength;
-    paramsF32[60] = this.#sceneBuffers.rectAreaRadiance[0];
-    paramsF32[61] = this.#sceneBuffers.rectAreaRadiance[1];
-    paramsF32[62] = this.#sceneBuffers.rectAreaRadiance[2];
-    paramsF32[63] = this.#sceneBuffers.hasRectAreaLight ? 1 : 0;
-    paramsF32[64] = this.#sceneBuffers.meshAreaTriA[0];
-    paramsF32[65] = this.#sceneBuffers.meshAreaTriA[1];
-    paramsF32[66] = this.#sceneBuffers.meshAreaTriA[2];
-    paramsF32[67] = this.#sceneBuffers.hasMeshAreaLight ? 1 : 0;
-    paramsF32[68] = this.#sceneBuffers.meshAreaTriB[0];
-    paramsF32[69] = this.#sceneBuffers.meshAreaTriB[1];
-    paramsF32[70] = this.#sceneBuffers.meshAreaTriB[2];
-    paramsF32[71] = this.#sceneBuffers.environmentMapWidth;
-    paramsF32[72] = this.#sceneBuffers.meshAreaTriC[0];
-    paramsF32[73] = this.#sceneBuffers.meshAreaTriC[1];
-    paramsF32[74] = this.#sceneBuffers.meshAreaTriC[2];
-    paramsF32[75] = this.#sceneBuffers.environmentMapHeight;
-    paramsF32[76] = this.#sceneBuffers.meshAreaRadiance[0];
-    paramsF32[77] = this.#sceneBuffers.meshAreaRadiance[1];
-    paramsF32[78] = this.#sceneBuffers.meshAreaRadiance[2];
-    paramsF32[79] = this.#sceneBuffers.hasMeshAreaLight ? 1 : 0;
-    paramsF32.set(invVp, 80); // byte 320 = 12×u32 + 17×vec4f before matrices
-    paramsF32.set(vp, 96);
-    const prevVp = multiplyMat4(
-      input.prevProjMatrix ?? input.projMatrix,
-      input.prevViewMatrix ?? input.viewMatrix,
-    );
-    paramsF32.set(prevVp, 112);
+    const paramsArrayBuffer = this.#buildParamsBuffer(input, width, height);
     this.#device.queue.writeBuffer(this.#paramsBuffer, 0, paramsArrayBuffer);
 
     let bindGroup = this.#pathTraceBindGroup;

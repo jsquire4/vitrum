@@ -196,6 +196,14 @@ fn sampleSky(dir: vec3f) -> vec3f {
   return sky * params.environmentTint.rgb;
 }
 
+// NOTE: HDRI environment dimensions are packed into the .w lanes of the
+// meshAreaTriB / meshAreaTriC vec4 slots in the params UBO (lines [68..75]
+// host-side: paramsF32[71] = envWidth, paramsF32[75] = envHeight). This is a
+// space-saving trick — those .w lanes are otherwise unused because the
+// meshAreaTri positions only need .xyz. Any host-side packer that touches
+// the params buffer MUST preserve this convention. Future cleanup: lift to
+// a dedicated params.environmentDims (vec2u) field once the params struct
+// is repacked.
 fn hasEnvironmentMap() -> bool {
   return params.environmentTint.w > 0.5 && params.meshAreaTriB.w > 0.5 && params.meshAreaTriC.w > 0.5;
 }
@@ -930,45 +938,9 @@ fn glossyReflectionSample(rng: ptr<function, u32>, r: vec3f, roughness: f32) -> 
   return safe_normalize(mix(r, jitterDir, k));
 }
 
-fn sampleRectAreaLight(
-  rng: ptr<function, u32>,
-  hitPos: vec3f,
-  normal: vec3f,
-  wo: vec3f,
-  baseColor: vec3f,
-  roughness: f32,
-  metallic: f32,
-  transmission: f32,
-  throughput: vec3f,
-  radiance: ptr<function, vec3f>,
-) {
-  let u = rand_f32(rng) * 2.0 - 1.0;
-  let v = rand_f32(rng) * 2.0 - 1.0;
-  let lp = params.rectAreaPos.xyz + params.rectAreaU.xyz * u + params.rectAreaV.xyz * v;
-  let toLight = lp - hitPos;
-  let dist2 = max(dot(toLight, toLight), 1e-6);
-  let dist = sqrt(dist2);
-  let wi = toLight / dist;
-  let nDotL = max(dot(normal, wi), 0.0);
-  if (nDotL <= 0.0) {
-    return;
-  }
-  let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-  let lightNormal = safe_normalize(cross(params.rectAreaU.xyz, params.rectAreaV.xyz));
-  let cosLight = max(dot(lightNormal, -wi), 0.0);
-  if (cosLight <= 0.0) {
-    return;
-  }
-  let area = max(4.0 * length(cross(params.rectAreaU.xyz, params.rectAreaV.xyz)), 1e-6);
-  let lightPdf = dist2 / max(cosLight * area, 1e-6);
-  let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, wi);
-  let misWeight = powerHeuristic(lightPdf, brdfPdf);
-  let shadowRay = Ray(hitPos + normal * 1e-3, wi);
-  if (traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-    return;
-  }
-  *radiance = *radiance + throughput * brdf * nDotL * params.rectAreaRadiance.rgb * misWeight / max(lightPdf, 1e-6);
-}
+// sampleRectAreaLight (legacy single-rect-area path) was removed: the
+// multi-light loop in main() reads rectAreaLights[ri*4 + 0..3] directly and
+// already covers the single-light case (rectAreaLightCount == 1).
 
 fn sampleMeshAreaLight(
   rng: ptr<function, u32>,
@@ -1172,6 +1144,10 @@ fn photonMapContribution(
   if (availableLightCount == 0u) return vec3f(0.0);
   let photonCount = u32(clamp(params.rectAreaU.w * 2.0, 8.0, 32.0));
   let maxChain = u32(clamp(params.rectAreaV.w, 1.0, 8.0));
+  // Photon-gather radius in world units. Hardcoded at 0.35 for the current
+  // calibration scene. Exposed as a named local so the photon density / cell
+  // size relationship is easy to tune in one place. Future: lift to a params
+  // field if hosts need scene-relative tuning.
   let gatherRadius = 0.35;
   let gatherRadius2 = gatherRadius * gatherRadius;
   var contribution = vec3f(0.0);
@@ -1293,15 +1269,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       break;
     }
 
-    var matId = 0u;
-    if (hit.triIndex < params.triangleCount) {
-      matId = select(0u, triMaterialIds[hit.triIndex], hit.triIndex < arrayLength(&triMaterialIds));
-    } else {
-      let analyticIndex = hit.triIndex - params.triangleCount;
-      if (analyticIndex < arrayLength(&analyticHeaders)) {
-        matId = u32(max(analyticHeaders[analyticIndex].y, 0.0));
-      }
-    }
+    let matId = hitMaterialId(hit);
     let m0Index = matId * MATERIAL_VEC4_STRIDE;
     let m1Index = m0Index + 1u;
     let m2Index = m0Index + 2u;
@@ -1560,7 +1528,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       radiance = radiance + directLi * f32(lightCount);
     }
 
-    if (causticMode() == 1u) {
+    let caustic = causticMode();
+    if (caustic == 1u) {
       radiance = radiance + manifoldNeeContribution(
         &rng,
         hitPos,
@@ -1572,7 +1541,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         transmission,
         throughputAtVertex,
       );
-    } else if (causticMode() == 2u) {
+    } else if (caustic == 2u) {
       radiance = radiance + photonMapContribution(
         &rng,
         hitPos,

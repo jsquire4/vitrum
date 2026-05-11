@@ -1469,6 +1469,34 @@ Import in `uploadSceneBuffers.ts` `analyticShapeId()` case and `capabilities` ge
 
 ---
 
+### Phase 4 deferred items (revisit during Phase 11 second-sweep pass)
+
+Four items were intentionally deferred because they are large mechanical
+moves (4.52 / 4.53) or WGSL+host couplings that need a real GPU smoke
+verification before landing (4.64 / 4.71). Phase 11 will surface them
+again if they remain real issues; they are tracked here so a future
+session can pick them up directly without re-discovering them.
+
+- **4.52 / 4.53** `pt-webgl/src/index.ts` — extract `PTEngineWebGL2` class
+  + `createPTEngine_WebGL2` factory + GPU-init logic into a dedicated
+  `ptEngineWebGL2.ts` file. Mechanical move (~700 LOC), zero behavior
+  change. Deferred to keep the current pass's diff reviewable.
+- **4.64** `pathTraceBruteforce.wgsl.ts` — split the 424-line `main()`
+  WGSL function into sub-helpers (RIS / shade / accumulate). The split
+  needs a real-device smoke run to confirm correctness across the
+  bounce loop's local-variable scoping; the new wgslSmoke.gpu.test
+  added in Phase 4.76 will catch syntactic regressions but not
+  semantic drift in the split.
+- **4.71** `uploadSceneBuffers.ts` — remove the legacy `first*` light
+  extractors and have `pathTraceBruteforce.wgsl.ts` read from the
+  arrays everywhere (currently the WGSL HDRI sky aperture, mesh-area
+  emitter test, and photon-map all read `params.pointLightPos` /
+  `params.rectAreaPos` / `params.meshAreaTri*` single-light scalars).
+  Touches the WGSL `params` struct layout — needs a careful GPU
+  verification pass.
+
+---
+
 ## Phase 5 — Integration Boundary Fixes
 
 ---

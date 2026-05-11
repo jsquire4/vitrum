@@ -25,36 +25,9 @@ import { RESOLVE_WGSL } from '../src/shaders/deferred/resolve.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { createVarianceBuffer, createFrameResources } from '../src/pipeline/resourceManager.js';
 
-// ── WebGPU global polyfills (Node test environment) ───────────────────────────
-// resourceManager.ts uses GPUTextureUsage and GPUBufferUsage as namespace objects.
-// They are defined by @webgpu/types for TypeScript but are browser globals at runtime.
-// We define them here using the official WebGPU spec values so createFrameResources
-// and createVarianceBuffer can run without a real browser.
-// Source: https://gpuweb.github.io/gpuweb/#namespacedef-gputextureusage
-
-if (typeof (globalThis as Record<string, unknown>)['GPUTextureUsage'] === 'undefined') {
-  (globalThis as Record<string, unknown>)['GPUTextureUsage'] = {
-    COPY_SRC:        0x01,
-    COPY_DST:        0x02,
-    TEXTURE_BINDING: 0x04,
-    STORAGE_BINDING: 0x08,
-    RENDER_ATTACHMENT: 0x10,
-  };
-}
-if (typeof (globalThis as Record<string, unknown>)['GPUBufferUsage'] === 'undefined') {
-  (globalThis as Record<string, unknown>)['GPUBufferUsage'] = {
-    MAP_READ:    0x0001,
-    MAP_WRITE:   0x0002,
-    COPY_SRC:    0x0004,
-    COPY_DST:    0x0008,
-    INDEX:       0x0010,
-    VERTEX:      0x0020,
-    UNIFORM:     0x0040,
-    STORAGE:     0x0080,
-    INDIRECT:    0x0100,
-    QUERY_RESOLVE: 0x0200,
-  };
-}
+// WebGPU global polyfills for the Node test environment — see helpers file.
+import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
+installWebGPUPolyfills();
 
 // ─── 1. COMMON_WGSL — WelfordVariance struct ─────────────────────────────────
 

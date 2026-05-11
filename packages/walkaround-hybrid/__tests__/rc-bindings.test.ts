@@ -107,27 +107,18 @@ describe('uniform buffer sizes (match WGSL struct sizes)', () => {
 // ─── Bind group layout entry counts ──────────────────────────────────────────
 
 describe('bind group layout entry counts (match TSL storage() declarations)', () => {
-  it('cast pass BGL: 9 entries (5 BVH+mat read-only + 1 cascade rw + env tex + env sampler + uniforms)', () => {
-    // As declared in _castBindGroupLayout:
-    // 0: bvh (read-only)
-    // 1: geom_index (read-only)
-    // 2: geom_position (read-only)
-    // 3: materials (read-only)
-    // 4: triMatId (read-only)
-    // 5: cascadeOut (storage/rw)
-    // 6: envMap (texture)
-    // 7: envSampler (sampler)
-    // 8: u_arr/CascadeUniforms (read-only)
-    const CAST_BGL_ENTRY_COUNT = 9;
-    expect(CAST_BGL_ENTRY_COUNT).toBe(9);
+  it('cast pass BGL: binding count derived from probeRayCast.wgsl.ts source', () => {
+    // Derived from the actual WGSL source so the assertion catches drift if
+    // a new binding is added without updating the host bind-group layout
+    // cache. Current authoritative count is 10 (5 BVH+mat + cascadeOut +
+    // envMap + envSampler + uniforms + activeProbes).
+    const castBindings = (PROBE_RAY_CAST_WGSL.match(/@binding\(/g) ?? []).length;
+    expect(castBindings).toBe(10);
   });
 
-  it('merge pass BGL: 3 entries (upper read-only + lower rw + merge uniforms read-only)', () => {
-    // 0: upperCascade (read-only)
-    // 1: lowerCascade (storage/rw)
-    // 2: m_arr/MergeUniforms (read-only)
-    const MERGE_BGL_ENTRY_COUNT = 3;
-    expect(MERGE_BGL_ENTRY_COUNT).toBe(3);
+  it('merge pass BGL: 3 entries — verified by counting @binding(...) in WGSL source', () => {
+    const mergeBindings = (CASCADE_MERGE_WGSL.match(/@binding\(/g) ?? []).length;
+    expect(mergeBindings).toBe(3);
   });
 });
 

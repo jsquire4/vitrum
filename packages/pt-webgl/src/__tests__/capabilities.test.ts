@@ -1,5 +1,6 @@
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGL2 } from '../index.js';
+import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
 
 vi.mock('three/addons/lights/RectAreaLightUniformsLib.js', () => ({
   RectAreaLightUniformsLib: { init: vi.fn() },
@@ -54,40 +55,7 @@ vi.mock('three-gpu-pathtracer', () => {
   return { WebGLPathTracer };
 });
 
-class FakeWebGL2RenderingContext {
-  readonly MAX_FRAGMENT_UNIFORM_VECTORS = 0x8dfd;
-  readonly MAX_TEXTURE_SIZE = 0x0d33;
-  readonly MAX_RENDERBUFFER_SIZE = 0x84e8;
-  readonly RENDERER = 0x1f01;
-
-  getExtension(_name: string): null {
-    return null;
-  }
-
-  getParameter(param: number): number | string {
-    if (param === this.MAX_FRAGMENT_UNIFORM_VECTORS) {
-      return 512;
-    }
-    if (param === this.MAX_TEXTURE_SIZE || param === this.MAX_RENDERBUFFER_SIZE) {
-      return 8192;
-    }
-    if (param === this.RENDERER) {
-      return 'Fake WebGL2';
-    }
-    return 0;
-  }
-}
-
-function makeRendererStub(options?: { maxSize?: number }) {
-  const setSize = vi.fn();
-  return {
-    getContext: () => new FakeWebGL2RenderingContext(),
-    domElement: { addEventListener: vi.fn() },
-    setSize,
-    _setSize: setSize,
-    _maxSize: options?.maxSize,
-  };
-}
+// FakeWebGL2RenderingContext + makeRendererStub now live in ./testUtils.ts.
 
 function makeFrame(width: number, height: number) {
   return {
@@ -102,9 +70,15 @@ function makeFrame(width: number, height: number) {
 }
 
 describe('pt-webgl capabilities', () => {
+  let teardownGlobalStub: (() => void) | null = null;
   beforeAll(() => {
-    (globalThis as unknown as { WebGL2RenderingContext: typeof FakeWebGL2RenderingContext })
-      .WebGL2RenderingContext = FakeWebGL2RenderingContext;
+    teardownGlobalStub = installWebGL2GlobalStub();
+  });
+  afterAll(() => {
+    // 6.5: explicitly clear the global so subsequent test files don't see
+    // a stale stub on globalThis.
+    teardownGlobalStub?.();
+    teardownGlobalStub = null;
   });
 
   it('reports requested caustic capability when strategy is configured', async () => {
