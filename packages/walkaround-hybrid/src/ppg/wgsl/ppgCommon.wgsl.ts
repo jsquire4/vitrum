@@ -73,9 +73,10 @@ fn ppgKdFindCellShared(worldPos: vec3f, cellCount: u32) -> u32 {
     let nid = stN[sp];
     if (nid >= nk) { continue; }
     let node = ppgKdNodes[nid];
-    let meta = node.meta;
-    if ((meta & 0x80000000u) != 0u) {
-      let cellIdx = meta & 0x7FFFFFFFu;
+    // WGSL reserves meta as a keyword; rename the local to nodeMeta.
+    let nodeMeta = node.meta;
+    if ((nodeMeta & 0x80000000u) != 0u) {
+      let cellIdx = nodeMeta & 0x7FFFFFFFu;
       if (cellIdx < cellCount) {
         let d = ppgCells[cellIdx].position - worldPos;
         let dist2 = dot(d, d);
@@ -87,7 +88,7 @@ fn ppgKdFindCellShared(worldPos: vec3f, cellCount: u32) -> u32 {
       continue;
     }
 
-    let axis = meta & 3u;
+    let axis = nodeMeta & 3u;
     let split = node.split;
     let c0 = node.child0;
     let c1 = node.child1;

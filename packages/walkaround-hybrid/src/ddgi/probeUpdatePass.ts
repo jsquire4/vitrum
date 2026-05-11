@@ -45,9 +45,60 @@ const PROBE_RAY_STRIDE_BYTES = 64;
 // `materialsBuf` holds one DDGIMaterial struct per material slot.
 // DDGIMaterial WGSL layout: 64 bytes = 16 × f32 (std140, see _uploadMaterials).
 /** Maximum number of distinct materials the DDGI probe pass supports. */
-const DDGI_MAX_MATERIALS = 64;
+export const DDGI_MAX_MATERIALS = 64;
 /** Byte stride of one DDGIMaterial struct (must match the WGSL layout). */
-const DDGI_MATERIAL_STRIDE_BYTES = 64;
+export const DDGI_MATERIAL_STRIDE_BYTES = 64;
+/** Float stride of one DDGIMaterial entry (64 bytes = 16 × f32). */
+export const DDGI_MATERIAL_ENTRY_FLOATS = 16;
+
+/**
+ * Pack a list of THREE materials into the GPU-bound DDGIMaterial std140 layout
+ * (64 bytes per material, 16 floats each). Pure function — does no GPU calls.
+ * Used by both `ProbeUpdatePass._uploadMaterials` (at runtime) and the
+ * byte-equivalence test fixture.
+ *
+ * WGSL layout (offsets in bytes per entry):
+ *   offset  0: baseColor: vec3f  (12) + _pad0:  f32 (4)
+ *   offset 16: emissive:  vec3f  (12) + roughness: f32 (4)
+ *   offset 32: metalness, ior, transmission, _pad1 (4 × f32)
+ *   offset 48: attenuationColor: vec3f (12) + flags: u32 (4)
+ *     flags bit 0: isGlass (transmission > 0)
+ *
+ * Defaults (when a THREE field is absent): baseColor [1,1,1], emissive
+ * [0,0,0], roughness 0.5, metallic 0, transmission 0, ior 1.5,
+ * attenuationColor [1,1,1]. Matches the pre-P2-6.1 inline packer.
+ */
+export function packDDGIMaterials(mats: readonly THREE.Material[]): ArrayBuffer {
+  const ENTRY = DDGI_MATERIAL_ENTRY_FLOATS;
+  const buf = new ArrayBuffer(DDGI_MAX_MATERIALS * DDGI_MATERIAL_STRIDE_BYTES);
+  const data = new Float32Array(buf);
+  // u32 view onto the same backing buffer so the `flags` slot can be written
+  // as a real u32 (the WGSL struct declares it as u32; writing 1.0 as f32
+  // would land 0x3F800000 ≠ 1u in the GPU read).
+  const u32view = new Uint32Array(buf);
+  const matsToUse = mats.slice(0, DDGI_MAX_MATERIALS);
+  matsToUse.forEach((mat, i) => {
+    const base = i * ENTRY;
+    const pbr = extractThreePbrScalars(mat);
+    data[base + 0] = pbr.baseColor[0];
+    data[base + 1] = pbr.baseColor[1];
+    data[base + 2] = pbr.baseColor[2];
+    data[base + 3] = 0; // _pad0
+    data[base + 4] = pbr.emissive[0];
+    data[base + 5] = pbr.emissive[1];
+    data[base + 6] = pbr.emissive[2];
+    data[base + 7] = pbr.roughness;
+    data[base + 8] = pbr.metallic;
+    data[base + 9] = pbr.ior;
+    data[base + 10] = pbr.transmission;
+    data[base + 11] = 0; // _pad1
+    data[base + 12] = pbr.attenuationColor[0];
+    data[base + 13] = pbr.attenuationColor[1];
+    data[base + 14] = pbr.attenuationColor[2];
+    u32view[base + 15] = pbr.transmission > 0 ? 1 : 0;
+  });
+  return buf;
+}
 
 
 interface GPUResources {
@@ -345,45 +396,8 @@ export class ProbeUpdatePass {
   }
 
   private _uploadMaterials(device: GPUDevice, mats: THREE.Material[]): void {
-    // DDGIMaterial WGSL layout (std140, 64 bytes = 16 floats per entry):
-    //   offset  0: baseColor: vec3f  (12 bytes) + _pad0: f32 (4) = 16 bytes
-    //   offset 16: emissive: vec3f   (12 bytes) + roughness: f32 (4) = 16 bytes
-    //   offset 32: metalness, ior, transmission, _pad1: 4 × f32 = 16 bytes
-    //   offset 48: attenuationColor: vec3f (12 bytes) + flags: u32 (4) = 16 bytes
-    // Total: 64 bytes. Using exactly 16 floats per entry to match the WGSL stride.
-    // PBR scalars are extracted via the cross-engine
-    // `extractThreePbrScalars` helper (P2-6.1); DDGI keeps its own defaults
-    // (1.5 IOR / 0.5 roughness / white base / black emissive / white
-    // attenuation) for byte-equivalence with the pre-helper inline pack.
-    const ENTRY = 16; // floats per material entry — matches DDGIMaterial size (64 bytes)
-    const data = new Float32Array(DDGI_MAX_MATERIALS * ENTRY);
-    // Use a u32 view to write the flags field as an actual u32
-    // (flags is declared as u32 in WGSL; writing float 1.0 would give 0x3F800000 ≠ 1).
-    const u32view = new Uint32Array(data.buffer);
-    const matsToUse = mats.slice(0, DDGI_MAX_MATERIALS);
-    matsToUse.forEach((mat, i) => {
-      const base = i * ENTRY;
-      const pbr = extractThreePbrScalars(mat);
-      data[base + 0] = pbr.baseColor[0];
-      data[base + 1] = pbr.baseColor[1];
-      data[base + 2] = pbr.baseColor[2];
-      data[base + 3] = 0; // _pad0
-      data[base + 4] = pbr.emissive[0];
-      data[base + 5] = pbr.emissive[1];
-      data[base + 6] = pbr.emissive[2];
-      data[base + 7] = pbr.roughness;
-      data[base + 8] = pbr.metallic;
-      data[base + 9] = pbr.ior;
-      data[base + 10] = pbr.transmission;
-      data[base + 11] = 0; // _pad1
-      data[base + 12] = pbr.attenuationColor[0];
-      data[base + 13] = pbr.attenuationColor[1];
-      data[base + 14] = pbr.attenuationColor[2];
-      // flags: bit 0 = isGlass. Written via u32view so the WGSL u32 field reads 0 or 1,
-      // not the IEEE-754 bit pattern of float 1.0 (0x3F800000).
-      u32view[base + 15] = pbr.transmission > 0 ? 1 : 0;
-    });
-    device.queue.writeBuffer(this._gpu!.materialsBuf, 0, data.buffer);
+    const buf = packDDGIMaterials(mats);
+    device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
   }
 
   private _uploadLights(device: GPUDevice): void {

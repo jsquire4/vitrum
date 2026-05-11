@@ -18,4 +18,14 @@ export default defineConfig({
   server: {
     port: 5175,
   },
+  build: {
+    rollupOptions: {
+      input: {
+        index: path.resolve(__dirname, 'index.html'),
+        ptwebgl: path.resolve(__dirname, 'pt-webgl.html'),
+        walkaround: path.resolve(__dirname, 'walkaround.html'),
+        ptwebgpu: path.resolve(__dirname, 'pt-webgpu.html'),
+      },
+    },
+  },
 });

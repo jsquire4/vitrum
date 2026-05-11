@@ -48,16 +48,52 @@ function nonNull<T>(v: T | null, name: string): T {
 }
 
 async function main(): Promise<void> {
-  const canvasPt    = nonNull(document.querySelector<HTMLCanvasElement>('#c-pt'), '#c-pt');
-  const canvasWgpu  = nonNull(document.querySelector<HTMLCanvasElement>('#c-wgpu'), '#c-wgpu');
-  const canvasPtGpu = nonNull(document.querySelector<HTMLCanvasElement>('#c-ptgpu'), '#c-ptgpu');
+  // Per-engine pages omit some canvases. nonNullIf returns the canvas if
+  // present and required by mode; throws if required-but-missing; returns
+  // a 1×1 placeholder if not-required (so loops can still reference the
+  // variable without conditional plumbing throughout).
+  const canvasPt    = document.querySelector<HTMLCanvasElement>('#c-pt');
+  const canvasWgpu  = document.querySelector<HTMLCanvasElement>('#c-wgpu');
+  const canvasPtGpu = document.querySelector<HTMLCanvasElement>('#c-ptgpu');
   const statusEl    = nonNull(document.querySelector<HTMLDivElement>('#status'), '#status');
 
   const lines: [string, string, string] = ['', '', ''];
 
+  // URL params drive validation-harness toggles. Pre-defined keys:
+  //   ?cameraMotion=1            — slow orbit of the camera (drives #4 motion path)
+  //   ?ppgEnabled=1              — enable PPG (#6 path)
+  //   ?denoiser=atrous           — use legacy 3-iter atrous instead of SVGF (#7)
+  //   ?quality=interactive|final|capture|safe — pt-webgl scheduler mode (#9)
+  //   ?ptWebgpuBounces=N         — pt-webgpu bounce-depth override (default 4)
+  //   ?samplesTarget=N           — pt-webgl + pt-webgpu convergence target
+  //   ?scene=cornell|complex     — scene selector (#11)
+  const params = new URLSearchParams(window.location.search);
+  // `mode` selects which engine(s) to initialize. Each per-engine page
+  // (pt-webgl.html / walkaround.html / pt-webgpu.html) sets the
+  // body[data-engine-mode] attribute, which we read here as a fallback.
+  const bodyMode = (document.body.getAttribute('data-engine-mode') ?? 'all') as
+    | 'all' | 'ptwebgl' | 'walkaround' | 'ptwebgpu';
+  const mode = (params.get('mode') ?? bodyMode) as typeof bodyMode;
+  const FLAGS = {
+    mode,
+    cameraMotion: params.get('cameraMotion') === '1',
+    ppgEnabled: params.get('ppgEnabled') === '1',
+    denoiser: (params.get('denoiser') ?? 'svgf') as 'svgf' | 'atrous',
+    quality: (params.get('quality') ?? 'capture') as 'interactive' | 'final' | 'capture' | 'safe',
+    ptWebgpuBounces: parseInt(params.get('ptWebgpuBounces') ?? '4', 10) || 4,
+    samplesTarget: parseInt(params.get('samplesTarget') ?? '32', 10) || 32,
+    scene: (params.get('scene') ?? 'cornell') as 'cornell' | 'complex',
+  };
+  const RUN = {
+    ptWebgl: mode === 'all' || mode === 'ptwebgl',
+    walkaround: mode === 'all' || mode === 'walkaround',
+    ptWebgpu: mode === 'all' || mode === 'ptwebgpu',
+  };
+
   // Expose engine telemetry as window.__vitrum so the validation harness
   // (driven via Claude-in-Chrome or DevTools) can poll without touching DOM.
   const telemetry: {
+    flags: typeof FLAGS;
     ptWebgl?: { state: string; spp: number; target: number; converged: boolean };
     walkaround?: {
       state: string;
@@ -67,8 +103,35 @@ async function main(): Promise<void> {
       lastGpuTimingsFrame?: number;
     };
     ptWebgpu?: { state: string; spp: number; target: number; converged: boolean };
-  } = {};
+    memory?: { usedJSHeapMB: number; totalJSHeapMB: number; jsHeapLimitMB: number; sampledAtFrame: number };
+    cameraMotion?: { angleDeg: number; moving: boolean };
+  } = { flags: FLAGS };
   (globalThis as unknown as { __vitrum: typeof telemetry }).__vitrum = telemetry;
+
+  // ── Camera motion (#4) ────────────────────────────────────────────────
+  // When cameraMotion=1, slowly orbit the camera around the scene origin.
+  // Each animation tick advances the orbit angle by a small delta. The
+  // walkaround engine's CAMERA_MOVE_RESET_THRESHOLD_SQ should fire and
+  // reset the temporal accumulator — confirm via debugTimingsLen / frame
+  // count behaviour.
+  let cameraAngle = 0;
+  let motionStartTs = 0;
+
+  // ── Memory probe (#8) ─────────────────────────────────────────────────
+  // Poll performance.memory every ~30 frames. Surfaces gradual heap growth
+  // and JS-side leak risk. Real GPU-memory usage is not exposed by the
+  // browser; this catches JS-side growth (closures, event listeners, etc.).
+  function pollMemory(frameIdx: number): void {
+    if (frameIdx % 30 !== 0) return;
+    const m = (performance as unknown as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
+    if (!m) return;
+    telemetry.memory = {
+      usedJSHeapMB: +(m.usedJSHeapSize / (1024 * 1024)).toFixed(2),
+      totalJSHeapMB: +(m.totalJSHeapSize / (1024 * 1024)).toFixed(2),
+      jsHeapLimitMB: +(m.jsHeapSizeLimit / (1024 * 1024)).toFixed(2),
+      sampledAtFrame: frameIdx,
+    };
+  }
 
   function refreshStatus(): void {
     statusEl.textContent = lines.join('\n').trim() || '…';
@@ -82,18 +145,37 @@ async function main(): Promise<void> {
   camera.lookAt(-0.05, -0.15, 0);
 
   // ── WebGL2 path trace ─────────────────────────────────────────────────
-  const renderer = new THREE.WebGLRenderer({ canvas: canvasPt, antialias: false, alpha: false });
-  renderer.setPixelRatio(1);
-  renderer.setClearColor(0x111111, 1);
-  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  // pt-webgl skipped entirely when mode doesn't include it or canvas absent.
+  if (!RUN.ptWebgl || !canvasPt) {
+    lines[0] = '';
+  }
+  const renderer = (RUN.ptWebgl && canvasPt)
+    ? new THREE.WebGLRenderer({ canvas: canvasPt, antialias: false, alpha: false })
+    : null;
+  if (renderer) {
+    renderer.setPixelRatio(1);
+    renderer.setClearColor(0x111111, 1);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+  }
 
-  const ptEngine = await createPTEngine_WebGL2({ device: renderer });
-  ptEngine.setScene(vitrumScene);
+  const ptEngine = renderer
+    ? await createPTEngine_WebGL2({
+        device: renderer,
+        extensions: {
+          'vitrum.ptWebgl.qualityMode': FLAGS.quality,
+        },
+      })
+    : null;
+  if (ptEngine) {
+    ptEngine.setScene(vitrumScene);
+    (globalThis as unknown as { __vitrumPtWebgl: typeof ptEngine }).__vitrumPtWebgl = ptEngine;
+  }
 
   let ptFrame = 0;
-  const samplesTarget = 32;
+  const samplesTarget = FLAGS.samplesTarget;
 
   function resizePt(): void {
+    if (!renderer || !canvasPt) return;
     resizeCanvasToDisplaySize(canvasPt);
     camera.aspect = canvasPt.width / Math.max(canvasPt.height, 1);
     camera.updateProjectionMatrix();
@@ -102,8 +184,27 @@ async function main(): Promise<void> {
 
   resizePt();
 
+  // Orbit step computed against motionStart so the path is deterministic
+  // independent of frame-rate jitter.
+  function applyCameraMotion(): void {
+    if (!FLAGS.cameraMotion) return;
+    const now = performance.now();
+    if (motionStartTs === 0) motionStartTs = now;
+    // 360° in 24 seconds ⇒ ~0.067 deg/ms. Slow enough to hit
+    // CAMERA_MOVE_RESET_THRESHOLD_SQ every frame so we can observe the
+    // walkaround temporal reset path.
+    cameraAngle = ((now - motionStartTs) * 0.0667) % 360;
+    const rad = (cameraAngle * Math.PI) / 180;
+    const radius = 2.75;
+    camera.position.set(Math.sin(rad) * radius, 0, Math.cos(rad) * radius);
+    camera.lookAt(-0.05, -0.15, 0);
+    telemetry.cameraMotion = { angleDeg: +cameraAngle.toFixed(2), moving: true };
+  }
+
   function ptLoop(): void {
+    if (!ptEngine || !canvasPt) return;
     resizePt();
+    applyCameraMotion();
     camera.updateMatrixWorld();
     const input: FrameInput = {
       viewMatrix: mat4FromThree(camera.matrixWorldInverse),
@@ -132,12 +233,14 @@ async function main(): Promise<void> {
       target: samplesTarget,
       converged: out.isConverged,
     };
-    lines[0] = `PT: SPP ${out.samplesAccumulated}/${samplesTarget}${out.isConverged ? ' ✓' : ''}`;
+    lines[0] = `PT: SPP ${out.samplesAccumulated}/${samplesTarget}${out.isConverged ? ' ✓' : ''}${FLAGS.cameraMotion ? ' · motion' : ''}`;
     refreshStatus();
-    if (!out.isConverged) requestAnimationFrame(ptLoop);
+    // Keep RAFing when cameraMotion is on; the fork resets accumulation on
+    // camera changes internally so each frame redrives a fresh accumulator.
+    if (!out.isConverged || FLAGS.cameraMotion) requestAnimationFrame(ptLoop);
   }
 
-  requestAnimationFrame(ptLoop);
+  if (ptEngine) requestAnimationFrame(ptLoop);
 
   // ── WebGPU walkaround (optional) ───────────────────────────────────────
   // Flatten the three nested guards into early returns inside an IIFE so the
@@ -145,6 +248,8 @@ async function main(): Promise<void> {
   // outer indentation level. The IIFE keeps the late-binding `lines[1]`
   // updates in scope.
   await (async (): Promise<void> => {
+    if (!RUN.walkaround && !RUN.ptWebgpu) return;
+    if (!canvasWgpu && !canvasPtGpu) return;
     if (!navigator.gpu) {
       lines[1] = 'Walkaround: no WebGPU — skipped (PT demonstrates shared Scene).';
       refreshStatus();
@@ -167,8 +272,8 @@ async function main(): Promise<void> {
       ...(tsAvailable ? { requiredFeatures: ['timestamp-query' as GPUFeatureName] } : {}),
     });
     const format = navigator.gpu.getPreferredCanvasFormat();
-    const ctx = canvasWgpu.getContext('webgpu');
-    if (!ctx) {
+    const ctx = (RUN.walkaround && canvasWgpu) ? canvasWgpu.getContext('webgpu') : null;
+    if (RUN.walkaround && canvasWgpu && !ctx) {
       lines[1] = 'Walkaround: getContext("webgpu") failed.';
       refreshStatus();
       return;
@@ -176,6 +281,7 @@ async function main(): Promise<void> {
     const gpuCtx = ctx;
 
     function configureWgpu(): void {
+      if (!gpuCtx || !canvasWgpu) return;
       resizeCanvasToDisplaySize(canvasWgpu);
       gpuCtx.configure({
         device,
@@ -191,84 +297,104 @@ async function main(): Promise<void> {
 
     // Expose the device + engine on window for the diagnostic probe.
     (globalThis as unknown as { __vitrumDevice: GPUDevice; __vitrumWalkaround?: unknown }).__vitrumDevice = device;
-    const hybrid = await createWalkaroundEngine_Hybrid({
-      device,
-      width: canvasWgpu.width,
-      height: canvasWgpu.height,
-      threeScene,
-      primaryLightDir,
-      primaryLightIntensity: 5,
-      skyTint: [0.55, 0.72, 1.0],
-      skyIrradiance: 0.35,
-      isSceneReady: () => true,
-    });
-    (globalThis as unknown as { __vitrumWalkaround: typeof hybrid }).__vitrumWalkaround = hybrid;
-    hybrid.setScene(vitrumScene);
-
-    const ready = await waitEngineReady(hybrid, 45_000);
-    if (!ready) {
-      lines[1] = `Walkaround: still ${hybrid.state} after timeout (try smaller scene or check GPU).`;
-      refreshStatus();
-      return;
-    }
-    lines[1] = 'Walkaround: rendering';
-    refreshStatus();
-
-    let wFrame = 0;
-    function wgpuLoop(): void {
-      configureWgpu();
-      camera.aspect = canvasWgpu.width / Math.max(canvasWgpu.height, 1);
-      camera.updateProjectionMatrix();
-      camera.updateMatrixWorld();
-      const view = gpuCtx.getCurrentTexture().createView();
-      const input: FrameInput = {
-        viewMatrix: mat4FromThree(camera.matrixWorldInverse),
-        projMatrix: mat4FromThree(camera.projectionMatrix),
-        cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
-        viewport: {
+    const hybrid = (RUN.walkaround && canvasWgpu && gpuCtx)
+      ? await createWalkaroundEngine_Hybrid({
+          device,
           width: canvasWgpu.width,
           height: canvasWgpu.height,
-          devicePixelRatio: window.devicePixelRatio,
-        },
-        frameIndex: wFrame,
-        frameSeed: (wFrame * 1664525 + 1013904223) >>> 0,
-        swapChainView: view,
-        swapChainFormat: format,
-        quality: { bounces: 4 },
+          threeScene,
+          primaryLightDir,
+          primaryLightIntensity: 5,
+          skyTint: [0.55, 0.72, 1.0],
+          skyIrradiance: 0.35,
+          isSceneReady: () => true,
+          denoiser: FLAGS.denoiser,
+          ppgEnabled: FLAGS.ppgEnabled,
+        })
+      : null;
+    if (hybrid) {
+      (globalThis as unknown as { __vitrumWalkaround: typeof hybrid }).__vitrumWalkaround = hybrid;
+      hybrid.setScene(vitrumScene);
+      // Scene lifecycle (#5) — expose a callable that rerun setScene with the
+      // current vitrumScene. Cheap correctness probe: makes sure the engine
+      // re-uploads BVH + reservoir state without leaking.
+      (globalThis as unknown as { __vitrumResetScene: () => void }).__vitrumResetScene = () => {
+        hybrid.setScene(vitrumScene);
       };
-      hybrid.renderFrame(input);
-      wFrame++;
-      const hyb = hybrid as unknown as {
-        debugTimings?: ReadonlyArray<{ t: number; ms: number }>;
-        lastGpuTimings?: Record<string, number>;
-        lastGpuTimingsFrame?: number;
-      };
-      telemetry.walkaround = {
-        state: hybrid.state,
-        frame: wFrame,
-        debugTimingsLen: hyb.debugTimings?.length ?? 0,
-        ...(hyb.lastGpuTimings ? { lastGpuTimings: hyb.lastGpuTimings } : {}),
-        ...(hyb.lastGpuTimingsFrame != null ? { lastGpuTimingsFrame: hyb.lastGpuTimingsFrame } : {}),
-      };
-      requestAnimationFrame(wgpuLoop);
-    }
-    requestAnimationFrame(wgpuLoop);
 
-    window.addEventListener('resize', () => {
-      configureWgpu();
-    });
+      const ready = await waitEngineReady(hybrid, 45_000);
+      if (!ready) {
+        lines[1] = `Walkaround: still ${hybrid.state} after timeout (try smaller scene or check GPU).`;
+        refreshStatus();
+        return;
+      }
+      lines[1] = 'Walkaround: rendering';
+      refreshStatus();
+    }
+
+    if (hybrid && canvasWgpu && gpuCtx) {
+      let wFrame = 0;
+      function wgpuLoop(): void {
+        if (!hybrid || !canvasWgpu || !gpuCtx) return;
+        configureWgpu();
+        applyCameraMotion();
+        camera.aspect = canvasWgpu.width / Math.max(canvasWgpu.height, 1);
+        camera.updateProjectionMatrix();
+        camera.updateMatrixWorld();
+        const view = gpuCtx.getCurrentTexture().createView();
+        const input: FrameInput = {
+          viewMatrix: mat4FromThree(camera.matrixWorldInverse),
+          projMatrix: mat4FromThree(camera.projectionMatrix),
+          cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
+          viewport: {
+            width: canvasWgpu.width,
+            height: canvasWgpu.height,
+            devicePixelRatio: window.devicePixelRatio,
+          },
+          frameIndex: wFrame,
+          frameSeed: (wFrame * 1664525 + 1013904223) >>> 0,
+          swapChainView: view,
+          swapChainFormat: format,
+          quality: { bounces: 4 },
+        };
+        hybrid.renderFrame(input);
+        wFrame++;
+        const hyb = hybrid as unknown as {
+          debugTimings?: ReadonlyArray<{ t: number; ms: number }>;
+          lastGpuTimings?: Record<string, number>;
+          lastGpuTimingsFrame?: number;
+        };
+        telemetry.walkaround = {
+          state: hybrid.state,
+          frame: wFrame,
+          debugTimingsLen: hyb.debugTimings?.length ?? 0,
+          ...(hyb.lastGpuTimings ? { lastGpuTimings: hyb.lastGpuTimings } : {}),
+          ...(hyb.lastGpuTimingsFrame != null ? { lastGpuTimingsFrame: hyb.lastGpuTimingsFrame } : {}),
+        };
+        pollMemory(wFrame);
+        requestAnimationFrame(wgpuLoop);
+      }
+      requestAnimationFrame(wgpuLoop);
+
+      window.addEventListener('resize', () => {
+        configureWgpu();
+      });
+    }
 
     // ── pt-webgpu (headless validation drive) ──────────────────────────────
     // Shares the same GPUDevice as the walkaround pipeline. Runs in its own
     // RAF loop until samplesTarget is reached. The bottom canvas is left
     // unconfigured — pt-webgpu writes to its internal HDR accum and does
     // not present to a swap chain.
+    if (!RUN.ptWebgpu || !canvasPtGpu) return;
     try {
       resizeCanvasToDisplaySize(canvasPtGpu);
       const ptGpuEngine = await createPTEngine_WebGPU({ device });
       ptGpuEngine.setScene(vitrumScene);
-      const ptGpuSamplesTarget = 32;
+      (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu = ptGpuEngine;
+      const ptGpuSamplesTarget = FLAGS.samplesTarget;
       let ptGpuFrame = 0;
+      let lastCameraPos: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
       function ptGpuLoop(): void {
         if (ptGpuEngine.state !== 'ready') {
           lines[2] = `pt-webgpu: state=${ptGpuEngine.state}`;
@@ -276,7 +402,17 @@ async function main(): Promise<void> {
           requestAnimationFrame(ptGpuLoop);
           return;
         }
+        applyCameraMotion();
         camera.updateMatrixWorld();
+        // Camera-move reset — pt-webgpu accumulates monotonically, so on
+        // camera change we have to reset() to flush the accum.
+        const dx = camera.position.x - lastCameraPos[0];
+        const dy = camera.position.y - lastCameraPos[1];
+        const dz = camera.position.z - lastCameraPos[2];
+        if (dx * dx + dy * dy + dz * dz > 1e-6) {
+          ptGpuEngine.reset();
+          lastCameraPos = [camera.position.x, camera.position.y, camera.position.z];
+        }
         const input: FrameInput = {
           viewMatrix: mat4FromThree(camera.matrixWorldInverse),
           projMatrix: mat4FromThree(camera.projectionMatrix),
@@ -288,7 +424,7 @@ async function main(): Promise<void> {
           },
           frameIndex: ptGpuFrame,
           frameSeed: (ptGpuFrame * 6364136223846793005 + 1442695040888963407) >>> 0,
-          quality: { samplesTarget: ptGpuSamplesTarget, bounces: 4, resolutionFactor: 1 },
+          quality: { samplesTarget: ptGpuSamplesTarget, bounces: FLAGS.ptWebgpuBounces, resolutionFactor: 1 },
         };
         const out = ptGpuEngine.renderFrame(input);
         ptGpuFrame++;
@@ -298,9 +434,9 @@ async function main(): Promise<void> {
           target: ptGpuSamplesTarget,
           converged: out.isConverged,
         };
-        lines[2] = `pt-webgpu: SPP ${out.samplesAccumulated}/${ptGpuSamplesTarget}${out.isConverged ? ' ✓' : ''}`;
+        lines[2] = `pt-webgpu: SPP ${out.samplesAccumulated}/${ptGpuSamplesTarget}${out.isConverged ? ' ✓' : ''}${FLAGS.cameraMotion ? ' · motion' : ''}`;
         refreshStatus();
-        if (!out.isConverged) requestAnimationFrame(ptGpuLoop);
+        if (!out.isConverged || FLAGS.cameraMotion) requestAnimationFrame(ptGpuLoop);
       }
       requestAnimationFrame(ptGpuLoop);
     } catch (e) {
@@ -310,7 +446,7 @@ async function main(): Promise<void> {
     }
   })();
 
-  window.addEventListener('resize', resizePt);
+  if (renderer) window.addEventListener('resize', resizePt);
 }
 
 main().catch((e) => {
