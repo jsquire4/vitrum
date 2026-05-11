@@ -11,7 +11,11 @@ import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 // scene buffer uploads, and the path-trace dispatch on real hardware.
 import { createPTEngine_WebGPU } from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
-import { createWalkaroundEngine_Hybrid, HYBRID_WEBGPU_REQUIRED_LIMITS } from '@vitrum/walkaround-hybrid';
+import {
+  createWalkaroundEngine_Hybrid,
+  HYBRID_WEBGPU_REQUIRED_FEATURES,
+  HYBRID_WEBGPU_REQUIRED_LIMITS,
+} from '@vitrum/walkaround-hybrid';
 
 if (typeof console !== 'undefined' && console.debug) {
   console.debug('[two-engines] pt-webgpu factory loaded:', typeof createPTEngine_WebGPU);
@@ -278,9 +282,13 @@ async function main(): Promise<void> {
     // adapter exposes it so the engine can record per-pass GPU timings
     // for telemetry / dev-panel readback.
     const tsAvailable = adapter.features.has('timestamp-query');
+    const requiredFeatures: GPUFeatureName[] = [
+      ...HYBRID_WEBGPU_REQUIRED_FEATURES.filter((f) => adapter.features.has(f)),
+      ...(tsAvailable ? ['timestamp-query' as GPUFeatureName] : []),
+    ];
     const device = await adapter.requestDevice({
       requiredLimits: HYBRID_WEBGPU_REQUIRED_LIMITS,
-      ...(tsAvailable ? { requiredFeatures: ['timestamp-query' as GPUFeatureName] } : {}),
+      ...(requiredFeatures.length > 0 ? { requiredFeatures } : {}),
     });
     const format = navigator.gpu.getPreferredCanvasFormat();
     const ctx = (RUN.walkaround && canvasWgpu) ? canvasWgpu.getContext('webgpu') : null;

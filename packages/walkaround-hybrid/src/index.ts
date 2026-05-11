@@ -28,6 +28,7 @@ export type { DDGILight } from './ddgi/types.js';
 export {
   WalkaroundGPUPipeline,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
+  HYBRID_WEBGPU_REQUIRED_FEATURES,
 } from './pipeline/WalkaroundGPUPipeline.js';
 export type { PipelineFrameInputs } from './pipeline/WalkaroundGPUPipeline.js';
 export {

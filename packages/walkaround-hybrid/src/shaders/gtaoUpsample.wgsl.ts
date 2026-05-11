@@ -38,7 +38,7 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   let halfDims = fullDims / 2u;
 
   // Read center pixel's normal + depth.
-  let center = textureLoad(up_normalDepth, vec2i(gid.xy), 0);
+  let center = textureLoad(up_normalDepth, gid.xy, 0);
   let centerNormal = center.xyz * 2.0 - 1.0;
   let centerDepth = abs(center.w);
 
@@ -61,12 +61,12 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
         min(halfPx.x + dx, halfDims.x - 1u),
         min(halfPx.y + dy, halfDims.y - 1u),
       );
-      let ao = textureLoad(up_aoHalf, vec2i(sampleHalf), 0).r;
+      let ao = textureLoad(up_aoHalf, sampleHalf, 0).r;
       // Corresponding full-res sample point (center of the half-res cell).
       let sampleFull = sampleHalf * 2u + 1u;
       let nd = textureLoad(
         up_normalDepth,
-        vec2i(min(sampleFull.x, fullDims.x - 1u),
+        vec2u(min(sampleFull.x, fullDims.x - 1u),
               min(sampleFull.y, fullDims.y - 1u)),
         0,
       );
@@ -86,10 +86,10 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   } else {
     // Cheap unweighted average as backup.
     ao = (
-      textureLoad(up_aoHalf, vec2i(halfPx), 0).r +
-      textureLoad(up_aoHalf, vec2i(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).r +
-      textureLoad(up_aoHalf, vec2i(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).r +
-      textureLoad(up_aoHalf, vec2i(min(halfPx.x + 1u, halfDims.x - 1u),
+      textureLoad(up_aoHalf, halfPx, 0).r +
+      textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).r +
+      textureLoad(up_aoHalf, vec2u(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).r +
+      textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u),
                                     min(halfPx.y + 1u, halfDims.y - 1u)), 0).r
     ) * 0.25;
   }

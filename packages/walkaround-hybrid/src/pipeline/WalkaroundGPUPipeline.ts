@@ -112,7 +112,29 @@ import {
  */
 export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
   maxStorageBuffersPerShaderStage: 16,
+  // Sprint 18 — shade writes 4 storage textures simultaneously
+  // (hdrColorOut, gNormalDepthOut, hdrIndirectOut, hdrTotalOut), at the
+  // default cap of 4. Indirect-combine writes a 5th. Lift to 8 so future
+  // additions (sparse / motion-vector outputs) have headroom too.
+  maxStorageTexturesPerShaderStage: 8,
 };
+
+/**
+ * WebGPU features the hybrid pipeline requires.  Hosts must include these in
+ * `adapter.requestDevice({ requiredFeatures })` (alongside any of their own).
+ *
+ * - `texture-formats-tier1`: lifts r16float (used by Sprint 15 GTAO half/full
+ *   AO textures) and rg16float into write-only storage texture support.
+ *   Without it, the gtao + gtao-upsample BGLs fail to validate and the engine
+ *   reports "Invalid PipelineLayout" at compile time.
+ *
+ * Optional features (e.g. `timestamp-query` for dev-time per-pass GPU
+ * timings) are handled separately by the host and are not part of the
+ * required-features contract.
+ */
+export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = [
+  'texture-formats-tier1' as GPUFeatureName,
+];
 
 /**
  * Camera squared-distance threshold for temporal accumulator reset.
