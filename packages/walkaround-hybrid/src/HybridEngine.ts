@@ -201,6 +201,26 @@ export class HybridEngine implements Engine {
     return this._debugTimings;
   }
 
+  /** Per-pass GPU timings in milliseconds, keyed by the same `PassLabel`
+   *  set the timestamp-query subsystem uses. Empty record when the active
+   *  adapter doesn't expose `timestamp-query` or when the engine is not yet
+   *  initialised. Useful for dev panels + telemetry harnesses. */
+  get lastGpuTimings(): Record<string, number> {
+    const p = this._pipeline as unknown as {
+      lastGpuTimings?: Record<string, number>;
+    } | null;
+    return p?.lastGpuTimings ?? {};
+  }
+
+  /** Frame index that produced {@link lastGpuTimings}; -1 if no readback
+   *  has resolved yet. */
+  get lastGpuTimingsFrame(): number {
+    const p = this._pipeline as unknown as {
+      lastGpuTimingsFrame?: number;
+    } | null;
+    return p?.lastGpuTimingsFrame ?? -1;
+  }
+
   // ── Sprint 11 — PPG state ──────────────────────────────────────────────
   /**
    * Whether PPG buffers are allocated. Set at construction from

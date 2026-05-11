@@ -59,7 +59,13 @@ async function main(): Promise<void> {
   // (driven via Claude-in-Chrome or DevTools) can poll without touching DOM.
   const telemetry: {
     ptWebgl?: { state: string; spp: number; target: number; converged: boolean };
-    walkaround?: { state: string; frame: number; debugTimingsLen: number };
+    walkaround?: {
+      state: string;
+      frame: number;
+      debugTimingsLen: number;
+      lastGpuTimings?: Record<string, number>;
+      lastGpuTimingsFrame?: number;
+    };
     ptWebgpu?: { state: string; spp: number; target: number; converged: boolean };
   } = {};
   (globalThis as unknown as { __vitrum: typeof telemetry }).__vitrum = telemetry;
@@ -152,9 +158,13 @@ async function main(): Promise<void> {
     }
     // The walkaround-hybrid shade pass binds 13+ storage buffers; default
     // WebGPU device limit is 8. Pass HYBRID_WEBGPU_REQUIRED_LIMITS so the
-    // pipeline layouts validate.
+    // pipeline layouts validate. Also opt into 'timestamp-query' when the
+    // adapter exposes it so the engine can record per-pass GPU timings
+    // for telemetry / dev-panel readback.
+    const tsAvailable = adapter.features.has('timestamp-query');
     const device = await adapter.requestDevice({
       requiredLimits: HYBRID_WEBGPU_REQUIRED_LIMITS,
+      ...(tsAvailable ? { requiredFeatures: ['timestamp-query' as GPUFeatureName] } : {}),
     });
     const format = navigator.gpu.getPreferredCanvasFormat();
     const ctx = canvasWgpu.getContext('webgpu');
@@ -225,11 +235,17 @@ async function main(): Promise<void> {
       };
       hybrid.renderFrame(input);
       wFrame++;
-      const hyb = hybrid as unknown as { debugTimings?: ReadonlyArray<{ t: number; ms: number }> };
+      const hyb = hybrid as unknown as {
+        debugTimings?: ReadonlyArray<{ t: number; ms: number }>;
+        lastGpuTimings?: Record<string, number>;
+        lastGpuTimingsFrame?: number;
+      };
       telemetry.walkaround = {
         state: hybrid.state,
         frame: wFrame,
         debugTimingsLen: hyb.debugTimings?.length ?? 0,
+        ...(hyb.lastGpuTimings ? { lastGpuTimings: hyb.lastGpuTimings } : {}),
+        ...(hyb.lastGpuTimingsFrame != null ? { lastGpuTimingsFrame: hyb.lastGpuTimingsFrame } : {}),
       };
       requestAnimationFrame(wgpuLoop);
     }

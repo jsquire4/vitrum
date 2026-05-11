@@ -534,7 +534,7 @@ export class ProbeUpdatePass {
       ],
     });
 
-    const pass = encoder.beginComputePass();
+    const pass = encoder.beginComputePass({ label: 'ddgi-probe-rays' });
     pass.setPipeline(g.raysPipeline);
     pass.setBindGroup(0, bg0);
     pass.setBindGroup(1, bg1);
@@ -571,7 +571,7 @@ export class ProbeUpdatePass {
 
     // Dispatch: global x = activeCount * IRR_CELL, global y = IRR_CELL.
     // workgroup (8,8,1) so dispatchWorkgroups(activeCount, 1, 1) covers one probe.
-    const pass = encoder.beginComputePass();
+    const pass = encoder.beginComputePass({ label: 'ddgi-blend-irr' });
     pass.setPipeline(g.blendIrrPipeline);
     pass.setBindGroup(0, bg0);
     pass.setBindGroup(1, bg1);
@@ -604,7 +604,7 @@ export class ProbeUpdatePass {
       ],
     });
 
-    const pass = encoder.beginComputePass();
+    const pass = encoder.beginComputePass({ label: 'ddgi-blend-vis' });
     pass.setPipeline(g.blendVisPipeline);
     pass.setBindGroup(0, bg0);
     pass.setBindGroup(1, bg1);
