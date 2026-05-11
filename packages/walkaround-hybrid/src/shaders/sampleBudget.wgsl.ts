@@ -1,9 +1,9 @@
 /**
  * sampleBudget.wgsl — Variance-driven per-pixel sample-tier compute shader.
  *
- * Sprint 9 (walkaround only). Reads the per-pixel WelfordVariance state from
- * a RG32Float storage texture, computes a dispatch-tier byte per pixel, and
- * writes it to a sample-count texture (r32uint).
+ * Sprint 9 — Walkaround adaptive sampling. Reads the per-pixel Welford
+ * variance state written by the welford-temporal pass and classifies each
+ * pixel into a sample tier byte that downstream passes consume.
  *
  * Tier semantics:
  *   1 = high-confidence pixel   (variance < threshold_low  → 1 ray/frame)
@@ -19,17 +19,31 @@
  * blending is perceptually stable on a calibrated display; variance > 0.10
  * produces visible noise even through the à-trous denoiser.
  *
- * Integration status: DEFERRED — shader is complete and runnable but is NOT
- * wired into the dispatch pipeline. Sprint 10a or a follow-up GPU-verification
- * sprint will insert this pass between the temporal accumulator and the next
- * RIS pass. See plan/sprint-9-walkaround-integration.md for wiring details.
+ * Pipeline placement:
+ *   slot 0 — sample-budget   (this pass)
+ *     ↓ writes tier texture (r32uint)
+ *   slot 1 — ris
+ *     ↓ (tier texture is currently informational only — RIS does not yet
+ *        consume it; future work may use tier to gate M_LIGHT)
+ *   slot 5 — shade
+ *     ↓ checkerboard sparse write (Sprint 9 companion of this pass)
  *
- * Dependencies: WELFORD_VARIANCE_WGSL (canonical struct + helpers) is injected
- * below; the shader string is self-contained for standalone validation. When
- * concatenated alongside COMMON_WGSL the duplicate struct will collide, so use
- * one or the other — not both.
+ * The variance texture this pass reads is the Welford state written by
+ * the welford-temporal pass on the PREVIOUS frame (read via the ping-pong
+ * slot that is NOT being written this frame). The first frame has no
+ * meaningful variance so all pixels classify to tier 4 (low confidence).
  *
- * @version 1 (Sprint 9, 2026-05-09)
+ * Bindings deliberately use `texture_2d<f32>` (sampled, unfilterable-float)
+ * for the variance input instead of a storage-read view: WebGPU does not
+ * support read-access for rg32float storage textures across all browsers,
+ * but the source variance texture was created with TEXTURE_BINDING usage
+ * for exactly this read path.
+ *
+ * Dependencies: WELFORD_VARIANCE_WGSL (canonical struct + helpers) is
+ * injected below. Do NOT prepend COMMON_WGSL — that would cause a
+ * redeclaration error for WelfordVariance.
+ *
+ * @version 2 (Sprint 9 wire-in, 2026-05-11)
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
@@ -47,15 +61,23 @@ struct SampleBudgetUniforms {
 
 @group(0) @binding(0) var<uniform>            u_budget: SampleBudgetUniforms;
 
-// RG32Float — r=mean, g=M2. Written by the temporal accumulator pass each frame.
-@group(0) @binding(1) var                     t_variance: texture_storage_2d<rg32float, read>;
+// RG32Float — r=mean, g=M2. Written by the welford-temporal pass each frame.
+// Bound as texture_2d<f32> (unfilterable) because storage-read of rg32float
+// is not portably supported across WebGPU browsers.
+@group(0) @binding(1) var                     t_variance: texture_2d<f32>;
 
-// r32uint — tier byte per pixel (1, 2, or 4). Read by next-frame RIS dispatch.
+// r32uint — tier byte per pixel (1, 2, or 4). Read by next-frame shade dispatch.
 @group(0) @binding(2) var                     t_tier_out: texture_storage_2d<r32uint, write>;
 
 // Sample counter (per-frame, same value for all pixels in a frame).
 // Host writes this as part of the per-frame UBO update.
-@group(0) @binding(3) var<uniform>            u_sampleCount: u32;
+struct SampleCountUniforms {
+  sampleCount: u32,
+  _pad0:       u32,
+  _pad1:       u32,
+  _pad2:       u32,
+};
+@group(0) @binding(3) var<uniform>            u_sampleCount: SampleCountUniforms;
 
 // ── WelfordVariance (canonical, injected from @vitrum/shared-denoisers) ─────
 ${WELFORD_VARIANCE_WGSL}
@@ -79,11 +101,11 @@ fn sampleBudgetKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
   if (px >= u_budget.screenWidth || py >= u_budget.screenHeight) { return; }
 
   // Load per-pixel Welford state. r=mean, g=M2 (RG32Float texel).
-  let raw = textureLoad(t_variance, vec2<u32>(px, py));
+  let raw = textureLoad(t_variance, vec2<i32>(i32(px), i32(py)), 0);
   let state = WelfordVariance(raw.r, raw.g);
 
   // Compute unbiased variance. Returns 0 for n < 2.
-  let n = u_sampleCount;
+  let n = u_sampleCount.sampleCount;
   let variance = welfordVariance(state, n);
 
   // Classify tier.

@@ -8,10 +8,14 @@
  * survives every configuration.
  *
  * Configurations (slot count in parentheses):
- *   • PPG off, legacy atrous (10): ris…shade, atrous-0..2, temporalAccum, composite
- *   • PPG on,  legacy atrous (11): + ppg-update
- *   • PPG off, SVGF          (14): ris…shade, welford-temporal, svgf-variance, svgf-atrous-0..4, temporalAccum, composite
- *   • PPG on,  SVGF          (15): + ppg-update
+ *   • PPG off, legacy atrous (12): sample-budget, ris…shade, atrous-0..2, temporalAccum, resolve, composite
+ *   • PPG on,  legacy atrous (13): + ppg-update
+ *   • PPG off, SVGF          (16): sample-budget, ris…shade, welford-temporal, svgf-variance, svgf-atrous-0..4, temporalAccum, resolve, composite
+ *   • PPG on,  SVGF          (17): + ppg-update
+ *
+ * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
+ * `resolve` (inserted between temporalAccum and composite). Both passes
+ * are part of the standard pipeline now — there is no opt-out path.
  *
  * Uses a ping-pong pair of readback buffers so one can be in-flight
  * (mapped/mapping) while the next frame writes into the other, avoiding
@@ -19,6 +23,7 @@
  */
 
 export type PassLabel =
+  | 'sample-budget'
   | 'ris'
   | 'temporal'
   | 'spatial-1'
@@ -36,6 +41,7 @@ export type PassLabel =
   | 'atrous-1'
   | 'atrous-2'
   | 'temporalAccum'
+  | 'resolve'
   | 'composite';
 
 /**
@@ -43,7 +49,7 @@ export type PassLabel =
  * GPU querySet + resolve/readback buffers so allocation survives every
  * runtime layout.
  */
-export const MAX_PASS_COUNT = 15;
+export const MAX_PASS_COUNT = 17;
 
 export interface PassLayoutOptions {
   readonly ppgEnabled: boolean;
@@ -60,7 +66,12 @@ export interface PassLayout {
 }
 
 export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
-  const labels: PassLabel[] = ['ris', 'temporal', 'spatial-1', 'spatial-2', 'shade'];
+  const labels: PassLabel[] = [
+    // Sprint 9 — adaptive sampling tier classifier runs before everything
+    // else so its r32uint tier output is available for shade in the same frame.
+    'sample-budget',
+    'ris', 'temporal', 'spatial-1', 'spatial-2', 'shade',
+  ];
   if (opts.ppgEnabled) labels.push('ppg-update');
   if (opts.denoiserMode === 'svgf') {
     labels.push(
@@ -75,7 +86,9 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   } else {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');
   }
-  labels.push('temporalAccum', 'composite');
+  // Sprint 9 — resolve sits between temporalAccum and composite so the
+  // composite blit reads from the resolved (checkerboard-filled) texture.
+  labels.push('temporalAccum', 'resolve', 'composite');
 
   const indexMap = new Map<PassLabel, number>();
   labels.forEach((label, i) => indexMap.set(label, i));

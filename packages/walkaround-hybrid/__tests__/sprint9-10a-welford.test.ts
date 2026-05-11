@@ -20,8 +20,8 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
-import { SAMPLE_BUDGET_WGSL } from '../src/shaders/deferred/sampleBudget.wgsl.js';
-import { RESOLVE_WGSL } from '../src/shaders/deferred/resolve.wgsl.js';
+import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
+import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { createVarianceBuffer, createFrameResources } from '../src/pipeline/resourceManager.js';
 
@@ -260,14 +260,19 @@ describe('RESOLVE_WGSL — checkerboard upsampling + temporal reprojection', () 
     expect(RESOLVE_WGSL).toContain('fn clampCoord');
   });
 
-  it('contains readMotionVector helper', () => {
-    expect(RESOLVE_WGSL).toContain('fn readMotionVector');
+  it('reads motion vector directly via textureLoad on full-resolution texture', () => {
+    // P3-C.1 wire-in changed motion-vector binding to a screen-sized
+    // texture_2d<f32>; the old 1×1-fallback `readMotionVector` helper is gone
+    // because the host now always allocates motionVectorTexture at full res.
+    expect(RESOLVE_WGSL).toContain('textureLoad(t_motion_vectors');
   });
 
-  it('motion-vector fallback: returns zero vec when texture is 1x1', () => {
-    // The 1×1 check is the documented zero-motion fallback.
-    expect(RESOLVE_WGSL).toContain('mvTexW <= 1u && mvTexH <= 1u');
-    expect(RESOLVE_WGSL).toContain('return vec2<f32>(0.0, 0.0)');
+  it('checkerboardOn uniform gates the gap-fill branch (passthrough when 0)', () => {
+    // P3-C.1: until shade.wgsl is upgraded to write sparsely, the resolve
+    // pass runs in passthrough mode (checkerboardOn=0) — all pixels copy
+    // through from current radiance. The flag is part of ResolveUniforms.
+    expect(RESOLVE_WGSL).toContain('checkerboardOn');
+    expect(RESOLVE_WGSL).toContain('if (checkerboardOn == 0u) { return true; }');
   });
 
   it('writes resolved radiance via textureStore', () => {

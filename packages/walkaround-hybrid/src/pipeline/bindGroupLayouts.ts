@@ -24,6 +24,10 @@ export interface BGLCache {
   hybridLayers?: GPUBindGroupLayout;
   /** @group(3) with DDGI + optional PPG training storage (bindings 4–5). */
   hybridPpg?: GPUBindGroupLayout;
+  /** Sprint 9 — sample-budget pass bind group layout. */
+  sampleBudget?: GPUBindGroupLayout;
+  /** Sprint 9 — resolve pass bind group layout. */
+  resolve?: GPUBindGroupLayout;
 }
 
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
@@ -156,6 +160,58 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
     ],
   });
   return cache.hybridLayers;
+}
+
+/**
+ * Sprint 9 — sample-budget BGL. Matches the @group(0) bindings in
+ * sampleBudget.wgsl.ts:
+ *   0 — SampleBudgetUniforms ubo (thresholds + screen size)
+ *   1 — variance source (rg32float, sampled, unfilterable)
+ *   2 — tier output (r32uint, write-only storage)
+ *   3 — SampleCountUniforms ubo (sample-count counter)
+ */
+export function getSampleBudgetBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.sampleBudget) return cache.sampleBudget;
+  cache.sampleBudget = device.createBindGroupLayout({
+    label: 'sample-budget-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32uint' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.sampleBudget;
+}
+
+/**
+ * Sprint 9 — resolve BGL. Matches the @group(0) bindings in
+ * resolve.wgsl.ts:
+ *   0 — ResolveUniforms ubo (screen size + frame parity)
+ *   1 — current radiance (rgba16float, sampled, unfilterable)
+ *   2 — previous radiance (rgba16float, sampled, unfilterable)
+ *   3 — motion vectors (rg32float, sampled, unfilterable)
+ *   4 — resolved out (rgba16float, write-only storage)
+ */
+export function getResolveBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.resolve) return cache.resolve;
+  cache.resolve = device.createBindGroupLayout({
+    label: 'resolve-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+    ],
+  });
+  return cache.resolve;
 }
 
 /** Hybrid layer bind group with PPG training (4–5) + guiding read paths (6–9). */

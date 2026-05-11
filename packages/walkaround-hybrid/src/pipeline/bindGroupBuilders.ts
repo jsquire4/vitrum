@@ -19,6 +19,8 @@ import {
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
   getHybridLayersBindGroupLayoutWithPpg,
+  getSampleBudgetBindGroupLayout,
+  getResolveBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -317,6 +319,52 @@ export function buildSVGFVarianceBindGroup(
       { binding: 5, resource: welfordWrite },
       { binding: 6, resource: varianceEstimate },
       { binding: 7, resource: { buffer: ubo } },
+    ],
+  });
+}
+
+// ── Sample-budget bind group (Sprint 9) ──────────────────────────────────────
+
+export function buildSampleBudgetBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  varianceView: GPUTextureView,
+  tierWriteView: GPUTextureView,
+  budgetUbo: GPUBuffer,
+  sampleCountUbo: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'sample-budget-bg',
+    layout: getSampleBudgetBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: { buffer: budgetUbo } },
+      { binding: 1, resource: varianceView },        // welford variance source (rg32float)
+      { binding: 2, resource: tierWriteView },       // tier output (r32uint)
+      { binding: 3, resource: { buffer: sampleCountUbo } },
+    ],
+  });
+}
+
+// ── Resolve bind group (Sprint 9) ────────────────────────────────────────────
+
+export function buildResolveBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  resolveUbo: GPUBuffer,
+  currentRadianceView: GPUTextureView,
+  prevRadianceView: GPUTextureView,
+  motionVectorsView: GPUTextureView,
+  resolvedWriteView: GPUTextureView,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'resolve-bg',
+    layout: getResolveBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: { buffer: resolveUbo } },
+      { binding: 1, resource: currentRadianceView },
+      { binding: 2, resource: prevRadianceView },
+      { binding: 3, resource: motionVectorsView },
+      { binding: 4, resource: resolvedWriteView },
     ],
   });
 }

@@ -15,6 +15,8 @@ import { RIS_WGSL } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_WGSL } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
+import { SAMPLE_BUDGET_WGSL } from '../shaders/sampleBudget.wgsl.js';
+import { RESOLVE_WGSL } from '../shaders/resolve.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import {
@@ -38,6 +40,8 @@ import {
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
   getHybridLayersBindGroupLayoutWithPpg,
+  getSampleBudgetBindGroupLayout,
+  getResolveBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -56,6 +60,10 @@ export interface CompiledPipelines {
   /** Sprint 11 — path guiding training (shade writes samples; dispatch follows). */
   ppgEnabled: boolean;
   ppgUpdatePipeline?: GPUComputePipeline;
+  /** Sprint 9 — adaptive sampling tier classifier (runs before RIS). */
+  sampleBudgetPipeline: GPUComputePipeline;
+  /** Sprint 9 — resolve pass (runs between temporalAccum and composite). */
+  resolvePipeline: GPUComputePipeline;
 }
 
 export async function compilePipelines(
@@ -88,6 +96,12 @@ export async function compilePipelines(
     ? device.createShaderModule({ label: 'ppg-update', code: COMMON_WGSL + PPG_UPDATE_WGSL })
     : null;
 
+  // Sprint 9 — sample-budget and resolve are standalone compute shaders.
+  // sampleBudget.wgsl imports WELFORD_VARIANCE_WGSL from @vitrum/shared-denoisers
+  // directly; resolve.wgsl is self-contained.
+  const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: SAMPLE_BUDGET_WGSL });
+  const resolveSM      = device.createShaderModule({ label: 'resolve',       code: RESOLVE_WGSL });
+
   // Check for compile errors on every shader module before proceeding.
   const welfordSM =
     denoiserMode === 'svgf'
@@ -107,6 +121,7 @@ export async function compilePipelines(
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
+    ['sample-budget', sampleBudgetSM], ['resolve', resolveSM],
     ...(welfordSM ? [['welford', welfordSM] as [string, GPUShaderModule]] : []),
     ...(svgfSM ? [['svgf', svgfSM] as [string, GPUShaderModule]] : []),
     ...(ppgUpdateSM ? [['ppg-update', ppgUpdateSM] as [string, GPUShaderModule]] : []),
@@ -154,6 +169,12 @@ export async function compilePipelines(
   const compositeLayout = device.createPipelineLayout({
     bindGroupLayouts: [getCompositeBindGroupLayout(device, bglCache)],
   });
+  const sampleBudgetLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getSampleBudgetBindGroupLayout(device, bglCache)],
+  });
+  const resolveLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getResolveBindGroupLayout(device, bglCache)],
+  });
 
   // Compile compute pipelines in parallel.
   const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
@@ -168,6 +189,18 @@ export async function compilePipelines(
     label: 'atrous', layout: atrousLayout,
     compute: { module: atrousSM, entryPoint: 'atrousMain' },
   });
+
+  // Sprint 9 — adaptive sampling pipelines.
+  const [sampleBudgetPipeline, resolvePipeline] = await Promise.all([
+    device.createComputePipelineAsync({
+      label: 'sample-budget', layout: sampleBudgetLayout,
+      compute: { module: sampleBudgetSM, entryPoint: 'sampleBudgetKernel' },
+    }),
+    device.createComputePipelineAsync({
+      label: 'resolve', layout: resolveLayout,
+      compute: { module: resolveSM, entryPoint: 'resolveKernel' },
+    }),
+  ]);
 
   let welfordPipeline: GPUComputePipeline | undefined;
   let svgfVariancePipeline: GPUComputePipeline | undefined;
@@ -230,6 +263,8 @@ export async function compilePipelines(
     atrousPipeline,
     accumPipeline,
     compositePipeline,
+    sampleBudgetPipeline,
+    resolvePipeline,
     denoiserMode,
     ppgEnabled: ppgOn,
     ...(welfordPipeline !== undefined &&

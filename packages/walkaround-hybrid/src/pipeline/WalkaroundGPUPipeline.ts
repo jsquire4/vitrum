@@ -53,6 +53,8 @@ import {
   buildWelfordBindGroup,
   buildSVGFVarianceBindGroup,
   buildSVGFAtrousBindGroup,
+  buildSampleBudgetBindGroup,
+  buildResolveBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
 // Note: we deliberately do NOT import `runSvgfWebGPU` from shared-denoisers.
@@ -212,6 +214,9 @@ export class WalkaroundGPUPipeline {
   private _welfordPipeline: GPUComputePipeline | undefined = undefined;
   private _svgfVariancePipeline: GPUComputePipeline | undefined = undefined;
   private _svgfAtrousPipeline: GPUComputePipeline | undefined = undefined;
+  // Sprint 9 — adaptive sampling pipelines (always populated).
+  private _sampleBudgetPipeline!: GPUComputePipeline;
+  private _resolvePipeline!: GPUComputePipeline;
   /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
   private _ppgEnabled = false;
   private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
@@ -241,6 +246,10 @@ export class WalkaroundGPUPipeline {
   private _svgfAtrousUboRef: UboRef = { buf: undefined };
   private _ppgUpdateUboRef: UboRef = { buf: undefined };
   private _ppgShadeMetaUboRef: UboRef = { buf: undefined };
+  // Sprint 9 — adaptive sampling UBOs.
+  private _sampleBudgetUboRef: UboRef = { buf: undefined };
+  private _sampleCountUboRef:  UboRef = { buf: undefined };
+  private _resolveUboRef:      UboRef = { buf: undefined };
   private get _perPassUboRefs(): readonly UboRef[] {
     return [
       this._atrousUboRef,
@@ -250,6 +259,9 @@ export class WalkaroundGPUPipeline {
       this._svgfAtrousUboRef,
       this._ppgUpdateUboRef,
       this._ppgShadeMetaUboRef,
+      this._sampleBudgetUboRef,
+      this._sampleCountUboRef,
+      this._resolveUboRef,
     ];
   }
 
@@ -332,6 +344,8 @@ export class WalkaroundGPUPipeline {
     this._svgfAtrousPipeline   = compiled.svgfAtrousPipeline;
     this._ppgEnabled           = compiled.ppgEnabled;
     this._ppgUpdatePipeline    = compiled.ppgUpdatePipeline;
+    this._sampleBudgetPipeline = compiled.sampleBudgetPipeline;
+    this._resolvePipeline      = compiled.resolvePipeline;
     if (this._denoiserMode === 'svgf' && (
       !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
     )) {
@@ -349,6 +363,10 @@ export class WalkaroundGPUPipeline {
     const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
     this._atrousUboRef.buf = d.createBuffer({ label: 'atrous-ubo', size: 16, usage: U });
     this._accumUboRef.buf  = d.createBuffer({ label: 'accum-ubo',  size: 16, usage: U });
+    // Sprint 9 — adaptive sampling UBOs (always allocated; passes always run).
+    this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
+    this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
+    this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
     if (this._denoiserMode === 'svgf') {
       this._welfordUboRef.buf       = d.createBuffer({ label: 'welford-ubo',        size: 16, usage: U });
       this._svgfVarianceUboRef.buf  = d.createBuffer({ label: 'svgf-variance-ubo',  size: SVGF_VARIANCE_UNIFORMS_SIZE_BYTES, usage: U });
@@ -480,6 +498,44 @@ export class WalkaroundGPUPipeline {
       const ts = tsWrites(this._tsState.querySet, passLayout, label);
       return ts ? { label, timestampWrites: ts } : { label };
     };
+
+    // Pass 0: Sample budget (Sprint 9). Reads previous-frame Welford variance,
+    // writes per-pixel tier texture (1=converged, 2=med, 4=high-noise). On the
+    // first few frames (variance unconverged) every pixel classifies to tier 1
+    // because raw bytes read 0 — that's harmless: the tier output is not yet
+    // consumed by RIS or shade, so the pass is currently informational only.
+    // (Tier-aware RIS / shade is the next Sprint 9 step; this dispatch is the
+    // wire-in that lets the downstream consumers be added without re-doing the
+    // plumbing.)
+    {
+      // Budget uniforms: f32 threshold_low, f32 threshold_high, u32 screenW, u32 screenH (16 bytes).
+      const budgetBytes = new ArrayBuffer(16);
+      const budgetF32 = new Float32Array(budgetBytes);
+      const budgetU32 = new Uint32Array(budgetBytes);
+      budgetF32[0] = 0.01;
+      budgetF32[1] = 0.10;
+      budgetU32[2] = W;
+      budgetU32[3] = H;
+      d.queue.writeBuffer(this._sampleBudgetUboRef.buf!, 0, budgetBytes);
+      // Sample count uniforms: u32 sampleCount + 3 pad u32 (16 bytes).
+      d.queue.writeBuffer(
+        this._sampleCountUboRef.buf!,
+        0,
+        new Uint32Array([Math.max(this._accumFrameIndex + 1, 1), 0, 0, 0]),
+      );
+      const bgBudget = buildSampleBudgetBindGroup(
+        d, this._bglCache,
+        this._res.varianceBuffer.createView(),
+        this._res.tierTexture.createView(),
+        this._sampleBudgetUboRef.buf!,
+        this._sampleCountUboRef.buf!,
+      );
+      const pass = encoder.beginComputePass(computeDesc('sample-budget'));
+      pass.setPipeline(this._sampleBudgetPipeline);
+      pass.setBindGroup(0, bgBudget);
+      pass.dispatchWorkgroups(wgX, wgY, 1);
+      pass.end();
+    }
 
     // Pass 1: RIS (primary ray cast + reservoir sampling)
     {
@@ -647,8 +703,36 @@ export class WalkaroundGPUPipeline {
     this._accumPingPongIndex = 1 - this._accumPingPongIndex;
     this._accumFrameIndex++;
 
-    // Pass 6: Composite render pass — blit accumulated HDR to swap-chain.
-    const finalTex = writeAccum;
+    // Pass: Resolve (Sprint 9). Currently runs in passthrough mode
+    // (checkerboardOn=0) — every pixel copies through from writeAccum to
+    // resolvedTexture. When shade.wgsl is upgraded to write sparsely
+    // (checkerboard pattern), flip checkerboardOn=1 in the resolve UBO and
+    // the gap-fill branch becomes active. Until then this pass costs one
+    // extra texture copy per frame but produces identical output.
+    {
+      // ResolveUniforms: u32 W, u32 H, u32 frameParity, u32 checkerboardOn (16 bytes).
+      d.queue.writeBuffer(
+        this._resolveUboRef.buf!,
+        0,
+        new Uint32Array([W, H, this._frameCount & 1, 0]),
+      );
+      const bgResolve = buildResolveBindGroup(
+        d, this._bglCache,
+        this._resolveUboRef.buf!,
+        writeAccum.createView(),                            // current radiance (post-accum)
+        readAccum.createView(),                             // prev radiance (other ping-pong slot)
+        this._res.motionVectorTexture.createView(),         // motion vectors (zero-filled until a motion-vector pass exists)
+        this._res.resolvedTexture.createView(),
+      );
+      const pass = encoder.beginComputePass(computeDesc('resolve'));
+      pass.setPipeline(this._resolvePipeline);
+      pass.setBindGroup(0, bgResolve);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+
+    // Pass: Composite render pass — blit resolved HDR to swap-chain.
+    const finalTex = this._res.resolvedTexture;
     const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.compositeLinearSampler);
     {
       const tsComp = tsWrites(this._tsState.querySet, passLayout, 'composite');

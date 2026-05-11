@@ -56,6 +56,20 @@ export interface FrameResources {
   svgfVarianceEstimateTexture: GPUTexture;
   /** Screen-space motion (RG32F); zeros until a motion-vector pass exists. */
   motionVectorTexture: GPUTexture;
+  /**
+   * Sprint 9 — Per-pixel sample tier (r32uint, 1 / 2 / 4). Written by the
+   * sample-budget pass each frame; available for downstream consumption by
+   * shade or RIS. Always allocated — adaptive sampling is part of the
+   * standard pipeline as of Sprint 9 wire-in.
+   */
+  tierTexture: GPUTexture;
+  /**
+   * Sprint 9 — Final resolved radiance (rgba16float). Written by the
+   * resolve pass (between temporalAccum and composite); read by composite.
+   * Always allocated — sparse-shade resolve is part of the standard pipeline
+   * as of Sprint 9 wire-in.
+   */
+  resolvedTexture: GPUTexture;
 
   /**
    * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
@@ -537,6 +551,24 @@ export function createFrameResources(
     { width: W, height: H, depthOrArrayLayers: 1 },
   );
 
+  // Sprint 9 — Adaptive sampling textures (tier + resolved). Both are
+  // unconditional now: sample-budget + resolve are standard pipeline passes.
+  const tierTexture = device.createTexture({
+    label: 'sample-tier',
+    size: [W, H],
+    format: 'r32uint',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const resolvedTexture = device.createTexture({
+    label: 'resolved-radiance',
+    size: [W, H],
+    format: 'rgba16float',
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC,
+  });
+
   // Sprint 11 — PPG buffers (opt-in via ppgEnabled, default: disabled).
   // No behavioural change for existing callers when ppgEnabled is false/unset.
   // Use a conditional spread so the ppgBuffers key is absent (not undefined)
@@ -567,6 +599,8 @@ export function createFrameResources(
     varianceBufferAux,
     svgfVarianceEstimateTexture,
     motionVectorTexture,
+    tierTexture,
+    resolvedTexture,
     ...ppgExt,
   };
 }
@@ -594,6 +628,8 @@ export function destroyFrameResources(r: FrameResources): void {
   r.varianceBufferAux.destroy();
   r.svgfVarianceEstimateTexture.destroy();
   r.motionVectorTexture.destroy();
+  r.tierTexture.destroy();
+  r.resolvedTexture.destroy();
   if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
     destroyPPGBuffers(r.ppgBuffers);
   }
