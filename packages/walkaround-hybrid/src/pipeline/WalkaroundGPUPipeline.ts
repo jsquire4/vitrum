@@ -701,7 +701,11 @@ export class WalkaroundGPUPipeline {
       );
     }
 
-    const alpha = this._accumFrameIndex === 0 ? 1.0 : 0.1;
+    // alpha=0.05 (was 0.1) gives ~95% history weight per frame. Slows
+    // convergence on legitimate changes but the camera-motion path resets
+    // accumFrameIndex anyway, so this only affects static-camera frames
+    // where slower integration is the right trade-off (less flicker).
+    const alpha = this._accumFrameIndex === 0 ? 1.0 : 0.05;
     this._lastCameraPos = [...inputs.cameraPos];
 
     {

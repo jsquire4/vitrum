@@ -190,7 +190,14 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     let lid = r.lightId;
     if (lid < ubo.emitterCount) {
       let e  = emitters[lid];
-      let ls = sampleEmitterPoint(e, vec2f(0.5, 0.5));
+      // Stochastic xi instead of (0.5, 0.5). The deterministic centre-sample
+      // bites hard on rect-area lights split into two triangles: the two
+      // tris have different centroids, so ReSTIR flipping between them
+      // produces a bimodal radiance per frame (visible flicker). Random xi
+      // distributes the sample point across the triangle each frame;
+      // temporalAccum integrates the variance out.
+      let lsXi = vec2f(rand_f32(&rng), rand_f32(&rng));
+      let ls = sampleEmitterPoint(e, lsXi);
       let toL = ls.pos - pos;
       let dist = length(toL);
       if (dist > 1e-4) {
