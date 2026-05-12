@@ -31,14 +31,14 @@ export interface FrameResources {
   ddgiUboBuffer: GPUBuffer;
   /**
    * Sprint 9 — Per-pixel Welford variance buffer (RG32Float storage texture).
-   * Ping-pong pair with {@link varianceBufferAux} when the SVGF path runs
+   * Ping-pong pair with {@link varianceBufferAux} when the atrous-variance path runs
    * `welfordTemporalMain` each frame.
    */
   varianceBuffer: GPUTexture;
-  /** Second Welford ping-pong half (SVGF path only). */
+  /** Second Welford ping-pong half (atrous-variance path only). */
   varianceBufferAux: GPUTexture;
-  /** SVGF variance-estimation output (.r = scalar variance, .g = frame tag). */
-  svgfVarianceEstimateTexture: GPUTexture;
+  /** Atrous-variance estimation output (.r = scalar variance, .g = frame tag). */
+  atrousVarianceEstimateTexture: GPUTexture;
   /** Screen-space motion (RG32F); zeros until a motion-vector pass exists. */
   motionVectorTexture: GPUTexture;
   /**
@@ -433,11 +433,11 @@ export function createFrameResources(
   // grid params from HybridLayeredStage.
   device.queue.writeBuffer(ddgiUboBuffer, 0, buildDDGIPlaceholderUBO().buffer);
 
-  // Sprint 9 / 10a — Welford ping-pong + SVGF variance map + motion placeholder.
+  // Sprint 9 / 10a — Welford ping-pong + atrous-variance estimate map + motion placeholder.
   const varianceBuffer = createVarianceBuffer(device, W, H);
   const varianceBufferAux = createVarianceBuffer(device, W, H);
-  const svgfVarianceEstimateTexture = device.createTexture({
-    label: 'svgf-variance-estimate',
+  const atrousVarianceEstimateTexture = device.createTexture({
+    label: 'atrous-variance-estimate',
     size: [W, H],
     format: 'rg32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
@@ -569,7 +569,7 @@ export function createFrameResources(
     ddgiUboBuffer,
     varianceBuffer,
     varianceBufferAux,
-    svgfVarianceEstimateTexture,
+    atrousVarianceEstimateTexture,
     motionVectorTexture,
     tierTexture,
     resolvedTexture,
@@ -610,7 +610,7 @@ export function destroyFrameResources(r: FrameResources): void {
   r.ddgiUboBuffer.destroy();
   r.varianceBuffer.destroy();
   r.varianceBufferAux.destroy();
-  r.svgfVarianceEstimateTexture.destroy();
+  r.atrousVarianceEstimateTexture.destroy();
   r.motionVectorTexture.destroy();
   r.tierTexture.destroy();
   r.resolvedTexture.destroy();

@@ -205,7 +205,11 @@ export interface EngineOptions {
   /** Denoiser pipeline wired at engine creation. Changing the denoiser
    *  requires recompiling shaders and resizing auxiliary buffers — so it is
    *  a creation-time structural decision, not a per-frame dial. */
-  readonly denoiser?: 'none' | 'atrous' | 'svgf' | 'bmfr' | 'oidn-final';
+  /** `'svgf'` is a deprecated alias for `'atrous-variance'`; backends that ship
+   *  à-trous + variance-scalar lookup should accept both. Real Schied 2017 SVGF
+   *  (bilinear reprojection, per-pixel history, disocclusion detection) is not
+   *  implemented anywhere yet; see plan/sprint-svgf-real-future.md. */
+  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'bmfr' | 'oidn-final';
 
   // ── Specular caustics strategy (RFE-05) ────────────────────────────────
   /**

@@ -67,8 +67,8 @@ describe('Sprint 15 — pass layout integration', () => {
     expect(MAX_PASS_COUNT).toBeGreaterThanOrEqual(19);
   });
 
-  it('SVGF layout includes gtao and gtao-upsample between shade and welford-temporal', () => {
-    const layout = buildPassLayout({ denoiserMode: 'svgf' });
+  it('atrous-variance layout includes gtao and gtao-upsample between shade and welford-temporal', () => {
+    const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
     const labels = layout.labels;
     const shadeIdx = labels.indexOf('shade');
     const gtaoIdx = labels.indexOf('gtao');
@@ -87,9 +87,9 @@ describe('Sprint 15 — pass layout integration', () => {
   });
 
   it('slotCount fits within MAX_PASS_COUNT', () => {
-    const layoutSvgf = buildPassLayout({ denoiserMode: 'svgf' });
+    const layoutAtrousVariance = buildPassLayout({ denoiserMode: 'atrous-variance' });
     const layoutAtrous = buildPassLayout({ denoiserMode: 'atrous' });
-    expect(layoutSvgf.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
+    expect(layoutAtrousVariance.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
     expect(layoutAtrous.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
   });
 });

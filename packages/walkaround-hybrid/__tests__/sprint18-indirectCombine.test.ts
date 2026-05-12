@@ -1,5 +1,5 @@
 /**
- * Sprint 18 — Per-channel SVGF (direct vs indirect) structural tests.
+ * Sprint 18 — Per-channel denoising (direct vs indirect) structural tests.
  *
  * Validates:
  *  - shade.wgsl now writes split direct + indirect outputs;
@@ -58,7 +58,7 @@ describe('Sprint 18 — indirect-combine WGSL', () => {
 
 describe('Sprint 18 — pass-layout placement', () => {
   it('places indirect-combine directly before temporalAccum in every variant', () => {
-    for (const denoiserMode of ['svgf', 'atrous'] as const) {
+    for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
       const layout = buildPassLayout({ denoiserMode });
       const combine = layout.labels.indexOf('indirect-combine');
       const accum = layout.labels.indexOf('temporalAccum');

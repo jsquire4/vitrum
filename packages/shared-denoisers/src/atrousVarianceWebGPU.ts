@@ -1,39 +1,43 @@
 /**
- * One-shot SVGF (variance + à-trous) on CPU-backed linear HDR RGB via WebGPU.
+ * One-shot à-trous + variance denoiser on CPU-backed linear HDR RGB via WebGPU.
+ *
+ * Previously named svgfWebGPU.ts; renamed by sweep-2026-05-11 D3.
+ * The denoiser was previously called SVGF but never implemented real
+ * Schied 2017 SVGF. Real SVGF is tracked in plan/sprint-svgf-real-future.md.
  *
  * When optional g-buffer slices (`gbufferNormalsRgb`, `linearDepth`, `motionRg`,
  * `welfordMeanM2`) are omitted, fills synthetic buffers from
- * SVGF_SYNTHETIC_GBUFFER_DEFAULTS unless `syntheticGbufferFallback` overrides them.
+ * ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS unless `syntheticGbufferFallback` overrides them.
  *
- * For temporal variance (`frameCount >= SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT`), hosts should
+ * For temporal variance (`frameCount >= ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT`), hosts should
  * supply `welfordMeanM2` from the path accumulator (RG mean + M₂). Cornell-style demos
  * may omit it and accept the console warning plus zero-filled variance input.
  */
 
-import { SVGF_WGSL, SVGF_COMPUTE_WORKGROUP_SIZE } from './wgsl/svgf.wgsl.js';
+import { ATROUS_VARIANCE_WGSL, ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE } from './wgsl/atrousVariance.wgsl.js';
 import {
-  SVGF_DEFAULT_UNIFORMS,
-  SVGF_UNIFORMS_SIZE_BYTES,
-  SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
-  packSVGFUniforms,
-  packSVGFVarianceUniforms,
-} from './svgfBindings.js';
+  ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
+  ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+  ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
+  packAtrousVarianceAtrousUniforms,
+  packAtrousVarianceVarianceUniforms,
+} from './atrousVarianceBindings.js';
 import {
-  SVGF_DEFAULT_ATROUS_ITERATIONS,
-  SVGF_MAX_ATROUS_ITERATIONS,
-  SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT,
-} from './svgfConstants.js';
+  ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
+  ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS,
+  ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
+} from './atrousVarianceConstants.js';
 import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
 import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 
-export interface SvgfSyntheticGbufferFallback {
+export interface AtrousVarianceSyntheticGbufferFallback {
   readonly normalRgb?: readonly [number, number, number];
   readonly linearDepth?: number;
 }
 
 /** Defaults when optional G-buffer slices are omitted (Cornell-style synthetic prepass). */
-export const SVGF_SYNTHETIC_GBUFFER_DEFAULTS = {
+export const ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS = {
   normalRgb: [0, 1, 0] as const,
   linearDepth: 2,
 } as const;
@@ -41,30 +45,30 @@ export const SVGF_SYNTHETIC_GBUFFER_DEFAULTS = {
 const VARIANCE_ENTRY = 'svgfVarianceMain';
 const ATROUS_ENTRY = 'svgfAtrousMain';
 
-interface SvgfPipelineBundle {
+interface AtrousVariancePipelineBundle {
   readonly variance: GPUComputePipeline;
   readonly atrous: GPUComputePipeline;
 }
 
-const svgfPipelinesByDevice = new WeakMap<GPUDevice, SvgfPipelineBundle>();
+const atrousVariancePipelinesByDevice = new WeakMap<GPUDevice, AtrousVariancePipelineBundle>();
 
-function svgfPipelines(device: GPUDevice): SvgfPipelineBundle {
-  let bundle = svgfPipelinesByDevice.get(device);
+function atrousVariancePipelines(device: GPUDevice): AtrousVariancePipelineBundle {
+  let bundle = atrousVariancePipelinesByDevice.get(device);
   if (bundle == null) {
-    const shaderModule = device.createShaderModule({ label: 'svgf', code: SVGF_WGSL });
+    const shaderModule = device.createShaderModule({ label: 'atrous-variance', code: ATROUS_VARIANCE_WGSL });
     bundle = {
       variance: device.createComputePipeline({
-        label: 'svgf-variance',
+        label: 'atrous-variance-variance',
         layout: 'auto',
         compute: { module: shaderModule, entryPoint: VARIANCE_ENTRY },
       }),
       atrous: device.createComputePipeline({
-        label: 'svgf-atrous',
+        label: 'atrous-variance-atrous',
         layout: 'auto',
         compute: { module: shaderModule, entryPoint: ATROUS_ENTRY },
       }),
     };
-    svgfPipelinesByDevice.set(device, bundle);
+    atrousVariancePipelinesByDevice.set(device, bundle);
   }
   return bundle;
 }
@@ -231,18 +235,18 @@ function uploadInterleavedRgAsRg32f(
 }
 
 /**
- * Validates sizes of optional SVGF G-buffer CPU slices.
- * Call from hosts before `runSvgfWebGPU` when assembling buffers manually.
+ * Validates sizes of optional à-trous + variance G-buffer CPU slices.
+ * Call from hosts before `runAtrousVarianceWebGPU` when assembling buffers manually.
  */
-export function assertSvgfWebGPUBufferShapes(opts: SvgfWebGPUOptions): void {
+export function assertAtrousVarianceWebGPUBufferShapes(opts: AtrousVarianceWebGPUOptions): void {
   const w = opts.width;
   const h = opts.height;
   const px = w * h;
   if (w <= 0 || h <= 0 || opts.rgb.length < px * 3) {
-    throw new Error('runSvgfWebGPU: invalid rgb buffer or dimensions');
+    throw new Error('runAtrousVarianceWebGPU: invalid rgb buffer or dimensions');
   }
   const need = (cond: boolean, detail: string): void => {
-    if (!cond) throw new Error(`runSvgfWebGPU: ${detail}`);
+    if (!cond) throw new Error(`runAtrousVarianceWebGPU: ${detail}`);
   };
   if (opts.prevRadianceRgb != null) {
     need(opts.prevRadianceRgb.length >= px * 3, 'prevRadianceRgb length must be >= width * height * 3');
@@ -262,10 +266,10 @@ export function assertSvgfWebGPUBufferShapes(opts: SvgfWebGPUOptions): void {
 }
 
 function warnMissingWelfordTemporal(frameCount: number): void {
-  if (frameCount < SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT) return;
+  if (frameCount < ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT) return;
   if (typeof console === 'undefined' || typeof console.warn !== 'function') return;
   console.warn(
-    `[@vitrum/shared-denoisers] runSvgfWebGPU: frameCount >= ${SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT} but welfordMeanM2 was not supplied — temporal variance uses zeros. Provide RG32 mean+M₂ from the path accumulator when using temporal SVGF.`,
+    `[@vitrum/shared-denoisers] runAtrousVarianceWebGPU: frameCount >= ${ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT} but welfordMeanM2 was not supplied — temporal variance uses zeros. Provide RG32 mean+M₂ from the path accumulator when using temporal à-trous variance denoiser.`,
   );
 }
 
@@ -298,15 +302,15 @@ function readRgba16fToRgbFloat(device: GPUDevice, texture: GPUTexture, width: nu
   });
 }
 
-export interface SvgfWebGPUOptions {
+export interface AtrousVarianceWebGPUOptions {
   readonly rgb: Float32Array;
   readonly width: number;
   readonly height: number;
-  /** Frames since reset; below SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT selects spatial variance in shader. Default 0. */
+  /** Frames since reset; below ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT selects spatial variance in shader. Default 0. */
   readonly frameCount?: number;
   /**
-   * À-trous iterations (step 1, 2, 4, …). Default SVGF_DEFAULT_ATROUS_ITERATIONS.
-   * Values are clamped to [1, SVGF_MAX_ATROUS_ITERATIONS].
+   * À-trous iterations (step 1, 2, 4, …). Default ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS.
+   * Values are clamped to [1, ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS].
    */
   readonly atrousIterations?: number;
   /** Explicit device; never destroyed by this call. */
@@ -328,41 +332,41 @@ export interface SvgfWebGPUOptions {
   /** Screen-space motion vector per pixel (e.g. UV delta); RG interleaved, length `width * height * 2`. */
   readonly motionRg?: Float32Array;
   /**
-   * Welford RG texel matching SVGF_WGSL / Sprint 9 Welford buffer: `.r = mean luminance`, `.g = M₂`.
-   * Length `width * height * 2`. Supply when frameCount >= SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT for temporal variance.
+   * Welford RG texel matching ATROUS_VARIANCE_WGSL / Sprint 9 Welford buffer: `.r = mean luminance`, `.g = M₂`.
+   * Length `width * height * 2`. Supply when frameCount >= ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT for temporal variance.
    */
   readonly welfordMeanM2?: Float32Array;
 
-  /** Overrides SVGF_SYNTHETIC_GBUFFER_DEFAULTS when real G-buffer slices are omitted. */
-  readonly syntheticGbufferFallback?: SvgfSyntheticGbufferFallback;
-  /** À-trous edge-stop σ; defaults from SVGF_DEFAULT_UNIFORMS. */
+  /** Overrides ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS when real G-buffer slices are omitted. */
+  readonly syntheticGbufferFallback?: AtrousVarianceSyntheticGbufferFallback;
+  /** À-trous edge-stop σ; defaults from ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS. */
   readonly sigmaColor?: number;
   readonly sigmaNormal?: number;
   readonly sigmaDepth?: number;
 }
 
 /**
- * Runs SVGF variance estimation then ping-pong à-trous filtering.
+ * Runs à-trous variance estimation then ping-pong à-trous filtering.
  * Transient textures and buffers are freed per call; the GPU device is pooled by default.
  */
-export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Array> {
+export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions): Promise<Float32Array> {
   const w = opts.width;
   const h = opts.height;
   const frameCount = opts.frameCount ?? 0;
-  const rawAtrous = opts.atrousIterations ?? SVGF_DEFAULT_ATROUS_ITERATIONS;
-  const atrousIterations = Math.min(SVGF_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
+  const rawAtrous = opts.atrousIterations ?? ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS;
+  const atrousIterations = Math.min(ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
   const reuseShared = opts.reuseSharedWebGpuDevice !== false && opts.device == null;
-  const sigmaColor = opts.sigmaColor ?? SVGF_DEFAULT_UNIFORMS.sigmaColor;
-  const sigmaNormal = opts.sigmaNormal ?? SVGF_DEFAULT_UNIFORMS.sigmaNormal;
-  const sigmaDepth = opts.sigmaDepth ?? SVGF_DEFAULT_UNIFORMS.sigmaDepth;
-  const synNormal = opts.syntheticGbufferFallback?.normalRgb ?? SVGF_SYNTHETIC_GBUFFER_DEFAULTS.normalRgb;
-  const synDepth = opts.syntheticGbufferFallback?.linearDepth ?? SVGF_SYNTHETIC_GBUFFER_DEFAULTS.linearDepth;
-  assertSvgfWebGPUBufferShapes(opts);
+  const sigmaColor = opts.sigmaColor ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
+  const sigmaNormal = opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal;
+  const sigmaDepth = opts.sigmaDepth ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;
+  const synNormal = opts.syntheticGbufferFallback?.normalRgb ?? ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS.normalRgb;
+  const synDepth = opts.syntheticGbufferFallback?.linearDepth ?? ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS.linearDepth;
+  assertAtrousVarianceWebGPUBufferShapes(opts);
   if (opts.welfordMeanM2 == null) {
     warnMissingWelfordTemporal(frameCount);
   }
   if (typeof navigator === 'undefined' || navigator.gpu == null) {
-    throw new Error('runSvgfWebGPU: WebGPU not available');
+    throw new Error('runAtrousVarianceWebGPU: WebGPU not available');
   }
 
   let device: GPUDevice;
@@ -374,7 +378,7 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
   } else {
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (adapter == null) {
-      throw new Error('runSvgfWebGPU: failed to request GPU adapter');
+      throw new Error('runAtrousVarianceWebGPU: failed to request GPU adapter');
     }
     device = await adapter.requestDevice();
     destroyEphemeral = () => {
@@ -382,7 +386,7 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
     };
   }
 
-  const { variance: variancePipeline, atrous: atrousPipeline } = svgfPipelines(device);
+  const { variance: variancePipeline, atrous: atrousPipeline } = atrousVariancePipelines(device);
 
   // G-buffer inputs are written via writeTexture and read as texture_2d<f32>
   // inside the compute shaders. They are never used as render attachments,
@@ -392,43 +396,43 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
     GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
 
   const inputColor = device.createTexture({
-    label: 'svgf-input-color',
+    label: 'atrous-variance-input-color',
     size: [w, h],
     format: 'rgba32float',
     usage: texRgba32Usage,
   });
   const prevRadiance = device.createTexture({
-    label: 'svgf-prev',
+    label: 'atrous-variance-prev',
     size: [w, h],
     format: 'rgba32float',
     usage: texRgba32Usage,
   });
   const gbufferNormal = device.createTexture({
-    label: 'svgf-normal',
+    label: 'atrous-variance-normal',
     size: [w, h],
     format: 'rgba32float',
     usage: texRgba32Usage,
   });
   const gbufferDepth = device.createTexture({
-    label: 'svgf-depth',
+    label: 'atrous-variance-depth',
     size: [w, h],
     format: 'rgba32float',
     usage: texRgba32Usage,
   });
   const motionVectors = device.createTexture({
-    label: 'svgf-motion',
+    label: 'atrous-variance-motion',
     size: [w, h],
     format: 'rg32float',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
   });
   const varianceIn = device.createTexture({
-    label: 'svgf-welford-in',
+    label: 'atrous-variance-welford-in',
     size: [w, h],
     format: 'rg32float',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
   });
   const varianceOut = device.createTexture({
-    label: 'svgf-variance-out',
+    label: 'atrous-variance-variance-out',
     size: [w, h],
     format: 'rg32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
@@ -441,13 +445,13 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
     GPUTextureUsage.COPY_SRC;
 
   const colorPingA = device.createTexture({
-    label: 'svgf-color-a',
+    label: 'atrous-variance-color-a',
     size: [w, h],
     format: 'rgba16float',
     usage: pingPongUsage,
   });
   const colorPingB = device.createTexture({
-    label: 'svgf-color-b',
+    label: 'atrous-variance-color-b',
     size: [w, h],
     format: 'rgba16float',
     usage: pingPongUsage,
@@ -481,11 +485,11 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
   }
 
   const varianceUbo = device.createBuffer({
-    size: SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
+    size: ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  const varianceUboScratch = new ArrayBuffer(SVGF_VARIANCE_UNIFORMS_SIZE_BYTES);
-  packSVGFVarianceUniforms({ frameCount }, varianceUboScratch);
+  const varianceUboScratch = new ArrayBuffer(ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
+  packAtrousVarianceVarianceUniforms({ frameCount }, varianceUboScratch);
   device.queue.writeBuffer(varianceUbo, 0, varianceUboScratch);
 
   const varianceBind = device.createBindGroup({
@@ -509,14 +513,14 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
   // then batch every pass (variance + N × atrous) into a single encoder /
   // single queue.submit — replaces what used to be up to 13 separate submits.
   const atrousUbos: GPUBuffer[] = [];
-  const atrousScratch = new ArrayBuffer(SVGF_UNIFORMS_SIZE_BYTES);
+  const atrousScratch = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
   for (let iter = 0; iter < atrousIterations; iter += 1) {
     const ubo = device.createBuffer({
-      label: `svgf-atrous-ubo-${iter}`,
-      size: SVGF_UNIFORMS_SIZE_BYTES,
+      label: `atrous-variance-atrous-ubo-${iter}`,
+      size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    packSVGFUniforms(
+    packAtrousVarianceAtrousUniforms(
       { iteration: iter, sigmaColor, sigmaNormal, sigmaDepth },
       atrousScratch,
     );
@@ -543,8 +547,8 @@ export async function runSvgfWebGPU(opts: SvgfWebGPUOptions): Promise<Float32Arr
     });
   });
 
-  const wg = SVGF_COMPUTE_WORKGROUP_SIZE;
-  const encoder = device.createCommandEncoder({ label: 'svgf-batched' });
+  const wg = ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE;
+  const encoder = device.createCommandEncoder({ label: 'atrous-variance-batched' });
 
   const passV = encoder.beginComputePass();
   passV.setPipeline(variancePipeline);

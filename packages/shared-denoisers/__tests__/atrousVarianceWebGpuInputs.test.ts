@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { assertSvgfWebGPUBufferShapes } from '../src/svgfWebGPU.js';
+import { assertAtrousVarianceWebGPUBufferShapes } from '../src/atrousVarianceWebGPU.js';
 
-describe('assertSvgfWebGPUBufferShapes', () => {
+describe('assertAtrousVarianceWebGPUBufferShapes', () => {
   const minimal = {
     rgb: new Float32Array(12),
     width: 2,
@@ -9,16 +9,16 @@ describe('assertSvgfWebGPUBufferShapes', () => {
   };
 
   it('accepts rgb-only payloads', () => {
-    expect(() => assertSvgfWebGPUBufferShapes(minimal)).not.toThrow();
+    expect(() => assertAtrousVarianceWebGPUBufferShapes(minimal)).not.toThrow();
   });
 
   it('throws when rgb is undersized', () => {
-    expect(() => assertSvgfWebGPUBufferShapes({ rgb: new Float32Array(8), width: 2, height: 2 })).toThrow(/rgb/);
+    expect(() => assertAtrousVarianceWebGPUBufferShapes({ rgb: new Float32Array(8), width: 2, height: 2 })).toThrow(/rgb/);
   });
 
   it('throws when prevRadianceRgb is undersized', () => {
     expect(() =>
-      assertSvgfWebGPUBufferShapes({
+      assertAtrousVarianceWebGPUBufferShapes({
         ...minimal,
         prevRadianceRgb: new Float32Array(11),
       }),
@@ -27,7 +27,7 @@ describe('assertSvgfWebGPUBufferShapes', () => {
 
   it('throws when gbufferNormalsRgb is undersized', () => {
     expect(() =>
-      assertSvgfWebGPUBufferShapes({
+      assertAtrousVarianceWebGPUBufferShapes({
         ...minimal,
         gbufferNormalsRgb: new Float32Array(11),
       }),
@@ -36,7 +36,7 @@ describe('assertSvgfWebGPUBufferShapes', () => {
 
   it('throws when linearDepth is undersized', () => {
     expect(() =>
-      assertSvgfWebGPUBufferShapes({
+      assertAtrousVarianceWebGPUBufferShapes({
         ...minimal,
         linearDepth: new Float32Array(3),
       }),
@@ -45,7 +45,7 @@ describe('assertSvgfWebGPUBufferShapes', () => {
 
   it('throws when motionRg is undersized', () => {
     expect(() =>
-      assertSvgfWebGPUBufferShapes({
+      assertAtrousVarianceWebGPUBufferShapes({
         ...minimal,
         motionRg: new Float32Array(7),
       }),
@@ -54,7 +54,7 @@ describe('assertSvgfWebGPUBufferShapes', () => {
 
   it('throws when welfordMeanM2 is undersized', () => {
     expect(() =>
-      assertSvgfWebGPUBufferShapes({
+      assertAtrousVarianceWebGPUBufferShapes({
         ...minimal,
         welfordMeanM2: new Float32Array(7),
       }),
@@ -64,7 +64,7 @@ describe('assertSvgfWebGPUBufferShapes', () => {
   it('accepts fully populated slices', () => {
     const px = 4;
     expect(() =>
-      assertSvgfWebGPUBufferShapes({
+      assertAtrousVarianceWebGPUBufferShapes({
         rgb: new Float32Array(px * 3),
         width: 2,
         height: 2,

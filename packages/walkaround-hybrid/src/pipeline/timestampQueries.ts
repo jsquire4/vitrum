@@ -13,8 +13,8 @@
  *       gtao, gtao-upsample, atrous-0..2, indirect-temporal-accum,
  *       atrous-indirect-0..3, indirect-combine, temporalAccum, resolve,
  *       composite
- *   • SVGF          (26): sample-budget, …shade, gtao+upsample,
- *       welford-temporal, svgf-variance, svgf-atrous-0..2,
+ *   • atrous-variance (26): sample-budget, …shade, gtao+upsample,
+ *       welford-temporal, atrous-variance-variance, atrous-variance-atrous-0..2,
  *       indirect-temporal-accum, atrous-indirect-0..3, indirect-combine,
  *       temporalAccum, resolve, composite — matches MAX_PASS_COUNT
  *
@@ -41,10 +41,10 @@ export type PassLabel =
   | 'gtao'
   | 'gtao-upsample'
   | 'welford-temporal'
-  | 'svgf-variance'
-  | 'svgf-atrous-0'
-  | 'svgf-atrous-1'
-  | 'svgf-atrous-2'
+  | 'atrous-variance-variance'
+  | 'atrous-variance-atrous-0'
+  | 'atrous-variance-atrous-1'
+  | 'atrous-variance-atrous-2'
   | 'atrous-0'
   | 'atrous-1'
   | 'atrous-2'
@@ -67,20 +67,20 @@ export type PassLabel =
  *          19 (Sprint 15: gtao + gtao-upsample) → 20 (Sprint 16: gi-ris) →
  *          23 (Sprint 17: gi-temporal + gi-spatial-1 + gi-spatial-2) →
  *          24 (Sprint 18: indirect-combine) →
- *          22 (Original #7: trim 2 dead svgf-atrous slots — iter count
+ *          22 (Original #7: trim 2 dead atrous-variance-atrous slots — iter count
  *          dropped from 5 to 3 in shared-denoisers but layout was stale) →
- *          26 (Sprint 18 follow-up: per-channel SVGF — replace the
+ *          26 (Sprint 18 follow-up: per-channel indirect atrous — replace the
  *          embedded bilateral in indirect-combine with a real 4-iter
  *          atrous chain (atrous-indirect-0..3) on the indirect channel) →
  *          27 (Sprint 18 follow-up: indirect-temporal-accum — pre-atrous
  *          temporal accumulator with TCBB clip to kill firefly admit
  *          + smooth shadow-region blotches before spatial filter) →
- *          26 (D7 sweep: PPG deleted — max is now SVGF without ppg-update).
+ *          26 (D7 sweep: PPG deleted — max is now atrous-variance without ppg-update).
  */
 export const MAX_PASS_COUNT = 26;
 
 export interface PassLayoutOptions {
-  readonly denoiserMode: 'svgf' | 'atrous';
+  readonly denoiserMode: 'atrous-variance' | 'atrous';
 }
 
 export interface PassLayout {
@@ -114,17 +114,17 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   // for the *previous* frame's AO; the current frame's AO becomes input for
   // the next frame).
   labels.push('gtao', 'gtao-upsample');
-  if (opts.denoiserMode === 'svgf') {
-    // Iteration count tied to `SVGF_DEFAULT_ATROUS_ITERATIONS = 3` in
-    // shared-denoisers/svgfConstants.ts. The dispatch loop in
-    // WalkaroundGPUPipeline._dispatchSVGF runs the same count; keep these
+  if (opts.denoiserMode === 'atrous-variance') {
+    // Iteration count tied to `ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS = 3` in
+    // shared-denoisers/atrousVarianceConstants.ts. The dispatch loop in
+    // WalkaroundGPUPipeline._dispatchAtrousVariance runs the same count; keep these
     // in sync so the layout has exactly one slot per dispatch.
     labels.push(
       'welford-temporal',
-      'svgf-variance',
-      'svgf-atrous-0',
-      'svgf-atrous-1',
-      'svgf-atrous-2',
+      'atrous-variance-variance',
+      'atrous-variance-atrous-0',
+      'atrous-variance-atrous-1',
+      'atrous-variance-atrous-2',
     );
   } else {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   WELFORD_VARIANCE_WGSL,
   WELFORD_VARIANCE_VERSION,
-  SVGF_WGSL,
+  ATROUS_VARIANCE_WGSL,
 } from '../src/index.js';
 import { COMMON_WGSL } from '../../walkaround-hybrid/src/shaders/common.wgsl.js';
 
@@ -31,15 +31,15 @@ describe('WelfordVariance canonical WGSL', () => {
     expect(COMMON_WGSL).toContain('fn welfordVariance');
   });
 
-  it('is injected into SVGF_WGSL', () => {
-    expect(SVGF_WGSL).toContain('struct WelfordVariance');
-    expect(SVGF_WGSL).toContain('fn welfordVariance');
+  it('is injected into ATROUS_VARIANCE_WGSL', () => {
+    expect(ATROUS_VARIANCE_WGSL).toContain('struct WelfordVariance');
+    expect(ATROUS_VARIANCE_WGSL).toContain('fn welfordVariance');
   });
 
   it('appears exactly once in each consumer (no duplicate declarations)', () => {
     const commonOccurrences = COMMON_WGSL.split('struct WelfordVariance').length - 1;
-    const svgfOccurrences = SVGF_WGSL.split('struct WelfordVariance').length - 1;
+    const atrousVarianceOccurrences = ATROUS_VARIANCE_WGSL.split('struct WelfordVariance').length - 1;
     expect(commonOccurrences).toBe(1);
-    expect(svgfOccurrences).toBe(1);
+    expect(atrousVarianceOccurrences).toBe(1);
   });
 });

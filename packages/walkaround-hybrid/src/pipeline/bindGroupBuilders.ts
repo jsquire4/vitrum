@@ -292,9 +292,9 @@ export function buildCompositeBindGroup(
   });
 }
 
-// ── SVGF bind group builders (Sprint 10a) ────────────────────────────────────
+// ── À-trous + variance bind group builders (Sprint 10a) ──────────────────────
 //
-// SVGF pipelines use 'auto' bindgroup layouts, so the layout source is the
+// These pipelines use 'auto' bindgroup layouts, so the layout source is the
 // pipeline itself (via `getBindGroupLayout(0)`) rather than the BGL cache.
 // These builders centralize the layout-binding wiring that previously lived
 // inline inside renderFrame().
@@ -319,7 +319,7 @@ export function buildWelfordBindGroup(
   });
 }
 
-export function buildSVGFVarianceBindGroup(
+export function buildAtrousVarianceVarianceBindGroup(
   device: GPUDevice,
   variancePipeline: GPUComputePipeline,
   hdrColor: GPUTextureView,
@@ -327,14 +327,14 @@ export function buildSVGFVarianceBindGroup(
   varianceEstimate: GPUTextureView,
   ubo: GPUBuffer,
 ): GPUBindGroup {
-  // The svgf-variance kernel reads only inputColor (0), varianceIn (5),
+  // The variance kernel reads only inputColor (0), varianceIn (5),
   // and writes varianceOut (6) + reads varUBO (7). Bindings 1..4 are
   // DECLARED in the WGSL but UNREFERENCED by the kernel body — Dawn's
   // `layout: 'auto'` drops unreferenced bindings, so trying to bind
   // them yields "binding index N not present in the bind group layout"
   // and the whole command buffer is rejected. We just don't pass them.
   return device.createBindGroup({
-    label: 'svgf-variance-bg',
+    label: 'atrous-variance-variance-bg',
     layout: variancePipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: hdrColor },
@@ -512,7 +512,7 @@ export function buildIndirectCombineBindGroup(
   });
 }
 
-export function buildSVGFAtrousBindGroup(
+export function buildAtrousVarianceAtrousBindGroup(
   device: GPUDevice,
   atrousPipeline: GPUComputePipeline,
   inputTex: GPUTextureView,
@@ -522,7 +522,7 @@ export function buildSVGFAtrousBindGroup(
   ubo: GPUBuffer,
 ): GPUBindGroup {
   return device.createBindGroup({
-    label: 'svgf-atrous-bg',
+    label: 'atrous-variance-atrous-bg',
     layout: atrousPipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: inputTex },

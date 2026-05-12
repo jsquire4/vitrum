@@ -84,7 +84,7 @@ describe('Sprint 17 — spatial-GI WGSL', () => {
 
 describe('Sprint 17 — pass-layout placement', () => {
   it('places gi-temporal + gi-spatial-1 + gi-spatial-2 contiguously after gi-ris in every layout variant', () => {
-    for (const denoiserMode of ['svgf', 'atrous'] as const) {
+    for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
       const layout = buildPassLayout({ denoiserMode });
       const labels = layout.labels;
       const giRis = labels.indexOf('gi-ris');

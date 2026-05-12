@@ -109,7 +109,7 @@ describe('COMMON_WGSL — WelfordVariance struct (Sprint 9 / Decision 13)', () =
 
 // ─── 1b. WELFORD_TEMPORAL_WGSL (Sprint 10a host integration) ─────────────────
 
-describe('WELFORD_TEMPORAL_WGSL — luminance Welford accumulation for SVGF', () => {
+describe('WELFORD_TEMPORAL_WGSL — luminance Welford accumulation for atrous-variance', () => {
   it('contains welfordTemporalMain entry point', () => {
     expect(WELFORD_TEMPORAL_WGSL).toContain('fn welfordTemporalMain');
   });
@@ -372,7 +372,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
     expect(usage & GPUTextureUsage.STORAGE_BINDING).toBeTruthy();
   });
 
-  it('includes TEXTURE_BINDING in the usage flags (Sprint 10a SVGF will sample it)', () => {
+  it('includes TEXTURE_BINDING in the usage flags (Sprint 10a atrous-variance samples it)', () => {
     let capturedDesc: GPUTextureDescriptor | null = null;
     const mockDevice = {
       createTexture(desc: GPUTextureDescriptor): GPUTexture {
@@ -444,7 +444,7 @@ describe('FrameResources — varianceBuffer field (Sprint 9)', () => {
     expect(res).toHaveProperty('varianceBuffer');
     expect(res.varianceBuffer).not.toBeNull();
     expect(res).toHaveProperty('varianceBufferAux');
-    expect(res).toHaveProperty('svgfVarianceEstimateTexture');
+    expect(res).toHaveProperty('atrousVarianceEstimateTexture');
     expect(res).toHaveProperty('motionVectorTexture');
   });
 

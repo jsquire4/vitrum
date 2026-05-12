@@ -1,13 +1,23 @@
 /**
- * svgf.wgsl.ts — SVGF spatiotemporal variance-guided filter.
+ * atrousVariance.wgsl.ts — à-trous wavelet edge-stop filter + per-pixel variance scalar lookup.
  *
- * Implements Schied et al. 2017: "Spatiotemporal Variance-Guided Filtering:
- * Real-Time Reconstruction for Path-Traced Global Illumination".
+ * NOT a Schied 2017 SVGF implementation. What this module provides:
+ *   - À-trous wavelet edge-stop filtering (Dammertz 2010).
+ *   - Per-pixel variance scalar lookup from Welford temporal accumulation
+ *     (Sprint 9) or 3×3 spatial estimate (early frames).
+ *
+ * The defining SVGF temporal stages (bilinear reprojection, disocclusion
+ * detection, per-pixel history length, variance-guided α-clamp, Schied Eq. 4
+ * edge-stop form) are absent. Real Schied 2017 SVGF is tracked in
+ * plan/sprint-svgf-real-future.md.
+ *
+ * Previously named svgf.wgsl.ts; renamed by sweep-2026-05-11 D3 to match
+ * what the implementation actually does.
  *
  * Two compute entry points:
  *
  *   svgfVarianceMain — Variance estimation pass.
- *     When temporal history is scarce (frame count below SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT), estimates variance
+ *     When temporal history is scarce (frame count below ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT), estimates variance
  *     from a 3×3 spatial neighborhood. When temporal history is stable,
  *     falls back to the Welford running variance already in the variance buffer.
  *     Writes a per-pixel scalar variance estimate into the output.
@@ -28,7 +38,7 @@
  *     binding 4 — texture_2d<f32>                        motionVectors  (RG32F, .xy = screen-space motion)
  *     binding 5 — texture_2d<f32>                        varianceIn     (RG32F — WelfordVariance mean+m2)
  *     binding 6 — texture_storage_2d<rg32float, write>   varianceOut    (estimated scalar variance per pixel)
- *     binding 7 — var<uniform> SVGFVarianceUBO
+ *     binding 7 — var<uniform> AtrousVarianceVarianceUBO
  *
  *   group 0 — à-trous pass (svgfAtrousMain):
  *     binding 0 — texture_2d<f32>                        inputColor     (RGBA16F — ping-pong input)
@@ -36,7 +46,7 @@
  *     binding 2 — texture_2d<f32>                        gbufferNormal  (RGBA16F, .xyz = world normal)
  *     binding 3 — texture_2d<f32>                        gbufferDepth   (RGBA16F or R32F, .r = linear depth)
  *     binding 4 — texture_2d<f32>                        varianceMap    (RG32F — .r = estimated variance)
- *     binding 5 — var<uniform> SVGFAtrousUBO
+ *     binding 5 — var<uniform> AtrousVarianceAtrousUBO
  *
  * WelfordVariance struct:
  *   This shader declares a local copy of WelfordVariance matching the layout
@@ -47,10 +57,6 @@
  *   @see walkaround-hybrid/src/shaders/common.wgsl.ts — WelfordVariance @version 1
  *
  * References:
- *   Schied, Kaplanyan, Schied, Dachsbacher et al. "Spatiotemporal Variance-
- *   Guided Filtering: Real-Time Reconstruction for Path-Traced Global
- *   Illumination". HPG 2017. https://cg.ivd.kit.edu/svgf.php
- *
  *   Dammertz, Hanika, Keller "Edge-Avoiding À-Trous Wavelet Transform for
  *   fast Global Illumination Filtering". HPG 2010.
  *
@@ -58,16 +64,16 @@
  *   Decision 13 — versioned struct pinned Sprint 9 (2026-05-09).
  */
 
-import { SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT } from '../svgfConstants.js';
+import { ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../atrousVarianceConstants.js';
 import { WELFORD_VARIANCE_WGSL } from './welfordVariance.wgsl.js';
 import { SVGF_ATROUS_KERNEL_WGSL } from './atrousKernel.wgsl.js';
 
 /** Must match `@workgroup_size` in this module's compute entry points. */
-export const SVGF_COMPUTE_WORKGROUP_SIZE = 16 as const;
+export const ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE = 16 as const;
 
-export const SVGF_WGSL = /* wgsl */ `
-// Temporal branch threshold — single source: ../svgfConstants.ts SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT
-const SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT}u;
+export const ATROUS_VARIANCE_WGSL = /* wgsl */ `
+// Temporal branch threshold — single source: ../atrousVarianceConstants.ts ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT
+const SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT}u;
 
 // ============================================================
 // WelfordVariance — canonical struct + helpers from welfordVariance.wgsl.ts.
@@ -86,7 +92,7 @@ const LUM_W    = vec3f(0.2126, 0.7152, 0.0722);
 // ============================================================
 // Variance estimation uniforms
 // ============================================================
-struct SVGFVarianceUBO {
+struct AtrousVarianceVarianceUBO {
   frameCount:  u32,   // cumulative frames since last camera reset (0 = first frame)
   _pad0:       u32,
   _pad1:       u32,
@@ -96,7 +102,7 @@ struct SVGFVarianceUBO {
 // ============================================================
 // À-trous iteration uniforms
 // ============================================================
-struct SVGFAtrousUBO {
+struct AtrousVarianceAtrousUBO {
   iteration:   u32,   // 0-4 (step width = 1 << iteration)
   sigmaColor:  f32,   // color edge-stop σ (default 10.0)
   sigmaNormal: f32,   // normal edge-stop σ as exponent (default 128.0)
@@ -126,7 +132,7 @@ struct SVGFAtrousUBO {
 @group(0) @binding(4) var varIn_motionVec:     texture_2d<f32>;
 @group(0) @binding(5) var varIn_varianceIn:    texture_2d<f32>;
 @group(0) @binding(6) var varOut_varianceOut:  texture_storage_2d<rg32float, write>;
-@group(0) @binding(7) var<uniform>  varUBO:   SVGFVarianceUBO;
+@group(0) @binding(7) var<uniform>  varUBO:   AtrousVarianceVarianceUBO;
 
 fn luminance(c: vec3f) -> f32 {
   return dot(c, LUM_W);
@@ -200,7 +206,7 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
 @group(0) @binding(2) var atrous_gbufNormal:  texture_2d<f32>;
 @group(0) @binding(3) var atrous_gbufDepth:   texture_2d<f32>;
 @group(0) @binding(4) var atrous_varianceMap: texture_2d<f32>;
-@group(0) @binding(5) var<uniform> atrousUBO: SVGFAtrousUBO;
+@group(0) @binding(5) var<uniform> atrousUBO: AtrousVarianceAtrousUBO;
 
 // 5×5 B3 spline kernel — injected from shared TS constant (atrousKernel.wgsl.ts).
 ${SVGF_ATROUS_KERNEL_WGSL}
@@ -250,7 +256,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let kIdx = u32((dy + 2) * 5 + (dx + 2));
       let h    = SVGF_KERNEL[kIdx];
 
-      // ── Variance-guided color edge stop (Schied 2017 Eq. 4) ────────────
+      // ── Variance-guided color edge stop ─────────────────────────────────
       // Tolerance scales with sqrt(variance): noisy pixels accept wider
       // color neighborhoods, converged pixels apply tighter edges.
       let lumP = luminance(cP);

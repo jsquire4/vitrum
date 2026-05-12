@@ -98,7 +98,7 @@ describe('Sprint 16 — ReservoirGI byte-pack helpers (common.wgsl)', () => {
 
 describe('Sprint 16 — pass-layout placement', () => {
   it('gi-ris sits directly after spatial-2 and before shade in every layout variant', () => {
-    for (const denoiserMode of ['svgf', 'atrous'] as const) {
+    for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
       const layout = buildPassLayout({ denoiserMode });
       const spatial2 = layout.labels.indexOf('spatial-2');
       const giRis = layout.labels.indexOf('gi-ris');

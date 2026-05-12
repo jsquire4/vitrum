@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { buildPassLayout, MAX_PASS_COUNT } from '../src/pipeline/timestampQueries.js';
 
 describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
-  describe('SVGF mode (26 slots)', () => {
-    const layout = buildPassLayout({ denoiserMode: 'svgf' });
+  describe('atrous-variance mode (26 slots)', () => {
+    const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
 
     it('prepends sample-budget at slot 0 (runs before RIS)', () => {
       expect(layout.index('sample-budget')).toBe(0);
@@ -30,10 +30,10 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('welford-temporal')).toBe(12);
     });
 
-    it('places svgf-variance + 3 svgf-atrous slots in order', () => {
-      expect(layout.index('svgf-variance')).toBe(13);
-      expect(layout.index('svgf-atrous-0')).toBe(14);
-      expect(layout.index('svgf-atrous-2')).toBe(16);
+    it('places atrous-variance-variance + 3 atrous-variance-atrous slots in order', () => {
+      expect(layout.index('atrous-variance-variance')).toBe(13);
+      expect(layout.index('atrous-variance-atrous-0')).toBe(14);
+      expect(layout.index('atrous-variance-atrous-2')).toBe(16);
     });
 
     it('places indirect-temporal-accum, 4 atrous-indirect slots, indirect-combine, then temporal+resolve+composite tail', () => {
@@ -52,7 +52,7 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(() => layout.index('ppg-update')).toThrow(/not active/);
     });
 
-    it('does not include legacy atrous labels', () => {
+    it('does not include legacy atrous-0 label', () => {
       expect(() => layout.index('atrous-0')).toThrow(/not active/);
     });
 
@@ -87,7 +87,7 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('composite')).toBe(23);
     });
 
-    it('does not include SVGF labels', () => {
+    it('does not include atrous-variance labels', () => {
       expect(() => layout.index('welford-temporal')).toThrow(/not active/);
     });
 
@@ -98,20 +98,20 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
 
   describe('MAX_PASS_COUNT invariant', () => {
     it('every layout fits within MAX_PASS_COUNT', () => {
-      for (const denoiserMode of ['svgf', 'atrous'] as const) {
+      for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
         const layout = buildPassLayout({ denoiserMode });
         expect(layout.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
       }
     });
 
-    it('MAX_PASS_COUNT is 26 (D7 sweep — PPG deleted, SVGF is worst-case at 26 slots)', () => {
+    it('MAX_PASS_COUNT is 26 (D7 sweep — PPG deleted, atrous-variance is worst-case at 26 slots)', () => {
       expect(MAX_PASS_COUNT).toBe(26);
     });
   });
 
   describe('labels array matches index() lookup', () => {
     it('layout.labels[i] === label such that layout.index(label) === i', () => {
-      const layout = buildPassLayout({ denoiserMode: 'svgf' });
+      const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
       for (let i = 0; i < layout.slotCount; i++) {
         const label = layout.labels[i];
         if (label === undefined) throw new Error(`undefined label at ${i}`);
@@ -120,7 +120,7 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
     });
 
     it('first label is sample-budget; last is composite', () => {
-      const layout = buildPassLayout({ denoiserMode: 'svgf' });
+      const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
       expect(layout.labels[0]).toBe('sample-budget');
       expect(layout.labels[layout.slotCount - 1]).toBe('composite');
     });

@@ -13,7 +13,7 @@
  *   3. Spatial reuse (2 separable passes)
  *   4. Shade + GI: compute DI + one indirect bounce, write HDR color
  *   5. Denoise:
- *        • default **SVGF** (Sprint 10a): temporal Welford + variance + 5 à-trous
+ *        • default **atrous-variance** (Sprint 10a): temporal Welford + variance + 3 à-trous
  *        • optional legacy **à-trous** (3 iters)
  *   6. Temporal accumulation: EMA blend with previous frame's HDR
  *   7. Composite render pass: blit accumulated HDR to the swap-chain texture
@@ -46,8 +46,8 @@ import {
   buildHybridLayersBindGroup,
   buildCompositeBindGroup,
   buildWelfordBindGroup,
-  buildSVGFVarianceBindGroup,
-  buildSVGFAtrousBindGroup,
+  buildAtrousVarianceVarianceBindGroup,
+  buildAtrousVarianceAtrousBindGroup,
   buildSampleBudgetBindGroup,
   buildResolveBindGroup,
   buildGTAOBindGroup,
@@ -59,7 +59,7 @@ import {
   ATROUS_INDIRECT_SIGMAS,
   type UboRef,
 } from './bindGroupBuilders.js';
-// Note: we deliberately do NOT import `runSvgfWebGPU` from shared-denoisers.
+// Note: we deliberately do NOT import `runAtrousVarianceWebGPU` from shared-denoisers.
 // That entry point is a one-shot CPU-backed path that allocates and frees
 // transient GPU textures per call. This pipeline owns persistent GPU
 // textures across frames (accumA/B, variance ping-pong, denoise pings),
@@ -67,12 +67,12 @@ import {
 // invalidate the bind-group cache. We import only the host-side packing
 // helpers and pipeline constants.
 import {
-  packSVGFUniforms,
-  packSVGFVarianceUniforms,
-  SVGF_DEFAULT_ATROUS_ITERATIONS,
-  SVGF_DEFAULT_UNIFORMS,
-  SVGF_UNIFORMS_SIZE_BYTES,
-  SVGF_VARIANCE_UNIFORMS_SIZE_BYTES,
+  packAtrousVarianceAtrousUniforms,
+  packAtrousVarianceVarianceUniforms,
+  ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
+  ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
+  ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+  ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
 } from '@vitrum/shared-denoisers';
 import {
   tsWrites,
@@ -276,15 +276,15 @@ export class WalkaroundGPUPipeline {
   private _atrousPipeline!: GPUComputePipeline;
   private _accumPipeline!: GPUComputePipeline;
   private _compositePipeline!: GPURenderPipeline;
-  /** `svgf` — variance-guided (default). `atrous` — legacy three-pass à-trous only. */
-  private _denoiserMode: 'atrous' | 'svgf' = 'svgf';
+  /** `atrous-variance` — variance-guided (default). `atrous` — legacy three-pass à-trous only. */
+  private _denoiserMode: 'atrous' | 'atrous-variance' = 'atrous-variance';
   /** Audit B8 — populated at initialize() time from HybridEngineOptions. */
   private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
   /** Audit M3 — populated at initialize() time from HybridEngineOptions. */
   private _temporalAccumAlpha = DEFAULT_TEMPORAL_ACCUM_ALPHA;
   private _welfordPipeline: GPUComputePipeline | undefined = undefined;
-  private _svgfVariancePipeline: GPUComputePipeline | undefined = undefined;
-  private _svgfAtrousPipeline: GPUComputePipeline | undefined = undefined;
+  private _atrousVarianceVariancePipeline: GPUComputePipeline | undefined = undefined;
+  private _atrousVarianceAtrousPipeline: GPUComputePipeline | undefined = undefined;
   // Sprint 9 — adaptive sampling pipelines (always populated).
   private _sampleBudgetPipeline!: GPUComputePipeline;
   private _resolvePipeline!: GPUComputePipeline;
@@ -309,7 +309,7 @@ export class WalkaroundGPUPipeline {
   //  - Builder-managed (lazy): _atrousUboRef and _accumUboRef are passed
   //    by reference into buildAtrousBindGroup / buildAccumBindGroup, which
   //    lazy-allocate on first call so each builder owns its UBO lifetime.
-  //  - Eager: the SVGF UBOs are allocated in initialize() (gated by
+  //  - Eager: the atrous-variance UBOs are allocated in initialize() (gated by
   //    denoiserMode) so renderFrame() can write straight into them without
   //    first-frame branching.
   // dispose() walks all via the `_perPassUboRefs` array below so
@@ -320,8 +320,8 @@ export class WalkaroundGPUPipeline {
   private _atrousIndirectUboRef: UboRef = { buf: undefined };
   private _accumUboRef: UboRef  = { buf: undefined };
   private _welfordUboRef: UboRef = { buf: undefined };
-  private _svgfVarianceUboRef: UboRef = { buf: undefined };
-  private _svgfAtrousUboRef: UboRef = { buf: undefined };
+  private _atrousVarianceVarianceUboRef: UboRef = { buf: undefined };
+  private _atrousVarianceAtrousUboRef: UboRef = { buf: undefined };
   // Sprint 9 — adaptive sampling UBOs.
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
   private _sampleCountUboRef:  UboRef = { buf: undefined };
@@ -332,8 +332,8 @@ export class WalkaroundGPUPipeline {
       this._atrousIndirectUboRef,
       this._accumUboRef,
       this._welfordUboRef,
-      this._svgfVarianceUboRef,
-      this._svgfAtrousUboRef,
+      this._atrousVarianceVarianceUboRef,
+      this._atrousVarianceAtrousUboRef,
       this._sampleBudgetUboRef,
       this._sampleCountUboRef,
       this._resolveUboRef,
@@ -367,7 +367,7 @@ export class WalkaroundGPUPipeline {
   async readGpuTimingsOnce(): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
     if (!this._initialized) return { perPass: {}, rawBigints: [] };
     const layout = buildPassLayout({
-      denoiserMode: this._denoiserMode === 'svgf' ? 'svgf' : 'atrous',
+      denoiserMode: this._denoiserMode === 'atrous-variance' ? 'atrous-variance' : 'atrous',
     });
     return readTimestampsOnce(this._device, this._tsState, layout);
   }
@@ -378,7 +378,7 @@ export class WalkaroundGPUPipeline {
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
     options?: {
       verbose?: boolean;
-      denoiser?: 'atrous' | 'svgf';
+      denoiser?: 'atrous' | 'atrous-variance';
       /** Audit B8 — host-overridable camera-move temporal-reset threshold. */
       cameraMoveResetThresholdSq?: number;
       /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
@@ -408,7 +408,7 @@ export class WalkaroundGPUPipeline {
     // ── Compile shaders ───────────────────────────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
-      denoiser: options?.denoiser ?? 'svgf',
+      denoiser: options?.denoiser ?? 'atrous-variance',
     });
     this._risPipeline       = compiled.risPipeline;
     this._temporalPipeline  = compiled.temporalPipeline;
@@ -423,8 +423,8 @@ export class WalkaroundGPUPipeline {
     this._temporalAccumAlpha = options?.temporalAccumAlpha
       ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
     this._welfordPipeline   = compiled.welfordPipeline;
-    this._svgfVariancePipeline = compiled.svgfVariancePipeline;
-    this._svgfAtrousPipeline   = compiled.svgfAtrousPipeline;
+    this._atrousVarianceVariancePipeline = compiled.atrousVarianceVariancePipeline;
+    this._atrousVarianceAtrousPipeline   = compiled.atrousVarianceAtrousPipeline;
     this._sampleBudgetPipeline = compiled.sampleBudgetPipeline;
     this._resolvePipeline      = compiled.resolvePipeline;
     this._gtaoPipeline         = compiled.gtaoPipeline;
@@ -434,10 +434,10 @@ export class WalkaroundGPUPipeline {
     this._spatialGiPipeline    = compiled.spatialGiPipeline;
     this._indirectCombinePipeline = compiled.indirectCombinePipeline;
     this._indirectTemporalAccumPipeline = compiled.indirectTemporalAccumPipeline;
-    if (this._denoiserMode === 'svgf' && (
-      !this._welfordPipeline || !this._svgfVariancePipeline || !this._svgfAtrousPipeline
+    if (this._denoiserMode === 'atrous-variance' && (
+      !this._welfordPipeline || !this._atrousVarianceVariancePipeline || !this._atrousVarianceAtrousPipeline
     )) {
-      throw new Error('[ReSTIR] SVGF denoiser requested but pipelines are missing.');
+      throw new Error('[ReSTIR] atrous-variance denoiser requested but pipelines are missing.');
     }
 
     // ── Timestamp queries (DEV-only, feature-gated) ──────────────────────
@@ -455,10 +455,10 @@ export class WalkaroundGPUPipeline {
     this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
     this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
     this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
-    if (this._denoiserMode === 'svgf') {
-      this._welfordUboRef.buf       = d.createBuffer({ label: 'welford-ubo',        size: 16, usage: U });
-      this._svgfVarianceUboRef.buf  = d.createBuffer({ label: 'svgf-variance-ubo',  size: SVGF_VARIANCE_UNIFORMS_SIZE_BYTES, usage: U });
-      this._svgfAtrousUboRef.buf    = d.createBuffer({ label: 'svgf-atrous-ubo',    size: SVGF_UNIFORMS_SIZE_BYTES, usage: U });
+    if (this._denoiserMode === 'atrous-variance') {
+      this._welfordUboRef.buf                  = d.createBuffer({ label: 'welford-ubo',                    size: 16, usage: U });
+      this._atrousVarianceVarianceUboRef.buf   = d.createBuffer({ label: 'atrous-variance-variance-ubo',   size: ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES, usage: U });
+      this._atrousVarianceAtrousUboRef.buf     = d.createBuffer({ label: 'atrous-variance-atrous-ubo',     size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES, usage: U });
     }
 
     this._initialized = true;
@@ -555,7 +555,7 @@ export class WalkaroundGPUPipeline {
 
     // ── Dispatch compute passes ───────────────────────────────────────────
     const passLayout = buildPassLayout({
-      denoiserMode: this._denoiserMode === 'svgf' ? 'svgf' : 'atrous',
+      denoiserMode: this._denoiserMode === 'atrous-variance' ? 'atrous-variance' : 'atrous',
     });
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
@@ -819,8 +819,8 @@ export class WalkaroundGPUPipeline {
 
     let denoisedOut: GPUTexture;
 
-    if (this._denoiserMode === 'svgf') {
-      denoisedOut = this._dispatchSVGF(
+    if (this._denoiserMode === 'atrous-variance') {
+      denoisedOut = this._dispatchAtrousVariance(
         encoder, gNormalDepthView, readAccum, isMoving, wgX16, wgY16, computeDesc,
       );
       this._welfordPing = 1 - this._welfordPing;
@@ -831,7 +831,7 @@ export class WalkaroundGPUPipeline {
     }
 
     // Sprint 18 — per-channel denoise + combine. Direct (denoisedOut from
-    // the SVGF/atrous chain above) is already smoothed.
+    // the atrous-variance/atrous chain above) is already smoothed.
     //
     // Sprint 18 follow-up — first run a TCBB-clipped temporal accumulator
     // on the raw indirect signal so each frame's reservoir-driven jitter
@@ -998,10 +998,10 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
-   * SVGF denoise dispatch — welford-temporal → svgf-variance → N × svgf-atrous.
+   * À-trous + variance denoise dispatch — welford-temporal → variance → N × atrous.
    * Returns the final atrous output texture to feed into the accumulator.
    */
-  private _dispatchSVGF(
+  private _dispatchAtrousVariance(
     encoder: GPUCommandEncoder,
     gNormalDepthView: GPUTextureView,
     readAccum: GPUTexture,
@@ -1012,20 +1012,20 @@ export class WalkaroundGPUPipeline {
   ): GPUTexture {
     const d = this._device;
     const wf = this._welfordPipeline!;
-    const sv = this._svgfVariancePipeline!;
-    const sa = this._svgfAtrousPipeline!;
+    const sv = this._atrousVarianceVariancePipeline!;
+    const sa = this._atrousVarianceAtrousPipeline!;
 
     const welfordRead  = this._welfordPing === 0 ? this._res.varianceBuffer : this._res.varianceBufferAux;
     const welfordWrite = this._welfordPing === 0 ? this._res.varianceBufferAux : this._res.varianceBuffer;
 
-    // welfordUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'svgf'.
+    // welfordUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
     const wU32 = new Uint32Array([this._accumFrameIndex + 1, isMoving ? 1 : 0, 0, 0]);
     d.queue.writeBuffer(this._welfordUboRef.buf!, 0, wU32);
 
     const hdrColorView = this._res.hdrColorTexture.createView();
     // Sprint 18 follow-up — welford reads the total-radiance texture so the
     // variance and the sample-budget tier derived from it cover both direct
-    // and indirect channels. SVGF variance + atrous still read hdrColorView
+    // and indirect channels. Variance + atrous still read hdrColorView
     // (direct-only) so the denoiser sees the channel it is tuned for.
     const hdrTotalView = this._res.hdrTotalTexture.createView();
     {
@@ -1039,44 +1039,44 @@ export class WalkaroundGPUPipeline {
       pass.end();
     }
 
-    // svgfVarianceUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'svgf'.
-    const varUboBytes = new ArrayBuffer(SVGF_VARIANCE_UNIFORMS_SIZE_BYTES);
-    packSVGFVarianceUniforms({ frameCount: this._accumFrameIndex }, varUboBytes, 0);
-    d.queue.writeBuffer(this._svgfVarianceUboRef.buf!, 0, varUboBytes);
+    // atrousVarianceVarianceUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
+    const varUboBytes = new ArrayBuffer(ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
+    packAtrousVarianceVarianceUniforms({ frameCount: this._accumFrameIndex }, varUboBytes, 0);
+    d.queue.writeBuffer(this._atrousVarianceVarianceUboRef.buf!, 0, varUboBytes);
 
     {
-      const pass = encoder.beginComputePass(computeDesc('svgf-variance'));
+      const pass = encoder.beginComputePass(computeDesc('atrous-variance-variance'));
       pass.setPipeline(sv);
-      pass.setBindGroup(0, buildSVGFVarianceBindGroup(
+      pass.setBindGroup(0, buildAtrousVarianceVarianceBindGroup(
         d, sv,
         hdrColorView,
         welfordWrite.createView(),
-        this._res.svgfVarianceEstimateTexture.createView(),
-        this._svgfVarianceUboRef.buf!,
+        this._res.atrousVarianceEstimateTexture.createView(),
+        this._atrousVarianceVarianceUboRef.buf!,
       ));
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
 
-    // svgfAtrousUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'svgf'.
-    const atrousUboBytes = new ArrayBuffer(SVGF_UNIFORMS_SIZE_BYTES);
+    // atrousVarianceAtrousUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
+    const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
     let inputTex: GPUTexture = this._res.hdrColorTexture;
-    const varView = this._res.svgfVarianceEstimateTexture.createView();
-    for (let iter = 0; iter < SVGF_DEFAULT_ATROUS_ITERATIONS; iter++) {
-      packSVGFUniforms(
-        { iteration: iter, ...SVGF_DEFAULT_UNIFORMS },
+    const varView = this._res.atrousVarianceEstimateTexture.createView();
+    for (let iter = 0; iter < ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS; iter++) {
+      packAtrousVarianceAtrousUniforms(
+        { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
         atrousUboBytes,
         0,
       );
-      d.queue.writeBuffer(this._svgfAtrousUboRef.buf!, 0, atrousUboBytes);
+      d.queue.writeBuffer(this._atrousVarianceAtrousUboRef.buf!, 0, atrousUboBytes);
       const outTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
-      const pass = encoder.beginComputePass(computeDesc(`svgf-atrous-${iter}` as PassLabel));
+      const pass = encoder.beginComputePass(computeDesc(`atrous-variance-atrous-${iter}` as PassLabel));
       pass.setPipeline(sa);
-      pass.setBindGroup(0, buildSVGFAtrousBindGroup(
+      pass.setBindGroup(0, buildAtrousVarianceAtrousBindGroup(
         d, sa,
         inputTex.createView(), outTex.createView(),
         gNormalDepthView, varView,
-        this._svgfAtrousUboRef.buf!,
+        this._atrousVarianceAtrousUboRef.buf!,
       ));
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();

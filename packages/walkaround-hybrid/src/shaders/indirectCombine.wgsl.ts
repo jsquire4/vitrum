@@ -1,8 +1,8 @@
 /**
- * Sprint 18 — per-channel SVGF combine pass.
+ * Sprint 18 — per-channel denoising combine pass.
  *
  * Both channels are denoised upstream:
- *   - direct: hdrColorTexture → welford → svgf-variance → svgf-atrous ×3
+ *   - direct: hdrColorTexture → welford → atrous-variance-variance → atrous-variance-atrous ×3
  *   - indirect: hdrIndirectTexture → atrous ×4 (steps 1, 2, 4, 8) with
  *               broader edge-stop sigmas tuned for ReSTIR-GI's pre-smoothed
  *               signal (see ATROUS_INDIRECT_SIGMAS in bindGroupBuilders).

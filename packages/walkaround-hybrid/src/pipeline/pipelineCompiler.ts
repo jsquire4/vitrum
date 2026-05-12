@@ -26,7 +26,7 @@ import { INDIRECT_COMBINE_WGSL } from '../shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_WGSL } from '../shaders/indirectTemporalAccum.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
-import { ATROUS_WGSL, SVGF_WGSL, TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
+import { ATROUS_WGSL, ATROUS_VARIANCE_WGSL, TEMPORAL_ACCUM_WGSL } from '@vitrum/shared-denoisers';
 import { WELFORD_TEMPORAL_WGSL } from '../shaders/welfordTemporal.wgsl.js';
 import { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from '../shaders/composite.wgsl.js';
 import {
@@ -56,10 +56,10 @@ export interface CompiledPipelines {
   atrousPipeline: GPUComputePipeline;
   accumPipeline: GPUComputePipeline;
   compositePipeline: GPURenderPipeline;
-  denoiserMode: 'atrous' | 'svgf';
+  denoiserMode: 'atrous' | 'atrous-variance';
   welfordPipeline?: GPUComputePipeline;
-  svgfVariancePipeline?: GPUComputePipeline;
-  svgfAtrousPipeline?: GPUComputePipeline;
+  atrousVarianceVariancePipeline?: GPUComputePipeline;
+  atrousVarianceAtrousPipeline?: GPUComputePipeline;
   /** Sprint 9 — adaptive sampling tier classifier (runs before RIS). */
   sampleBudgetPipeline: GPUComputePipeline;
   /** Sprint 9 — resolve pass (runs between temporalAccum and composite). */
@@ -84,9 +84,9 @@ export async function compilePipelines(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
-  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'svgf' },
+  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'atrous-variance' },
 ): Promise<CompiledPipelines> {
-  const denoiserMode = opts?.denoiser ?? 'svgf';
+  const denoiserMode = opts?.denoiser ?? 'atrous-variance';
   // Compile all shader modules (common WGSL is prepended to each ReSTIR pass).
   const risSM      = device.createShaderModule({ label: 'ris',      code: COMMON_WGSL + RIS_WGSL });
   const temporalSM = device.createShaderModule({ label: 'temporal', code: COMMON_WGSL + TEMPORAL_WGSL });
@@ -104,17 +104,17 @@ export async function compilePipelines(
 
   // Check for compile errors on every shader module before proceeding.
   const welfordSM =
-    denoiserMode === 'svgf'
+    denoiserMode === 'atrous-variance'
       ? device.createShaderModule({ label: 'welford-temporal', code: COMMON_WGSL + WELFORD_TEMPORAL_WGSL })
       : null;
-  // SVGF_WGSL is self-contained: it declares its own PI, INV_PI, LUM_W, and
+  // ATROUS_VARIANCE_WGSL is self-contained: it declares its own PI, INV_PI, LUM_W, and
   // WelfordVariance struct (via WELFORD_VARIANCE_WGSL). Do NOT prepend
   // COMMON_WGSL here — it would cause WGSL redeclaration errors on those
   // names. The welford-temporal pass DOES need COMMON_WGSL (for the BVH /
   // shared math helpers), which is why those two diverge.
-  const svgfSM =
-    denoiserMode === 'svgf'
-      ? device.createShaderModule({ label: 'svgf', code: SVGF_WGSL })
+  const atrousVarianceSM =
+    denoiserMode === 'atrous-variance'
+      ? device.createShaderModule({ label: 'atrous-variance', code: ATROUS_VARIANCE_WGSL })
       : null;
 
   const modules: [string, GPUShaderModule][] = [
@@ -123,7 +123,7 @@ export async function compilePipelines(
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
     ['sample-budget', sampleBudgetSM], ['resolve', resolveSM],
     ...(welfordSM ? [['welford', welfordSM] as [string, GPUShaderModule]] : []),
-    ...(svgfSM ? [['svgf', svgfSM] as [string, GPUShaderModule]] : []),
+    ...(atrousVarianceSM ? [['atrous-variance', atrousVarianceSM] as [string, GPUShaderModule]] : []),
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
@@ -292,23 +292,23 @@ export async function compilePipelines(
   });
 
   let welfordPipeline: GPUComputePipeline | undefined;
-  let svgfVariancePipeline: GPUComputePipeline | undefined;
-  let svgfAtrousPipeline: GPUComputePipeline | undefined;
-  if (denoiserMode === 'svgf' && welfordSM && svgfSM) {
+  let atrousVarianceVariancePipeline: GPUComputePipeline | undefined;
+  let atrousVarianceAtrousPipeline: GPUComputePipeline | undefined;
+  if (denoiserMode === 'atrous-variance' && welfordSM && atrousVarianceSM) {
     welfordPipeline = await device.createComputePipelineAsync({
       label: 'welford-temporal',
       layout: 'auto',
       compute: { module: welfordSM, entryPoint: 'welfordTemporalMain' },
     });
-    svgfVariancePipeline = await device.createComputePipelineAsync({
-      label: 'svgf-variance',
+    atrousVarianceVariancePipeline = await device.createComputePipelineAsync({
+      label: 'atrous-variance-variance',
       layout: 'auto',
-      compute: { module: svgfSM, entryPoint: 'svgfVarianceMain' },
+      compute: { module: atrousVarianceSM, entryPoint: 'svgfVarianceMain' },
     });
-    svgfAtrousPipeline = await device.createComputePipelineAsync({
-      label: 'svgf-atrous',
+    atrousVarianceAtrousPipeline = await device.createComputePipelineAsync({
+      label: 'atrous-variance-atrous',
       layout: 'auto',
-      compute: { module: svgfSM, entryPoint: 'svgfAtrousMain' },
+      compute: { module: atrousVarianceSM, entryPoint: 'svgfAtrousMain' },
     });
   }
 
@@ -354,9 +354,9 @@ export async function compilePipelines(
     indirectTemporalAccumPipeline,
     denoiserMode,
     ...(welfordPipeline !== undefined &&
-    svgfVariancePipeline !== undefined &&
-    svgfAtrousPipeline !== undefined
-      ? { welfordPipeline, svgfVariancePipeline, svgfAtrousPipeline }
+    atrousVarianceVariancePipeline !== undefined &&
+    atrousVarianceAtrousPipeline !== undefined
+      ? { welfordPipeline, atrousVarianceVariancePipeline, atrousVarianceAtrousPipeline }
       : {}),
   };
 }
