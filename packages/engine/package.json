@@ -1,7 +1,11 @@
 {
   "name": "@vitrum/engine",
   "version": "0.0.0",
-  "description": "Drop-in entry point: createEngine() picks a backend, derives defaults from scene AABB, attaches a ResizeObserver, and returns the @vitrum/core Engine contract.",
+  "private": true,
+  "description": "Drop-in entry point: createEngine() picks a backend, derives defaults from scene AABB, and returns the @vitrum/core Engine contract. Vanilla attachVitrum + React VitrumCanvas helpers included.",
+  "keywords": ["webgpu", "webgl2", "path-tracing", "global-illumination", "vitrum", "react", "three"],
+  "author": "jsquire4",
+  "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -10,7 +14,12 @@
     "./lifecycle": "./src/lifecycle/index.ts",
     "./react":     "./src/react/index.ts"
   },
-  "license": "MIT",
+  "files": ["src", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsquire4/vitrum.git",
+    "directory": "packages/engine"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
