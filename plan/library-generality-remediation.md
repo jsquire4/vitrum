@@ -1,7 +1,11 @@
 # Library generality remediation plan
 
-**Status**: open, work-in-progress
+**Status**: ✅ COMPLETE — all 27 findings landed across `9db0e7f`, `7b159c0`,
+`328a659`, `0088a78`, and the M2/M10 follow-up commit. Defaults preserve
+Cornell rendering byte-for-byte at every step. 371 walkaround-hybrid tests
+and workspace typecheck remain clean.
 **Created**: 2026-05-11
+**Closed**: 2026-05-12
 **Source**: three parallel audits run on 2026-05-11 (WGSL-shader generality, host-pipeline generality, recent-commits code-quality). Plus an empirical reservoir probe on the live Cornell walkaround engine.
 
 ## Scope
@@ -42,11 +46,44 @@ This plan tracks the findings from the audit pass and which have landed vs which
 | Q4 | ✅ landed | dead `_prevAccum`/`_gNormalDepth`/`_motionVectors` params removed from `buildSVGFVarianceBindGroup` |
 | Q5 | ✅ landed | `compositeLinearSampler` renamed to `compositeSampler` (it was `nearest`, not `linear`); dead `void PPG_DIRECTIONS` import removed |
 
+## Landed 2026-05-12 — host-side options (Batch 1: B8, M3, M4, M5)
+
+Pure host-side changes, no UBO plumbing needed. Defaults preserve Cornell.
+
+| ID | Status | What |
+|---|---|---|
+| B8 | ✅ landed | `HybridEngineOptions.cameraMoveResetThresholdSq?` |
+| M3 | ✅ landed | `HybridEngineOptions.temporalAccumAlpha?` |
+| M4 | ✅ landed | `HybridEngineOptions.targetFrameIntervalMs?: number \| null` |
+| M5 | ✅ landed | `defaultIsSceneReady` heuristic relaxed `total >= 200` → `total > 0` |
+
+## Landed 2026-05-12 — UBO-plumbed tunables (Batch 2: B1, B3, B4, M1, M6, M7, M8, M12)
+
+`WalkaroundUBO` grew from 256 → 288 bytes with 7 new tunable fields; `GTAOUniforms` grew from 16 → 32 bytes with 1 new field + padding; the `emitterGeometry(...)` helper signature grew a `dist2Floor` argument so the three call sites all pass `ubo.emitterDist2Floor` consistently.
+
+| ID | Status | What |
+|---|---|---|
+| B1 | ✅ landed | `HybridEngineOptions.caustic: { boost?, visClamp? }` |
+| B3 | ✅ landed | `HybridEngineOptions.gtao.bilateralDepthSigma?` |
+| B4 | ✅ landed | `HybridEngineOptions.directFireflyClamp?` |
+| M1 | ✅ landed | `HybridEngineOptions.gtao: { radiusPx?, intensity?, depthThresholdWorldUnits? }` |
+| M6 | ✅ landed | `HybridEngineOptions.temporalMClampDI?` |
+| M7 | ✅ landed | `HybridEngineOptions.spatialReuseRadiusPx?` |
+| M8 | ✅ landed | `HybridEngineOptions.spatialDepthTolFloor?` |
+| M12 | ✅ landed | `HybridEngineOptions.emitterDist2Floor?` |
+
+## Landed 2026-05-12 — sample-budget + PPG sizing (Batch 3: M2, M10)
+
+| ID | Status | What |
+|---|---|---|
+| M2 | ✅ landed | `HybridEngineOptions.adaptiveSamplingThresholds?: [low, high]` |
+| M10 | ✅ landed | `HybridEngineOptions.ppgMaxSpatialCells?` plumbed through `createFrameResources` → `createPPGBuffers` |
+
 ---
 
-## Still open — substantial UBO / `HybridEngineOptions` work
+## Originally-deferred items, now also landed
 
-These need real API design + UBO field additions + host-side plumbing. They were *not* landed tonight because the work depends on a coherent `HybridEngineOptions` surface that should be designed in one pass rather than incrementally accumulated. Each item lists the audit reference, the current scene-dependence, and the suggested remediation pattern.
+These notes are kept here for traceability; all of them have been remediated in the commits referenced at the top of this document.
 
 ### Blockers
 

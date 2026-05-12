@@ -465,6 +465,15 @@ export interface FrameResourceOptions {
    * @since Sprint 11
    */
   ppgEnabled?: boolean;
+
+  /**
+   * Override `PPG_MAX_SPATIAL_CELLS` for PPG buffer sizing (audit M10).
+   * Default `10_000` is fine for Cornell-scale interiors; large outdoor
+   * scenes may need 50K+ for adequate guiding coverage.
+   *
+   * Only consulted when `ppgEnabled === true`.
+   */
+  ppgMaxSpatialCells?: number;
 }
 
 /**
@@ -698,7 +707,13 @@ export function createFrameResources(
   // which satisfies exactOptionalPropertyTypes.
   const ppgExt: Pick<FrameResources, 'ppgBuffers'> =
     options?.ppgEnabled === true
-      ? { ppgBuffers: createPPGBuffers(device) }
+      ? {
+          ppgBuffers: createPPGBuffers(device, {
+            ...(options.ppgMaxSpatialCells !== undefined
+              ? { maxCells: options.ppgMaxSpatialCells }
+              : {}),
+          }),
+        }
       : {};
 
   // Sprint 15 — GTAO textures (half-res input, full-res upsampled output).

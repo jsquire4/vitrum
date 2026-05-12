@@ -227,6 +227,12 @@ export interface PipelineFrameInputs {
   /** Audit B3 — GTAO upsample bilateral depth sigma (world units);
    *  Cornell default 0.25 (= 1/√(2*4); see legacy `exp(-Δ * 4)`). */
   gtaoBilateralDepthSigma: number;
+  /** Audit M2 — adaptive-sampling tier classifier low-variance threshold;
+   *  Cornell default 0.01.  Variance below this → tier 1 (converged). */
+  adaptiveSamplingThresholdLow: number;
+  /** Audit M2 — adaptive-sampling tier classifier high-variance threshold;
+   *  Cornell default 0.10.  Variance above this → tier 4 (high noise). */
+  adaptiveSamplingThresholdHigh: number;
   /** The WebGPU swap-chain texture view to render into for this frame.
    *  Caller must obtain via context.getCurrentTexture().createView()
    *  inside the same animation-frame callback that calls renderFrame. */
@@ -402,6 +408,8 @@ export class WalkaroundGPUPipeline {
       cameraMoveResetThresholdSq?: number;
       /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
       temporalAccumAlpha?: number;
+      /** Audit M10 — host-overridable PPG spatial-cell allocation cap. */
+      ppgMaxSpatialCells?: number;
     },
   ): Promise<void> {
     const d = this._device;
@@ -423,7 +431,12 @@ export class WalkaroundGPUPipeline {
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
-    this._res = createFrameResources(d, W, H, { ppgEnabled: options?.ppgEnabled ?? false });
+    this._res = createFrameResources(d, W, H, {
+      ppgEnabled: options?.ppgEnabled ?? false,
+      ...(options?.ppgMaxSpatialCells !== undefined
+        ? { ppgMaxSpatialCells: options.ppgMaxSpatialCells }
+        : {}),
+    });
 
     // ── Compile shaders ───────────────────────────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
@@ -666,11 +679,14 @@ export class WalkaroundGPUPipeline {
     // currently ignores it; tier-aware DI sampling is a future Sprint-9 step.
     {
       // Budget uniforms: f32 threshold_low, f32 threshold_high, u32 screenW, u32 screenH (16 bytes).
+      // Audit M2: thresholds now host-overridable via
+      // HybridEngineOptions.adaptiveSamplingThresholds; default [0.01, 0.10]
+      // is calibrated to Cornell variance dynamic range.
       const budgetBytes = new ArrayBuffer(16);
       const budgetF32 = new Float32Array(budgetBytes);
       const budgetU32 = new Uint32Array(budgetBytes);
-      budgetF32[0] = 0.01;
-      budgetF32[1] = 0.10;
+      budgetF32[0] = inputs.adaptiveSamplingThresholdLow;
+      budgetF32[1] = inputs.adaptiveSamplingThresholdHigh;
       budgetU32[2] = W;
       budgetU32[3] = H;
       d.queue.writeBuffer(this._sampleBudgetUboRef.buf!, 0, budgetBytes);

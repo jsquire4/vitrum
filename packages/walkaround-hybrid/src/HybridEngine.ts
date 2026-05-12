@@ -259,6 +259,29 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly spatialDepthTolFloor?: number;
 
   /**
+   * Adaptive-sampling tier classifier thresholds (audit M2).  The
+   * sample-budget pass reads previous-frame Welford variance and writes
+   * a per-pixel tier (1 / 2 / 4) used downstream by RIS to scale M_GI.
+   *
+   * **Light-intensity-sensitive** — variance scales with peak-radiance²,
+   * so HDR scenes need higher thresholds.  Default `[0.01, 0.10]` is
+   * calibrated for Cornell's variance dynamic range.
+   *
+   * @default [0.01, 0.10]
+   */
+  readonly adaptiveSamplingThresholds?: readonly [low: number, high: number];
+
+  /**
+   * Maximum PPG (path-guiding) spatial-cell allocation (audit M10).
+   * Buffer sizing — exceeding this requires re-creating the engine.
+   * Default `10_000` (≈ 3.4 MB) is fine for Cornell-scale interiors;
+   * large outdoor scenes need 50K+ for good guiding coverage.
+   *
+   * @default 10000
+   */
+  readonly ppgMaxSpatialCells?: number;
+
+  /**
    * GTAO (ground-truth ambient occlusion) tuning (audits M1, B3).  All
    * fields optional.  Defaults preserve Cornell behaviour.
    *
@@ -427,6 +450,12 @@ export class HybridEngine implements Engine {
   private readonly _gtaoDepthThreshold: number;
   /** Audit B3 — written into GTAO UBO each frame. */
   private readonly _gtaoBilateralDepthSigma: number;
+  /** Audit M2 — written into sample-budget UBO each frame. */
+  private readonly _adaptiveSamplingThresholdLow: number;
+  /** Audit M2 — written into sample-budget UBO each frame. */
+  private readonly _adaptiveSamplingThresholdHigh: number;
+  /** Audit M10 — passed to createFrameResources() → createPPGBuffers(). */
+  private readonly _ppgMaxSpatialCells: number | undefined;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -522,6 +551,9 @@ export class HybridEngine implements Engine {
     this._gtaoIntensity         = opts.gtao?.intensity               ?? 2.0;
     this._gtaoDepthThreshold    = opts.gtao?.depthThresholdWorldUnits ?? 2.0;
     this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma   ?? 0.25;
+    this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
+    this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
+    this._ppgMaxSpatialCells = opts.ppgMaxSpatialCells;
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
@@ -778,6 +810,8 @@ export class HybridEngine implements Engine {
       gtaoIntensity:         this._gtaoIntensity,
       gtaoDepthThreshold:    this._gtaoDepthThreshold,
       gtaoBilateralDepthSigma: this._gtaoBilateralDepthSigma,
+      adaptiveSamplingThresholdLow:  this._adaptiveSamplingThresholdLow,
+      adaptiveSamplingThresholdHigh: this._adaptiveSamplingThresholdHigh,
       swapChainView:         swapView,
       swapChainFormat:       swapFmt,
     });
@@ -1046,6 +1080,9 @@ export class HybridEngine implements Engine {
             denoiser: this._denoiser,
             cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
             temporalAccumAlpha: this._temporalAccumAlpha,
+            ...(this._ppgMaxSpatialCells !== undefined
+              ? { ppgMaxSpatialCells: this._ppgMaxSpatialCells }
+              : {}),
           },
         );
         const pipelineMs = performance.now() - pipelineStart;
