@@ -64,6 +64,19 @@ struct IntersectionResult {
   dist: f32,
 };
 
+// ─── safeInvDir helper ────────────────────────────────────────────────────────
+// Williams 2005 §4 IEEE-safe inverse-direction: substitutes a finite large
+// value when a component is near-zero to avoid NaN from 0 * ±Inf in the slab
+// test.  WGSL sign(0)==0, so a zero component yields 0 * 1e30 == 0, which is
+// correct (zero-direction axis contributes nothing to tNear/tFar).
+fn safeInvDir(d: vec3f) -> vec3f {
+  return vec3f(
+    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
+    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
+    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
+  );
+}
+
 // ─── three-mesh-bvh: intersectsBounds ────────────────────────────────────────
 
 fn intersectsBounds(
@@ -75,7 +88,7 @@ fn intersectsBounds(
   let boundsMin = vec3( bounds.min[0], bounds.min[1], bounds.min[2] );
   let boundsMax = vec3( bounds.max[0], bounds.max[1], bounds.max[2] );
 
-  let invDir = 1.0 / ray.direction;
+  let invDir = safeInvDir(ray.direction);
   let tMinPlane = ( boundsMin - ray.origin ) * invDir;
   let tMaxPlane = ( boundsMax - ray.origin ) * invDir;
 

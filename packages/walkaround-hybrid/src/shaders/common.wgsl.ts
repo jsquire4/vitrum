@@ -27,7 +27,6 @@ const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
 const INFINITY = 1e20;
 const BVH_STACK_DEPTH = 60u;
-const TRI_INTERSECT_EPSILON = 1e-5;
 const LEAFNODE_FLAG = 0xFFFF0000u;
 
 // Audit M12 follow-up: the emitter-geometry-term distance² floor is now
@@ -106,7 +105,14 @@ struct WalkaroundUBO {
   temporalMClampDI:           u32,     //  offset 272 — audit M6
   spatialReuseRadiusPx:       f32,     //  offset 276 — audit M7
   spatialDepthTolFloor:       f32,     //  offset 280 — audit M8
-  _pad:                       u32,     //  offset 284 — 16-byte align
+  triIntersectEpsilon:        f32,     //  offset 284 — D12: Möller-Trumbore coplanarity floor
+  // Padding to maintain 16-byte struct alignment (struct size must be a
+  // multiple of 16). triIntersectEpsilon occupies 284-287; the previous
+  // single _pad is now split into 4 words to reach 304 bytes (304 % 16 == 0).
+  _pad:                       u32,     //  offset 288
+  _pad2:                      u32,     //  offset 292
+  _pad3:                      u32,     //  offset 296
+  _pad4:                      u32,     //  offset 300
 };
 
 // Emitter geometry term G with a configurable dist² clamp applied at
@@ -474,6 +480,22 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
 // BVH ray traversal (adapted from three-mesh-bvh WGSL)
 // ============================================================
 
+// Williams 2005 §4 IEEE-safe inverse-direction helper.
+// When a direction component is exactly zero, 1/0 = ±Inf is IEEE-valid but
+// 0 * ±Inf = NaN can poison the slab test when the ray origin coincides
+// with an AABB face.  We substitute a finite large value instead.
+// WGSL sign(0) == 0, so for a zero component sign(d.x) * 1e30 == 0, and
+// (bMin - origin) * 0 == 0 — the axis contributes zero to tNear/tFar,
+// which is correct: a zero-direction ray cannot enter/exit the slab through
+// that axis; entry/exit are determined by the other two axes.
+fn safeInvDir(d: vec3f) -> vec3f {
+  return vec3f(
+    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
+    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
+    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
+  );
+}
+
 // Returns intersection distance (INFINITY if no hit) -- shadow ray.
 // bvh_index is array<vec4u>: .xyz = vertex indices,
 //                            .w = packed RGB888 + (trans4 | texType4) byte.
@@ -498,7 +520,7 @@ fn bvhIntersectAny(
     // Slab test for bounds -- read array<f32,3> fields by index.
     let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
     let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    let invDir = vec3f(1.0) / dir;
+    let invDir = safeInvDir(dir);
     let t1 = (nMin - origin) * invDir;
     let t2 = (nMax - origin) * invDir;
     let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
@@ -530,8 +552,10 @@ fn bvhIntersectAny(
       // three-mesh-bvh stores rightChildOrTriOffset as a RELATIVE offset (in
       // node units) from the current node, NOT an absolute node index.  The
       // left child is always nodeIdx+1 (the immediately-following node).
+      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot)
+      // — the previous 'stackPtr < 62u' needlessly wasted slot 63.
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr < 62u) {
+      if (stackPtr + 1u < 64u) {
         stack[stackPtr] = rightChild; stackPtr++;
         stack[stackPtr] = nodeIdx + 1u; stackPtr++;
       }
@@ -568,7 +592,7 @@ fn bvhIntersectFirstHit(
 
     let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
     let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    let invDir = vec3f(1.0) / ray.direction;
+    let invDir = safeInvDir(ray.direction);
     let t1 = (nMin - ray.origin) * invDir;
     let t2 = (nMax - ray.origin) * invDir;
     let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
@@ -618,8 +642,10 @@ fn bvhIntersectFirstHit(
     } else {
       // Interior node: rightChildOrTriOffset is a RELATIVE offset (node units)
       // from this node, NOT an absolute node index.
+      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot)
+      // — the previous 'stackPtr < 62u' needlessly wasted slot 63.
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr < 62u) {
+      if (stackPtr + 1u < 64u) {
         stack[stackPtr] = rightChild; stackPtr++;
         stack[stackPtr] = nodeIdx + 1u; stackPtr++;
       }
@@ -658,12 +684,15 @@ fn decodeIsMetal(packed: u32) -> bool {
 }
 
 // Moller-Trumbore triangle intersection; returns t or INFINITY.
+// Uses ubo.triIntersectEpsilon (D12) for the coplanarity floor so hosts
+// can tune it per scene scale.  Shaders that bind WalkaroundUBO at @group(2)
+// @binding(0) provide the UBO; the value defaults to 1e-5 (metre-scale).
 fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
   let e1 = b - a;
   let e2 = c - a;
   let h = cross(dir, e2);
   let det = dot(e1, h);
-  if (abs(det) < TRI_INTERSECT_EPSILON) { return INFINITY; }
+  if (abs(det) < ubo.triIntersectEpsilon) { return INFINITY; }
   let invDet = 1.0 / det;
   let s = origin - a;
   let u = dot(s, h) * invDet;
@@ -672,7 +701,7 @@ fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) ->
   let v = dot(dir, q) * invDet;
   if (v < 0.0 || u + v > 1.0) { return INFINITY; }
   let t = dot(e2, q) * invDet;
-  if (t < TRI_INTERSECT_EPSILON) { return INFINITY; }
+  if (t < ubo.triIntersectEpsilon) { return INFINITY; }
   return t;
 }
 

@@ -34,7 +34,7 @@
  *     binding 0 — texture_2d<f32>                        inputColor     (noisy RGBA16F)
  *     binding 1 — texture_2d<f32>                        prevRadiance   (previous frame RGBA16F)
  *     binding 2 — texture_2d<f32>                        gbufferNormal  (RGBA16F, .xyz = world normal)
- *     binding 3 — texture_2d<f32>                        gbufferDepth   (RGBA16F or R32F, .r = linear depth)
+ *     binding 3 — texture_2d<f32>                        gbufferDepth   (RGBA16F or R32F, .x = linear depth)
  *     binding 4 — texture_2d<f32>                        motionVectors  (RG32F, .xy = screen-space motion)
  *     binding 5 — texture_2d<f32>                        varianceIn     (RG32F — WelfordVariance mean+m2)
  *     binding 6 — texture_storage_2d<rg32float, write>   varianceOut    (estimated scalar variance per pixel)
@@ -44,7 +44,7 @@
  *     binding 0 — texture_2d<f32>                        inputColor     (RGBA16F — ping-pong input)
  *     binding 1 — texture_storage_2d<rgba16float, write> outputColor    (RGBA16F — ping-pong output)
  *     binding 2 — texture_2d<f32>                        gbufferNormal  (RGBA16F, .xyz = world normal)
- *     binding 3 — texture_2d<f32>                        gbufferDepth   (RGBA16F or R32F, .r = linear depth)
+ *     binding 3 — texture_2d<f32>                        gbufferDepth   (RGBA16F or R32F, .x = linear depth)
  *     binding 4 — texture_2d<f32>                        varianceMap    (RG32F — .r = estimated variance)
  *     binding 5 — var<uniform> AtrousVarianceAtrousUBO
  *
@@ -217,9 +217,9 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let cCenter = textureLoad(atrous_inputColor, gid.xy, 0).rgb;
-  // Match walkaround atrous.wgsl: packed normal (0..1) → world normal; depth in .w
+  // Match walkaround atrous.wgsl: packed normal (0..1) → world normal; depth in .x
   let nCenter = textureLoad(atrous_gbufNormal, gid.xy, 0).xyz * 2.0 - 1.0;
-  let zCenter = textureLoad(atrous_gbufDepth, gid.xy, 0).w;
+  let zCenter = textureLoad(atrous_gbufDepth, gid.xy, 0).x;
 
   // Sky / miss pixels pass through unfiltered.
   if (zCenter <= 0.0) {
@@ -251,7 +251,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
 
       let cP = textureLoad(atrous_inputColor, pu, 0).rgb;
       let nP = textureLoad(atrous_gbufNormal, pu, 0).xyz * 2.0 - 1.0;
-      let zP = textureLoad(atrous_gbufDepth,  pu, 0).w;
+      let zP = textureLoad(atrous_gbufDepth,  pu, 0).x;
 
       let kIdx = u32((dy + 2) * 5 + (dx + 2));
       let h    = SVGF_KERNEL[kIdx];

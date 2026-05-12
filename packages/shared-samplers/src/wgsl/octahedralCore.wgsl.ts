@@ -9,7 +9,12 @@ fn octEncode(dir: vec3f) -> vec2f {
   if (n.z >= 0.0) {
     return n.xy;
   }
-  return (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
+  // Lower-hemisphere fold — Item #39 / Cigolle 2014 §A.1:
+  // sign(0)=0 in WGSL collapses the fold when n.x or n.y is exactly 0.
+  // Use select() so that 0 maps to +1, matching the paper's convention.
+  let sx = select(-1.0, 1.0, n.x >= 0.0);
+  let sy = select(-1.0, 1.0, n.y >= 0.0);
+  return vec2f((1.0 - abs(n.y)) * sx, (1.0 - abs(n.x)) * sy);
 }
 
 fn octDecode(oct: vec2f) -> vec3f {

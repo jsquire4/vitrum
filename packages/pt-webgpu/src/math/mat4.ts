@@ -98,3 +98,47 @@ export function transformDirection(m: Mat4, v: Vec3): [number, number, number] {
   if (len < 1e-8) return [0, 1, 0];
   return [x / len, y / len, z / len];
 }
+
+/**
+ * Transform a surface normal by the inverse-transpose of the upper-left 3×3
+ * sub-matrix of `m` (the cofactor matrix divided by det(M)).
+ *
+ * Under non-uniform scale, applying M directly to normals distorts them so
+ * they are no longer perpendicular to the transformed surface.  The correct
+ * transform is `(M⁻¹)ᵀ · n`, which preserves the orthogonality invariant
+ * `n · t = 0` after the transform of tangent `t` by M.
+ *
+ * The cofactor expansion avoids an explicit matrix inversion: the cofactor
+ * matrix equals `det(M) · (M⁻¹)ᵀ` for the 3×3 submatrix, so the
+ * `1/det` factor cancels in the post-normalize step.
+ *
+ * For a pure rotation (uniform scale = 1), this is equivalent to
+ * `transformDirection(m, v)` up to floating-point rounding.
+ *
+ * References: Shirley & Morley "Realistic Ray Tracing" §2.7; any linear-algebra
+ * text on the adjugate / classical adjoint of a 3×3 matrix.
+ */
+export function transformNormal(m: Mat4, v: Vec3): [number, number, number] {
+  const [m00, m10, m20, m01, m11, m21, m02, m12, m22] = [
+    m[0] ?? 0, m[1] ?? 0, m[2] ?? 0,
+    m[4] ?? 0, m[5] ?? 0, m[6] ?? 0,
+    m[8] ?? 0, m[9] ?? 0, m[10] ?? 0,
+  ];
+  // Cofactor matrix of the 3×3 upper-left submatrix.
+  // c_ij = (-1)^(i+j) * M_ij  (minor of row i, col j).
+  const c00 = m11 * m22 - m21 * m12;
+  const c01 = -(m01 * m22 - m21 * m02);
+  const c02 = m01 * m12 - m11 * m02;
+  const c10 = -(m10 * m22 - m20 * m12);
+  const c11 = m00 * m22 - m20 * m02;
+  const c12 = -(m00 * m12 - m10 * m02);
+  const c20 = m10 * m21 - m20 * m11;
+  const c21 = -(m00 * m21 - m20 * m01);
+  const c22 = m00 * m11 - m10 * m01;
+  const x = c00 * v[0] + c10 * v[1] + c20 * v[2];
+  const y = c01 * v[0] + c11 * v[1] + c21 * v[2];
+  const z = c02 * v[0] + c12 * v[1] + c22 * v[2];
+  const len = Math.hypot(x, y, z);
+  if (len < 1e-8) return [0, 1, 0];
+  return [x / len, y / len, z / len];
+}

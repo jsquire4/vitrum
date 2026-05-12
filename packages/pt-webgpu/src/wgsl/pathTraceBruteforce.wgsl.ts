@@ -32,7 +32,7 @@ struct FrameParams {
   causticStrategy: u32,
   environmentMapWidth: u32,
   environmentMapHeight: u32,
-  _pad0: u32,
+  triIntersectEpsilon: f32, // UBO-plumbed (D12); default 1e-5 (metre-scale)
   _pad1: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
@@ -503,7 +503,7 @@ fn projectToNdc(pos: vec3f, vp: mat4x4f) -> vec2f {
 }
 
 fn intersectAabb(ray: Ray, bmin: vec3f, bmax: vec3f, tMin: f32, tMax: f32) -> bool {
-  let invDir = vec3f(1.0) / ray.direction;
+  let invDir = safeInvDir(ray.direction);
   let t1 = (bmin - ray.origin) * invDir;
   let t2 = (bmax - ray.origin) * invDir;
   let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
@@ -542,7 +542,7 @@ fn transformNormalFromWorldToLocalCols(w2l0: vec4f, w2l1: vec4f, w2l2: vec4f, nL
 }
 
 fn intersectAabbDetailed(ray: Ray, bmin: vec3f, bmax: vec3f, tMin: f32, tMax: f32, nOut: ptr<function, vec3f>) -> f32 {
-  let invDir = vec3f(1.0) / ray.direction;
+  let invDir = safeInvDir(ray.direction);
   let t0 = (bmin - ray.origin) * invDir;
   let t1 = (bmax - ray.origin) * invDir;
   let tsm = min(t0, t1);
@@ -1522,7 +1522,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
       let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
       if (max(sigmaT.x, max(sigmaT.y, sigmaT.z)) > 0.0) {
-        throughput = throughput * exp(-sigmaT * min(hit.dist, 32.0));
+        throughput = throughput * exp(-sigmaT * hit.dist);
       }
       if (scatteringCoeff > 0.0) {
         let anisotropyBoost = 1.0 + 0.5 * scatteringAnisotropy;

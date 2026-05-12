@@ -1,6 +1,6 @@
 /**
  * UBO updater — writes per-frame camera + lighting + tunables into the
- * 288-byte WalkaroundUBO uniform buffer.
+ * 304-byte WalkaroundUBO uniform buffer.
  *
  * UBO layout (mixed f32 / u32 — see WalkaroundUBO struct in common.wgsl):
  *   offset   0: viewMatrix                  (mat4×4f = 64 bytes)
@@ -22,15 +22,19 @@
  *   offset 272: temporalMClampDI            (u32 = 4 bytes) — audit M6
  *   offset 276: spatialReuseRadiusPx        (f32 = 4 bytes) — audit M7
  *   offset 280: spatialDepthTolFloor        (f32 = 4 bytes) — audit M8
- *   offset 284: _pad                        (u32 = 4 bytes — 16-byte align)
- * Total: 288 bytes.
+ *   offset 284: triIntersectEpsilon         (f32 = 4 bytes) — D12
+ *   offset 288: _pad                        (u32 = 4 bytes)
+ *   offset 292: _pad2                       (u32 = 4 bytes)
+ *   offset 296: _pad3                       (u32 = 4 bytes)
+ *   offset 300: _pad4                       (u32 = 4 bytes — 16-byte align)
+ * Total: 304 bytes (304 % 16 == 0).
  */
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
 
 /** Size of the WalkaroundUBO in bytes. Exported so the GPU buffer
  *  allocator can match. */
-export const WALKAROUND_UBO_SIZE_BYTES = 288;
+export const WALKAROUND_UBO_SIZE_BYTES = 304;
 
 export function updateUBO(
   device: GPUDevice,
@@ -68,7 +72,8 @@ export function updateUBO(
   u32[68] = inputs.temporalMClampDI >>> 0;
   f32[69] = inputs.spatialReuseRadiusPx;
   f32[70] = inputs.spatialDepthTolFloor;
-  // f32[71] = _pad, leave 0.
+  f32[71] = inputs.triIntersectEpsilon;
+  // f32[72..75] = _pad / _pad2 / _pad3 / _pad4, leave 0.
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

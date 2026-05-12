@@ -194,8 +194,21 @@ struct ProbeRay {
 // -----------------------------------------------------------------
 // BVH traversal (inline — not using wgslFn wrapper here for robustness)
 // -----------------------------------------------------------------
+
+// Williams 2005 §4 IEEE-safe inverse-direction helper.
+// Prevents NaN from 0 * ±Inf in slab tests when a ray direction component
+// is zero.  WGSL sign(0)==0, so a zero component yields 0*1e30==0, which
+// correctly contributes nothing to the tNear/tFar computation.
+fn safeInvDir(d: vec3f) -> vec3f {
+  return vec3f(
+    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
+    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
+    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
+  );
+}
+
 fn intersectsAABBDist(ray: Ray, boundsMin: vec3f, boundsMax: vec3f) -> f32 {
-  let invDir = 1.0 / ray.direction;
+  let invDir = safeInvDir(ray.direction);
   let t0 = (boundsMin - ray.origin) * invDir;
   let t1 = (boundsMax - ray.origin) * invDir;
   let tmin3 = min(t0, t1);

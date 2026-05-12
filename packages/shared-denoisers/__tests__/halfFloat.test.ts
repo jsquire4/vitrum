@@ -39,34 +39,20 @@ describe('halfFloat', () => {
 // 33-H: Half-float overflow behavior (Foundations Item F9)
 //
 // A finite f32 value > 65504 (the largest representable fp16 normal) should
-// clamp to ±Infinity when encoded as fp16, NOT to a NaN bit pattern.
-//
-// The current implementation (halfFloat.ts line 32-33) sets the mantissa quiet
-// bit when the source mantissa is non-zero, which misclassifies finite-overflow
-// as NaN. These tests are marked it.fails pending the F9 fix in M4.
+// saturate to ±Infinity when encoded as fp16, as IEEE 754 specifies.
 // ---------------------------------------------------------------------------
 describe('halfFloat overflow behavior (33-H / F9)', () => {
-  // TODO(F9-fix): The implementation maps finite overflow to NaN (mantissa bit set).
-  // Once the fix lands, change these it.fails → it and remove the TODO.
+  it('f32ToF16(70000) should be +Infinity (not NaN)', () => {
+    const result = f32ToF16(70000);
+    expect(Number.isNaN(result)).toBe(false);
+    expect(result).toBe(Number.POSITIVE_INFINITY);
+  });
 
-  it.fails(
-    // F9: finite value > 65504 should become ±Inf, not NaN',
-    'f32ToF16(70000) should be +Infinity (not NaN)',
-    () => {
-      const result = f32ToF16(70000);
-      expect(Number.isNaN(result)).toBe(false);
-      expect(result).toBe(Number.POSITIVE_INFINITY);
-    },
-  );
-
-  it.fails(
-    'f32ToF16(-70000) should be -Infinity (not NaN)',
-    () => {
-      const result = f32ToF16(-70000);
-      expect(Number.isNaN(result)).toBe(false);
-      expect(result).toBe(Number.NEGATIVE_INFINITY);
-    },
-  );
+  it('f32ToF16(-70000) should be -Infinity (not NaN)', () => {
+    const result = f32ToF16(-70000);
+    expect(Number.isNaN(result)).toBe(false);
+    expect(result).toBe(Number.NEGATIVE_INFINITY);
+  });
 
   // These two are NOT it.fails — the existing implementation already handles them.
   it('+Infinity input encodes as +Infinity', () => {

@@ -1,5 +1,5 @@
 import type { Scene, SceneEmitter } from '@vitrum/core';
-import { transformDirection, transformPoint } from '../math/mat4.js';
+import { transformNormal, transformPoint } from '../math/mat4.js';
 import { invertMat4 } from '../math/mat4.js';
 import { buildCpuBvh } from './buildCpuBvh.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
@@ -210,7 +210,7 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
           primitive.normals[i * 3 + 2] ?? 0,
         ];
         const tp = transform == null ? p : transformPoint(transform, p);
-        const tn = transform == null ? n : transformDirection(transform, n);
+        const tn = transform == null ? n : transformNormal(transform, n);
         positions.push(tp[0], tp[1], tp[2], 0);
         normals.push(tn[0], tn[1], tn[2], 0);
       }

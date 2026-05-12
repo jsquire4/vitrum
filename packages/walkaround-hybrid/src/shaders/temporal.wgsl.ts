@@ -93,7 +93,8 @@ fn computePHat_t(lid: u32, surf: PrimarySurface) -> f32 {
   if (nDotL < 1e-6 || nlDotL < 1e-6) { return 0.0; }
   // evalGGX already multiplies by NdotL (receiver cosine); G is the emitter
   // geometry term only: cos(emitter) / dist².
-  let G    = nlDotL / dist2;
+  // p̂ must be identical to RIS — Bitterli 2020 §4.3.
+  let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
   let brdf = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
   return luminance(e.Le * brdf * G);
 }

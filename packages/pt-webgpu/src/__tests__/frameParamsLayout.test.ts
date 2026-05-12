@@ -26,7 +26,7 @@ import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
  *     15 causticStrategy     (0=none, 1=manifold-nee, 2=photon-map)
  *     16 environmentMapWidth
  *     17 environmentMapHeight
- *     18 _pad0
+ *     18 triIntersectEpsilon  (f32; default 1e-5, metre-scale)
  *     19 _pad1
  *
  *   f32 slot 20..23 cameraPos    (xyz, .w = 1)
@@ -91,7 +91,7 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'causticStrategy: u32',
       'environmentMapWidth: u32',
       'environmentMapHeight: u32',
-      '_pad0: u32',
+      'triIntersectEpsilon: f32',
       '_pad1: u32',
       'cameraPos: vec4f',
       'lightDir: vec4f',
@@ -173,14 +173,16 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
 
   it('fits inside the 512-byte UBO with the new layout (336 bytes used)', () => {
     // Field sizes (WGSL std140-ish for uniform buffers, vec4-aligned):
-    //   20 u32 = 80 bytes
-    //   4  vec4f = 64 bytes
-    //   3  mat4x4f = 192 bytes
+    //   19 u32  = 76 bytes  (slot 18 is now triIntersectEpsilon: f32)
+    //    1 f32  =  4 bytes  (triIntersectEpsilon)
+    //    4 vec4f = 64 bytes
+    //    3 mat4x4f = 192 bytes
     //   total = 336 bytes, fits in 512.
     const u32Count = fields.filter((f) => /:\s*u32\b/.test(f)).length;
+    const f32Count = fields.filter((f) => /:\s*f32\b/.test(f)).length;
     const vec4Count = fields.filter((f) => /:\s*vec4f\b/.test(f)).length;
     const mat4Count = fields.filter((f) => /:\s*mat4x4f\b/.test(f)).length;
-    const bytes = u32Count * 4 + vec4Count * 16 + mat4Count * 64;
+    const bytes = u32Count * 4 + f32Count * 4 + vec4Count * 16 + mat4Count * 64;
     expect(bytes).toBe(336);
     expect(bytes).toBeLessThanOrEqual(512);
   });

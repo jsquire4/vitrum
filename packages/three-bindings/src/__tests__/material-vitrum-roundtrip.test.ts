@@ -83,15 +83,15 @@ describe('convertMaterial: THREE userData.vitrum* → vitrum.Material', () => {
     expect(v.spectralAttenuation?.values.length).toBe(81);
   });
 
-  it('reads vitrumSpectralAttenuation as raw Float32Array (back-compat, assumes 380–780 nm)', () => {
+  it('rejects bare Float32Array for vitrumSpectralAttenuation (deprecated path removed, D11)', () => {
+    // Pre-alpha breaking change: the bare Float32Array back-compat branch was
+    // deleted in the 2026-05-11 sweep. Callers must use the full SpectralCurve
+    // shape: { wavelengthStart, wavelengthEnd, values: Float32Array }.
     const raw = new Float32Array(81).fill(0.1);
     const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
     m.userData['vitrumSpectralAttenuation'] = raw;
     const v = convertMaterial(m);
-    expect(v.spectralAttenuation).toBeDefined();
-    expect(v.spectralAttenuation?.wavelengthStart).toBe(380);
-    expect(v.spectralAttenuation?.wavelengthEnd).toBe(780);
-    expect(v.spectralAttenuation?.values).toBe(raw);
+    expect(v.spectralAttenuation).toBeUndefined();
   });
 
   it('reads vitrumThinFilmStack (RFE-08)', () => {

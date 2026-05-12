@@ -5,27 +5,11 @@
  *   packages/shared-samplers/src/wgsl/octahedralCore.wgsl.ts  lines 7–22
  * (Cigolle et al. JCGT 2014 §3 eq. 2)
  *
- * WGSL sign() and JS Math.sign() both return 0 for input 0, so the
- * conventions are consistent across the seam.
- *
  * Encoding convention: output is in [-1, 1]² (not [0, 1]²).
  *
- * KNOWN BUG (surfaced by this test suite):
- *   The south pole (0, 0, -1) is degenerate. octEncode maps it to [0, 0]
- *   (via the lower-hemisphere fold: sign(0)*... = 0), which is the same
- *   encoding as the north pole (0, 0, 1). octDecode([0, 0]) reconstructs
- *   (0, 0, 1) — the wrong pole. Any direction with x=0, y=0, z<0 will
- *   exhibit this sign-collapse. Root cause: Math.sign(0) = 0 in both WGSL
- *   and JS, so the fold `(1-|n.y|)*sign(n.x)` collapses to 0 when n.x=0,
- *   regardless of the z-sign being negative. The fix (not applied here —
- *   do not touch source files) is to clamp sign(0) to +1 in the lower-
- *   hemisphere fold, e.g. `select(-1.0, 1.0, n.x >= 0.0)`.
- *   See: Cigolle et al. 2014 §A.1 — they note sign(0) must be treated as
- *   +1 to avoid this degenerate case.
- *
- *   The round-trip identity test (1000 Marsaglia samples) passes because the
- *   south-pole singularity has measure zero on the sphere and Marsaglia
- *   sampling never produces exactly (0, 0, -1).
+ * South-pole singularity (Item #39) is fixed: the lower-hemisphere fold now
+ * uses `select(-1.0, 1.0, n.x >= 0.0)` (WGSL) / `n[0] >= 0 ? 1 : -1` (TS)
+ * so that sign(0) maps to +1 per Cigolle et al. 2014 §A.1.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -35,17 +19,22 @@ import { describe, it, expect } from 'vitest';
 // ---------------------------------------------------------------------------
 
 /** Mirror of octahedralCore.wgsl.ts:7–13 (octEncode).
- *  Cigolle et al. 2014 §3 eq. 2. */
+ *  Cigolle et al. 2014 §3 eq. 2.
+ *  Item #39: use n[0] >= 0 ? 1 : -1 (maps 0 → +1) to match the WGSL
+ *  select(-1.0, 1.0, n.x >= 0.0) fix; Math.sign(0) = 0 is wrong here. */
 function octEncodeTS(v: [number, number, number]): [number, number] {
   const denom = Math.abs(v[0]) + Math.abs(v[1]) + Math.abs(v[2]);
   const n: [number, number, number] = [v[0] / denom, v[1] / denom, v[2] / denom];
   if (n[2] >= 0) {
     return [n[0], n[1]];
   }
-  // Fold lower hemisphere — mirrors WGSL: (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y))
+  // Lower-hemisphere fold — Cigolle 2014 §A.1 / Item #39:
+  // 0 must map to +1, not 0. Use ternary to match WGSL select() semantics.
+  const sx = n[0] >= 0 ? 1 : -1;
+  const sy = n[1] >= 0 ? 1 : -1;
   return [
-    (1.0 - Math.abs(n[1])) * Math.sign(n[0]),
-    (1.0 - Math.abs(n[0])) * Math.sign(n[1]),
+    (1.0 - Math.abs(n[1])) * sx,
+    (1.0 - Math.abs(n[0])) * sy,
   ];
 }
 
@@ -173,14 +162,8 @@ describe('octahedral encode/decode (33-E)', () => {
       expect(nearEq(dec, [0, 0, 1])).toBe(true);
     });
 
-    // TODO(M4-#39): Octahedral south-pole singularity.
-    // (0,0,-1) currently encodes to [0,0] because sign(0)=0 collapses
-    // the lower-hemisphere fold; [0,0] decodes to (0,0,+1). South pole
-    // round-trips to north pole. Fix: in octEncode, replace `sign(n.x)`
-    // with `select(-1.0, 1.0, n.x >= 0.0)` (and same for n.y).
-    // Cigolle et al. 2014 §A.1 documents this sign(0) gotcha.
-    // This `it.fails` will flip to passing once the source fix lands.
-    it.fails('south pole (0,0,-1) round-trips to (0,0,-1) [pending #39 fix]', () => {
+    // Item #39 fix landed: south pole now round-trips correctly.
+    it('south pole (0,0,-1) round-trips to (0,0,-1)', () => {
       const dec = roundTrip([0, 0, -1]);
       const dot = dotV([0, 0, -1], dec);
       expect(dot).toBeGreaterThan(0.9999);
@@ -211,9 +194,9 @@ describe('octahedral encode/decode (33-E)', () => {
       expect(dotV(v, roundTrip(v))).toBeGreaterThan(0.9999);
     });
 
-    // -Z axis is the same case as the south-pole `it.fails` above; covered
-    // by the M4-#39 fix. Kept here so the axis-aligned suite is symmetric.
-    it.fails('-Z axis direction round-trips correctly [pending #39 fix]', () => {
+    // -Z axis is the same case as the south-pole test above (Item #39).
+    // Kept here so the axis-aligned suite is symmetric.
+    it('-Z axis direction round-trips correctly', () => {
       const v: [number, number, number] = [0, 0, -1];
       expect(dotV(v, roundTrip(v))).toBeGreaterThan(0.9999);
     });

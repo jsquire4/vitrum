@@ -13,7 +13,6 @@ const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
 const INV_2PI = 0.15915494309189535;
 const INFINITY = 1e20;
-const TRI_INTERSECT_EPSILON = 1e-5;
 
 struct BVHNode {
   boundsMin: array<f32, 3>,
@@ -62,12 +61,23 @@ fn safe_normalize(v: vec3f) -> vec3f {
   return v / len;
 }
 
+fn safeInvDir(d: vec3f) -> vec3f {
+  // Williams 2005 §4 IEEE-safe form. When a direction component is
+  // exactly zero, 0 * Inf = NaN poisons the slab test if the ray origin
+  // coincides with an AABB face. Substitute a tiny signed value.
+  return vec3f(
+    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
+    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
+    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
+  );
+}
+
 fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
   let e1 = b - a;
   let e2 = c - a;
   let h = cross(dir, e2);
   let det = dot(e1, h);
-  if (abs(det) < TRI_INTERSECT_EPSILON) {
+  if (abs(det) < params.triIntersectEpsilon) {
     return INFINITY;
   }
   let invDet = 1.0 / det;
@@ -82,7 +92,7 @@ fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) ->
     return INFINITY;
   }
   let t = dot(e2, q) * invDet;
-  if (t < TRI_INTERSECT_EPSILON) {
+  if (t < params.triIntersectEpsilon) {
     return INFINITY;
   }
   return t;

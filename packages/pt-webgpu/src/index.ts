@@ -143,7 +143,8 @@ class PTEngineWebGPU implements Engine {
    *   u32 slot 14..15 hasEnvironmentMap (0/1), causticStrategy
    *                   (0=none, 1=manifold-nee, 2=photon-map)
    *   u32 slot 16..17 environmentMapWidth, environmentMapHeight
-   *   u32 slot 18..19 _pad0, _pad1   (zero; reserved)
+   *   f32 slot 18     triIntersectEpsilon (default 1e-5; metre-scale)
+   *   u32 slot 19     _pad1   (zero; reserved)
    *
    *   f32 slot 20..23 cameraPos.xyz + 1.0
    *   f32 slot 24..27 lightDir.xyz + averageDirectionalIrradiance
@@ -194,8 +195,8 @@ class PTEngineWebGPU implements Engine {
           : 0;
     paramsU32[16] = sb.environmentMapWidth >>> 0;
     paramsU32[17] = sb.environmentMapHeight >>> 0;
-    // Slots 18..19 are padding; the underlying ArrayBuffer is already
-    // zero-initialized so we leave them as-is.
+    paramsF32[18] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
+    // Slot 19 (_pad1) is padding; zero-initialized by ArrayBuffer.
     paramsF32[20] = input.cameraPosition[0];
     paramsF32[21] = input.cameraPosition[1];
     paramsF32[22] = input.cameraPosition[2];

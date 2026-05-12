@@ -87,6 +87,14 @@ export interface EquiAngularOptions {
  * @param lightPos  - World-space position of the point light.
  * @param opts      - Optional `sceneTMax` / `degenerateFallbackLength`.
  * @returns         Sampled (t, pdf) pair.
+ *
+ * **Degenerate guards:**
+ * - `D < 1e-6` (light on the ray): uniform fallback on `[0, degenerateFallbackLength]`.
+ * - `thetaRange < 1e-8` (light direction nearly perpendicular to the ray, e.g.
+ *   `tClosest >> sceneTMax`): returns `{ t: 0, pdf: 0 }` to avoid division by
+ *   zero downstream.  Callers should treat `pdf === 0` as "do not use this
+ *   sample" and fall back to another sampling strategy (e.g. exponential
+ *   distance).
  */
 export function sampleEquiAngular(
   u: number,
@@ -123,14 +131,22 @@ export function sampleEquiAngular(
   const thetaMax = Math.atan2(sceneTMax - tClosest, D);
   const thetaRange = thetaMax - thetaMin;
 
+  // Guard: near-zero angular range (light nearly perpendicular to the ray at
+  // extreme distance).  Division by thetaRange would produce Inf/NaN PDF.
+  if (thetaRange < 1e-8) {
+    return { t: 0, pdf: 0 };
+  }
+
   // Step 4: uniform sample in angular space
   const theta = thetaMin + u * thetaRange;
   const t = D * Math.tan(theta) + tClosest;
 
-  // Step 5: PDF in t-space
+  // Step 5: PDF in t-space, evaluated at the CLAMPED t so the returned
+  // (t, pdf) pair is self-consistent (Kulla & Conty 2012, §3).
   // p(t) = 1 / (D · thetaRange · (1 + ((t - t_closest)/D)²))
-  const ratio = (t - tClosest) / D;
+  const tClamped = Math.max(0, t);
+  const ratio = (tClamped - tClosest) / D;
   const pdf = 1 / (D * thetaRange * (1 + ratio * ratio));
 
-  return { t: Math.max(0, t), pdf };
+  return { t: tClamped, pdf };
 }

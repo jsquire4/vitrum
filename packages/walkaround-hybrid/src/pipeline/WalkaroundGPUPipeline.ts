@@ -213,6 +213,10 @@ export interface PipelineFrameInputs {
    *  default 0.05 (5 cm). Hosts on different scales should pass
    *  `sceneDiagonal * 1e-3`. */
   spatialDepthTolFloor: number;
+  /** D12 — Möller-Trumbore coplanarity epsilon.  Controls the `abs(det) < ε`
+   *  near-zero determinant threshold in `intersectTriangle`.  Default `1e-5`
+   *  (metre-scale).  Reduce for millimetre-scale geometry. */
+  triIntersectEpsilon: number;
   /** Audit M1 — GTAO sampling radius in pixels; Cornell default 32. */
   gtaoRadiusPx: number;
   /** Audit M1 — GTAO intensity exponent; Cornell default 2.0. */

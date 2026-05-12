@@ -30,7 +30,15 @@ export function float32ToFloat16Bits(value: number): number {
   }
 
   if (exponent >= 31) {
-    return ((sign | 0x7c00 | (mantissa !== 0 ? 0x0200 : 0)) & 0xffff) >>> 0;
+    // Distinguish: was the f32 input already Inf/NaN (exp bits all-ones),
+    // or is this a finite f32 that overflows the fp16 range?
+    const expBits = (x & 0x7f80_0000) >>> 23; // biased f32 exponent
+    if (expBits === 0xff) {
+      // Input was Inf or NaN — preserve the NaN-vs-Inf distinction.
+      return ((sign | 0x7c00 | (mantissa !== 0 ? 0x0200 : 0)) & 0xffff) >>> 0;
+    }
+    // Input was finite but > 65504 — IEEE specifies saturation to ±Inf.
+    return ((sign | 0x7c00) & 0xffff) >>> 0;
   }
 
   return ((sign | (exponent << 10) | (mantissa >> 13)) & 0xffff) >>> 0;

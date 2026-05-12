@@ -126,35 +126,20 @@ export function convertMaterial(m: ThreeStdMat): Material {
   }
 
   // RFE-08 (Sprint 12 — hero-wavelength spectral attenuation curve)
-  // The host stamp is a SpectralCurve object: { wavelengthStart, wavelengthEnd, values }.
-  // We accept both a full SpectralCurve object and, for back-compat, a plain
-  // Float32Array treated as 380–780 nm / 81-sample curve.
+  // Only the full SpectralCurve shape is accepted:
+  //   { wavelengthStart: number, wavelengthEnd: number, values: Float32Array }
+  // The deprecated bare Float32Array path was removed in the 2026-05-11 sweep
+  // (pre-alpha; no external consumers). See Foundations Item #35 / D11.
   const rawSpectral = ud[K.SPECTRAL_ATTEN];
-  if (rawSpectral != null) {
-    if (
-      typeof rawSpectral === 'object' &&
-      !Array.isArray(rawSpectral) &&
-      'wavelengthStart' in (rawSpectral as object) &&
-      'wavelengthEnd' in (rawSpectral as object) &&
-      'values' in (rawSpectral as object)
-    ) {
-      base.spectralAttenuation = rawSpectral as SpectralCurve;
-    } else if (rawSpectral instanceof Float32Array && rawSpectral.length >= 3) {
-      // Raw Float32Array fallback: assume 380–780 nm range.
-      // Deprecated path — kept for back-compat with hosts that stamp the
-      // userData curve as a bare Float32Array. New code should write
-      // `{ wavelengthStart, wavelengthEnd, values: Float32Array }`.
-      console.warn(
-        '[vitrum/three-bindings] SpectralCurve as Float32Array is deprecated. ' +
-          'Use { wavelengthStart, wavelengthEnd, values: Float32Array } instead. ' +
-          'Scheduled for removal in Phase 7 / Sprint 1.',
-      );
-      base.spectralAttenuation = {
-        wavelengthStart: 380,
-        wavelengthEnd: 780,
-        values: rawSpectral,
-      };
-    }
+  if (
+    rawSpectral != null &&
+    typeof rawSpectral === 'object' &&
+    !Array.isArray(rawSpectral) &&
+    'wavelengthStart' in (rawSpectral as object) &&
+    'wavelengthEnd' in (rawSpectral as object) &&
+    'values' in (rawSpectral as object)
+  ) {
+    base.spectralAttenuation = rawSpectral as SpectralCurve;
   }
 
   // RFE-08 (Sprint 12 — multi-layer thin-film stack)

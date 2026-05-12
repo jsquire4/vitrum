@@ -282,6 +282,20 @@ export interface HybridEngineOptions extends EngineOptions {
     readonly depthThresholdWorldUnits?: number;
     readonly bilateralDepthSigma?: number;
   };
+
+  /**
+   * Möller-Trumbore coplanarity epsilon (D12 / audit M3 follow-up).
+   * Controls the `abs(det) < ε` near-zero determinant test in
+   * `intersectTriangle` in the ReSTIR WGSL.  A too-small value causes
+   * grazing-angle rays to incorrectly miss coplanar triangles; a too-large
+   * value rejects valid near-coplanar hits.
+   *
+   * **Scene-scale-sensitive.**  Default `1e-5` is correct for metre-scale.
+   * For millimetre-scale geometry, try `1e-7`; for kilometre-scale, `1e-3`.
+   *
+   * @default 1e-5
+   */
+  readonly triIntersectEpsilon?: number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -423,6 +437,8 @@ export class HybridEngine implements Engine {
   private readonly _adaptiveSamplingThresholdLow: number;
   /** Audit M2 — written into sample-budget UBO each frame. */
   private readonly _adaptiveSamplingThresholdHigh: number;
+  /** D12 — written into WalkaroundUBO each frame. */
+  private readonly _triIntersectEpsilon: number;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -532,6 +548,7 @@ export class HybridEngine implements Engine {
     this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma   ?? 0.25;
     this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
     this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
+    this._triIntersectEpsilon    = opts.triIntersectEpsilon ?? 1e-5;
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
@@ -790,6 +807,7 @@ export class HybridEngine implements Engine {
       gtaoBilateralDepthSigma: this._gtaoBilateralDepthSigma,
       adaptiveSamplingThresholdLow:  this._adaptiveSamplingThresholdLow,
       adaptiveSamplingThresholdHigh: this._adaptiveSamplingThresholdHigh,
+      triIntersectEpsilon:   this._triIntersectEpsilon,
       swapChainView:         swapView,
       swapChainFormat:       swapFmt,
     });

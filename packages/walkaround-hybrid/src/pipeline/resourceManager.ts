@@ -385,10 +385,10 @@ export function createFrameResources(
   device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
 
   // UBO: camera matrices + per-frame params + library-generality tunables
-  // (288 bytes — see WALKAROUND_UBO_SIZE_BYTES in uboUpdater.ts and the
+  // (304 bytes — see WALKAROUND_UBO_SIZE_BYTES in uboUpdater.ts and the
   // WalkaroundUBO struct in common.wgsl).
   const uboBuffer = device.createBuffer({
-    size: 288,
+    size: 304,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
