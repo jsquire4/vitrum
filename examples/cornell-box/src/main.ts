@@ -43,6 +43,10 @@ interface CaptureConfig {
   readonly height: number;
   readonly bounces: number;
   readonly samplesTarget: number;
+  /** Optional override for engine samplesPerFrame (URL: vitrumSpf). When set,
+   * the capture-mode default of 1 sample/frame is replaced — useful for
+   * background-tab capture where rAF cadence is the bottleneck.  */
+  readonly samplesPerFrame: number | null;
   readonly causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
   readonly isCapture: boolean;
   readonly autoStart: boolean;
@@ -241,6 +245,9 @@ function parseCaptureConfig(): CaptureConfig {
       params.get('vitrumSpp'),
       isCapture ? DEFAULT_CAPTURE_SPP : (preset?.spp ?? DEFAULT_MANUAL_SPP),
     ),
+    samplesPerFrame: params.has('vitrumSpf')
+      ? Math.max(1, Math.min(128, parsePositiveInt(params.get('vitrumSpf'), 1)))
+      : null,
     causticStrategy,
     isCapture,
     autoStart: params.get('vitrumAutoStart') === '1',
@@ -437,6 +444,16 @@ async function main(): Promise<void> {
       'vitrum.ptWebgl.pixelAdaptiveSampling': config.pixelAdaptiveSampling,
       'vitrum.ptWebgl.pixelAdaptiveCadence': config.pixelAdaptiveCadence,
       'vitrum.ptWebgl.additiveAccumulation': config.pixelAdaptiveSampling,
+      // Capture-mode default is 1 sample/frame for telemetry granularity. That
+      // ties wall-clock convergence to rAF cadence, which collapses under
+      // background-tab throttling. Allow URL override via vitrumSpf so capture
+      // sessions can converge in one rAF tick.
+      ...(config.samplesPerFrame != null
+        ? {
+            'vitrum.ptWebgl.samplesPerFrame': config.samplesPerFrame,
+            'vitrum.ptWebgl.maxSamplesPerFrame': config.samplesPerFrame,
+          }
+        : {}),
     },
   })) as PTEngineWebGL2;
   setStatus('Uploading scene to path tracer...');

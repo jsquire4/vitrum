@@ -75,7 +75,11 @@ struct SVGFReprojUBO {
 @group(0) @binding(9)  var reproj_historyLengthIn:  texture_2d<u32>;
 @group(0) @binding(10) var reproj_momentsIn:        texture_2d<f32>;
 @group(0) @binding(11) var reproj_colorOut:         texture_storage_2d<rgba16float, write>;
-@group(0) @binding(12) var reproj_historyOut:       texture_storage_2d<r16uint, write>;
+// historyOut: was r16uint; base-spec WebGPU disallows r16uint as storage
+// (needs texture-formats-tier1, which three.js's WebGPURenderer doesn't
+// request). r32uint is base-spec storage-capable; counter stays well under
+// u16 max so the wider format is just 2x memory, no behavioural change.
+@group(0) @binding(12) var reproj_historyOut:       texture_storage_2d<r32uint, write>;
 @group(0) @binding(13) var reproj_momentsOut:       texture_storage_2d<rg32float, write>;
 @group(0) @binding(14) var<uniform> reproj_ubo:     SVGFReprojUBO;
 

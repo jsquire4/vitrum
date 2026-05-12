@@ -547,10 +547,16 @@ export function createFrameResources(
     format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
+  // Was r16float, but WebGPU base spec doesn't allow r16float as a storage
+  // texture (requires the optional `texture-formats-tier1` feature, which
+  // three.js's WebGPURenderer ignores — its hardcoded GPUFeatureName enum
+  // omits it). rgba16float IS base-spec storage-capable; we keep the AO
+  // value in .r (other channels unused) so existing texture-binding reads
+  // in shade.wgsl (textureLoad(...).r) still work without changes.
   const aoFullTexture = device.createTexture({
     label: 'gtao-full',
     size: [W, H],
-    format: 'r16float',
+    format: 'rgba16float',
     usage:
       GPUTextureUsage.STORAGE_BINDING |
       GPUTextureUsage.TEXTURE_BINDING |
@@ -558,22 +564,25 @@ export function createFrameResources(
   });
   // Seed aoFullTexture with 1.0 (f16 1.0 = 0x3C00) so first-frame shade
   // reads return "unoccluded" before gtao writes a real value.
+  // rgba16float = 8 bytes/texel; pack 1.0 in .r, zeros in .g/.b/.a.
   {
-    const onesRowBytes = Math.max(256, Math.ceil(W * 2 / 256) * 256);
-    const onesBuf = new Uint8Array(onesRowBytes * H);
-    // f16 1.0 = 0x3C00. r16float stores 2 bytes/texel.
+    const bytesPerTexel = 8;
+    const rowBytes = Math.max(256, Math.ceil(W * bytesPerTexel / 256) * 256);
+    const buf = new Uint8Array(rowBytes * H);
     for (let y = 0; y < H; y++) {
-      const rowOff = y * onesRowBytes;
+      const rowOff = y * rowBytes;
       for (let x = 0; x < W; x++) {
-        const o = rowOff + x * 2;
-        onesBuf[o] = 0x00;
-        onesBuf[o + 1] = 0x3C;
+        const o = rowOff + x * bytesPerTexel;
+        // .r = 1.0 (0x3C00); .g/.b/.a = 0
+        buf[o]     = 0x00;
+        buf[o + 1] = 0x3C;
+        // (remaining 6 bytes stay 0 from Uint8Array init)
       }
     }
     device.queue.writeTexture(
       { texture: aoFullTexture },
-      onesBuf,
-      { offset: 0, bytesPerRow: onesRowBytes },
+      buf,
+      { offset: 0, bytesPerRow: rowBytes },
       { width: W, height: H, depthOrArrayLayers: 1 },
     );
   }
@@ -647,17 +656,22 @@ export function createFrameResources(
   // varianceMomentsIntermed: 1920×1080×8 ≈ 16 MB
   const svgfHistUsage =
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
+  // Was r16uint; base-spec WebGPU disallows it as a storage texture (needs
+  // texture-formats-tier1). r32uint is base-spec storage-capable. Counter
+  // values stay well under u16 max so the wider format is just 2× memory,
+  // no behavioural change.
   const svgfHistoryLengthTextureA = device.createTexture({
     label: 'svgf-real-history-length-a',
-    size: [W, H], format: 'r16uint', usage: svgfHistUsage,
+    size: [W, H], format: 'r32uint', usage: svgfHistUsage,
   });
   const svgfHistoryLengthTextureB = device.createTexture({
     label: 'svgf-real-history-length-b',
-    size: [W, H], format: 'r16uint', usage: svgfHistUsage,
+    size: [W, H], format: 'r32uint', usage: svgfHistUsage,
   });
   // Initialise both to 0 so the first frame treats all pixels as disoccluded.
+  // r32uint = 4 bytes/texel.
   {
-    const bpr = Math.max(256, Math.ceil(W * 2 / 256) * 256);
+    const bpr = Math.max(256, Math.ceil(W * 4 / 256) * 256);
     const zeroBuf = new Uint8Array(bpr * H);
     device.queue.writeTexture({ texture: svgfHistoryLengthTextureA }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });
     device.queue.writeTexture({ texture: svgfHistoryLengthTextureB }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });

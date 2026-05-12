@@ -28,7 +28,11 @@ struct GTAOUniforms {
 
 @group(0) @binding(0) var up_aoHalf:      texture_2d<f32>;
 @group(0) @binding(1) var up_normalDepth: texture_2d<f32>;
-@group(0) @binding(2) var up_aoFullOut:   texture_storage_2d<r16float, write>;
+// aoFullOut: was r16float; switched to rgba16float because base-spec WebGPU
+// disallows r16float as a storage texture (needs texture-formats-tier1, which
+// three.js's WebGPURenderer doesn't request). AO value stored in .r; .g/.b/.a
+// unused. shade.wgsl reads .r unchanged.
+@group(0) @binding(2) var up_aoFullOut:   texture_storage_2d<rgba16float, write>;
 // Audit B3: bilateral depth sigma now read from the GTAO UBO (shared with
 // gtao.wgsl's GTAOUniforms struct) so the host can scale it with the scene.
 @group(0) @binding(3) var<uniform> up_gtao: GTAOUniforms;
