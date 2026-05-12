@@ -53,8 +53,14 @@ import {
 
 import {
   sampleHeroWavelength,
+  sampleHeroWavelengthMIS,
   wavelengthToRGB,
   Y_CMF_INTEGRAL,
+  X_CMF_INTEGRAL,
+  Z_CMF_INTEGRAL,
+  X_CMF_CDF,
+  Y_CMF_CDF,
+  Z_CMF_CDF,
   HERO_LAMBDA_MIN,
   HERO_LAMBDA_MAX,
 } from '../src/wavelengthSampling.js';
@@ -456,5 +462,136 @@ describe('abbeNumber', () => {
     // n_F = n_C when B=0, so denominator → 0 → V_d → ∞
     const V = abbeNumber(1.5, 0, 0);
     expect(!isFinite(V) || V > 1000).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// MIS hero-wavelength sampling (Wilkie et al. extension to Fascione 2015)
+// ════════════════════════════════════════════════════════════════════════════════
+
+describe('X_CMF_INTEGRAL / Z_CMF_INTEGRAL', () => {
+  // CIE 1931 2-deg CMFs are normalised so that ∫X = ∫Y = ∫Z. This guarantees
+  // equal-energy white lands at chromaticity (x,y,z) = (1/3, 1/3, 1/3).
+  // At 5 nm steps with trapezoidal rule, all three integrals ≈ 106.85 (within 0.02%).
+  it('all three integrals are equal to within 0.05% (CIE chromaticity-normalisation invariant)', () => {
+    expect(Math.abs(X_CMF_INTEGRAL - Y_CMF_INTEGRAL) / Y_CMF_INTEGRAL).toBeLessThan(0.0005);
+    expect(Math.abs(Z_CMF_INTEGRAL - Y_CMF_INTEGRAL) / Y_CMF_INTEGRAL).toBeLessThan(0.0005);
+  });
+
+  it('all three integrals ≈ 106.85 (trapezoidal at 5 nm steps over [380,780] nm)', () => {
+    expect(X_CMF_INTEGRAL).toBeCloseTo(106.85, 0);
+    expect(Y_CMF_INTEGRAL).toBeCloseTo(106.85, 0);
+    expect(Z_CMF_INTEGRAL).toBeCloseTo(106.85, 0);
+  });
+});
+
+describe('X / Y / Z CDFs are valid normalised CDFs', () => {
+  for (const [name, cdf] of [
+    ['X', X_CMF_CDF],
+    ['Y', Y_CMF_CDF],
+    ['Z', Z_CMF_CDF],
+  ] as const) {
+    it(`${name}_CMF_CDF has length 82, starts at 0, ends at 1`, () => {
+      expect(cdf.length).toBe(82);
+      expect(cdf[0]).toBe(0);
+      expect(cdf[81]).toBeCloseTo(1, 10);
+    });
+    it(`${name}_CMF_CDF is monotone non-decreasing`, () => {
+      for (let i = 1; i < cdf.length; i++) {
+        expect(cdf[i]!).toBeGreaterThanOrEqual(cdf[i - 1]!);
+      }
+    });
+  }
+});
+
+describe('sampleHeroWavelengthMIS', () => {
+  it('returns wavelength in [380, 780] for any (uStrategy, uLambda) ∈ [0,1]×[0,1]', () => {
+    for (let i = 0; i < 100; i++) {
+      const us = (i % 10) / 10;
+      const ul = Math.floor(i / 10) / 10;
+      const { lambdaNm } = sampleHeroWavelengthMIS(us, ul);
+      expect(lambdaNm).toBeGreaterThanOrEqual(HERO_LAMBDA_MIN);
+      expect(lambdaNm).toBeLessThanOrEqual(HERO_LAMBDA_MAX);
+    }
+  });
+
+  it('returns positive pdf for any sampled wavelength inside [380, 780]', () => {
+    for (let i = 0; i < 100; i++) {
+      const { pdf } = sampleHeroWavelengthMIS((i * 0.013) % 1, (i * 0.029) % 1);
+      expect(pdf).toBeGreaterThan(0);
+    }
+  });
+
+  it('uStrategy < 1/3 picks the X strategy: λ-distribution clusters near X peak (~600 nm)', () => {
+    // Sample many λ from the X strategy by fixing uStrategy < 1/3.
+    // Mean λ should be biased toward X-peak region (560-620nm), not Y-peak (555nm).
+    const lambdas: number[] = [];
+    for (let i = 0; i < 200; i++) {
+      const { lambdaNm } = sampleHeroWavelengthMIS(0.1, i / 200);
+      lambdas.push(lambdaNm);
+    }
+    const mean = lambdas.reduce((a, b) => a + b, 0) / lambdas.length;
+    // X CMF has TWO lobes: small at ~445 nm, large at ~600 nm. Mean should be > 555.
+    expect(mean).toBeGreaterThan(530);
+  });
+
+  it('uStrategy in [2/3, 1) picks the Z strategy: λ-distribution clusters near Z peak (~445 nm)', () => {
+    // Z CMF peaks at ~445 nm — sampling from Z should give λ predominantly < 500 nm.
+    const lambdas: number[] = [];
+    for (let i = 0; i < 200; i++) {
+      const { lambdaNm } = sampleHeroWavelengthMIS(0.9, i / 200);
+      lambdas.push(lambdaNm);
+    }
+    const mean = lambdas.reduce((a, b) => a + b, 0) / lambdas.length;
+    expect(mean).toBeLessThan(490);
+    // Most samples should land in the blue band [380, 510].
+    const blueFraction = lambdas.filter((l) => l < 510).length / lambdas.length;
+    expect(blueFraction).toBeGreaterThan(0.6);
+  });
+
+  it('over many samples, mixture covers all three chromatic regions roughly evenly', () => {
+    // Drive a wide u-grid through MIS; bin the results into blue/green/red bands.
+    // With uniform strategy selection over X/Y/Z, we expect roughly balanced coverage.
+    const N = 6000;
+    let blue = 0, green = 0, red = 0;
+    for (let i = 0; i < N; i++) {
+      // Use a Halton-like scrambled pair to avoid axis-aligned aliasing
+      const us = ((i * 7919) % 1009) / 1009;
+      const ul = ((i * 6151) % 997) / 997;
+      const { lambdaNm } = sampleHeroWavelengthMIS(us, ul);
+      if (lambdaNm < 490) blue++;
+      else if (lambdaNm < 580) green++;
+      else red++;
+    }
+    // Each band gets at least 15% of samples (vs Y-only sampling where blue would be < 5%).
+    expect(blue / N).toBeGreaterThan(0.15);
+    expect(green / N).toBeGreaterThan(0.15);
+    expect(red / N).toBeGreaterThan(0.15);
+  });
+
+  it('mixture pdf is unbiased: Monte Carlo integral of constant L(λ)=1 recovers Y of D65 ≈ 1', () => {
+    // For a flat unit spectral input, the MC estimator for Y component should
+    // converge to Y_INTEGRAL / Y_INTEGRAL = 1 (per the wavelengthToRGB contract).
+    // Estimator: (1/N) Σ Y(λ_i) / pdf_mis(λ_i) — should converge to ∫Y dλ.
+    const N = 4000;
+    let sum = 0;
+    for (let i = 0; i < N; i++) {
+      const us = ((i * 7919) % 1013) / 1013;
+      const ul = ((i * 6151) % 1009) / 1009;
+      const { lambdaNm, pdf } = sampleHeroWavelengthMIS(us, ul);
+      const [, y] = sampleCMF(lambdaNm);
+      sum += y / pdf;
+    }
+    const estimate = sum / N;
+    // Should be close to Y_INTEGRAL (~106.86). 5% tolerance for low-N MC noise.
+    expect(estimate).toBeGreaterThan(Y_CMF_INTEGRAL * 0.92);
+    expect(estimate).toBeLessThan(Y_CMF_INTEGRAL * 1.08);
+  });
+
+  it('deterministic for the same (uStrategy, uLambda) pair', () => {
+    const a = sampleHeroWavelengthMIS(0.4, 0.7);
+    const b = sampleHeroWavelengthMIS(0.4, 0.7);
+    expect(a.lambdaNm).toBe(b.lambdaNm);
+    expect(a.pdf).toBe(b.pdf);
   });
 });

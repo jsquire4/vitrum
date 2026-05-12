@@ -34,7 +34,9 @@ import {
   CIE_LAMBDA_MAX,
   CIE_LAMBDA_STEP,
   CIE_TABLE_LENGTH,
+  CIE_X_TABLE,
   CIE_Y_TABLE,
+  CIE_Z_TABLE,
   sampleCMF,
   xyzToLinearSRGB,
 } from './cieCmf.js';
@@ -51,28 +53,39 @@ import {
  *            drawn from pdf(λ) ∝ Y(λ) has index < i (wavelength < 380 + 5·i nm).
  *            Length = CIE_TABLE_LENGTH + 1 (CDF[0] = 0, CDF[N] = 1 by construction).
  */
-const { Y_INTEGRAL, Y_CDF }: { Y_INTEGRAL: number; Y_CDF: Float64Array } = (() => {
+/**
+ * buildIntegralAndCdf — derive the trapezoidal-rule integral and the
+ * piecewise-linear normalised CDF for a 81-entry CMF table at 5 nm steps.
+ *
+ * Used to build importance-sampling tables for X, Y, and Z CMFs.  The CDF
+ * has length CIE_TABLE_LENGTH + 1 (CDF[0] = 0, CDF[N] = 1 by construction).
+ */
+function buildIntegralAndCdf(table: Readonly<Float32Array>): { integral: number; cdf: Float64Array } {
   let integral = 0;
   for (let i = 0; i < CIE_TABLE_LENGTH; i++) {
     const w = i === 0 || i === CIE_TABLE_LENGTH - 1 ? 0.5 : 1.0;
-    integral += w * (CIE_Y_TABLE[i] ?? 0);
+    integral += w * (table[i] ?? 0);
   }
   integral *= CIE_LAMBDA_STEP;
 
   const cdf = new Float64Array(CIE_TABLE_LENGTH + 1);
   cdf[0] = 0;
   for (let i = 1; i <= CIE_TABLE_LENGTH; i++) {
-    const yPrev = CIE_Y_TABLE[i - 1] ?? 0;
-    const yCurr = i < CIE_TABLE_LENGTH ? (CIE_Y_TABLE[i] ?? 0) : 0;
-    cdf[i] = (cdf[i - 1] ?? 0) + (yPrev + yCurr) * 0.5 * CIE_LAMBDA_STEP;
+    const vPrev = table[i - 1] ?? 0;
+    const vCurr = i < CIE_TABLE_LENGTH ? (table[i] ?? 0) : 0;
+    cdf[i] = (cdf[i - 1] ?? 0) + (vPrev + vCurr) * 0.5 * CIE_LAMBDA_STEP;
   }
   const total = cdf[CIE_TABLE_LENGTH] ?? integral;
   for (let i = 0; i <= CIE_TABLE_LENGTH; i++) {
     cdf[i] = (cdf[i] ?? 0) / total;
   }
 
-  return { Y_INTEGRAL: integral, Y_CDF: cdf };
-})();
+  return { integral, cdf };
+}
+
+const { integral: Y_INTEGRAL, cdf: Y_CDF } = buildIntegralAndCdf(CIE_Y_TABLE);
+const { integral: X_INTEGRAL, cdf: X_CDF } = buildIntegralAndCdf(CIE_X_TABLE);
+const { integral: Z_INTEGRAL, cdf: Z_CDF } = buildIntegralAndCdf(CIE_Z_TABLE);
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -90,39 +103,115 @@ const { Y_INTEGRAL, Y_CDF }: { Y_INTEGRAL: number; Y_CDF: Float64Array } = (() =
  *   wavelength in nm and `pdf` is the probability density at that wavelength
  *   (units: nm⁻¹).
  */
-export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number } {
-  // Clamp u to a valid range
+/**
+ * sampleCmfCdfInverse — generic piecewise-linear CDF inversion for one CMF table.
+ *
+ * Given a uniform random `u ∈ [0, 1)`, returns the wavelength `λ` whose CDF
+ * value equals `u` under the importance distribution `pdf(λ) ∝ table(λ)`,
+ * plus the per-strategy `pdf(λ) = table(λ) / integral`.
+ *
+ * Shared by `sampleHeroWavelength` (legacy Y-only, single strategy) and
+ * `sampleHeroWavelengthMIS` (multiple-strategy, balance heuristic).
+ */
+function sampleCmfCdfInverse(
+  u: number,
+  table: Readonly<Float32Array>,
+  cdf: Float64Array,
+  integral: number,
+): { lambdaNm: number; pdf: number } {
   const uClamped = Math.max(0, Math.min(1 - 1e-7, u));
 
-  // Binary search for the CDF segment containing uClamped.
-  // Y_CDF has length CIE_TABLE_LENGTH + 1.
   let lo = 0;
   let hi = CIE_TABLE_LENGTH - 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if ((Y_CDF[mid + 1] ?? 0) <= uClamped) {
+    if ((cdf[mid + 1] ?? 0) <= uClamped) {
       lo = mid + 1;
     } else {
       hi = mid;
     }
   }
 
-  // lo is the lower table index: lambda range [lo_nm, lo_nm + step].
-  const cdfLo = Y_CDF[lo] ?? 0;
-  const cdfHi = Y_CDF[lo + 1] ?? 1;
-  const yLo = CIE_Y_TABLE[lo] ?? 0;
-  const yHi = CIE_Y_TABLE[lo + 1] ?? 0;
+  const cdfLo = cdf[lo] ?? 0;
+  const cdfHi = cdf[lo + 1] ?? 1;
+  const vLo = table[lo] ?? 0;
+  const vHi = table[lo + 1] ?? 0;
 
-  // Linear interpolation within the segment.
   const t = cdfHi > cdfLo ? (uClamped - cdfLo) / (cdfHi - cdfLo) : 0;
-  const lambdaNm = (CIE_LAMBDA_MIN + lo * CIE_LAMBDA_STEP) + t * CIE_LAMBDA_STEP;
+  const lambdaNm = CIE_LAMBDA_MIN + lo * CIE_LAMBDA_STEP + t * CIE_LAMBDA_STEP;
   const lambdaClamped = Math.max(CIE_LAMBDA_MIN, Math.min(CIE_LAMBDA_MAX, lambdaNm));
 
-  // PDF at the sampled wavelength: pdf(λ) = Y(λ) / ∫Y(λ)dλ
-  const yAtLambda = yLo + t * (yHi - yLo);
-  const pdf = yAtLambda / Y_INTEGRAL;
+  const vAtLambda = vLo + t * (vHi - vLo);
+  const pdf = vAtLambda / integral;
 
   return { lambdaNm: lambdaClamped, pdf };
+}
+
+/**
+ * misMixturePdf — evaluate the balance-heuristic mixture PDF at λ.
+ *
+ * Used by the MIS estimator to weight a sampled wavelength regardless of
+ * which underlying strategy (X, Y, or Z) drew it. The mixture is uniform
+ * over the three strategies (each picked with probability 1/3), so:
+ *
+ *   pdf_mis(λ) = (pdf_X(λ) + pdf_Y(λ) + pdf_Z(λ)) / 3
+ *             = (X(λ)/∫X + Y(λ)/∫Y + Z(λ)/∫Z) / 3
+ */
+function misMixturePdf(lambdaNm: number): number {
+  const [x, y, z] = sampleCMF(lambdaNm);
+  return (x / X_INTEGRAL + y / Y_INTEGRAL + z / Z_INTEGRAL) / 3;
+}
+
+export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number } {
+  return sampleCmfCdfInverse(u, CIE_Y_TABLE, Y_CDF, Y_INTEGRAL);
+}
+
+/**
+ * Sample a hero wavelength using one-sample multiple-importance sampling
+ * across the X, Y, and Z CMFs (Wilkie et al. extension to Fascione 2015).
+ *
+ * Y-only importance sampling — the legacy `sampleHeroWavelength` — clusters
+ * samples around 555 nm because Y(λ) peaks there. At low SPP this leaves
+ * the blue band (λ ≈ 445 nm, where Z(λ) peaks but Y(λ) ≈ 0.04) almost
+ * empty, so blue-rich scenes (or any scene at low SPP) reconstruct with a
+ * strong green/yellow bias and slow blue convergence.
+ *
+ * One-sample MIS distributes the sample budget across all three CMFs. With
+ * uniform strategy selection, ~⅓ of samples land near the X peak (~600 nm,
+ * red-orange), ~⅓ near Y (~555 nm, green), and ~⅓ near Z (~445 nm, blue) —
+ * giving every chromatic region adequate coverage.
+ *
+ * The estimator weight uses the **mixture pdf** evaluated at the sampled λ,
+ * not the per-strategy pdf:
+ *
+ *   pdf_mis(λ) = (pdf_X(λ) + pdf_Y(λ) + pdf_Z(λ)) / 3
+ *
+ * This is the balance-heuristic combination — variance-optimal for additive
+ * estimators when individual strategy variances are similar.
+ *
+ * Reference: Wilkie, A. et al. "Hero Wavelength Spectral Sampling", EGSR 2015,
+ * §3.3 (Multi-strategy hero wavelength sampling).
+ *
+ * @param uStrategy - Uniform random in [0, 1) used to pick X / Y / Z.
+ * @param uLambda   - Uniform random in [0, 1) used for inverse-CDF on the chosen strategy.
+ * @returns `{ lambdaNm, pdf }` where `pdf` is the mixture pdf — i.e. the
+ *   denominator the caller should divide their throughput by, not the
+ *   per-strategy pdf.
+ */
+export function sampleHeroWavelengthMIS(
+  uStrategy: number,
+  uLambda: number,
+): { lambdaNm: number; pdf: number } {
+  const s = Math.max(0, Math.min(1 - 1e-7, uStrategy));
+  let lambdaNm: number;
+  if (s < 1 / 3) {
+    lambdaNm = sampleCmfCdfInverse(uLambda, CIE_X_TABLE, X_CDF, X_INTEGRAL).lambdaNm;
+  } else if (s < 2 / 3) {
+    lambdaNm = sampleCmfCdfInverse(uLambda, CIE_Y_TABLE, Y_CDF, Y_INTEGRAL).lambdaNm;
+  } else {
+    lambdaNm = sampleCmfCdfInverse(uLambda, CIE_Z_TABLE, Z_CDF, Z_INTEGRAL).lambdaNm;
+  }
+  return { lambdaNm, pdf: misMixturePdf(lambdaNm) };
 }
 
 /**
@@ -163,6 +252,21 @@ export function wavelengthToRGB(
 
 /** Integral of Y CMF over [380, 780] nm.  Used as the PDF normalisation constant. */
 export const Y_CMF_INTEGRAL: number = Y_INTEGRAL;
+
+/** Integral of X CMF over [380, 780] nm. Used by the MIS sampler's mixture pdf. */
+export const X_CMF_INTEGRAL: number = X_INTEGRAL;
+
+/** Integral of Z CMF over [380, 780] nm. Used by the MIS sampler's mixture pdf. */
+export const Z_CMF_INTEGRAL: number = Z_INTEGRAL;
+
+/** Normalised CDF of X CMF (length 82). Mirrored to GLSL by the fork material upload. */
+export const X_CMF_CDF: Readonly<Float64Array> = X_CDF;
+
+/** Normalised CDF of Y CMF (length 82). Mirrored to GLSL by the fork material upload. */
+export const Y_CMF_CDF: Readonly<Float64Array> = Y_CDF;
+
+/** Normalised CDF of Z CMF (length 82). Mirrored to GLSL by the fork material upload. */
+export const Z_CMF_CDF: Readonly<Float64Array> = Z_CDF;
 
 /** Visible wavelength range minimum, nm. */
 export const HERO_LAMBDA_MIN: number = CIE_LAMBDA_MIN;

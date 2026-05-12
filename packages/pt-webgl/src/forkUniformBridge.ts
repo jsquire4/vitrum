@@ -70,41 +70,55 @@ function setUniform<T>(material: PathTracerMaterialLike | null, name: string, va
  * previously hand-baked literal `106.857` would silently fall out of sync
  * if the CIE_Y_TABLE source data ever changed.
  */
-function computeYIntegralWavelengthSpace(
-  y: Float32Array | Readonly<Float32Array>,
+function computeCmfIntegralWavelengthSpace(
+  table: Float32Array | Readonly<Float32Array>,
   stepNm: number,
 ): number {
   let total = 0;
-  for (let i = 1; i < y.length; i += 1) {
-    const y0 = y[i - 1] ?? 0;
-    const y1 = y[i] ?? 0;
-    total += (y0 + y1) * 0.5;
+  for (let i = 1; i < table.length; i += 1) {
+    const v0 = table[i - 1] ?? 0;
+    const v1 = table[i] ?? 0;
+    total += (v0 + v1) * 0.5;
   }
   return total * stepNm;
 }
 
-const Y_CMF_INTEGRAL = computeYIntegralWavelengthSpace(CIE_Y_TABLE, 5);
+const X_CMF_INTEGRAL = computeCmfIntegralWavelengthSpace(CIE_X_TABLE, 5);
+const Y_CMF_INTEGRAL = computeCmfIntegralWavelengthSpace(CIE_Y_TABLE, 5);
+const Z_CMF_INTEGRAL = computeCmfIntegralWavelengthSpace(CIE_Z_TABLE, 5);
 // Detect silent drift in the source CMF table. The legacy hardcoded value
 // was 106.857 (CIE 1931 standard observer, 380–780 nm, 5 nm step). If the
 // computed integral drifts >0.05 from that, the source table changed and
 // downstream normalization needs review.
 if (typeof console !== 'undefined' && console.warn) {
-  if (Math.abs(Y_CMF_INTEGRAL - 106.857) > 0.05) {
-    console.warn(
-      `[forkUniformBridge] CIE-Y integral drift: computed ${Y_CMF_INTEGRAL.toFixed(3)}, ` +
-        `expected ~106.857. Update host call sites that hard-code the constant.`,
-    );
+  const CMF_INTEGRAL_DRIFTS: Array<[string, number]> = [
+    ['X', X_CMF_INTEGRAL],
+    ['Y', Y_CMF_INTEGRAL],
+    ['Z', Z_CMF_INTEGRAL],
+  ];
+  for (const [name, val] of CMF_INTEGRAL_DRIFTS) {
+    if (Math.abs(val - 106.857) > 0.05) {
+      console.warn(
+        `[forkUniformBridge] CIE-${name} integral drift: computed ${val.toFixed(3)}, ` +
+          `expected ~106.857. Update host call sites that hard-code the constant.`,
+      );
+    }
   }
 }
 
-function buildYCdf(y: Float32Array): Float32Array {
-  const cdf = new Float32Array(y.length + 1);
+/**
+ * buildCmfCdf — piecewise-linear normalised CDF for one CMF table. Output
+ * length = `table.length + 1` (CDF[0] = 0, CDF[N] = 1). Used to populate
+ * `uXCmfCdf`/`uYCmfCdf`/`uZCmfCdf` for the GLSL MIS hero-wavelength sampler.
+ */
+function buildCmfCdf(table: Float32Array | Readonly<Float32Array>): Float32Array {
+  const cdf = new Float32Array(table.length + 1);
   cdf[0] = 0;
   let total = 0;
   for (let i = 1; i < cdf.length; i += 1) {
-    const y0 = y[i - 1] ?? 0;
-    const y1 = i < y.length ? (y[i] ?? 0) : 0;
-    total += (y0 + y1) * 0.5;
+    const v0 = table[i - 1] ?? 0;
+    const v1 = i < table.length ? (table[i] ?? 0) : 0;
+    total += (v0 + v1) * 0.5;
     cdf[i] = total;
   }
   if (total > 0) {
@@ -117,6 +131,10 @@ function buildYCdf(y: Float32Array): Float32Array {
   return cdf;
 }
 
+const X_CMF_CDF_FLOAT32 = buildCmfCdf(CIE_X_TABLE);
+const Y_CMF_CDF_FLOAT32 = buildCmfCdf(CIE_Y_TABLE);
+const Z_CMF_CDF_FLOAT32 = buildCmfCdf(CIE_Z_TABLE);
+
 export function driveForkMaterialUniforms(
   pathTracer: unknown,
   causticOptions?: ForkBridgeCausticOptions,
@@ -125,16 +143,23 @@ export function driveForkMaterialUniforms(
   const tracer = pathTracer as { _pathTracer?: { material?: PathTracerMaterialLike } };
   const material = tracer._pathTracer?.material ?? null;
   if (material == null) return;
-  const yCdf = buildYCdf(CIE_Y_TABLE);
 
   setUniform(material, 'uCmfX', CIE_X_TABLE);
   setUniform(material, 'uCmfY', CIE_Y_TABLE);
   setUniform(material, 'uCmfZ', CIE_Z_TABLE);
-  setUniform(material, 'uYCmfCdf', yCdf);
-  // Trapezoidal integral in table-space; shader/host treat this as relative
-  // normalization constant. Computed at module init from CIE_Y_TABLE so the
-  // value stays in sync with the source data automatically.
+  // CDFs for the GLSL MIS hero-wavelength sampler (Wilkie 2015 §3.3).
+  // Y-only sampling collapses blue/red to near-zero at low SPP because Y(λ)
+  // is heavily concentrated near 555 nm; uploading X and Z CDFs lets the
+  // shader pick from any of three strategies with balance-heuristic mixture pdf.
+  setUniform(material, 'uXCmfCdf', X_CMF_CDF_FLOAT32);
+  setUniform(material, 'uYCmfCdf', Y_CMF_CDF_FLOAT32);
+  setUniform(material, 'uZCmfCdf', Z_CMF_CDF_FLOAT32);
+  // Trapezoidal integrals in table-space; shader/host treat these as relative
+  // normalization constants. Computed at module init from CIE_X/Y/Z_TABLE so
+  // the values stay in sync with the source data automatically.
+  setUniform(material, 'uXCmfIntegral', X_CMF_INTEGRAL);
   setUniform(material, 'uYCmfIntegral', Y_CMF_INTEGRAL);
+  setUniform(material, 'uZCmfIntegral', Z_CMF_INTEGRAL);
   setUniform(material, 'uSpectralRendering', causticOptions?.spectralRendering === true ? 1 : 0);
   setUniform(material, 'uRadianceClamp', causticOptions?.radianceClamp ?? 0);
   if (causticOptions != null) {
