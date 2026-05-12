@@ -87,6 +87,12 @@ export interface RCDispatchOpts {
   sunColor:       THREE.Color;
   envEquirect:    THREE.Texture | null;
   frameSeed:      number;
+  /**
+   * E2 — Möller–Trumbore coplanarity threshold (default 1e-5 for metre-scale).
+   * Plumbed from HybridEngine.triIntersectEpsilon into CascadeUniforms so the
+   * RC shader uses the same epsilon as the WalkaroundUBO shaders.
+   */
+  triIntersectEpsilon?: number;
   /** Smoke-test / fallback mode: fill cascades with debug colours, skip ray-cast. */
   debugFill?:     boolean;
 }
@@ -103,6 +109,7 @@ function buildCascadeUniformDataInto(
   sunColor: THREE.Color,
   envIntensity: number,
   frameSeed: number,
+  triIntersectEpsilon: number,  // E2: UBO-plumbed (was local WGSL const)
 ): void {
   const dim = CASCADE_DIMS[k]!;
   const rayGridSize = Math.round(Math.sqrt(dim.rays));
@@ -114,7 +121,7 @@ function buildCascadeUniformDataInto(
   // rayGridSize(u), intervalNear(f), intervalFar(f), cascadeIndex(u)
   // sunDirection(3f), _pad2(f)
   // sunColor(3f), envIntensity(f)
-  // frameSeed(u), lastCascade(u), _pad4(2u)
+  // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), _pad4a(u)
   // Total: 40 float/uint values = 160 bytes
   const ui = new Uint32Array(d.buffer);
   d[0]  = o.x; d[1]  = o.y; d[2]  = o.z; d[3]  = 0;
@@ -129,7 +136,8 @@ function buildCascadeUniformDataInto(
   d[23] = envIntensity;
   ui[24] = frameSeed;
   ui[25] = CASCADE_COUNT - 1;
-  ui[26] = 0; ui[27] = 0;
+  d[26] = triIntersectEpsilon;  // E2: was _pad4[0]
+  ui[27] = 0;                   // _pad4a
 }
 
 function buildMergeUniformData(
@@ -238,6 +246,7 @@ export class RCDispatcher {
       const pass = handles.castPasses[k]!;
       buildCascadeUniformDataInto(
         pass.cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed,
+        opts.triIntersectEpsilon ?? 1e-5,
       );
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer as ArrayBuffer);
     }
@@ -436,7 +445,7 @@ export class RCDispatcher {
       // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
       // through.
       const cascadeParamsRaw = new Float32Array(40);
-      buildCascadeUniformDataInto(cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed);
+      buildCascadeUniformDataInto(cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed, opts.triIntersectEpsilon ?? 1e-5);
       const cascadeParamsBuf = device.createBuffer({
         label:  `rc-cast-C${k}-uniforms`,
         size:   cascadeParamsRaw.byteLength,

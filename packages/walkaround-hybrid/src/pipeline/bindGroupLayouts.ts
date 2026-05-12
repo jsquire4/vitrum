@@ -251,8 +251,9 @@ export function getResolveBindGroupLayout(
 /**
  * Sprint 15 — GTAO half-res compute pass BGL. Matches `gtao.wgsl.ts`:
  *   0 — gNormalDepth (rgba16float, sampled)
- *   1 — aoHalf out (r16float, write-only storage)
+ *   1 — aoHalf out (rgba16float, write-only storage — E1 multi-bounce: bumped from r16float)
  *   2 — GTAOUniforms ubo
+ *   3 — gtao_albedo (rgba16float, sampled — E1 Jiménez 2016 §5.2 multi-bounce term)
  */
 export function getGTAOBindGroupLayout(
   device: GPUDevice,
@@ -263,8 +264,10 @@ export function getGTAOBindGroupLayout(
     label: 'gtao-bgl',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r16float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      // E1 — hdrAlbedoOut (shade pass M9.C) wired for multi-bounce factor.
+      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
     ],
   });
   return cache.gtao;
@@ -272,9 +275,9 @@ export function getGTAOBindGroupLayout(
 
 /**
  * Sprint 15 — GTAO bilateral upsample BGL. Matches `gtaoUpsample.wgsl.ts`:
- *   0 — aoHalf in (r16float, sampled)
+ *   0 — aoHalf in (rgba16float, sampled — E1: bumped from r16float; carries per-channel aoMb)
  *   1 — gNormalDepth (rgba16float, sampled)
- *   2 — aoFull out (r16float, write-only storage)
+ *   2 — aoFull out (r16float, write-only storage — stays scalar; upsample reduces vec3 to luminance)
  *   3 — GTAOUniforms (uniform, audit B3 — for bilateralDepthSigma)
  */
 export function getGTAOUpsampleBindGroupLayout(

@@ -782,6 +782,8 @@ export class WalkaroundGPUPipeline {
           this._res.gNormalDepthTexture.createView(),
           this._res.aoHalfTexture.createView(),
           this._res.gtaoUboBuffer,
+          // E1 — hdrAlbedoOut for Jiménez 2016 §5.2 multi-bounce term.
+          this._res.albedoTexture.createView(),
         );
         const pass = encoder.beginComputePass(computeDesc('gtao'));
         pass.setPipeline(this._gtaoPipeline);

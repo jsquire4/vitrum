@@ -75,13 +75,20 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   var sumAO: f32 = 0.0;
   var sumW:  f32 = 0.0;
 
+  // E1: aoHalf now carries per-channel multi-bounce AO (rgba16float).
+  // Reduce to a scalar luminance weight before bilateral filtering so
+  // the output aoFull remains r16float (shade reads a single channel).
+  let lum = vec3f(0.2126, 0.7152, 0.0722);
+
   for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
     for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
       let sampleHalf = vec2u(
         min(halfPx.x + dx, halfDims.x - 1u),
         min(halfPx.y + dy, halfDims.y - 1u),
       );
-      let ao = textureLoad(up_aoHalf, sampleHalf, 0).r;
+      // Read per-channel multi-bounce AO and collapse to scalar luminance.
+      let aoMb = textureLoad(up_aoHalf, sampleHalf, 0).rgb;
+      let ao = dot(aoMb, lum);
       // Corresponding full-res sample point (center of the half-res cell).
       let sampleFull = sampleHalf * 2u + 1u;
       let nd = textureLoad(
@@ -100,17 +107,18 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // If no half-res sample matches our surface (heavy edge), fall back to
   // the unweighted average — better to have *some* AO than zero.
+  // E1: reduce per-channel multi-bounce vec3 to luminance scalar in fallback too.
   var ao: f32 = 1.0;
   if (sumW > 1e-4) {
     ao = sumAO / sumW;
   } else {
-    // Cheap unweighted average as backup.
+    // Cheap unweighted average as backup; reduce each tap to luminance first.
     ao = (
-      textureLoad(up_aoHalf, halfPx, 0).r +
-      textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).r +
-      textureLoad(up_aoHalf, vec2u(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).r +
-      textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u),
-                                    min(halfPx.y + 1u, halfDims.y - 1u)), 0).r
+      dot(textureLoad(up_aoHalf, halfPx, 0).rgb, lum) +
+      dot(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).rgb, lum) +
+      dot(textureLoad(up_aoHalf, vec2u(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb, lum) +
+      dot(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u),
+                                       min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb, lum)
     ) * 0.25;
   }
 

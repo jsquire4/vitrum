@@ -51,6 +51,9 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
   - Spectral attenuation Beer-Lambert RFE-01 — APPLIED (runtime visual/perf verification pending)
 
 ## RFE-09 pt-webgl Material -> Fork Uniform Bridge: APPLIED (runtime-unverified)
+<!-- NOTE: This "RFE-09" is the uniform-bridge sprint deliverable (not a standalone external_requests/ file).
+     The file external_requests/09-runtime-lighting-updates.md is a separate, later-filed RFE (Status: Proposed)
+     that proposes a runtime updatePrimaryLight/updateSkyDome/updateLights API. It is NOT implemented here. -->
 
 - Files changed in vitrum + fork:
   - `packages/pt-webgl/src/forkUniformBridge.ts` (NEW) — scene material scan + uniform driving

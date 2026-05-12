@@ -12,8 +12,12 @@
  *   - `gNormalDepth` (rgba16float): xyz = normal × 0.5 + 0.5, w = signed depth
  *     (abs = world-space hit distance; negative = glass; 0 = sky-miss).
  * Outputs:
- *   - `aoHalf` (r16float): per-pixel occlusion factor in [0, 1]. 1 = fully lit,
- *     0 = fully occluded.
+ *   - `aoHalf` (rgba16float): per-channel multi-bounce ambient occlusion factor.
+ *     Each channel encodes the Jiménez 2016 §5.2 Eq. 16 albedo-aware brightened
+ *     visibility for that colour channel.  The bilateral upsample reduces this
+ *     to a single luminance-weighted scalar before shade reads it.
+ *     1 = fully lit, 0 = fully occluded.  The multi-bounce term brightens
+ *     intermediate albedo surfaces; at ρ = 1 each channel equals the scalar AO.
  *
  * Half-res: dispatches over W/2 × H/2 invocations; each samples the *full-res*
  * gNormalDepth at the 2×2 quad center. Bilateral upsample (see
@@ -37,8 +41,10 @@
  * the surface normal (the γ/n terms). The Jiménez integral is the correct
  * Lambertian-weighted visible-arc integral on the slice plane.
  *
- * Multi-bounce (Jiménez 2016 §5.2): deferred — requires an albedo G-buffer
- * that is not currently wired into the GTAO pass. Tracked separately.
+ * Multi-bounce (Jiménez 2016 §5.2 / Eq. 16): now implemented. The per-channel
+ * albedo G-buffer (hdrAlbedoOut from shade pass M9.C) is bound at @binding(3).
+ * The scalar visibility `vis` is lifted to a per-channel `vec3f` by the Eq. 16
+ * polynomial before being stored; `gtaoUpsample.wgsl.ts` reads it as vec3.
  *
  * Per-pixel jitter on the base direction breaks aliased horizon-ray patterns;
  * the bilateral upsample averages neighbors before the shade pass consumes it,
@@ -74,8 +80,12 @@ struct GTAOUniforms {
 };
 
 @group(0) @binding(0) var gtao_normalDepth: texture_2d<f32>;
-@group(0) @binding(1) var gtao_aoOut:       texture_storage_2d<r16float, write>;
+@group(0) @binding(1) var gtao_aoOut:       texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var<uniform> gtao_ubo: GTAOUniforms;
+// E1 — Jiménez 2016 §5.2 multi-bounce: per-channel diffuse albedo from the
+// shade pass (hdrAlbedoOut, Item 24). Sampled at the same pixel to compute
+// the albedo-weighted brightening polynomial for each colour channel.
+@group(0) @binding(3) var gtao_albedo:      texture_2d<f32>;
 
 const PI:      f32 = 3.14159265359;
 const PI_HALF: f32 = 1.57079632679;
@@ -237,7 +247,29 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let aoRaw = clamp(aoSum / f32(NUM_DIRECTIONS), 0.0, 1.0);
-  let ao = pow(aoRaw, gtao_ubo.intensity);
-  textureStore(gtao_aoOut, gid.xy, vec4f(ao, 0.0, 0.0, 1.0));
+  let vis   = pow(aoRaw, gtao_ubo.intensity);
+
+  // ── Jiménez 2016 §5.2 / Eq. 16 — multi-bounce ambient occlusion ──────────
+  //
+  // Per-channel albedo-aware brightening that approximates the "missing" energy
+  // from inter-reflections.  With ρ = 1 (white surface), a_mb ≡ vis (identity).
+  // With ρ → 0 (black surface), a_mb → 0 (no AO leakage on dark surfaces).
+  //
+  // Albedo is sampled from the shade pass's hdrAlbedoOut (written by M9.C).
+  // hdrAlbedoOut is full-resolution; GTAO is half-resolution, so we sample at
+  // the 2×2 quad centre (fullPx = gid.xy * 2 + 1), same as gNormalDepth.
+  //
+  // Coefficients from Jiménez 2016 Eq. 16 (table in §5.2):
+  //   a_mb = ((2.0404·ρ − 0.3324)·v + (−4.7951·ρ + 0.6417))·v + (2.7552·ρ + 0.6903))·v
+  //
+  // Reference: Jiménez et al. 2016, §5.2 / Eq. 16.
+  let albedoSample = textureLoad(gtao_albedo, vec2i(fullPx), 0).rgb;
+  let albedo = clamp(albedoSample, vec3f(0.0), vec3f(1.0));
+  let ca = 2.0404 * albedo - vec3f(0.3324);
+  let cb = -4.7951 * albedo + vec3f(0.6417);
+  let cc = 2.7552 * albedo + vec3f(0.6903);
+  let aoMb = clamp(((ca * vis + cb) * vis + cc) * vis, vec3f(0.0), vec3f(1.0));
+
+  textureStore(gtao_aoOut, gid.xy, vec4f(aoMb, 1.0));
 }
 `;

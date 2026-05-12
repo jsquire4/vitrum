@@ -57,8 +57,10 @@ export interface FrameResources {
   resolvedTexture: GPUTexture;
 
   /**
-   * Sprint 15 — Half-resolution GTAO occlusion factor (r16float). Written by
+   * Sprint 15 — Half-resolution GTAO occlusion factor (rgba16float). Written by
    * `gtaoMain`; consumed by `gtaoUpsampleMain` to reconstruct full-res AO.
+   * E1: bumped from r16float to rgba16float to carry per-channel multi-bounce
+   * AO (Jiménez 2016 §5.2 / Eq. 16). The upsample reduces to scalar luminance.
    */
   aoHalfTexture: GPUTexture;
   /**
@@ -490,10 +492,11 @@ export function createFrameResources(
   // black via an uninitialised AO read.
   const halfW = Math.max(1, Math.floor(W / 2));
   const halfH = Math.max(1, Math.floor(H / 2));
+  // E1: rgba16float (was r16float) to carry per-channel multi-bounce AO.
   const aoHalfTexture = device.createTexture({
     label: 'gtao-half',
     size: [halfW, halfH],
-    format: 'r16float',
+    format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
   const aoFullTexture = device.createTexture({

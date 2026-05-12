@@ -9,6 +9,7 @@ Numbered specs propose **API and algorithm** extensions to vitrum. They are **no
 | 01 | [01-spectral-rendering.md](./01-spectral-rendering.md) | Accepted | Spectral attenuation + dispersion: fork Beer–Lambert uses packed μ(λ); GPU acceptance still pending |
 | 04 | [04-multilayer-thinfilm.md](./04-multilayer-thinfilm.md) | Accepted | Multi-layer thin film (TMM) in progress |
 | 08 | [08-sprint12-spectral-accumulator-fork-patch.md](./08-sprint12-spectral-accumulator-fork-patch.md) | Accepted | Sprint 12 spectral accumulator integration in progress |
+| 09 | [09-runtime-lighting-updates.md](./09-runtime-lighting-updates.md) | Proposed | Runtime lighting updates without pipeline rebuild (`updatePrimaryLight`, `updateSkyDome`, `updateLights`) |
 
 **Status values:** `Proposed` → `Accepted` (in scope, target phase set) → `Implemented` | `Deferred` (reason + link) | `Rejected` (reason). RFEs that reach `Implemented` are removed from this directory and recorded in [`IMPLEMENTATION-STATUS.md`](./IMPLEMENTATION-STATUS.md).
 

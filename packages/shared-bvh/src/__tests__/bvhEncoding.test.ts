@@ -585,3 +585,195 @@ describe('33-G BVH encoding round-trip', () => {
     expect(isFinite(hit.tHit)).toBe(true);
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// T1.D3 — BVH 200-triangle complex-scene round-trip
+//
+// Generates a 10×10 grid of triangles forming a flat plane (200 triangles).
+// Builds a BVH via buildMirrorBvh (SAH, 16 bins). Traces 1000 random rays.
+// For each ray, computes tHit via:
+//   (a) BVH traversal (relative-offset, same algorithm as walkaround + pt-webgpu)
+//   (b) Brute-force loop over all 200 triangles (oracle)
+// Asserts: |tHit_bvh - tHit_brute| < 1e-5 for every hitting ray.
+//
+// This catches stack-depth edge cases and SAH split failures that the smaller
+// 8-triangle box test (33-G) cannot exercise.
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Generate a 10×10 grid of quads, each split into 2 triangles.
+ * Total: 10×10×2 = 200 triangles. The plane lies in the XZ plane (Y=0),
+ * spanning [0, 10] × [0, 10] in X and Z. This gives many co-planar
+ * triangles to stress the SAH binning across all 3 axes.
+ */
+function make10x10GridMesh(): { positions: Float32Array; indices: Uint32Array } {
+  const GRID = 10; // 10×10 quads → 200 triangles
+  const vertCount = (GRID + 1) * (GRID + 1);
+  const positions = new Float32Array(vertCount * 4);
+
+  // Vertex grid on the XZ plane (Y = 0).
+  for (let row = 0; row <= GRID; row++) {
+    for (let col = 0; col <= GRID; col++) {
+      const vi = row * (GRID + 1) + col;
+      positions[vi * 4 + 0] = col;      // X ∈ [0, 10]
+      positions[vi * 4 + 1] = 0.0;      // Y = 0
+      positions[vi * 4 + 2] = row;      // Z ∈ [0, 10]
+      positions[vi * 4 + 3] = 0.0;
+    }
+  }
+
+  const triCount = GRID * GRID * 2;
+  const indices = new Uint32Array(triCount * 4);
+
+  let ti = 0;
+  for (let row = 0; row < GRID; row++) {
+    for (let col = 0; col < GRID; col++) {
+      // Quad corners
+      const tl = row * (GRID + 1) + col;       // top-left
+      const tr = tl + 1;                        // top-right
+      const bl = (row + 1) * (GRID + 1) + col; // bottom-left
+      const br = bl + 1;                        // bottom-right
+
+      // Triangle 0: tl, tr, bl
+      indices[ti * 4 + 0] = tl;
+      indices[ti * 4 + 1] = tr;
+      indices[ti * 4 + 2] = bl;
+      indices[ti * 4 + 3] = 0;
+      ti++;
+
+      // Triangle 1: tr, br, bl
+      indices[ti * 4 + 0] = tr;
+      indices[ti * 4 + 1] = br;
+      indices[ti * 4 + 2] = bl;
+      indices[ti * 4 + 3] = 0;
+      ti++;
+    }
+  }
+
+  return { positions, indices };
+}
+
+/**
+ * Brute-force Möller-Trumbore against every triangle.
+ * Oracle for BVH traversal — same math, no hierarchy.
+ */
+function traceBruteForce(
+  positions: Float32Array,
+  indices: Uint32Array,
+  ox: number, oy: number, oz: number,
+  dx: number, dy: number, dz: number,
+  tMin: number,
+  tMax: number,
+): { hit: boolean; tHit: number } {
+  const totalTris = Math.floor(indices.length / 4);
+  let closest = tMax;
+  let hitAny = false;
+
+  for (let t = 0; t < totalTris; t++) {
+    const i0 = indices[t * 4] ?? 0;
+    const i1 = indices[t * 4 + 1] ?? 0;
+    const i2 = indices[t * 4 + 2] ?? 0;
+    const ax = positions[i0 * 4] ?? 0, ay = positions[i0 * 4 + 1] ?? 0, az = positions[i0 * 4 + 2] ?? 0;
+    const bx = positions[i1 * 4] ?? 0, by = positions[i1 * 4 + 1] ?? 0, bz = positions[i1 * 4 + 2] ?? 0;
+    const cx = positions[i2 * 4] ?? 0, cy = positions[i2 * 4 + 1] ?? 0, cz = positions[i2 * 4 + 2] ?? 0;
+
+    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+    const hx = dy * e2z - dz * e2y, hy = dz * e2x - dx * e2z, hz = dx * e2y - dy * e2x;
+    const det = e1x * hx + e1y * hy + e1z * hz;
+    if (Math.abs(det) < 1e-8) continue;
+    const invDet = 1.0 / det;
+    const sx = ox - ax, sy = oy - ay, sz = oz - az;
+    const u = (sx * hx + sy * hy + sz * hz) * invDet;
+    if (u < 0 || u > 1) continue;
+    const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+    const v = (dx * qx + dy * qy + dz * qz) * invDet;
+    if (v < 0 || u + v > 1) continue;
+    const hitT = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+    if (hitT > tMin && hitT < closest) {
+      closest = hitT;
+      hitAny = true;
+    }
+  }
+
+  return { hit: hitAny, tHit: closest };
+}
+
+describe('T1.D3 — BVH 200-tri complex-scene round-trip', () => {
+  it('relative-offset BVH traversal matches brute-force oracle for 1000 rays (|Δt| < 1e-5)', () => {
+    const { positions, indices } = make10x10GridMesh();
+    const built = buildMirrorBvh(positions, indices);
+
+    // Validate BVH encoding is well-formed before traversal.
+    validateBvhEncoding(built.bvhNodes, built.totalNodes);
+
+    // The plane spans X ∈ [0, 10], Z ∈ [0, 10], Y = 0.
+    // We shoot rays from Y > 0 (above plane) downward (-Y direction),
+    // with origins uniformly distributed over [−1, 11]² in X,Z to hit
+    // both the interior and edges of the plane.
+
+    // Deterministic LCG (same parameters as existing tests).
+    let rngState = 0xabcdef01;
+    const rand = (): number => {
+      rngState = (Math.imul(rngState, 1664525) + 1013904223) >>> 0;
+      return rngState / 0x100000000;
+    };
+
+    const NUM_RAYS = 1_000;
+    let missMatch = 0;      // BVH misses where brute-force hits
+    let tHitMismatch = 0;   // |tHit_bvh - tHit_brute| >= 1e-5
+    let hitCount = 0;
+
+    for (let r = 0; r < NUM_RAYS; r++) {
+      // Ray origin: random position above the grid plane.
+      const ox = rand() * 12 - 1; // X ∈ [-1, 11]
+      const oy = rand() * 8 + 1;  // Y ∈ [1, 9]  (above the plane)
+      const oz = rand() * 12 - 1; // Z ∈ [-1, 11]
+
+      // Direction: straight down (-Y) to guarantee deterministic brute-force result.
+      // We also test slightly angled rays to exercise the slab test.
+      const angleVariation = (rand() - 0.5) * 0.4; // ±0.2 tilt in X and Z
+      const dx = angleVariation;
+      const dy = -1.0;
+      const dz = (rand() - 0.5) * 0.4;
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const ndx = dx / len, ndy = dy / len, ndz = dz / len;
+
+      const bvhResult = traceBvh(
+        built.bvhNodes, positions, built.reorderedIndices,
+        ox, oy, oz, ndx, ndy, ndz,
+        1e-4, 1000.0,
+      );
+
+      const bruteResult = traceBruteForce(
+        positions, indices,
+        ox, oy, oz, ndx, ndy, ndz,
+        1e-4, 1000.0,
+      );
+
+      if (bruteResult.hit) {
+        hitCount++;
+        if (!bvhResult.hit) {
+          missMatch++;
+        } else {
+          const delta = Math.abs(bvhResult.tHit - bruteResult.tHit);
+          if (delta >= 1e-5) {
+            tHitMismatch++;
+          }
+        }
+      } else {
+        // Brute-force miss — BVH should also miss (no false positives).
+        if (bvhResult.hit) {
+          missMatch++;
+        }
+      }
+    }
+
+    // The grid spans most of [0,10]×[0,10]; many rays will hit.
+    expect(hitCount).toBeGreaterThan(300);
+
+    // Zero tolerance on BVH-vs-brute agreement: all hits must agree within 1e-5.
+    expect(missMatch).toBe(0);
+    expect(tHitMismatch).toBe(0);
+  });
+});

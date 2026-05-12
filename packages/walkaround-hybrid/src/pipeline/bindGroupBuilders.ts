@@ -404,6 +404,8 @@ export function buildGTAOBindGroup(
   gNormalDepthView: GPUTextureView,
   aoHalfWriteView: GPUTextureView,
   gtaoUbo: GPUBuffer,
+  /** E1 — hdrAlbedoOut view for Jiménez 2016 §5.2 multi-bounce term. */
+  albedoView: GPUTextureView,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: 'gtao-bg',
@@ -412,6 +414,8 @@ export function buildGTAOBindGroup(
       { binding: 0, resource: gNormalDepthView },
       { binding: 1, resource: aoHalfWriteView },
       { binding: 2, resource: { buffer: gtaoUbo } },
+      // E1 — visible-point albedo from shade pass (hdrAlbedoOut, Item 24).
+      { binding: 3, resource: albedoView },
     ],
   });
 }

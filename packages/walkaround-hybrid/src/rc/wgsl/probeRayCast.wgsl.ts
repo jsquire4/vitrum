@@ -35,7 +35,9 @@ export const PROBE_RAY_CAST_WGSL = /* wgsl */`
 
 const BVH_STACK_DEPTH = 60u;
 const INFINITY = 1e20;
-const TRI_INTERSECT_EPSILON = 1e-5;
+// E2: TRI_INTERSECT_EPSILON removed from module scope; value is now
+// read from CascadeUniforms.triIntersectEpsilon (UBO-plumbed per M4.A).
+// intersectsTriangle() receives it as a function parameter.
 
 // ─── three-mesh-bvh: structs ─────────────────────────────────────────────────
 
@@ -114,7 +116,10 @@ fn intersectsBounds(
 
 // ─── three-mesh-bvh: intersectsTriangle ──────────────────────────────────────
 
-fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f ) -> IntersectionResult {
+// E2: triEps (Möller–Trumbore coplanarity threshold) is passed as a parameter
+// rather than read from a module-scope constant. All call sites thread the
+// value from CascadeUniforms.triIntersectEpsilon.
+fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f, triEps: f32 ) -> IntersectionResult {
 
   var result: IntersectionResult;
   result.didHit = false;
@@ -125,7 +130,7 @@ fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f ) -> IntersectionR
 
   let det = - dot( ray.direction, n );
 
-  if ( abs( det ) < TRI_INTERSECT_EPSILON ) {
+  if ( abs( det ) < triEps ) {
     return result;
   }
 
@@ -140,7 +145,7 @@ fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f ) -> IntersectionR
 
   let w = 1.0 - u - v;
 
-  if ( u < - TRI_INTERSECT_EPSILON || v < - TRI_INTERSECT_EPSILON || w < - TRI_INTERSECT_EPSILON || t < TRI_INTERSECT_EPSILON ) {
+  if ( u < - triEps || v < - triEps || w < - triEps || t < triEps ) {
     return result;
   }
 
@@ -160,7 +165,8 @@ fn intersectTriangles(
   bvh_index: ptr<storage, array<vec3u>, read>,
   offset: u32,
   count: u32,
-  ray: Ray
+  ray: Ray,
+  triEps: f32,  // E2: UBO-plumbed epsilon
 ) -> IntersectionResult {
 
   var closestResult: IntersectionResult;
@@ -173,7 +179,7 @@ fn intersectTriangles(
     let b = bvh_position[ indices.y ];
     let c = bvh_position[ indices.z ];
 
-    var triResult = intersectsTriangle( ray, a, b, c );
+    var triResult = intersectsTriangle( ray, a, b, c, triEps );
 
     if ( triResult.didHit && triResult.dist < closestResult.dist ) {
       closestResult = triResult;
@@ -191,6 +197,7 @@ fn bvhIntersectFirstHit(
   bvh_position: ptr<storage, array<vec3f>, read>,
   bvh: ptr<storage, array<BVHNode>, read>,
   ray: Ray,
+  triEps: f32,  // E2: UBO-plumbed epsilon threaded from CascadeUniforms
 ) -> IntersectionResult {
 
   var pointer = 0;
@@ -227,7 +234,7 @@ fn bvhIntersectFirstHit(
       let offset = boundsInfoy;
 
       let localHit = intersectTriangles(
-        bvh_position, bvh_index, offset, count, ray
+        bvh_position, bvh_index, offset, count, ray, triEps
       );
 
       if ( localHit.didHit && localHit.dist < bestHit.dist ) {
@@ -257,25 +264,31 @@ fn bvhIntersectFirstHit(
 // ─── CascadeUniforms struct ───────────────────────────────────────────────────
 // Must match buildCascadeUniformDataInto() layout in cascadeDispatch.ts
 // (40 floats = 160 bytes).
+//
+// E2 — triIntersectEpsilon: Möller–Trumbore coplanarity threshold (f32).
+// Replaces the local const TRI_INTERSECT_EPSILON: f32 = 1e-5 that was
+// previously hardcoded.  Occupies the first of the two former _pad4 slots;
+// the second becomes _pad4a.  Total size unchanged: 40 f32/u32 = 160 bytes.
 
 struct CascadeUniforms {
-  probeOriginWorld : vec3f,
-  _pad0            : f32,
-  roomSize         : vec3f,
-  _pad1            : f32,
-  probeCount       : vec3u,
-  raysPerProbe     : u32,
-  rayGridSize      : u32,
-  intervalNear     : f32,
-  intervalFar      : f32,
-  cascadeIndex     : u32,
-  sunDirection     : vec3f,
-  _pad2            : f32,
-  sunColor         : vec3f,
-  envIntensity     : f32,
-  frameSeed        : u32,
-  lastCascade      : u32,
-  _pad4            : vec2u,
+  probeOriginWorld  : vec3f,
+  _pad0             : f32,
+  roomSize          : vec3f,
+  _pad1             : f32,
+  probeCount        : vec3u,
+  raysPerProbe      : u32,
+  rayGridSize       : u32,
+  intervalNear      : f32,
+  intervalFar       : f32,
+  cascadeIndex      : u32,
+  sunDirection      : vec3f,
+  _pad2             : f32,
+  sunColor          : vec3f,
+  envIntensity      : f32,
+  frameSeed         : u32,
+  lastCascade       : u32,
+  triIntersectEpsilon: f32,  // E2: UBO-plumbed (was local const 1e-5)
+  _pad4a            : u32,
 };
 
 // ─── MaterialEntry struct ─────────────────────────────────────────────────────
@@ -351,6 +364,7 @@ fn traceSunVisibility(
   origin:        vec3f,
   sunDir:        vec3f,
   slabStepSize:  f32,
+  triEps:        f32,  // E2: threaded from CascadeUniforms.triIntersectEpsilon
 ) -> vec3f {
   var visibility = vec3f(1.0);
   var rayOrigin  = origin;
@@ -358,7 +372,7 @@ fn traceSunVisibility(
     var sRay = Ray();
     sRay.origin    = rayOrigin;
     sRay.direction = sunDir;
-    let sHit = bvhIntersectFirstHit(geom_index, geom_position, bvh, sRay);
+    let sHit = bvhIntersectFirstHit(geom_index, geom_position, bvh, sRay, triEps);
     if (!sHit.didHit) {
       return visibility;
     }
@@ -428,8 +442,11 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
   var radiance     = vec3f(0.0);
   var escaped      = true;
 
+  // E2: read epsilon from CascadeUniforms (UBO-plumbed from HybridEngine.triIntersectEpsilon).
+  let triEps = u.triIntersectEpsilon;
+
   let hit = bvhIntersectFirstHit(
-    &rc_geom_index, &rc_geom_position, &rc_bvh, ray
+    &rc_geom_index, &rc_geom_position, &rc_bvh, ray, triEps
   );
 
   // M14: scene-scale-proportional step to clear glass slabs/faces.
@@ -463,6 +480,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
       hitPos + n * 0.01,
       u.sunDirection,
       slabStep,
+      triEps,
     );
     let nDotL  = max(0.0, dot(n, u.sunDirection));
     let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;
@@ -478,7 +496,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
       refRay.origin    = hitPos + ray.direction * slabStep;
       refRay.direction = ray.direction;
       let secondHit = bvhIntersectFirstHit(
-        &rc_geom_index, &rc_geom_position, &rc_bvh, refRay
+        &rc_geom_index, &rc_geom_position, &rc_bvh, refRay, triEps
       );
       if (!secondHit.didHit) {
         let envUV = dirToEquirectUV(refRay.direction);
@@ -494,6 +512,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
           secondPos + secondHit.normal * 0.01,
           u.sunDirection,
           slabStep,
+          triEps,
         );
         let nDotL2 = max(0.0, dot(secondHit.normal, u.sunDirection));
         transContrib = u.sunColor * secondColor * nDotL2 * 0.31831
