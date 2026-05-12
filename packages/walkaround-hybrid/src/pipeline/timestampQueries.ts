@@ -2,24 +2,21 @@
  * GPU timestamp query helpers — DEV-only, feature-gated.
  *
  * The number and ordering of timestamp slots depends on frame configuration
- * (whether PPG is enabled and which denoiser is active). `buildPassLayout`
- * returns a deterministic `PassLabel` → slot-index map per frame, and the
- * querySet is sized to the worst-case slot count so a single allocation
- * survives every configuration.
+ * (which denoiser is active). `buildPassLayout` returns a deterministic
+ * `PassLabel` → slot-index map per frame, and the querySet is sized to the
+ * worst-case slot count so a single allocation survives every configuration.
  *
  * Configurations (slot count in parentheses, current as of Sprint 18
  * follow-up — indirect-temporal-accum + 4-iter atrous-indirect chain):
- *   • PPG off, legacy atrous (24): sample-budget, ris, temporal, spatial-1,
+ *   • legacy atrous (24): sample-budget, ris, temporal, spatial-1,
  *       spatial-2, gi-ris, gi-temporal, gi-spatial-1, gi-spatial-2, shade,
  *       gtao, gtao-upsample, atrous-0..2, indirect-temporal-accum,
  *       atrous-indirect-0..3, indirect-combine, temporalAccum, resolve,
  *       composite
- *   • PPG on,  legacy atrous (25): + ppg-update between shade and gtao
- *   • PPG off, SVGF          (26): sample-budget, …shade, gtao+upsample,
+ *   • SVGF          (26): sample-budget, …shade, gtao+upsample,
  *       welford-temporal, svgf-variance, svgf-atrous-0..2,
  *       indirect-temporal-accum, atrous-indirect-0..3, indirect-combine,
- *       temporalAccum, resolve, composite
- *   • PPG on,  SVGF          (27): + ppg-update — matches MAX_PASS_COUNT
+ *       temporalAccum, resolve, composite — matches MAX_PASS_COUNT
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes
@@ -41,7 +38,6 @@ export type PassLabel =
   | 'gi-spatial-1'
   | 'gi-spatial-2'
   | 'shade'
-  | 'ppg-update'
   | 'gtao'
   | 'gtao-upsample'
   | 'welford-temporal'
@@ -78,12 +74,12 @@ export type PassLabel =
  *          atrous chain (atrous-indirect-0..3) on the indirect channel) →
  *          27 (Sprint 18 follow-up: indirect-temporal-accum — pre-atrous
  *          temporal accumulator with TCBB clip to kill firefly admit
- *          + smooth shadow-region blotches before spatial filter).
+ *          + smooth shadow-region blotches before spatial filter) →
+ *          26 (D7 sweep: PPG deleted — max is now SVGF without ppg-update).
  */
-export const MAX_PASS_COUNT = 27;
+export const MAX_PASS_COUNT = 26;
 
 export interface PassLayoutOptions {
-  readonly ppgEnabled: boolean;
   readonly denoiserMode: 'svgf' | 'atrous';
 }
 
@@ -113,7 +109,6 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
     'gi-spatial-2',
     'shade',
   ];
-  if (opts.ppgEnabled) labels.push('ppg-update');
   // Sprint 15 — GTAO runs after shade (consumes gNormalDepth) and before the
   // denoiser passes (whose hdrColor input is already AO-modulated by shade
   // for the *previous* frame's AO; the current frame's AO becomes input for
@@ -159,7 +154,7 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
       const i = indexMap.get(label);
       if (i === undefined) {
         throw new Error(
-          `pass label "${label}" is not active in this layout (ppg=${opts.ppgEnabled}, denoiser=${opts.denoiserMode})`,
+          `pass label "${label}" is not active in this layout (denoiser=${opts.denoiserMode})`,
         );
       }
       return i;

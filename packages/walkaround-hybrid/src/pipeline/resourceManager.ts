@@ -10,21 +10,7 @@
  * buffers, HDR color textures, ping-pong textures, accum textures, UBO,
  * samplers, DDGI placeholders). Returns a typed bundle so the caller can
  * store each handle as a private field.
- *
- * `createPPGBuffers` allocates the PPG storage buffers (Sprint 11).
- * Gated by `ppgEnabled` option — no allocation when PPG is disabled so
- * the default engine behaviour is unchanged.
  */
-
-import {
-  PPG_MAX_SPATIAL_CELLS,
-  PPG_CELL_BYTE_STRIDE,
-  PPG_LEAF_BYTE_STRIDE,
-  PPG_KD_MAX_NODES,
-  PPG_KD_NODE_BYTE_STRIDE,
-} from '../ppg/types.js';
-import type { PPGBufferOptions } from '../ppg/types.js';
-import { encodePpgKdDisabledRoot, buildPpgKdTreeGpuBytes } from '../ppg/buildPpgKdTree.js';
 
 export interface FrameResources {
   reservoirCurrentBuffer: GPUBuffer;
@@ -147,192 +133,6 @@ export interface FrameResources {
    */
   indirectAccumPingTexture: GPUTexture;
   indirectAccumPongTexture: GPUTexture;
-
-  /**
-   * Sprint 11 — PPG (path guiding) buffers. Only present when `ppgEnabled`
-   * is true in the options passed to `createFrameResources`. When PPG is
-   * disabled (the default), this field is absent — all existing consumers
-   * are unaffected.
-   *
-   * See `createPPGBuffers` for the allocation details and byte-layout rationale.
-   *
-   * exactOptionalPropertyTypes: the field is entirely absent (not undefined)
-   * when PPG is disabled — consumers must use `'ppgBuffers' in res` to check.
-   *
-   * @since Sprint 11, 2026-05-09
-   */
-  readonly ppgBuffers?: PPGBuffers;
-}
-
-/**
- * GPU buffer bundle allocated by `createPPGBuffers`. All buffers are
- * needed together to run the PPG sample + update passes.
- *
- * @since Sprint 11, 2026-05-09
- */
-export interface PPGBuffers {
-  /**
-   * Spatial cell buffer — one PPGSpatialCell per active cell.
-   *
-   * Size: `maxCells × PPG_CELL_BYTE_STRIDE` (32 bytes/cell).
-   * Usage: STORAGE | COPY_DST | COPY_SRC
-   *   - STORAGE: both ppgSample (read) and ppgUpdate (read) shaders bind it.
-   *   - COPY_DST: host uploads initial cell positions on init or scene change.
-   *   - COPY_SRC: allows CPU readback for test validation.
-   */
-  cellBuffer: GPUBuffer;
-
-  /**
-   * Directional leaf buffer — one PPGDirectionalLeaf per spatial cell.
-   *
-   * Size: `maxCells × PPG_LEAF_BYTE_STRIDE` (256 bytes/leaf).
-   * Half of each leaf (128 bytes) holds 16 atomic-u32 pairs
-   * (radianceSum_fixed + sampleCount per bin); the other 128 bytes are
-   * reserved for future split-tracking fields.
-   * Usage: STORAGE | COPY_DST | COPY_SRC
-   *   - STORAGE: ppgSample (read) and ppgUpdate (read_write/atomic) bind it.
-   *   - COPY_DST: cleared to zero on init; updated per-frame by ppgUpdate.
-   *   - COPY_SRC: CPU readback for test validation.
-   */
-  leafBuffer: GPUBuffer;
-
-  /**
-   * Per-frame path-completion sample buffer.
-   *
-   * Receives PPGPathSample records written by the shade pass (one record per
-   * completed indirect bounce). Consumed by the ppgUpdate compute pass on
-   * the next even frame. Size = `maxCells × 48 bytes` (one sample-record
-   * slot per cell — in practice the shade pass fills far fewer than maxCells
-   * samples per frame, but headroom is allocated so the buffer never overflows
-   * without bounds-checking).
-   * Usage: STORAGE | COPY_DST | COPY_SRC
-   */
-  sampleBuffer: GPUBuffer;
-
-  /**
-   * Atomic slot counter for training samples (cleared each frame before shade).
-   * sizeof = 16 bytes for WebGPU min buffer alignment.
-   */
-  sampleHeadBuffer: GPUBuffer;
-
-  /**
-   * kd-tree over spatial cell centroids (16-byte nodes, see `buildPpgKdTree.ts`).
-   * Initialised with a sentinel that forces brute-force lookup in WGSL until
-   * the host uploads `buildPpgKdTreeGpuBytes(...)`.
-   */
-  kdBuffer: GPUBuffer;
-
-  /** Maximum number of spatial cells this buffer set was allocated for. */
-  readonly maxCells: number;
-}
-
-/**
- * Allocate PPG storage buffers for the walkaround engine.
- *
- * Called from `createFrameResources` when `ppgEnabled` is true, or
- * from `HybridEngine.setPPGEnabled(true)` if PPG is toggled at runtime.
- *
- * Buffer sizing:
- *   - cellBuffer:   maxCells × 32 bytes  = 320 KB at default 10K cap.
- *   - leafBuffer:   maxCells × 256 bytes = 2.56 MB at default 10K cap.
- *   - sampleBuffer: maxCells × 48 bytes  = 480 KB at default 10K cap.
- *   - sampleHeadBuffer: 16 bytes (atomic counter + alignment).
- *   - kdBuffer:     ≤ (2×maxCells+8) × 16 bytes (~321 KB at 10K cap).
- * Total: ~3.7 MB — negligible alongside the main BVH + reservoir buffers.
- *
- * WebGPU minimum buffer size is 4 bytes; all allocations are well above that.
- *
- * @param device   - Live GPUDevice.
- * @param options  - Optional overrides (see PPGBufferOptions).
- * @returns        Allocated PPGBuffers (cells, leaves, samples, sample head, kd-tree).
- *
- * @since Sprint 11, 2026-05-09
- */
-export function createPPGBuffers(device: GPUDevice, options?: PPGBufferOptions): PPGBuffers {
-  const maxCells = options?.maxCells ?? PPG_MAX_SPATIAL_CELLS;
-
-  const storageUsage =
-    GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
-
-  // Each leaf occupies PPG_LEAF_BYTE_STRIDE bytes (256), of which 128 are used
-  // for the 16 atomic-u32-pair bins; 128 bytes are reserved.
-  // The leaf count equals maxCells (1:1 cell-to-leaf mapping in Sprint 11).
-  const leafCount = maxCells;
-
-  // sampleBuffer: one PPGPathSample (48 bytes) per cell as an upper bound.
-  const PPG_PATH_SAMPLE_BYTE_STRIDE = 48;
-
-  const cellBuffer = device.createBuffer({
-    label: 'ppg-cell-buffer',
-    size: Math.max(maxCells * PPG_CELL_BYTE_STRIDE, 16),
-    usage: storageUsage,
-  });
-
-  const leafBuffer = device.createBuffer({
-    label: 'ppg-leaf-buffer',
-    size: Math.max(leafCount * PPG_LEAF_BYTE_STRIDE, 16),
-    usage: storageUsage,
-  });
-
-  const sampleBuffer = device.createBuffer({
-    label: 'ppg-sample-buffer',
-    size: Math.max(maxCells * PPG_PATH_SAMPLE_BYTE_STRIDE, 16),
-    usage: storageUsage,
-  });
-
-  const kdByteSize = Math.max(PPG_KD_MAX_NODES * PPG_KD_NODE_BYTE_STRIDE, 16);
-  const kdBuffer = device.createBuffer({
-    label: 'ppg-kd-buffer',
-    size: kdByteSize,
-    usage: storageUsage,
-  });
-  const sampleHeadBuffer = device.createBuffer({
-    label: 'ppg-sample-head',
-    size: 16,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  device.queue.writeBuffer(sampleHeadBuffer, 0, new Uint32Array(4));
-  const kdSentinel = encodePpgKdDisabledRoot();
-  device.queue.writeBuffer(
-    kdBuffer,
-    0,
-    kdSentinel.buffer as ArrayBuffer,
-    kdSentinel.byteOffset,
-    kdSentinel.byteLength,
-  );
-
-  return { cellBuffer, leafBuffer, sampleBuffer, sampleHeadBuffer, kdBuffer, maxCells };
-}
-
-export function writePpgKdTree(
-  queue: GPUQueue,
-  kdBuffer: GPUBuffer,
-  cells: ReadonlyArray<{ readonly position: readonly [number, number, number] }>,
-  activeCellCount: number,
-): void {
-  const bytes = buildPpgKdTreeGpuBytes(cells, activeCellCount);
-  queue.writeBuffer(
-    kdBuffer,
-    0,
-    bytes.buffer as ArrayBuffer,
-    bytes.byteOffset,
-    bytes.byteLength,
-  );
-}
-
-/**
- * Destroy all buffers in a PPGBuffers bundle. Safe to call from dispose()
- * or when PPG is toggled off. Nullability is not enforced here — callers
- * guard with `if (ppgBuffers)`.
- *
- * @since Sprint 11, 2026-05-09
- */
-export function destroyPPGBuffers(buffers: PPGBuffers): void {
-  buffers.cellBuffer.destroy();
-  buffers.leafBuffer.destroy();
-  buffers.sampleBuffer.destroy();
-  buffers.sampleHeadBuffer.destroy();
-  buffers.kdBuffer.destroy();
 }
 
 /**
@@ -449,39 +249,14 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
 
 /**
  * Options for `createFrameResources`.
- *
- * @since Sprint 11, 2026-05-09 (ppgEnabled added)
  */
 export interface FrameResourceOptions {
-  /**
-   * When true, allocates PPG storage buffers (cellBuffer, leafBuffer,
-   * sampleBuffer, sampleHeadBuffer, kdBuffer). Defaults to false — existing callers are unaffected.
-   *
-   * PPG buffers add about 3.7 MB of GPU memory at the default 10K cell cap.
-   * The Sprint 11 default is disabled; only opt-in consumers (tests or
-   * hosts that explicitly set `ppgEnabled: true` in HybridEngineOptions)
-   * will allocate them.
-   *
-   * @since Sprint 11
-   */
-  ppgEnabled?: boolean;
-
-  /**
-   * Override `PPG_MAX_SPATIAL_CELLS` for PPG buffer sizing (audit M10).
-   * Default `10_000` is fine for Cornell-scale interiors; large outdoor
-   * scenes may need 50K+ for adequate guiding coverage.
-   *
-   * Only consulted when `ppgEnabled === true`.
-   */
-  ppgMaxSpatialCells?: number;
+  // Reserved for future options.
 }
 
 /**
  * Create all per-frame GPU resources for the pipeline. Called once from
  * `initialize()` after BVH upload and before shader compilation.
- *
- * Pass `{ ppgEnabled: true }` to also allocate PPG buffers (Sprint 11).
- * The default is `ppgEnabled: false` — no behavioural change for existing callers.
  */
 export function createFrameResources(
   device: GPUDevice,
@@ -701,21 +476,6 @@ export function createFrameResources(
       GPUTextureUsage.COPY_SRC,
   });
 
-  // Sprint 11 — PPG buffers (opt-in via ppgEnabled, default: disabled).
-  // No behavioural change for existing callers when ppgEnabled is false/unset.
-  // Use a conditional spread so the ppgBuffers key is absent (not undefined)
-  // which satisfies exactOptionalPropertyTypes.
-  const ppgExt: Pick<FrameResources, 'ppgBuffers'> =
-    options?.ppgEnabled === true
-      ? {
-          ppgBuffers: createPPGBuffers(device, {
-            ...(options.ppgMaxSpatialCells !== undefined
-              ? { maxCells: options.ppgMaxSpatialCells }
-              : {}),
-          }),
-        }
-      : {};
-
   // Sprint 15 — GTAO textures (half-res input, full-res upsampled output).
   // `aoFullTexture` is initialised to 1.0 by uploading a buffer of f16 ones
   // so the first frame (before gtao has executed) doesn't darken shade to
@@ -826,7 +586,6 @@ export function createFrameResources(
     indirectDenoisedPongTexture,
     indirectAccumPingTexture,
     indirectAccumPongTexture,
-    ...ppgExt,
   };
 }
 
@@ -868,7 +627,4 @@ export function destroyFrameResources(r: FrameResources): void {
   r.indirectDenoisedPongTexture.destroy();
   r.indirectAccumPingTexture.destroy();
   r.indirectAccumPongTexture.destroy();
-  if (r.ppgBuffers) {          // Sprint 11 — PPG buffers (opt-in, may be absent)
-    destroyPPGBuffers(r.ppgBuffers);
-  }
 }

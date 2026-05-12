@@ -39,7 +39,6 @@ import { packDDGIGridParams } from './pipeline/resourceManager.js';
 import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
-import { aabbFromBvhPositions, buildPpgUniformGridCells } from './ppg/ppgCellUpload.js';
 
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -116,21 +115,6 @@ export interface HybridEngineOptions extends EngineOptions {
    * `window.__DDGI__` inside `typeof window !== 'undefined'` guards.
    */
   readonly debug?: boolean;
-
-  /**
-   * Sprint 11 — Enable PPG (path guiding) buffer allocation + training dispatch.
-   *
-   * When true, the engine allocates PPG storage buffers
-   * (cellBuffer, leafBuffer, sampleBuffer, sampleHeadBuffer, kdBuffer) during
-   * pipeline initialisation, injects training writes into the shade pass, and
-   * dispatches `ppgUpdate` after shade. Sampling guided paths from the learned
-   * distribution remains future work.
-   *
-   * Defaults to false — no behavioural change for existing consumers.
-   *
-   * @since Sprint 11, 2026-05-09
-   */
-  readonly ppgEnabled?: boolean;
 
   /**
    * Post-shade denoiser: `svgf` (default) — temporal Welford + SVGF à-trous;
@@ -272,16 +256,6 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly adaptiveSamplingThresholds?: readonly [low: number, high: number];
 
   /**
-   * Maximum PPG (path-guiding) spatial-cell allocation (audit M10).
-   * Buffer sizing — exceeding this requires re-creating the engine.
-   * Default `10_000` (≈ 3.4 MB) is fine for Cornell-scale interiors;
-   * large outdoor scenes need 50K+ for good guiding coverage.
-   *
-   * @default 10000
-   */
-  readonly ppgMaxSpatialCells?: number;
-
-  /**
    * GTAO (ground-truth ambient occlusion) tuning (audits M1, B3).  All
    * fields optional.  Defaults preserve Cornell behaviour.
    *
@@ -410,17 +384,6 @@ export class HybridEngine implements Engine {
     return p.readGpuTimingsOnce();
   }
 
-  // ── Sprint 11 — PPG state ──────────────────────────────────────────────
-  /**
-   * Whether PPG buffers are allocated. Set at construction from
-   * `HybridEngineOptions.ppgEnabled`. May be toggled post-construction
-   * via `setPPGEnabled()`, but the buffer allocation change only takes
-   * effect on the next `reset()` / `setScene()` cycle (reinitialisation
-   * required to resize GPU allocations).
-   *
-   * Default: false — no behavioural change for existing consumers.
-   */
-  private _ppgEnabled: boolean;
   private readonly _denoiser: 'atrous' | 'svgf';
   /** Audit M4 — null disables the FPS cap; configured at construction. */
   private readonly _targetFrameIntervalMs: number | null;
@@ -454,8 +417,6 @@ export class HybridEngine implements Engine {
   private readonly _adaptiveSamplingThresholdLow: number;
   /** Audit M2 — written into sample-budget UBO each frame. */
   private readonly _adaptiveSamplingThresholdHigh: number;
-  /** Audit M10 — passed to createFrameResources() → createPPGBuffers(). */
-  private readonly _ppgMaxSpatialCells: number | undefined;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -518,7 +479,6 @@ export class HybridEngine implements Engine {
     this._debug                 = opts.debug ?? false;
     this._verbose               = opts.verbose ?? false;
     this._maxBounces            = opts.maxBounces ?? 4;
-    this._ppgEnabled            = opts.ppgEnabled ?? false;
     // Audit B7: validate the denoiser option at construction so an unsupported
     // value (e.g. `'none'`, `'bmfr'`, `'oidn-final'` from the @vitrum/core
     // EngineOptions contract) does not silently coerce to SVGF and produce
@@ -553,7 +513,6 @@ export class HybridEngine implements Engine {
     this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma   ?? 0.25;
     this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
     this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
-    this._ppgMaxSpatialCells = opts.ppgMaxSpatialCells;
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
@@ -909,42 +868,6 @@ export class HybridEngine implements Engine {
     this._layerEnabled.set(layer, enabled);
   }
 
-  // ── Sprint 11 — PPG toggle ─────────────────────────────────────────────
-
-  /**
-   * Enable or disable PPG (path guiding) for subsequent frames.
-   *
-   * The setting takes effect on reinitialisation (`reset()`): frame resources
-   * and pipelines are rebuilt with or without PPG training buffers and dispatch.
-   *
-   * The no-op guarantee: calling `setPPGEnabled(false)` when PPG was never
-   * enabled has zero cost and no side effects. Existing consumers that never
-   * call this method are unaffected.
-   *
-   * @param on - true to enable PPG training path on next reinit; false to disable.
-   *
-   * @since Sprint 11, 2026-05-09
-   */
-  setPPGEnabled(on: boolean): void {
-    if (this._ppgEnabled === on) return;
-    this._ppgEnabled = on;
-    // Reinitialize so createFrameResources receives the new ppgEnabled flag.
-    this.reset();
-    if (this._debug) {
-      console.log('[hybrid:debug] setPPGEnabled', { on, reinitialized: true });
-    }
-  }
-
-  /**
-   * Returns whether PPG is currently enabled.
-   * Reflects the last call to `setPPGEnabled` or the `ppgEnabled` constructor option.
-   *
-   * @since Sprint 11, 2026-05-09
-   */
-  get ppgEnabled(): boolean {
-    return this._ppgEnabled;
-  }
-
   // ── Dispose ────────────────────────────────────────────────────────────
 
   dispose(): void {
@@ -1075,14 +998,10 @@ export class HybridEngine implements Engine {
           bvh,
           getPreferredSwapChainFormat(),
           {
-            ppgEnabled: this._ppgEnabled,
             verbose: this._verbose || this._debug,
             denoiser: this._denoiser,
             cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
             temporalAccumAlpha: this._temporalAccumAlpha,
-            ...(this._ppgMaxSpatialCells !== undefined
-              ? { ppgMaxSpatialCells: this._ppgMaxSpatialCells }
-              : {}),
           },
         );
         const pipelineMs = performance.now() - pipelineStart;
@@ -1095,15 +1014,6 @@ export class HybridEngine implements Engine {
           }
           pipeline.dispose();
           return;
-        }
-
-        if (this._ppgEnabled) {
-          const maxC = pipeline.ppgAllocatedMaxCells;
-          if (maxC > 0) {
-            const box = aabbFromBvhPositions(bvh.bvhPositions.cpuData, bvh.bvhPositions.count);
-            const cells = buildPpgUniformGridCells(box.min, box.max, maxC);
-            pipeline.uploadPpgCells(cells, cells.length);
-          }
         }
 
         // Wire the sun intensity multiplier into DDGI so its Le bake

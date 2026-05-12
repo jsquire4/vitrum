@@ -18,7 +18,6 @@ import {
   getAccumBindGroupLayout,
   getCompositeBindGroupLayout,
   getHybridLayersBindGroupLayout,
-  getHybridLayersBindGroupLayoutWithPpg,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
   getGTAOBindGroupLayout,
@@ -254,15 +253,6 @@ export interface HybridLayersResources {
   ddgiPlaceholderRg16f: GPUTexture;
   nearestSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
-  /** When set, binds PPG training (4–5) + guiding buffers (6–9) for group 3. */
-  readonly ppgTrainBuffers?: {
-    sampleBuffer: GPUBuffer;
-    headBuffer: GPUBuffer;
-    cellBuffer: GPUBuffer;
-    leafBuffer: GPUBuffer;
-    kdBuffer: GPUBuffer;
-    shadeMetaBuffer: GPUBuffer;
-  };
 }
 
 export function buildHybridLayersBindGroup(
@@ -272,30 +262,15 @@ export function buildHybridLayersBindGroup(
 ): GPUBindGroup {
   const irrTex = r.ddgiIrrTex ?? r.ddgiPlaceholderRgba16f;
   const visTex = r.ddgiVisTex ?? r.ddgiPlaceholderRg16f;
-  const ppg = r.ppgTrainBuffers;
-  const layout = ppg
-    ? getHybridLayersBindGroupLayoutWithPpg(device, cache)
-    : getHybridLayersBindGroupLayout(device, cache);
-  const entries: GPUBindGroupEntry[] = [
-    { binding: 0, resource: irrTex.createView() },
-    { binding: 1, resource: visTex.createView() },
-    { binding: 2, resource: r.nearestSampler },
-    { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
-  ];
-  if (ppg) {
-    entries.push(
-      { binding: 4, resource: { buffer: ppg.sampleBuffer } },
-      { binding: 5, resource: { buffer: ppg.headBuffer } },
-      { binding: 6, resource: { buffer: ppg.cellBuffer } },
-      { binding: 7, resource: { buffer: ppg.leafBuffer } },
-      { binding: 8, resource: { buffer: ppg.kdBuffer } },
-      { binding: 9, resource: { buffer: ppg.shadeMetaBuffer } },
-    );
-  }
   return device.createBindGroup({
     label: 'hybrid-layers-bg',
-    layout,
-    entries,
+    layout: getHybridLayersBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: irrTex.createView() },
+      { binding: 1, resource: visTex.createView() },
+      { binding: 2, resource: r.nearestSampler },
+      { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
+    ],
   });
 }
 

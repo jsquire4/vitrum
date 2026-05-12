@@ -67,8 +67,8 @@ describe('Sprint 15 — pass layout integration', () => {
     expect(MAX_PASS_COUNT).toBeGreaterThanOrEqual(19);
   });
 
-  it('SVGF + PPG-off layout includes gtao and gtao-upsample between shade and welford-temporal', () => {
-    const layout = buildPassLayout({ ppgEnabled: false, denoiserMode: 'svgf' });
+  it('SVGF layout includes gtao and gtao-upsample between shade and welford-temporal', () => {
+    const layout = buildPassLayout({ denoiserMode: 'svgf' });
     const labels = layout.labels;
     const shadeIdx = labels.indexOf('shade');
     const gtaoIdx = labels.indexOf('gtao');
@@ -81,26 +81,15 @@ describe('Sprint 15 — pass layout integration', () => {
   });
 
   it('atrous layout (denoiserMode=atrous) also includes gtao slots', () => {
-    const layout = buildPassLayout({ ppgEnabled: false, denoiserMode: 'atrous' });
+    const layout = buildPassLayout({ denoiserMode: 'atrous' });
     expect(layout.labels).toContain('gtao');
     expect(layout.labels).toContain('gtao-upsample');
   });
 
-  it('PPG-on layout still includes gtao slots after ppg-update', () => {
-    const layout = buildPassLayout({ ppgEnabled: true, denoiserMode: 'svgf' });
-    const labels = layout.labels;
-    const ppgIdx = labels.indexOf('ppg-update');
-    const gtaoIdx = labels.indexOf('gtao');
-    // ppg-update sits before gtao in the order (ppg-update is added between
-    // shade and gtao); both should be present.
-    expect(ppgIdx).toBeGreaterThanOrEqual(0);
-    expect(gtaoIdx).toBeGreaterThan(ppgIdx);
-  });
-
   it('slotCount fits within MAX_PASS_COUNT', () => {
-    const layoutSvgf = buildPassLayout({ ppgEnabled: false, denoiserMode: 'svgf' });
-    const layoutPpg = buildPassLayout({ ppgEnabled: true, denoiserMode: 'svgf' });
+    const layoutSvgf = buildPassLayout({ denoiserMode: 'svgf' });
+    const layoutAtrous = buildPassLayout({ denoiserMode: 'atrous' });
     expect(layoutSvgf.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
-    expect(layoutPpg.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
+    expect(layoutAtrous.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
   });
 });

@@ -86,23 +86,19 @@ export { applyDDGIShading } from './rc/applyDDGIShading.js';
 export { PROBE_RAY_CAST_WGSL } from './rc/wgsl/probeRayCast.wgsl.js';
 export { CASCADE_MERGE_WGSL } from './rc/wgsl/cascadeMerge.wgsl.js';
 
-// ─── Sprint 13 — Neural denoiser ─────────────────────────────────────────────
-// InferenceGraph: WebGPU compute-shader inference graph for UNet-style neural denoising.
-// Mode scope: walkaround only (PT final uses Sprint 10b OIDN).
+export type { FrameResourceOptions } from './pipeline/resourceManager.js';
 
-// Inference graph orchestrator and types.
+// ─── Sprint 13 — Neural denoiser scaffold ─────────────────────────────────────
+// InferenceGraph + UNet architecture spec (WebGPU compute-shader inference).
 export { InferenceGraph } from './neural/InferenceGraph.js';
 export type {
-  InferenceLayer,
-  InferenceLayerKind,
   InferenceGraphSpec,
   ModelWeights,
+  InferenceLayer,
+  InferenceLayerKind,
 } from './neural/InferenceGraph.js';
-
-// UNet architecture spec and constants.
 export {
   WALKAROUND_DENOISER_UNET_SPEC,
-  buildUNetSpec,
   UNET_INPUT_CHANNELS,
   UNET_OUTPUT_CHANNELS,
   UNET_ENCODER_CHANNELS,
@@ -111,53 +107,10 @@ export {
   UNET_WEIGHT_BYTES,
   UNET_INPUT_TENSOR_NAMES,
   UNET_OUTPUT_TENSOR_NAMES,
+  buildUNetSpec,
 } from './neural/unetArchitecture.js';
-
-// WGSL primitive kernels (exported for host inspection and headless testing).
 export { CONV2D_WGSL } from './neural/wgsl/conv2d.wgsl.js';
 export { TRANSPOSED_CONV2D_WGSL } from './neural/wgsl/transposedConv2d.wgsl.js';
 export { RELU_WGSL } from './neural/wgsl/relu.wgsl.js';
 export { SKIP_CONNECTION_WGSL } from './neural/wgsl/skipConnection.wgsl.js';
 export { BILINEAR_UPSAMPLE_WGSL } from './neural/wgsl/bilinearUpsample.wgsl.js';
-
-// ─── Sprint 11 — PPG (path guiding) ──────────────────────────────────────────
-// PPG is walkaround-only. WebGL2 PT has no compute shaders and cannot
-// maintain the kd-tree update pass.
-
-// Type definitions (CPU-side) + GPU layout constants.
-export type { PPGDirectionalBin, PPGQuadTreeNode, PPGSpatialCell, PPGBufferOptions } from './ppg/types.js';
-export {
-  PPG_MAX_SPATIAL_CELLS,
-  PPG_DIRECTIONS,
-  PPG_CELL_BYTE_STRIDE,
-  PPG_LEAF_BYTE_STRIDE,
-  PPG_KD_NODE_BYTE_STRIDE,
-  PPG_KD_MAX_NODES,
-} from './ppg/types.js';
-
-// PPG update-pass WGSL (the live training kernel; dispatched from
-// WalkaroundGPUPipeline when PPG is enabled). The companion sample-pass
-// fragment was deleted in P3-C.2 — `shadePpgGuide.wgsl.ts` provides the
-// guided indirect bounce via marker-injection into shade.wgsl with
-// real @group(3) bindings.
-export { PPG_UPDATE_WGSL } from './ppg/wgsl/ppgUpdate.wgsl.js';
-
-// Buffer allocation helpers.
-export {
-  createPPGBuffers,
-  destroyPPGBuffers,
-  writePpgKdTree,
-} from './pipeline/resourceManager.js';
-export {
-  buildPpgKdTreeGpuBytes,
-  encodePpgKdDisabledRoot,
-  ppgNearestCellIndexKd,
-  ppgNearestCellIndexBrute,
-} from './ppg/buildPpgKdTree.js';
-export {
-  aabbFromBvhPositions,
-  buildPpgUniformGridCells,
-  encodePpgCellGpuBytes,
-} from './ppg/ppgCellUpload.js';
-export type { PpgCellPosition } from './ppg/ppgCellUpload.js';
-export type { PPGBuffers, FrameResourceOptions } from './pipeline/resourceManager.js';

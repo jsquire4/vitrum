@@ -36,9 +36,6 @@ describe('Sprint 18 — shade.wgsl split output', () => {
     expect(SHADE_WGSL).toMatch(/textureStore\(hdrIndirectOut,\s*gid\.xy,\s*vec4f\(clampedIndirect/);
   });
 
-  it('preserves the combined variable for PPG record injection', () => {
-    expect(SHADE_WGSL).toContain('let combined = clampedDirect + clampedIndirect');
-  });
 });
 
 describe('Sprint 18 — indirect-combine WGSL', () => {
@@ -61,14 +58,12 @@ describe('Sprint 18 — indirect-combine WGSL', () => {
 
 describe('Sprint 18 — pass-layout placement', () => {
   it('places indirect-combine directly before temporalAccum in every variant', () => {
-    for (const ppgEnabled of [false, true]) {
-      for (const denoiserMode of ['svgf', 'atrous'] as const) {
-        const layout = buildPassLayout({ ppgEnabled, denoiserMode });
-        const combine = layout.labels.indexOf('indirect-combine');
-        const accum = layout.labels.indexOf('temporalAccum');
-        expect(combine).toBeGreaterThanOrEqual(0);
-        expect(accum).toBe(combine + 1);
-      }
+    for (const denoiserMode of ['svgf', 'atrous'] as const) {
+      const layout = buildPassLayout({ denoiserMode });
+      const combine = layout.labels.indexOf('indirect-combine');
+      const accum = layout.labels.indexOf('temporalAccum');
+      expect(combine).toBeGreaterThanOrEqual(0);
+      expect(accum).toBe(combine + 1);
     }
   });
 

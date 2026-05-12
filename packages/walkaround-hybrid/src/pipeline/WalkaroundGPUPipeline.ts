@@ -32,13 +32,8 @@ import {
   buildDDGIPlaceholderUBO,
   createFrameResources,
   destroyFrameResources,
-  writePpgKdTree,
   type FrameResources,
 } from './resourceManager.js';
-import {
-  encodePpgCellGpuBytes,
-  type PpgCellPosition,
-} from '../ppg/ppgCellUpload.js';
 import {
   type BGLCache,
 } from './bindGroupLayouts.js';
@@ -302,11 +297,6 @@ export class WalkaroundGPUPipeline {
   private _indirectTemporalAccumPipeline!: GPUComputePipeline;
   /** Sprint 18 follow-up — ping-pong index for the indirect temporal accumulator. */
   private _indirectAccumPingPong = 0;
-  /** Sprint 11 — shade records training samples; {@link ppgUpdatePipeline} consumes them. */
-  private _ppgEnabled = false;
-  private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
-  /** Valid cell indices are [0 .. {@link _ppgActiveCellCount} - 1] after the last {@link uploadPpgCells}. */
-  private _ppgActiveCellCount = 0;
   private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
 
   /** Ping-pong read index for Welford textures (0 = read varianceBuffer). */
@@ -319,10 +309,10 @@ export class WalkaroundGPUPipeline {
   //  - Builder-managed (lazy): _atrousUboRef and _accumUboRef are passed
   //    by reference into buildAtrousBindGroup / buildAccumBindGroup, which
   //    lazy-allocate on first call so each builder owns its UBO lifetime.
-  //  - Eager: the SVGF and PPG UBOs are allocated in initialize() (gated
-  //    by denoiserMode / ppgEnabled) so renderFrame() can write straight
-  //    into them without first-frame branching.
-  // dispose() walks all seven via the `_perPassUboRefs` array below so
+  //  - Eager: the SVGF UBOs are allocated in initialize() (gated by
+  //    denoiserMode) so renderFrame() can write straight into them without
+  //    first-frame branching.
+  // dispose() walks all via the `_perPassUboRefs` array below so
   // adding a new UBO only requires registering it there.
   private _atrousUboRef: UboRef = { buf: undefined };
   /** Sprint 18 — separate UBO for the indirect-channel atrous chain so it
@@ -332,8 +322,6 @@ export class WalkaroundGPUPipeline {
   private _welfordUboRef: UboRef = { buf: undefined };
   private _svgfVarianceUboRef: UboRef = { buf: undefined };
   private _svgfAtrousUboRef: UboRef = { buf: undefined };
-  private _ppgUpdateUboRef: UboRef = { buf: undefined };
-  private _ppgShadeMetaUboRef: UboRef = { buf: undefined };
   // Sprint 9 — adaptive sampling UBOs.
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
   private _sampleCountUboRef:  UboRef = { buf: undefined };
@@ -346,8 +334,6 @@ export class WalkaroundGPUPipeline {
       this._welfordUboRef,
       this._svgfVarianceUboRef,
       this._svgfAtrousUboRef,
-      this._ppgUpdateUboRef,
-      this._ppgShadeMetaUboRef,
       this._sampleBudgetUboRef,
       this._sampleCountUboRef,
       this._resolveUboRef,
@@ -381,19 +367,9 @@ export class WalkaroundGPUPipeline {
   async readGpuTimingsOnce(): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
     if (!this._initialized) return { perPass: {}, rawBigints: [] };
     const layout = buildPassLayout({
-      ppgEnabled: this._ppgEnabled,
       denoiserMode: this._denoiserMode === 'svgf' ? 'svgf' : 'atrous',
     });
     return readTimestampsOnce(this._device, this._tsState, layout);
-  }
-
-  /**
-   * When PPG buffers are allocated, `ppgBuffers.maxCells`; otherwise `0`.
-   * Used by hosts to size CPU cell grids before {@link uploadPpgCells}.
-   */
-  get ppgAllocatedMaxCells(): number {
-    if (!this._initialized) return 0;
-    return this._res.ppgBuffers?.maxCells ?? 0;
   }
 
   /** Upload BVH data + compile shaders. Must be called once before renderFrame. */
@@ -401,21 +377,17 @@ export class WalkaroundGPUPipeline {
     bvhBuffers: SceneBVHBuffers,
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
     options?: {
-      ppgEnabled?: boolean;
       verbose?: boolean;
       denoiser?: 'atrous' | 'svgf';
       /** Audit B8 — host-overridable camera-move temporal-reset threshold. */
       cameraMoveResetThresholdSq?: number;
       /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
       temporalAccumAlpha?: number;
-      /** Audit M10 — host-overridable PPG spatial-cell allocation cap. */
-      ppgMaxSpatialCells?: number;
     },
   ): Promise<void> {
     const d = this._device;
     const { _width: W, _height: H } = this;
     this._swapChainFormat = swapChainFormat;
-    this._ppgActiveCellCount = 0;
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
     this._bvhNodesBuffer    = uploadBuffer(d, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
@@ -431,27 +403,13 @@ export class WalkaroundGPUPipeline {
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
-    this._res = createFrameResources(d, W, H, {
-      ppgEnabled: options?.ppgEnabled ?? false,
-      ...(options?.ppgMaxSpatialCells !== undefined
-        ? { ppgMaxSpatialCells: options.ppgMaxSpatialCells }
-        : {}),
-    });
+    this._res = createFrameResources(d, W, H);
 
     // ── Compile shaders ───────────────────────────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
       denoiser: options?.denoiser ?? 'svgf',
-      ppgEnabled: options?.ppgEnabled === true,
     });
-    if (options?.ppgEnabled === true) {
-      if (!compiled.ppgUpdatePipeline) {
-        throw new Error('[ReSTIR] PPG enabled but ppgUpdate pipeline is missing.');
-      }
-      if (!('ppgBuffers' in this._res)) {
-        throw new Error('[ReSTIR] PPG enabled but frame resources omit ppgBuffers.');
-      }
-    }
     this._risPipeline       = compiled.risPipeline;
     this._temporalPipeline  = compiled.temporalPipeline;
     this._spatialPipeline   = compiled.spatialPipeline;
@@ -467,8 +425,6 @@ export class WalkaroundGPUPipeline {
     this._welfordPipeline   = compiled.welfordPipeline;
     this._svgfVariancePipeline = compiled.svgfVariancePipeline;
     this._svgfAtrousPipeline   = compiled.svgfAtrousPipeline;
-    this._ppgEnabled           = compiled.ppgEnabled;
-    this._ppgUpdatePipeline    = compiled.ppgUpdatePipeline;
     this._sampleBudgetPipeline = compiled.sampleBudgetPipeline;
     this._resolvePipeline      = compiled.resolvePipeline;
     this._gtaoPipeline         = compiled.gtaoPipeline;
@@ -491,7 +447,7 @@ export class WalkaroundGPUPipeline {
     // Allocate all per-frame UBOs upfront so renderFrame() never blocks on
     // first-frame buffer creation and dispose() never has to guard. Each
     // UBO is small (≤32B); the total fixed cost is ~200B regardless of
-    // denoiser/PPG mode.
+    // denoiser mode.
     const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
     this._atrousUboRef.buf = d.createBuffer({ label: 'atrous-ubo', size: 16, usage: U });
     this._accumUboRef.buf  = d.createBuffer({ label: 'accum-ubo',  size: 16, usage: U });
@@ -504,10 +460,6 @@ export class WalkaroundGPUPipeline {
       this._svgfVarianceUboRef.buf  = d.createBuffer({ label: 'svgf-variance-ubo',  size: SVGF_VARIANCE_UNIFORMS_SIZE_BYTES, usage: U });
       this._svgfAtrousUboRef.buf    = d.createBuffer({ label: 'svgf-atrous-ubo',    size: SVGF_UNIFORMS_SIZE_BYTES, usage: U });
     }
-    if (this._ppgEnabled) {
-      this._ppgUpdateUboRef.buf    = d.createBuffer({ label: 'ppg-update-ubo',    size: 16, usage: U });
-      this._ppgShadeMetaUboRef.buf = d.createBuffer({ label: 'ppg-shade-meta',    size: 16, usage: U });
-    }
 
     this._initialized = true;
     if (options?.verbose) {
@@ -515,51 +467,10 @@ export class WalkaroundGPUPipeline {
     }
   }
 
-  /**
-   * Upload PPG spatial cell centroids and rebuild the kd-tree over
-   * `[0 .. activeCellCount-1]`. Clears directional leaf statistics so training
-   * restarts from a clean slate.
-   */
-  uploadPpgCells(
-    cells: ReadonlyArray<PpgCellPosition>,
-    activeCellCount: number,
-  ): void {
-    if (!this._initialized) {
-      throw new Error('[ReSTIR] uploadPpgCells: pipeline not initialized');
-    }
-    if (!this._ppgEnabled || !this._res.ppgBuffers) {
-      throw new Error('[ReSTIR] uploadPpgCells: PPG is not enabled on this pipeline');
-    }
-    const ppg = this._res.ppgBuffers;
-    if (activeCellCount > ppg.maxCells) {
-      throw new RangeError(
-        `[ReSTIR] uploadPpgCells: activeCellCount ${activeCellCount} > maxCells ${ppg.maxCells}`,
-      );
-    }
-    if (activeCellCount > cells.length) {
-      throw new RangeError(
-        `[ReSTIR] uploadPpgCells: activeCellCount ${activeCellCount} > cells.length ${cells.length}`,
-      );
-    }
-    const enc = encodePpgCellGpuBytes(cells, activeCellCount, ppg.cellBuffer.size);
-    this._device.queue.writeBuffer(
-      ppg.cellBuffer,
-      0,
-      enc.buffer as ArrayBuffer,
-      enc.byteOffset,
-      enc.byteLength,
-    );
-    writePpgKdTree(this._device.queue, ppg.kdBuffer, cells, activeCellCount);
-    const zeros = new Uint8Array(ppg.leafBuffer.size);
-    this._device.queue.writeBuffer(ppg.leafBuffer, 0, zeros);
-    this._ppgActiveCellCount = activeCellCount;
-  }
-
   /** Re-upload emitter data (called on light/panel change).
    *
-   * Re-uploads emitter triangles + power CDF only. CPU-side {@link SceneBVHBuffers.cellPower}
-   * is regenerated when callers rebuild the scene BVH via {@link HybridEngine.setScene} /
-   * `reset()`.
+   * Re-uploads emitter triangles + power CDF only. The scene BVH is rebuilt
+   * via {@link HybridEngine.setScene} / `reset()` when the scene changes.
    */
   updateEmitters(bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf'>): void {
     this._emitterBuffer.destroy();
@@ -644,17 +555,10 @@ export class WalkaroundGPUPipeline {
 
     // ── Dispatch compute passes ───────────────────────────────────────────
     const passLayout = buildPassLayout({
-      ppgEnabled: this._ppgEnabled,
       denoiserMode: this._denoiserMode === 'svgf' ? 'svgf' : 'atrous',
     });
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
-
-    if (this._ppgEnabled && this._res.ppgBuffers) {
-      const ppg = this._res.ppgBuffers;
-      encoder.clearBuffer(ppg.sampleBuffer, 0, ppg.sampleBuffer.size);
-      encoder.clearBuffer(ppg.sampleHeadBuffer, 0, ppg.sampleHeadBuffer.size);
-    }
 
     const wgX = Math.ceil(W / 8);
     const wgY = Math.ceil(H / 8);
@@ -758,13 +662,6 @@ export class WalkaroundGPUPipeline {
     // Combined hybrid-layers bind group at slot 3 holds DDGI inputs
     // (Lovelace caps maxBindGroups=4 so we can't use slot 4).
     // shade.wgsl gates on isDDGIWired().
-    if (this._ppgEnabled && this._res.ppgBuffers && this._ppgShadeMetaUboRef.buf) {
-      d.queue.writeBuffer(
-        this._ppgShadeMetaUboRef.buf,
-        0,
-        new Uint32Array([this._ppgActiveCellCount, 0, 0, 0]),
-      );
-    }
     const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
       ddgiIrrTex:              this._ddgiIrrTex,
       ddgiVisTex:              this._ddgiVisTex,
@@ -772,18 +669,6 @@ export class WalkaroundGPUPipeline {
       ddgiPlaceholderRg16f:    this._res.ddgiPlaceholderRg16f,
       nearestSampler:          this._res.nearestSampler,
       ddgiUboBuffer:           this._res.ddgiUboBuffer,
-      ...(this._ppgEnabled && this._res.ppgBuffers && this._ppgShadeMetaUboRef.buf
-        ? {
-            ppgTrainBuffers: {
-              sampleBuffer:   this._res.ppgBuffers.sampleBuffer,
-              headBuffer:     this._res.ppgBuffers.sampleHeadBuffer,
-              cellBuffer:     this._res.ppgBuffers.cellBuffer,
-              leafBuffer:     this._res.ppgBuffers.leafBuffer,
-              kdBuffer:       this._res.ppgBuffers.kdBuffer,
-              shadeMetaBuffer: this._ppgShadeMetaUboRef.buf,
-            },
-          }
-        : {}),
     });
 
     // Sprint 16 — ReSTIR-GI RIS pass. Half-res dispatch (W/2 × H/2).
@@ -914,35 +799,6 @@ export class WalkaroundGPUPipeline {
       }
     }
 
-    if (this._ppgEnabled && this._ppgUpdatePipeline && this._res.ppgBuffers && this._ppgUpdateUboRef.buf) {
-      const ppg = this._res.ppgBuffers;
-      const sampleCapacity = Math.floor(ppg.sampleBuffer.size / 48);
-      const uPpg = new Uint32Array([
-        sampleCapacity,
-        this._frameCount % 2,
-        this._ppgActiveCellCount,
-        0,
-      ]);
-      d.queue.writeBuffer(this._ppgUpdateUboRef.buf, 0, uPpg);
-      const bgPpgUpdate = d.createBindGroup({
-        layout: this._ppgUpdatePipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._ppgUpdateUboRef.buf } },
-          { binding: 1, resource: { buffer: ppg.sampleBuffer } },
-          { binding: 2, resource: { buffer: ppg.cellBuffer } },
-          { binding: 3, resource: { buffer: ppg.leafBuffer } },
-          { binding: 4, resource: { buffer: ppg.kdBuffer } },
-        ],
-      });
-      const wgPpg = Math.max(1, Math.ceil(sampleCapacity / 64));
-      {
-        const pass = encoder.beginComputePass(computeDesc('ppg-update'));
-        pass.setPipeline(this._ppgUpdatePipeline);
-        pass.setBindGroup(0, bgPpgUpdate);
-        pass.dispatchWorkgroups(wgPpg, 1, 1);
-        pass.end();
-      }
-    }
 
     // ── Camera motion: reset temporal index before denoise / accum ────────
     const dx = inputs.cameraPos[0] - this._lastCameraPos[0];

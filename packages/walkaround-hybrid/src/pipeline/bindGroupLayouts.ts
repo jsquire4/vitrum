@@ -22,8 +22,6 @@ export interface BGLCache {
   composite?: GPUBindGroupLayout;
   accum?: GPUBindGroupLayout;
   hybridLayers?: GPUBindGroupLayout;
-  /** @group(3) with DDGI + optional PPG training storage (bindings 4–5). */
-  hybridPpg?: GPUBindGroupLayout;
   /** Sprint 9 — sample-budget pass bind group layout. */
   sampleBudget?: GPUBindGroupLayout;
   /** Sprint 9 — resolve pass bind group layout. */
@@ -179,9 +177,6 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  * the cascade buffers, params UBO, and setRCInputs wiring all retired
  * together. The RC subsystem remains live for the standalone 'rc'
  * walkaround engine.
- *
- * When {@link getHybridLayersBindGroupLayoutWithPpg} is used, bindings 4–5
- * add PPG training sample array + atomic head (Sprint 11 integration).
  */
 export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.hybridLayers) return cache.hybridLayers;
@@ -389,23 +384,3 @@ export function getIndirectCombineBindGroupLayout(
   return cache.indirectCombine;
 }
 
-/** Hybrid layer bind group with PPG training (4–5) + guiding read paths (6–9). */
-export function getHybridLayersBindGroupLayoutWithPpg(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
-  if (cache.hybridPpg) return cache.hybridPpg;
-  cache.hybridPpg = device.createBindGroupLayout({
-    label: 'hybrid-layers-ppg-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-    ],
-  });
-  return cache.hybridPpg;
-}

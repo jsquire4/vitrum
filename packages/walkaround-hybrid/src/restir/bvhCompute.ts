@@ -90,28 +90,7 @@ export interface SceneBVHBuffers {
   emitters: StorageBufferHandle;
   /** f32[] — CDF over emitter power (same length as emitters). */
   emitterCdf: StorageBufferHandle;
-  /**
-   * f32[] — per-emitter total radiant flux (same length as emitters).
-   *
-   * cellPower[i] = luminance(Le[i]) × area[i] for mesh/triangle-area
-   * emitters, matching the formula used to build the power-CDF.
-   *
-   * Consumed by the light-tree `powers` input in `@vitrum/shared-samplers`
-   * (`buildLightTree`). Power-weighted importance sampling on the GPU side
-   * uses the CDF derived from this field via `buildLightTreeCDF`.
-   *
-   * The field is retained because:
-   *  - the data is small (one f32 per emitter)
-   *  - the round-trip correctness (Le × area scaling) is asserted by
-   *    `__tests__/sprint2-cellPower.test.ts` and useful as a foundation
-   *  - removing + reinstating would churn the public type
-   *
-   * Sentinels: the dummy emitter (inserted when no real emitters exist)
-   * has cellPower = 0.5. This keeps the buffer non-empty so a zero-emitter
-   * scene doesn't break the bind group when the light tree is wired in.
-   */
-  cellPower: StorageBufferHandle;
-  /** Number of entries in the emitters / cdf / cellPower arrays. */
+  /** Number of entries in the emitters / cdf arrays. */
   emitterCount: number;
   totalEmissivePower: number;
   /** Merged geometry (CPU side, for debug / re-upload). */
@@ -203,7 +182,7 @@ export function buildReSTIRSceneBVH(
   // them.
   const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots);
 
-  const { emitterFloats, cdfArray, cellPowerArray, totalEmissivePower } = buildEmitterList(
+  const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(
     shared.indices,
     shared.positions, // stride-4; emitter math reads .xyz only
     shared.normals,
@@ -252,14 +231,6 @@ export function buildReSTIRSceneBVH(
     emitterCdf: {
       cpuData: cdfArray.buffer as ArrayBuffer,
       byteLength: cdfArray.byteLength,
-      count: emitterCount,
-    },
-    // Per-emitter radiant flux (f32[], same length as emitters).
-    // Feeds the shared-samplers light tree (`buildLightTreeCDF`) as its
-    // `powers` input for power-weighted importance sampling.
-    cellPower: {
-      cpuData: cellPowerArray.buffer as ArrayBuffer,
-      byteLength: cellPowerArray.byteLength,
       count: emitterCount,
     },
     emitterCount,

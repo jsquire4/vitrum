@@ -82,8 +82,6 @@ struct DDGIGridUBO {
   visH:      f32,
 };
 @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
-// @@PPG_TRAIN_BINDINGS_INSERT@@
-// @@PPG_GUIDE_DECLS_INSERT@@
 
 // RESERVOIR_DI_STRIDE / loadReservoirDI_rw live in COMMON_WGSL.
 
@@ -396,7 +394,6 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   //   Lo_sunCaustic   sun shadow ray through glass, deterministic
   //   Lo_skyAperture  5-tap sky probe through cutout, scalar luminance
   //   Lo_indirect     ReSTIR-GI half-res reservoir read (Sprint 16), per-channel split (Sprint 18)
-  // @@PPG_BOUNCE_INSERT@@
   //
   // Sprint 15 — GTAO modulates ALL non-emissive lighting terms.
   // - Lo_emit is the light source itself; never darken it.
@@ -454,13 +451,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // converged indirect brightness (~0.3 worst case), generous head-room
   // for legitimate color-bleed peaks, but kills the firefly tail.
   let clampedIndirect = min(indirectRadiance, vec3f(1.0));
-  // PPG record reads the 'combined' variable per its train-record template;
-  // preserve it so guiding sees the full radiance estimate.
-  let combined = clampedDirect + clampedIndirect;
   // Write LINEAR HDR radiance to hdrColorOut — do NOT tone-map here.
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.
-  // @@PPG_RECORD_INSERT@@
   textureStore(hdrColorOut,    gid.xy, vec4f(clampedDirect,            1.0));
   textureStore(hdrIndirectOut, gid.xy, vec4f(clampedIndirect,          1.0));
   textureStore(hdrTotalOut,    gid.xy, vec4f(clampedDirect + clampedIndirect, 1.0));

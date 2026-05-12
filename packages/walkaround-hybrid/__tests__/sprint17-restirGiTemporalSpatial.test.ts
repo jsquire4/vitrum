@@ -84,21 +84,19 @@ describe('Sprint 17 — spatial-GI WGSL', () => {
 
 describe('Sprint 17 — pass-layout placement', () => {
   it('places gi-temporal + gi-spatial-1 + gi-spatial-2 contiguously after gi-ris in every layout variant', () => {
-    for (const ppgEnabled of [false, true]) {
-      for (const denoiserMode of ['svgf', 'atrous'] as const) {
-        const layout = buildPassLayout({ ppgEnabled, denoiserMode });
-        const labels = layout.labels;
-        const giRis = labels.indexOf('gi-ris');
-        const giTemporal = labels.indexOf('gi-temporal');
-        const giS1 = labels.indexOf('gi-spatial-1');
-        const giS2 = labels.indexOf('gi-spatial-2');
-        const shade = labels.indexOf('shade');
-        expect(giRis).toBeGreaterThanOrEqual(0);
-        expect(giTemporal).toBe(giRis + 1);
-        expect(giS1).toBe(giRis + 2);
-        expect(giS2).toBe(giRis + 3);
-        expect(shade).toBe(giS2 + 1);
-      }
+    for (const denoiserMode of ['svgf', 'atrous'] as const) {
+      const layout = buildPassLayout({ denoiserMode });
+      const labels = layout.labels;
+      const giRis = labels.indexOf('gi-ris');
+      const giTemporal = labels.indexOf('gi-temporal');
+      const giS1 = labels.indexOf('gi-spatial-1');
+      const giS2 = labels.indexOf('gi-spatial-2');
+      const shade = labels.indexOf('shade');
+      expect(giRis).toBeGreaterThanOrEqual(0);
+      expect(giTemporal).toBe(giRis + 1);
+      expect(giS1).toBe(giRis + 2);
+      expect(giS2).toBe(giRis + 3);
+      expect(shade).toBe(giS2 + 1);
     }
   });
 
