@@ -41,6 +41,12 @@ export const SHADE_WGSL = /* wgsl */ `
 // per-pixel variance estimate and the sample-budget tier reflect the full
 // signal (direct + indirect), not just the direct channel.
 @group(0) @binding(13) var hdrTotalOut: texture_storage_2d<rgba16float, write>;
+// Item 24 — albedo demodulation (Schied 2017 §4.1). The indirect channel
+// is written WITHOUT the albedo factor so the à-trous chain operates on
+// pure lighting (L/albedo). hdrAlbedoOut carries the visible-point diffuse
+// colour; indirectCombine re-multiplies (filtered_lighting × albedo) after
+// the denoising chain.
+@group(0) @binding(14) var hdrAlbedoOut: texture_storage_2d<rgba16float, write>;
 
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
@@ -115,6 +121,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     // uses depth=0 as a sentinel that distinguishes sky from non-sky and
     // prevents floor radiance bleeding into sky pixels (or vice versa).
     textureStore(gNormalDepthOut, gid.xy, vec4f(0.5, 1.0, 0.5, 0.0));
+    // Item 24: sky pixels have no surface albedo. Write (1,1,1) so
+    // indirectCombine's re-modulation is a no-op for sky pixels.
+    textureStore(hdrAlbedoOut,   gid.xy, vec4f(1.0, 1.0, 1.0, 1.0));
+    textureStore(hdrIndirectOut, gid.xy, vec4f(0.0, 0.0, 0.0, 1.0));
+    textureStore(hdrTotalOut,    gid.xy, vec4f(skyMiss, 1.0));
     return;
   }
 
@@ -332,10 +343,12 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // The result is per-pixel screen-space — the probe grid stops being
   // the per-pixel basis, so cell artefacts go away.
   //
-  // Lo_indirect = albedo * Lo * W * cos(N, wi) * INV_PI
+  // Lo_indirect_lighting = Lo * W * cos(N, wi) * INV_PI  (albedo-demodulated)
   //   - Lo, W from the GI reservoir (half-res; bilinear-blend across 4 cells)
-  //   - albedo is the visible point's diffuse colour
   //   - cos × INV_PI is the receiver Lambertian BRDF response
+  //   - albedo is intentionally OMITTED here (Item 24 — Schied 2017 §4.1
+  //     albedo demodulation). The à-trous chain filters the pure lighting
+  //     signal; indirectCombine re-multiplies by albedo after denoising.
   // Gating: glass/metal surfaces skip this (their Lo_emit drives).
   //         The reservoir was empty-stored by risGi in those cases.
   //
@@ -380,7 +393,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
       if (distS <= 1e-4) { continue; }
       let wi = toS / distS;
       let cosTheta = max(0.0, dot(normal, wi));
-      Lo_indirect = Lo_indirect + g.Lo * albedo * INV_PI * cosTheta * g.W * bw;
+      // Item 24: omit albedo here; indirectCombine applies it post-denoising.
+      Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * bw;
       totalW = totalW + bw;
     }
     if (totalW > 1e-3) {
@@ -454,8 +468,17 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Write LINEAR HDR radiance to hdrColorOut — do NOT tone-map here.
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.
-  textureStore(hdrColorOut,    gid.xy, vec4f(clampedDirect,            1.0));
-  textureStore(hdrIndirectOut, gid.xy, vec4f(clampedIndirect,          1.0));
-  textureStore(hdrTotalOut,    gid.xy, vec4f(clampedDirect + clampedIndirect, 1.0));
+  //
+  // Item 24 — albedo demodulation (Schied 2017 §4.1):
+  //   hdrIndirectOut carries the albedo-demodulated lighting signal
+  //   (L / albedo). indirectCombine re-applies albedo after denoising.
+  //   hdrAlbedoOut carries the visible-point diffuse albedo for that re-modulation.
+  //   hdrTotalOut represents the full radiance (direct + re-modulated indirect)
+  //   so the Welford variance estimate reflects the actual signal energy.
+  textureStore(hdrColorOut,    gid.xy, vec4f(clampedDirect,                          1.0));
+  textureStore(hdrIndirectOut, gid.xy, vec4f(clampedIndirect,                        1.0));
+  textureStore(hdrAlbedoOut,   gid.xy, vec4f(albedo,                                 1.0));
+  // Total = direct + indirect-with-albedo-restored; used only by Welford.
+  textureStore(hdrTotalOut,    gid.xy, vec4f(clampedDirect + clampedIndirect * albedo, 1.0));
 }
 `;

@@ -2,7 +2,11 @@
  * GTAO (Ground-Truth Ambient Occlusion) — half-resolution horizon-based AO.
  *
  * Reference: Jiménez et al. 2016, "Practical Realtime Strategies for Accurate
- * Indirect Occlusion," SIGGRAPH 2016.
+ * Indirect Occlusion," SIGGRAPH 2016. §4.2 Eq. 11 (slice integral).
+ *
+ * XeGTAO reference implementation verified against:
+ *   Intel XeGTAO — https://github.com/GameTechDev/XeGTAO
+ *   (XeGTAO.hlsli, `XeGTAO_MainPass` inner loop)
  *
  * Inputs:
  *   - `gNormalDepth` (rgba16float): xyz = normal × 0.5 + 0.5, w = signed depth
@@ -16,12 +20,25 @@
  * `gtaoUpsample.wgsl.ts`) reconstructs full-res AO from this half-res map.
  *
  * Algorithm summary:
+ *   Decode world-space surface normal from G-buffer.
  *   for each of NUM_DIRECTIONS angular slices on the screen-space tangent plane:
+ *     project surface normal onto the slice plane → get projected-normal angle γ (n)
  *     for each of NUM_STEPS log-spaced step distances along ±direction:
  *       sample depth at p + dir × step (and p − dir × step)
  *       track the maximum horizon angle on each side (cos θ_horizon)
- *     integrate the slice's visible-arc fraction
+ *     clamp θ_h to ± π/2 of γ (upper hemisphere w.r.t. normal)
+ *     integrate the Jiménez 2016 §4.2 Eq. 11 slice AO:
+ *       iarc(h, n) = (cos(n) + 2·h·sin(n) − cos(2·h − n)) / 4
+ *       localVisibility = |projNormal| · (iarc(h0, n) + iarc(h1, n))
  *   ao = average over slices, gamma-corrected.
+ *
+ * Previously this used the simplified Bavoil-style HBAO formula `(h1+h2)/π`
+ * (angular fraction of hemisphere), which ignores the cosine weight relative to
+ * the surface normal (the γ/n terms). The Jiménez integral is the correct
+ * Lambertian-weighted visible-arc integral on the slice plane.
+ *
+ * Multi-bounce (Jiménez 2016 §5.2): deferred — requires an albedo G-buffer
+ * that is not currently wired into the GTAO pass. Tracked separately.
  *
  * Per-pixel jitter on the base direction breaks aliased horizon-ray patterns;
  * the bilateral upsample averages neighbors before the shade pass consumes it,
@@ -60,13 +77,34 @@ struct GTAOUniforms {
 @group(0) @binding(1) var gtao_aoOut:       texture_storage_2d<r16float, write>;
 @group(0) @binding(2) var<uniform> gtao_ubo: GTAOUniforms;
 
-const PI: f32 = 3.14159265359;
+const PI:      f32 = 3.14159265359;
+const PI_HALF: f32 = 1.57079632679;
 const NUM_DIRECTIONS: u32 = 4u;
 const NUM_STEPS:      u32 = 6u;
 
 fn hashPx(p: vec2u) -> f32 {
   let h = sin(f32(p.x) * 12.9898 + f32(p.y) * 78.233) * 43758.5453;
   return fract(h);
+}
+
+// Jiménez 2016 §4.2 Eq. 11 — closed-form slice integral for one horizon side.
+//
+// Derivation (XeGTAO-verified form):
+//   The visible solid-angle arc on the slice plane, Lambertian-weighted by the
+//   surface normal, integrates to:
+//     iarc(h, n) = (cos(n) + 2·h·sin(n) − cos(2·h − n)) / 4
+//   where:
+//     h  = horizon angle for this side (in [-π, π], measured from view axis)
+//     n  = projected-normal angle γ (angle of surface normal from view axis in
+//          the slice plane)
+//
+// This is equivalent to Eq. 11 in the paper after expanding:
+//   cos(γ)·(2θ_h − sin(2θ_h − 2γ)) + sin(γ)·sin²(θ_h − γ) all over 4,
+// rewritten using the identity sin²(x) = (1 − cos(2x))/2 and combining.
+//
+// Reference: XeGTAO.hlsli (iarc0/iarc1 form) — Intel GameTechDev/XeGTAO, MIT licence.
+fn gtaoSliceIntegral(h: f32, n: f32, cosN: f32) -> f32 {
+  return (cosN + 2.0 * h * sin(n) - cos(2.0 * h - n)) * 0.25;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -86,6 +124,9 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
+  // Decode world-space surface normal from G-buffer (stored as n*0.5+0.5).
+  let surfNormal = normalize(center.xyz * 2.0 - 1.0);
+
   let jitter = hashPx(gid.xy);
 
   var aoSum: f32 = 0.0;
@@ -95,9 +136,40 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
     let theta = baseAngle + jitter * (PI / f32(NUM_DIRECTIONS));
     let dir = vec2f(cos(theta), sin(theta));
 
-    // Track the highest cos(horizon) found on each side of this slice.
-    // cos(horizon) > 0 means a sample is *closer* to camera than the center
-    // (occluder above the surface plane). 1 = surface coplanar.
+    // ── Projected-normal angle γ (n) for this slice ──────────────────────
+    //
+    // The slice plane is defined by two axes:
+    //   axisVec  = vec3(dir.x, dir.y, 0.0) — the 2D slice direction lifted
+    //              into 3D; this is the "in-plane perpendicular" (XeGTAO's
+    //              axisVec). We treat screen X/Y as lateral and depth as −Z.
+    //   viewAxis = vec3(0.0, 0.0, -1.0)    — view direction (into screen).
+    //              This is an approximation: correct for orthographic projection
+    //              and a good central-pixel approximation for perspective.
+    //
+    // Project the surface normal onto the slice plane (perpendicular to axisVec)
+    // and compute the signed angle between that projection and viewAxis.
+    //   projNormal = surfNormal − axisVec · dot(surfNormal, axisVec)
+    //   n = signNorm · acos(clamp(dot(projNormal, viewAxis) / |projNormal|))
+    //
+    // Matches XeGTAO.hlsli lines ~640–660.
+    let axisVec = vec3f(dir.x, dir.y, 0.0);
+    let viewAxis = vec3f(0.0, 0.0, -1.0);
+
+    let projNormal = surfNormal - axisVec * dot(surfNormal, axisVec);
+    let projNormalLen = max(length(projNormal), 1e-6);
+
+    // orthoDir = component of dir perpendicular to viewAxis in the slice plane
+    // (XeGTAO's orthoDirectionVec). Used only to determine the sign of n.
+    // In our coord system, orthoDir = vec3(dir.x, dir.y, 0) - it is axisVec
+    // itself here because axisVec lies in the XY plane (depth = 0).
+    let signNorm = sign(dot(axisVec, projNormal));
+    let cosN = clamp(dot(projNormal, viewAxis) / projNormalLen, -1.0, 1.0);
+    // n = γ: signed angle of projected normal from view axis in slice plane.
+    let n = signNorm * acos(cosN);
+
+    // ── Horizon march: track max cos(θ_h) on each side ───────────────────
+    // cos(θ_h) > 0 means the sample rises above the center depth (occluder
+    // above the surface). horizonPos = positive-dir side, horizonNeg = neg side.
     var horizonPos: f32 = -1.0;
     var horizonNeg: f32 = -1.0;
 
@@ -140,12 +212,28 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
 
-    // Slice visibility: visible arc fraction of the upper hemisphere on this
-    // tangent slice. acos(horizon) in [0, π/2] when cosH = 0 → horizon at
-    // ground plane (no occlusion); cosH → 1 → horizon overhead (full block).
-    let h1 = acos(clamp(horizonPos, -1.0, 1.0));
-    let h2 = acos(clamp(horizonNeg, -1.0, 1.0));
-    aoSum = aoSum + (h1 + h2) / PI;
+    // ── Jiménez 2016 §4.2 Eq. 11 slice integral ──────────────────────────
+    //
+    // Convert cos(θ_h) → θ_h angles, placing them in the signed-angle frame:
+    //   h0 = horizon angle for the negative-direction side → maps to [-π, 0]
+    //   h1 = horizon angle for the positive-direction side → maps to [0, +π]
+    //
+    // Clamp to ±π/2 around n so we only integrate the upper hemisphere
+    // w.r.t. the surface normal (XeGTAO.hlsli commented-out clamp lines):
+    //   h0 = n + clamp(h0 - n, -π/2, +π/2)
+    //   h1 = n + clamp(h1 - n, -π/2, +π/2)
+    let h0_raw = -acos(clamp(horizonNeg, -1.0, 1.0)); // negative side → [-π, 0]
+    let h1_raw =  acos(clamp(horizonPos, -1.0, 1.0)); // positive side → [0, +π]
+
+    let h0 = n + clamp(h0_raw - n, -PI_HALF, PI_HALF);
+    let h1 = n + clamp(h1_raw - n, -PI_HALF, PI_HALF);
+
+    // Weighted by how much of the normal lies in the slice plane.
+    // projNormalLen → 1 when normal is in-plane; → 0 when normal is
+    // perpendicular to the slice (slice contributes nothing for that normal).
+    let localVis = projNormalLen * (gtaoSliceIntegral(h0, n, cosN)
+                                  + gtaoSliceIntegral(h1, n, cosN));
+    aoSum = aoSum + localVis;
   }
 
   let aoRaw = clamp(aoSum / f32(NUM_DIRECTIONS), 0.0, 1.0);

@@ -542,6 +542,8 @@ export class WalkaroundGPUPipeline {
       reservoirGiCurrentBuffer: this._res.reservoirGiCurrentBuffer,
       hdrIndirectTexture:      this._res.hdrIndirectTexture,
       hdrTotalTexture:         this._res.hdrTotalTexture,
+      // Item 24 — albedo demodulation (Schied 2017 §4.1).
+      albedoTexture:           this._res.albedoTexture,
     });
     const bgScene = buildSceneBindGroup(d, this._bglCache, {
       bvhNodesBuffer:    this._bvhNodesBuffer,
@@ -876,6 +878,9 @@ export class WalkaroundGPUPipeline {
         denoisedIndirect.createView(),
         gNormalDepthView,
         combinedTex.createView(),
+        // Item 24 — albedo demodulation: re-modulate denoised indirect lighting
+        // by the visible-point albedo written by shade (Schied 2017 §4.1).
+        this._res.albedoTexture.createView(),
       );
       const pass = encoder.beginComputePass(computeDesc('indirect-combine'));
       pass.setPipeline(this._indirectCombinePipeline);

@@ -45,6 +45,8 @@ export interface FrameBindGroupResources {
   hdrIndirectTexture: GPUTexture;
   /** Sprint 18 follow-up — total-radiance HDR output (shade write, welford read). */
   hdrTotalTexture: GPUTexture;
+  /** Item 24 — visible-point diffuse albedo (shade write, indirectCombine read). */
+  albedoTexture: GPUTexture;
 }
 
 export function buildFrameBindGroup(
@@ -79,6 +81,9 @@ export function buildFrameBindGroup(
       { binding: 12, resource: r.hdrIndirectTexture.createView() },
       // Sprint 18 follow-up — total-radiance output (welford input).
       { binding: 13, resource: r.hdrTotalTexture.createView() },
+      // Item 24 — albedo demodulation: shade writes visible-point albedo here;
+      // indirectCombine reads it to re-modulate the denoised indirect signal.
+      { binding: 14, resource: r.albedoTexture.createView() },
     ],
   });
 }
@@ -499,6 +504,8 @@ export function buildIndirectCombineBindGroup(
   hdrIndirectView: GPUTextureView,
   gNormalDepthView: GPUTextureView,
   combinedOutView: GPUTextureView,
+  /** Item 24 — albedo texture view for re-modulation after indirect denoising. */
+  albedoView: GPUTextureView,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: 'indirect-combine-bg',
@@ -508,6 +515,8 @@ export function buildIndirectCombineBindGroup(
       { binding: 1, resource: hdrIndirectView },
       { binding: 2, resource: gNormalDepthView },
       { binding: 3, resource: combinedOutView },
+      // Item 24 — re-modulate denoised indirect by albedo (Schied 2017 §4.1).
+      { binding: 4, resource: albedoView },
     ],
   });
 }

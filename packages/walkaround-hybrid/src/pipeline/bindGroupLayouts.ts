@@ -74,6 +74,10 @@ export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
       // Written by shade as direct + indirect. Welford reads it so the variance
       // / tier estimate covers the full signal, not just the direct channel.
       { binding: 13, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      // Item 24 — albedo demodulation (Schied 2017 §4.1). Written by shade
+      // alongside hdrIndirectOut; read by indirectCombine to re-modulate the
+      // denoised lighting signal back to full outgoing radiance.
+      { binding: 14, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
     ],
   });
   return cache.frame;
@@ -366,6 +370,7 @@ export function getIndirectTemporalAccumBindGroupLayout(
  *   1 — hdrIndirect    (rgba16float, sampled, unfilterable)
  *   2 — gNormalDepth   (rgba16float, sampled, unfilterable)
  *   3 — combinedOut    (rgba16float, write-only storage)
+ *   4 — albedo         (rgba16float, sampled, unfilterable) — Item 24
  */
 export function getIndirectCombineBindGroupLayout(
   device: GPUDevice,
@@ -379,6 +384,9 @@ export function getIndirectCombineBindGroupLayout(
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      // Item 24 — albedo demodulation (Schied 2017 §4.1).
+      // Re-modulates the denoised indirect lighting signal by albedo.
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
     ],
   });
   return cache.indirectCombine;

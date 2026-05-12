@@ -235,6 +235,46 @@ function uploadInterleavedRgAsRg32f(
 }
 
 /**
+ * Albedo demodulation helpers — Schied 2017 §4.1.
+ *
+ * `demodulateAlbedo`: divide rgb by albedo (per channel, clamped to 1e-3
+ * to avoid division by zero on black surfaces). Returns a new Float32Array.
+ *
+ * `remodulateAlbedo`: multiply filtered lighting by albedo to restore the
+ * physically correct denoised outgoing radiance. Modifies `rgb` in-place
+ * and returns it.
+ */
+
+/** Divide rgb by albedo; returns a new Float32Array of the demodulated signal. */
+function demodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
+  const out = new Float32Array(rgb.length);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const si = i * 3;
+    const ar = Math.max(albedo[si]     ?? 0, 1e-3);
+    const ag = Math.max(albedo[si + 1] ?? 0, 1e-3);
+    const ab = Math.max(albedo[si + 2] ?? 0, 1e-3);
+    out[si]     = (rgb[si]     ?? 0) / ar;
+    out[si + 1] = (rgb[si + 1] ?? 0) / ag;
+    out[si + 2] = (rgb[si + 2] ?? 0) / ab;
+  }
+  return out;
+}
+
+/** Multiply rgb by albedo in-place; returns the same Float32Array. */
+function remodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
+  for (let i = 0; i < pixelCount; i += 1) {
+    const si = i * 3;
+    const ar = albedo[si]     !== undefined ? albedo[si]!     : 1;
+    const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
+    const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
+    rgb[si]     = (rgb[si]     ?? 0) * ar;
+    rgb[si + 1] = (rgb[si + 1] ?? 0) * ag;
+    rgb[si + 2] = (rgb[si + 2] ?? 0) * ab;
+  }
+  return rgb;
+}
+
+/**
  * Validates sizes of optional à-trous + variance G-buffer CPU slices.
  * Call from hosts before `runAtrousVarianceWebGPU` when assembling buffers manually.
  */
@@ -262,6 +302,9 @@ export function assertAtrousVarianceWebGPUBufferShapes(opts: AtrousVarianceWebGP
   }
   if (opts.welfordMeanM2 != null) {
     need(opts.welfordMeanM2.length >= px * 2, 'welfordMeanM2 length must be >= width * height * 2');
+  }
+  if (opts.albedoRgb != null) {
+    need(opts.albedoRgb.length >= px * 3, 'albedoRgb length must be >= width * height * 3');
   }
 }
 
@@ -336,6 +379,20 @@ export interface AtrousVarianceWebGPUOptions {
    * Length `width * height * 2`. Supply when frameCount >= ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT for temporal variance.
    */
   readonly welfordMeanM2?: Float32Array;
+
+  /**
+   * Per-pixel diffuse albedo (row-major RGB, length `width * height * 3`).
+   *
+   * When supplied, enables albedo demodulation per Schied 2017 §4.1:
+   *   1. Before filtering: `lighting = rgb / max(albedo, 1e-3)` (per channel).
+   *   2. À-trous chain filters the pure lighting signal.
+   *   3. After filtering: `output = filtered_lighting × albedo`.
+   *
+   * Without this, albedo-correlated high-frequency variation (texture
+   * boundaries, material edges) bleeds into the lighting during spatial
+   * filtering and produces blurry material boundaries.
+   */
+  readonly albedoRgb?: Float32Array;
 
   /** Overrides ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS when real G-buffer slices are omitted. */
   readonly syntheticGbufferFallback?: AtrousVarianceSyntheticGbufferFallback;
@@ -528,7 +585,16 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
     atrousUbos.push(ubo);
   }
 
-  uploadRgbAsRgba16f(device, colorPingA, opts.rgb, w, h);
+  // Item 24 — albedo demodulation (Schied 2017 §4.1).
+  // When albedoRgb is supplied, divide the input rgb by albedo before
+  // uploading to the GPU so the à-trous chain filters pure lighting.
+  // The demodulated buffer is used ONLY for colorPingA (the à-trous input);
+  // inputColor (the variance pass input) receives the original rgb so the
+  // variance estimate reflects the actual noisy signal energy.
+  const rgbForAtrous = opts.albedoRgb != null
+    ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h)
+    : opts.rgb;
+  uploadRgbAsRgba16f(device, colorPingA, rgbForAtrous, w, h);
 
   // Build the alternating bind groups up front: A→B for even iterations,
   // B→A for odd. Each pair is paired with its iteration's UBO.
@@ -572,6 +638,12 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
 
   const finalTex = readTex;
   const rgbOut = await readRgba16fToRgbFloat(device, finalTex, w, h);
+
+  // Item 24 — albedo re-modulation: multiply the filtered lighting by albedo
+  // to restore the correct denoised outgoing radiance.
+  if (opts.albedoRgb != null) {
+    remodulateAlbedo(rgbOut, opts.albedoRgb, w * h);
+  }
 
   inputColor.destroy();
   prevRadiance.destroy();

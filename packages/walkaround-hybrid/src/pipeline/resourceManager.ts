@@ -133,6 +133,14 @@ export interface FrameResources {
    */
   indirectAccumPingTexture: GPUTexture;
   indirectAccumPongTexture: GPUTexture;
+  /**
+   * Item 24 — visible-point diffuse albedo (rgba16float, full-res). Written by
+   * shade alongside hdrIndirectOut. indirectCombine reads this to re-modulate
+   * the denoised lighting signal: `output = filtered_lighting × albedo`.
+   * Albedo demodulation (Schied 2017 §4.1) keeps high-frequency albedo
+   * variation out of the à-trous chain, preventing material-boundary bleed.
+   */
+  albedoTexture: GPUTexture;
 }
 
 /**
@@ -550,6 +558,19 @@ export function createFrameResources(
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
   });
 
+  // Item 24 — albedo demodulation (Schied 2017 §4.1). Full-res rgba16float
+  // texture that carries the visible-point diffuse albedo written by shade.
+  // indirectCombine reads it to re-multiply the denoised lighting signal.
+  const albedoTexture = device.createTexture({
+    label: 'albedo-demodulation',
+    size: [W, H],
+    format: 'rgba16float',
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC,
+  });
+
   return {
     reservoirCurrentBuffer,
     reservoirPreviousBuffer,
@@ -586,6 +607,7 @@ export function createFrameResources(
     indirectDenoisedPongTexture,
     indirectAccumPingTexture,
     indirectAccumPongTexture,
+    albedoTexture,
   };
 }
 
@@ -627,4 +649,5 @@ export function destroyFrameResources(r: FrameResources): void {
   r.indirectDenoisedPongTexture.destroy();
   r.indirectAccumPingTexture.destroy();
   r.indirectAccumPongTexture.destroy();
+  r.albedoTexture.destroy();
 }

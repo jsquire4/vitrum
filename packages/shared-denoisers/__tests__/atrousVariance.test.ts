@@ -275,6 +275,33 @@ describe('packAtrousVarianceVarianceUniforms', () => {
   });
 });
 
+// ── Item 24 — albedo demodulation contract (Schied 2017 §4.1) ─────────────────
+//
+// These tests verify that the WGSL shader module does NOT claim to perform
+// demodulation internally (it operates on whatever signal is passed via
+// inputColor) and that the TS-level contract markers are correct. The actual
+// demodulate/remodulate math is tested at the CPU-helper level in
+// atrousVarianceWebGpuInputs.test.ts.
+
+describe('Item 24 — albedo demodulation WGSL contract', () => {
+  it('atrous pass reads inputColor without any albedo divide (demodulation is caller responsibility)', () => {
+    // The WGSL shader should NOT contain an albedo demodulation operation —
+    // demodulation is applied by the host before uploading to colorPingA.
+    // Check that the atrous entry point reads inputColor directly, not a
+    // derived lighting buffer. We verify the atrous pass still contains the
+    // standard textureLoad on atrous_inputColor (no implicit albedo divide).
+    expect(ATROUS_VARIANCE_WGSL).toContain('textureLoad(atrous_inputColor,');
+  });
+
+  it('does not declare an albedo texture binding (demodulation is host-side)', () => {
+    // The à-trous shader module does NOT add an albedo binding — that binding
+    // lives in shade.wgsl (write) and indirectCombine.wgsl (re-modulate read).
+    // This test ensures a future refactor does not accidentally pull albedo
+    // into the shared-denoisers shader.
+    expect(ATROUS_VARIANCE_WGSL).not.toContain('albedo');
+  });
+});
+
 // ── ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS sanity checks ─────────────────────
 
 describe('ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS', () => {

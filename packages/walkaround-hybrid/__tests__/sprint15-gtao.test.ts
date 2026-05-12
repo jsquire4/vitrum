@@ -4,6 +4,9 @@
  * Verifies the WGSL strings contain expected entry points + key constants,
  * the pass layout includes `gtao` and `gtao-upsample` in the right order,
  * and MAX_PASS_COUNT was bumped to accommodate the new slots.
+ *
+ * Also includes Item 23 (sweep 2026-05-11): TypeScript mirror of the Jiménez
+ * 2016 §4.2 slice integral to verify the corrected AO formula analytically.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -35,6 +38,25 @@ describe('Sprint 15 — GTAO WGSL', () => {
     // The sky-miss early-out should set the output to fully lit.
     expect(GTAO_WGSL).toMatch(/centerDepth\s*<\s*1e-4/);
     expect(GTAO_WGSL).toContain('textureStore(gtao_aoOut, gid.xy, vec4f(1.0))');
+  });
+
+  it('GTAO_WGSL uses Jiménez 2016 slice integral (gtaoSliceIntegral fn)', () => {
+    // Verify the shader contains the corrected integral helper, not the
+    // old simplified (h1+h2)/PI formula.
+    expect(GTAO_WGSL).toContain('fn gtaoSliceIntegral');
+    // Must reference horizon clamping to upper hemisphere (±π/2 around n).
+    expect(GTAO_WGSL).toContain('PI_HALF');
+    // Must decode the surface normal from the G-buffer.
+    expect(GTAO_WGSL).toContain('surfNormal');
+    // Old simplified formula must NOT appear.
+    expect(GTAO_WGSL).not.toContain('(h1 + h2) / PI');
+  });
+
+  it('GTAO_WGSL decodes surface normal from G-buffer before the slice loop', () => {
+    // projNormal computation requires surfNormal; this asserts the decode is present.
+    expect(GTAO_WGSL).toContain('center.xyz * 2.0 - 1.0');
+    expect(GTAO_WGSL).toContain('projNormal');
+    expect(GTAO_WGSL).toContain('projNormalLen');
   });
 });
 
@@ -91,5 +113,168 @@ describe('Sprint 15 — pass layout integration', () => {
     const layoutAtrous = buildPassLayout({ denoiserMode: 'atrous' });
     expect(layoutAtrousVariance.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
     expect(layoutAtrous.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Item 23 (sweep 2026-05-11) — Jiménez 2016 §4.2 slice integral: CPU mirror
+//
+// TypeScript mirror of the gtaoSliceIntegral() WGSL function + the per-slice
+// visibility computation. No GPU required. Tests verify the corrected formula
+// against known analytical values.
+//
+// Coordinate convention (matches the WGSL implementation):
+//   - viewAxis = (0, 0, -1) — view direction (into screen / along depth)
+//   - h0 = -acos(horizonNeg) in [-π, 0]  (negative slice side)
+//   - h1 =  acos(horizonPos) in  [0, π]  (positive slice side)
+//   - n  = signed angle of projected normal from viewAxis in slice plane
+//   - cosN = cos(n)
+//   - iarc(h, n) = (cosN + 2·h·sin(n) − cos(2·h − n)) / 4
+//   - localVis = projNormalLen · (iarc(h0, n) + iarc(h1, n))
+//
+// Reference: Jiménez et al. 2016, §4.2 Eq. 11;
+//            Intel XeGTAO.hlsli (iarc0/iarc1 form).
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PI_CONST      = Math.PI;
+const PI_HALF_CONST = Math.PI / 2;
+
+/** TypeScript mirror of the WGSL gtaoSliceIntegral(h, n, cosN). */
+function gtaoSliceIntegral(h: number, n: number, cosN: number): number {
+  return (cosN + 2.0 * h * Math.sin(n) - Math.cos(2.0 * h - n)) * 0.25;
+}
+
+/**
+ * Compute the Jiménez 2016 per-slice visibility for a given surface normal
+ * and pair of horizon cosines.
+ */
+function computeSliceVisibility(
+  surfNormal: [number, number, number],
+  sliceDir: [number, number],
+  horizonPos: number,
+  horizonNeg: number,
+): number {
+  const axisVec: [number, number, number] = [sliceDir[0], sliceDir[1], 0.0];
+  const viewAxis: [number, number, number] = [0.0, 0.0, -1.0];
+
+  const dot3 = (a: [number, number, number], b: [number, number, number]): number =>
+    a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+  const sub3 = (a: [number, number, number], s: number, v: [number, number, number]): [number, number, number] =>
+    [a[0] - s*v[0], a[1] - s*v[1], a[2] - s*v[2]];
+  const len3 = (a: [number, number, number]): number => Math.sqrt(dot3(a, a));
+  const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+
+  const dotNAxis = dot3(surfNormal, axisVec);
+  const projNormal = sub3(surfNormal, dotNAxis, axisVec);
+  const projNormalLen = Math.max(len3(projNormal), 1e-6);
+
+  const signNorm = Math.sign(dot3(axisVec, projNormal)) || 1.0;
+  const cosN = clamp(dot3(projNormal, viewAxis) / projNormalLen, -1.0, 1.0);
+  const n = signNorm * Math.acos(cosN);
+
+  const h0_raw = -Math.acos(clamp(horizonNeg, -1.0, 1.0));
+  const h1_raw =  Math.acos(clamp(horizonPos, -1.0, 1.0));
+
+  const h0 = n + clamp(h0_raw - n, -PI_HALF_CONST, PI_HALF_CONST);
+  const h1 = n + clamp(h1_raw - n, -PI_HALF_CONST, PI_HALF_CONST);
+
+  return projNormalLen * (gtaoSliceIntegral(h0, n, cosN) + gtaoSliceIntegral(h1, n, cosN));
+}
+
+/** Compute full AO by averaging slice visibility over numDirs uniform slices. */
+function computeAOUniformSlices(
+  horizonPos: number,
+  horizonNeg: number,
+  surfNormal: [number, number, number],
+  numDirs = 4,
+): number {
+  let aoSum = 0.0;
+  for (let d = 0; d < numDirs; d++) {
+    const theta = (d / numDirs) * PI_CONST;
+    const dir: [number, number] = [Math.cos(theta), Math.sin(theta)];
+    aoSum += computeSliceVisibility(surfNormal, dir, horizonPos, horizonNeg);
+  }
+  return Math.min(1.0, Math.max(0.0, aoSum / numDirs));
+}
+
+describe('Item 23 — Jiménez 2016 GTAO slice integral (CPU mirror)', () => {
+  /**
+   * Unoccluded surface: both horizons at the ground plane (cosH = 0 → θ_h = π/2).
+   * With the surface normal pointing toward the camera (0,0,-1), the full upper
+   * hemisphere is visible; AO should be close to 1.0.
+   */
+  it('fully unoccluded surface (horizons at equator) → AO ≈ 1.0', () => {
+    const normalTowardCamera: [number, number, number] = [0, 0, -1];
+    const ao = computeAOUniformSlices(0.0, 0.0, normalTowardCamera);
+    expect(ao).toBeGreaterThan(0.9);
+    expect(ao).toBeLessThanOrEqual(1.0);
+  });
+
+  /**
+   * Fully occluded surface: both horizons at zenith (cosH = 1 → θ_h = 0).
+   * Every direction above the surface is blocked; AO should be near 0.
+   */
+  it('fully occluded surface (horizons at zenith) → AO ≈ 0.0', () => {
+    const normalTowardCamera: [number, number, number] = [0, 0, -1];
+    const ao = computeAOUniformSlices(1.0, 1.0, normalTowardCamera);
+    expect(ao).toBeLessThan(0.1);
+  });
+
+  /**
+   * Half-occluded: positive side blocked (cosH=1), negative side open (cosH=0).
+   * AO should be strictly between 0 and 1 (around 0.3–0.7 range).
+   */
+  it('half-occluded surface → AO in (0.3, 0.7)', () => {
+    const normalTowardCamera: [number, number, number] = [0, 0, -1];
+    const ao = computeAOUniformSlices(1.0, 0.0, normalTowardCamera);
+    expect(ao).toBeGreaterThan(0.3);
+    expect(ao).toBeLessThan(0.7);
+  });
+
+  /**
+   * Normal perpendicular to the view axis: AO should still be a valid
+   * factor in [0, 1].
+   */
+  it('normal perpendicular to view axis (+Y) unoccluded → AO in [0, 1]', () => {
+    const normalUp: [number, number, number] = [0, 1, 0];
+    const ao = computeAOUniformSlices(0.0, 0.0, normalUp);
+    expect(ao).toBeGreaterThanOrEqual(0.0);
+    expect(ao).toBeLessThanOrEqual(1.0);
+  });
+
+  /**
+   * gtaoSliceIntegral boundary: h=0, n=0 (horizon at normal baseline).
+   * (cos(0) + 2·0·sin(0) − cos(0)) / 4 = (1 + 0 − 1) / 4 = 0.
+   */
+  it('gtaoSliceIntegral: h=0, n=0 → 0.0 (no visible arc at normal baseline)', () => {
+    expect(gtaoSliceIntegral(0, 0, Math.cos(0))).toBeCloseTo(0.0, 6);
+  });
+
+  /**
+   * gtaoSliceIntegral boundary: h=π/2, n=0 (full positive hemisphere open).
+   * (1 + 2·(π/2)·0 − cos(π − 0)) / 4 = (1 + 0 − (−1)) / 4 = 0.5.
+   */
+  it('gtaoSliceIntegral: h=π/2, n=0 → 0.5 (full positive arc, normal at viewAxis)', () => {
+    expect(gtaoSliceIntegral(PI_HALF_CONST, 0, Math.cos(0))).toBeCloseTo(0.5, 5);
+  });
+
+  /**
+   * Verify the Jiménez formula differs from the old (h)/π simplified form
+   * for a tilted normal, confirming the correct formula is used.
+   * For n=π/4, h=π/2:
+   *   iarc = (cos(π/4) + π·sin(π/4) − cos(π − π/4)) / 4
+   */
+  it('gtaoSliceIntegral: tilted normal (n=π/4, h=π/2) matches Jiménez closed form', () => {
+    const n = PI_CONST / 4;
+    const h = PI_HALF_CONST;
+    const cosN = Math.cos(n);
+    const result = gtaoSliceIntegral(h, n, cosN);
+
+    const expected = (Math.cos(n) + 2.0 * h * Math.sin(n) - Math.cos(2.0 * h - n)) * 0.25;
+    expect(result).toBeCloseTo(expected, 10);
+
+    // The old simplified formula would give h/π ≈ 0.5; the Jiménez form differs.
+    const oldFormula = h / PI_CONST;
+    expect(Math.abs(result - oldFormula)).toBeGreaterThan(0.05);
   });
 });
