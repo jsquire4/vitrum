@@ -518,6 +518,52 @@ support to the WebGL2 path tracer.
 
 **Effort:** 2–4 weeks (depends on fork's current state).
 
+### stainedGlass-driven adds (audit 2026-05-12)
+
+Added per the gap audit at `plan/stainedGlass-gap-audit-2026-05-12.md`.
+Folded into this in-flight branch since the user explicitly authorized
+"get it in now while we're doing this work."
+
+- **SG.A — anisotropy round-trip (Gap 5):** add `anisotropy` +
+  `anisotropyRotation` to `@vitrum/core` Material; read in
+  `convertMaterial`; write in `vitrumSceneToThree`. Ripple/waterglass
+  cells gain correct anisotropic highlight in PT. ~½ day.
+- **SG.B — three.js peer dep relaxation (Gap 4):** vitrum requires
+  `three ^0.184`; stainedGlass at 0.171. Either (a) relax peerDeps to
+  `>=0.171 <0.190` after API audit, or (b) hard-document the upgrade
+  requirement. Eliminates `as any` casts at every host bridge call.
+  ~½ day.
+- **SG.C — `HybridEngine.updateLighting()` (Gap 1):** runtime light
+  update API. Re-uploads sun UBO + invalidates DDGI probe cache +
+  resets temporal accumulator. Eliminates the engine-recreation
+  workaround documented at `useVitrumWalkaroundEngine.ts:34` (which
+  blocks smooth time-of-day scrubbing). Medium scope, ~2 days. Land
+  after H3 (PPG) commits to release HybridEngine.ts.
+- **SG.D — per-material spectral pipeline through fork (Gap 2):** THE
+  load-bearing find. `forkUniformBridge.ts` uploads only global CMF
+  tables; per-material `spectralAttenuation` / `thinFilmStack` /
+  `scatteringCoefficient` are dropped at the bridge. Cobalt, iron,
+  Se/Cd, gold-ruby glass all render via RGB approximation in current
+  PT renders. Fix requires:
+    1. pt-webgl: per-material spectral upload path
+       (`forkUniformBridge.ts` extension).
+    2. Fork: extend `MaterialsTexture` packing to carry per-material
+       spectral data (Sprint 12 was "partial" — this completes it).
+    3. Fork: BSDF spectral consumer reads from MaterialsTexture
+       instead of global tables.
+  Naturally folds into the H6 chain since both are fork-side work
+  and Sprint 5's MRT G-buffer infrastructure is the structural
+  prerequisite. Schedule as **H6.6 — Sprint 12 completion** after
+  Sprint 10c (H6.5). Multi-day fork patch.
+
+**Surprising finding NOT in scope here** — surprise #3 in the audit:
+walkaround engine bypasses `sceneFromThreeJS` and reads raw THREE.Scene.
+All `userData.vitrum*` stamps are available but only `surfaceTextureId`
+is read. The contract is asymmetrically enforced (pt-webgl honors it;
+walkaround doesn't). That's a **Tier 3 architectural concern** — folds
+into T3.A (unified `createEngine` + canonical Scene flow) when Tier 3
+ships.
+
 ### Phase H6 — BDPT chain (Sprints 4 → 5 → 6 → 10c) — EXPANDED 2026-05-12
 
 **Originally:** "Sprint 10c BDPT fork dispatch."
@@ -543,6 +589,7 @@ usable client-facing render workflow and a "render overnight" workflow.
 - **H6.3** — Regression-test Sprints 7 (volume scatter, fork commit `260c432`), 8 (chromatic dispersion `7ffd15d`), 12 (hero spectral `8917492`), 14 (layered BSDF `ee379dc`) against the new MRT base. Forward-port any broken integrator paths.
 - **H6.4** — Apply Sprint 6 fork patch per `plan/archive/sprint-6-pt-fork-patch.md`. Builds on Sprint 5.
 - **H6.5** — Apply Sprint 10c BDPT integrator (per the original spec, was at `plan/sprint-10c-pt-fork-patch.md` — now likely moved to `plan/archive/`). GLSL port of H4's `bdptConnectionMIS_full` power heuristic. Vertex pdf storage uses the Sprint 5 MRT ping-pong infrastructure.
+- **H6.6 — Sprint 12 completion (per-material spectral)** — per stainedGlass audit Gap 2. Extend `MaterialsTexture` in the fork to carry per-material `spectralAttenuation` (32 bins × 4 bytes), `thinFilmStack` (variable; 8-layer cap), `scatteringCoefficient`. BSDF reads from MaterialsTexture for these. pt-webgl `forkUniformBridge.ts` uploads per-material spectral data alongside the existing global CMF tables. Cobalt/iron/Se-Cd/gold-ruby glass start rendering with TRUE per-wavelength absorption instead of RGB Beer-Lambert approximation. ~3-5 days fork work.
 - **Vitrum-side bridge** (small): pt-webgl exposes a `bdpt: boolean` option in `createPTEngine_WebGL2`; the fork interprets it.
 
 **Effort:** 3–4 weeks. The risk is H6.3 — Sprints 7/8/12/14 may not adapt cleanly to MRT and need re-authoring.
