@@ -1,0 +1,13 @@
+{
+  "name": "@vitrum/shader-compile-ci",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Headless-Chromium CI guard: loads each cornell-box scenario, asserts no GLSL shader-compile / link / WebGL errors.",
+  "type": "module",
+  "scripts": {
+    "shader-compile-ci": "node ./run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.59.1"
+  }
+}
