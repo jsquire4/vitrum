@@ -1,7 +1,11 @@
 # Sprint 10c — BDPT Fork Patch Specification
 
-**Status**: vitrum-side scaffold COMPLETE. Fork patch PENDING (requires GPU render
-environment and Sprint 2–7 patches applied in order first).
+**Status**: vitrum-side scaffold COMPLETE. Fork patch BLOCKED — prerequisite
+Sprints 4, 5, 6 fork patches do not exist (no spec files in plan/, no commits in
+fork). Sprint 5 MRT G-buffer (`WebGLMultipleRenderTargets`, gColor/gNormalDepth/gAlbedo)
+is required by the ping-pong light-subpath texture architecture and is absent from the
+fork. Implementation attempt on 2026-05-12 confirmed blocked at this gate.
+Sprint 2 (commit 5388ef0) and Sprint 3 (commit e656a73) are applied.
 
 **Replaces**: `plan/sprint-10c-deferred.md` (archived below as an appendix).
 

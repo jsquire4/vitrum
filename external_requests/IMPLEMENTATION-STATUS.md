@@ -15,6 +15,14 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
 - Vitrum **`npm run fork-shader-smoke`** invokes the fork `scripts/shader-smoke-check.js`; Playwright capture adapter appends **`vitrumScenario` / `vitrumSeed` / …** query params for host pages.
 - Final GPU render/perf validation remains pending and tracked in `plan/gap-closure-verification-2026-05-10.md`.
 
+## Sprint 10c BDPT Fork Dispatch: BLOCKED (2026-05-12)
+
+- **Depends on**: vitrum `bdptConnectionMIS_full` + `buildBDPTStrategyPDFs_full` — DONE at commit d5d94a4 (T2.H4).
+- **Fork prerequisite state**: Sprint 2 (5388ef0) and Sprint 3 (e656a73) applied. Sprints 4, 5, 6 — no spec files exist in `plan/`, no commits in fork.
+- **Blocker**: Sprint 5 MRT G-buffer (`WebGLMultipleRenderTargets` with gColor / gNormalDepth / gAlbedo) is a structural dependency of the light-subpath ping-pong texture architecture. That infrastructure does not exist in the fork. The spec (§ "WebGL2 vertex storage decision") explicitly states the ping-pong approach "reuses the Sprint 5 `WebGLMultipleRenderTargets` pattern". Implementing Sprint 10c without Sprint 5 would require redesigning the vertex storage from scratch, which is out of scope for this patch.
+- **Required next step**: Author Sprint 4, 5, 6 spec files in `plan/` and apply the corresponding fork patches before re-attempting Sprint 10c.
+- **GLSL-side approach** (per spec): GLSL-only MIS — the `bdptMISWeight` inline is a direct GLSL port of the TypeScript `bdptConnectionMIS_full` power heuristic; no CPU round-trip. CPU-side `buildBDPTStrategyPDFs_full` / `bdptConnectionMIS_full` remain reference implementations only.
+
 ## RFE-07 Sprint 7 Volume Scattering: APPLIED
 
 - Fork commit hash: `260c432`

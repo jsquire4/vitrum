@@ -21,14 +21,12 @@ export {
   rgbToSpectralCoefficients,
   evaluateSpectrum,
 } from './jakobHanika.js';
-// ── Sprint 10c (BDPT) — DEFERRED ──────────────────────────────────────────────
-// Trigger criterion: Sprint 7 hero-render floor-caustic noise exceeds threshold.
-// Until Sprint 10c is officially opened, these exports are present but not
-// integrated. See plan/sprint-10c-pt-fork-patch.md for the full spec and
-// plan/archive/phase-6-roadmap.md §Sprint 10c for the trigger gate.
-// AUDIT NOTE L-3 (2026-05-09): Exports appear in the public API before
-// integration testing is complete. They compile and are tested structurally
-// in __tests__/bdpt.test.ts, but the fork-side dispatch is deferred.
+// ── Sprint 10c (BDPT) ────────────────────────────────────────────────────────
+// Sprint 10c is open (un-deferred by user 2026-05-12). The _full MIS helpers
+// (T2.H4) are the canonical consumer-facing API. Fork-side GLSL dispatch is
+// BLOCKED on Sprints 4–6 fork patches (no spec or fork commits exist for those
+// sprints yet). See plan/sprint-10c-pt-fork-patch.md §Status for full blocker
+// detail and external_requests/IMPLEMENTATION-STATUS.md §Sprint 10c.
 export {
   BDPT_KIND_LIGHT,
   BDPT_KIND_EYE,
