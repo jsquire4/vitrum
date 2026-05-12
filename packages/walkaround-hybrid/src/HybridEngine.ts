@@ -41,8 +41,8 @@ import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import { aabbFromBvhPositions, buildPpgUniformGridCells } from './ppg/ppgCellUpload.js';
 
-/** Per-frame target interval (60 FPS soft-cap). */
-const TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
+/** Default per-frame target interval (~60 FPS soft-cap). */
+const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -60,8 +60,10 @@ export interface HybridEngineOptions extends EngineOptions {
 
   /**
    * Predicate the engine polls before kicking off ReSTIR pipeline init.
-   * Returns true when the scene has enough geometry to build a meaningful BVH.
-   * Defaults to the `defaultIsSceneReady` heuristic (>= 200 triangles).
+   * Returns true when the scene has enough geometry to build a BVH.
+   * Defaults to the `defaultIsSceneReady` heuristic (any triangle present).
+   * Override if your scene loads asynchronously and you need a different
+   * signal (e.g. wait for a specific async asset, or require N triangles).
    */
   readonly isSceneReady?: () => boolean;
 
@@ -135,6 +137,48 @@ export interface HybridEngineOptions extends EngineOptions {
    * `atrous` — legacy three-pass edge-stopping à-trous only.
    */
   readonly denoiser?: 'atrous' | 'svgf';
+
+  // ── Library-generality knobs (audit follow-up) ──────────────────────────
+  // All optional; defaults preserve Cornell-test-scene behaviour byte-for-
+  // byte. Hosts targeting other scene scales / intensities should set them.
+
+  /**
+   * Per-frame render-interval cap in **milliseconds**. Null disables the
+   * cap (every rAF call dispatches a frame). Pass `1000/30 - 1` for a 30
+   * FPS ceiling, `1000/120 - 1` for 120 FPS.  Default `1000/60 - 1` (~60
+   * FPS soft-cap).  Scene-independent — purely a host-side governor.
+   *
+   * @default 1000/60 - 1
+   */
+  readonly targetFrameIntervalMs?: number | null;
+
+  /**
+   * Camera squared-distance threshold (**world-space units²**) for
+   * resetting the temporal accumulator.  When the camera moves more than
+   * `sqrt(threshold)` units in one frame, the accumulator's history is
+   * discarded and accumulation restarts at α=1.
+   *
+   * **Scene-scale-sensitive**.  Default `1.0` is tuned to Cornell's ~2-unit
+   * room. For a 100-unit city block, this never trips (permanent ghosting);
+   * for a 1-unit jewellery scene, every micro-movement trips it. Recommended
+   * default for hosts is `(sceneDiagonal × 0.001)²`.
+   *
+   * @default 1.0
+   */
+  readonly cameraMoveResetThresholdSq?: number;
+
+  /**
+   * Per-frame temporal-accumulator EMA weight.  `1.0` = no history (single
+   * frame), `0.01` = 99% history retain.
+   *
+   * **Framerate-sensitive**.  Default `0.01` is tuned for ~60 FPS Cornell
+   * convergence. At 30 FPS the same α doubles temporal lag; at 120 FPS it
+   * halves convergence-back-to-steady-state after a camera stop. For
+   * FPS-independent feel, set `1 - exp(-frameTime × k)` for a chosen k.
+   *
+   * @default 0.01
+   */
+  readonly temporalAccumAlpha?: number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -150,7 +194,12 @@ function defaultIsSceneReady(scene: THREE.Scene): boolean {
     const idx = mesh.geometry.index;
     total += idx ? idx.count / 3 : (mesh.geometry.attributes['position']?.count ?? 0) / 3;
   });
-  return total >= 200;
+  // Audit M5: was `total >= 200`, calibrated to Cornell-scale scenes.
+  // Procedurally-generated terrain or sparse-geometry scenes may have far
+  // fewer triangles and a perfectly valid BVH; the 200 floor silently
+  // blocked them. Hosts with stricter readiness signals supply their own
+  // `isSceneReady` callback.
+  return total > 0;
 }
 
 /** Get the preferred swap-chain format from the browser GPU. */
@@ -250,6 +299,12 @@ export class HybridEngine implements Engine {
    */
   private _ppgEnabled: boolean;
   private readonly _denoiser: 'atrous' | 'svgf';
+  /** Audit M4 — null disables the FPS cap; configured at construction. */
+  private readonly _targetFrameIntervalMs: number | null;
+  /** Audit B8 — passed to WalkaroundGPUPipeline at initialize() time. */
+  private readonly _cameraMoveResetThresholdSq: number;
+  /** Audit M3 — passed to WalkaroundGPUPipeline at initialize() time. */
+  private readonly _temporalAccumAlpha: number;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -326,6 +381,11 @@ export class HybridEngine implements Engine {
       );
     }
     this._denoiser             = opts.denoiser ?? 'svgf';
+    this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
+      ? opts.targetFrameIntervalMs
+      : DEFAULT_TARGET_FRAME_INTERVAL_MS;
+    this._cameraMoveResetThresholdSq = opts.cameraMoveResetThresholdSq ?? 1.0;
+    this._temporalAccumAlpha    = opts.temporalAccumAlpha ?? 0.01;
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
@@ -446,8 +506,12 @@ export class HybridEngine implements Engine {
     if (!bvh)      { if (dbg) dbg.skipNoBvh++;      return skipOutput; }
 
     const now = performance.now();
-    if (this._lastFrameTs !== 0 &&
-        now - this._lastFrameTs < TARGET_FRAME_INTERVAL_MS) {
+    // Audit M4: configurable FPS cap. `null` disables the throttle so VR /
+    // 90+ Hz displays get every frame. Default preserves Cornell's 60-FPS
+    // soft-cap.
+    if (this._targetFrameIntervalMs !== null &&
+        this._lastFrameTs !== 0 &&
+        now - this._lastFrameTs < this._targetFrameIntervalMs) {
       if (dbg) dbg.skipFrameInterval++;
       // CRITICAL on >60Hz displays: even though the heavy pipeline is
       // throttled to 60 FPS, the host's rAF still acquires a fresh swap-
@@ -827,7 +891,13 @@ export class HybridEngine implements Engine {
         await pipeline.initialize(
           bvh,
           getPreferredSwapChainFormat(),
-          { ppgEnabled: this._ppgEnabled, verbose: this._verbose || this._debug, denoiser: this._denoiser },
+          {
+            ppgEnabled: this._ppgEnabled,
+            verbose: this._verbose || this._debug,
+            denoiser: this._denoiser,
+            cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
+            temporalAccumAlpha: this._temporalAccumAlpha,
+          },
         );
         const pipelineMs = performance.now() - pipelineStart;
 

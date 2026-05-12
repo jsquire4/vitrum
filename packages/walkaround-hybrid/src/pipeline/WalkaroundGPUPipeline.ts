@@ -139,13 +139,20 @@ export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = [
 ];
 
 /**
- * Camera squared-distance threshold for temporal accumulator reset.
- * Tuned to OrbitControls damping: after a drag release, damping continues
- * to move the camera by ~0.1–0.5" per frame for ~30 frames before settling.
- * Threshold 1.0 lets damping ride through to α=0.1 while still resetting
- * history on actual pan/orbit. (WARM-4 fix: was inline magic literal `1.0`.)
+ * Default camera squared-distance threshold for temporal accumulator reset.
+ * 1.0 is calibrated to Cornell's ~2-unit room + OrbitControls damping
+ * (~0.1–0.5 units per frame for ~30 frames after a drag release). Hosts on
+ * different scene scales should override via
+ * `HybridEngineOptions.cameraMoveResetThresholdSq`. See audit B8.
  */
-const CAMERA_MOVE_RESET_THRESHOLD_SQ = 1.0;
+const DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ = 1.0;
+
+/**
+ * Default per-frame temporal-accumulator EMA weight. 0.01 = 99% history
+ * retain, tuned for Cornell convergence at ~60 FPS. Framerate-dependent;
+ * see audit M3.
+ */
+const DEFAULT_TEMPORAL_ACCUM_ALPHA = 0.01;
 
 export interface PipelineFrameInputs {
   /** Camera view matrix (column-major mat4x4f, 16 floats). The pipeline
@@ -241,6 +248,10 @@ export class WalkaroundGPUPipeline {
   private _compositePipeline!: GPURenderPipeline;
   /** `svgf` — variance-guided (default). `atrous` — legacy three-pass à-trous only. */
   private _denoiserMode: 'atrous' | 'svgf' = 'svgf';
+  /** Audit B8 — populated at initialize() time from HybridEngineOptions. */
+  private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
+  /** Audit M3 — populated at initialize() time from HybridEngineOptions. */
+  private _temporalAccumAlpha = DEFAULT_TEMPORAL_ACCUM_ALPHA;
   private _welfordPipeline: GPUComputePipeline | undefined = undefined;
   private _svgfVariancePipeline: GPUComputePipeline | undefined = undefined;
   private _svgfAtrousPipeline: GPUComputePipeline | undefined = undefined;
@@ -354,7 +365,15 @@ export class WalkaroundGPUPipeline {
   async initialize(
     bvhBuffers: SceneBVHBuffers,
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
-    options?: { ppgEnabled?: boolean; verbose?: boolean; denoiser?: 'atrous' | 'svgf' },
+    options?: {
+      ppgEnabled?: boolean;
+      verbose?: boolean;
+      denoiser?: 'atrous' | 'svgf';
+      /** Audit B8 — host-overridable camera-move temporal-reset threshold. */
+      cameraMoveResetThresholdSq?: number;
+      /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
+      temporalAccumAlpha?: number;
+    },
   ): Promise<void> {
     const d = this._device;
     const { _width: W, _height: H } = this;
@@ -399,6 +418,10 @@ export class WalkaroundGPUPipeline {
     this._accumPipeline     = compiled.accumPipeline;
     this._compositePipeline = compiled.compositePipeline;
     this._denoiserMode      = compiled.denoiserMode;
+    this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
+      ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
+    this._temporalAccumAlpha = options?.temporalAccumAlpha
+      ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
     this._welfordPipeline   = compiled.welfordPipeline;
     this._svgfVariancePipeline = compiled.svgfVariancePipeline;
     this._svgfAtrousPipeline   = compiled.svgfAtrousPipeline;
@@ -875,7 +898,7 @@ export class WalkaroundGPUPipeline {
     const dy = inputs.cameraPos[1] - this._lastCameraPos[1];
     const dz = inputs.cameraPos[2] - this._lastCameraPos[2];
     const camMoveSq = dx * dx + dy * dy + dz * dz;
-    const isMoving = camMoveSq > CAMERA_MOVE_RESET_THRESHOLD_SQ;
+    const isMoving = camMoveSq > this._cameraMoveResetThresholdSq;
     if (isMoving) {
       this._accumFrameIndex = 0;
     }
@@ -960,7 +983,7 @@ export class WalkaroundGPUPipeline {
     // threshold — and the camera-motion path still forces α=1 on a real
     // move so motion responsiveness is unchanged (just slower to converge
     // back to steady state after a stop).
-    const alpha = this._accumFrameIndex === 0 ? 1.0 : 0.01;
+    const alpha = this._accumFrameIndex === 0 ? 1.0 : this._temporalAccumAlpha;
     this._lastCameraPos = [...inputs.cameraPos];
 
     {
