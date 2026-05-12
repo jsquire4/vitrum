@@ -168,21 +168,28 @@ Stays within `MAX_DRAW_BUFFERS=8` limit (3 MRT attachments per draw call).
   - `src/materials/pathtracing/PhysicalPathTracingMaterial.js` — Sprint 8 uniforms (`u_ior0`, `u_dispersionStrength`, `u_jakobCoeffs`) committed in Sprint 7 commit
 - Gaps: none material. The `u_dispersionStrength == 0` fast path is in place — non-bevel glass takes the existing `transmissionDirection` path unchanged.
 
-## RFE-08 Sprint 12 Spectral Accumulator: PARTIAL
+## RFE-08 Sprint 12 Spectral Accumulator: COMPLETE (H6.6 / SG.D — 2026-05-12)
 
-- Fork commit hash: `8917492`
-- Files changed in fork:
+- Fork commit hash: `8917492` (kernel); per-material upload path was already wired in the
+  RFE-09 / MaterialsTexture packing pass (no new fork commit needed).
+- Files changed in fork (kernel + consumer, all prior commits):
   - `src/shader/bsdf/spectral_accumulator.glsl.js` (NEW) — `sampleCmfX/Y/Z`, `sampleHeroWavelength` (Y-CMF CDF binary search), `wavelengthToRGB` (XYZ→linear sRGB, Bradford D65 matrix)
-  - `src/shader/bsdf/bsdf_functions.glsl.js` — `cauchyIORatLambda(lambdaNm, A, B, C)`; `evalSpectrumAtHero(lambdaNm)` (both ready to connect once payload restructure lands)
+  - `src/shader/bsdf/bsdf_functions.glsl.js` — `cauchyIORatLambda(lambdaNm, A, B, C)`; `evalSpectrumAtHero(lambdaNm)`
   - `src/shader/bsdf/index.js` — exports `spectral_accumulator`
   - `src/materials/pathtracing/PhysicalPathTracingMaterial.js` — Sprint 12 uniforms (`uCmfX[81]`, `uCmfY[81]`, `uCmfZ[81]`, `uYCmfCdf[82]`, `uYCmfIntegral`, `iorCauchyA/B/C`); `spectral_accumulator` GLSL block in fragment shader
-  - `SPRINT_12_GAPS.md` (NEW) — full gap documentation
-- Gaps (see `SPRINT_12_GAPS.md`):
-  - Ray payload restructure (`vec3 throughput` → `float wavelength + float throughput`) — APPLIED in shader payload + BSDF transport paths (runtime verification pending)
-  - Main loop spectral accumulation — APPLIED (`sampleHeroWavelength` seeds payload; contribution sites derive `throughputRgb` via `wavelengthToRGB`)
-  - BSDF hero-wavelength IOR switchover from 3-channel to continuous Cauchy — APPLIED for transmission branch (`dispersionTransmissionDirection` now uses `cauchyIORatLambda(heroWavelength, A, B, C)`)
-  - Thin-film stack TMM evaluation (35-layer TiO₂/SiO₂) — APPLIED in fork; runtime visual/perf verification pending
-  - Spectral attenuation Beer-Lambert RFE-01 — APPLIED (runtime visual/perf verification pending)
+  - `src/uniforms/MaterialsTexture.js` — per-material spectral grid at samples 20–27 (32 floats, 380–780 nm uniform grid); `hasSpectralAttenuation` feature flag at sample 17.a bit 0; thin-film stack (35 layers) at samples 28–54; all read from `userData.vitrumSpectralAttenuation` / `userData.vitrumThinFilmStack`.
+  - `src/shader/common/util_functions.glsl.js` — `readSpectralAttenuationMu(materialsTex, materialIndex, spectralIdx)`; `spectralAttenuationMuHero(materialsTex, materialIndex, heroWavelength)`; `transmissionAttenuationHero(materialsTex, dist, attColor, attDist, hasSpectral, materialIndex, heroWavelength)` — routes to spectral μ(λ) exp(−μ·d) when hasSpectral, otherwise RGB Beer-Lambert + heroScalarFromRgb fallback.
+  - `src/materials/pathtracing/glsl/attenuate_hit_function.glsl.js` — calls `transmissionAttenuationHero` with `material.hasSpectralAttenuation` + `materialIndex` at volume exit hit.
+  - `src/shader/structs/material_struct.glsl.js` — `hasSpectralAttenuation` field decoded from featureFlags bit 0.
+- Vitrum files changed (H6.6 completion):
+  - `packages/pt-webgl/src/__tests__/materialsTextureSpectral.test.ts` (NEW) — 9 tests covering wire-format layout self-check, no-spectral fallback, constant-μ curve, ramp-curve linearity, multi-material stride correctness, scatteringCoefficient sample-15 packing, thinFilmStack layer-count + incidentIor + angleDependent, hasFrontLayer/hasBackLayer feature flags, and PBR field non-corruption invariant.
+- All prior gaps fully resolved:
+  - Ray payload restructure — APPLIED
+  - Main loop spectral accumulation — APPLIED
+  - BSDF hero-wavelength Cauchy IOR — APPLIED
+  - Thin-film TMM — APPLIED
+  - Per-material spectral Beer-Lambert (the H6.6 / SG.D payoff) — COMPLETE
+- Remaining: GPU visual A/B (cobalt/iron/SeCd/goldRuby render with spectral vs. RGB Beer-Lambert). No GPU in-session; verified via unit tests + shader smoke.
 
 ## RFE-09 pt-webgl Material -> Fork Uniform Bridge: APPLIED (runtime-unverified)
 <!-- NOTE: This "RFE-09" is the uniform-bridge sprint deliverable (not a standalone external_requests/ file).

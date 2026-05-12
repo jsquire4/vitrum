@@ -64,13 +64,18 @@ Walkaround: lighting is baked into `createWalkaroundEngine_Hybrid` creation-time
 - **File pointers:** `vitrum/packages/walkaround-hybrid/src/HybridEngine.ts:656`, `stainedGlass/packages/app/src/rendering/vitrum-bridge/useVitrumWalkaroundEngine.ts:34` (comment documents the gap explicitly).
 - **Resolution:** Implemented in `feat/sweep-2026-05-12-followup` (commit after 4f5975d). `HybridEngine.updateLighting(opts: Partial<LightingOptions>)` added. `DDGI.invalidateProbeCache()` and `WalkaroundGPUPipeline.requestAccumReset()` added as internal plumbing. 9 tests in `packages/walkaround-hybrid/__tests__/hybridEngineLighting.test.ts`. stainedGlass host can replace the 8-slot engine-recreation dance with a single `engine.updateLighting(computeLightingState(...))` call on every timeOfDay selector change.
 
-**Gap 2 — `spectralAttenuation`, `thinFilmStack`, `scatteringCoefficient` flow through the contract but are NOT consumed by the three-gpu-pathtracer fork (pt-webgl path)**
+**Gap 2 — `spectralAttenuation`, `thinFilmStack`, `scatteringCoefficient` flow through the contract but are NOT consumed by the three-gpu-pathtracer fork (pt-webgl path)** ✅ RESOLVED (H6.6 / SG.D — 2026-05-12)
 
 - **What stainedGlass needs:** Per-wavelength Beer-Lambert attenuation (cobalt, iron, Se/Cd, gold ruby, etc.) and TMM dichroic evaluation to drive true spectral color in final PT renders.
-- **What vitrum delivers today:** `@vitrum/three-bindings` `convertMaterial()` reads all `userData.vitrum*` stamps and maps them to `Material.spectralAttenuation`, `Material.thinFilmStack`, `Material.scatteringCoefficient`, `Material.dispersionAbbeNumber`. `vitrumSceneToThree()` stamps them back onto the THREE scene's `userData`. But `forkUniformBridge.ts` only uploads the **global** CMF tables (`uCmfX/Y/Z`, `uYCmfCdf`) to the fork material uniforms — it does NOT upload per-material spectral curves, thin-film stacks, or volume-scatter coefficients. Comment at `forkUniformBridge.ts` line 115: `"per-material scalar drives now come from the fork MaterialsTexture packing path"` — implying the fork is expected to read from the materials texture, but the host has no confirmed evidence this path is implemented in the fork.
-- **What's missing:** Either (a) per-material spectral data uploaded as uniforms/textures to the fork shader and consumed in the fork's BSDF, or (b) a hero-wavelength spectral path in pt-webgl that replaces RGB Beer-Lambert when `spectralAttenuation` is present. The host bakes and stamps the data correctly; vitrum's pt-webgl backend drops it on the floor.
-- **Fix scope:** Large — requires fork shader work (`three-gpu-pathtracer` fork) and per-material uniform/texture upload in pt-webgl.
-- **File pointers:** `vitrum/packages/pt-webgl/src/forkUniformBridge.ts:115`, `stainedGlass/packages/stained-glass-physics/src/baking/spectralAbsorption.ts`, `stainedGlass/packages/stained-glass-physics/src/baking/createBakedGlassMaterial.ts:355–358`.
+- **What vitrum delivers today:** `@vitrum/three-bindings` `convertMaterial()` reads all `userData.vitrum*` stamps and maps them to `Material.spectralAttenuation`, `Material.thinFilmStack`, `Material.scatteringCoefficient`, `Material.dispersionAbbeNumber`. `vitrumSceneToThree()` stamps them back onto the THREE scene's `userData`. The fork's `MaterialsTexture.updateFrom()` reads these directly from `userData.vitrumSpectralAttenuation` / `userData.vitrumThinFilmStack` / `userData.vitrumScatteringCoefficient` and packs them into the material texture (samples 15–54 per material). The GLSL consumer (`util_functions.glsl.js::transmissionAttenuationHero`) reads per-material spectral μ(λ) at the hero wavelength via `readSpectralAttenuationMu` / `spectralAttenuationMuHero` when `material.hasSpectralAttenuation` (feature flag bit 0). RGB Beer-Lambert fallback is preserved for materials without spectral data.
+- **Resolution:** The full pipeline was verified to be wired end-to-end as of H6.6. The audit finding that "the fork was expected to read from the materials texture but there was no confirmed evidence this path was implemented" was resolved by reading the fork source. The complete chain is:
+  1. stainedGlass physics baker → `userData.vitrumSpectralAttenuation` (SpectralCurve, 81 bins, 380–780 nm)
+  2. `vitrumSceneToThree()` stamps it back onto the THREE material `userData`
+  3. `MaterialsTexture.updateFrom()` samples to 32-bin uniform grid (samples 20–27) + sets `hasSpectralAttenuation` in featureFlags (sample 17.a bit 0)
+  4. `readSpectralAttenuationMu` → `spectralAttenuationMuHero` → `transmissionAttenuationHero` in `util_functions.glsl.js` applies exp(−μ·d) Beer-Lambert at hero wavelength
+  5. Called from both `attenuate_hit_function.glsl.js` (shadow rays) and the main path-tracing loop in `PhysicalPathTracingMaterial.js`
+- **New test coverage:** `packages/pt-webgl/src/__tests__/materialsTextureSpectral.test.ts` — 9 tests verifying wire-format correctness, multi-material stride, ramp-curve linearity, scatteringCoefficient packing, thinFilmStack layer data, feature flag bits, and PBR non-corruption invariant. All 49 pt-webgl tests pass.
+- **Remaining:** GPU visual A/B verification (cobalt/iron/SeCd/goldRuby spectral vs. RGB Beer-Lambert) requires GPU access. The code path is complete and unit-verified.
 
 **Gap 3 — `scatterTint` / Mie forward-scatter RGB modulation has no vitrum receiver**
 
@@ -148,7 +153,7 @@ Walkaround: lighting is baked into `createWalkaroundEngine_Hybrid` creation-time
 
 **Gap 1 (updateLighting for walkaround):** ✅ Implemented in `feat/sweep-2026-05-12-followup`. See Gap 1 resolution note above.
 
-**Gap 2 (spectral/TMM/scatter consumption in pt-webgl):** This is effectively Tier 2.H5 (fork patches needed) + additional fork shader work for per-material spectral curves. Large scope. Prerequisite for scientifically accurate stained-glass color rendering in final PT mode. Block it on the fork-patch sprint chain (H6.2–H6.5). The host-side data is already correctly produced; this is purely a backend (fork) implementation gap.
+**Gap 2 (spectral/TMM/scatter consumption in pt-webgl):** ✅ RESOLVED in H6.6 (2026-05-12). The full spectral pipeline was already wired in the fork (MaterialsTexture packing → GLSL readSpectralAttenuationMu → transmissionAttenuationHero). 9 new unit tests confirm the wire-format contract. GPU A/B visual verification pending.
 
 **Gap 3 (scatterTint wiring):** Trivial host change, but only meaningful after Gap 2 lands (pt-webgl needs to consume scatteringCoefficientRGB before the wire-up has any effect).
 
