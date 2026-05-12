@@ -49,6 +49,16 @@ export { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from './shaders/composite.wg
 // Shared lib utilities
 export { upgradeToNodeMaterial } from './lib/nodeMaterialUpgrade.js';
 
+// Wire contract: surface-texture id enum (consumed by host scene
+// bindings that stamp `userData.surfaceTextureId`, by `packBVHIndexW`,
+// and by the WGSL `surfaceTextureMod` switch in
+// shaders/surfaceTextures.wgsl.ts).
+export {
+  SURFACE_TEXTURE_ID,
+  type SurfaceTextureName,
+  type SurfaceTextureId,
+} from './surfaceTextureIds.js';
+
 // ─── RC subsystem ─────────────────────────────────────────────────────────────
 // Cascade pyramid storage layout.
 export {
