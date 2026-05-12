@@ -67,13 +67,87 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
   - None of the above sprints write to gNormalDepth/gAlbedo, so no regressions in their output paths.
   - GPU visual A/B (no-MRT host vs MRT host gColor agreement) pending as part of H6.3 verification.
 
-## Sprint 10c BDPT Fork Dispatch: BLOCKED (2026-05-12)
+## Sprint 10c BDPT Fork Dispatch: APPLIED (2026-05-12)
 
-- **Depends on**: vitrum `bdptConnectionMIS_full` + `buildBDPTStrategyPDFs_full` — DONE at commit d5d94a4 (T2.H4).
-- **Fork prerequisite state**: Sprint 2 (5388ef0) and Sprint 3 (e656a73) applied. Sprints 4, 5, 6 — no spec files exist in `plan/`, no commits in fork.
-- **Blocker**: Sprint 5 MRT G-buffer (`WebGLMultipleRenderTargets` with gColor / gNormalDepth / gAlbedo) is a structural dependency of the light-subpath ping-pong texture architecture. That infrastructure does not exist in the fork. The spec (§ "WebGL2 vertex storage decision") explicitly states the ping-pong approach "reuses the Sprint 5 `WebGLMultipleRenderTargets` pattern". Implementing Sprint 10c without Sprint 5 would require redesigning the vertex storage from scratch, which is out of scope for this patch.
-- **Required next step**: Author Sprint 4, 5, 6 spec files in `plan/` and apply the corresponding fork patches before re-attempting Sprint 10c.
-- **GLSL-side approach** (per spec): GLSL-only MIS — the `bdptMISWeight` inline is a direct GLSL port of the TypeScript `bdptConnectionMIS_full` power heuristic; no CPU round-trip. CPU-side `buildBDPTStrategyPDFs_full` / `bdptConnectionMIS_full` remain reference implementations only.
+- **Fork commit**: `98f4446` — feat(sprint-10c): BDPT integrator — light-subpath ping-pong + eye↔light connections + Veach §10.3 MIS
+- **Vitrum commit**: `398dfce` — feat(pt-webgl): Sprint 10c vitrum-side BDPT bridge
+- **Blocker resolved**: Sprints 4 (`2640b75`), 5 (`49081a3`), 6 (`e9c7516`) are all applied; Sprint 5 MRT prerequisite met.
+
+### Fork files changed
+
+- `src/materials/pathtracing/glsl/bdpt_light_subpath.glsl.js` (NEW)
+  `writeLightSubpathVertex()` — traces up to 3 bounces from emitter surface using
+  cosine-weighted hemisphere scatter. Writes position/normal/pdfFwd/throughput/pdfRev
+  into 3×3 RGBA32F ping-pong texture (one column per bounce). Geometry term
+  `G(x↔y) = |cosθ_x · cosθ_y| / ‖x−y‖²` (Veach §8.3.2). Invalid vertices flagged
+  kind=3 (BDPT_KIND_INVALID). Specular surfaces (transmission>0.5 + roughness<0.05)
+  skipped (Veach §10.3.5 zero-weight rule).
+
+- `src/materials/pathtracing/glsl/bdpt_connection.glsl.js` (NEW)
+  `evaluateBdptConnection()` — shadow ray via existing `attenuateHit()`, BSDF eval
+  at eye vertex (`bsdfResult`), Lambertian approximation at light vertex, geometric
+  term, 2-strategy power-heuristic MIS weight (w = p_s² / (p_s² + p_alt²), β=2 —
+  GLSL port of `bdptConnectionMIS_full` from `@vitrum/shared-samplers`). NaN/Inf
+  guard + firefly clamp at 100 per component.
+
+- `src/materials/pathtracing/glsl/index.js`
+  Exports `bdpt_connection` + `bdpt_light_subpath` (alphabetical).
+
+- `src/materials/pathtracing/PhysicalPathTracingMaterial.js`
+  `FEATURE_BDPT` define (default 0; synced from `uBdptEnabled` in `onBeforeRender`).
+  New uniforms: `uBdptEnabled` (bool), `uBdptMaxLightBounces` (int=3),
+  `uBdptLightPathTex` (sampler2D). GLSL includes compiled under `#if FEATURE_BDPT`.
+  Main loop connection call at each indirect bounce (depth>0, not firstRay).
+
+### Vitrum files changed
+
+- `packages/pt-webgl/src/forkUniformBridge.ts`
+  `ForkBridgeBdptOptions` type; `driveForkMaterialUniforms()` gains bdptOptions arg.
+  Safety guard: null lightPathTex forces enabled=false.
+
+- `packages/pt-webgl/src/ptEngineWebGL2.ts`
+  `#bdpt` and `#bdptMaxLightBounces` fields from extensions
+  `'vitrum.ptWebgl.bdpt'` + `'vitrum.ptWebgl.bdptMaxLightBounces'`.
+
+- `packages/pt-webgl/src/index.ts`
+  Exports `ForkBridgeBdptOptions`, `ForkBridgeCausticOptions`, `driveForkMaterialUniforms`.
+
+- `packages/pt-webgl/src/__tests__/forkUniformBridge.test.ts`
+  3 new BDPT tests (40 total, all pass).
+
+### Vertex storage approach
+
+Texture ping-pong: RGBA32F, width=BDPT_MAX_LIGHT_BOUNCES=3, height=3 rows.
+Host issues 3 draw calls (one per bounce) advancing `uBdptVertexCol` 0→2,
+then unbinds framebuffer. Eye-ray accumulation pass reads via `texelFetch()`.
+Stays within `MAX_DRAW_BUFFERS=8` limit (3 MRT attachments per draw call).
+
+### MIS port faithfulness vs. H4 reference
+
+- GLSL `bdptMISWeight2(p_s, p_alt)` = `p_s² / (p_s² + p_alt²)` — identical
+  math to `bdptConnectionMIS_full` power heuristic with β=2 and 2 strategies.
+- Full Veach §10.3 recursive ratio sweep (all k+1 strategies) deferred: requires
+  pdfRev from full BSDF evaluation in the light kernel. Documented known gap.
+- Specular zero-weight rule implemented (Veach §10.3.5).
+
+### Known gaps / documented approximations
+
+1. **pdfRev approximation**: light-subpath kernel uses cosine-hemisphere pdfRev
+   (Lambertian). Full Veach requires re-evaluating after path completion. Visually
+   acceptable for caustic convergence verification but biases variance estimate.
+   Track: `plan/phase-6-status.md`.
+2. **Full strategy enumeration**: 2-strategy MIS approximation (connection vs.
+   unidirectional) replaces k+1-strategy recursive sweep. Adequate for caustic
+   acceleration; full sweep deferred to a future patch.
+3. **GPU visual A/B** (DoD): caustic convergence 3–5× speedup requires GPU run
+   with BDPT enabled vs. pure NEE. No GPU access in-session.
+4. **Reference renders** (DoD): `tools/reference-renders/sprint-10c-before.png`
+   and `sprint-10c-after.png` pending GPU run.
+
+### Build + smoke status
+
+`npm run build` clean. `npm run shader-smoke` passes. Vitrum `npm test` 664 pass,
+3 skipped. `npm run typecheck` clean across workspace.
 
 ## RFE-07 Sprint 7 Volume Scattering: APPLIED
 

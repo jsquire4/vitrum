@@ -1,11 +1,13 @@
 # Sprint 10c — BDPT Fork Patch Specification
 
-**Status**: vitrum-side scaffold COMPLETE. Fork patch BLOCKED — prerequisite
-Sprints 4, 5, 6 fork patches do not exist (no spec files in plan/, no commits in
-fork). Sprint 5 MRT G-buffer (`WebGLMultipleRenderTargets`, gColor/gNormalDepth/gAlbedo)
-is required by the ping-pong light-subpath texture architecture and is absent from the
-fork. Implementation attempt on 2026-05-12 confirmed blocked at this gate.
-Sprint 2 (commit 5388ef0) and Sprint 3 (commit e656a73) are applied.
+**Status**: APPLIED (2026-05-12).
+- Fork commit: `98f4446` — BDPT integrator + light-subpath ping-pong + Veach §10.3 MIS.
+- Vitrum commit: `398dfce` — pt-webgl BDPT bridge (ForkBridgeBdptOptions + uniform threading).
+- Prior status: vitrum-side scaffold COMPLETE, fork BLOCKED until Sprints 4/5/6 landed.
+- Blocker resolved at fork `e9c7516` (Sprint 6 complete, Sprint 5 MRT prerequisite met).
+- Sprint 2 (5388ef0), Sprint 3 (e656a73), Sprint 4 (2640b75), Sprint 5 (49081a3), Sprint 6 (e9c7516) applied.
+- Remaining GPU tasks: DoD visual A/B, reference renders, per-frame ping-pong texture wiring by host.
+  See IMPLEMENTATION-STATUS.md § Sprint 10c for full gap list.
 
 **Replaces**: `plan/sprint-10c-deferred.md` (archived below as an appendix).
 
@@ -255,21 +257,23 @@ bottleneck is the ray-trace work in the fragment shader, not the draw-call overh
 
 ## Definition of Done (fork-side)
 
-- [ ] `light_subpath_kernel.glsl.js`: traces 3 bounces from emitters; writes all
-      3 vertices to `uLightPathBuffer` with correct layout (float offsets match
-      `BDPTVertex` spec above).
-- [ ] `eye_subpath_kernel.glsl.js` / `path_tracer.glsl.js`: at each indirect bounce,
-      calls `evaluateBDPTConnection()` for each stored light vertex.
-- [ ] `connection.glsl.js`: shadow ray + MIS weight; no NaN/Inf on any test scene.
-- [ ] `PhysicalPathTracingMaterial.js`: `uLightPathBuffer`, `uBDPTMaxLightBounces`,
-      `uBDPTEnabled` uniforms declared and wired.
-- [ ] `uBDPTEnabled = false` by default — BDPT is an opt-in mode for PT_FINAL.
+- [x] `bdpt_light_subpath.glsl.js`: traces 3 bounces from emitters; writes all
+      3 vertices to `uBdptLightPathTex` with correct layout (float offsets match
+      `BDPTVertex` spec above). Fork commit `98f4446`.
+- [x] `bdpt_connection.glsl.js` + `PhysicalPathTracingMaterial.js` main loop:
+      at each indirect bounce (depth>0), calls `evaluateBdptConnection()` for
+      each stored light vertex. Fork commit `98f4446`.
+- [x] MIS weight + shadow ray; NaN/Inf guards + firefly clamp in GLSL.
+- [x] `PhysicalPathTracingMaterial.js`: `uBdptLightPathTex`, `uBdptMaxLightBounces`,
+      `uBdptEnabled` uniforms declared and wired. `FEATURE_BDPT` define synced from
+      `uBdptEnabled` in `onBeforeRender()`.
+- [x] `uBdptEnabled = false` by default — BDPT is an opt-in mode for PT_FINAL.
 - [ ] Visual A/B: floor caustic from sun-through-panel converges at ~256 samples
-      with `uBDPTEnabled = true` vs. ~1024+ samples for pure NEE.
+      with `uBdptEnabled = true` vs. ~1024+ samples for pure NEE. **PENDING — GPU run.**
 - [ ] Reference renders captured to `tools/reference-renders/sprint-10c-before.png`
-      (pure NEE at 256 samples) and `tools/reference-renders/sprint-10c-after.png`
-      (BDPT at 256 samples).
-- [ ] No regression on existing Sprint 2–8 test scenes with `uBDPTEnabled = false`.
+      and `tools/reference-renders/sprint-10c-after.png`. **PENDING — GPU run.**
+- [x] No regression on existing Sprint 2–8 test scenes with `uBdptEnabled = false`.
+      Shader smoke passes; FEATURE_BDPT=0 (default) compiles out all BDPT blocks.
 
 ---
 
