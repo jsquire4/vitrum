@@ -26,6 +26,7 @@ import * as THREE from 'three';
 import type {
   Engine,
   EngineCapabilities,
+  EngineDebugSurface,
   EngineFactory,
   EngineOptions,
   EngineState,
@@ -121,23 +122,22 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly skyIrradiance: number;
 
   /**
-   * Host `THREE.Scene` — BVH / DDGI fallback when `setScene` has no mesh
-   * primitives.
+   * Optional escape hatch for hosts that need to provide a THREE.Scene as the
+   * BVH / DDGI source directly (e.g. when the host's authoritative scene graph
+   * is THREE-only and they intentionally omit `setScene(vitrumScene)`).
    *
-   * @deprecated since T3.H (2026-05-12). The unified `createEngine()` factory
-   * in `@vitrum/engine` converts vitrum Scene → THREE.Scene internally via
-   * `vitrumSceneToThree()` and never asks the host to plumb a THREE.Scene
-   * through this constructor. New hosts SHOULD use `createEngine()` and
-   * pass `scene` (THREE or vitrum); this `threeScene` field is kept for
-   * one deprecation cycle so existing direct callers (legacy host code,
-   * tests that construct HybridEngine without the facade) keep working.
+   * **Most callers leave this undefined.** When `setScene` provides a vitrum
+   * Scene with at least one mesh primitive, the engine derives the BVH source
+   * via `vitrumSceneToThree()` and the `threeScene` field is never read. The
+   * @vitrum/engine `createEngine()` facade always takes the latter path.
    *
-   * Removal is scheduled for the next sprint — when the only remaining
-   * call site is `@vitrum/engine`'s walkaround constructor, the field
-   * becomes private engine state and `createEngine()` invokes a new
-   * internal API instead.
+   * Was required pre-T3.H (deprecated 2026-05-12, removed 2026-05-12). Hosts
+   * that previously passed `threeScene: someScene` can drop the field if they
+   * also call `setScene(sceneFromThreeJS(someScene))` afterwards. If they do
+   * neither (no mesh primitives in setScene + no threeScene), the engine
+   * throws on pipeline init with a clear error.
    */
-  readonly threeScene: THREE.Scene;
+  readonly threeScene?: THREE.Scene;
 
   /** Light list for DDGI probe update pass. */
   readonly lights?: DDGILight[];
@@ -424,7 +424,13 @@ export class HybridEngine implements Engine {
   private readonly _device:               GPUDevice;
   private readonly _width:                number;
   private readonly _height:               number;
-  private readonly _threeScene:           THREE.Scene;
+  /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
+   *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
+  private readonly _threeScene:           THREE.Scene | null;
+  /** Lazily-synthesized THREE.Scene root from the most recent vitrum
+   *  setScene() — caches `vitrumSceneToThree(_lastScene)` so DDGI updateFrame
+   *  doesn't re-traverse on every frame. Reset on every setScene(). */
+  private _synthesizedThreeScene:         THREE.Scene | null = null;
   private readonly _isSceneReady:         () => boolean;
   // Lighting fields are NOT readonly — updateLighting() mutates them at runtime.
   private _primaryLightDir:               [number, number, number];
@@ -578,7 +584,7 @@ export class HybridEngine implements Engine {
     this._device                = opts.device;
     this._width                 = opts.width;
     this._height                = opts.height;
-    this._threeScene            = opts.threeScene;
+    this._threeScene            = opts.threeScene ?? null;
     this._primaryLightDir       = opts.primaryLightDir;
     this._primaryLightIntensity = opts.primaryLightIntensity;
     this._skyTint               = opts.skyTint;
@@ -646,7 +652,14 @@ export class HybridEngine implements Engine {
     this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
     this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
     this._triIntersectEpsilon    = opts.triIntersectEpsilon ?? 1e-5;
-    this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
+    // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
+    // primitive OR the optional escape-hatch THREE.Scene contains triangles.
+    // Hosts override via opts.isSceneReady when they need a scene-specific
+    // signal (e.g. wait for an async asset).
+    this._isSceneReady          = opts.isSceneReady ?? (() => {
+      if (this._coreSceneSuppliesMeshes()) return true;
+      return this._threeScene != null && defaultIsSceneReady(this._threeScene);
+    });
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
     this._getPipelineRebuildKey     = opts.getPipelineRebuildKey;
@@ -706,10 +719,31 @@ export class HybridEngine implements Engine {
    */
   setScene(scene: Scene): void {
     this._lastScene = scene;
+    // T3.H removal: drop the cached synthesized THREE.Scene; the next BVH
+    // build / DDGI updateFrame will re-derive it from the new vitrum Scene.
+    if (this._synthesizedThreeScene != null) {
+      try { disposeVitrumThreeSceneRoot(this._synthesizedThreeScene); } catch {}
+      this._synthesizedThreeScene = null;
+    }
 
     // Tear down the existing pipeline, reinitialise asynchronously.
     this._teardownPipeline();
     void this._initPipeline();
+  }
+
+  /** T3.H removal: lazily synthesize a THREE.Scene from the most recent
+   *  vitrum Scene if (a) the host did not pass `threeScene` at construction,
+   *  and (b) the vitrum Scene supplies meshes. Caller is responsible for
+   *  null-checking — if both threeScene and synthesizable are null, the
+   *  pipeline will throw at BVH build with a clear message. */
+  private _ensureThreeSceneRoot(): THREE.Scene | null {
+    if (this._threeScene != null) return this._threeScene;
+    if (this._synthesizedThreeScene != null) return this._synthesizedThreeScene;
+    if (this._lastScene != null && this._coreSceneSuppliesMeshes()) {
+      this._synthesizedThreeScene = vitrumSceneToThree(this._lastScene) as THREE.Scene;
+      return this._synthesizedThreeScene;
+    }
+    return null;
   }
 
   updatePrimitive?: never;
@@ -902,11 +936,16 @@ export class HybridEngine implements Engine {
     if (ddgiLayerOn) {
       // DDGIFrameInputs now accepts a DDGIDeviceHandle (`device` or a
       // Three.js renderer adapter). HybridEngine owns the device directly.
-      void this._ddgi.updateFrame({
-        scene:   this._ddgiTraversalScene ?? this._threeScene,
-        device:  this._device,
-        enabled: true,
-      });
+      // Source order: traversal scene set during BVH init (vitrum-derived),
+      // host-provided threeScene escape hatch, lazily-synthesized fallback.
+      const ddgiScene = this._ddgiTraversalScene ?? this._ensureThreeSceneRoot();
+      if (ddgiScene != null) {
+        void this._ddgi.updateFrame({
+          scene:   ddgiScene,
+          device:  this._device,
+          enabled: true,
+        });
+      }
     }
 
     // ── DDGI atlas wire ─────────────────────────────────────────────────
@@ -1100,6 +1139,77 @@ export class HybridEngine implements Engine {
   // we expose probe-update progress; for now the optional method is
   // intentionally absent (consumers must typeof-check per the contract).
 
+  // ── Debug introspection (T3.G followup) ────────────────────────────────
+
+  /** Debug-introspection surface for @vitrum/dev overlays. Each method
+   *  reaches into the live pipeline / DDGI / BVH state and returns the
+   *  current handle (engine-owned; callers MUST NOT destroy). Returns
+   *  null when the relevant subsystem isn't initialised yet.
+   *
+   *  Not implemented: pickPrimitive (needs a real picking pass) and the
+   *  denoiser-toggle pair (needs pipeline bypass plumbing). Both stay
+   *  absent so DenoiserABToggle / MaterialInspector fall back to their
+   *  warn paths until those land. */
+  readonly debug: EngineDebugSurface = {
+    atlasTexture: (): GPUTexture | null => {
+      const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
+      return atlas?.irradiance ?? null;
+    },
+    visibilityAtlasTexture: (): GPUTexture | null => {
+      const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
+      return atlas?.visibility ?? null;
+    },
+    bvhNodes: (): Float32Array | null => {
+      const bvh = this._bvhBuffers;
+      const buf = bvh?.bvhNodes?.cpuData;
+      if (buf == null) return null;
+      // three-mesh-bvh node layout: 32 bytes per node, treated as
+      // [minX, minY, minZ, leftIdx_u32_as_f32, maxX, maxY, maxZ,
+      //  triCountOrRightIdx_u32_as_f32]. Repackage into the public
+      // contract: [min, max, depth=0 placeholder, pad=0]. Depth would
+      // need a parent-link traversal we don't have here; the visualiser
+      // can colour by node-index ratio as a passable proxy.
+      const src = new Float32Array(buf);
+      const nodeCount = (buf as ArrayBuffer).byteLength / 32;
+      const out = new Float32Array(nodeCount * 8);
+      for (let i = 0; i < nodeCount; i++) {
+        const so = i * 8;   // 8 f32 lanes per source node
+        const oo = i * 8;   // 8 f32 lanes per output node
+        out[oo + 0] = src[so + 0]!; // minX
+        out[oo + 1] = src[so + 1]!; // minY
+        out[oo + 2] = src[so + 2]!; // minZ
+        out[oo + 3] = src[so + 4]!; // maxX
+        out[oo + 4] = src[so + 5]!; // maxY
+        out[oo + 5] = src[so + 6]!; // maxZ
+        out[oo + 6] = 0;            // depth — TODO: parent traversal
+        out[oo + 7] = 0;            // pad
+      }
+      return out;
+    },
+    giSignalTextures: () => {
+      const p = this._pipeline as unknown as {
+        _res?: {
+          hdrColorTexture?: GPUTexture;
+          hdrIndirectTexture?: GPUTexture;
+          aoFullTexture?: GPUTexture;
+        };
+      } | null;
+      const res = p?._res;
+      if (res == null) return null;
+      // 'direct' = hdrColorTexture (raw shade output, before SVGF).
+      // 'indirect' = hdrIndirectTexture (per-channel SVGF input, Sprint 18).
+      // 'ao' = aoFullTexture (GTAO bilateral upsample output, Sprint 15).
+      // 'total' = current swap chain — not exposed as a persistent
+      //   texture; consumers can blit from the canvas directly.
+      return {
+        direct:   res.hdrColorTexture    ?? null,
+        indirect: res.hdrIndirectTexture ?? null,
+        ao:       res.aoFullTexture      ?? null,
+        total:    null,
+      };
+    },
+  };
+
   // ── Dispose ────────────────────────────────────────────────────────────
 
   dispose(): void {
@@ -1203,9 +1313,21 @@ export class HybridEngine implements Engine {
 
       try {
         const bvhStart = performance.now();
-        const bvhRoot: THREE.Object3D = this._coreSceneSuppliesMeshes()
-          ? vitrumSceneToThree(this._lastScene!)
-          : this._threeScene;
+        let bvhRoot: THREE.Object3D;
+        if (this._coreSceneSuppliesMeshes()) {
+          bvhRoot = vitrumSceneToThree(this._lastScene!);
+        } else if (this._threeScene != null) {
+          bvhRoot = this._threeScene;
+        } else {
+          // T3.H removal: no vitrum mesh primitives AND no escape-hatch
+          // threeScene. The host hasn't given us anything to render against.
+          throw new Error(
+            '[HybridEngine] BVH source unavailable: setScene(vitrumScene) ' +
+            'supplied no mesh primitives and no `threeScene` was passed at ' +
+            'construction. Call engine.setScene(sceneFromThreeJS(yourThreeScene)) ' +
+            'or pass `threeScene` directly to the engine constructor.',
+          );
+        }
         if (bvhRoot !== this._threeScene) {
           this._ddgiTraversalScene = bvhRoot as THREE.Scene;
         }

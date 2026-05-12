@@ -170,6 +170,57 @@ export interface Engine {
    *  for warm-up). Same throw-safety + optionality semantics as
    *  {@link onFrame}. */
   onProgress?(cb: (progress: ProgressStats) => void): () => void;
+
+  /** Optional debug-introspection surface for dev overlays. When present,
+   *  exposes engine-internal state (DDGI atlases, BVH nodes, GI signal
+   *  textures, denoiser toggle) that visualisation tools can blit / draw.
+   *  Backends that don't implement this still satisfy the core contract;
+   *  consumers MUST typeof-check before calling any method. See
+   *  {@link EngineDebugSurface}. */
+  debug?: EngineDebugSurface;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Debug-introspection surface (T3.G + T3.G followup)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Optional debug-introspection surface an engine may expose via `engine.debug`.
+ *  Every method is optional — dev tools call only those they need and
+ *  fall back when absent. Returned WebGPU texture handles are owned by the
+ *  engine (the caller MUST NOT destroy them); they're invalidated on the
+ *  next setScene() / dispose(). */
+export interface EngineDebugSurface {
+  /** DDGI irradiance atlas (the GPUTexture the probe-update pass writes
+   *  to). Returns null when DDGI is disabled or not yet initialised. */
+  atlasTexture?(): GPUTexture | null;
+
+  /** DDGI visibility-atlas companion to {@link atlasTexture}. */
+  visibilityAtlasTexture?(): GPUTexture | null;
+
+  /** Flat per-node AABB list: 8 floats per node — `[minX, minY, minZ,
+   *  maxX, maxY, maxZ, depth, pad]`. Returns null when the BVH is not
+   *  built or introspection is not wired. */
+  bvhNodes?(): Float32Array | null;
+
+  /** Screen-space pixel hit-test. Returns the primitive ID at (x, y) or
+   *  null when nothing is hit. Used by MaterialInspector for click-pick. */
+  pickPrimitive?(x: number, y: number): string | null;
+
+  /** Current denoiser-pass enabled state; mirrors the last
+   *  {@link setDenoiserEnabled} call (or the engine default). */
+  isDenoiserEnabled?(): boolean;
+
+  /** Toggle the denoiser pass for the next frame. */
+  setDenoiserEnabled?(enabled: boolean): void;
+
+  /** Per-channel GI signal textures for split-screen visualisation. Any
+   *  field may be null when the backend doesn't separate that signal. */
+  giSignalTextures?(): {
+    direct: GPUTexture | null;
+    indirect: GPUTexture | null;
+    ao: GPUTexture | null;
+    total: GPUTexture | null;
+  } | null;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
