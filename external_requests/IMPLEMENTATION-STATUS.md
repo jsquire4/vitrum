@@ -172,6 +172,37 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
 - Gaps:
   - GPU visual/perf verification pending.
 
+## H6.3 — Sprint 5 MRT compatibility verification: COMPLETE (2026-05-12)
+
+Fork commit: `ff1dace`
+
+Verified that the H6.2 MRT rename (`gl_FragColor` → `gColor`) did not break Sprint
+7/8/12/14 output paths. No forward-porting was required.
+
+- **Sprint 7** (volume scatter + SSS, fork 260c432): `volumeMarch()` and `sssSample()`
+  in `src/shader/bsdf/volume_march.glsl.js` / `bsdf_functions.glsl.js` return scalars
+  or `ScatterRecord` — they never wrote to `gl_FragColor`. The scatter event updates
+  `state.throughput` and the main loop accumulates via `gColor.rgb`. Clean.
+
+- **Sprint 8** (Cauchy chromatic dispersion, fork 7ffd15d): `evalSpectrum()`,
+  `cauchyIORatLambda()`, and `dispersionTransmissionDirection()` in
+  `bsdf_functions.glsl.js` return scalars or direction vectors. Dispersion path
+  exits via `ScatterRecord`; the main loop accumulates into `gColor.rgb`. Clean.
+
+- **Sprint 12** (hero-wavelength spectral kernel, fork 8917492): `sampleHeroWavelength()`
+  and `wavelengthToRGB()` in `src/shader/bsdf/spectral_accumulator.glsl.js` return
+  float/vec3. Main loop calls `wavelengthToRGB(state.wavelength, state.throughput,
+  state.wavelengthPdf)` → `throughputRgb` → `gColor.rgb`. Clean.
+
+- **Sprint 14** (layered BSDF, fork ee379dc): `activeLayerWeight()` in
+  `bsdf_functions.glsl.js` returns a float. `bsdfEval()` multiplies local `color`
+  (vec3) by that scalar and returns; the caller accumulates into `gColor.rgb` through
+  the standard path. Clean.
+
+`npm run shader-smoke` passes at ff1dace. No `gl_FragColor` found in any sprint-owned
+source file (`src/shader/bsdf/`, `src/shader/common/`, or
+`src/materials/pathtracing/PhysicalPathTracingMaterial.js`).
+
 ## Residual risks
 
 GPU verification was not available; shader correctness is unverified beyond syntactic
