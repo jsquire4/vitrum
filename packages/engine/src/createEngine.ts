@@ -323,6 +323,12 @@ function wrapWithIdempotentDispose(
           },
         }
       : {}),
+    // T3.G followup — pass the underlying engine.debug surface through
+    // unchanged. Methods are bound to the engine instance, so calling
+    // proxy.debug.atlasTexture() reads live state. After dispose, the
+    // surface still exists but most methods will return null / empty
+    // because the underlying _ddgi / _pipeline / _bvhBuffers are torn down.
+    ...(engine.debug ? { debug: engine.debug } : {}),
   };
   return proxy;
 }

@@ -26,6 +26,7 @@ import * as THREE from 'three';
 import type {
   Engine,
   EngineCapabilities,
+  EngineDebugSurface,
   EngineFactory,
   EngineOptions,
   EngineState,
@@ -1137,6 +1138,77 @@ export class HybridEngine implements Engine {
   // meaningful 'pt-spp' to report. DDGI warm-up could surface here once
   // we expose probe-update progress; for now the optional method is
   // intentionally absent (consumers must typeof-check per the contract).
+
+  // ── Debug introspection (T3.G followup) ────────────────────────────────
+
+  /** Debug-introspection surface for @vitrum/dev overlays. Each method
+   *  reaches into the live pipeline / DDGI / BVH state and returns the
+   *  current handle (engine-owned; callers MUST NOT destroy). Returns
+   *  null when the relevant subsystem isn't initialised yet.
+   *
+   *  Not implemented: pickPrimitive (needs a real picking pass) and the
+   *  denoiser-toggle pair (needs pipeline bypass plumbing). Both stay
+   *  absent so DenoiserABToggle / MaterialInspector fall back to their
+   *  warn paths until those land. */
+  readonly debug: EngineDebugSurface = {
+    atlasTexture: (): GPUTexture | null => {
+      const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
+      return atlas?.irradiance ?? null;
+    },
+    visibilityAtlasTexture: (): GPUTexture | null => {
+      const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
+      return atlas?.visibility ?? null;
+    },
+    bvhNodes: (): Float32Array | null => {
+      const bvh = this._bvhBuffers;
+      const buf = bvh?.bvhNodes?.cpuData;
+      if (buf == null) return null;
+      // three-mesh-bvh node layout: 32 bytes per node, treated as
+      // [minX, minY, minZ, leftIdx_u32_as_f32, maxX, maxY, maxZ,
+      //  triCountOrRightIdx_u32_as_f32]. Repackage into the public
+      // contract: [min, max, depth=0 placeholder, pad=0]. Depth would
+      // need a parent-link traversal we don't have here; the visualiser
+      // can colour by node-index ratio as a passable proxy.
+      const src = new Float32Array(buf);
+      const nodeCount = (buf as ArrayBuffer).byteLength / 32;
+      const out = new Float32Array(nodeCount * 8);
+      for (let i = 0; i < nodeCount; i++) {
+        const so = i * 8;   // 8 f32 lanes per source node
+        const oo = i * 8;   // 8 f32 lanes per output node
+        out[oo + 0] = src[so + 0]!; // minX
+        out[oo + 1] = src[so + 1]!; // minY
+        out[oo + 2] = src[so + 2]!; // minZ
+        out[oo + 3] = src[so + 4]!; // maxX
+        out[oo + 4] = src[so + 5]!; // maxY
+        out[oo + 5] = src[so + 6]!; // maxZ
+        out[oo + 6] = 0;            // depth — TODO: parent traversal
+        out[oo + 7] = 0;            // pad
+      }
+      return out;
+    },
+    giSignalTextures: () => {
+      const p = this._pipeline as unknown as {
+        _res?: {
+          hdrColorTexture?: GPUTexture;
+          hdrIndirectTexture?: GPUTexture;
+          aoFullTexture?: GPUTexture;
+        };
+      } | null;
+      const res = p?._res;
+      if (res == null) return null;
+      // 'direct' = hdrColorTexture (raw shade output, before SVGF).
+      // 'indirect' = hdrIndirectTexture (per-channel SVGF input, Sprint 18).
+      // 'ao' = aoFullTexture (GTAO bilateral upsample output, Sprint 15).
+      // 'total' = current swap chain — not exposed as a persistent
+      //   texture; consumers can blit from the canvas directly.
+      return {
+        direct:   res.hdrColorTexture    ?? null,
+        indirect: res.hdrIndirectTexture ?? null,
+        ao:       res.aoFullTexture      ?? null,
+        total:    null,
+      };
+    },
+  };
 
   // ── Dispose ────────────────────────────────────────────────────────────
 
