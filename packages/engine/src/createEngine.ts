@@ -313,6 +313,22 @@ function wrapWithIdempotentDispose(
       try { engine.dispose(); } catch {}
       try { postDispose(); } catch {}
     },
+    ...(engine.onFrame
+      ? {
+          onFrame: (cb: Parameters<NonNullable<Engine['onFrame']>>[0]) => {
+            if (disposed) return () => {};
+            return engine.onFrame!(cb);
+          },
+        }
+      : {}),
+    ...(engine.onProgress
+      ? {
+          onProgress: (cb: Parameters<NonNullable<Engine['onProgress']>>[0]) => {
+            if (disposed) return () => {};
+            return engine.onProgress!(cb);
+          },
+        }
+      : {}),
   };
   return proxy;
 }
