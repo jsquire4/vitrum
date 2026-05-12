@@ -20,7 +20,7 @@
 
 import type { Scene, Engine, Vec3 } from '@vitrum/core';
 import { detectGpu } from '@vitrum/core';
-import { sceneFromThreeJS, vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
+import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
   type HybridEngineOptions,
@@ -157,15 +157,6 @@ async function constructWalkaround(
   }
   const device = await adapter.requestDevice();
 
-  // The HybridEngine ctor requires `threeScene` (used as the BVH/DDGI
-  // geometry source). When the user passed a THREE.Scene, reuse it
-  // directly; when they passed a vitrum Scene, convert it back so the
-  // engine's existing pipeline is satisfied. T3.H drops this round-trip
-  // by routing scene through engine.setScene() exclusively.
-  const threeScene = sceneInputIsThree
-    ? (opts.scene as unknown as Parameters<typeof createWalkaroundEngine_Hybrid>[0]['threeScene'])
-    : vitrumSceneToThree(vitrumScene);
-
   const D = aabb.diagonal;
   const scaleDefaults = deriveScaleDefaults(D);
 
@@ -180,6 +171,14 @@ async function constructWalkaround(
     DEFAULT_SKY_TINT[0], DEFAULT_SKY_TINT[1], DEFAULT_SKY_TINT[2],
   ];
 
+  // T3.H removal: pass `threeScene` ONLY when the user gave us one — when
+  // they passed a vitrum Scene the engine's setScene() path synthesizes the
+  // THREE.Scene internally on first BVH build. Removes the round-trip
+  // through vitrumSceneToThree() that we previously did at the facade.
+  const threeSceneForCtor = sceneInputIsThree
+    ? (opts.scene as unknown as Parameters<typeof createWalkaroundEngine_Hybrid>[0]['threeScene'])
+    : undefined;
+
   const merged: HybridEngineOptions = {
     device,
     width: Math.max(1, opts.canvas.width),
@@ -188,7 +187,7 @@ async function constructWalkaround(
     primaryLightIntensity: DEFAULT_PRIMARY_LIGHT_INTENSITY,
     skyTint,
     skyIrradiance: DEFAULT_SKY_IRRADIANCE,
-    threeScene,
+    ...(threeSceneForCtor != null ? { threeScene: threeSceneForCtor } : {}),
     cameraMoveResetThresholdSq: scaleDefaults.cameraMoveResetThresholdSq,
     temporalAccumAlpha: scaleDefaults.temporalAccumAlpha,
     emitterDist2Floor: scaleDefaults.emitterDist2Floor,
@@ -201,11 +200,6 @@ async function constructWalkaround(
   engine.setScene(vitrumScene);
 
   return wrapWithIdempotentDispose(engine, () => {
-    if (!sceneInputIsThree) {
-      // We synthesized this THREE.Scene; tear it down (geometries +
-      // materials) so the GPU resources we briefly held are released.
-      try { disposeVitrumThreeSceneRoot(threeScene as unknown as Parameters<typeof disposeVitrumThreeSceneRoot>[0]); } catch {}
-    }
     try { device.destroy(); } catch {}
   });
 }

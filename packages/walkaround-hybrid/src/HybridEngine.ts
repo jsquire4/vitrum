@@ -121,23 +121,22 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly skyIrradiance: number;
 
   /**
-   * Host `THREE.Scene` — BVH / DDGI fallback when `setScene` has no mesh
-   * primitives.
+   * Optional escape hatch for hosts that need to provide a THREE.Scene as the
+   * BVH / DDGI source directly (e.g. when the host's authoritative scene graph
+   * is THREE-only and they intentionally omit `setScene(vitrumScene)`).
    *
-   * @deprecated since T3.H (2026-05-12). The unified `createEngine()` factory
-   * in `@vitrum/engine` converts vitrum Scene → THREE.Scene internally via
-   * `vitrumSceneToThree()` and never asks the host to plumb a THREE.Scene
-   * through this constructor. New hosts SHOULD use `createEngine()` and
-   * pass `scene` (THREE or vitrum); this `threeScene` field is kept for
-   * one deprecation cycle so existing direct callers (legacy host code,
-   * tests that construct HybridEngine without the facade) keep working.
+   * **Most callers leave this undefined.** When `setScene` provides a vitrum
+   * Scene with at least one mesh primitive, the engine derives the BVH source
+   * via `vitrumSceneToThree()` and the `threeScene` field is never read. The
+   * @vitrum/engine `createEngine()` facade always takes the latter path.
    *
-   * Removal is scheduled for the next sprint — when the only remaining
-   * call site is `@vitrum/engine`'s walkaround constructor, the field
-   * becomes private engine state and `createEngine()` invokes a new
-   * internal API instead.
+   * Was required pre-T3.H (deprecated 2026-05-12, removed 2026-05-12). Hosts
+   * that previously passed `threeScene: someScene` can drop the field if they
+   * also call `setScene(sceneFromThreeJS(someScene))` afterwards. If they do
+   * neither (no mesh primitives in setScene + no threeScene), the engine
+   * throws on pipeline init with a clear error.
    */
-  readonly threeScene: THREE.Scene;
+  readonly threeScene?: THREE.Scene;
 
   /** Light list for DDGI probe update pass. */
   readonly lights?: DDGILight[];
@@ -424,7 +423,13 @@ export class HybridEngine implements Engine {
   private readonly _device:               GPUDevice;
   private readonly _width:                number;
   private readonly _height:               number;
-  private readonly _threeScene:           THREE.Scene;
+  /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
+   *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
+  private readonly _threeScene:           THREE.Scene | null;
+  /** Lazily-synthesized THREE.Scene root from the most recent vitrum
+   *  setScene() — caches `vitrumSceneToThree(_lastScene)` so DDGI updateFrame
+   *  doesn't re-traverse on every frame. Reset on every setScene(). */
+  private _synthesizedThreeScene:         THREE.Scene | null = null;
   private readonly _isSceneReady:         () => boolean;
   // Lighting fields are NOT readonly — updateLighting() mutates them at runtime.
   private _primaryLightDir:               [number, number, number];
@@ -578,7 +583,7 @@ export class HybridEngine implements Engine {
     this._device                = opts.device;
     this._width                 = opts.width;
     this._height                = opts.height;
-    this._threeScene            = opts.threeScene;
+    this._threeScene            = opts.threeScene ?? null;
     this._primaryLightDir       = opts.primaryLightDir;
     this._primaryLightIntensity = opts.primaryLightIntensity;
     this._skyTint               = opts.skyTint;
@@ -646,7 +651,14 @@ export class HybridEngine implements Engine {
     this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
     this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
     this._triIntersectEpsilon    = opts.triIntersectEpsilon ?? 1e-5;
-    this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
+    // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
+    // primitive OR the optional escape-hatch THREE.Scene contains triangles.
+    // Hosts override via opts.isSceneReady when they need a scene-specific
+    // signal (e.g. wait for an async asset).
+    this._isSceneReady          = opts.isSceneReady ?? (() => {
+      if (this._coreSceneSuppliesMeshes()) return true;
+      return this._threeScene != null && defaultIsSceneReady(this._threeScene);
+    });
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
     this._getPipelineRebuildKey     = opts.getPipelineRebuildKey;
@@ -706,10 +718,31 @@ export class HybridEngine implements Engine {
    */
   setScene(scene: Scene): void {
     this._lastScene = scene;
+    // T3.H removal: drop the cached synthesized THREE.Scene; the next BVH
+    // build / DDGI updateFrame will re-derive it from the new vitrum Scene.
+    if (this._synthesizedThreeScene != null) {
+      try { disposeVitrumThreeSceneRoot(this._synthesizedThreeScene); } catch {}
+      this._synthesizedThreeScene = null;
+    }
 
     // Tear down the existing pipeline, reinitialise asynchronously.
     this._teardownPipeline();
     void this._initPipeline();
+  }
+
+  /** T3.H removal: lazily synthesize a THREE.Scene from the most recent
+   *  vitrum Scene if (a) the host did not pass `threeScene` at construction,
+   *  and (b) the vitrum Scene supplies meshes. Caller is responsible for
+   *  null-checking — if both threeScene and synthesizable are null, the
+   *  pipeline will throw at BVH build with a clear message. */
+  private _ensureThreeSceneRoot(): THREE.Scene | null {
+    if (this._threeScene != null) return this._threeScene;
+    if (this._synthesizedThreeScene != null) return this._synthesizedThreeScene;
+    if (this._lastScene != null && this._coreSceneSuppliesMeshes()) {
+      this._synthesizedThreeScene = vitrumSceneToThree(this._lastScene) as THREE.Scene;
+      return this._synthesizedThreeScene;
+    }
+    return null;
   }
 
   updatePrimitive?: never;
@@ -902,11 +935,16 @@ export class HybridEngine implements Engine {
     if (ddgiLayerOn) {
       // DDGIFrameInputs now accepts a DDGIDeviceHandle (`device` or a
       // Three.js renderer adapter). HybridEngine owns the device directly.
-      void this._ddgi.updateFrame({
-        scene:   this._ddgiTraversalScene ?? this._threeScene,
-        device:  this._device,
-        enabled: true,
-      });
+      // Source order: traversal scene set during BVH init (vitrum-derived),
+      // host-provided threeScene escape hatch, lazily-synthesized fallback.
+      const ddgiScene = this._ddgiTraversalScene ?? this._ensureThreeSceneRoot();
+      if (ddgiScene != null) {
+        void this._ddgi.updateFrame({
+          scene:   ddgiScene,
+          device:  this._device,
+          enabled: true,
+        });
+      }
     }
 
     // ── DDGI atlas wire ─────────────────────────────────────────────────
@@ -1203,9 +1241,21 @@ export class HybridEngine implements Engine {
 
       try {
         const bvhStart = performance.now();
-        const bvhRoot: THREE.Object3D = this._coreSceneSuppliesMeshes()
-          ? vitrumSceneToThree(this._lastScene!)
-          : this._threeScene;
+        let bvhRoot: THREE.Object3D;
+        if (this._coreSceneSuppliesMeshes()) {
+          bvhRoot = vitrumSceneToThree(this._lastScene!);
+        } else if (this._threeScene != null) {
+          bvhRoot = this._threeScene;
+        } else {
+          // T3.H removal: no vitrum mesh primitives AND no escape-hatch
+          // threeScene. The host hasn't given us anything to render against.
+          throw new Error(
+            '[HybridEngine] BVH source unavailable: setScene(vitrumScene) ' +
+            'supplied no mesh primitives and no `threeScene` was passed at ' +
+            'construction. Call engine.setScene(sceneFromThreeJS(yourThreeScene)) ' +
+            'or pass `threeScene` directly to the engine constructor.',
+          );
+        }
         if (bvhRoot !== this._threeScene) {
           this._ddgiTraversalScene = bvhRoot as THREE.Scene;
         }
