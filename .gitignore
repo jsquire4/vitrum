@@ -13,3 +13,4 @@ coverage/
 
 # Claude Code session metrics (local-only; not part of the product)
 .claude/tracking/
+.claude/worktrees/

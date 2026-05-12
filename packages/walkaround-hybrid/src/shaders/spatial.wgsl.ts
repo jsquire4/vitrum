@@ -36,11 +36,9 @@ export const SPATIAL_WGSL = /* wgsl */ `
 // RESERVOIR_DI_STRIDE / loadReservoirDI_rw / storeReservoirDI_rw live in COMMON_WGSL.
 // NEIGHBORS = 5 (restored — was briefly 3 for perf). The spatial-2
 // pass was also restored alongside.
-// Per-pixel spatial-reuse drives the soft falloff / AO-like coherence
-// that makes the rendering feel grounded; cutting it for perf
-// produced visible "sparkles around came/solder".
 const NEIGHBORS = 5u;
-const RADIUS = 30.0;
+// RADIUS is now read from ubo.spatialReuseRadiusPx (derived from
+// HybridEngineOptions.spatialReuseRadiusFraction × screenHeight).
 const M_SCALE = 4u;
 
 // PrimarySurface struct defined in COMMON_WGSL.
@@ -131,7 +129,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
 
   for (var i = 0u; i < NEIGHBORS; i++) {
     let offset = poissonDisk(i, rotation);
-    let nbrPx  = vec2i(gid.xy) + vec2i(vec2f(offset.x * RADIUS, offset.y * RADIUS));
+    let nbrPx  = vec2i(gid.xy) + vec2i(vec2f(offset.x * ubo.spatialReuseRadiusPx, offset.y * ubo.spatialReuseRadiusPx));
     if (any(nbrPx < vec2i(0)) || any(nbrPx >= vec2i(dims))) { continue; }
     let nbrIdx = u32(nbrPx.y) * dims.x + u32(nbrPx.x);
 
@@ -139,9 +137,10 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     let nbr_surf = castPrimary(vec2u(nbrPx), dims, invVP);
     if (!nbr_surf.hit) { continue; }
     let depthDiff = abs(center.depth - nbr_surf.depth);
-    // 0.10 × center.depth = relative 10% depth tolerance (more meaningful than
-    // an absolute 0.15 m gate when scene scale spans tens of meters).
-    let depthTol  = max(0.05, 0.10 * center.depth);
+    // Relative 10% depth tolerance, with an absolute floor from the UBO.
+    // spatialDepthTolFloor is derived from scene scale in uboUpdater.ts;
+    // default ~0.001 preserves near-zero tolerance for Cornell-scale scenes.
+    let depthTol  = max(ubo.spatialDepthTolFloor, 0.10 * center.depth);
     let normalDot = dot(center.normal, nbr_surf.normal);
     if (depthDiff > depthTol || normalDot < 0.9) { continue; }
 

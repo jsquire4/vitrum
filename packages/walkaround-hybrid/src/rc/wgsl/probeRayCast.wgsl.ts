@@ -326,6 +326,9 @@ fn dirToEquirectUV(d: vec3f) -> vec2f {
 // ─── Sun visibility helper ────────────────────────────────────────────────────
 // Glass-aware sun shadow test.  Verbatim from sunVisibilityHelper wgslFn.
 
+// M14 audit remediation: slabStepSize replaces the Cornell-specific 0.5-unit
+// glass-slab step. Callers compute it from the scene extent
+// (min(roomSize) * 0.001) so the step is proportional to the actual scene.
 fn traceSunVisibility(
   bvh:           ptr<storage, array<BVHNode>,        read>,
   geom_index:    ptr<storage, array<vec3u>,          read>,
@@ -334,6 +337,7 @@ fn traceSunVisibility(
   triMatId:      ptr<storage, array<u32>,            read>,
   origin:        vec3f,
   sunDir:        vec3f,
+  slabStepSize:  f32,
 ) -> vec3f {
   var visibility = vec3f(1.0);
   var rayOrigin  = origin;
@@ -356,7 +360,7 @@ fn traceSunVisibility(
     let beerAtten = exp(-gAttenCol * (gThick / max(0.001, sMat.attenDist)));
     visibility = visibility * gColor * beerAtten;
     let hitPos = rayOrigin + sunDir * sHit.dist;
-    rayOrigin  = hitPos + sunDir * 0.5;
+    rayOrigin  = hitPos + sunDir * slabStepSize;
   }
   return vec3f(0.0);
 }
@@ -415,6 +419,11 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     &rc_geom_index, &rc_geom_position, &rc_bvh, ray
   );
 
+  // M14: scene-scale-proportional step to clear glass slabs/faces.
+  // Uses the smallest room axis * 0.001 so the offset is never
+  // Cornell-tuned (0.5 units) but scales with actual scene extents.
+  let slabStep = min(u.roomSize.x, min(u.roomSize.y, u.roomSize.z)) * 0.001;
+
   if (!hit.didHit || hit.dist > maxT) {
     if (u.cascadeIndex == u.lastCascade) {
       let envUV  = dirToEquirectUV(rayDir);
@@ -440,6 +449,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
       &rc_bvh, &rc_geom_index, &rc_geom_position, &rc_materials, &rc_triMatId,
       hitPos + n * 0.01,
       u.sunDirection,
+      slabStep,
     );
     let nDotL  = max(0.0, dot(n, u.sunDirection));
     let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;
@@ -451,7 +461,8 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
       let glassThickness = max(0.001, mat.thickness);
       let beerAttenColor = exp(-matAtten * (glassThickness / max(0.001, mat.attenDist)));
       var refRay = Ray();
-      refRay.origin    = hitPos + ray.direction * 0.5;
+      // M14: step past the glass face proportionally rather than 0.5 units.
+      refRay.origin    = hitPos + ray.direction * slabStep;
       refRay.direction = ray.direction;
       let secondHit = bvhIntersectFirstHit(
         &rc_geom_index, &rc_geom_position, &rc_bvh, refRay
@@ -469,6 +480,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
           &rc_bvh, &rc_geom_index, &rc_geom_position, &rc_materials, &rc_triMatId,
           secondPos + secondHit.normal * 0.01,
           u.sunDirection,
+          slabStep,
         );
         let nDotL2 = max(0.0, dot(secondHit.normal, u.sunDirection));
         transContrib = u.sunColor * secondColor * nDotL2 * 0.31831

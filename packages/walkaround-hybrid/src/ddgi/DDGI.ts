@@ -45,6 +45,23 @@ export interface DDGIOptions {
    * Guarded by `typeof window !== 'undefined'`.
    */
   debug?: boolean;
+  /**
+   * Maximum number of distinct materials supported by the DDGI probe pass.
+   * Forwarded to {@link ProbeUpdatePassOptions.maxMaterials}. Defaults to 64.
+   * @since Sprint 16 (M9 audit remediation)
+   */
+  maxMaterials?: number;
+  /**
+   * Probe spacing (world units). Passed to `ProbeGrid.computeFromBounds`.
+   * `undefined` = auto-derived from scene AABB (`maxSize / 12`).
+   * @since Sprint 16 (M11 audit remediation)
+   */
+  probeSpacing?: number;
+  /**
+   * Hard cap on probes per axis. Defaults to 16.
+   * @since Sprint 16 (M11 audit remediation)
+   */
+  maxProbesPerAxis?: number;
 }
 
 /** Per-frame inputs supplied by the host for a DDGI update tick. */
@@ -83,12 +100,20 @@ export class DDGI {
   private _gpuOk:       boolean  = false;
   private _lastFrameTs: number   = 0;
   private _debug:       boolean;
+  // M11: probe grid parameters forwarded to computeFromBounds each frame.
+  private _probeSpacing:      number | undefined;
+  private _maxProbesPerAxis:  number;
 
   constructor(opts: DDGIOptions = {}) {
     this._debug = opts.debug ?? false;
+    this._probeSpacing     = opts.probeSpacing;
+    this._maxProbesPerAxis = opts.maxProbesPerAxis ?? 16;
     this._bvh   = new SceneBvh();
     this._grid  = new ProbeGrid();
-    this._pass  = new ProbeUpdatePass(this._bvh, this._grid, { debug: this._debug });
+    this._pass  = new ProbeUpdatePass(this._bvh, this._grid, {
+      debug: this._debug,
+      ...(opts.maxMaterials !== undefined ? { maxMaterials: opts.maxMaterials } : {}),
+    });
   }
 
   // ── Read-only accessors matching the old DDGIHandle shape ─────────────────
@@ -169,7 +194,7 @@ export class DDGI {
     // Compute probe grid dims from BVH bounds.
     const bufs = this._bvh.buffers;
     if (bufs) {
-      this._grid.computeFromBounds(bufs.boundingBox);
+      this._grid.computeFromBounds(bufs.boundingBox, this._probeSpacing, this._maxProbesPerAxis);
       if (this._grid.dirty || !this._grid.irradianceA) {
         this._grid.allocateAtlases();
       }

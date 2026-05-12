@@ -91,20 +91,18 @@ export class ProbeGrid {
   /**
    * (Re-)compute probe grid dimensions from the BVH bounds.
    * Returns true if the grid changed and atlases need rebuilding.
+   *
+   * @param boundingBox     Scene AABB from the BVH.
+   * @param spacingInches   Probe spacing in scene units. Pass `undefined` to
+   *                        use the auto-derived value (`maxSize / 12`).
+   * @param maxProbesPerAxis Hard cap per axis. Defaults to 16. Raise for large
+   *                        scenes; lower for performance-constrained devices.
+   *                        M11 audit remediation — was previously hardcoded.
    */
   computeFromBounds(
     boundingBox: THREE.Box3,
-    // Auto-scaled by default: target ~5 probes along the longest scene
-    // axis (spacing = maxSize / 4). The legacy stained-glass studio
-    // scene was authored in inches and runs ~144-foot rooms, so the
-    // historical default of 16 (inches) was fine. The same constant
-    // applied to a 2-unit Cornell box produces a 3×3×3 grid 32× larger
-    // than the scene — only the corner probe is anywhere near the
-    // geometry, indirect-light bleed disappears, surfaces look gray.
-    // Pass undefined to use the auto-derived spacing; pass a number to
-    // pin to a specific value (e.g., the studio context still wants 16).
-    // Hard cap (16, 10, 16 = 2560 max) prevents pathological growth.
     spacingInches?: number,
+    maxProbesPerAxis = 16,
   ): boolean {
     const size = new THREE.Vector3();
     boundingBox.getSize(size);
@@ -121,14 +119,10 @@ export class ProbeGrid {
     const ny = Math.max(3, Math.ceil(size.y / PROBE_SPACING) + 1);
     const nz = Math.max(3, Math.ceil(size.z / PROBE_SPACING) + 1);
 
-    // Hard cap to keep atlas sizes reasonable. Y was previously capped at 10
-    // for the original studio scene (low ceilings), but that left the upper
-    // half of taller rooms (e.g. the Cornell box at y∈[-1,+1] with spacing
-    // 0.17 → ny=13) without probe coverage — ceiling and light source
-    // unobserved, indirect bounce died, no colour bleed. Match X/Z at 16.
-    const cx = Math.min(nx, 16);
-    const cy = Math.min(ny, 16);
-    const cz = Math.min(nz, 16);
+    const cap = Math.max(3, maxProbesPerAxis);
+    const cx = Math.min(nx, cap);
+    const cy = Math.min(ny, cap);
+    const cz = Math.min(nz, cap);
 
     const changed =
       cx !== this.dims.x || cy !== this.dims.y || cz !== this.dims.z ||

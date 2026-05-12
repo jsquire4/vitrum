@@ -25,7 +25,7 @@ import { extractThreePbrScalars } from '@vitrum/three-bindings';
 import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
-import { PROBE_UPDATE_RAYS_WGSL } from './wgsl/probeUpdateRays.wgsl.js';
+import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
 import { packDDGIGridParams } from '../pipeline/resourceManager.js';
 import { detectGpu } from '@vitrum/core';
@@ -100,6 +100,28 @@ export function packDDGIMaterials(mats: readonly THREE.Material[]): ArrayBuffer 
   return buf;
 }
 
+/**
+ * Like {@link packDDGIMaterials} but accepts an explicit max-material count
+ * so instances with `maxMaterials !== 64` get a correctly-sized buffer.
+ * Internal use only — `packDDGIMaterials` is the public API.
+ */
+function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials: number): ArrayBuffer {
+  const ENTRY = DDGI_MATERIAL_ENTRY_FLOATS;
+  const buf = new ArrayBuffer(maxMaterials * DDGI_MATERIAL_STRIDE_BYTES);
+  const data = new Float32Array(buf);
+  const u32view = new Uint32Array(buf);
+  const matsToUse = mats.slice(0, maxMaterials);
+  matsToUse.forEach((mat, i) => {
+    const base = i * ENTRY;
+    const pbr = extractThreePbrScalars(mat);
+    data[base + 0] = pbr.baseColor[0]; data[base + 1] = pbr.baseColor[1]; data[base + 2] = pbr.baseColor[2]; data[base + 3] = 0;
+    data[base + 4] = pbr.emissive[0];  data[base + 5] = pbr.emissive[1];  data[base + 6] = pbr.emissive[2];  data[base + 7] = pbr.roughness;
+    data[base + 8] = pbr.metallic;     data[base + 9] = pbr.ior;          data[base + 10] = pbr.transmission; data[base + 11] = 0;
+    data[base + 12] = pbr.attenuationColor[0]; data[base + 13] = pbr.attenuationColor[1]; data[base + 14] = pbr.attenuationColor[2];
+    u32view[base + 15] = pbr.transmission > 0 ? 1 : 0;
+  });
+  return buf;
+}
 
 interface GPUResources {
   device: GPUDevice;
@@ -137,6 +159,18 @@ export interface ProbeUpdatePassOptions {
    * having a debug global appear unconditionally in production builds.
    */
   debug?: boolean;
+  /**
+   * Maximum number of distinct materials supported by the DDGI probe pass.
+   * Injected as a compile-time constant into the `probeUpdateRays.wgsl`
+   * shader (`array<DDGIMaterial, N>`). Must match the `materialsBuf` size
+   * allocated at init (M × DDGI_MATERIAL_STRIDE_BYTES bytes).
+   *
+   * Defaults to 64. Raise for scenes with more unique materials.
+   * Do NOT raise above WebGPU's uniform-buffer array limit (~4096).
+   *
+   * @since Sprint 16 (M9 audit remediation)
+   */
+  maxMaterials?: number;
 }
 
 export class ProbeUpdatePass {
@@ -156,10 +190,25 @@ export class ProbeUpdatePass {
   // and walls render dark.
   private _sunIntensityMul = 1;
 
+  // Sky tint and irradiance scale used by sampleSkyColor() in
+  // probeUpdateRays.wgsl for miss rays. Defaults replicate the legacy
+  // hardcoded gradient midpoint so Cornell results are unchanged.
+  // (B2 audit remediation — previously hardcoded in WGSL).
+  private _skyTint: [number, number, number] = [0.4, 0.6, 1.0];
+  private _skyIrradiance = 2.0;
+
+  // Max materials for the WGSL compile-time array size (M9 audit remediation).
+  private _ddgiMaxMaterials: number;
+
   constructor(bvh: SceneBvh, grid: ProbeGrid, opts: ProbeUpdatePassOptions = {}) {
     this._bvh  = bvh;
     this._grid = grid;
     this._debug = opts.debug ?? false;
+    this._ddgiMaxMaterials = opts.maxMaterials ?? DDGI_MAX_MATERIALS;
+    if (this._ddgiMaxMaterials < 1) {
+      console.warn(`[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`);
+      this._ddgiMaxMaterials = 1;
+    }
   }
 
   setLights(lights: DDGILight[]): void {
@@ -171,6 +220,24 @@ export class ProbeUpdatePass {
    *  the sun's Le matches shade.wgsl's Lo_emit. */
   setSunIntensityMultiplier(mul: number): void {
     this._sunIntensityMul = mul;
+  }
+
+  /**
+   * Override the sky tint and irradiance scale used by probe miss-rays.
+   * Written into {@link FrameParams} at offsets 32–44 so `sampleSkyColor`
+   * in WGSL reads scene-specific values rather than a Cornell-tuned gradient.
+   *
+   * Defaults: tint=(0.4,0.6,1.0) and irradiance=2.0 (matches the former
+   * hardcoded WGSL values — no regression for Cornell builds).
+   *
+   * @param tint      Linear-sRGB sky colour (HDR; values above 1.0 are valid).
+   * @param irradiance Scalar multiplier on top of the tint. At 1.0 the tint
+   *                   is used as-is. At 2.0 the sky is twice as bright as a
+   *                   unit-white sky, which suits open-outdoor scenes.
+   */
+  setSkyParams(tint: [number, number, number], irradiance: number): void {
+    this._skyTint = tint;
+    this._skyIrradiance = irradiance;
   }
 
   /**
@@ -220,7 +287,9 @@ export class ProbeUpdatePass {
     let blendIrrPipeline: GPUComputePipeline;
     let blendVisPipeline: GPUComputePipeline;
     try {
-      const raysModule = device.createShaderModule({ code: PROBE_UPDATE_RAYS_WGSL });
+      // M9: compile with the host-specified material array size so scenes with
+      // more than 64 materials don't overflow the uniform buffer.
+      const raysModule = device.createShaderModule({ code: makeProbeUpdateRaysWGSL(this._ddgiMaxMaterials) });
       raysPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: raysModule, entryPoint: 'probeUpdateRays' },
@@ -266,10 +335,10 @@ export class ProbeUpdatePass {
       idxBuf:         makeBuffer(12, RO),
       normBuf:        makeBuffer(12, RO),
       matIdBuf:       makeBuffer(4,  RO),
-      materialsBuf:   makeBuffer(DDGI_MAX_MATERIALS * DDGI_MATERIAL_STRIDE_BYTES, UB),
+      materialsBuf:   makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
       lightsBuf:      makeBuffer(16 * 80 + 16, UB),
       gridParamsBuf:  makeBuffer(64, UB),
-      frameParamsBuf: makeBuffer(32, UB),
+      frameParamsBuf: makeBuffer(48, UB),
       blendParamsBuf: makeBuffer(16, UB),
       rayResultsBuf:  makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
       activeProbesBuf:makeBuffer(4, RO),
@@ -419,7 +488,14 @@ export class ProbeUpdatePass {
   }
 
   private _uploadMaterials(device: GPUDevice, mats: THREE.Material[]): void {
-    const buf = packDDGIMaterials(mats);
+    // M9: runtime warning when scene exceeds the compiled-in cap.
+    if (mats.length > this._ddgiMaxMaterials) {
+      console.warn(
+        `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
+        `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
+      );
+    }
+    const buf = packDDGIMaterialsN(mats, this._ddgiMaxMaterials);
     device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
   }
 
@@ -487,12 +563,14 @@ export class ProbeUpdatePass {
   }
 
   private _uploadFrameParams(device: GPUDevice): void {
-    // 8 floats / 32 bytes; aliased u32 view shares the storage:
+    // 12 floats / 48 bytes; aliased u32 view shares the storage:
     //   data[0..2]  → randomRotation: vec3f  (per-frame ray-direction jitter)
     //   u32[3]      → frameIndex: u32
     //   u32[4]      → probeCount: u32
     //   u32[5]      → probesPerFrame: u32 (ceil(probeCount / 4))
-    //   data[6..7]  → pad to 32 bytes (std140 vec4 alignment)
+    //   data[6..7]  → _pad0, _pad1 (std140 vec4 alignment)
+    //   data[8..10] → skyTint: vec3f  (B2 audit: was hardcoded in WGSL)
+    //   data[11]    → skyIrradiance: f32
     //
     // randomRotation is FIXED (not Math.random() per frame). The previous
     // per-frame jitter rotated all probes' rays by different random angles
@@ -504,7 +582,7 @@ export class ProbeUpdatePass {
     // converges to one stable value. Trade-off: ray-direction aliasing
     // (192 fixed directions). Acceptable here; matters for dynamic scenes,
     // where blue-noise per-probe-fixed-across-frames would be the cure.
-    const data = new Float32Array(8);
+    const data = new Float32Array(12);
     const u32 = new Uint32Array(data.buffer);
     data[0] = 0;
     data[1] = 0;
@@ -512,6 +590,11 @@ export class ProbeUpdatePass {
     u32[3] = this._frameIndex;
     u32[4] = this._grid.probeCount;
     u32[5] = Math.ceil(this._grid.probeCount / 4);
+    // data[6..7] = 0 (pad — already zeroed by Float32Array constructor)
+    data[8]  = this._skyTint[0];
+    data[9]  = this._skyTint[1];
+    data[10] = this._skyTint[2];
+    data[11] = this._skyIrradiance;
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data.buffer);
   }
 

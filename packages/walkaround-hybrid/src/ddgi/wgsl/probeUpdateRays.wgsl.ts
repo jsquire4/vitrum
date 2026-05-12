@@ -13,7 +13,29 @@ import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 const WG_SIZE = 32;
 const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
 
-export const PROBE_UPDATE_RAYS_WGSL = /* wgsl */`
+/**
+ * Generate the probeUpdateRays WGSL shader with a compile-time material
+ * array size. Injecting this as a template literal avoids exceeding
+ * WebGPU's uniform array size limits when the caller has fewer than 64
+ * materials — and allows scenes with more materials to raise the cap.
+ *
+ * M9 audit remediation: `DDGI_MAX_MATERIALS` was previously hardcoded as
+ * `array<DDGIMaterial, 64>` in the WGSL. Now driven by
+ * `HybridEngineOptions.ddgiMaxMaterials` (default 64).
+ *
+ * @param maxMaterials Maximum number of distinct materials. Must be >= 1.
+ *        The host-side materialsBuf must be at least
+ *        `maxMaterials × DDGI_MATERIAL_STRIDE_BYTES` bytes.
+ */
+export function makeProbeUpdateRaysWGSL(maxMaterials: number): string {
+  if (maxMaterials < 1) throw new RangeError(`makeProbeUpdateRaysWGSL: maxMaterials must be >= 1, got ${maxMaterials}`);
+  return makeProbeUpdateRaysWGSLImpl(maxMaterials);
+}
+
+/** @deprecated Use {@link makeProbeUpdateRaysWGSL}(64) instead. */
+export const PROBE_UPDATE_RAYS_WGSL = /* wgsl */ makeProbeUpdateRaysWGSLImpl(64);
+
+function makeProbeUpdateRaysWGSLImpl(maxMaterials: number): string { return /* wgsl */`
 
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
@@ -21,7 +43,12 @@ ${OCTAHEDRAL_WGSL}
 const WG_SIZE: u32       = ${WG_SIZE}u;
 const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
 const RAYS_PER_THREAD: u32 = ${RAYS_PER_THREAD}u;   // RAYS_PER_PROBE / WG_SIZE
-const NORMAL_BIAS: f32     = 0.02;   // inches — push ray origin off surface
+// NORMAL_BIAS is derived per-frame from gridParams.spacing * 0.001 (see
+// evalSunLight / evalPointLight below). M13 audit: the fixed 0.02 was
+// Cornell-specific (probe spacing ~0.17 units → 0.17×0.001 = 0.00017, well
+// below 0.02). Large scenes with spacing >20 units need a proportionally
+// larger bias; tiny scenes (spacing <0.02) would over-bias with 0.02.
+// Removed as a compile-time constant; computed inline where needed.
 const INFINITY: f32        = 1e20;
 const PI: f32              = 3.14159265359;
 const BVH_STACK_DEPTH: u32 = 60u;
@@ -124,6 +151,11 @@ struct FrameParams {
   totalProbes:    u32,
   probesPerFrame: u32,
   _pad0: u32, _pad1: u32,
+  // Sky appearance for miss rays (B2 audit: previously hardcoded gradient).
+  // Written by ProbeUpdatePass.setSkyParams(); defaults match the original
+  // Cornell-tuned values so existing behaviour is unchanged.
+  skyTint:        vec3f,
+  skyIrradiance:  f32,
 }
 
 // -----------------------------------------------------------------
@@ -149,7 +181,7 @@ struct ProbeRay {
 @group(0) @binding(3) var<storage, read> bvh_normal:      array<vec3f>;
 @group(0) @binding(4) var<storage, read> bvh_materialId:  array<u32>;
 
-@group(1) @binding(0) var<uniform> materials:     array<DDGIMaterial, 64>;
+@group(1) @binding(0) var<uniform> materials:     array<DDGIMaterial, ${maxMaterials}>;
 @group(1) @binding(1) var<uniform> lights:        DDGILightUniforms;
 
 @group(2) @binding(0) var<storage, read_write> rayResults:   array<ProbeRay>;
@@ -304,9 +336,11 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
     // Glass slab — apply per-cell tint, then continue past the slab.
     visibility = visibility * sMat.attenuationColor * sMat.transmission;
     let hitPos = rayOrigin + sunDir * sHit.dist;
-    // Step past the slab. The 0.5 inch step matches RC's convention; it is
-    // larger than any glass slab thickness in current scenes (~0.25-0.4 in).
-    rayOrigin  = hitPos + sunDir * 0.5;
+    // M14: step past the slab by 1% of probe spacing so the offset is
+    // proportional to scene scale (replacing the Cornell-specific 0.5 units).
+    // For Cornell spacing ~0.17 → step 0.0017; for a 100-unit building →
+    // step ~3 units, ensuring the continuation ray clears the slab face.
+    rayOrigin  = hitPos + sunDir * (gridParams.spacing * 0.01);
   }
   // Loop exhausted (more than 3 glass crossings) — treat as fully attenuated.
   return vec3f(0.0);
@@ -319,7 +353,9 @@ fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
 
   // Glass-aware multi-crossing visibility (replaces single-hit bvhTraceFirstHit
   // + binary glass-attenuation pre-fix).
-  let visibility = traceSunVisibility(hitPos + hitNormal * NORMAL_BIAS, lightDir);
+  // M13: normal bias derived from probe spacing to stay scene-scale-agnostic.
+  let normalBias = gridParams.spacing * 0.001;
+  let visibility = traceSunVisibility(hitPos + hitNormal * normalBias, lightDir);
   return lightColor * intensity * nDotL * visibility;
 }
 
@@ -331,11 +367,13 @@ fn evalPointLight(lightPos: vec3f, lightColor: vec3f, intensity: f32,
   let nDotL = max(0.0, dot(hitNormal, lightDir));
   if (nDotL < 1e-3) { return vec3f(0.0); }
 
+  // M13: normal bias proportional to probe spacing (scene-scale-agnostic).
+  let normalBias_p = gridParams.spacing * 0.001;
   var shadowRay: Ray;
-  shadowRay.origin    = hitPos + hitNormal * NORMAL_BIAS;
+  shadowRay.origin    = hitPos + hitNormal * normalBias_p;
   shadowRay.direction = lightDir;
   let shadow = bvhTraceFirstHit(shadowRay);
-  if (shadow.didHit && shadow.dist < dist - NORMAL_BIAS) {
+  if (shadow.didHit && shadow.dist < dist - normalBias_p) {
     return vec3f(0.0);
   }
   let atten = intensity / (dist * dist + 1.0);
@@ -368,24 +406,28 @@ fn probeWorldPos(probeIdx: u32) -> vec3f {
 }
 
 // -----------------------------------------------------------------
-// Simple sky / environment color sampling (basic gradient).
-// The real env comes from PMREM in the fragment shader; for probe
-// update we just need a plausible sky color for missed rays.
+// Sky / environment colour sampling for probe miss-rays.
+//
+// Uses frameParams.skyTint and frameParams.skyIrradiance written by the
+// host's ProbeUpdatePass.setSkyParams() (B2 audit remediation — replaced
+// the Cornell-only hardcoded gradient). The default host values
+// (tint=vec3f(0.4,0.6,1.0), irradiance=2.0) reproduce the former
+// hardcoded midpoint exactly, so Cornell renders are unchanged.
+//
+// Geometry: above-horizon tinted by skyTint × cosine falloff from zenith;
+// below-horizon attenuated to a neutral dark ground to avoid artificially
+// brightening the indirect irradiance from probe rays that miss the floor.
 // -----------------------------------------------------------------
 fn sampleSkyColor(dir: vec3f) -> vec3f {
-  // Above-horizon: gradient from warm horizon to blue zenith.
-  // Below-horizon: fade to a dark ground albedo. The BVH covers the floor, so
-  // most downward probe rays will hit the scene rather than reach this path;
-  // for the few that don't (probe near a window edge), use a neutral dark ground
-  // rather than reflecting the horizon colour, which would artificially brighten
-  // the indirect irradiance.
   let above = max(0.0, dir.y);   // 0..1 above horizon
   let below = max(0.0, -dir.y);  // 0..1 below horizon
-  let horizon = vec3f(0.9, 0.85, 0.75);  // warm horizon
-  let zenith  = vec3f(0.4, 0.6, 1.0);   // blue zenith
-  let ground  = vec3f(0.1, 0.08, 0.06); // dark earth
-  let skyColor    = mix(horizon, zenith, above) * 2.0;  // above-horizon EV
-  let groundColor = mix(horizon, ground, below) * 0.3;  // below-horizon attenuated
+  // Above-horizon: lerp from horizon (white/neutral) to zenith tint,
+  // then scale by the scene's sky irradiance level.
+  let horizon = vec3f(0.9, 0.85, 0.75);           // warm neutral horizon (fixed)
+  let skyColor = mix(horizon, frameParams.skyTint, above) * frameParams.skyIrradiance;
+  // Below-horizon: dark ground, attenuated so it doesn't dominate.
+  let ground  = vec3f(0.1, 0.08, 0.06);           // dark earth (fixed)
+  let groundColor = mix(horizon, ground, below) * 0.3;
   return mix(skyColor, groundColor, below);
 }
 
@@ -525,4 +567,5 @@ fn probeUpdateRays(
     }
   }
 }
-`;
+`; }
+

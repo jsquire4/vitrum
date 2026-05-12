@@ -37,7 +37,9 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
 // RESERVOIR_DI_STRIDE / loadReservoirDI_{rw,ro} / storeReservoirDI_rw live in COMMON_WGSL.
-const M_CLAMP = 20u;
+// M_CLAMP is now read from the UBO (ubo.temporalMClampDI) — the compile-time
+// constant is kept only as documentation of the default.
+// const M_CLAMP_DEFAULT = 20u;
 
 // PrimarySurface struct defined in COMMON_WGSL.
 fn castPrimary_t(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> PrimarySurface {
@@ -134,8 +136,8 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   // occluded or back-facing at the current surface, p̂≈0 and the sample
   // contributes ~nothing (w_prev → 0).
 
-  // M-clamp previous reservoir.
-  prev.M = min(prev.M, M_CLAMP);
+  // M-clamp previous reservoir — UBO-driven for scene-independence.
+  prev.M = min(prev.M, ubo.temporalMClampDI);
 
   // Evaluate p̂ at CURRENT pixel for the previous reservoir's chosen light.
   let pHatPrevAtCur = computePHat_t(prev.lightId, curSurf);

@@ -66,9 +66,11 @@
   struct + `welfordUpdate` / `welfordVariance` helpers in `common.wgsl.ts` (version
   1, Decision 13). `sampleBudgetKernel` compute shader + `resolveKernel` (checkerboard
   upsampling) authored. `createVarianceBuffer` helper exported from `resourceManager.ts`.
-  Dispatch integration deferred (see below). Full integration spec in
-  `plan/sprint-9-walkaround-integration.md`. Commit range: `f5bfde0`. Tests: 63
-  (Welford suite). Mode scope: walkaround.
+  **Dispatch integration WIRED** — `sampleBudgetKernel` and `resolveKernel` are
+  dispatched unconditionally in `WalkaroundGPUPipeline.renderFrame` (Pass 0 and the
+  resolve pass before composite). `varianceBuffer` is written by the Welford temporal
+  pass (Sprint 10a). Full integration spec: `plan/sprint-9-walkaround-integration.md`.
+  Commit range: `f5bfde0`. Tests: 63 (Welford suite). Mode scope: walkaround.
 
 ### Frontier sprints
 
@@ -79,7 +81,10 @@
 descriptor types (`SVGFVarianceBindGroupLayout`, `SVGFAtrousBindGroupLayout`,
 `SVGF_DEFAULT_UNIFORMS`), and packing helpers (`packSVGFVarianceUniforms`,
 `packSVGFUniforms`). Tests: included in shared-denoisers suite (69 total).
-Walkaround wiring deferred — see `plan/sprint-10a-walkaround-integration.md`.
+**Walkaround wiring COMPLETE** — SVGF two-pass dispatch (`svgfVarianceMain` +
+`svgfAtrousMain` × 5) is wired into `WalkaroundGPUPipeline.renderFrame` as the
+`denoiserMode === 'svgf'` path; Welford temporal replaces the à-trous path when
+SVGF is selected. See `plan/sprint-10a-walkaround-integration.md` for spec.
 PT preview wiring (replacing Sprint 6 hexagonal filter) deferred — see
 `plan/sprint-10a-pt-fork-patch.md`. Commit range: `4aee481`.
 
@@ -121,23 +126,23 @@ for N=3 bounces × 3 texel groups, exceeding `MAX_DRAW_BUFFERS = 8`.
 **BDPT opt-in by default** (`uBDPTEnabled = false`) — zero regression risk until
 the fork patch is applied and verified.
 
-#### Sprint 11 — PPG path guiding: COMPLETE (vitrum-side, scaffold only — dispatch deferred)
+#### Sprint 11 — PPG path guiding: COMPLETE (vitrum-side + dispatch wired)
 
 `@vitrum/walkaround-hybrid` ships:
 - `src/ppg/types.ts` — `PPGDirectionalBin`, `PPGQuadTreeNode`, `PPGSpatialCell`,
-  `PPGBuffers`, `PPG_MAX_SPATIAL_CELLS` (10,000), `PPG_DIRECTIONS` (16), byte-stride
-  constants.
+  `PPGBuffers`, `PPG_MAX_SPATIAL_CELLS` (10,000), byte-stride constants.
 - `src/ppg/wgsl/ppgSample.wgsl.ts` — `PPG_SAMPLE_WGSL` WGSL fragment for guided
   direction sampling, @group(2) bindings.
 - `src/ppg/wgsl/ppgUpdate.wgsl.ts` — `PPG_UPDATE_WGSL` compute kernel with atomic
   fixed-point radiance accumulation.
 - `createPPGBuffers` / `destroyPPGBuffers` in `resourceManager.ts`.
-- `HybridEngineOptions.ppgEnabled`, `HybridEngine.setPPGEnabled()`,
+- `HybridEngineOptions.ppgEnabled` / `ppgMaxSpatialCells`, `HybridEngine.setPPGEnabled()`,
   `HybridEngine.ppgEnabled` getter.
 
-Dense linear array kd-tree with brute-force O(N) nearest-cell lookup (Decision: see
-`plan/sprint-11-ppg-integration.md`, kd-tree section). Dispatch wiring deferred —
-see `plan/sprint-11-ppg-integration.md`. Tests: 81 (PPG suite). Commit range:
+**Dispatch WIRED** — PPG update kernel dispatched in `WalkaroundGPUPipeline.renderFrame`
+when `ppgEnabled === true` (after shade, before denoiser). `buildPpgKdTreeGpuBytes` + kd-tree
+upload wired in `HybridEngine._initPipeline`. See `plan/sprint-11-ppg-integration.md` for spec.
+Dense linear-array kd-tree with O(N) nearest-cell lookup. Tests: 81 (PPG suite). Commit range:
 `0cebaf9`.
 
 #### Sprint 12 — Hero-wavelength spectral: COMPLETE (vitrum-side spectral utilities)
@@ -236,26 +241,20 @@ etc.). Visual A/B verification required after each; reference renders saved to
   sliders (§7, item 1 of roadmap).
 - **Sprint 8 host**: `bevels.ts` baker — remove fake noise-split; import
   `dispersionStrength` from `glassMaterialProfiles.ts` and pass to shader.
-- **Sprint 9 host**: adaptive sampling integration per
-  `plan/sprint-9-walkaround-integration.md` (pipeline compilation, BGL, texture
-  allocation, dispatch order update).
-- **Sprint 10a host (walkaround)**: SVGF wiring per
-  `plan/sprint-10a-walkaround-integration.md` (replace à-trous dispatch loop).
+- **Sprint 9 / 10a / 11 host**: Library-side dispatch wiring is complete.
+  Remaining host work: expose `denoiserMode`, `ppgEnabled`, and adaptive
+  sampling thresholds in the UI (render-mode panel / settings panel). GPU
+  verification (frame capture, timing gate) required before enabling by default.
 - **Sprint 10b host**: `plan/sprint-10b-host-checklist.md` — install
   `onnxruntime-web`, bundle OIDN ONNX model, "Denoise" button, float32 readback,
   `preloadOIDNModel` pre-warm, denoised PNG save option, `clearOIDNCache` on exit.
-- **Sprint 11 host**: PPG dispatch wiring per `plan/sprint-11-ppg-integration.md`
-  (pipeline compilation, BGL, shade pass changes, frame-parity gating).
 
 ### Integration deferred (vitrum-side, requires GPU verification)
 
-- **Sprint 9 adaptive sampling dispatch path**: `sampleBudgetKernel` and
-  `resolveKernel` shaders authored; `varianceBuffer` allocated; pipeline
-  compilation, BGL construction, and dispatch-order integration deferred. See
-  `plan/sprint-9-walkaround-integration.md`.
-- **Sprint 11 PPG dispatch wiring**: shaders authored, buffers allocated (opt-in
-  via `ppgEnabled`); pipeline compilation and shade-pass changes deferred. See
-  `plan/sprint-11-ppg-integration.md`.
+- **Sprint 9 adaptive sampling + Sprint 10a SVGF + Sprint 11 PPG dispatch**:
+  All three are now wired into `WalkaroundGPUPipeline.renderFrame` and
+  `HybridEngine._initPipeline`. GPU verification (frame capture, A/B compare)
+  still pending. See the respective integration spec docs for test procedures.
 - **Sprint 13 neural denoiser HybridEngine wiring**: `InferenceGraph` authored and
   tested; wiring into `HybridEngine.renderFrame` (G-buffer pack pass, dispatch chain,
   composite read path, `setNeuralDenoiserEnabled` toggle) deferred. See
