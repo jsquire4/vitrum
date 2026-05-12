@@ -92,10 +92,30 @@ export interface SceneBVHCommonResult {
   positionStrideFloats: 3 | 4;
 
   /**
-   * Triangle indices (3 × u32 per triangle). Read AFTER the BVH build —
-   * MeshBVH's SAH partition reorders the index buffer in place.
+   * Triangle indices — 3 u32 per triangle (`BvhIndexStride = 3`, the
+   * `array<vec3u>` WGSL form used by RC and DDGI shaders).  Read AFTER
+   * the BVH build — MeshBVH's SAH partition reorders the index buffer in
+   * place.
+   *
+   * Callers that require stride 4 (pt-webgpu, ReSTIR) must post-process:
+   *   - pt-webgpu: expand to vec4u, zeroing `.w` (zero-fill contract).
+   *   - ReSTIR:    expand and pack RGBA material color + texType into `.w`.
+   *
+   * Upload-time assertion (recommended):
+   * ```ts
+   * const stride = bvhIndexStride;  // 3 or 4
+   * if (indexData.byteLength % (stride * 4) !== 0)
+   *   throw new Error(`BVH index buffer not aligned to stride ${stride}`);
+   * ```
    */
   indices: Uint32Array;
+
+  /**
+   * Index-buffer stride — always 3 for `buildSceneBVH` output (3 u32 per
+   * triangle, no padding).  Callers that post-process to stride 4 should
+   * document that separately.
+   */
+  bvhIndexStride: 3;
 
   /**
    * Per-triangle materialId (one u32 per triangle). Derived via the
@@ -536,6 +556,10 @@ export function buildSceneBVH(
     positions,
     positionStrideFloats: positionStride,
     indices,
+    // buildSceneBVH always returns stride-3 indices (3 u32 per triangle,
+    // no padding). Callers needing stride 4 must post-process — see the
+    // BvhIndexStride type in @vitrum/shared-bvh for the contract.
+    bvhIndexStride: 3,
     triMaterialId,
     normals,
     materials,
@@ -564,6 +588,7 @@ function emptyBVHResult(positionStride: 3 | 4): SceneBVHCommonResult {
     positions: new Float32Array(positionStride === 4 ? 12 : 9),
     positionStrideFloats: positionStride,
     indices: new Uint32Array([0, 1, 2]),
+    bvhIndexStride: 3,
     triMaterialId: new Uint32Array(1),
     normals: new Float32Array(positionStride === 4 ? 12 : 9),
     materials: [],
@@ -623,6 +648,46 @@ function packRootBuffer(root0: ArrayBuffer | ArrayBufferView): Float32Array {
  * Leaf nodes are untouched — both versions store the triangle offset
  * in the same field with identical semantics.
  */
+/**
+ * Verify a relative-offset BVH produced by `buildCpuBvh` (pt-webgpu) or
+ * `normalizeBvhInteriorOffsets` (shared-bvh).
+ *
+ * For every interior node the right-child offset must satisfy:
+ *   1 ≤ rightChildOrTriOffset < totalNodes
+ * (offset 0 would alias the node itself; offset ≥ totalNodes would be out
+ * of bounds.) Leaf nodes are skipped — their `rightChildOrTriOffset` field
+ * holds a triangle array offset, not a node index.
+ *
+ * Cost: O(totalNodes) — call only in dev / test mode (the function is always
+ * exported so callers control the gate). Throws on the first violation found.
+ */
+export function validateBvhEncoding(
+  nodeBytes: Float32Array | Uint32Array,
+  totalNodes: number,
+): void {
+  const UINT32_PER_NODE = 8;
+  const LEAFNODE_FLAG = 0xffff;
+  const u32 =
+    nodeBytes instanceof Uint32Array
+      ? nodeBytes
+      : new Uint32Array(nodeBytes.buffer, nodeBytes.byteOffset, nodeBytes.length);
+
+  for (let i = 0; i < totalNodes; i++) {
+    const base = i * UINT32_PER_NODE;
+    const splitOrCount = u32[base + 7]!;
+    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    if (isLeaf) continue;
+    const offset = u32[base + 6]!;
+    if (offset < 1 || offset >= totalNodes) {
+      throw new Error(
+        `[@vitrum/shared-bvh] validateBvhEncoding: interior node ${i} has invalid ` +
+          `relative right-child offset ${offset} (must be in [1, ${totalNodes - 1}]). ` +
+          `Check that the BVH was built with relative-offset encoding.`,
+      );
+    }
+  }
+}
+
 function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   const UINT32_PER_NODE = 8;
   const LEAFNODE_FLAG = 0xFFFF;

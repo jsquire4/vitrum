@@ -48,4 +48,36 @@ describe('buildCpuBvh', () => {
     const sortedMaterials = Array.from(built.reorderedTriMaterialIds).sort((a, b) => a - b);
     expect(sortedMaterials).toEqual([0, 1, 2, 3, 4, 5]);
   });
+
+  it('encodes interior nodes with relative right-child offsets (1 ≤ offset < totalNodes)', () => {
+    // Build a BVH large enough to have multiple interior nodes.
+    const positions = makePositions(18);
+    const indices = new Uint32Array([
+      0, 1, 2, 0,
+      3, 4, 5, 0,
+      6, 7, 8, 0,
+      9, 10, 11, 0,
+      12, 13, 14, 0,
+      15, 16, 17, 0,
+    ]);
+    const triMaterialIds = new Uint32Array([0, 1, 2, 3, 4, 5]);
+    const built = buildCpuBvh(positions, indices, triMaterialIds);
+
+    const LEAFNODE_FLAG = 0xffff;
+    const nodeU32 = new Uint32Array(built.bvhNodes.buffer);
+    const totalNodes = built.bvhNodes.length / 8; // 8 u32 per node
+
+    let foundInterior = false;
+    for (let i = 0; i < totalNodes; i++) {
+      const splitOrCount = nodeU32[i * 8 + 7] ?? 0;
+      const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+      if (isLeaf) continue;
+      foundInterior = true;
+      const offset = nodeU32[i * 8 + 6] ?? 0;
+      expect(offset).toBeGreaterThanOrEqual(1);
+      expect(offset).toBeLessThan(totalNodes);
+    }
+    // Sanity: a 6-triangle BVH must have at least one interior node.
+    expect(foundInterior).toBe(true);
+  });
 });

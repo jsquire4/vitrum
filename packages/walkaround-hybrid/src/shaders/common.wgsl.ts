@@ -548,16 +548,21 @@ fn bvhIntersectAny(
         if (t > 1e-4 && t < tMax) { return true; }
       }
     } else {
-      // Interior node: push right child, then left (so left is processed first).
+      // Interior node: ordered traversal (Wald 2007 / PBR4e §7.3.3).
       // three-mesh-bvh stores rightChildOrTriOffset as a RELATIVE offset (in
       // node units) from the current node, NOT an absolute node index.  The
       // left child is always nodeIdx+1 (the immediately-following node).
-      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot)
-      // — the previous 'stackPtr < 62u' needlessly wasted slot 63.
-      let rightChild = nodeIdx + node.rightChildOrTriOffset;
+      // splitAxisOrTriCount low 2 bits encode the split axis (0=X,1=Y,2=Z).
+      // Push far child first so near child is popped (and tested) first.
+      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot).
+      let rightChild  = nodeIdx + node.rightChildOrTriOffset;
+      let axis        = splitOrCount & 0x3u;
+      let leftToRight = dir[axis] >= 0.0;
+      let nearChild   = select(rightChild,   nodeIdx + 1u, leftToRight);
+      let farChild    = select(nodeIdx + 1u, rightChild,   leftToRight);
       if (stackPtr + 1u < 64u) {
-        stack[stackPtr] = rightChild; stackPtr++;
-        stack[stackPtr] = nodeIdx + 1u; stackPtr++;
+        stack[stackPtr] = farChild;  stackPtr++;
+        stack[stackPtr] = nearChild; stackPtr++;
       }
     }
   }
@@ -640,14 +645,19 @@ fn bvhIntersectFirstHit(
         }
       }
     } else {
-      // Interior node: rightChildOrTriOffset is a RELATIVE offset (node units)
-      // from this node, NOT an absolute node index.
-      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot)
-      // — the previous 'stackPtr < 62u' needlessly wasted slot 63.
-      let rightChild = nodeIdx + node.rightChildOrTriOffset;
+      // Interior node: ordered traversal (Wald 2007 / PBR4e §7.3.3).
+      // rightChildOrTriOffset is a RELATIVE offset (node units) from this node.
+      // splitAxisOrTriCount low 2 bits encode the split axis (0=X,1=Y,2=Z).
+      // Push far child first so near child is popped (and tested) first.
+      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot).
+      let rightChild  = nodeIdx + node.rightChildOrTriOffset;
+      let axis        = splitOrCount & 0x3u;
+      let leftToRight = ray.direction[axis] >= 0.0;
+      let nearChild   = select(rightChild,   nodeIdx + 1u, leftToRight);
+      let farChild    = select(nodeIdx + 1u, rightChild,   leftToRight);
       if (stackPtr + 1u < 64u) {
-        stack[stackPtr] = rightChild; stackPtr++;
-        stack[stackPtr] = nodeIdx + 1u; stackPtr++;
+        stack[stackPtr] = farChild;  stackPtr++;
+        stack[stackPtr] = nearChild; stackPtr++;
       }
     }
   }

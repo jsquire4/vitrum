@@ -24,7 +24,15 @@ export {
 export interface PackedSceneData {
   readonly positions: Float32Array; // vec4f packed
   readonly normals: Float32Array; // vec4f packed
-  readonly indices: Uint32Array; // vec4u packed (xyz used)
+  /**
+   * Triangle indices — stride 4 (vec4u): 3 u32 vertex indices + `.w = 0`
+   * (zero-fill contract). The pt-webgpu WGSL reads `.x,.y,.z` from
+   * `array<vec4u>` — stride 4 is required for correct WGSL alignment.
+   *
+   * This differs from `shared-bvh/buildSceneBVH` which returns stride 3.
+   * Upload-time assertion: `indices.byteLength % (4 * 4) === 0`.
+   */
+  readonly indices: Uint32Array; // vec4u packed (xyz = vertex indices, w = 0)
   readonly triMaterialIds: Uint32Array;
   readonly materials: Float32Array; // MATERIAL_VEC4_STRIDE * vec4f per material
   readonly bvhNodes: Float32Array; // 8 floats (32 bytes) per node
@@ -274,6 +282,15 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
 }
 
 export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): UploadedSceneBuffers {
+  // Upload-time assertion: pt-webgpu uses stride-4 indices (vec4u, .w = 0).
+  // byteLength must be a multiple of 4 u32 = 16 bytes.
+  if (packed.indices.byteLength > 0 && packed.indices.byteLength % 16 !== 0) {
+    throw new Error(
+      `[pt-webgpu/uploadPackedScene] Index buffer byteLength (${packed.indices.byteLength}) ` +
+        `is not aligned to BvhIndexStride 4 (16 bytes per triangle). ` +
+        `pt-webgpu requires stride-4 indices — 3 vertex u32 + 1 zero-fill u32.`,
+    );
+  }
   const positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', packed.positions);
   const normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', packed.normals);
   const indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', packed.indices);

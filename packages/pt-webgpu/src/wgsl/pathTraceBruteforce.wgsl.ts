@@ -854,7 +854,11 @@ fn traceMeshBvh(
       }
     } else {
       let leftChild = nodeIdx + 1u;
-      let rightChild = node.rightChildOrTriOffset;
+      // rightChildOrTriOffset is a RELATIVE offset (node units) from the current
+      // node index; left child is always nodeIdx + 1. This matches the canonical
+      // relative-offset encoding used by shared-bvh/normalizeBvhInteriorOffsets
+      // and walkaround-hybrid/common.wgsl. Invariant: 1 ≤ offset < totalNodes.
+      let rightChild = nodeIdx + node.rightChildOrTriOffset;
       if (stackPtr + 2u < 64u) {
         stack[stackPtr] = rightChild;
         stackPtr = stackPtr + 1u;
