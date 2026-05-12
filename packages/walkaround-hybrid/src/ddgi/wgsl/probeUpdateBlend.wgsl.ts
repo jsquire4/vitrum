@@ -119,17 +119,18 @@ fn probeUpdateBlendIrradiance(
     // interpolation in shade.wgsl correctly drops these probes from the
     // 8-probe stencil.
     if (ray.hitDistance < 0.05) { continue; }
-    // Mid-sharp directional kernel: pow(w, 8) preserves directional colour
-    // separation (a -X atlas pixel sees mostly rays going -X — hitting the
-    // red wall in Cornell — rather than averaging across the whole upper
-    // hemisphere where gray ceiling/floor surfaces with higher albedo
-    // dominate the average and bleach the colour signal). pow(50) was too
-    // narrow for our 192-ray budget (most pixels had no aligned ray),
-    // Lambert was too broad. pow(8) lands the lobe FWHM at ~25° — wide
-    // enough that each atlas pixel sees ~5 aligned rays for stable values.
+    // Paper Lambertian cosine kernel — Majercik 2019 §3 Algorithm 1.
+    // Weight = max(0, n·d) where n is the atlas-texel outgoing direction and
+    // d is the probe ray direction. This is the standard cosine weight for
+    // irradiance accumulation; summing ray contributions with this weight and
+    // then dividing by totalWeight produces the correct irradiance E at each
+    // atlas texel (after Change 3 moves albedo/π to the receiver side).
+    // Per-frame SO(3) rotation (Change 1 / Item 6) decorrelates ray samples
+    // across frames so the temporal EMA can average the higher per-frame
+    // variance produced by a true cosine kernel vs the narrower pow(8) lobe.
     let w = max(0.0, dot(dir, ray.direction));
     if (w < 1e-3) { continue; }
-    let weight = pow(w, 8.0);
+    let weight = w;
     newColor    = newColor + ray.hitRadiance * weight;
     totalWeight = totalWeight + weight;
   }
@@ -209,7 +210,10 @@ fn probeUpdateBlendVisibility(
     if (ray.hitDistance < 0.05) { continue; }
     let w = max(0.0, dot(dir, ray.direction));
     if (w < 1e-3) { continue; }
-    let weight  = pow(w, 50.0);
+    // Variance-shadow visibility kernel — Majercik 2019 §3 uses pow(2) for the
+    // depth/depth² accumulation (Chebyshev shadow visibility). pow(50) was too
+    // narrow for a 192-ray budget (most atlas pixels had zero aligned rays).
+    let weight  = pow(w, 2.0);
     let d       = ray.hitDistance;
     newDepth   = newDepth + d * weight;
     newDepthSq = newDepthSq + d * d * weight;

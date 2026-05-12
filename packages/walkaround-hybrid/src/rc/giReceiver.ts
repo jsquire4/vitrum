@@ -18,7 +18,7 @@
 
 import * as THREE from 'three';
 import { MeshPhysicalNodeMaterial } from 'three/webgpu';
-import { output, renderOutput } from 'three/tsl';
+import { output, renderOutput, mul, uniform, materialColor } from 'three/tsl';
 import type { CascadeBuffers } from './cascadePyramid.js';
 import { buildWalkaroundLightingNode } from './walkaroundDiffuseLighting.js';
 
@@ -99,10 +99,15 @@ function makeGIReceiverMaterial(
     nm.iridescenceIOR  = srcMat.iridescenceIOR;
   }
 
-  // Add walkaround GI as an additive indirect-light term via emissiveNode.
-  // NodeMaterial adds emissiveNode to outgoingLightNode AFTER the standard
-  // PBR direct-lighting computation.
-  nm.emissiveNode = giNode as AnyNode;
+  // GI signal is integrated irradiance E; multiply by albedo/π to convert
+  // to Lambertian outgoing radiance before adding via emissiveNode (the only
+  // NodeMaterial hook for per-pixel additive contribution; no
+  // indirectDiffuseNode exists in the TSL version vitrum uses).
+  // Receiver equation: L_o_indirect = (albedo / π) · E_gi
+  // Reference: Majercik 2019 §3; D1 locked decision in sweep-2026-05-11.
+  const PI_INV = uniform(1.0 / Math.PI);
+  const giDiffuse = mul(giNode as AnyNode, mul(materialColor as AnyNode, PI_INV as AnyNode));
+  nm.emissiveNode = giDiffuse;
 
   // Tone-map + sRGB-encode the linear PBR + GI output.
   (nm as MeshPhysicalNodeMaterial & { outputNode: unknown }).outputNode =

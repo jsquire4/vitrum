@@ -572,21 +572,62 @@ export class ProbeUpdatePass {
     //   data[8..10] → skyTint: vec3f  (B2 audit: was hardcoded in WGSL)
     //   data[11]    → skyIrradiance: f32
     //
-    // randomRotation is FIXED (not Math.random() per frame). The previous
-    // per-frame jitter rotated all probes' rays by different random angles
-    // each frame, so every probe's newColor changed each update — the
-    // EMA (0.97 hysteresis) couldn't fully suppress the per-frame variance,
-    // producing visible perpetual screen-wide flicker that "worsened on
-    // refresh and settled but never stopped". For a static Cornell scene
-    // fixed rotation gives identical newColor across updates → atlas
-    // converges to one stable value. Trade-off: ray-direction aliasing
-    // (192 fixed directions). Acceptable here; matters for dynamic scenes,
-    // where blue-noise per-probe-fixed-across-frames would be the cure.
+    // Per-frame deterministic SO(3) rotation (Shoemake 1992 "Uniform Random
+    // Rotations"). Uses three Halton-base-{2,3,5} quasi-random values seeded
+    // by the frame index to produce a uniform-on-SO(3) quaternion, then
+    // converts to an axis-angle vec3 consumed by the WGSL probeUpdateRays
+    // shader. Replacing the previous all-zeros fixed rotation:
+    //   - Decorrelates probe ray samples across frames so the EMA hysteresis
+    //     accumulates an effectively larger ray budget over time.
+    //   - Eliminates the 192-fixed-direction aliasing that the EMA could not
+    //     suppress at 0.97 hysteresis.
+    //   - Halton rather than Math.random() avoids correlation clumps.
+    // Reference: Majercik et al. 2019 §3.1; Shoemake 1992.
+    //
+    // (Previous comment noted that the (0,0,0) freeze was a band-aid for
+    // EMA instability — that root cause is fixed by the M7 energy-model
+    // correction; per-frame rotation is now safe to restore.)
+    const haltonBase = (i: number, base: number): number => {
+      let result = 0;
+      let f = 1;
+      let n = i;
+      while (n > 0) {
+        f /= base;
+        result += f * (n % base);
+        n = Math.floor(n / base);
+      }
+      return result;
+    };
+    const fi = this._frameIndex + 1;
+    const u1 = haltonBase(fi, 2);
+    const u2 = haltonBase(fi, 3);
+    const u3 = haltonBase(fi, 5);
+    // Shoemake quaternion form (uniform distribution on SO(3)).
+    const sigma1 = Math.sqrt(1 - u1);
+    const sigma2 = Math.sqrt(u1);
+    const theta1 = 2 * Math.PI * u2;
+    const theta2 = 2 * Math.PI * u3;
+    const qw = sigma2 * Math.cos(theta2);
+    const qx = sigma1 * Math.sin(theta1);
+    const qy = sigma1 * Math.cos(theta1);
+    const qz = sigma2 * Math.sin(theta2);
+    // Convert quaternion → axis-angle vec3 (WGSL consumer applies this as
+    // a Rodrigues rotation to each probe ray direction).
+    const angle = 2 * Math.acos(Math.min(1, Math.abs(qw)));
+    const sinHalf = Math.sqrt(Math.max(0, 1 - qw * qw));
+    let ax: number, ay: number, az: number;
+    if (sinHalf < 1e-6) {
+      ax = 1; ay = 0; az = 0; // identity — no rotation
+    } else {
+      ax = qx / sinHalf;
+      ay = qy / sinHalf;
+      az = qz / sinHalf;
+    }
     const data = new Float32Array(12);
     const u32 = new Uint32Array(data.buffer);
-    data[0] = 0;
-    data[1] = 0;
-    data[2] = 0;
+    data[0] = ax * angle;
+    data[1] = ay * angle;
+    data[2] = az * angle;
     u32[3] = this._frameIndex;
     u32[4] = this._grid.probeCount;
     u32[5] = Math.ceil(this._grid.probeCount / 4);

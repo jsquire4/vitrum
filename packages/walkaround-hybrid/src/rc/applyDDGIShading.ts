@@ -141,7 +141,11 @@ export function applyDDGIShading(
       iW, iH, vW, vH,
     );
 
-    // Diffuse indirect = irradiance × albedo / π (Lambertian BRDF).
+    // Lambertian receiver: outgoing diffuse from indirect = (albedo/π) · E_ddgi.
+    // Atlas holds true irradiance E per Sweep M7 — albedo/π baking moved from
+    // producer (probeUpdateRays.wgsl.ts) to consumer here.
+    // Receiver equation: L_o_indirect = (albedo / π) · E_ddgi
+    // Reference: Majercik 2019 §3; M7 DDGI Coherent Physical Model.
     const PI_INV = uniform(1.0 / Math.PI);
     // AnyNode casts below are needed because three/tsl typings are conservative
     // and don't model wgslFn return types precisely.
