@@ -73,7 +73,7 @@ fn computePHat(lid: u32, pos: vec3f, normal: vec3f, wo: vec3f, albedo: vec3f, ro
   // reservoir was importance-sampling against an unclamped p̂ while shade
   // evaluated with the clamped one, causing the ratio mismatch to show
   // up as fireflies in temporal+spatial reuse).
-  let G    = emitterGeometry(nlDotL, dist2);
+  let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
   let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
   return luminance(e.Le * brdf * G);
 }
@@ -153,7 +153,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // Same emitterGeometry helper as computePHat above so the per-candidate
     // p̂ in the M_LIGHT loop matches the reservoir's selection p̂ matches
     // shade's evaluation p̂ (sweep finding Bug 3).
-    let G    = emitterGeometry(nlDotL, dist2);
+    let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
     let brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);
     let pHat = luminance(ls.Le * brdf * G);
 

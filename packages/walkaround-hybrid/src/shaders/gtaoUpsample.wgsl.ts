@@ -11,9 +11,27 @@
 
 export const GTAO_UPSAMPLE_WGSL = /* wgsl */ `
 
+// Duplicate of gtao.wgsl's GTAOUniforms struct (both shaders bind the same
+// uboBuffer; the duplicate WGSL declaration is required because each shader
+// module is compiled independently — concatenating would conflict with
+// gtao's @binding(0/1/2) declarations on the same group).
+struct GTAOUniforms {
+  tanFovHalf: f32,
+  radiusPx:   f32,
+  intensity:  f32,
+  depthThresh: f32,
+  bilateralDepthSigma: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
+};
+
 @group(0) @binding(0) var up_aoHalf:      texture_2d<f32>;
 @group(0) @binding(1) var up_normalDepth: texture_2d<f32>;
 @group(0) @binding(2) var up_aoFullOut:   texture_storage_2d<r16float, write>;
+// Audit B3: bilateral depth sigma now read from the GTAO UBO (shared with
+// gtao.wgsl's GTAOUniforms struct) so the host can scale it with the scene.
+@group(0) @binding(3) var<uniform> up_gtao: GTAOUniforms;
 
 fn similarityWeight(
   centerDepth: f32,
@@ -23,8 +41,10 @@ fn similarityWeight(
 ) -> f32 {
   // Reject samples too far in depth or too different in normal — they
   // belong to a different surface and would bleed AO across geometric edges.
+  // depthW = exp(-Δdepth / (2 σ²)), with σ = up_gtao.bilateralDepthSigma.
   let depthDelta = abs(centerDepth - sampleDepth);
-  let depthW = exp(-depthDelta * 4.0);  // tighter: scene scale 2 units, σ ≈ 0.25
+  let sigma = max(1e-6, up_gtao.bilateralDepthSigma);
+  let depthW = exp(-depthDelta / (2.0 * sigma * sigma));
   let nDot = max(0.0, dot(centerNormal, sampleNormal));
   let normW = pow(nDot, 16.0);
   return depthW * normW;

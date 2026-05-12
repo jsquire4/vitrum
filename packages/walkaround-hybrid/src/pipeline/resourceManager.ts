@@ -600,9 +600,11 @@ export function createFrameResources(
   const placeholderData = new Float32Array([0.5, 0.5, 1.0, 0.0]); // encodes normal=(0,0,1), depth=0
   device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
 
-  // UBO: camera matrices + per-frame params (256 bytes).
+  // UBO: camera matrices + per-frame params + library-generality tunables
+  // (288 bytes — see WALKAROUND_UBO_SIZE_BYTES in uboUpdater.ts and the
+  // WalkaroundUBO struct in common.wgsl).
   const uboBuffer = device.createBuffer({
-    size: 256,
+    size: 288,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -741,9 +743,13 @@ export function createFrameResources(
       { width: W, height: H, depthOrArrayLayers: 1 },
     );
   }
+  // 32 bytes: GTAOUniforms struct {tanFovHalf, radiusPx, intensity,
+  // depthThresh, bilateralDepthSigma, _pad0, _pad1, _pad2}. The bilateral
+  // sigma + pads were added per audit B3 so gtaoUpsample can read the
+  // host-configurable depth-edge falloff from the same UBO.
   const gtaoUboBuffer = device.createBuffer({
     label: 'gtao-ubo',
-    size: 16,
+    size: 32,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 

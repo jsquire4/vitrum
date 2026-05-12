@@ -179,6 +179,106 @@ export interface HybridEngineOptions extends EngineOptions {
    * @default 0.01
    */
   readonly temporalAccumAlpha?: number;
+
+  /**
+   * Emitter-geometry-term distance² floor (audit M12).  Clamps
+   * `G = (n_l · ω) / max(dist², emitterDist2Floor)` to prevent G blowup
+   * for receivers within sqrt(floor) of an emitter.
+   *
+   * **Scene-scale-sensitive**.  Default `0.01` (10 cm minimum effective
+   * distance) for Cornell-scale.  Hosts on different scales should pass
+   * `(sceneDiagonal × 1e-3)²` so the floor scales with scene extent.
+   *
+   * @default 0.01
+   */
+  readonly emitterDist2Floor?: number;
+
+  /**
+   * Per-channel HDR clamp on the direct radiance channel before SVGF /
+   * atrous (audit B4).  Suppresses fireflies from ReSTIR-DI's
+   * stochastic light-point selection on glancing-angle BRDF evaluations.
+   *
+   * **Light-intensity-sensitive**.  Default `4.0` is calibrated for
+   * Le=12 (`4 / π × 12 ≈ 15`, clamped at 4).  For brighter scenes
+   * compute `~4 × luminance(maxEmitterLe)`.
+   *
+   * @default 4.0
+   */
+  readonly directFireflyClamp?: number;
+
+  /**
+   * Stained-glass caustic boost (audit B1).  Multiplies the through-glass
+   * sun-shadow-ray contribution.  Cornell's stained-glass test scene uses
+   * `{ boost: 22, visClamp: 0.6 }` to compensate for Brown-Beer-Lambert
+   * attenuation; generic scenes should leave this at defaults (no boost,
+   * no clamp).
+   *
+   * @default { boost: 1.0, visClamp: 1.0 }
+   */
+  readonly caustic?: {
+    readonly boost?: number;
+    readonly visClamp?: number;
+  };
+
+  /**
+   * ReSTIR-DI temporal M-clamp (audit M6).  Caps the previous-frame
+   * reservoir's `M` before combining into this frame's reservoir.
+   * Higher = stickier history (slower to respond to lighting changes
+   * but lower variance).
+   *
+   * **Framerate-sensitive**.  Default 20 frames ≈ 333 ms history at
+   * 60 FPS.  At 15 FPS this stretches to 1.3 s; at 120 FPS it compresses
+   * to 167 ms.  For FPS-independent feel: `round(0.3 / frameTimeSeconds)`.
+   *
+   * @default 20
+   */
+  readonly temporalMClampDI?: number;
+
+  /**
+   * ReSTIR-DI spatial-reuse radius in **pixels** (audit M7).  The Poisson
+   * disk for neighbour sampling extends this far from the centre pixel.
+   *
+   * **Resolution-sensitive**.  Default `30` is calibrated for ~1080p–4K.
+   * At 480p reuse stretches across geometry boundaries; at 8K it stays
+   * very local.  Suggested host derivation: `screenHeight × 0.025`.
+   *
+   * @default 30
+   */
+  readonly spatialReuseRadiusPx?: number;
+
+  /**
+   * ReSTIR-DI spatial-reuse depth-tolerance world-units floor (audit M8).
+   * Neighbours whose depth differs by less than this absolute value are
+   * accepted regardless of relative tolerance.
+   *
+   * **Scene-scale-sensitive**.  Default `0.05` (5 cm) for Cornell-scale.
+   * Hosts on cm-scale scenes should use ~`sceneDiagonal × 1e-3`.
+   *
+   * @default 0.05
+   */
+  readonly spatialDepthTolFloor?: number;
+
+  /**
+   * GTAO (ground-truth ambient occlusion) tuning (audits M1, B3).  All
+   * fields optional.  Defaults preserve Cornell behaviour.
+   *
+   * - `radiusPx` (resolution-sensitive): sampling radius in screen-space
+   *   pixels. Default 32; consider `screenHeight × ~0.025` for
+   *   resolution-independent feel.
+   * - `intensity`: AO exponent (`ao = pow(raw, intensity)`). Default 2.0.
+   * - `depthThresholdWorldUnits` (scene-scale-sensitive): max depth
+   *   discontinuity to include in the horizon test.  Default 2.0 (Cornell
+   *   ~2 m room); large-scale scenes should use ~`sceneDiagonal × 0.05`.
+   * - `bilateralDepthSigma` (scene-scale-sensitive): σ for the bilateral
+   *   upsample's depth-weight Gaussian (world units).  Default 0.25.
+   *   Hosts should set ~`sceneDiagonal × 0.01`.
+   */
+  readonly gtao?: {
+    readonly radiusPx?: number;
+    readonly intensity?: number;
+    readonly depthThresholdWorldUnits?: number;
+    readonly bilateralDepthSigma?: number;
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -305,6 +405,28 @@ export class HybridEngine implements Engine {
   private readonly _cameraMoveResetThresholdSq: number;
   /** Audit M3 — passed to WalkaroundGPUPipeline at initialize() time. */
   private readonly _temporalAccumAlpha: number;
+  /** Audit M12 — written into WalkaroundUBO each frame. */
+  private readonly _emitterDist2Floor: number;
+  /** Audit B4 — written into WalkaroundUBO each frame. */
+  private readonly _directFireflyClamp: number;
+  /** Audit B1 — written into WalkaroundUBO each frame. */
+  private readonly _causticBoost: number;
+  /** Audit B1 — written into WalkaroundUBO each frame. */
+  private readonly _causticVisClamp: number;
+  /** Audit M6 — written into WalkaroundUBO each frame. */
+  private readonly _temporalMClampDI: number;
+  /** Audit M7 — written into WalkaroundUBO each frame. */
+  private readonly _spatialReuseRadiusPx: number;
+  /** Audit M8 — written into WalkaroundUBO each frame. */
+  private readonly _spatialDepthTolFloor: number;
+  /** Audit M1 — written into GTAO UBO each frame. */
+  private readonly _gtaoRadiusPx: number;
+  /** Audit M1 — written into GTAO UBO each frame. */
+  private readonly _gtaoIntensity: number;
+  /** Audit M1 — written into GTAO UBO each frame. */
+  private readonly _gtaoDepthThreshold: number;
+  /** Audit B3 — written into GTAO UBO each frame. */
+  private readonly _gtaoBilateralDepthSigma: number;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -386,6 +508,20 @@ export class HybridEngine implements Engine {
       : DEFAULT_TARGET_FRAME_INTERVAL_MS;
     this._cameraMoveResetThresholdSq = opts.cameraMoveResetThresholdSq ?? 1.0;
     this._temporalAccumAlpha    = opts.temporalAccumAlpha ?? 0.01;
+    // Library-generality tunables. Defaults preserve Cornell behaviour;
+    // hosts on different scene scales / intensities should override.
+    this._emitterDist2Floor     = opts.emitterDist2Floor    ?? 0.01;
+    this._directFireflyClamp    = opts.directFireflyClamp   ?? 4.0;
+    this._causticBoost          = opts.caustic?.boost       ?? 1.0;
+    this._causticVisClamp       = opts.caustic?.visClamp    ?? 1.0;
+    this._temporalMClampDI      = opts.temporalMClampDI     ?? 20;
+    this._spatialReuseRadiusPx  = opts.spatialReuseRadiusPx ?? 30.0;
+    this._spatialDepthTolFloor  = opts.spatialDepthTolFloor ?? 0.05;
+    // GTAO defaults match the previous hard-coded values in the pipeline.
+    this._gtaoRadiusPx          = opts.gtao?.radiusPx                ?? 32.0;
+    this._gtaoIntensity         = opts.gtao?.intensity               ?? 2.0;
+    this._gtaoDepthThreshold    = opts.gtao?.depthThresholdWorldUnits ?? 2.0;
+    this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma   ?? 0.25;
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
@@ -629,6 +765,19 @@ export class HybridEngine implements Engine {
       primaryLightIntensity: this._primaryLightIntensity,
       skyTint:               this._skyTint,
       skyIrradiance:         this._skyIrradiance,
+      // Library-generality tunables (audit follow-up). Defaults preserve
+      // Cornell behaviour; hosts override via HybridEngineOptions.
+      emitterDist2Floor:     this._emitterDist2Floor,
+      directFireflyClamp:    this._directFireflyClamp,
+      causticBoost:          this._causticBoost,
+      causticVisClamp:       this._causticVisClamp,
+      temporalMClampDI:      this._temporalMClampDI,
+      spatialReuseRadiusPx:  this._spatialReuseRadiusPx,
+      spatialDepthTolFloor:  this._spatialDepthTolFloor,
+      gtaoRadiusPx:          this._gtaoRadiusPx,
+      gtaoIntensity:         this._gtaoIntensity,
+      gtaoDepthThreshold:    this._gtaoDepthThreshold,
+      gtaoBilateralDepthSigma: this._gtaoBilateralDepthSigma,
       swapChainView:         swapView,
       swapChainFormat:       swapFmt,
     });

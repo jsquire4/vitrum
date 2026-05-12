@@ -30,29 +30,19 @@ const BVH_STACK_DEPTH = 60u;
 const TRI_INTERSECT_EPSILON = 1e-5;
 const LEAFNODE_FLAG = 0xFFFF0000u;
 
-// Distance² floor for the emitter geometry term G = (n_l·ω) / dist².
-// Without it, a receiving pixel that sits within ~2 inches of a panel-cell
-// emitter (a stained-glass scene with cm-scale geometry) sees G=400+,
-// blowing the wall to near-saturation.
+// Audit M12 follow-up: the emitter-geometry-term distance² floor is now
+// a runtime UBO value (ubo.emitterDist2Floor) rather than a compile-
+// time constant. Hosts set it via HybridEngineOptions.emitterDist2Floor
+// and a sensible default is computed from the scene AABB:
+//   max(sceneDiag × 1e-3, 0.0001)²
+// Cornell preserves 0.01 (≈10 cm minimum effective distance).
 //
-// PREVIOUS value 4.0 was calibrated for that stained-glass scene; for
-// meter-scale scenes (Cornell box, where the area light sits ~1.4 m from
-// the box top and ~2 m from the floor mid, giving dist² in [1.8, 4.0]),
-// a floor of 4.0 clamps the geometry term *for every receiver* by 1.0–2.3×.
-// Verified via magnitude audit: this single constant was responsible for
-// ~50–60% of the scene-wide "things look too dim" symptom for both direct
-// and indirect lighting.
-//
-// New value 0.01 = 10 cm minimum effective distance.  Still prevents the
-// G=400+ blowup at cm-scale emitter contact (any receiver within 1 cm of a
-// panel-cell still sees G clamped), but does not touch any receiver beyond
-// 10 cm — the entire Cornell scene now uses the true 1/dist² falloff.
-//
-// CRITICAL: this floor must be applied in BOTH the RIS reservoir
-// construction (ris.wgsl computePHat + M_LIGHT loop) AND shade's
-// direct-light evaluation (shade.wgsl) so the importance-sampled
-// p̂ matches the evaluated p̂.
-const EMITTER_DIST2_FLOOR = 0.01;
+// CRITICAL: the floor must be applied identically in BOTH the RIS
+// reservoir construction (ris.wgsl computePHat + M_LIGHT loop) AND
+// shade direct-light evaluation (shade.wgsl) so the importance-sampled
+// pHat matches the evaluated pHat. Both call:
+//   emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor)
+// with the same UBO value.
 
 // Sprint 18 follow-up — ReSTIR-GI per-pixel unbiased weight (W) cap.
 //
@@ -94,25 +84,37 @@ const RESTIR_GI_W_CAP: f32 = 16.0;
 // rely on them. Bump documentation if the layout changes.
 // ============================================================
 struct WalkaroundUBO {
-  viewMatrix:      mat4x4f,    //  offset 0
-  projMatrix:      mat4x4f,    //  offset 64
-  prevViewMatrix:  mat4x4f,    //  offset 128
-  cameraPos:       vec3f,      //  offset 192
-  frameSeed:       u32,        //  offset 204
-  screenSize:      vec2u,      //  offset 208
-  emitterCount:    u32,        //  offset 216
-  totalEmPower:    f32,        //  offset 220
-  sunDirection:    vec3f,      //  offset 224
-  sunIntensity:    f32,        //  offset 236 — matches BVH build
-  skyTint:         vec3f,      //  offset 240 — diffuse sky dome RGB
-  skyIrradiance:   f32,        //  offset 252 — sky dome brightness
+  viewMatrix:                 mat4x4f, //  offset 0
+  projMatrix:                 mat4x4f, //  offset 64
+  prevViewMatrix:             mat4x4f, //  offset 128
+  cameraPos:                  vec3f,   //  offset 192
+  frameSeed:                  u32,     //  offset 204
+  screenSize:                 vec2u,   //  offset 208
+  emitterCount:               u32,     //  offset 216
+  totalEmPower:               f32,     //  offset 220
+  sunDirection:               vec3f,   //  offset 224
+  sunIntensity:               f32,     //  offset 236 — matches BVH build
+  skyTint:                    vec3f,   //  offset 240 — diffuse sky dome RGB
+  skyIrradiance:              f32,     //  offset 252 — sky dome brightness
+  // Library-generality tunables (audit follow-up). All scalar f32/u32
+  // packed tightly after the existing 256-byte block. Defaults preserve
+  // Cornell behaviour; hosts override via HybridEngineOptions.
+  emitterDist2Floor:          f32,     //  offset 256 — audit M12
+  directFireflyClamp:         f32,     //  offset 260 — audit B4
+  causticBoost:               f32,     //  offset 264 — audit B1
+  causticVisClamp:            f32,     //  offset 268 — audit B1
+  temporalMClampDI:           u32,     //  offset 272 — audit M6
+  spatialReuseRadiusPx:       f32,     //  offset 276 — audit M7
+  spatialDepthTolFloor:       f32,     //  offset 280 — audit M8
+  _pad:                       u32,     //  offset 284 — 16-byte align
 };
 
-// Emitter geometry term G with the same dist² clamp applied at
+// Emitter geometry term G with a configurable dist² clamp applied at
 // every call site. Use this everywhere instead of inlining
-// nlDotL / dist² directly.
-fn emitterGeometry(nlDotL: f32, dist2: f32) -> f32 {
-  let dist2_clamped = max(dist2, EMITTER_DIST2_FLOOR);
+// nlDotL / dist² directly.  The floor is now read from the WalkaroundUBO
+// (audit M12) rather than the old scene-scale-baked constant.
+fn emitterGeometry(nlDotL: f32, dist2: f32, dist2Floor: f32) -> f32 {
+  let dist2_clamped = max(dist2, dist2Floor);
   return nlDotL / dist2_clamped;
 }
 

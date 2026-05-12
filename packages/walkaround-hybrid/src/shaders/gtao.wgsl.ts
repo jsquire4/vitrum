@@ -44,6 +44,16 @@ struct GTAOUniforms {
   // horizon test. Larger gap = treat as background → no occlusion. Prevents
   // halos around foreground silhouettes.
   depthThresh: f32,
+  // Audit B3: bilateral upsample depth-weight sigma (world units). Used by
+  // gtaoUpsample.wgsl for the joint-bilateral half→full upsample. Previously
+  // hardcoded to 4.0 in the shader (σ ≈ 0.25 m), which was Cornell-scale-only.
+  // Hosts should set ~(sceneDiagonal * 0.01) so the half-life of the depth
+  // weight is ~1% of the scene's longest axis.
+  bilateralDepthSigma: f32,
+  // Pad to 32 bytes (8-element struct) for WebGPU 16-byte UBO alignment.
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0) var gtao_normalDepth: texture_2d<f32>;

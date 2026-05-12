@@ -198,6 +198,35 @@ export interface PipelineFrameInputs {
   skyTint: [number, number, number];
   /** Sky-dome irradiance scalar paired with skyTint. ~0.5×sun at noon. */
   skyIrradiance: number;
+  /** Audit M12 — emitter geometry term dist² floor; default `0.01` for
+   *  Cornell-scale; hosts on different scales should pass `(diag * 1e-3)²`. */
+  emitterDist2Floor: number;
+  /** Audit B4 — per-channel max HDR radiance clamp on the direct channel.
+   *  Default 4.0 calibrated to Le=12. */
+  directFireflyClamp: number;
+  /** Audit B1 — stained-glass caustic boost. Cornell uses 22.0; generic
+   *  scenes pass 1.0 (no boost). */
+  causticBoost: number;
+  /** Audit B1 — clamp applied to the tinted-visibility vector before the
+   *  caustic-boost multiplication. Cornell uses 0.6; generic scenes pass 1.0. */
+  causticVisClamp: number;
+  /** Audit M6 — ReSTIR-DI temporal M-clamp; Cornell default 20. */
+  temporalMClampDI: number;
+  /** Audit M7 — ReSTIR-DI spatial reuse radius in pixels; Cornell default 30. */
+  spatialReuseRadiusPx: number;
+  /** Audit M8 — ReSTIR-DI spatial depth-tolerance world-units floor; Cornell
+   *  default 0.05 (5 cm). Hosts on different scales should pass
+   *  `sceneDiagonal * 1e-3`. */
+  spatialDepthTolFloor: number;
+  /** Audit M1 — GTAO sampling radius in pixels; Cornell default 32. */
+  gtaoRadiusPx: number;
+  /** Audit M1 — GTAO intensity exponent; Cornell default 2.0. */
+  gtaoIntensity: number;
+  /** Audit M1 — GTAO depth threshold in world units; Cornell default 2.0. */
+  gtaoDepthThreshold: number;
+  /** Audit B3 — GTAO upsample bilateral depth sigma (world units);
+   *  Cornell default 0.25 (= 1/√(2*4); see legacy `exp(-Δ * 4)`). */
+  gtaoBilateralDepthSigma: number;
   /** The WebGPU swap-chain texture view to render into for this frame.
    *  Caller must obtain via context.getCurrentTexture().createView()
    *  inside the same animation-frame callback that calls renderFrame. */
@@ -821,14 +850,19 @@ export class WalkaroundGPUPipeline {
     // (so there's a 1-frame lag on AO, invisible for static cameras and
     // ReSTIR-DI's temporal accumulator absorbs slow camera changes).
     {
-      // Pack GTAOUniforms (tanFovHalf, radiusPx, intensity, depthThresh).
+      // Pack GTAOUniforms (tanFovHalf, radiusPx, intensity, depthThresh,
+      // bilateralDepthSigma, _pad0, _pad1, _pad2).
+      // radiusPx / intensity / depthThresh / bilateralDepthSigma are now
+      // host-configurable via HybridEngineOptions.gtao (audit M1 + B3).
       const camY = (inputs.projMatrix[5] ?? 1.0); // (1/tan(fov/2)) at the y-FOV
       const tanFovHalf = camY > 1e-6 ? 1.0 / camY : 0.5;
       const gtaoUboBytes = new Float32Array([
-        tanFovHalf, // 0
-        32.0,       // 1: radiusPx (32px contact radius)
-        2.0,        // 2: intensity exponent
-        2.0,        // 3: world-unit depth threshold (scene scale ~2 units)
+        tanFovHalf,                            // 0
+        inputs.gtaoRadiusPx,                   // 1: audit M1
+        inputs.gtaoIntensity,                  // 2: audit M1
+        inputs.gtaoDepthThreshold,             // 3: audit M1
+        inputs.gtaoBilateralDepthSigma,        // 4: audit B3
+        0, 0, 0,                               // 5..7: _pad0/1/2
       ]);
       d.queue.writeBuffer(this._res.gtaoUboBuffer, 0, gtaoUboBytes);
       const halfW = Math.max(1, Math.floor(W / 2));
@@ -854,6 +888,7 @@ export class WalkaroundGPUPipeline {
           this._res.aoHalfTexture.createView(),
           this._res.gNormalDepthTexture.createView(),
           this._res.aoFullTexture.createView(),
+          this._res.gtaoUboBuffer,
         );
         const pass = encoder.beginComputePass(computeDesc('gtao-upsample'));
         pass.setPipeline(this._gtaoUpsamplePipeline);

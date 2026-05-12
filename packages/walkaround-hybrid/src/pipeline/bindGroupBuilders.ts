@@ -442,6 +442,7 @@ export function buildGTAOUpsampleBindGroup(
   aoHalfReadView: GPUTextureView,
   gNormalDepthView: GPUTextureView,
   aoFullWriteView: GPUTextureView,
+  gtaoUbo: GPUBuffer,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: 'gtao-upsample-bg',
@@ -450,6 +451,7 @@ export function buildGTAOUpsampleBindGroup(
       { binding: 0, resource: aoHalfReadView },
       { binding: 1, resource: gNormalDepthView },
       { binding: 2, resource: aoFullWriteView },
+      { binding: 3, resource: { buffer: gtaoUbo } },
     ],
   });
 }

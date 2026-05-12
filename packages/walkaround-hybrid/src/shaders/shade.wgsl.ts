@@ -198,7 +198,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
         if (nDotL > 1e-6 && nlDotL > 1e-6) {
           let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3);
           if (!occ) {
-            let G    = emitterGeometry(nlDotL, dist * dist);
+            let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
             let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
             Lo_direct = e.Le * brdf * G * r.W;
           }
@@ -251,9 +251,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
       // CAUSTIC_BOOST 10 → 22: less-saturated cells (e.g., brown) Beer-Lambert
       // to pow(0.55, 6) ≈ 0.028 — caustics from those cells were below ambient
       // floor brightness, invisible against the soft DDGI cell-tint blob.
-      let CAUSTIC_BOOST = 22.0;
-      let visClamped = min(vis, vec3f(0.6));
-      Lo_sunCaustic = visClamped * ubo.sunIntensity * nDotSun * albedo * INV_PI * CAUSTIC_BOOST;
+      // Audit B1: CAUSTIC_BOOST and the visibility clamp are now UBO-driven.
+      // Cornell stained-glass uses 22.0 / 0.6 (the historical calibration);
+      // generic scenes pass 1.0 / 1.0 (no boost, no clamp).
+      let visClamped = min(vis, vec3f(ubo.causticVisClamp));
+      Lo_sunCaustic = visClamped * ubo.sunIntensity * nDotSun * albedo * INV_PI * ubo.causticBoost;
     }
 
     // ── Multi-tap sky aperture probe ──────────────────────────────────────
@@ -436,7 +438,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // legitimately bright surfaces (light source itself: Lo_emit) intact —
   // those go through a separate Lo_emit branch that bypasses the BRDF
   // singularity entirely.
-  let clampedDirect = min(directRadiance, vec3f(4.0));
+  // Audit B4: clamp is now UBO-driven. Default 4.0 preserves Cornell behaviour
+  // (calibrated for Le=12, albedo=1, → 4 * INV_PI * Le ≈ 15 → cap at 4);
+  // hosts with brighter emitters should compute ~4 * luminance(maxEmitterLe).
+  let clampedDirect = min(directRadiance, vec3f(ubo.directFireflyClamp));
   // Indirect clamp is *much* tighter than direct: the atrous chain's
   // chromaticity-based color edge-stop preserves bright fireflies (center
   // bright + neighbour dark = large color delta → neighbours' smoothing
