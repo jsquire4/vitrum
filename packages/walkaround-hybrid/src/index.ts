@@ -87,3 +87,18 @@ export { PROBE_RAY_CAST_WGSL } from './rc/wgsl/probeRayCast.wgsl.js';
 export { CASCADE_MERGE_WGSL } from './rc/wgsl/cascadeMerge.wgsl.js';
 
 export type { FrameResourceOptions } from './pipeline/resourceManager.js';
+
+// ─── Neural denoiser (T2.H2) ──────────────────────────────────────────────────
+// InferenceGraph + weights loader for the U-Net neural denoiser.
+// The 'neural' denoiser mode in HybridEngine is opt-in (default: atrous-variance).
+// Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model binary.
+export { InferenceGraph } from './neural/InferenceGraph.js';
+export { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
+export type { UNetSpec, LayerSpec, LayerKind, LayerWeightLayout, LayerParams } from './neural/unetArchitecture.js';
+export {
+  loadWeightsFromArrayBuffer,
+  serializeWeightsToArrayBuffer,
+  VITRUM_MODEL_MAGIC,
+  VITRUM_MODEL_VERSION,
+} from './neural/weights.js';
+export type { ModelWeights, LayerWeights } from './neural/weights.js';

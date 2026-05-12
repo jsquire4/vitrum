@@ -39,6 +39,8 @@ import { packDDGIGridParams } from './pipeline/resourceManager.js';
 import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
+import { InferenceGraph } from './neural/InferenceGraph.js';
+import type { ModelWeights } from './neural/weights.js';
 
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -133,8 +135,22 @@ export interface HybridEngineOptions extends EngineOptions {
    *
    *   `'svgf'` is a deprecated alias for `'atrous-variance'`; triggers a
    *   one-time console warning.
+   *
+   *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
+   *   et al. 2015). Requires `neuralWeights` to be provided. Default still
+   *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
    */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf';
+  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural';
+
+  /**
+   * Pre-loaded model weights for the neural denoiser (T2.H2).
+   * Required when `denoiser === 'neural'`. Load via `loadWeightsFromArrayBuffer()`
+   * from the vitrum binary format exported by `tools/neural-denoiser-training/export_weights.py`.
+   *
+   * If `denoiser === 'neural'` and `neuralWeights` is undefined, the engine
+   * constructor throws with a helpful error pointing to the training README.
+   */
+  readonly neuralWeights?: ModelWeights;
 
   // ── Library-generality knobs (audit follow-up) ──────────────────────────
   // All optional; defaults preserve Cornell-test-scene behaviour byte-for-
@@ -412,7 +428,9 @@ export class HybridEngine implements Engine {
     return p.readGpuTimingsOnce();
   }
 
-  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real';
+  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural';
+  /** T2.H2 — neural denoiser weights (populated when _denoiser === 'neural'). */
+  private readonly _neuralWeights: ModelWeights | undefined;
   /** Audit M4 — null disables the FPS cap; configured at construction. */
   private readonly _targetFrameIntervalMs: number | null;
   /** Audit B8 — passed to WalkaroundGPUPipeline at initialize() time. */
@@ -519,13 +537,23 @@ export class HybridEngine implements Engine {
       opts.denoiser !== 'atrous' &&
       opts.denoiser !== 'atrous-variance' &&
       opts.denoiser !== 'svgf-real' &&
-      opts.denoiser !== 'svgf'
+      opts.denoiser !== 'svgf' &&
+      opts.denoiser !== 'neural'
     ) {
       throw new TypeError(
         `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
-        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real'. ` +
+        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural'. ` +
         `If you need 'none' / 'bmfr' / 'oidn-final' from @vitrum/core, ` +
         `pick a backend that implements those modes.`,
+      );
+    }
+    // T2.H2 — 'neural' requires neuralWeights to be provided.
+    if (opts.denoiser === 'neural' && !opts.neuralWeights) {
+      throw new TypeError(
+        `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
+        `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
+        `or train one with tools/neural-denoiser-training/train.py. ` +
+        `See tools/neural-denoiser-training/README.md for instructions.`,
       );
     }
     if (opts.denoiser === 'svgf') {
@@ -536,6 +564,7 @@ export class HybridEngine implements Engine {
       );
     }
     this._denoiser = opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');
+    this._neuralWeights = opts.neuralWeights;
     this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
       ? opts.targetFrameIntervalMs
       : DEFAULT_TARGET_FRAME_INTERVAL_MS;
@@ -1040,6 +1069,15 @@ export class HybridEngine implements Engine {
 
         const pipeline = new WalkaroundGPUPipeline(device, this._width, this._height);
         const pipelineStart = performance.now();
+
+        // T2.H2 — Neural denoiser: create and initialize InferenceGraph before pipeline init.
+        let inferenceGraph: InferenceGraph | undefined;
+        if (this._denoiser === 'neural' && this._neuralWeights) {
+          const { buildUNetSpec } = await import('./neural/unetArchitecture.js');
+          inferenceGraph = new InferenceGraph(buildUNetSpec());
+          await inferenceGraph.initialize(device, this._neuralWeights, this._width, this._height);
+        }
+
         await pipeline.initialize(
           bvh,
           getPreferredSwapChainFormat(),
@@ -1048,6 +1086,8 @@ export class HybridEngine implements Engine {
             denoiser: this._denoiser,
             cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
             temporalAccumAlpha: this._temporalAccumAlpha,
+            // exactOptionalPropertyTypes: omit the key entirely when undefined.
+            ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
           },
         );
         const pipelineMs = performance.now() - pipelineStart;

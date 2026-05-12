@@ -518,14 +518,41 @@ support to the WebGL2 path tracer.
 
 **Effort:** 2–4 weeks (depends on fork's current state).
 
-### Phase H6 — Sprint 10c full BDPT dispatch
+### Phase H6 — BDPT chain (Sprints 4 → 5 → 6 → 10c) — EXPANDED 2026-05-12
 
-**Doc:** `plan/sprint-10c-pt-fork-patch.md` (existing, gated).
+**Originally:** "Sprint 10c BDPT fork dispatch."
 
-Fork patch enabling BDPT in the pt-webgl backend. Requires Phase H4
-completion (the CPU-side full Veach MIS) as upstream dependency.
+**Re-scoped after discovery:** Sprint 10c (BDPT integrator) requires the
+Sprint 5 MRT G-buffer infrastructure (`WebGLMultipleRenderTargets` with
+gColor + gNormalDepth + gAlbedo). The fork team intentionally skipped
+Sprints 4/5/6 (going 3 → 7 → 8 → 12 → 14 directly), so 10c never had
+its prerequisite. To ship H6, the prerequisite chain must land.
 
-**Effort:** 2–3 weeks (after H4).
+**Tangible benefit (justifies the scope expansion):**
+For stainedGlass specifically — the canonical app for vitrum — caustic
+patterns through colored glass onto interior surfaces are the
+load-bearing visual feature. Walkaround can't render them
+(ReSTIR-GI restricted to diffuse hits; no specular-vertex caustics).
+PT mode renders them but slowly. BDPT cuts the final-render time
+30min → 5min for stained-glass scenes. That's the difference between a
+usable client-facing render workflow and a "render overnight" workflow.
+
+**Sub-phases (serial):**
+- **H6.1** — Apply Sprint 4 fork patch per `plan/archive/sprint-4-pt-fork-patch.md`. Small.
+- **H6.2** — Apply Sprint 5 MRT G-buffer per `plan/archive/sprint-5-pt-fork-patch.md` + `sprint-5-mrt-gbuffer-spec.md`. STRUCTURAL fork change.
+- **H6.3** — Regression-test Sprints 7 (volume scatter, fork commit `260c432`), 8 (chromatic dispersion `7ffd15d`), 12 (hero spectral `8917492`), 14 (layered BSDF `ee379dc`) against the new MRT base. Forward-port any broken integrator paths.
+- **H6.4** — Apply Sprint 6 fork patch per `plan/archive/sprint-6-pt-fork-patch.md`. Builds on Sprint 5.
+- **H6.5** — Apply Sprint 10c BDPT integrator (per the original spec, was at `plan/sprint-10c-pt-fork-patch.md` — now likely moved to `plan/archive/`). GLSL port of H4's `bdptConnectionMIS_full` power heuristic. Vertex pdf storage uses the Sprint 5 MRT ping-pong infrastructure.
+- **Vitrum-side bridge** (small): pt-webgl exposes a `bdpt: boolean` option in `createPTEngine_WebGL2`; the fork interprets it.
+
+**Effort:** 3–4 weeks. The risk is H6.3 — Sprints 7/8/12/14 may not adapt cleanly to MRT and need re-authoring.
+
+**Verification gates:**
+- After H6.2: existing fork build + smoke render must succeed (catches obvious regressions).
+- After H6.3: each of Sprints 7/8/12/14 must produce visually-equivalent output to its pre-MRT version on a reference scene.
+- After H6.5: BDPT vs unidirectional-PT on a glass+caustic scene must show measurable variance reduction at fixed sample count (the whole reason BDPT exists).
+
+**Why earlier "BLOCKED" was wrong:** The dispatched agent looked in `plan/` for prerequisite specs, found nothing, declared blocked. Specs exist in `plan/archive/`. The deeper truth (deliberate fork-team skip; multi-week scope) is real, but the user explicitly authorized the expanded scope; H6 is back in.
 
 ### Tier 2 totals
 

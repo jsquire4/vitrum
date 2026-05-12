@@ -63,7 +63,7 @@ export interface CompiledPipelines {
   atrousPipeline: GPUComputePipeline;
   accumPipeline: GPUComputePipeline;
   compositePipeline: GPURenderPipeline;
-  denoiserMode: 'atrous' | 'atrous-variance' | 'svgf-real';
+  denoiserMode: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural';
   welfordPipeline?: GPUComputePipeline;
   atrousVarianceVariancePipeline?: GPUComputePipeline;
   atrousVarianceAtrousPipeline?: GPUComputePipeline;
@@ -99,7 +99,7 @@ export async function compilePipelines(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
-  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' },
+  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' },
 ): Promise<CompiledPipelines> {
   const denoiserMode = opts?.denoiser ?? 'atrous-variance';
   // Compile all shader modules (common WGSL is prepended to each ReSTIR pass).

@@ -218,7 +218,12 @@ export interface EngineOptions {
    *  GPU memory budget for `'svgf-real'` at 1080p: ~52 MB of new persistent
    *  textures (historyLength r16uint + momentsHistory rg32float + prevRadiance
    *  rgba16float + motionVec rg32float). */
-  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'svgf-real' | 'bmfr' | 'oidn-final';
+  /**
+   * `'neural'` — T2.H2 — GPU U-Net denoiser. Requires backend-specific weight
+   * provisioning (e.g. `HybridEngineOptions.neuralWeights` in
+   * `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
+   */
+  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural';
 
   // ── Specular caustics strategy (RFE-05) ────────────────────────────────
   /**

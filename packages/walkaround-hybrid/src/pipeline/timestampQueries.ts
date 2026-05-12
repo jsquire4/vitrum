@@ -96,7 +96,9 @@ export type PassLabel =
 export const MAX_PASS_COUNT = 31;
 
 export interface PassLayoutOptions {
-  readonly denoiserMode: 'atrous-variance' | 'atrous' | 'svgf-real';
+  /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is
+   *  self-managing and doesn't participate in the timestamp-query pass layout). */
+  readonly denoiserMode: 'atrous-variance' | 'atrous' | 'svgf-real' | 'neural';
 }
 
 export interface PassLayout {
@@ -130,7 +132,8 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   // for the *previous* frame's AO; the current frame's AO becomes input for
   // the next frame).
   labels.push('gtao', 'gtao-upsample');
-  if (opts.denoiserMode === 'atrous-variance') {
+  // T2.H2: 'neural' uses the atrous-variance pass layout (InferenceGraph manages its own dispatch).
+  if (opts.denoiserMode === 'atrous-variance' || opts.denoiserMode === 'neural') {
     // Iteration count tied to `ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS = 3` in
     // shared-denoisers/atrousVarianceConstants.ts. The dispatch loop in
     // WalkaroundGPUPipeline._dispatchAtrousVariance runs the same count; keep these
