@@ -137,9 +137,10 @@ fn probeUpdateBorderIrradiance(
 
   let origin = irrCellOrigin(probeIdx);
 
-  for (var pass = 0u; pass < 2u; pass = pass + 1u) {
-    let t = select(t0, t1, pass == 1u);
-    // t ranges [0,48) for pass=0 and [48,96) for pass=1. Positions above
+  // 'pass' was a variable name here but it's a WGSL reserved word; renamed to 'passIdx'.
+  for (var passIdx = 0u; passIdx < 2u; passIdx = passIdx + 1u) {
+    let t = select(t0, t1, passIdx == 1u);
+    // t ranges [0,48) for passIdx=0 and [48,96) for passIdx=1. Positions above
     // stride*stride = 100 are skipped.
     if (t >= stride * stride) { continue; }
     let lx = t % stride;
@@ -222,8 +223,8 @@ fn probeUpdateBorderVisibility(
   let total = stride * stride;  // 324
   let origin = visCellOrigin(probeIdx);
 
-  for (var pass = 0u; pass < 2u; pass = pass + 1u) {
-    let t = lid.x + pass * 256u;
+  for (var passIdx = 0u; passIdx < 2u; passIdx = passIdx + 1u) {
+    let t = lid.x + passIdx * 256u;
     if (t >= total) { continue; }
     let lx = t % stride;
     let ly = t / stride;
