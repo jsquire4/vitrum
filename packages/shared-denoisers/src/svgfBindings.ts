@@ -20,7 +20,7 @@
  *
  * References:
  *   Schied et al. "Spatiotemporal Variance-Guided Filtering" HPG 2017.
- *   Sprint 10a spec: plan/phase-6-roadmap.md §Sprint 10a.
+ *   Sprint 10a spec: plan/archive/phase-6-roadmap.md §Sprint 10a.
  */
 
 import { SVGF_FRAME_COUNT_INPUT_GUARD_MAX } from './svgfConstants.js';

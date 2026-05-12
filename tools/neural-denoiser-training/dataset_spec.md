@@ -9,7 +9,7 @@ clean reference image.
 
 ## Dataset size target
 
-Per `plan/phase-6-roadmap.md` §Sprint 13 Definition of Done:
+Per `plan/archive/phase-6-roadmap.md` §Sprint 13 Definition of Done:
 
 > "Training pipeline generates ~10K noisy/clean pairs."
 

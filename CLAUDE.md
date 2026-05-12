@@ -11,30 +11,35 @@
 Read in this order to onboard:
 
 1. `README.md` — package architecture overview
-2. `plan/library-architecture.md` — package responsibilities, dependencies, migration plan
-3. `plan/phase-6-roadmap.md` — full Phase 6 sprint plan
-4. `plan/sprint-0-api-contract.md` — Sprint 0 (the prerequisite sprint) and its Definition of Done
-5. `packages/core/src/{scene,frame,engine}.ts` — the locked-in API contract types
-6. `CREDITS.md` — attribution to ~30 prior works the engine builds on
-7. The other plan/ docs (`glorious-hybrid.md`, `path-tracer-library-readiness.md`, etc.) are historical context for why the architecture is what it is.
+2. `plan/library-architecture.md` — package responsibilities, dependencies
+3. `plan/phase-7-restir-gi.md` — current Phase-7 walkaround GI work (Sprints 15–18 shipped: GTAO, ReSTIR-GI RIS/temporal/spatial, per-channel SVGF)
+4. `packages/core/src/{scene,frame,engine}.ts` — the locked-in API contract types
+5. `CREDITS.md` — attribution to ~30 prior works the engine builds on
+6. The other plan/ docs (`generalized-library-milestones.md`, `walkaround-without-three.md`, `pt-webgpu-deep-audit.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `renderer-fidelity-matrix.md`) are the active docs. Completed-sprint artifacts live in `plan/archive/`.
 
 ## What's done
 
-- **Sprint 0 – Sprint 13**: Phase 6 library work complete through Sprint 13. All 661 tests pass (3 skipped — intentional GPU-only paths); `tsc --noEmit` clean across workspace.
-- **Packages fully implemented**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (SVGF, OIDN bridge), `pt-webgl` (wraps three-gpu-pathtracer fork), `walkaround-hybrid` (DDGI + RC + ReSTIR + PPG + neural denoiser scaffold).
-- **Extraction complete**: `_staging/legacy-source/` contains only host-app React/Redux files that are intentionally not extracted (see `_staging/README.md`).
-- **External RFEs 01–05**: contract-layer additions to `@vitrum/core` complete.
-- **Audit + remediation**: Sprints 1–11 audit findings all addressed (see `plan/sprints-1-11-audit.md`).
-- **Selective merge from `feat/plan-gaps`**: additive plan and benchmark docs merged into main.
+- **Phase 6 (Sprints 0–13) complete**; **Phase 7 walkaround-hybrid (Sprints 14–18) shipped**: layered BSDF fork patch, half-res GTAO + bilateral upsample (S15), ReSTIR-GI RIS (S16), ReSTIR-GI temporal+spatial reuse (S17), per-channel SVGF on direct + indirect (S18), plus extensive firefly / dim-magnitude root-cause work and library-generality remediation. Workspace `tsc --noEmit` clean; ~660+ vitest tests pass (2–3 skipped — intentional GPU-only paths).
+- **Packages**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (SVGF, OIDN bridge), `pt-webgl` (wraps three-gpu-pathtracer fork — production PT), `pt-webgpu` (pre-alpha prototype WebGPU PT — internal, not production), `walkaround-hybrid` (DDGI + RC + ReSTIR-DI + ReSTIR-GI + PPG + neural denoiser scaffold + GTAO + per-channel SVGF).
+- **Extraction**: `_staging/legacy-source/` contains only host-app React/Redux files intentionally not extracted (see `_staging/README.md`).
+- **External RFEs**: 01–05 (contract-layer) plus 06/07/08/09/10/12/14 fork patches applied per `external_requests/IMPLEMENTATION-STATUS.md`.
 
-## What's next (Phase 6 remaining work)
+## Where things actually stand (read this before claiming "ready")
 
-The vitrum library side is complete. Remaining work requires GPU verification:
+A 2026-05-11 deep math/physics sweep found multiple load-bearing bugs that the green test suite does not catch — see `memory/in-flight-sweep.md` for the verified list. Highlights:
 
-1. **Apply fork patches** (Sprints 2–8, 10a) to `~/projects/three-gpu-pathtracer/` in sprint order — see `plan/phase-6-status.md` § "Fork patches needed".
-2. **Wire deferred integrations** (Sprints 9 adaptive sampling, 10a SVGF walkaround, 11 PPG dispatch) — integration specs in their respective `plan/sprint-N-walkaround-integration.md` docs.
-3. **Host-side changes** — Sprint 1 checklist through Sprint 11 PPG dispatch; see `plan/phase-6-status.md` § "Host-side changes needed".
-4. **Re-evaluate Sprint 10c / 12 / 13 triggers** — documented in `plan/phase-6-status.md` § "Resumption checklist".
+- **DDGI receiver double-applies albedo and 1/π** (producer writes `L_o = albedo·(direct+indirect)/π`; consumer multiplies again by `albedo/π`).
+- **DDGI atlas border padding is allocated but never written**; bilinear at every probe-cell edge blends with zero.
+- **What ships as "SVGF" is à-trous + a variance scalar lookup** — variance pass declares 4 textures it never samples; depth uploaded to `.r` but read from `.w`; no per-pixel disocclusion-reset history.
+- **PPG enable hard-throws at pipeline compile** because the injector still searches for a string that no longer exists in `shade.wgsl`.
+- **`pt-webgpu` glossy BSDF** is a mix-around-mirror lerp paired with a textbook GGX half-vector PDF — sampling/PDF mismatch.
+- **Neural denoiser** is decorative scaffolding (no `'neural'` mode in `HybridEngine`; scaffold itself has shape mismatches).
+
+Treat these as real, prioritise honestly. Don't paper over with band-aids that suppress symptoms (e.g., the recent `disable DDGI gain` and the hard-coded `randomRotation = (0,0,0)`).
+
+## What's next
+
+Pick from `memory/in-flight-sweep.md` blockers, or active docs `phase-7-restir-gi.md` / `d2-e6-pt-webgpu-ppg-performance.md` / `pt-webgpu-deep-audit.md`. Sprint 10c (BDPT dispatch) and Sprint 14 (layered BSDF) remain gated.
 
 ## Sibling repository: the path-tracer fork
 

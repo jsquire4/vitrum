@@ -48,7 +48,7 @@
  * References:
  *   Intel OpenImageDenoise: https://www.openimagedenoise.org/
  *   ONNX Runtime Web: https://onnxruntime.ai/docs/get-started/with-javascript/web.html
- *   Sprint 10b spec: plan/phase-6-roadmap.md §Sprint 10b.
+ *   Sprint 10b spec: plan/archive/phase-6-roadmap.md §Sprint 10b.
  *   Decision 11: WebNN executionProviders rider.
  */
 
@@ -301,7 +301,7 @@ async function _loadORT(): Promise<_OrtModule> {
     throw new Error(
       `[oidnBridge] Could not load 'onnxruntime-web'. ` +
       `Install it as a project dependency: npm install onnxruntime-web. ` +
-      `See Sprint 10b spec (plan/phase-6-roadmap.md) for details.`,
+      `See Sprint 10b spec (plan/archive/phase-6-roadmap.md) for details.`,
       { cause },
     );
   }

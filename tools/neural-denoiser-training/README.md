@@ -102,7 +102,7 @@ See `plan/sprint-13-walkaround-integration.md` for the full wiring plan into
 
 ## Bail-out criterion
 
-Per `plan/phase-6-roadmap.md` §Sprint 13:
+Per `plan/archive/phase-6-roadmap.md` §Sprint 13:
 
 > "Bail-out criterion: if month-1 inference benchmarks don't hit <50 ms, abort and wait for WebNN."
 

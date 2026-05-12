@@ -96,10 +96,9 @@ export interface SceneBVHBuffers {
    * cellPower[i] = luminance(Le[i]) × area[i] for mesh/triangle-area
    * emitters, matching the formula used to build the power-CDF.
    *
-   * NOT consumed by any live engine in this repo. The intended consumer
-   * is the Sprint 3 light tree (`buildLightTree` in @vitrum/shared-samplers)
-   * as its `powers` input for power-weighted importance sampling, which
-   * is deferred until Sprint 9/10 walkaround dispatch integration.
+   * Consumed by the light-tree `powers` input in `@vitrum/shared-samplers`
+   * (`buildLightTree`). Power-weighted importance sampling on the GPU side
+   * uses the CDF derived from this field via `buildLightTreeCDF`.
    *
    * The field is retained because:
    *  - the data is small (one f32 per emitter)
@@ -256,8 +255,8 @@ export function buildReSTIRSceneBVH(
       count: emitterCount,
     },
     // Per-emitter radiant flux (f32[], same length as emitters).
-    // Sprint 3 light tree (shared-samplers buildLightTreeCDF) uses this as its
-    // `powers` input. Not yet consumed by any WGSL shader — GPU dispatch deferred.
+    // Feeds the shared-samplers light tree (`buildLightTreeCDF`) as its
+    // `powers` input for power-weighted importance sampling.
     cellPower: {
       cpuData: cellPowerArray.buffer as ArrayBuffer,
       byteLength: cellPowerArray.byteLength,

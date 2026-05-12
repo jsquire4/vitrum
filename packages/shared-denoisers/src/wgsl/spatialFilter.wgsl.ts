@@ -36,7 +36,7 @@
  *   McGuire et al. "A Fast and Stable Feature-Aware Motion Blur Filter" JCGT 2012
  *   (hexagonal kernel shape motivation).
  *
- *   Sprint 6 spec: plan/phase-6-roadmap.md §Sprint 6.
+ *   Sprint 6 spec: plan/archive/phase-6-roadmap.md §Sprint 6.
  *
  * Bind group layout (group 0):
  *

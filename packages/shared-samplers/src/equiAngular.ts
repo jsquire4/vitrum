@@ -34,8 +34,8 @@
  *
  *   Pharr, Jakob, Humphreys "Physically Based Rendering" 4th ed., §14.1.2.
  *
- *   Phase 6 Sprint 7 spec: plan/phase-6-roadmap.md §Sprint 7.
- *   Fork GLSL mirror: plan/sprint-7-pt-fork-patch.md §volume_march.glsl.js.
+ *   Phase 6 Sprint 7 spec: plan/archive/phase-6-roadmap.md §Sprint 7.
+ *   Fork GLSL mirror: plan/archive/sprint-7-pt-fork-patch.md §volume_march.glsl.js.
  */
 
 // ────────────────────────────────────────────────────────────────────────────

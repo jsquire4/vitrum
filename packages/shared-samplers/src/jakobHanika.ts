@@ -46,13 +46,13 @@
  *   - This placeholder: 3-band linear rainbow.  Visually plausible for bevel
  *     dispersion; may show banding artifacts on extreme chromatic colors.
  *
- * TODO (post-Sprint-12):
- *   Integrate the full precomputed table once the distribution license is
- *   confirmed.  The public mitsuba-renderer repo at
- *   github.com/mitsuba-renderer/mitsuba3 contains a C++ implementation of the
- *   table lookup at `src/render/film.cpp` and the table at
+ * Future precision upgrade:
+ *   Integrate the full precomputed table from the Jakob-Hanika 2019 paper
+ *   once the distribution license is confirmed.  The public mitsuba-renderer
+ *   repo at github.com/mitsuba-renderer/mitsuba3 contains a C++ implementation
+ *   of the table lookup at `src/render/film.cpp` and the table at
  *   `resources/data/spectral/`.  A TypeScript port of the lookup is
- *   straightforward once the table is available. See plan/phase-6-status.md
+ *   straightforward once the table is available.
  *   Known Issues for tracking.
  *
  * References:
@@ -63,7 +63,7 @@
  *   Mitsuba 3 implementation:
  *   github.com/mitsuba-renderer/mitsuba3 src/render/film.cpp
  *
- *   Phase 6 Sprint 8 spec: plan/phase-6-roadmap.md §Sprint 8.
+ *   Phase 6 Sprint 8 spec: plan/archive/phase-6-roadmap.md §Sprint 8.
  *   GLSL mirror: plan/sprint-8-pt-fork-patch.md §dielectric BSDF.
  */
 

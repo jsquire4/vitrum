@@ -25,7 +25,7 @@ export {
 // Trigger criterion: Sprint 7 hero-render floor-caustic noise exceeds threshold.
 // Until Sprint 10c is officially opened, these exports are present but not
 // integrated. See plan/sprint-10c-pt-fork-patch.md for the full spec and
-// plan/phase-6-roadmap.md §Sprint 10c for the trigger gate.
+// plan/archive/phase-6-roadmap.md §Sprint 10c for the trigger gate.
 // AUDIT NOTE L-3 (2026-05-09): Exports appear in the public API before
 // integration testing is complete. They compile and are tested structurally
 // in __tests__/bdpt.test.ts, but the fork-side dispatch is deferred.
