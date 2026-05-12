@@ -57,13 +57,16 @@ describe('Sprint 18 — indirect-combine WGSL', () => {
 });
 
 describe('Sprint 18 — pass-layout placement', () => {
-  it('places indirect-combine directly before temporalAccum in every variant', () => {
+  it('places indirect-combine before temporalAccum in every variant (with DDGI border slots in between)', () => {
     for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
       const layout = buildPassLayout({ denoiserMode });
       const combine = layout.labels.indexOf('indirect-combine');
-      const accum = layout.labels.indexOf('temporalAccum');
+      const accum   = layout.labels.indexOf('temporalAccum');
       expect(combine).toBeGreaterThanOrEqual(0);
-      expect(accum).toBe(combine + 1);
+      // Item 3 (DDGI border fill): ddgi-border-irr and ddgi-border-vis now sit
+      // between indirect-combine and temporalAccum so the border is filled
+      // before temporal accumulation reads the atlas.
+      expect(accum).toBe(combine + 3);
     }
   });
 

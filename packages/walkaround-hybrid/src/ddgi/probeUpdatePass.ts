@@ -27,6 +27,7 @@ import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
+import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
 import { packDDGIGridParams } from '../pipeline/resourceManager.js';
 import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
@@ -125,9 +126,28 @@ function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials: numbe
 
 interface GPUResources {
   device: GPUDevice;
-  raysPipeline:      GPUComputePipeline;
-  blendIrrPipeline:  GPUComputePipeline;
-  blendVisPipeline:  GPUComputePipeline;
+  raysPipeline:       GPUComputePipeline;
+  blendIrrPipeline:   GPUComputePipeline;
+  blendVisPipeline:   GPUComputePipeline;
+  /** Border-fill pipeline for the irradiance atlas. */
+  borderIrrPipeline:  GPUComputePipeline;
+  /** Border-fill pipeline for the visibility atlas. */
+  borderVisPipeline:  GPUComputePipeline;
+  /**
+   * Scratch atlas textures for the border fill pass ping-pong.
+   *
+   * WebGPU forbids binding the same texture as both `texture_2d` (read) and
+   * `texture_storage_2d` (write) in a single pipeline. The border pass reads
+   * from a scratch copy of the blend output and writes the border pixels back
+   * into the blend-output atlas. The host copies write→scratch with
+   * `copyTextureToTexture` between the blend and border dispatches.
+   *
+   * The scratch textures are reallocated lazily when the atlas size changes
+   * (keyed on a `width×height` size tag stored in `_irrScratchSize` and
+   * `_visScratchSize`). They are destroyed in `dispose()`.
+   */
+  irrScratchTex: GPUTexture | null;
+  visScratchTex: GPUTexture | null;
   // BVH buffers (replaced on scene rebuild)
   bvhBuf:        GPUBuffer;
   posBuf:        GPUBuffer;
@@ -135,11 +155,15 @@ interface GPUResources {
   normBuf:       GPUBuffer;
   matIdBuf:      GPUBuffer;
   // Uniform buffers
-  materialsBuf:  GPUBuffer;
-  lightsBuf:     GPUBuffer;
-  gridParamsBuf: GPUBuffer;
-  frameParamsBuf:GPUBuffer;
-  blendParamsBuf:GPUBuffer;
+  materialsBuf:    GPUBuffer;
+  lightsBuf:       GPUBuffer;
+  gridParamsBuf:   GPUBuffer;
+  frameParamsBuf:  GPUBuffer;
+  blendParamsBuf:  GPUBuffer;
+  /** BorderUBO for the irradiance border pass (8 u32 fields = 32 bytes). */
+  borderIrrUboBuf: GPUBuffer;
+  /** BorderUBO for the visibility border pass (8 u32 fields = 32 bytes). */
+  borderVisUboBuf: GPUBuffer;
   // Dynamic per-frame buffers
   rayResultsBuf: GPUBuffer;
   activeProbesBuf: GPUBuffer;
@@ -181,6 +205,10 @@ export class ProbeUpdatePass {
   private _frameIndex = 0;
   private _maxProbes = 0;
   private _lights: DDGILight[] = [];
+  /** Cached size tag for the irradiance scratch texture (`width|height` string). */
+  private _irrScratchSize = '';
+  /** Cached size tag for the visibility scratch texture (`width|height` string). */
+  private _visScratchSize = '';
   private _debug: boolean;
   // Multiplier applied to every light's intensity when packing the
   // probe-update light UBO. Defaults to 1 so unrelated callers keep the
@@ -286,6 +314,8 @@ export class ProbeUpdatePass {
     let raysPipeline: GPUComputePipeline;
     let blendIrrPipeline: GPUComputePipeline;
     let blendVisPipeline: GPUComputePipeline;
+    let borderIrrPipeline: GPUComputePipeline;
+    let borderVisPipeline: GPUComputePipeline;
     try {
       // M9: compile with the host-specified material array size so scenes with
       // more than 64 materials don't overflow the uniform buffer.
@@ -304,6 +334,16 @@ export class ProbeUpdatePass {
       blendVisPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: blendVisModule, entryPoint: 'probeUpdateBlendVisibility' },
+      });
+      const borderIrrModule = device.createShaderModule({ code: PROBE_UPDATE_BORDER_IRR_WGSL });
+      borderIrrPipeline = await device.createComputePipelineAsync({
+        layout: 'auto',
+        compute: { module: borderIrrModule, entryPoint: 'probeUpdateBorderIrradiance' },
+      });
+      const borderVisModule = device.createShaderModule({ code: PROBE_UPDATE_BORDER_VIS_WGSL });
+      borderVisPipeline = await device.createComputePipelineAsync({
+        layout: 'auto',
+        compute: { module: borderVisModule, entryPoint: 'probeUpdateBorderVisibility' },
       });
     } catch (e) {
       console.error('[DDGI] Shader compilation failed:', e);
@@ -325,23 +365,34 @@ export class ProbeUpdatePass {
     const RW = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     const UB = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
 
+    // BorderUBO layout: 8 u32 fields = 32 bytes (std140, vec4-aligned pairs).
+    // Fields: numProbes, atlasWidth, atlasHeight, _pad0, gridDimX, gridDimY,
+    //         gridDimZ, _pad1. Matches struct in probeUpdateBorder.wgsl.ts.
+    const BORDER_UBO_BYTES = 32;
+
     this._gpu = {
       device,
       raysPipeline,
       blendIrrPipeline,
       blendVisPipeline,
-      bvhBuf:         makeBuffer(16, RO),
-      posBuf:         makeBuffer(12, RO),
-      idxBuf:         makeBuffer(12, RO),
-      normBuf:        makeBuffer(12, RO),
-      matIdBuf:       makeBuffer(4,  RO),
-      materialsBuf:   makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
-      lightsBuf:      makeBuffer(16 * 80 + 16, UB),
-      gridParamsBuf:  makeBuffer(64, UB),
-      frameParamsBuf: makeBuffer(48, UB),
-      blendParamsBuf: makeBuffer(16, UB),
-      rayResultsBuf:  makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
-      activeProbesBuf:makeBuffer(4, RO),
+      borderIrrPipeline,
+      borderVisPipeline,
+      irrScratchTex:  null,
+      visScratchTex:  null,
+      bvhBuf:          makeBuffer(16, RO),
+      posBuf:          makeBuffer(12, RO),
+      idxBuf:          makeBuffer(12, RO),
+      normBuf:         makeBuffer(12, RO),
+      matIdBuf:        makeBuffer(4,  RO),
+      materialsBuf:    makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
+      lightsBuf:       makeBuffer(16 * 80 + 16, UB),
+      gridParamsBuf:   makeBuffer(64, UB),
+      frameParamsBuf:  makeBuffer(48, UB),
+      blendParamsBuf:  makeBuffer(16, UB),
+      borderIrrUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
+      borderVisUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
+      rayResultsBuf:   makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
+      activeProbesBuf: makeBuffer(4, RO),
       linearSampler,
     };
     return true;
@@ -449,6 +500,35 @@ export class ProbeUpdatePass {
 
     this._runBlendIrrPass(encoder, activeProbes.length, irrReadTex, irrWriteTex);
     this._runBlendVisPass(encoder, activeProbes.length, visReadTex, visWriteTex);
+
+    // Border fill pass (Item 3 — Majercik 2019 §3.2).
+    //
+    // After blend, `irrWriteTex` and `visWriteTex` have correct interior pixels
+    // but zeroed border pixels. We can't bind the same texture as both
+    // `texture_2d` (read) and `texture_storage_2d` (write) in a single pipeline
+    // pass, so we use a scratch ping-pong:
+    //   1. copy write → scratch (so border pass reads complete interior from scratch)
+    //   2. border pass reads from scratch, writes border pixels into write
+    //
+    // The scratch textures are allocated lazily and cached in `_gpu.irrScratchTex`
+    // / `_gpu.visScratchTex`, reused every frame as long as atlas size is stable.
+    const irrScratch = this._getOrCreateScratchTexture(device, irrWriteTex, 'irr');
+    const visScratch = this._getOrCreateScratchTexture(device, visWriteTex, 'vis');
+    encoder.copyTextureToTexture(
+      { texture: irrWriteTex },
+      { texture: irrScratch },
+      { width: irrWriteTex.width, height: irrWriteTex.height, depthOrArrayLayers: 1 },
+    );
+    encoder.copyTextureToTexture(
+      { texture: visWriteTex },
+      { texture: visScratch },
+      { width: visWriteTex.width, height: visWriteTex.height, depthOrArrayLayers: 1 },
+    );
+    this._uploadBorderUbo(device, irrWriteTex, 'irr');
+    this._uploadBorderUbo(device, visWriteTex, 'vis');
+    this._runBorderIrrPass(encoder, probeCount, irrScratch, irrWriteTex);
+    this._runBorderVisPass(encoder, probeCount, visScratch, visWriteTex);
+
     device.queue.submit([encoder.finish()]);
 
     // Swap ping-pong atlases.
@@ -793,6 +873,124 @@ export class ProbeUpdatePass {
   }
 
   /**
+   * Return (or lazily create) the scratch texture used by the border fill
+   * pass for the given atlas. The scratch texture is an atlas-sized
+   * rgba16float texture that serves as a read-only source for the border
+   * pass so we don't need to bind the same texture for both read and write.
+   *
+   * @param device - WebGPU device.
+   * @param atlas  - The write-side atlas texture whose dimensions to match.
+   * @param which  - 'irr' for irradiance, 'vis' for visibility.
+   */
+  private _getOrCreateScratchTexture(
+    device: GPUDevice,
+    atlas: GPUTexture,
+    which: 'irr' | 'vis',
+  ): GPUTexture {
+    const g = this._gpu!;
+    const sizeTag = `${atlas.width}|${atlas.height}`;
+    if (which === 'irr') {
+      if (g.irrScratchTex && this._irrScratchSize === sizeTag) return g.irrScratchTex;
+      g.irrScratchTex?.destroy();
+      g.irrScratchTex = device.createTexture({
+        size: [atlas.width, atlas.height, 1],
+        format: 'rgba16float',
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_SRC |
+          GPUTextureUsage.COPY_DST,
+      });
+      this._irrScratchSize = sizeTag;
+      return g.irrScratchTex;
+    } else {
+      if (g.visScratchTex && this._visScratchSize === sizeTag) return g.visScratchTex;
+      g.visScratchTex?.destroy();
+      g.visScratchTex = device.createTexture({
+        size: [atlas.width, atlas.height, 1],
+        format: 'rgba16float',
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_SRC |
+          GPUTextureUsage.COPY_DST,
+      });
+      this._visScratchSize = sizeTag;
+      return g.visScratchTex;
+    }
+  }
+
+  /**
+   * Upload the BorderUBO for the irradiance or visibility border pass.
+   * The UBO layout (8 × u32 = 32 bytes):
+   *   [0] numProbes   [1] atlasWidth  [2] atlasHeight  [3] _pad0
+   *   [4] gridDimX    [5] gridDimY    [6] gridDimZ      [7] _pad1
+   */
+  private _uploadBorderUbo(
+    device: GPUDevice,
+    atlas: GPUTexture,
+    which: 'irr' | 'vis',
+  ): void {
+    const g = this._gpu!;
+    const data = new Uint32Array(8);
+    data[0] = this._grid.probeCount;
+    data[1] = atlas.width;
+    data[2] = atlas.height;
+    data[3] = 0; // _pad0
+    data[4] = this._grid.params.dims.x;
+    data[5] = this._grid.params.dims.y;
+    data[6] = this._grid.params.dims.z;
+    data[7] = 0; // _pad1
+    const buf = which === 'irr' ? g.borderIrrUboBuf : g.borderVisUboBuf;
+    device.queue.writeBuffer(buf, 0, data.buffer);
+  }
+
+  private _runBorderIrrPass(
+    encoder: GPUCommandEncoder,
+    probeCount: number,
+    scratchTex: GPUTexture,
+    writeAtlas: GPUTexture,
+  ): void {
+    const g = this._gpu!;
+    const bg = g.device.createBindGroup({
+      layout: g.borderIrrPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: scratchTex.createView() },
+        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+        { binding: 2, resource: { buffer: g.borderIrrUboBuf } },
+      ],
+    });
+    const pass = encoder.beginComputePass({ label: 'ddgi-border-irr' });
+    pass.setPipeline(g.borderIrrPipeline);
+    pass.setBindGroup(0, bg);
+    // One workgroup per probe. Each workgroup has 48 threads covering the
+    // (IRR_STRIDE)² = 100 positions of one cell's border ring.
+    pass.dispatchWorkgroups(probeCount, 1, 1);
+    pass.end();
+  }
+
+  private _runBorderVisPass(
+    encoder: GPUCommandEncoder,
+    probeCount: number,
+    scratchTex: GPUTexture,
+    writeAtlas: GPUTexture,
+  ): void {
+    const g = this._gpu!;
+    const bg = g.device.createBindGroup({
+      layout: g.borderVisPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: scratchTex.createView() },
+        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+        { binding: 2, resource: { buffer: g.borderVisUboBuf } },
+      ],
+    });
+    const pass = encoder.beginComputePass({ label: 'ddgi-border-vis' });
+    pass.setPipeline(g.borderVisPipeline);
+    pass.setBindGroup(0, bg);
+    // One workgroup per probe. 256 threads × 2 passes covers all 324 positions.
+    pass.dispatchWorkgroups(probeCount, 1, 1);
+    pass.end();
+  }
+
+  /**
    * Expose the cached read-side GPUTextures so external consumers
    * (e.g. the hybrid pipeline) can bind them into the ReSTIR shade pass
    * via WalkaroundGPUPipeline.setDDGIInputs(...). Returns null if compute
@@ -825,9 +1023,15 @@ export class ProbeUpdatePass {
     g.gridParamsBuf.destroy();
     g.frameParamsBuf.destroy();
     g.blendParamsBuf.destroy();
+    g.borderIrrUboBuf.destroy();
+    g.borderVisUboBuf.destroy();
+    g.irrScratchTex?.destroy();
+    g.visScratchTex?.destroy();
     g.rayResultsBuf.destroy();
     g.activeProbesBuf.destroy();
     this._gpu = null;
     this._textureCache = new WeakMap();
+    this._irrScratchSize = '';
+    this._visScratchSize = '';
   }
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildPassLayout, MAX_PASS_COUNT } from '../src/pipeline/timestampQueries.js';
 
 describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
-  describe('atrous-variance mode (26 slots)', () => {
+  describe('atrous-variance mode (28 slots)', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
 
     it('prepends sample-budget at slot 0 (runs before RIS)', () => {
@@ -36,16 +36,18 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('atrous-variance-atrous-2')).toBe(16);
     });
 
-    it('places indirect-temporal-accum, 4 atrous-indirect slots, indirect-combine, then temporal+resolve+composite tail', () => {
+    it('places indirect-temporal-accum, 4 atrous-indirect slots, indirect-combine, ddgi-border-irr/vis, then temporal+resolve+composite tail', () => {
       expect(layout.index('indirect-temporal-accum')).toBe(17);
       expect(layout.index('atrous-indirect-0')).toBe(18);
       expect(layout.index('atrous-indirect-1')).toBe(19);
       expect(layout.index('atrous-indirect-2')).toBe(20);
       expect(layout.index('atrous-indirect-3')).toBe(21);
       expect(layout.index('indirect-combine')).toBe(22);
-      expect(layout.index('temporalAccum')).toBe(23);
-      expect(layout.index('resolve')).toBe(24);
-      expect(layout.index('composite')).toBe(25);
+      expect(layout.index('ddgi-border-irr')).toBe(23);
+      expect(layout.index('ddgi-border-vis')).toBe(24);
+      expect(layout.index('temporalAccum')).toBe(25);
+      expect(layout.index('resolve')).toBe(26);
+      expect(layout.index('composite')).toBe(27);
     });
 
     it('does not include ppg-update', () => {
@@ -56,13 +58,13 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(() => layout.index('atrous-0')).toThrow(/not active/);
     });
 
-    it('reports 26 slots', () => {
-      expect(layout.slotCount).toBe(26);
-      expect(layout.labels).toHaveLength(26);
+    it('reports 28 slots', () => {
+      expect(layout.slotCount).toBe(28);
+      expect(layout.labels).toHaveLength(28);
     });
   });
 
-  describe('legacy atrous mode (24 slots)', () => {
+  describe('legacy atrous mode (26 slots)', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous' });
 
     it('GI block at 5..8; shade at 9; gtao + upsample at 10, 11; atrous-0..2 at 12..14', () => {
@@ -77,22 +79,24 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('atrous-2')).toBe(14);
     });
 
-    it('places indirect-temporal-accum, atrous-indirect-0..3, indirect-combine, then temporalAccum/resolve/composite tail', () => {
+    it('places indirect-temporal-accum, atrous-indirect-0..3, indirect-combine, ddgi-border-irr/vis, then temporalAccum/resolve/composite tail', () => {
       expect(layout.index('indirect-temporal-accum')).toBe(15);
       expect(layout.index('atrous-indirect-0')).toBe(16);
       expect(layout.index('atrous-indirect-3')).toBe(19);
       expect(layout.index('indirect-combine')).toBe(20);
-      expect(layout.index('temporalAccum')).toBe(21);
-      expect(layout.index('resolve')).toBe(22);
-      expect(layout.index('composite')).toBe(23);
+      expect(layout.index('ddgi-border-irr')).toBe(21);
+      expect(layout.index('ddgi-border-vis')).toBe(22);
+      expect(layout.index('temporalAccum')).toBe(23);
+      expect(layout.index('resolve')).toBe(24);
+      expect(layout.index('composite')).toBe(25);
     });
 
     it('does not include atrous-variance labels', () => {
       expect(() => layout.index('welford-temporal')).toThrow(/not active/);
     });
 
-    it('reports 24 slots', () => {
-      expect(layout.slotCount).toBe(24);
+    it('reports 26 slots', () => {
+      expect(layout.slotCount).toBe(26);
     });
   });
 
@@ -104,8 +108,8 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       }
     });
 
-    it('MAX_PASS_COUNT is 26 (D7 sweep — PPG deleted, atrous-variance is worst-case at 26 slots)', () => {
-      expect(MAX_PASS_COUNT).toBe(26);
+    it('MAX_PASS_COUNT is 28 (Item 3: DDGI border fill added ddgi-border-irr + ddgi-border-vis)', () => {
+      expect(MAX_PASS_COUNT).toBe(28);
     });
   });
 

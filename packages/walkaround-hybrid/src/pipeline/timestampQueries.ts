@@ -8,15 +8,16 @@
  *
  * Configurations (slot count in parentheses, current as of Sprint 18
  * follow-up — indirect-temporal-accum + 4-iter atrous-indirect chain):
- *   • legacy atrous (24): sample-budget, ris, temporal, spatial-1,
+ *   • legacy atrous (26): sample-budget, ris, temporal, spatial-1,
  *       spatial-2, gi-ris, gi-temporal, gi-spatial-1, gi-spatial-2, shade,
  *       gtao, gtao-upsample, atrous-0..2, indirect-temporal-accum,
- *       atrous-indirect-0..3, indirect-combine, temporalAccum, resolve,
- *       composite
- *   • atrous-variance (26): sample-budget, …shade, gtao+upsample,
+ *       atrous-indirect-0..3, indirect-combine, ddgi-border-irr,
+ *       ddgi-border-vis, temporalAccum, resolve, composite
+ *   • atrous-variance (28): sample-budget, …shade, gtao+upsample,
  *       welford-temporal, atrous-variance-variance, atrous-variance-atrous-0..2,
  *       indirect-temporal-accum, atrous-indirect-0..3, indirect-combine,
- *       temporalAccum, resolve, composite — matches MAX_PASS_COUNT
+ *       ddgi-border-irr, ddgi-border-vis, temporalAccum, resolve,
+ *       composite — matches MAX_PASS_COUNT
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes
@@ -54,6 +55,8 @@ export type PassLabel =
   | 'atrous-indirect-2'
   | 'atrous-indirect-3'
   | 'indirect-combine'
+  | 'ddgi-border-irr'
+  | 'ddgi-border-vis'
   | 'temporalAccum'
   | 'resolve'
   | 'composite';
@@ -75,9 +78,11 @@ export type PassLabel =
  *          27 (Sprint 18 follow-up: indirect-temporal-accum — pre-atrous
  *          temporal accumulator with TCBB clip to kill firefly admit
  *          + smooth shadow-region blotches before spatial filter) →
- *          26 (D7 sweep: PPG deleted — max is now atrous-variance without ppg-update).
+ *          26 (D7 sweep: PPG deleted — max is now atrous-variance without ppg-update) →
+ *          28 (Item 3: DDGI atlas border fill — ddgi-border-irr + ddgi-border-vis
+ *          appended after indirect-combine and before temporalAccum).
  */
-export const MAX_PASS_COUNT = 26;
+export const MAX_PASS_COUNT = 28;
 
 export interface PassLayoutOptions {
   readonly denoiserMode: 'atrous-variance' | 'atrous';
@@ -141,6 +146,12 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
     'atrous-indirect-2',
     'atrous-indirect-3',
     'indirect-combine',
+    // Item 3 (sweep 2026-05-11) — DDGI atlas border fill pass. Two slots:
+    // irradiance and visibility. Run once per frame after the indirect chain
+    // and before temporal accumulation, so the consumer (ddgiSample) reads
+    // border-filled atlases during the NEXT frame's shade pass.
+    'ddgi-border-irr',
+    'ddgi-border-vis',
   );
   // Sprint 9 — resolve sits between temporalAccum and composite so the
   // composite blit reads from the resolved (checkerboard-filled) texture.
