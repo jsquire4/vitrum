@@ -29,6 +29,7 @@ import type {
   EngineFactory,
   EngineOptions,
   EngineState,
+  FrameStats,
 } from '@vitrum/core';
 import type { Scene } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
@@ -119,7 +120,23 @@ export interface HybridEngineOptions extends EngineOptions {
   /** Sky-dome irradiance scalar paired with skyTint. */
   readonly skyIrradiance: number;
 
-  /** Host `THREE.Scene` — BVH / DDGI fallback when `setScene` has no mesh primitives. */
+  /**
+   * Host `THREE.Scene` — BVH / DDGI fallback when `setScene` has no mesh
+   * primitives.
+   *
+   * @deprecated since T3.H (2026-05-12). The unified `createEngine()` factory
+   * in `@vitrum/engine` converts vitrum Scene → THREE.Scene internally via
+   * `vitrumSceneToThree()` and never asks the host to plumb a THREE.Scene
+   * through this constructor. New hosts SHOULD use `createEngine()` and
+   * pass `scene` (THREE or vitrum); this `threeScene` field is kept for
+   * one deprecation cycle so existing direct callers (legacy host code,
+   * tests that construct HybridEngine without the facade) keep working.
+   *
+   * Removal is scheduled for the next sprint — when the only remaining
+   * call site is `@vitrum/engine`'s walkaround constructor, the field
+   * becomes private engine state and `createEngine()` invokes a new
+   * internal API instead.
+   */
   readonly threeScene: THREE.Scene;
 
   /** Light list for DDGI probe update pass. */
@@ -423,6 +440,9 @@ export class HybridEngine implements Engine {
    *  Only populated when `debug === true`. Hosts that want a UI gauge
    *  should poll {@link debugTimings} instead of reaching into globals. */
   private readonly _debugTimings: Array<{ t: number; ms: number }> = [];
+
+  /** T3.E — telemetry subscribers fired at end of each successful renderFrame. */
+  private readonly _frameSubs: Array<(s: FrameStats) => void> = [];
 
   /** Read-only snapshot of recent frame timings collected when the engine
    *  was constructed with `debug: true`. Returns an empty array when debug
@@ -954,11 +974,28 @@ export class HybridEngine implements Engine {
 
     const dt = performance.now() - t0;
 
-    // Record the frame timing on the engine itself; hosts that want to surface
-    // it in dev UI can poll `engine.debugTimings`. The legacy mirror into
-    // window.__WGPU__.walkaround.frameTimings is preserved while
-    // `_staging/legacy-source` host code reads from there — it will be dropped
-    // when the host extraction lands.
+    // T3.E telemetry. Fired before the legacy debug mirror so subscribers
+    // see every frame, not just debug-mode ones. We pull GPU timings from
+    // the pipeline's lastGpuTimings if it exposed any (they're populated
+    // by the same timestamp-query infrastructure the debug log uses).
+    if (this._frameSubs.length > 0) {
+      const gpu = (pipeline as unknown as { lastGpuTimings?: Record<string, number> })
+        .lastGpuTimings;
+      const passTimings = gpu;
+      const gpuTotal = gpu?.['total'];
+      const stats: FrameStats = {
+        frameTimeMs: dt,
+        ...(gpuTotal !== undefined ? { gpuTimeMs: gpuTotal } : {}),
+        ...(passTimings ? { passTimings } : {}),
+        spp: 1,
+      };
+      for (const sub of this._frameSubs) {
+        try { sub(stats); } catch (err) {
+          if (this._verbose) console.warn('[HybridEngine] onFrame subscriber threw', err);
+        }
+      }
+    }
+
     if (this._debug) {
       this._debugTimings.push({ t: now, ms: dt });
       if (this._debugTimings.length > 240) this._debugTimings.shift();
@@ -1044,6 +1081,24 @@ export class HybridEngine implements Engine {
   setLayerEnabled(layer: string, enabled: boolean): void {
     this._layerEnabled.set(layer, enabled);
   }
+
+  // ── Telemetry (T3.E) ───────────────────────────────────────────────────
+
+  /** Subscribe to per-frame stats. Fired at the end of each successful
+   *  renderFrame() call. Returns an unsubscribe function. Subscribers
+   *  that throw are swallowed so the render loop stays alive. */
+  onFrame(cb: (stats: FrameStats) => void): () => void {
+    this._frameSubs.push(cb);
+    return () => {
+      const i = this._frameSubs.indexOf(cb);
+      if (i >= 0) this._frameSubs.splice(i, 1);
+    };
+  }
+
+  // Walkaround engines don't accumulate, so onProgress doesn't have a
+  // meaningful 'pt-spp' to report. DDGI warm-up could surface here once
+  // we expose probe-update progress; for now the optional method is
+  // intentionally absent (consumers must typeof-check per the contract).
 
   // ── Dispose ────────────────────────────────────────────────────────────
 

@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@vitrum/core": ["../core/src/index.ts"],
+      "@vitrum/three-bindings": ["../three-bindings/src/index.ts"],
+      "@vitrum/walkaround-hybrid": ["../walkaround-hybrid/src/index.ts"],
+      "@vitrum/pt-webgl": ["../pt-webgl/src/index.ts"]
+    }
+  },
+  "include": ["src", "__tests__"]
+}

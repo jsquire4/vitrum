@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@vitrum/core": ["../core/src/index.ts"]
+    }
+  },
+  "include": ["src", "__tests__"]
+}

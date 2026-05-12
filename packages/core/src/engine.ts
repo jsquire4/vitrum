@@ -153,6 +153,62 @@ export interface Engine {
    *  except `state` and `capabilities` is valid. For engines that surfaced
    *  `'error'`, callers should dispose before recreating. */
   dispose(): void;
+
+  // ── Telemetry (T3.E) ─────────────────────────────────────────────────────
+
+  /** Subscribe to per-frame stats. Backend invokes the callback synchronously
+   *  at the end of each `renderFrame()` call. Returns an unsubscribe function;
+   *  call it to stop receiving stats. Subscribers MUST NOT throw — engines
+   *  catch and swallow throws to keep the render loop alive. Optional: a
+   *  backend that does not implement this still satisfies the contract; the
+   *  host should typeof-check before calling. */
+  onFrame?(cb: (stats: FrameStats) => void): () => void;
+
+  /** Subscribe to long-running progress events (PT samples-per-pixel
+   *  accumulation, denoiser convergence, DDGI warm-up). Backends fire at
+   *  their natural cadence (typically once per frame for SPP; less often
+   *  for warm-up). Same throw-safety + optionality semantics as
+   *  {@link onFrame}. */
+  onProgress?(cb: (progress: ProgressStats) => void): () => void;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Telemetry (T3.E)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Per-frame statistics surfaced via {@link Engine.onFrame}.  Optional
+ *  fields reflect backend capability — `gpuTimeMs` requires
+ *  `timestamp-query` on the WebGPU side; `passTimings` requires per-pass
+ *  instrumentation; `spp` is meaningful only for accumulating engines. */
+export interface FrameStats {
+  /** Wall-clock duration of `renderFrame()` in milliseconds. */
+  readonly frameTimeMs: number;
+  /** GPU-side execution time if timestamp queries are available. */
+  readonly gpuTimeMs?: number;
+  /** Optional per-pass breakdown (label → milliseconds). */
+  readonly passTimings?: Readonly<Record<string, number>>;
+  /** Samples accumulated this frame (PT-style engines).  Walkaround engines
+   *  emit `1`. */
+  readonly spp?: number;
+  /** BVH max depth — diagnostic for traversal cost. */
+  readonly bvhDepth?: number;
+  /** Approximate engine-owned GPU memory (sum of texture + buffer bytes). */
+  readonly estimatedGpuMemoryBytes?: number;
+}
+
+/** Progress event surfaced via {@link Engine.onProgress}.  The discriminator
+ *  is `kind`; consumers switch on it to interpret `current` / `target`. */
+export interface ProgressStats {
+  readonly kind: 'pt-spp' | 'denoiser-converge' | 'ddgi-warmup';
+  /** Current value in the kind-appropriate unit (samples for `pt-spp`,
+   *  frames for `denoiser-converge`, probe-update passes for
+   *  `ddgi-warmup`). */
+  readonly current: number;
+  /** Target value at which `fraction` reaches 1. May be `Infinity` for
+   *  open-ended walkaround warm-ups. */
+  readonly target: number;
+  /** Convenience: `clamp(current / target, 0, 1)`. */
+  readonly fraction: number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

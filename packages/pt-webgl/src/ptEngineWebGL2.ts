@@ -18,6 +18,8 @@ import type {
   EngineFactory,
   EngineOptions,
   EngineState,
+  FrameStats,
+  ProgressStats,
 } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
@@ -339,6 +341,14 @@ export class PTEngineWebGL2 implements Engine {
   #pixelAdaptiveCadence = 4;
   #tileVariancePass: TileVariancePass | null = null;
   #tileFactorsScratch: Uint8Array = new Uint8Array(MAX_TILE_GRID * MAX_TILE_GRID);
+
+  /** T3.E telemetry — fired at the end of each renderFrame() with the
+   *  scheduler's per-frame stats. Empty by default; subscribers register
+   *  via {@link onFrame}. */
+  readonly #frameSubs: Array<(s: FrameStats) => void> = [];
+  /** T3.E telemetry — fired with the running SPP / target on each frame
+   *  that performed work. Subscribers register via {@link onProgress}. */
+  readonly #progressSubs: Array<(p: ProgressStats) => void> = [];
 
   constructor(opts: PTEngineWebGL2Options, gpu: PTEngineWebGL2Init, slot: StateSlot) {
     this.#slot = slot;
@@ -709,6 +719,30 @@ export class PTEngineWebGL2 implements Engine {
       additiveAccumulation: this.#additiveAccumulation,
       pixelAdaptiveSampling: this.#pixelAdaptiveSampling,
     };
+    // T3.E telemetry hooks. We fire AFTER #lastTelemetry is populated so
+    // subscribers can also peek via the FrameOutput.telemetry passthrough.
+    if (this.#frameSubs.length > 0) {
+      const stats: FrameStats = {
+        frameTimeMs: batchMs,
+        spp,
+      };
+      for (const sub of this.#frameSubs) {
+        try { sub(stats); } catch { /* swallow */ }
+      }
+    }
+    if (this.#progressSubs.length > 0 && sppDelta > 0) {
+      const target = Math.max(1, targetSpp);
+      const progress: ProgressStats = {
+        kind: 'pt-spp',
+        current: spp,
+        target,
+        fraction: Math.min(1, spp / target),
+      };
+      for (const sub of this.#progressSubs) {
+        try { sub(progress); } catch { /* swallow */ }
+      }
+    }
+
     return {
       primaryRadiance: this.#pathTracer.target.texture,
       samplesAccumulated: spp,
@@ -743,6 +777,30 @@ export class PTEngineWebGL2 implements Engine {
       throw new Error('resume: engine is disposed');
     }
     this.#slot.set('ready');
+  }
+
+  // ── Telemetry (T3.E) ───────────────────────────────────────────────────
+
+  /** Subscribe to per-frame stats (frameTimeMs + running SPP). Returns an
+   *  unsubscribe function. Subscribers that throw are swallowed. */
+  onFrame(cb: (stats: FrameStats) => void): () => void {
+    this.#frameSubs.push(cb);
+    return () => {
+      const i = this.#frameSubs.indexOf(cb);
+      if (i >= 0) this.#frameSubs.splice(i, 1);
+    };
+  }
+
+  /** Subscribe to SPP-accumulation progress (`kind: 'pt-spp'`). Returns
+   *  an unsubscribe function. Subscribers that throw are swallowed.
+   *  Fired only on frames that actually advanced SPP — paused / no-work
+   *  frames don't emit. */
+  onProgress(cb: (progress: ProgressStats) => void): () => void {
+    this.#progressSubs.push(cb);
+    return () => {
+      const i = this.#progressSubs.indexOf(cb);
+      if (i >= 0) this.#progressSubs.splice(i, 1);
+    };
   }
 
   dispose(): void {

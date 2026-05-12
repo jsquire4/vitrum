@@ -1,52 +1,136 @@
 # vitrum
 
-WebGPU + WebGL2 path tracing & global illumination engine for the browser. Backend-agnostic, scene-binding-agnostic.
+A WebGPU + WebGL2 **path tracing & global illumination engine** for the browser. THREE.js-friendly, host-agnostic, drop-in.
 
-> **Status**: pre-alpha, private. Not yet ready for prime time. Public release planned after the foundational packages stabilize.
+> **Status**: pre-alpha, private. Not yet on npm. Public release planned after the foundational packages stabilize.
 
-## What is this
+## What is vitrum
 
-`vitrum` is the engine half of a browser rendering stack: **path tracing** (WebGL2, via a forked `three-gpu-pathtracer`) and **real-time GI** (WebGPU DDGI + radiance cascades + ReSTIR). It is shaped into a **reusable, host-agnostic** library: the host owns the device, the frame loop, and the scene graph; engines implement `@vitrum/core`'s `Engine` contract.
+vitrum gives you two render modes under one API:
 
-The white-whale ambition: own the entire SOTA-browser-rendering stack — from BVH construction to physically-based path tracing to real-time global illumination to denoising — under one consistent API contract.
+- **Real-time GI** — WebGPU layered DDGI + ReSTIR DI + per-channel SVGF + GTAO. Targets ~60 fps for sub-500k-triangle scenes on consumer dGPUs.
+- **Converged path tracing** — WebGL2 wrapping a forked `three-gpu-pathtracer`. Hero-quality renders that converge over seconds.
+
+You don't pick the backend; vitrum picks for you based on your hardware and scene complexity. You hand it a `THREE.Scene`, get back an `Engine` that you call `renderFrame()` on each frame.
+
+## 5-line hello world
+
+```ts
+import { attachVitrum } from '@vitrum/engine/lifecycle';
+
+const handle = await attachVitrum({ canvas, scene, camera });
+// … later
+handle.dispose();
+```
+
+`attachVitrum()` runs the requestAnimationFrame loop, attaches a ResizeObserver, pauses on tab-hidden, and disposes the engine cleanly. Use the lower-level `createEngine()` if you want to drive the loop yourself.
+
+## React variant
+
+```tsx
+import { VitrumCanvas } from '@vitrum/engine/react';
+
+<VitrumCanvas
+  scene={scene}
+  camera={camera}
+  prefer="realtime"
+  onFrame={(s) => setFps(Math.round(1000 / s.frameTimeMs))}
+/>
+```
+
+`react` and `react-dom` are **optional** peer deps. Vanilla hosts pay nothing for them.
+
+## Capability matrix
+
+| Feature                       | walkaround-hybrid (WebGPU)  | pt-webgl (WebGL2)          |
+| ----------------------------- | --------------------------- | -------------------------- |
+| **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT |
+| **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  |
+| **Light types**               | point / dir / area / sky    | point / dir / area / sky   |
+| **Materials**                 | PBR + transmission          | PBR + clearcoat + transmission + spectral hero-MIS |
+| **Caustics**                  | none (DDGI only)            | manifold-NEE (opt-in)      |
+| **Animation**                 | camera ✓ / lights limited / mesh transform ✗ | camera ✓ / lights ✓ / mesh ✗ |
+| **Hardware**                  | WebGPU                      | WebGL2                     |
+| **Convergence**               | re-renders every frame      | accumulates SPP            |
+
+See [`plan/animation-support-status.md`](./plan/animation-support-status.md) for the full animation matrix with caveats.
+
+## When to use which engine
+
+`prefer: 'auto'` (default) gives you walkaround-hybrid on WebGPU + scenes < 500k tris, else pt-webgl.
+
+Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-camera demos. Set `prefer: 'quality'` for hero renders, product visualization, anything you'd want to save as a 4K PNG.
+
+## Public API
+
+| Package                       | What you import                                        |
+| ----------------------------- | ------------------------------------------------------ |
+| `@vitrum/engine`              | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath) |
+| `@vitrum/core`                | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats` types |
+| `@vitrum/three-bindings`      | `sceneFromThreeJS`, `loadGltfScene`                    |
+| `@vitrum/dev`                 | Debug overlays (FrameTimeHUD, MaterialInspector, …) — devDep only |
+
+Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
+
+## Lifecycle (the white-whale insight)
+
+The engine accepts a device handle but **does not own** the device's lifetime. You own when the device is created, when it's lost, when it's reset. The engine owns its GPU resources for as long as you say.
+
+This is the design choice that makes the library survive Canvas remount, route changes, tab-visibility transitions. `<VitrumCanvas>` and `attachVitrum()` already wire this correctly — you only need to think about it if you build your own host shell.
+
+## Examples
+
+- [`examples/cornell-box`](./examples/cornell-box) — minimal `@vitrum/pt-webgl` + `@vitrum/three-bindings` consumer (the regression-test scenes live here)
+- [`examples/hero-viewer`](./examples/hero-viewer) — drag-drop glTF viewer
+- [`examples/hero-lighting-designer`](./examples/hero-lighting-designer) — interactive lights + frame-time HUD
+- [`examples/hero-product-viz`](./examples/hero-product-viz) — progressive PT product render with material editor
 
 ## Architecture
 
-The package layout reflects the architectural separation between **what the engine consumes** (a scene), **how the engine renders** (a backend), and **who the host is** (any three.js / babylon.js / raw-WebGL/WebGPU app).
-
 ```
-@vitrum/core                    Public façade: types, lifecycle contract, no GPU code
-@vitrum/three-bindings          three.js scene → @vitrum/core Scene adapter
-@vitrum/shared-bvh              Software BVH compute (WebGPU + WebGL2)
-@vitrum/shared-samplers         Sobol, Hammersley, light tree, mixture PDF
-@vitrum/shared-denoisers        À-trous, SVGF, spatial filter, OIDN bridge (BMFR not shipped)
-@vitrum/pt-webgl                WebGL2 path-tracer backend (wraps three-gpu-pathtracer fork)
-@vitrum/pt-webgpu               WebGPU-native path-tracer backend (pre-alpha prototype; active development)
-@vitrum/walkaround-hybrid       WebGPU layered DDGI + RC + ReSTIR DI engine
+@vitrum/engine             Drop-in facade — createEngine, attachVitrum, VitrumCanvas
+  ↓
+@vitrum/core               Engine contract; types only, no GPU code
+@vitrum/three-bindings     THREE.Scene → vitrum Scene + glTF loader
+@vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI + SVGF + GTAO
+@vitrum/pt-webgl           WebGL2 PT (wraps three-gpu-pathtracer fork)
+@vitrum/pt-webgpu          WebGPU-native PT (pre-alpha, internal)
+@vitrum/shared-bvh         Software BVH compute (CPU + GPU)
+@vitrum/shared-samplers    Sobol, Hammersley, light tree, hero-wavelength MIS
+@vitrum/shared-denoisers   À-trous, SVGF, OIDN bridge
+@vitrum/dev                Debug overlays (devDep)
 ```
 
-## The contract (in three sentences)
+## Performance budgets
 
-The library accepts a **device handle** + a **Scene** and exposes an **Engine** with `setScene`, `renderFrame`, `pause`, `resume`, `reset`, `dispose`. The host owns the device's lifetime, the frame cadence, the scene state, and the camera state. The engine owns its GPU resources for as long as the host says.
+(Reference renders captured on RTX 4090, ANGLE D3D11.)
 
-That contract is what dissolves the "render mode toggle remounts the Canvas, accumulator vanishes" bug class structurally. The engine never assumes its lifetime matches a particular React mount — its lifetime is exactly `init` to `dispose`, owned by the host.
+| Scene                       | Engine            | Resolution | Convergence target | Time / Frame   |
+| --------------------------- | ----------------- | ---------- | ------------------ | -------------- |
+| Cornell box (~30 tris)      | pt-webgl          | 512×512    | 64 SPP             | ~17 s total    |
+| Cornell glass               | pt-webgl          | 512×512    | 64 SPP             | ~20 s total    |
+| Cornell spectral (hero MIS) | pt-webgl          | 512×512    | 64 SPP             | ~20 s total    |
+| Living room (~200k tris)    | walkaround-hybrid | 1080p      | real-time          | 14–22 ms / frame |
 
-## What's already novel here
+## What's novel here
 
-- **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI), ReSTIR DI (and recomposed radiance-cascade work is tracked for `HybridEngine`; see [packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md)). RC tooling also ships standalone under `packages/walkaround-hybrid/src/rc/`.
-- **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE. Originated as a patch on three-gpu-pathtracer; will land in `@vitrum/pt-webgl` and `@vitrum/pt-webgpu`.
-- **Hybrid analytic-CSG + BVH-mesh intersection** — closed-form quadrics (came/solder, gemstones) + triangle meshes (glass, panels, room) in the same path-tracing kernel. Production renderers usually pick one or the other.
+- **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI) with stochastic direct illumination (ReSTIR-DI) and a single-bounce indirect (ReSTIR-GI), denoised with per-channel SVGF + GTAO. ([packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md))
+- **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE; lives in the `three-gpu-pathtracer` fork.
+- **Hybrid analytic-CSG + BVH-mesh intersection** — closed-form quadrics + triangle meshes in the same path-tracing kernel. Production renderers usually pick one or the other.
+- **Hero-wavelength MIS** (Wilkie et al. 2015) — one-sample MIS across X/Y/Z CMFs ships in the WebGL2 PT spectral path.
 
 ## Built on prior work
 
-vitrum depends on the foundational work of many others. See [CREDITS.md](./CREDITS.md) for the full attribution list. Headline dependencies:
+See [CREDITS.md](./CREDITS.md) for the full attribution list (~30 papers + libraries). Headline dependencies:
 
 - **three.js** (Mr.doob et al., MIT)
 - **three-gpu-pathtracer** (Garrett Johnson, MIT)
 - **three-mesh-bvh** (Garrett Johnson, MIT)
 - **DDGI** (Majercik et al., 2019)
 - **Radiance Cascades** (Sannikov, 2024)
-- **ReSTIR DI** (Bitterli et al., 2020)
+- **ReSTIR DI / GI** (Bitterli et al., 2020 / Ouyang et al., 2021)
+- **SVGF** (Schied et al., 2017)
+- **Hero Wavelength Spectral Sampling** (Wilkie et al., 2015)
 - **Disney BSDF** (Burley, 2012)
 
 ## License

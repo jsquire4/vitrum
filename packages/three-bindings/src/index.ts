@@ -18,6 +18,7 @@ import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
 
 export { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from './vitrumSceneToThree.js';
+export { loadGltfScene, type LoadedGltf, type GltfCamera, type LoadGltfSceneOptions } from './gltfLoader.js';
 export { VITRUM_USER_DATA_KEYS } from './userDataKeys.js';
 export {
   extractThreePbrScalars,
@@ -81,6 +82,16 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
           `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are added per Phase 6 sprint.`,
         );
       }
+      // Skip transparent MeshBasicMaterial meshes — these are invisible UI
+      // hit-zones (EdgeHotZone, TracingImageOverlay opacity=0 planes). If
+      // included they render as opaque flat-emissive surfaces and occlude
+      // the actual scene. PT panel-black bug 2026-05-12.
+      const isBasicTransparent =
+        rawMat != null &&
+        (rawMat as THREE.MeshBasicMaterial).isMeshBasicMaterial === true &&
+        ((rawMat as THREE.MeshBasicMaterial).transparent === true ||
+         ((rawMat as THREE.MeshBasicMaterial).opacity ?? 1) <= 0.01);
+      if (isBasicTransparent) return;
       const prim = convertMesh(mesh);
       const meshEmitter = emissiveMeshAreaEmitter(mesh);
       if (meshEmitter != null) {

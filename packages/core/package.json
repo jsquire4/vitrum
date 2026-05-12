@@ -1,7 +1,11 @@
 {
   "name": "@vitrum/core",
   "version": "0.0.0",
+  "private": true,
   "description": "Public façade, types, and lifecycle contract for vitrum engines. Backend-agnostic, scene-binding-agnostic.",
+  "keywords": ["webgpu", "webgl2", "path-tracing", "global-illumination", "vitrum"],
+  "author": "jsquire4",
+  "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -11,7 +15,12 @@
     "./engine": "./src/engine.ts",
     "./frame": "./src/frame.ts"
   },
-  "license": "MIT",
+  "files": ["src", "README.md"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsquire4/vitrum.git",
+    "directory": "packages/core"
+  },
   "peerDependencies": {},
   "scripts": {
     "typecheck": "tsc --noEmit"
