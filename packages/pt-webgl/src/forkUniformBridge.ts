@@ -16,6 +16,41 @@ export interface ForkBridgeCausticOptions {
   readonly radianceClamp?: number;
 }
 
+/**
+ * BDPT options for Sprint 10c — bidirectional path tracing for caustic-heavy
+ * scenes (stainedGlass, crystal, underwater).
+ *
+ * Pass this in addition to {@link ForkBridgeCausticOptions} to enable BDPT
+ * in the PT_FINAL accumulation mode. BDPT adds explicit eye↔light vertex
+ * connections via a ping-pong light-subpath texture.
+ *
+ * - `enabled` maps to the fork's `uBdptEnabled` uniform + `FEATURE_BDPT` define.
+ *   When false (default) the connection GLSL is compiled out — zero overhead.
+ * - `maxLightBounces` controls how many stored light vertices to attempt connections
+ *   with (1–3; default 3 = BDPT_MAX_LIGHT_BOUNCES constant in fork).
+ *   Reducing to 1 cuts per-sample shadow-ray cost by ~2/3 at the expense of
+ *   caustic depth beyond the first emitter bounce.
+ * - `lightPathTex` is the RGBA32F texture the host writes via the light-subpath
+ *   draw pass. If null, BDPT is automatically disabled as a safety guard.
+ *
+ * References: Veach 1997 §10.3; sprint-10c-pt-fork-patch.md.
+ */
+export interface ForkBridgeBdptOptions {
+  /** Enable BDPT integrator path (default false). */
+  readonly enabled: boolean;
+  /**
+   * Number of light-subpath bounces to store and connect (1–3; default 3).
+   * Must match the light-subpath draw pass loop count in the host renderer.
+   */
+  readonly maxLightBounces?: number;
+  /**
+   * Light-subpath ping-pong texture (RGBA32F, width=maxLightBounces, height=3).
+   * Written by the host's light-subpath draw pass before the main accumulation loop.
+   * null → BDPT disabled even if enabled=true (safety guard for uninitialized hosts).
+   */
+  readonly lightPathTex?: unknown | null;
+}
+
 function sanitizePositiveFinite(value: number, fallback: number, max: number): number {
   if (!Number.isFinite(value)) return fallback;
   return Math.max(1, Math.min(max, Math.floor(value)));
@@ -85,6 +120,7 @@ function buildYCdf(y: Float32Array): Float32Array {
 export function driveForkMaterialUniforms(
   pathTracer: unknown,
   causticOptions?: ForkBridgeCausticOptions,
+  bdptOptions?: ForkBridgeBdptOptions,
 ): void {
   const tracer = pathTracer as { _pathTracer?: { material?: PathTracerMaterialLike } };
   const material = tracer._pathTracer?.material ?? null;
@@ -112,6 +148,28 @@ export function driveForkMaterialUniforms(
     setUniform(material, 'uMneeMaxIterations', sanitizePositiveFinite(causticOptions.mneeMaxIterations, 8, 16));
     setUniform(material, 'uMneeMaxChainLength', sanitizePositiveFinite(causticOptions.mneeMaxChainLength, 3, 8));
   }
+
+  // Sprint 10c — BDPT uniform bridge.
+  // Threads the host-side BDPT options to the fork's uBdptEnabled / uBdptMaxLightBounces /
+  // uBdptLightPathTex uniforms. The fork's FEATURE_BDPT define is synced automatically via
+  // onBeforeRender() from uBdptEnabled.
+  //
+  // Safety guard: if lightPathTex is null (uninitialized host), force enabled=false to
+  // prevent the shader from sampling an unbound texture slot.
+  if (bdptOptions != null) {
+    const lightPathTex = bdptOptions.lightPathTex ?? null;
+    const effectivelyEnabled = bdptOptions.enabled && lightPathTex != null;
+    setUniform(material, 'uBdptEnabled', effectivelyEnabled);
+    setUniform(material, 'uBdptLightPathTex', lightPathTex);
+    const maxBounces = bdptOptions.maxLightBounces != null
+      ? sanitizePositiveFinite(bdptOptions.maxLightBounces, 3, 3)
+      : 3;
+    setUniform(material, 'uBdptMaxLightBounces', maxBounces);
+  } else {
+    // BDPT not requested — ensure it's off (idempotent; safe to call every frame).
+    setUniform(material, 'uBdptEnabled', false);
+  }
+
   // RFE-09 stabilization: per-material scalar drives now come from the fork
   // MaterialsTexture packing path. The bridge only uploads global spectral tables.
 }

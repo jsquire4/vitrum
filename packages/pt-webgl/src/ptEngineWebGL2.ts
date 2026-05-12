@@ -318,6 +318,10 @@ export class PTEngineWebGL2 implements Engine {
   readonly #mneeMaxChainLength: number;
   readonly #spectralRendering: boolean;
   readonly #radianceClamp: number;
+  // Sprint 10c — BDPT option. Stored from extensions['vitrum.ptWebgl.bdpt'].
+  // Forwarded to fork uBdptEnabled / uBdptMaxLightBounces / uBdptLightPathTex uniforms.
+  readonly #bdpt: boolean;
+  readonly #bdptMaxLightBounces: number;
   readonly #limits: DeviceLimits;
   readonly #schedulerOptions: SchedulerOptions;
 
@@ -352,6 +356,17 @@ export class PTEngineWebGL2 implements Engine {
     this.#radianceClamp = typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
       ? Math.max(0, requestedRadianceClamp)
       : 0;
+    // Sprint 10c: BDPT option from extensions.
+    // 'vitrum.ptWebgl.bdpt' (boolean) enables BDPT mode for PT_FINAL caustic renders.
+    // 'vitrum.ptWebgl.bdptMaxLightBounces' (1–3) controls light-subpath depth.
+    // The lightPathTex is not passed via options (it requires a live WebGL texture
+    // object); hosts that need BDPT must call driveForkMaterialUniforms() directly
+    // with their ForkBridgeBdptOptions including the ping-pong texture reference.
+    this.#bdpt = opts.extensions?.['vitrum.ptWebgl.bdpt'] === true;
+    const requestedBdptBounces = opts.extensions?.['vitrum.ptWebgl.bdptMaxLightBounces'];
+    this.#bdptMaxLightBounces = typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
+      ? Math.min(3, Math.floor(requestedBdptBounces))
+      : 3;
     this.#schedulerOptions = defaultSchedulerOptions(opts.extensions);
     this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
     this.#tileSize = this.#schedulerOptions.initialTileSize;
@@ -567,13 +582,25 @@ export class PTEngineWebGL2 implements Engine {
     this.#threeSceneRoot = threeScene;
     const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
     tracerCompat.setScene(threeScene, this.#camera);
-    driveForkMaterialUniforms(this.#pathTracer, {
-      strategy: this.#causticStrategy,
-      mneeMaxIterations: this.#mneeMaxIterations,
-      mneeMaxChainLength: this.#mneeMaxChainLength,
-      spectralRendering: this.#spectralRendering,
-      radianceClamp: this.#radianceClamp,
-    });
+    // Sprint 10c: BDPT bridge — enabled=true only when the extension flag is set.
+    // lightPathTex is null here (no WebGL texture at setScene time); hosts that
+    // need per-frame BDPT must call driveForkMaterialUniforms() after supplying
+    // their ping-pong texture from the light-subpath draw pass.
+    driveForkMaterialUniforms(
+      this.#pathTracer,
+      {
+        strategy: this.#causticStrategy,
+        mneeMaxIterations: this.#mneeMaxIterations,
+        mneeMaxChainLength: this.#mneeMaxChainLength,
+        spectralRendering: this.#spectralRendering,
+        radianceClamp: this.#radianceClamp,
+      },
+      {
+        enabled: this.#bdpt,
+        maxLightBounces: this.#bdptMaxLightBounces,
+        lightPathTex: null, // populated per-frame by host after light-subpath draw pass
+      },
+    );
   }
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {

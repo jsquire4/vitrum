@@ -41,3 +41,7 @@ export {
   pointIntensityFromLumens,
   rectAreaIntensityFromLumens,
 } from './lightingIntensityTable.js';
+
+// Sprint 10c — BDPT option types for host callers that drive fork uniforms directly.
+export type { ForkBridgeBdptOptions, ForkBridgeCausticOptions } from './forkUniformBridge.js';
+export { driveForkMaterialUniforms } from './forkUniformBridge.js';
