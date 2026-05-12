@@ -1,12 +1,15 @@
 /**
- * bdptMIS.ts — BDPT connection-PMF MIS weight computation (Sprint 10c scaffold).
+ * bdptMIS.ts — Single-strategy MIS aid for fork-side dispatch (Sprint 10c scaffold).
  *
- * `bdptConnectionMIS` applies the Veach power heuristic (β=2 by default) to a
- * per-strategy PDF vector. `buildBDPTStrategyPDFs` fills that vector using a
- * **simplified separable product** of forward PDFs along light/eye subpath
- * prefixes — see its JSDoc for exactly which indices are non-zero. This is a
- * structural aid for tests and future fork alignment; it is **not** a full
- * BDPT strategy PDF enumeration for arbitrary connection topologies.
+ * `bdptConnectionMIS_partial` applies the Veach power heuristic (β=2 by default)
+ * to a per-strategy PDF vector. `buildBDPTStrategyPDFs_partial` fills that vector
+ * using a **simplified separable product** of forward PDFs along light/eye subpath
+ * prefixes — see its JSDoc for exactly which indices are non-zero.
+ *
+ * These are partial helpers: they handle only the single-strategy case needed for
+ * current fork-side dispatch wiring. They are **not** a full BDPT strategy PDF
+ * enumeration for arbitrary connection topologies (Veach §10.3). See
+ * `plan/sprint-bdpt-veach-full-future.md` for the full §10.3 enumeration spec.
  *
  * References:
  *   - Veach 1997, PhD thesis §9.2 (power heuristic), §10.3 (BDPT MIS weights).
@@ -20,12 +23,16 @@ import type { BDPTVertex } from './bdptVertex.js';
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Compute the power-heuristic MIS weight for a single BDPT connection strategy.
+ * Single-strategy MIS aid: compute the power-heuristic MIS weight for one BDPT
+ * connection strategy.
  *
  * Given the per-strategy PDF table `pdfsByStrategy`, returns the MIS weight for
- * `selectedStrategyIndex`.  Typical use: the table from {@link buildBDPTStrategyPDFs}
- * (mostly zero entries except boundary cases `s=0` / `t=0` and the interior
- * index `k=s` when both `s,t>0`).
+ * `selectedStrategyIndex`.  Typical use: the table from
+ * {@link buildBDPTStrategyPDFs_partial} (mostly zero entries except boundary
+ * cases `s=0` / `t=0` and the interior index `k=s` when both `s,t>0`).
+ *
+ * This is a partial helper — it does not enumerate all Veach §10.3 strategies.
+ * See `plan/sprint-bdpt-veach-full-future.md` for the full strategy enumeration.
  *
  * Graceful degradation:
  *   - All-zero PDFs: returns 0 (path has zero probability — do not accumulate).
@@ -37,7 +44,7 @@ import type { BDPTVertex } from './bdptVertex.js';
  * @param beta              - power heuristic exponent (default 2; β=1 = balance)
  * @returns MIS weight ∈ [0, 1]
  */
-export function bdptConnectionMIS(
+export function bdptConnectionMIS_partial(
   pdfsByStrategy: ReadonlyArray<number>,
   selectedStrategyIndex: number,
   beta: number = 2,
@@ -65,9 +72,9 @@ export function bdptConnectionMIS(
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Build the per-strategy PDF table used by {@link bdptConnectionMIS}.
+ * Build the per-strategy PDF table used by {@link bdptConnectionMIS_partial}.
  *
- * **Simplified model (intentional):** for each k ∈ [0, s+t] we form
+ * **Simplified / partial model (intentional):** for each k ∈ [0, s+t] we form
  * `p_k = lightCumPdf[min(k,s)] · eyeCumPdf[min(s+t−k, t)]` where each cumulative
  * array holds forward-PDF products along the corresponding subpath prefix.
  *
@@ -76,18 +83,19 @@ export function bdptConnectionMIS(
  *   - `s = 0`, `t > 0` ⇒ only `k = 0` may be non-zero (pure eye prefix).
  *   - `t = 0`, `s > 0` ⇒ only `k = s` may be non-zero (pure light prefix).
  *   - `s > 0` **and** `t > 0` ⇒ only `k = s` may be non-zero (full light prefix
- *     × full eye prefix).  Other indices are zero — not a full Veach BDPT
- *     strategy enumeration; extend here when fork-side connection PDFs cover
- *     all `k`.
+ *     × full eye prefix).  Other indices are zero — this is a single-strategy
+ *     MIS aid, not a full Veach BDPT strategy enumeration; extend here when
+ *     fork-side connection PDFs cover all `k`.
  *
  * Reverse PDFs and geometry terms at the connection edge are omitted on the CPU
- * (see fork GLSL for the full factor).
+ * (see fork GLSL for the full factor). For the full §10.3 enumeration spec, see
+ * `plan/sprint-bdpt-veach-full-future.md`.
  *
  * @param lightSubpath - light-subpath vertices, v_0 = emitter surface
  * @param eyeSubpath   - eye-subpath vertices, u_0 = camera/primary-hit surface
  * @returns Float32Array of length s+t+1 (mostly zeros except the cases above)
  */
-export function buildBDPTStrategyPDFs(
+export function buildBDPTStrategyPDFs_partial(
   lightSubpath: ReadonlyArray<BDPTVertex>,
   eyeSubpath: ReadonlyArray<BDPTVertex>,
 ): Float32Array {

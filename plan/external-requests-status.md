@@ -6,6 +6,14 @@
 
 ---
 
+## Scope note
+
+This file covers RFEs 01–05 (API contract additions to @vitrum/core completed
+2026-05-09). For RFEs 06–14 (fork-side shader patches), see
+[../external_requests/IMPLEMENTATION-STATUS.md](../external_requests/IMPLEMENTATION-STATUS.md).
+
+---
+
 ## Summary
 
 5 RFEs processed from `external_requests/`. All 5 implemented as API-contract

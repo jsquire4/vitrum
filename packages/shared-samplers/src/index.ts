@@ -42,7 +42,7 @@ export {
   unpackBDPTVertex,
 } from './bdptVertex.js';
 export type { BDPTVertex } from './bdptVertex.js';
-export { bdptConnectionMIS, buildBDPTStrategyPDFs } from './bdptMIS.js';
+export { bdptConnectionMIS_partial, buildBDPTStrategyPDFs_partial } from './bdptMIS.js';
 
 // Sprint 12 — hero-wavelength spectral path tracing utilities
 export {

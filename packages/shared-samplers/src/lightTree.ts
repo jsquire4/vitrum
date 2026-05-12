@@ -19,11 +19,14 @@
  * (4 components per texel × 3 texels, padded to 12 floats for alignment).
  * See `packLightTreeForGPU` for the exact layout.
  *
+ * NOTE: This is Shirley 1996 median-split with power-as-cost. Future SOTA
+ * upgrade to Estévez-Kulla 2018 would require: (1) per-node orientation cones;
+ * (2) SAH-like split with receiver-aware importance; (3) adaptive (non-median)
+ * split. Tracked separately.
+ *
  * References:
  *   - Shirley, Smits, Wang, Zimmerman 1996, "Monte Carlo Techniques for
  *     Direct Lighting Calculations", ACM TOG.
- *   - Estevez & Kulla 2018, "Importance Sampling of Many Lights with
- *     Adaptive Tree Splitting", EGSR.
  */
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -211,7 +214,7 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
  * proportional to child power, then corrects for spatial proximity at the
  * leaf. The GPU consumes the packed node array directly via `packLightTreeForGPU`.
  *
- * `nodePowerPrefixSum` layout: length = nodeCount (one entry per node, pre-order).
+ * `_powerPrefixSumDebug` layout: length = nodeCount (one entry per node, pre-order).
  * Each entry is the running prefix sum of `totalPower` values across the
  * pre-order node array, normalised by `root.totalPower`. Because internal nodes
  * aggregate subtree power, their contribution is counted once in the running sum
@@ -227,13 +230,18 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
 export function buildLightTree(input: LightTreeBuildInput): {
   nodes: LightTreeNode[];
   /**
-   * Unnormalised node-power prefix-sum for CPU-side verification.
-   * Length = nodeCount (pre-order). Values can exceed 1.0 because internal
-   * nodes aggregate subtree power, so their power is counted before each
-   * child's power is also counted. This is NOT a true CDF — do not use it
-   * for uniform random sampling without first filtering to leaf nodes only.
+   * @internal
+   *
+   * **WARNING: Do NOT use for sampling — values exceed 1.0 because internal
+   * nodes are counted before children. Use leaf-only power traversal on
+   * `nodes` instead.**
+   *
+   * Unnormalised node-power prefix-sum for CPU-side structural verification
+   * only. Length = nodeCount (pre-order). Values can exceed 1.0 because
+   * internal nodes aggregate subtree power, so their power is counted before
+   * each child's power is also counted. This is NOT a true CDF.
    */
-  nodePowerPrefixSum: Float32Array;
+  _powerPrefixSumDebug: Float32Array;
 } {
   const { powers, centroids, aabbs } = input;
   const n = powers.length;
@@ -264,15 +272,16 @@ export function buildLightTree(input: LightTreeBuildInput): {
   // Each entry is the running sum of totalPower values normalised by root.totalPower.
   // Because internal nodes aggregate subtree power, values exceed 1.0 for trees
   // with more than one leaf — this is intentional (see JSDoc above).
+  // For sampling, use leaf-only power traversal on `nodes` instead.
   const rootPower = nodes[0]!.totalPower;
-  const nodePowerPrefixSum = new Float32Array(nodes.length);
+  const _powerPrefixSumDebug = new Float32Array(nodes.length);
   let running = 0;
   for (let i = 0; i < nodes.length; i++) {
     running += nodes[i]!.totalPower;
-    nodePowerPrefixSum[i] = rootPower > 0 ? running / rootPower : 0;
+    _powerPrefixSumDebug[i] = rootPower > 0 ? running / rootPower : 0;
   }
 
-  return { nodes, nodePowerPrefixSum };
+  return { nodes, _powerPrefixSumDebug };
 }
 
 /**

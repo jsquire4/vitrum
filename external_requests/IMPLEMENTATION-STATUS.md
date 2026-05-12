@@ -1,5 +1,11 @@
 # external_requests/ Implementation Status — 2026-05-10
 
+## Scope note
+
+This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–05
+(@vitrum/core contract additions), see
+[../plan/external-requests-status.md](../plan/external-requests-status.md).
+
 ## 2026-05-10 closure update
 
 - Fork Sprint 12 Gap §5 (spectral attenuation Beer-Lambert) **uses packed per-material spectral μ(λ)** from `MaterialsTexture` texels 20–27 inside `transmissionAttenuationHero` (hero-wavelength exp(−μ·d)); RGB fallback remains when no spectral curve is packed.

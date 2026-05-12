@@ -27,7 +27,7 @@ import {
   BDPT_MAX_EYE_BOUNCES,
 } from '../src/bdptVertex.js';
 import type { BDPTVertex } from '../src/bdptVertex.js';
-import { bdptConnectionMIS, buildBDPTStrategyPDFs } from '../src/bdptMIS.js';
+import { bdptConnectionMIS_partial, buildBDPTStrategyPDFs_partial } from '../src/bdptMIS.js';
 
 // ── Helper factories ──────────────────────────────────────────────────────────
 
@@ -196,13 +196,13 @@ describe('packBDPTVertex / unpackBDPTVertex', () => {
   });
 });
 
-// ── buildBDPTStrategyPDFs ─────────────────────────────────────────────────────
+// ── buildBDPTStrategyPDFs_partial ─────────────────────────────────────────────────────
 
-describe('buildBDPTStrategyPDFs', () => {
+describe('buildBDPTStrategyPDFs_partial', () => {
   it('strategy k=s (interior) is the only non-zero row when s>0 and t>0 (simplified PDF model)', () => {
     const light = [makeVertex({ pdfFwd: 0.6 }), makeVertex({ pdfFwd: 0.7 })];
     const eye = [makeVertex({ pdfFwd: 0.5 }), makeVertex({ pdfFwd: 0.4 })];
-    const pdfs = buildBDPTStrategyPDFs(light, eye);
+    const pdfs = buildBDPTStrategyPDFs_partial(light, eye);
     const s = 2;
     expect(pdfs.length).toBe(s + 2 + 1);
     for (let k = 0; k < pdfs.length; k++) {
@@ -217,31 +217,31 @@ describe('buildBDPTStrategyPDFs', () => {
   it('returns length s+t+1 for non-trivial subpaths', () => {
     const light = [makeVertex(), makeVertex()]; // s=2
     const eye = [makeVertex(), makeVertex(), makeVertex()]; // t=3
-    const pdfs = buildBDPTStrategyPDFs(light, eye);
+    const pdfs = buildBDPTStrategyPDFs_partial(light, eye);
     expect(pdfs.length).toBe(6); // s+t+1 = 2+3+1 = 6
   });
 
   it('returns length 1 when both subpaths are empty', () => {
-    const pdfs = buildBDPTStrategyPDFs([], []);
+    const pdfs = buildBDPTStrategyPDFs_partial([], []);
     expect(pdfs.length).toBe(1);
   });
 
   it('returns length s+1 when eye subpath is empty', () => {
     const light = [makeVertex(), makeVertex()]; // s=2
-    const pdfs = buildBDPTStrategyPDFs(light, []);
+    const pdfs = buildBDPTStrategyPDFs_partial(light, []);
     expect(pdfs.length).toBe(3); // s+t+1 = 2+0+1 = 3
   });
 
   it('returns length t+1 when light subpath is empty', () => {
     const eye = [makeVertex(), makeVertex(), makeVertex()]; // t=3
-    const pdfs = buildBDPTStrategyPDFs([], eye);
+    const pdfs = buildBDPTStrategyPDFs_partial([], eye);
     expect(pdfs.length).toBe(4); // s+t+1 = 0+3+1 = 4
   });
 
   it('all entries are non-negative', () => {
     const light = [makeVertex({ pdfFwd: 0.5 }), makeVertex({ pdfFwd: 0.3 })];
     const eye = [makeVertex({ pdfFwd: 0.8 }), makeVertex({ pdfFwd: 0.2 })];
-    const pdfs = buildBDPTStrategyPDFs(light, eye);
+    const pdfs = buildBDPTStrategyPDFs_partial(light, eye);
     for (const p of pdfs) {
       expect(p).toBeGreaterThanOrEqual(0);
     }
@@ -253,7 +253,7 @@ describe('buildBDPTStrategyPDFs', () => {
       makeVertex({ pdfFwd: 0.5 }),
       makeVertex({ pdfFwd: 0.4 }),
     ];
-    const pdfs = buildBDPTStrategyPDFs([], eye);
+    const pdfs = buildBDPTStrategyPDFs_partial([], eye);
     // k=0: eye product = 0.5 * 0.4 = 0.2
     expect(pdfs[0]).toBeCloseTo(0.5 * 0.4, 6);
   });
@@ -263,38 +263,38 @@ describe('buildBDPTStrategyPDFs', () => {
       makeVertex({ pdfFwd: 0.6 }),
       makeVertex({ pdfFwd: 0.7 }),
     ];
-    const pdfs = buildBDPTStrategyPDFs(light, []);
+    const pdfs = buildBDPTStrategyPDFs_partial(light, []);
     // k=s=2: light product = 0.6 * 0.7 = 0.42
     expect(pdfs[2]).toBeCloseTo(0.6 * 0.7, 6);
   });
 });
 
-// ── bdptConnectionMIS ─────────────────────────────────────────────────────────
+// ── bdptConnectionMIS_partial ─────────────────────────────────────────────────────────
 
-describe('bdptConnectionMIS', () => {
+describe('bdptConnectionMIS_partial', () => {
   it('MIS weights sum to 1 across all strategies when all PDFs > 0', () => {
     // Full Veach / power-heuristic sanity: each strategy gets p_i^β / Σ p_j^β.
-    // With buildBDPTStrategyPDFs most entries are zero; see tests above for sparsity.
+    // With buildBDPTStrategyPDFs_partial most entries are zero; see tests above for sparsity.
     const pdfs = [0.1, 0.5, 0.3, 0.2, 0.4];
     let sum = 0;
     for (let k = 0; k < pdfs.length; k++) {
-      sum += bdptConnectionMIS(pdfs, k);
+      sum += bdptConnectionMIS_partial(pdfs, k);
     }
     expect(sum).toBeCloseTo(1.0, 5);
   });
 
   it('single strategy always returns weight 1.0', () => {
-    expect(bdptConnectionMIS([0.7], 0)).toBeCloseTo(1.0);
-    expect(bdptConnectionMIS([0.001], 0)).toBeCloseTo(1.0);
+    expect(bdptConnectionMIS_partial([0.7], 0)).toBeCloseTo(1.0);
+    expect(bdptConnectionMIS_partial([0.001], 0)).toBeCloseTo(1.0);
   });
 
   it('with β=1 (balance heuristic), 2-strategy case matches balance formula', () => {
     const p1 = 0.3;
     const p2 = 0.7;
-    const w1 = bdptConnectionMIS([p1, p2], 0, 1);
+    const w1 = bdptConnectionMIS_partial([p1, p2], 0, 1);
     // balance heuristic: p1 / (p1 + p2)
     expect(w1).toBeCloseTo(p1 / (p1 + p2), 6);
-    const w2 = bdptConnectionMIS([p1, p2], 1, 1);
+    const w2 = bdptConnectionMIS_partial([p1, p2], 1, 1);
     expect(w2).toBeCloseTo(p2 / (p1 + p2), 6);
     expect(w1 + w2).toBeCloseTo(1.0, 6);
   });
@@ -302,26 +302,26 @@ describe('bdptConnectionMIS', () => {
   it('default β=2 (power heuristic) amplifies dominant strategy more than balance', () => {
     const pdfs = [0.1, 0.9]; // strategy 1 is dominant
     const wBalance = pdfs[1]! / (pdfs[0]! + pdfs[1]!);
-    const wPower = bdptConnectionMIS(pdfs, 1, 2);
+    const wPower = bdptConnectionMIS_partial(pdfs, 1, 2);
     expect(wPower).toBeGreaterThan(wBalance);
   });
 
   it('all-zero PDFs returns 0 gracefully (no NaN/Infinity)', () => {
-    const result = bdptConnectionMIS([0, 0, 0], 1);
+    const result = bdptConnectionMIS_partial([0, 0, 0], 1);
     expect(result).toBe(0);
     expect(Number.isFinite(result)).toBe(true);
   });
 
   it('out-of-range strategy index returns 0', () => {
-    expect(bdptConnectionMIS([0.5, 0.5], -1)).toBe(0);
-    expect(bdptConnectionMIS([0.5, 0.5], 2)).toBe(0);
-    expect(bdptConnectionMIS([0.5, 0.5], 100)).toBe(0);
+    expect(bdptConnectionMIS_partial([0.5, 0.5], -1)).toBe(0);
+    expect(bdptConnectionMIS_partial([0.5, 0.5], 2)).toBe(0);
+    expect(bdptConnectionMIS_partial([0.5, 0.5], 100)).toBe(0);
   });
 
   it('weights sum to 1 across strategies built from real subpaths', () => {
     const light = [makeVertex({ pdfFwd: 0.5 }), makeVertex({ pdfFwd: 0.3 })];
     const eye = [makeVertex({ pdfFwd: 0.8 }), makeVertex({ pdfFwd: 0.4 })];
-    const pdfs = buildBDPTStrategyPDFs(light, eye);
+    const pdfs = buildBDPTStrategyPDFs_partial(light, eye);
 
     // Only non-zero strategies should contribute; sum of their weights = 1
     const nonZero = Array.from(pdfs).filter(p => p > 0);
@@ -329,7 +329,7 @@ describe('bdptConnectionMIS', () => {
       let sum = 0;
       for (let k = 0; k < pdfs.length; k++) {
         if (pdfs[k]! > 0) {
-          sum += bdptConnectionMIS(Array.from(pdfs), k);
+          sum += bdptConnectionMIS_partial(Array.from(pdfs), k);
         }
       }
       expect(sum).toBeCloseTo(1.0, 4);
@@ -338,17 +338,17 @@ describe('bdptConnectionMIS', () => {
 
   it('empty light subpath — all weight goes to pure eye-tracing strategy', () => {
     const eye = [makeVertex({ pdfFwd: 0.5 }), makeVertex({ pdfFwd: 0.5 })];
-    const pdfs = buildBDPTStrategyPDFs([], eye);
+    const pdfs = buildBDPTStrategyPDFs_partial([], eye);
     // Only k=0 (pure eye tracing) is non-zero — weight should be 1
-    const w = bdptConnectionMIS(Array.from(pdfs), 0);
+    const w = bdptConnectionMIS_partial(Array.from(pdfs), 0);
     expect(w).toBeCloseTo(1.0, 5);
   });
 
   it('empty eye subpath — all weight goes to pure light-tracing strategy', () => {
     const light = [makeVertex({ pdfFwd: 0.5 }), makeVertex({ pdfFwd: 0.3 })];
-    const pdfs = buildBDPTStrategyPDFs(light, []);
+    const pdfs = buildBDPTStrategyPDFs_partial(light, []);
     // Only k=s=2 (pure light tracing) is non-zero — weight should be 1
-    const w = bdptConnectionMIS(Array.from(pdfs), light.length);
+    const w = bdptConnectionMIS_partial(Array.from(pdfs), light.length);
     expect(w).toBeCloseTo(1.0, 5);
   });
 });
