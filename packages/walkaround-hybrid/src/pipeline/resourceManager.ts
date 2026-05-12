@@ -20,7 +20,6 @@ import {
   PPG_MAX_SPATIAL_CELLS,
   PPG_CELL_BYTE_STRIDE,
   PPG_LEAF_BYTE_STRIDE,
-  PPG_DIRECTIONS,
   PPG_KD_MAX_NODES,
   PPG_KD_NODE_BYTE_STRIDE,
 } from '../ppg/types.js';
@@ -40,7 +39,7 @@ export interface FrameResources {
   placeholderTexture: GPUTexture;
   uboBuffer: GPUBuffer;
   nearestSampler: GPUSampler;
-  compositeLinearSampler: GPUSampler;
+  compositeSampler: GPUSampler;
   ddgiPlaceholderRgba16f: GPUTexture;
   ddgiPlaceholderRg16f: GPUTexture;
   ddgiUboBuffer: GPUBuffer;
@@ -301,10 +300,6 @@ export function createPPGBuffers(device: GPUDevice, options?: PPGBufferOptions):
     kdSentinel.byteOffset,
     kdSentinel.byteLength,
   );
-
-  // Suppress unused-import lint: PPG_DIRECTIONS is part of the public type
-  // contract surfaced through tests; referenced here to keep the import live.
-  void PPG_DIRECTIONS;
 
   return { cellBuffer, leafBuffer, sampleBuffer, sampleHeadBuffer, kdBuffer, maxCells };
 }
@@ -615,7 +610,7 @@ export function createFrameResources(
     magFilter: 'nearest',
     minFilter: 'nearest',
   });
-  const compositeLinearSampler = device.createSampler({
+  const compositeSampler = device.createSampler({
     magFilter: 'nearest',
     minFilter: 'nearest',
     addressModeU: 'clamp-to-edge',
@@ -787,7 +782,7 @@ export function createFrameResources(
     placeholderTexture,
     uboBuffer,
     nearestSampler,
-    compositeLinearSampler,
+    compositeSampler,
     ddgiPlaceholderRgba16f,
     ddgiPlaceholderRg16f,
     ddgiUboBuffer,

@@ -305,14 +305,14 @@ export function buildCompositeBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   texView: GPUTextureView,
-  compositeLinearSampler: GPUSampler,
+  compositeSampler: GPUSampler,
 ): GPUBindGroup {
   return device.createBindGroup({
     label: 'composite-bg',
     layout: getCompositeBindGroupLayout(device, cache),
     entries: [
       { binding: 0, resource: texView },
-      { binding: 1, resource: compositeLinearSampler },
+      { binding: 1, resource: compositeSampler },
     ],
   });
 }
@@ -348,9 +348,6 @@ export function buildSVGFVarianceBindGroup(
   device: GPUDevice,
   variancePipeline: GPUComputePipeline,
   hdrColor: GPUTextureView,
-  _prevAccum: GPUTextureView,
-  _gNormalDepth: GPUTextureView,
-  _motionVectors: GPUTextureView,
   welfordWrite: GPUTextureView,
   varianceEstimate: GPUTextureView,
   ubo: GPUBuffer,
@@ -360,10 +357,7 @@ export function buildSVGFVarianceBindGroup(
   // DECLARED in the WGSL but UNREFERENCED by the kernel body — Dawn's
   // `layout: 'auto'` drops unreferenced bindings, so trying to bind
   // them yields "binding index N not present in the bind group layout"
-  // and the whole command buffer is rejected. The trailing `_` params
-  // are preserved so existing callers keep compiling without churn;
-  // a future cleanup can shrink the signature when the SVGF spatial
-  // term grows to actually consume those buffers.
+  // and the whole command buffer is rejected. We just don't pass them.
   return device.createBindGroup({
     label: 'svgf-variance-bg',
     layout: variancePipeline.getBindGroupLayout(0),

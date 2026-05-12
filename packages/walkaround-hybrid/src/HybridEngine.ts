@@ -313,6 +313,18 @@ export class HybridEngine implements Engine {
     this._verbose               = opts.verbose ?? false;
     this._maxBounces            = opts.maxBounces ?? 4;
     this._ppgEnabled            = opts.ppgEnabled ?? false;
+    // Audit B7: validate the denoiser option at construction so an unsupported
+    // value (e.g. `'none'`, `'bmfr'`, `'oidn-final'` from the @vitrum/core
+    // EngineOptions contract) does not silently coerce to SVGF and produce
+    // wrong output. Supported values are explicitly enumerated here.
+    if (opts.denoiser !== undefined && opts.denoiser !== 'atrous' && opts.denoiser !== 'svgf') {
+      throw new TypeError(
+        `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
+        `walkaround-hybrid supports: 'atrous' | 'svgf'. ` +
+        `If you need 'none' / 'bmfr' / 'oidn-final' from @vitrum/core, ` +
+        `pick a backend that implements those modes.`,
+      );
+    }
     this._denoiser             = opts.denoiser ?? 'svgf';
     this._isSceneReady          = opts.isSceneReady ?? (() => defaultIsSceneReady(this._threeScene));
 

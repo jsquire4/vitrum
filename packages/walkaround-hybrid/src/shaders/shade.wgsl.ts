@@ -414,8 +414,16 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Direct = emit (light source itself) + direct shadow-mapped terms (× AO).
   // Indirect = ReSTIR-GI Lo_indirect (× AO). Lo_emit bypasses AO because
   // the light source itself is never in self-shadow.
-  let directRadiance = Lo_emit + (Lo_direct + Lo_sunCaustic
-                                 + Lo_skyAperture * 0.08) * ao;
+  //
+  // Lo_skyAperture audit follow-up: the upstream computation already returns
+  // skyVisScalar * skyTint * skyIrradiance * albedo * INV_PI, which is the
+  // correct outgoing radiance for a Lambertian receiver under a partially-
+  // visible sky dome.  Earlier code multiplied by 0.08 as an empirical trim
+  // calibrated to Cornell's stained-glass ambient — that double-scaled the
+  // physically-parameterised sky channel and was not portable to scenes with
+  // a different skyIrradiance.  The 0.08 has been dropped; Lo_skyAperture
+  // is summed at full magnitude.
+  let directRadiance = Lo_emit + (Lo_direct + Lo_sunCaustic + Lo_skyAperture) * ao;
   let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally

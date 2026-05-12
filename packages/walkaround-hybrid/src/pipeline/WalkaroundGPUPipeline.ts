@@ -515,7 +515,7 @@ export class WalkaroundGPUPipeline {
     const d = this._device;
     const finalTex = this._res.resolvedTexture;
     const bgComposite = buildCompositeBindGroup(
-      d, this._bglCache, finalTex.createView(), this._res.compositeLinearSampler,
+      d, this._bglCache, finalTex.createView(), this._res.compositeSampler,
     );
     const encoder = d.createCommandEncoder({ label: 'composite-only' });
     const pass = encoder.beginRenderPass({
@@ -607,11 +607,11 @@ export class WalkaroundGPUPipeline {
     // Pass 0: Sample budget (Sprint 9). Reads previous-frame Welford variance,
     // writes per-pixel tier texture (1=converged, 2=med, 4=high-noise). On the
     // first few frames (variance unconverged) every pixel classifies to tier 1
-    // because raw bytes read 0 — that's harmless: the tier output is not yet
-    // consumed by RIS or shade, so the pass is currently informational only.
-    // (Tier-aware RIS / shade is the next Sprint 9 step; this dispatch is the
-    // wire-in that lets the downstream consumers be added without re-doing the
-    // plumbing.)
+    // because raw bytes read 0 — harmless: the safety-clamp in shade.wgsl
+    // falls back to ao=1.0 in that case. The tier output IS consumed:
+    // risGi.wgsl reads `gi_tier` at @group(2) @binding(2) and scales M_GI per
+    // pixel (high-variance regions get more RIS candidates).  ris.wgsl (DI)
+    // currently ignores it; tier-aware DI sampling is a future Sprint-9 step.
     {
       // Budget uniforms: f32 threshold_low, f32 threshold_high, u32 screenW, u32 screenH (16 bytes).
       const budgetBytes = new ArrayBuffer(16);
@@ -1012,7 +1012,7 @@ export class WalkaroundGPUPipeline {
 
     // Pass: Composite render pass — blit resolved HDR to swap-chain.
     const finalTex = this._res.resolvedTexture;
-    const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.compositeLinearSampler);
+    const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.compositeSampler);
     {
       const tsComp = tsWrites(this._tsState.querySet, passLayout, 'composite');
       const pass = encoder.beginRenderPass({
@@ -1031,26 +1031,28 @@ export class WalkaroundGPUPipeline {
       pass.end();
     }
 
-    // Resolve timestamps + copy into the inactive readback buffer.
-    resolveTimestamps(encoder, this._tsState, this._frameCount, passLayout.slotCount);
-
-    d.queue.submit([encoder.finish()]);
-
     // Swap reservoir ping-pong for next frame (copy current → previous).
-    // Sprint 17 — also copy GI reservoir current → previous for next-frame
-    // temporal reuse. Both copies submitted in the same command encoder.
-    const enc2 = d.createCommandEncoder({ label: 'reservoir-swap' });
-    enc2.copyBufferToBuffer(
+    // Sprint 17 + audit B6 fix: copies must be folded into the *same*
+    // command encoder as the main frame work, before its single
+    // queue.submit().  When this was a separate submit (enc2 below the
+    // main submit), high-FPS hosts could begin frame N+1's temporal
+    // reservoir read before enc2 had completed, racing the previous-
+    // frame copy — corrupts the GI reservoir, manifests as flicker.
+    encoder.copyBufferToBuffer(
       this._res.reservoirCurrentBuffer, 0,
       this._res.reservoirPreviousBuffer, 0,
       this._res.reservoirCurrentBuffer.size,
     );
-    enc2.copyBufferToBuffer(
+    encoder.copyBufferToBuffer(
       this._res.reservoirGiCurrentBuffer, 0,
       this._res.reservoirGiPreviousBuffer, 0,
       this._res.reservoirGiCurrentBuffer.size,
     );
-    d.queue.submit([enc2.finish()]);
+
+    // Resolve timestamps + copy into the inactive readback buffer.
+    resolveTimestamps(encoder, this._tsState, this._frameCount, passLayout.slotCount);
+
+    d.queue.submit([encoder.finish()]);
 
     // Kick async readback of the timestamp buffer we just copied into.
     // Pass the layout labels so the async callback labels each slot
@@ -1118,9 +1120,6 @@ export class WalkaroundGPUPipeline {
       pass.setBindGroup(0, buildSVGFVarianceBindGroup(
         d, sv,
         hdrColorView,
-        readAccum.createView(),
-        gNormalDepthView,
-        this._res.motionVectorTexture.createView(),
         welfordWrite.createView(),
         this._res.svgfVarianceEstimateTexture.createView(),
         this._svgfVarianceUboRef.buf!,

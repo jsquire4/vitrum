@@ -7,17 +7,19 @@
  * querySet is sized to the worst-case slot count so a single allocation
  * survives every configuration.
  *
- * Configurations (slot count in parentheses, current as of Sprint 18 +
- * Original #7 svgf-atrous trim):
- *   • PPG off, legacy atrous (17): sample-budget, ris, temporal, spatial-1,
+ * Configurations (slot count in parentheses, current as of Sprint 18
+ * follow-up — indirect-temporal-accum + 4-iter atrous-indirect chain):
+ *   • PPG off, legacy atrous (24): sample-budget, ris, temporal, spatial-1,
  *       spatial-2, gi-ris, gi-temporal, gi-spatial-1, gi-spatial-2, shade,
- *       gtao, gtao-upsample, atrous-0..2, indirect-combine, temporalAccum,
- *       resolve, composite
- *   • PPG on,  legacy atrous (18): + ppg-update between shade and gtao
- *   • PPG off, SVGF          (21): sample-budget, …shade, gtao+upsample,
- *       welford-temporal, svgf-variance, svgf-atrous-0..2, indirect-combine,
+ *       gtao, gtao-upsample, atrous-0..2, indirect-temporal-accum,
+ *       atrous-indirect-0..3, indirect-combine, temporalAccum, resolve,
+ *       composite
+ *   • PPG on,  legacy atrous (25): + ppg-update between shade and gtao
+ *   • PPG off, SVGF          (26): sample-budget, …shade, gtao+upsample,
+ *       welford-temporal, svgf-variance, svgf-atrous-0..2,
+ *       indirect-temporal-accum, atrous-indirect-0..3, indirect-combine,
  *       temporalAccum, resolve, composite
- *   • PPG on,  SVGF          (22): + ppg-update
+ *   • PPG on,  SVGF          (27): + ppg-update — matches MAX_PASS_COUNT
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes
