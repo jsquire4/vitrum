@@ -120,7 +120,23 @@ export interface HybridEngineOptions extends EngineOptions {
   /** Sky-dome irradiance scalar paired with skyTint. */
   readonly skyIrradiance: number;
 
-  /** Host `THREE.Scene` — BVH / DDGI fallback when `setScene` has no mesh primitives. */
+  /**
+   * Host `THREE.Scene` — BVH / DDGI fallback when `setScene` has no mesh
+   * primitives.
+   *
+   * @deprecated since T3.H (2026-05-12). The unified `createEngine()` factory
+   * in `@vitrum/engine` converts vitrum Scene → THREE.Scene internally via
+   * `vitrumSceneToThree()` and never asks the host to plumb a THREE.Scene
+   * through this constructor. New hosts SHOULD use `createEngine()` and
+   * pass `scene` (THREE or vitrum); this `threeScene` field is kept for
+   * one deprecation cycle so existing direct callers (legacy host code,
+   * tests that construct HybridEngine without the facade) keep working.
+   *
+   * Removal is scheduled for the next sprint — when the only remaining
+   * call site is `@vitrum/engine`'s walkaround constructor, the field
+   * becomes private engine state and `createEngine()` invokes a new
+   * internal API instead.
+   */
   readonly threeScene: THREE.Scene;
 
   /** Light list for DDGI probe update pass. */
