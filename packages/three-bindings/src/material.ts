@@ -3,6 +3,9 @@
  *
  * Handles MeshStandardMaterial and MeshPhysicalMaterial, including all
  * physical-material extensions (transmission, clearcoat, sheen, iridescence).
+ * MeshBasicMaterial is accepted via convertBasicMaterial — it is rendered
+ * as a flat self-lit surface (emissive = color, roughness = 1) so unlit
+ * overlay meshes appear consistent under PT/walkaround.
  * Other material types (ShaderMaterial, etc.) are rejected at the mesh level
  * in mesh.ts before this converter is called.
  */
@@ -187,6 +190,35 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.extensions = extensions;
   }
 
+  return base;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// MeshBasicMaterial converter
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Convert a THREE.MeshBasicMaterial into a flat self-lit vitrum Material.
+ * MeshBasicMaterial is unlit in three.js; under PT/walkaround we approximate
+ * the same look by setting `emissive = color, emissiveIntensity = 1,
+ * roughness = 1, metallic = 0`. This keeps overlay/preview meshes
+ * (panel-mount preview, debug grids) readable regardless of scene lighting
+ * without requiring a separate unlit pass.
+ *
+ * Maps that the basic material carries (`map`, `alphaMap`) are forwarded;
+ * other PBR maps are not relevant for the basic material type.
+ */
+export function convertBasicMaterial(m: THREE.MeshBasicMaterial): Material {
+  const c = colorToVec3(m.color);
+  const base: Material = {
+    baseColor: c,
+    roughness: 1.0,
+    metallic: 0.0,
+    emissive: c,
+    emissiveIntensity: 1.0,
+  };
+  if (m.map != null) base.baseColorMap = m.map;
+  if (m.alphaMap != null) base.alphaMap = m.alphaMap;
   return base;
 }
 

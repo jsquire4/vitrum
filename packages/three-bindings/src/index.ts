@@ -4,7 +4,7 @@
  * Public API: `sceneFromThreeJS` plus Tier 1 extension constants (`spectral.ts`).
  * All sub-converters live in dedicated modules:
  *
- *   material.ts   — convertMaterial (MeshStandard + MeshPhysical)
+ *   material.ts   — convertMaterial (MeshStandard + MeshPhysical) + convertBasicMaterial
  *   mesh.ts       — convertMesh + geometry attribute extractors
  *   lights.ts     — convertLight (directional, rect-area, point, spot)
  *   environment.ts — resolveEnvironment (HDRI vs none)
@@ -24,6 +24,7 @@ export {
   PBR_DEFAULTS_DEFAULT,
   colorToVec3,
   convertMaterial,
+  convertBasicMaterial,
 } from './material.js';
 export type { PbrScalars, PbrDefaults, ThreeStdMat, ThreePhysMat } from './material.js';
 

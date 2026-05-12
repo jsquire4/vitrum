@@ -8,7 +8,7 @@
 
 import type * as THREE from 'three';
 import type { MeshPrimitive, Mat4, SceneEmitter } from '@vitrum/core';
-import { convertMaterial } from './material.js';
+import { convertMaterial, convertBasicMaterial } from './material.js';
 import { luminance } from './math.js';
 
 /**
@@ -106,18 +106,23 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   }
 
   const rawMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-  if (
-    rawMat == null ||
-    (!(rawMat as THREE.MeshStandardMaterial).isMeshStandardMaterial &&
-      !(rawMat as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial)
-  ) {
+  const isStd  = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
+  const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
+  // MeshBasicMaterial is the third accepted type. It renders unlit in three.js;
+  // we synthesize a flat-emissive vitrum material so it appears as a self-lit
+  // flat color regardless of scene lighting. Used by app-side overlay meshes
+  // (panel mount preview, debug overlays, grid layers).
+  const isBasic = (rawMat as THREE.MeshBasicMaterial | null)?.isMeshBasicMaterial === true;
+  if (rawMat == null || (!isStd && !isPhys && !isBasic)) {
     const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
     throw new Error(
       `Unsupported THREE type at "${label}": material ${typeName}. Supported types are added per Phase 6 sprint.`,
     );
   }
 
-  const material = convertMaterial(rawMat as THREE.MeshStandardMaterial);
+  const material = isBasic
+    ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
+    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
 
   return {
     kind: 'mesh',
