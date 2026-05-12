@@ -142,10 +142,9 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
   });
 
   it('reads per-light data from the storage-buffer arrays, not from params.<light>', () => {
-    // After the rewrite, the WGSL code reads:
-    //   pointLights[0].xyz / pointLights[1].rgb        (point light 0)
-    //   spotLights[0].xyz / spotLights[1].{xyz,w} / spotLights[2].rgb
-    //   rectAreaLights[0..3]  / meshAreaLights[0..3]
+    // After the Item-15 multi-light loop rewrite, rectAreaLights and
+    // meshAreaLights are accessed via a loop variable index (rb = li * 4u),
+    // not hardcoded [0]. The main direct-light loop still uses rb = ri * 4u.
     // We verify a representative sample is present and the .w-stuffing reads
     // are gone.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('pointLights[0].xyz');
@@ -153,10 +152,11 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[0].xyz');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[1].w');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[2].rgb');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[0].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[3].rgb');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[0].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[3].rgb');
+    // Item 15: rectAreaLights and meshAreaLights now use loop-indexed rb/mb.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb].xyz');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb + 3u].rgb');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[mb].xyz');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('meshAreaLights[mb + 3u].rgb');
     // No more reads of the dropped vec4f fields.
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/params\.pointLightPos\b/);
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/params\.spotLightPos\b/);

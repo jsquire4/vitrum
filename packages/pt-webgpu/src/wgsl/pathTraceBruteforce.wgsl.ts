@@ -293,6 +293,30 @@ fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   return f0 + (vec3f(1.0) - f0) * m5;
 }
 
+/**
+ * Unpolarised Fresnel reflectance for a smooth dielectric interface.
+ * Handles TIR (returns 1.0) and entering-from-inside (cosTheta_i < 0).
+ * Ref: Pharr, Jakob, Humphreys. Physically Based Rendering 4th ed. §9.3
+ *      "Specular Reflection and Transmission" — FrDielectric().
+ *      https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF
+ */
+fn frDielectric(cosTheta_i_in: f32, eta_in: f32) -> f32 {
+  var cosTheta_i = clamp(cosTheta_i_in, -1.0, 1.0);
+  var eta = eta_in;
+  // Entering from the inside — flip so cosTheta_i is positive and invert eta.
+  if (cosTheta_i < 0.0) {
+    eta = 1.0 / eta;
+    cosTheta_i = -cosTheta_i;
+  }
+  let sin2Theta_i = max(0.0, 1.0 - cosTheta_i * cosTheta_i);
+  let sin2Theta_t = sin2Theta_i / (eta * eta);
+  if (sin2Theta_t >= 1.0) { return 1.0; } // Total Internal Reflection.
+  let cosTheta_t = sqrt(max(0.0, 1.0 - sin2Theta_t));
+  let r_par  = (eta * cosTheta_i - cosTheta_t) / (eta * cosTheta_i + cosTheta_t);
+  let r_perp = (cosTheta_i - eta * cosTheta_t) / (cosTheta_i + eta * cosTheta_t);
+  return 0.5 * (r_par * r_par + r_perp * r_perp);
+}
+
 fn ggxD(nDotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
   let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
@@ -367,10 +391,15 @@ fn brdfDirectionalPdf(baseColor: vec3f, roughness: f32, metallic: f32, transmiss
   return diffProb * pdfDiff + specProb * pdfSpec;
 }
 
-fn intersectRectAreaLightRay(rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
-  let rectPos = rectAreaLights[0].xyz;
-  let uAxis = rectAreaLights[1].xyz;
-  let vAxis = rectAreaLights[2].xyz;
+// Intersect the BSDF sample ray against rect area light index li.
+// Accepts a light index so BSDF->light MIS can check all lights.
+// Ref: Veach, E. PhD thesis, Stanford 1997, Ch. 9 -- power-heuristic MIS;
+//      sum-MIS over all lights is unbiased (D9 decision).
+fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
+  let rb = li * 4u;
+  let rectPos = rectAreaLights[rb].xyz;
+  let uAxis = rectAreaLights[rb + 1u].xyz;
+  let vAxis = rectAreaLights[rb + 2u].xyz;
   let lightNormal = safe_normalize(cross(uAxis, vAxis));
   let denom = dot(lightNormal, rayDir);
   if (abs(denom) < 1e-6) {
@@ -399,10 +428,14 @@ fn intersectRectAreaLightRay(rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<funct
   return true;
 }
 
-fn intersectMeshAreaLightRay(rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
-  let a = meshAreaLights[0].xyz;
-  let b = meshAreaLights[1].xyz;
-  let c = meshAreaLights[2].xyz;
+// Intersect the BSDF sample ray against mesh area light index li.
+// Accepts a light index so BSDF->light MIS can check all lights.
+// Ref: Veach 1997 Ch. 9 -- sum-MIS over all lights (D9 decision).
+fn intersectMeshAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: ptr<function, f32>, lightPdfOut: ptr<function, f32>) -> bool {
+  let mb = li * 4u;
+  let a = meshAreaLights[mb].xyz;
+  let b = meshAreaLights[mb + 1u].xyz;
+  let c = meshAreaLights[mb + 2u].xyz;
   let t = intersectTriangle(rayOrigin, rayDir, a, b, c);
   if (t <= 1e-4 || t >= INFINITY) {
     return false;
@@ -437,30 +470,37 @@ fn bsdfAreaLightConnectionContribution(
   if (bsdfPdf <= 1e-6) {
     return vec3f(0.0);
   }
+  // Sum MIS over all area lights: iterate every rect and mesh light, keep the
+  // closest unoccluded hit. Cost is O(N_lights) intersection tests — acceptable
+  // for prototype scenes with ≤ 8 lights (D9 decision).
+  // Ref: Veach 1997 Ch. 9 — sum-MIS is unbiased; choosing the closest hit along
+  //      the BSDF-sampled direction is correct because the sample is a direction,
+  //      not a point, so only the nearest light along that direction contributes.
+  let offsetOrigin = hitPos + normal * 1e-3;
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
-  if (params.rectAreaLightCount > 0u) {
+  for (var li = 0u; li < params.rectAreaLightCount; li = li + 1u) {
     var rectDist = INFINITY;
     var rectPdf = 0.0;
-    if (intersectRectAreaLightRay(hitPos + normal * 1e-3, wi, &rectDist, &rectPdf)) {
-      let shadowRay = Ray(hitPos + normal * 1e-3, wi);
+    if (intersectRectAreaLightRay(li, offsetOrigin, wi, &rectDist, &rectPdf)) {
+      let shadowRay = Ray(offsetOrigin, wi);
       if (!traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3)) && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
-        bestEmission = rectAreaLights[3].rgb;
+        bestEmission = rectAreaLights[li * 4u + 3u].rgb;
       }
     }
   }
-  if (params.meshAreaLightCount > 0u) {
+  for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
     var meshDist = INFINITY;
     var meshPdf = 0.0;
-    if (intersectMeshAreaLightRay(hitPos + normal * 1e-3, wi, &meshDist, &meshPdf)) {
-      let shadowRay = Ray(hitPos + normal * 1e-3, wi);
+    if (intersectMeshAreaLightRay(mi, offsetOrigin, wi, &meshDist, &meshPdf)) {
+      let shadowRay = Ray(offsetOrigin, wi);
       if (!traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3)) && meshDist < bestDist) {
         bestDist = meshDist;
         bestLightPdf = meshPdf;
-        bestEmission = meshAreaLights[3].rgb;
+        bestEmission = meshAreaLights[mi * 4u + 3u].rgb;
       }
     }
   }
@@ -927,10 +967,52 @@ fn cosineHemisphereSample(rng: ptr<function, u32>, n: vec3f) -> vec3f {
   return safe_normalize(local.x * t + local.y * b + local.z * n);
 }
 
-fn glossyReflectionSample(rng: ptr<function, u32>, r: vec3f, roughness: f32) -> vec3f {
-  let jitterDir = cosineHemisphereSample(rng, r);
-  let k = clamp(roughness * roughness, 0.0, 1.0);
-  return safe_normalize(mix(r, jitterDir, k));
+/**
+ * Heitz 2018 VNDF sample (Algorithm 1).
+ * Input: wo in surface tangent-space (N = +Z); alpha = roughness².
+ * Output: sampled half-vector h in tangent-space.
+ * Ref: Heitz, E. "Sampling the GGX Distribution of Visible Normals."
+ *      JCGT 7(4):1–13, 2018. https://jcgt.org/published/0007/04/01/paper.pdf
+ */
+fn sampleGgxVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f {
+  // Step 1: stretch wo into the unit-roughness configuration.
+  let Vh = safe_normalize(vec3f(alpha * wo.x, alpha * wo.y, wo.z));
+  // Step 2: ONB around Vh (Frisvad-style, no branching on y).
+  let lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+  let T1 = select(
+    vec3f(1.0, 0.0, 0.0),
+    vec3f(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq),
+    lensq > 1e-10,
+  );
+  let T2 = cross(Vh, T1);
+  // Step 3: sample point on unit disc with polar mapping, project onto hemisphere.
+  let u1 = rand_f32(rng);
+  let u2 = rand_f32(rng);
+  let r   = sqrt(u1);
+  let phi = 2.0 * PI * u2;
+  let t1  = r * cos(phi);
+  var t2  = r * sin(phi);
+  let s   = 0.5 * (1.0 + Vh.z);
+  // Lerp between the two extreme projections to match the hemisphere distribution.
+  t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
+  // Step 4: reproject onto hemisphere, unstretch back to ellipsoid frame.
+  let Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+  return safe_normalize(vec3f(alpha * Nh.x, alpha * Nh.y, max(1e-6, Nh.z)));
+}
+
+/**
+ * Sample a glossy reflection direction via Heitz 2018 VNDF.
+ * All inputs in WORLD space; n is the surface normal; t, b are
+ * surface-tangent ONB axes (caller computes via buildOnb).
+ * Returns the world-space reflection direction.
+ * Ref: Heitz 2018 VNDF Algorithm 1 (see sampleGgxVndfTangent above).
+ */
+fn glossyReflectionSample(rng: ptr<function, u32>, wo: vec3f, n: vec3f, t: vec3f, b: vec3f, roughness: f32) -> vec3f {
+  let alpha   = max(roughness * roughness, 0.001);
+  let woLocal = vec3f(dot(wo, t), dot(wo, b), dot(wo, n));
+  let hLocal  = sampleGgxVndfTangent(woLocal, alpha, rng);
+  let hWorld  = safe_normalize(hLocal.x * t + hLocal.y * b + hLocal.z * n);
+  return safe_normalize(reflect(-wo, hWorld));
 }
 
 // sampleRectAreaLight (legacy single-rect-area path) was removed: the
@@ -1324,35 +1406,68 @@ fn sampleNextBounceDirection(
   fresnel: vec3f,
   thinFilmTransmitTint: vec3f,
 ) -> BounceSample {
-  let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
-  let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
-  let baseDiffProb = max(0.0, (1.0 - metallic) * (1.0 - transmission));
-  let sumProb = max(baseSpecProb + baseTransProb + baseDiffProb, 1e-4);
-  let specProb = baseSpecProb / sumProb;
-  let transProb = baseTransProb / sumProb;
-  let diffProb = baseDiffProb / sumProb;
-  let xi = rand_f32(rng);
-  let chooseTransmission = xi < transProb;
-  let chooseSpecular = !chooseTransmission && (xi < transProb + specProb);
+  // Build surface-tangent ONB once; shared by both glossy-reflect call sites.
+  var tanT: vec3f;
+  var tanB: vec3f;
+  buildOnb(normal, &tanT, &tanB);
+
   var result: BounceSample;
   result.sampledDir = vec3f(0.0);
   result.sampleAllowsAreaMis = false;
-  if (chooseTransmission) {
+
+  // -----------------------------------------------------------------------
+  // Transmissive (dielectric) surface: Fresnel-weighted reflect/refract
+  // partition per PBR4e §9.3 FrDielectric.
+  // Ref: Pharr, Jakob, Humphreys. PBR 4th ed. §9.3 "Specular Reflection and
+  //      Transmission" — DielectricBxDF::Sample_f.
+  //      https://pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF
+  // -----------------------------------------------------------------------
+  if (transmission > 0.0 && metallic == 0.0) {
+    let cosThetaI = abs(dot(-incomingDir, normal));
+    let R = frDielectric(cosThetaI, ior);  // PBR4e §9.3 FrDielectric
+    let xi = rand_f32(rng);
     let frontFace = dot(incomingDir, hitNormal) < 0.0;
-    let eta = select(ior, 1.0 / ior, frontFace);
-    let refr = refract(incomingDir, normal, eta);
-    let validRefract = dot(refr, refr) > 1e-8;
-    let idealReflect = reflect(incomingDir, normal);
-    let outDir = select(idealReflect, safe_normalize(refr), validRefract);
-    let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
-    result.newRayOrigin = hitPos + offsetN * 1e-3;
-    result.sampledDir = glossyReflectionSample(rng, outDir, roughness * 0.5);
-    result.newRayDir = result.sampledDir;
-    result.throughputMul = mix(vec3f(1.0), baseColor, 0.15) * thinFilmTransmitTint / max(transProb, 1e-4);
-  } else if (chooseSpecular) {
-    let refl = reflect(incomingDir, normal);
+    if (xi < R) {
+      // Fresnel-weighted specular reflection branch.
+      // frDielectric returns 1.0 for TIR, so TIR is handled automatically
+      // (the refract branch is never taken when R == 1).
+      let wo = -incomingDir; // eye-side direction
+      result.newRayOrigin = hitPos + normal * 1e-3;
+      result.sampledDir = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+      result.newRayDir = result.sampledDir;
+      result.sampleAllowsAreaMis = true;
+      // Divide by branch probability R (unbiased estimator).
+      result.throughputMul = fresnel / max(R, 1e-4);
+    } else {
+      // Fresnel-weighted refraction branch.
+      let eta = select(ior, 1.0 / ior, frontFace);
+      let refr = refract(incomingDir, normal, eta);
+      let outDir = safe_normalize(refr);
+      let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
+      result.newRayOrigin = hitPos + offsetN * 1e-3;
+      result.sampledDir = outDir;
+      result.newRayDir = outDir;
+      // Divide by branch probability (1 - R); apply thin-film transmittance tint.
+      result.throughputMul = mix(vec3f(1.0), baseColor, 0.15) * thinFilmTransmitTint / max(1.0 - R, 1e-4);
+    }
+    return result;
+  }
+
+  // -----------------------------------------------------------------------
+  // Non-transmissive surface: heuristic specular / diffuse partition.
+  // -----------------------------------------------------------------------
+  let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
+  let baseDiffProb = max(0.0, 1.0 - baseSpecProb);
+  let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
+  let specProb = baseSpecProb / sumProb;
+  let diffProb = baseDiffProb / sumProb;
+  let xi2 = rand_f32(rng);
+  if (xi2 < specProb) {
+    // Glossy specular reflection — Heitz 2018 VNDF.
+    // Ref: Heitz 2018 VNDF Algorithm 1 (see glossyReflectionSample).
+    let wo = -incomingDir;
     result.newRayOrigin = hitPos + normal * 1e-3;
-    result.sampledDir = glossyReflectionSample(rng, refl, roughness);
+    result.sampledDir = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
     result.newRayDir = result.sampledDir;
     result.sampleAllowsAreaMis = true;
     result.throughputMul = fresnel / max(specProb, 1e-4);
