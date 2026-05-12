@@ -169,6 +169,24 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.backLayer = rawBack as SurfaceAbsorptionLayer;
   }
 
+  // RFE-10 dichroic addendum (PHY.1 — 2026-05-12). The stainedGlass dichroic
+  // body baker emits two 256×1 RGBA-float DataTextures pre-convolving the
+  // TMM × CIE 1931 standard observer. Forward both through
+  // `Material.extensions.dichroicLUTs` for raster backends that bind them
+  // directly; PT backends may continue to evaluate the TMM in-shader from
+  // `thinFilmStack` and ignore the LUT. Core never inspects `extensions`,
+  // matching the existing escape-hatch contract.
+  const rawDichroicR = ud[K.DICHROIC_REFLECTANCE_LUT];
+  const rawDichroicT = ud[K.DICHROIC_TRANSMITTANCE_LUT];
+  if (rawDichroicR != null || rawDichroicT != null) {
+    const extensions = { ...(base.extensions ?? {}) } as Record<string, unknown>;
+    extensions['dichroicLUTs'] = {
+      reflectance: rawDichroicR,
+      transmittance: rawDichroicT,
+    };
+    base.extensions = extensions;
+  }
+
   return base;
 }
 
