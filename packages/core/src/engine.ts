@@ -206,10 +206,19 @@ export interface EngineOptions {
    *  requires recompiling shaders and resizing auxiliary buffers — so it is
    *  a creation-time structural decision, not a per-frame dial. */
   /** `'svgf'` is a deprecated alias for `'atrous-variance'`; backends that ship
-   *  à-trous + variance-scalar lookup should accept both. Real Schied 2017 SVGF
-   *  (bilinear reprojection, per-pixel history, disocclusion detection) is not
-   *  implemented anywhere yet; see plan/sprint-svgf-real-future.md. */
-  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'bmfr' | 'oidn-final';
+   *  à-trous + variance-scalar lookup should accept both.
+   *
+   *  `'svgf-real'` — T2.H1 — full Schied 2017 SVGF with bilinear motion-vector
+   *  reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
+   *  history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
+   *  variance-from-moments (Eq. 5), and 7×7 spatial fallback for disoccluded
+   *  pixels (§4.3). Implemented in `@vitrum/shared-denoisers` and wired in
+   *  `@vitrum/walkaround-hybrid`.
+   *
+   *  GPU memory budget for `'svgf-real'` at 1080p: ~52 MB of new persistent
+   *  textures (historyLength r16uint + momentsHistory rg32float + prevRadiance
+   *  rgba16float + motionVec rg32float). */
+  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'svgf-real' | 'bmfr' | 'oidn-final';
 
   // ── Specular caustics strategy (RFE-05) ────────────────────────────────
   /**

@@ -117,16 +117,24 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly debug?: boolean;
 
   /**
-   * Post-shade denoiser: `'atrous-variance'` (default) — temporal Welford +
-   * à-trous + variance scalar lookup; `'atrous'` — legacy three-pass
-   * edge-stopping à-trous only.
+   * Post-shade denoiser:
    *
-   * `'svgf'` is accepted as a deprecated alias for `'atrous-variance'` and
-   * will trigger a one-time console warning. Remove by next sprint. Real
-   * Schied 2017 SVGF (bilinear reprojection, per-pixel history, disocclusion
-   * detection) is tracked in plan/sprint-svgf-real-future.md.
+   *   `'atrous-variance'` (default) — temporal Welford + à-trous + variance
+   *   scalar lookup; honest about what it does (not Schied 2017 SVGF).
+   *
+   *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
+   *
+   *   `'svgf-real'` — T2.H1 — full Schied 2017 SVGF: bilinear motion-vector
+   *   reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
+   *   history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
+   *   variance-from-moments (Eq. 5), 7×7 spatial fallback for disoccluded pixels
+   *   (§4.3). Requires historyLength (r16uint) + momentsHistory (rg32float) +
+   *   prevRadiance (rgba16float) persistent textures: ~52 MB at 1080p.
+   *
+   *   `'svgf'` is a deprecated alias for `'atrous-variance'`; triggers a
+   *   one-time console warning.
    */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf';
+  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf';
 
   // ── Library-generality knobs (audit follow-up) ──────────────────────────
   // All optional; defaults preserve Cornell-test-scene behaviour byte-for-
@@ -404,7 +412,7 @@ export class HybridEngine implements Engine {
     return p.readGpuTimingsOnce();
   }
 
-  private readonly _denoiser: 'atrous' | 'atrous-variance';
+  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real';
   /** Audit M4 — null disables the FPS cap; configured at construction. */
   private readonly _targetFrameIntervalMs: number | null;
   /** Audit B8 — passed to WalkaroundGPUPipeline at initialize() time. */
@@ -510,11 +518,12 @@ export class HybridEngine implements Engine {
       opts.denoiser !== undefined &&
       opts.denoiser !== 'atrous' &&
       opts.denoiser !== 'atrous-variance' &&
+      opts.denoiser !== 'svgf-real' &&
       opts.denoiser !== 'svgf'
     ) {
       throw new TypeError(
         `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
-        `walkaround-hybrid supports: 'atrous' | 'atrous-variance'. ` +
+        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real'. ` +
         `If you need 'none' / 'bmfr' / 'oidn-final' from @vitrum/core, ` +
         `pick a backend that implements those modes.`,
       );
@@ -522,8 +531,8 @@ export class HybridEngine implements Engine {
     if (opts.denoiser === 'svgf') {
       console.warn(
         `[walkaround-hybrid] denoiser: 'svgf' is deprecated; use 'atrous-variance'. ` +
-        `The shipping implementation is à-trous + variance scalar lookup, NOT real Schied 2017 SVGF ` +
-        `(which was never actually wired). Real SVGF tracked in plan/sprint-svgf-real-future.md.`,
+        `The shipping implementation is à-trous + variance scalar lookup, NOT real Schied 2017 SVGF. ` +
+        `For real Schied 2017 SVGF, pass denoiser: 'svgf-real' (T2.H1).`,
       );
     }
     this._denoiser = opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');

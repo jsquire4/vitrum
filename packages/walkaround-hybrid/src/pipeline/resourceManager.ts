@@ -143,6 +143,54 @@ export interface FrameResources {
    * variation out of the à-trous chain, preventing material-boundary bleed.
    */
   albedoTexture: GPUTexture;
+
+  // ── T2.H1 — Real SVGF ('svgf-real' mode) persistent textures ─────────────
+  /**
+   * T2.H1 — 1×1 r32uint placeholder for object-ID inputs. Object IDs are
+   * not available in the current walkaround pipeline; this placeholder makes
+   * both currObjId and prevObjId read as 0, which means the object-id mismatch
+   * test (oPrev != objIdCurr → 0 != 0 = false) never rejects reprojection.
+   */
+  svgfObjIdPlaceholderTexture: GPUTexture;
+
+  /**
+   * T2.H1 — Per-pixel history length A (r16uint, full-res).
+   * Ping-pong pair with svgfHistoryLengthTextureB.
+   * Increments on accepted reprojection; resets to 1 on disocclusion (Eq. 3).
+   * Memory per texture at 1080p: 1920×1080×2 ≈ 4 MB.
+   */
+  svgfHistoryLengthTextureA: GPUTexture;
+  /** T2.H1 — Per-pixel history length B (ping-pong pair). */
+  svgfHistoryLengthTextureB: GPUTexture;
+  /**
+   * T2.H1 — Per-pixel first + second luminance moments A (rg32float, full-res).
+   * Ping-pong pair with svgfMomentsTextureB.
+   * M1 = E[L] (Eq. 4), M2 = E[L²] (Eq. 4). Used by variance pass Eq. 5.
+   * Memory per texture at 1080p: 1920×1080×8 ≈ 16 MB.
+   */
+  svgfMomentsTextureA: GPUTexture;
+  /** T2.H1 — Per-pixel moments B (ping-pong pair). */
+  svgfMomentsTextureB: GPUTexture;
+  /**
+   * T2.H1 — Previous-frame EMA radiance A (rgba16float, full-res).
+   * Ping-pong pair with svgfPrevRadianceTextureB.
+   * Read as prevColor; written as colorOut. Swapped each frame.
+   * Memory per texture at 1080p: 1920×1080×8 ≈ 16 MB.
+   */
+  svgfPrevRadianceTextureA: GPUTexture;
+  /** T2.H1 — Previous-frame EMA radiance B (ping-pong pair). */
+  svgfPrevRadianceTextureB: GPUTexture;
+  /**
+   * T2.H1 — SVGF variance output texture (rg32float, full-res). Written by
+   * the 7×7 fallback pass; read by the à-trous chain.
+   * Memory at 1080p: 1920×1080×8 ≈ 16 MB.
+   */
+  svgfVarianceTexture: GPUTexture;
+  /**
+   * T2.H1 — Intermediate variance from moments (rg32float, full-res). Written
+   * by svgfVarianceFromMomentsMain; read by svgf7x7FallbackMain.
+   */
+  svgfVarianceMomentsIntermedTexture: GPUTexture;
 }
 
 /**
@@ -574,6 +622,83 @@ export function createFrameResources(
       GPUTextureUsage.COPY_SRC,
   });
 
+  // ── T2.H1 — 1×1 r32uint zero placeholder for object IDs (svgf-real).
+  // Object IDs are not available in this pipeline; reading 0 from both
+  // curr and prev means the id-mismatch test never rejects reprojection.
+  const svgfObjIdPlaceholderTexture = device.createTexture({
+    label: 'svgf-real-objid-placeholder',
+    size: [1, 1],
+    format: 'r32uint',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: svgfObjIdPlaceholderTexture },
+    new Uint32Array([0]),
+    { bytesPerRow: 4 },
+    [1, 1],
+  );
+
+  // ── T2.H1 — Real SVGF persistent textures (always allocated; zero overhead
+  // when mode is not 'svgf-real' because they're idle). At 1080p total ≈52 MB.
+  // historyLength: 1920×1080×2 ≈  4 MB
+  // momentsHistory: 1920×1080×8 ≈ 16 MB
+  // prevRadiance: 1920×1080×8 ≈  16 MB
+  // varianceTexture: 1920×1080×8 ≈ 16 MB (merged final)
+  // varianceMomentsIntermed: 1920×1080×8 ≈ 16 MB
+  const svgfHistUsage =
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
+  const svgfHistoryLengthTextureA = device.createTexture({
+    label: 'svgf-real-history-length-a',
+    size: [W, H], format: 'r16uint', usage: svgfHistUsage,
+  });
+  const svgfHistoryLengthTextureB = device.createTexture({
+    label: 'svgf-real-history-length-b',
+    size: [W, H], format: 'r16uint', usage: svgfHistUsage,
+  });
+  // Initialise both to 0 so the first frame treats all pixels as disoccluded.
+  {
+    const bpr = Math.max(256, Math.ceil(W * 2 / 256) * 256);
+    const zeroBuf = new Uint8Array(bpr * H);
+    device.queue.writeTexture({ texture: svgfHistoryLengthTextureA }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });
+    device.queue.writeTexture({ texture: svgfHistoryLengthTextureB }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });
+  }
+  const svgfMomUsage =
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
+  const svgfMomentsTextureA = device.createTexture({
+    label: 'svgf-real-moments-a',
+    size: [W, H], format: 'rg32float', usage: svgfMomUsage,
+  });
+  const svgfMomentsTextureB = device.createTexture({
+    label: 'svgf-real-moments-b',
+    size: [W, H], format: 'rg32float', usage: svgfMomUsage,
+  });
+  const svgfRadUsage =
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
+  const svgfPrevRadianceTextureA = device.createTexture({
+    label: 'svgf-real-prev-radiance-a',
+    size: [W, H], format: 'rgba16float', usage: svgfRadUsage,
+  });
+  const svgfPrevRadianceTextureB = device.createTexture({
+    label: 'svgf-real-prev-radiance-b',
+    size: [W, H], format: 'rgba16float', usage: svgfRadUsage,
+  });
+  const svgfVarianceTexture = device.createTexture({
+    label: 'svgf-real-variance',
+    size: [W, H],
+    format: 'rg32float',
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const svgfVarianceMomentsIntermedTexture = device.createTexture({
+    label: 'svgf-real-variance-moments-intermed',
+    size: [W, H],
+    format: 'rg32float',
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING,
+  });
+
   return {
     reservoirCurrentBuffer,
     reservoirPreviousBuffer,
@@ -611,6 +736,15 @@ export function createFrameResources(
     indirectAccumPingTexture,
     indirectAccumPongTexture,
     albedoTexture,
+    svgfObjIdPlaceholderTexture,
+    svgfHistoryLengthTextureA,
+    svgfHistoryLengthTextureB,
+    svgfMomentsTextureA,
+    svgfMomentsTextureB,
+    svgfPrevRadianceTextureA,
+    svgfPrevRadianceTextureB,
+    svgfVarianceTexture,
+    svgfVarianceMomentsIntermedTexture,
   };
 }
 
@@ -653,4 +787,13 @@ export function destroyFrameResources(r: FrameResources): void {
   r.indirectAccumPingTexture.destroy();
   r.indirectAccumPongTexture.destroy();
   r.albedoTexture.destroy();
+  r.svgfObjIdPlaceholderTexture.destroy();
+  r.svgfHistoryLengthTextureA.destroy();
+  r.svgfHistoryLengthTextureB.destroy();
+  r.svgfMomentsTextureA.destroy();
+  r.svgfMomentsTextureB.destroy();
+  r.svgfPrevRadianceTextureA.destroy();
+  r.svgfPrevRadianceTextureB.destroy();
+  r.svgfVarianceTexture.destroy();
+  r.svgfVarianceMomentsIntermedTexture.destroy();
 }

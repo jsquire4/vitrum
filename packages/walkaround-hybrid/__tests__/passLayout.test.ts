@@ -102,14 +102,14 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
 
   describe('MAX_PASS_COUNT invariant', () => {
     it('every layout fits within MAX_PASS_COUNT', () => {
-      for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
+      for (const denoiserMode of ['atrous-variance', 'atrous', 'svgf-real'] as const) {
         const layout = buildPassLayout({ denoiserMode });
         expect(layout.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
       }
     });
 
-    it('MAX_PASS_COUNT is 28 (Item 3: DDGI border fill added ddgi-border-irr + ddgi-border-vis)', () => {
-      expect(MAX_PASS_COUNT).toBe(28);
+    it('MAX_PASS_COUNT is 31 (T2.H1: svgf-real adds 8 passes — reproj+moments+7x7+5×atrous)', () => {
+      expect(MAX_PASS_COUNT).toBe(31);
     });
   });
 

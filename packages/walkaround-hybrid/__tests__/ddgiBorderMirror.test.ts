@@ -402,8 +402,8 @@ describe('buildPassLayout — DDGI border fill slots', () => {
     expect(layout.slotCount).toBe(26);
   });
 
-  it('MAX_PASS_COUNT is 28', () => {
-    expect(MAX_PASS_COUNT).toBe(28);
+  it('MAX_PASS_COUNT is 31 (T2.H1 svgf-real adds 8 new pass slots)', () => {
+    expect(MAX_PASS_COUNT).toBe(31);
   });
 });
 

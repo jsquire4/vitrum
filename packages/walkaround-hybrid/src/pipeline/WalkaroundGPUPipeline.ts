@@ -73,6 +73,10 @@ import {
   ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
   ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
   ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
+  packSVGFReprojUniforms,
+  SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
+  SVGF_REPROJ_DEFAULT_UNIFORMS,
+  SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
 } from '@vitrum/shared-denoisers';
 import {
   tsWrites,
@@ -280,8 +284,8 @@ export class WalkaroundGPUPipeline {
   private _atrousPipeline!: GPUComputePipeline;
   private _accumPipeline!: GPUComputePipeline;
   private _compositePipeline!: GPURenderPipeline;
-  /** `atrous-variance` — variance-guided (default). `atrous` — legacy three-pass à-trous only. */
-  private _denoiserMode: 'atrous' | 'atrous-variance' = 'atrous-variance';
+  /** `atrous-variance` — variance-guided (default). `atrous` — legacy. `svgf-real` — Schied 2017 T2.H1. */
+  private _denoiserMode: 'atrous' | 'atrous-variance' | 'svgf-real' = 'atrous-variance';
   /** Audit B8 — populated at initialize() time from HybridEngineOptions. */
   private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
   /** Audit M3 — populated at initialize() time from HybridEngineOptions. */
@@ -289,6 +293,15 @@ export class WalkaroundGPUPipeline {
   private _welfordPipeline: GPUComputePipeline | undefined = undefined;
   private _atrousVarianceVariancePipeline: GPUComputePipeline | undefined = undefined;
   private _atrousVarianceAtrousPipeline: GPUComputePipeline | undefined = undefined;
+  // T2.H1 — svgf-real pipelines (populated when denoiserMode === 'svgf-real').
+  private _svgfReprojPipeline:    GPUComputePipeline | undefined = undefined;
+  private _svgfMomentsPipeline:   GPUComputePipeline | undefined = undefined;
+  private _svgfFallbackPipeline:  GPUComputePipeline | undefined = undefined;
+  private _svgfRealAtrousPipeline:GPUComputePipeline | undefined = undefined;
+  /** T2.H1 — UBO for the svgf-real reprojection pass (SVGFReprojUBO, 16 bytes). */
+  private _svgfReprojUboRef: UboRef = { buf: undefined };
+  /** T2.H1 — Ping-pong index for svgf-real history/moments/prevRadiance. 0 = A→read, B→write. */
+  private _svgfPingPong = 0;
   // Sprint 9 — adaptive sampling pipelines (always populated).
   private _sampleBudgetPipeline!: GPUComputePipeline;
   private _resolvePipeline!: GPUComputePipeline;
@@ -341,6 +354,7 @@ export class WalkaroundGPUPipeline {
       this._sampleBudgetUboRef,
       this._sampleCountUboRef,
       this._resolveUboRef,
+      this._svgfReprojUboRef,
     ];
   }
 
@@ -370,9 +384,7 @@ export class WalkaroundGPUPipeline {
    */
   async readGpuTimingsOnce(): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
     if (!this._initialized) return { perPass: {}, rawBigints: [] };
-    const layout = buildPassLayout({
-      denoiserMode: this._denoiserMode === 'atrous-variance' ? 'atrous-variance' : 'atrous',
-    });
+    const layout = buildPassLayout({ denoiserMode: this._denoiserMode });
     return readTimestampsOnce(this._device, this._tsState, layout);
   }
 
@@ -382,7 +394,7 @@ export class WalkaroundGPUPipeline {
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
     options?: {
       verbose?: boolean;
-      denoiser?: 'atrous' | 'atrous-variance';
+      denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real';
       /** Audit B8 — host-overridable camera-move temporal-reset threshold. */
       cameraMoveResetThresholdSq?: number;
       /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
@@ -429,6 +441,11 @@ export class WalkaroundGPUPipeline {
     this._welfordPipeline   = compiled.welfordPipeline;
     this._atrousVarianceVariancePipeline = compiled.atrousVarianceVariancePipeline;
     this._atrousVarianceAtrousPipeline   = compiled.atrousVarianceAtrousPipeline;
+    // T2.H1 — svgf-real pipelines (undefined unless denoiserMode === 'svgf-real').
+    this._svgfReprojPipeline    = compiled.svgfReprojPipeline;
+    this._svgfMomentsPipeline   = compiled.svgfMomentsPipeline;
+    this._svgfFallbackPipeline  = compiled.svgfFallbackPipeline;
+    this._svgfRealAtrousPipeline= compiled.svgfRealAtrousPipeline;
     this._sampleBudgetPipeline = compiled.sampleBudgetPipeline;
     this._resolvePipeline      = compiled.resolvePipeline;
     this._gtaoPipeline         = compiled.gtaoPipeline;
@@ -442,6 +459,12 @@ export class WalkaroundGPUPipeline {
       !this._welfordPipeline || !this._atrousVarianceVariancePipeline || !this._atrousVarianceAtrousPipeline
     )) {
       throw new Error('[ReSTIR] atrous-variance denoiser requested but pipelines are missing.');
+    }
+    if (this._denoiserMode === 'svgf-real' && (
+      !this._svgfReprojPipeline || !this._svgfMomentsPipeline ||
+      !this._svgfFallbackPipeline || !this._svgfRealAtrousPipeline
+    )) {
+      throw new Error('[ReSTIR] svgf-real denoiser requested but pipelines are missing.');
     }
 
     // ── Timestamp queries (DEV-only, feature-gated) ──────────────────────
@@ -463,6 +486,14 @@ export class WalkaroundGPUPipeline {
       this._welfordUboRef.buf                  = d.createBuffer({ label: 'welford-ubo',                    size: 16, usage: U });
       this._atrousVarianceVarianceUboRef.buf   = d.createBuffer({ label: 'atrous-variance-variance-ubo',   size: ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES, usage: U });
       this._atrousVarianceAtrousUboRef.buf     = d.createBuffer({ label: 'atrous-variance-atrous-ubo',     size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES, usage: U });
+    }
+    // T2.H1 — svgf-real reprojection UBO (SVGFReprojUBO, 16 bytes).
+    if (this._denoiserMode === 'svgf-real') {
+      this._svgfReprojUboRef.buf = d.createBuffer({ label: 'svgf-real-reproj-ubo', size: SVGF_REPROJ_UNIFORMS_SIZE_BYTES, usage: U });
+      // Pre-fill with default values (hosts can override per-frame if needed in a future API).
+      const scratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
+      packSVGFReprojUniforms(SVGF_REPROJ_DEFAULT_UNIFORMS, scratch);
+      d.queue.writeBuffer(this._svgfReprojUboRef.buf, 0, scratch);
     }
 
     this._initialized = true;
@@ -560,9 +591,7 @@ export class WalkaroundGPUPipeline {
     );
 
     // ── Dispatch compute passes ───────────────────────────────────────────
-    const passLayout = buildPassLayout({
-      denoiserMode: this._denoiserMode === 'atrous-variance' ? 'atrous-variance' : 'atrous',
-    });
+    const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode });
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
 
@@ -826,12 +855,24 @@ export class WalkaroundGPUPipeline {
     const writeAccum = this._accumPingPongIndex === 0 ? this._res.accumTextureB : this._res.accumTextureA;
 
     let denoisedOut: GPUTexture;
+    // Transient UBOs created by _dispatchSVGFReal (one per atrous iter). Destroyed
+    // after d.queue.submit() below so the GPU has finished reading them.
+    let svgfAtrousIterUbos: GPUBuffer[] = [];
 
     if (this._denoiserMode === 'atrous-variance') {
       denoisedOut = this._dispatchAtrousVariance(
         encoder, gNormalDepthView, readAccum, isMoving, wgX16, wgY16, computeDesc,
       );
       this._welfordPing = 1 - this._welfordPing;
+    } else if (this._denoiserMode === 'svgf-real') {
+      // T2.H1 — Schied 2017 SVGF: reprojection → variance-from-moments →
+      // 7×7 spatial fallback → à-trous chain.
+      const svgfResult = this._dispatchSVGFReal(
+        encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
+      );
+      denoisedOut = svgfResult.tex;
+      // Defer UBO cleanup until after submit (set as local to be destroyed below).
+      svgfAtrousIterUbos = svgfResult.iterUbos;
     } else {
       denoisedOut = this._dispatchAtrousLegacy(
         encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
@@ -995,6 +1036,11 @@ export class WalkaroundGPUPipeline {
 
     d.queue.submit([encoder.finish()]);
 
+    // Destroy svgf-real transient atrous UBOs now that the encoder is submitted.
+    // submit() signals the GPU queue; it is safe to destroy host-side handles — the
+    // GPU retains its reference until the command completes.
+    for (const ubo of svgfAtrousIterUbos) { ubo.destroy(); }
+
     // Kick async readback of the timestamp buffer we just copied into.
     // Pass the layout labels so the async callback labels each slot
     // correctly even if the pipeline reconfigures between frames.
@@ -1094,6 +1140,173 @@ export class WalkaroundGPUPipeline {
       inputTex = outTex;
     }
     return inputTex;
+  }
+
+  /**
+   * T2.H1 — Real Schied 2017 SVGF dispatch.
+   *
+   * Pass order:
+   *   1. svgfReprojMain  — bilinear reprojection + disocclusion + EMA history (Eq. 1–4)
+   *   2. svgfVarianceFromMomentsMain — variance from blended moments (Eq. 5)
+   *   3. svgf7x7FallbackMain — merge 7×7 spatial fallback for h<4 pixels (§4.3)
+   *   4. (copy colorOut → ping) + svgfAtrousMain × SVGF_REAL_DEFAULT_ATROUS_ITERATIONS
+   *
+   * Persistent textures updated each frame:
+   *   - svgfHistoryLengthTexture: written by reproj, read next frame as historyLengthIn
+   *   - svgfMomentsTexture: written by reproj (momentsOut), read next frame as momentsIn
+   *   - svgfPrevRadianceTexture: written by reproj (colorOut), read next frame as prevColor
+   *
+   * The reproj output (colorOut) is the EMA-blended radiance. The atrous chain
+   * reads this rather than the raw hdrColorTexture so that high-variance pixels
+   * (new / disoccluded) still get spatial smoothing from the à-trous chain even
+   * when temporal history is thin.
+   */
+  private _dispatchSVGFReal(
+    encoder: GPUCommandEncoder,
+    gNormalDepthView: GPUTextureView,
+    wgX16: number,
+    wgY16: number,
+    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
+  ): { tex: GPUTexture; iterUbos: GPUBuffer[] } {
+    const d = this._device;
+
+    // ── Pass 1: Reprojection ─────────────────────────────────────────────────
+    // Bindings follow svgfReprojection.wgsl.ts binding declarations (0..14).
+    // For the walkaround-hybrid pipeline, currDepth + currNormal come from
+    // gNormalDepthTexture (.r = depth packed, .xyz = normal packed 0..1).
+    // We use gNormalDepthTexture for both curr and prev depth/normal: one-frame
+    // lag on the previous-frame G-buffer is acceptable for a real-time engine
+    // and avoids allocating a full second G-buffer. Object IDs are not available
+    // in the current walkaround pipeline; a 1×1 placeholder (id=0) is used so
+    // the id-mismatch check always passes — this is conservative (never rejects
+    // valid reprojection) and can be improved when objId outputs are added.
+    // Select ping-pong slots: read from A, write to B (or vice versa).
+    const histRead  = this._svgfPingPong === 0 ? this._res.svgfHistoryLengthTextureA : this._res.svgfHistoryLengthTextureB;
+    const histWrite = this._svgfPingPong === 0 ? this._res.svgfHistoryLengthTextureB : this._res.svgfHistoryLengthTextureA;
+    const momRead   = this._svgfPingPong === 0 ? this._res.svgfMomentsTextureA       : this._res.svgfMomentsTextureB;
+    const momWrite  = this._svgfPingPong === 0 ? this._res.svgfMomentsTextureB       : this._res.svgfMomentsTextureA;
+    const radRead   = this._svgfPingPong === 0 ? this._res.svgfPrevRadianceTextureA  : this._res.svgfPrevRadianceTextureB;
+    const radWrite  = this._svgfPingPong === 0 ? this._res.svgfPrevRadianceTextureB  : this._res.svgfPrevRadianceTextureA;
+
+    const reproj = this._svgfReprojPipeline!;
+    {
+      const bg = d.createBindGroup({
+        label: 'svgf-real-reproj-bg',
+        layout: reproj.getBindGroupLayout(0),
+        entries: [
+          { binding: 0,  resource: this._res.hdrColorTexture.createView() },    // currColor (sampled)
+          { binding: 1,  resource: radRead.createView() },                       // prevColor (sampled)
+          { binding: 2,  resource: this._res.motionVectorTexture.createView() }, // motionVec
+          { binding: 3,  resource: this._res.gNormalDepthTexture.createView() }, // currDepth (.r)
+          { binding: 4,  resource: this._res.gNormalDepthTexture.createView() }, // currNormal (.xyz 0..1)
+          { binding: 5,  resource: this._res.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
+          { binding: 6,  resource: this._res.gNormalDepthTexture.createView() }, // prevDepth (1-frame lag)
+          { binding: 7,  resource: this._res.gNormalDepthTexture.createView() }, // prevNormal (1-frame lag)
+          { binding: 8,  resource: this._res.svgfObjIdPlaceholderTexture.createView() }, // prevObjId (placeholder)
+          { binding: 9,  resource: histRead.createView() },                      // historyLengthIn
+          { binding: 10, resource: momRead.createView() },                       // momentsIn
+          { binding: 11, resource: radWrite.createView() },                      // colorOut (storage write)
+          { binding: 12, resource: histWrite.createView() },                     // historyOut (storage write)
+          { binding: 13, resource: momWrite.createView() },                      // momentsOut (storage write)
+          { binding: 14, resource: { buffer: this._svgfReprojUboRef.buf! } },
+        ],
+      });
+      const pass = encoder.beginComputePass(computeDesc('svgf-real-reproj'));
+      pass.setPipeline(reproj);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+
+    // ── Pass 2: Variance from moments ────────────────────────────────────────
+    // Reads momWrite (just written by reproj) and histWrite.
+    {
+      const bg = d.createBindGroup({
+        label: 'svgf-real-moments-bg',
+        layout: this._svgfMomentsPipeline!.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: momWrite.createView() },
+          { binding: 1, resource: histWrite.createView() },
+          { binding: 2, resource: this._res.svgfVarianceMomentsIntermedTexture.createView() },
+        ],
+      });
+      const pass = encoder.beginComputePass(computeDesc('svgf-real-moments'));
+      pass.setPipeline(this._svgfMomentsPipeline!);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+
+    // ── Pass 3: 7×7 spatial fallback ─────────────────────────────────────────
+    {
+      const bg = d.createBindGroup({
+        label: 'svgf-real-7x7-bg',
+        layout: this._svgfFallbackPipeline!.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this._res.hdrColorTexture.createView() },
+          { binding: 1, resource: histWrite.createView() },
+          { binding: 2, resource: this._res.svgfVarianceMomentsIntermedTexture.createView() },
+          { binding: 3, resource: this._res.svgfVarianceTexture.createView() },
+        ],
+      });
+      const pass = encoder.beginComputePass(computeDesc('svgf-real-7x7'));
+      pass.setPipeline(this._svgfFallbackPipeline!);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
+
+    // Flip ping-pong for next frame (history, moments, prevRadiance).
+    this._svgfPingPong = 1 - this._svgfPingPong;
+
+    // ── Pass 4: À-trous chain (svgfAtrousMain) ───────────────────────────────
+    // Feed the EMA-blended reprojection output (radWrite) as the starting color.
+    // Ping-pong with denoisedPing/Pong as usual.
+    const sa = this._svgfRealAtrousPipeline!;
+    const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
+    const varView = this._res.svgfVarianceTexture.createView();
+    let inputTex: GPUTexture = radWrite;
+    // Collect transient per-iteration UBOs so they can be destroyed after submit().
+    // GPUBuffer is a GPU resource — it must be explicitly destroyed; GC does not
+    // release GPU memory. The caller (renderFrame) calls destroySVGFAtrousUbos()
+    // after d.queue.submit() has drained the encoder.
+    const svgfIterUbos: GPUBuffer[] = [];
+    for (let iter = 0; iter < SVGF_REAL_DEFAULT_ATROUS_ITERATIONS; iter++) {
+      packAtrousVarianceAtrousUniforms(
+        { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
+        atrousUboBytes,
+        0,
+      );
+      // One 16-byte UBO per atrous iteration (5 × 16 = 80 bytes total per frame).
+      const iterUbo = d.createBuffer({
+        label: `svgf-real-atrous-ubo-${iter}`,
+        size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      d.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
+      svgfIterUbos.push(iterUbo);
+
+      const outTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
+      const bg = d.createBindGroup({
+        label: `svgf-real-atrous-bg-${iter}`,
+        layout: sa.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: inputTex.createView() },
+          { binding: 1, resource: outTex.createView() },
+          { binding: 2, resource: gNormalDepthView },
+          { binding: 3, resource: gNormalDepthView },
+          { binding: 4, resource: varView },
+          { binding: 5, resource: { buffer: iterUbo } },
+        ],
+      });
+      const pass = encoder.beginComputePass(computeDesc(`svgf-real-atrous-${iter}` as `svgf-real-atrous-${0|1|2|3|4}`));
+      pass.setPipeline(sa);
+      pass.setBindGroup(0, bg);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+      inputTex = outTex;
+    }
+    return { tex: inputTex, iterUbos: svgfIterUbos };
   }
 
   /**

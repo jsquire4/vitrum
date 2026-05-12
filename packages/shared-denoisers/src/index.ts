@@ -71,3 +71,49 @@ export {
   ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS,
 } from './atrousVarianceWebGPU.js';
 export type { AtrousVarianceWebGPUOptions, AtrousVarianceSyntheticGbufferFallback } from './atrousVarianceWebGPU.js';
+
+// ── T2.H1 — Real Schied 2017 SVGF ('svgf-real' mode) ─────────────────────────
+// Implements bilinear reprojection + disocclusion test + per-pixel history +
+// variance-from-moments (Eq. 1–5) + 7×7 spatial fallback (§4.3).
+// WGSL fragment exports (for WalkaroundGPUPipeline persistent-texture path):
+export {
+  SVGF_REPROJECTION_WGSL,
+  SVGF_REAL_REPROJECTION_WORKGROUP_SIZE,
+} from './wgsl/svgfReprojection.wgsl.js';
+export {
+  SVGF_VARIANCE_FROM_MOMENTS_WGSL,
+  SVGF_HISTORY_MIN_FOR_MOMENTS,
+  SVGF_VARIANCE_FROM_MOMENTS_WORKGROUP_SIZE,
+} from './wgsl/svgfVarianceFromMoments.wgsl.js';
+export {
+  SVGF_7X7_SPATIAL_FALLBACK_WGSL,
+  SVGF_SPATIAL_FALLBACK_HISTORY_THRESHOLD,
+  SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE,
+} from './wgsl/svgf7x7SpatialFallback.wgsl.js';
+// Constants:
+export {
+  SVGF_REAL_DEFAULT_ALPHA_MIN,
+  SVGF_REAL_DEFAULT_SIGMA_DEPTH,
+  SVGF_REAL_DEFAULT_SIGMA_NORMAL,
+  SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
+  SVGF_REAL_MAX_ATROUS_ITERATIONS,
+} from './svgfRealConstants.js';
+// Bindings + packer:
+export {
+  SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
+  SVGF_REPROJ_DEFAULT_UNIFORMS,
+  packSVGFReprojUniforms,
+} from './svgfRealBindings.js';
+export type { SVGFReprojUniforms } from './svgfRealBindings.js';
+// One-shot WebGPU host pipeline (CPU-backed, allocates transient textures):
+export {
+  runSVGFRealWebGPU,
+  svgfReprojCPU,
+  svgfVarianceFromMomentsCPU,
+  svgf7x7FallbackCPU,
+} from './svgfRealWebGPU.js';
+export type {
+  SVGFRealWebGPUOptions,
+  SVGFReprojCPUInput,
+  SVGFReprojCPUOutput,
+} from './svgfRealWebGPU.js';

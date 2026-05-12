@@ -49,6 +49,15 @@ export type PassLabel =
   | 'atrous-0'
   | 'atrous-1'
   | 'atrous-2'
+  // T2.H1 — svgf-real pass labels (5 passes: reproj → moments → 7x7 → 5 × atrous)
+  | 'svgf-real-reproj'
+  | 'svgf-real-moments'
+  | 'svgf-real-7x7'
+  | 'svgf-real-atrous-0'
+  | 'svgf-real-atrous-1'
+  | 'svgf-real-atrous-2'
+  | 'svgf-real-atrous-3'
+  | 'svgf-real-atrous-4'
   | 'indirect-temporal-accum'
   | 'atrous-indirect-0'
   | 'atrous-indirect-1'
@@ -81,11 +90,13 @@ export type PassLabel =
  *          26 (D7 sweep: PPG deleted — max is now atrous-variance without ppg-update) →
  *          28 (Item 3: DDGI atlas border fill — ddgi-border-irr + ddgi-border-vis
  *          appended after indirect-combine and before temporalAccum).
+ *          31 (T2.H1: svgf-real replaces the 5 atrous-variance passes with 8
+ *          svgf-real passes — reproj, moments, 7×7, 5 × atrous iters).
  */
-export const MAX_PASS_COUNT = 28;
+export const MAX_PASS_COUNT = 31;
 
 export interface PassLayoutOptions {
-  readonly denoiserMode: 'atrous-variance' | 'atrous';
+  readonly denoiserMode: 'atrous-variance' | 'atrous' | 'svgf-real';
 }
 
 export interface PassLayout {
@@ -130,6 +141,20 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
       'atrous-variance-atrous-0',
       'atrous-variance-atrous-1',
       'atrous-variance-atrous-2',
+    );
+  } else if (opts.denoiserMode === 'svgf-real') {
+    // T2.H1 — real Schied 2017 SVGF: reproj → moments → 7×7 fallback → 5 × à-trous.
+    // SVGF_REAL_DEFAULT_ATROUS_ITERATIONS = 5 in shared-denoisers/svgfRealConstants.ts.
+    // Keep slot count in sync with _dispatchSVGFReal's loop.
+    labels.push(
+      'svgf-real-reproj',
+      'svgf-real-moments',
+      'svgf-real-7x7',
+      'svgf-real-atrous-0',
+      'svgf-real-atrous-1',
+      'svgf-real-atrous-2',
+      'svgf-real-atrous-3',
+      'svgf-real-atrous-4',
     );
   } else {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');
