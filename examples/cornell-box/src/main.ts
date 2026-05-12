@@ -13,9 +13,9 @@ import { createPTEngine_WebGL2, readAccumulationRgbFloat } from '@vitrum/pt-webg
 import { sceneFromThreeJS, VITRUM_USER_DATA_KEYS as K } from '@vitrum/three-bindings';
 import {
   HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE,
-  SVGF_DEFAULT_ATROUS_ITERATIONS,
-  SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
-  SVGF_MAX_ATROUS_ITERATIONS,
+  ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS as SVGF_DEFAULT_ATROUS_ITERATIONS,
+  ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX as SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
+  ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS as SVGF_MAX_ATROUS_ITERATIONS,
 } from '@vitrum/shared-denoisers';
 import { BilateralPreviewCanvas, writeTonemappedRgbToCanvas, type DenoiseDisplayMode } from './denoiseDisplay.js';
 
@@ -658,8 +658,8 @@ async function main(): Promise<void> {
         svgfSucceededRef,
         '[vitrum-cornell] SVGF WebGPU failed — raw canvas unchanged.',
         async (rgb) => {
-          const { runSvgfWebGPU } = await import('@vitrum/shared-denoisers');
-          return runSvgfWebGPU({
+          const { runAtrousVarianceWebGPU } = await import('@vitrum/shared-denoisers');
+          return runAtrousVarianceWebGPU({
             rgb,
             width: renderWidth,
             height: renderHeight,

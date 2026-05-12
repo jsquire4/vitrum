@@ -29,7 +29,10 @@ import { MeshPhysicalMaterial } from 'three';
 // MaterialsTexture is a named export from the uniforms subpath and is not
 // part of the public index.js. The path is stable: it has lived at
 // src/uniforms/MaterialsTexture.js since Sprint 5 MRT (fork commit 49081a3).
-import { MaterialsTexture, MATERIAL_PIXELS } from '../../../three-gpu-pathtracer/src/uniforms/MaterialsTexture.js';
+// 5 `../` from packages/pt-webgl/src/__tests__/ → ~/projects/, then sibling.
+// The fork ships JS only (no .d.ts); ts-ignore the implicit-any import.
+// @ts-expect-error — JS-only fork module; runtime resolves via vitest.
+import { MaterialsTexture, MATERIAL_PIXELS } from '../../../../../three-gpu-pathtracer/src/uniforms/MaterialsTexture.js';
 
 // ── Wire-format layout constants (must match MaterialsTexture.js) ──────────────
 // These are asserted below as a self-check so a MATERIAL_PIXELS bump is caught.
