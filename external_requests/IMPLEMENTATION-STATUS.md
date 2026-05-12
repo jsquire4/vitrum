@@ -31,6 +31,19 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
   - GPU profiling of ms/sample reduction pending (DoD target: ≥40% on glass-and-came scene). Runtime verification required.
   - `forceFullBSDF` per-material override not yet implemented. Add when opal scene A/B shows degradation.
 
+## Sprint 6 Rough Refraction GGX Lobe: APPLIED (2026-05-12)
+
+- Fork commit: `e9c7516`
+- Date: 2026-05-12
+- Files changed in fork:
+  - `src/shader/bsdf/bsdf_functions.glsl.js` — added `perturbDirectionByGGX(refractDir, roughness, u1, u2)` helper (Heitz 2014 visible NDF); called after `refract()` in both `transmissionDirection()` and `dispersionTransmissionDirection()` via `rand2(47)`. Roughness < 1e-4 fast-paths to specular (no perturbation). Composition with Phase 4: Phase 4 modifies N before `refract`; Sprint 6 perturbs refDir after — correct order.
+- Adaptations from spec:
+  - Spec showed a call site as `refDir = perturbDirectionByGGX(refDir, rough, rand(), rand())` using scalar `rand()` calls. The fork uses the established `rand2(seed)` pattern for paired uniform samples — `rand2(47)` (seed 47 is unused by any prior sprint). This is functionally equivalent and consistent with fork conventions.
+  - `dispersionTransmissionDirection` was not mentioned in the spec call site but logically requires the same perturbation (it is the hero-wavelength dispersion path that calls into the same transmission branch). Perturbation added there too.
+- Gaps:
+  - GPU visual A/B on hammered/seedy glass pending (no GPU access in-session). Shader smoke: pass.
+  - Firefly risk at roughness > 0.8 noted in spec risk section — existing `filteredGlossyFactor` clamp should cover it; runtime verification needed.
+
 ## Sprint 5 MRT G-buffer: APPLIED (2026-05-12)
 
 - Fork commit: `49081a3`

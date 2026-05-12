@@ -1,5 +1,7 @@
 # Sprint 6 — PT Fork Patch Plan
 
+**Status: APPLIED 2026-05-12 — fork commit `e9c7516`**
+
 **Sprint goal**: Composable visual upgrades — rough refraction lobe + edge-stopping spatial denoiser.
 
 **Fork repo**: `~/projects/three-gpu-pathtracer/` branch `phase4-normalmap-shadow-rays`.
