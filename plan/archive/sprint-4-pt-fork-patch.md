@@ -1,10 +1,16 @@
 # Sprint 4 PT fork patch — BSDF cost reduction
 
-> **Status**: Documented, not yet applied.
+> **Status**: APPLIED on 2026-05-12 at fork commit `2640b75`
+> Applied as part of H6 BDPT chain (vitrum sweep-2026-05-12-followup).
+> Adaptation: `forceFullBSDF` per-material flag deferred; `liteMode` mechanism
+> is in place and the override can be added when GPU A/B reveals opal degradation.
+> GPU profiling of ms/sample reduction is pending (requires WebGL runtime).
+>
+> Original planning notes:
 > Apply after Sprint 3 fork patches are merged and the Sprint 3 variance
 > benchmark baseline is captured (the pre-Sprint-4 ms/sample number becomes
 > Sprint 4's baseline).
-> Fork branch: `phase4-normalmap-shadow-rays`
+> Fork branch: `phase4-normalmap-shadow-rays` (now consolidated to `main`)
 > Fork path: `~/projects/three-gpu-pathtracer/`
 
 ---

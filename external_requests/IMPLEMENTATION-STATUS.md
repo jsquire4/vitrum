@@ -15,6 +15,22 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
 - Vitrum **`npm run fork-shader-smoke`** invokes the fork `scripts/shader-smoke-check.js`; Playwright capture adapter appends **`vitrumScenario` / `vitrumSeed` / …** query params for host pages.
 - Final GPU render/perf validation remains pending and tracked in `plan/gap-closure-verification-2026-05-10.md`.
 
+## Sprint 4 BSDF Cost Reduction: APPLIED (2026-05-12)
+
+- Fork commit: `2640b75`
+- Date: 2026-05-12
+- Files changed in fork:
+  - `src/shader/structs/surface_record_struct.glsl.js` — added `uint lobeMask` (P1) and `bool liteMode` (P2) fields to `SurfaceRecord`
+  - `src/materials/pathtracing/glsl/get_surface_record_function.glsl.js` — added `uniform int materialLodDepth` (P3); `int pathDepth` parameter; `bool useTextures` guard on all 16 texture fetches (including TBN normal map path); lobeMask bitfield computed from material thresholds; `liteMode = (pathDepth > 1)`; fog particle fast-path sets `lobeMask=1/liteMode=false`
+  - `src/shader/bsdf/bsdf_functions.glsl.js` — sheen and clearcoat lobes in `bsdfEval` gated on `lobeMask` bits 2/3 and `!surf.liteMode` (P1+P2); iridescence `evalIridescence` call in `specularEval` gated on lobeMask bit 4 and `!surf.liteMode` (P1+P2)
+  - `src/materials/pathtracing/PhysicalPathTracingMaterial.js` — `materialLodDepth: { value: 2 }` uniform added; `getSurfaceRecord` call site passes `int(state.depth)` as `pathDepth`
+- Adaptations from spec:
+  - Spec referenced `forceFullBSDF` material flag — deferred. The `liteMode` mechanism is in place; the per-material override can be added via a future Material struct bit when GPU profiling reveals an opal/glueChip scene degradation.
+  - The `materialLodDepth` uniform is declared in the GLSL function file (not as a separate fragment-shader `uniform` line) since `get_surface_record_function` is assembled into the shader before `main()`.
+- Gaps:
+  - GPU profiling of ms/sample reduction pending (DoD target: ≥40% on glass-and-came scene). Runtime verification required.
+  - `forceFullBSDF` per-material override not yet implemented. Add when opal scene A/B shows degradation.
+
 ## Sprint 10c BDPT Fork Dispatch: BLOCKED (2026-05-12)
 
 - **Depends on**: vitrum `bdptConnectionMIS_full` + `buildBDPTStrategyPDFs_full` — DONE at commit d5d94a4 (T2.H4).
