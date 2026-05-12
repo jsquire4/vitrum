@@ -11,6 +11,12 @@ coverage/
 .tsbuildinfo
 *.tsbuildinfo
 
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pth
+*.bin
+
 # Claude Code session metrics (local-only; not part of the product)
 .claude/tracking/
 .claude/worktrees/
