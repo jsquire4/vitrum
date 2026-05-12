@@ -82,10 +82,15 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
           `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are added per Phase 6 sprint.`,
         );
       }
-      // Skip transparent MeshBasicMaterial meshes — these are invisible UI
-      // hit-zones (EdgeHotZone, TracingImageOverlay opacity=0 planes). If
-      // included they render as opaque flat-emissive surfaces and occlude
-      // the actual scene. PT panel-black bug 2026-05-12.
+      // Skip meshes that aren't visually rendered — these are pointer-
+      // capture planes (CanvasEventRouter's 10000×10000 plane with
+      // `visible={false}`), edge hot-zones (EdgeHotZone with opacity=0),
+      // selection-handle overlays, etc. Without skipping, they enter the
+      // path-traced / walkaround scene as opaque flat-emissive surfaces
+      // and occlude the actual geometry. PT/walkaround panel-black bug
+      // 2026-05-12.
+      if (obj.visible === false) return;
+      if ((rawMat as THREE.Material | null)?.visible === false) return;
       const isBasicTransparent =
         rawMat != null &&
         (rawMat as THREE.MeshBasicMaterial).isMeshBasicMaterial === true &&
