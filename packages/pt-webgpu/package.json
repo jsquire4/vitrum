@@ -16,7 +16,9 @@
     "directory": "packages/pt-webgpu"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && vitest run --config vitest.gpu.config.ts",
+    "test:node": "vitest run",
+    "test:gpu": "vitest run --config vitest.gpu.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -24,6 +26,8 @@
     "@vitrum/shared-samplers": "file:../shared-samplers"
   },
   "devDependencies": {
+    "@vitest/browser": "^1.6.1",
+    "playwright": "^1.59.1",
     "typescript": "^5.5.0",
     "vitest": "^1.6.1"
   }
