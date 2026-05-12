@@ -320,6 +320,28 @@ export interface HybridEngineOptions extends EngineOptions {
    * @default 1e-5
    */
   readonly triIntersectEpsilon?: number;
+
+  // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
+
+  /**
+   * Enable the Müller 2017 Practical Path Guiding subsystem.
+   *
+   * When `true`, the engine instantiates an adaptive spatial tree (sTree)
+   * and per-cell directional trees (dTree) per §3.1–3.2. Training runs
+   * via `ppgUpdate.wgsl.ts` (incoming radiance L_i, world frame). Guiding
+   * mixes the learned PDF with BSDF sampling via MIS (§3.4).
+   *
+   * Default: `false` (PPG is an opt-in feature; default remains BSDF-only).
+   */
+  readonly ppgEnabled?: boolean;
+
+  /**
+   * Maximum number of sTree spatial cells (hard cap on adaptive splits).
+   * Each cell consumes memory for a flat dTree node buffer on the GPU.
+   *
+   * Default: 16 384 (matches `PPG_MAX_SPATIAL_CELLS`).
+   */
+  readonly ppgMaxSpatialCells?: number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

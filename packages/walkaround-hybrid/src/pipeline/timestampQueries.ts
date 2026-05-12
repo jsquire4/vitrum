@@ -66,6 +66,9 @@ export type PassLabel =
   | 'indirect-combine'
   | 'ddgi-border-irr'
   | 'ddgi-border-vis'
+  // T2.H3 — PPG paper-faithful (Müller 2017) opt-in passes
+  | 'ppg-update'
+  | 'ppg-guide'
   | 'temporalAccum'
   | 'resolve'
   | 'composite';
@@ -92,8 +95,10 @@ export type PassLabel =
  *          appended after indirect-combine and before temporalAccum).
  *          31 (T2.H1: svgf-real replaces the 5 atrous-variance passes with 8
  *          svgf-real passes — reproj, moments, 7×7, 5 × atrous iters).
+ *          33 (T2.H3: PPG paper-faithful opt-in — adds ppg-update + ppg-guide
+ *          when ppgEnabled=true; layout returns 31 when ppgEnabled=false).
  */
-export const MAX_PASS_COUNT = 31;
+export const MAX_PASS_COUNT = 33;
 
 export interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is

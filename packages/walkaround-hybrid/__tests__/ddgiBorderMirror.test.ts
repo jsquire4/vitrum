@@ -403,7 +403,7 @@ describe('buildPassLayout — DDGI border fill slots', () => {
   });
 
   it('MAX_PASS_COUNT is 31 (T2.H1 svgf-real adds 8 new pass slots)', () => {
-    expect(MAX_PASS_COUNT).toBe(31);
+    expect(MAX_PASS_COUNT).toBe(33);
   });
 });
 

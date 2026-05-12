@@ -12,6 +12,8 @@
 
 import { COMMON_WGSL } from '../shaders/common.wgsl.js';
 import { RIS_WGSL } from '../shaders/ris.wgsl.js';
+import { PPG_UPDATE_WGSL } from '../ppg/ppgUpdate.wgsl.js';
+import { PPG_GUIDE_WGSL } from '../ppg/ppgGuide.wgsl.js';
 import { TEMPORAL_WGSL } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
@@ -57,6 +59,10 @@ import {
 
 export interface CompiledPipelines {
   risPipeline: GPUComputePipeline;
+  /** T2.H3 — PPG update kernel (training on L_i, Müller §3.3). */
+  ppgUpdatePipeline?: GPUComputePipeline;
+  /** T2.H3 — PPG guide kernel (dTree direction sampling + MIS PDF, Müller §3.2, §3.4). */
+  ppgGuidePipeline?: GPUComputePipeline;
   temporalPipeline: GPUComputePipeline;
   spatialPipeline: GPUComputePipeline;
   shadePipeline: GPUComputePipeline;
@@ -99,7 +105,7 @@ export async function compilePipelines(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
-  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' },
+  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural'; ppgEnabled?: boolean },
 ): Promise<CompiledPipelines> {
   const denoiserMode = opts?.denoiser ?? 'atrous-variance';
   // Compile all shader modules (common WGSL is prepended to each ReSTIR pass).
@@ -395,6 +401,39 @@ export async function compilePipelines(
     primitive: { topology: 'triangle-list' },
   });
 
+  // T2.H3 — PPG pipelines (Müller 2017 §3.2–3.4): opt-in via opts.ppgEnabled.
+  // Both kernels use `layout: 'auto'` — their bind group layouts are simple
+  // enough that WebGPU can derive them from the shader without a manual
+  // PipelineLayout. pipelineCompiler only compiles; bind-group creation and
+  // dispatch live in WalkaroundGPUPipeline.renderFrame.
+  let ppgUpdatePipeline: GPUComputePipeline | undefined;
+  let ppgGuidePipeline:  GPUComputePipeline | undefined;
+  if (opts?.ppgEnabled) {
+    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: PPG_UPDATE_WGSL });
+    const ppgGuideSM  = device.createShaderModule({ label: 'ppg-guide',  code: PPG_GUIDE_WGSL });
+    for (const [label, sm] of [['ppg-update', ppgUpdateSM], ['ppg-guide', ppgGuideSM]] as [string, GPUShaderModule][]) {
+      const info = await sm.getCompilationInfo();
+      const errs = info.messages.filter(m => m.type === 'error');
+      if (errs.length > 0) {
+        console.error(`[ReSTIR] PPG shader compile errors in '${label}':`, errs.map(e => `line ${e.lineNum}: ${e.message}`));
+        throw new Error(`[ReSTIR] PPG shader compile error in '${label}': ${errs[0]!.message}`);
+      }
+    }
+    [ppgUpdatePipeline, ppgGuidePipeline] = await Promise.all([
+      device.createComputePipelineAsync({
+        label: 'ppg-update', layout: 'auto',
+        compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
+      }),
+      device.createComputePipelineAsync({
+        label: 'ppg-guide', layout: 'auto',
+        compute: { module: ppgGuideSM, entryPoint: 'ppgGuideMain' },
+      }),
+    ]);
+    if (opts?.verbose) {
+      console.log('[ReSTIR] PPG pipelines compiled (Müller 2017 — sTree + dTree + MIS)');
+    }
+  }
+
   if (opts?.verbose) {
     console.log('[ReSTIR] All pipelines compiled successfully');
   }
@@ -427,6 +466,10 @@ export async function compilePipelines(
     svgfFallbackPipeline !== undefined &&
     svgfRealAtrousPipeline !== undefined
       ? { svgfReprojPipeline, svgfMomentsPipeline, svgfFallbackPipeline, svgfRealAtrousPipeline }
+      : {}),
+    // T2.H3 — PPG pipelines (Müller 2017): only present when ppgEnabled.
+    ...(ppgUpdatePipeline !== undefined && ppgGuidePipeline !== undefined
+      ? { ppgUpdatePipeline, ppgGuidePipeline }
       : {}),
   };
 }

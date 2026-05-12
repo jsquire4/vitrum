@@ -88,6 +88,43 @@ export { CASCADE_MERGE_WGSL } from './rc/wgsl/cascadeMerge.wgsl.js';
 
 export type { FrameResourceOptions } from './pipeline/resourceManager.js';
 
+// ─── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ────────────────
+// CPU-side adaptive sTree + dTree + MIS combination.
+// Enable via HybridEngineOptions.ppgEnabled: true (default false).
+export {
+  buildSTree,
+  findSTreeLeaf,
+  sTreeAccumulate,
+  splitOverflowLeaves,
+  resetAccumulators,
+  aabbContains,
+} from './ppg/sTree.js';
+export {
+  buildEmptyDTree,
+  findDTreeLeaf,
+  dTreeSample,
+  dTreePdf,
+  refineDTree,
+  sumLeafSolidAngles,
+  sumLeafPdfIntegrals,
+} from './ppg/dTree.js';
+export { computeMISWeights } from './ppg/ppgGuide.wgsl.js';
+export {
+  PPG_CELL_SPLIT_THRESHOLD,
+  PPG_DTREE_FLUX_FRACTION,
+  PPG_DTREE_MERGE_FRACTION,
+  PPG_DTREE_MAX_DEPTH,
+  PPG_DTREE_INITIAL_DEPTH,
+  PPG_MIS_ALPHA,
+  PPG_MIS_ALPHA_MIN,
+  PPG_MIS_ALPHA_MAX,
+  PPG_MAX_SPATIAL_CELLS,
+} from './ppg/ppgConstants.js';
+export type { AABB, STreeNode, DTreeNode, DTree, STree, PPGModelHandle } from './ppg/types.js';
+// WGSL kernel strings (for host inspection or test assertions).
+export { PPG_UPDATE_WGSL } from './ppg/ppgUpdate.wgsl.js';
+export { PPG_GUIDE_WGSL } from './ppg/ppgGuide.wgsl.js';
+
 // ─── Neural denoiser (T2.H2) ──────────────────────────────────────────────────
 // InferenceGraph + weights loader for the U-Net neural denoiser.
 // The 'neural' denoiser mode in HybridEngine is opt-in (default: atrous-variance).

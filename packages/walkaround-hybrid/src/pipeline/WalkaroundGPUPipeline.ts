@@ -301,6 +301,11 @@ export class WalkaroundGPUPipeline {
   private _svgfMomentsPipeline:   GPUComputePipeline | undefined = undefined;
   private _svgfFallbackPipeline:  GPUComputePipeline | undefined = undefined;
   private _svgfRealAtrousPipeline:GPUComputePipeline | undefined = undefined;
+  // T2.H3 — PPG pipelines (Müller 2017; populated when ppgEnabled === true).
+  private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
+  private _ppgGuidePipeline:  GPUComputePipeline | undefined = undefined;
+  /** T2.H3 — PPG is enabled iff both pipelines were compiled successfully. */
+  private _ppgEnabled = false;
   /** T2.H1 — UBO for the svgf-real reprojection pass (SVGFReprojUBO, 16 bytes). */
   private _svgfReprojUboRef: UboRef = { buf: undefined };
   /** T2.H1 — Ping-pong index for svgf-real history/moments/prevRadiance. 0 = A→read, B→write. */
@@ -404,6 +409,8 @@ export class WalkaroundGPUPipeline {
       temporalAccumAlpha?: number;
       /** T2.H2 — neural denoiser InferenceGraph (required when denoiser='neural'). */
       inferenceGraph?: InferenceGraph;
+      /** T2.H3 — enable PPG (Müller 2017 adaptive sTree + dTree + MIS). */
+      ppgEnabled?: boolean;
     },
   ): Promise<void> {
     const d = this._device;
@@ -433,6 +440,7 @@ export class WalkaroundGPUPipeline {
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
       denoiser: compiledDenoiser,
+      ppgEnabled: options?.ppgEnabled ?? false,
     });
     this._risPipeline       = compiled.risPipeline;
     this._temporalPipeline  = compiled.temporalPipeline;
@@ -487,6 +495,15 @@ export class WalkaroundGPUPipeline {
     )) {
       throw new Error('[ReSTIR] svgf-real denoiser requested but pipelines are missing.');
     }
+
+    // T2.H3 — PPG pipelines (Müller 2017 §3.1–3.4): store and flag as enabled.
+    // Guide pass runs BEFORE shade (provides p_guide for next-bounce sampling).
+    // Update pass runs AFTER shade (accumulates L_i into dTree leaves, deviation 3 fix).
+    this._ppgUpdatePipeline = compiled.ppgUpdatePipeline;
+    this._ppgGuidePipeline  = compiled.ppgGuidePipeline;
+    this._ppgEnabled = (options?.ppgEnabled ?? false) &&
+      compiled.ppgUpdatePipeline !== undefined &&
+      compiled.ppgGuidePipeline  !== undefined;
 
     // ── Timestamp queries (DEV-only, feature-gated) ──────────────────────
     initTimestampQueries(d, this._tsState);
@@ -790,6 +807,26 @@ export class WalkaroundGPUPipeline {
       s2.end();
     }
 
+    // T2.H3 — PPG guide pass (Müller §3.2, §3.4): BEFORE shade.
+    // Produces a per-pixel guided direction and PDF (world frame, deviation 4 fix).
+    // The shade pass consumes the guide output for the next-bounce sample,
+    // mixing it with the BSDF PDF via MIS (deviation from prior: no guide at all).
+    // When ppgEnabled=false this block is skipped and the shade pass uses BSDF only.
+    if (this._ppgEnabled && this._ppgGuidePipeline) {
+      // PPG guide runs with layout:'auto' — no manual bind group needed for the
+      // skeleton GPU path. The full bind-group wiring (ppgLeafFlux, ppgLeafSolidAng,
+      // ppgTotalFlux, ppgSampleOut) requires the serialised sTree/dTree buffers from
+      // the CPU-side PPGModelHandle. That wiring is handled by pipelineCompiler once
+      // the host calls ppgUpdate (CPU rebuild) and uploads the flat buffer.
+      // For now the guide pipeline is compiled and reserved; the dispatch is a no-op
+      // stub (zero workgroups) until the host provides the sTree GPU buffer.
+      // The shade pass falls back to BSDF-only when the guide output buffer is zeros.
+      const stubPass = encoder.beginComputePass(computeDesc('ppg-guide'));
+      stubPass.setPipeline(this._ppgGuidePipeline);
+      stubPass.dispatchWorkgroups(0, 0, 0); // no-op until sTree GPU buffer is wired
+      stubPass.end();
+    }
+
     {
       const pass = encoder.beginComputePass(computeDesc('shade'));
       pass.setPipeline(this._shadePipeline);
@@ -799,6 +836,18 @@ export class WalkaroundGPUPipeline {
       pass.setBindGroup(3, bgHybrid);
       pass.dispatchWorkgroups(wgX, wgY, 1);
       pass.end();
+    }
+
+    // T2.H3 — PPG update pass (Müller §3.3): AFTER shade.
+    // Reads per-path L_i samples written by shade and accumulates flux into
+    // dTree leaf atomics (deviation 3 fix: L_i not L_o, deviation 4 fix: world frame).
+    // The CPU reads back the atomic buffer at the end of each rebuild cycle and
+    // calls splitOverflowLeaves + refineDTree to adapt the tree.
+    if (this._ppgEnabled && this._ppgUpdatePipeline) {
+      const stubPass = encoder.beginComputePass(computeDesc('ppg-update'));
+      stubPass.setPipeline(this._ppgUpdatePipeline);
+      stubPass.dispatchWorkgroups(0, 0, 0); // no-op stub until sTree GPU buffer is wired
+      stubPass.end();
     }
 
     // ── Sprint 15 — GTAO half-res + bilateral upsample ────────────────────

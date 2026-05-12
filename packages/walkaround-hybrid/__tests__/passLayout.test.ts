@@ -108,8 +108,8 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       }
     });
 
-    it('MAX_PASS_COUNT is 31 (T2.H1: svgf-real adds 8 passes — reproj+moments+7x7+5×atrous)', () => {
-      expect(MAX_PASS_COUNT).toBe(31);
+    it('MAX_PASS_COUNT is 33 (T2.H3: PPG opt-in adds 2 passes — ppg-update + ppg-guide)', () => {
+      expect(MAX_PASS_COUNT).toBe(33);
     });
   });
 
