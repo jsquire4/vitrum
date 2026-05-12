@@ -253,17 +253,55 @@ function snapshotPreBuildMaterials(
   const vertexCount = (merged.attributes['position'] as THREE.BufferAttribute).count;
   const vertexMatId = new Uint32Array(vertexCount);
 
-  // One entry per unique THREE.Material across all source meshes, in
-  // mesh-traversal order. Multi-material meshes (e.g. GlassMesh's
-  // [front, front, back] array) collapse to their primary (index-0)
-  // material — this matches the conventions 2-of-3 walkaround engines
-  // use today.
+  // One entry per *value-unique* material across all source meshes.
+  // Multi-material meshes (e.g. GlassMesh's [front, front, back] array)
+  // collapse to their primary (index-0) material.
+  //
+  // Dedup-by-value (not by identity) because hosts that use React/R3F
+  // construct fresh THREE.Material instances on re-render even when the
+  // PBR field values are identical. With per-edge `useEdgeMaterial` +
+  // 70+ inline `<meshStandardMaterial>` JSX declarations in the
+  // stainedGlass app, a typical livingRoom scene generated 356 unique
+  // material instances vs. ~30 unique *values* — overflowing DDGI's
+  // 64-material slot cap and forcing per-frame BVH rebuilds. Value-dedup
+  // collapses this back to the structural minimum. — fix 2026-05-12.
+  //
+  // The signature hashes only the fields the consumers (DDGI / ReSTIR
+  // shading / PT path) actually read: baseColor, emissive, emissiveIntensity,
+  // roughness, metalness, transmission, ior, and texture-map identity.
+  // Two materials with identical signatures are interchangeable for
+  // path-traced and probe-updated illumination.
+  const matSig = (m: THREE.Material): string => {
+    const s = m as THREE.MeshStandardMaterial;
+    const p = m as THREE.MeshPhysicalMaterial;
+    const col = s.color ? `${s.color.r.toFixed(4)},${s.color.g.toFixed(4)},${s.color.b.toFixed(4)}` : '';
+    const em = s.emissive ? `${s.emissive.r.toFixed(4)},${s.emissive.g.toFixed(4)},${s.emissive.b.toFixed(4)}` : '';
+    const r = (s.roughness ?? 0.5).toFixed(4);
+    const mt = (s.metalness ?? 0).toFixed(4);
+    const ei = (s.emissiveIntensity ?? 1).toFixed(4);
+    const tr = (p.transmission ?? 0).toFixed(4);
+    const ior = (p.ior ?? 1.5).toFixed(4);
+    // Map identity (uuid is stable across React renders for the same source).
+    const mapU = s.map ? s.map.uuid : '';
+    const nmU = s.normalMap ? s.normalMap.uuid : '';
+    return `${col}|${em}|${ei}|${r}|${mt}|${tr}|${ior}|${mapU}|${nmU}`;
+  };
   const matLut: THREE.Material[] = [];
   const matMap = new Map<THREE.Material, number>();
+  const sigMap = new Map<string, number>();
   for (const mesh of meshes) {
     const meshMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-    if (meshMat && !matMap.has(meshMat)) {
-      matMap.set(meshMat, matLut.length);
+    if (!meshMat || matMap.has(meshMat)) continue;
+    const sig = matSig(meshMat);
+    const existing = sigMap.get(sig);
+    if (existing !== undefined) {
+      // Different THREE.Material instance, same PBR signature — alias the
+      // identity to the existing canonical slot.
+      matMap.set(meshMat, existing);
+    } else {
+      const idx = matLut.length;
+      sigMap.set(sig, idx);
+      matMap.set(meshMat, idx);
       matLut.push(meshMat);
     }
   }

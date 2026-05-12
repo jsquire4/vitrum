@@ -93,19 +93,24 @@ export class SceneBvh {
 
     if (meshes.length === 0) return;
 
-    // Geometry-version dirty check — sum of every mesh's
-    // (position-attribute version + mesh.id). Cheap to compute, stable
-    // across frames where no geometry actually changed.
+    // Geometry-version dirty check — sum of every mesh's geometry version
+    // bumps plus the mesh count. Cheap to compute, stable across frames
+    // where no geometry actually changed.
     //
-    // Note: additive hash has a collision risk if a geometry's version
-    // shifts in the opposite direction of mesh.id changes (false-negatives
-    // / missed rebuilds). Upgrade to XOR / FNV-style if that proves
-    // problematic in practice.
-    let version = 0;
+    // Critical: do NOT include `mesh.id` (Three.js's monotonic global Mesh
+    // counter). React reconciliation in the host can construct fresh
+    // THREE.Mesh objects per render (e.g. JSX-declared <mesh> inside a
+    // .map()), bumping mesh.id each frame even when the structural scene
+    // is unchanged. Hashing mesh.id makes the dirty check permanently dirty,
+    // triggering a full BVH rebuild every frame (~79ms on a livingRoom-scale
+    // scene). posAttr.version is sufficient — it bumps when
+    // `position.needsUpdate = true` or the attribute is replaced, which is
+    // the actual signal we want. Mesh count detects add/remove without
+    // depending on identity. — fix 2026-05-12 (walkaround lockup).
+    let version = meshes.length * 1000003;
     for (const m of meshes) {
       const posAttr = m.geometry.attributes['position'] as THREE.BufferAttribute;
       version += posAttr.version ?? 0;
-      version += m.id;
     }
     if (version === this._lastGeometryVersion && this._buffers !== null) return;
     this._lastGeometryVersion = version;
