@@ -406,3 +406,103 @@ describe('buildPassLayout — DDGI border fill slots', () => {
     expect(MAX_PASS_COUNT).toBe(28);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test 5 — Non-uniform interior spot-check (catches source-row off-by-one).
+// Audit follow-up: the uniform-interior tests above can't distinguish
+// source row 1 vs row 2 for the top edge (or N vs N-1 for bottom). This
+// suite uses a per-row distinct value so a bad source row would show up.
+// ---------------------------------------------------------------------------
+describe('non-uniform interior — source-row sanity', () => {
+  it('N=8: top-edge border samples interior row 2 (not row 1)', () => {
+    const N = 8;
+    const stride = N + 2;
+    // Interior row r (1..N) is filled with r=row, g=0, b=0, a=1.
+    // After border fill, top-edge border (ly=0, lx=1..N) should hold row=2.
+    const interior = new Float32Array(N * N * 4);
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const i = (r * N + c) * 4;
+        interior[i + 0] = r + 1;  // row label 1..N
+        interior[i + 1] = 0;
+        interior[i + 2] = 0;
+        interior[i + 3] = 1;
+      }
+    }
+    const atlas = runBorderFill(N, interior);
+
+    // For each top-edge border texel (lx ∈ 1..N, ly = 0), the source per
+    // borderMirror is interior (N+1-lx, 2). The atlas y=0 row should hold
+    // value r=2 in every position.
+    for (let lx = 1; lx <= N; lx++) {
+      const [r, g, b, a] = readTexel(atlas, stride, lx, 0);
+      expect(r).toBe(2);  // ← source row label is 2 (NOT 1)
+      expect(g).toBe(0);
+      expect(b).toBe(0);
+      expect(a).toBe(1);
+    }
+  });
+
+  it('N=8: bottom-edge border samples interior row N-1 = 7 (not row N = 8)', () => {
+    const N = 8;
+    const stride = N + 2;
+    const interior = new Float32Array(N * N * 4);
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const i = (r * N + c) * 4;
+        interior[i + 0] = r + 1;
+        interior[i + 3] = 1;
+      }
+    }
+    const atlas = runBorderFill(N, interior);
+
+    // Bottom-edge border (lx ∈ 1..N, ly = N+1=9). Source: interior (N+1-lx, N-1).
+    // N-1 = 7 → row label 7 (NOT 8).
+    for (let lx = 1; lx <= N; lx++) {
+      const [r] = readTexel(atlas, stride, lx, N + 1);
+      expect(r).toBe(7);
+    }
+  });
+
+  it('N=8: left-edge border samples interior column 2 (not column 1)', () => {
+    const N = 8;
+    const stride = N + 2;
+    const interior = new Float32Array(N * N * 4);
+    // Interior column c (1..N) holds r=column.
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const i = (r * N + c) * 4;
+        interior[i + 0] = c + 1;
+        interior[i + 3] = 1;
+      }
+    }
+    const atlas = runBorderFill(N, interior);
+
+    // Left-edge border (lx=0, ly ∈ 1..N). Source: interior (2, N+1-ly).
+    // Column label 2 (NOT 1).
+    for (let ly = 1; ly <= N; ly++) {
+      const [r] = readTexel(atlas, stride, 0, ly);
+      expect(r).toBe(2);
+    }
+  });
+
+  it('N=8: top-edge border preserves the cross-cell horizontal flip (source x = N+1-lx)', () => {
+    const N = 8;
+    const stride = N + 2;
+    // Interior column c (1..N) holds r=column. Top edge mirror flips x:
+    // border (lx=1, ly=0) → source (8, 2) → r=8.
+    // border (lx=8, ly=0) → source (1, 2) → r=1.
+    const interior = new Float32Array(N * N * 4);
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        const i = (r * N + c) * 4;
+        interior[i + 0] = c + 1;
+        interior[i + 3] = 1;
+      }
+    }
+    const atlas = runBorderFill(N, interior);
+    expect(readTexel(atlas, stride, 1, 0)[0]).toBe(8);   // lx=1 → mirror source col=8
+    expect(readTexel(atlas, stride, 8, 0)[0]).toBe(1);   // lx=8 → mirror source col=1
+    expect(readTexel(atlas, stride, 4, 0)[0]).toBe(5);   // lx=4 → mirror source col=5
+  });
+});

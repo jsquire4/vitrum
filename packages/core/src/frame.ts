@@ -148,7 +148,7 @@ export interface FrameOutput {
   readonly normalDepth?: BackendTexture;
 
   /** Demodulated albedo (base color × occlusion, no lighting). Used by OIDN
-   *  and SVGF to denoise lighting independently from texture detail. */
+   *  and atrous-variance to denoise lighting independently from texture detail. */
   readonly albedo?: BackendTexture;
 
   // ── Optional metadata ──────────────────────────────────────────────────
@@ -157,7 +157,8 @@ export interface FrameOutput {
   readonly variance?: BackendTexture;
 
   /** Per-pixel motion vectors in screen space. RG32F: (dx, dy) in pixels.
-   *  Used by SVGF + checkerboard upsampling. */
+   *  Reserved for future temporal-reprojection denoiser (real Schied 2017
+   *  SVGF, see plan/sprint-svgf-real-future.md) + checkerboard upsampling. */
   readonly motionVectors?: BackendTexture;
 
   // ── Convergence stats ──────────────────────────────────────────────────

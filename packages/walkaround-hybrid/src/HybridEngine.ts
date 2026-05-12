@@ -184,8 +184,8 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly emitterDist2Floor?: number;
 
   /**
-   * Per-channel HDR clamp on the direct radiance channel before SVGF /
-   * atrous (audit B4).  Suppresses fireflies from ReSTIR-DI's
+   * Per-channel HDR clamp on the direct radiance channel before the
+   * atrous-variance denoiser (audit B4). Suppresses fireflies from ReSTIR-DI's
    * stochastic light-point selection on glancing-angle BRDF evaluations.
    *
    * **Light-intensity-sensitive**.  Default `4.0` is calibrated for

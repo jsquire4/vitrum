@@ -1,5 +1,5 @@
 /**
- * Lazy singleton WebGPU device for short compute passes (SVGF, HDR bilateral).
+ * Lazy singleton WebGPU device for short compute passes (atrous-variance, HDR bilateral).
  * Avoids adapter/device teardown latency on repeated denoise shots.
  *
  * Concurrency: `disposeSharedWebGPUDevice()` bumps a generation counter. Any

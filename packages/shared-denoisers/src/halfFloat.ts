@@ -1,6 +1,6 @@
 /**
  * IEEE 754 binary16 ↔ binary32 conversion (no deps).
- * Used to upload/read rgba16float SVGF ping-pong textures from CPU.
+ * Used to upload/read rgba16float atrous-variance ping-pong textures from CPU.
  */
 
 /** Pack float32 into binary16 bits (uint16). */

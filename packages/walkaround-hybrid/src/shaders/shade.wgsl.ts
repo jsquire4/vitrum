@@ -31,7 +31,7 @@ export const SHADE_WGSL = /* wgsl */ `
 // for the Lo_indirect term. The dispatch grid in shade is full-res, so
 // we sample at (gid.xy / 2) — each 2×2 quad shares one GI reservoir.
 @group(0) @binding(11) var<storage, read_write> reservoirGiCurrent: array<u32>;
-// Sprint 18 — split indirect output for per-channel SVGF tuning. The
+// Sprint 18 — split indirect output for per-channel atrous-variance tuning. The
 // main hdrColorOut carries direct + emit + sun caustic + sky aperture
 // (already AO-modulated). The hdrIndirectOut carries Lo_indirect (× AO)
 // so it can be denoised with broader sigmas before recombination. The
@@ -421,8 +421,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let ao = select(1.0, clamp(aoRaw, 0.0, 1.0), aoRaw > 0.001);
 
   // Sprint 18 — split the radiance into a direct channel (heads to the
-  // tight-sigma SVGF chain) and an indirect channel (heads to the broader
-  // bilateral blur). The downstream combine pass sums them.
+  // tight-sigma atrous-variance chain) and an indirect channel (heads to
+  // the broader bilateral blur). The downstream combine pass sums them.
   //
   // Direct = emit (light source itself) + direct shadow-mapped terms (× AO).
   // Indirect = ReSTIR-GI Lo_indirect (× AO). Lo_emit bypasses AO because
@@ -441,8 +441,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
   // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of
-  // a wall, near-zero RIS pdf). These propagate through SVGF (which would
-  // smear them spatially) and the temporal accumulator (slow to bleed off).
+  // a wall, near-zero RIS pdf). These propagate through the atrous-variance
+  // denoiser (which would smear them spatially) and the temporal accumulator
+  // (slow to bleed off).
   // Cap per-channel: physical max for an albedo-1 diffuse surface viewing
   // Le=12 ≈ 4/π × 12 ≈ 15. We clamp at 4 to suppress the grazing-edge
   // singularities (~2.8 measured at the red-wall edge stripe) while leaving

@@ -2,8 +2,8 @@
  * Shared B3-spline 5×5 atrous wavelet kernel.
  *
  * Canonical values in both numeric (`ATROUS_KERNEL_VALUES`) and WGSL
- * literal (`ATROUS_KERNEL_WGSL` / `SVGF_ATROUS_KERNEL_WGSL`) forms so
- * the kernel does not drift between atrous.wgsl.ts and svgf.wgsl.ts.
+ * literal (`ATROUS_KERNEL_WGSL` / `ATROUS_VARIANCE_KERNEL_WGSL`) forms so
+ * the kernel does not drift between atrous.wgsl.ts and atrousVariance.wgsl.ts.
  */
 
 /**
@@ -34,5 +34,5 @@ function buildKernelWgsl(name: string): string {
 
 /** Atrous-style usage (`KERNEL`). */
 export const ATROUS_KERNEL_WGSL = buildKernelWgsl('KERNEL');
-/** SVGF-style usage (`SVGF_KERNEL`). */
-export const SVGF_ATROUS_KERNEL_WGSL = buildKernelWgsl('SVGF_KERNEL');
+/** atrous-variance-pipeline usage (`ATROUS_VARIANCE_KERNEL`). */
+export const ATROUS_VARIANCE_KERNEL_WGSL = buildKernelWgsl('ATROUS_VARIANCE_KERNEL');
