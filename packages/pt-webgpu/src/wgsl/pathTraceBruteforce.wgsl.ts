@@ -79,7 +79,7 @@ const SPECTRAL_SAMPLE_COUNT = 32u;
 fn materialScalar(matId: u32, scalarOffset: u32) -> f32 {
   let scalarIndex = matId * MATERIAL_SCALAR_STRIDE + scalarOffset;
   let vecIndex = scalarIndex / 4u;
-  if (vecIndex >= arrayLength(&materials)) return 0.0;
+  if (vecIndex >= arrayLength(&materials)) { return 0.0; }
   let c = scalarIndex % 4u;
   let v = materials[vecIndex];
   if (c == 0u) { return v.x; }
@@ -524,11 +524,11 @@ fn bsdfEnvironmentConnectionContribution(
   throughputAtVertex: vec3f,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
-  if (nDotL <= 1e-5) return vec3f(0.0);
+  if (nDotL <= 1e-5) { return vec3f(0.0); }
   let bsdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, wi);
-  if (bsdfPdf <= 1e-6) return vec3f(0.0);
+  if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
   let shadowRay = Ray(hitPos + normal * 1e-3, wi);
-  if (traceAny(shadowRay, 1e-4, INFINITY)) return vec3f(0.0);
+  if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
   let envPdf = environmentPdf(wi);
   let envColor = sampleEnvironmentColor(wi);
   let misWeight = powerHeuristic(bsdfPdf, envPdf);
@@ -627,13 +627,13 @@ fn intersectSphereLocal(ray: Ray, center: vec3f, radius: f32, nOut: ptr<function
   let b = 2.0 * dot(oc, ray.direction);
   let c = dot(oc, oc) - radius * radius;
   let disc = b * b - 4.0 * a * c;
-  if (disc < 0.0) return INFINITY;
+  if (disc < 0.0) { return INFINITY; }
   let s = sqrt(disc);
   let t0 = (-b - s) / (2.0 * a);
   let t1 = (-b + s) / (2.0 * a);
   var t = t0;
-  if (t < 1e-5) t = t1;
-  if (t < 1e-5) return INFINITY;
+  if (t < 1e-5) { t = t1; }
+  if (t < 1e-5) { return INFINITY; }
   let p = ray.origin + ray.direction * t;
   *nOut = safe_normalize(p - center);
   return t;
@@ -1219,10 +1219,10 @@ fn photonMapContribution(
   throughput: vec3f,
 ) -> vec3f {
   var availableLightCount = 0u;
-  if (params.lightDir.w > 1e-6) availableLightCount = availableLightCount + 1u;
-  if (params.pointLightCount > 0u) availableLightCount = availableLightCount + 1u;
-  if (params.spotLightCount > 0u) availableLightCount = availableLightCount + 1u;
-  if (availableLightCount == 0u) return vec3f(0.0);
+  if (params.lightDir.w > 1e-6) { availableLightCount = availableLightCount + 1u; }
+  if (params.pointLightCount > 0u) { availableLightCount = availableLightCount + 1u; }
+  if (params.spotLightCount > 0u) { availableLightCount = availableLightCount + 1u; }
+  if (availableLightCount == 0u) { return vec3f(0.0); }
   let photonCount = u32(clamp(f32(params.mneeMaxIterations) * 2.0, 8.0, 32.0));
   let maxChain = clamp(params.mneeMaxChainLength, 1u, 8u);
   // Photon-gather radius in world units. Hardcoded at 0.35 for the current
@@ -1282,9 +1282,9 @@ fn photonMapContribution(
     var ray = Ray(photonOrigin + photonDir * 1e-3, photonDir);
     var flux = photonFlux / max(f32(photonCount), 1.0);
     for (var bounce = 0u; bounce < 8u; bounce = bounce + 1u) {
-      if (bounce >= maxChain) break;
+      if (bounce >= maxChain) { break; }
       let hit = traceClosest(ray, 1e-4, INFINITY);
-      if (!hit.didHit) break;
+      if (!hit.didHit) { break; }
       let matId = hitMaterialId(hit);
       let m0Index = matId * MATERIAL_VEC4_STRIDE;
       let m2Index = m0Index + 2u;
