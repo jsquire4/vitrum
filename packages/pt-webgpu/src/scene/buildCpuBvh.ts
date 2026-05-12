@@ -222,13 +222,13 @@ export function buildCpuBvh(
     let bestSplit = 0; // index of the last bin in the LEFT partition
 
     for (let axis = 0; axis < 3; axis++) {
-      const span = cMax[axis] - cMin[axis];
+      const span = cMax[axis]! - cMin[axis]!;
       if (span <= 1e-9) continue; // degenerate — all centroids co-planar on this axis
 
       // Bin triangles.
       const bins: BinData[] = Array.from({ length: NUM_BINS }, makeEmptyBin);
       for (const r of subset) {
-        const t = (r.centroid[axis] - cMin[axis]) / span;
+        const t = (r.centroid[axis]! - cMin[axis]!) / span;
         const binIdx = Math.min(NUM_BINS - 1, Math.floor(t * NUM_BINS));
         growBin(bins[binIdx]!, r);
       }
@@ -330,11 +330,11 @@ export function buildCpuBvh(
     }
 
     // Partition at the chosen bin boundary.
-    const span = cMax[bestAxis] - cMin[bestAxis];
+    const span = cMax[bestAxis]! - cMin[bestAxis]!;
     const left: TriangleRecord[] = [];
     const right: TriangleRecord[] = [];
     for (const r of subset) {
-      const t = (r.centroid[bestAxis] - cMin[bestAxis]) / span;
+      const t = (r.centroid[bestAxis]! - cMin[bestAxis]!) / span;
       const binIdx = Math.min(NUM_BINS - 1, Math.floor(t * NUM_BINS));
       if (binIdx <= bestSplit) {
         left.push(r);

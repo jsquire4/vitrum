@@ -156,12 +156,12 @@ function buildMirrorBvh(
     let bestCost = Infinity, bestAxis = 0, bestSplit = 0;
 
     for (let axis = 0; axis < 3; axis++) {
-      const span = cMax[axis] - cMin[axis];
+      const span = cMax[axis]! - cMin[axis]!;
       if (span <= 1e-9) continue;
 
       const bins: BinDataTest[] = Array.from({ length: NUM_BINS_TEST }, makeEmptyBinTest);
       for (const r of subset) {
-        const t = (r.centroid[axis] - cMin[axis]) / span;
+        const t = (r.centroid[axis]! - cMin[axis]!) / span;
         const bi = Math.min(NUM_BINS_TEST - 1, Math.floor(t * NUM_BINS_TEST));
         const bin = bins[bi]!;
         bin.min[0] = Math.min(bin.min[0], r.min[0]);
@@ -221,10 +221,10 @@ function buildMirrorBvh(
       return nodeIndex;
     }
 
-    const span = cMax[bestAxis] - cMin[bestAxis];
+    const span = cMax[bestAxis]! - cMin[bestAxis]!;
     const left: TriRec[] = [], right: TriRec[] = [];
     for (const r of subset) {
-      const t = (r.centroid[bestAxis] - cMin[bestAxis]) / span;
+      const t = (r.centroid[bestAxis]! - cMin[bestAxis]!) / span;
       const bi = Math.min(NUM_BINS_TEST - 1, Math.floor(t * NUM_BINS_TEST));
       (bi <= bestSplit ? left : right).push(r);
     }
