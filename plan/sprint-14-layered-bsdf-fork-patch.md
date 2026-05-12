@@ -1,5 +1,12 @@
 # Sprint 14 — Layered BSDF Fork Patch Plan (RFE-03 / RFE-12)
 
+**Status: APPLIED on 2026-05-11 at fork commit ee379dc**
+Supporting infrastructure (material struct, packing, surface record selection, roughness
+override, activeLayerWeight helper) was already present from phase4-normalmap-shadow-rays
+merge. This patch added the missing `color *= activeLayerWeight(surf, heroWavelength)` call
+inside `bsdfEval` to complete the lobe-side application. Prerequisite commit also landed:
+`d6b88b3` (adaptive tile sample-count fix). No GPU verification yet — A/B render is the gate.
+
 ## Goal
 
 Implement front/back asymmetric layered BSDF support in the `three-gpu-pathtracer` fork so

@@ -81,12 +81,22 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
   - `frontLayer`/`backLayer` BSDF evaluation — deferred on RFE-12.
   - `vitrum.Material → fork uniforms` direction — completed in RFE-09.
 
-## RFE-12 Layered BSDF Fork-Patch Plan: APPLIED
+## RFE-12 / RFE-03 Layered BSDF Fork Patch: APPLIED (2026-05-11)
 
-- Files changed:
-  - `plan/sprint-14-layered-bsdf-fork-patch.md` (NEW) — implementation plan for RFE-03.
+- Fork commit: `ee379dc` — feat(layered-bsdf): Sprint 14 — wire activeLayerWeight into bsdfEval color path
+- Prerequisite fork commit: `d6b88b3` — fix(adaptive): count proportional tile work for adaptive repeat sampling
+- Files changed in fork:
+  - `src/shader/bsdf/bsdf_functions.glsl.js` — added `color *= activeLayerWeight(surf, heroWavelength)` in `bsdfEval` after all lobe evaluations. The helper function and all supporting fields were already present from the earlier phase4-normalmap-shadow-rays merge.
+  - `build/index.module.js`, `build/index.module.js.map`, `build/index.umd.cjs`, `build/index.umd.cjs.map` — rebuilt bundles.
+- Infrastructure already on main (from phase4-normalmap-shadow-rays merge `49f1e4b`):
+  - `src/shader/structs/material_struct.glsl.js` — `frontLayerTransmission`, `frontLayerRoughness`, `hasFrontLayer`, `backLayerTransmission`, `backLayerRoughness`, `hasBackLayer`; featureFlags unpacking at bits 2 and 4.
+  - `src/uniforms/MaterialsTexture.js` — packs `userData.vitrumFrontLayer` / `userData.vitrumBackLayer` into material texels 18–19.
+  - `src/shader/structs/surface_record_struct.glsl.js` — `activeLayerTransmission`, `activeLayerRoughness`, `hasActiveLayer`.
+  - `src/materials/pathtracing/glsl/get_surface_record_function.glsl.js` — per-face layer selection by `frontFaceHit`; roughness override applied to `surf.filteredRoughness` before lobe evaluation.
+  - `src/shader/bsdf/bsdf_functions.glsl.js` — `activeLayerWeight()` helper using `heroScalarFromRgb` for spectral path.
 - Gaps:
-  - None for this meta-RFE (plan-only deliverable).
+  - GPU A/B visual verification pending (per spec gate condition).
+  - `pt-webgl` vitrum-side bridge (`sceneToThree.ts`) should populate `userData.vitrumFrontLayer` / `userData.vitrumBackLayer` from `Material.frontLayer` / `Material.backLayer` — this is a separate vitrum-side follow-up (see note below).
 
 ## RFE-14 Thin-Film TMM Evaluator: APPLIED (runtime-unverified)
 
