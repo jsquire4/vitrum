@@ -306,6 +306,31 @@ export interface Material {
    */
   thinFilmStack?: ThinFilmStack;
 
+  // ── Anisotropic specular (Gap 5 — stainedGlass audit 2026-05-12) ───────
+  /**
+   * Anisotropic specular highlight strength ∈ [0, 1].
+   * 0 = isotropic (default); 1 = fully anisotropic.
+   *
+   * Mirrors `THREE.MeshPhysicalMaterial.anisotropy`. The field is set
+   * directly on the THREE material (not via userData) for ripple and
+   * waterglass cells in the stainedGlass baking pipeline.
+   *
+   * Reference: Three.js MeshPhysicalMaterial.anisotropy
+   * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropy).
+   */
+  anisotropy?: number;
+
+  /**
+   * Rotation of the anisotropic highlight in radians ∈ [0, π].
+   * Only meaningful when `anisotropy` > 0.
+   *
+   * Mirrors `THREE.MeshPhysicalMaterial.anisotropyRotation`.
+   *
+   * Reference: Three.js MeshPhysicalMaterial.anisotropyRotation
+   * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropyRotation).
+   */
+  anisotropyRotation?: number;
+
   // ── Backend escape hatch ────────────────────────────────────────────────
   /** Backends may read keyed fields from here for backend-specific features.
    *  Core never inspects this map. */

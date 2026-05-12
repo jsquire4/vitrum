@@ -115,6 +115,13 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
     if (m.attenuationDistance != null) mat.attenuationDistance = m.attenuationDistance;
     if (m.thickness != null) mat.thickness = m.thickness;
   }
+  // Gap 5 (stainedGlass audit 2026-05-12) — write anisotropy directly onto
+  // the THREE material (not into userData) to match how the fork consumes it.
+  // Write when defined, including 0, so an explicit 0 round-trips cleanly.
+  if (m.anisotropy !== undefined) {
+    mat.anisotropy = m.anisotropy;
+    mat.anisotropyRotation = m.anisotropyRotation ?? 0;
+  }
   applyTextureMaps(mat, m);
   stampVitrumUserData(mat, m);
   return mat;

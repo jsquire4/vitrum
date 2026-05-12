@@ -96,6 +96,17 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.iridescenceThicknessRange = p.iridescenceThicknessRange;
   }
 
+  // Gap 5 (stainedGlass audit 2026-05-12) — anisotropy is set DIRECTLY on the
+  // THREE MeshPhysicalMaterial (not via userData) by the baking pipeline for
+  // ripple/waterglass cells. Read both fields off the live material object.
+  // Mirror the iridescence pattern: only capture when non-zero so default-zero
+  // THREE materials don't populate the vitrum Material with phantom fields.
+  if (p.anisotropy !== 0) {
+    base.anisotropy = p.anisotropy;
+    // Always capture rotation alongside anisotropy; 0 rotation is meaningful.
+    base.anisotropyRotation = p.anisotropyRotation;
+  }
+
   // ── userData.vitrum* stamps (RFE-06..08 / RFE-03) ──────────────────────────
   // The host stamps these on THREE materials so backends can read them via the
   // vitrum.Material contract. We project them unconditionally here; each guard

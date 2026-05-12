@@ -221,6 +221,78 @@ describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () =>
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// Gap 5 — Anisotropy round-trip (stainedGlass audit 2026-05-12)
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('convertMaterial: anisotropy + anisotropyRotation (Gap 5)', () => {
+  it('reads anisotropy and anisotropyRotation directly from THREE material', () => {
+    const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    m.anisotropy = 0.7;
+    m.anisotropyRotation = 0.3;
+    const v = convertMaterial(m);
+    expect(v.anisotropy).toBeCloseTo(0.7);
+    expect(v.anisotropyRotation).toBeCloseTo(0.3);
+  });
+
+  it('leaves anisotropy undefined when THREE material has default anisotropy=0', () => {
+    const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    // THREE defaults anisotropy to 0; vitrum should not populate the field.
+    const v = convertMaterial(m);
+    expect(v.anisotropy).toBeUndefined();
+    expect(v.anisotropyRotation).toBeUndefined();
+  });
+});
+
+describe('vitrumSceneToThree: anisotropy + anisotropyRotation written to THREE material (Gap 5)', () => {
+  it('writes anisotropy and anisotropyRotation onto the THREE material', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      anisotropy: 0.7,
+      anisotropyRotation: 0.3,
+    });
+    expect(threeMat.anisotropy).toBeCloseTo(0.7);
+    expect(threeMat.anisotropyRotation).toBeCloseTo(0.3);
+  });
+
+  it('preserves anisotropy=0 when explicitly set in vitrum Material', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      anisotropy: 0,
+    });
+    expect(threeMat.anisotropy).toBe(0);
+    expect(threeMat.anisotropyRotation).toBe(0); // defaults to 0 when anisotropy defined
+  });
+
+  it('does NOT stamp anisotropy when absent from vitrum Material (no phantom field)', () => {
+    // When anisotropy is absent the THREE material must have its own default (0).
+    // We verify the field was not artificially overwritten by the converter.
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+    });
+    // THREE default is 0; as long as we haven't broken the default this passes.
+    expect(threeMat.anisotropy).toBe(0);
+  });
+});
+
+describe('Full round-trip: anisotropy THREE → vitrum → THREE (Gap 5)', () => {
+  it('preserves anisotropy=0.7 and anisotropyRotation=0.3 through the full round-trip', () => {
+    const original = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    original.anisotropy = 0.7;
+    original.anisotropyRotation = 0.3;
+
+    // THREE → vitrum
+    const vitrumMat = convertMaterial(original);
+    expect(vitrumMat.anisotropy).toBeCloseTo(0.7);
+    expect(vitrumMat.anisotropyRotation).toBeCloseTo(0.3);
+
+    // vitrum → THREE
+    const backToThree = vitrumMatToThreeMat(vitrumMat);
+    expect(backToThree.anisotropy).toBeCloseTo(0.7);
+    expect(backToThree.anisotropyRotation).toBeCloseTo(0.3);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // Full round-trip: THREE → vitrum → THREE
 // ────────────────────────────────────────────────────────────────────────────
 
