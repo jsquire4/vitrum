@@ -16,11 +16,11 @@
     "three-mesh-bvh": "^0.9.9"
   },
   "peerDependencies": {
-    "three": ">=0.160.0"
+    "three": ">=0.167.0 <0.190"
   },
   "devDependencies": {
-    "@types/three": "^0.184.1",
-    "three": ">=0.160.0",
+    "@types/three": ">=0.167.0 <0.190",
+    "three": ">=0.167.0 <0.190",
     "typescript": "^5.5.0",
     "vitest": "^1.6.1"
   }
