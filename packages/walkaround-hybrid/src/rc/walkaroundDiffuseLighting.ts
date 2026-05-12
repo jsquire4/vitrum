@@ -25,6 +25,7 @@ import {
 } from 'three/tsl';
 import type { CascadeBuffers } from './cascadePyramid.js';
 import { CASCADE_DIMS } from './cascadePyramid.js';
+import { computeOctahedralSolidAngles } from './octahedralSolidAngles.js';
 
 /** Octahedron decode: 2D unit-square uv → unit direction. */
 function octDirForIndex(idx: number, gridSize: number): [number, number, number] {
@@ -72,6 +73,15 @@ export function buildWalkaroundLightingNode(
   for (let i = 0; i < RAYS; i++) {
     DIRS.push(octDirForIndex(i, GRID));
   }
+
+  // Per-bin solid-angle weights (Ω_i) for the N×N octahedral grid.
+  // Replaces the uniform 4π/N assumption.  Sum of all Ω_i ≈ 4π.
+  //
+  // Reference: Cigolle et al. 2014, "A Survey of Efficient Representations
+  // for Independent Unit Vectors", JCGT §2 / Appendix A.2.
+  // The octahedral grid is NOT solid-angle-uniform — texels near the fold
+  // edges subtend a smaller solid angle than central texels.
+  const solidAngles = computeOctahedralSolidAngles(GRID);
 
   // Uniform block for cascade geometry.
   const uOriginX = uniform(cascadeBuffers.probeOriginWorld.x, 'float');
@@ -144,11 +154,18 @@ export function buildWalkaroundLightingNode(
         }
       }
 
-      (diffuse as AnyNode).addAssign((sample as AnyNode).mul(nDotL));
+      // Receiver irradiance integral: E_i = L_i · cos(θ_i) · Ω_i
+      // where Ω_i is the solid angle of direction bin i in the octahedral grid.
+      // Using per-bin solid angle instead of uniform 4π/N corrects the
+      // non-uniform solid-angle distribution near the octahedral fold edges.
+      // Reference: Cigolle et al. 2014, JCGT §A.2.
+      const omega = solidAngles[d]!;
+      (diffuse as AnyNode).addAssign((sample as AnyNode).mul(nDotL).mul(omega));
     }
 
-    // Monte-Carlo normalization: PDF = 1/(4π) per sample.
-    return (diffuse as AnyNode).mul(4.0 * Math.PI / RAYS);
+    // No additional normalization factor: the per-bin Ω_i already encodes
+    // the solid-angle weight for the irradiance integral E = Σ L_i·cos(θ_i)·Ω_i.
+    return diffuse as AnyNode;
   })();
 
   return {

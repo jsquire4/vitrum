@@ -10,6 +10,34 @@
  * Conservation-law check: b=3 means (L_k/s_k) grows by 1.5×, so strict conservation
  * wants R_k × 9 per cascade; we keep × 4 for perf (documented angular under-resolution).
  *
+ * ── NON-SANNIKOV SCALING (deliberate perf trade) ─────────────────────────────
+ *
+ * The actual CASCADE_DIMS below do NOT follow Sannikov 2023's branching law.
+ * Paper-faithful 3D Radiance Cascades prescribes:
+ *   - Probe count scales /8 per cascade per axis (8× volume reduction)
+ *   - Intervals scale ×4 per cascade
+ * At the C0 anchor (64×36×56 probes × 16 rays = 2.06M rays), paper-faithful
+ * scaling at 5 cascades would be ~10× the GPU cost at C0, yielding ~4fps on
+ * RTX-class hardware.  For the WebGPU 30fps target this is infeasible.
+ *
+ * Current measured scaling (from CASCADE_DIMS below):
+ *   Probe-count ratio per cascade: ~2.7–7.2× (not /8 per axis)
+ *   Interval ratio per cascade:    ~2.5–3×    (not ×4)
+ *
+ * Consequence for the merge step: the standard Sannikov merge kernel averages
+ * 4 children with equal weight (÷4), which is correct only when each parent
+ * bin covers exactly 4 children's solid angle.  With non-power-of-4 probe
+ * counts the children have unequal solid-angle coverage.
+ *
+ * The merge kernel `cascadeMerge.wgsl.ts` compensates by weighting children
+ * by their actual octahedral solid-angle coverage rather than assuming ÷4.
+ * See the `octCellSolidAngle` helper in that shader.
+ *
+ * Reference: Sannikov 2023, "Radiance Cascades: A Novel Approach to
+ * Calculating Global Illumination", §3 (cascade construction).
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
  * Storage: each cascade is a flat Float32Array (4 floats per direction-bin: rgba).
  * Packed layout: [probeX * probeY * probeZ * raysPerProbe] × 4 floats.
  * Probe index: probeIdx = px + py*PX + pz*PX*PY.
