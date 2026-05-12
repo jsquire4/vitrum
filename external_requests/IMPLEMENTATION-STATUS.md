@@ -31,6 +31,29 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
   - GPU profiling of ms/sample reduction pending (DoD target: ≥40% on glass-and-came scene). Runtime verification required.
   - `forceFullBSDF` per-material override not yet implemented. Add when opal scene A/B shows degradation.
 
+## Sprint 5 MRT G-buffer: APPLIED (2026-05-12)
+
+- Fork commit: `49081a3`
+- Date: 2026-05-12
+- Files changed in fork:
+  - `src/materials/pathtracing/PhysicalPathTracingMaterial.js` — MRT layout declarations (`layout(location=0..2) out vec4 gColor/gNormalDepth/gAlbedo`); renamed all `gl_FragColor` usages to `gColor`; G-buffer accumulator variables (`gbufWritten`, `gbufNormalEnc`, `gbufLinearDepth`, `gbufAlbedo`); primary-hit capture block at `state.firstRay` using camera world matrix + `surf.normal`/`surf.color`; G-buffer write at end of `main()` with sky fallbacks.
+  - `scripts/shader-smoke-check.js` — radiance-clamp pattern updated to accept `gColor` in place of `gl_FragColor`.
+  - `build/index.module.js`, `build/index.module.js.map`, `build/index.umd.cjs`, `build/index.umd.cjs.map` — rebuilt bundles.
+- MRT layout applied (per spec Decision 12):
+  - location 0: `gColor` RGBA16F — accumulated radiance (unchanged from prior single output)
+  - location 1: `gNormalDepth` RGBA16F — world normal encoded [0,1] in `.rgb`; linear depth in `.w`
+  - location 2: `gAlbedo` RGBA8 — demodulated base color (surf.color), no lighting
+- Adaptations from spec:
+  - Spec referenced host-side `WebGLMultipleRenderTargets` allocation — that is vitrum-side (`@vitrum/pt-webgl`), not fork-side; not changed here per scope.
+  - Host-side format defaults (RGBA16F for gColor/gNormalDepth, RGBA8 for gAlbedo) documented in spec; fragment shader outputs are format-agnostic.
+- Gaps / H6.3 hit list (earlier-sprint paths affected by `gl_FragColor → gColor` rename):
+  - Sprint 7 volume scatter: writes `gColor.rgb` accumulations — structurally unchanged, compiles correctly.
+  - Sprint 8 dispersion: routes through `gColor.rgb` — structurally unchanged, compiles correctly.
+  - Sprint 12 spectral: `wavelengthToRGB`/`throughputRgb` pipe into `gColor.rgb` — unchanged.
+  - Sprint 14 layered BSDF: `activeLayerWeight` call in main loop affects `gColor.rgb` indirectly — unchanged.
+  - None of the above sprints write to gNormalDepth/gAlbedo, so no regressions in their output paths.
+  - GPU visual A/B (no-MRT host vs MRT host gColor agreement) pending as part of H6.3 verification.
+
 ## Sprint 10c BDPT Fork Dispatch: BLOCKED (2026-05-12)
 
 - **Depends on**: vitrum `bdptConnectionMIS_full` + `buildBDPTStrategyPDFs_full` — DONE at commit d5d94a4 (T2.H4).

@@ -584,6 +584,21 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
+   * Schedule a temporal-accumulator reset on the next rendered frame.
+   *
+   * Sets `_accumFrameIndex` to 0 so the accumulation shader selects α=1
+   * (history discarded) on the very next `renderFrame` call. After that
+   * single frame the index increments normally and the accumulator resumes
+   * blending at the configured `_temporalAccumAlpha`.
+   *
+   * Cost: one JS field write. No GPU work is dispatched. Called by
+   * `HybridEngine.updateLighting()` whenever lighting parameters change.
+   */
+  requestAccumReset(): void {
+    this._accumFrameIndex = 0;
+  }
+
+  /**
    * Run one frame of the ReSTIR compute pipeline + composite render pass.
    * Returns true on success, false if pipeline not ready.
    */

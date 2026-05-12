@@ -132,6 +132,26 @@ export class DDGI {
     this._pass.setLights(lights);
   }
 
+  // ── Probe cache invalidation ──────────────────────────────────────────────
+
+  /**
+   * Invalidate the DDGI probe atlas so it re-converges from scratch.
+   *
+   * Resets `_frame` to 0 and `_ready` to false. On the next `updateFrame`
+   * call the blend kernel will fire with `alpha=1` for every texel (history
+   * weight = 0), effectively clearing the irradiance + visibility atlases
+   * and letting the DDGI update kernel re-converge over the default ~STRIDE
+   * frame window.
+   *
+   * Does NOT deallocate GPU textures or touch the BVH — cost is two JS
+   * field writes only. Called by `HybridEngine.updateLighting()` when
+   * lighting parameters change at runtime.
+   */
+  invalidateProbeCache(): void {
+    this._frame = 0;
+    this._ready = false;
+  }
+
   // ── Per-frame update ──────────────────────────────────────────────────────
 
   /**

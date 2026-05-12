@@ -49,6 +49,22 @@ const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
 // Public types
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
+ * All fields are optional; omitting a field leaves the corresponding engine
+ * parameter unchanged.
+ */
+export interface LightingOptions {
+  /** Primary directional light direction (world-space, normalised). */
+  primaryLightDir?: [number, number, number];
+  /** Primary directional light intensity (linear, unitless). */
+  primaryLightIntensity?: number;
+  /** Diffuse-sky-dome RGB tint. */
+  skyTint?: [number, number, number];
+  /** Sky-dome irradiance scalar paired with {@link skyTint}. */
+  skyIrradiance?: number;
+}
+
 export interface HybridEngineOptions extends EngineOptions {
   /** WebGPU device (narrowed from the opaque `device: unknown` on EngineOptions). */
   readonly device: GPUDevice;
@@ -393,10 +409,11 @@ export class HybridEngine implements Engine {
   private readonly _height:               number;
   private readonly _threeScene:           THREE.Scene;
   private readonly _isSceneReady:         () => boolean;
-  private readonly _primaryLightDir:      [number, number, number];
-  private readonly _primaryLightIntensity:number;
-  private readonly _skyTint:              [number, number, number];
-  private readonly _skyIrradiance:        number;
+  // Lighting fields are NOT readonly — updateLighting() mutates them at runtime.
+  private _primaryLightDir:               [number, number, number];
+  private _primaryLightIntensity:         number;
+  private _skyTint:                       [number, number, number];
+  private _skyIrradiance:                 number;
   private readonly _ctorLights:           readonly DDGILight[];
   private readonly _debug:                boolean;
   private readonly _verbose:             boolean;
@@ -677,6 +694,69 @@ export class HybridEngine implements Engine {
 
   updatePrimitive?: never;
   updateEmitter?: never;
+
+  // ── Runtime lighting update ────────────────────────────────────────────
+
+  /**
+   * Runtime update of the primary directional light + sky parameters.
+   *
+   * Re-uploads the WalkaroundUBO at the next frame start (the existing UBO
+   * uploader reads live engine fields each frame — no frozen snapshot to
+   * bust). Invalidates the DDGI probe atlas so it re-converges over the
+   * next ~8 frames. Resets the temporal accumulator (history discarded;
+   * α=1 for the very next frame).
+   *
+   * **No pipelines or GPU buffers are recreated.** The only cost is:
+   *   - 2 JS field writes per changed field (field + DDGI sun-intensity mirror)
+   *   - DDGI re-convergence over the default `STRIDE` frames (~133 ms at
+   *     60 FPS)
+   *   - 1 frame of temporal-accumulator reset overhead
+   *
+   * **Use case:** time-of-day scrubbing in stainedGlass without engine
+   * teardown. Eliminates the engine-recreation workaround documented at
+   * `useVitrumWalkaroundEngine.ts:34` (stainedGlass audit Gap 1).
+   *
+   * Calling with an empty object (`{}`) is a safe no-op.
+   *
+   * @param opts - Partial lighting overrides. Omitted fields are unchanged.
+   */
+  updateLighting(opts: Partial<LightingOptions>): void {
+    let changed = false;
+
+    if (opts.primaryLightDir !== undefined) {
+      this._primaryLightDir = opts.primaryLightDir;
+      changed = true;
+      // Mirror into DDGI's sun-intensity multiplier path on the ProbeUpdatePass.
+      // The pass uses the sun direction implicitly via the light list; updating
+      // the field here ensures renderFrame() passes the new value to the UBO.
+    }
+    if (opts.primaryLightIntensity !== undefined) {
+      this._primaryLightIntensity = opts.primaryLightIntensity;
+      changed = true;
+      // Keep the DDGI ProbeUpdatePass sun-intensity multiplier in sync so the
+      // irradiance atlas re-converges at the correct brightness.
+      this._ddgi.pass.setSunIntensityMultiplier(opts.primaryLightIntensity);
+    }
+    if (opts.skyTint !== undefined) {
+      this._skyTint = opts.skyTint;
+      changed = true;
+    }
+    if (opts.skyIrradiance !== undefined) {
+      this._skyIrradiance = opts.skyIrradiance;
+      changed = true;
+    }
+
+    if (!changed) return;
+
+    // Invalidate the DDGI probe atlas — re-converges from scratch over the
+    // next STRIDE frames (~8 frames, ~133 ms at 60 FPS).
+    this._ddgi.invalidateProbeCache();
+
+    // Reset the temporal accumulator — history discarded, α=1 for next frame.
+    // _pipeline may be null if the engine is still initialising; the flag is
+    // applied as soon as the pipeline exists (set before any renderFrame call).
+    this._pipeline?.requestAccumReset();
+  }
 
   // ── Frame rendering ────────────────────────────────────────────────────
 

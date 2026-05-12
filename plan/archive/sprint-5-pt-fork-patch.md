@@ -2,6 +2,9 @@
 
 **Sprint goal**: Analytic H-channel came geometry + MRT G-buffer scaffold.
 
+**Status**: MRT G-buffer (§2) APPLIED — fork commit `49081a3` (2026-05-12).
+Analytic came intersection (§1) NOT YET APPLIED — deferred; see §3 DoD item list.
+
 **Fork repo**: `~/projects/three-gpu-pathtracer/` branch `phase4-normalmap-shadow-rays`.
 **Do NOT modify the fork without explicit user instruction.** This document
 specifies what must be patched in the fork once Sprint 5 kicks off.
@@ -264,8 +267,10 @@ The following items are **fork-side** and must be verified against the
   `analyticCameEnabled` flag.
 - [ ] Profile baseline: BVH-walk node-visits per ray ≥30% reduction on a
   500-segment scene.
-- [ ] Host-side MRT allocation (`WebGLMultipleRenderTargets`) and fragment
-  output population in `PhysicalPathTracingMaterial.js`.
+- [x] Fragment output declarations and primary-hit G-buffer population in
+  `PhysicalPathTracingMaterial.js` — APPLIED (fork commit `49081a3`).
+  Host-side `WebGLMultipleRenderTargets` allocation is a vitrum-side item
+  (`@vitrum/pt-webgl`) already specced; not a fork change.
 
 ---
 

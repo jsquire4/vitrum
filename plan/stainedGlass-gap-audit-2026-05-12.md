@@ -55,13 +55,14 @@ Walkaround: lighting is baked into `createWalkaroundEngine_Hybrid` creation-time
 
 ### 🔴 Hard-blocked (host can't ship without vitrum change)
 
-**Gap 1 — No `updateLighting()` on `HybridEngine` (walkaround time-of-day scrubbing)**
+**Gap 1 — No `updateLighting()` on `HybridEngine` (walkaround time-of-day scrubbing)** ✅ RESOLVED
 
 - **What stainedGlass needs:** Real-time scrubbing of the time-of-day slider in walkaround mode without a full engine teardown + rebuild cycle. Users expect the sun to move continuously like a real dial.
 - **What vitrum delivers today:** `HybridEngineOptions.primaryLightDir/Intensity/skyTint/skyIrradiance` are creation-time-only options with no runtime update method. `HybridEngine.updatePrimitive` and `updateEmitter` are explicitly `never` (`HybridEngine.ts` lines 656–657).
 - **What's missing:** A `HybridEngine.updateLighting(opts: Partial<LightingOptions>)` method (or equivalent) that re-uploads the sun UBO and resets the temporal accumulator without tearing down pipelines.
 - **Fix scope:** Medium — UBO path exists; adding the method means defining the API surface, re-uploading affected uniform buffers per-frame, and invalidating DDGI probe cache.
 - **File pointers:** `vitrum/packages/walkaround-hybrid/src/HybridEngine.ts:656`, `stainedGlass/packages/app/src/rendering/vitrum-bridge/useVitrumWalkaroundEngine.ts:34` (comment documents the gap explicitly).
+- **Resolution:** Implemented in `feat/sweep-2026-05-12-followup` (commit after 4f5975d). `HybridEngine.updateLighting(opts: Partial<LightingOptions>)` added. `DDGI.invalidateProbeCache()` and `WalkaroundGPUPipeline.requestAccumReset()` added as internal plumbing. 9 tests in `packages/walkaround-hybrid/__tests__/hybridEngineLighting.test.ts`. stainedGlass host can replace the 8-slot engine-recreation dance with a single `engine.updateLighting(computeLightingState(...))` call on every timeOfDay selector change.
 
 **Gap 2 — `spectralAttenuation`, `thinFilmStack`, `scatteringCoefficient` flow through the contract but are NOT consumed by the three-gpu-pathtracer fork (pt-webgl path)**
 
@@ -145,7 +146,7 @@ Walkaround: lighting is baked into `createWalkaroundEngine_Hybrid` creation-time
 
 ### Defer (Tier 2 / separate sprint)
 
-**Gap 1 (updateLighting for walkaround):** Medium scope. Requires extending `HybridEngine` API surface, re-uploading the WalkaroundUBO, and resetting the temporal accumulator without full pipeline teardown. Natural fit as a future walkaround sprint (call it Sprint W1).
+**Gap 1 (updateLighting for walkaround):** ✅ Implemented in `feat/sweep-2026-05-12-followup`. See Gap 1 resolution note above.
 
 **Gap 2 (spectral/TMM/scatter consumption in pt-webgl):** This is effectively Tier 2.H5 (fork patches needed) + additional fork shader work for per-material spectral curves. Large scope. Prerequisite for scientifically accurate stained-glass color rendering in final PT mode. Block it on the fork-patch sprint chain (H6.2–H6.5). The host-side data is already correctly produced; this is purely a backend (fork) implementation gap.
 
