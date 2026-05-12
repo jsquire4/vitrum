@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
 import path from 'node:path';
+import fs from 'node:fs';
 
 const repoRoot = path.resolve(__dirname, '../..');
+const captureDir = path.resolve(repoRoot, 'tools/reference-renders/post-sweep-20260512');
 
 export default defineConfig({
   resolve: {
@@ -16,4 +18,35 @@ export default defineConfig({
   server: {
     port: 5174,
   },
+  plugins: [
+    {
+      name: 'vitrum-capture-sink',
+      configureServer(server) {
+        fs.mkdirSync(captureDir, { recursive: true });
+        server.middlewares.use('/__capture', (req, res) => {
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.end('POST only');
+            return;
+          }
+          const url = new URL(req.url ?? '/', 'http://x');
+          const name = (url.searchParams.get('name') ?? 'capture').replace(/[^a-zA-Z0-9._-]/g, '_');
+          const filePath = path.join(captureDir, `${name}.png`);
+          const chunks: Buffer[] = [];
+          req.on('data', (c) => chunks.push(c));
+          req.on('end', () => {
+            const buf = Buffer.concat(chunks);
+            fs.writeFileSync(filePath, buf);
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ ok: true, bytes: buf.length, path: filePath }));
+          });
+          req.on('error', (err) => {
+            res.statusCode = 500;
+            res.end(String(err));
+          });
+        });
+      },
+    },
+  ],
 });

@@ -404,7 +404,12 @@ async function main(): Promise<void> {
   }
 
   setStatus('Creating WebGL renderer...');
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: false,
+    alpha: false,
+    preserveDrawingBuffer: config.isCapture,
+  });
   renderer.setPixelRatio(1);
   renderer.setClearColor(0x111111, 1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
