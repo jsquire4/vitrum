@@ -110,7 +110,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
   let primaryRay = generatePrimaryRay_common(gid.x, gid.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let primaryHit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay);
+  let primaryHit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay, ubo.triIntersectEpsilon);
 
   if (!primaryHit.didHit) {
     // Sky pixel: output sky color (already written by RIS pass, but keep consistent).
@@ -205,7 +205,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
         let nDotL = max(0.0, dot(normal, wi));
         let nlDotL = max(0.0, dot(-e.normal, wi));
         if (nDotL > 1e-6 && nlDotL > 1e-6) {
-          let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3);
+          let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon);
           if (!occ) {
             let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
             let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);

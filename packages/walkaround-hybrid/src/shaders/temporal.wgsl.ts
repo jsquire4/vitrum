@@ -45,7 +45,7 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 fn castPrimary_t(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> PrimarySurface {
   var s: PrimarySurface;
   let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, camPos, invVP);
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray);
+  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray, ubo.triIntersectEpsilon);
   s.hit = hit.didHit;
   if (!hit.didHit) {
     return s;

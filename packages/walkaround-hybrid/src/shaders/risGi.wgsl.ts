@@ -107,7 +107,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let primaryRay = generatePrimaryRay_common(
     fullPx.x, fullPx.y, fullDims.x, fullDims.y, ubo.cameraPos, invVP,
   );
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay);
+  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay, ubo.triIntersectEpsilon);
   if (!hit.didHit) {
     storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
     return;
@@ -146,7 +146,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     // first BVH hit (or sky-miss at RECONNECT_MAX_DIST).
     let bounceRay = Ray(pos + normal * NORMAL_BIAS_GI, wi);
     let bounceHit = bvhIntersectFirstHit(
-      &bvh_index, &bvh_position, &bvh, bounceRay,
+      &bvh_index, &bvh_position, &bvh, bounceRay, ubo.triIntersectEpsilon,
     );
 
     var xs:  vec3f;
@@ -199,7 +199,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
       let occ = bvhIntersectAny(
         &bvh_index, &bvh_position, &bvh,
-        shadowOrig, wiZ, distS - 2e-3,
+        shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
       );
       if (occ) {
         r.w_sum = 0.0;

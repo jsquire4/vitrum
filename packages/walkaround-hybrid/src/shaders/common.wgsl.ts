@@ -507,6 +507,7 @@ fn bvhIntersectAny(
   origin: vec3f,
   dir:    vec3f,
   tMax:   f32,
+  triEps: f32,
 ) -> bool {
   var stack: array<u32, 64>;
   var stackPtr = 0u;
@@ -544,7 +545,7 @@ fn bvhIntersectAny(
         let a = (*bvh_position)[idx.x].xyz;
         let b = (*bvh_position)[idx.y].xyz;
         let c = (*bvh_position)[idx.z].xyz;
-        let t = intersectTriangle(origin, dir, a, b, c);
+        let t = intersectTriangle(origin, dir, a, b, c, triEps);
         if (t > 1e-4 && t < tMax) { return true; }
       }
     } else {
@@ -580,6 +581,7 @@ fn bvhIntersectFirstHit(
   bvh_position: ptr<storage, array<vec4f>,    read>,
   bvh:          ptr<storage, array<BVHNode>,  read>,
   ray: Ray,
+  triEps: f32,
 ) -> HitResult {
   var result: HitResult;
   result.didHit = false;
@@ -618,7 +620,7 @@ fn bvhIntersectFirstHit(
         let a = pa4.xyz;
         let b = pb4.xyz;
         let c = pc4.xyz;
-        let t = intersectTriangle(ray.origin, ray.direction, a, b, c);
+        let t = intersectTriangle(ray.origin, ray.direction, a, b, c, triEps);
         if (t > 1e-4 && t < result.dist) {
           result.didHit = true;
           result.dist = t;
@@ -694,15 +696,18 @@ fn decodeIsMetal(packed: u32) -> bool {
 }
 
 // Moller-Trumbore triangle intersection; returns t or INFINITY.
-// Uses ubo.triIntersectEpsilon (D12) for the coplanarity floor so hosts
-// can tune it per scene scale.  Shaders that bind WalkaroundUBO at @group(2)
-// @binding(0) provide the UBO; the value defaults to 1e-5 (metre-scale).
-fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
+// Caller supplies the coplanarity floor as a parameter — typically threaded
+// from WalkaroundUBO.triIntersectEpsilon (D12), default 1e-5 (metre-scale).
+// Threading via parameter keeps COMMON_WGSL compilable when concatenated
+// with shaders that bind a different UBO struct (atrous binds AtrousUBO,
+// which has no triIntersectEpsilon member). Without parameterization the
+// atrous shader fails to compile at COMMON_WGSL + ATROUS_WGSL link time.
+fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f, triEps: f32) -> f32 {
   let e1 = b - a;
   let e2 = c - a;
   let h = cross(dir, e2);
   let det = dot(e1, h);
-  if (abs(det) < ubo.triIntersectEpsilon) { return INFINITY; }
+  if (abs(det) < triEps) { return INFINITY; }
   let invDet = 1.0 / det;
   let s = origin - a;
   let u = dot(s, h) * invDet;
@@ -711,7 +716,7 @@ fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) ->
   let v = dot(dir, q) * invDet;
   if (v < 0.0 || u + v > 1.0) { return INFINITY; }
   let t = dot(e2, q) * invDet;
-  if (t < ubo.triIntersectEpsilon) { return INFINITY; }
+  if (t < triEps) { return INFINITY; }
   return t;
 }
 

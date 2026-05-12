@@ -45,7 +45,7 @@ const M_SCALE = 4u;
 fn castPrimary(px: vec2u, dims: vec2u, invVP: mat4x4f) -> PrimarySurface {
   var s: PrimarySurface;
   let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray);
+  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray, ubo.triIntersectEpsilon);
   s.hit = hit.didHit;
   if (!hit.didHit) {
     return s;

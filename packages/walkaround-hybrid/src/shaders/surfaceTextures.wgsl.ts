@@ -186,7 +186,7 @@ fn bvhTraceTintedVisibility(
         let a = (*bvh_position)[idx.x].xyz;
         let b = (*bvh_position)[idx.y].xyz;
         let c = (*bvh_position)[idx.z].xyz;
-        let t = intersectTriangle(origin, dir, a, b, c);
+        let t = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
         if (t > 1e-4 && t < tMax) {
           let trans4 = (idxEntry.w >> 4u) & 0xFu;
           if (trans4 > 4u) {

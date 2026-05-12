@@ -105,7 +105,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let invVP = invertMat4_common(vp);
 
   let primaryRay = generatePrimaryRay_common(gid.x, gid.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay);
+  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay, ubo.triIntersectEpsilon);
 
   if (!hit.didHit) {
     // Sky pixel -- write sky color directly to HDR output, empty reservoir.
@@ -173,7 +173,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let dist = length(toL);
     let wi  = toL / dist;
     let shadowOrig = pos + normal * 1e-3;
-    let occluded = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, shadowOrig, wi, dist - 2e-3);
+    let occluded = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon);
     if (occluded) {
       r.w_sum = 0.0;
       r.W     = 0.0;
