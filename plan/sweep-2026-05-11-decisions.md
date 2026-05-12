@@ -352,6 +352,7 @@ Order within milestone is flexible; land each as its own small PR.
 | Foundations #18 | Remove `min(hit.dist, 32.0)` Beer-Lambert clamp |
 | Foundations #28 | Add `safeInvDir` helper; replace 5 `1/dir` sites |
 | Foundations #29 | Fix BVH stack guard arithmetic (`stackPtr + 1u < 64u`) |
+| **New #39** | Fix octahedral south-pole singularity: `octEncode((0,0,-1)) → (0,0)` because `sign(0)=0` collapses the lower-hemisphere fold; `octDecode((0,0)) = (0,0,+1)` so south pole round-trips to north pole. Fix in `packages/shared-samplers/src/wgsl/octahedralCore.wgsl.ts:7-22` (and the equivalent in `packages/shared-bvh/src/wgsl/octahedral.wgsl.ts`): replace `sign(n.x)` / `sign(n.y)` with `select(-1.0, 1.0, n.x >= 0.0)` / `select(-1.0, 1.0, n.y >= 0.0)`. Cigolle 2014 §A.1 documents this gotcha. Two `it.fails` tests in `packages/shared-samplers/__tests__/octahedral.test.ts` will flip to passing. |
 | Foundations #36 (D12) | UBO-plumb `triIntersectEpsilon` |
 | Foundations #35 (D11) | Delete deprecated `Float32Array` spectral path |
 

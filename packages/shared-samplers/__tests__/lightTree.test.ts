@@ -191,6 +191,132 @@ describe('buildLightTree', () => {
   });
 });
 
+// ── 33-F: Light-tree leaf PDF sums to 1 ──────────────────────────────────────
+
+describe('33-F leaf PDF partition', () => {
+  /**
+   * Enumerate all leaves in a built tree and return their powers.
+   * A leaf is any node with emitterIndex >= 0.
+   */
+  function leafPowers(nodes: ReturnType<typeof buildLightTree>['nodes']): number[] {
+    return nodes.filter((n) => n.emitterIndex >= 0).map((n) => n.totalPower);
+  }
+
+  /**
+   * Simple seeded linear-congruential PRNG returning [0, 1).
+   * LCG parameters from Numerical Recipes.
+   */
+  function makeLcg(seed: number) {
+    let s = seed >>> 0;
+    return () => {
+      s = Math.imul(1664525, s) + 1013904223;
+      return (s >>> 0) / 0x1_0000_0000;
+    };
+  }
+
+  it('leaf PDF partition sums to 1 — small (3 emitters)', () => {
+    const { nodes } = buildLightTree(makeInput([1, 2, 3]));
+    const root = nodes[0]!;
+    const totalPower = root.totalPower;
+    const pdfs = leafPowers(nodes).map((p) => p / totalPower);
+    const sum = pdfs.reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1.0, 5); // tolerance 1e-5
+  });
+
+  it('leaf PDF partition sums to 1 — medium (16 emitters)', () => {
+    const powers = Array.from({ length: 16 }, (_, i) => i + 1);
+    const { nodes } = buildLightTree(makeInput(powers));
+    const totalPower = nodes[0]!.totalPower;
+    const pdfs = leafPowers(nodes).map((p) => p / totalPower);
+    const sum = pdfs.reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1.0, 5);
+  });
+
+  it('leaf PDF partition sums to 1 — pathological (1000 emitters)', () => {
+    // Use pseudo-random-looking powers (reproducible).
+    const rng = makeLcg(0xdeadbeef);
+    const powers = Array.from({ length: 1000 }, () => rng() * 10 + 0.001);
+    const { nodes } = buildLightTree(makeInput(powers));
+    const totalPower = nodes[0]!.totalPower;
+    const pdfs = leafPowers(nodes).map((p) => p / totalPower);
+    const sum = pdfs.reduce((a, b) => a + b, 0);
+    expect(sum).toBeCloseTo(1.0, 5);
+  });
+
+  it('zero-power emitter has PDF = 0 alongside non-zero emitters', () => {
+    // Emitter at index 1 has power 0.
+    const { nodes } = buildLightTree(makeInput([5, 0, 3, 7]));
+    const totalPower = nodes[0]!.totalPower;
+    const leaves = nodes.filter((n) => n.emitterIndex >= 0);
+    const zeroLeaf = leaves.find((n) => n.totalPower === 0);
+    expect(zeroLeaf).toBeDefined();
+    expect(zeroLeaf!.totalPower / totalPower).toBe(0);
+  });
+
+  it('single-emitter tree: pdf_leaf[0] == 1', () => {
+    const { nodes } = buildLightTree(makeInput([42]));
+    const totalPower = nodes[0]!.totalPower;
+    const leaves = nodes.filter((n) => n.emitterIndex >= 0);
+    expect(leaves).toHaveLength(1);
+    expect(leaves[0]!.totalPower / totalPower).toBeCloseTo(1.0, 10);
+  });
+
+  it('2-emitter tree with powers [3, 7]: pdf proportional to power', () => {
+    const { nodes } = buildLightTree(makeInput([3, 7]));
+    const totalPower = nodes[0]!.totalPower; // must be 10
+    expect(totalPower).toBeCloseTo(10.0);
+    const leaves = nodes.filter((n) => n.emitterIndex >= 0);
+    // Sort by emitterIndex to get deterministic order.
+    const sorted = leaves.slice().sort((a, b) => a.emitterIndex - b.emitterIndex);
+    expect(sorted[0]!.totalPower / totalPower).toBeCloseTo(0.3, 10);
+    expect(sorted[1]!.totalPower / totalPower).toBeCloseTo(0.7, 10);
+  });
+
+  it('CDF reconstruction: selection frequencies match pdf_leaf within 2 SEs (N=10 000)', () => {
+    const powers = [1, 4, 2, 8, 5];
+    const { nodes } = buildLightTree(makeInput(powers));
+    const totalPower = nodes[0]!.totalPower;
+    // Sort leaves by emitterIndex to reconstruct a stable CDF order.
+    const leaves = nodes
+      .filter((n) => n.emitterIndex >= 0)
+      .sort((a, b) => a.emitterIndex - b.emitterIndex);
+    const pdfs = leaves.map((l) => l.totalPower / totalPower);
+
+    // Build CDF (leaf-only, in emitterIndex order).
+    const cdf: number[] = [];
+    let running = 0;
+    for (const p of pdfs) {
+      running += p;
+      cdf.push(running);
+    }
+
+    // Sample 10 000 times using deterministic LCG.
+    const N = 10_000;
+    const counts = new Array<number>(pdfs.length).fill(0);
+    const rng = makeLcg(0xcafe_1234);
+    for (let s = 0; s < N; s++) {
+      const u = rng();
+      // Binary search for the first cdf[i] >= u.
+      let lo = 0, hi = cdf.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cdf[mid]! < u) lo = mid + 1;
+        else hi = mid;
+      }
+      counts[lo]!++;
+    }
+
+    // Verify each bucket is within ±2 binomial standard errors.
+    for (let i = 0; i < pdfs.length; i++) {
+      const expected = pdfs[i]! * N;
+      const se = Math.sqrt(pdfs[i]! * (1 - pdfs[i]!) * N);
+      const actual = counts[i]!;
+      expect(actual).toBeGreaterThanOrEqual(expected - 2 * se);
+      expect(actual).toBeLessThanOrEqual(expected + 2 * se);
+    }
+  });
+});
+
 describe('packLightTreeForGPU', () => {
   it('produces 12 floats per node (3 RGBA texels)', () => {
     const { nodes } = buildLightTree(makeInput([4.0, 6.0]));
