@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vitrum — glTF Viewer</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: #111;
+        color: #ccc;
+        font-family: system-ui, sans-serif;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        background: rgba(0,0,0,0.6);
+        pointer-events: none;
+        transition: opacity 0.3s;
+      }
+      #overlay.hidden { opacity: 0; pointer-events: none; }
+      #overlay h1 { font-size: 1.4rem; margin: 0; color: #fff; }
+      #overlay p  { font-size: 0.9rem; margin: 0; color: #aaa; }
+      #drop-zone {
+        border: 2px dashed #555;
+        border-radius: 12px;
+        padding: 32px 48px;
+        text-align: center;
+        pointer-events: all;
+        cursor: pointer;
+        transition: border-color 0.2s;
+      }
+      #drop-zone.over { border-color: #7af; }
+      #controls {
+        position: fixed;
+        top: 12px;
+        right: 12px;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        background: rgba(0,0,0,0.5);
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 13px;
+      }
+      #controls label { cursor: pointer; user-select: none; }
+      #controls input[type="file"] { display: none; }
+      #status {
+        position: fixed;
+        bottom: 12px;
+        left: 12px;
+        font-size: 12px;
+        opacity: 0.7;
+        background: rgba(0,0,0,0.4);
+        padding: 4px 8px;
+        border-radius: 4px;
+      }
+      button {
+        background: #333;
+        border: 1px solid #555;
+        color: #ddd;
+        padding: 5px 12px;
+        border-radius: 6px;
+        font: inherit;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      button:hover { background: #444; }
+      button.active { background: #1a5fa8; border-color: #4af; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <div id="overlay">
+      <h1>vitrum glTF Viewer</h1>
+      <div id="drop-zone">
+        <p>Drag &amp; drop a .glb / .gltf file here</p>
+        <p style="margin-top:8px; font-size:0.8rem; color:#777">or click to browse</p>
+        <input type="file" id="file-input" accept=".glb,.gltf" />
+      </div>
+    </div>
+
+    <div id="controls" style="display:none">
+      <label for="file-input-2">Open file</label>
+      <input type="file" id="file-input-2" accept=".glb,.gltf" />
+      <span style="color:#555">|</span>
+      <span>Engine:</span>
+      <button id="btn-realtime" class="active">Realtime GI</button>
+      <button id="btn-quality">Path Trace</button>
+    </div>
+
+    <div id="status">Ready — no model loaded</div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
