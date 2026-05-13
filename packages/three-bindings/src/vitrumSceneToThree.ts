@@ -344,10 +344,29 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
   }
 }
 
-function applyEnvironment(threeScene: Scene, env: VitrumScene['environment']): void {
-  if (isNoneEnv(env)) {
+/**
+ * Apply a vitrum SceneEnvironment to an EXISTING THREE.Scene by mutating
+ * `threeScene.environment` / `environmentIntensity` / `environmentRotation`
+ * (and the matching background fields) in place. Does NOT rebuild meshes,
+ * lights, or the BVH — callers are expected to follow up with the backend's
+ * env-only update path (e.g. `WebGLPathTracer.updateEnvironment()`).
+ *
+ * Called internally by {@link vitrumSceneToThree} on its freshly created
+ * scene; exported so backends like @vitrum/pt-webgl can reuse the same
+ * env-application logic in their `updateEnvironment()` fast path without
+ * triggering a full setScene() / BVH rebuild.
+ *
+ * Pass `null` to clear the environment (treated identically to
+ * `{ kind: 'none' }`).
+ */
+export function applyEnvironment(threeScene: Scene, env: VitrumScene['environment'] | null): void {
+  if (env == null || isNoneEnv(env)) {
     threeScene.background = new Color(0, 0, 0);
     threeScene.environment = null;
+    threeScene.environmentIntensity = 1;
+    threeScene.backgroundIntensity = 1;
+    threeScene.environmentRotation.set(0, 0, 0);
+    threeScene.backgroundRotation.set(0, 0, 0);
     return;
   }
   if (env.kind === 'hdri') {

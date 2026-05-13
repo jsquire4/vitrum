@@ -118,6 +118,17 @@ export interface Engine {
   /** Patch a single emitter. Same incremental-fallback semantics as above. */
   updateEmitter?(id: string, patch: Partial<SceneEmitter>): void;
 
+  /** Apply an environment-only update (HDRI texture / intensity / rotation
+   *  swap, or transition to `kind: 'none'`) without rebuilding the BVH or
+   *  re-uploading geometry/materials. Backends that can update the IBL
+   *  uniforms in place — pt-webgl wraps WebGLPathTracer.updateEnvironment(),
+   *  which costs one accumulator reset and no BVH work — implement this for
+   *  fast timeOfDay scrubs on the host side. Backends without a cheap env
+   *  path (current HybridEngine is reactive to its own scene-source rather
+   *  than host-driven env scrubs) may omit this method; hosts MUST
+   *  typeof-check before calling. */
+  updateEnvironment?(env: import('./scene.js').SceneEnvironment | null): void;
+
   // ── Frame-level rendering ───────────────────────────────────────────────
 
   /** Render one sample/frame and return references to the engine's output
