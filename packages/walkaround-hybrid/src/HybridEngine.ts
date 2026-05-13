@@ -597,6 +597,15 @@ export class HybridEngine implements Engine {
    */
   private _pendingTeardown: boolean = false;
 
+  /**
+   * True while an `_initPipeline()` async chain is mid-flight. The init
+   * chain sets this to `true` at entry to the inner IIFE and to `false`
+   * in its `finally`. Read by `dispose()` to decide whether to defer
+   * teardown to the in-flight chain's finally block (via
+   * `_pendingTeardown`) or to tear down synchronously here and now.
+   */
+  private _initRunning: boolean = false;
+
   /** Monotonic fingerprint of {@link HybridEngineOptions.pipelineRebuildKey} /
    *  {@link HybridEngineOptions.getPipelineRebuildKey} — changes trigger `reset()`. */
   private _rebuildKeyFingerprintSeen: string;
@@ -1236,11 +1245,56 @@ export class HybridEngine implements Engine {
 
   // ── Dispose ────────────────────────────────────────────────────────────
 
+  /**
+   * Synchronous dispose — releases all engine-owned GPU resources.
+   *
+   * The contract intentionally remains synchronous (so hosts can call it
+   * from React cleanup effects, finalizers, etc. without an async
+   * paradigm shift). When an `_initPipeline()` chain is in flight, the
+   * actual GPU-resource release for any work that chain hasn't yet
+   * published is deferred to the chain's own `finally` block — the chain
+   * checks `_pendingTeardown` after every await boundary and, if set,
+   * disposes its locals AND finalises teardown of whatever did make it
+   * to shared state. This avoids the async-dispose API ripple while
+   * still being honest about late-resolving init work.
+   *
+   * Idempotent: a second `dispose()` call is a no-op.
+   */
   dispose(): void {
+    if (this._state === 'disposed' && !this._initRunning) {
+      // Already disposed and no in-flight chain to coordinate with — no-op.
+      return;
+    }
     this._disposed = true;
-    this._teardownPipeline();
-    this._ddgi.dispose();
-    this._state = 'disposed';
+    // We deliberately do NOT bump _initSeq here. The in-flight chain
+    // captured `mySeq` at start; it relies on `mySeq === this._initSeq`
+    // to know whether IT is the latest writer. If we bumped seq the
+    // chain's `finally` would think a newer chain raced past — but
+    // there isn't one — and it would skip the teardown finalisation.
+    // Instead, dispose communicates intent via `_disposed` +
+    // `_pendingTeardown`; the chain's checkpoints check all three.
+
+    if (this._initRunning) {
+      // An init is mid-flight. Defer teardown to that chain's finally
+      // block — it will dispose its locals AND tear down whatever's
+      // currently in shared state (BVH/pipeline/traversal scene that a
+      // PRIOR chain published before being raced out by this one). We
+      // can't safely call _teardownPipeline() here because the in-flight
+      // chain's `await pipeline.initialize()` may still be holding a
+      // live reference to a half-built pipeline.
+      this._pendingTeardown = true;
+      this._state = 'disposed';
+      // Note: _ddgi.dispose() is deferred too; the in-flight chain may
+      // still call _ddgi.pass.setSunIntensityMultiplier() after the
+      // post-pipeline checkpoint, and we don't want a torn-down DDGI
+      // under it. The chain's finally calls _ddgi.dispose() when it
+      // sees _pendingTeardown.
+    } else {
+      // No in-flight init; tear down here and now.
+      this._teardownPipeline();
+      this._ddgi.dispose();
+      this._state = 'disposed';
+    }
 
     if (this._debug && typeof window !== 'undefined') {
       const dbg = this._dbg;
@@ -1249,6 +1303,7 @@ export class HybridEngine implements Engine {
       console.log(`[hybrid:debug] dispose #${dbg.disposeCount}`, {
         ranForMs: liveMs.toFixed(1),
         framesDispatched: dbg.framesDispatched,
+        deferredTeardown: this._pendingTeardown,
         skipReasons: {
           noPipeline: dbg.skipNoPipeline, noBvh: dbg.skipNoBvh,
           noSwapView: dbg.skipNoSwapView, frameInterval: dbg.skipFrameInterval,
@@ -1315,6 +1370,7 @@ export class HybridEngine implements Engine {
     // Fire-and-forget: the engine transitions to 'ready' when the BVH and
     // pipeline finish setting up, or to 'error' on failure. Callers do not
     // await this — the engine state machine is the synchronization point.
+    this._initRunning = true;
     void (async () => {
       // Poll until scene has enough geometry (or 5s timeout).
       const pollStart = Date.now();
@@ -1528,7 +1584,16 @@ export class HybridEngine implements Engine {
             console.log('[hybrid:debug] init finally — finalising deferred teardown', { seq: mySeq });
           }
           this._teardownPipeline();
+          // _ddgi.dispose() was deferred by dispose() since init was in-flight;
+          // it's safe to call now because no chain is using it any more.
+          try { this._ddgi.dispose(); } catch {}
           this._state = 'disposed';
+        }
+        // Always clear _initRunning at the end of OUR chain — but only if
+        // we're still the latest. A newer chain will have set it back to
+        // true; we MUST NOT clear another chain's flag.
+        if (mySeq === this._initSeq) {
+          this._initRunning = false;
         }
       }
     })();
