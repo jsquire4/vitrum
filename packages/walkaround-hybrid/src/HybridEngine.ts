@@ -1723,11 +1723,21 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> =
   }
 
   const engine = new HybridEngine(opts);
-  // _initPipeline is fire-and-forget; the engine transitions to 'ready'
-  // when the BVH poll + pipeline compile finishes. The host polls
-  // engine.state or observes renderFrame returning samplesAccumulated=0.
-  // Bootstrap with a valid empty scene (no primitives, no emitters) so the
-  // scene-readiness poll falls through to the host threeScene heuristic.
+  // Bootstrap setScene with an empty vitrum Scene. Two callers depend on
+  // this:
+  //   1. Hosts that pass `threeScene` at construction and never call setScene
+  //      themselves (e.g. examples/two-engines-one-scene). Without the
+  //      bootstrap they'd never trigger _initPipeline → engine stays
+  //      'uninitialized' → renderFrame returns skip output forever.
+  //   2. Hosts that DO call setScene afterwards (e.g. @vitrum/engine.createEngine).
+  //      The host's setScene fires init-B which races init-A. The init-flight
+  //      guard (HybridEngine._initSeq, see _initPipeline()) ensures the loser
+  //      bootstrap chain disposes its locals — no GPU resource leak. The
+  //      bootstrap is wasted work but safe.
+  //
+  // We could remove the bootstrap and require all hosts to call setScene
+  // explicitly, but that would silently break case 1 and offer no safety
+  // benefit (Fix 1 already eliminates the race-leak class).
   engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
   return engine;
 }
