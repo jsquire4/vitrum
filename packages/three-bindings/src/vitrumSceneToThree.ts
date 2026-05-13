@@ -82,6 +82,22 @@ function stampVitrumUserData(mat: MeshPhysicalMaterial, m: VitrumMaterial): void
   if (m.frontLayer !== undefined) ud[K.FRONT_LAYER] = m.frontLayer;
   if (m.backLayer !== undefined) ud[K.BACK_LAYER] = m.backLayer;
 
+  // RFE-10 dichroic addendum (PHY.1 — 2026-05-12). Re-stamp the pre-convolved
+  // angle-indexed LUTs surfaced via Material.extensions.dichroicLUTs so they
+  // survive the THREE → vitrum → THREE round trip. The forward direction
+  // (`convertMaterial` in material.ts) reads userData.vitrumDichroic*LUT into
+  // `extensions.dichroicLUTs.{reflectance,transmittance}`; this side writes
+  // the same texture handles back so raster backends downstream of the round
+  // trip can re-bind them. Only stamp when present — absent LUTs leave a
+  // clean userData object (no phantom keys), matching the rest of stamping.
+  const dichroic = m.extensions?.['dichroicLUTs'] as
+    | { reflectance?: unknown; transmittance?: unknown }
+    | undefined;
+  if (dichroic != null) {
+    if (dichroic.reflectance != null) ud[K.DICHROIC_REFLECTANCE_LUT] = dichroic.reflectance;
+    if (dichroic.transmittance != null) ud[K.DICHROIC_TRANSMITTANCE_LUT] = dichroic.transmittance;
+  }
+
   mat.userData = ud;
 }
 
@@ -328,17 +344,50 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
   }
 }
 
-function applyEnvironment(threeScene: Scene, env: VitrumScene['environment']): void {
-  if (isNoneEnv(env)) {
+/**
+ * Apply a vitrum SceneEnvironment to an EXISTING THREE.Scene by mutating
+ * `threeScene.environment` / `environmentIntensity` / `environmentRotation`
+ * (and the matching background fields) in place. Does NOT rebuild meshes,
+ * lights, or the BVH — callers are expected to follow up with the backend's
+ * env-only update path (e.g. `WebGLPathTracer.updateEnvironment()`).
+ *
+ * Called internally by {@link vitrumSceneToThree} on its freshly created
+ * scene; exported so backends like @vitrum/pt-webgl can reuse the same
+ * env-application logic in their `updateEnvironment()` fast path without
+ * triggering a full setScene() / BVH rebuild.
+ *
+ * Pass `null` to clear the environment (treated identically to
+ * `{ kind: 'none' }`).
+ */
+export function applyEnvironment(threeScene: Scene, env: VitrumScene['environment'] | null): void {
+  if (env == null || isNoneEnv(env)) {
     threeScene.background = new Color(0, 0, 0);
     threeScene.environment = null;
+    threeScene.environmentIntensity = 1;
+    threeScene.backgroundIntensity = 1;
+    threeScene.environmentRotation.set(0, 0, 0);
+    threeScene.backgroundRotation.set(0, 0, 0);
     return;
   }
   if (env.kind === 'hdri') {
     if (isTexture(env.hdri)) {
+      const intensity = env.intensity ?? 1;
+      const rotationY = env.rotationY ?? 0;
       threeScene.environment = env.hdri;
       threeScene.background = env.hdri;
-      threeScene.environmentIntensity = env.intensity ?? 1;
+      // Set BOTH environmentIntensity (drives IBL contribution to materials)
+      // AND backgroundIntensity (drives the visible HDRI background brightness).
+      // WebGLPathTracer.updateEnvironment() reads both uniforms from the THREE
+      // scene; keeping them in lock-step matches THREE's "background = environment"
+      // texture-sharing convention here.
+      threeScene.environmentIntensity = intensity;
+      threeScene.backgroundIntensity = intensity;
+      // HdriEnvironment.rotationY is a yaw around world up. Project onto the
+      // THREE Euler's Y component for both environment and background rotation
+      // so the equirect map is oriented consistently in the IBL contribution and
+      // the visible background. Other Euler axes are left at their defaults (0).
+      threeScene.environmentRotation.set(0, rotationY, 0);
+      threeScene.backgroundRotation.set(0, rotationY, 0);
     } else {
       console.warn(
         '@vitrum/three-bindings: HDRI environment requires THREE.Texture handle; got opaque TextureRef — using black background',

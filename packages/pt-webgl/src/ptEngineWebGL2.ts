@@ -22,9 +22,9 @@ import type {
   ProgressStats,
 } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
-import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
-import { vitrumSceneToThree } from '@vitrum/three-bindings';
+import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
 import {
   MAX_TILE_GRID,
@@ -103,6 +103,18 @@ interface WebGLPathTracerCompat {
   setSize(width: number, height: number): void;
   reset(): void;
   renderSample(): void;
+  /** Re-reads `scene.environment` / `scene.environmentIntensity` /
+   *  `scene.environmentRotation` (and the matching background fields) into the
+   *  fork's IBL uniforms WITHOUT touching geometry, materials, or the BVH.
+   *  Internally calls `reset()` (one accumulator-clear) — no BVH rebuild,
+   *  no geometry re-upload. Used by `PTEngineWebGL2.updateEnvironment()` to
+   *  service host-driven timeOfDay scrubs cheaply. */
+  updateEnvironment?(): void;
+  /** Optional fork field — the wrapper stores a reference to the THREE scene
+   *  most recently passed to `setScene()`. updateEnvironment() reads
+   *  `scene.environment*` off this reference, so the host MUST mutate the
+   *  same scene object the wrapper has cached, not pass in a new one. */
+  scene?: unknown;
   dispose?(): void;
   samples: number;
   tiles: { setScalar: (n: number) => void };
@@ -611,6 +623,62 @@ export class PTEngineWebGL2 implements Engine {
         lightPathTex: null, // populated per-frame by host after light-subpath draw pass
       },
     );
+  }
+
+  /**
+   * Apply an environment-only update without rebuilding geometry, materials,
+   * or the BVH. Hosts call this for fast timeOfDay scrubs where only the
+   * HDRI texture / intensity / rotation changes.
+   *
+   * Cost: one accumulator-clear (one frame's worth of work) — no BVH rebuild
+   * and no GPU geometry / material re-upload. Compare to `setScene()`, which
+   * disposes the entire converted three.js subtree, rebuilds it via
+   * `vitrumSceneToThree`, and triggers a full BVH rebuild inside
+   * WebGLPathTracer.
+   *
+   * Implementation: mutates the engine's INTERNAL THREE.Scene root via the
+   * shared `applyEnvironment` helper from @vitrum/three-bindings (matches
+   * the env-application logic vitrumSceneToThree uses on the freshly created
+   * scene), then calls `WebGLPathTracer.updateEnvironment()` which reads
+   * the env uniforms back off the cached scene reference. The fork's
+   * `updateEnvironment()` already calls `reset()` internally.
+   *
+   * Pre-conditions: a successful `setScene()` must have been called first;
+   * otherwise the engine has no internal scene to mutate.
+   *
+   * Pass `null` to clear the environment (equivalent to `{ kind: 'none' }`).
+   */
+  updateEnvironment(env: SceneEnvironment | null): void {
+    if (this.#slot.get() === 'disposed') {
+      throw new Error('updateEnvironment: engine is disposed');
+    }
+    if (this.#threeSceneRoot == null || this.#vitrumScene == null) {
+      throw new Error('updateEnvironment: call setScene() before updateEnvironment()');
+    }
+    // Mutate the existing internal THREE.Scene in place (no rebuild, no
+    // dispose, no replacement). The fork caches a reference to this scene
+    // when setScene() was called, so it will see the new env on its next
+    // updateEnvironment() call.
+    applyEnvironment(this.#threeSceneRoot, env);
+    const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
+    if (typeof tracerCompat.updateEnvironment === 'function') {
+      tracerCompat.updateEnvironment();
+    } else {
+      // Fork API gap: should never happen with the vendored
+      // three-gpu-pathtracer fork (WebGLPathTracer.updateEnvironment was
+      // present at fork-time and continues to exist). Reset the accumulator
+      // anyway so the host sees fresh samples on the next render.
+      console.warn(
+        '[pt-webgl] WebGLPathTracer.updateEnvironment() not available; ' +
+          'falling back to accumulator reset only — IBL uniforms will not update until next setScene()',
+      );
+      tracerCompat.reset();
+    }
+    // Cache the env on the vitrum scene record so subsequent reads of the
+    // engine's vitrum scene state reflect the env update. The Scene type's
+    // environment field is non-nullable; collapse a null env to `{ kind: 'none' }`.
+    const nextEnv: SceneEnvironment = env ?? { kind: 'none' };
+    this.#vitrumScene = { ...this.#vitrumScene, environment: nextEnv };
   }
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {

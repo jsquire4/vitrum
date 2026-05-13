@@ -17,7 +17,7 @@ import { convertMesh, emissiveMeshAreaEmitter, stripEmissive } from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
 
-export { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from './vitrumSceneToThree.js';
+export { vitrumSceneToThree, disposeVitrumThreeSceneRoot, applyEnvironment } from './vitrumSceneToThree.js';
 export { loadGltfScene, type LoadedGltf, type GltfCamera, type LoadGltfSceneOptions } from './gltfLoader.js';
 export { VITRUM_USER_DATA_KEYS } from './userDataKeys.js';
 export {

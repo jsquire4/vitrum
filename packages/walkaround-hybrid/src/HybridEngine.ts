@@ -422,8 +422,11 @@ export class HybridEngine implements Engine {
 
   // ── Creation-time options (immutable after construction) ───────────────
   private readonly _device:               GPUDevice;
-  private readonly _width:                number;
-  private readonly _height:               number;
+  // Mutable since T-resize: the host calls `setSize()` whenever the
+  // canvas resizes; the pipeline reallocates its FrameResources without
+  // a full engine teardown. See `setSize()` for the resize contract.
+  private _width:                number;
+  private _height:               number;
   /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
    *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
   private readonly _threeScene:           THREE.Scene | null;
@@ -572,6 +575,39 @@ export class HybridEngine implements Engine {
   // ── Initialisation cancellation ───────────────────────────────────────
   /** Set to true by dispose() to cancel an in-flight async init. */
   private _disposed = false;
+
+  /**
+   * Monotonic init sequence — incremented at the start of every
+   * `_initPipeline()` call. Each in-flight async init captures the value
+   * at entry; before it writes any shared state (`_ddgiTraversalScene`,
+   * `_bvhBuffers`, `_pipeline`) it re-checks `mySeq === this._initSeq`.
+   * If the value drifted, a newer init / teardown raced ahead and this
+   * older chain MUST dispose its locals + bail without mutating shared
+   * state. Without this guard, two concurrent inits both write — the loser
+   * leaks ~1 GB of GPU resources (full-res rgba16float textures + BVH
+   * buffers + DDGI atlases) per setScene/resize storm tick.
+   */
+  private _initSeq: number = 0;
+
+  /**
+   * Set true by `dispose()` when there's an in-flight `_initPipeline()`
+   * chain. The init chain checks this flag after every `await` and, if
+   * set, disposes any locals it owns (BVH, pipeline) AND finalises
+   * teardown of `_pipeline` / `_bvhBuffers` / `_ddgiTraversalScene` if
+   * something snuck into them between the dispose call and the await
+   * resolution. Lets `dispose()` stay synchronous while still being honest
+   * about late writers.
+   */
+  private _pendingTeardown: boolean = false;
+
+  /**
+   * True while an `_initPipeline()` async chain is mid-flight. The init
+   * chain sets this to `true` at entry to the inner IIFE and to `false`
+   * in its `finally`. Read by `dispose()` to decide whether to defer
+   * teardown to the in-flight chain's finally block (via
+   * `_pendingTeardown`) or to tear down synchronously here and now.
+   */
+  private _initRunning: boolean = false;
 
   /** Monotonic fingerprint of {@link HybridEngineOptions.pipelineRebuildKey} /
    *  {@link HybridEngineOptions.getPipelineRebuildKey} — changes trigger `reset()`. */
@@ -810,6 +846,54 @@ export class HybridEngine implements Engine {
     // _pipeline may be null if the engine is still initialising; the flag is
     // applied as soon as the pipeline exists (set before any renderFrame call).
     this._pipeline?.requestAccumReset();
+  }
+
+  // ── Resize ─────────────────────────────────────────────────────────────
+
+  /**
+   * Resize the render surface WITHOUT rebuilding the BVH or recompiling
+   * pipelines. The host calls this whenever the canvas (or device-pixel
+   * ratio) changes — much cheaper than the previous resize-storm pattern
+   * (engine teardown → recreate engine → poll for ready), which on a
+   * single resize tick churned every BVH buffer + every pipeline shader
+   * + every DDGI atlas + ~1 GB of FrameResources textures.
+   *
+   * Behaviour:
+   *   - Updates `_width` / `_height` on the engine.
+   *   - Calls `WalkaroundGPUPipeline.resize(W, H)` if the pipeline is
+   *     live, which destroys + recreates per-frame GPU resources only
+   *     (FrameResources textures + reservoir buffers + variance buffers
+   *     + GTAO half/full + SVGF persistent textures) at the new size.
+   *     The BVH, pipeline shaders, bind-group layouts, DDGI atlases,
+   *     and per-pass UBOs are preserved.
+   *   - Resets the temporal accumulator + ping-pong indices on the
+   *     pipeline (the new textures are blank, so reusing prior history
+   *     would sample undefined memory).
+   *
+   * No-op when called with the current size, or when the pipeline isn't
+   * yet live (the new size is stored on the engine; `_initPipeline` will
+   * use it when it constructs the pipeline).
+   *
+   * Cost: O(W·H) GPU memory churn for the FrameResources reallocation;
+   * no shader recompile, no BVH rebuild. Typical resize tick: 5-30 ms
+   * for the GPU allocations on a 4K surface, vs 500-2000 ms for a full
+   * engine teardown + re-init.
+   */
+  setSize(width: number, height: number): void {
+    if (width === this._width && height === this._height) return;
+    if (width <= 0 || height <= 0) {
+      // Defensive: WebGPU createTexture rejects zero-sized textures.
+      // Hosts sometimes feed in transient 0-pixel sizes during resize
+      // animations — silently ignore.
+      return;
+    }
+    this._width = width;
+    this._height = height;
+    if (this._pipeline) {
+      this._pipeline.resize(width, height);
+    }
+    // No DDGI invalidation — the irradiance atlas is world-space, not
+    // screen-space, so it survives a resize unchanged.
   }
 
   // ── Frame rendering ────────────────────────────────────────────────────
@@ -1212,11 +1296,56 @@ export class HybridEngine implements Engine {
 
   // ── Dispose ────────────────────────────────────────────────────────────
 
+  /**
+   * Synchronous dispose — releases all engine-owned GPU resources.
+   *
+   * The contract intentionally remains synchronous (so hosts can call it
+   * from React cleanup effects, finalizers, etc. without an async
+   * paradigm shift). When an `_initPipeline()` chain is in flight, the
+   * actual GPU-resource release for any work that chain hasn't yet
+   * published is deferred to the chain's own `finally` block — the chain
+   * checks `_pendingTeardown` after every await boundary and, if set,
+   * disposes its locals AND finalises teardown of whatever did make it
+   * to shared state. This avoids the async-dispose API ripple while
+   * still being honest about late-resolving init work.
+   *
+   * Idempotent: a second `dispose()` call is a no-op.
+   */
   dispose(): void {
+    if (this._state === 'disposed' && !this._initRunning) {
+      // Already disposed and no in-flight chain to coordinate with — no-op.
+      return;
+    }
     this._disposed = true;
-    this._teardownPipeline();
-    this._ddgi.dispose();
-    this._state = 'disposed';
+    // We deliberately do NOT bump _initSeq here. The in-flight chain
+    // captured `mySeq` at start; it relies on `mySeq === this._initSeq`
+    // to know whether IT is the latest writer. If we bumped seq the
+    // chain's `finally` would think a newer chain raced past — but
+    // there isn't one — and it would skip the teardown finalisation.
+    // Instead, dispose communicates intent via `_disposed` +
+    // `_pendingTeardown`; the chain's checkpoints check all three.
+
+    if (this._initRunning) {
+      // An init is mid-flight. Defer teardown to that chain's finally
+      // block — it will dispose its locals AND tear down whatever's
+      // currently in shared state (BVH/pipeline/traversal scene that a
+      // PRIOR chain published before being raced out by this one). We
+      // can't safely call _teardownPipeline() here because the in-flight
+      // chain's `await pipeline.initialize()` may still be holding a
+      // live reference to a half-built pipeline.
+      this._pendingTeardown = true;
+      this._state = 'disposed';
+      // Note: _ddgi.dispose() is deferred too; the in-flight chain may
+      // still call _ddgi.pass.setSunIntensityMultiplier() after the
+      // post-pipeline checkpoint, and we don't want a torn-down DDGI
+      // under it. The chain's finally calls _ddgi.dispose() when it
+      // sees _pendingTeardown.
+    } else {
+      // No in-flight init; tear down here and now.
+      this._teardownPipeline();
+      this._ddgi.dispose();
+      this._state = 'disposed';
+    }
 
     if (this._debug && typeof window !== 'undefined') {
       const dbg = this._dbg;
@@ -1225,6 +1354,7 @@ export class HybridEngine implements Engine {
       console.log(`[hybrid:debug] dispose #${dbg.disposeCount}`, {
         ranForMs: liveMs.toFixed(1),
         framesDispatched: dbg.framesDispatched,
+        deferredTeardown: this._pendingTeardown,
         skipReasons: {
           noPipeline: dbg.skipNoPipeline, noBvh: dbg.skipNoBvh,
           noSwapView: dbg.skipNoSwapView, frameInterval: dbg.skipFrameInterval,
@@ -1272,6 +1402,9 @@ export class HybridEngine implements Engine {
     if (this._disposed) return;
 
     const device = this._device;
+    // Capture our sequence number — any newer _initPipeline()/teardown bump
+    // invalidates the writes below. See `_initSeq` docs.
+    const mySeq = ++this._initSeq;
 
     if (this._debug) {
       const dbg = this._dbg;
@@ -1279,7 +1412,7 @@ export class HybridEngine implements Engine {
       dbg.initStart = performance.now();
       console.log(`[hybrid:debug] init #${dbg.initCount} START`, {
         W: this._width, H: this._height, device: !!device,
-        t: dbg.initStart.toFixed(0),
+        t: dbg.initStart.toFixed(0), seq: mySeq,
       });
     }
 
@@ -1288,11 +1421,12 @@ export class HybridEngine implements Engine {
     // Fire-and-forget: the engine transitions to 'ready' when the BVH and
     // pipeline finish setting up, or to 'error' on failure. Callers do not
     // await this — the engine state machine is the synchronization point.
+    this._initRunning = true;
     void (async () => {
       // Poll until scene has enough geometry (or 5s timeout).
       const pollStart = Date.now();
       let pollIters = 0;
-      while (!this._disposed) {
+      while (!this._disposed && mySeq === this._initSeq) {
         const elapsed = Date.now() - pollStart;
         if (elapsed >= 5_000) break;
         if (this._sceneReadyForBvh()) break;
@@ -1300,24 +1434,36 @@ export class HybridEngine implements Engine {
         pollIters++;
       }
 
-      if (this._disposed) {
+      if (this._disposed || mySeq !== this._initSeq) {
         if (this._debug) {
-          console.log('[hybrid:debug] init aborted during scene-readiness poll', { pollIters });
+          console.log('[hybrid:debug] init aborted during scene-readiness poll', {
+            pollIters, disposed: this._disposed, raced: mySeq !== this._initSeq, seq: mySeq,
+          });
         }
         return;
       }
 
       if (this._debug) {
-        console.log('[hybrid:debug] scene-ready', { pollIters, elapsed: Date.now() - pollStart });
+        console.log('[hybrid:debug] scene-ready', { pollIters, elapsed: Date.now() - pollStart, seq: mySeq });
       }
+
+      // Locals — must be disposed if we lose the race before publishing to
+      // shared state. `bvhRoot` is owned-and-synthesized iff
+      // (bvhRoot !== this._threeScene) — that's the same condition the
+      // sync code uses to decide whether _ddgiTraversalScene gets it.
+      let bvhRoot: THREE.Object3D | null = null;
+      let bvhOwnedSynthesized = false;
+      let bvh: SceneBVHBuffers | null = null;
+      let pipeline: WalkaroundGPUPipeline | null = null;
 
       try {
         const bvhStart = performance.now();
-        let bvhRoot: THREE.Object3D;
         if (this._coreSceneSuppliesMeshes()) {
           bvhRoot = vitrumSceneToThree(this._lastScene!);
+          bvhOwnedSynthesized = true;
         } else if (this._threeScene != null) {
           bvhRoot = this._threeScene;
+          bvhOwnedSynthesized = false;
         } else {
           // T3.H removal: no vitrum mesh primitives AND no escape-hatch
           // threeScene. The host hasn't given us anything to render against.
@@ -1328,25 +1474,43 @@ export class HybridEngine implements Engine {
             'or pass `threeScene` directly to the engine constructor.',
           );
         }
-        if (bvhRoot !== this._threeScene) {
-          this._ddgiTraversalScene = bvhRoot as THREE.Scene;
-        }
-        const bvh = buildReSTIRSceneBVH([bvhRoot], {
+        bvh = buildReSTIRSceneBVH([bvhRoot], {
           primaryLightDir:       new THREE.Vector3(...this._primaryLightDir),
           primaryLightIntensity: this._primaryLightIntensity,
         });
         const bvhMs = performance.now() - bvhStart;
+
+        // First shared-state write checkpoint. If a newer setScene/reset
+        // bumped _initSeq while buildReSTIRSceneBVH ran (it's CPU-side but
+        // not instantaneous on heavy scenes), discard our work locally.
+        if (this._disposed || this._pendingTeardown || mySeq !== this._initSeq) {
+          if (this._debug) {
+            console.log('[hybrid:debug] init lost race pre-_ddgiTraversalScene write', {
+              disposed: this._disposed, pendingTeardown: this._pendingTeardown,
+              raced: mySeq !== this._initSeq, seq: mySeq,
+            });
+          }
+          // Locals will be disposed by the finally block.
+          return;
+        }
+        if (bvhOwnedSynthesized) {
+          this._ddgiTraversalScene = bvhRoot as THREE.Scene;
+          bvhOwnedSynthesized = false; // ownership transferred to engine
+        }
         this._bvhBuffers = bvh;
+        const bvhPublished = bvh;
+        bvh = null; // ownership transferred to engine
 
         if (this._debug) {
           console.log('[hybrid:debug] BVH built', {
             bvhMs: bvhMs.toFixed(1),
-            triCount: bvh.bvhNodes?.count,
-            emitterCount: bvh.emitters?.count,
+            triCount: bvhPublished.bvhNodes?.count,
+            emitterCount: bvhPublished.emitters?.count,
+            seq: mySeq,
           });
         }
 
-        const pipeline = new WalkaroundGPUPipeline(device, this._width, this._height);
+        pipeline = new WalkaroundGPUPipeline(device, this._width, this._height);
         const pipelineStart = performance.now();
 
         // T2.H2 — Neural denoiser: create and initialize InferenceGraph before pipeline init.
@@ -1358,7 +1522,7 @@ export class HybridEngine implements Engine {
         }
 
         await pipeline.initialize(
-          bvh,
+          bvhPublished,
           getPreferredSwapChainFormat(),
           {
             verbose: this._verbose || this._debug,
@@ -1371,13 +1535,33 @@ export class HybridEngine implements Engine {
         );
         const pipelineMs = performance.now() - pipelineStart;
 
-        if (this._disposed) {
+        // Final shared-state write checkpoint — pipeline.initialize() awaits
+        // shader compilation (~50–500 ms). A newer setScene/reset/dispose
+        // raced ahead in the meantime → discard locally and dispose locals
+        // in finally. We MUST NOT publish `pipeline` to `_pipeline` in this
+        // case; the newer chain has its own pipeline coming.
+        if (this._disposed || this._pendingTeardown || mySeq !== this._initSeq) {
           if (this._debug) {
-            console.log('[hybrid:debug] init aborted post-pipeline.initialize', {
+            console.log('[hybrid:debug] init lost race post-pipeline.initialize', {
               pipelineMs: pipelineMs.toFixed(1),
+              disposed: this._disposed, pendingTeardown: this._pendingTeardown,
+              raced: mySeq !== this._initSeq, seq: mySeq,
             });
           }
-          pipeline.dispose();
+          // Also tear down the BVH we already published to _bvhBuffers if
+          // it's still ours; otherwise the newer chain has replaced it.
+          if (this._bvhBuffers === bvhPublished) {
+            disposeSceneBVH(bvhPublished);
+            this._bvhBuffers = null;
+          }
+          // And the traversal scene we published if it's still ours.
+          if (this._ddgiTraversalScene !== null
+              && this._ddgiTraversalScene === bvhRoot
+              && bvhRoot !== this._threeScene) {
+            disposeVitrumThreeSceneRoot(this._ddgiTraversalScene);
+            this._ddgiTraversalScene = null;
+          }
+          // pipeline disposed by the finally block.
           return;
         }
 
@@ -1409,13 +1593,14 @@ export class HybridEngine implements Engine {
         }
 
         this._pipeline     = pipeline;
+        pipeline = null; // ownership transferred to engine
         this._state        = 'ready';
 
         if (this._debug) {
           const dbg = this._dbg;
           const totalMs = performance.now() - dbg.initStart;
           console.log(`[hybrid:debug] init #${dbg.initCount} COMPLETE`, {
-            pipelineMs: pipelineMs.toFixed(1), totalMs: totalMs.toFixed(1),
+            pipelineMs: pipelineMs.toFixed(1), totalMs: totalMs.toFixed(1), seq: mySeq,
           });
         }
       } catch (err) {
@@ -1426,6 +1611,41 @@ export class HybridEngine implements Engine {
           '[HybridEngine] init failed — engine state set to error. Call dispose() and recreate the engine to retry.',
           err,
         );
+      } finally {
+        // Dispose any locals that did NOT make it to shared state. After
+        // a successful run all three are null (ownership transferred). On
+        // a race / error / dispose, whichever weren't transferred get freed
+        // here so we don't leak ~1 GB of GPU resources per loser.
+        if (pipeline) {
+          try { pipeline.dispose(); } catch {}
+        }
+        if (bvh) {
+          try { disposeSceneBVH(bvh); } catch {}
+        }
+        if (bvhRoot && bvhOwnedSynthesized) {
+          try { disposeVitrumThreeSceneRoot(bvhRoot); } catch {}
+        }
+        // If dispose() raced and left _pendingTeardown set, finalise the
+        // teardown now. The newest writer (us, if we published successfully)
+        // is responsible for actually tearing down — we're the last live
+        // reference. Note: if a newer chain is still running, its own
+        // checkpoints will see _pendingTeardown and bail before publishing.
+        if (this._pendingTeardown && mySeq === this._initSeq) {
+          if (this._debug) {
+            console.log('[hybrid:debug] init finally — finalising deferred teardown', { seq: mySeq });
+          }
+          this._teardownPipeline();
+          // _ddgi.dispose() was deferred by dispose() since init was in-flight;
+          // it's safe to call now because no chain is using it any more.
+          try { this._ddgi.dispose(); } catch {}
+          this._state = 'disposed';
+        }
+        // Always clear _initRunning at the end of OUR chain — but only if
+        // we're still the latest. A newer chain will have set it back to
+        // true; we MUST NOT clear another chain's flag.
+        if (mySeq === this._initSeq) {
+          this._initRunning = false;
+        }
       }
     })();
   }
@@ -1503,11 +1723,21 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> =
   }
 
   const engine = new HybridEngine(opts);
-  // _initPipeline is fire-and-forget; the engine transitions to 'ready'
-  // when the BVH poll + pipeline compile finishes. The host polls
-  // engine.state or observes renderFrame returning samplesAccumulated=0.
-  // Bootstrap with a valid empty scene (no primitives, no emitters) so the
-  // scene-readiness poll falls through to the host threeScene heuristic.
+  // Bootstrap setScene with an empty vitrum Scene. Two callers depend on
+  // this:
+  //   1. Hosts that pass `threeScene` at construction and never call setScene
+  //      themselves (e.g. examples/two-engines-one-scene). Without the
+  //      bootstrap they'd never trigger _initPipeline → engine stays
+  //      'uninitialized' → renderFrame returns skip output forever.
+  //   2. Hosts that DO call setScene afterwards (e.g. @vitrum/engine.createEngine).
+  //      The host's setScene fires init-B which races init-A. The init-flight
+  //      guard (HybridEngine._initSeq, see _initPipeline()) ensures the loser
+  //      bootstrap chain disposes its locals — no GPU resource leak. The
+  //      bootstrap is wasted work but safe.
+  //
+  // We could remove the bootstrap and require all hosts to call setScene
+  // explicitly, but that would silently break case 1 and offer no safety
+  // benefit (Fix 1 already eliminates the race-leak class).
   engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
   return engine;
 }

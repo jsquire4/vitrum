@@ -553,6 +553,49 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
+   * Resize all per-frame GPU resources to a new render-surface size WITHOUT
+   * rebuilding the BVH or recompiling pipelines. Destroys the current
+   * `_res: FrameResources` (every full-res rgba16float texture, reservoir
+   * buffer, variance buffer, GTAO half/full, SVGF persistent textures, …)
+   * and reallocates them at the new dimensions. Resets ping-pong indices
+   * and frame counters because the new textures contain garbage.
+   *
+   * Cost: O(W·H) GPU memory churn (~1 GB at 4K), no shader recompilation,
+   * no BVH rebuild. Call this from the host (via `HybridEngine.setSize`)
+   * when the canvas resizes — much cheaper than full engine teardown +
+   * re-init.
+   *
+   * Bind groups are NOT cached at the pipeline level (they're built per
+   * frame in `renderFrame()` from the live texture handles), so the
+   * resize automatically picks up next frame.
+   *
+   * No-op when called before `initialize()`.
+   */
+  resize(width: number, height: number): void {
+    if (!this._initialized) {
+      // Update stored size so a later initialize() picks up the new value.
+      this._width = width;
+      this._height = height;
+      return;
+    }
+    if (width === this._width && height === this._height) return;
+    this._width = width;
+    this._height = height;
+    // Destroy + reallocate per-frame resources at the new size.
+    destroyFrameResources(this._res);
+    this._res = createFrameResources(this._device, width, height);
+    // Reset transient per-frame state — ping-pong reads from the previous
+    // frame's texture, but the new textures are blank, so we must restart
+    // the accumulator at α=1 and re-seed history.
+    this._accumPingPongIndex = 0;
+    this._accumFrameIndex = 0;
+    this._welfordPing = 0;
+    this._svgfPingPong = 0;
+    this._indirectAccumPingPong = 0;
+    this._lastCameraPos = [0, 0, 0];
+  }
+
+  /**
    * Blit the most recent resolvedTexture to the host's swap chain WITHOUT
    * running the compute pipeline. Used when HybridEngine's 60-FPS throttle
    * skips a frame — without this, on >60Hz displays the alternate frames'
