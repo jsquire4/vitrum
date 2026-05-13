@@ -29,5 +29,8 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git"
+  },
+  "overrides": {
+    "three": "0.171.0"
   }
 }
