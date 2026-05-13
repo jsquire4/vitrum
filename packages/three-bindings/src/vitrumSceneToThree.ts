@@ -336,9 +336,23 @@ function applyEnvironment(threeScene: Scene, env: VitrumScene['environment']): v
   }
   if (env.kind === 'hdri') {
     if (isTexture(env.hdri)) {
+      const intensity = env.intensity ?? 1;
+      const rotationY = env.rotationY ?? 0;
       threeScene.environment = env.hdri;
       threeScene.background = env.hdri;
-      threeScene.environmentIntensity = env.intensity ?? 1;
+      // Set BOTH environmentIntensity (drives IBL contribution to materials)
+      // AND backgroundIntensity (drives the visible HDRI background brightness).
+      // WebGLPathTracer.updateEnvironment() reads both uniforms from the THREE
+      // scene; keeping them in lock-step matches THREE's "background = environment"
+      // texture-sharing convention here.
+      threeScene.environmentIntensity = intensity;
+      threeScene.backgroundIntensity = intensity;
+      // HdriEnvironment.rotationY is a yaw around world up. Project onto the
+      // THREE Euler's Y component for both environment and background rotation
+      // so the equirect map is oriented consistently in the IBL contribution and
+      // the visible background. Other Euler axes are left at their defaults (0).
+      threeScene.environmentRotation.set(0, rotationY, 0);
+      threeScene.backgroundRotation.set(0, rotationY, 0);
     } else {
       console.warn(
         '@vitrum/three-bindings: HDRI environment requires THREE.Texture handle; got opaque TextureRef — using black background',

@@ -11,7 +11,11 @@ import type { SceneEnvironment } from '@vitrum/core';
 /**
  * Resolve the @vitrum/core SceneEnvironment from a THREE.Scene.
  *
- * - `scene.environment` set → `{ kind: 'hdri', hdri: texture }`.
+ * - `scene.environment` set → `{ kind: 'hdri', hdri: texture, intensity, rotationY }`.
+ *   `intensity` mirrors `scene.environmentIntensity` (default 1); `rotationY`
+ *   mirrors `scene.environmentRotation.y` (default 0). Capturing both fields
+ *   prevents env intensity / rotation from being silently dropped on the
+ *   THREE → vitrum → THREE round trip used by the PT engine env-update path.
  * - `scene.background` as a solid Color (no environment map) → `{ kind: 'none' }`.
  * - Nothing set → `{ kind: 'none' }`.
  *
@@ -27,7 +31,13 @@ import type { SceneEnvironment } from '@vitrum/core';
  */
 export function resolveEnvironment(threeScene: THREE.Scene): SceneEnvironment {
   if (threeScene.environment != null) {
-    return { kind: 'hdri', hdri: threeScene.environment };
+    // THREE.Scene.environmentIntensity defaults to 1; environmentRotation is
+    // a THREE.Euler. We capture only the Y rotation because HdriEnvironment
+    // models a yaw around world up (matches WebGLPathTracer's equirect map
+    // rotation behavior — full Euler isn't needed for hemispheric IBL).
+    const intensity = threeScene.environmentIntensity ?? 1;
+    const rotationY = threeScene.environmentRotation?.y ?? 0;
+    return { kind: 'hdri', hdri: threeScene.environment, intensity, rotationY };
   }
   return { kind: 'none' };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { Mesh } from 'three';
+import { Mesh, Texture } from 'three';
 import { vitrumSceneToThree } from '../vitrumSceneToThree.js';
+import { resolveEnvironment } from '../environment.js';
 
 describe('vitrumSceneToThree RFE userData stamping', () => {
   it('stamps frontLayer/backLayer metadata for fork packing', () => {
@@ -123,5 +124,59 @@ describe('vitrumSceneToThree RFE userData stamping', () => {
     });
     expect(userData['vitrumFrontLayer']).toEqual({ transmission: [0.4, 0.5, 0.6], roughness: 0.22 });
     expect(userData['vitrumBackLayer']).toEqual({ transmission: [0.9, 0.85, 0.8], roughness: 0.1 });
+  });
+});
+
+describe('vitrumSceneToThree HDRI environment intensity / rotation (Fix 2)', () => {
+  it('writes environment.intensity to BOTH environmentIntensity and backgroundIntensity', () => {
+    const hdri = new Texture();
+    const scene = vitrumSceneToThree({
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'hdri', hdri, intensity: 2.5 },
+    });
+    expect(scene.environment).toBe(hdri);
+    expect(scene.environmentIntensity).toBeCloseTo(2.5);
+    expect(scene.backgroundIntensity).toBeCloseTo(2.5);
+  });
+
+  it('writes environment.rotationY onto environmentRotation.y and backgroundRotation.y', () => {
+    const hdri = new Texture();
+    const scene = vitrumSceneToThree({
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'hdri', hdri, intensity: 1, rotationY: Math.PI / 6 },
+    });
+    expect(scene.environmentRotation.y).toBeCloseTo(Math.PI / 6);
+    expect(scene.backgroundRotation.y).toBeCloseTo(Math.PI / 6);
+  });
+
+  it('defaults intensity=1 and rotationY=0 when omitted on HDRI env', () => {
+    const hdri = new Texture();
+    const scene = vitrumSceneToThree({
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'hdri', hdri },
+    });
+    expect(scene.environmentIntensity).toBe(1);
+    expect(scene.backgroundIntensity).toBe(1);
+    expect(scene.environmentRotation.y).toBe(0);
+    expect(scene.backgroundRotation.y).toBe(0);
+  });
+
+  it('round-trips environment intensity + rotationY through resolveEnvironment → vitrumSceneToThree', () => {
+    const hdri = new Texture();
+    // Step 1: pretend a host scene has env + intensity 0.4 + rotation -π/4
+    const env0 = { kind: 'hdri' as const, hdri, intensity: 0.4, rotationY: -Math.PI / 4 };
+    // Step 2: vitrum → THREE
+    const threeScene = vitrumSceneToThree({ primitives: [], emitters: [], environment: env0 });
+    expect(threeScene.environmentIntensity).toBeCloseTo(0.4);
+    expect(threeScene.environmentRotation.y).toBeCloseTo(-Math.PI / 4);
+    // Step 3: THREE → vitrum (resolveEnvironment)
+    const env1 = resolveEnvironment(threeScene);
+    expect(env1.kind).toBe('hdri');
+    if (env1.kind !== 'hdri') return;
+    expect(env1.intensity).toBeCloseTo(0.4);
+    expect(env1.rotationY).toBeCloseTo(-Math.PI / 4);
   });
 });
