@@ -422,8 +422,11 @@ export class HybridEngine implements Engine {
 
   // ── Creation-time options (immutable after construction) ───────────────
   private readonly _device:               GPUDevice;
-  private readonly _width:                number;
-  private readonly _height:               number;
+  // Mutable since T-resize: the host calls `setSize()` whenever the
+  // canvas resizes; the pipeline reallocates its FrameResources without
+  // a full engine teardown. See `setSize()` for the resize contract.
+  private _width:                number;
+  private _height:               number;
   /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
    *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
   private readonly _threeScene:           THREE.Scene | null;
@@ -843,6 +846,54 @@ export class HybridEngine implements Engine {
     // _pipeline may be null if the engine is still initialising; the flag is
     // applied as soon as the pipeline exists (set before any renderFrame call).
     this._pipeline?.requestAccumReset();
+  }
+
+  // ── Resize ─────────────────────────────────────────────────────────────
+
+  /**
+   * Resize the render surface WITHOUT rebuilding the BVH or recompiling
+   * pipelines. The host calls this whenever the canvas (or device-pixel
+   * ratio) changes — much cheaper than the previous resize-storm pattern
+   * (engine teardown → recreate engine → poll for ready), which on a
+   * single resize tick churned every BVH buffer + every pipeline shader
+   * + every DDGI atlas + ~1 GB of FrameResources textures.
+   *
+   * Behaviour:
+   *   - Updates `_width` / `_height` on the engine.
+   *   - Calls `WalkaroundGPUPipeline.resize(W, H)` if the pipeline is
+   *     live, which destroys + recreates per-frame GPU resources only
+   *     (FrameResources textures + reservoir buffers + variance buffers
+   *     + GTAO half/full + SVGF persistent textures) at the new size.
+   *     The BVH, pipeline shaders, bind-group layouts, DDGI atlases,
+   *     and per-pass UBOs are preserved.
+   *   - Resets the temporal accumulator + ping-pong indices on the
+   *     pipeline (the new textures are blank, so reusing prior history
+   *     would sample undefined memory).
+   *
+   * No-op when called with the current size, or when the pipeline isn't
+   * yet live (the new size is stored on the engine; `_initPipeline` will
+   * use it when it constructs the pipeline).
+   *
+   * Cost: O(W·H) GPU memory churn for the FrameResources reallocation;
+   * no shader recompile, no BVH rebuild. Typical resize tick: 5-30 ms
+   * for the GPU allocations on a 4K surface, vs 500-2000 ms for a full
+   * engine teardown + re-init.
+   */
+  setSize(width: number, height: number): void {
+    if (width === this._width && height === this._height) return;
+    if (width <= 0 || height <= 0) {
+      // Defensive: WebGPU createTexture rejects zero-sized textures.
+      // Hosts sometimes feed in transient 0-pixel sizes during resize
+      // animations — silently ignore.
+      return;
+    }
+    this._width = width;
+    this._height = height;
+    if (this._pipeline) {
+      this._pipeline.resize(width, height);
+    }
+    // No DDGI invalidation — the irradiance atlas is world-space, not
+    // screen-space, so it survives a resize unchanged.
   }
 
   // ── Frame rendering ────────────────────────────────────────────────────
