@@ -296,6 +296,86 @@ describe('Full round-trip: anisotropy THREE → vitrum → THREE (Gap 5)', () =>
 // Full round-trip: THREE → vitrum → THREE
 // ────────────────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────────────────
+// Dichroic LUT round-trip (RFE-10 — PHY.1 — stainedGlass dichroic addendum)
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('Dichroic LUT round-trip (Fix 3)', () => {
+  it('reads vitrumDichroicReflectanceLUT + vitrumDichroicTransmittanceLUT into Material.extensions.dichroicLUTs', () => {
+    // The texture handles are opaque — convertMaterial copies them through
+    // verbatim. Use plain marker objects so we can assert reference equality.
+    const reflectanceLut = { __marker: 'reflectance' };
+    const transmittanceLut = { __marker: 'transmittance' };
+    const m = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    m.userData['vitrumDichroicReflectanceLUT'] = reflectanceLut;
+    m.userData['vitrumDichroicTransmittanceLUT'] = transmittanceLut;
+    const v = convertMaterial(m);
+    const dichroic = v.extensions?.['dichroicLUTs'] as
+      | { reflectance?: unknown; transmittance?: unknown }
+      | undefined;
+    expect(dichroic).toBeDefined();
+    expect(dichroic?.reflectance).toBe(reflectanceLut);
+    expect(dichroic?.transmittance).toBe(transmittanceLut);
+  });
+
+  it('stamps userData.vitrumDichroic*LUT from Material.extensions.dichroicLUTs (vitrum → THREE)', () => {
+    const reflectanceLut = { __marker: 'reflectance' };
+    const transmittanceLut = { __marker: 'transmittance' };
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      extensions: {
+        dichroicLUTs: { reflectance: reflectanceLut, transmittance: transmittanceLut },
+      },
+    });
+    expect(threeMat.userData['vitrumDichroicReflectanceLUT']).toBe(reflectanceLut);
+    expect(threeMat.userData['vitrumDichroicTransmittanceLUT']).toBe(transmittanceLut);
+  });
+
+  it('does NOT stamp dichroic keys when extensions.dichroicLUTs is absent (no phantom keys)', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+    });
+    expect(threeMat.userData['vitrumDichroicReflectanceLUT']).toBeUndefined();
+    expect(threeMat.userData['vitrumDichroicTransmittanceLUT']).toBeUndefined();
+  });
+
+  it('full round-trip: THREE userData.vitrumDichroic*LUT → vitrum → THREE userData.vitrumDichroic*LUT', () => {
+    const reflectanceLut = { __marker: 'reflectance-rt' };
+    const transmittanceLut = { __marker: 'transmittance-rt' };
+    const original = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    original.userData['vitrumDichroicReflectanceLUT'] = reflectanceLut;
+    original.userData['vitrumDichroicTransmittanceLUT'] = transmittanceLut;
+
+    // THREE → vitrum
+    const vitrumMat = convertMaterial(original);
+    const dichroic = vitrumMat.extensions?.['dichroicLUTs'] as
+      | { reflectance?: unknown; transmittance?: unknown }
+      | undefined;
+    expect(dichroic?.reflectance).toBe(reflectanceLut);
+    expect(dichroic?.transmittance).toBe(transmittanceLut);
+
+    // vitrum → THREE
+    const backToThree = vitrumMatToThreeMat(vitrumMat);
+    expect(backToThree.userData['vitrumDichroicReflectanceLUT']).toBe(reflectanceLut);
+    expect(backToThree.userData['vitrumDichroicTransmittanceLUT']).toBe(transmittanceLut);
+  });
+
+  it('survives partial dichroic LUT (only reflectance present)', () => {
+    const reflectanceLut = { __marker: 'reflectance-only' };
+    const original = new THREE.MeshPhysicalMaterial({ color: 0xffffff });
+    original.userData['vitrumDichroicReflectanceLUT'] = reflectanceLut;
+    const vitrumMat = convertMaterial(original);
+    const dichroic = vitrumMat.extensions?.['dichroicLUTs'] as
+      | { reflectance?: unknown; transmittance?: unknown }
+      | undefined;
+    expect(dichroic?.reflectance).toBe(reflectanceLut);
+    expect(dichroic?.transmittance).toBeUndefined();
+    const backToThree = vitrumMatToThreeMat(vitrumMat);
+    expect(backToThree.userData['vitrumDichroicReflectanceLUT']).toBe(reflectanceLut);
+    expect(backToThree.userData['vitrumDichroicTransmittanceLUT']).toBeUndefined();
+  });
+});
+
 describe('Full round-trip: THREE userData.vitrum* → vitrum.Material → THREE userData.vitrum*', () => {
   it('preserves all RFE-06..08 + RFE-03 fields end-to-end', () => {
     // Step 1: build a THREE material with all vitrum stamps

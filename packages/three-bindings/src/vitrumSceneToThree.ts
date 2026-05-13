@@ -82,6 +82,22 @@ function stampVitrumUserData(mat: MeshPhysicalMaterial, m: VitrumMaterial): void
   if (m.frontLayer !== undefined) ud[K.FRONT_LAYER] = m.frontLayer;
   if (m.backLayer !== undefined) ud[K.BACK_LAYER] = m.backLayer;
 
+  // RFE-10 dichroic addendum (PHY.1 — 2026-05-12). Re-stamp the pre-convolved
+  // angle-indexed LUTs surfaced via Material.extensions.dichroicLUTs so they
+  // survive the THREE → vitrum → THREE round trip. The forward direction
+  // (`convertMaterial` in material.ts) reads userData.vitrumDichroic*LUT into
+  // `extensions.dichroicLUTs.{reflectance,transmittance}`; this side writes
+  // the same texture handles back so raster backends downstream of the round
+  // trip can re-bind them. Only stamp when present — absent LUTs leave a
+  // clean userData object (no phantom keys), matching the rest of stamping.
+  const dichroic = m.extensions?.['dichroicLUTs'] as
+    | { reflectance?: unknown; transmittance?: unknown }
+    | undefined;
+  if (dichroic != null) {
+    if (dichroic.reflectance != null) ud[K.DICHROIC_REFLECTANCE_LUT] = dichroic.reflectance;
+    if (dichroic.transmittance != null) ud[K.DICHROIC_TRANSMITTANCE_LUT] = dichroic.transmittance;
+  }
+
   mat.userData = ud;
 }
 
