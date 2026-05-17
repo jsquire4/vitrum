@@ -67,7 +67,7 @@
 import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import { ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../atrousVarianceConstants.js';
 import { WELFORD_VARIANCE_WGSL } from './welfordVariance.wgsl.js';
-import { ATROUS_VARIANCE_KERNEL_WGSL } from './atrousKernel.wgsl.js';
+import { ATROUS_KERNEL_WGSL } from './atrousKernel.wgsl.js';
 
 /** Must match `@workgroup_size` in this module's compute entry points. */
 export const ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE = 16 as const;
@@ -208,7 +208,8 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
 @group(0) @binding(5) var<uniform> atrousUBO: AtrousVarianceAtrousUBO;
 
 // 5×5 B3 spline kernel — injected from shared TS constant (atrousKernel.wgsl.ts).
-${ATROUS_VARIANCE_KERNEL_WGSL}
+// C11: identifier KERNEL_B3SPLINE_5x5 is shared with atrous.wgsl.
+${ATROUS_KERNEL_WGSL}
 
 @compute @workgroup_size(16, 16, 1)
 fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -253,7 +254,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let zP = textureLoad(atrous_gbufDepth,  pu, 0).x;
 
       let kIdx = u32((dy + 2) * 5 + (dx + 2));
-      let h    = ATROUS_VARIANCE_KERNEL[kIdx];
+      let h    = KERNEL_B3SPLINE_5x5[kIdx];
 
       // ── Variance-guided color edge stop ─────────────────────────────────
       // Tolerance scales with sqrt(variance): noisy pixels accept wider

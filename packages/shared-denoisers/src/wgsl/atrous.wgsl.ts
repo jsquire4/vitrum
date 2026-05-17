@@ -36,6 +36,7 @@ struct AtrousUBO {
 @group(0) @binding(4) var<uniform> ubo: AtrousUBO;
 
 // 5x5 B3 spline kernel — injected from shared TS constant (atrousKernel.wgsl.ts).
+// C11: identifier KERNEL_B3SPLINE_5x5 is shared with atrousVariance.wgsl.
 ${ATROUS_KERNEL_WGSL}
 
 @compute @workgroup_size(16, 16, 1)
@@ -78,7 +79,7 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let zP = textureLoad(gbufferDepth,  pu, 0).w;
 
       let kIdx = u32((dy + 2) * 5 + (dx + 2));
-      let h    = KERNEL[kIdx];
+      let h    = KERNEL_B3SPLINE_5x5[kIdx];
 
       // Edge-stopping weights (Dammertz et al. 2010).
       let dn = max(0.0, dot(nCenter, nP));

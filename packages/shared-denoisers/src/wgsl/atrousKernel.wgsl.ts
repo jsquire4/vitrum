@@ -2,8 +2,11 @@
  * Shared B3-spline 5×5 atrous wavelet kernel.
  *
  * Canonical values in both numeric (`ATROUS_KERNEL_VALUES`) and WGSL
- * literal (`ATROUS_KERNEL_WGSL` / `ATROUS_VARIANCE_KERNEL_WGSL`) forms so
- * the kernel does not drift between atrous.wgsl.ts and atrousVariance.wgsl.ts.
+ * literal (`ATROUS_KERNEL_WGSL`) forms so the kernel does not drift
+ * between atrous.wgsl.ts and atrousVariance.wgsl.ts. Both consumers
+ * read from the same `KERNEL_B3SPLINE_5x5` array identifier (C11
+ * dedup — pre-C11 we shipped two near-identical strings differing
+ * only by the const name).
  */
 
 /**
@@ -17,6 +20,9 @@ export const ATROUS_KERNEL_VALUES: readonly number[] = [
   4 / 256, 16 / 256, 24 / 256, 16 / 256, 4 / 256,
   1 / 256, 4 / 256, 6 / 256, 4 / 256, 1 / 256,
 ] as const;
+
+/** Stable WGSL identifier emitted by `ATROUS_KERNEL_WGSL`. */
+export const ATROUS_KERNEL_IDENT = 'KERNEL_B3SPLINE_5x5' as const;
 
 function buildKernelWgsl(name: string): string {
   const rows: string[] = [];
@@ -32,7 +38,9 @@ function buildKernelWgsl(name: string): string {
   return `const ${name}: array<f32, 25> = array<f32, 25>(\n${rows.join('\n')}\n);`;
 }
 
-/** Atrous-style usage (`KERNEL`). */
-export const ATROUS_KERNEL_WGSL = buildKernelWgsl('KERNEL');
-/** atrous-variance-pipeline usage (`ATROUS_VARIANCE_KERNEL`). */
-export const ATROUS_VARIANCE_KERNEL_WGSL = buildKernelWgsl('ATROUS_VARIANCE_KERNEL');
+/**
+ * Canonical 5×5 B3-spline kernel WGSL. Both consumers read the
+ * identifier `KERNEL_B3SPLINE_5x5` (post-C11: collapsed from the
+ * pre-C11 pair of `KERNEL` + `ATROUS_VARIANCE_KERNEL` strings).
+ */
+export const ATROUS_KERNEL_WGSL = buildKernelWgsl(ATROUS_KERNEL_IDENT);

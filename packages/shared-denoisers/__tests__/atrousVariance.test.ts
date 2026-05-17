@@ -156,8 +156,8 @@ describe('ATROUS_VARIANCE_WGSL', () => {
     expect(ATROUS_VARIANCE_WGSL).toContain('textureStore(varOut_varianceOut');
   });
 
-  it('declares 5×5 B3 spline kernel (ATROUS_VARIANCE_KERNEL array)', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('ATROUS_VARIANCE_KERNEL');
+  it('declares 5×5 B3 spline kernel (KERNEL_B3SPLINE_5x5 array — C11 shared name)', () => {
+    expect(ATROUS_VARIANCE_WGSL).toContain('KERNEL_B3SPLINE_5x5');
     expect(ATROUS_VARIANCE_WGSL).toContain('array<f32, 25>');
   });
 
