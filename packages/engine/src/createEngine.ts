@@ -265,8 +265,12 @@ function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
 /** Wrap an engine so that calling .dispose() multiple times is a no-op
  *  beyond the first call. The plan calls this out as an explicit
  *  acceptance criterion ("engine.dispose() followed by engine.dispose()
- *  is idempotent"). */
-function wrapWithIdempotentDispose(
+ *  is idempotent").
+ *
+ *  @internal Exported for unit-test access only. Not part of the public
+ *  `@vitrum/engine` API surface; consumers should use {@link createEngine}
+ *  / {@link attachVitrum}. */
+export function wrapWithIdempotentDispose(
   engine: Engine,
   postDispose: () => void,
 ): Engine {
@@ -286,6 +290,13 @@ function wrapWithIdempotentDispose(
       ? {
           updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
             if (!disposed) engine.updateEmitter!(id, patch);
+          },
+        }
+      : {}),
+    ...(engine.updateEnvironment
+      ? {
+          updateEnvironment: (env: Parameters<NonNullable<Engine['updateEnvironment']>>[0]) => {
+            if (!disposed) engine.updateEnvironment!(env);
           },
         }
       : {}),
