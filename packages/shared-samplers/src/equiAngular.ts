@@ -1,4 +1,9 @@
 /**
+ * @internal
+ * Test/spec oracle for the WGSL equi-angular sampler in the fork's volume
+ * single-scatter path. Not exported from the package public index — not for
+ * production import. Existing tests reach in via `../src/equiAngular.js`.
+ *
  * equiAngular.ts — Equi-angular sampling for volume single-scatter NEE.
  *
  * Equi-angular sampling (also known as the "Szécsi trick" or Kulla-Conty

@@ -1,4 +1,11 @@
 /**
+ * @internal
+ * Sprint 10c — gated for future BDPT dispatch (no production consumer wired
+ * yet; fork-side GLSL kernels are blocked on Sprints 4–6 fork patches per
+ * plan/sprint-10c-pt-fork-patch.md §Status). Test/spec oracle for the WGSL/GLSL
+ * BDPT vertex layout. Not exported from the package public index — not for
+ * production import. Existing tests reach in via `../src/bdptVertex.js`.
+ *
  * bdptVertex.ts — BDPT path vertex type definitions for CPU↔GPU exchange.
  *
  * Defines the canonical BDPTVertex record that the CPU library packs and the

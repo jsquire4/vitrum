@@ -1,4 +1,11 @@
 /**
+ * @internal
+ * Sprint 10c — gated for future BDPT dispatch (no production consumer wired
+ * yet; fork-side GLSL kernels blocked per plan/sprint-10c-pt-fork-patch.md).
+ * Test/spec oracle for the WGSL/GLSL BDPT MIS implementations. Not exported
+ * from the package public index — not for production import. Existing tests
+ * reach in via `../src/bdptMIS.js`.
+ *
  * bdptMIS.ts — BDPT MIS helpers: partial stub (Sprint 10c) + full Veach §10.3 (T2.H4).
  *
  * **Partial helpers** (`_partial` suffix): single-strategy MIS aid for fork-side

@@ -1,4 +1,9 @@
 /**
+ * @internal
+ * Test/spec oracle for the WGSL Jakob+Hanika spectral-upsampling implementation
+ * in the fork. Not exported from the package public index — not for production
+ * import. Existing tests reach in via `../src/jakobHanika.js`.
+ *
  * jakobHanika.ts — Jakob+Hanika 2019 spectral upsampling (compact approximation).
  *
  * Converts an RGB color into a 3-coefficient polynomial that approximates a

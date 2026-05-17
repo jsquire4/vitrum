@@ -1,4 +1,9 @@
 /**
+ * @internal
+ * Test/spec oracle for the WGSL HG-phase implementation in the fork's
+ * volume-scattering / SSS path. Not exported from the package public index —
+ * not for production import. Existing tests reach in via `../src/hgPhase.js`.
+ *
  * hgPhase.ts — Henyey-Greenstein phase function.
  *
  * Used by the Sprint 7 volume scattering path AND single-scatter SSS

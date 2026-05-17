@@ -1,4 +1,11 @@
 /**
+ * @internal
+ * Test/spec oracle for the GLSL hero-wavelength sampler in the PT fork.
+ * Production consumer (`pt-webgl/forkUniformBridge.ts`) imports the underlying
+ * `CIE_X/Y/Z_TABLE` from `./cieCmf.js` directly and computes its own integrals
+ * + CDFs at module load. Not exported from the package public index — not for
+ * production import. Existing tests reach in via `../src/wavelengthSampling.js`.
+ *
  * wavelengthSampling.ts — Hero-wavelength sampling utilities.
  *
  * Implements stochastic wavelength selection by importance-sampling the CIE Y

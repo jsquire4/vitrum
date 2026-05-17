@@ -1,4 +1,11 @@
 /**
+ * @internal
+ * Test/spec oracle + documented physical constants for glass IOR dispersion.
+ * Production fork-side GLSL uses its own per-material Cauchy formulation;
+ * this TS module is the reference + documentation of the canonical
+ * coefficients. Not exported from the package public index — not for
+ * production import. Existing tests reach in via `../src/cauchyIor.js`.
+ *
  * cauchyIor.ts — Per-wavelength index of refraction via the Cauchy dispersion formula.
  *
  * Cauchy's empirical dispersion equation:

@@ -1,4 +1,10 @@
 /**
+ * @internal
+ * Test/spec oracle for the WGSL implementations in `pt-webgpu` and the
+ * PT fork's GLSL MIS combiners (W2-C6 will canonicalise the WGSL versions
+ * in a future round). Not exported from the package public index — not for
+ * production import. Existing tests reach in via `../src/mixturePdf.js`.
+ *
  * mixturePdf.ts — Multiple Importance Sampling (MIS) combiners.
  *
  * Implements the balance and power heuristics from Veach & Guibas 1995

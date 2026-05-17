@@ -1,4 +1,9 @@
 /**
+ * @internal
+ * Test/spec oracle for the WGSL implementation in the PT fork's GPU light-tree
+ * traversal. Not exported from the package public index — not for production
+ * import. Existing tests reach in via `../src/lightTree.js`.
+ *
  * lightTree.ts — CPU-side binary light tree with SAH-variant splitting.
  *
  * Builds a power-weighted binary tree over an emitter list. The tree is
