@@ -13,6 +13,8 @@ export { OCTAHEDRAL_CORE_WGSL } from './wgsl/octahedralCore.wgsl.js';
 // W2-C6 — canonical PCG random + BSDF sampling-frame primitives.
 export { PCG_WGSL } from './wgsl/pcg.wgsl.js';
 export { BSDF_PRIMITIVES_WGSL } from './wgsl/bsdfPrimitives.wgsl.js';
+// W2-C15 — canonical per-pixel hash.
+export { HASH_WGSL } from './wgsl/hash.wgsl.js';
 export { buildLightTree, packLightTreeForGPU } from './lightTree.js';
 export type { LightTreeNode, LightTreeBuildInput } from './lightTree.js';
 export { balanceHeuristic, powerHeuristic, mixturePdf } from './mixturePdf.js';

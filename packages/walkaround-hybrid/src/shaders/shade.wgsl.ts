@@ -243,9 +243,15 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     // function of its (x, y) position only).
     let sunBase = ubo.sunDirection;
     let SUN_ANGULAR_RADIUS = 0.00436;
-    let hx = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453);
-    let hy = fract(sin(f32(gid.x) * 93.989  + f32(gid.y) * 67.345) * 24634.6345);
-    let xi = vec2f(hx, hy);
+    // Per-pixel deterministic 2D hash — pixelHash22 returns a pair of
+    // mutually-uncorrelated channels from the canonical hash module
+    // (@vitrum/shared-samplers/wgsl/hash, W2-C15).  Pre-W2-C15 this
+    // site open-coded the two channels as
+    //   fract(sin(x * 12.9898 + y * 78.233) * 43758.5453)
+    //   fract(sin(x * 93.989  + y * 67.345) * 24634.6345)
+    // with the same constants pixelHash22 uses internally; output is
+    // bit-identical.
+    let xi = pixelHash22(gid.xy);
     let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
     let tan = safe_normalize(cross(upRef, sunBase));
     let bit = cross(sunBase, tan);

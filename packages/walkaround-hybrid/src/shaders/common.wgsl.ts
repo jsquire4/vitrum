@@ -17,16 +17,16 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
-import { PCG_WGSL, BSDF_PRIMITIVES_WGSL } from '@vitrum/shared-samplers';
+import { PCG_WGSL, BSDF_PRIMITIVES_WGSL, HASH_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-// W2-C6 — PCG + BSDF sampling-frame primitives now live in
-// @vitrum/shared-samplers (single source of truth across walkaround-hybrid
-// and pt-webgpu). They are template-interpolated below so that the public
-// COMMON_WGSL string still contains every symbol the rest of the package
-// references; the wgslCompose bit-identical gate continues to hold by
-// construction (the test asserts `composeWgsl(MODULE) == COMMON_WGSL + …`,
-// and both sides include the interpolated bytes).
+// W2-C6 / W2-C15 — PCG + BSDF sampling-frame primitives and the per-pixel
+// hash now live in @vitrum/shared-samplers (single source of truth across
+// walkaround-hybrid and pt-webgpu). They are template-interpolated below so
+// that the public COMMON_WGSL string still contains every symbol the rest
+// of the package references; the wgslCompose bit-identical gate continues
+// to hold by construction (the test asserts `composeWgsl(MODULE) ==
+// COMMON_WGSL + …`, and both sides include the interpolated bytes).
 export const COMMON_WGSL = /* wgsl */ `
 
 // ============================================================
@@ -377,6 +377,16 @@ fn updateReservoirGI(
 // to every shader that requires('common').
 // ============================================================
 ${PCG_WGSL}
+
+// ============================================================
+// Per-pixel deterministic hash — canonical at
+// @vitrum/shared-samplers/wgsl/hash (W2-C15).  Provides pixelHash21,
+// pixelHash22, pixelHash11 (+ const HASH_SEED).  Consumed by shade.wgsl
+// (sun-cone jitter) and historically by gtao.wgsl (slice-direction
+// jitter — that shader is standalone and interpolates HASH_WGSL into
+// its own source string).
+// ============================================================
+${HASH_WGSL}
 
 // ============================================================
 // Utility

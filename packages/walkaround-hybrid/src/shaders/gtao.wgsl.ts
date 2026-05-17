@@ -51,9 +51,12 @@
  * so per-frame jitter doesn't introduce temporal flicker.
  */
 
+import { HASH_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const GTAO_WGSL = /* wgsl */ `
+${HASH_WGSL}
+
 
 struct GTAOUniforms {
   // tan(fov/2) along screen height; used to convert pixel offsets to view-space
@@ -94,10 +97,10 @@ const PI_HALF: f32 = 1.57079632679;
 const NUM_DIRECTIONS: u32 = 4u;
 const NUM_STEPS:      u32 = 6u;
 
-fn hashPx(p: vec2u) -> f32 {
-  let h = sin(f32(p.x) * 12.9898 + f32(p.y) * 78.233) * 43758.5453;
-  return fract(h);
-}
+// Per-pixel hash — canonical at @vitrum/shared-samplers/wgsl/hash
+// (W2-C15).  pixelHash21 replaces the historical local hashPx that
+// open-coded the same fract(sin(x*12.9898 + y*78.233) * 43758.5453)
+// form; output is bit-identical for matching inputs.
 
 // Jiménez 2016 §4.2 Eq. 11 — closed-form slice integral for one horizon side.
 //
@@ -139,7 +142,7 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   // Decode world-space surface normal from G-buffer (stored as n*0.5+0.5).
   let surfNormal = normalize(center.xyz * 2.0 - 1.0);
 
-  let jitter = hashPx(gid.xy);
+  let jitter = pixelHash21(gid.xy);
 
   var aoSum: f32 = 0.0;
 
