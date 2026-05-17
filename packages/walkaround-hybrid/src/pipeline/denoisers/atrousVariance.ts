@@ -139,9 +139,11 @@ export class AtrousVarianceDenoiser implements Denoiser {
     // The include-graph handles the self-contained-vs-common-dependent split
     // structurally: WELFORD_TEMPORAL_MODULE declares `requires: ['common']`,
     // while ATROUS_VARIANCE_MODULE declares `requires: []` because the
-    // shared-denoisers WGSL fragment ships its own PI/INV_PI/LUM_W/
-    // WelfordVariance declarations. The pre-R6 anti-duplication-by-comment
-    // is now structural — no hand-rolled prepend, no risk of redeclaration.
+    // shared-denoisers WGSL fragment template-interpolates its own
+    // PI/INV_PI/Rec.709 luminance helper/WelfordVariance declarations
+    // (Rec.709 helper from @vitrum/shared-samplers per C10). The pre-R6
+    // anti-duplication-by-comment is now structural — no hand-rolled prepend,
+    // no risk of redeclaration.
     const welfordSM = device.createShaderModule({
       label: 'welford-temporal',
       code: composeWgsl(WELFORD_TEMPORAL_MODULE, WGSL_MODULES),

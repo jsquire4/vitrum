@@ -8,10 +8,13 @@
  * References: bilateral filtering (Tomasi & Manduchi); luminance edge-stop common in HDR denoise probes.
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
+
 /** Must match `@workgroup_size` below (dispatch uses this value). */
 export const HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE = 8 as const;
 
 export const HDR_LUMINANCE_BILATERAL_WGSL = /* wgsl */ `
+${LUMINANCE_WGSL}
 struct BilateralParams {
   sigmaLuminance: f32,
   _pad0: f32,
@@ -23,9 +26,7 @@ struct BilateralParams {
 @group(0) @binding(1) var texOut: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var<uniform> params: BilateralParams;
 
-fn luminance(c: vec3<f32>) -> f32 {
-  return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
+// C10: luminance helper is canonical rec709Luminance from @vitrum/shared-samplers.
 
 @compute @workgroup_size(8, 8, 1)
 fn hdrLuminanceBilateralMain(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -35,7 +36,7 @@ fn hdrLuminanceBilateralMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
   let p0 = vec2<i32>(i32(gid.x), i32(gid.y));
   let c0 = textureLoad(texIn, p0, 0).rgb;
-  let L0 = luminance(c0);
+  let L0 = rec709Luminance(c0);
   var acc = vec3<f32>(0.0);
   var wsum = 0.0;
   let sig = max(params.sigmaLuminance, 1e-6);
@@ -48,7 +49,7 @@ fn hdrLuminanceBilateralMain(@builtin(global_invocation_id) gid: vec3<u32>) {
         continue;
       }
       let c = textureLoad(texIn, p, 0).rgb;
-      let L = luminance(c);
+      let L = rec709Luminance(c);
       let spatial = f32(dx * dx + dy * dy);
       let ws = exp(-spatial / 18.0); // 2 * sigma_spatial^2, sigma_spatial=3 (5x5 kernel radius)
       let wr = exp(-(L - L0) * (L - L0) * invTwoSig2);

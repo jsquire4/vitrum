@@ -9,10 +9,11 @@
  * trilinear upsample would smear.
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const GTAO_UPSAMPLE_WGSL = /* wgsl */ `
-
+${LUMINANCE_WGSL}
 // Duplicate of gtao.wgsl's GTAOUniforms struct (both shaders bind the same
 // uboBuffer; the duplicate WGSL declaration is required because each shader
 // module is compiled independently — concatenating would conflict with
@@ -84,7 +85,7 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   // E1: aoHalf now carries per-channel multi-bounce AO (rgba16float).
   // Reduce to a scalar luminance weight before bilateral filtering so
   // the output aoFull remains r16float (shade reads a single channel).
-  let lum = vec3f(0.2126, 0.7152, 0.0722);
+  // C10: Rec.709 luminance via canonical helper (shared-samplers/luminance.wgsl).
 
   for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
     for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
@@ -94,7 +95,7 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
       );
       // Read per-channel multi-bounce AO and collapse to scalar luminance.
       let aoMb = textureLoad(up_aoHalf, sampleHalf, 0).rgb;
-      let ao = dot(aoMb, lum);
+      let ao = rec709Luminance(aoMb);
       // Corresponding full-res sample point (center of the half-res cell).
       let sampleFull = sampleHalf * 2u + 1u;
       let nd = textureLoad(
@@ -120,11 +121,11 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   } else {
     // Cheap unweighted average as backup; reduce each tap to luminance first.
     ao = (
-      dot(textureLoad(up_aoHalf, halfPx, 0).rgb, lum) +
-      dot(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).rgb, lum) +
-      dot(textureLoad(up_aoHalf, vec2u(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb, lum) +
-      dot(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u),
-                                       min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb, lum)
+      rec709Luminance(textureLoad(up_aoHalf, halfPx, 0).rgb) +
+      rec709Luminance(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).rgb) +
+      rec709Luminance(textureLoad(up_aoHalf, vec2u(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb) +
+      rec709Luminance(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u),
+                                                   min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb)
     ) * 0.25;
   }
 

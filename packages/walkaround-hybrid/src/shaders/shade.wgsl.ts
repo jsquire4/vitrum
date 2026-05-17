@@ -294,11 +294,12 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     let sin45 = 0.7071068;
     var skyAccum = 0.0;
     var weightAccum = 0.0;
-    let luminanceWeights = vec3f(0.2126, 0.7152, 0.0722);
+    // C10: Rec.709 luminance via canonical helper rec709Luminance (from common.wgsl,
+    // which template-interpolates @vitrum/shared-samplers LUMINANCE_WGSL).
     // Centre tap (along normal, weight 1.0).
     {
       let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, normal, 1e6);
-      let lum = dot(v, luminanceWeights);
+      let lum = rec709Luminance(v);
       skyAccum = skyAccum + lum * 1.0;
       weightAccum = weightAccum + 1.0;
     }
@@ -309,25 +310,25 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     let diag3 = safe_normalize(normal * cos45 - bitangent * sin45);
     {
       let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag0, 1e6);
-      let lum = dot(v, luminanceWeights);
+      let lum = rec709Luminance(v);
       skyAccum = skyAccum + lum * cos45;
       weightAccum = weightAccum + cos45;
     }
     {
       let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag1, 1e6);
-      let lum = dot(v, luminanceWeights);
+      let lum = rec709Luminance(v);
       skyAccum = skyAccum + lum * cos45;
       weightAccum = weightAccum + cos45;
     }
     {
       let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag2, 1e6);
-      let lum = dot(v, luminanceWeights);
+      let lum = rec709Luminance(v);
       skyAccum = skyAccum + lum * cos45;
       weightAccum = weightAccum + cos45;
     }
     {
       let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag3, 1e6);
-      let lum = dot(v, luminanceWeights);
+      let lum = rec709Luminance(v);
       skyAccum = skyAccum + lum * cos45;
       weightAccum = weightAccum + cos45;
     }

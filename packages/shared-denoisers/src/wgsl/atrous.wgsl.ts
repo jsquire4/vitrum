@@ -12,10 +12,11 @@
  *   C-none/Web-RTRT atrous denoiser implementation.
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import { ATROUS_KERNEL_WGSL } from './atrousKernel.wgsl.js';
 
 export const ATROUS_WGSL = /* wgsl */ `
-
+${LUMINANCE_WGSL}
 @group(0) @binding(0) var inputColor:    texture_2d<f32>;
 @group(0) @binding(1) var outputColor:   texture_storage_2d<rgba16float, write>;
 // Normal+depth G-buffer authored by the shade pass.  Both binding 2 and
@@ -92,11 +93,9 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // normalizing both colors to unit luminance first, we measure
       // hue/saturation difference instead of brightness difference,
       // making σc behave consistently across all cell luminances.
-      // Rec. 709 luminance weights — canonical value; identical copies exist
-      // in svgf.wgsl.ts, spatialFilter.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
-      let lumW = vec3f(0.2126, 0.7152, 0.0722);
-      let lumP = max(1e-3, dot(cP, lumW));
-      let lumC = max(1e-3, dot(cCenter, lumW));
+      // C10: Rec.709 luminance via canonical helper (shared-samplers/luminance.wgsl).
+      let lumP = max(1e-3, rec709Luminance(cP));
+      let lumC = max(1e-3, rec709Luminance(cCenter));
       let dc = length(cP / lumP - cCenter / lumC);
       let wc = exp(-dc * dc / (ubo.sigmaC * ubo.sigmaC + 1e-6));
 

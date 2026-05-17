@@ -34,9 +34,11 @@
  *   group(1) binding(0) — ppgUBO: struct { sampleCount: u32, leafCount: u32, ... }
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const PPG_UPDATE_WGSL = /* wgsl */`
+${LUMINANCE_WGSL}
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Müller et al. 2017 §3.3 — training on INCOMING radiance (L_i).
 // DEVIATION 3 FIX: ppgLiSamples is the L_i binding, not Lo.
@@ -93,7 +95,8 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   // DEVIATION 3 FIX: read from ppgLiSamples (L_i binding), not from any
   // clamped outgoing-radiance buffer (Lo binding).
   let Li  = ppgLiSamples[idx].xyz;
-  let lum = dot(Li, vec3<f32>(0.2126, 0.7152, 0.0722));
+  // C10: Rec.709 luminance via canonical helper (shared-samplers/luminance.wgsl).
+  let lum = rec709Luminance(Li);
   if (lum <= 0.0) { return; }
 
   // Octahedral UV of the incoming direction in WORLD space (deviation 4 fix).

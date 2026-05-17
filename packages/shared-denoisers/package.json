@@ -22,7 +22,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@vitrum/core": "file:../core"
+    "@vitrum/core": "file:../core",
+    "@vitrum/shared-samplers": "file:../shared-samplers"
   },
   "peerDependencies": {
     "onnxruntime-web": "^1.18.0"

@@ -17,10 +17,11 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const COMMON_WGSL = /* wgsl */ `
-
+${LUMINANCE_WGSL}
 // ============================================================
 // Constants
 // ============================================================
@@ -395,8 +396,13 @@ fn rand3(state: ptr<function, u32>) -> vec3f {
 // ============================================================
 // Utility
 // ============================================================
+// Back-compat alias: every walkaround consumer that already requires
+// 'common' calls luminance(c); the canonical helper now lives in
+// @vitrum/shared-samplers (C10) and is template-interpolated above as
+// rec709Luminance. Keeping luminance as a thin forward preserves all
+// existing call sites without a sweep through 6+ shader files.
 fn luminance(c: vec3f) -> f32 {
-  return dot(c, vec3f(0.2126, 0.7152, 0.0722));
+  return rec709Luminance(c);
 }
 
 fn safe_normalize(v: vec3f) -> vec3f {

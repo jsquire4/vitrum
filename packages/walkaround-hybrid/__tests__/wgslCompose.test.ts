@@ -265,8 +265,9 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
 
   it('atrousVariance: self-contained — composer adds nothing', () => {
     // Pre-R6 anti-duplication-by-comment at pipelineCompiler.ts:131 +
-    // atrousVariance.ts:148: this string declares its own PI/INV_PI/LUM_W/
-    // WelfordVariance. The structural fix is `requires: []`.
+    // atrousVariance.ts:148: this string declares its own PI/INV_PI/
+    // Rec.709 luminance helper (via @vitrum/shared-samplers LUMINANCE_WGSL,
+    // C10)/WelfordVariance. The structural fix is `requires: []`.
     expect(composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES)).toBe(ATROUS_VARIANCE_WGSL);
   });
 

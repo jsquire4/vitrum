@@ -53,8 +53,10 @@
  *   _pad: f32        — alignment
  */
 
-export const SPATIAL_FILTER_WGSL = /* wgsl */ `
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 
+export const SPATIAL_FILTER_WGSL = /* wgsl */ `
+${LUMINANCE_WGSL}
 @group(0) @binding(0) var inputColor:    texture_2d<f32>;
 @group(0) @binding(1) var outputColor:   texture_storage_2d<rgba16float, write>;
 @group(0) @binding(2) var gbufferNormal: texture_2d<f32>;
@@ -174,11 +176,9 @@ fn spatialFilterMain(@builtin(global_invocation_id) gid: vec3u) {
 
     // Color: luminance-normalized chromaticity distance (matches à-trous
     // convention in atrous.wgsl.ts; avoids HDR magnitude bias).
-    // Rec. 709 luminance weights — canonical value; identical copies exist
-    // in svgf.wgsl.ts, atrous.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
-    let lumW = vec3f(0.2126, 0.7152, 0.0722);
-    let lumP = max(1e-3, dot(cP, lumW));
-    let lumC = max(1e-3, dot(cCenter, lumW));
+    // C10: Rec.709 luminance via canonical helper (shared-samplers/luminance.wgsl).
+    let lumP = max(1e-3, rec709Luminance(cP));
+    let lumC = max(1e-3, rec709Luminance(cCenter));
     let dc   = length(cP / lumP - cCenter / lumC);
     let wc   = exp(-dc * dc / sigC2);
 

@@ -13,10 +13,10 @@
  * atrousVariance.ts / svgfReal.ts pre-R6:
  *   - ATROUS_WGSL was prepended with COMMON_WGSL  → requires: ['common']
  *   - TEMPORAL_ACCUM_WGSL was NOT concatenated   → requires: []
- *   - ATROUS_VARIANCE_WGSL was self-contained (carries its own PI/INV_PI/
- *     LUM_W/WelfordVariance) — the anti-duplication-by-comment at
- *     pipelineCompiler.ts:131 (pre-R6) becomes structural here:
- *     requires: [].
+ *   - ATROUS_VARIANCE_WGSL is self-contained — it template-interpolates
+ *     PI/INV_PI/Rec.709 luminance helper (via @vitrum/shared-samplers LUMINANCE_WGSL,
+ *     C10)/WelfordVariance into its own source. The anti-duplication-by-comment
+ *     at pipelineCompiler.ts:131 (pre-R6) becomes structural here: requires: [].
  *   - SVGF_REPROJECTION_WGSL, SVGF_VARIANCE_FROM_MOMENTS_WGSL,
  *     SVGF_7X7_SPATIAL_FALLBACK_WGSL are all self-contained: pre-R6 they
  *     were compiled standalone (no COMMON_WGSL prepend in svgfReal.ts).
@@ -105,8 +105,9 @@ export const TEMPORAL_ACCUM_MODULE: WgslModule = {
   requires: [],
 };
 
-/** Pre-R6: ATROUS_VARIANCE_WGSL is self-contained — declares its own PI,
- *  INV_PI, LUM_W, and WelfordVariance struct. Pre-R6 atrousVariance.ts:148
+/** Pre-R6: ATROUS_VARIANCE_WGSL is self-contained — template-interpolates
+ *  its own PI, INV_PI, Rec.709 luminance helper (via @vitrum/shared-samplers
+ *  LUMINANCE_WGSL, C10), and WelfordVariance struct. Pre-R6 atrousVariance.ts:148
  *  had an anti-duplication-by-comment explaining why COMMON_WGSL was NOT
  *  prepended; W1-R6 turns that comment into structure: `requires: []`. */
 export const ATROUS_VARIANCE_MODULE: WgslModule = {

@@ -64,6 +64,7 @@
  *   Decision 13 — versioned struct pinned Sprint 9 (2026-05-09).
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import { ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../atrousVarianceConstants.js';
 import { WELFORD_VARIANCE_WGSL } from './welfordVariance.wgsl.js';
 import { ATROUS_VARIANCE_KERNEL_WGSL } from './atrousKernel.wgsl.js';
@@ -76,6 +77,11 @@ export const ATROUS_VARIANCE_WGSL = /* wgsl */ `
 const SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT}u;
 
 // ============================================================
+// Rec.709 luminance helper — canonical (shared-samplers/luminance.wgsl).
+// ============================================================
+${LUMINANCE_WGSL}
+
+// ============================================================
 // WelfordVariance — canonical struct + helpers from welfordVariance.wgsl.ts.
 // ============================================================
 ${WELFORD_VARIANCE_WGSL}
@@ -85,9 +91,6 @@ ${WELFORD_VARIANCE_WGSL}
 // ============================================================
 const PI       = 3.14159265358979;
 const INV_PI   = 0.31830988618;
-// Rec. 709 luminance weights — canonical value; identical copies exist
-// in atrous.wgsl.ts, spatialFilter.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
-const LUM_W    = vec3f(0.2126, 0.7152, 0.0722);
 
 // ============================================================
 // Variance estimation uniforms
@@ -134,10 +137,6 @@ struct AtrousVarianceAtrousUBO {
 @group(0) @binding(6) var varOut_varianceOut:  texture_storage_2d<rg32float, write>;
 @group(0) @binding(7) var<uniform>  varUBO:   AtrousVarianceVarianceUBO;
 
-fn luminance(c: vec3f) -> f32 {
-  return dot(c, LUM_W);
-}
-
 @compute @workgroup_size(16, 16, 1)
 fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = textureDimensions(varIn_inputColor);
@@ -158,7 +157,7 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
       for (var dx = -1; dx <= 1; dx++) {
         let p = vec2i(gid.xy) + vec2i(dx, dy);
         if (any(p < vec2i(0)) || any(vec2u(p) >= dims)) { continue; }
-        let lum = luminance(textureLoad(varIn_inputColor, vec2u(p), 0).rgb);
+        let lum = rec709Luminance(textureLoad(varIn_inputColor, vec2u(p), 0).rgb);
         sum   += lum;
         sumSq += lum * lum;
         n     += 1u;
@@ -233,7 +232,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
   // Step width doubles each iteration: 1, 2, 4, 8, 16.
   let sw = i32(1u << atrousUBO.iteration);
 
-  let lumCenter = luminance(cCenter);
+  let lumCenter = rec709Luminance(cCenter);
 
   var sumColor  = vec3f(0.0);
   var sumWeight = 0.0;
@@ -259,7 +258,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // ── Variance-guided color edge stop ─────────────────────────────────
       // Tolerance scales with sqrt(variance): noisy pixels accept wider
       // color neighborhoods, converged pixels apply tighter edges.
-      let lumP = luminance(cP);
+      let lumP = rec709Luminance(cP);
       let dLum = lumP - lumCenter;
       // Add a small epsilon to the denominator so the first-frame case
       // (zero variance) still allows some neighborhood smoothing.
