@@ -32,6 +32,8 @@
  *   to the frame BGL by the Sprint 16 pipeline machinery.
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const RIS_GI_WGSL = /* wgsl */ `
 
 @group(0) @binding(10) var gi_gNormalDepth: texture_2d<f32>;
@@ -221,3 +223,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, r);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry.
+ *  Order mirrors the pre-R6 concat `COMMON_WGSL + DDGI_SAMPLE_WGSL + RIS_GI_WGSL`. */
+export const RIS_GI_MODULE: WgslModule = {
+  name: 'risGi',
+  source: RIS_GI_WGSL,
+  requires: ['common', 'ddgiSample'],
+};

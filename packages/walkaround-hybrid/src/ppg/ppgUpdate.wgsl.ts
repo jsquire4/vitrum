@@ -34,6 +34,8 @@
  *   group(1) binding(0) — ppgUBO: struct { sampleCount: u32, leafCount: u32, ... }
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const PPG_UPDATE_WGSL = /* wgsl */`
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Müller et al. 2017 §3.3 — training on INCOMING radiance (L_i).
@@ -114,3 +116,10 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   _ = vIdx; // vIdx reserved for 2-D leaf indexing in a future tree serialisation pass.
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained. */
+export const PPG_UPDATE_MODULE: WgslModule = {
+  name: 'ppgUpdate',
+  source: PPG_UPDATE_WGSL,
+  requires: [],
+};

@@ -51,6 +51,8 @@
  * so per-frame jitter doesn't introduce temporal flicker.
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const GTAO_WGSL = /* wgsl */ `
 
 struct GTAOUniforms {
@@ -273,3 +275,10 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(gtao_aoOut, gid.xy, vec4f(aoMb, 1.0));
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained. */
+export const GTAO_MODULE: WgslModule = {
+  name: 'gtao',
+  source: GTAO_WGSL,
+  requires: [],
+};

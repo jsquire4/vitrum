@@ -22,6 +22,7 @@
  */
 
 import { IRR_CELL, VIS_CELL, IRR_STRIDE, VIS_STRIDE } from './ddgiAtlasLayout.js';
+import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 // Atlas-layout constants are template-substituted at module-load time so
 // the producer (probeGrid.allocateAtlases) and the two consumers
@@ -137,3 +138,11 @@ fn ddgiSample(
   return sum / totalWeight;
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. The DDGI sampler is a
+ *  standalone helper function (no BVH or RNG dependence on `common`). */
+export const DDGI_SAMPLE_MODULE: WgslModule = {
+  name: 'ddgiSample',
+  source: DDGI_SAMPLE_WGSL,
+  requires: [],
+};

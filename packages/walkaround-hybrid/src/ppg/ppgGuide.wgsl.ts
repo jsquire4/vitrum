@@ -31,6 +31,8 @@
  *   group(1) binding(0) — ppgGuideUBO:     struct { ... }
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const PPG_GUIDE_WGSL = /* wgsl */`
 // ── PPG guide kernel ──────────────────────────────────────────────────────────
 // Müller et al. 2017 §3.2, §3.4 — dTree direction sampling + MIS PDF.
@@ -137,6 +139,13 @@ fn ppgGuideMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   ppgSampleOut[pix] = vec4<f32>(dir, pdf);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained. */
+export const PPG_GUIDE_MODULE: WgslModule = {
+  name: 'ppgGuide',
+  source: PPG_GUIDE_WGSL,
+  requires: [],
+};
 
 // ────────────────────────────────────────────────────────────────────────────
 // MIS weight computation (Müller §3.4) — pure TypeScript for host + test use

@@ -26,6 +26,8 @@
  *   @group(0) @binding(2) WalkaroundUBO       (uniform)
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const TEMPORAL_GI_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var<storage, read_write> tgi_resCurrent: array<u32>;
@@ -178,3 +180,10 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. */
+export const TEMPORAL_GI_MODULE: WgslModule = {
+  name: 'temporalGi',
+  source: TEMPORAL_GI_WGSL,
+  requires: ['common'],
+};

@@ -9,6 +9,8 @@
  * pipelineCompiler injects this string into shade's shader module only.
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const SURFACE_TEXTURES_WGSL = /* wgsl */ `
 
 // ============================================================
@@ -236,3 +238,10 @@ fn bvhTraceTintedVisibility(
   return visibility;
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. */
+export const SURFACE_TEXTURES_MODULE: WgslModule = {
+  name: 'surfaceTextures',
+  source: SURFACE_TEXTURES_WGSL,
+  requires: ['common'],
+};

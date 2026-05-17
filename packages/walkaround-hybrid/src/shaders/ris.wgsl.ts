@@ -16,6 +16,8 @@
  *   @group(2): ubo   (camera matrices + per-frame params)
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const RIS_WGSL = /* wgsl */ `
 
 // ============================================================
@@ -186,3 +188,10 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   storeReservoirDI_rw(&currentReservoir, pixelIdx, r);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. */
+export const RIS_MODULE: WgslModule = {
+  name: 'ris',
+  source: RIS_WGSL,
+  requires: ['common'],
+};

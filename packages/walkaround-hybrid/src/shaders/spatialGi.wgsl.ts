@@ -21,6 +21,8 @@
  *   @group(0) @binding(2) WalkaroundUBO    (uniform)
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const SPATIAL_GI_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var<storage, read>       sgi_resIn:  array<u32>;
@@ -128,3 +130,10 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   storeReservoirGI_rw(&sgi_resOut, pixelIdx, rOut);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. */
+export const SPATIAL_GI_MODULE: WgslModule = {
+  name: 'spatialGi',
+  source: SPATIAL_GI_WGSL,
+  requires: ['common'],
+};

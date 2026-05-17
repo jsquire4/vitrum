@@ -17,6 +17,7 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
+import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const COMMON_WGSL = /* wgsl */ `
 
@@ -855,3 +856,11 @@ ${WELFORD_VARIANCE_WGSL}
 // Surface-texture pattern functions live in surfaceTextures.wgsl.ts (shade-only).
 
 `;
+
+/** W1-R6 — declarative include-graph entry. Common is the root of the
+ *  dependency tree; everything else opts in via `requires: ['common']`. */
+export const COMMON_MODULE: WgslModule = {
+  name: 'common',
+  source: COMMON_WGSL,
+  requires: [],
+};

@@ -24,12 +24,12 @@ import {
   ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
   ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
   ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
-  ATROUS_VARIANCE_WGSL,
   packAtrousVarianceAtrousUniforms,
   packAtrousVarianceVarianceUniforms,
 } from '@vitrum/shared-denoisers';
-import { COMMON_WGSL } from '../../shaders/common.wgsl.js';
-import { WELFORD_TEMPORAL_WGSL } from '../../shaders/welfordTemporal.wgsl.js';
+import { WELFORD_TEMPORAL_MODULE } from '../../shaders/welfordTemporal.wgsl.js';
+import { composeWgsl } from '../wgslComposer.js';
+import { ATROUS_VARIANCE_MODULE, WGSL_MODULES } from '../wgslModules.js';
 import type { UboRef } from '../bindGroupBuilders.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
@@ -136,18 +136,19 @@ export class AtrousVarianceDenoiser implements Denoiser {
     const { device } = ctx;
 
     // ── Compile shader modules ────────────────────────────────────────────
+    // The include-graph handles the self-contained-vs-common-dependent split
+    // structurally: WELFORD_TEMPORAL_MODULE declares `requires: ['common']`,
+    // while ATROUS_VARIANCE_MODULE declares `requires: []` because the
+    // shared-denoisers WGSL fragment ships its own PI/INV_PI/LUM_W/
+    // WelfordVariance declarations. The pre-R6 anti-duplication-by-comment
+    // is now structural — no hand-rolled prepend, no risk of redeclaration.
     const welfordSM = device.createShaderModule({
       label: 'welford-temporal',
-      code: COMMON_WGSL + WELFORD_TEMPORAL_WGSL,
+      code: composeWgsl(WELFORD_TEMPORAL_MODULE, WGSL_MODULES),
     });
-    // ATROUS_VARIANCE_WGSL is self-contained: it declares its own PI, INV_PI,
-    // LUM_W, and WelfordVariance struct (via WELFORD_VARIANCE_WGSL). Do NOT
-    // prepend COMMON_WGSL here — it would cause WGSL redeclaration errors
-    // on those names. The welford-temporal pass DOES need COMMON_WGSL (for
-    // the BVH / shared math helpers), which is why those two diverge.
     const atrousVarianceSM = device.createShaderModule({
       label: 'atrous-variance',
-      code: ATROUS_VARIANCE_WGSL,
+      code: composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES),
     });
 
     // Compile checks — mirror the historical pipelineCompiler behaviour.
