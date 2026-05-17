@@ -28,6 +28,7 @@ import {
   ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
 } from './atrousVarianceConstants.js';
 import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
+import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
 import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 
@@ -232,46 +233,6 @@ function uploadInterleavedRgAsRg32f(
       }
     }
   });
-}
-
-/**
- * Albedo demodulation helpers — Schied 2017 §4.1.
- *
- * `demodulateAlbedo`: divide rgb by albedo (per channel, clamped to 1e-3
- * to avoid division by zero on black surfaces). Returns a new Float32Array.
- *
- * `remodulateAlbedo`: multiply filtered lighting by albedo to restore the
- * physically correct denoised outgoing radiance. Modifies `rgb` in-place
- * and returns it.
- */
-
-/** Divide rgb by albedo; returns a new Float32Array of the demodulated signal. */
-function demodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
-  const out = new Float32Array(rgb.length);
-  for (let i = 0; i < pixelCount; i += 1) {
-    const si = i * 3;
-    const ar = Math.max(albedo[si]     ?? 0, 1e-3);
-    const ag = Math.max(albedo[si + 1] ?? 0, 1e-3);
-    const ab = Math.max(albedo[si + 2] ?? 0, 1e-3);
-    out[si]     = (rgb[si]     ?? 0) / ar;
-    out[si + 1] = (rgb[si + 1] ?? 0) / ag;
-    out[si + 2] = (rgb[si + 2] ?? 0) / ab;
-  }
-  return out;
-}
-
-/** Multiply rgb by albedo in-place; returns the same Float32Array. */
-function remodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
-  for (let i = 0; i < pixelCount; i += 1) {
-    const si = i * 3;
-    const ar = albedo[si]     !== undefined ? albedo[si]!     : 1;
-    const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
-    const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
-    rgb[si]     = (rgb[si]     ?? 0) * ar;
-    rgb[si + 1] = (rgb[si + 1] ?? 0) * ag;
-    rgb[si + 2] = (rgb[si + 2] ?? 0) * ab;
-  }
-  return rgb;
 }
 
 /**

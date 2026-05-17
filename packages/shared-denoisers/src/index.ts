@@ -72,6 +72,11 @@ export {
 } from './atrousVarianceWebGPU.js';
 export type { AtrousVarianceWebGPUOptions, AtrousVarianceSyntheticGbufferFallback } from './atrousVarianceWebGPU.js';
 
+// W7-H8: CPU albedo demodulate/remodulate helpers (Schied 2017 §4.1).
+// Extracted from atrousVarianceWebGPU.ts; reusable by any CPU denoiser path
+// that wants to filter lighting before re-applying the albedo term.
+export { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
+
 // ── T2.H1 — Real Schied 2017 SVGF ('svgf-real' mode) ─────────────────────────
 // Implements bilinear reprojection + disocclusion test + per-pixel history +
 // variance-from-moments (Eq. 1–5) + 7×7 spatial fallback (§4.3).
