@@ -81,3 +81,8 @@ export {
   FRAUNHOFER_F_NM,
   FRAUNHOFER_C_NM,
 } from './cauchyIor.js';
+
+// ── W7-H5: Generic uniform SO(3) sampler (Halton × Shoemake) ─────────────────
+// Used by walkaround DDGI probe-update for per-frame QMC ray decorrelation;
+// suitable for any compute pass needing a deterministic uniform rotation.
+export { haltonBase, sampleUniformRotationAxisAngle } from './quaternionSampling.js';
