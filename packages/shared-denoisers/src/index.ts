@@ -10,6 +10,17 @@
 export * from './wgsl/atrous.wgsl.js';
 export * from './wgsl/temporalAccum.wgsl.js';
 
+// Sprint 6 — 37-tap hexagonal-kernel edge-stopping spatial filter.
+// TODO consumer: PT-preview side currently uses Sprint 10a à-trous+variance instead
+// (see plan/archive/sprint-10a-pt-fork-patch.md). This export keeps the hexagonal
+// alternative reachable from the package public surface so a host (or future
+// denoiser mode) can opt back into it. Implementation and bind-group descriptor
+// are fully tested via __tests__/spatialFilter.test.ts.
+export {
+  SPATIAL_FILTER_WGSL,
+} from './wgsl/spatialFilter.wgsl.js';
+export type { SpatialFilterBindGroupLayout } from './wgsl/spatialFilter.wgsl.js';
+
 // Canonical WelfordVariance — single source for cross-package variance state.
 export {
   WELFORD_VARIANCE_WGSL,
