@@ -1,31 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import { BoxGeometry, Mesh, MeshPhysicalMaterial, Scene } from 'three';
 import { driveForkMaterialUniforms } from '../forkUniformBridge.js';
+import { ForkAccess, makeForkPathTracerStubForTests } from '../forkAccess.js';
 
+/** Build a path-tracer stub with a fresh uniforms map. Construction goes
+ *  through {@link makeForkPathTracerStubForTests} so individual test files
+ *  never bind to the fork-private navigation shape directly — that lives
+ *  inside `forkAccess.ts`. */
 function makeStubPathTracer() {
-  return {
-    _pathTracer: {
-      material: {
-        uniforms: {
-          u_volumeDensity: { value: 123 },
-          uCausticStrategy: { value: -1 },
-          uMneeMaxIterations: { value: 0 },
-          uMneeMaxChainLength: { value: 0 },
-          uCmfX: { value: null as unknown },
-          uCmfY: { value: null as unknown },
-          uCmfZ: { value: null as unknown },
-          uYCmfCdf: { value: null as unknown },
-          uYCmfIntegral: { value: 0 },
-          uSpectralRendering: { value: -1 },
-          uRadianceClamp: { value: -1 },
-          // Sprint 10c — BDPT uniforms
-          uBdptEnabled: { value: false as unknown },
-          uBdptMaxLightBounces: { value: 0 },
-          uBdptLightPathTex: { value: null as unknown },
-        },
+  return makeForkPathTracerStubForTests({
+    material: {
+      uniforms: {
+        u_volumeDensity: { value: 123 },
+        uCausticStrategy: { value: -1 },
+        uMneeMaxIterations: { value: 0 },
+        uMneeMaxChainLength: { value: 0 },
+        uCmfX: { value: null as unknown },
+        uCmfY: { value: null as unknown },
+        uCmfZ: { value: null as unknown },
+        uYCmfCdf: { value: null as unknown },
+        uYCmfIntegral: { value: 0 },
+        uSpectralRendering: { value: -1 },
+        uRadianceClamp: { value: -1 },
+        // Sprint 10c — BDPT uniforms
+        uBdptEnabled: { value: false as unknown },
+        uBdptMaxLightBounces: { value: 0 },
+        uBdptLightPathTex: { value: null as unknown },
       },
     },
-  };
+  });
+}
+
+/** Read-back helper: resolves uniforms via the same accessor production
+ *  code uses. Asserts non-null so tests fail loudly rather than chasing
+ *  optional-chain undefineds when the stub shape drifts. */
+function uniformsOf(pathTracer: unknown): Record<string, { value: unknown }> {
+  const material = ForkAccess.getMaterial(pathTracer);
+  if (material == null || material.uniforms == null) {
+    throw new Error('test bug: stub path tracer has no material/uniforms');
+  }
+  return material.uniforms;
 }
 
 describe('driveForkMaterialUniforms', () => {
@@ -40,18 +54,18 @@ describe('driveForkMaterialUniforms', () => {
       mneeMaxIterations: 12,
       mneeMaxChainLength: 4,
     });
-    const uniforms = pathTracer._pathTracer.material.uniforms;
+    const uniforms = uniformsOf(pathTracer);
 
-    expect(uniforms.uCmfX.value).toBeInstanceOf(Float32Array);
-    expect(uniforms.uCmfY.value).toBeInstanceOf(Float32Array);
-    expect(uniforms.uCmfZ.value).toBeInstanceOf(Float32Array);
-    expect(uniforms.uYCmfCdf.value).toBeInstanceOf(Float32Array);
-    expect(uniforms.uYCmfIntegral.value).toBeCloseTo(106.857);
-    expect(uniforms.uSpectralRendering.value).toBe(0);
-    expect(uniforms.uRadianceClamp.value).toBe(0);
-    expect(uniforms.uCausticStrategy.value).toBe(1);
-    expect(uniforms.uMneeMaxIterations.value).toBe(12);
-    expect(uniforms.uMneeMaxChainLength.value).toBe(4);
+    expect(uniforms.uCmfX!.value).toBeInstanceOf(Float32Array);
+    expect(uniforms.uCmfY!.value).toBeInstanceOf(Float32Array);
+    expect(uniforms.uCmfZ!.value).toBeInstanceOf(Float32Array);
+    expect(uniforms.uYCmfCdf!.value).toBeInstanceOf(Float32Array);
+    expect(uniforms.uYCmfIntegral!.value).toBeCloseTo(106.857);
+    expect(uniforms.uSpectralRendering!.value).toBe(0);
+    expect(uniforms.uRadianceClamp!.value).toBe(0);
+    expect(uniforms.uCausticStrategy!.value).toBe(1);
+    expect(uniforms.uMneeMaxIterations!.value).toBe(12);
+    expect(uniforms.uMneeMaxChainLength!.value).toBe(4);
   });
 
   it('does not override per-material scalar uniforms', () => {
@@ -61,10 +75,10 @@ describe('driveForkMaterialUniforms', () => {
 
     const pathTracer = makeStubPathTracer();
     driveForkMaterialUniforms(pathTracer);
-    const uniforms = pathTracer._pathTracer.material.uniforms;
+    const uniforms = uniformsOf(pathTracer);
 
-    expect(uniforms.u_volumeDensity.value).toBe(123);
-    expect(uniforms.uYCmfIntegral.value).toBeCloseTo(106.857);
+    expect(uniforms.u_volumeDensity!.value).toBe(123);
+    expect(uniforms.uYCmfIntegral!.value).toBeCloseTo(106.857);
   });
 
   it('maps strategy "none" to zero code', () => {
@@ -78,11 +92,11 @@ describe('driveForkMaterialUniforms', () => {
       mneeMaxIterations: 6,
       mneeMaxChainLength: 2,
     });
-    const uniforms = pathTracer._pathTracer.material.uniforms;
+    const uniforms = uniformsOf(pathTracer);
 
-    expect(uniforms.uCausticStrategy.value).toBe(0);
-    expect(uniforms.uMneeMaxIterations.value).toBe(6);
-    expect(uniforms.uMneeMaxChainLength.value).toBe(2);
+    expect(uniforms.uCausticStrategy!.value).toBe(0);
+    expect(uniforms.uMneeMaxIterations!.value).toBe(6);
+    expect(uniforms.uMneeMaxChainLength!.value).toBe(2);
   });
 
   it('enables experimental hero-wavelength reconstruction when requested', () => {
@@ -98,8 +112,9 @@ describe('driveForkMaterialUniforms', () => {
       radianceClamp: 8,
     });
 
-    expect(pathTracer._pathTracer.material.uniforms.uSpectralRendering.value).toBe(1);
-    expect(pathTracer._pathTracer.material.uniforms.uRadianceClamp.value).toBe(8);
+    const u = uniformsOf(pathTracer);
+    expect(u.uSpectralRendering!.value).toBe(1);
+    expect(u.uRadianceClamp!.value).toBe(8);
   });
 
   // ── Sprint 10c — BDPT option flow-through tests ─────────────────────────
@@ -111,9 +126,9 @@ describe('driveForkMaterialUniforms', () => {
       mneeMaxIterations: 6,
       mneeMaxChainLength: 2,
     });
-    const uniforms = pathTracer._pathTracer.material.uniforms;
+    const uniforms = uniformsOf(pathTracer);
     // When bdptOptions is not supplied, uBdptEnabled must be false.
-    expect(uniforms.uBdptEnabled.value).toBe(false);
+    expect(uniforms.uBdptEnabled!.value).toBe(false);
     // The lightPathTex uniform is not touched by the bridge (null = no bind).
     // We only assert uBdptEnabled = false as the structural "off" guarantee.
   });
@@ -127,10 +142,10 @@ describe('driveForkMaterialUniforms', () => {
       { strategy: 'none', mneeMaxIterations: 6, mneeMaxChainLength: 2 },
       { enabled: true, maxLightBounces: 2, lightPathTex: fakeTexture },
     );
-    const uniforms = pathTracer._pathTracer.material.uniforms;
-    expect(uniforms.uBdptEnabled.value).toBe(true);
-    expect(uniforms.uBdptMaxLightBounces.value).toBe(2);
-    expect(uniforms.uBdptLightPathTex.value).toBe(fakeTexture);
+    const uniforms = uniformsOf(pathTracer);
+    expect(uniforms.uBdptEnabled!.value).toBe(true);
+    expect(uniforms.uBdptMaxLightBounces!.value).toBe(2);
+    expect(uniforms.uBdptLightPathTex!.value).toBe(fakeTexture);
   });
 
   it('Sprint 10c: BDPT enabled=true + null lightPathTex forces enabled=false (safety guard)', () => {
@@ -140,9 +155,9 @@ describe('driveForkMaterialUniforms', () => {
       { strategy: 'none', mneeMaxIterations: 6, mneeMaxChainLength: 2 },
       { enabled: true, maxLightBounces: 3, lightPathTex: null },
     );
-    const uniforms = pathTracer._pathTracer.material.uniforms;
+    const uniforms = uniformsOf(pathTracer);
     // Safety guard: null texture → force disabled to prevent sampling unbound slot.
-    expect(uniforms.uBdptEnabled.value).toBe(false);
+    expect(uniforms.uBdptEnabled!.value).toBe(false);
   });
 
   it('handles mixed-material scenes without clobbering scalar controls', () => {
@@ -177,13 +192,13 @@ describe('driveForkMaterialUniforms', () => {
       mneeMaxIterations: 10,
       mneeMaxChainLength: 5,
     });
-    const uniforms = pathTracer._pathTracer.material.uniforms;
+    const uniforms = uniformsOf(pathTracer);
 
-    expect(uniforms.u_volumeDensity.value).toBe(123);
-    expect(uniforms.uCausticStrategy.value).toBe(2);
-    expect(uniforms.uMneeMaxIterations.value).toBe(10);
-    expect(uniforms.uMneeMaxChainLength.value).toBe(5);
-    expect(uniforms.uCmfX.value).toBeInstanceOf(Float32Array);
-    expect(uniforms.uYCmfIntegral.value).toBeCloseTo(106.857);
+    expect(uniforms.u_volumeDensity!.value).toBe(123);
+    expect(uniforms.uCausticStrategy!.value).toBe(2);
+    expect(uniforms.uMneeMaxIterations!.value).toBe(10);
+    expect(uniforms.uMneeMaxChainLength!.value).toBe(5);
+    expect(uniforms.uCmfX!.value).toBeInstanceOf(Float32Array);
+    expect(uniforms.uYCmfIntegral!.value).toBeCloseTo(106.857);
   });
 });

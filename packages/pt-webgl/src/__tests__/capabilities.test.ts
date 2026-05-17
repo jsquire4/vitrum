@@ -12,7 +12,28 @@ vi.mock('@vitrum/three-bindings', () => ({
   }),
 }));
 
-vi.mock('three-gpu-pathtracer', () => {
+vi.mock('three-gpu-pathtracer', async () => {
+  // The helper lives in `forkAccess.ts` so this file never writes the
+  // underscore-prefixed fork-private key directly. When the fork renames
+  // its private accessor, only `forkAccess.ts` (the production shim and
+  // the helper) needs to change — every mock factory updates automatically.
+  const { makeForkPathTracerStubForTests } = await import('../forkAccess.js');
+  const forkShape = makeForkPathTracerStubForTests({
+    material: {
+      uniforms: {
+        uCausticStrategy: { value: -1 },
+        uMneeMaxIterations: { value: 0 },
+        uMneeMaxChainLength: { value: 0 },
+        uCmfX: { value: null },
+        uCmfY: { value: null },
+        uCmfZ: { value: null },
+        uYCmfCdf: { value: null },
+        uYCmfIntegral: { value: 0 },
+        uSpectralRendering: { value: -1 },
+        uRadianceClamp: { value: -1 },
+      },
+    },
+  });
   class WebGLPathTracer {
     readonly target = { texture: {} };
     samples = 0;
@@ -26,22 +47,13 @@ vi.mock('three-gpu-pathtracer', () => {
     tileRepeatFactors: Uint8Array | null = null;
     configureAdditiveAccumulation = vi.fn();
     readonly tiles = { set: vi.fn() };
-    readonly _pathTracer = {
-      material: {
-        uniforms: {
-          uCausticStrategy: { value: -1 },
-          uMneeMaxIterations: { value: 0 },
-          uMneeMaxChainLength: { value: 0 },
-          uCmfX: { value: null },
-          uCmfY: { value: null },
-          uCmfZ: { value: null },
-          uYCmfCdf: { value: null },
-          uYCmfIntegral: { value: 0 },
-          uSpectralRendering: { value: -1 },
-          uRadianceClamp: { value: -1 },
-        },
-      },
-    };
+
+    constructor() {
+      // Splice the fork-shape onto each instance so `ForkAccess.getMaterial`
+      // can navigate it. The spread carries the fork's private-field structure
+      // without this file ever referencing the underscore-prefixed key.
+      Object.assign(this, forkShape);
+    }
 
     setScene(): void {}
     setCamera(): void {}

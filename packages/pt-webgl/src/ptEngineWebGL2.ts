@@ -26,6 +26,7 @@ import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vit
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
+import { ForkAccess } from './forkAccess.js';
 import { IblBakerCache } from './iblBaker.js';
 import {
   MAX_TILE_GRID,
@@ -122,7 +123,10 @@ interface WebGLPathTracerCompat {
   bounces: number;
   filterGlossyFactor: number;
   fastUpdate: boolean;
-  _pathTracer?: { material?: { uniforms?: Record<string, { value: unknown }> } };
+  // Fork-private accessors (the underscore-prefixed shader-material path and
+  // the render-target texture handle) live in forkAccess.ts — production
+  // callers must go through `ForkAccess.*`, not declare the navigation shape
+  // on this surface.
   domElement?: HTMLCanvasElement;
 }
 
@@ -554,7 +558,7 @@ export class PTEngineWebGL2 implements Engine {
         computeAdaptiveTileRepeatFactors(
           this.#tileVariancePass,
           this.#renderer,
-          this.#pathTracer.target.texture as unknown as import('three').Texture,
+          ForkAccess.getRenderTexture(this.#pathTracer) as unknown as import('three').Texture,
           w,
           h,
           tilesX,
@@ -715,7 +719,7 @@ export class PTEngineWebGL2 implements Engine {
       const spp = this.#pathTracer.samples;
       const cap = this.#maxSamplesLimit;
       return {
-        primaryRadiance: this.#pathTracer.target.texture,
+        primaryRadiance: ForkAccess.getRenderTexture(this.#pathTracer),
         samplesAccumulated: spp,
         isConverged: spp >= cap,
         telemetry: this.#lastTelemetry,
@@ -818,7 +822,7 @@ export class PTEngineWebGL2 implements Engine {
     }
 
     return {
-      primaryRadiance: this.#pathTracer.target.texture,
+      primaryRadiance: ForkAccess.getRenderTexture(this.#pathTracer),
       samplesAccumulated: spp,
       isConverged: spp >= targetSpp,
       telemetry: this.#lastTelemetry,

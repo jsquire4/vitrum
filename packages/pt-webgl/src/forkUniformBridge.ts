@@ -1,11 +1,8 @@
 import { CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE } from '@vitrum/shared-samplers';
+import { ForkAccess, type MaterialLike } from './forkAccess.js';
 
 interface UniformRef<T> {
   value: T;
-}
-
-interface PathTracerMaterialLike {
-  uniforms?: Record<string, UniformRef<unknown>>;
 }
 
 export interface ForkBridgeCausticOptions {
@@ -56,7 +53,7 @@ function sanitizePositiveFinite(value: number, fallback: number, max: number): n
   return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
-function setUniform<T>(material: PathTracerMaterialLike | null, name: string, value: T): void {
+function setUniform<T>(material: MaterialLike | null, name: string, value: T): void {
   const u = material?.uniforms?.[name] as UniformRef<T> | undefined;
   if (u != null) {
     u.value = value;
@@ -140,8 +137,9 @@ export function driveForkMaterialUniforms(
   causticOptions?: ForkBridgeCausticOptions,
   bdptOptions?: ForkBridgeBdptOptions,
 ): void {
-  const tracer = pathTracer as { _pathTracer?: { material?: PathTracerMaterialLike } };
-  const material = tracer._pathTracer?.material ?? null;
+  // Resolved via the single fork-private accessor — when the fork renames
+  // `_pathTracer` or exposes an official getter, only forkAccess.ts changes.
+  const material = ForkAccess.getMaterial(pathTracer);
   if (material == null) return;
 
   setUniform(material, 'uCmfX', CIE_X_TABLE);
