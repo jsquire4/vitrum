@@ -117,3 +117,12 @@ export type {
   SVGFReprojCPUInput,
   SVGFReprojCPUOutput,
 } from './svgfRealWebGPU.js';
+
+// ── Half-float + WebGPU copy helpers (W12 — used by HybridEngine.debug
+//    readback methods for dev overlays). Shipped here because shared-denoisers
+//    already owns the binary16 conversion path. ─────────────────────────────
+export { float16BitsToFloat32, float32ToFloat16Bits } from './halfFloat.js';
+export {
+  alignedTextureCopyBytesPerRow,
+  WEBGPU_COPY_BYTES_PER_ROW_ALIGNMENT,
+} from './webGpuTextureCopy.js';

@@ -43,6 +43,10 @@ import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
+import {
+  alignedTextureCopyBytesPerRow,
+  float16BitsToFloat32,
+} from '@vitrum/shared-denoisers';
 
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -1294,7 +1298,81 @@ export class HybridEngine implements Engine {
         total:    null,
       };
     },
+    ddgiAtlasReadback: async () => {
+      // W12 — readback the DDGI irradiance + visibility atlases to RGB
+      // Float32Arrays for dev overlays that don't own the GPUDevice. Both
+      // atlases are allocated as rgba16float (see probeUpdatePass.ts:468-473).
+      const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
+      if (atlas == null) return null;
+      const irr = atlas.irradiance;
+      const vis = atlas.visibility;
+      // Atlas dimensions: irradiance + visibility share the same atlas grid
+      // layout (probe count × per-probe-cell footprint). Width / height
+      // come straight from the GPUTexture handle.
+      const width  = irr.width;
+      const height = irr.height;
+      if (width === 0 || height === 0) return null;
+      const [irradianceData, visibilityData] = await Promise.all([
+        this._readbackRgba16fToRgbFloat32(irr, width, height),
+        this._readbackRgba16fToRgbFloat32(vis, width, height),
+      ]);
+      return { width, height, irradianceData, visibilityData };
+    },
+    giSignalReadback: async () => {
+      const sigs = this.debug.giSignalTextures?.();
+      if (sigs == null) return null;
+      const refTex = sigs.direct ?? sigs.indirect ?? sigs.ao;
+      if (refTex == null) return null;
+      const width  = refTex.width;
+      const height = refTex.height;
+      if (width === 0 || height === 0) return null;
+      // Three readbacks in parallel; each null channel resolves to null.
+      const [direct, indirect, ao] = await Promise.all([
+        sigs.direct   != null ? this._readbackRgba16fToRgbFloat32(sigs.direct,   width, height) : Promise.resolve(null),
+        sigs.indirect != null ? this._readbackRgba16fToRgbFloat32(sigs.indirect, width, height) : Promise.resolve(null),
+        sigs.ao       != null ? this._readbackRgba16fToRgbFloat32(sigs.ao,       width, height) : Promise.resolve(null),
+      ]);
+      return { width, height, direct, indirect, ao };
+    },
   };
+
+  /** Generic rgba16float → RGB Float32 readback helper used by the W12
+   *  debug readback methods. Drops the alpha channel; row pitch is aligned
+   *  to 256 bytes per the WebGPU copy spec. The returned typed array has
+   *  length `width*height*3`. Allocates and destroys its own staging buffer
+   *  each call — dev-overlay use only, not on the hot path. */
+  private async _readbackRgba16fToRgbFloat32(
+    texture: GPUTexture,
+    width: number,
+    height: number,
+  ): Promise<Float32Array> {
+    const device = this._device;
+    const bytesPerPixel = 8;                                          // rgba16float = 4 * 2
+    const bpr = alignedTextureCopyBytesPerRow(width, bytesPerPixel);  // 256-byte aligned row pitch
+    const buf = device.createBuffer({
+      size: bpr * height,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = device.createCommandEncoder({ label: 'HybridEngine.debug.rgba16fReadback' });
+    encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height, 1]);
+    device.queue.submit([encoder.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const raw = new Uint8Array(buf.getMappedRange());
+    const dv  = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    const out = new Float32Array(width * height * 3);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const byte = y * bpr + x * bytesPerPixel;
+        const di   = (y * width + x) * 3;
+        out[di    ] = float16BitsToFloat32(dv.getUint16(byte + 0, true));
+        out[di + 1] = float16BitsToFloat32(dv.getUint16(byte + 2, true));
+        out[di + 2] = float16BitsToFloat32(dv.getUint16(byte + 4, true));
+      }
+    }
+    buf.unmap();
+    buf.destroy();
+    return out;
+  }
 
   // ── Dispose ────────────────────────────────────────────────────────────
 

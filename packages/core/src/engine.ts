@@ -232,6 +232,45 @@ export interface EngineDebugSurface {
     ao: GPUTexture | null;
     total: GPUTexture | null;
   } | null;
+
+  /** CPU-side readback of the DDGI irradiance + visibility atlases for dev
+   *  overlays that don't own the engine's `GPUDevice` (e.g. React components
+   *  rendering to a 2D canvas). Returns RGB Float32Arrays (irradiance: RGB
+   *  per texel; visibility: depth in `.r`, depth² in `.g`, blue/alpha zero).
+   *  Resolves to `null` when DDGI is disabled or the atlases are not yet
+   *  allocated. Backends MAY rate-limit / cache to avoid issuing a
+   *  copyTextureToBuffer per call — callers should request at most a few
+   *  frames per second. Added W12 (dev overlays finish). */
+  ddgiAtlasReadback?(): Promise<{
+    /** Atlas pixel width. */
+    readonly width: number;
+    /** Atlas pixel height. */
+    readonly height: number;
+    /** RGB per texel, row-major, length `width*height*3`. */
+    readonly irradianceData: Float32Array;
+    /** RGB per texel, row-major, length `width*height*3`. `.r` is depth,
+     *  `.g` is depth². */
+    readonly visibilityData: Float32Array;
+  } | null>;
+
+  /** CPU-side readback of the per-channel GI signal textures (direct radiance,
+   *  indirect radiance, AO) for split-screen visualisation in hosts that don't
+   *  own the engine's `GPUDevice`. Each channel is RGB Float32, row-major,
+   *  pre-tonemap. Any channel may be `null` when the backend doesn't separate
+   *  that signal. Resolves to `null` when the pipeline isn't initialised.
+   *  Same rate-limit guidance as {@link ddgiAtlasReadback}. Added W12. */
+  giSignalReadback?(): Promise<{
+    /** Channel pixel width (full render resolution). */
+    readonly width: number;
+    /** Channel pixel height. */
+    readonly height: number;
+    /** Direct radiance — RGB per texel, length `width*height*3`. */
+    readonly direct: Float32Array | null;
+    /** Indirect radiance — RGB per texel. */
+    readonly indirect: Float32Array | null;
+    /** AO — RGB per texel (single-channel AO copied to all three lanes). */
+    readonly ao: Float32Array | null;
+  } | null>;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
