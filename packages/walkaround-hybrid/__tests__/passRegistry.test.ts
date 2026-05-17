@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
 import type { Pass, PassDispatchContext, PassGateOptions, PassInitContext } from '../src/pipeline/Pass.js';
+import type { PassLabel } from '../src/pipeline/timestampQueries.js';
 
 /**
  * Build a minimal stub Pass for graph-shape tests. The pass is inert — it
@@ -15,6 +16,7 @@ function stubPass(
   return {
     id,
     dependencies,
+    passLabels: [id as PassLabel],
     gates: gate,
     initialize: async (_ctx: PassInitContext) => undefined,
     dispatch: (_ctx: PassDispatchContext) => undefined,

@@ -15,15 +15,20 @@
  * texture→buffer→inference→texture bridging in HybridEngine is finished.
  */
 
-import type {
-  Denoiser,
-  DenoiserDispatchContext,
-  DenoiserInitContext,
+import {
+  DENOISER_PASS_LABELS,
+  type Denoiser,
+  type DenoiserDispatchContext,
+  type DenoiserInitContext,
 } from './index.js';
 
 export class NeuralDenoiser implements Denoiser {
   readonly id = 'neural' as const;
   readonly disabled = true;
+  /** W10 placeholder: mirrors the atrous-variance layout so a host that
+   *  switches to 'neural' before W10 lands does not trip the
+   *  buildPassLayout slot-count invariant. */
+  readonly passLabels = DENOISER_PASS_LABELS['neural'];
 
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
     // No-op — the registry guards against ever reaching this path while

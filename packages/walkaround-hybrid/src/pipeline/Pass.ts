@@ -3,27 +3,36 @@
  *
  * The walkaround pipeline is composed of independently-compiled passes
  * scheduled by {@link PassRegistry}. Each pass owns its own bind-group
- * layout, pipeline compilation, per-frame bind-group construction, and
- * dispatch. The orchestrator iterates a topologically-sorted list of
- * registered passes per frame.
+ * construction and dispatch. The orchestrator iterates a topologically-sorted
+ * list of registered passes per frame.
  *
  * Premium-library rationale: before this abstraction, adding a single
  * pass required ~25-30 edits across 6-9 files (complexity sweep
  * 2026-05-17 Theme B). With a Pass, adding one is a single registry
- * entry + one shader-string module.
+ * entry + (optionally) one shader-string module.
  *
  * Lifecycle:
- *   - Construction is cheap (no GPU work).
+ *   - Construction is cheap (no GPU work). Concrete passes accept any
+ *     pipelines / UBOs / refs they need to share with the rest of the
+ *     orchestrator in their constructor so they can stay stateless across
+ *     frames.
  *   - {@link Pass.initialize} is awaited once at engine boot per
- *     pass. Pipelines, BGLs, and pass-local resources are created
- *     here.
+ *     pass. The walkaround passes share `compilePipelines()` output (so
+ *     no per-pass shader recompile here); initialize() can still be used
+ *     for pass-local resource allocation if needed.
  *   - {@link Pass.dispatch} runs per frame.
  *   - {@link Pass.dispose} runs once at engine teardown.
  *
  * Compute vs. render passes: dispatch receives a {@link GPUCommandEncoder};
  * the pass internally begins a compute or render pass as needed. The
- * abstraction is encoder-agnostic.
+ * abstraction is encoder-agnostic — the CompositePass begins a render pass
+ * and uses the same interface as every other pass.
  */
+
+import type { BGLCache } from './bindGroupLayouts.js';
+import type { FrameResources } from './resourceManager.js';
+import type { PassLabel } from './timestampQueries.js';
+import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
 
 /** Engine-state surface a pass may inspect when deciding whether to run.
  *  Kept structural so this module does not import HybridEngineOptions. */
@@ -41,20 +50,90 @@ export interface PassInitContext {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
+  /** Cache of universal BGLs (frame/scene/ubo/composite/accum/atrous/…). */
+  readonly bglCache: BGLCache;
+  /** Persistent frame resources — passes may inspect or pre-bind from here. */
+  readonly frameResources: FrameResources;
 }
 
-/** Context provided to {@link Pass.dispatch}. Resources are typed loosely
- *  to keep this module dependency-free; concrete passes narrow to the
- *  {@link FrameResources} sub-struct they need. */
+/**
+ * Per-frame mutable state shared between passes. The orchestrator owns this
+ * struct; passes mutate it as they run so downstream passes see the latest
+ * texture handles and ping-pong indices.
+ *
+ * Why this exists: many passes are chained — the denoiser produces a texture
+ * the indirect-combine pass reads, which produces a texture the temporal
+ * accumulator reads, and so on. Threading those handoffs through pass
+ * arguments would re-create the position-encoded coupling we are deleting.
+ * The shared state bag keeps the dataflow data-driven without sacrificing
+ * the topological declared ordering.
+ */
+export interface PassFrameState {
+  /** Direct-channel denoised radiance texture (set by the denoiser dispatch
+   *  the orchestrator runs between `gtao-upsample` and
+   *  `indirect-temporal-accum`; defaults to `common.hdrColorTexture` when
+   *  the active denoiser is `NoneDenoiser` and returns null). */
+  denoisedDirect: GPUTexture;
+  /** Texture written by the indirect temporal accumulator and read by the
+   *  indirect atrous chain. */
+  indirectAccumOut: GPUTexture;
+  /** Final denoised indirect texture after the 4-iter atrous-indirect chain. */
+  denoisedIndirect: GPUTexture;
+  /** Output of indirect-combine; input to temporalAccum. */
+  combinedDenoised: GPUTexture;
+  /** Current-frame radiance texture written by temporalAccum and read by resolve. */
+  writeAccum: GPUTexture;
+  /** Previous-frame radiance texture (the inactive ping-pong slot at the
+   *  start of the frame); resolve reads this as `prevRadianceView`. */
+  readAccum: GPUTexture;
+  /** EMA blend weight passed to the temporal accumulator pass. 1.0 on the
+   *  first frame (history discarded); `_temporalAccumAlpha` thereafter. */
+  alpha: number;
+  /** Whether the camera moved this frame above the reset threshold;
+   *  consumed by the denoiser dispatch + temporal accumulator. */
+  isMoving: boolean;
+}
+
+/** Context provided to {@link Pass.dispatch}. */
 export interface PassDispatchContext {
   readonly device: GPUDevice;
   readonly encoder: GPUCommandEncoder;
   readonly width: number;
   readonly height: number;
+  /** Monotonic accumulator frame index (resets on camera motion). */
   readonly frameIndex: number;
-  readonly resources: unknown;
-  /** Optional timestamp-query slot for this pass; null when disabled. */
-  readonly timestampWrites: GPUComputePassTimestampWrites | null;
+  /** Strictly-monotonic frame counter (does NOT reset). */
+  readonly frameCount: number;
+  /** Cache of universal BGLs (frame/scene/ubo/composite/accum/atrous/…). */
+  readonly bglCache: BGLCache;
+  /** Persistent frame resources. */
+  readonly resources: FrameResources;
+  /** Per-frame inputs (camera matrices, lighting params, swap chain view, …). */
+  readonly inputs: PipelineFrameInputs;
+  /** Pre-built frame/scene/ubo bind groups — shared by RIS/temporal/spatial/shade. */
+  readonly frameBindGroup: GPUBindGroup;
+  readonly sceneBindGroup: GPUBindGroup;
+  readonly uboBindGroup: GPUBindGroup;
+  /** Pre-built DDGI hybrid-layers bind group (slot 3) — used by gi-ris + shade. */
+  readonly hybridLayersBindGroup: GPUBindGroup;
+  /** Workgroup counts — 8×8 (wgX/wgY), 16×16 (wgX16/wgY16),
+   *  half-res 8×8 (halfWgX/halfWgY). */
+  readonly wgX: number;
+  readonly wgY: number;
+  readonly wgX16: number;
+  readonly wgY16: number;
+  readonly halfWgX: number;
+  readonly halfWgY: number;
+  /** Pre-resolved gNormalDepth view used as edge-stop input by GTAO + atrous chains. */
+  readonly gNormalDepthView: GPUTextureView;
+  /** Build a `GPUComputePassDescriptor` with optional timestampWrites. */
+  readonly computeDesc: (label: PassLabel) => GPUComputePassDescriptor;
+  /** Build the optional render-pass `timestampWrites` struct, or undefined
+   *  when timestamp queries aren't active. Used by CompositePass. */
+  readonly renderTimestampWrites: (label: PassLabel) => GPURenderPassTimestampWrites | undefined;
+  /** Shared mutable frame state used to thread textures between chained
+   *  passes (denoiser→indirect-combine→temporalAccum→resolve→composite). */
+  readonly frameState: PassFrameState;
 }
 
 export interface Pass {
@@ -65,12 +144,23 @@ export interface Pass {
    *  topologically sorts by these. Unknown IDs raise at registration. */
   readonly dependencies: readonly string[];
 
+  /** Timestamp-query labels emitted by this pass. For single-dispatch
+   *  passes this is `[this.id]`. Multi-dispatch passes (SpatialReservoirPass,
+   *  AtrousIndirectPass) enumerate every label they emit so
+   *  `buildPassLayout` can size the GPU querySet correctly.
+   *
+   *  The relative order MUST match the dispatch order inside
+   *  {@link Pass.dispatch}, since `tsWrites` resolves slot indices via
+   *  these labels. */
+  readonly passLabels: readonly PassLabel[];
+
   /** Decide whether this pass runs for the given options. Skipped passes
    *  still hold their compiled pipeline; gating is a per-frame decision. */
   gates(opts: PassGateOptions): boolean;
 
-  /** One-time async initialization. Compile pipeline, create BGL,
-   *  allocate any pass-local resources. */
+  /** One-time async initialization. Allocate any pass-local resources;
+   *  compile any pass-private pipelines (most walkaround passes use the
+   *  shared compile output and have a no-op initialize). */
   initialize(ctx: PassInitContext): Promise<void>;
 
   /** Per-frame dispatch. The pass builds its bind group(s) and submits

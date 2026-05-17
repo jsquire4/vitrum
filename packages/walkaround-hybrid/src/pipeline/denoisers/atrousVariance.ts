@@ -32,10 +32,11 @@ import { COMMON_WGSL } from '../../shaders/common.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../../shaders/welfordTemporal.wgsl.js';
 import type { UboRef } from '../bindGroupBuilders.js';
 import type { PassLabel } from '../timestampQueries.js';
-import type {
-  Denoiser,
-  DenoiserDispatchContext,
-  DenoiserInitContext,
+import {
+  DENOISER_PASS_LABELS,
+  type Denoiser,
+  type DenoiserDispatchContext,
+  type DenoiserInitContext,
 } from './index.js';
 
 /**
@@ -116,6 +117,7 @@ function buildAtrousVarianceAtrousBindGroup(
 
 export class AtrousVarianceDenoiser implements Denoiser {
   readonly id = 'atrous-variance' as const;
+  readonly passLabels = DENOISER_PASS_LABELS['atrous-variance'];
 
   // ── GPU pipelines (compiled in initialize) ──────────────────────────────
   private _welfordPipeline!: GPUComputePipeline;

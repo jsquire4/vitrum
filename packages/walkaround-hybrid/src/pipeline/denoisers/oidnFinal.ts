@@ -10,15 +10,19 @@
  * will wire it through this denoiser entry.
  */
 
-import type {
-  Denoiser,
-  DenoiserDispatchContext,
-  DenoiserInitContext,
+import {
+  DENOISER_PASS_LABELS,
+  type Denoiser,
+  type DenoiserDispatchContext,
+  type DenoiserInitContext,
 } from './index.js';
 
 export class OIDNFinalDenoiser implements Denoiser {
   readonly id = 'oidn-final' as const;
   readonly disabled = true;
+  /** W11 placeholder: empty so the registry rejection happens at lookup
+   *  before this would ever participate in a pass layout. */
+  readonly passLabels = DENOISER_PASS_LABELS['oidn-final'];
 
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
     // No-op — the registry guards against ever reaching this path while

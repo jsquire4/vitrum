@@ -38,6 +38,50 @@ export type DenoiserId =
   | 'oidn-final';
 
 /**
+ * Static per-denoiser timestamp-query label table.
+ *
+ * Each concrete {@link Denoiser} class references its entry here for its
+ * `passLabels` field, and `buildPassLayout` reads from the same map so
+ * the GPU timing slots stay in lockstep with the actual dispatch order.
+ *
+ * 'neural' falls back to the atrous-variance layout: the W10 placeholder
+ * never reaches `dispatch` (registry rejects it at `lookup`), so the
+ * label list is only consulted defensively by `buildPassLayout`.
+ *
+ * 'oidn-final' is `[]` because the registry rejects it before any
+ * dispatch and it never adds slots.
+ */
+export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabel[]>> = Object.freeze({
+  'none': Object.freeze([]),
+  'atrous': Object.freeze(['atrous-0', 'atrous-1', 'atrous-2']),
+  'atrous-variance': Object.freeze([
+    'welford-temporal',
+    'atrous-variance-variance',
+    'atrous-variance-atrous-0',
+    'atrous-variance-atrous-1',
+    'atrous-variance-atrous-2',
+  ]),
+  'svgf-real': Object.freeze([
+    'svgf-real-reproj',
+    'svgf-real-moments',
+    'svgf-real-7x7',
+    'svgf-real-atrous-0',
+    'svgf-real-atrous-1',
+    'svgf-real-atrous-2',
+    'svgf-real-atrous-3',
+    'svgf-real-atrous-4',
+  ]),
+  'neural': Object.freeze([
+    'welford-temporal',
+    'atrous-variance-variance',
+    'atrous-variance-atrous-0',
+    'atrous-variance-atrous-1',
+    'atrous-variance-atrous-2',
+  ]),
+  'oidn-final': Object.freeze([]),
+} as Record<DenoiserId, readonly PassLabel[]>);
+
+/**
  * Initialization context handed to {@link Denoiser.initialize}.
  *
  * The denoiser may read `bglCache` to look up shared (universal) BGLs
@@ -102,6 +146,12 @@ export interface DenoiserDispatchContext {
 
 export interface Denoiser {
   readonly id: DenoiserId;
+
+  /** Timestamp-query labels this denoiser emits in dispatch order. Consumed
+   *  by `buildPassLayout` so the GPU querySet is sized to the active
+   *  denoiser. Pass-through denoisers return `[]`. The order MUST match
+   *  the order the labels appear inside {@link Denoiser.dispatch}. */
+  readonly passLabels: readonly import('../timestampQueries.js').PassLabel[];
 
   /** Compile pipelines, create BGLs, allocate persistent textures/buffers.
    *  Awaited once at engine boot. */
