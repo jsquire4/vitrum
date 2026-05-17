@@ -37,9 +37,15 @@ const GPUShaderStageValues = {
   COMPUTE:  0x4,
 } as const;
 
+const GPUMapModeValues = {
+  READ:  0x0001,
+  WRITE: 0x0002,
+} as const;
+
 export function installWebGPUPolyfills(): void {
   const g = globalThis as Record<string, unknown>;
   if (g['GPUBufferUsage'] === undefined) g['GPUBufferUsage'] = GPUBufferUsageValues;
   if (g['GPUTextureUsage'] === undefined) g['GPUTextureUsage'] = GPUTextureUsageValues;
   if (g['GPUShaderStage'] === undefined) g['GPUShaderStage'] = GPUShaderStageValues;
+  if (g['GPUMapMode'] === undefined) g['GPUMapMode'] = GPUMapModeValues;
 }

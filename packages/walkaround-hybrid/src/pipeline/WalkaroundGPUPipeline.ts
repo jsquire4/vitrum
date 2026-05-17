@@ -410,6 +410,14 @@ export class WalkaroundGPUPipeline {
       inferenceGraph?: InferenceGraph;
       /** T2.H3 — enable PPG (Müller 2017 adaptive sTree + dTree + MIS). */
       ppgEnabled?: boolean;
+      /** W11 — OIDN final-pass denoiser config (required when denoiser='oidn-final').
+       *  Threaded into `registerBuiltinDenoisers` so the OIDN entry registers as a
+       *  real (non-disabled) denoiser; missing on a 'oidn-final' selection causes
+       *  the registry to reject lookup with a clear remediation message. */
+      oidn?: {
+        modelUrl: string;
+        executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+      };
     },
   ): Promise<void> {
     const d = this._device;
@@ -457,7 +465,10 @@ export class WalkaroundGPUPipeline {
     //    rejects them at `lookup()` time with a clear error pointing at
     //    the workstream that will land the real implementation.
     this._denoiserRegistry = new DenoiserRegistry();
-    registerBuiltinDenoisers(this._denoiserRegistry);
+    registerBuiltinDenoisers(this._denoiserRegistry, {
+      // exactOptionalPropertyTypes-safe: only forward `oidn` when supplied.
+      ...(options?.oidn !== undefined ? { oidn: options.oidn } : {}),
+    });
     this._activeDenoiser = this._denoiserRegistry.lookup(this._denoiserMode);
     await this._activeDenoiser.initialize({
       device: d,
