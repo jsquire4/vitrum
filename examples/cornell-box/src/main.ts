@@ -477,8 +477,8 @@ async function main(): Promise<void> {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     if (config.isCapture) {
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
+      canvas!.style.width = `${w}px`;
+      canvas!.style.height = `${h}px`;
     }
     renderer.setSize(w, h, false);
   }
@@ -573,11 +573,11 @@ async function main(): Promise<void> {
     }
 
     if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {
-      canvas.style.visibility = 'hidden';
+      canvas!.style.visibility = 'hidden';
       denoiseCanvas.style.display = 'block';
       bilateral.render(engine.getAccumulationRenderTarget().texture as THREE.Texture, renderWidth, renderHeight);
     } else if (config.denoiseDisplay !== 'oidn' && config.denoiseDisplay !== 'wgsl' && config.denoiseDisplay !== 'svgf') {
-      canvas.style.visibility = 'visible';
+      canvas!.style.visibility = 'visible';
       if (denoiseCanvas != null) denoiseCanvas.style.display = 'none';
     }
 
@@ -604,7 +604,7 @@ async function main(): Promise<void> {
           const rt = engine.getAccumulationRenderTarget();
           const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
           const dod = await denoise(rgb);
-          canvas.style.visibility = 'hidden';
+          canvas!.style.visibility = 'hidden';
           denoiseCanvas.style.display = 'block';
           writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
           succeededRef.value = true;
@@ -612,7 +612,7 @@ async function main(): Promise<void> {
           finalizeVitrumCapture(successLabel, capFrame);
         } catch (err) {
           console.warn(warnText, err);
-          canvas.style.visibility = 'visible';
+          canvas!.style.visibility = 'visible';
           startedRef.value = false;
           succeededRef.value = false;
           updateCaptureCanvasHint();

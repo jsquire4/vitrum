@@ -455,8 +455,8 @@ async function main(): Promise<void> {
           projMatrix: mat4FromThree(camera.projectionMatrix),
           cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
           viewport: {
-            width: canvasPtGpu.width,
-            height: canvasPtGpu.height,
+            width: canvasPtGpu!.width,
+            height: canvasPtGpu!.height,
             devicePixelRatio: window.devicePixelRatio,
           },
           frameIndex: ptGpuFrame,
