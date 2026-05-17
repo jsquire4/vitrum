@@ -333,7 +333,17 @@ export interface Material {
 
   // ── Backend escape hatch ────────────────────────────────────────────────
   /** Backends may read keyed fields from here for backend-specific features.
-   *  Core never inspects this map. */
+   *  Core never inspects this map.
+   *
+   *  **Verified consumers (W3-D17 audit, 2026-05-17):**
+   *  - `@vitrum/three-bindings` reads `extensions.dichroicLUTs` in
+   *    `vitrumSceneToThree.ts` (re-stamps the pre-convolved angle-indexed
+   *    LUTs into THREE userData so they survive the THREE → vitrum → THREE
+   *    round trip) and writes the same key in `material.ts::convertMaterial`
+   *    from inbound THREE userData. See RFE-10 dichroic addendum (PHY.1).
+   *
+   *  Not yet read by `pt-webgl`, `pt-webgpu`, or `walkaround-hybrid`; those
+   *  may bind keyed entries here as new backend-specific features land. */
   extensions?: Readonly<Record<string, unknown>>;
 }
 
