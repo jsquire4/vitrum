@@ -711,13 +711,13 @@ export class HybridEngine implements Engine {
 
     this.capabilities = {
       supportsIncrementalScene:  false,
-      // supportsMotionBlur === false. WalkaroundGPUPipeline does allocate a
-      // motionVectorTexture, but it's for SVGF temporal reprojection (encoded
-      // as `motion-vectors-zero` — a 2D screen-space delta), not for accumu-
-      // lating samples across a shutter interval. True motion-blur SPP
-      // accumulation is incompatible with the walkaround engine's per-frame
-      // cadence — see resourceManager.ts ("motion-vectors-zero" label).
-      supportsMotionBlur:        false,
+      // Note: WalkaroundGPUPipeline does allocate a motionVectorTexture, but
+      // it's for SVGF temporal reprojection (encoded as `motion-vectors-zero`
+      // — a 2D screen-space delta), not for accumulating samples across a
+      // shutter interval. True motion-blur SPP accumulation is incompatible
+      // with the walkaround engine's per-frame cadence — see
+      // resourceManager.ts ("motion-vectors-zero" label). The contract no
+      // longer carries `supportsMotionBlur` (dropped W3-D18, 2026-05-17).
       supportsAuxBuffers:        false,
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,

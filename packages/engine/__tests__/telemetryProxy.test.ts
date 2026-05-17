@@ -16,7 +16,6 @@ import type { Engine, FrameStats, ProgressStats, EngineCapabilities, EngineState
 
 const NULL_CAPS: EngineCapabilities = {
   supportsIncrementalScene: false,
-  supportsMotionBlur: false,
   supportsAuxBuffers: false,
   accumulates: false,
   maxSamplesPerPixel: Infinity,

@@ -20,7 +20,6 @@ import type { Engine, EngineCapabilities, EngineState } from '@vitrum/core';
 function makeMinimalEngine(): Engine {
   const caps: EngineCapabilities = {
     supportsIncrementalScene: false,
-    supportsMotionBlur: false,
     supportsAuxBuffers: false,
     accumulates: false,
     maxSamplesPerPixel: Infinity,
