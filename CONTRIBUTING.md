@@ -3,7 +3,15 @@
 ## Commands
 
 - `npm run typecheck` — TypeScript across workspaces.
-- `npm test` — Vitest where configured.
+- `npm test` — Vitest where configured (node tests only; fast, no browser).
+- `npm run test:gpu` — Vitest in headless Chromium via Playwright for the
+  packages with `vitest.gpu.config.ts` (`@vitrum/pt-webgpu`,
+  `@vitrum/shared-denoisers`). **Requires Playwright browsers to be
+  installed** — run `npx playwright install chromium` once. Skipped from
+  the default `npm test` because (a) Playwright browsers are a 200MB
+  install most contributors won't have, and (b) the GPU tests need a
+  Vulkan/SwiftShader stack that's environment-dependent.
+- `npm run test:all` — Both node + GPU passes per package.
 - `npm run fork-shader-smoke` — Shader string regression on the sibling
   `three-gpu-pathtracer` checkout (`../three-gpu-pathtracer`, or `VITRUM_FORK_DIR`).
 

@@ -16,9 +16,10 @@
     "directory": "packages/shared-denoisers"
   },
   "scripts": {
-    "test": "vitest run && vitest run --config vitest.gpu.config.ts",
+    "test": "vitest run",
     "test:node": "vitest run",
     "test:gpu": "vitest run --config vitest.gpu.config.ts",
+    "test:all": "vitest run && vitest run --config vitest.gpu.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
