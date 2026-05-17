@@ -10,12 +10,30 @@
  * buffers, HDR color textures, ping-pong textures, accum textures, UBO,
  * samplers, DDGI placeholders). Returns a typed bundle so the caller can
  * store each handle as a private field.
+ *
+ * W1-R2 (2026-05-17) — the formerly 41-field flat `FrameResources` god-struct
+ * is now split into 8 per-algorithm sub-structs (`common`, `restirDI`,
+ * `restirGI`, `ddgi`, `gtao`, `svgf`, `ppg`, `neural`). Sub-struct boundaries
+ * map to the per-algorithm passes in `pipeline/passes/*`. `ppg` and `neural`
+ * are empty placeholders for W9 (PPG GPU dTree) and W10 (neural denoiser
+ * finish) respectively. See plan/premium-grade-refactor-20260517.md §W1-R2
+ * and complexity-sweep-20260517 findings A3 + B6.
  */
 
-export interface FrameResources {
-  reservoirCurrentBuffer: GPUBuffer;
-  reservoirPreviousBuffer: GPUBuffer;
-  reservoirSpatialBuffer: GPUBuffer;
+// ─── Per-algorithm sub-struct interfaces ─────────────────────────────────────
+
+/**
+ * Cross-cutting GPU resources shared by every pass — primary HDR targets,
+ * temporal accumulator ping-pong, UBO, samplers, motion vectors, the
+ * sample-tier + resolved-radiance textures used by sample-budget /
+ * resolve, Sprint-18 indirect + albedo + variance scaffolding, and the
+ * 1×1 placeholder used by the G-buffer bind group slots.
+ *
+ * Anything that belongs to a single algorithm (DDGI atlas placeholders,
+ * GTAO half-/full-res output, SVGF history textures, ReSTIR reservoir
+ * buffers) lives in its dedicated sub-struct below.
+ */
+export interface CommonFrameResources {
   hdrColorTexture: GPUTexture;
   gNormalDepthTexture: GPUTexture;
   denoisedPingTexture: GPUTexture;
@@ -26,19 +44,6 @@ export interface FrameResources {
   uboBuffer: GPUBuffer;
   nearestSampler: GPUSampler;
   compositeSampler: GPUSampler;
-  ddgiPlaceholderRgba16f: GPUTexture;
-  ddgiPlaceholderRg16f: GPUTexture;
-  ddgiUboBuffer: GPUBuffer;
-  /**
-   * Sprint 9 — Per-pixel Welford variance buffer (RG32Float storage texture).
-   * Ping-pong pair with {@link varianceBufferAux} when the atrous-variance path runs
-   * `welfordTemporalMain` each frame.
-   */
-  varianceBuffer: GPUTexture;
-  /** Second Welford ping-pong half (atrous-variance path only). */
-  varianceBufferAux: GPUTexture;
-  /** Atrous-variance estimation output (.r = scalar variance, .g = frame tag). */
-  atrousVarianceEstimateTexture: GPUTexture;
   /** Screen-space motion (RG32F); zeros until a motion-vector pass exists. */
   motionVectorTexture: GPUTexture;
   /**
@@ -55,43 +60,23 @@ export interface FrameResources {
    * as of Sprint 9 wire-in.
    */
   resolvedTexture: GPUTexture;
-
   /**
-   * Sprint 15 — Half-resolution GTAO occlusion factor (rgba16float). Written by
-   * `gtaoMain`; consumed by `gtaoUpsampleMain` to reconstruct full-res AO.
-   * E1: bumped from r16float to rgba16float to carry per-channel multi-bounce
-   * AO (Jiménez 2016 §5.2 / Eq. 16). The upsample reduces to scalar luminance.
+   * Sprint 18 follow-up — total (direct + indirect) HDR signal, written
+   * by shade alongside hdrColor and hdrIndirect.  Used as the welford
+   * input so the per-pixel variance estimate (and the sample-budget
+   * tier derived from it) reflects the full radiance, not just the
+   * direct channel.  SVGF variance / atrous still read hdrColorTexture
+   * (direct-only) so the denoiser sees the channel it's tuned for.
    */
-  aoHalfTexture: GPUTexture;
+  hdrTotalTexture: GPUTexture;
   /**
-   * Sprint 15 — Full-resolution GTAO occlusion factor (r16float). Written by
-   * `gtaoUpsampleMain`; sampled by `shade.wgsl` to modulate the diffuse
-   * indirect / direct terms. 1-frame lagged from current shade (AO computes
-   * from current frame's gNormalDepth but shade reads the *previous* frame's
-   * AO texture for binding-order simplicity).
+   * Item 24 — visible-point diffuse albedo (rgba16float, full-res). Written by
+   * shade alongside hdrIndirectOut. indirectCombine reads this to re-modulate
+   * the denoised lighting signal: `output = filtered_lighting × albedo`.
+   * Albedo demodulation (Schied 2017 §4.1) keeps high-frequency albedo
+   * variation out of the à-trous chain, preventing material-boundary bleed.
    */
-  aoFullTexture: GPUTexture;
-  /** Sprint 15 — GTAO uniforms (16 bytes: tanFovHalf, radiusPx, intensity, depthThresh). */
-  gtaoUboBuffer: GPUBuffer;
-
-  /**
-   * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
-   * Layout: RESERVOIR_GI_STRIDE = 20 u32 (80 bytes) per pixel.
-   * Size: (W/2) × (H/2) × 80 bytes. At 2688×1344 → ~58 MB.
-   * Written by `risGiMain`; read by temporal/spatial passes and shade.
-   */
-  reservoirGiCurrentBuffer: GPUBuffer;
-  /**
-   * Sprint 17 — previous-frame GI reservoir (temporal reuse input).
-   * Updated at end-of-frame via copyBufferToBuffer(current → previous).
-   */
-  reservoirGiPreviousBuffer: GPUBuffer;
-  /**
-   * Sprint 17 — spatial-reuse scratch GI reservoir. Ping-ponged with
-   * `reservoirGiCurrentBuffer` across the two spatial passes.
-   */
-  reservoirGiSpatialBuffer: GPUBuffer;
-
+  albedoTexture: GPUTexture;
   /**
    * Sprint 18 — separate indirect-channel HDR target (rgba16float, full-res).
    * Written by shade as `Lo_indirect * ao`; read by the indirect-combine
@@ -105,15 +90,6 @@ export interface FrameResources {
    * raw direct-denoiser output.
    */
   combinedDenoisedTexture: GPUTexture;
-  /**
-   * Sprint 18 follow-up — total (direct + indirect) HDR signal, written
-   * by shade alongside hdrColor and hdrIndirect.  Used as the welford
-   * input so the per-pixel variance estimate (and the sample-budget
-   * tier derived from it) reflects the full radiance, not just the
-   * direct channel.  SVGF variance / atrous still read hdrColorTexture
-   * (direct-only) so the denoiser sees the channel it's tuned for.
-   */
-  hdrTotalTexture: GPUTexture;
   /**
    * Sprint 18 — indirect-channel à-trous ping-pong pair.  Four iterations
    * with widening step (1, 2, 4, 8) on hdrIndirectTexture produce a smooth
@@ -136,15 +112,75 @@ export interface FrameResources {
   indirectAccumPingTexture: GPUTexture;
   indirectAccumPongTexture: GPUTexture;
   /**
-   * Item 24 — visible-point diffuse albedo (rgba16float, full-res). Written by
-   * shade alongside hdrIndirectOut. indirectCombine reads this to re-modulate
-   * the denoised lighting signal: `output = filtered_lighting × albedo`.
-   * Albedo demodulation (Schied 2017 §4.1) keeps high-frequency albedo
-   * variation out of the à-trous chain, preventing material-boundary bleed.
+   * Sprint 9 — Per-pixel Welford variance buffer (RG32Float storage texture).
+   * Ping-pong pair with {@link varianceBufferAux} when the atrous-variance path runs
+   * `welfordTemporalMain` each frame.
    */
-  albedoTexture: GPUTexture;
+  varianceBuffer: GPUTexture;
+  /** Second Welford ping-pong half (atrous-variance path only). */
+  varianceBufferAux: GPUTexture;
+  /** Atrous-variance estimation output (.r = scalar variance, .g = frame tag). */
+  atrousVarianceEstimateTexture: GPUTexture;
+}
 
-  // ── T2.H1 — Real SVGF ('svgf-real' mode) persistent textures ─────────────
+/** ReSTIR direct-illumination reservoir buffers (current / previous / spatial). */
+export interface RestirDIFrameResources {
+  reservoirCurrentBuffer: GPUBuffer;
+  reservoirPreviousBuffer: GPUBuffer;
+  reservoirSpatialBuffer: GPUBuffer;
+}
+
+/** ReSTIR global-illumination reservoir buffers (current / previous / spatial). */
+export interface RestirGIFrameResources {
+  /**
+   * Sprint 16 — half-res ReSTIR-GI reservoir buffer.
+   * Layout: RESERVOIR_GI_STRIDE = 20 u32 (80 bytes) per pixel.
+   * Size: (W/2) × (H/2) × 80 bytes. At 2688×1344 → ~58 MB.
+   * Written by `risGiMain`; read by temporal/spatial passes and shade.
+   */
+  reservoirGiCurrentBuffer: GPUBuffer;
+  /**
+   * Sprint 17 — previous-frame GI reservoir (temporal reuse input).
+   * Updated at end-of-frame via copyBufferToBuffer(current → previous).
+   */
+  reservoirGiPreviousBuffer: GPUBuffer;
+  /**
+   * Sprint 17 — spatial-reuse scratch GI reservoir. Ping-ponged with
+   * `reservoirGiCurrentBuffer` across the two spatial passes.
+   */
+  reservoirGiSpatialBuffer: GPUBuffer;
+}
+
+/** DDGI 1×1 atlas placeholders + the DDGI uniform buffer (gate UBO). */
+export interface DDGIFrameResources {
+  ddgiPlaceholderRgba16f: GPUTexture;
+  ddgiPlaceholderRg16f: GPUTexture;
+  ddgiUboBuffer: GPUBuffer;
+}
+
+/** GTAO half- and full-resolution AO textures + GTAO uniform buffer. */
+export interface GTAOFrameResources {
+  /**
+   * Sprint 15 — Half-resolution GTAO occlusion factor (rgba16float). Written by
+   * `gtaoMain`; consumed by `gtaoUpsampleMain` to reconstruct full-res AO.
+   * E1: bumped from r16float to rgba16float to carry per-channel multi-bounce
+   * AO (Jiménez 2016 §5.2 / Eq. 16). The upsample reduces to scalar luminance.
+   */
+  aoHalfTexture: GPUTexture;
+  /**
+   * Sprint 15 — Full-resolution GTAO occlusion factor (r16float). Written by
+   * `gtaoUpsampleMain`; sampled by `shade.wgsl` to modulate the diffuse
+   * indirect / direct terms. 1-frame lagged from current shade (AO computes
+   * from current frame's gNormalDepth but shade reads the *previous* frame's
+   * AO texture for binding-order simplicity).
+   */
+  aoFullTexture: GPUTexture;
+  /** Sprint 15 — GTAO uniforms (16 bytes: tanFovHalf, radiusPx, intensity, depthThresh). */
+  gtaoUboBuffer: GPUBuffer;
+}
+
+/** SVGF ('svgf-real' mode) persistent textures — history, moments, prev-rad, variance. */
+export interface SVGFFrameResources {
   /**
    * T2.H1 — 1×1 r32uint placeholder for object-ID inputs. Object IDs are
    * not available in the current walkaround pipeline; this placeholder makes
@@ -152,7 +188,6 @@ export interface FrameResources {
    * test (oPrev != objIdCurr → 0 != 0 = false) never rejects reprojection.
    */
   svgfObjIdPlaceholderTexture: GPUTexture;
-
   /**
    * T2.H1 — Per-pixel history length A (r16uint, full-res).
    * Ping-pong pair with svgfHistoryLengthTextureB.
@@ -191,6 +226,52 @@ export interface FrameResources {
    * by svgfVarianceFromMomentsMain; read by svgf7x7FallbackMain.
    */
   svgfVarianceMomentsIntermedTexture: GPUTexture;
+}
+
+/**
+ * Path-guiding (PPG) GPU resources — empty placeholder.
+ *
+ * W9 (PPG GPU dTree) will populate this sub-struct with the dTree storage
+ * buffers and any associated UBOs. Declared now so consumers can pattern-
+ * match on `res.ppg` without conditional access.
+ */
+export interface PPGFrameResources {
+  /** Reserved for W9. */
+  readonly _empty?: never;
+}
+
+/**
+ * Neural denoiser GPU resources — empty placeholder.
+ *
+ * W10 (neural denoiser finish) will populate this sub-struct with the
+ * weight buffers, intermediate tensors, and any required UBOs. Declared
+ * now so consumers can pattern-match on `res.neural` without conditional
+ * access.
+ */
+export interface NeuralFrameResources {
+  /** Reserved for W10. */
+  readonly _empty?: never;
+}
+
+/**
+ * All per-frame GPU resources, grouped by owning algorithm.
+ *
+ * Premium-library rationale (complexity sweep 2026-05-17 findings A3 + B6):
+ * the legacy flat 41-field interface forced every consumer to scan a wall of
+ * sibling fields and made it impossible to know at a glance which algorithm
+ * owned a given resource. With per-algorithm sub-structs, a Pass that only
+ * touches GTAO can take `GTAOFrameResources` directly; a SVGF Pass takes
+ * `SVGFFrameResources`; nothing needs to be aware of fields it doesn't use.
+ */
+export interface FrameResources {
+  common: CommonFrameResources;
+  restirDI: RestirDIFrameResources;
+  restirGI: RestirGIFrameResources;
+  ddgi: DDGIFrameResources;
+  gtao: GTAOFrameResources;
+  svgf: SVGFFrameResources;
+  ppg: PPGFrameResources;
+  neural: NeuralFrameResources;
 }
 
 /**
@@ -315,6 +396,12 @@ export interface FrameResourceOptions {
 /**
  * Create all per-frame GPU resources for the pipeline. Called once from
  * `initialize()` after BVH upload and before shader compilation.
+ *
+ * Allocation order is load-bearing: every test + reference render that
+ * captures GPU-call traces (createTexture / createBuffer / writeTexture /
+ * writeBuffer) relies on the exact ordering below. Do not reorder without
+ * regenerating references. W1-R2 preserves the legacy order verbatim — only
+ * the assembled return shape changes.
  */
 export function createFrameResources(
   device: GPUDevice,
@@ -713,10 +800,13 @@ export function createFrameResources(
       GPUTextureUsage.TEXTURE_BINDING,
   });
 
-  return {
-    reservoirCurrentBuffer,
-    reservoirPreviousBuffer,
-    reservoirSpatialBuffer,
+  // ── Assemble per-algorithm sub-structs ────────────────────────────────────
+  // Allocation above is unchanged from the legacy flat layout; the bucketing
+  // below is a pure organisational layer. W1-R2 maps each of the 41 legacy
+  // sibling fields to exactly one sub-struct — see plan/premium-grade-refactor
+  // -20260517.md §W1-R2 for the canonical mapping table.
+
+  const common: CommonFrameResources = {
     hdrColorTexture,
     gNormalDepthTexture,
     denoisedPingTexture,
@@ -727,29 +817,47 @@ export function createFrameResources(
     uboBuffer,
     nearestSampler,
     compositeSampler,
-    ddgiPlaceholderRgba16f,
-    ddgiPlaceholderRg16f,
-    ddgiUboBuffer,
-    varianceBuffer,
-    varianceBufferAux,
-    atrousVarianceEstimateTexture,
     motionVectorTexture,
     tierTexture,
     resolvedTexture,
-    aoHalfTexture,
-    aoFullTexture,
-    gtaoUboBuffer,
-    reservoirGiCurrentBuffer,
-    reservoirGiPreviousBuffer,
-    reservoirGiSpatialBuffer,
+    hdrTotalTexture,
+    albedoTexture,
     hdrIndirectTexture,
     combinedDenoisedTexture,
-    hdrTotalTexture,
     indirectDenoisedPingTexture,
     indirectDenoisedPongTexture,
     indirectAccumPingTexture,
     indirectAccumPongTexture,
-    albedoTexture,
+    varianceBuffer,
+    varianceBufferAux,
+    atrousVarianceEstimateTexture,
+  };
+
+  const restirDI: RestirDIFrameResources = {
+    reservoirCurrentBuffer,
+    reservoirPreviousBuffer,
+    reservoirSpatialBuffer,
+  };
+
+  const restirGI: RestirGIFrameResources = {
+    reservoirGiCurrentBuffer,
+    reservoirGiPreviousBuffer,
+    reservoirGiSpatialBuffer,
+  };
+
+  const ddgi: DDGIFrameResources = {
+    ddgiPlaceholderRgba16f,
+    ddgiPlaceholderRg16f,
+    ddgiUboBuffer,
+  };
+
+  const gtao: GTAOFrameResources = {
+    aoHalfTexture,
+    aoFullTexture,
+    gtaoUboBuffer,
+  };
+
+  const svgf: SVGFFrameResources = {
     svgfObjIdPlaceholderTexture,
     svgfHistoryLengthTextureA,
     svgfHistoryLengthTextureB,
@@ -760,54 +868,82 @@ export function createFrameResources(
     svgfVarianceTexture,
     svgfVarianceMomentsIntermedTexture,
   };
+
+  // PPG + neural are placeholders for W9 / W10. Frozen empty objects so any
+  // accidental write throws in strict mode instead of silently mutating.
+  const ppg: PPGFrameResources = Object.freeze({}) as PPGFrameResources;
+  const neural: NeuralFrameResources = Object.freeze({}) as NeuralFrameResources;
+
+  return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
 }
 
 /**
  * Destroy all resources returned by `createFrameResources`. Safe to call
  * in dispose(); callers must also destroy the static BVH buffers separately.
+ *
+ * Destruction order mirrors the legacy flat-struct destroy order verbatim so
+ * any GPU-call-trace test or telemetry recording continues to observe the
+ * same sequence of `.destroy()` calls.
  */
 export function destroyFrameResources(r: FrameResources): void {
-  r.reservoirCurrentBuffer.destroy();
-  r.reservoirPreviousBuffer.destroy();
-  r.reservoirSpatialBuffer.destroy();
-  r.hdrColorTexture.destroy();
-  r.gNormalDepthTexture.destroy();
-  r.denoisedPingTexture.destroy();
-  r.denoisedPongTexture.destroy();
-  r.accumTextureA.destroy();
-  r.accumTextureB.destroy();
-  r.placeholderTexture.destroy();
-  r.uboBuffer.destroy();
-  r.ddgiPlaceholderRgba16f.destroy();
-  r.ddgiPlaceholderRg16f.destroy();
-  r.ddgiUboBuffer.destroy();
-  r.varianceBuffer.destroy();
-  r.varianceBufferAux.destroy();
-  r.atrousVarianceEstimateTexture.destroy();
-  r.motionVectorTexture.destroy();
-  r.tierTexture.destroy();
-  r.resolvedTexture.destroy();
-  r.aoHalfTexture.destroy();
-  r.aoFullTexture.destroy();
-  r.gtaoUboBuffer.destroy();
-  r.reservoirGiCurrentBuffer.destroy();
-  r.reservoirGiPreviousBuffer.destroy();
-  r.reservoirGiSpatialBuffer.destroy();
-  r.hdrIndirectTexture.destroy();
-  r.combinedDenoisedTexture.destroy();
-  r.hdrTotalTexture.destroy();
-  r.indirectDenoisedPingTexture.destroy();
-  r.indirectDenoisedPongTexture.destroy();
-  r.indirectAccumPingTexture.destroy();
-  r.indirectAccumPongTexture.destroy();
-  r.albedoTexture.destroy();
-  r.svgfObjIdPlaceholderTexture.destroy();
-  r.svgfHistoryLengthTextureA.destroy();
-  r.svgfHistoryLengthTextureB.destroy();
-  r.svgfMomentsTextureA.destroy();
-  r.svgfMomentsTextureB.destroy();
-  r.svgfPrevRadianceTextureA.destroy();
-  r.svgfPrevRadianceTextureB.destroy();
-  r.svgfVarianceTexture.destroy();
-  r.svgfVarianceMomentsIntermedTexture.destroy();
+  // restirDI
+  r.restirDI.reservoirCurrentBuffer.destroy();
+  r.restirDI.reservoirPreviousBuffer.destroy();
+  r.restirDI.reservoirSpatialBuffer.destroy();
+
+  // common (first wave — matches legacy order)
+  r.common.hdrColorTexture.destroy();
+  r.common.gNormalDepthTexture.destroy();
+  r.common.denoisedPingTexture.destroy();
+  r.common.denoisedPongTexture.destroy();
+  r.common.accumTextureA.destroy();
+  r.common.accumTextureB.destroy();
+  r.common.placeholderTexture.destroy();
+  r.common.uboBuffer.destroy();
+
+  // ddgi
+  r.ddgi.ddgiPlaceholderRgba16f.destroy();
+  r.ddgi.ddgiPlaceholderRg16f.destroy();
+  r.ddgi.ddgiUboBuffer.destroy();
+
+  // common (second wave — variance + motion + tier + resolved)
+  r.common.varianceBuffer.destroy();
+  r.common.varianceBufferAux.destroy();
+  r.common.atrousVarianceEstimateTexture.destroy();
+  r.common.motionVectorTexture.destroy();
+  r.common.tierTexture.destroy();
+  r.common.resolvedTexture.destroy();
+
+  // gtao
+  r.gtao.aoHalfTexture.destroy();
+  r.gtao.aoFullTexture.destroy();
+  r.gtao.gtaoUboBuffer.destroy();
+
+  // restirGI
+  r.restirGI.reservoirGiCurrentBuffer.destroy();
+  r.restirGI.reservoirGiPreviousBuffer.destroy();
+  r.restirGI.reservoirGiSpatialBuffer.destroy();
+
+  // common (Sprint-18 indirect / combined / hdrTotal / indirect ping-pong / albedo)
+  r.common.hdrIndirectTexture.destroy();
+  r.common.combinedDenoisedTexture.destroy();
+  r.common.hdrTotalTexture.destroy();
+  r.common.indirectDenoisedPingTexture.destroy();
+  r.common.indirectDenoisedPongTexture.destroy();
+  r.common.indirectAccumPingTexture.destroy();
+  r.common.indirectAccumPongTexture.destroy();
+  r.common.albedoTexture.destroy();
+
+  // svgf
+  r.svgf.svgfObjIdPlaceholderTexture.destroy();
+  r.svgf.svgfHistoryLengthTextureA.destroy();
+  r.svgf.svgfHistoryLengthTextureB.destroy();
+  r.svgf.svgfMomentsTextureA.destroy();
+  r.svgf.svgfMomentsTextureB.destroy();
+  r.svgf.svgfPrevRadianceTextureA.destroy();
+  r.svgf.svgfPrevRadianceTextureB.destroy();
+  r.svgf.svgfVarianceTexture.destroy();
+  r.svgf.svgfVarianceMomentsIntermedTexture.destroy();
+
+  // ppg / neural — empty placeholders; nothing to destroy until W9 / W10.
 }

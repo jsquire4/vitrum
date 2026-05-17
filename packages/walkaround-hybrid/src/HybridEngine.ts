@@ -1271,11 +1271,13 @@ export class HybridEngine implements Engine {
       return out;
     },
     giSignalTextures: () => {
+      // W1-R2 — _res is the nested FrameResources struct. The debug surface
+      // reaches in via a structural cast (cannot import FrameResources here
+      // without a cyclic dep), so we mirror the sub-struct shape inline.
       const p = this._pipeline as unknown as {
         _res?: {
-          hdrColorTexture?: GPUTexture;
-          hdrIndirectTexture?: GPUTexture;
-          aoFullTexture?: GPUTexture;
+          common?: { hdrColorTexture?: GPUTexture; hdrIndirectTexture?: GPUTexture };
+          gtao?: { aoFullTexture?: GPUTexture };
         };
       } | null;
       const res = p?._res;
@@ -1286,9 +1288,9 @@ export class HybridEngine implements Engine {
       // 'total' = current swap chain — not exposed as a persistent
       //   texture; consumers can blit from the canvas directly.
       return {
-        direct:   res.hdrColorTexture    ?? null,
-        indirect: res.hdrIndirectTexture ?? null,
-        ao:       res.aoFullTexture      ?? null,
+        direct:   res.common?.hdrColorTexture    ?? null,
+        indirect: res.common?.hdrIndirectTexture ?? null,
+        ao:       res.gtao?.aoFullTexture        ?? null,
         total:    null,
       };
     },
