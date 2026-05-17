@@ -8,7 +8,10 @@
       "@vitrum/core": ["../core/src/index.ts"],
       "@vitrum/three-bindings": ["../three-bindings/src/index.ts"],
       "@vitrum/walkaround-hybrid": ["../walkaround-hybrid/src/index.ts"],
-      "@vitrum/pt-webgl": ["../pt-webgl/src/index.ts"]
+      "@vitrum/pt-webgl": ["../pt-webgl/src/index.ts"],
+      "@vitrum/shared-bvh": ["../shared-bvh/src/index.ts"],
+      "@vitrum/shared-samplers": ["../shared-samplers/src/index.ts"],
+      "@vitrum/shared-denoisers": ["../shared-denoisers/src/index.ts"]
     }
   },
   "include": ["src", "__tests__"]
