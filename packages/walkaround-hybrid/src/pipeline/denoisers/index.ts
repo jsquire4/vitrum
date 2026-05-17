@@ -10,16 +10,20 @@
  * entry; the orchestrator looks the denoiser up by ID and dispatches
  * polymorphically.
  *
- * Concrete implementations are added in W1-R3 (the next round of the
- * W1 workstream); this module ships the interface + registry only.
+ *   denoisers/none.ts            (W1-R3 — pass-through no-op)
+ *   denoisers/atrous.ts          (W1-R3 — legacy 3-iter à-trous)
+ *   denoisers/atrousVariance.ts  (W1-R3 — Welford + variance + 3 × atrous, default)
+ *   denoisers/svgfReal.ts        (W1-R3 — real Schied 2017 SVGF)
+ *   denoisers/neural.ts          (W1-R3, `disabled` until W10)
+ *   denoisers/oidnFinal.ts       (W1-R3, `disabled` until W11)
  *
- *   denoisers/none.ts            (W1-R3)
- *   denoisers/atrous.ts          (W1-R3)
- *   denoisers/atrousVariance.ts  (W1-R3)
- *   denoisers/svgfReal.ts        (W1-R3)
- *   denoisers/neural.ts          (W1-R3, gated `disabled` until W10)
- *   denoisers/oidnFinal.ts       (W1-R3, gated `disabled` until W11)
+ * Concrete entries register themselves via {@link registerBuiltinDenoisers}
+ * (see `denoisers/registerBuiltinDenoisers.ts`).
  */
+
+import type { BGLCache } from '../bindGroupLayouts.js';
+import type { FrameResources } from '../resourceManager.js';
+import type { PassLabel } from '../timestampQueries.js';
 
 /** Identifier union for built-in denoisers. The premium-grade plan
  *  reserves the slots `'neural'` (W10) and `'oidn-final'` (W11) which
@@ -33,20 +37,67 @@ export type DenoiserId =
   | 'neural'
   | 'oidn-final';
 
+/**
+ * Initialization context handed to {@link Denoiser.initialize}.
+ *
+ * The denoiser may read `bglCache` to look up shared (universal) BGLs
+ * — frame/scene/ubo/composite — but must not register denoiser-specific
+ * BGLs there: a denoiser-private BGL is private to the denoiser entry.
+ *
+ * `frameResources` lets the denoiser pre-bind persistent resources it
+ * does not own (e.g. SVGF's persistent history textures live in
+ * {@link FrameResources.svgf}).
+ */
 export interface DenoiserInitContext {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
+  readonly bglCache: BGLCache;
+  readonly frameResources: FrameResources;
 }
 
+/**
+ * Per-frame dispatch context. Concrete denoisers narrow `resources` to
+ * the {@link FrameResources} sub-struct they need; the interface keeps
+ * the field typed loosely so this module does not have to know what
+ * each denoiser reads.
+ *
+ * `sharedAtrousPipeline` is the compiled à-trous compute pipeline used
+ * by the legacy 3-iter denoiser AND by the always-on indirect-channel
+ * chain that runs outside any denoiser (see
+ * `WalkaroundGPUPipeline._dispatchAtrousIndirect`). It stays in shared
+ * compilation so both consumers can reuse the same module + BGL; the
+ * legacy `AtrousDenoiser.dispatch` reads it from this context.
+ *
+ * `computeDesc` is a callback that builds the optional `timestampWrites`
+ * field for a {@link GPUComputePassDescriptor}. Sharing the closure
+ * means denoisers report their timings under the same per-frame
+ * {@link PassLayout} as the rest of the pipeline.
+ */
 export interface DenoiserDispatchContext {
   readonly device: GPUDevice;
   readonly encoder: GPUCommandEncoder;
   readonly width: number;
   readonly height: number;
   readonly frameIndex: number;
-  /** Loose typing so this module does not depend on FrameResources. */
-  readonly resources: unknown;
+  /** Concrete denoisers cast this to {@link FrameResources}. */
+  readonly resources: FrameResources;
+  /** Shared atrous pipeline; see field doc above. */
+  readonly sharedAtrousPipeline: GPUComputePipeline;
+  /** Cache of universal BGLs (frame/scene/ubo/composite/accum/atrous). */
+  readonly bglCache: BGLCache;
+  /** Pre-resolved G-buffer normal+depth view used as edge-stop input. */
+  readonly gNormalDepthView: GPUTextureView;
+  /** Current temporal-accumulator read texture (the AtrousVariance
+   *  denoiser needs this for the welford alpha-reset path). */
+  readonly readAccum: GPUTexture;
+  /** Whether the camera moved this frame (drives accumulator reset). */
+  readonly isMoving: boolean;
+  /** Pre-computed 16×16-workgroup dispatch counts. */
+  readonly wgX16: number;
+  readonly wgY16: number;
+  /** Build a `GPUComputePassDescriptor` with optional timestampWrites. */
+  readonly computeDesc: (label: PassLabel) => GPUComputePassDescriptor;
 }
 
 export interface Denoiser {
@@ -61,6 +112,14 @@ export interface Denoiser {
    *  pass-through (in which case the engine sources radiance from the
    *  raw HDR texture directly). */
   dispatch(ctx: DenoiserDispatchContext): GPUTexture | null;
+
+  /** Optional cleanup hook called by the pipeline AFTER its
+   *  `device.queue.submit()` has been called for the frame the denoiser
+   *  just dispatched. Allows a denoiser to release per-frame transient
+   *  GPU buffers (e.g. the per-à-trous-iter UBOs SVGF-real allocates)
+   *  once the GPU queue has taken ownership of the encoded command
+   *  buffer. Default implementations are no-ops. */
+  cleanupAfterSubmit?(): void;
 
   /** Resize callback — denoiser may reallocate persistent resources. */
   resize(width: number, height: number): void;

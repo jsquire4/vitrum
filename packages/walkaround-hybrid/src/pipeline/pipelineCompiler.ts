@@ -1,6 +1,8 @@
 /**
  * Pipeline compiler — creates all GPUComputePipeline and GPURenderPipeline
- * objects used by WalkaroundGPUPipeline.
+ * objects used by WalkaroundGPUPipeline EXCEPT the denoiser-specific ones
+ * (those are owned by each {@link Denoiser} implementation in
+ * `pipeline/denoisers/`).
  *
  * Called once from `initialize()`. Compiles all shader modules in parallel,
  * checks for compile errors, then creates pipeline layouts and dispatches
@@ -8,6 +10,15 @@
  *
  * The temporalAccum shader is NOT concatenated with COMMON_WGSL — it is a
  * standalone compute shader with no dependency on the common library.
+ *
+ * W1-R3 (2026-05-17) — denoiser-conditional shader compiles + pipeline
+ * creation (welford, atrous-variance, svgf-real reproj/moments/7×7/atrous)
+ * moved into the corresponding {@link Denoiser.initialize} entries. This
+ * module no longer branches on `denoiserMode` for anything — it compiles
+ * the always-on RIS / temporal / spatial / shade / GTAO / GI / indirect /
+ * adaptive-sampling / composite pipelines plus the shared `atrousPipeline`
+ * the legacy à-trous denoiser AND the always-on indirect chain both
+ * dispatch.
  */
 
 import { COMMON_WGSL } from '../shaders/common.wgsl.js';
@@ -30,13 +41,8 @@ import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import {
   ATROUS_WGSL,
-  ATROUS_VARIANCE_WGSL,
   TEMPORAL_ACCUM_WGSL,
-  SVGF_REPROJECTION_WGSL,
-  SVGF_VARIANCE_FROM_MOMENTS_WGSL,
-  SVGF_7X7_SPATIAL_FALLBACK_WGSL,
 } from '@vitrum/shared-denoisers';
-import { WELFORD_TEMPORAL_WGSL } from '../shaders/welfordTemporal.wgsl.js';
 import { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from '../shaders/composite.wgsl.js';
 import {
   getFrameBindGroupLayout,
@@ -66,21 +72,12 @@ export interface CompiledPipelines {
   temporalPipeline: GPUComputePipeline;
   spatialPipeline: GPUComputePipeline;
   shadePipeline: GPUComputePipeline;
+  /** Shared à-trous pipeline — used by the legacy `AtrousDenoiser` AND by
+   *  the always-on indirect-channel chain
+   *  (`WalkaroundGPUPipeline._dispatchAtrousIndirect`). */
   atrousPipeline: GPUComputePipeline;
   accumPipeline: GPUComputePipeline;
   compositePipeline: GPURenderPipeline;
-  denoiserMode: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural';
-  welfordPipeline?: GPUComputePipeline;
-  atrousVarianceVariancePipeline?: GPUComputePipeline;
-  atrousVarianceAtrousPipeline?: GPUComputePipeline;
-  /** T2.H1 — svgf-real: bilinear reprojection + EMA history (Schied 2017 Stage 1). */
-  svgfReprojPipeline?: GPUComputePipeline;
-  /** T2.H1 — svgf-real: variance from moments Eq. 5. */
-  svgfMomentsPipeline?: GPUComputePipeline;
-  /** T2.H1 — svgf-real: 7×7 spatial fallback §4.3. */
-  svgfFallbackPipeline?: GPUComputePipeline;
-  /** T2.H1 — svgf-real: à-trous pass (reuses atrous-variance shader). */
-  svgfRealAtrousPipeline?: GPUComputePipeline;
   /** Sprint 9 — adaptive sampling tier classifier (runs before RIS). */
   sampleBudgetPipeline: GPUComputePipeline;
   /** Sprint 9 — resolve pass (runs between temporalAccum and composite). */
@@ -105,9 +102,8 @@ export async function compilePipelines(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
-  opts?: { verbose?: boolean; denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural'; ppgEnabled?: boolean },
+  opts?: { verbose?: boolean; ppgEnabled?: boolean },
 ): Promise<CompiledPipelines> {
-  const denoiserMode = opts?.denoiser ?? 'atrous-variance';
   // Compile all shader modules (common WGSL is prepended to each ReSTIR pass).
   const risSM      = device.createShaderModule({ label: 'ris',      code: COMMON_WGSL + RIS_WGSL });
   const temporalSM = device.createShaderModule({ label: 'temporal', code: COMMON_WGSL + TEMPORAL_WGSL });
@@ -124,46 +120,11 @@ export async function compilePipelines(
   const resolveSM      = device.createShaderModule({ label: 'resolve',       code: RESOLVE_WGSL });
 
   // Check for compile errors on every shader module before proceeding.
-  const welfordSM =
-    denoiserMode === 'atrous-variance'
-      ? device.createShaderModule({ label: 'welford-temporal', code: COMMON_WGSL + WELFORD_TEMPORAL_WGSL })
-      : null;
-  // ATROUS_VARIANCE_WGSL is self-contained: it declares its own PI, INV_PI, LUM_W, and
-  // WelfordVariance struct (via WELFORD_VARIANCE_WGSL). Do NOT prepend
-  // COMMON_WGSL here — it would cause WGSL redeclaration errors on those
-  // names. The welford-temporal pass DOES need COMMON_WGSL (for the BVH /
-  // shared math helpers), which is why those two diverge.
-  const atrousVarianceSM =
-    denoiserMode === 'atrous-variance'
-      ? device.createShaderModule({ label: 'atrous-variance', code: ATROUS_VARIANCE_WGSL })
-      : null;
-
-  // T2.H1 — svgf-real shader modules.
-  const svgfReprojSM = denoiserMode === 'svgf-real'
-    ? device.createShaderModule({ label: 'svgf-reproj', code: SVGF_REPROJECTION_WGSL })
-    : null;
-  const svgfMomentsSM = denoiserMode === 'svgf-real'
-    ? device.createShaderModule({ label: 'svgf-moments', code: SVGF_VARIANCE_FROM_MOMENTS_WGSL })
-    : null;
-  const svgfFallbackSM = denoiserMode === 'svgf-real'
-    ? device.createShaderModule({ label: 'svgf-7x7', code: SVGF_7X7_SPATIAL_FALLBACK_WGSL })
-    : null;
-  // svgf-real reuses the atrous-variance à-trous chain for spatial filtering.
-  const svgfRealAtrousVarianceSM = denoiserMode === 'svgf-real'
-    ? device.createShaderModule({ label: 'svgf-real-atrous-variance', code: ATROUS_VARIANCE_WGSL })
-    : null;
-
   const modules: [string, GPUShaderModule][] = [
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
     ['sample-budget', sampleBudgetSM], ['resolve', resolveSM],
-    ...(welfordSM ? [['welford', welfordSM] as [string, GPUShaderModule]] : []),
-    ...(atrousVarianceSM ? [['atrous-variance', atrousVarianceSM] as [string, GPUShaderModule]] : []),
-    ...(svgfReprojSM           ? [['svgf-reproj',   svgfReprojSM]   as [string, GPUShaderModule]] : []),
-    ...(svgfMomentsSM          ? [['svgf-moments',  svgfMomentsSM]  as [string, GPUShaderModule]] : []),
-    ...(svgfFallbackSM         ? [['svgf-7x7',      svgfFallbackSM] as [string, GPUShaderModule]] : []),
-    ...(svgfRealAtrousVarianceSM ? [['svgf-real-atrous-variance', svgfRealAtrousVarianceSM] as [string, GPUShaderModule]] : []),
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
@@ -331,57 +292,6 @@ export async function compilePipelines(
     compute: { module: indirectTemporalAccumSM, entryPoint: 'indirectTemporalAccumMain' },
   });
 
-  // T2.H1 — svgf-real pipelines (compile only when denoiserMode === 'svgf-real').
-  let svgfReprojPipeline:      GPUComputePipeline | undefined;
-  let svgfMomentsPipeline:     GPUComputePipeline | undefined;
-  let svgfFallbackPipeline:    GPUComputePipeline | undefined;
-  let svgfRealAtrousPipeline:  GPUComputePipeline | undefined;
-  if (denoiserMode === 'svgf-real' && svgfReprojSM && svgfMomentsSM && svgfFallbackSM && svgfRealAtrousVarianceSM) {
-    [svgfReprojPipeline, svgfMomentsPipeline, svgfFallbackPipeline] = await Promise.all([
-      device.createComputePipelineAsync({
-        label: 'svgf-real-reproj',
-        layout: 'auto',
-        compute: { module: svgfReprojSM, entryPoint: 'svgfReprojMain' },
-      }),
-      device.createComputePipelineAsync({
-        label: 'svgf-real-moments',
-        layout: 'auto',
-        compute: { module: svgfMomentsSM, entryPoint: 'svgfVarianceFromMomentsMain' },
-      }),
-      device.createComputePipelineAsync({
-        label: 'svgf-real-7x7',
-        layout: 'auto',
-        compute: { module: svgfFallbackSM, entryPoint: 'svgf7x7FallbackMain' },
-      }),
-    ]);
-    svgfRealAtrousPipeline = await device.createComputePipelineAsync({
-      label: 'svgf-real-atrous',
-      layout: 'auto',
-      compute: { module: svgfRealAtrousVarianceSM, entryPoint: 'svgfAtrousMain' },
-    });
-  }
-
-  let welfordPipeline: GPUComputePipeline | undefined;
-  let atrousVarianceVariancePipeline: GPUComputePipeline | undefined;
-  let atrousVarianceAtrousPipeline: GPUComputePipeline | undefined;
-  if (denoiserMode === 'atrous-variance' && welfordSM && atrousVarianceSM) {
-    welfordPipeline = await device.createComputePipelineAsync({
-      label: 'welford-temporal',
-      layout: 'auto',
-      compute: { module: welfordSM, entryPoint: 'welfordTemporalMain' },
-    });
-    atrousVarianceVariancePipeline = await device.createComputePipelineAsync({
-      label: 'atrous-variance-variance',
-      layout: 'auto',
-      compute: { module: atrousVarianceSM, entryPoint: 'svgfVarianceMain' },
-    });
-    atrousVarianceAtrousPipeline = await device.createComputePipelineAsync({
-      label: 'atrous-variance-atrous',
-      layout: 'auto',
-      compute: { module: atrousVarianceSM, entryPoint: 'svgfAtrousMain' },
-    });
-  }
-
   const accumSM = device.createShaderModule({ label: 'accum', code: TEMPORAL_ACCUM_WGSL });
   const accumPipeline = await device.createComputePipelineAsync({
     label: 'temporalAccum', layout: accumLayout,
@@ -455,18 +365,6 @@ export async function compilePipelines(
     spatialGiPipeline,
     indirectCombinePipeline,
     indirectTemporalAccumPipeline,
-    denoiserMode,
-    ...(welfordPipeline !== undefined &&
-    atrousVarianceVariancePipeline !== undefined &&
-    atrousVarianceAtrousPipeline !== undefined
-      ? { welfordPipeline, atrousVarianceVariancePipeline, atrousVarianceAtrousPipeline }
-      : {}),
-    ...(svgfReprojPipeline !== undefined &&
-    svgfMomentsPipeline !== undefined &&
-    svgfFallbackPipeline !== undefined &&
-    svgfRealAtrousPipeline !== undefined
-      ? { svgfReprojPipeline, svgfMomentsPipeline, svgfFallbackPipeline, svgfRealAtrousPipeline }
-      : {}),
     // T2.H3 — PPG pipelines (Müller 2017): only present when ppgEnabled.
     ...(ppgUpdatePipeline !== undefined && ppgGuidePipeline !== undefined
       ? { ppgUpdatePipeline, ppgGuidePipeline }
