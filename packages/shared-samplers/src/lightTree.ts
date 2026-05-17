@@ -214,7 +214,7 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
  * proportional to child power, then corrects for spatial proximity at the
  * leaf. The GPU consumes the packed node array directly via `packLightTreeForGPU`.
  *
- * `_powerPrefixSumDebug` layout: length = nodeCount (one entry per node, pre-order).
+ * `powerPrefixSum` layout: length = nodeCount (one entry per node, pre-order).
  * Each entry is the running prefix sum of `totalPower` values across the
  * pre-order node array, normalised by `root.totalPower`. Because internal nodes
  * aggregate subtree power, their contribution is counted once in the running sum
@@ -230,18 +230,15 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
 export function buildLightTree(input: LightTreeBuildInput): {
   nodes: LightTreeNode[];
   /**
-   * @internal
-   *
-   * **WARNING: Do NOT use for sampling — values exceed 1.0 because internal
-   * nodes are counted before children. Use leaf-only power traversal on
-   * `nodes` instead.**
-   *
-   * Unnormalised node-power prefix-sum for CPU-side structural verification
-   * only. Length = nodeCount (pre-order). Values can exceed 1.0 because
-   * internal nodes aggregate subtree power, so their power is counted before
-   * each child's power is also counted. This is NOT a true CDF.
+   * Unnormalised node-power prefix-sum for CPU-side structural verification.
+   * Length = nodeCount (pre-order). Values can exceed 1.0 because internal
+   * nodes aggregate subtree power, so their power is counted before each
+   * child's power is also counted. This is NOT a true CDF — do not use for
+   * sampling (GPU descends from the root via leaf-only power traversal).
+   * Provided so tests / debug overlays can assert monotonicity and structural
+   * invariants.
    */
-  _powerPrefixSumDebug: Float32Array;
+  powerPrefixSum: Float32Array;
 } {
   const { powers, centroids, aabbs } = input;
   const n = powers.length;
@@ -274,14 +271,14 @@ export function buildLightTree(input: LightTreeBuildInput): {
   // with more than one leaf — this is intentional (see JSDoc above).
   // For sampling, use leaf-only power traversal on `nodes` instead.
   const rootPower = nodes[0]!.totalPower;
-  const _powerPrefixSumDebug = new Float32Array(nodes.length);
+  const powerPrefixSum = new Float32Array(nodes.length);
   let running = 0;
   for (let i = 0; i < nodes.length; i++) {
     running += nodes[i]!.totalPower;
-    _powerPrefixSumDebug[i] = rootPower > 0 ? running / rootPower : 0;
+    powerPrefixSum[i] = rootPower > 0 ? running / rootPower : 0;
   }
 
-  return { nodes, _powerPrefixSumDebug };
+  return { nodes, powerPrefixSum };
 }
 
 /**

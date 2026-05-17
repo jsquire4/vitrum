@@ -165,13 +165,13 @@ export async function denoiseFinal(
   const normalKey = tn.normal ?? 'normal';
   const albedoKey = tn.albedo ?? 'albedo';
 
-  const colorNchw = _hwcToNchw(color, height, width, 3);
+  const colorNchw = hwcToNchw(color, height, width, 3);
   const feeds: Record<string, unknown> = {
     [colorKey]: new ort.Tensor('float32', colorNchw, [1, 3, height, width]),
   };
 
   if (normal !== undefined) {
-    feeds[normalKey] = new ort.Tensor('float32', _hwcToNchw(normal, height, width, 3), [
+    feeds[normalKey] = new ort.Tensor('float32', hwcToNchw(normal, height, width, 3), [
       1,
       3,
       height,
@@ -179,7 +179,7 @@ export async function denoiseFinal(
     ]);
   }
   if (albedo !== undefined) {
-    feeds[albedoKey] = new ort.Tensor('float32', _hwcToNchw(albedo, height, width, 3), [
+    feeds[albedoKey] = new ort.Tensor('float32', hwcToNchw(albedo, height, width, 3), [
       1,
       3,
       height,
@@ -201,7 +201,7 @@ export async function denoiseFinal(
     );
   }
 
-  return _nchwToHwc(outputTensor.data, height, width, 3);
+  return nchwToHwc(outputTensor.data, height, width, 3);
 }
 
 /**
@@ -238,15 +238,13 @@ export function clearOIDNCache(): void {
 
 // ── Layout transform helpers ─────────────────────────────────────────────────
 //
-// Exported with an underscore prefix to signal internal / test-only status
-// (not part of the public API surface). Direct export allows unit testing
-// the layout transform without running ONNX inference.
-//
-// AUDIT FIX M-3 (2026-05-09): These were previously unexported and only
-// "tested" indirectly via denoiseFinal's return type. A layout-transpose bug
-// would silently produce scrambled output. Now exported for direct round-trip
-// verification in oidnBridge.test.ts.
-export { _hwcToNchw, _nchwToHwc };
+// Internal — not exported from `@vitrum/shared-denoisers/index.ts`. Tests
+// deep-import via `'../src/oidnBridge.js'` so the round-trip can be verified
+// without running ONNX inference (AUDIT FIX M-3, 2026-05-09). D15 of the
+// 2026-05-17 sweep dropped the warning underscore prefix that previously
+// signalled this; the `@internal` JSDoc + missing public re-export is now
+// the canonical signal.
+export { hwcToNchw, nchwToHwc };
 
 /**
  * Lazily import onnxruntime-web.
@@ -332,8 +330,10 @@ async function _getOrCreateSession(
 /**
  * Convert a flat HWC (height × width × channels) buffer to NCHW
  * (1 × channels × height × width) for ONNX Runtime input.
+ *
+ * @internal — exported for test round-trip; not on the public surface.
  */
-function _hwcToNchw(
+function hwcToNchw(
   src: Float32Array,
   height: number,
   width: number,
@@ -357,8 +357,10 @@ function _hwcToNchw(
 /**
  * Convert a flat NCHW (1 × channels × height × width) buffer back to HWC
  * (height × width × channels) for the caller.
+ *
+ * @internal — exported for test round-trip; not on the public surface.
  */
-function _nchwToHwc(
+function nchwToHwc(
   src: Float32Array,
   height: number,
   width: number,

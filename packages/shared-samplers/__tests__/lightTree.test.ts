@@ -5,7 +5,7 @@
  *  - 1 emitter → trivial leaf tree
  *  - 2 emitters → 3 nodes (internal + 2 leaves), correct power sum
  *  - 4 emitters with linear power [1, 2, 4, 8] → root totalPower = 15,
- *    _powerPrefixSumDebug is monotonically increasing (values may exceed 1.0 — see
+ *    powerPrefixSum is monotonically increasing (values may exceed 1.0 — see
  *    buildLightTree JSDoc: it is an unnormalised node-power prefix-sum, not a true CDF)
  *  - Doubling all powers → all node totalPowers double (Sprint 2 round-trip)
  *  - packLightTreeForGPU → correct float layout
@@ -49,7 +49,7 @@ function makeInput(powers: number[]): LightTreeBuildInput {
 describe('buildLightTree', () => {
   it('1 emitter → single leaf node', () => {
     const input = makeInput([5.0]);
-    const { nodes, _powerPrefixSumDebug } = buildLightTree(input);
+    const { nodes, powerPrefixSum } = buildLightTree(input);
 
     expect(nodes).toHaveLength(1);
     const node = nodes[0]!;
@@ -60,9 +60,9 @@ describe('buildLightTree', () => {
     expect(node.leftChild).toBe(-1);
     expect(node.rightChild).toBe(-1);
 
-    // _powerPrefixSumDebug of a single node is [1.0] (root power / root power)
-    expect(_powerPrefixSumDebug).toHaveLength(1);
-    expect(_powerPrefixSumDebug[0]).toBeCloseTo(1.0);
+    // powerPrefixSum of a single node is [1.0] (root power / root power)
+    expect(powerPrefixSum).toHaveLength(1);
+    expect(powerPrefixSum[0]).toBeCloseTo(1.0);
   });
 
   it('2 emitters → 3 nodes (1 internal + 2 leaves), internal totalPower = sum', () => {
@@ -94,9 +94,9 @@ describe('buildLightTree', () => {
     expect(leafPowerSum).toBeCloseTo(10.0);
   });
 
-  it('4 emitters with powers [1,2,4,8] → root totalPower = 15, _powerPrefixSumDebug is monotonically increasing', () => {
+  it('4 emitters with powers [1,2,4,8] → root totalPower = 15, powerPrefixSum is monotonically increasing', () => {
     const input = makeInput([1, 2, 4, 8]);
-    const { nodes, _powerPrefixSumDebug } = buildLightTree(input);
+    const { nodes, powerPrefixSum } = buildLightTree(input);
 
     // 4 leaves → 7 nodes in a full binary tree
     expect(nodes).toHaveLength(7);
@@ -104,18 +104,18 @@ describe('buildLightTree', () => {
     const root = nodes[0]!;
     expect(root.totalPower).toBeCloseTo(15.0);
 
-    // _powerPrefixSumDebug must be monotonically non-decreasing.
+    // powerPrefixSum must be monotonically non-decreasing.
     // Values can exceed 1.0 because internal nodes aggregate subtree power and
     // their power is counted before each child's power — this is expected and
     // documented. The array is an unnormalised prefix-sum, not a true CDF.
-    for (let i = 1; i < _powerPrefixSumDebug.length; i++) {
-      expect(_powerPrefixSumDebug[i]!).toBeGreaterThanOrEqual(_powerPrefixSumDebug[i - 1]!);
+    for (let i = 1; i < powerPrefixSum.length; i++) {
+      expect(powerPrefixSum[i]!).toBeGreaterThanOrEqual(powerPrefixSum[i - 1]!);
     }
 
     // First entry > 0 (root power / root power — always exactly 1.0 for a positive tree).
-    expect(_powerPrefixSumDebug[0]!).toBeCloseTo(1.0);
+    expect(powerPrefixSum[0]!).toBeCloseTo(1.0);
     // Final entry > 0 since all emitters have positive power.
-    expect(_powerPrefixSumDebug[_powerPrefixSumDebug.length - 1]!).toBeGreaterThan(0);
+    expect(powerPrefixSum[powerPrefixSum.length - 1]!).toBeGreaterThan(0);
   });
 
   it('doubling all input powers doubles every node totalPower (Sprint 2 round-trip)', () => {
@@ -160,7 +160,7 @@ describe('buildLightTree', () => {
     };
 
     // Must not throw
-    const { nodes, _powerPrefixSumDebug } = buildLightTree(input);
+    const { nodes, powerPrefixSum } = buildLightTree(input);
 
     // Correct node count for 4 leaves
     expect(nodes).toHaveLength(7);
@@ -168,9 +168,9 @@ describe('buildLightTree', () => {
     // Root totalPower = 1 + 8 + 2 + 4 = 15
     expect(nodes[0]!.totalPower).toBeCloseTo(15.0);
 
-    // _powerPrefixSumDebug is still monotonically non-decreasing
-    for (let i = 1; i < _powerPrefixSumDebug.length; i++) {
-      expect(_powerPrefixSumDebug[i]!).toBeGreaterThanOrEqual(_powerPrefixSumDebug[i - 1]!);
+    // powerPrefixSum is still monotonically non-decreasing
+    for (let i = 1; i < powerPrefixSum.length; i++) {
+      expect(powerPrefixSum[i]!).toBeGreaterThanOrEqual(powerPrefixSum[i - 1]!);
     }
 
     // All leaves have valid emitterIndex (≥ 0)
