@@ -28,7 +28,7 @@ import {
   ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
 } from './atrousVarianceConstants.js';
 import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
-import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
+import { getSharedTestWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 
 export interface AtrousVarianceSyntheticGbufferFallback {
@@ -356,10 +356,16 @@ export interface AtrousVarianceWebGPUOptions {
    * Values are clamped to [1, ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS].
    */
   readonly atrousIterations?: number;
-  /** Explicit device; never destroyed by this call. */
+  /** Explicit device; never destroyed by this call. REQUIRED unless `reuseSharedWebGpuDevice: true` is set. */
   readonly device?: GPUDevice;
   /**
-   * When true (default), uses getSharedWebGPUDevice. When false, one-shot device + destroy.
+   * Opt-in to the test/demo singleton from `sharedWebGpuDevice.ts`.
+   * Default `false` (W6-E1, 2026-05-17): production callers MUST pass `device`.
+   * Set to `true` only from tests / Cornell-style demos that intentionally
+   * share a process-wide device for adapter latency.
+   *
+   * If neither `device` nor `reuseSharedWebGpuDevice: true` is supplied, the
+   * call throws — the singleton fallback is no longer implicit.
    */
   readonly reuseSharedWebGpuDevice?: boolean;
 
@@ -412,7 +418,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   const frameCount = opts.frameCount ?? 0;
   const rawAtrous = opts.atrousIterations ?? ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS;
   const atrousIterations = Math.min(ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
-  const reuseShared = opts.reuseSharedWebGpuDevice !== false && opts.device == null;
+  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
   const sigmaColor = opts.sigmaColor ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
   const sigmaNormal = opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal;
   const sigmaDepth = opts.sigmaDepth ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;
@@ -427,20 +433,16 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   }
 
   let device: GPUDevice;
-  let destroyEphemeral: (() => void) | null = null;
   if (opts.device != null) {
     device = opts.device;
   } else if (reuseShared) {
-    device = await getSharedWebGPUDevice();
+    device = await getSharedTestWebGPUDevice();
   } else {
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (adapter == null) {
-      throw new Error('runAtrousVarianceWebGPU: failed to request GPU adapter');
-    }
-    device = await adapter.requestDevice();
-    destroyEphemeral = () => {
-      device.destroy();
-    };
+    throw new Error(
+      'runAtrousVarianceWebGPU: pass an explicit `device: GPUDevice` (host owns lifecycle, ' +
+        'CLAUDE.md design principle #2). Tests / demos may opt in to the shared singleton ' +
+        'with `reuseSharedWebGpuDevice: true`.',
+    );
   }
 
   const { variance: variancePipeline, atrous: atrousPipeline } = atrousVariancePipelines(device);
@@ -656,7 +658,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   colorPingB.destroy();
   varianceUbo.destroy();
   for (const ubo of atrousUbos) ubo.destroy();
-  destroyEphemeral?.();
+  // Device ownership stays with the caller (W6-E1) — never destroyed here.
 
   return rgbOut;
 }

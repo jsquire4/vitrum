@@ -8,7 +8,7 @@ import {
   HDR_LUMINANCE_BILATERAL_WGSL,
   HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE,
 } from './wgsl/hdrLuminanceBilateral.wgsl.js';
-import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
+import { getSharedTestWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 
 /** Default luminance edge-stop σ for `runHdrLuminanceBilateralWebGPU` (matches Cornell `vitrumWgslSigma`). */
@@ -20,11 +20,16 @@ export interface HdrLuminanceBilateralWebGPUOptions {
   readonly height: number;
   /** Luminance edge-stop σ; larger → more blur. Typical 0.02–0.15 HDR linear. */
   readonly sigmaLuminance?: number;
-  /** Use this device; never destroyed by this call. */
+  /** Use this device; never destroyed by this call. REQUIRED unless `reuseSharedWebGpuDevice: true` is set. */
   readonly device?: GPUDevice;
   /**
-   * When true (default), uses a cached process-wide device via getSharedWebGPUDevice.
-   * When false, allocates a dedicated device per call and destroys it afterward.
+   * Opt-in to the test/demo singleton from `sharedWebGpuDevice.ts`.
+   * Default `false` (W6-E1, 2026-05-17): production callers MUST pass `device`.
+   * Set to `true` only from tests / Cornell-style demos that intentionally
+   * share a process-wide device for adapter latency.
+   *
+   * If neither `device` nor `reuseSharedWebGpuDevice: true` is supplied, the
+   * call throws — the singleton fallback is no longer implicit.
    */
   readonly reuseSharedWebGpuDevice?: boolean;
 }
@@ -47,14 +52,15 @@ function bilateralComputePipeline(device: GPUDevice): GPUComputePipeline {
 
 /**
  * Runs one luminance bilateral pass on linear HDR RGB (flattened length w*h*3).
- * By default reuses getSharedWebGPUDevice and caches the compute pipeline per device.
+ * Requires `opts.device` or the test/demo opt-in flag `reuseSharedWebGpuDevice: true`.
+ * Caches the compute pipeline per device.
  */
 export async function runHdrLuminanceBilateralWebGPU(
   opts: HdrLuminanceBilateralWebGPUOptions,
 ): Promise<Float32Array> {
   const { rgb, width: w, height: h } = opts;
   const sigma = opts.sigmaLuminance ?? HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE;
-  const reuseShared = opts.reuseSharedWebGpuDevice !== false && opts.device == null;
+  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
   if (typeof navigator === 'undefined' || navigator.gpu == null) {
     throw new Error('runHdrLuminanceBilateralWebGPU: WebGPU not available in this browser');
   }
@@ -63,20 +69,16 @@ export async function runHdrLuminanceBilateralWebGPU(
   }
 
   let device: GPUDevice;
-  let destroyEphemeral: (() => void) | null = null;
   if (opts.device != null) {
     device = opts.device;
   } else if (reuseShared) {
-    device = await getSharedWebGPUDevice();
+    device = await getSharedTestWebGPUDevice();
   } else {
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (adapter == null) {
-      throw new Error('runHdrLuminanceBilateralWebGPU: failed to request GPU adapter');
-    }
-    device = await adapter.requestDevice();
-    destroyEphemeral = () => {
-      device.destroy();
-    };
+    throw new Error(
+      'runHdrLuminanceBilateralWebGPU: pass an explicit `device: GPUDevice` (host owns ' +
+        'lifecycle, CLAUDE.md design principle #2). Tests / demos may opt in to the shared ' +
+        'singleton with `reuseSharedWebGpuDevice: true`.',
+    );
   }
 
   const pipeline = bilateralComputePipeline(device);
@@ -176,7 +178,7 @@ export async function runHdrLuminanceBilateralWebGPU(
   texOut.destroy();
   ubo.destroy();
   readbackBuffer.destroy();
-  destroyEphemeral?.();
+  // Device ownership stays with the caller (W6-E1) — never destroyed here.
 
   return out;
 }
