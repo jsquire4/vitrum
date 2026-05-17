@@ -497,8 +497,9 @@ async function main(): Promise<void> {
   let wgslDisplaySucceeded = false;
   let svgfDisplaySucceeded = false;
   let lastDivideByAlpha = false;
-  /** Last converged frame output — async denoisers finalize capture using this. */
-  let convergedFrame: PTEngineWebGL2FrameOutput | null = null;
+  /** Last converged frame output — async denoisers finalize capture using this.
+   *  Only rendered (non-skipped) outputs are ever stored here. */
+  let convergedFrame: Extract<PTEngineWebGL2FrameOutput, { kind: 'rendered' }> | null = null;
 
   function updateCaptureCanvasHint(): void {
     if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {
@@ -520,7 +521,10 @@ async function main(): Promise<void> {
     globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#c';
   }
 
-  function finalizeVitrumCapture(reason: string, out: PTEngineWebGL2FrameOutput): void {
+  function finalizeVitrumCapture(
+    reason: string,
+    out: Extract<PTEngineWebGL2FrameOutput, { kind: 'rendered' }>,
+  ): void {
     if (globalThis.VITRUM_CAPTURE_READY === true) return;
     globalThis.VITRUM_MS_PER_SAMPLE = (performance.now() - startMs) / Math.max(out.samplesAccumulated, 1);
     globalThis.VITRUM_CAPTURE_TELEMETRY = {
@@ -563,6 +567,12 @@ async function main(): Promise<void> {
 
     const out = engine.renderFrame(input) as PTEngineWebGL2FrameOutput;
     frame++;
+    if (out.kind === 'skipped') {
+      // pt-webgl does not emit skip outputs today, but the union allows
+      // backends to do so — keep RAFing until we receive a rendered frame.
+      requestAnimationFrame(loop);
+      return;
+    }
     const displayedSpp = Number.isInteger(out.samplesAccumulated)
       ? String(out.samplesAccumulated)
       : out.samplesAccumulated.toFixed(2);

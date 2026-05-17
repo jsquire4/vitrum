@@ -242,6 +242,12 @@ async function main(): Promise<void> {
 
     const out = ptEngine.renderFrame(input);
     ptFrame++;
+    if (out.kind === 'skipped') {
+      // pt-webgl does not currently emit skip outputs, but the union allows
+      // it — keep the loop spinning so we eventually get a rendered frame.
+      requestAnimationFrame(ptLoop);
+      return;
+    }
     telemetry.ptWebgl = {
       state: ptEngine.state,
       spp: out.samplesAccumulated,
@@ -465,6 +471,12 @@ async function main(): Promise<void> {
         };
         const out = ptGpuEngine.renderFrame(input);
         ptGpuFrame++;
+        if (out.kind === 'skipped') {
+          // Backend deferred this frame (e.g. pipeline still warming up).
+          // Keep RAFing so we eventually receive a rendered frame.
+          requestAnimationFrame(ptGpuLoop);
+          return;
+        }
         telemetry.ptWebgpu = {
           state: ptGpuEngine.state,
           spp: out.samplesAccumulated,

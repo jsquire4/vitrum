@@ -33,7 +33,7 @@ import type {
   FrameStats,
 } from '@vitrum/core';
 import type { Scene } from '@vitrum/core';
-import type { FrameInput, FrameOutput } from '@vitrum/core';
+import type { FrameInput, FrameOutput, FrameSkipReason } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
@@ -916,19 +916,17 @@ export class HybridEngine implements Engine {
    *
    * The 60 FPS internal throttle is enforced here: on high-refresh-rate
    * displays, frames arriving faster than ~16.67 ms apart are skipped and
-   * this returns a "skip" FrameOutput (samplesAccumulated: 0, isConverged:
-   * false, primaryRadiance: null).
+   * this returns `{ kind: 'skipped', reason: 'fps-throttle' }`.
+   * See `FrameSkipReason` for the full set of skip reasons emitted by this
+   * backend (paused/disposed/no-pipeline/no-bvh/no-swap-view/fps-throttle/
+   * rebuild).
    */
   renderFrame(input: FrameInput): FrameOutput {
-    const skipOutput: FrameOutput = {
-      primaryRadiance: null,
-      samplesAccumulated: 0,
-      isConverged: false,
-    };
+    const skip = (reason: FrameSkipReason): FrameOutput => ({ kind: 'skipped', reason });
 
-    if (this._state === 'paused' || this._state === 'disposed' || this._state === 'error') {
-      return skipOutput;
-    }
+    if (this._state === 'paused') return skip('paused');
+    if (this._state === 'disposed') return skip('disposed');
+    if (this._state === 'error') return skip('pending-init');
 
     const fp = HybridEngine._fingerprintRebuildKey(
       this._getPipelineRebuildKey?.() ?? this._staticPipelineRebuildKey,
@@ -936,15 +934,15 @@ export class HybridEngine implements Engine {
     if (fp !== this._rebuildKeyFingerprintSeen) {
       this._rebuildKeyFingerprintSeen = fp;
       this.reset();
-      return skipOutput;
+      return skip('rebuild');
     }
 
     const dbg = this._debug ? this._dbg : null;
 
     const pipeline = this._pipeline;
     const bvh = this._bvhBuffers;
-    if (!pipeline) { if (dbg) dbg.skipNoPipeline++; return skipOutput; }
-    if (!bvh)      { if (dbg) dbg.skipNoBvh++;      return skipOutput; }
+    if (!pipeline) { if (dbg) dbg.skipNoPipeline++; return skip('pending-init'); }
+    if (!bvh)      { if (dbg) dbg.skipNoBvh++;      return skip('no-scene'); }
 
     const now = performance.now();
     // Audit M4: configurable FPS cap. `null` disables the throttle so VR /
@@ -964,7 +962,7 @@ export class HybridEngine implements Engine {
       if (skipSwapView && this._pipeline) {
         this._pipeline.presentLastFrame(skipSwapView);
       }
-      return skipOutput;
+      return skip('fps-throttle');
     }
     this._lastFrameTs = now;
 
@@ -978,7 +976,7 @@ export class HybridEngine implements Engine {
 
     if (!swapView) {
       if (dbg) dbg.skipNoSwapView++;
-      return skipOutput;
+      return skip('no-swap-view');
     }
 
     // Periodic 5s rate report.
@@ -1136,6 +1134,7 @@ export class HybridEngine implements Engine {
     }
 
     return {
+      kind:               'rendered',
       primaryRadiance:    swapView,   // swap chain is the output surface
       samplesAccumulated: 1,
       isConverged:        false,      // walkaround never converges; resamples every frame

@@ -709,6 +709,7 @@ export class PTEngineWebGL2 implements Engine {
       const spp = this.#pathTracer.samples;
       const cap = this.#maxSamplesLimit;
       return {
+        kind: 'rendered',
         primaryRadiance: this.#pathTracer.target.texture,
         samplesAccumulated: spp,
         isConverged: spp >= cap,
@@ -812,6 +813,7 @@ export class PTEngineWebGL2 implements Engine {
     }
 
     return {
+      kind: 'rendered',
       primaryRadiance: this.#pathTracer.target.texture,
       samplesAccumulated: spp,
       isConverged: spp >= targetSpp,

@@ -291,10 +291,10 @@ function wrapWithIdempotentDispose(
       : {}),
     renderFrame(input) {
       if (disposed) {
-        // Returning a no-op output keeps host RAF loops from crashing if
-        // they race the dispose. The host is expected to stop rendering
-        // when state === 'disposed'.
-        return { samplesAccumulated: 0, isConverged: true, primaryRadiance: null } as ReturnType<Engine['renderFrame']>;
+        // Returning a `skipped` FrameOutput keeps host RAF loops from
+        // crashing if they race the dispose. The host is expected to stop
+        // rendering when state === 'disposed'.
+        return { kind: 'skipped', reason: 'disposed' } as ReturnType<Engine['renderFrame']>;
       }
       return engine.renderFrame(input);
     },

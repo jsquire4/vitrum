@@ -387,7 +387,15 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'paused') {
       const pq = input.quality ?? {};
       const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
+      // Paused returns the most-recently accumulated frame so the host can
+      // keep displaying the converged image without a render. samplesAccumulated
+      // is the frozen count — pt-webgpu does not emit `kind:'skipped'` in this
+      // state.
+      if (this.#accumTexture == null) {
+        return { kind: 'skipped', reason: 'pending-init' };
+      }
       return {
+        kind: 'rendered',
         primaryRadiance: this.#accumTexture,
         normalDepth: this.#normalDepthTexture ?? undefined,
         albedo: this.#albedoTexture ?? undefined,
@@ -407,6 +415,7 @@ class PTEngineWebGPU implements Engine {
     this.#ensureAccumResources(width, height);
     this.#ensurePipeline();
     if (
+      this.#accumTexture == null ||
       this.#accumView == null ||
       this.#normalDepthView == null ||
       this.#albedoView == null ||
@@ -475,6 +484,7 @@ class PTEngineWebGPU implements Engine {
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
     const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
     return {
+      kind: 'rendered',
       primaryRadiance: this.#accumTexture,
       normalDepth: this.#normalDepthTexture ?? undefined,
       albedo: this.#albedoTexture ?? undefined,

@@ -228,6 +228,11 @@ async function saveHighRes(): Promise<void> {
           quality:         { samplesTarget: SPP_TARGET, bounces: 8, resolutionFactor: 1, filteredGlossyFactor: 0.5 },
         });
         frame++;
+        if (out.kind === 'skipped') {
+          // Backend deferred this frame; keep RAFing until we receive a rendered one.
+          requestAnimationFrame(tick);
+          return;
+        }
         const spp = Math.round(out.samplesAccumulated);
         statusEl.textContent = `Saving… SPP ${spp} / ${SPP_TARGET} at ${saveW}×${saveH}`;
         if (out.isConverged) { resolve(); return; }

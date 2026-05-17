@@ -117,30 +117,63 @@ export interface Viewport {
 // Frame outputs (engine → host, every frame)
 // ────────────────────────────────────────────────────────────────────────────
 
-export interface FrameOutput {
+/**
+ * Tag on the skipped variant of `FrameOutput`. The engine elected NOT to
+ * render this frame and produced no usable texture.
+ *
+ * Known reasons (string-literal union so consumers can switch exhaustively):
+ *   - `'fps-throttle'`   — internal frame-rate cap (walkaround targets ~60 Hz).
+ *   - `'paused'`         — engine is in the `'paused'` state.
+ *   - `'no-scene'`       — `setScene()` has not been called yet.
+ *   - `'pending-init'`   — backend pipeline still warming up (BVH compile,
+ *                          WebGPU shader module ready, etc.).
+ *   - `'no-swap-view'`   — host did not supply `swapChainView` for a backend
+ *                          that draws directly into the swap chain.
+ *   - `'rebuild'`        — a pipeline rebuild was triggered this tick; this
+ *                          frame is dropped while the new pipeline initialises.
+ *   - `'disposed'`       — engine was disposed; caller likely racing dispose.
+ *
+ * Forward-compat: `string` is also accepted so backends can introduce new
+ * reasons without bumping the contract. Hosts that switch on `reason` should
+ * supply a default branch.
+ */
+export type FrameSkipReason =
+  | 'fps-throttle'
+  | 'paused'
+  | 'no-scene'
+  | 'pending-init'
+  | 'no-swap-view'
+  | 'rebuild'
+  | 'disposed'
+  | (string & {});
+
+/**
+ * The engine elected to skip this frame. No texture was produced.
+ * Hosts should leave the previous frame on screen (engines that need to keep
+ * the swap-chain alive — e.g. walkaround's FPS throttle — blit the last
+ * presented frame internally before returning).
+ */
+export interface FrameSkipped {
+  readonly kind: 'skipped';
+  /** Why the frame was skipped. See `FrameSkipReason` for known values. */
+  readonly reason: FrameSkipReason;
+}
+
+/**
+ * The engine produced a rendered frame. `primaryRadiance` is a valid
+ * backend-texture handle; optional G-buffer aux textures may also be present.
+ */
+export interface FrameRendered {
+  readonly kind: 'rendered';
+
   /**
    * Primary radiance buffer — the final converged-or-converging color image.
-   * Format depends on backend: WebGPU returns a `GPUTexture`, WebGL2 returns
-   * the renderer's framebuffer or a `WebGLTexture` handle.
-   *
-   * **Skip frames:** When `samplesAccumulated === 0`, the engine elected to
-   * skip this frame (e.g. frame-rate throttle, pipeline not yet ready, paused
-   * state). On skip frames `primaryRadiance` is `null` — hosts MUST check
-   * `samplesAccumulated > 0` before treating `primaryRadiance` as a valid
-   * texture handle. Example guard:
-   *
-   * ```ts
-   * const out = engine.renderFrame(input);
-   * if (out.samplesAccumulated > 0 && out.primaryRadiance != null) {
-   *   // safe to use out.primaryRadiance
-   * }
-   * ```
-   *
-   * Walkaround engines set `samplesAccumulated = 1` on every rendered frame
-   * (they resample rather than accumulate). `samplesAccumulated = 0` is the
-   * universal "skip frame" sentinel.
+   * Format depends on backend: WebGPU returns a `GPUTexture` (or the
+   * `GPUTextureView` of the swap chain for surface-drawing backends like
+   * walkaround-hybrid); WebGL2 returns the renderer's framebuffer or a
+   * `WebGLTexture` handle.
    */
-  readonly primaryRadiance: BackendTexture | null;
+  readonly primaryRadiance: BackendTexture;
 
   // ── Optional G-buffer (Phase 6 sprint 5 introduces these) ──────────────
   /** Encoded normal + linear depth. RGBA16F: xyz = world-space normal,
@@ -163,7 +196,9 @@ export interface FrameOutput {
 
   // ── Convergence stats ──────────────────────────────────────────────────
   /** Number of accumulated samples-per-pixel. Increments each `renderFrame`
-   *  call until target reached. Resets to 0 on `engine.reset()`. */
+   *  call until target reached. Resets to 0 on `engine.reset()`. Walkaround
+   *  engines return `1` per rendered frame (they resample rather than
+   *  accumulate). */
   readonly samplesAccumulated: number;
 
   /** True when the engine considers the image converged enough to display
@@ -171,6 +206,29 @@ export interface FrameOutput {
    *  walkaround engines flip it once temporal accumulation has stabilized. */
   readonly isConverged: boolean;
 }
+
+/**
+ * Discriminated union returned by `Engine.renderFrame`. The `kind` field
+ * tells the host whether a frame was produced. This replaces the previous
+ * `{ primaryRadiance: BackendTexture | null; samplesAccumulated: number }`
+ * shape, where `samplesAccumulated === 0` was an in-band sentinel for
+ * "skipped frame" — easy to violate and impossible for the type system
+ * to enforce.
+ *
+ * Recommended consumer pattern:
+ *
+ * ```ts
+ * const out = engine.renderFrame(input);
+ * if (out.kind === 'skipped') {
+ *   // diagnostics / FPS counter / leave previous frame on screen
+ *   return;
+ * }
+ * // TypeScript now knows out.primaryRadiance is a real BackendTexture and
+ * // out.samplesAccumulated / out.isConverged are present.
+ * postProcess(out.primaryRadiance);
+ * ```
+ */
+export type FrameOutput = FrameSkipped | FrameRendered;
 
 /** Opaque texture handle. The shape varies per backend; hosts pass it back
  *  through `engine.renderFrame` outputs into post-processing chains, save
