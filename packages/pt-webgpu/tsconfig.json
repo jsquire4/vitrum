@@ -5,6 +5,7 @@
     "noEmit": true,
     "paths": {
       "@vitrum/core": ["../core/src/index.ts"],
+      "@vitrum/shared-bvh": ["../shared-bvh/src/index.ts"],
       "@vitrum/shared-samplers": ["../shared-samplers/src/index.ts"]
     }
   },
