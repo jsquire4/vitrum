@@ -31,7 +31,7 @@ position. The GI re-converges within ~30 frames after each change.
 The scene is rebuilt from scratch on each slider-change batch (50ms debounce)
 via `sceneFromThreeJS`. This is acceptable for a static-topology scene;
 if the engine had a wired `updateEmitter()` path the slider could go
-directly without a full scene rebuild. See `plan/animation-support-status.md`
+directly without a full scene rebuild. See `plan/archive/animation-support-status.md`
 for the incremental-update roadmap.
 
 ## Assets

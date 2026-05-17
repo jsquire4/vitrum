@@ -10,7 +10,7 @@
  * directional distribution (dTree) upon splitting, then accumulate
  * independently.
  *
- * ADDRESSES DEVIATION 1 (from plan/sweep-2026-05-11-fixes-engines.md Item 25):
+ * ADDRESSES DEVIATION 1 (from plan/archive/sweep-2026-05-11-fixes-engines.md Item 25):
  *   The deleted implementation used a static kd-tree built once from a 4×4×4
  *   uniform grid. This module implements a DYNAMIC adaptive split: after each
  *   training frame's atomic accumulation, `splitOverflowLeaves` traverses the

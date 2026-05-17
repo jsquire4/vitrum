@@ -313,7 +313,7 @@ If/when the user lifts the gate on Tier 4:
 2. List which ideas still feel right given the stainedGlass integration
    experience.
 3. For each surviving idea, write a per-item plan with the same
-   discipline as `sweep-2026-05-11-decisions.md` (decisions locked,
+   discipline as `archive/sweep-2026-05-11-decisions.md` (decisions locked,
    per-file scope, behavior-preserving tests, dependencies).
 4. Pick a single headline (recommend: Path 1 if convergence speed
    matters more; Path 3 if perf matters more; cached light field if
