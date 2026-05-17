@@ -1,5 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createPTEngine_WebGL2 } from '../index.js';
+
+// Mock the fork so this test does not require the sibling `three-gpu-pathtracer/`
+// checkout to be present (the `file:` workspace symlink is broken in git worktrees,
+// see vitest.config.ts for the lookup chain). The test only exercises input
+// validation that runs before any WebGLPathTracer construction, so a no-op
+// stub is sufficient. Other tests that need richer fork behaviour mock it
+// themselves (see capabilities.test.ts).
+vi.mock('three-gpu-pathtracer', () => {
+  class WebGLPathTracer {
+    setScene(): void {}
+    setCamera(): void {}
+    renderSample(): void {}
+    reset(): void {}
+    dispose(): void {}
+  }
+  return { WebGLPathTracer };
+});
 
 describe('createPTEngine_WebGL2', () => {
   it('rejects null/invalid device', async () => {

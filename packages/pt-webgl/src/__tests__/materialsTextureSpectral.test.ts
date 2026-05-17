@@ -23,16 +23,51 @@
  * MATERIAL_PIXELS bump shifts the spectral slot offset.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { MeshPhysicalMaterial } from 'three';
-// Direct subpath import — vitest alias only covers the top-level fork entry;
-// MaterialsTexture is a named export from the uniforms subpath and is not
-// part of the public index.js. The path is stable: it has lived at
-// src/uniforms/MaterialsTexture.js since Sprint 5 MRT (fork commit 49081a3).
-// 5 `../` from packages/pt-webgl/src/__tests__/ → ~/projects/, then sibling.
-// The fork ships JS only (no .d.ts); ts-ignore the implicit-any import.
-// @ts-expect-error — JS-only fork module; runtime resolves via vitest.
-import { MaterialsTexture, MATERIAL_PIXELS } from '../../../../../three-gpu-pathtracer/src/uniforms/MaterialsTexture.js';
+
+// MaterialsTexture is a named export from a subpath of the fork that is
+// intentionally NOT part of the public index.js. The fork lives as a sibling
+// directory to the vitrum repo; vitest.config.ts exposes it as the
+// `@vitrum-fork/three-gpu-pathtracer` alias so the import survives both main
+// checkouts and git worktrees (where the file:-symlink `node_modules` entry
+// is broken). The fork ships JS only (no .d.ts); the alias resolves at
+// runtime — silence implicit-any.
+// @ts-expect-error — JS-only fork module; runtime resolves via vitest alias.
+import { MaterialsTexture, MATERIAL_PIXELS } from '@vitrum-fork/three-gpu-pathtracer/src/uniforms/MaterialsTexture.js';
+
+// Resolve the fork root once so the suite can self-skip cleanly when the
+// sibling repo is missing (CI / fresh clone / worktree without the sibling
+// checked out). Mirrors the lookup chain in vitest.config.ts.
+const __filename = fileURLToPath(import.meta.url);
+const __dirnameLocal = path.dirname(__filename);
+function findForkRoot(): string | null {
+  const FORK = 'three-gpu-pathtracer';
+  const SENTINEL = path.join('src', 'uniforms', 'MaterialsTexture.js');
+  const env = process.env['VITRUM_PT_FORK_PATH'];
+  if (env && fs.existsSync(path.join(env, SENTINEL))) return env;
+  const candidates = [
+    // main checkout: __tests__ → src → pt-webgl → packages → vitrum → <parent>
+    path.resolve(__dirnameLocal, '../../../../..', FORK),
+    // worktree: __tests__ → src → pt-webgl → packages → <agent-id> → worktrees → .claude → vitrum → <parent>
+    path.resolve(__dirnameLocal, '../../../../../../../..', FORK),
+  ];
+  for (const c of candidates) if (fs.existsSync(path.join(c, SENTINEL))) return c;
+  let dir = __dirnameLocal;
+  for (let i = 0; i < 12; i++) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    const candidate = path.join(parent, FORK);
+    if (fs.existsSync(path.join(candidate, SENTINEL))) return candidate;
+    dir = parent;
+  }
+  return null;
+}
+const FORK_AVAILABLE = findForkRoot() !== null;
+const itIfFork = FORK_AVAILABLE ? it : it.skip;
 
 // ── Wire-format layout constants (must match MaterialsTexture.js) ──────────────
 // These are asserted below as a self-check so a MATERIAL_PIXELS bump is caught.
@@ -93,11 +128,11 @@ function readBin(slice: Float32Array, spectralIdx: number): number {
 
 describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract', () => {
 
-  it('MATERIAL_PIXELS constant matches expected value (self-check against future bumps)', () => {
+  itIfFork('MATERIAL_PIXELS constant matches expected value (self-check against future bumps)', () => {
     expect(MATERIAL_PIXELS).toBe(EXPECTED_MATERIAL_PIXELS);
   });
 
-  it('material without vitrumSpectralAttenuation: hasSpectralAttenuation bit = 0, spectral bins = 0', () => {
+  itIfFork('material without vitrumSpectralAttenuation: hasSpectralAttenuation bit = 0, spectral bins = 0', () => {
     const mat = new MeshPhysicalMaterial({ color: 0xffffff, transmission: 1, ior: 1.52 });
     const slice = packAndSlice([mat], 0);
 
@@ -109,7 +144,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     }
   });
 
-  it('cobalt-blue spectral curve: hasSpectralAttenuation=1, μ(λ) bins non-zero and peak at red end', () => {
+  itIfFork('cobalt-blue spectral curve: hasSpectralAttenuation=1, μ(λ) bins non-zero and peak at red end', () => {
     // Cobalt absorbs ~525, 595, 650 nm (red/orange).
     // A flat μ=1.0 constant curve verifies packing math; caller uses real curves.
     const curve = makeConstantSpectralCurve(1.0);
@@ -128,7 +163,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     }
   });
 
-  it('spectral bins reflect linearly-interpolated μ(λ) from the source curve wavelength range', () => {
+  itIfFork('spectral bins reflect linearly-interpolated μ(λ) from the source curve wavelength range', () => {
     // Source curve: 0.0 at 380 nm, 1.0 at 780 nm (linear ramp).
     const N = 81;
     const values = new Float32Array(N);
@@ -150,7 +185,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     expect(readBin(slice, 15)).toBeCloseTo(15 / 31, 2);
   });
 
-  it('material index 1 in a 2-material array: spectral bins land at the correct stride offset', () => {
+  itIfFork('material index 1 in a 2-material array: spectral bins land at the correct stride offset', () => {
     // mat[0] has no spectral; mat[1] has constant μ=2.5.
     const mat0 = new MeshPhysicalMaterial({ color: 0xff0000 });
     const mat1 = new MeshPhysicalMaterial({ transmission: 1, ior: 1.52 });
@@ -173,7 +208,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     }
   });
 
-  it('vitrumScatteringCoefficient (sssSigmaT) packs into sample 15.r', () => {
+  itIfFork('vitrumScatteringCoefficient (sssSigmaT) packs into sample 15.r', () => {
     // Opalescent glass: sssSigmaT = 0.35 mm⁻¹.
     const mat = new MeshPhysicalMaterial({ transmission: 1, ior: 1.47 });
     mat.userData['vitrumScatteringCoefficient'] = 0.35;
@@ -187,7 +222,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     expect(slice[S15_OFFSET + 1]).toBeCloseTo(0.6, 5);
   });
 
-  it('vitrumThinFilmStack: thinFilmEnabled=1 and layer count in sample 16.a', () => {
+  itIfFork('vitrumThinFilmStack: thinFilmEnabled=1 and layer count in sample 16.a', () => {
     // 2-layer TiO₂/SiO₂ stack (dichroic).
     const stack = {
       incidentIor: 1.0,
@@ -215,7 +250,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     expect(slice[17 * 4 + 1]).toBeCloseTo(1.0, 5);
   });
 
-  it('hasFrontLayer bit (bit 1) and hasBackLayer bit (bit 2) in featureFlags', () => {
+  itIfFork('hasFrontLayer bit (bit 1) and hasBackLayer bit (bit 2) in featureFlags', () => {
     const mat = new MeshPhysicalMaterial({ transmission: 1, ior: 1.52 });
     mat.userData['vitrumFrontLayer'] = { transmission: [0.9, 0.92, 0.95], roughness: 0.2 };
     mat.userData['vitrumBackLayer'] = { transmission: [0.98, 0.98, 0.98], roughness: 0.05 };
@@ -227,7 +262,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     expect(featureFlags & 4).toBe(4); // hasBackLayer
   });
 
-  it('opt-in invariant: spectral path does not corrupt base PBR fields', () => {
+  itIfFork('opt-in invariant: spectral path does not corrupt base PBR fields', () => {
     // Confirm that adding spectral data does not change IOR, attenuationDistance etc.
     const mat = new MeshPhysicalMaterial({
       color: 0x3355bb,
