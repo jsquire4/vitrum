@@ -7,7 +7,15 @@
  * - Triangle intersection and basic utilities
  *
  * ReSTIR/DDGI-specific reservoir and lighting logic is intentionally excluded.
+ *
+ * W2-C1: safeInvDir + intersectTriangle (Moller-Trumbore) come from the
+ * canonical @vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts module and are
+ * concatenated at the tail of this shader header.  intersectTriangle takes
+ * triEps as a function parameter (the canonical signature); call sites in
+ * pt-webgpu pass `params.triIntersectEpsilon` from the FrameParams UBO.
  */
+import { BVH_TRAVERSE_WGSL } from '@vitrum/shared-bvh';
+
 export const PT_WEBGPU_COMMON_WGSL = /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
@@ -61,40 +69,11 @@ fn safe_normalize(v: vec3f) -> vec3f {
   return v / len;
 }
 
-fn safeInvDir(d: vec3f) -> vec3f {
-  // Williams 2005 §4 IEEE-safe form. When a direction component is
-  // exactly zero, 0 * Inf = NaN poisons the slab test if the ray origin
-  // coincides with an AABB face. Substitute a tiny signed value.
-  return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
-  );
-}
-
-fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
-  let e1 = b - a;
-  let e2 = c - a;
-  let h = cross(dir, e2);
-  let det = dot(e1, h);
-  if (abs(det) < params.triIntersectEpsilon) {
-    return INFINITY;
-  }
-  let invDet = 1.0 / det;
-  let s = origin - a;
-  let u = dot(s, h) * invDet;
-  if (u < 0.0 || u > 1.0) {
-    return INFINITY;
-  }
-  let q = cross(s, e1);
-  let v = dot(dir, q) * invDet;
-  if (v < 0.0 || u + v > 1.0) {
-    return INFINITY;
-  }
-  let t = dot(e2, q) * invDet;
-  if (t < params.triIntersectEpsilon) {
-    return INFINITY;
-  }
-  return t;
-}
+// W2-C1: safeInvDir and intersectTriangle live in
+// @vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts (canonical).  The canonical
+// intersectTriangle takes triEps as a parameter (so the primitive does not
+// depend on the host UBO struct shape); pt-webgpu's two call sites
+// (traceMeshBvh and intersectMeshAreaLightRay) thread
+// params.triIntersectEpsilon explicitly.
+${BVH_TRAVERSE_WGSL}
 `;

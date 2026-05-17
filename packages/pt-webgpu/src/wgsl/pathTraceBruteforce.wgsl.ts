@@ -436,7 +436,7 @@ fn intersectMeshAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   let a = meshAreaLights[mb].xyz;
   let b = meshAreaLights[mb + 1u].xyz;
   let c = meshAreaLights[mb + 2u].xyz;
-  let t = intersectTriangle(rayOrigin, rayDir, a, b, c);
+  let t = intersectTriangle(rayOrigin, rayDir, a, b, c, params.triIntersectEpsilon);
   if (t <= 1e-4 || t >= INFINITY) {
     return false;
   }
@@ -821,7 +821,7 @@ fn traceMeshBvh(
         let a = positions[tri.x].xyz;
         let b = positions[tri.y].xyz;
         let c = positions[tri.z].xyz;
-        let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
+        let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c, params.triIntersectEpsilon);
         if (hitT > tMin && hitT < triFar) {
           if (!closest) {
             return true;

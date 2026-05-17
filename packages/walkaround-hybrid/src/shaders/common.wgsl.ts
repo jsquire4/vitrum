@@ -17,9 +17,20 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
+import { BVH_TRAVERSE_WGSL } from '@vitrum/shared-bvh';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-export const COMMON_WGSL = /* wgsl */ `
+// W2-C1: `safeInvDir` and `intersectTriangle` live in
+// `@vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts` (single canonical source).
+// They are still embedded in the exported `COMMON_WGSL` string at the head
+// of the BVH-traversal section so the W1-R6 bit-identity snapshot tests
+// (`__tests__/wgslCompose.test.ts`) keep passing — the composer emits
+// `BVH_TRAVERSE_WGSL + COMMON_BODY_WGSL + X_WGSL`, and we keep
+// `COMMON_WGSL = BVH_TRAVERSE_WGSL + COMMON_BODY_WGSL` so the literal-
+// concatenation reference in the tests matches.  `COMMON_MODULE.source`
+// is the body only, with `requires: ['bvhTraverse']`, so the include-graph
+// emits the primitives exactly once per composed shader.
+const COMMON_BODY_WGSL = /* wgsl */ `
 
 // ============================================================
 // Constants
@@ -480,22 +491,11 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
 // ============================================================
 // BVH ray traversal (adapted from three-mesh-bvh WGSL)
 // ============================================================
-
-// Williams 2005 §4 IEEE-safe inverse-direction helper.
-// When a direction component is exactly zero, 1/0 = ±Inf is IEEE-valid but
-// 0 * ±Inf = NaN can poison the slab test when the ray origin coincides
-// with an AABB face.  We substitute a finite large value instead.
-// WGSL sign(0) == 0, so for a zero component sign(d.x) * 1e30 == 0, and
-// (bMin - origin) * 0 == 0 — the axis contributes zero to tNear/tFar,
-// which is correct: a zero-direction ray cannot enter/exit the slab through
-// that axis; entry/exit are determined by the other two axes.
-fn safeInvDir(d: vec3f) -> vec3f {
-  return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
-  );
-}
+// safeInvDir (Williams 2005 §4 IEEE-safe inverse-direction) and
+// intersectTriangle (Moller-Trumbore) are defined in
+// @vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts and prepended via the
+// include-graph (COMMON_MODULE.requires = ['bvhTraverse']).  See the
+// header comment above for the bit-identity contract.
 
 // Returns intersection distance (INFINITY if no hit) -- shadow ray.
 // bvh_index is array<vec4u>: .xyz = vertex indices,
@@ -696,30 +696,12 @@ fn decodeIsMetal(packed: u32) -> bool {
   return ((packed >> 3u) & 0x1u) != 0u;
 }
 
-// Moller-Trumbore triangle intersection; returns t or INFINITY.
-// Caller supplies the coplanarity floor as a parameter — typically threaded
-// from WalkaroundUBO.triIntersectEpsilon (D12), default 1e-5 (metre-scale).
-// Threading via parameter keeps COMMON_WGSL compilable when concatenated
-// with shaders that bind a different UBO struct (atrous binds AtrousUBO,
-// which has no triIntersectEpsilon member). Without parameterization the
-// atrous shader fails to compile at COMMON_WGSL + ATROUS_WGSL link time.
-fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f, triEps: f32) -> f32 {
-  let e1 = b - a;
-  let e2 = c - a;
-  let h = cross(dir, e2);
-  let det = dot(e1, h);
-  if (abs(det) < triEps) { return INFINITY; }
-  let invDet = 1.0 / det;
-  let s = origin - a;
-  let u = dot(s, h) * invDet;
-  if (u < 0.0 || u > 1.0) { return INFINITY; }
-  let q = cross(s, e1);
-  let v = dot(dir, q) * invDet;
-  if (v < 0.0 || u + v > 1.0) { return INFINITY; }
-  let t = dot(e2, q) * invDet;
-  if (t < triEps) { return INFINITY; }
-  return t;
-}
+// Moller-Trumbore intersectTriangle lives in
+// @vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts (W2-C1 dedup).  It is
+// provided via the include-graph at the top of every compiled shader that
+// requires 'common'; the helper signature
+//   intersectTriangle(origin, dir, a, b, c, triEps) -> f32
+// is unchanged.
 
 // ============================================================
 // Emitter sampling helpers
@@ -857,10 +839,26 @@ ${WELFORD_VARIANCE_WGSL}
 
 `;
 
+/**
+ * Backwards-compatible export.  Concatenates `BVH_TRAVERSE_WGSL` (the
+ * canonical `safeInvDir` + `intersectTriangle` primitives, W2-C1) ahead of
+ * the common body so the historical string layout — and the W1-R6
+ * bit-identity test snapshots — are preserved by construction.
+ *
+ * The include-graph composer reaches the same bytes by emitting
+ * `BVH_TRAVERSE_MODULE.source + COMMON_MODULE.source + X.source`; we
+ * keep this string export so any module that still concatenates
+ * `COMMON_WGSL + X` directly produces the same output.
+ */
+export const COMMON_WGSL = BVH_TRAVERSE_WGSL + COMMON_BODY_WGSL;
+
 /** W1-R6 — declarative include-graph entry. Common is the root of the
- *  dependency tree; everything else opts in via `requires: ['common']`. */
+ *  walkaround-hybrid dependency tree; everything else opts in via
+ *  `requires: ['common']`.  W2-C1 added `requires: ['bvhTraverse']` so the
+ *  canonical BVH primitives (`safeInvDir`, `intersectTriangle`) are emitted
+ *  exactly once per composed shader and live in `@vitrum/shared-bvh`. */
 export const COMMON_MODULE: WgslModule = {
   name: 'common',
-  source: COMMON_WGSL,
-  requires: [],
+  source: COMMON_BODY_WGSL,
+  requires: ['bvhTraverse'],
 };

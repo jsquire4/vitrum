@@ -29,6 +29,8 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
+import { BVH_TRAVERSE_WGSL } from '@vitrum/shared-bvh';
+
 export const PROBE_RAY_CAST_WGSL = /* wgsl */`
 
 // ─── three-mesh-bvh: constants ───────────────────────────────────────────────
@@ -66,18 +68,13 @@ struct IntersectionResult {
   dist: f32,
 };
 
-// ─── safeInvDir helper ────────────────────────────────────────────────────────
-// Williams 2005 §4 IEEE-safe inverse-direction: substitutes a finite large
-// value when a component is near-zero to avoid NaN from 0 * ±Inf in the slab
-// test.  WGSL sign(0)==0, so a zero component yields 0 * 1e30 == 0, which is
-// correct (zero-direction axis contributes nothing to tNear/tFar).
-fn safeInvDir(d: vec3f) -> vec3f {
-  return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
-  );
-}
+// ─── W2-C1: canonical BVH primitives (safeInvDir, intersectTriangle) ─────────
+// Pasted from @vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts; INFINITY is in
+// scope from the constants block above.  intersectTriangle (returns f32) is
+// distinct from the rc-local intersectsTriangle (returns IntersectionResult)
+// — both can co-exist by name.  The local one stays so the existing
+// IntersectionResult-returning bvh wrappers keep their signature.
+${BVH_TRAVERSE_WGSL}
 
 // ─── three-mesh-bvh: intersectsBounds ────────────────────────────────────────
 

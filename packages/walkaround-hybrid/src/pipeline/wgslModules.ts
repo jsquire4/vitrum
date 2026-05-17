@@ -38,6 +38,7 @@ import {
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
   SVGF_7X7_SPATIAL_FALLBACK_WGSL,
 } from '@vitrum/shared-denoisers';
+import { BVH_TRAVERSE_WGSL } from '@vitrum/shared-bvh';
 
 import { COMMON_MODULE } from '../shaders/common.wgsl.js';
 import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
@@ -60,6 +61,20 @@ import { DDGI_SAMPLE_MODULE } from '../ddgi/ddgiSampleWgsl.js';
 import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
 import { PPG_GUIDE_MODULE } from '../ppg/ppgGuide.wgsl.js';
 import type { WgslModule } from './wgslComposer.js';
+
+/**
+ * Canonical BVH primitives (W2-C1 — `safeInvDir`, `intersectTriangle`).
+ * Source-of-truth lives in `@vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts`;
+ * `COMMON_MODULE` declares `requires: ['bvhTraverse']` so any shader that
+ * depends on common (which is essentially everything ReSTIR-side) inherits
+ * the primitives via the include-graph.  Standalone shaders that need only
+ * the primitives can also depend on `'bvhTraverse'` directly.
+ */
+export const BVH_TRAVERSE_MODULE: WgslModule = {
+  name: 'bvhTraverse',
+  source: BVH_TRAVERSE_WGSL,
+  requires: [],
+};
 
 // Re-exports so consumers can import every module from a single, central index.
 export {
@@ -149,6 +164,7 @@ export const WELFORD_VARIANCE_MODULE: WgslModule = {
  */
 export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, WgslModule>([
   // Foundation
+  [BVH_TRAVERSE_MODULE.name, BVH_TRAVERSE_MODULE],
   [COMMON_MODULE.name, COMMON_MODULE],
   [WELFORD_VARIANCE_MODULE.name, WELFORD_VARIANCE_MODULE],
 

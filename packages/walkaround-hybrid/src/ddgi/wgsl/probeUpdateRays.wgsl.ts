@@ -7,7 +7,7 @@
  */
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
-import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
+import { OCTAHEDRAL_WGSL, BVH_TRAVERSE_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 const WG_SIZE = 32;
@@ -52,6 +52,13 @@ const RAYS_PER_THREAD: u32 = ${RAYS_PER_THREAD}u;   // RAYS_PER_PROBE / WG_SIZE
 const INFINITY: f32        = 1e20;
 const PI: f32              = 3.14159265359;
 const BVH_STACK_DEPTH: u32 = 60u;
+
+// W2-C1: canonical safeInvDir + intersectTriangle from
+// @vitrum/shared-bvh/wgsl/bvhTraverse.wgsl.ts.  Pasted as a raw string so
+// the surrounding shader keeps its self-contained createShaderModule({code})
+// shape (this file is not part of the W1-R6 walkaround-hybrid include-graph
+// — it's its own DDGI compute pipeline).  INFINITY must be in scope above.
+${BVH_TRAVERSE_WGSL}
 
 // Probe-side glass-transmission perceptual scale. When a probe ray hits
 // glass we mix room radiance with sky-tinted transmitted radiance,
@@ -194,18 +201,10 @@ struct ProbeRay {
 // -----------------------------------------------------------------
 // BVH traversal (inline — not using wgslFn wrapper here for robustness)
 // -----------------------------------------------------------------
-
-// Williams 2005 §4 IEEE-safe inverse-direction helper.
-// Prevents NaN from 0 * ±Inf in slab tests when a ray direction component
-// is zero.  WGSL sign(0)==0, so a zero component yields 0*1e30==0, which
-// correctly contributes nothing to the tNear/tFar computation.
-fn safeInvDir(d: vec3f) -> vec3f {
-  return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
-  );
-}
+// W2-C1: safeInvDir comes from the canonical BVH_TRAVERSE_WGSL block
+// pasted above.  intersectsTriangleBVH stays local because it returns the
+// DDGI-specific IntersectionResult struct (with .indices, .barycoord, .side
+// fields) rather than a bare f32 distance like the canonical Moller-Trumbore.
 
 fn intersectsAABBDist(ray: Ray, boundsMin: vec3f, boundsMax: vec3f) -> f32 {
   let invDir = safeInvDir(ray.direction);
