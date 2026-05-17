@@ -21,7 +21,6 @@ export type { ProbeUpdatePassOptions } from './ddgi/probeUpdatePass.js';
 export { ProbeGrid } from './ddgi/probeGrid.js';
 export type { ProbeGridDims, ProbeGridParams } from './ddgi/probeGrid.js';
 export * from './ddgi/ddgiAtlasLayout.js';
-export { DDGI_SAMPLE_WGSL } from './ddgi/ddgiSampleWgsl.js';
 export type { DDGILight } from './ddgi/types.js';
 
 // ReSTIR pipeline
@@ -37,14 +36,13 @@ export {
 } from './restir/bvhCompute.js';
 export type { SceneBVHBuffers } from './restir/bvhCompute.js';
 
-// WGSL shader strings (consumed by pipelineCompiler internally; re-exported
-// so host apps can inspect or extend them).
-export { COMMON_WGSL } from './shaders/common.wgsl.js';
-export { RIS_WGSL } from './shaders/ris.wgsl.js';
-export { TEMPORAL_WGSL } from './shaders/temporal.wgsl.js';
-export { SPATIAL_WGSL } from './shaders/spatial.wgsl.js';
-export { SHADE_WGSL } from './shaders/shade.wgsl.js';
-export { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from './shaders/composite.wgsl.js';
+// D13 (2026-05-17 sweep): the ReSTIR / composite / DDGI sample WGSL strings
+// (`COMMON_WGSL`, `RIS_WGSL`, `TEMPORAL_WGSL`, `SPATIAL_WGSL`, `SHADE_WGSL`,
+// `COMPOSITE_VERT_WGSL`, `COMPOSITE_FRAG_WGSL`, `DDGI_SAMPLE_WGSL`) are now
+// package-internal. They remain exported from their `*.wgsl.ts` source
+// modules; tests that need to inspect them deep-import via
+// `../src/shaders/common.wgsl.js` etc. Promoting any of these back to the
+// public surface requires a downstream consumer + a versioned-API decision.
 
 // Shared lib utilities
 export { upgradeToNodeMaterial } from './lib/nodeMaterialUpgrade.js';
@@ -131,9 +129,9 @@ export {
   PPG_MAX_SPATIAL_CELLS,
 } from './ppg/ppgConstants.js';
 export type { AABB, STreeNode, DTreeNode, DTree, STree, PPGModelHandle } from './ppg/types.js';
-// WGSL kernel strings (for host inspection or test assertions).
-export { PPG_UPDATE_WGSL } from './ppg/ppgUpdate.wgsl.js';
-export { PPG_GUIDE_WGSL } from './ppg/ppgGuide.wgsl.js';
+// D13 (2026-05-17 sweep): `PPG_UPDATE_WGSL` and `PPG_GUIDE_WGSL` are now
+// package-internal. They remain exported from their source modules; tests
+// that need them deep-import.
 
 // ─── Neural denoiser (T2.H2) ──────────────────────────────────────────────────
 // InferenceGraph + weights loader for the U-Net neural denoiser.
