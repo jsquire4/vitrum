@@ -48,6 +48,7 @@ import {
 import {
   BILINEAR_UPSAMPLE_WGSL,
 } from './wgsl/bilinearUpsample.wgsl.js';
+import { INPUT_PACKER_WGSL, INPUT_PACKER_ENTRY } from './inputPacker.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -117,6 +118,11 @@ export class InferenceGraph {
   /** Placeholder buffer for unused bindings (weights/biases on parameterless layers). */
   private _placeholderBuf: GPUBuffer | null = null;
 
+  /** B3 fix: input-packer compute pipeline (compiled once at initialize). */
+  private _inputPackPipeline: GPUComputePipeline | null = null;
+  /** B3 fix: uniform buffer holding the pixelCount for the input packer. */
+  private _inputPackUniformBuf: GPUBuffer | null = null;
+
   /** Whether initialize() has completed successfully. */
   private _ready = false;
 
@@ -157,6 +163,34 @@ export class InferenceGraph {
       size: PLACEHOLDER_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.UNIFORM,
     });
+
+    // ── B3 fix: compile the input-packer compute pipeline once.
+    // The actual bind group is built per-frame in _runInputPack because the
+    // three input buffers (noisyColor / albedo / normals) come from the host
+    // each frame and can change identity.
+    const packModule = device.createShaderModule({
+      label: 'neural/inputPacker',
+      code: INPUT_PACKER_WGSL,
+    });
+    this._inputPackPipeline = await device.createComputePipelineAsync({
+      label: 'neural-pipeline-inputPack',
+      layout: 'auto',
+      compute: { module: packModule, entryPoint: INPUT_PACKER_ENTRY },
+    });
+
+    // Uniform buffer for input packer: holds the per-frame pixelCount (H*W).
+    // 16 bytes — std140 minimum struct stride is 16; PackParams has 1 u32 + 3 pad u32.
+    this._inputPackUniformBuf = device.createBuffer({
+      label: 'neural-uniform-inputPack',
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    {
+      const u32 = new Uint32Array(4);
+      u32[0] = H * W;
+      // u32[1..3] are padding — leave as 0.
+      device.queue.writeBuffer(this._inputPackUniformBuf, 0, u32.buffer);
+    }
 
     // ── Allocate intermediate tensors ─────────────────────────────────────
     this._tensors.clear();
@@ -353,6 +387,8 @@ export class InferenceGraph {
     // track of them separately.
     this._placeholderBuf?.destroy();
     this._placeholderBuf = null;
+    this._inputPackPipeline = null;
+    this._inputPackUniformBuf = null;
 
     this._device = null;
     this._ready  = false;
@@ -613,23 +649,24 @@ export class InferenceGraph {
   }
 
   /**
-   * Bug 2 fix: GPU-side input packing pass.
-   * Packs noisyColor (H×W×3) + albedo (H×W×3) + normals (H×W×3)
-   * into enc_input (H×W×9) by interleaving.
+   * B3 fix: GPU-side input packing pass.
    *
-   * Implementation: uses copyBufferToBuffer with a stride shader.
-   * For correctness in the test environment (no real GPU), we implement
-   * this as three sequential copies into channel offsets of enc_input.
-   * In a production GPU path, this would be a single dispatch of an
-   * inputPack compute shader.
+   * Packs noisyColor (H×W×3) + albedo (H×W×3) + normals (H×W×3) into
+   * enc_input (H×W×9) with the per-pixel INTERLEAVED layout that
+   * `unetArchitecture.ts` and the downstream conv2d kernels expect:
    *
-   * Since WebGPU doesn't support strided copies natively, in the test
-   * environment we accept that enc_input will contain the concatenated
-   * (not interleaved) channels. The architecture validates structure;
-   * a trained model would need proper interleaving via a pack shader.
+   *   enc_input[p*9+0..2] = noisyColor[p*3+0..2]
+   *   enc_input[p*9+3..5] = albedo[p*3+0..2]
+   *   enc_input[p*9+6..8] = normals[p*3+0..2]
    *
-   * The `inputPacker.ts` module provides the proper GPU packing shader
-   * for production use.
+   * The previous implementation issued three `copyBufferToBuffer` calls
+   * producing PLANAR layout [noisyColor | albedo | normals], which the
+   * U-Net could not consume. This dispatch invokes `INPUT_PACKER_WGSL`
+   * once per frame.
+   *
+   * The compute pipeline is compiled once at `initialize()`. The bind
+   * group is rebuilt each frame because the three input buffers are
+   * supplied per-call and their identities are not stable across frames.
    */
   private _runInputPack(
     enc: GPUCommandEncoder,
@@ -639,21 +676,30 @@ export class InferenceGraph {
   ): void {
     const encInputTensor = this._tensors.get('enc_input');
     if (!encInputTensor) return;
+    if (!this._inputPackPipeline || !this._inputPackUniformBuf) return;
+    if (!this._device) return;
 
-    const H = this._H;
-    const W = this._W;
-    const bytesPerChannel = H * W * 3 * 4; // 3 channels × 4 bytes
+    const device = this._device;
+    const pixelCount = this._H * this._W;
 
-    // The enc_input buffer is H×W×9. We copy each 3-channel block
-    // into the corresponding offset in enc_input.
-    // noisyColor → channels 0-2 (byte offset 0)
-    // albedo     → channels 3-5 (byte offset H×W×3×4)
-    // normals    → channels 6-8 (byte offset H×W×6×4)
-    // Note: this produces a planar layout [noisyColor | albedo | normals],
-    // not the interleaved per-pixel layout. A production pack shader is in inputPacker.ts.
-    enc.copyBufferToBuffer(noisyColorBuf, 0, encInputTensor.buf, 0,               bytesPerChannel);
-    enc.copyBufferToBuffer(albedoBuf,     0, encInputTensor.buf, bytesPerChannel,  bytesPerChannel);
-    enc.copyBufferToBuffer(normalsBuf,    0, encInputTensor.buf, bytesPerChannel * 2, bytesPerChannel);
+    const bindGroup = device.createBindGroup({
+      label: 'neural-bg-inputPack',
+      layout: this._inputPackPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: noisyColorBuf } },
+        { binding: 1, resource: { buffer: albedoBuf } },
+        { binding: 2, resource: { buffer: normalsBuf } },
+        { binding: 3, resource: { buffer: encInputTensor.buf } },
+        { binding: 4, resource: { buffer: this._inputPackUniformBuf } },
+      ],
+    });
+
+    const pass = enc.beginComputePass({ label: 'neural-inputPack' });
+    pass.setPipeline(this._inputPackPipeline);
+    pass.setBindGroup(0, bindGroup);
+    // Workgroup size in INPUT_PACKER_WGSL is 256×1×1.
+    pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);
+    pass.end();
   }
 }
 
