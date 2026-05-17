@@ -40,8 +40,8 @@ export {
   unpackBDPTVertex,
 } from './bdptVertex.js';
 export type { BDPTVertex } from './bdptVertex.js';
-export { bdptConnectionMIS_partial, buildBDPTStrategyPDFs_partial } from './bdptMIS.js';
-// T2.H4 — Full Veach §10.3 BDPT MIS strategy enumeration
+// T2.H4 — Full Veach §10.3 BDPT MIS strategy enumeration. The earlier
+// Sprint 10c `_partial` helpers (deprecated) were removed in W7.
 export {
   geometricTermG,
   buildBDPTStrategyPDFs_full,
