@@ -17,7 +17,6 @@ export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';
 export { sampleEquiAngular } from './equiAngular.js';
 export type { EquiAngularSample, EquiAngularOptions } from './equiAngular.js';
 export {
-  rgbToApproxSpectralCoefficients,
   rgbToSpectralCoefficients,
   evaluateSpectrum,
 } from './jakobHanika.js';

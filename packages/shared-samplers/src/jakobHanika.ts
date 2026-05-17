@@ -1,67 +1,51 @@
 /**
- * jakobHanika.ts — Jakob+Hanika 2019 spectral upsampling (compact approximation).
+ * jakobHanika.ts — compact RGB→spectral approximation (NOT the Jakob & Hanika
+ * 2019 paper's spectral-uplifting method).
  *
- * Converts an RGB color into a 3-coefficient polynomial that approximates a
- * smooth reflectance spectrum across the visible range [380, 780] nm.
+ * ⚠️ **Honest naming note.** This file is named after Jakob & Hanika 2019 and
+ * adopts the same sigmoid-of-quadratic form for the output spectrum, but the
+ * implementation here is a **3-channel Gaussian-peak approximation**, not the
+ * paper's precomputed-table lookup. The two produce visibly different spectra
+ * away from grey and have different gamut coverage. Treat them as distinct
+ * techniques that happen to share an output representation.
  *
- * The spectrum at wavelength λ (nm) is given by:
- *   s(λ) = sigmoid(c0 + c1·λ + c2·λ²)
- * where sigmoid(x) = 0.5 + x / (2·√(1 + x²))  (smooth approximation of [0,1])
+ * What this implementation does:
+ *   Each RGB channel is modelled as a Gaussian-like peak centred at its
+ *   representative wavelength:
+ *     Red   → λ_peak ≈ 700 nm   (σ ≈ 30 nm)
+ *     Green → λ_peak ≈ 550 nm   (σ ≈ 30 nm)
+ *     Blue  → λ_peak ≈ 450 nm   (σ ≈ 30 nm)
+ *   The combined channel spectrum s(λ) = r·peak_R + g·peak_G + b·peak_B is
+ *   sampled at the three peak wavelengths and a quadratic c0 + c1·λ + c2·λ²
+ *   is fit via a 3×3 Vandermonde inversion on the logits. The output spectrum
+ *   is sigmoid(c0 + c1·λ + c2·λ²) with sigmoid(x) = 0.5 + x / (2·√(1 + x²)).
  *
- * ────────────────────────────────────────────────────────────────────────────
- * IMPLEMENTATION NOTE — Placeholder vs. Full Table
- * ────────────────────────────────────────────────────────────────────────────
+ * What it does NOT do:
+ *   - It does NOT consult the multi-MB Jakob & Hanika 2019 lookup table.
+ *   - It does NOT achieve gamut-correct round-tripping for saturated colours.
+ *   - Extreme chromatic colours can exhibit 3-band banding.
+ *   - Achromatic RGB is shortcut to a flat spectrum (constant c0, c1=c2=0)
+ *     bypassing the fit entirely.
  *
- * The original Jakob+Hanika 2019 paper provides a precomputed 3D lookup table
- * of polynomial coefficients indexed by quantized RGB triples.  The table
- * covers the full sRGB gamut with high accuracy and is the "correct"
- * implementation of the paper.
- *
- * Source: rgl.epfl.ch/publications/Jakob2019Spectral
- *
- * The precomputed table (coefficient_table.bin) is a multi-MB binary file.
- * Loading and distributing it as part of a browser library is undesirable:
- *   - Bundle size: the full table is ~24 MB; even compressed, it adds
- *     significant startup weight for a feature used only in bevel cells.
- *   - Network dependency: loading at runtime requires async fetch + caching.
- *   - License: the table data is research output; its distribution in a
- *     binary package requires explicit clearance from the authors.
- *
- * This implementation provides a PLACEHOLDER that uses a compact analytic
- * approximation instead of the precomputed table.  The placeholder maps each
- * RGB channel to a simplified polynomial by modeling each channel as a
- * Gaussian-like peak centered at its representative wavelength:
- *   Red   → λ_peak ≈ 700 nm
- *   Green → λ_peak ≈ 550 nm
- *   Blue  → λ_peak ≈ 450 nm
- *
- * The approximation fits a quadratic polynomial to the combined channel
- * spectrum using a linear combination of the three Gaussian peaks.  This
- * gives a smooth, physically plausible spectrum that is NOT as accurate as
- * the full Jakob+Hanika table but is visually correct for the primary use
- * case (bevel rainbow dispersion with 3 discrete spectral bands).
- *
- * Visual accuracy comparison:
- *   - Full table: smooth rainbow, spectrally accurate, matches paper fig 4.
- *   - This placeholder: 3-band linear rainbow.  Visually plausible for bevel
- *     dispersion; may show banding artifacts on extreme chromatic colors.
+ * Why it ships anyway: it is small (no MB-sized assets), license-free, and
+ * good enough for the spectral PT use sites in this repo (e.g. bevel rainbow
+ * dispersion with 3 discrete bands).
  *
  * Future precision upgrade:
- *   Integrate the full precomputed table from the Jakob-Hanika 2019 paper
- *   once the distribution license is confirmed.  The public mitsuba-renderer
- *   repo at github.com/mitsuba-renderer/mitsuba3 contains a C++ implementation
- *   of the table lookup at `src/render/film.cpp` and the table at
- *   `resources/data/spectral/`.  A TypeScript port of the lookup is
- *   straightforward once the table is available.
- *   Known Issues for tracking.
+ *   Integrate the full precomputed table from the Jakob & Hanika 2019 paper.
+ *   The public Mitsuba 3 repo (github.com/mitsuba-renderer/mitsuba3) contains
+ *   a C++ implementation of the table lookup at `src/render/film.cpp` and the
+ *   table at `resources/data/spectral/`. A TypeScript port is straightforward
+ *   once the distribution license is confirmed.
  *
  * References:
  *   Jakob, Hanika 2019, "A Low-Dimensional Function Space for Efficient
  *   Spectral Upsampling", Computer Graphics Forum 38(2) (Eurographics 2019).
  *   https://rgl.epfl.ch/publications/Jakob2019Spectral
+ *   — for the *paper*; the *implementation here* is the approximation
+ *   described above, not the paper's table lookup.
  *
- *   Mitsuba 3 implementation:
- *   github.com/mitsuba-renderer/mitsuba3 src/render/film.cpp
+ *   Mitsuba 3 implementation: github.com/mitsuba-renderer/mitsuba3
  *
  *   Phase 6 Sprint 8 spec: plan/archive/phase-6-roadmap.md §Sprint 8.
  *   GLSL mirror: plan/sprint-8-pt-fork-patch.md §dielectric BSDF.
@@ -186,27 +170,25 @@ function fitCoefficients(r: number, g: number, b: number): [number, number, numb
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Compact RGB→spectral coefficient fit (placeholder vs. full Jakob–Hanika table).
+ * Compact RGB → spectral coefficient fit (3-channel Gaussian-peak approximation;
+ * NOT the Jakob & Hanika 2019 paper's precomputed table — see file header).
  *
  * Converts an RGB color (linear sRGB, components in [0, 1]) into a 3-coefficient
- * polynomial that approximates a smooth reflectance spectrum across [380, 780] nm.
+ * polynomial whose sigmoid evaluation approximates a smooth reflectance
+ * spectrum across [380, 780] nm.
  *
  * The spectrum at wavelength λ (nm) is:
  *   s(λ) = sigmoid(c0 + c1·λ + c2·λ²)
  * where sigmoid(x) = 0.5 + x / (2·√(1 + x²)).
  *
- * ⚠️ Not the paper’s precomputed table — see file-level documentation.
- *
- * @internal Placeholder approximation. Slated for replacement by the
- *           paper's precomputed table in Sprint 12. New code should call the
- *           stable alias `rgbToSpectralCoefficients` defined below.
+ * Slated for replacement by the paper's precomputed table in a future sprint.
  *
  * @param r - Red channel, linear sRGB [0, 1].
  * @param g - Green channel, linear sRGB [0, 1].
  * @param b - Blue channel, linear sRGB [0, 1].
  * @returns (c0, c1, c2) polynomial coefficients.
  */
-export function rgbToApproxSpectralCoefficients(
+export function rgbToSpectralCoefficients(
   r: number,
   g: number,
   b: number,
@@ -243,7 +225,7 @@ export function rgbToApproxSpectralCoefficients(
  *
  * s(λ) = sigmoid(c0 + c1·λ + c2·λ²)
  *
- * @param coeffs   - (c0, c1, c2) from rgbToApproxSpectralCoefficients.
+ * @param coeffs   - (c0, c1, c2) from `rgbToSpectralCoefficients`.
  * @param lambdaNm - Wavelength in nm.  Values outside [380, 780] are accepted
  *                   but may extrapolate beyond the fitted range.
  * @returns Spectral reflectance in [0, 1].
@@ -261,11 +243,3 @@ export function evaluateSpectrum(
 /** Visible range used by this implementation. */
 export const VISIBLE_LAMBDA_MIN = LAMBDA_MIN;
 export const VISIBLE_LAMBDA_MAX = LAMBDA_MAX;
-
-/**
- * Stable public alias for the RGB→spectral coefficient fit. Use this name
- * in production code; `rgbToApproxSpectralCoefficients` is the current
- * approximation-only implementation and is marked @internal — the
- * precomputed-table replacement is scheduled to swap in via Sprint 12.
- */
-export const rgbToSpectralCoefficients = rgbToApproxSpectralCoefficients;
