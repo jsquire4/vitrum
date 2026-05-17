@@ -17,6 +17,69 @@ import * as THREE from 'three';
 import type { Engine, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
 import { createEngine, type CreateEngineOptions } from '../createEngine.js';
 
+// ────────────────────────────────────────────────────────────────────────────
+// A2 — WebGPU swap-chain detection + per-frame view acquisition.
+//
+// HybridEngine.renderFrame requires `FrameInput.swapChainView` to be a fresh
+// per-frame `GPUTextureView`; when absent it returns a "skip" frame
+// (HybridEngine.ts:979). createEngine() configures the canvas's WebGPU
+// context during walkaround backend construction; here we just observe and
+// re-derive the per-frame view.
+//
+// Extracted as a top-level helper so the unit test can pin the FrameInput
+// shape (with vs without WebGPU context) without a DOM/RAF harness.
+
+/** Output of {@link detectWebGPUSwapChain}. Both fields null ⇒ WebGL/host
+ *  is not WebGPU-backed (or canvas lacks a WebGPU context); attachVitrum
+ *  will then leave `FrameInput.swapChainView` undefined. */
+export interface WebGPUSwapChainInfo {
+  readonly context: GPUCanvasContext | null;
+  readonly format: GPUTextureFormat | undefined;
+}
+
+/** Detect whether the canvas currently has a WebGPU context (configured by
+ *  createEngine's walkaround backend constructor) and recover its format.
+ *  Returns `{ context: null, format: undefined }` for WebGL hosts (where
+ *  three.js's WebGLRenderer claims the canvas's `webgl2` context, leaving
+ *  `getContext('webgpu')` returning null) or for test environments without
+ *  WebGPU support.
+ *
+ *  @internal Exported for unit-test access. */
+export function detectWebGPUSwapChain(canvas: HTMLCanvasElement): WebGPUSwapChainInfo {
+  try {
+    const ctx = canvas.getContext('webgpu') as GPUCanvasContext | null;
+    if (ctx == null) return { context: null, format: undefined };
+    const cfg = (ctx as unknown as {
+      getConfiguration?: () => { format?: GPUTextureFormat } | null;
+    }).getConfiguration?.();
+    const format = cfg?.format
+      ?? ((typeof navigator !== 'undefined' && 'gpu' in navigator
+        ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
+            .getPreferredCanvasFormat?.()
+        : undefined)
+        ?? ('bgra8unorm' as GPUTextureFormat));
+    return { context: ctx, format };
+  } catch {
+    return { context: null, format: undefined };
+  }
+}
+
+/** Per WebGPU spec, `getCurrentTexture()` MUST be called inside the rAF
+ *  tick and the resulting view is single-use (do NOT cache across frames).
+ *  Returns undefined when the context is null (WebGL host) or acquisition
+ *  throws (canvas size zero, context lost) — caller leaves
+ *  `FrameInput.swapChainView` undefined so HybridEngine skips the frame.
+ *
+ *  @internal Exported for unit-test access. */
+export function acquireSwapChainView(ctx: GPUCanvasContext | null): GPUTextureView | undefined {
+  if (ctx == null) return undefined;
+  try {
+    return ctx.getCurrentTexture().createView();
+  } catch {
+    return undefined;
+  }
+}
+
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
   /** Scene description. Either a vitrum Scene or a THREE.Scene. */
   readonly scene: Scene | THREE.Scene;
@@ -86,6 +149,13 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     resizeObserver.observe(opts.canvas);
   }
 
+  // A2 — WebGPU backend detection. createEngine's walkaround constructor
+  // configured the canvas's WebGPU context; we re-observe it here so the
+  // RAF tick can acquire a fresh GPUTextureView per frame and pass it as
+  // FrameInput.swapChainView. WebGL hosts return { context: null } and the
+  // tick omits the swap-chain fields.
+  const { context: webgpuContext, format: webgpuFormat } = detectWebGPUSwapChain(opts.canvas);
+
   // Pause-on-hidden. Default ON.
   const pauseOnHidden = opts.pauseOnHidden ?? true;
   let visibilityHandler: (() => void) | undefined;
@@ -115,6 +185,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     opts.camera.updateMatrixWorld();
     const view = new Float32Array(opts.camera.matrixWorldInverse.elements);
     const proj = new Float32Array(opts.camera.projectionMatrix.elements);
+    // A2 — acquire the per-frame swap-chain view for WebGPU backends.
+    const swapChainView = acquireSwapChainView(webgpuContext);
+
     const input: FrameInput = {
       viewMatrix: view,
       projMatrix: proj,
@@ -125,6 +198,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       frameIndex,
       frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,
       ...(opts.quality ? { quality: opts.quality } : {}),
+      ...(swapChainView != null ? { swapChainView, swapChainFormat: webgpuFormat } : {}),
     };
     try {
       engine.renderFrame(input);
