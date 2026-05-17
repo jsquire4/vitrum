@@ -3,6 +3,7 @@
  */
 
 import type { Engine, FrameInput, Mat4, Scene } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { buildComplexThreeScene, buildCornellBoxThreeScene } from '@vitrum-examples/shared';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 // pt-webgpu drives the bottom canvas headlessly (no swap-chain present;
@@ -23,7 +24,7 @@ if (typeof console !== 'undefined' && console.debug) {
 import * as THREE from 'three';
 
 function mat4FromThree(m: THREE.Matrix4): Mat4 {
-  return new Float32Array(m.elements);
+  return asMat4(new Float32Array(m.elements));
 }
 
 function resizeCanvasToDisplaySize(canvas: HTMLCanvasElement): void {

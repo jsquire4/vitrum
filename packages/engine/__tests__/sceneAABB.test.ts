@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeSceneAABB } from '../src/sceneAABB.js';
 import type { Scene, MeshPrimitive, InstancedMeshPrimitive, Material, Mat4 } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 
 const MAT: Material = {
   baseColor: [0.5, 0.5, 0.5],
@@ -61,12 +62,12 @@ describe('computeSceneAABB', () => {
   it('honours an affine transform on a mesh primitive', () => {
     // translate +10 on X via column-major identity * translate(10, 0, 0)
     // prettier-ignore
-    const xform = new Float32Array([
+    const xform = asMat4(new Float32Array([
       1, 0, 0, 0,
       0, 1, 0, 0,
       0, 0, 1, 0,
       10, 0, 0, 1,
-    ]);
+    ]));
     const aabb = computeSceneAABB(emptyScene([unitCube('a', xform)]));
     expect(aabb.min[0]).toBeCloseTo(9.5);
     expect(aabb.max[0]).toBeCloseTo(10.5);
@@ -75,12 +76,12 @@ describe('computeSceneAABB', () => {
 
   it('grows the AABB across multiple primitives', () => {
     // prettier-ignore
-    const right = new Float32Array([
+    const right = asMat4(new Float32Array([
       1, 0, 0, 0,
       0, 1, 0, 0,
       0, 0, 1, 0,
       5, 0, 0, 1,
-    ]);
+    ]));
     const aabb = computeSceneAABB(
       emptyScene([unitCube('a'), unitCube('b', right)]),
     );
@@ -94,10 +95,10 @@ describe('computeSceneAABB', () => {
     const instances: ReadonlyArray<Mat4> = [
       // identity
       // prettier-ignore
-      new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+      asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])),
       // translate +3 X
       // prettier-ignore
-      new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 3,0,0,1]),
+      asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 3,0,0,1])),
     ];
     const inst: InstancedMeshPrimitive = {
       kind: 'instanced-mesh',

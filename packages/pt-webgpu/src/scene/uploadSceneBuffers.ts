@@ -1,4 +1,5 @@
 import type { Scene, SceneEmitter } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { transformNormal, transformPoint } from '../math/mat4.js';
 import { invertMat4 } from '../math/mat4.js';
 import { buildCpuBvh } from './buildCpuBvh.js';
@@ -106,12 +107,12 @@ function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBuffer
   return buffer;
 }
 
-const IDENTITY_MAT4 = new Float32Array([
+const IDENTITY_MAT4 = asMat4(new Float32Array([
   1, 0, 0, 0,
   0, 1, 0, 0,
   0, 0, 1, 0,
   0, 0, 0, 1,
-]);
+]));
 
 /** Supported analytic-shape discriminator strings, in numeric-id order.
  *  The pt-webgpu WGSL shader reads `analyticHeader.x` and switches on these

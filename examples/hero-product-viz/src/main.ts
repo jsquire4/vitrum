@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { attachVitrum, createEngine, type AttachVitrumHandle } from '@vitrum/engine';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import type { ProgressStats } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
@@ -216,8 +217,8 @@ async function saveHighRes(): Promise<void> {
       function tick(): void {
         if (!saveEngine) { resolve(); return; }
         saveCam.updateMatrixWorld();
-        const view = new Float32Array(saveCam.matrixWorldInverse.elements);
-        const proj = new Float32Array(saveCam.projectionMatrix.elements);
+        const view = asMat4(new Float32Array(saveCam.matrixWorldInverse.elements));
+        const proj = asMat4(new Float32Array(saveCam.projectionMatrix.elements));
         const out = saveEngine.renderFrame({
           viewMatrix:      view,
           projMatrix:      proj,

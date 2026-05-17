@@ -14,6 +14,7 @@ import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
+import { asMat4 } from '@vitrum/core';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
@@ -162,12 +163,12 @@ class PTEngineWebGPU implements Engine {
   #buildParamsBuffer(input: FrameInput, width: number, height: number): ArrayBuffer {
     const sb = this.#sceneBuffers!;
     const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
-    const invVp = invertMat4(vp) ?? new Float32Array([
+    const invVp = invertMat4(vp) ?? asMat4(new Float32Array([
       1, 0, 0, 0,
       0, 1, 0, 0,
       0, 0, 1, 0,
       0, 0, 0, 1,
-    ]);
+    ]));
 
     const paramsArrayBuffer = new ArrayBuffer(512);
     const paramsU32 = new Uint32Array(paramsArrayBuffer);

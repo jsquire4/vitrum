@@ -7,7 +7,8 @@
  */
 
 import type * as THREE from 'three';
-import type { MeshPrimitive, Mat4, SceneEmitter } from '@vitrum/core';
+import type { MeshPrimitive, SceneEmitter } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { convertMaterial, convertBasicMaterial } from './material.js';
 import { luminance } from './math.js';
 
@@ -94,7 +95,7 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   const tangents = extractAttribute(geo, 'tangent');
   const indices = extractIndex(geo);
 
-  const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
+  const transform = asMat4(new Float32Array(obj.matrixWorld.elements));
 
   // Multi-material meshes: warn and fall back to first material.
   // Geometry-group splitting (each group gets its own material) is a future enhancement.

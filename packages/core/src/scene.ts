@@ -20,8 +20,32 @@ export type Vec2 = readonly [number, number];
 export type Vec3 = readonly [number, number, number];
 export type Vec4 = readonly [number, number, number, number];
 
-/** Column-major 4×4 matrix, 16 elements. Matches Three.js + WebGPU/WebGL convention. */
-export type Mat4 = Float32Array;
+/**
+ * Column-major 4×4 matrix, 16 elements. Matches Three.js + WebGPU/WebGL convention.
+ *
+ * Branded so that arbitrary `Float32Array`s do NOT satisfy the type — every
+ * `Mat4` MUST flow through {@link asMat4}, which validates the length. This
+ * caught D6 of the 2026-05-17 sweep: the previous unbranded alias accepted
+ * any-length Float32Array silently, including the 9-float upper-3×3 used by
+ * normal-matrix code paths.
+ */
+declare const __mat4Brand: unique symbol;
+export type Mat4 = Float32Array & { readonly [__mat4Brand]: true };
+
+/**
+ * Brand a length-16 `Float32Array` as a {@link Mat4}. This is the ONLY
+ * sanctioned construction boundary; no callers should `as Mat4`-cast.
+ *
+ * Throws synchronously on the wrong length so the violation surfaces at the
+ * call site, not inside the GPU upload path where it would manifest as a
+ * silent layout corruption.
+ */
+export function asMat4(arr: Float32Array): Mat4 {
+  if (arr.length !== 16) {
+    throw new Error(`asMat4: expected length-16 Float32Array, got length ${arr.length}`);
+  }
+  return arr as Mat4;
+}
 
 /** A monotonic, host-supplied identifier. Stable across `setScene` calls so
  *  backends can do incremental updates. Hosts should use whatever their scene

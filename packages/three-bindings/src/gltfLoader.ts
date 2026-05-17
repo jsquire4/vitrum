@@ -19,6 +19,7 @@
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { Mat4, Vec3, Scene } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 
 import { sceneFromThreeJS } from './index.js';
 
@@ -125,8 +126,8 @@ function extractFirstCamera(gltf: GLTF): GltfCamera | undefined {
   // three.js when the camera was constructed from glTF. Same for orthographic.
   const proj = (cam as THREE.PerspectiveCamera | THREE.OrthographicCamera).projectionMatrix;
 
-  const viewMatrix = new Float32Array(matWorldInverse.elements);
-  const projMatrix = new Float32Array(proj.elements);
+  const viewMatrix = asMat4(new Float32Array(matWorldInverse.elements));
+  const projMatrix = asMat4(new Float32Array(proj.elements));
   const cameraPosition: Vec3 = [
     matWorld.elements[12]!, matWorld.elements[13]!, matWorld.elements[14]!,
   ];

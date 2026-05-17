@@ -1,6 +1,7 @@
 import type { Mat4, Vec3 } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 
-export function multiplyMat4(a: Mat4, b: Mat4): Float32Array {
+export function multiplyMat4(a: Mat4, b: Mat4): Mat4 {
   const atA = (index: number): number => a[index] ?? 0;
   const atB = (index: number): number => b[index] ?? 0;
   const out = new Float32Array(16);
@@ -13,10 +14,10 @@ export function multiplyMat4(a: Mat4, b: Mat4): Float32Array {
         atA(3 * 4 + row) * atB(col * 4 + 3);
     }
   }
-  return out;
+  return asMat4(out);
 }
 
-export function invertMat4(m: Mat4): Float32Array | null {
+export function invertMat4(m: Mat4): Mat4 | null {
   const at = (index: number): number => m[index] ?? 0;
   const out = new Float32Array(16);
 
@@ -71,7 +72,7 @@ export function invertMat4(m: Mat4): Float32Array | null {
   out[14] = (-a30 * b03 + a31 * b01 - a32 * b00) * invDet;
   out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * invDet;
 
-  return out;
+  return asMat4(out);
 }
 
 export function transformPoint(m: Mat4, p: Vec3): [number, number, number] {

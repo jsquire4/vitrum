@@ -3,6 +3,7 @@
  */
 
 import type { FrameInput, Mat4, Vec3 } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import type {
   PTEngineWebGL2,
   PTEngineWebGL2FrameOutput,
@@ -33,7 +34,7 @@ declare global {
 }
 
 function mat4FromThree(m: THREE.Matrix4): Mat4 {
-  return new Float32Array(m.elements);
+  return asMat4(new Float32Array(m.elements));
 }
 
 interface CaptureConfig {
