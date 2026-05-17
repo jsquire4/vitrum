@@ -30,6 +30,7 @@ import {
   COMPOSITE_VERT_MODULE,
   GTAO_MODULE,
   GTAO_UPSAMPLE_MODULE,
+  GTAO_UNIFORMS_MODULE,
   INDIRECT_COMBINE_MODULE,
   INDIRECT_TEMPORAL_ACCUM_MODULE,
   PPG_GUIDE_MODULE,
@@ -54,6 +55,7 @@ import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
 import { COMPOSITE_FRAG_WGSL, COMPOSITE_VERT_WGSL } from '../src/shaders/composite.wgsl.js';
 import { GTAO_WGSL } from '../src/shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
+import { GTAO_UNIFORMS_WGSL } from '../src/shaders/gtaoUniforms.wgsl.js';
 import { INDIRECT_COMBINE_WGSL } from '../src/shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_WGSL } from '../src/shaders/indirectTemporalAccum.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
@@ -215,12 +217,18 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(composeWgsl(RESOLVE_MODULE, WGSL_MODULES)).toBe(RESOLVE_WGSL);
   });
 
-  it('gtao: standalone (no prepend)', () => {
-    expect(composeWgsl(GTAO_MODULE, WGSL_MODULES)).toBe(GTAO_WGSL);
+  it('gtao: GTAO_UNIFORMS_WGSL + GTAO_WGSL (C12 dedup)', () => {
+    expect(composeWgsl(GTAO_MODULE, WGSL_MODULES)).toBe(GTAO_UNIFORMS_WGSL + GTAO_WGSL);
   });
 
-  it('gtaoUpsample: standalone (no prepend)', () => {
-    expect(composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES)).toBe(GTAO_UPSAMPLE_WGSL);
+  it('gtaoUpsample: GTAO_UNIFORMS_WGSL + GTAO_UPSAMPLE_WGSL (C12 dedup)', () => {
+    expect(composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES)).toBe(
+      GTAO_UNIFORMS_WGSL + GTAO_UPSAMPLE_WGSL,
+    );
+  });
+
+  it('gtaoUniforms: standalone (no prepend) — pure struct fragment (C12)', () => {
+    expect(composeWgsl(GTAO_UNIFORMS_MODULE, WGSL_MODULES)).toBe(GTAO_UNIFORMS_WGSL);
   });
 
   it('risGi: COMMON_WGSL + DDGI_SAMPLE_WGSL + RIS_GI_WGSL', () => {

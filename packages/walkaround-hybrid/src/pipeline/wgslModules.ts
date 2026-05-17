@@ -53,6 +53,7 @@ import { SAMPLE_BUDGET_MODULE } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_MODULE } from '../shaders/resolve.wgsl.js';
 import { GTAO_MODULE } from '../shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_MODULE } from '../shaders/gtaoUpsample.wgsl.js';
+import { GTAO_UNIFORMS_MODULE } from '../shaders/gtaoUniforms.wgsl.js';
 import { INDIRECT_COMBINE_MODULE } from '../shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_MODULE } from '../shaders/indirectTemporalAccum.wgsl.js';
 import { COMPOSITE_VERT_MODULE, COMPOSITE_FRAG_MODULE } from '../shaders/composite.wgsl.js';
@@ -77,6 +78,7 @@ export {
   RESOLVE_MODULE,
   GTAO_MODULE,
   GTAO_UPSAMPLE_MODULE,
+  GTAO_UNIFORMS_MODULE,
   INDIRECT_COMBINE_MODULE,
   INDIRECT_TEMPORAL_ACCUM_MODULE,
   COMPOSITE_VERT_MODULE,
@@ -173,7 +175,8 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [SAMPLE_BUDGET_MODULE.name, SAMPLE_BUDGET_MODULE],
   [RESOLVE_MODULE.name, RESOLVE_MODULE],
 
-  // Sprint 15 — GTAO
+  // Sprint 15 — GTAO (gtaoUniforms shared by both passes — C12 dedup)
+  [GTAO_UNIFORMS_MODULE.name, GTAO_UNIFORMS_MODULE],
   [GTAO_MODULE.name, GTAO_MODULE],
   [GTAO_UPSAMPLE_MODULE.name, GTAO_UPSAMPLE_MODULE],
 

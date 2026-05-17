@@ -14,20 +14,10 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const GTAO_UPSAMPLE_WGSL = /* wgsl */ `
 ${LUMINANCE_WGSL}
-// Duplicate of gtao.wgsl's GTAOUniforms struct (both shaders bind the same
-// uboBuffer; the duplicate WGSL declaration is required because each shader
-// module is compiled independently — concatenating would conflict with
-// gtao's @binding(0/1/2) declarations on the same group).
-struct GTAOUniforms {
-  tanFovHalf: f32,
-  radiusPx:   f32,
-  intensity:  f32,
-  depthThresh: f32,
-  bilateralDepthSigma: f32,
-  _pad0: f32,
-  _pad1: f32,
-  _pad2: f32,
-};
+// C12: GTAOUniforms struct is canonical (./gtaoUniforms.wgsl) and prepended
+// by the W1-R6 include-graph via requires: ['gtaoUniforms']. Both shaders
+// bind the same uboBuffer, so they MUST agree on the struct layout — the
+// pre-C12 duplicate-by-comment is now a single source.
 
 @group(0) @binding(0) var up_aoHalf:      texture_2d<f32>;
 @group(0) @binding(1) var up_normalDepth: texture_2d<f32>;
@@ -133,9 +123,11 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. Self-contained. */
+/** W1-R6 — declarative include-graph entry. Pre-C12 was `requires: []`
+ *  with the GTAOUniforms struct inlined; post-C12 the struct lives in
+ *  the dedicated `gtaoUniforms` module and is prepended by the composer. */
 export const GTAO_UPSAMPLE_MODULE: WgslModule = {
   name: 'gtaoUpsample',
   source: GTAO_UPSAMPLE_WGSL,
-  requires: [],
+  requires: ['gtaoUniforms'],
 };
