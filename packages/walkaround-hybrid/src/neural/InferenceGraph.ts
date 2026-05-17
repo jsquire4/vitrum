@@ -118,6 +118,14 @@ export class InferenceGraph {
   /** Placeholder buffer for unused bindings (weights/biases on parameterless layers). */
   private _placeholderBuf: GPUBuffer | null = null;
 
+  /**
+   * F4 fix: all GPU buffers allocated by initialize() — tracked so dispose()
+   * can destroy them. Includes weights/biases/uniforms/placeholder, plus the
+   * input-packer uniform buffer. Tensor buffers live in `_tensors` and are
+   * destroyed separately.
+   */
+  private _allocatedBuffers: GPUBuffer[] = [];
+
   /** B3 fix: input-packer compute pipeline (compiled once at initialize). */
   private _inputPackPipeline: GPUComputePipeline | null = null;
   /** B3 fix: uniform buffer holding the pixelCount for the input packer. */
@@ -152,6 +160,9 @@ export class InferenceGraph {
     this._H      = H;
     this._ready  = false;
 
+    // F4 fix: clear any pre-existing tracked buffers from a previous init.
+    this._allocatedBuffers = [];
+
     // Build the weight lookup by name.
     const weightsByName = new Map<string, LayerWeights>(
       weights.layers.map(lw => [lw.name, lw]),
@@ -163,6 +174,7 @@ export class InferenceGraph {
       size: PLACEHOLDER_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.UNIFORM,
     });
+    this._allocatedBuffers.push(this._placeholderBuf);
 
     // ── B3 fix: compile the input-packer compute pipeline once.
     // The actual bind group is built per-frame in _runInputPack because the
@@ -185,6 +197,7 @@ export class InferenceGraph {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    this._allocatedBuffers.push(this._inputPackUniformBuf);
     {
       const u32 = new Uint32Array(4);
       u32[0] = H * W;
@@ -246,6 +259,7 @@ export class InferenceGraph {
         size: UNIFORM_BUF_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
+      this._allocatedBuffers.push(uniformBuf); // F4 fix
 
       // Bug 4 fix: write the uniform buffer now with actual shape params.
       this._writeUniform(device, uniformBuf, layer, tensorDimsMap);
@@ -365,6 +379,11 @@ export class InferenceGraph {
    * Bug 7 fix: _cachedBindGroups cleared slot-by-slot via new Array(N).fill(undefined)
    * before destroying underlying buffers, ensuring GPUBindGroups release their
    * buffer references before the buffers are destroyed.
+   *
+   * F4 fix: destroy every buffer tracked in `_allocatedBuffers` (weights,
+   * biases, layer uniforms, input-packer uniform, placeholder). The prior
+   * implementation only destroyed the placeholder buffer and leaked the
+   * weight/bias/uniform buffers — see admitting comment in the prior body.
    */
   dispose(): void {
     // Bug 7 fix: null out cached bind groups slot-by-slot BEFORE destroying buffers.
@@ -382,10 +401,14 @@ export class InferenceGraph {
     }
     this._tensors.clear();
 
-    // Destroy uniform buffers (stored on layer states, already nulled above).
-    // The uniform buffers themselves need to be destroyed — we need to keep
-    // track of them separately.
-    this._placeholderBuf?.destroy();
+    // F4 fix: destroy all tracked allocations (weights, biases, layer uniforms,
+    // input-packer uniform, placeholder buffer). Each buffer.destroy() is
+    // idempotent on a fresh handle, but guard with try/catch to tolerate
+    // double-destroy in error paths.
+    for (const buf of this._allocatedBuffers) {
+      try { buf.destroy(); } catch { /* tolerate already-destroyed */ }
+    }
+    this._allocatedBuffers = [];
     this._placeholderBuf = null;
     this._inputPackPipeline = null;
     this._inputPackUniformBuf = null;
@@ -587,6 +610,7 @@ export class InferenceGraph {
         });
         new Float32Array(weightsBuf.getMappedRange()).set(lw.weights);
         weightsBuf.unmap();
+        this._allocatedBuffers.push(weightsBuf); // F4 fix
       }
     }
 
@@ -603,6 +627,7 @@ export class InferenceGraph {
         });
         new Float32Array(biasesBuf.getMappedRange()).set(lw.biases);
         biasesBuf.unmap();
+        this._allocatedBuffers.push(biasesBuf); // F4 fix
       }
     }
 
