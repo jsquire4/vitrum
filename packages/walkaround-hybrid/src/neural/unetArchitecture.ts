@@ -77,143 +77,28 @@ export interface UNetSpec {
 }
 
 /**
- * Skip-connection spatial shape table — documents the BUG 1 fix explicitly.
+ * Architecture summary (Bug 1 fix — verified skip-add shape match).
  *
- * The encoder performs stride-2 downsampling. The *skip source* is the output
- * AFTER the conv+relu at that encoder level — i.e., already downsampled.
+ * Each encoder level is a stride-1 feature conv (whose output is the skip
+ * source, named `enc{N}_feat`) followed by a separate stride-2 down-conv
+ * (named `enc{N}_down`). The decoder's transposed conv at level N produces
+ * the same (H, W, C) as `enc{N}_feat`, so skip-add (not skip-concat) is
+ * shape-correct at every site. `InferenceGraph._validateSkipShapes()`
+ * asserts this at init time.
  *
- * Correct pairings (H=1080, W=1920 at 1080p):
- *   enc1 output: H/2 × W/2 × 24   →  paired with dec1_up (H × W → H × W × 24  after tconv)
- *   enc2 output: H/4 × W/4 × 48   →  paired with dec2_up (H/2 × W/2 → H/2 × W/2 × 48)
- *   enc3 output: H/8 × W/8 × 96   →  paired with dec3_up (H/4 × W/4 → H/4 × W/4 × 96)
- *
- * dec3_up comes from tconv(bottleneck at H/8 × W/8 × 192, stride 2)
- *   → output: H/4 × W/4 × 96  ✓ matches enc3 at H/8 × W/8 × 96? NO —
- *
- * CRITICAL: enc3 outputs H/8 (after stride-2 from H/4 input).
- *   dec3_up tconv from H/8 (bottleneck) with stride 2 → H/4.
- *   enc3 is also H/8. So dec3_up (H/4) and enc3 (H/8) are MISMATCHED.
- *
- * FIX: use the encoder input (before downsampling) as the skip source.
- * But that contradicts the standard U-Net. The correct interpretation:
- *
- * Standard U-Net skip-connection taps the encoder level's OUTPUT (after relu,
- * before the NEXT level's stride-2 conv). So:
- *   enc3 output: H/8 × W/8 × 96  (stride-2 applied, output is H/8)
- *   dec3_up output: transposedConv2d(bottleneck H/8 × W/8 × 192) stride=2 → H/4 × W/4 × 96
- *   MISMATCH: H/4 ≠ H/8
- *
- * Resolution (matching the sprint-neural-denoiser-future.md spec arithmetic):
- * The decoder tconv at level 3 upsamples from H/8 to H/4.
- * The skip source for dec3 must ALSO be at H/4.
- * Therefore enc3 must be the output BEFORE stride-2 — i.e., enc2 output space (H/4).
- *
- * Re-reading the spec doc: it says "skip-add(enc3: H/8×W/8×96) → H/4 × W/4 × 96"
- * which is self-contradictory. The resolution: the spec's "enc3" label refers to
- * the feature map ENTERING level 3, not the output of level 3's stride-2 conv.
- *
- * This implementation uses a clean naming: enc{N}_pre is the input to level N's
- * stride-2 conv; enc{N} is the output. Skip connections use enc{N}_pre.
- *
- * Verified arithmetic:
- *   enc_input:   H   × W   × 9
- *   enc1:        H/2 × W/2 × 24  (stride-2 from enc_input)
- *   enc2:        H/4 × W/4 × 48  (stride-2 from enc1)
- *   enc3:        H/8 × W/8 × 96  (stride-2 from enc2)
- *   bottleneck:  H/8 × W/8 × 192 (stride-1 from enc3)
- *
- *   dec3_up:     H/4 × W/4 × 96  (tconv stride-2 from bottleneck H/8)
- *   skip3_add:   H/4 × W/4 × 96  ← enc2 output (H/4 × W/4 × 48 → NO, channels differ)
- *
- * The spec says dec3_tconv is 192→96 (channels match enc3 = 96).
- * For skip-add to work, the skip source must have the same (H,W,C) as dec3_up.
- * dec3_up is H/4 × W/4 × 96. The only encoder output at H/4 × W/4 × C is enc2
- * at C=48 — channels don't match either.
- *
- * CONCLUSION: The skip connection is NOT a simple element-wise add when channels differ.
- * Standard U-Net uses concatenation (not addition), but the spec says "skip-add" to
- * keep memory budget down. For skip-add to work, channels must match.
- *
- * FINAL resolution: skip adds from the same-level encoder output which IS at the
- * same spatial resolution as the decoder output. After the tconv at dec3, we're at
- * H/4. The encoder output at H/4 is enc2 (48 ch). But dec3 output is 96ch — mismatch.
- *
- * The ONLY way skip-add works (not skip-concat) is if dec3_tconv produces 48ch to
- * match enc2 at 48ch, or enc3 (96ch) is used and it's at H/8 and we DON'T upsample
- * first (no spatial mismatch if both are at H/8).
- *
- * Reading the spec arithmetic table from sprint-neural-denoiser-future.md again:
- *   dec3_tconv: 192×96×4 + 96 = 73,824   (2×2 kernel) — THIS IS THE INPUT→OUTPUT
- *   doc says: Level 3: transposedConv2d(192→96, 2×2, stride 2) + skip-add(enc3)
- *
- * The spec pairs dec3 with enc3. enc3 = H/8 × W/8 × 96. dec3_up output from
- * tconv(bottleneck at H/8, stride 2) = H/4 × W/4 × 96. These are spatially mismatched.
- *
- * BUG 1 INTERPRETATION: the spec doc says this is the BUG. The correct fix
- * (per sprint-neural-denoiser-future.md §Bug 1):
- *   "dec3_up is H/4 × W/4 × 96. The skip connection adds enc3 which is at H/8 × W/8 × 96
- *    — 4× mismatch. ... the comment describing it was wrong."
- *   Fix: verify shapes at every skip-add site.
- *
- * For a correct U-Net with skip-add (not concat):
- *   The skip connection must come from a pre-downsampling feature map at the same
- *   spatial resolution as the decoder output, with the same channel count.
- *
- * This implementation adopts the explicit-pre-conv tapping:
- *   skip3 ← enc2_out   (H/4 × W/4 × 48)  BUT channels differ from dec3_up (96)!
- *
- * PRAGMATIC RESOLUTION for this re-implementation:
- * Use skip-add only when channels and spatial dims match, which they do if we
- * project skip features first. The architecture stores intermediate activations at
- * the same spatial scale as the decoder and uses a 1×1 projection conv to align channels.
- * But that adds parameters.
- *
- * SIMPLEST CORRECT APPROACH (matching the spec's intent):
- * The decoder's transposed conv produces the same spatial dim AND channel count
- * as the corresponding encoder output. The spec intends:
- *   enc3 output BEFORE applying stride → this is the feature map at H/4 (if enc3
- *   is a stride-1 conv applied to enc2's H/4 output).
- *
- * ADOPTED INTERPRETATION (the only one where the arithmetic in the spec works):
- * The "encoder levels" in the spec use stride-1 conv for the feature transform,
- * followed by a separate stride-2 downsampler (average pool or strided conv).
- * The skip tap is from BEFORE the stride-2 step.
- *
- *   Level 1: conv2d(9→24, 3×3, stride 1, pad 1) + relu  → H × W × 24  ← skip1 tap
- *            then stride-2 pool or conv → H/2 × W/2 × 24 → enc1_down
- *   Level 2: conv2d(24→48, 3×3, stride 1, pad 1) + relu → H/2 × W/2 × 48 ← skip2 tap
- *            then stride-2 → H/4 × W/4 × 48 → enc2_down
- *   Level 3: conv2d(48→96, 3×3, stride 1, pad 1) + relu → H/4 × W/4 × 96 ← skip3 tap
- *            then stride-2 → H/8 × W/8 × 96 → enc3_down
- *   bottleneck: conv2d(96→192, 3×3, stride 1, pad 1) → H/8 × W/8 × 192
- *
- *   dec3_up: tconv(192→96, 2×2, stride 2) → H/4 × W/4 × 96  ← add skip3 (H/4 × W/4 × 96 ✓)
- *   dec2_up: tconv(96→48, 2×2, stride 2) → H/2 × W/2 × 48   ← add skip2 (H/2 × W/2 × 48 ✓)
- *   dec1_up: tconv(48→24, 2×2, stride 2) → H × W × 24        ← add skip1 (H × W × 24 ✓)
- *
- * This is the correct, internally consistent interpretation. All skip-add pairs match in
- * both spatial dimensions AND channel count. This is what we implement below.
- *
- * The stride-2 downsamplers after each encoder level are implemented as stride-2 conv
- * (combined with the next encoder level's conv) for efficiency, which means we need to
- * cache the pre-downsampling activations as the skip sources.
- *
- * FINAL LAYER GRAPH (this is what runs):
- *   pack      → enc_input (H×W×9)
- *   enc1_conv → enc1_feat (H×W×24)   ← skip1
- *   enc1_down → enc1_out  (H/2×W/2×24)
- *   enc2_conv → enc2_feat (H/2×W/2×48) ← skip2
- *   enc2_down → enc2_out  (H/4×W/4×48)
- *   enc3_conv → enc3_feat (H/4×W/4×96) ← skip3
- *   enc3_down → enc3_out  (H/8×W/8×96)
- *   bottleneck → bn_out   (H/8×W/8×192)
- *   dec3_up   (H/4×W/4×96) + skip3 → dec3_sum (H/4×W/4×96)
- *   dec3_conv → dec3_out  (H/4×W/4×96)
- *   dec2_up   (H/2×W/2×48) + skip2 → dec2_sum (H/2×W/2×48)
- *   dec2_conv → dec2_out  (H/2×W/2×48)
- *   dec1_up   (H×W×24) + skip1 → dec1_sum (H×W×24)
- *   dec1_conv → dec1_out  (H×W×24)
- *   proj      → output    (H×W×3)
+ * Final layer graph (built below by `buildUNetSpec()`):
+ *   pack       → enc_input  (H × W × 9)
+ *   enc1_conv  → enc1_feat  (H × W × 24)      ← skip1
+ *   enc1_down  → enc1_out   (H/2 × W/2 × 24)
+ *   enc2_conv  → enc2_feat  (H/2 × W/2 × 48)  ← skip2
+ *   enc2_down  → enc2_out   (H/4 × W/4 × 48)
+ *   enc3_conv  → enc3_feat  (H/4 × W/4 × 96)  ← skip3
+ *   enc3_down  → enc3_out   (H/8 × W/8 × 96)
+ *   bottleneck → bn_out     (H/8 × W/8 × 192)
+ *   dec3_up    (H/4 × W/4 × 96)  + skip3 → dec3_sum  → dec3_conv → dec3_out
+ *   dec2_up    (H/2 × W/2 × 48)  + skip2 → dec2_sum  → dec2_conv → dec2_out
+ *   dec1_up    (H × W × 24)      + skip1 → dec1_sum  → dec1_conv → dec1_out
+ *   proj       → denoised   (H × W × 3)
  */
 
 // ── Canonical U-Net spec (bug-1-fixed architecture) ───────────────────────────
