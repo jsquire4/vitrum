@@ -10,16 +10,12 @@ import {
   packEmitterArrays,
 } from './emitterPacking.js';
 
-export {
-  MAX_POINT_LIGHTS,
-  MAX_SPOT_LIGHTS,
-  MAX_RECT_AREA_LIGHTS,
-  MAX_MESH_AREA_LIGHTS,
-  POINT_LIGHT_FLOAT_STRIDE,
-  SPOT_LIGHT_FLOAT_STRIDE,
-  RECT_AREA_LIGHT_FLOAT_STRIDE,
-  MESH_AREA_LIGHT_FLOAT_STRIDE,
-} from './emitterPacking.js';
+// NOTE: emitter capacity constants (`MAX_*_LIGHTS`) and per-light float strides
+// (`*_FLOAT_STRIDE`) used to be re-exported here, but no caller imported them
+// via this module — every consumer imports them directly from `./emitterPacking`.
+// The redundant re-export block was removed in W7 to keep the module surface
+// honest. Import from `./emitterPacking.js` (or its package equivalent) if you
+// need those constants.
 
 export interface PackedSceneData {
   readonly positions: Float32Array; // vec4f packed
