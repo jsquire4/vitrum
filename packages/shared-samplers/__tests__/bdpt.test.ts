@@ -23,9 +23,10 @@ import {
   BDPT_KIND_INVALID,
   BDPT_VERTEX_FLOATS,
   BDPT_VERTEX_BYTES,
-  BDPT_MAX_LIGHT_BOUNCES,
-  BDPT_MAX_EYE_BOUNCES,
 } from '../src/bdptVertex.js';
+// W7-H7: BDPT_MAX_LIGHT_BOUNCES / BDPT_MAX_EYE_BOUNCES moved to
+// @vitrum/pt-webgl/forkUniformBridge. Their value assertions live in
+// packages/pt-webgl/src/__tests__/forkUniformBridge.test.ts.
 import type { BDPTVertex } from '../src/bdptVertex.js';
 import { bdptConnectionMIS_partial, buildBDPTStrategyPDFs_partial } from '../src/bdptMIS.js';
 
@@ -82,13 +83,9 @@ describe('BDPT constants', () => {
     expect(BDPT_VERTEX_BYTES).toBe(48);
   });
 
-  it('BDPT_MAX_LIGHT_BOUNCES is 3 (per roadmap DoD)', () => {
-    expect(BDPT_MAX_LIGHT_BOUNCES).toBe(3);
-  });
-
-  it('BDPT_MAX_EYE_BOUNCES is 12 (matches engine default maxBounces)', () => {
-    expect(BDPT_MAX_EYE_BOUNCES).toBe(12);
-  });
+  // W7-H7: BDPT_MAX_LIGHT_BOUNCES / BDPT_MAX_EYE_BOUNCES value assertions
+  // moved to packages/pt-webgl/src/__tests__/forkUniformBridge.test.ts —
+  // those constants now live in @vitrum/pt-webgl (fork-specific budget).
 });
 
 // ── Pack / unpack round-trip ──────────────────────────────────────────────────

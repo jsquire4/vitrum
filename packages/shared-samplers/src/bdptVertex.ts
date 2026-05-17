@@ -68,28 +68,14 @@ export const BDPT_VERTEX_FLOATS = 12; // 3 RGBA32F texels
 export const BDPT_VERTEX_BYTES = 48;
 
 // ────────────────────────────────────────────────────────────────────────────
-// Bounce limits
+// Bounce limits — moved to @vitrum/pt-webgl in W7-H7
 // ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Maximum light-subpath bounces.
- *
- * Per the roadmap DoD: N=3. Increasing this raises the per-pixel vertex-buffer
- * footprint (3 RGBA32F texels × N × pixelCount). At N=3 on a 1920×1080 canvas
- * the light-path texture is 3 × 3 × 1920×1080 × 16 bytes ≈ 282 MB — at the
- * upper edge of what a mid-range GPU can hold in a single texture. Do not raise
- * this without a corresponding memory budget analysis.
- */
-export const BDPT_MAX_LIGHT_BOUNCES = 3;
-
-/**
- * Maximum eye-subpath bounces.
- *
- * Tied to the engine's `maxBounces` option in `@vitrum/core/engine.ts`. The
- * default value of 12 matches `EngineOptions.maxBounces`; the fork reads a
- * uniform `uBDPTMaxEyeBounces` set from this constant.
- */
-export const BDPT_MAX_EYE_BOUNCES = 12;
+//
+// BDPT_MAX_LIGHT_BOUNCES (=3) and BDPT_MAX_EYE_BOUNCES (=12) used to live
+// here. They were always fork-specific budget choices (light-path texture
+// size, eye-subpath loop count) — generic BDPT vertex layout doesn't care.
+// They now live alongside the rest of the forkUniformBridge wiring in
+// `@vitrum/pt-webgl/src/forkUniformBridge.ts`.
 
 // ────────────────────────────────────────────────────────────────────────────
 // Type

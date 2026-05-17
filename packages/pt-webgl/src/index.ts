@@ -44,4 +44,8 @@ export {
 
 // Sprint 10c — BDPT option types for host callers that drive fork uniforms directly.
 export type { ForkBridgeBdptOptions, ForkBridgeCausticOptions } from './forkUniformBridge.js';
-export { driveForkMaterialUniforms } from './forkUniformBridge.js';
+export {
+  driveForkMaterialUniforms,
+  BDPT_MAX_LIGHT_BOUNCES,
+  BDPT_MAX_EYE_BOUNCES,
+} from './forkUniformBridge.js';

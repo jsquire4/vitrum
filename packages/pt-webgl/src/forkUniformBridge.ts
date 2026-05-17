@@ -1,5 +1,37 @@
 import { CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE } from '@vitrum/shared-samplers';
 
+// ────────────────────────────────────────────────────────────────────────────
+// BDPT bounce-budget constants (W7-H7)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// These values are fork-specific budget choices for the three-gpu-pathtracer
+// fork's BDPT integrator. They live in @vitrum/pt-webgl (alongside the rest
+// of the forkUniformBridge wiring) rather than in @vitrum/shared-samplers
+// because the BDPT vertex layout in shared-samplers is generic — the
+// bounce counts that drive texture sizing are specifically a pt-webgl-fork
+// concern.
+
+/**
+ * Maximum light-subpath bounces.
+ *
+ * Per the roadmap DoD: N=3. Increasing this raises the per-pixel
+ * vertex-buffer footprint (3 RGBA32F texels × N × pixelCount). At N=3 on
+ * a 1920×1080 canvas the light-path texture is 3 × 3 × 1920×1080 × 16
+ * bytes ≈ 282 MB — at the upper edge of what a mid-range GPU can hold
+ * in a single texture. Do not raise this without a corresponding memory
+ * budget analysis.
+ */
+export const BDPT_MAX_LIGHT_BOUNCES = 3;
+
+/**
+ * Maximum eye-subpath bounces.
+ *
+ * Tied to the engine's `maxBounces` option in `@vitrum/core/engine.ts`.
+ * The default value of 12 matches `EngineOptions.maxBounces`; the fork
+ * reads a uniform `uBDPTMaxEyeBounces` set from this constant.
+ */
+export const BDPT_MAX_EYE_BOUNCES = 12;
+
 interface UniformRef<T> {
   value: T;
 }

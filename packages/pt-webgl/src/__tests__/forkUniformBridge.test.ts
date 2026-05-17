@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { BoxGeometry, Mesh, MeshPhysicalMaterial, Scene } from 'three';
-import { driveForkMaterialUniforms } from '../forkUniformBridge.js';
+import {
+  driveForkMaterialUniforms,
+  BDPT_MAX_LIGHT_BOUNCES,
+  BDPT_MAX_EYE_BOUNCES,
+} from '../forkUniformBridge.js';
 
 function makeStubPathTracer() {
   return {
@@ -27,6 +31,20 @@ function makeStubPathTracer() {
     },
   };
 }
+
+describe('BDPT bounce-budget constants', () => {
+  // W7-H7 — these constants previously lived in @vitrum/shared-samplers but
+  // they are pt-webgl-fork-specific budget choices (light-path texture size,
+  // eye-subpath loop count). Assertions migrated here from
+  // shared-samplers/__tests__/bdpt.test.ts.
+  it('BDPT_MAX_LIGHT_BOUNCES is 3 (per roadmap DoD)', () => {
+    expect(BDPT_MAX_LIGHT_BOUNCES).toBe(3);
+  });
+
+  it('BDPT_MAX_EYE_BOUNCES is 12 (matches engine default maxBounces)', () => {
+    expect(BDPT_MAX_EYE_BOUNCES).toBe(12);
+  });
+});
 
 describe('driveForkMaterialUniforms', () => {
   it('uploads CMF and CDF tables when scene is set', () => {

@@ -34,11 +34,12 @@ export {
   BDPT_KIND_INVALID,
   BDPT_VERTEX_FLOATS,
   BDPT_VERTEX_BYTES,
-  BDPT_MAX_LIGHT_BOUNCES,
-  BDPT_MAX_EYE_BOUNCES,
   packBDPTVertex,
   unpackBDPTVertex,
 } from './bdptVertex.js';
+// W7-H7 — BDPT_MAX_LIGHT_BOUNCES / BDPT_MAX_EYE_BOUNCES relocated to
+// @vitrum/pt-webgl (forkUniformBridge.ts). They are fork-specific budget
+// choices, not generic BDPT vertex-layout constants.
 export type { BDPTVertex } from './bdptVertex.js';
 export { bdptConnectionMIS_partial, buildBDPTStrategyPDFs_partial } from './bdptMIS.js';
 // T2.H4 — Full Veach §10.3 BDPT MIS strategy enumeration
