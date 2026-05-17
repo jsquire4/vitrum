@@ -26,8 +26,10 @@
  *  • MaterialEntry flat-struct packing (RC's cascade compute only).
  *
  * Per-engine consumers wrap this module's output with their own packing:
- *   - DDGI:   wraps `SceneBvh` class around `buildSceneBVH({positionStride: 3})`
- *             for dirty-tracking semantics.
+ *   - DDGI:   wraps `SceneBvh` class (in
+ *             `packages/walkaround-hybrid/src/ddgi/sceneBvh.ts`) around
+ *             `buildSceneBVH({positionStride: 4})` for dirty-tracking
+ *             semantics across React `useFrame` ticks.
  *   - RC:     calls `buildSceneBVH({positionStride: 4})` then packs
  *             `materials` array → `MaterialEntry` flat-struct sibling fn.
  *   - ReSTIR: calls `buildSceneBVH({positionStride: 4, proxyMeshNames: ...})`

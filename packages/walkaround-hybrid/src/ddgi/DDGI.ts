@@ -27,7 +27,7 @@
  */
 
 import * as THREE from 'three';
-import { SceneBvh } from '@vitrum/shared-bvh';
+import { SceneBvh } from './sceneBvh.js';
 import { ProbeGrid } from './probeGrid.js';
 import { ProbeUpdatePass } from './probeUpdatePass.js';
 import type { DDGILight } from './types.js';

@@ -1,5 +1,4 @@
 export * from './bvhCommon.js';
-export * from './sceneBvh.js';
 
 /**
  * Index-buffer stride used by the BVH index array.

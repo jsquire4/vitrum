@@ -22,7 +22,7 @@
 
 import * as THREE from 'three';
 import { extractThreePbrScalars } from '@vitrum/three-bindings';
-import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
+import type { SceneBvh, SceneBvhBuffers } from './sceneBvh.js';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';

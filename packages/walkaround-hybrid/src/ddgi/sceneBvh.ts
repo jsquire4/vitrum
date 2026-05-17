@@ -2,15 +2,20 @@
  * SceneBvh — unified BVH over the raster scene for DDGI probe ray tracing.
  *
  * Thin DDGI wrapper around the Tier 2 shared `buildSceneBVH` core
- * (`./bvhCommon.ts`). The class shell remains in shared-bvh for one reason
- * the per-frame DDGI loop depends on:
+ * (`@vitrum/shared-bvh`). Lives in walkaround-hybrid/ddgi (not shared-bvh)
+ * because it's DDGI-internal: the per-frame `update(scene)` dirty-cache is
+ * a DDGI-only concern. The shared core is a pure builder (no dirty cache)
+ * by design — see `useSceneBVH` in the host app for the canonical
+ * React-side debounce; DDGI uses this lower-level cache because it runs
+ * inside `useFrame`.
  *
+ * What this wrapper adds on top of the shared core:
  *   - Geometry-version dirty tracking — `update(scene)` walks the same
- *     **visible** mesh set as `buildSceneBVH` and only rebuilds the BVH when
- *     `BufferAttribute.version + mesh.id` sum changes. The shared core is
- *     a pure builder (no dirty cache) by design — see
- *     `useSceneBVH` in the host app for the canonical React-side debounce;
- *     DDGI uses this lower-level cache because it runs inside `useFrame`.
+ *     **visible** mesh set as `buildSceneBVH` and only rebuilds the BVH
+ *     when `BufferAttribute.version + meshCount` changes.
+ *   - A DDGI-specific mesh filter (broader than the shared default —
+ *     accepts any visible mesh with a position attribute, not just
+ *     MeshStandardMaterial / MeshPhysicalMaterial — see DDGI_MESH_FILTER).
  *
  * GPU buffer layout matches what the inline WGSL in probeUpdateRays.wgsl.ts
  * expects (same layout as three-mesh-bvh's bvhIntersectFirstHit WGSL).
@@ -18,7 +23,7 @@
  */
 
 import * as THREE from 'three';
-import { buildSceneBVH } from './bvhCommon.js';
+import { buildSceneBVH } from '@vitrum/shared-bvh';
 
 export interface SceneBvhBuffers {
   /** Flat BVHNode array — bounds (6 f32) + rightChild/triOffset (u32) +
