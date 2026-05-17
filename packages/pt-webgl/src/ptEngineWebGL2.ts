@@ -26,6 +26,7 @@ import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vit
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
+import { IblBakerCache } from './iblBaker.js';
 import {
   MAX_TILE_GRID,
   TileVariancePass,
@@ -324,6 +325,11 @@ export class PTEngineWebGL2 implements Engine {
   readonly #pathTracer: WebGLPathTracer;
   readonly #camera: PerspectiveCamera;
   readonly #supportsAnalyticCame: boolean;
+
+  /** Per-engine IBL sky bake cache. One per engine instance so two
+   *  `PTEngineWebGL2`s on the same page never share `DataTexture`s bound to
+   *  different GL contexts. Cleared in {@link dispose}. */
+  readonly #iblBakerCache: IblBakerCache = new IblBakerCache();
 
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
@@ -833,6 +839,19 @@ export class PTEngineWebGL2 implements Engine {
     return this.#pathTracer.target as unknown as WebGLRenderTarget;
   }
 
+  /**
+   * The engine's per-instance sky-equirect bake cache. Hosts that bake sky
+   * textures for `scene.environment` should call `iblBakerCache.bake(...)`
+   * rather than constructing their own cache, so one cache services all
+   * environment updates for this engine's renderer / GL context.
+   *
+   * Two `PTEngineWebGL2` instances → two separate caches → no cross-renderer
+   * `DataTexture` reuse. The cache is cleared automatically on {@link dispose}.
+   */
+  get iblBakerCache(): IblBakerCache {
+    return this.#iblBakerCache;
+  }
+
   pause(): void {
     if (this.#slot.get() === 'disposed') {
       throw new Error('pause: engine is disposed');
@@ -881,6 +900,10 @@ export class PTEngineWebGL2 implements Engine {
       disposeObject3DTree(this.#threeSceneRoot);
       this.#threeSceneRoot = null;
     }
+    // Release any cached sky bakes — their DataTexture buffers (≈512 KiB each
+    // at HalfFloat 512x256) would otherwise leak for the engine's lifetime
+    // even though the GL context is about to be released by the host.
+    this.#iblBakerCache.clear();
     this.#pathTracer.dispose();
     this.#slot.set('disposed');
   }

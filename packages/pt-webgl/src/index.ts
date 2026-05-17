@@ -28,7 +28,7 @@ export type {
 
 export * from './constants.js';
 export * from './sunGeometry.js';
-export { bakeSkyEquirect, clearSkyEquirectCache } from './iblBaker.js';
+export { IblBakerCache } from './iblBaker.js';
 export { debounceMsForEditRate, PT_DEBOUNCE_MS_NORMAL, PT_DEBOUNCE_MS_BURST } from './debounce.js';
 export { computeLightingState } from './lightingState.js';
 export type { LightingState, LightingStateInputs } from './lightingState.js';
