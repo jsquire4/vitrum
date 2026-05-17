@@ -28,6 +28,8 @@ export {
   convertBasicMaterial,
 } from './material.js';
 export type { PbrScalars, PbrDefaults, ThreeStdMat, ThreePhysMat } from './material.js';
+export { collectDDGILightsFromRectAreaLights } from './ddgiLights.js';
+export type { DDGILight } from './ddgiLights.js';
 
 /**
  * Converts a THREE.Scene into a @vitrum/core Scene.

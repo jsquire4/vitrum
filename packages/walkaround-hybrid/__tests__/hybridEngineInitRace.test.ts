@@ -154,6 +154,10 @@ vi.mock('@vitrum/three-bindings', async () => {
     disposeVitrumThreeSceneRoot: vi.fn((r: THREE.Object3D) => {
       state.disposeSceneRootCalls.push(r);
     }),
+    // W7-H4: collectDDGILightsFromRectAreaLights moved from HybridEngine
+    // into @vitrum/three-bindings. Tests mock the entire module, so we
+    // restate it here as a no-op (no RectAreaLights in the mock scenes).
+    collectDDGILightsFromRectAreaLights: vi.fn(() => []),
   };
 });
 

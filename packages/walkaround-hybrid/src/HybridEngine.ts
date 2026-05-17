@@ -40,7 +40,7 @@ import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { packDDGIGridParams } from './pipeline/resourceManager.js';
 import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
-import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
+import { vitrumSceneToThree, disposeVitrumThreeSceneRoot, collectDDGILightsFromRectAreaLights } from '@vitrum/three-bindings';
 import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
 
@@ -1659,41 +1659,6 @@ export class HybridEngine implements Engine {
     if (typeof key === 'number') return Number.isNaN(key) ? '__n:NaN' : `__n:${key}`;
     return `__s:${key}`;
   }
-}
-
-/**
- * Walk an Object3D tree for `THREE.RectAreaLight` instances and project each
- * onto a `DDGILight` point-light approximation so the DDGI probe-update pass
- * (which only switches on `kind === 'sun' | 'fixture' | 'teaLight'`) can
- * evaluate direct lighting at probe-ray hit points.
- *
- * Approximation rationale: DDGI provides low-frequency indirect bounce — the
- * actual rect geometry only matters for the high-frequency direct term, which
- * ReSTIR DI handles separately from the actual emitter triangles. A point at
- * the rect centroid carrying flux ≈ `color × intensity × area` gives a
- * qualitatively-correct downward irradiance for probes; colour bleed onto
- * surrounding walls (the visible signature of Cornell-style scenes) reaches
- * the irradiance atlas correctly. The remaining factor-of-π errors in
- * total-flux conversion are negligible against the multiple-of-10 dynamic
- * range that distinguishes "lit colour bleed" from "atlas reads zero".
- */
-function collectDDGILightsFromRectAreaLights(root: THREE.Object3D): DDGILight[] {
-  const out: DDGILight[] = [];
-  const _wp = new THREE.Vector3();
-  root.updateMatrixWorld(true);
-  root.traverseVisible((obj) => {
-    if (!(obj instanceof THREE.RectAreaLight)) return;
-    const light = obj;
-    const area = light.width * light.height;
-    _wp.setFromMatrixPosition(light.matrixWorld);
-    out.push({
-      kind: 'fixture',
-      intensity: light.intensity * area,
-      on: true,
-      position: { x: _wp.x, y: _wp.y, z: _wp.z },
-    });
-  });
-  return out;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
