@@ -32,7 +32,7 @@ function normalizeVec3(x: number, y: number, z: number): Vec3 {
  *
  * (M-2 fix: moved from module-level singleton to per-call parameter.)
  */
-export function warnOnce(warnedTypes: Set<string>, typeName: string, label: string): void {
+function warnOnce(warnedTypes: Set<string>, typeName: string, label: string): void {
   if (warnedTypes.has(typeName)) return;
   warnedTypes.add(typeName);
   console.warn(

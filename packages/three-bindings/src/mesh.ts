@@ -49,7 +49,7 @@ export function stripEmissive(prim: MeshPrimitive): MeshPrimitive {
 // Attribute extractors
 // ────────────────────────────────────────────────────────────────────────────
 
-export function extractAttribute(
+function extractAttribute(
   geo: THREE.BufferGeometry,
   name: string,
 ): Float32Array | undefined {
@@ -60,7 +60,7 @@ export function extractAttribute(
   return new Float32Array(arr);
 }
 
-export function extractIndex(
+function extractIndex(
   geo: THREE.BufferGeometry,
 ): Uint32Array | Uint16Array | undefined {
   const idx = geo.index;
