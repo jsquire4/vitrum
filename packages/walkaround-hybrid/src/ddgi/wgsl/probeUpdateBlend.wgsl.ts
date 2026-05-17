@@ -70,16 +70,13 @@ ${COMMON}
 @group(1) @binding(1) var irrSamp:   sampler;
 @group(1) @binding(2) var irrOut:    texture_storage_2d<rgba16float, write>;
 
+// W2-C4 dedup: per-probe atlas cell-origin arithmetic comes from
+// @vitrum/shared-bvh/wgsl/octahedral.wgsl.ts (probeAtlasCellOrigin),
+// already pulled in via the OCTAHEDRAL_WGSL include above.  The local
+// wrapper preserves the historical (probeIdx, pixel) → vec2u signature
+// used by the textureStore() call site below.
 fn irrAtlasCoord(probeIdx: u32, pixel: vec2u) -> vec2u {
-  let STRIDE = IRR_CELL + 2u;
-  let px  = probeIdx % gridParams.dims.x;
-  let tmp = probeIdx / gridParams.dims.x;
-  let py  = tmp % gridParams.dims.y;
-  let pz  = tmp / gridParams.dims.y;
-  return vec2u(
-    px * STRIDE + 1u + pixel.x,
-    (py + pz * gridParams.dims.y) * STRIDE + 1u + pixel.y,
-  );
+  return probeAtlasCellOrigin(probeIdx, gridParams.dims, IRR_CELL) + pixel;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -160,16 +157,9 @@ ${COMMON}
 // rg16float is not writable as a storage texture in WebGPU; use rgba16float.
 @group(1) @binding(2) var visOut:    texture_storage_2d<rgba16float, write>;
 
+// W2-C4 dedup: shared probeAtlasCellOrigin from OCTAHEDRAL_WGSL.
 fn visAtlasCoord(probeIdx: u32, pixel: vec2u) -> vec2u {
-  let STRIDE = VIS_CELL + 2u;
-  let px  = probeIdx % gridParams.dims.x;
-  let tmp = probeIdx / gridParams.dims.x;
-  let py  = tmp % gridParams.dims.y;
-  let pz  = tmp / gridParams.dims.y;
-  return vec2u(
-    px * STRIDE + 1u + pixel.x,
-    (py + pz * gridParams.dims.y) * STRIDE + 1u + pixel.y,
-  );
+  return probeAtlasCellOrigin(probeIdx, gridParams.dims, VIS_CELL) + pixel;
 }
 
 @compute @workgroup_size(16, 16, 1)

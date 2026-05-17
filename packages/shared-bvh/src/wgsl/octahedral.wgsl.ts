@@ -10,6 +10,32 @@ export const OCTAHEDRAL_WGSL =
   OCTAHEDRAL_CORE_WGSL.trimEnd() +
   /* wgsl */ `
 
+// Integer texel origin (upper-left corner inside the +1 px border) of a
+// probe's per-probe cell within an octahedral atlas.  Returned as a vec2u
+// so callers writing via textureStore() can add a pixel offset directly:
+//
+//   let origin = probeAtlasCellOrigin(probeIdx, gridDims, IRR_CELL);
+//   let texel  = origin + pixel;   // vec2u
+//   textureStore(irrOut, texel, ...);
+//
+// Sampling-side callers compose this with the float octahedral UV via
+// probeAtlasUv() below.  Single source of truth for atlas-coordinate
+// arithmetic (W2-C4 dedup) — was previously re-derived in three places:
+// probeUpdateBlend.wgsl.ts (irradiance + visibility), ddgiSampleWgsl.ts
+// (irradiance + visibility), and ddgi/probeUpdateRays.wgsl.ts (via
+// irradianceAtlasUv).
+fn probeAtlasCellOrigin(probeIdx: u32, gridDims: vec3u, cell: u32) -> vec2u {
+  let stride = cell + 2u;
+  let px = probeIdx % gridDims.x;
+  let tmp = probeIdx / gridDims.x;
+  let py = tmp % gridDims.y;
+  let pz = tmp / gridDims.y;
+  return vec2u(
+    px * stride + 1u,
+    (py + pz * gridDims.y) * stride + 1u,
+  );
+}
+
 // Compute the atlas UV for a probe's texel. Parameterized by cell size:
 //   irradiance atlas uses cell=8, visibility atlas uses cell=16.
 // Each cell carries a +1 px border on every side, so the per-probe stride
@@ -26,15 +52,9 @@ fn probeAtlasUv(
   gridDims: vec3u,
   cell: u32,
 ) -> vec2f {
-  let stride = cell + 2u;
-  let px = probeIdx % gridDims.x;
-  let tmp = probeIdx / gridDims.x;
-  let py = tmp % gridDims.y;
-  let pz = tmp / gridDims.y;
-  let cellX = f32(px * stride) + 1.0;    // +1 for border
-  let cellY = f32((py + pz * gridDims.y) * stride) + 1.0;
-  let u = (cellX + octUv.x * f32(cell)) / atlasW;
-  let v = (cellY + octUv.y * f32(cell)) / atlasH;
+  let origin = probeAtlasCellOrigin(probeIdx, gridDims, cell);
+  let u = (f32(origin.x) + octUv.x * f32(cell)) / atlasW;
+  let v = (f32(origin.y) + octUv.y * f32(cell)) / atlasH;
   return vec2f(u, v);
 }
 
