@@ -2,12 +2,24 @@
  * Early shared WGSL include for pt-webgpu.
  *
  * This captures transferable, renderer-agnostic pieces from stainedGlass:
- * - PCG RNG
+ * - PCG RNG (canonical @vitrum/shared-samplers, since W2-C6)
+ * - BSDF sampling-frame primitives — buildONB / buildOnb,
+ *   sampleCosineHemisphere / cosineHemisphereSample, cosineHemispherePdf,
+ *   fresnelSchlick (canonical @vitrum/shared-samplers, since W2-C6)
  * - BVH node/ray/hit structs aligned with three-mesh-bvh's packed layout
  * - Triangle intersection and basic utilities
  *
  * ReSTIR/DDGI-specific reservoir and lighting logic is intentionally excluded.
+ *
+ * W2-C6 — the duplicated PCG + BSDF-sampling primitives that pt-webgpu and
+ * walkaround-hybrid previously declared independently now live in a single
+ * canonical module at @vitrum/shared-samplers.  We concat-import the
+ * canonical bytes here so the rest of `pathTraceBruteforce.wgsl.ts` can
+ * still resolve every symbol by name without going through the W1-R6
+ * include-graph (pt-webgpu does not use the include-graph today).
  */
+import { PCG_WGSL, BSDF_PRIMITIVES_WGSL } from '@vitrum/shared-samplers';
+
 export const PT_WEBGPU_COMMON_WGSL = /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
@@ -34,24 +46,7 @@ struct HitResult {
   normal: vec3f,
 };
 
-fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32 {
-  var state = px * 1664525u + py * 1013904223u + frameSeed * 22695477u;
-  state ^= state >> 17u;
-  state ^= state << 31u;
-  state ^= state >> 11u;
-  return state;
-}
-
-fn pcgNext(state: ptr<function, u32>) -> u32 {
-  (*state) = (*state) * 747796405u + 2891336453u;
-  var word = (((*state) >> (((*state) >> 28u) + 4u)) ^ (*state)) * 277803737u;
-  word = (word >> 22u) ^ word;
-  return word;
-}
-
-fn rand_f32(state: ptr<function, u32>) -> f32 {
-  return f32(pcgNext(state)) / f32(0xFFFFFFFFu);
-}
+${PCG_WGSL}
 
 fn safe_normalize(v: vec3f) -> vec3f {
   let len = length(v);
@@ -60,6 +55,8 @@ fn safe_normalize(v: vec3f) -> vec3f {
   }
   return v / len;
 }
+
+${BSDF_PRIMITIVES_WGSL}
 
 fn safeInvDir(d: vec3f) -> vec3f {
   // Williams 2005 §4 IEEE-safe form. When a direction component is

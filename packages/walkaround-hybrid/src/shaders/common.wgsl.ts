@@ -17,8 +17,16 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
+import { PCG_WGSL, BSDF_PRIMITIVES_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
+// W2-C6 — PCG + BSDF sampling-frame primitives now live in
+// @vitrum/shared-samplers (single source of truth across walkaround-hybrid
+// and pt-webgpu). They are template-interpolated below so that the public
+// COMMON_WGSL string still contains every symbol the rest of the package
+// references; the wgslCompose bit-identical gate continues to hold by
+// construction (the test asserts `composeWgsl(MODULE) == COMMON_WGSL + …`,
+// and both sides include the interpolated bytes).
 export const COMMON_WGSL = /* wgsl */ `
 
 // ============================================================
@@ -363,34 +371,12 @@ fn updateReservoirGI(
 }
 
 // ============================================================
-// PCG random number generator
+// PCG random number generator — canonical at @vitrum/shared-samplers/wgsl/pcg
+// (W2-C6). Template-interpolated here so the COMMON_WGSL string still
+// exports the symbols pcgInit / pcgNext / rand_f32 / rand_f32_2 / rand_f32_3
+// to every shader that requires('common').
 // ============================================================
-fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32 {
-  var state = px * 1664525u + py * 1013904223u + frameSeed * 22695477u;
-  state ^= state >> 17u;
-  state ^= state << 31u;
-  state ^= state >> 11u;
-  return state;
-}
-
-fn pcgNext(state: ptr<function, u32>) -> u32 {
-  (*state) = (*state) * 747796405u + 2891336453u;
-  var word = (((*state) >> (((*state) >> 28u) + 4u)) ^ (*state)) * 277803737u;
-  word = (word >> 22u) ^ word;
-  return word;
-}
-
-fn rand_f32(state: ptr<function, u32>) -> f32 {
-  return f32(pcgNext(state)) / f32(0xFFFFFFFFu);
-}
-
-fn rand2(state: ptr<function, u32>) -> vec2f {
-  return vec2f(rand_f32(state), rand_f32(state));
-}
-
-fn rand3(state: ptr<function, u32>) -> vec3f {
-  return vec3f(rand_f32(state), rand_f32(state), rand_f32(state));
-}
+${PCG_WGSL}
 
 // ============================================================
 // Utility
@@ -405,38 +391,17 @@ fn safe_normalize(v: vec3f) -> vec3f {
   return v / len;
 }
 
-// Build an orthonormal basis around a normal.
-fn buildONB(n: vec3f, T: ptr<function, vec3f>, B: ptr<function, vec3f>) {
-  var up = vec3f(0.0, 1.0, 0.0);
-  if (abs(n.y) > 0.999) { up = vec3f(1.0, 0.0, 0.0); }
-  *T = normalize(cross(up, n));
-  *B = cross(n, *T);
-}
-
-// Cosine-hemisphere sample in local space, returns world-space direction.
-fn sampleCosineHemisphere(n: vec3f, rng: ptr<function, u32>) -> vec3f {
-  let xi = rand2(rng);
-  let r = sqrt(xi.x);
-  let phi = 2.0 * PI * xi.y;
-  let localDir = vec3f(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - xi.x)));
-  var T: vec3f; var B: vec3f;
-  buildONB(n, &T, &B);
-  return localDir.x * T + localDir.y * B + localDir.z * n;
-}
-
-fn cosineHemispherePdf(n: vec3f, wi: vec3f) -> f32 {
-  return max(0.0, dot(n, wi)) * INV_PI;
-}
+// ============================================================
+// BSDF / sampling-frame primitives — canonical at
+// @vitrum/shared-samplers/wgsl/bsdfPrimitives (W2-C6).
+// Provides buildONB, sampleCosineHemisphere, cosineHemispherePdf,
+// fresnelSchlick (+ pt-webgpu aliases buildOnb, cosineHemisphereSample).
+// ============================================================
+${BSDF_PRIMITIVES_WGSL}
 
 // ============================================================
 // GGX BRDF (simplified Lambertian + GGX specular)
 // ============================================================
-
-// Schlick Fresnel
-fn fresnelSchlick(cosTheta: f32, F0: vec3f) -> vec3f {
-  let c = 1.0 - cosTheta;
-  return F0 + (1.0 - F0) * (c * c * c * c * c);
-}
 
 // GGX NDF
 fn distributionGGX(NdotH: f32, rough: f32) -> f32 {

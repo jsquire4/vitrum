@@ -286,12 +286,9 @@ fn luminance(c: vec3f) -> f32 {
   return dot(c, vec3f(0.2126, 0.7152, 0.0722));
 }
 
-fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
-  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
-  let m2 = m * m;
-  let m5 = m2 * m2 * m;
-  return f0 + (vec3f(1.0) - f0) * m5;
-}
+// fresnelSchlick is canonical at @vitrum/shared-samplers/wgsl/bsdfPrimitives
+// (W2-C6); the canonical declaration is concat-imported via
+// PT_WEBGPU_COMMON_WGSL above.
 
 /**
  * Unpolarised Fresnel reflectance for a smooth dielectric interface.
@@ -950,26 +947,15 @@ fn traceAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
   return false;
 }
 
-fn buildOnb(n: vec3f, t: ptr<function, vec3f>, b: ptr<function, vec3f>) {
-  var up = vec3f(0.0, 1.0, 0.0);
-  if (abs(n.y) > 0.999) {
-    up = vec3f(1.0, 0.0, 0.0);
-  }
-  *t = normalize(cross(up, n));
-  *b = cross(n, *t);
-}
-
-fn cosineHemisphereSample(rng: ptr<function, u32>, n: vec3f) -> vec3f {
-  let u1 = rand_f32(rng);
-  let u2 = rand_f32(rng);
-  let r = sqrt(u1);
-  let phi = 2.0 * PI * u2;
-  let local = vec3f(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u1)));
-  var t: vec3f;
-  var b: vec3f;
-  buildOnb(n, &t, &b);
-  return safe_normalize(local.x * t + local.y * b + local.z * n);
-}
+// buildOnb (alias of buildONB) and cosineHemisphereSample (alias of
+// sampleCosineHemisphere with swapped argument order) are canonical at
+// @vitrum/shared-samplers/wgsl/bsdfPrimitives (W2-C6); the canonical
+// declarations are concat-imported via PT_WEBGPU_COMMON_WGSL above.
+// Note: pre-W2-C6 the local cosineHemisphereSample wrapped the basis
+// recombination in safe_normalize; that wrap is a numerical no-op
+// (the inputs T, B, n are unit and orthogonal by construction) and
+// the canonical form omits it.  RNG sequence and output magnitude
+// are preserved to within FP round-off.
 
 /**
  * Heitz 2018 VNDF sample (Algorithm 1).

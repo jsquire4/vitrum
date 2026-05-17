@@ -141,7 +141,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let xi  = rand_f32(&rng);
     let lid = sampleEmitterIdx(&emitterCdf, emCount, xi);
     let e   = emitters[lid];
-    let ls  = sampleEmitterPoint(e, rand2(&rng));
+    let ls  = sampleEmitterPoint(e, rand_f32_2(&rng));
 
     let toL   = ls.pos - pos;
     let dist2 = dot(toL, toL);
