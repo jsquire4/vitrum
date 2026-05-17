@@ -8,7 +8,7 @@
  * Bindings are independent so the two pipelines don't share layouts.
  */
 
-import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
+import { OCTAHEDRAL_WGSL } from './atlasOctahedral.wgsl.js';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 // Common header shared by both shaders

@@ -328,7 +328,7 @@ function uniformRoomRadiance(): { radiance: [number, number, number]; hitDistanc
 // ---------------------------------------------------------------------------
 
 /**
- * Octahedral decode — MIRROR OF octahedral.wgsl.ts: octDecode.
+ * Octahedral decode — MIRROR OF shared-samplers/wgsl/octahedralCore.wgsl.ts: octDecode.
  * Maps (u, v) in [0, 1]^2 → unit sphere direction.
  *
  * Reference: Cigolle et al. 2014, JCGT.

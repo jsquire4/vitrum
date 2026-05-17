@@ -7,7 +7,7 @@
  */
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
-import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
+import { OCTAHEDRAL_WGSL } from './atlasOctahedral.wgsl.js';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 const WG_SIZE = 32;

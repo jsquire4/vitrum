@@ -314,7 +314,7 @@ struct MaterialEntry {
   thickness   : f32,
 };
 
-// ─── Octahedral helpers (from @vitrum/shared-bvh octahedral.wgsl.ts) ─────────
+// ─── Octahedral helpers (mirrors @vitrum/shared-samplers/wgsl/octahedralCore.wgsl.ts) ─────────
 // Call sites use octDecode(uv * 2.0 - 1.0) to remap from [0,1] to [-1,1].
 
 fn octEncode(dir: vec3f) -> vec2f {

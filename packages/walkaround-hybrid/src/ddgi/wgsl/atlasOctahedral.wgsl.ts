@@ -1,7 +1,17 @@
 /**
- * Octahedral encoding / decoding and atlas UV helpers for DDGI probe maps.
- * Encode/decode core is shared with `@vitrum/shared-samplers` / pt-webgpu.
- * Per Cigolle et al. JCGT 2014.
+ * DDGI atlas-UV WGSL helpers (`probeAtlasUv`, `irradianceAtlasUv`,
+ * `visibilityAtlasUv`) layered on top of the canonical octahedral
+ * encode/decode primitive (`OCTAHEDRAL_CORE_WGSL` from
+ * `@vitrum/shared-samplers`).
+ *
+ * Lives in walkaround-hybrid/ddgi (not in `@vitrum/shared-bvh`) because the
+ * atlas-stride layout (cell + 2px border, per-octant probe packing) is a
+ * DDGI-internal convention — only `probeUpdateBlend.wgsl.ts` and
+ * `probeUpdateRays.wgsl.ts` consume it. The canonical octahedral primitive
+ * itself stays in shared-samplers (also used by RC / pt-webgpu / ReSTIR).
+ *
+ * Per Cigolle et al. JCGT 2014 §A for the octahedral primitive;
+ * atlas-UV layout per Majercik et al. JCGT 2019 (DDGI border-extend padding).
  */
 
 import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
