@@ -1,4 +1,14 @@
-export * from './bvhCommon.js';
+// Selective re-export from `bvhCommon.js` — `validateBvhEncoding` is omitted
+// from the public surface (W7: tests-only helper). It remains `export`-ed
+// from the module file so tests can deep-import via `../bvhCommon.js`, but
+// is not part of `@vitrum/shared-bvh`'s consumer-facing API.
+export {
+  buildSceneBVH,
+} from './bvhCommon.js';
+export type {
+  SceneBVHCommonResult,
+  SceneBVHCommonOpts,
+} from './bvhCommon.js';
 export * from './sceneBvh.js';
 export * from './wgsl/octahedral.wgsl.js';
 
