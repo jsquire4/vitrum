@@ -15,11 +15,19 @@
  * `plan/walkaround-without-three.md` for the re-integration plan.
  *
  * Debug globals:
- *   The original hook wrote to `window.__WGPU__.walkaround` and
- *   `window.__HYBRID_LAYERS__`. Those are host-bridge responsibilities.
- *   This class exposes `setLayerEnabled()` so the host can wire layer
- *   toggles; it calls `window.__WGPU__` only inside a debug branch
- *   guarded by `typeof window !== 'undefined'` and the `debug` option.
+ *   The original hook wrote to host-owned globals (the legacy debug bridge
+ *   and the per-engine layer-toggle map). Those are host-bridge
+ *   responsibilities. This class exposes `setLayerEnabled()` so the host
+ *   can wire layer toggles, and `onFrame(stats => …)` so the host can
+ *   stash whatever per-frame telemetry it wants (frame-time, GPU timings,
+ *   per-pass ms) into its own globals — the engine never reaches into the
+ *   browser `window`.
+ *
+ *   (W6-E3, 2026-05-17 — removed the previous per-frame write to the host
+ *   debug-bridge ring buffer. Hosts that previously read that buffer
+ *   migrate to the documented `onFrame` API and write whatever shape
+ *   their dev tools expect themselves; `stats.frameTimeMs` carries the
+ *   same value the engine used to push.)
  */
 
 import * as THREE from 'three';
@@ -1120,19 +1128,13 @@ export class HybridEngine implements Engine {
     }
 
     if (this._debug) {
+      // W6-E3: only push to the engine-owned internal ring buffer (exposed
+      // via `getDebugSurface()`). The previous per-frame write to the host
+      // debug-bridge global was removed — hosts that want a window-level
+      // mirror should subscribe via `onFrame(stats => …)` and stash there
+      // themselves.
       this._debugTimings.push({ t: now, ms: dt });
       if (this._debugTimings.length > 240) this._debugTimings.shift();
-
-      if (typeof window !== 'undefined') {
-        const w = window as unknown as { __WGPU__?: { walkaround?: { frameTimings: unknown } } };
-        if (w.__WGPU__?.walkaround) {
-          const ft = w.__WGPU__.walkaround.frameTimings as Array<{ t: number; ms: number }>;
-          if (Array.isArray(ft)) {
-            ft.push({ t: now, ms: dt });
-            if (ft.length > 240) ft.shift();
-          }
-        }
-      }
     }
 
     return {
