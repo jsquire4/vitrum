@@ -64,6 +64,27 @@ export interface FrameInput {
   readonly prevProjMatrix?: Mat4;
 
   // ── Viewport ────────────────────────────────────────────────────────────
+  /**
+   * Per-frame viewport (physical pixel dimensions + DPR).
+   *
+   * **Engine-honour contract (A4):**
+   * - Generic PT engines (e.g. `@vitrum/pt-webgl`) honour `viewport.width`
+   *   and `viewport.height` every frame; passing different values triggers
+   *   an internal render-target resize transparently.
+   * - **`HybridEngine` (`@vitrum/walkaround-hybrid`) does NOT.** Its WebGPU
+   *   render targets (DDGI atlas, ReSTIR reservoirs, history textures,
+   *   accumulation buffer) are sized at construction via
+   *   `HybridEngineOptions.{width,height}` and can only be resized
+   *   explicitly via `HybridEngine.setSize(width, height)`. Pushing a new
+   *   `FrameInput.viewport` is silently ignored — there is no per-frame
+   *   resize-detection branch in `HybridEngine.renderFrame`.
+   *
+   * Hosts driving `HybridEngine` directly MUST call `engine.setSize()`
+   * when their canvas dimensions change. Hosts using `attachVitrum()`
+   * get this for free: its `ResizeObserver` duck-types `engine.setSize`
+   * and calls it when the underlying engine exposes the method (i.e.
+   * when the backend is walkaround-hybrid).
+   */
   readonly viewport: Viewport;
 
   // ── Frame indexing ──────────────────────────────────────────────────────

@@ -131,11 +131,18 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     : undefined;
 
   // Resize: track the canvas's CSS pixel size + DPR. Renderframe receives
-  // the latest values via FrameInput.viewport. Engine never sees this
-  // observer — the contract is "viewport per frame".
+  // the latest values via FrameInput.viewport.
+  //
+  // A4 — generic PT engines honour viewport-per-frame, but HybridEngine
+  // (WebGPU walkaround) does not — its DDGI atlas / ReSTIR reservoirs /
+  // history textures / accumulation buffer are sized at construction and
+  // can only be resized via `setSize(w, h)`. Duck-type for that method
+  // and call it when the host's canvas dimensions change so WebGPU hosts
+  // using attachVitrum get correct resize behaviour out of the box.
   let viewportW = Math.max(1, opts.canvas.width);
   let viewportH = Math.max(1, opts.canvas.height);
   let viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
+  const engineSetSize = (engine as unknown as { setSize?: (w: number, h: number) => void }).setSize;
   let resizeObserver: ResizeObserver | undefined;
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver((entries) => {
@@ -145,6 +152,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         viewportH = Math.max(1, Math.floor(cr.height));
       }
       viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
+      if (typeof engineSetSize === 'function') {
+        // Pass physical pixels (DPR-applied) to match the engine's render-
+        // target allocation convention. HybridEngine.setSize is a no-op when
+        // the dimensions match, so this is cheap on no-op resizes.
+        try { engineSetSize.call(engine, Math.max(1, Math.floor(viewportW * viewportDpr)), Math.max(1, Math.floor(viewportH * viewportDpr))); } catch {}
+      }
     });
     resizeObserver.observe(opts.canvas);
   }
