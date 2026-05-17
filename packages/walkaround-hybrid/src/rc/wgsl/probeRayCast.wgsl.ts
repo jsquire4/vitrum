@@ -30,6 +30,7 @@
  */
 
 import { BVH_TRAVERSE_WGSL } from '@vitrum/shared-bvh';
+import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 export const PROBE_RAY_CAST_WGSL = /* wgsl */`
 
@@ -311,25 +312,17 @@ struct MaterialEntry {
   thickness   : f32,
 };
 
-// ─── Octahedral helpers (from @vitrum/shared-bvh octahedral.wgsl.ts) ─────────
-// Call sites use octDecode(uv * 2.0 - 1.0) to remap from [0,1] to [-1,1].
-
-fn octEncode(dir: vec3f) -> vec2f {
-  let n = dir / (abs(dir.x) + abs(dir.y) + abs(dir.z));
-  if (n.z >= 0.0) {
-    return n.xy;
-  }
-  return (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
-}
-
-fn octDecode(oct: vec2f) -> vec3f {
-  let n = vec3f(oct, 1.0 - abs(oct.x) - abs(oct.y));
-  if (n.z < 0.0) {
-    let xy = (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
-    return normalize(vec3f(xy, n.z));
-  }
-  return normalize(n);
-}
+// ─── W2-C3: canonical octEncode / octDecode (Cigolle et al. JCGT 2014) ──────
+// Source: @vitrum/shared-samplers/wgsl/octahedralCore.wgsl.ts.
+// Fixes the sign(0) collapse bug — the previous inline copy used
+//   vec2f(sign(n.x), sign(n.y))
+// for the lower-hemisphere fold; WGSL sign(0) == 0, which collapsed both
+// n.x and n.y to 0 when a direction sat exactly on an axis boundary,
+// producing a degenerate octahedral UV.  The canonical version uses
+//   select(-1.0, 1.0, n.x >= 0.0)
+// so axis-aligned directions map to +1 (matching Cigolle 2014 §A.1).  Call
+// sites use octDecode(uv * 2.0 - 1.0) to remap from [0,1] to [-1,1].
+${OCTAHEDRAL_CORE_WGSL}
 
 // ─── Probe-ray helpers ────────────────────────────────────────────────────────
 // Verbatim from probeRayHelpers wgslFn in probeRayCast.wgsl.ts.

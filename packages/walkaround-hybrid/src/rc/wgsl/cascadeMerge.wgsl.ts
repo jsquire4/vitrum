@@ -21,7 +21,16 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
+import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
+
 export const CASCADE_MERGE_WGSL = /* wgsl */`
+
+// W2-C3: canonical octEncode / octDecode (Cigolle et al. JCGT 2014).
+// Source: @vitrum/shared-samplers/wgsl/octahedralCore.wgsl.ts.  Used by
+// octCellSolidAngle below in place of the historical inline
+// octDecodeForMerge helper (which was already correct vs. the buggy sign(0)
+// form, but was a third inline copy by hand).
+${OCTAHEDRAL_CORE_WGSL}
 
 // ─── octCellSolidAngle ───────────────────────────────────────────────────────
 // Per-bin solid-angle estimate for a cell at grid position (cx, cy) in an
@@ -41,16 +50,12 @@ export const CASCADE_MERGE_WGSL = /* wgsl */`
 // Independent Unit Vectors", JCGT §A.2 — octahedral Jacobian / texel area.
 // Reference: Sannikov 2023, §3 — cascade conservation law.
 
+// W2-C3 dedup: thin scalar wrapper around the canonical octDecode (from
+// @vitrum/shared-samplers/wgsl/octahedralCore.wgsl.ts).  The previous
+// inline body was algorithmically identical (already used the
+// select(-1.0, 1.0, ox >= 0.0) form rather than the buggy sign(0) form).
 fn octDecodeForMerge(u: f32, v: f32) -> vec3f {
-  var nx = u;
-  var ny = v;
-  let nz = 1.0 - abs(u) - abs(v);
-  if nz < 0.0 {
-    let ox = nx;
-    nx = (1.0 - abs(ny)) * select(-1.0, 1.0, ox >= 0.0);
-    ny = (1.0 - abs(ox)) * select(-1.0, 1.0, ny >= 0.0);
-  }
-  return normalize(vec3f(nx, ny, nz));
+  return octDecode(vec2f(u, v));
 }
 
 // Spherical quad area via two-triangle cross-product approximation.
