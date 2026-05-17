@@ -20,3 +20,4 @@ __pycache__/
 # Claude Code session metrics (local-only; not part of the product)
 .claude/tracking/
 .claude/worktrees/
+.claude/scheduled_tasks.lock
