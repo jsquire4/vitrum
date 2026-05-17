@@ -11,16 +11,6 @@ export interface WgpuProbeResult {
    * Classified from `adapter.info` (with empty vendor/arch treated as unknown).
    */
   adapterKind?: WgpuAdapterKind;
-  /**
-   * @deprecated Prefer {@link adapterKind}. All in-library readers migrated
-   * during pass 2 of the complexity sweep; this field is retained on the
-   * public type only for legacy host integrations in `_staging/legacy-
-   * source/`. Library code MUST NOT add new readers — `adapterKind` is the
-   * single source of truth. When present, `true` means not SwiftShader
-   * (`adapterKind !== 'swiftshader'`), including the fingerprinting
-   * `unknown` case where the real GPU is still treated as usable.
-   */
-  isHardwareGpu?: boolean;
 }
 
 /**
@@ -125,13 +115,10 @@ export async function probeWebGPU(): Promise<WgpuProbeResult> {
 
     // Read adapter info with retry — some Chromium builds populate
     // `adapter.info` asynchronously on first read (empty strings until
-    // a follow-up frame). The retry handles that race; falsely flagging
-    // empty info as `isHardwareGpu: false` was the bug fixed in this revision.
+    // a follow-up frame). The retry handles that race; falsely classifying
+    // empty info as a non-hardware adapter was a real prior-art bug.
     const { vendor, architecture } = await readAdapterInfo(adapter);
     const adapterKind = classifyAdapter({ vendor, architecture });
-    // Treat 'unknown' as hardware-undetermined: legacy boolean and mount gates
-    // map unknown→true (do not falsely refuse a likely-real GPU).
-    const isHardwareGpu = adapterKind !== 'swiftshader';
 
     return {
       supported: true,
@@ -142,7 +129,6 @@ export async function probeWebGPU(): Promise<WgpuProbeResult> {
       ...(architecture ? { architecture } : {}),
       features: [...adapter.features].map(String),
       limits,
-      isHardwareGpu,
     };
   } catch {
     return { supported: false };

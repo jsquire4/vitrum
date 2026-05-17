@@ -5,10 +5,10 @@
  * spec gate consume on `window.__WG__`.
  *
  * The shared `probeWebGPU()` is canonical; this wrapper exists so the
- * `__WG__` global shape (`isWebGPU` + `adapterKind` / `isHardwareGpu` +
- * lower-cased `adapterVendor` / `adapterArchitecture`) keeps working for the
- * existing chroma precondition gate. New callers should consume
- * `probeWebGPU()` directly via the lib.
+ * `__WG__` global shape (`isWebGPU` + `adapterKind` + lower-cased
+ * `adapterVendor` / `adapterArchitecture`) keeps working for the existing
+ * chroma precondition gate. New callers should consume `probeWebGPU()`
+ * directly via the lib.
  */
 
 import { probeWebGPU, type WgpuAdapterKind } from './wgpuSupport.js';
@@ -30,17 +30,6 @@ export interface GpuDetection {
    * unavailable).
    */
   adapterKind: WgpuAdapterKind;
-  /**
-   * @deprecated Use {@link adapterKind} (`adapterKind !== 'swiftshader'`).
-   * All in-library readers have migrated to `adapterKind` as of pass 2 of
-   * the complexity sweep; the field is kept on the public type only for
-   * legacy host integrations (see `_staging/legacy-source/`). Internal
-   * library code MUST NOT add new readers — the field will be removed when
-   * the legacy host extraction lands. `true` when WebGPU is supported and
-   * the adapter is not SwiftShader, including the fingerprinting `unknown`
-   * case.
-   */
-  isHardwareGpu: boolean;
   /** GPUAdapterInfo.vendor (lowercased) — '' if unavailable. */
   adapterVendor?: string;
   /** GPUAdapterInfo.architecture (lowercased) — '' if unavailable. */
@@ -84,7 +73,6 @@ export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
     const result: GpuDetection = {
       isWebGPU: probe.supported,
       adapterKind,
-      isHardwareGpu: Boolean(probe.supported && probe.isHardwareGpu !== false),
       adapterVendor: (probe.vendor ?? '').toLowerCase(),
       adapterArchitecture: (probe.architecture ?? '').toLowerCase(),
     };
