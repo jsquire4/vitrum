@@ -1,33 +1,52 @@
-# PPG Rebuild — Future Sprint Placeholder
+# PPG Rebuild — In-Flight Sprint (not deleted)
 
-**Status:** Future / unscheduled
+**Status:** In-flight (opt-in pipeline compiles; GPU dispatch is a 0-workgroup stub)
 **Created:** 2026-05-11
-**Context:** This functionality was deleted during sweep-2026-05-11 because the existing
-implementation was not paper-faithful. This doc preserves the design intent for when a
-real implementation sprint is scheduled.
+**Last factual sweep:** 2026-05-17
+
+**Status correction (2026-05-17):**
+An earlier revision of this doc claimed the PPG subsystem was *deleted*
+during sweep-2026-05-11. That framing is **no longer accurate** — the
+subsystem was revived as an opt-in pipeline under task T2.H3 and ships
+in the current workspace. The "What was deleted and why" wording has
+been rewritten below as "What is currently revived and what still needs
+to land." The paper reference and the five-axis paper-faithful
+requirements list further down remain valid as implementation guidance
+for the outstanding GPU-side work.
 
 ---
 
-## What was deleted and why
+## What is currently revived (T2.H3)
 
-The following were removed (D7, decisions doc):
+The following are present in the current workspace:
 
-- `packages/walkaround-hybrid/src/ppg/` (entire directory: `buildPpgKdTree.ts`,
-  `ppgCellUpload.ts`, `types.ts`, and WGSL: `ppgUpdate.wgsl.ts`, `ppgCommon.wgsl.ts`)
-- `packages/walkaround-hybrid/src/shaders/shadePpgGuide.wgsl.ts`
-- `packages/walkaround-hybrid/src/shaders/shadePpgTrain.wgsl.ts`
-- PPG-related tests: `ppgCellUpload.test.ts`, `sprint11-ppg.test.ts`, `sprint2-cellPower.test.ts`
-- `ppgEnabled` constructor option, `setPPGEnabled()`, and all PPG markers
-  (`@@PPG_TRAIN_BINDINGS_INSERT@@`, `@@PPG_GUIDE_DECLS_INSERT@@`, `@@PPG_BOUNCE_INSERT@@`,
-  `@@PPG_RECORD_INSERT@@`) from `shade.wgsl.ts`
-- PPG bindings from `bindGroupLayouts.ts`, `pipelineCompiler.ts`, `resourceManager.ts`,
-  `bindGroupBuilders.ts`, `uboUpdater.ts`
-- `cellPower` field from emitter packing in `restir/bvhCompute.ts:255–260`
+- `packages/walkaround-hybrid/src/ppg/` (directory present — `dTree.ts`,
+  `sTree.ts`, `ppgConstants.ts`, `types.ts`, plus WGSL kernels
+  `ppgUpdate.wgsl.ts` and `ppgGuide.wgsl.ts`).
+- `ppgEnabled` is back on `HybridEngineOptions` and threaded through
+  `WalkaroundGPUPipeline._ppgEnabled` (default `false`). When set,
+  `pipelineCompiler` compiles the PPG-guide and PPG-update compute
+  pipelines and `passOrder` schedules them.
+- The pass-graph stubs `PPGGuidePass` and `PPGUpdatePass` exist and run
+  end-to-end through the orchestrator when `ppgEnabled === true`.
 
-The deletion was necessary because the implementation deviated from Müller 2017 on five
-independent axes (see below), actively crashing before it ran (Item 1 injector throw),
-and the test suite was purely structural. A partial implementation that guides on the
-wrong signal harms convergence when enabled — the clean-slate decision is safer.
+## What still needs to land before T2.H3 closes
+
+- **GPU dispatch is currently a `dispatchWorkgroups(0, 0, 0)` no-op.**
+  Both `PPGGuidePass` and `PPGUpdatePass` ship as deliberate stubs (see
+  `pipeline/passes/PPGGuidePass.ts:42` and `pipeline/passes/PPGUpdatePass.ts:37`)
+  — the pipeline compiles, the dispatch lands, but no work executes
+  because the sTree / dTree GPU buffers and bind-groups aren't wired
+  yet. This was a forward-looking placeholder so the compiler /
+  pass-graph plumbing could be code-reviewed in isolation.
+- **W9 — wire the GPU sTree traversal + the dTree producer.** Both
+  the per-cell flux atomic-add path (Requirement 3 below) and the
+  guide-direction sample path (Requirement 4) need actual workgroup
+  counts and real bind-groups before the `ppgEnabled === true` mode
+  changes any frame's pixels.
+- **All five paper-faithful requirements below remain unmet by the
+  current dispatch stubs** — they document what the revival sprint must
+  produce, not what already runs.
 
 ---
 
@@ -45,8 +64,10 @@ Key sections: §3.1 (spatial tree), §3.2 (directional tree), §3.3 (training si
 
 ## The 5 paper-faithful requirements
 
-The deleted implementation got all 5 wrong. A re-implementation must satisfy all 5
-before the feature is wired into `HybridEngine`.
+The pre-revival implementation got all 5 wrong. The current opt-in
+pipeline (T2.H3) lands the compile-time / pass-graph plumbing but the
+GPU dispatch is still a `(0,0,0)` no-op — so all 5 requirements below
+remain open until W9 wires real workgroup counts and bind-groups.
 
 ### Requirement 1 — Adaptive spatial tree (sTree), Müller §3.1
 
@@ -232,8 +253,12 @@ Atomic GPU buffer updates (Requirement 1 and 2) require care in WebGPU:
 ## Pre-requisites before scheduling
 
 1. Walkaround shade loop must expose a per-bounce hook where the guide direction can be
-   injected. The deleted `@@PPG_BOUNCE_INSERT@@` marker pattern was the right approach —
-   revive it when scheduling this sprint.
+   injected. The original `@@PPG_BOUNCE_INSERT@@` marker pattern was the right approach;
+   the T2.H3 revival took a different tack (a separate compute pass scheduled in
+   `passOrder` rather than an in-shader injection point). W9 should confirm the new
+   approach is still able to deposit flux at the actual sample point — Müller §3.3 is
+   strict that the deposit-key direction is the incoming-radiance direction at the
+   sample point, not the outgoing direction at the next bounce.
 2. The SVGF/atrous-variance depth fix (D2) must be landed so the G-buffer at the guide
    sample point is reliable.
 3. ReSTIR-DI p̂ fix (Item 5) should land first: PPG and ReSTIR both touch the indirect

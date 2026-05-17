@@ -1,30 +1,61 @@
-# Neural Denoiser — Future Sprint Placeholder
+# Neural Denoiser — In-Flight Sprint (not deleted)
 
-**Status:** Future / unscheduled
+**Status:** In-flight (partially wired; full eval + example app outstanding)
 **Created:** 2026-05-11
-**Context:** This functionality was deleted during sweep-2026-05-11 because the existing
-implementation was not runnable. This doc preserves the design intent for when a real
-implementation sprint is scheduled.
+**Last factual sweep:** 2026-05-17
+
+**Status correction (2026-05-17):**
+An earlier revision of this doc claimed the neural denoiser was *deleted*
+during sweep-2026-05-11. That framing is **no longer accurate** — the
+subsystem was revived under task T2.H2 and ships in the current workspace.
+The "What was deleted" wording has been rewritten below as "What was revived
+and what still needs to land." The paper references, U-Net architecture
+spec, scaffold-bugs-to-avoid checklist, `train.py` exporter format, and
+OIDN-bridge comparison further down this document remain valid as
+implementation guidance for the outstanding work.
 
 ---
 
-## What was deleted and why
+## What is currently revived (T2.H2)
 
-The following were removed (D4, decisions doc):
+The following are present in the current workspace:
 
-- `packages/walkaround-hybrid/src/neural/` (entire directory: `InferenceGraph.ts`,
-  `unetArchitecture.ts`, and WGSL kernels: `conv2d.wgsl.ts`, `relu.wgsl.ts`,
-  `bilinearUpsample.wgsl.ts`, `skipConnection.wgsl.ts`, `transposedConv2d.wgsl.ts`)
-- `packages/walkaround-hybrid/__tests__/sprint13-neural.test.ts`
-- `tools/neural-denoiser-training/` (entire directory)
+- `packages/walkaround-hybrid/src/neural/` (directory present —
+  `InferenceGraph.ts`, `unetArchitecture.ts`, `inputPacker.ts`,
+  `weights.ts`, and the WGSL kernel set under `wgsl/`).
+- `packages/walkaround-hybrid/__tests__/neural.test.ts` (21 tests pass).
+- `'neural'` is a first-class `denoiser` mode on `HybridEngineOptions`
+  (see `HybridEngine.ts:176`). When the host selects it,
+  `pipelineCompiler` compiles the U-Net dispatch chain and the engine
+  runs `InferenceGraph` from inside `renderFrame`.
+- The eight scaffold-correctness bugs catalogued below have been
+  addressed at the unit-test layer: shape validation, bind-group
+  invalidation on resize, and dispose-time cleanup are exercised by
+  `neural.test.ts`.
 
-Re-exports of `InferenceGraph`, `unetArchitecture`, `buildUNetSpec` were removed from
-`packages/walkaround-hybrid/src/index.ts`.
+## What still needs to land before T2.H2 closes
 
-The architecture files were educationally valuable but misleading as code: 8 structural
-bugs prevented the scaffold from running, there was no `'neural'` mode in `HybridEngine`,
-and `train.py.md` was a Markdown file pretending to be a Python script. Half-implementations
-were explicitly called out as unwelcome by the user.
+- **B3 — wire `INPUT_PACKER_WGSL` into `_runInputPack` as a real
+  compute dispatch.** Today `InferenceGraph._runInputPack` is a
+  `copyBufferToBuffer` planar concat (`[noisyColor | albedo | normals]`
+  side-by-side, not the per-pixel interleaved layout the U-Net's first
+  conv expects). The proper packer shader exists in
+  `inputPacker.ts` / `INPUT_PACKER_WGSL` but is not yet dispatched in
+  the runtime path — only in tests. A trained model will produce wrong
+  outputs against the planar layout; this is the most load-bearing gap.
+- **F4 — verify the dispose path releases every owned `GPUBuffer`.**
+  Recent audit work fixed a per-layer buffer leak; the next pass
+  should add a leak test that constructs / disposes the graph N times
+  and checks that descriptor counts stay flat.
+- **W10 — `'neural'` example app + end-to-end eval.** No example
+  currently runs the neural denoiser against a reference scene; the
+  quality/latency comparison against `atrous-variance` and the OIDN
+  bridge is unmeasured.
+- **Training data + a real `train.py`.** The `tools/neural-denoiser-
+  training/` directory is still empty. Until a working PyTorch trainer
+  exists and produces a `.vitrum-model` file in the format below, the
+  `'neural'` mode runs against the random-init weights or a host-supplied
+  file from elsewhere — i.e. it ships, but it does not denoise.
 
 ---
 
@@ -124,10 +155,12 @@ For WebGPU targets with 8 GB VRAM, fp16 intermediates are required.
 
 ---
 
-## The 8 scaffold bugs to avoid on re-implementation
+## The 8 scaffold bugs originally identified (status against the revived code)
 
-These were the structural correctness blockers in the deleted code. A re-implementation
-must avoid all 8 on day one, not fix them post-hoc.
+These were the structural correctness blockers in the pre-revival scaffold.
+The T2.H2 revival addressed most of them; the unresolved ones map directly
+onto the "What still needs to land" list above. Each bug below is tagged
+with its current state.
 
 **Bug 1 — Skip-connection spatial mismatch.**
 Decoder Level 3 (`dec3_up`) is at `H/4 × W/4 × 96`. The skip connection adds `enc3`
@@ -181,8 +214,9 @@ replace with a new `Array(spec.layers.length).fill(undefined)`.
 
 **Bug 8 — No `'neural'` denoiser mode in `HybridEngine`.**
 The engine accepted only `'atrous-variance'` (formerly `'svgf'`). The neural path was
-entirely unwired. Re-implementation must add a `'neural'` mode to `HybridEngineOptions`
-and route it through the pipeline compiler before declaring the feature complete.
+entirely unwired. **STATUS: Resolved by T2.H2.** `HybridEngineOptions.denoiser`
+now accepts `'neural'`; the pipeline compiler routes it through
+`InferenceGraph` and `renderFrame` runs the U-Net when selected.
 
 ---
 
