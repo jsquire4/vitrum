@@ -4,6 +4,21 @@ Read-only audit of every demo in `examples/` for completeness, consistency, and
 buildability. Trivial fixes (README typos, missing manifest fields) applied
 in-place; non-trivial findings recorded here only.
 
+## Status update — 2026-05-18
+
+Per-example findings rechecked against current `main`:
+
+- **`cornell-box` typecheck NO** → **YES** as of `ac1b593` (`fix(examples,pt-webgpu): typecheck cornell-box + two-engines-one-scene + pt-webgpu process ref`). `npm run typecheck --workspace @vitrum-examples/cornell-box` runs clean. Typecheck script is present in `package.json`.
+- **`two-engines-one-scene` typecheck NO** → **YES** (same `ac1b593` fix; the `pt-webgpu/src/scene/buildCpuBvh.ts` `process.env` reference was reconciled). Typecheck script is present.
+- **`hero-product-viz` README typo (50ms vs 80ms)** → confirmed fixed (audit-time in-place fix held).
+- **New example added 2026-05-18:** `examples/neural-denoiser` (W10 — neural denoiser example + acceptance test + README, commit `452a0a6`). Not in the audit table below; typechecks clean.
+- **Shared-helper hoists** landed after the audit: `mat4FromThree` + `resizeCanvasToDisplaySize` moved to `examples/shared` (`77245ea`); `parsePositiveInt` canonicalised across `hero-product-viz` + `hero-viewer` (`9e77566`).
+
+Coverage-gaps section below is still accurate for items not called out above.
+
+---
+
+
 ## Scope
 
 Six subdirectories audited:
