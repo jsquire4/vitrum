@@ -26,6 +26,17 @@ export type {
   PTEngineWebGL2FrameOutput,
 } from './ptEngineWebGL2.js';
 
+// W11 follow-up — OIDN final-pass dispatcher (internal kick-and-return state
+// machine; hosts query the engine via `getDenoisedFrame()` rather than touching
+// the dispatcher directly, but the types are exported for test harnesses).
+export { OIDNFinalDispatcher } from './oidnFinalDispatcher.js';
+export type {
+  OIDNFinalDispatcherOptions,
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+} from './oidnFinalDispatcher.js';
+
 export * from './constants.js';
 export * from './sunGeometry.js';
 export { bakeSkyEquirect, clearSkyEquirectCache } from './iblBaker.js';

@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@vitrum/core": "file:../core",
+    "@vitrum/shared-denoisers": "file:../shared-denoisers",
     "@vitrum/shared-samplers": "file:../shared-samplers",
     "@vitrum/three-bindings": "file:../three-bindings",
     "three-gpu-pathtracer": "file:../../../three-gpu-pathtracer",
