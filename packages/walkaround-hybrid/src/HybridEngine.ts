@@ -32,7 +32,7 @@ import type {
   EngineState,
   FrameStats,
 } from '@vitrum/core';
-import type { Scene } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter, Material } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
@@ -40,6 +40,8 @@ import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { packDDGIGridParams } from './pipeline/resourceManager.js';
 import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import { packBVHIndexW, packBVHBeerColors } from './restir/packingHelpers.js';
+import { buildEmitterList } from './restir/emitterList.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
@@ -710,7 +712,11 @@ export class HybridEngine implements Engine {
     }
 
     this.capabilities = {
-      supportsIncrementalScene:  false,
+      // Items A3 (2026-05-17): updatePrimitive / updateEmitter implement a
+      // material-only fast path that re-uploads per-triangle material bytes
+      // (bvhIndex.w + bvhBeerColors) and the emitter list + CDF without a
+      // pipeline rebuild. Geometry changes still throw (see those methods).
+      supportsIncrementalScene:  true,
       // supportsMotionBlur === false. WalkaroundGPUPipeline does allocate a
       // motionVectorTexture, but it's for SVGF temporal reprojection (encoded
       // as `motion-vectors-zero` — a 2D screen-space delta), not for accumu-
@@ -782,8 +788,9 @@ export class HybridEngine implements Engine {
     return null;
   }
 
-  updatePrimitive?: never;
-  updateEmitter?: never;
+  // ── Incremental scene updates (items A3) ──────────────────────────────────
+  // Real implementations live below `updateLighting`. The Engine contract
+  // marks both methods as optional; HybridEngine implements them.
 
   // ── Runtime lighting update ────────────────────────────────────────────
 
@@ -846,6 +853,331 @@ export class HybridEngine implements Engine {
     // _pipeline may be null if the engine is still initialising; the flag is
     // applied as soon as the pipeline exists (set before any renderFrame call).
     this._pipeline?.requestAccumReset();
+  }
+
+  // ── Incremental scene updates (items A3) ───────────────────────────────
+
+  /**
+   * Patch a single primitive's material in-place WITHOUT rebuilding the BVH
+   * or recompiling pipelines.
+   *
+   * **Material-only fast path.** When `patch` only touches material fields,
+   * this method:
+   *   1. Looks up the underlying THREE.Mesh by primitive id (`mesh.name === id`).
+   *   2. Mutates the mesh's THREE.Material in place (baseColor, roughness,
+   *      metallic, transmission, ior, attenuationColor, etc.).
+   *   3. Re-packs the per-triangle material bytes (`bvhIndex[t*4+3]` +
+   *      `bvhBeerColors[t]`) for every triangle whose `triMaterialId` matches
+   *      the mutated material slot, via the existing `packBVHIndexW` /
+   *      `packBVHBeerColors` helpers operating on the cached merged-geometry
+   *      typed arrays.
+   *   4. DMAs the patched bytes into the existing BVH index + beer GPU
+   *      buffers via `queue.writeBuffer` — no buffer reallocation, no
+   *      shader recompile, no BVH topology rebuild.
+   *   5. Resets the temporal accumulator + invalidates the DDGI probe atlas
+   *      so the change converges over the next ~8 frames.
+   *
+   * **Geometry changes are not supported on this fast path.** Patches that
+   * include `positions`, `normals`, `uvs`, `tangents`, `indices`, or
+   * `transform` throw a clear error pointing at `setScene` as the workaround.
+   * A future revision may rebuild only the affected BVH leaf instead of the
+   * whole tree; for now, the conservative path is honest about its scope.
+   *
+   * **No-op when the pipeline isn't yet live** — same semantics as
+   * {@link updateLighting}. The next `setScene` will reflect any subsequent
+   * patches via a full rebuild.
+   *
+   * @param id     The primitive id (matches `Scene.primitives[].id`).
+   * @param patch  Partial primitive override. Only `material.*` fields are
+   *               honoured on the fast path; geometry / transform fields
+   *               throw with a setScene pointer.
+   * @throws {Error} when the primitive id is unknown in the last setScene'd scene.
+   * @throws {Error} when the patch touches geometry/topology fields — call
+   *                 `setScene` with the modified scene instead.
+   */
+  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+    // Reject geometry / topology changes: the fast path only re-uploads
+    // material bytes. Geometry edits would invalidate the BVH spatial layout
+    // and require a leaf-rebuild (future work). Throwing here is the audit-
+    // recommended conservative behaviour for round-1 of A3.
+    const geometryFields = [
+      'positions', 'normals', 'uvs', 'tangents', 'indices', 'transform',
+      'instances', 'params', 'shape', 'fallbackMesh', 'kind',
+    ] as const;
+    for (const f of geometryFields) {
+      if ((patch as Record<string, unknown>)[f] !== undefined) {
+        throw new Error(
+          `HybridEngine.updatePrimitive("${id}"): patching '${f}' is a geometry/topology change. ` +
+          `The material-only fast path re-uploads per-triangle material bytes only. ` +
+          `For geometry edits, call setScene() with the modified scene — that triggers a full ` +
+          `BVH rebuild (~50 ms for a 30k-tri scene).`,
+        );
+      }
+    }
+
+    // Locate the primitive in the last setScene'd scene to validate the id
+    // and confirm a material-only patch is meaningful. (Without this check a
+    // typo'd id would silently no-op.)
+    if (this._lastScene == null) {
+      throw new Error(
+        `HybridEngine.updatePrimitive("${id}"): no scene set. ` +
+        `Call setScene(scene) before updatePrimitive.`,
+      );
+    }
+    const prim = this._lastScene.primitives.find((p) => String(p.id) === id);
+    if (!prim) {
+      throw new Error(
+        `HybridEngine.updatePrimitive("${id}"): primitive id not found in current scene. ` +
+        `Available ids: [${this._lastScene.primitives.map((p) => String(p.id)).join(', ')}].`,
+      );
+    }
+
+    // If the patch has no material body, there's nothing to do — return early.
+    // (Useful for hosts that compute diffs and may produce empty patches.)
+    if (patch.material === undefined) return;
+
+    // Mutate the THREE material on the BVH-source scene in place. The
+    // mutation MUST hit the same THREE.Material instance the BVH build
+    // captured into its materials LUT — otherwise the per-triangle matId
+    // lookup wouldn't see the new values when we re-pack.
+    //
+    // `_ddgiTraversalScene` is the THREE root that `_initPipeline` fed into
+    // `buildReSTIRSceneBVH` (so its materials populate `materialsLut`).
+    // Fall back to the ctor `_threeScene` (escape hatch path) and then to
+    // the cached synthesized root for the pre-init phase.
+    const threeRoot = this._ddgiTraversalScene ?? this._threeScene ?? this._ensureThreeSceneRoot();
+    if (!threeRoot) {
+      // No THREE scene yet — pipeline isn't initialized. Safe no-op: when
+      // the pipeline does initialize, it'll pick up the latest _lastScene
+      // (which the caller is expected to have updated separately to keep
+      // the host's source-of-truth and engine state in sync).
+      return;
+    }
+    let targetMesh: THREE.Mesh | null = null;
+    threeRoot.traverse((obj) => {
+      if (targetMesh) return;
+      if ((obj as THREE.Mesh).isMesh && obj.name === id) {
+        targetMesh = obj as THREE.Mesh;
+      }
+    });
+    if (!targetMesh) {
+      // Mesh not in the THREE graph (e.g. analytic-only primitive with no
+      // mesh fallback wired up yet). For now: defer to setScene. The host
+      // can still update their authoritative Scene and call setScene to
+      // pick up the change.
+      throw new Error(
+        `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene. ` +
+        `Analytic-only primitives don't yet support the fast path; call setScene with the modified scene.`,
+      );
+    }
+
+    applyMaterialPatchToThree(targetMesh, patch.material);
+
+    // Re-pack the affected per-triangle material bytes. The simplest and
+    // most correct version walks ALL triangles — re-packing is O(triCount)
+    // typed-array writes (~30k tris ≈ 0.5 ms on a modern CPU). A more
+    // surgical version would track per-primitive triangle ranges and patch
+    // only those slots, but the current shared-bvh result doesn't expose
+    // that mapping, and the gain would be sub-millisecond for typical
+    // scenes. The CRITICAL win is avoiding the BVH rebuild + shader
+    // recompile + pipeline re-init (~500-2000 ms), not shaving a fraction
+    // of a millisecond off the CPU pack.
+    const bvh = this._bvhBuffers;
+    const pipeline = this._pipeline;
+    if (!bvh || !pipeline) {
+      // Pipeline not live — the next initialize() reads the freshly-mutated
+      // THREE material directly. Reset accumulator anyway so the eventual
+      // first frame starts clean.
+      this._pipeline?.requestAccumReset();
+      this._ddgi.invalidateProbeCache();
+      return;
+    }
+    const triCount = bvh.bvhIndex.count;
+    const triMatIdArr = new Uint32Array(bvh.triangleMaterialIds.cpuData);
+    const newIndex = packBVHIndexW(
+      bvh.mergedIndices,
+      triMatIdArr,
+      bvh.materialsLut,
+      triCount,
+    );
+    const newBeer = packBVHBeerColors(
+      triMatIdArr,
+      bvh.materialsLut,
+      triCount,
+    );
+
+    // Refresh the cached cpuData arrays so any subsequent updatePrimitive on
+    // a different primitive reads back the latest bytes (avoids stale
+    // overwrites when multiple patches stream in between frames).
+    bvh.bvhIndex.cpuData = newIndex.buffer as ArrayBuffer;
+    bvh.bvhBeerColors.cpuData = newBeer.buffer as ArrayBuffer;
+
+    pipeline.updateMaterialsBytes(
+      bvh.bvhIndex.cpuData,
+      bvh.bvhBeerColors.cpuData,
+    );
+
+    // Reset temporal accumulator + invalidate DDGI atlas so the change
+    // converges visually. Material edits affect direct AND indirect
+    // illumination, so both buffers need to refresh.
+    pipeline.requestAccumReset();
+    this._ddgi.invalidateProbeCache();
+  }
+
+  /**
+   * Patch a single emitter in-place WITHOUT rebuilding the BVH or recompiling
+   * pipelines.
+   *
+   * **Per-emitter-kind fast path.**
+   *   - `directional`: routes to {@link updateLighting} since the walkaround
+   *     engine carries the primary directional light as engine-level state
+   *     (not in the per-triangle emitter list). Multiple directional emitters
+   *     are not supported; only the first directional emitter found in the
+   *     scene maps to the primary sun.
+   *   - `rect-area` / `point` / `spot` / `disc-area`: locates the THREE light
+   *     by emitter id (`light.name === id`), mutates color / intensity /
+   *     position fields in place, rebuilds the entire emitter list + power
+   *     CDF from the now-mutated THREE graph, and re-uploads via
+   *     {@link WalkaroundGPUPipeline.updateEmitters}.
+   *   - `mesh-area`: delegates to {@link updatePrimitive} on the referenced
+   *     mesh primitive (the area emission is folded into the mesh's THREE
+   *     material's emissive at scene-binding time, so the same material
+   *     mutation path applies). Pass the patched emissive via a primitive
+   *     patch instead — this method throws to make the indirection obvious.
+   *
+   * **No-op when the pipeline isn't yet live** — same semantics as
+   * {@link updateLighting} / {@link updatePrimitive}.
+   *
+   * @throws {Error} when the emitter id is unknown.
+   * @throws {Error} for `mesh-area` patches (use `updatePrimitive` instead).
+   */
+  updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
+    if (this._lastScene == null) {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): no scene set. Call setScene first.`,
+      );
+    }
+    const emitter = this._lastScene.emitters.find((e) => String(e.id) === id);
+    if (!emitter) {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): emitter id not found in current scene. ` +
+        `Available ids: [${this._lastScene.emitters.map((e) => String(e.id)).join(', ')}].`,
+      );
+    }
+
+    if (emitter.kind === 'mesh-area') {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): mesh-area emitters fold their emission into the ` +
+        `referenced mesh primitive's THREE material at scene-binding time. ` +
+        `Call updatePrimitive("${String(emitter.meshId)}", { material: { emissive: ..., emissiveIntensity: ... } }) instead.`,
+      );
+    }
+
+    if (emitter.kind === 'directional') {
+      // Walkaround keeps the primary directional light as engine-level state
+      // (not in the per-triangle emitter list). Forward the patch into the
+      // existing updateLighting path.
+      const dirPatch = patch as Partial<typeof emitter>;
+      const lightingOpts: Partial<LightingOptions> = {};
+      if (dirPatch.direction !== undefined) {
+        lightingOpts.primaryLightDir = [
+          dirPatch.direction[0], dirPatch.direction[1], dirPatch.direction[2],
+        ];
+      }
+      if (dirPatch.intensity !== undefined) {
+        lightingOpts.primaryLightIntensity = dirPatch.intensity;
+      }
+      // Note: color modulation isn't carried separately by the walkaround
+      // primary-light path (intensity is the only scalar driver). Hosts
+      // wanting tinted sun should rebuild the scene.
+      if (Object.keys(lightingOpts).length > 0) {
+        this.updateLighting(lightingOpts);
+      }
+      return;
+    }
+
+    // For area / point / spot emitters: locate the THREE light and mutate it
+    // in place. The emitter list is rebuilt from the THREE graph below. We
+    // use `_ddgiTraversalScene` (the BVH-source root) so the THREE.Light
+    // we mutate is the same instance the next emitter-list rebuild will see.
+    const threeRoot = this._ddgiTraversalScene ?? this._threeScene ?? this._ensureThreeSceneRoot();
+    if (!threeRoot) {
+      // Pipeline not initialized yet — the next initialize() will rebuild
+      // the emitter list from the (host-updated) scene. No-op safely.
+      this._pipeline?.requestAccumReset();
+      return;
+    }
+    let targetLight: THREE.Light | null = null;
+    threeRoot.traverse((obj) => {
+      if (targetLight) return;
+      if ((obj as THREE.Light).isLight && obj.name === id) {
+        targetLight = obj as THREE.Light;
+      }
+    });
+    if (!targetLight) {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): emitter has no THREE.Light in the synthesized scene. ` +
+        `(Pipeline may still be initializing — patches before the first setScene-driven build are no-ops.)`,
+      );
+    }
+
+    applyEmitterPatchToThreeLight(targetLight, patch);
+
+    const bvh = this._bvhBuffers;
+    const pipeline = this._pipeline;
+    if (!bvh || !pipeline) {
+      this._pipeline?.requestAccumReset();
+      return;
+    }
+
+    // Rebuild the emitter list from the now-mutated THREE graph. The shared-
+    // bvh result we cached carries the merged-geometry typed arrays the
+    // builder needs (indices, positions, normals, triMaterialId, materials);
+    // we only need to re-collect the RectAreaLight emitter triangles from
+    // the THREE root since those are non-mesh sources.
+    const triMatIdArr = new Uint32Array(bvh.triangleMaterialIds.cpuData);
+    const extraEmitters = collectRectAreaLightEmitterTrisLocal([threeRoot]);
+    const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(
+      bvh.mergedIndices,
+      bvh.mergedPositionsStride4,
+      bvh.mergedNormalsStride4,
+      triMatIdArr,
+      bvh.materialsLut,
+      {
+        primaryLightDir: new THREE.Vector3(
+          this._primaryLightDir[0],
+          this._primaryLightDir[1],
+          this._primaryLightDir[2],
+        ),
+        primaryLightIntensity: this._primaryLightIntensity,
+        extraEmitters,
+      },
+    );
+
+    // Refresh cached cpuData + emitter count on the SceneBVHBuffers struct so
+    // future updates / re-uploads see the latest state.
+    bvh.emitters.cpuData = emitterFloats.buffer as ArrayBuffer;
+    bvh.emitters.byteLength = emitterFloats.byteLength;
+    bvh.emitters.count = cdfArray.length;
+    bvh.emitterCdf.cpuData = cdfArray.buffer as ArrayBuffer;
+    bvh.emitterCdf.byteLength = cdfArray.byteLength;
+    bvh.emitterCdf.count = cdfArray.length;
+    bvh.emitterCount = cdfArray.length;
+    bvh.totalEmissivePower = totalEmissivePower;
+
+    // updateEmitters() destroys + re-uploads — safe for emitter-count changes
+    // (RectAreaLight intensity dropping below 1e-8 culls the emitter, growing
+    // intensity adds it back).
+    pipeline.updateEmitters({
+      emitters:   bvh.emitters,
+      emitterCdf: bvh.emitterCdf,
+    });
+
+    pipeline.requestAccumReset();
+    // Emitter-only edits don't materially change the secondary-bounce sky
+    // floor, but DDGI's irradiance atlas integrates direct light per probe
+    // — flushing it keeps the second bounce in sync with the new emitter.
+    this._ddgi.invalidateProbeCache();
   }
 
   // ── Resize ─────────────────────────────────────────────────────────────
@@ -1693,6 +2025,165 @@ function collectDDGILightsFromRectAreaLights(root: THREE.Object3D): DDGILight[] 
       position: { x: _wp.x, y: _wp.y, z: _wp.z },
     });
   });
+  return out;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Items A3 — incremental-update helpers
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Apply a vitrum {@link Material} patch onto a THREE.Mesh's THREE material
+ * in place. Mirrors the fields read by `restir/packingHelpers.ts` +
+ * `restir/emitterList.ts` so the next BVH re-pack and emitter rebuild see
+ * the updated values.
+ *
+ * Limitations (intentional — see {@link HybridEngine.updatePrimitive}):
+ *   - Only PBR scalar / colour fields are honoured. Texture map swaps would
+ *     require texture-handle invalidation, which is out of scope for the
+ *     material-only fast path.
+ *   - Mesh.material may be an array (multi-material); we mutate index 0 only,
+ *     matching the BVH-snapshot convention in `snapshotPreBuildMaterials`.
+ */
+function applyMaterialPatchToThree(mesh: THREE.Mesh, mat: Partial<Material>): void {
+  const target = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+  if (!target) return;
+  const std = target as THREE.MeshStandardMaterial;
+  const phys = target as THREE.MeshPhysicalMaterial;
+
+  if (mat.baseColor !== undefined) {
+    std.color = std.color ?? new THREE.Color();
+    std.color.setRGB(mat.baseColor[0], mat.baseColor[1], mat.baseColor[2]);
+  }
+  if (mat.roughness !== undefined) std.roughness = mat.roughness;
+  if (mat.metallic !== undefined) std.metalness = mat.metallic;
+  if (mat.emissive !== undefined) {
+    std.emissive = std.emissive ?? new THREE.Color();
+    std.emissive.setRGB(mat.emissive[0], mat.emissive[1], mat.emissive[2]);
+  }
+  if (mat.emissiveIntensity !== undefined) std.emissiveIntensity = mat.emissiveIntensity;
+  if (mat.transmission !== undefined) phys.transmission = mat.transmission;
+  if (mat.ior !== undefined) phys.ior = mat.ior;
+  if (mat.attenuationColor !== undefined) {
+    (phys as { attenuationColor?: THREE.Color }).attenuationColor =
+      (phys as { attenuationColor?: THREE.Color }).attenuationColor ?? new THREE.Color();
+    (phys as { attenuationColor: THREE.Color }).attenuationColor.setRGB(
+      mat.attenuationColor[0], mat.attenuationColor[1], mat.attenuationColor[2],
+    );
+  }
+  if (mat.attenuationDistance !== undefined) {
+    (phys as { attenuationDistance?: number }).attenuationDistance = mat.attenuationDistance;
+  }
+  if (mat.thickness !== undefined) {
+    (phys as { thickness?: number }).thickness = mat.thickness;
+  }
+  target.needsUpdate = true;
+}
+
+/**
+ * Apply a vitrum {@link SceneEmitter} patch onto its corresponding THREE.Light.
+ * Used by {@link HybridEngine.updateEmitter} so the in-place mutation feeds
+ * the next emitter-list rebuild.
+ *
+ * The mutation set covers the fields the walkaround engine reads (intensity,
+ * color, position, direction, rect dimensions). Per-light-kind fields not
+ * yet read by the engine (e.g. distance / decay nuances) are ignored
+ * silently — no-op rather than throw, matching the engine's broader
+ * "unsupported emitter kind degrades gracefully" pattern.
+ */
+function applyEmitterPatchToThreeLight(
+  light: THREE.Light,
+  patch: Partial<SceneEmitter>,
+): void {
+  if (patch.color !== undefined) {
+    light.color = light.color ?? new THREE.Color();
+    light.color.setRGB(patch.color[0], patch.color[1], patch.color[2]);
+  }
+  if (patch.intensity !== undefined) light.intensity = patch.intensity;
+
+  const positionalPatch = patch as { position?: [number, number, number] };
+  if (positionalPatch.position !== undefined && 'position' in light) {
+    light.position.set(
+      positionalPatch.position[0],
+      positionalPatch.position[1],
+      positionalPatch.position[2],
+    );
+    // RectAreaLight + lights with matrixAutoUpdate=false (set by
+    // vitrumSceneToThree) need an explicit matrixWorld refresh so the
+    // emitter rebuild's matrixWorld.applyMatrix4 sees the new position.
+    light.updateMatrix();
+    light.updateMatrixWorld(true);
+  }
+
+  if (light instanceof THREE.RectAreaLight) {
+    const rectPatch = patch as { uAxis?: [number, number, number]; vAxis?: [number, number, number] };
+    if (rectPatch.uAxis !== undefined) {
+      light.width = 2 * Math.hypot(rectPatch.uAxis[0], rectPatch.uAxis[1], rectPatch.uAxis[2]);
+    }
+    if (rectPatch.vAxis !== undefined) {
+      light.height = 2 * Math.hypot(rectPatch.vAxis[0], rectPatch.vAxis[1], rectPatch.vAxis[2]);
+    }
+  }
+}
+
+/**
+ * Re-collect RectAreaLight emitter triangles from a THREE root for the
+ * emitter-list rebuild in {@link HybridEngine.updateEmitter}.
+ *
+ * Mirrors `restir/bvhCompute.ts:collectRectAreaLightEmitterTris` — the
+ * original function is module-private to bvhCompute.ts to avoid leaking
+ * detailed packing internals. We duplicate the small loop here rather than
+ * promote it to a public export so the BVH-build contract stays narrow.
+ */
+function collectRectAreaLightEmitterTrisLocal(
+  sceneRoots: THREE.Object3D[],
+): {
+  vA: [number, number, number];
+  vB: [number, number, number];
+  vC: [number, number, number];
+  normal: [number, number, number];
+  area: number;
+  Le: [number, number, number];
+}[] {
+  const out: {
+    vA: [number, number, number]; vB: [number, number, number];
+    vC: [number, number, number]; normal: [number, number, number];
+    area: number; Le: [number, number, number];
+  }[] = [];
+  const _ll = new THREE.Vector3();
+  const _lr = new THREE.Vector3();
+  const _ur = new THREE.Vector3();
+  const _ul = new THREE.Vector3();
+  const _normal = new THREE.Vector3();
+  const _ab = new THREE.Vector3();
+  const _ac = new THREE.Vector3();
+
+  for (const root of sceneRoots) {
+    root.updateMatrixWorld(true);
+    root.traverseVisible((obj) => {
+      if (!(obj instanceof THREE.RectAreaLight)) return;
+      const light = obj;
+      const wHalf = light.width * 0.5;
+      const hHalf = light.height * 0.5;
+      _ll.set(-wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
+      _lr.set( wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
+      _ur.set( wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
+      _ul.set(-wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
+      _ab.subVectors(_lr, _ll);
+      _ac.subVectors(_ur, _ll);
+      _normal.crossVectors(_ab, _ac);
+      const crossLen = _normal.length();
+      if (crossLen < 1e-8) return;
+      _normal.setFromMatrixColumn(light.matrixWorld, 2).normalize().negate();
+      const triArea = crossLen * 0.5;
+      const c = light.color;
+      const I = light.intensity;
+      const Le: [number, number, number] = [c.r * I, c.g * I, c.b * I];
+      const N: [number, number, number] = [_normal.x, _normal.y, _normal.z];
+      out.push({ vA: [_ll.x, _ll.y, _ll.z], vB: [_lr.x, _lr.y, _lr.z], vC: [_ur.x, _ur.y, _ur.z], normal: N, area: triArea, Le });
+      out.push({ vA: [_ll.x, _ll.y, _ll.z], vB: [_ur.x, _ur.y, _ur.z], vC: [_ul.x, _ul.y, _ul.z], normal: N, area: triArea, Le });
+    });
+  }
   return out;
 }
 

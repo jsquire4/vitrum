@@ -289,6 +289,11 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.matrix.setPosition(L.position);
       L.matrixAutoUpdate = false;
       L.matrixWorld.copy(L.matrix);
+      // Stamp emitter id onto the THREE light so consumers (e.g.
+      // HybridEngine.updateEmitter, items A3) can look the light up by id.
+      // Other emitter kinds set `.name` inside their case body; the rect-area
+      // branch previously omitted it.
+      L.name = String(e.id);
       const crossLen = _z.crossVectors(
         _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]),
         _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]),

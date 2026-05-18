@@ -565,6 +565,26 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
+   * Re-upload the per-triangle material data (bvhIndex.w + bvhBeerColors)
+   * WITHOUT touching the BVH topology or recompiling shaders.
+   *
+   * Used by {@link HybridEngine.updatePrimitive} for the material-only fast
+   * path: the BVH node layout, vertex positions, and indices are unchanged;
+   * only the per-triangle baseColor / transmission / texType / Beer-Lambert
+   * color bytes carried in bvhIndex[t*4+3] and bvhBeerColors[t] need fresh
+   * values. Existing buffer slots are written in place via `queue.writeBuffer`
+   * — no buffer reallocation, no destroy/reupload churn.
+   *
+   * Caller is responsible for re-packing the CPU-side typed arrays (via
+   * `packBVHIndexW` / `packBVHBeerColors`) with the patched THREE material
+   * already mutated in the merged-geometry materials LUT.
+   */
+  updateMaterialsBytes(bvhIndexCpuData: ArrayBuffer, beerCpuData: ArrayBuffer): void {
+    this._device.queue.writeBuffer(this._bvhIndexBuffer, 0, bvhIndexCpuData);
+    this._device.queue.writeBuffer(this._bvhBeerBuffer,  0, beerCpuData);
+  }
+
+  /**
    * Resize all per-frame GPU resources to a new render-surface size WITHOUT
    * rebuilding the BVH or recompiling pipelines. Destroys the current
    * `_res: FrameResources` (every full-res rgba16float texture, reservoir

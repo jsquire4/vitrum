@@ -95,6 +95,24 @@ export interface SceneBVHBuffers {
   totalEmissivePower: number;
   /** Merged geometry (CPU side, for debug / re-upload). */
   mergedGeometry: THREE.BufferGeometry;
+
+  // ── Items A3 — incremental update bookkeeping ─────────────────────────────
+  // Retained so {@link HybridEngine.updatePrimitive} can re-pack a single
+  // primitive's triangles in-place via `packBVHIndexW` / `packBVHBeerColors`
+  // without rebuilding the BVH. `triMaterialId.cpuData` already exposes the
+  // per-tri matId LUT; this field adds the parallel `THREE.Material[]` LUT so
+  // a (mat, matId) lookup is possible.
+  /** Per-material LUT mirroring the array order used by `triangleMaterialIds`. */
+  materialsLut: THREE.Material[];
+  /** Merged-geometry vertex indices, stride-3 (one tri = 3 u32). Mirrors
+   *  the data inside `mergedGeometry.index` but kept as a typed-array view
+   *  so the CPU-side repacker doesn't reach into THREE internals. */
+  mergedIndices: Uint32Array;
+  /** Merged-geometry positions, stride-4 (xyz + .w packed UV). Used by the
+   *  CPU-side emitter rebuilder (see `HybridEngine.updateEmitter`). */
+  mergedPositionsStride4: Float32Array;
+  /** Merged-geometry vertex normals, stride-4. Same provenance. */
+  mergedNormalsStride4: Float32Array;
 }
 
 // EmitterTri layout, EMITTER_STRIDE / EMITTER_FLOATS, and the
@@ -236,6 +254,11 @@ export function buildReSTIRSceneBVH(
     emitterCount,
     totalEmissivePower,
     mergedGeometry: shared.bvh.geometry,
+    // ── Items A3 — incremental-update bookkeeping ──────────────────────────
+    materialsLut: shared.materials,
+    mergedIndices: shared.indices,
+    mergedPositionsStride4: positionsWithUV,
+    mergedNormalsStride4: shared.normals,
   };
 }
 
