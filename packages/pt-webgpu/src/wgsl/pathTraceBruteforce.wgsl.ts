@@ -386,7 +386,15 @@ fn brdfDirectionalPdf(baseColor: vec3f, roughness: f32, metallic: f32, transmiss
   }
   let alpha = max(roughness * roughness, 1e-3);
   let d = ggxD(nDotH, alpha);
-  let pdfSpec = d * nDotH / max(4.0 * vDotH, 1e-6);
+  // VNDF reflection PDF (Heitz 2018 JCGT 7(4) §3, Eq. 17):
+  //   p_VNDF(h | wo) = D(h) · G1(wo) · max(0, wo·h) / (N·wo)
+  // With reflection Jacobian dω_h/dω_wi = 1/(4·|wo·h|), this collapses to
+  //   p_VNDF(wi | wo) = D(h) · G1(wo) / (4 · N·wo)
+  // which matches the glossyReflectionSample sampler (sampleGgxVndfTangent).
+  // Earlier revisions used the NDF half-vector PDF (d · N·h / (4 · wo·h));
+  // that distribution and the VNDF sampler disagree, biasing MIS weights.
+  let g1Wo = smithG1(nDotV, roughness);
+  let pdfSpec = (d * g1Wo) / max(4.0 * nDotV, 1e-6);
   let pdfDiff = nDotL * INV_PI;
   return diffProb * pdfDiff + specProb * pdfSpec;
 }
@@ -1440,8 +1448,15 @@ fn sampleNextBounceDirection(
       result.sampledDir = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
       result.newRayDir = result.sampledDir;
       result.sampleAllowsAreaMis = true;
-      // Divide by branch probability R (unbiased estimator).
-      result.throughputMul = fresnel / max(R, 1e-4);
+      // MC estimator for VNDF sampling of the GGX BRDF (Heitz 2018):
+      //   f·cosθ / p_VNDF = [D·G·F / (4·NdotV·NdotL)] · NdotL
+      //                    / [D·G1(wo) / (4·NdotV)]
+      //                    = F · G1(wi)
+      // The Fresnel branch probability R is the partition weight, so the
+      // throughput multiplier is F · G1(wi) / R.
+      let nDotL = max(dot(normal, result.sampledDir), 0.0);
+      let g1Wi = smithG1(nDotL, roughness);
+      result.throughputMul = fresnel * g1Wi / max(R, 1e-4);
     } else {
       // Fresnel-weighted refraction branch.
       let eta = select(ior, 1.0 / ior, frontFace);
@@ -1469,12 +1484,17 @@ fn sampleNextBounceDirection(
   if (xi2 < specProb) {
     // Glossy specular reflection — Heitz 2018 VNDF.
     // Ref: Heitz 2018 VNDF Algorithm 1 (see glossyReflectionSample).
+    // MC estimator for VNDF sampling collapses to F · G1(wi). Without the
+    // G1(wi) factor (or with the NDF half-vector PDF) grazing reflections
+    // are over-estimated; see brdfDirectionalPdf for the matching PDF.
     let wo = -incomingDir;
     result.newRayOrigin = hitPos + normal * 1e-3;
     result.sampledDir = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
     result.newRayDir = result.sampledDir;
     result.sampleAllowsAreaMis = true;
-    result.throughputMul = fresnel / max(specProb, 1e-4);
+    let nDotL = max(dot(normal, result.sampledDir), 0.0);
+    let g1Wi = smithG1(nDotL, roughness);
+    result.throughputMul = fresnel * g1Wi / max(specProb, 1e-4);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
     result.sampledDir = cosineHemisphereSample(rng, normal);
