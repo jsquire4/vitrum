@@ -176,6 +176,14 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  *     1 — visibility atlas (texture_2d<f32>, unfilterable)
  *     2 — non-filtering sampler
  *     3 — DDGI grid uniform (64 bytes)
+ *   PPG section (W9 Phase 2 — speculative wire, see shade.wgsl)
+ *     4 — ppgGuidance buffer: array<vec4<f32>> per pixel (xyz=dir, w=pdf)
+ *         Shape contract matches W9 Phase 1's ppgSampleOut binding.
+ *         Until Phase 1 ships, the host binds a zero-filled placeholder
+ *         buffer; shade's runtime PDF-sentinel (pdf <= 0) falls back to
+ *         pure ReSTIR-GI behaviour so today's renders are unaffected.
+ *         risGi.wgsl shares this BGL but does not declare binding 4
+ *         (WGSL allows BGL entries unused by a given consumer shader).
  *
  * Note: RC bindings were dropped — Lo_rc was computed and discarded;
  * the cascade buffers, params UBO, and setRCInputs wiring all retired
@@ -191,6 +199,7 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ],
   });
   return cache.hybridLayers;

@@ -232,25 +232,45 @@ export interface SVGFFrameResources {
  * Path-guiding (PPG) GPU resources — Müller 2017 Practical Path Guiding
  * (W9, opt-in via `HybridEngineOptions.ppgEnabled`).
  *
- * When PPG is not enabled, every field is `undefined` and the PPG passes are
- * never registered (see `WalkaroundGPUPipeline._ppgEnabled`). When enabled,
- * these buffers are uploaded each rebuild cycle and bound into the PPG guide
- * + update passes:
+ * W9 Phase 1 (`feat/w9-ppg-gpu-dtree-finish`) added the full guide/update
+ * pipeline buffers (sTree, dTree, dTreeOffsets, flux atomics, sample IO,
+ * UBOs). All are lazy-allocated by `allocatePPGResources` only when the
+ * host opts in via `HybridEngineOptions.ppgEnabled === true`.
  *
+ * W9 Phase 2 (`feat/w9-phase2-ppg-mis-in-shade`) added `ppgGuidanceBuffer`
+ * — a persistent placeholder bound at slot 4 of the hybrid-layers bind
+ * group consumed by shade.wgsl. It is ALWAYS allocated (so the bind-group
+ * layout is stable regardless of PPG enable state). When PPG is disabled
+ * the buffer stays zero-filled and shade.wgsl's PDF-sentinel
+ * (`pdf <= 0`) skips the MIS branch.
+ *
+ * W9 Phase 2 wire (this branch) — `WalkaroundGPUPipeline.renderFrame`
+ * rebuilds the hybrid-layers bind group each frame after the PPG guide
+ * kernel dispatch, pointing slot 4 at `sampleOutBuf` (the actual kernel
+ * output) when PPG is enabled, otherwise at `ppgGuidanceBuffer`. This is
+ * what makes the MIS combination actually fire in production.
+ *
+ * Lazy-field layout (see `ppg/serialise.ts`):
  *   - sTreeBuf       — serialised spatial kd-tree (Float32Array)
  *   - dTreeBuf       — concatenated per-cell directional quadtrees
  *   - dTreeOffsetsBuf — sTree-cell → dTreeBuf base-offset table
  *   - fluxAtomicsBuf — atomic u32 flux accumulator (one slot per dTree node)
- *   - samplesPosBuf  — per-pixel sample positions (training input; W9 P1 stub-filled)
+ *   - samplesPosBuf  — per-pixel sample positions (training input)
  *   - samplesDirBuf  — per-pixel sample directions (training input)
- *   - samplesLiBuf   — per-pixel incoming radiance L_i (deviation-3 binding)
+ *   - samplesLiBuf   — per-pixel incoming radiance L_i
  *   - sampleOutBuf   — per-pixel guide sample output (xyz=dir, w=pdf)
  *   - guideUboBuffer — guide kernel UBO (pixelCount, alpha, scene bounds)
  *   - updateUboBuffer — update kernel UBO (sampleCount, fluxBudget)
- *
- * See `ppg/serialise.ts` for the buffer layout.
  */
 export interface PPGFrameResources {
+  /**
+   * Persistent zero-filled placeholder used by the shade.wgsl hybrid-layers
+   * bind group when PPG is disabled. Sizing: `width × height × 16 bytes`
+   * (one vec4f per pixel). Always allocated, never undefined.
+   */
+  ppgGuidanceBuffer: GPUBuffer;
+
+  // ── W9 Phase 1 — opt-in lazy buffers (allocatePPGResources) ────────────
   /** Set only when `ppgEnabled` was true at engine init. */
   sTreeBuf?: GPUBuffer;
   dTreeBuf?: GPUBuffer;
@@ -261,7 +281,11 @@ export interface PPGFrameResources {
   samplesPosBuf?: GPUBuffer;
   samplesDirBuf?: GPUBuffer;
   samplesLiBuf?: GPUBuffer;
-  /** Per-pixel guide sample output (xyz=dir world, w=pdf). */
+  /**
+   * Per-pixel guide sample output (xyz=dir world, w=pdf). The Phase-2 wire
+   * points the shade hybrid-layers BG slot 4 at this buffer when PPG is
+   * enabled.
+   */
   sampleOutBuf?: GPUBuffer;
   /** Guide + update kernel UBOs. */
   guideUboBuffer?: GPUBuffer;
@@ -897,10 +921,27 @@ export function createFrameResources(
     svgfVarianceMomentsIntermedTexture,
   };
 
-  // PPG resources are allocated lazily by `allocatePPGResources` when
-  // `HybridEngineOptions.ppgEnabled === true`. Default leaves every slot
-  // undefined so the pipeline can treat PPG as truly opt-in.
-  const ppg: PPGFrameResources = {};
+  // W9 Phase 2 — per-pixel PPG guidance placeholder buffer. Sized to
+  // vec4f × pixel count. Zero-initialised (driver guarantees zero on
+  // allocation under the WebGPU spec). When PPG is disabled this is what
+  // shade.wgsl reads — shade's PDF-sentinel (pdf <= 0) routes every pixel
+  // to the ReSTIR-GI-only path. When PPG is enabled, the pipeline's
+  // renderFrame rebuilds the hybrid-layers bind group to point slot 4 at
+  // `ppg.sampleOutBuf` (the kernel output) instead. Either way the BG
+  // *layout* is stable, so no pipeline rebuild is ever needed.
+  const ppgGuidanceByteSize = Math.max(16, W * H * 16);
+  const ppgGuidanceBuffer = device.createBuffer({
+    label: 'ppg-guidance-placeholder',
+    size: ppgGuidanceByteSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  // The remaining PPG fields (sTreeBuf, dTreeBuf, sampleOutBuf, etc.) are
+  // lazy-populated by `allocatePPGResources` only when the host opts in
+  // via `HybridEngineOptions.ppgEnabled === true`.
+  const ppg: PPGFrameResources = { ppgGuidanceBuffer };
+  // Neural is still an empty placeholder for W10. Frozen so any accidental
+  // write throws in strict mode instead of silently mutating.
   const neural: NeuralFrameResources = Object.freeze({}) as NeuralFrameResources;
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
@@ -974,7 +1015,9 @@ export function destroyFrameResources(r: FrameResources): void {
   r.svgf.svgfVarianceTexture.destroy();
   r.svgf.svgfVarianceMomentsIntermedTexture.destroy();
 
-  // ppg — destroy all allocated buffers (each is optional; null-safe).
+  // ppg — always-allocated placeholder plus all Phase-1 lazy buffers
+  // (each lazy field is optional; null-safe).
+  r.ppg.ppgGuidanceBuffer.destroy();
   r.ppg.sTreeBuf?.destroy();
   r.ppg.dTreeBuf?.destroy();
   r.ppg.dTreeOffsetsBuf?.destroy();
