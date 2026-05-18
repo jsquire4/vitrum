@@ -837,8 +837,13 @@ fn generatePrimaryRay_common(
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
   let far4  = invVP * vec4f(ndc,  1.0, 1.0);
   let near4 = invVP * vec4f(ndc, -1.0, 1.0);
-  let farW  = far4.xyz  / far4.w;
-  let nearW = near4.xyz / near4.w;
+  // Guard against degenerate-camera invVP. invertMat4_common returns the zero
+  // matrix when |det| < 1e-10; that would set far4/near4 = (0,0,0,0), and the
+  // raw /w divides would yield NaN, which downstream safe_normalize does not
+  // catch (it only handles zero-length). On real perspective cameras far4.w
+  // and near4.w are well above 1e-30, so the guard is inert.
+  let farW  = far4.xyz  / select(1.0, far4.w,  abs(far4.w)  > 1e-30);
+  let nearW = near4.xyz / select(1.0, near4.w, abs(near4.w) > 1e-30);
   var ray: Ray;
   ray.origin    = camPos;
   ray.direction = safe_normalize(farW - nearW);

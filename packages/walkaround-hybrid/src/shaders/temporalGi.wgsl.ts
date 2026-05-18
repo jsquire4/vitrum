@@ -56,8 +56,11 @@ fn worldFromHalfPx_temporal(halfPx: vec2u, depth: f32, fullDims: vec2u) -> vec3f
   let invVP = invertMat4_common(ubo.projMatrix * ubo.viewMatrix);
   let far4 = invVP * vec4f(ndc, 1.0, 1.0);
   let near4 = invVP * vec4f(ndc, -1.0, 1.0);
-  let farW = far4.xyz / far4.w;
-  let nearW = near4.xyz / near4.w;
+  // Guard: invertMat4_common returns zero matrix for near-singular det; the
+  // raw /w would then NaN-poison the ray. See generatePrimaryRay_common for
+  // the canonical handling.
+  let farW  = far4.xyz  / select(1.0, far4.w,  abs(far4.w)  > 1e-30);
+  let nearW = near4.xyz / select(1.0, near4.w, abs(near4.w) > 1e-30);
   let dir = safe_normalize(farW - nearW);
   // Reconstruct world from linear depth = distance along ray from camera.
   return ubo.cameraPos + dir * depth;
