@@ -21,7 +21,11 @@ export class RISGIPass implements Pass {
   readonly dependencies: readonly string[] = ['spatial-2'];
   readonly passLabels: readonly PassLabel[] = ['gi-ris'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(): boolean {
     return true;

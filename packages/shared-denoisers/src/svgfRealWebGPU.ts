@@ -39,8 +39,6 @@ import {
   ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
   ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
   packAtrousVarianceAtrousUniforms,
-  packAtrousVarianceVarianceUniforms,
-  ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
 } from './atrousVarianceBindings.js';
 import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
 import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';

@@ -22,7 +22,11 @@ export class GTAOPass implements Pass {
   readonly dependencies: readonly string[] = ['shade'];
   readonly passLabels: readonly PassLabel[] = ['gtao'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(): boolean {
     return true;

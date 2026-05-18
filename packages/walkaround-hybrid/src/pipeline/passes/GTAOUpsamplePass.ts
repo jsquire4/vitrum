@@ -19,7 +19,11 @@ export class GTAOUpsamplePass implements Pass {
   readonly dependencies: readonly string[] = ['gtao'];
   readonly passLabels: readonly PassLabel[] = ['gtao-upsample'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(): boolean {
     return true;

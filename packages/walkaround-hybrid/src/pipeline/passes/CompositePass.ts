@@ -23,7 +23,11 @@ export class CompositePass implements Pass {
   readonly dependencies: readonly string[] = ['resolve'];
   readonly passLabels: readonly PassLabel[] = ['composite'];
 
-  constructor(private readonly _pipeline: GPURenderPipeline) {}
+  private readonly _pipeline: GPURenderPipeline;
+
+  constructor(pipeline: GPURenderPipeline) {
+    this._pipeline = pipeline;
+  }
 
   /** Exposed so {@link WalkaroundGPUPipeline.presentLastFrame} can reuse
    *  the compiled composite render pipeline without holding its own copy. */

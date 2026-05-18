@@ -407,7 +407,7 @@ export function createFrameResources(
   device: GPUDevice,
   W: number,
   H: number,
-  options?: FrameResourceOptions,
+  _options?: FrameResourceOptions,
 ): FrameResources {
   // Reservoir DI: 16 bytes/pixel (4 × u32)
   const RESERVOIR_STRIDE = 16;

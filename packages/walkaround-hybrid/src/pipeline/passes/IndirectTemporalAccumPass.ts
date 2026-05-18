@@ -28,11 +28,17 @@ export class IndirectTemporalAccumPass implements Pass {
   readonly dependencies: readonly string[] = ['shade', 'gtao-upsample'];
   readonly passLabels: readonly PassLabel[] = ['indirect-temporal-accum'];
 
+  private readonly _pipeline: GPUComputePipeline;
+  /** Orchestrator-owned ping-pong index (0 = ping out / pong prev). */
+  private readonly _pingPongRef: PingPongRef;
+
   constructor(
-    private readonly _pipeline: GPUComputePipeline,
-    /** Orchestrator-owned ping-pong index (0 = ping out / pong prev). */
-    private readonly _pingPongRef: PingPongRef,
-  ) {}
+    pipeline: GPUComputePipeline,
+    pingPongRef: PingPongRef,
+  ) {
+    this._pipeline = pipeline;
+    this._pingPongRef = pingPongRef;
+  }
 
   gates(): boolean {
     return true;

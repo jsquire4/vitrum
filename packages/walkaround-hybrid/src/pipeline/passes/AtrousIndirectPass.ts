@@ -47,13 +47,19 @@ export class AtrousIndirectPass implements Pass {
     'atrous-indirect-3',
   ];
 
+  /** Shared à-trous pipeline (same handle the AtrousDenoiser uses). */
+  private readonly _sharedAtrousPipeline: GPUComputePipeline;
+  /** Pass-private UBO ref — kept separate from AtrousDenoiser's UBO so
+   *  the two consumers never race on their per-iter sigma writes. */
+  private readonly _uboRef: UboRef;
+
   constructor(
-    /** Shared à-trous pipeline (same handle the AtrousDenoiser uses). */
-    private readonly _sharedAtrousPipeline: GPUComputePipeline,
-    /** Pass-private UBO ref — kept separate from AtrousDenoiser's UBO so
-     *  the two consumers never race on their per-iter sigma writes. */
-    private readonly _uboRef: UboRef,
-  ) {}
+    sharedAtrousPipeline: GPUComputePipeline,
+    uboRef: UboRef,
+  ) {
+    this._sharedAtrousPipeline = sharedAtrousPipeline;
+    this._uboRef = uboRef;
+  }
 
   gates(): boolean {
     return true;

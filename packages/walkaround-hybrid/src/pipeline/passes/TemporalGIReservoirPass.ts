@@ -18,7 +18,11 @@ export class TemporalGIReservoirPass implements Pass {
   readonly dependencies: readonly string[] = ['gi-ris'];
   readonly passLabels: readonly PassLabel[] = ['gi-temporal'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(): boolean {
     return true;

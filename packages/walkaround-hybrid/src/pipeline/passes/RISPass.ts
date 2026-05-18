@@ -18,7 +18,11 @@ export class RISPass implements Pass {
   readonly dependencies: readonly string[] = ['sample-budget'];
   readonly passLabels: readonly PassLabel[] = ['ris'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(): boolean {
     return true;

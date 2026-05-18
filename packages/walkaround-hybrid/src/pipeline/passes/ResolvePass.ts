@@ -25,10 +25,16 @@ export class ResolvePass implements Pass {
   readonly dependencies: readonly string[] = ['temporalAccum'];
   readonly passLabels: readonly PassLabel[] = ['resolve'];
 
+  private readonly _pipeline: GPUComputePipeline;
+  private readonly _uboRef: UboRef;
+
   constructor(
-    private readonly _pipeline: GPUComputePipeline,
-    private readonly _uboRef: UboRef,
-  ) {}
+    pipeline: GPUComputePipeline,
+    uboRef: UboRef,
+  ) {
+    this._pipeline = pipeline;
+    this._uboRef = uboRef;
+  }
 
   gates(): boolean {
     return true;
