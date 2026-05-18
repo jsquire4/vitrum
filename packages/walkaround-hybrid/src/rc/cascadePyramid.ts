@@ -49,7 +49,11 @@
  * Three.js WebGPU renderer backend.  See TSL_TO_RAW_MAPPING.md for rationale.
  */
 
-import * as THREE from 'three';
+// W8 Phase 1A (2026-05-18) — `THREE.Box3` / `THREE.Vector3` removed from this
+// module; replaced by plain `[x,y,z]` tuples + a {min,max} AABB type. The
+// `StorageBufferAttribute` import survives because the TSL host path still
+// hands the GPU buffer to a TSL `storage()` node; W8 Phase 1B adds a parallel
+// raw-GPUBuffer path so HybridEngine never touches the THREE backend.
 import { StorageBufferAttribute } from 'three/webgpu';
 
 // Performance budget: total compute invocations ≤ 200K for 30fps on RTX-class hardware
@@ -77,6 +81,13 @@ function cascadeBufferSize(c: CascadeDim): number {
   return cascadeTotalRays(c) * 4;
 }
 
+/** Plain AABB ({min,max} in world space), used in lieu of `THREE.Box3` so this
+ *  module stays THREE-free for the HybridEngine integration (W8 Phase 1A). */
+export interface CascadeAABB {
+  readonly min: readonly [number, number, number];
+  readonly max: readonly [number, number, number];
+}
+
 export interface CascadeBuffers {
   /** One Float32Array per cascade, length = probeX*probeY*probeZ*rays*4 floats. */
   cascades: Float32Array[];
@@ -86,31 +97,42 @@ export interface CascadeBuffers {
    * GI lighting node (reader) share the exact same GPU buffer object.
    * IMPORTANT: never create a second StorageBufferAttribute from the same Float32Array;
    * the WebGPU runtime allocates a separate GPU buffer per StorageBufferAttribute instance.
+   *
+   * NOTE (W8 Phase 1A — 2026-05-18): retained for the TSL host path
+   * (`walkaroundDiffuseLighting.ts` → `storage(attr).label(...)`). HybridEngine's
+   * WGSL shade pipeline uses the raw GPUBuffer extracted by `RCDispatcher`
+   * instead, so this field is host-only. W8 Phase 1B will add a parallel
+   * `rawCascades: GPUBuffer[]` field so the HybridEngine path doesn't need to
+   * reach into the THREE renderer backend at all.
    */
   gpuCascades: StorageBufferAttribute[];
-  /** Room AABB min corner in world space (probes start here). */
-  probeOriginWorld: THREE.Vector3;
-  /** Room AABB size in world space. */
-  roomSize: THREE.Vector3;
+  /** Room AABB min corner in world space (probes start here). Plain tuple — THREE-free. */
+  probeOriginWorld: readonly [number, number, number];
+  /** Room AABB size in world space. Plain tuple — THREE-free. */
+  roomSize: readonly [number, number, number];
 }
 
 /**
  * Allocate cascade storage on the CPU.
  * StorageBufferAttribute GPU-side buffers are allocated by the Three.js WebGPU
  * renderer the first time they are uploaded.
+ *
+ * Accepts a {@link CascadeAABB} (plain `{min,max}`) so this module is THREE-free.
+ * Callers with a `THREE.Box3` should convert via
+ * `{ min: [b.min.x, b.min.y, b.min.z], max: [b.max.x, b.max.y, b.max.z] }`.
  */
-export function allocateCascades(bounds: THREE.Box3): CascadeBuffers {
-  const size   = bounds.getSize(new THREE.Vector3());
+export function allocateCascades(bounds: CascadeAABB): CascadeBuffers {
   // Floor each axis at 1µm so a degenerate scene (e.g. a flat plane with
   // zero extent on one axis) never feeds a zero divisor into the cascade
   // merge UV mapping (`worldPos / roomSize` at cascadeMerge.wgsl:111) or
   // the probe-ray slab step (`min(roomSize.*) * 0.001` at
   // probeRayCast.wgsl:455). 1e-6 is below any real-world scene precision
   // and keeps the f32 divides well clear of subnormal range.
-  size.x = Math.max(size.x, 1e-6);
-  size.y = Math.max(size.y, 1e-6);
-  size.z = Math.max(size.z, 1e-6);
-  const origin = bounds.min.clone();
+  const sx = Math.max(bounds.max[0] - bounds.min[0], 1e-6);
+  const sy = Math.max(bounds.max[1] - bounds.min[1], 1e-6);
+  const sz = Math.max(bounds.max[2] - bounds.min[2], 1e-6);
+  const origin: readonly [number, number, number] = [bounds.min[0], bounds.min[1], bounds.min[2]];
+  const size: readonly [number, number, number]   = [sx, sy, sz];
   const cascades = CASCADE_DIMS.map((c) => {
     const len = cascadeBufferSize(c);
     return new Float32Array(len);

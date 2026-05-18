@@ -124,8 +124,10 @@ function buildCascadeUniformDataInto(
   // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), _pad4a(u)
   // Total: 40 float/uint values = 160 bytes
   const ui = new Uint32Array(d.buffer);
-  d[0]  = o.x; d[1]  = o.y; d[2]  = o.z; d[3]  = 0;
-  d[4]  = s.x; d[5]  = s.y; d[6]  = s.z; d[7]  = 0;
+  // W8 Phase 1A — `probeOriginWorld` / `roomSize` are now plain `[x,y,z]`
+  // tuples (was `THREE.Vector3`). Index access matches the WGSL packing.
+  d[0]  = o[0]; d[1]  = o[1]; d[2]  = o[2]; d[3]  = 0;
+  d[4]  = s[0]; d[5]  = s[1]; d[6]  = s[2]; d[7]  = 0;
   ui[8] = dim.probes[0]; ui[9] = dim.probes[1]; ui[10] = dim.probes[2];
   ui[11] = dim.rays;
   ui[12] = rayGridSize;
@@ -162,8 +164,9 @@ function buildMergeUniformData(
   ui[8]  = Math.round(Math.sqrt(lowerDim.rays));
   ui[9]  = Math.round(Math.sqrt(upperDim.rays));
   ui[10] = 0; ui[11] = 0;
-  d[12]  = o.x; d[13] = o.y; d[14] = o.z; d[15] = 0;
-  d[16]  = s.x; d[17] = s.y; d[18] = s.z; d[19] = 0;
+  // W8 Phase 1A — plain `[x,y,z]` tuples (was `THREE.Vector3`).
+  d[12]  = o[0]; d[13] = o[1]; d[14] = o[2]; d[15] = 0;
+  d[16]  = s[0]; d[17] = s[1]; d[18] = s[2]; d[19] = 0;
   return d;
 }
 

@@ -84,12 +84,14 @@ export function buildWalkaroundLightingNode(
   const solidAngles = computeOctahedralSolidAngles(GRID);
 
   // Uniform block for cascade geometry.
-  const uOriginX = uniform(cascadeBuffers.probeOriginWorld.x, 'float');
-  const uOriginY = uniform(cascadeBuffers.probeOriginWorld.y, 'float');
-  const uOriginZ = uniform(cascadeBuffers.probeOriginWorld.z, 'float');
-  const uSizeX   = uniform(cascadeBuffers.roomSize.x, 'float');
-  const uSizeY   = uniform(cascadeBuffers.roomSize.y, 'float');
-  const uSizeZ   = uniform(cascadeBuffers.roomSize.z, 'float');
+  // W8 Phase 1A (2026-05-18) — `probeOriginWorld` / `roomSize` are now plain
+  // `[x,y,z]` tuples; index access matches the WGSL packing.
+  const uOriginX = uniform(cascadeBuffers.probeOriginWorld[0], 'float');
+  const uOriginY = uniform(cascadeBuffers.probeOriginWorld[1], 'float');
+  const uOriginZ = uniform(cascadeBuffers.probeOriginWorld[2], 'float');
+  const uSizeX   = uniform(cascadeBuffers.roomSize[0], 'float');
+  const uSizeY   = uniform(cascadeBuffers.roomSize[1], 'float');
+  const uSizeZ   = uniform(cascadeBuffers.roomSize[2], 'float');
 
   // C0 storage reference. Use cascadeBuffers.gpuCascades[0] — the same
   // StorageBufferAttribute instance that cascadeDispatch writes into.

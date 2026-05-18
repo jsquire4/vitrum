@@ -14,12 +14,30 @@
  * degenerate box produces zero-probe cascades.
  */
 
-import * as THREE from 'three';
-import { allocateCascades, disposeCascades, type CascadeBuffers } from './cascadePyramid.js';
+// W8 Phase 1A (2026-05-18) — THREE.Box3 swapped for the plain
+// `CascadeAABB` so this module is THREE-free for HybridEngine integration.
+import {
+  allocateCascades,
+  disposeCascades,
+  type CascadeAABB,
+  type CascadeBuffers,
+} from './cascadePyramid.js';
+
+/** Squared distance between two `[x,y,z]` tuples (used to detect bounds drift
+ *  without pulling in `THREE.Vector3.distanceTo`). */
+function distance3Sq(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): number {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  const dz = a[2] - b[2];
+  return dx * dx + dy * dy + dz * dz;
+}
 
 export class CascadeBufferManager {
   private _buffers: CascadeBuffers | null = null;
-  private _prevBounds: THREE.Box3 | null = null;
+  private _prevBounds: { min: [number, number, number]; max: [number, number, number] } | null = null;
 
   /**
    * Allocate (or re-allocate) cascade storage for the given scene bounds.
@@ -27,11 +45,13 @@ export class CascadeBufferManager {
    *
    * Returns `true` if new buffers were allocated, `false` if bounds unchanged.
    */
-  initialize(bounds: THREE.Box3): boolean {
+  initialize(bounds: CascadeAABB): boolean {
     if (this._prevBounds) {
       const prev = this._prevBounds;
-      const sameLo = prev.min.distanceTo(bounds.min) < 1;
-      const sameHi = prev.max.distanceTo(bounds.max) < 1;
+      // Pre-W8: `THREE.Vector3.distanceTo < 1` per axis. Equivalent in the
+      // plain-tuple form: squared distance < 1.
+      const sameLo = distance3Sq(prev.min, bounds.min) < 1;
+      const sameHi = distance3Sq(prev.max, bounds.max) < 1;
       if (sameLo && sameHi && this._buffers) return false;
     }
 
@@ -41,7 +61,10 @@ export class CascadeBufferManager {
     }
 
     this._buffers = allocateCascades(bounds);
-    this._prevBounds = bounds.clone();
+    this._prevBounds = {
+      min: [bounds.min[0], bounds.min[1], bounds.min[2]],
+      max: [bounds.max[0], bounds.max[1], bounds.max[2]],
+    };
     return true;
   }
 

@@ -68,7 +68,7 @@ export {
   disposeCascades,
   fillCascadeDebug,
 } from './rc/cascadePyramid.js';
-export type { CascadeDim, CascadeBuffers } from './rc/cascadePyramid.js';
+export type { CascadeAABB, CascadeDim, CascadeBuffers } from './rc/cascadePyramid.js';
 
 // RC BVH builder (StorageBufferAttribute-typed adapter over @vitrum/shared-bvh).
 export { buildRCSceneBVH } from './rc/bvhCompute.js';
