@@ -129,11 +129,13 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     }
   });
 
-  it('ppg and neural sub-structs are present but empty (W9 / W10 placeholders)', () => {
+  it('ppg starts empty (lazy-populated by allocatePPGResources); neural is a frozen placeholder', () => {
     const res = createFrameResources(makeMockDevice(), 64, 64);
     expect(res.ppg).toBeDefined();
     expect(res.neural).toBeDefined();
-    // Empty placeholder — only the optional `_empty?: never` marker; no own enumerable keys.
+    // W9: ppg is `{}` by default; `allocatePPGResources` populates it only
+    // when the host opts in via `ppgEnabled: true`. neural stays a frozen
+    // placeholder until W10.
     expect(Object.keys(res.ppg)).toEqual([]);
     expect(Object.keys(res.neural)).toEqual([]);
   });

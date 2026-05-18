@@ -134,6 +134,18 @@ export type { AABB, STreeNode, DTreeNode, DTree, STree, PPGModelHandle } from '.
 // WGSL kernel strings (for host inspection or test assertions).
 export { PPG_UPDATE_WGSL } from './ppg/ppgUpdate.wgsl.js';
 export { PPG_GUIDE_WGSL } from './ppg/ppgGuide.wgsl.js';
+// W9 — serialisation (CPU producers + GPU-equivalent traversal oracles).
+export {
+  serialiseDTree,
+  serialiseSTree,
+  gpuTraverseDTreeLeaf,
+  gpuTraverseSTreeLeaf,
+  DTREE_HEADER_F32,
+  DTREE_NODE_F32,
+  STREE_HEADER_F32,
+  STREE_NODE_F32,
+} from './ppg/serialise.js';
+export type { SerialisedSTree } from './ppg/serialise.js';
 
 // ─── Neural denoiser (T2.H2) ──────────────────────────────────────────────────
 // InferenceGraph + weights loader for the U-Net neural denoiser.

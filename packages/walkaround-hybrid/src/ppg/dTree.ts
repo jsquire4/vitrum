@@ -53,7 +53,25 @@ export function buildEmptyDTree(initialDepth: number): DTree {
 
 /**
  * Recursively build the quadtree subtree rooted at the current node.
- * Nodes are appended in pre-order DFS (root, then NW, NE, SW, SE children).
+ *
+ * **Layout invariant (W9 fix):** for every interior node, its four children
+ * are stored at consecutive indices `[firstChild, firstChild+1,
+ * firstChild+2, firstChild+3]` (NW, NE, SW, SE). This matches the assumption
+ * built into {@link findDTreeLeaf} and into the GPU traversal in
+ * `ppgGuide.wgsl.ts`:
+ *
+ *     idx = node.firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0)
+ *
+ * The naive single-pass "push self then recurse" scheme interleaves
+ * grandchildren between siblings (root→NW-subtree→NE-subtree means root's
+ * NE child lands far past `firstChild+1`), breaking the invariant for any
+ * tree with `maxDepth ≥ 2`. We instead use a **two-phase build per level**:
+ * push all four children's slots consecutively, THEN recurse into each
+ * non-leaf child. This guarantees children are always adjacent.
+ *
+ * Nodes are appended in BFS-by-level / DFS-by-subtree order: root is at 0,
+ * its four children at 1..4, then for each non-leaf child its grandchildren
+ * are appended next (sub-tree depth-first).
  */
 function buildSubtree(
   nodes: DTreeNode[],
@@ -64,32 +82,106 @@ function buildSubtree(
 ): number {
   const idx = nodes.length;
   const isLeaf = depth >= maxDepth;
-  const uMid = (u0 + u1) * 0.5;
-  const vMid = (v0 + v1) * 0.5;
 
-  // Solid angle = 4π × patch area in octahedral square (deviation 5 fix).
-  const solidAngle = isLeaf ? FOUR_PI * (u1 - u0) * (v1 - v0) : -1;
-
-  // Reserve the slot, fill firstChild after children are built.
+  // Push this node first (its index is `idx`).
   nodes.push({
     isLeaf,
     u0, v0, u1, v1,
-    solidAngle,
+    solidAngle: isLeaf ? FOUR_PI * (u1 - u0) * (v1 - v0) : -1,
     flux: 0,
     firstChild: -1,
     depth,
   });
 
-  if (!isLeaf) {
-    const firstChild = nodes.length;
-    nodes[idx]!.firstChild = firstChild;
-    buildSubtree(nodes, u0, uMid, v0, vMid, depth + 1, maxDepth); // NW
-    buildSubtree(nodes, uMid, u1, v0, vMid, depth + 1, maxDepth); // NE
-    buildSubtree(nodes, u0, uMid, vMid, v1, depth + 1, maxDepth); // SW
-    buildSubtree(nodes, uMid, u1, vMid, v1, depth + 1, maxDepth); // SE
+  if (isLeaf) return idx;
+
+  // Two-phase build: (1) push 4 consecutive children, (2) recurse into each.
+  const uMid = (u0 + u1) * 0.5;
+  const vMid = (v0 + v1) * 0.5;
+  const childExtents: Array<[number, number, number, number]> = [
+    [u0,   uMid, v0,   vMid], // NW (offset 0)
+    [uMid, u1,   v0,   vMid], // NE (offset 1)
+    [u0,   uMid, vMid, v1  ], // SW (offset 2)
+    [uMid, u1,   vMid, v1  ], // SE (offset 3)
+  ];
+  const childIsLeaf = (depth + 1) >= maxDepth;
+
+  // Phase 1 — reserve all four child slots consecutively.
+  const firstChild = nodes.length;
+  nodes[idx]!.firstChild = firstChild;
+  for (let ci = 0; ci < 4; ci++) {
+    const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
+    nodes.push({
+      isLeaf: childIsLeaf,
+      u0: cu0, u1: cu1, v0: cv0, v1: cv1,
+      solidAngle: childIsLeaf ? FOUR_PI * (cu1 - cu0) * (cv1 - cv0) : -1,
+      flux: 0,
+      firstChild: -1,
+      depth: depth + 1,
+    });
+  }
+
+  // Phase 2 — recurse into each non-leaf child to build its sub-tree.
+  if (!childIsLeaf) {
+    for (let ci = 0; ci < 4; ci++) {
+      const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
+      const childIdx = firstChild + ci;
+      // The recursive call must build the grandchildren at the current
+      // tail (i.e. `nodes.length`). Patch this child's firstChild to point
+      // there, then push its 4 grandchildren consecutively.
+      const grandFirst = nodes.length;
+      nodes[childIdx]!.firstChild = grandFirst;
+      buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
+    }
   }
 
   return idx;
+}
+
+/**
+ * Helper used by Phase 2 — given a parent whose own slot is already pushed,
+ * push its four children consecutively AND recurse into each non-leaf child.
+ *
+ * Distinct from {@link buildSubtree} because the parent slot is NOT pushed
+ * here; the caller already pushed it (Phase 1) and is patching its
+ * `firstChild`. This avoids the double-push that would mis-align the layout.
+ */
+function buildSubtreeChildrenOnly(
+  nodes: DTreeNode[],
+  u0: number, u1: number,
+  v0: number, v1: number,
+  depth: number,
+  maxDepth: number,
+): void {
+  const uMid = (u0 + u1) * 0.5;
+  const vMid = (v0 + v1) * 0.5;
+  const childIsLeaf = (depth + 1) >= maxDepth;
+  const childExtents: Array<[number, number, number, number]> = [
+    [u0,   uMid, v0,   vMid],
+    [uMid, u1,   v0,   vMid],
+    [u0,   uMid, vMid, v1  ],
+    [uMid, u1,   vMid, v1  ],
+  ];
+  const firstChild = nodes.length;
+  for (let ci = 0; ci < 4; ci++) {
+    const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
+    nodes.push({
+      isLeaf: childIsLeaf,
+      u0: cu0, u1: cu1, v0: cv0, v1: cv1,
+      solidAngle: childIsLeaf ? FOUR_PI * (cu1 - cu0) * (cv1 - cv0) : -1,
+      flux: 0,
+      firstChild: -1,
+      depth: depth + 1,
+    });
+  }
+  if (!childIsLeaf) {
+    for (let ci = 0; ci < 4; ci++) {
+      const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
+      const childIdx = firstChild + ci;
+      nodes[childIdx]!.firstChild = nodes.length;
+      buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
+    }
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
