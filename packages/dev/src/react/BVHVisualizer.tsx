@@ -11,13 +11,15 @@
 //
 // HybridEngine ships engine.debug.bvhNodes() since the T3.G followup
 // landed; the remaining work is the 2D-canvas projection in this component.
-// Note: the current bvhNodes() output zeroes out the `depth` field — a
-// parent-link traversal is still pending. The depth-coloured visualisation
-// will need either that field populated or a separate pre-pass.
+//
+// The bvhNodes() output now populates the `depth` field via an iterative
+// DFS over the BVH's depth-first node ordering (root=0; left child at
+// idx+1; right child at the rightChildOrTriOffset word). Depth-coloured
+// visualisation can render `hsl(depth * 30, 80%, 60%)` directly.
 //
 // TODO: wire the engine.debug.bvhNodes() readback into a canvas overlay.
 //   1. engine.debug.bvhNodes() → Float32Array of [min, max, depth, pad] per
-//      node (depth currently 0; parent traversal TODO upstream).
+//      node — `depth` is now real (W8 follow-up, 2026-05-18).
 //   2. Create a <canvas> overlay (same size as WebGPU canvas) in front of it.
 //   3. Per-frame: project each node's 8 corners through viewProj; draw box
 //      in depth-mapped color (hsl(depth * 30, 80%, 60%)).

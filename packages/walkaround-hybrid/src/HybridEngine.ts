@@ -1075,13 +1075,49 @@ export class HybridEngine implements Engine {
       //   f32[0..2] bounds.min xyz
       //   f32[3..5] bounds.max xyz
       //   u32[6]    rightChildOrTriOffset
-      //   u32[7]    splitAxisOrTriCount
-      // Repackage into the public contract: [min, max, depth=0 placeholder,
-      // pad=0]. Depth would need a parent-link traversal we don't have
-      // here; the visualiser can colour by node-index ratio as a passable
-      // proxy.
-      const src = new Float32Array(buf);
+      //   u32[7]    splitAxisOrTriCount  (leaf when (high16 == 0xFFFF))
+      // Repackage into the public contract: [min, max, depth, pad].
+      const src    = new Float32Array(buf);
+      const srcU32 = new Uint32Array(buf);
       const nodeCount = (buf as ArrayBuffer).byteLength / 32;
+
+      // Depth pass — iterative DFS from root (depth-first encoding means
+      // the left child sits at idx+1; the right child is at
+      // srcU32[idx*8 + 6]). Leaves are flagged by the high 16 bits of the
+      // split-axis word being 0xFFFF (matches `BVH_LEAFNODE_FLAG` in
+      // `shared-bvh/wgsl/bvhIntersect.wgsl.ts:64`).
+      const depths = new Uint32Array(nodeCount);
+      if (nodeCount > 0) {
+        // Stack reused for the traversal — pre-allocate at the BVH stack
+        // depth (60 per `BVH_INTERSECT_STACK_DEPTH`) plus headroom for
+        // unbalanced trees.
+        const stack = new Int32Array(nodeCount); // worst-case linear chain
+        const stackD = new Uint32Array(nodeCount);
+        let sp = 0;
+        stack[sp]  = 0;
+        stackD[sp] = 0;
+        sp++;
+        while (sp > 0) {
+          sp--;
+          const idx = stack[sp]!;
+          const d   = stackD[sp]!;
+          if (idx < 0 || idx >= nodeCount) continue;
+          depths[idx] = d;
+          const splitWord = srcU32[idx * 8 + 7]!;
+          const isLeaf = (splitWord & 0xffff0000) === 0xffff0000;
+          if (isLeaf) continue;
+          const rightChild = srcU32[idx * 8 + 6]!;
+          // Push right first so left (idx+1) pops first — preserves a
+          // left-then-right walk for deterministic dev-overlay colours.
+          stack[sp]  = rightChild;
+          stackD[sp] = d + 1;
+          sp++;
+          stack[sp]  = idx + 1;
+          stackD[sp] = d + 1;
+          sp++;
+        }
+      }
+
       const out = new Float32Array(nodeCount * 8);
       for (let i = 0; i < nodeCount; i++) {
         const so = i * 8;   // 8 f32 lanes per source node
@@ -1092,7 +1128,7 @@ export class HybridEngine implements Engine {
         out[oo + 3] = src[so + 3]!; // maxX
         out[oo + 4] = src[so + 4]!; // maxY
         out[oo + 5] = src[so + 5]!; // maxZ
-        out[oo + 6] = 0;            // depth — TODO: parent traversal
+        out[oo + 6] = depths[i]!;   // depth (root=0; via DFS parent walk)
         out[oo + 7] = 0;            // pad
       }
       return out;
