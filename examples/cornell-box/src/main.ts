@@ -621,6 +621,28 @@ async function main(): Promise<void> {
       })();
     };
 
+    // -------- OIDN (manual dispatcher) — MIGRATION-PENDING --------
+    // Today this block does: readAccumulationRgbFloat → denoiseFinal → writeTonemappedRgbToCanvas,
+    // all driven from the example with its own oidnStarted/oidnDisplaySucceeded state machine.
+    //
+    // After `feat/w11-pt-webgl-oidn` lands (commit 7e98d90 on that branch), pt-webgl ships a
+    // built-in OIDN dispatcher behind:
+    //   - engine option:  denoiser: 'oidn-final'
+    //   - extension knob: extensions['vitrum.ptWebgl.oidnModelUrl'] = <ONNX model URL>
+    //   - per-frame API:  engine.getDenoisedFrame() → Float32Array | null
+    //
+    // Once W11 is in main, this block (≈26 lines of manual wiring incl. state refs + the
+    // dynamic denoiseFinal import) can be replaced by either:
+    //   a) configure the engine with denoiser='oidn-final' + oidnModelUrl extension at
+    //      createPTEngine_WebGL2 time, and poll engine.getDenoisedFrame() inside loop(); OR
+    //   b) gate a new `?denoiser=oidn-final` URL-param branch on the new engine path and
+    //      keep this manual `?vitrumDisplay=oidn` block as a regression baseline.
+    //
+    // Simplification deferred here because W11 is not yet in this branch's base (HEAD
+    // 29ccf96 — W1-R6); writing speculative `engine.getDenoisedFrame()` calls would break
+    // `npm run typecheck` against this base. Re-execute this cleanup post-W11 merge.
+    //
+    // See also: examples/cornell-box/README.md for the recommended-path note for new consumers.
     const oidnStartedRef = { value: oidnStarted };
     const oidnSucceededRef = { value: oidnDisplaySucceeded };
     if (
