@@ -31,6 +31,11 @@ import {
   TileVariancePass,
   computeAdaptiveTileRepeatFactors,
 } from './adaptiveTileWeights.js';
+import {
+  OIDNFinalDispatcher,
+  type DenoisedFrame,
+  type OIDNBridgeLoader,
+} from './oidnFinalDispatcher.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Device-tier threshold for analytic came (Sprint 5)
@@ -52,6 +57,16 @@ const MIN_UNIFORM_VECTORS_FOR_CAME = 256;
 
 export interface PTEngineWebGL2Options extends EngineOptions {
   readonly device: WebGLRenderer;
+  /**
+   * Test-only OIDN bridge loader override. When the host selects
+   * `denoiser: 'oidn-final'`, the engine constructs an
+   * {@link OIDNFinalDispatcher}; production code lets the dispatcher
+   * lazy-import `@vitrum/shared-denoisers` on first kick. Tests pass a
+   * synthetic loader returning a mock bridge to avoid pulling in
+   * `onnxruntime-web`. Not part of the public Engine contract — typed
+   * here for the W11 follow-up integration test.
+   */
+  readonly oidnBridgeLoader?: OIDNBridgeLoader;
 }
 
 const DEFAULT_MAX_BOUNCES = 12;
@@ -362,6 +377,14 @@ export class PTEngineWebGL2 implements Engine {
    *  that performed work. Subscribers register via {@link onProgress}. */
   readonly #progressSubs: Array<(p: ProgressStats) => void> = [];
 
+  /** W11 follow-up — OIDN final-pass dispatcher. Non-null iff the host
+   *  selected `denoiser: 'oidn-final'` AND supplied
+   *  `extensions['vitrum.ptWebgl.oidnModelUrl']`. The dispatcher is
+   *  invalidated on setScene / reset / updateEnvironment (any state
+   *  change that resets the accumulator). See
+   *  {@link OIDNFinalDispatcher} for the kick-and-return state machine. */
+  readonly #oidnDispatcher: OIDNFinalDispatcher | null;
+
   constructor(opts: PTEngineWebGL2Options, gpu: PTEngineWebGL2Init, slot: StateSlot) {
     this.#slot = slot;
     this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
@@ -418,6 +441,29 @@ export class PTEngineWebGL2 implements Engine {
     this.#pathTracer.renderDelay = 0;
     this.#pathTracer.minSamples = 0;
     this.#pathTracer.fadeDuration = 0;
+
+    // W11 follow-up — wire 'oidn-final' denoiser mode. The factory below
+    // validates the model URL at construction; this branch trusts that
+    // validation has already run, so a 'oidn-final' opts.denoiser without
+    // the matching model URL is a programming error in the factory itself.
+    // Color-only readback (no albedo / normal aux inputs) — the pt-webgl
+    // fork's primary render target is plain `WebGLRenderTarget`, not MRT,
+    // so the shader's `gAlbedo` / `gNormalDepth` outputs aren't captured
+    // host-side. See {@link OIDNFinalDispatcher} doc for context.
+    if (opts.denoiser === 'oidn-final') {
+      const modelUrl = opts.extensions?.['vitrum.ptWebgl.oidnModelUrl'];
+      const epsRaw = opts.extensions?.['vitrum.ptWebgl.oidnExecutionProviders'];
+      const eps = Array.isArray(epsRaw)
+        ? (epsRaw.filter((p) => p === 'webnn' || p === 'webgpu' || p === 'wasm') as Array<'webnn' | 'webgpu' | 'wasm'>)
+        : undefined;
+      const dispatcherOpts =
+        eps !== undefined && eps.length > 0
+          ? { modelUrl: modelUrl as string, executionProviders: eps }
+          : { modelUrl: modelUrl as string };
+      this.#oidnDispatcher = new OIDNFinalDispatcher(dispatcherOpts, opts.oidnBridgeLoader);
+    } else {
+      this.#oidnDispatcher = null;
+    }
   }
 
   get state(): EngineState {
@@ -598,6 +644,9 @@ export class PTEngineWebGL2 implements Engine {
     if (this.#threeSceneRoot != null) {
       disposeObject3DTree(this.#threeSceneRoot);
     }
+    // OIDN dispatcher: scene swap invalidates the accumulator, so the
+    // cached denoised image is also stale. Drop it.
+    this.#oidnDispatcher?.invalidate();
     this.#vitrumScene = scene;
     this.#cameraSignature = '';
     const threeScene = vitrumSceneToThree(scene);
@@ -674,6 +723,10 @@ export class PTEngineWebGL2 implements Engine {
       );
       tracerCompat.reset();
     }
+    // OIDN dispatcher: an env swap clears the accumulator (the fork's
+    // updateEnvironment() calls reset() internally), so any cached
+    // denoised image is stale relative to the new lighting. Drop it.
+    this.#oidnDispatcher?.invalidate();
     // Cache the env on the vitrum scene record so subsequent reads of the
     // engine's vitrum scene state reflect the env update. The Scene type's
     // environment field is non-nullable; collapse a null env to `{ kind: 'none' }`.
@@ -820,10 +873,28 @@ export class PTEngineWebGL2 implements Engine {
       }
     }
 
+    const isConverged = spp >= targetSpp;
+    // W11 follow-up: kick the OIDN dispatcher on every converged frame.
+    // The dispatcher is internally idempotent — it short-circuits on
+    // in-flight or already-completed inferences for the current
+    // invalidation cohort, so calling unconditionally per converged
+    // frame is the right shape (no need to gate here on "first converged
+    // frame"). Readback uses the additive-accumulation branch when the
+    // engine is in sum/count mode so the bridge sees averaged HDR RGB.
+    if (this.#oidnDispatcher != null && isConverged && spp > 0) {
+      this.#oidnDispatcher.kickIfReady(
+        this.#renderer,
+        this.#pathTracer.target as unknown as WebGLRenderTarget,
+        w,
+        h,
+        this.#additiveAccumulation,
+      );
+    }
+
     return {
       primaryRadiance: this.#pathTracer.target.texture,
       samplesAccumulated: spp,
-      isConverged: spp >= targetSpp,
+      isConverged,
       telemetry: this.#lastTelemetry,
     };
   }
@@ -831,6 +902,9 @@ export class PTEngineWebGL2 implements Engine {
   reset(): void {
     if (this.#slot.get() === 'disposed') return;
     this.#pathTracer.reset();
+    // OIDN dispatcher: the accumulator just cleared, so the cached
+    // denoised image (and any in-flight inference) is stale.
+    this.#oidnDispatcher?.invalidate();
   }
 
   /**
@@ -840,6 +914,27 @@ export class PTEngineWebGL2 implements Engine {
   getAccumulationRenderTarget(): WebGLRenderTarget {
     this.#assertLive('getAccumulationRenderTarget');
     return this.#pathTracer.target as unknown as WebGLRenderTarget;
+  }
+
+  /**
+   * W11 follow-up — returns the most recently completed OIDN-denoised
+   * RGB image from the internal {@link OIDNFinalDispatcher}, or null when:
+   *
+   *  - the engine was not constructed with `denoiser: 'oidn-final'`;
+   *  - the dispatcher has not yet completed its first inference for the
+   *    current accumulator cohort;
+   *  - the accumulator was just invalidated (setScene / reset /
+   *    updateEnvironment) and no converged frame has rendered since.
+   *
+   * Layout matches `OIDNDenoiseInputs.color`: row-major interleaved RGB,
+   * `width × height × 3` floats. Hosts that want to display the
+   * denoised result can pass this to `writeTonemappedRgbToCanvas`
+   * (the cornell-box demo uses exactly that path today, just with a
+   * host-side `denoiseFinal` call — this method lets the engine own
+   * the denoise instead).
+   */
+  getDenoisedFrame(): DenoisedFrame | null {
+    return this.#oidnDispatcher?.getLatestDenoised() ?? null;
   }
 
   pause(): void {
@@ -890,6 +985,7 @@ export class PTEngineWebGL2 implements Engine {
       disposeObject3DTree(this.#threeSceneRoot);
       this.#threeSceneRoot = null;
     }
+    this.#oidnDispatcher?.dispose();
     this.#pathTracer.dispose();
     this.#slot.set('disposed');
   }
@@ -922,6 +1018,23 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
     throw new RangeError(
       `createPTEngine_WebGL2: maxSamplesPerPixel structural cap must be >= 1 (got ${maxSpp})`,
     );
+  }
+
+  // W11 follow-up — validate 'oidn-final' requires a model URL up front.
+  // The OIDNFinalDispatcher constructor also throws on a missing URL, but
+  // surfacing the error from the engine factory (with a pointer to the
+  // exact extensions key) gives hosts a clearer integration error than a
+  // late-bound throw from the dispatcher.
+  if (opts.denoiser === 'oidn-final') {
+    const modelUrl = opts.extensions?.['vitrum.ptWebgl.oidnModelUrl'];
+    if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
+      throw new Error(
+        "createPTEngine_WebGL2: denoiser: 'oidn-final' requires " +
+          "extensions['vitrum.ptWebgl.oidnModelUrl'] (a URL or path to the OIDN ONNX model file). " +
+          'See packages/shared-denoisers/src/oidnBridge.ts for model variants ' +
+          '(oidn_rt_hdr.onnx for color-only, oidn_rt_hdr_alb_nrm.onnx for the aux-input variant).',
+      );
+    }
   }
 
   const renderer = opts.device as WebGLRenderer;
