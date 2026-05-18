@@ -232,6 +232,16 @@ export interface EngineDebugSurface {
     ao: GPUTexture | null;
     total: GPUTexture | null;
   } | null;
+
+  /** W9 — total number of CPU sTree refinement cycles that have run since
+   *  engine init. Each cycle reads back the GPU `ppgFluxAtomics`, calls
+   *  `splitOverflowLeaves` on the CPU mirror sTree, and re-uploads the
+   *  serialised buffers (`serialiseSTree`). Returns 0 when PPG is disabled
+   *  or refinement has been skipped (heuristic gating). Surfaced so dev
+   *  overlays can confirm refinement is actually happening — without this
+   *  metric the only signal of progress is a frame-by-frame quality lift
+   *  that's hard to attribute. */
+  ppgRefinementCount?(): number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

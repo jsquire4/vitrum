@@ -1294,6 +1294,25 @@ export class HybridEngine implements Engine {
         total:    null,
       };
     },
+    /**
+     * W9 — total CPU sTree refinement cycles that have actually mutated
+     * the tree (i.e. `splitOverflowLeaves` grew the leaf count) since
+     * pipeline init. The scheduler's heuristic gate is permissive — most
+     * cadence ticks will refine — so a healthy run shows this counter
+     * climbing roughly every `intervalFrames` frames. Stuck at 0 = either
+     * PPG is disabled, the scene is producing no flux signal, or the
+     * heuristic is rejecting every readback. Returns 0 when the
+     * walkaround pipeline isn't initialised (PPG disabled, or pre-init).
+     */
+    ppgRefinementCount: (): number => {
+      // Reach through the pipeline's public accessor. The cast here
+      // matches the pattern used by giSignalTextures above — no cyclic
+      // dependency on the pipeline type, just structural duck-typing.
+      const p = this._pipeline as unknown as {
+        getPPGRefinementCount?: () => number;
+      } | null;
+      return p?.getPPGRefinementCount?.() ?? 0;
+    },
   };
 
   // ── Dispose ────────────────────────────────────────────────────────────

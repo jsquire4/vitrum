@@ -49,7 +49,8 @@ import {
 import { buildSTree } from '../ppg/sTree.js';
 import type { AABB, STree } from '../ppg/types.js';
 import { serialiseSTree } from '../ppg/serialise.js';
-import { PPG_MIS_ALPHA } from '../ppg/ppgConstants.js';
+import { PPG_CELL_SPLIT_THRESHOLD, PPG_MAX_SPATIAL_CELLS, PPG_MIS_ALPHA } from '../ppg/ppgConstants.js';
+import { STreeRefinementScheduler } from '../ppg/refinementScheduler.js';
 import {
   type BGLCache,
 } from './bindGroupLayouts.js';
@@ -382,6 +383,19 @@ export class WalkaroundGPUPipeline {
    *  pixel indices to the (placeholder) world-space query position for sTree
    *  descent. Set from the BVH bounds at initialize() time. */
   private _ppgSceneAABB: AABB = { min: [-10, -10, -10], max: [10, 10, 10] };
+  /**
+   * W9 — sTree refinement scheduler. Reads back `fluxAtomicsBuf` every
+   * `intervalFrames` frames, decides whether refinement is warranted via
+   * the samples-increasing OR loss-decreasing heuristic, calls
+   * `splitOverflowLeaves` on the CPU mirror sTree, and re-uploads the
+   * serialised buffers. See `refinementScheduler.ts`. Null when
+   * `_ppgEnabled === false`.
+   */
+  private _ppgRefinement: STreeRefinementScheduler | null = null;
+  /** Cached `dTreeOffsets` from the last `serialiseSTree` call. The
+   *  refinement readback needs this to map atomic slots back to dTree
+   *  leaves; re-serialising just to recover it would be wasteful. */
+  private _ppgDTreeOffsets: Uint32Array | null = null;
   /** Sprint 18 follow-up — ping-pong index for the indirect temporal
    *  accumulator. Lives on the pipeline because the value persists across
    *  frames; the {@link IndirectTemporalAccumPass} reads + advances it
@@ -619,6 +633,14 @@ export class WalkaroundGPUPipeline {
       this._uploadPPGTree();
       this._writePPGGuideUBO();
       this._writePPGUpdateUBO();
+      // W9 — refinement scheduler: every N frames, read back the GPU's
+      // ppgFluxAtomics, decide whether to split sTree leaves via the
+      // samples-increasing OR loss-decreasing heuristic, then re-upload.
+      // The scheduler's staging buffers are sized to the live atomics
+      // buffer; if a future resize changes that size, `_ensurePPGRefinementStaging`
+      // re-allocates them.
+      this._ppgRefinement = new STreeRefinementScheduler();
+      this._ensurePPGRefinementStaging();
     }
 
     this._initialized = true;
@@ -680,6 +702,11 @@ export class WalkaroundGPUPipeline {
       this._uploadPPGTree();
       this._writePPGGuideUBO();
       this._writePPGUpdateUBO();
+      // Resize may have changed the atomics buffer size — re-size the
+      // refinement staging buffers + reset gating history (new resolution
+      // is effectively a fresh sample stream).
+      this._ensurePPGRefinementStaging();
+      this._ppgRefinement?.resetHistory();
     }
     // Reset transient per-frame state — ping-pong reads from the previous
     // frame's texture, but the new textures are blank, so we must restart
@@ -995,6 +1022,12 @@ export class WalkaroundGPUPipeline {
     // Resolve timestamps + copy into the inactive readback buffer.
     resolveTimestamps(encoder, this._tsState, this._frameCount, passLayout.slotCount);
 
+    // W9 — schedule a copyBufferToBuffer from the live ppgFluxAtomics to
+    // our refinement staging buffer iff this frame matches the cadence.
+    // The copy must be encoded BEFORE queue.submit; the mapAsync that
+    // backs the readback happens AFTER submit (next block).
+    const refinementStaging = this._maybeEncodePPGAtomicsCopy(encoder);
+
     d.queue.submit([encoder.finish()]);
 
     // Per-frame denoiser cleanup. Runs after `queue.submit()` — the GPU
@@ -1009,6 +1042,15 @@ export class WalkaroundGPUPipeline {
     // Pass the layout labels so the async callback labels each slot
     // correctly even if the pipeline reconfigures between frames.
     kickTimestampReadback(this._tsState, this._frameCount, passLayout.labels);
+
+    // W9 — if we encoded a flux-atomics copy above, kick its mapAsync
+    // here (post-submit). The async resolution runs `_consumePPGRefinementReadback`
+    // which decodes the atomics, applies the heuristic gate, calls
+    // splitOverflowLeaves on the CPU mirror, and (on accept) re-uploads
+    // the serialised tree + clears the atomics on the GPU.
+    if (refinementStaging !== null) {
+      this._kickPPGRefinementReadback(refinementStaging);
+    }
     // Mirror public telemetry fields from the state object so callers
     // can read them as before.
     this.lastGpuTimings      = this._tsState.lastGpuTimings;
@@ -1020,8 +1062,12 @@ export class WalkaroundGPUPipeline {
 
   /**
    * W9 — Serialise the CPU sTree + per-cell dTrees and upload to the GPU
-   * storage buffers. Called once at init; Phase 2 will call this after each
-   * refinement cycle. No-op when PPG is disabled.
+   * storage buffers. Called once at init; the refinement scheduler calls
+   * this again after each successful `splitOverflowLeaves` cycle. No-op
+   * when PPG is disabled.
+   *
+   * Caches the returned `dTreeOffsets` on the pipeline so the refinement
+   * scheduler can decode atomic readbacks without re-serialising.
    */
   private _uploadPPGTree(): void {
     if (!this._ppgEnabled || !this._ppgSTree) return;
@@ -1031,6 +1077,7 @@ export class WalkaroundGPUPipeline {
     this._device.queue.writeBuffer(ppg.sTreeBuf, 0, sTreeBuf.buffer, sTreeBuf.byteOffset, sTreeBuf.byteLength);
     this._device.queue.writeBuffer(ppg.dTreeBuf, 0, dTreeBuf.buffer, dTreeBuf.byteOffset, dTreeBuf.byteLength);
     this._device.queue.writeBuffer(ppg.dTreeOffsetsBuf, 0, dTreeOffsets.buffer, dTreeOffsets.byteOffset, dTreeOffsets.byteLength);
+    this._ppgDTreeOffsets = dTreeOffsets;
   }
 
   /**
@@ -1088,6 +1135,110 @@ export class WalkaroundGPUPipeline {
     this._device.queue.writeBuffer(buf, 0, data);
   }
 
+  /**
+   * Public W9 metric — total sTree refinement cycles run since pipeline
+   * init (i.e. how many times `splitOverflowLeaves` mutated the CPU
+   * mirror sTree). Surfaced by `HybridEngine.debug.ppgRefinementCount()`.
+   * Returns 0 when PPG is disabled.
+   */
+  getPPGRefinementCount(): number {
+    return this._ppgRefinement?.refinementCount ?? 0;
+  }
+
+  /** Ensure the refinement scheduler's staging buffers are sized to the
+   *  live `fluxAtomicsBuf`. No-op when PPG is disabled. */
+  private _ensurePPGRefinementStaging(): void {
+    if (!this._ppgEnabled || !this._ppgRefinement) return;
+    const fluxBuf = this._res.ppg.fluxAtomicsBuf;
+    if (!fluxBuf) return;
+    this._ppgRefinement.ensureStaging(this._device, fluxBuf.size);
+  }
+
+  /**
+   * If this frame matches the refinement cadence, encode a
+   * `copyBufferToBuffer` from the live `fluxAtomicsBuf` into one of the
+   * scheduler's ping-pong staging buffers and return that buffer. The
+   * caller is expected to kick `mapAsync` on it AFTER `queue.submit`.
+   * Returns null when no copy was encoded (cadence miss, PPG disabled,
+   * or a readback is already in flight).
+   */
+  private _maybeEncodePPGAtomicsCopy(encoder: GPUCommandEncoder): GPUBuffer | null {
+    if (!this._ppgEnabled || !this._ppgRefinement) return null;
+    const fluxBuf = this._res.ppg.fluxAtomicsBuf;
+    if (!fluxBuf) return null;
+    if (!this._ppgRefinement.shouldReadback(this._frameCount)) return null;
+
+    const staging = this._ppgRefinement.acquireStaging();
+    if (staging === null) return null;
+    encoder.copyBufferToBuffer(fluxBuf, 0, staging, 0, fluxBuf.size);
+    return staging;
+  }
+
+  /**
+   * Kick a `mapAsync(READ)` on the given staging buffer and, once it
+   * resolves, run the heuristic gate + (on accept) `splitOverflowLeaves`
+   * + re-upload the serialised tree + clear the GPU atomics.
+   *
+   * Fire-and-forget — we deliberately do NOT await this; if the
+   * resolution lands during a later frame's `renderFrame`, the
+   * scheduler's `_readbackInFlight` flag prevents a second concurrent
+   * readback from racing. The async callback never touches GPU state
+   * during another encoder's recording (only via post-completion
+   * `device.queue.writeBuffer` calls, which are queue-serialised).
+   */
+  private _kickPPGRefinementReadback(staging: GPUBuffer): void {
+    if (!this._ppgRefinement || !this._ppgSTree || !this._ppgDTreeOffsets) return;
+    const sched = this._ppgRefinement;
+    const sTree = this._ppgSTree;
+    const dTreeOffsets = this._ppgDTreeOffsets;
+    const device = this._device;
+    const fluxBuf = this._res.ppg.fluxAtomicsBuf;
+
+    staging.mapAsync(GPUMapMode.READ).then(() => {
+      try {
+        const range = staging.getMappedRange();
+        // Copy out of the mapped range before unmapping — decoding
+        // touches the buffer in-place but the snapshot stores derived
+        // scalars only, so we can unmap immediately after.
+        const snap = sched.consumeReadback(sTree, dTreeOffsets, range);
+        staging.unmap();
+        if (snap === null) return; // gate rejected — nothing to do
+        // Apply the split + re-upload + atomic clear. The CPU sTree's
+        // sampleCount fields were just populated by consumeReadback;
+        // splitOverflowLeaves reads them directly.
+        const grew = sched.applySplit(sTree, PPG_CELL_SPLIT_THRESHOLD, PPG_MAX_SPATIAL_CELLS);
+        if (grew) {
+          // Re-upload + cache new offsets via the existing helper.
+          this._uploadPPGTree();
+        }
+        // Always clear the atomics after a readback (whether or not we
+        // split). The next training cycle must start from zero, otherwise
+        // the gating heuristic would see ever-increasing totals and split
+        // forever. `writeBuffer` with a zero-filled view is the cheapest
+        // option here — the buffer is at most a few MB.
+        if (fluxBuf) {
+          const zero = new Uint8Array(fluxBuf.size);
+          device.queue.writeBuffer(fluxBuf, 0, zero);
+        }
+      } catch (e) {
+        // Robustness: a mapAsync error (lost device, validation failure)
+        // must NOT crash the render loop. Surface to console and reset
+        // the scheduler's in-flight flag so the next cadence tick can
+        // retry. `consumeReadback` already clears the flag on success.
+        try { staging.unmap(); } catch { /* may not be mapped */ }
+        sched.resetHistory();
+        // eslint-disable-next-line no-console
+        console.warn('[PPG] refinement readback failed:', e);
+      }
+    }).catch((e) => {
+      // mapAsync rejection — same recovery as above. WebGPU spec: the
+      // promise rejects on device-loss or buffer-destroy races.
+      sched.resetHistory();
+      // eslint-disable-next-line no-console
+      console.warn('[PPG] refinement mapAsync rejected:', e);
+    });
+  }
+
   dispose(): void {
     this._bvhNodesBuffer?.destroy();
     this._bvhIndexBuffer?.destroy();
@@ -1109,6 +1260,10 @@ export class WalkaroundGPUPipeline {
     // T2.H2 — dispose the neural InferenceGraph if present (reserved for W10).
     this._inferenceGraph?.dispose();
     this._inferenceGraph = null;
+    // W9 — release refinement-scheduler staging buffers.
+    this._ppgRefinement?.dispose();
+    this._ppgRefinement = null;
+    this._ppgDTreeOffsets = null;
   }
 
   /**
