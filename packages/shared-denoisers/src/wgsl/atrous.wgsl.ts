@@ -92,11 +92,11 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // normalizing both colors to unit luminance first, we measure
       // hue/saturation difference instead of brightness difference,
       // making σc behave consistently across all cell luminances.
-      // Rec. 709 luminance weights — canonical value; identical copies exist
-      // in svgf.wgsl.ts, spatialFilter.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
-      let lumW = vec3f(0.2126, 0.7152, 0.0722);
-      let lumP = max(1e-3, dot(cP, lumW));
-      let lumC = max(1e-3, dot(cCenter, lumW));
+      // luminance() is the canonical Rec.709 helper from COMMON_WGSL
+      // (atrous module declares requires: 'common'; the W1-R6 composer
+      // prepends COMMON_WGSL so fn luminance is in scope here).
+      let lumP = max(1e-3, luminance(cP));
+      let lumC = max(1e-3, luminance(cCenter));
       let dc = length(cP / lumP - cCenter / lumC);
       let wc = exp(-dc * dc / (ubo.sigmaC * ubo.sigmaC + 1e-6));
 
