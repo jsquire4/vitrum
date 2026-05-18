@@ -768,6 +768,12 @@ export class ProbeUpdatePass {
   // record (just width/height); we use it as a WeakMap key so the
   // GPUTexture is released when ProbeGrid drops the slot.
   private _textureCache = new WeakMap<AtlasTextureSlot, GPUTexture>();
+  // Parallel Set of cached GPUTextures so `dispose()` can call `.destroy()`
+  // on each one — replacing the WeakMap alone does NOT free the captured
+  // GPU resources (those textures stay alive on the device until the
+  // AtlasTextureSlot itself is GC'd, which for ProbeGrid-owned slots is
+  // tied to the engine's lifetime).
+  private _trackedCacheTextures = new Set<GPUTexture>();
 
   private _getOrCreateAtlasTexture(
     device: GPUDevice,
@@ -792,6 +798,7 @@ export class ProbeUpdatePass {
     });
 
     this._textureCache.set(slot, gpuTex);
+    this._trackedCacheTextures.add(gpuTex);
     return gpuTex;
   }
 
@@ -1073,6 +1080,13 @@ export class ProbeUpdatePass {
     g.rayResultsBuf.destroy();
     g.activeProbesBuf.destroy();
     this._gpu = null;
+    // Destroy cached atlas GPUTextures BEFORE clearing the WeakMap. The
+    // WeakMap key is the AtlasTextureSlot (owned by ProbeGrid, lifetime
+    // tied to the engine), so `new WeakMap()` alone does not free the
+    // captured textures — the slots are still strongly reachable and the
+    // GPU memory stays allocated until the engine itself is collected.
+    for (const tex of this._trackedCacheTextures) tex.destroy();
+    this._trackedCacheTextures.clear();
     this._textureCache = new WeakMap();
     this._irrScratchSize = '';
     this._visScratchSize = '';
