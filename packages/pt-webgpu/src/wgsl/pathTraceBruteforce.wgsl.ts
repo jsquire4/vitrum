@@ -1103,56 +1103,13 @@ fn glossyReflectionSample(rng: ptr<function, u32>, wo: vec3f, n: vec3f, t: vec3f
   return result;
 }
 
-// sampleRectAreaLight (legacy single-rect-area path) was removed: the
-// multi-light loop in main() reads rectAreaLights[ri*4 + 0..3] directly and
-// already covers the single-light case (rectAreaLightCount == 1).
-
-fn sampleMeshAreaLight(
-  rng: ptr<function, u32>,
-  hitPos: vec3f,
-  normal: vec3f,
-  wo: vec3f,
-  baseColor: vec3f,
-  roughness: f32,
-  metallic: f32,
-  transmission: f32,
-  throughput: vec3f,
-  radiance: ptr<function, vec3f>,
-) {
-  let a = meshAreaLights[0].xyz;
-  let b = meshAreaLights[1].xyz;
-  let c = meshAreaLights[2].xyz;
-  let r1 = rand_f32(rng);
-  let r2 = rand_f32(rng);
-  let su = sqrt(r1);
-  let u = 1.0 - su;
-  let v = r2 * su;
-  let w = 1.0 - u - v;
-  let lp = a * u + b * v + c * w;
-  let toLight = lp - hitPos;
-  let dist2 = max(dot(toLight, toLight), 1e-6);
-  let dist = sqrt(dist2);
-  let wi = toLight / dist;
-  let nDotL = max(dot(normal, wi), 0.0);
-  if (nDotL <= 0.0) {
-    return;
-  }
-  let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-  let lightNormal = safe_normalize(cross(b - a, c - a));
-  let cosLight = max(dot(lightNormal, -wi), 0.0);
-  if (cosLight <= 0.0) {
-    return;
-  }
-  let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
-  let lightPdf = dist2 / max(cosLight * area, 1e-6);
-  let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, wi);
-  let misWeight = powerHeuristic(lightPdf, brdfPdf);
-  let shadowRay = Ray(hitPos + normal * 1e-3, wi);
-  if (traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-    return;
-  }
-  *radiance = *radiance + throughput * brdf * nDotL * meshAreaLights[3].rgb * misWeight / max(lightPdf, 1e-6);
-}
+// sampleRectAreaLight (legacy single-rect-area path) and sampleMeshAreaLight
+// (legacy single-mesh-area-light path reading meshAreaLights[0..3] directly)
+// both removed: the multi-light loop in main() reads
+// {rectAreaLights, meshAreaLights}[ri*4 + 0..3] dynamically and already
+// covers the single-light case (count == 1). WGSL strips uncalled functions
+// silently so the dead code wasn't a runtime cost — but it misled readers
+// into believing meshAreaLights[0..3] was a special always-the-first slot.
 
 fn causticMode() -> u32 {
   return params.causticStrategy;
