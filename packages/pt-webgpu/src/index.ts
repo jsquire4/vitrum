@@ -6,6 +6,7 @@ import type {
   EngineState,
   FrameInput,
   FrameOutput,
+  FrameStats,
   Scene,
   SceneEmitter,
   ScenePrimitive,
@@ -84,6 +85,19 @@ class PTEngineWebGPU implements Engine {
   #paramsBuffer: GPUBuffer | null = null;
   #computePipeline: GPUComputePipeline | null = null;
   #bindGroupLayout: GPUBindGroupLayout | null = null;
+
+  // ── W3-D16 telemetry ───────────────────────────────────────────────────
+  // Subscribers registered via `onFrame()`. Empty by default; fired
+  // synchronously from `renderFrame()` after the GPU dispatch is submitted.
+  // Subscribers that throw are caught & swallowed so the render loop stays
+  // alive (matches the pt-webgl + walkaround contract).
+  readonly #frameSubs: Array<(s: FrameStats) => void> = [];
+  // Monotone per-engine frame counter — bumped only on a successful
+  // (non-paused) `renderFrame()`. Surfaced in `FrameStats.frameIndex`.
+  // Distinct from the host-supplied `FrameInput.frameIndex` (which is the
+  // host's own counter); we want a value that's monotone WRT this engine's
+  // dispatches even if the host re-uses input frameIndex values.
+  #engineFrameIndex = 0;
 
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot) {
     this.#slot = slot;
@@ -387,6 +401,9 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'paused') {
       const pq = input.quality ?? {};
       const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
+      // Paused: do NOT bump engineFrameIndex and do NOT fire telemetry —
+      // matches the pt-webgl convention that subscribers see only frames
+      // that performed real work.
       return {
         primaryRadiance: this.#accumTexture,
         normalDepth: this.#normalDepthTexture ?? undefined,
@@ -397,6 +414,12 @@ class PTEngineWebGPU implements Engine {
         isConverged: this.#samplesAccumulated >= targetSppPaused,
       };
     }
+
+    // W3-D16: CPU→submit wall-clock timing. We measure the JS work +
+    // command-encoder build + queue.submit; the actual GPU execution
+    // happens asynchronously and is NOT included (timestamp-query would be
+    // needed for GPU time, which this backend doesn't wire yet).
+    const t0 = performance.now();
 
     const q = input.quality ?? {};
     this.#activeBounces = Math.max(1, Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit));
@@ -473,7 +496,27 @@ class PTEngineWebGPU implements Engine {
     this.#device.queue.submit([encoder.finish()]);
 
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
+    this.#engineFrameIndex += 1;
     const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
+
+    // W3-D16: fire telemetry AFTER the submit. `gpuTimeMs` / `passTimings`
+    // are absent because pt-webgpu doesn't wire timestamp-query yet — the
+    // canonical FrameStats contract says "absent, not zero" for unavailable
+    // data, so we simply omit them.
+    if (this.#frameSubs.length > 0) {
+      const frameTimeMs = performance.now() - t0;
+      const stats: FrameStats = {
+        frameTimeMs,
+        spp: this.#samplesAccumulated,
+        samplesAccumulated: this.#samplesAccumulated,
+        frameIndex: this.#engineFrameIndex,
+        backend: 'webgpu',
+      };
+      for (const sub of this.#frameSubs) {
+        try { sub(stats); } catch { /* swallow */ }
+      }
+    }
+
     return {
       primaryRadiance: this.#accumTexture,
       normalDepth: this.#normalDepthTexture ?? undefined,
@@ -482,6 +525,20 @@ class PTEngineWebGPU implements Engine {
       motionVectors: this.#motionVectorsTexture ?? undefined,
       samplesAccumulated: this.#samplesAccumulated,
       isConverged: this.#samplesAccumulated >= targetSpp,
+    };
+  }
+
+  // ── W3-D16 telemetry ───────────────────────────────────────────────────
+
+  /** Subscribe to per-frame stats. Returns an unsubscribe function.
+   *  Fired synchronously at the end of each successful `renderFrame()`
+   *  call (paused frames are skipped). Subscribers that throw are caught
+   *  and swallowed so the render loop stays alive. */
+  onFrame(cb: (stats: FrameStats) => void): () => void {
+    this.#frameSubs.push(cb);
+    return () => {
+      const i = this.#frameSubs.indexOf(cb);
+      if (i >= 0) this.#frameSubs.splice(i, 1);
     };
   }
 
