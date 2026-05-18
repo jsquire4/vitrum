@@ -235,6 +235,13 @@ fn bvhTraceTintedVisibility(
       if (stackPtr < 62u) {
         stack[stackPtr] = rightChild; stackPtr++;
         stack[stackPtr] = nodeIdx + 1u; stackPtr++;
+      } else {
+        // Stack overflow: bail out with current accumulated visibility
+        // rather than silently dropping the right subtree.  At depth 64
+        // a balanced BVH spans 2^64 triangles, so this branch is
+        // unreachable for any real scene; the guard exists for invariant
+        // clarity.
+        return visibility;
       }
     }
   }

@@ -565,6 +565,13 @@ fn bvhIntersectAny(
       if (stackPtr + 1u < 64u) {
         stack[stackPtr] = farChild;  stackPtr++;
         stack[stackPtr] = nearChild; stackPtr++;
+      } else {
+        // Stack overflow: abandon traversal and return current best
+        // (false = not-yet-occluded) rather than silently dropping the
+        // far subtree.  At depth 64 a balanced BVH spans 2^64 triangles,
+        // so this branch is unreachable for any real scene; the guard
+        // exists for invariant clarity, not as a performance path.
+        return false;
       }
     }
   }
@@ -661,6 +668,12 @@ fn bvhIntersectFirstHit(
       if (stackPtr + 1u < 64u) {
         stack[stackPtr] = farChild;  stackPtr++;
         stack[stackPtr] = nearChild; stackPtr++;
+      } else {
+        // Stack overflow: bail out with current best-hit rather than
+        // silently dropping the far subtree.  At depth 64 a balanced BVH
+        // spans 2^64 triangles, so this branch is unreachable for any
+        // real scene; the guard exists for invariant clarity.
+        return result;
       }
     }
   }
