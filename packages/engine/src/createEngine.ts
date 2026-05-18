@@ -23,7 +23,9 @@ import { detectGpu } from '@vitrum/core';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
+  WALKAROUND_HYBRID_EXT_KEY,
   type HybridEngineOptions,
+  type WalkaroundHybridExtensions,
 } from '@vitrum/walkaround-hybrid';
 import {
   createPTEngine_WebGL2,
@@ -145,20 +147,24 @@ export function deriveScaleDefaults(D: number): ScaleDefaults {
 // Backend constructors
 // ────────────────────────────────────────────────────────────────────────────
 
-async function constructWalkaround(
-  opts: CreateEngineOptions,
-  vitrumScene: Scene,
-  aabb: SceneAABB,
-  sceneInputIsThree: boolean,
-): Promise<Engine> {
-  const adapter = await navigator.gpu.requestAdapter();
-  if (adapter == null) {
-    throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
-  }
-  const device = await adapter.requestDevice();
-
-  const D = aabb.diagonal;
-  const scaleDefaults = deriveScaleDefaults(D);
+/**
+ * Pure helper that assembles the final `HybridEngineOptions` from the
+ * createEngine() inputs. Extracted from `constructWalkaround` so the
+ * options-merge logic — specifically, the W3-D12 round-trip into
+ * `extensions['walkaround-hybrid']` — can be unit-tested without spinning
+ * up a real GPUDevice. The user's `advanced.extensions['walkaround-hybrid']`
+ * shallow-merges over the facade defaults (per-key user-wins).
+ */
+export function buildWalkaroundHybridOptions(args: {
+  readonly device: GPUDevice;
+  readonly canvasWidth: number;
+  readonly canvasHeight: number;
+  readonly diagonal: number;
+  readonly threeSceneForCtor: WalkaroundHybridExtensions['threeScene'] | undefined;
+  readonly debug: boolean;
+  readonly advanced: Partial<HybridEngineOptions> | undefined;
+}): HybridEngineOptions {
+  const scaleDefaults = deriveScaleDefaults(args.diagonal);
 
   // The HybridEngine still expects mutable [number, number, number] for
   // these direction/tint fields (predates the readonly Vec3 alias on
@@ -171,30 +177,83 @@ async function constructWalkaround(
     DEFAULT_SKY_TINT[0], DEFAULT_SKY_TINT[1], DEFAULT_SKY_TINT[2],
   ];
 
+  // W3-D12: walkaround-specific knobs live under
+  // `extensions['walkaround-hybrid']`. The host's `advanced.extensions
+  // ['walkaround-hybrid']` shallow-merges over the facade defaults
+  // (per-key user-wins). Legacy top-level keys on `advanced` are still
+  // forwarded as-is; HybridEngine's deprecation shim surfaces a warning
+  // and the extensions bag wins when a field appears in both.
+  const advanced = (args.advanced ?? {}) as Partial<HybridEngineOptions>;
+  const advancedExt = (advanced.extensions?.[WALKAROUND_HYBRID_EXT_KEY] ?? {}) as
+    Partial<WalkaroundHybridExtensions>;
+
+  const walkaroundExt: WalkaroundHybridExtensions = {
+    primaryLightDir,
+    primaryLightIntensity: DEFAULT_PRIMARY_LIGHT_INTENSITY,
+    skyTint,
+    skyIrradiance: DEFAULT_SKY_IRRADIANCE,
+    ...(args.threeSceneForCtor != null ? { threeScene: args.threeSceneForCtor } : {}),
+    cameraMoveResetThresholdSq: scaleDefaults.cameraMoveResetThresholdSq,
+    temporalAccumAlpha: scaleDefaults.temporalAccumAlpha,
+    emitterDist2Floor: scaleDefaults.emitterDist2Floor,
+    triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
+    debug: args.debug,
+    // Per-key user override wins.
+    ...advancedExt,
+  };
+
+  // Strip extensions out of the top-level passthrough so the spread
+  // below doesn't clobber the merged bucket built above.
+  const {
+    extensions: _advancedExtensions, // eslint-disable-line @typescript-eslint/no-unused-vars
+    ...advancedTopLevel
+  } = advanced;
+
+  return {
+    device: args.device,
+    width: Math.max(1, args.canvasWidth),
+    height: Math.max(1, args.canvasHeight),
+    // Carry any other top-level overrides (e.g. denoiser, maxBounces,
+    // legacy top-level walkaround knobs from older callers). Anything in
+    // the walkaround extension bag wins via the merged extensions value
+    // since the HybridEngine shim prefers extensions over top-level.
+    ...advancedTopLevel,
+    extensions: {
+      ...(advanced.extensions ?? {}),
+      [WALKAROUND_HYBRID_EXT_KEY]: walkaroundExt,
+    },
+  };
+}
+
+async function constructWalkaround(
+  opts: CreateEngineOptions,
+  vitrumScene: Scene,
+  aabb: SceneAABB,
+  sceneInputIsThree: boolean,
+): Promise<Engine> {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter == null) {
+    throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
+  }
+  const device = await adapter.requestDevice();
+
   // T3.H removal: pass `threeScene` ONLY when the user gave us one — when
   // they passed a vitrum Scene the engine's setScene() path synthesizes the
   // THREE.Scene internally on first BVH build. Removes the round-trip
   // through vitrumSceneToThree() that we previously did at the facade.
   const threeSceneForCtor = sceneInputIsThree
-    ? (opts.scene as unknown as Parameters<typeof createWalkaroundEngine_Hybrid>[0]['threeScene'])
+    ? (opts.scene as unknown as WalkaroundHybridExtensions['threeScene'])
     : undefined;
 
-  const merged: HybridEngineOptions = {
+  const merged = buildWalkaroundHybridOptions({
     device,
-    width: Math.max(1, opts.canvas.width),
-    height: Math.max(1, opts.canvas.height),
-    primaryLightDir,
-    primaryLightIntensity: DEFAULT_PRIMARY_LIGHT_INTENSITY,
-    skyTint,
-    skyIrradiance: DEFAULT_SKY_IRRADIANCE,
-    ...(threeSceneForCtor != null ? { threeScene: threeSceneForCtor } : {}),
-    cameraMoveResetThresholdSq: scaleDefaults.cameraMoveResetThresholdSq,
-    temporalAccumAlpha: scaleDefaults.temporalAccumAlpha,
-    emitterDist2Floor: scaleDefaults.emitterDist2Floor,
-    triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
-    debug: opts.debug ?? false,
-    ...(opts.advanced as Partial<HybridEngineOptions> | undefined),
-  };
+    canvasWidth:  opts.canvas.width,
+    canvasHeight: opts.canvas.height,
+    diagonal:     aabb.diagonal,
+    threeSceneForCtor,
+    debug:        opts.debug ?? false,
+    advanced:     opts.advanced as Partial<HybridEngineOptions> | undefined,
+  });
 
   const engine = await createWalkaroundEngine_Hybrid(merged);
   engine.setScene(vitrumScene);

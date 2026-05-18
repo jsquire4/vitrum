@@ -67,6 +67,226 @@ export interface LightingOptions {
   skyIrradiance?: number;
 }
 
+/**
+ * Extension key under `EngineOptions.extensions` that hosts use to pass
+ * walkaround-hybrid-backend-specific creation-time configuration. Per
+ * CLAUDE.md design principle #3 ("Generalize over time") this lets a host
+ * stay on the generic `EngineOptions` contract while still configuring
+ * backend-specific knobs.
+ *
+ * Usage:
+ * ```ts
+ * createWalkaroundEngine_Hybrid({
+ *   device, width, height,
+ *   extensions: {
+ *     [WALKAROUND_HYBRID_EXT_KEY]: {
+ *       primaryLightDir: [0, -1, 0],
+ *       primaryLightIntensity: 1.0,
+ *       skyTint: [0.5, 0.7, 1.0],
+ *       skyIrradiance: 0.3,
+ *       // … any other walkaround knobs
+ *     },
+ *   },
+ * });
+ * ```
+ */
+export const WALKAROUND_HYBRID_EXT_KEY = 'walkaround-hybrid' as const;
+
+/**
+ * Walkaround-hybrid-backend-specific creation-time configuration. Lives
+ * under `EngineOptions.extensions['walkaround-hybrid']`.
+ *
+ * **Required fields** when this engine is used: `primaryLightDir`,
+ * `primaryLightIntensity`, `skyTint`, `skyIrradiance`. The engine still
+ * accepts them at the top level of `HybridEngineOptions` for one
+ * deprecation cycle (a one-time `console.warn` is emitted per top-level
+ * field), but new code SHOULD pass them through `extensions`.
+ *
+ * All other fields are optional tunables with Cornell-scale defaults.
+ */
+export interface WalkaroundHybridExtensions {
+  // ── Lighting (required) ─────────────────────────────────────────────────
+  /**
+   * Primary directional light direction (world-space, normalised).
+   * Used for both BVH-build-time emitter list construction AND per-frame
+   * sun-shadow casting. The two MUST match exactly for self-emission Le
+   * to reproduce correctly.
+   */
+  readonly primaryLightDir?: [number, number, number];
+
+  /** Primary directional light intensity (linear, unitless). */
+  readonly primaryLightIntensity?: number;
+
+  /**
+   * Diffuse-sky-dome RGB tint. Consumed by the sky-aperture probe and
+   * second-bounce sky-miss paths.
+   */
+  readonly skyTint?: [number, number, number];
+
+  /** Sky-dome irradiance scalar paired with skyTint. */
+  readonly skyIrradiance?: number;
+
+  // ── Scene readiness / pipeline lifecycle ────────────────────────────────
+  /**
+   * Predicate the engine polls before kicking off ReSTIR pipeline init.
+   * Returns true when the scene has enough geometry to build a BVH.
+   * Defaults to the `defaultIsSceneReady` heuristic (any triangle present).
+   */
+  readonly isSceneReady?: () => boolean;
+
+  /**
+   * Stable signal sampled at ctor (`pipelineRebuildKey`) and/or dynamically
+   * via {@link getPipelineRebuildKey}. When the effective value changes the
+   * engine rebuilds the pipeline.
+   */
+  readonly pipelineRebuildKey?: string | number | null;
+
+  /**
+   * Optional callback polled at the start of each renderFrame (after state
+   * guards). Takes precedence over {@link pipelineRebuildKey} when supplied.
+   */
+  readonly getPipelineRebuildKey?: () => string | number | null | undefined;
+
+  /**
+   * Optional escape hatch for hosts that need to provide a THREE.Scene as the
+   * BVH / DDGI source directly. Most callers leave this undefined and rely
+   * on `setScene(vitrumScene)`.
+   */
+  readonly threeScene?: THREE.Scene;
+
+  /** Light list for DDGI probe update pass. */
+  readonly lights?: DDGILight[];
+
+  // ── Logging ──────────────────────────────────────────────────────────────
+  /** When true, enables informational ReSTIR pipeline logs. */
+  readonly verbose?: boolean;
+
+  /** When true, enables debug logging + exposes `window.__DDGI__`. */
+  readonly debug?: boolean;
+
+  // ── Neural denoiser weights ─────────────────────────────────────────────
+  /**
+   * Pre-loaded model weights for the neural denoiser (T2.H2). Required when
+   * the top-level `denoiser === 'neural'`.
+   */
+  readonly neuralWeights?: ModelWeights;
+
+  // ── Library-generality knobs (audit follow-up) ──────────────────────────
+
+  /**
+   * Per-frame render-interval cap in milliseconds. Null disables the cap.
+   * @default 1000/60 - 1
+   */
+  readonly targetFrameIntervalMs?: number | null;
+
+  /**
+   * Camera squared-distance threshold (world-space units²) for resetting
+   * the temporal accumulator. Scene-scale-sensitive.
+   * @default 1.0
+   */
+  readonly cameraMoveResetThresholdSq?: number;
+
+  /**
+   * Per-frame temporal-accumulator EMA weight. `1.0` = no history;
+   * `0.01` = 99% history retain. Framerate-sensitive.
+   * @default 0.01
+   */
+  readonly temporalAccumAlpha?: number;
+
+  /**
+   * Emitter-geometry-term distance² floor (audit M12). Scene-scale-sensitive.
+   * @default 0.01
+   */
+  readonly emitterDist2Floor?: number;
+
+  /**
+   * Per-channel HDR clamp on the direct radiance channel (audit B4).
+   * Light-intensity-sensitive.
+   * @default 4.0
+   */
+  readonly directFireflyClamp?: number;
+
+  /**
+   * Stained-glass caustic boost (audit B1). Multiplies the through-glass
+   * sun-shadow-ray contribution.
+   * @default { boost: 1.0, visClamp: 1.0 }
+   */
+  readonly caustic?: {
+    readonly boost?: number;
+    readonly visClamp?: number;
+  };
+
+  /**
+   * ReSTIR-DI temporal M-clamp (audit M6). Framerate-sensitive.
+   * @default 20
+   */
+  readonly temporalMClampDI?: number;
+
+  /**
+   * ReSTIR-DI spatial-reuse radius in pixels (audit M7). Resolution-sensitive.
+   * @default 30
+   */
+  readonly spatialReuseRadiusPx?: number;
+
+  /**
+   * ReSTIR-DI spatial-reuse depth-tolerance world-units floor (audit M8).
+   * Scene-scale-sensitive.
+   * @default 0.05
+   */
+  readonly spatialDepthTolFloor?: number;
+
+  /**
+   * Adaptive-sampling tier classifier thresholds (audit M2).
+   * Light-intensity-sensitive.
+   * @default [0.01, 0.10]
+   */
+  readonly adaptiveSamplingThresholds?: readonly [low: number, high: number];
+
+  /**
+   * GTAO (ground-truth ambient occlusion) tuning (audits M1, B3).
+   * All fields optional; defaults preserve Cornell behaviour.
+   */
+  readonly gtao?: {
+    readonly radiusPx?: number;
+    readonly intensity?: number;
+    readonly depthThresholdWorldUnits?: number;
+    readonly bilateralDepthSigma?: number;
+  };
+
+  /**
+   * Möller-Trumbore coplanarity epsilon. Scene-scale-sensitive.
+   * @default 1e-5
+   */
+  readonly triIntersectEpsilon?: number;
+
+  // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
+  /**
+   * Enable the Müller 2017 Practical Path Guiding subsystem. Opt-in.
+   * @default false
+   */
+  readonly ppgEnabled?: boolean;
+
+  /**
+   * Maximum number of sTree spatial cells (hard cap on adaptive splits).
+   * @default 16384
+   */
+  readonly ppgMaxSpatialCells?: number;
+}
+
+/**
+ * Walkaround-hybrid backend creation-time options. The required + cross-
+ * backend fields (`device`, `width`, `height`, `denoiser`, `maxBounces`,
+ * `maxSamplesPerPixel`, `causticStrategy`, `causticOptions`, `extensions`)
+ * live on {@link EngineOptions}; walkaround-specific knobs live under
+ * `extensions['walkaround-hybrid']` (typed as {@link WalkaroundHybridExtensions}).
+ *
+ * **Back-compat shim:** All walkaround-specific fields are also accepted at
+ * the top level of this interface for one deprecation cycle. When a top-
+ * level field is supplied, a one-time `console.warn` is emitted naming the
+ * field and pointing at the extensions migration path. If the same field is
+ * supplied at both the top level AND in `extensions['walkaround-hybrid']`,
+ * the extensions value wins.
+ */
 export interface HybridEngineOptions extends EngineOptions {
   /** WebGPU device (narrowed from the opaque `device: unknown` on EngineOptions). */
   readonly device: GPUDevice;
@@ -78,303 +298,130 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly height: number;
 
   /**
-   * Predicate the engine polls before kicking off ReSTIR pipeline init.
-   * Returns true when the scene has enough geometry to build a BVH.
-   * Defaults to the `defaultIsSceneReady` heuristic (any triangle present).
-   * Override if your scene loads asynchronously and you need a different
-   * signal (e.g. wait for a specific async asset, or require N triangles).
-   */
-  readonly isSceneReady?: () => boolean;
-
-  /**
-   * Stable signal sampled at ctor (`pipelineRebuildKey`) and/or dynamically
-   * via {@link getPipelineRebuildKey}. When the effective value changes compared
-   * to the previous frame's sample, {@link HybridEngine.reset} runs so the GPU
-   * pipeline is recreated (same `_lastScene` / `THREE` graph).
-   */
-  readonly pipelineRebuildKey?: string | number | null;
-
-  /**
-   * Optional callback polled at the **start** of each {@link HybridEngine.renderFrame}
-   * (after state guards). Takes precedence over {@link pipelineRebuildKey} when
-   * supplied. Enables hosts to invalidate the pipeline without `setScene()`.
-   */
-  readonly getPipelineRebuildKey?: () => string | number | null | undefined;
-
-  /**
-   * Primary directional light direction (world-space, normalised).
-   * Used for both BVH-build-time emitter list construction AND per-frame
-   * sun-shadow casting. The two MUST match exactly for self-emission Le
-   * to reproduce correctly.
-   */
-  readonly primaryLightDir: [number, number, number];
-
-  /** Primary directional light intensity (linear, unitless). */
-  readonly primaryLightIntensity: number;
-
-  /**
-   * Diffuse-sky-dome RGB tint. Consumed by the sky-aperture probe and
-   * second-bounce sky-miss paths.
-   */
-  readonly skyTint: [number, number, number];
-
-  /** Sky-dome irradiance scalar paired with skyTint. */
-  readonly skyIrradiance: number;
-
-  /**
-   * Optional escape hatch for hosts that need to provide a THREE.Scene as the
-   * BVH / DDGI source directly (e.g. when the host's authoritative scene graph
-   * is THREE-only and they intentionally omit `setScene(vitrumScene)`).
+   * Post-shade denoiser. (Stays on the top-level options because the
+   * canonical `denoiser` field is part of the core `EngineOptions` contract
+   * per W3-D4.) The walkaround-hybrid backend supports
+   * `'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural'`. Other
+   * values from the core union throw at construction (audit B7).
    *
-   * **Most callers leave this undefined.** When `setScene` provides a vitrum
-   * Scene with at least one mesh primitive, the engine derives the BVH source
-   * via `vitrumSceneToThree()` and the `threeScene` field is never read. The
-   * @vitrum/engine `createEngine()` facade always takes the latter path.
+   * `'svgf'` is a deprecated alias for `'atrous-variance'`; triggers a
+   * one-time console warning.
    *
-   * Was required pre-T3.H (deprecated 2026-05-12, removed 2026-05-12). Hosts
-   * that previously passed `threeScene: someScene` can drop the field if they
-   * also call `setScene(sceneFromThreeJS(someScene))` afterwards. If they do
-   * neither (no mesh primitives in setScene + no threeScene), the engine
-   * throws on pipeline init with a clear error.
-   */
-  readonly threeScene?: THREE.Scene;
-
-  /** Light list for DDGI probe update pass. */
-  readonly lights?: DDGILight[];
-
-  /** When true, enables informational ReSTIR pipeline logs (initialization / shader compile). */
-  readonly verbose?: boolean;
-
-  /**
-   * When true, enables debug logging and exposes
-   * `window.__DDGI__` inside `typeof window !== 'undefined'` guards.
-   */
-  readonly debug?: boolean;
-
-  /**
-   * Post-shade denoiser:
-   *
-   *   `'atrous-variance'` (default) — temporal Welford + à-trous + variance
-   *   scalar lookup; honest about what it does (not Schied 2017 SVGF).
-   *
-   *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
-   *
-   *   `'svgf-real'` — T2.H1 — full Schied 2017 SVGF: bilinear motion-vector
-   *   reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
-   *   history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
-   *   variance-from-moments (Eq. 5), 7×7 spatial fallback for disoccluded pixels
-   *   (§4.3). Requires historyLength (r16uint) + momentsHistory (rg32float) +
-   *   prevRadiance (rgba16float) persistent textures: ~52 MB at 1080p.
-   *
-   *   `'svgf'` is a deprecated alias for `'atrous-variance'`; triggers a
-   *   one-time console warning.
-   *
-   *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
-   *   et al. 2015). Requires `neuralWeights` to be provided. Default still
-   *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
+   * `'neural'` requires `extensions['walkaround-hybrid'].neuralWeights`.
    */
   readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural';
 
-  /**
-   * Pre-loaded model weights for the neural denoiser (T2.H2).
-   * Required when `denoiser === 'neural'`. Load via `loadWeightsFromArrayBuffer()`
-   * from the vitrum binary format exported by `tools/neural-denoiser-training/export_weights.py`.
-   *
-   * If `denoiser === 'neural'` and `neuralWeights` is undefined, the engine
-   * constructor throws with a helpful error pointing to the training README.
-   */
+  // ── Deprecated top-level shims (use extensions['walkaround-hybrid']) ───
+  // All fields below are kept for one deprecation cycle. The constructor
+  // emits a one-time console.warn per field when supplied here, and
+  // `extensions['walkaround-hybrid'][field]` wins if both are set.
+
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].isSceneReady` instead. */
+  readonly isSceneReady?: () => boolean;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].pipelineRebuildKey` instead. */
+  readonly pipelineRebuildKey?: string | number | null;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].getPipelineRebuildKey` instead. */
+  readonly getPipelineRebuildKey?: () => string | number | null | undefined;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].primaryLightDir` instead. */
+  readonly primaryLightDir?: [number, number, number];
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].primaryLightIntensity` instead. */
+  readonly primaryLightIntensity?: number;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].skyTint` instead. */
+  readonly skyTint?: [number, number, number];
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].skyIrradiance` instead. */
+  readonly skyIrradiance?: number;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].threeScene` instead. */
+  readonly threeScene?: THREE.Scene;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].lights` instead. */
+  readonly lights?: DDGILight[];
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].verbose` instead. */
+  readonly verbose?: boolean;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].debug` instead. */
+  readonly debug?: boolean;
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].neuralWeights` instead. */
   readonly neuralWeights?: ModelWeights;
-
-  // ── Library-generality knobs (audit follow-up) ──────────────────────────
-  // All optional; defaults preserve Cornell-test-scene behaviour byte-for-
-  // byte. Hosts targeting other scene scales / intensities should set them.
-
-  /**
-   * Per-frame render-interval cap in **milliseconds**. Null disables the
-   * cap (every rAF call dispatches a frame). Pass `1000/30 - 1` for a 30
-   * FPS ceiling, `1000/120 - 1` for 120 FPS.  Default `1000/60 - 1` (~60
-   * FPS soft-cap).  Scene-independent — purely a host-side governor.
-   *
-   * @default 1000/60 - 1
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].targetFrameIntervalMs` instead. */
   readonly targetFrameIntervalMs?: number | null;
-
-  /**
-   * Camera squared-distance threshold (**world-space units²**) for
-   * resetting the temporal accumulator.  When the camera moves more than
-   * `sqrt(threshold)` units in one frame, the accumulator's history is
-   * discarded and accumulation restarts at α=1.
-   *
-   * **Scene-scale-sensitive**.  Default `1.0` is tuned to Cornell's ~2-unit
-   * room. For a 100-unit city block, this never trips (permanent ghosting);
-   * for a 1-unit jewellery scene, every micro-movement trips it. Recommended
-   * default for hosts is `(sceneDiagonal × 0.001)²`.
-   *
-   * @default 1.0
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].cameraMoveResetThresholdSq` instead. */
   readonly cameraMoveResetThresholdSq?: number;
-
-  /**
-   * Per-frame temporal-accumulator EMA weight.  `1.0` = no history (single
-   * frame), `0.01` = 99% history retain.
-   *
-   * **Framerate-sensitive**.  Default `0.01` is tuned for ~60 FPS Cornell
-   * convergence. At 30 FPS the same α doubles temporal lag; at 120 FPS it
-   * halves convergence-back-to-steady-state after a camera stop. For
-   * FPS-independent feel, set `1 - exp(-frameTime × k)` for a chosen k.
-   *
-   * @default 0.01
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].temporalAccumAlpha` instead. */
   readonly temporalAccumAlpha?: number;
-
-  /**
-   * Emitter-geometry-term distance² floor (audit M12).  Clamps
-   * `G = (n_l · ω) / max(dist², emitterDist2Floor)` to prevent G blowup
-   * for receivers within sqrt(floor) of an emitter.
-   *
-   * **Scene-scale-sensitive**.  Default `0.01` (10 cm minimum effective
-   * distance) for Cornell-scale.  Hosts on different scales should pass
-   * `(sceneDiagonal × 1e-3)²` so the floor scales with scene extent.
-   *
-   * @default 0.01
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].emitterDist2Floor` instead. */
   readonly emitterDist2Floor?: number;
-
-  /**
-   * Per-channel HDR clamp on the direct radiance channel before the
-   * atrous-variance denoiser (audit B4). Suppresses fireflies from ReSTIR-DI's
-   * stochastic light-point selection on glancing-angle BRDF evaluations.
-   *
-   * **Light-intensity-sensitive**.  Default `4.0` is calibrated for
-   * Le=12 (`4 / π × 12 ≈ 15`, clamped at 4).  For brighter scenes
-   * compute `~4 × luminance(maxEmitterLe)`.
-   *
-   * @default 4.0
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].directFireflyClamp` instead. */
   readonly directFireflyClamp?: number;
-
-  /**
-   * Stained-glass caustic boost (audit B1).  Multiplies the through-glass
-   * sun-shadow-ray contribution.  Cornell's stained-glass test scene uses
-   * `{ boost: 22, visClamp: 0.6 }` to compensate for Brown-Beer-Lambert
-   * attenuation; generic scenes should leave this at defaults (no boost,
-   * no clamp).
-   *
-   * @default { boost: 1.0, visClamp: 1.0 }
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].caustic` instead. */
   readonly caustic?: {
     readonly boost?: number;
     readonly visClamp?: number;
   };
-
-  /**
-   * ReSTIR-DI temporal M-clamp (audit M6).  Caps the previous-frame
-   * reservoir's `M` before combining into this frame's reservoir.
-   * Higher = stickier history (slower to respond to lighting changes
-   * but lower variance).
-   *
-   * **Framerate-sensitive**.  Default 20 frames ≈ 333 ms history at
-   * 60 FPS.  At 15 FPS this stretches to 1.3 s; at 120 FPS it compresses
-   * to 167 ms.  For FPS-independent feel: `round(0.3 / frameTimeSeconds)`.
-   *
-   * @default 20
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].temporalMClampDI` instead. */
   readonly temporalMClampDI?: number;
-
-  /**
-   * ReSTIR-DI spatial-reuse radius in **pixels** (audit M7).  The Poisson
-   * disk for neighbour sampling extends this far from the centre pixel.
-   *
-   * **Resolution-sensitive**.  Default `30` is calibrated for ~1080p–4K.
-   * At 480p reuse stretches across geometry boundaries; at 8K it stays
-   * very local.  Suggested host derivation: `screenHeight × 0.025`.
-   *
-   * @default 30
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].spatialReuseRadiusPx` instead. */
   readonly spatialReuseRadiusPx?: number;
-
-  /**
-   * ReSTIR-DI spatial-reuse depth-tolerance world-units floor (audit M8).
-   * Neighbours whose depth differs by less than this absolute value are
-   * accepted regardless of relative tolerance.
-   *
-   * **Scene-scale-sensitive**.  Default `0.05` (5 cm) for Cornell-scale.
-   * Hosts on cm-scale scenes should use ~`sceneDiagonal × 1e-3`.
-   *
-   * @default 0.05
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].spatialDepthTolFloor` instead. */
   readonly spatialDepthTolFloor?: number;
-
-  /**
-   * Adaptive-sampling tier classifier thresholds (audit M2).  The
-   * sample-budget pass reads previous-frame Welford variance and writes
-   * a per-pixel tier (1 / 2 / 4) used downstream by RIS to scale M_GI.
-   *
-   * **Light-intensity-sensitive** — variance scales with peak-radiance²,
-   * so HDR scenes need higher thresholds.  Default `[0.01, 0.10]` is
-   * calibrated for Cornell's variance dynamic range.
-   *
-   * @default [0.01, 0.10]
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].adaptiveSamplingThresholds` instead. */
   readonly adaptiveSamplingThresholds?: readonly [low: number, high: number];
-
-  /**
-   * GTAO (ground-truth ambient occlusion) tuning (audits M1, B3).  All
-   * fields optional.  Defaults preserve Cornell behaviour.
-   *
-   * - `radiusPx` (resolution-sensitive): sampling radius in screen-space
-   *   pixels. Default 32; consider `screenHeight × ~0.025` for
-   *   resolution-independent feel.
-   * - `intensity`: AO exponent (`ao = pow(raw, intensity)`). Default 2.0.
-   * - `depthThresholdWorldUnits` (scene-scale-sensitive): max depth
-   *   discontinuity to include in the horizon test.  Default 2.0 (Cornell
-   *   ~2 m room); large-scale scenes should use ~`sceneDiagonal × 0.05`.
-   * - `bilateralDepthSigma` (scene-scale-sensitive): σ for the bilateral
-   *   upsample's depth-weight Gaussian (world units).  Default 0.25.
-   *   Hosts should set ~`sceneDiagonal × 0.01`.
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].gtao` instead. */
   readonly gtao?: {
     readonly radiusPx?: number;
     readonly intensity?: number;
     readonly depthThresholdWorldUnits?: number;
     readonly bilateralDepthSigma?: number;
   };
-
-  /**
-   * Möller-Trumbore coplanarity epsilon (D12 / audit M3 follow-up).
-   * Controls the `abs(det) < ε` near-zero determinant test in
-   * `intersectTriangle` in the ReSTIR WGSL.  A too-small value causes
-   * grazing-angle rays to incorrectly miss coplanar triangles; a too-large
-   * value rejects valid near-coplanar hits.
-   *
-   * **Scene-scale-sensitive.**  Default `1e-5` is correct for metre-scale.
-   * For millimetre-scale geometry, try `1e-7`; for kilometre-scale, `1e-3`.
-   *
-   * @default 1e-5
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].triIntersectEpsilon` instead. */
   readonly triIntersectEpsilon?: number;
-
-  // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
-
-  /**
-   * Enable the Müller 2017 Practical Path Guiding subsystem.
-   *
-   * When `true`, the engine instantiates an adaptive spatial tree (sTree)
-   * and per-cell directional trees (dTree) per §3.1–3.2. Training runs
-   * via `ppgUpdate.wgsl.ts` (incoming radiance L_i, world frame). Guiding
-   * mixes the learned PDF with BSDF sampling via MIS (§3.4).
-   *
-   * Default: `false` (PPG is an opt-in feature; default remains BSDF-only).
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].ppgEnabled` instead. */
   readonly ppgEnabled?: boolean;
-
-  /**
-   * Maximum number of sTree spatial cells (hard cap on adaptive splits).
-   * Each cell consumes memory for a flat dTree node buffer on the GPU.
-   *
-   * Default: 16 384 (matches `PPG_MAX_SPATIAL_CELLS`).
-   */
+  /** @deprecated Pass via `extensions['walkaround-hybrid'].ppgMaxSpatialCells` instead. */
   readonly ppgMaxSpatialCells?: number;
+}
+
+// ── Deprecation shim ─────────────────────────────────────────────────────
+/**
+ * Per-process set of walkaround-hybrid option fields for which we've
+ * already emitted a top-level-vs-extensions deprecation warning. The shim
+ * warns once per field name (across all engine instances in the process),
+ * not once per instance — repeated engine creations with the same legacy
+ * fields don't spam the console.
+ */
+const _warnedDeprecatedFields = new Set<string>();
+
+function _warnDeprecatedField(field: string): void {
+  if (_warnedDeprecatedFields.has(field)) return;
+  _warnedDeprecatedFields.add(field);
+  console.warn(
+    `[walkaround-hybrid] HybridEngineOptions.${field} is deprecated; ` +
+    `pass it via EngineOptions.extensions['${WALKAROUND_HYBRID_EXT_KEY}'].${field} instead. ` +
+    `The top-level field will be removed in a future release.`,
+  );
+}
+
+/**
+ * Read a walkaround-hybrid option field with extensions-wins back-compat.
+ * If the field is present at BOTH levels, the extensions value wins and a
+ * one-time deprecation warning fires for the top-level usage. If it's only
+ * at the top level, returns the top-level value and warns. If only in
+ * extensions (or neither), returns the extensions value (or undefined).
+ */
+function _readWalkaroundExtField<K extends keyof WalkaroundHybridExtensions>(
+  opts: HybridEngineOptions,
+  field: K,
+): WalkaroundHybridExtensions[K] | undefined {
+  const ext = opts.extensions?.[WALKAROUND_HYBRID_EXT_KEY] as
+    | WalkaroundHybridExtensions
+    | undefined;
+  const extVal = ext?.[field];
+  // `field` is a key of WalkaroundHybridExtensions which the deprecated
+  // top-level shim mirrors 1:1 on HybridEngineOptions.
+  const topVal = (opts as unknown as Record<string, unknown>)[field as string] as
+    | WalkaroundHybridExtensions[K]
+    | undefined;
+  if (topVal !== undefined) {
+    _warnDeprecatedField(field as string);
+  }
+  return extVal !== undefined ? extVal : topVal;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -617,16 +664,72 @@ export class HybridEngine implements Engine {
   private readonly _getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
 
   constructor(opts: HybridEngineOptions) {
+    // W3-D12: walkaround-specific fields live under
+    // `opts.extensions['walkaround-hybrid']`. Reads via `_readWalkaroundExtField`
+    // accept either location for one deprecation cycle and emit a one-time
+    // console.warn per field when the legacy top-level location is used.
+    // `device`, `width`, `height`, and the cross-backend `denoiser` / core
+    // EngineOptions fields stay at the top level.
+    const ext_primaryLightDir       = _readWalkaroundExtField(opts, 'primaryLightDir');
+    const ext_primaryLightIntensity = _readWalkaroundExtField(opts, 'primaryLightIntensity');
+    const ext_skyTint               = _readWalkaroundExtField(opts, 'skyTint');
+    const ext_skyIrradiance         = _readWalkaroundExtField(opts, 'skyIrradiance');
+    const ext_threeScene            = _readWalkaroundExtField(opts, 'threeScene');
+    const ext_isSceneReady          = _readWalkaroundExtField(opts, 'isSceneReady');
+    const ext_pipelineRebuildKey    = _readWalkaroundExtField(opts, 'pipelineRebuildKey');
+    const ext_getPipelineRebuildKey = _readWalkaroundExtField(opts, 'getPipelineRebuildKey');
+    const ext_lights                = _readWalkaroundExtField(opts, 'lights');
+    const ext_verbose               = _readWalkaroundExtField(opts, 'verbose');
+    const ext_debug                 = _readWalkaroundExtField(opts, 'debug');
+    const ext_neuralWeights         = _readWalkaroundExtField(opts, 'neuralWeights');
+    const ext_targetFrameIntervalMs = _readWalkaroundExtField(opts, 'targetFrameIntervalMs');
+    const ext_cameraMoveResetThresholdSq = _readWalkaroundExtField(opts, 'cameraMoveResetThresholdSq');
+    const ext_temporalAccumAlpha    = _readWalkaroundExtField(opts, 'temporalAccumAlpha');
+    const ext_emitterDist2Floor     = _readWalkaroundExtField(opts, 'emitterDist2Floor');
+    const ext_directFireflyClamp    = _readWalkaroundExtField(opts, 'directFireflyClamp');
+    const ext_caustic               = _readWalkaroundExtField(opts, 'caustic');
+    const ext_temporalMClampDI      = _readWalkaroundExtField(opts, 'temporalMClampDI');
+    const ext_spatialReuseRadiusPx  = _readWalkaroundExtField(opts, 'spatialReuseRadiusPx');
+    const ext_spatialDepthTolFloor  = _readWalkaroundExtField(opts, 'spatialDepthTolFloor');
+    const ext_adaptiveSamplingThresholds = _readWalkaroundExtField(opts, 'adaptiveSamplingThresholds');
+    const ext_gtao                  = _readWalkaroundExtField(opts, 'gtao');
+    const ext_triIntersectEpsilon   = _readWalkaroundExtField(opts, 'triIntersectEpsilon');
+    // ppgEnabled / ppgMaxSpatialCells: declared for back-compat but not yet
+    // consumed inside this engine (pipeline compiler reads ppgEnabled via a
+    // different surface). Touching the extensions read still emits the
+    // deprecation warning if the host migrates from top-level usage.
+    _readWalkaroundExtField(opts, 'ppgEnabled');
+    _readWalkaroundExtField(opts, 'ppgMaxSpatialCells');
+
+    // Required-field validation (lighting). These four were `readonly … :
+    // T` (required) on the pre-W3-D12 interface; the extensions interface
+    // marks them optional so the generic createEngine() facade can supply
+    // them after the user's overrides. Validate at construction so the
+    // engine never tries to render with undefined lighting.
+    if (
+      ext_primaryLightDir == null ||
+      ext_primaryLightIntensity == null ||
+      ext_skyTint == null ||
+      ext_skyIrradiance == null
+    ) {
+      throw new TypeError(
+        `[HybridEngine] required walkaround-hybrid lighting fields missing. ` +
+        `Pass primaryLightDir, primaryLightIntensity, skyTint, skyIrradiance via ` +
+        `extensions['${WALKAROUND_HYBRID_EXT_KEY}'] (or, for one more deprecation cycle, ` +
+        `at the top level of HybridEngineOptions).`,
+      );
+    }
+
     this._device                = opts.device;
     this._width                 = opts.width;
     this._height                = opts.height;
-    this._threeScene            = opts.threeScene ?? null;
-    this._primaryLightDir       = opts.primaryLightDir;
-    this._primaryLightIntensity = opts.primaryLightIntensity;
-    this._skyTint               = opts.skyTint;
-    this._skyIrradiance         = opts.skyIrradiance;
-    this._debug                 = opts.debug ?? false;
-    this._verbose               = opts.verbose ?? false;
+    this._threeScene            = ext_threeScene ?? null;
+    this._primaryLightDir       = ext_primaryLightDir;
+    this._primaryLightIntensity = ext_primaryLightIntensity;
+    this._skyTint               = ext_skyTint;
+    this._skyIrradiance         = ext_skyIrradiance;
+    this._debug                 = ext_debug ?? false;
+    this._verbose               = ext_verbose ?? false;
     this._maxBounces            = opts.maxBounces ?? 4;
     // Audit B7: validate the denoiser option at construction so an unsupported
     // value (e.g. `'none'`, `'bmfr'`, `'oidn-final'` from the @vitrum/core
@@ -649,7 +752,7 @@ export class HybridEngine implements Engine {
       );
     }
     // T2.H2 — 'neural' requires neuralWeights to be provided.
-    if (opts.denoiser === 'neural' && !opts.neuralWeights) {
+    if (opts.denoiser === 'neural' && !ext_neuralWeights) {
       throw new TypeError(
         `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
         `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
@@ -665,46 +768,46 @@ export class HybridEngine implements Engine {
       );
     }
     this._denoiser = opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');
-    this._neuralWeights = opts.neuralWeights;
-    this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
-      ? opts.targetFrameIntervalMs
+    this._neuralWeights = ext_neuralWeights;
+    this._targetFrameIntervalMs = ext_targetFrameIntervalMs !== undefined
+      ? ext_targetFrameIntervalMs
       : DEFAULT_TARGET_FRAME_INTERVAL_MS;
-    this._cameraMoveResetThresholdSq = opts.cameraMoveResetThresholdSq ?? 1.0;
-    this._temporalAccumAlpha    = opts.temporalAccumAlpha ?? 0.01;
+    this._cameraMoveResetThresholdSq = ext_cameraMoveResetThresholdSq ?? 1.0;
+    this._temporalAccumAlpha    = ext_temporalAccumAlpha ?? 0.01;
     // Library-generality tunables. Defaults preserve Cornell behaviour;
     // hosts on different scene scales / intensities should override.
-    this._emitterDist2Floor     = opts.emitterDist2Floor    ?? 0.01;
-    this._directFireflyClamp    = opts.directFireflyClamp   ?? 4.0;
-    this._causticBoost          = opts.caustic?.boost       ?? 1.0;
-    this._causticVisClamp       = opts.caustic?.visClamp    ?? 1.0;
-    this._temporalMClampDI      = opts.temporalMClampDI     ?? 20;
-    this._spatialReuseRadiusPx  = opts.spatialReuseRadiusPx ?? 30.0;
-    this._spatialDepthTolFloor  = opts.spatialDepthTolFloor ?? 0.05;
+    this._emitterDist2Floor     = ext_emitterDist2Floor    ?? 0.01;
+    this._directFireflyClamp    = ext_directFireflyClamp   ?? 4.0;
+    this._causticBoost          = ext_caustic?.boost       ?? 1.0;
+    this._causticVisClamp       = ext_caustic?.visClamp    ?? 1.0;
+    this._temporalMClampDI      = ext_temporalMClampDI     ?? 20;
+    this._spatialReuseRadiusPx  = ext_spatialReuseRadiusPx ?? 30.0;
+    this._spatialDepthTolFloor  = ext_spatialDepthTolFloor ?? 0.05;
     // GTAO defaults match the previous hard-coded values in the pipeline.
-    this._gtaoRadiusPx          = opts.gtao?.radiusPx                ?? 32.0;
-    this._gtaoIntensity         = opts.gtao?.intensity               ?? 2.0;
-    this._gtaoDepthThreshold    = opts.gtao?.depthThresholdWorldUnits ?? 2.0;
-    this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma   ?? 0.25;
-    this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
-    this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
-    this._triIntersectEpsilon    = opts.triIntersectEpsilon ?? 1e-5;
+    this._gtaoRadiusPx          = ext_gtao?.radiusPx                ?? 32.0;
+    this._gtaoIntensity         = ext_gtao?.intensity               ?? 2.0;
+    this._gtaoDepthThreshold    = ext_gtao?.depthThresholdWorldUnits ?? 2.0;
+    this._gtaoBilateralDepthSigma = ext_gtao?.bilateralDepthSigma   ?? 0.25;
+    this._adaptiveSamplingThresholdLow  = ext_adaptiveSamplingThresholds?.[0] ?? 0.01;
+    this._adaptiveSamplingThresholdHigh = ext_adaptiveSamplingThresholds?.[1] ?? 0.10;
+    this._triIntersectEpsilon    = ext_triIntersectEpsilon ?? 1e-5;
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
-    // Hosts override via opts.isSceneReady when they need a scene-specific
-    // signal (e.g. wait for an async asset).
-    this._isSceneReady          = opts.isSceneReady ?? (() => {
+    // Hosts override via the extensions `isSceneReady` callback when they
+    // need a scene-specific signal (e.g. wait for an async asset).
+    this._isSceneReady          = ext_isSceneReady ?? (() => {
       if (this._coreSceneSuppliesMeshes()) return true;
       return this._threeScene != null && defaultIsSceneReady(this._threeScene);
     });
 
-    this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
-    this._getPipelineRebuildKey     = opts.getPipelineRebuildKey;
+    this._staticPipelineRebuildKey = ext_pipelineRebuildKey ?? null;
+    this._getPipelineRebuildKey     = ext_getPipelineRebuildKey;
     this._rebuildKeyFingerprintSeen = HybridEngine._fingerprintRebuildKey(
-      opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
+      ext_getPipelineRebuildKey?.() ?? ext_pipelineRebuildKey ?? null,
     );
 
     this._ddgi = new DDGI({ debug: this._debug });
-    this._ctorLights = opts.lights ?? [];
+    this._ctorLights = ext_lights ?? [];
     if (this._ctorLights.length > 0) {
       this._ddgi.setLights(this._ctorLights as DDGILight[]);
     }

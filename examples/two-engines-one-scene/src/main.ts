@@ -13,6 +13,7 @@ import { createPTEngine_WebGPU } from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
+  WALKAROUND_HYBRID_EXT_KEY,
   HYBRID_WEBGPU_REQUIRED_FEATURES,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
@@ -321,20 +322,27 @@ async function main(): Promise<void> {
           device,
           width: canvasWgpu.width,
           height: canvasWgpu.height,
-          threeScene,
-          primaryLightDir,
-          // Cornell box is an indoor scene with one area light at the top.
-          // Sun (`primaryLightIntensity`) and sky (`skyIrradiance`) belong
-          // to the original stained-glass-studio context the engine was
-          // built around; firing them for Cornell adds spurious extra
-          // illumination (notably a bright peach stripe at the red-wall
-          // edge from grazing-angle sun shading + skyAperture probes).
-          primaryLightIntensity: 0,
-          skyTint: [0.55, 0.72, 1.0],
-          skyIrradiance: 0,
-          isSceneReady: () => true,
+          // W3-D12: walkaround-specific knobs live under
+          // extensions['walkaround-hybrid']; denoiser stays at the top
+          // level as the canonical core EngineOptions field.
           denoiser: FLAGS.denoiser,
-          ppgEnabled: FLAGS.ppgEnabled,
+          extensions: {
+            [WALKAROUND_HYBRID_EXT_KEY]: {
+              threeScene,
+              primaryLightDir,
+              // Cornell box is an indoor scene with one area light at the top.
+              // Sun (`primaryLightIntensity`) and sky (`skyIrradiance`) belong
+              // to the original stained-glass-studio context the engine was
+              // built around; firing them for Cornell adds spurious extra
+              // illumination (notably a bright peach stripe at the red-wall
+              // edge from grazing-angle sun shading + skyAperture probes).
+              primaryLightIntensity: 0,
+              skyTint: [0.55, 0.72, 1.0],
+              skyIrradiance: 0,
+              isSceneReady: () => true,
+              ppgEnabled: FLAGS.ppgEnabled,
+            },
+          },
         })
       : null;
     if (hybrid) {
