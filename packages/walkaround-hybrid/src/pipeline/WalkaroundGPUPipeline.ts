@@ -800,6 +800,24 @@ export class WalkaroundGPUPipeline {
     // consumes it for the indirect-path MIS combine; risGi shares the BGL
     // but does not declare binding 4 (WGSL permits unused BGL entries on
     // a given consumer shader).
+    //
+    // W9 Phase 2 wire — when PPG is enabled, point slot 4 at the real
+    // kernel-output buffer (`ppg.sampleOutBuf`, written by the ppg-guide
+    // pass earlier in this same encoder) instead of the zero-filled
+    // placeholder. shade.wgsl's PDF-sentinel fallback (pdf <= 0) still
+    // applies on pixels the guide kernel chose not to emit, so the
+    // ReSTIR-GI-only branch remains intact for those pixels. When PPG is
+    // disabled we keep the placeholder so the bind-group LAYOUT (and
+    // therefore the compiled shade pipeline) is identical in both modes.
+    //
+    // Shape contract: both buffers carry `array<vec4<f32>>` of length
+    // (W × H), `xyz`=world-space direction, `w`=solid-angle pdf — the
+    // exact contract declared in `ppgGuide.wgsl.ts`'s `ppgSampleOut`
+    // binding and `shade.wgsl.ts`'s `ppgGuidance` consumer binding.
+    const shadePPGBuffer: GPUBuffer =
+      this._ppgEnabled && this._res.ppg.sampleOutBuf !== undefined
+        ? this._res.ppg.sampleOutBuf
+        : this._res.ppg.ppgGuidanceBuffer;
     const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
       ddgiIrrTex:              this._ddgiIrrTex,
       ddgiVisTex:              this._ddgiVisTex,
@@ -807,7 +825,7 @@ export class WalkaroundGPUPipeline {
       ddgiPlaceholderRg16f:    this._res.ddgi.ddgiPlaceholderRg16f,
       nearestSampler:          this._res.common.nearestSampler,
       ddgiUboBuffer:           this._res.ddgi.ddgiUboBuffer,
-      ppgGuidanceBuffer:       this._res.ppg.ppgGuidanceBuffer,
+      ppgGuidanceBuffer:       shadePPGBuffer,
     });
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────
