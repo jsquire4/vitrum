@@ -123,3 +123,16 @@ export type {
   SVGFReprojCPUInput,
   SVGFReprojCPUOutput,
 } from './svgfRealCpu.js';
+
+// ── Cross-package primitives (consumed by walkaround-hybrid OIDN denoiser) ───
+// These helpers existed inside the package but were not re-exported from the
+// index. The walkaround-hybrid OIDNFinalDenoiser previously inlined its own
+// copies; route through these canonicals now.
+export {
+  float16BitsToFloat32,
+  float32ToFloat16Bits,
+} from './halfFloat.js';
+export {
+  alignedTextureCopyBytesPerRow,
+  WEBGPU_COPY_BYTES_PER_ROW_ALIGNMENT,
+} from './webGpuTextureCopy.js';

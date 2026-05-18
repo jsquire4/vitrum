@@ -95,48 +95,18 @@ export interface OIDNFinalDenoiserOptions {
   readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
 }
 
-/**
- * Compute `bytesPerRow` aligned to WebGPU's 256-byte requirement for
- * the given full-row byte count (`width × bytesPerTexel`).
- */
-function alignBytesPerRow(rowBytes: number): number {
-  return Math.max(256, Math.ceil(rowBytes / 256) * 256);
-}
-
-/**
- * Unpack a half-float (binary16) bit pattern to a JS number. Pulled
- * out as a small helper rather than depending on the `@petamoriken/float16`
- * polyfill — `denoiseFinal` only needs three full-frame conversions per
- * inference (one per aux input), not per-frame hot-path conversion.
- */
-function f16ToF32(bits: number): number {
-  const s = (bits & 0x8000) >> 15;
-  const e = (bits & 0x7C00) >> 10;
-  const f =  bits & 0x03FF;
-  if (e === 0) {
-    return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
-  } else if (e === 0x1F) {
-    return f ? NaN : ((s ? -1 : 1) * Infinity);
-  }
-  return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
-}
-
-/** Convert a Float32 value into the closest half-float (binary16) bit pattern. */
-function f32ToF16(val: number): number {
-  if (Number.isNaN(val)) return 0x7E00;
-  if (val === 0) return 0;
-  const sign = val < 0 ? 0x8000 : 0;
-  const abs = Math.abs(val);
-  if (abs >= 65504) return sign | 0x7BFF; // clamp to max finite f16
-  if (abs < Math.pow(2, -14)) {
-    // Subnormal
-    const mantissa = Math.round(abs / Math.pow(2, -24));
-    return sign | mantissa;
-  }
-  const exponent = Math.floor(Math.log2(abs));
-  const mantissa = Math.round((abs / Math.pow(2, exponent) - 1) * 1024);
-  return sign | ((exponent + 15) << 10) | mantissa;
-}
+// Local aliases routed to the canonical half-float and row-alignment helpers
+// in @vitrum/shared-denoisers. Earlier revisions inlined these (~40 LOC); the
+// canonical versions are byte-identical with one tiny exception:
+// `alignedTextureCopyBytesPerRow(width, bpp)` does not impose the `max(256, …)`
+// lower bound — for any width > 0 the result is already ≥ 256, so behaviour is
+// equivalent. `decoupledF32` ensures the local call sites read like the
+// inline originals.
+import {
+  float16BitsToFloat32 as f16ToF32,
+  float32ToFloat16Bits as f32ToF16,
+} from '@vitrum/shared-denoisers';
+import { alignedTextureCopyBytesPerRow } from '@vitrum/shared-denoisers';
 
 /**
  * Read 4 channels of a row-major rgba16float buffer into a Float32 RGB
@@ -180,7 +150,7 @@ function rgbF32ToRgba16fRowAligned(
   width: number,
   height: number,
 ): { buffer: ArrayBuffer; bytesPerRow: number } {
-  const bytesPerRow = alignBytesPerRow(width * 8);
+  const bytesPerRow = alignedTextureCopyBytesPerRow(width, 8);
   // Allocate as ArrayBuffer (not ArrayBufferLike via `new Uint8Array(N).buffer`)
   // so the return type stays narrow enough for GPUAllowSharedBufferSource —
   // TS 5.5+ widens `Uint8Array<...>` to `Uint8Array<ArrayBufferLike>` which
@@ -325,7 +295,7 @@ export class OIDNFinalDenoiser implements Denoiser {
     // Allocate transient readback buffers + queue the copies into the
     // current frame's encoder. WebGPU requires bytesPerRow to be a
     // multiple of 256 in copyTextureToBuffer, hence the alignment.
-    const bytesPerRow = alignBytesPerRow(W * 8); // rgba16float = 8 B / texel
+    const bytesPerRow = alignedTextureCopyBytesPerRow(W, 8); // rgba16float = 8 B / texel
     const readSize = bytesPerRow * H;
 
     const colorReadback = device.createBuffer({
