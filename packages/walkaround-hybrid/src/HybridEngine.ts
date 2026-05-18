@@ -20,6 +20,19 @@
  *   This class exposes `setLayerEnabled()` so the host can wire layer
  *   toggles; it calls `window.__WGPU__` only inside a debug branch
  *   guarded by `typeof window !== 'undefined'` and the `debug` option.
+ *
+ * Decomposition (refactor sweep 2026-05-18):
+ *   - {@link PipelineInitCoordinator} (HybridEngineLifecycle.ts) owns the
+ *     async pipeline-init race coordination + the multi-phase init chain.
+ *   - {@link transformRefit} / {@link topologyRebuild}
+ *     (HybridEnginePrimitiveUpdates.ts) implement the `updatePrimitive`
+ *     fast / rebuild paths.
+ *   - {@link TUNABLE_DEFINITIONS} (HybridEngineTuning.ts) is the single
+ *     source of truth for audit-driven tuning knobs.
+ *   - This file owns: public Engine API impl, construction-time options
+ *     validation, debug surface, engine-state machine and reset
+ *     coordination, scene synthesis + ownership, per-frame DDGI
+ *     orchestration + frame throttle + telemetry mirror.
  */
 
 import * as THREE from 'three';
@@ -28,390 +41,37 @@ import type {
   EngineCapabilities,
   EngineDebugSurface,
   EngineFactory,
-  EngineOptions,
   EngineState,
   FrameStats,
   GpuMemoryBreakdown,
 } from '@vitrum/core';
 import type { Scene, ScenePrimitive } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
-import { refitBvhBounds } from '@vitrum/shared-bvh';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { packDDGIGridParams, type FrameResources } from './pipeline/resourceManager.js';
 import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
-import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
+import { disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
-import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
+import { transformRefit, topologyRebuild, type PrimitiveUpdateContext } from './HybridEnginePrimitiveUpdates.js';
+import { PipelineInitCoordinator, type PipelineInitHost } from './HybridEngineLifecycle.js';
+import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
+import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
+
+// Re-export the option / lighting interfaces from their dedicated module so
+// the package's public surface (`./HybridEngine.js` import path) stays
+// unchanged after the type split (refactor sweep 2026-05-18).
+export type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
 
-// ────────────────────────────────────────────────────────────────────────────
-// Public types
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
- * All fields are optional; omitting a field leaves the corresponding engine
- * parameter unchanged.
- */
-export interface LightingOptions {
-  /** Primary directional light direction (world-space, normalised). */
-  primaryLightDir?: [number, number, number];
-  /** Primary directional light intensity (linear, unitless). */
-  primaryLightIntensity?: number;
-  /** Diffuse-sky-dome RGB tint. */
-  skyTint?: [number, number, number];
-  /** Sky-dome irradiance scalar paired with {@link skyTint}. */
-  skyIrradiance?: number;
-}
-
-export interface HybridEngineOptions extends EngineOptions {
-  /** WebGPU device (narrowed from the opaque `device: unknown` on EngineOptions). */
-  readonly device: GPUDevice;
-
-  /** Physical pixel width of the render surface. */
-  readonly width: number;
-
-  /** Physical pixel height of the render surface. */
-  readonly height: number;
-
-  /**
-   * Predicate the engine polls before kicking off ReSTIR pipeline init.
-   * Returns true when the scene has enough geometry to build a BVH.
-   * Defaults to the `defaultIsSceneReady` heuristic (any triangle present).
-   * Override if your scene loads asynchronously and you need a different
-   * signal (e.g. wait for a specific async asset, or require N triangles).
-   */
-  readonly isSceneReady?: () => boolean;
-
-  /**
-   * Stable signal sampled at ctor (`pipelineRebuildKey`) and/or dynamically
-   * via {@link getPipelineRebuildKey}. When the effective value changes compared
-   * to the previous frame's sample, {@link HybridEngine.reset} runs so the GPU
-   * pipeline is recreated (same `_lastScene` / `THREE` graph).
-   */
-  readonly pipelineRebuildKey?: string | number | null;
-
-  /**
-   * Optional callback polled at the **start** of each {@link HybridEngine.renderFrame}
-   * (after state guards). Takes precedence over {@link pipelineRebuildKey} when
-   * supplied. Enables hosts to invalidate the pipeline without `setScene()`.
-   */
-  readonly getPipelineRebuildKey?: () => string | number | null | undefined;
-
-  /**
-   * Primary directional light direction (world-space, normalised).
-   * Used for both BVH-build-time emitter list construction AND per-frame
-   * sun-shadow casting. The two MUST match exactly for self-emission Le
-   * to reproduce correctly.
-   */
-  readonly primaryLightDir: [number, number, number];
-
-  /** Primary directional light intensity (linear, unitless). */
-  readonly primaryLightIntensity: number;
-
-  /**
-   * Diffuse-sky-dome RGB tint. Consumed by the sky-aperture probe and
-   * second-bounce sky-miss paths.
-   */
-  readonly skyTint: [number, number, number];
-
-  /** Sky-dome irradiance scalar paired with skyTint. */
-  readonly skyIrradiance: number;
-
-  /**
-   * Optional escape hatch for hosts that need to provide a THREE.Scene as the
-   * BVH / DDGI source directly (e.g. when the host's authoritative scene graph
-   * is THREE-only and they intentionally omit `setScene(vitrumScene)`).
-   *
-   * **Most callers leave this undefined.** When `setScene` provides a vitrum
-   * Scene with at least one mesh primitive, the engine derives the BVH source
-   * via `vitrumSceneToThree()` and the `threeScene` field is never read. The
-   * @vitrum/engine `createEngine()` facade always takes the latter path.
-   *
-   * Was required pre-T3.H (deprecated 2026-05-12, removed 2026-05-12). Hosts
-   * that previously passed `threeScene: someScene` can drop the field if they
-   * also call `setScene(sceneFromThreeJS(someScene))` afterwards. If they do
-   * neither (no mesh primitives in setScene + no threeScene), the engine
-   * throws on pipeline init with a clear error.
-   */
-  readonly threeScene?: THREE.Scene;
-
-  /** Light list for DDGI probe update pass. */
-  readonly lights?: DDGILight[];
-
-  /** When true, enables informational ReSTIR pipeline logs (initialization / shader compile). */
-  readonly verbose?: boolean;
-
-  /**
-   * When true, enables debug logging and exposes
-   * `window.__DDGI__` inside `typeof window !== 'undefined'` guards.
-   */
-  readonly debug?: boolean;
-
-  /**
-   * Post-shade denoiser:
-   *
-   *   `'atrous-variance'` (default) — temporal Welford + à-trous + variance
-   *   scalar lookup; honest about what it does (not Schied 2017 SVGF).
-   *
-   *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
-   *
-   *   `'svgf-real'` — T2.H1 — full Schied 2017 SVGF: bilinear motion-vector
-   *   reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
-   *   history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
-   *   variance-from-moments (Eq. 5), 7×7 spatial fallback for disoccluded pixels
-   *   (§4.3). Requires historyLength (r16uint) + momentsHistory (rg32float) +
-   *   prevRadiance (rgba16float) persistent textures: ~52 MB at 1080p.
-   *
-   *   `'svgf'` is a deprecated alias for `'atrous-variance'`; triggers a
-   *   one-time console warning.
-   *
-   *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
-   *   et al. 2015). Requires `neuralWeights` to be provided. Default still
-   *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
-   *
-   *   `'oidn-final'` — W11 — Intel Open Image Denoise final-pass via ONNX
-   *   Runtime Web (`@vitrum/shared-denoisers/oidnBridge`). Async/stale-by-
-   *   one-frame model: each dispatch reads back the HDR + albedo + normal
-   *   buffers, runs OIDN on the CPU/GPU/WebNN, and uploads the denoised
-   *   RGB back into a vt-owned output texture (≈50-200 ms inference).
-   *   Requires `extensions['walkaround-hybrid'].oidnModelUrl` to be supplied
-   *   (URL or path to the bundled .onnx model file). Optional peer dep
-   *   `onnxruntime-web` must be installed at runtime.
-   */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural' | 'oidn-final';
-
-  /**
-   * Pre-loaded model weights for the neural denoiser (T2.H2).
-   * Required when `denoiser === 'neural'`. Load via `loadWeightsFromArrayBuffer()`
-   * from the vitrum binary format exported by `tools/neural-denoiser-training/export_weights.py`.
-   *
-   * If `denoiser === 'neural'` and `neuralWeights` is undefined, the engine
-   * constructor throws with a helpful error pointing to the training README.
-   */
-  readonly neuralWeights?: ModelWeights;
-
-  /**
-   * Backend-specific creation-time configuration (per the
-   * `@vitrum/core` `EngineOptions.extensions` design-principle: backends
-   * own their own extension namespace). Hosts pass
-   * `extensions: { 'walkaround-hybrid': { ... } }` to thread non-generic
-   * config (today: OIDN model URL) without polluting the generic
-   * `EngineOptions` surface.
-   *
-   * Keys currently consumed:
-   *   - `'walkaround-hybrid'.oidnModelUrl` (W11) — required when
-   *     `denoiser === 'oidn-final'`. URL or path to the bundled OIDN
-   *     `.onnx` model file (e.g. `'/models/oidn_rt_hdr_alb_nrm.onnx'`).
-   *     The host is responsible for serving the file.
-   *   - `'walkaround-hybrid'.oidnExecutionProviders` (W11) — optional
-   *     override of the ONNX Runtime Web execution-provider order;
-   *     default `['webnn', 'webgpu', 'wasm']` (Decision 11).
-   */
-  readonly extensions?: Readonly<Record<string, unknown>> & {
-    readonly 'walkaround-hybrid'?: {
-      readonly oidnModelUrl?: string;
-      readonly oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-    };
-  };
-
-  // ── Library-generality knobs (audit follow-up) ──────────────────────────
-  // All optional; defaults preserve Cornell-test-scene behaviour byte-for-
-  // byte. Hosts targeting other scene scales / intensities should set them.
-
-  /**
-   * Per-frame render-interval cap in **milliseconds**. Null disables the
-   * cap (every rAF call dispatches a frame). Pass `1000/30 - 1` for a 30
-   * FPS ceiling, `1000/120 - 1` for 120 FPS.  Default `1000/60 - 1` (~60
-   * FPS soft-cap).  Scene-independent — purely a host-side governor.
-   *
-   * @default 1000/60 - 1
-   */
-  readonly targetFrameIntervalMs?: number | null;
-
-  /**
-   * Camera squared-distance threshold (**world-space units²**) for
-   * resetting the temporal accumulator.  When the camera moves more than
-   * `sqrt(threshold)` units in one frame, the accumulator's history is
-   * discarded and accumulation restarts at α=1.
-   *
-   * **Scene-scale-sensitive**.  Default `1.0` is tuned to Cornell's ~2-unit
-   * room. For a 100-unit city block, this never trips (permanent ghosting);
-   * for a 1-unit jewellery scene, every micro-movement trips it. Recommended
-   * default for hosts is `(sceneDiagonal × 0.001)²`.
-   *
-   * @default 1.0
-   */
-  readonly cameraMoveResetThresholdSq?: number;
-
-  /**
-   * Per-frame temporal-accumulator EMA weight.  `1.0` = no history (single
-   * frame), `0.01` = 99% history retain.
-   *
-   * **Framerate-sensitive**.  Default `0.01` is tuned for ~60 FPS Cornell
-   * convergence. At 30 FPS the same α doubles temporal lag; at 120 FPS it
-   * halves convergence-back-to-steady-state after a camera stop. For
-   * FPS-independent feel, set `1 - exp(-frameTime × k)` for a chosen k.
-   *
-   * @default 0.01
-   */
-  readonly temporalAccumAlpha?: number;
-
-  /**
-   * Emitter-geometry-term distance² floor (audit M12).  Clamps
-   * `G = (n_l · ω) / max(dist², emitterDist2Floor)` to prevent G blowup
-   * for receivers within sqrt(floor) of an emitter.
-   *
-   * **Scene-scale-sensitive**.  Default `0.01` (10 cm minimum effective
-   * distance) for Cornell-scale.  Hosts on different scales should pass
-   * `(sceneDiagonal × 1e-3)²` so the floor scales with scene extent.
-   *
-   * @default 0.01
-   */
-  readonly emitterDist2Floor?: number;
-
-  /**
-   * Per-channel HDR clamp on the direct radiance channel before the
-   * atrous-variance denoiser (audit B4). Suppresses fireflies from ReSTIR-DI's
-   * stochastic light-point selection on glancing-angle BRDF evaluations.
-   *
-   * **Light-intensity-sensitive**.  Default `4.0` is calibrated for
-   * Le=12 (`4 / π × 12 ≈ 15`, clamped at 4).  For brighter scenes
-   * compute `~4 × luminance(maxEmitterLe)`.
-   *
-   * @default 4.0
-   */
-  readonly directFireflyClamp?: number;
-
-  /**
-   * Stained-glass caustic boost (audit B1).  Multiplies the through-glass
-   * sun-shadow-ray contribution.  Cornell's stained-glass test scene uses
-   * `{ boost: 22, visClamp: 0.6 }` to compensate for Brown-Beer-Lambert
-   * attenuation; generic scenes should leave this at defaults (no boost,
-   * no clamp).
-   *
-   * @default { boost: 1.0, visClamp: 1.0 }
-   */
-  readonly caustic?: {
-    readonly boost?: number;
-    readonly visClamp?: number;
-  };
-
-  /**
-   * ReSTIR-DI temporal M-clamp (audit M6).  Caps the previous-frame
-   * reservoir's `M` before combining into this frame's reservoir.
-   * Higher = stickier history (slower to respond to lighting changes
-   * but lower variance).
-   *
-   * **Framerate-sensitive**.  Default 20 frames ≈ 333 ms history at
-   * 60 FPS.  At 15 FPS this stretches to 1.3 s; at 120 FPS it compresses
-   * to 167 ms.  For FPS-independent feel: `round(0.3 / frameTimeSeconds)`.
-   *
-   * @default 20
-   */
-  readonly temporalMClampDI?: number;
-
-  /**
-   * ReSTIR-DI spatial-reuse radius in **pixels** (audit M7).  The Poisson
-   * disk for neighbour sampling extends this far from the centre pixel.
-   *
-   * **Resolution-sensitive**.  Default `30` is calibrated for ~1080p–4K.
-   * At 480p reuse stretches across geometry boundaries; at 8K it stays
-   * very local.  Suggested host derivation: `screenHeight × 0.025`.
-   *
-   * @default 30
-   */
-  readonly spatialReuseRadiusPx?: number;
-
-  /**
-   * ReSTIR-DI spatial-reuse depth-tolerance world-units floor (audit M8).
-   * Neighbours whose depth differs by less than this absolute value are
-   * accepted regardless of relative tolerance.
-   *
-   * **Scene-scale-sensitive**.  Default `0.05` (5 cm) for Cornell-scale.
-   * Hosts on cm-scale scenes should use ~`sceneDiagonal × 1e-3`.
-   *
-   * @default 0.05
-   */
-  readonly spatialDepthTolFloor?: number;
-
-  /**
-   * Adaptive-sampling tier classifier thresholds (audit M2).  The
-   * sample-budget pass reads previous-frame Welford variance and writes
-   * a per-pixel tier (1 / 2 / 4) used downstream by RIS to scale M_GI.
-   *
-   * **Light-intensity-sensitive** — variance scales with peak-radiance²,
-   * so HDR scenes need higher thresholds.  Default `[0.01, 0.10]` is
-   * calibrated for Cornell's variance dynamic range.
-   *
-   * @default [0.01, 0.10]
-   */
-  readonly adaptiveSamplingThresholds?: readonly [low: number, high: number];
-
-  /**
-   * GTAO (ground-truth ambient occlusion) tuning (audits M1, B3).  All
-   * fields optional.  Defaults preserve Cornell behaviour.
-   *
-   * - `radiusPx` (resolution-sensitive): sampling radius in screen-space
-   *   pixels. Default 32; consider `screenHeight × ~0.025` for
-   *   resolution-independent feel.
-   * - `intensity`: AO exponent (`ao = pow(raw, intensity)`). Default 2.0.
-   * - `depthThresholdWorldUnits` (scene-scale-sensitive): max depth
-   *   discontinuity to include in the horizon test.  Default 2.0 (Cornell
-   *   ~2 m room); large-scale scenes should use ~`sceneDiagonal × 0.05`.
-   * - `bilateralDepthSigma` (scene-scale-sensitive): σ for the bilateral
-   *   upsample's depth-weight Gaussian (world units).  Default 0.25.
-   *   Hosts should set ~`sceneDiagonal × 0.01`.
-   */
-  readonly gtao?: {
-    readonly radiusPx?: number;
-    readonly intensity?: number;
-    readonly depthThresholdWorldUnits?: number;
-    readonly bilateralDepthSigma?: number;
-  };
-
-  /**
-   * Möller-Trumbore coplanarity epsilon (D12 / audit M3 follow-up).
-   * Controls the `abs(det) < ε` near-zero determinant test in
-   * `intersectTriangle` in the ReSTIR WGSL.  A too-small value causes
-   * grazing-angle rays to incorrectly miss coplanar triangles; a too-large
-   * value rejects valid near-coplanar hits.
-   *
-   * **Scene-scale-sensitive.**  Default `1e-5` is correct for metre-scale.
-   * For millimetre-scale geometry, try `1e-7`; for kilometre-scale, `1e-3`.
-   *
-   * @default 1e-5
-   */
-  readonly triIntersectEpsilon?: number;
-
-  // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
-
-  /**
-   * Enable the Müller 2017 Practical Path Guiding subsystem.
-   *
-   * When `true`, the engine instantiates an adaptive spatial tree (sTree)
-   * and per-cell directional trees (dTree) per §3.1–3.2. Training runs
-   * via `ppgUpdate.wgsl.ts` (incoming radiance L_i, world frame). Guiding
-   * mixes the learned PDF with BSDF sampling via MIS (§3.4).
-   *
-   * Default: `false` (PPG is an opt-in feature; default remains BSDF-only).
-   */
-  readonly ppgEnabled?: boolean;
-
-  /**
-   * Maximum number of sTree spatial cells (hard cap on adaptive splits).
-   * Each cell consumes memory for a flat dTree node buffer on the GPU.
-   *
-   * Default: 16 384 (matches `PPG_MAX_SPATIAL_CELLS`).
-   */
-  readonly ppgMaxSpatialCells?: number;
-}
+// `HybridEngineOptions` + `LightingOptions` interface bodies live in
+// `HybridEngineOptions.ts` (~340 LOC of pure JSDoc, extracted refactor sweep
+// 2026-05-18). Re-exported above so the package surface is unchanged.
 
 // ────────────────────────────────────────────────────────────────────────────
 // Scene-readiness helper
@@ -540,38 +200,11 @@ export class HybridEngine implements Engine {
   private readonly _oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
   /** Audit M4 — null disables the FPS cap; configured at construction. */
   private readonly _targetFrameIntervalMs: number | null;
-  /** Audit B8 — passed to WalkaroundGPUPipeline at initialize() time. */
-  private readonly _cameraMoveResetThresholdSq: number;
-  /** Audit M3 — passed to WalkaroundGPUPipeline at initialize() time. */
-  private readonly _temporalAccumAlpha: number;
-  /** Audit M12 — written into WalkaroundUBO each frame. */
-  private readonly _emitterDist2Floor: number;
-  /** Audit B4 — written into WalkaroundUBO each frame. */
-  private readonly _directFireflyClamp: number;
-  /** Audit B1 — written into WalkaroundUBO each frame. */
-  private readonly _causticBoost: number;
-  /** Audit B1 — written into WalkaroundUBO each frame. */
-  private readonly _causticVisClamp: number;
-  /** Audit M6 — written into WalkaroundUBO each frame. */
-  private readonly _temporalMClampDI: number;
-  /** Audit M7 — written into WalkaroundUBO each frame. */
-  private readonly _spatialReuseRadiusPx: number;
-  /** Audit M8 — written into WalkaroundUBO each frame. */
-  private readonly _spatialDepthTolFloor: number;
-  /** Audit M1 — written into GTAO UBO each frame. */
-  private readonly _gtaoRadiusPx: number;
-  /** Audit M1 — written into GTAO UBO each frame. */
-  private readonly _gtaoIntensity: number;
-  /** Audit M1 — written into GTAO UBO each frame. */
-  private readonly _gtaoDepthThreshold: number;
-  /** Audit B3 — written into GTAO UBO each frame. */
-  private readonly _gtaoBilateralDepthSigma: number;
-  /** Audit M2 — written into sample-budget UBO each frame. */
-  private readonly _adaptiveSamplingThresholdLow: number;
-  /** Audit M2 — written into sample-budget UBO each frame. */
-  private readonly _adaptiveSamplingThresholdHigh: number;
-  /** D12 — written into WalkaroundUBO each frame. */
-  private readonly _triIntersectEpsilon: number;
+  /** Per-frame audit tunable record (frozen; spread into pipeline.renderFrame).
+   *  See `HybridEngineTuning.ts`. */
+  private readonly _tunables: Tunables;
+  /** Init-time audit tunable record (frozen; passed into pipeline.initialize). */
+  private readonly _initTunables: InitTunables;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -611,42 +244,23 @@ export class HybridEngine implements Engine {
     ['ddgi', true],
   ]);
 
-  // ── Initialisation cancellation ───────────────────────────────────────
-  /** Set to true by dispose() to cancel an in-flight async init. */
-  private _disposed = false;
+  // ── Pipeline init coordinator (see HybridEngineLifecycle.ts) ──────────
+  //
+  // Owns the monotonic init-sequence + dispose race coordination + multi-
+  // phase async init chain. The engine delegates init/dispose flow to it
+  // via the {@link PipelineInitHost} surface built in `_buildInitHost()`.
+  private readonly _initCoordinator: PipelineInitCoordinator;
 
-  /**
-   * Monotonic init sequence — incremented at the start of every
-   * `_initPipeline()` call. Each in-flight async init captures the value
-   * at entry; before it writes any shared state (`_ddgiTraversalScene`,
-   * `_bvhBuffers`, `_pipeline`) it re-checks `mySeq === this._initSeq`.
-   * If the value drifted, a newer init / teardown raced ahead and this
-   * older chain MUST dispose its locals + bail without mutating shared
-   * state. Without this guard, two concurrent inits both write — the loser
-   * leaks ~1 GB of GPU resources (full-res rgba16float textures + BVH
-   * buffers + DDGI atlases) per setScene/resize storm tick.
-   */
-  private _initSeq: number = 0;
-
-  /**
-   * Set true by `dispose()` when there's an in-flight `_initPipeline()`
-   * chain. The init chain checks this flag after every `await` and, if
-   * set, disposes any locals it owns (BVH, pipeline) AND finalises
-   * teardown of `_pipeline` / `_bvhBuffers` / `_ddgiTraversalScene` if
-   * something snuck into them between the dispose call and the await
-   * resolution. Lets `dispose()` stay synchronous while still being honest
-   * about late writers.
-   */
-  private _pendingTeardown: boolean = false;
-
-  /**
-   * True while an `_initPipeline()` async chain is mid-flight. The init
-   * chain sets this to `true` at entry to the inner IIFE and to `false`
-   * in its `finally`. Read by `dispose()` to decide whether to defer
-   * teardown to the in-flight chain's finally block (via
-   * `_pendingTeardown`) or to tear down synchronously here and now.
-   */
-  private _initRunning: boolean = false;
+  // Underscore-prefixed forwarders for the coordinator's race-tracking
+  // state. These exist so existing dispose / init-race tests that reach
+  // in via `engine['_initSeq']` / `engine['_pendingTeardown']` /
+  // `engine['_initRunning']` continue to see the live values without
+  // duplicating state on the engine. They're test seams, not part of any
+  // documented engine surface.
+  private get _initSeq(): number { return this._initCoordinator.initSeq; }
+  private get _initRunning(): boolean { return this._initCoordinator.initRunning; }
+  private get _pendingTeardown(): boolean { return this._initCoordinator.pendingTeardown; }
+  private get _disposed(): boolean { return this._initCoordinator.disposed; }
 
   /** Monotonic fingerprint of {@link HybridEngineOptions.pipelineRebuildKey} /
    *  {@link HybridEngineOptions.getPipelineRebuildKey} — changes trigger `reset()`. */
@@ -729,25 +343,10 @@ export class HybridEngine implements Engine {
     this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
       ? opts.targetFrameIntervalMs
       : DEFAULT_TARGET_FRAME_INTERVAL_MS;
-    this._cameraMoveResetThresholdSq = opts.cameraMoveResetThresholdSq ?? 1.0;
-    this._temporalAccumAlpha    = opts.temporalAccumAlpha ?? 0.01;
-    // Library-generality tunables. Defaults preserve Cornell behaviour;
-    // hosts on different scene scales / intensities should override.
-    this._emitterDist2Floor     = opts.emitterDist2Floor    ?? 0.01;
-    this._directFireflyClamp    = opts.directFireflyClamp   ?? 4.0;
-    this._causticBoost          = opts.caustic?.boost       ?? 1.0;
-    this._causticVisClamp       = opts.caustic?.visClamp    ?? 1.0;
-    this._temporalMClampDI      = opts.temporalMClampDI     ?? 20;
-    this._spatialReuseRadiusPx  = opts.spatialReuseRadiusPx ?? 30.0;
-    this._spatialDepthTolFloor  = opts.spatialDepthTolFloor ?? 0.05;
-    // GTAO defaults match the previous hard-coded values in the pipeline.
-    this._gtaoRadiusPx          = opts.gtao?.radiusPx                ?? 32.0;
-    this._gtaoIntensity         = opts.gtao?.intensity               ?? 2.0;
-    this._gtaoDepthThreshold    = opts.gtao?.depthThresholdWorldUnits ?? 2.0;
-    this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma   ?? 0.25;
-    this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
-    this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
-    this._triIntersectEpsilon    = opts.triIntersectEpsilon ?? 1e-5;
+    // Library-generality tunables — table-driven; defaults preserve Cornell
+    // behaviour, hosts override via HybridEngineOptions.
+    this._tunables     = readTunables(opts);
+    this._initTunables = readInitTunables(opts);
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -805,6 +404,12 @@ export class HybridEngine implements Engine {
       // every method.
       debugSurface: true,
     };
+
+    // Pipeline-init coordinator: own the async init race state machine and
+    // dispose coordination. The host adapter built below grants the
+    // coordinator the small surface it needs without exposing private
+    // engine fields directly.
+    this._initCoordinator = new PipelineInitCoordinator(this._buildInitHost());
   }
 
   // ── Scene management ───────────────────────────────────────────────────
@@ -836,7 +441,7 @@ export class HybridEngine implements Engine {
 
     // Tear down the existing pipeline, reinitialise asynchronously.
     this._teardownPipeline();
-    void this._initPipeline();
+    this._initCoordinator.startInit();
   }
 
   /** T3.H removal: lazily synthesize a THREE.Scene from the most recent
@@ -869,13 +474,16 @@ export class HybridEngine implements Engine {
   //     recompile, no DDGI atlas invalidation), rewrite the affected
   //     primitive's vertex slice in `bvhPositions`, reset the accumulator.
   //  - any topology field present (`positions` / `normals` / `uvs` /
-  //    `tangents` / `indices` / `instances` / `params` / `shape` /
-  //    `fallbackMesh` / `kind`) → full-rebuild path (a): re-run
-  //    `buildReSTIRSceneBVH`, destroy + reupload all four BVH GPU
-  //    buffers, reset the accumulator.
+  //     `tangents` / `indices` / `instances` / `params` / `shape` /
+  //     `fallbackMesh` / `kind`) → full-rebuild path (a): re-run
+  //     `buildReSTIRSceneBVH`, destroy + reupload all four BVH GPU
+  //     buffers, reset the accumulator.
   //  - material-only patches → throw with a clear pointer (the merger's
-  //    job is to replace this branch with the material-fast-path branch's
-  //    dispatch logic).
+  //     job is to replace this branch with the material-fast-path branch's
+  //     dispatch logic).
+  //
+  // Implementations live in `HybridEnginePrimitiveUpdates.ts`; this method
+  // is the routing dispatcher.
   //
   // Implements `Engine.updatePrimitive(id, patch)` from `@vitrum/core`.
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
@@ -903,11 +511,13 @@ export class HybridEngine implements Engine {
     const hasMaterialChange  = (patch as Record<string, unknown>)['material']  !== undefined;
 
     if (hasTopologyChange) {
-      this._updatePrimitiveTopologyRebuild(id, patch);
+      const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
+      this._bvhBuffers = result.bvhBuffers;
       return;
     }
     if (hasTransformChange) {
-      this._updatePrimitiveTransformRefit(id, patch);
+      const result = transformRefit(id, patch, this._buildPrimitiveUpdateContext());
+      this._bvhBuffers = result.bvhBuffers;
       return;
     }
     if (hasMaterialChange) {
@@ -927,271 +537,16 @@ export class HybridEngine implements Engine {
     // field's presence.
   }
 
-  /**
-   * Transform-only fast path (Option (c) per items_to_fix.md A3).
-   *
-   * The BVH topology is preserved — only AABB bounds are refit. Cost is
-   * O(affectedVertices + totalBvhNodes), no pipeline recompile, no DDGI
-   * atlas invalidation. For a single primitive on a 30k-tri scene this
-   * runs in well under 1 ms vs. ~50 ms for a full SAH rebuild + pipeline
-   * recompile.
-   *
-   * Steps:
-   *  1. Look up the affected mesh by `name === id` in the synthesized
-   *     THREE scene (or `_threeScene` for the host-Three-scene path).
-   *  2. Apply the new transform to the THREE.Mesh (`matrix` + `matrixWorld`).
-   *  3. Compute the matrix delta `D = matrixWorldNew · matrixWorldAtBuild⁻¹`.
-   *  4. For each vertex `v` in `[vertexStart, vertexStart + vertexCount)`,
-   *     read the old world-space position from `bvhPositions.cpuData`,
-   *     apply `D`, write the new world-space position back. (UV in `.w`
-   *     is preserved.)
-   *  5. Update `matrixWorldAtBuild` snapshot to the new matrix world.
-   *  6. Run `refitBvhBounds` on the BVH node buffer.
-   *  7. Upload the refit nodes + position slice via the pipeline.
-   *  8. Reset the accumulator (history is invalid — the primitive moved).
-   */
-  private _updatePrimitiveTransformRefit(id: string, patch: Partial<ScenePrimitive>): void {
-    const bvh = this._bvhBuffers;
-    if (bvh == null) {
-      // Pipeline still initialising — nothing to refit. Fall through to a
-      // full rebuild so the next setScene picks up the new transform.
-      this._updatePrimitiveTopologyRebuild(id, patch);
-      return;
-    }
-
-    const range = bvh.meshVertexRanges.find((r) => r.name === id);
-    if (range == null || range.vertexCount === 0) {
-      // No vertices for this primitive in the merged buffer (e.g. an
-      // emitter-only primitive, or a name mismatch). Fall back to a
-      // topology rebuild so the user's intent isn't silently dropped.
-      this._updatePrimitiveTopologyRebuild(id, patch);
-      return;
-    }
-
-    const root = this._ensureThreeSceneRoot();
-    if (root == null) {
-      throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): no THREE scene available for refit.`,
-      );
-    }
-    let mesh: THREE.Mesh | null = null;
-    root.traverseVisible((obj) => {
-      if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-        mesh = obj as THREE.Mesh;
-      }
-    });
-    if (mesh == null) {
-      throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
-      );
-    }
-    const meshRef = mesh as THREE.Mesh;
-
-    // Apply the new transform. The Scene contract says transform is a
-    // 16-element column-major Mat4 (see core/src/scene.ts:MeshPrimitive).
-    const newMat = new THREE.Matrix4();
-    const transform = (patch as { transform?: ArrayLike<number> }).transform;
-    if (transform && transform.length >= 16) {
-      newMat.fromArray(Array.from(transform));
-    } else {
-      newMat.identity();
-    }
-    meshRef.matrix.copy(newMat);
-    meshRef.matrixWorld.copy(newMat);
-    meshRef.matrixAutoUpdate = false;
-
-    // Compute matrix delta D = newMat · oldMat⁻¹. We transform each
-    // already-baked world-space vertex through D to get the new
-    // world-space vertex; equivalent to local⁻¹ → new-world round-trip
-    // but without storing local-space positions.
-    const oldMatWorld = new THREE.Matrix4().fromArray(Array.from(range.matrixWorldAtBuild));
-    const oldMatWorldInv = new THREE.Matrix4().copy(oldMatWorld).invert();
-    const delta = new THREE.Matrix4().multiplyMatrices(newMat, oldMatWorldInv);
-
-    // Rewrite the affected vertex slice of bvhPositions.cpuData. The
-    // stride-4 layout packs world-space xyz into [0..2] and UV-as-u32
-    // into [3] (preserved here). Use a single typed-array view over the
-    // shared ArrayBuffer so the changes land in cpuData.
-    const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
-    const STRIDE = 4;
-    const baseVertex = range.vertexStart;
-    const sliceVerts = range.vertexCount;
-    const tmp = new THREE.Vector3();
-    for (let v = 0; v < sliceVerts; v++) {
-      const off = (baseVertex + v) * STRIDE;
-      tmp.x = positionsF32[off + 0]!;
-      tmp.y = positionsF32[off + 1]!;
-      tmp.z = positionsF32[off + 2]!;
-      tmp.applyMatrix4(delta);
-      positionsF32[off + 0] = tmp.x;
-      positionsF32[off + 1] = tmp.y;
-      positionsF32[off + 2] = tmp.z;
-      // .w (UV pack) preserved.
-    }
-
-    // Update the matrix snapshot in-place so subsequent transform
-    // patches compute their delta against the latest matrix, not the
-    // original build-time matrix.
-    range.matrixWorldAtBuild.set(newMat.elements);
-
-    // Refit BVH bounds in place against the freshly-updated positions.
-    // Use the cached stride-3 index buffer (refit reads 3 u32 per
-    // triangle, no padding).
-    const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
-    refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
-
-    // Upload the refit nodes + the affected position slice to GPU.
-    // bvhNodes is small (~32 KB / 1k tris) — upload whole.
-    // Positions: write only the affected byte range to honour the
-    // "fast path" goal.
-    const positionsByteOffset = baseVertex * STRIDE * 4; // f32 = 4 bytes
-    const positionsByteLength = sliceVerts * STRIDE * 4;
-    const positionsSlice = bvh.bvhPositions.cpuData.slice(
-      positionsByteOffset,
-      positionsByteOffset + positionsByteLength,
-    );
-    this._pipeline?.refreshBvhRefit(
-      bvh.bvhNodes.cpuData.slice(0),
-      { byteOffset: positionsByteOffset, data: positionsSlice },
-    );
-
-    // Reset the accumulator — temporal history is invalid because the
-    // primitive moved (history pixels reference the old world position).
-    this._pipeline?.requestAccumReset();
-    // DDGI probes baked their irradiance against the old position;
-    // invalidate so probes re-converge over the next STRIDE frames.
-    this._ddgi.invalidateProbeCache();
-  }
-
-  /**
-   * Topology-change full-rebuild path (Option (a) per items_to_fix.md A3).
-   *
-   * Picked over Option (b) ("`rebuildBvhLeaf(bvh, leafIndex, newTriangles)`
-   * in shared-bvh") because:
-   *  - three-mesh-bvh's MeshBVH constructor builds the whole tree
-   *    monolithically; surgical leaf-replacement would require
-   *    re-implementing SAH partitioning (Option (b) is genuinely
-   *    invasive).
-   *  - Topology changes are rarer than transform / material edits — the
-   *    fast paths (this branch's (c) + the material branch's bytes-only
-   *    re-upload) handle the common case. When topology DOES change,
-   *    paying ~50 ms for a clean rebuild is the right trade vs. multi-
-   *    sprint engineering on a custom partial-rebuilder.
-   *
-   * The CPU-side BVH builder runs; the pipeline shaders + bind-group
-   * layouts + DDGI atlas + per-frame textures are preserved (no
-   * `_initPipeline()` re-run). Cost: BVH build (~50 ms / 30k tris) +
-   * 4 buffer destroy/recreate. No pipeline recompile.
-   */
-  private _updatePrimitiveTopologyRebuild(id: string, patch: Partial<ScenePrimitive>): void {
-    const root = this._ensureThreeSceneRoot();
-    if (root == null) {
-      throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): no THREE scene available for rebuild.`,
-      );
-    }
-
-    // Apply the patch to the affected THREE.Mesh in the synthesized
-    // scene so the BVH build picks up the new geometry / transform.
-    // For now we support the most common topology patches:
-    //   - transform (16-element Mat4)
-    //   - positions, normals, uvs, tangents, indices (typed arrays from
-    //     core/src/scene.ts MeshPrimitive)
-    // Other fields (`instances`, `params`, `shape`, `fallbackMesh`,
-    // `kind`) require a wholesale primitive replacement; throw with a
-    // clear pointer so the host knows to use setScene().
-    let mesh: THREE.Mesh | null = null;
-    root.traverseVisible((obj) => {
-      if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-        mesh = obj as THREE.Mesh;
-      }
-    });
-    if (mesh == null) {
-      throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
-      );
-    }
-    const meshRef = mesh as THREE.Mesh;
-
-    const p = patch as {
-      transform?: ArrayLike<number>;
-      positions?: ArrayLike<number>;
-      normals?: ArrayLike<number>;
-      uvs?: ArrayLike<number>;
-      tangents?: ArrayLike<number>;
-      indices?: ArrayLike<number>;
-      instances?: unknown;
-      params?: unknown;
-      shape?: unknown;
-      fallbackMesh?: unknown;
-      kind?: unknown;
-    };
-    for (const f of ['instances', 'params', 'shape', 'fallbackMesh', 'kind'] as const) {
-      if (p[f] !== undefined) {
-        throw new Error(
-          `HybridEngine.updatePrimitive("${id}"): patching '${f}' requires a primitive ` +
-          `replacement, not just an attribute update. Call setScene() with the ` +
-          `modified scene instead.`,
-        );
-      }
-    }
-
-    if (p.transform && p.transform.length >= 16) {
-      const m = new THREE.Matrix4().fromArray(Array.from(p.transform));
-      meshRef.matrix.copy(m);
-      meshRef.matrixWorld.copy(m);
-      meshRef.matrixAutoUpdate = false;
-    }
-    if (p.positions) {
-      meshRef.geometry.setAttribute(
-        'position',
-        new THREE.BufferAttribute(new Float32Array(Array.from(p.positions)), 3),
-      );
-    }
-    if (p.normals) {
-      meshRef.geometry.setAttribute(
-        'normal',
-        new THREE.BufferAttribute(new Float32Array(Array.from(p.normals)), 3),
-      );
-    }
-    if (p.uvs) {
-      meshRef.geometry.setAttribute(
-        'uv',
-        new THREE.BufferAttribute(new Float32Array(Array.from(p.uvs)), 2),
-      );
-    }
-    if (p.tangents) {
-      meshRef.geometry.setAttribute(
-        'tangent',
-        new THREE.BufferAttribute(new Float32Array(Array.from(p.tangents)), 4),
-      );
-    }
-    if (p.indices) {
-      meshRef.geometry.setIndex(
-        new THREE.BufferAttribute(new Uint32Array(Array.from(p.indices)), 1),
-      );
-    }
-
-    // Rebuild the BVH from the patched THREE scene. The old buffers are
-    // released after the new ones are uploaded.
-    const oldBuffers = this._bvhBuffers;
-    const newBuffers = buildReSTIRSceneBVH([root], {
-      primaryLightDir:       new THREE.Vector3(...this._primaryLightDir),
+  /** Build the per-call resource context the primitive-update helpers consume. */
+  private _buildPrimitiveUpdateContext(): PrimitiveUpdateContext {
+    return {
+      bvhBuffers:            this._bvhBuffers,
+      threeRoot:             this._ensureThreeSceneRoot(),
+      pipeline:              this._pipeline,
+      ddgi:                  this._ddgi,
+      primaryLightDir:       this._primaryLightDir,
       primaryLightIntensity: this._primaryLightIntensity,
-    });
-    this._bvhBuffers = newBuffers;
-    if (oldBuffers) disposeSceneBVH(oldBuffers);
-
-    // Refresh the four BVH GPU buffers + (in case emissive geometry
-    // changed) the emitter buffers. Pipeline shaders + bind-group
-    // layouts are NOT touched.
-    this._pipeline?.refreshBvhFullRebuild(newBuffers);
-    this._pipeline?.updateEmitters(newBuffers);
-
-    // Reset the accumulator + invalidate DDGI — geometry topology
-    // changed, history is meaningless.
-    this._pipeline?.requestAccumReset();
-    this._ddgi.invalidateProbeCache();
+    };
   }
 
   updateEmitter?: never;
@@ -1493,22 +848,9 @@ export class HybridEngine implements Engine {
       primaryLightIntensity: this._primaryLightIntensity,
       skyTint:               this._skyTint,
       skyIrradiance:         this._skyIrradiance,
-      // Library-generality tunables (audit follow-up). Defaults preserve
-      // Cornell behaviour; hosts override via HybridEngineOptions.
-      emitterDist2Floor:     this._emitterDist2Floor,
-      directFireflyClamp:    this._directFireflyClamp,
-      causticBoost:          this._causticBoost,
-      causticVisClamp:       this._causticVisClamp,
-      temporalMClampDI:      this._temporalMClampDI,
-      spatialReuseRadiusPx:  this._spatialReuseRadiusPx,
-      spatialDepthTolFloor:  this._spatialDepthTolFloor,
-      gtaoRadiusPx:          this._gtaoRadiusPx,
-      gtaoIntensity:         this._gtaoIntensity,
-      gtaoDepthThreshold:    this._gtaoDepthThreshold,
-      gtaoBilateralDepthSigma: this._gtaoBilateralDepthSigma,
-      adaptiveSamplingThresholdLow:  this._adaptiveSamplingThresholdLow,
-      adaptiveSamplingThresholdHigh: this._adaptiveSamplingThresholdHigh,
-      triIntersectEpsilon:   this._triIntersectEpsilon,
+      // Library-generality audit tunables (HybridEngineTuning.ts). Defaults
+      // preserve Cornell behaviour; hosts override via HybridEngineOptions.
+      ...this._tunables,
       swapChainView:         swapView,
       swapChainFormat:       swapFmt,
     });
@@ -1577,7 +919,7 @@ export class HybridEngine implements Engine {
    */
   reset(): void {
     this._teardownPipeline();
-    void this._initPipeline();
+    this._initCoordinator.startInit();
   }
 
   // ── Pause / resume ─────────────────────────────────────────────────────
@@ -1745,50 +1087,44 @@ export class HybridEngine implements Engine {
    *
    * The contract intentionally remains synchronous (so hosts can call it
    * from React cleanup effects, finalizers, etc. without an async
-   * paradigm shift). When an `_initPipeline()` chain is in flight, the
-   * actual GPU-resource release for any work that chain hasn't yet
-   * published is deferred to the chain's own `finally` block — the chain
-   * checks `_pendingTeardown` after every await boundary and, if set,
-   * disposes its locals AND finalises teardown of whatever did make it
-   * to shared state. This avoids the async-dispose API ripple while
-   * still being honest about late-resolving init work.
+   * paradigm shift). When the {@link PipelineInitCoordinator} has an init
+   * chain in flight, the actual GPU-resource release for any work that
+   * chain hasn't yet published is deferred to the chain's own `finally`
+   * block — the chain checks the coordinator's `_pendingTeardown` after
+   * every await boundary and, if set, disposes its locals AND finalises
+   * teardown of whatever did make it to shared state.
    *
    * Idempotent: a second `dispose()` call is a no-op.
    */
   dispose(): void {
-    if (this._state === 'disposed' && !this._initRunning) {
+    if (this._state === 'disposed' && !this._initCoordinator.initRunning) {
       // Already disposed and no in-flight chain to coordinate with — no-op.
       return;
     }
-    this._disposed = true;
-    // We deliberately do NOT bump _initSeq here. The in-flight chain
-    // captured `mySeq` at start; it relies on `mySeq === this._initSeq`
-    // to know whether IT is the latest writer. If we bumped seq the
-    // chain's `finally` would think a newer chain raced past — but
-    // there isn't one — and it would skip the teardown finalisation.
-    // Instead, dispose communicates intent via `_disposed` +
-    // `_pendingTeardown`; the chain's checkpoints check all three.
 
-    if (this._initRunning) {
-      // An init is mid-flight. Defer teardown to that chain's finally
-      // block — it will dispose its locals AND tear down whatever's
-      // currently in shared state (BVH/pipeline/traversal scene that a
-      // PRIOR chain published before being raced out by this one). We
-      // can't safely call _teardownPipeline() here because the in-flight
-      // chain's `await pipeline.initialize()` may still be holding a
-      // live reference to a half-built pipeline.
-      this._pendingTeardown = true;
-      this._state = 'disposed';
-      // Note: _ddgi.dispose() is deferred too; the in-flight chain may
-      // still call _ddgi.pass.setSunIntensityMultiplier() after the
-      // post-pipeline checkpoint, and we don't want a torn-down DDGI
-      // under it. The chain's finally calls _ddgi.dispose() when it
-      // sees _pendingTeardown.
-    } else {
+    // requestTeardown returns true when the coordinator has no chain in
+    // flight (we tear down here and now), false when it has one in flight
+    // and its finally block will tear down. The coordinator records the
+    // dispose intent regardless so its phase checkpoints bail.
+    const teardownNow = this._initCoordinator.requestTeardown();
+    if (teardownNow) {
       // No in-flight init; tear down here and now.
       this._teardownPipeline();
       this._ddgi.dispose();
       this._state = 'disposed';
+    } else {
+      // An init is mid-flight. Defer teardown to that chain's finally
+      // block — it will dispose its locals AND tear down whatever's
+      // currently in shared state. We can't safely call
+      // _teardownPipeline() here because the in-flight chain's
+      // `await pipeline.initialize()` may still be holding a live
+      // reference to a half-built pipeline.
+      this._state = 'disposed';
+      // Note: _ddgi.dispose() is deferred too; the in-flight chain may
+      // still call _ddgi.pass.setSunIntensityMultiplier() after the
+      // post-pipeline checkpoint, and we don't want a torn-down DDGI
+      // under it. The chain's finally calls disposeDdgi() when it sees
+      // pending teardown.
     }
 
     if (this._debug && typeof window !== 'undefined') {
@@ -1798,7 +1134,7 @@ export class HybridEngine implements Engine {
       console.log(`[hybrid:debug] dispose #${dbg.disposeCount}`, {
         ranForMs: liveMs.toFixed(1),
         framesDispatched: dbg.framesDispatched,
-        deferredTeardown: this._pendingTeardown,
+        deferredTeardown: !teardownNow,
         skipReasons: {
           noPipeline: dbg.skipNoPipeline, noBvh: dbg.skipNoBvh,
           noSwapView: dbg.skipNoSwapView, frameInterval: dbg.skipFrameInterval,
@@ -1842,268 +1178,62 @@ export class HybridEngine implements Engine {
     }
   }
 
-  private async _initPipeline(): Promise<void> {
-    if (this._disposed) return;
+  /** Build the back-reference the {@link PipelineInitCoordinator} consumes.
+   *  All getters close over `this`; the coordinator never sees raw field
+   *  references, only the small documented surface in
+   *  `HybridEngineLifecycle.ts`. */
+  private _buildInitHost(): PipelineInitHost {
+    const self = this;
+    return {
+      get device() { return self._device; },
+      get width() { return self._width; },
+      get height() { return self._height; },
+      get threeScene() { return self._threeScene; },
+      get lastScene() { return self._lastScene; },
+      get primaryLightDir() { return self._primaryLightDir; },
+      get primaryLightIntensity() { return self._primaryLightIntensity; },
+      get denoiser() { return self._denoiser; },
+      get neuralWeights() { return self._neuralWeights; },
+      get oidnModelUrl() { return self._oidnModelUrl; },
+      get oidnExecutionProviders() { return self._oidnExecutionProviders; },
+      get verbose() { return self._verbose; },
+      get debug() { return self._debug; },
+      get cameraMoveResetThresholdSq() { return self._initTunables.cameraMoveResetThresholdSq; },
+      get temporalAccumAlpha() { return self._initTunables.temporalAccumAlpha; },
+      get ctorLights() { return self._ctorLights; },
+      get ddgi() { return self._ddgi; },
+      get preferredSwapChainFormat() { return getPreferredSwapChainFormat(); },
+      get currentBvhBuffers() { return self._bvhBuffers; },
+      get currentTraversalScene() { return self._ddgiTraversalScene; },
 
-    const device = this._device;
-    // Capture our sequence number — any newer _initPipeline()/teardown bump
-    // invalidates the writes below. See `_initSeq` docs.
-    const mySeq = ++this._initSeq;
+      isSceneReadyForBvh: () => self._sceneReadyForBvh(),
+      coreSceneSuppliesMeshes: () => self._coreSceneSuppliesMeshes(),
 
-    if (this._debug) {
-      const dbg = this._dbg;
-      dbg.initCount++;
-      dbg.initStart = performance.now();
-      console.log(`[hybrid:debug] init #${dbg.initCount} START`, {
-        W: this._width, H: this._height, device: !!device,
-        t: dbg.initStart.toFixed(0), seq: mySeq,
-      });
-    }
+      publishBvh:             (bvh) => { self._bvhBuffers = bvh; },
+      publishTraversalScene:  (s)   => { self._ddgiTraversalScene = s; },
+      publishPipeline:        (p)   => { self._pipeline = p; },
+      rollbackBvh:            ()    => { self._bvhBuffers = null; },
+      rollbackTraversalScene: ()    => { self._ddgiTraversalScene = null; },
+      setState:               (s)   => { self._state = s; },
+      teardownPipeline:       ()    => { self._teardownPipeline(); },
+      disposeDdgi:            ()    => { self._ddgi.dispose(); },
 
-    this._state = 'initializing';
-
-    // Fire-and-forget: the engine transitions to 'ready' when the BVH and
-    // pipeline finish setting up, or to 'error' on failure. Callers do not
-    // await this — the engine state machine is the synchronization point.
-    this._initRunning = true;
-    void (async () => {
-      // Poll until scene has enough geometry (or 5s timeout).
-      const pollStart = Date.now();
-      let pollIters = 0;
-      while (!this._disposed && mySeq === this._initSeq) {
-        const elapsed = Date.now() - pollStart;
-        if (elapsed >= 5_000) break;
-        if (this._sceneReadyForBvh()) break;
-        await new Promise<void>((r) => setTimeout(r, 50));
-        pollIters++;
-      }
-
-      if (this._disposed || mySeq !== this._initSeq) {
-        if (this._debug) {
-          console.log('[hybrid:debug] init aborted during scene-readiness poll', {
-            pollIters, disposed: this._disposed, raced: mySeq !== this._initSeq, seq: mySeq,
-          });
-        }
-        return;
-      }
-
-      if (this._debug) {
-        console.log('[hybrid:debug] scene-ready', { pollIters, elapsed: Date.now() - pollStart, seq: mySeq });
-      }
-
-      // Locals — must be disposed if we lose the race before publishing to
-      // shared state. `bvhRoot` is owned-and-synthesized iff
-      // (bvhRoot !== this._threeScene) — that's the same condition the
-      // sync code uses to decide whether _ddgiTraversalScene gets it.
-      let bvhRoot: THREE.Object3D | null = null;
-      let bvhOwnedSynthesized = false;
-      let bvh: SceneBVHBuffers | null = null;
-      let pipeline: WalkaroundGPUPipeline | null = null;
-
-      try {
-        const bvhStart = performance.now();
-        if (this._coreSceneSuppliesMeshes()) {
-          bvhRoot = vitrumSceneToThree(this._lastScene!);
-          bvhOwnedSynthesized = true;
-        } else if (this._threeScene != null) {
-          bvhRoot = this._threeScene;
-          bvhOwnedSynthesized = false;
-        } else {
-          // T3.H removal: no vitrum mesh primitives AND no escape-hatch
-          // threeScene. The host hasn't given us anything to render against.
-          throw new Error(
-            '[HybridEngine] BVH source unavailable: setScene(vitrumScene) ' +
-            'supplied no mesh primitives and no `threeScene` was passed at ' +
-            'construction. Call engine.setScene(sceneFromThreeJS(yourThreeScene)) ' +
-            'or pass `threeScene` directly to the engine constructor.',
-          );
-        }
-        bvh = buildReSTIRSceneBVH([bvhRoot], {
-          primaryLightDir:       new THREE.Vector3(...this._primaryLightDir),
-          primaryLightIntensity: this._primaryLightIntensity,
+      recordInitStart: () => {
+        const d = self._dbg;
+        d.initCount++;
+        d.initStart = performance.now();
+        console.log(`[hybrid:debug] init #${d.initCount} START`, {
+          W: self._width, H: self._height, device: !!self._device,
+          t: d.initStart.toFixed(0),
         });
-        const bvhMs = performance.now() - bvhStart;
-
-        // First shared-state write checkpoint. If a newer setScene/reset
-        // bumped _initSeq while buildReSTIRSceneBVH ran (it's CPU-side but
-        // not instantaneous on heavy scenes), discard our work locally.
-        if (this._disposed || this._pendingTeardown || mySeq !== this._initSeq) {
-          if (this._debug) {
-            console.log('[hybrid:debug] init lost race pre-_ddgiTraversalScene write', {
-              disposed: this._disposed, pendingTeardown: this._pendingTeardown,
-              raced: mySeq !== this._initSeq, seq: mySeq,
-            });
-          }
-          // Locals will be disposed by the finally block.
-          return;
-        }
-        if (bvhOwnedSynthesized) {
-          this._ddgiTraversalScene = bvhRoot as THREE.Scene;
-          bvhOwnedSynthesized = false; // ownership transferred to engine
-        }
-        this._bvhBuffers = bvh;
-        const bvhPublished = bvh;
-        bvh = null; // ownership transferred to engine
-
-        if (this._debug) {
-          console.log('[hybrid:debug] BVH built', {
-            bvhMs: bvhMs.toFixed(1),
-            triCount: bvhPublished.bvhNodes?.count,
-            emitterCount: bvhPublished.emitters?.count,
-            seq: mySeq,
-          });
-        }
-
-        pipeline = new WalkaroundGPUPipeline(device, this._width, this._height);
-        const pipelineStart = performance.now();
-
-        // T2.H2 — Neural denoiser: create and initialize InferenceGraph before pipeline init.
-        let inferenceGraph: InferenceGraph | undefined;
-        if (this._denoiser === 'neural' && this._neuralWeights) {
-          const { buildUNetSpec } = await import('./neural/unetArchitecture.js');
-          inferenceGraph = new InferenceGraph(buildUNetSpec());
-          await inferenceGraph.initialize(device, this._neuralWeights, this._width, this._height);
-        }
-
-        await pipeline.initialize(
-          bvhPublished,
-          getPreferredSwapChainFormat(),
-          {
-            verbose: this._verbose || this._debug,
-            denoiser: this._denoiser,
-            cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
-            temporalAccumAlpha: this._temporalAccumAlpha,
-            // exactOptionalPropertyTypes: omit the key entirely when undefined.
-            ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
-            // W11 — forward OIDN config when denoiser === 'oidn-final'.
-            // Validated upstream in the constructor; here we just thread.
-            ...(this._oidnModelUrl !== undefined
-              ? {
-                  oidn: {
-                    modelUrl: this._oidnModelUrl,
-                    ...(this._oidnExecutionProviders !== undefined
-                      ? { executionProviders: this._oidnExecutionProviders }
-                      : {}),
-                  },
-                }
-              : {}),
-          },
-        );
-        const pipelineMs = performance.now() - pipelineStart;
-
-        // Final shared-state write checkpoint — pipeline.initialize() awaits
-        // shader compilation (~50–500 ms). A newer setScene/reset/dispose
-        // raced ahead in the meantime → discard locally and dispose locals
-        // in finally. We MUST NOT publish `pipeline` to `_pipeline` in this
-        // case; the newer chain has its own pipeline coming.
-        if (this._disposed || this._pendingTeardown || mySeq !== this._initSeq) {
-          if (this._debug) {
-            console.log('[hybrid:debug] init lost race post-pipeline.initialize', {
-              pipelineMs: pipelineMs.toFixed(1),
-              disposed: this._disposed, pendingTeardown: this._pendingTeardown,
-              raced: mySeq !== this._initSeq, seq: mySeq,
-            });
-          }
-          // Also tear down the BVH we already published to _bvhBuffers if
-          // it's still ours; otherwise the newer chain has replaced it.
-          if (this._bvhBuffers === bvhPublished) {
-            disposeSceneBVH(bvhPublished);
-            this._bvhBuffers = null;
-          }
-          // And the traversal scene we published if it's still ours.
-          if (this._ddgiTraversalScene !== null
-              && this._ddgiTraversalScene === bvhRoot
-              && bvhRoot !== this._threeScene) {
-            disposeVitrumThreeSceneRoot(this._ddgiTraversalScene);
-            this._ddgiTraversalScene = null;
-          }
-          // pipeline disposed by the finally block.
-          return;
-        }
-
-        // Wire the sun intensity multiplier into DDGI so its Le bake
-        // matches shade.wgsl's Lo_emit. `setSunIntensityMultiplier` is a
-        // public method on ProbeUpdatePass — no cast needed.
-        this._ddgi.pass.setSunIntensityMultiplier(this._primaryLightIntensity);
-
-        // Auto-collect THREE.RectAreaLight from the scene as DDGI point
-        // lights (centroid + flux-equivalent intensity). DDGI's per-probe
-        // ray-cast pass uses only 'sun' + 'fixture'/'teaLight' kinds —
-        // without this bridge, rect-area lights from `vitrumSceneToThree`
-        // never reach DDGI's `evalDirectLighting`, so probe rays hitting
-        // walls return zero radiance and the irradiance atlas stays
-        // black → no color bleed onto boxes, surfaces render flat-gray
-        // even with DDGI mechanically running.
-        //
-        // For a 1×1 rect at intensity 12 (Le=(12,12,12) per channel),
-        // the per-area-element flux is Le × dA. A point at the rect
-        // centroid carrying flux ≈ Le × area integrates roughly the same
-        // total downward power; the DDGI atlas captures the qualitative
-        // colour bleed correctly, which is what the indirect bounce
-        // depends on. ReSTIR DI still drives the high-frequency direct
-        // term from the actual rect geometry — DDGI here only feeds the
-        // low-frequency indirect.
-        const ddgiRectLights = collectDDGILightsFromRectAreaLights(bvhRoot);
-        if (ddgiRectLights.length > 0) {
-          this._ddgi.setLights([...this._ctorLights, ...ddgiRectLights]);
-        }
-
-        this._pipeline     = pipeline;
-        pipeline = null; // ownership transferred to engine
-        this._state        = 'ready';
-
-        if (this._debug) {
-          const dbg = this._dbg;
-          const totalMs = performance.now() - dbg.initStart;
-          console.log(`[hybrid:debug] init #${dbg.initCount} COMPLETE`, {
-            pipelineMs: pipelineMs.toFixed(1), totalMs: totalMs.toFixed(1), seq: mySeq,
-          });
-        }
-      } catch (err) {
-        if (!this._disposed) {
-          this._state = 'error';
-        }
-        console.error(
-          '[HybridEngine] init failed — engine state set to error. Call dispose() and recreate the engine to retry.',
-          err,
-        );
-      } finally {
-        // Dispose any locals that did NOT make it to shared state. After
-        // a successful run all three are null (ownership transferred). On
-        // a race / error / dispose, whichever weren't transferred get freed
-        // here so we don't leak ~1 GB of GPU resources per loser.
-        if (pipeline) {
-          try { pipeline.dispose(); } catch {}
-        }
-        if (bvh) {
-          try { disposeSceneBVH(bvh); } catch {}
-        }
-        if (bvhRoot && bvhOwnedSynthesized) {
-          try { disposeVitrumThreeSceneRoot(bvhRoot); } catch {}
-        }
-        // If dispose() raced and left _pendingTeardown set, finalise the
-        // teardown now. The newest writer (us, if we published successfully)
-        // is responsible for actually tearing down — we're the last live
-        // reference. Note: if a newer chain is still running, its own
-        // checkpoints will see _pendingTeardown and bail before publishing.
-        if (this._pendingTeardown && mySeq === this._initSeq) {
-          if (this._debug) {
-            console.log('[hybrid:debug] init finally — finalising deferred teardown', { seq: mySeq });
-          }
-          this._teardownPipeline();
-          // _ddgi.dispose() was deferred by dispose() since init was in-flight;
-          // it's safe to call now because no chain is using it any more.
-          try { this._ddgi.dispose(); } catch {}
-          this._state = 'disposed';
-        }
-        // Always clear _initRunning at the end of OUR chain — but only if
-        // we're still the latest. A newer chain will have set it back to
-        // true; we MUST NOT clear another chain's flag.
-        if (mySeq === this._initSeq) {
-          this._initRunning = false;
-        }
-      }
-    })();
+      },
+      recordInitComplete: (pipelineMs, totalMs) => {
+        const d = self._dbg;
+        console.log(`[hybrid:debug] init #${d.initCount} COMPLETE`, {
+          pipelineMs: pipelineMs.toFixed(1), totalMs: totalMs.toFixed(1),
+        });
+      },
+    };
   }
 
   // ── Private static helpers ─────────────────────────────────────────────
@@ -2113,41 +1243,6 @@ export class HybridEngine implements Engine {
     if (typeof key === 'number') return Number.isNaN(key) ? '__n:NaN' : `__n:${key}`;
     return `__s:${key}`;
   }
-}
-
-/**
- * Walk an Object3D tree for `THREE.RectAreaLight` instances and project each
- * onto a `DDGILight` point-light approximation so the DDGI probe-update pass
- * (which only switches on `kind === 'sun' | 'fixture' | 'teaLight'`) can
- * evaluate direct lighting at probe-ray hit points.
- *
- * Approximation rationale: DDGI provides low-frequency indirect bounce — the
- * actual rect geometry only matters for the high-frequency direct term, which
- * ReSTIR DI handles separately from the actual emitter triangles. A point at
- * the rect centroid carrying flux ≈ `color × intensity × area` gives a
- * qualitatively-correct downward irradiance for probes; colour bleed onto
- * surrounding walls (the visible signature of Cornell-style scenes) reaches
- * the irradiance atlas correctly. The remaining factor-of-π errors in
- * total-flux conversion are negligible against the multiple-of-10 dynamic
- * range that distinguishes "lit colour bleed" from "atlas reads zero".
- */
-function collectDDGILightsFromRectAreaLights(root: THREE.Object3D): DDGILight[] {
-  const out: DDGILight[] = [];
-  const _wp = new THREE.Vector3();
-  root.updateMatrixWorld(true);
-  root.traverseVisible((obj) => {
-    if (!(obj instanceof THREE.RectAreaLight)) return;
-    const light = obj;
-    const area = light.width * light.height;
-    _wp.setFromMatrixPosition(light.matrixWorld);
-    out.push({
-      kind: 'fixture',
-      intensity: light.intensity * area,
-      on: true,
-      position: { x: _wp.x, y: _wp.y, z: _wp.z },
-    });
-  });
-  return out;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2187,13 +1282,13 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> =
   //      'uninitialized' → renderFrame returns skip output forever.
   //   2. Hosts that DO call setScene afterwards (e.g. @vitrum/engine.createEngine).
   //      The host's setScene fires init-B which races init-A. The init-flight
-  //      guard (HybridEngine._initSeq, see _initPipeline()) ensures the loser
-  //      bootstrap chain disposes its locals — no GPU resource leak. The
-  //      bootstrap is wasted work but safe.
+  //      guard inside PipelineInitCoordinator (mySeq === _initSeq) ensures the
+  //      loser bootstrap chain disposes its locals — no GPU resource leak.
+  //      The bootstrap is wasted work but safe.
   //
   // We could remove the bootstrap and require all hosts to call setScene
   // explicitly, but that would silently break case 1 and offer no safety
-  // benefit (Fix 1 already eliminates the race-leak class).
+  // benefit (the init-flight guard already eliminates the race-leak class).
   engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
   return engine;
 }
