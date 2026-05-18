@@ -11,7 +11,7 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./scene": "./src/scene.ts",
+    "./scene": "./src/scene/index.ts",
     "./engine": "./src/engine.ts",
     "./frame": "./src/frame.ts"
   },

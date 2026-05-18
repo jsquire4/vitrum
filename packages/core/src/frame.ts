@@ -14,7 +14,7 @@
 // This split is what makes `engine.setScene(scene)` cheap — the scene only
 // changes when geometry/materials/lights change. Frame state is hot.
 
-import type { Mat4, Vec3 } from './scene.js';
+import type { Mat4, Vec3 } from './scene/index.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Per-frame quality settings (host → engine, every frame)
