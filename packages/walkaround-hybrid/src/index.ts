@@ -140,8 +140,11 @@ export { PPG_GUIDE_WGSL } from './ppg/ppgGuide.wgsl.js';
 // The 'neural' denoiser mode in HybridEngine is opt-in (default: atrous-variance).
 // Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model binary.
 export { InferenceGraph } from './neural/InferenceGraph.js';
-export { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
-export type { UNetSpec, LayerSpec, LayerKind, LayerWeightLayout, LayerParams } from './neural/unetArchitecture.js';
+// `neural/unetArchitecture.js` is intentionally NOT re-exported here. It is
+// dynamically imported inside `HybridEngine.ts` so apps that never opt into
+// the 'neural' denoiser mode don't pay the bundle cost. Re-exporting it
+// here makes the dynamic import ineffective (statically reachable from the
+// package root). Tests import directly via `./neural/unetArchitecture.js`.
 export {
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,
