@@ -35,8 +35,15 @@ export interface NonDenoiserPassEntry {
 
 /**
  * Non-denoiser passes that participate in the GPU-timing layout, in
- * dispatch order. The denoiser is spliced in between `gtao-upsample` and
- * `indirect-temporal-accum` (see {@link composePassLabels}).
+ * dispatch order. The active denoiser's labels are spliced in at the
+ * `denoiser-adapter` entry (see {@link composePassLabels}).
+ *
+ * The `denoiser-adapter` entry is the timestamp-layout reflection of the
+ * virtual {@link DenoiserAdapterPass}: its own `labels` are `[]` because
+ * the labels actually emitted at this slot depend on which Denoiser is
+ * active. Keeping the entry in the static order — rather than splicing
+ * on `gtao-upsample + 1` — means `composePassLabels` has a single source
+ * of truth (this table) instead of an implicit constant pointing into it.
  *
  * PPGGuidePass + PPGUpdatePass are deliberately omitted — they have been
  * out of the timestamp layout since the D7 sweep removed PPG-only slots,
@@ -59,7 +66,9 @@ export const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.f
   { id: 'shade', labels: ['shade'] },
   { id: 'gtao', labels: ['gtao'] },
   { id: 'gtao-upsample', labels: ['gtao-upsample'] },
-  // <denoiser passLabels splice here>
+  // Virtual denoiser-adapter slot — labels come from the active Denoiser
+  // and are spliced here by `composePassLabels`.
+  { id: 'denoiser-adapter', labels: [] },
   { id: 'indirect-temporal-accum', labels: ['indirect-temporal-accum'] },
   {
     id: 'atrous-indirect-3',
@@ -76,12 +85,13 @@ export const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.f
   { id: 'composite', labels: ['composite'] },
 ] satisfies NonDenoiserPassEntry[]);
 
-/** Position in {@link NON_DENOISER_PASS_ORDER} after which the denoiser
- *  pass-labels are spliced — the slot AFTER `gtao-upsample`. */
+/** Position in {@link NON_DENOISER_PASS_ORDER} at which the active
+ *  denoiser's pass-labels are spliced — the `denoiser-adapter` virtual
+ *  entry. */
 const DENOISER_INSERTION_INDEX = (() => {
-  const i = NON_DENOISER_PASS_ORDER.findIndex((e) => e.id === 'gtao-upsample');
-  if (i < 0) throw new Error('NON_DENOISER_PASS_ORDER must contain gtao-upsample');
-  return i + 1;
+  const i = NON_DENOISER_PASS_ORDER.findIndex((e) => e.id === 'denoiser-adapter');
+  if (i < 0) throw new Error('NON_DENOISER_PASS_ORDER must contain denoiser-adapter');
+  return i;
 })();
 
 /**

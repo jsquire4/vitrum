@@ -77,6 +77,7 @@ import type {
 import {
   AtrousIndirectPass,
   CompositePass,
+  DenoiserAdapterPass,
   GTAOPass,
   GTAOUpsamplePass,
   IndirectCombinePass,
@@ -308,17 +309,6 @@ export interface PipelineFrameInputs {
   swapChainFormat: GPUTextureFormat;
 }
 
-/** Index in `sortedPasses` AFTER which the orchestrator runs the
- *  polymorphic denoiser dispatch. Resolved at registry construction time
- *  by finding `gtao-upsample`. Honest layering note: the denoiser is a
- *  separate concept from pass scheduling — see
- *  `denoisers/index.ts::Denoiser`. Pre-W1-R5 this split lived as a
- *  position-encoded line in renderFrame; W1-R5 keeps the manual
- *  `_activeDenoiser.dispatch()` call here rather than wrapping the
- *  denoiser as a virtual Pass, so the layering distinction stays
- *  visible. */
-const DENOISER_AFTER_PASS_ID = 'gtao-upsample';
-
 export class WalkaroundGPUPipeline {
   // Private fields use the `_field` underscore prefix, matching HybridEngine.
   private _device: GPUDevice;
@@ -367,8 +357,6 @@ export class WalkaroundGPUPipeline {
   private _passRegistry: PassRegistry | null = null;
   /** Sorted pass list cached at boot; reused across frames. */
   private _sortedPasses: readonly Pass[] = [];
-  /** Index of the pass after which the denoiser dispatch fires. */
-  private _denoiserSplitIndex = -1;
   /** T2.H2 — neural denoiser InferenceGraph; kept for future W10 wiring. */
   private _inferenceGraph: InferenceGraph | null = null;
   /** Audit B8 — populated at initialize() time from HybridEngineOptions. */
@@ -576,6 +564,15 @@ export class WalkaroundGPUPipeline {
     registry.register(new ShadePass(compiled.shadePipeline));
     registry.register(new GTAOPass(compiled.gtaoPipeline));
     registry.register(new GTAOUpsamplePass(compiled.gtaoUpsamplePipeline));
+    // Virtual pass — promotes the polymorphic denoiser dispatch into the
+    // regular pass loop. Reads the active Denoiser through a getter so
+    // the adapter stays valid across `_activeDenoiser` reassignment in
+    // `dispose()` (where it is set to null AFTER the pass-list dispose
+    // walk, so the getter never sees the null transition).
+    registry.register(new DenoiserAdapterPass(
+      () => this._activeDenoiser!,
+      () => this._atrousPipeline,
+    ));
     registry.register(new IndirectTemporalAccumPass(
       compiled.indirectTemporalAccumPipeline,
       this._indirectAccumPingPongRef,
@@ -602,14 +599,6 @@ export class WalkaroundGPUPipeline {
     // ── Initialize all passes in parallel ────────────────────────────────
     this._passRegistry = registry;
     this._sortedPasses = registry.sortedPasses();
-    this._denoiserSplitIndex = this._sortedPasses.findIndex(
-      (p) => p.id === DENOISER_AFTER_PASS_ID,
-    );
-    if (this._denoiserSplitIndex < 0) {
-      throw new Error(
-        `WalkaroundGPUPipeline: pass "${DENOISER_AFTER_PASS_ID}" not registered`,
-      );
-    }
     await Promise.all(this._sortedPasses.map((p) => p.initialize({
       device: d, width: W, height: H, bglCache: this._bglCache, frameResources: this._res,
     })));
@@ -964,45 +953,19 @@ export class WalkaroundGPUPipeline {
       ppgEnabled: this._ppgEnabled,
     };
 
-    // ── Pass loop, part 1 — up to and including gtao-upsample ────────────
-    // Manual `Pass.gates` filtering inline so we can iterate the cached
-    // `_sortedPasses` array; equivalent to `_passRegistry.activePasses(...)`
-    // but avoids re-sorting per frame.
-    for (let i = 0; i <= this._denoiserSplitIndex; i++) {
-      const pass = this._sortedPasses[i]!;
-      if (!pass.gates(gateOpts)) continue;
-      pass.dispatch(passCtx);
-    }
-
-    // ── Polymorphic denoiser dispatch ────────────────────────────────────
-    // Honest layering: denoising is a separate concept from pass
-    // scheduling (denoisers have a return value — the resolved-radiance
-    // texture downstream composition samples — and a different lifecycle
-    // shape). Wrapping the denoiser as a virtual Pass would obscure that
-    // distinction. The orchestrator threads the result back into
-    // `frameState.denoisedDirect` for IndirectCombinePass to read.
-    const denoiserResult = this._activeDenoiser!.dispatch({
-      device: d,
-      encoder,
-      width: W,
-      height: H,
-      frameIndex: this._accumFrameIndex,
-      resources: this._res,
-      sharedAtrousPipeline: this._atrousPipeline,
-      bglCache: this._bglCache,
-      gNormalDepthView,
-      readAccum,
-      isMoving,
-      wgX16,
-      wgY16,
-      computeDesc,
-    });
-    // NoneDenoiser returns null → source the raw HDR target directly.
-    frameState.denoisedDirect = denoiserResult ?? this._res.common.hdrColorTexture;
-
-    // ── Pass loop, part 2 — indirect-temporal-accum … composite ──────────
-    for (let i = this._denoiserSplitIndex + 1; i < this._sortedPasses.length; i++) {
-      const pass = this._sortedPasses[i]!;
+    // ── Unified pass loop ────────────────────────────────────────────────
+    // Polymorphic denoiser dispatch is one of the sorted passes
+    // ({@link DenoiserAdapterPass}); its dependency on `gtao-upsample` +
+    // `indirect-temporal-accum`'s dependency on `denoiser-adapter` place
+    // it in the slot the manual two-half split previously bracketed.
+    // `frameState.denoisedDirect` is seeded above with the raw HDR
+    // target, so when the adapter gates off (NoneDenoiser) downstream
+    // passes see the legacy fallback handle.
+    //
+    // Manual `Pass.gates` filtering inline rather than calling
+    // `_passRegistry.activePasses(...)` so we iterate the cached
+    // `_sortedPasses` array and avoid re-sorting per frame.
+    for (const pass of this._sortedPasses) {
       if (!pass.gates(gateOpts)) continue;
       pass.dispatch(passCtx);
     }

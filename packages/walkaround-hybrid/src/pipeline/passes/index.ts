@@ -31,6 +31,7 @@ export { ShadePass } from './ShadePass.js';
 export { PPGUpdatePass } from './PPGUpdatePass.js';
 export { GTAOPass } from './GTAOPass.js';
 export { GTAOUpsamplePass } from './GTAOUpsamplePass.js';
+export { DenoiserAdapterPass } from './DenoiserAdapterPass.js';
 export { IndirectTemporalAccumPass } from './IndirectTemporalAccumPass.js';
 export { AtrousIndirectPass } from './AtrousIndirectPass.js';
 export { IndirectCombinePass } from './IndirectCombinePass.js';

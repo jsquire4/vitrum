@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest';
 import {
   AtrousIndirectPass,
   CompositePass,
+  DenoiserAdapterPass,
   GTAOPass,
   GTAOUpsamplePass,
   IndirectCombinePass,
@@ -28,6 +29,7 @@ import {
 } from '../src/pipeline/passes/index.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
 import type { PassGateOptions } from '../src/pipeline/Pass.js';
+import type { Denoiser } from '../src/pipeline/denoisers/index.js';
 
 // Stub GPU resources — we never call dispatch in these tests, so the
 // pipelines/refs only need to be present, not real.
@@ -35,6 +37,18 @@ const stubPipeline = {} as GPUComputePipeline;
 const stubRenderPipeline = {} as GPURenderPipeline;
 const stubUboRef = { buf: undefined };
 const stubPingPong = { value: 0 };
+// Minimal Denoiser stub for DenoiserAdapterPass tests — only `id` and
+// `passLabels` are inspected by the shape tests; the dispatch path is
+// covered by integration tests with a real GPU device.
+const makeStubDenoiser = (id: string, labels: readonly string[]): Denoiser =>
+  ({
+    id: id as Denoiser['id'],
+    passLabels: labels as Denoiser['passLabels'],
+    initialize: async () => {},
+    dispatch: () => null,
+    resize: () => {},
+    dispose: () => {},
+  } as unknown as Denoiser);
 
 const DEFAULT_GATE: PassGateOptions = {
   denoiserMode: 'atrous-variance',
@@ -110,10 +124,30 @@ describe('Pass entries — W1-R5 shape invariants', () => {
     expect(p.dependencies).toEqual(['gtao']);
   });
 
-  it('IndirectTemporalAccumPass: depends on shade AND gtao-upsample', () => {
+  it('DenoiserAdapterPass: depends on gtao-upsample; passLabels forward from active denoiser', () => {
+    const stubDenoiser = makeStubDenoiser('atrous-variance', ['welford-temporal', 'atrous-variance-variance']);
+    const p = new DenoiserAdapterPass(() => stubDenoiser, () => stubPipeline);
+    expect(p.id).toBe('denoiser-adapter');
+    expect(p.dependencies).toEqual(['gtao-upsample']);
+    expect(p.passLabels).toEqual(['welford-temporal', 'atrous-variance-variance']);
+  });
+
+  it('DenoiserAdapterPass: gates() returns false for the NoneDenoiser', () => {
+    const noneStub = makeStubDenoiser('none', []);
+    const p = new DenoiserAdapterPass(() => noneStub, () => stubPipeline);
+    expect(p.gates()).toBe(false);
+  });
+
+  it('DenoiserAdapterPass: gates() returns true for non-pass-through denoisers', () => {
+    const realStub = makeStubDenoiser('atrous-variance', []);
+    const p = new DenoiserAdapterPass(() => realStub, () => stubPipeline);
+    expect(p.gates()).toBe(true);
+  });
+
+  it('IndirectTemporalAccumPass: depends on shade, gtao-upsample, denoiser-adapter', () => {
     const p = new IndirectTemporalAccumPass(stubPipeline, stubPingPong);
     expect(p.id).toBe('indirect-temporal-accum');
-    expect(p.dependencies).toEqual(['shade', 'gtao-upsample']);
+    expect(p.dependencies).toEqual(['shade', 'gtao-upsample', 'denoiser-adapter']);
   });
 
   it('AtrousIndirectPass: 4 labels, id = atrous-indirect-3', () => {
@@ -171,7 +205,7 @@ describe('Pass entries — W1-R5 shape invariants', () => {
 });
 
 describe('Pass entries — topological registration', () => {
-  it('all 18 passes register + sort with no cycles', () => {
+  it('all 19 passes register + sort with no cycles', () => {
     const reg = new PassRegistry();
     reg.register(new SampleBudgetPass(stubPipeline, stubUboRef, stubUboRef));
     reg.register(new RISPass(stubPipeline));
@@ -183,6 +217,7 @@ describe('Pass entries — topological registration', () => {
     reg.register(new ShadePass(stubPipeline));
     reg.register(new GTAOPass(stubPipeline));
     reg.register(new GTAOUpsamplePass(stubPipeline));
+    reg.register(new DenoiserAdapterPass(() => makeStubDenoiser('atrous-variance', []), () => stubPipeline));
     reg.register(new IndirectTemporalAccumPass(stubPipeline, stubPingPong));
     reg.register(new AtrousIndirectPass(stubPipeline, stubUboRef));
     reg.register(new IndirectCombinePass(stubPipeline));
@@ -191,7 +226,7 @@ describe('Pass entries — topological registration', () => {
     reg.register(new CompositePass(stubRenderPipeline));
     reg.register(new PPGGuidePass(stubPipeline));
     reg.register(new PPGUpdatePass(stubPipeline));
-    expect(reg.size()).toBe(18);
+    expect(reg.size()).toBe(19);
     const order = reg.sortedPasses().map((p) => p.id);
     // Spot-check the topo: sample-budget first, composite last.
     expect(order[0]).toBe('sample-budget');
@@ -200,6 +235,9 @@ describe('Pass entries — topological registration', () => {
     const idx = (id: string) => order.indexOf(id);
     expect(idx('shade')).toBeGreaterThan(idx('spatial-2'));
     expect(idx('shade')).toBeGreaterThan(idx('gi-spatial-2'));
+    // denoiser-adapter sits between gtao-upsample and indirect-temporal-accum.
+    expect(idx('denoiser-adapter')).toBeGreaterThan(idx('gtao-upsample'));
+    expect(idx('denoiser-adapter')).toBeLessThan(idx('indirect-temporal-accum'));
     // indirect-combine comes after atrous-indirect-3.
     expect(idx('indirect-combine')).toBeGreaterThan(idx('atrous-indirect-3'));
     // temporalAccum after indirect-combine.

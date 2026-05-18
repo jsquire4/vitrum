@@ -25,7 +25,18 @@ import type { PingPongRef } from './passRefs.js';
 
 export class IndirectTemporalAccumPass implements Pass {
   readonly id = 'indirect-temporal-accum' as const;
-  readonly dependencies: readonly string[] = ['shade', 'gtao-upsample'];
+  /**
+   * `denoiser-adapter` is listed here (alongside `shade` + `gtao-upsample`)
+   * so the virtual {@link DenoiserAdapterPass} always dispatches before
+   * this pass in the topological order. There is no shared GPU resource
+   * between the two — the dependency is purely to preserve the dispatch
+   * ordering that pre-W1-R5b's manual two-half loop hard-coded, so the
+   * GPU timestamp-query slots still line up with the historic positions
+   * emitted by `composePassLabels`. Without it, the topo-sort tiebreaker
+   * (lexicographic) happens to produce the same order, but that is too
+   * fragile a thing to rely on.
+   */
+  readonly dependencies: readonly string[] = ['shade', 'gtao-upsample', 'denoiser-adapter'];
   readonly passLabels: readonly PassLabel[] = ['indirect-temporal-accum'];
 
   private readonly _pipeline: GPUComputePipeline;
