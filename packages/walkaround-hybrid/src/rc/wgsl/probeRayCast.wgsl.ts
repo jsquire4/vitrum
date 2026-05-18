@@ -318,7 +318,8 @@ struct MaterialEntry {
 // Call sites use octDecode(uv * 2.0 - 1.0) to remap from [0,1] to [-1,1].
 
 fn octEncode(dir: vec3f) -> vec2f {
-  let n = dir / (abs(dir.x) + abs(dir.y) + abs(dir.z));
+  // Zero-vector guard — see octahedralCore.wgsl for rationale.
+  let n = dir / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1e-20);
   if (n.z >= 0.0) {
     return n.xy;
   }
