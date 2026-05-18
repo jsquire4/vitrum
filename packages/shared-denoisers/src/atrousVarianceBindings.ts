@@ -13,19 +13,25 @@
  *   1. AtrousVarianceVarianceUBO — variance estimation pass (svgfVarianceMain)
  *   2. AtrousVarianceAtrousUBO   — à-trous wavelet pass     (svgfAtrousMain)
  *
- * std140 packing notes (WebGPU uniform buffer layout rules):
+ * ─── UBO codegen (W2-C13) ─────────────────────────────────────────────────────
+ * The interface, size constant, packer function, and WGSL struct declaration
+ * are now all generated from a single `defineUbo` field-spec list per UBO.
+ * Drift is no longer possible — adding/removing a field touches exactly one
+ * source-of-truth and TypeScript propagates the change to every consumer.
+ *
+ * Layout notes (WGSL uniform address-space layout):
  *   - Each f32/u32 scalar is 4 bytes, aligned to 4 bytes.
- *   - A struct containing only scalars requires no inter-field padding
- *     when all fields are the same primitive size.
- *   - The buffer itself must be a multiple of 16 bytes (WebGPU min binding
- *     size for uniform buffers). Explicit _pad fields keep structs 16-byte
- *     aligned for driver compatibility.
+ *   - A struct's total size is rounded up to its largest member alignment.
+ *   - WebGPU requires every uniform-buffer binding ≥ 16 bytes — `defineUbo`
+ *     enforces this automatically.
  *
  * References:
  *   Dammertz et al. "Edge-Avoiding À-Trous Wavelet Transform" HPG 2010.
  *   Sprint 10a spec: plan/archive/phase-6-roadmap.md §Sprint 10a.
+ *   W2-C13 codegen helper: packages/shared-samplers/src/uboCodegen.ts.
  */
 
+import { defineUbo } from '@vitrum/shared-samplers';
 import { ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX } from './atrousVarianceConstants.js';
 
 // ============================================================
@@ -33,7 +39,7 @@ import { ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX } from './atrousVarianceCon
 // ============================================================
 
 /**
- * Uniforms for the à-trous variance estimation pass (svgfVarianceMain).
+ * Single-source-of-truth UBO definition for the variance estimation pass.
  *
  * frameCount drives the switch between spatial-neighborhood variance
  * (when temporal history is sparse) and Welford temporal variance
@@ -44,26 +50,29 @@ import { ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX } from './atrousVarianceCon
  * reset frameCount to 0 on camera move / scene change and increment it each frame thereafter.
  *
  * Values above ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX are saturated when packing (host guardrail).
+ *
+ * The codegen helper produces a 16-byte struct:
+ *   offset  0 — frameCount : u32  (4 bytes)
+ *   offsets 4..15 — zero pad (struct size rounded up to 16-byte uniform-buffer minimum)
  */
+const ATROUS_VARIANCE_VARIANCE_UBO = defineUbo([
+  { name: 'frameCount', type: 'u32' },
+] as const);
+
+/** Uniforms for the à-trous variance estimation pass (svgfVarianceMain). */
 export interface AtrousVarianceVarianceUniforms {
   /** Cumulative frames since the last camera reset. 0 = first frame. */
   readonly frameCount: number;
 }
 
-/**
- * Byte size of the AtrousVarianceVarianceUBO std140 struct.
- *
- * Layout:
- *   offset 0  — frameCount : u32  (4 bytes)
- *   offset 4  — _pad0      : u32  (4 bytes, alignment padding)
- *   offset 8  — _pad1      : u32  (4 bytes, alignment padding)
- *   offset 12 — _pad2      : u32  (4 bytes, alignment padding)
- * Total: 16 bytes (meets 16-byte uniform buffer alignment requirement).
- */
-export const ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES = 16 as const;
+/** Byte size of the AtrousVarianceVarianceUBO uniform-buffer binding. */
+export const ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES = ATROUS_VARIANCE_VARIANCE_UBO.sizeBytes;
 
 /**
  * Pack AtrousVarianceVarianceUniforms into an ArrayBuffer at the given byte offset.
+ *
+ * Applies the FRAME_COUNT_INPUT_GUARD_MAX saturation host-side before delegating
+ * to the codegen-generated packer.
  *
  * @param u       - Uniform values to pack.
  * @param target  - Destination ArrayBuffer (must be ≥ offset + ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES).
@@ -74,13 +83,12 @@ export function packAtrousVarianceVarianceUniforms(
   target: ArrayBuffer,
   offset = 0,
 ): void {
-  const view = new DataView(target, offset, ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
-  const packedCount = Math.min(Math.max(0, Math.floor(u.frameCount)), ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX);
-  view.setUint32(0, packedCount >>> 0, true);
-  // _pad0, _pad1, _pad2 — zero-filled for determinism
-  view.setUint32(4,  0, true);
-  view.setUint32(8,  0, true);
-  view.setUint32(12, 0, true);
+  const packedCount = Math.min(
+    Math.max(0, Math.floor(u.frameCount)),
+    ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX,
+  );
+  const view = new DataView(target);
+  ATROUS_VARIANCE_VARIANCE_UBO.pack(view, offset, { frameCount: packedCount });
 }
 
 // ============================================================
@@ -88,13 +96,12 @@ export function packAtrousVarianceVarianceUniforms(
 // ============================================================
 
 /**
- * Uniforms for one à-trous wavelet iteration (svgfAtrousMain).
+ * Single-source-of-truth UBO definition for one à-trous wavelet iteration.
  *
  * The host dispatches svgfAtrousMain N times (typically 5), incrementing
  * `iteration` from 0 to N-1 and ping-ponging the color texture between
  * passes. There is no maxIterations uniform — the host controls the total
- * iteration count by varying the dispatch count. See `AtrousVarianceAtrousUniforms.iteration`
- * for details on the per-dispatch iteration index.
+ * iteration count by varying the dispatch count.
  *
  * Default σ values and their provenance:
  *   sigmaColor  = 4.0   — tuned for stained-glass scenes' high-chroma
@@ -104,9 +111,20 @@ export function packAtrousVarianceVarianceUniforms(
  *   sigmaNormal = 128.0 — high exponent → preserves sharp surface boundaries
  *   sigmaDepth  = 1.0   — world-unit depth tolerance
  *
- * Hosts may tune σ values per scene. Recommend starting with defaults and
- * reducing sigmaColor when caustic edges over-blur on glass surfaces.
+ * The codegen helper produces a 16-byte struct:
+ *   offset  0 — iteration   : u32  (4 bytes)
+ *   offset  4 — sigmaColor  : f32  (4 bytes)
+ *   offset  8 — sigmaNormal : f32  (4 bytes)
+ *   offset 12 — sigmaDepth  : f32  (4 bytes)
  */
+const ATROUS_VARIANCE_ATROUS_UBO = defineUbo([
+  { name: 'iteration',   type: 'u32' },
+  { name: 'sigmaColor',  type: 'f32' },
+  { name: 'sigmaNormal', type: 'f32' },
+  { name: 'sigmaDepth',  type: 'f32' },
+] as const);
+
+/** Uniforms for one à-trous wavelet iteration (svgfAtrousMain). */
 export interface AtrousVarianceAtrousUniforms {
   /**
    * À-trous iteration index for the current dispatch (0-based, unbounded).
@@ -138,17 +156,8 @@ export interface AtrousVarianceAtrousUniforms {
   readonly sigmaDepth: number;
 }
 
-/**
- * Byte size of the AtrousVarianceAtrousUBO std140 struct.
- *
- * Layout:
- *   offset 0  — iteration   : u32  (4 bytes)
- *   offset 4  — sigmaColor  : f32  (4 bytes)
- *   offset 8  — sigmaNormal : f32  (4 bytes)
- *   offset 12 — sigmaDepth  : f32  (4 bytes)
- * Total: 16 bytes.
- */
-export const ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES = 16 as const;
+/** Byte size of the AtrousVarianceAtrousUBO uniform-buffer binding. */
+export const ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES = ATROUS_VARIANCE_ATROUS_UBO.sizeBytes;
 
 /**
  * Pack AtrousVarianceAtrousUniforms into an ArrayBuffer at the given byte offset.
@@ -162,16 +171,36 @@ export function packAtrousVarianceAtrousUniforms(
   target: ArrayBuffer,
   offset = 0,
 ): void {
-  const view = new DataView(target, offset, ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-  // iteration at offset 0, little-endian u32
-  view.setUint32(0, u.iteration >>> 0, true);
-  // sigmaColor at offset 4, little-endian f32
-  view.setFloat32(4,  u.sigmaColor,  true);
-  // sigmaNormal at offset 8, little-endian f32
-  view.setFloat32(8,  u.sigmaNormal, true);
-  // sigmaDepth at offset 12, little-endian f32
-  view.setFloat32(12, u.sigmaDepth,  true);
+  const view = new DataView(target);
+  ATROUS_VARIANCE_ATROUS_UBO.pack(view, offset, {
+    iteration:   u.iteration,
+    sigmaColor:  u.sigmaColor,
+    sigmaNormal: u.sigmaNormal,
+    sigmaDepth:  u.sigmaDepth,
+  });
 }
+
+// ============================================================
+// WGSL struct declarations (codegen-emitted)
+// ============================================================
+
+/**
+ * WGSL `struct AtrousVarianceVarianceUBO { ... }` declaration emitted from
+ * the same defineUbo() spec as the host-side packer. Consumers that build
+ * shader strings should reference this rather than hand-mirroring the layout.
+ *
+ * (Currently the atrousVariance.wgsl.ts module hand-declares its struct;
+ * porting it to consume this string is part of the follow-up rollout.)
+ */
+export const ATROUS_VARIANCE_VARIANCE_UBO_WGSL =
+  ATROUS_VARIANCE_VARIANCE_UBO.wgsl('AtrousVarianceVarianceUBO');
+
+/**
+ * WGSL `struct AtrousVarianceAtrousUBO { ... }` declaration emitted from
+ * the same defineUbo() spec as the host-side packer.
+ */
+export const ATROUS_VARIANCE_ATROUS_UBO_WGSL =
+  ATROUS_VARIANCE_ATROUS_UBO.wgsl('AtrousVarianceAtrousUBO');
 
 // ============================================================
 // Bind group layout descriptors

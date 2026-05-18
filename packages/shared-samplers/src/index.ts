@@ -81,3 +81,8 @@ export {
   FRAUNHOFER_F_NM,
   FRAUNHOFER_C_NM,
 } from './cauchyIor.js';
+
+// ── W2-C13 — defineUbo codegen helper (proof of concept: 2 UBOs migrated;
+//             ~20 remaining across walkaround-hybrid / shared-denoisers / pt-webgpu).
+export { defineUbo } from './uboCodegen.js';
+export type { UboDefinition, UboFieldSpec, UboFieldType, UboValue, UboWgslOptions } from './uboCodegen.js';
