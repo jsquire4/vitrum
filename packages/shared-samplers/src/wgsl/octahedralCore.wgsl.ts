@@ -5,7 +5,12 @@
 
 export const OCTAHEDRAL_CORE_WGSL = /* wgsl */ `
 fn octEncode(dir: vec3f) -> vec2f {
-  let n = dir / (abs(dir.x) + abs(dir.y) + abs(dir.z));
+  // Cigolle 2014 assumes unit-length input (L1 norm in [1, √3]).
+  // Clamp the denominator so zero-vector input — which can occur if an upstream
+  // normalize() of a degenerate vector returns (0,0,0) — produces a defined
+  // (0,0) output instead of NaN. The epsilon is small enough that it does not
+  // perturb the encoding of any non-zero input within f32 precision.
+  let n = dir / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1e-20);
   if (n.z >= 0.0) {
     return n.xy;
   }
