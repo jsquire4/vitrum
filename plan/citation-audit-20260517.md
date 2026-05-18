@@ -8,6 +8,18 @@
 This document does **not** modify any source files. It catalogues what is
 missing so a follow-up commit can backfill the citations.
 
+## Status update — 2026-05-18
+
+Both structural gaps called out below have been closed:
+
+- **"7 of 10 packages have no README at all"** → fixed. Verified by directory listing on 2026-05-18: all 11 packages (10 original + `@vitrum/scene-lighting` added afterward) have `README.md` files. Landed via `chore/missing-package-readmes` (`ec58f48`, commit `0ab2d54`) + the W13 README-audit pass (`fc882f6`).
+- **22 algorithms with missing CREDITS.md citations** → backfilled by `docs(credits): add missing citations + mark unimplemented techniques as candidates` (commit `70f53cd`, merged via `6860e5a`).
+
+The per-algorithm gap tables below describe the 2026-05-17 audit-time state. Treat them as historical; a fresh re-audit is needed before claiming the citation rule is now satisfied algorithm-by-algorithm.
+
+---
+
+
 ## Scope
 
 - `CREDITS.md`, `README.md`, all `packages/*/README.md` files, all
