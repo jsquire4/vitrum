@@ -605,9 +605,9 @@ export class WalkaroundGPUPipeline {
   presentLastFrame(swapChainView: GPUTextureView): void {
     if (!this._initialized) return;
     const d = this._device;
-    const finalTex = this._res.resolvedTexture;
+    const finalTex = this._res.common.resolvedTexture;
     const bgComposite = buildCompositeBindGroup(
-      d, this._bglCache, finalTex.createView(), this._res.compositeSampler,
+      d, this._bglCache, finalTex.createView(), this._res.common.compositeSampler,
     );
     const encoder = d.createCommandEncoder({ label: 'composite-only' });
     const pass = encoder.beginRenderPass({
@@ -652,25 +652,25 @@ export class WalkaroundGPUPipeline {
     const { _width: W, _height: H } = this;
 
     // ── Update UBO ────────────────────────────────────────────────────────
-    updateUBO(d, this._res.uboBuffer, inputs);
+    updateUBO(d, this._res.common.uboBuffer, inputs);
 
     // ── Build placeholder texture view ────────────────────────────────────
-    const placeholderView = this._res.placeholderTexture.createView();
+    const placeholderView = this._res.common.placeholderTexture.createView();
 
     // ── Build bind groups ─────────────────────────────────────────────────
     const bgFrame = buildFrameBindGroup(d, this._bglCache, {
       placeholderView,
-      reservoirCurrentBuffer:  this._res.reservoirCurrentBuffer,
-      reservoirPreviousBuffer: this._res.reservoirPreviousBuffer,
-      reservoirSpatialBuffer:  this._res.reservoirSpatialBuffer,
-      hdrColorTexture:         this._res.hdrColorTexture,
-      nearestSampler:          this._res.nearestSampler,
-      gNormalDepthTexture:     this._res.gNormalDepthTexture,
-      reservoirGiCurrentBuffer: this._res.reservoirGiCurrentBuffer,
-      hdrIndirectTexture:      this._res.hdrIndirectTexture,
-      hdrTotalTexture:         this._res.hdrTotalTexture,
+      reservoirCurrentBuffer:  this._res.restirDI.reservoirCurrentBuffer,
+      reservoirPreviousBuffer: this._res.restirDI.reservoirPreviousBuffer,
+      reservoirSpatialBuffer:  this._res.restirDI.reservoirSpatialBuffer,
+      hdrColorTexture:         this._res.common.hdrColorTexture,
+      nearestSampler:          this._res.common.nearestSampler,
+      gNormalDepthTexture:     this._res.common.gNormalDepthTexture,
+      reservoirGiCurrentBuffer: this._res.restirGI.reservoirGiCurrentBuffer,
+      hdrIndirectTexture:      this._res.common.hdrIndirectTexture,
+      hdrTotalTexture:         this._res.common.hdrTotalTexture,
       // Item 24 — albedo demodulation (Schied 2017 §4.1).
-      albedoTexture:           this._res.albedoTexture,
+      albedoTexture:           this._res.common.albedoTexture,
     });
     const bgScene = buildSceneBindGroup(d, this._bglCache, {
       bvhNodesBuffer:    this._bvhNodesBuffer,
@@ -681,9 +681,9 @@ export class WalkaroundGPUPipeline {
       bvhBeerBuffer:     this._bvhBeerBuffer,
     });
     const bgUbo   = buildUboBindGroup(
-      d, this._bglCache, this._res.uboBuffer,
-      this._res.aoFullTexture.createView(),
-      this._res.tierTexture.createView(),
+      d, this._bglCache, this._res.common.uboBuffer,
+      this._res.gtao.aoFullTexture.createView(),
+      this._res.common.tierTexture.createView(),
     );
 
     // ── Dispatch compute passes ───────────────────────────────────────────
@@ -733,8 +733,8 @@ export class WalkaroundGPUPipeline {
       );
       const bgBudget = buildSampleBudgetBindGroup(
         d, this._bglCache,
-        this._res.varianceBuffer.createView(),
-        this._res.tierTexture.createView(),
+        this._res.common.varianceBuffer.createView(),
+        this._res.common.tierTexture.createView(),
         this._sampleBudgetUboRef.buf!,
         this._sampleCountUboRef.buf!,
       );
@@ -796,10 +796,10 @@ export class WalkaroundGPUPipeline {
     const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
       ddgiIrrTex:              this._ddgiIrrTex,
       ddgiVisTex:              this._ddgiVisTex,
-      ddgiPlaceholderRgba16f:  this._res.ddgiPlaceholderRgba16f,
-      ddgiPlaceholderRg16f:    this._res.ddgiPlaceholderRg16f,
-      nearestSampler:          this._res.nearestSampler,
-      ddgiUboBuffer:           this._res.ddgiUboBuffer,
+      ddgiPlaceholderRgba16f:  this._res.ddgi.ddgiPlaceholderRgba16f,
+      ddgiPlaceholderRg16f:    this._res.ddgi.ddgiPlaceholderRg16f,
+      nearestSampler:          this._res.common.nearestSampler,
+      ddgiUboBuffer:           this._res.ddgi.ddgiUboBuffer,
     });
 
     // Sprint 16 — ReSTIR-GI RIS pass. Half-res dispatch (W/2 × H/2).
@@ -826,9 +826,9 @@ export class WalkaroundGPUPipeline {
 
       const bgTemporalGi = buildTemporalGiBindGroup(
         d, this._bglCache,
-        this._res.reservoirGiCurrentBuffer,
-        this._res.reservoirGiPreviousBuffer,
-        this._res.uboBuffer,
+        this._res.restirGI.reservoirGiCurrentBuffer,
+        this._res.restirGI.reservoirGiPreviousBuffer,
+        this._res.common.uboBuffer,
       );
       const tPass = encoder.beginComputePass(computeDesc('gi-temporal'));
       tPass.setPipeline(this._temporalGiPipeline);
@@ -839,9 +839,9 @@ export class WalkaroundGPUPipeline {
       // Spatial pass 1: current → spatial.
       const bgSpatial1 = buildSpatialGiBindGroup(
         d, this._bglCache,
-        this._res.reservoirGiCurrentBuffer,
-        this._res.reservoirGiSpatialBuffer,
-        this._res.uboBuffer,
+        this._res.restirGI.reservoirGiCurrentBuffer,
+        this._res.restirGI.reservoirGiSpatialBuffer,
+        this._res.common.uboBuffer,
         'spatial-gi-bg-1',
       );
       const s1 = encoder.beginComputePass(computeDesc('gi-spatial-1'));
@@ -853,9 +853,9 @@ export class WalkaroundGPUPipeline {
       // Spatial pass 2: spatial → current.
       const bgSpatial2 = buildSpatialGiBindGroup(
         d, this._bglCache,
-        this._res.reservoirGiSpatialBuffer,
-        this._res.reservoirGiCurrentBuffer,
-        this._res.uboBuffer,
+        this._res.restirGI.reservoirGiSpatialBuffer,
+        this._res.restirGI.reservoirGiCurrentBuffer,
+        this._res.common.uboBuffer,
         'spatial-gi-bg-2',
       );
       const s2 = encoder.beginComputePass(computeDesc('gi-spatial-2'));
@@ -928,7 +928,7 @@ export class WalkaroundGPUPipeline {
         inputs.gtaoBilateralDepthSigma,        // 4: audit B3
         0, 0, 0,                               // 5..7: _pad0/1/2
       ]);
-      d.queue.writeBuffer(this._res.gtaoUboBuffer, 0, gtaoUboBytes);
+      d.queue.writeBuffer(this._res.gtao.gtaoUboBuffer, 0, gtaoUboBytes);
       const halfW = Math.max(1, Math.floor(W / 2));
       const halfH = Math.max(1, Math.floor(H / 2));
       const wgGtaoX = Math.ceil(halfW / 8);
@@ -936,11 +936,11 @@ export class WalkaroundGPUPipeline {
       {
         const bg = buildGTAOBindGroup(
           d, this._bglCache,
-          this._res.gNormalDepthTexture.createView(),
-          this._res.aoHalfTexture.createView(),
-          this._res.gtaoUboBuffer,
+          this._res.common.gNormalDepthTexture.createView(),
+          this._res.gtao.aoHalfTexture.createView(),
+          this._res.gtao.gtaoUboBuffer,
           // E1 — hdrAlbedoOut for Jiménez 2016 §5.2 multi-bounce term.
-          this._res.albedoTexture.createView(),
+          this._res.common.albedoTexture.createView(),
         );
         const pass = encoder.beginComputePass(computeDesc('gtao'));
         pass.setPipeline(this._gtaoPipeline);
@@ -951,10 +951,10 @@ export class WalkaroundGPUPipeline {
       {
         const bg = buildGTAOUpsampleBindGroup(
           d, this._bglCache,
-          this._res.aoHalfTexture.createView(),
-          this._res.gNormalDepthTexture.createView(),
-          this._res.aoFullTexture.createView(),
-          this._res.gtaoUboBuffer,
+          this._res.gtao.aoHalfTexture.createView(),
+          this._res.common.gNormalDepthTexture.createView(),
+          this._res.gtao.aoFullTexture.createView(),
+          this._res.gtao.gtaoUboBuffer,
         );
         const pass = encoder.beginComputePass(computeDesc('gtao-upsample'));
         pass.setPipeline(this._gtaoUpsamplePipeline);
@@ -977,10 +977,10 @@ export class WalkaroundGPUPipeline {
 
     const wgX16 = Math.ceil(W / 16);
     const wgY16 = Math.ceil(H / 16);
-    const gNormalDepthView = this._res.gNormalDepthTexture.createView();
+    const gNormalDepthView = this._res.common.gNormalDepthTexture.createView();
 
-    const readAccum  = this._accumPingPongIndex === 0 ? this._res.accumTextureA : this._res.accumTextureB;
-    const writeAccum = this._accumPingPongIndex === 0 ? this._res.accumTextureB : this._res.accumTextureA;
+    const readAccum  = this._accumPingPongIndex === 0 ? this._res.common.accumTextureA : this._res.common.accumTextureB;
+    const writeAccum = this._accumPingPongIndex === 0 ? this._res.common.accumTextureB : this._res.common.accumTextureA;
 
     let denoisedOut: GPUTexture;
     // Transient UBOs created by _dispatchSVGFReal (one per atrous iter). Destroyed
@@ -1032,15 +1032,15 @@ export class WalkaroundGPUPipeline {
     // temporal smoothing first means atrous sees a far more coherent
     // signal and its spatial filter actually converges.
     const indirectAccumOut = this._indirectAccumPingPong === 0
-      ? this._res.indirectAccumPingTexture
-      : this._res.indirectAccumPongTexture;
+      ? this._res.common.indirectAccumPingTexture
+      : this._res.common.indirectAccumPongTexture;
     const indirectAccumPrev = this._indirectAccumPingPong === 0
-      ? this._res.indirectAccumPongTexture
-      : this._res.indirectAccumPingTexture;
+      ? this._res.common.indirectAccumPongTexture
+      : this._res.common.indirectAccumPingTexture;
     {
       const bgIta = buildIndirectTemporalAccumBindGroup(
         d, this._bglCache,
-        this._res.hdrIndirectTexture.createView(),
+        this._res.common.hdrIndirectTexture.createView(),
         indirectAccumPrev.createView(),
         indirectAccumOut.createView(),
       );
@@ -1056,7 +1056,7 @@ export class WalkaroundGPUPipeline {
     const denoisedIndirect = this._dispatchAtrousIndirect(
       encoder, gNormalDepthView, wgX16, wgY16, computeDesc, indirectAccumOut,
     );
-    const combinedTex = this._res.combinedDenoisedTexture;
+    const combinedTex = this._res.common.combinedDenoisedTexture;
     {
       const bgCombine = buildIndirectCombineBindGroup(
         d, this._bglCache,
@@ -1066,7 +1066,7 @@ export class WalkaroundGPUPipeline {
         combinedTex.createView(),
         // Item 24 — albedo demodulation: re-modulate denoised indirect lighting
         // by the visible-point albedo written by shade (Schied 2017 §4.1).
-        this._res.albedoTexture.createView(),
+        this._res.common.albedoTexture.createView(),
       );
       const pass = encoder.beginComputePass(computeDesc('indirect-combine'));
       pass.setPipeline(this._indirectCombinePipeline);
@@ -1123,8 +1123,8 @@ export class WalkaroundGPUPipeline {
         this._resolveUboRef.buf!,
         writeAccum.createView(),                            // current radiance (post-accum)
         readAccum.createView(),                             // prev radiance (other ping-pong slot)
-        this._res.motionVectorTexture.createView(),         // motion vectors (zero-filled until a motion-vector pass exists)
-        this._res.resolvedTexture.createView(),
+        this._res.common.motionVectorTexture.createView(),         // motion vectors (zero-filled until a motion-vector pass exists)
+        this._res.common.resolvedTexture.createView(),
       );
       const pass = encoder.beginComputePass(computeDesc('resolve'));
       pass.setPipeline(this._resolvePipeline);
@@ -1136,8 +1136,8 @@ export class WalkaroundGPUPipeline {
     }
 
     // Pass: Composite render pass — blit resolved HDR to swap-chain.
-    const finalTex = this._res.resolvedTexture;
-    const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.compositeSampler);
+    const finalTex = this._res.common.resolvedTexture;
+    const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.common.compositeSampler);
     {
       const tsComp = tsWrites(this._tsState.querySet, passLayout, 'composite');
       const pass = encoder.beginRenderPass({
@@ -1164,14 +1164,14 @@ export class WalkaroundGPUPipeline {
     // reservoir read before enc2 had completed, racing the previous-
     // frame copy — corrupts the GI reservoir, manifests as flicker.
     encoder.copyBufferToBuffer(
-      this._res.reservoirCurrentBuffer, 0,
-      this._res.reservoirPreviousBuffer, 0,
-      this._res.reservoirCurrentBuffer.size,
+      this._res.restirDI.reservoirCurrentBuffer, 0,
+      this._res.restirDI.reservoirPreviousBuffer, 0,
+      this._res.restirDI.reservoirCurrentBuffer.size,
     );
     encoder.copyBufferToBuffer(
-      this._res.reservoirGiCurrentBuffer, 0,
-      this._res.reservoirGiPreviousBuffer, 0,
-      this._res.reservoirGiCurrentBuffer.size,
+      this._res.restirGI.reservoirGiCurrentBuffer, 0,
+      this._res.restirGI.reservoirGiPreviousBuffer, 0,
+      this._res.restirGI.reservoirGiCurrentBuffer.size,
     );
 
     // Resolve timestamps + copy into the inactive readback buffer.
@@ -1215,19 +1215,19 @@ export class WalkaroundGPUPipeline {
     const sv = this._atrousVarianceVariancePipeline!;
     const sa = this._atrousVarianceAtrousPipeline!;
 
-    const welfordRead  = this._welfordPing === 0 ? this._res.varianceBuffer : this._res.varianceBufferAux;
-    const welfordWrite = this._welfordPing === 0 ? this._res.varianceBufferAux : this._res.varianceBuffer;
+    const welfordRead  = this._welfordPing === 0 ? this._res.common.varianceBuffer : this._res.common.varianceBufferAux;
+    const welfordWrite = this._welfordPing === 0 ? this._res.common.varianceBufferAux : this._res.common.varianceBuffer;
 
     // welfordUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
     const wU32 = new Uint32Array([this._accumFrameIndex + 1, isMoving ? 1 : 0, 0, 0]);
     d.queue.writeBuffer(this._welfordUboRef.buf!, 0, wU32);
 
-    const hdrColorView = this._res.hdrColorTexture.createView();
+    const hdrColorView = this._res.common.hdrColorTexture.createView();
     // Sprint 18 follow-up — welford reads the total-radiance texture so the
     // variance and the sample-budget tier derived from it cover both direct
     // and indirect channels. Variance + atrous still read hdrColorView
     // (direct-only) so the denoiser sees the channel it is tuned for.
-    const hdrTotalView = this._res.hdrTotalTexture.createView();
+    const hdrTotalView = this._res.common.hdrTotalTexture.createView();
     {
       const pass = encoder.beginComputePass(computeDesc('welford-temporal'));
       pass.setPipeline(wf);
@@ -1251,7 +1251,7 @@ export class WalkaroundGPUPipeline {
         d, sv,
         hdrColorView,
         welfordWrite.createView(),
-        this._res.atrousVarianceEstimateTexture.createView(),
+        this._res.common.atrousVarianceEstimateTexture.createView(),
         this._atrousVarianceVarianceUboRef.buf!,
       ));
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
@@ -1260,8 +1260,8 @@ export class WalkaroundGPUPipeline {
 
     // atrousVarianceAtrousUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
     const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    let inputTex: GPUTexture = this._res.hdrColorTexture;
-    const varView = this._res.atrousVarianceEstimateTexture.createView();
+    let inputTex: GPUTexture = this._res.common.hdrColorTexture;
+    const varView = this._res.common.atrousVarianceEstimateTexture.createView();
     for (let iter = 0; iter < ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS; iter++) {
       packAtrousVarianceAtrousUniforms(
         { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
@@ -1269,7 +1269,7 @@ export class WalkaroundGPUPipeline {
         0,
       );
       d.queue.writeBuffer(this._atrousVarianceAtrousUboRef.buf!, 0, atrousUboBytes);
-      const outTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
+      const outTex = iter % 2 === 0 ? this._res.common.denoisedPingTexture : this._res.common.denoisedPongTexture;
       const pass = encoder.beginComputePass(computeDesc(`atrous-variance-atrous-${iter}` as PassLabel));
       pass.setPipeline(sa);
       pass.setBindGroup(0, buildAtrousVarianceAtrousBindGroup(
@@ -1324,12 +1324,12 @@ export class WalkaroundGPUPipeline {
     // the id-mismatch check always passes — this is conservative (never rejects
     // valid reprojection) and can be improved when objId outputs are added.
     // Select ping-pong slots: read from A, write to B (or vice versa).
-    const histRead  = this._svgfPingPong === 0 ? this._res.svgfHistoryLengthTextureA : this._res.svgfHistoryLengthTextureB;
-    const histWrite = this._svgfPingPong === 0 ? this._res.svgfHistoryLengthTextureB : this._res.svgfHistoryLengthTextureA;
-    const momRead   = this._svgfPingPong === 0 ? this._res.svgfMomentsTextureA       : this._res.svgfMomentsTextureB;
-    const momWrite  = this._svgfPingPong === 0 ? this._res.svgfMomentsTextureB       : this._res.svgfMomentsTextureA;
-    const radRead   = this._svgfPingPong === 0 ? this._res.svgfPrevRadianceTextureA  : this._res.svgfPrevRadianceTextureB;
-    const radWrite  = this._svgfPingPong === 0 ? this._res.svgfPrevRadianceTextureB  : this._res.svgfPrevRadianceTextureA;
+    const histRead  = this._svgfPingPong === 0 ? this._res.svgf.svgfHistoryLengthTextureA : this._res.svgf.svgfHistoryLengthTextureB;
+    const histWrite = this._svgfPingPong === 0 ? this._res.svgf.svgfHistoryLengthTextureB : this._res.svgf.svgfHistoryLengthTextureA;
+    const momRead   = this._svgfPingPong === 0 ? this._res.svgf.svgfMomentsTextureA       : this._res.svgf.svgfMomentsTextureB;
+    const momWrite  = this._svgfPingPong === 0 ? this._res.svgf.svgfMomentsTextureB       : this._res.svgf.svgfMomentsTextureA;
+    const radRead   = this._svgfPingPong === 0 ? this._res.svgf.svgfPrevRadianceTextureA  : this._res.svgf.svgfPrevRadianceTextureB;
+    const radWrite  = this._svgfPingPong === 0 ? this._res.svgf.svgfPrevRadianceTextureB  : this._res.svgf.svgfPrevRadianceTextureA;
 
     const reproj = this._svgfReprojPipeline!;
     {
@@ -1337,15 +1337,15 @@ export class WalkaroundGPUPipeline {
         label: 'svgf-real-reproj-bg',
         layout: reproj.getBindGroupLayout(0),
         entries: [
-          { binding: 0,  resource: this._res.hdrColorTexture.createView() },    // currColor (sampled)
+          { binding: 0,  resource: this._res.common.hdrColorTexture.createView() },    // currColor (sampled)
           { binding: 1,  resource: radRead.createView() },                       // prevColor (sampled)
-          { binding: 2,  resource: this._res.motionVectorTexture.createView() }, // motionVec
-          { binding: 3,  resource: this._res.gNormalDepthTexture.createView() }, // currDepth (.r)
-          { binding: 4,  resource: this._res.gNormalDepthTexture.createView() }, // currNormal (.xyz 0..1)
-          { binding: 5,  resource: this._res.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
-          { binding: 6,  resource: this._res.gNormalDepthTexture.createView() }, // prevDepth (1-frame lag)
-          { binding: 7,  resource: this._res.gNormalDepthTexture.createView() }, // prevNormal (1-frame lag)
-          { binding: 8,  resource: this._res.svgfObjIdPlaceholderTexture.createView() }, // prevObjId (placeholder)
+          { binding: 2,  resource: this._res.common.motionVectorTexture.createView() }, // motionVec
+          { binding: 3,  resource: this._res.common.gNormalDepthTexture.createView() }, // currDepth (.r)
+          { binding: 4,  resource: this._res.common.gNormalDepthTexture.createView() }, // currNormal (.xyz 0..1)
+          { binding: 5,  resource: this._res.svgf.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
+          { binding: 6,  resource: this._res.common.gNormalDepthTexture.createView() }, // prevDepth (1-frame lag)
+          { binding: 7,  resource: this._res.common.gNormalDepthTexture.createView() }, // prevNormal (1-frame lag)
+          { binding: 8,  resource: this._res.svgf.svgfObjIdPlaceholderTexture.createView() }, // prevObjId (placeholder)
           { binding: 9,  resource: histRead.createView() },                      // historyLengthIn
           { binding: 10, resource: momRead.createView() },                       // momentsIn
           { binding: 11, resource: radWrite.createView() },                      // colorOut (storage write)
@@ -1370,7 +1370,7 @@ export class WalkaroundGPUPipeline {
         entries: [
           { binding: 0, resource: momWrite.createView() },
           { binding: 1, resource: histWrite.createView() },
-          { binding: 2, resource: this._res.svgfVarianceMomentsIntermedTexture.createView() },
+          { binding: 2, resource: this._res.svgf.svgfVarianceMomentsIntermedTexture.createView() },
         ],
       });
       const pass = encoder.beginComputePass(computeDesc('svgf-real-moments'));
@@ -1386,10 +1386,10 @@ export class WalkaroundGPUPipeline {
         label: 'svgf-real-7x7-bg',
         layout: this._svgfFallbackPipeline!.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: this._res.hdrColorTexture.createView() },
+          { binding: 0, resource: this._res.common.hdrColorTexture.createView() },
           { binding: 1, resource: histWrite.createView() },
-          { binding: 2, resource: this._res.svgfVarianceMomentsIntermedTexture.createView() },
-          { binding: 3, resource: this._res.svgfVarianceTexture.createView() },
+          { binding: 2, resource: this._res.svgf.svgfVarianceMomentsIntermedTexture.createView() },
+          { binding: 3, resource: this._res.svgf.svgfVarianceTexture.createView() },
         ],
       });
       const pass = encoder.beginComputePass(computeDesc('svgf-real-7x7'));
@@ -1407,7 +1407,7 @@ export class WalkaroundGPUPipeline {
     // Ping-pong with denoisedPing/Pong as usual.
     const sa = this._svgfRealAtrousPipeline!;
     const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    const varView = this._res.svgfVarianceTexture.createView();
+    const varView = this._res.svgf.svgfVarianceTexture.createView();
     let inputTex: GPUTexture = radWrite;
     // Collect transient per-iteration UBOs so they can be destroyed after submit().
     // GPUBuffer is a GPU resource — it must be explicitly destroyed; GC does not
@@ -1429,7 +1429,7 @@ export class WalkaroundGPUPipeline {
       d.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
       svgfIterUbos.push(iterUbo);
 
-      const outTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
+      const outTex = iter % 2 === 0 ? this._res.common.denoisedPingTexture : this._res.common.denoisedPongTexture;
       const bg = d.createBindGroup({
         label: `svgf-real-atrous-bg-${iter}`,
         layout: sa.getBindGroupLayout(0),
@@ -1463,10 +1463,10 @@ export class WalkaroundGPUPipeline {
     computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
   ): GPUTexture {
     const d = this._device;
-    let inputTex = this._res.hdrColorTexture;
+    let inputTex = this._res.common.hdrColorTexture;
     for (let iter = 0; iter < 3; iter++) {
       const stepWidth = 1 << iter;
-      const outputTex = iter % 2 === 0 ? this._res.denoisedPingTexture : this._res.denoisedPongTexture;
+      const outputTex = iter % 2 === 0 ? this._res.common.denoisedPingTexture : this._res.common.denoisedPongTexture;
       const bgAtrous = buildAtrousBindGroup(
         d, this._bglCache, this._atrousUboRef,
         inputTex.createView(), outputTex.createView(),
@@ -1503,8 +1503,8 @@ export class WalkaroundGPUPipeline {
     for (let iter = 0; iter < 4; iter++) {
       const stepWidth = 1 << iter;
       const outputTex = iter % 2 === 0
-        ? this._res.indirectDenoisedPingTexture
-        : this._res.indirectDenoisedPongTexture;
+        ? this._res.common.indirectDenoisedPingTexture
+        : this._res.common.indirectDenoisedPongTexture;
       const bgAtrous = buildAtrousBindGroup(
         d, this._bglCache, this._atrousIndirectUboRef,
         inputTex.createView(), outputTex.createView(),
@@ -1562,12 +1562,12 @@ export class WalkaroundGPUPipeline {
       if (this._ddgiPlaceholderUBO === null) {
         this._ddgiPlaceholderUBO = buildDDGIPlaceholderUBO();
       }
-      this._device.queue.writeBuffer(this._res.ddgiUboBuffer, 0, this._ddgiPlaceholderUBO.buffer);
+      this._device.queue.writeBuffer(this._res.ddgi.ddgiUboBuffer, 0, this._ddgiPlaceholderUBO.buffer);
     } else {
       this._ddgiIrrTex = inputs.irradianceTex;
       this._ddgiVisTex = inputs.visibilityTex;
       if (inputs.gridParams.byteLength > 0) {
-        this._device.queue.writeBuffer(this._res.ddgiUboBuffer, 0, inputs.gridParams);
+        this._device.queue.writeBuffer(this._res.ddgi.ddgiUboBuffer, 0, inputs.gridParams);
       }
     }
   }

@@ -440,12 +440,13 @@ describe('FrameResources — varianceBuffer field (Sprint 9)', () => {
 
     const res = createFrameResources(mockDevice, 64, 64);
 
-    // The varianceBuffer field must be present.
-    expect(res).toHaveProperty('varianceBuffer');
-    expect(res.varianceBuffer).not.toBeNull();
-    expect(res).toHaveProperty('varianceBufferAux');
-    expect(res).toHaveProperty('atrousVarianceEstimateTexture');
-    expect(res).toHaveProperty('motionVectorTexture');
+    // W1-R2 — FrameResources is now grouped into per-algorithm sub-structs.
+    // varianceBuffer + friends moved under `res.common`.
+    expect(res.common).toHaveProperty('varianceBuffer');
+    expect(res.common.varianceBuffer).not.toBeNull();
+    expect(res.common).toHaveProperty('varianceBufferAux');
+    expect(res.common).toHaveProperty('atrousVarianceEstimateTexture');
+    expect(res.common).toHaveProperty('motionVectorTexture');
   });
 
   it('destroyFrameResources calls destroy on varianceBuffer', async () => {
