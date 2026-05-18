@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@vitrum/core": "file:../core",
+    "@vitrum/scene-lighting": "file:../scene-lighting",
     "@vitrum/shared-denoisers": "file:../shared-denoisers",
     "@vitrum/shared-samplers": "file:../shared-samplers",
     "@vitrum/three-bindings": "file:../three-bindings",

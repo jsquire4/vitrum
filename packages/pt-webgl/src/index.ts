@@ -38,20 +38,15 @@ export type {
 } from './oidnFinalDispatcher.js';
 
 export * from './constants.js';
-export * from './sunGeometry.js';
 export { bakeSkyEquirect, clearSkyEquirectCache } from './iblBaker.js';
 export { debounceMsForEditRate, PT_DEBOUNCE_MS_NORMAL, PT_DEBOUNCE_MS_BURST } from './debounce.js';
-export { computeLightingState } from './lightingState.js';
-export type { LightingState, LightingStateInputs } from './lightingState.js';
-export { skyParamsFor, worldSunPosition, SUN_LIGHT_DISTANCE } from './skyParams.js';
-export type { SkyParams } from './skyParams.js';
-export {
-  COLOR_TEMP_HEX,
-  SUN_INTENSITY,
-  getSunIntensity,
-  pointIntensityFromLumens,
-  rectAreaIntensityFromLumens,
-} from './lightingIntensityTable.js';
+
+// Re-exported from @vitrum/scene-lighting — the four lighting-state modules
+// (sun geometry, time-of-day → SkyParams, intensity table, unified LightingState)
+// were previously colocated here but are equally consumed by walkaround-hybrid;
+// they live in their own backend-agnostic package now. The re-exports below
+// keep the pt-webgl public surface unchanged for existing callers.
+export * from '@vitrum/scene-lighting';
 
 // Sprint 10c — BDPT option types for host callers that drive fork uniforms directly.
 export type { ForkBridgeBdptOptions, ForkBridgeCausticOptions } from './forkUniformBridge.js';
