@@ -13,6 +13,10 @@
 import type * as THREE from 'three';
 import type { Material, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
 import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
+import {
+  applyForwardExtensions,
+  type MaterialConversionOptions,
+} from './materialExtensions.js';
 
 /** THREE.MeshPhysicalMaterial default index of refraction. Used as the
  *  "no-op" guard so callers that did not customize IOR don't generate
@@ -42,7 +46,10 @@ function isPhysical(m: ThreeStdMat): m is ThreePhysMat {
 // Material converter
 // ────────────────────────────────────────────────────────────────────────────
 
-export function convertMaterial(m: ThreeStdMat): Material {
+export function convertMaterial(
+  m: ThreeStdMat,
+  options: MaterialConversionOptions = {},
+): Material {
   const base: Material = {
     baseColor: colorToVec3(m.color),
     roughness: m.roughness,
@@ -99,30 +106,32 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.iridescenceThicknessRange = p.iridescenceThicknessRange;
   }
 
-  // Gap 5 (stainedGlass audit 2026-05-12) — anisotropy is set DIRECTLY on the
-  // THREE MeshPhysicalMaterial (not via userData) by the baking pipeline for
-  // ripple/waterglass cells. Read both fields off the live material object.
-  // Mirror the iridescence pattern: only capture when non-zero so default-zero
-  // THREE materials don't populate the vitrum Material with phantom fields.
+  // Anisotropy is set DIRECTLY on the THREE MeshPhysicalMaterial (not via
+  // userData). Mirror the iridescence pattern: only capture when non-zero so
+  // default-zero THREE materials don't populate the vitrum Material with
+  // phantom fields. Reference: Three.js MeshPhysicalMaterial.anisotropy.
   if (p.anisotropy !== 0) {
     base.anisotropy = p.anisotropy;
     // Always capture rotation alongside anisotropy; 0 rotation is meaningful.
     base.anisotropyRotation = p.anisotropyRotation;
   }
 
-  // ── userData.vitrum* stamps (RFE-06..08 / RFE-03) ──────────────────────────
+  // ── userData.vitrum* stamps for core Material fields ─────────────────────
   // The host stamps these on THREE materials so backends can read them via the
   // vitrum.Material contract. We project them unconditionally here; each guard
   // preserves exactOptionalPropertyTypes (no field set = field absent).
   const ud = (p.userData ?? {}) as Record<string, unknown>;
 
-  // RFE-06 (Sprint 8 — chromatic dispersion, Abbe number)
+  // Chromatic dispersion (Abbe number).
+  // Reference: OpenPBR Surface v1.1.1 `transmission_dispersion_abbe_number`.
   const rawDispersion = ud[K.DISPERSION_ABBE];
   if (typeof rawDispersion === 'number') {
     base.dispersionAbbeNumber = rawDispersion;
   }
 
-  // RFE-07 (Sprint 7 — volume scattering + HG anisotropy)
+  // Volume scattering + Henyey-Greenstein phase asymmetry.
+  // Reference: Novák et al., "Monte Carlo Methods for Volumetric Light
+  // Transport Simulation," CGF 2018 (delta tracking / null-collision).
   const rawScatCoeff = ud[K.SCATTERING_COEFF];
   if (typeof rawScatCoeff === 'number') {
     base.scatteringCoefficient = rawScatCoeff;
@@ -139,11 +148,9 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.scatteringAnisotropy = rawScatAniso;
   }
 
-  // RFE-08 (Sprint 12 — hero-wavelength spectral attenuation curve)
-  // Only the full SpectralCurve shape is accepted:
-  //   { wavelengthStart: number, wavelengthEnd: number, values: Float32Array }
-  // The deprecated bare Float32Array path was removed in the 2026-05-11 sweep
-  // (pre-alpha; no external consumers). See Foundations Item #35 / D11.
+  // Hero-wavelength spectral attenuation curve. Only the full SpectralCurve
+  // shape is accepted: { wavelengthStart, wavelengthEnd, values: Float32Array }.
+  // Reference: Wilkie et al., "Hero Wavelength Spectral Sampling," EGSR 2014.
   const rawSpectral = ud[K.SPECTRAL_ATTEN];
   if (
     rawSpectral != null &&
@@ -156,13 +163,16 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.spectralAttenuation = rawSpectral as SpectralCurve;
   }
 
-  // RFE-08 (Sprint 12 — multi-layer thin-film stack)
+  // Multi-layer thin-film stack (Abeles TMM).
+  // Reference: Born & Wolf, "Principles of Optics" (1999).
   const rawThinFilm = ud[K.THIN_FILM_STACK];
   if (rawThinFilm != null && typeof rawThinFilm === 'object' && !Array.isArray(rawThinFilm)) {
     base.thinFilmStack = rawThinFilm as ThinFilmStack;
   }
 
-  // RFE-03 (Sprint X — per-face surface absorption layers)
+  // Per-face surface absorption layers (Belcour-style atomic decomposition).
+  // Reference: Belcour, "Efficient Rendering of Layered Materials using an
+  // Atomic Decomposition with Statistical Operators," ACM TOG 2018.
   const rawFront = ud[K.FRONT_LAYER];
   if (rawFront != null && typeof rawFront === 'object' && !Array.isArray(rawFront)) {
     base.frontLayer = rawFront as SurfaceAbsorptionLayer;
@@ -172,21 +182,13 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.backLayer = rawBack as SurfaceAbsorptionLayer;
   }
 
-  // RFE-10 dichroic addendum (PHY.1 — 2026-05-12). The stainedGlass dichroic
-  // body baker emits two 256×1 RGBA-float DataTextures pre-convolving the
-  // TMM × CIE 1931 standard observer. Forward both through
-  // `Material.extensions.dichroicLUTs` for raster backends that bind them
-  // directly; PT backends may continue to evaluate the TMM in-shader from
-  // `thinFilmStack` and ignore the LUT. Core never inspects `extensions`,
-  // matching the existing escape-hatch contract.
-  const rawDichroicR = ud[K.DICHROIC_REFLECTANCE_LUT];
-  const rawDichroicT = ud[K.DICHROIC_TRANSMITTANCE_LUT];
-  if (rawDichroicR != null || rawDichroicT != null) {
-    const extensions = { ...(base.extensions ?? {}) } as Record<string, unknown>;
-    extensions['dichroicLUTs'] = {
-      reflectance: rawDichroicR,
-      transmittance: rawDichroicT,
-    };
+  // ── Pluggable extension converters (host-app-specific) ───────────────────
+  // Host-app domain extensions (e.g. dichroic LUTs from
+  // @vitrum/stained-glass-extensions) live in opt-in converter packages.
+  // Core never inspects `Material.extensions`; three-bindings only forwards
+  // converter output verbatim.
+  const extensions = applyForwardExtensions(m, options.extensionConverters);
+  if (extensions !== undefined) {
     base.extensions = extensions;
   }
 

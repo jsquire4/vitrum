@@ -35,6 +35,10 @@ import {
 import type { Texture } from 'three';
 import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
 import { luminance as rec709Luminance } from './math.js';
+import {
+  applyReverseExtensions,
+  type MaterialConversionOptions,
+} from './materialExtensions.js';
 
 function isNoneEnv(env: VitrumScene['environment']): env is NoneEnvironment {
   return env.kind === 'none';
@@ -57,52 +61,51 @@ function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
   if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
 }
 
-/** Stamp vitrum-specific extension fields into `mat.userData` using the
+/** Stamp vitrum-specific core Material fields into `mat.userData` using the
  *  canonical keys from `userDataKeys.ts`. Each field is set only when the
- *  source field is defined, so callers without the new RFEs get a clean
- *  userData object (no phantom keys). */
+ *  source field is defined, so callers without those fields get a clean
+ *  userData object (no phantom keys). Host-app extensions (e.g. dichroic
+ *  LUTs) are handled separately by the extension-converter registry. */
 function stampVitrumUserData(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
   const ud: Record<string, unknown> = mat.userData ?? {};
 
-  // RFE-06 (Sprint 8 — chromatic dispersion)
+  // Chromatic dispersion (Abbe number).
   if (m.dispersionAbbeNumber !== undefined) {
     ud[K.DISPERSION_ABBE] = m.dispersionAbbeNumber;
   }
 
-  // RFE-07 (Sprint 7 — volume scattering)
+  // Volume scattering + Henyey-Greenstein phase asymmetry.
   if (m.scatteringCoefficient !== undefined) ud[K.SCATTERING_COEFF] = m.scatteringCoefficient;
   if (m.scatteringCoefficientRGB !== undefined) ud[K.SCATTERING_RGB] = m.scatteringCoefficientRGB;
   if (m.scatteringAnisotropy !== undefined) ud[K.SCATTERING_ANISO] = m.scatteringAnisotropy;
 
-  // RFE-08 (Sprint 12 — spectral attenuation + thin-film stack)
+  // Spectral attenuation + multi-layer thin-film stack.
   if (m.spectralAttenuation !== undefined) ud[K.SPECTRAL_ATTEN] = m.spectralAttenuation;
   if (m.thinFilmStack !== undefined) ud[K.THIN_FILM_STACK] = m.thinFilmStack;
 
-  // RFE-03 (per-face surface absorption layers)
+  // Per-face surface absorption layers.
   if (m.frontLayer !== undefined) ud[K.FRONT_LAYER] = m.frontLayer;
   if (m.backLayer !== undefined) ud[K.BACK_LAYER] = m.backLayer;
-
-  // RFE-10 dichroic addendum (PHY.1 — 2026-05-12). Re-stamp the pre-convolved
-  // angle-indexed LUTs surfaced via Material.extensions.dichroicLUTs so they
-  // survive the THREE → vitrum → THREE round trip. The forward direction
-  // (`convertMaterial` in material.ts) reads userData.vitrumDichroic*LUT into
-  // `extensions.dichroicLUTs.{reflectance,transmittance}`; this side writes
-  // the same texture handles back so raster backends downstream of the round
-  // trip can re-bind them. Only stamp when present — absent LUTs leave a
-  // clean userData object (no phantom keys), matching the rest of stamping.
-  const dichroic = m.extensions?.['dichroicLUTs'] as
-    | { reflectance?: unknown; transmittance?: unknown }
-    | undefined;
-  if (dichroic != null) {
-    if (dichroic.reflectance != null) ud[K.DICHROIC_REFLECTANCE_LUT] = dichroic.reflectance;
-    if (dichroic.transmittance != null) ud[K.DICHROIC_TRANSMITTANCE_LUT] = dichroic.transmittance;
-  }
 
   mat.userData = ud;
 }
 
-/** Additive diffuse emission from `mesh-area` emitters referencing this mesh (`color * intensity`). */
-function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysicalMaterial {
+/** Convert a vitrum Material into a THREE.MeshPhysicalMaterial.
+ *
+ *  Public so hosts (e.g. PT-engine adapters) can drive material conversion
+ *  with their own extension converters without re-implementing the base PBR
+ *  + userData stamping logic. Internally used by {@link vitrumSceneToThree}.
+ *
+ *  @param m             vitrum Material to convert.
+ *  @param meshAreaRgb   Additive diffuse emission from `mesh-area` emitters
+ *                       referencing this mesh (color * intensity). Optional.
+ *  @param options       Optional conversion options (extension converters).
+ */
+export function vitrumMaterialToThree(
+  m: VitrumMaterial,
+  meshAreaRgb?: Vec3,
+  options: MaterialConversionOptions = {},
+): MeshPhysicalMaterial {
   const color = new Color(m.baseColor[0], m.baseColor[1], m.baseColor[2]);
   const baseIntensity = m.emissiveIntensity ?? 1;
   const ba = meshAreaRgb ?? [0, 0, 0];
@@ -131,15 +134,18 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
     if (m.attenuationDistance != null) mat.attenuationDistance = m.attenuationDistance;
     if (m.thickness != null) mat.thickness = m.thickness;
   }
-  // Gap 5 (stainedGlass audit 2026-05-12) — write anisotropy directly onto
-  // the THREE material (not into userData) to match how the fork consumes it.
-  // Write when defined, including 0, so an explicit 0 round-trips cleanly.
+  // Write anisotropy directly onto the THREE material (not into userData) to
+  // match how the fork consumes it. Write when defined, including 0, so an
+  // explicit 0 round-trips cleanly. Reference:
+  // Three.js MeshPhysicalMaterial.anisotropy / anisotropyRotation.
   if (m.anisotropy !== undefined) {
     mat.anisotropy = m.anisotropy;
     mat.anisotropyRotation = m.anisotropyRotation ?? 0;
   }
   applyTextureMaps(mat, m);
   stampVitrumUserData(mat, m);
+  // Host-app extensions (e.g. dichroic LUTs) stamp via opt-in converters.
+  applyReverseExtensions(m, mat, options.extensionConverters);
   return mat;
 }
 
@@ -147,14 +153,18 @@ function isTexture(x: unknown): x is Texture {
   return x != null && typeof x === 'object' && 'isTexture' in x && (x as Texture).isTexture === true;
 }
 
-function meshPrimitiveToThree(p: MeshPrimitive, meshAreaRadianceRgb?: Vec3): Mesh {
+function meshPrimitiveToThree(
+  p: MeshPrimitive,
+  meshAreaRadianceRgb?: Vec3,
+  options: MaterialConversionOptions = {},
+): Mesh {
   const geo = new BufferGeometry();
   geo.setAttribute('position', new BufferAttribute(p.positions, 3));
   geo.setAttribute('normal', new BufferAttribute(p.normals, 3));
   if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
   if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
   if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
-  const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb);
+  const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb, options);
   const mesh = new Mesh(geo, mat);
   mesh.name = String(p.id);
   const m = new Matrix4();
@@ -413,7 +423,10 @@ export function applyEnvironment(threeScene: Scene, env: VitrumScene['environmen
  * unsupported THREE types. Implement `InstancedMesh` conversion before passing
  * instanced primitives to this function.
  */
-export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
+export function vitrumSceneToThree(
+  vitrumScene: VitrumScene,
+  options: MaterialConversionOptions = {},
+): Scene {
   const threeScene = new Scene();
   const meshBoost = meshEmitterBoostByPrimitiveId(vitrumScene);
   const meshPrimitiveIds = new Set(
@@ -429,7 +442,7 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
   for (const p of vitrumScene.primitives) {
     if (p.kind === 'mesh') {
       const add = meshBoost.get(String(p.id));
-      threeScene.add(meshPrimitiveToThree(p, add));
+      threeScene.add(meshPrimitiveToThree(p, add, options));
     } else {
       throw new Error(
         `Unsupported @vitrum/core primitive kind "${(p as ScenePrimitive).kind}" in vitrumSceneToThree. Supported types are added per Phase 6 sprint.`,

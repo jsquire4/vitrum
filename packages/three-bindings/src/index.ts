@@ -16,8 +16,14 @@ import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { convertMesh, emissiveMeshAreaEmitter, stripEmissive } from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
+import type { MaterialConversionOptions } from './materialExtensions.js';
 
-export { vitrumSceneToThree, disposeVitrumThreeSceneRoot, applyEnvironment } from './vitrumSceneToThree.js';
+export {
+  vitrumSceneToThree,
+  vitrumMaterialToThree,
+  disposeVitrumThreeSceneRoot,
+  applyEnvironment,
+} from './vitrumSceneToThree.js';
 export { loadGltfScene, type LoadedGltf, type GltfCamera, type LoadGltfSceneOptions } from './gltfLoader.js';
 export { VITRUM_USER_DATA_KEYS } from './userDataKeys.js';
 export {
@@ -28,6 +34,10 @@ export {
   convertBasicMaterial,
 } from './material.js';
 export type { PbrScalars, PbrDefaults, ThreeStdMat, ThreePhysMat } from './material.js';
+export type {
+  MaterialExtensionConverter,
+  MaterialConversionOptions,
+} from './materialExtensions.js';
 
 /**
  * Converts a THREE.Scene into a @vitrum/core Scene.
@@ -42,7 +52,10 @@ export type { PbrScalars, PbrDefaults, ThreeStdMat, ThreePhysMat } from './mater
  * call. The warning fires again on the next call — it is not suppressed across
  * calls. This ensures scene hot-reloads in dev don't permanently silence warnings.
  */
-export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
+export function sceneFromThreeJS(
+  threeScene: THREE.Scene,
+  options: MaterialConversionOptions = {},
+): Scene {
   threeScene.updateMatrixWorld(true);
 
   const primitives: ScenePrimitive[] = [];
@@ -97,7 +110,7 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
         ((rawMat as THREE.MeshBasicMaterial).transparent === true ||
          ((rawMat as THREE.MeshBasicMaterial).opacity ?? 1) <= 0.01);
       if (isBasicTransparent) return;
-      const prim = convertMesh(mesh);
+      const prim = convertMesh(mesh, options);
       const meshEmitter = emissiveMeshAreaEmitter(mesh);
       if (meshEmitter != null) {
         emitters.push(meshEmitter);

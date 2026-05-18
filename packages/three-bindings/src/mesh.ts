@@ -9,6 +9,7 @@
 import type * as THREE from 'three';
 import type { MeshPrimitive, Mat4, SceneEmitter } from '@vitrum/core';
 import { convertMaterial, convertBasicMaterial } from './material.js';
+import type { MaterialConversionOptions } from './materialExtensions.js';
 import { luminance } from './math.js';
 
 /**
@@ -74,7 +75,10 @@ export function extractIndex(
 // Mesh converter
 // ────────────────────────────────────────────────────────────────────────────
 
-export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
+export function convertMesh(
+  obj: THREE.Mesh,
+  options: MaterialConversionOptions = {},
+): MeshPrimitive {
   const geo = obj.geometry as THREE.BufferGeometry;
   const label = obj.name || obj.uuid;
 
@@ -122,7 +126,7 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
 
   const material = isBasic
     ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
-    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
+    : convertMaterial(rawMat as THREE.MeshStandardMaterial, options);
 
   return {
     kind: 'mesh',

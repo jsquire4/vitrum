@@ -4,6 +4,11 @@
  * conversions live in separate files and must agree byte-for-byte on the
  * key names; defining them once here removes the chance of a silent typo
  * breaking the round trip.
+ *
+ * Keys here cover the generic, host-agnostic core Material fields. Host-app
+ * extensions (e.g. stained-glass dichroic LUTs) define their own keys
+ * privately inside their respective converter packages — three-bindings
+ * does not know about them.
  */
 export const VITRUM_USER_DATA_KEYS = {
   DISPERSION_ABBE:               'vitrumDispersionAbbeNumber',
@@ -14,11 +19,4 @@ export const VITRUM_USER_DATA_KEYS = {
   THIN_FILM_STACK:               'vitrumThinFilmStack',
   FRONT_LAYER:                   'vitrumFrontLayer',
   BACK_LAYER:                    'vitrumBackLayer',
-  // RFE-10 dichroic addendum (PHY.1 — 2026-05-12). Pre-convolved
-  // angle-indexed LUTs produced by the stainedGlass dichroic baker via
-  // TMM × CIE 1931. The raster fragment shader reads them directly; PT
-  // backends may use them as a fast-path alternative to evaluating the
-  // TMM in-shader from the (already-stamped) THIN_FILM_STACK.
-  DICHROIC_REFLECTANCE_LUT:      'vitrumDichroicReflectanceLUT',
-  DICHROIC_TRANSMITTANCE_LUT:    'vitrumDichroicTransmittanceLUT',
 } as const;

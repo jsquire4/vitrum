@@ -7,10 +7,12 @@
 //
 // The general case is the union of every shape we might support. The current
 // concrete needs are triangle meshes (panels, walls, floors) and analytic
-// primitives (architectural-pattern shapes such as H-channel came rails;
-// Phase 6 sprint 5 lands them). Future kinds extend the discriminated union
-// without breaking older backends — backends pattern-match on `kind` and
-// ignore unknown kinds with a warning, not a crash.
+// primitives (sphere/box/capsule/cylinder closed-form intersections). Future
+// kinds extend the discriminated union without breaking older backends —
+// backends pattern-match on `kind` and ignore unknown kinds with a warning,
+// not a crash. Host-app-specific analytic shapes register themselves through
+// the open-ended `AnalyticShape` string variant (see below); they live in
+// downstream packages rather than core.
 
 // ────────────────────────────────────────────────────────────────────────────
 // Math primitives (these are exported for hosts to construct against)
@@ -29,7 +31,7 @@ export type Mat4 = Float32Array;
 export type SceneNodeId = string;
 
 // ────────────────────────────────────────────────────────────────────────────
-// Spectral rendering types (RFE-01)
+// Spectral rendering types
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -51,7 +53,7 @@ export interface SpectralCurve {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Layered BSDF types (RFE-03)
+// Layered BSDF types
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -93,7 +95,7 @@ export interface SurfaceAbsorptionLayer {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Multi-layer thin-film types (RFE-04)
+// Multi-layer thin-film types
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -157,7 +159,7 @@ export interface ThinFilmStack {
  *  Disney-BSDF lobes for backends that support them. The `extensions` field
  *  is the escape hatch: backends can read backend-specific data from it
  *  without polluting the core type (e.g., normalMap-perturbed shadow ray
- *  parameters, the Phase 4 contribution).
+ *  parameters, host-app extensions such as dichroic LUTs).
  *
  *  **Mutability contract:** primitive and emitter types expose `readonly material:
  *  Material` — the *slot* is not reassigned through the contract API. To change
@@ -205,7 +207,7 @@ export interface Material {
   iridescenceIor?: number;
   iridescenceThicknessRange?: Vec2;
 
-  // ── Spectral attenuation (RFE-01) ──────────────────────────────────────
+  // ── Spectral attenuation ───────────────────────────────────────────────
   /**
    * Spectral attenuation coefficient table, sampled at uniformly spaced
    * wavelengths. Each entry is μ(λ) in inverse scene-length-units (matching
@@ -234,7 +236,7 @@ export interface Material {
    */
   dispersionAbbeNumber?: number;
 
-  // ── Volume scattering (RFE-02) ──────────────────────────────────────────
+  // ── Volume scattering ──────────────────────────────────────────────────
   /**
    * Scattering coefficient σ_s, in inverse scene-length-units (matching
    * attenuationDistance units). The total extinction coefficient is
@@ -271,7 +273,7 @@ export interface Material {
    */
   scatteringCoefficientRGB?: Vec3;
 
-  // ── Per-face BSDF asymmetry / layered BSDF (RFE-03) ────────────────────
+  // ── Per-face BSDF asymmetry / layered BSDF ─────────────────────────────
   /**
    * Thin absorbing layer applied to the front (outward-normal) face.
    * "Front" is the face whose normal points in the direction used to define
@@ -292,7 +294,7 @@ export interface Material {
    */
   backLayer?: SurfaceAbsorptionLayer;
 
-  // ── Multi-layer thin-film interference / TMM (RFE-04) ──────────────────
+  // ── Multi-layer thin-film interference / TMM ───────────────────────────
   /**
    * Multi-layer thin-film stack evaluated via the Transfer Matrix Method.
    * When present, overrides the single-layer iridescence model
@@ -306,14 +308,14 @@ export interface Material {
    */
   thinFilmStack?: ThinFilmStack;
 
-  // ── Anisotropic specular (Gap 5 — stainedGlass audit 2026-05-12) ───────
+  // ── Anisotropic specular ───────────────────────────────────────────────
   /**
    * Anisotropic specular highlight strength ∈ [0, 1].
    * 0 = isotropic (default); 1 = fully anisotropic.
    *
-   * Mirrors `THREE.MeshPhysicalMaterial.anisotropy`. The field is set
-   * directly on the THREE material (not via userData) for ripple and
-   * waterglass cells in the stainedGlass baking pipeline.
+   * Mirrors `THREE.MeshPhysicalMaterial.anisotropy` semantics. The field is
+   * set directly on the THREE material (not via userData) when bridging
+   * through `@vitrum/three-bindings`.
    *
    * Reference: Three.js MeshPhysicalMaterial.anisotropy
    * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropy).
@@ -324,7 +326,7 @@ export interface Material {
    * Rotation of the anisotropic highlight in radians ∈ [0, π].
    * Only meaningful when `anisotropy` > 0.
    *
-   * Mirrors `THREE.MeshPhysicalMaterial.anisotropyRotation`.
+   * Mirrors `THREE.MeshPhysicalMaterial.anisotropyRotation` semantics.
    *
    * Reference: Three.js MeshPhysicalMaterial.anisotropyRotation
    * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropyRotation).
@@ -384,9 +386,12 @@ export interface InstancedMeshPrimitive {
  *  unsupported shapes log a warning and degrade to skip (or to mesh
  *  tessellation if a fallback geometry is provided).
  *
- *  Phase 6 sprint 5 introduces 'h-channel-came' for our analytic came/solder
- *  geometry. Future shapes (gemstones via 'ellipsoid', pillars via 'capsule',
- *  etc.) extend this discriminated union without breaking existing scenes.
+ *  Core ships the geometry-primitive set (`'sphere' | 'box' | 'capsule' |
+ *  'cylinder'`); host-app extension packages (e.g.
+ *  `@vitrum/stained-glass-extensions`) define their own discriminator
+ *  strings via the open-ended `(string & {})` variant of `AnalyticShape`.
+ *  Backends opt in to extra shapes through `EngineCapabilities
+ *  .supportedAnalyticShapes` and pattern-match by string equality.
  */
 export interface AnalyticPrimitive {
   readonly kind: 'analytic';
@@ -398,12 +403,29 @@ export interface AnalyticPrimitive {
   readonly fallbackMesh?: Omit<MeshPrimitive, 'kind' | 'id' | 'material' | 'transform'>;
 }
 
+/**
+ * Analytic-shape discriminator string. Core declares the geometry-primitive
+ * literals it ships with; the trailing `(string & {})` variant keeps the
+ * type assignable from arbitrary strings (without collapsing to `string`),
+ * so host-app extension packages can register their own shape tags without
+ * modifying core.
+ *
+ * Core literals:
+ *   'sphere'   — params: [cx, cy, cz, radius]
+ *   'box'      — params: [cx, cy, cz, hx, hy, hz]
+ *   'capsule'  — params: [ax, ay, az, bx, by, bz, radius]
+ *   'cylinder' — params: [cx, cy, cz, radius, halfHeight]
+ *
+ * Extension-registered shapes (example, not part of core):
+ *   'h-channel-came' — @vitrum/stained-glass-extensions; params
+ *                      [length, railWidth, blockHeight, webThickness]
+ */
 export type AnalyticShape =
-  | 'sphere'           // params: [cx, cy, cz, radius]
-  | 'box'              // params: [cx, cy, cz, hx, hy, hz]
-  | 'capsule'          // params: [ax, ay, az, bx, by, bz, radius]
-  | 'cylinder'         // params: [cx, cy, cz, radius, halfHeight]
-  | 'h-channel-came';  // params: [length, railWidth, blockHeight, webThickness] — H-channel rail primitive, Phase 6 sprint 5
+  | 'sphere'
+  | 'box'
+  | 'capsule'
+  | 'cylinder'
+  | (string & {});
 
 export type ScenePrimitive =
   | MeshPrimitive

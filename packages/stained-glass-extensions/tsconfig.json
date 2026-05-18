@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "noEmit": true,
+    "paths": {
+      "@vitrum/core": ["../core/src/index.ts"],
+      "@vitrum/three-bindings": ["../three-bindings/src/index.ts"]
+    }
+  },
+  "include": ["src"]
+}
