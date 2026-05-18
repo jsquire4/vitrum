@@ -14,7 +14,41 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { attachVitrum, type AttachVitrumHandle, type EnginePreference } from '@vitrum/engine';
-import { loadGltfScene } from '@vitrum/three-bindings';
+import { loadGltfScene, sceneFromThreeJS } from '@vitrum/three-bindings';
+
+// ── Capture protocol globals (consumed by tools/benchmark-runner/capture-adapter-playwright.mjs) ──
+//
+// In capture mode (`?vitrumScenario=hero-viewer&vitrumAutoStart=1`) the viewer
+// skips drag-drop and instead boots a built-in procedural fallback scene so
+// that headless Playwright runs do not require an external glTF asset.
+declare global {
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_READY: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var VITRUM_MS_PER_SAMPLE: number | undefined;
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_TELEMETRY: Record<string, unknown> | undefined;
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_CANVAS_SELECTOR: string | undefined;
+}
+
+function parsePositiveInt(raw: string | null, dflt: number): number {
+  if (!raw) return dflt;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
+}
+const captureParams = new URLSearchParams(window.location.search);
+const captureMode = captureParams.has('vitrumScenario');
+const captureWidth  = parsePositiveInt(captureParams.get('vitrumWidth'),  1280);
+const captureHeight = parsePositiveInt(captureParams.get('vitrumHeight'),  720);
+const captureSpp    = parsePositiveInt(captureParams.get('vitrumSpp'),    256);
+const capturePrefer: EnginePreference =
+  captureParams.get('vitrumPrefer') === 'quality' ? 'quality' : 'realtime';
+
+globalThis.VITRUM_CAPTURE_READY = false;
+globalThis.VITRUM_MS_PER_SAMPLE = undefined;
+globalThis.VITRUM_CAPTURE_TELEMETRY = undefined;
+globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#c';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
@@ -35,8 +69,24 @@ let prefer: EnginePreference = 'realtime';
 
 // ── Three.js camera + orbit controls ─────────────────────────────────────────
 
-const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
+const camera = new THREE.PerspectiveCamera(
+  45,
+  captureMode
+    ? captureWidth / captureHeight
+    : window.innerWidth / window.innerHeight,
+  0.01,
+  1000,
+);
 camera.position.set(0, 1, 3);
+
+if (captureMode) {
+  // Lock canvas to capture dimensions so the Playwright locator screenshot
+  // matches the requested image size.
+  canvas.style.width  = `${captureWidth}px`;
+  canvas.style.height = `${captureHeight}px`;
+  canvas.width  = captureWidth;
+  canvas.height = captureHeight;
+}
 
 const orbit = new OrbitControls(camera, canvas);
 orbit.enableDamping = true;
@@ -184,6 +234,124 @@ canvas.addEventListener('drop', (e) => {
 // ── Window resize ─────────────────────────────────────────────────────────────
 
 window.addEventListener('resize', () => {
+  if (captureMode) return; // dimensions are locked in capture mode
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
 });
+
+// ── Capture-mode bootstrap (procedural fallback scene) ────────────────────────
+//
+// When `?vitrumScenario=hero-viewer` is present we skip the interactive
+// drag-drop UI and render a deterministic built-in scene: a chrome sphere on
+// a checkered floor under two area lights. This is what gets A/B-diffed across
+// session branches at merge time.
+function buildFallbackHeroScene(): THREE.Scene {
+  const scene = new THREE.Scene();
+
+  // Center chrome sphere
+  const sphereMat = new THREE.MeshPhysicalMaterial({
+    color: 0xeeeeee,
+    roughness: 0.15,
+    metalness: 1.0,
+  });
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(0.6, 48, 32), sphereMat);
+  sphere.position.set(0, 0.6, 0);
+  scene.add(sphere);
+
+  // Diffuse pedestal — kept matte so the chrome highlight stays distinct.
+  const baseMat = new THREE.MeshPhysicalMaterial({
+    color: 0x707070, roughness: 0.85, metalness: 0,
+  });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.0, 0.05, 48), baseMat);
+  base.position.set(0, -0.025, 0);
+  scene.add(base);
+
+  // Ground
+  const floorMat = new THREE.MeshPhysicalMaterial({ color: 0x222222, roughness: 0.95 });
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(10, 10), floorMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -0.06;
+  scene.add(floor);
+
+  // Two area lights for a clear directional response on the sphere.
+  const keyLight = new THREE.RectAreaLight(0xfff4e8, 14, 2.0, 2.0);
+  keyLight.position.set(-1.8, 2.5, 1.8);
+  keyLight.lookAt(0, 0.6, 0);
+  scene.add(keyLight);
+
+  const fillLight = new THREE.RectAreaLight(0xdfeaff, 6, 1.6, 1.6);
+  fillLight.position.set(2.0, 1.8, -1.2);
+  fillLight.lookAt(0, 0.6, 0);
+  scene.add(fillLight);
+
+  return scene;
+}
+
+async function runCaptureModeBootstrap(): Promise<void> {
+  const initStart = performance.now();
+  try {
+    const threeScene = buildFallbackHeroScene();
+    const vitrumScene = sceneFromThreeJS(threeScene);
+
+    // Fixed camera framing for determinism — no orbit damping in capture mode.
+    camera.position.set(2.4, 1.6, 2.4);
+    camera.lookAt(0, 0.5, 0);
+    orbit.target.set(0, 0.5, 0);
+    orbit.enabled = false;
+    orbit.update();
+
+    overlay.classList.add('hidden');
+
+    handle = await attachVitrum({
+      canvas,
+      scene: vitrumScene,
+      camera,
+      prefer: capturePrefer,
+      // No onFrame in capture mode — OrbitControls is disabled so damping is irrelevant.
+      // Pass quality settings only for the path-trace path; realtime ignores quality.
+      quality: {
+        samplesTarget: captureSpp,
+        bounces: 8,
+        resolutionFactor: 1,
+        filteredGlossyFactor: 0.5,
+      },
+      onProgress: (p) => {
+        if (p.kind !== 'pt-spp') return;
+        setStatus(`Capture SPP ${Math.round(p.current)}/${Math.round(p.target)}`);
+        if (p.fraction >= 1) finalizeCapture(p.current, initStart);
+      },
+    });
+    setStatus(`Capture mode — ${capturePrefer} engine, ${captureWidth}x${captureHeight}`);
+
+    // For realtime: there's no SPP convergence signal — fall back to a settle
+    // timer matching the Playwright adapter's default settleMs window.
+    if (capturePrefer === 'realtime') {
+      window.setTimeout(() => finalizeCapture(0, initStart), 4000);
+    }
+  } catch (err) {
+    setStatus(`Capture init failed: ${String(err)}`);
+    globalThis.VITRUM_CAPTURE_TELEMETRY = { error: String(err) };
+    globalThis.VITRUM_CAPTURE_READY = true;
+  }
+}
+
+function finalizeCapture(samplesAccumulated: number, initStart: number): void {
+  if (globalThis.VITRUM_CAPTURE_READY === true) return;
+  const elapsed = performance.now() - initStart;
+  globalThis.VITRUM_MS_PER_SAMPLE = elapsed / Math.max(samplesAccumulated, 1);
+  globalThis.VITRUM_CAPTURE_TELEMETRY = {
+    scenarioId: `hero-viewer-${capturePrefer}`,
+    samplesAccumulated,
+    msPerSample: globalThis.VITRUM_MS_PER_SAMPLE,
+    captureCanvasSelector: '#c',
+    enginePrefer: capturePrefer,
+  };
+  globalThis.VITRUM_CAPTURE_READY = true;
+  console.info(
+    `[vitrum-capture] hero-viewer ready: ${samplesAccumulated} SPP in ${elapsed.toFixed(0)} ms (prefer=${capturePrefer})`,
+  );
+}
+
+if (captureMode) {
+  void runCaptureModeBootstrap();
+}
