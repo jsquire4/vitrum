@@ -159,51 +159,52 @@ export interface ThinFilmStack {
  *  without polluting the core type (e.g., normalMap-perturbed shadow ray
  *  parameters, the Phase 4 contribution).
  *
- *  **Mutability contract:** primitive and emitter types expose `readonly material:
- *  Material` — the *slot* is not reassigned through the contract API. To change
- *  any material field after `setScene`, hosts MUST call `engine.updatePrimitive`
- *  (or `updateEmitter`) with the patched material. Backends are not required to
- *  detect in-place mutations and will not generally rescan unchanged slots,
- *  matching the existing incremental-update contract on `Engine`.
+ *  **The contract type is fully immutable.** Every field is `readonly` and
+ *  primitives expose `readonly material: MaterialSpec`. To change any material
+ *  field after `setScene`, hosts MUST construct a fresh `MaterialSpec` (clone
+ *  + override via spread) and call `engine.updatePrimitive` (or
+ *  `updateEmitter`) with the new value. Backends do not detect in-place
+ *  mutations — this is enforced by the type system, not just by convention
+ *  (W3-D1, 2026-05-17).
  *
  *  Texture handles are opaque to core. The scene-binding layer (e.g.,
  *  @vitrum/three-bindings) is responsible for converting host textures to
  *  whatever format the backend expects (typed arrays for upload, GPU texture
  *  handles, etc.). Core just routes them through. */
-export interface Material {
+export interface MaterialSpec {
   // ── Base PBR ────────────────────────────────────────────────────────────
-  baseColor: Vec3;
-  roughness: number;            // 0 = mirror, 1 = matte
-  metallic: number;             // 0 = dielectric, 1 = pure metal
-  emissive?: Vec3;
-  emissiveIntensity?: number;
+  readonly baseColor: Vec3;
+  readonly roughness: number;            // 0 = mirror, 1 = matte
+  readonly metallic: number;             // 0 = dielectric, 1 = pure metal
+  readonly emissive?: Vec3;
+  readonly emissiveIntensity?: number;
 
   // ── Transmission / refraction ───────────────────────────────────────────
-  transmission?: number;        // 0 = opaque, 1 = fully transparent
-  ior?: number;                  // index of refraction
-  attenuationColor?: Vec3;       // Beer-Lambert: color the medium absorbs to
-  attenuationDistance?: number;  // Beer-Lambert: depth at which attenuationColor reached
-  thickness?: number;            // Beer-Lambert: actual slab thickness
+  readonly transmission?: number;        // 0 = opaque, 1 = fully transparent
+  readonly ior?: number;                  // index of refraction
+  readonly attenuationColor?: Vec3;       // Beer-Lambert: color the medium absorbs to
+  readonly attenuationDistance?: number;  // Beer-Lambert: depth at which attenuationColor reached
+  readonly thickness?: number;            // Beer-Lambert: actual slab thickness
 
   // ── Texture maps (opaque handles, see TextureRef) ───────────────────────
-  baseColorMap?: TextureRef;
-  normalMap?: TextureRef;
-  normalScale?: number;
-  roughnessMap?: TextureRef;
-  metallicMap?: TextureRef;
-  transmissionMap?: TextureRef;
-  emissiveMap?: TextureRef;
-  alphaMap?: TextureRef;
+  readonly baseColorMap?: TextureRef;
+  readonly normalMap?: TextureRef;
+  readonly normalScale?: number;
+  readonly roughnessMap?: TextureRef;
+  readonly metallicMap?: TextureRef;
+  readonly transmissionMap?: TextureRef;
+  readonly emissiveMap?: TextureRef;
+  readonly alphaMap?: TextureRef;
 
   // ── Disney BSDF extensions (optional) ───────────────────────────────────
-  sheen?: number;
-  sheenColor?: Vec3;
-  sheenRoughness?: number;
-  clearcoat?: number;
-  clearcoatRoughness?: number;
-  iridescence?: number;
-  iridescenceIor?: number;
-  iridescenceThicknessRange?: Vec2;
+  readonly sheen?: number;
+  readonly sheenColor?: Vec3;
+  readonly sheenRoughness?: number;
+  readonly clearcoat?: number;
+  readonly clearcoatRoughness?: number;
+  readonly iridescence?: number;
+  readonly iridescenceIor?: number;
+  readonly iridescenceThicknessRange?: Vec2;
 
   // ── Spectral attenuation (RFE-01) ──────────────────────────────────────
   /**
@@ -220,7 +221,7 @@ export interface Material {
    *
    * Reference: Wilkie et al., "Hero Wavelength Spectral Sampling," EGSR 2014.
    */
-  spectralAttenuation?: SpectralCurve;
+  readonly spectralAttenuation?: SpectralCurve;
 
   /**
    * Abbe number V_d = (n_d − 1) / (n_F − n_C) for wavelength-dependent IOR.
@@ -232,7 +233,7 @@ export interface Material {
    *
    * Reference: OpenPBR Surface v1.1.1 `transmission_dispersion_abbe_number`.
    */
-  dispersionAbbeNumber?: number;
+  readonly dispersionAbbeNumber?: number;
 
   // ── Volume scattering (RFE-02) ──────────────────────────────────────────
   /**
@@ -247,7 +248,7 @@ export interface Material {
    * Reference: Novák et al., "Monte Carlo Methods for Volumetric Light
    * Transport Simulation," CGF 2018 (delta tracking / null-collision).
    */
-  scatteringCoefficient?: number;
+  readonly scatteringCoefficient?: number;
 
   /**
    * Henyey-Greenstein phase function asymmetry parameter g ∈ (−1, 1).
@@ -258,7 +259,7 @@ export interface Material {
    *
    * Reference: Henyey & Greenstein, "Diffuse Radiation in the Galaxy," 1941.
    */
-  scatteringAnisotropy?: number;
+  readonly scatteringAnisotropy?: number;
 
   /**
    * Per-channel (RGB) scattering coefficients. When present, overrides the
@@ -269,7 +270,7 @@ export interface Material {
    * Reference: OpenPBR Surface v1.1.1 `transmission_scatter`,
    * Standard Surface `transmission_scatter`.
    */
-  scatteringCoefficientRGB?: Vec3;
+  readonly scatteringCoefficientRGB?: Vec3;
 
   // ── Per-face BSDF asymmetry / layered BSDF (RFE-03) ────────────────────
   /**
@@ -284,13 +285,13 @@ export interface Material {
    * Reference: Belcour, "Efficient Rendering of Layered Materials using an
    * Atomic Decomposition with Statistical Operators," ACM TOG (SIGGRAPH 2018).
    */
-  frontLayer?: SurfaceAbsorptionLayer;
+  readonly frontLayer?: SurfaceAbsorptionLayer;
 
   /**
    * Thin absorbing layer applied to the back (inward-normal) face.
    * Symmetric semantics to frontLayer.
    */
-  backLayer?: SurfaceAbsorptionLayer;
+  readonly backLayer?: SurfaceAbsorptionLayer;
 
   // ── Multi-layer thin-film interference / TMM (RFE-04) ──────────────────
   /**
@@ -304,7 +305,7 @@ export interface Material {
    * Belcour & Barla, "A Practical Extension to Microfacet Theory for the
    * Modeling of Varying Iridescence," ACM TOG (SIGGRAPH 2017).
    */
-  thinFilmStack?: ThinFilmStack;
+  readonly thinFilmStack?: ThinFilmStack;
 
   // ── Anisotropic specular (Gap 5 — stainedGlass audit 2026-05-12) ───────
   /**
@@ -318,7 +319,7 @@ export interface Material {
    * Reference: Three.js MeshPhysicalMaterial.anisotropy
    * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropy).
    */
-  anisotropy?: number;
+  readonly anisotropy?: number;
 
   /**
    * Rotation of the anisotropic highlight in radians ∈ [0, π].
@@ -329,13 +330,23 @@ export interface Material {
    * Reference: Three.js MeshPhysicalMaterial.anisotropyRotation
    * (https://threejs.org/docs/#api/en/materials/MeshPhysicalMaterial.anisotropyRotation).
    */
-  anisotropyRotation?: number;
+  readonly anisotropyRotation?: number;
 
   // ── Backend escape hatch ────────────────────────────────────────────────
   /** Backends may read keyed fields from here for backend-specific features.
    *  Core never inspects this map. */
-  extensions?: Readonly<Record<string, unknown>>;
+  readonly extensions?: Readonly<Record<string, unknown>>;
 }
+
+/**
+ * Backwards-compat alias for the pre-W3-D1 name. New code should use
+ * {@link MaterialSpec} directly. The alias is preserved to avoid breaking
+ * existing imports from `@vitrum/core`; it will be removed once all
+ * in-tree consumers migrate.
+ *
+ * @deprecated since 2026-05-17 (W3-D1) — use `MaterialSpec`.
+ */
+export type Material = MaterialSpec;
 
 /** Opaque texture reference. The scene-binding layer creates these; backends
  *  consume them. The shape varies — for WebGL2 backends it might be a
@@ -360,7 +371,7 @@ export interface MeshPrimitive {
   readonly uvs?: Float32Array;
   readonly tangents?: Float32Array;       // xyzw per vertex; w = bitangent sign
   readonly indices?: Uint32Array | Uint16Array;
-  readonly material: Material;
+  readonly material: MaterialSpec;
   readonly transform?: Mat4;              // identity if absent
   readonly castShadow?: boolean;          // default true
   readonly receiveShadow?: boolean;       // default true
@@ -376,7 +387,7 @@ export interface InstancedMeshPrimitive {
   readonly uvs?: Float32Array;
   readonly tangents?: Float32Array;
   readonly indices?: Uint32Array | Uint16Array;
-  readonly material: Material;
+  readonly material: MaterialSpec;
   readonly instances: ReadonlyArray<Mat4>;
 }
 
@@ -393,7 +404,7 @@ export interface AnalyticPrimitive {
   readonly id: SceneNodeId;
   readonly shape: AnalyticShape;
   readonly params: Float32Array;          // shape-specific layout, see AnalyticShape
-  readonly material: Material;
+  readonly material: MaterialSpec;
   readonly transform?: Mat4;
   readonly fallbackMesh?: Omit<MeshPrimitive, 'kind' | 'id' | 'material' | 'transform'>;
 }
