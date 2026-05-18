@@ -44,43 +44,10 @@ const NEIGHBORS = 5u;
 const M_SCALE = 4u;
 
 // PrimarySurface struct defined in COMMON_WGSL.
-fn castPrimary(px: vec2u, dims: vec2u, invVP: mat4x4f) -> PrimarySurface {
-  var s: PrimarySurface;
-  let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray, ubo.triIntersectEpsilon);
-  s.hit = hit.didHit;
-  if (!hit.didHit) {
-    return s;
-  }
-  s.pos    = ray.origin + ray.direction * hit.dist;
-  s.normal = hit.normal;
-  s.wo     = -ray.direction;
-  let matColor = decodeMaterialColor(hit.matColorPacked);
-  let isGlass  = matColor.a > 0.3;
-  s.albedo = matColor.rgb;
-  s.rough  = select(0.85, 0.05, isGlass);
-  s.metal  = 0.0;
-  s.depth  = hit.dist;
-  return s;
-}
-
-fn computePHat_s(lid: u32, surf: PrimarySurface) -> f32 {
-  if (!surf.hit) { return 0.0; }
-  let e = emitters[lid];
-  let centroid = (e.vA + e.vB + e.vC) / 3.0;
-  let toL   = centroid - surf.pos;
-  let dist2 = dot(toL, toL);
-  if (dist2 < 1e-8) { return 0.0; }
-  let wi     = toL / sqrt(dist2);
-  let nDotL  = max(0.0, dot(surf.normal, wi));
-  let nlDotL = max(0.0, dot(-e.normal, wi));
-  if (nDotL < 1e-6 || nlDotL < 1e-6) { return 0.0; }
-  // evalGGX already multiplies by NdotL; G is emitter geometry term only.
-  // p̂ must be identical to RIS — Bitterli 2020 §4.3.
-  let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-  let brdf = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
-  return luminance(e.Le * brdf * G);
-}
+// W2-C9 — primary-surface cast moved to restirCastPrimary.wgsl
+// (canonical castPrimary(px, dims, camPos, invVP)).
+// W2-C7 — p̂ moved to restirPHat.wgsl
+// (canonical restir_di_compute_phat_from_surface(lid, surf)).
 
 // Poisson disk offsets (normalized, scale by RADIUS in the shader).
 fn poissonDisk(i: u32, rotation: f32) -> vec2f {
@@ -121,7 +88,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   // against placeholder textures) and for evaluating p̂ at the right pos/normal.
   let vp    = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
-  let center = castPrimary(gid.xy, dims, invVP);
+  let center = castPrimary(gid.xy, dims, ubo.cameraPos, invVP);
   if (!center.hit) {
     // Sky pixel — no reservoir to combine; pass current through unchanged.
     storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
@@ -137,7 +104,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     let nbrIdx = u32(nbrPx.y) * dims.x + u32(nbrPx.x);
 
     // Geometric similarity gate computed from BVH-cast primary surfaces.
-    let nbr_surf = castPrimary(vec2u(nbrPx), dims, invVP);
+    let nbr_surf = castPrimary(vec2u(nbrPx), dims, ubo.cameraPos, invVP);
     if (!nbr_surf.hit) { continue; }
     let depthDiff = abs(center.depth - nbr_surf.depth);
     // Relative 10% depth tolerance, with an absolute floor from the UBO.
@@ -151,7 +118,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     let nbrM = max(1u, nbr.M / M_SCALE);
 
     // Re-evaluate p̂ at the CENTER surface for the neighbor's chosen light.
-    let pHatNbrAtCenter = computePHat_s(nbr.lightId, center);
+    let pHatNbrAtCenter = restir_di_compute_phat_from_surface(nbr.lightId, center);
     let w = pHatNbrAtCenter * nbr.W * f32(nbrM);
 
     r.M += nbrM;
@@ -162,16 +129,20 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Recompute W.
-  let pHatZ = computePHat_s(r.lightId, center);
+  let pHatZ = restir_di_compute_phat_from_surface(r.lightId, center);
   r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
 
   storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. */
+/** W1-R6 — declarative include-graph entry.
+ *  W2-C7+C9: depends on the canonical ReSTIR p̂ and primary-cast helpers
+ *  (both of which transitively require `common`). The composer dedupes
+ *  `common` so the emitted order is `common, restirPHat, restirCastPrimary,
+ *  spatial`. */
 export const SPATIAL_MODULE: WgslModule = {
   name: 'spatial',
   source: SPATIAL_WGSL,
-  requires: ['common'],
+  requires: ['restirPHat', 'restirCastPrimary'],
 };

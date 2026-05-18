@@ -57,6 +57,8 @@ import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
 import { INDIRECT_COMBINE_WGSL } from '../src/shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_WGSL } from '../src/shaders/indirectTemporalAccum.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
+import { RESTIR_PHAT_WGSL } from '../src/shaders/restirPHat.wgsl.js';
+import { RESTIR_CAST_PRIMARY_WGSL } from '../src/shaders/restirCastPrimary.wgsl.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
@@ -177,16 +179,32 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // assertion that "the include-graph emits the same bytes" is mechanical
   // and stays auditable.
 
-  it('ris: COMMON_WGSL + RIS_WGSL', () => {
-    expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(COMMON_WGSL + RIS_WGSL);
+  // W2-C7+C9 update: ris/temporal/spatial now depend on the canonical
+  // restirPHat / restirCastPrimary helpers (Bitterli 2020 §4.3 — the p̂
+  // function MUST BE IDENTICAL across the three passes, structurally
+  // enforced by sharing the declaration site). The composed output gains
+  // RESTIR_PHAT_WGSL after COMMON_WGSL (and RESTIR_CAST_PRIMARY_WGSL for
+  // the two reuse passes); the function bodies themselves moved verbatim
+  // from the three consumer files into the shared modules, so the total
+  // composed-bytes for any pass equals the pre-refactor composed bytes
+  // with the duplicated helper bodies relocated to the shared section.
+
+  it('ris: COMMON_WGSL + RESTIR_PHAT_WGSL + RIS_WGSL', () => {
+    expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
+      COMMON_WGSL + RESTIR_PHAT_WGSL + RIS_WGSL,
+    );
   });
 
-  it('temporal: COMMON_WGSL + TEMPORAL_WGSL', () => {
-    expect(composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)).toBe(COMMON_WGSL + TEMPORAL_WGSL);
+  it('temporal: COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL', () => {
+    expect(composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)).toBe(
+      COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
+    );
   });
 
-  it('spatial: COMMON_WGSL + SPATIAL_WGSL', () => {
-    expect(composeWgsl(SPATIAL_MODULE, WGSL_MODULES)).toBe(COMMON_WGSL + SPATIAL_WGSL);
+  it('spatial: COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL', () => {
+    expect(composeWgsl(SPATIAL_MODULE, WGSL_MODULES)).toBe(
+      COMMON_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
+    );
   });
 
   it('shade: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + SHADE_WGSL', () => {

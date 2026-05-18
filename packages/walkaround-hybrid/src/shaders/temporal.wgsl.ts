@@ -44,25 +44,8 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 // const M_CLAMP_DEFAULT = 20u;
 
 // PrimarySurface struct defined in COMMON_WGSL.
-fn castPrimary_t(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> PrimarySurface {
-  var s: PrimarySurface;
-  let ray = generatePrimaryRay_common(px.x, px.y, dims.x, dims.y, camPos, invVP);
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray, ubo.triIntersectEpsilon);
-  s.hit = hit.didHit;
-  if (!hit.didHit) {
-    return s;
-  }
-  s.pos    = ray.origin + ray.direction * hit.dist;
-  s.normal = hit.normal;
-  s.wo     = -ray.direction;
-  let matColor = decodeMaterialColor(hit.matColorPacked);
-  let isGlass  = matColor.a > 0.3;
-  s.albedo = matColor.rgb;
-  s.rough  = select(0.85, 0.05, isGlass);
-  s.metal  = 0.0;
-  s.depth  = hit.dist;
-  return s;
-}
+// W2-C9 — primary-surface cast moved to restirCastPrimary.wgsl
+// (canonical castPrimary(px, dims, camPos, invVP)).
 
 // Reproject a world-space position through the previous-frame view+proj
 // matrix.  Returns the previous pixel as ivec2 or -1 outside the frustum.
@@ -82,24 +65,8 @@ fn reprojectToPrev(world: vec3f, dims: vec2u) -> vec2i {
   return px;
 }
 
-fn computePHat_t(lid: u32, surf: PrimarySurface) -> f32 {
-  if (!surf.hit) { return 0.0; }
-  let e = emitters[lid];
-  let centroid = (e.vA + e.vB + e.vC) / 3.0;
-  let toL = centroid - surf.pos;
-  let dist2 = dot(toL, toL);
-  if (dist2 < 1e-8) { return 0.0; }
-  let wi     = toL / sqrt(dist2);
-  let nDotL  = max(0.0, dot(surf.normal, wi));
-  let nlDotL = max(0.0, dot(-e.normal, wi));
-  if (nDotL < 1e-6 || nlDotL < 1e-6) { return 0.0; }
-  // evalGGX already multiplies by NdotL (receiver cosine); G is the emitter
-  // geometry term only: cos(emitter) / dist².
-  // p̂ must be identical to RIS — Bitterli 2020 §4.3.
-  let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-  let brdf = evalGGX(surf.albedo, surf.rough, surf.metal, surf.normal, surf.wo, wi);
-  return luminance(e.Le * brdf * G);
-}
+// W2-C7 — p̂ moved to restirPHat.wgsl
+// (canonical restir_di_compute_phat_from_surface(lid, surf)).
 
 @compute @workgroup_size(8, 8, 1)
 fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -114,7 +81,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   // Re-cast current pixel's primary ray to get the actual surface.
   let vp    = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
-  let curSurf = castPrimary_t(gid.xy, dims, ubo.cameraPos, invVP);
+  let curSurf = castPrimary(gid.xy, dims, ubo.cameraPos, invVP);
   if (!curSurf.hit) {
     // Sky pixel — nothing to project; pass-through.
     storeReservoirDI_rw(&currentReservoir, pixelIdx, cur);
@@ -143,7 +110,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   prev.M = min(prev.M, ubo.temporalMClampDI);
 
   // Evaluate p̂ at CURRENT pixel for the previous reservoir's chosen light.
-  let pHatPrevAtCur = computePHat_t(prev.lightId, curSurf);
+  let pHatPrevAtCur = restir_di_compute_phat_from_surface(prev.lightId, curSurf);
   let w_prev = pHatPrevAtCur * prev.W * f32(prev.M);
 
   // Combine reservoirs.
@@ -155,16 +122,20 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Recompute W.
-  let pHatZ = computePHat_t(combined.lightId, curSurf);
+  let pHatZ = restir_di_compute_phat_from_surface(combined.lightId, curSurf);
   combined.W = select(0.0, combined.w_sum / (f32(combined.M) * pHatZ), pHatZ > 0.0);
 
   storeReservoirDI_rw(&currentReservoir, pixelIdx, combined);
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. */
+/** W1-R6 — declarative include-graph entry.
+ *  W2-C7+C9: depends on the canonical ReSTIR p̂ and primary-cast helpers
+ *  (both of which transitively require `common`). The composer dedupes
+ *  `common` so the emitted order is `common, restirPHat, restirCastPrimary,
+ *  temporal`. */
 export const TEMPORAL_MODULE: WgslModule = {
   name: 'temporal',
   source: TEMPORAL_WGSL,
-  requires: ['common'],
+  requires: ['restirPHat', 'restirCastPrimary'],
 };

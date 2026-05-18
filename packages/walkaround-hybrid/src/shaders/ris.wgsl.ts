@@ -56,29 +56,12 @@ export const RIS_WGSL = /* wgsl */ `
 // they are prepended to RIS_WGSL at compile time (see
 // WalkaroundGPUPipeline shader-module concat).
 
-// ============================================================
-// Emitter target function (unshadowed)
-// ============================================================
-fn computePHat(lid: u32, pos: vec3f, normal: vec3f, wo: vec3f, albedo: vec3f, rough: f32, metal: f32) -> f32 {
-  let e = emitters[lid];
-  let centroid = (e.vA + e.vB + e.vC) / 3.0;
-  let toL = centroid - pos;
-  let dist2 = dot(toL, toL);
-  if (dist2 < 1e-8) { return 0.0; }
-  let wi = toL / sqrt(dist2);
-  let nDotL  = max(0.0, dot(normal, wi));
-  let nlDotL = max(0.0, dot(-e.normal, wi));
-  if (nDotL < 1e-6 || nlDotL < 1e-6) { return 0.0; }
-  // evalGGX includes NdotL; G is the emitter geometry term only (nlDotL/dist²).
-  // Use emitterGeometry helper from common.wgsl to apply the EMITTER_DIST2_FLOOR
-  // clamp consistently with shade.wgsl (sweep finding Bug 3 — the RIS
-  // reservoir was importance-sampling against an unclamped p̂ while shade
-  // evaluated with the clamped one, causing the ratio mismatch to show
-  // up as fireflies in temporal+spatial reuse).
-  let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-  let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
-  return luminance(e.Le * brdf * G);
-}
+// W2-C7 — emitter target function p̂ moved to restirPHat.wgsl
+// (canonical restir_di_compute_phat_from_surface(lid, surf)). RIS calls
+// it once at the visibility-test stage with a PrimarySurface built from
+// the inline primary-cast result (the M_LIGHT loop computes its own
+// per-candidate p̂ inline because it uses the sampled emitter point
+// ls.pos, not the centroid the canonical helper assumes).
 
 // ============================================================
 // RIS main kernel -- primary ray cast + reservoir sampling
@@ -152,9 +135,10 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (nDotL < 1e-6 || nlDotL < 1e-6) { continue; }
 
     // evalGGX includes NdotL; G is the emitter geometry term only.
-    // Same emitterGeometry helper as computePHat above so the per-candidate
-    // p̂ in the M_LIGHT loop matches the reservoir's selection p̂ matches
-    // shade's evaluation p̂ (sweep finding Bug 3).
+    // Same emitterGeometry helper as the canonical
+    // restir_di_compute_phat_from_surface (restirPHat.wgsl), so the
+    // per-candidate p̂ in the M_LIGHT loop matches the reservoir's
+    // selection p̂ matches shade's evaluation p̂ (sweep finding Bug 3).
     let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
     let brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);
     let pHat = luminance(ls.Le * brdf * G);
@@ -180,7 +164,19 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       r.w_sum = 0.0;
       r.W     = 0.0;
     } else {
-      let pHatZ = computePHat(lid, pos, normal, wo, albedo, roughness, metalness);
+      // Build a PrimarySurface from the inline-cast values so the canonical
+      // p̂ helper (Bitterli 2020 §4.3 — identical across RIS/temporal/spatial)
+      // sees the same struct shape as the reuse passes.
+      var surf: PrimarySurface;
+      surf.hit    = true;
+      surf.pos    = pos;
+      surf.normal = normal;
+      surf.wo     = wo;
+      surf.albedo = albedo;
+      surf.rough  = roughness;
+      surf.metal  = metalness;
+      surf.depth  = hit.dist;
+      let pHatZ = restir_di_compute_phat_from_surface(lid, surf);
       r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
     }
   }
@@ -189,9 +185,16 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. */
+/** W1-R6 — declarative include-graph entry.
+ *  W2-C7: depends on the canonical ReSTIR p̂ helper (which transitively
+ *  requires `common`). RIS does not require restirCastPrimary because it
+ *  inlines its primary cast (the surface decode feeds the M_LIGHT loop's
+ *  per-candidate BRDF evaluation; converting RIS to use the canonical
+ *  PrimarySurface cast would require a larger restructure than C7+C9
+ *  warrants — see restirCastPrimary.wgsl.ts header). The composer emits
+ *  `common, restirPHat, ris`. */
 export const RIS_MODULE: WgslModule = {
   name: 'ris',
   source: RIS_WGSL,
-  requires: ['common'],
+  requires: ['restirPHat'],
 };
