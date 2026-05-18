@@ -1,16 +1,19 @@
 /**
  * Shared B3-spline 5×5 atrous wavelet kernel.
  *
- * Canonical values in both numeric (`ATROUS_KERNEL_VALUES`) and WGSL
- * literal (`ATROUS_KERNEL_WGSL` / `ATROUS_VARIANCE_KERNEL_WGSL`) forms so
- * the kernel does not drift between atrous.wgsl.ts and atrousVariance.wgsl.ts.
+ * Public surface: the two WGSL-literal exports (`ATROUS_KERNEL_WGSL` /
+ * `ATROUS_VARIANCE_KERNEL_WGSL`) consumed by atrous.wgsl.ts +
+ * atrousVariance.wgsl.ts. The numeric `ATROUS_KERNEL_VALUES` table below
+ * is file-local — it backs the WGSL-string builder so the values cannot
+ * drift between the two consumers; 2026-05-18 dead-code sweep verified
+ * zero external consumers.
  */
 
 /**
  * 25 weights in row-major order. Each is `n / 256` so the kernel
  * matches the canonical B3-spline wavelet (Dammertz et al. 2010).
  */
-export const ATROUS_KERNEL_VALUES: readonly number[] = [
+const ATROUS_KERNEL_VALUES: readonly number[] = [
   1 / 256, 4 / 256, 6 / 256, 4 / 256, 1 / 256,
   4 / 256, 16 / 256, 24 / 256, 16 / 256, 4 / 256,
   6 / 256, 24 / 256, 36 / 256, 24 / 256, 6 / 256,

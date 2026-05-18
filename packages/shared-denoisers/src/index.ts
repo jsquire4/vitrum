@@ -132,7 +132,4 @@ export {
   float16BitsToFloat32,
   float32ToFloat16Bits,
 } from './halfFloat.js';
-export {
-  alignedTextureCopyBytesPerRow,
-  WEBGPU_COPY_BYTES_PER_ROW_ALIGNMENT,
-} from './webGpuTextureCopy.js';
+export { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';

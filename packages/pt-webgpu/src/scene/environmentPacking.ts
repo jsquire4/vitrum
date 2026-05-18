@@ -12,8 +12,10 @@ export interface EnvironmentParams {
   readonly warnings: readonly string[];
 }
 
-/** Empty / no-environment slot — neutral tint, no HDRI sampling. */
-export function emptyEnvironmentParams(): EnvironmentParams {
+/** Empty / no-environment slot — neutral tint, no HDRI sampling.
+ *  File-local — only consumed by `environmentParams()` below; 2026-05-18
+ *  dead-code sweep verified zero external consumers. */
+function emptyEnvironmentParams(): EnvironmentParams {
   return {
     tint: [1, 1, 1],
     sunDirection: [0, 1, 0],
@@ -39,7 +41,9 @@ export function emptyEnvironmentParams(): EnvironmentParams {
  *  - Floor of 0.2 prevents the tint from going to black for huge mie values.
  *  - All channels multiply by `intensity`, the scene-level dome brightness.
  */
-export function buildProceduralSkyEnvironmentParams(
+// File-local — only consumed by `environmentParams()` below; 2026-05-18
+// dead-code sweep verified zero external consumers.
+function buildProceduralSkyEnvironmentParams(
   env: Extract<Scene['environment'], { kind: 'procedural-sky' }>,
 ): EnvironmentParams {
   const d = env.sunDirection;
