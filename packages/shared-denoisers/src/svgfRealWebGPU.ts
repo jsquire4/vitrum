@@ -369,7 +369,7 @@ function uploadRgbAsRgba16f(
       dv.setUint16(byte + 6, float32ToFloat16Bits(1),                true);
     }
   }
-  device.queue.writeTexture({ texture }, buf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w, h]);
+  device.queue.writeTexture({ texture }, buf.buffer, { bytesPerRow: bpr }, [w, h]);
 }
 
 function uploadRg32f(
@@ -394,7 +394,7 @@ function uploadRg32f(
   }
   device.queue.writeTexture(
     { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
+    buf.buffer,
     { bytesPerRow: bpr },
     [w, h],
   );
@@ -410,7 +410,7 @@ function fillR16Uint(device: GPUDevice, texture: GPUTexture, w: number, h: numbe
       dv.setUint16(y * bpr + x * 2, v, true);
     }
   }
-  device.queue.writeTexture({ texture }, buf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w, h]);
+  device.queue.writeTexture({ texture }, buf.buffer, { bytesPerRow: bpr }, [w, h]);
 }
 
 function fillRg32f(device: GPUDevice, texture: GPUTexture, w: number, h: number, r: number, g: number): void {
@@ -434,7 +434,7 @@ function fillRgba32f(device: GPUDevice, texture: GPUTexture, w: number, h: numbe
   }
   device.queue.writeTexture(
     { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
+    buf.buffer,
     { bytesPerRow: bpr },
     [w, h],
   );
@@ -451,7 +451,7 @@ function uploadR32f(device: GPUDevice, texture: GPUTexture, data: Float32Array, 
   }
   device.queue.writeTexture(
     { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
+    buf.buffer,
     { bytesPerRow: bpr },
     [w, h],
   );
@@ -468,7 +468,7 @@ function uploadR32Uint(device: GPUDevice, texture: GPUTexture, data: Uint32Array
   }
   device.queue.writeTexture(
     { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
+    buf.buffer,
     { bytesPerRow: bpr },
     [w, h],
   );
@@ -649,8 +649,8 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
         normBuf[o+3] = 0;
       }
     }
-    device.queue.writeTexture({ texture: currNormTex }, normBuf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w,h]);
-    device.queue.writeTexture({ texture: prevNormTex }, normBuf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w,h]);
+    device.queue.writeTexture({ texture: currNormTex }, normBuf.buffer, { bytesPerRow: bpr }, [w,h]);
+    device.queue.writeTexture({ texture: prevNormTex }, normBuf.buffer, { bytesPerRow: bpr }, [w,h]);
   } else {
     fillRgba32f(device, currNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
     fillRgba32f(device, prevNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
@@ -674,7 +674,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
         dv.setUint16(y * bpr + x * 2, (opts.historyLengthIn[y * w + x] ?? 0) & 0xFFFF, true);
       }
     }
-    device.queue.writeTexture({ texture: histInTex }, hBuf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w,h]);
+    device.queue.writeTexture({ texture: histInTex }, hBuf.buffer, { bytesPerRow: bpr }, [w,h]);
   } else {
     fillR16Uint(device, histInTex, w, h, 0);
   }
@@ -810,7 +810,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   for (let iter = 0; iter < atrousIterations; iter++) {
     const pass = encoder.beginComputePass({ label: `svgf-atrous-${iter}` });
     pass.setPipeline(atrousPipeline);
-    pass.setBindGroup(0, atrousBGs[iter]!);
+    pass.setBindGroup(0, atrousBGs[iter]);
     pass.dispatchWorkgroups(Math.ceil(w / wgA), Math.ceil(h / wgA));
     pass.end();
   }

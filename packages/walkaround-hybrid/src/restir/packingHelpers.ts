@@ -76,7 +76,7 @@ export function packUVIntoPositionW(
 function resolveTriColor(mat: THREE.Material, applyBeer: boolean): THREE.Color {
   const physMat = mat as THREE.MeshPhysicalMaterial;
   const stdMat  = mat as THREE.MeshStandardMaterial;
-  const transmission = (physMat.transmission ?? 0) as number;
+  const transmission = (physMat.transmission ?? 0);
   const isTransmissive = transmission > 0.01;
   const attenColor = (physMat as { attenuationColor?: THREE.Color }).attenuationColor;
   if (isTransmissive && attenColor) {
@@ -119,14 +119,14 @@ export function packBVHIndexW(
     if (mat) {
       const physMat = mat as THREE.MeshPhysicalMaterial;
       const stdMat  = mat as THREE.MeshStandardMaterial;
-      transmission = (physMat.transmission ?? 0) as number;
+      transmission = (physMat.transmission ?? 0);
       const color = resolveTriColor(mat, /* applyBeer */ false);
       r = Math.round(color.r * 255) & 0xFF;
       g = Math.round(color.g * 255) & 0xFF;
       b = Math.round(color.b * 255) & 0xFF;
       const surfTex = (mat.userData as { surfaceTextureId?: number } | undefined)?.surfaceTextureId;
       texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
-      const metalness = (stdMat?.metalness ?? 0) as number;
+      const metalness = (stdMat?.metalness ?? 0);
       isMetal = metalness > 1e-4 ? 1 : 0;
     }
     const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;

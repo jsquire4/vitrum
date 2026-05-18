@@ -68,7 +68,7 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
       engine.debug!.setDenoiserEnabled!(next);
       setEnabled(next);
     } else {
-      // eslint-disable-next-line no-console
+       
       console.warn(
         '[DenoiserABToggle] engine.debug.setDenoiserEnabled() is not implemented. ' +
         'Implement it in HybridEngine to wire the denoiser toggle. ' +

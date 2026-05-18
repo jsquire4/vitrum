@@ -61,7 +61,7 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
 
   if (!hasDebug) {
     // Warn once on every mount (not every render).
-    // eslint-disable-next-line no-console
+     
     console.warn(
       '[DDGIAtlasViewer] engine.debug.atlasTexture() is not implemented. ' +
       'DDGIAtlasViewer requires the T3.G followup: HybridEngine must expose ' +

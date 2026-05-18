@@ -110,7 +110,7 @@ export async function runHdrLuminanceBilateralWebGPU(
     }
   }
 
-  device.queue.writeTexture({ texture: texIn }, upload.buffer as GPUAllowSharedBufferSource, {
+  device.queue.writeTexture({ texture: texIn }, upload.buffer, {
     bytesPerRow,
     rowsPerImage: h,
   }, [w, h]);

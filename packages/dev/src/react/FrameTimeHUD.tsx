@@ -202,7 +202,7 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
           {passTimes.map(([name, ms]) => (
             <div key={name}>
               <span style={LABEL_STYLE}>{name}</span>
-              <span style={PASS_STYLE}>{(ms as number).toFixed(2)} ms</span>
+              <span style={PASS_STYLE}>{(ms).toFixed(2)} ms</span>
             </div>
           ))}
         </div>

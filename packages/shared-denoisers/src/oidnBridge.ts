@@ -322,7 +322,7 @@ async function _getOrCreateSession(
   }
 
   const session = await ort.InferenceSession.create(modelUrl, {
-    executionProviders: executionProviders as string[],
+    executionProviders: executionProviders,
   });
 
   _sessionCache.set(modelUrl, session);

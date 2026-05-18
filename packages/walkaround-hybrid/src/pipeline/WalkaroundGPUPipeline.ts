@@ -146,7 +146,7 @@ export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
  * required-features contract.
  */
 export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = [
-  'texture-formats-tier1' as GPUFeatureName,
+  'texture-formats-tier1',
 ];
 
 /**

@@ -71,7 +71,7 @@ function quantiseKey(params: SkyParams): string {
 
 function evictOldestIfNeeded(): void {
   while (cache.size > CACHE_CAPACITY) {
-    const oldestKey = cache.keys().next().value as string | undefined;
+    const oldestKey = cache.keys().next().value;
     if (!oldestKey) break;
     const entry = cache.get(oldestKey);
     cache.delete(oldestKey);

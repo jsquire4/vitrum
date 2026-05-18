@@ -871,8 +871,8 @@ export function createFrameResources(
 
   // PPG + neural are placeholders for W9 / W10. Frozen empty objects so any
   // accidental write throws in strict mode instead of silently mutating.
-  const ppg: PPGFrameResources = Object.freeze({}) as PPGFrameResources;
-  const neural: NeuralFrameResources = Object.freeze({}) as NeuralFrameResources;
+  const ppg: PPGFrameResources = Object.freeze({});
+  const neural: NeuralFrameResources = Object.freeze({});
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
 }

@@ -262,7 +262,7 @@ const concurrency = Math.max(
 const entries = [];
 if (concurrency <= 1) {
   for (const scenario of scenarios) {
-    // eslint-disable-next-line no-await-in-loop
+     
     entries.push(await evaluateScenario(scenario));
   }
 } else if (concurrency >= scenarios.length) {

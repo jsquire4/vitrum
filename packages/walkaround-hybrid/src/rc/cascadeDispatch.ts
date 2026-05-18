@@ -180,7 +180,7 @@ function buildMergeUniformData(
  * This is the same access pattern the Three.js backend itself uses internally.
  */
 function gpuBufferOf(attr: StorageBufferAttribute): GPUBuffer {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
   const buf = (attr as unknown as Record<string, unknown>)['__gpuBuffer'] as GPUBuffer | undefined;
   if (!buf) {
     throw new Error(
@@ -222,7 +222,7 @@ export class RCDispatcher {
     }
 
     // Guard: compute dispatch requires a real WebGPU backend.
-    const backend = (gl as WebGPURenderer).backend as WebGPUBackendView | undefined;
+    const backend = (gl).backend as WebGPUBackendView | undefined;
     if (backend?.isWebGPUBackend !== true || backend.device == null) {
       this._debugFill(cascadeBuffers);
       return;
@@ -248,7 +248,7 @@ export class RCDispatcher {
         pass.cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed,
         opts.triIntersectEpsilon ?? 1e-5,
       );
-      device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer as ArrayBuffer);
+      device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
     }
 
     // Encode compute commands.
@@ -259,7 +259,7 @@ export class RCDispatcher {
     for (let k = 0; k < CASCADE_COUNT; k++) {
       const pass = handles.castPasses[k]!;
       passEncoder.setPipeline(pass.pipeline);
-      passEncoder.setBindGroup(0, handles.castBindGroups[k]!);
+      passEncoder.setBindGroup(0, handles.castBindGroups[k]);
       passEncoder.dispatchWorkgroups(pass.dispatchX);
     }
 
@@ -267,7 +267,7 @@ export class RCDispatcher {
     for (let m = 0; m < handles.mergePasses.length; m++) {
       const pass = handles.mergePasses[m]!;
       passEncoder.setPipeline(pass.pipeline);
-      passEncoder.setBindGroup(0, handles.mergeBindGroups[m]!);
+      passEncoder.setBindGroup(0, handles.mergeBindGroups[m]);
       passEncoder.dispatchWorkgroups(pass.dispatchX);
     }
 
@@ -430,7 +430,7 @@ export class RCDispatcher {
         label:  `rc-cast-C${k}`,
         layout: castPipelineLayout,
         compute: {
-          module:     this._castShaderModule!,
+          module:     this._castShaderModule,
           entryPoint: 'probeRayCastKernel',
         },
       });
@@ -493,7 +493,7 @@ export class RCDispatcher {
         label:  `rc-merge-${lower}→${lower + 1}`,
         layout: mergePipelineLayout,
         compute: {
-          module:     this._mergeShaderModule!,
+          module:     this._mergeShaderModule,
           entryPoint: 'cascadeMergeKernel',
         },
       });

@@ -915,7 +915,7 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
     );
   }
 
-  const renderer = opts.device as WebGLRenderer;
+  const renderer = opts.device;
   RectAreaLightUniformsLib.init();
 
   const pathTracer = new WebGLPathTracer(

@@ -21,14 +21,14 @@ import { BilateralPreviewCanvas, writeTonemappedRgbToCanvas, type DenoiseDisplay
 
 declare global {
   // Optional capture harness hooks read by tools/benchmark-runner/capture-adapter-playwright.mjs.
-  // eslint-disable-next-line no-var
+   
   var VITRUM_CAPTURE_READY: boolean | undefined;
-  // eslint-disable-next-line no-var
+   
   var VITRUM_MS_PER_SAMPLE: number | undefined;
-  // eslint-disable-next-line no-var
+   
   var VITRUM_CAPTURE_TELEMETRY: Record<string, unknown> | undefined;
   /** Preferred screenshot target when capture runs after VITRUM_CAPTURE_READY (see adapter env override). */
-  // eslint-disable-next-line no-var
+   
   var VITRUM_CAPTURE_CANVAS_SELECTOR: string | undefined;
 }
 

@@ -523,7 +523,7 @@ class PTEngineWebGPU implements Engine {
 export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async (
   opts: PTEngineWebGPUOptions,
 ): Promise<Engine> => {
-  if (opts.device == null || typeof (opts.device as GPUDevice).createCommandEncoder !== 'function') {
+  if (opts.device == null || typeof (opts.device).createCommandEncoder !== 'function') {
     throw new TypeError(
       'createPTEngine_WebGPU: device must be a GPUDevice instance',
     );

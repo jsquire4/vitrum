@@ -106,7 +106,7 @@ function makeGIReceiverMaterial(
   // Receiver equation: L_o_indirect = (albedo / π) · E_gi
   // Reference: Majercik 2019 §3; D1 locked decision in sweep-2026-05-11.
   const PI_INV = uniform(1.0 / Math.PI);
-  const giDiffuse = mul(giNode as AnyNode, mul(materialColor as AnyNode, PI_INV as AnyNode));
+  const giDiffuse = mul(giNode, mul(materialColor as AnyNode, PI_INV));
   nm.emissiveNode = giDiffuse;
 
   // Tone-map + sRGB-encode the linear PBR + GI output.

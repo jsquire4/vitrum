@@ -116,7 +116,7 @@ export class TileVariancePass {
     tilesX: number,
     tilesY: number,
   ): void {
-    const mat = this.mesh.material as ShaderMaterial;
+    const mat = this.mesh.material;
     mat.uniforms['uAccum']!.value = accumTexture;
     mat.uniforms['uTexSize']!.value.set(texWidth, texHeight);
     mat.uniforms['uTiles']!.value.set(tilesX, tilesY);

@@ -70,8 +70,8 @@ async function readAdapterInfo(
 ): Promise<{ vendor: string; architecture: string }> {
   for (let i = 0; i <= retries; i++) {
     const info = adapter.info;
-    const vendor = ((info?.vendor ?? '') as string).toString();
-    const architecture = ((info?.architecture ?? '') as string).toString();
+    const vendor = ((info?.vendor ?? '')).toString();
+    const architecture = ((info?.architecture ?? '')).toString();
     if (vendor.length > 0 || architecture.length > 0) {
       return { vendor, architecture };
     }
