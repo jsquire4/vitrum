@@ -24,9 +24,14 @@ export class OIDNFinalDenoiser implements Denoiser {
    *  before this would ever participate in a pass layout. */
   readonly passLabels = DENOISER_PASS_LABELS['oidn-final'];
 
+  /** W11 will read `ctx.config.modelUrl` (when `ctx.config?.kind ===
+   *  'oidn-final'`) here once the real path lands. The DU is the canonical
+   *  source of the model URL — not an `extensions['oidnModelUrl']` look-up. */
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
     // No-op — the registry guards against ever reaching this path while
-    // `disabled === true`. W11 will replace this stub.
+    // `disabled === true`. W11 will replace this stub and pull
+    // `_ctx.config?.kind === 'oidn-final' && _ctx.config.modelUrl` from
+    // the W3-D4 DU.
   }
 
   dispatch(_ctx: DenoiserDispatchContext): GPUTexture | null {

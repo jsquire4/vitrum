@@ -274,6 +274,126 @@ export interface ProgressStats {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Denoiser configuration (W3-D4)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Opaque handle to neural-denoiser model weights. The concrete shape lives
+ * in the backend that ships the neural denoiser (`@vitrum/walkaround-hybrid`'s
+ * `ModelWeights`); core declares the slot as `unknown` so the contract does
+ * not pull a backend-specific dependency in. Backends MUST runtime-check the
+ * shape when they pull it out of the {@link DenoiserConfig}.
+ *
+ * Hosts that statically know the concrete type (e.g. they `import type
+ * { ModelWeights } from '@vitrum/walkaround-hybrid'`) can narrow at the call
+ * site by writing `{ kind: 'neural', weights: myModelWeights }`.
+ */
+export type NeuralWeights = unknown;
+
+/**
+ * Discriminated union of denoiser pipeline configurations (W3-D4).
+ *
+ * The discriminator is `kind`; variants that need additional config
+ * (`'neural'` requires `weights`; `'oidn-final'` requires `modelUrl`)
+ * encode that in the type, so the compiler enforces per-mode
+ * preconditions instead of leaving them as runtime throws.
+ *
+ * Backends:
+ *   - `'none'`             — pass-through; sample raw HDR.
+ *   - `'atrous'`           — legacy 3-iter à-trous.
+ *   - `'atrous-variance'`  — Welford temporal + variance-scalar + à-trous (default).
+ *   - `'svgf-real'`        — Schied 2017 SVGF (reproj + moments + 7×7 + 5×atrous).
+ *   - `'neural'`           — T2.H2 GPU U-Net. **Requires** `weights`.
+ *   - `'oidn-final'`       — Intel Open Image Denoise final pass.
+ *                            **Requires** `modelUrl` (URL of the ONNX model).
+ */
+export type DenoiserConfig =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'atrous' }
+  | { readonly kind: 'atrous-variance' }
+  | { readonly kind: 'svgf-real' }
+  | { readonly kind: 'neural'; readonly weights: NeuralWeights }
+  | { readonly kind: 'oidn-final'; readonly modelUrl: string };
+
+/** Discriminator string union extracted from {@link DenoiserConfig}.
+ *  Useful for backend registries that look up implementations by string id. */
+export type DenoiserKind = DenoiserConfig['kind'];
+
+/**
+ * Backwards-compat accept-shape on `EngineOptions.denoiser`. Hosts may pass
+ * either the structured {@link DenoiserConfig} (preferred — type-enforces
+ * per-mode required config) or the legacy bare-string form which is
+ * normalised internally and `@deprecated` for new code.
+ *
+ * The legacy-string accept-set includes:
+ *   - every {@link DenoiserKind} (forwarded directly to the DU equivalent),
+ *     EXCEPT `'neural'` / `'oidn-final'` which require additional config —
+ *     {@link normalizeDenoiserConfig} throws on those bare strings.
+ *   - `'svgf'`, a deprecated alias for `'atrous-variance'` carried over
+ *     from the original string union for hosts that have not yet migrated.
+ *
+ * NOTE: passing `'neural'` or `'oidn-final'` as a bare string is rejected
+ * at the core normaliser because there is nowhere to thread the required
+ * `weights` / `modelUrl`. The DU form is the only typed path that gets
+ * per-mode config end-to-end through the contract.
+ *
+ * @deprecated The bare-string form is retained for compatibility only.
+ * Prefer the {@link DenoiserConfig} object form (`{kind: 'atrous-variance'}`).
+ */
+export type Denoiser = DenoiserConfig | DenoiserKind | 'svgf';
+
+/**
+ * Normalise either accepted form of `EngineOptions.denoiser` to the
+ * canonical {@link DenoiserConfig} shape.
+ *
+ * Throws on the two string-form variants that require additional config
+ * (`'neural'` / `'oidn-final'`): a bare-string of those kinds is
+ * unsatisfiable without supplying weights / modelUrl, so we fail loudly
+ * at engine creation instead of letting the backend reach a misconfigured
+ * runtime state.
+ *
+ * `'svgf'` is the legacy deprecated alias for `'atrous-variance'`;
+ * normaliser accepts it silently (the calling backend is expected to log
+ * its own one-time deprecation warning so the wording can include
+ * backend-specific guidance like the SVGF-real upgrade path).
+ *
+ * Passing `undefined` resolves to `{kind: 'atrous-variance'}`.
+ */
+export function normalizeDenoiserConfig(d: Denoiser | undefined): DenoiserConfig {
+  if (d === undefined) return { kind: 'atrous-variance' };
+  if (typeof d === 'string') {
+    switch (d) {
+      case 'none':
+      case 'atrous':
+      case 'atrous-variance':
+      case 'svgf-real':
+        return { kind: d };
+      case 'svgf':
+        return { kind: 'atrous-variance' };
+      case 'neural':
+        throw new TypeError(
+          `[@vitrum/core] denoiser: 'neural' (bare string) is not supported; ` +
+          `the neural denoiser requires weights — pass ` +
+          `\`denoiser: { kind: 'neural', weights }\` instead.`,
+        );
+      case 'oidn-final':
+        throw new TypeError(
+          `[@vitrum/core] denoiser: 'oidn-final' (bare string) is not supported; ` +
+          `the OIDN final-pass denoiser requires a modelUrl — pass ` +
+          `\`denoiser: { kind: 'oidn-final', modelUrl }\` instead.`,
+        );
+      default: {
+        const _exhaustive: never = d;
+        throw new TypeError(
+          `[@vitrum/core] unknown denoiser string '${_exhaustive as string}'.`,
+        );
+      }
+    }
+  }
+  return d;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Backend factory contract
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -322,26 +442,16 @@ export interface EngineOptions {
   // ── Denoiser composition ────────────────────────────────────────────────
   /** Denoiser pipeline wired at engine creation. Changing the denoiser
    *  requires recompiling shaders and resizing auxiliary buffers — so it is
-   *  a creation-time structural decision, not a per-frame dial. */
-  /** `'svgf'` is a deprecated alias for `'atrous-variance'`; backends that ship
-   *  à-trous + variance-scalar lookup should accept both.
+   *  a creation-time structural decision, not a per-frame dial.
    *
-   *  `'svgf-real'` — T2.H1 — full Schied 2017 SVGF with bilinear motion-vector
-   *  reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
-   *  history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
-   *  variance-from-moments (Eq. 5), and 7×7 spatial fallback for disoccluded
-   *  pixels (§4.3). Implemented in `@vitrum/shared-denoisers` and wired in
-   *  `@vitrum/walkaround-hybrid`.
+   *  W3-D4: this field accepts either a {@link DenoiserConfig} discriminated
+   *  union (preferred) or the legacy bare string (deprecated). The DU form
+   *  type-encodes per-mode required config — e.g. `{kind: 'neural'}` is a
+   *  compile error because `weights` is missing — so a typed caller cannot
+   *  reach runtime in an unsatisfiable configuration.
    *
-   *  GPU memory budget for `'svgf-real'` at 1080p: ~52 MB of new persistent
-   *  textures (historyLength r16uint + momentsHistory rg32float + prevRadiance
-   *  rgba16float + motionVec rg32float). */
-  /**
-   * `'neural'` — T2.H2 — GPU U-Net denoiser. Requires backend-specific weight
-   * provisioning (e.g. `HybridEngineOptions.neuralWeights` in
-   * `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
-   */
-  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural';
+   *  Default when absent: `{kind: 'atrous-variance'}`. */
+  readonly denoiser?: Denoiser;
 
   // ── Specular caustics strategy (RFE-05) ────────────────────────────────
   /**

@@ -21,6 +21,7 @@
  * (see `denoisers/registerBuiltinDenoisers.ts`).
  */
 
+import type { DenoiserConfig } from '@vitrum/core';
 import type { BGLCache } from '../bindGroupLayouts.js';
 import type { FrameResources } from '../resourceManager.js';
 import type { PassLabel } from '../timestampQueries.js';
@@ -98,6 +99,18 @@ export interface DenoiserInitContext {
   readonly height: number;
   readonly bglCache: BGLCache;
   readonly frameResources: FrameResources;
+  /**
+   * W3-D4: full {@link DenoiserConfig} DU passed through to the
+   * concrete entry. Variants that carry per-mode required config
+   * (`'neural'` → `weights`, `'oidn-final'` → `modelUrl`) read it from
+   * here rather than from extensions, making the DU the canonical
+   * source for per-mode initialization data.
+   *
+   * Optional for back-compat with call sites still using
+   * {@link DenoiserRegistry.lookup} (string-id form); when present, the
+   * `.kind` MUST match the denoiser's own `.id`.
+   */
+  readonly config?: DenoiserConfig;
 }
 
 /**
@@ -211,6 +224,21 @@ export class DenoiserRegistry {
       );
     }
     return d;
+  }
+
+  /**
+   * W3-D4: resolve a denoiser by {@link DenoiserConfig} DU. Extracts the
+   * `.kind` discriminant for the same Map lookup as {@link lookup}, but
+   * keeps the typed caller path: a host that supplied
+   * `{kind: 'neural', weights}` reaches the {@link Denoiser.initialize}
+   * site with the full config so the neural entry can pull the weights
+   * out (analogous for `'oidn-final'` and `modelUrl`).
+   *
+   * Same error semantics as {@link lookup}: throws on unknown kinds and
+   * on disabled placeholders.
+   */
+  lookupConfig(config: DenoiserConfig): Denoiser {
+    return this.lookup(config.kind);
   }
 
   /** All registered IDs, including disabled. For diagnostics + capability

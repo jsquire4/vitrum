@@ -30,9 +30,15 @@ export class NeuralDenoiser implements Denoiser {
    *  buildPassLayout slot-count invariant. */
   readonly passLabels = DENOISER_PASS_LABELS['neural'];
 
+  /** W10 will read `ctx.config.weights` (when `ctx.config?.kind === 'neural'`)
+   *  here once the real path lands. Stashing the field doc on the placeholder
+   *  so the canonical source of weights is unambiguously the DU, not the
+   *  legacy `HybridEngineOptions.neuralWeights` side-channel. */
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
     // No-op — the registry guards against ever reaching this path while
-    // `disabled === true`. W10 will replace this stub.
+    // `disabled === true`. W10 will replace this stub and pull
+    // `_ctx.config?.kind === 'neural' && _ctx.config.weights` from the
+    // W3-D4 DU.
   }
 
   dispatch(_ctx: DenoiserDispatchContext): GPUTexture | null {

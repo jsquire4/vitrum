@@ -24,6 +24,8 @@
 
 import * as THREE from 'three';
 import type {
+  Denoiser,
+  DenoiserConfig,
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
@@ -32,6 +34,7 @@ import type {
   EngineState,
   FrameStats,
 } from '@vitrum/core';
+import { normalizeDenoiserConfig } from '@vitrum/core';
 import type { Scene } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
@@ -152,7 +155,11 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly debug?: boolean;
 
   /**
-   * Post-shade denoiser:
+   * Post-shade denoiser. W3-D4: prefers the {@link DenoiserConfig}
+   * discriminated-union form from `@vitrum/core`; the legacy bare-string
+   * form is accepted (and deprecated) via the {@link Denoiser} alias.
+   *
+   * Built-in kinds the walkaround-hybrid backend dispatches:
    *
    *   `'atrous-variance'` (default) — temporal Welford + à-trous + variance
    *   scalar lookup; honest about what it does (not Schied 2017 SVGF).
@@ -166,22 +173,35 @@ export interface HybridEngineOptions extends EngineOptions {
    *   (§4.3). Requires historyLength (r16uint) + momentsHistory (rg32float) +
    *   prevRadiance (rgba16float) persistent textures: ~52 MB at 1080p.
    *
-   *   `'svgf'` is a deprecated alias for `'atrous-variance'`; triggers a
-   *   one-time console warning.
+   *   `'svgf'` is a deprecated bare-string alias for `'atrous-variance'`;
+   *   accepted via the legacy {@link Denoiser} alias with a one-time
+   *   console warning. The DU form does NOT include `'svgf'` — it is a
+   *   string-form-only carryover.
    *
-   *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
-   *   et al. 2015). Requires `neuralWeights` to be provided. Default still
-   *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
+   *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 /
+   *   Ronneberger et al. 2015). The DU variant requires `weights` inline:
+   *   `denoiser: { kind: 'neural', weights }`. See
+   *   tools/neural-denoiser-training/README.md.
+   *
+   *   `'oidn-final'` — placeholder for the OIDN final-pass denoiser (W11).
+   *   The DU variant requires `modelUrl` inline:
+   *   `denoiser: { kind: 'oidn-final', modelUrl }`.
+   *
+   * @see normalizeDenoiserConfig
    */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural';
+  readonly denoiser?: Denoiser;
 
   /**
    * Pre-loaded model weights for the neural denoiser (T2.H2).
-   * Required when `denoiser === 'neural'`. Load via `loadWeightsFromArrayBuffer()`
-   * from the vitrum binary format exported by `tools/neural-denoiser-training/export_weights.py`.
    *
-   * If `denoiser === 'neural'` and `neuralWeights` is undefined, the engine
-   * constructor throws with a helpful error pointing to the training README.
+   * @deprecated W3-D4: prefer the discriminated-union form
+   * `denoiser: { kind: 'neural', weights }` which type-enforces the
+   * weights requirement. This top-level field is retained as a legacy
+   * fallback for hosts that still pass `denoiser: 'neural'` as a bare
+   * string; the constructor merges it into the canonical DU form.
+   *
+   * Load via `loadWeightsFromArrayBuffer()` from the vitrum binary format
+   * exported by `tools/neural-denoiser-training/export_weights.py`.
    */
   readonly neuralWeights?: ModelWeights;
 
@@ -496,9 +516,10 @@ export class HybridEngine implements Engine {
     return p.readGpuTimingsOnce();
   }
 
-  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural';
-  /** T2.H2 — neural denoiser weights (populated when _denoiser === 'neural'). */
-  private readonly _neuralWeights: ModelWeights | undefined;
+  /** Canonical denoiser configuration. W3-D4: always a {@link DenoiserConfig}
+   *  after the constructor has normalised either accept-form (legacy bare
+   *  string + neuralWeights side-channel, or the new DU). */
+  private readonly _denoiserConfig: DenoiserConfig;
   /** Audit M4 — null disables the FPS cap; configured at construction. */
   private readonly _targetFrameIntervalMs: number | null;
   /** Audit B8 — passed to WalkaroundGPUPipeline at initialize() time. */
@@ -628,44 +649,80 @@ export class HybridEngine implements Engine {
     this._debug                 = opts.debug ?? false;
     this._verbose               = opts.verbose ?? false;
     this._maxBounces            = opts.maxBounces ?? 4;
-    // Audit B7: validate the denoiser option at construction so an unsupported
-    // value (e.g. `'none'`, `'bmfr'`, `'oidn-final'` from the @vitrum/core
-    // EngineOptions contract) does not silently coerce to atrous-variance and produce
-    // wrong output. Supported values are explicitly enumerated here.
-    // 'svgf' is accepted as a deprecated alias — logs a one-time warning, then normalises.
-    if (
-      opts.denoiser !== undefined &&
-      opts.denoiser !== 'atrous' &&
-      opts.denoiser !== 'atrous-variance' &&
-      opts.denoiser !== 'svgf-real' &&
-      opts.denoiser !== 'svgf' &&
-      opts.denoiser !== 'neural'
-    ) {
-      throw new TypeError(
-        `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
-        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural'. ` +
-        `If you need 'none' / 'bmfr' / 'oidn-final' from @vitrum/core, ` +
-        `pick a backend that implements those modes.`,
-      );
-    }
-    // T2.H2 — 'neural' requires neuralWeights to be provided.
-    if (opts.denoiser === 'neural' && !opts.neuralWeights) {
-      throw new TypeError(
-        `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
-        `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
-        `or train one with tools/neural-denoiser-training/train.py. ` +
-        `See tools/neural-denoiser-training/README.md for instructions.`,
-      );
-    }
-    if (opts.denoiser === 'svgf') {
+    // W3-D4: normalise denoiser to the canonical DenoiserConfig DU.
+    //
+    // Accepted accept-shapes (in priority order):
+    //   1. DenoiserConfig DU object   — preferred, per-mode required config
+    //                                   travels inline; no extensions / no
+    //                                   `neuralWeights` side-channel needed.
+    //   2. 'svgf' bare string         — deprecated alias for
+    //                                   'atrous-variance'. Carryover from
+    //                                   the legacy string union; not part
+    //                                   of the new DU.
+    //   3. 'neural' bare string +     — legacy form; merged into the
+    //      opts.neuralWeights side-      canonical DU `{kind: 'neural',
+    //      channel                       weights}` here.
+    //   4. Any other bare string      — handed to core's
+    //                                   normalizeDenoiserConfig which
+    //                                   accepts none/atrous/atrous-variance/
+    //                                   svgf-real and throws on
+    //                                   'oidn-final' (which requires a
+    //                                   modelUrl that has no legacy
+    //                                   side-channel).
+    //
+    // The walkaround-hybrid backend further enforces its own supported
+    // subset AFTER normalisation: 'none' is rejected (no pass-through path)
+    // and 'oidn-final' is registered-but-disabled (W11 will land it).
+    const rawDenoiser = opts.denoiser;
+    let cfg: DenoiserConfig;
+    if (rawDenoiser === 'svgf') {
       console.warn(
         `[walkaround-hybrid] denoiser: 'svgf' is deprecated; use 'atrous-variance'. ` +
         `The shipping implementation is à-trous + variance scalar lookup, NOT real Schied 2017 SVGF. ` +
         `For real Schied 2017 SVGF, pass denoiser: 'svgf-real' (T2.H1).`,
       );
+      cfg = { kind: 'atrous-variance' };
+    } else if (rawDenoiser === 'neural') {
+      // Legacy form: bare 'neural' string + opts.neuralWeights side-channel.
+      // Merge into the canonical DU here so downstream code sees one shape.
+      if (!opts.neuralWeights) {
+        throw new TypeError(
+          `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
+          `Prefer the discriminated-union form: ` +
+          `\`denoiser: { kind: 'neural', weights }\`. ` +
+          `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
+          `or train one with tools/neural-denoiser-training/train.py.`,
+        );
+      }
+      cfg = { kind: 'neural', weights: opts.neuralWeights };
+    } else {
+      cfg = normalizeDenoiserConfig(rawDenoiser);
     }
-    this._denoiser = opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');
-    this._neuralWeights = opts.neuralWeights;
+    // Backend-supported subset. Reject DU kinds walkaround-hybrid cannot
+    // execute today so a host gets a clear error instead of a silent fall
+    // through. `'none'` could be supported in principle but the current
+    // pipeline does not have the pass-through plumbing to sample raw HDR
+    // for composite, so it stays rejected for now.
+    if (cfg.kind === 'none') {
+      throw new TypeError(
+        `[HybridEngine] denoiser: 'none' is not supported by walkaround-hybrid ` +
+        `(no pass-through plumbing for raw HDR composite). ` +
+        `Use 'atrous' for the cheapest active denoiser.`,
+      );
+    }
+    // 'oidn-final' is a W11 placeholder; the DenoiserRegistry will throw a
+    // clear "registered but disabled" error if it ever reaches lookup, but
+    // we surface it here too so the error includes per-mode config context
+    // (the user supplied a modelUrl and may want to know why it isn't
+    // wired up yet).
+    if (cfg.kind === 'oidn-final') {
+      throw new TypeError(
+        `[HybridEngine] denoiser: 'oidn-final' is a registered placeholder ` +
+        `(W11 work; modelUrl='${cfg.modelUrl}' acknowledged). ` +
+        `Use 'atrous-variance' or 'svgf-real' until W11 lands.`,
+      );
+    }
+    this._denoiserConfig = cfg;
     this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
       ? opts.targetFrameIntervalMs
       : DEFAULT_TARGET_FRAME_INTERVAL_MS;
@@ -1515,12 +1572,17 @@ export class HybridEngine implements Engine {
         pipeline = new WalkaroundGPUPipeline(device, this._width, this._height);
         const pipelineStart = performance.now();
 
-        // T2.H2 — Neural denoiser: create and initialize InferenceGraph before pipeline init.
+        // T2.H2 — Neural denoiser: create and initialize InferenceGraph
+        // before pipeline init. W3-D4: weights now travel inline on the
+        // DenoiserConfig DU; the cast back to ModelWeights mirrors the
+        // backend-narrowing contract on NeuralWeights (core types it as
+        // `unknown` so the contract doesn't pull a backend dep).
         let inferenceGraph: InferenceGraph | undefined;
-        if (this._denoiser === 'neural' && this._neuralWeights) {
+        if (this._denoiserConfig.kind === 'neural') {
+          const weights = this._denoiserConfig.weights as ModelWeights;
           const { buildUNetSpec } = await import('./neural/unetArchitecture.js');
           inferenceGraph = new InferenceGraph(buildUNetSpec());
-          await inferenceGraph.initialize(device, this._neuralWeights, this._width, this._height);
+          await inferenceGraph.initialize(device, weights, this._width, this._height);
         }
 
         await pipeline.initialize(
@@ -1528,7 +1590,7 @@ export class HybridEngine implements Engine {
           getPreferredSwapChainFormat(),
           {
             verbose: this._verbose || this._debug,
-            denoiser: this._denoiser,
+            denoiserConfig: this._denoiserConfig,
             cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
             temporalAccumAlpha: this._temporalAccumAlpha,
             // exactOptionalPropertyTypes: omit the key entirely when undefined.

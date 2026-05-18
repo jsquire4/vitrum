@@ -56,6 +56,7 @@ import {
   buildCompositeBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
+import type { DenoiserConfig } from '@vitrum/core';
 import {
   DenoiserRegistry,
   type Denoiser,
@@ -400,12 +401,16 @@ export class WalkaroundGPUPipeline {
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
     options?: {
       verbose?: boolean;
-      denoiser?: DenoiserId;
+      /** W3-D4: canonical {@link DenoiserConfig} DU; the pipeline
+       *  internally consults `.kind` for the registry lookup AND passes
+       *  the per-mode config (weights / modelUrl) into the denoiser's
+       *  initialize via {@link DenoiserRegistry.lookupConfig}. */
+      denoiserConfig?: DenoiserConfig;
       /** Audit B8 — host-overridable camera-move temporal-reset threshold. */
       cameraMoveResetThresholdSq?: number;
       /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
       temporalAccumAlpha?: number;
-      /** T2.H2 — neural denoiser InferenceGraph (required when denoiser='neural').
+      /** T2.H2 — neural denoiser InferenceGraph (required when denoiser kind is 'neural').
        *  Kept on the options surface for forward compatibility with W10. */
       inferenceGraph?: InferenceGraph;
       /** T2.H3 — enable PPG (Müller 2017 adaptive sTree + dTree + MIS). */
@@ -440,7 +445,9 @@ export class WalkaroundGPUPipeline {
     // Shared à-trous pipeline — fed into the AtrousDenoiser context AND
     // the always-on AtrousIndirectPass.
     this._atrousPipeline = compiled.atrousPipeline;
-    this._denoiserMode = options?.denoiser ?? 'atrous-variance';
+    const denoiserCfg: DenoiserConfig = options?.denoiserConfig
+      ?? { kind: 'atrous-variance' };
+    this._denoiserMode = denoiserCfg.kind as DenoiserId;
     this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
       ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
     this._temporalAccumAlpha = options?.temporalAccumAlpha
@@ -452,19 +459,24 @@ export class WalkaroundGPUPipeline {
       compiled.ppgGuidePipeline  !== undefined;
 
     // ── Denoiser registry: build, register builtins, look up + initialise
-    //    the active denoiser. Disabled placeholders (neural / oidn-final)
-    //    are registered but never reach `initialize()` — the registry
-    //    rejects them at `lookup()` time with a clear error pointing at
-    //    the workstream that will land the real implementation.
+    //    the active denoiser. W3-D4: `lookupConfig` bridges the DU's
+    //    `.kind` discriminant to the registry's string-id lookup AND
+    //    threads per-mode config (weights / modelUrl) into the
+    //    Denoiser.initialize context via the optional `config` field.
+    //    Disabled placeholders (neural / oidn-final) are registered but
+    //    never reach `initialize()` — the registry rejects them at
+    //    `lookupConfig()` time with a clear error pointing at the
+    //    workstream that will land the real implementation.
     this._denoiserRegistry = new DenoiserRegistry();
     registerBuiltinDenoisers(this._denoiserRegistry);
-    this._activeDenoiser = this._denoiserRegistry.lookup(this._denoiserMode);
+    this._activeDenoiser = this._denoiserRegistry.lookupConfig(denoiserCfg);
     await this._activeDenoiser.initialize({
       device: d,
       width: W,
       height: H,
       bglCache: this._bglCache,
       frameResources: this._res,
+      config: denoiserCfg,
     });
 
     // Forward-compat: a host may still supply an InferenceGraph via options

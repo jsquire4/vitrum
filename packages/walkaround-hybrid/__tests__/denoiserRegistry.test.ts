@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { normalizeDenoiserConfig, type DenoiserConfig } from '@vitrum/core';
 import {
   DenoiserRegistry,
   type Denoiser,
@@ -130,6 +131,110 @@ describe('Builtin Denoiser entries', () => {
   it('NoneDenoiser.dispatch returns null (pass-through, sample raw HDR)', () => {
     const d = new NoneDenoiser();
     expect(d.dispatch({} as DenoiserDispatchContext)).toBeNull();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// W3-D4 — DenoiserConfig discriminated union
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('W3-D4 — DenoiserConfig discriminated union', () => {
+  describe('normalizeDenoiserConfig — DU passthrough', () => {
+    it('passes through { kind: "atrous-variance" } unchanged', () => {
+      const cfg: DenoiserConfig = { kind: 'atrous-variance' };
+      expect(normalizeDenoiserConfig(cfg)).toEqual({ kind: 'atrous-variance' });
+    });
+
+    it('passes through { kind: "neural", weights } and preserves the weights', () => {
+      const weights = { layers: [] };
+      const cfg: DenoiserConfig = { kind: 'neural', weights };
+      const out = normalizeDenoiserConfig(cfg);
+      expect(out.kind).toBe('neural');
+      if (out.kind === 'neural') {
+        expect(out.weights).toBe(weights);
+      }
+    });
+
+    it('passes through { kind: "oidn-final", modelUrl } and preserves the URL', () => {
+      const cfg: DenoiserConfig = { kind: 'oidn-final', modelUrl: '/oidn.onnx' };
+      const out = normalizeDenoiserConfig(cfg);
+      expect(out.kind).toBe('oidn-final');
+      if (out.kind === 'oidn-final') {
+        expect(out.modelUrl).toBe('/oidn.onnx');
+      }
+    });
+  });
+
+  describe('normalizeDenoiserConfig — string normalisation', () => {
+    it('undefined → atrous-variance default', () => {
+      expect(normalizeDenoiserConfig(undefined)).toEqual({ kind: 'atrous-variance' });
+    });
+
+    it('plain string ids become DU singletons', () => {
+      expect(normalizeDenoiserConfig('none')).toEqual({ kind: 'none' });
+      expect(normalizeDenoiserConfig('atrous')).toEqual({ kind: 'atrous' });
+      expect(normalizeDenoiserConfig('atrous-variance')).toEqual({ kind: 'atrous-variance' });
+      expect(normalizeDenoiserConfig('svgf-real')).toEqual({ kind: 'svgf-real' });
+    });
+
+    it('deprecated "svgf" alias normalises to atrous-variance', () => {
+      expect(normalizeDenoiserConfig('svgf')).toEqual({ kind: 'atrous-variance' });
+    });
+
+    it('bare "neural" string is rejected — weights required', () => {
+      expect(() => normalizeDenoiserConfig('neural')).toThrow(/neural.*requires weights/);
+    });
+
+    it('bare "oidn-final" string is rejected — modelUrl required', () => {
+      expect(() => normalizeDenoiserConfig('oidn-final')).toThrow(/oidn-final.*requires.*modelUrl/);
+    });
+  });
+
+  describe('per-mode required config is compile-enforced', () => {
+    // These tests exist primarily for the @ts-expect-error directives — if
+    // a future refactor accidentally widens the DU back to a string union,
+    // the directives fail, surfacing the regression.
+
+    it('{ kind: "neural" } without weights is a compile error', () => {
+      // @ts-expect-error - weights is required for kind: 'neural'
+      const bad: DenoiserConfig = { kind: 'neural' };
+      // Belt-and-braces runtime sanity (the DU still has 'kind').
+      expect(bad.kind).toBe('neural');
+    });
+
+    it('{ kind: "oidn-final" } without modelUrl is a compile error', () => {
+      // @ts-expect-error - modelUrl is required for kind: 'oidn-final'
+      const bad: DenoiserConfig = { kind: 'oidn-final' };
+      expect(bad.kind).toBe('oidn-final');
+    });
+
+    it('{ kind: "atrous-variance", weights: x } rejects extraneous fields under strict object literal', () => {
+      // Variants without per-mode config don't accept stray keys at the
+      // literal site: TS narrows to the no-extras variant.
+      // @ts-expect-error - 'weights' is not a property of kind: 'atrous-variance'
+      const bad: DenoiserConfig = { kind: 'atrous-variance', weights: {} };
+      expect(bad.kind).toBe('atrous-variance');
+    });
+  });
+
+  describe('DenoiserRegistry.lookupConfig — DU → registered Denoiser', () => {
+    it('looks up an enabled denoiser via its DenoiserConfig kind', () => {
+      const reg = new DenoiserRegistry();
+      registerBuiltinDenoisers(reg);
+      expect(reg.lookupConfig({ kind: 'atrous-variance' }).id).toBe('atrous-variance');
+      expect(reg.lookupConfig({ kind: 'svgf-real' }).id).toBe('svgf-real');
+    });
+
+    it('rejects disabled-placeholder DU variants with the registry error', () => {
+      const reg = new DenoiserRegistry();
+      registerBuiltinDenoisers(reg);
+      expect(() =>
+        reg.lookupConfig({ kind: 'neural', weights: { layers: [] } }),
+      ).toThrow(/registered but disabled/);
+      expect(() =>
+        reg.lookupConfig({ kind: 'oidn-final', modelUrl: '/oidn.onnx' }),
+      ).toThrow(/registered but disabled/);
+    });
   });
 });
 
