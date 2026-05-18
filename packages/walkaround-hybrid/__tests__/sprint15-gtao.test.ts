@@ -12,6 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { GTAO_WGSL } from '../src/shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
+import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import {
   MAX_PASS_COUNT,
   buildPassLayout,
@@ -82,6 +83,42 @@ describe('Sprint 15 — GTAO upsample WGSL', () => {
   it('passes through sky-miss as 1.0', () => {
     expect(GTAO_UPSAMPLE_WGSL).toMatch(/centerDepth\s*<\s*1e-4/);
     expect(GTAO_UPSAMPLE_WGSL).toContain('textureStore(up_aoFullOut, gid.xy, vec4f(1.0))');
+  });
+
+  // Tier-G — Jiménez 2016 §5.2 multi-bounce AO must survive the upsample.
+  //
+  // Pre-Tier-G the upsample collapsed the per-channel half-res vec3 AO to
+  // a single luminance scalar via dot(aoMb, vec3(0.2126, 0.7152, 0.0722))
+  // and wrote `vec4f(scalar)` to the rgba16float output. shade.wgsl then
+  // read only `.r`. That defeated the per-channel multi-bounce formulation
+  // — a red wall darkened the green/blue channels by the same factor as
+  // the red channel, indistinguishable from Bavoil-style scalar AO. The
+  // following assertions lock in the corrected per-channel pipeline.
+  it('keeps per-channel multi-bounce AO through the bilateral filter (no luminance collapse)', () => {
+    // sumAO is now a vec3f, not an f32.
+    expect(GTAO_UPSAMPLE_WGSL).toContain('var sumAO: vec3f');
+    // No luminance-collapse weights anywhere in the upsample.
+    expect(GTAO_UPSAMPLE_WGSL).not.toContain('0.2126');
+    expect(GTAO_UPSAMPLE_WGSL).not.toContain('0.7152');
+    expect(GTAO_UPSAMPLE_WGSL).not.toContain('0.0722');
+    // Per-channel clamp at the write site (not a scalar clamp).
+    expect(GTAO_UPSAMPLE_WGSL).toMatch(/clamp\(ao,\s*vec3f\(0\.0\),\s*vec3f\(1\.0\)\)/);
+  });
+});
+
+describe('Tier-G — shade consumes per-channel multi-bounce AO', () => {
+  // Pre-Tier-G shade did `let aoRaw = textureLoad(aoFullTexture, ...).r;` —
+  // a single scalar broadcast across all RGB radiance channels, equivalent
+  // to Bavoil-style scalar AO. The Jiménez 2016 §5.2 per-channel form
+  // requires reading the full vec3 from `.rgb` so each colour channel can
+  // darken by its own multi-bounce factor.
+  it('reads .rgb from aoFullTexture (not .r)', () => {
+    expect(SHADE_WGSL).toContain('textureLoad(aoFullTexture, vec2i(gid.xy), 0).rgb');
+    expect(SHADE_WGSL).not.toMatch(/textureLoad\(aoFullTexture,\s*vec2i\(gid\.xy\),\s*0\)\.r\b/);
+  });
+
+  it('declares ao as vec3f for per-channel multiplication', () => {
+    expect(SHADE_WGSL).toMatch(/let\s+ao\s*=\s*vec3f\(/);
   });
 });
 

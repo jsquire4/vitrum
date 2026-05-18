@@ -634,12 +634,11 @@ export function createFrameResources(
     format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
-  // Was r16float, but WebGPU base spec doesn't allow r16float as a storage
-  // texture (requires the optional `texture-formats-tier1` feature, which
-  // three.js's WebGPURenderer ignores — its hardcoded GPUFeatureName enum
-  // omits it). rgba16float IS base-spec storage-capable; we keep the AO
-  // value in .r (other channels unused) so existing texture-binding reads
-  // in shade.wgsl (textureLoad(...).r) still work without changes.
+  // rgba16float is base-spec storage-capable (r16float would require the
+  // optional `texture-formats-tier1` feature, which three.js's WebGPURenderer
+  // does not request). Tier-G fix: `.rgb` now carries per-channel Jiménez
+  // 2016 §5.2 multi-bounce AO; previously only `.r` was written and shade
+  // collapsed the per-channel AO to a single scalar.
   const aoFullTexture = device.createTexture({
     label: 'gtao-full',
     size: [W, H],
@@ -649,9 +648,10 @@ export function createFrameResources(
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_DST,
   });
-  // Seed aoFullTexture with 1.0 (f16 1.0 = 0x3C00) so first-frame shade
-  // reads return "unoccluded" before gtao writes a real value.
-  // rgba16float = 8 bytes/texel; pack 1.0 in .r, zeros in .g/.b/.a.
+  // Seed aoFullTexture with vec3(1.0) on `.rgb` (f16 1.0 = 0x3C00) so the
+  // first-frame shade read returns "unoccluded" on every channel before
+  // gtao + upsample have written real per-channel values. rgba16float =
+  // 8 bytes/texel; pack 1.0 in R/G/B and 0 in A.
   {
     const bytesPerTexel = 8;
     const rowBytes = Math.max(256, Math.ceil(W * bytesPerTexel / 256) * 256);
@@ -660,10 +660,16 @@ export function createFrameResources(
       const rowOff = y * rowBytes;
       for (let x = 0; x < W; x++) {
         const o = rowOff + x * bytesPerTexel;
-        // .r = 1.0 (0x3C00); .g/.b/.a = 0
+        // .r = 1.0 (0x3C00)
         buf[o]     = 0x00;
         buf[o + 1] = 0x3C;
-        // (remaining 6 bytes stay 0 from Uint8Array init)
+        // .g = 1.0 (0x3C00)
+        buf[o + 2] = 0x00;
+        buf[o + 3] = 0x3C;
+        // .b = 1.0 (0x3C00)
+        buf[o + 4] = 0x00;
+        buf[o + 5] = 0x3C;
+        // .a = 0 (unused; stays 0 from Uint8Array init)
       }
     }
     device.queue.writeTexture(

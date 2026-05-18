@@ -275,9 +275,11 @@ export function getGTAOBindGroupLayout(
 
 /**
  * Sprint 15 — GTAO bilateral upsample BGL. Matches `gtaoUpsample.wgsl.ts`:
- *   0 — aoHalf in (rgba16float, sampled — E1: bumped from r16float; carries per-channel aoMb)
+ *   0 — aoHalf in (rgba16float, sampled — carries per-channel multi-bounce AO)
  *   1 — gNormalDepth (rgba16float, sampled)
- *   2 — aoFull out (r16float, write-only storage — stays scalar; upsample reduces vec3 to luminance)
+ *   2 — aoFull out (rgba16float, write-only storage — Tier-G fix: per-channel
+ *       Jiménez 2016 §5.2 AO stored in `.rgb`; previously collapsed to a
+ *       luminance scalar in `.r`)
  *   3 — GTAOUniforms (uniform, audit B3 — for bilateralDepthSigma)
  */
 export function getGTAOUpsampleBindGroupLayout(

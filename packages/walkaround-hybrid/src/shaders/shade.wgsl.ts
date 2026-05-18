@@ -63,9 +63,12 @@ export const SHADE_WGSL = /* wgsl */ `
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
-// Sprint 15 — GTAO occlusion factor (r16float, full-res, 1-frame lagged).
-// Multiplied into diffuse direct + indirect terms below to darken contact
-// regions. Sky-miss and emissive light sources bypass this multiplier.
+// Sprint 15 — GTAO occlusion factor (rgba16float, full-res, 1-frame lagged).
+// .rgb carries the per-channel Jiménez 2016 §5.2 multi-bounce AO (one
+// factor per RGB channel based on the surface albedo). Multiplied into
+// diffuse direct + indirect terms below to darken contact regions on a
+// per-channel basis. Sky-miss and emissive light sources bypass this
+// multiplier.
 @group(2) @binding(1) var aoFullTexture: texture_2d<f32>;
 
 // DDGI bind group (group 3). Atlas + sampler + grid params UBO bound here
@@ -416,11 +419,22 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // - Direct, sun, sky-aperture, indirect all darken in concave contact
   //   regions per Jiménez 2016. Sky-miss pixels (centerDepth=0) were
   //   written 1.0 in gtao.wgsl so they pass through unmodified.
-  // - The select(1.0, ao, ao > 0.001) safe-fallback prevents a corrupt
-  //   first-frame AO sample (NaN, negative, huge) from blanking pixels;
-  //   the texture is seeded with 1.0 at engine init but defense-in-depth.
-  let aoRaw = textureLoad(aoFullTexture, vec2i(gid.xy), 0).r;
-  let ao = select(1.0, clamp(aoRaw, 0.0, 1.0), aoRaw > 0.001);
+  // - The per-channel safe-fallback below replaces any pathological channel
+  //   (NaN, negative, ~0 due to first-frame uninitialised sample) with 1.0
+  //   so a corrupt sample never blanks the pixel. The texture is seeded
+  //   with vec3(1.0) at engine init; this is defence-in-depth.
+  //
+  // Tier-G fix (Jiménez 2016 §5.2 per-channel multi-bounce): previously
+  // shade read only the .r channel — equivalent to Bavoil-style scalar
+  // AO. The upsample now writes the full per-channel multi-bounce vec3
+  // into .rgb, so shade darkens each colour channel by its own factor.
+  let aoRaw = textureLoad(aoFullTexture, vec2i(gid.xy), 0).rgb;
+  let aoClamped = clamp(aoRaw, vec3f(0.0), vec3f(1.0));
+  let ao = vec3f(
+    select(1.0, aoClamped.r, aoRaw.r > 0.001),
+    select(1.0, aoClamped.g, aoRaw.g > 0.001),
+    select(1.0, aoClamped.b, aoRaw.b > 0.001),
+  );
 
   // Sprint 18 — split the radiance into a direct channel (heads to the
   // tight-sigma atrous-variance chain) and an indirect channel (heads to
