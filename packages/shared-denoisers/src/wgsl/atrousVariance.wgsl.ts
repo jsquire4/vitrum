@@ -64,6 +64,7 @@
  *   Decision 13 — versioned struct pinned Sprint 9 (2026-05-09).
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import { ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../atrousVarianceConstants.js';
 import { WELFORD_VARIANCE_WGSL } from './welfordVariance.wgsl.js';
 import { ATROUS_VARIANCE_KERNEL_WGSL } from './atrousKernel.wgsl.js';
@@ -72,6 +73,11 @@ import { ATROUS_VARIANCE_KERNEL_WGSL } from './atrousKernel.wgsl.js';
 export const ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE = 16 as const;
 
 export const ATROUS_VARIANCE_WGSL = /* wgsl */ `
+// Canonical Rec.709 luminance — @vitrum/shared-samplers/wgsl/luminance.wgsl.
+// Provides const LUM_W709 + fn luminance(c: vec3f) -> f32. The local fn
+// luminance defined below at "Variance Estimation Pass" delegates to this.
+${LUMINANCE_WGSL}
+
 // Temporal branch threshold — single source: ../atrousVarianceConstants.ts ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT
 const SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT}u;
 
@@ -85,9 +91,6 @@ ${WELFORD_VARIANCE_WGSL}
 // ============================================================
 const PI       = 3.14159265358979;
 const INV_PI   = 0.31830988618;
-// Rec. 709 luminance weights — canonical value; identical copies exist
-// in atrous.wgsl.ts, spatialFilter.wgsl.ts, hdrLuminanceBilateral.wgsl.ts.
-const LUM_W    = vec3f(0.2126, 0.7152, 0.0722);
 
 // ============================================================
 // Variance estimation uniforms
@@ -134,9 +137,7 @@ struct AtrousVarianceAtrousUBO {
 @group(0) @binding(6) var varOut_varianceOut:  texture_storage_2d<rg32float, write>;
 @group(0) @binding(7) var<uniform>  varUBO:   AtrousVarianceVarianceUBO;
 
-fn luminance(c: vec3f) -> f32 {
-  return dot(c, LUM_W);
-}
+// fn luminance(c: vec3f) — canonical from LUMINANCE_WGSL above; uses LUM_W709.
 
 @compute @workgroup_size(16, 16, 1)
 fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
