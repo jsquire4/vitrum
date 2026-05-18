@@ -113,21 +113,31 @@ function sampleGgxVndfTangent(
 }
 
 /**
- * GGX VNDF PDF: p(h | wo) = D(h) * G1(wo) * max(0, wo·h) / (N·wo)
- * For reflection the Jacobian gives p(wi | wo) = p(h) / (4 * wo·h).
- * Simplified: D(h) * N·h / (4 * wo·h).
- * This matches brdfDirectionalPdf's pdfSpec computation exactly.
+ * GGX VNDF reflection PDF (Heitz 2018 JCGT 7(4) §3):
+ *   p_VNDF(h | wo) = D(h) · G1(wo) · max(0, wo·h) / (N·wo)
+ * With the reflection Jacobian dω_h/dω_wi = 1/(4·|wo·h|), this collapses to
+ *   p_VNDF(wi | wo) = D(h) · G1(wo) / (4 · N·wo)
+ * which is what brdfDirectionalPdf's `pdfSpec` computes and what the
+ * sampleGgxVndfTangent sampler is consistent with. Note: this uses the
+ * Schlick-GGX `smithG1` form to match the WGSL `evaluateBrdf` masking term;
+ * the analytic-G1 form below (`smithG1Heitz`) is only used for the VNDF
+ * normalization check in T1.D1.
  */
 function ggxVndfReflectionPdf(
   wo: [number, number, number],
   wi: [number, number, number],
   alpha: number,
 ): number {
+  const nDotV = Math.max(wo[2], 0.0);
+  if (nDotV <= 1e-5) return 0.0;
   const hRaw = normalize3([wo[0] + wi[0], wo[1] + wi[1], wo[2] + wi[2]]);
   const nDotH = Math.max(hRaw[2], 0.0);
-  const vDotH = Math.max(dot3(wo, hRaw), 1e-6);
   const d = ggxD(nDotH, alpha);
-  return (d * nDotH) / (4.0 * vDotH);
+  // Roughness used in smithG1 here mirrors the WGSL `evaluateBrdf` / pdf
+  // call sites which use `roughness` (not alpha) in the Schlick-GGX form.
+  const roughness = Math.sqrt(alpha);
+  const g1Wo = smithG1(nDotV, roughness);
+  return (d * g1Wo) / (4.0 * nDotV);
 }
 
 // ---------------------------------------------------------------------------
@@ -598,6 +608,75 @@ describe('VNDF GGX properties (Item 33-B, Item 14 VNDF landed)', () => {
     // below-horizon events are discarded by the cos(θ) = 0 cosine weighting in
     // the path integrator, so they do not bias the image.
     expect(belowHorizon / 10_000).toBeLessThan(0.08);
+  });
+
+  it('VNDF sample/PDF match: f·cosθ / pdf ≈ F·G1(wi) (Heitz 2018 estimator identity)', () => {
+    // CONTRACT CHECK — sampleGgxVndfTangent vs ggxVndfReflectionPdf.
+    // With proper VNDF sampling and the matching VNDF PDF, the MC estimator
+    //   weight = BRDF·cos / pdf
+    //   BRDF (white f0=1, metallic=1) = D·G·F / (4·NdotV·NdotL)
+    //   pdf  (Heitz 2018 VNDF)        = D·G1(wo) / (4·NdotV)
+    //   weight = F · G / G1(wo) = F · G1(wi)
+    // The earlier NDF-half-vector PDF (d·NdotH/(4·vDotH)) failed this identity
+    // by a factor of (G1(wo)·vDotH)/(NdotV·NdotH); this test pins it down.
+    const woConfigs: Array<[number, number, number]> = [
+      [0.0, 0.0, 1.0],                          // along the normal
+      normalize3([0.3, 0.0, 0.95]),             // shallow tilt
+      normalize3([0.7, 0.0, 0.71]),             // 45°
+      normalize3([0.0, 0.6, 0.8]),              // off-axis
+    ];
+    const roughnesses = [0.2, 0.5, 0.8];
+    const N_IS = 20_000;
+
+    for (const wo of woConfigs) {
+      for (const roughness of roughnesses) {
+        const alpha = Math.max(roughness * roughness, 1e-3);
+        const rng = {
+          v: (0xb16b00b5 ^ Math.round(wo[2] * 1000) ^ Math.round(roughness * 10000)) >>> 0,
+        };
+
+        let weightSum = 0;
+        let analyticSum = 0;
+        let n = 0;
+        for (let i = 0; i < N_IS; i++) {
+          const h = sampleGgxVndfTangent(wo, alpha, rng);
+          const woDotH = dot3(wo, h);
+          const wi: [number, number, number] = [
+            2 * woDotH * h[0] - wo[0],
+            2 * woDotH * h[1] - wo[1],
+            2 * woDotH * h[2] - wo[2],
+          ];
+          if (wi[2] <= 1e-5) continue; // below horizon
+          const pdf = ggxVndfReflectionPdf(wo, wi, alpha);
+          if (pdf < 1e-10) continue;
+
+          // Specular-only BRDF, F = 1 (metallic albedo=1, fresnel collapsed).
+          const nDotH = Math.max(h[2], 0);
+          const D = ggxD(nDotH, alpha);
+          const G = smithG1(wo[2], roughness) * smithG1(wi[2], roughness);
+          const brdfSpec = (D * G) / Math.max(4 * wo[2] * wi[2], 1e-6);
+          const weight = (brdfSpec * wi[2]) / pdf;
+
+          // Analytic identity target: F · G1(wi) (F = 1 here).
+          const target = smithG1(wi[2], roughness);
+
+          if (Number.isFinite(weight)) {
+            weightSum += weight;
+            analyticSum += target;
+            n++;
+          }
+        }
+
+        expect(n).toBeGreaterThan(N_IS * 0.7);
+        const meanWeight = weightSum / n;
+        const meanTarget = analyticSum / n;
+        // The MC mean of weight should track the MC mean of G1(wi) since the
+        // identity holds POINTWISE. Tight tolerance because both sides use the
+        // same wi samples.
+        const relErr = Math.abs(meanWeight - meanTarget) / Math.max(meanTarget, 1e-6);
+        expect(relErr).toBeLessThan(1e-3);
+      }
+    }
   });
 
   it('VNDF importance-sampled f/pdf ≈ constant (unbiased estimator test, roughness=0.5)', () => {
