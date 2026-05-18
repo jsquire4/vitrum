@@ -90,7 +90,7 @@ export { buildWalkaroundLightingNode } from './rc/walkaroundDiffuseLighting.js';
 export type { WalkaroundLightingNodes } from './rc/walkaroundDiffuseLighting.js';
 
 // DDGI shading injection (TSL-preserved; requires three/webgpu + three/tsl).
-export { applyDDGIShading } from './rc/applyDDGIShading.js';
+export { applyDDGIShading } from './ddgi/applyDDGIShading.js';
 
 // Raw WGSL shader strings (for host inspection or headless testing).
 export { PROBE_RAY_CAST_WGSL } from './rc/wgsl/probeRayCast.wgsl.js';
