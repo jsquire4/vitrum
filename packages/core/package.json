@@ -23,7 +23,8 @@
   },
   "peerDependencies": {},
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts,.tsx"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.40",

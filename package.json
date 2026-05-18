@@ -13,7 +13,10 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:workspaces": "npm run lint --workspaces --if-present",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "clean": "npm run clean --workspaces --if-present",
     "fork-shader-smoke": "node ./scripts/run-fork-shader-smoke.mjs",
     "shader-compile-ci": "npm run shader-compile-ci --workspace @vitrum/shader-compile-ci",
@@ -25,7 +28,16 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "typescript": "^5.5.0"
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.3",
+    "typescript": "^5.5.0",
+    "typescript-eslint": "^8.59.3"
   },
   "license": "MIT",
   "author": "jsquire4",
