@@ -229,15 +229,43 @@ export interface SVGFFrameResources {
 }
 
 /**
- * Path-guiding (PPG) GPU resources — empty placeholder.
+ * Path-guiding (PPG) GPU resources — Müller 2017 Practical Path Guiding
+ * (W9, opt-in via `HybridEngineOptions.ppgEnabled`).
  *
- * W9 (PPG GPU dTree) will populate this sub-struct with the dTree storage
- * buffers and any associated UBOs. Declared now so consumers can pattern-
- * match on `res.ppg` without conditional access.
+ * When PPG is not enabled, every field is `undefined` and the PPG passes are
+ * never registered (see `WalkaroundGPUPipeline._ppgEnabled`). When enabled,
+ * these buffers are uploaded each rebuild cycle and bound into the PPG guide
+ * + update passes:
+ *
+ *   - sTreeBuf       — serialised spatial kd-tree (Float32Array)
+ *   - dTreeBuf       — concatenated per-cell directional quadtrees
+ *   - dTreeOffsetsBuf — sTree-cell → dTreeBuf base-offset table
+ *   - fluxAtomicsBuf — atomic u32 flux accumulator (one slot per dTree node)
+ *   - samplesPosBuf  — per-pixel sample positions (training input; W9 P1 stub-filled)
+ *   - samplesDirBuf  — per-pixel sample directions (training input)
+ *   - samplesLiBuf   — per-pixel incoming radiance L_i (deviation-3 binding)
+ *   - sampleOutBuf   — per-pixel guide sample output (xyz=dir, w=pdf)
+ *   - guideUboBuffer — guide kernel UBO (pixelCount, alpha, scene bounds)
+ *   - updateUboBuffer — update kernel UBO (sampleCount, fluxBudget)
+ *
+ * See `ppg/serialise.ts` for the buffer layout.
  */
 export interface PPGFrameResources {
-  /** Reserved for W9. */
-  readonly _empty?: never;
+  /** Set only when `ppgEnabled` was true at engine init. */
+  sTreeBuf?: GPUBuffer;
+  dTreeBuf?: GPUBuffer;
+  dTreeOffsetsBuf?: GPUBuffer;
+  /** Atomic u32 accumulator — one slot per dTree node (matches dTreeBuf layout). */
+  fluxAtomicsBuf?: GPUBuffer;
+  /** Per-pixel sample inputs to the update kernel (training). */
+  samplesPosBuf?: GPUBuffer;
+  samplesDirBuf?: GPUBuffer;
+  samplesLiBuf?: GPUBuffer;
+  /** Per-pixel guide sample output (xyz=dir world, w=pdf). */
+  sampleOutBuf?: GPUBuffer;
+  /** Guide + update kernel UBOs. */
+  guideUboBuffer?: GPUBuffer;
+  updateUboBuffer?: GPUBuffer;
 }
 
 /**
@@ -869,9 +897,10 @@ export function createFrameResources(
     svgfVarianceMomentsIntermedTexture,
   };
 
-  // PPG + neural are placeholders for W9 / W10. Frozen empty objects so any
-  // accidental write throws in strict mode instead of silently mutating.
-  const ppg: PPGFrameResources = Object.freeze({}) as PPGFrameResources;
+  // PPG resources are allocated lazily by `allocatePPGResources` when
+  // `HybridEngineOptions.ppgEnabled === true`. Default leaves every slot
+  // undefined so the pipeline can treat PPG as truly opt-in.
+  const ppg: PPGFrameResources = {};
   const neural: NeuralFrameResources = Object.freeze({}) as NeuralFrameResources;
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
@@ -945,5 +974,130 @@ export function destroyFrameResources(r: FrameResources): void {
   r.svgf.svgfVarianceTexture.destroy();
   r.svgf.svgfVarianceMomentsIntermedTexture.destroy();
 
-  // ppg / neural — empty placeholders; nothing to destroy until W9 / W10.
+  // ppg — destroy all allocated buffers (each is optional; null-safe).
+  r.ppg.sTreeBuf?.destroy();
+  r.ppg.dTreeBuf?.destroy();
+  r.ppg.dTreeOffsetsBuf?.destroy();
+  r.ppg.fluxAtomicsBuf?.destroy();
+  r.ppg.samplesPosBuf?.destroy();
+  r.ppg.samplesDirBuf?.destroy();
+  r.ppg.samplesLiBuf?.destroy();
+  r.ppg.sampleOutBuf?.destroy();
+  r.ppg.guideUboBuffer?.destroy();
+  r.ppg.updateUboBuffer?.destroy();
+  // neural — empty placeholder; nothing to destroy until W10.
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// PPG resource allocator (W9 — opt-in via HybridEngineOptions.ppgEnabled)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Allocate the PPG (Müller 2017 path-guiding) GPU buffers and attach them to
+ * an existing FrameResources struct. Called once at engine init, AFTER
+ * `createFrameResources`, only when `ppgEnabled` is true.
+ *
+ * Buffer-size policy:
+ *   - sTreeBuf:        sized for `maxSpatialCells` × STREE_NODE_F32 + header.
+ *   - dTreeBuf:        sized for `maxSpatialCells × maxDTreeNodesPerCell`
+ *                      × DTREE_NODE_F32 + per-cell header.
+ *   - dTreeOffsetsBuf: u32 × maxSpatialCells.
+ *   - fluxAtomicsBuf:  u32 × maxSpatialCells × maxDTreeNodesPerCell.
+ *   - samples*Buf:     vec4f × (width × height).
+ *   - sampleOutBuf:    vec4f × (width × height).
+ *   - guideUboBuffer:  48 bytes (12 × f32 — see PPGGuideUBO in WGSL).
+ *   - updateUboBuffer: 16 bytes (4 × u32 — see PPGUpdateUBO in WGSL).
+ *
+ * The host can resize via {@link allocatePPGResources} on a new
+ * FrameResources struct; the old buffers are NOT destroyed here (the caller
+ * owns their lifecycle).
+ */
+export function allocatePPGResources(
+  device: GPUDevice,
+  res: FrameResources,
+  width: number,
+  height: number,
+  opts?: {
+    /**
+     * Hard cap on sTree leaf count. Default 1 024 — large enough for
+     * meaningful spatial refinement while keeping VRAM bounded at ~6 MB.
+     * Hosts that expect dense scenes can raise this up to
+     * `PPG_MAX_SPATIAL_CELLS` (16 384).
+     */
+    maxSpatialCells?: number;
+    /**
+     * Upper bound on dTree nodes per cell.
+     * Default 341 = 1 + 4 + 16 + 64 + 256 (full 4^4 quadtree = depth 4).
+     * Matches `PPG_DTREE_MAX_DEPTH = 4`.
+     */
+    maxDTreeNodesPerCell?: number;
+  },
+): void {
+  const maxSpatialCells = opts?.maxSpatialCells ?? 1_024;
+  const maxDTreeNodesPerCell = opts?.maxDTreeNodesPerCell ?? 341;
+  const pixelCount = Math.max(1, width * height);
+
+  // Layout constants — must match serialise.ts.
+  const STREE_HEADER_F32 = 4;
+  const STREE_NODE_F32 = 16;
+  const DTREE_HEADER_F32 = 4;
+  const DTREE_NODE_F32 = 8;
+
+  const sTreeBufF32 = STREE_HEADER_F32 + maxSpatialCells * STREE_NODE_F32;
+  const dTreeBufF32 =
+    maxSpatialCells * (DTREE_HEADER_F32 + maxDTreeNodesPerCell * DTREE_NODE_F32);
+  const fluxAtomicsCount = maxSpatialCells * maxDTreeNodesPerCell;
+
+  res.ppg.sTreeBuf = device.createBuffer({
+    label: 'ppg-sTreeBuf',
+    size: Math.max(16, sTreeBufF32 * 4),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.dTreeBuf = device.createBuffer({
+    label: 'ppg-dTreeBuf',
+    size: Math.max(16, dTreeBufF32 * 4),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.dTreeOffsetsBuf = device.createBuffer({
+    label: 'ppg-dTreeOffsets',
+    size: Math.max(16, maxSpatialCells * 4),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.fluxAtomicsBuf = device.createBuffer({
+    label: 'ppg-fluxAtomics',
+    size: Math.max(16, fluxAtomicsCount * 4),
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
+  });
+  // Sample input buffers — vec4f per pixel.
+  const samplesSize = Math.max(16, pixelCount * 16);
+  res.ppg.samplesPosBuf = device.createBuffer({
+    label: 'ppg-samplesPos',
+    size: samplesSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.samplesDirBuf = device.createBuffer({
+    label: 'ppg-samplesDir',
+    size: samplesSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.samplesLiBuf = device.createBuffer({
+    label: 'ppg-samplesLi',
+    size: samplesSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.sampleOutBuf = device.createBuffer({
+    label: 'ppg-sampleOut',
+    size: samplesSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.guideUboBuffer = device.createBuffer({
+    label: 'ppg-guide-ubo',
+    size: 48, // 12 × f32 — see PPGGuideUBO in ppgGuide.wgsl.ts.
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  res.ppg.updateUboBuffer = device.createBuffer({
+    label: 'ppg-update-ubo',
+    size: 16, // 4 × u32 — see PPGUpdateUBO in ppgUpdate.wgsl.ts.
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
 }
