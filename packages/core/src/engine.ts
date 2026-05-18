@@ -85,6 +85,17 @@ export interface EngineCapabilities {
    * CGF 34(4), 2015.
    */
   readonly causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
+
+  /**
+   * True when the engine exposes {@link Engine.debug} with at least one
+   * implemented introspection method (W3-D8). Hosts that show dev overlays
+   * use this as a structural opt-in: when false, the overlay can hide the
+   * panel entirely rather than typeof-checking every method. Inferred from
+   * the engine's debug surface at construction time; backends that ship
+   * `debug` set this to `true`, others leave it `false`. Defaults to
+   * `false` so omitting it is a safe negative report.
+   */
+  readonly debugSurface?: boolean;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -232,6 +243,61 @@ export interface EngineDebugSurface {
     ao: GPUTexture | null;
     total: GPUTexture | null;
   } | null;
+
+  /**
+   * Approximate engine-owned GPU memory broken down by algorithm category,
+   * texture format, and buffer-usage class. Numbers are estimates:
+   *
+   *   - WebGPU does not expose actual driver-allocated size (alignment,
+   *     padding, mip-chain rounding all live inside the implementation).
+   *     We infer texture bytes as `width × height × bytesPerTexel(format)`
+   *     and buffer bytes as the requested `size`.
+   *   - Sub-byte / block-compressed formats (BC*, ETC*, ASTC*) are reported
+   *     as their uncompressed equivalent for safety; if a backend allocates
+   *     a BC texture it should bias the report up, never down.
+   *   - The split by `byCategory` follows the per-algorithm sub-structs in
+   *     each backend's FrameResources (e.g. `common`, `restirDI`,
+   *     `restirGI`, `svgf`, `gtao`, `ddgi`, `ppg`, `neural`). Backends
+   *     without an algorithm report `0` for that key (or omit it).
+   *
+   * Returns `null` when the engine hasn't allocated any frame resources
+   * yet (pre-init, between dispose+recreate). Callers MUST tolerate a
+   * `null` return; budget gauges typically render a "—" tile in that case.
+   *
+   * Hook into {@link FrameStats.gpuMemoryBytes} for streaming consumption
+   * during the render loop — pulling once at engine creation is fine for
+   * a one-shot budget audit.
+   */
+  estimatedGpuMemoryBytes?(): GpuMemoryBreakdown | null;
+}
+
+/**
+ * Per-frame GPU-memory budget breakdown surfaced via
+ * {@link EngineDebugSurface.estimatedGpuMemoryBytes}. All values are bytes.
+ *
+ * Invariant: `total === sum(byCategory)`. The two secondary tables
+ * (`byTextureFormat`, `byBufferUsage`) are independent decompositions of
+ * the same total — they sum to `total` when the engine has at least one
+ * resource of each type, otherwise they sum to `total − unaccounted` (e.g.
+ * samplers are not counted in either secondary table because WebGPU does
+ * not expose their footprint). Consumers MUST NOT cross-multiply between
+ * the three views.
+ */
+export interface GpuMemoryBreakdown {
+  /** Sum of all engine-owned texture + buffer bytes. */
+  readonly total: number;
+  /** Per-algorithm bytes (keyed by FrameResources sub-struct name). */
+  readonly byCategory: Readonly<Record<string, number>>;
+  /** Texture bytes split by `GPUTextureFormat` literal. */
+  readonly byTextureFormat: Readonly<Record<string, number>>;
+  /**
+   * Buffer bytes split by usage class (`'storage' | 'uniform' | 'vertex'
+   * | 'index' | 'other'`). A buffer with multiple usage bits is attributed
+   * to its dominant declared purpose: STORAGE > UNIFORM > VERTEX > INDEX >
+   * other (the order chosen so the visible budget reflects path-tracer
+   * allocator pressure rather than incidental copy bits).
+   */
+  readonly byBufferUsage: Readonly<Record<string, number>>;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -254,8 +320,27 @@ export interface FrameStats {
   readonly spp?: number;
   /** BVH max depth — diagnostic for traversal cost. */
   readonly bvhDepth?: number;
-  /** Approximate engine-owned GPU memory (sum of texture + buffer bytes). */
+  /**
+   * Approximate engine-owned GPU memory (sum of texture + buffer bytes).
+   * Backwards-compatible scalar form — emitted by backends that have not
+   * been wired up to the structured breakdown. Hosts that want a structured
+   * report should prefer {@link FrameStats.gpuMemoryBytes}.
+   *
+   * @deprecated Prefer {@link FrameStats.gpuMemoryBytes}; this scalar
+   * remains for backends that have not yet integrated the structured
+   * surface.
+   */
   readonly estimatedGpuMemoryBytes?: number;
+  /**
+   * Structured GPU-memory breakdown when the backend can build one.
+   * Same shape as {@link EngineDebugSurface.estimatedGpuMemoryBytes}; the
+   * stats hook is a streaming convenience so dev overlays can show a live
+   * gauge without polling debug methods. Backends emit either this OR
+   * `estimatedGpuMemoryBytes` (or neither). The structured form is
+   * preferred — when both are present, prefer this and treat the scalar
+   * as `gpuMemoryBytes.total`.
+   */
+  readonly gpuMemoryBytes?: GpuMemoryBreakdown;
 }
 
 /** Progress event surfaced via {@link Engine.onProgress}.  The discriminator
