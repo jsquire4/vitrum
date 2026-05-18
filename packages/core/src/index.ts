@@ -5,7 +5,7 @@
 
 export * from './scene/index.js';
 export * from './frame.js';
-export * from './engine.js';
+export * from './engine/index.js';
 export type { GpuDetection, DetectGpuOptions } from './gpuDetection.js';
 export type { WgpuAdapterKind, WgpuProbeResult } from './wgpuSupport.js';
 export { detectGpu } from './gpuDetection.js';
