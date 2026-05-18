@@ -252,6 +252,16 @@ fn bvhIntersectFirstHit(
       let c1 = select( rightIndex, leftIndex, leftToRight );
       let c2 = select( leftIndex, rightIndex, leftToRight );
 
+      // Bail out cleanly with current best-hit if pushing both children
+      // would overflow.  Without this guard the unconditional push wrote
+      // past the end of stack[BVH_STACK_DEPTH] (WGSL clamps the index,
+      // corrupting stack[BVH_STACK_DEPTH-1]) before the loop-top check
+      // could fire.  At depth 60 a balanced BVH spans 2^60 triangles, so
+      // this branch is unreachable for any real scene.
+      if ( pointer + 2 >= i32( BVH_STACK_DEPTH ) ) {
+        return bestHit;
+      }
+
       pointer = pointer + 1;
       stack[ pointer ] = c2;
 

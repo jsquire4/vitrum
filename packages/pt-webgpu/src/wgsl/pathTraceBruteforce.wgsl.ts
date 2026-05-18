@@ -892,13 +892,21 @@ fn traceMeshBvh(
       // rightChildOrTriOffset is a RELATIVE offset (node units) from the current
       // node index; left child is always nodeIdx + 1. This matches the canonical
       // relative-offset encoding used by shared-bvh/normalizeBvhInteriorOffsets
-      // and walkaround-hybrid/common.wgsl. Invariant: 1 ≤ offset < totalNodes.
+      // and walkaround-hybrid/common.wgsl. Invariant: 1 <= offset < totalNodes.
       let rightChild = nodeIdx + node.rightChildOrTriOffset;
       if (stackPtr + 2u < 64u) {
         stack[stackPtr] = rightChild;
         stackPtr = stackPtr + 1u;
         stack[stackPtr] = leftChild;
         stackPtr = stackPtr + 1u;
+      } else {
+        // Stack overflow: bail out with current best-hit (already
+        // written into *hit if closest, else simply 'no hit found yet')
+        // rather than silently dropping both children.  At depth 64 a
+        // balanced BVH spans 2^64 triangles so this branch is
+        // unreachable for any real scene; the guard exists for invariant
+        // clarity and to surface degenerate inputs deterministically.
+        return (*hit).didHit;
       }
     }
   }
