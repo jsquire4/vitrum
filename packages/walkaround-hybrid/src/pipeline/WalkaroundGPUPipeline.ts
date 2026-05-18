@@ -565,6 +565,62 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
+   * BVH-refit fast path — overwrite the bvhNodes + bvhPositions GPU
+   * buffers in place via `device.queue.writeBuffer`. The buffer handles,
+   * sizes, and bind groups are preserved (no pipeline rebind, no bind-
+   * group invalidation).
+   *
+   * Used by `HybridEngine.updatePrimitive`'s transform-only fast path
+   * after CPU-side refit. Caller passes the already-refit BVH node bytes
+   * and the affected position slice (byte-offset relative to the start
+   * of `bvhPositions`).
+   *
+   * `bvhNodesBytes` is uploaded whole because parent bounds bubble
+   * upward; even a single-mesh transform can dirty the root's AABB.
+   * `positions` is uploaded byte-by-byte using `byteOffset` + `data` so
+   * a small primitive only pays for its own slice.
+   */
+  refreshBvhRefit(
+    bvhNodesBytes: ArrayBuffer,
+    positionsSlice: { byteOffset: number; data: ArrayBuffer },
+  ): void {
+    if (!this._initialized) return;
+    this._device.queue.writeBuffer(this._bvhNodesBuffer, 0, bvhNodesBytes);
+    this._device.queue.writeBuffer(
+      this._bvhPositionBuffer,
+      positionsSlice.byteOffset,
+      positionsSlice.data,
+    );
+  }
+
+  /**
+   * Full BVH-buffer reupload — destroy + recreate the four BVH GPU
+   * buffers (nodes, index, beer, positions) from a freshly-built
+   * `SceneBVHBuffers`. Used by `HybridEngine.updatePrimitive`'s topology-
+   * change path after a `buildReSTIRSceneBVH` rebuild. Emitter buffers
+   * are NOT touched here — call `updateEmitters` separately if the
+   * emitter list also changed.
+   *
+   * The pipeline shaders and bind-group layouts stay intact because
+   * `buildSceneBindGroup` is re-invoked per-frame in `renderFrame()`
+   * from the live buffer handles, so the destroy + recreate is picked
+   * up automatically next frame.
+   */
+  refreshBvhFullRebuild(
+    bvhBuffers: Pick<SceneBVHBuffers, 'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhPositions'>,
+  ): void {
+    if (!this._initialized) return;
+    this._bvhNodesBuffer.destroy();
+    this._bvhIndexBuffer.destroy();
+    this._bvhBeerBuffer.destroy();
+    this._bvhPositionBuffer.destroy();
+    this._bvhNodesBuffer    = uploadBuffer(this._device, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
+    this._bvhIndexBuffer    = uploadBuffer(this._device, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
+    this._bvhBeerBuffer     = uploadBuffer(this._device, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
+    this._bvhPositionBuffer = uploadBuffer(this._device, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
+  }
+
+  /**
    * Resize all per-frame GPU resources to a new render-surface size WITHOUT
    * rebuilding the BVH or recompiling pipelines. Destroys the current
    * `_res: FrameResources` (every full-res rgba16float texture, reservoir

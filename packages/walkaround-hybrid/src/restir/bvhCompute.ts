@@ -95,6 +95,37 @@ export interface SceneBVHBuffers {
   totalEmissivePower: number;
   /** Merged geometry (CPU side, for debug / re-upload). */
   mergedGeometry: THREE.BufferGeometry;
+  /**
+   * Per-source-mesh vertex ranges in the merged vertex buffer, in mesh
+   * traversal order. `name` is the source `Object3D.name`; for scenes
+   * synthesized via `vitrumSceneToThree` the name equals the primitive id
+   * (see `vitrumSceneToThree.ts:159`), so primitive id → vertex range
+   * needs no extra bookkeeping.
+   *
+   * `matrixWorldAtBuild` is the 16-float `mesh.matrixWorld.elements`
+   * snapshot at the time the BVH was built. On a transform-only patch,
+   * `HybridEngine.updatePrimitive` walks the cached merged-world position
+   * back through `inverse(matrixWorldAtBuild)` (to recover the local-space
+   * position) and forward through the patched `matrixWorld` — yielding
+   * the new world-space position without re-running the full BVH build.
+   *
+   * Mirrors `SceneBVHCommonResult.meshVertexRanges` from `@vitrum/shared-bvh`,
+   * extended with the matrix snapshot the refit path needs.
+   */
+  meshVertexRanges: ReadonlyArray<{
+    name: string;
+    vertexStart: number;
+    vertexCount: number;
+    matrixWorldAtBuild: Float32Array;
+  }>;
+  /**
+   * Stride-3 triangle index buffer (3 u32 per triangle) — the un-packed
+   * indices returned by `buildSharedBVH`. ReSTIR's GPU `bvhIndex` is
+   * stride-4 (packs RGBA8 material color into `.w`); the shared-bvh
+   * refit helper reads indices without the `.w` lane, so we cache the
+   * stride-3 form here for the refit fast path.
+   */
+  bvhIndicesStride3: Uint32Array;
 }
 
 // EmitterTri layout, EMITTER_STRIDE / EMITTER_FLOATS, and the
@@ -236,7 +267,56 @@ export function buildReSTIRSceneBVH(
     emitterCount,
     totalEmissivePower,
     mergedGeometry: shared.bvh.geometry,
+    meshVertexRanges: enrichMeshVertexRangesWithMatrix(sceneRoots, shared.meshVertexRanges),
+    bvhIndicesStride3: shared.indices,
   };
+}
+
+/**
+ * Walk `sceneRoots` once to find each named mesh and snapshot its
+ * `matrixWorld.elements` — required by `HybridEngine.updatePrimitive`'s
+ * transform-only refit path. Names are unique (host stamps primitive ids
+ * onto `mesh.name`), so the first match per name wins.
+ *
+ * Meshes without a match (the host renamed or removed them between
+ * build and refit) get a fallback identity matrix; the refit will then
+ * misposition that mesh, but the topology-rebuild path catches it on
+ * the next setScene.
+ */
+function enrichMeshVertexRangesWithMatrix(
+  sceneRoots: THREE.Object3D[],
+  rawRanges: ReadonlyArray<{ name: string; vertexStart: number; vertexCount: number }>,
+): ReadonlyArray<{
+  name: string;
+  vertexStart: number;
+  vertexCount: number;
+  matrixWorldAtBuild: Float32Array;
+}> {
+  const byName = new Map<string, THREE.Object3D>();
+  for (const root of sceneRoots) {
+    root.traverseVisible((obj) => {
+      if (!byName.has(obj.name)) byName.set(obj.name, obj);
+    });
+  }
+  const out = rawRanges.map((r) => {
+    const obj = byName.get(r.name);
+    // Snapshot the matrix-world elements at build time. Use a fresh
+    // Float32Array so subsequent host edits to obj.matrixWorld don't
+    // mutate our snapshot.
+    const m = obj ? new Float32Array(obj.matrixWorld.elements) : new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+    return {
+      name: r.name,
+      vertexStart: r.vertexStart,
+      vertexCount: r.vertexCount,
+      matrixWorldAtBuild: m,
+    };
+  });
+  return out;
 }
 
 /** Dispose CPU-side geometry + GPU buffers (call on unmount). */
