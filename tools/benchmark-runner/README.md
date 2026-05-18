@@ -245,7 +245,7 @@ For each of the 11 scenarios in `sweep-2026-05-11-diff-report.md`:
 4. A/B the images side-by-side and confirm the directional change described
    in the **Expected change** field. Mark **Visual sign-off** as ☑ when satisfied.
 
-Acceptance criteria (per plan/sweep-2026-05-12-followup.md § Phase A4):
+Acceptance criteria (per plan/archive/sweep-2026-05-12-followup.md § Phase A4):
 - Visual changes must be in the direction the math predicts (see each scenario's
   **Expected change** field).
 - No new artifacts introduced that were not present in the pre-sweep image.

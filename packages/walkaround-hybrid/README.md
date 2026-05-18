@@ -2,12 +2,16 @@
 
 **Stability:** pre-alpha — `HybridEngine` and shader/pipeline APIs may change until the extraction milestones in `plan/generalized-library-milestones.md` are closed.
 
-WebGPU **ReSTIR DI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass. **Radiance Cascades (RC)** are implemented under `src/rc/` for standalone dispatch and material-wrapper flows; composition back into `HybridEngine`’s shade pass is tracked (see `HybridEngine.ts` file header and [plan/walkaround-without-three.md](../../plan/walkaround-without-three.md)).
+WebGPU **ReSTIR DI + ReSTIR-GI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass, **GTAO** ambient occlusion (half-res + bilateral upsample), per-channel **SVGF / à-trous-variance** denoising on direct + indirect, and opt-in **PPG** path guiding and **neural U-Net** denoiser scaffolds. **Radiance Cascades (RC)** are implemented under `src/rc/` for standalone dispatch and material-wrapper flows; composition back into `HybridEngine`’s shade pass is tracked (see `HybridEngine.ts` file header and [plan/walkaround-without-three.md](../../plan/walkaround-without-three.md)).
 
 Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **DDGI** (Dynamic Diffuse Global Illumination) — probe-atlas irradiance, updated via compute each frame.
 - **RC** (Radiance Cascades) — see `src/rc/` for cascade compute and TSL hooks; not currently added to the `HybridEngine` combined shading sum.
 - **ReSTIR DI** (Reservoir-based Spatiotemporal Importance Resampling) — direct illumination with temporal + spatial reuse.
+- **ReSTIR-GI** (Ouyang et al. 2021) — indirect-illumination reservoirs with RIS + temporal + spatial reuse (Sprints 16–17).
+- **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
+- **Denoisers** (selectable via `EngineOptions.denoiser`): `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
+- **PPG** path guiding (Müller et al. 2017) — opt-in via `EngineOptions.ppgEnabled`; sTree + dTree on CPU with WGSL update/guide kernels under `src/ppg/`.
 
 ## Denoisers
 
@@ -75,6 +79,7 @@ ReSTIR-only usage does not trigger the DDGI or RC-material-wrapper paths.
 ```
 src/
   HybridEngine.ts        — Engine implementation (de-React-ified useHybridLayeredGI)
+  hostScene/             — Three-side scene adapters consumed by HybridEngine
   ddgi/                  — DDGI subsystem (probe grid, update pass, atlas layout)
   rc/                    — RC subsystem (cascade pyramid, dispatch, material wrappers)
     cascadePyramid.ts    — storage layout + allocation
@@ -88,9 +93,26 @@ src/
       probeRayCast.wgsl.ts — Assembled raw WGSL for probe ray-cast compute kernel
       cascadeMerge.wgsl.ts — Assembled raw WGSL for cascade merge compute kernel
     TSL_TO_RAW_MAPPING.md — Documents every TSL primitive → raw WebGPU mapping
-  pipeline/              — ReSTIR pipeline (7-way split of WalkaroundGPUPipeline)
-  restir/                — ReSTIR BVH builder
-  shaders/               — ReSTIR WGSL shader strings
+  pipeline/              — Declarative Pass / PassRegistry, denoiser registry, FrameResources
+    Pass.ts, PassRegistry.ts — Pass interface + registry (W1-R1)
+    passes/              — One file per pass (RIS, RIS-GI, Temporal[GI], Spatial[GI],
+                           Shade, IndirectCombine, IndirectTemporalAccum, AtrousIndirect,
+                           GTAO, GTAOUpsample, Composite, Resolve, SampleBudget,
+                           PPGGuide, PPGUpdate) + declarative passOrder
+    denoisers/           — Denoiser registry (atrous, atrous-variance, svgf-real,
+                           neural, oidn-final, none)
+    pipelineCompiler.ts  — WGSL include-graph (declarative `requires:`; W1-R6)
+    WalkaroundGPUPipeline.ts — Iterates PASS_ORDER each frame
+  restir/                — ReSTIR BVH + emitter list builders
+  shaders/               — WGSL shader strings: ris, risGi, temporal, temporalGi,
+                           spatial, spatialGi, shade, indirectCombine,
+                           indirectTemporalAccum, gtao, gtaoUpsample,
+                           composite, resolve, sampleBudget, welfordTemporal
+  ppg/                   — Practical Path Guiding (Müller 2017): sTree + dTree on CPU,
+                           ppgUpdate/ppgGuide WGSL kernels (opt-in via ppgEnabled)
+  neural/                — U-Net denoiser (Chaitanya 2017): InferenceGraph,
+                           inputPacker, unetArchitecture, weights loader (opt-in
+                           via denoiser: 'neural'); WGSL kernels under neural/wgsl/
   lib/                   — Shared utilities (nodeMaterialUpgrade)
 ```
 

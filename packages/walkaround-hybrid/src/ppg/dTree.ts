@@ -8,7 +8,7 @@
  * unit-square [0,1]². Leaves split adaptively when their accumulated flux
  * fraction exceeds `PPG_DTREE_FLUX_FRACTION × totalFlux`.
  *
- * ADDRESSES DEVIATION 2 (from plan/sweep-2026-05-11-fixes-engines.md Item 25):
+ * ADDRESSES DEVIATION 2 (from plan/archive/sweep-2026-05-11-fixes-engines.md Item 25):
  *   The deleted implementation used a fixed 4×4 octahedral grid (16 bins).
  *   This module implements an ADAPTIVE quadtree that refines high-flux
  *   directional bins, capable of representing sharp indirect caustics.

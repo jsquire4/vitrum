@@ -158,7 +158,7 @@ lighting = color / max(albedo, 0.001)
 Filter `lighting` through the SVGF pipeline. After à-trous: re-multiply by albedo.
 This prevents albedo-correlated high-frequency texture edges from spreading into the
 lighting estimate during filtering. Requires an albedo G-buffer texture. See
-sweep-2026-05-11-fixes-engines.md Item 24 for the full spec.
+archive/sweep-2026-05-11-fixes-engines.md Item 24 for the full spec.
 
 ---
 

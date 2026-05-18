@@ -618,7 +618,7 @@ Pure hygiene — runs in parallel with everything from Wave 1.
   (referenced by stale in-flight memory; in-flight-plan.md claims a
   ReSTIR-GI rewrite is in flight but the work shipped in commits 1203df9
   / 7d307f6).
-- **Disagreement between two RFE trackers** — `plan/external-requests-status.md`
+- **Disagreement between two RFE trackers** — `plan/archive/external-requests-status.md`
   vs `external_requests/IMPLEMENTATION-STATUS.md` reconciled to one
   canonical doc.
 
@@ -975,7 +975,7 @@ folder cleaned.
    false; work shipped in commits 1203df9 / 7d307f6).
 6. **Worktree branches** — delete `worktree-agent-a06812aa6c5b09b98`,
    `worktree-agent-a193d8b569f806c50`.
-7. **RFE trackers** — reconcile `plan/external-requests-status.md` and
+7. **RFE trackers** — reconcile `plan/archive/external-requests-status.md` and
    `external_requests/IMPLEMENTATION-STATUS.md` to one canonical doc.
 8. **`CREDITS.md`** — re-audit; ensure every algorithm has its prior-art
    citation. Particularly: PPG (Müller 2017), GTAO (Jiménez 2016), OIDN

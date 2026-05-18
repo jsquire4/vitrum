@@ -53,7 +53,7 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | **Hardware**                  | WebGPU                      | WebGL2                     |
 | **Convergence**               | re-renders every frame      | accumulates SPP            |
 
-See [`plan/animation-support-status.md`](./plan/animation-support-status.md) for the full animation matrix with caveats.
+See [`plan/archive/animation-support-status.md`](./plan/archive/animation-support-status.md) for the full animation matrix with caveats.
 
 ## When to use which engine
 
