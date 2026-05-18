@@ -115,6 +115,10 @@ export {
   svgfVarianceFromMomentsCPU,
   svgf7x7FallbackCPU,
 } from './svgfRealCpu.js';
+export {
+  svgfRealDemodulateAlbedo,
+  svgfRealRemodulateAlbedo,
+} from './svgfRealWebGPU.js';
 export type {
   SVGFReprojCPUInput,
   SVGFReprojCPUOutput,
