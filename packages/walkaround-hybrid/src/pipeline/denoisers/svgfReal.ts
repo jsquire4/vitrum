@@ -64,13 +64,8 @@ export class SVGFRealDenoiser implements Denoiser {
   /** Ping-pong index for history/moments/prevRadiance (0 = A→read, B→write). */
   private _pingPong = 0;
 
-  /** Owning device handle, captured at init time so dispose can free
-   *  resources without re-plumbing it through. */
-  private _device: GPUDevice | null = null;
-
   async initialize(ctx: DenoiserInitContext): Promise<void> {
     const { device } = ctx;
-    this._device = device;
 
     // ── Compile shader modules ────────────────────────────────────────────
     // All four SVGF kernels are self-contained per their shared-denoisers
@@ -326,6 +321,5 @@ export class SVGFRealDenoiser implements Denoiser {
     this._reprojUboRef.buf = undefined;
     for (const ubo of this._pendingTransientUbos) ubo.destroy();
     this._pendingTransientUbos = [];
-    this._device = null;
   }
 }

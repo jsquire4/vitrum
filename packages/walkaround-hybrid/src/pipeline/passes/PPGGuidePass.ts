@@ -37,7 +37,11 @@ export class PPGGuidePass implements Pass {
   readonly dependencies: readonly string[] = ['gi-spatial-2'];
   readonly passLabels: readonly PassLabel[] = ['ppg-guide'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(opts: PassGateOptions): boolean {
     return opts.ppgEnabled;

@@ -106,7 +106,6 @@ import {
   readTimestampsOnce,
   type TimestampState,
   type PassLabel,
-  type PassLayout,
 } from './timestampQueries.js';
 
 /**
@@ -391,7 +390,6 @@ export class WalkaroundGPUPipeline {
    *  frames; the {@link IndirectTemporalAccumPass} reads + advances it
    *  through a {@link PingPongRef} wrapper. */
   private _indirectAccumPingPongRef: PingPongRef = { value: 0 };
-  private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
 
   // Bind group layout memoisation cache
   private _bglCache: BGLCache = {};
@@ -482,7 +480,6 @@ export class WalkaroundGPUPipeline {
   ): Promise<void> {
     const d = this._device;
     const { _width: W, _height: H } = this;
-    this._swapChainFormat = swapChainFormat;
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
     this._bvhNodesBuffer    = uploadBuffer(d, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);

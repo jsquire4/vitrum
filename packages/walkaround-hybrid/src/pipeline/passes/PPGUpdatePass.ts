@@ -35,7 +35,11 @@ export class PPGUpdatePass implements Pass {
   readonly dependencies: readonly string[] = ['shade'];
   readonly passLabels: readonly PassLabel[] = ['ppg-update'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(opts: PassGateOptions): boolean {
     return opts.ppgEnabled;

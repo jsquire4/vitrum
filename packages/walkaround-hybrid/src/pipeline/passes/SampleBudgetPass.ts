@@ -41,11 +41,19 @@ export class SampleBudgetPass implements Pass {
   readonly dependencies: readonly string[] = [];
   readonly passLabels: readonly PassLabel[] = ['sample-budget'];
 
+  private readonly _pipeline: GPUComputePipeline;
+  private readonly _budgetUboRef: UboRef;
+  private readonly _sampleCountUboRef: UboRef;
+
   constructor(
-    private readonly _pipeline: GPUComputePipeline,
-    private readonly _budgetUboRef: UboRef,
-    private readonly _sampleCountUboRef: UboRef,
-  ) {}
+    pipeline: GPUComputePipeline,
+    budgetUboRef: UboRef,
+    sampleCountUboRef: UboRef,
+  ) {
+    this._pipeline = pipeline;
+    this._budgetUboRef = budgetUboRef;
+    this._sampleCountUboRef = sampleCountUboRef;
+  }
 
   gates(): boolean {
     return true; // always-on standard pipeline pass since Sprint 9.

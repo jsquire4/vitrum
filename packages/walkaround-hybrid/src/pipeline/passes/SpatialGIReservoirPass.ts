@@ -21,7 +21,11 @@ export class SpatialGIReservoirPass implements Pass {
   readonly dependencies: readonly string[] = ['gi-temporal'];
   readonly passLabels: readonly PassLabel[] = ['gi-spatial-1', 'gi-spatial-2'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(): boolean {
     return true;

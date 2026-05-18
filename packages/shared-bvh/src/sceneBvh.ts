@@ -66,7 +66,11 @@ export class SceneBvh {
   /** Cached geometry version for dirty-checking. */
   private _lastGeometryVersion = -1;
 
-  constructor(private readonly opts: SceneBvhOptions = {}) {}
+  private readonly opts: SceneBvhOptions;
+
+  constructor(opts: SceneBvhOptions = {}) {
+    this.opts = opts;
+  }
 
   get buffers(): SceneBvhBuffers | null {
     return this._buffers;

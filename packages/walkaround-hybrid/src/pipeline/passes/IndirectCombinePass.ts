@@ -25,7 +25,11 @@ export class IndirectCombinePass implements Pass {
   readonly dependencies: readonly string[] = ['atrous-indirect-3'];
   readonly passLabels: readonly PassLabel[] = ['indirect-combine'];
 
-  constructor(private readonly _pipeline: GPUComputePipeline) {}
+  private readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
 
   gates(): boolean {
     return true;
