@@ -64,13 +64,22 @@ fn ddgiSample(
     let tw = mix(vec3f(1.0) - frac, frac, vec3f(co));
     var w  = tw.x * tw.y * tw.z;
 
-    // Smooth backface modulation (DDGI paper Eq. 9).
+    // Receiver-side per-probe weight — strict Lambertian cosine baseline.
+    // Majercik et al. 2019 §6 ("Dynamic Diffuse Global Illumination with
+    // Ray-Traced Irradiance Fields"), Algorithm 2 / Eq. 11 baseline form:
+    //   w_n = max(0, dot(receiverNormal, probeDirection))
+    // This is the cosine kernel that matches the producer-side accumulation
+    // (probeUpdateBlend irradiance pass already uses max(0, n·d)). Earlier
+    // code used the wrap-around variant pow((n·p + 1)/2, 2) + 0.2 as a "smooth
+    // backface modulation" — that's a tunable in the paper's Eq. 9 discussion,
+    // not the baseline, and biases the receiver toward off-axis probes with
+    // the wrong falloff. Switching to the strict baseline gives a physically
+    // consistent receiver↔producer pair (no magic exponent, no +0.2 floor).
     let toProbe   = probeWorld - worldPos;
     let probeDist = length(toProbe);
     if (probeDist > 1e-3) {
       let probeDir = toProbe / probeDist;
-      let nDotP    = dot(surfaceNormal, probeDir);
-      let bw       = pow((nDotP + 1.0) * 0.5, 2.0) + 0.2;
+      let bw       = max(0.0, dot(surfaceNormal, probeDir));
       w = w * bw;
     }
 
