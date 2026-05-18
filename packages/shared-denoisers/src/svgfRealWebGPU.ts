@@ -155,10 +155,8 @@ export interface SVGFReprojCPUOutput {
   readonly momentsOut:      Float32Array;
 }
 
-/** Rec. 709 luminance. */
-function lumCPU(r: number, g: number, b: number): number {
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
+// Rec.709 luminance hoisted to @vitrum/shared-samplers.
+import { luminance as lumCPU } from '@vitrum/shared-samplers';
 
 /**
  * CPU emulation of svgfReprojMain (used by unit tests).

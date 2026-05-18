@@ -10,11 +10,10 @@
  */
 
 import { SVGF_REPROJ_DEFAULT_UNIFORMS } from './svgfRealBindings.js';
-
-/** Rec. 709 luminance. */
-function lumCPU(r: number, g: number, b: number): number {
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
+// Rec.709 luminance hoisted to @vitrum/shared-samplers (no THREE dep, no
+// peer-dep load). Local alias `lumCPU` kept so the dense call-site usage
+// below reads as it always has.
+import { luminance as lumCPU } from '@vitrum/shared-samplers';
 
 /**
  * CPU emulation of svgfReprojMain — for unit tests only.
