@@ -2,6 +2,14 @@
 
 > Read-only audit of every workspace `package.json` plus root, enumerating every blocker that exists today before vitrum can ship `@vitrum/*` to npm. No changes were made to any `package.json` or source file. The project remains pre-alpha and private per [`CLAUDE.md`](../CLAUDE.md) and [`RELEASING.md`](../RELEASING.md).
 
+## Status update — 2026-05-18
+
+Several blockers identified below have since been resolved. Verified-current state:
+
+- **README/LICENSE** (blocker #5) — **fully resolved**. All 11 packages (10 audited + `@vitrum/scene-lighting` added afterward) now have both a `README.md` and a `LICENSE` file. The follow-up fixes landed via `chore/missing-package-readmes` (`ec58f48`), `chore/per-package-license-files-20260517` (`cc5bc50`), and the W13 README-audit pass (`fc882f6` + `0ab2d54`).
+- **scene-lighting package metadata** (added post-audit) — brought to workspace parity 2026-05-18 (commit `63f207f` added keywords/author/license/files/repository/lint script).
+- Blockers #1 (no build step), #2 (private), #3 (`file:` fork dep), #4 (`file:` intra-workspace deps), and the per-package `homepage`/`bugs` gap remain open — they are intentional pre-alpha state per `RELEASING.md`. The per-package rows below are accurate for those fields but stale wrt README/LICENSE.
+
 ## Scope
 
 Audited packages (10): root + 10 workspace packages under `packages/*`.
