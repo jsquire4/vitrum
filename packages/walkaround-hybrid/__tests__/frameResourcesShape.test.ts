@@ -8,7 +8,9 @@
  * making the migration auditable field-by-field for any downstream consumer
  * who reads `res.X` and needs to find the new path.
  *
- * PPG and neural are intentionally empty for now (W9 / W10 will populate).
+ * W9 Phase 2: `ppg.ppgGuidanceBuffer` was added (speculative wire — shade
+ * consumes it via the hybrid-layers BGL, runtime-sentinelled by pdf <= 0).
+ * Neural remains empty until W10.
  *
  * See plan/premium-grade-refactor-20260517.md §W1-R2 and
  * complexity-sweep-20260517 findings A3 + B6.
@@ -84,6 +86,10 @@ const FIELD_MIGRATION_TABLE = [
   ['svgfPrevRadianceTextureB',       'svgf'],
   ['svgfVarianceTexture',            'svgf'],
   ['svgfVarianceMomentsIntermedTexture', 'svgf'],
+
+  // ppg ───────────────────────────────────────────────────────────────────
+  // W9 Phase 2 — speculative wire (see resourceManager.ts + shade.wgsl).
+  ['ppgGuidanceBuffer',              'ppg'],
 ] as const;
 
 function makeMockDevice() {
@@ -116,12 +122,11 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     }
   });
 
-  it('migration table is exhaustive — covers every legacy FrameResources sibling field', () => {
-    // The legacy interface had 45 sibling fields (the "41-field god-struct"
-    // shorthand in the W1-R2 brief is approximate — actual count when
-    // enumerated: common 24 + restirDI 3 + restirGI 3 + ddgi 3 + gtao 3 +
-    // svgf 9 = 45). Every entry must appear exactly once.
-    expect(FIELD_MIGRATION_TABLE.length).toBe(45);
+  it('migration table is exhaustive — covers every FrameResources sibling field', () => {
+    // Original legacy interface had 45 sibling fields. W9 Phase 2 adds one
+    // more (ppg.ppgGuidanceBuffer) → 46 total. Counts:
+    //   common 24 + restirDI 3 + restirGI 3 + ddgi 3 + gtao 3 + svgf 9 + ppg 1 = 46.
+    expect(FIELD_MIGRATION_TABLE.length).toBe(46);
     const seen = new Set<string>();
     for (const [field] of FIELD_MIGRATION_TABLE) {
       expect(seen.has(field), `legacy field '${field}' listed twice`).toBe(false);
@@ -129,12 +134,15 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     }
   });
 
-  it('ppg and neural sub-structs are present but empty (W9 / W10 placeholders)', () => {
+  it('ppg carries the W9 Phase 2 guidance buffer; neural remains an empty W10 placeholder', () => {
     const res = createFrameResources(makeMockDevice(), 64, 64);
     expect(res.ppg).toBeDefined();
     expect(res.neural).toBeDefined();
-    // Empty placeholder — only the optional `_empty?: never` marker; no own enumerable keys.
-    expect(Object.keys(res.ppg)).toEqual([]);
+    // W9 Phase 2 — ppg.ppgGuidanceBuffer present (zero-filled placeholder
+    // until Phase 1 lands its guide kernel; shade.wgsl PDF-sentinel skips
+    // the MIS branch when pdf <= 0).
+    expect(Object.keys(res.ppg)).toEqual(['ppgGuidanceBuffer']);
+    // Neural still empty until W10.
     expect(Object.keys(res.neural)).toEqual([]);
   });
 

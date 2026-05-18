@@ -229,15 +229,32 @@ export interface SVGFFrameResources {
 }
 
 /**
- * Path-guiding (PPG) GPU resources — empty placeholder.
+ * Path-guiding (PPG) GPU resources.
  *
- * W9 (PPG GPU dTree) will populate this sub-struct with the dTree storage
- * buffers and any associated UBOs. Declared now so consumers can pattern-
- * match on `res.ppg` without conditional access.
+ * W9 Phase 2 wire — shade.wgsl consumes `ppgGuidanceBuffer` via the
+ * hybrid-layers bind group (slot 4) as an optional additional MIS candidate
+ * for the indirect path. The buffer holds one `vec4<f32>` per pixel:
+ * `xyz` = world-space sampled direction (from the sTree/dTree GPU
+ * traversal), `w` = solid-angle PDF.
+ *
+ * Until W9 Phase 1 ships its `ppgGuide` kernel, this buffer is allocated
+ * but never written — it stays zero-filled, the per-pixel pdf is 0, and
+ * shade.wgsl's runtime sentinel skips the PPG branch entirely. That keeps
+ * today's render bit-identical to the pre-Phase-2 state.
+ *
+ * Sizing rule: `width × height × 16 bytes` (one vec4f per pixel). Shape
+ * contract matches W9 Phase 1's `ppgSampleOut: array<vec4<f32>>` in
+ * ppgGuide.wgsl.
  */
 export interface PPGFrameResources {
-  /** Reserved for W9. */
-  readonly _empty?: never;
+  /**
+   * W9 Phase 2 — per-pixel PPG guidance directions.
+   *
+   * vec4f per pixel: xyz = direction (world), w = pdf (solid-angle).
+   * Today: zero-filled placeholder (Phase 1 not yet shipped → sentinel
+   * pdf=0 routes shade.wgsl to the ReSTIR-GI-only fallback).
+   */
+  ppgGuidanceBuffer: GPUBuffer;
 }
 
 /**
@@ -869,9 +886,23 @@ export function createFrameResources(
     svgfVarianceMomentsIntermedTexture,
   };
 
-  // PPG + neural are placeholders for W9 / W10. Frozen empty objects so any
-  // accidental write throws in strict mode instead of silently mutating.
-  const ppg: PPGFrameResources = Object.freeze({}) as PPGFrameResources;
+  // W9 Phase 2 — per-pixel PPG guidance buffer. Sized to vec4f × pixel count.
+  // Zero-initialised (mappedAtCreation: false → driver guarantees zero on
+  // allocation under WebGPU spec; the buffer is read-only storage from
+  // shade's perspective so we don't need an explicit clear). Until W9
+  // Phase 1 ships its ppgGuide kernel, the buffer stays zero — shade.wgsl's
+  // PDF-sentinel (pdf <= 0) routes every pixel to the ReSTIR-GI-only path,
+  // bit-identical to the pre-Phase-2 render.
+  const ppgGuidanceByteSize = Math.max(16, W * H * 16);
+  const ppgGuidanceBuffer = device.createBuffer({
+    label: 'ppg-guidance-placeholder',
+    size: ppgGuidanceByteSize,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  const ppg: PPGFrameResources = { ppgGuidanceBuffer };
+  // Neural is still an empty placeholder for W10. Frozen so any accidental
+  // write throws in strict mode instead of silently mutating.
   const neural: NeuralFrameResources = Object.freeze({}) as NeuralFrameResources;
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
@@ -945,5 +976,7 @@ export function destroyFrameResources(r: FrameResources): void {
   r.svgf.svgfVarianceTexture.destroy();
   r.svgf.svgfVarianceMomentsIntermedTexture.destroy();
 
-  // ppg / neural — empty placeholders; nothing to destroy until W9 / W10.
+  // ppg — W9 Phase 2 guidance buffer.
+  r.ppg.ppgGuidanceBuffer.destroy();
+  // neural — still an empty placeholder until W10.
 }

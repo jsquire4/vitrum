@@ -258,6 +258,20 @@ export interface HybridLayersResources {
   ddgiPlaceholderRg16f: GPUTexture;
   nearestSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
+  /**
+   * W9 Phase 2 — PPG-sampled guidance directions buffer.
+   *
+   * Per-pixel `vec4<f32>` (xyz = world-space direction, w = solid-angle pdf).
+   * Shape contract matches W9 Phase 1's `ppgSampleOut` storage buffer in
+   * ppgGuide.wgsl. When Phase 1 lands its guide kernel, this binding gets
+   * pointed at the kernel's output buffer.
+   *
+   * Until Phase 1 ships, the host provides a zero-filled placeholder buffer
+   * — shade.wgsl's runtime PDF-sentinel (pdf <= 0) skips the MIS branch and
+   * falls back to pure ReSTIR-GI behaviour, so today's renders are
+   * unaffected by this speculative wire.
+   */
+  ppgGuidanceBuffer: GPUBuffer;
 }
 
 export function buildHybridLayersBindGroup(
@@ -275,6 +289,7 @@ export function buildHybridLayersBindGroup(
       { binding: 1, resource: visTex.createView() },
       { binding: 2, resource: r.nearestSampler },
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
+      { binding: 4, resource: { buffer: r.ppgGuidanceBuffer } },
     ],
   });
 }

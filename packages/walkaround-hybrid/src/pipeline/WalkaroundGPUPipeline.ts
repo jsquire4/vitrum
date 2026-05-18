@@ -704,6 +704,10 @@ export class WalkaroundGPUPipeline {
       this._res.common.tierTexture.createView(),
     );
     // Sprint 16 — DDGI hybrid layers slot 3 — shared by gi-ris and shade.
+    // W9 Phase 2 — also carries the ppgGuidance buffer at binding 4. shade
+    // consumes it for the indirect-path MIS combine; risGi shares the BGL
+    // but does not declare binding 4 (WGSL permits unused BGL entries on
+    // a given consumer shader).
     const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
       ddgiIrrTex:              this._ddgiIrrTex,
       ddgiVisTex:              this._ddgiVisTex,
@@ -711,6 +715,7 @@ export class WalkaroundGPUPipeline {
       ddgiPlaceholderRg16f:    this._res.ddgi.ddgiPlaceholderRg16f,
       nearestSampler:          this._res.common.nearestSampler,
       ddgiUboBuffer:           this._res.ddgi.ddgiUboBuffer,
+      ppgGuidanceBuffer:       this._res.ppg.ppgGuidanceBuffer,
     });
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────

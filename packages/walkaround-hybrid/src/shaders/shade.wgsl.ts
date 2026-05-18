@@ -91,7 +91,39 @@ struct DDGIGridUBO {
 };
 @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
 
+// W9 Phase 2 — PPG guidance buffer (Müller et al. 2017 §3.4 — practical path
+// guiding). One vec4<f32> per pixel: xyz = world-space sampled direction
+// (from the sTree/dTree GPU traversal in ppgGuide.wgsl), w = solid-angle PDF.
+//
+// === Shape contract with W9 Phase 1 (ppgGuide.wgsl ppgSampleOut) ===
+// Phase 1's guide kernel writes vec4<f32>(dir, pdf) per pixel into
+// ppgSampleOut: array<vec4<f32>>. This binding consumes the same shape —
+// the host-side wire (WalkaroundGPUPipeline) points this binding at the
+// same buffer Phase 1 writes (or a zero-filled placeholder when Phase 1
+// hasn't shipped its kernel — see the "speculative wire" notes in
+// CHANGELOG and plan/d2-e6-pt-webgpu-ppg-performance.md).
+//
+// === Runtime PDF-sentinel fallback ===
+// When ppgGuidance[pixelIdx].w <= 0 (no training signal, kernel disabled,
+// or placeholder), the MIS-combine branch below skips the PPG candidate and
+// the indirect estimate is bit-identical to the pre-Phase-2 ReSTIR-GI-only
+// path. Today (Phase 1 not yet merged) the host binds a zero-filled buffer
+// so this sentinel fires for every pixel — render output unchanged.
+@group(3) @binding(4) var<storage, read> ppgGuidance: array<vec4f>;
+
 // RESERVOIR_DI_STRIDE / loadReservoirDI_rw live in COMMON_WGSL.
+
+// W9 Phase 2 — power-heuristic MIS weight (Veach 1997 §9.2.4, β=2).
+//   w_a = (a²) / (a² + b²)
+// Returns 0.5 when both pdfs are zero (defensive — caller should sentinel
+// before calling, so this branch only fires under numeric pathology).
+fn powerHeuristic(pdfA: f32, pdfB: f32) -> f32 {
+  let a2 = pdfA * pdfA;
+  let b2 = pdfB * pdfB;
+  let denom = a2 + b2;
+  if (denom <= 1e-12) { return 0.5; }
+  return a2 / denom;
+}
 
 fn loadSpatialDI(pixelIdx: u32) -> ReservoirDI {
   return loadReservoirDI_rw(&spatialReservoir, pixelIdx);
@@ -364,6 +396,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // with bilinear weights at half-res fractional coord (gid*0.5) eliminates
   // the quad grid.
   var Lo_indirect = vec3f(0.0);
+  // Track the effective receiver-side cosine PDF chosen by the ReSTIR-GI
+  // reservoir (cosθ/π — the Lambertian importance sampling target). Carried
+  // out of the bilinear loop so the W9 Phase 2 PPG MIS combine below can
+  // power-heuristic against it without re-deriving the chosen direction.
+  var restirEffectivePdf: f32 = 0.0;
   if (!isGlass && !isMetal) {
     let halfDims = dims / 2u;
     let halfPxF = vec2f(gid.xy) * 0.5;
@@ -376,6 +413,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     let bw01 = (1.0 - fx) *        fy;
     let bw11 =        fx  *        fy;
     var totalW: f32 = 0.0;
+    var cosThetaAccum: f32 = 0.0;
     for (var k: u32 = 0u; k < 4u; k = k + 1u) {
       var hx = hx0;
       var hy = hy0;
@@ -397,10 +435,72 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
       let cosTheta = max(0.0, dot(normal, wi));
       // Item 24: omit albedo here; indirectCombine applies it post-denoising.
       Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * bw;
+      cosThetaAccum = cosThetaAccum + cosTheta * bw;
       totalW = totalW + bw;
     }
     if (totalW > 1e-3) {
       Lo_indirect = Lo_indirect / totalW;
+      // Effective cosine-weighted PDF of the receiver-side sample chosen by
+      // ReSTIR-GI. The half-res reservoir's target_pdf uses cosθ/π as its
+      // Lambertian importance weight, so the implicit sampling density of
+      // the chosen direction is cosθ/π (Bitterli et al. 2020 §5.3 — RIS
+      // weights divided by target_pdf recover the underlying sample PDF).
+      restirEffectivePdf = (cosThetaAccum / totalW) * INV_PI;
+    }
+
+    // ── W9 Phase 2 — PPG MIS combine (Müller 2017 §3.4) ────────────────────
+    //
+    // The PPG guide kernel (ppgGuide.wgsl, W9 Phase 1) writes per-pixel
+    // vec4f(dir_world, pdf) into the ppgGuidance buffer. When the PDF is
+    // positive we treat that direction as an additional MIS candidate for
+    // the indirect path and combine it with the ReSTIR-GI estimate via the
+    // power heuristic.
+    //
+    // === RUNTIME PDF-SENTINEL FALLBACK ===
+    // When pdf_ppg <= 0 the entire PPG branch is skipped → Lo_indirect is
+    // bit-identical to today's ReSTIR-GI-only behaviour. This is the
+    // documented path that fires when Phase 1 hasn't shipped yet (the host
+    // binds a zero-filled placeholder buffer) or when the dTree hasn't
+    // accumulated training signal (totalFlux <= 0 in ppgGuide.wgsl returns
+    // pdf = 0 explicitly — see ppgGuide.wgsl §degenerate-case).
+    //
+    // === MIS shape — two candidates ===
+    // 1. ReSTIR-GI sample with effective PDF cosθ_restir / π
+    //    contribution = Lo_indirect (computed above, includes g.Lo·cosθ·g.W·1/π)
+    // 2. PPG-sampled direction with PDF pdf_ppg
+    //    contribution = Lo_estimate · cosθ_ppg · 1/π · (1 / pdf_ppg)
+    //
+    // The PPG candidate's radiance Lo_estimate uses the SAME g.Lo from the
+    // nearest ReSTIR-GI reservoir as an approximate incoming-radiance
+    // estimate at the receiver. This is the speculative wire — a future
+    // refinement (or a Phase 1 extension that adds a per-pixel Lo_ppg
+    // output buffer alongside the direction) will replace this with a
+    // PPG-direction-specific incoming-radiance trace. The MIS framework
+    // (power heuristic, weight normalisation) is the load-bearing part
+    // here; the Lo source can be re-pointed without touching the MIS code.
+    let ppgEntry = ppgGuidance[pixelIdx];
+    let pdfPpg = ppgEntry.w;
+    if (pdfPpg > 1e-6 && restirEffectivePdf > 1e-6) {
+      let wiPpg = ppgEntry.xyz;
+      let cosThetaPpg = max(0.0, dot(normal, wiPpg));
+      if (cosThetaPpg > 1e-6) {
+        // Nearest half-res reservoir provides the ambient Lo estimate. This
+        // is the speculative-Lo path documented above — Phase 1 may ship
+        // a per-pixel Lo_ppg buffer, in which case wire it here.
+        let halfPxN = vec2u(gid.xy / 2u);
+        let hxN = min(halfPxN.x, halfDims.x - 1u);
+        let hyN = min(halfPxN.y, halfDims.y - 1u);
+        let gN = loadReservoirGI_rw(&reservoirGiCurrent, hyN * halfDims.x + hxN);
+        if (gN.W > 0.0 && gN.M > 0u) {
+          // PPG candidate contribution at the receiver (albedo-demodulated,
+          // matches the ReSTIR-side term's Item-24 convention).
+          let LoPpgCandidate = gN.Lo * INV_PI * cosThetaPpg / pdfPpg;
+          // Power-heuristic MIS weights — w_restir + w_ppg = 1 by construction.
+          let wRestir = powerHeuristic(restirEffectivePdf, pdfPpg);
+          let wPpg    = powerHeuristic(pdfPpg, restirEffectivePdf);
+          Lo_indirect = wRestir * Lo_indirect + wPpg * LoPpgCandidate;
+        }
+      }
     }
   }
 
