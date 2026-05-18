@@ -71,8 +71,12 @@
 // Visible range
 // ────────────────────────────────────────────────────────────────────────────
 
-const LAMBDA_MIN = 380; // nm
-const LAMBDA_MAX = 780; // nm
+// Canonical 380/780 nm range; importing rather than re-declaring locally
+// keeps the visible-light bounds consistent across cieCmf, materialPacking,
+// and this jakobHanika approximation.
+import { CIE_LAMBDA_MIN, CIE_LAMBDA_MAX } from './cieCmf.js';
+const LAMBDA_MIN = CIE_LAMBDA_MIN;
+const LAMBDA_MAX = CIE_LAMBDA_MAX;
 
 // Representative wavelengths for R, G, B primaries (sRGB Rec.709 primaries)
 const LAMBDA_R = 700; // nm — red primary

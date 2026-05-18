@@ -1,4 +1,5 @@
 import type { Material } from '@vitrum/core';
+import { CIE_LAMBDA_MIN, CIE_LAMBDA_MAX } from '@vitrum/shared-samplers';
 
 const THIN_FILM_LAYER_LIMIT = 8;
 const SPECTRAL_SAMPLE_COUNT = 32;
@@ -6,8 +7,10 @@ const SPECTRAL_SAMPLE_COUNT = 32;
 const MATERIAL_VEC4_STRIDE = 22;
 export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 
-const SPECTRAL_LAMBDA_MIN_NM = 380;
-const SPECTRAL_LAMBDA_MAX_NM = 780;
+// Visible-light wavelength range, canonical from shared-samplers/cieCmf.
+// Previously duplicated as SPECTRAL_LAMBDA_MIN_NM/SPECTRAL_LAMBDA_MAX_NM.
+const SPECTRAL_LAMBDA_MIN_NM = CIE_LAMBDA_MIN;
+const SPECTRAL_LAMBDA_MAX_NM = CIE_LAMBDA_MAX;
 
 function sampleSpectralCurve(curve: Material['spectralAttenuation'], lambdaNm: number): number {
   if (curve == null || curve.values.length === 0) return 0;
