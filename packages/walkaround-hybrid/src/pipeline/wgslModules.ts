@@ -38,6 +38,7 @@ import {
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
   SVGF_7X7_SPATIAL_FALLBACK_WGSL,
 } from '@vitrum/shared-denoisers';
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 
 import { COMMON_MODULE } from '../shaders/common.wgsl.js';
 import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
@@ -94,6 +95,21 @@ export {
 // These wrap the raw-string exports from `@vitrum/shared-denoisers` in
 // WgslModule envelopes so the include-graph can resolve them by name.
 // shared-denoisers itself stays untouched.
+
+/**
+ * Canonical Rec.709 luminance helper from @vitrum/shared-samplers.
+ * Modules can `requires: ['luminance']` to pull `fn luminance(c: vec3f)`
+ * + `const LUM_W709` without the weight of the full `common` module.
+ *
+ * Note: `common` itself defines `fn luminance` for legacy reasons, so a
+ * module that already requires 'common' should NOT also require 'luminance'
+ * — that would emit two definitions and WGSL would reject the redefinition.
+ */
+export const LUMINANCE_MODULE: WgslModule = {
+  name: 'luminance',
+  source: LUMINANCE_WGSL,
+  requires: [],
+};
 
 /** Pre-R6 concat: `COMMON_WGSL + ATROUS_WGSL` (pipelineCompiler.ts:112). */
 export const ATROUS_MODULE: WgslModule = {
@@ -154,6 +170,7 @@ export const WELFORD_VARIANCE_MODULE: WgslModule = {
 export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, WgslModule>([
   // Foundation
   [COMMON_MODULE.name, COMMON_MODULE],
+  [LUMINANCE_MODULE.name, LUMINANCE_MODULE],
   [WELFORD_VARIANCE_MODULE.name, WELFORD_VARIANCE_MODULE],
 
   // Walkaround-local shader helpers

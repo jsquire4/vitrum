@@ -30,3 +30,11 @@ fn luminance(c: vec3f) -> f32 {
 }
 
 `;
+
+/**
+ * Stable name used by walkaround-hybrid's W1-R6 WGSL include-graph registry
+ * (`packages/walkaround-hybrid/src/pipeline/wgslModules.ts`). Consumers
+ * declare `requires: ['luminance']` to pull this module in without
+ * dragging in the heavier `common` module.
+ */
+export const LUMINANCE_MODULE_NAME = 'luminance' as const;

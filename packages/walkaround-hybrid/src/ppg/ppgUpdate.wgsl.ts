@@ -173,8 +173,10 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   // L_i: incoming radiance — luminance of the path contribution.
   // DEVIATION 3 FIX: read from ppgLiSamples (L_i binding), not from any
   // clamped outgoing-radiance buffer (Lo binding).
+  // luminance(c) — canonical Rec.709 from LUMINANCE_WGSL (this module
+  // declares requires: 'luminance' so composeWgsl prepends it).
   let Li  = ppgLiSamples[idx].xyz;
-  let lum = dot(Li, vec3<f32>(0.2126, 0.7152, 0.0722));
+  let lum = luminance(Li);
   if (lum <= 0.0) { return; }
 
   // Octahedral UV of the incoming direction in WORLD space (deviation 4 fix).
@@ -206,9 +208,10 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. Self-contained. */
+/** W1-R6 — declarative include-graph entry. Requires the canonical
+ *  Rec.709 luminance helper (formerly an inline dot in the dTree update). */
 export const PPG_UPDATE_MODULE: WgslModule = {
   name: 'ppgUpdate',
   source: PPG_UPDATE_WGSL,
-  requires: [],
+  requires: ['luminance'],
 };

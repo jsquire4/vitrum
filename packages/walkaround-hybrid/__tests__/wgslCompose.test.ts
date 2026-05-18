@@ -21,6 +21,7 @@ import {
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
   TEMPORAL_ACCUM_WGSL,
 } from '@vitrum/shared-denoisers';
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 
 import { composeWgsl, type WgslModule } from '../src/pipeline/wgslComposer.js';
 import {
@@ -304,10 +305,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  // PPG (Müller 2017) — both standalone.
+  // PPG (Müller 2017) — ppgUpdate now requires canonical luminance (W8
+  // follow-up cleanup); ppgGuide is still standalone.
 
-  it('ppgUpdate: standalone (no prepend)', () => {
-    expect(composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES)).toBe(PPG_UPDATE_WGSL);
+  it('ppgUpdate: prepends LUMINANCE_WGSL only', () => {
+    const composed = composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES);
+    expect(composed).toBe(`${LUMINANCE_WGSL}${PPG_UPDATE_WGSL}`);
   });
 
   it('ppgGuide: standalone (no prepend)', () => {

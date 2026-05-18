@@ -16,10 +16,8 @@ struct WelfordTemporalUBO {
   _pad1:       u32,
 };
 
-const LUM_W: vec3f = vec3f(0.2126, 0.7152, 0.0722);
-fn luminance_welford(c: vec3f) -> f32 {
-  return dot(c, LUM_W);
-}
+// luminance(c) — canonical Rec.709 helper from COMMON_WGSL (this module
+// declares requires: 'common', so the W1-R6 composer prepends COMMON_WGSL).
 
 @group(0) @binding(0) var w_hdr:  texture_2d<f32>;
 @group(0) @binding(1) var w_prev: texture_2d<f32>;
@@ -31,7 +29,7 @@ fn welfordTemporalMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = textureDimensions(w_hdr);
   if (any(gid.xy >= dims)) { return; }
 
-  let lum = luminance_welford(textureLoad(w_hdr, gid.xy, 0).rgb);
+  let lum = luminance(textureLoad(w_hdr, gid.xy, 0).rgb);
   let raw = textureLoad(w_prev, gid.xy, 0);
   // WGSL select() only accepts scalar/vecN types — split the struct pick
   // into per-field selects to keep the same forceReset-zero-state semantic.
