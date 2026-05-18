@@ -47,6 +47,65 @@ import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 
 // ============================================================
+// Albedo demodulation helpers — Schied 2017 §4.1.
+// ============================================================
+//
+// Before SVGF's variance + à-trous chain, divide the HDR radiance by the
+// per-pixel albedo so the spatial filter operates on pure lighting (the
+// "lighting estimate" L = c/ρ in Schied 2017 §4.1). After the chain, the
+// filtered lighting is re-multiplied by albedo to restore the physically
+// correct outgoing radiance.
+//
+// The benefit is that high-frequency albedo variation (e.g. a red/green
+// checkerboard) no longer participates in the cross-bilateral weights of
+// the à-trous kernel, so the filter cannot bleed colors across material
+// boundaries that share the same depth + normal.
+//
+// `demodulateAlbedo`: out[i] = rgb[i] / max(albedo[i], 1e-3)   — returns a new array.
+// `remodulateAlbedo`: rgb[i] *= albedo[i]                       — mutates in-place.
+//
+// Both helpers mirror the implementation in `atrousVarianceWebGPU.ts` exactly,
+// so a denoiser switch (atrous-variance ↔ svgf-real) is invariant under the
+// modulation step.
+
+/** Divide rgb by albedo; returns a new Float32Array of the demodulated signal. */
+export function svgfRealDemodulateAlbedo(
+  rgb: Float32Array,
+  albedo: Float32Array,
+  pixelCount: number,
+): Float32Array {
+  const out = new Float32Array(rgb.length);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const si = i * 3;
+    const ar = Math.max(albedo[si]     ?? 0, 1e-3);
+    const ag = Math.max(albedo[si + 1] ?? 0, 1e-3);
+    const ab = Math.max(albedo[si + 2] ?? 0, 1e-3);
+    out[si]     = (rgb[si]     ?? 0) / ar;
+    out[si + 1] = (rgb[si + 1] ?? 0) / ag;
+    out[si + 2] = (rgb[si + 2] ?? 0) / ab;
+  }
+  return out;
+}
+
+/** Multiply rgb by albedo in-place; returns the same Float32Array. */
+export function svgfRealRemodulateAlbedo(
+  rgb: Float32Array,
+  albedo: Float32Array,
+  pixelCount: number,
+): Float32Array {
+  for (let i = 0; i < pixelCount; i += 1) {
+    const si = i * 3;
+    const ar = albedo[si]     !== undefined ? albedo[si]!     : 1;
+    const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
+    const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
+    rgb[si]     = (rgb[si]     ?? 0) * ar;
+    rgb[si + 1] = (rgb[si + 1] ?? 0) * ag;
+    rgb[si + 2] = (rgb[si + 2] ?? 0) * ab;
+  }
+  return rgb;
+}
+
+// ============================================================
 // CPU-emulation helpers (used by tests; no GPU required)
 // ============================================================
 
@@ -519,6 +578,14 @@ export interface SVGFRealWebGPUOptions {
   /** Per-pixel object ID (u32), length W*H. Defaults to 0. */
   readonly objectIds?: Uint32Array;
 
+  /**
+   * Per-pixel surface albedo ρ (linear RGB row-major, length W*H*3). When
+   * supplied, the SVGF chain runs on demodulated lighting (L = c/ρ) per
+   * Schied 2017 §4.1 and re-modulates after the à-trous chain. When omitted,
+   * the chain operates directly on `rgb` (legacy / variance-test path).
+   */
+  readonly albedoRgb?: Float32Array;
+
   /** Per-pixel history length (u32) from previous frame. Defaults to 0. */
   readonly historyLengthIn?: Uint32Array;
   /** Previous-frame moments M1, M2 (interleaved), length W*H*2. Defaults to 0. */
@@ -618,8 +685,25 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   const pongTex = device.createTexture({ label: 'svgf-pong', size: [w,h], format: 'rgba16float', usage: pingPongUsage });
 
   // ── Upload inputs ─────────────────────────────────────────────────────────
-  uploadRgbAsRgba16f(device, currColorTex, opts.rgb, w, h);
-  uploadRgbAsRgba16f(device, prevColorTex, opts.prevRadianceRgb ?? opts.rgb, w, h);
+  // Schied 2017 §4.1 — albedo demodulation. When albedoRgb is supplied,
+  // divide both the current and previous-frame HDR radiance by per-pixel
+  // albedo BEFORE the SVGF chain so reprojection blending, moment tracking,
+  // variance estimation, and the à-trous spatial filter all see the
+  // demodulated lighting estimate L = c/ρ. This keeps high-frequency albedo
+  // variation (e.g. material-boundary checkerboards) out of the cross-
+  // bilateral weights and prevents color bleed across material edges that
+  // share the same depth + normal. After the à-trous chain finishes, we
+  // multiply the filtered lighting back by albedo to restore physically
+  // correct outgoing radiance.
+  const px = w * h;
+  const rgbForChain = opts.albedoRgb != null
+    ? svgfRealDemodulateAlbedo(opts.rgb, opts.albedoRgb, px)
+    : opts.rgb;
+  const prevForChain = opts.albedoRgb != null
+    ? svgfRealDemodulateAlbedo(opts.prevRadianceRgb ?? opts.rgb, opts.albedoRgb, px)
+    : (opts.prevRadianceRgb ?? opts.rgb);
+  uploadRgbAsRgba16f(device, currColorTex, rgbForChain, w, h);
+  uploadRgbAsRgba16f(device, prevColorTex, prevForChain, w, h);
 
   if (opts.motionRg != null) {
     uploadRg32f(device, motionTex, opts.motionRg, w, h);
@@ -820,6 +904,13 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   // Read result: after N iterations, last write is in pong (odd) or ping (even).
   const readTex = atrousIterations % 2 === 0 ? pingTex : pongTex;
   const result  = await readRgba16fToRgb(device, readTex, w, h);
+
+  // Schied 2017 §4.1 — albedo re-modulation: multiply the filtered lighting
+  // by per-pixel albedo to restore physically correct denoised outgoing
+  // radiance. In-place mutation of `result`. No-op when albedoRgb is omitted.
+  if (opts.albedoRgb != null) {
+    svgfRealRemodulateAlbedo(result, opts.albedoRgb, px);
+  }
 
   // ── Cleanup ───────────────────────────────────────────────────────────────
   for (const t of [
