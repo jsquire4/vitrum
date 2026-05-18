@@ -284,6 +284,30 @@ export interface PipelineFrameInputs {
    *  near-zero determinant threshold in `intersectTriangle`.  Default `1e-5`
    *  (metre-scale).  Reduce for millimetre-scale geometry. */
   triIntersectEpsilon: number;
+  /** 2026-05-18 sweep — probe-side glass-transmission perceptual mix scale.
+   *  Cornell default 0.7. */
+  glassMixScale: number;
+  /** 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap (risGi,
+   *  spatialGi). Cornell default 16.0. */
+  restirGiWCap: number;
+  /** 2026-05-18 sweep — DDGI irradiance clamp applied at the ReSTIR-GI
+   *  reconnection vertex (risGi). Cornell default 5.0. */
+  restirGiIrrClamp: number;
+  /** 2026-05-18 sweep — ReSTIR-GI temporal previous-frame M clamp
+   *  (temporalGi). Cornell default 50. */
+  restirGiMClamp: number;
+  /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse disc radius (half-res
+   *  pixels). Cornell default 12.0. */
+  restirGiSpatialRadiusPx: number;
+  /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse normal-alignment cosine
+   *  minimum (spatialGi). Cornell default 0.906 ≈ cos(25°). */
+  restirGiSpatialNormalDotMin: number;
+  /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse tangent-plane distance
+   *  tolerance (spatialGi). Cornell default 0.05 (5 cm world units). */
+  restirGiSpatialCoplanarTol: number;
+  /** 2026-05-18 sweep — per-channel HDR clamp on the indirect channel
+   *  (shade.wgsl). Cornell default [1.0, 1.0, 1.0]. */
+  indirectFireflyClamp: readonly [number, number, number];
   /** Audit M1 — GTAO sampling radius in pixels; Cornell default 32. */
   gtaoRadiusPx: number;
   /** Audit M1 — GTAO intensity exponent; Cornell default 2.0. */

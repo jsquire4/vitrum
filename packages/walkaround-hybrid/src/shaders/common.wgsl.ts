@@ -70,7 +70,10 @@ const LEAFNODE_FLAG = 0xFFFF0000u;
 // reconnection vertex (see risGi.wgsl).  W can then breathe at 16, which
 // admits the legitimate variance the unbiased estimator needs while still
 // bounding pathological cases for variance-bounded convergence.
-const RESTIR_GI_W_CAP: f32 = 16.0;
+//
+// 2026-05-18 sweep — the Cornell-tuned cap value (16.0) now lives on the
+// WalkaroundUBO as restirGiWCap. Library consumers on different scene
+// scales override it via HybridEngineOptions.restirGiWCap.
 
 // ============================================================
 // WalkaroundUBO — canonical per-frame uniform layout shared by every
@@ -107,13 +110,18 @@ struct WalkaroundUBO {
   spatialReuseRadiusPx:       f32,     //  offset 276 — audit M7
   spatialDepthTolFloor:       f32,     //  offset 280 — audit M8
   triIntersectEpsilon:        f32,     //  offset 284 — D12: Möller-Trumbore coplanarity floor
-  // Padding to maintain 16-byte struct alignment (struct size must be a
-  // multiple of 16). triIntersectEpsilon occupies 284-287; the previous
-  // single _pad is now split into 4 words to reach 304 bytes (304 % 16 == 0).
-  _pad:                       u32,     //  offset 288
-  _pad2:                      u32,     //  offset 292
-  _pad3:                      u32,     //  offset 296
-  _pad4:                      u32,     //  offset 300
+  // 2026-05-18 sweep — eight more Cornell-tuned magic constants migrated
+  // from WGSL kernels into the UBO so hosts can override per scene.
+  glassMixScale:              f32,     //  offset 288 — probeUpdateRays glass-transmission perceptual mix
+  restirGiWCap:               f32,     //  offset 292 — risGi/spatialGi unbiased-weight cap
+  restirGiIrrClamp:           f32,     //  offset 296 — risGi DDGI irradiance read clamp
+  restirGiMClamp:             u32,     //  offset 300 — temporalGi prev-frame M-clamp
+  restirGiSpatialRadiusPx:    f32,     //  offset 304 — spatialGi disc-sample radius (half-res pixels)
+  restirGiSpatialNormalDotMin:f32,     //  offset 308 — spatialGi normal-alignment cosine min
+  restirGiSpatialCoplanarTol: f32,     //  offset 312 — spatialGi tangent-plane distance tolerance
+  _padPreVec3:                f32,     //  offset 316 — pad to align vec3f to 16-byte boundary
+  indirectFireflyClamp:       vec3f,   //  offset 320 — shade indirect channel per-channel HDR clamp
+  _padEnd:                    f32,     //  offset 332 — round struct size up to 336 (multiple of 16)
 };
 
 // Emitter geometry term G with a configurable dist² clamp applied at
