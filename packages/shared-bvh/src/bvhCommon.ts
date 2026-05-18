@@ -147,6 +147,22 @@ export interface SceneBVHCommonResult {
 
   /** World-space bounding box of the merged geometry. */
   boundingBox: THREE.Box3;
+
+  /**
+   * Per-source-mesh vertex ranges in the merged buffer, in the same order
+   * as the meshes the filter accepted (matching `traverseVisible` order).
+   * Each entry's `name` is the source `Object3D.name` — for synthesized
+   * scenes (`vitrumSceneToThree`) the name equals the primitive id, so a
+   * primitive id round-trips back to its vertex range without a fresh
+   * traversal.
+   *
+   * `StaticGeometryGenerator` concatenates each source mesh's vertices
+   * contiguously, and the BVH build reorders the *index* buffer but NOT
+   * the vertex buffer — so these ranges remain valid for the lifetime of
+   * the returned buffers. Used by `HybridEngine.updatePrimitive`'s
+   * transform-only refit fast path.
+   */
+  meshVertexRanges: ReadonlyArray<{ name: string; vertexStart: number; vertexCount: number }>;
 }
 
 export interface SceneBVHCommonOpts {
@@ -498,6 +514,51 @@ export function buildSceneBVH(
   // top-of-file comment for the full rationale.
   const { vertexMatId, materials } = snapshotPreBuildMaterials(meshes, merged);
 
+  // ── 3b. Per-source-mesh vertex ranges ─────────────────────────────────
+  // Snapshot now (pre-clearGroups, pre-BVH-build). The BVH build reorders
+  // INDICES via SAH but never moves vertices, so these ranges remain
+  // valid for the lifetime of the returned buffers. Consumers (e.g.
+  // HybridEngine.updatePrimitive's transform-only refit) use them to
+  // refresh one mesh's worldspace positions in place without touching
+  // the rest of the merged vertex buffer.
+  const meshVertexRanges: Array<{ name: string; vertexStart: number; vertexCount: number }> = [];
+  {
+    const origGroups2 = merged.groups;
+    const idxArr2 = merged.index!.array;
+    if (origGroups2.length === meshes.length && origGroups2.length > 0) {
+      // One group per source mesh — scan each group's index slice for
+      // min/max vertex referenced. Vertex ranges are contiguous per
+      // mesh thanks to StaticGeometryGenerator's concatenation order.
+      for (let gi = 0; gi < origGroups2.length; gi++) {
+        const g = origGroups2[gi]!;
+        const mesh = meshes[gi]!;
+        let mn = Number.POSITIVE_INFINITY;
+        let mx = Number.NEGATIVE_INFINITY;
+        const end = g.start + g.count;
+        for (let i = g.start; i < end; i++) {
+          const v = idxArr2[i]!;
+          if (v < mn) mn = v;
+          if (v > mx) mx = v;
+        }
+        const vertexStart = Number.isFinite(mn) ? mn : 0;
+        const vertexCount = Number.isFinite(mx) ? mx - vertexStart + 1 : 0;
+        meshVertexRanges.push({ name: mesh.name, vertexStart, vertexCount });
+      }
+    } else if (meshes.length === 1) {
+      // Single-material merge (no groups) — one mesh covers all vertices.
+      const total = (merged.attributes['position'] as THREE.BufferAttribute).count;
+      meshVertexRanges.push({ name: meshes[0]!.name, vertexStart: 0, vertexCount: total });
+    } else {
+      // Defensive fallback: group metadata absent / mismatched. Emit
+      // empty ranges so `meshVertexRanges.length === meshes.length`
+      // — the caller's id→range lookup will return vertexCount=0 and
+      // skip the refit, preferring the topology-rebuild path.
+      for (const mesh of meshes) {
+        meshVertexRanges.push({ name: mesh.name, vertexStart: 0, vertexCount: 0 });
+      }
+    }
+  }
+
   // ── 4. Collapse groups + build BVH ────────────────────────────────────
   // Replace per-mesh groups with a single group covering all triangles
   // so MeshBVH builds ONE unified root.
@@ -603,6 +664,7 @@ export function buildSceneBVH(
     materials,
     ...(uvAttribute != null ? { uvAttribute } : {}),
     boundingBox,
+    meshVertexRanges,
   };
 }
 
@@ -634,6 +696,7 @@ function emptyBVHResult(positionStride: 3 | 4): SceneBVHCommonResult {
       new THREE.Vector3(-1, -1, -1),
       new THREE.Vector3(1, 1, 1),
     ),
+    meshVertexRanges: [],
   };
 }
 
@@ -753,5 +816,142 @@ function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
     const absoluteU32Idx = u32[base + 6]!;
     const absoluteNodeIdx = absoluteU32Idx / UINT32_PER_NODE;
     u32[base + 6] = absoluteNodeIdx - i;
+  }
+}
+
+/**
+ * In-place BVH **refit** — recompute every node's AABB bounds without
+ * rebuilding tree topology. Used by `HybridEngine.updatePrimitive` when a
+ * transform-only patch arrives: tree structure (split planes, parent/
+ * child links, triangle ordering, leaf membership) is preserved; only the
+ * `bounds.min/max` fields are refreshed from the (already updated) vertex
+ * positions.
+ *
+ * Cost: O(totalNodes + sum(leafTriCounts)). For a 30 k-tri scene this
+ * runs in well under 1 ms vs. ~50 ms for a full SAH rebuild — the whole
+ * point of the fast path.
+ *
+ * **Algorithm**: iterative post-order DFS. Each node is "first-visited"
+ * (push children + emit-marker) and then "emit-visited" (compute AABB
+ * from children's already-refit bounds or from leaf triangles).
+ *
+ * **Inputs**:
+ *  - `bvhNodes`: the 32-byte-per-node packed Float32Array buffer. Its
+ *    `bounds` fields (slots 0–5) are overwritten in place; the topology
+ *    fields (slots 6, 7) are untouched.
+ *  - `indices`: stride-3 triangle index buffer (3 u32 per triangle) as
+ *    returned by `buildSceneBVH`. **Stride-4 callers** (ReSTIR / pt-webgpu)
+ *    must pass a stride-3 view since refit reads `indices[t*3 + (0|1|2)]`.
+ *  - `positions`: vertex-position buffer. Stride may be 3 or 4 floats per
+ *    vertex; the .w lane (if present) is ignored.
+ *  - `positionStrideFloats`: 3 or 4 — matches the build-time layout.
+ *
+ * **Invariant preserved**: leaves keep their `triOffset` + `triCount`;
+ * interior nodes keep their relative right-child offset. The GPU
+ * traversal continues to work unchanged.
+ */
+export function refitBvhBounds(
+  bvhNodes: Float32Array,
+  indices: Uint32Array,
+  positions: Float32Array,
+  positionStrideFloats: 3 | 4,
+): void {
+  const UINT32_PER_NODE = 8;
+  const LEAFNODE_FLAG = 0xffff;
+  const totalNodes = bvhNodes.length / UINT32_PER_NODE;
+  if (totalNodes === 0) return;
+  const u32 = new Uint32Array(bvhNodes.buffer, bvhNodes.byteOffset, bvhNodes.length);
+  const f32 = bvhNodes;
+
+  // Build a post-order traversal order via an iterative DFS so we don't
+  // risk a stack overflow on deep trees. Each stack entry packs
+  // (nodeIdx, second-visit-flag) into one 32-bit slot:
+  //   bit 31 set ⇒ second visit (emit AABB)
+  //   low 31 bits ⇒ node index
+  const order = new Int32Array(totalNodes);
+  let orderLen = 0;
+  const stack = new Int32Array(totalNodes * 2);
+  let sp = 0;
+  stack[sp++] = 0; // root, first visit
+  while (sp > 0) {
+    const entry = stack[--sp]!;
+    const isSecondVisit = (entry & 0x80000000) !== 0;
+    const nodeIdx = entry & 0x7fffffff;
+    if (isSecondVisit) {
+      order[orderLen++] = nodeIdx;
+      continue;
+    }
+    const splitOrCount = u32[nodeIdx * UINT32_PER_NODE + 7]!;
+    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    if (isLeaf) {
+      order[orderLen++] = nodeIdx;
+      continue;
+    }
+    // Internal node: schedule emit-now after both children, then push
+    // children (right first so left pops first — stable visitation order
+    // for debugging).
+    stack[sp++] = nodeIdx | 0x80000000;
+    const leftChild = nodeIdx + 1;
+    const rightChild = nodeIdx + u32[nodeIdx * UINT32_PER_NODE + 6]!;
+    stack[sp++] = rightChild;
+    stack[sp++] = leftChild;
+  }
+
+  // Walk the post-order list and refit each node's AABB.
+  for (let oi = 0; oi < orderLen; oi++) {
+    const nodeIdx = order[oi]!;
+    const base = nodeIdx * UINT32_PER_NODE;
+    const splitOrCount = u32[base + 7]!;
+    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+
+    let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
+    let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;
+
+    if (isLeaf) {
+      const triCount = splitOrCount & 0xffff;
+      const triOffset = u32[base + 6]!;
+      for (let t = 0; t < triCount; t++) {
+        const triIdx = triOffset + t;
+        const i0 = indices[triIdx * 3 + 0]!;
+        const i1 = indices[triIdx * 3 + 1]!;
+        const i2 = indices[triIdx * 3 + 2]!;
+        // Three vertices per triangle — inline the unrolled cmin/cmax
+        // rather than allocate an array per iteration.
+        let off = i0 * positionStrideFloats;
+        let x = positions[off + 0]!, y = positions[off + 1]!, z = positions[off + 2]!;
+        if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+        if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+        if (z < mnZ) mnZ = z; if (z > mxZ) mxZ = z;
+        off = i1 * positionStrideFloats;
+        x = positions[off + 0]!; y = positions[off + 1]!; z = positions[off + 2]!;
+        if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+        if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+        if (z < mnZ) mnZ = z; if (z > mxZ) mxZ = z;
+        off = i2 * positionStrideFloats;
+        x = positions[off + 0]!; y = positions[off + 1]!; z = positions[off + 2]!;
+        if (x < mnX) mnX = x; if (x > mxX) mxX = x;
+        if (y < mnY) mnY = y; if (y > mxY) mxY = y;
+        if (z < mnZ) mnZ = z; if (z > mxZ) mxZ = z;
+      }
+    } else {
+      const leftChild = nodeIdx + 1;
+      const rightChild = nodeIdx + u32[base + 6]!;
+      // Inline both children's union to avoid an iterator allocation.
+      let cBase = leftChild * UINT32_PER_NODE;
+      let cMnX = f32[cBase + 0]!, cMnY = f32[cBase + 1]!, cMnZ = f32[cBase + 2]!;
+      let cMxX = f32[cBase + 3]!, cMxY = f32[cBase + 4]!, cMxZ = f32[cBase + 5]!;
+      if (cMnX < mnX) mnX = cMnX; if (cMxX > mxX) mxX = cMxX;
+      if (cMnY < mnY) mnY = cMnY; if (cMxY > mxY) mxY = cMxY;
+      if (cMnZ < mnZ) mnZ = cMnZ; if (cMxZ > mxZ) mxZ = cMxZ;
+      cBase = rightChild * UINT32_PER_NODE;
+      cMnX = f32[cBase + 0]!; cMnY = f32[cBase + 1]!; cMnZ = f32[cBase + 2]!;
+      cMxX = f32[cBase + 3]!; cMxY = f32[cBase + 4]!; cMxZ = f32[cBase + 5]!;
+      if (cMnX < mnX) mnX = cMnX; if (cMxX > mxX) mxX = cMxX;
+      if (cMnY < mnY) mnY = cMnY; if (cMxY > mxY) mxY = cMxY;
+      if (cMnZ < mnZ) mnZ = cMnZ; if (cMxZ > mxZ) mxZ = cMxZ;
+    }
+
+    f32[base + 0] = mnX; f32[base + 1] = mnY; f32[base + 2] = mnZ;
+    f32[base + 3] = mxX; f32[base + 4] = mxY; f32[base + 5] = mxZ;
   }
 }
