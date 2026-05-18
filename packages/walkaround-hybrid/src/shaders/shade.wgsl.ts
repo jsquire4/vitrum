@@ -194,7 +194,9 @@ fn lo_direct(
   let nDotL = max(0.0, dot(normal, wi));
   let nlDotL = max(0.0, dot(-e.normal, wi));
   if (nDotL <= 1e-6 || nlDotL <= 1e-6) { return vec3f(0.0); }
-  let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon);
+  // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
+  // (light passes through glass; per-channel tinted-visibility handles tint).
+  let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
   if (occ) { return vec3f(0.0); }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
   let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
@@ -469,7 +471,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Locals are named identically to their helper outputs (Lo_emit, Lo_direct,
   // Lo_sunCaustic, Lo_skyAperture, Lo_indirect) so the structural-contract
   // tests in sprint18-indirectCombine.test.ts continue to match.
-  let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, primaryHit.matColorPacked, primaryHit.triIndex);
+  let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, primaryHit.matColorPacked, primaryHit.indices.w);
   let Lo_direct     = lo_direct(pixelIdx, pos, normal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
   let Lo_sunCaustic = lo_sun_caustic(gid.xy, pos, normal, albedo, isGlass, isMetal);
   let Lo_skyAperture = lo_sky_aperture(pos, normal, albedo, isGlass, isMetal);

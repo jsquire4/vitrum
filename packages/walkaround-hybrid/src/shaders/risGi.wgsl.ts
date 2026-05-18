@@ -200,9 +200,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     if (distS > 1e-4) {
       let wiZ = toS / distS;
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
+      // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
+      // (light passes through glass; per-channel tinted-visibility handles tint).
       let occ = bvhIntersectAny(
         &bvh_index, &bvh_position, &bvh,
-        shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
+        shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon, true,
       );
       if (occ) {
         r.w_sum = 0.0;
