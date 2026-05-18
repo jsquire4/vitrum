@@ -23,14 +23,27 @@ Each technique is cited at its implementation site in the source code. This list
 - **Beer-Lambert attenuation** — Pierre Bouguer (1729), August Beer (1852), Johann Heinrich Lambert (1760)
 - **Cauchy IOR formula** — Augustin-Louis Cauchy (1830)
 - **Schlick Fresnel approximation** — Christophe Schlick, "An Inexpensive BRDF Model for Physically-based Rendering," Eurographics 1994
+- **GGX visible normal distribution function (VNDF) sampling** — Eric Heitz, "Sampling the GGX Distribution of Visible Normals," JCGT 7(4):1–13, 2018. <https://jcgt.org/published/0007/04/01/paper.pdf>
 - **Multiple importance sampling (MIS) — power heuristic** — Eric Veach, "Robust Monte Carlo Methods for Light Transport Simulation," PhD thesis, Stanford 1997
+- **RIS (Resampled Importance Sampling) estimator** — Justin Talbot, David Cline, Parris Egbert, "Importance Resampling for Global Illumination," EGSR 2005
 - **Sobol low-discrepancy sequence** — Ilya Sobol (1967), as adapted in the three-gpu-pathtracer library
+
+### Geometry & acceleration
+
+- **Möller-Trumbore ray-triangle intersection** — Tomas Möller, Ben Trumbore, "Fast, Minimum Storage Ray-Triangle Intersection," Journal of Graphics Tools 2(1):21–28, 1997
+- **Binned SAH BVH construction** — Ingo Wald, "On fast Construction of SAH-based Bounding Volume Hierarchies," IEEE Symposium on Interactive Ray Tracing, 2007 (K=16 bins per axis)
+- **Robust ray-AABB slab traversal** — Amy Williams, Steve Barrus, R. Keith Morley, Peter Shirley, "An Efficient and Robust Ray-Box Intersection Algorithm," Journal of Graphics Tools 10(1), 2005 (safe-inverse-direction handling of `dir.* == 0`)
 
 ### Real-time global illumination
 
 - **DDGI (Dynamic Diffuse Global Illumination)** — Zander Majercik, Jean-Philippe Guertin, Derek Nowrouzezahrai, Morgan McGuire, "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields," JCGT 2019
 - **Radiance Cascades** — Alexander Sannikov, "Radiance Cascades: A Novel High-Resolution Formal Solution for Multidimensional Non-LTE Radiative Transfer," 2024
 - **ReSTIR DI (Reservoir-based Spatiotemporal Importance Resampling)** — Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron Lefohn, Wojciech Jarosz, "Spatiotemporal reservoir resampling for real-time ray tracing with dynamic direct lighting," SIGGRAPH 2020
+- **ReSTIR GI (diffuse-indirect resampling)** — Zander Majercik, Adam Marrs, Josef Spjut, Morgan McGuire, "Dynamic Diffuse Global Illumination Resampling," SIGGRAPH 2021 (§4.2 initial-sample RIS, §4.5 temporal/spatial reuse)
+
+### Ambient occlusion
+
+- **GTAO (Ground-Truth Ambient Occlusion)** — Jorge Jiménez, Xian-Chun Wu, Angelo Pesce, Adrian Jarabo, "Practical Realtime Strategies for Accurate Indirect Occlusion," SIGGRAPH 2016 Course Notes (§4.2 Eq. 11). Reference implementation cross-checked against Intel XeGTAO (<https://github.com/GameTechDev/XeGTAO>).
 
 ### Volumetric & participating media
 
@@ -46,8 +59,8 @@ Each technique is cited at its implementation site in the source code. This list
 
 - **À-trous wavelet GI denoiser** — Holger Dammertz, Daniel Sewtz, Johannes Hanika, Hendrik P. A. Lensch, "Edge-Avoiding À-Trous Wavelet Transform for fast Global Illumination Filtering," HPG 2010
 - **SVGF (Spatiotemporal Variance-Guided Filtering)** — Christoph Schied et al., "Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced Global Illumination," HPG 2017
-- **BMFR (Blockwise Multi-Order Feature Regression)** — Matias Koskela, Kalle Immonen, Markku Mäkitalo, Alessandro Foi, Timo Viitanen, Pekka Jääskeläinen, "Blockwise Multi-Order Feature Regression for Real-Time Path-Tracing Reconstruction," ACM TOG 2019
 - **Variance-clamped temporal accumulation** — Schied et al. SVGF (above)
+- **Intel Open Image Denoise (OIDN)** — Intel Corporation, Apache-2.0 (model weights), executed in-browser via ONNX Runtime Web
 
 ### Tone mapping & post-processing
 
@@ -59,9 +72,15 @@ Each technique is cited at its implementation site in the source code. This list
 
 ### Caustic methods
 
-- **Bidirectional path tracing (BDPT)** — Eric P. Lafortune, Yves D. Willems, "Bi-directional Path Tracing," CompuGraphics 1993
-- **ReSTIR BDPT** — Hedstrom et al., "Bidirectional ReSTIR Path Tracing with Caustics," ACM TOG 2025
-- **Vertex Connection and Merging (VCM)** — Iliyan Georgiev, Jaroslav Křivánek, Tomáš Davidovič, Philipp Slusallek, "Light Transport Simulation with Vertex Connection and Merging," ACM TOG 2012
+- **Bidirectional path tracing (BDPT)** — Eric P. Lafortune, Yves D. Willems, "Bi-directional Path Tracing," CompuGraphics 1993 (partial: vertex tables + connection-strategy MIS math under `shared-samplers/src/bdpt*` — full caustic dispatch gated on Sprint 10c per `plan/phase-7-restir-gi.md`)
+
+## Candidate techniques (not yet implemented)
+
+The following techniques are tracked as roadmap candidates. They are documented here for transparency about what vitrum is *not* yet shipping, and to credit the prior art that future implementations would build on. See `plan/` for current status.
+
+- **BMFR (Blockwise Multi-Order Feature Regression)** — Matias Koskela, Kalle Immonen, Markku Mäkitalo, Alessandro Foi, Timo Viitanen, Pekka Jääskeläinen, "Blockwise Multi-Order Feature Regression for Real-Time Path-Tracing Reconstruction," ACM TOG 2019. `shared-denoisers/src/index.ts`: "BMFR remains a roadmap candidate; no BMFR module is exported."
+- **ReSTIR BDPT** — Hedstrom et al., "Bidirectional ReSTIR Path Tracing with Caustics," ACM TOG 2025. Not implemented as of 2026-05-17.
+- **Vertex Connection and Merging (VCM)** — Iliyan Georgiev, Jaroslav Křivánek, Tomáš Davidovič, Philipp Slusallek, "Light Transport Simulation with Vertex Connection and Merging," ACM TOG 2012. Not implemented as of 2026-05-17.
 
 ## Asset attribution
 
