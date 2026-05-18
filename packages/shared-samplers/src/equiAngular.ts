@@ -144,6 +144,13 @@ export function sampleEquiAngular(
   // Step 5: PDF in t-space, evaluated at the CLAMPED t so the returned
   // (t, pdf) pair is self-consistent (Kulla & Conty 2012, §3).
   // p(t) = 1 / (D · thetaRange · (1 + ((t - t_closest)/D)²))
+  //
+  // History: the 2026-05-11 in-flight sweep (Tier D) flagged a clamp/PDF
+  // mismatch here — the sampler previously returned `max(0, t)` while
+  // computing the PDF on the unclamped `t`. Closed by commit d97e806
+  // (M4 sweep, Item 10) on 2026-05-11; the clamp now applies to both the
+  // returned sample and the ratio fed into the PDF, so `pdf == p(returned_t)`.
+  // Verified-closed during the 2026-05-17 session.
   const tClamped = Math.max(0, t);
   const ratio = (tClamped - tClosest) / D;
   const pdf = 1 / (D * thetaRange * (1 + ratio * ratio));
