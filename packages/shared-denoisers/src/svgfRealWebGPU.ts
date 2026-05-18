@@ -21,10 +21,11 @@
  *   Schied et al. "Spatiotemporal Variance-Guided Filtering" HPG 2017.
  */
 
-import { SVGF_REPROJECTION_WGSL, SVGF_REAL_REPROJECTION_WORKGROUP_SIZE } from './wgsl/svgfReprojection.wgsl.js';
-import { SVGF_VARIANCE_FROM_MOMENTS_WGSL, SVGF_VARIANCE_FROM_MOMENTS_WORKGROUP_SIZE } from './wgsl/svgfVarianceFromMoments.wgsl.js';
-import { SVGF_7X7_SPATIAL_FALLBACK_WGSL, SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
-import { ATROUS_VARIANCE_WGSL, ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE } from './wgsl/atrousVariance.wgsl.js';
+import { SVGF_REAL_REPROJECTION_WORKGROUP_SIZE } from './wgsl/svgfReprojection.wgsl.js';
+import { SVGF_VARIANCE_FROM_MOMENTS_WORKGROUP_SIZE } from './wgsl/svgfVarianceFromMoments.wgsl.js';
+import { SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
+import { ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE } from './wgsl/atrousVariance.wgsl.js';
+import { svgfRealPipelines } from './svgfRealPipelineCache.js';
 import {
   SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
   SVGF_REPROJ_DEFAULT_UNIFORMS,
@@ -356,53 +357,11 @@ export function svgf7x7FallbackCPU(opts: {
   return out;
 }
 
-// ============================================================
-// Pipeline cache (keyed by GPUDevice)
-// ============================================================
-
-interface SVGFRealPipelineBundle {
-  readonly reprojPipeline:    GPUComputePipeline;
-  readonly momentsPipeline:   GPUComputePipeline;
-  readonly fallbackPipeline:  GPUComputePipeline;
-  readonly atrousPipeline:    GPUComputePipeline;
-}
-
-const svgfRealPipelinesByDevice = new WeakMap<GPUDevice, SVGFRealPipelineBundle>();
-
-function svgfRealPipelines(device: GPUDevice): SVGFRealPipelineBundle {
-  let bundle = svgfRealPipelinesByDevice.get(device);
-  if (bundle == null) {
-    const reprojSM   = device.createShaderModule({ label: 'svgf-reproj',    code: SVGF_REPROJECTION_WGSL });
-    const momentsSM  = device.createShaderModule({ label: 'svgf-moments',   code: SVGF_VARIANCE_FROM_MOMENTS_WGSL });
-    const fallbackSM = device.createShaderModule({ label: 'svgf-7x7',       code: SVGF_7X7_SPATIAL_FALLBACK_WGSL });
-    const atrousVarianceSM = device.createShaderModule({ label: 'svgf-real-atrous-variance', code: ATROUS_VARIANCE_WGSL });
-
-    bundle = {
-      reprojPipeline: device.createComputePipeline({
-        label: 'svgf-real-reproj',
-        layout: 'auto',
-        compute: { module: reprojSM, entryPoint: 'svgfReprojMain' },
-      }),
-      momentsPipeline: device.createComputePipeline({
-        label: 'svgf-real-moments',
-        layout: 'auto',
-        compute: { module: momentsSM, entryPoint: 'svgfVarianceFromMomentsMain' },
-      }),
-      fallbackPipeline: device.createComputePipeline({
-        label: 'svgf-real-7x7',
-        layout: 'auto',
-        compute: { module: fallbackSM, entryPoint: 'svgf7x7FallbackMain' },
-      }),
-      atrousPipeline: device.createComputePipeline({
-        label: 'svgf-real-atrous',
-        layout: 'auto',
-        compute: { module: atrousVarianceSM, entryPoint: 'svgfAtrousMain' },
-      }),
-    };
-    svgfRealPipelinesByDevice.set(device, bundle);
-  }
-  return bundle;
-}
+// Pipeline cache hoisted to svgfRealPipelineCache.ts (W4-A7) — both the
+// type and the function come from that module now. Earlier revisions
+// inlined the cache here and the extracted module became an orphan
+// canonical (created, never imported). Routing through the canonical
+// activates the extracted module and removes ~40 lines of duplication.
 
 // ============================================================
 // Helpers — texture upload / readback
