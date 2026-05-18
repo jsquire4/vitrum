@@ -97,23 +97,83 @@ export interface RCDispatchOpts {
   debugFill?:     boolean;
 }
 
+/**
+ * Raw-GPU-types variant of {@link RCDispatchOpts} used by hosts that already
+ * own a `GPUDevice` + raw `GPUBuffer` handles (e.g. `HybridEngine`, which
+ * runs the WGSL shade pipeline directly and does not use THREE's WebGPU
+ * renderer backend).
+ *
+ * Added in W8 Phase 1B (2026-05-18). The THREE-tied `RCDispatchOpts` survives
+ * for the legacy host TSL path (`walkaroundDiffuseLighting.ts` consumers)
+ * and is implemented as an adapter that extracts raw buffers + textures
+ * from the THREE renderer and delegates to {@link RCDispatcher.dispatchFrameRaw}.
+ */
+export interface RCDispatchOptsRaw {
+  /** Raw WebGPU device — caller-owned. */
+  device:             GPUDevice;
+
+  /** BVH GPU buffers (5 separate SSBOs; layout matches `bvhCompute.SceneBVH`). */
+  bvhNodesBuf:        GPUBuffer;
+  bvhIndicesBuf:      GPUBuffer;
+  bvhPositionsBuf:    GPUBuffer;
+  materialsBuf:       GPUBuffer;
+  triMaterialIdBuf:   GPUBuffer;
+
+  /** One cascade-output `GPUBuffer` per cascade, same order as
+   *  {@link CASCADE_DIMS}. The dispatcher writes into these (cast) and
+   *  reads/writes parents (merge). */
+  cascadeBufs:        readonly GPUBuffer[];
+
+  /** Cascade geometry — plain tuples matching `CascadeBuffers.probeOriginWorld`/`roomSize`. */
+  probeOriginWorld:   readonly [number, number, number];
+  roomSize:           readonly [number, number, number];
+
+  /** Sun direction (world space, normalised) and RGB tint. */
+  sunDirection:       readonly [number, number, number];
+  sunColor:           readonly [number, number, number];
+
+  /** Environment equirectangular texture — caller supplies a pre-created
+   *  view + sampler. Pass `null` to use the dispatcher's 1×1 black placeholder. */
+  envTextureView?:    GPUTextureView | null;
+  envSampler?:        GPUSampler | null;
+
+  frameSeed:          number;
+  /** Möller–Trumbore coplanarity threshold. Default 1e-5. */
+  triIntersectEpsilon?: number;
+  /** Debug-fill mode bypasses GPU compute and writes test colours to CPU
+   *  Float32Arrays. Only useful for the legacy `RCDispatchOpts` path which
+   *  also owns CPU `Float32Array` mirrors of the cascades. The raw path
+   *  has no CPU mirror, so when `debugFill: true` here the dispatcher
+   *  simply returns without dispatching. */
+  debugFill?:         boolean;
+}
+
 // ─── Uniform data builders ────────────────────────────────────────────────────
 // These are the exact same packing functions as the original cascadeDispatch.ts.
 
-/** Write CascadeUniforms into an existing Float32Array (avoids realloc per frame). */
+/** Write CascadeUniforms into an existing Float32Array (avoids realloc per frame).
+ *
+ * W8 Phase 1B (2026-05-18) — sunDir / sunColor / cascade geometry all take
+ * plain `readonly [number, number, number]` tuples; no `THREE.Vector3` /
+ * `THREE.Color` dependency. The legacy `RCDispatchOpts` (THREE-tied) path
+ * converts `THREE.Vector3 → [x,y,z]` and `THREE.Color → [r,g,b]` at the
+ * call site before invoking this helper.
+ */
 function buildCascadeUniformDataInto(
   d: Float32Array,
   k: number,
-  cb: CascadeBuffers,
-  sunDir: THREE.Vector3,
-  sunColor: THREE.Color,
+  probeOriginWorld: readonly [number, number, number],
+  roomSize:         readonly [number, number, number],
+  sunDir:           readonly [number, number, number],
+  sunColor:         readonly [number, number, number],
   envIntensity: number,
   frameSeed: number,
   triIntersectEpsilon: number,  // E2: UBO-plumbed (was local WGSL const)
 ): void {
   const dim = CASCADE_DIMS[k]!;
   const rayGridSize = Math.round(Math.sqrt(dim.rays));
-  const { probeOriginWorld: o, roomSize: s } = cb;
+  const o = probeOriginWorld;
+  const s = roomSize;
   // CascadeUniforms layout (matches WGSL struct in probeRayCast.wgsl.ts):
   // probeOriginWorld(3f), _pad0(f)
   // roomSize(3f), _pad1(f)
@@ -124,8 +184,6 @@ function buildCascadeUniformDataInto(
   // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), _pad4a(u)
   // Total: 40 float/uint values = 160 bytes
   const ui = new Uint32Array(d.buffer);
-  // W8 Phase 1A — `probeOriginWorld` / `roomSize` are now plain `[x,y,z]`
-  // tuples (was `THREE.Vector3`). Index access matches the WGSL packing.
   d[0]  = o[0]; d[1]  = o[1]; d[2]  = o[2]; d[3]  = 0;
   d[4]  = s[0]; d[5]  = s[1]; d[6]  = s[2]; d[7]  = 0;
   ui[8] = dim.probes[0]; ui[9] = dim.probes[1]; ui[10] = dim.probes[2];
@@ -133,8 +191,8 @@ function buildCascadeUniformDataInto(
   ui[12] = rayGridSize;
   d[13] = dim.intervalNear; d[14] = dim.intervalFar;
   ui[15] = k;
-  d[16] = sunDir.x; d[17] = sunDir.y; d[18] = sunDir.z; d[19] = 0;
-  d[20] = sunColor.r; d[21] = sunColor.g; d[22] = sunColor.b;
+  d[16] = sunDir[0]; d[17] = sunDir[1]; d[18] = sunDir[2]; d[19] = 0;
+  d[20] = sunColor[0]; d[21] = sunColor[1]; d[22] = sunColor[2];
   d[23] = envIntensity;
   ui[24] = frameSeed;
   ui[25] = CASCADE_COUNT - 1;
@@ -145,7 +203,8 @@ function buildCascadeUniformDataInto(
 function buildMergeUniformData(
   lowerDim: (typeof CASCADE_DIMS)[number],
   upperDim: (typeof CASCADE_DIMS)[number],
-  cb: CascadeBuffers,
+  probeOriginWorld: readonly [number, number, number],
+  roomSize:         readonly [number, number, number],
 ): Float32Array {
   // MergeUniforms layout (matches WGSL struct in cascadeMerge.wgsl.ts):
   // lowerProbeCount(3u), lowerRayCount(u)
@@ -156,7 +215,8 @@ function buildMergeUniformData(
   // Total: 20 float/uint values = 80 bytes
   const d = new Float32Array(20);
   const ui = new Uint32Array(d.buffer);
-  const { probeOriginWorld: o, roomSize: s } = cb;
+  const o = probeOriginWorld;
+  const s = roomSize;
   ui[0]  = lowerDim.probes[0]; ui[1]  = lowerDim.probes[1]; ui[2]  = lowerDim.probes[2];
   ui[3]  = lowerDim.rays;
   ui[4]  = upperDim.probes[0]; ui[5]  = upperDim.probes[1]; ui[6]  = upperDim.probes[2];
@@ -164,7 +224,6 @@ function buildMergeUniformData(
   ui[8]  = Math.round(Math.sqrt(lowerDim.rays));
   ui[9]  = Math.round(Math.sqrt(upperDim.rays));
   ui[10] = 0; ui[11] = 0;
-  // W8 Phase 1A — plain `[x,y,z]` tuples (was `THREE.Vector3`).
   d[12]  = o[0]; d[13] = o[1]; d[14] = o[2]; d[15] = 0;
   d[16]  = s[0]; d[17] = s[1]; d[18] = s[2]; d[19] = 0;
   return d;
@@ -233,12 +292,63 @@ export class RCDispatcher {
 
     const device: GPUDevice = backend.device;
 
-    // Lazy init.
+    // W8 Phase 1B (2026-05-18) — adapt the THREE-tied opts to the raw-GPU
+    // `dispatchFrameRaw` entry. Extracts each StorageBufferAttribute to its
+    // underlying `GPUBuffer` and converts `THREE.Vector3` / `THREE.Color`
+    // sun parameters to plain `[x,y,z]` / `[r,g,b]` tuples.
+    const { sceneBVH } = opts;
+    const cascadeBufs: GPUBuffer[] = cascadeBuffers.gpuCascades.map(gpuBufferOf);
+
+    let envTextureView: GPUTextureView | null = null;
+    let envSampler:     GPUSampler | null = null;
+    const envBinding = this._buildEnvBinding(device, opts);
+    envTextureView = envBinding.envTextureView;
+    envSampler     = envBinding.envSampler;
+
+    await this.dispatchFrameRaw({
+      device,
+      bvhNodesBuf:      gpuBufferOf(sceneBVH.bvhNodes),
+      bvhIndicesBuf:    gpuBufferOf(sceneBVH.indices),
+      bvhPositionsBuf:  gpuBufferOf(sceneBVH.positions),
+      materialsBuf:     gpuBufferOf(sceneBVH.materials),
+      triMaterialIdBuf: gpuBufferOf(sceneBVH.triMaterialId),
+      cascadeBufs,
+      probeOriginWorld: cascadeBuffers.probeOriginWorld,
+      roomSize:         cascadeBuffers.roomSize,
+      sunDirection:     [opts.sunDirection.x, opts.sunDirection.y, opts.sunDirection.z],
+      sunColor:         [opts.sunColor.r, opts.sunColor.g, opts.sunColor.b],
+      envTextureView,
+      envSampler,
+      frameSeed:         opts.frameSeed,
+      ...(opts.triIntersectEpsilon !== undefined
+        ? { triIntersectEpsilon: opts.triIntersectEpsilon }
+        : {}),
+    });
+  }
+
+  /**
+   * THREE-free entry point — accepts raw `GPUDevice` + raw `GPUBuffer` handles
+   * directly. Used by hosts that own a `GPUDevice` and don't go through a
+   * THREE WebGPU renderer backend (e.g. `HybridEngine`).
+   *
+   * W8 Phase 1B (2026-05-18) — added alongside the legacy {@link dispatchFrame}.
+   * The legacy path delegates to this method after extracting raw buffers
+   * from the THREE renderer.
+   */
+  async dispatchFrameRaw(opts: RCDispatchOptsRaw): Promise<void> {
+    if (opts.debugFill) {
+      // Raw path has no CPU-side mirror to fill; just no-op for the
+      // smoke-test case. (Hosts wanting CPU debug fill should use the
+      // legacy `dispatchFrame` path which owns CPU Float32Arrays.)
+      return;
+    }
+
+    const device = opts.device;
     if (!this._handles) {
       try {
-        this._handles = this._buildHandles(device, opts);
+        this._handles = this._buildHandlesRaw(device, opts);
       } catch (err: unknown) {
-        console.error('[RCDispatcher] buildHandles failed:', err);
+        console.error('[RCDispatcher] buildHandlesRaw failed:', err);
         return;
       }
     }
@@ -248,7 +358,10 @@ export class RCDispatcher {
     for (let k = 0; k < CASCADE_COUNT; k++) {
       const pass = handles.castPasses[k]!;
       buildCascadeUniformDataInto(
-        pass.cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed,
+        pass.cascadeParamsRaw, k,
+        opts.probeOriginWorld, opts.roomSize,
+        opts.sunDirection, opts.sunColor,
+        1.0, opts.frameSeed,
         opts.triIntersectEpsilon ?? 1e-5,
       );
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer as ArrayBuffer);
@@ -384,12 +497,46 @@ export class RCDispatcher {
   }
 
   /**
-   * Build all pipelines and bind groups (one-time setup).
-   * Called lazily on first `dispatchFrame()`.
+   * Resolve the env binding for the raw (THREE-free) path. When the caller
+   * supplies both `envTextureView` and `envSampler`, use them. Otherwise
+   * create a 1×1 black placeholder.
+   *
+   * Added in W8 Phase 1B (2026-05-18).
    */
-  private _buildHandles(device: GPUDevice, opts: RCDispatchOpts): DispatchHandles {
-    const { sceneBVH, cascadeBuffers } = opts;
+  private _resolveEnvBindingRaw(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+  ): { envTextureView: GPUTextureView; envSampler: GPUSampler } {
+    if (opts.envTextureView && opts.envSampler) {
+      return { envTextureView: opts.envTextureView, envSampler: opts.envSampler };
+    }
+    const placeholderTex = device.createTexture({
+      label:  'rc-env-placeholder',
+      size:   [1, 1],
+      format: 'rgba8unorm',
+      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: placeholderTex },
+      new Uint8Array([0, 0, 0, 255]),
+      { bytesPerRow: 4 },
+      [1, 1],
+    );
+    return {
+      envTextureView: placeholderTex.createView({ label: 'rc-env-placeholder-view' }),
+      envSampler: device.createSampler({ label: 'rc-env-placeholder-sampler' }),
+    };
+  }
 
+  /**
+   * Build all pipelines and bind groups (one-time setup).
+   * Called lazily on first `dispatchFrameRaw()`.
+   *
+   * W8 Phase 1B (2026-05-18) — refactored to take {@link RCDispatchOptsRaw}
+   * (raw GPU types). The legacy THREE-tied {@link dispatchFrame} entry adapts
+   * its inputs and calls {@link dispatchFrameRaw}, which calls this method.
+   */
+  private _buildHandlesRaw(device: GPUDevice, opts: RCDispatchOptsRaw): DispatchHandles {
     // Compile shader modules (shared across all cast passes / merge passes).
     if (!this._castShaderModule) {
       this._castShaderModule = device.createShaderModule({
@@ -410,15 +557,16 @@ export class RCDispatcher {
     const castPipelineLayout  = device.createPipelineLayout({ bindGroupLayouts: [castBGL] });
     const mergePipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [mergeBGL] });
 
-    // BVH GPU buffers (shared across all cast passes).
-    const bvhBuf      = gpuBufferOf(sceneBVH.bvhNodes);
-    const idxBuf      = gpuBufferOf(sceneBVH.indices);
-    const posBuf      = gpuBufferOf(sceneBVH.positions);
-    const matBuf      = gpuBufferOf(sceneBVH.materials);
-    const triMatBuf   = gpuBufferOf(sceneBVH.triMaterialId);
+    // BVH GPU buffers (shared across all cast passes; caller-provided).
+    const bvhBuf      = opts.bvhNodesBuf;
+    const idxBuf      = opts.bvhIndicesBuf;
+    const posBuf      = opts.bvhPositionsBuf;
+    const matBuf      = opts.materialsBuf;
+    const triMatBuf   = opts.triMaterialIdBuf;
 
-    // Env texture + sampler.
-    const { envTextureView, envSampler } = this._buildEnvBinding(device, opts);
+    // Env texture + sampler. If the caller supplied both, use them; otherwise
+    // create a 1×1 black placeholder.
+    const { envTextureView, envSampler } = this._resolveEnvBindingRaw(device, opts);
 
     // ── Cast passes (one per cascade) ──────────────────────────────────────
     const castPasses: CastPassHandles[] = [];
@@ -448,7 +596,13 @@ export class RCDispatcher {
       // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
       // through.
       const cascadeParamsRaw = new Float32Array(40);
-      buildCascadeUniformDataInto(cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed, opts.triIntersectEpsilon ?? 1e-5);
+      buildCascadeUniformDataInto(
+        cascadeParamsRaw, k,
+        opts.probeOriginWorld, opts.roomSize,
+        opts.sunDirection, opts.sunColor,
+        1.0, opts.frameSeed,
+        opts.triIntersectEpsilon ?? 1e-5,
+      );
       const cascadeParamsBuf = device.createBuffer({
         label:  `rc-cast-C${k}-uniforms`,
         size:   cascadeParamsRaw.byteLength,
@@ -458,9 +612,8 @@ export class RCDispatcher {
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(cascadeParamsRaw);
       cascadeParamsBuf.unmap();
 
-      // Cascade output buffer.
-      const cascadeAttr = cascadeBuffers.gpuCascades[k]!;
-      const cascadeBuf  = gpuBufferOf(cascadeAttr);
+      // Cascade output buffer (caller-provided raw GPUBuffer).
+      const cascadeBuf  = opts.cascadeBufs[k]!;
 
       // Build bind group.
       const bindGroup = device.createBindGroup({
@@ -502,7 +655,7 @@ export class RCDispatcher {
       });
 
       // MergeUniforms buffer (20 floats = 80 bytes).
-      const mergeRaw = buildMergeUniformData(lowerDim, upperDim, cascadeBuffers);
+      const mergeRaw = buildMergeUniformData(lowerDim, upperDim, opts.probeOriginWorld, opts.roomSize);
       const cascadeParamsBuf = device.createBuffer({
         label:  `rc-merge-${lower}-uniforms`,
         size:   mergeRaw.byteLength,
@@ -512,8 +665,9 @@ export class RCDispatcher {
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(mergeRaw);
       cascadeParamsBuf.unmap();
 
-      const lowerBuf = gpuBufferOf(cascadeBuffers.gpuCascades[lower]!);
-      const upperBuf = gpuBufferOf(cascadeBuffers.gpuCascades[lower + 1]!);
+      // Caller-provided raw cascade GPUBuffers (lower + upper).
+      const lowerBuf = opts.cascadeBufs[lower]!;
+      const upperBuf = opts.cascadeBufs[lower + 1]!;
 
       const bindGroup = device.createBindGroup({
         label:  `rc-merge-${lower}-bg`,
