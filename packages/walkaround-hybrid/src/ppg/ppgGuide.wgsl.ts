@@ -142,7 +142,6 @@ fn sTreeFindLeafBase(pos: vec3<f32>) -> u32 {
 // probability proportional to its accumulated flux, descending until a leaf.
 // Returns the leaf's f32 base offset within ppgDTreeBuf.
 fn dTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
-  let totalFlux = ppgDTreeBuf[dTreeOffset + 2u];
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
     let base = dTreeOffset + DTREE_HEADER_F32 + idx * DTREE_NODE_STRIDE;
@@ -183,9 +182,6 @@ fn dTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
     idx = firstChild + pick;
   }
   return dTreeOffset + DTREE_HEADER_F32; // unreachable on a well-formed tree
-  // Note: 'totalFlux' is used by the PDF formula in the caller (main below).
-  // It is read here only for completeness; the compiler will not emit a
-  // load if WGSL DCEs it. We rely on the caller to read it directly.
 }
 
 @compute @workgroup_size(64)
