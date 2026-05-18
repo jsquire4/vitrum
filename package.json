@@ -21,6 +21,9 @@
     "verify:mechanical": "npm run typecheck && npm test && npm run fork-shader-smoke && npm run shader-compile-ci",
     "release:dry-run": "npm pack --dry-run --workspaces --if-present"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "typescript": "^5.5.0"
   },
