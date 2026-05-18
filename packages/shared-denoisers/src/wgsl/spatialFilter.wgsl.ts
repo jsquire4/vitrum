@@ -208,8 +208,13 @@ fn spatialFilterMain(@builtin(global_invocation_id) gid: vec3u) {
 /**
  * Documents the bind group layout expected by `SPATIAL_FILTER_WGSL`.
  * Host code MUST bind these in the same order and with matching formats.
+ *
+ * File-local — this is a documentation-only descriptor with no compile-
+ * time consumers (TypeScript or runtime). Kept here as inline schema for
+ * humans reading the WGSL string above. 2026-05-18 dead-code sweep
+ * verified zero non-self consumers.
  */
-export interface SpatialFilterBindGroupLayout {
+interface SpatialFilterBindGroupLayout {
   /** binding 0 — noisy input color.  Format: rgba16float (RGBA16F).
    *  Source: the PT accumulation buffer (FrameOutput.primaryRadiance). */
   inputColor: 'texture_2d<f32>';

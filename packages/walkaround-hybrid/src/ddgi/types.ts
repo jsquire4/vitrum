@@ -38,21 +38,8 @@ export interface DDGILight {
   readonly position?: { readonly x: number; readonly y: number; readonly z: number };
 }
 
-/**
- * Minimal device handle accepted by DDGI.updateFrame. The probe-update
- * pass needs a `GPUDevice` to bind compute pipelines; previously DDGI's
- * input shape required a Three.js renderer adapter (`{ backend: { device,
- * isWebGPUBackend } }`), forcing HybridEngine to synthesise an empty fake.
- * This shape removes that coupling — DDGI no longer cares whether the
- * device came from a Three.js renderer or directly from `navigator.gpu`.
- *
- * `renderer` is still accepted (and forwarded to ProbeUpdatePass.init for
- * the legacy three.js-backend lazy-init path), but it is optional. When
- * absent, ProbeUpdatePass falls back to `navigator.gpu.requestAdapter`.
- */
-export interface DDGIDeviceHandle {
-  /** Raw WebGPU device (or null/undefined for the navigator.gpu fallback). */
-  readonly device?: GPUDevice;
-  /** Optional Three.js WebGPURenderer-shaped object (legacy path). */
-  readonly renderer?: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } };
-}
+// `DDGIDeviceHandle` interface removed 2026-05-18 — was defined here but
+// never imported anywhere in the workspace (only referenced in JSDoc
+// comments inside HybridEngine.ts by spelling, not by type). DDGI's
+// input shape currently uses an inline object literal via `DDGIFrameInputs`
+// which exposes the `device` + `renderer` fields directly.
