@@ -199,6 +199,36 @@ async function constructWalkaround(
   const engine = await createWalkaroundEngine_Hybrid(merged);
   engine.setScene(vitrumScene);
 
+  // A2 — configure the canvas's WebGPU context so the attachVitrum RAF tick
+  // can acquire a fresh GPUTextureView per frame and pass it as
+  // FrameInput.swapChainView. HybridEngine.renderFrame skips the WebGPU path
+  // when input.swapChainView is undefined (HybridEngine.ts:979). Without
+  // this configure step, a host using attachVitrum() against a WebGPU
+  // backend gets a black canvas. We configure here (not in attachVitrum)
+  // because createEngine owns the GPUDevice handle.
+  try {
+    const ctx = opts.canvas.getContext('webgpu') as GPUCanvasContext | null;
+    if (ctx != null) {
+      const format = (typeof navigator !== 'undefined' && 'gpu' in navigator
+        ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
+            .getPreferredCanvasFormat?.() ?? ('bgra8unorm' as GPUTextureFormat)
+        : ('bgra8unorm' as GPUTextureFormat));
+      ctx.configure({
+        device,
+        format,
+        // OPAQUE compositing — matches HybridEngine.renderFrame's resolve pass
+        // (which writes RGB with alpha = 1.0). PREMULTIPLIED would double-
+        // composite the canvas over the page background.
+        alphaMode: 'opaque',
+      });
+    }
+  } catch {
+    // Best-effort. Hosts that pre-configure their own context (or use a
+    // headless test canvas with no getContext('webgpu') support) are fine —
+    // attachVitrum will simply not plumb swapChainView and HybridEngine
+    // will skip frames cleanly.
+  }
+
   return wrapWithIdempotentDispose(engine, () => {
     try { device.destroy(); } catch {}
   });
@@ -265,8 +295,12 @@ function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
 /** Wrap an engine so that calling .dispose() multiple times is a no-op
  *  beyond the first call. The plan calls this out as an explicit
  *  acceptance criterion ("engine.dispose() followed by engine.dispose()
- *  is idempotent"). */
-function wrapWithIdempotentDispose(
+ *  is idempotent").
+ *
+ *  @internal Exported for unit-test access only. Not part of the public
+ *  `@vitrum/engine` API surface; consumers should use {@link createEngine}
+ *  / {@link attachVitrum}. */
+export function wrapWithIdempotentDispose(
   engine: Engine,
   postDispose: () => void,
 ): Engine {
@@ -286,6 +320,13 @@ function wrapWithIdempotentDispose(
       ? {
           updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
             if (!disposed) engine.updateEmitter!(id, patch);
+          },
+        }
+      : {}),
+    ...(engine.updateEnvironment
+      ? {
+          updateEnvironment: (env: Parameters<NonNullable<Engine['updateEnvironment']>>[0]) => {
+            if (!disposed) engine.updateEnvironment!(env);
           },
         }
       : {}),

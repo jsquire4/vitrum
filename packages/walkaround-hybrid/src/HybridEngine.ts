@@ -1329,6 +1329,13 @@ export class HybridEngine implements Engine {
    * displays, frames arriving faster than ~16.67 ms apart are skipped and
    * this returns a "skip" FrameOutput (samplesAccumulated: 0, isConverged:
    * false, primaryRadiance: null).
+   *
+   * Note: `input.viewport` is ignored by HybridEngine — its WebGPU render
+   * targets (DDGI atlas, ReSTIR reservoirs, history textures, accumulation
+   * buffer) are sized at construction and resized only via {@link setSize}.
+   * Hosts MUST call `engine.setSize(w, h)` when the canvas dimensions change;
+   * pushing a new `viewport` per frame is silently dropped. See the
+   * `@vitrum/core` FrameInput.viewport JSDoc for the cross-backend contract.
    */
   renderFrame(input: FrameInput): FrameOutput {
     const skipOutput: FrameOutput = {
