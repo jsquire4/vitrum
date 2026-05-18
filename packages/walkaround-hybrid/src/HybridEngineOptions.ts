@@ -461,4 +461,30 @@ export interface HybridEngineOptions extends EngineOptions {
    * Default: 16 384 (matches `PPG_MAX_SPATIAL_CELLS`).
    */
   readonly ppgMaxSpatialCells?: number;
+
+  // ── RC (Sannikov 2023 Radiance Cascades — W8 sprint, 2026-05-18) ──────────
+
+  /**
+   * Enable the Sannikov 2023 Radiance Cascades subsystem inside HybridEngine.
+   *
+   * When `true`, the engine instantiates an {@link RCSubsystem} that:
+   *   - Builds a per-engine RC BVH (~50 ms for ~30K-tri scenes) on each
+   *     `setScene` call. Today this builds a SEPARATE BVH from the
+   *     ReSTIR-DI BVH — future W2-style work may unify them.
+   *   - Allocates raw `GPUBuffer`s for each of the 5 cascades (per
+   *     `CASCADE_DIMS`) — memory cost depends on cascade sizing.
+   *   - Dispatches the cascade compute pipeline (5 cast passes + 4 merge
+   *     passes) each frame.
+   *
+   * The cascade-0 buffer is exposed via the pipeline as the indirect-diffuse
+   * source for shade.wgsl. W8 Phase 2 (initial wire — this commit) dispatches
+   * cascades without sampling them in shade. Phase 3 wires sampling + MIS
+   * composition with DDGI / ReSTIR-GI.
+   *
+   * Default: `false` — RC is opt-in until Phase 3 demonstrates first-bounce
+   * indirect quality gain over DDGI-only.
+   *
+   * @see plan/w8-rc-mis-composition.md for the full sprint plan.
+   */
+  readonly rcEnabled?: boolean;
 }

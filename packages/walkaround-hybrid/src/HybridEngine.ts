@@ -60,6 +60,7 @@ import { transformRefit, topologyRebuild, type PrimitiveUpdateContext } from './
 import { PipelineInitCoordinator, type PipelineInitHost } from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
+import { RCSubsystem } from './HybridEngineRC.js';
 
 // Re-export the option / lighting interfaces from their dedicated module so
 // the package's public surface (`./HybridEngine.js` import path) stays
@@ -226,6 +227,9 @@ export class HybridEngine implements Engine {
   private _ddgi:    DDGI;
   private _ddgiOn:  boolean = true;
 
+  // ── RC subsystem (W8 Phase 2 — opt-in via opts.rcEnabled) ───────────────
+  private _rc: RCSubsystem | null = null;
+
   // ── Per-frame throttle ─────────────────────────────────────────────────
   private _lastFrameTs = 0;
 
@@ -374,6 +378,13 @@ export class HybridEngine implements Engine {
       this._ddgi.setLights(this._ctorLights as DDGILight[]);
     }
 
+    // W8 Phase 2 — opt-in RC subsystem. RCSubsystem owns its own BVH +
+    // cascade GPUBuffers. setScene() rebuilds them when the source scene
+    // changes; dispatch happens per-frame in renderFrame() below.
+    if (opts.rcEnabled === true) {
+      this._rc = new RCSubsystem(this._device);
+    }
+
     this.capabilities = {
       // Set true once any updatePrimitive path ships. This branch
       // (`feat/a3-geometry-change-bvh-leaf-rebuild`) ships the transform
@@ -443,6 +454,15 @@ export class HybridEngine implements Engine {
     if (this._synthesizedThreeScene != null) {
       try { disposeVitrumThreeSceneRoot(this._synthesizedThreeScene); } catch {}
       this._synthesizedThreeScene = null;
+    }
+
+    // W8 Phase 2 — rebuild the RC BVH + cascade buffers against the new
+    // scene. Synthesise a fresh THREE root if needed (lazy via
+    // `_ensureThreeSceneRoot`). When the host supplied no source, the RC
+    // dispatcher stays idle until the next setScene.
+    if (this._rc) {
+      const rcRoot = this._ensureThreeSceneRoot();
+      if (rcRoot != null) this._rc.setScene(rcRoot);
     }
 
     // Tear down the existing pipeline, reinitialise asynchronously.
@@ -816,6 +836,26 @@ export class HybridEngine implements Engine {
       }
     }
 
+    // ── RC per-frame dispatch (W8 Phase 2) ──────────────────────────────
+    // RCSubsystem owns its own BVH + cascade buffers. Dispatch each frame
+    // when rcEnabled. Cascade-0 buffer is the indirect-diffuse source for
+    // Phase 3's shade.wgsl wiring; Phase 2 just exercises the dispatch path.
+    if (this._rc) {
+      this._rc.dispatchFrame({
+        sunDirection:        this._primaryLightDir,
+        // Multiply sun direction by intensity into a Color-ish [r,g,b].
+        // Cornell-default Le for the directional sun is the radiance after
+        // primaryLightIntensity scaling; reproduce that here.
+        sunColor:            [
+          this._primaryLightIntensity,
+          this._primaryLightIntensity,
+          this._primaryLightIntensity,
+        ],
+        frameSeed:           input.frameSeed,
+        triIntersectEpsilon: this._tunables.triIntersectEpsilon,
+      });
+    }
+
     // ── DDGI atlas wire ─────────────────────────────────────────────────
     if (!ddgiLayerOn) {
       pipeline.setDDGIInputs(null);
@@ -1125,6 +1165,11 @@ export class HybridEngine implements Engine {
       // No in-flight init; tear down here and now.
       this._teardownPipeline();
       this._ddgi.dispose();
+      // W8 Phase 2 — also tear down RC subsystem when active.
+      if (this._rc) {
+        this._rc.dispose();
+        this._rc = null;
+      }
       this._state = 'disposed';
     } else {
       // An init is mid-flight. Defer teardown to that chain's finally
