@@ -80,13 +80,13 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
       let reject!: (e: unknown) => void;
       const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
       state.pipelineInitDeferreds.push({ promise, resolve, reject });
-      this.dispose = vi.fn(() => { this.disposed = true; });
+      this.dispose = vi.fn(() => { this.disposed = true; }) as ReturnType<typeof vi.fn>;
       const idx = this.index;
       this.resize = vi.fn((nw: number, nh: number) => {
         this.width = nw;
         this.height = nh;
         state.pipelineResizeCalls.push({ pipelineIdx: idx, w: nw, h: nh });
-      });
+      }) as ReturnType<typeof vi.fn>;
       state.pipelineConstructed.push(this);
     }
 

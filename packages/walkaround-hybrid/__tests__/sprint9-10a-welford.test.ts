@@ -339,7 +339,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
 
     createVarianceBuffer(mockDevice, 1920, 1080);
     expect(capturedDesc).not.toBeNull();
-    expect((capturedDesc as GPUTextureDescriptor).format).toBe('rg32float');
+    expect((capturedDesc as unknown as GPUTextureDescriptor).format).toBe('rg32float');
   });
 
   it('creates a texture with the supplied dimensions', () => {
@@ -353,7 +353,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
 
     createVarianceBuffer(mockDevice, 640, 480);
     expect(capturedDesc).not.toBeNull();
-    const size = (capturedDesc as GPUTextureDescriptor).size as [number, number];
+    const size = (capturedDesc as unknown as GPUTextureDescriptor).size as [number, number];
     expect(size[0]).toBe(640);
     expect(size[1]).toBe(480);
   });
@@ -368,7 +368,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
     } as unknown as GPUDevice;
 
     createVarianceBuffer(mockDevice, 256, 256);
-    const usage = (capturedDesc as GPUTextureDescriptor).usage;
+    const usage = (capturedDesc as unknown as GPUTextureDescriptor).usage;
     expect(usage & GPUTextureUsage.STORAGE_BINDING).toBeTruthy();
   });
 
@@ -382,7 +382,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
     } as unknown as GPUDevice;
 
     createVarianceBuffer(mockDevice, 256, 256);
-    const usage = (capturedDesc as GPUTextureDescriptor).usage;
+    const usage = (capturedDesc as unknown as GPUTextureDescriptor).usage;
     expect(usage & GPUTextureUsage.TEXTURE_BINDING).toBeTruthy();
   });
 
@@ -396,7 +396,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
     } as unknown as GPUDevice;
 
     createVarianceBuffer(mockDevice, 256, 256);
-    const usage = (capturedDesc as GPUTextureDescriptor).usage;
+    const usage = (capturedDesc as unknown as GPUTextureDescriptor).usage;
     expect(usage & GPUTextureUsage.COPY_SRC).toBeTruthy();
   });
 });

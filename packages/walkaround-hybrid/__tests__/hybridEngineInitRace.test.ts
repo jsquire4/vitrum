@@ -72,7 +72,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
       let reject!: (e: unknown) => void;
       const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
       state.pipelineInitDeferreds.push({ promise, resolve, reject });
-      this.dispose = vi.fn(() => { this.disposed = true; });
+      this.dispose = vi.fn(() => { this.disposed = true; }) as ReturnType<typeof vi.fn>;
       state.pipelineDisposeSpies.push(this.dispose);
       state.pipelineConstructed.push(this);
     }

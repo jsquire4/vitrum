@@ -36,7 +36,7 @@ describe('SURFACE_TEXTURE_ID — wire contract with surfaceTextures.wgsl', () =>
     const matches = [...SURFACE_TEXTURES_WGSL.matchAll(/case\s+(\d+)u\s*:/g)];
     expect(matches.length).toBeGreaterThan(0);
     const ids = matches.map((m) => Number(m[1]));
-    const validIds = new Set(Object.values(SURFACE_TEXTURE_ID));
+    const validIds: Set<number> = new Set(Object.values(SURFACE_TEXTURE_ID));
     for (const id of ids) {
       expect(validIds.has(id)).toBe(true);
     }
