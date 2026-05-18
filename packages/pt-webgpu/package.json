@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@vitrum/core": "file:../core",
+    "@vitrum/shared-bvh": "file:../shared-bvh",
     "@vitrum/shared-samplers": "file:../shared-samplers"
   },
   "devDependencies": {
