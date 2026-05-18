@@ -30,6 +30,29 @@ declare global {
   /** Preferred screenshot target when capture runs after VITRUM_CAPTURE_READY (see adapter env override). */
   // eslint-disable-next-line no-var
   var VITRUM_CAPTURE_CANVAS_SELECTOR: string | undefined;
+  /**
+   * Live per-frame telemetry exposed for tools/benchmark-runner/run-quality-mode-bench.mjs.
+   * Updated every `renderFrame()` tick with current accumulated SPP, last batchMs,
+   * frame counter, and quality mode. Independent of `VITRUM_CAPTURE_*` which only
+   * fires once at convergence. The shape is intentionally minimal so external
+   * pollers don't have to reason about engine-internal types.
+   */
+  // eslint-disable-next-line no-var
+  var __vitrum:
+    | {
+        ptWebgl?: {
+          spp: number;
+          lastFrameMs: number;
+          frame: number;
+          qualityMode: string;
+          samplesTarget: number;
+          isConverged: boolean;
+          sppPerSecond: number | null;
+          renderWidth: number;
+          renderHeight: number;
+        };
+      }
+    | undefined;
 }
 
 function mat4FromThree(m: THREE.Matrix4): Mat4 {
@@ -391,6 +414,23 @@ async function main(): Promise<void> {
   globalThis.VITRUM_MS_PER_SAMPLE = undefined;
   globalThis.VITRUM_CAPTURE_TELEMETRY = undefined;
   globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#c';
+  // Initialise the live per-frame poll target before the engine constructs.
+  // Pollers (run-quality-mode-bench.mjs) start sampling as soon as the canvas
+  // is ready, so seed deterministic zeros and update each tick from the loop.
+  globalThis.__vitrum = {
+    ...(globalThis.__vitrum ?? {}),
+    ptWebgl: {
+      spp: 0,
+      lastFrameMs: 0,
+      frame: 0,
+      qualityMode: config.qualityMode,
+      samplesTarget: config.samplesTarget,
+      isConverged: false,
+      sppPerSecond: null,
+      renderWidth: 0,
+      renderHeight: 0,
+    },
+  };
 
   if (!config.autoStart) {
     setStatus('Ready. Press Start WebGL render.');
@@ -570,6 +610,18 @@ async function main(): Promise<void> {
     lastDivideByAlpha = telemetry?.additiveAccumulation ?? false;
     if (out.isConverged) {
       convergedFrame = out;
+    }
+    // Publish live per-frame telemetry for run-quality-mode-bench.mjs.
+    // `batchMs` is the engine's measured wall-clock for the GPU submission
+    // batch — the correct signal for per-frame perf, not delta-from-rAF.
+    if (globalThis.__vitrum?.ptWebgl != null) {
+      globalThis.__vitrum.ptWebgl.spp = out.samplesAccumulated;
+      globalThis.__vitrum.ptWebgl.lastFrameMs = telemetry?.batchMs ?? 0;
+      globalThis.__vitrum.ptWebgl.frame = frame;
+      globalThis.__vitrum.ptWebgl.isConverged = out.isConverged;
+      globalThis.__vitrum.ptWebgl.sppPerSecond = telemetry?.sppPerSecond ?? null;
+      globalThis.__vitrum.ptWebgl.renderWidth = telemetry?.renderWidth ?? renderWidth;
+      globalThis.__vitrum.ptWebgl.renderHeight = telemetry?.renderHeight ?? renderHeight;
     }
 
     if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {

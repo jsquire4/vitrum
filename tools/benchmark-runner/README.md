@@ -11,10 +11,85 @@ benchmark file template.
 
 - `npm run benchmark --workspace @vitrum/benchmark-runner`
 - `npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner`
+- `npm run benchmark:qualitymodes --workspace @vitrum/benchmark-runner`
 
 These commands execute `run-gap-closure-verification.mjs` and write:
 
 - `tools/benchmark-runner/results/gap-closure-verification-2026-05-10.json`
+
+## Per-qualityMode benchmark
+
+`run-quality-mode-bench.mjs` measures **frame time** and **SPP/sec** for each
+`PTEngineWebGL2QualityMode` (`interactive` | `safe` | `final` | `capture`)
+against one or more cornell-box scenarios.
+
+The cornell-box example publishes live telemetry on `window.__vitrum.ptWebgl`
+(`spp`, `lastFrameMs`, `frame`, `qualityMode`, `samplesTarget`, `isConverged`,
+`sppPerSecond`, `renderWidth`, `renderHeight`). The benchmark drives the page
+via Playwright, polls these every 100 ms for 30 s, and writes a JSON report
+to `tools/benchmark-runner/results/quality-modes-<timestamp>.json`.
+
+### Running
+
+This script requires a live cornell-box dev server. In one terminal:
+
+```bash
+npm run dev --workspace @vitrum-examples/cornell-box
+# default URL: http://127.0.0.1:5174/
+```
+
+In another terminal (typically your **main checkout**, not a worktree, to
+avoid Playwright browser-version mismatches):
+
+```bash
+npm run benchmark:qualitymodes --workspace @vitrum/benchmark-runner
+```
+
+### Env knobs
+
+- `VITRUM_CAPTURE_URL` — dev-server URL (default `http://127.0.0.1:5174/`)
+- `VITRUM_BENCH_DURATION_MS` — poll window per (scenario, mode) (default `30000`)
+- `VITRUM_BENCH_POLL_MS` — poll interval (default `100`)
+- `VITRUM_BENCH_SAMPLES_TARGET` — `vitrumSpp` for the URL (default `128`)
+- `VITRUM_BENCH_WIDTH` / `VITRUM_BENCH_HEIGHT` — render size (default `1280x720`)
+- `VITRUM_BENCH_QUALITY_MODES` — comma-separated subset (default all 4)
+- `VITRUM_BENCH_SCENARIOS` — comma-separated subset (default `cornell-box`)
+- `VITRUM_BENCH_HEADLESS` — `0` for headed Chromium (default `1`)
+
+### Worktree note
+
+If your worktree has a Playwright browser version mismatch
+(`Executable doesn't exist at .../headless_shell`), run the benchmark from
+your main checkout where browsers are installed (`npx playwright install`).
+The script writes its results into the worktree's
+`tools/benchmark-runner/results/` directory regardless of which checkout it
+runs in, because the path is resolved relative to the script file location.
+
+### Output schema
+
+```json
+{
+  "generatedAt": "2026-05-17T...",
+  "schemaVersion": "quality-modes-bench-2026-05-17",
+  "environment": { "platform": "linux", "node": "v20.x", ... },
+  "qualityModes": ["interactive", "safe", "final", "capture"],
+  "scenarios": ["cornell-box"],
+  "results": [
+    {
+      "scenario": "cornell-box",
+      "qualityMode": "interactive",
+      "framesRendered": 142,
+      "totalSpp": 128,
+      "sppPerSec": 4.26,
+      "meanFrameMs": 195.3,
+      "p50FrameMs": 188.0,
+      "p99FrameMs": 412.5,
+      "converged": true,
+      ...
+    }
+  ]
+}
+```
 
 ## GPU capture mode
 

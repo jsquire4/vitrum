@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "benchmark": "node ./run-gap-closure-verification.mjs",
-    "benchmark:gap-closure": "node ./run-gap-closure-verification.mjs"
+    "benchmark:gap-closure": "node ./run-gap-closure-verification.mjs",
+    "benchmark:qualitymodes": "node ./run-quality-mode-bench.mjs"
   },
   "devDependencies": {
     "playwright": "^1.59.1"
