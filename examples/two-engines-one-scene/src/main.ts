@@ -2,8 +2,13 @@
  * Gate G2: identical @vitrum/core Scene drives pt-webgl (WebGL2) and walkaround-hybrid (WebGPU).
  */
 
-import type { Engine, FrameInput, Mat4, Scene } from '@vitrum/core';
-import { buildComplexThreeScene, buildCornellBoxThreeScene } from '@vitrum-examples/shared';
+import type { Engine, FrameInput, Scene } from '@vitrum/core';
+import {
+  buildComplexThreeScene,
+  buildCornellBoxThreeScene,
+  mat4FromThree,
+  resizeCanvasToDisplaySize,
+} from '@vitrum-examples/shared';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 // pt-webgpu drives the bottom canvas headlessly (no swap-chain present;
 // pt-webgpu accumulates to an internal HDR texture, leaving the host to
@@ -20,20 +25,6 @@ if (typeof console !== 'undefined' && console.debug) {
   console.debug('[two-engines] pt-webgpu factory loaded:', typeof createPTEngine_WebGPU);
 }
 import * as THREE from 'three';
-
-function mat4FromThree(m: THREE.Matrix4): Mat4 {
-  return new Float32Array(m.elements);
-}
-
-function resizeCanvasToDisplaySize(canvas: HTMLCanvasElement): void {
-  const dpr = Math.min(window.devicePixelRatio, 2);
-  const w = Math.floor(canvas.clientWidth * dpr);
-  const h = Math.floor(canvas.clientHeight * dpr);
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
-  }
-}
 
 async function waitEngineReady(engine: Engine, timeoutMs: number): Promise<boolean> {
   const t0 = performance.now();

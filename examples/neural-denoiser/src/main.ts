@@ -22,8 +22,8 @@
  * tricks) so the denoiser has something to denoise.
  */
 
-import type { FrameInput, Mat4 } from '@vitrum/core';
-import { buildCornellBoxThreeScene } from '@vitrum-examples/shared';
+import type { FrameInput } from '@vitrum/core';
+import { buildCornellBoxThreeScene, mat4FromThree, resizeCanvasToDisplaySize } from '@vitrum-examples/shared';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   buildRandomWeightsForSpec,
@@ -40,20 +40,6 @@ import { WALKAROUND_DENOISER_UNET_SPEC } from '@vitrum/walkaround-hybrid/src/neu
 import * as THREE from 'three';
 
 type DenoiserMode = NonNullable<HybridEngineOptions['denoiser']>;
-
-function mat4FromThree(m: THREE.Matrix4): Mat4 {
-  return new Float32Array(m.elements);
-}
-
-function resizeCanvasToDisplaySize(canvas: HTMLCanvasElement): void {
-  const dpr = Math.min(window.devicePixelRatio, 2);
-  const w = Math.floor(canvas.clientWidth * dpr);
-  const h = Math.floor(canvas.clientHeight * dpr);
-  if (canvas.width !== w || canvas.height !== h) {
-    canvas.width = w;
-    canvas.height = h;
-  }
-}
 
 function parseDenoiserMode(raw: string | null): DenoiserMode {
   if (raw === 'atrous' || raw === 'atrous-variance' || raw === 'svgf-real' || raw === 'neural') {
