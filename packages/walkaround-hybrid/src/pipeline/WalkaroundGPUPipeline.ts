@@ -133,21 +133,25 @@ export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
 };
 
 /**
- * WebGPU features the hybrid pipeline requires.  Hosts must include these in
- * `adapter.requestDevice({ requiredFeatures })` (alongside any of their own).
+ * WebGPU features the hybrid pipeline requires.  Currently none — the
+ * pipeline allocates every storage texture using base-spec-storage-capable
+ * formats (rgba16float, rgba32float, rg32float, r32uint, rgba32uint). The
+ * "downgraded from r16float / r16uint" notes in resourceManager.ts and the
+ * GTAO/SVGF shaders are historical: those textures are intentionally
+ * allocated in their wider, base-spec form so the engine runs on adapters
+ * that lack the optional `texture-formats-tier1` feature (notably any host
+ * driving us through three.js's WebGPURenderer, which omits tier1 from its
+ * hardcoded feature enum).
  *
- * - `texture-formats-tier1`: lifts r16float (used by Sprint 15 GTAO half/full
- *   AO textures) and rg16float into write-only storage texture support.
- *   Without it, the gtao + gtao-upsample BGLs fail to validate and the engine
- *   reports "Invalid PipelineLayout" at compile time.
+ * Kept exported as an empty readonly array for API stability — hosts that
+ * already spread it into `requiredFeatures` continue to work. New code
+ * should not depend on this export.
  *
  * Optional features (e.g. `timestamp-query` for dev-time per-pass GPU
  * timings) are handled separately by the host and are not part of the
  * required-features contract.
  */
-export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = [
-  'texture-formats-tier1' as GPUFeatureName,
-];
+export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = [];
 
 /**
  * Default camera squared-distance threshold for temporal accumulator reset.
