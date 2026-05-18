@@ -10,16 +10,10 @@ import {
   packEmitterArrays,
 } from './emitterPacking.js';
 
-export {
-  MAX_POINT_LIGHTS,
-  MAX_SPOT_LIGHTS,
-  MAX_RECT_AREA_LIGHTS,
-  MAX_MESH_AREA_LIGHTS,
-  POINT_LIGHT_FLOAT_STRIDE,
-  SPOT_LIGHT_FLOAT_STRIDE,
-  RECT_AREA_LIGHT_FLOAT_STRIDE,
-  MESH_AREA_LIGHT_FLOAT_STRIDE,
-} from './emitterPacking.js';
+// 8 dead re-exports of MAX_*_LIGHTS / *_FLOAT_STRIDE constants (originally
+// surfaced here for hosts that might assemble emitter arrays directly) were
+// removed 2026-05-18 — no in-tree consumer reached them. The canonical
+// definitions stay in `./emitterPacking.ts` and are file-locally used.
 
 export interface PackedSceneData {
   readonly positions: Float32Array; // vec4f packed

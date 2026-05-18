@@ -1,16 +1,20 @@
 import type { DiscAreaEmitter, MeshAreaEmitter, Scene } from '@vitrum/core';
 import { transformPoint } from '../math/mat4.js';
 
-export const MAX_POINT_LIGHTS = 16;
-export const MAX_SPOT_LIGHTS = 8;
-export const MAX_RECT_AREA_LIGHTS = 8;
-export const MAX_MESH_AREA_LIGHTS = 8;
+// Per-emitter capacity caps + float strides — file-local. No external
+// consumers (2026-05-18 dead-code sweep verified workspace-wide). Re-exports
+// previously surfaced from uploadSceneBuffers.ts were also dropped in the
+// same sweep.
+const MAX_POINT_LIGHTS = 16;
+const MAX_SPOT_LIGHTS = 8;
+const MAX_RECT_AREA_LIGHTS = 8;
+const MAX_MESH_AREA_LIGHTS = 8;
 
 /** vec4 pairs per point light: position, radiance */
-export const POINT_LIGHT_FLOAT_STRIDE = 8;
-export const SPOT_LIGHT_FLOAT_STRIDE = 12;
-export const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
-export const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
+const POINT_LIGHT_FLOAT_STRIDE = 8;
+const SPOT_LIGHT_FLOAT_STRIDE = 12;
+const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
+const MESH_AREA_LIGHT_FLOAT_STRIDE = 16;
 
 /** Map disc emitter to rect-axis payload — half-span √(π)/2·radius on each orthogonal tangent so WGSL quad area (=4|u×v|) equals π·r². Sampling differs from a true disc. */
 function discAreaPackedAsRect(e: DiscAreaEmitter): {

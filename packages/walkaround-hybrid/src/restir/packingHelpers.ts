@@ -14,17 +14,20 @@ import * as THREE from 'three';
 
 /** Default warm-gray fallback color (sRGB byte values) when a triangle has
  *  no material or unrecognised material type. Matches the old in-file
- *  `WARM_GRAY_DEFAULT_*` constants. */
-export const WARM_GRAY_DEFAULT_R = 153;
-export const WARM_GRAY_DEFAULT_G = 148;
-export const WARM_GRAY_DEFAULT_B = 140;
+ *  `WARM_GRAY_DEFAULT_*` constants. File-local — no external consumers
+ *  (2026-05-18 dead-code sweep). */
+const WARM_GRAY_DEFAULT_R = 153;
+const WARM_GRAY_DEFAULT_G = 148;
+const WARM_GRAY_DEFAULT_B = 140;
 
 /**
  * Apply Beer-Lambert absorption to an attenuation color given a sample
  * thickness / attenuation-distance pair. Returns the input color unchanged
  * if any required parameter is missing or non-finite.
+ *
+ * File-local — no external consumers (2026-05-18 dead-code sweep).
  */
-export function applyBeerLambert(
+function applyBeerLambert(
   attCol: THREE.Color,
   thickness: number | undefined,
   attDist: number | undefined,
