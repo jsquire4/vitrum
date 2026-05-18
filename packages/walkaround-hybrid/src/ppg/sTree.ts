@@ -153,7 +153,12 @@ export function sTreeAccumulate(
   dTreeAccumulateFlux(dTree, octUV, flux);
 }
 
-/** Forward declaration — implemented in dTree.ts and re-imported here. */
+/**
+ * Inlined here (NOT a re-export from dTree.ts) to avoid the circular
+ * import sTree↔dTree would otherwise create. Mirrors the same descent
+ * as `findDTreeLeaf` in dTree.ts; if that traversal changes, this copy
+ * must too.
+ */
 function dTreeAccumulateFlux(
   dTree: DTree,
   octUV: [number, number],

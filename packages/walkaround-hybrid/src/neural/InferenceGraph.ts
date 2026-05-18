@@ -650,10 +650,14 @@ export class InferenceGraph {
     });
 
     // Bug 6 fix: record buffer identity for cache invalidation.
+    // Only the dynamic buffers (input + output) need cache-keying — the
+    // weights and biases are static after `initialize()` so they cannot
+    // change between frames. Earlier revisions also stored the
+    // weights/biases labels here, but the matching `_getCurrentBufKeys`
+    // returned empty strings for those slots, so the cache check at
+    // line 333 always failed and the bind group was rebuilt every frame.
     const bufKeys = [
       inputBuf.label ?? '',
-      weightsBuf.label ?? '',
-      biasesBuf.label ?? '',
       outputBuf.label ?? '',
     ] as const;
 
@@ -665,12 +669,7 @@ export class InferenceGraph {
     const outputName = layer.output;
     const inputBuf   = this._tensors.get(inputName)?.buf ?? this._placeholderBuf!;
     const outputBuf  = this._tensors.get(outputName)?.buf ?? this._placeholderBuf!;
-    return [
-      inputBuf.label ?? '',
-      '', // weights are static after initialize
-      '', // biases are static after initialize
-      outputBuf.label ?? '',
-    ];
+    return [inputBuf.label ?? '', outputBuf.label ?? ''];
   }
 
   /**

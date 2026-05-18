@@ -34,8 +34,13 @@ export interface VitrumCanvasProps {
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   /** Quality vs speed hint. See CreateEngineOptions.prefer. */
   prefer?: EnginePreference;
-  /** Per-frame quality dials. Changing this prop does NOT reconstruct
-   *  the engine; the new value is read on the next RAF tick. */
+  /** Per-frame quality dials. CURRENT BEHAVIOUR: read once at mount time
+   *  and passed into `attachVitrum`; subsequent prop changes do NOT
+   *  propagate until the component remounts. The mutable ref kept by
+   *  this component for symmetry with onFrame/onProgress is not consulted
+   *  by `attachVitrum`'s rAF tick. (Earlier revisions of this JSDoc
+   *  claimed live propagation; that was aspirational. To get live quality
+   *  updates today, force a remount via `key`.) */
   quality?: NonNullable<FrameInput['quality']>;
   /** Frame-level telemetry (forwards engine.onFrame). */
   onFrame?: (stats: FrameStats) => void;

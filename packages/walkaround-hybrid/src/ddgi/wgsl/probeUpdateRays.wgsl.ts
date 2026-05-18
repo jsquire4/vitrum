@@ -325,12 +325,15 @@ fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
 //   - Hit glass        -> tint * transmission, then continue past the slab
 //                        and recurse (bounded to 3 glass crossings).
 //
-// Beer-Lambert simplification: this kernel still uses the simplified
-// per-cell tint (attenuationColor * transmission) — the legacy single-
-// hit-Cornell-tuned behaviour. The canonical MaterialEntry now carries
+// Linear-tint glass attenuation (NOT Beer-Lambert): this kernel applies
+// visibility *= attenuationColor * transmission per glass slab — no
+// exponential, no thickness. The canonical MaterialEntry now carries
 // thickness and attenuationDistance (W2-C5), so a future revision can
-// promote this to full exp(-attenColor * thickness / attenDist) without
-// changing the buffer layout.
+// promote this to full Beer-Lambert exp(-attenColor * thickness /
+// attenDist) (matching probeRayCast.wgsl in @vitrum/walkaround-rc)
+// without changing the buffer layout. Earlier comments labelled this
+// "Beer-Lambert simplification" — the linear formulation does NOT
+// reduce to Beer-Lambert in any limit, so the label was misleading.
 fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
   var visibility = vec3f(1.0);
   var rayOrigin  = origin;

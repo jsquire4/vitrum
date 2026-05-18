@@ -41,13 +41,17 @@
  * Reference: WGSL §14.4.4 Address-space layout constraints
  *   https://www.w3.org/TR/WGSL/#address-space-layout-constraints
  *
- * ─── Rollout status (W2-C13 proof of concept) ────────────────────────────────
- * This is the START of a UBO-codegen rollout. The proof-of-concept migration
- * lives in `packages/shared-denoisers/src/atrousVarianceBindings.ts` (the
- * two à-trous + variance UBOs). Remaining migrations (~20 UBOs across
- * walkaround-hybrid, shared-denoisers, pt-webgpu — HybridEngine UBO, GTAO
- * UBO, SVGF reproj UBO, PPG UBOs, RC merge UBOs, DDGI border UBO, etc.) are
- * tracked as follow-up tasks under the W2 refactor sweep.
+ * ─── Rollout status (W2-C13) ─────────────────────────────────────────────────
+ * `defineUbo` is the canonical UBO codegen helper. Current adopters:
+ *   - `packages/walkaround-hybrid/src/**` — ~8 UBOs migrated.
+ *   - `packages/shared-denoisers/src/wgsl/welfordVariance.wgsl.ts` — partial.
+ * NOT yet migrated (still hand-rolled DataView packers):
+ *   - `packages/shared-denoisers/src/atrousVarianceBindings.ts`
+ *   - `packages/shared-denoisers/src/svgfRealBindings.ts`
+ *   - `packages/pt-webgpu/src/index.ts` (FrameParams)
+ *   - `packages/walkaround-hybrid/src/rc/cascadeDispatch.ts` (Cascade/Merge UBOs)
+ * Earlier revisions of this docstring claimed atrousVarianceBindings.ts was
+ * the proof-of-concept adopter; that migration was planned but not landed.
  */
 
 // ─── Field-type vocabulary ────────────────────────────────────────────────────
