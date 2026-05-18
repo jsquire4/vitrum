@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
-import type { SkyParams } from './skyParams.js';
+import type { SkyParams } from '@vitrum/scene-lighting';
 
 /**
  * Bake the analytic Preetham sky shader into a CPU-readable equirect
