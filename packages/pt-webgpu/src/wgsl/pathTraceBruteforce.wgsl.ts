@@ -76,6 +76,24 @@ const THIN_FILM_SCALAR_BASE = 28u;
 const SPECTRAL_SCALAR_BASE = 52u;
 const SPECTRAL_SAMPLE_COUNT = 32u;
 
+// Shared BSDF / light-sample triple. Bundles the {direction, pdf, value}
+// outputs every sampler in this kernel produces, so callers can hand a single
+// struct between the sample / pdf / eval functions and future MIS code paths.
+//
+// Semantics:
+//   wi     — sampled scattered (or environment) direction in world space.
+//   pdf    — probability density at wi. A value <= 0 signals failure for
+//            samplers that can fail (currently only sampleEnvironmentImportance).
+//   value  — for BSDF samplers, the unitless BRDF "kernel" at wi (Fresnel and
+//            albedo are integrated by callers at the throughput level, matching
+//            the existing sampleNextBounceDirection pattern). For the
+//            environment-importance sampler, the emitted radiance along wi.
+struct BsdfSample {
+  wi: vec3f,
+  pdf: f32,
+  value: vec3f,
+}
+
 fn materialScalar(matId: u32, scalarOffset: u32) -> f32 {
   let scalarIndex = matId * MATERIAL_SCALAR_STRIDE + scalarOffset;
   let vecIndex = scalarIndex / 4u;
@@ -249,14 +267,23 @@ fn environmentPdf(dir: vec3f) -> f32 {
   return max(environmentMapTexels[idx].w, 1e-8);
 }
 
-fn sampleEnvironmentImportance(rng: ptr<function, u32>, outDir: ptr<function, vec3f>, outColor: ptr<function, vec3f>, outPdf: ptr<function, f32>) -> bool {
+// Environment-map importance sampler. Returns a BsdfSample where
+// .value is the emitted radiance along .wi and .pdf <= 0 signals failure
+// (no environment map, or empty CDF). Same RNG consumption (one rand_f32 call)
+// and identical sampled direction / radiance / pdf as the prior pointer-out
+// signature it replaces.
+fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
+  var result: BsdfSample;
+  result.wi = vec3f(0.0, 1.0, 0.0);
+  result.value = vec3f(0.0);
+  result.pdf = 0.0;
   if (!hasEnvironmentMap()) {
-    return false;
+    return result;
   }
   let dims = environmentDimensions();
   let count = dims.x * dims.y;
   if (count == 0u || arrayLength(&environmentMapCdf) < count + 1u) {
-    return false;
+    return result;
   }
   let xi = rand_f32(rng);
   var lo = 0u;
@@ -276,10 +303,10 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>, outDir: ptr<function, ve
   let sinTheta = sin(theta);
   let dir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
   let texel = environmentMapTexels[idx];
-  *outDir = safe_normalize(dir);
-  *outColor = texel.rgb * max(params.environmentSun.w, 0.0);
-  *outPdf = max(texel.w, 1e-8);
-  return true;
+  result.wi = safe_normalize(dir);
+  result.value = texel.rgb * max(params.environmentSun.w, 0.0);
+  result.pdf = max(texel.w, 1e-8);
+  return result;
 }
 
 fn luminance(c: vec3f) -> f32 {
@@ -959,16 +986,28 @@ fn buildOnb(n: vec3f, t: ptr<function, vec3f>, b: ptr<function, vec3f>) {
   *b = cross(n, *t);
 }
 
-fn cosineHemisphereSample(rng: ptr<function, u32>, n: vec3f) -> vec3f {
+// Cosine-weighted hemisphere sampler — diffuse BRDF.
+// Returns a BsdfSample where wi is the sampled world-space direction,
+// pdf = cos(θ)/π, and value = vec3f(INV_PI) (unitless Lambertian kernel;
+// callers multiply by albedo at the throughput level — matches the existing
+// pattern in sampleNextBounceDirection).
+// Same RNG consumption (two rand_f32 calls) and identical sampled direction
+// as the prior vec3f-returning signature.
+fn cosineHemisphereSample(rng: ptr<function, u32>, n: vec3f) -> BsdfSample {
   let u1 = rand_f32(rng);
   let u2 = rand_f32(rng);
   let r = sqrt(u1);
   let phi = 2.0 * PI * u2;
-  let local = vec3f(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - u1)));
+  let cosTheta = sqrt(max(0.0, 1.0 - u1));
+  let local = vec3f(r * cos(phi), r * sin(phi), cosTheta);
   var t: vec3f;
   var b: vec3f;
   buildOnb(n, &t, &b);
-  return safe_normalize(local.x * t + local.y * b + local.z * n);
+  var result: BsdfSample;
+  result.wi = safe_normalize(local.x * t + local.y * b + local.z * n);
+  result.pdf = cosTheta * INV_PI;
+  result.value = vec3f(INV_PI);
+  return result;
 }
 
 /**
@@ -1008,15 +1047,44 @@ fn sampleGgxVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f
  * Sample a glossy reflection direction via Heitz 2018 VNDF.
  * All inputs in WORLD space; n is the surface normal; t, b are
  * surface-tangent ONB axes (caller computes via buildOnb).
- * Returns the world-space reflection direction.
- * Ref: Heitz 2018 VNDF Algorithm 1 (see sampleGgxVndfTangent above).
+ * Returns a BsdfSample where:
+ *   wi    — world-space reflection direction
+ *   pdf   — GGX half-vector PDF d * nDotH / (4 * vDotH), matching the
+ *           convention used by brdfDirectionalPdf for MIS consistency
+ *   value — unitless microfacet specular kernel D * G / (4 * nDotV * nDotL);
+ *           Fresnel and albedo are integrated by callers at the throughput
+ *           level (matches sampleNextBounceDirection's existing pattern).
+ * Same RNG consumption (two rand_f32 calls inside sampleGgxVndfTangent) and
+ * identical sampled direction as the prior vec3f-returning signature.
+ * Ref: Heitz 2018 VNDF Algorithm 1 (see sampleGgxVndfTangent above);
+ *      PBR4e §9.6 for the BRDF kernel decomposition.
  */
-fn glossyReflectionSample(rng: ptr<function, u32>, wo: vec3f, n: vec3f, t: vec3f, b: vec3f, roughness: f32) -> vec3f {
+fn glossyReflectionSample(rng: ptr<function, u32>, wo: vec3f, n: vec3f, t: vec3f, b: vec3f, roughness: f32) -> BsdfSample {
   let alpha   = max(roughness * roughness, 0.001);
   let woLocal = vec3f(dot(wo, t), dot(wo, b), dot(wo, n));
   let hLocal  = sampleGgxVndfTangent(woLocal, alpha, rng);
   let hWorld  = safe_normalize(hLocal.x * t + hLocal.y * b + hLocal.z * n);
-  return safe_normalize(reflect(-wo, hWorld));
+  let wi      = safe_normalize(reflect(-wo, hWorld));
+
+  var result: BsdfSample;
+  result.wi = wi;
+  // Compute pdf + value at the sampled wi. These are populated so future MIS
+  // code paths can read them without redoing the eval; today's callers in
+  // sampleNextBounceDirection still only consume .wi.
+  let nDotV = max(dot(n, wo), 1e-6);
+  let nDotL = max(dot(n, wi), 0.0);
+  let nDotH = max(dot(n, hWorld), 0.0);
+  let vDotH = max(dot(wo, hWorld), 1e-6);
+  let d = ggxD(nDotH, alpha);
+  if (nDotL <= 1e-5) {
+    result.pdf = 0.0;
+    result.value = vec3f(0.0);
+  } else {
+    result.pdf = d * nDotH / max(4.0 * vDotH, 1e-6);
+    let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+    result.value = vec3f((d * g) / max(4.0 * nDotV * nDotL, 1e-6));
+  }
+  return result;
 }
 
 // sampleRectAreaLight (legacy single-rect-area path) was removed: the
@@ -1437,8 +1505,9 @@ fn sampleNextBounceDirection(
       // (the refract branch is never taken when R == 1).
       let wo = -incomingDir; // eye-side direction
       result.newRayOrigin = hitPos + normal * 1e-3;
-      result.sampledDir = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
-      result.newRayDir = result.sampledDir;
+      let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+      result.sampledDir = bs.wi;
+      result.newRayDir = bs.wi;
       result.sampleAllowsAreaMis = true;
       // Divide by branch probability R (unbiased estimator).
       result.throughputMul = fresnel / max(R, 1e-4);
@@ -1471,14 +1540,16 @@ fn sampleNextBounceDirection(
     // Ref: Heitz 2018 VNDF Algorithm 1 (see glossyReflectionSample).
     let wo = -incomingDir;
     result.newRayOrigin = hitPos + normal * 1e-3;
-    result.sampledDir = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
-    result.newRayDir = result.sampledDir;
+    let bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);
+    result.sampledDir = bs.wi;
+    result.newRayDir = bs.wi;
     result.sampleAllowsAreaMis = true;
     result.throughputMul = fresnel / max(specProb, 1e-4);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
-    result.sampledDir = cosineHemisphereSample(rng, normal);
-    result.newRayDir = result.sampledDir;
+    let bs = cosineHemisphereSample(rng, normal);
+    result.sampledDir = bs.wi;
+    result.newRayDir = bs.wi;
     result.sampleAllowsAreaMis = true;
     let kd = (vec3f(1.0) - fresnel) * (1.0 - metallic);
     result.throughputMul = (kd * baseColor) / max(diffProb, 1e-4);
@@ -1796,9 +1867,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         var envDir = vec3f(0.0, 1.0, 0.0);
         var envColor = vec3f(0.0);
         var envPdf = 0.0;
-        let sampled = sampleEnvironmentImportance(&rng, &envDir, &envColor, &envPdf);
-        if (!sampled) {
-          envDir = cosineHemisphereSample(&rng, normal);
+        let envSample = sampleEnvironmentImportance(&rng);
+        if (envSample.pdf > 0.0) {
+          envDir = envSample.wi;
+          envColor = envSample.value;
+          envPdf = envSample.pdf;
+        } else {
+          let diffSample = cosineHemisphereSample(&rng, normal);
+          envDir = diffSample.wi;
           envColor = sampleEnvironmentColor(envDir);
           envPdf = max(environmentPdf(envDir), 1e-8);
         }
