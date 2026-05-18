@@ -141,8 +141,9 @@ The following items from Sections A / B / C of THIS audit (filed 2026-05-17) hav
 - **C2** — `memory/in-flight-sweep.md` is user-owned; the current CLAUDE.md and this file are now the authoritative open-bug list. (Stale branches + 2 zombie worktrees also removed as part of repo hygiene.)
 - **C3** — `CHANGELOG.md` brought current to the W1–W7 / W11 / W12 / W13 / items-to-fix landings (`feat/docs-c1-c3-claude-md-changelog`, commit `8cacb78`).
 - **C4** — per-package READMEs audited for accuracy in W13 (`chore/w13-readme-audit-plan-archive`, commit `fc882f6`).
+- **B1** — PPG dispatch is now a real `dispatchWorkgroups(wgCount, 1, 1)` call wired through the W9 GPU flat-buffer traversal kernel. Verified at `packages/walkaround-hybrid/src/pipeline/passes/PPGGuidePass.ts:94` (and the file header's "no more dispatchWorkgroups(0,0,0)" callout). The `ppg-dispatch.test.ts` suite pins the wiring (5 tests passing, run 2026-05-18). The earlier "stub" comment block referenced at `WalkaroundGPUPipeline.ts:819-829` is gone — that file's PPG integration now flows through `PPGCoordinator` (post W1-R5 + walkaround-pipeline-split).
 
-Still open from this audit: **B1** (PPG → W9), **B2** (RC → W8). All Section A and Section C items are closed.
+Still open from this audit: **B2** (RC → W8). All Section A and Section C items are closed; B1 closed on 2026-05-18.
 
 ### D.1 — Verified-stale items removed (original 2026-05-17 list)
 

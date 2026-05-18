@@ -107,9 +107,8 @@ Read in this order to onboard:
 
 ## Where things actually stand (read this before claiming "ready")
 
-The 2026-05-11 deep math/physics sweep + the 2026-05-17 complexity sweep + the 2026-05-17 judge-mode audit have largely been worked through. The `items_to_fix.md` file at the repo root is the **authoritative** open-bug list — each entry was re-verified by opening the cited file before being kept. After W1–W7 / W11 / W12 / W13 / items-to-fix landings, **Sections A and C of `items_to_fix.md` are empty of open items**; only two Section B items remain:
+The 2026-05-11 deep math/physics sweep + the 2026-05-17 complexity sweep + the 2026-05-17 judge-mode audit + the 2026-05-18 structural sweep have largely been worked through. The `items_to_fix.md` file at the repo root is the **authoritative** open-bug list — each entry was re-verified by opening the cited file before being kept. After W1–W7 / W11 / W12 / W13 / items-to-fix landings + the 2026-05-18 sweep landings (HybridEngine decomp, WalkaroundGPUPipeline split, pathTraceBruteforce split, core/scene + core/engine splits, Cornell-magic UBO migration, iblBaker per-instance hoist, scene-lighting package extract, renderFrame denoiser-pass collapse, webGpuTextureUpload migration, Möller-Trumbore canonical hoist), **Sections A and C of `items_to_fix.md` are empty of open items, and B1 closed on 2026-05-18**; only one Section B item remains:
 
-- **B1 — PPG GPU dispatch is `dispatchWorkgroups(0, 0, 0)`.** `ppgEnabled = true` compiles the pipeline but produces zero PPG samples. Either wire the sTree/dTree GPU producer (W9 work) or remove the option. (`packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts:829`)
 - **B2 — RC subsystem ships 1500+ LOC but is unwired into `HybridEngine`.** Either wire RC into the combined shading sum (W8 work) or move the subtree to `examples/standalone-rc/` and drop it from `walkaround-hybrid` public exports.
 - **`pt-webgpu` glossy BSDF mix-around-mirror sampling/PDF mismatch** — still real, but `pt-webgpu` is explicitly labelled pre-alpha prototype, not the production PT path (`pt-webgl` is). Tracked in `plan/pt-webgpu-deep-audit.md`.
 
@@ -119,7 +118,7 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 
 Two parallel queues:
 
-1. **`items_to_fix.md` remaining Section B items** — B1 (PPG dispatchWorkgroups 0,0,0) → W9; B2 (RC unwired) → W8. See the file at the repo root for verified-current locations, symptoms, fix sketches, and acceptance criteria. **A3 follow-up:** geometry-change BVH leaf rebuild (the current fast path throws on geometry diffs).
+1. **`items_to_fix.md` remaining Section B item** — B2 (RC unwired) → W8. See the file at the repo root for verified-current locations, symptoms, fix sketches, and acceptance criteria. **A3 follow-up:** geometry-change BVH leaf rebuild (the current fast path throws on geometry diffs).
 2. **`plan/premium-grade-refactor-20260517.md` remaining workstreams** — W1 / W2 / W3 (D5/D6/D7/D8/D13/D15/D16/D17/D18/D19) / W4 (A4) / W6 (E1/E2/E3/E6) / W7 (G2/G3/G5/G6/G7/G8/G9 + H1–H5/H7/H8 + I) / W11 / W12 / W13 are done. Remaining: **W3 D1/D2/D3/D4/D12** (other contract items); **W4 A5/A6/A7/A8/A9** (remaining god-file splits — `HybridEngine`, `WalkaroundGPUPipeline`, `probeUpdatePass`, etc.); **W5** (per-pass BGLs); **W8** (RC extraction → `@vitrum/walkaround-rc`); **W9** (PPG GPU dTree finish); **W10** (Neural denoiser full finish — B3 was partial).
 
 Older active docs: `phase-7-restir-gi.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `pt-webgpu-deep-audit.md`. Sprint 10c (BDPT dispatch) and Sprint 14 (layered BSDF) remain gated.
