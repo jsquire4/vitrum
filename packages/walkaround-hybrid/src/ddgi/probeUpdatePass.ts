@@ -1,16 +1,22 @@
 /**
- * ProbeUpdatePass — DDGI probe update via raw WebGPU compute.
+ * ProbeUpdatePass — DDGI probe update orchestrator (raw WebGPU compute).
  *
- * Uses the renderer's raw GPUDevice to run two compute passes per frame:
- *  Pass 1 (probeUpdateRays): for each active probe, fire 96 rays via
- *          inline BVH traversal, collect radiance at hit points.
- *  Pass 2 (probeUpdateBlend): blend ray results into octahedral atlas
- *          textures with EWMA temporal hysteresis.
+ * Drives the 5-stage DDGI probe update chain per frame:
+ *   1. {@link ProbeRaysPass}              — ray-cast 192 rays per active probe via inline BVH traversal.
+ *   2. {@link ProbeBlendIrradiancePass}   — EWMA blend ray results into octahedral irradiance atlas.
+ *   3. {@link ProbeBlendVisibilityPass}   — EWMA blend hit distances into octahedral visibility atlas.
+ *   4. {@link ProbeBorderIrradiancePass}  — Majercik 2019 §3.2 border-pixel replication (irradiance).
+ *   5. {@link ProbeBorderVisibilityPass}  — Majercik 2019 §3.2 border-pixel replication (visibility).
  *
- * This uses raw WebGPU rather than TSL/wgslFn because the compute shader
- * has custom @group/@binding layouts that don't compose naturally with
- * three.js's binding system. The WebGPU backend's `device` property is
- * used directly.
+ * Each per-phase Pass owns its compiled pipeline + per-dispatch bind-group
+ * construction. The orchestrator owns the shared GPU state (BVH buffers,
+ * UBOs, ray-results SSBO, scratch textures, atlas ping-pong via ProbeGrid)
+ * and constructs a single {@link ProbePassContext} per frame that every
+ * pass reads from.
+ *
+ * Why raw WebGPU rather than TSL/wgslFn: the compute shaders use custom
+ * `@group/@binding` layouts that don't compose naturally with three.js's
+ * binding system. The WebGPU backend's `device` property is used directly.
  *
  * three/webgpu coupling: `renderer.backend.device` is accessed directly,
  * but ProbeGrid atlas slots are now backend-agnostic `AtlasTextureSlot`
@@ -21,118 +27,54 @@
  */
 
 import * as THREE from 'three';
-import { extractThreePbrScalars } from '@vitrum/three-bindings';
 import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
-import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
-import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
-import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
 import { packDDGIGridParams } from '../pipeline/resourceManager.js';
 import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
+import {
+  packDDGIMaterials,
+  packDDGIMaterialsN,
+  DDGI_MAX_MATERIALS,
+  DDGI_MATERIAL_STRIDE_BYTES,
+  DDGI_MATERIAL_ENTRY_FLOATS,
+} from './ddgiMaterialPacker.js';
+import { ProbeRaysPass } from './passes/probeRaysPass.js';
+import { ProbeBlendIrradiancePass } from './passes/probeBlendIrradiancePass.js';
+import { ProbeBlendVisibilityPass } from './passes/probeBlendVisibilityPass.js';
+import { ProbeBorderIrradiancePass } from './passes/probeBorderIrradiancePass.js';
+import { ProbeBorderVisibilityPass } from './passes/probeBorderVisibilityPass.js';
+import type { ProbePassContext } from './passes/probePassTypes.js';
 
-// Re-export so existing consumers (`import { RAYS_PER_PROBE } from
-// 'walkaround-hybrid/ddgi/probeUpdatePass'`) keep working. The constant
-// lives in `./ddgiConstants.ts` to break the ESM import cycle between
-// this module and its WGSL template files (host imports WGSL, WGSL
-// imports the constant; before extraction the WGSL would read TDZ for
-// `RAYS_PER_PROBE` and throw at evaluation time).
-export { RAYS_PER_PROBE };
+// Re-exports so existing consumers (`import { RAYS_PER_PROBE,
+// packDDGIMaterials, DDGI_MAX_MATERIALS, … } from
+// 'walkaround-hybrid/ddgi/probeUpdatePass'`) keep working. The constants
+// and pure-function packers live in dedicated modules to break the ESM
+// import cycle between this module and its WGSL template files, and to
+// keep the orchestrator focused on the 5-stage dispatch chain.
+export {
+  RAYS_PER_PROBE,
+  packDDGIMaterials,
+  DDGI_MAX_MATERIALS,
+  DDGI_MATERIAL_STRIDE_BYTES,
+  DDGI_MATERIAL_ENTRY_FLOATS,
+};
+
 // ProbeRay struct: 12 floats / 2 u32 → 16 × 4 bytes = 64 bytes each
 const PROBE_RAY_STRIDE_BYTES = 64;
 
-// DDGI material buffer sizing constants.
-// `materialsBuf` holds one DDGIMaterial struct per material slot.
-// DDGIMaterial WGSL layout: 64 bytes = 16 × f32 (std140, see _uploadMaterials).
-/** Maximum number of distinct materials the DDGI probe pass supports. */
-export const DDGI_MAX_MATERIALS = 64;
-/** Byte stride of one DDGIMaterial struct (must match the WGSL layout). */
-export const DDGI_MATERIAL_STRIDE_BYTES = 64;
-/** Float stride of one DDGIMaterial entry (64 bytes = 16 × f32). */
-export const DDGI_MATERIAL_ENTRY_FLOATS = 16;
-
 /**
- * Pack a list of THREE materials into the GPU-bound DDGIMaterial std140 layout
- * (64 bytes per material, 16 floats each). Pure function — does no GPU calls.
- * Used by both `ProbeUpdatePass._uploadMaterials` (at runtime) and the
- * byte-equivalence test fixture.
+ * Shared GPU resources owned by the orchestrator and threaded through to
+ * every per-phase Pass via {@link ProbePassContext}.
  *
- * WGSL layout (offsets in bytes per entry):
- *   offset  0: baseColor: vec3f  (12) + _pad0:  f32 (4)
- *   offset 16: emissive:  vec3f  (12) + roughness: f32 (4)
- *   offset 32: metalness, ior, transmission, _pad1 (4 × f32)
- *   offset 48: attenuationColor: vec3f (12) + flags: u32 (4)
- *     flags bit 0: isGlass (transmission > 0)
- *
- * Defaults (when a THREE field is absent): baseColor [1,1,1], emissive
- * [0,0,0], roughness 0.5, metallic 0, transmission 0, ior 1.5,
- * attenuationColor [1,1,1]. Matches the pre-P2-6.1 inline packer.
+ * The pipelines themselves live inside the per-phase Pass instances
+ * (`_raysPass`, `_blendIrrPass`, `_blendVisPass`, `_borderIrrPass`,
+ * `_borderVisPass`); the orchestrator only holds shared buffers, scratch
+ * textures, and the sampler.
  */
-export function packDDGIMaterials(mats: readonly THREE.Material[]): ArrayBuffer {
-  const ENTRY = DDGI_MATERIAL_ENTRY_FLOATS;
-  const buf = new ArrayBuffer(DDGI_MAX_MATERIALS * DDGI_MATERIAL_STRIDE_BYTES);
-  const data = new Float32Array(buf);
-  // u32 view onto the same backing buffer so the `flags` slot can be written
-  // as a real u32 (the WGSL struct declares it as u32; writing 1.0 as f32
-  // would land 0x3F800000 ≠ 1u in the GPU read).
-  const u32view = new Uint32Array(buf);
-  const matsToUse = mats.slice(0, DDGI_MAX_MATERIALS);
-  matsToUse.forEach((mat, i) => {
-    const base = i * ENTRY;
-    const pbr = extractThreePbrScalars(mat);
-    data[base + 0] = pbr.baseColor[0];
-    data[base + 1] = pbr.baseColor[1];
-    data[base + 2] = pbr.baseColor[2];
-    data[base + 3] = 0; // _pad0
-    data[base + 4] = pbr.emissive[0];
-    data[base + 5] = pbr.emissive[1];
-    data[base + 6] = pbr.emissive[2];
-    data[base + 7] = pbr.roughness;
-    data[base + 8] = pbr.metallic;
-    data[base + 9] = pbr.ior;
-    data[base + 10] = pbr.transmission;
-    data[base + 11] = 0; // _pad1
-    data[base + 12] = pbr.attenuationColor[0];
-    data[base + 13] = pbr.attenuationColor[1];
-    data[base + 14] = pbr.attenuationColor[2];
-    u32view[base + 15] = pbr.transmission > 0 ? 1 : 0;
-  });
-  return buf;
-}
-
-/**
- * Like {@link packDDGIMaterials} but accepts an explicit max-material count
- * so instances with `maxMaterials !== 64` get a correctly-sized buffer.
- * Internal use only — `packDDGIMaterials` is the public API.
- */
-function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials: number): ArrayBuffer {
-  const ENTRY = DDGI_MATERIAL_ENTRY_FLOATS;
-  const buf = new ArrayBuffer(maxMaterials * DDGI_MATERIAL_STRIDE_BYTES);
-  const data = new Float32Array(buf);
-  const u32view = new Uint32Array(buf);
-  const matsToUse = mats.slice(0, maxMaterials);
-  matsToUse.forEach((mat, i) => {
-    const base = i * ENTRY;
-    const pbr = extractThreePbrScalars(mat);
-    data[base + 0] = pbr.baseColor[0]; data[base + 1] = pbr.baseColor[1]; data[base + 2] = pbr.baseColor[2]; data[base + 3] = 0;
-    data[base + 4] = pbr.emissive[0];  data[base + 5] = pbr.emissive[1];  data[base + 6] = pbr.emissive[2];  data[base + 7] = pbr.roughness;
-    data[base + 8] = pbr.metallic;     data[base + 9] = pbr.ior;          data[base + 10] = pbr.transmission; data[base + 11] = 0;
-    data[base + 12] = pbr.attenuationColor[0]; data[base + 13] = pbr.attenuationColor[1]; data[base + 14] = pbr.attenuationColor[2];
-    u32view[base + 15] = pbr.transmission > 0 ? 1 : 0;
-  });
-  return buf;
-}
-
 interface GPUResources {
   device: GPUDevice;
-  raysPipeline:       GPUComputePipeline;
-  blendIrrPipeline:   GPUComputePipeline;
-  blendVisPipeline:   GPUComputePipeline;
-  /** Border-fill pipeline for the irradiance atlas. */
-  borderIrrPipeline:  GPUComputePipeline;
-  /** Border-fill pipeline for the visibility atlas. */
-  borderVisPipeline:  GPUComputePipeline;
   /**
    * Scratch atlas textures for the border fill pass ping-pong.
    *
@@ -228,6 +170,15 @@ export class ProbeUpdatePass {
   // Max materials for the WGSL compile-time array size (M9 audit remediation).
   private _ddgiMaxMaterials: number;
 
+  // Per-phase Pass instances — each owns its compiled pipeline + bind-group
+  // construction. Constructed eagerly so we can await all five compiles in
+  // parallel during init().
+  private readonly _raysPass:      ProbeRaysPass;
+  private readonly _blendIrrPass:  ProbeBlendIrradiancePass;
+  private readonly _blendVisPass:  ProbeBlendVisibilityPass;
+  private readonly _borderIrrPass: ProbeBorderIrradiancePass;
+  private readonly _borderVisPass: ProbeBorderVisibilityPass;
+
   constructor(bvh: SceneBvh, grid: ProbeGrid, opts: ProbeUpdatePassOptions = {}) {
     this._bvh  = bvh;
     this._grid = grid;
@@ -237,6 +188,11 @@ export class ProbeUpdatePass {
       console.warn(`[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`);
       this._ddgiMaxMaterials = 1;
     }
+    this._raysPass      = new ProbeRaysPass(this._ddgiMaxMaterials);
+    this._blendIrrPass  = new ProbeBlendIrradiancePass();
+    this._blendVisPass  = new ProbeBlendVisibilityPass();
+    this._borderIrrPass = new ProbeBorderIrradiancePass();
+    this._borderVisPass = new ProbeBorderVisibilityPass();
   }
 
   setLights(lights: DDGILight[]): void {
@@ -310,41 +266,15 @@ export class ProbeUpdatePass {
       return false;
     }
 
-    // Compile shaders.
-    let raysPipeline: GPUComputePipeline;
-    let blendIrrPipeline: GPUComputePipeline;
-    let blendVisPipeline: GPUComputePipeline;
-    let borderIrrPipeline: GPUComputePipeline;
-    let borderVisPipeline: GPUComputePipeline;
+    // Compile all five per-phase pipelines in parallel.
     try {
-      // M9: compile with the host-specified material array size so scenes with
-      // more than 64 materials don't overflow the uniform buffer.
-      const raysModule = device.createShaderModule({ code: makeProbeUpdateRaysWGSL(this._ddgiMaxMaterials) });
-      raysPipeline = await device.createComputePipelineAsync({
-        layout: 'auto',
-        compute: { module: raysModule, entryPoint: 'probeUpdateRays' },
-      });
-
-      const blendIrrModule = device.createShaderModule({ code: PROBE_UPDATE_BLEND_IRR_WGSL });
-      blendIrrPipeline = await device.createComputePipelineAsync({
-        layout: 'auto',
-        compute: { module: blendIrrModule, entryPoint: 'probeUpdateBlendIrradiance' },
-      });
-      const blendVisModule = device.createShaderModule({ code: PROBE_UPDATE_BLEND_VIS_WGSL });
-      blendVisPipeline = await device.createComputePipelineAsync({
-        layout: 'auto',
-        compute: { module: blendVisModule, entryPoint: 'probeUpdateBlendVisibility' },
-      });
-      const borderIrrModule = device.createShaderModule({ code: PROBE_UPDATE_BORDER_IRR_WGSL });
-      borderIrrPipeline = await device.createComputePipelineAsync({
-        layout: 'auto',
-        compute: { module: borderIrrModule, entryPoint: 'probeUpdateBorderIrradiance' },
-      });
-      const borderVisModule = device.createShaderModule({ code: PROBE_UPDATE_BORDER_VIS_WGSL });
-      borderVisPipeline = await device.createComputePipelineAsync({
-        layout: 'auto',
-        compute: { module: borderVisModule, entryPoint: 'probeUpdateBorderVisibility' },
-      });
+      await Promise.all([
+        this._raysPass.compile(device),
+        this._blendIrrPass.compile(device),
+        this._blendVisPass.compile(device),
+        this._borderIrrPass.compile(device),
+        this._borderVisPass.compile(device),
+      ]);
     } catch (e) {
       console.error('[DDGI] Shader compilation failed:', e);
       return false;
@@ -372,11 +302,6 @@ export class ProbeUpdatePass {
 
     this._gpu = {
       device,
-      raysPipeline,
-      blendIrrPipeline,
-      blendVisPipeline,
-      borderIrrPipeline,
-      borderVisPipeline,
       irrScratchTex:  null,
       visScratchTex:  null,
       bvhBuf:          makeBuffer(16, RO),
@@ -472,9 +397,45 @@ export class ProbeUpdatePass {
     const visReadTex  = this._getOrCreateAtlasTexture(device, this._grid.visibilityReadTex!, 'rgba16float');
     const visWriteTex = this._getOrCreateAtlasTexture(device, this._grid.visibilityWriteTex!, 'rgba16float');
 
-    // Run compute passes.
+    // Allocate/refresh border-fill scratch textures (lazy on size change).
+    const irrScratch = this._getOrCreateScratchTexture(device, irrWriteTex, 'irr');
+    const visScratch = this._getOrCreateScratchTexture(device, visWriteTex, 'vis');
+
+    // Upload the BorderUBOs for this frame (atlas size + grid dims).
+    this._uploadBorderUbo(device, irrWriteTex, 'irr');
+    this._uploadBorderUbo(device, visWriteTex, 'vis');
+
+    // Build the per-frame dispatch context handed to every Pass.
+    const ctx: ProbePassContext = {
+      device,
+      activeCount: activeProbes.length,
+      probeCount,
+      irrReadTex,
+      irrWriteTex,
+      visReadTex,
+      visWriteTex,
+      irrScratchTex: irrScratch,
+      visScratchTex: visScratch,
+      bvhBuf:          this._gpu.bvhBuf,
+      posBuf:          this._gpu.posBuf,
+      idxBuf:          this._gpu.idxBuf,
+      normBuf:         this._gpu.normBuf,
+      matIdBuf:        this._gpu.matIdBuf,
+      materialsBuf:    this._gpu.materialsBuf,
+      lightsBuf:       this._gpu.lightsBuf,
+      gridParamsBuf:   this._gpu.gridParamsBuf,
+      frameParamsBuf:  this._gpu.frameParamsBuf,
+      blendParamsBuf:  this._gpu.blendParamsBuf,
+      borderIrrUboBuf: this._gpu.borderIrrUboBuf,
+      borderVisUboBuf: this._gpu.borderVisUboBuf,
+      rayResultsBuf:   this._gpu.rayResultsBuf,
+      activeProbesBuf: this._gpu.activeProbesBuf,
+      linearSampler:   this._gpu.linearSampler,
+    };
+
+    // Run the 5-stage probe-update dispatch chain.
     const encoder = device.createCommandEncoder();
-    this._runRaysPass(encoder, activeProbes.length, irrReadTex);
+    this._raysPass.dispatch(encoder, ctx);
 
     // CRITICAL: copy read→write so inactive probes' cells stay in sync.
     // Without this, the per-frame ping-pong (`swap()` below) combined with
@@ -498,8 +459,8 @@ export class ProbeUpdatePass {
       { width: visReadTex.width, height: visReadTex.height, depthOrArrayLayers: 1 },
     );
 
-    this._runBlendIrrPass(encoder, activeProbes.length, irrReadTex, irrWriteTex);
-    this._runBlendVisPass(encoder, activeProbes.length, visReadTex, visWriteTex);
+    this._blendIrrPass.dispatch(encoder, ctx);
+    this._blendVisPass.dispatch(encoder, ctx);
 
     // Border fill pass (Item 3 — Majercik 2019 §3.2).
     //
@@ -512,8 +473,6 @@ export class ProbeUpdatePass {
     //
     // The scratch textures are allocated lazily and cached in `_gpu.irrScratchTex`
     // / `_gpu.visScratchTex`, reused every frame as long as atlas size is stable.
-    const irrScratch = this._getOrCreateScratchTexture(device, irrWriteTex, 'irr');
-    const visScratch = this._getOrCreateScratchTexture(device, visWriteTex, 'vis');
     encoder.copyTextureToTexture(
       { texture: irrWriteTex },
       { texture: irrScratch },
@@ -524,10 +483,8 @@ export class ProbeUpdatePass {
       { texture: visScratch },
       { width: visWriteTex.width, height: visWriteTex.height, depthOrArrayLayers: 1 },
     );
-    this._uploadBorderUbo(device, irrWriteTex, 'irr');
-    this._uploadBorderUbo(device, visWriteTex, 'vis');
-    this._runBorderIrrPass(encoder, probeCount, irrScratch, irrWriteTex);
-    this._runBorderVisPass(encoder, probeCount, visScratch, visWriteTex);
+    this._borderIrrPass.dispatch(encoder, ctx);
+    this._borderVisPass.dispatch(encoder, ctx);
 
     device.queue.submit([encoder.finish()]);
 
@@ -667,6 +624,10 @@ export class ProbeUpdatePass {
     // (Previous comment noted that the (0,0,0) freeze was a band-aid for
     // EMA instability — that root cause is fixed by the M7 energy-model
     // correction; per-frame rotation is now safe to restore.)
+    //
+    // NOTE: this Halton-Shoemake sampler will move to @vitrum/shared-samplers
+    // in W7-H5 (separate branch). Leaving it inline here per the W4-A8
+    // scope boundary.
     const haltonBase = (i: number, base: number): number => {
       let result = 0;
       let f = 1;
@@ -758,120 +719,6 @@ export class ProbeUpdatePass {
     return gpuTex;
   }
 
-  private _runRaysPass(
-    encoder: GPUCommandEncoder,
-    activeCount: number,
-    irrReadTex: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-
-    const bg0 = g.device.createBindGroup({
-      layout: g.raysPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: g.bvhBuf } },
-        { binding: 1, resource: { buffer: g.posBuf } },
-        { binding: 2, resource: { buffer: g.idxBuf } },
-        { binding: 3, resource: { buffer: g.normBuf } },
-        { binding: 4, resource: { buffer: g.matIdBuf } },
-      ],
-    });
-    const bg1 = g.device.createBindGroup({
-      layout: g.raysPipeline.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: g.materialsBuf } },
-        { binding: 1, resource: { buffer: g.lightsBuf } },
-      ],
-    });
-    const bg2 = g.device.createBindGroup({
-      layout: g.raysPipeline.getBindGroupLayout(2),
-      entries: [
-        { binding: 0, resource: { buffer: g.rayResultsBuf } },
-        { binding: 1, resource: { buffer: g.activeProbesBuf } },
-        { binding: 2, resource: irrReadTex.createView() },
-        { binding: 3, resource: g.linearSampler },
-        { binding: 4, resource: { buffer: g.gridParamsBuf } },
-        { binding: 5, resource: { buffer: g.frameParamsBuf } },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ddgi-probe-rays' });
-    pass.setPipeline(g.raysPipeline);
-    pass.setBindGroup(0, bg0);
-    pass.setBindGroup(1, bg1);
-    pass.setBindGroup(2, bg2);
-    // Dispatch one workgroup per active probe.
-    pass.dispatchWorkgroups(activeCount);
-    pass.end();
-  }
-
-  private _runBlendIrrPass(
-    encoder: GPUCommandEncoder,
-    activeCount: number,
-    irrReadTex: GPUTexture,
-    irrWriteTex: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg0 = g.device.createBindGroup({
-      layout: g.blendIrrPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: g.rayResultsBuf } },
-        { binding: 1, resource: { buffer: g.activeProbesBuf } },
-        { binding: 2, resource: { buffer: g.gridParamsBuf } },
-        { binding: 3, resource: { buffer: g.blendParamsBuf } },
-      ],
-    });
-    const bg1 = g.device.createBindGroup({
-      layout: g.blendIrrPipeline.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: irrReadTex.createView() },
-        { binding: 1, resource: g.linearSampler },
-        { binding: 2, resource: irrWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-      ],
-    });
-
-    // Dispatch: global x = activeCount * IRR_CELL, global y = IRR_CELL.
-    // workgroup (8,8,1) so dispatchWorkgroups(activeCount, 1, 1) covers one probe.
-    const pass = encoder.beginComputePass({ label: 'ddgi-blend-irr' });
-    pass.setPipeline(g.blendIrrPipeline);
-    pass.setBindGroup(0, bg0);
-    pass.setBindGroup(1, bg1);
-    pass.dispatchWorkgroups(activeCount, 1, 1);
-    pass.end();
-  }
-
-  private _runBlendVisPass(
-    encoder: GPUCommandEncoder,
-    activeCount: number,
-    visReadTex: GPUTexture,
-    visWriteTex: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg0 = g.device.createBindGroup({
-      layout: g.blendVisPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: g.rayResultsBuf } },
-        { binding: 1, resource: { buffer: g.activeProbesBuf } },
-        { binding: 2, resource: { buffer: g.gridParamsBuf } },
-        { binding: 3, resource: { buffer: g.blendParamsBuf } },
-      ],
-    });
-    const bg1 = g.device.createBindGroup({
-      layout: g.blendVisPipeline.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: visReadTex.createView() },
-        { binding: 1, resource: g.linearSampler },
-        { binding: 2, resource: visWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ddgi-blend-vis' });
-    pass.setPipeline(g.blendVisPipeline);
-    pass.setBindGroup(0, bg0);
-    pass.setBindGroup(1, bg1);
-    pass.dispatchWorkgroups(activeCount, 1, 1);
-    pass.end();
-  }
-
   /**
    * Return (or lazily create) the scratch texture used by the border fill
    * pass for the given atlas. The scratch texture is an atlas-sized
@@ -943,53 +790,6 @@ export class ProbeUpdatePass {
     device.queue.writeBuffer(buf, 0, data.buffer);
   }
 
-  private _runBorderIrrPass(
-    encoder: GPUCommandEncoder,
-    probeCount: number,
-    scratchTex: GPUTexture,
-    writeAtlas: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg = g.device.createBindGroup({
-      layout: g.borderIrrPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: scratchTex.createView() },
-        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-        { binding: 2, resource: { buffer: g.borderIrrUboBuf } },
-      ],
-    });
-    const pass = encoder.beginComputePass({ label: 'ddgi-border-irr' });
-    pass.setPipeline(g.borderIrrPipeline);
-    pass.setBindGroup(0, bg);
-    // One workgroup per probe. Each workgroup has 48 threads covering the
-    // (IRR_STRIDE)² = 100 positions of one cell's border ring.
-    pass.dispatchWorkgroups(probeCount, 1, 1);
-    pass.end();
-  }
-
-  private _runBorderVisPass(
-    encoder: GPUCommandEncoder,
-    probeCount: number,
-    scratchTex: GPUTexture,
-    writeAtlas: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg = g.device.createBindGroup({
-      layout: g.borderVisPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: scratchTex.createView() },
-        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-        { binding: 2, resource: { buffer: g.borderVisUboBuf } },
-      ],
-    });
-    const pass = encoder.beginComputePass({ label: 'ddgi-border-vis' });
-    pass.setPipeline(g.borderVisPipeline);
-    pass.setBindGroup(0, bg);
-    // One workgroup per probe. 256 threads × 2 passes covers all 324 positions.
-    pass.dispatchWorkgroups(probeCount, 1, 1);
-    pass.end();
-  }
-
   /**
    * Expose the cached read-side GPUTextures so external consumers
    * (e.g. the hybrid pipeline) can bind them into the ReSTIR shade pass
@@ -1011,6 +811,13 @@ export class ProbeUpdatePass {
   }
 
   dispose(): void {
+    // Pass-owned pipeline refs always safe to drop.
+    this._raysPass.dispose();
+    this._blendIrrPass.dispose();
+    this._blendVisPass.dispose();
+    this._borderIrrPass.dispose();
+    this._borderVisPass.dispose();
+
     if (!this._gpu) return;
     const g = this._gpu;
     g.bvhBuf.destroy();
