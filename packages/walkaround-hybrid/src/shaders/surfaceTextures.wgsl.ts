@@ -168,7 +168,14 @@ fn bvhTraceTintedVisibility(
 
     let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
     let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    let invDir = vec3f(1.0) / dir;
+    // Williams 2005 §4 IEEE-safe inverse-direction. Plain \`vec3f(1.0)/dir\`
+    // produces ±Inf when a component of \`dir\` is exactly zero (axis-aligned
+    // sun-shadow rays, axis-aligned hit normals, sky-aperture taps along
+    // ±X/Y/Z), and \`0 * Inf = NaN\` then poisons the slab test when the ray
+    // origin sits on the corresponding AABB face. safeInvDir lives in
+    // COMMON_WGSL and is in scope (the pipeline concatenates COMMON_WGSL +
+    // SURFACE_TEXTURES_WGSL + … into the shade module).
+    let invDir = safeInvDir(dir);
     let t1 = (nMin - origin) * invDir;
     let t2 = (nMax - origin) * invDir;
     let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
