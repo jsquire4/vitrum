@@ -39,6 +39,51 @@ export interface ModelWeights {
   readonly layers: readonly LayerWeights[];
 }
 
+// ── Random-weights helper (for examples + acceptance tests) ──────────────────
+
+/**
+ * Build a ModelWeights matching a U-Net spec with deterministic He-initialized
+ * random weights. The denoising output will NOT be meaningful — this is for
+ * pipeline-wiring smoke tests and the W10 example (no trained checkpoint
+ * ships in-repo; downloading the canonical `vi-neural-weights.json` is a
+ * separate workstream — see `packages/walkaround-hybrid/README.md`).
+ *
+ * Deterministic via a Park-Miller LCG seeded from `seed` so the same call
+ * with the same spec + seed produces bit-identical output across runs.
+ *
+ * @param spec  Architecture spec (typically `WALKAROUND_DENOISER_UNET_SPEC`).
+ * @param seed  LCG seed (default 0xDEAF1984 — matches the model magic).
+ */
+export function buildRandomWeightsForSpec(
+  spec: { layers: readonly { name: string; weightLayout: 'OIKW' | 'IOKW' | 'none'; params: { inC: number; outC: number; kH?: number; kW?: number } }[] },
+  seed: number = VITRUM_MODEL_MAGIC,
+): ModelWeights {
+  let s = (seed >>> 0) || 1;
+  const lcg01 = (): number => {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    return s / 0x100000000;
+  };
+  const lcgRange = (lo: number, hi: number): number => lo + lcg01() * (hi - lo);
+
+  const layers: LayerWeights[] = spec.layers.map((layer) => {
+    if (layer.weightLayout === 'none') {
+      return { name: layer.name, weights: new Float32Array(0), biases: new Float32Array(0) };
+    }
+    const { inC, outC, kH = 1, kW = 1 } = layer.params;
+    const count = inC * outC * kH * kW;
+    // He init: scale = sqrt(2 / fan_in). For conv2d fan_in = inC × kH × kW.
+    // Same scale used for both OIKW (conv2d) and IOKW (transposedConv2d).
+    const scale = Math.sqrt(2.0 / Math.max(1, inC * kH * kW));
+    const weights = new Float32Array(count);
+    for (let i = 0; i < count; i++) weights[i] = lcgRange(-scale, scale);
+    const biases = new Float32Array(outC);
+    for (let i = 0; i < outC; i++) biases[i] = lcgRange(-0.01, 0.01);
+    return { name: layer.name, weights, biases };
+  });
+
+  return { layers };
+}
+
 // ── Binary loader ─────────────────────────────────────────────────────────────
 
 /**

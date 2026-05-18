@@ -9,6 +9,59 @@ Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **RC** (Radiance Cascades) — see `src/rc/` for cascade compute and TSL hooks; not currently added to the `HybridEngine` combined shading sum.
 - **ReSTIR DI** (Reservoir-based Spatiotemporal Importance Resampling) — direct illumination with temporal + spatial reuse.
 
+## Denoisers
+
+The post-shade denoise chain is selectable via `HybridEngineOptions.denoiser`.
+All modes share the same engine surface — only the post-shade pass changes.
+
+| Mode               | Default | Description                                                                          |
+|--------------------|---------|--------------------------------------------------------------------------------------|
+| `'atrous'`         |         | Legacy 3-iteration à-trous (no variance weighting).                                  |
+| `'atrous-variance'`| ✓       | Welford temporal accumulator + variance lookup + 3-iter à-trous. Current production. |
+| `'svgf-real'`      |         | Real Schied 2017 SVGF (T2.H1) — reprojection, moments, 7×7 filter, 5-tap à-trous.    |
+| `'neural'`         |         | U-Net neural denoiser (T2.H2 / W10). Requires `neuralWeights` — see below.           |
+
+### Neural denoiser — weights interface
+
+`denoiser: 'neural'` requires `neuralWeights: ModelWeights` to be passed to
+the engine constructor; missing weights produce a clear validation error at
+construction time.
+
+```ts
+import {
+  createWalkaroundEngine_Hybrid,
+  loadWeightsFromArrayBuffer,
+} from '@vitrum/walkaround-hybrid';
+
+const weightsBytes = await (await fetch('/vi-neural-weights.bin')).arrayBuffer();
+const neuralWeights = loadWeightsFromArrayBuffer(weightsBytes);
+
+const engine = await createWalkaroundEngine_Hybrid({
+  // …other engine options…
+  denoiser:      'neural',
+  neuralWeights,
+});
+```
+
+The binary format is `.vitrum-model` (magic `0xDEAF1984`, little-endian) —
+mirrored by the Python exporter at `tools/neural-denoiser-training/export_weights.py`
+and the TypeScript serialiser `serializeWeightsToArrayBuffer`.
+
+The canonical trained checkpoint ships as `vi-neural-weights.bin` (target ~1.7 MB
+at f32 for the default ~426k-parameter spec). The repo does NOT ship a trained
+checkpoint — see `tools/neural-denoiser-training/README.md` for training.
+
+**Smoke-test path (no trained weights):** `buildRandomWeightsForSpec(spec, seed)`
+synthesises deterministic He-init random weights. The pipeline runs end-to-end
+but the denoised output will NOT be visually clean — this is only for wiring
+verification (used by `examples/neural-denoiser/`).
+
+### Example app
+
+`examples/neural-denoiser/` demonstrates all three modes side-by-side with a
+URL toggle (`?denoiser=atrous-variance|svgf-real|neural`); `npm run dev
+--workspace @vitrum-examples/neural-denoiser`.
+
 ## Peer dependencies
 
 - `three >= 0.160.0`
