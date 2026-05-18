@@ -40,10 +40,13 @@
  *   Total new persistent textures for svgf-real: ~52 MB at 1080p.
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
+
 /** Must match @workgroup_size in svgfReprojMain. */
 export const SVGF_REAL_REPROJECTION_WORKGROUP_SIZE = 16 as const;
 
 export const SVGF_REPROJECTION_WGSL = /* wgsl */ `
+${LUMINANCE_WGSL}
 // ============================================================
 // SVGFReprojUBO — tunable disocclusion + EMA constants
 // ============================================================
@@ -87,9 +90,8 @@ struct SVGFReprojUBO {
 // Helpers
 // ============================================================
 
-// Luminance weight — Rec. 709.
-const SVGF_LUM_W = vec3f(0.2126, 0.7152, 0.0722);
-fn svgfLuminance(c: vec3f) -> f32 { return dot(c, SVGF_LUM_W); }
+// luminance(c) is the canonical Rec.709 helper from LUMINANCE_WGSL
+// (prepended above at module build time).
 
 // Test a single previous-frame tap for Schied Eq. 2 disocclusion criteria.
 // Returns true if the tap is VALID (should be included in bilinear blend).
@@ -219,7 +221,7 @@ fn svgfReprojMain(@builtin(global_invocation_id) gid: vec3u) {
   let blendedColor = alpha * currColor + (1.0 - alpha) * accColor;
 
   // Moment update: first and second luminance moments.
-  let lCurr = svgfLuminance(currColor);
+  let lCurr = luminance(currColor);
   let newM1  = alpha * lCurr        + (1.0 - alpha) * accM1;
   let newM2  = alpha * lCurr * lCurr + (1.0 - alpha) * accM2;
 

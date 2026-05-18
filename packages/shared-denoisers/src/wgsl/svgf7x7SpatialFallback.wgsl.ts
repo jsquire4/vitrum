@@ -22,6 +22,7 @@
  *   Schied et al. HPG 2017 §4.3.
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import { SVGF_HISTORY_MIN_FOR_MOMENTS } from './svgfVarianceFromMoments.wgsl.js';
 
 /** Pixels with history below this threshold use the 7×7 spatial variance estimate. */
@@ -31,11 +32,10 @@ export const SVGF_SPATIAL_FALLBACK_HISTORY_THRESHOLD = SVGF_HISTORY_MIN_FOR_MOME
 export const SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE = 16 as const;
 
 export const SVGF_7X7_SPATIAL_FALLBACK_WGSL = /* wgsl */ `
+${LUMINANCE_WGSL}
 const SVGF_SPATIAL_THRESHOLD: u32 = ${SVGF_SPATIAL_FALLBACK_HISTORY_THRESHOLD}u;
 
-// Rec. 709 luminance weights (canonical; matches other shared-denoisers shaders).
-const SVGF7_LUM_W = vec3f(0.2126, 0.7152, 0.0722);
-fn svgf7Lum(c: vec3f) -> f32 { return dot(c, SVGF7_LUM_W); }
+// luminance(c) is the canonical Rec.709 helper from LUMINANCE_WGSL above.
 
 @group(0) @binding(0) var sfb_currColor:    texture_2d<f32>;
 @group(0) @binding(1) var sfb_historyIn:    texture_2d<u32>;
@@ -69,7 +69,7 @@ fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
       if (p.x < 0 || p.y < 0 || u32(p.x) >= dims.x || u32(p.y) >= dims.y) {
         continue;
       }
-      let lum = svgf7Lum(textureLoad(sfb_currColor, vec2u(p), 0).rgb);
+      let lum = luminance(textureLoad(sfb_currColor, vec2u(p), 0).rgb);
       sumL  += lum;
       sumL2 += lum * lum;
       n     += 1u;
