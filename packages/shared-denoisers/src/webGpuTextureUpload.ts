@@ -150,6 +150,13 @@ export function uploadInterleavedRgAsRg32f(
   });
 }
 
+/**
+ * Alias of {@link uploadInterleavedRgAsRg32f} for callers that prefer the
+ * shorter name. Kept as a named alias rather than a separate implementation
+ * so the two cannot drift.
+ */
+export const uploadRg32f = uploadInterleavedRgAsRg32f;
+
 /** Tight scalar R floats per pixel (length w*h) → r32float texture. */
 export function uploadR32f(
   device: GPUDevice,
