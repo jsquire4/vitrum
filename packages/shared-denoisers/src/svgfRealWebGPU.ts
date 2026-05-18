@@ -43,9 +43,19 @@ import {
   packAtrousVarianceVarianceUniforms,
   ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
 } from './atrousVarianceBindings.js';
-import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
 import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
+import {
+  uploadRgbAsRgba16f,
+  uploadRg32f,
+  uploadR32f,
+  uploadR32Uint,
+  uploadR16Uint,
+  fillR16Uint,
+  fillRg32f,
+  fillRgba32f,
+  readRgba16fToRgb,
+} from './webGpuTextureUpload.js';
 
 // ============================================================
 // Albedo demodulation helpers — Schied 2017 §4.1.
@@ -360,159 +370,11 @@ export function svgf7x7FallbackCPU(opts: {
 // inlined the cache here and the extracted module became an orphan
 // canonical (created, never imported). Routing through the canonical
 // activates the extracted module and removes ~40 lines of duplication.
-
-// ============================================================
-// Helpers — texture upload / readback
-// ============================================================
-
-function uploadRgbAsRgba16f(
-  device: GPUDevice,
-  texture: GPUTexture,
-  rgb: Float32Array,
-  w: number,
-  h: number,
-): void {
-  const bpr = alignedTextureCopyBytesPerRow(w, 8);
-  const buf = new Uint8Array(bpr * h);
-  const dv = new DataView(buf.buffer);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const si = (y * w + x) * 3;
-      const byte = y * bpr + x * 8;
-      dv.setUint16(byte + 0, float32ToFloat16Bits(rgb[si]     ?? 0), true);
-      dv.setUint16(byte + 2, float32ToFloat16Bits(rgb[si + 1] ?? 0), true);
-      dv.setUint16(byte + 4, float32ToFloat16Bits(rgb[si + 2] ?? 0), true);
-      dv.setUint16(byte + 6, float32ToFloat16Bits(1),                true);
-    }
-  }
-  device.queue.writeTexture({ texture }, buf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w, h]);
-}
-
-function uploadRg32f(
-  device: GPUDevice,
-  texture: GPUTexture,
-  rg: Float32Array,
-  w: number,
-  h: number,
-): void {
-  const bpr = alignedTextureCopyBytesPerRow(w, 8);
-  // bpr is aligned to 256 bytes (WebGPU minimum), which is always divisible by 4,
-  // so stride (f32 elements per row) is always an integer.
-  const stride = bpr / 4;
-  const buf = new Float32Array(stride * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const si = (y * w + x) * 2;
-      const o  = y * stride + x * 2;
-      buf[o]     = rg[si]     ?? 0;
-      buf[o + 1] = rg[si + 1] ?? 0;
-    }
-  }
-  device.queue.writeTexture(
-    { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
-    { bytesPerRow: bpr },
-    [w, h],
-  );
-}
-
-function fillR16Uint(device: GPUDevice, texture: GPUTexture, w: number, h: number, value: number): void {
-  const bpr = alignedTextureCopyBytesPerRow(w, 2);
-  const buf = new Uint8Array(bpr * h);
-  const dv  = new DataView(buf.buffer);
-  const v   = value & 0xFFFF;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      dv.setUint16(y * bpr + x * 2, v, true);
-    }
-  }
-  device.queue.writeTexture({ texture }, buf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w, h]);
-}
-
-function fillRg32f(device: GPUDevice, texture: GPUTexture, w: number, h: number, r: number, g: number): void {
-  // Allocate tight RG buffer; uploadRg32f handles row-alignment internally.
-  const data = new Float32Array(w * h * 2);
-  if (r !== 0 || g !== 0) {
-    for (let i = 0; i < w * h; i++) { data[i * 2] = r; data[i * 2 + 1] = g; }
-  }
-  uploadRg32f(device, texture, data, w, h);
-}
-
-function fillRgba32f(device: GPUDevice, texture: GPUTexture, w: number, h: number, rgba: [number,number,number,number]): void {
-  const bpr = alignedTextureCopyBytesPerRow(w, 16);
-  const stride = bpr / 4;
-  const buf = new Float32Array(stride * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const o = y * stride + x * 4;
-      buf[o] = rgba[0]; buf[o+1] = rgba[1]; buf[o+2] = rgba[2]; buf[o+3] = rgba[3];
-    }
-  }
-  device.queue.writeTexture(
-    { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
-    { bytesPerRow: bpr },
-    [w, h],
-  );
-}
-
-function uploadR32f(device: GPUDevice, texture: GPUTexture, data: Float32Array, w: number, h: number): void {
-  const bpr = alignedTextureCopyBytesPerRow(w, 4);
-  const stride = bpr / 4;
-  const buf = new Float32Array(stride * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      buf[y * stride + x] = data[y * w + x] ?? 0;
-    }
-  }
-  device.queue.writeTexture(
-    { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
-    { bytesPerRow: bpr },
-    [w, h],
-  );
-}
-
-function uploadR32Uint(device: GPUDevice, texture: GPUTexture, data: Uint32Array, w: number, h: number): void {
-  const bpr = alignedTextureCopyBytesPerRow(w, 4);
-  const stride = bpr / 4;
-  const buf = new Uint32Array(stride * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      buf[y * stride + x] = data[y * w + x] ?? 0;
-    }
-  }
-  device.queue.writeTexture(
-    { texture },
-    buf.buffer as GPUAllowSharedBufferSource,
-    { bytesPerRow: bpr },
-    [w, h],
-  );
-}
-
-async function readRgba16fToRgb(device: GPUDevice, texture: GPUTexture, w: number, h: number): Promise<Float32Array> {
-  const bpr = alignedTextureCopyBytesPerRow(w, 8);
-  const buf = device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const encoder = device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
-  device.queue.submit([encoder.finish()]);
-  await buf.mapAsync(GPUMapMode.READ);
-  const raw = new Uint8Array(buf.getMappedRange());
-  const dv  = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-  const out = new Float32Array(w * h * 3);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const byte = y * bpr + x * 8;
-      const di   = (y * w + x) * 3;
-      out[di]     = float16BitsToFloat32(dv.getUint16(byte + 0, true));
-      out[di + 1] = float16BitsToFloat32(dv.getUint16(byte + 2, true));
-      out[di + 2] = float16BitsToFloat32(dv.getUint16(byte + 4, true));
-    }
-  }
-  buf.unmap();
-  buf.destroy();
-  return out;
-}
+//
+// Texture upload / readback helpers were similarly inlined here until W4-A7.
+// They now live in webGpuTextureUpload.ts (see imports above); routing
+// through that canonical removes ~150 lines of duplication and ensures
+// the row-padding alignment math has a single source of truth.
 
 // ============================================================
 // Public API
@@ -705,17 +567,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
     uploadR32Uint(device, prevObjTex, zeros32, w, h);
   }
   if (opts.historyLengthIn != null) {
-    fillR16Uint(device, histInTex, w, h, 0);
-    // Upload actual values
-    const bpr = alignedTextureCopyBytesPerRow(w, 2);
-    const hBuf = new Uint8Array(bpr * h);
-    const dv = new DataView(hBuf.buffer);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        dv.setUint16(y * bpr + x * 2, (opts.historyLengthIn[y * w + x] ?? 0) & 0xFFFF, true);
-      }
-    }
-    device.queue.writeTexture({ texture: histInTex }, hBuf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w,h]);
+    uploadR16Uint(device, histInTex, opts.historyLengthIn, w, h);
   } else {
     fillR16Uint(device, histInTex, w, h, 0);
   }
