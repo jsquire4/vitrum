@@ -395,6 +395,29 @@ rendering. Existing content with σₜ > 0 will appear darker in thick regions
 
 ## Item 26: Two incompatible BVHNode encodings co-exist
 
+> **STATUS — VERIFIED CLOSED (2026-05-17).** Re-audited against the current
+> source on branch `feat/fix-bvhnode-encoding-unification` (from `29ccf96`).
+> All four prescribed sub-fixes have already been applied:
+> 1. `buildCpuBvh.ts:363` stores `node.rightChildOrTriOffset = rightChild - nodeIndex`
+>    (relative offset) and `buildCpuBvh.ts:373–389` enforces the
+>    `1 ≤ offset < totalNodes` invariant in dev/test mode.
+> 2. `pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:861` traversal reads
+>    `let rightChild = nodeIdx + node.rightChildOrTriOffset;` — exactly the
+>    walkaround convention. File comment at `:855–860` cites the canonical
+>    convention.
+> 3. `validateBvhEncoding(nodes, totalNodes)` is exported from
+>    `shared-bvh/src/bvhCommon.ts:702–727` and used by both the pt-webgpu
+>    build path (`buildCpuBvh.ts`) and the shared-bvh test suite.
+> 4. `packages/pt-webgpu/src/__tests__/buildCpuBvh.test.ts:52–82` verifies
+>    the relative-offset invariant directly; `packages/shared-bvh/src/__tests__/bvhEncoding.test.ts`
+>    exercises a CPU oracle 200-triangle round-trip (1 000 rays, BVH-vs-brute
+>    `|Δt| < 1e-5`) — see test `T1.D3`. All 20 tests pass (`vitest run`
+>    `packages/shared-bvh packages/pt-webgpu/src/__tests__/buildCpuBvh.test.ts`,
+>    2026-05-17).
+>
+> No further action required for Item 26. The original Tier-H "two
+> incompatible BVHNode encodings" landmine is no longer present.
+
 **File(s):**
 - `packages/pt-webgpu/src/scene/buildCpuBvh.ts` — stores **absolute** right-child
   node index in `rightChildOrTriOffset`
@@ -467,6 +490,25 @@ wrong pixels).
 ---
 
 ## Item 27: Index buffer stride differs across packages
+
+> **STATUS — VERIFIED CLOSED (2026-05-17).** Re-audited against the current
+> source on branch `feat/fix-bvhnode-encoding-unification` (from `29ccf96`).
+> Stride-3 (`array<vec3u>`) and stride-4 (`array<vec4u>`) are both first-class
+> sanctioned layouts per the canonical `BvhIndexStride` type, exported from
+> `packages/shared-bvh/src/index.ts:26` with a documented contract covering
+> both forms. The original "two incompatible strides with no defense" claim
+> is no longer applicable:
+> - `SceneBVHCommonResult.bvhIndexStride` (`shared-bvh/src/bvhCommon.ts:118`)
+>   pins the producer-side stride to 3.
+> - pt-webgpu's `buildCpuBvh` and ReSTIR's `bvhCompute` each post-process to
+>   stride 4 with an explicit `.w` zero-fill / payload contract documented
+>   inline.
+> - The `BvhIndexStride` doc-comment specifies the upload-time alignment
+>   assertion (`byteLength % (stride * 4) !== 0`) — the contract clarification
+>   the original Item 27 fix prescribed.
+>
+> This is the intended design (`Decision points` in the original entry
+> already endorsed it). No defect remains.
 
 **File(s):**
 - `packages/pt-webgpu/src/scene/buildCpuBvh.ts:67,153` — indices packed as
