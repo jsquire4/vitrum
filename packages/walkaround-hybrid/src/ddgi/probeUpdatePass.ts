@@ -30,7 +30,47 @@ import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl
 import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
 import { packDDGIGridParams } from '../pipeline/resourceManager.js';
 import { detectGpu } from '@vitrum/core';
+import { defineUbo } from '@vitrum/shared-samplers';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
+
+// W2-C13 follow-up — BorderUBO / BorderUBOV (DDGI atlas border pass).
+// 8×u32 = 32 B. probeUpdateBorder.wgsl declares two distinct WGSL structs
+// (BorderUBO for irradiance, BorderUBOV for visibility) but they share the
+// same field set and layout. Defined once here and reused for both buffers.
+const DDGI_BORDER_UBO = defineUbo([
+  { name: 'numProbes',   type: 'u32' },
+  { name: 'atlasWidth',  type: 'u32' },
+  { name: 'atlasHeight', type: 'u32' },
+  { name: '_pad0',       type: 'u32' },
+  { name: 'gridDimX',    type: 'u32' },
+  { name: 'gridDimY',    type: 'u32' },
+  { name: 'gridDimZ',    type: 'u32' },
+  { name: '_pad1',       type: 'u32' },
+] as const);
+
+// W2-C13 follow-up — FrameParams (probeUpdateRays.wgsl). 48 B.
+// vec3f randomRotation @0, u32 frameIndex @12, u32 totalProbes @16,
+// u32 probesPerFrame @20, u32 _pad0 @24, u32 _pad1 @28, vec3f skyTint @32,
+// f32 skyIrradiance @44. The std140 vec4-alignment ensures skyTint starts
+// at offset 32; the two explicit pad slots fill the 24..32 gap.
+const DDGI_FRAME_PARAMS_UBO = defineUbo([
+  { name: 'randomRotation', type: 'vec3f' },
+  { name: 'frameIndex',     type: 'u32'   },
+  { name: 'totalProbes',    type: 'u32'   },
+  { name: 'probesPerFrame', type: 'u32'   },
+  { name: '_pad0',          type: 'u32'   },
+  { name: '_pad1',          type: 'u32'   },
+  { name: 'skyTint',        type: 'vec3f' },
+  { name: 'skyIrradiance',  type: 'f32'   },
+] as const);
+
+// W2-C13 follow-up — BlendParams (probeUpdateBlend.wgsl). Two-field UBO,
+// padded by the 16-byte WebGPU minimum-binding floor.
+//   u32 probesPerFrame @0, f32 hysteresis @4, (8..15 zero pad).
+const DDGI_BLEND_PARAMS_UBO = defineUbo([
+  { name: 'probesPerFrame', type: 'u32' },
+  { name: 'hysteresis',     type: 'f32' },
+] as const);
 
 // Re-export so existing consumers (`import { RAYS_PER_PROBE } from
 // 'walkaround-hybrid/ddgi/probeUpdatePass'`) keep working. The constant
@@ -703,28 +743,32 @@ export class ProbeUpdatePass {
       ay = qy / sinHalf;
       az = qz / sinHalf;
     }
-    const data = new Float32Array(12);
-    const u32 = new Uint32Array(data.buffer);
-    data[0] = ax * angle;
-    data[1] = ay * angle;
-    data[2] = az * angle;
-    u32[3] = this._frameIndex;
-    u32[4] = this._grid.probeCount;
-    u32[5] = Math.ceil(this._grid.probeCount / 4);
-    // data[6..7] = 0 (pad — already zeroed by Float32Array constructor)
-    data[8]  = this._skyTint[0];
-    data[9]  = this._skyTint[1];
-    data[10] = this._skyTint[2];
-    data[11] = this._skyIrradiance;
-    device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data.buffer);
+    // W2-C13 follow-up: defineUbo writes vec3f + 3×u32 + 2×u32 pad + vec3f + f32
+    // at the same offsets as the prior Float32Array/Uint32Array-aliased writes
+    // (0/12/16/20/24/28/32/44).
+    const data = new ArrayBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes);
+    DDGI_FRAME_PARAMS_UBO.pack(new DataView(data), 0, {
+      randomRotation: [ax * angle, ay * angle, az * angle] as const,
+      frameIndex:     this._frameIndex,
+      totalProbes:    this._grid.probeCount,
+      probesPerFrame: Math.ceil(this._grid.probeCount / 4),
+      _pad0: 0, _pad1: 0,
+      skyTint:       [this._skyTint[0], this._skyTint[1], this._skyTint[2]] as const,
+      skyIrradiance: this._skyIrradiance,
+    });
+    device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data);
   }
 
   private _uploadBlendParams(device: GPUDevice): void {
-    const data = new Float32Array(4);
-    const u32 = new Uint32Array(data.buffer);
-    u32[0] = Math.ceil(this._grid.probeCount / 4);
-    data[1] = 0.97; // HYSTERESIS
-    device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data.buffer);
+    // W2-C13 follow-up: byte-identical to the prior Float32Array(4)-aliased
+    // write — defineUbo pads the two active fields out to the WebGPU 16-byte
+    // minimum-binding floor with zero-fill.
+    const data = new ArrayBuffer(DDGI_BLEND_PARAMS_UBO.sizeBytes);
+    DDGI_BLEND_PARAMS_UBO.pack(new DataView(data), 0, {
+      probesPerFrame: Math.ceil(this._grid.probeCount / 4),
+      hysteresis:     0.97, // HYSTERESIS
+    });
+    device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data);
   }
 
   // Cache: AtlasTextureSlot identity → GPUTexture. The slot is a plain
@@ -923,6 +967,10 @@ export class ProbeUpdatePass {
    * The UBO layout (8 × u32 = 32 bytes):
    *   [0] numProbes   [1] atlasWidth  [2] atlasHeight  [3] _pad0
    *   [4] gridDimX    [5] gridDimY    [6] gridDimZ      [7] _pad1
+   *
+   * W2-C13 follow-up: defineUbo packs the eight u32 fields contiguously
+   * at offsets 0/4/.../28, matching the prior Uint32Array(8) write
+   * byte-for-byte.
    */
   private _uploadBorderUbo(
     device: GPUDevice,
@@ -930,17 +978,19 @@ export class ProbeUpdatePass {
     which: 'irr' | 'vis',
   ): void {
     const g = this._gpu!;
-    const data = new Uint32Array(8);
-    data[0] = this._grid.probeCount;
-    data[1] = atlas.width;
-    data[2] = atlas.height;
-    data[3] = 0; // _pad0
-    data[4] = this._grid.params.dims.x;
-    data[5] = this._grid.params.dims.y;
-    data[6] = this._grid.params.dims.z;
-    data[7] = 0; // _pad1
+    const data = new ArrayBuffer(DDGI_BORDER_UBO.sizeBytes);
+    DDGI_BORDER_UBO.pack(new DataView(data), 0, {
+      numProbes:   this._grid.probeCount,
+      atlasWidth:  atlas.width,
+      atlasHeight: atlas.height,
+      _pad0:       0,
+      gridDimX:    this._grid.params.dims.x,
+      gridDimY:    this._grid.params.dims.y,
+      gridDimZ:    this._grid.params.dims.z,
+      _pad1:       0,
+    });
     const buf = which === 'irr' ? g.borderIrrUboBuf : g.borderVisUboBuf;
-    device.queue.writeBuffer(buf, 0, data.buffer);
+    device.queue.writeBuffer(buf, 0, data);
   }
 
   private _runBorderIrrPass(

@@ -10,6 +10,7 @@
  * Audit refs: M2 (thresholds host-overridable), Sprint 9 wire-in notes.
  */
 
+import { defineUbo } from '@vitrum/shared-samplers';
 import {
   buildSampleBudgetBindGroup,
   type UboRef,
@@ -20,6 +21,20 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+
+// W2-C13 follow-up — SampleBudgetUniforms (2×f32 + 2×u32 = 16 B):
+// adaptive-sampling thresholds + screen extent for tier classification.
+const SAMPLE_BUDGET_UBO = defineUbo([
+  { name: 'thresholdLow',  type: 'f32' },
+  { name: 'thresholdHigh', type: 'f32' },
+  { name: 'screenW',       type: 'u32' },
+  { name: 'screenH',       type: 'u32' },
+] as const);
+// SampleCountUniforms (1×u32 + 3 trailing pad = 16 B floor): per-frame
+// 1-based sample count. defineUbo zero-fills bytes 4..15.
+const SAMPLE_COUNT_UBO = defineUbo([
+  { name: 'sampleCount', type: 'u32' },
+] as const);
 
 export class SampleBudgetPass implements Pass {
   readonly id = 'sample-budget' as const;
@@ -44,20 +59,23 @@ export class SampleBudgetPass implements Pass {
     const { device, encoder, inputs, wgX, wgY, computeDesc, resources } = ctx;
 
     // Budget uniforms: f32 threshold_low, f32 threshold_high, u32 screenW, u32 screenH (16 bytes).
-    const budgetBytes = new ArrayBuffer(16);
-    const budgetF32 = new Float32Array(budgetBytes);
-    const budgetU32 = new Uint32Array(budgetBytes);
-    budgetF32[0] = inputs.adaptiveSamplingThresholdLow;
-    budgetF32[1] = inputs.adaptiveSamplingThresholdHigh;
-    budgetU32[2] = ctx.width;
-    budgetU32[3] = ctx.height;
+    // W2-C13 follow-up: identical std140 layout to the prior Float32Array/
+    // Uint32Array-aliased write (f32 @0/4, u32 @8/12).
+    const budgetBytes = new ArrayBuffer(SAMPLE_BUDGET_UBO.sizeBytes);
+    SAMPLE_BUDGET_UBO.pack(new DataView(budgetBytes), 0, {
+      thresholdLow:  inputs.adaptiveSamplingThresholdLow,
+      thresholdHigh: inputs.adaptiveSamplingThresholdHigh,
+      screenW:       ctx.width,
+      screenH:       ctx.height,
+    });
     device.queue.writeBuffer(this._budgetUboRef.buf!, 0, budgetBytes);
-    // Sample count uniforms: u32 sampleCount + 3 pad u32 (16 bytes).
-    device.queue.writeBuffer(
-      this._sampleCountUboRef.buf!,
-      0,
-      new Uint32Array([Math.max(ctx.frameIndex + 1, 1), 0, 0, 0]),
-    );
+    // Sample count uniforms: u32 sampleCount + 3 pad u32 (16 bytes). defineUbo
+    // zero-fills the trailing pad to match the prior [count, 0, 0, 0] write.
+    const sampleCountBytes = new ArrayBuffer(SAMPLE_COUNT_UBO.sizeBytes);
+    SAMPLE_COUNT_UBO.pack(new DataView(sampleCountBytes), 0, {
+      sampleCount: Math.max(ctx.frameIndex + 1, 1),
+    });
+    device.queue.writeBuffer(this._sampleCountUboRef.buf!, 0, sampleCountBytes);
     const bg = buildSampleBudgetBindGroup(
       device, ctx.bglCache,
       resources.common.varianceBuffer.createView(),

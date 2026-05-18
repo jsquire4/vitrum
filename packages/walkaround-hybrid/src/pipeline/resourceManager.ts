@@ -20,6 +20,32 @@
  * and complexity-sweep-20260517 findings A3 + B6.
  */
 
+import { defineUbo } from '@vitrum/shared-samplers';
+
+// W2-C13 follow-up — DDGI grid UBO (64 B). Mirrors shade.wgsl's DDGIGridUBO
+// struct (10 active fields ending at offset 48) plus an explicit 16-byte
+// reserved tail to preserve the pre-codegen 64-byte buffer size byte-for-byte
+// (the prior `new Float32Array(16)` allocation zeroed bytes 48..63).
+const DDGI_GRID_UBO = defineUbo([
+  { name: 'origin',   type: 'vec3f' },
+  { name: 'spacing',  type: 'f32'   },
+  { name: 'dimsX',    type: 'u32'   },
+  { name: 'dimsY',    type: 'u32'   },
+  { name: 'dimsZ',    type: 'u32'   },
+  { name: '_pad0',    type: 'u32'   },
+  { name: 'irrW',     type: 'f32'   },
+  { name: 'irrH',     type: 'f32'   },
+  { name: 'visW',     type: 'f32'   },
+  { name: 'visH',     type: 'f32'   },
+  // Reserved tail — kept explicit so the packed buffer remains 64 B (matches
+  // the WalkaroundGPUPipeline.gridParamsBuf allocation and the
+  // buildDDGIPlaceholderUBO contract).
+  { name: '_reserved0', type: 'f32' },
+  { name: '_reserved1', type: 'f32' },
+  { name: '_reserved2', type: 'f32' },
+  { name: '_reserved3', type: 'f32' },
+] as const);
+
 // ─── Per-algorithm sub-struct interfaces ─────────────────────────────────────
 
 /**
@@ -311,22 +337,30 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
  * `WalkaroundGPUPipeline._ddgiPlaceholderUBO`.
  */
 export function buildDDGIPlaceholderUBO(): Float32Array {
-  const placeholder = new Float32Array(16);
-  placeholder[3] = 24;                              // spacing (default probe spacing)
-  new Uint32Array(placeholder.buffer)[4] = 1;       // dimsX — isDDGIWired() checks dimsX > 1u
-  new Uint32Array(placeholder.buffer)[5] = 1;       // dimsY
-  new Uint32Array(placeholder.buffer)[6] = 1;       // dimsZ
-  placeholder[8]  = 1;                              // irrW (matches 1×1 placeholder texture)
-  placeholder[9]  = 1;                              // irrH
-  placeholder[10] = 1;                              // visW
-  placeholder[11] = 1;                              // visH
-  return placeholder;
+  // W2-C13 follow-up: byte-identical to the prior 64-byte Float32Array
+  // (origin@0 zeros, spacing@12=24, dims@16/20/24=1 as u32, pad@28=0,
+  // irr/vis sizes@32..44=1, reserved tail@48..63 zero).
+  const buf = new ArrayBuffer(DDGI_GRID_UBO.sizeBytes);
+  DDGI_GRID_UBO.pack(new DataView(buf), 0, {
+    origin: [0, 0, 0] as const,
+    spacing: 24,
+    dimsX: 1, dimsY: 1, dimsZ: 1,
+    _pad0: 0,
+    irrW: 1, irrH: 1, visW: 1, visH: 1,
+    _reserved0: 0, _reserved1: 0, _reserved2: 0, _reserved3: 0,
+  });
+  return new Float32Array(buf);
 }
 
 /**
  * Pack live DDGI grid params into the canonical 64-byte UBO layout expected
  * by shade.wgsl. Single source of truth; HybridEngine.renderFrame() used to
  * inline this packing, which drifted vs. buildDDGIPlaceholderUBO above.
+ *
+ * W2-C13 follow-up: layout is now produced by the shared `defineUbo` codegen
+ * helper. Field order + offsets are unchanged from the pre-codegen DataView
+ * writes (vec3f origin@0, f32 spacing@12, three u32 dims@16/20/24,
+ * u32 _pad@28, four f32 atlas sizes@32..44, reserved tail@48..63).
  */
 export function packDDGIGridParams(p: {
   origin: { x: number; y: number; z: number };
@@ -337,21 +371,20 @@ export function packDDGIGridParams(p: {
   visibilityAtlasW: number;
   visibilityAtlasH: number;
 }): ArrayBuffer {
-  const buf = new ArrayBuffer(64);
-  const f32 = new Float32Array(buf);
-  const u32 = new Uint32Array(buf);
-  f32[0] = p.origin.x;
-  f32[1] = p.origin.y;
-  f32[2] = p.origin.z;
-  f32[3] = p.spacing;
-  u32[4] = p.dims.x;
-  u32[5] = p.dims.y;
-  u32[6] = p.dims.z;
-  u32[7] = 0;
-  f32[8]  = p.irradianceAtlasW;
-  f32[9]  = p.irradianceAtlasH;
-  f32[10] = p.visibilityAtlasW;
-  f32[11] = p.visibilityAtlasH;
+  const buf = new ArrayBuffer(DDGI_GRID_UBO.sizeBytes);
+  DDGI_GRID_UBO.pack(new DataView(buf), 0, {
+    origin: [p.origin.x, p.origin.y, p.origin.z] as const,
+    spacing: p.spacing,
+    dimsX: p.dims.x,
+    dimsY: p.dims.y,
+    dimsZ: p.dims.z,
+    _pad0: 0,
+    irrW: p.irradianceAtlasW,
+    irrH: p.irradianceAtlasH,
+    visW: p.visibilityAtlasW,
+    visH: p.visibilityAtlasH,
+    _reserved0: 0, _reserved1: 0, _reserved2: 0, _reserved3: 0,
+  });
   return buf;
 }
 
