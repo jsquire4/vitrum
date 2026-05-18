@@ -195,7 +195,11 @@ fn bvhTraceTintedVisibility(
         let a = (*bvh_position)[idx.x].xyz;
         let b = (*bvh_position)[idx.y].xyz;
         let c = (*bvh_position)[idx.z].xyz;
-        let t = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
+        // Canonical intersectTriangle now returns IntersectionResult; unwrap
+        // .dist (or INFINITY when !didHit) so the rest of this helper continues
+        // to operate on a plain f32 t-value.
+        let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
+        let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
         if (t > 1e-4 && t < tMax) {
           let trans4 = (idxEntry.w >> 4u) & 0xFu;
           if (trans4 > 4u) {

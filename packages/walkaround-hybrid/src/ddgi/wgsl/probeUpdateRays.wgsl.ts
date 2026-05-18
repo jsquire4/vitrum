@@ -7,7 +7,7 @@
  */
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
-import { OCTAHEDRAL_WGSL, MATERIAL_ENTRY_WGSL } from '@vitrum/shared-bvh';
+import { OCTAHEDRAL_WGSL, MATERIAL_ENTRY_WGSL, BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 const WG_SIZE = 32;
@@ -40,6 +40,7 @@ function makeProbeUpdateRaysWGSLImpl(maxMaterials: number): string { return /* w
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
 ${MATERIAL_ENTRY_WGSL}
+${BVH_INTERSECT_WGSL}
 
 const WG_SIZE: u32       = ${WG_SIZE}u;
 const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
@@ -50,9 +51,13 @@ const RAYS_PER_THREAD: u32 = ${RAYS_PER_THREAD}u;   // RAYS_PER_PROBE / WG_SIZE
 // below 0.02). Large scenes with spacing >20 units need a proportionally
 // larger bias; tiny scenes (spacing <0.02) would over-bias with 0.02.
 // Removed as a compile-time constant; computed inline where needed.
-const INFINITY: f32        = 1e20;
+//
+// sweep-20260518/moller-trumbore-canonical: the local INFINITY (= 1e20) and
+// BVH_STACK_DEPTH (= 60) constants previously lived here. The canonical
+// module declares BVH_INTERSECT_INFINITY / BVH_INTERSECT_STACK_DEPTH with the
+// same values; the one remaining INFINITY reference below (out.hitDistance
+// for sky misses) now reads BVH_INTERSECT_INFINITY.
 const PI: f32              = 3.14159265359;
-const BVH_STACK_DEPTH: u32 = 60u;
 
 // Probe-side glass-transmission perceptual scale. When a probe ray hits
 // glass we mix room radiance with sky-tinted transmitted radiance,
@@ -64,32 +69,16 @@ const BVH_STACK_DEPTH: u32 = 60u;
 const GLASS_TRANSMISSION_PROBE_SCALE: f32 = 0.7;
 
 // -----------------------------------------------------------------
-// BVH structures (mirrored from three-mesh-bvh)
+// BVH structs come from @vitrum/shared-bvh BVH_INTERSECT_WGSL (injected
+// at the top of this file). Pre-canonical DDGI declared its own:
+//   - BVHBoundingBox { min: array<f32,3>, max: array<f32,3> }
+//   - BVHNode (nested-bounds form)
+//   - Ray, IntersectionResult
+// The canonical struct uses flat boundsMin/boundsMax fields; rename refs
+// from node.bounds.min[i] → node.boundsMin[i] etc. The canonical
+// IntersectionResult is a superset with extra (matColorPacked, uv) slots
+// that this consumer ignores.
 // -----------------------------------------------------------------
-struct BVHBoundingBox {
-  min: array<f32, 3>,
-  max: array<f32, 3>,
-}
-
-struct BVHNode {
-  bounds: BVHBoundingBox,
-  rightChildOrTriangleOffset: u32,
-  splitAxisOrTriangleCount: u32,
-}
-
-struct Ray {
-  origin: vec3f,
-  direction: vec3f,
-}
-
-struct IntersectionResult {
-  didHit: bool,
-  indices: vec4u,
-  normal: vec3f,
-  barycoord: vec3f,
-  side: f32,
-  dist: f32,
-}
 
 // -----------------------------------------------------------------
 // DDGI material table — uses the canonical MaterialEntry struct
@@ -189,128 +178,29 @@ struct ProbeRay {
 @group(2) @binding(5) var<uniform>             frameParams:  FrameParams;
 
 // -----------------------------------------------------------------
-// BVH traversal (inline — not using wgslFn wrapper here for robustness)
+// BVH traversal — canonical helpers come from @vitrum/shared-bvh
+// BVH_INTERSECT_WGSL (injected at the top of this file). The pre-canonical
+// local helpers safeInvDir, intersectsAABBDist, intersectsTriangleBVH
+// (hardcoded triEps = 1e-5), and bvhTraceFirstHit (60-LOC traversal loop)
+// were here and have been removed. The four call sites below thread
+// DDGI_TRI_EPSILON through canonical bvhIntersectFirstHitV3 — replacing
+// the pre-canonical hardcoded constant with a single named local that a
+// future revision can promote to a UBO field without touching the call
+// sites.
 // -----------------------------------------------------------------
+const DDGI_TRI_EPSILON: f32 = 1e-5;
 
-// Williams 2005 §4 IEEE-safe inverse-direction helper.
-// Prevents NaN from 0 * ±Inf in slab tests when a ray direction component
-// is zero.  WGSL sign(0)==0, so a zero component yields 0*1e30==0, which
-// correctly contributes nothing to the tNear/tFar computation.
-fn safeInvDir(d: vec3f) -> vec3f {
-  return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
-  );
-}
-
-fn intersectsAABBDist(ray: Ray, boundsMin: vec3f, boundsMax: vec3f) -> f32 {
-  let invDir = safeInvDir(ray.direction);
-  let t0 = (boundsMin - ray.origin) * invDir;
-  let t1 = (boundsMax - ray.origin) * invDir;
-  let tmin3 = min(t0, t1);
-  let tmax3 = max(t0, t1);
-  let tmin = max(max(tmin3.x, tmin3.y), tmin3.z);
-  let tmax = min(min(tmax3.x, tmax3.y), tmax3.z);
-  if (tmax < 0.0 || tmin > tmax) { return INFINITY; }
-  return max(0.0, tmin);
-}
-
-fn intersectsTriangleBVH(ray: Ray, a: vec3f, b: vec3f, c: vec3f) -> IntersectionResult {
-  var result: IntersectionResult;
-  result.didHit = false;
-  let e1 = b - a;
-  let e2 = c - a;
-  let n  = cross(e1, e2);
-  let det = -dot(ray.direction, n);
-  if (abs(det) < 1e-5) { return result; }
-  let invDet = 1.0 / det;
-  let AO = ray.origin - a;
-  let DAO = cross(AO, ray.direction);
-  let u = dot(e2, DAO) * invDet;
-  let v = -dot(e1, DAO) * invDet;
-  let t = dot(AO, n) * invDet;
-  let w = 1.0 - u - v;
-  if (u < -1e-5 || v < -1e-5 || w < -1e-5 || t < 1e-5) { return result; }
-  result.didHit   = true;
-  result.dist     = t;
-  result.barycoord = vec3f(w, u, v);
-  result.side     = sign(det);
-  result.normal   = result.side * normalize(n);
-  return result;
-}
-
+// Adapter shim — preserves the pre-canonical bvhTraceFirstHit(ray) call
+// signature used at four sites below (traceSunVisibility, the point-light
+// shadow query, the main probe-ray cast, etc.) by threading DDGI_TRI_EPSILON
+// into the canonical vec3-storage entry point. Inlining the canonical
+// directly at each call site would also work; the shim keeps the diff
+// concentrated and the call sites readable.
 fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
-  var best: IntersectionResult;
-  best.didHit = false;
-  best.dist   = INFINITY;
-
-  // BVH traversal matching three-mesh-bvh's bvhIntersectFirstHit format.
-  // BVHNode layout: bounds (6 floats), rightChildOrTriangleOffset (u32),
-  // splitAxisOrTriangleCount (u32).
-  // isLeaf = (splitAxisOrTriangleCount & 0xffff0000u) != 0u
-  // leaf: triCount = splitAxisOrTriangleCount & 0x0000ffffu,
-  //        triOffset = rightChildOrTriangleOffset
-  // internal: splitAxis = splitAxisOrTriangleCount & 0x0000ffffu,
-  //            rightChild = currNodeIndex + rightChildOrTriangleOffset
-
-  var pointer: i32 = 0;
-  var stack: array<u32, 60>;
-  stack[0] = 0u;
-
-  loop {
-    if (pointer < 0 || pointer >= i32(BVH_STACK_DEPTH)) { break; }
-    let currNodeIdx = stack[pointer];
-    let node        = bvh[currNodeIdx];
-    pointer -= 1;
-
-    let bmin    = vec3f(node.bounds.min[0], node.bounds.min[1], node.bounds.min[2]);
-    let bmax    = vec3f(node.bounds.max[0], node.bounds.max[1], node.bounds.max[2]);
-    let tHit    = intersectsAABBDist(ray, bmin, bmax);
-    if (tHit > best.dist) { continue; }
-
-    let boundsInfoX = node.splitAxisOrTriangleCount;
-    let boundsInfoY = node.rightChildOrTriangleOffset;
-    let isLeaf = (boundsInfoX & 0xffff0000u) != 0u;
-
-    if (isLeaf) {
-      let triCount  = boundsInfoX & 0x0000ffffu;
-      let triOffset = boundsInfoY;
-      for (var i = 0u; i < triCount; i = i + 1u) {
-        let idx = bvh_index[triOffset + i];
-        let a   = bvh_position[idx.x];
-        let b   = bvh_position[idx.y];
-        let c   = bvh_position[idx.z];
-        let tri = intersectsTriangleBVH(ray, a, b, c);
-        if (tri.didHit && tri.dist < best.dist) {
-          best = tri;
-          best.indices = vec4u(idx, triOffset + i);
-        }
-      }
-    } else {
-      let leftIdx  = currNodeIdx + 1u;
-      let rightIdx = currNodeIdx + boundsInfoY;
-      let splitAxis = boundsInfoX & 0x0000ffffu;
-      let leftToRight = ray.direction[splitAxis] >= 0.0;
-      let c1 = select(rightIdx, leftIdx, leftToRight);
-      let c2 = select(leftIdx, rightIdx, leftToRight);
-      // Bail out cleanly with current best-hit if pushing both children
-      // would overflow.  Without this guard the unconditional push wrote
-      // past the end of stack[BVH_STACK_DEPTH] (WGSL clamps the index,
-      // corrupting stack[BVH_STACK_DEPTH-1]) before the loop-top check
-      // could fire.  At depth 60 a balanced BVH spans 2^60 triangles, so
-      // this branch is unreachable for any real scene.
-      if (pointer + 2 >= i32(BVH_STACK_DEPTH)) {
-        return best;
-      }
-      pointer += 1;
-      stack[pointer] = c2;
-      pointer += 1;
-      stack[pointer] = c1;
-    }
-  }
-
-  return best;
+  return bvhIntersectFirstHitV3(
+    &bvh_index, &bvh_position, &bvh, ray,
+    DDGI_TRI_EPSILON,
+  );
 }
 
 // -----------------------------------------------------------------
@@ -493,7 +383,7 @@ fn probeUpdateRays(
 
     if (!hit.didHit) {
       out.hitRadiance  = sampleSkyColor(dir);
-      out.hitDistance  = INFINITY;
+      out.hitDistance  = BVH_INTERSECT_INFINITY;
       out.hitNormal    = -dir;
       out.hitPosition  = probeOrigin + dir * 1e6;
       out.hitMaterialId = 0u;

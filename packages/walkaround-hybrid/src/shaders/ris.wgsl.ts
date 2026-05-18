@@ -159,7 +159,9 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let dist = length(toL);
     let wi  = toL / dist;
     let shadowOrig = pos + normal * 1e-3;
-    let occluded = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon);
+    // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
+    // (light passes through glass; per-channel tinted-visibility handles tint).
+    let occluded = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
     if (occluded) {
       r.w_sum = 0.0;
       r.W     = 0.0;

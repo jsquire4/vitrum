@@ -305,9 +305,17 @@ describe('E2 — CascadeUniforms triIntersectEpsilon UBO-plumb', () => {
     expect(PROBE_RAY_CAST_WGSL).not.toMatch(/^const TRI_INTERSECT_EPSILON/m);
   });
 
-  it('PROBE_RAY_CAST_WGSL: intersectsTriangle accepts triEps parameter', () => {
-    // The function signature must include the epsilon parameter.
-    expect(PROBE_RAY_CAST_WGSL).toContain('fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f, triEps: f32 )');
+  it('PROBE_RAY_CAST_WGSL: canonical intersectTriangle is reachable with a triEps parameter', () => {
+    // sweep-20260518/moller-trumbore-canonical: intersectsTriangle (with the
+    // trailing 's' the three-mesh-bvh upstream used) was a local fn; it
+    // hoisted into @vitrum/shared-bvh BVH_INTERSECT_WGSL as `intersectTriangle`
+    // (no trailing 's'), reached via the canonical injection. The signature
+    // still accepts the per-call triEps parameter (no module-scope constant).
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'fn intersectTriangle(\n  origin: vec3f, dir: vec3f,\n  a: vec3f, b: vec3f, c: vec3f,\n  triEps: f32,\n)',
+    );
+    // And no module-scope `const TRI_INTERSECT_EPSILON` survived the hoist.
+    expect(PROBE_RAY_CAST_WGSL).not.toMatch(/^const TRI_INTERSECT_EPSILON/m);
   });
 
   it('CascadeUniforms struct size unchanged: still 40 f32/u32 = 160 bytes', () => {

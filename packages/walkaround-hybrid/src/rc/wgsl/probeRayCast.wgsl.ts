@@ -29,248 +29,35 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
-import { MATERIAL_ENTRY_WGSL } from '@vitrum/shared-bvh';
+import { MATERIAL_ENTRY_WGSL, BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
 
 export const PROBE_RAY_CAST_WGSL = /* wgsl */`
 ${MATERIAL_ENTRY_WGSL}
-// ─── three-mesh-bvh: constants ───────────────────────────────────────────────
+${BVH_INTERSECT_WGSL}
 
-const BVH_STACK_DEPTH = 60u;
-const INFINITY = 1e20;
-// E2: TRI_INTERSECT_EPSILON removed from module scope; value is now
-// read from CascadeUniforms.triIntersectEpsilon (UBO-plumbed per M4.A).
-// intersectsTriangle() receives it as a function parameter.
-
-// ─── three-mesh-bvh: structs ─────────────────────────────────────────────────
-
-struct Ray {
-  origin: vec3f,
-  direction: vec3f,
-};
-
-struct BVHBoundingBox {
-  min: array<f32, 3>,
-  max: array<f32, 3>,
-}
-
-struct BVHNode {
-  bounds: BVHBoundingBox,
-  rightChildOrTriangleOffset: u32,
-  splitAxisOrTriangleCount: u32,
-};
-
-struct IntersectionResult {
-  didHit: bool,
-  indices: vec4u,
-  normal: vec3f,
-  barycoord: vec3f,
-  side: f32,
-  dist: f32,
-};
-
-// ─── safeInvDir helper ────────────────────────────────────────────────────────
-// Williams 2005 §4 IEEE-safe inverse-direction: substitutes a finite large
-// value when a component is near-zero to avoid NaN from 0 * ±Inf in the slab
-// test.  WGSL sign(0)==0, so a zero component yields 0 * 1e30 == 0, which is
-// correct (zero-direction axis contributes nothing to tNear/tFar).
-fn safeInvDir(d: vec3f) -> vec3f {
-  return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
-  );
-}
-
-// ─── three-mesh-bvh: intersectsBounds ────────────────────────────────────────
-
-fn intersectsBounds(
-  ray: Ray,
-  bounds: BVHBoundingBox,
-  dist: ptr<function, f32>
-) -> bool {
-
-  let boundsMin = vec3( bounds.min[0], bounds.min[1], bounds.min[2] );
-  let boundsMax = vec3( bounds.max[0], bounds.max[1], bounds.max[2] );
-
-  let invDir = safeInvDir(ray.direction);
-  let tMinPlane = ( boundsMin - ray.origin ) * invDir;
-  let tMaxPlane = ( boundsMax - ray.origin ) * invDir;
-
-  let tMinHit = vec3f(
-    min( tMinPlane.x, tMaxPlane.x ),
-    min( tMinPlane.y, tMaxPlane.y ),
-    min( tMinPlane.z, tMaxPlane.z )
-  );
-
-  let tMaxHit = vec3f(
-    max( tMinPlane.x, tMaxPlane.x ),
-    max( tMinPlane.y, tMaxPlane.y ),
-    max( tMinPlane.z, tMaxPlane.z )
-  );
-
-  let t0 = max( max( tMinHit.x, tMinHit.y ), tMinHit.z );
-  let t1 = min( min( tMaxHit.x, tMaxHit.y ), tMaxHit.z );
-
-  ( *dist ) = max( t0, 0.0 );
-
-  return t1 >= ( *dist );
-}
-
-// ─── three-mesh-bvh: intersectsTriangle ──────────────────────────────────────
-
-// E2: triEps (Möller–Trumbore coplanarity threshold) is passed as a parameter
-// rather than read from a module-scope constant. All call sites thread the
-// value from CascadeUniforms.triIntersectEpsilon.
-fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f, triEps: f32 ) -> IntersectionResult {
-
-  var result: IntersectionResult;
-  result.didHit = false;
-
-  let edge1 = b - a;
-  let edge2 = c - a;
-  let n = cross( edge1, edge2 );
-
-  let det = - dot( ray.direction, n );
-
-  if ( abs( det ) < triEps ) {
-    return result;
-  }
-
-  let invdet = 1.0 / det;
-
-  let AO = ray.origin - a;
-  let DAO = cross( AO, ray.direction );
-
-  let u = dot( edge2, DAO ) * invdet;
-  let v = -dot( edge1, DAO ) * invdet;
-  let t = dot( AO, n ) * invdet;
-
-  let w = 1.0 - u - v;
-
-  if ( u < - triEps || v < - triEps || w < - triEps || t < triEps ) {
-    return result;
-  }
-
-  result.didHit = true;
-  result.barycoord = vec3f( w, u, v );
-  result.dist = t;
-  result.side = sign( det );
-  result.normal = result.side * normalize( n );
-
-  return result;
-}
-
-// ─── three-mesh-bvh: intersectTriangles ──────────────────────────────────────
-
-fn intersectTriangles(
-  bvh_position: ptr<storage, array<vec3f>, read>,
-  bvh_index: ptr<storage, array<vec3u>, read>,
-  offset: u32,
-  count: u32,
-  ray: Ray,
-  triEps: f32,  // E2: UBO-plumbed epsilon
-) -> IntersectionResult {
-
-  var closestResult: IntersectionResult;
-  closestResult.didHit = false;
-  closestResult.dist = INFINITY;
-
-  for ( var i = offset; i < offset + count; i = i + 1u ) {
-    let indices = bvh_index[ i ];
-    let a = bvh_position[ indices.x ];
-    let b = bvh_position[ indices.y ];
-    let c = bvh_position[ indices.z ];
-
-    var triResult = intersectsTriangle( ray, a, b, c, triEps );
-
-    if ( triResult.didHit && triResult.dist < closestResult.dist ) {
-      closestResult = triResult;
-      closestResult.indices = vec4u( indices.xyz, i );
-    }
-  }
-
-  return closestResult;
-}
-
-// ─── three-mesh-bvh: bvhIntersectFirstHit ────────────────────────────────────
-
+// ─── BVH structs + traversal ─────────────────────────────────────────────────
+// Canonical from @vitrum/shared-bvh BVH_INTERSECT_WGSL (injected above).
+// The pre-canonical local copies of: BVH_STACK_DEPTH / INFINITY constants;
+// Ray / BVHBoundingBox / BVHNode (nested-bounds) / IntersectionResult structs;
+// safeInvDir / intersectsBounds / intersectsTriangle / intersectTriangles /
+// bvhIntersectFirstHit helpers — all lived here and have been removed.
+//
+// Call-site migration:
+//   - bvhIntersectFirstHit(geom_index, geom_position, bvh, ray, triEps)
+//     now resolves to the canonical V3 entry, bvhIntersectFirstHitV3 — the
+//     algorithm is unchanged; the canonical uses flat BVHNode boundsMin /
+//     boundsMax fields (rename-only; same memory layout). Below we re-export
+//     the canonical V3 entry under the pre-canonical name so the four
+//     call sites in this file (entry kernel, two glass-bounce traces,
+//     traceSunVisibility) need no rename.
 fn bvhIntersectFirstHit(
-  bvh_index: ptr<storage, array<vec3u>, read>,
-  bvh_position: ptr<storage, array<vec3f>, read>,
-  bvh: ptr<storage, array<BVHNode>, read>,
+  bvh_index:    ptr<storage, array<vec3u>,   read>,
+  bvh_position: ptr<storage, array<vec3f>,   read>,
+  bvh:          ptr<storage, array<BVHNode>, read>,
   ray: Ray,
-  triEps: f32,  // E2: UBO-plumbed epsilon threaded from CascadeUniforms
+  triEps: f32,
 ) -> IntersectionResult {
-
-  var pointer = 0;
-  var stack: array<u32, BVH_STACK_DEPTH>;
-  stack[ 0 ] = 0u;
-
-  var bestHit: IntersectionResult;
-  bestHit.didHit = false;
-  bestHit.dist = INFINITY;
-
-  loop {
-    if ( pointer < 0 || pointer >= i32( BVH_STACK_DEPTH ) ) {
-      break;
-    }
-
-    let currNodeIndex = stack[ pointer ];
-    let node = bvh[ currNodeIndex ];
-
-    pointer = pointer - 1;
-
-    var boundsHitDistance: f32 = 0.0;
-
-    if ( ! intersectsBounds( ray, node.bounds, &boundsHitDistance ) || boundsHitDistance > bestHit.dist ) {
-      continue;
-    }
-
-    let boundsInfox = node.splitAxisOrTriangleCount;
-    let boundsInfoy = node.rightChildOrTriangleOffset;
-
-    let isLeaf = ( boundsInfox & 0xffff0000u ) != 0u;
-
-    if ( isLeaf ) {
-      let count = boundsInfox & 0x0000ffffu;
-      let offset = boundsInfoy;
-
-      let localHit = intersectTriangles(
-        bvh_position, bvh_index, offset, count, ray, triEps
-      );
-
-      if ( localHit.didHit && localHit.dist < bestHit.dist ) {
-        bestHit = localHit;
-      }
-
-    } else {
-      let leftIndex = currNodeIndex + 1u;
-      let splitAxis = boundsInfox & 0x0000ffffu;
-      let rightIndex = currNodeIndex + boundsInfoy;
-
-      let leftToRight = ray.direction[splitAxis] >= 0.0;
-      let c1 = select( rightIndex, leftIndex, leftToRight );
-      let c2 = select( leftIndex, rightIndex, leftToRight );
-
-      // Bail out cleanly with current best-hit if pushing both children
-      // would overflow.  Without this guard the unconditional push wrote
-      // past the end of stack[BVH_STACK_DEPTH] (WGSL clamps the index,
-      // corrupting stack[BVH_STACK_DEPTH-1]) before the loop-top check
-      // could fire.  At depth 60 a balanced BVH spans 2^60 triangles, so
-      // this branch is unreachable for any real scene.
-      if ( pointer + 2 >= i32( BVH_STACK_DEPTH ) ) {
-        return bestHit;
-      }
-
-      pointer = pointer + 1;
-      stack[ pointer ] = c2;
-
-      pointer = pointer + 1;
-      stack[ pointer ] = c1;
-    }
-  }
-
-  return bestHit;
+  return bvhIntersectFirstHitV3(bvh_index, bvh_position, bvh, ray, triEps);
 }
 
 // ─── CascadeUniforms struct ───────────────────────────────────────────────────

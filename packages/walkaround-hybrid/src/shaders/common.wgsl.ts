@@ -17,6 +17,7 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
+import { BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const COMMON_WGSL = /* wgsl */ `
@@ -126,42 +127,25 @@ fn emitterGeometry(nlDotL: f32, dist2: f32, dist2Floor: f32) -> f32 {
 }
 
 // ============================================================
-// BVH structs (matches three-mesh-bvh WGSL layout)
-// ============================================================
-
-// BVHNode: 32 bytes -- exactly matches three-mesh-bvh's raw node layout.
-// From node_modules/three-mesh-bvh/src/core/Constants.js:
-//   BYTES_PER_NODE = 6 * 4 + 4 + 4 = 32
-// Binary layout:
-//   bytes  0-11:  boundsMin[0..2]  (3 x f32, NO padding between min+max)
-//   bytes 12-23:  boundsMax[0..2]  (3 x f32)
-//   bytes 24-27:  rightChildOrTriangleOffset  (u32)
-//   bytes 28-31:  splitAxisOrTriangleCount    (u32, 0xFFFF0000|count for leaves)
+// BVH structs + intersection helpers — canonical from @vitrum/shared-bvh
+// (sweep-20260518/moller-trumbore-canonical). Single source of truth for
+// BVHNode, Ray, IntersectionResult, safeInvDir, intersectTriangle,
+// bvhIntersectFirstHit, bvhIntersectAny. Pre-canonical inline copies were
+// here (lines 128-164 + 480-735 in the pre-refactor file).
 //
-// IMPORTANT: we use array<f32,3> (align 4, stride 12) NOT vec3f (align 16)
-// so that boundsMin and boundsMax are packed without padding, and the
-// right/split fields start at byte 24 -- matching the C++ layout.
-struct BVHNode {
-  boundsMin: array<f32, 3>,              // bytes 0-11  (no padding)
-  boundsMax: array<f32, 3>,              // bytes 12-23 (no padding)
-  rightChildOrTriOffset: u32,            // bytes 24-27
-  splitAxisOrTriCount: u32,              // bytes 28-31
-};
-
-struct Ray {
-  origin:    vec3f,
-  direction: vec3f,
-};
-
-struct HitResult {
-  didHit:         bool,
-  dist:           f32,
-  triIndex:       u32,       // triangle index in bvhIndex
-  bary:           vec3f,     // barycentric coords (u,v,w)
-  normal:         vec3f,
-  matColorPacked: u32,       // RGB888 + (trans4|texType4) packed from bvhIndex[triIdx].w
-  uv:             vec2f,     // interpolated UV at the hit point (0..1)
-};
+// Migration notes:
+//   - The canonical return type is IntersectionResult (superset). The
+//     pre-canonical HitResult is gone; its bary field is now barycoord,
+//     and triIndex is now indices.w (matches DDGI / RC conventions).
+//   - intersectTriangle now returns IntersectionResult (not f32). The
+//     one remaining inline caller (bvhTraceTintedVisibility in
+//     surfaceTextures.wgsl) unwraps .dist / .didHit at the call site.
+//   - bvhIntersectAny gains a skipGlass: bool parameter. All ReSTIR
+//     call sites pass true (matches the pre-canonical glass-transmissive
+//     shadow behaviour — light passes through, tint is applied by the
+//     per-channel bvhTraceTintedVisibility helper in shade).
+// ============================================================
+${BVH_INTERSECT_WGSL}
 
 // ============================================================
 // Emitter struct (80 bytes per emitter, 16-byte aligned)
@@ -478,207 +462,19 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
 }
 
 // ============================================================
-// BVH ray traversal (adapted from three-mesh-bvh WGSL)
+// BVH ray traversal — canonical helpers live in @vitrum/shared-bvh
+// (BVH_INTERSECT_WGSL injected at the top of this file). The pre-canonical
+// inline bodies of safeInvDir, bvhIntersectAny, bvhIntersectFirstHit, and
+// intersectTriangle were here and have been removed; consumers continue
+// calling them by the same names from the injected module.
+// The pre-canonical HitResult struct was a rename of IntersectionResult
+// (canonical superset) — call sites migrated:
+//   hit.bary     → hit.barycoord
+//   hit.triIndex → hit.indices.w
+// intersectTriangle now returns IntersectionResult (was f32); the one
+// inline caller in surfaceTextures.wgsl unwraps .dist / .didHit at the
+// call site.
 // ============================================================
-
-// Williams 2005 §4 IEEE-safe inverse-direction helper.
-// When a direction component is exactly zero, 1/0 = ±Inf is IEEE-valid but
-// 0 * ±Inf = NaN can poison the slab test when the ray origin coincides
-// with an AABB face.  We substitute a finite large value instead.
-// WGSL sign(0) == 0, so for a zero component sign(d.x) * 1e30 == 0, and
-// (bMin - origin) * 0 == 0 — the axis contributes zero to tNear/tFar,
-// which is correct: a zero-direction ray cannot enter/exit the slab through
-// that axis; entry/exit are determined by the other two axes.
-fn safeInvDir(d: vec3f) -> vec3f {
-  return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
-  );
-}
-
-// Returns intersection distance (INFINITY if no hit) -- shadow ray.
-// bvh_index is array<vec4u>: .xyz = vertex indices,
-//                            .w = packed RGB888 + (trans4 | texType4) byte.
-// bvh_position is array<vec4f>: .xyz = world-space position, .w = packed UV.
-fn bvhIntersectAny(
-  bvh_index:    ptr<storage, array<vec4u>,    read>,
-  bvh_position: ptr<storage, array<vec4f>,    read>,
-  bvh:          ptr<storage, array<BVHNode>,  read>,
-  origin: vec3f,
-  dir:    vec3f,
-  tMax:   f32,
-  triEps: f32,
-) -> bool {
-  var stack: array<u32, 64>;
-  var stackPtr = 0u;
-  stack[stackPtr] = 0u; stackPtr++;
-
-  while (stackPtr > 0u) {
-    stackPtr--;
-    let nodeIdx = stack[stackPtr];
-    let node = (*bvh)[nodeIdx];
-
-    // Slab test for bounds -- read array<f32,3> fields by index.
-    let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-    let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    let invDir = safeInvDir(dir);
-    let t1 = (nMin - origin) * invDir;
-    let t2 = (nMax - origin) * invDir;
-    let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
-    let tFar  = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
-    if (tNear > tFar || tFar < 0.0 || tNear > tMax) { continue; }
-
-    // Leaf test.
-    let splitOrCount = node.splitAxisOrTriCount;
-    if ((splitOrCount & 0xFFFF0000u) == LEAFNODE_FLAG) {
-      let count = splitOrCount & 0x0000FFFFu;
-      let offset = node.rightChildOrTriOffset;
-      for (var i = 0u; i < count; i++) {
-        let triIdx = offset + i;
-        let idxEntry = (*bvh_index)[triIdx];
-        let idx = idxEntry.xyz;
-        // Skip transmissive (glass) triangles in shadow rays so light passes
-        // through them.  Transmission lives in bits [7:4] of idxEntry.w
-        // (4-bit unorm); glass has transmission > ~0.3 → packed > 4.
-        let trans4 = (idxEntry.w >> 4u) & 0xFu;
-        if (trans4 > 4u) { continue; }
-        let a = (*bvh_position)[idx.x].xyz;
-        let b = (*bvh_position)[idx.y].xyz;
-        let c = (*bvh_position)[idx.z].xyz;
-        let t = intersectTriangle(origin, dir, a, b, c, triEps);
-        if (t > 1e-4 && t < tMax) { return true; }
-      }
-    } else {
-      // Interior node: ordered traversal (Wald 2007 / PBR4e §7.3.3).
-      // three-mesh-bvh stores rightChildOrTriOffset as a RELATIVE offset (in
-      // node units) from the current node, NOT an absolute node index.  The
-      // left child is always nodeIdx+1 (the immediately-following node).
-      // splitAxisOrTriCount low 2 bits encode the split axis (0=X,1=Y,2=Z).
-      // Push far child first so near child is popped (and tested) first.
-      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot).
-      let rightChild  = nodeIdx + node.rightChildOrTriOffset;
-      let axis        = splitOrCount & 0x3u;
-      let leftToRight = dir[axis] >= 0.0;
-      let nearChild   = select(rightChild,   nodeIdx + 1u, leftToRight);
-      let farChild    = select(nodeIdx + 1u, rightChild,   leftToRight);
-      if (stackPtr + 1u < 64u) {
-        stack[stackPtr] = farChild;  stackPtr++;
-        stack[stackPtr] = nearChild; stackPtr++;
-      } else {
-        // Stack overflow: abandon traversal and return current best
-        // (false = not-yet-occluded) rather than silently dropping the
-        // far subtree.  At depth 64 a balanced BVH spans 2^64 triangles,
-        // so this branch is unreachable for any real scene; the guard
-        // exists for invariant clarity, not as a performance path.
-        return false;
-      }
-    }
-  }
-  return false;
-}
-
-// bvhTraceTintedVisibility lives in surfaceTextures.wgsl.ts (shade-only).
-
-// Returns closest hit.
-// bvh_index is array<vec4u>: .xyz = vertex indices,
-//                            .w = packed RGB888 + (trans4 | texType4) byte.
-// bvh_position is array<vec4f>: .xyz = world-space position, .w = packed UV.
-fn bvhIntersectFirstHit(
-  bvh_index:    ptr<storage, array<vec4u>,    read>,
-  bvh_position: ptr<storage, array<vec4f>,    read>,
-  bvh:          ptr<storage, array<BVHNode>,  read>,
-  ray: Ray,
-  triEps: f32,
-) -> HitResult {
-  var result: HitResult;
-  result.didHit = false;
-  result.dist = INFINITY;
-  result.uv = vec2f(0.0);
-
-  var stack: array<u32, 64>;
-  var stackPtr = 0u;
-  stack[stackPtr] = 0u; stackPtr++;
-
-  while (stackPtr > 0u) {
-    stackPtr--;
-    let nodeIdx = stack[stackPtr];
-    let node = (*bvh)[nodeIdx];
-
-    let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-    let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    let invDir = safeInvDir(ray.direction);
-    let t1 = (nMin - ray.origin) * invDir;
-    let t2 = (nMax - ray.origin) * invDir;
-    let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
-    let tFar  = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
-    if (tNear > tFar || tFar < 0.0 || tNear > result.dist) { continue; }
-
-    let splitOrCount = node.splitAxisOrTriCount;
-    if ((splitOrCount & 0xFFFF0000u) == LEAFNODE_FLAG) {
-      let count = splitOrCount & 0x0000FFFFu;
-      let offset = node.rightChildOrTriOffset;
-      for (var i = 0u; i < count; i++) {
-        let triIdx = offset + i;
-        let idxEntry = (*bvh_index)[triIdx];
-        let idx = idxEntry.xyz;  // vertex indices in .xyz
-        let pa4 = (*bvh_position)[idx.x];
-        let pb4 = (*bvh_position)[idx.y];
-        let pc4 = (*bvh_position)[idx.z];
-        let a = pa4.xyz;
-        let b = pb4.xyz;
-        let c = pc4.xyz;
-        let t = intersectTriangle(ray.origin, ray.direction, a, b, c, triEps);
-        if (t > 1e-4 && t < result.dist) {
-          result.didHit = true;
-          result.dist = t;
-          result.triIndex = triIdx;
-          result.matColorPacked = idxEntry.w;  // RGB888 + (trans4|texType4)
-          // Compute barycentric.
-          let p = ray.origin + ray.direction * t;
-          let ab = b - a; let ac = c - a; let ap = p - a;
-          let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
-          let d20 = dot(ap, ab); let d21 = dot(ap, ac);
-          let denom = d00 * d11 - d01 * d01;
-          var u = (d11 * d20 - d01 * d21) / denom;
-          var v = (d00 * d21 - d01 * d20) / denom;
-          u = clamp(u, 0.0, 1.0); v = clamp(v, 0.0, 1.0);
-          let bw = 1.0 - u - v;
-          result.bary = vec3f(bw, u, v);
-          result.normal = safe_normalize(cross(ab, ac));
-          // Decode + interpolate per-vertex UV (packed 16:16 unorm in .w of
-          // each bvh_position entry).
-          let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
-          let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
-          let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
-          result.uv = bw * uvA + u * uvB + v * uvC;
-        }
-      }
-    } else {
-      // Interior node: ordered traversal (Wald 2007 / PBR4e §7.3.3).
-      // rightChildOrTriOffset is a RELATIVE offset (node units) from this node.
-      // splitAxisOrTriCount low 2 bits encode the split axis (0=X,1=Y,2=Z).
-      // Push far child first so near child is popped (and tested) first.
-      // Guard uses 'stackPtr + 1u < 64u' (i.e. index 63 is the last valid slot).
-      let rightChild  = nodeIdx + node.rightChildOrTriOffset;
-      let axis        = splitOrCount & 0x3u;
-      let leftToRight = ray.direction[axis] >= 0.0;
-      let nearChild   = select(rightChild,   nodeIdx + 1u, leftToRight);
-      let farChild    = select(nodeIdx + 1u, rightChild,   leftToRight);
-      if (stackPtr + 1u < 64u) {
-        stack[stackPtr] = farChild;  stackPtr++;
-        stack[stackPtr] = nearChild; stackPtr++;
-      } else {
-        // Stack overflow: bail out with current best-hit rather than
-        // silently dropping the far subtree.  At depth 64 a balanced BVH
-        // spans 2^64 triangles, so this branch is unreachable for any
-        // real scene; the guard exists for invariant clarity.
-        return result;
-      }
-    }
-  }
-  return result;
-}
 
 // Decode RGB888 + (trans4|texType4) packed material data from bvhIndex[triIdx].w.
 // Returns vec4f(r, g, b, transmission) in [0, 1].  The texture-type id is
@@ -707,31 +503,6 @@ fn decodeSurfaceTextureId(packed: u32) -> u32 {
 // can't smooth across the thin came strips.
 fn decodeIsMetal(packed: u32) -> bool {
   return ((packed >> 3u) & 0x1u) != 0u;
-}
-
-// Moller-Trumbore triangle intersection; returns t or INFINITY.
-// Caller supplies the coplanarity floor as a parameter — typically threaded
-// from WalkaroundUBO.triIntersectEpsilon (D12), default 1e-5 (metre-scale).
-// Threading via parameter keeps COMMON_WGSL compilable when concatenated
-// with shaders that bind a different UBO struct (atrous binds AtrousUBO,
-// which has no triIntersectEpsilon member). Without parameterization the
-// atrous shader fails to compile at COMMON_WGSL + ATROUS_WGSL link time.
-fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f, triEps: f32) -> f32 {
-  let e1 = b - a;
-  let e2 = c - a;
-  let h = cross(dir, e2);
-  let det = dot(e1, h);
-  if (abs(det) < triEps) { return INFINITY; }
-  let invDet = 1.0 / det;
-  let s = origin - a;
-  let u = dot(s, h) * invDet;
-  if (u < 0.0 || u > 1.0) { return INFINITY; }
-  let q = cross(s, e1);
-  let v = dot(dir, q) * invDet;
-  if (v < 0.0 || u + v > 1.0) { return INFINITY; }
-  let t = dot(e2, q) * invDet;
-  if (t < triEps) { return INFINITY; }
-  return t;
 }
 
 // ============================================================
