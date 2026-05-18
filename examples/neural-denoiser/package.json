@@ -1,0 +1,27 @@
+{
+  "name": "@vitrum-examples/neural-denoiser",
+  "version": "0.0.0",
+  "private": true,
+  "description": "W10 demo: walkaround-hybrid with selectable denoiser (atrous-variance / svgf-real / neural U-Net).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@vitrum-examples/shared": "file:../shared",
+    "@vitrum/core": "file:../../packages/core",
+    "@vitrum/three-bindings": "file:../../packages/three-bindings",
+    "@vitrum/walkaround-hybrid": "file:../../packages/walkaround-hybrid",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.184.1",
+    "@webgpu/types": "^0.1.40",
+    "typescript": "^5.3.3",
+    "vite": "^5.4.0"
+  }
+}

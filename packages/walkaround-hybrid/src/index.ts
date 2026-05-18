@@ -143,6 +143,7 @@ export { InferenceGraph } from './neural/InferenceGraph.js';
 export { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
 export type { UNetSpec, LayerSpec, LayerKind, LayerWeightLayout, LayerParams } from './neural/unetArchitecture.js';
 export {
+  buildRandomWeightsForSpec,
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,
   VITRUM_MODEL_MAGIC,
