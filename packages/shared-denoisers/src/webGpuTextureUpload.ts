@@ -14,12 +14,16 @@ import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 
 // Bytes-per-pixel constants for the formats we upload to.
+// RGBA32F_BPP is `export`ed because `hdrLuminanceBilateralWebGPU.ts` imports
+// it alongside `uploadRgbAsRgba32f`. The other five (RGBA16F / RG32F / R32F /
+// R32U / R16U) are file-local helper constants used by the upload functions
+// below; 2026-05-18 dead-code sweep verified zero external consumers.
 export const RGBA32F_BPP = 16 as const;
-export const RGBA16F_BPP = 8  as const;
-export const RG32F_BPP   = 8  as const;
-export const R32F_BPP    = 4  as const;
-export const R32U_BPP    = 4  as const;
-export const R16U_BPP    = 2  as const;
+const RGBA16F_BPP = 8  as const;
+const RG32F_BPP   = 8  as const;
+const R32F_BPP    = 4  as const;
+const R32U_BPP    = 4  as const;
+const R16U_BPP    = 2  as const;
 
 // Re-export so callers can keep a single import for upload + alignment math.
 export { alignedTextureCopyBytesPerRow };
@@ -38,7 +42,7 @@ export { alignedTextureCopyBytesPerRow };
  * For byte-level uploads (e.g. f16 packed via DataView), pass Uint8Array as
  * the ctor and bytesPerElement=1; the rowStride argument is then in bytes.
  */
-export function uploadTexture2D<T extends Float32Array | Uint8Array | Uint32Array>(
+function uploadTexture2D<T extends Float32Array | Uint8Array | Uint32Array>(
   device: GPUDevice,
   texture: GPUTexture,
   width: number,
