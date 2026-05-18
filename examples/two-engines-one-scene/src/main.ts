@@ -13,7 +13,6 @@ import { createPTEngine_WebGPU } from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
-  HYBRID_WEBGPU_REQUIRED_FEATURES,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 
@@ -278,14 +277,14 @@ async function main(): Promise<void> {
     }
     // The walkaround-hybrid shade pass binds 13+ storage buffers; default
     // WebGPU device limit is 8. Pass HYBRID_WEBGPU_REQUIRED_LIMITS so the
-    // pipeline layouts validate. Also opt into 'timestamp-query' when the
-    // adapter exposes it so the engine can record per-pass GPU timings
-    // for telemetry / dev-panel readback.
+    // pipeline layouts validate. The pipeline itself requires no optional
+    // features (all storage textures use base-spec formats). Opt into
+    // 'timestamp-query' when the adapter exposes it so the engine can
+    // record per-pass GPU timings for telemetry / dev-panel readback.
     const tsAvailable = adapter.features.has('timestamp-query');
-    const requiredFeatures: GPUFeatureName[] = [
-      ...HYBRID_WEBGPU_REQUIRED_FEATURES.filter((f) => adapter.features.has(f)),
-      ...(tsAvailable ? ['timestamp-query' as GPUFeatureName] : []),
-    ];
+    const requiredFeatures: GPUFeatureName[] = tsAvailable
+      ? ['timestamp-query' as GPUFeatureName]
+      : [];
     const device = await adapter.requestDevice({
       requiredLimits: HYBRID_WEBGPU_REQUIRED_LIMITS,
       ...(requiredFeatures.length > 0 ? { requiredFeatures } : {}),
