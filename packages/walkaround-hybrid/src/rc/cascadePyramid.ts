@@ -101,6 +101,15 @@ export interface CascadeBuffers {
  */
 export function allocateCascades(bounds: THREE.Box3): CascadeBuffers {
   const size   = bounds.getSize(new THREE.Vector3());
+  // Floor each axis at 1µm so a degenerate scene (e.g. a flat plane with
+  // zero extent on one axis) never feeds a zero divisor into the cascade
+  // merge UV mapping (`worldPos / roomSize` at cascadeMerge.wgsl:111) or
+  // the probe-ray slab step (`min(roomSize.*) * 0.001` at
+  // probeRayCast.wgsl:455). 1e-6 is below any real-world scene precision
+  // and keeps the f32 divides well clear of subnormal range.
+  size.x = Math.max(size.x, 1e-6);
+  size.y = Math.max(size.y, 1e-6);
+  size.z = Math.max(size.z, 1e-6);
   const origin = bounds.min.clone();
   const cascades = CASCADE_DIMS.map((c) => {
     const len = cascadeBufferSize(c);
