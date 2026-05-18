@@ -1,4 +1,14 @@
-import { CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE } from '@vitrum/shared-samplers';
+import {
+  CIE_X_TABLE,
+  CIE_Y_TABLE,
+  CIE_Z_TABLE,
+  X_CMF_CDF,
+  Y_CMF_CDF,
+  Z_CMF_CDF,
+  X_CMF_INTEGRAL,
+  Y_CMF_INTEGRAL,
+  Z_CMF_INTEGRAL,
+} from '@vitrum/shared-samplers';
 
 interface UniformRef<T> {
   value: T;
@@ -64,76 +74,30 @@ function setUniform<T>(material: PathTracerMaterialLike | null, name: string, va
 }
 
 /**
- * Wavelength-space trapezoidal integral of the CIE-Y CMF (step × Σ sample
- * pairs / 2). Computed once at module init from the same source table the
- * shader uniforms read, so the value is guaranteed to stay in sync — the
- * previously hand-baked literal `106.857` would silently fall out of sync
- * if the CIE_Y_TABLE source data ever changed.
+ * Convert one of the canonical Float64Array CMF CDFs from
+ * `@vitrum/shared-samplers` into a Float32Array suitable for GLSL uniform
+ * upload (WebGL2 uniform arrays require Float32). The shared package owns the
+ * trapezoidal-rule integral + normalised-CDF construction (see
+ * `wavelengthSampling.ts::buildIntegralAndCdf`) — this bridge only narrows
+ * the precision for shader use.
+ *
+ * W2-C14 dedup: the previous local `computeCmfIntegralWavelengthSpace` +
+ * `buildCmfCdf` reimplementations were mathematically equivalent to the
+ * shared-samplers versions (both forms of pair-sum trapezoidal rule resolve
+ * to `step·(0.5·f[0] + f[1] + … + f[N-2] + 0.5·f[N-1])`) but maintained in
+ * two places, drifting silently if either side updated boundary handling.
  */
-function computeCmfIntegralWavelengthSpace(
-  table: Float32Array | Readonly<Float32Array>,
-  stepNm: number,
-): number {
-  let total = 0;
-  for (let i = 1; i < table.length; i += 1) {
-    const v0 = table[i - 1] ?? 0;
-    const v1 = table[i] ?? 0;
-    total += (v0 + v1) * 0.5;
+function cdfToFloat32(cdf: Readonly<Float64Array>): Float32Array {
+  const out = new Float32Array(cdf.length);
+  for (let i = 0; i < cdf.length; i += 1) {
+    out[i] = cdf[i] ?? 0;
   }
-  return total * stepNm;
+  return out;
 }
 
-const X_CMF_INTEGRAL = computeCmfIntegralWavelengthSpace(CIE_X_TABLE, 5);
-const Y_CMF_INTEGRAL = computeCmfIntegralWavelengthSpace(CIE_Y_TABLE, 5);
-const Z_CMF_INTEGRAL = computeCmfIntegralWavelengthSpace(CIE_Z_TABLE, 5);
-// Detect silent drift in the source CMF table. The legacy hardcoded value
-// was 106.857 (CIE 1931 standard observer, 380–780 nm, 5 nm step). If the
-// computed integral drifts >0.05 from that, the source table changed and
-// downstream normalization needs review.
-if (typeof console !== 'undefined' && console.warn) {
-  const CMF_INTEGRAL_DRIFTS: Array<[string, number]> = [
-    ['X', X_CMF_INTEGRAL],
-    ['Y', Y_CMF_INTEGRAL],
-    ['Z', Z_CMF_INTEGRAL],
-  ];
-  for (const [name, val] of CMF_INTEGRAL_DRIFTS) {
-    if (Math.abs(val - 106.857) > 0.05) {
-      console.warn(
-        `[forkUniformBridge] CIE-${name} integral drift: computed ${val.toFixed(3)}, ` +
-          `expected ~106.857. Update host call sites that hard-code the constant.`,
-      );
-    }
-  }
-}
-
-/**
- * buildCmfCdf — piecewise-linear normalised CDF for one CMF table. Output
- * length = `table.length + 1` (CDF[0] = 0, CDF[N] = 1). Used to populate
- * `uXCmfCdf`/`uYCmfCdf`/`uZCmfCdf` for the GLSL MIS hero-wavelength sampler.
- */
-function buildCmfCdf(table: Float32Array | Readonly<Float32Array>): Float32Array {
-  const cdf = new Float32Array(table.length + 1);
-  cdf[0] = 0;
-  let total = 0;
-  for (let i = 1; i < cdf.length; i += 1) {
-    const v0 = table[i - 1] ?? 0;
-    const v1 = i < table.length ? (table[i] ?? 0) : 0;
-    total += (v0 + v1) * 0.5;
-    cdf[i] = total;
-  }
-  if (total > 0) {
-    for (let i = 0; i < cdf.length; i += 1) {
-      cdf[i] = (cdf[i] ?? 0) / total;
-    }
-  } else {
-    cdf[cdf.length - 1] = 1;
-  }
-  return cdf;
-}
-
-const X_CMF_CDF_FLOAT32 = buildCmfCdf(CIE_X_TABLE);
-const Y_CMF_CDF_FLOAT32 = buildCmfCdf(CIE_Y_TABLE);
-const Z_CMF_CDF_FLOAT32 = buildCmfCdf(CIE_Z_TABLE);
+const X_CMF_CDF_FLOAT32 = cdfToFloat32(X_CMF_CDF);
+const Y_CMF_CDF_FLOAT32 = cdfToFloat32(Y_CMF_CDF);
+const Z_CMF_CDF_FLOAT32 = cdfToFloat32(Z_CMF_CDF);
 
 export function driveForkMaterialUniforms(
   pathTracer: unknown,
