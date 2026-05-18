@@ -543,6 +543,15 @@ const _sharedDispatcher = new RCDispatcher();
 /**
  * Convenience wrapper: dispatch cascade passes using a shared singleton `RCDispatcher`.
  * This matches the original functional `dispatchCascadePasses()` API.
+ *
+ * @deprecated Module-level singletons violate CLAUDE.md Design Principle 2
+ * ("the host owns lifecycle"). Use `new RCDispatcher()` per host and call
+ * `dispatcher.dispatchFrame(opts)` directly. Single-canvas hosts can keep
+ * one instance for the page; multi-canvas hosts MUST instantiate per
+ * dispatcher (the shared singleton corrupts state across independent
+ * canvases). Retained for backward compatibility with legacy callers;
+ * no production consumer is left in this monorepo (only one test exercises
+ * the surface to keep it un-broken).
  */
 export async function dispatchCascadePasses(opts: RCDispatchOpts): Promise<void> {
   return _sharedDispatcher.dispatchFrame(opts);
@@ -555,6 +564,9 @@ export async function dispatchCascadePasses(opts: RCDispatchOpts): Promise<void>
  *
  * No-op if `dispatchCascadePasses` was never called for the current page.
  * After calling, subsequent `dispatchCascadePasses` calls reinitialize.
+ *
+ * @deprecated See `dispatchCascadePasses` deprecation note — instantiate
+ * `RCDispatcher` per host and call `.dispose()` on your own instance.
  */
 export function disposeSharedDispatcher(): void {
   _sharedDispatcher.dispose();
