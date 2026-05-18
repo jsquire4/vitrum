@@ -1,12 +1,21 @@
 /**
- * GTAO bilateral upsample — half-res AO → full-res AO.
+ * GTAO bilateral upsample — half-res per-channel AO → full-res per-channel AO.
  *
- * Reads the half-res AO map (r16float) produced by `gtao.wgsl.ts` and a
- * full-res gNormalDepth map. For each full-res pixel, samples the four nearest
- * half-res taps and weights them by depth+normal similarity to the full-res
- * pixel's surface. Standard "joint bilateral upsample" pattern (Kopf et al.
- * 2007) — preserves AO discontinuities at geometric edges that the simple
- * trilinear upsample would smear.
+ * Reads the half-res per-channel multi-bounce AO map (rgba16float) produced by
+ * `gtao.wgsl.ts` and a full-res gNormalDepth map. For each full-res pixel,
+ * samples the four nearest half-res taps and weights them by depth+normal
+ * similarity to the full-res pixel's surface. Standard "joint bilateral
+ * upsample" pattern (Kopf et al. 2007) — preserves AO discontinuities at
+ * geometric edges that the simple trilinear upsample would smear.
+ *
+ * Tier-G fix (Jiménez 2016 §5.2 per-channel multi-bounce): previously the
+ * upsample collapsed the per-channel AO vec3 to a single luminance scalar
+ * with weights (0.2126, 0.7152, 0.0722) and stored only `.r`. That defeated
+ * the Jiménez §5.2 per-channel formulation — every consumer pixel got the
+ * same scalar AO across R/G/B, equivalent to Bavoil-style scalar AO with a
+ * one-time luminance-weighted brightening. The upsample now keeps three
+ * independent AO channels through the bilateral filter so shade can darken
+ * each colour channel by its own multi-bounce factor.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -30,10 +39,15 @@ struct GTAOUniforms {
 
 @group(0) @binding(0) var up_aoHalf:      texture_2d<f32>;
 @group(0) @binding(1) var up_normalDepth: texture_2d<f32>;
-// aoFullOut: was r16float; switched to rgba16float because base-spec WebGPU
-// disallows r16float as a storage texture (needs texture-formats-tier1, which
-// three.js's WebGPURenderer doesn't request). AO value stored in .r; .g/.b/.a
-// unused. shade.wgsl reads .r unchanged.
+// aoFullOut: rgba16float storage texture. .rgb carries the per-channel
+// Jiménez 2016 §5.2 multi-bounce AO (one factor per RGB channel); .a unused.
+// Was previously stored as a scalar in .r only with .gba zero — that
+// dropped the per-channel multi-bounce contribution and made shade darken
+// every channel uniformly, equivalent to Bavoil-style scalar AO. shade.wgsl
+// now reads .rgb and multiplies the vec3 AO into the radiance terms.
+// rgba16float is base-spec storage-capable; r16float would require the
+// optional texture-formats-tier1 feature that three.js's WebGPURenderer
+// does not request.
 @group(0) @binding(2) var up_aoFullOut:   texture_storage_2d<rgba16float, write>;
 // Audit B3: bilateral depth sigma now read from the GTAO UBO (shared with
 // gtao.wgsl's GTAOUniforms struct) so the host can scale it with the scene.
@@ -78,13 +92,17 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   let halfPx = gid.xy / 2u;
 
   // Sample 2×2 neighborhood in half-res. Use clamped coords for the edges.
-  var sumAO: f32 = 0.0;
-  var sumW:  f32 = 0.0;
-
-  // E1: aoHalf now carries per-channel multi-bounce AO (rgba16float).
-  // Reduce to a scalar luminance weight before bilateral filtering so
-  // the output aoFull remains r16float (shade reads a single channel).
-  let lum = vec3f(0.2126, 0.7152, 0.0722);
+  //
+  // Tier-G fix: keep the per-channel multi-bounce vec3 AO through the
+  // bilateral filter rather than collapsing it to a luminance scalar.
+  // Jiménez 2016 §5.2 Eq. 16 produces one AO factor per RGB channel based
+  // on the surface albedo (a red wall darkens only the red channel; the
+  // green/blue inter-reflection terms are near 1.0). Reducing to luminance
+  // here erased that per-channel structure and made every output pixel
+  // darken uniformly — equivalent to Bavoil-style scalar AO with a
+  // one-time luminance-weighted brightening.
+  var sumAO: vec3f = vec3f(0.0);
+  var sumW:  f32   = 0.0;
 
   for (var dy: u32 = 0u; dy < 2u; dy = dy + 1u) {
     for (var dx: u32 = 0u; dx < 2u; dx = dx + 1u) {
@@ -92,9 +110,8 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
         min(halfPx.x + dx, halfDims.x - 1u),
         min(halfPx.y + dy, halfDims.y - 1u),
       );
-      // Read per-channel multi-bounce AO and collapse to scalar luminance.
+      // Read per-channel multi-bounce AO as-is.
       let aoMb = textureLoad(up_aoHalf, sampleHalf, 0).rgb;
-      let ao = dot(aoMb, lum);
       // Corresponding full-res sample point (center of the half-res cell).
       let sampleFull = sampleHalf * 2u + 1u;
       let nd = textureLoad(
@@ -106,29 +123,28 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
       let sNormal = nd.xyz * 2.0 - 1.0;
       let sDepth = abs(nd.w);
       let w = similarityWeight(centerDepth, centerNormal, sDepth, sNormal);
-      sumAO = sumAO + ao * w;
+      sumAO = sumAO + aoMb * w;
       sumW = sumW + w;
     }
   }
 
   // If no half-res sample matches our surface (heavy edge), fall back to
-  // the unweighted average — better to have *some* AO than zero.
-  // E1: reduce per-channel multi-bounce vec3 to luminance scalar in fallback too.
-  var ao: f32 = 1.0;
+  // the unweighted per-channel average — better to have *some* AO than zero.
+  var ao: vec3f = vec3f(1.0);
   if (sumW > 1e-4) {
     ao = sumAO / sumW;
   } else {
-    // Cheap unweighted average as backup; reduce each tap to luminance first.
+    // Cheap unweighted per-channel average as backup.
     ao = (
-      dot(textureLoad(up_aoHalf, halfPx, 0).rgb, lum) +
-      dot(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).rgb, lum) +
-      dot(textureLoad(up_aoHalf, vec2u(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb, lum) +
-      dot(textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u),
-                                       min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb, lum)
+      textureLoad(up_aoHalf, halfPx, 0).rgb +
+      textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u), halfPx.y), 0).rgb +
+      textureLoad(up_aoHalf, vec2u(halfPx.x, min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb +
+      textureLoad(up_aoHalf, vec2u(min(halfPx.x + 1u, halfDims.x - 1u),
+                                   min(halfPx.y + 1u, halfDims.y - 1u)), 0).rgb
     ) * 0.25;
   }
 
-  textureStore(up_aoFullOut, gid.xy, vec4f(clamp(ao, 0.0, 1.0)));
+  textureStore(up_aoFullOut, gid.xy, vec4f(clamp(ao, vec3f(0.0), vec3f(1.0)), 1.0));
 }
 `;
 
