@@ -21,9 +21,7 @@
     "test:gpu": "vitest run --config vitest.gpu.config.ts",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@vitrum/core": "file:../core"
-  },
+  "dependencies": {},
   "peerDependencies": {
     "onnxruntime-web": "^1.18.0"
   },
