@@ -19,16 +19,42 @@ import { DenoiserRegistry } from './index.js';
 import { NeuralDenoiser } from './neural.js';
 import { NoneDenoiser } from './none.js';
 import { OIDNFinalDenoiser } from './oidnFinal.js';
+import type { OIDNFinalDenoiserOptions } from './oidnFinal.js';
 import { SVGFRealDenoiser } from './svgfReal.js';
 
-export function registerBuiltinDenoisers(registry: DenoiserRegistry): void {
+/**
+ * Per-denoiser construction-time configuration. Backends that need
+ * non-default construction args expose them via a single config bag
+ * here. Today the only entry is `oidn` — but PPG / Neural will accept
+ * weight URLs through this same surface when their workstreams land
+ * (W9 / W10).
+ *
+ * When `oidn.modelUrl` is undefined (the default), the OIDN entry
+ * registers as a `disabled` placeholder: `DenoiserRegistry.ids()` still
+ * lists `'oidn-final'`, but `lookup('oidn-final')` throws the canonical
+ * "registered but disabled" error — so a host that selects
+ * `denoiser: 'oidn-final'` without supplying a `modelUrl` fails fast at
+ * pipeline boot with a clear remediation message.
+ */
+export interface RegisterBuiltinDenoisersOptions {
+  /** W11 — OIDN final-pass denoiser config. Forwarded from
+   *  `HybridEngineOptions.extensions['walkaround-hybrid'].oidnModelUrl`. */
+  readonly oidn?: OIDNFinalDenoiserOptions;
+}
+
+export function registerBuiltinDenoisers(
+  registry: DenoiserRegistry,
+  options?: RegisterBuiltinDenoisersOptions,
+): void {
   registry.register(new NoneDenoiser());
   registry.register(new AtrousDenoiser());
   registry.register(new AtrousVarianceDenoiser());
   registry.register(new SVGFRealDenoiser());
   // Disabled placeholders — registered for diagnostic enumeration via
   // DenoiserRegistry.ids(), but `lookup()` throws if a host selects one
-  // before the corresponding workstream finishes (W10 / W11).
+  // before the corresponding workstream finishes (W10) OR (for OIDN, W11)
+  // without supplying construction-time config.
   registry.register(new NeuralDenoiser());
-  registry.register(new OIDNFinalDenoiser());
+  // W11 — OIDN: enabled when modelUrl is provided, registered-but-disabled otherwise.
+  registry.register(new OIDNFinalDenoiser(options?.oidn));
 }

@@ -121,10 +121,16 @@ describe('Builtin Denoiser entries', () => {
     expect(d.disabled).toBe(true);
   });
 
-  it('OIDNFinalDenoiser carries id "oidn-final" and is disabled (W11 placeholder)', () => {
+  it('OIDNFinalDenoiser carries id "oidn-final" and is disabled when no modelUrl supplied', () => {
     const d = new OIDNFinalDenoiser();
     expect(d.id).toBe('oidn-final');
     expect(d.disabled).toBe(true);
+  });
+
+  it('OIDNFinalDenoiser is enabled (disabled === false) when modelUrl is supplied (W11 wire)', () => {
+    const d = new OIDNFinalDenoiser({ modelUrl: '/models/oidn.onnx' });
+    expect(d.id).toBe('oidn-final');
+    expect(d.disabled).toBe(false);
   });
 
   it('NoneDenoiser.dispatch returns null (pass-through, sample raw HDR)', () => {
@@ -156,6 +162,24 @@ describe('registerBuiltinDenoisers', () => {
     const reg = new DenoiserRegistry();
     registerBuiltinDenoisers(reg);
     expect(() => reg.lookup('neural')).toThrow(/registered but disabled/);
+    expect(() => reg.lookup('oidn-final')).toThrow(/registered but disabled/);
+  });
+
+  // ── W11 — OIDN config threading ────────────────────────────────────────────
+  it('registers oidn-final as ENABLED when options.oidn.modelUrl is provided', () => {
+    const reg = new DenoiserRegistry();
+    registerBuiltinDenoisers(reg, {
+      oidn: { modelUrl: '/models/oidn_rt_hdr_alb_nrm.onnx' },
+    });
+    // No longer disabled — lookup succeeds.
+    const d = reg.lookup('oidn-final');
+    expect(d.id).toBe('oidn-final');
+    expect(d.disabled).toBe(false);
+  });
+
+  it('registers oidn-final as DISABLED when options.oidn is omitted (back-compat)', () => {
+    const reg = new DenoiserRegistry();
+    registerBuiltinDenoisers(reg); // no options
     expect(() => reg.lookup('oidn-final')).toThrow(/registered but disabled/);
   });
 });

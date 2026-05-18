@@ -175,8 +175,17 @@ export interface HybridEngineOptions extends EngineOptions {
    *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
    *   et al. 2015). Requires `neuralWeights` to be provided. Default still
    *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
+   *
+   *   `'oidn-final'` — W11 — Intel Open Image Denoise final-pass via ONNX
+   *   Runtime Web (`@vitrum/shared-denoisers/oidnBridge`). Async/stale-by-
+   *   one-frame model: each dispatch reads back the HDR + albedo + normal
+   *   buffers, runs OIDN on the CPU/GPU/WebNN, and uploads the denoised
+   *   RGB back into a vt-owned output texture (≈50-200 ms inference).
+   *   Requires `extensions['walkaround-hybrid'].oidnModelUrl` to be supplied
+   *   (URL or path to the bundled .onnx model file). Optional peer dep
+   *   `onnxruntime-web` must be installed at runtime.
    */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural';
+  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural' | 'oidn-final';
 
   /**
    * Pre-loaded model weights for the neural denoiser (T2.H2).
@@ -187,6 +196,30 @@ export interface HybridEngineOptions extends EngineOptions {
    * constructor throws with a helpful error pointing to the training README.
    */
   readonly neuralWeights?: ModelWeights;
+
+  /**
+   * Backend-specific creation-time configuration (per the
+   * `@vitrum/core` `EngineOptions.extensions` design-principle: backends
+   * own their own extension namespace). Hosts pass
+   * `extensions: { 'walkaround-hybrid': { ... } }` to thread non-generic
+   * config (today: OIDN model URL) without polluting the generic
+   * `EngineOptions` surface.
+   *
+   * Keys currently consumed:
+   *   - `'walkaround-hybrid'.oidnModelUrl` (W11) — required when
+   *     `denoiser === 'oidn-final'`. URL or path to the bundled OIDN
+   *     `.onnx` model file (e.g. `'/models/oidn_rt_hdr_alb_nrm.onnx'`).
+   *     The host is responsible for serving the file.
+   *   - `'walkaround-hybrid'.oidnExecutionProviders` (W11) — optional
+   *     override of the ONNX Runtime Web execution-provider order;
+   *     default `['webnn', 'webgpu', 'wasm']` (Decision 11).
+   */
+  readonly extensions?: Readonly<Record<string, unknown>> & {
+    readonly 'walkaround-hybrid'?: {
+      readonly oidnModelUrl?: string;
+      readonly oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+    };
+  };
 
   // ── Library-generality knobs (audit follow-up) ──────────────────────────
   // All optional; defaults preserve Cornell-test-scene behaviour byte-for-
@@ -499,9 +532,12 @@ export class HybridEngine implements Engine {
     return p.readGpuTimingsOnce();
   }
 
-  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural';
+  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
   /** T2.H2 — neural denoiser weights (populated when _denoiser === 'neural'). */
   private readonly _neuralWeights: ModelWeights | undefined;
+  /** W11 — OIDN config (populated when _denoiser === 'oidn-final'). */
+  private readonly _oidnModelUrl: string | undefined;
+  private readonly _oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
   /** Audit M4 — null disables the FPS cap; configured at construction. */
   private readonly _targetFrameIntervalMs: number | null;
   /** Audit B8 — passed to WalkaroundGPUPipeline at initialize() time. */
@@ -632,8 +668,8 @@ export class HybridEngine implements Engine {
     this._verbose               = opts.verbose ?? false;
     this._maxBounces            = opts.maxBounces ?? 4;
     // Audit B7: validate the denoiser option at construction so an unsupported
-    // value (e.g. `'none'`, `'bmfr'`, `'oidn-final'` from the @vitrum/core
-    // EngineOptions contract) does not silently coerce to atrous-variance and produce
+    // value (e.g. `'none'`, `'bmfr'` from the @vitrum/core EngineOptions
+    // contract) does not silently coerce to atrous-variance and produce
     // wrong output. Supported values are explicitly enumerated here.
     // 'svgf' is accepted as a deprecated alias — logs a one-time warning, then normalises.
     if (
@@ -642,13 +678,13 @@ export class HybridEngine implements Engine {
       opts.denoiser !== 'atrous-variance' &&
       opts.denoiser !== 'svgf-real' &&
       opts.denoiser !== 'svgf' &&
-      opts.denoiser !== 'neural'
+      opts.denoiser !== 'neural' &&
+      opts.denoiser !== 'oidn-final'
     ) {
       throw new TypeError(
         `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
-        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural'. ` +
-        `If you need 'none' / 'bmfr' / 'oidn-final' from @vitrum/core, ` +
-        `pick a backend that implements those modes.`,
+        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final'. ` +
+        `If you need 'none' / 'bmfr' from @vitrum/core, pick a backend that implements those modes.`,
       );
     }
     // T2.H2 — 'neural' requires neuralWeights to be provided.
@@ -660,6 +696,25 @@ export class HybridEngine implements Engine {
         `See tools/neural-denoiser-training/README.md for instructions.`,
       );
     }
+    // W11 — 'oidn-final' requires extensions['walkaround-hybrid'].oidnModelUrl.
+    const _whExt = (opts.extensions as undefined | {
+      'walkaround-hybrid'?: {
+        oidnModelUrl?: string;
+        oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+      };
+    })?.['walkaround-hybrid'];
+    const _oidnModelUrl = _whExt?.oidnModelUrl;
+    if (opts.denoiser === 'oidn-final' &&
+        (typeof _oidnModelUrl !== 'string' || _oidnModelUrl.length === 0)) {
+      throw new TypeError(
+        `[HybridEngine] denoiser: 'oidn-final' requires ` +
+        `extensions['walkaround-hybrid'].oidnModelUrl (non-empty string) ` +
+        `pointing at the bundled OIDN ONNX model file ` +
+        `(e.g. '/models/oidn_rt_hdr_alb_nrm.onnx'). ` +
+        `See plan/premium-grade-refactor-20260517.md §W11 + ` +
+        `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
+      );
+    }
     if (opts.denoiser === 'svgf') {
       console.warn(
         `[walkaround-hybrid] denoiser: 'svgf' is deprecated; use 'atrous-variance'. ` +
@@ -669,6 +724,8 @@ export class HybridEngine implements Engine {
     }
     this._denoiser = opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');
     this._neuralWeights = opts.neuralWeights;
+    this._oidnModelUrl = _oidnModelUrl;
+    this._oidnExecutionProviders = _whExt?.oidnExecutionProviders;
     this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
       ? opts.targetFrameIntervalMs
       : DEFAULT_TARGET_FRAME_INTERVAL_MS;
@@ -1911,6 +1968,18 @@ export class HybridEngine implements Engine {
             temporalAccumAlpha: this._temporalAccumAlpha,
             // exactOptionalPropertyTypes: omit the key entirely when undefined.
             ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
+            // W11 — forward OIDN config when denoiser === 'oidn-final'.
+            // Validated upstream in the constructor; here we just thread.
+            ...(this._oidnModelUrl !== undefined
+              ? {
+                  oidn: {
+                    modelUrl: this._oidnModelUrl,
+                    ...(this._oidnExecutionProviders !== undefined
+                      ? { executionProviders: this._oidnExecutionProviders }
+                      : {}),
+                  },
+                }
+              : {}),
           },
         );
         const pipelineMs = performance.now() - pipelineStart;
