@@ -14,6 +14,11 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5176,
+    // 5179 — port allocation across examples is hand-managed; cornell-box
+    // owns 5174, two-engines 5175, hero-viewer 5176, hero-lighting-designer
+    // 5177, hero-product-viz 5178, neural-denoiser 5179. Earlier revisions
+    // had neural-denoiser sharing 5176 with hero-viewer, which caused
+    // EADDRINUSE on concurrent `dev` runs.
+    port: 5179,
   },
 });

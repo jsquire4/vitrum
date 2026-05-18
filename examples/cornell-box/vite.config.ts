@@ -3,7 +3,12 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 const repoRoot = path.resolve(__dirname, '../..');
-const captureDir = path.resolve(repoRoot, 'tools/reference-renders/post-sweep-20260512');
+// Capture sink directory — accepts POST /__capture?name=<scenario> uploads
+// from the Playwright capture adapter. Earlier revisions hard-coded a
+// per-sweep date ("post-sweep-20260512") that aged out without anyone
+// rotating it; settled on a stable name so reference renders accumulate
+// in one place.
+const captureDir = path.resolve(repoRoot, 'tools/reference-renders/cornell-box-captures');
 
 export default defineConfig({
   resolve: {
