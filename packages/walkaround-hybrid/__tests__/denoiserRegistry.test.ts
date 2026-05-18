@@ -94,25 +94,25 @@ describe('Builtin Denoiser entries', () => {
   it('NoneDenoiser carries id "none" and is enabled by default', () => {
     const d = new NoneDenoiser();
     expect(d.id).toBe('none');
-    expect(d.disabled).toBeUndefined();
+    expect((d as { disabled?: boolean }).disabled).toBeUndefined();
   });
 
   it('AtrousDenoiser carries id "atrous" and is enabled by default', () => {
     const d = new AtrousDenoiser();
     expect(d.id).toBe('atrous');
-    expect(d.disabled).toBeUndefined();
+    expect((d as { disabled?: boolean }).disabled).toBeUndefined();
   });
 
   it('AtrousVarianceDenoiser carries id "atrous-variance" and is enabled by default', () => {
     const d = new AtrousVarianceDenoiser();
     expect(d.id).toBe('atrous-variance');
-    expect(d.disabled).toBeUndefined();
+    expect((d as { disabled?: boolean }).disabled).toBeUndefined();
   });
 
   it('SVGFRealDenoiser carries id "svgf-real" and is enabled by default', () => {
     const d = new SVGFRealDenoiser();
     expect(d.id).toBe('svgf-real');
-    expect(d.disabled).toBeUndefined();
+    expect((d as { disabled?: boolean }).disabled).toBeUndefined();
   });
 
   it('NeuralDenoiser carries id "neural" and is disabled (W10 placeholder)', () => {

@@ -30,10 +30,13 @@ import {
   createWalkaroundEngine_Hybrid,
   HYBRID_WEBGPU_REQUIRED_FEATURES,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
-  WALKAROUND_DENOISER_UNET_SPEC,
   type HybridEngineOptions,
   type ModelWeights,
 } from '@vitrum/walkaround-hybrid';
+// `unetArchitecture.js` is intentionally not re-exported from the package
+// root so apps that don't use the neural denoiser don't pay its bundle cost.
+// This example DOES use it, so we import from the deep path.
+import { WALKAROUND_DENOISER_UNET_SPEC } from '@vitrum/walkaround-hybrid/src/neural/unetArchitecture.js';
 import * as THREE from 'three';
 
 type DenoiserMode = NonNullable<HybridEngineOptions['denoiser']>;

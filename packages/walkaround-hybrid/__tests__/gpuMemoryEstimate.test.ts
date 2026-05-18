@@ -79,7 +79,7 @@ function makeStubDevice(): GPUDevice {
         depth = so.depthOrArrayLayers ?? 1;
       }
       return {
-        label: desc.label,
+        ...(desc.label !== undefined && { label: desc.label }),
         width,
         height,
         depthOrArrayLayers: depth,
@@ -90,7 +90,7 @@ function makeStubDevice(): GPUDevice {
       };
     },
     createBuffer: (desc: GPUBufferDescriptor): StubBuffer => ({
-      label: desc.label,
+      ...(desc.label !== undefined && { label: desc.label }),
       size: desc.size,
       usage: desc.usage,
       destroy: () => {},

@@ -189,7 +189,8 @@ describe('serialiseSTree — CPU/GPU traversal oracle', () => {
   it('a fresh single-cell sTree returns the root for any in-bounds query', () => {
     const sTree = buildSTree(SCENE_AABB);
     const { sTreeBuf } = serialiseSTree(sTree);
-    for (const pos of [[0, 0, 0], [-9, -9, -9], [9, 9, 9]] as const) {
+    const positions: [number, number, number][] = [[0, 0, 0], [-9, -9, -9], [9, 9, 9]];
+    for (const pos of positions) {
       const cpuIdx = findSTreeLeaf(sTree, pos);
       const gpuBase = gpuTraverseSTreeLeaf(sTreeBuf, pos);
       expect(cpuIdx).toBe(0);

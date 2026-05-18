@@ -47,7 +47,8 @@ describe('Pass entries — W1-R5 shape invariants', () => {
     expect(p.id).toBe('sample-budget');
     expect(p.dependencies).toEqual([]);
     expect(p.passLabels).toEqual(['sample-budget']);
-    expect(p.gates(DEFAULT_GATE)).toBe(true);
+    // SampleBudgetPass.gates() ignores opts (always-on); call without args.
+    expect(p.gates()).toBe(true);
   });
 
   it('RISPass: depends on sample-budget', () => {
@@ -55,7 +56,8 @@ describe('Pass entries — W1-R5 shape invariants', () => {
     expect(p.id).toBe('ris');
     expect(p.dependencies).toEqual(['sample-budget']);
     expect(p.passLabels).toEqual(['ris']);
-    expect(p.gates(DEFAULT_GATE)).toBe(true);
+    // RISPass.gates() ignores opts (always-on); call without args.
+    expect(p.gates()).toBe(true);
   });
 
   it('TemporalReservoirPass: depends on ris', () => {
