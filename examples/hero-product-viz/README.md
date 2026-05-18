@@ -23,7 +23,7 @@ npm run dev
 ```
 
 Drag the material sliders to change the glass properties. The path tracer
-re-converges after each change (50ms debounce). When happy with the result,
+re-converges after each change (80ms debounce). When happy with the result,
 click "Save high-res PNG" — this renders a separate 4K frame offline and
 downloads it. **Be patient: a 4K render at 512 SPP typically takes 20–60 seconds.**
 
