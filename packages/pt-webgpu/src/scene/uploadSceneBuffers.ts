@@ -15,7 +15,7 @@ import {
 // removed 2026-05-18 — no in-tree consumer reached them. The canonical
 // definitions stay in `./emitterPacking.ts` and are file-locally used.
 
-export interface PackedSceneData {
+interface PackedSceneData {
   readonly positions: Float32Array; // vec4f packed
   readonly normals: Float32Array; // vec4f packed
   /**

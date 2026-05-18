@@ -93,7 +93,7 @@ function classifyTriangleEmitter(
   };
 }
 
-export interface EmitterListOptions {
+interface EmitterListOptions {
   primaryLightDir?: THREE.Vector3;
   primaryLightIntensity?: number;
   /**

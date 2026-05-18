@@ -26,7 +26,7 @@
 import type { PassLabel } from '../timestampQueries.js';
 
 /** Discriminator for the denoiser-injection point in the static order. */
-export interface NonDenoiserPassEntry {
+interface NonDenoiserPassEntry {
   /** Stable id of the corresponding Pass class. */
   readonly id: string;
   /** Labels emitted by the pass in dispatch order. */

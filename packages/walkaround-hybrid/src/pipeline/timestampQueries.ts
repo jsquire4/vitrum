@@ -103,7 +103,7 @@ export type PassLabel =
  */
 export const MAX_PASS_COUNT = 33;
 
-export interface PassLayoutOptions {
+interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is
    *  self-managing and doesn't participate in the timestamp-query pass layout).
    *  W1-R3: widened to {@link DenoiserId} so 'none' / 'oidn-final' compile;
@@ -112,7 +112,7 @@ export interface PassLayoutOptions {
   readonly denoiserMode: import('./denoisers/index.js').DenoiserId;
 }
 
-export interface PassLayout {
+interface PassLayout {
   /** Slot index for the given label. Throws if the label is not active in this layout. */
   readonly index: (label: PassLabel) => number;
   /** Total slots used by this layout. Always ≤ MAX_PASS_COUNT. */

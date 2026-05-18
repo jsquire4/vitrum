@@ -47,7 +47,7 @@ const ACCUM_UBO = defineUbo([
 
 // ── Frame bind group ─────────────────────────────────────────────────────────
 
-export interface FrameBindGroupResources {
+interface FrameBindGroupResources {
   placeholderView: GPUTextureView;
   reservoirCurrentBuffer: GPUBuffer;
   reservoirPreviousBuffer: GPUBuffer;
@@ -106,7 +106,7 @@ export function buildFrameBindGroup(
 
 // ── Scene bind group ─────────────────────────────────────────────────────────
 
-export interface SceneBindGroupResources {
+interface SceneBindGroupResources {
   bvhNodesBuffer: GPUBuffer;
   bvhIndexBuffer: GPUBuffer;
   bvhPositionBuffer: GPUBuffer;
@@ -166,7 +166,7 @@ export interface UboRef { buf: GPUBuffer | undefined }
  * signal is already temporally smoothed by ReSTIR-GI and tolerates
  * wider blurs across depth / normal / chroma transitions.
  */
-export interface AtrousSigmas {
+interface AtrousSigmas {
   sigmaN: number;
   sigmaZ: number;
   sigmaC: number;
@@ -278,7 +278,7 @@ export function buildAccumBindGroup(
 
 // ── Hybrid layers bind group (DDGI, shade pass slot 3) ───────────────────────
 
-export interface HybridLayersResources {
+interface HybridLayersResources {
   ddgiIrrTex: GPUTexture | null;
   ddgiVisTex: GPUTexture | null;
   ddgiPlaceholderRgba16f: GPUTexture;

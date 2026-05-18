@@ -69,7 +69,7 @@ import {
   type BGLCache,
 } from './bindGroupLayouts.js';
 
-export interface CompiledPipelines {
+interface CompiledPipelines {
   risPipeline: GPUComputePipeline;
   /** T2.H3 — PPG update kernel (training on L_i, Müller §3.3). */
   ppgUpdatePipeline?: GPUComputePipeline;

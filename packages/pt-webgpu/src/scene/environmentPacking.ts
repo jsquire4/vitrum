@@ -1,6 +1,6 @@
 import type { Scene } from '@vitrum/core';
 
-export interface EnvironmentParams {
+interface EnvironmentParams {
   readonly tint: readonly [number, number, number];
   readonly sunDirection: readonly [number, number, number];
   readonly sunStrength: number;

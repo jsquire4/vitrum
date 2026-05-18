@@ -36,7 +36,7 @@ import { SVGFRealDenoiser } from './svgfReal.js';
  * `denoiser: 'oidn-final'` without supplying a `modelUrl` fails fast at
  * pipeline boot with a clear remediation message.
  */
-export interface RegisterBuiltinDenoisersOptions {
+interface RegisterBuiltinDenoisersOptions {
   /** W11 — OIDN final-pass denoiser config. Forwarded from
    *  `HybridEngineOptions.extensions['walkaround-hybrid'].oidnModelUrl`. */
   readonly oidn?: OIDNFinalDenoiserOptions;
