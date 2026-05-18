@@ -432,8 +432,8 @@ describe('DDGI pipeline CPU emulation — behavior tests', () => {
 
         // For each atlas cell, compute cosine-weighted blend and apply EMA.
         for (let c = 0; c < numCells; c++) {
-          const newColor = cosineBlend(cellDirs[c], rayResults);
-          atlas[c] = emaBlend(atlas[c], newColor);
+          const newColor = cosineBlend(cellDirs[c]!, rayResults);
+          atlas[c] = emaBlend(atlas[c]!, newColor);
         }
       }
 
@@ -575,17 +575,18 @@ describe('Halton SO(3) — rotation matrix sanity', () => {
       ];
 
       // det(R) should be 1 for a proper rotation.
+      const r0 = R[0]!, r1 = R[1]!, r2 = R[2]!;
       const det =
-        R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) -
-        R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) +
-        R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
+        r0[0]! * (r1[1]! * r2[2]! - r1[2]! * r2[1]!) -
+        r0[1]! * (r1[0]! * r2[2]! - r1[2]! * r2[0]!) +
+        r0[2]! * (r1[0]! * r2[1]! - r1[1]! * r2[0]!);
       expect(Math.abs(det - 1)).toBeLessThan(1e-5);
 
       // R·Rᵀ should be I (orthogonal matrix).
       for (let i = 0; i < 3; i++) {
         for (let j = 0; j < 3; j++) {
           let rrt = 0;
-          for (let k = 0; k < 3; k++) rrt += R[i][k] * R[j][k];
+          for (let k = 0; k < 3; k++) rrt += R[i]![k]! * R[j]![k]!;
           const expected = i === j ? 1 : 0;
           expect(Math.abs(rrt - expected)).toBeLessThan(1e-5);
         }

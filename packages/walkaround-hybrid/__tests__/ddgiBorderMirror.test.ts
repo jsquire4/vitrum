@@ -80,10 +80,10 @@ function runBorderFill(
     for (let x = 0; x < N; x++) {
       const src = (y * N + x) * 4;
       const dst = ((y + 1) * stride + (x + 1)) * 4;
-      atlas[dst + 0] = interior[src + 0];
-      atlas[dst + 1] = interior[src + 1];
-      atlas[dst + 2] = interior[src + 2];
-      atlas[dst + 3] = interior[src + 3];
+      atlas[dst + 0] = interior[src + 0]!;
+      atlas[dst + 1] = interior[src + 1]!;
+      atlas[dst + 2] = interior[src + 2]!;
+      atlas[dst + 3] = interior[src + 3]!;
     }
   }
 
@@ -95,10 +95,10 @@ function runBorderFill(
       const [mx, my] = mirror;
       const srcIdx   = (my * stride + mx) * 4;
       const dstIdx   = (ly * stride + lx) * 4;
-      atlas[dstIdx + 0] = atlas[srcIdx + 0];
-      atlas[dstIdx + 1] = atlas[srcIdx + 1];
-      atlas[dstIdx + 2] = atlas[srcIdx + 2];
-      atlas[dstIdx + 3] = atlas[srcIdx + 3];
+      atlas[dstIdx + 0] = atlas[srcIdx + 0]!;
+      atlas[dstIdx + 1] = atlas[srcIdx + 1]!;
+      atlas[dstIdx + 2] = atlas[srcIdx + 2]!;
+      atlas[dstIdx + 3] = atlas[srcIdx + 3]!;
     }
   }
 
@@ -108,7 +108,7 @@ function runBorderFill(
 /** Read a single texel from a flat atlas (rgba, row-major). */
 function readTexel(atlas: Float32Array, stride: number, lx: number, ly: number): [number, number, number, number] {
   const i = (ly * stride + lx) * 4;
-  return [atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3]];
+  return [atlas[i]!, atlas[i + 1]!, atlas[i + 2]!, atlas[i + 3]!];
 }
 
 /** Bilinear interpolation between four texel values at fractional (u, v) in [0, 1]. */
