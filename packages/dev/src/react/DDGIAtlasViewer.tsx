@@ -57,7 +57,10 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
 }) => {
   if (!visible) return null;
 
-  const hasDebug = typeof engine.debug?.atlasTexture === 'function';
+  // W3-D8: top-level engine.debug gated on capabilities.debugSurface; the
+  // specific debug method remains optional per EngineDebugSurface.
+  const hasDebug =
+    engine.capabilities.debugSurface && !!engine.debug?.atlasTexture;
 
   if (!hasDebug) {
     // Warn once on every mount (not every render).

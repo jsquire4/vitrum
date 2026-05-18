@@ -46,6 +46,12 @@ afterEach(() => {
 function makeEngine(): Engine {
   const caps: EngineCapabilities = {
     supportsIncrementalScene: false,
+    incrementalUpdates: false,
+    environmentSwap: false,
+    // Minimal engine — no telemetry or debug surface.
+    frameTelemetry: false,
+    progressTelemetry: false,
+    debugSurface: false,
     supportsMotionBlur: false,
     supportsAuxBuffers: false,
     accumulates: false,
@@ -139,6 +145,10 @@ describe('attachDebugOverlays', () => {
         subscribedCb = cb;
         return () => { unsubscribeCalled = true; };
       };
+      // W3-D8: capability flag is the source of truth. Without flipping it,
+      // attachDebugOverlays will fall back to the rAF path and the dynamically
+      // attached onFrame above is ignored — matching the new contract.
+      (engine.capabilities as { frameTelemetry: boolean }).frameTelemetry = true;
 
       const handle = attachDebugOverlays(engine, container, { overlays: ['frameTime'] });
 

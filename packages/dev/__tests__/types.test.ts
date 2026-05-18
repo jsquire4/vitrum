@@ -20,6 +20,12 @@ import type { Engine, EngineCapabilities, EngineState } from '@vitrum/core';
 function makeMinimalEngine(): Engine {
   const caps: EngineCapabilities = {
     supportsIncrementalScene: false,
+    incrementalUpdates: false,
+    environmentSwap: false,
+    // The minimal engine omits onFrame/onProgress/debug — all flags false.
+    frameTelemetry: false,
+    progressTelemetry: false,
+    debugSurface: false,
     supportsMotionBlur: false,
     supportsAuxBuffers: false,
     accumulates: false,
@@ -61,28 +67,31 @@ describe('@vitrum/dev types', () => {
     expect(engine.debug).toBeUndefined();
   });
 
-  it('typeof-guard for onFrame works correctly on a minimal engine', () => {
+  it('capability-guard for onFrame works correctly on a minimal engine (W3-D8)', () => {
     const engine = makeMinimalEngine() as DebuggableEngine;
-    const hasOnFrame = typeof engine.onFrame === 'function';
-    expect(hasOnFrame).toBe(false);
+    expect(engine.capabilities.frameTelemetry).toBe(false);
   });
 
-  it('typeof-guard for debug.setDenoiserEnabled works on a minimal engine', () => {
+  it('capability-guard for debug surface works on a minimal engine (W3-D8)', () => {
     const engine = makeMinimalEngine() as DebuggableEngine;
-    const hasSetDenoiser = typeof engine.debug?.setDenoiserEnabled === 'function';
-    expect(hasSetDenoiser).toBe(false);
+    // Top-level surface absent ⇒ debugSurface = false, and the individual
+    // method is also undefined (defence-in-depth: per-field optionality).
+    expect(engine.capabilities.debugSurface).toBe(false);
+    expect(engine.debug?.setDenoiserEnabled).toBeUndefined();
   });
 
-  it('a DebuggableEngine with onFrame implemented can subscribe + unsubscribe', () => {
+  it('a DebuggableEngine with onFrame implemented (capability=true) can subscribe + unsubscribe (W3-D8)', () => {
     const engine = makeMinimalEngine() as DebuggableEngine;
     const calls: FrameStats[] = [];
-    // Manually attach onFrame (simulates T3.E landing)
+    // Manually attach onFrame AND flip capabilities.frameTelemetry — the
+    // capability flag is the source of truth per the W3-D8 invariant.
     (engine as unknown as Record<string, unknown>)['onFrame'] = (cb: (s: FrameStats) => void) => {
       cb({ frameTimeMs: 16.7 });
       return () => { /* no-op unsubscribe */ };
     };
-    if (typeof engine.onFrame === 'function') {
-      const unsub = engine.onFrame((stats) => calls.push(stats));
+    (engine.capabilities as { frameTelemetry: boolean }).frameTelemetry = true;
+    if (engine.capabilities.frameTelemetry) {
+      const unsub = engine.onFrame!((stats) => calls.push(stats));
       unsub(); // must not throw
     }
     expect(calls).toHaveLength(1);

@@ -127,7 +127,10 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
   const [draft, setDraft] = useState<Material | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
 
-  const hasPickAPI = typeof engine.debug?.pickPrimitive === 'function';
+  // W3-D8: top-level engine.debug gated on capabilities.debugSurface; the
+  // specific debug method remains optional per EngineDebugSurface.
+  const hasPickAPI =
+    engine.capabilities.debugSurface && !!engine.debug?.pickPrimitive;
 
   // Sync draft when selection changes.
   useEffect(() => {
@@ -150,9 +153,11 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
   const updateField = <K extends keyof Material>(key: K, value: Material[K]): void => {
     const next: Material = { ...draft, [key]: value };
     setDraft(next);
-    // updatePrimitive is optional on Engine; fall back to nothing if absent.
-    if (typeof engine.updatePrimitive === 'function') {
-      engine.updatePrimitive(selectedPrimitiveId, { material: next });
+    // W3-D8: gate on capabilities.incrementalUpdates rather than the
+    // method's typeof — when the flag is true, the method is guaranteed
+    // present per the EngineCapabilities invariant.
+    if (engine.capabilities.incrementalUpdates) {
+      engine.updatePrimitive!(selectedPrimitiveId, { material: next });
     }
   };
 

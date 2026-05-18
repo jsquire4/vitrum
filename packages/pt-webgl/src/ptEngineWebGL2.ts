@@ -436,6 +436,19 @@ export class PTEngineWebGL2 implements Engine {
 
     return {
       supportsIncrementalScene: false,
+      // W3-D8 feature flags — honest reporting:
+      //  - updatePrimitive/updateEmitter throw 'Not implemented' (this
+      //    backend requires full setScene), so incrementalUpdates = false.
+      //  - updateEnvironment is implemented (wraps WebGLPathTracer.update-
+      //    Environment()), so environmentSwap = true.
+      //  - onFrame + onProgress are real subscribers; both true.
+      //  - No `debug` field — three-gpu-pathtracer doesn't expose probe
+      //    atlases or BVH node introspection in a portable way.
+      incrementalUpdates: false,
+      environmentSwap:    true,
+      frameTelemetry:     true,
+      progressTelemetry:  true,
+      debugSurface:       false,
       supportsMotionBlur: false,
       supportsAuxBuffers: false,
       accumulates: true,

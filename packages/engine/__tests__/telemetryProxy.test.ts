@@ -16,6 +16,13 @@ import type { Engine, FrameStats, ProgressStats, EngineCapabilities, EngineState
 
 const NULL_CAPS: EngineCapabilities = {
   supportsIncrementalScene: false,
+  incrementalUpdates: false,
+  environmentSwap: false,
+  // The FakeEngine below DOES implement onFrame/onProgress, so report them
+  // honestly per the W3-D8 invariant: `capabilities.X === true ⇒ method exists`.
+  frameTelemetry: true,
+  progressTelemetry: true,
+  debugSurface: false,
   supportsMotionBlur: false,
   supportsAuxBuffers: false,
   accumulates: false,

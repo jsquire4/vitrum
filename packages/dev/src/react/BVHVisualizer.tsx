@@ -90,7 +90,10 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
     };
   }, [toggleKey]);
 
-  const hasDebug = typeof engine.debug?.bvhNodes === 'function';
+  // W3-D8: top-level engine.debug gated on capabilities.debugSurface; the
+  // specific debug method remains optional per EngineDebugSurface.
+  const hasDebug =
+    engine.capabilities.debugSurface && !!engine.debug?.bvhNodes;
 
   if (visible && !hasDebug && !warnedRef.current) {
     warnedRef.current = true;

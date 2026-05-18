@@ -20,6 +20,13 @@ import type {
 
 const NULL_CAPS: EngineCapabilities = {
   supportsIncrementalScene: false,
+  incrementalUpdates: false,
+  environmentSwap: false,
+  frameTelemetry: false,
+  progressTelemetry: false,
+  // The DebuggableFakeEngine below DOES implement engine.debug, so report
+  // it honestly per the W3-D8 invariant.
+  debugSurface: true,
   supportsMotionBlur: false,
   supportsAuxBuffers: false,
   accumulates: false,

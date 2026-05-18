@@ -38,11 +38,55 @@ export type EngineState =
 // Engine capabilities (engine → host, queried after init)
 // ────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Engine capabilities — the host-queryable declaration of what an engine
+ * actually supports. The engine declares this ONCE at construction; hosts
+ * read `engine.capabilities.X` to decide whether to call optional members.
+ *
+ * **Invariant (W3-D8):** When `capabilities.X === true`, the corresponding
+ * optional method (or surface) on the {@link Engine} interface MUST be
+ * present AND callable. Hosts MAY skip the `typeof engine.method === 'function'`
+ * check and dispatch on the capability flag directly. Backends that decline
+ * a capability MUST report `false` even if a stub method exists — the
+ * capability flag is the source of truth, not method presence.
+ *
+ * The capability map:
+ *  - `incrementalUpdates` ⇒ `updatePrimitive` AND `updateEmitter` exist.
+ *  - `environmentSwap`    ⇒ `updateEnvironment` exists.
+ *  - `frameTelemetry`     ⇒ `onFrame` exists.
+ *  - `progressTelemetry`  ⇒ `onProgress` exists.
+ *  - `debugSurface`       ⇒ `debug` (an {@link EngineDebugSurface}) exists.
+ *    Individual fields of the debug surface remain optional — hosts that
+ *    need a SPECIFIC debug method (e.g., `debug.bvhNodes`) still check that
+ *    field truthy, but they can skip the top-level `engine.debug != null`
+ *    check by reading `capabilities.debugSurface`.
+ */
 export interface EngineCapabilities {
   /** Engine supports `updatePrimitive` / `updateEmitter` patches, falling
    *  back to full `setScene` for unsupported diffs. When false, hosts must
    *  always call `setScene` for any change. */
   readonly supportsIncrementalScene: boolean;
+
+  // ── W3-D8 feature-presence flags ────────────────────────────────────────
+  /** `updatePrimitive` and `updateEmitter` are present and callable.
+   *  Aliased onto `supportsIncrementalScene` semantics — true iff the
+   *  engine implements real per-primitive / per-emitter patches (vs.
+   *  throwing or silently delegating to a full `setScene`). */
+  readonly incrementalUpdates: boolean;
+
+  /** `updateEnvironment` is present and callable. */
+  readonly environmentSwap: boolean;
+
+  /** `onFrame` is present and callable. */
+  readonly frameTelemetry: boolean;
+
+  /** `onProgress` is present and callable. */
+  readonly progressTelemetry: boolean;
+
+  /** `debug` (an {@link EngineDebugSurface}) is present. Individual fields
+   *  of the surface remain optional — hosts that need a specific debug
+   *  method still check that field's truthiness. */
+  readonly debugSurface: boolean;
 
   /** Engine consumes `FrameInput.shutterTime`. */
   readonly supportsMotionBlur: boolean;
@@ -112,10 +156,11 @@ export interface Engine {
   /** Patch a single primitive in-place. Engine MAY internally fall back to a
    *  full `setScene` rebuild if the diff is too disruptive (e.g., changing
    *  geometry vertex counts). Available only when
-   *  `capabilities.supportsIncrementalScene = true`. */
+   *  `capabilities.incrementalUpdates === true` (W3-D8 invariant). */
   updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
 
-  /** Patch a single emitter. Same incremental-fallback semantics as above. */
+  /** Patch a single emitter. Same incremental-fallback semantics as above.
+   *  Available only when `capabilities.incrementalUpdates === true`. */
   updateEmitter?(id: string, patch: Partial<SceneEmitter>): void;
 
   /** Apply an environment-only update (HDRI texture / intensity / rotation
@@ -125,8 +170,11 @@ export interface Engine {
    *  which costs one accumulator reset and no BVH work — implement this for
    *  fast timeOfDay scrubs on the host side. Backends without a cheap env
    *  path (current HybridEngine is reactive to its own scene-source rather
-   *  than host-driven env scrubs) may omit this method; hosts MUST
-   *  typeof-check before calling. */
+   *  than host-driven env scrubs) omit this method.
+   *
+   *  W3-D8: Hosts MUST query `capabilities.environmentSwap` rather than
+   *  `typeof engine.updateEnvironment === 'function'`. When the capability
+   *  is `true`, this method is guaranteed to exist. */
   updateEnvironment?(env: import('./scene.js').SceneEnvironment | null): void;
 
   // ── Frame-level rendering ───────────────────────────────────────────────
@@ -170,24 +218,28 @@ export interface Engine {
   /** Subscribe to per-frame stats. Backend invokes the callback synchronously
    *  at the end of each `renderFrame()` call. Returns an unsubscribe function;
    *  call it to stop receiving stats. Subscribers MUST NOT throw — engines
-   *  catch and swallow throws to keep the render loop alive. Optional: a
-   *  backend that does not implement this still satisfies the contract; the
-   *  host should typeof-check before calling. */
+   *  catch and swallow throws to keep the render loop alive.
+   *
+   *  W3-D8: Available only when `capabilities.frameTelemetry === true`. */
   onFrame?(cb: (stats: FrameStats) => void): () => void;
 
   /** Subscribe to long-running progress events (PT samples-per-pixel
    *  accumulation, denoiser convergence, DDGI warm-up). Backends fire at
    *  their natural cadence (typically once per frame for SPP; less often
-   *  for warm-up). Same throw-safety + optionality semantics as
-   *  {@link onFrame}. */
+   *  for warm-up). Same throw-safety semantics as {@link onFrame}.
+   *
+   *  W3-D8: Available only when `capabilities.progressTelemetry === true`. */
   onProgress?(cb: (progress: ProgressStats) => void): () => void;
 
   /** Optional debug-introspection surface for dev overlays. When present,
    *  exposes engine-internal state (DDGI atlases, BVH nodes, GI signal
    *  textures, denoiser toggle) that visualisation tools can blit / draw.
-   *  Backends that don't implement this still satisfy the core contract;
-   *  consumers MUST typeof-check before calling any method. See
-   *  {@link EngineDebugSurface}. */
+   *  Individual fields of the surface remain optional — consumers that
+   *  need a specific debug method (e.g., `engine.debug.bvhNodes`) still
+   *  check that field truthy.
+   *
+   *  W3-D8: The top-level `debug` surface is present only when
+   *  `capabilities.debugSurface === true`. See {@link EngineDebugSurface}. */
   debug?: EngineDebugSurface;
 }
 

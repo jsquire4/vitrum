@@ -115,8 +115,11 @@ export function attachDebugOverlays(
       fpsRow.setValue(avg > 0 ? (1000 / avg).toFixed(1) : '—');
     };
 
-    if (typeof engine.onFrame === 'function') {
-      const unsub = engine.onFrame(update);
+    // W3-D8: source-of-truth is engine.capabilities.frameTelemetry. When
+    // true, engine.onFrame is guaranteed present per the EngineCapabilities
+    // invariant; otherwise fall back to rAF wall-clock measurement.
+    if (engine.capabilities.frameTelemetry) {
+      const unsub = engine.onFrame!(update);
       cleanupFns.push(unsub);
     } else {
       let lastTime: number | null = null;
@@ -137,7 +140,11 @@ export function attachDebugOverlays(
 
   // ── Denoiser A/B Toggle ──────────────────────────────────────────────────
   if (overlays.includes('denoiserToggle')) {
-    const hasDebug = typeof engine.debug?.setDenoiserEnabled === 'function';
+    // W3-D8: gate the top-level engine.debug presence on the capability
+    // flag, then check the specific method on the debug surface (individual
+    // EngineDebugSurface fields remain optional per the contract).
+    const hasDebug =
+      engine.capabilities.debugSurface && !!engine.debug?.setDenoiserEnabled;
     let enabled = engine.debug?.isDenoiserEnabled?.() ?? true;
 
     const badge = makeDiv({

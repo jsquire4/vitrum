@@ -711,6 +711,22 @@ export class HybridEngine implements Engine {
 
     this.capabilities = {
       supportsIncrementalScene:  false,
+      // W3-D8 feature flags — honest reporting:
+      //  - updatePrimitive/updateEmitter are typed as `?: never` on this
+      //    engine (items_to_fix.md A3 limitation) → incrementalUpdates=false.
+      //  - No updateEnvironment method (HybridEngine is reactive to its own
+      //    scene-source rather than host-driven env scrubs) → environmentSwap=false.
+      //  - onFrame is implemented as a real subscriber → frameTelemetry=true.
+      //  - onProgress is intentionally absent (walkaround doesn't accumulate
+      //    SPP and DDGI warm-up progress isn't surfaced yet) → progressTelemetry=false.
+      //  - The `debug` field is implemented as a partial EngineDebugSurface
+      //    (atlasTexture, visibilityAtlasTexture, bvhNodes, giSignalTextures)
+      //    → debugSurface=true.
+      incrementalUpdates: false,
+      environmentSwap:    false,
+      frameTelemetry:     true,
+      progressTelemetry:  false,
+      debugSurface:       true,
       // supportsMotionBlur === false. WalkaroundGPUPipeline does allocate a
       // motionVectorTexture, but it's for SVGF temporal reprojection (encoded
       // as `motion-vectors-zero` — a 2D screen-space delta), not for accumu-

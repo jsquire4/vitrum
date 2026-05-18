@@ -83,7 +83,10 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
   const isControlled = activeProp !== undefined;
   const active = isControlled ? activeProp : internalActive;
 
-  const hasDebug = typeof engine.debug?.giSignalTextures === 'function';
+  // W3-D8: top-level engine.debug gated on capabilities.debugSurface; the
+  // specific debug method remains optional per EngineDebugSurface.
+  const hasDebug =
+    engine.capabilities.debugSurface && !!engine.debug?.giSignalTextures;
 
   const toggle = (): void => {
     const next = !active;

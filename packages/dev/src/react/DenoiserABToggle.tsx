@@ -58,8 +58,11 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
     return engine.debug?.isDenoiserEnabled?.() ?? true;
   });
 
+  // W3-D8: top-level engine.debug presence is gated on
+  // capabilities.debugSurface; individual EngineDebugSurface fields remain
+  // optional, so we still check the specific method.
   const hasDebug =
-    typeof engine.debug?.setDenoiserEnabled === 'function';
+    engine.capabilities.debugSurface && !!engine.debug?.setDenoiserEnabled;
 
   const doToggle = (): void => {
     const next = !enabled;

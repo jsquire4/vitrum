@@ -105,6 +105,16 @@ class PTEngineWebGPU implements Engine {
   get capabilities(): EngineCapabilities {
     return {
       supportsIncrementalScene: false, // Honest reporting — updatePrimitive/updateEmitter currently delegate to setScene; flip to true when real incremental patching lands.
+      // W3-D8 feature flags — honest reporting:
+      //  - updatePrimitive/updateEmitter exist but delegate to setScene
+      //    (no real incremental patching yet) → incrementalUpdates=false.
+      //  - No updateEnvironment, onFrame, onProgress, or debug surface
+      //    implemented in this prototype backend.
+      incrementalUpdates: false,
+      environmentSwap:    false,
+      frameTelemetry:     false,
+      progressTelemetry:  false,
+      debugSurface:       false,
       supportsMotionBlur: false,
       supportsAuxBuffers: true,
       accumulates: true,

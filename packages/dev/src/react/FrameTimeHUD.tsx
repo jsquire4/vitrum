@@ -128,8 +128,10 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
     const ring = ringRef.current;
 
     // ── Path A: engine.onFrame present (T3.E) ───────────────────────────
-    if (typeof engine.onFrame === 'function') {
-      const unsubscribe = engine.onFrame((stats) => {
+    // W3-D8: query capabilities.frameTelemetry; when true, engine.onFrame
+    // is guaranteed callable per the EngineCapabilities invariant.
+    if (engine.capabilities.frameTelemetry) {
+      const unsubscribe = engine.onFrame!((stats) => {
         ring.push(stats.frameTimeMs);
         setLatest(stats);
         setAvgMs(ring.mean());

@@ -265,27 +265,41 @@ function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
 /** Wrap an engine so that calling .dispose() multiple times is a no-op
  *  beyond the first call. The plan calls this out as an explicit
  *  acceptance criterion ("engine.dispose() followed by engine.dispose()
- *  is idempotent"). */
+ *  is idempotent").
+ *
+ *  **W3-D8:** Optional method forwarding is driven by
+ *  `engine.capabilities` (not by `typeof engine.method`). The capability
+ *  flag is the source of truth — when a backend declares
+ *  `capabilities.frameTelemetry === true`, the underlying `onFrame` MUST
+ *  exist per the EngineCapabilities invariant, so the proxy forwards it
+ *  unconditionally. Backends that don't declare the capability get the
+ *  proxy entry omitted (so `proxy.onFrame === undefined` matches
+ *  `engine.onFrame === undefined`). */
 function wrapWithIdempotentDispose(
   engine: Engine,
   postDispose: () => void,
 ): Engine {
   let disposed = false;
+  const caps = engine.capabilities;
+
   const proxy: Engine = {
     get state() { return engine.state; },
     get capabilities() { return engine.capabilities; },
     setScene(scene) { if (!disposed) engine.setScene(scene); },
-    ...(engine.updatePrimitive
+    ...(caps.incrementalUpdates
       ? {
           updatePrimitive: (id: string, patch: Parameters<NonNullable<Engine['updatePrimitive']>>[1]) => {
             if (!disposed) engine.updatePrimitive!(id, patch);
           },
-        }
-      : {}),
-    ...(engine.updateEmitter
-      ? {
           updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
             if (!disposed) engine.updateEmitter!(id, patch);
+          },
+        }
+      : {}),
+    ...(caps.environmentSwap
+      ? {
+          updateEnvironment: (env: Parameters<NonNullable<Engine['updateEnvironment']>>[0]) => {
+            if (!disposed) engine.updateEnvironment!(env);
           },
         }
       : {}),
@@ -307,7 +321,7 @@ function wrapWithIdempotentDispose(
       try { engine.dispose(); } catch {}
       try { postDispose(); } catch {}
     },
-    ...(engine.onFrame
+    ...(caps.frameTelemetry
       ? {
           onFrame: (cb: Parameters<NonNullable<Engine['onFrame']>>[0]) => {
             if (disposed) return () => {};
@@ -315,7 +329,7 @@ function wrapWithIdempotentDispose(
           },
         }
       : {}),
-    ...(engine.onProgress
+    ...(caps.progressTelemetry
       ? {
           onProgress: (cb: Parameters<NonNullable<Engine['onProgress']>>[0]) => {
             if (disposed) return () => {};
@@ -323,12 +337,12 @@ function wrapWithIdempotentDispose(
           },
         }
       : {}),
-    // T3.G followup — pass the underlying engine.debug surface through
-    // unchanged. Methods are bound to the engine instance, so calling
+    // W3-D8: forward engine.debug iff `capabilities.debugSurface` is
+    // declared. Methods are bound to the engine instance, so calling
     // proxy.debug.atlasTexture() reads live state. After dispose, the
     // surface still exists but most methods will return null / empty
     // because the underlying _ddgi / _pipeline / _bvhBuffers are torn down.
-    ...(engine.debug ? { debug: engine.debug } : {}),
+    ...(caps.debugSurface ? { debug: engine.debug } : {}),
   };
   return proxy;
 }
