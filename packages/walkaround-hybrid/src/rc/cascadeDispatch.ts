@@ -687,44 +687,10 @@ export class RCDispatcher {
   }
 }
 
-// ─── Backward-compatible functional API ──────────────────────────────────────
-// Mirrors the original `dispatchCascadePasses(opts)` signature for drop-in use.
-
-// Single-canvas-scoped by design: this functional API serves the legacy /
-// single-host call sites where there is exactly one RC canvas per page.
-// Multi-canvas / multi-instance hosts should instantiate `RCDispatcher`
-// directly (the class is exported) — a shared dispatcher would otherwise
-// share state across canvases that should be independent.
-const _sharedDispatcher = new RCDispatcher();
-
-/**
- * Convenience wrapper: dispatch cascade passes using a shared singleton `RCDispatcher`.
- * This matches the original functional `dispatchCascadePasses()` API.
- *
- * @deprecated Module-level singletons violate CLAUDE.md Design Principle 2
- * ("the host owns lifecycle"). Use `new RCDispatcher()` per host and call
- * `dispatcher.dispatchFrame(opts)` directly. Single-canvas hosts can keep
- * one instance for the page; multi-canvas hosts MUST instantiate per
- * dispatcher (the shared singleton corrupts state across independent
- * canvases). Retained for backward compatibility with legacy callers;
- * no production consumer is left in this monorepo (only one test exercises
- * the surface to keep it un-broken).
- */
-export async function dispatchCascadePasses(opts: RCDispatchOpts): Promise<void> {
-  return _sharedDispatcher.dispatchFrame(opts);
-}
-
-/**
- * Tear down GPU resources held by the module-level shared dispatcher used
- * by `dispatchCascadePasses`. Hosts should call this on canvas unmount or
- * page teardown to avoid leaking pipelines / bind groups on hot reload.
- *
- * No-op if `dispatchCascadePasses` was never called for the current page.
- * After calling, subsequent `dispatchCascadePasses` calls reinitialize.
- *
- * @deprecated See `dispatchCascadePasses` deprecation note — instantiate
- * `RCDispatcher` per host and call `.dispose()` on your own instance.
- */
-export function disposeSharedDispatcher(): void {
-  _sharedDispatcher.dispose();
-}
+// W8 follow-up cleanup (2026-05-18) — the `dispatchCascadePasses` /
+// `disposeSharedDispatcher` module-level singleton wrappers were removed
+// after grep verified zero production consumers (host code instantiates
+// `RCDispatcher` directly now via HybridEngineRC.ts). The singletons
+// violated CLAUDE.md Design Principle 2 ("the host owns lifecycle") and
+// only existed as a backward-compat surface for legacy callers that no
+// longer exist in this monorepo.

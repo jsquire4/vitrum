@@ -75,7 +75,7 @@ export { buildRCSceneBVH } from './rc/bvhCompute.js';
 export type { SceneBVH as RCSceneBVH, BvhBuildOpts as RCBvhBuildOpts } from './rc/bvhCompute.js';
 
 // Cascade dispatch — raw WebGPU compute (converted from TSL per RD-12).
-export { RCDispatcher, dispatchCascadePasses, disposeSharedDispatcher } from './rc/cascadeDispatch.js';
+export { RCDispatcher } from './rc/cascadeDispatch.js';
 export type { RCDispatchOpts, RCDispatchOptsRaw } from './rc/cascadeDispatch.js';
 
 // Cascade buffer manager (de-React-ified from useCascadeBuffers).
