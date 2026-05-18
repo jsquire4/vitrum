@@ -18,6 +18,16 @@
  *   6. Temporal accumulation: EMA blend with previous frame's HDR
  *   7. Composite render pass: blit accumulated HDR to the swap-chain texture
  *
+ * **W1-R5 — declarative pass order.** All 18 non-denoiser stages above are
+ * implemented as self-contained {@link Pass} entries under
+ * `pipeline/passes/` and registered with a {@link PassRegistry}. Frame
+ * dispatch is now a pass-loop sandwiching the polymorphic denoiser
+ * dispatch (which lives in {@link DenoiserRegistry} from W1-R3/R4). Adding
+ * a non-denoiser pass is a single new file + one `register()` call below.
+ * The position-encoded ordering inside this file was the largest single
+ * source of integration complexity per the 2026-05-17 sweep (Theme B / B2
+ * / B5 / B6).
+ *
  * Note: we use primary-ray-casting mode instead of a G-buffer raster pass.
  * The G-buffer bind group slots are filled with 1×1 placeholder textures for
  * layout compatibility; the RIS + shade passes generate their own primary
@@ -42,19 +52,8 @@ import {
   buildFrameBindGroup,
   buildSceneBindGroup,
   buildUboBindGroup,
-  buildAtrousBindGroup,
-  buildAccumBindGroup,
   buildHybridLayersBindGroup,
   buildCompositeBindGroup,
-  buildSampleBudgetBindGroup,
-  buildResolveBindGroup,
-  buildGTAOBindGroup,
-  buildGTAOUpsampleBindGroup,
-  buildTemporalGiBindGroup,
-  buildSpatialGiBindGroup,
-  buildIndirectCombineBindGroup,
-  buildIndirectTemporalAccumBindGroup,
-  ATROUS_INDIRECT_SIGMAS,
   type UboRef,
 } from './bindGroupBuilders.js';
 import {
@@ -63,6 +62,34 @@ import {
   type DenoiserId,
 } from './denoisers/index.js';
 import { registerBuiltinDenoisers } from './denoisers/registerBuiltinDenoisers.js';
+import { PassRegistry } from './PassRegistry.js';
+import type {
+  Pass,
+  PassDispatchContext,
+  PassFrameState,
+  PassGateOptions,
+} from './Pass.js';
+import {
+  AtrousIndirectPass,
+  CompositePass,
+  GTAOPass,
+  GTAOUpsamplePass,
+  IndirectCombinePass,
+  IndirectTemporalAccumPass,
+  PPGGuidePass,
+  PPGUpdatePass,
+  ResolvePass,
+  RISGIPass,
+  RISPass,
+  SampleBudgetPass,
+  ShadePass,
+  SpatialGIReservoirPass,
+  SpatialReservoirPass,
+  TemporalAccumPass,
+  TemporalGIReservoirPass,
+  TemporalReservoirPass,
+} from './passes/index.js';
+import type { PingPongRef } from './passes/passRefs.js';
 import {
   tsWrites,
   initTimestampQueries,
@@ -230,6 +257,17 @@ export interface PipelineFrameInputs {
   swapChainFormat: GPUTextureFormat;
 }
 
+/** Index in `sortedPasses` AFTER which the orchestrator runs the
+ *  polymorphic denoiser dispatch. Resolved at registry construction time
+ *  by finding `gtao-upsample`. Honest layering note: the denoiser is a
+ *  separate concept from pass scheduling — see
+ *  `denoisers/index.ts::Denoiser`. Pre-W1-R5 this split lived as a
+ *  position-encoded line in renderFrame; W1-R5 keeps the manual
+ *  `_activeDenoiser.dispatch()` call here rather than wrapping the
+ *  denoiser as a virtual Pass, so the layering distinction stays
+ *  visible. */
+const DENOISER_AFTER_PASS_ID = 'gtao-upsample';
+
 export class WalkaroundGPUPipeline {
   // Private fields use the `_field` underscore prefix, matching HybridEngine.
   private _device: GPUDevice;
@@ -261,46 +299,38 @@ export class WalkaroundGPUPipeline {
   // Populated lazily on first setDDGIInputs(null) call.
   private _ddgiPlaceholderUBO: Float32Array | null = null;
 
-  // Compiled compute + render pipelines
-  private _risPipeline!: GPUComputePipeline;
-  private _temporalPipeline!: GPUComputePipeline;
-  private _spatialPipeline!: GPUComputePipeline;
-  private _shadePipeline!: GPUComputePipeline;
   /** Shared à-trous pipeline. Used by the legacy `AtrousDenoiser` (passed
    *  in via the dispatch context) AND by the always-on
-   *  {@link _dispatchAtrousIndirect} chain. Compiled in pipelineCompiler. */
+   *  {@link AtrousIndirectPass}. Compiled once in pipelineCompiler and
+   *  shared by both consumers (rationale: identical shader / BGL — forking
+   *  a private compile per consumer would double the boot cost for zero
+   *  functional benefit). */
   private _atrousPipeline!: GPUComputePipeline;
-  private _accumPipeline!: GPUComputePipeline;
-  private _compositePipeline!: GPURenderPipeline;
   /** Active denoiser (looked up from `_denoiserRegistry` after init). */
   private _denoiserMode: DenoiserId = 'atrous-variance';
   /** Registry of all built-in denoisers; populated once at boot. */
   private _denoiserRegistry: DenoiserRegistry | null = null;
   /** The active denoiser instance for this pipeline (set in initialize). */
   private _activeDenoiser: Denoiser | null = null;
+  /** Registry of non-denoiser passes; populated once at boot. */
+  private _passRegistry: PassRegistry | null = null;
+  /** Sorted pass list cached at boot; reused across frames. */
+  private _sortedPasses: readonly Pass[] = [];
+  /** Index of the pass after which the denoiser dispatch fires. */
+  private _denoiserSplitIndex = -1;
   /** T2.H2 — neural denoiser InferenceGraph; kept for future W10 wiring. */
   private _inferenceGraph: InferenceGraph | null = null;
   /** Audit B8 — populated at initialize() time from HybridEngineOptions. */
   private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
   /** Audit M3 — populated at initialize() time from HybridEngineOptions. */
   private _temporalAccumAlpha = DEFAULT_TEMPORAL_ACCUM_ALPHA;
-  // T2.H3 — PPG pipelines (Müller 2017; populated when ppgEnabled === true).
-  private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
-  private _ppgGuidePipeline:  GPUComputePipeline | undefined = undefined;
   /** T2.H3 — PPG is enabled iff both pipelines were compiled successfully. */
   private _ppgEnabled = false;
-  // Sprint 9 — adaptive sampling pipelines (always populated).
-  private _sampleBudgetPipeline!: GPUComputePipeline;
-  private _resolvePipeline!: GPUComputePipeline;
-  private _gtaoPipeline!: GPUComputePipeline;
-  private _gtaoUpsamplePipeline!: GPUComputePipeline;
-  private _risGiPipeline!: GPUComputePipeline;
-  private _temporalGiPipeline!: GPUComputePipeline;
-  private _spatialGiPipeline!: GPUComputePipeline;
-  private _indirectCombinePipeline!: GPUComputePipeline;
-  private _indirectTemporalAccumPipeline!: GPUComputePipeline;
-  /** Sprint 18 follow-up — ping-pong index for the indirect temporal accumulator. */
-  private _indirectAccumPingPong = 0;
+  /** Sprint 18 follow-up — ping-pong index for the indirect temporal
+   *  accumulator. Lives on the pipeline because the value persists across
+   *  frames; the {@link IndirectTemporalAccumPass} reads + advances it
+   *  through a {@link PingPongRef} wrapper. */
+  private _indirectAccumPingPongRef: PingPongRef = { value: 0 };
   private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
 
   // Bind group layout memoisation cache
@@ -407,27 +437,19 @@ export class WalkaroundGPUPipeline {
       verbose: options?.verbose ?? false,
       ppgEnabled: options?.ppgEnabled ?? false,
     });
-    this._risPipeline       = compiled.risPipeline;
-    this._temporalPipeline  = compiled.temporalPipeline;
-    this._spatialPipeline   = compiled.spatialPipeline;
-    this._shadePipeline     = compiled.shadePipeline;
-    this._atrousPipeline    = compiled.atrousPipeline;
-    this._accumPipeline     = compiled.accumPipeline;
-    this._compositePipeline = compiled.compositePipeline;
+    // Shared à-trous pipeline — fed into the AtrousDenoiser context AND
+    // the always-on AtrousIndirectPass.
+    this._atrousPipeline = compiled.atrousPipeline;
     this._denoiserMode = options?.denoiser ?? 'atrous-variance';
     this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
       ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
     this._temporalAccumAlpha = options?.temporalAccumAlpha
       ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
-    this._sampleBudgetPipeline = compiled.sampleBudgetPipeline;
-    this._resolvePipeline      = compiled.resolvePipeline;
-    this._gtaoPipeline         = compiled.gtaoPipeline;
-    this._gtaoUpsamplePipeline = compiled.gtaoUpsamplePipeline;
-    this._risGiPipeline        = compiled.risGiPipeline;
-    this._temporalGiPipeline   = compiled.temporalGiPipeline;
-    this._spatialGiPipeline    = compiled.spatialGiPipeline;
-    this._indirectCombinePipeline = compiled.indirectCombinePipeline;
-    this._indirectTemporalAccumPipeline = compiled.indirectTemporalAccumPipeline;
+
+    // T2.H3 — PPG is enabled iff host opted-in AND both pipelines compiled.
+    this._ppgEnabled = (options?.ppgEnabled ?? false) &&
+      compiled.ppgUpdatePipeline !== undefined &&
+      compiled.ppgGuidePipeline  !== undefined;
 
     // ── Denoiser registry: build, register builtins, look up + initialise
     //    the active denoiser. Disabled placeholders (neural / oidn-final)
@@ -455,15 +477,6 @@ export class WalkaroundGPUPipeline {
       this._inferenceGraph = options.inferenceGraph;
     }
 
-    // T2.H3 — PPG pipelines (Müller 2017 §3.1–3.4): store and flag as enabled.
-    // Guide pass runs BEFORE shade (provides p_guide for next-bounce sampling).
-    // Update pass runs AFTER shade (accumulates L_i into dTree leaves, deviation 3 fix).
-    this._ppgUpdatePipeline = compiled.ppgUpdatePipeline;
-    this._ppgGuidePipeline  = compiled.ppgGuidePipeline;
-    this._ppgEnabled = (options?.ppgEnabled ?? false) &&
-      compiled.ppgUpdatePipeline !== undefined &&
-      compiled.ppgGuidePipeline  !== undefined;
-
     // ── Timestamp queries (DEV-only, feature-gated) ──────────────────────
     initTimestampQueries(d, this._tsState);
 
@@ -477,6 +490,61 @@ export class WalkaroundGPUPipeline {
     this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
     this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
     this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
+
+    // ── Pass registry: instantiate + register all non-denoiser passes ────
+    // Order of registration is irrelevant; the registry topologically sorts.
+    const registry = new PassRegistry();
+    registry.register(new SampleBudgetPass(
+      compiled.sampleBudgetPipeline,
+      this._sampleBudgetUboRef,
+      this._sampleCountUboRef,
+    ));
+    registry.register(new RISPass(compiled.risPipeline));
+    registry.register(new TemporalReservoirPass(compiled.temporalPipeline));
+    registry.register(new SpatialReservoirPass(compiled.spatialPipeline));
+    registry.register(new RISGIPass(compiled.risGiPipeline));
+    registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline));
+    registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline));
+    registry.register(new ShadePass(compiled.shadePipeline));
+    registry.register(new GTAOPass(compiled.gtaoPipeline));
+    registry.register(new GTAOUpsamplePass(compiled.gtaoUpsamplePipeline));
+    registry.register(new IndirectTemporalAccumPass(
+      compiled.indirectTemporalAccumPipeline,
+      this._indirectAccumPingPongRef,
+    ));
+    registry.register(new AtrousIndirectPass(
+      compiled.atrousPipeline,
+      this._atrousIndirectUboRef,
+    ));
+    registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
+    registry.register(new TemporalAccumPass(compiled.accumPipeline, this._accumUboRef));
+    registry.register(new ResolvePass(compiled.resolvePipeline, this._resolveUboRef));
+    registry.register(new CompositePass(compiled.compositePipeline));
+    // PPG passes — only register when the pipelines compiled successfully.
+    // The `gates()` predicate gates dispatch on `opts.ppgEnabled` so they
+    // can be registered unconditionally here, but skipping registration
+    // when the pipeline is undefined avoids holding a stale field.
+    if (compiled.ppgGuidePipeline) {
+      registry.register(new PPGGuidePass(compiled.ppgGuidePipeline));
+    }
+    if (compiled.ppgUpdatePipeline) {
+      registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));
+    }
+
+    // ── Initialize all passes in parallel ────────────────────────────────
+    this._passRegistry = registry;
+    this._sortedPasses = registry.sortedPasses();
+    this._denoiserSplitIndex = this._sortedPasses.findIndex(
+      (p) => p.id === DENOISER_AFTER_PASS_ID,
+    );
+    if (this._denoiserSplitIndex < 0) {
+      throw new Error(
+        `WalkaroundGPUPipeline: pass "${DENOISER_AFTER_PASS_ID}" not registered`,
+      );
+    }
+    await Promise.all(this._sortedPasses.map((p) => p.initialize({
+      device: d, width: W, height: H, bglCache: this._bglCache, frameResources: this._res,
+    })));
 
     this._initialized = true;
     if (options?.verbose) {
@@ -533,7 +601,7 @@ export class WalkaroundGPUPipeline {
     // the accumulator at α=1 and re-seed history.
     this._accumPingPongIndex = 0;
     this._accumFrameIndex = 0;
-    this._indirectAccumPingPong = 0;
+    this._indirectAccumPingPongRef.value = 0;
     this._lastCameraPos = [0, 0, 0];
     // Denoiser-private ping-pong indices (Welford / SVGF) reset inside
     // each Denoiser.resize implementation.
@@ -554,6 +622,11 @@ export class WalkaroundGPUPipeline {
     const bgComposite = buildCompositeBindGroup(
       d, this._bglCache, finalTex.createView(), this._res.common.compositeSampler,
     );
+    // The CompositePass instance owns the compiled render pipeline; reuse
+    // it here so a single source of truth for the composite shader stays
+    // intact. Located via registry lookup — the orchestrator does not
+    // hold a separate compiled-pipeline handle for composite.
+    const compositePass = this._passRegistry!.get('composite') as CompositePass;
     const encoder = d.createCommandEncoder({ label: 'composite-only' });
     const pass = encoder.beginRenderPass({
       label: 'composite-only',
@@ -564,7 +637,7 @@ export class WalkaroundGPUPipeline {
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
       }],
     });
-    pass.setPipeline(this._compositePipeline);
+    pass.setPipeline(compositePass.pipeline);
     pass.setBindGroup(0, bgComposite);
     pass.draw(3, 1, 0, 0);
     pass.end();
@@ -602,7 +675,7 @@ export class WalkaroundGPUPipeline {
     // ── Build placeholder texture view ────────────────────────────────────
     const placeholderView = this._res.common.placeholderTexture.createView();
 
-    // ── Build bind groups ─────────────────────────────────────────────────
+    // ── Build shared bind groups (frame/scene/ubo/hybrid-layers) ─────────
     const bgFrame = buildFrameBindGroup(d, this._bglCache, {
       placeholderView,
       reservoirCurrentBuffer:  this._res.restirDI.reservoirCurrentBuffer,
@@ -630,14 +703,27 @@ export class WalkaroundGPUPipeline {
       this._res.gtao.aoFullTexture.createView(),
       this._res.common.tierTexture.createView(),
     );
+    // Sprint 16 — DDGI hybrid layers slot 3 — shared by gi-ris and shade.
+    const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
+      ddgiIrrTex:              this._ddgiIrrTex,
+      ddgiVisTex:              this._ddgiVisTex,
+      ddgiPlaceholderRgba16f:  this._res.ddgi.ddgiPlaceholderRgba16f,
+      ddgiPlaceholderRg16f:    this._res.ddgi.ddgiPlaceholderRg16f,
+      nearestSampler:          this._res.common.nearestSampler,
+      ddgiUboBuffer:           this._res.ddgi.ddgiUboBuffer,
+    });
 
-    // ── Dispatch compute passes ───────────────────────────────────────────
+    // ── Per-frame pre-computed scalars ───────────────────────────────────
     const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode });
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
 
-    const wgX = Math.ceil(W / 8);
-    const wgY = Math.ceil(H / 8);
+    const wgX  = Math.ceil(W / 8);
+    const wgY  = Math.ceil(H / 8);
+    const wgX16 = Math.ceil(W / 16);
+    const wgY16 = Math.ceil(H / 16);
+    const halfWgX = Math.ceil(Math.floor(W / 2) / 8);
+    const halfWgY = Math.ceil(Math.floor(H / 2) / 8);
 
     // Helper: build a GPUComputePassDescriptor without an undefined timestampWrites
     // property — required by exactOptionalPropertyTypes. We spread the optional
@@ -648,267 +734,9 @@ export class WalkaroundGPUPipeline {
       const ts = tsWrites(this._tsState.querySet, passLayout, label);
       return ts ? { label, timestampWrites: ts } : { label };
     };
-
-    // Pass 0: Sample budget (Sprint 9). Reads previous-frame Welford variance,
-    // writes per-pixel tier texture (1=converged, 2=med, 4=high-noise). On the
-    // first few frames (variance unconverged) every pixel classifies to tier 1
-    // because raw bytes read 0 — harmless: the safety-clamp in shade.wgsl
-    // falls back to ao=1.0 in that case. The tier output IS consumed:
-    // risGi.wgsl reads `gi_tier` at @group(2) @binding(2) and scales M_GI per
-    // pixel (high-variance regions get more RIS candidates).  ris.wgsl (DI)
-    // currently ignores it; tier-aware DI sampling is a future Sprint-9 step.
-    {
-      // Budget uniforms: f32 threshold_low, f32 threshold_high, u32 screenW, u32 screenH (16 bytes).
-      // Audit M2: thresholds now host-overridable via
-      // HybridEngineOptions.adaptiveSamplingThresholds; default [0.01, 0.10]
-      // is calibrated to Cornell variance dynamic range.
-      const budgetBytes = new ArrayBuffer(16);
-      const budgetF32 = new Float32Array(budgetBytes);
-      const budgetU32 = new Uint32Array(budgetBytes);
-      budgetF32[0] = inputs.adaptiveSamplingThresholdLow;
-      budgetF32[1] = inputs.adaptiveSamplingThresholdHigh;
-      budgetU32[2] = W;
-      budgetU32[3] = H;
-      d.queue.writeBuffer(this._sampleBudgetUboRef.buf!, 0, budgetBytes);
-      // Sample count uniforms: u32 sampleCount + 3 pad u32 (16 bytes).
-      d.queue.writeBuffer(
-        this._sampleCountUboRef.buf!,
-        0,
-        new Uint32Array([Math.max(this._accumFrameIndex + 1, 1), 0, 0, 0]),
-      );
-      const bgBudget = buildSampleBudgetBindGroup(
-        d, this._bglCache,
-        this._res.common.varianceBuffer.createView(),
-        this._res.common.tierTexture.createView(),
-        this._sampleBudgetUboRef.buf!,
-        this._sampleCountUboRef.buf!,
-      );
-      const pass = encoder.beginComputePass(computeDesc('sample-budget'));
-      pass.setPipeline(this._sampleBudgetPipeline);
-      pass.setBindGroup(0, bgBudget);
-      pass.dispatchWorkgroups(wgX, wgY, 1);
-      pass.end();
-    }
-
-    // Pass 1: RIS (primary ray cast + reservoir sampling)
-    {
-      const pass = encoder.beginComputePass(computeDesc('ris'));
-      pass.setPipeline(this._risPipeline);
-      pass.setBindGroup(0, bgFrame);
-      pass.setBindGroup(1, bgScene);
-      pass.setBindGroup(2, bgUbo);
-      pass.dispatchWorkgroups(wgX, wgY, 1);
-      pass.end();
-    }
-
-    // Pass 2: Temporal reuse
-    {
-      const pass = encoder.beginComputePass(computeDesc('temporal'));
-      pass.setPipeline(this._temporalPipeline);
-      pass.setBindGroup(0, bgFrame);
-      pass.setBindGroup(1, bgScene);
-      pass.setBindGroup(2, bgUbo);
-      pass.dispatchWorkgroups(wgX, wgY, 1);
-      pass.end();
-    }
-
-    // Pass 3a + 3b: Spatial reuse — two passes for fidelity. Per-pass cost
-    // on Lovelace was ~22ms each. With NEIGHBORS=5, each pass is heavier
-    // but the visual win is the dominant variance reducer in the pipeline.
-    {
-      const pass = encoder.beginComputePass(computeDesc('spatial-1'));
-      pass.setPipeline(this._spatialPipeline);
-      pass.setBindGroup(0, bgFrame);
-      pass.setBindGroup(1, bgScene);
-      pass.setBindGroup(2, bgUbo);
-      pass.dispatchWorkgroups(wgX, wgY, 1);
-      pass.end();
-    }
-    {
-      const pass = encoder.beginComputePass(computeDesc('spatial-2'));
-      pass.setPipeline(this._spatialPipeline);
-      pass.setBindGroup(0, bgFrame);
-      pass.setBindGroup(1, bgScene);
-      pass.setBindGroup(2, bgUbo);
-      pass.dispatchWorkgroups(wgX, wgY, 1);
-      pass.end();
-    }
-
-    // Pass 4: Shading + GI (re-traces primary ray, evaluates ReSTIR).
-    // Combined hybrid-layers bind group at slot 3 holds DDGI inputs
-    // (Lovelace caps maxBindGroups=4 so we can't use slot 4).
-    // shade.wgsl gates on isDDGIWired().
-    const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
-      ddgiIrrTex:              this._ddgiIrrTex,
-      ddgiVisTex:              this._ddgiVisTex,
-      ddgiPlaceholderRgba16f:  this._res.ddgi.ddgiPlaceholderRgba16f,
-      ddgiPlaceholderRg16f:    this._res.ddgi.ddgiPlaceholderRg16f,
-      nearestSampler:          this._res.common.nearestSampler,
-      ddgiUboBuffer:           this._res.ddgi.ddgiUboBuffer,
-    });
-
-    // Sprint 16 — ReSTIR-GI RIS pass. Half-res dispatch (W/2 × H/2).
-    // Reuses bgFrame (gNormalDepth + reservoirGiCurrent), bgScene (BVH),
-    // bgUbo (camera + ao), bgHybrid (DDGI atlas).
-    {
-      const halfWg = Math.ceil((Math.floor(W / 2)) / 8);
-      const halfWgY = Math.ceil((Math.floor(H / 2)) / 8);
-      const pass = encoder.beginComputePass(computeDesc('gi-ris'));
-      pass.setPipeline(this._risGiPipeline);
-      pass.setBindGroup(0, bgFrame);
-      pass.setBindGroup(1, bgScene);
-      pass.setBindGroup(2, bgUbo);
-      pass.setBindGroup(3, bgHybrid);
-      pass.dispatchWorkgroups(halfWg, halfWgY, 1);
-      pass.end();
-    }
-
-    // Sprint 17 — GI temporal reuse + two spatial passes (ping-pong).
-    // All three run half-res (W/2 × H/2) using dedicated single-group BGLs.
-    {
-      const halfWg  = Math.ceil((Math.floor(W / 2)) / 8);
-      const halfWgY = Math.ceil((Math.floor(H / 2)) / 8);
-
-      const bgTemporalGi = buildTemporalGiBindGroup(
-        d, this._bglCache,
-        this._res.restirGI.reservoirGiCurrentBuffer,
-        this._res.restirGI.reservoirGiPreviousBuffer,
-        this._res.common.uboBuffer,
-      );
-      const tPass = encoder.beginComputePass(computeDesc('gi-temporal'));
-      tPass.setPipeline(this._temporalGiPipeline);
-      tPass.setBindGroup(0, bgTemporalGi);
-      tPass.dispatchWorkgroups(halfWg, halfWgY, 1);
-      tPass.end();
-
-      // Spatial pass 1: current → spatial.
-      const bgSpatial1 = buildSpatialGiBindGroup(
-        d, this._bglCache,
-        this._res.restirGI.reservoirGiCurrentBuffer,
-        this._res.restirGI.reservoirGiSpatialBuffer,
-        this._res.common.uboBuffer,
-        'spatial-gi-bg-1',
-      );
-      const s1 = encoder.beginComputePass(computeDesc('gi-spatial-1'));
-      s1.setPipeline(this._spatialGiPipeline);
-      s1.setBindGroup(0, bgSpatial1);
-      s1.dispatchWorkgroups(halfWg, halfWgY, 1);
-      s1.end();
-
-      // Spatial pass 2: spatial → current.
-      const bgSpatial2 = buildSpatialGiBindGroup(
-        d, this._bglCache,
-        this._res.restirGI.reservoirGiSpatialBuffer,
-        this._res.restirGI.reservoirGiCurrentBuffer,
-        this._res.common.uboBuffer,
-        'spatial-gi-bg-2',
-      );
-      const s2 = encoder.beginComputePass(computeDesc('gi-spatial-2'));
-      s2.setPipeline(this._spatialGiPipeline);
-      s2.setBindGroup(0, bgSpatial2);
-      s2.dispatchWorkgroups(halfWg, halfWgY, 1);
-      s2.end();
-    }
-
-    // T2.H3 — PPG guide pass (Müller §3.2, §3.4): BEFORE shade.
-    // Produces a per-pixel guided direction and PDF (world frame, deviation 4 fix).
-    // The shade pass consumes the guide output for the next-bounce sample,
-    // mixing it with the BSDF PDF via MIS (deviation from prior: no guide at all).
-    // When ppgEnabled=false this block is skipped and the shade pass uses BSDF only.
-    if (this._ppgEnabled && this._ppgGuidePipeline) {
-      // PPG guide runs with layout:'auto' — no manual bind group needed for the
-      // skeleton GPU path. The full bind-group wiring (ppgLeafFlux, ppgLeafSolidAng,
-      // ppgTotalFlux, ppgSampleOut) requires the serialised sTree/dTree buffers from
-      // the CPU-side PPGModelHandle. That wiring is handled by pipelineCompiler once
-      // the host calls ppgUpdate (CPU rebuild) and uploads the flat buffer.
-      // For now the guide pipeline is compiled and reserved; the dispatch is a no-op
-      // stub (zero workgroups) until the host provides the sTree GPU buffer.
-      // The shade pass falls back to BSDF-only when the guide output buffer is zeros.
-      const stubPass = encoder.beginComputePass(computeDesc('ppg-guide'));
-      stubPass.setPipeline(this._ppgGuidePipeline);
-      stubPass.dispatchWorkgroups(0, 0, 0); // no-op until sTree GPU buffer is wired
-      stubPass.end();
-    }
-
-    {
-      const pass = encoder.beginComputePass(computeDesc('shade'));
-      pass.setPipeline(this._shadePipeline);
-      pass.setBindGroup(0, bgFrame);
-      pass.setBindGroup(1, bgScene);
-      pass.setBindGroup(2, bgUbo);
-      pass.setBindGroup(3, bgHybrid);
-      pass.dispatchWorkgroups(wgX, wgY, 1);
-      pass.end();
-    }
-
-    // T2.H3 — PPG update pass (Müller §3.3): AFTER shade.
-    // Reads per-path L_i samples written by shade and accumulates flux into
-    // dTree leaf atomics (deviation 3 fix: L_i not L_o, deviation 4 fix: world frame).
-    // The CPU reads back the atomic buffer at the end of each rebuild cycle and
-    // calls splitOverflowLeaves + refineDTree to adapt the tree.
-    if (this._ppgEnabled && this._ppgUpdatePipeline) {
-      const stubPass = encoder.beginComputePass(computeDesc('ppg-update'));
-      stubPass.setPipeline(this._ppgUpdatePipeline);
-      stubPass.dispatchWorkgroups(0, 0, 0); // no-op stub until sTree GPU buffer is wired
-      stubPass.end();
-    }
-
-    // ── Sprint 15 — GTAO half-res + bilateral upsample ────────────────────
-    // Runs after shade (consumes gNormalDepth) and before the denoiser
-    // passes. The aoFullTexture is sampled by shade for the *next* frame
-    // (so there's a 1-frame lag on AO, invisible for static cameras and
-    // ReSTIR-DI's temporal accumulator absorbs slow camera changes).
-    {
-      // Pack GTAOUniforms (tanFovHalf, radiusPx, intensity, depthThresh,
-      // bilateralDepthSigma, _pad0, _pad1, _pad2).
-      // radiusPx / intensity / depthThresh / bilateralDepthSigma are now
-      // host-configurable via HybridEngineOptions.gtao (audit M1 + B3).
-      const camY = (inputs.projMatrix[5] ?? 1.0); // (1/tan(fov/2)) at the y-FOV
-      const tanFovHalf = camY > 1e-6 ? 1.0 / camY : 0.5;
-      const gtaoUboBytes = new Float32Array([
-        tanFovHalf,                            // 0
-        inputs.gtaoRadiusPx,                   // 1: audit M1
-        inputs.gtaoIntensity,                  // 2: audit M1
-        inputs.gtaoDepthThreshold,             // 3: audit M1
-        inputs.gtaoBilateralDepthSigma,        // 4: audit B3
-        0, 0, 0,                               // 5..7: _pad0/1/2
-      ]);
-      d.queue.writeBuffer(this._res.gtao.gtaoUboBuffer, 0, gtaoUboBytes);
-      const halfW = Math.max(1, Math.floor(W / 2));
-      const halfH = Math.max(1, Math.floor(H / 2));
-      const wgGtaoX = Math.ceil(halfW / 8);
-      const wgGtaoY = Math.ceil(halfH / 8);
-      {
-        const bg = buildGTAOBindGroup(
-          d, this._bglCache,
-          this._res.common.gNormalDepthTexture.createView(),
-          this._res.gtao.aoHalfTexture.createView(),
-          this._res.gtao.gtaoUboBuffer,
-          // E1 — hdrAlbedoOut for Jiménez 2016 §5.2 multi-bounce term.
-          this._res.common.albedoTexture.createView(),
-        );
-        const pass = encoder.beginComputePass(computeDesc('gtao'));
-        pass.setPipeline(this._gtaoPipeline);
-        pass.setBindGroup(0, bg);
-        pass.dispatchWorkgroups(wgGtaoX, wgGtaoY, 1);
-        pass.end();
-      }
-      {
-        const bg = buildGTAOUpsampleBindGroup(
-          d, this._bglCache,
-          this._res.gtao.aoHalfTexture.createView(),
-          this._res.common.gNormalDepthTexture.createView(),
-          this._res.gtao.aoFullTexture.createView(),
-          this._res.gtao.gtaoUboBuffer,
-        );
-        const pass = encoder.beginComputePass(computeDesc('gtao-upsample'));
-        pass.setPipeline(this._gtaoUpsamplePipeline);
-        pass.setBindGroup(0, bg);
-        pass.dispatchWorkgroups(wgX, wgY, 1);
-        pass.end();
-      }
-    }
-
+    const renderTimestampWrites = (label: PassLabel): GPURenderPassTimestampWrites | undefined => {
+      return tsWrites(this._tsState.querySet, passLayout, label);
+    };
 
     // ── Camera motion: reset temporal index before denoise / accum ────────
     const dx = inputs.cameraPos[0] - this._lastCameraPos[0];
@@ -920,18 +748,79 @@ export class WalkaroundGPUPipeline {
       this._accumFrameIndex = 0;
     }
 
-    const wgX16 = Math.ceil(W / 16);
-    const wgY16 = Math.ceil(H / 16);
+    // Resolve the temporal-accumulator ping-pong slots for this frame.
+    const readAccum  = this._accumPingPongIndex === 0
+      ? this._res.common.accumTextureA : this._res.common.accumTextureB;
+    const writeAccum = this._accumPingPongIndex === 0
+      ? this._res.common.accumTextureB : this._res.common.accumTextureA;
+
     const gNormalDepthView = this._res.common.gNormalDepthTexture.createView();
 
-    const readAccum  = this._accumPingPongIndex === 0 ? this._res.common.accumTextureA : this._res.common.accumTextureB;
-    const writeAccum = this._accumPingPongIndex === 0 ? this._res.common.accumTextureB : this._res.common.accumTextureA;
+    // alpha=0.01 gives ~99% history weight per frame. Sprint-18-followup
+    // tightening: even with the GI W cap + bilinear reservoir blend, the
+    // per-pixel reservoir choice changes a few % per frame, and the
+    // temporal accumulator's 2% admit at α=0.02 made that change visible
+    // as a "dancing" residual noise pattern. Halving α makes each frame's
+    // pattern contribution 1% — below the eye's flat-surface detection
+    // threshold — and the camera-motion path still forces α=1 on a real
+    // move so motion responsiveness is unchanged (just slower to converge
+    // back to steady state after a stop).
+    const alpha = this._accumFrameIndex === 0 ? 1.0 : this._temporalAccumAlpha;
 
-    // Polymorphic denoiser dispatch — replaces the legacy 4-way
-    // string-switch on `_denoiserMode`. The registry lookup happened in
-    // `initialize`; here we just delegate to the active entry. The
-    // `NoneDenoiser` returns null to opt out, in which case the raw HDR
-    // texture feeds the downstream temporal accumulator directly.
+    // ── Build the shared per-pass dispatch context ───────────────────────
+    const frameState: PassFrameState = {
+      denoisedDirect: this._res.common.hdrColorTexture,   // overwritten by denoiser dispatch
+      indirectAccumOut: this._res.common.indirectAccumPingTexture,  // overwritten by indirect-temporal-accum
+      denoisedIndirect: this._res.common.indirectDenoisedPingTexture, // overwritten by atrous-indirect
+      combinedDenoised: this._res.common.combinedDenoisedTexture,
+      writeAccum,
+      readAccum,
+      alpha,
+      isMoving,
+    };
+    const passCtx: PassDispatchContext = {
+      device: d,
+      encoder,
+      width: W,
+      height: H,
+      frameIndex: this._accumFrameIndex,
+      frameCount: this._frameCount,
+      bglCache: this._bglCache,
+      resources: this._res,
+      inputs,
+      frameBindGroup: bgFrame,
+      sceneBindGroup: bgScene,
+      uboBindGroup: bgUbo,
+      hybridLayersBindGroup: bgHybrid,
+      wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
+      gNormalDepthView,
+      computeDesc,
+      renderTimestampWrites,
+      frameState,
+    };
+
+    const gateOpts: PassGateOptions = {
+      denoiserMode: this._denoiserMode,
+      ppgEnabled: this._ppgEnabled,
+    };
+
+    // ── Pass loop, part 1 — up to and including gtao-upsample ────────────
+    // Manual `Pass.gates` filtering inline so we can iterate the cached
+    // `_sortedPasses` array; equivalent to `_passRegistry.activePasses(...)`
+    // but avoids re-sorting per frame.
+    for (let i = 0; i <= this._denoiserSplitIndex; i++) {
+      const pass = this._sortedPasses[i]!;
+      if (!pass.gates(gateOpts)) continue;
+      pass.dispatch(passCtx);
+    }
+
+    // ── Polymorphic denoiser dispatch ────────────────────────────────────
+    // Honest layering: denoising is a separate concept from pass
+    // scheduling (denoisers have a return value — the resolved-radiance
+    // texture downstream composition samples — and a different lifecycle
+    // shape). Wrapping the denoiser as a virtual Pass would obscure that
+    // distinction. The orchestrator threads the result back into
+    // `frameState.denoisedDirect` for IndirectCombinePass to read.
     const denoiserResult = this._activeDenoiser!.dispatch({
       device: d,
       encoder,
@@ -948,141 +837,20 @@ export class WalkaroundGPUPipeline {
       wgY16,
       computeDesc,
     });
-    let denoisedOut: GPUTexture = denoiserResult ?? this._res.common.hdrColorTexture;
+    // NoneDenoiser returns null → source the raw HDR target directly.
+    frameState.denoisedDirect = denoiserResult ?? this._res.common.hdrColorTexture;
 
-    // Sprint 18 — per-channel denoise + combine. Direct (denoisedOut from
-    // the atrous-variance/atrous chain above) is already smoothed.
-    //
-    // Sprint 18 follow-up — first run a TCBB-clipped temporal accumulator
-    // on the raw indirect signal so each frame's reservoir-driven jitter
-    // (per-pixel chosen-sample changes) gets averaged out *before* atrous.
-    // Atrous's chromaticity edge-stop preserves bright outliers; doing
-    // temporal smoothing first means atrous sees a far more coherent
-    // signal and its spatial filter actually converges.
-    const indirectAccumOut = this._indirectAccumPingPong === 0
-      ? this._res.common.indirectAccumPingTexture
-      : this._res.common.indirectAccumPongTexture;
-    const indirectAccumPrev = this._indirectAccumPingPong === 0
-      ? this._res.common.indirectAccumPongTexture
-      : this._res.common.indirectAccumPingTexture;
-    {
-      const bgIta = buildIndirectTemporalAccumBindGroup(
-        d, this._bglCache,
-        this._res.common.hdrIndirectTexture.createView(),
-        indirectAccumPrev.createView(),
-        indirectAccumOut.createView(),
-      );
-      const pass = encoder.beginComputePass(computeDesc('indirect-temporal-accum'));
-      pass.setPipeline(this._indirectTemporalAccumPipeline);
-      pass.setBindGroup(0, bgIta);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
+    // ── Pass loop, part 2 — indirect-temporal-accum … composite ──────────
+    for (let i = this._denoiserSplitIndex + 1; i < this._sortedPasses.length; i++) {
+      const pass = this._sortedPasses[i]!;
+      if (!pass.gates(gateOpts)) continue;
+      pass.dispatch(passCtx);
     }
-    this._indirectAccumPingPong = 1 - this._indirectAccumPingPong;
-    // Run the indirect 4-iter atrous chain on the temporally-accumulated
-    // signal rather than the raw frame, then sum with the denoised direct.
-    const denoisedIndirect = this._dispatchAtrousIndirect(
-      encoder, gNormalDepthView, wgX16, wgY16, computeDesc, indirectAccumOut,
-    );
-    const combinedTex = this._res.common.combinedDenoisedTexture;
-    {
-      const bgCombine = buildIndirectCombineBindGroup(
-        d, this._bglCache,
-        denoisedOut.createView(),
-        denoisedIndirect.createView(),
-        gNormalDepthView,
-        combinedTex.createView(),
-        // Item 24 — albedo demodulation: re-modulate denoised indirect lighting
-        // by the visible-point albedo written by shade (Schied 2017 §4.1).
-        this._res.common.albedoTexture.createView(),
-      );
-      const pass = encoder.beginComputePass(computeDesc('indirect-combine'));
-      pass.setPipeline(this._indirectCombinePipeline);
-      pass.setBindGroup(0, bgCombine);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-    }
-    denoisedOut = combinedTex;
 
-    // alpha=0.01 gives ~99% history weight per frame. Sprint-18-followup
-    // tightening: even with the GI W cap + bilinear reservoir blend, the
-    // per-pixel reservoir choice changes a few % per frame, and the
-    // temporal accumulator's 2% admit at α=0.02 made that change visible
-    // as a "dancing" residual noise pattern. Halving α makes each frame's
-    // pattern contribution 1% — below the eye's flat-surface detection
-    // threshold — and the camera-motion path still forces α=1 on a real
-    // move so motion responsiveness is unchanged (just slower to converge
-    // back to steady state after a stop).
-    const alpha = this._accumFrameIndex === 0 ? 1.0 : this._temporalAccumAlpha;
-    this._lastCameraPos = [...inputs.cameraPos];
-
-    {
-      const bgAccum = buildAccumBindGroup(
-        d, this._bglCache, this._accumUboRef,
-        denoisedOut.createView(),
-        readAccum.createView(),
-        writeAccum.createView(),
-        alpha,
-      );
-      const pass = encoder.beginComputePass(computeDesc('temporalAccum'));
-      pass.setPipeline(this._accumPipeline);
-      pass.setBindGroup(0, bgAccum);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-    }
+    // ── End-of-frame: swap-chain present sentinel + reservoir housekeeping ─
     this._accumPingPongIndex = 1 - this._accumPingPongIndex;
     this._accumFrameIndex++;
-
-    // Pass: Resolve (Sprint 9). Currently runs in passthrough mode
-    // (checkerboardOn=0) — every pixel copies through from writeAccum to
-    // resolvedTexture. When shade.wgsl is upgraded to write sparsely
-    // (checkerboard pattern), flip checkerboardOn=1 in the resolve UBO and
-    // the gap-fill branch becomes active. Until then this pass costs one
-    // extra texture copy per frame but produces identical output.
-    {
-      // ResolveUniforms: u32 W, u32 H, u32 frameParity, u32 checkerboardOn (16 bytes).
-      d.queue.writeBuffer(
-        this._resolveUboRef.buf!,
-        0,
-        new Uint32Array([W, H, this._frameCount & 1, 0]),
-      );
-      const bgResolve = buildResolveBindGroup(
-        d, this._bglCache,
-        this._resolveUboRef.buf!,
-        writeAccum.createView(),                            // current radiance (post-accum)
-        readAccum.createView(),                             // prev radiance (other ping-pong slot)
-        this._res.common.motionVectorTexture.createView(),         // motion vectors (zero-filled until a motion-vector pass exists)
-        this._res.common.resolvedTexture.createView(),
-      );
-      const pass = encoder.beginComputePass(computeDesc('resolve'));
-      pass.setPipeline(this._resolvePipeline);
-      pass.setBindGroup(0, bgResolve);
-      // resolve.wgsl uses @workgroup_size(8, 8, 1) — dispatch with wgX/wgY
-      // (ceil(W/8), ceil(H/8)) NOT the 16×16-sized wgX16/wgY16.
-      pass.dispatchWorkgroups(wgX, wgY, 1);
-      pass.end();
-    }
-
-    // Pass: Composite render pass — blit resolved HDR to swap-chain.
-    const finalTex = this._res.common.resolvedTexture;
-    const bgComposite = buildCompositeBindGroup(d, this._bglCache, finalTex.createView(), this._res.common.compositeSampler);
-    {
-      const tsComp = tsWrites(this._tsState.querySet, passLayout, 'composite');
-      const pass = encoder.beginRenderPass({
-        label: 'composite',
-        colorAttachments: [{
-          view: inputs.swapChainView,
-          loadOp: 'clear',
-          storeOp: 'store',
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        }],
-        ...(tsComp ? { timestampWrites: tsComp } : {}),
-      });
-      pass.setPipeline(this._compositePipeline);
-      pass.setBindGroup(0, bgComposite);
-      pass.draw(3, 1, 0, 0);  // 3 vertices, fullscreen triangle
-      pass.end();
-    }
+    this._lastCameraPos = [...inputs.cameraPos];
 
     // Swap reservoir ping-pong for next frame (copy current → previous).
     // Sprint 17 + audit B6 fix: copies must be folded into the *same*
@@ -1091,6 +859,13 @@ export class WalkaroundGPUPipeline {
     // main submit), high-FPS hosts could begin frame N+1's temporal
     // reservoir read before enc2 had completed, racing the previous-
     // frame copy — corrupts the GI reservoir, manifests as flicker.
+    //
+    // Kept as inline `encoder.copyBufferToBuffer` rather than a `FinalizePass`
+    // because the housekeeping touches non-Pass state (the orchestrator-
+    // owned reservoir ping-pong) and runs AFTER `composite` regardless of
+    // gating; an extra Pass would have empty `passLabels` and force the
+    // orchestrator to know about it specially. Two lines here vs a 30-line
+    // file is the right trade.
     encoder.copyBufferToBuffer(
       this._res.restirDI.reservoirCurrentBuffer, 0,
       this._res.restirDI.reservoirPreviousBuffer, 0,
@@ -1128,45 +903,6 @@ export class WalkaroundGPUPipeline {
     return true;
   }
 
-  /**
-   * Sprint 18 — indirect-channel à-trous dispatch. Four iterations with
-   * widening step (1, 2, 4, 8) on hdrIndirectTexture, written into an
-   * indirect ping-pong pair. Uses broader sigmas than the direct chain
-   * (see ATROUS_INDIRECT_SIGMAS) since ReSTIR-GI temporal+spatial reuse
-   * has already smoothed the indirect signal and remaining noise is just
-   * the 2×2 quad variance from the half-res reservoir read in shade.
-   */
-  private _dispatchAtrousIndirect(
-    encoder: GPUCommandEncoder,
-    gNormalDepthView: GPUTextureView,
-    wgX16: number,
-    wgY16: number,
-    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
-    inputTexture: GPUTexture,
-  ): GPUTexture {
-    const d = this._device;
-    let inputTex = inputTexture;
-    for (let iter = 0; iter < 4; iter++) {
-      const stepWidth = 1 << iter;
-      const outputTex = iter % 2 === 0
-        ? this._res.common.indirectDenoisedPingTexture
-        : this._res.common.indirectDenoisedPongTexture;
-      const bgAtrous = buildAtrousBindGroup(
-        d, this._bglCache, this._atrousIndirectUboRef,
-        inputTex.createView(), outputTex.createView(),
-        gNormalDepthView, gNormalDepthView, stepWidth,
-        ATROUS_INDIRECT_SIGMAS,
-      );
-      const pass = encoder.beginComputePass(computeDesc(`atrous-indirect-${iter}` as PassLabel));
-      pass.setPipeline(this._atrousPipeline);
-      pass.setBindGroup(0, bgAtrous);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outputTex;
-    }
-    return inputTex;
-  }
-
   dispose(): void {
     this._bvhNodesBuffer?.destroy();
     this._bvhIndexBuffer?.destroy();
@@ -1181,6 +917,10 @@ export class WalkaroundGPUPipeline {
     this._activeDenoiser?.dispose();
     this._activeDenoiser = null;
     this._denoiserRegistry = null;
+    // Each Pass releases any pass-private GPU resources it owns.
+    for (const pass of this._sortedPasses) pass.dispose();
+    this._sortedPasses = [];
+    this._passRegistry = null;
     // T2.H2 — dispose the neural InferenceGraph if present (reserved for W10).
     this._inferenceGraph?.dispose();
     this._inferenceGraph = null;

@@ -21,10 +21,11 @@
  */
 
 import { buildAtrousBindGroup, type UboRef } from '../bindGroupBuilders.js';
-import type {
-  Denoiser,
-  DenoiserDispatchContext,
-  DenoiserInitContext,
+import {
+  DENOISER_PASS_LABELS,
+  type Denoiser,
+  type DenoiserDispatchContext,
+  type DenoiserInitContext,
 } from './index.js';
 
 /** Number of à-trous iterations. Matches the legacy hard-coded value. */
@@ -32,6 +33,7 @@ const ATROUS_ITERATIONS = 3;
 
 export class AtrousDenoiser implements Denoiser {
   readonly id = 'atrous' as const;
+  readonly passLabels = DENOISER_PASS_LABELS['atrous'];
 
   /** Lazy 16-byte UBO holding `(stepWidth, sigmaN, sigmaZ, sigmaC)`. */
   private readonly _uboRef: UboRef = { buf: undefined };

@@ -37,14 +37,16 @@ import {
 } from '@vitrum/shared-denoisers';
 import type { UboRef } from '../bindGroupBuilders.js';
 import type { PassLabel } from '../timestampQueries.js';
-import type {
-  Denoiser,
-  DenoiserDispatchContext,
-  DenoiserInitContext,
+import {
+  DENOISER_PASS_LABELS,
+  type Denoiser,
+  type DenoiserDispatchContext,
+  type DenoiserInitContext,
 } from './index.js';
 
 export class SVGFRealDenoiser implements Denoiser {
   readonly id = 'svgf-real' as const;
+  readonly passLabels = DENOISER_PASS_LABELS['svgf-real'];
 
   // ── GPU pipelines (compiled in initialize) ──────────────────────────────
   private _reprojPipeline!: GPUComputePipeline;

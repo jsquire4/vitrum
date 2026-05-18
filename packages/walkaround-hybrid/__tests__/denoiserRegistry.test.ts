@@ -22,6 +22,7 @@ function stubDenoiser(id: DenoiserId, disabled = false): Denoiser {
   return {
     id,
     disabled,
+    passLabels: [],
     initialize: async (_ctx: DenoiserInitContext) => undefined,
     dispatch: (_ctx: DenoiserDispatchContext) => null,
     resize: (_w: number, _h: number) => undefined,

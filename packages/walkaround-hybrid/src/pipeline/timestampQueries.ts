@@ -28,6 +28,9 @@
  * the "buffer in use" stall a single readback buffer would cause.
  */
 
+import { DENOISER_PASS_LABELS } from './denoisers/index.js';
+import { composePassLabels } from './passes/passOrder.js';
+
 export type PassLabel =
   | 'sample-budget'
   | 'ris'
@@ -118,83 +121,22 @@ export interface PassLayout {
   readonly labels: readonly PassLabel[];
 }
 
+/**
+ * Build the per-frame timestamp-query slot layout.
+ *
+ * Single source of truth: consumes the static {@link NON_DENOISER_PASS_ORDER}
+ * table from `passes/passOrder.ts` and splices in the active denoiser's
+ * labels via {@link DENOISER_PASS_LABELS}. Adding a new non-denoiser pass
+ * is one edit to the order table (no edits here); adding a new denoiser
+ * is one entry in the labels map.
+ */
 export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
-  const labels: PassLabel[] = [
-    // Sprint 9 — adaptive sampling tier classifier runs before everything
-    // else so its r32uint tier output is available for shade in the same frame.
-    'sample-budget',
-    'ris', 'temporal', 'spatial-1', 'spatial-2',
-    // Sprint 16 — ReSTIR-GI RIS runs after the DI spatial passes and
-    // before shade so shade can consume the GI reservoir for Lo_indirect.
-    'gi-ris',
-    // Sprint 17 — GI temporal reuse + two ping-pong spatial passes. The
-    // shade pass reads the *current* GI reservoir, which after both spatial
-    // passes contains the spatially+temporally fused estimate.
-    'gi-temporal',
-    'gi-spatial-1',
-    'gi-spatial-2',
-    'shade',
-  ];
-  // Sprint 15 — GTAO runs after shade (consumes gNormalDepth) and before the
-  // denoiser passes (whose hdrColor input is already AO-modulated by shade
-  // for the *previous* frame's AO; the current frame's AO becomes input for
-  // the next frame).
-  labels.push('gtao', 'gtao-upsample');
-  // T2.H2: 'neural' uses the atrous-variance pass layout (InferenceGraph manages its own dispatch).
-  // 'none' adds no denoiser slots — NoneDenoiser is a pass-through. 'oidn-final' is registered
-  // disabled and never reaches this layout at runtime (registry throws at lookup).
-  if (opts.denoiserMode === 'atrous-variance' || opts.denoiserMode === 'neural') {
-    // Iteration count tied to `ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS = 3` in
-    // shared-denoisers/atrousVarianceConstants.ts. The dispatch loop in
-    // AtrousVarianceDenoiser.dispatch runs the same count; keep these
-    // in sync so the layout has exactly one slot per dispatch.
-    labels.push(
-      'welford-temporal',
-      'atrous-variance-variance',
-      'atrous-variance-atrous-0',
-      'atrous-variance-atrous-1',
-      'atrous-variance-atrous-2',
-    );
-  } else if (opts.denoiserMode === 'svgf-real') {
-    // T2.H1 — real Schied 2017 SVGF: reproj → moments → 7×7 fallback → 5 × à-trous.
-    // SVGF_REAL_DEFAULT_ATROUS_ITERATIONS = 5 in shared-denoisers/svgfRealConstants.ts.
-    // Keep slot count in sync with SVGFRealDenoiser.dispatch's loop.
-    labels.push(
-      'svgf-real-reproj',
-      'svgf-real-moments',
-      'svgf-real-7x7',
-      'svgf-real-atrous-0',
-      'svgf-real-atrous-1',
-      'svgf-real-atrous-2',
-      'svgf-real-atrous-3',
-      'svgf-real-atrous-4',
-    );
-  } else if (opts.denoiserMode === 'atrous') {
-    labels.push('atrous-0', 'atrous-1', 'atrous-2');
-  }
-  // 'none' / 'oidn-final': no denoiser slots appended.
-  // Sprint 18 follow-up — indirect-channel temporal accumulator (TCBB clip
-  // on history + firefly cap on current) runs *before* the atrous chain so
-  // atrous operates on a temporally-coherent signal rather than per-frame
-  // reservoir-sampled noise.  Followed by the 4-iter atrous chain (steps
-  // 1,2,4,8) and the indirect-combine sum.
-  labels.push(
-    'indirect-temporal-accum',
-    'atrous-indirect-0',
-    'atrous-indirect-1',
-    'atrous-indirect-2',
-    'atrous-indirect-3',
-    'indirect-combine',
-    // Item 3 (sweep 2026-05-11) — DDGI atlas border fill pass. Two slots:
-    // irradiance and visibility. Run once per frame after the indirect chain
-    // and before temporal accumulation, so the consumer (ddgiSample) reads
-    // border-filled atlases during the NEXT frame's shade pass.
-    'ddgi-border-irr',
-    'ddgi-border-vis',
-  );
-  // Sprint 9 — resolve sits between temporalAccum and composite so the
-  // composite blit reads from the resolved (checkerboard-filled) texture.
-  labels.push('temporalAccum', 'resolve', 'composite');
+  // Lazy imports break the module-init cycle (passOrder → timestampQueries
+  // → denoisers/index → timestampQueries). At call time both target
+  // modules have fully initialised their `*_PASS_LABELS` and
+  // `NON_DENOISER_PASS_ORDER` exports.
+  const denoiserLabels = DENOISER_PASS_LABELS[opts.denoiserMode];
+  const labels = composePassLabels(denoiserLabels);
 
   const indexMap = new Map<PassLabel, number>();
   labels.forEach((label, i) => indexMap.set(label, i));
