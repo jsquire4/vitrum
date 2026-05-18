@@ -11,6 +11,15 @@ export type {
 export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
 export type { HybridEngineOptions } from './HybridEngine.js';
 
+// W3-D19 — WebGPU brand constructors / narrowers for the @vitrum/core
+// `BackendTexture<'webgpu'>` and `BackendTextureFormat<'webgpu'>` slots.
+export {
+  asWebGPUBackendTexture,
+  asWebGPUBackendTextureFormat,
+  narrowToWebGPUTextureView,
+  narrowToWebGPUTextureFormat,
+} from './backendTextureBrand.js';
+
 // DDGI subsystem (class-based, de-React-ified)
 export { DDGI } from './ddgi/DDGI.js';
 export type { DDGIOptions, DDGIFrameInputs } from './ddgi/DDGI.js';

@@ -26,6 +26,7 @@ import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vit
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
+import { asWebGLBackendTexture } from './backendTextureBrand.js';
 import {
   MAX_TILE_GRID,
   TileVariancePass,
@@ -709,7 +710,9 @@ export class PTEngineWebGL2 implements Engine {
       const spp = this.#pathTracer.samples;
       const cap = this.#maxSamplesLimit;
       return {
-        primaryRadiance: this.#pathTracer.target.texture,
+        // W3-D19 — brand the WebGLTexture so consumers can statically
+        // distinguish a WebGL-backed primaryRadiance from a WebGPU one.
+        primaryRadiance: asWebGLBackendTexture(this.#pathTracer.target.texture),
         samplesAccumulated: spp,
         isConverged: spp >= cap,
         telemetry: this.#lastTelemetry,
@@ -812,7 +815,9 @@ export class PTEngineWebGL2 implements Engine {
     }
 
     return {
-      primaryRadiance: this.#pathTracer.target.texture,
+      // W3-D19 — brand the WebGLTexture so consumers can statically
+      // distinguish a WebGL-backed primaryRadiance from a WebGPU one.
+      primaryRadiance: asWebGLBackendTexture(this.#pathTracer.target.texture),
       samplesAccumulated: spp,
       isConverged: spp >= targetSpp,
       telemetry: this.#lastTelemetry,

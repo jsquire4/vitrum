@@ -34,6 +34,11 @@ import type {
 } from '@vitrum/core';
 import type { Scene } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
+import {
+  asWebGPUBackendTexture,
+  narrowToWebGPUTextureView,
+  narrowToWebGPUTextureFormat,
+} from './backendTextureBrand.js';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
@@ -960,7 +965,9 @@ export class HybridEngine implements Engine {
       // presented as cleared black → visible dark-flash on every other
       // frame at 120Hz. Blit the most recent resolvedTexture so the
       // canvas keeps showing the previous frame.
-      const skipSwapView = input.swapChainView as GPUTextureView | undefined;
+      const skipSwapView = input.swapChainView
+        ? narrowToWebGPUTextureView(input.swapChainView)
+        : undefined;
       if (skipSwapView && this._pipeline) {
         this._pipeline.presentLastFrame(skipSwapView);
       }
@@ -970,11 +977,18 @@ export class HybridEngine implements Engine {
 
     const t0 = now;
 
-    // Core's FrameInput types swap-chain fields opaquely (BackendTexture /
-    // BackendTextureFormat). The walkaround backend requires WebGPU; cast at
-    // this boundary so the rest of HybridEngine works with concrete types.
-    const swapView   = input.swapChainView as GPUTextureView | undefined;
-    const swapFmt    = (input.swapChainFormat as GPUTextureFormat | undefined) ?? getPreferredSwapChainFormat();
+    // Core's FrameInput types swap-chain fields opaquely as branded
+    // BackendTexture<'webgpu'> / BackendTextureFormat<'webgpu'>. The
+    // walkaround backend requires WebGPU; narrow at this boundary so the
+    // rest of HybridEngine works with the concrete `GPUTextureView` /
+    // `GPUTextureFormat` types. The narrow is zero-cost — the host's
+    // raw `GPUTextureView` reference flows through unchanged.
+    const swapView = input.swapChainView
+      ? narrowToWebGPUTextureView(input.swapChainView)
+      : undefined;
+    const swapFmt = input.swapChainFormat
+      ? narrowToWebGPUTextureFormat(input.swapChainFormat)
+      : getPreferredSwapChainFormat();
 
     if (!swapView) {
       if (dbg) dbg.skipNoSwapView++;
@@ -1136,7 +1150,10 @@ export class HybridEngine implements Engine {
     }
 
     return {
-      primaryRadiance:    swapView,   // swap chain is the output surface
+      // Re-brand the swap-chain view so the host can forward
+      // FrameOutput.primaryRadiance into a post-processing chain without
+      // losing the W3-D19 brand. Zero-cost — same GPUTextureView reference.
+      primaryRadiance:    asWebGPUBackendTexture(swapView),
       samplesAccumulated: 1,
       isConverged:        false,      // walkaround never converges; resamples every frame
     };

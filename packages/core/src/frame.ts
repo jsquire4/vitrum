@@ -97,11 +97,17 @@ export interface FrameInput {
    *  ignore both fields and write to their own framebuffer; the host then
    *  reads via `FrameOutput.primaryRadiance`. Typed as opaque so the
    *  backend-agnostic core does not pull in WebGPU type declarations.
-   *  Backends document what they require and cast at the boundary. */
-  readonly swapChainView?: BackendTexture;
+   *  Backends document what they require and recover the underlying handle
+   *  at the boundary via their `as*BackendTexture` constructor / narrow
+   *  helpers (e.g. `asWebGPUBackendTexture` in `@vitrum/walkaround-hybrid`).
+   *  Both swap-chain fields are WebGPU-specific by today's contract — the
+   *  brand parameter `'webgpu'` documents this and lets TS reject e.g.
+   *  passing a WebGL handle here without going through an explicit
+   *  constructor. */
+  readonly swapChainView?: BackendTexture<'webgpu'>;
   /** Backend-opaque swap-chain format. WebGPU backends expect a
    *  `GPUTextureFormat` string literal; WebGL backends ignore. */
-  readonly swapChainFormat?: BackendTextureFormat;
+  readonly swapChainFormat?: BackendTextureFormat<'webgpu'>;
 }
 
 export interface Viewport {
@@ -172,12 +178,42 @@ export interface FrameOutput {
   readonly isConverged: boolean;
 }
 
-/** Opaque texture handle. The shape varies per backend; hosts pass it back
- *  through `engine.renderFrame` outputs into post-processing chains, save
- *  pipelines, etc. without inspecting it. */
-export type BackendTexture = unknown;
+// ────────────────────────────────────────────────────────────────────────────
+// Backend texture branding (W3-D19)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// `BackendTexture` and `BackendTextureFormat` are nominally branded — values
+// CANNOT be assigned to them without going through a backend's `as*Backend*`
+// constructor. The brand encodes the backend identity (`'webgpu'`, `'webgl'`,
+// or `unknown` for backend-agnostic slots) so TS catches mismatched-backend
+// assignments at compile time instead of failing at runtime cast.
+//
+// At runtime the brand is zero-cost — the underlying value (`GPUTextureView`,
+// `WebGLTexture`, etc.) flows through unchanged. The brand exists only in
+// types; `unique symbol`-keyed properties on type-only `declare const`
+// declarations never exist on real values, so the structural type system
+// treats them as nominal markers.
+//
+// Construction is the only way in: backends export `asWebGPUBackendTexture`
+// (in `@vitrum/walkaround-hybrid` / `@vitrum/pt-webgpu`) and
+// `asWebGLBackendTexture` (in `@vitrum/pt-webgl`). On the read side they
+// expose a matching `narrowTo*` that asserts the brand and returns the
+// underlying handle. The host code never sees these brand symbols directly.
 
-/** Opaque texture-format token. Backend-specific (e.g. WebGPU uses
- *  `GPUTextureFormat` string literals); the core contract treats it as
- *  opaque so backend types don't bleed in here. */
-export type BackendTextureFormat = unknown;
+declare const __backendTextureBrand: unique symbol;
+/** Opaque, backend-branded texture handle. `TBackend` is `'webgpu'`,
+ *  `'webgl'`, or `unknown` (when the slot is backend-agnostic, e.g.
+ *  `FrameOutput.primaryRadiance` which the host may forward to either a
+ *  WebGPU composite or a WebGL readback). Construct via a backend's
+ *  `as*BackendTexture` helper; never via raw assignment. */
+export type BackendTexture<TBackend = unknown> = {
+  readonly [__backendTextureBrand]: TBackend;
+};
+
+declare const __backendTextureFormatBrand: unique symbol;
+/** Opaque, backend-branded texture-format token. Backed by `string` at
+ *  runtime (e.g. WebGPU's `GPUTextureFormat` is a string literal union).
+ *  Construct via a backend's `as*BackendTextureFormat` helper. */
+export type BackendTextureFormat<TBackend = unknown> = string & {
+  readonly [__backendTextureFormatBrand]: TBackend;
+};

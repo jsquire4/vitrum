@@ -45,3 +45,8 @@ export {
 // Sprint 10c — BDPT option types for host callers that drive fork uniforms directly.
 export type { ForkBridgeBdptOptions, ForkBridgeCausticOptions } from './forkUniformBridge.js';
 export { driveForkMaterialUniforms } from './forkUniformBridge.js';
+
+// W3-D19 — WebGL brand constructor / narrower for the @vitrum/core
+// `BackendTexture<'webgl'>` slot. pt-webgl-internal types brand themselves;
+// hosts that round-trip BackendTexture through their own code can use these.
+export { asWebGLBackendTexture, narrowToWebGLTexture } from './backendTextureBrand.js';

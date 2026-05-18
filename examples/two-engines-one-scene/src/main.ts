@@ -15,6 +15,8 @@ import {
   createWalkaroundEngine_Hybrid,
   HYBRID_WEBGPU_REQUIRED_FEATURES,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
+  asWebGPUBackendTexture,
+  asWebGPUBackendTextureFormat,
 } from '@vitrum/walkaround-hybrid';
 
 if (typeof console !== 'undefined' && console.debug) {
@@ -390,8 +392,10 @@ async function main(): Promise<void> {
           },
           frameIndex: wFrame,
           frameSeed: (wFrame * 1664525 + 1013904223) >>> 0,
-          swapChainView: view,
-          swapChainFormat: format,
+          // W3-D19 — wrap raw WebGPU handles with brand constructors so
+          // they satisfy `BackendTexture<'webgpu'>` / `BackendTextureFormat<'webgpu'>`.
+          swapChainView: asWebGPUBackendTexture(view),
+          swapChainFormat: asWebGPUBackendTextureFormat(format),
           quality: { bounces: 4 },
         };
         hybrid.renderFrame(input);

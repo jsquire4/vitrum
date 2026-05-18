@@ -25,6 +25,17 @@ export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export { summarizeScene };
 export type { SceneSummary };
 
+// W3-D19 — WebGPU brand constructors / narrowers for the @vitrum/core
+// `BackendTexture<'webgpu'>` and `BackendTextureFormat<'webgpu'>` slots.
+export {
+  asWebGPUBackendTexture,
+  asWebGPUBackendTextureFormat,
+  narrowToWebGPUTextureView,
+  narrowToWebGPUTextureFormat,
+} from './backendTextureBrand.js';
+
+import { asWebGPUBackendTexture } from './backendTextureBrand.js';
+
 export interface PTEngineWebGPUOptions extends EngineOptions {
   readonly device: GPUDevice;
 }
@@ -387,12 +398,14 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'paused') {
       const pq = input.quality ?? {};
       const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
+      // W3-D19 — brand each WebGPU GPUTexture so the FrameOutput slots
+      // satisfy `BackendTexture<unknown> | null`. Zero-cost wrappers.
       return {
-        primaryRadiance: this.#accumTexture,
-        normalDepth: this.#normalDepthTexture ?? undefined,
-        albedo: this.#albedoTexture ?? undefined,
-        variance: this.#varianceTexture ?? undefined,
-        motionVectors: this.#motionVectorsTexture ?? undefined,
+        primaryRadiance: this.#accumTexture ? asWebGPUBackendTexture(this.#accumTexture) : null,
+        ...(this.#normalDepthTexture ? { normalDepth: asWebGPUBackendTexture(this.#normalDepthTexture) } : {}),
+        ...(this.#albedoTexture ? { albedo: asWebGPUBackendTexture(this.#albedoTexture) } : {}),
+        ...(this.#varianceTexture ? { variance: asWebGPUBackendTexture(this.#varianceTexture) } : {}),
+        ...(this.#motionVectorsTexture ? { motionVectors: asWebGPUBackendTexture(this.#motionVectorsTexture) } : {}),
         samplesAccumulated: this.#samplesAccumulated,
         isConverged: this.#samplesAccumulated >= targetSppPaused,
       };
@@ -474,12 +487,13 @@ class PTEngineWebGPU implements Engine {
 
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
     const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
+    // W3-D19 — brand each WebGPU GPUTexture for the FrameOutput slots.
     return {
-      primaryRadiance: this.#accumTexture,
-      normalDepth: this.#normalDepthTexture ?? undefined,
-      albedo: this.#albedoTexture ?? undefined,
-      variance: this.#varianceTexture ?? undefined,
-      motionVectors: this.#motionVectorsTexture ?? undefined,
+      primaryRadiance: this.#accumTexture ? asWebGPUBackendTexture(this.#accumTexture) : null,
+      ...(this.#normalDepthTexture ? { normalDepth: asWebGPUBackendTexture(this.#normalDepthTexture) } : {}),
+      ...(this.#albedoTexture ? { albedo: asWebGPUBackendTexture(this.#albedoTexture) } : {}),
+      ...(this.#varianceTexture ? { variance: asWebGPUBackendTexture(this.#varianceTexture) } : {}),
+      ...(this.#motionVectorsTexture ? { motionVectors: asWebGPUBackendTexture(this.#motionVectorsTexture) } : {}),
       samplesAccumulated: this.#samplesAccumulated,
       isConverged: this.#samplesAccumulated >= targetSpp,
     };
