@@ -12,6 +12,8 @@
  * wrong screen quadrant for ~all pixels).
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const TEMPORAL_WGSL = /* wgsl */ `
 
 // Bind groups re-declared (same layout as ris.wgsl -- required in WGSL).
@@ -159,3 +161,10 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   storeReservoirDI_rw(&currentReservoir, pixelIdx, combined);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. */
+export const TEMPORAL_MODULE: WgslModule = {
+  name: 'temporal',
+  source: TEMPORAL_WGSL,
+  requires: ['common'],
+};

@@ -11,6 +11,8 @@
 // Atlas-layout constants are consumed by ddgiSampleWgsl.ts (the canonical
 // DDGI atlas sampler); shade.wgsl delegates via ddgiSampleFromBindings —
 // no direct constant references needed here.
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const SHADE_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var gDepth:     texture_2d<f32>;
@@ -483,3 +485,14 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(hdrTotalOut,    gid.xy, vec4f(clampedDirect + clampedIndirect * albedo, 1.0));
 }
 `;
+
+/** W1-R6 — declarative include-graph entry.
+ *  Order mirrors the historical concat `COMMON_WGSL + SURFACE_TEXTURES_WGSL +
+ *  DDGI_SAMPLE_WGSL + SHADE_WGSL` — surfaceTextures requires common, so the
+ *  composer emits {common, surfaceTextures, ddgiSample, shade} which is
+ *  byte-equivalent to that pre-R6 string. */
+export const SHADE_MODULE: WgslModule = {
+  name: 'shade',
+  source: SHADE_WGSL,
+  requires: ['common', 'surfaceTextures', 'ddgiSample'],
+};

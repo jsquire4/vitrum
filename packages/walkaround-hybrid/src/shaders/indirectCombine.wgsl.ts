@@ -27,6 +27,8 @@
  *   remodulated: c_filtered = L_filtered × ρ."
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const INDIRECT_COMBINE_WGSL = /* wgsl */ `
 @group(0) @binding(0) var ic_denoisedDirect:   texture_2d<f32>;
 @group(0) @binding(1) var ic_denoisedIndirect: texture_2d<f32>;
@@ -52,3 +54,10 @@ fn indirectCombineMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(ic_combinedOut, gid.xy, vec4f(direct + indirect, 1.0));
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained. */
+export const INDIRECT_COMBINE_MODULE: WgslModule = {
+  name: 'indirectCombine',
+  source: INDIRECT_COMBINE_WGSL,
+  requires: [],
+};

@@ -15,6 +15,8 @@
  * in the vertex shader.
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const COMPOSITE_VERT_WGSL = /* wgsl */ `
 @vertex
 fn vertMain(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4f {
@@ -76,3 +78,16 @@ fn fragMain(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
   return vec4f(srgb, 1.0);
 }
 `;
+
+/** W1-R6 — declarative include-graph entries. Vert and frag are
+ *  independent shader modules; neither prepends COMMON_WGSL. */
+export const COMPOSITE_VERT_MODULE: WgslModule = {
+  name: 'compositeVert',
+  source: COMPOSITE_VERT_WGSL,
+  requires: [],
+};
+export const COMPOSITE_FRAG_MODULE: WgslModule = {
+  name: 'compositeFrag',
+  source: COMPOSITE_FRAG_WGSL,
+  requires: [],
+};

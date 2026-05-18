@@ -39,6 +39,8 @@
  *   @group(0) @binding(2) outAccum    indirectAccum*Texture (storage write)
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const INDIRECT_TEMPORAL_ACCUM_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var ita_currentRaw: texture_2d<f32>;
@@ -102,3 +104,10 @@ fn indirectTemporalAccumMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(ita_outAccum, gid.xy, vec4f(result, 1.0));
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained. */
+export const INDIRECT_TEMPORAL_ACCUM_MODULE: WgslModule = {
+  name: 'indirectTemporalAccum',
+  source: INDIRECT_TEMPORAL_ACCUM_WGSL,
+  requires: [],
+};

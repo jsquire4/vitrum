@@ -25,16 +25,20 @@
 import {
   ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
   ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
-  ATROUS_VARIANCE_WGSL,
   packAtrousVarianceAtrousUniforms,
   packSVGFReprojUniforms,
-  SVGF_7X7_SPATIAL_FALLBACK_WGSL,
   SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
   SVGF_REPROJ_DEFAULT_UNIFORMS,
   SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
-  SVGF_REPROJECTION_WGSL,
-  SVGF_VARIANCE_FROM_MOMENTS_WGSL,
 } from '@vitrum/shared-denoisers';
+import { composeWgsl } from '../wgslComposer.js';
+import {
+  ATROUS_VARIANCE_MODULE,
+  SVGF_7X7_SPATIAL_FALLBACK_MODULE,
+  SVGF_REPROJECTION_MODULE,
+  SVGF_VARIANCE_FROM_MOMENTS_MODULE,
+  WGSL_MODULES,
+} from '../wgslModules.js';
 import type { UboRef } from '../bindGroupBuilders.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
@@ -69,18 +73,23 @@ export class SVGFRealDenoiser implements Denoiser {
     this._device = device;
 
     // ── Compile shader modules ────────────────────────────────────────────
+    // All four SVGF kernels are self-contained per their shared-denoisers
+    // source — `requires: []` in WGSL_MODULES. The composer still routes
+    // them through composeWgsl() for the structural uniformity this gives
+    // the include-graph (and so future SVGF modules that DO grow a
+    // dependency need only update their `requires` array).
     const reprojSM = device.createShaderModule({
-      label: 'svgf-reproj', code: SVGF_REPROJECTION_WGSL,
+      label: 'svgf-reproj', code: composeWgsl(SVGF_REPROJECTION_MODULE, WGSL_MODULES),
     });
     const momentsSM = device.createShaderModule({
-      label: 'svgf-moments', code: SVGF_VARIANCE_FROM_MOMENTS_WGSL,
+      label: 'svgf-moments', code: composeWgsl(SVGF_VARIANCE_FROM_MOMENTS_MODULE, WGSL_MODULES),
     });
     const fallbackSM = device.createShaderModule({
-      label: 'svgf-7x7', code: SVGF_7X7_SPATIAL_FALLBACK_WGSL,
+      label: 'svgf-7x7', code: composeWgsl(SVGF_7X7_SPATIAL_FALLBACK_MODULE, WGSL_MODULES),
     });
     // SVGF-real reuses the atrous-variance kernel for spatial filtering.
     const atrousSM = device.createShaderModule({
-      label: 'svgf-real-atrous-variance', code: ATROUS_VARIANCE_WGSL,
+      label: 'svgf-real-atrous-variance', code: composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES),
     });
 
     for (const [label, sm] of [

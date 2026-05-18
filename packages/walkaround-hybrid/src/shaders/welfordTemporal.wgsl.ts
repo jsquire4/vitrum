@@ -5,6 +5,8 @@
  * Prepended with COMMON_WGSL for WelfordVariance + welfordUpdate.
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const WELFORD_TEMPORAL_WGSL = /* wgsl */ `
 
 struct WelfordTemporalUBO {
@@ -44,3 +46,10 @@ fn welfordTemporalMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(w_out, gid.xy, vec4f(next.mean, next.m2, 0.0, 0.0));
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. */
+export const WELFORD_TEMPORAL_MODULE: WgslModule = {
+  name: 'welfordTemporal',
+  source: WELFORD_TEMPORAL_WGSL,
+  requires: ['common'],
+};

@@ -47,6 +47,7 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
+import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const SAMPLE_BUDGET_WGSL = /* wgsl */ `
 
@@ -115,3 +116,12 @@ fn sampleBudgetKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
   textureStore(t_tier_out, vec2<u32>(px, py), vec4<u32>(tier, 0u, 0u, 0u));
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained: this module
+ *  template-interpolates `WELFORD_VARIANCE_WGSL` directly into its own
+ *  source string, so it has no run-time `requires`. */
+export const SAMPLE_BUDGET_MODULE: WgslModule = {
+  name: 'sampleBudget',
+  source: SAMPLE_BUDGET_WGSL,
+  requires: [],
+};

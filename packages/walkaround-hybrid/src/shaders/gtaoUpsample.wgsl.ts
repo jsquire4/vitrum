@@ -9,6 +9,8 @@
  * trilinear upsample would smear.
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const GTAO_UPSAMPLE_WGSL = /* wgsl */ `
 
 // Duplicate of gtao.wgsl's GTAOUniforms struct (both shaders bind the same
@@ -129,3 +131,10 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   textureStore(up_aoFullOut, gid.xy, vec4f(clamp(ao, 0.0, 1.0)));
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained. */
+export const GTAO_UPSAMPLE_MODULE: WgslModule = {
+  name: 'gtaoUpsample',
+  source: GTAO_UPSAMPLE_WGSL,
+  requires: [],
+};

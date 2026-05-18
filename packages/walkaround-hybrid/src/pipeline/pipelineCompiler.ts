@@ -8,8 +8,14 @@
  * checks for compile errors, then creates pipeline layouts and dispatches
  * pipeline creation with `createComputePipelineAsync` / `createRenderPipelineAsync`.
  *
- * The temporalAccum shader is NOT concatenated with COMMON_WGSL — it is a
- * standalone compute shader with no dependency on the common library.
+ * The shader source for every module is composed via the declarative WGSL
+ * include-graph: each `*_MODULE` declares its `requires` array, and
+ * `composeWgsl()` topo-sorts the closure and emits each dep exactly once.
+ * Pre-R6 this file held nine hand-rolled `COMMON_WGSL + X_WGSL` concat
+ * patterns plus an anti-duplication-by-comment explaining why
+ * `ATROUS_VARIANCE_WGSL` was self-contained — both are gone (the
+ * self-contained-ness is now structural: `ATROUS_VARIANCE_MODULE.requires`
+ * is `[]`).
  *
  * W1-R3 (2026-05-17) — denoiser-conditional shader compiles + pipeline
  * creation (welford, atrous-variance, svgf-real reproj/moments/7×7/atrous)
@@ -21,29 +27,29 @@
  * dispatch.
  */
 
-import { COMMON_WGSL } from '../shaders/common.wgsl.js';
-import { RIS_WGSL } from '../shaders/ris.wgsl.js';
-import { PPG_UPDATE_WGSL } from '../ppg/ppgUpdate.wgsl.js';
-import { PPG_GUIDE_WGSL } from '../ppg/ppgGuide.wgsl.js';
-import { TEMPORAL_WGSL } from '../shaders/temporal.wgsl.js';
-import { SPATIAL_WGSL } from '../shaders/spatial.wgsl.js';
-import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
-import { SAMPLE_BUDGET_WGSL } from '../shaders/sampleBudget.wgsl.js';
-import { RESOLVE_WGSL } from '../shaders/resolve.wgsl.js';
-import { GTAO_WGSL } from '../shaders/gtao.wgsl.js';
-import { GTAO_UPSAMPLE_WGSL } from '../shaders/gtaoUpsample.wgsl.js';
-import { RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
-import { TEMPORAL_GI_WGSL } from '../shaders/temporalGi.wgsl.js';
-import { SPATIAL_GI_WGSL } from '../shaders/spatialGi.wgsl.js';
-import { INDIRECT_COMBINE_WGSL } from '../shaders/indirectCombine.wgsl.js';
-import { INDIRECT_TEMPORAL_ACCUM_WGSL } from '../shaders/indirectTemporalAccum.wgsl.js';
-import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
-import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
+import { composeWgsl } from './wgslComposer.js';
 import {
-  ATROUS_WGSL,
-  TEMPORAL_ACCUM_WGSL,
-} from '@vitrum/shared-denoisers';
-import { COMPOSITE_VERT_WGSL, COMPOSITE_FRAG_WGSL } from '../shaders/composite.wgsl.js';
+  ATROUS_MODULE,
+  COMPOSITE_FRAG_MODULE,
+  COMPOSITE_VERT_MODULE,
+  GTAO_MODULE,
+  GTAO_UPSAMPLE_MODULE,
+  INDIRECT_COMBINE_MODULE,
+  INDIRECT_TEMPORAL_ACCUM_MODULE,
+  PPG_GUIDE_MODULE,
+  PPG_UPDATE_MODULE,
+  RESOLVE_MODULE,
+  RIS_GI_MODULE,
+  RIS_MODULE,
+  SAMPLE_BUDGET_MODULE,
+  SHADE_MODULE,
+  SPATIAL_GI_MODULE,
+  SPATIAL_MODULE,
+  TEMPORAL_ACCUM_MODULE,
+  TEMPORAL_GI_MODULE,
+  TEMPORAL_MODULE,
+  WGSL_MODULES,
+} from './wgslModules.js';
 import {
   getFrameBindGroupLayout,
   getSceneBindGroupLayout,
@@ -104,20 +110,23 @@ export async function compilePipelines(
   swapChainFormat: GPUTextureFormat,
   opts?: { verbose?: boolean; ppgEnabled?: boolean },
 ): Promise<CompiledPipelines> {
-  // Compile all shader modules (common WGSL is prepended to each ReSTIR pass).
-  const risSM      = device.createShaderModule({ label: 'ris',      code: COMMON_WGSL + RIS_WGSL });
-  const temporalSM = device.createShaderModule({ label: 'temporal', code: COMMON_WGSL + TEMPORAL_WGSL });
-  const spatialSM  = device.createShaderModule({ label: 'spatial',  code: COMMON_WGSL + SPATIAL_WGSL });
-  const shadeSM    = device.createShaderModule({ label: 'shade',    code: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + SHADE_WGSL });
-  const atrousSM   = device.createShaderModule({ label: 'atrous',   code: COMMON_WGSL + ATROUS_WGSL });
-  const compVertSM = device.createShaderModule({ label: 'comp-vert', code: COMPOSITE_VERT_WGSL });
-  const compFragSM = device.createShaderModule({ label: 'comp-frag', code: COMPOSITE_FRAG_WGSL });
+  // Compile all shader modules. The include-graph (composeWgsl + WGSL_MODULES)
+  // resolves each module's dependency closure exactly once — no hand-rolled
+  // `COMMON_WGSL + X_WGSL` concat patterns remain.
+  const risSM      = device.createShaderModule({ label: 'ris',       code: composeWgsl(RIS_MODULE,      WGSL_MODULES) });
+  const temporalSM = device.createShaderModule({ label: 'temporal',  code: composeWgsl(TEMPORAL_MODULE, WGSL_MODULES) });
+  const spatialSM  = device.createShaderModule({ label: 'spatial',   code: composeWgsl(SPATIAL_MODULE,  WGSL_MODULES) });
+  const shadeSM    = device.createShaderModule({ label: 'shade',     code: composeWgsl(SHADE_MODULE,    WGSL_MODULES) });
+  const atrousSM   = device.createShaderModule({ label: 'atrous',    code: composeWgsl(ATROUS_MODULE,   WGSL_MODULES) });
+  const compVertSM = device.createShaderModule({ label: 'comp-vert', code: composeWgsl(COMPOSITE_VERT_MODULE, WGSL_MODULES) });
+  const compFragSM = device.createShaderModule({ label: 'comp-frag', code: composeWgsl(COMPOSITE_FRAG_MODULE, WGSL_MODULES) });
 
   // Sprint 9 — sample-budget and resolve are standalone compute shaders.
-  // sampleBudget.wgsl imports WELFORD_VARIANCE_WGSL from @vitrum/shared-denoisers
-  // directly; resolve.wgsl is self-contained.
-  const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: SAMPLE_BUDGET_WGSL });
-  const resolveSM      = device.createShaderModule({ label: 'resolve',       code: RESOLVE_WGSL });
+  // sampleBudget.wgsl template-interpolates WELFORD_VARIANCE_WGSL from
+  // @vitrum/shared-denoisers into its own source; resolve.wgsl is
+  // self-contained. Both modules declare `requires: []`.
+  const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES) });
+  const resolveSM      = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,       WGSL_MODULES) });
 
   // Check for compile errors on every shader module before proceeding.
   const modules: [string, GPUShaderModule][] = [
@@ -223,8 +232,8 @@ export async function compilePipelines(
   ]);
 
   // Sprint 15 — GTAO pipelines.
-  const gtaoSM = device.createShaderModule({ label: 'gtao', code: GTAO_WGSL });
-  const gtaoUpsampleSM = device.createShaderModule({ label: 'gtao-upsample', code: GTAO_UPSAMPLE_WGSL });
+  const gtaoSM = device.createShaderModule({ label: 'gtao', code: composeWgsl(GTAO_MODULE, WGSL_MODULES) });
+  const gtaoUpsampleSM = device.createShaderModule({ label: 'gtao-upsample', code: composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES) });
   const [gtaoPipeline, gtaoUpsamplePipeline] = await Promise.all([
     device.createComputePipelineAsync({
       label: 'gtao', layout: gtaoLayout,
@@ -243,7 +252,7 @@ export async function compilePipelines(
   // storage buffer rides on the frame BGL at binding 11.
   const risGiSM = device.createShaderModule({
     label: 'risGi',
-    code: COMMON_WGSL + DDGI_SAMPLE_WGSL + RIS_GI_WGSL,
+    code: composeWgsl(RIS_GI_MODULE, WGSL_MODULES),
   });
   const risGiPipeline = await device.createComputePipelineAsync({
     label: 'risGi', layout: shadeLayout,
@@ -253,11 +262,11 @@ export async function compilePipelines(
   // Sprint 17 — GI temporal + spatial reuse pipelines.
   const temporalGiSM = device.createShaderModule({
     label: 'temporalGi',
-    code: COMMON_WGSL + TEMPORAL_GI_WGSL,
+    code: composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES),
   });
   const spatialGiSM = device.createShaderModule({
     label: 'spatialGi',
-    code: COMMON_WGSL + SPATIAL_GI_WGSL,
+    code: composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES),
   });
   const [temporalGiPipeline, spatialGiPipeline] = await Promise.all([
     device.createComputePipelineAsync({
@@ -273,7 +282,7 @@ export async function compilePipelines(
   // Sprint 18 — indirect-combine pipeline.
   const indirectCombineSM = device.createShaderModule({
     label: 'indirectCombine',
-    code: INDIRECT_COMBINE_WGSL,
+    code: composeWgsl(INDIRECT_COMBINE_MODULE, WGSL_MODULES),
   });
   const indirectCombinePipeline = await device.createComputePipelineAsync({
     label: 'indirectCombine',
@@ -284,7 +293,7 @@ export async function compilePipelines(
   // Sprint 18 follow-up — indirect pre-atrous temporal accumulator.
   const indirectTemporalAccumSM = device.createShaderModule({
     label: 'indirectTemporalAccum',
-    code: INDIRECT_TEMPORAL_ACCUM_WGSL,
+    code: composeWgsl(INDIRECT_TEMPORAL_ACCUM_MODULE, WGSL_MODULES),
   });
   const indirectTemporalAccumPipeline = await device.createComputePipelineAsync({
     label: 'indirectTemporalAccum',
@@ -292,7 +301,7 @@ export async function compilePipelines(
     compute: { module: indirectTemporalAccumSM, entryPoint: 'indirectTemporalAccumMain' },
   });
 
-  const accumSM = device.createShaderModule({ label: 'accum', code: TEMPORAL_ACCUM_WGSL });
+  const accumSM = device.createShaderModule({ label: 'accum', code: composeWgsl(TEMPORAL_ACCUM_MODULE, WGSL_MODULES) });
   const accumPipeline = await device.createComputePipelineAsync({
     label: 'temporalAccum', layout: accumLayout,
     compute: { module: accumSM, entryPoint: 'temporalAccumMain' },
@@ -319,8 +328,8 @@ export async function compilePipelines(
   let ppgUpdatePipeline: GPUComputePipeline | undefined;
   let ppgGuidePipeline:  GPUComputePipeline | undefined;
   if (opts?.ppgEnabled) {
-    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: PPG_UPDATE_WGSL });
-    const ppgGuideSM  = device.createShaderModule({ label: 'ppg-guide',  code: PPG_GUIDE_WGSL });
+    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES) });
+    const ppgGuideSM  = device.createShaderModule({ label: 'ppg-guide',  code: composeWgsl(PPG_GUIDE_MODULE,  WGSL_MODULES) });
     for (const [label, sm] of [['ppg-update', ppgUpdateSM], ['ppg-guide', ppgGuideSM]] as [string, GPUShaderModule][]) {
       const info = await sm.getCompilationInfo();
       const errs = info.messages.filter(m => m.type === 'error');

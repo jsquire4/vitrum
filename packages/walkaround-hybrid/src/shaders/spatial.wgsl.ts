@@ -10,6 +10,8 @@
  * evaluated at the CORRECT surface, not at the world origin.
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const SPATIAL_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var gDepth:     texture_2d<f32>;
@@ -166,3 +168,10 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   storeReservoirDI_rw(&spatialReservoir, pixelIdx, r);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. */
+export const SPATIAL_MODULE: WgslModule = {
+  name: 'spatial',
+  source: SPATIAL_WGSL,
+  requires: ['common'],
+};

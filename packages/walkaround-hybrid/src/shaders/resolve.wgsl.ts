@@ -44,6 +44,8 @@
  * @version 2 (Sprint 9 wire-in, 2026-05-11)
  */
 
+import type { WgslModule } from '../pipeline/wgslComposer.js';
+
 export const RESOLVE_WGSL = /* wgsl */ `
 
 // ── Uniforms ──────────────────────────────────────────────────────────────────
@@ -131,3 +133,10 @@ fn resolveKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
   textureStore(t_resolved_out, vec2<u32>(px, py), radiance);
 }
 `;
+
+/** W1-R6 — declarative include-graph entry. Self-contained. */
+export const RESOLVE_MODULE: WgslModule = {
+  name: 'resolve',
+  source: RESOLVE_WGSL,
+  requires: [],
+};
