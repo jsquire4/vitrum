@@ -22,6 +22,7 @@
 
 import * as THREE from 'three';
 import { extractThreePbrScalars } from '@vitrum/three-bindings';
+import { defineUbo } from '@vitrum/shared-samplers';
 import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
@@ -51,6 +52,60 @@ export const DDGI_MAX_MATERIALS = 64;
 export const DDGI_MATERIAL_STRIDE_BYTES = 64;
 /** Float stride of one DDGIMaterial entry (64 bytes = 16 × f32). */
 export const DDGI_MATERIAL_ENTRY_FLOATS = 16;
+
+// ─── DDGILightUniforms codegen (W2-C13 array<struct> vocab) ─────────────────
+//
+// Single source of truth for the DDGILightUniforms UBO consumed by
+// probeUpdateRays.wgsl. Mirrors the WGSL `struct DDGILightUniforms` /
+// `struct DDGILight` declared in probeUpdateRays.wgsl.ts.
+//
+// Inner DDGILight std140 layout (64 bytes):
+//   offset  0: kind          (u32)
+//   offset  4..15: _pad0/_pad1/_pad2 (3 × f32)   — explicit so the WGSL
+//                                                  struct's named pads match
+//   offset 16: position      (vec3f, 12 + 4 trailing pad)
+//   offset 28: intensity     (f32, lands in vec3f trailing-pad slot)
+//   offset 32: direction     (vec3f, 12 + 4 pad)
+//   offset 44: innerCone     (f32)
+//   offset 48: color         (vec3f, 12 + 4 pad)
+//   offset 60: outerCone     (f32)
+// Outer DDGILightUniforms layout (1040 bytes):
+//   offset  0: count   (u32)
+//   offset  4..15: _pad0/_pad1/_pad2 (3 × u32)   — explicit named pads
+//   offset 16: items   (array<DDGILight, 16>, stride 64, total 1024 bytes)
+const DDGI_LIGHT_UBO_ELEM = defineUbo([
+  { name: 'kind',      type: 'u32'   },
+  { name: '_pad0',     type: 'f32'   },
+  { name: '_pad1',     type: 'f32'   },
+  { name: '_pad2',     type: 'f32'   },
+  { name: 'position',  type: 'vec3f' },
+  { name: 'intensity', type: 'f32'   },
+  { name: 'direction', type: 'vec3f' },
+  { name: 'innerCone', type: 'f32'   },
+  { name: 'color',     type: 'vec3f' },
+  { name: 'outerCone', type: 'f32'   },
+] as const);
+
+/** Max DDGI light entries the WGSL array<DDGILight, N> is sized for. */
+const DDGI_MAX_LIGHTS = 16;
+
+const DDGI_LIGHT_UBO = defineUbo([
+  { name: 'count', type: 'u32' },
+  { name: '_pad0', type: 'u32' },
+  { name: '_pad1', type: 'u32' },
+  { name: '_pad2', type: 'u32' },
+  { name: 'items', type: 'array', element: DDGI_LIGHT_UBO_ELEM, count: DDGI_MAX_LIGHTS },
+] as const);
+
+if (DDGI_LIGHT_UBO_ELEM.sizeBytes !== 64) {
+  throw new Error(`DDGILight element size drifted from 64 bytes (got ${DDGI_LIGHT_UBO_ELEM.sizeBytes})`);
+}
+if (DDGI_LIGHT_UBO.sizeBytes !== 1040) {
+  throw new Error(`DDGILightUniforms size drifted from 1040 bytes (got ${DDGI_LIGHT_UBO.sizeBytes})`);
+}
+
+/** Total bytes of the DDGILightUniforms UBO (1040 = 16 header + 16 × 64). */
+export const DDGI_LIGHTS_UBO_SIZE_BYTES = DDGI_LIGHT_UBO.sizeBytes;
 
 /**
  * Pack a list of THREE materials into the GPU-bound DDGIMaterial std140 layout
@@ -385,7 +440,7 @@ export class ProbeUpdatePass {
       normBuf:         makeBuffer(12, RO),
       matIdBuf:        makeBuffer(4,  RO),
       materialsBuf:    makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
-      lightsBuf:       makeBuffer(16 * 80 + 16, UB),
+      lightsBuf:       makeBuffer(DDGI_LIGHTS_UBO_SIZE_BYTES, UB),
       gridParamsBuf:   makeBuffer(64, UB),
       frameParamsBuf:  makeBuffer(48, UB),
       blendParamsBuf:  makeBuffer(16, UB),
@@ -580,59 +635,79 @@ export class ProbeUpdatePass {
   }
 
   private _uploadLights(device: GPUDevice): void {
-    // DDGILightUniforms:
-    // u32 count, 3 pad, then up to 16 × DDGILight (80 bytes each)
-    // DDGILight: kind(u32), pad0,pad1,pad2(3×f32), pos(vec3f), intensity(f32),
-    //            dir(vec3f), innerCone(f32), color(vec3f), outerCone(f32)
-    // = 4 + 12 + 12 + 4 + 12 + 4 + 12 + 4 = 64 bytes per light
-    const MAX = 16;
-    const LIGHT_STRIDE = 16; // floats per light (64 bytes)
-    const headerSize = 4; // floats for count + 3 pad
-    const data = new Float32Array(headerSize + MAX * LIGHT_STRIDE);
-    const udata = new Uint32Array(data.buffer);
-
+    // Pack via the W2-C13 codegen — byte-identical to the previous
+    // hand-rolled Float32/Uint32 aliased-array packer.
+    //
+    // Inner element layout (64 bytes; see DDGI_LIGHT_UBO_ELEM):
+    //   u32 kind, 3×f32 _pad, vec3f position + f32 intensity (in vec3 pad),
+    //   vec3f direction + f32 innerCone, vec3f color + f32 outerCone.
+    //
+    // Defaults for unset lights are 0 (zero-fill in the codegen pack()).
     const lights = this._lights.filter(l => l.on);
-    udata[0] = Math.min(lights.length, MAX);
+    const activeCount = Math.min(lights.length, DDGI_MAX_LIGHTS);
 
-    lights.slice(0, MAX).forEach((l, i) => {
-      const base = (headerSize + i * LIGHT_STRIDE);
-      const ubase = base;
+    // Build the items array. Slots beyond `activeCount` are unset and will
+    // be zero-filled automatically by defineUbo.pack.
+    type LightItem = {
+      kind: number;
+      _pad0: number; _pad1: number; _pad2: number;
+      position: readonly [number, number, number];
+      intensity: number;
+      direction: readonly [number, number, number];
+      innerCone: number;
+      color: readonly [number, number, number];
+      outerCone: number;
+    };
+    const items: LightItem[] = [];
+    for (let i = 0; i < activeCount; i++) {
+      const l = lights[i]!;
       if (l.kind === 'sun') {
-        udata[ubase] = 0; // LIGHT_SUN
-        // Apply the hybrid pipeline's primaryLightIntensity multiplier
-        // so DDGI's per-probe Le bake matches shade.wgsl's Lo_emit.
-        // Without this, the stored l.intensity (typically 1.0) makes
-        // DDGI 1/5 the magnitude of the rest of the renderer.
-        data[base + 4] = 0;    // pos.x
-        data[base + 5] = 0;    // pos.y
-        data[base + 6] = 0;    // pos.z
-        data[base + 7] = l.intensity * this._sunIntensityMul; // intensity
-        data[base + 8] = 0;    // dir.x
-        data[base + 9] = -1;   // dir.y (sun is from above)
-        data[base + 10] = 0;   // dir.z
-        data[base + 11] = 0;   // innerCone (unused for sun)
-        data[base + 12] = 1;   // color.r
-        data[base + 13] = 0.95;// color.g
-        data[base + 14] = 0.85;// color.b
-        data[base + 15] = 0;   // outerCone (unused for sun)
+        items.push({
+          kind: 0, // LIGHT_SUN
+          _pad0: 0, _pad1: 0, _pad2: 0,
+          position:  [0, 0, 0] as const,
+          // Apply the hybrid pipeline's primaryLightIntensity multiplier so
+          // DDGI's per-probe Le bake matches shade.wgsl's Lo_emit.
+          intensity: l.intensity * this._sunIntensityMul,
+          direction: [0, -1, 0] as const,
+          innerCone: 0,
+          color:     [1, 0.95, 0.85] as const,
+          outerCone: 0,
+        });
       } else if (l.kind === 'fixture' || l.kind === 'teaLight') {
-        udata[ubase] = 1; // LIGHT_POINT
         const pos = l.position;
-        data[base + 4]  = pos?.x ?? 0;
-        data[base + 5]  = pos?.y ?? 0;
-        data[base + 6]  = pos?.z ?? 0;
-        data[base + 7]  = l.intensity;
-        data[base + 8]  = 0;
-        data[base + 9]  = 0;
-        data[base + 10] = 0;
-        data[base + 11] = 0;
-        data[base + 12] = 1;
-        data[base + 13] = 1;
-        data[base + 14] = 1;
-        data[base + 15] = 0;
+        items.push({
+          kind: 1, // LIGHT_POINT
+          _pad0: 0, _pad1: 0, _pad2: 0,
+          position:  [pos?.x ?? 0, pos?.y ?? 0, pos?.z ?? 0] as const,
+          intensity: l.intensity,
+          direction: [0, 0, 0] as const,
+          innerCone: 0,
+          color:     [1, 1, 1] as const,
+          outerCone: 0,
+        });
+      } else {
+        // Unrecognised kind: emit a zeroed slot so `count` stays meaningful.
+        items.push({
+          kind: 0,
+          _pad0: 0, _pad1: 0, _pad2: 0,
+          position:  [0, 0, 0] as const,
+          intensity: 0,
+          direction: [0, 0, 0] as const,
+          innerCone: 0,
+          color:     [0, 0, 0] as const,
+          outerCone: 0,
+        });
       }
+    }
+
+    const buf = new ArrayBuffer(DDGI_LIGHTS_UBO_SIZE_BYTES);
+    DDGI_LIGHT_UBO.pack(new DataView(buf), 0, {
+      count: activeCount,
+      _pad0: 0, _pad1: 0, _pad2: 0,
+      items,
     });
-    device.queue.writeBuffer(this._gpu!.lightsBuf, 0, data.buffer);
+    device.queue.writeBuffer(this._gpu!.lightsBuf, 0, buf);
   }
 
   private _uploadGridParams(device: GPUDevice): void {

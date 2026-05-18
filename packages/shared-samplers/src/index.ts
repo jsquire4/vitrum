@@ -81,3 +81,18 @@ export {
   FRAUNHOFER_F_NM,
   FRAUNHOFER_C_NM,
 } from './cauchyIor.js';
+
+// ── W2-C13 — single-source-of-truth UBO codegen ─────────────────────────────
+// Collapses the five hand-mirrored declarations per UBO (docstring, interface,
+// SIZE_BYTES, packer, WGSL struct) into one field-spec list. See uboCodegen.ts
+// for the rationale + WGSL §14.4.4 layout reference.
+export { defineUbo } from './uboCodegen.js';
+export type {
+  UboFieldType,
+  UboFieldSpec,
+  UboArrayFieldSpec,
+  AnyUboFieldSpec,
+  UboDefinition,
+  UboValue,
+  UboWgslOptions,
+} from './uboCodegen.js';
