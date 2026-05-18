@@ -488,11 +488,15 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 
 /** W1-R6 — declarative include-graph entry.
  *  Order mirrors the historical concat `COMMON_WGSL + SURFACE_TEXTURES_WGSL +
- *  DDGI_SAMPLE_WGSL + SHADE_WGSL` — surfaceTextures requires common, so the
- *  composer emits {common, surfaceTextures, ddgiSample, shade} which is
- *  byte-equivalent to that pre-R6 string. */
+ *  DDGI_SAMPLE_WGSL + SHADE_WGSL`. After W7-H6, `surfaceTextures` was split
+ *  into the host `surfaceMods` (procedural stained-glass patterns) and the
+ *  library-general `glassVisibility` (per-channel BVH shadow walker). The
+ *  composer emits {common, surfaceMods, glassVisibility, ddgiSample, shade}
+ *  whose concatenation equals the pre-split bytes since
+ *  `STAINED_GLASS_SURFACE_MODS_WGSL + GLASS_VISIBILITY_WGSL` ===
+ *  `SURFACE_TEXTURES_WGSL`. */
 export const SHADE_MODULE: WgslModule = {
   name: 'shade',
   source: SHADE_WGSL,
-  requires: ['common', 'surfaceTextures', 'ddgiSample'],
+  requires: ['common', 'surfaceMods', 'glassVisibility', 'ddgiSample'],
 };

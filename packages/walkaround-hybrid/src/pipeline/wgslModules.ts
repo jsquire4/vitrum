@@ -41,6 +41,8 @@ import {
 
 import { COMMON_MODULE } from '../shaders/common.wgsl.js';
 import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
+import { STAINED_GLASS_SURFACE_MODS_MODULE } from '../shaders/stained-glass/surfaceMods.wgsl.js';
+import { GLASS_VISIBILITY_MODULE } from '../shaders/glassVisibility.wgsl.js';
 import { RIS_MODULE } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_MODULE } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../shaders/spatial.wgsl.js';
@@ -65,6 +67,8 @@ import type { WgslModule } from './wgslComposer.js';
 export {
   COMMON_MODULE,
   SURFACE_TEXTURES_MODULE,
+  STAINED_GLASS_SURFACE_MODS_MODULE,
+  GLASS_VISIBILITY_MODULE,
   RIS_MODULE,
   TEMPORAL_MODULE,
   SPATIAL_MODULE,
@@ -154,6 +158,11 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
 
   // Walkaround-local shader helpers
   [SURFACE_TEXTURES_MODULE.name, SURFACE_TEXTURES_MODULE],
+  // W7-H6 split: stained-glass surface mods (host) + glass visibility (library).
+  // The eventual home of `surfaceMods` is the `@vitrum/stained-glass-extensions`
+  // package (W3-D2+D3); it stays here until that lands.
+  [STAINED_GLASS_SURFACE_MODS_MODULE.name, STAINED_GLASS_SURFACE_MODS_MODULE],
+  [GLASS_VISIBILITY_MODULE.name, GLASS_VISIBILITY_MODULE],
   [DDGI_SAMPLE_MODULE.name, DDGI_SAMPLE_MODULE],
 
   // ReSTIR-DI passes
