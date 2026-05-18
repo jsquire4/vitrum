@@ -9,7 +9,7 @@ export type {
 
 // Engine class (the public Engine implementation)
 export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
-export type { HybridEngineOptions } from './HybridEngine.js';
+export type { HybridEngineOptions, LightingOptions } from './HybridEngine.js';
 
 // DDGI subsystem (class-based, de-React-ified)
 export { DDGI } from './ddgi/DDGI.js';
