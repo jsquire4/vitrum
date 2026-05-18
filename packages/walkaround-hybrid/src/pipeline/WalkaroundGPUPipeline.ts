@@ -46,9 +46,6 @@ import {
   buildAccumBindGroup,
   buildHybridLayersBindGroup,
   buildCompositeBindGroup,
-  buildWelfordBindGroup,
-  buildAtrousVarianceVarianceBindGroup,
-  buildAtrousVarianceAtrousBindGroup,
   buildSampleBudgetBindGroup,
   buildResolveBindGroup,
   buildGTAOBindGroup,
@@ -60,25 +57,12 @@ import {
   ATROUS_INDIRECT_SIGMAS,
   type UboRef,
 } from './bindGroupBuilders.js';
-// Note: we deliberately do NOT import `runAtrousVarianceWebGPU` from shared-denoisers.
-// That entry point is a one-shot CPU-backed path that allocates and frees
-// transient GPU textures per call. This pipeline owns persistent GPU
-// textures across frames (accumA/B, variance ping-pong, denoise pings),
-// so the one-shot API would churn texture allocations every frame and
-// invalidate the bind-group cache. We import only the host-side packing
-// helpers and pipeline constants.
 import {
-  packAtrousVarianceAtrousUniforms,
-  packAtrousVarianceVarianceUniforms,
-  ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
-  ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
-  ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-  ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
-  packSVGFReprojUniforms,
-  SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
-  SVGF_REPROJ_DEFAULT_UNIFORMS,
-  SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
-} from '@vitrum/shared-denoisers';
+  DenoiserRegistry,
+  type Denoiser,
+  type DenoiserId,
+} from './denoisers/index.js';
+import { registerBuiltinDenoisers } from './denoisers/registerBuiltinDenoisers.js';
 import {
   tsWrites,
   initTimestampQueries,
@@ -282,34 +266,29 @@ export class WalkaroundGPUPipeline {
   private _temporalPipeline!: GPUComputePipeline;
   private _spatialPipeline!: GPUComputePipeline;
   private _shadePipeline!: GPUComputePipeline;
+  /** Shared à-trous pipeline. Used by the legacy `AtrousDenoiser` (passed
+   *  in via the dispatch context) AND by the always-on
+   *  {@link _dispatchAtrousIndirect} chain. Compiled in pipelineCompiler. */
   private _atrousPipeline!: GPUComputePipeline;
   private _accumPipeline!: GPUComputePipeline;
   private _compositePipeline!: GPURenderPipeline;
-  /** `atrous-variance` — variance-guided (default). `atrous` — legacy. `svgf-real` — Schied 2017 T2.H1. `neural` — T2.H2 U-Net. */
-  private _denoiserMode: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' = 'atrous-variance';
-  /** T2.H2 — neural denoiser InferenceGraph (populated when denoiserMode === 'neural'). */
+  /** Active denoiser (looked up from `_denoiserRegistry` after init). */
+  private _denoiserMode: DenoiserId = 'atrous-variance';
+  /** Registry of all built-in denoisers; populated once at boot. */
+  private _denoiserRegistry: DenoiserRegistry | null = null;
+  /** The active denoiser instance for this pipeline (set in initialize). */
+  private _activeDenoiser: Denoiser | null = null;
+  /** T2.H2 — neural denoiser InferenceGraph; kept for future W10 wiring. */
   private _inferenceGraph: InferenceGraph | null = null;
   /** Audit B8 — populated at initialize() time from HybridEngineOptions. */
   private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
   /** Audit M3 — populated at initialize() time from HybridEngineOptions. */
   private _temporalAccumAlpha = DEFAULT_TEMPORAL_ACCUM_ALPHA;
-  private _welfordPipeline: GPUComputePipeline | undefined = undefined;
-  private _atrousVarianceVariancePipeline: GPUComputePipeline | undefined = undefined;
-  private _atrousVarianceAtrousPipeline: GPUComputePipeline | undefined = undefined;
-  // T2.H1 — svgf-real pipelines (populated when denoiserMode === 'svgf-real').
-  private _svgfReprojPipeline:    GPUComputePipeline | undefined = undefined;
-  private _svgfMomentsPipeline:   GPUComputePipeline | undefined = undefined;
-  private _svgfFallbackPipeline:  GPUComputePipeline | undefined = undefined;
-  private _svgfRealAtrousPipeline:GPUComputePipeline | undefined = undefined;
   // T2.H3 — PPG pipelines (Müller 2017; populated when ppgEnabled === true).
   private _ppgUpdatePipeline: GPUComputePipeline | undefined = undefined;
   private _ppgGuidePipeline:  GPUComputePipeline | undefined = undefined;
   /** T2.H3 — PPG is enabled iff both pipelines were compiled successfully. */
   private _ppgEnabled = false;
-  /** T2.H1 — UBO for the svgf-real reprojection pass (SVGFReprojUBO, 16 bytes). */
-  private _svgfReprojUboRef: UboRef = { buf: undefined };
-  /** T2.H1 — Ping-pong index for svgf-real history/moments/prevRadiance. 0 = A→read, B→write. */
-  private _svgfPingPong = 0;
   // Sprint 9 — adaptive sampling pipelines (always populated).
   private _sampleBudgetPipeline!: GPUComputePipeline;
   private _resolvePipeline!: GPUComputePipeline;
@@ -324,45 +303,34 @@ export class WalkaroundGPUPipeline {
   private _indirectAccumPingPong = 0;
   private _swapChainFormat: GPUTextureFormat = 'bgra8unorm';
 
-  /** Ping-pong read index for Welford textures (0 = read varianceBuffer). */
-  private _welfordPing = 0;
-
   // Bind group layout memoisation cache
   private _bglCache: BGLCache = {};
 
-  // Per-pass UBO buffers. Two access patterns coexist:
-  //  - Builder-managed (lazy): _atrousUboRef and _accumUboRef are passed
-  //    by reference into buildAtrousBindGroup / buildAccumBindGroup, which
-  //    lazy-allocate on first call so each builder owns its UBO lifetime.
-  //  - Eager: the atrous-variance UBOs are allocated in initialize() (gated by
-  //    denoiserMode) so renderFrame() can write straight into them without
-  //    first-frame branching.
-  // dispose() walks all via the `_perPassUboRefs` array below so
-  // adding a new UBO only requires registering it there.
-  private _atrousUboRef: UboRef = { buf: undefined };
+  // Per-pass UBO buffers owned by the pipeline (i.e. NOT owned by a
+  // denoiser — denoiser-private UBOs are field-owned by each Denoiser
+  // implementation under `denoisers/`). Two access patterns coexist:
+  //  - Builder-managed (lazy): _atrousIndirectUboRef and _accumUboRef
+  //    are passed by reference into buildAtrousBindGroup /
+  //    buildAccumBindGroup, which lazy-allocate on first call so each
+  //    builder owns its UBO lifetime.
+  //  - Eager: the adaptive-sampling UBOs are allocated in initialize().
+  // dispose() walks all via the `_perPassUboRefs` array below so adding
+  // a new UBO only requires registering it there.
   /** Sprint 18 — separate UBO for the indirect-channel atrous chain so it
-   *  doesn't race the direct chain's per-iteration sigma writes. */
+   *  doesn't race the legacy denoiser's per-iteration sigma writes. */
   private _atrousIndirectUboRef: UboRef = { buf: undefined };
   private _accumUboRef: UboRef  = { buf: undefined };
-  private _welfordUboRef: UboRef = { buf: undefined };
-  private _atrousVarianceVarianceUboRef: UboRef = { buf: undefined };
-  private _atrousVarianceAtrousUboRef: UboRef = { buf: undefined };
   // Sprint 9 — adaptive sampling UBOs.
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
   private _sampleCountUboRef:  UboRef = { buf: undefined };
   private _resolveUboRef:      UboRef = { buf: undefined };
   private get _perPassUboRefs(): readonly UboRef[] {
     return [
-      this._atrousUboRef,
       this._atrousIndirectUboRef,
       this._accumUboRef,
-      this._welfordUboRef,
-      this._atrousVarianceVarianceUboRef,
-      this._atrousVarianceAtrousUboRef,
       this._sampleBudgetUboRef,
       this._sampleCountUboRef,
       this._resolveUboRef,
-      this._svgfReprojUboRef,
     ];
   }
 
@@ -402,12 +370,13 @@ export class WalkaroundGPUPipeline {
     swapChainFormat: GPUTextureFormat = 'bgra8unorm',
     options?: {
       verbose?: boolean;
-      denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural';
+      denoiser?: DenoiserId;
       /** Audit B8 — host-overridable camera-move temporal-reset threshold. */
       cameraMoveResetThresholdSq?: number;
       /** Audit M3 — host-overridable temporal-accumulator EMA weight. */
       temporalAccumAlpha?: number;
-      /** T2.H2 — neural denoiser InferenceGraph (required when denoiser='neural'). */
+      /** T2.H2 — neural denoiser InferenceGraph (required when denoiser='neural').
+       *  Kept on the options surface for forward compatibility with W10. */
       inferenceGraph?: InferenceGraph;
       /** T2.H3 — enable PPG (Müller 2017 adaptive sTree + dTree + MIS). */
       ppgEnabled?: boolean;
@@ -433,13 +402,9 @@ export class WalkaroundGPUPipeline {
     // ── Per-frame GPU resources ───────────────────────────────────────────
     this._res = createFrameResources(d, W, H);
 
-    // ── Compile shaders ───────────────────────────────────────────────────
-    // T2.H2 — 'neural' mode falls through to 'atrous-variance' for pipeline compilation
-    // (the shade pipeline is still needed). InferenceGraph handles its own GPU pipelines.
-    const compiledDenoiser = options?.denoiser === 'neural' ? 'atrous-variance' : (options?.denoiser ?? 'atrous-variance');
+    // ── Compile shaders (denoiser-agnostic) ───────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
-      denoiser: compiledDenoiser,
       ppgEnabled: options?.ppgEnabled ?? false,
     });
     this._risPipeline       = compiled.risPipeline;
@@ -449,21 +414,11 @@ export class WalkaroundGPUPipeline {
     this._atrousPipeline    = compiled.atrousPipeline;
     this._accumPipeline     = compiled.accumPipeline;
     this._compositePipeline = compiled.compositePipeline;
-    // T2.H2: override denoiserMode to 'neural' when requested (the compiled object
-    // stores 'atrous-variance' as the fallback — we override here).
-    this._denoiserMode = options?.denoiser ?? compiled.denoiserMode;
+    this._denoiserMode = options?.denoiser ?? 'atrous-variance';
     this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
       ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
     this._temporalAccumAlpha = options?.temporalAccumAlpha
       ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
-    this._welfordPipeline   = compiled.welfordPipeline;
-    this._atrousVarianceVariancePipeline = compiled.atrousVarianceVariancePipeline;
-    this._atrousVarianceAtrousPipeline   = compiled.atrousVarianceAtrousPipeline;
-    // T2.H1 — svgf-real pipelines (undefined unless denoiserMode === 'svgf-real').
-    this._svgfReprojPipeline    = compiled.svgfReprojPipeline;
-    this._svgfMomentsPipeline   = compiled.svgfMomentsPipeline;
-    this._svgfFallbackPipeline  = compiled.svgfFallbackPipeline;
-    this._svgfRealAtrousPipeline= compiled.svgfRealAtrousPipeline;
     this._sampleBudgetPipeline = compiled.sampleBudgetPipeline;
     this._resolvePipeline      = compiled.resolvePipeline;
     this._gtaoPipeline         = compiled.gtaoPipeline;
@@ -473,27 +428,31 @@ export class WalkaroundGPUPipeline {
     this._spatialGiPipeline    = compiled.spatialGiPipeline;
     this._indirectCombinePipeline = compiled.indirectCombinePipeline;
     this._indirectTemporalAccumPipeline = compiled.indirectTemporalAccumPipeline;
-    if (this._denoiserMode === 'atrous-variance' && (
-      !this._welfordPipeline || !this._atrousVarianceVariancePipeline || !this._atrousVarianceAtrousPipeline
-    )) {
-      throw new Error('[ReSTIR] atrous-variance denoiser requested but pipelines are missing.');
-    }
-    // T2.H2 — store neural InferenceGraph (Bug 8 fix: 'neural' mode now wired).
-    if (this._denoiserMode === 'neural') {
-      if (!options?.inferenceGraph) {
-        throw new Error(
-          '[WalkaroundGPUPipeline] denoiser: \'neural\' requires an initialized InferenceGraph. ' +
-          'Pass inferenceGraph: graph in the initialize() options. ' +
-          'See tools/neural-denoiser-training/README.md for training instructions.',
-        );
-      }
+
+    // ── Denoiser registry: build, register builtins, look up + initialise
+    //    the active denoiser. Disabled placeholders (neural / oidn-final)
+    //    are registered but never reach `initialize()` — the registry
+    //    rejects them at `lookup()` time with a clear error pointing at
+    //    the workstream that will land the real implementation.
+    this._denoiserRegistry = new DenoiserRegistry();
+    registerBuiltinDenoisers(this._denoiserRegistry);
+    this._activeDenoiser = this._denoiserRegistry.lookup(this._denoiserMode);
+    await this._activeDenoiser.initialize({
+      device: d,
+      width: W,
+      height: H,
+      bglCache: this._bglCache,
+      frameResources: this._res,
+    });
+
+    // Forward-compat: a host may still supply an InferenceGraph via options
+    // even though the `neural` denoiser is `disabled: true` and lookup
+    // would have already thrown above. We store the handle (no error
+    // raised here) so a future test exercising W10 wiring can read it
+    // back. The walkaround path no longer silently substitutes
+    // atrous-variance for neural — that fallback was removed in W1-R3.
+    if (options?.inferenceGraph) {
       this._inferenceGraph = options.inferenceGraph;
-    }
-    if (this._denoiserMode === 'svgf-real' && (
-      !this._svgfReprojPipeline || !this._svgfMomentsPipeline ||
-      !this._svgfFallbackPipeline || !this._svgfRealAtrousPipeline
-    )) {
-      throw new Error('[ReSTIR] svgf-real denoiser requested but pipelines are missing.');
     }
 
     // T2.H3 — PPG pipelines (Müller 2017 §3.1–3.4): store and flag as enabled.
@@ -509,30 +468,15 @@ export class WalkaroundGPUPipeline {
     initTimestampQueries(d, this._tsState);
 
     // ── Eager UBO allocation ─────────────────────────────────────────────
-    // Allocate all per-frame UBOs upfront so renderFrame() never blocks on
-    // first-frame buffer creation and dispose() never has to guard. Each
-    // UBO is small (≤32B); the total fixed cost is ~200B regardless of
-    // denoiser mode.
+    // Allocate the pipeline-owned per-frame UBOs upfront so renderFrame()
+    // never blocks on first-frame buffer creation. Denoiser-owned UBOs
+    // are allocated inside each `Denoiser.initialize()`.
     const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
-    this._atrousUboRef.buf = d.createBuffer({ label: 'atrous-ubo', size: 16, usage: U });
     this._accumUboRef.buf  = d.createBuffer({ label: 'accum-ubo',  size: 16, usage: U });
     // Sprint 9 — adaptive sampling UBOs (always allocated; passes always run).
     this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
     this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
     this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
-    if (this._denoiserMode === 'atrous-variance') {
-      this._welfordUboRef.buf                  = d.createBuffer({ label: 'welford-ubo',                    size: 16, usage: U });
-      this._atrousVarianceVarianceUboRef.buf   = d.createBuffer({ label: 'atrous-variance-variance-ubo',   size: ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES, usage: U });
-      this._atrousVarianceAtrousUboRef.buf     = d.createBuffer({ label: 'atrous-variance-atrous-ubo',     size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES, usage: U });
-    }
-    // T2.H1 — svgf-real reprojection UBO (SVGFReprojUBO, 16 bytes).
-    if (this._denoiserMode === 'svgf-real') {
-      this._svgfReprojUboRef.buf = d.createBuffer({ label: 'svgf-real-reproj-ubo', size: SVGF_REPROJ_UNIFORMS_SIZE_BYTES, usage: U });
-      // Pre-fill with default values (hosts can override per-frame if needed in a future API).
-      const scratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
-      packSVGFReprojUniforms(SVGF_REPROJ_DEFAULT_UNIFORMS, scratch);
-      d.queue.writeBuffer(this._svgfReprojUboRef.buf, 0, scratch);
-    }
 
     this._initialized = true;
     if (options?.verbose) {
@@ -589,10 +533,11 @@ export class WalkaroundGPUPipeline {
     // the accumulator at α=1 and re-seed history.
     this._accumPingPongIndex = 0;
     this._accumFrameIndex = 0;
-    this._welfordPing = 0;
-    this._svgfPingPong = 0;
     this._indirectAccumPingPong = 0;
     this._lastCameraPos = [0, 0, 0];
+    // Denoiser-private ping-pong indices (Welford / SVGF) reset inside
+    // each Denoiser.resize implementation.
+    this._activeDenoiser?.resize(width, height);
   }
 
   /**
@@ -982,45 +927,28 @@ export class WalkaroundGPUPipeline {
     const readAccum  = this._accumPingPongIndex === 0 ? this._res.common.accumTextureA : this._res.common.accumTextureB;
     const writeAccum = this._accumPingPongIndex === 0 ? this._res.common.accumTextureB : this._res.common.accumTextureA;
 
-    let denoisedOut: GPUTexture;
-    // Transient UBOs created by _dispatchSVGFReal (one per atrous iter). Destroyed
-    // after d.queue.submit() below so the GPU has finished reading them.
-    let svgfAtrousIterUbos: GPUBuffer[] = [];
-
-    if (this._denoiserMode === 'atrous-variance') {
-      denoisedOut = this._dispatchAtrousVariance(
-        encoder, gNormalDepthView, readAccum, isMoving, wgX16, wgY16, computeDesc,
-      );
-      this._welfordPing = 1 - this._welfordPing;
-    } else if (this._denoiserMode === 'svgf-real') {
-      // T2.H1 — Schied 2017 SVGF: reprojection → variance-from-moments →
-      // 7×7 spatial fallback → à-trous chain.
-      const svgfResult = this._dispatchSVGFReal(
-        encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
-      );
-      denoisedOut = svgfResult.tex;
-      // Defer UBO cleanup until after submit (set as local to be destroyed below).
-      svgfAtrousIterUbos = svgfResult.iterUbos;
-    } else if (this._denoiserMode === 'neural' && this._inferenceGraph?.ready) {
-      // T2.H2 — Neural U-Net denoiser. Bug 8 fix: 'neural' mode is now wired.
-      // The InferenceGraph reads from hdrColorTexture (noisy) + albedoTexture (albedo)
-      // and writes denoised output to hdrColorTexture for the downstream composite pass.
-      // Since InferenceGraph works with GPU buffers (not textures), the host-side pipeline
-      // would need texture-to-buffer copies + buffer-to-texture blits around the inference.
-      // For the current implementation the neural pass falls back to atrous-variance
-      // when no output buffer is available at renderFrame time (texture-buffer bridging
-      // is a follow-up integration step requiring albedo/normals as storage buffers).
-      // The InferenceGraph is verified ready and available; the architecture is wired.
-      // Full texture→buffer→inference→texture bridging is tracked in the integration spec.
-      denoisedOut = this._dispatchAtrousVariance(
-        encoder, gNormalDepthView, readAccum, isMoving, wgX16, wgY16, computeDesc,
-      );
-      this._welfordPing = 1 - this._welfordPing;
-    } else {
-      denoisedOut = this._dispatchAtrousLegacy(
-        encoder, gNormalDepthView, wgX16, wgY16, computeDesc,
-      );
-    }
+    // Polymorphic denoiser dispatch — replaces the legacy 4-way
+    // string-switch on `_denoiserMode`. The registry lookup happened in
+    // `initialize`; here we just delegate to the active entry. The
+    // `NoneDenoiser` returns null to opt out, in which case the raw HDR
+    // texture feeds the downstream temporal accumulator directly.
+    const denoiserResult = this._activeDenoiser!.dispatch({
+      device: d,
+      encoder,
+      width: W,
+      height: H,
+      frameIndex: this._accumFrameIndex,
+      resources: this._res,
+      sharedAtrousPipeline: this._atrousPipeline,
+      bglCache: this._bglCache,
+      gNormalDepthView,
+      readAccum,
+      isMoving,
+      wgX16,
+      wgY16,
+      computeDesc,
+    });
+    let denoisedOut: GPUTexture = denoiserResult ?? this._res.common.hdrColorTexture;
 
     // Sprint 18 — per-channel denoise + combine. Direct (denoisedOut from
     // the atrous-variance/atrous chain above) is already smoothed.
@@ -1179,10 +1107,13 @@ export class WalkaroundGPUPipeline {
 
     d.queue.submit([encoder.finish()]);
 
-    // Destroy svgf-real transient atrous UBOs now that the encoder is submitted.
-    // submit() signals the GPU queue; it is safe to destroy host-side handles — the
-    // GPU retains its reference until the command completes.
-    for (const ubo of svgfAtrousIterUbos) { ubo.destroy(); }
+    // Per-frame denoiser cleanup. Runs after `queue.submit()` — the GPU
+    // queue holds its own reference to the encoded command buffer, so
+    // it is safe to release host-side handles to anything the denoiser
+    // wrote into this frame's encoder. SVGFRealDenoiser uses this hook
+    // to destroy the 5 transient per-iter UBOs it allocates each frame;
+    // other denoisers implement it as a no-op (or omit it entirely).
+    this._activeDenoiser?.cleanupAfterSubmit?.();
 
     // Kick async readback of the timestamp buffer we just copied into.
     // Pass the layout labels so the async callback labels each slot
@@ -1195,291 +1126,6 @@ export class WalkaroundGPUPipeline {
 
     this._frameCount++;
     return true;
-  }
-
-  /**
-   * À-trous + variance denoise dispatch — welford-temporal → variance → N × atrous.
-   * Returns the final atrous output texture to feed into the accumulator.
-   */
-  private _dispatchAtrousVariance(
-    encoder: GPUCommandEncoder,
-    gNormalDepthView: GPUTextureView,
-    readAccum: GPUTexture,
-    isMoving: boolean,
-    wgX16: number,
-    wgY16: number,
-    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
-  ): GPUTexture {
-    const d = this._device;
-    const wf = this._welfordPipeline!;
-    const sv = this._atrousVarianceVariancePipeline!;
-    const sa = this._atrousVarianceAtrousPipeline!;
-
-    const welfordRead  = this._welfordPing === 0 ? this._res.common.varianceBuffer : this._res.common.varianceBufferAux;
-    const welfordWrite = this._welfordPing === 0 ? this._res.common.varianceBufferAux : this._res.common.varianceBuffer;
-
-    // welfordUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
-    const wU32 = new Uint32Array([this._accumFrameIndex + 1, isMoving ? 1 : 0, 0, 0]);
-    d.queue.writeBuffer(this._welfordUboRef.buf!, 0, wU32);
-
-    const hdrColorView = this._res.common.hdrColorTexture.createView();
-    // Sprint 18 follow-up — welford reads the total-radiance texture so the
-    // variance and the sample-budget tier derived from it cover both direct
-    // and indirect channels. Variance + atrous still read hdrColorView
-    // (direct-only) so the denoiser sees the channel it is tuned for.
-    const hdrTotalView = this._res.common.hdrTotalTexture.createView();
-    {
-      const pass = encoder.beginComputePass(computeDesc('welford-temporal'));
-      pass.setPipeline(wf);
-      pass.setBindGroup(0, buildWelfordBindGroup(
-        d, wf, hdrTotalView, welfordRead.createView(), welfordWrite.createView(),
-        this._welfordUboRef.buf!,
-      ));
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-    }
-
-    // atrousVarianceVarianceUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
-    const varUboBytes = new ArrayBuffer(ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceVarianceUniforms({ frameCount: this._accumFrameIndex }, varUboBytes, 0);
-    d.queue.writeBuffer(this._atrousVarianceVarianceUboRef.buf!, 0, varUboBytes);
-
-    {
-      const pass = encoder.beginComputePass(computeDesc('atrous-variance-variance'));
-      pass.setPipeline(sv);
-      pass.setBindGroup(0, buildAtrousVarianceVarianceBindGroup(
-        d, sv,
-        hdrColorView,
-        welfordWrite.createView(),
-        this._res.common.atrousVarianceEstimateTexture.createView(),
-        this._atrousVarianceVarianceUboRef.buf!,
-      ));
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-    }
-
-    // atrousVarianceAtrousUboRef.buf is allocated eagerly in initialize() when denoiserMode === 'atrous-variance'.
-    const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    let inputTex: GPUTexture = this._res.common.hdrColorTexture;
-    const varView = this._res.common.atrousVarianceEstimateTexture.createView();
-    for (let iter = 0; iter < ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS; iter++) {
-      packAtrousVarianceAtrousUniforms(
-        { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
-        atrousUboBytes,
-        0,
-      );
-      d.queue.writeBuffer(this._atrousVarianceAtrousUboRef.buf!, 0, atrousUboBytes);
-      const outTex = iter % 2 === 0 ? this._res.common.denoisedPingTexture : this._res.common.denoisedPongTexture;
-      const pass = encoder.beginComputePass(computeDesc(`atrous-variance-atrous-${iter}` as PassLabel));
-      pass.setPipeline(sa);
-      pass.setBindGroup(0, buildAtrousVarianceAtrousBindGroup(
-        d, sa,
-        inputTex.createView(), outTex.createView(),
-        gNormalDepthView, varView,
-        this._atrousVarianceAtrousUboRef.buf!,
-      ));
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outTex;
-    }
-    return inputTex;
-  }
-
-  /**
-   * T2.H1 — Real Schied 2017 SVGF dispatch.
-   *
-   * Pass order:
-   *   1. svgfReprojMain  — bilinear reprojection + disocclusion + EMA history (Eq. 1–4)
-   *   2. svgfVarianceFromMomentsMain — variance from blended moments (Eq. 5)
-   *   3. svgf7x7FallbackMain — merge 7×7 spatial fallback for h<4 pixels (§4.3)
-   *   4. (copy colorOut → ping) + svgfAtrousMain × SVGF_REAL_DEFAULT_ATROUS_ITERATIONS
-   *
-   * Persistent textures updated each frame:
-   *   - svgfHistoryLengthTexture: written by reproj, read next frame as historyLengthIn
-   *   - svgfMomentsTexture: written by reproj (momentsOut), read next frame as momentsIn
-   *   - svgfPrevRadianceTexture: written by reproj (colorOut), read next frame as prevColor
-   *
-   * The reproj output (colorOut) is the EMA-blended radiance. The atrous chain
-   * reads this rather than the raw hdrColorTexture so that high-variance pixels
-   * (new / disoccluded) still get spatial smoothing from the à-trous chain even
-   * when temporal history is thin.
-   */
-  private _dispatchSVGFReal(
-    encoder: GPUCommandEncoder,
-    gNormalDepthView: GPUTextureView,
-    wgX16: number,
-    wgY16: number,
-    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
-  ): { tex: GPUTexture; iterUbos: GPUBuffer[] } {
-    const d = this._device;
-
-    // ── Pass 1: Reprojection ─────────────────────────────────────────────────
-    // Bindings follow svgfReprojection.wgsl.ts binding declarations (0..14).
-    // For the walkaround-hybrid pipeline, currDepth + currNormal come from
-    // gNormalDepthTexture (.r = depth packed, .xyz = normal packed 0..1).
-    // We use gNormalDepthTexture for both curr and prev depth/normal: one-frame
-    // lag on the previous-frame G-buffer is acceptable for a real-time engine
-    // and avoids allocating a full second G-buffer. Object IDs are not available
-    // in the current walkaround pipeline; a 1×1 placeholder (id=0) is used so
-    // the id-mismatch check always passes — this is conservative (never rejects
-    // valid reprojection) and can be improved when objId outputs are added.
-    // Select ping-pong slots: read from A, write to B (or vice versa).
-    const histRead  = this._svgfPingPong === 0 ? this._res.svgf.svgfHistoryLengthTextureA : this._res.svgf.svgfHistoryLengthTextureB;
-    const histWrite = this._svgfPingPong === 0 ? this._res.svgf.svgfHistoryLengthTextureB : this._res.svgf.svgfHistoryLengthTextureA;
-    const momRead   = this._svgfPingPong === 0 ? this._res.svgf.svgfMomentsTextureA       : this._res.svgf.svgfMomentsTextureB;
-    const momWrite  = this._svgfPingPong === 0 ? this._res.svgf.svgfMomentsTextureB       : this._res.svgf.svgfMomentsTextureA;
-    const radRead   = this._svgfPingPong === 0 ? this._res.svgf.svgfPrevRadianceTextureA  : this._res.svgf.svgfPrevRadianceTextureB;
-    const radWrite  = this._svgfPingPong === 0 ? this._res.svgf.svgfPrevRadianceTextureB  : this._res.svgf.svgfPrevRadianceTextureA;
-
-    const reproj = this._svgfReprojPipeline!;
-    {
-      const bg = d.createBindGroup({
-        label: 'svgf-real-reproj-bg',
-        layout: reproj.getBindGroupLayout(0),
-        entries: [
-          { binding: 0,  resource: this._res.common.hdrColorTexture.createView() },    // currColor (sampled)
-          { binding: 1,  resource: radRead.createView() },                       // prevColor (sampled)
-          { binding: 2,  resource: this._res.common.motionVectorTexture.createView() }, // motionVec
-          { binding: 3,  resource: this._res.common.gNormalDepthTexture.createView() }, // currDepth (.r)
-          { binding: 4,  resource: this._res.common.gNormalDepthTexture.createView() }, // currNormal (.xyz 0..1)
-          { binding: 5,  resource: this._res.svgf.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
-          { binding: 6,  resource: this._res.common.gNormalDepthTexture.createView() }, // prevDepth (1-frame lag)
-          { binding: 7,  resource: this._res.common.gNormalDepthTexture.createView() }, // prevNormal (1-frame lag)
-          { binding: 8,  resource: this._res.svgf.svgfObjIdPlaceholderTexture.createView() }, // prevObjId (placeholder)
-          { binding: 9,  resource: histRead.createView() },                      // historyLengthIn
-          { binding: 10, resource: momRead.createView() },                       // momentsIn
-          { binding: 11, resource: radWrite.createView() },                      // colorOut (storage write)
-          { binding: 12, resource: histWrite.createView() },                     // historyOut (storage write)
-          { binding: 13, resource: momWrite.createView() },                      // momentsOut (storage write)
-          { binding: 14, resource: { buffer: this._svgfReprojUboRef.buf! } },
-        ],
-      });
-      const pass = encoder.beginComputePass(computeDesc('svgf-real-reproj'));
-      pass.setPipeline(reproj);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-    }
-
-    // ── Pass 2: Variance from moments ────────────────────────────────────────
-    // Reads momWrite (just written by reproj) and histWrite.
-    {
-      const bg = d.createBindGroup({
-        label: 'svgf-real-moments-bg',
-        layout: this._svgfMomentsPipeline!.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: momWrite.createView() },
-          { binding: 1, resource: histWrite.createView() },
-          { binding: 2, resource: this._res.svgf.svgfVarianceMomentsIntermedTexture.createView() },
-        ],
-      });
-      const pass = encoder.beginComputePass(computeDesc('svgf-real-moments'));
-      pass.setPipeline(this._svgfMomentsPipeline!);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-    }
-
-    // ── Pass 3: 7×7 spatial fallback ─────────────────────────────────────────
-    {
-      const bg = d.createBindGroup({
-        label: 'svgf-real-7x7-bg',
-        layout: this._svgfFallbackPipeline!.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: this._res.common.hdrColorTexture.createView() },
-          { binding: 1, resource: histWrite.createView() },
-          { binding: 2, resource: this._res.svgf.svgfVarianceMomentsIntermedTexture.createView() },
-          { binding: 3, resource: this._res.svgf.svgfVarianceTexture.createView() },
-        ],
-      });
-      const pass = encoder.beginComputePass(computeDesc('svgf-real-7x7'));
-      pass.setPipeline(this._svgfFallbackPipeline!);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-    }
-
-    // Flip ping-pong for next frame (history, moments, prevRadiance).
-    this._svgfPingPong = 1 - this._svgfPingPong;
-
-    // ── Pass 4: À-trous chain (svgfAtrousMain) ───────────────────────────────
-    // Feed the EMA-blended reprojection output (radWrite) as the starting color.
-    // Ping-pong with denoisedPing/Pong as usual.
-    const sa = this._svgfRealAtrousPipeline!;
-    const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    const varView = this._res.svgf.svgfVarianceTexture.createView();
-    let inputTex: GPUTexture = radWrite;
-    // Collect transient per-iteration UBOs so they can be destroyed after submit().
-    // GPUBuffer is a GPU resource — it must be explicitly destroyed; GC does not
-    // release GPU memory. The caller (renderFrame) calls destroySVGFAtrousUbos()
-    // after d.queue.submit() has drained the encoder.
-    const svgfIterUbos: GPUBuffer[] = [];
-    for (let iter = 0; iter < SVGF_REAL_DEFAULT_ATROUS_ITERATIONS; iter++) {
-      packAtrousVarianceAtrousUniforms(
-        { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
-        atrousUboBytes,
-        0,
-      );
-      // One 16-byte UBO per atrous iteration (5 × 16 = 80 bytes total per frame).
-      const iterUbo = d.createBuffer({
-        label: `svgf-real-atrous-ubo-${iter}`,
-        size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      d.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
-      svgfIterUbos.push(iterUbo);
-
-      const outTex = iter % 2 === 0 ? this._res.common.denoisedPingTexture : this._res.common.denoisedPongTexture;
-      const bg = d.createBindGroup({
-        label: `svgf-real-atrous-bg-${iter}`,
-        layout: sa.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: inputTex.createView() },
-          { binding: 1, resource: outTex.createView() },
-          { binding: 2, resource: gNormalDepthView },
-          { binding: 3, resource: gNormalDepthView },
-          { binding: 4, resource: varView },
-          { binding: 5, resource: { buffer: iterUbo } },
-        ],
-      });
-      const pass = encoder.beginComputePass(computeDesc(`svgf-real-atrous-${iter}` as `svgf-real-atrous-${0|1|2|3|4}`));
-      pass.setPipeline(sa);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outTex;
-    }
-    return { tex: inputTex, iterUbos: svgfIterUbos };
-  }
-
-  /**
-   * Legacy à-trous denoise dispatch — 3 iterations with widening step.
-   */
-  private _dispatchAtrousLegacy(
-    encoder: GPUCommandEncoder,
-    gNormalDepthView: GPUTextureView,
-    wgX16: number,
-    wgY16: number,
-    computeDesc: (label: PassLabel) => GPUComputePassDescriptor,
-  ): GPUTexture {
-    const d = this._device;
-    let inputTex = this._res.common.hdrColorTexture;
-    for (let iter = 0; iter < 3; iter++) {
-      const stepWidth = 1 << iter;
-      const outputTex = iter % 2 === 0 ? this._res.common.denoisedPingTexture : this._res.common.denoisedPongTexture;
-      const bgAtrous = buildAtrousBindGroup(
-        d, this._bglCache, this._atrousUboRef,
-        inputTex.createView(), outputTex.createView(),
-        gNormalDepthView, gNormalDepthView, stepWidth,
-      );
-      const pass = encoder.beginComputePass(computeDesc(`atrous-${iter}` as PassLabel));
-      pass.setPipeline(this._atrousPipeline);
-      pass.setBindGroup(0, bgAtrous);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outputTex;
-    }
-    return inputTex;
   }
 
   /**
@@ -1531,7 +1177,11 @@ export class WalkaroundGPUPipeline {
     if (this._res) destroyFrameResources(this._res);
     for (const ref of this._perPassUboRefs) ref.buf?.destroy();
     disposeTimestampState(this._tsState);
-    // T2.H2 — dispose the neural InferenceGraph if present.
+    // Denoiser owns its own pipelines + UBOs; let it release them.
+    this._activeDenoiser?.dispose();
+    this._activeDenoiser = null;
+    this._denoiserRegistry = null;
+    // T2.H2 — dispose the neural InferenceGraph if present (reserved for W10).
     this._inferenceGraph?.dispose();
     this._inferenceGraph = null;
   }

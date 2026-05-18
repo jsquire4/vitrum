@@ -297,59 +297,6 @@ export function buildCompositeBindGroup(
   });
 }
 
-// ── À-trous + variance bind group builders (Sprint 10a) ──────────────────────
-//
-// These pipelines use 'auto' bindgroup layouts, so the layout source is the
-// pipeline itself (via `getBindGroupLayout(0)`) rather than the BGL cache.
-// These builders centralize the layout-binding wiring that previously lived
-// inline inside renderFrame().
-
-export function buildWelfordBindGroup(
-  device: GPUDevice,
-  welfordPipeline: GPUComputePipeline,
-  hdrColor: GPUTextureView,
-  welfordRead: GPUTextureView,
-  welfordWrite: GPUTextureView,
-  ubo: GPUBuffer,
-): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'welford-bg',
-    layout: welfordPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: hdrColor },
-      { binding: 1, resource: welfordRead },
-      { binding: 2, resource: welfordWrite },
-      { binding: 3, resource: { buffer: ubo } },
-    ],
-  });
-}
-
-export function buildAtrousVarianceVarianceBindGroup(
-  device: GPUDevice,
-  variancePipeline: GPUComputePipeline,
-  hdrColor: GPUTextureView,
-  welfordWrite: GPUTextureView,
-  varianceEstimate: GPUTextureView,
-  ubo: GPUBuffer,
-): GPUBindGroup {
-  // The variance kernel reads only inputColor (0), varianceIn (5),
-  // and writes varianceOut (6) + reads varUBO (7). Bindings 1..4 are
-  // DECLARED in the WGSL but UNREFERENCED by the kernel body — Dawn's
-  // `layout: 'auto'` drops unreferenced bindings, so trying to bind
-  // them yields "binding index N not present in the bind group layout"
-  // and the whole command buffer is rejected. We just don't pass them.
-  return device.createBindGroup({
-    label: 'atrous-variance-variance-bg',
-    layout: variancePipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: hdrColor },
-      { binding: 5, resource: welfordWrite },
-      { binding: 6, resource: varianceEstimate },
-      { binding: 7, resource: { buffer: ubo } },
-    ],
-  });
-}
-
 // ── Sample-budget bind group (Sprint 9) ──────────────────────────────────────
 
 export function buildSampleBudgetBindGroup(
@@ -525,25 +472,3 @@ export function buildIndirectCombineBindGroup(
   });
 }
 
-export function buildAtrousVarianceAtrousBindGroup(
-  device: GPUDevice,
-  atrousPipeline: GPUComputePipeline,
-  inputTex: GPUTextureView,
-  outputTex: GPUTextureView,
-  gNormalDepth: GPUTextureView,
-  varianceEstimate: GPUTextureView,
-  ubo: GPUBuffer,
-): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'atrous-variance-atrous-bg',
-    layout: atrousPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: inputTex },
-      { binding: 1, resource: outputTex },
-      { binding: 2, resource: gNormalDepth },
-      { binding: 3, resource: gNormalDepth },
-      { binding: 4, resource: varianceEstimate },
-      { binding: 5, resource: { buffer: ubo } },
-    ],
-  });
-}

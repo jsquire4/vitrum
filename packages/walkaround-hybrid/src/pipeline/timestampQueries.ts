@@ -102,8 +102,11 @@ export const MAX_PASS_COUNT = 33;
 
 export interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is
-   *  self-managing and doesn't participate in the timestamp-query pass layout). */
-  readonly denoiserMode: 'atrous-variance' | 'atrous' | 'svgf-real' | 'neural';
+   *  self-managing and doesn't participate in the timestamp-query pass layout).
+   *  W1-R3: widened to {@link DenoiserId} so 'none' / 'oidn-final' compile;
+   *  'oidn-final' is registered as `disabled` and never reaches this layout
+   *  builder at runtime — the registry rejects it at `lookup()` time. */
+  readonly denoiserMode: import('./denoisers/index.js').DenoiserId;
 }
 
 export interface PassLayout {
@@ -138,10 +141,12 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   // the next frame).
   labels.push('gtao', 'gtao-upsample');
   // T2.H2: 'neural' uses the atrous-variance pass layout (InferenceGraph manages its own dispatch).
+  // 'none' adds no denoiser slots — NoneDenoiser is a pass-through. 'oidn-final' is registered
+  // disabled and never reaches this layout at runtime (registry throws at lookup).
   if (opts.denoiserMode === 'atrous-variance' || opts.denoiserMode === 'neural') {
     // Iteration count tied to `ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS = 3` in
     // shared-denoisers/atrousVarianceConstants.ts. The dispatch loop in
-    // WalkaroundGPUPipeline._dispatchAtrousVariance runs the same count; keep these
+    // AtrousVarianceDenoiser.dispatch runs the same count; keep these
     // in sync so the layout has exactly one slot per dispatch.
     labels.push(
       'welford-temporal',
@@ -153,7 +158,7 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   } else if (opts.denoiserMode === 'svgf-real') {
     // T2.H1 — real Schied 2017 SVGF: reproj → moments → 7×7 fallback → 5 × à-trous.
     // SVGF_REAL_DEFAULT_ATROUS_ITERATIONS = 5 in shared-denoisers/svgfRealConstants.ts.
-    // Keep slot count in sync with _dispatchSVGFReal's loop.
+    // Keep slot count in sync with SVGFRealDenoiser.dispatch's loop.
     labels.push(
       'svgf-real-reproj',
       'svgf-real-moments',
@@ -164,9 +169,10 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
       'svgf-real-atrous-3',
       'svgf-real-atrous-4',
     );
-  } else {
+  } else if (opts.denoiserMode === 'atrous') {
     labels.push('atrous-0', 'atrous-1', 'atrous-2');
   }
+  // 'none' / 'oidn-final': no denoiser slots appended.
   // Sprint 18 follow-up — indirect-channel temporal accumulator (TCBB clip
   // on history + firefly cap on current) runs *before* the atrous chain so
   // atrous operates on a temporally-coherent signal rather than per-frame
