@@ -27,6 +27,14 @@ import {
   packAtrousVarianceAtrousUniforms,
   packAtrousVarianceVarianceUniforms,
 } from '@vitrum/shared-denoisers';
+import { defineUbo } from '@vitrum/shared-samplers';
+
+// W2-C13 follow-up — WelfordTemporalUBO (2×u32 active + min-binding pad
+// to 16 B). Mirrors `struct WelfordTemporalUBO` in welfordTemporal.wgsl.ts.
+const WELFORD_TEMPORAL_UBO = defineUbo([
+  { name: 'sampleN',    type: 'u32' },
+  { name: 'forceReset', type: 'u32' },
+] as const);
 import { WELFORD_TEMPORAL_MODULE } from '../../shaders/welfordTemporal.wgsl.js';
 import { composeWgsl } from '../wgslComposer.js';
 import { ATROUS_VARIANCE_MODULE, WGSL_MODULES } from '../wgslModules.js';
@@ -230,8 +238,15 @@ export class AtrousVarianceDenoiser implements Denoiser {
       : common.varianceBuffer;
 
     // welfordUboRef.buf is allocated eagerly in initialize().
-    const wU32 = new Uint32Array([frameIndex + 1, isMoving ? 1 : 0, 0, 0]);
-    device.queue.writeBuffer(this._welfordUboRef.buf!, 0, wU32);
+    // W2-C13 follow-up: byte-identical to the prior Uint32Array([frameIndex+1,
+    // forceReset, 0, 0]) write — defineUbo packs two u32 fields at offsets 0/4
+    // and zero-fills the trailing pad to the 16-byte minimum-binding floor.
+    const wUboBytes = new ArrayBuffer(WELFORD_TEMPORAL_UBO.sizeBytes);
+    WELFORD_TEMPORAL_UBO.pack(new DataView(wUboBytes), 0, {
+      sampleN:    frameIndex + 1,
+      forceReset: isMoving ? 1 : 0,
+    });
+    device.queue.writeBuffer(this._welfordUboRef.buf!, 0, wUboBytes);
 
     const hdrColorView = common.hdrColorTexture.createView();
     // Sprint 18 follow-up — welford reads the total-radiance texture so the

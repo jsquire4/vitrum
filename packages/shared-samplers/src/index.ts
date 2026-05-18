@@ -81,3 +81,13 @@ export {
   FRAUNHOFER_F_NM,
   FRAUNHOFER_C_NM,
 } from './cauchyIor.js';
+
+// W2-C13 — declarative UBO codegen (defineUbo)
+export { defineUbo } from './uboCodegen.js';
+export type {
+  UboFieldType,
+  UboFieldSpec,
+  UboValue,
+  UboDefinition,
+  UboWgslOptions,
+} from './uboCodegen.js';

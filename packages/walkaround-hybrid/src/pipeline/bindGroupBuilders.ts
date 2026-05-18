@@ -10,6 +10,7 @@
  * first call and reused thereafter.
  */
 
+import { defineUbo } from '@vitrum/shared-samplers';
 import {
   getFrameBindGroupLayout,
   getSceneBindGroupLayout,
@@ -28,6 +29,21 @@ import {
   getIndirectTemporalAccumBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
+
+// ─── W2-C13 follow-up: UBO codegen for builder-managed UBOs ───────────────────
+// AtrousUBO (atrous.wgsl.ts): {stepWidth, sigmaN, sigmaZ, sigmaC} — 4×f32 = 16 B.
+const ATROUS_UBO = defineUbo([
+  { name: 'stepWidth', type: 'f32' },
+  { name: 'sigmaN',    type: 'f32' },
+  { name: 'sigmaZ',    type: 'f32' },
+  { name: 'sigmaC',    type: 'f32' },
+] as const);
+// AccumUBO (temporalAccum.wgsl.ts): {alpha, _pad1, _pad2, _pad3} — 1 active f32
+// padded to the 16-byte WebGPU minimum-binding floor. Only `alpha` is read by
+// the shader; the three trailing pads are zero-filled by defineUbo.pack.
+const ACCUM_UBO = defineUbo([
+  { name: 'alpha', type: 'f32' },
+] as const);
 
 // ── Frame bind group ─────────────────────────────────────────────────────────
 
@@ -193,11 +209,19 @@ export function buildAtrousBindGroup(
 ): GPUBindGroup {
   if (!uboRef.buf) {
     uboRef.buf = device.createBuffer({
-      size: 16,
+      size: ATROUS_UBO.sizeBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
-  const uboData = new Float32Array([stepWidth, sigmas.sigmaN, sigmas.sigmaZ, sigmas.sigmaC]);
+  // W2-C13 follow-up: same byte layout as the prior Float32Array([stepWidth,
+  // sigmaN, sigmaZ, sigmaC]) — four f32 fields at offsets 0/4/8/12.
+  const uboData = new ArrayBuffer(ATROUS_UBO.sizeBytes);
+  ATROUS_UBO.pack(new DataView(uboData), 0, {
+    stepWidth,
+    sigmaN: sigmas.sigmaN,
+    sigmaZ: sigmas.sigmaZ,
+    sigmaC: sigmas.sigmaC,
+  });
   device.queue.writeBuffer(uboRef.buf, 0, uboData);
 
   return device.createBindGroup({
@@ -226,17 +250,18 @@ export function buildAccumBindGroup(
 ): GPUBindGroup {
   if (!uboRef.buf) {
     uboRef.buf = device.createBuffer({
-      size: 16,
+      size: ACCUM_UBO.sizeBytes,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
   }
-  // AccumUBO is now {alpha, _pad1, _pad2, _pad3} — the temporal accum shader
-  // uses an AABB clamp on the 3×3 neighborhood (not k·std_dev), so the former
-  // varianceK slot is unused padding.
-  device.queue.writeBuffer(
-    uboRef.buf, 0,
-    new Float32Array([alpha, 0, 0, 0]),
-  );
+  // W2-C13 follow-up: AccumUBO is now {alpha, _pad1, _pad2, _pad3} — the
+  // temporal accum shader uses an AABB clamp on the 3×3 neighborhood (not
+  // k·std_dev), so the former varianceK slot is unused padding. defineUbo
+  // zero-fills the trailing pad bytes to match the prior
+  // Float32Array([alpha, 0, 0, 0]) write byte-for-byte.
+  const accumUboData = new ArrayBuffer(ACCUM_UBO.sizeBytes);
+  ACCUM_UBO.pack(new DataView(accumUboData), 0, { alpha });
+  device.queue.writeBuffer(uboRef.buf, 0, accumUboData);
   return device.createBindGroup({
     label: 'accum-bg',
     layout: getAccumBindGroupLayout(device, cache),
