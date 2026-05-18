@@ -23,7 +23,10 @@ import {
   packAtrousVarianceAtrousUniforms,
   packAtrousVarianceVarianceUniforms,
 } from '../src/atrousVarianceBindings.js';
-import { ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX, ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../src/atrousVarianceConstants.js';
+import {
+  ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX,
+  ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
+} from '../src/atrousVarianceConstants.js';
 
 // ── ATROUS_VARIANCE_WGSL content tests ──────────────────────────────────────
 
@@ -47,7 +50,9 @@ describe('ATROUS_VARIANCE_WGSL', () => {
   });
 
   it('injects temporal variance frame threshold matching atrousVarianceConstants', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain(`SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT}u`);
+    expect(ATROUS_VARIANCE_WGSL).toContain(
+      `SVGF_TEMPORAL_VARIANCE_MIN_FRAMES: u32 = ${ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT}u`,
+    );
     expect(ATROUS_VARIANCE_WGSL).toContain('if (frameCount < SVGF_TEMPORAL_VARIANCE_MIN_FRAMES)');
   });
 
@@ -143,9 +148,9 @@ describe('ATROUS_VARIANCE_WGSL', () => {
   });
 
   it('implements bilateral edge-stopping (color + normal + depth weights)', () => {
-    expect(ATROUS_VARIANCE_WGSL).toContain('wc');   // color weight
-    expect(ATROUS_VARIANCE_WGSL).toContain('wn');   // normal weight
-    expect(ATROUS_VARIANCE_WGSL).toContain('wz');   // depth weight
+    expect(ATROUS_VARIANCE_WGSL).toContain('wc'); // color weight
+    expect(ATROUS_VARIANCE_WGSL).toContain('wn'); // normal weight
+    expect(ATROUS_VARIANCE_WGSL).toContain('wz'); // depth weight
   });
 
   it('uses textureStore for outputColor', () => {
@@ -180,28 +185,40 @@ describe('packAtrousVarianceAtrousUniforms', () => {
 
   it('round-trips iteration as u32 at offset 0', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceAtrousUniforms({ iteration: 3, sigmaColor: 10, sigmaNormal: 128, sigmaDepth: 1 }, buf);
+    packAtrousVarianceAtrousUniforms(
+      { iteration: 3, sigmaColor: 10, sigmaNormal: 128, sigmaDepth: 1 },
+      buf,
+    );
     const view = new DataView(buf);
     expect(view.getUint32(0, true)).toBe(3);
   });
 
   it('round-trips sigmaColor as f32 at offset 4', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceAtrousUniforms({ iteration: 0, sigmaColor: 10.0, sigmaNormal: 128.0, sigmaDepth: 1.0 }, buf);
+    packAtrousVarianceAtrousUniforms(
+      { iteration: 0, sigmaColor: 10.0, sigmaNormal: 128.0, sigmaDepth: 1.0 },
+      buf,
+    );
     const view = new DataView(buf);
     expect(view.getFloat32(4, true)).toBeCloseTo(10.0, 3);
   });
 
   it('round-trips sigmaNormal as f32 at offset 8', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceAtrousUniforms({ iteration: 0, sigmaColor: 10.0, sigmaNormal: 128.0, sigmaDepth: 1.0 }, buf);
+    packAtrousVarianceAtrousUniforms(
+      { iteration: 0, sigmaColor: 10.0, sigmaNormal: 128.0, sigmaDepth: 1.0 },
+      buf,
+    );
     const view = new DataView(buf);
     expect(view.getFloat32(8, true)).toBeCloseTo(128.0, 1);
   });
 
   it('round-trips sigmaDepth as f32 at offset 12', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceAtrousUniforms({ iteration: 0, sigmaColor: 10.0, sigmaNormal: 128.0, sigmaDepth: 1.5 }, buf);
+    packAtrousVarianceAtrousUniforms(
+      { iteration: 0, sigmaColor: 10.0, sigmaNormal: 128.0, sigmaDepth: 1.5 },
+      buf,
+    );
     const view = new DataView(buf);
     expect(view.getFloat32(12, true)).toBeCloseTo(1.5, 4);
   });
@@ -222,14 +239,20 @@ describe('packAtrousVarianceAtrousUniforms', () => {
 
   it('iteration 0 produces step width 1 (the logical 2^0 = 1)', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceAtrousUniforms({ iteration: 0, sigmaColor: 10, sigmaNormal: 128, sigmaDepth: 1 }, buf);
+    packAtrousVarianceAtrousUniforms(
+      { iteration: 0, sigmaColor: 10, sigmaNormal: 128, sigmaDepth: 1 },
+      buf,
+    );
     const view = new DataView(buf);
     expect(view.getUint32(0, true)).toBe(0);
   });
 
   it('iteration 4 produces step width 16 (the logical 2^4 = 16)', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceAtrousUniforms({ iteration: 4, sigmaColor: 10, sigmaNormal: 128, sigmaDepth: 1 }, buf);
+    packAtrousVarianceAtrousUniforms(
+      { iteration: 4, sigmaColor: 10, sigmaNormal: 128, sigmaDepth: 1 },
+      buf,
+    );
     const view = new DataView(buf);
     expect(view.getUint32(0, true)).toBe(4);
   });
@@ -252,11 +275,11 @@ describe('packAtrousVarianceVarianceUniforms', () => {
   it('pads remaining 12 bytes with zeros', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
     // Pre-fill with 0xFF to ensure packer writes zeros.
-    new Uint8Array(buf).fill(0xFF);
+    new Uint8Array(buf).fill(0xff);
     packAtrousVarianceVarianceUniforms({ frameCount: 1 }, buf);
     const view = new DataView(buf);
-    expect(view.getUint32(4,  true)).toBe(0);
-    expect(view.getUint32(8,  true)).toBe(0);
+    expect(view.getUint32(4, true)).toBe(0);
+    expect(view.getUint32(8, true)).toBe(0);
     expect(view.getUint32(12, true)).toBe(0);
   });
 
@@ -269,7 +292,10 @@ describe('packAtrousVarianceVarianceUniforms', () => {
 
   it('saturates frameCount at ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX', () => {
     const buf = new ArrayBuffer(ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
-    packAtrousVarianceVarianceUniforms({ frameCount: ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX + 9 }, buf);
+    packAtrousVarianceVarianceUniforms(
+      { frameCount: ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX + 9 },
+      buf,
+    );
     const view = new DataView(buf);
     expect(view.getUint32(0, true)).toBe(ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX);
   });

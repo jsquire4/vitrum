@@ -104,7 +104,7 @@ describe('sampleHG', () => {
     const N = 100;
     for (let i = 0; i < N; i++) {
       const u1 = (i + 0.5) / N;
-      const u2 = ((i * 37) % N + 0.5) / N;
+      const u2 = (((i * 37) % N) + 0.5) / N;
       const [, , z] = sampleHG(u1, u2, 0.9);
       if (z > 0) positiveCount++;
     }
@@ -117,7 +117,7 @@ describe('sampleHG', () => {
     const N = 100;
     for (let i = 0; i < N; i++) {
       const u1 = (i + 0.5) / N;
-      const u2 = ((i * 37) % N + 0.5) / N;
+      const u2 = (((i * 37) % N) + 0.5) / N;
       const [, , z] = sampleHG(u1, u2, -0.9);
       if (z < 0) negativeCount++;
     }

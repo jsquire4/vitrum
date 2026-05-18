@@ -7,11 +7,7 @@
  * the albedoTexture for downstream demodulation.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class ShadePass implements Pass {
@@ -29,9 +25,14 @@ export class ShadePass implements Pass {
 
   dispatch(ctx: PassDispatchContext): void {
     const {
-      encoder, computeDesc,
-      frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup,
-      wgX, wgY,
+      encoder,
+      computeDesc,
+      frameBindGroup,
+      sceneBindGroup,
+      uboBindGroup,
+      hybridLayersBindGroup,
+      wgX,
+      wgY,
     } = ctx;
     const pass = encoder.beginComputePass(computeDesc('shade'));
     pass.setPipeline(this._pipeline);

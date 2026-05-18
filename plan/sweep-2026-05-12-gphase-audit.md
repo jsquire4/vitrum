@@ -28,11 +28,12 @@ M9.C (atrous demodulation) on top. No RC content was reverted or duplicated.
 
 🟡 **status: naming collision resolved — two distinct RFE-09 entries**
 
-**Current state (before fixes):**  
+**Current state (before fixes):**
+
 - `external_requests/09-runtime-lighting-updates.md`: Status: **Proposed** — proposes
   a future `updatePrimaryLight` / `updateSkyDome` / `updateLights` API on `HybridEngine`.
 - `external_requests/IMPLEMENTATION-STATUS.md` §"RFE-09": claims **APPLIED** — but refers
-  to the *pt-webgl fork uniform bridge* sprint deliverable (`forkUniformBridge.ts`), which
+  to the _pt-webgl fork uniform bridge_ sprint deliverable (`forkUniformBridge.ts`), which
   is a completely different thing filed under the same number.
 - `external_requests/README.md` index: RFE-09 was **missing** from the table entirely.
 - CHANGELOG (line 58): correctly describes the uniform bridge under "RFE-09".
@@ -42,9 +43,10 @@ deliverable. The file `09-runtime-lighting-updates.md` is a separately filed ext
 (Status: Proposed, not implemented). They are genuinely different; neither doc is wrong
 about its own subject; but the shared number created apparent contradiction.
 
-**Action taken:**  
+**Action taken:**
+
 1. `external_requests/README.md` — added RFE-09 row: `09-runtime-lighting-updates.md |
-   Proposed | Runtime lighting updates without pipeline rebuild`.
+Proposed | Runtime lighting updates without pipeline rebuild`.
 2. `external_requests/IMPLEMENTATION-STATUS.md` — added inline HTML comment disambiguating
    the "RFE-09" uniform-bridge section from the `09-runtime-lighting-updates.md` proposal.
 
@@ -60,18 +62,19 @@ correctly reflects its unimplemented state.
 
 **Lines changed (verified by reading `git show d97e806 -- packages/walkaround-hybrid/src/shaders/common.wgsl.ts`):**  
 The diff for `common.wgsl.ts` in `d97e806` shows:
+
 - Lines 552–553 (in `bvhIntersectAny`): added two comment lines using single-quoted
   `'stackPtr + 1u < 64u'`. These lines did **not exist** in the pre-M4 state (confirmed
   via `git show 0088a78:…common.wgsl.ts | grep Guard` — no output).
 - Line 563: changed actual WGSL guard from `stackPtr < 62u` → `stackPtr + 1u < 64u`
   (this is the real correctness fix, Item 29, not the backtick fix).
 - Lines 642–643 / 658: same pattern for `bvhIntersectFirstHit`.
-- `grep -E '^\+.*\`|^\-.*\`'` on the diff returns zero lines — **no backticks were
+- `grep -E '^\+.*\`|^\-.\*\`'` on the diff returns zero lines — **no backticks were
   added or removed** in the diff.
 
 **Interpretation of agent claim:** The commit message describes the backtick fix as a "bonus"
-resolved as a side effect. Inspecting the diff shows the Guard comments were simply *added
-fresh* with single quotes (no prior comment existed to convert). The template-literal hazard
+resolved as a side effect. Inspecting the diff shows the Guard comments were simply _added
+fresh_ with single quotes (no prior comment existed to convert). The template-literal hazard
 that the agent referred to was likely a comment they drafted but then immediately wrote with
 single quotes. Either way: the current file has no backtick-quoted inline code inside the
 JS template literal, and the WGSL logic (`stackPtr + 1u < 64u`) is correct.

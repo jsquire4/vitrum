@@ -9,12 +9,7 @@
  * Gated on `opts.ppgEnabled`.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassGateOptions,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassGateOptions, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class PPGUpdatePass implements Pass {

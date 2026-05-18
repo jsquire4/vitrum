@@ -21,7 +21,7 @@
  * SIGGRAPH 2014.
  */
 
-export const TEMPORAL_ACCUM_WGSL = /* wgsl */`
+export const TEMPORAL_ACCUM_WGSL = /* wgsl */ `
 
 struct AccumUBO {
   alpha: f32,        // [0, 1] blend weight on the current frame

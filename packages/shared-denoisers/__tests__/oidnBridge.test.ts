@@ -35,14 +35,18 @@ describe('oidnBridge exports', () => {
     // It must be a Promise — we don't await it here (no ORT installed).
     expect(stub).toBeInstanceOf(Promise);
     // Suppress unhandled rejection for this test.
-    stub.catch(() => {/* expected — no ORT installed */});
+    stub.catch(() => {
+      /* expected — no ORT installed */
+    });
   });
 
   it('exports preloadOIDNModel as an async function', () => {
     expect(typeof preloadOIDNModel).toBe('function');
     const stub = preloadOIDNModel({ modelUrl: '/test.onnx' });
     expect(stub).toBeInstanceOf(Promise);
-    stub.catch(() => {/* expected */});
+    stub.catch(() => {
+      /* expected */
+    });
   });
 
   it('exports clearOIDNCache as a synchronous function', () => {
@@ -122,7 +126,7 @@ describe('OIDNDenoiseOptions defaults', () => {
 
 describe('_hwcToNchw / _nchwToHwc layout transforms', () => {
   it('round-trips a 1×1×3 (single pixel, 3 channels) buffer', () => {
-    const hwc = new Float32Array([0.1, 0.5, 0.9]);  // R, G, B at pixel (0,0)
+    const hwc = new Float32Array([0.1, 0.5, 0.9]); // R, G, B at pixel (0,0)
     const nchw = _hwcToNchw(hwc, 1, 1, 3);
     // NCHW layout for 1×1×3: [R_00, G_00, B_00] — same as HWC for 1 pixel
     expect(nchw).toHaveLength(3);
@@ -171,7 +175,9 @@ describe('_hwcToNchw / _nchwToHwc layout transforms', () => {
   });
 
   it('preserves total element count across layouts', () => {
-    const w = 8, h = 4, c = 3;
+    const w = 8,
+      h = 4,
+      c = 3;
     const hwc = new Float32Array(h * w * c).map((_, i) => i * 0.01);
     const nchw = _hwcToNchw(hwc, h, w, c);
     expect(nchw).toHaveLength(hwc.length);
@@ -180,7 +186,9 @@ describe('_hwcToNchw / _nchwToHwc layout transforms', () => {
   });
 
   it('round-trips a 4×4×3 buffer with floating-point values', () => {
-    const w = 4, h = 4, c = 3;
+    const w = 4,
+      h = 4,
+      c = 3;
     const hwc = Float32Array.from({ length: h * w * c }, (_, i) => Math.sin(i * 0.37));
     const nchw = _hwcToNchw(hwc, h, w, c);
     const back = _nchwToHwc(nchw, h, w, c);
@@ -191,7 +199,7 @@ describe('_hwcToNchw / _nchwToHwc layout transforms', () => {
 
   it('handles 1-channel (grayscale) buffer round-trip', () => {
     // Although OIDN uses 3 channels, the helpers are channel-agnostic
-    const hwc = new Float32Array([10, 20, 30, 40]);  // 2×2×1
+    const hwc = new Float32Array([10, 20, 30, 40]); // 2×2×1
     const nchw = _hwcToNchw(hwc, 2, 2, 1);
     // For 1 channel, HWC and NCHW should be identical
     expect(Array.from(nchw)).toEqual([10, 20, 30, 40]);
@@ -215,12 +223,13 @@ describe('OIDNDenoiseInputs', () => {
   });
 
   it('accepts full input with normal and albedo aux buffers', () => {
-    const w = 64, h = 64;
+    const w = 64,
+      h = 64;
     const inputs: OIDNDenoiseInputs = {
-      color:  new Float32Array(h * w * 3),
+      color: new Float32Array(h * w * 3),
       normal: new Float32Array(h * w * 3),
       albedo: new Float32Array(h * w * 3),
-      width:  w,
+      width: w,
       height: h,
     };
     expect(inputs.normal).toBeInstanceOf(Float32Array);

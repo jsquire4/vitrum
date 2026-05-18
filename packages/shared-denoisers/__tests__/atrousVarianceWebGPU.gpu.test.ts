@@ -21,7 +21,13 @@ describe.skipIf(!hasWebGpu)('runAtrousVarianceWebGPU (WebGPU)', () => {
     rgb[1] = 2;
     rgb[2] = 1;
 
-    const out = await runAtrousVarianceWebGPU({ rgb, width: w, height: h, frameCount: 0, atrousIterations: 5 });
+    const out = await runAtrousVarianceWebGPU({
+      rgb,
+      width: w,
+      height: h,
+      frameCount: 0,
+      atrousIterations: 5,
+    });
     expect(out.length).toBe(w * h * 3);
     expect(Number.isFinite(out[0])).toBe(true);
   });

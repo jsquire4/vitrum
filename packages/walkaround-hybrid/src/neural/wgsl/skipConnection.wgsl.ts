@@ -16,7 +16,7 @@
  * inputB occupies binding 1 (normally weights) — this is intentional for skip layers.
  */
 
-export const SKIP_CONNECTION_WGSL = /* wgsl */`
+export const SKIP_CONNECTION_WGSL = /* wgsl */ `
 struct SkipParams {
   count : u32,   // total number of elements (H × W × C)
   _pad0 : u32,

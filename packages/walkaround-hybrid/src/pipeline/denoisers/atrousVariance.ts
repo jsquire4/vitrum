@@ -191,7 +191,9 @@ export class AtrousVarianceDenoiser implements Denoiser {
     // branching in dispatch.
     const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
     this._welfordUboRef.buf = device.createBuffer({
-      label: 'welford-ubo', size: 16, usage: U,
+      label: 'welford-ubo',
+      size: 16,
+      usage: U,
     });
     this._varianceUboRef.buf = device.createBuffer({
       label: 'atrous-variance-variance-ubo',
@@ -222,12 +224,8 @@ export class AtrousVarianceDenoiser implements Denoiser {
     const sv = this._variancePipeline;
     const sa = this._atrousPipeline;
 
-    const welfordRead = this._welfordPing === 0
-      ? common.varianceBuffer
-      : common.varianceBufferAux;
-    const welfordWrite = this._welfordPing === 0
-      ? common.varianceBufferAux
-      : common.varianceBuffer;
+    const welfordRead = this._welfordPing === 0 ? common.varianceBuffer : common.varianceBufferAux;
+    const welfordWrite = this._welfordPing === 0 ? common.varianceBufferAux : common.varianceBuffer;
 
     // welfordUboRef.buf is allocated eagerly in initialize().
     const wU32 = new Uint32Array([frameIndex + 1, isMoving ? 1 : 0, 0, 0]);
@@ -242,11 +240,17 @@ export class AtrousVarianceDenoiser implements Denoiser {
     {
       const pass = encoder.beginComputePass(computeDesc('welford-temporal'));
       pass.setPipeline(wf);
-      pass.setBindGroup(0, buildWelfordBindGroup(
-        device, wf,
-        hdrTotalView, welfordRead.createView(), welfordWrite.createView(),
-        this._welfordUboRef.buf!,
-      ));
+      pass.setBindGroup(
+        0,
+        buildWelfordBindGroup(
+          device,
+          wf,
+          hdrTotalView,
+          welfordRead.createView(),
+          welfordWrite.createView(),
+          this._welfordUboRef.buf!,
+        ),
+      );
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
@@ -258,13 +262,17 @@ export class AtrousVarianceDenoiser implements Denoiser {
     {
       const pass = encoder.beginComputePass(computeDesc('atrous-variance-variance'));
       pass.setPipeline(sv);
-      pass.setBindGroup(0, buildAtrousVarianceVarianceBindGroup(
-        device, sv,
-        hdrColorView,
-        welfordWrite.createView(),
-        common.atrousVarianceEstimateTexture.createView(),
-        this._varianceUboRef.buf!,
-      ));
+      pass.setBindGroup(
+        0,
+        buildAtrousVarianceVarianceBindGroup(
+          device,
+          sv,
+          hdrColorView,
+          welfordWrite.createView(),
+          common.atrousVarianceEstimateTexture.createView(),
+          this._varianceUboRef.buf!,
+        ),
+      );
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
@@ -279,19 +287,23 @@ export class AtrousVarianceDenoiser implements Denoiser {
         0,
       );
       device.queue.writeBuffer(this._atrousUboRef.buf!, 0, atrousUboBytes);
-      const outTex = iter % 2 === 0
-        ? common.denoisedPingTexture
-        : common.denoisedPongTexture;
+      const outTex = iter % 2 === 0 ? common.denoisedPingTexture : common.denoisedPongTexture;
       const pass = encoder.beginComputePass(
         computeDesc(`atrous-variance-atrous-${iter}` as PassLabel),
       );
       pass.setPipeline(sa);
-      pass.setBindGroup(0, buildAtrousVarianceAtrousBindGroup(
-        device, sa,
-        inputTex.createView(), outTex.createView(),
-        gNormalDepthView, varView,
-        this._atrousUboRef.buf!,
-      ));
+      pass.setBindGroup(
+        0,
+        buildAtrousVarianceAtrousBindGroup(
+          device,
+          sa,
+          inputTex.createView(),
+          outTex.createView(),
+          gNormalDepthView,
+          varView,
+          this._atrousUboRef.buf!,
+        ),
+      );
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
       inputTex = outTex;

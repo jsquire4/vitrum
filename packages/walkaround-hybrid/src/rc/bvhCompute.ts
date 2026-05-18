@@ -34,13 +34,13 @@ import type { MeshBVH } from 'three-mesh-bvh';
 import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
 
 export interface SceneBVH {
-  bvh:           MeshBVH;
-  bvhNodes:      StorageBufferAttribute;   // packed BVHNode (8 floats per node)
-  positions:     StorageBufferAttribute;   // vec3f per vertex (16-byte stride: xyz + 0 pad)
-  indices:       StorageBufferAttribute;   // vec3u per triangle (3 x uint32)
-  materials:     StorageBufferAttribute;   // MaterialEntry per material (16 floats)
-  triMaterialId: StorageBufferAttribute;   // u32 per triangle
-  bounds:        THREE.Box3;
+  bvh: MeshBVH;
+  bvhNodes: StorageBufferAttribute; // packed BVHNode (8 floats per node)
+  positions: StorageBufferAttribute; // vec3f per vertex (16-byte stride: xyz + 0 pad)
+  indices: StorageBufferAttribute; // vec3u per triangle (3 x uint32)
+  materials: StorageBufferAttribute; // MaterialEntry per material (16 floats)
+  triMaterialId: StorageBufferAttribute; // u32 per triangle
+  bounds: THREE.Box3;
 }
 
 export interface BvhBuildOpts {
@@ -111,10 +111,7 @@ function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
  * Build a SceneBVH from the current scene graph for the cascade pipeline.
  * Cost: ~50 ms for ~30K triangle scenes. Caller debounces.
  */
-export function buildRCSceneBVH(
-  scene: THREE.Scene,
-  opts: BvhBuildOpts = {},
-): SceneBVH {
+export function buildRCSceneBVH(scene: THREE.Scene, opts: BvhBuildOpts = {}): SceneBVH {
   // Delegate single-root BVH build + per-vertex matId snapshot to shared module.
   // Stride 4 = 16-byte vec3f-aligned layout — required because the WGSL spec
   // defines `array<vec3f>` storage stride as roundUp(16, 12) = 16, NOT 12.
@@ -129,12 +126,12 @@ export function buildRCSceneBVH(
   const materialFloats = packCascadeMaterials(result.materials);
 
   return {
-    bvh:           result.bvh,
-    bvhNodes:      new StorageBufferAttribute(result.bvhNodes,        8),
-    positions:     new StorageBufferAttribute(result.positions,        4),
-    indices:       new StorageBufferAttribute(result.indices,          3),
-    materials:     new StorageBufferAttribute(materialFloats,         16),
-    triMaterialId: new StorageBufferAttribute(result.triMaterialId,    1),
-    bounds:        result.boundingBox,
+    bvh: result.bvh,
+    bvhNodes: new StorageBufferAttribute(result.bvhNodes, 8),
+    positions: new StorageBufferAttribute(result.positions, 4),
+    indices: new StorageBufferAttribute(result.indices, 3),
+    materials: new StorageBufferAttribute(materialFloats, 16),
+    triMaterialId: new StorageBufferAttribute(result.triMaterialId, 1),
+    bounds: result.boundingBox,
   };
 }

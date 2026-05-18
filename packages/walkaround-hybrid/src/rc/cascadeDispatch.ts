@@ -31,7 +31,12 @@
 import * as THREE from 'three';
 import type { WebGPURenderer } from 'three/webgpu';
 import type { StorageBufferAttribute } from 'three/webgpu';
-import { CASCADE_DIMS, CASCADE_COUNT, fillCascadeDebug, type CascadeBuffers } from './cascadePyramid.js';
+import {
+  CASCADE_DIMS,
+  CASCADE_COUNT,
+  fillCascadeDebug,
+  type CascadeBuffers,
+} from './cascadePyramid.js';
 import type { SceneBVH } from './bvhCompute.js';
 import { PROBE_RAY_CAST_WGSL } from './wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from './wgsl/cascadeMerge.wgsl.js';
@@ -46,33 +51,33 @@ interface WebGPUBackendView {
 // ─── Internal types ───────────────────────────────────────────────────────────
 
 interface CastPassHandles {
-  pipeline:  GPUComputePipeline;
+  pipeline: GPUComputePipeline;
   /** Uniform buffer (GPUBuffer wrapping a Float32Array aligned to CascadeUniforms). */
   cascadeParamsBuf: GPUBuffer;
   /** CPU-side backing for the uniform buffer — updated each frame. */
   cascadeParamsRaw: Float32Array;
   /** Workgroup dispatch count = ceil(totalRays / 64). */
-  dispatchX:  number;
+  dispatchX: number;
 }
 
 interface MergePassHandles {
-  pipeline:  GPUComputePipeline;
+  pipeline: GPUComputePipeline;
   /** Uniform buffer for MergeUniforms. */
   cascadeParamsBuf: GPUBuffer;
-  mergeRaw:   Float32Array;
+  mergeRaw: Float32Array;
   /** Workgroup dispatch count = ceil(totalLower / 64). */
-  dispatchX:  number;
+  dispatchX: number;
 }
 
 interface DispatchHandles {
-  castPasses:   CastPassHandles[];
-  mergePasses:  MergePassHandles[];
+  castPasses: CastPassHandles[];
+  mergePasses: MergePassHandles[];
   /** The env texture view bound in every cast pass at binding 6. */
   envTextureView: GPUTextureView;
   /** The env sampler bound in every cast pass at binding 7. */
-  envSampler:     GPUSampler;
+  envSampler: GPUSampler;
   /** Bind groups: one array<GPUBindGroup> per cast pass (index k), one per merge pass. */
-  castBindGroups:  GPUBindGroup[];
+  castBindGroups: GPUBindGroup[];
   mergeBindGroups: GPUBindGroup[];
 }
 
@@ -80,13 +85,13 @@ interface DispatchHandles {
 
 export interface RCDispatchOpts {
   /** Three.js WebGPU renderer — used to access the raw GPUDevice and backend. */
-  gl:             WebGPURenderer;
-  sceneBVH:       SceneBVH;
+  gl: WebGPURenderer;
+  sceneBVH: SceneBVH;
   cascadeBuffers: CascadeBuffers;
-  sunDirection:   THREE.Vector3;
-  sunColor:       THREE.Color;
-  envEquirect:    THREE.Texture | null;
-  frameSeed:      number;
+  sunDirection: THREE.Vector3;
+  sunColor: THREE.Color;
+  envEquirect: THREE.Texture | null;
+  frameSeed: number;
   /**
    * E2 — Möller–Trumbore coplanarity threshold (default 1e-5 for metre-scale).
    * Plumbed from HybridEngine.triIntersectEpsilon into CascadeUniforms so the
@@ -94,7 +99,7 @@ export interface RCDispatchOpts {
    */
   triIntersectEpsilon?: number;
   /** Smoke-test / fallback mode: fill cascades with debug colours, skip ray-cast. */
-  debugFill?:     boolean;
+  debugFill?: boolean;
 }
 
 // ─── Uniform data builders ────────────────────────────────────────────────────
@@ -109,7 +114,7 @@ function buildCascadeUniformDataInto(
   sunColor: THREE.Color,
   envIntensity: number,
   frameSeed: number,
-  triIntersectEpsilon: number,  // E2: UBO-plumbed (was local WGSL const)
+  triIntersectEpsilon: number, // E2: UBO-plumbed (was local WGSL const)
 ): void {
   const dim = CASCADE_DIMS[k]!;
   const rayGridSize = Math.round(Math.sqrt(dim.rays));
@@ -124,20 +129,34 @@ function buildCascadeUniformDataInto(
   // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), _pad4a(u)
   // Total: 40 float/uint values = 160 bytes
   const ui = new Uint32Array(d.buffer);
-  d[0]  = o.x; d[1]  = o.y; d[2]  = o.z; d[3]  = 0;
-  d[4]  = s.x; d[5]  = s.y; d[6]  = s.z; d[7]  = 0;
-  ui[8] = dim.probes[0]; ui[9] = dim.probes[1]; ui[10] = dim.probes[2];
+  d[0] = o.x;
+  d[1] = o.y;
+  d[2] = o.z;
+  d[3] = 0;
+  d[4] = s.x;
+  d[5] = s.y;
+  d[6] = s.z;
+  d[7] = 0;
+  ui[8] = dim.probes[0];
+  ui[9] = dim.probes[1];
+  ui[10] = dim.probes[2];
   ui[11] = dim.rays;
   ui[12] = rayGridSize;
-  d[13] = dim.intervalNear; d[14] = dim.intervalFar;
+  d[13] = dim.intervalNear;
+  d[14] = dim.intervalFar;
   ui[15] = k;
-  d[16] = sunDir.x; d[17] = sunDir.y; d[18] = sunDir.z; d[19] = 0;
-  d[20] = sunColor.r; d[21] = sunColor.g; d[22] = sunColor.b;
+  d[16] = sunDir.x;
+  d[17] = sunDir.y;
+  d[18] = sunDir.z;
+  d[19] = 0;
+  d[20] = sunColor.r;
+  d[21] = sunColor.g;
+  d[22] = sunColor.b;
   d[23] = envIntensity;
   ui[24] = frameSeed;
   ui[25] = CASCADE_COUNT - 1;
-  d[26] = triIntersectEpsilon;  // E2: was _pad4[0]
-  ui[27] = 0;                   // _pad4a
+  d[26] = triIntersectEpsilon; // E2: was _pad4[0]
+  ui[27] = 0; // _pad4a
 }
 
 function buildMergeUniformData(
@@ -155,15 +174,26 @@ function buildMergeUniformData(
   const d = new Float32Array(20);
   const ui = new Uint32Array(d.buffer);
   const { probeOriginWorld: o, roomSize: s } = cb;
-  ui[0]  = lowerDim.probes[0]; ui[1]  = lowerDim.probes[1]; ui[2]  = lowerDim.probes[2];
-  ui[3]  = lowerDim.rays;
-  ui[4]  = upperDim.probes[0]; ui[5]  = upperDim.probes[1]; ui[6]  = upperDim.probes[2];
-  ui[7]  = upperDim.rays;
-  ui[8]  = Math.round(Math.sqrt(lowerDim.rays));
-  ui[9]  = Math.round(Math.sqrt(upperDim.rays));
-  ui[10] = 0; ui[11] = 0;
-  d[12]  = o.x; d[13] = o.y; d[14] = o.z; d[15] = 0;
-  d[16]  = s.x; d[17] = s.y; d[18] = s.z; d[19] = 0;
+  ui[0] = lowerDim.probes[0];
+  ui[1] = lowerDim.probes[1];
+  ui[2] = lowerDim.probes[2];
+  ui[3] = lowerDim.rays;
+  ui[4] = upperDim.probes[0];
+  ui[5] = upperDim.probes[1];
+  ui[6] = upperDim.probes[2];
+  ui[7] = upperDim.rays;
+  ui[8] = Math.round(Math.sqrt(lowerDim.rays));
+  ui[9] = Math.round(Math.sqrt(upperDim.rays));
+  ui[10] = 0;
+  ui[11] = 0;
+  d[12] = o.x;
+  d[13] = o.y;
+  d[14] = o.z;
+  d[15] = 0;
+  d[16] = s.x;
+  d[17] = s.y;
+  d[18] = s.z;
+  d[19] = 0;
   return d;
 }
 
@@ -180,12 +210,11 @@ function buildMergeUniformData(
  * This is the same access pattern the Three.js backend itself uses internally.
  */
 function gpuBufferOf(attr: StorageBufferAttribute): GPUBuffer {
-   
   const buf = (attr as unknown as Record<string, unknown>)['__gpuBuffer'] as GPUBuffer | undefined;
   if (!buf) {
     throw new Error(
       '[RCDispatcher] StorageBufferAttribute GPU buffer not yet allocated. ' +
-      'Ensure the Three.js WebGPU renderer has processed the scene before calling initialize().',
+        'Ensure the Three.js WebGPU renderer has processed the scene before calling initialize().',
     );
   }
   return buf;
@@ -203,7 +232,7 @@ function gpuBufferOf(attr: StorageBufferAttribute): GPUBuffer {
  */
 export class RCDispatcher {
   private _handles: DispatchHandles | null = null;
-  private _castShaderModule:  GPUShaderModule | null = null;
+  private _castShaderModule: GPUShaderModule | null = null;
   private _mergeShaderModule: GPUShaderModule | null = null;
 
   /**
@@ -222,7 +251,7 @@ export class RCDispatcher {
     }
 
     // Guard: compute dispatch requires a real WebGPU backend.
-    const backend = (gl).backend as WebGPUBackendView | undefined;
+    const backend = gl.backend as WebGPUBackendView | undefined;
     if (backend?.isWebGPUBackend !== true || backend.device == null) {
       this._debugFill(cascadeBuffers);
       return;
@@ -245,7 +274,13 @@ export class RCDispatcher {
     for (let k = 0; k < CASCADE_COUNT; k++) {
       const pass = handles.castPasses[k]!;
       buildCascadeUniformDataInto(
-        pass.cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed,
+        pass.cascadeParamsRaw,
+        k,
+        cascadeBuffers,
+        opts.sunDirection,
+        opts.sunColor,
+        1.0,
+        opts.frameSeed,
         opts.triIntersectEpsilon ?? 1e-5,
       );
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
@@ -286,7 +321,7 @@ export class RCDispatcher {
       }
       this._handles = null;
     }
-    this._castShaderModule  = null;
+    this._castShaderModule = null;
     this._mergeShaderModule = null;
   }
 
@@ -308,8 +343,12 @@ export class RCDispatcher {
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // geom_position
         { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // materials
         { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // triMatId
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },           // cascadeOut (rw)
-        { binding: 6, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }, // cascadeOut (rw)
+        {
+          binding: 6,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: 'float', viewDimension: '2d' },
+        },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
         { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // CascadeUniforms
       ],
@@ -322,7 +361,7 @@ export class RCDispatcher {
       label: 'rc-merge-bgl',
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // upperCascade
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },           // lowerCascade (rw)
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }, // lowerCascade (rw)
         { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // MergeUniforms
       ],
     });
@@ -346,15 +385,15 @@ export class RCDispatcher {
     const envThree = opts.envEquirect ?? fallbackEnv;
     const backend = opts.gl.backend as WebGPUBackendView | undefined;
     const envGpuData = backend?.get?.(envThree) as { texture?: GPUTexture } | undefined;
-    const envGpuTex  = envGpuData?.texture;
+    const envGpuTex = envGpuData?.texture;
 
     if (envGpuTex) {
       return {
         envTextureView: envGpuTex.createView({ label: 'rc-env-view' }),
         envSampler: device.createSampler({
-          label:        'rc-env-sampler',
-          magFilter:    'linear',
-          minFilter:    'linear',
+          label: 'rc-env-sampler',
+          magFilter: 'linear',
+          minFilter: 'linear',
           addressModeU: 'repeat',
           addressModeV: 'clamp-to-edge',
         }),
@@ -363,10 +402,10 @@ export class RCDispatcher {
 
     // Fallback: create a 1×1 placeholder until the renderer uploads the env texture.
     const placeholderTex = device.createTexture({
-      label:  'rc-env-placeholder',
-      size:   [1, 1],
+      label: 'rc-env-placeholder',
+      size: [1, 1],
       format: 'rgba8unorm',
-      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     });
     device.queue.writeTexture(
       { texture: placeholderTex },
@@ -390,29 +429,29 @@ export class RCDispatcher {
     // Compile shader modules (shared across all cast passes / merge passes).
     if (!this._castShaderModule) {
       this._castShaderModule = device.createShaderModule({
-        label:  'rc-probe-ray-cast',
-        code:   PROBE_RAY_CAST_WGSL,
+        label: 'rc-probe-ray-cast',
+        code: PROBE_RAY_CAST_WGSL,
       });
     }
     if (!this._mergeShaderModule) {
       this._mergeShaderModule = device.createShaderModule({
-        label:  'rc-cascade-merge',
-        code:   CASCADE_MERGE_WGSL,
+        label: 'rc-cascade-merge',
+        code: CASCADE_MERGE_WGSL,
       });
     }
 
-    const castBGL  = this._castBindGroupLayout(device);
+    const castBGL = this._castBindGroupLayout(device);
     const mergeBGL = this._mergeBindGroupLayout(device);
 
-    const castPipelineLayout  = device.createPipelineLayout({ bindGroupLayouts: [castBGL] });
+    const castPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [castBGL] });
     const mergePipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [mergeBGL] });
 
     // BVH GPU buffers (shared across all cast passes).
-    const bvhBuf      = gpuBufferOf(sceneBVH.bvhNodes);
-    const idxBuf      = gpuBufferOf(sceneBVH.indices);
-    const posBuf      = gpuBufferOf(sceneBVH.positions);
-    const matBuf      = gpuBufferOf(sceneBVH.materials);
-    const triMatBuf   = gpuBufferOf(sceneBVH.triMaterialId);
+    const bvhBuf = gpuBufferOf(sceneBVH.bvhNodes);
+    const idxBuf = gpuBufferOf(sceneBVH.indices);
+    const posBuf = gpuBufferOf(sceneBVH.positions);
+    const matBuf = gpuBufferOf(sceneBVH.materials);
+    const triMatBuf = gpuBufferOf(sceneBVH.triMaterialId);
 
     // Env texture + sampler.
     const { envTextureView, envSampler } = this._buildEnvBinding(device, opts);
@@ -427,10 +466,10 @@ export class RCDispatcher {
 
       // Create per-pass pipeline.
       const pipeline = device.createComputePipeline({
-        label:  `rc-cast-C${k}`,
+        label: `rc-cast-C${k}`,
         layout: castPipelineLayout,
         compute: {
-          module:     this._castShaderModule,
+          module: this._castShaderModule,
           entryPoint: 'probeRayCastKernel',
         },
       });
@@ -445,11 +484,20 @@ export class RCDispatcher {
       // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
       // through.
       const cascadeParamsRaw = new Float32Array(40);
-      buildCascadeUniformDataInto(cascadeParamsRaw, k, cascadeBuffers, opts.sunDirection, opts.sunColor, 1.0, opts.frameSeed, opts.triIntersectEpsilon ?? 1e-5);
+      buildCascadeUniformDataInto(
+        cascadeParamsRaw,
+        k,
+        cascadeBuffers,
+        opts.sunDirection,
+        opts.sunColor,
+        1.0,
+        opts.frameSeed,
+        opts.triIntersectEpsilon ?? 1e-5,
+      );
       const cascadeParamsBuf = device.createBuffer({
-        label:  `rc-cast-C${k}-uniforms`,
-        size:   cascadeParamsRaw.byteLength,
-        usage:  GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        label: `rc-cast-C${k}-uniforms`,
+        size: cascadeParamsRaw.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(cascadeParamsRaw);
@@ -457,11 +505,11 @@ export class RCDispatcher {
 
       // Cascade output buffer.
       const cascadeAttr = cascadeBuffers.gpuCascades[k]!;
-      const cascadeBuf  = gpuBufferOf(cascadeAttr);
+      const cascadeBuf = gpuBufferOf(cascadeAttr);
 
       // Build bind group.
       const bindGroup = device.createBindGroup({
-        label:  `rc-cast-C${k}-bg`,
+        label: `rc-cast-C${k}-bg`,
         layout: castBGL,
         entries: [
           { binding: 0, resource: { buffer: bvhBuf } },
@@ -476,7 +524,12 @@ export class RCDispatcher {
         ],
       });
 
-      castPasses.push({ pipeline, cascadeParamsBuf, cascadeParamsRaw, dispatchX: Math.ceil(totalRays / 64) });
+      castPasses.push({
+        pipeline,
+        cascadeParamsBuf,
+        cascadeParamsRaw,
+        dispatchX: Math.ceil(totalRays / 64),
+      });
       castBindGroups.push(bindGroup);
     }
 
@@ -487,13 +540,14 @@ export class RCDispatcher {
     for (let lower = CASCADE_COUNT - 2; lower >= 0; lower--) {
       const lowerDim = CASCADE_DIMS[lower]!;
       const upperDim = CASCADE_DIMS[lower + 1]!;
-      const totalLower = lowerDim.probes[0] * lowerDim.probes[1] * lowerDim.probes[2] * lowerDim.rays;
+      const totalLower =
+        lowerDim.probes[0] * lowerDim.probes[1] * lowerDim.probes[2] * lowerDim.rays;
 
       const pipeline = device.createComputePipeline({
-        label:  `rc-merge-${lower}→${lower + 1}`,
+        label: `rc-merge-${lower}→${lower + 1}`,
         layout: mergePipelineLayout,
         compute: {
-          module:     this._mergeShaderModule,
+          module: this._mergeShaderModule,
           entryPoint: 'cascadeMergeKernel',
         },
       });
@@ -501,9 +555,9 @@ export class RCDispatcher {
       // MergeUniforms buffer (20 floats = 80 bytes).
       const mergeRaw = buildMergeUniformData(lowerDim, upperDim, cascadeBuffers);
       const cascadeParamsBuf = device.createBuffer({
-        label:  `rc-merge-${lower}-uniforms`,
-        size:   mergeRaw.byteLength,
-        usage:  GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        label: `rc-merge-${lower}-uniforms`,
+        size: mergeRaw.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         mappedAtCreation: true,
       });
       new Float32Array(cascadeParamsBuf.getMappedRange()).set(mergeRaw);
@@ -513,7 +567,7 @@ export class RCDispatcher {
       const upperBuf = gpuBufferOf(cascadeBuffers.gpuCascades[lower + 1]!);
 
       const bindGroup = device.createBindGroup({
-        label:  `rc-merge-${lower}-bg`,
+        label: `rc-merge-${lower}-bg`,
         layout: mergeBGL,
         entries: [
           { binding: 0, resource: { buffer: upperBuf } },
@@ -522,7 +576,12 @@ export class RCDispatcher {
         ],
       });
 
-      mergePasses.push({ pipeline, cascadeParamsBuf, mergeRaw, dispatchX: Math.ceil(totalLower / 64) });
+      mergePasses.push({
+        pipeline,
+        cascadeParamsBuf,
+        mergeRaw,
+        dispatchX: Math.ceil(totalLower / 64),
+      });
       mergeBindGroups.push(bindGroup);
     }
 

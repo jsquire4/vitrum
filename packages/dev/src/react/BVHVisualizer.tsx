@@ -94,18 +94,19 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
 
   if (visible && !hasDebug && !warnedRef.current) {
     warnedRef.current = true;
-     
+
     console.warn(
       '[BVHVisualizer] engine.debug.bvhNodes() is not implemented. ' +
-      'BVHVisualizer requires the T3.G followup: HybridEngine must expose ' +
-      'engine.debug.bvhNodes() returning a Float32Array of node AABBs. ' +
-      'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
+        'BVHVisualizer requires the T3.G followup: HybridEngine must expose ' +
+        'engine.debug.bvhNodes() returning a Float32Array of node AABBs. ' +
+        'See packages/dev/src/types.ts:EngineDebugSurface for the interface.',
     );
   }
 
-  const label = toggleKey !== null
-    ? `BVH [${toggleKey.toUpperCase()}] ${visible ? '■ on' : '□ off'}`
-    : `BVH ${visible ? '■ on' : '□ off'}`;
+  const label =
+    toggleKey !== null
+      ? `BVH [${toggleKey.toUpperCase()}] ${visible ? '■ on' : '□ off'}`
+      : `BVH ${visible ? '■ on' : '□ off'}`;
 
   return (
     <>

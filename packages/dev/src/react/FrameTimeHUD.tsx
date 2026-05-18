@@ -8,13 +8,7 @@
 // The parent must have position: relative (or any non-static position) so the
 // absolute positioning lands inside the canvas area.
 
-import React, {
-  useEffect,
-  useRef,
-  useState,
-  type FC,
-  type CSSProperties,
-} from 'react';
+import React, { useEffect, useRef, useState, type FC, type CSSProperties } from 'react';
 import type { DebuggableEngine, FrameStats } from '../types.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -167,9 +161,8 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
   const frameMs = latest?.frameTimeMs.toFixed(2) ?? '—';
   const avgMsStr = avgMs > 0 ? avgMs.toFixed(2) : '—';
   const gpuMs = latest?.gpuTimeMs !== undefined ? latest.gpuTimeMs.toFixed(2) : null;
-  const passTimes = showPassBreakdown && latest?.passTimings
-    ? Object.entries(latest.passTimings)
-    : null;
+  const passTimes =
+    showPassBreakdown && latest?.passTimings ? Object.entries(latest.passTimings) : null;
 
   return (
     <div
@@ -202,7 +195,7 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
           {passTimes.map(([name, ms]) => (
             <div key={name}>
               <span style={LABEL_STYLE}>{name}</span>
-              <span style={PASS_STYLE}>{(ms).toFixed(2)} ms</span>
+              <span style={PASS_STYLE}>{ms.toFixed(2)} ms</span>
             </div>
           ))}
         </div>

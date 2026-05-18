@@ -9,11 +9,7 @@
  */
 
 import { buildSpatialGiBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class SpatialGIReservoirPass implements Pass {
@@ -34,7 +30,8 @@ export class SpatialGIReservoirPass implements Pass {
     // Pass 1: current → spatial.
     {
       const bg = buildSpatialGiBindGroup(
-        device, bglCache,
+        device,
+        bglCache,
         resources.restirGI.reservoirGiCurrentBuffer,
         resources.restirGI.reservoirGiSpatialBuffer,
         resources.common.uboBuffer,
@@ -49,7 +46,8 @@ export class SpatialGIReservoirPass implements Pass {
     // Pass 2: spatial → current.
     {
       const bg = buildSpatialGiBindGroup(
-        device, bglCache,
+        device,
+        bglCache,
         resources.restirGI.reservoirGiSpatialBuffer,
         resources.restirGI.reservoirGiCurrentBuffer,
         resources.common.uboBuffer,

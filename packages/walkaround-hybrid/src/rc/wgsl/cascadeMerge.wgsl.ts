@@ -21,7 +21,7 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
-export const CASCADE_MERGE_WGSL = /* wgsl */`
+export const CASCADE_MERGE_WGSL = /* wgsl */ `
 
 // ─── octCellSolidAngle ───────────────────────────────────────────────────────
 // Per-bin solid-angle estimate for a cell at grid position (cx, cy) in an

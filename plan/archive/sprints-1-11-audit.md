@@ -6,6 +6,7 @@
 > This document is preserved as a historical record of pre-remediation findings.
 
 ## Summary
+
 - Findings: HIGH=2, MEDIUM=6, LOW=3
 - Tests at audit time: 346 passing (193 walkaround + 69 shared-denoisers + 54 shared-samplers + 18 pt-webgl + 11 shared-bvh + 1 three-bindings)
 - tsc: clean (exit 0, no diagnostics)
@@ -15,24 +16,29 @@
 ## HIGH severity
 
 ### H-1 — PPG leaf stride mismatch between ppgUpdate.wgsl and ppgSample.wgsl
+
 **File:** `packages/walkaround-hybrid/src/ppg/wgsl/ppgUpdate.wgsl.ts:163-165`
 **Also:** `packages/walkaround-hybrid/src/ppg/wgsl/ppgSample.wgsl.ts:55-61`
 
 `ppgUpdate.wgsl` reads the leaf buffer as `array<atomic<u32>>` and computes leaf offsets via:
+
 ```wgsl
 fn ppgLeafSlot(leafIdx: u32, binIdx: u32, field: u32) -> u32 {
   return leafIdx * 32u + binIdx * 2u + field;
 }
 ```
+
 `leafIdx * 32u` means 32 u32 slots = 128 bytes per leaf.
 
 `ppgSample.wgsl` binds the same buffer as `array<PPGDirectionalLeaf>`, where:
+
 ```wgsl
 struct PPGDirectionalLeaf {
   bins:      array<vec2f, 16>,  // 128 bytes
   _reserved: array<vec2f, 16>,  // 128 bytes reserved
 };
 ```
+
 Each struct element is 256 bytes (`PPG_LEAF_BYTE_STRIDE` in `types.ts:129`).
 
 For `leafIdx >= 1`, the two shaders address different memory locations in the same buffer: ppgSample expects leaf 1 to start at byte 256, ppgUpdate writes to byte 128. When these shaders are integrated, any scene with more than one occupied PPG spatial cell will silently corrupt the directional bin data for all cells beyond cell 0.
@@ -44,6 +50,7 @@ For `leafIdx >= 1`, the two shaders address different memory locations in the sa
 ---
 
 ### H-2 — PPG fixed-point radiance clamp saturates at 256 nits, not 65536
+
 **File:** `packages/walkaround-hybrid/src/ppg/wgsl/ppgUpdate.wgsl.ts:195`
 
 ```wgsl
@@ -63,6 +70,7 @@ For HDR scenes with emitters above 256 nits (common: sun-through-glass can reach
 ## MEDIUM severity
 
 ### M-1 — Light tree CDF is not a real CDF: exceeds 1.0 and cannot drive sampling
+
 **File:** `packages/shared-samplers/src/lightTree.ts:238-248`
 
 The `buildLightTree` function builds a CDF over all nodes in pre-order traversal, using each node's `totalPower`. Because internal nodes aggregate subtree power, their power is counted once in the running sum before each leaf's power is counted again. For any tree with >1 leaf, `cdf[0]` = `root.totalPower / root.totalPower` = 1.0, then subsequent entries exceed 1.0.
@@ -78,6 +86,7 @@ The GPU never consumes this CDF (it does its own binary traversal), so there is 
 ---
 
 ### M-2 — SVGF sigmaColor=10 claimed from Schied 2017 Table 1, but Table 1 shows σ_l = 4
+
 **File:** `packages/shared-denoisers/src/svgfBindings.ts:90-91`
 
 `SVGF_DEFAULT_UNIFORMS.sigmaColor = 10.0` with the comment "Default σ values follow Schied 2017 Table 1." Schied 2017 Table 1 specifies σ_l (luminance color σ) = 4.0, not 10.0. The formulation differs slightly (this code uses `sigmaColor²` as a divisor inside `variance * sigmaColor²`; the paper uses `σ_l²`), so 10 may be an intentional re-tuning for a different normalization convention. If so, the claim of provenance from Table 1 is incorrect and should be clarified.
@@ -89,6 +98,7 @@ The GPU never consumes this CDF (it does its own binary traversal), so there is 
 ---
 
 ### M-3 — HWC↔NCHW round-trip helpers are not directly tested
+
 **File:** `packages/shared-denoisers/src/oidnBridge.ts:287-330`
 
 `_hwcToNchw` and `_nchwToHwc` are internal helpers with no direct unit tests. The test file claims in its header that they are "correct (tested via the public denoiseFinal return type guarantee)" — but the test only confirms `denoiseFinal` returns a Promise and throws when ORT is absent; it never exercises the layout transform at all.
@@ -102,6 +112,7 @@ A layout transpose bug in either helper would silently produce scrambled output 
 ---
 
 ### M-4 — PPG kd-tree brute-force O(N) scan at 10K cells is a per-sample cost in the shade pass
+
 **File:** `packages/walkaround-hybrid/src/ppg/wgsl/ppgSample.wgsl.ts:112-131`
 
 The `ppgFindCellIndex` function runs a linear scan over all `cellCount` cells per shading invocation. At `PPG_MAX_SPATIAL_CELLS = 10_000`, this is 10K distance comparisons per indirect-bounce path vertex per pixel per frame. The commit message acknowledges this ("acceptable during the structural-prep phase") and tags a follow-up, but no tracking issue exists in the plan docs.
@@ -115,6 +126,7 @@ At typical walkaround resolution (1920×1080, checkerboard = 50% pixels, 2 bounc
 ---
 
 ### M-5 — mixturePdf divide-by-zero not protected when all probabilities are 0
+
 **File:** `packages/shared-samplers/src/mixturePdf.ts:95-99`
 
 `mixturePdf` returns `result = Σ probabilities[i] × pdfs[i]`. If all probabilities are 0, result = 0 — this is not a throw and is not protected. However, the function does not divide. The issue is a silent 0 return where a 0-probability mix is logically undefined (no strategy active). A caller using this as a PDF denominator in MIS weighting will then divide by 0.
@@ -128,6 +140,7 @@ The docstring does not state the behavior for all-zero probabilities. `balanceHe
 ---
 
 ### M-6 — SVGF atrous iteration count is fixed at 5 in shader; not overridable via UBO
+
 **File:** `packages/shared-denoisers/src/wgsl/svgf.wgsl.ts:19-20` (docstring)
 
 The `svgfAtrousMain` shader performs exactly one iteration per dispatch call. The host is supposed to dispatch it 5 times. The `iteration` field in `SVGFAtrousUBO` controls the step width for that one call (0–4). There is no way to run fewer than 5 iterations without changing the host dispatch logic.
@@ -143,6 +156,7 @@ The iteration count is not exposed as a uniform, meaning a host that wants 3 ite
 ## LOW severity
 
 ### L-1 — jakobHanika.ts TODO not tracked in any plan document
+
 **File:** `packages/shared-samplers/src/jakobHanika.ts:49`
 
 The `TODO (Sprint 12 or earlier)` comment references integrating the full precomputed table but no corresponding entry exists in `plan/phase-6-roadmap.md` or the sprint docs. Risk: it gets forgotten.
@@ -152,6 +166,7 @@ The `TODO (Sprint 12 or earlier)` comment references integrating the full precom
 ---
 
 ### L-2 — Light tree median split degrades for clustered centroids without warning
+
 **File:** `packages/shared-samplers/src/lightTree.ts:148-152`
 
 When all emitter centroids are co-located (e.g., all panel cells in a single stained-glass window are modeled at the window centroid), the split axis span is 0 and the sort produces an arbitrary but valid partition. The resulting tree has degenerate depth (no spatial separation) and the GPU proximity heuristic will not function. No warning or detection is emitted.
@@ -163,6 +178,7 @@ This is low severity because (a) real scenes have spread centroids and (b) the G
 ---
 
 ### L-3 — BDPT exports appear in shared-samplers index.ts but were not part of audited sprints
+
 **File:** `packages/shared-samplers/src/index.ts:7,18-31`
 
 A lint/auto-save pass (noted in system context) added Sprint 10c BDPT exports to `index.ts`. The BDPT files (`bdptVertex.ts`, `bdptMIS.ts`) exist on disk and tsc compiles them, but they are not part of the Sprint 1–11 audit scope and were not covered by any of the 346 tests in this audit. Per `plan/phase-6-roadmap.md`, Sprint 10c is explicitly deferred ("trigger criterion: Sprint 7 caustic gap identified").
@@ -198,6 +214,7 @@ No correctness risk to existing code since exports don't break callers. Risk is 
 ## Concerns: remediate now vs. needs user judgment
 
 **Remediate now (safe, non-disruptive):**
+
 - H-1: `ppgUpdate.wgsl` leaf stride formula — change `leafIdx * 32u` to `leafIdx * 64u`
 - H-2: `ppgUpdate.wgsl` clamp bound — change `0xFFFFFFu` to `0xFFFFFFFFu`
 - M-3: Add direct HWC↔NCHW round-trip test in `oidnBridge.test.ts`
@@ -205,6 +222,7 @@ No correctness risk to existing code since exports don't break callers. Risk is 
 - L-3: Remove or mark-deferred the BDPT exports that appeared in `index.ts`
 
 **Requires user judgment:**
+
 - M-1: Light tree CDF rename/rebuild — affects public API surface; GPU consumer is unaffected
 - M-2: SVGF sigmaColor claim vs. paper — may be intentionally re-tuned; need authorial confirmation
 - M-4: PPG brute-force O(N) scan — determine whether Sprint 11 integration is blocked on kd-tree

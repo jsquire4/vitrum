@@ -11,7 +11,13 @@
  */
 
 import type * as THREE from 'three';
-import type { Material, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
+import type {
+  Material,
+  Vec3,
+  SpectralCurve,
+  ThinFilmStack,
+  SurfaceAbsorptionLayer,
+} from '@vitrum/core';
 import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
 
 /** THREE.MeshPhysicalMaterial default index of refraction. Used as the
@@ -128,10 +134,7 @@ export function convertMaterial(m: ThreeStdMat): Material {
     base.scatteringCoefficient = rawScatCoeff;
   }
   const rawScatRgb = ud[K.SCATTERING_RGB];
-  if (
-    Array.isArray(rawScatRgb) &&
-    (rawScatRgb as unknown[]).length === 3
-  ) {
+  if (Array.isArray(rawScatRgb) && (rawScatRgb as unknown[]).length === 3) {
     base.scatteringCoefficientRGB = rawScatRgb as unknown as Vec3;
   }
   const rawScatAniso = ud[K.SCATTERING_ANISO];
@@ -149,9 +152,9 @@ export function convertMaterial(m: ThreeStdMat): Material {
     rawSpectral != null &&
     typeof rawSpectral === 'object' &&
     !Array.isArray(rawSpectral) &&
-    'wavelengthStart' in (rawSpectral) &&
-    'wavelengthEnd' in (rawSpectral) &&
-    'values' in (rawSpectral)
+    'wavelengthStart' in rawSpectral &&
+    'wavelengthEnd' in rawSpectral &&
+    'values' in rawSpectral
   ) {
     base.spectralAttenuation = rawSpectral as SpectralCurve;
   }

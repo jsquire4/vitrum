@@ -13,12 +13,7 @@
 //   import type { DebuggableEngine, FrameStats, ProgressStats } from '@vitrum/dev';
 
 // ── Shared types ─────────────────────────────────────────────────────────────
-export type {
-  FrameStats,
-  ProgressStats,
-  EngineDebugSurface,
-  DebuggableEngine,
-} from './types.js';
+export type { FrameStats, ProgressStats, EngineDebugSurface, DebuggableEngine } from './types.js';
 
 // ── React components ─────────────────────────────────────────────────────────
 export { FrameTimeHUD, RingBuffer } from './react/FrameTimeHUD.js';

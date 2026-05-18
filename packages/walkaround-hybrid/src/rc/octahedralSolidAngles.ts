@@ -46,10 +46,12 @@ const SUB = 16;
  * §A.1 to avoid the south-pole singularity at (u,v) = (0,0) with n.z = −1.
  */
 function octDecode(u: number, v: number): [number, number, number] {
-  let nx = u, ny = v;
+  let nx = u,
+    ny = v;
   const nz = 1.0 - Math.abs(u) - Math.abs(v);
   if (nz < 0) {
-    const ox = nx, oy = ny;
+    const ox = nx,
+      oy = ny;
     nx = (1.0 - Math.abs(oy)) * (ox >= 0 ? 1 : -1);
     ny = (1.0 - Math.abs(ox)) * (oy >= 0 ? 1 : -1);
   }
@@ -58,15 +60,8 @@ function octDecode(u: number, v: number): [number, number, number] {
 }
 
 /** Cross-product of two 3-vectors. */
-function cross(
-  a: [number, number, number],
-  b: [number, number, number],
-): [number, number, number] {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
+function cross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
 /** Euclidean length of a 3-vector. */
@@ -75,10 +70,7 @@ function len3(v: [number, number, number]): number {
 }
 
 /** Subtract two 3-vectors. */
-function sub3(
-  a: [number, number, number],
-  b: [number, number, number],
-): [number, number, number] {
+function sub3(a: [number, number, number], b: [number, number, number]): [number, number, number] {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
@@ -112,8 +104,8 @@ function sphericalQuadArea(
  */
 export function computeOctahedralSolidAngles(gridSize: number): Float32Array {
   const N = gridSize;
-  const cellWidth = 2.0 / N;   // UV width of each cell
-  const subWidth  = cellWidth / SUB;
+  const cellWidth = 2.0 / N; // UV width of each cell
+  const subWidth = cellWidth / SUB;
   const out = new Float32Array(N * N);
 
   for (let row = 0; row < N; row++) {

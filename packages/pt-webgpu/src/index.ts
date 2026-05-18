@@ -11,15 +11,17 @@ import type {
   ScenePrimitive,
 } from '@vitrum/core';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
-import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
+import {
+  buildPackedScene,
+  uploadPackedScene,
+  PT_WEBGPU_ANALYTIC_SHAPES,
+  type UploadedSceneBuffers,
+} from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
-import {
-  HAMMERSLEY_WGSL,
-  OCTAHEDRAL_CORE_WGSL,
-} from '@vitrum/shared-samplers';
+import { HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export { summarizeScene };
@@ -92,8 +94,10 @@ class PTEngineWebGPU implements Engine {
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     const causticOpts = opts.causticOptions ?? {};
-    const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
-    const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
+    const mneeIter =
+      typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
+    const mneeChain =
+      typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
   }
@@ -112,7 +116,14 @@ class PTEngineWebGPU implements Engine {
       maxBounces: this.#maxBouncesLimit,
       // Slot 0 is the "unknown" sentinel; supported shapes start at index 1.
       supportedAnalyticShapes: new Set<string>(PT_WEBGPU_ANALYTIC_SHAPES.slice(1)),
-      supportedEmitterKinds: new Set<string>(['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area']),
+      supportedEmitterKinds: new Set<string>([
+        'directional',
+        'point',
+        'spot',
+        'rect-area',
+        'disc-area',
+        'mesh-area',
+      ]),
       causticStrategy: this.#causticStrategy,
     };
   }
@@ -162,12 +173,8 @@ class PTEngineWebGPU implements Engine {
   #buildParamsBuffer(input: FrameInput, width: number, height: number): ArrayBuffer {
     const sb = this.#sceneBuffers!;
     const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
-    const invVp = invertMat4(vp) ?? new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]);
+    const invVp =
+      invertMat4(vp) ?? new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
     const paramsArrayBuffer = new ArrayBuffer(512);
     const paramsU32 = new Uint32Array(paramsArrayBuffer);
@@ -188,11 +195,7 @@ class PTEngineWebGPU implements Engine {
     paramsU32[13] = this.#mneeMaxChainLength >>> 0;
     paramsU32[14] = sb.hasEnvironmentMap ? 1 : 0;
     paramsU32[15] =
-      this.#causticStrategy === 'manifold-nee'
-        ? 1
-        : this.#causticStrategy === 'photon-map'
-          ? 2
-          : 0;
+      this.#causticStrategy === 'manifold-nee' ? 1 : this.#causticStrategy === 'photon-map' ? 2 : 0;
     paramsU32[16] = sb.environmentMapWidth >>> 0;
     paramsU32[17] = sb.environmentMapHeight >>> 0;
     paramsF32[18] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
@@ -205,10 +208,7 @@ class PTEngineWebGPU implements Engine {
     paramsF32[25] = sb.directionalLight[1];
     paramsF32[26] = sb.directionalLight[2];
     paramsF32[27] =
-      (sb.directionalIrradiance[0] +
-        sb.directionalIrradiance[1] +
-        sb.directionalIrradiance[2]) /
-      3;
+      (sb.directionalIrradiance[0] + sb.directionalIrradiance[1] + sb.directionalIrradiance[2]) / 3;
     paramsF32[28] = sb.environmentTint[0];
     paramsF32[29] = sb.environmentTint[1];
     paramsF32[30] = sb.environmentTint[2];
@@ -275,7 +275,10 @@ class PTEngineWebGPU implements Engine {
       label: 'vitrum.pt-webgpu.accum',
       size: { width, height, depthOrArrayLayers: 1 },
       format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+      usage:
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_SRC,
     });
     this.#accumView = this.#accumTexture.createView();
     this.#normalDepthTexture = this.#device.createTexture({
@@ -325,7 +328,11 @@ class PTEngineWebGPU implements Engine {
   }
 
   #ensurePipeline(): void {
-    if (this.#computePipeline != null && this.#bindGroupLayout != null && this.#paramsBuffer != null) {
+    if (
+      this.#computePipeline != null &&
+      this.#bindGroupLayout != null &&
+      this.#paramsBuffer != null
+    ) {
       return;
     }
     this.#paramsBuffer = this.#device.createBuffer({
@@ -399,7 +406,10 @@ class PTEngineWebGPU implements Engine {
     }
 
     const q = input.quality ?? {};
-    this.#activeBounces = Math.max(1, Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit));
+    this.#activeBounces = Math.max(
+      1,
+      Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit),
+    );
     const resolution = q.resolutionFactor ?? 1;
     const width = Math.max(1, Math.floor(input.viewport.width * resolution));
     const height = Math.max(1, Math.floor(input.viewport.height * resolution));
@@ -460,7 +470,9 @@ class PTEngineWebGPU implements Engine {
       this.#pathTraceBindGroup = bindGroup;
     }
 
-    const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
+    const encoder = this.#device.createCommandEncoder({
+      label: 'vitrum.pt-webgpu.pathTrace.encoder',
+    });
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
     pass.setPipeline(this.#computePipeline);
     pass.setBindGroup(0, bindGroup);
@@ -523,10 +535,8 @@ class PTEngineWebGPU implements Engine {
 export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async (
   opts: PTEngineWebGPUOptions,
 ): Promise<Engine> => {
-  if (opts.device == null || typeof (opts.device).createCommandEncoder !== 'function') {
-    throw new TypeError(
-      'createPTEngine_WebGPU: device must be a GPUDevice instance',
-    );
+  if (opts.device == null || typeof opts.device.createCommandEncoder !== 'function') {
+    throw new TypeError('createPTEngine_WebGPU: device must be a GPUDevice instance');
   }
   const maxBounces = opts.maxBounces;
   if (maxBounces !== undefined && maxBounces < 1) {

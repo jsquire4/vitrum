@@ -341,7 +341,15 @@ export interface EngineOptions {
    * provisioning (e.g. `HybridEngineOptions.neuralWeights` in
    * `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
    */
-  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural';
+  readonly denoiser?:
+    | 'none'
+    | 'atrous'
+    | 'atrous-variance'
+    | 'svgf'
+    | 'svgf-real'
+    | 'bmfr'
+    | 'oidn-final'
+    | 'neural';
 
   // ── Specular caustics strategy (RFE-05) ────────────────────────────────
   /**

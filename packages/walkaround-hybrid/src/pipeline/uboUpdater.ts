@@ -42,12 +42,12 @@ export function updateUBO(
   inputs: PipelineFrameInputs,
 ): void {
   const data = new ArrayBuffer(WALKAROUND_UBO_SIZE_BYTES);
-  const f32  = new Float32Array(data);
-  const u32  = new Uint32Array(data);
+  const f32 = new Float32Array(data);
+  const u32 = new Uint32Array(data);
 
-  f32.set(inputs.viewMatrix,     0);    //  0..15 (64 bytes)
-  f32.set(inputs.projMatrix,    16);    // 16..31 (64 bytes)
-  f32.set(inputs.prevViewMatrix, 32);   // 32..47 (64 bytes)
+  f32.set(inputs.viewMatrix, 0); //  0..15 (64 bytes)
+  f32.set(inputs.projMatrix, 16); // 16..31 (64 bytes)
+  f32.set(inputs.prevViewMatrix, 32); // 32..47 (64 bytes)
   f32[48] = inputs.cameraPos[0];
   f32[49] = inputs.cameraPos[1];
   f32[50] = inputs.cameraPos[2];

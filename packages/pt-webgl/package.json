@@ -3,13 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "description": "WebGL2 path-tracer backend wrapping the vitrum three-gpu-pathtracer fork.",
-  "keywords": ["webgl2", "path-tracing", "three-gpu-pathtracer", "vitrum"],
+  "keywords": [
+    "webgl2",
+    "path-tracing",
+    "three-gpu-pathtracer",
+    "vitrum"
+  ],
   "author": "jsquire4",
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git",

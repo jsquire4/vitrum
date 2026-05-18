@@ -12,7 +12,7 @@ import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 // Common header shared by both shaders
-const COMMON = /* wgsl */`
+const COMMON = /* wgsl */ `
 
 ${OCTAHEDRAL_WGSL}
 
@@ -62,7 +62,7 @@ struct FrameBlendParams {
 // -----------------------------------------------------------------
 // Irradiance blend shader
 // -----------------------------------------------------------------
-export const PROBE_UPDATE_BLEND_IRR_WGSL = /* wgsl */`
+export const PROBE_UPDATE_BLEND_IRR_WGSL = /* wgsl */ `
 
 ${COMMON}
 
@@ -151,7 +151,7 @@ fn probeUpdateBlendIrradiance(
 // -----------------------------------------------------------------
 // Visibility blend shader
 // -----------------------------------------------------------------
-export const PROBE_UPDATE_BLEND_VIS_WGSL = /* wgsl */`
+export const PROBE_UPDATE_BLEND_VIS_WGSL = /* wgsl */ `
 
 ${COMMON}
 

@@ -9,10 +9,7 @@ export const HDR_ACCUM_GOLDEN_BASE64 =
 
 /** Expected float32 RGB after `accumulationFloatRgbaToRgb(..., divideByAlpha: true)` for the golden texels. */
 export const HDR_ACCUM_GOLDEN_EXPECTED_RGB_DIVIDE = new Float32Array([
-  2, 4, 6,
-  0, 0, 0,
-  0.015, 0.025, 0.035,
-  2, 4, 6,
+  2, 4, 6, 0, 0, 0, 0.015, 0.025, 0.035, 2, 4, 6,
 ]);
 
 export const HDR_ACCUM_GOLDEN_PIXEL_COUNT = 4 as const;

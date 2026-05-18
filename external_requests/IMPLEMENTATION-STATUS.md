@@ -192,6 +192,7 @@ Stays within `MAX_DRAW_BUFFERS=8` limit (3 MRT attachments per draw call).
 - Remaining: GPU visual A/B (cobalt/iron/SeCd/goldRuby render with spectral vs. RGB Beer-Lambert). No GPU in-session; verified via unit tests + shader smoke.
 
 ## RFE-09 pt-webgl Material -> Fork Uniform Bridge: APPLIED (runtime-unverified)
+
 <!-- NOTE: This "RFE-09" is the uniform-bridge sprint deliverable (not a standalone external_requests/ file).
      The file external_requests/09-runtime-lighting-updates.md is a separate, later-filed RFE (Status: Proposed)
      that proposes a runtime updatePrimaryLight/updateSkyDome/updateLights API. It is NOT implemented here. -->
@@ -212,7 +213,7 @@ Stays within `MAX_DRAW_BUFFERS=8` limit (3 MRT attachments per draw call).
 
 - Implementation: `packages/three-bindings/src/material.ts` (lines 93–157)
 - Pre-existed at the time of RFE-10 filing — committed in `1036a8c`
-  ("fix: wire vitrum.Material ↔ THREE userData.vitrum* round-trip").
+  ("fix: wire vitrum.Material ↔ THREE userData.vitrum\* round-trip").
 - Reads and type-checks: `vitrumDispersionAbbeNumber`, `vitrumScatteringCoefficient`,
   `vitrumScatteringCoefficientRGB`, `vitrumScatteringAnisotropy`,
   `vitrumSpectralAttenuation` (SpectralCurve object + Float32Array fallback),
@@ -273,7 +274,7 @@ Verified that the H6.2 MRT rename (`gl_FragColor` → `gColor`) did not break Sp
 - **Sprint 12** (hero-wavelength spectral kernel, fork 8917492): `sampleHeroWavelength()`
   and `wavelengthToRGB()` in `src/shader/bsdf/spectral_accumulator.glsl.js` return
   float/vec3. Main loop calls `wavelengthToRGB(state.wavelength, state.throughput,
-  state.wavelengthPdf)` → `throughputRgb` → `gColor.rgb`. Clean.
+state.wavelengthPdf)` → `throughputRgb` → `gColor.rgb`. Clean.
 
 - **Sprint 14** (layered BSDF, fork ee379dc): `activeLayerWeight()` in
   `bsdf_functions.glsl.js` returns a float. `bsdfEval()` multiplies local `color`
@@ -291,6 +292,7 @@ compile (rollup bundles JS strings, not compiled GLSL). Hosts running the fork s
 A/B verify against pre-patch reference renders before shipping.
 
 Specific risks:
+
 - `TRANSLUCENT_BIT` packing and shader read-path are now wired, but per-material SSS
   behavior still requires scene-level visual verification in a mixed-material test scene.
 - Sprint 12 `sampleHeroWavelength` GLSL uses a fixed-iteration binary search (7

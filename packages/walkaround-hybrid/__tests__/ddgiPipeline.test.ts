@@ -86,7 +86,9 @@ function haltonSO3Rotation(frameIndex: number): [number, number, number] {
   const sinHalf = Math.sqrt(Math.max(0, 1 - qw * qw));
   let ax: number, ay: number, az: number;
   if (sinHalf < 1e-6) {
-    ax = 1; ay = 0; az = 0;
+    ax = 1;
+    ay = 0;
+    az = 0;
   } else {
     ax = qx / sinHalf;
     ay = qy / sinHalf;
@@ -120,7 +122,7 @@ function hammersleyUniform(i: number, numSamples: number): [number, number] {
 
 /** MIRROR OF hammersley.wgsl.ts: uniformSphere */
 function uniformSphere(u: [number, number]): [number, number, number] {
-  const phi  = u[0] * 2 * PI;
+  const phi = u[0] * 2 * PI;
   const cosT = 1 - 2 * u[1];
   const sinT = Math.sqrt(Math.max(0, 1 - cosT * cosT));
   return [sinT * Math.cos(phi), sinT * Math.sin(phi), cosT];
@@ -131,9 +133,7 @@ function rotateAngleAxis(
   v: [number, number, number],
   angleAxis: [number, number, number],
 ): [number, number, number] {
-  const angle = Math.sqrt(
-    angleAxis[0] ** 2 + angleAxis[1] ** 2 + angleAxis[2] ** 2,
-  );
+  const angle = Math.sqrt(angleAxis[0] ** 2 + angleAxis[1] ** 2 + angleAxis[2] ** 2);
   if (angle < 1e-6) return v;
   const ax = angleAxis[0] / angle;
   const ay = angleAxis[1] / angle;
@@ -159,7 +159,7 @@ function ddgiRayDirection(
   numSamples: number,
   randomRotation: [number, number, number],
 ): [number, number, number] {
-  const uv  = hammersleyUniform(i, numSamples);
+  const uv = hammersleyUniform(i, numSamples);
   const dir = uniformSphere(uv);
   return rotateAngleAxis(dir, randomRotation);
 }
@@ -189,10 +189,7 @@ function sampleProbeRays(
 //   E = Σ L_i · max(0, cellDir · d_i) / Σ max(0, cellDir · d_i)
 // ---------------------------------------------------------------------------
 
-function dot3(
-  a: [number, number, number],
-  b: [number, number, number],
-): number {
+function dot3(a: [number, number, number], b: [number, number, number]): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
@@ -215,9 +212,12 @@ function cosineBlend(
     hitDistance: number;
   }>,
 ): [number, number, number] {
-  let r = 0, g = 0, b = 0, totalWeight = 0;
+  let r = 0,
+    g = 0,
+    b = 0,
+    totalWeight = 0;
   for (const ray of rays) {
-    if (ray.hitDistance < 0) continue;    // backface
+    if (ray.hitDistance < 0) continue; // backface
     if (ray.hitDistance < 0.05) continue; // self-intersection
     const w = Math.max(0, dot3(cellDir, ray.direction));
     if (w < 1e-3) continue;
@@ -264,11 +264,7 @@ function receiverMultiply(
   albedo: [number, number, number],
   E: [number, number, number],
 ): [number, number, number] {
-  return [
-    (albedo[0] / PI) * E[0],
-    (albedo[1] / PI) * E[1],
-    (albedo[2] / PI) * E[2],
-  ];
+  return [(albedo[0] / PI) * E[0], (albedo[1] / PI) * E[1], (albedo[2] / PI) * E[2]];
 }
 
 // ---------------------------------------------------------------------------
@@ -285,21 +281,21 @@ function borderMirror(
   lx: number,
   ly: number,
 ): { mirror: [number, number]; isBorder: boolean } {
-  const onLeftEdge   = lx === 0;
-  const onRightEdge  = lx === N + 1;
-  const onTopEdge    = ly === 0;
+  const onLeftEdge = lx === 0;
+  const onRightEdge = lx === N + 1;
+  const onTopEdge = ly === 0;
   const onBottomEdge = ly === N + 1;
-  const isBorder     = onLeftEdge || onRightEdge || onTopEdge || onBottomEdge;
+  const isBorder = onLeftEdge || onRightEdge || onTopEdge || onBottomEdge;
   if (!isBorder) return { mirror: [lx, ly], isBorder: false };
 
-  if (onTopEdge    && onLeftEdge)  return { mirror: [N,     N    ], isBorder: true };
-  if (onTopEdge    && onRightEdge) return { mirror: [1,     N    ], isBorder: true };
-  if (onBottomEdge && onLeftEdge)  return { mirror: [N,     1    ], isBorder: true };
-  if (onBottomEdge && onRightEdge) return { mirror: [1,     1    ], isBorder: true };
-  if (onTopEdge)    return { mirror: [N + 1 - lx, 2        ], isBorder: true };
-  if (onBottomEdge) return { mirror: [N + 1 - lx, N - 1    ], isBorder: true };
-  if (onLeftEdge)   return { mirror: [2,           N + 1 - ly], isBorder: true };
-  if (onRightEdge)  return { mirror: [N - 1,       N + 1 - ly], isBorder: true };
+  if (onTopEdge && onLeftEdge) return { mirror: [N, N], isBorder: true };
+  if (onTopEdge && onRightEdge) return { mirror: [1, N], isBorder: true };
+  if (onBottomEdge && onLeftEdge) return { mirror: [N, 1], isBorder: true };
+  if (onBottomEdge && onRightEdge) return { mirror: [1, 1], isBorder: true };
+  if (onTopEdge) return { mirror: [N + 1 - lx, 2], isBorder: true };
+  if (onBottomEdge) return { mirror: [N + 1 - lx, N - 1], isBorder: true };
+  if (onLeftEdge) return { mirror: [2, N + 1 - ly], isBorder: true };
+  if (onRightEdge) return { mirror: [N - 1, N + 1 - ly], isBorder: true };
   return { mirror: [lx, ly], isBorder: false };
 }
 
@@ -338,7 +334,9 @@ function octDecode(u: number, v: number): [number, number, number] {
   const fx = u * 2 - 1;
   const fy = v * 2 - 1;
   const fz = 1 - Math.abs(fx) - Math.abs(fy);
-  let x = fx, y = fy, z = fz;
+  let x = fx,
+    y = fy,
+    z = fz;
   if (fz < 0) {
     x = (1 - Math.abs(fy)) * Math.sign(fx === 0 ? 1 : fx);
     y = (1 - Math.abs(fx)) * Math.sign(fy === 0 ? 1 : fy);
@@ -414,19 +412,18 @@ describe('DDGI pipeline CPU emulation — behavior tests', () => {
       const numCells = cellDirs.length; // 64
 
       // Atlas per-cell EMA state — 3 channels each, initialised to 0.
-      const atlas: Array<[number, number, number]> = Array.from(
-        { length: numCells },
-        () => [0, 0, 0],
-      );
+      const atlas: Array<[number, number, number]> = Array.from({ length: numCells }, () => [
+        0, 0, 0,
+      ]);
 
       for (let frame = 0; frame < FRAMES; frame++) {
         // Sample ray directions for this frame (Halton SO(3) rotation).
         const rayDirs = sampleProbeRays(frame);
 
         // All rays in a uniform room return L_i = 1, hitDistance = 1.0.
-        const rayResults = rayDirs.map(dir => ({
+        const rayResults = rayDirs.map((dir) => ({
           direction: dir,
-          radiance:  uniformRoomRadiance().radiance,
+          radiance: uniformRoomRadiance().radiance,
           hitDistance: uniformRoomRadiance().hitDistance,
         }));
 
@@ -536,7 +533,7 @@ describe('DDGI pipeline CPU emulation — behavior tests', () => {
     // Use a fixed frame so the directions are deterministic.
     const frameIndex = 7;
     const rayDirs = sampleProbeRays(frameIndex);
-    const rayResults = rayDirs.map(dir => ({
+    const rayResults = rayDirs.map((dir) => ({
       direction: dir,
       radiance: [0.8, 0.6, 0.4] as [number, number, number],
       hitDistance: 1.0,
@@ -565,13 +562,17 @@ describe('Halton SO(3) — rotation matrix sanity', () => {
       const angle = Math.sqrt(aa[0] ** 2 + aa[1] ** 2 + aa[2] ** 2);
       if (angle < 1e-9) continue; // identity — trivially valid
 
-      const ax = aa[0] / angle, ay = aa[1] / angle, az = aa[2] / angle;
-      const c = Math.cos(angle), s = Math.sin(angle), t = 1 - c;
+      const ax = aa[0] / angle,
+        ay = aa[1] / angle,
+        az = aa[2] / angle;
+      const c = Math.cos(angle),
+        s = Math.sin(angle),
+        t = 1 - c;
 
       const R = [
-        [t * ax * ax + c,      t * ax * ay - s * az, t * ax * az + s * ay],
-        [t * ax * ay + s * az, t * ay * ay + c,      t * ay * az - s * ax],
-        [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c     ],
+        [t * ax * ax + c, t * ax * ay - s * az, t * ax * az + s * ay],
+        [t * ax * ay + s * az, t * ay * ay + c, t * ay * az - s * ax],
+        [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c],
       ];
 
       // det(R) should be 1 for a proper rotation.

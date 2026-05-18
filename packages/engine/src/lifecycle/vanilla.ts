@@ -60,12 +60,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // Telemetry forwarders. We use the engine's own subscription API rather
   // than wrapping renderFrame because subscribers must run even if the
   // host-supplied onFrame throws (engine swallows callback throws).
-  const unsubFrame = opts.onFrame && engine.onFrame
-    ? engine.onFrame(opts.onFrame)
-    : undefined;
-  const unsubProgress = opts.onProgress && engine.onProgress
-    ? engine.onProgress(opts.onProgress)
-    : undefined;
+  const unsubFrame = opts.onFrame && engine.onFrame ? engine.onFrame(opts.onFrame) : undefined;
+  const unsubProgress =
+    opts.onProgress && engine.onProgress ? engine.onProgress(opts.onProgress) : undefined;
 
   // Resize: track the canvas's CSS pixel size + DPR. Renderframe receives
   // the latest values via FrameInput.viewport. Engine never sees this
@@ -92,9 +89,13 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   if (pauseOnHidden && typeof document !== 'undefined') {
     visibilityHandler = () => {
       if (document.visibilityState === 'hidden') {
-        try { engine.pause(); } catch {}
+        try {
+          engine.pause();
+        } catch {}
       } else {
-        try { engine.resume(); } catch {}
+        try {
+          engine.resume();
+        } catch {}
       }
     };
     document.addEventListener('visibilitychange', visibilityHandler);
@@ -151,10 +152,18 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       if (visibilityHandler && typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', visibilityHandler);
       }
-      try { resizeObserver?.disconnect(); } catch {}
-      try { unsubFrame?.(); } catch {}
-      try { unsubProgress?.(); } catch {}
-      try { engine.dispose(); } catch {}
+      try {
+        resizeObserver?.disconnect();
+      } catch {}
+      try {
+        unsubFrame?.();
+      } catch {}
+      try {
+        unsubProgress?.();
+      } catch {}
+      try {
+        engine.dispose();
+      } catch {}
     },
   };
 }

@@ -43,22 +43,15 @@ function cross3(
   a: [number, number, number],
   b: [number, number, number],
 ): [number, number, number] {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
 function len3(v: [number, number, number]): number {
   return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 }
 
-function sub3(
-  a: [number, number, number],
-  b: [number, number, number],
-): [number, number, number] {
-  return [a[0]-b[0], a[1]-b[1], a[2]-b[2]];
+function sub3(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
 function sphericalQuadAreaForMerge(
@@ -97,12 +90,19 @@ function octCellSolidAngle(cx: number, cy: number, N: number): number {
  * upperGridSize: N for the upper (finer) cascade's ray grid.
  */
 function cascadeMergeCell(
-  children: [[number,number,number],[number,number,number],[number,number,number],[number,number,number]],
+  children: [
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+  ],
   parentGx: number,
   parentGy: number,
   upperGridSize: number,
 ): [number, number, number] {
-  let mergedR = 0, mergedG = 0, mergedB = 0;
+  let mergedR = 0,
+    mergedG = 0,
+    mergedB = 0;
   let omegaTotal = 0;
   for (let ci = 0; ci < 4; ci++) {
     const dx = ci % 2;
@@ -122,7 +122,6 @@ function cascadeMergeCell(
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
-
   // ── 1. WGSL mirror vs TS `computeOctahedralSolidAngles` ─────────────────────
   it.each([4, 8, 16] as const)(
     'octCellSolidAngle (1-quad) vs computeOctahedralSolidAngles (SUB=16) agree to within 5%% for N=%i',
@@ -154,12 +153,18 @@ describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
       // reaches ~13%; it shrinks as N grows (N=8: ~4%, N=16: ~2%).
       // This test documents the known approximation gap, not a bug.
       const sumRelErr = Math.abs(wgslSum - tsSum) / tsSum;
-      expect(sumRelErr, `N=${N}: sum relative error ${(sumRelErr*100).toFixed(2)}% (ts=${tsSum.toFixed(4)}, wgsl=${wgslSum.toFixed(4)})`).toBeLessThan(0.15);
+      expect(
+        sumRelErr,
+        `N=${N}: sum relative error ${(sumRelErr * 100).toFixed(2)}% (ts=${tsSum.toFixed(4)}, wgsl=${wgslSum.toFixed(4)})`,
+      ).toBeLessThan(0.15);
 
       // Per-cell relative error: allow up to 25% (WGSL uses 1 quad vs TS's SUB=16).
       // Edge/corner cells near the octahedral fold have the highest local error
       // due to the coarser 1-quad approximation. N=4 worst cell reaches ~19%.
-      expect(maxRelError, `N=${N}: max per-cell relative error ${(maxRelError*100).toFixed(2)}%`).toBeLessThan(0.25);
+      expect(
+        maxRelError,
+        `N=${N}: max per-cell relative error ${(maxRelError * 100).toFixed(2)}%`,
+      ).toBeLessThan(0.25);
     },
   );
 
@@ -168,17 +173,31 @@ describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
     // For any parent position and grid size, if all 4 children carry radiance
     // (1,1,1), the weighted-average merge must also produce (1,1,1).
     // This proves the formula is normalized (divides by Σ Ω), not a weighted sum.
-    const ones: [number,number,number] = [1, 1, 1];
-    const uniformChildren: [[number,number,number],[number,number,number],[number,number,number],[number,number,number]] = [ones, ones, ones, ones];
+    const ones: [number, number, number] = [1, 1, 1];
+    const uniformChildren: [
+      [number, number, number],
+      [number, number, number],
+      [number, number, number],
+      [number, number, number],
+    ] = [ones, ones, ones, ones];
 
     for (const N of [4, 8, 16]) {
       const parentGridSize = N / 2;
       for (let gy = 0; gy < parentGridSize; gy++) {
         for (let gx = 0; gx < parentGridSize; gx++) {
           const merged = cascadeMergeCell(uniformChildren, gx, gy, N);
-          expect(Math.abs(merged[0] - 1), `N=${N} gx=${gx} gy=${gy}: R channel = ${merged[0]}`).toBeLessThan(1e-6);
-          expect(Math.abs(merged[1] - 1), `N=${N} gx=${gx} gy=${gy}: G channel = ${merged[1]}`).toBeLessThan(1e-6);
-          expect(Math.abs(merged[2] - 1), `N=${N} gx=${gx} gy=${gy}: B channel = ${merged[2]}`).toBeLessThan(1e-6);
+          expect(
+            Math.abs(merged[0] - 1),
+            `N=${N} gx=${gx} gy=${gy}: R channel = ${merged[0]}`,
+          ).toBeLessThan(1e-6);
+          expect(
+            Math.abs(merged[1] - 1),
+            `N=${N} gx=${gx} gy=${gy}: G channel = ${merged[1]}`,
+          ).toBeLessThan(1e-6);
+          expect(
+            Math.abs(merged[2] - 1),
+            `N=${N} gx=${gx} gy=${gy}: B channel = ${merged[2]}`,
+          ).toBeLessThan(1e-6);
         }
       }
     }
@@ -189,13 +208,20 @@ describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
     // If the merge were `merged = Σ child·Ω` without `/ Σ Ω`, the output for
     // uniform (1,1,1) children would equal Σ Ω, which is > 0. This test
     // confirms the actual merge result (1,1,1) differs from the un-normalized sum.
-    const ones: [number,number,number] = [1, 1, 1];
-    const uniformChildren: [[number,number,number],[number,number,number],[number,number,number],[number,number,number]] = [ones, ones, ones, ones];
+    const ones: [number, number, number] = [1, 1, 1];
+    const uniformChildren: [
+      [number, number, number],
+      [number, number, number],
+      [number, number, number],
+      [number, number, number],
+    ] = [ones, ones, ones, ones];
 
     // Compute the un-normalized weighted sum for one cell.
     const N = 8;
-    const gx = 2, gy = 2;
-    let rawSumR = 0, rawOmegaTotal = 0;
+    const gx = 2,
+      gy = 2;
+    let rawSumR = 0,
+      rawOmegaTotal = 0;
     for (let ci = 0; ci < 4; ci++) {
       const dx = ci % 2;
       const dy = Math.floor(ci / 2);
@@ -213,5 +239,4 @@ describe('cascadeMerge solid-angle weighting — F4 re-verification', () => {
     const merged = cascadeMergeCell(uniformChildren, gx, gy, N);
     expect(Math.abs(merged[0] - 1)).toBeLessThan(1e-6);
   });
-
 });

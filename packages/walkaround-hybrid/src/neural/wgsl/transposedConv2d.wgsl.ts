@@ -21,7 +21,7 @@
  * Workgroup: 8×8×1 over (outH, outW, outC).
  */
 
-export const TRANSPOSED_CONV2D_WGSL = /* wgsl */`
+export const TRANSPOSED_CONV2D_WGSL = /* wgsl */ `
 struct TConv2DParams {
   inputH  : u32,
   inputW  : u32,

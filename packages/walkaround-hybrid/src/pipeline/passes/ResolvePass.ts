@@ -13,11 +13,7 @@
  */
 
 import { buildResolveBindGroup, type UboRef } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class ResolvePass implements Pass {
@@ -37,7 +33,19 @@ export class ResolvePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX, wgY, frameState, frameCount, width, height } = ctx;
+    const {
+      device,
+      encoder,
+      computeDesc,
+      bglCache,
+      resources,
+      wgX,
+      wgY,
+      frameState,
+      frameCount,
+      width,
+      height,
+    } = ctx;
 
     // ResolveUniforms: u32 W, u32 H, u32 frameParity, u32 checkerboardOn (16 bytes).
     device.queue.writeBuffer(
@@ -46,10 +54,11 @@ export class ResolvePass implements Pass {
       new Uint32Array([width, height, frameCount & 1, 0]),
     );
     const bg = buildResolveBindGroup(
-      device, bglCache,
+      device,
+      bglCache,
       this._uboRef.buf!,
-      frameState.writeAccum.createView(),           // current radiance (post-accum)
-      frameState.readAccum.createView(),            // prev radiance (other ping-pong slot)
+      frameState.writeAccum.createView(), // current radiance (post-accum)
+      frameState.readAccum.createView(), // prev radiance (other ping-pong slot)
       resources.common.motionVectorTexture.createView(),
       resources.common.resolvedTexture.createView(),
     );

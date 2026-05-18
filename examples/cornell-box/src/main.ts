@@ -17,18 +17,22 @@ import {
   ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX as SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
   ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS as SVGF_MAX_ATROUS_ITERATIONS,
 } from '@vitrum/shared-denoisers';
-import { BilateralPreviewCanvas, writeTonemappedRgbToCanvas, type DenoiseDisplayMode } from './denoiseDisplay.js';
+import {
+  BilateralPreviewCanvas,
+  writeTonemappedRgbToCanvas,
+  type DenoiseDisplayMode,
+} from './denoiseDisplay.js';
 
 declare global {
   // Optional capture harness hooks read by tools/benchmark-runner/capture-adapter-playwright.mjs.
-   
+
   var VITRUM_CAPTURE_READY: boolean | undefined;
-   
+
   var VITRUM_MS_PER_SAMPLE: number | undefined;
-   
+
   var VITRUM_CAPTURE_TELEMETRY: Record<string, unknown> | undefined;
   /** Preferred screenshot target when capture runs after VITRUM_CAPTURE_READY (see adapter env override). */
-   
+
   var VITRUM_CAPTURE_CANVAS_SELECTOR: string | undefined;
 }
 
@@ -170,7 +174,8 @@ const INTERACTIVE_PRESETS: Record<InteractivePresetId, InteractivePreset> = {
 };
 
 function parseQualityMode(value: string | null, isCapture: boolean): PTEngineWebGL2QualityMode {
-  if (value === 'interactive' || value === 'final' || value === 'capture' || value === 'safe') return value;
+  if (value === 'interactive' || value === 'final' || value === 'capture' || value === 'safe')
+    return value;
   return isCapture ? 'capture' : 'interactive';
 }
 
@@ -188,7 +193,12 @@ function defaultBouncesForScenario(scenarioId: string): number {
   return 6;
 }
 
-function fitWithin(width: number, height: number, maxWidth: number, maxHeight: number): readonly [number, number] {
+function fitWithin(
+  width: number,
+  height: number,
+  maxWidth: number,
+  maxHeight: number,
+): readonly [number, number] {
   const scale = Math.min(1, maxWidth / Math.max(width, 1), maxHeight / Math.max(height, 1));
   return [Math.max(1, Math.floor(width * scale)), Math.max(1, Math.floor(height * scale))] as const;
 }
@@ -213,8 +223,7 @@ function parseDenoiseDisplay(params: URLSearchParams): DenoiseDisplayMode {
 function parseCaptureConfig(): CaptureConfig {
   const params = new URLSearchParams(window.location.search);
   const caustic = params.get('vitrumCaustic');
-  const causticStrategy =
-    caustic === 'manifold-nee' || caustic === 'photon-map' ? caustic : 'none';
+  const causticStrategy = caustic === 'manifold-nee' || caustic === 'photon-map' ? caustic : 'none';
   const isCapture = params.has('vitrumScenario');
   const scenarioRaw = params.get('vitrumScenario');
   const scenarioId = resolveScenarioId(
@@ -257,12 +266,18 @@ function parseCaptureConfig(): CaptureConfig {
     maxMegapixels: parsePositiveMegapixels(params.get('vitrumMaxMp'), 24),
     denoiseDisplay: parseDenoiseDisplay(params),
     oidnModelUrl: params.get('vitrumOidnModel'),
-    wgslSigma: parsePositiveFloat(params.get('vitrumWgslSigma'), HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE),
+    wgslSigma: parsePositiveFloat(
+      params.get('vitrumWgslSigma'),
+      HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE,
+    ),
     svgfFrameCount: Math.min(
       parseNonNegativeInt(params.get('vitrumSvgfFrameCount') ?? params.get('vitrumSvgfFrames'), 0),
       SVGF_FRAME_COUNT_INPUT_GUARD_MAX,
     ),
-    svgfAtrousIterations: parseSvgfAtrousIterations(params.get('vitrumSvgfAtrous'), SVGF_DEFAULT_ATROUS_ITERATIONS),
+    svgfAtrousIterations: parseSvgfAtrousIterations(
+      params.get('vitrumSvgfAtrous'),
+      SVGF_DEFAULT_ATROUS_ITERATIONS,
+    ),
     webGpuReuseSharedDevice: params.get('vitrumWebGpuShared') !== '0',
     // Opt-in: additive Σ/count + tile-variance repeats are still experimental in WebGL2.
     pixelAdaptiveSampling: !isCapture && params.get('vitrumAdaptive') === '1',
@@ -290,10 +305,9 @@ function applyScenarioMaterialTweaks(
       wavelengthStart: 380,
       wavelengthEnd: 780,
       values: new Float32Array([
-        0.08, 0.1, 0.12, 0.15, 0.2, 0.28, 0.36, 0.44,
-        0.52, 0.58, 0.64, 0.68, 0.7, 0.68, 0.62, 0.54,
-        0.46, 0.38, 0.31, 0.25, 0.2, 0.16, 0.13, 0.11,
-        0.1, 0.09, 0.085, 0.08, 0.078, 0.076, 0.074, 0.072,
+        0.08, 0.1, 0.12, 0.15, 0.2, 0.28, 0.36, 0.44, 0.52, 0.58, 0.64, 0.68, 0.7, 0.68, 0.62, 0.54,
+        0.46, 0.38, 0.31, 0.25, 0.2, 0.16, 0.13, 0.11, 0.1, 0.09, 0.085, 0.08, 0.078, 0.076, 0.074,
+        0.072,
       ]),
     };
     material.userData[K.THIN_FILM_STACK] = {
@@ -340,7 +354,12 @@ function buildCornellScene(config: CaptureConfig): THREE.Scene {
     glass.ior = 1.52;
   }
 
-  const mk = (geo: THREE.BufferGeometry, mat: THREE.MeshPhysicalMaterial, pos: Vec3, scale: Vec3) => {
+  const mk = (
+    geo: THREE.BufferGeometry,
+    mat: THREE.MeshPhysicalMaterial,
+    pos: Vec3,
+    scale: Vec3,
+  ) => {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(pos[0], pos[1], pos[2]);
     mesh.scale.set(scale[0], scale[1], scale[2]);
@@ -522,7 +541,8 @@ async function main(): Promise<void> {
 
   function finalizeVitrumCapture(reason: string, out: PTEngineWebGL2FrameOutput): void {
     if (globalThis.VITRUM_CAPTURE_READY === true) return;
-    globalThis.VITRUM_MS_PER_SAMPLE = (performance.now() - startMs) / Math.max(out.samplesAccumulated, 1);
+    globalThis.VITRUM_MS_PER_SAMPLE =
+      (performance.now() - startMs) / Math.max(out.samplesAccumulated, 1);
     globalThis.VITRUM_CAPTURE_TELEMETRY = {
       ...out.telemetry,
       msPerSample: globalThis.VITRUM_MS_PER_SAMPLE,
@@ -575,8 +595,16 @@ async function main(): Promise<void> {
     if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {
       canvas.style.visibility = 'hidden';
       denoiseCanvas.style.display = 'block';
-      bilateral.render(engine.getAccumulationRenderTarget().texture as THREE.Texture, renderWidth, renderHeight);
-    } else if (config.denoiseDisplay !== 'oidn' && config.denoiseDisplay !== 'wgsl' && config.denoiseDisplay !== 'svgf') {
+      bilateral.render(
+        engine.getAccumulationRenderTarget().texture as THREE.Texture,
+        renderWidth,
+        renderHeight,
+      );
+    } else if (
+      config.denoiseDisplay !== 'oidn' &&
+      config.denoiseDisplay !== 'wgsl' &&
+      config.denoiseDisplay !== 'svgf'
+    ) {
       canvas.style.visibility = 'visible';
       if (denoiseCanvas != null) denoiseCanvas.style.display = 'none';
     }
@@ -602,7 +630,13 @@ async function main(): Promise<void> {
       void (async () => {
         try {
           const rt = engine.getAccumulationRenderTarget();
-          const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
+          const rgb = readAccumulationRgbFloat(
+            renderer,
+            rt,
+            renderWidth,
+            renderHeight,
+            lastDivideByAlpha,
+          );
           const dod = await denoise(rgb);
           canvas.style.visibility = 'hidden';
           denoiseCanvas.style.display = 'block';
@@ -695,25 +729,31 @@ async function main(): Promise<void> {
     svgfStarted = svgfStartedRef.value;
     svgfDisplaySucceeded = svgfSucceededRef.value;
 
-    const perfLabel = telemetry == null
-      ? rendererLabel
-      : [
-        rendererLabel,
-        `${telemetry.renderWidth}x${telemetry.renderHeight}`,
-        `${telemetry.samplesPerFrame}spf`,
-        `${telemetry.tileSize}x${telemetry.tileSize} tiles`,
-        telemetry.sppPerSecond == null ? null : `${telemetry.sppPerSecond.toFixed(1)} spp/s`,
-        telemetry.estimatedRenderTargetBytes == null
-          ? null
-          : `~${(telemetry.estimatedRenderTargetBytes / (1024 * 1024)).toFixed(0)} MiB RT`,
-        telemetry.additiveAccumulation ? 'sum/count HDR' : null,
-        telemetry.pixelAdaptiveSampling ? 'pixel-adaptive sum/count (experimental)' : null,
-        telemetry.guardrail,
-      ].filter(Boolean).join(' — ');
-    const completionLabel = samplesTarget <= SMOKE_SPP_THRESHOLD
-      ? ' — smoke complete (grainy by design)'
-      : ' — converged';
-    setStatus(`${config.scenarioId} (${config.causticStrategy}, ${config.qualityMode}) SPP: ${displayedSpp} / ${samplesTarget}${out.isConverged ? completionLabel : ''} — ${perfLabel}`);
+    const perfLabel =
+      telemetry == null
+        ? rendererLabel
+        : [
+            rendererLabel,
+            `${telemetry.renderWidth}x${telemetry.renderHeight}`,
+            `${telemetry.samplesPerFrame}spf`,
+            `${telemetry.tileSize}x${telemetry.tileSize} tiles`,
+            telemetry.sppPerSecond == null ? null : `${telemetry.sppPerSecond.toFixed(1)} spp/s`,
+            telemetry.estimatedRenderTargetBytes == null
+              ? null
+              : `~${(telemetry.estimatedRenderTargetBytes / (1024 * 1024)).toFixed(0)} MiB RT`,
+            telemetry.additiveAccumulation ? 'sum/count HDR' : null,
+            telemetry.pixelAdaptiveSampling ? 'pixel-adaptive sum/count (experimental)' : null,
+            telemetry.guardrail,
+          ]
+            .filter(Boolean)
+            .join(' — ');
+    const completionLabel =
+      samplesTarget <= SMOKE_SPP_THRESHOLD
+        ? ' — smoke complete (grainy by design)'
+        : ' — converged';
+    setStatus(
+      `${config.scenarioId} (${config.causticStrategy}, ${config.qualityMode}) SPP: ${displayedSpp} / ${samplesTarget}${out.isConverged ? completionLabel : ''} — ${perfLabel}`,
+    );
     if (!out.isConverged) {
       requestAnimationFrame(loop);
       return;

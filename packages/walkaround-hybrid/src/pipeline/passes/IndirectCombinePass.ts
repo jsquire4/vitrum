@@ -13,11 +13,7 @@
  */
 
 import { buildIndirectCombineBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class IndirectCombinePass implements Pass {
@@ -34,10 +30,21 @@ export class IndirectCombinePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, gNormalDepthView, frameState } = ctx;
+    const {
+      device,
+      encoder,
+      computeDesc,
+      bglCache,
+      resources,
+      wgX16,
+      wgY16,
+      gNormalDepthView,
+      frameState,
+    } = ctx;
     const combinedTex = resources.common.combinedDenoisedTexture;
     const bg = buildIndirectCombineBindGroup(
-      device, bglCache,
+      device,
+      bglCache,
       frameState.denoisedDirect.createView(),
       frameState.denoisedIndirect.createView(),
       gNormalDepthView,

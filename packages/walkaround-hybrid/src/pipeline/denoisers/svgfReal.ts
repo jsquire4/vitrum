@@ -79,17 +79,21 @@ export class SVGFRealDenoiser implements Denoiser {
     // the include-graph (and so future SVGF modules that DO grow a
     // dependency need only update their `requires` array).
     const reprojSM = device.createShaderModule({
-      label: 'svgf-reproj', code: composeWgsl(SVGF_REPROJECTION_MODULE, WGSL_MODULES),
+      label: 'svgf-reproj',
+      code: composeWgsl(SVGF_REPROJECTION_MODULE, WGSL_MODULES),
     });
     const momentsSM = device.createShaderModule({
-      label: 'svgf-moments', code: composeWgsl(SVGF_VARIANCE_FROM_MOMENTS_MODULE, WGSL_MODULES),
+      label: 'svgf-moments',
+      code: composeWgsl(SVGF_VARIANCE_FROM_MOMENTS_MODULE, WGSL_MODULES),
     });
     const fallbackSM = device.createShaderModule({
-      label: 'svgf-7x7', code: composeWgsl(SVGF_7X7_SPATIAL_FALLBACK_MODULE, WGSL_MODULES),
+      label: 'svgf-7x7',
+      code: composeWgsl(SVGF_7X7_SPATIAL_FALLBACK_MODULE, WGSL_MODULES),
     });
     // SVGF-real reuses the atrous-variance kernel for spatial filtering.
     const atrousSM = device.createShaderModule({
-      label: 'svgf-real-atrous-variance', code: composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES),
+      label: 'svgf-real-atrous-variance',
+      code: composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES),
     });
 
     for (const [label, sm] of [
@@ -112,23 +116,26 @@ export class SVGFRealDenoiser implements Denoiser {
     }
 
     // ── Compile pipelines ─────────────────────────────────────────────────
-    [this._reprojPipeline, this._momentsPipeline, this._fallbackPipeline] =
-      await Promise.all([
-        device.createComputePipelineAsync({
-          label: 'svgf-real-reproj', layout: 'auto',
-          compute: { module: reprojSM, entryPoint: 'svgfReprojMain' },
-        }),
-        device.createComputePipelineAsync({
-          label: 'svgf-real-moments', layout: 'auto',
-          compute: { module: momentsSM, entryPoint: 'svgfVarianceFromMomentsMain' },
-        }),
-        device.createComputePipelineAsync({
-          label: 'svgf-real-7x7', layout: 'auto',
-          compute: { module: fallbackSM, entryPoint: 'svgf7x7FallbackMain' },
-        }),
-      ]);
+    [this._reprojPipeline, this._momentsPipeline, this._fallbackPipeline] = await Promise.all([
+      device.createComputePipelineAsync({
+        label: 'svgf-real-reproj',
+        layout: 'auto',
+        compute: { module: reprojSM, entryPoint: 'svgfReprojMain' },
+      }),
+      device.createComputePipelineAsync({
+        label: 'svgf-real-moments',
+        layout: 'auto',
+        compute: { module: momentsSM, entryPoint: 'svgfVarianceFromMomentsMain' },
+      }),
+      device.createComputePipelineAsync({
+        label: 'svgf-real-7x7',
+        layout: 'auto',
+        compute: { module: fallbackSM, entryPoint: 'svgf7x7FallbackMain' },
+      }),
+    ]);
     this._atrousPipeline = await device.createComputePipelineAsync({
-      label: 'svgf-real-atrous', layout: 'auto',
+      label: 'svgf-real-atrous',
+      layout: 'auto',
       compute: { module: atrousSM, entryPoint: 'svgfAtrousMain' },
     });
 
@@ -144,15 +151,7 @@ export class SVGFRealDenoiser implements Denoiser {
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture {
-    const {
-      device,
-      encoder,
-      resources,
-      gNormalDepthView,
-      wgX16,
-      wgY16,
-      computeDesc,
-    } = ctx;
+    const { device, encoder, resources, gNormalDepthView, wgX16, wgY16, computeDesc } = ctx;
     const common = resources.common;
     const svgf = resources.svgf;
 
@@ -167,12 +166,16 @@ export class SVGFRealDenoiser implements Denoiser {
     // the id-mismatch check always passes — this is conservative (never rejects
     // valid reprojection) and can be improved when objId outputs are added.
     // Select ping-pong slots: read from A, write to B (or vice versa).
-    const histRead = this._pingPong === 0 ? svgf.svgfHistoryLengthTextureA : svgf.svgfHistoryLengthTextureB;
-    const histWrite = this._pingPong === 0 ? svgf.svgfHistoryLengthTextureB : svgf.svgfHistoryLengthTextureA;
+    const histRead =
+      this._pingPong === 0 ? svgf.svgfHistoryLengthTextureA : svgf.svgfHistoryLengthTextureB;
+    const histWrite =
+      this._pingPong === 0 ? svgf.svgfHistoryLengthTextureB : svgf.svgfHistoryLengthTextureA;
     const momRead = this._pingPong === 0 ? svgf.svgfMomentsTextureA : svgf.svgfMomentsTextureB;
     const momWrite = this._pingPong === 0 ? svgf.svgfMomentsTextureB : svgf.svgfMomentsTextureA;
-    const radRead = this._pingPong === 0 ? svgf.svgfPrevRadianceTextureA : svgf.svgfPrevRadianceTextureB;
-    const radWrite = this._pingPong === 0 ? svgf.svgfPrevRadianceTextureB : svgf.svgfPrevRadianceTextureA;
+    const radRead =
+      this._pingPong === 0 ? svgf.svgfPrevRadianceTextureA : svgf.svgfPrevRadianceTextureB;
+    const radWrite =
+      this._pingPong === 0 ? svgf.svgfPrevRadianceTextureB : svgf.svgfPrevRadianceTextureA;
 
     const reproj = this._reprojPipeline;
     {
@@ -180,20 +183,20 @@ export class SVGFRealDenoiser implements Denoiser {
         label: 'svgf-real-reproj-bg',
         layout: reproj.getBindGroupLayout(0),
         entries: [
-          { binding: 0, resource: common.hdrColorTexture.createView() },          // currColor (sampled)
-          { binding: 1, resource: radRead.createView() },                          // prevColor (sampled)
-          { binding: 2, resource: common.motionVectorTexture.createView() },       // motionVec
-          { binding: 3, resource: common.gNormalDepthTexture.createView() },       // currDepth (.r)
-          { binding: 4, resource: common.gNormalDepthTexture.createView() },       // currNormal (.xyz 0..1)
+          { binding: 0, resource: common.hdrColorTexture.createView() }, // currColor (sampled)
+          { binding: 1, resource: radRead.createView() }, // prevColor (sampled)
+          { binding: 2, resource: common.motionVectorTexture.createView() }, // motionVec
+          { binding: 3, resource: common.gNormalDepthTexture.createView() }, // currDepth (.r)
+          { binding: 4, resource: common.gNormalDepthTexture.createView() }, // currNormal (.xyz 0..1)
           { binding: 5, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
-          { binding: 6, resource: common.gNormalDepthTexture.createView() },       // prevDepth (1-frame lag)
-          { binding: 7, resource: common.gNormalDepthTexture.createView() },       // prevNormal (1-frame lag)
+          { binding: 6, resource: common.gNormalDepthTexture.createView() }, // prevDepth (1-frame lag)
+          { binding: 7, resource: common.gNormalDepthTexture.createView() }, // prevNormal (1-frame lag)
           { binding: 8, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // prevObjId (placeholder)
-          { binding: 9, resource: histRead.createView() },                         // historyLengthIn
-          { binding: 10, resource: momRead.createView() },                         // momentsIn
-          { binding: 11, resource: radWrite.createView() },                        // colorOut (storage write)
-          { binding: 12, resource: histWrite.createView() },                       // historyOut (storage write)
-          { binding: 13, resource: momWrite.createView() },                        // momentsOut (storage write)
+          { binding: 9, resource: histRead.createView() }, // historyLengthIn
+          { binding: 10, resource: momRead.createView() }, // momentsIn
+          { binding: 11, resource: radWrite.createView() }, // colorOut (storage write)
+          { binding: 12, resource: histWrite.createView() }, // historyOut (storage write)
+          { binding: 13, resource: momWrite.createView() }, // momentsOut (storage write)
           { binding: 14, resource: { buffer: this._reprojUboRef.buf! } },
         ],
       });
@@ -286,9 +289,7 @@ export class SVGFRealDenoiser implements Denoiser {
           { binding: 5, resource: { buffer: iterUbo } },
         ],
       });
-      const pass = encoder.beginComputePass(
-        computeDesc(`svgf-real-atrous-${iter}` as PassLabel),
-      );
+      const pass = encoder.beginComputePass(computeDesc(`svgf-real-atrous-${iter}` as PassLabel));
       pass.setPipeline(sa);
       pass.setBindGroup(0, bg);
       pass.dispatchWorkgroups(wgX16, wgY16, 1);

@@ -184,28 +184,14 @@ export function packBDPTVertex(v: BDPTVertex, target: Float32Array, offset: numb
  */
 export function unpackBDPTVertex(source: Float32Array, offset: number): BDPTVertex {
   const rawKind = source[offset + 3] ?? 3;
-  const kind = (rawKind === 0 || rawKind === 1 || rawKind === 2)
-    ? (rawKind)
-    : (3 as const);
+  const kind = rawKind === 0 || rawKind === 1 || rawKind === 2 ? rawKind : (3 as const);
 
   return {
-    position: [
-      source[offset + 0] ?? 0,
-      source[offset + 1] ?? 0,
-      source[offset + 2] ?? 0,
-    ],
+    position: [source[offset + 0] ?? 0, source[offset + 1] ?? 0, source[offset + 2] ?? 0],
     kind,
-    normal: [
-      source[offset + 4] ?? 0,
-      source[offset + 5] ?? 0,
-      source[offset + 6] ?? 0,
-    ],
+    normal: [source[offset + 4] ?? 0, source[offset + 5] ?? 0, source[offset + 6] ?? 0],
     pdfFwd: source[offset + 7] ?? 0,
-    throughput: [
-      source[offset + 8] ?? 0,
-      source[offset + 9] ?? 0,
-      source[offset + 10] ?? 0,
-    ],
+    throughput: [source[offset + 8] ?? 0, source[offset + 9] ?? 0, source[offset + 10] ?? 0],
     pdfRev: source[offset + 11] ?? 0,
   };
 }

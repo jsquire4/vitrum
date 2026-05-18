@@ -3,12 +3,12 @@ import { pickBackend, deriveScaleDefaults } from '../src/createEngine.js';
 
 describe('pickBackend', () => {
   it('returns pt-webgl when prefer is quality, regardless of WebGPU', () => {
-    expect(pickBackend('quality', true,  10_000)).toBe('pt-webgl');
+    expect(pickBackend('quality', true, 10_000)).toBe('pt-webgl');
     expect(pickBackend('quality', false, 10_000)).toBe('pt-webgl');
   });
 
   it('returns walkaround-hybrid when prefer is realtime + WebGPU available', () => {
-    expect(pickBackend('realtime', true,  10_000_000)).toBe('walkaround-hybrid');
+    expect(pickBackend('realtime', true, 10_000_000)).toBe('walkaround-hybrid');
   });
 
   it('falls back to pt-webgl when prefer is realtime but WebGPU absent', () => {

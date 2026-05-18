@@ -39,11 +39,11 @@ When disabled, the composite pass reads the SVGF output directly (Sprint 10a beh
 
 `InferenceGraph` expects one 9-channel input tensor named `enc_input` (H × W × 9, f32):
 
-| Channels | Source | Buffer |
-|---|---|---|
-| 0–2 (RGB) | SVGF denoised color (after 5 à-trous passes) | `atrous_outputColor` ping-pong result |
-| 3–5 (RGB) | G-buffer albedo (Sprint 5 MRT, binding 2) | `gAlbedo` texture read |
-| 6–8 (RGB) | G-buffer normals (Sprint 5 MRT, binding 1, decode .xyz) | `gNormalDepth` texture read |
+| Channels  | Source                                                  | Buffer                                |
+| --------- | ------------------------------------------------------- | ------------------------------------- |
+| 0–2 (RGB) | SVGF denoised color (after 5 à-trous passes)            | `atrous_outputColor` ping-pong result |
+| 3–5 (RGB) | G-buffer albedo (Sprint 5 MRT, binding 2)               | `gAlbedo` texture read                |
+| 6–8 (RGB) | G-buffer normals (Sprint 5 MRT, binding 1, decode .xyz) | `gNormalDepth` texture read           |
 
 **Pack pass**: A small compute shader (not in Sprint 13 scope — author in a follow-up
 single-day patch) reads the three source textures and writes a flat f32 buffer in
@@ -60,13 +60,16 @@ as `(n + 1) / 2` to map to [0, 1] before passing to the network (matches the
 Two new bind groups for the neural denoiser dispatch chain:
 
 **Bind group 3** — shared inputs (read across all layers that need them):
+
 - binding 0: `enc_input` storage buffer (H × W × 9 f32) — packed G-buffer
 - binding 1: `denoisedColor` storage buffer (H × W × 3 f32) — final output
 
 **Layer-level bind groups** (bind group 0 per layer, recreated per dispatch):
+
 - Per the `InferenceGraph.run()` implementation — auto-created from `pipeline.getBindGroupLayout(0)`.
 
 The `WalkaroundGPUPipeline` must allocate:
+
 - `enc_input` buffer: `width × height × 9 × 4` bytes
 - All intermediate tensor buffers: managed internally by `InferenceGraph.initialize()`
 - `denoisedColor` output buffer: `width × height × 3 × 4` bytes
@@ -110,11 +113,11 @@ first frame where `neuralDenoiserEnabled === true` and `neuralDenoiserWeights` i
 
 Per `plan/phase-6-roadmap.md` §Sprint 13:
 
-| Metric | Target | Abort threshold |
-|---|---|---|
-| `InferenceGraph.run()` frame time | < 50 ms | ≥ 50 ms (month-1 check) |
-| Typical discrete GPU (desktop) | 10–30 ms | — |
-| Integrated GPU / mobile | 50–150 ms | Disable, await WebNN |
+| Metric                            | Target    | Abort threshold         |
+| --------------------------------- | --------- | ----------------------- |
+| `InferenceGraph.run()` frame time | < 50 ms   | ≥ 50 ms (month-1 check) |
+| Typical discrete GPU (desktop)    | 10–30 ms  | —                       |
+| Integrated GPU / mobile           | 50–150 ms | Disable, await WebNN    |
 
 **Month-1 benchmarks**: after the first month of integration, time `InferenceGraph.run()`
 using WebGPU timestamp queries. If p95 > 50 ms on the target GPU, abort neural denoising
@@ -128,20 +131,21 @@ and rely on SVGF alone. See `plan/phase-6-roadmap.md` §7 item 5 for the bail-ou
 
 **Intermediate tensors at 1080p (float32)**:
 
-| Tensor | Shape | Size |
-|---|---|---|
-| enc_input | 1080 × 1920 × 9 | 71.3 MB |
-| enc1 | 540 × 960 × 24 | 49.8 MB |
-| enc2 | 270 × 480 × 48 | 24.9 MB |
-| enc3 | 135 × 240 × 96 | 12.4 MB |
-| btn | 135 × 240 × 192 | 24.9 MB |
-| dec3 | 270 × 480 × 96 | 49.8 MB |
-| dec2 | 540 × 960 × 48 | 99.5 MB |
-| dec1 | 1080 × 1920 × 24 | 199 MB |
-| denoisedColor | 1080 × 1920 × 3 | 25 MB |
-| **Total** | | **~557 MB** |
+| Tensor        | Shape            | Size        |
+| ------------- | ---------------- | ----------- |
+| enc_input     | 1080 × 1920 × 9  | 71.3 MB     |
+| enc1          | 540 × 960 × 24   | 49.8 MB     |
+| enc2          | 270 × 480 × 48   | 24.9 MB     |
+| enc3          | 135 × 240 × 96   | 12.4 MB     |
+| btn           | 135 × 240 × 192  | 24.9 MB     |
+| dec3          | 270 × 480 × 96   | 49.8 MB     |
+| dec2          | 540 × 960 × 48   | 99.5 MB     |
+| dec1          | 1080 × 1920 × 24 | 199 MB      |
+| denoisedColor | 1080 × 1920 × 3  | 25 MB       |
+| **Total**     |                  | **~557 MB** |
 
 **Mitigation options** (apply in order until budget fits):
+
 1. **fp16 inference**: halve all intermediate tensor sizes (~278 MB). Requires
    WGSL kernel changes to use `f16` (behind a WebGPU extension; verify support).
 2. **Channel pruning**: reduce bottleneck from 192 to 128 channels. Saves ~40% of
@@ -159,7 +163,9 @@ before constructing the `InferenceGraph`:
 
 ```typescript
 function adaptSpecForResolution(
-  spec: InferenceGraphSpec, width: number, height: number
+  spec: InferenceGraphSpec,
+  width: number,
+  height: number,
 ): InferenceGraphSpec {
   // Recompute all dispatchX/Y from the resolution and layer input dimensions.
   // Left as host-side concern per the library/host separation principle.
@@ -168,6 +174,7 @@ function adaptSpecForResolution(
 ```
 
 Sizing formula per layer kind:
+
 - `conv2d` / `transposed_conv2d`: `(ceil(outputW / 8), ceil(outputH / 8), outputC)`
 - `relu` / `skip`: `(ceil(H × W × C / 256), 1, 1)`
 

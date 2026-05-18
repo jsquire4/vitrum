@@ -55,10 +55,7 @@ export function bdptConnectionMIS_partial(
   selectedStrategyIndex: number,
   beta: number = 2,
 ): number {
-  if (
-    selectedStrategyIndex < 0 ||
-    selectedStrategyIndex >= pdfsByStrategy.length
-  ) {
+  if (selectedStrategyIndex < 0 || selectedStrategyIndex >= pdfsByStrategy.length) {
     return 0;
   }
 
@@ -119,13 +116,13 @@ export function buildBDPTStrategyPDFs_partial(
   const lightCumPdf = new Float64Array(s + 1);
   lightCumPdf[0] = 1;
   for (let i = 0; i < s; i++) {
-    lightCumPdf[i + 1] = lightCumPdf[i]! * (lightSubpath[i]!.pdfFwd);
+    lightCumPdf[i + 1] = lightCumPdf[i]! * lightSubpath[i]!.pdfFwd;
   }
 
   const eyeCumPdf = new Float64Array(t + 1);
   eyeCumPdf[0] = 1;
   for (let j = 0; j < t; j++) {
-    eyeCumPdf[j + 1] = eyeCumPdf[j]! * (eyeSubpath[j]!.pdfFwd);
+    eyeCumPdf[j + 1] = eyeCumPdf[j]! * eyeSubpath[j]!.pdfFwd;
   }
 
   // Strategy k: k light vertices + (s+t-k) eye vertices.
@@ -143,7 +140,7 @@ export function buildBDPTStrategyPDFs_partial(
       continue;
     }
 
-    pdfs[k] = (lightCumPdf[numLightVerts]! * eyeCumPdf[numEyeVerts]!);
+    pdfs[k] = lightCumPdf[numLightVerts]! * eyeCumPdf[numEyeVerts]!;
   }
 
   return pdfs;
@@ -293,7 +290,7 @@ export function buildBDPTStrategyPDFs_full(
   {
     let p = pRef;
     for (let s = selectedS; s > 0; s--) {
-      const v     = vertices[s]!;
+      const v = vertices[s]!;
       const vPrev = vertices[s - 1]!;
 
       // Specular rule: the connection point between the two subpaths for
@@ -313,7 +310,7 @@ export function buildBDPTStrategyPDFs_full(
   {
     let p = pRef;
     for (let s = selectedS; s < n - 1; s++) {
-      const v     = vertices[s]!;
+      const v = vertices[s]!;
       const vNext = vertices[s + 1]!;
 
       if (vNext.isSpecular || v.isSpecular) break;

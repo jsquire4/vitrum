@@ -21,14 +21,8 @@
 import type { Scene, Engine, Vec3 } from '@vitrum/core';
 import { detectGpu } from '@vitrum/core';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
-import {
-  createWalkaroundEngine_Hybrid,
-  type HybridEngineOptions,
-} from '@vitrum/walkaround-hybrid';
-import {
-  createPTEngine_WebGL2,
-  type PTEngineWebGL2Options,
-} from '@vitrum/pt-webgl';
+import { createWalkaroundEngine_Hybrid, type HybridEngineOptions } from '@vitrum/walkaround-hybrid';
+import { createPTEngine_WebGL2, type PTEngineWebGL2Options } from '@vitrum/pt-webgl';
 
 import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 
@@ -89,7 +83,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
   const sceneInputIsThree = isThreeScene(opts.scene);
   const vitrumScene: Scene = sceneInputIsThree
     ? sceneFromThreeJS(opts.scene as unknown as Parameters<typeof sceneFromThreeJS>[0])
-    : (opts.scene);
+    : opts.scene;
 
   const aabb = computeSceneAABB(vitrumScene);
   const gpu = await detectGpu({ publishToWindow: false });
@@ -153,7 +147,9 @@ async function constructWalkaround(
 ): Promise<Engine> {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter == null) {
-    throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
+    throw new Error(
+      'createEngine: WebGPU adapter request returned null even though detectGpu reported support',
+    );
   }
   const device = await adapter.requestDevice();
 
@@ -165,10 +161,14 @@ async function constructWalkaround(
   // @vitrum/core/scene). Spread into a fresh tuple to satisfy the older
   // signature without leaking mutable refs to our shared defaults.
   const primaryLightDir: [number, number, number] = [
-    DEFAULT_PRIMARY_LIGHT_DIR[0], DEFAULT_PRIMARY_LIGHT_DIR[1], DEFAULT_PRIMARY_LIGHT_DIR[2],
+    DEFAULT_PRIMARY_LIGHT_DIR[0],
+    DEFAULT_PRIMARY_LIGHT_DIR[1],
+    DEFAULT_PRIMARY_LIGHT_DIR[2],
   ];
   const skyTint: [number, number, number] = [
-    DEFAULT_SKY_TINT[0], DEFAULT_SKY_TINT[1], DEFAULT_SKY_TINT[2],
+    DEFAULT_SKY_TINT[0],
+    DEFAULT_SKY_TINT[1],
+    DEFAULT_SKY_TINT[2],
   ];
 
   // T3.H removal: pass `threeScene` ONLY when the user gave us one — when
@@ -200,7 +200,9 @@ async function constructWalkaround(
   engine.setScene(vitrumScene);
 
   return wrapWithIdempotentDispose(engine, () => {
-    try { device.destroy(); } catch {}
+    try {
+      device.destroy();
+    } catch {}
   });
 }
 
@@ -220,11 +222,15 @@ async function constructPathTracer(
   engine.setScene(vitrumScene);
 
   return wrapWithIdempotentDispose(engine, () => {
-    try { renderer.dispose(); } catch {}
+    try {
+      renderer.dispose();
+    } catch {}
     // Some pt-webgl test paths hand back a renderer with forceContextLoss.
     const ext = (renderer as unknown as { forceContextLoss?: () => void }).forceContextLoss;
     if (typeof ext === 'function') {
-      try { ext.call(renderer); } catch {}
+      try {
+        ext.call(renderer);
+      } catch {}
     }
   });
 }
@@ -241,7 +247,8 @@ async function createWebGL2RendererForCanvas(
     three = await import('three');
   } catch (err) {
     throw new Error(
-      'createEngine: failed to load three.js. @vitrum/engine has `three` as a peer dependency; install it in your host. Original error: ' + String(err),
+      'createEngine: failed to load three.js. @vitrum/engine has `three` as a peer dependency; install it in your host. Original error: ' +
+        String(err),
     );
   }
   const renderer = new three.WebGLRenderer({
@@ -257,34 +264,41 @@ async function createWebGL2RendererForCanvas(
 // ────────────────────────────────────────────────────────────────────────────
 
 function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
-  return typeof s === 'object'
-    && s != null
-    && (s as { isScene?: unknown }).isScene === true;
+  return typeof s === 'object' && s != null && (s as { isScene?: unknown }).isScene === true;
 }
 
 /** Wrap an engine so that calling .dispose() multiple times is a no-op
  *  beyond the first call. The plan calls this out as an explicit
  *  acceptance criterion ("engine.dispose() followed by engine.dispose()
  *  is idempotent"). */
-function wrapWithIdempotentDispose(
-  engine: Engine,
-  postDispose: () => void,
-): Engine {
+function wrapWithIdempotentDispose(engine: Engine, postDispose: () => void): Engine {
   let disposed = false;
   const proxy: Engine = {
-    get state() { return engine.state; },
-    get capabilities() { return engine.capabilities; },
-    setScene(scene) { if (!disposed) engine.setScene(scene); },
+    get state() {
+      return engine.state;
+    },
+    get capabilities() {
+      return engine.capabilities;
+    },
+    setScene(scene) {
+      if (!disposed) engine.setScene(scene);
+    },
     ...(engine.updatePrimitive
       ? {
-          updatePrimitive: (id: string, patch: Parameters<NonNullable<Engine['updatePrimitive']>>[1]) => {
+          updatePrimitive: (
+            id: string,
+            patch: Parameters<NonNullable<Engine['updatePrimitive']>>[1],
+          ) => {
             if (!disposed) engine.updatePrimitive!(id, patch);
           },
         }
       : {}),
     ...(engine.updateEmitter
       ? {
-          updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
+          updateEmitter: (
+            id: string,
+            patch: Parameters<NonNullable<Engine['updateEmitter']>>[1],
+          ) => {
             if (!disposed) engine.updateEmitter!(id, patch);
           },
         }
@@ -298,14 +312,24 @@ function wrapWithIdempotentDispose(
       }
       return engine.renderFrame(input);
     },
-    reset() { if (!disposed) engine.reset(); },
-    pause() { if (!disposed) engine.pause(); },
-    resume() { if (!disposed) engine.resume(); },
+    reset() {
+      if (!disposed) engine.reset();
+    },
+    pause() {
+      if (!disposed) engine.pause();
+    },
+    resume() {
+      if (!disposed) engine.resume();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
-      try { engine.dispose(); } catch {}
-      try { postDispose(); } catch {}
+      try {
+        engine.dispose();
+      } catch {}
+      try {
+        postDispose();
+      } catch {}
     },
     ...(engine.onFrame
       ? {

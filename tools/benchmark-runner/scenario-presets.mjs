@@ -69,7 +69,7 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1280x720',
     bounces: 10,
     spp: 512,
-    backend: 'pt-webgl',      // also exercise pt-webgpu; run both via vitrumBackend query param
+    backend: 'pt-webgl', // also exercise pt-webgpu; run both via vitrumBackend query param
     cameraElevationDeg: 45,
   },
 

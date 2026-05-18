@@ -212,10 +212,7 @@ const DEFAULT_FILTER = (obj: THREE.Object3D): boolean => {
   if (!(obj instanceof THREE.Mesh)) return false;
   const mat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
   if (!mat) return false;
-  return (
-    mat instanceof THREE.MeshStandardMaterial ||
-    mat instanceof THREE.MeshPhysicalMaterial
-  );
+  return mat instanceof THREE.MeshStandardMaterial || mat instanceof THREE.MeshPhysicalMaterial;
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -232,8 +229,7 @@ const DEFAULT_FILTER = (obj: THREE.Object3D): boolean => {
  */
 function ensureIndexed(geo: THREE.BufferGeometry): void {
   if (geo.index !== null) return;
-  const posCount =
-    (geo.attributes['position'] as THREE.BufferAttribute | undefined)?.count ?? 0;
+  const posCount = (geo.attributes['position'] as THREE.BufferAttribute | undefined)?.count ?? 0;
   if (posCount === 0) return;
   const idx = new Uint32Array(posCount);
   for (let i = 0; i < posCount; i++) idx[i] = i;
@@ -274,8 +270,12 @@ function snapshotPreBuildMaterials(
   const matSig = (m: THREE.Material): string => {
     const s = m as THREE.MeshStandardMaterial;
     const p = m as THREE.MeshPhysicalMaterial;
-    const col = s.color ? `${s.color.r.toFixed(4)},${s.color.g.toFixed(4)},${s.color.b.toFixed(4)}` : '';
-    const em = s.emissive ? `${s.emissive.r.toFixed(4)},${s.emissive.g.toFixed(4)},${s.emissive.b.toFixed(4)}` : '';
+    const col = s.color
+      ? `${s.color.r.toFixed(4)},${s.color.g.toFixed(4)},${s.color.b.toFixed(4)}`
+      : '';
+    const em = s.emissive
+      ? `${s.emissive.r.toFixed(4)},${s.emissive.g.toFixed(4)},${s.emissive.b.toFixed(4)}`
+      : '';
     const r = (s.roughness ?? 0.5).toFixed(4);
     const mt = (s.metalness ?? 0).toFixed(4);
     const ei = (s.emissiveIntensity ?? 1).toFixed(4);
@@ -362,9 +362,7 @@ export function buildSceneBVH(
   const proxyMeshNames = opts.proxyMeshNames ?? new Set<string>();
   const skyHideRadius = opts.skyHideRadiusThreshold ?? 500;
 
-  const roots: THREE.Object3D[] = Array.isArray(sceneOrRoots)
-    ? sceneOrRoots
-    : [sceneOrRoots];
+  const roots: THREE.Object3D[] = Array.isArray(sceneOrRoots) ? sceneOrRoots : [sceneOrRoots];
 
   // ── 0. Force-update world matrices ─────────────────────────────────────
   // StaticGeometryGenerator applies mesh.matrixWorld to every vertex
@@ -612,10 +610,7 @@ export function buildSceneBVH(
  */
 function emptyBVHResult(positionStride: 3 | 4): SceneBVHCommonResult {
   const emptyGeo = new THREE.BufferGeometry();
-  emptyGeo.setAttribute(
-    'position',
-    new THREE.BufferAttribute(new Float32Array(9), 3),
-  );
+  emptyGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9), 3));
   emptyGeo.setIndex(new THREE.BufferAttribute(new Uint32Array([0, 1, 2]), 1));
   emptyGeo.addGroup(0, 3, 0);
   const bvh = new MeshBVH(emptyGeo) as BvhWithRoots;
@@ -630,10 +625,7 @@ function emptyBVHResult(positionStride: 3 | 4): SceneBVHCommonResult {
     triMaterialId: new Uint32Array(1),
     normals: new Float32Array(positionStride === 4 ? 12 : 9),
     materials: [],
-    boundingBox: new THREE.Box3(
-      new THREE.Vector3(-1, -1, -1),
-      new THREE.Vector3(1, 1, 1),
-    ),
+    boundingBox: new THREE.Box3(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1)),
   };
 }
 
@@ -713,7 +705,7 @@ export function validateBvhEncoding(
   for (let i = 0; i < totalNodes; i++) {
     const base = i * UINT32_PER_NODE;
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = splitOrCount >>> 16 === LEAFNODE_FLAG;
     if (isLeaf) continue;
     const offset = u32[base + 6]!;
     if (offset < 1 || offset >= totalNodes) {
@@ -728,7 +720,7 @@ export function validateBvhEncoding(
 
 function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   const UINT32_PER_NODE = 8;
-  const LEAFNODE_FLAG = 0xFFFF;
+  const LEAFNODE_FLAG = 0xffff;
   const u32 = new Uint32Array(bvhNodes.buffer, bvhNodes.byteOffset, bvhNodes.length);
   const totalNodes = bvhNodes.length / UINT32_PER_NODE;
   if (totalNodes <= 1) return;
@@ -737,10 +729,12 @@ function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   for (let i = 0; i < totalNodes; i++) {
     const base = i * UINT32_PER_NODE;
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = splitOrCount >>> 16 === LEAFNODE_FLAG;
     if (isLeaf) continue;
     const value = u32[base + 6]!;
-    if (value >= totalNodes) { needsConversion = true; }
+    if (value >= totalNodes) {
+      needsConversion = true;
+    }
     break;
   }
   if (!needsConversion) return;
@@ -748,7 +742,7 @@ function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   for (let i = 0; i < totalNodes; i++) {
     const base = i * UINT32_PER_NODE;
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = splitOrCount >>> 16 === LEAFNODE_FLAG;
     if (isLeaf) continue;
     const absoluteU32Idx = u32[base + 6]!;
     const absoluteNodeIdx = absoluteU32Idx / UINT32_PER_NODE;

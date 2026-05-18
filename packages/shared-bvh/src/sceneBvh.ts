@@ -143,13 +143,13 @@ export class SceneBvh {
 
     // Forward the shared-core result fields 1:1 — no rename adaptor.
     this._buffers = {
-      bvhNodes:      result.bvhNodes,
-      positions:     result.positions,
-      indices:       result.indices,
-      normals:       result.normals,
+      bvhNodes: result.bvhNodes,
+      positions: result.positions,
+      indices: result.indices,
+      normals: result.normals,
       triMaterialId: result.triMaterialId,
-      materials:     result.materials,
-      boundingBox:   result.boundingBox,
+      materials: result.materials,
+      boundingBox: result.boundingBox,
     };
   }
 

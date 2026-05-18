@@ -21,7 +21,7 @@
 export const SVGF_REAL_DEFAULT_ALPHA_MIN = 0.05 as const;
 
 /** Default depth-deviation tolerance for disocclusion test (Schied Eq. 2, σ_z). */
-export const SVGF_REAL_DEFAULT_SIGMA_DEPTH = 0.10 as const;
+export const SVGF_REAL_DEFAULT_SIGMA_DEPTH = 0.1 as const;
 
 /** Default normal dot-product threshold for disocclusion test (Schied Eq. 2, σ_n). */
 export const SVGF_REAL_DEFAULT_SIGMA_NORMAL = 0.95 as const;

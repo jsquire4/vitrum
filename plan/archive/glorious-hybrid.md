@@ -5,6 +5,7 @@
 > Phase 2 hybrid scaffold (commit `78674a5` + H1 + D1-pivot at HEAD `70d5136`) renders black on real NVIDIA Lovelace hardware. Working reference (`walkaround-ddgi` HEAD `e89d992`) renders correctly on the same machine.
 >
 > Three parallel debug branches were attempted on 2026-05-06 and archived 2026-05-07 as `archive/fix-attempt-{a,b,c}` tags after none hardware-validated:
+>
 > - **fix-attempt-a — DIAGNOSIS FALSIFIED.** Hypothesised a GPUTexture identity mismatch in `probeUpdatePass.ts`. Verified by direct file diff: `walkaround-ddgi/src/.../probeUpdatePass.ts` differs from `hybrid-renderer/src/.../probeUpdatePass.ts` by **one line** (a `detectGpu` import path). The texture-creation pattern is identical — so this cannot be the bug.
 > - **fix-attempt-b — UNVERIFIED.** Added a layer-readiness gate to `applyHybridShading.ts` plus 6 unit tests + a window-bridge counter. Plausible but un-hardware-tested.
 > - **fix-attempt-c — STANDING BEST HYPOTHESIS.** Collapsed `HybridStage.tsx` into a near-byte-identical clone of `WalkaroundStage.tsx`, lifting `applyDDGIShading.ts` + `useDDGI.ts` verbatim from walkaround-ddgi. Iter-2 commit message correctly predicts: if still black, the bug lives in StudioScene factory / lib divergence / viewport state shape / RoomLoader / mount-dispatch / lighting plumbing — i.e. **scene scaffolding around the renderer, NOT the renderer itself**.
@@ -64,14 +65,14 @@ stainedGlass is not a generic GI demo. It is a tool whose value is "show me what
 
 ### 2.1 What "glorious" looks like for stainedGlass
 
-| # | Feature | Glorious bar |
-|---|---|---|
-| 1 | **Floor caustics under the panel** | Colored, bright, with sharp edges where geometry is sharp and soft falloff where the sun is occluded by came. The colored pool on the floor is recognisable as a translation of the panel design above it. **THE feature.** |
-| 2 | **Light through colored glass cells** | Each cell's color is vivid and clearly differentiated. Came (lead solder lines) cast crisp dark seams between cells. Stacked overlay textures (e.g. waterglass over rondelle) read distinctly. |
-| 3 | **Surface-texture refraction** | Hammered, ripple, granite, baroque, waterglass, catspaw, flemish — each surface character is visible by its perturbation of the transmitted light, not just as a normal-map highlight. |
-| 4 | **Time-of-day variation** | Sun angle changes the entire feel: harsh midday, golden hour low-angle through cells, blue-hour ambient. The designer uses TOD as a tool to find the right hour for the install. |
-| 5 | **Multiple lights** | Sun is primary. Interior lights (table lamp, ceiling fixture) for night scenes. Lights compose without one washing out the other. |
-| 6 | **The "wow" moment** | First-frame impression: the room feels real, the panel feels installed, the caustics make you look twice. No more than 3 seconds of "loading" before the wow. |
+| #   | Feature                               | Glorious bar                                                                                                                                                                                                                |
+| --- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Floor caustics under the panel**    | Colored, bright, with sharp edges where geometry is sharp and soft falloff where the sun is occluded by came. The colored pool on the floor is recognisable as a translation of the panel design above it. **THE feature.** |
+| 2   | **Light through colored glass cells** | Each cell's color is vivid and clearly differentiated. Came (lead solder lines) cast crisp dark seams between cells. Stacked overlay textures (e.g. waterglass over rondelle) read distinctly.                              |
+| 3   | **Surface-texture refraction**        | Hammered, ripple, granite, baroque, waterglass, catspaw, flemish — each surface character is visible by its perturbation of the transmitted light, not just as a normal-map highlight.                                      |
+| 4   | **Time-of-day variation**             | Sun angle changes the entire feel: harsh midday, golden hour low-angle through cells, blue-hour ambient. The designer uses TOD as a tool to find the right hour for the install.                                            |
+| 5   | **Multiple lights**                   | Sun is primary. Interior lights (table lamp, ceiling fixture) for night scenes. Lights compose without one washing out the other.                                                                                           |
+| 6   | **The "wow" moment**                  | First-frame impression: the room feels real, the panel feels installed, the caustics make you look twice. No more than 3 seconds of "loading" before the wow.                                                               |
 
 ### 2.2 Acceptance criteria the rendered output must meet
 
@@ -97,13 +98,13 @@ These gates inform the phase-by-phase verification. They do NOT all gate v1 — 
 
 Locked by verified facts (§4 + the through-glass impossibility for ReSTIR per ReSTIR BDPT TOG 2025 §7 page 11: "The glass fixtures in Sponza and Bathroom cause next event estimation (s = 1) to fail, which makes BSDF sampling (s = 0) the only viable technique for ReSTIR PT. The glass also causes failed reconnections, forcing ReSTIR PT to use (unidirectional) random replay for most scene lighting." — author preprint, reverified 2026-05-06):
 
-| Layer | Owns | Why (verified source) |
-|---|---|---|
-| **DDGI** | Indirect-diffuse ambient/fill (room walls, ceiling, floor away from caustic) | DDGI's Chebyshev visibility + 8-nearest-probe sample is the canonical leak-resistant indirect-diffuse cache. (Majercik 2019, verified §4 entry 45.) Already shipping on `walkaround-ddgi` HEAD `e89d992` with chroma 0.0745. |
-| **RC (single cascade)** | Through-glass sun caustic (LSDE path); came shadow detail | Verified that ReSTIR cannot reconnect through delta surfaces (ReSTIR BDPT TOG 2025 §7, page 11 of preprint). Through-glass requires a dedicated tracer. RC's existing `walkaround-rc` `traceSunVisibility` does this with `bvhTraceTintedVisibility`. The cascade interpolation acts as a structural denoiser (RC's signature claim, recon §3.5). |
-| **ReSTIR DI** | Direct light from analytical sources on opaque surfaces — diffuse channel only | Verified §4 entry 13: "ReSTIR DI is diffuse-only in Cyberpunk's implementation; smooth surfaces use a 'poor man's MIS' weighted by `roughness²` against BRDF sampling". Mirrors Cyberpunk's design exactly. |
-| **Specular sampler (separate)** | Glossy reflections on opaque surfaces (room floor varnish, glass panel back-face) | Verified pattern: every shipping system splits indirect-specular from diffuse (Lumen, HDRP, Cyberpunk; recon §3 verified by primary sources). For v1 we use Karis 2013 split-sum against a small env probe + screen-space reflections; "ReSTIR specular stream" deferred to v2. |
-| **Three.js raster G-buffer** | Primary visibility, transmission compositor for the panel itself, IBL on opaque, AmbientLight fallback | Verified pattern: every shipping system uses raster primary visibility (Lumen, HDRP, Cyberpunk's default mode; recon §1.2 verified). ReSTIR primary-cast was a research choice we're discarding. |
+| Layer                           | Owns                                                                                                   | Why (verified source)                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DDGI**                        | Indirect-diffuse ambient/fill (room walls, ceiling, floor away from caustic)                           | DDGI's Chebyshev visibility + 8-nearest-probe sample is the canonical leak-resistant indirect-diffuse cache. (Majercik 2019, verified §4 entry 45.) Already shipping on `walkaround-ddgi` HEAD `e89d992` with chroma 0.0745.                                                                                                                      |
+| **RC (single cascade)**         | Through-glass sun caustic (LSDE path); came shadow detail                                              | Verified that ReSTIR cannot reconnect through delta surfaces (ReSTIR BDPT TOG 2025 §7, page 11 of preprint). Through-glass requires a dedicated tracer. RC's existing `walkaround-rc` `traceSunVisibility` does this with `bvhTraceTintedVisibility`. The cascade interpolation acts as a structural denoiser (RC's signature claim, recon §3.5). |
+| **ReSTIR DI**                   | Direct light from analytical sources on opaque surfaces — diffuse channel only                         | Verified §4 entry 13: "ReSTIR DI is diffuse-only in Cyberpunk's implementation; smooth surfaces use a 'poor man's MIS' weighted by `roughness²` against BRDF sampling". Mirrors Cyberpunk's design exactly.                                                                                                                                       |
+| **Specular sampler (separate)** | Glossy reflections on opaque surfaces (room floor varnish, glass panel back-face)                      | Verified pattern: every shipping system splits indirect-specular from diffuse (Lumen, HDRP, Cyberpunk; recon §3 verified by primary sources). For v1 we use Karis 2013 split-sum against a small env probe + screen-space reflections; "ReSTIR specular stream" deferred to v2.                                                                   |
+| **Three.js raster G-buffer**    | Primary visibility, transmission compositor for the panel itself, IBL on opaque, AmbientLight fallback | Verified pattern: every shipping system uses raster primary visibility (Lumen, HDRP, Cyberpunk's default mode; recon §1.2 verified). ReSTIR primary-cast was a research choice we're discarding.                                                                                                                                                  |
 
 ### 3.2 The composite math
 
@@ -156,15 +157,15 @@ This is structurally identical to Lumen's "screen → SDF → voxel → skylight
 
 Verified across all sources (recon §3, primary sources Lumen + HDRP + Cyberpunk all confirm). For stainedGlass:
 
-| Channel | Owner | Roughness range | Why |
-|---|---|---|---|
-| Direct diffuse on opaque | ReSTIR DI × RC-sun-vis | All | Sharp shadows; direct lights have known positions |
-| Direct specular on opaque (roomy varnish, etc.) | Sample direct light × GGX BRDF (no sampling) | All — analytical | Trivial when light positions are known |
-| Indirect diffuse | DDGI Chebyshev × albedo/π | All | Standard Lambertian indirect |
-| Indirect specular (mid-rough, 0.2 < r < 0.8) | Karis split-sum on env probe (no surface cache for v1) | 0.2 < r < 0.8 | Wide BRDF lobe; cached representation works |
-| Indirect specular (sharp, r < 0.2) | DEFERRED to v2 | r < 0.2 | Will be a dedicated trace; out of v1 scope |
-| Refraction through panel (raster path) | Three.js MeshPhysicalNodeMaterial transmission compositor | n/a | Already shipping; do not reinvent |
-| Refraction caustic on floor (the LSDE path) | RC `traceSunVisibility` / `bvhTraceTintedVisibility` × direct sun term | n/a | Verified that no other layer can resolve this; RC owns it. |
+| Channel                                         | Owner                                                                  | Roughness range  | Why                                                        |
+| ----------------------------------------------- | ---------------------------------------------------------------------- | ---------------- | ---------------------------------------------------------- |
+| Direct diffuse on opaque                        | ReSTIR DI × RC-sun-vis                                                 | All              | Sharp shadows; direct lights have known positions          |
+| Direct specular on opaque (roomy varnish, etc.) | Sample direct light × GGX BRDF (no sampling)                           | All — analytical | Trivial when light positions are known                     |
+| Indirect diffuse                                | DDGI Chebyshev × albedo/π                                              | All              | Standard Lambertian indirect                               |
+| Indirect specular (mid-rough, 0.2 < r < 0.8)    | Karis split-sum on env probe (no surface cache for v1)                 | 0.2 < r < 0.8    | Wide BRDF lobe; cached representation works                |
+| Indirect specular (sharp, r < 0.2)              | DEFERRED to v2                                                         | r < 0.2          | Will be a dedicated trace; out of v1 scope                 |
+| Refraction through panel (raster path)          | Three.js MeshPhysicalNodeMaterial transmission compositor              | n/a              | Already shipping; do not reinvent                          |
+| Refraction caustic on floor (the LSDE path)     | RC `traceSunVisibility` / `bvhTraceTintedVisibility` × direct sun term | n/a              | Verified that no other layer can resolve this; RC owns it. |
 
 ### 3.5 Denoise order — temporal-first, à-trous-second, per-stream
 
@@ -194,15 +195,15 @@ Pre-step (universal, before temporal):
 
 ### 3.6 The reservoir / probe / cache buffer layout — high-level shape
 
-| Buffer | Size at 1080p | Format | Notes |
-|---|---|---|---|
-| G-buffer (albedo + normal-roughness + depth + motion) | ~32 MB total | RGBA8 + RGB10A2 + R32F + RGBA16F | Standard layout |
-| DDGI probe atlases (irradiance + visibility, ping-ponged) | ~4 MB each, 8 MB total | RGBA16F | Same as `walkaround-ddgi` today |
-| RC cascade C0 storage buffer | ~4–8 MB | f16 packed | Single cascade, single-purpose (sun-through-glass) |
-| ReSTIR reservoirs (current + temporal history) | 132 MB at 32 B/reservoir, **66 MB at 16 B/reservoir (f16-packed)** | u32×4 (16 B) or u32×8 (32 B) | f16 packing required to fit in default `maxStorageBufferBindingSize = 128 MiB` (verified §4 entry 8). Bitterli 2020 §6 confirms 16 B is sufficient for DI. |
-| À-trous ping-pong (per-stream) | 16 MB × 2 streams × 2 ping-pong = 64 MB | RGBA16F | Diffuse + specular each get own pair |
-| HDR composite target | 16 MB | RGBA16F | Pre-tone-map |
-| **Estimated total at 1080p with f16 reservoirs** | **~200 MB** | | Well within RTX 4090's typical ~4 GiB `maxStorageBufferBindingSize`; tight on Apple M / Intel Arc 128 MiB defaults |
+| Buffer                                                    | Size at 1080p                                                      | Format                           | Notes                                                                                                                                                      |
+| --------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G-buffer (albedo + normal-roughness + depth + motion)     | ~32 MB total                                                       | RGBA8 + RGB10A2 + R32F + RGBA16F | Standard layout                                                                                                                                            |
+| DDGI probe atlases (irradiance + visibility, ping-ponged) | ~4 MB each, 8 MB total                                             | RGBA16F                          | Same as `walkaround-ddgi` today                                                                                                                            |
+| RC cascade C0 storage buffer                              | ~4–8 MB                                                            | f16 packed                       | Single cascade, single-purpose (sun-through-glass)                                                                                                         |
+| ReSTIR reservoirs (current + temporal history)            | 132 MB at 32 B/reservoir, **66 MB at 16 B/reservoir (f16-packed)** | u32×4 (16 B) or u32×8 (32 B)     | f16 packing required to fit in default `maxStorageBufferBindingSize = 128 MiB` (verified §4 entry 8). Bitterli 2020 §6 confirms 16 B is sufficient for DI. |
+| À-trous ping-pong (per-stream)                            | 16 MB × 2 streams × 2 ping-pong = 64 MB                            | RGBA16F                          | Diffuse + specular each get own pair                                                                                                                       |
+| HDR composite target                                      | 16 MB                                                              | RGBA16F                          | Pre-tone-map                                                                                                                                               |
+| **Estimated total at 1080p with f16 reservoirs**          | **~200 MB**                                                        |                                  | Well within RTX 4090's typical ~4 GiB `maxStorageBufferBindingSize`; tight on Apple M / Intel Arc 128 MiB defaults                                         |
 
 The 132 MB → 66 MB compression via f16 reservoirs is the binding constraint: without it, we cannot run on default WebGPU limits. f16 is verified stable since Chrome 120 (§4 entry 4 implicit + recon-webgpu §1 row 3) and ReSTIR reservoirs are listed as a target in the verified §4 entry 39 / 5 (E2 experiment).
 
@@ -282,10 +283,12 @@ Sequenced per the recon-neural-denoising recommendations, all of which are withi
 **No FSR Ray Regen.** Verified §4 entry 26 — RDNA-4 + DX12 SM 6.6 + Win11 only. Wrong hardware.
 
 **No NRD direct port for v1.** Reverification (`plan/reverify-restir-relax.md` §2) corrects two pieces of recon framing here:
+
 - The recon's "RELAX stabilizes in 1–2 frames vs REBLUR ~6 frames" is **unsupported by primary sources** — that wording originates with a single Cyberpunk modder (Ultra Plus on cyberpunk2077mod.com), not NVIDIA. NRD's `NRDSettings.h` ships **identical** disocclusion-recovery defaults for both denoisers (`historyFixFrameNum=3`, `maxFastAccumulatedFrameNum=6`). The "6 frames" number in the modder claim is exactly NRD's fast-history default, common to both.
 - Per the NRD maintainer (dzhdanNV, NRD issue #47, verbatim): "REBLUR: 25% faster ... in some cases more temporally stable. Coupled with AO/SO denoising (free addition to the diffuse denoiser). RELAX: has luminance stoppers ... dense spatial filtering (A-trous decomposition) in some cases provides advantages over sparse filtering in REBLUR." NRD README timings at 1440p RTX 4080 confirm: REBLUR_DIFFUSE_SPECULAR 2.50 ms vs RELAX_DIFFUSE_SPECULAR 3.20 ms — **REBLUR is ~28% faster, NOT slower**.
 
 If we ever do a direct port (post-v1), the choice is benchmark-gated, not source-quoted:
+
 - **Perf-default favors REBLUR** (faster + free AO denoising per maintainer).
 - **Port-effort favors RELAX** (A-trous decomposition has no subgroup dependency, works in any WebGPU implementation; REBLUR uses wave/subgroup ops in several passes that would need fallback paths for Firefox/Safari per §5.1).
 
@@ -312,11 +315,13 @@ For v1 we ship SVGF (Phase 6) regardless. NRD direct port is deferred to post-v1
 ### 5.1 Subgroups path
 
 **Capability gate.** Verified §4.1:
+
 - subgroups stable in Chrome 134+ (Feb 2025) — entry 2.
 - `subgroup_id` + `num_subgroups` builtins in Chrome 144 (Jan 2026) — entry 3.
 - `subgroup_uniformity` WGSL extension in Chrome 145 (Jan 2026) — entry 4.
 
 **Use cases (in priority order):**
+
 1. **BVH traversal coherent rays** — primaries + first-bounce diffuse have high coherence; `subgroupBallot` active-mask + shared L1 reads should redistribute traversal work across idle SIMT lanes. Recon-webgpu §4: "Google Meet got 2.3-2.9× on matmul shaders in the subgroups origin trial." The CoopRT (ISCA 2025) paper was reverified (`plan/reverify-perf-onnx.md` §1) — its 5.11× number is real but applies to a hardware-modification proposal evaluated in an architectural simulator (Vulkan-sim) over a Turing-class hardware-RT-core baseline. **It does NOT predict WebGPU shader-software speedups** and is dropped as evidence. CoopRT's general insight — "redistributing BVH-traversal work across idle SIMT lanes is profitable on divergent workloads" — does support investing in subgroup-level work redistribution in our software BVH, but the achievable speedup is unknown without measurement (see E3 in §9). Subgroups remain directionally worth pursuing; the speedup magnitude is benchmark-gated, not source-quoted.
 2. **ReSTIR spatial reuse** — k=5 neighbor scan benefits from subgroup broadcast for shared `g_pixelInfo` reads.
 3. **Denoiser à-trous wavelet** — 5×5 stencil with shared edge-stop weights; subgroup shuffles cut redundant fetches.
@@ -328,6 +333,7 @@ For v1 we ship SVGF (Phase 6) regardless. NRD direct port is deferred to post-v1
 **Verified §4 entry 43:** three-mesh-bvh v0.9.9 (Mar 3 2026) latest; `/webgpu` module since v0.9.2 (Oct 24 2025). Provides TSL raycast/shapecast/closest-point on GPU.
 
 **Integration plan.** Replace the per-branch hand-rolled BVH WGSL traversal kernels with three-mesh-bvh's TSL primitives where possible. Currently each walkaround branch implements its own BVH walk (DDGI: `probeUpdateRays.wgsl.ts:506 LOC`; RC: `probeRayCast.wgsl.ts:360`; ReSTIR: full `bvhCompute.ts`). Consolidating onto the upstream library:
+
 - Reduces our maintenance surface (we follow gkjohnson's optimization passes for free).
 - Enables the subgroup speedup path if/when the library adopts it.
 - Preserves our shared `lib/bvhCommon.ts` builder, which already feeds the BVH-of-static-geometry pattern.
@@ -360,17 +366,17 @@ Verified §4: `shader-f16` stable since Chrome 120 (recon-webgpu §1 row 3 verif
 
 At 1080p, RTX 4090, all layers active, f16-packed reservoirs:
 
-| Resource | MB |
-|---|---|
-| G-buffer (5 textures) | 40 |
-| DDGI atlases (irradiance + visibility, ping-pong) | ~10 |
-| RC C0 visibility | 8 |
-| ReSTIR reservoirs (current + history, f16 packed) | 66 |
-| À-trous ping-pong (2 streams × 2 buffers) | 64 |
-| HDR composite target | 16 |
-| BVH (~15k tris, vec3f stride packed) | ~5 |
-| Env probe + LUT | ~2 |
-| **Total** | **~211 MB** |
+| Resource                                          | MB          |
+| ------------------------------------------------- | ----------- |
+| G-buffer (5 textures)                             | 40          |
+| DDGI atlases (irradiance + visibility, ping-pong) | ~10         |
+| RC C0 visibility                                  | 8           |
+| ReSTIR reservoirs (current + history, f16 packed) | 66          |
+| À-trous ping-pong (2 streams × 2 buffers)         | 64          |
+| HDR composite target                              | 16          |
+| BVH (~15k tris, vec3f stride packed)              | ~5          |
+| Env probe + LUT                                   | ~2          |
+| **Total**                                         | **~211 MB** |
 
 Comfortable on RTX 4090 (~4 GiB max). Tight on Apple M2 (256 MiB max storage buffer — but our biggest single buffer is reservoirs at 66 MB, fits). At 720p adaptive fallback the totals halve.
 
@@ -397,6 +403,7 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **Scope.** Land the layered architecture skeleton + DDGI as the only active layer. Material-injection composer that adds layer contributions to TSL `emissiveNode` (or `outputNode` per D1). `__HYBRID_LAYERS__` dev-backdoor toggle (boolean | 'isolate' per D2).
 
 **Code feed.** Lift verbatim from `walkaround-ddgi` HEAD `e89d992`:
+
 - `src/rendering/scene/walkaround/{useDDGI, applyDDGIShading, ddgiSampleWgsl, probeGrid, probeUpdatePass, sceneBvh}.ts`
 - `src/rendering/scene/walkaround/wgsl/{octahedral, hammersley, probeUpdateRays, probeUpdateBlend}.wgsl.ts`
 - The DDGI chroma e2e spec → renamed to `12-walkaround-hybrid-ddgi.spec.ts`
@@ -406,12 +413,14 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **Adapted.** `useDDGI` body becomes `useDDGILayer` + `HybridContext` + `useHybridFrameLoop` (see existing `hybrid-renderer-phase-2.md` §3.6 — that decomposition is sound and survives this revision).
 
 **Verification gate.**
+
 - G-A1: chroma_stdDev ≥ 0.02 at the canonical camera (matches `walkaround-ddgi` baseline of 0.0745).
 - G-A6: scene mounts ≤ 500 ms, first wow frame ≤ 3 s.
 - G-A9: editor + PT specs unchanged (`01-08`, `09-12 PT`).
 - G-layer-toggle: `__HYBRID_LAYERS__ = {ddgi: false, ...}` produces coherent fallback (raster + ambient SH only, no crash).
 
 **Notes.**
+
 - The phase-2 plan's §9 D1/D2/D3 architectural decisions are escalated to §7 of THIS plan for user sign-off.
 - Phase 2 scaffolds the `RCLayerStub` and `ReSTIRLayerStub` so Phases 3 and 4 drop in without re-architecture.
 
@@ -420,6 +429,7 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **Scope.** Replace `RCLayerStub` with a real `RCLayer` driving a single-cascade C0 sun-shadow trace through panel glass. Output `vec3 visibility_through_glass` per pixel, applied multiplicatively against direct-light at the composite.
 
 **Code feed.** Lift from `walkaround-rc`:
+
 - `traceSunVisibility` / `bvhTraceTintedVisibility` from `shaders/walkaround/probeRayCast.wgsl.ts:144-198` (per the existing photorealism plan's §4.1 reference).
 - The `useGIReceiverConverter` pattern is NOT lifted — RC's contribution comes through the new HybridLayer interface, not via emissive material wrapping.
 
@@ -428,6 +438,7 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **Adapted.** RC's existing glass-tint logic (panel cells contribute per-channel tint along the ray) becomes the only function of the layer.
 
 **Verification gate.**
+
 - G-A1: chroma_stdDev measurably increased from Phase 2 baseline (caustic now visible).
 - G-A2: came-shadow line through caustic shows ≥ 20% luma dip at the seam.
 - G-A4: TOD sweep produces continuous animation (no popping).
@@ -438,11 +449,13 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **Scope.** Replace `ReSTIRLayerStub` with `ReSTIRLayer`. Run RIS (M=32) → temporal → spatial-1 → spatial-2 → shade. Use raster G-buffer (NOT compute-cast primary). DDGI atlas as miss-radiance for ReSTIR rays (HDRP pattern). f16-packed reservoirs (post-experiment E2).
 
 **Code feed.** Lift from `walkaround-restir`:
+
 - RIS / temporal / spatial / shade compute passes (~2200 LOC of WGSL across `ris,temporal,spatial,shade,common.wgsl.ts`).
 - Pairwise MIS implementation (Bitterli 2022 — promote from biased 1/M as soon as spatial reuse is on).
 - The 60-FPS frame cap pattern.
 
 **Discarded from ReSTIR branch.**
+
 - Primary-ray-cast mode (replaced by raster G-buffer feed).
 - The compute-cast `composite.wgsl` (replaced by the hybrid composite).
 - The full `WebGPUCanvas` separate-mount pattern (already deleted in parity Phase 5; we use R3F factory swap).
@@ -450,10 +463,12 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 - The emitter list machinery, EXCEPT for the analytical-light reservoir candidate pool.
 
 **Adapted.**
+
 - Reservoirs go from u32×8 (32 B) to u32×4 (16 B) with f16 packing — gated on E2 result.
 - Light index translation pass NOT included (our scene has stable indices).
 
 **Verification gate.**
+
 - G-A8: firefly cap holds (max-pixel-luma in 100ms ≤ 8× temporal average).
 - G-A1 / G-A3: chroma + ΔE2000 cell-color fidelity targets achieved.
 - G-A7: 30+ fps on RTX 4090 at 1080p with all layers on.
@@ -467,6 +482,7 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **Why now (not Phase 4 or 6).** ReSTIR DI's diffuse-only output looks "matte" on the room floor's varnish. Specular split-sum is what makes the floor look polished. Without it the scene feels half-finished even at A1+A2 chroma.
 
 **Verification gate.**
+
 - Visual A/B against Phase 4 — varnish on floor reads as polished, not matte.
 - A5 multi-light: interior point light glints on floor varnish are visible.
 
@@ -485,6 +501,7 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **Pre-experiment E6 (run before Phase 6 commits).** `oidn-web` drop-in benchmark at 1080p on RTX 4090 + Apple M-class. If perf budget fits and quality exceeds SVGF, fold `oidn-web` in instead. If not, stick with SVGF.
 
 **Verification gate.**
+
 - G-A8 firefly cap.
 - Visual A/B against Phase 5 — temporal stability under camera motion improves measurably.
 - 1 spp ReSTIR DI input → temporally stable image in ≤ 10 ms (per SVGF target, verified §4 entry 44).
@@ -504,6 +521,7 @@ Each phase gets a verification gate. NO effort estimates — outcome > effort. P
 **No new code expected.** This is the ship gate, not a feature phase. Bug-fix-only.
 
 **Deliverables.**
+
 - Hardware-validation matrix populated.
 - Per-target perf timing report.
 - Final acceptance test on the A1-A9 bar.
@@ -519,16 +537,16 @@ These are tracked separately in §10 ("Open questions / future research"). They 
 
 All 8 decisions signed off by user one-at-a-time on 2026-05-06. Recorded for future-session context.
 
-| ID | Decision | Locked |
-|---|---|---|
-| D1 | DDGI injection point | **A — `emissiveNode`** (linear HDR throughout, single ACES at end matches Lumen/HDRP/Cyberpunk; preserves chroma in bright caustics) |
-| D2 | `__HYBRID_LAYERS__` toggle type | **B — `boolean \| 'isolate'`** (per-layer isolation mode for debugging) |
-| D3 | `__DDGI__` namespace alias | **A — keep for one phase** (Phase 7 cleanup) |
-| D4 | Subgroup A/B sequencing | **A — Pre-Phase-2 experiment (E3)** (CoopRT 5.11× was debunked; we need our own data) |
-| D5 | f16 reservoir packing | **A — Pre-Phase-4 experiment (E2)** (Bitterli 2020 §6 claim plausible-pending-evidence; verify before locking layout) |
-| D6 | Specular split-sum timing | **A — Phase 5** (post Phase 4 ReSTIR DI; sequenced by visual-impact-priority) |
-| D7 | Tone-map curve | **C — Khronos PBR Neutral** (user override of recommendation; chroma test thresholds will need re-baselining in Phase 8) |
-| D8 | Camera UX | **C — Both WASD + orbit toggle** (WASD for "wow"; orbit for chip/panel-detail review) |
+| ID  | Decision                        | Locked                                                                                                                               |
+| --- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | DDGI injection point            | **A — `emissiveNode`** (linear HDR throughout, single ACES at end matches Lumen/HDRP/Cyberpunk; preserves chroma in bright caustics) |
+| D2  | `__HYBRID_LAYERS__` toggle type | **B — `boolean \| 'isolate'`** (per-layer isolation mode for debugging)                                                              |
+| D3  | `__DDGI__` namespace alias      | **A — keep for one phase** (Phase 7 cleanup)                                                                                         |
+| D4  | Subgroup A/B sequencing         | **A — Pre-Phase-2 experiment (E3)** (CoopRT 5.11× was debunked; we need our own data)                                                |
+| D5  | f16 reservoir packing           | **A — Pre-Phase-4 experiment (E2)** (Bitterli 2020 §6 claim plausible-pending-evidence; verify before locking layout)                |
+| D6  | Specular split-sum timing       | **A — Phase 5** (post Phase 4 ReSTIR DI; sequenced by visual-impact-priority)                                                        |
+| D7  | Tone-map curve                  | **C — Khronos PBR Neutral** (user override of recommendation; chroma test thresholds will need re-baselining in Phase 8)             |
+| D8  | Camera UX                       | **C — Both WASD + orbit toggle** (WASD for "wow"; orbit for chip/panel-detail review)                                                |
 
 The full decision discussion is preserved below for context (each section's recommendation is now superseded by the LOCKED entry above).
 
@@ -537,10 +555,12 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** Where in the TSL graph does DDGI's contribution land?
 
 **Options.**
+
 - **A. `emissiveNode = add(emissive, ddgiContrib)`** (proposed in `hybrid-renderer-phase-2.md` §3.2). DDGI moves to the additive-light slot; the hybrid composer owns `outputNode = renderOutput(output, ACES, sRGB)`.
 - **B. `outputNode = renderOutput(add(output, ddgi+rc+restir), ACES, sRGB)`** (preserves current `walkaround-ddgi` pattern bit-for-bit).
 
 **Recommendation: A.** Reasoning grounded in verified facts:
+
 - Verified pattern (Lumen, HDRP, Cyberpunk all): "linear radiance throughout, single tone-map at the end" (recon §1.2 + §3.6 verified). Option A reserves `outputNode` for the global ACES tone-map.
 - RC's existing `walkaround-rc` pattern already uses `emissiveNode` injection (verified by reading `walkaround-rc/.../giReceiver.ts:109`); Option A unifies all three layers on the same slot.
 - ReSTIR's eventual contribution wants the same slot.
@@ -556,10 +576,12 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** Does the dev-backdoor toggle support `'isolate'` debug mode (only-this-layer-and-no-PBR) in addition to plain on/off?
 
 **Options.**
+
 - **A. `boolean`** — only on/off per layer. Simpler type signature.
 - **B. `boolean | 'isolate'`** — supports diagnostic "show only this layer's contribution".
 
 **Recommendation: B.** Reasoning:
+
 - "Pure DDGI on black PBR" / "pure RC caustic on black PBR" are real diagnostic modes. Without them, debugging which layer produced which pixel is harder.
 - Cost is small — `'isolate'` mode just zeros out three.js's `output` (the PBR-lit + IBL contribution) and the other layers' contributions in the composer.
 - This is dev-only; the public API surface is `walkaroundEngine === 'hybrid'`.
@@ -575,10 +597,12 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** Keep `window.__DDGI__` as alias for `window.__WALKAROUND__.layers.ddgi` during the migration?
 
 **Options.**
+
 - **A. Keep alias for one phase** (drop in Phase 7 cleanup).
 - **B. Drop immediately in Phase 2** (force migrating spec to update its bridge reads).
 
 **Recommendation: A.** Reasoning:
+
 - Lets the migrated spec land without two simultaneous breaking changes (engine selector + bridge namespace).
 - Costs 5 LOC in `DDGILayer.ts`.
 
@@ -593,11 +617,13 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** When do we A/B test the subgroup-coherent BVH path against the non-subgroup baseline?
 
 **Options.**
+
 - **A. Pre-Phase 2** — validate the speedup BEFORE committing to subgroup-using kernels in Phase 4.
 - **B. Phase 4 alongside ReSTIR DI** — test both implementations during Phase 4 with `walkaround-restir`'s BVH compute as the baseline.
 - **C. Phase 8 perf tuning** — ship Phase 4 with the subgroup path, optimize-or-fallback in Phase 8.
 
 **Recommendation: A.** Reasoning:
+
 - Verified §4: subgroups stable in Chrome 134+ (Feb 2025); hardware-validated on NVIDIA Lovelace already in our worktrees.
 - Reverify (`plan/reverify-perf-onnx.md` §1) showed CoopRT's 5.11× number applies to a hardware-modification proposal in an architectural simulator over a Turing RT-core baseline — it does NOT predict WebGPU shader-software speedups and is NOT usable as a planning anchor. The closest verified analogue is Google Meet's matmul subgroups origin trial at 2.3-2.9× — but that's matmul, not BVH traversal. We need OUR specific data on OUR specific BVH shape.
 - Pre-validating informs Phase 4's kernel design: if subgroups give 2× we lean in; if they give 1.1× we keep both paths simple. Without primary-source predictive numbers, **the only path to a defensible kernel-design decision is empirical measurement (E3)**.
@@ -613,11 +639,13 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** Do we pre-validate f16 reservoir compression visual quality before designing Phase 4's reservoir layout?
 
 **Options.**
+
 - **A. Pre-Phase 4 experiment (E2 in §9)** — implement a small standalone test that A/B compares f16 vs u32 reservoirs on the honeycomb scene. Decide layout before Phase 4 designs ReSTIR's buffer schemas.
 - **B. Phase 4 ships f32 reservoirs** — fits if we request `requiredLimits.maxStorageBufferBindingSize > 128 MiB`. Avoids the experiment.
 - **C. Phase 4 ships f16 reservoirs without experiment** — trust Bitterli 2020 §6's "16 B is sufficient" claim.
 
 **Recommendation: A.** Reasoning:
+
 - Verified §4 entry 8: WebGPU spec default `maxStorageBufferBindingSize = 128 MiB`. f32 reservoirs at 132 MB are over.
 - Apple M-class verified at ~256 MiB max storage buffer (recon-webgpu §2). Tight.
 - "Bitterli 2020 §6 confirms 16 B is sufficient for DI" was claimed in the recon — verifier did NOT directly confirm this paper passage in §4. Treat as plausible-pending-evidence.
@@ -635,11 +663,13 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** Specular split-sum + env probe is Phase 5 (post Phase 4 ReSTIR DI lands). Should it be earlier, or later, or split?
 
 **Options.**
+
 - **A. Phase 5 (proposed).** After ReSTIR DI ships. Fills the "matte floor" gap.
 - **B. Phase 4.5 (between ReSTIR and denoise).** Specular composes on top of ReSTIR, which composes on top of RC — getting all the radiance in before denoise sequencing makes sense.
 - **C. Defer to v2.** ReSTIR DI handles direct specular on opaque (Cyberpunk's "poor man's MIS roughness²-weighted BRDF sampling"); env probe handles indirect specular implicitly via three.js's existing IBL.
 
 **Recommendation: A.** Reasoning:
+
 - Verified pattern (recon §3 BRDF split): every shipping system splits indirect-specular from diffuse. Three.js's existing IBL is "good enough" for indirect specular at v1's ambition; full-quality split-sum elevates it to "polished".
 - The "matte floor without varnish glint" is a Phase 4 user-visible problem, but Phase 5 fills it before v1 ships.
 - C is too aggressive — varnish glint really is a stainedGlass-relevant feature for floor texture.
@@ -655,12 +685,14 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** Single ACES filmic at composite, or a different tonemap?
 
 **Options.**
+
 - **A. ACES filmic** (Narkowicz 2015 fit) — matches `walkaround-ddgi`'s current TSL-injected tonemap.
 - **B. Reinhard** (simpler, Three.js default).
 - **C. Khronos PBR Neutral** (newer, more accurate to PBR materials).
 - **D. None — output linear, leave HDR for browser canvas.**
 
 **Recommendation: A.** Reasoning:
+
 - Verified §4 entry: `walkaround-ddgi`'s current ACES via TSL `renderOutput()` is hardware-validated.
 - Verified §4 entry: `walkaround-restir`'s composite.wgsl uses Narkowicz fit — same curve.
 - Cyberpunk + Lumen + HDRP all use ACES-family curves (verified standard pattern, recon §1.2).
@@ -678,11 +710,13 @@ The full decision discussion is preserved below for context (each section's reco
 **Decision.** Which camera UX governs walkaround?
 
 **Options.**
+
 - **A. RC's WASD walk camera** (current `walkaround-rc/.../useWalkCamera.ts:106 LOC`). User physically walks around the room.
 - **B. ReSTIR's drei `<OrbitControls>` + panel-framing constraint.** User orbits around the panel.
 - **C. Both, with an explore vs orbit toggle.**
 
 **Recommendation: C.** Reasoning:
+
 - The "wow moment" (A6 acceptance) comes from physical presence — WASD walk wins.
 - But for chip-tracker / panel-detail review the orbit framing is essential.
 - Cost of supporting both is modest (~1 day in Phase 7).
@@ -750,11 +784,11 @@ These should be run BEFORE the corresponding implementation phase commits to a d
 
 Hardware-validated on host Chrome / NVIDIA RTX 4090 / 1316×903 viewport on `experiment-e1-oidn-web` branch (commit `9627c94` + a 1-line adapter-info wiring fix to `WalkaroundStage.tsx:initOidn`):
 
-| denoiser | per-pass median | budget |
-|---|---|---|
-| À-trous (control) | sub-ms | 16.67 ms |
-| oidn-web | **1051 ms** (3 runs: 1317 / 1051 / 1047) | 63× over budget |
-| none (raw 1spp) | sub-ms | 16.67 ms |
+| denoiser          | per-pass median                          | budget          |
+| ----------------- | ---------------------------------------- | --------------- |
+| À-trous (control) | sub-ms                                   | 16.67 ms        |
+| oidn-web          | **1051 ms** (3 runs: 1317 / 1051 / 1047) | 63× over budget |
+| none (raw 1spp)   | sub-ms                                   | 16.67 ms        |
 
 oidn-web's tile pipeline ran 24 tiles at ~45ms each = ~1 second per full denoise pass. Init was fast (9.8ms + 1.84 MB weights fetch). The per-pass cost is the multi-RAF tile dispatch dominated by tfjs-webgpu UNet inference; not amenable to optimisation without a fundamentally smaller model.
 
@@ -778,10 +812,10 @@ oidn-web's tile pipeline ran 24 tiles at ~45ms each = ~1 second per full denoise
 
 Hardware-validated on host Chrome / NVIDIA RTX 4090 / 1M rays / BVH = 1207 nodes / 4176 tris on `experiment-e3-subgroups` branch (commit `a6bed79`):
 
-| ray distribution | Path A median | Path B median | speedup B/A |
-|---|---|---|---|
-| cone-coherent | 2.60 ms | 2.65 ms | **0.98×** (Path B slightly slower) |
-| divergent | 2.70 ms | 2.45 ms | **1.10×** (Path B 10% faster) |
+| ray distribution | Path A median | Path B median | speedup B/A                        |
+| ---------------- | ------------- | ------------- | ---------------------------------- |
+| cone-coherent    | 2.60 ms       | 2.65 ms       | **0.98×** (Path B slightly slower) |
+| divergent        | 2.70 ms       | 2.45 ms       | **1.10×** (Path B 10% faster)      |
 
 Both batches: 100% hit-count parity (correctness preserved). Adapter: NVIDIA Lovelace, hardware GPU, subgroups available. Headline: 0.98× median, 1.27× p95 (within noise).
 
@@ -845,16 +879,19 @@ If/when the following land in stable browsers, revisit the relevant phase:
 After v1 hardware-validates and merges to main, the GI pipeline gets extracted into a standalone open-source library so others can use it. This is a committed direction, not a stretch goal — but it ships AFTER v1, not as part of v1.
 
 **Library boundary (the dividing line):**
+
 - LIBRARY: anything that doesn't reference `panel` / `room` / `came` / `glass` / `TOD` / `sglass`. Includes BVH primitives, WGPU support + adapter probing, DDGI probe-grid + atlas, RC cascade dispatch, ReSTIR reservoir + RIS + spatiotemporal reuse, denoisers, composition framework, tone-mapping curves, layer-toggle protocol.
 - APP (stays in stainedGlass): scene loading, panel geometry, came/solder, mounts, room loading, sglass fixtures, e2e specs that depend on panel/room semantics, the explore/orbit camera UX.
 
 **Build discipline during Phase 2-6:**
+
 - All new GI primitives land in `lib/`; never `src/rendering/walkaround/` unless they reference app concepts.
 - Layer interfaces are explicit TypeScript types — no shared closure state, no app globals leaking into library code.
 - Library needs an app-agnostic test scene (Cornell-box-equivalent) alongside the existing sglass fixtures.
 - JSDoc on public exports as we write them. Plan files (`glorious-hybrid.md`, `recon-verification.md`, `reverify-*.md`) become the public design-rationale companion.
 
 **Naming + scope** (TBD when v1 ships):
+
 - Likely package name: `@stainedglass/gi` or standalone identity (e.g. `gloriousgi`, `ribbon-gi`).
 - License: MIT (frictionless adoption).
 - Scope v1: single npm package, hybrid renderer + canonical demo. Layered split possible later (`@gi/bvh`, `@gi/ddgi`, `@gi/restir`, `@gi/denoise`).
@@ -880,6 +917,7 @@ Listed in rough order of expected value-to-effort ratio:
 ## Appendix A — File map
 
 **On `main` HEAD `55c44cf`:**
+
 - `src/store/viewportSlice.ts:39` — `WalkaroundEngine = 'ddgi' | 'rc' | 'restir' | 'hybrid'`
 - `src/store/selectors/viewport.ts:18-19` — `selectExploreEnabled`, `selectWalkaroundEngine`
 - `src/rendering/scene/walkaround/lib/{bvhCommon, useSceneBVH, nodeMaterialUpgrade, wgpuSupport}.ts` — Tier 2 shared GI primitives
@@ -887,11 +925,13 @@ Listed in rough order of expected value-to-effort ratio:
 - `src/__tests__/fixtures/honeycombFixture.ts` — programmatic fixture builder
 
 **Walkaround branch worktrees (live A/B references through Phase 8):**
+
 - `walkaround-ddgi` HEAD `e89d992` — DDGI implementation; lifts in Phase 2.
 - `walkaround-rc` HEAD `677ef84` — RC + WASD walk camera; lifts (single-cascade) in Phase 3 + (camera) in Phase 7.
 - `walkaround-restir` HEAD `56d6381` — ReSTIR DI implementation; lifts in Phase 4 (with primary-cast mode dropped).
 
 **New on `hybrid-renderer` (Phase 2 onward):**
+
 - `src/rendering/scene/walkaround/HybridContext.ts`
 - `src/rendering/scene/walkaround/layers/{types, DDGILayer, RCLayer (Phase 3), ReSTIRLayer (Phase 4)}.ts`
 - `src/rendering/scene/walkaround/applyHybridShading.ts`
@@ -902,6 +942,7 @@ Listed in rough order of expected value-to-effort ratio:
 - `src/__tests__/e2e/14-walkaround-hybrid-*.spec.ts` — hybrid acceptance tests (A1-A9)
 
 **Archived after v1 ship:**
+
 - `walkaround-ddgi` → `walkaround-ddgi-archive` on remote, then deleted at v1 ship.
 - Same for RC and ReSTIR.
 
@@ -911,31 +952,31 @@ Listed in rough order of expected value-to-effort ratio:
 
 This plan brids load-bearing claims to the verifier's §4 entries:
 
-| §4 # | Fact | Used in |
-|---|---|---|
-| 2-6 | WebGPU subgroups + extensions Chrome ship versions | §5.1, D4 |
-| 8 | `maxStorageBufferBindingSize = 128 MiB` default | §3.6, §5.3, §5.5, D5 |
-| 9 | No hardware RT in WebGPU as of May 2026 | §5, §8.2 |
-| 11-15 | Cyberpunk ReSTIR design (DI-only-on-diffuse, M=32, etc.) | §3.1, §4.3 |
-| 16 | Bitterli 2020 M=32, k=5 | §4.3 |
-| 17 | Wyman 2023 reservoir struct + c_cap=20 | §4.3 |
-| 18 | Algorithm 7 = Defensive Pairwise (NOT what we use; we use plain pairwise = Bitterli 2022) | §4.3 |
-| 19 | ReSTIR GI 9.3-166× MSE reduction | §10.3 |
-| 20-23 | NRD details (compute-only, no tensor) | §4.4, §8.3 |
-| 25 | DLSS 4 transformer FP8 | §8.2 |
-| 26 | FSR Ray Regen RDNA-4 only | §8.2 |
-| 32 | HDRP `RayTracingFallbackHierarchy` enum | §3.3 |
-| 39-42 | ORT-Web, oidn-web, Denoiser, wonnx archive | §4.4, §9 E1 |
-| 43 | three-mesh-bvh /webgpu since v0.9.2 | §5.2 |
-| 44 | SVGF 1 spp → 10 ms | §3.5, §4.4, §9 E5 |
-| 45 | DDGI Chebyshev visibility | §4.1 |
-| 46 | Lumen software-RT MDF + global distance field | §3.3 |
-| 47 | Lumen voxel clipmap pattern (specific cadence numbers DROPPED per `plan/reverify-lumen.md` §1 — natsuneko3 blog had no primary source; UE5.6 `LumenVoxelLighting.cpp` no longer exists, voxel lighting is event-driven on modified bricks; closest analogue is `GlobalDistanceField.cpp:1268` GSDF clipmap with frequencies 1/2/4/4, a different system) | §3.3 |
-| reverify | Lumen 16×16 screen-probe tile + 8×8 octahedral = 64 rays/probe (`LumenScreenProbeGather.cpp:55,82` + SIGGRAPH 2022 p.161) | §4.1 (DDGI uses different sampling but pattern reference) |
-| reverify | Lumen surface cache atlas 4096×4096 default (`LumenScene.cpp:68` + SIGGRAPH 2022 p.69), 300 cards/frame + 512×512 texel budget (`LumenSceneRendering.cpp:80` + SIGGRAPH 2022 p.69) | §4.1 (Surface Cache rejection rationale) |
-| reverify | MegaLights ↔ Lumen: sibling pipelines, MegaLights reuses Lumen BRDF rays for guiding (SIGGRAPH 2025 paper p.9, p.49) | §10.1 |
-| 48 | NRC 2.6 ms full-HD | §10.3 |
-| 49 | DLSS-RR unattainable in browser | §8.2 |
+| §4 #     | Fact                                                                                                                                                                                                                                                                                                                                                     | Used in                                                   |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 2-6      | WebGPU subgroups + extensions Chrome ship versions                                                                                                                                                                                                                                                                                                       | §5.1, D4                                                  |
+| 8        | `maxStorageBufferBindingSize = 128 MiB` default                                                                                                                                                                                                                                                                                                          | §3.6, §5.3, §5.5, D5                                      |
+| 9        | No hardware RT in WebGPU as of May 2026                                                                                                                                                                                                                                                                                                                  | §5, §8.2                                                  |
+| 11-15    | Cyberpunk ReSTIR design (DI-only-on-diffuse, M=32, etc.)                                                                                                                                                                                                                                                                                                 | §3.1, §4.3                                                |
+| 16       | Bitterli 2020 M=32, k=5                                                                                                                                                                                                                                                                                                                                  | §4.3                                                      |
+| 17       | Wyman 2023 reservoir struct + c_cap=20                                                                                                                                                                                                                                                                                                                   | §4.3                                                      |
+| 18       | Algorithm 7 = Defensive Pairwise (NOT what we use; we use plain pairwise = Bitterli 2022)                                                                                                                                                                                                                                                                | §4.3                                                      |
+| 19       | ReSTIR GI 9.3-166× MSE reduction                                                                                                                                                                                                                                                                                                                         | §10.3                                                     |
+| 20-23    | NRD details (compute-only, no tensor)                                                                                                                                                                                                                                                                                                                    | §4.4, §8.3                                                |
+| 25       | DLSS 4 transformer FP8                                                                                                                                                                                                                                                                                                                                   | §8.2                                                      |
+| 26       | FSR Ray Regen RDNA-4 only                                                                                                                                                                                                                                                                                                                                | §8.2                                                      |
+| 32       | HDRP `RayTracingFallbackHierarchy` enum                                                                                                                                                                                                                                                                                                                  | §3.3                                                      |
+| 39-42    | ORT-Web, oidn-web, Denoiser, wonnx archive                                                                                                                                                                                                                                                                                                               | §4.4, §9 E1                                               |
+| 43       | three-mesh-bvh /webgpu since v0.9.2                                                                                                                                                                                                                                                                                                                      | §5.2                                                      |
+| 44       | SVGF 1 spp → 10 ms                                                                                                                                                                                                                                                                                                                                       | §3.5, §4.4, §9 E5                                         |
+| 45       | DDGI Chebyshev visibility                                                                                                                                                                                                                                                                                                                                | §4.1                                                      |
+| 46       | Lumen software-RT MDF + global distance field                                                                                                                                                                                                                                                                                                            | §3.3                                                      |
+| 47       | Lumen voxel clipmap pattern (specific cadence numbers DROPPED per `plan/reverify-lumen.md` §1 — natsuneko3 blog had no primary source; UE5.6 `LumenVoxelLighting.cpp` no longer exists, voxel lighting is event-driven on modified bricks; closest analogue is `GlobalDistanceField.cpp:1268` GSDF clipmap with frequencies 1/2/4/4, a different system) | §3.3                                                      |
+| reverify | Lumen 16×16 screen-probe tile + 8×8 octahedral = 64 rays/probe (`LumenScreenProbeGather.cpp:55,82` + SIGGRAPH 2022 p.161)                                                                                                                                                                                                                                | §4.1 (DDGI uses different sampling but pattern reference) |
+| reverify | Lumen surface cache atlas 4096×4096 default (`LumenScene.cpp:68` + SIGGRAPH 2022 p.69), 300 cards/frame + 512×512 texel budget (`LumenSceneRendering.cpp:80` + SIGGRAPH 2022 p.69)                                                                                                                                                                       | §4.1 (Surface Cache rejection rationale)                  |
+| reverify | MegaLights ↔ Lumen: sibling pipelines, MegaLights reuses Lumen BRDF rays for guiding (SIGGRAPH 2025 paper p.9, p.49)                                                                                                                                                                                                                                     | §10.1                                                     |
+| 48       | NRC 2.6 ms full-HD                                                                                                                                                                                                                                                                                                                                       | §10.3                                                     |
+| 49       | DLSS-RR unattainable in browser                                                                                                                                                                                                                                                                                                                          | §8.2                                                      |
 
 ---
 
@@ -946,6 +987,7 @@ These two tools / techniques unlocked deeper primary-source verification that th
 ### C.1 Public UE5 source mirror — `katataki/UES5.6`
 
 The official `EpicGames/UnrealEngine` repo's raw URLs return 404 to unauthenticated tools (the repo is gated behind the EULA accept-flow). The public mirror at `github.com/katataki/UES5.6` serves identical raw files for UE5.6, allowing direct file:line citations without EULA gating. Reverify-lumen used this to verify:
+
 - `LumenScreenProbeGather.cpp:55,82` (screen-probe tile + octahedral sizes)
 - `LumenScene.cpp:68` (surface cache atlas size default)
 - `LumenSceneRendering.cpp:80` (cards-per-frame default)

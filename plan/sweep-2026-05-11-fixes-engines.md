@@ -9,6 +9,7 @@
 ## Item 1: PPG Injector Hard-Throws
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/shaders/shadePpgGuide.wgsl.ts:301–306` — searches for `'Lo_ddgi * DDGI_DIFFUSE_BLEND;'`
 - `packages/walkaround-hybrid/src/shaders/shade.wgsl.ts:459` — current text is `let combined = clampedDirect + clampedIndirect;`
 
@@ -17,13 +18,14 @@
 **Authoritative source:** No external paper. Vitrum internal contract: `shadePpgGuide.wgsl.ts` is a code-injection shim, not a standalone shader. The injector must track shade.wgsl's current variable names.
 
 **Fix (DECIDED — durable marker approach):**
+
 1. In `shade.wgsl.ts`, replace line 459 (`let combined = clampedDirect + clampedIndirect;`) with:
    ```wgsl
    // @@PPG_GUIDE_EXTEND_COMBINED@@
    let combined = clampedDirect + clampedIndirect;
    ```
    Add the named marker as a sibling of the existing `@@PPG_BOUNCE_INSERT@@` (line 399) and `@@PPG_RECORD_INSERT@@` (line 463) markers — keep all three in the same shade.wgsl coordinate system.
-2. In `shadePpgGuide.wgsl.ts:301–311`, replace the brittle `tail = 'Lo_ddgi * DDGI_DIFFUSE_BLEND;'` string-search and the corresponding `replace()` with a marker-anchored splice on the new `// @@PPG_GUIDE_EXTEND_COMBINED@@` marker. The new injector inserts the extended combined sum *immediately after* the marker line, replacing the next line's `let combined = ...;` with `let combined = clampedDirect + clampedIndirect + Lo_ppgBounce * PPG_GUIDE_INDIRECT_BLEND;`.
+2. In `shadePpgGuide.wgsl.ts:301–311`, replace the brittle `tail = 'Lo_ddgi * DDGI_DIFFUSE_BLEND;'` string-search and the corresponding `replace()` with a marker-anchored splice on the new `// @@PPG_GUIDE_EXTEND_COMBINED@@` marker. The new injector inserts the extended combined sum _immediately after_ the marker line, replacing the next line's `let combined = ...;` with `let combined = clampedDirect + clampedIndirect + Lo_ppgBounce * PPG_GUIDE_INDIRECT_BLEND;`.
 3. Update the JSDoc on `injectPpgGuideBounceIntoShadeWgsl` to document the marker contract.
 
 **Rationale:** the agent's original fix (just update the search string) is mechanically correct but will silently break again the next time shade.wgsl's combined-sum line changes. Switching to a named marker — like the two existing markers in the same file — makes future breakage loud (marker-not-found error) instead of silent (string-not-found error masquerading as "PPG works").
@@ -43,20 +45,22 @@
 ## Item 2: DDGI Double-π / Double-Albedo at Receiver
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts:547` — writes `radiance = (direct + indirect) * albedo / PI`
 - `packages/walkaround-hybrid/src/rc/applyDDGIShading.ts:148` — multiplies again by `materialColor * PI_INV`
 
 **Root cause:** The probe atlas stores outgoing Lambertian radiance `L_o = albedo/π · (L_direct + L_indirect)`. The consumer then applies the receiver's Lambertian BRDF `albedo/π` again, yielding `albedo²/π²` instead of the correct `albedo/π`. Commit `3fb63e3 disable DDGI gain` suppressed the resulting over-brightness by a band-aid gain reduction.
 
-**Authoritative source:** Majercik et al. 2019, "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields", JCGT §3. The atlas accumulates *irradiance* E (integral of incoming radiance over the hemisphere), not outgoing radiance. The correct consumer is:
+**Authoritative source:** Majercik et al. 2019, "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields", JCGT §3. The atlas accumulates _irradiance_ E (integral of incoming radiance over the hemisphere), not outgoing radiance. The correct consumer is:
 
 ```
 L_diffuse_indirect = (albedo / π) × E_atlas
 ```
 
-where `E_atlas` is the per-pixel irradiance sample from the probe. The probe update should store *incoming* radiance `L_i` and let the atlas blending produce E automatically (or store `E` directly by integrating over probe rays with a cosine weight). It should NOT pre-multiply by albedo.
+where `E_atlas` is the per-pixel irradiance sample from the probe. The probe update should store _incoming_ radiance `L_i` and let the atlas blending produce E automatically (or store `E` directly by integrating over probe rays with a cosine weight). It should NOT pre-multiply by albedo.
 
 **Fix:**
+
 1. In `probeUpdateRays.wgsl.ts:547`: remove the `* albedo / PI` factor. Store raw incoming radiance `L_i = direct + indirect`. The blend kernel `probeUpdateBlend` already applies a directional weight and averages over rays; after blending the atlas holds a weighted irradiance approximation.
 2. In `applyDDGIShading.ts:148`: the `albedo/π` multiply is correct and must stay. Remove the comment about PI_INV needing to compensate for anything — it now cleanly implements the Lambertian receiver equation.
 3. Remove the gain band-aid from commit `3fb63e3` if it was wired into any UBO or uniform constant.
@@ -76,6 +80,7 @@ where `E_atlas` is the per-pixel irradiance sample from the probe. The probe upd
 ## Item 3: DDGI Atlas Border Padding Never Written
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/ddgi/ddgiAtlasLayout.ts:13–14` — documents that border pixels should wrap the octahedral seam
 - `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts` — blend kernel writes only interior atlas coordinates, no border fill pass
 
@@ -84,6 +89,7 @@ where `E_atlas` is the per-pixel irradiance sample from the probe. The probe upd
 **Authoritative source:** Majercik et al. 2019 §3.2 and supplemental. DDGI octahedral atlas border update: for each border texel, copy the mirrored interior texel that represents the same direction on the octahedral map. Specifically, for a texel at position `(bx, by)` on the border, find the equivalent octahedral uv, reflect it across the seam into the interior cell, and copy from there. This is a standard octahedral map border-fixup technique (see also Cigolle et al. 2014, "Survey of Efficient Representations for Independent Unit Vectors", JCGT §2).
 
 **Fix:**
+
 1. Add a third compute pass `probeUpdateBorder` that runs after `probeUpdateBlend` each frame.
 2. The pass iterates over every atlas probe cell's border ring (1 pixel wide on each side). For each border texel at atlas position `(px, py)`:
    - Compute the probe's local pixel `(lx, ly)` within its `STRIDE × STRIDE` cell.
@@ -108,17 +114,21 @@ where `E_atlas` is the per-pixel irradiance sample from the probe. The probe upd
 ## Item 4: RC GI Bypasses Receiver BRDF
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/rc/giReceiver.ts:103–105` — `nm.emissiveNode = giNode`
 
-**Root cause:** Three.js NodeMaterial's `emissiveNode` is added to `outgoingLightNode` *after* PBR shading. This means the GI signal is injected as if it were self-emission: it bypasses the receiver's diffuse BRDF (`albedo/π · nDotL`). A black absorber and a white diffuse wall receive identical GI contribution.
+**Root cause:** Three.js NodeMaterial's `emissiveNode` is added to `outgoingLightNode` _after_ PBR shading. This means the GI signal is injected as if it were self-emission: it bypasses the receiver's diffuse BRDF (`albedo/π · nDotL`). A black absorber and a white diffuse wall receive identical GI contribution.
 
 **Authoritative source:** Majercik et al. 2019 §3 receiver equation:
+
 ```
 L_o = L_direct + (albedo / π) × E_ddgi
 ```
+
 The correct TSL injection point is `irridianceNode` or an explicit additive term in the diffuse irradiance chain before the BRDF multiply, not `emissiveNode`.
 
 **Fix (DECIDED — pre-multiply by `albedo/π` before assigning to `emissiveNode`):**
+
 1. In `giReceiver.ts`, replace `nm.emissiveNode = giNode as AnyNode` (line 105) with:
    ```ts
    // GI signal is integrated irradiance E. Apply Lambertian BRDF (albedo/π)
@@ -148,15 +158,17 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 ## Item 5: ReSTIR-DI p̂ Inconsistency
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/shaders/ris.wgsl.ts:76` — uses `emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor)` (clamped)
 - `packages/walkaround-hybrid/src/shaders/temporal.wgsl.ts:96` — uses `nlDotL / dist2` (raw)
 - `packages/walkaround-hybrid/src/shaders/spatial.wgsl.ts:77` — uses `nlDotL / dist2` (raw)
 
-**Root cause:** Bitterli et al. 2020, "Spatiotemporal Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct Lighting" (ReSTIR DI), §3 and §4.3: for unbiased temporal and spatial reuse, the target distribution p̂ used to evaluate reservoir weights *must be identical* across all passes. When p̂ differs between initial sampling (clamped geometry term) and reuse passes (unclamped), the reservoir weight ratio `p̂_new / p̂_old` is computed incorrectly, reintroducing the firefly mode the clamp was supposed to kill.
+**Root cause:** Bitterli et al. 2020, "Spatiotemporal Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct Lighting" (ReSTIR DI), §3 and §4.3: for unbiased temporal and spatial reuse, the target distribution p̂ used to evaluate reservoir weights _must be identical_ across all passes. When p̂ differs between initial sampling (clamped geometry term) and reuse passes (unclamped), the reservoir weight ratio `p̂_new / p̂_old` is computed incorrectly, reintroducing the firefly mode the clamp was supposed to kill.
 
 **Authoritative source:** Bitterli et al. 2020, §4.3 "Resampling"; Ouyang et al. 2021, "ReSTIR GI", §3 — both state that p̂ must be consistent for MIS correctness. The floor clamp `emitterDist2Floor` is a variance-reduction heuristic applied uniformly — all three passes must use it.
 
 **Fix:**
+
 1. Extract `computePHat` (temporal.wgsl.ts) and `computePHat_s` (spatial.wgsl.ts) to use the same `emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor)` call as `ris.wgsl.ts:76`. The `emitterDist2Floor` uniform is already present in the UBO; add it to the temporal and spatial UBO layouts if not already bound.
 2. Verify that `ubo.emitterDist2Floor` is accessible in the temporal and spatial bind groups. If not, add it.
 3. Add an inline comment in each `computePHat` explaining the consistency requirement and citing Bitterli §4.3.
@@ -176,6 +188,7 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 ## Item 6: DDGI randomRotation Hard-Coded to (0,0,0)
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/ddgi/probeUpdatePass.ts:585–589`
 
 **Root cause:** The per-frame probe ray rotation is fixed at `(0, 0, 0)`. The comment documents this as intentional to avoid per-frame flicker in a static Cornell scene, but the consequence is that the 192-ray estimator never temporally accumulates new MC samples — the effective sample count is permanently 192 regardless of frame count. DDGI's temporal averaging relies on probe rotation to decorrelate frames.
@@ -183,6 +196,7 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 **Authoritative source:** Majercik et al. 2019 §3.1, "Probe Update": "We apply a random rotation to the probe rays each frame using a random rotation matrix R ∈ SO(3). This decorrelates the per-frame ray samples and allows the temporal hysteresis blend to accumulate an effectively larger ray budget over time." Majercik et al. 2022 supplement describes using a fixed per-probe blue-noise sequence (not fully random per frame) as a less-flickery alternative for dynamic scenes.
 
 **Fix:**
+
 1. For static scenes (current priority): revert to a per-frame random rotation. Use a low-discrepancy sequence (e.g., Halton-based SO(3) rotation from the frame index) rather than `Math.random()` to avoid correlation clumps. A Halton sequence on the frame index avoids both the all-same-direction degeneracy and the excessive variance of pure RNG.
 2. For dynamic scenes (later): switch to a fixed-per-probe blue-noise SO(3) sequence as described in Majercik 2022, where each probe gets a unique rotation that cycles through a precomputed set. This is the standard DDGI implementation in RTXGI.
 3. Immediate minimum fix: `data[0] = Math.sin(this._frameIndex * 2.399963) * 0.5;` (golden-angle step) gives deterministic low-discrepancy variation without `Math.random()` variance.
@@ -202,6 +216,7 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 ## Item 7: SVGF Depth Channel Mismatch
 
 **File(s):**
+
 - `packages/shared-denoisers/src/svgfWebGPU.ts:189–209` — host writes linear depth to `buf[o]` (the `.r` / `.x` component)
 - `packages/shared-denoisers/src/wgsl/svgf.wgsl.ts:216,248` — shader reads `.w` from `atrous_gbufDepth`
 
@@ -210,6 +225,7 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 **Authoritative source:** Schied et al. 2017, "Spatiotemporal Variance-Guided Filtering", HPG §4.2 Eq. 4: depth edge-stop weight `w_z = exp(-|z_p - z_q| / (σ_z · |∇z · (p - q)| + ε))`. The channel indexing is an implementation detail; what matters is that host and shader agree.
 
 **Fix (DECIDED — Option A, shader reads `.x`):**
+
 1. In `svgf.wgsl.ts:216`, change `textureLoad(atrous_gbufDepth, gid.xy, 0).w` to `textureLoad(atrous_gbufDepth, gid.xy, 0).x`.
 2. In `svgf.wgsl.ts:248`, change `textureLoad(atrous_gbufDepth,  pu, 0).w` to `textureLoad(atrous_gbufDepth,  pu, 0).x`.
 3. Update the doc-comments at `svgf.wgsl.ts:27,37` to read "binding 3 — gbufferDepth (.x = linear depth)" — they already mention `.r`, which is just the alternative spelling for the same channel.
@@ -232,11 +248,13 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 ## Item 8: SVGF Variance Pass — 4 of 7 Textures Unused (Temporal Reuse Missing)
 
 **File(s):**
+
 - `packages/shared-denoisers/src/wgsl/svgf.wgsl.ts:122–128` — declares but never samples `prevRadiance`, `gbufNormal`, `gbufDepth`, `motionVec`
 
 **Root cause:** The variance pass declares bindings for temporal-reuse inputs (previous radiance, G-buffer, motion vectors) but reads only `inputColor` and `varianceIn`. The paper's full temporal reuse pipeline (bilinear reprojection, depth/normal/object-id disocclusion test, per-pixel history length, α-clamped blend, 7×7 spatial fallback for disoccluded pixels, variance-from-history Eq. 4) is entirely absent. What runs is a 3×3 spatial variance estimate fed into à-trous.
 
 **Authoritative source:** Schied et al. 2017, HPG §4 (full algorithm):
+
 - Eq. 1: linear reprojection `p_prev = P · V_prev · x` using motion vector
 - Eq. 2: disocclusion test on depth and normal: reject if `|z - z_prev| > threshold` or `|n · n_prev| < threshold`
 - Eq. 3: per-pixel history length `h ← (h_prev + 1)` on acceptance, reset to 0 on reject
@@ -244,6 +262,7 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 - Eq. 5: variance from blended first/second moment: `Var = M2 - M1²`
 
 **Complexity estimate: Large (weeks).** This is not a patch — it is implementing the SVGF temporal stage from scratch. Key new pieces:
+
 1. Reprojection pass: per-pixel motion-vector lookup + bilinear gather from previous frame.
 2. Disocclusion detection: depth + normal rejection per Schied Eq. 2.
 3. History-length buffer: persistent per-pixel `u32` texture, reset on disocclusion.
@@ -252,12 +271,14 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 6. Updated variance pass to read from moment buffer rather than compute spatially.
 
 **Fix plan:**
+
 1. Add two persistent textures: `historyLength` (r16uint) and `momentsHistory` (rg32float, M1 + M2).
 2. Implement a new `svgfTemporalMain` compute pass that runs before the existing variance pass. This pass: reprojects via motion vector, tests disocclusion, updates history length, blends color and moments via EMA, and writes to `prevRadiance`, `historyLength`, `momentsHistory`.
 3. Update `svgfVarianceMain` to read from `momentsHistory` instead of performing spatial 3×3 variance for all pixels; retain spatial fallback only for pixels where `historyLength == 0`.
 4. Wire new pass into `svgfWebGPU.ts` pipeline between frame inputs and the existing variance+atrous chain.
 
 **Decision points:**
+
 - Should the existing `shared-denoisers` à-trous and variance code be kept in place and the temporal pass added around it, or is a full rewrite of `svgf.wgsl.ts` cleaner? Recommendation: add temporal as a new wgsl file, leave existing variance+atrous as-is (they are correctish for the non-temporal case), and wire temporal → variance → atrous.
 - Does the walkaround engine already have a per-pixel Welford running in the scene (see Item 9)? If so, the moment buffer from the scene's Welford pass can feed the SVGF temporal pass directly, avoiding a second EMA.
 
@@ -274,14 +295,16 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 ## Item 9: Welford `n` Is Global, Not Per-Pixel
 
 **File(s):**
+
 - `packages/shared-denoisers/src/wgsl/svgf.wgsl.ts:140` — reads `varUBO.frameCount` for the switching threshold
 - Host-side: `svgfWebGPU.ts` passes `frameCount` as a uniform
 
-**Root cause:** The per-pixel history length `n` used in Welford's online variance algorithm should be the number of valid (non-disoccluded) samples accumulated *at that pixel*. Using a global `frameCount` means that pixels disoccluded on frame 10 of a 100-frame sequence still use n=100, causing wildly underestimated variance (the mean is stale but n is large).
+**Root cause:** The per-pixel history length `n` used in Welford's online variance algorithm should be the number of valid (non-disoccluded) samples accumulated _at that pixel_. Using a global `frameCount` means that pixels disoccluded on frame 10 of a 100-frame sequence still use n=100, causing wildly underestimated variance (the mean is stale but n is large).
 
 **Authoritative source:** Welford 1962, "Note on a Method for Calculating Corrected Sums of Squares and Products"; Schied 2017 §4.2: per-pixel history length `h_i` is reset on disocclusion. The variance estimate is `Var = M2_i / h_i`.
 
 **Fix:** Per-pixel history length requires a persistent texture (see Item 8's `historyLength` buffer). Once Item 8's temporal pass is implemented:
+
 1. Remove the global `frameCount` pathway from the variance pass entirely.
 2. The variance pass reads per-pixel `h_i` from `historyLength`, uses it to scale `M2/h_i`.
 3. The switching threshold (`SVGF_TEMPORAL_VARIANCE_MIN_FRAMES`) becomes a per-pixel condition: if `h_i < threshold`, use spatial 3×3 fallback; otherwise use per-pixel temporal variance.
@@ -301,23 +324,28 @@ The correct TSL injection point is `irridianceNode` or an explicit additive term
 ## Item 10: equiAngular Returns Clamped `t` with PDF at Unclamped `t`
 
 **File(s):**
+
 - `packages/shared-samplers/src/equiAngular.ts:133–135`
 
-**Root cause:** Line 133 computes `ratio = (t - tClosest) / D` using the *unclamped* `t` (from `tan(theta)` which can produce `t < 0` or `t > ray length` in degenerate geometry). Line 135 returns `{ t: Math.max(0, t), pdf }` — the clamped sample position — but the PDF was computed at the unclamped `t`. When `t < 0` (geometrically degenerate), the returned sample is at `t=0` with a PDF calculated at a negative `t` value, violating the sampling identity `∫ f(t)/p(t) dt = 1`.
+**Root cause:** Line 133 computes `ratio = (t - tClosest) / D` using the _unclamped_ `t` (from `tan(theta)` which can produce `t < 0` or `t > ray length` in degenerate geometry). Line 135 returns `{ t: Math.max(0, t), pdf }` — the clamped sample position — but the PDF was computed at the unclamped `t`. When `t < 0` (geometrically degenerate), the returned sample is at `t=0` with a PDF calculated at a negative `t` value, violating the sampling identity `∫ f(t)/p(t) dt = 1`.
 
 **Authoritative source:** Kulla & Fajardo 2012, "Importance Sampling of Area Lights in Participating Media" (equi-angular sampling). The PDF at sampled position t is:
+
 ```
 p(t) = D / (thetaRange · (D² + (t - t_closest)²))
 ```
-where `t` is the *returned* sample position, not the pre-clamped value.
+
+where `t` is the _returned_ sample position, not the pre-clamped value.
 
 **Fix:** Compute `ratio` using the clamped `t` value:
+
 ```ts
 const tClamped = Math.max(0, t);
 const ratio = (tClamped - tClosest) / D;
 const pdf = 1 / (D * thetaRange * (1 + ratio * ratio));
 return { t: tClamped, pdf };
 ```
+
 Since `t < 0` is degenerate (the point is behind the ray origin), the real fix is to also clamp `thetaMin` to ensure the sampled `t` stays in `[0, tMax]`. Check whether `tMin < 0` should be clamped at the function entry.
 
 **Decision points:** Should the function also guard against the case `thetaRange <= 0` (light perpendicular to ray)? This returns PDF = 0 (divide by zero). A guard `if (thetaRange < 1e-8) return { t: 0, pdf: 0 }` is needed.
@@ -335,6 +363,7 @@ Since `t < 0` is degenerate (the point is behind the ray origin), the real fix i
 ## Item 11: `bdptConnectionMIS` Mislabeled as Veach Implementation
 
 **File(s):**
+
 - `packages/shared-samplers/src/bdptMIS.ts:1–14` (JSDoc) and the exported symbol `bdptConnectionMIS`
 
 **Root cause:** The JSDoc states "structural aid for tests and future fork alignment; it is not a full BDPT strategy PDF enumeration." The export name `bdptConnectionMIS` implies a complete Veach power-heuristic BDPT MIS weight computation. Callers who import this by name and assume it is a complete implementation will get incorrect MIS weights.
@@ -342,6 +371,7 @@ Since `t < 0` is degenerate (the point is behind the ray origin), the real fix i
 **Authoritative source:** Veach 1997, PhD thesis §9.2 (power heuristic) and §10.3 (BDPT MIS weights).
 
 **Fix (two options):**
+
 - Option A (rename + document): Rename the export to `bdptConnectionMISStub` or `bdptPowerHeuristicWeight`. Update all importers. Clearly document in the function signature that `buildBDPTStrategyPDFs` produces a simplified PDF vector, not a full BDPT enumeration.
 - Option B (implement): Implement a complete `buildBDPTStrategyPDFs` that correctly evaluates all strategies `(s, t)` for arbitrary connection lengths, including the camera/light path prefixes. This is a significant undertaking (Sprint 10c scope) but is the correct end state.
 
@@ -362,6 +392,7 @@ Recommendation: Option A now; Option B as a separate sprint when BDPT is actuall
 ## Item 12: lightTree References Estévez-Kulla but Is Shirley-1996
 
 **File(s):**
+
 - `packages/shared-samplers/src/lightTree.ts:1–27` (module header)
 
 **Root cause:** The module header correctly documents that the implementation is Shirley 1996 median-split. However, `Estevez & Kulla 2018` is listed in the References section. Estévez-Kulla 2018 defines a fundamentally different algorithm (orientation-cone-based BVH, SAH-like split with receiver-aware importance, BSDF cone queries). Nothing from that paper is implemented. The reference misleads maintainers into believing the implementation is closer to SOTA than it is.
@@ -385,11 +416,13 @@ Recommendation: Option A now; Option B as a separate sprint when BDPT is actuall
 ## Item 13: `nodePowerPrefixSum` Documented Footgun
 
 **File(s):**
+
 - `packages/shared-samplers/src/lightTree.ts:214–236` (JSDoc for `nodePowerPrefixSum`)
 
 **Root cause:** `nodePowerPrefixSum` is a public field on the return value of `buildLightTree`. The name and position imply it is a CDF suitable for uniform random sampling. The JSDoc explicitly states it is not a CDF — values exceed 1.0 because internal nodes are counted before their children. A future caller who uses this for direct sampling will produce a biased estimator.
 
 **Fix:**
+
 - Rename the field to `nodeAccumulatedPowerNormalized` or simply `_powerPrefixSumDebug` (leading underscore signals internal use).
 - Alternative: if the field exists only for CPU-side structural verification (monotonicity checks in tests), make it a local variable not returned in the public interface, and expose a separate `verify(nodes)` function instead.
 - Add a prominent `@internal` JSDoc tag and a `@throws` note: "Do not use for sampling. Use leaf-only power traversal on `nodes` instead."
@@ -411,12 +444,14 @@ Recommendation: Option A now; Option B as a separate sprint when BDPT is actuall
 **Recommendation: Keep the architecture files, delete the broken scaffold code, and re-scope to a post-GPU-validation milestone.**
 
 **Reasoning:**
+
 - The `InferenceGraph.ts` and `unetArchitecture.ts` type definitions and architecture spec are well-structured and reflect real design decisions (channel widths, parameter budget, memory estimates). They have value as a blueprint.
 - The WGSL kernels (`conv2d.wgsl.ts`, `skipConnection.wgsl.ts`, etc.) are structurally correct but have binding-index mismatches and unwritten uniform buffers. They cannot run as authored.
 - `HybridEngine.ts` does not accept `'neural'` as a denoiser mode; the scaffolding is entirely unwired.
 - `tools/neural-denoiser-training/train.py.md` (a `.md` file pretending to be a Python script) and the broken skip-connection spatial mismatch are the worst offenders.
 
 **The 8 scaffold bugs to fix regardless of keep/delete decision:**
+
 1. Skip-connection spatial mismatch: decoder Level 3 pairs `(H/4 × W/4)` output with `enc3` which is `(H/8 × W/8)` — shapes are mismatched by 4× in both dimensions. The `unetArchitecture.ts` comment says "H/4 × W/4 × 96" for `dec3_up` but `enc3` is `H/8 × W/8 × 96`. The `skip` layer would add tensors of different sizes.
 2. `enc_input` is referenced in the layer spec (line 159) but no layer packs the three input tensors (`noisyColor`, `albedo`, `normals`) into a single 9-channel buffer. The spec leaves this to the host with no implementation.
 3. Binding index mismatch in `InferenceGraph.ts:run()`: the code places the uniform buffer at `binding = layer.inputs.length + 1`, weights at `+2`, biases at `+3`. The WGSL kernels in `conv2d.wgsl.ts` declare: input=0, weights=1, bias=2, output=3, uniform=4 — not matching the runtime assignment.
@@ -439,6 +474,7 @@ Recommendation: Option A now; Option B as a separate sprint when BDPT is actuall
 ## Item 20: DDGI Blend Kernel Uses `pow(w, 8)` Not Paper Lambertian
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts:130–134`
 
 **Root cause:** The blend kernel computes `weight = pow(max(0, dot(dir, ray.direction)), 8.0)`. The paper uses a Lambertian cosine weight `w = max(0, cos θ) = max(0, n · d)` where `n` is the atlas texel direction and `d` is the ray direction. The `pow(w, 8)` produces a specular-like lobe (~25° FWHM) that concentrates contributions from near-aligned rays. For a 192-ray budget this avoids the bleaching noted in the code comment (white ceiling dominates red walls in Cornell), but the result is not irradiance — it is a directionally-filtered radiance average.
@@ -446,6 +482,7 @@ Recommendation: Option A now; Option B as a separate sprint when BDPT is actuall
 **Authoritative source:** Majercik et al. 2019 §3 and Algorithm 1: irradiance atlas update uses `w_i = max(0, dir_i · texel_direction)` (standard cosine weight for irradiance accumulation). The cos weight integrates to correct irradiance; a higher power does not. If the 192-ray budget is too sparse for a cosine weight to produce stable results, the paper recommends increasing rays-per-probe or using a tighter ray allocation strategy.
 
 **Fix options:**
+
 - Option A (paper-correct): Change `pow(w, 8.0)` to `w` (pure Lambertian cosine). Accept that 192 rays will produce more visible per-probe variance; rely on Item 6 (random rotation) and temporal hysteresis (HYSTERESIS=0.97) to smooth it.
 - Option B (hybrid, document non-physical): Keep `pow(w, 8)` but rename the accumulated quantity from "irradiance" to "directional radiance approximation" throughout all comments, docs, and the atlas-sampling shader. Update Item 2 accordingly (the receiver equation must not apply `albedo/π` if the atlas does not hold irradiance).
 
@@ -466,6 +503,7 @@ Recommendation: Option A, contingent on Item 6 (random rotation) landing first. 
 ## Item 21: Radiance Cascades Dimensional Scaling Not Sannikov-Faithful
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/rc/cascadePyramid.ts:31–37`
 
 **Root cause:** The cascade dimensions are tuned for GPU budget (measured 4fps at paper dimensions). The current scaling gives probe-count ratios of ~2.7–7.2× per cascade (not the paper's 4× or 8× for 3D), and interval ratios of 2.5–3× (not the paper's 4×). With 4 children in the merge step but non-power-of-4 probe counts, energy is not conserved across the pyramid because the merge assumes each parent covers exactly 4 children's solid angle.
@@ -473,12 +511,14 @@ Recommendation: Option A, contingent on Item 6 (random rotation) landing first. 
 **Authoritative source:** Sannikov 2023, "Radiance Cascades: A Novel Approach to Calculating Global Illumination", §3 (cascade construction). Conservation law: the solid-angle interval at cascade k is `Δω_k = 4^k · Δω_0`, and probe density scales inversely so `N_probes_k · R_k = const`. For 3D, the paper recommends probe spacing to grow by `2^k` per axis (factor 8 per cascade in 3D).
 
 **Complexity estimate: Large (weeks).** Making the dimensions Sannikov-faithful requires:
+
 1. Choosing new probe counts and ray counts that satisfy the cascade conservation law.
 2. The C0 anchor at the current performance budget is incompatible with paper-faithful scaling — paper C0 at 64×36×56 probes × 16 rays was already 2.06M rays/cascade (4fps measured). A paper-faithful 5-cascade pyramid would be ~10× more expensive at C0, ~40× at C4.
 3. This is fundamentally a GPU performance problem, not a code bug. Sannikov-faithful scaling for a 30fps WebGPU target requires either fewer cascades, much smaller probe grids, or hardware that doesn't exist in the browser today.
 
 **Fix:**
 Two viable paths:
+
 - Path A (document non-faithful, fix merge step): Accept the non-paper dimensions as a perf tradeoff. Fix the merge kernel to account for non-power-of-4 child counts (actual solid-angle coverage, not assumed 4×). This is a cascade-merge integral correction, medium complexity.
 - Path B (reduce to 2D Sannikov): Use a 2D RC formulation (screen-space or thin-volume), where the conservation law is easier to satisfy at lower cost. The paper has a 2D mode. This is a significant architecture change.
 
@@ -499,6 +539,7 @@ Recommendation: Path A for now (fix the merge integral to match actual child cov
 ## Item 22: RC Normalization Assumes Uniform Sphere but Rays Are Octahedral Grid
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/rc/walkaroundDiffuseLighting.ts:151` — multiplies by `4π/N`
 
 **Root cause:** `4π/N` is the Monte Carlo normalization for N uniformly distributed samples on the unit sphere (PDF = 1/4π). The rays come from an octahedral 2D grid discretization, not from uniform-sphere sampling. The octahedral grid has a non-uniform solid-angle distribution per texel (texels near the octahedral fold have smaller solid angle). The correct normalization is a per-direction solid-angle weight `Ω_i / N_total` where `Ω_i` is the solid angle of the i-th octahedral texel.
@@ -506,6 +547,7 @@ Recommendation: Path A for now (fix the merge integral to match actual child cov
 **Authoritative source:** Cigolle et al. 2014, "A Survey of Efficient Representations for Independent Unit Vectors", JCGT §2 — octahedral texel solid angle is approximately `4π/N` for large N (standard octahedral) but varies per texel. For the 4×4 bin grid (16 bins), the solid-angle variance is non-negligible (~15% deviation near fold edges).
 
 **Fix:**
+
 1. Precompute per-bin solid-angle weights for the octahedral grid used by PPG/RC (the 4×4 or raysPerProbe grid). This is a CPU-side lookup table.
 2. In the WGSL/TSL GI node, replace `mul(sample, 4π/N)` with `mul(sample, solid_angle_weight[binIdx])` where `solid_angle_weight` is a small storage buffer or hard-coded array of per-bin weights.
 3. For the RC cascade case, the per-direction weight should be `Ω_i` (solid angle of direction bin i), not the uniform-sphere average.
@@ -525,15 +567,19 @@ Recommendation: Path A for now (fix the merge integral to match actual child cov
 ## Item 23: GTAO Simplified Slice Integral, No Multi-Bounce
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/shaders/gtao.wgsl.ts:146–148`
 
 **Root cause:** The slice AO integral is computed as `(h1 + h2) / π`, which is the angular fraction of the hemisphere that is visible (the "Bavoil-style HBAO" approximation). Jiménez et al. 2016 §4.2 defines the correct GTAO slice integral as:
+
 ```
 a(slice) = cos(γ) · (2θ_h - sin(2θ_h - 2γ)) + sin(γ) · sin²(θ_h - γ)
 ```
+
 where `θ_h` is the horizon angle, `γ` is the surface normal projected on the slice, and the integral accounts for the Lambertian cosine weight relative to the normal (not just the horizon angle). The simplified form `(h1+h2)/π` ignores the `cos(γ)` and `sin(γ)` terms and produces AO that is not physically tied to the normal orientation.
 
 **Fix:**
+
 1. In `gtao.wgsl.ts`, compute the projected normal angle `γ` on each slice direction (the angle between the surface normal and the tangent plane of the slice).
 2. Replace `(h1 + h2) / PI` with the full Jiménez integral (clamped to [0, 1]).
 3. The multi-bounce term (Jiménez 2016 §5.2) applies an approximated ambient reflectance to add indirect AO: `a_mb = a_raw · (1 - ρ·(1 - a_raw))` where `ρ` is surface albedo. This requires the albedo G-buffer — mark as optional enhancement.
@@ -555,6 +601,7 @@ where `θ_h` is the horizon angle, `γ` is the surface normal projected on the s
 ## Item 24: No Albedo Demodulation in SVGF/à-trous Chain
 
 **File(s):**
+
 - `packages/shared-denoisers/src/wgsl/svgf.wgsl.ts` (both variance and atrous passes)
 - `packages/shared-denoisers/src/svgfWebGPU.ts` (pipeline setup)
 - `packages/walkaround-hybrid/src/shaders/shade.wgsl.ts` (outputs `hdrColorOut` as full lit color)
@@ -564,6 +611,7 @@ where `θ_h` is the horizon angle, `γ` is the surface normal projected on the s
 **Authoritative source:** Schied et al. 2017, §4.1: "We demodulate the lighting from the albedo of the first hit surface before filtering: L = c/ρ where c is the full-color path trace output and ρ is the first-hit albedo." Eq. 1 in the temporal reprojection section assumes this has been done.
 
 **Fix:**
+
 1. In `shade.wgsl.ts`, store albedo in a separate G-buffer texture (e.g., `hdrAlbedoOut`). This may already exist as part of the G-buffer (check if `gbufNormal` or another slot carries albedo).
 2. Add a pre-filter pass (or modify the existing variance pass input stage) to compute `lighting = inputColor / max(albedo, 0.001)`.
 3. Run SVGF on `lighting`. After the à-trous chain, re-multiply: `output = filteredLighting × albedo`.
@@ -596,6 +644,7 @@ The current implementation deviates from Müller et al. 2017 "Practical Path Gui
 5. **Solid-angle constant**: `ppgGuideSolidAngle` uses `4π/16` for 16 fixed bins. Müller uses bin-specific solid-angle weights from the adaptive tree's leaf area.
 
 **Complexity estimate: Large (weeks).** A paper-faithful Müller PPG requires:
+
 - An adaptive spatial tree (sTree) with per-cell variance tracking and split/merge
 - A per-cell adaptive directional tree (dTree) — the defining data structure
 - Per-frame refinement of both trees
@@ -604,6 +653,7 @@ The current implementation deviates from Müller et al. 2017 "Practical Path Gui
 - All of the above working on GPU with atomic updates
 
 **Delete plan:**
+
 1. Delete `packages/walkaround-hybrid/src/ppg/wgsl/ppgUpdate.wgsl.ts` and `ppgCommon.wgsl.ts`.
 2. Delete `packages/walkaround-hybrid/src/ppg/buildPpgKdTree.ts` (kd-tree over a fixed grid has no paper basis).
 3. Delete `packages/walkaround-hybrid/src/ppg/ppgCellUpload.ts`.
@@ -625,15 +675,15 @@ The current implementation deviates from Müller et al. 2017 "Practical Path Gui
 
 These items are independent and can be parallelized across contributors.
 
-| Item | Title | Effort |
-|------|-------|--------|
-| 1 | PPG injector hard-throw | 1h |
-| 5 | ReSTIR-DI p̂ consistency | 2h |
-| 7 | SVGF depth channel mismatch | 1h |
-| 10 | equiAngular clamped t / PDF mismatch | 1h |
-| 11 | bdptConnectionMIS rename | 1h |
-| 12 | lightTree reference cleanup | 30min |
-| 13 | nodePowerPrefixSum rename | 30min |
+| Item | Title                                | Effort |
+| ---- | ------------------------------------ | ------ |
+| 1    | PPG injector hard-throw              | 1h     |
+| 5    | ReSTIR-DI p̂ consistency              | 2h     |
+| 7    | SVGF depth channel mismatch          | 1h     |
+| 10   | equiAngular clamped t / PDF mismatch | 1h     |
+| 11   | bdptConnectionMIS rename             | 1h     |
+| 12   | lightTree reference cleanup          | 30min  |
+| 13   | nodePowerPrefixSum rename            | 30min  |
 
 Land as a single PR (except Item 1 may be a stand-alone PR since it touches the pipeline compiler path).
 
@@ -641,36 +691,36 @@ Land as a single PR (except Item 1 may be a stand-alone PR since it touches the 
 
 Must land in this order due to physical coherence coupling.
 
-| Item | Title | Effort | After |
-|------|-------|--------|-------|
-| 6 | randomRotation unfreeze | 2h | — |
-| 20 | blend kernel: pow(8) → Lambertian | 2h | Item 6 |
-| 2 | double-π / double-albedo fix | 3h | Items 6, 20 |
-| 3 | atlas border padding pass | 1–2d | Item 2 |
-| 4 | RC GI BRDF injection fix | 3h | Item 2 |
+| Item | Title                             | Effort | After       |
+| ---- | --------------------------------- | ------ | ----------- |
+| 6    | randomRotation unfreeze           | 2h     | —           |
+| 20   | blend kernel: pow(8) → Lambertian | 2h     | Item 6      |
+| 2    | double-π / double-albedo fix      | 3h     | Items 6, 20 |
+| 3    | atlas border padding pass         | 1–2d   | Item 2      |
+| 4    | RC GI BRDF injection fix          | 3h     | Item 2      |
 
 ### Phase 3: ReSTIR + RC Correctness
 
-| Item | Title | Effort | After |
-|------|-------|--------|-------|
-| 22 | RC normalization (octahedral PDF) | 1d | — |
-| 21 | RC cascade merge integral | 1–2d | Item 22 |
-| 23 | GTAO correct slice integral | 4h | — |
+| Item | Title                             | Effort | After   |
+| ---- | --------------------------------- | ------ | ------- |
+| 22   | RC normalization (octahedral PDF) | 1d     | —       |
+| 21   | RC cascade merge integral         | 1–2d   | Item 22 |
+| 23   | GTAO correct slice integral       | 4h     | —       |
 
 ### Phase 4: SVGF Temporal Reuse (large rewrite)
 
-| Item | Title | Effort | After |
-|------|-------|--------|-------|
-| 24 | Albedo demodulation | 1d | Items 7, 8 |
-| 9 | Per-pixel Welford history | — | Part of Item 8 |
-| 8 | Full SVGF temporal reprojection | 2–3 weeks | Item 7 |
+| Item | Title                           | Effort    | After          |
+| ---- | ------------------------------- | --------- | -------------- |
+| 24   | Albedo demodulation             | 1d        | Items 7, 8     |
+| 9    | Per-pixel Welford history       | —         | Part of Item 8 |
+| 8    | Full SVGF temporal reprojection | 2–3 weeks | Item 7         |
 
 ### Phase 5: Delete or Rebuild Decision Items
 
-| Item | Title | Effort | Decision |
-|------|-------|--------|---------|
-| 19 | Neural denoiser: keep arch, delete broken kernels | 1d | Recommended: partial keep |
-| 25 | PPG: delete and re-scope | 1d | Recommended: delete |
+| Item | Title                                             | Effort | Decision                  |
+| ---- | ------------------------------------------------- | ------ | ------------------------- |
+| 19   | Neural denoiser: keep arch, delete broken kernels | 1d     | Recommended: partial keep |
+| 25   | PPG: delete and re-scope                          | 1d     | Recommended: delete       |
 
 ---
 

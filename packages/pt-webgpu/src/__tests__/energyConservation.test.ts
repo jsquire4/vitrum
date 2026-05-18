@@ -96,11 +96,11 @@ function sampleGgxVndfTangent(
   // Step 3: sample disc
   const u1 = lcg(rng);
   const u2 = lcg(rng);
-  const r   = Math.sqrt(u1);
+  const r = Math.sqrt(u1);
   const phi = 2.0 * Math.PI * u2;
-  const t1  = r * Math.cos(phi);
-  let   t2  = r * Math.sin(phi);
-  const s   = 0.5 * (1.0 + Vh[2]);
+  const t1 = r * Math.cos(phi);
+  let t2 = r * Math.sin(phi);
+  const s = 0.5 * (1.0 + Vh[2]);
   t2 = (1.0 - s) * Math.sqrt(Math.max(0, 1.0 - t1 * t1)) + s * t2;
   // Step 4: reproject and unstretch
   const z = Math.sqrt(Math.max(0, 1.0 - t1 * t1 - t2 * t2));
@@ -145,7 +145,7 @@ function frDielectric(cosThetaIIn: number, etaIn: number): number {
   const sin2ThetaT = sin2ThetaI / (eta * eta);
   if (sin2ThetaT >= 1.0) return 1.0; // TIR
   const cosTheta_t = Math.sqrt(Math.max(0.0, 1.0 - sin2ThetaT));
-  const r_par  = (eta * cosTheta_i - cosTheta_t) / (eta * cosTheta_i + cosTheta_t);
+  const r_par = (eta * cosTheta_i - cosTheta_t) / (eta * cosTheta_i + cosTheta_t);
   const r_perp = (cosTheta_i - eta * cosTheta_t) / (cosTheta_i + eta * cosTheta_t);
   return 0.5 * (r_par * r_par + r_perp * r_perp);
 }
@@ -169,18 +169,11 @@ function schlickFresnelScalar(f0: number, cosTheta: number): number {
  * Mirror of pathTraceBruteforce.wgsl.ts lines 289-294 (fresnelSchlick),
  * vec3 variant.
  */
-function schlickFresnel(
-  cosTheta: number,
-  f0: [number, number, number],
-): [number, number, number] {
+function schlickFresnel(cosTheta: number, f0: [number, number, number]): [number, number, number] {
   const m = Math.min(Math.max(1.0 - cosTheta, 0.0), 1.0);
   const m2 = m * m;
   const m5 = m2 * m2 * m;
-  return [
-    f0[0] + (1.0 - f0[0]) * m5,
-    f0[1] + (1.0 - f0[1]) * m5,
-    f0[2] + (1.0 - f0[2]) * m5,
-  ];
+  return [f0[0] + (1.0 - f0[0]) * m5, f0[1] + (1.0 - f0[1]) * m5, f0[2] + (1.0 - f0[2]) * m5];
 }
 
 /**
@@ -199,7 +192,7 @@ function ggxD(nDotH: number, alpha: number): number {
  */
 function smithG1(nDotV: number, roughness: number): number {
   const r = roughness + 1.0;
-  const k = (r * r) * 0.125;
+  const k = r * r * 0.125;
   return nDotV / Math.max(nDotV * (1.0 - k) + k, 1e-6);
 }
 
@@ -263,9 +256,7 @@ function evaluateBrdf(
  * Lambertian path only. Returns (albedo / π) for all wi in upper hemisphere.
  * Used in Tests 1 and 3.
  */
-function lambertianBrdf(
-  albedo: [number, number, number],
-): [number, number, number] {
+function lambertianBrdf(albedo: [number, number, number]): [number, number, number] {
   const INV_PI = 1.0 / Math.PI;
   return [albedo[0] * INV_PI, albedo[1] * INV_PI, albedo[2] * INV_PI];
 }
@@ -293,7 +284,9 @@ describe('Energy conservation — white furnace tests (Item 33-D)', () => {
 
     for (const albedo of albedos) {
       const brdf = lambertianBrdf(albedo); // albedo/π per channel
-      let sumR = 0, sumG = 0, sumB = 0;
+      let sumR = 0,
+        sumG = 0,
+        sumB = 0;
 
       for (let i = 0; i < N; i++) {
         const wi = uniformSphereSample(rng);
@@ -304,9 +297,9 @@ describe('Energy conservation — white furnace tests (Item 33-D)', () => {
       }
 
       // Solid angle of full sphere = 4π; MC weight = 4π/N
-      const integralR = (4 * Math.PI / N) * sumR;
-      const integralG = (4 * Math.PI / N) * sumG;
-      const integralB = (4 * Math.PI / N) * sumB;
+      const integralR = ((4 * Math.PI) / N) * sumR;
+      const integralG = ((4 * Math.PI) / N) * sumG;
+      const integralB = ((4 * Math.PI) / N) * sumB;
 
       expect(integralR).toBeCloseTo(albedo[0], /* decimal precision */ 1.9); // ~1%
       expect(integralG).toBeCloseTo(albedo[1], 1.9);
@@ -332,7 +325,9 @@ describe('Energy conservation — white furnace tests (Item 33-D)', () => {
 
     for (const roughness of roughnesses) {
       const rng = { v: 0xcafef00d ^ Math.round(roughness * 1000) };
-      let sumR = 0, sumG = 0, sumB = 0;
+      let sumR = 0,
+        sumG = 0,
+        sumB = 0;
 
       for (let i = 0; i < N; i++) {
         const wi = uniformHemiSample(rng);
@@ -344,9 +339,9 @@ describe('Energy conservation — white furnace tests (Item 33-D)', () => {
       }
 
       // Upper hemisphere solid angle = 2π; MC weight = 2π/N
-      const integralR = (2 * Math.PI / N) * sumR;
-      const integralG = (2 * Math.PI / N) * sumG;
-      const integralB = (2 * Math.PI / N) * sumB;
+      const integralR = ((2 * Math.PI) / N) * sumR;
+      const integralG = ((2 * Math.PI) / N) * sumG;
+      const integralB = ((2 * Math.PI) / N) * sumB;
 
       // Must not exceed 1 (energy conservation). Small MC tolerance 1e-2.
       expect(integralR).toBeLessThanOrEqual(1.0 + 1e-2);
@@ -376,7 +371,7 @@ describe('Energy conservation — white furnace tests (Item 33-D)', () => {
       }
 
       // Upper hemisphere MC: weight = 2π/N
-      const integral = (2 * Math.PI / N) * sum;
+      const integral = ((2 * Math.PI) / N) * sum;
       const expected = kd * albedo[0];
 
       if (kd === 0.0) {
@@ -467,7 +462,7 @@ describe('T1.D1 — VNDF importance-sampling normalization (Item 14)', () => {
    */
   function smithG1Heitz(nDotV: number, alpha: number): number {
     // GGX exact masking (not Schlick approximation): k = alpha²/2.
-    const k = (alpha * alpha) * 0.5;
+    const k = alpha * alpha * 0.5;
     return nDotV / Math.max(nDotV * (1.0 - k) + k, 1e-6);
   }
 
@@ -483,8 +478,8 @@ describe('T1.D1 — VNDF importance-sampling normalization (Item 14)', () => {
     h: [number, number, number],
     alpha: number,
   ): number {
-    const nDotH = Math.max(h[2], 0.0);       // N = (0,0,1)
-    const nDotV = Math.max(wo[2], 1e-6);     // N·wo
+    const nDotH = Math.max(h[2], 0.0); // N = (0,0,1)
+    const nDotV = Math.max(wo[2], 1e-6); // N·wo
     const woDotH = Math.max(dot3(wo, h), 0.0);
     const D = ggxD(nDotH, alpha);
     const G1 = smithG1Heitz(nDotV, alpha);
@@ -630,7 +625,7 @@ describe('VNDF GGX properties (Item 33-B, Item 14 VNDF landed)', () => {
       const D = ggxD(nDotH, alpha);
       const G = smithG1(wo[2], Math.sqrt(alpha)) * smithG1(cosTheta, Math.sqrt(alpha));
       const brdfSpec = (D * G) / Math.max(4 * wo[2] * cosTheta, 1e-6);
-      const weight = brdfSpec * cosTheta / pdf;
+      const weight = (brdfSpec * cosTheta) / pdf;
       if (Number.isFinite(weight) && weight >= 0) {
         sumWeight += weight;
         countValid++;

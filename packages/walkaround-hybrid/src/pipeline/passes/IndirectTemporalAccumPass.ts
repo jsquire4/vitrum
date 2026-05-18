@@ -15,11 +15,7 @@
  */
 
 import { buildIndirectTemporalAccumBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import type { PingPongRef } from './passRefs.js';
 
@@ -43,15 +39,18 @@ export class IndirectTemporalAccumPass implements Pass {
   dispatch(ctx: PassDispatchContext): void {
     const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, frameState } = ctx;
     const common = resources.common;
-    const indirectAccumOut = this._pingPongRef.value === 0
-      ? common.indirectAccumPingTexture
-      : common.indirectAccumPongTexture;
-    const indirectAccumPrev = this._pingPongRef.value === 0
-      ? common.indirectAccumPongTexture
-      : common.indirectAccumPingTexture;
+    const indirectAccumOut =
+      this._pingPongRef.value === 0
+        ? common.indirectAccumPingTexture
+        : common.indirectAccumPongTexture;
+    const indirectAccumPrev =
+      this._pingPongRef.value === 0
+        ? common.indirectAccumPongTexture
+        : common.indirectAccumPingTexture;
 
     const bg = buildIndirectTemporalAccumBindGroup(
-      device, bglCache,
+      device,
+      bglCache,
       common.hdrIndirectTexture.createView(),
       indirectAccumPrev.createView(),
       indirectAccumOut.createView(),

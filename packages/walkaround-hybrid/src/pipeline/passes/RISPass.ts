@@ -6,11 +6,7 @@
  * shared frame/scene/ubo bind groups; no pass-private bind groups.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class RISPass implements Pass {

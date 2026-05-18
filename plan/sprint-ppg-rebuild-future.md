@@ -35,7 +35,7 @@ wrong signal harms convergence when enabled — the clean-slate decision is safe
 
 Müller, T., Gross, M., Novák, J.
 "Practical Path Guiding for Efficient Light-Transport Simulation."
-*Eurographics Symposium on Rendering*, 2017.
+_Eurographics Symposium on Rendering_, 2017.
 https://tom94.net/data/publications/mueller17practical/mueller17practical.pdf
 
 Key sections: §3.1 (spatial tree), §3.2 (directional tree), §3.3 (training signal),
@@ -63,6 +63,7 @@ Built a static kd-tree once from a 4×4×4 uniform grid. No variance tracking, n
 no rebuilds. This is not an adaptive spatial tree — it is a fixed uniform grid.
 
 **Implementation requirements:**
+
 - Per-cell sample counter and accumulated-variance scalar (atomic GPU buffer).
 - Split decision: if `sum_variance(cell) > sTreeThreshold`, split along the longest axis
   of the cell's bounding box and initialize two child dTrees from the parent dTree.
@@ -90,6 +91,7 @@ no flux-fraction-driven refinement. 16 bins cannot represent sharp indirect caus
 the angular resolution is ~90° per bin.
 
 **Implementation requirements:**
+
 - Per-cell dTree stored as a binary tree over [0,1]² (octahedral map). Starting depth:
   2 (4 leaves for a 2-level tree). Maximum depth: configurable (8 → 256 leaves).
 - Flux accumulation: per-leaf atomic float buffer, incremented during the training pass.
@@ -105,9 +107,11 @@ the angular resolution is ~90° per bin.
 The guiding PDF is trained on **incoming radiance** at the sampled point — the radiance
 arriving at a surface point from a given direction, weighted by the BSDF. The training
 signal is the per-sample product estimate:
+
 ```
 w_sample = f(ωo, ωi) · L_i(x, ωi) · cos(θi) / p(ωi)
 ```
+
 where `f(ωo, ωi)` is the BSDF, `L_i` is the incoming radiance from direction `ωi`
 (estimated by continuing the path), `θi` is the angle to the normal, and `p(ωi)` is the
 current sampling PDF. This signal is deposited into the dTree cell corresponding to
@@ -121,8 +125,9 @@ with identical illumination would have different guide PDFs under the deleted sc
 even though the incoming light field is the same.
 
 **Implementation requirements:**
-- The training signal must be deposited at the *sample point* (where the ray was born),
-  in the direction of the *incoming* radiance (the direction toward the next-bounce hit
+
+- The training signal must be deposited at the _sample point_ (where the ray was born),
+  in the direction of the _incoming_ radiance (the direction toward the next-bounce hit
   or light source).
 - The deposit value is the path throughput estimate at that bounce, not the shade output.
 - In the walkaround context, this requires tapping the indirect illumination estimate
@@ -134,14 +139,18 @@ even though the incoming light field is the same.
 **What the paper requires:**
 Importance sampling at each bounce mixes the guide PDF (learned dTree) with the BSDF
 sampling PDF using multiple importance sampling:
+
 ```
 p_mixed(ωi) = α · p_guide(ωi) + (1 − α) · p_bsdf(ωi)
 ```
+
 where α is a mixing weight (typically 0.5 or adapted per-cell based on guide quality).
 The MIS weight for a guide-sampled direction is:
+
 ```
 MIS_guide = p_mixed(ωi) / p_guide(ωi)
 ```
+
 and the throughput is divided by `p_mixed(ωi)` (not just `p_guide(ωi)`).
 
 **What the deleted implementation did:**
@@ -151,6 +160,7 @@ MIS with the BSDF provides a safety net: even if the guide PDF is completely wro
 BSDF term ensures the estimator remains unbiased.
 
 **Implementation requirements:**
+
 - Compute `p_guide(ωi)` from the dTree at the sample point and direction.
 - Compute `p_bsdf(ωi)` from the BSDF PDF at the same direction.
 - Mix: `p_mixed = α · p_guide + (1 − α) · p_bsdf`.
@@ -168,9 +178,11 @@ drawing a sample from the dTree must use the exact leaf solid angle `Ω_leaf`, n
 uniform approximation `4π/N`.
 
 The sampling PDF for a direction `ωi` drawn from the dTree is:
+
 ```
 p_guide(ωi) = leaf.flux / (totalCellFlux · Ω_leaf)
 ```
+
 where `Ω_leaf` is the solid angle of the leaf's octahedral patch computed from its
 bounding box in [0,1]² space.
 
@@ -180,6 +192,7 @@ At 16 bins the per-bin solid-angle variation is ~15% from mean (Cigolle et al. 2
 §2); using the uniform approximation introduces systematic bias in the guide PDF.
 
 **Implementation requirements:**
+
 - Precompute per-leaf solid angle at tree build time. For a leaf at octahedral UV patch
   `[u0, u1] × [v0, v1]`, the solid angle is the spherical surface area of the
   corresponding spherical polygon — computed analytically or by numerical integration
@@ -210,6 +223,7 @@ translates to:
    the resulting tree is serialized to a flat GPU buffer.
 
 Atomic GPU buffer updates (Requirement 1 and 2) require care in WebGPU:
+
 - Use `atomicAdd` on `array<atomic<u32>>` with integer-encoded flux (fixed-point f32).
 - The maximum number of dTree nodes must be bounded at initialization (pre-allocated
   flat buffer, no dynamic allocation on GPU).

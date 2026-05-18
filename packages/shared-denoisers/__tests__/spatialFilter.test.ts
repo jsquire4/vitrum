@@ -68,8 +68,8 @@ describe('SPATIAL_FILTER_WGSL', () => {
 
   it('implements bilateral edge-stopping (color + normal + depth weights)', () => {
     // These identifiers confirm the three edge-stopping weight components.
-    expect(SPATIAL_FILTER_WGSL).toContain('wc');   // color weight
-    expect(SPATIAL_FILTER_WGSL).toContain('wn');   // normal weight
-    expect(SPATIAL_FILTER_WGSL).toContain('wz');   // depth weight
+    expect(SPATIAL_FILTER_WGSL).toContain('wc'); // color weight
+    expect(SPATIAL_FILTER_WGSL).toContain('wn'); // normal weight
+    expect(SPATIAL_FILTER_WGSL).toContain('wz'); // depth weight
   });
 });

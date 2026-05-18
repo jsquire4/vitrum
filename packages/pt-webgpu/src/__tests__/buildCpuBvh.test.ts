@@ -30,12 +30,7 @@ describe('buildCpuBvh', () => {
   it('builds multiple nodes and preserves triangle/material multiset', () => {
     const positions = makePositions(18);
     const indices = new Uint32Array([
-      0, 1, 2, 0,
-      3, 4, 5, 0,
-      6, 7, 8, 0,
-      9, 10, 11, 0,
-      12, 13, 14, 0,
-      15, 16, 17, 0,
+      0, 1, 2, 0, 3, 4, 5, 0, 6, 7, 8, 0, 9, 10, 11, 0, 12, 13, 14, 0, 15, 16, 17, 0,
     ]);
     const triMaterialIds = new Uint32Array([0, 1, 2, 3, 4, 5]);
     const built = buildCpuBvh(positions, indices, triMaterialIds);
@@ -53,12 +48,7 @@ describe('buildCpuBvh', () => {
     // Build a BVH large enough to have multiple interior nodes.
     const positions = makePositions(18);
     const indices = new Uint32Array([
-      0, 1, 2, 0,
-      3, 4, 5, 0,
-      6, 7, 8, 0,
-      9, 10, 11, 0,
-      12, 13, 14, 0,
-      15, 16, 17, 0,
+      0, 1, 2, 0, 3, 4, 5, 0, 6, 7, 8, 0, 9, 10, 11, 0, 12, 13, 14, 0, 15, 16, 17, 0,
     ]);
     const triMaterialIds = new Uint32Array([0, 1, 2, 3, 4, 5]);
     const built = buildCpuBvh(positions, indices, triMaterialIds);
@@ -70,7 +60,7 @@ describe('buildCpuBvh', () => {
     let foundInterior = false;
     for (let i = 0; i < totalNodes; i++) {
       const splitOrCount = nodeU32[i * 8 + 7] ?? 0;
-      const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+      const isLeaf = splitOrCount >>> 16 === LEAFNODE_FLAG;
       if (isLeaf) continue;
       foundInterior = true;
       const offset = nodeU32[i * 8 + 6] ?? 0;

@@ -56,9 +56,7 @@ export function computeLightingState(opts: LightingStateInputs): LightingState {
   // ── Sun intensity ──────────────────────────────────────────────────
   // getSunIntensity(t) × intensityMultiplier — same value PT/raster pass to
   // three.js DirectionalLight.intensity.
-  const baseIntensity = isNight
-    ? SUN_INTENSITY.moonlight
-    : getSunIntensity(timeOfDay);
+  const baseIntensity = isNight ? SUN_INTENSITY.moonlight : getSunIntensity(timeOfDay);
   const sunIntensity = baseIntensity * intensityMultiplier;
 
   // ── Sky tint ──────────────────────────────────────────────────────
@@ -70,11 +68,7 @@ export function computeLightingState(opts: LightingStateInputs): LightingState {
     skyTint = [0.05, 0.08, 0.15];
   } else {
     const t = Math.max(0, Math.min(1, (skyParams.turbidity - 2) / 6));
-    skyTint = [
-      0.55 + 0.45 * t,
-      0.75 + 0.05 * t,
-      1.00 - 0.65 * t,
-    ];
+    skyTint = [0.55 + 0.45 * t, 0.75 + 0.05 * t, 1.0 - 0.65 * t];
   }
 
   // ── Sky irradiance ────────────────────────────────────────────────

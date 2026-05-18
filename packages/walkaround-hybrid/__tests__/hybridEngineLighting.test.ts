@@ -42,21 +42,23 @@ function makeMockScene(): THREE.Scene {
 
 // ── Factory: minimal HybridEngine with lighting parameters ────────────────────
 
-function makeEngine(opts: {
-  primaryLightDir?: [number, number, number];
-  primaryLightIntensity?: number;
-  skyTint?: [number, number, number];
-  skyIrradiance?: number;
-} = {}): HybridEngine {
+function makeEngine(
+  opts: {
+    primaryLightDir?: [number, number, number];
+    primaryLightIntensity?: number;
+    skyTint?: [number, number, number];
+    skyIrradiance?: number;
+  } = {},
+): HybridEngine {
   return new HybridEngine({
-    device:                makeMockDevice(),
-    width:                 64,
-    height:                64,
-    threeScene:            makeMockScene(),
-    primaryLightDir:       opts.primaryLightDir       ?? [0, -1, 0],
+    device: makeMockDevice(),
+    width: 64,
+    height: 64,
+    threeScene: makeMockScene(),
+    primaryLightDir: opts.primaryLightDir ?? [0, -1, 0],
     primaryLightIntensity: opts.primaryLightIntensity ?? 1.0,
-    skyTint:               opts.skyTint               ?? [0.5, 0.6, 1.0],
-    skyIrradiance:         opts.skyIrradiance         ?? 0.8,
+    skyTint: opts.skyTint ?? [0.5, 0.6, 1.0],
+    skyIrradiance: opts.skyIrradiance ?? 0.8,
   });
 }
 
@@ -157,10 +159,10 @@ describe('HybridEngine.updateLighting — DDGI probe cache invalidation', () => 
 describe('HybridEngine.updateLighting — partial update does not disturb other fields', () => {
   it('changing only primaryLightIntensity leaves dir, skyTint, skyIrradiance intact', () => {
     const engine = makeEngine({
-      primaryLightDir:       [0.3, -0.9, 0.1],
+      primaryLightDir: [0.3, -0.9, 0.1],
       primaryLightIntensity: 1.0,
-      skyTint:               [0.5, 0.6, 0.9],
-      skyIrradiance:         0.7,
+      skyTint: [0.5, 0.6, 0.9],
+      skyIrradiance: 0.7,
     });
     const e = engine as unknown as Record<string, unknown>;
 

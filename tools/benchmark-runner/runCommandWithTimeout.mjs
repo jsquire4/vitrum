@@ -14,11 +14,7 @@ import { spawn } from 'node:child_process';
  * Extracted from run-gap-closure-verification.mjs (was ~60 lines inline).
  */
 export function runCommandWithTimeout(command, opts = {}) {
-  const {
-    cwd = process.cwd(),
-    env = {},
-    timeoutMs = 30_000,
-  } = opts;
+  const { cwd = process.cwd(), env = {}, timeoutMs = 30_000 } = opts;
   return new Promise((resolveResult) => {
     let settled = false;
     const child = spawn(command, {

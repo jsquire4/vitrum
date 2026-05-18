@@ -31,10 +31,7 @@ export {
   HYBRID_WEBGPU_REQUIRED_FEATURES,
 } from './pipeline/WalkaroundGPUPipeline.js';
 export type { PipelineFrameInputs } from './pipeline/WalkaroundGPUPipeline.js';
-export {
-  buildReSTIRSceneBVH,
-  disposeSceneBVH,
-} from './restir/bvhCompute.js';
+export { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 export type { SceneBVHBuffers } from './restir/bvhCompute.js';
 
 // WGSL shader strings (consumed by pipelineCompiler internally; re-exported
@@ -75,7 +72,11 @@ export { buildRCSceneBVH } from './rc/bvhCompute.js';
 export type { SceneBVH as RCSceneBVH, BvhBuildOpts as RCBvhBuildOpts } from './rc/bvhCompute.js';
 
 // Cascade dispatch — raw WebGPU compute (converted from TSL per RD-12).
-export { RCDispatcher, dispatchCascadePasses, disposeSharedDispatcher } from './rc/cascadeDispatch.js';
+export {
+  RCDispatcher,
+  dispatchCascadePasses,
+  disposeSharedDispatcher,
+} from './rc/cascadeDispatch.js';
 export type { RCDispatchOpts } from './rc/cascadeDispatch.js';
 
 // Cascade buffer manager (de-React-ified from useCascadeBuffers).
@@ -141,7 +142,13 @@ export { PPG_GUIDE_WGSL } from './ppg/ppgGuide.wgsl.js';
 // Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model binary.
 export { InferenceGraph } from './neural/InferenceGraph.js';
 export { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
-export type { UNetSpec, LayerSpec, LayerKind, LayerWeightLayout, LayerParams } from './neural/unetArchitecture.js';
+export type {
+  UNetSpec,
+  LayerSpec,
+  LayerKind,
+  LayerWeightLayout,
+  LayerParams,
+} from './neural/unetArchitecture.js';
 export {
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,

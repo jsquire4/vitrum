@@ -10,12 +10,15 @@ const scenarios = GAP_CLOSURE_SCENARIOS;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
-const baselineDir = resolve(repoRoot, process.env.VITRUM_BASELINE_DIR ?? 'tools/reference-renders/baseline');
+const baselineDir = resolve(
+  repoRoot,
+  process.env.VITRUM_BASELINE_DIR ?? 'tools/reference-renders/baseline',
+);
 const captureDir = resolve(here, 'results/captures');
 // Date is derived at run time so the artifact name reflects when the
 // verification actually ran. Override with VITRUM_RESULT_DATE for
 // deterministic reproductions (e.g. golden-result tests).
-const resultDate = (process.env.VITRUM_RESULT_DATE ?? new Date().toISOString().slice(0, 10));
+const resultDate = process.env.VITRUM_RESULT_DATE ?? new Date().toISOString().slice(0, 10);
 const outputPath = resolve(here, `results/gap-closure-verification-${resultDate}.json`);
 
 const captureEnabled = process.env.VITRUM_GPU_CAPTURE === '1';
@@ -60,7 +63,11 @@ async function readPerfSidecar(imagePath) {
 async function writePerfSidecar(imagePath, telemetry) {
   if (telemetry == null) return;
   if (typeof telemetry === 'number' && Number.isFinite(telemetry)) {
-    await writeFile(`${imagePath}.json`, `${JSON.stringify({ msPerSample: telemetry }, null, 2)}\n`, 'utf8');
+    await writeFile(
+      `${imagePath}.json`,
+      `${JSON.stringify({ msPerSample: telemetry }, null, 2)}\n`,
+      'utf8',
+    );
     return;
   }
   if (typeof telemetry === 'object') {
@@ -77,14 +84,19 @@ function parseResolution(resolution) {
 }
 
 function scenarioVariants(scenario) {
-  if (Array.isArray(scenario.causticVariants) && scenario.causticVariants.length > 0) return scenario.causticVariants;
+  if (Array.isArray(scenario.causticVariants) && scenario.causticVariants.length > 0)
+    return scenario.causticVariants;
   return ['candidate'];
 }
 
 function captureScenarioSettings(scenario) {
   if (!smokeCapture) return scenario;
   const { width, height } = parseResolution(scenario.resolution);
-  const scale = Math.min(1, smokeMaxWidth / Math.max(width, 1), smokeMaxHeight / Math.max(height, 1));
+  const scale = Math.min(
+    1,
+    smokeMaxWidth / Math.max(width, 1),
+    smokeMaxHeight / Math.max(height, 1),
+  );
   const cappedWidth = Math.max(1, Math.floor(width * scale));
   const cappedHeight = Math.max(1, Math.floor(height * scale));
   return {
@@ -119,16 +131,20 @@ async function runCapture(scenario, variant, outputImagePath) {
         'VITRUM_CAPTURE_CMD is unset. Provide a deterministic capture adapter command that writes VITRUM_OUTPUT_PNG.',
     };
   }
-  const run = await runCommand(captureCommand, {
-    VITRUM_SCENARIO_ID: effectiveScenario.scenarioId,
-    VITRUM_SEED: String(effectiveScenario.seed),
-    VITRUM_WIDTH: String(width),
-    VITRUM_HEIGHT: String(height),
-    VITRUM_BOUNCES: String(effectiveScenario.bounces),
-    VITRUM_SPP: String(effectiveScenario.spp),
-    VITRUM_CAUSTIC_STRATEGY: variant,
-    VITRUM_OUTPUT_PNG: outputImagePath,
-  }, captureProcessTimeoutMs);
+  const run = await runCommand(
+    captureCommand,
+    {
+      VITRUM_SCENARIO_ID: effectiveScenario.scenarioId,
+      VITRUM_SEED: String(effectiveScenario.seed),
+      VITRUM_WIDTH: String(width),
+      VITRUM_HEIGHT: String(height),
+      VITRUM_BOUNCES: String(effectiveScenario.bounces),
+      VITRUM_SPP: String(effectiveScenario.spp),
+      VITRUM_CAUSTIC_STRATEGY: variant,
+      VITRUM_OUTPUT_PNG: outputImagePath,
+    },
+    captureProcessTimeoutMs,
+  );
   const imageExists = await fileExists(outputImagePath);
   if (run.code !== 0 || !imageExists) {
     return {
@@ -140,7 +156,10 @@ async function runCapture(scenario, variant, outputImagePath) {
 
   let perfTelemetry = null;
   if (run.stdout) {
-    const lines = run.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    const lines = run.stdout
+      .split('\n')
+      .map((s) => s.trim())
+      .filter(Boolean);
     const jsonLine = lines.find((line) => line.startsWith('{') && line.endsWith('}'));
     if (jsonLine != null) {
       try {
@@ -194,7 +213,8 @@ async function evaluateScenario(scenario) {
   }
 
   const baselineHash = await sha256(baselineImagePath);
-  const baselineTelemetry = baselineCaptureInfo?.perfTelemetry ?? (await readPerfSidecar(baselineImagePath));
+  const baselineTelemetry =
+    baselineCaptureInfo?.perfTelemetry ?? (await readPerfSidecar(baselineImagePath));
   const perfBaseline = baselineTelemetry?.msPerSample ?? null;
   let aggregateCandidateHash = '';
   const perfSamples = [];
@@ -229,9 +249,7 @@ async function evaluateScenario(scenario) {
 
   const afterHash = createHash('sha256').update(aggregateCandidateHash).digest('hex');
   const perfCandidate =
-    perfSamples.length === 0
-      ? null
-      : perfSamples.reduce((a, b) => a + b, 0) / perfSamples.length;
+    perfSamples.length === 0 ? null : perfSamples.reduce((a, b) => a + b, 0) / perfSamples.length;
   const identical = baselineHash === afterHash;
   const failedByHash = failOnIdentical && identical;
   return {
@@ -262,7 +280,6 @@ const concurrency = Math.max(
 const entries = [];
 if (concurrency <= 1) {
   for (const scenario of scenarios) {
-     
     entries.push(await evaluateScenario(scenario));
   }
 } else if (concurrency >= scenarios.length) {

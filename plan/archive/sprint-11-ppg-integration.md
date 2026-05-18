@@ -25,17 +25,17 @@ with a TODO comment in the WGSL source. Do not remove that comment until the kd-
 
 ## What was built in Sprint 11
 
-| Artifact | Location | Status |
-|---|---|---|
-| `PPGDirectionalBin`, `PPGQuadTreeNode`, `PPGSpatialCell` types | `src/ppg/types.ts` | Shipped |
-| `PPG_MAX_SPATIAL_CELLS`, `PPG_DIRECTIONS`, byte-stride constants | `src/ppg/types.ts` | Shipped |
-| `PPG_SAMPLE_WGSL` fragment | `src/ppg/wgsl/ppgSample.wgsl.ts` | Authored; not dispatched |
-| `PPG_UPDATE_WGSL` compute kernel | `src/ppg/wgsl/ppgUpdate.wgsl.ts` | Authored; not dispatched |
-| `createPPGBuffers` / `destroyPPGBuffers` helpers | `src/pipeline/resourceManager.ts` | Exported; opt-in via `ppgEnabled` |
-| `PPGBuffers` interface + `FrameResources.ppgBuffers` field | `src/pipeline/resourceManager.ts` | Optional field; undefined when disabled |
-| `HybridEngineOptions.ppgEnabled` | `src/HybridEngine.ts` | Construction-time opt-in |
-| `HybridEngine.setPPGEnabled()` | `src/HybridEngine.ts` | Toggle method; no-op for dispatch in Sprint 11 |
-| `HybridEngine.ppgEnabled` getter | `src/HybridEngine.ts` | Reflects current toggle state |
+| Artifact                                                         | Location                          | Status                                         |
+| ---------------------------------------------------------------- | --------------------------------- | ---------------------------------------------- |
+| `PPGDirectionalBin`, `PPGQuadTreeNode`, `PPGSpatialCell` types   | `src/ppg/types.ts`                | Shipped                                        |
+| `PPG_MAX_SPATIAL_CELLS`, `PPG_DIRECTIONS`, byte-stride constants | `src/ppg/types.ts`                | Shipped                                        |
+| `PPG_SAMPLE_WGSL` fragment                                       | `src/ppg/wgsl/ppgSample.wgsl.ts`  | Authored; not dispatched                       |
+| `PPG_UPDATE_WGSL` compute kernel                                 | `src/ppg/wgsl/ppgUpdate.wgsl.ts`  | Authored; not dispatched                       |
+| `createPPGBuffers` / `destroyPPGBuffers` helpers                 | `src/pipeline/resourceManager.ts` | Exported; opt-in via `ppgEnabled`              |
+| `PPGBuffers` interface + `FrameResources.ppgBuffers` field       | `src/pipeline/resourceManager.ts` | Optional field; undefined when disabled        |
+| `HybridEngineOptions.ppgEnabled`                                 | `src/HybridEngine.ts`             | Construction-time opt-in                       |
+| `HybridEngine.setPPGEnabled()`                                   | `src/HybridEngine.ts`             | Toggle method; no-op for dispatch in Sprint 11 |
+| `HybridEngine.ppgEnabled` getter                                 | `src/HybridEngine.ts`             | Reflects current toggle state                  |
 
 ## What integration requires
 
@@ -88,11 +88,11 @@ objects bound to the same `GPUBuffer` — the WebGPU spec permits this.
 
 Add to `FrameResources` (already present as optional `ppgBuffers` field):
 
-| Field | Format | Usage | Notes |
-|---|---|---|---|
-| `ppgBuffers.cellBuffer` | raw (PPGSpatialCell array) | `STORAGE \| COPY_DST \| COPY_SRC` | Allocated when `ppgEnabled: true` |
-| `ppgBuffers.leafBuffer` | raw (atomic u32 array) | `STORAGE \| COPY_DST \| COPY_SRC` | 256 bytes/leaf; 128 used atomically |
-| `ppgBuffers.sampleBuffer` | raw (PPGPathSample array) | `STORAGE \| COPY_DST \| COPY_SRC` | Written by shade pass; consumed by ppgUpdate |
+| Field                     | Format                     | Usage                             | Notes                                        |
+| ------------------------- | -------------------------- | --------------------------------- | -------------------------------------------- |
+| `ppgBuffers.cellBuffer`   | raw (PPGSpatialCell array) | `STORAGE \| COPY_DST \| COPY_SRC` | Allocated when `ppgEnabled: true`            |
+| `ppgBuffers.leafBuffer`   | raw (atomic u32 array)     | `STORAGE \| COPY_DST \| COPY_SRC` | 256 bytes/leaf; 128 used atomically          |
+| `ppgBuffers.sampleBuffer` | raw (PPGPathSample array)  | `STORAGE \| COPY_DST \| COPY_SRC` | Written by shade pass; consumed by ppgUpdate |
 
 No new textures — PPG data lives entirely in storage buffers.
 
@@ -113,6 +113,7 @@ Write this UBO each frame in `renderFrame()` after the shade pass.
 ### 5. New render-frame dispatch order in `WalkaroundGPUPipeline.renderFrame()`
 
 Current dispatch order (7 passes, Sprint 9 additions still deferred):
+
 1. RIS
 2. Temporal reuse
 3. Spatial reuse × 2
@@ -122,6 +123,7 @@ Current dispatch order (7 passes, Sprint 9 additions still deferred):
 7. Composite blit
 
 New dispatch with PPG update (8 passes):
+
 1. RIS
 2. Temporal reuse
 3. Spatial reuse × 2
@@ -189,6 +191,7 @@ Reset `ppgSampleCountBuffer` to 0 each frame before the shade dispatch.
 ### 8. Definition of done (Sprint 11 roadmap)
 
 Per `plan/phase-6-roadmap.md` Sprint 11:
+
 - [ ] PPG kd-tree allocated as WebGPU storage buffer (sparse, capped at ~10K cells) ✓ (structure authored)
 - [ ] Each cell holds a quad-tree of directional bins (16-direction discretisation) ✓ (authored)
 - [ ] Per-frame: collect path-completion samples into the structure; ping-pong update ✓ (authored; dispatch deferred)
@@ -200,6 +203,7 @@ Per `plan/phase-6-roadmap.md` Sprint 11:
 Sprint 11 DoD: indirect-only convergence at 30 vs. 90 samples baseline.
 
 Measurement protocol:
+
 1. Load the reference stained-glass room scene (all panels lit, no direct sun).
 2. Disable DDGI so indirect lighting is from the ReSTIR GI bounce only.
 3. Capture a 30-sample frame from the baseline (cosine-weighted) pipeline.
@@ -217,6 +221,7 @@ update bandwidth and mirrors the Sprint 9 checkerboard resolve convention (which
 `frameParity`). Both are driven by the same per-frame uniform `frameSeed % 2`.
 
 When the two features compose (Sprint 9 integration + Sprint 11):
+
 - Even frames: shade → PPG update → sample-budget pass → resolve
 - Odd frames: shade → (skip PPG update) → sample-budget pass → resolve
 
@@ -225,6 +230,7 @@ When the two features compose (Sprint 9 integration + Sprint 11):
 **Decision: dense linear array with brute-force nearest-cell lookup.**
 
 Rationale:
+
 - The kd-tree binary descent in `ppgSample.wgsl` uses a brute-force O(N) linear scan
   over `ppgCells` in Sprint 11. At 10K cells, this is 10K vec3f distance comparisons
   per indirect-bounce shader invocation. At 8 ns/comparison (GPU SIMD), this costs

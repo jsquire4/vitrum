@@ -2,7 +2,7 @@
 
 **Sprint goal**: RGB-as-3-wavelengths spectral + Jakob+Hanika upsampling.
 Bevel glass renders true rainbow dispersion via per-channel IOR from the Cauchy
-formula.  The Jakob+Hanika rider smooths the 3-color fan into a continuous
+formula. The Jakob+Hanika rider smooths the 3-color fan into a continuous
 polynomial spectrum.
 
 **Fork repo**: `~/projects/three-gpu-pathtracer/` branch `phase4-normalmap-shadow-rays`.
@@ -29,17 +29,20 @@ ior(λ) = n₀ + B / λ² + C / λ⁴
 ```
 
 Simplified (first-order Cauchy, sufficient for visual quality):
+
 ```
 ior(λ) ≈ n₀ + B / λ²
 ```
 
 The `B` coefficient relates to the Abbe number as:
+
 ```
 B ≈ (n₀ - 1) / (V_d × (1/λ_F² - 1/λ_C²))
 ```
 
 For lead crystal (Abbe V_d ≈ 32, n₀ ≈ 1.58):
-- B ≈ 0.0085 μm²   (λ in μm)  →  B ≈ 8.5e6 nm²  (λ in nm)
+
+- B ≈ 0.0085 μm² (λ in μm) → B ≈ 8.5e6 nm² (λ in nm)
 - Dispersion strength `u_dispersionStrength = 0.018` (default, per roadmap)
 
 Practical per-channel IOR at representative wavelengths:
@@ -123,7 +126,7 @@ float iorB = u_ior0 + u_dispersionStrength * specB / (LAMBDA_B * LAMBDA_B);
 ```
 
 **Host side**: the host computes `rgbToSpectralCoefficients(r, g, b)` from the
-glass color and uploads the result as `u_jakobCoeffs` (vec3 uniform).  This
+glass color and uploads the result as `u_jakobCoeffs` (vec3 uniform). This
 is a per-material uniform, not a per-frame one (the glass color changes only
 on material edit, not every frame).
 
@@ -146,7 +149,7 @@ jakobCoeffs:         { value: new THREE.Vector3(0, 0, 0) }, // (c0, c1, c2)
 
 `jakobCoeffs` defaults to (0, 0, 0) which gives `evalSpectrum(_, λ) = sigmoid(0) = 0.5`
 — a flat 50% spectrum that, combined with the Cauchy formula, gives equal IOR
-perturbation at all wavelengths (no colorimetric modification).  Hosts set
+perturbation at all wavelengths (no colorimetric modification). Hosts set
 this to the real spectral coefficients for chromatic glass.
 
 ---
@@ -190,16 +193,17 @@ material.onBeforeCompile = (shader) => {
 ## 4. `bevels.ts` baker (host side) — remove fake noise-split
 
 **Current (fake) implementation** in `bevels.ts`:
+
 ```typescript
 // HACK: simulate dispersion by splitting the bevel mesh into
 // R/G/B sub-meshes with slightly different normals.  Remove in Sprint 8.
 const rMesh = createBevelMesh({ normalNoise: 0.02 });
 const gMesh = createBevelMesh({ normalNoise: 0.01 });
-const bMesh = createBevelMesh({ normalNoise: 0.00 });
+const bMesh = createBevelMesh({ normalNoise: 0.0 });
 ```
 
-**Sprint 8**: remove the sub-mesh split entirely.  The bevel cell is a single
-mesh with `dispersionStrength = 0.018` in its material profile.  The Cauchy
+**Sprint 8**: remove the sub-mesh split entirely. The bevel cell is a single
+mesh with `dispersionStrength = 0.018` in its material profile. The Cauchy
 formula in the fork shader handles dispersion physically.
 
 ---
@@ -207,11 +211,13 @@ formula in the fork shader handles dispersion physically.
 ## 5. Definition of done
 
 **Vitrum-side** (already complete after Sprint 8 implementation):
+
 - [x] `rgbToSpectralCoefficients` + `evaluateSpectrum` in `@vitrum/shared-samplers/src/jakobHanika.ts`
 - [x] Full documentation of placeholder vs. full table in source (see jakobHanika.ts header)
 - [x] Tests pass: achromatic flat spectrum, chromatic primaries peak at correct λ
 
 **Fork-side** (to be verified in `~/projects/three-gpu-pathtracer/`):
+
 - [ ] Cauchy IOR formula at {700, 550, 450} nm in `bsdf_functions.glsl.js`
 - [ ] Stochastic wavelength selection (1/3 probability per channel)
 - [ ] `evalSpectrum` GLSL function (6 instructions per channel)
@@ -219,6 +225,7 @@ formula in the fork shader handles dispersion physically.
 - [ ] `dispersionStrength = 0` fast path (no spectral split for non-bevel glass)
 
 **Host-side** (to be verified in the host application):
+
 - [ ] `glassMaterialProfiles.ts` — `dispersionStrength` field added
 - [ ] `createBakedGlassMaterial.ts` — `jakobCoeffs` computed + uploaded
 - [ ] `bevels.ts` — fake noise-split removed; single mesh with `dispersionStrength = 0.018`
@@ -230,6 +237,7 @@ formula in the fork shader handles dispersion physically.
 **Decision**: use the compact placeholder approximation rather than the full precomputed table.
 
 **Rationale**:
+
 1. The full precomputed table (≥24 MB) is too large for a browser library bundle.
 2. The table's redistribution license is not confirmed for open-source use.
 3. The placeholder captures the primary visual effect (spectral peak at each
@@ -240,10 +248,10 @@ formula in the fork shader handles dispersion physically.
 
 **Accuracy gap**: the placeholder may show slight banding on saturated colors
 (e.g., a deep ruby red may not have as smooth a spectrum as the full table
-would produce).  For the primary use case (clear lead-crystal bevel cells with
+would produce). For the primary use case (clear lead-crystal bevel cells with
 subtle rainbow splitting), this is visually acceptable.
 
 **Upgrade path**: if the full table becomes available, `rgbToSpectralCoefficients`
 can be replaced with a table lookup without changing the call sites or the
-coefficient format.  The polynomial structure (`c0 + c1·λ + c2·λ²`) is
+coefficient format. The polynomial structure (`c0 + c1·λ + c2·λ²`) is
 identical in both the placeholder and the full Jakob+Hanika 2019 table.

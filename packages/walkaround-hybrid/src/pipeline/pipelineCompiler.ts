@@ -113,38 +113,78 @@ export async function compilePipelines(
   // Compile all shader modules. The include-graph (composeWgsl + WGSL_MODULES)
   // resolves each module's dependency closure exactly once — no hand-rolled
   // `COMMON_WGSL + X_WGSL` concat patterns remain.
-  const risSM      = device.createShaderModule({ label: 'ris',       code: composeWgsl(RIS_MODULE,      WGSL_MODULES) });
-  const temporalSM = device.createShaderModule({ label: 'temporal',  code: composeWgsl(TEMPORAL_MODULE, WGSL_MODULES) });
-  const spatialSM  = device.createShaderModule({ label: 'spatial',   code: composeWgsl(SPATIAL_MODULE,  WGSL_MODULES) });
-  const shadeSM    = device.createShaderModule({ label: 'shade',     code: composeWgsl(SHADE_MODULE,    WGSL_MODULES) });
-  const atrousSM   = device.createShaderModule({ label: 'atrous',    code: composeWgsl(ATROUS_MODULE,   WGSL_MODULES) });
-  const compVertSM = device.createShaderModule({ label: 'comp-vert', code: composeWgsl(COMPOSITE_VERT_MODULE, WGSL_MODULES) });
-  const compFragSM = device.createShaderModule({ label: 'comp-frag', code: composeWgsl(COMPOSITE_FRAG_MODULE, WGSL_MODULES) });
+  const risSM = device.createShaderModule({
+    label: 'ris',
+    code: composeWgsl(RIS_MODULE, WGSL_MODULES),
+  });
+  const temporalSM = device.createShaderModule({
+    label: 'temporal',
+    code: composeWgsl(TEMPORAL_MODULE, WGSL_MODULES),
+  });
+  const spatialSM = device.createShaderModule({
+    label: 'spatial',
+    code: composeWgsl(SPATIAL_MODULE, WGSL_MODULES),
+  });
+  const shadeSM = device.createShaderModule({
+    label: 'shade',
+    code: composeWgsl(SHADE_MODULE, WGSL_MODULES),
+  });
+  const atrousSM = device.createShaderModule({
+    label: 'atrous',
+    code: composeWgsl(ATROUS_MODULE, WGSL_MODULES),
+  });
+  const compVertSM = device.createShaderModule({
+    label: 'comp-vert',
+    code: composeWgsl(COMPOSITE_VERT_MODULE, WGSL_MODULES),
+  });
+  const compFragSM = device.createShaderModule({
+    label: 'comp-frag',
+    code: composeWgsl(COMPOSITE_FRAG_MODULE, WGSL_MODULES),
+  });
 
   // Sprint 9 — sample-budget and resolve are standalone compute shaders.
   // sampleBudget.wgsl template-interpolates WELFORD_VARIANCE_WGSL from
   // @vitrum/shared-denoisers into its own source; resolve.wgsl is
   // self-contained. Both modules declare `requires: []`.
-  const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES) });
-  const resolveSM      = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,       WGSL_MODULES) });
+  const sampleBudgetSM = device.createShaderModule({
+    label: 'sample-budget',
+    code: composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES),
+  });
+  const resolveSM = device.createShaderModule({
+    label: 'resolve',
+    code: composeWgsl(RESOLVE_MODULE, WGSL_MODULES),
+  });
 
   // Check for compile errors on every shader module before proceeding.
   const modules: [string, GPUShaderModule][] = [
-    ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
-    ['shade', shadeSM], ['atrous', atrousSM],
-    ['comp-vert', compVertSM], ['comp-frag', compFragSM],
-    ['sample-budget', sampleBudgetSM], ['resolve', resolveSM],
+    ['ris', risSM],
+    ['temporal', temporalSM],
+    ['spatial', spatialSM],
+    ['shade', shadeSM],
+    ['atrous', atrousSM],
+    ['comp-vert', compVertSM],
+    ['comp-frag', compFragSM],
+    ['sample-budget', sampleBudgetSM],
+    ['resolve', resolveSM],
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
-    const errors = info.messages.filter(m => m.type === 'error');
+    const errors = info.messages.filter((m) => m.type === 'error');
     if (errors.length > 0) {
-      console.error(`[ReSTIR] Shader compile errors in '${label}':`, errors.map(e => `line ${e.lineNum}: ${e.message}`));
-      throw new Error(`[ReSTIR] Shader compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`);
+      console.error(
+        `[ReSTIR] Shader compile errors in '${label}':`,
+        errors.map((e) => `line ${e.lineNum}: ${e.message}`),
+      );
+      throw new Error(
+        `[ReSTIR] Shader compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`,
+      );
     }
-    const warns = info.messages.filter(m => m.type === 'warning');
+    const warns = info.messages.filter((m) => m.type === 'warning');
     if (warns.length > 0) {
-      console.warn(`[ReSTIR] Shader warnings in '${label}':`, warns.map(w => w.message));
+      console.warn(
+        `[ReSTIR] Shader warnings in '${label}':`,
+        warns.map((w) => w.message),
+      );
     }
   }
 
@@ -206,41 +246,67 @@ export async function compilePipelines(
   });
 
   // Compile compute pipelines in parallel.
-  const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
-    await Promise.all([
-      device.createComputePipelineAsync({ label: 'ris',      layout: computeLayout, compute: { module: risSM,      entryPoint: 'risMain'      } }),
-      device.createComputePipelineAsync({ label: 'temporal', layout: computeLayout, compute: { module: temporalSM, entryPoint: 'temporalMain' } }),
-      device.createComputePipelineAsync({ label: 'spatial',  layout: computeLayout, compute: { module: spatialSM,  entryPoint: 'spatialMain'  } }),
-      device.createComputePipelineAsync({ label: 'shade',    layout: shadeLayout,   compute: { module: shadeSM,    entryPoint: 'shadeMain'    } }),
-    ]);
+  const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] = await Promise.all([
+    device.createComputePipelineAsync({
+      label: 'ris',
+      layout: computeLayout,
+      compute: { module: risSM, entryPoint: 'risMain' },
+    }),
+    device.createComputePipelineAsync({
+      label: 'temporal',
+      layout: computeLayout,
+      compute: { module: temporalSM, entryPoint: 'temporalMain' },
+    }),
+    device.createComputePipelineAsync({
+      label: 'spatial',
+      layout: computeLayout,
+      compute: { module: spatialSM, entryPoint: 'spatialMain' },
+    }),
+    device.createComputePipelineAsync({
+      label: 'shade',
+      layout: shadeLayout,
+      compute: { module: shadeSM, entryPoint: 'shadeMain' },
+    }),
+  ]);
 
   const atrousPipeline = await device.createComputePipelineAsync({
-    label: 'atrous', layout: atrousLayout,
+    label: 'atrous',
+    layout: atrousLayout,
     compute: { module: atrousSM, entryPoint: 'atrousMain' },
   });
 
   // Sprint 9 — adaptive sampling pipelines.
   const [sampleBudgetPipeline, resolvePipeline] = await Promise.all([
     device.createComputePipelineAsync({
-      label: 'sample-budget', layout: sampleBudgetLayout,
+      label: 'sample-budget',
+      layout: sampleBudgetLayout,
       compute: { module: sampleBudgetSM, entryPoint: 'sampleBudgetKernel' },
     }),
     device.createComputePipelineAsync({
-      label: 'resolve', layout: resolveLayout,
+      label: 'resolve',
+      layout: resolveLayout,
       compute: { module: resolveSM, entryPoint: 'resolveKernel' },
     }),
   ]);
 
   // Sprint 15 — GTAO pipelines.
-  const gtaoSM = device.createShaderModule({ label: 'gtao', code: composeWgsl(GTAO_MODULE, WGSL_MODULES) });
-  const gtaoUpsampleSM = device.createShaderModule({ label: 'gtao-upsample', code: composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES) });
+  const gtaoSM = device.createShaderModule({
+    label: 'gtao',
+    code: composeWgsl(GTAO_MODULE, WGSL_MODULES),
+  });
+  const gtaoUpsampleSM = device.createShaderModule({
+    label: 'gtao-upsample',
+    code: composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES),
+  });
   const [gtaoPipeline, gtaoUpsamplePipeline] = await Promise.all([
     device.createComputePipelineAsync({
-      label: 'gtao', layout: gtaoLayout,
+      label: 'gtao',
+      layout: gtaoLayout,
       compute: { module: gtaoSM, entryPoint: 'gtaoMain' },
     }),
     device.createComputePipelineAsync({
-      label: 'gtao-upsample', layout: gtaoUpsampleLayout,
+      label: 'gtao-upsample',
+      layout: gtaoUpsampleLayout,
       compute: { module: gtaoUpsampleSM, entryPoint: 'gtaoUpsampleMain' },
     }),
   ]);
@@ -255,7 +321,8 @@ export async function compilePipelines(
     code: composeWgsl(RIS_GI_MODULE, WGSL_MODULES),
   });
   const risGiPipeline = await device.createComputePipelineAsync({
-    label: 'risGi', layout: shadeLayout,
+    label: 'risGi',
+    layout: shadeLayout,
     compute: { module: risGiSM, entryPoint: 'risGiMain' },
   });
 
@@ -270,11 +337,13 @@ export async function compilePipelines(
   });
   const [temporalGiPipeline, spatialGiPipeline] = await Promise.all([
     device.createComputePipelineAsync({
-      label: 'temporalGi', layout: temporalGiLayout,
+      label: 'temporalGi',
+      layout: temporalGiLayout,
       compute: { module: temporalGiSM, entryPoint: 'temporalGiMain' },
     }),
     device.createComputePipelineAsync({
-      label: 'spatialGi', layout: spatialGiLayout,
+      label: 'spatialGi',
+      layout: spatialGiLayout,
       compute: { module: spatialGiSM, entryPoint: 'spatialGiMain' },
     }),
   ]);
@@ -301,9 +370,13 @@ export async function compilePipelines(
     compute: { module: indirectTemporalAccumSM, entryPoint: 'indirectTemporalAccumMain' },
   });
 
-  const accumSM = device.createShaderModule({ label: 'accum', code: composeWgsl(TEMPORAL_ACCUM_MODULE, WGSL_MODULES) });
+  const accumSM = device.createShaderModule({
+    label: 'accum',
+    code: composeWgsl(TEMPORAL_ACCUM_MODULE, WGSL_MODULES),
+  });
   const accumPipeline = await device.createComputePipelineAsync({
-    label: 'temporalAccum', layout: accumLayout,
+    label: 'temporalAccum',
+    layout: accumLayout,
     compute: { module: accumSM, entryPoint: 'temporalAccumMain' },
   });
 
@@ -311,7 +384,7 @@ export async function compilePipelines(
   const compositePipeline = await device.createRenderPipelineAsync({
     label: 'composite',
     layout: compositeLayout,
-    vertex:   { module: compVertSM, entryPoint: 'vertMain' },
+    vertex: { module: compVertSM, entryPoint: 'vertMain' },
     fragment: {
       module: compFragSM,
       entryPoint: 'fragMain',
@@ -326,25 +399,39 @@ export async function compilePipelines(
   // PipelineLayout. pipelineCompiler only compiles; bind-group creation and
   // dispatch live in WalkaroundGPUPipeline.renderFrame.
   let ppgUpdatePipeline: GPUComputePipeline | undefined;
-  let ppgGuidePipeline:  GPUComputePipeline | undefined;
+  let ppgGuidePipeline: GPUComputePipeline | undefined;
   if (opts?.ppgEnabled) {
-    const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES) });
-    const ppgGuideSM  = device.createShaderModule({ label: 'ppg-guide',  code: composeWgsl(PPG_GUIDE_MODULE,  WGSL_MODULES) });
-    for (const [label, sm] of [['ppg-update', ppgUpdateSM], ['ppg-guide', ppgGuideSM]] as [string, GPUShaderModule][]) {
+    const ppgUpdateSM = device.createShaderModule({
+      label: 'ppg-update',
+      code: composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES),
+    });
+    const ppgGuideSM = device.createShaderModule({
+      label: 'ppg-guide',
+      code: composeWgsl(PPG_GUIDE_MODULE, WGSL_MODULES),
+    });
+    for (const [label, sm] of [
+      ['ppg-update', ppgUpdateSM],
+      ['ppg-guide', ppgGuideSM],
+    ] as [string, GPUShaderModule][]) {
       const info = await sm.getCompilationInfo();
-      const errs = info.messages.filter(m => m.type === 'error');
+      const errs = info.messages.filter((m) => m.type === 'error');
       if (errs.length > 0) {
-        console.error(`[ReSTIR] PPG shader compile errors in '${label}':`, errs.map(e => `line ${e.lineNum}: ${e.message}`));
+        console.error(
+          `[ReSTIR] PPG shader compile errors in '${label}':`,
+          errs.map((e) => `line ${e.lineNum}: ${e.message}`),
+        );
         throw new Error(`[ReSTIR] PPG shader compile error in '${label}': ${errs[0]!.message}`);
       }
     }
     [ppgUpdatePipeline, ppgGuidePipeline] = await Promise.all([
       device.createComputePipelineAsync({
-        label: 'ppg-update', layout: 'auto',
+        label: 'ppg-update',
+        layout: 'auto',
         compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
       }),
       device.createComputePipelineAsync({
-        label: 'ppg-guide', layout: 'auto',
+        label: 'ppg-guide',
+        layout: 'auto',
         compute: { module: ppgGuideSM, entryPoint: 'ppgGuideMain' },
       }),
     ]);

@@ -57,8 +57,10 @@ export function buildEmptyDTree(initialDepth: number): DTree {
  */
 function buildSubtree(
   nodes: DTreeNode[],
-  u0: number, u1: number,
-  v0: number, v1: number,
+  u0: number,
+  u1: number,
+  v0: number,
+  v1: number,
   depth: number,
   maxDepth: number,
 ): number {
@@ -73,7 +75,10 @@ function buildSubtree(
   // Reserve the slot, fill firstChild after children are built.
   nodes.push({
     isLeaf,
-    u0, v0, u1, v1,
+    u0,
+    v0,
+    u1,
+    v1,
     solidAngle,
     flux: 0,
     firstChild: -1,
@@ -113,7 +118,7 @@ export function findDTreeLeaf(dTree: DTree, octUV: [number, number]): number {
     const uMid = (node.u0 + node.u1) * 0.5;
     const vMid = (node.v0 + node.v1) * 0.5;
     const goRight = octUV[0] >= uMid;
-    const goDown  = octUV[1] >= vMid;
+    const goDown = octUV[1] >= vMid;
     idx = node.firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0);
   }
 }
@@ -159,9 +164,8 @@ export function dTreeSample(
       const uSample = node.u0 + u1 * (node.u1 - node.u0);
       const vSample = node.v0 + u0 * (node.v1 - node.v0);
       // PDF = (leafFlux / totalFlux) / solidAngle_leaf  (deviation 5 fix)
-      const pdf = (node.flux > 0 && totalFlux > 0)
-        ? (node.flux / totalFlux) / node.solidAngle
-        : 1 / FOUR_PI;
+      const pdf =
+        node.flux > 0 && totalFlux > 0 ? node.flux / totalFlux / node.solidAngle : 1 / FOUR_PI;
       return { octUV: [uSample, vSample], pdf: Math.max(pdf, 1e-12) };
     }
 
@@ -178,7 +182,7 @@ export function dTreeSample(
     }
     // Adjust remaining for the next level.
     const chosenFlux = dTree.nodes[c0 + chosen]!.flux;
-    remaining -= (cumFlux - chosenFlux);
+    remaining -= cumFlux - chosenFlux;
     idx = c0 + chosen;
   }
 }
@@ -194,7 +198,7 @@ export function dTreePdf(dTree: DTree, octUV: [number, number]): number {
   if (dTree.totalFlux <= 0) return 1 / FOUR_PI;
   const leafIdx = findDTreeLeaf(dTree, octUV);
   const leaf = dTree.nodes[leafIdx]!;
-  return (leaf.flux / dTree.totalFlux) / leaf.solidAngle;
+  return leaf.flux / dTree.totalFlux / leaf.solidAngle;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -252,7 +256,10 @@ export function refineDTree(
     let maxChildFlux = 0;
     for (let ci = 0; ci < 4; ci++) {
       const child = dTree.nodes[c + ci];
-      if (!child || !child.isLeaf) { allLeaves = false; break; }
+      if (!child || !child.isLeaf) {
+        allLeaves = false;
+        break;
+      }
       if (child.flux > maxChildFlux) maxChildFlux = child.flux;
     }
     if (!allLeaves) continue;
@@ -292,8 +299,10 @@ function splitDTreeLeaf(dTree: DTree, nodeIdx: number): void {
   ] as Array<[number, number, number, number]>) {
     dTree.nodes.push({
       isLeaf: true,
-      u0: cu0, u1: cu1,
-      v0: cv0, v1: cv1,
+      u0: cu0,
+      u1: cu1,
+      v0: cv0,
+      v1: cv1,
       solidAngle: FOUR_PI * (cu1 - cu0) * (cv1 - cv0),
       flux: childFlux,
       firstChild: -1,

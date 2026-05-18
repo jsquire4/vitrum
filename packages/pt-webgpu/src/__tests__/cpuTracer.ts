@@ -16,12 +16,17 @@
 // ---------------------------------------------------------------------------
 
 export type Vec3 = [number, number, number];
-export type Rng  = { v: number };
+export type Rng = { v: number };
 
-export interface Ray { origin: Vec3; dir: Vec3 }
+export interface Ray {
+  origin: Vec3;
+  dir: Vec3;
+}
 
 export interface Triangle {
-  v0: Vec3; v1: Vec3; v2: Vec3;
+  v0: Vec3;
+  v1: Vec3;
+  v2: Vec3;
   materialId: number;
 }
 
@@ -45,10 +50,14 @@ export interface DirectionalLight {
 }
 
 /** Minimal point light (position + radiance). */
-export interface PointLight { pos: Vec3; radiance: Vec3 }
+export interface PointLight {
+  pos: Vec3;
+  radiance: Vec3;
+}
 
-export type Light = { kind: 'directional'; light: DirectionalLight }
-                  | { kind: 'point';       light: PointLight };
+export type Light =
+  | { kind: 'directional'; light: DirectionalLight }
+  | { kind: 'point'; light: PointLight };
 
 export interface Scene {
   /** Brute-force triangle list — no BVH; keep ≤ 50 for fast CI. */
@@ -98,11 +107,7 @@ export function dot(a: Vec3, b: Vec3): number {
 }
 
 export function cross(a: Vec3, b: Vec3): Vec3 {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
 export function length3(v: Vec3): number {
@@ -139,12 +144,14 @@ export function safeInvDir(d: Vec3): Vec3 {
 export function intersectTriangleMT(
   rayOrigin: Vec3,
   rayDir: Vec3,
-  v0: Vec3, v1: Vec3, v2: Vec3,
+  v0: Vec3,
+  v1: Vec3,
+  v2: Vec3,
   eps = 1e-5,
 ): { t: number; u: number; v: number } | null {
   const e1 = sub(v1, v0);
   const e2 = sub(v2, v0);
-  const h  = cross(rayDir, e2);
+  const h = cross(rayDir, e2);
   const det = dot(e1, h);
   if (Math.abs(det) < eps) return null;
   const invDet = 1.0 / det;
@@ -181,16 +188,8 @@ export function intersectAabb(
     (bMax[1] - rayOrigin[1]) * inv[1],
     (bMax[2] - rayOrigin[2]) * inv[2],
   ];
-  const tNear = Math.max(
-    Math.min(t1[0], t2[0]),
-    Math.min(t1[1], t2[1]),
-    Math.min(t1[2], t2[2]),
-  );
-  const tFar = Math.min(
-    Math.max(t1[0], t2[0]),
-    Math.max(t1[1], t2[1]),
-    Math.max(t1[2], t2[2]),
-  );
+  const tNear = Math.max(Math.min(t1[0], t2[0]), Math.min(t1[1], t2[1]), Math.min(t1[2], t2[2]));
+  const tFar = Math.min(Math.max(t1[0], t2[0]), Math.max(t1[1], t2[1]), Math.max(t1[2], t2[2]));
   return tNear > tFar ? null : { tNear, tFar };
 }
 
@@ -214,13 +213,10 @@ function buildOnb(n: Vec3): { t: Vec3; b: Vec3 } {
   return { t, b };
 }
 
-export function cosineHemisphereSample(
-  rng: Rng,
-  n: Vec3,
-): { dir: Vec3; pdf: number } {
-  const u1  = lcg(rng);
-  const u2  = lcg(rng);
-  const r   = Math.sqrt(u1);
+export function cosineHemisphereSample(rng: Rng, n: Vec3): { dir: Vec3; pdf: number } {
+  const u1 = lcg(rng);
+  const u2 = lcg(rng);
+  const r = Math.sqrt(u1);
   const phi = 2.0 * Math.PI * u2;
   const localX = r * Math.cos(phi);
   const localY = r * Math.sin(phi);
@@ -241,26 +237,22 @@ export function cosineHemisphereSample(
 // Heitz 2018, Algorithm 1. Input/output in tangent-space (N = +Z).
 // ---------------------------------------------------------------------------
 
-export function sampleGgxVndfTangent(
-  wo: Vec3,
-  alpha: number,
-  rng: Rng,
-): Vec3 {
+export function sampleGgxVndfTangent(wo: Vec3, alpha: number, rng: Rng): Vec3 {
   // Step 1: stretch.
   const Vh = safeNormalize([alpha * wo[0], alpha * wo[1], wo[2]]);
   // Step 2: ONB around Vh (Frisvad-style).
   const { t: T1, b: T2 } = buildOnb(Vh);
   // Step 3: sample disc.
-  const u1  = lcg(rng);
-  const u2  = lcg(rng);
-  const r   = Math.sqrt(u1);
+  const u1 = lcg(rng);
+  const u2 = lcg(rng);
+  const r = Math.sqrt(u1);
   const phi = 2.0 * Math.PI * u2;
-  const t1  = r * Math.cos(phi);
-  let   t2  = r * Math.sin(phi);
-  const s   = 0.5 * (1.0 + Vh[2]);
+  const t1 = r * Math.cos(phi);
+  let t2 = r * Math.sin(phi);
+  const s = 0.5 * (1.0 + Vh[2]);
   t2 = (1.0 - s) * Math.sqrt(Math.max(0.0, 1.0 - t1 * t1)) + s * t2;
   // Step 4: reproject and unstretch.
-  const z  = Math.sqrt(Math.max(0.0, 1.0 - t1 * t1 - t2 * t2));
+  const z = Math.sqrt(Math.max(0.0, 1.0 - t1 * t1 - t2 * t2));
   const Nh: Vec3 = [
     t1 * T1[0] + t2 * T2[0] + z * Vh[0],
     t1 * T1[1] + t2 * T2[1] + z * Vh[1],
@@ -275,14 +267,17 @@ export function sampleGgxVndfTangent(
 
 export function frDielectric(cosTheta_i: number, eta: number): number {
   let ct = Math.min(Math.max(cosTheta_i, -1.0), 1.0);
-  let e  = eta;
-  if (ct < 0.0) { e = 1.0 / e; ct = -ct; }
+  let e = eta;
+  if (ct < 0.0) {
+    e = 1.0 / e;
+    ct = -ct;
+  }
   const sin2I = Math.max(0.0, 1.0 - ct * ct);
   const sin2T = sin2I / (e * e);
   if (sin2T >= 1.0) return 1.0; // TIR
-  const cosT  = Math.sqrt(Math.max(0.0, 1.0 - sin2T));
-  const r_par  = (e * ct - cosT) / (e * ct + cosT);
-  const r_perp = (ct - e * cosT)  / (ct + e * cosT);
+  const cosT = Math.sqrt(Math.max(0.0, 1.0 - sin2T));
+  const r_par = (e * ct - cosT) / (e * ct + cosT);
+  const r_perp = (ct - e * cosT) / (ct + e * cosT);
   return 0.5 * (r_par * r_par + r_perp * r_perp);
 }
 
@@ -291,7 +286,7 @@ export function frDielectric(cosTheta_i: number, eta: number): number {
 // ---------------------------------------------------------------------------
 
 export function schlickFresnel(f0: number, cos: number): number {
-  const m  = Math.min(Math.max(1.0 - cos, 0.0), 1.0);
+  const m = Math.min(Math.max(1.0 - cos, 0.0), 1.0);
   const m2 = m * m;
   const m5 = m2 * m2 * m;
   return f0 + (1.0 - f0) * m5;
@@ -362,16 +357,11 @@ function traceAny(scene: Scene, ray: Ray, tMin: number, tMax: number): boolean {
 // Supports DirectionalLight and PointLight.
 // ---------------------------------------------------------------------------
 
-function sampleDirectLight(
-  scene: Scene,
-  hitPos: Vec3,
-  normal: Vec3,
-  rng: Rng,
-): Vec3 {
+function sampleDirectLight(scene: Scene, hitPos: Vec3, normal: Vec3, rng: Rng): Vec3 {
   if (scene.lights.length === 0) return [0, 0, 0];
 
   // Uniform-randomly pick one light (same pattern as WGSL §1666).
-  const idx   = Math.floor(lcg(rng) * scene.lights.length) % scene.lights.length;
+  const idx = Math.floor(lcg(rng) * scene.lights.length) % scene.lights.length;
   const entry = scene.lights[idx]!;
 
   let wi: Vec3;
@@ -380,15 +370,15 @@ function sampleDirectLight(
 
   if (entry.kind === 'directional') {
     const dl = entry.light;
-    wi   = safeNormalize(dl.dir);
-    Li   = [dl.radiance, dl.radiance, dl.radiance];
+    wi = safeNormalize(dl.dir);
+    Li = [dl.radiance, dl.radiance, dl.radiance];
     tMax = 1e30;
   } else {
-    const pl      = entry.light;
+    const pl = entry.light;
     const toLight = sub(pl.pos, hitPos);
-    const dist    = length3(toLight);
-    wi   = scale(toLight, 1.0 / Math.max(dist, 1e-8));
-    Li   = scale(pl.radiance, 1.0 / Math.max(dist * dist, 1e-5));
+    const dist = length3(toLight);
+    wi = scale(toLight, 1.0 / Math.max(dist, 1e-8));
+    Li = scale(pl.radiance, 1.0 / Math.max(dist * dist, 1e-5));
     tMax = dist - 2e-3;
   }
 
@@ -415,14 +405,9 @@ function sampleDirectLight(
 // the test scenes use albedo-only materials (roughness=1, metallic=0).
 // ---------------------------------------------------------------------------
 
-export function integratePath(
-  scene: Scene,
-  ray: Ray,
-  rng: Rng,
-  opts: PathOpts,
-): Vec3 {
+export function integratePath(scene: Scene, ray: Ray, rng: Rng, opts: PathOpts): Vec3 {
   let throughput: Vec3 = [1, 1, 1];
-  let radiance: Vec3   = [0, 0, 0];
+  let radiance: Vec3 = [0, 0, 0];
   let currentRay = ray;
 
   for (let bounce = 0; bounce < opts.maxBounces; bounce++) {
@@ -435,7 +420,7 @@ export function integratePath(
     }
 
     const hitPos = add(currentRay.origin, scale(currentRay.dir, hit.t));
-    const mat    = scene.materials[scene.triangles[hit.triIdx]!.materialId]!;
+    const mat = scene.materials[scene.triangles[hit.triIdx]!.materialId]!;
     const normal = hit.normal;
 
     // Emission.

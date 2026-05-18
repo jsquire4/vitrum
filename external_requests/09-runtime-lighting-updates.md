@@ -65,8 +65,8 @@ class HybridEngine implements Engine {
    *  on rejection). */
   updateLighting(patch: {
     primaryLight?: { dir: [number, number, number]; intensity: number };
-    skyDome?:      { tint: [number, number, number]; irradiance: number };
-    lights?:       DDGILight[];
+    skyDome?: { tint: [number, number, number]; irradiance: number };
+    lights?: DDGILight[];
   }): void;
 }
 ```
@@ -91,11 +91,11 @@ interface EngineCapabilities {
 
 For `@vitrum/walkaround-hybrid`'s HybridEngine the implementation paths are:
 
-| Method | What patches | Cost |
-|---|---|---|
-| `updatePrimaryLight(dir, intensity)` | Re-bake `EmitterTri.Le` for all emitters tagged primary; rewrite `ReSTIR` shading UBO field; rewrite probe-update UBO field | O(primaryEmitterCount) + 2 buffer writes |
-| `updateSkyDome(tint, irradiance)` | Rewrite ReSTIR shading UBO field + probe-update UBO field | 2 buffer writes |
-| `updateLights(lights)` | Rewrite probe-update lights UBO; if count change exceeds capacity, fall back to reset() | 1 buffer write if count stable; else full rebuild |
+| Method                               | What patches                                                                                                                | Cost                                              |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `updatePrimaryLight(dir, intensity)` | Re-bake `EmitterTri.Le` for all emitters tagged primary; rewrite `ReSTIR` shading UBO field; rewrite probe-update UBO field | O(primaryEmitterCount) + 2 buffer writes          |
+| `updateSkyDome(tint, irradiance)`    | Rewrite ReSTIR shading UBO field + probe-update UBO field                                                                   | 2 buffer writes                                   |
+| `updateLights(lights)`               | Rewrite probe-update lights UBO; if count change exceeds capacity, fall back to reset()                                     | 1 buffer write if count stable; else full rebuild |
 
 `@vitrum/pt-webgl` reports `supportsIncrementalLighting: false` initially. (PT engines rebuild the BVH on `setScene` anyway, so the host can use `setScene` to push lighting changes; an incremental path is a future optimization.)
 

@@ -27,6 +27,7 @@ Each step lists a route, an action, and the telemetry signals to check.
 **Action:** Open `http://localhost:5173/` (or whatever Vite picks). Wait for the path-traced render to converge (~60s of accumulation).
 
 **Signals:**
+
 - HUD shows `samples/sec` non-zero and stable. Expected: similar to baseline (whatever the user's reference render targets).
 - HUD shows `sample count` climbing monotonically until `samplesTarget` is reached.
 - DevTools console: no shader-compile errors. No `WebGL: ` warnings beyond the expected ones (RAFFLE / extension probes).
@@ -44,6 +45,7 @@ Each step lists a route, an action, and the telemetry signals to check.
 **Action:** Switch to the walkaround engine (URL param: `?engine=walkaround-hybrid`). Open DevTools, find the GPU-timing dev panel (whatever surface displays `lastGpuTimings`).
 
 **Signals:**
+
 - The timing dict keys should now be the real pass labels: `ris`, `temporal`, `spatial-1`, `spatial-2`, `shade`, `ppg-update` (only if PPG enabled), `welford-temporal`, `svgf-variance`, `svgf-atrous-0`..`svgf-atrous-4`, `temporalAccum`, `composite` — NOT the old generic `denoise-5`..`denoise-11`.
 - Each ms value is plausible (welford-temporal < 1ms, svgf-atrous-N each ~0.5–2ms, shade is the dominant cost).
 - Switching denoiser mode (`?denoiser=atrous` vs `?denoiser=svgf`) should swap the SVGF labels for `atrous-0` / `atrous-1` / `atrous-2`.
@@ -61,6 +63,7 @@ Each step lists a route, an action, and the telemetry signals to check.
 **Action:** Render the scene with multiple lights (1 point + 1 spot + 1 rect-area + 1 mesh-area emitter) + HDRI environment. Let it converge.
 
 **Signals to check (telemetry, not eyeballs):**
+
 - No shader-compile errors. The new `FrameParams` struct has 20 u32 + 4 vec4f + 3 mat4x4f (336 bytes used, 512 buffer); if the WGSL string fails to compile, the engine init throws on `getCompilationInfo`.
 - Per-light accumulators (point/spot/rect/mesh) should each appear in the final image. The `first*` light extractors are gone, but the multi-light loop ALREADY iterates the same storage arrays at the same offsets — the change is which slot the WGSL reads "light 0" from.
 - HDRI sky aperture sampling still works (use a scene with a textured environment, look at glossy reflections). Sample count climbs steadily.
@@ -82,6 +85,7 @@ Each step lists a route, an action, and the telemetry signals to check.
 **Action:** Open the DDGI debug view (if a probe-visualization mode exists). Otherwise watch the indirect-light contribution on a non-emissive surface near the glass.
 
 **Signals:**
+
 - Glass primitives still tint indirect light correctly (the `attenuationColor` field flows through `extractThreePbrScalars` → DDGI buffer).
 - Probe atlases allocate at the right size (check `probeGrid.params.irradianceAtlasW` × `irradianceAtlasH` in the dev panel).
 - No "three/webgpu storage texture not allocated" errors; the new `AtlasTextureSlot` pattern lazily creates the GPUTexture inside `probeUpdatePass._getOrCreateAtlasTexture` per slot.
@@ -99,6 +103,7 @@ Each step lists a route, an action, and the telemetry signals to check.
 **Action:** Render a scene. Sprint 9 adds two new passes (`sample-budget` before RIS, `resolve` after temporalAccum) and modifies RIS + shade to act on the per-pixel tier.
 
 **Signals (telemetry — these matter most):**
+
 1. **Pass layout:** GPU-timing dict now has `sample-budget` and `resolve` as keys, in addition to all the previous ones. New slot count should be 17 (was 15).
 2. **Sample budget output:** `tierTexture` (r32uint) should be written every frame. The shader writes tier ∈ {1, 2, 4} based on the welford variance estimate. If the user has a tier-visualization mode, look for tier=4 (red?) at undersampled regions and tier=1 (green?) at converged regions.
 3. **Checkerboard pattern:** With `frameParity = frameCount & 1`, half the pixels are shaded each frame. The other half come from the resolve pass via motion-vector reprojection.
@@ -106,10 +111,12 @@ Each step lists a route, an action, and the telemetry signals to check.
 5. **Static scene regression:** With the camera still, the converged image should match the pre-Sprint-9 baseline (full-resolution shading). Welford variance settles, tier transitions to all-1, and effectively all pixels are reused from the previous frame.
 
 **Acceptance:**
+
 - A/B static render against P3-B.2 baseline: should converge to the same image (within ±2% pixel difference).
 - Performance: sample-per-second should be HIGHER than baseline once tier=1 dominates the frame (the whole point of adaptive sampling).
 
 **Risk surfaces:**
+
 - **RIS modification:** The "tier=1 → reuse prev reservoir" branch is the deepest semantic change. If RIS resamples even with tier=1, perf gains evaporate; if it reuses too aggressively, dark/light spots appear.
 - **shade.wgsl checkerboard:** The "gap pixel" branch writes a sentinel to hdrColor. The denoise chain (svgf-variance + atrous) reads from hdrColor. If the denoiser interprets the sentinel as "real" radiance, the denoised output gets corrupted streaks. If the user's agent implementation chose to make the resolve pass run BEFORE the denoise instead of after, watch for which-pass-comes-when in the encoder.
 - **Motion vectors:** Resolve relies on accurate motion vectors. These are written by RIS's gbuffer-output. Verify they're non-zero during camera motion.
@@ -143,4 +150,4 @@ If something looks wrong:
 
 ---
 
-*Generated as part of the P3-V task — drive via Claude-in-Chrome on the 4090 to validate the P3 series before pushing to origin.*
+_Generated as part of the P3-V task — drive via Claude-in-Chrome on the 4090 to validate the P3 series before pushing to origin._

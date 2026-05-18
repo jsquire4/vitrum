@@ -26,8 +26,14 @@ import type { SceneBvh, SceneBvhBuffers } from '@vitrum/shared-bvh';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
-import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
-import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
+import {
+  PROBE_UPDATE_BLEND_IRR_WGSL,
+  PROBE_UPDATE_BLEND_VIS_WGSL,
+} from './wgsl/probeUpdateBlend.wgsl.js';
+import {
+  PROBE_UPDATE_BORDER_IRR_WGSL,
+  PROBE_UPDATE_BORDER_VIS_WGSL,
+} from './wgsl/probeUpdateBorder.wgsl.js';
 import { packDDGIGridParams } from '../pipeline/resourceManager.js';
 import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
@@ -115,10 +121,21 @@ function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials: numbe
   matsToUse.forEach((mat, i) => {
     const base = i * ENTRY;
     const pbr = extractThreePbrScalars(mat);
-    data[base + 0] = pbr.baseColor[0]; data[base + 1] = pbr.baseColor[1]; data[base + 2] = pbr.baseColor[2]; data[base + 3] = 0;
-    data[base + 4] = pbr.emissive[0];  data[base + 5] = pbr.emissive[1];  data[base + 6] = pbr.emissive[2];  data[base + 7] = pbr.roughness;
-    data[base + 8] = pbr.metallic;     data[base + 9] = pbr.ior;          data[base + 10] = pbr.transmission; data[base + 11] = 0;
-    data[base + 12] = pbr.attenuationColor[0]; data[base + 13] = pbr.attenuationColor[1]; data[base + 14] = pbr.attenuationColor[2];
+    data[base + 0] = pbr.baseColor[0];
+    data[base + 1] = pbr.baseColor[1];
+    data[base + 2] = pbr.baseColor[2];
+    data[base + 3] = 0;
+    data[base + 4] = pbr.emissive[0];
+    data[base + 5] = pbr.emissive[1];
+    data[base + 6] = pbr.emissive[2];
+    data[base + 7] = pbr.roughness;
+    data[base + 8] = pbr.metallic;
+    data[base + 9] = pbr.ior;
+    data[base + 10] = pbr.transmission;
+    data[base + 11] = 0;
+    data[base + 12] = pbr.attenuationColor[0];
+    data[base + 13] = pbr.attenuationColor[1];
+    data[base + 14] = pbr.attenuationColor[2];
     u32view[base + 15] = pbr.transmission > 0 ? 1 : 0;
   });
   return buf;
@@ -126,13 +143,13 @@ function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials: numbe
 
 interface GPUResources {
   device: GPUDevice;
-  raysPipeline:       GPUComputePipeline;
-  blendIrrPipeline:   GPUComputePipeline;
-  blendVisPipeline:   GPUComputePipeline;
+  raysPipeline: GPUComputePipeline;
+  blendIrrPipeline: GPUComputePipeline;
+  blendVisPipeline: GPUComputePipeline;
   /** Border-fill pipeline for the irradiance atlas. */
-  borderIrrPipeline:  GPUComputePipeline;
+  borderIrrPipeline: GPUComputePipeline;
   /** Border-fill pipeline for the visibility atlas. */
-  borderVisPipeline:  GPUComputePipeline;
+  borderVisPipeline: GPUComputePipeline;
   /**
    * Scratch atlas textures for the border fill pass ping-pong.
    *
@@ -149,17 +166,17 @@ interface GPUResources {
   irrScratchTex: GPUTexture | null;
   visScratchTex: GPUTexture | null;
   // BVH buffers (replaced on scene rebuild)
-  bvhBuf:        GPUBuffer;
-  posBuf:        GPUBuffer;
-  idxBuf:        GPUBuffer;
-  normBuf:       GPUBuffer;
-  matIdBuf:      GPUBuffer;
+  bvhBuf: GPUBuffer;
+  posBuf: GPUBuffer;
+  idxBuf: GPUBuffer;
+  normBuf: GPUBuffer;
+  matIdBuf: GPUBuffer;
   // Uniform buffers
-  materialsBuf:    GPUBuffer;
-  lightsBuf:       GPUBuffer;
-  gridParamsBuf:   GPUBuffer;
-  frameParamsBuf:  GPUBuffer;
-  blendParamsBuf:  GPUBuffer;
+  materialsBuf: GPUBuffer;
+  lightsBuf: GPUBuffer;
+  gridParamsBuf: GPUBuffer;
+  frameParamsBuf: GPUBuffer;
+  blendParamsBuf: GPUBuffer;
   /** BorderUBO for the irradiance border pass (8 u32 fields = 32 bytes). */
   borderIrrUboBuf: GPUBuffer;
   /** BorderUBO for the visibility border pass (8 u32 fields = 32 bytes). */
@@ -198,9 +215,9 @@ export interface ProbeUpdatePassOptions {
 }
 
 export class ProbeUpdatePass {
-  private _bvh:  SceneBvh;
+  private _bvh: SceneBvh;
   private _grid: ProbeGrid;
-  private _gpu:  GPUResources | null = null;
+  private _gpu: GPUResources | null = null;
   private _lastBvhVersion = -1;
   private _frameIndex = 0;
   private _maxProbes = 0;
@@ -229,12 +246,14 @@ export class ProbeUpdatePass {
   private _ddgiMaxMaterials: number;
 
   constructor(bvh: SceneBvh, grid: ProbeGrid, opts: ProbeUpdatePassOptions = {}) {
-    this._bvh  = bvh;
+    this._bvh = bvh;
     this._grid = grid;
     this._debug = opts.debug ?? false;
     this._ddgiMaxMaterials = opts.maxMaterials ?? DDGI_MAX_MATERIALS;
     if (this._ddgiMaxMaterials < 1) {
-      console.warn(`[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`);
+      console.warn(
+        `[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`,
+      );
       this._ddgiMaxMaterials = 1;
     }
   }
@@ -272,7 +291,9 @@ export class ProbeUpdatePass {
    * Initialize GPU resources. Returns false if WebGPU is unavailable.
    * Tries the renderer's WebGPU backend first; falls back to navigator.gpu.
    */
-  async init(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }): Promise<boolean> {
+  async init(renderer: {
+    backend?: { device?: GPUDevice; isWebGPUBackend?: boolean };
+  }): Promise<boolean> {
     // Hardware-GPU gate. detectGpu() publishes window.__WG__ BEFORE we
     // touch the device, so e2e validation can read the flag even if we
     // refuse to proceed. SwiftShader (Chromium's software rasterizer)
@@ -283,7 +304,7 @@ export class ProbeUpdatePass {
     if (gpu.isWebGPU && gpu.adapterKind === 'swiftshader') {
       console.error(
         `[DDGI] SwiftShader detected (vendor='${gpu.adapterVendor}', architecture='${gpu.adapterArchitecture}'). ` +
-        `Refusing to initialize DDGI on software rasterizer. Launch Chrome with hardware GPU enabled to validate DDGI output.`,
+          `Refusing to initialize DDGI on software rasterizer. Launch Chrome with hardware GPU enabled to validate DDGI output.`,
       );
       return false;
     }
@@ -319,7 +340,9 @@ export class ProbeUpdatePass {
     try {
       // M9: compile with the host-specified material array size so scenes with
       // more than 64 materials don't overflow the uniform buffer.
-      const raysModule = device.createShaderModule({ code: makeProbeUpdateRaysWGSL(this._ddgiMaxMaterials) });
+      const raysModule = device.createShaderModule({
+        code: makeProbeUpdateRaysWGSL(this._ddgiMaxMaterials),
+      });
       raysPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: raysModule, entryPoint: 'probeUpdateRays' },
@@ -377,21 +400,21 @@ export class ProbeUpdatePass {
       blendVisPipeline,
       borderIrrPipeline,
       borderVisPipeline,
-      irrScratchTex:  null,
-      visScratchTex:  null,
-      bvhBuf:          makeBuffer(16, RO),
-      posBuf:          makeBuffer(12, RO),
-      idxBuf:          makeBuffer(12, RO),
-      normBuf:         makeBuffer(12, RO),
-      matIdBuf:        makeBuffer(4,  RO),
-      materialsBuf:    makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
-      lightsBuf:       makeBuffer(16 * 80 + 16, UB),
-      gridParamsBuf:   makeBuffer(64, UB),
-      frameParamsBuf:  makeBuffer(48, UB),
-      blendParamsBuf:  makeBuffer(16, UB),
+      irrScratchTex: null,
+      visScratchTex: null,
+      bvhBuf: makeBuffer(16, RO),
+      posBuf: makeBuffer(12, RO),
+      idxBuf: makeBuffer(12, RO),
+      normBuf: makeBuffer(12, RO),
+      matIdBuf: makeBuffer(4, RO),
+      materialsBuf: makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
+      lightsBuf: makeBuffer(16 * 80 + 16, UB),
+      gridParamsBuf: makeBuffer(64, UB),
+      frameParamsBuf: makeBuffer(48, UB),
+      blendParamsBuf: makeBuffer(16, UB),
       borderIrrUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
       borderVisUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
-      rayResultsBuf:   makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
+      rayResultsBuf: makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
       activeProbesBuf: makeBuffer(4, RO),
       linearSampler,
     };
@@ -404,7 +427,11 @@ export class ProbeUpdatePass {
    * @param offset    Which 1/4 of probes to update (0-3)
    * @param stride    Number of update strata (usually 4)
    */
-  async runFrame(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }, offset: number, stride: number): Promise<void> {
+  async runFrame(
+    renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } },
+    offset: number,
+    stride: number,
+  ): Promise<void> {
     if (!this._gpu) {
       await this.init(renderer);
       if (!this._gpu) return;
@@ -465,12 +492,28 @@ export class ProbeUpdatePass {
     if (!this._grid.irradianceA) this._grid.allocateAtlases();
 
     // Get/create GPU textures for the atlases.
-    const irrReadTex  = this._getOrCreateAtlasTexture(device, this._grid.irradianceReadTex, 'rgba16float');
-    const irrWriteTex = this._getOrCreateAtlasTexture(device, this._grid.irradianceWriteTex, 'rgba16float');
+    const irrReadTex = this._getOrCreateAtlasTexture(
+      device,
+      this._grid.irradianceReadTex,
+      'rgba16float',
+    );
+    const irrWriteTex = this._getOrCreateAtlasTexture(
+      device,
+      this._grid.irradianceWriteTex,
+      'rgba16float',
+    );
     // Visibility atlas: allocated as RGBAFormat (rgba16float) because WebGPU does not
     // support rg16float as a storage texture. The WGSL shader declares rgba16float too.
-    const visReadTex  = this._getOrCreateAtlasTexture(device, this._grid.visibilityReadTex, 'rgba16float');
-    const visWriteTex = this._getOrCreateAtlasTexture(device, this._grid.visibilityWriteTex, 'rgba16float');
+    const visReadTex = this._getOrCreateAtlasTexture(
+      device,
+      this._grid.visibilityReadTex,
+      'rgba16float',
+    );
+    const visWriteTex = this._getOrCreateAtlasTexture(
+      device,
+      this._grid.visibilityWriteTex,
+      'rgba16float',
+    );
 
     // Run compute passes.
     const encoder = device.createCommandEncoder();
@@ -545,10 +588,7 @@ export class ProbeUpdatePass {
     }
   }
 
-  private _rebuildBvhBuffers(
-    device: GPUDevice,
-    buffers: SceneBvhBuffers,
-  ): void {
+  private _rebuildBvhBuffers(device: GPUDevice, buffers: SceneBvhBuffers): void {
     const RO = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     const upload = (oldBuf: GPUBuffer, data: ArrayBufferLike): GPUBuffer => {
       oldBuf.destroy();
@@ -560,11 +600,11 @@ export class ProbeUpdatePass {
       device.queue.writeBuffer(buf, 0, arr);
       return buf;
     };
-    this._gpu!.bvhBuf  = upload(this._gpu!.bvhBuf,  buffers.bvhNodes.buffer);
-    this._gpu!.posBuf  = upload(this._gpu!.posBuf,   buffers.positions.buffer);
-    this._gpu!.idxBuf  = upload(this._gpu!.idxBuf,   buffers.indices.buffer);
-    this._gpu!.normBuf = upload(this._gpu!.normBuf,  buffers.normals.buffer);
-    this._gpu!.matIdBuf= upload(this._gpu!.matIdBuf, buffers.triMaterialId.buffer);
+    this._gpu!.bvhBuf = upload(this._gpu!.bvhBuf, buffers.bvhNodes.buffer);
+    this._gpu!.posBuf = upload(this._gpu!.posBuf, buffers.positions.buffer);
+    this._gpu!.idxBuf = upload(this._gpu!.idxBuf, buffers.indices.buffer);
+    this._gpu!.normBuf = upload(this._gpu!.normBuf, buffers.normals.buffer);
+    this._gpu!.matIdBuf = upload(this._gpu!.matIdBuf, buffers.triMaterialId.buffer);
   }
 
   private _uploadMaterials(device: GPUDevice, mats: THREE.Material[]): void {
@@ -572,7 +612,7 @@ export class ProbeUpdatePass {
     if (mats.length > this._ddgiMaxMaterials) {
       console.warn(
         `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
-        `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
+          `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
       );
     }
     const buf = packDDGIMaterialsN(mats, this._ddgiMaxMaterials);
@@ -591,11 +631,11 @@ export class ProbeUpdatePass {
     const data = new Float32Array(headerSize + MAX * LIGHT_STRIDE);
     const udata = new Uint32Array(data.buffer);
 
-    const lights = this._lights.filter(l => l.on);
+    const lights = this._lights.filter((l) => l.on);
     udata[0] = Math.min(lights.length, MAX);
 
     lights.slice(0, MAX).forEach((l, i) => {
-      const base = (headerSize + i * LIGHT_STRIDE);
+      const base = headerSize + i * LIGHT_STRIDE;
       const ubase = base;
       if (l.kind === 'sun') {
         udata[ubase] = 0; // LIGHT_SUN
@@ -603,27 +643,27 @@ export class ProbeUpdatePass {
         // so DDGI's per-probe Le bake matches shade.wgsl's Lo_emit.
         // Without this, the stored l.intensity (typically 1.0) makes
         // DDGI 1/5 the magnitude of the rest of the renderer.
-        data[base + 4] = 0;    // pos.x
-        data[base + 5] = 0;    // pos.y
-        data[base + 6] = 0;    // pos.z
+        data[base + 4] = 0; // pos.x
+        data[base + 5] = 0; // pos.y
+        data[base + 6] = 0; // pos.z
         data[base + 7] = l.intensity * this._sunIntensityMul; // intensity
-        data[base + 8] = 0;    // dir.x
-        data[base + 9] = -1;   // dir.y (sun is from above)
-        data[base + 10] = 0;   // dir.z
-        data[base + 11] = 0;   // innerCone (unused for sun)
-        data[base + 12] = 1;   // color.r
-        data[base + 13] = 0.95;// color.g
-        data[base + 14] = 0.85;// color.b
-        data[base + 15] = 0;   // outerCone (unused for sun)
+        data[base + 8] = 0; // dir.x
+        data[base + 9] = -1; // dir.y (sun is from above)
+        data[base + 10] = 0; // dir.z
+        data[base + 11] = 0; // innerCone (unused for sun)
+        data[base + 12] = 1; // color.r
+        data[base + 13] = 0.95; // color.g
+        data[base + 14] = 0.85; // color.b
+        data[base + 15] = 0; // outerCone (unused for sun)
       } else if (l.kind === 'fixture' || l.kind === 'teaLight') {
         udata[ubase] = 1; // LIGHT_POINT
         const pos = l.position;
-        data[base + 4]  = pos?.x ?? 0;
-        data[base + 5]  = pos?.y ?? 0;
-        data[base + 6]  = pos?.z ?? 0;
-        data[base + 7]  = l.intensity;
-        data[base + 8]  = 0;
-        data[base + 9]  = 0;
+        data[base + 4] = pos?.x ?? 0;
+        data[base + 5] = pos?.y ?? 0;
+        data[base + 6] = pos?.z ?? 0;
+        data[base + 7] = l.intensity;
+        data[base + 8] = 0;
+        data[base + 9] = 0;
         data[base + 10] = 0;
         data[base + 11] = 0;
         data[base + 12] = 1;
@@ -697,7 +737,9 @@ export class ProbeUpdatePass {
     const sinHalf = Math.sqrt(Math.max(0, 1 - qw * qw));
     let ax: number, ay: number, az: number;
     if (sinHalf < 1e-6) {
-      ax = 1; ay = 0; az = 0; // identity — no rotation
+      ax = 1;
+      ay = 0;
+      az = 0; // identity — no rotation
     } else {
       ax = qx / sinHalf;
       ay = qy / sinHalf;
@@ -712,8 +754,8 @@ export class ProbeUpdatePass {
     u32[4] = this._grid.probeCount;
     u32[5] = Math.ceil(this._grid.probeCount / 4);
     // data[6..7] = 0 (pad — already zeroed by Float32Array constructor)
-    data[8]  = this._skyTint[0];
-    data[9]  = this._skyTint[1];
+    data[8] = this._skyTint[0];
+    data[9] = this._skyTint[1];
     data[10] = this._skyTint[2];
     data[11] = this._skyIrradiance;
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data.buffer);
@@ -825,7 +867,10 @@ export class ProbeUpdatePass {
       entries: [
         { binding: 0, resource: irrReadTex.createView() },
         { binding: 1, resource: g.linearSampler },
-        { binding: 2, resource: irrWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+        {
+          binding: 2,
+          resource: irrWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }),
+        },
       ],
     });
 
@@ -860,7 +905,10 @@ export class ProbeUpdatePass {
       entries: [
         { binding: 0, resource: visReadTex.createView() },
         { binding: 1, resource: g.linearSampler },
-        { binding: 2, resource: visWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+        {
+          binding: 2,
+          resource: visWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }),
+        },
       ],
     });
 
@@ -896,9 +944,7 @@ export class ProbeUpdatePass {
         size: [atlas.width, atlas.height, 1],
         format: 'rgba16float',
         usage:
-          GPUTextureUsage.TEXTURE_BINDING |
-          GPUTextureUsage.COPY_SRC |
-          GPUTextureUsage.COPY_DST,
+          GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
       });
       this._irrScratchSize = sizeTag;
       return g.irrScratchTex;
@@ -909,9 +955,7 @@ export class ProbeUpdatePass {
         size: [atlas.width, atlas.height, 1],
         format: 'rgba16float',
         usage:
-          GPUTextureUsage.TEXTURE_BINDING |
-          GPUTextureUsage.COPY_SRC |
-          GPUTextureUsage.COPY_DST,
+          GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
       });
       this._visScratchSize = sizeTag;
       return g.visScratchTex;
@@ -924,11 +968,7 @@ export class ProbeUpdatePass {
    *   [0] numProbes   [1] atlasWidth  [2] atlasHeight  [3] _pad0
    *   [4] gridDimX    [5] gridDimY    [6] gridDimZ      [7] _pad1
    */
-  private _uploadBorderUbo(
-    device: GPUDevice,
-    atlas: GPUTexture,
-    which: 'irr' | 'vis',
-  ): void {
+  private _uploadBorderUbo(device: GPUDevice, atlas: GPUTexture, which: 'irr' | 'vis'): void {
     const g = this._gpu!;
     const data = new Uint32Array(8);
     data[0] = this._grid.probeCount;
@@ -954,7 +994,10 @@ export class ProbeUpdatePass {
       layout: g.borderIrrPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: scratchTex.createView() },
-        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+        {
+          binding: 1,
+          resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }),
+        },
         { binding: 2, resource: { buffer: g.borderIrrUboBuf } },
       ],
     });
@@ -978,7 +1021,10 @@ export class ProbeUpdatePass {
       layout: g.borderVisPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: scratchTex.createView() },
-        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+        {
+          binding: 1,
+          resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }),
+        },
         { binding: 2, resource: { buffer: g.borderVisUboBuf } },
       ],
     });

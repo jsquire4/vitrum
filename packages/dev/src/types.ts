@@ -5,12 +5,7 @@
 // (`import type { FrameStats } from '@vitrum/dev'`) stay working without
 // the consumer needing to know which package owns the canonical type.
 
-import type {
-  Engine,
-  EngineDebugSurface,
-  FrameStats,
-  ProgressStats,
-} from '@vitrum/core';
+import type { Engine, EngineDebugSurface, FrameStats, ProgressStats } from '@vitrum/core';
 
 export type { EngineDebugSurface, FrameStats, ProgressStats };
 

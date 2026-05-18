@@ -18,15 +18,15 @@ import { loadGltfScene } from '@vitrum/three-bindings';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const canvas     = document.querySelector<HTMLCanvasElement>('#c')!;
-const overlay    = document.querySelector<HTMLDivElement>('#overlay')!;
-const dropZone   = document.querySelector<HTMLDivElement>('#drop-zone')!;
-const fileInput  = document.querySelector<HTMLInputElement>('#file-input')!;
+const canvas = document.querySelector<HTMLCanvasElement>('#c')!;
+const overlay = document.querySelector<HTMLDivElement>('#overlay')!;
+const dropZone = document.querySelector<HTMLDivElement>('#drop-zone')!;
+const fileInput = document.querySelector<HTMLInputElement>('#file-input')!;
 const fileInput2 = document.querySelector<HTMLInputElement>('#file-input-2')!;
-const controls2  = document.querySelector<HTMLDivElement>('#controls')!;
-const statusEl   = document.querySelector<HTMLDivElement>('#status')!;
+const controls2 = document.querySelector<HTMLDivElement>('#controls')!;
+const statusEl = document.querySelector<HTMLDivElement>('#status')!;
 const btnRealtime = document.querySelector<HTMLButtonElement>('#btn-realtime')!;
-const btnQuality  = document.querySelector<HTMLButtonElement>('#btn-quality')!;
+const btnQuality = document.querySelector<HTMLButtonElement>('#btn-quality')!;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -58,16 +58,25 @@ function setStatus(msg: string): void {
 /** Fit the orbit camera so the loaded scene fills the view. */
 function fitCameraToScene(scene: import('@vitrum/core').Scene): void {
   // Compute AABB from triangle vertex data.
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity;
+  let maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
   for (const prim of scene.primitives) {
     if (prim.kind !== 'mesh') continue;
     const pos = prim.positions;
     for (let i = 0; i < pos.length; i += 3) {
-      const x = pos[i]!, y = pos[i + 1]!, z = pos[i + 2]!;
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+      const x = pos[i]!,
+        y = pos[i + 1]!,
+        z = pos[i + 2]!;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
     }
   }
   if (!isFinite(minX)) return; // empty scene — leave camera as-is
@@ -84,7 +93,7 @@ function fitCameraToScene(scene: import('@vitrum/core').Scene): void {
   orbit.update();
 
   camera.near = diag * 0.001;
-  camera.far  = diag * 10;
+  camera.far = diag * 10;
   camera.updateProjectionMatrix();
 }
 
@@ -127,7 +136,10 @@ async function loadFileTracked(file: File): Promise<void> {
 
   lastVitrumScene = result.scene;
 
-  if (handle) { handle.dispose(); handle = null; }
+  if (handle) {
+    handle.dispose();
+    handle = null;
+  }
   fitCameraToScene(result.scene);
   setStatus(`Starting engine (${prefer})…`);
   try {
@@ -140,13 +152,19 @@ async function loadFileTracked(file: File): Promise<void> {
   }
 }
 
-async function getCurrentScene(_h: AttachVitrumHandle): Promise<import('@vitrum/core').Scene | null> {
+async function getCurrentScene(
+  _h: AttachVitrumHandle,
+): Promise<import('@vitrum/core').Scene | null> {
   // We store the last scene above rather than extracting from the engine handle.
   return lastVitrumScene;
 }
 
-btnRealtime.addEventListener('click', () => { void switchPrefer('realtime'); });
-btnQuality.addEventListener('click',  () => { void switchPrefer('quality'); });
+btnRealtime.addEventListener('click', () => {
+  void switchPrefer('realtime');
+});
+btnQuality.addEventListener('click', () => {
+  void switchPrefer('quality');
+});
 
 // ── Drag-drop and file-open handlers ─────────────────────────────────────────
 

@@ -11,11 +11,7 @@
  */
 
 import { buildCompositeBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class CompositePass implements Pass {
@@ -41,19 +37,22 @@ export class CompositePass implements Pass {
     const { device, encoder, bglCache, resources, inputs, renderTimestampWrites } = ctx;
     const finalTex = resources.common.resolvedTexture;
     const bg = buildCompositeBindGroup(
-      device, bglCache,
+      device,
+      bglCache,
       finalTex.createView(),
       resources.common.compositeSampler,
     );
     const tsComp = renderTimestampWrites('composite');
     const pass = encoder.beginRenderPass({
       label: 'composite',
-      colorAttachments: [{
-        view: inputs.swapChainView,
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      }],
+      colorAttachments: [
+        {
+          view: inputs.swapChainView,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        },
+      ],
       ...(tsComp ? { timestampWrites: tsComp } : {}),
     });
     pass.setPipeline(this._pipeline);

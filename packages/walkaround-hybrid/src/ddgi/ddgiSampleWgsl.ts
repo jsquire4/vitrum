@@ -28,7 +28,7 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 // the producer (probeGrid.allocateAtlases) and the two consumers
 // (this file + engines/restir/shaders/shade.wgsl.ts) read the same values
 // from one source of truth (ddgiAtlasLayout.ts).
-export const DDGI_SAMPLE_WGSL = /* wgsl */`
+export const DDGI_SAMPLE_WGSL = /* wgsl */ `
 fn ddgiSample(
   worldPos: vec3f,
   surfaceNormal: vec3f,

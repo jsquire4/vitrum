@@ -10,16 +10,8 @@ describe('vitrumSceneToThree RFE userData stamping', () => {
         {
           kind: 'mesh',
           id: 'pane',
-          positions: new Float32Array([
-            -1, -1, 0,
-            1, -1, 0,
-            0, 1, 0,
-          ]),
-          normals: new Float32Array([
-            0, 0, 1,
-            0, 0, 1,
-            0, 0, 1,
-          ]),
+          positions: new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
           indices: new Uint32Array([0, 1, 2]),
           material: {
             baseColor: [1, 1, 1],
@@ -44,7 +36,10 @@ describe('vitrumSceneToThree RFE userData stamping', () => {
     const mesh = scene.children.find((x) => x instanceof Mesh) as Mesh | undefined;
     expect(mesh).toBeDefined();
     const material = mesh?.material as { userData?: Record<string, unknown> } | undefined;
-    const front = material?.userData?.['vitrumFrontLayer'] as { transmission?: number[]; roughness?: number };
+    const front = material?.userData?.['vitrumFrontLayer'] as {
+      transmission?: number[];
+      roughness?: number;
+    };
     const back = material?.userData?.['vitrumBackLayer'] as { transmission?: number[] };
 
     expect(front?.transmission).toEqual([0.2, 0.3, 0.4]);
@@ -58,16 +53,8 @@ describe('vitrumSceneToThree RFE userData stamping', () => {
         {
           kind: 'mesh',
           id: 'mixed-pane',
-          positions: new Float32Array([
-            -1, -1, 0,
-            1, -1, 0,
-            0, 1, 0,
-          ]),
-          normals: new Float32Array([
-            0, 0, 1,
-            0, 0, 1,
-            0, 0, 1,
-          ]),
+          positions: new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
           indices: new Uint32Array([0, 1, 2]),
           material: {
             baseColor: [0.7, 0.8, 0.9],
@@ -122,7 +109,10 @@ describe('vitrumSceneToThree RFE userData stamping', () => {
         { ior: 1.5, thicknessNm: 180 },
       ],
     });
-    expect(userData['vitrumFrontLayer']).toEqual({ transmission: [0.4, 0.5, 0.6], roughness: 0.22 });
+    expect(userData['vitrumFrontLayer']).toEqual({
+      transmission: [0.4, 0.5, 0.6],
+      roughness: 0.22,
+    });
     expect(userData['vitrumBackLayer']).toEqual({ transmission: [0.9, 0.85, 0.8], roughness: 0.1 });
   });
 });

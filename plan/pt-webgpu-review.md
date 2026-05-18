@@ -2,17 +2,17 @@
 
 ## Files inventory
 
-| Path | LOC | Description |
-|---|---|---|
-| `src/index.ts` | 353 | Engine class, factory, state/slot pattern |
-| `src/math/mat4.ts` | 100 | Mat4 multiply, invert, transformPoint, transformDirection |
-| `src/scene/flattenScene.ts` | 51 | `summarizeScene()` — structural summary of a Scene |
-| `src/scene/uploadSceneBuffers.ts` | 148 | `buildPackedScene()` + `uploadPackedScene()` — CPU packing + GPU buffer upload |
-| `src/wgsl/common.wgsl.ts` | 89 | PCG RNG, BVH structs, Ray/HitResult, `intersectTriangle`, `safe_normalize` |
-| `src/wgsl/hammersley.wgsl.ts` | 37 | Van der Corput radical inverse, Hammersley, uniform sphere, Rodrigues rotation |
-| `src/wgsl/octahedral.wgsl.ts` | 23 | Octahedral encode/decode for compact normal storage |
+| Path                                   | LOC | Description                                                                                 |
+| -------------------------------------- | --- | ------------------------------------------------------------------------------------------- |
+| `src/index.ts`                         | 353 | Engine class, factory, state/slot pattern                                                   |
+| `src/math/mat4.ts`                     | 100 | Mat4 multiply, invert, transformPoint, transformDirection                                   |
+| `src/scene/flattenScene.ts`            | 51  | `summarizeScene()` — structural summary of a Scene                                          |
+| `src/scene/uploadSceneBuffers.ts`      | 148 | `buildPackedScene()` + `uploadPackedScene()` — CPU packing + GPU buffer upload              |
+| `src/wgsl/common.wgsl.ts`              | 89  | PCG RNG, BVH structs, Ray/HitResult, `intersectTriangle`, `safe_normalize`                  |
+| `src/wgsl/hammersley.wgsl.ts`          | 37  | Van der Corput radical inverse, Hammersley, uniform sphere, Rodrigues rotation              |
+| `src/wgsl/octahedral.wgsl.ts`          | 23  | Octahedral encode/decode for compact normal storage                                         |
 | `src/wgsl/pathTraceBruteforce.wgsl.ts` | 107 | Main compute kernel: camera ray gen, brute-force tri intersect, Lambert shade, accumulation |
-| `src/wgsl/pathTraceSeed.wgsl.ts` | 36 | Debug-only seed kernel (UV gradient); NOT wired into the engine — dead file |
+| `src/wgsl/pathTraceSeed.wgsl.ts`       | 36  | Debug-only seed kernel (UV gradient); NOT wired into the engine — dead file                 |
 
 Total source: ~944 LOC across 9 files.
 
@@ -40,23 +40,24 @@ Signatures match the contract exactly. TypeScript compiles clean with `--noEmit`
 
 index.ts:82–93:
 
-| Capability | Value | Correct? |
-|---|---|---|
-| `accumulates` | `true` | Yes — PT-style |
-| `supportsMotionBlur` | `false` | Yes — not yet implemented |
-| `supportsAuxBuffers` | `false` | Yes — no G-buffer output yet |
-| `supportsIncrementalScene` | `false` | Yes — full setScene required |
-| `maxSamplesPerPixel` | from opts, default 4096 | Yes |
-| `maxBounces` | from opts, default 12 | Yes — NOTE: shader does not yet implement multi-bounce loops; this cap is currently a lie (see Gaps) |
-| `supportedAnalyticShapes` | `{'sphere','box','capsule','cylinder','h-channel-came'}` | CONCERN: these five shapes are advertised but the scene packer (uploadSceneBuffers.ts:71–73) SKIPS analytic primitives with a warning. This creates a false capability claim. |
-| `supportedEmitterKinds` | full set of 6 kinds | CONCERN: the shader only reads one directional light from params; point/rect-area/disc-area/spot/mesh-area emitters are extracted but only direction is extracted; no light sampling loop. Same false capability claim. |
-| `causticStrategy` | from opts, default 'none' | Yes — API complete, impl deferred |
+| Capability                 | Value                                                    | Correct?                                                                                                                                                                                                                |
+| -------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `accumulates`              | `true`                                                   | Yes — PT-style                                                                                                                                                                                                          |
+| `supportsMotionBlur`       | `false`                                                  | Yes — not yet implemented                                                                                                                                                                                               |
+| `supportsAuxBuffers`       | `false`                                                  | Yes — no G-buffer output yet                                                                                                                                                                                            |
+| `supportsIncrementalScene` | `false`                                                  | Yes — full setScene required                                                                                                                                                                                            |
+| `maxSamplesPerPixel`       | from opts, default 4096                                  | Yes                                                                                                                                                                                                                     |
+| `maxBounces`               | from opts, default 12                                    | Yes — NOTE: shader does not yet implement multi-bounce loops; this cap is currently a lie (see Gaps)                                                                                                                    |
+| `supportedAnalyticShapes`  | `{'sphere','box','capsule','cylinder','h-channel-came'}` | CONCERN: these five shapes are advertised but the scene packer (uploadSceneBuffers.ts:71–73) SKIPS analytic primitives with a warning. This creates a false capability claim.                                           |
+| `supportedEmitterKinds`    | full set of 6 kinds                                      | CONCERN: the shader only reads one directional light from params; point/rect-area/disc-area/spot/mesh-area emitters are extracted but only direction is extracted; no light sampling loop. Same false capability claim. |
+| `causticStrategy`          | from opts, default 'none'                                | Yes — API complete, impl deferred                                                                                                                                                                                       |
 
 ## WGSL shaders
 
 ### `pathTraceBruteforce.wgsl.ts` (the active kernel)
 
 The shader does:
+
 1. Camera ray generation via inverse VP matrix — correct and functional.
 2. Brute-force O(N) triangle intersection loop — functional for small meshes; no BVH.
 3. Single bounce Lambert diffuse shading + emissive scalar — functional.
@@ -72,6 +73,7 @@ This 36-line debug kernel that writes a UV-gradient pattern is NOT imported or u
 ### `common.wgsl.ts`, `hammersley.wgsl.ts`, `octahedral.wgsl.ts`
 
 All three are imported and concatenated into the active kernel. The WGSL is semantically correct:
+
 - PCG hash function implementation is standard; `pcgInit` / `pcgNext` / `rand_f32` are correct.
 - `intersectTriangle` implements Möller-Trumbore with correct backface handling (double-sided: abs(det) check).
 - Hammersley and octahedral encoders are textbook-correct ports.
@@ -79,6 +81,7 @@ All three are imported and concatenated into the active kernel. The WGSL is sema
 ## Scene → GPU upload
 
 `buildPackedScene` (uploadSceneBuffers.ts:60–125) walks `Scene.primitives`:
+
 - Handles `mesh` and `instanced-mesh` kinds: flattens vertices with transform, packs indices with global offset, assigns material IDs.
 - Skips `analytic` primitives with a warning.
 - Extracts one directional emitter for the shader (only the first; ignores all other emitter kinds).
@@ -137,26 +140,28 @@ Dependencies: only `@vitrum/core` is in `package.json`. Does NOT import `@vitrum
 
 ## Cross-package dependencies
 
-| Dependency | Status |
-|---|---|
-| `@vitrum/core` | Correct — types only, no runtime import |
-| `@vitrum/shared-bvh` | Not used — expected when BVH traversal is wired |
-| `@vitrum/shared-samplers` | Not used — Hammersley/Octahedral reimplemented inline in WGSL |
-| `@vitrum/shared-denoisers` | Not used — expected when denoiser is wired |
-| `three` | Absent — correct, Three.js-free |
-| `@vitrum/walkaround-hybrid` | Absent — correct |
-| `@vitrum/pt-webgl` | Absent — correct |
+| Dependency                  | Status                                                        |
+| --------------------------- | ------------------------------------------------------------- |
+| `@vitrum/core`              | Correct — types only, no runtime import                       |
+| `@vitrum/shared-bvh`        | Not used — expected when BVH traversal is wired               |
+| `@vitrum/shared-samplers`   | Not used — Hammersley/Octahedral reimplemented inline in WGSL |
+| `@vitrum/shared-denoisers`  | Not used — expected when denoiser is wired                    |
+| `three`                     | Absent — correct, Three.js-free                               |
+| `@vitrum/walkaround-hybrid` | Absent — correct                                              |
+| `@vitrum/pt-webgl`          | Absent — correct                                              |
 
 Note: the WGSL includes for Hammersley/octahedral are duplicates of what `@vitrum/shared-samplers` owns. When `shared-samplers` gains a WGSL export path, these should be replaced.
 
 ## What's missing / gaps
 
 ### BLOCKER
+
 - **No multi-bounce path tracing loop.** The kernel traces exactly 1 path segment. `maxBounces` is advertised but unused. Any scene with indirect lighting (GI, caustics, interior illumination) will render as purely direct-lit Lambertian. This is the single most important gap.
 - **No BSDF beyond Lambertian.** Roughness, metallic, transmission, IOR are all discarded by the material packer. All surfaces render as diffuse grey-ish with emissive additive. Specular, metallic, glass: none.
 - **No BVH.** O(N) brute-force loop over all triangles. Will become unusably slow beyond ~5K triangles. Not a correctness blocker, but a performance blocker for any non-trivial scene.
 
 ### MEDIUM
+
 - **No NEE / direct light sampling.** Only Lambert shading from a single hardcoded directional light direction. Point, rect-area, disc-area, spot, mesh-area emitters are entirely ignored. Multi-light scenes will render incorrect radiance.
 - **No texture support.** `baseColorMap`, `normalMap`, `roughnessMap`, `emissiveMap` are all discarded. Textured scenes will render with flat base color.
 - **Analytic primitive intersection not implemented.** Five shapes advertised in capabilities, zero implemented.
@@ -164,6 +169,7 @@ Note: the WGSL includes for Hammersley/octahedral are duplicates of what `@vitru
 - **No environment map / HDRI sampling.** The sky model is a hardcoded gradient in the shader (`sampleSky`). HDRI and procedural-sky environment types are ignored.
 
 ### LOW
+
 - **Dead `pathTraceSeed.wgsl.ts`.** Can be deleted or promoted to a test utility.
 - **Inline WGSL samplers duplicate `shared-samplers`.** Should migrate to shared package when that package gains a WGSL export path.
 - **`transformDirection` in mat4.ts is exported but unused** in the current codebase.

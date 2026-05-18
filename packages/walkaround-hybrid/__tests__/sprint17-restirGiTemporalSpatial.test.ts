@@ -10,10 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { TEMPORAL_GI_WGSL } from '../src/shaders/temporalGi.wgsl.js';
 import { SPATIAL_GI_WGSL } from '../src/shaders/spatialGi.wgsl.js';
-import {
-  MAX_PASS_COUNT,
-  buildPassLayout,
-} from '../src/pipeline/timestampQueries.js';
+import { MAX_PASS_COUNT, buildPassLayout } from '../src/pipeline/timestampQueries.js';
 
 describe('Sprint 17 — temporal-GI WGSL', () => {
   it('declares temporalGiMain entry point with 8x8 workgroup', () => {

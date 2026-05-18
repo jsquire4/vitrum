@@ -1,6 +1,7 @@
 # Sprint 10c — BDPT Fork Patch Specification
 
 **Status**: APPLIED (2026-05-12).
+
 - Fork commit: `98f4446` — BDPT integrator + light-subpath ping-pong + Veach §10.3 MIS.
 - Vitrum commit: `398dfce` — pt-webgl BDPT bridge (ForkBridgeBdptOptions + uniform threading).
 - Prior status: vitrum-side scaffold COMPLETE, fork BLOCKED until Sprints 4/5/6 landed.
@@ -32,18 +33,18 @@ Before applying this patch:
 
 The following are now shipped in `@vitrum/shared-samplers`:
 
-| Export | File | Purpose |
-|---|---|---|
-| `BDPTVertex` | `src/bdptVertex.ts` | Vertex type with exact float-offset doc |
-| `BDPT_KIND_LIGHT/EYE/CONNECTION/INVALID` | `src/bdptVertex.ts` | Kind constants (0–3) |
-| `BDPT_VERTEX_FLOATS` (12) | `src/bdptVertex.ts` | Floats per packed vertex |
-| `BDPT_VERTEX_BYTES` (48) | `src/bdptVertex.ts` | Bytes per packed vertex |
-| `BDPT_MAX_LIGHT_BOUNCES` (3) | `src/bdptVertex.ts` | Max light subpath bounces |
-| `BDPT_MAX_EYE_BOUNCES` (12) | `src/bdptVertex.ts` | Max eye subpath bounces |
-| `packBDPTVertex` | `src/bdptVertex.ts` | CPU→GPU packing |
-| `unpackBDPTVertex` | `src/bdptVertex.ts` | GPU→CPU unpacking (testing) |
-| `bdptConnectionMIS` | `src/bdptMIS.ts` | Power-heuristic MIS weight |
-| `buildBDPTStrategyPDFs` | `src/bdptMIS.ts` | Per-strategy PDF table builder |
+| Export                                   | File                | Purpose                                 |
+| ---------------------------------------- | ------------------- | --------------------------------------- |
+| `BDPTVertex`                             | `src/bdptVertex.ts` | Vertex type with exact float-offset doc |
+| `BDPT_KIND_LIGHT/EYE/CONNECTION/INVALID` | `src/bdptVertex.ts` | Kind constants (0–3)                    |
+| `BDPT_VERTEX_FLOATS` (12)                | `src/bdptVertex.ts` | Floats per packed vertex                |
+| `BDPT_VERTEX_BYTES` (48)                 | `src/bdptVertex.ts` | Bytes per packed vertex                 |
+| `BDPT_MAX_LIGHT_BOUNCES` (3)             | `src/bdptVertex.ts` | Max light subpath bounces               |
+| `BDPT_MAX_EYE_BOUNCES` (12)              | `src/bdptVertex.ts` | Max eye subpath bounces                 |
+| `packBDPTVertex`                         | `src/bdptVertex.ts` | CPU→GPU packing                         |
+| `unpackBDPTVertex`                       | `src/bdptVertex.ts` | GPU→CPU unpacking (testing)             |
+| `bdptConnectionMIS`                      | `src/bdptMIS.ts`    | Power-heuristic MIS weight              |
+| `buildBDPTStrategyPDFs`                  | `src/bdptMIS.ts`    | Per-strategy PDF table builder          |
 
 ---
 
@@ -126,6 +127,7 @@ uniform. This stays within the 8-target limit and keeps the framebuffer setup
 from Sprint 5 reusable.
 
 Implementation steps:
+
 1. Allocate a `WebGLTexture` with `internalFormat = RGBA32F`, width=3, height=3.
    This is the "light path buffer" — one column per bounce, one row per texel group.
 2. Create a framebuffer with 3 color attachments (gVertex0/1/2 → 3 RGBA32F targets).
@@ -193,6 +195,7 @@ float bdptMISWeight(float pdfSelected, float pdfSum2) {
 ```
 
 Shadow ray:
+
 ```glsl
 bool isVisible(vec3 origin, vec3 target) {
     // Use existing traceScene() with a shadow-ray mode flag.
@@ -243,11 +246,11 @@ renderer.gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, BDPT_MAX_LIGHT_BOUNCES, 3
 
 ## WebGL2 vertex storage — detailed constraint analysis
 
-| Approach | Max vertices | Drawbacks | Why chosen / rejected |
-|---|---|---|---|
-| MRT (all bounces at once) | 8 × MAX_DRAW_BUFFERS | MAX_DRAW_BUFFERS = 8; 9 targets needed for 3 bounces → overflows | Rejected |
-| Texture ping-pong (one column per draw call) | Unlimited (limited by texture width) | 3 draw calls per frame; viewport scissor required | **Chosen** |
-| SSBO / transform feedback | Theoretically cleaner | Not available in WebGL2 (only WebGL2 compute via extensions unavailable in Safari) | Rejected |
+| Approach                                     | Max vertices                         | Drawbacks                                                                          | Why chosen / rejected |
+| -------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------- | --------------------- |
+| MRT (all bounces at once)                    | 8 × MAX_DRAW_BUFFERS                 | MAX_DRAW_BUFFERS = 8; 9 targets needed for 3 bounces → overflows                   | Rejected              |
+| Texture ping-pong (one column per draw call) | Unlimited (limited by texture width) | 3 draw calls per frame; viewport scissor required                                  | **Chosen**            |
+| SSBO / transform feedback                    | Theoretically cleaner                | Not available in WebGL2 (only WebGL2 compute via extensions unavailable in Safari) | Rejected              |
 
 The texture ping-pong approach adds ~3 draw calls per frame to the existing
 PT_FINAL accumulation loop. Each call is a fullscreen quad (~2 triangles); the

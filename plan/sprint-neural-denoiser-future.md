@@ -33,12 +33,12 @@ were explicitly called out as unwelcome by the user.
 **Primary architecture precedent:**
 Chaitanya, C.R.A., Kaplanyan, A., Schied, C., Salvi, M., Lefohn, A., Nowrouzezahrai, D.,
 Aila, T. "Interactive Reconstruction of Monte Carlo Image Sequences using a Recurrent
-Denoising Autoencoder." *SIGGRAPH*, 2017.
+Denoising Autoencoder." _SIGGRAPH_, 2017.
 https://doi.org/10.1145/3072959.3073601
 
 **UNet architecture:**
 Ronneberger, O., Fischer, P., Brox, T. "U-Net: Convolutional Networks for Biomedical
-Image Segmentation." *MICCAI*, 2015.
+Image Segmentation." _MICCAI_, 2015.
 https://arxiv.org/abs/1505.04597
 
 **OIDN (alternative to compare against — see below):**
@@ -57,6 +57,7 @@ WebGPU inference. It is worth preserving exactly.
 Albedo and normals come from the SVGF/atrous-variance G-buffer pipeline.
 
 **Encoder** (3 levels, stride-2 conv, 2× downsampling per level):
+
 ```
 Level 1: conv2d(9→24,  3×3, stride 2) + ReLU  →  H/2  × W/2  × 24
 Level 2: conv2d(24→48, 3×3, stride 2) + ReLU  →  H/4  × W/4  × 48
@@ -64,11 +65,13 @@ Level 3: conv2d(48→96, 3×3, stride 2) + ReLU  →  H/8  × W/8  × 96
 ```
 
 **Bottleneck** (stride 1, no spatial change):
+
 ```
 conv2d(96→192, 3×3, stride 1) + ReLU           →  H/8  × W/8  × 192
 ```
 
 **Decoder** (3 levels, transposed conv 2×2, stride 2, skip-add from encoder):
+
 ```
 Level 3: transposedConv2d(192→96, 2×2, stride 2)
          + skip-add(enc3: H/8×W/8×96)  →  H/4 × W/4 × 96
@@ -82,11 +85,13 @@ Level 1: transposedConv2d(48→24, 2×2, stride 2)
 ```
 
 **Output projection:**
+
 ```
 conv2d(24→3, 1×1, stride 1)  →  denoised RGB
 ```
 
 **Parameter count (verified in deleted source):**
+
 ```
 enc1:        9 × 24 × 9 + 24   =   1,968
 enc2:       24 × 48 × 9 + 48   =  10,416
@@ -107,6 +112,7 @@ BYTES (f32):                    1,704,300 ≈ 1.63 MB
 This fits within the 1–3 MB DoD target.
 
 **Intermediate GPU memory at 1080p (f32):**
+
 ```
 enc1 output:  540 ×  960 × 24  × 4 ≈  50 MB
 enc2 output:  270 ×  480 × 48  × 4 ≈  25 MB
@@ -191,6 +197,7 @@ and route it through the pipeline compiler before declaring the feature complete
 The training script must export weights in the format expected by `InferenceGraph`:
 
 **Input:**
+
 - Training pairs: (noisy path-traced render, denoised ground-truth render) from the
   vitrum reference scenes in `examples/`. Auxiliary buffers: albedo G-buffer and
   world-space normals G-buffer.
@@ -204,12 +211,14 @@ inference time).
 is insufficient. Match what Chaitanya 2017 uses for the path-tracing denoising case.
 
 **Export format (`.vitrum-model` binary):**
+
 ```
 Header: [u32 magic=0xDEAF1984, u32 version=1, u32 layerCount]
 Per layer: [u32 nameLen, char[nameLen] name,
             u32 weightCount, f32[weightCount] weights,
             u32 biasCount,   f32[biasCount]   biases]
 ```
+
 Weight layout: `[outputC × inputC × kH × kW]` (standard PyTorch layout, row-major).
 The loader in `InferenceGraph` reads this format to populate `ModelWeights`.
 

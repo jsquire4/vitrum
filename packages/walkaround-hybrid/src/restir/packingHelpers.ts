@@ -53,17 +53,15 @@ export function packUVIntoPositionW(
   out.set(positions);
   const u32View = new Uint32Array(out.buffer);
 
-  const sourceUvs = uvAttr
-    ? new Float32Array(uvAttr.array)
-    : new Float32Array(vertCount * 2);
+  const sourceUvs = uvAttr ? new Float32Array(uvAttr.array) : new Float32Array(vertCount * 2);
 
   for (let i = 0; i < vertCount; i++) {
     let u = sourceUvs[i * 2 + 0]!;
     let v = sourceUvs[i * 2 + 1]!;
     u = u - Math.floor(u);
     v = v - Math.floor(v);
-    const u16 = Math.min(0xFFFF, Math.max(0, Math.round(u * 0xFFFF))) & 0xFFFF;
-    const v16 = Math.min(0xFFFF, Math.max(0, Math.round(v * 0xFFFF))) & 0xFFFF;
+    const u16 = Math.min(0xffff, Math.max(0, Math.round(u * 0xffff))) & 0xffff;
+    const v16 = Math.min(0xffff, Math.max(0, Math.round(v * 0xffff))) & 0xffff;
     u32View[i * 4 + 3] = (v16 << 16) | u16;
   }
   return out;
@@ -75,8 +73,8 @@ export function packUVIntoPositionW(
  */
 function resolveTriColor(mat: THREE.Material, applyBeer: boolean): THREE.Color {
   const physMat = mat as THREE.MeshPhysicalMaterial;
-  const stdMat  = mat as THREE.MeshStandardMaterial;
-  const transmission = (physMat.transmission ?? 0);
+  const stdMat = mat as THREE.MeshStandardMaterial;
+  const transmission = physMat.transmission ?? 0;
   const isTransmissive = transmission > 0.01;
   const attenColor = (physMat as { attenuationColor?: THREE.Color }).attenuationColor;
   if (isTransmissive && attenColor) {
@@ -112,25 +110,27 @@ export function packBVHIndexW(
 
     const matId = triMaterialId[t]!;
     const mat = materials[matId];
-    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
+    let r = WARM_GRAY_DEFAULT_R,
+      g = WARM_GRAY_DEFAULT_G,
+      b = WARM_GRAY_DEFAULT_B;
     let transmission = 0;
     let texTypeId = 0;
     let isMetal = 0;
     if (mat) {
       const physMat = mat as THREE.MeshPhysicalMaterial;
-      const stdMat  = mat as THREE.MeshStandardMaterial;
-      transmission = (physMat.transmission ?? 0);
+      const stdMat = mat as THREE.MeshStandardMaterial;
+      transmission = physMat.transmission ?? 0;
       const color = resolveTriColor(mat, /* applyBeer */ false);
-      r = Math.round(color.r * 255) & 0xFF;
-      g = Math.round(color.g * 255) & 0xFF;
-      b = Math.round(color.b * 255) & 0xFF;
+      r = Math.round(color.r * 255) & 0xff;
+      g = Math.round(color.g * 255) & 0xff;
+      b = Math.round(color.b * 255) & 0xff;
       const surfTex = (mat.userData as { surfaceTextureId?: number } | undefined)?.surfaceTextureId;
       texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
-      const metalness = (stdMat?.metalness ?? 0);
+      const metalness = stdMat?.metalness ?? 0;
       isMetal = metalness > 1e-4 ? 1 : 0;
     }
-    const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
-    const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
+    const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xf;
+    const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xff;
     indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
   }
   return indexBuf;
@@ -149,12 +149,14 @@ export function packBVHBeerColors(
   for (let t = 0; t < triCount; t++) {
     const matId = triMaterialId[t]!;
     const mat = materials[matId];
-    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
+    let r = WARM_GRAY_DEFAULT_R,
+      g = WARM_GRAY_DEFAULT_G,
+      b = WARM_GRAY_DEFAULT_B;
     if (mat) {
       const color = resolveTriColor(mat, /* applyBeer */ true);
-      r = Math.round(Math.min(1, color.r) * 255) & 0xFF;
-      g = Math.round(Math.min(1, color.g) * 255) & 0xFF;
-      b = Math.round(Math.min(1, color.b) * 255) & 0xFF;
+      r = Math.round(Math.min(1, color.r) * 255) & 0xff;
+      g = Math.round(Math.min(1, color.g) * 255) & 0xff;
+      b = Math.round(Math.min(1, color.b) * 255) & 0xff;
     }
     beerBuf[t] = (r << 24) | (g << 16) | (b << 8);
   }

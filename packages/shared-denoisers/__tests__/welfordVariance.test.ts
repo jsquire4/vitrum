@@ -11,7 +11,9 @@ describe('WelfordVariance canonical WGSL', () => {
     // Any field-order change must update WELFORD_VARIANCE_VERSION and every
     // consumer's reads.
     expect(WELFORD_VARIANCE_WGSL).toContain('struct WelfordVariance {');
-    expect(WELFORD_VARIANCE_WGSL).toMatch(/struct WelfordVariance \{\s*mean: f32,\s*m2:\s*f32,\s*\}/);
+    expect(WELFORD_VARIANCE_WGSL).toMatch(
+      /struct WelfordVariance \{\s*mean: f32,\s*m2:\s*f32,\s*\}/,
+    );
   });
 
   it('carries the RG32Float layout documentation that consumers test for', () => {
@@ -38,7 +40,8 @@ describe('WelfordVariance canonical WGSL', () => {
 
   it('appears exactly once in each consumer (no duplicate declarations)', () => {
     const commonOccurrences = COMMON_WGSL.split('struct WelfordVariance').length - 1;
-    const atrousVarianceOccurrences = ATROUS_VARIANCE_WGSL.split('struct WelfordVariance').length - 1;
+    const atrousVarianceOccurrences =
+      ATROUS_VARIANCE_WGSL.split('struct WelfordVariance').length - 1;
     expect(commonOccurrences).toBe(1);
     expect(atrousVarianceOccurrences).toBe(1);
   });

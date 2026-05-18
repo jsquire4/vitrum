@@ -18,6 +18,7 @@ These are silent runtime failures or shader compilation errors. Fix before any o
 ### 1.1 RAYS_PER_PROBE mismatch
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts:18` — `const RAYS_PER_PROBE: u32 = 96u`
 - `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts:19` — `const RAYS_PER_PROBE: u32 = 96u`
 - `packages/walkaround-hybrid/src/ddgi/probeUpdatePass.ts:37` — `const RAYS_PER_PROBE = 192`
@@ -25,6 +26,7 @@ These are silent runtime failures or shader compilation errors. Fix before any o
 **Bug:** GPU buffer is allocated for 192 rays per probe. WGSL blend/ray shaders iterate only 96. Half of every DDGI atlas blend is silently skipped.
 
 **Fix:**
+
 1. In `probeUpdatePass.ts`, export `RAYS_PER_PROBE`:
    ```ts
    export const RAYS_PER_PROBE = 192;
@@ -45,18 +47,21 @@ These are silent runtime failures or shader compilation errors. Fix before any o
 ### 1.2 `-> void` on WGSL compute entry points
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/rc/wgsl/cascadeMerge.wgsl.ts:96`
 - `packages/walkaround-hybrid/src/rc/wgsl/probeRayCast.wgsl.ts:383`
 
 **Bug:** WGSL spec: compute entry points have no return type. `-> void` is invalid syntax and will fail GPU shader compilation.
 
 **Fix:** Remove `-> void` from both entry-point signatures:
+
 ```wgsl
 // Before:
 fn cascadeMergeKernel(@builtin(global_invocation_id) globalId: vec3u) -> void {
 // After:
 fn cascadeMergeKernel(@builtin(global_invocation_id) globalId: vec3u) {
 ```
+
 Same fix for `probeRayCastKernel` in probeRayCast.wgsl.ts:383.
 
 ---
@@ -64,15 +69,18 @@ Same fix for `probeRayCastKernel` in probeRayCast.wgsl.ts:383.
 ### 1.3 Missing `INV_2PI` constant
 
 **Files:**
+
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:217,240,272` — references `INV_2PI`
 - `packages/pt-webgpu/src/wgsl/common.wgsl.ts` — does not define `INV_2PI`
 
 **Bug:** Runtime WGSL compile failure for any scene with HDRI.
 
 **Fix:** Add to `common.wgsl.ts` alongside `INV_PI`:
+
 ```wgsl
 const INV_2PI: f32 = 0.15915494309190160;
 ```
+
 Add a wgslContract test asserting `PT_WEBGPU_TRACE_WGSL` contains `INV_2PI`.
 
 ---
@@ -80,12 +88,14 @@ Add a wgslContract test asserting `PT_WEBGPU_TRACE_WGSL` contains `INV_2PI`.
 ### 1.4 Normal encoding mismatch between spatialFilter and atrous
 
 **Files:**
+
 - `packages/shared-denoisers/src/wgsl/spatialFilter.wgsl.ts:143` — reads normals raw: `textureLoad(gbufferNormal, gid.xy, 0).xyz`
 - `packages/shared-denoisers/src/wgsl/atrous.wgsl.ts:50` — decodes: `textureLoad(gbufferNormal, gid.xy, 0).xyz * 2.0 - 1.0`
 
 **Bug:** If both shaders consume the same G-buffer, one produces wrong normals. The `rgba16float` format comment in both TypeScript descriptors is identical, implying they consume the same texture.
 
 **Fix:**
+
 1. Audit `WalkaroundGPUPipeline.ts` to determine which G-buffer texture is fed to `spatialFilter` vs `atrous`.
 2. If same texture: pick one encoding convention (prefer unsigned-normalized 0..1 for `rgba16float`) and update both shaders to match.
 3. If different textures: document the encoding contract in each shader's header comment with explicit G-buffer name.
@@ -95,12 +105,14 @@ Add a wgslContract test asserting `PT_WEBGPU_TRACE_WGSL` contains `INV_2PI`.
 ### 1.5 WelfordVariance struct duplication with no sync enforcement
 
 **Files:**
+
 - `packages/shared-denoisers/src/wgsl/svgf.wgsl.ts:72-88` — local copy `@version 1`
 - `packages/walkaround-hybrid/src/shaders/common.wgsl.ts` — canonical
 
 **Bug:** Comment-only enforcement. If common.wgsl.ts adds a field, svgf.wgsl.ts silently produces garbage variance.
 
 **Fix:**
+
 1. Extract the WelfordVariance WGSL struct block from `common.wgsl.ts` into a new exported constant:
    ```ts
    // packages/walkaround-hybrid/src/shaders/welfordVariance.wgsl.ts
@@ -170,6 +182,7 @@ No file outside `pt-webgpu` imports `OCTAHEDRAL_WGSL` from `@vitrum/pt-webgpu`.
 `VITRUM_SPECTRAL_EXTENSION_KEY = 'vitrum.spectral'` — zero external consumers.
 
 **Fix:**
+
 1. Delete `packages/three-bindings/src/spectral.ts`.
 2. Remove from `packages/three-bindings/src/index.ts:39`:
    ```ts
@@ -184,7 +197,7 @@ The following symbols are used only internally within `shared-denoisers`; no ext
 
 ```ts
 // Remove these from index.ts exports:
-export * from './webGpuTextureCopy.js';           // WEBGPU_COPY_BYTES_PER_ROW_ALIGNMENT, alignedTextureCopyBytesPerRow
+export * from './webGpuTextureCopy.js'; // WEBGPU_COPY_BYTES_PER_ROW_ALIGNMENT, alignedTextureCopyBytesPerRow
 export { float16BitsToFloat32, float32ToFloat16Bits } from './halfFloat.js';
 export { getSharedWebGPUDevice, disposeSharedWebGPUDevice } from './sharedWebGpuDevice.js';
 export { SPATIAL_FILTER_WGSL } from './wgsl/spatialFilter.wgsl.js';
@@ -246,10 +259,12 @@ Its 2 tests are a strict subset of `__tests__/jakobHanika.test.ts` (which is mor
 Both are authored, exported, and explicitly marked "DEFERRED — NOT wired into the dispatch pipeline." They increase cognitive surface area without function.
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/shaders/resolve.wgsl.ts`
 - `packages/walkaround-hybrid/src/shaders/sampleBudget.wgsl.ts`
 
 **Fix:**
+
 1. Create `packages/walkaround-hybrid/src/shaders/deferred/` directory.
 2. Move both files there.
 3. Update `index.ts` to not export them (they're already confirmed dead).
@@ -278,6 +293,7 @@ Also remove the corresponding unused import for `SUN_LIGHT_DISTANCE` from `../..
 **Files:** `ris.wgsl.ts`, `temporal.wgsl.ts`, `spatial.wgsl.ts`, `shade.wgsl.ts` — all four declare the same 13-field `WalkaroundUBO` struct at `@group(2) @binding(0)`.
 
 **Fix:**
+
 1. Add the struct declaration once to `COMMON_WGSL` in `packages/walkaround-hybrid/src/shaders/common.wgsl.ts`.
 2. Remove the four local `struct WalkaroundUBO { ... }` declarations from all four shader files.
 
@@ -288,6 +304,7 @@ Also remove the corresponding unused import for `SUN_LIGHT_DISTANCE` from `../..
 **Files:** `ris.wgsl.ts:70-86`, `temporal.wgsl.ts:55-67`, `shade.wgsl.ts:194-198`, `spatial.wgsl.ts:59-67` — four implementations of the same 16-byte bitcast pack/unpack.
 
 **Fix:**
+
 1. Add `RESERVOIR_DI_STRIDE`, `loadReservoirDI` (read-write and read-only variants), `storeReservoirDI` to `COMMON_WGSL`.
 2. Remove all four local definitions.
 
@@ -298,6 +315,7 @@ Also remove the corresponding unused import for `SUN_LIGHT_DISTANCE` from `../..
 **Files:** `spatial.wgsl.ts:70-100`, `temporal.wgsl.ts:73-83` — identical struct.
 
 **Fix:**
+
 1. Add `struct PrimarySurface { ... }` once to `COMMON_WGSL`.
 2. Remove both local declarations.
 3. The `castPrimary` functions differ in the `camPos` parameter; leave them in their respective shaders or unify as `castPrimaryRay(camPos, ...)` in `COMMON_WGSL`.
@@ -307,12 +325,14 @@ Also remove the corresponding unused import for `SUN_LIGHT_DISTANCE` from `../..
 ### 3.4 Consolidate DDGI trilinear sampling duplication
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/shaders/shade.wgsl.ts:97-190` — `ddgiSampleFromBindings()`
 - `packages/walkaround-hybrid/src/ddgi/wgsl/ddgiSampleWgsl.ts:43-137` — `ddgiSample()`
 
 ~90 lines of identical math. Also divergent fallback: `ddgiSampleWgsl.ts` returns `vec3f(0.05)` while `shade.wgsl.ts` returns `vec3f(0.0)`.
 
 **Fix:**
+
 1. Use the argument-passing form from `ddgiSampleWgsl.ts` as the canonical implementation.
 2. Change `ddgiSampleWgsl.ts:133` to return `vec3f(0.0)` (conservative, matches shade.wgsl.ts).
 3. In `shade.wgsl.ts`, replace the inline `ddgiSampleFromBindings()` body with a call to `ddgiSample(atlasIrr, atlasVis, gridUbo, pos, normal)`, passing the textures as function arguments rather than reading from `@group(3)` bindings directly.
@@ -322,12 +342,14 @@ Also remove the corresponding unused import for `SUN_LIGHT_DISTANCE` from `../..
 ### 3.5 Consolidate PPG kd-tree traversal
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/ppg/wgsl/ppgSample.wgsl.ts:147-222` — `ppgKdFindCell()`
 - `packages/walkaround-hybrid/src/ppg/wgsl/ppgUpdate.wgsl.ts:151-225` — `ppgUpdateKdFindCell()`
 
 ~75 lines of WGSL duplicated verbatim; differ only in function name, `cellCount` source, and axis helper name.
 
 **Fix:**
+
 1. Create `packages/walkaround-hybrid/src/ppg/wgsl/ppgCommon.wgsl.ts` with the parameterized traversal.
 2. Import `PPG_COMMON_WGSL` in both shader files; replace the local implementations.
 
@@ -340,6 +362,7 @@ Also remove the corresponding unused import for `SUN_LIGHT_DISTANCE` from `../..
 `irradianceAtlasUv` (CELL=8u) and `visibilityAtlasUv` (CELL=16u) are identical except for the cell constant.
 
 **Fix:**
+
 ```wgsl
 fn probeAtlasUv(probeIdx: u32, octUv: vec2f, atlasW: u32, atlasH: u32, gridDims: vec3u, cell: u32) -> vec2f { ... }
 fn irradianceAtlasUv(probeIdx: u32, octUv: vec2f, atlasW: u32, atlasH: u32, gridDims: vec3u) -> vec2f {
@@ -359,6 +382,7 @@ fn visibilityAtlasUv(probeIdx: u32, octUv: vec2f, atlasW: u32, atlasH: u32, grid
 Scene-specific window-panel texture functions (`_barroqueMod`, `_catspawMod`, `_flemishMod`, etc.) live in the shared math header imported by every shader.
 
 **Fix:**
+
 1. Create `packages/walkaround-hybrid/src/shaders/surfaceTextures.wgsl.ts` with `SURFACE_TEXTURES_WGSL`.
 2. Move lines 771-872 from `common.wgsl.ts` into the new file.
 3. In `pipelineCompiler.ts`, inject `SURFACE_TEXTURES_WGSL` only into shader modules that call `surfaceTextureMod` (i.e., shade.wgsl and the BVH tinted-visibility path).
@@ -372,6 +396,7 @@ Scene-specific window-panel texture functions (`_barroqueMod`, `_catspawMod`, `_
 `varianceK: f32` is declared in `AccumUBO` but never read in the shader. The module comment says "mean ± k·std_dev" but the shader uses AABB min/max.
 
 **Fix (choose one):**
+
 - Option A (simpler): Remove `varianceK` from the struct and replace with `_pad1: f32`. Update the host-side packer in `svgfWebGPU.ts` (and any test) to write 0.0 for the dropped slot. Add a comment: "AccumUBO uses AABB min/max clamp (not k·std_dev); varianceK removed."
 - Option B (complete): Implement std-dev clamping using `varianceK` as the threshold multiplier.
 
@@ -394,6 +419,7 @@ Scene-specific window-panel texture functions (`_barroqueMod`, `_catspawMod`, `_
 Single scalar `u1` drives both U and V jitter via different frequencies — correlated samples, not independent.
 
 **Fix:**
+
 ```wgsl
 // Before:
 let jitterU = (col + fract(u1 * 4.0)) / 4.0;
@@ -410,6 +436,7 @@ let jitterV = (row + u2) / 4.0;        // u2 for V (already declared)
 **File:** `packages/shared-denoisers/src/wgsl/hdrLuminanceBilateral.wgsl.ts:53`
 
 **Fix:**
+
 ```wgsl
 let ws = exp(-spatial / 18.0); // 2 * sigma_spatial^2, sigma_spatial=3 (5x5 kernel radius)
 ```
@@ -421,6 +448,7 @@ let ws = exp(-spatial / 18.0); // 2 * sigma_spatial^2, sigma_spatial=3 (5x5 kern
 **Files:** `svgf.wgsl.ts:99`, `atrous.wgsl.ts:99`, `spatialFilter.wgsl.ts:175`
 
 Constrained duplication (no cross-module WGSL imports in WebGPU). Each occurrence of `vec3f(0.2126, 0.7152, 0.0722)` should have:
+
 ```wgsl
 // Rec. 709 luminance weights — canonical value; three copies exist (svgf, atrous, spatialFilter)
 ```
@@ -432,15 +460,15 @@ Constrained duplication (no cross-module WGSL imports in WebGPU). Each occurrenc
 **Files:** `svgf.wgsl.ts:221-227`, `atrous.wgsl.ts:36-42` — identical 25-value kernel.
 
 **Fix:** Define in a shared TS file:
+
 ```ts
 export const ATROUS_KERNEL_VALUES = [
-  0.0625, 0.125, 0.0625,
-  0.125,  0.25,  0.125,
-  0.0625, 0.125, 0.0625,
+  0.0625, 0.125, 0.0625, 0.125, 0.25, 0.125, 0.0625, 0.125, 0.0625,
   // ... (all 25 values)
 ] as const;
 export const ATROUS_KERNEL_WGSL = `const KERNEL: array<f32, 25> = array<f32, 25>(${ATROUS_KERNEL_VALUES.join(',')});`;
 ```
+
 Inject into both WGSL strings via template literal. Eliminates the acknowledged "identical" copy.
 
 ---
@@ -462,6 +490,7 @@ The `// ── Material ──` header at lines 33-34 precedes the spectral type
 `Material` comment says "hosts may mutate fields between frames" but `readonly material: Material` slots on `MeshPrimitive` etc. provide no snapshot-trigger protocol.
 
 **Fix (choose one):**
+
 - Option A: Add `isDirty?: boolean` flag to `Material` so backends can detect mutations without deep comparison. Document the protocol: host sets `isDirty = true` after mutation; engine clears it after processing.
 - Option B: Remove the mutability note. Require hosts to call `updatePrimitive` for material changes. This is consistent with the incremental-update contract already on `Engine`.
 
@@ -489,6 +518,7 @@ causticOptions?: {
 `swapChainView?: GPUTextureView` and `swapChainFormat?: GPUTextureFormat` in the backend-agnostic `FrameInput` couple the core contract to one backend.
 
 **Fix:** Either:
+
 - Move to `extensions?: Record<string, unknown>` with a typed helper in `pt-webgpu` that extracts them.
 - Or type as opaque `BackendTexture = unknown` aliases like the existing `BackendTexture`.
 
@@ -497,6 +527,7 @@ causticOptions?: {
 #### 4.5 `gpuDetection.ts` / `wgpuSupport.ts` — Add removal milestones to `@deprecated isHardwareGpu`
 
 Both files have an identical `@deprecated` field with no removal date. Add:
+
 ```ts
 /** @deprecated Prefer {@link adapterKind}. Remove in Phase 7 / Sprint 1. */
 ```
@@ -506,6 +537,7 @@ Both files have an identical `@deprecated` field with no removal date. Add:
 #### 4.6 `wgpuSupport.ts:100-107` — Inline `isWebGPUSupported()` into `probeWebGPU()`
 
 Private single-use function with redundant null checks. Replace:
+
 ```ts
 // Remove isWebGPUSupported() declaration entirely.
 // In probeWebGPU(), replace the call with:
@@ -527,17 +559,18 @@ if (typeof navigator === 'undefined' || !('gpu' in navigator)) {
 Eight magic string keys (`'vitrumDispersionAbbeNumber'`, `'vitrumScatteringCoefficient'`, etc.) appear in both files with no shared definition. A typo silently breaks the round-trip.
 
 **Fix:**
+
 1. Create `packages/three-bindings/src/userDataKeys.ts`:
    ```ts
    export const VITRUM_USER_DATA_KEYS = {
-     DISPERSION_ABBE:    'vitrumDispersionAbbeNumber',
-     SCATTERING_COEFF:   'vitrumScatteringCoefficient',
-     SCATTERING_RGB:     'vitrumScatteringCoefficientRGB',
-     SCATTERING_ANISO:   'vitrumScatteringAnisotropy',
-     SPECTRAL_ATTEN:     'vitrumSpectralAttenuation',
-     THIN_FILM_STACK:    'vitrumThinFilmStack',
-     FRONT_LAYER:        'vitrumFrontLayer',
-     BACK_LAYER:         'vitrumBackLayer',
+     DISPERSION_ABBE: 'vitrumDispersionAbbeNumber',
+     SCATTERING_COEFF: 'vitrumScatteringCoefficient',
+     SCATTERING_RGB: 'vitrumScatteringCoefficientRGB',
+     SCATTERING_ANISO: 'vitrumScatteringAnisotropy',
+     SPECTRAL_ATTEN: 'vitrumSpectralAttenuation',
+     THIN_FILM_STACK: 'vitrumThinFilmStack',
+     FRONT_LAYER: 'vitrumFrontLayer',
+     BACK_LAYER: 'vitrumBackLayer',
    } as const;
    ```
 2. Replace bare string literals in both files with `VITRUM_USER_DATA_KEYS.*`.
@@ -588,7 +621,7 @@ Or: always emit `ior` for physical materials regardless of value.
 
 ```ts
 function stripEmissive(prim: MeshPrimitive): MeshPrimitive {
-  return { ...prim, material: { ...prim.material, emissive: [0,0,0], emissiveIntensity: 0 } };
+  return { ...prim, material: { ...prim.material, emissive: [0, 0, 0], emissiveIntensity: 0 } };
 }
 ```
 
@@ -621,9 +654,12 @@ if (p.transform) m.fromArray(p.transform); // Float32Array satisfies ArrayLike<n
 #### 4.14 Add disc-area approximation warning in `vitrumSceneToThree.ts`
 
 When `discAreaEmitterToRectThree` is called, emit:
+
 ```ts
-console.warn('[vitrum/three-bindings] DiscAreaEmitter converted to RectAreaLight approximation ' +
-  '(area-preserving rectangle). Round-trip will produce RectAreaEmitter, not DiscAreaEmitter.');
+console.warn(
+  '[vitrum/three-bindings] DiscAreaEmitter converted to RectAreaLight approximation ' +
+    '(area-preserving rectangle). Round-trip will produce RectAreaEmitter, not DiscAreaEmitter.',
+);
 ```
 
 ---
@@ -631,6 +667,7 @@ console.warn('[vitrum/three-bindings] DiscAreaEmitter converted to RectAreaLight
 #### 4.15 Add TODO in `environment.ts` for ProceduralSkyEnvironment
 
 In `resolveEnvironment()`, add:
+
 ```ts
 // TODO: ProceduralSkyEnvironment not handled here.
 // A THREE.Sky object with uniforms {turbidity, mieCoefficient, mieDirectionalG, rayleigh}
@@ -650,6 +687,7 @@ In `resolveEnvironment()`, add:
 `restir/bvhCompute.ts:208,241` accesses `shared.bvh.geometry.attributes['uv']` — a private three-mesh-bvh field.
 
 **Fix:**
+
 1. Add `uvAttribute?: THREE.BufferAttribute` to `SceneBVHCommonResult`.
 2. In `buildSceneBVH`, populate: `uvAttribute: merged.attributes['uv'] as THREE.BufferAttribute | undefined`.
 3. Update `restir/bvhCompute.ts` to read `shared.uvAttribute` instead of `shared.bvh.geometry.attributes['uv']`.
@@ -661,6 +699,7 @@ In `resolveEnvironment()`, add:
 Both `rc/bvhCompute.ts` and `restir/bvhCompute.ts` export `buildSceneBVH` with incompatible signatures and return types. Callers can silently import the wrong one.
 
 **Fix:**
+
 - `rc/bvhCompute.ts`: rename export to `buildRCSceneBVH`.
 - `restir/bvhCompute.ts`: rename export to `buildReSTIRSceneBVH`.
 - Update all call sites.
@@ -689,6 +728,7 @@ mesh.matrixWorld.decompose(_decompPos, _decompQuat, worldScale);
 **File:** `packages/shared-bvh/src/sceneBvh.ts:85-117`
 
 The dirty-check traversal uses `DDGI_MESH_FILTER` and the build traversal uses the same. Document that both MUST use the same filter to avoid hash/build mismatch:
+
 ```ts
 // IMPORTANT: both traversals (version hash and actual build) MUST use the same
 // filter predicate. Divergence causes the dirty check to invalidate on a different
@@ -720,6 +760,7 @@ version += m.id;
 Currently `rgbToSpectralCoefficients` is `@deprecated` pointing at the `Approx` variant, which is backwards — the `Approx` name is the placeholder.
 
 **Fix:**
+
 1. Remove `@deprecated` from `rgbToSpectralCoefficients`.
 2. Mark `rgbToApproxSpectralCoefficients` as `@internal` with a JSDoc: "Placeholder implementation. Will be replaced by precomputed table in Sprint 12. Use `rgbToSpectralCoefficients` as the stable public name."
 
@@ -761,6 +802,7 @@ Apply to all four tables: `CIE_X_TABLE`, `CIE_Y_TABLE`, `CIE_Z_TABLE`, `CIE_D65_
 `Y_CDF` depends on `Y_INTEGRAL`. Two separate top-level `const` IIFEs are reordering-fragile.
 
 **Fix:**
+
 ```ts
 const { integral: Y_INTEGRAL, cdf: Y_CDF } = (() => {
   // ... compute integral first, then cdf using it
@@ -781,6 +823,7 @@ const { integral: Y_INTEGRAL, cdf: Y_CDF } = (() => {
 Six near-identical functions sharing: `alignedTextureCopyBytesPerRow` + allocate typed array + loop + `device.queue.writeTexture`.
 
 **Fix:**
+
 1. Define named bpp constants:
    ```ts
    const RGBA32F_BPP = 16 as const;
@@ -807,6 +850,7 @@ Six near-identical functions sharing: `alignedTextureCopyBytesPerRow` + allocate
 Currently: 1 `queue.submit()` for variance pass + up to 12 `queue.submit()` inside the à-trous loop = up to 13 separate synchronization points per `runSvgfWebGPU` call.
 
 **Fix:**
+
 1. Create one `GPUCommandEncoder` before the variance pass.
 2. Add the variance pass and all à-trous iterations to the same encoder.
 3. Call `device.queue.submit([encoder.finish()])` once at the end.
@@ -821,9 +865,14 @@ Currently: 1 `queue.submit()` for variance pass + up to 12 `queue.submit()` insi
 Currently creates a new bind group per à-trous iteration (up to 12). Only 2 are needed.
 
 **Fix:**
+
 ```ts
-const atrousBindA = device.createBindGroup({ /* readTex=accumA, writeTex=accumB */ });
-const atrousBindB = device.createBindGroup({ /* readTex=accumB, writeTex=accumA */ });
+const atrousBindA = device.createBindGroup({
+  /* readTex=accumA, writeTex=accumB */
+});
+const atrousBindB = device.createBindGroup({
+  /* readTex=accumB, writeTex=accumA */
+});
 for (let iter = 0; iter < atrousIterations; iter++) {
   pass.setBindGroup(0, iter % 2 === 0 ? atrousBindA : atrousBindB);
   // ...
@@ -840,8 +889,11 @@ G-buffer textures are write-via-`writeTexture` and read-via-compute-shader; they
 
 ```ts
 // Before:
-const texRgba32Usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST |
-  GPUTextureUsage.COPY_SRC | GPUTextureUsage.RENDER_ATTACHMENT;
+const texRgba32Usage =
+  GPUTextureUsage.TEXTURE_BINDING |
+  GPUTextureUsage.COPY_DST |
+  GPUTextureUsage.COPY_SRC |
+  GPUTextureUsage.RENDER_ATTACHMENT;
 // After:
 const texRgba32Usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
 ```
@@ -910,6 +962,7 @@ const outputTensor = results[tn.output ?? 'output'] ?? results['color'];
 DDGI UBO packing inlined in `renderFrame()` — a parallel reimplementation of `buildDDGIPlaceholderUBO`.
 
 **Fix:**
+
 1. In `resourceManager.ts`, extract:
    ```ts
    export function packDDGIGridParams(p: ProbeGridParams): Float32Array { ... }
@@ -923,6 +976,7 @@ DDGI UBO packing inlined in `renderFrame()` — a parallel reimplementation of `
 The fake Three.js renderer adapter synthesized inline for `DDGI.updateFrame()` couples HybridEngine to DDGI's Three.js-shaped API.
 
 **Fix:**
+
 1. Define in `ddgi/types.ts`:
    ```ts
    export interface DDGIDeviceHandle {
@@ -974,6 +1028,7 @@ Seven UBO buffers are lazily allocated inside `renderFrame()`:
 The SVGF path creates bind groups inline inside a for-loop (bypassing `bindGroupBuilders.ts`), inconsistent with the legacy atrous path.
 
 **Fix:** Add to `bindGroupBuilders.ts`:
+
 - `buildWelfordBindGroup(d, layout, ...)`
 - `buildSVGFVarianceBindGroup(d, layout, ...)`
 - `buildSVGFAtrousBindGroup(d, layout, readTex, writeTex, ...)`
@@ -995,6 +1050,7 @@ Mixed convention: some fields use underscore prefix (`_ddgiIrrTex`), others do n
 The 709-line file mixes 6 concerns.
 
 **Fix:**
+
 1. Create `restir/packingHelpers.ts` with `applyBeerLambert`, `packUVIntoPositionW`, `packBVHIndexW`, `packBVHBeerColors`.
 2. Create `restir/emitterList.ts` with `buildEmitterList` and its luminance helper.
 3. Leave `buildReSTIRSceneBVH` (renamed per 4.17) as a thin orchestrator in `bvhCompute.ts`.
@@ -1018,6 +1074,7 @@ Call from both packers.
 Three near-identical branches (MeshPhysicalMaterial, MeshStandardMaterial, fallback) duplicate 12 of 16 float assignments.
 
 **Fix:** Single branch reading from MeshStandard cast with a Physical-only override block:
+
 ```ts
 const std = mat as THREE.MeshStandardMaterial;
 // write common fields: color, roughness, metalness, emissive ...
@@ -1043,6 +1100,7 @@ Either add the comment documenting single-canvas intent, or remove the singleton
 `buildCascadeUniformDataInto(..., 1.0, ...)` — `envIntensity` is hardcoded to `1.0` with no corresponding field in `RCDispatchOpts`.
 
 **Fix:** Either add `envIntensity?: number` to `RCDispatchOpts` (defaulting to `1.0`), or add a comment:
+
 ```ts
 // envIntensity fixed at 1.0: tone mapping is applied per-material downstream;
 // environment-level scaling is intentionally not exposed at the RC dispatch level.
@@ -1055,9 +1113,12 @@ Either add the comment documenting single-canvas intent, or remove the singleton
 The `[GI_TAG]?: boolean` Symbol-keyed brand requires `as unknown as GIMaterial` at every access site.
 
 **Fix:**
+
 ```ts
 // Instead of Symbol brand:
-interface GIMaterial { userData: { __vitrum_gi_wrapped?: true } }
+interface GIMaterial {
+  userData: { __vitrum_gi_wrapped?: true };
+}
 // Access:
 (nm as GIMaterial).userData.__vitrum_gi_wrapped = true;
 ```
@@ -1069,12 +1130,14 @@ interface GIMaterial { userData: { __vitrum_gi_wrapped?: true } }
 `WALKAROUND_DENOISER_UNET_SPEC` has baked 1080p dispatch parameters. A non-1080p render silently dispatches the wrong workgroup count.
 
 **Fix:**
+
 ```ts
 export function buildUNetSpec(width: number, height: number): UNetSpec {
   // Derive dispatchX/Y/Z from width/height
-  return { ...WALKAROUND_DENOISER_UNET_SPEC, /* override dispatch dims */ };
+  return { ...WALKAROUND_DENOISER_UNET_SPEC /* override dispatch dims */ };
 }
 ```
+
 Mark `WALKAROUND_DENOISER_UNET_SPEC` as `@internal` or add a JSDoc warning against direct use for non-1080p targets.
 
 ---
@@ -1082,6 +1145,7 @@ Mark `WALKAROUND_DENOISER_UNET_SPEC` as `@internal` or add a JSDoc warning again
 #### 4.48 `neural/InferenceGraph.ts:200-213` — Document intermediate buffer contract
 
 Add prominent JSDoc to `initialize()` and `run()`:
+
 ```ts
 /**
  * IMPORTANT: All intermediate tensor names must be included in the `outputs` map
@@ -1095,6 +1159,7 @@ Add prominent JSDoc to `initialize()` and `run()`:
 #### 4.49 `neural/InferenceGraph.ts:304-312` — Document bind group cache stability assumption
 
 Add comment:
+
 ```ts
 // Bind groups are cached permanently after first creation.
 // ASSUMPTION: buffer identity in `outputs` and `inputs` maps is stable across run() calls.
@@ -1109,6 +1174,7 @@ const bg = this._cachedBindGroups[i] ?? device.createBindGroup({ ... });
 The recursive `build` function is defined as a closure inside `buildPpgKdTreeGpuBytes`, capturing outer-scope arrays.
 
 **Fix:**
+
 ```ts
 function _buildKdNode(
   sub: number[], positions: Float32Array, nodes: PpgKdNode[]
@@ -1126,13 +1192,16 @@ export function buildPpgKdTreeGpuBytes(...): Uint8Array {
 #### 4.51 Replace PPG string-splice injection with explicit extension hooks in `shade.wgsl.ts`
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/ppg/wgsl/shadePpgTrain.wgsl.ts` — uses verbatim literal anchor `'@group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;'` for splice point
 - `packages/walkaround-hybrid/src/ppg/wgsl/shadePpgGuide.wgsl.ts` — uses multiline `COMBINED_ANCHOR` string as splice point
 
 **Problem:** Any refactoring of `shade.wgsl.ts` that touches the anchor strings (reformatting, reordering bindings, changing the `combined=` expression) silently breaks PPG injection at runtime — no compile error, just wrong output.
 
 **Fix:**
+
 1. In `shade.wgsl.ts`, replace the two implicit anchor sites with named comment delimiters:
+
    ```wgsl
    // @@PPG_BINDINGS_INSERT@@
    @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
@@ -1145,10 +1214,12 @@ export function buildPpgKdTreeGpuBytes(...): Uint8Array {
                 + Lo_ddgi * DDGI_DIFFUSE_BLEND;
    // @@PPG_COMBINED_INSERT@@
    ```
+
 2. In `shadePpgTrain.wgsl.ts` and `shadePpgGuide.wgsl.ts`, replace the verbatim string anchors with delimiter-based searches:
    ```ts
    const BINDINGS_MARKER = '// @@PPG_BINDINGS_INSERT@@';
-   if (!base.includes(BINDINGS_MARKER)) throw new Error('shade.wgsl.ts: PPG bindings marker missing');
+   if (!base.includes(BINDINGS_MARKER))
+     throw new Error('shade.wgsl.ts: PPG bindings marker missing');
    return base.replace(BINDINGS_MARKER, BINDINGS_MARKER + '\n' + ppgBindings);
    ```
 3. The marker strings are intentionally ugly and won't appear in any natural refactoring — a refactor that deletes them gets an explicit runtime `Error` instead of silent wrong output.
@@ -1164,6 +1235,7 @@ export function buildPpgKdTreeGpuBytes(...): Uint8Array {
 The 778-line `index.ts` is simultaneously: class definition, factory function, re-export barrel, type definitions, and scheduling constants.
 
 **Fix:**
+
 1. Create `packages/pt-webgl/src/ptEngineWebGL2.ts` containing:
    - `PTEngineWebGL2` class
    - `createPTEngine_WebGL2` factory
@@ -1176,7 +1248,10 @@ The 778-line `index.ts` is simultaneously: class definition, factory function, r
 #### 4.53 `index.ts:719-777` — Extract GPU init logic from factory
 
 ```ts
-function buildPTEngineGpu(renderer: WebGLRenderer, opts: PTEngineWebGL2Options): PTEngineWebGL2Init {
+function buildPTEngineGpu(
+  renderer: WebGLRenderer,
+  opts: PTEngineWebGL2Options,
+): PTEngineWebGL2Init {
   // instanceof WebGL2RenderingContext check
   // glContext.getParameter(...)
   // new WebGLPathTracer(...)
@@ -1190,8 +1265,8 @@ Factory becomes a thin coordinator.
 #### 4.54 `index.ts:131-133` — Document render-target memory constants
 
 ```ts
-const BYTES_PER_RGBA16F_PIXEL = 8;         // RGBA16F = 4 channels × 2 bytes
-const ESTIMATED_RENDER_TARGET_COUNT = 4;   // primary accum, depth, normal, motion vector
+const BYTES_PER_RGBA16F_PIXEL = 8; // RGBA16F = 4 channels × 2 bytes
+const ESTIMATED_RENDER_TARGET_COUNT = 4; // primary accum, depth, normal, motion vector
 const DEFAULT_RENDER_TARGET_OVERHEAD_BYTES = 64 * 1024 * 1024; // driver metadata, mip alignment
 ```
 
@@ -1300,10 +1375,13 @@ export const PT_TARGET_SAMPLES_BASE = 192;
 // Before:
 const px = tilesX * tilesY * 4;
 // ...
-for (let px = 0; px < tilesX; px += 1)  // shadows outer px
-
-// After:
-const pixelComponentCount = tilesX * tilesY * 4;
+for (
+  let px = 0;
+  px < tilesX;
+  px += 1 // shadows outer px
+)
+  // After:
+  const pixelComponentCount = tilesX * tilesY * 4;
 ```
 
 ---
@@ -1315,6 +1393,7 @@ const pixelComponentCount = tilesX * tilesY * 4;
 #### 4.64 `pathTraceBruteforce.wgsl.ts:1270-1693` — Split 424-line `main()` function
 
 Extract into sub-functions:
+
 ```wgsl
 fn decodeMaterial(hit: SceneHit, matId: u32) -> MaterialData { ... }
 fn directLightingSample(rng: ptr<...>, hit: SceneHit, mat: MaterialData) -> vec3f { ... }
@@ -1349,6 +1428,7 @@ else if (cMode == 2u) { ... }
 #### 4.68 `pathTraceBruteforce.wgsl.ts:198-205` — Fix HDRI dims piggy-backing in meshAreaTri slots
 
 Add explicit fields to `FrameParams`:
+
 ```wgsl
 environmentMapWidth: u32,
 environmentMapHeight: u32,
@@ -1374,6 +1454,7 @@ Expose via `EngineOptions.photonGatherRadius?: number` defaulting to `0.35`.
 #### 4.70 `uploadSceneBuffers.ts` — Collapse `PackedSceneData` / `UploadedSceneBuffers` duplication
 
 Have `UploadedSceneBuffers` embed `PackedSceneData` and extend with GPU buffer fields:
+
 ```ts
 interface UploadedSceneBuffers extends PackedSceneData {
   bvhBuf: GPUBuffer;
@@ -1391,6 +1472,7 @@ Remove `uploadPackedScene`'s 26-field copy loop; it becomes: `return { ...packed
 `firstPointLight`, `firstSpotLight`, `firstRectAreaLight`, `firstMeshAreaLight` coexist with the array packing path. The array path is the correct one.
 
 **Fix:**
+
 1. Remove the four `first*` functions.
 2. Remove their output fields from `PackedSceneData` / `UploadedSceneBuffers`.
 3. Update `buildPackedScene` to not call them.
@@ -1415,6 +1497,7 @@ function buildHdriEnvironment(env: HdriEnvironment): EnvironmentParams { ... }
 #### 4.73 `index.ts:343-447` — Extract `buildParamsBuffer()` pure function
 
 Move the 105-line manual float/u32 buffer construction out of `renderFrame()`:
+
 ```ts
 function buildParamsBuffer(
   input: FrameInput, sceneBuffers: UploadedSceneBuffers, ...
@@ -1451,6 +1534,7 @@ Import in `uploadSceneBuffers.ts` `analyticShapeId()` case and `capabilities` ge
 **Problem:** After all other fixes, `pt-webgpu` remains an isolated prototype. It has no external consumers, no wired integration, and the only tests are unit tests of TS-side packing logic. The WGSL `main()` entry point (even after the Phase 4.63 split) has never been submitted to a real WebGPU device.
 
 **Fix:**
+
 1. Wire `pt-webgpu` into `examples/two-engines-one-scene/` as the second engine (it currently uses `walkaround-hybrid`). The example is named "two engines" and this is the intended second slot.
    - Add `@vitrum/pt-webgpu` as a dependency of the example.
    - Add the source alias to `two-engines-one-scene/vite.config.ts`.
@@ -1478,9 +1562,9 @@ again if they remain real issues; they are tracked here so a future
 session can pick them up directly without re-discovering them.
 
 - **4.52 / 4.53** `pt-webgl/src/index.ts` — extract `PTEngineWebGL2` class
-  + `createPTEngine_WebGL2` factory + GPU-init logic into a dedicated
-  `ptEngineWebGL2.ts` file. Mechanical move (~700 LOC), zero behavior
-  change. Deferred to keep the current pass's diff reviewable.
+  - `createPTEngine_WebGL2` factory + GPU-init logic into a dedicated
+    `ptEngineWebGL2.ts` file. Mechanical move (~700 LOC), zero behavior
+    change. Deferred to keep the current pass's diff reviewable.
 - **4.64** `pathTraceBruteforce.wgsl.ts` — split the 424-line `main()`
   WGSL function into sub-helpers (RIS / shade / accumulate). The split
   needs a real-device smoke run to confirm correctness across the
@@ -1549,12 +1633,14 @@ When the canonical struct in `walkaround-hybrid/common.wgsl.ts` changes, this te
 ### 6.1 Fix tautological assertions in `rc-bindings.test.ts:109-131`
 
 Replace:
+
 ```ts
 const CAST_BGL_ENTRY_COUNT = 9;
 expect(CAST_BGL_ENTRY_COUNT).toBe(9); // tautology
 ```
 
 With a real structural assertion:
+
 ```ts
 const wgsl = PROBE_RAY_CAST_WGSL;
 const bindingCount = (wgsl.match(/@binding\(/g) ?? []).length;
@@ -1570,14 +1656,13 @@ Or instantiate `RCDispatcher` with a stub `GPUDevice` and assert on the actual b
 ```ts
 // Before (weak — matches by length only):
 const matchCall = mockQueue.writeBuffer.mock.calls.find(
-  (call) => (call[2] as Uint8Array).byteLength === disabled.byteLength
+  (call) => (call[2] as Uint8Array).byteLength === disabled.byteLength,
 );
 
 // After (assert content equality too):
 const matchCall = mockQueue.writeBuffer.mock.calls.find((call) => {
   const buf = call[2] as Uint8Array;
-  return buf.byteLength === disabled.byteLength &&
-    buf.every((byte, i) => byte === disabled[i]);
+  return buf.byteLength === disabled.byteLength && buf.every((byte, i) => byte === disabled[i]);
 });
 ```
 
@@ -1650,6 +1735,7 @@ Either rename to `sprint9-10a-welford.test.ts` or move the `WELFORD_TEMPORAL_WGS
 ### 7.1 Extract `triggerDenoise()` helper in `cornell-box/src/main.ts:453-663`
 
 Replace three near-identical async IIFE blocks (oidn/wgsl/svgf) with:
+
 ```ts
 async function triggerDenoise(
   mode: DenoiseDisplay,
@@ -1714,8 +1800,8 @@ Invert the three nested guard conditions to early returns, leaving `wgpuLoop` at
 
 ```js
 const ENV_TO_QUERY = [
-  { env: 'VITRUM_SCENARIO_ID',   query: 'vitrumScenario' },
-  { env: 'VITRUM_DENOISER',      query: 'vitrumDenoiser' },
+  { env: 'VITRUM_SCENARIO_ID', query: 'vitrumScenario' },
+  { env: 'VITRUM_DENOISER', query: 'vitrumDenoiser' },
   // ... all 13 mappings
 ];
 for (const { env, query } of ENV_TO_QUERY) {
@@ -1821,6 +1907,7 @@ const check = () => { if (!cancelled) { const g = window.__WG__; if (g) { ... re
 ### 8.9 Guard `debugDepsRef` behind `import.meta.env.DEV` in `HybridLayeredStage.tsx:340-367`
 
 The `debugDepsRef` allocation and mutation runs in all environments. Wrap entirely:
+
 ```ts
 if (import.meta.env.DEV) {
   debugDepsRef.current.graph = graphFaces;
@@ -1834,7 +1921,9 @@ if (import.meta.env.DEV) {
 
 ```ts
 // Before: setInterval polling every 500ms for a dev toggle
-const id = window.setInterval(() => { setDdgiOn(window.__HYBRID_LAYERS__?.ddgi !== false); }, 500);
+const id = window.setInterval(() => {
+  setDdgiOn(window.__HYBRID_LAYERS__?.ddgi !== false);
+}, 500);
 
 // After: event-driven or React context; event listener on storage/message
 ```
@@ -1894,6 +1983,7 @@ These items were explicitly scoped out of earlier sprints. They are not structur
 **Context:** `resolve.wgsl.ts` and `sampleBudget.wgsl.ts` were moved to `deferred/` in Phase 2.13. They are complete shaders but never dispatched.
 
 **Work:**
+
 1. `pipelineCompiler.ts`: add `RESOLVE_WGSL` and `SAMPLE_BUDGET_WGSL` shader module compilation (follow the existing module pattern).
 2. `WalkaroundGPUPipeline.ts`: add a `_dispatchSampleBudget(encoder)` pass before the RIS pass that writes per-pixel sample budgets based on Welford variance. Add a `_dispatchResolve(encoder)` pass after the denoising chain.
 3. `sampleBudget.wgsl.ts`: before wiring, remove the `[INLINE-COPY]` WelfordVariance block (Phase 2.13 flagged this) and replace with the injected `${WELFORD_VARIANCE_STRUCT_WGSL}` constant (Phase 1.5).
@@ -1908,6 +1998,7 @@ These items were explicitly scoped out of earlier sprints. They are not structur
 **Context:** Per `plan/sprint-10a-walkaround-integration.md`, the SVGF denoiser from `@vitrum/shared-denoisers` is already used in `WalkaroundGPUPipeline.ts` via low-level primitives, but the full integration spec (buffer handoff protocol, G-buffer layout contract, frame-count tracking) was deferred.
 
 **Work:**
+
 1. Resolve the normal encoding mismatch from Phase 1.4 — this is a prerequisite: the G-buffer encoding must be settled before SVGF integration can be verified.
 2. Audit the actual G-buffer slot assignments in `WalkaroundGPUPipeline.ts` against the `SvgfWebGPUInputs` shape expected by `runSvgfWebGPU`. Document any mismatches.
 3. Wire `svgfFrameCount` tracking: the pipeline must increment a frame counter per-frame and pass it to `packSVGFUniforms`. Verify the `SVGF_TEMPORAL_VARIANCE_MIN_FRAME_COUNT = 4` threshold is respected before variance-guided filtering begins.
@@ -1920,6 +2011,7 @@ These items were explicitly scoped out of earlier sprints. They are not structur
 **Context:** Per `plan/sprint-11-ppg-integration.md`, the PPG bind group uses `@group(2)` as a documented placeholder. The actual group number must be assigned once the full bind group layout for the shade pass is finalized.
 
 **Work:**
+
 1. Audit the shade pass bind group layout in `pipelineCompiler.ts` and `WalkaroundGPUPipeline.ts` to determine which group number PPG buffers should occupy (group 0 is typically frame-global UBO, groups 1-3 are scene data — PPG likely lands at group 4 or shares a slot via dynamic offsets).
 2. Update `@group(2)` in `ppgSample.wgsl.ts` and `ppgUpdate.wgsl.ts` to the correct group number.
 3. Update the `sprint11-ppg.test.ts:214` assertion (Phase 3.9 annotated it as a TODO — now close it).
@@ -1980,12 +2072,14 @@ These items were explicitly scoped out of earlier sprints. They are not structur
 **Goal:** After Phases 1–9 are complete, run the project's audit harness in a loop until it returns zero findings.
 
 ### 10.1 Run mechanical checks across the workspace
+
 1. `npm run typecheck` at repo root — must be 100% clean across every package that defines a `typecheck` script. Zero errors. Zero warnings.
 2. `npm test` at repo root — every test suite must pass. No skipped tests added during remediation (skipped tests = mess; either fix or delete the test).
 3. `npm run lint` if a lint script exists at any package; fix all reported issues.
 4. Run any `scripts/run-gap-closure-verification.mjs` style smoke script that exists in `scripts/` — capture output, address any non-clean signal.
 
 ### 10.2 Run the `/audit` skill / equivalent project audit pass
+
 1. Dispatch a Sonnet sub-agent to perform a full repo audit: read every file changed during Phases 1–9, verify no regressions, no half-implemented edits, no leftover TODO/FIXME/HACK markers introduced.
 2. Audit must cover:
    - Each phase's diff vs the plan item — does the change match the spec?
@@ -1996,7 +2090,9 @@ These items were explicitly scoped out of earlier sprints. They are not structur
 3. Audit produces a findings list in the same format as the original sweep (FINDING: file:line / Category / What / Evidence / Fix).
 
 ### 10.3 Remediation loop
+
 For every audit finding:
+
 1. Fix it immediately (no deferring — per the user's standing rule).
 2. After each batch of fixes, re-run 10.1 (mechanical checks).
 3. After mechanical checks pass, re-run 10.2 (audit pass).
@@ -2013,16 +2109,19 @@ For every audit finding:
 **Goal:** Run the full `/complexity-sweep` skill again over the entire repo. After remediating ~150 findings, the codebase has changed shape — a fresh sweep will surface anything that emerged from the refactors (e.g., a newly-extracted file that now has its own issues, a boundary that shifted, a god-file that we accidentally re-introduced).
 
 ### 11.1 Pre-sweep hygiene
+
 1. Ensure git working tree is clean — commit all Phase 1–10 work.
 2. Verify `MEMORY.md` and `in-flight-sweep.md` are up to date or archived; stale context misleads the sweep.
 3. Confirm CLAUDE.md and plan/ docs match current code reality.
 
 ### 11.2 Execute `/complexity-sweep`
+
 1. Invoke the skill with arguments matching the original run: "please review the entire repo, do not trust any comments, plans, memories, or any other summaries that may have been written. The only thing that contains the truth of the state of the repo is the code itself. Review it all, be very careful to read every line of every file and report back with a full list of findings."
 2. Follow the skill's full multi-agent dispatch (domain + integration + dead code).
 3. Persist `in-flight-sweep.md` before synthesis.
 
 ### 11.3 Synthesize Phase 11 findings
+
 1. Verify each agent finding by reading the cited code yourself — sub-agent reports are hypotheses (per CLAUDE.md guidance). False positives must be marked verified-false-positive with one-line justification before discarding.
 2. Produce a verified findings list grouped by phase (same structure as Phases 1–9 of this plan).
 3. Append the verified findings as `plan/sweep-remediation-plan-pass-2.md` (new file — do not overwrite this plan).
@@ -2036,17 +2135,20 @@ For every audit finding:
 **Goal:** Execute the Phase 11 findings to completion, then run the audit loop one more time to confirm zero outstanding issues.
 
 ### 12.1 Execute pass-2 remediation
+
 1. Work each finding in `sweep-remediation-plan-pass-2.md` start-to-finish (no batching across items, no deferring).
 2. Order: GPU correctness first, then dead code, then structural cleanup, then tests, mirroring the phase ordering of this plan.
 3. Commit per logical unit so the diff is reviewable.
 
 ### 12.2 Run audit loop (mirror of Phase 10)
+
 1. `npm run typecheck` clean
 2. `npm test` clean
 3. `/audit` sub-agent — zero findings
 4. Loop until two consecutive clean runs.
 
 ### 12.3 Final-clean confirmation
+
 1. Run mechanical checks one final time.
 2. Dispatch one final Sonnet audit agent with the prompt: "Verify the vitrum repo is in a clean state. Read every package's source and tests. Report any structural issues, dead code, half-implemented features, stale comments, or test gaps. Zero tolerance — if it is a mess, flag it."
 3. If the final agent returns clean: stop, write a one-line note at the bottom of this plan stating "Full remediation complete on `<iso-date>` — repo confirmed clean by two-pass sweep + audit."
@@ -2081,13 +2183,13 @@ Full remediation complete on 2026-05-11 — repo confirmed clean by two-pass swe
 
 The Phase 4 / Phase 9 deferrals (4.52 / 4.53 / 4.64 / 4.71 / 9.1 / 9.3) and
 the Pass-2 deferrals (P2-4.4 / P2-4.6 / P2-6.1 / P2-7.2) all landed in the
-P3-* commit series on 2026-05-11. See `plan/p3-validation-matrix.md` for
+P3-\* commit series on 2026-05-11. See `plan/p3-validation-matrix.md` for
 the RTX-4090-driven visual verification plan that the user runs via
 Claude-in-Chrome to confirm each deferred-item resolution.
 
 - **4.52 / 4.53** → P3-A.1 commit `e9d52f4` (PTEngineWebGL2 extraction).
 - **4.64** → P3-B.2 commit `f8a36dd` (pathTraceBruteforce main() split).
-- **4.71** → P3-B.1b commit `e9dd0b6` (drop first* + repack FrameParams).
+- **4.71** → P3-B.1b commit `e9dd0b6` (drop first\* + repack FrameParams).
 - **9.1** → P3-C.1 (Sprint 9 adaptive sampling — full integration, real algorithmic change).
 - **9.3** → P3-C.2 commit `24d847a` (delete orphan PPG_SAMPLE_WGSL; live path provided by shadePpgGuide.wgsl.ts).
 - **P2-4.4** → P3-B.1a commit `efdd5e0` (uploadSceneBuffers split).

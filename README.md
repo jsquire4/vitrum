@@ -35,23 +35,23 @@ import { VitrumCanvas } from '@vitrum/engine/react';
   camera={camera}
   prefer="realtime"
   onFrame={(s) => setFps(Math.round(1000 / s.frameTimeMs))}
-/>
+/>;
 ```
 
 `react` and `react-dom` are **optional** peer deps. Vanilla hosts pay nothing for them.
 
 ## Capability matrix
 
-| Feature                       | walkaround-hybrid (WebGPU)  | pt-webgl (WebGL2)          |
-| ----------------------------- | --------------------------- | -------------------------- |
-| **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT |
-| **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  |
-| **Light types**               | point / dir / area / sky    | point / dir / area / sky   |
-| **Materials**                 | PBR + transmission          | PBR + clearcoat + transmission + spectral hero-MIS |
-| **Caustics**                  | none (DDGI only)            | manifold-NEE (opt-in)      |
-| **Animation**                 | camera ✓ / lights limited / mesh transform ✗ | camera ✓ / lights ✓ / mesh ✗ |
-| **Hardware**                  | WebGPU                      | WebGL2                     |
-| **Convergence**               | re-renders every frame      | accumulates SPP            |
+| Feature          | walkaround-hybrid (WebGPU)                   | pt-webgl (WebGL2)                                  |
+| ---------------- | -------------------------------------------- | -------------------------------------------------- |
+| **GI quality**   | real-time, single-bounce GI                  | converged, multi-bounce PT                         |
+| **Bounce count** | 1 (DDGI gives multi-bounce)                  | unlimited                                          |
+| **Light types**  | point / dir / area / sky                     | point / dir / area / sky                           |
+| **Materials**    | PBR + transmission                           | PBR + clearcoat + transmission + spectral hero-MIS |
+| **Caustics**     | none (DDGI only)                             | manifold-NEE (opt-in)                              |
+| **Animation**    | camera ✓ / lights limited / mesh transform ✗ | camera ✓ / lights ✓ / mesh ✗                       |
+| **Hardware**     | WebGPU                                       | WebGL2                                             |
+| **Convergence**  | re-renders every frame                       | accumulates SPP                                    |
 
 See [`plan/animation-support-status.md`](./plan/animation-support-status.md) for the full animation matrix with caveats.
 
@@ -63,12 +63,12 @@ Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-
 
 ## Public API
 
-| Package                       | What you import                                        |
-| ----------------------------- | ------------------------------------------------------ |
-| `@vitrum/engine`              | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath) |
-| `@vitrum/core`                | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats` types |
-| `@vitrum/three-bindings`      | `sceneFromThreeJS`, `loadGltfScene`                    |
-| `@vitrum/dev`                 | Debug overlays (FrameTimeHUD, MaterialInspector, …) — devDep only |
+| Package                  | What you import                                                      |
+| ------------------------ | -------------------------------------------------------------------- |
+| `@vitrum/engine`         | `createEngine`, `attachVitrum`, `<VitrumCanvas>` (React subpath)     |
+| `@vitrum/core`           | `Engine`, `Scene`, `FrameInput`, `FrameStats`, `ProgressStats` types |
+| `@vitrum/three-bindings` | `sceneFromThreeJS`, `loadGltfScene`                                  |
+| `@vitrum/dev`            | Debug overlays (FrameTimeHUD, MaterialInspector, …) — devDep only    |
 
 Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
 
@@ -105,11 +105,11 @@ This is the design choice that makes the library survive Canvas remount, route c
 
 (Reference renders captured on RTX 4090, ANGLE D3D11.)
 
-| Scene                       | Engine            | Resolution | Convergence target | Time / Frame   |
-| --------------------------- | ----------------- | ---------- | ------------------ | -------------- |
-| Cornell box (~30 tris)      | pt-webgl          | 512×512    | 64 SPP             | ~17 s total    |
-| Cornell glass               | pt-webgl          | 512×512    | 64 SPP             | ~20 s total    |
-| Cornell spectral (hero MIS) | pt-webgl          | 512×512    | 64 SPP             | ~20 s total    |
+| Scene                       | Engine            | Resolution | Convergence target | Time / Frame     |
+| --------------------------- | ----------------- | ---------- | ------------------ | ---------------- |
+| Cornell box (~30 tris)      | pt-webgl          | 512×512    | 64 SPP             | ~17 s total      |
+| Cornell glass               | pt-webgl          | 512×512    | 64 SPP             | ~20 s total      |
+| Cornell spectral (hero MIS) | pt-webgl          | 512×512    | 64 SPP             | ~20 s total      |
 | Living room (~200k tris)    | walkaround-hybrid | 1080p      | real-time          | 14–22 ms / frame |
 
 ## What's novel here

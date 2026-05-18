@@ -61,12 +61,12 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
 
   if (!hasDebug) {
     // Warn once on every mount (not every render).
-     
+
     console.warn(
       '[DDGIAtlasViewer] engine.debug.atlasTexture() is not implemented. ' +
-      'DDGIAtlasViewer requires the T3.G followup: HybridEngine must expose ' +
-      'engine.debug with atlasTexture() and visibilityAtlasTexture(). ' +
-      'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
+        'DDGIAtlasViewer requires the T3.G followup: HybridEngine must expose ' +
+        'engine.debug with atlasTexture() and visibilityAtlasTexture(). ' +
+        'See packages/dev/src/types.ts:EngineDebugSurface for the interface.',
     );
   }
 

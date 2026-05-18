@@ -84,7 +84,10 @@ describe('composeWgsl — semantics', () => {
   const D: WgslModule = { name: 'D', source: '<D>', requires: ['B', 'C'] };
 
   const synthetic = new Map<string, WgslModule>([
-    ['A', A], ['B', B], ['C', C], ['D', D],
+    ['A', A],
+    ['B', B],
+    ['C', C],
+    ['D', D],
   ]);
 
   it('emits a leaf module with no deps as just its source', () => {
@@ -112,7 +115,10 @@ describe('composeWgsl — semantics', () => {
   it('throws on a dependency cycle', () => {
     const X: WgslModule = { name: 'X', source: '<X>', requires: ['Y'] };
     const Y: WgslModule = { name: 'Y', source: '<Y>', requires: ['X'] };
-    const cyclic = new Map<string, WgslModule>([['X', X], ['Y', Y]]);
+    const cyclic = new Map<string, WgslModule>([
+      ['X', X],
+      ['Y', Y],
+    ]);
     expect(() => composeWgsl(X, cyclic)).toThrow(/cycle/i);
   });
 
@@ -150,10 +156,7 @@ describe('WGSL_MODULES registry', () => {
   it('every `requires` entry resolves to a module in the registry', () => {
     for (const mod of WGSL_MODULES.values()) {
       for (const dep of mod.requires) {
-        expect(
-          WGSL_MODULES.has(dep),
-          `Module '${mod.name}' requires unknown '${dep}'`,
-        ).toBe(true);
+        expect(WGSL_MODULES.has(dep), `Module '${mod.name}' requires unknown '${dep}'`).toBe(true);
       }
     }
   });
@@ -230,15 +233,11 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   });
 
   it('temporalGi: COMMON_WGSL + TEMPORAL_GI_WGSL', () => {
-    expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + TEMPORAL_GI_WGSL,
-    );
+    expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).toBe(COMMON_WGSL + TEMPORAL_GI_WGSL);
   });
 
   it('spatialGi: COMMON_WGSL + SPATIAL_GI_WGSL', () => {
-    expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + SPATIAL_GI_WGSL,
-    );
+    expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(COMMON_WGSL + SPATIAL_GI_WGSL);
   });
 
   it('indirectCombine: standalone (no prepend)', () => {

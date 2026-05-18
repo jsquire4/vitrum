@@ -75,11 +75,14 @@ export function packAtrousVarianceVarianceUniforms(
   offset = 0,
 ): void {
   const view = new DataView(target, offset, ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
-  const packedCount = Math.min(Math.max(0, Math.floor(u.frameCount)), ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX);
+  const packedCount = Math.min(
+    Math.max(0, Math.floor(u.frameCount)),
+    ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX,
+  );
   view.setUint32(0, packedCount >>> 0, true);
   // _pad0, _pad1, _pad2 — zero-filled for determinism
-  view.setUint32(4,  0, true);
-  view.setUint32(8,  0, true);
+  view.setUint32(4, 0, true);
+  view.setUint32(8, 0, true);
   view.setUint32(12, 0, true);
 }
 
@@ -166,11 +169,11 @@ export function packAtrousVarianceAtrousUniforms(
   // iteration at offset 0, little-endian u32
   view.setUint32(0, u.iteration >>> 0, true);
   // sigmaColor at offset 4, little-endian f32
-  view.setFloat32(4,  u.sigmaColor,  true);
+  view.setFloat32(4, u.sigmaColor, true);
   // sigmaNormal at offset 8, little-endian f32
-  view.setFloat32(8,  u.sigmaNormal, true);
+  view.setFloat32(8, u.sigmaNormal, true);
   // sigmaDepth at offset 12, little-endian f32
-  view.setFloat32(12, u.sigmaDepth,  true);
+  view.setFloat32(12, u.sigmaDepth, true);
 }
 
 // ============================================================
@@ -263,8 +266,11 @@ export interface AtrousVarianceAtrousBindGroupLayout {
  *   - Reduce sigmaNormal for architectural scenes with many planar surfaces.
  *   - Adjust sigmaDepth relative to scene scale (larger rooms → larger depth σ).
  */
-export const ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS: Omit<AtrousVarianceAtrousUniforms, 'iteration'> = {
-  sigmaColor:  4.0,
+export const ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS: Omit<
+  AtrousVarianceAtrousUniforms,
+  'iteration'
+> = {
+  sigmaColor: 4.0,
   sigmaNormal: 128.0,
-  sigmaDepth:  1.0,
+  sigmaDepth: 1.0,
 } as const;

@@ -119,8 +119,8 @@ describe('computeOctahedralSolidAngles', () => {
 
         const avg = (omega0 + omega90 + omega180 + omega270) / 4;
 
-        expect(Math.abs(omega0   - avg) / avg).toBeLessThan(tol);
-        expect(Math.abs(omega90  - avg) / avg).toBeLessThan(tol);
+        expect(Math.abs(omega0 - avg) / avg).toBeLessThan(tol);
+        expect(Math.abs(omega90 - avg) / avg).toBeLessThan(tol);
         expect(Math.abs(omega180 - avg) / avg).toBeLessThan(tol);
         expect(Math.abs(omega270 - avg) / avg).toBeLessThan(tol);
       }
@@ -134,14 +134,14 @@ describe('computeOctahedralSolidAngles', () => {
 
     for (let row = 0; row < N; row++) {
       for (let col = 0; col < N; col++) {
-        const omega0   = w[row * N + col]!;
-        const omega90  = w[col * N + (N - 1 - row)]!;
+        const omega0 = w[row * N + col]!;
+        const omega90 = w[col * N + (N - 1 - row)]!;
         const omega180 = w[(N - 1 - row) * N + (N - 1 - col)]!;
         const omega270 = w[(N - 1 - col) * N + row]!;
         const avg = (omega0 + omega90 + omega180 + omega270) / 4;
 
-        expect(Math.abs(omega0   - avg) / avg).toBeLessThan(tol);
-        expect(Math.abs(omega90  - avg) / avg).toBeLessThan(tol);
+        expect(Math.abs(omega0 - avg) / avg).toBeLessThan(tol);
+        expect(Math.abs(omega90 - avg) / avg).toBeLessThan(tol);
         expect(Math.abs(omega180 - avg) / avg).toBeLessThan(tol);
         expect(Math.abs(omega270 - avg) / avg).toBeLessThan(tol);
       }

@@ -15,7 +15,7 @@
  *   and normal auxiliary features, concatenated per-pixel, as the network input."
  */
 
-export const INPUT_PACKER_WGSL = /* wgsl */`
+export const INPUT_PACKER_WGSL = /* wgsl */ `
 struct PackParams {
   pixelCount : u32,   // H × W
   _pad0      : u32,

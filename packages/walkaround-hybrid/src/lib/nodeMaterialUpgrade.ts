@@ -19,10 +19,7 @@
  */
 
 import * as THREE from 'three';
-import {
-  MeshPhysicalNodeMaterial,
-  MeshStandardNodeMaterial,
-} from 'three/webgpu';
+import { MeshPhysicalNodeMaterial, MeshStandardNodeMaterial } from 'three/webgpu';
 
 /**
  * Upgrade a vanilla MeshPhysicalMaterial / MeshStandardMaterial to its

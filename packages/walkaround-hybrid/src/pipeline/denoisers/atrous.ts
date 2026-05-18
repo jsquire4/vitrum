@@ -60,12 +60,16 @@ export class AtrousDenoiser implements Denoiser {
     let inputTex: GPUTexture = common.hdrColorTexture;
     for (let iter = 0; iter < ATROUS_ITERATIONS; iter++) {
       const stepWidth = 1 << iter;
-      const outputTex =
-        iter % 2 === 0 ? common.denoisedPingTexture : common.denoisedPongTexture;
+      const outputTex = iter % 2 === 0 ? common.denoisedPingTexture : common.denoisedPongTexture;
       const bgAtrous = buildAtrousBindGroup(
-        device, bglCache, this._uboRef,
-        inputTex.createView(), outputTex.createView(),
-        gNormalDepthView, gNormalDepthView, stepWidth,
+        device,
+        bglCache,
+        this._uboRef,
+        inputTex.createView(),
+        outputTex.createView(),
+        gNormalDepthView,
+        gNormalDepthView,
+        stepWidth,
       );
       const label = `atrous-${iter}` as `atrous-${0 | 1 | 2}`;
       const pass = encoder.beginComputePass(computeDesc(label));

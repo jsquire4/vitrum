@@ -151,8 +151,8 @@ import type { Material, ThinFilmStack, ThinFilmLayer } from '@vitrum/core';
 //                                       D_SiO2 = 550/(4·1.45) ≈ 95 nm
 const braggLayers: ThinFilmLayer[] = [];
 for (let i = 0; i < 30; i++) {
-  braggLayers.push({ ior: 2.35, thicknessNm: 58 });   // TiO₂
-  braggLayers.push({ ior: 1.45, thicknessNm: 95 });   // SiO₂
+  braggLayers.push({ ior: 2.35, thicknessNm: 58 }); // TiO₂
+  braggLayers.push({ ior: 1.45, thicknessNm: 95 }); // SiO₂
 }
 
 const dichroicStack: ThinFilmStack = {
@@ -178,7 +178,7 @@ const dichroicGlass: Material = {
 
 ## 8. References
 
-[1] L. Belcour, P. Barla. "A Practical Extension to Microfacet Theory for the Modeling of Varying Iridescence." *ACM Transactions on Graphics (Proc. SIGGRAPH 2017)*, vol. 36, no. 4, art. 65, 2017. DOI: 10.1145/3072959.3073620.
+[1] L. Belcour, P. Barla. "A Practical Extension to Microfacet Theory for the Modeling of Varying Iridescence." _ACM Transactions on Graphics (Proc. SIGGRAPH 2017)_, vol. 36, no. 4, art. 65, 2017. DOI: 10.1145/3072959.3073620.
 
 [2] "Thin-film interference." Wikipedia. https://en.wikipedia.org/wiki/Thin-film_interference.
 
@@ -186,8 +186,8 @@ const dichroicGlass: Material = {
 
 [4] A. Gharbi et al. "SiO₂/TiO₂ distributed Bragg reflector near 1.5 µm fabricated by e-beam evaporation." Texas Tech University, Nanophotonics Group, 2013. https://www.depts.ttu.edu/ece/nanophotonics/papers/2013_SiO2_TiO2%20distributed%20Bragg%20reflector%20near%201.5%20%CE%BCm%20fabricated%20by%20e-beam.pdf. (11-layer TiO₂/SiO₂ stack; measured reflectance curve.)
 
-[5] M. Born, E. Wolf. *Principles of Optics: Electromagnetic Theory of Propagation, Interference and Diffraction of Light.* 1st ed. Pergamon Press, 1959. 7th expanded ed. Cambridge University Press, 1999. (TMM derivation in Chapters 1 and 7.)
+[5] M. Born, E. Wolf. _Principles of Optics: Electromagnetic Theory of Propagation, Interference and Diffraction of Light._ 1st ed. Pergamon Press, 1959. 7th expanded ed. Cambridge University Press, 1999. (TMM derivation in Chapters 1 and 7.)
 
-[6] H.A. Macleod. *Thin-Film Optical Filters.* 4th ed. CRC Press, 2010. (Standard reference for the Abeles TMM in optical coating design.)
+[6] H.A. Macleod. _Thin-Film Optical Filters._ 4th ed. CRC Press, 2010. (Standard reference for the Abeles TMM in optical coating design.)
 
 [7] `tmm` Python library. https://pypi.org/project/tmm/. (Reference open-source implementation of the TMM for multilayer thin-film stacks.)

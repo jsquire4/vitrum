@@ -50,12 +50,7 @@
  *                   for visible-range rendering, B alone is usually sufficient.
  * @returns Index of refraction n(λ).  Always ≥ A for normal dispersion (B,C ≥ 0).
  */
-export function cauchyIOR(
-  lambdaNm: number,
-  A: number,
-  B: number,
-  C = 0,
-): number {
+export function cauchyIOR(lambdaNm: number, A: number, B: number, C = 0): number {
   // Convert wavelength from nm to µm for standard Cauchy coefficient units.
   const lambdaUm = lambdaNm * 1e-3; // 1 nm = 0.001 µm
   const lam2 = lambdaUm * lambdaUm;
@@ -75,8 +70,8 @@ export function cauchyIOR(
  */
 export const CAUCHY_CROWN_GLASS: { A: number; B: number; C: number } = {
   A: 1.5046,
-  B: 0.00290,   // calibrated for Abbe V_d ≈ 64
-  C: 0.00020,
+  B: 0.0029, // calibrated for Abbe V_d ≈ 64
+  C: 0.0002,
 };
 
 /**
@@ -87,9 +82,9 @@ export const CAUCHY_CROWN_GLASS: { A: number; B: number; C: number } = {
  * Reference: Schott F2 datasheet; Hecht "Optics" 5th ed. Table 3.3.
  */
 export const CAUCHY_FLINT_GLASS: { A: number; B: number; C: number } = {
-  A: 1.6200,
-  B: 0.00404,   // calibrated for Abbe V_d ≈ 36
-  C: 0.00080,
+  A: 1.62,
+  B: 0.00404, // calibrated for Abbe V_d ≈ 36
+  C: 0.0008,
 };
 
 /**
@@ -107,9 +102,9 @@ export const CAUCHY_FLINT_GLASS: { A: number; B: number; C: number } = {
  *   — close to the Sprint 8 empirical slider default of 0.018.
  */
 export const CAUCHY_LEAD_CRYSTAL: { A: number; B: number; C: number } = {
-  A: 1.5800,
-  B: 0.00659,   // calibrated for Abbe V_d ≈ 32
-  C: 0.00050,
+  A: 1.58,
+  B: 0.00659, // calibrated for Abbe V_d ≈ 32
+  C: 0.0005,
 };
 
 // ── Abbe number utility ────────────────────────────────────────────────────────

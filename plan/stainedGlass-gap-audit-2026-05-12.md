@@ -3,17 +3,18 @@
 ## Integration shape
 
 ### Vitrum packages consumed
+
 Source: `stainedGlass/packages/app/package.json` lines 34–40.
 
-| Package | Role |
-|---|---|
-| `@vitrum/core` | `Engine`, `FrameInput`, `FrameOutput`, `FrameQualitySettings`, `detectGpu` |
-| `@vitrum/three-bindings` | `sceneFromThreeJS` (PT path) — THREE.Scene → vitrum Scene conversion |
-| `@vitrum/pt-webgl` | `createPTEngine_WebGL2`, `debounceMsForEditRate`, `bakeSkyEquirect`, `computeLightingState`, `SkyParams`, `PTEngineWebGL2FrameOutput` |
-| `@vitrum/walkaround-hybrid` | `createWalkaroundEngine_Hybrid` |
-| `@vitrum/shared-bvh` | Listed in package.json but not directly imported in the rendering code reviewed |
-| `@vitrum/shared-denoisers` | Listed in package.json but not directly imported in the rendering code reviewed |
-| `@vitrum/shared-samplers` | Listed in package.json but not directly imported in the rendering code reviewed |
+| Package                     | Role                                                                                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `@vitrum/core`              | `Engine`, `FrameInput`, `FrameOutput`, `FrameQualitySettings`, `detectGpu`                                                            |
+| `@vitrum/three-bindings`    | `sceneFromThreeJS` (PT path) — THREE.Scene → vitrum Scene conversion                                                                  |
+| `@vitrum/pt-webgl`          | `createPTEngine_WebGL2`, `debounceMsForEditRate`, `bakeSkyEquirect`, `computeLightingState`, `SkyParams`, `PTEngineWebGL2FrameOutput` |
+| `@vitrum/walkaround-hybrid` | `createWalkaroundEngine_Hybrid`                                                                                                       |
+| `@vitrum/shared-bvh`        | Listed in package.json but not directly imported in the rendering code reviewed                                                       |
+| `@vitrum/shared-denoisers`  | Listed in package.json but not directly imported in the rendering code reviewed                                                       |
+| `@vitrum/shared-samplers`   | Listed in package.json but not directly imported in the rendering code reviewed                                                       |
 
 Three.js fork (`three-gpu-pathtracer: file:../../../three-gpu-pathtracer`) is still consumed directly by `pt-webgl`; the app itself consumes it only transitively.
 
@@ -38,15 +39,19 @@ Three.js fork (`three-gpu-pathtracer: file:../../../three-gpu-pathtracer`) is st
 ## Workflow
 
 ### Real-time design loop
+
 Raster mode. No vitrum engine active. Frame budget: ~16 ms (60 FPS target). PT preview quality mode: `interactive` (40 ms batch target per `ptEngineWebGL2.ts` line 189).
 
 ### Final-render mode
+
 PT mode. Target: 2112 samples / 10 bounces (`pathtracerConstants.ts` lines 66–70). Budget: 900 s (15 min hero render). Timing gate: 60–120 s for preview convergence (192 samples, `PT_HONEYCOMB/LIGHTBOX/FULL_SCENE_TIMING_BUDGET_MS`).
 
 ### Material edit
+
 `VitrumSceneSync` detects Redux selector changes and issues a debounced `engine.setScene()`. Debounce is adaptive via `debounceMsForEditRate()` from `@vitrum/pt-webgl`. Scalar-only changes (density, thickness, baseColor) go through `updateBakedGlassScalars()` which mutates the live THREE material in-place. There is no `engine.updatePrimitive()` path — pt-webgl throws on `updatePrimitive` (`ptEngineWebGL2.ts` line 581).
 
 ### Sun tracking / time-of-day
+
 Walkaround: lighting is baked into `createWalkaroundEngine_Hybrid` creation-time options. `useVitrumWalkaroundEngine` quantizes `timeOfDay` to 8 slots and **recreates the engine** on slot boundaries (`useVitrumWalkaroundEngine.ts` lines 59–62). Comment at line 34: `"Sprint N: extend HybridEngine with an updateLighting() method to eliminate the recreation step for real-time scrubbing."` PT: sun is a `RectAreaLight` managed by `SunPathTraced`, re-synced to the engine via `setScene` on IBL changes.
 
 ---

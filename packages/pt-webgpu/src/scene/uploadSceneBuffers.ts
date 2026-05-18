@@ -106,12 +106,7 @@ function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBuffer
   return buffer;
 }
 
-const IDENTITY_MAT4 = new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-]);
+const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 /** Supported analytic-shape discriminator strings, in numeric-id order.
  *  The pt-webgpu WGSL shader reads `analyticHeader.x` and switches on these
@@ -164,7 +159,9 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
     if (primitive.kind === 'analytic') {
       const shapeId = analyticShapeId(primitive.shape);
       if (shapeId === 0) {
-        warnings.push(`Analytic primitive "${primitive.id}" has unsupported shape "${primitive.shape}".`);
+        warnings.push(
+          `Analytic primitive "${primitive.id}" has unsupported shape "${primitive.shape}".`,
+        );
         continue;
       }
       const matId = nextMaterialId++;
@@ -202,7 +199,9 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
       })();
 
     const transforms =
-      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
+      primitive.kind === 'instanced-mesh'
+        ? primitive.instances
+        : [primitive.transform ?? undefined];
 
     for (const transform of transforms) {
       const vertexCount = Math.floor(basePositions.length / 3);
@@ -281,7 +280,10 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
   };
 }
 
-export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): UploadedSceneBuffers {
+export function uploadPackedScene(
+  device: GPUDevice,
+  packed: PackedSceneData,
+): UploadedSceneBuffers {
   // Upload-time assertion: pt-webgpu uses stride-4 indices (vec4u, .w = 0).
   // byteLength must be a multiple of 4 u32 = 16 bytes.
   if (packed.indices.byteLength > 0 && packed.indices.byteLength % 16 !== 0) {
@@ -291,22 +293,86 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
         `pt-webgpu requires stride-4 indices — 3 vertex u32 + 1 zero-fill u32.`,
     );
   }
-  const positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', packed.positions);
-  const normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', packed.normals);
-  const indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', packed.indices);
-  const triMaterialIdsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.triMaterialIds', packed.triMaterialIds);
-  const materialsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.materials', packed.materials);
-  const bvhNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.bvhNodes', packed.bvhNodes);
-  const analyticHeadersBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticHeaders', packed.analyticHeaders);
-  const analyticParamsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticParams', packed.analyticParams);
-  const analyticLocalToWorldBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticLocalToWorld', packed.analyticLocalToWorld);
-  const analyticWorldToLocalBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticWorldToLocal', packed.analyticWorldToLocal);
-  const environmentMapTexelsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.environmentMapTexels', packed.environmentMapTexels);
-  const environmentMapCdfBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.environmentMapCdf', packed.environmentMapCdf);
-  const pointLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.pointLights', packed.pointLightsData);
-  const spotLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData);
-  const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
-  const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
+  const positionsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.positions',
+    packed.positions,
+  );
+  const normalsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.normals',
+    packed.normals,
+  );
+  const indicesBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.indices',
+    packed.indices,
+  );
+  const triMaterialIdsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.triMaterialIds',
+    packed.triMaterialIds,
+  );
+  const materialsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.materials',
+    packed.materials,
+  );
+  const bvhNodesBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.bvhNodes',
+    packed.bvhNodes,
+  );
+  const analyticHeadersBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.analyticHeaders',
+    packed.analyticHeaders,
+  );
+  const analyticParamsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.analyticParams',
+    packed.analyticParams,
+  );
+  const analyticLocalToWorldBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.analyticLocalToWorld',
+    packed.analyticLocalToWorld,
+  );
+  const analyticWorldToLocalBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.analyticWorldToLocal',
+    packed.analyticWorldToLocal,
+  );
+  const environmentMapTexelsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.environmentMapTexels',
+    packed.environmentMapTexels,
+  );
+  const environmentMapCdfBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.environmentMapCdf',
+    packed.environmentMapCdf,
+  );
+  const pointLightsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.pointLights',
+    packed.pointLightsData,
+  );
+  const spotLightsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.spotLights',
+    packed.spotLightsData,
+  );
+  const rectAreaLightsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.rectAreaLights',
+    packed.rectAreaLightsData,
+  );
+  const meshAreaLightsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.meshAreaLights',
+    packed.meshAreaLightsData,
+  );
 
   return {
     ...packed,

@@ -33,7 +33,7 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-export const PPG_GUIDE_WGSL = /* wgsl */`
+export const PPG_GUIDE_WGSL = /* wgsl */ `
 // ── PPG guide kernel ──────────────────────────────────────────────────────────
 // Müller et al. 2017 §3.2, §3.4 — dTree direction sampling + MIS PDF.
 // DEVIATION 4 FIX: sampled directions are in WORLD space.
@@ -181,7 +181,7 @@ export function computeMISWeights(
   const denom = aPg * aPg + bPb * bPb;
   if (denom <= 0) return { wPpg: 0.5, wBsdf: 0.5, pMixed: Math.max(pMixed, 1e-12) };
   return {
-    wPpg:  (aPg * aPg) / denom,
+    wPpg: (aPg * aPg) / denom,
     wBsdf: (bPb * bPb) / denom,
     pMixed: Math.max(pMixed, 1e-12),
   };

@@ -71,9 +71,7 @@ function classifyTriangleEmitter(
   const skipEmitter = (mat.userData as { skipEmitter?: boolean } | undefined)?.skipEmitter === true;
   if (skipEmitter) return null;
 
-  const sunDot = Math.abs(
-    lightDir.x * normal.x + lightDir.y * normal.y + lightDir.z * normal.z,
-  );
+  const sunDot = Math.abs(lightDir.x * normal.x + lightDir.y * normal.y + lightDir.z * normal.z);
   if (sunDot <= 0.05) return null;
 
   const baseColor = physMat.color ?? new THREE.Color(1, 1, 1);
@@ -115,8 +113,8 @@ export interface EmitterListOptions {
 
 export function buildEmitterList(
   indices: Uint32Array,
-  positions: Float32Array,    // stride-4: read .xyz only
-  normals: Float32Array,      // stride-4: read .xyz only
+  positions: Float32Array, // stride-4: read .xyz only
+  normals: Float32Array, // stride-4: read .xyz only
   triMatIdMap: Uint32Array,
   materials: THREE.Material[],
   options: EmitterListOptions,
@@ -169,13 +167,17 @@ export function buildEmitterList(
     const n0x = normals[i0 * 4]!;
     const n0y = normals[i0 * 4 + 1]!;
     const n0z = normals[i0 * 4 + 2]!;
-    const hasNormals = (n0x !== 0 || n0y !== 0 || n0z !== 0);
+    const hasNormals = n0x !== 0 || n0y !== 0 || n0z !== 0;
     if (hasNormals) {
       nx = (n0x + normals[i1 * 4]! + normals[i2 * 4]!) / 3;
       ny = (n0y + normals[i1 * 4 + 1]! + normals[i2 * 4 + 1]!) / 3;
       nz = (n0z + normals[i1 * 4 + 2]! + normals[i2 * 4 + 2]!) / 3;
       const nlen = Math.sqrt(nx * nx + ny * ny + nz * nz);
-      if (nlen > 1e-6) { nx /= nlen; ny /= nlen; nz /= nlen; }
+      if (nlen > 1e-6) {
+        nx /= nlen;
+        ny /= nlen;
+        nz /= nlen;
+      }
     }
 
     const matId = triMatIdMap[t]!;
@@ -217,7 +219,9 @@ export function buildEmitterList(
       if (power < 1e-8) continue;
       emitterData.push({
         triIdx: -1,
-        vA: ex.vA, vB: ex.vB, vC: ex.vC,
+        vA: ex.vA,
+        vB: ex.vB,
+        vC: ex.vC,
         normal: ex.normal,
         area: ex.area,
         color: ex.Le,
@@ -230,7 +234,9 @@ export function buildEmitterList(
   if (emitterData.length === 0) {
     emitterData.push({
       triIdx: 0,
-      vA: [0, 10, 0], vB: [1, 10, 0], vC: [0.5, 10, 1],
+      vA: [0, 10, 0],
+      vB: [1, 10, 0],
+      vC: [0.5, 10, 1],
       normal: [0, -1, 0],
       area: 0.5,
       color: [1, 1, 1],
@@ -246,11 +252,26 @@ export function buildEmitterList(
   for (let i = 0; i < emitterCount; i++) {
     const e = emitterData[i]!;
     const base = i * EMITTER_FLOATS;
-    emitterFloats[base + 0] = e.vA[0]; emitterFloats[base + 1] = e.vA[1]; emitterFloats[base + 2] = e.vA[2]; emitterFloats[base + 3] = 0;
-    emitterFloats[base + 4] = e.vB[0]; emitterFloats[base + 5] = e.vB[1]; emitterFloats[base + 6] = e.vB[2]; emitterFloats[base + 7] = 0;
-    emitterFloats[base + 8] = e.vC[0]; emitterFloats[base + 9] = e.vC[1]; emitterFloats[base + 10] = e.vC[2]; emitterFloats[base + 11] = 0;
-    emitterFloats[base + 12] = e.normal[0]; emitterFloats[base + 13] = e.normal[1]; emitterFloats[base + 14] = e.normal[2]; emitterFloats[base + 15] = e.area;
-    emitterFloats[base + 16] = e.color[0]; emitterFloats[base + 17] = e.color[1]; emitterFloats[base + 18] = e.color[2]; emitterFloats[base + 19] = e.intensity;
+    emitterFloats[base + 0] = e.vA[0];
+    emitterFloats[base + 1] = e.vA[1];
+    emitterFloats[base + 2] = e.vA[2];
+    emitterFloats[base + 3] = 0;
+    emitterFloats[base + 4] = e.vB[0];
+    emitterFloats[base + 5] = e.vB[1];
+    emitterFloats[base + 6] = e.vB[2];
+    emitterFloats[base + 7] = 0;
+    emitterFloats[base + 8] = e.vC[0];
+    emitterFloats[base + 9] = e.vC[1];
+    emitterFloats[base + 10] = e.vC[2];
+    emitterFloats[base + 11] = 0;
+    emitterFloats[base + 12] = e.normal[0];
+    emitterFloats[base + 13] = e.normal[1];
+    emitterFloats[base + 14] = e.normal[2];
+    emitterFloats[base + 15] = e.area;
+    emitterFloats[base + 16] = e.color[0];
+    emitterFloats[base + 17] = e.color[1];
+    emitterFloats[base + 18] = e.color[2];
+    emitterFloats[base + 19] = e.intensity;
     totalEmissivePower += e.power;
   }
 

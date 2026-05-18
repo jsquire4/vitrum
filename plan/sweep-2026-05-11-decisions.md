@@ -18,12 +18,12 @@ for the technical detail on the locked option.
 These were fixed inline in the per-item plan files; this section just notes
 the corrections so reviewers can grep for them.
 
-| Item | Plan | Correction |
-|---|---|---|
-| Engines #1 | `sweep-…-fixes-engines.md` | Changed recommendation from brittle string-search update to a named marker `// @@PPG_GUIDE_EXTEND_COMBINED@@`, matching the existing `@@PPG_BOUNCE_INSERT@@` and `@@PPG_RECORD_INSERT@@` markers in the same file. Future shade.wgsl refactors will fail loud (marker-not-found) instead of silently. |
-| Engines #4 | `sweep-…-fixes-engines.md` | Removed the speculative `nm.irridianceNode` recommendation (misspelled, and the hook does not exist in the TSL version vitrum uses). Locked in the pre-multiply approach: `nm.emissiveNode = mul(giNode, mul(materialColor, PI_INV))`. The math is correct because the GI input is already integrated irradiance E. |
-| Engines #7 | `sweep-…-fixes-engines.md` | Locked Option A (one-line shader change to read `.x` instead of `.w`). Option B was contingent on a gbuffer-convention verification I could not complete with confidence; Option A is unconditionally safe. |
-| Foundations #29 | `sweep-…-fixes-foundations.md` | Corrected the off-by-one in the prose: the current `stackPtr < 62u` guard wastes 1 stack slot (index 63), not 2. The recommended fix `stackPtr + 1u < 64u` is unchanged. |
+| Item            | Plan                           | Correction                                                                                                                                                                                                                                                                                                          |
+| --------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engines #1      | `sweep-…-fixes-engines.md`     | Changed recommendation from brittle string-search update to a named marker `// @@PPG_GUIDE_EXTEND_COMBINED@@`, matching the existing `@@PPG_BOUNCE_INSERT@@` and `@@PPG_RECORD_INSERT@@` markers in the same file. Future shade.wgsl refactors will fail loud (marker-not-found) instead of silently.               |
+| Engines #4      | `sweep-…-fixes-engines.md`     | Removed the speculative `nm.irridianceNode` recommendation (misspelled, and the hook does not exist in the TSL version vitrum uses). Locked in the pre-multiply approach: `nm.emissiveNode = mul(giNode, mul(materialColor, PI_INV))`. The math is correct because the GI input is already integrated irradiance E. |
+| Engines #7      | `sweep-…-fixes-engines.md`     | Locked Option A (one-line shader change to read `.x` instead of `.w`). Option B was contingent on a gbuffer-convention verification I could not complete with confidence; Option A is unconditionally safe.                                                                                                         |
+| Foundations #29 | `sweep-…-fixes-foundations.md` | Corrected the off-by-one in the prose: the current `stackPtr < 62u` guard wastes 1 stack slot (index 63), not 2. The recommended fix `stackPtr + 1u < 64u` is unchanged.                                                                                                                                            |
 
 ---
 
@@ -55,6 +55,7 @@ revisit then; for now do not chase a non-verified convention.
 **Locked: rename, do NOT rewrite.**
 
 Drop the Schied 2017 citation from `svgf.wgsl.ts` and rename:
+
 - `SVGF_WGSL` → `ATROUS_VARIANCE_WGSL`
 - `SVGF_DEFAULT_*` constants → `ATROUS_VARIANCE_DEFAULT_*`
 - File `svgf.wgsl.ts` → `atrousVariance.wgsl.ts`
@@ -75,7 +76,7 @@ paper Eq. 4 edge-stop form) are absent. Implementing real SVGF is weeks of
 work for a marginal quality lift on top of the existing walkaround
 indirect-temporal-accumulator (which already does Karis-style RGB-AABB
 clipping). Per the project's "no SOTA-cargo-cult" principle, do the honest
-rename now, schedule real SVGF as a future sprint *if* a render-quality gap
+rename now, schedule real SVGF as a future sprint _if_ a render-quality gap
 motivates it.
 
 This decision subsumes Engines #9 (per-pixel Welford history): the global
@@ -90,6 +91,7 @@ on depth+normal+objId) so the work can be revived if needed.
 **Locked: full delete.**
 
 Delete:
+
 - `packages/walkaround-hybrid/src/neural/` (entire directory)
 - `packages/walkaround-hybrid/__tests__/sprint13-neural.test.ts`
 - `tools/neural-denoiser-training/` (entire directory)
@@ -144,6 +146,7 @@ are tuned to the GPU budget; bringing them to Sannikov-faithful 3D would be
 **Locked: full delete + future-sprint placeholder.**
 
 Delete:
+
 - `packages/walkaround-hybrid/src/ppg/` (entire directory)
 - `packages/walkaround-hybrid/src/shaders/shadePpgGuide.wgsl.ts`
 - `packages/walkaround-hybrid/src/shaders/shadePpgTrain.wgsl.ts`
@@ -153,6 +156,7 @@ Delete:
   exists for PPG)
 
 Remove:
+
 - `ppgEnabled` option from `HybridEngine` constructor / `setPPGEnabled` / etc.
 - All PPG markers from `shade.wgsl.ts` (`@@PPG_TRAIN_BINDINGS_INSERT@@`,
   `@@PPG_GUIDE_DECLS_INSERT@@`, `@@PPG_BOUNCE_INSERT@@`,
@@ -183,6 +187,7 @@ any host that flips the flag. Clean slate is safer.
 **Locked: Option A (rename to `_partial` namespace).**
 
 Rename:
+
 - `bdptConnectionMIS` → `bdptConnectionMIS_partial`
 - `buildBDPTStrategyPDFs` → `buildBDPTStrategyPDFs_partial`
 
@@ -272,11 +277,11 @@ single-field addition with no alignment risk.
 
 ## Three small items the per-item plans missed
 
-| Item | Status | Action |
-|---|---|---|
+| Item                                                                                                  | Status                                  | Action                                                                         |
+| ----------------------------------------------------------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------ |
 | Two locked worktree branches (`worktree-agent-a06812aa6c5b09b98`, `worktree-agent-a193d8b569f806c50`) | Sub-agent execution state, low priority | Leave alone. If they remain after the 38-item work completes, hand-clean then. |
-| 3 tools/*.md docs referencing `plan/phase-6-roadmap.md` (non-archive path) | Updated this session | DONE — all 3 now point to `plan/archive/phase-6-roadmap.md`. |
-| Items 2 + 4 + 6 + 20 should land coherently as one DDGI milestone | Captured in execution order below | See "DDGI Coherent Milestone" phase. |
+| 3 tools/\*.md docs referencing `plan/phase-6-roadmap.md` (non-archive path)                           | Updated this session                    | DONE — all 3 now point to `plan/archive/phase-6-roadmap.md`.                   |
+| Items 2 + 4 + 6 + 20 should land coherently as one DDGI milestone                                     | Captured in execution order below       | See "DDGI Coherent Milestone" phase.                                           |
 
 ---
 
@@ -291,16 +296,17 @@ milestone's tests are green.
 
 Land as a single PR. Pure rename / docstring / comment / structural changes.
 
-| Item | Action |
-|---|---|
-| Engines #11 (D8) | Rename `bdptConnectionMIS` → `bdptConnectionMIS_partial` |
-| Engines #12 | Drop Estévez-Kulla 2018 from `lightTree.ts` references |
-| Engines #13 | Rename `nodePowerPrefixSum` → `_powerPrefixSumDebug`, mark `@internal` |
-| Foundations #32 | Cross-link the two RFE tracker files |
-| Foundations #34 | Replace "future sprint" language in `HybridEngine.ts:592` |
-| Foundations #38 | Update `_staging/README.md` table to be accurate |
+| Item             | Action                                                                 |
+| ---------------- | ---------------------------------------------------------------------- |
+| Engines #11 (D8) | Rename `bdptConnectionMIS` → `bdptConnectionMIS_partial`               |
+| Engines #12      | Drop Estévez-Kulla 2018 from `lightTree.ts` references                 |
+| Engines #13      | Rename `nodePowerPrefixSum` → `_powerPrefixSumDebug`, mark `@internal` |
+| Foundations #32  | Cross-link the two RFE tracker files                                   |
+| Foundations #34  | Replace "future sprint" language in `HybridEngine.ts:592`              |
+| Foundations #38  | Update `_staging/README.md` table to be accurate                       |
 
 Concurrent: create the three future-sprint placeholders:
+
 - `plan/sprint-svgf-real-future.md` (D3)
 - `plan/sprint-neural-denoiser-future.md` (D4)
 - `plan/sprint-ppg-rebuild-future.md` (D7)
@@ -328,6 +334,7 @@ Land **before** any algorithmic-correctness items (Milestone 4+) so the new
 tests can validate the fixes.
 
 Implementation order per Foundations #33:
+
 1. **33-D Energy conservation (white furnace)** — gates BSDF correctness
 2. **33-A PDF normalizations** — HG, equiAngular, mixturePdf, octahedral, environment
 3. **33-E Octahedral encode/decode round-trip**
@@ -343,18 +350,18 @@ Implementation order per Foundations #33:
 
 Order within milestone is flexible; land each as its own small PR.
 
-| Item | Action |
-|---|---|
-| Engines #5 | ReSTIR-DI p̂ consistency: add `emitterGeometry(...)` to `temporal.wgsl.ts:96` and `spatial.wgsl.ts:77` |
-| Engines #7 (D2) | Change SVGF (now atrous-variance) shader depth read from `.w` to `.x` (lines 216, 248) |
-| Engines #10 | Fix `equiAngular.ts:135` PDF/sample mismatch (use clamped `t` in PDF computation) |
-| Foundations #17 | Add `transformNormal((M⁻¹)ᵀ)` to `mat4.ts`; replace `transformDirection` calls for normals |
-| Foundations #18 | Remove `min(hit.dist, 32.0)` Beer-Lambert clamp |
-| Foundations #28 | Add `safeInvDir` helper; replace 5 `1/dir` sites |
-| Foundations #29 | Fix BVH stack guard arithmetic (`stackPtr + 1u < 64u`) |
-| **New #39** | Fix octahedral south-pole singularity: `octEncode((0,0,-1)) → (0,0)` because `sign(0)=0` collapses the lower-hemisphere fold; `octDecode((0,0)) = (0,0,+1)` so south pole round-trips to north pole. Fix in `packages/shared-samplers/src/wgsl/octahedralCore.wgsl.ts:7-22` (and the equivalent in `packages/shared-bvh/src/wgsl/octahedral.wgsl.ts`): replace `sign(n.x)` / `sign(n.y)` with `select(-1.0, 1.0, n.x >= 0.0)` / `select(-1.0, 1.0, n.y >= 0.0)`. Cigolle 2014 §A.1 documents this gotcha. Two `it.fails` tests in `packages/shared-samplers/__tests__/octahedral.test.ts` will flip to passing. |
-| Foundations #36 (D12) | UBO-plumb `triIntersectEpsilon` |
-| Foundations #35 (D11) | Delete deprecated `Float32Array` spectral path |
+| Item                  | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engines #5            | ReSTIR-DI p̂ consistency: add `emitterGeometry(...)` to `temporal.wgsl.ts:96` and `spatial.wgsl.ts:77`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Engines #7 (D2)       | Change SVGF (now atrous-variance) shader depth read from `.w` to `.x` (lines 216, 248)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Engines #10           | Fix `equiAngular.ts:135` PDF/sample mismatch (use clamped `t` in PDF computation)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Foundations #17       | Add `transformNormal((M⁻¹)ᵀ)` to `mat4.ts`; replace `transformDirection` calls for normals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Foundations #18       | Remove `min(hit.dist, 32.0)` Beer-Lambert clamp                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Foundations #28       | Add `safeInvDir` helper; replace 5 `1/dir` sites                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Foundations #29       | Fix BVH stack guard arithmetic (`stackPtr + 1u < 64u`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| **New #39**           | Fix octahedral south-pole singularity: `octEncode((0,0,-1)) → (0,0)` because `sign(0)=0` collapses the lower-hemisphere fold; `octDecode((0,0)) = (0,0,+1)` so south pole round-trips to north pole. Fix in `packages/shared-samplers/src/wgsl/octahedralCore.wgsl.ts:7-22` (and the equivalent in `packages/shared-bvh/src/wgsl/octahedral.wgsl.ts`): replace `sign(n.x)` / `sign(n.y)` with `select(-1.0, 1.0, n.x >= 0.0)` / `select(-1.0, 1.0, n.y >= 0.0)`. Cigolle 2014 §A.1 documents this gotcha. Two `it.fails` tests in `packages/shared-samplers/__tests__/octahedral.test.ts` will flip to passing. |
+| Foundations #36 (D12) | UBO-plumb `triIntersectEpsilon`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Foundations #35 (D11) | Delete deprecated `Float32Array` spectral path                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 ### Milestone 5 — pt-webgpu BSDF correctness
 
@@ -414,17 +421,17 @@ Standalone after Milestone 7. Adds new compute pass.
 
 ### Milestone 9 — RC + GTAO physical fixes
 
-| Item | Action |
-|---|---|
-| Engines #22 | Replace RC `4π/N` normalization with per-bin solid-angle weights from octahedral grid |
-| Engines #21 (D6) | Fix RC merge integral to weight by actual child solid-angle coverage (Path A) |
-| Engines #23 | Replace GTAO `(h1+h2)/π` with full Jiménez 2016 slice integral |
-| Engines #24 | Add albedo demodulation (divide by albedo before atrous, multiply back after) — depends on Engines #7 |
+| Item             | Action                                                                                                |
+| ---------------- | ----------------------------------------------------------------------------------------------------- |
+| Engines #22      | Replace RC `4π/N` normalization with per-bin solid-angle weights from octahedral grid                 |
+| Engines #21 (D6) | Fix RC merge integral to weight by actual child solid-angle coverage (Path A)                         |
+| Engines #23      | Replace GTAO `(h1+h2)/π` with full Jiménez 2016 slice integral                                        |
+| Engines #24      | Add albedo demodulation (divide by albedo before atrous, multiply back after) — depends on Engines #7 |
 
 ### Milestone 10 — CHANGELOG + final docs
 
-| Item | Action |
-|---|---|
+| Item            | Action                                                                     |
+| --------------- | -------------------------------------------------------------------------- |
 | Foundations #37 | Catch up CHANGELOG.md with Sprint 12–18 entries (use git log to enumerate) |
 
 ---
@@ -435,6 +442,7 @@ Standalone after Milestone 7. Adds new compute pass.
 
 Per `CLAUDE.md` Testing protocol: every milestone that changes algorithmic
 behavior must capture before/after reference renders of:
+
 - Cornell box (the canonical regression scene at `examples/cornell-box/`)
 - Multi-material scene if available
 
@@ -452,8 +460,9 @@ do not repeat that pattern.
 ### Testing gates
 
 After each milestone:
+
 1. `npm run typecheck` clean across the workspace.
-2. `npm test` green (test count is allowed to *increase*; never to decrease).
+2. `npm test` green (test count is allowed to _increase_; never to decrease).
 3. Reference render diff if applicable.
 4. Update `memory/in-flight-sweep.md` to mark the milestone's items as
    resolved.

@@ -8,16 +8,8 @@ function makeScene(): Scene {
       {
         kind: 'mesh',
         id: 'mesh-a',
-        positions: new Float32Array([
-          0, 0, 0,
-          1, 0, 0,
-          0, 1, 0,
-        ]),
-        normals: new Float32Array([
-          0, 0, 1,
-          0, 0, 1,
-          0, 0, 1,
-        ]),
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
         material: {
           baseColor: [0.1, 0.2, 0.3],
           roughness: 0.5,

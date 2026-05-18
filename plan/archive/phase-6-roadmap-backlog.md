@@ -2,7 +2,7 @@
 
 **Canonical narrative**: [`plan/phase-6-roadmap.md`](./phase-6-roadmap.md) (goals, risks, mode-scope matrix, decision log).
 
-**Purpose**: single checklist of *definition-of-done* items pulled from the roadmap so progress can be tracked without rereading full sprint prose. Each sprint has a matching benchmark stub: [`plan/sprint-<N>-benchmark.md`](./sprint-1-benchmark.md).
+**Purpose**: single checklist of _definition-of-done_ items pulled from the roadmap so progress can be tracked without rereading full sprint prose. Each sprint has a matching benchmark stub: [`plan/sprint-<N>-benchmark.md`](./sprint-1-benchmark.md).
 
 **Legend**: unchecked = not done in-repo; this file is updated as sprints land.
 
@@ -10,7 +10,7 @@
 
 ## Sprint 1 — PT preview speed wins
 
-- [x] **1.1** Outdoor HDRI presets load with HTTP 200 (no silent 404). *Library slice*: `@vitrum/pt-webgl` exports working preset URLs + optional RGBE loader helper; hosts wire IBL. Cornell: `?hdri=<presetId>`.
+- [x] **1.1** Outdoor HDRI presets load with HTTP 200 (no silent 404). _Library slice_: `@vitrum/pt-webgl` exports working preset URLs + optional RGBE loader helper; hosts wire IBL. Cornell: `?hdri=<presetId>`.
 - [x] **1.2** Preview bounce count = 3 via `PT_PREVIEW_BOUNCES` / `PT_PREVIEW_OPTIONS.bounces`.
 - [x] **1.3** Preview uses `resolutionFactor: 0.5` in `PT_PREVIEW_OPTIONS` (0.5× render resolution vs viewport — bilinear resolve).
 - [x] **1.4** Skip expensive post-process for first N samples after reset. `FrameOutput.suggestSkipPostProcess` now emitted by `@vitrum/pt-webgl` using `PT_POSTPROCESS_WARMUP_SAMPLES = 8`.

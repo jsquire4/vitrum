@@ -139,7 +139,12 @@ describe('registerBuiltinDenoisers', () => {
     registerBuiltinDenoisers(reg);
     expect(reg.size()).toBe(6);
     expect(reg.ids()).toEqual([
-      'none', 'atrous', 'atrous-variance', 'svgf-real', 'neural', 'oidn-final',
+      'none',
+      'atrous',
+      'atrous-variance',
+      'svgf-real',
+      'neural',
+      'oidn-final',
     ]);
   });
 

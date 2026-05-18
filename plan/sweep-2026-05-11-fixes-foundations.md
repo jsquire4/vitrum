@@ -11,6 +11,7 @@ changes are made here; this is the authoritative fix brief.
 ## Item 14: pt-webgpu glossy BSDF sampling/PDF mismatch
 
 **File(s):**
+
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:930–934` (`glossyReflectionSample`)
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:334–368` (`brdfDirectionalPdf`)
 
@@ -25,7 +26,7 @@ from GGX VNDF by >2× in mean and has a heavier tail — the result is systemati
 energy loss on glossy surfaces.
 
 **Authoritative source:** Heitz, E. "Sampling the GGX Distribution of Visible
-Normals." *Journal of Computer Graphics Techniques* 7(4):1–13, 2018.
+Normals." _Journal of Computer Graphics Techniques_ 7(4):1–13, 2018.
 https://jcgt.org/published/0007/04/01/paper.pdf  
 Section 3 gives the exact VNDF sample formula; Section 4 gives the exact PDF
 `p(ωi | ωo) = G1(ωo)·max(0, ωo·ωm)·D(ωm) / (ωo·N)` expressed as
@@ -69,6 +70,7 @@ distribution.
    space. Add a `worldToLocal(v, n, t, b)` helper if one does not exist.
 
 2. Replace `glossyReflectionSample` body with:
+
    ```wgsl
    fn glossyReflectionSample(rng: ptr<function, u32>, wo: vec3f, n: vec3f, t: vec3f, b: vec3f, roughness: f32) -> vec3f {
      let alpha = max(roughness * roughness, 0.001);
@@ -79,6 +81,7 @@ distribution.
      return safe_normalize(reflect(-wo, h_world));
    }
    ```
+
    Signature change: add `n, t, b` parameters. Update all call sites
    (`sampleNextBounceDirection` specular and transmission branches at
    lines 1349 and 1355) — they already have `normal` and can call
@@ -96,6 +99,7 @@ no valid alternative that keeps the current lerp sampling while matching the
 existing half-vector PDF.
 
 **Behavior-preserving test:**
+
 ```ts
 // packages/pt-webgpu/__tests__/bsdfPdfNormalization.test.ts
 // Monte Carlo integration of sampleGgxVndf PDF over hemisphere ≈ 1.0
@@ -120,6 +124,7 @@ rays before signing off.
 ## Item 15: pt-webgpu BSDF→light MIS sees only first area light
 
 **File(s):**
+
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:370–399`
   (`intersectRectAreaLightRay`, hardcodes `rectAreaLights[0..3]`)
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:402–419`
@@ -173,6 +178,7 @@ this is unbiased and only costs O(N) light-count extra tests, acceptable
 for the prototype.
 
 **Behavior-preserving test:**
+
 ```ts
 // Scene with 2 rect-area lights on opposite walls.
 // Verify total radiance is within 5% of single-light × 2 (linearity).
@@ -192,6 +198,7 @@ pattern already present in the main direct-light loop.
 ## Item 16: pt-webgpu dielectric branch heuristic, not Fresnel-weighted
 
 **File(s):**
+
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:1313–1368`
   (`sampleNextBounceDirection`)
 
@@ -205,8 +212,8 @@ over-transmits at grazing angles and produces incorrect TIR behavior (the
 `validRefract` fallback at line 1346 does reflect, but the probability budget
 for reflection is too low because `specProb` was reduced by `baseTransProb`).
 
-**Authoritative source:** Pharr, Jakob, Humphreys. *Physically Based
-Rendering* 4th ed. Section 9.3 "Specular Reflection and Transmission" and the
+**Authoritative source:** Pharr, Jakob, Humphreys. _Physically Based
+Rendering_ 4th ed. Section 9.3 "Specular Reflection and Transmission" and the
 `DielectricBxDF::Sample_f` implementation at pbr-book.org/4ed/Reflection_Models/Dielectric_BSDF.
 The correct partition: compute `R = FrDielectric(cosTheta_i, eta)` using the
 unpolarized Fresnel equations; sample reflect with probability R, transmit
@@ -217,6 +224,7 @@ produce an unbiased estimator.
 
 1. Add `fn frDielectric(cosTheta_i: f32, eta: f32) -> f32` implementing the
    unpolarized Fresnel equation:
+
    ```wgsl
    fn frDielectric(cosTheta_i_in: f32, eta_in: f32) -> f32 {
      var cosTheta_i = clamp(cosTheta_i_in, -1.0, 1.0);
@@ -231,6 +239,7 @@ produce an unbiased estimator.
      return 0.5 * (r_par * r_par + r_perp * r_perp);
    }
    ```
+
    This is the standard unpolarized Fresnel from PBR4e §9.3 /
    `FrDielectric()`.
 
@@ -251,6 +260,7 @@ partition entirely or keep it for non-transmissive metallic/diffuse surfaces
 `transmission > 0` use Fresnel-weighted split).
 
 **Behavior-preserving test:**
+
 ```ts
 // White furnace test on a glass sphere (IOR=1.5): total throughput after
 // one dielectric bounce ≈ 1.0 (within 1%) at N=10 000 rays.
@@ -272,6 +282,7 @@ before/after.
 ## Item 17: pt-webgpu normal transform inverted on non-uniform scale instances
 
 **File(s):**
+
 - `packages/pt-webgpu/src/math/mat4.ts:92–100` (`transformDirection`)
 
 **Root cause:** `transformDirection` applies the forward model matrix `M`
@@ -281,11 +292,11 @@ to normals (treating them as directions). Under non-uniform scale
 For uniform scale the result is proportional to the correct answer (normalisation
 hides the error); for non-uniform scale the normal direction is wrong.
 
-**Authoritative source:** Pharr, Jakob, Humphreys. *PBR* 4th ed. §3.10
+**Authoritative source:** Pharr, Jakob, Humphreys. _PBR_ 4th ed. §3.10
 "Applying Transformations" — `Transform::operator()(const Normal3f&)` uses the
 transpose-inverse. See also pbr-book.org/4ed/Geometry_and_Transformations/Applying_Transformations.
-Also: Turkowski, K. "Properties of Surface Normal Transformations." *Graphics
-Gems*, Academic Press, 1990 — the derivation is that `M⁻ᵀ n` is required to
+Also: Turkowski, K. "Properties of Surface Normal Transformations." _Graphics
+Gems_, Academic Press, 1990 — the derivation is that `M⁻ᵀ n` is required to
 maintain `n · t = 0` under `M t`.
 
 **Fix:**
@@ -297,28 +308,34 @@ maintain `n · t = 0` under `M t`.
    export function transformNormal(m: Mat4, v: Vec3): [number, number, number] {
      // Compute (M⁻¹)ᵀ using cofactor expansion of the 3×3 submatrix.
      // For column-major Mat4 m: m[col*4 + row].
-     const [m00,m10,m20, m01,m11,m21, m02,m12,m22] = [
-       m[0]??0, m[1]??0, m[2]??0,
-       m[4]??0, m[5]??0, m[6]??0,
-       m[8]??0, m[9]??0, m[10]??0,
+     const [m00, m10, m20, m01, m11, m21, m02, m12, m22] = [
+       m[0] ?? 0,
+       m[1] ?? 0,
+       m[2] ?? 0,
+       m[4] ?? 0,
+       m[5] ?? 0,
+       m[6] ?? 0,
+       m[8] ?? 0,
+       m[9] ?? 0,
+       m[10] ?? 0,
      ];
      // Cofactors (rows of (M⁻¹)ᵀ = cofactor matrix / det).
-     const c00 = m11*m22 - m21*m12;
-     const c01 = -(m01*m22 - m21*m02);
-     const c02 = m01*m12 - m11*m02;
-     const c10 = -(m10*m22 - m20*m12);
-     const c11 = m00*m22 - m20*m02;
-     const c12 = -(m00*m12 - m10*m02);
-     const c20 = m10*m21 - m20*m11;
-     const c21 = -(m00*m21 - m20*m01);
-     const c22 = m00*m11 - m10*m01;
+     const c00 = m11 * m22 - m21 * m12;
+     const c01 = -(m01 * m22 - m21 * m02);
+     const c02 = m01 * m12 - m11 * m02;
+     const c10 = -(m10 * m22 - m20 * m12);
+     const c11 = m00 * m22 - m20 * m02;
+     const c12 = -(m00 * m12 - m10 * m02);
+     const c20 = m10 * m21 - m20 * m11;
+     const c21 = -(m00 * m21 - m20 * m01);
+     const c22 = m00 * m11 - m10 * m01;
      // Apply cofactor matrix to v (det cancels in normalisation).
-     const x = c00*v[0] + c10*v[1] + c20*v[2];
-     const y = c01*v[0] + c11*v[1] + c21*v[2];
-     const z = c02*v[0] + c12*v[1] + c22*v[2];
-     const len = Math.hypot(x,y,z);
-     if (len < 1e-8) return [0,1,0];
-     return [x/len, y/len, z/len];
+     const x = c00 * v[0] + c10 * v[1] + c20 * v[2];
+     const y = c01 * v[0] + c11 * v[1] + c21 * v[2];
+     const z = c02 * v[0] + c12 * v[1] + c22 * v[2];
+     const len = Math.hypot(x, y, z);
+     if (len < 1e-8) return [0, 1, 0];
+     return [x / len, y / len, z / len];
    }
    ```
 2. In `flattenScene.ts` (wherever `transformDirection` is called for normals),
@@ -328,6 +345,7 @@ maintain `n · t = 0` under `M t`.
 **Decision points:** None. The math is settled.
 
 **Behavior-preserving test:**
+
 ```ts
 // transformNormal round-trip: for a non-uniform scale matrix S=diag(2,1,3),
 // a face-normal n=(0,1,0) and tangent t=(1,0,0): verify
@@ -347,6 +365,7 @@ should track the correct surface tangent plane.
 ## Item 18: pt-webgpu Beer-Lambert path distance clamped at 32 world units
 
 **File(s):**
+
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:1525`
   `exp(-sigmaT * min(hit.dist, 32.0))`
 
@@ -358,7 +377,7 @@ for objects larger than 32 units (e.g. large water volumes or architectural
 glass panels).
 
 **Authoritative source:** Novák, J. et al. "Monte Carlo Methods for
-Volumetric Light Transport Simulation." *Eurographics State of the Art*, 2018.
+Volumetric Light Transport Simulation." _Eurographics State of the Art_, 2018.
 https://cs.dartmouth.edu/~wjarosz/publications/novak18mcvrl.pdf — equation for
 transmittance estimator T(x→y) = exp(−σₜ·‖x−y‖) with no distance cap.
 
@@ -376,6 +395,7 @@ remove the clamp. Recommendation: remove the clamp unconditionally. `exp(-σₜ 
 is numerically stable for large d (it just approaches 0); no cap is needed.
 
 **Behavior-preserving test:**
+
 ```ts
 // Transmittance through a slab of thickness 100 units with σₜ = 0.01:
 // T = exp(-0.01 * 100) = exp(-1) ≈ 0.368. With the 32-unit cap: exp(-0.32) ≈ 0.726.
@@ -396,6 +416,7 @@ rendering. Existing content with σₜ > 0 will appear darker in thick regions
 ## Item 26: Two incompatible BVHNode encodings co-exist
 
 **File(s):**
+
 - `packages/pt-webgpu/src/scene/buildCpuBvh.ts` — stores **absolute** right-child
   node index in `rightChildOrTriOffset`
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:817` — traversal reads
@@ -434,10 +455,11 @@ is the convention that matches the existing GPU-verified walkaround path.
 **Enforcement strategy:** Add a `validateBvhEncoding(nodes: Float32Array)` function
 to `shared-bvh/bvhCommon.ts` that asserts every interior node's right-child
 offset is in `[1, totalNodes)`. Call it from both:
+
 - `buildCpuBvh` (after build, in dev/test mode)
 - `buildSceneBVH` (after `normalizeBvhInteriorOffsets`, assertion removed in
   prod)
-Gated behind a `debug` flag in both builders.
+  Gated behind a `debug` flag in both builders.
 
 **Decision points:** None on convention choice (relative is clearly the
 canonical form — it is what the GPU-proven walkaround path uses and what
@@ -446,6 +468,7 @@ replaced entirely by delegating to `shared-bvh`? See Item 31 for that
 discussion.
 
 **Behavior-preserving test:**
+
 ```ts
 // buildCpuBvh round-trip: build a 4-triangle box, verify every interior
 // node's rightChildOrTriOffset satisfies 1 ≤ offset < totalNodes.
@@ -469,6 +492,7 @@ wrong pixels).
 ## Item 27: Index buffer stride differs across packages
 
 **File(s):**
+
 - `packages/pt-webgpu/src/scene/buildCpuBvh.ts:67,153` — indices packed as
   `vec4u` (stride 4), `.w` zeroed
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:777` — reads
@@ -508,6 +532,7 @@ canonical stride makes sense; the fix is clear contracts at the boundary, not
 unification. Endorse this as the design.
 
 **Behavior-preserving test:**
+
 ```ts
 // Upload a known 3-triangle mesh through both stride-3 and stride-4 paths;
 // verify the triangle indices decode correctly from WGSL.
@@ -526,6 +551,7 @@ avoid chasing two moving targets).
 ## Item 28: Unguarded `1/dir` in 5 ray-AABB sites → NaN on axis-aligned rays
 
 **File(s):**
+
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:506`
   `let invDir = vec3f(1.0) / ray.direction;`
 - `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:545`
@@ -545,8 +571,7 @@ The NaN occurs only when `origin.x == bmin.x` AND `dir.x == 0`, yielding
 `0 * Inf = NaN`, which poisons the tNear/tFar comparisons.
 
 **Authoritative source:** Williams, A. et al. "An Efficient and Robust
-Ray-Box Intersection Algorithm." *Journal of Graphics Tools* 10(1):49–54,
-2005. https://people.csail.mit.edu/amy/papers/box-jgt.pdf — Section 4 notes
+Ray-Box Intersection Algorithm." _Journal of Graphics Tools_ 10(1):49–54, 2005. https://people.csail.mit.edu/amy/papers/box-jgt.pdf — Section 4 notes
 that storing `invDir` components with IEEE infinity handles the axis-aligned
 case robustly, but relies on IEEE NaN propagation in the comparison NOT
 short-circuiting. The WGSL spec guarantees IEEE 754 f32, so the slab test is
@@ -554,6 +579,7 @@ safe IF the origin is not exactly on the slab plane. For probe origins that
 are snapped to integer grid positions (DDGI probes) coincidence is common.
 
 **Fix:** Replace the raw division with a robust inverse:
+
 ```wgsl
 fn safeInvDir(d: vec3f) -> vec3f {
   // Use select to avoid 0/0: if dir component is zero, invDir is ±Inf
@@ -565,6 +591,7 @@ fn safeInvDir(d: vec3f) -> vec3f {
   );
 }
 ```
+
 Replace all 5 `vec3f(1.0) / dir` calls with `safeInvDir(dir)`.
 
 Alternatively, use IEEE-standard `1.0 / max(abs(d), vec3f(1e-30)) * sign(d)`,
@@ -574,6 +601,7 @@ but `select` is clearer and avoids the sign-of-zero edge case.
 authoritative solution.
 
 **Behavior-preserving test:**
+
 ```ts
 // CPU-side: ray along +Y axis through a unit AABB; origin exactly at bottom
 // face center (0, 0, 0). Verify tNear == 0, tFar > 0, no NaN.
@@ -594,6 +622,7 @@ boolean false → missed intersection). The fix makes those return a hit.
 ## Item 29: BVH stack overflow drops right child silently
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/shaders/common.wgsl.ts:534, 536`
   `if (stackPtr < 62u)`
 - `packages/walkaround-hybrid/src/shaders/common.wgsl.ts:621, 623`
@@ -632,6 +661,7 @@ measurably increases occupancy pressure on low-VRAM devices. Recommendation:
 keep at 64 and fix the arithmetic; document the depth bound in code.
 
 **Behavior-preserving test:**
+
 ```ts
 // Construct a pathological BVH of depth 32 (worst-case median split on 64
 // sorted triangles). Trace a ray that should hit the deepest leaf. Verify hit.
@@ -650,6 +680,7 @@ occur in practice; the fix just corrects the guard arithmetic.
 ## Item 30: walkaround-hybrid common.wgsl traversal ignores split-axis ordering
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/shaders/common.wgsl.ts:529–537`
   (interior-node push in `bvhIntersectAny`)
 - `packages/walkaround-hybrid/src/shaders/common.wgsl.ts:618–626`
@@ -663,7 +694,7 @@ current unordered traversal is correct but suboptimal: it visits ~1.3–2×
 more nodes than ordered traversal on average scenes.
 
 **Authoritative source:** Wald, I. et al. "Ray Tracing Deformable Scenes
-Using Dynamic Bounding Volume Hierarchies." *ACM TOG* 26(1), 2007, and
+Using Dynamic Bounding Volume Hierarchies." _ACM TOG_ 26(1), 2007, and
 Pharr PBR4e §7.3.3 "Traversal" — ordered traversal uses `splitAxis` from
 the interior node to determine which child is near.
 
@@ -691,6 +722,7 @@ fix. Prioritise after correctness items. The performance gain is approximately
 30–50% fewer node tests for first-hit queries on coherent rays.
 
 **Behavior-preserving test:**
+
 ```ts
 // Trace 1000 random rays through a 10K-tri scene; compare hit distance
 // from ordered vs unordered traversal — must be identical.
@@ -711,6 +743,7 @@ only if the node layout is canonically encoded.
 ## Item 31: pt-webgpu/buildCpuBvh is median-split, not SAH
 
 **File(s):**
+
 - `packages/pt-webgpu/src/scene/buildCpuBvh.ts` — complete implementation
 
 **Root cause:** The builder sorts on longest centroid axis and splits at the
@@ -720,20 +753,19 @@ cost by 1.5–3× vs SAH. For a prototype path tracer this is acceptable, but it
 is not acceptable if `pt-webgpu` is ever used for production.
 
 **Authoritative source:** Wald, I. "On fast Construction of SAH-based
-Bounding Volume Hierarchies." *IEEE Symposium on Interactive Ray Tracing*,
-2007. https://www.sci.utah.edu/~wald/Publications/2007/ParallelBVHBuild/fastbuild.pdf
+Bounding Volume Hierarchies." _IEEE Symposium on Interactive Ray Tracing_, 2007. https://www.sci.utah.edu/~wald/Publications/2007/ParallelBVHBuild/fastbuild.pdf
 Binned SAH with K=16 bins achieves within 5% of optimal SAH quality at
 O(n log n) build time with a small constant.
 
 **Trade analysis — delegate to `shared-bvh` vs implement locally:**
 
-| Factor | Delegate to `shared-bvh` | Implement binned SAH locally |
-|---|---|---|
-| Code duplication | Eliminates duplicate builder | Keeps pt-webgpu independent |
-| BVH encoding | Gains `normalizeBvhInteriorOffsets` automatically | Must be added manually (Item 26) |
-| Index format | `shared-bvh` returns stride-3 indices | pt-webgpu uses stride-4 currently |
-| Three.js dependency | `shared-bvh` depends on `three` | `buildCpuBvh` has no Three.js dep |
-| pt-webgpu purity | Adds `three` transitive dep to pt-webgpu | Keeps pt-webgpu dependency-light |
+| Factor              | Delegate to `shared-bvh`                          | Implement binned SAH locally      |
+| ------------------- | ------------------------------------------------- | --------------------------------- |
+| Code duplication    | Eliminates duplicate builder                      | Keeps pt-webgpu independent       |
+| BVH encoding        | Gains `normalizeBvhInteriorOffsets` automatically | Must be added manually (Item 26)  |
+| Index format        | `shared-bvh` returns stride-3 indices             | pt-webgpu uses stride-4 currently |
+| Three.js dependency | `shared-bvh` depends on `three`                   | `buildCpuBvh` has no Three.js dep |
+| pt-webgpu purity    | Adds `three` transitive dep to pt-webgpu          | Keeps pt-webgpu dependency-light  |
 
 **Recommendation:** For now, **implement binned SAH locally** in `buildCpuBvh.ts`
 and separately fix the encoding (Item 26). The Three.js dependency on `shared-bvh`
@@ -752,6 +784,7 @@ If `pt-webgpu` later grows a Three.js integration layer, revisit.
 4. Carry the `rightChildOrTriOffset` as a relative offset (Item 26 fix).
 
 **Behavior-preserving test:**
+
 ```ts
 // Build BVH on 100-triangle scene; verify SAH builder produces
 // the same or fewer leaf nodes than median-split builder.
@@ -773,6 +806,7 @@ not WGSL.
 ## Item 32: Two RFE trackers disagree
 
 **File(s):**
+
 - `plan/external-requests-status.md` — covers RFEs 01–05 (contract-layer status)
 - `external_requests/IMPLEMENTATION-STATUS.md` — covers RFEs 06–14 with fork-commit hashes
 
@@ -827,89 +861,98 @@ existing suite.
 **Required numerical tests — full enumeration:**
 
 ### 33-A PDF normalization integrals
+
 **File:** `packages/shared-samplers/__tests__/pdfNormalization.test.ts`
 
-| Test | What it asserts | Tolerance | Dependencies |
-|---|---|---|---|
-| HG phase PDF normalizes | MC integral of `hg_phase(cosTheta, g)` over sphere ≈ 1 | 0.5% at N=50k | None |
-| equiAngular PDF matches sample | `equiAngularSample(u)` returns `t` with `pdf(t) == equiAngularPdf(t)`; verify PDF integral over valid range ≈ 1 | 1% at N=10k | None |
-| mixturePdf sums correctly | `mixturePdf([p1,p2,...], weights)` == weighted sum of component PDFs | 1e-6 exact | None |
-| octahedral PDF | Octahedral encode maps unit sphere to [0,1]² bijection; the area differential distortion integrates to 1 over sphere surface | 1% at N=50k | None |
-| environment importance PDF | Sum of all CDF buckets == 1; PDF at each pixel ≥ 0 | 1e-6 | None |
+| Test                           | What it asserts                                                                                                              | Tolerance     | Dependencies |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------------- | ------------ |
+| HG phase PDF normalizes        | MC integral of `hg_phase(cosTheta, g)` over sphere ≈ 1                                                                       | 0.5% at N=50k | None         |
+| equiAngular PDF matches sample | `equiAngularSample(u)` returns `t` with `pdf(t) == equiAngularPdf(t)`; verify PDF integral over valid range ≈ 1              | 1% at N=10k   | None         |
+| mixturePdf sums correctly      | `mixturePdf([p1,p2,...], weights)` == weighted sum of component PDFs                                                         | 1e-6 exact    | None         |
+| octahedral PDF                 | Octahedral encode maps unit sphere to [0,1]² bijection; the area differential distortion integrates to 1 over sphere surface | 1% at N=50k   | None         |
+| environment importance PDF     | Sum of all CDF buckets == 1; PDF at each pixel ≥ 0                                                                           | 1e-6          | None         |
 
 ### 33-B VNDF PDF normalization (new, required by Item 14)
+
 **File:** `packages/pt-webgpu/__tests__/bsdfPdfNormalization.test.ts`
 
-| Test | What it asserts | Tolerance |
-|---|---|---|
-| GGX VNDF sample PDF integrates to 1 | MC integral of `p(ωi|ωo)` over hemisphere at (roughness=0.1,0.5,0.9) | 1% at N=100k |
-| brdfDirectionalPdf diffuse lobe sums correctly | `∫ pdfDiff(wi) dωi = diffProb` over upper hemisphere | 1% at N=50k |
-| Full BSDF PDF hemisphere integral == 1 | Combined `brdfDirectionalPdf` over all bounce types | 1% at N=100k |
+| Test                                           | What it asserts                                      | Tolerance                                       |
+| ---------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------- | ------------ |
+| GGX VNDF sample PDF integrates to 1            | MC integral of `p(ωi                                 | ωo)` over hemisphere at (roughness=0.1,0.5,0.9) | 1% at N=100k |
+| brdfDirectionalPdf diffuse lobe sums correctly | `∫ pdfDiff(wi) dωi = diffProb` over upper hemisphere | 1% at N=50k                                     |
+| Full BSDF PDF hemisphere integral == 1         | Combined `brdfDirectionalPdf` over all bounce types  | 1% at N=100k                                    |
 
 ### 33-C MC convergence tests
+
 **File:** `packages/pt-webgpu/__tests__/radianceConvergence.test.ts`
 
-| Test | Scene | Analytic reference | Tolerance |
-|---|---|---|---|
-| Lambertian sphere exitant radiance | Unit sphere, uniform albedo ρ, directional light L | `π · ρ · L · cos(θ_L)` per solid angle | 2% at N=1000 samples |
-| Single-bounce diffuse from area light | Infinite plane illuminated by uniform area light | Analytic solid-angle integral | 2% at N=1000 |
+| Test                                  | Scene                                              | Analytic reference                     | Tolerance            |
+| ------------------------------------- | -------------------------------------------------- | -------------------------------------- | -------------------- |
+| Lambertian sphere exitant radiance    | Unit sphere, uniform albedo ρ, directional light L | `π · ρ · L · cos(θ_L)` per solid angle | 2% at N=1000 samples |
+| Single-bounce diffuse from area light | Infinite plane illuminated by uniform area light   | Analytic solid-angle integral          | 2% at N=1000         |
 
 These require a headless CPU path tracing reference (no GPU): implement a
 TypeScript miniature path tracer using the same WGSL-mirrored functions
 to do the MC integral numerically.
 
 ### 33-D Energy conservation (white furnace)
+
 **File:** `packages/pt-webgpu/__tests__/energyConservation.test.ts`
 
-| Test | What it asserts | Tolerance |
-|---|---|---|
+| Test                                         | What it asserts                                           | Tolerance    |
+| -------------------------------------------- | --------------------------------------------------------- | ------------ |
 | BSDF round-trip: `∫f(ωo,ωi)·cos(θi) dωi ≤ 1` | For white albedo (ρ=1) at roughness 0.1–0.9, metallic 0–1 | ≤ 1.0 + 1e-3 |
-| Dielectric Fresnel energy: `R + T = 1` | For `frDielectric(θ, η)`, verify `R + (1-R) = 1` at all θ | Exact (1e-6) |
+| Dielectric Fresnel energy: `R + T = 1`       | For `frDielectric(θ, η)`, verify `R + (1-R) = 1` at all θ | Exact (1e-6) |
 
 ### 33-E Octahedral encode/decode round-trip
+
 **File:** `packages/shared-samplers/__tests__/octahedral.test.ts` (extend
 existing file)
 
-| Test | What it asserts | Tolerance |
-|---|---|---|
+| Test                   | What it asserts                                          | Tolerance                         |
+| ---------------------- | -------------------------------------------------------- | --------------------------------- |
 | Encode→decode identity | For 1000 uniform sphere samples, `decode(encode(v)) ≈ v` | `dot(original, decoded) > 0.9999` |
-| Bijection coverage | Encoded values span [0,1]² without clustering | Chi-squared uniformity p > 0.01 |
+| Bijection coverage     | Encoded values span [0,1]² without clustering            | Chi-squared uniformity p > 0.01   |
 
 ### 33-F Light-tree leaf PDF sums to 1
+
 **File:** `packages/shared-samplers/__tests__/lightTree.test.ts` (extend
 existing file)
 
-| Test | What it asserts | Tolerance |
-|---|---|---|
-| Leaf PDF partition | Sum of `leafPdf(i)` over all leaves == 1 | 1e-5 |
-| No leaf with zero power has non-zero PDF | If `power[i] == 0`, `leafPdf(i) == 0` | Exact |
+| Test                                     | What it asserts                          | Tolerance |
+| ---------------------------------------- | ---------------------------------------- | --------- |
+| Leaf PDF partition                       | Sum of `leafPdf(i)` over all leaves == 1 | 1e-5      |
+| No leaf with zero power has non-zero PDF | If `power[i] == 0`, `leafPdf(i) == 0`    | Exact     |
 
 ### 33-G BVH cross-package compatibility round-trip
+
 **File:** `packages/shared-bvh/__tests__/bvhEncoding.test.ts` (new)
 
-| Test | What it asserts | Tolerance |
-|---|---|---|
-| pt-webgpu builder relative encoding | After fix (Item 26), every interior node's `offset ∈ [1, totalNodes)` | Exact |
-| walkaround normalization | `normalizeBvhInteriorOffsets` converts 0.7.x absolute to relative correctly | Exact |
-| Cross-package traversal identity | Same ray through same geometry gives identical `tHit` from both traversals | 1e-5 |
+| Test                                | What it asserts                                                             | Tolerance |
+| ----------------------------------- | --------------------------------------------------------------------------- | --------- |
+| pt-webgpu builder relative encoding | After fix (Item 26), every interior node's `offset ∈ [1, totalNodes)`       | Exact     |
+| walkaround normalization            | `normalizeBvhInteriorOffsets` converts 0.7.x absolute to relative correctly | Exact     |
+| Cross-package traversal identity    | Same ray through same geometry gives identical `tHit` from both traversals  | 1e-5      |
 
 ### 33-H Half-float overflow NaN behavior
+
 **File:** `packages/pt-webgpu/__tests__/numerics.test.ts` (new)
 
-| Test | What it asserts | Tolerance |
-|---|---|---|
-| Attenuation clamp | `exp(-sigmaT * d)` for large `d` approaches 0, not NaN | finite, ≥ 0 |
+| Test                | What it asserts                                          | Tolerance    |
+| ------------------- | -------------------------------------------------------- | ------------ |
+| Attenuation clamp   | `exp(-sigmaT * d)` for large `d` approaches 0, not NaN   | finite, ≥ 0  |
 | frDielectric bounds | `frDielectric(theta, eta)` ∈ [0, 1] for all valid inputs | Exact bounds |
-| safeInvDir no NaN | `safeInvDir(vec3(0,1,0))` is finite, not NaN | isFinite |
+| safeInvDir no NaN   | `safeInvDir(vec3(0,1,0))` is finite, not NaN             | isFinite     |
 
 ### 33-I Dielectric Fresnel sum test (required by Item 16)
+
 **File:** `packages/pt-webgpu/__tests__/energyConservation.test.ts`
 
-| Test | What it asserts | Tolerance |
-|---|---|---|
-| `R + T = 1` at all angles | `frDielectric(θ, 1.5) + (1 - frDielectric(θ, 1.5)) == 1` | Tautologically exact |
-| TIR at critical angle | `frDielectric(θ > θc, 1.5/1.0)` == 1.0 | 1e-6 |
-| Brewster angle | At `θ_B = atan(eta)`, parallel polarisation coefficient == 0 (for full Fresnel) | 1e-4 |
+| Test                      | What it asserts                                                                 | Tolerance            |
+| ------------------------- | ------------------------------------------------------------------------------- | -------------------- |
+| `R + T = 1` at all angles | `frDielectric(θ, 1.5) + (1 - frDielectric(θ, 1.5)) == 1`                        | Tautologically exact |
+| TIR at critical angle     | `frDielectric(θ > θc, 1.5/1.0)` == 1.0                                          | 1e-6                 |
+| Brewster angle            | At `θ_B = atan(eta)`, parallel polarisation coefficient == 0 (for full Fresnel) | 1e-4                 |
 
 **Priority order for implementation:** 33-B (Item 14 fix), 33-D (energy
 conservation), 33-G (cross-package BVH), 33-A (PDF normalization),
@@ -920,6 +963,7 @@ conservation), 33-G (cross-package BVH), 33-A (PDF normalization),
 ## Item 34: `HybridEngine.ts:592` vague "future sprint" TODO
 
 **File(s):**
+
 - `packages/walkaround-hybrid/src/HybridEngine.ts:588–593`
 
 **Root cause:** The comment at line 592 reads: "Real-time caustic strategies
@@ -963,12 +1007,15 @@ Remove "future sprint" language — it is a stale-context risk.
 ## Item 35: Spectral curve deprecation warning — "Phase 7 / Sprint 1" is now in progress
 
 **File(s):**
+
 - `packages/three-bindings/src/material.ts:148–150`
 
 **Root cause:** The `console.warn` at line 148 reads:
+
 ```
 "Scheduled for removal in Phase 7 / Sprint 1."
 ```
+
 Phase 7 is in progress as of 2026-05-11. The deprecated bare-`Float32Array`
 path must now be evaluated: either remove it (breaking change) or update the
 message to a concrete removal timeline.
@@ -996,6 +1043,7 @@ type guard that narrows the check to `SpectralCurve` shape (`wavelengthStart`,
 `wavelengthEnd`, `values` fields present).
 
 **Behavior-preserving test:**
+
 ```ts
 // After removal: verify that passing a Float32Array as spectralAttenuation
 // returns no SpectralCurve on the material (the field is undefined).
@@ -1015,6 +1063,7 @@ vitrum is pre-alpha, this is acceptable with a changelog entry.
 ## Item 36: Hardcoded thresholds without UBO plumbing
 
 **File(s):**
+
 - `packages/pt-webgpu/src/wgsl/common.wgsl.ts:16` `TRI_INTERSECT_EPSILON = 1e-5`
 - `packages/pt-webgpu/src/wgsl/common.wgsl.ts:59` `safe_normalize` floor `1e-8`
 - `packages/walkaround-hybrid/src/shaders/common.wgsl.ts:30` `TRI_INTERSECT_EPSILON = 1e-5`
@@ -1041,6 +1090,7 @@ assumption in the constant declaration and expose a host-side option:
 
 If UBO plumbing is deemed too invasive for now, at minimum add a JSDoc comment
 on the constant:
+
 ```wgsl
 // TRI_INTERSECT_EPSILON: calibrated for metre-scale geometry (world units ~1m).
 // Hosts with cm-scale geometry should use 1e-3; km-scale: 1e-7.
@@ -1054,6 +1104,7 @@ the existing `emitterDist2Floor`, `directFireflyClamp`, etc. already in the
 UBO.
 
 **Behavior-preserving test:**
+
 ```ts
 // Smoke test: verify FrameParams layout byte-total is unchanged if
 // documentation-only fix is chosen.
@@ -1073,6 +1124,7 @@ Documentation-only: zero risk.
 ## Item 37: CHANGELOG.md missing ~30 entries since Sprint 11
 
 **File(s):**
+
 - `CHANGELOG.md` (root)
 
 **Root cause:** The `[Unreleased]` section already contains a large block of
@@ -1111,6 +1163,7 @@ entries are in 1-to-1 correspondence for all Sprint 12+ commits.
 ## Item 38: `_staging/README.md` table doesn't list all current files
 
 **File(s):**
+
 - `_staging/README.md`
 
 **Root cause:** The table in `_staging/README.md` lists several specific
@@ -1144,6 +1197,7 @@ directory.
 ## Suggested Execution Order
 
 ### Phase 1 — Correctness foundations (unblock all later work)
+
 Items in this phase have no dependencies and fix hard incorrect behaviour.
 
 1. **Item 28** — Fix `safeInvDir` NaN in all 5 ray-AABB sites (both packages).
@@ -1151,10 +1205,11 @@ Items in this phase have no dependencies and fix hard incorrect behaviour.
 2. **Item 17** — Fix `transformNormal` (normal transform under non-uniform scale).
    Pure TypeScript math utility, no WGSL change.
 3. **Item 26** — Canonicalise BVH encoding to relative offsets (pt-webgpu builder
-   + pt-webgpu WGSL traversal). Must land atomically.
+   - pt-webgpu WGSL traversal). Must land atomically.
 4. **Item 29** — Fix stack overflow guard arithmetic (both packages).
 
 ### Phase 2 — pt-webgpu BSDF correctness (Items 14–16 + 18)
+
 These touch the same shader file and should land together or in order.
 
 5. **Item 14** — VNDF GGX sampling (replace lerp in `glossyReflectionSample`).
@@ -1164,15 +1219,18 @@ These touch the same shader file and should land together or in order.
    for correct PDF in MIS denominator).
 
 ### Phase 3 — Cross-package structure + BVH quality
+
 9. **Item 27** — Formalise index buffer stride contracts and upload assertions.
 10. **Item 31** — Replace median-split BVH with binned SAH in `buildCpuBvh.ts`.
 11. **Item 30** — Ordered BVH traversal in walkaround-hybrid `common.wgsl`.
 
 ### Phase 4 — Numerical test suite (Item 33)
+
 12. **Item 33** in priority sub-order: 33-B → 33-D → 33-G → 33-A → 33-E → 33-F → 33-C → 33-H → 33-I.
     Each test group can be parallelised with Phase 3 work.
 
 ### Phase 5 — Documentation and stale context
+
 13. **Item 32** — Cross-link RFE tracker files.
 14. **Item 34** — Remove "future sprint" language from HybridEngine comment.
 15. **Item 35** — Remove deprecated `Float32Array` spectral path (or update warning).
@@ -1187,19 +1245,19 @@ among themselves.
 
 ## References
 
-- Heitz, E. "Sampling the GGX Distribution of Visible Normals." *JCGT* 7(4), 2018.
+- Heitz, E. "Sampling the GGX Distribution of Visible Normals." _JCGT_ 7(4), 2018.
   https://jcgt.org/published/0007/04/01/paper.pdf
 - Williams, A. et al. "An Efficient and Robust Ray-Box Intersection Algorithm."
-  *Journal of Graphics Tools* 10(1):49–54, 2005.
+  _Journal of Graphics Tools_ 10(1):49–54, 2005.
   https://people.csail.mit.edu/amy/papers/box-jgt.pdf
 - Wald, I. "On fast Construction of SAH-based Bounding Volume Hierarchies."
-  *IEEE Symposium on Interactive Ray Tracing*, 2007.
+  _IEEE Symposium on Interactive Ray Tracing_, 2007.
   https://www.sci.utah.edu/~wald/Publications/2007/ParallelBVHBuild/fastbuild.pdf
-- Pharr, M., Jakob, W., Humphreys, G. *Physically Based Rendering* 4th ed.
+- Pharr, M., Jakob, W., Humphreys, G. _Physically Based Rendering_ 4th ed.
   §9.3 Specular Reflection/Transmission, §3.10 Applying Transformations.
   https://pbr-book.org/4ed
 - Veach, E. "Robust Monte Carlo Methods for Light Transport Simulation."
   PhD thesis, Stanford, 1997, Ch. 9 (MIS power heuristic).
 - Novák, J. et al. "Monte Carlo Methods for Volumetric Light Transport
-  Simulation." *Eurographics STAR*, 2018.
+  Simulation." _Eurographics STAR_, 2018.
   https://cs.dartmouth.edu/~wjarosz/publications/novak18mcvrl.pdf

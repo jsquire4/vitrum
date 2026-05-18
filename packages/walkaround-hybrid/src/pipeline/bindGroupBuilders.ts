@@ -58,11 +58,11 @@ export function buildFrameBindGroup(
     label: 'frame-bg',
     layout: getFrameBindGroupLayout(device, cache),
     entries: [
-      { binding: 0, resource: r.placeholderView },   // gDepth (placeholder — not used in primary-ray-cast mode)
-      { binding: 1, resource: r.placeholderView },   // gNormal
-      { binding: 2, resource: r.placeholderView },   // gAlbedo
-      { binding: 3, resource: r.placeholderView },   // gRough
-      { binding: 4, resource: r.placeholderView },   // motionVec
+      { binding: 0, resource: r.placeholderView }, // gDepth (placeholder — not used in primary-ray-cast mode)
+      { binding: 1, resource: r.placeholderView }, // gNormal
+      { binding: 2, resource: r.placeholderView }, // gAlbedo
+      { binding: 3, resource: r.placeholderView }, // gRough
+      { binding: 4, resource: r.placeholderView }, // motionVec
       { binding: 5, resource: { buffer: r.reservoirCurrentBuffer } },
       { binding: 6, resource: { buffer: r.reservoirPreviousBuffer } },
       { binding: 7, resource: { buffer: r.reservoirSpatialBuffer } },
@@ -109,11 +109,11 @@ export function buildSceneBindGroup(
     layout: getSceneBindGroupLayout(device, cache),
     entries: [
       { binding: 0, resource: { buffer: r.bvhNodesBuffer } },
-      { binding: 1, resource: { buffer: r.bvhIndexBuffer } },   // vec4u: [0..2]=indices, [3]=RGBA8 raw attCol
+      { binding: 1, resource: { buffer: r.bvhIndexBuffer } }, // vec4u: [0..2]=indices, [3]=RGBA8 raw attCol
       { binding: 2, resource: { buffer: r.bvhPositionBuffer } },
       { binding: 3, resource: { buffer: r.emitterBuffer } },
       { binding: 4, resource: { buffer: r.emitterCdfBuffer } },
-      { binding: 5, resource: { buffer: r.bvhBeerBuffer } },    // u32: per-tri Beer-Lambert visible color
+      { binding: 5, resource: { buffer: r.bvhBeerBuffer } }, // u32: per-tri Beer-Lambert visible color
     ],
   });
 }
@@ -132,8 +132,8 @@ export function buildUboBindGroup(
     layout: getUboBindGroupLayout(device, cache),
     entries: [
       { binding: 0, resource: { buffer: uboBuffer } },
-      { binding: 1, resource: aoFullView },  // Sprint 15 — GTAO occlusion factor
-      { binding: 2, resource: tierView },    // Sprint 9 — adaptive-sampling tier
+      { binding: 1, resource: aoFullView }, // Sprint 15 — GTAO occlusion factor
+      { binding: 2, resource: tierView }, // Sprint 9 — adaptive-sampling tier
     ],
   });
 }
@@ -141,7 +141,9 @@ export function buildUboBindGroup(
 // ── Atrous bind group ────────────────────────────────────────────────────────
 
 /** Mutable wrapper so the UBO buffer is lazily created once and reused. */
-export interface UboRef { buf: GPUBuffer | undefined }
+export interface UboRef {
+  buf: GPUBuffer | undefined;
+}
 
 /**
  * Atrous edge-stop sigmas. Defaults are the direct-channel tuning
@@ -233,10 +235,7 @@ export function buildAccumBindGroup(
   // AccumUBO is now {alpha, _pad1, _pad2, _pad3} — the temporal accum shader
   // uses an AABB clamp on the 3×3 neighborhood (not k·std_dev), so the former
   // varianceK slot is unused padding.
-  device.queue.writeBuffer(
-    uboRef.buf, 0,
-    new Float32Array([alpha, 0, 0, 0]),
-  );
+  device.queue.writeBuffer(uboRef.buf, 0, new Float32Array([alpha, 0, 0, 0]));
   return device.createBindGroup({
     label: 'accum-bg',
     layout: getAccumBindGroupLayout(device, cache),
@@ -312,8 +311,8 @@ export function buildSampleBudgetBindGroup(
     layout: getSampleBudgetBindGroupLayout(device, cache),
     entries: [
       { binding: 0, resource: { buffer: budgetUbo } },
-      { binding: 1, resource: varianceView },        // welford variance source (rg32float)
-      { binding: 2, resource: tierWriteView },       // tier output (r32uint)
+      { binding: 1, resource: varianceView }, // welford variance source (rg32float)
+      { binding: 2, resource: tierWriteView }, // tier output (r32uint)
       { binding: 3, resource: { buffer: sampleCountUbo } },
     ],
   });
@@ -471,4 +470,3 @@ export function buildIndirectCombineBindGroup(
     ],
   });
 }
-

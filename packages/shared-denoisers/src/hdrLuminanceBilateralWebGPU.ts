@@ -34,7 +34,10 @@ const bilateralPipelineByDevice = new WeakMap<GPUDevice, GPUComputePipeline>();
 function bilateralComputePipeline(device: GPUDevice): GPUComputePipeline {
   let pipeline = bilateralPipelineByDevice.get(device);
   if (pipeline == null) {
-    const shaderModule = device.createShaderModule({ label: 'hdr-lum-bilateral', code: HDR_LUMINANCE_BILATERAL_WGSL });
+    const shaderModule = device.createShaderModule({
+      label: 'hdr-lum-bilateral',
+      code: HDR_LUMINANCE_BILATERAL_WGSL,
+    });
     pipeline = device.createComputePipeline({
       label: 'hdr-lum-bilateral-pipeline',
       layout: 'auto',
@@ -110,10 +113,15 @@ export async function runHdrLuminanceBilateralWebGPU(
     }
   }
 
-  device.queue.writeTexture({ texture: texIn }, upload.buffer, {
-    bytesPerRow,
-    rowsPerImage: h,
-  }, [w, h]);
+  device.queue.writeTexture(
+    { texture: texIn },
+    upload.buffer,
+    {
+      bytesPerRow,
+      rowsPerImage: h,
+    },
+    [w, h],
+  );
 
   // BilateralParams UBO: 4 × f32 = 16 bytes.
   const HDR_BILATERAL_UBO_SIZE_BYTES = 16;
@@ -149,11 +157,7 @@ export async function runHdrLuminanceBilateralWebGPU(
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
 
-  encoder.copyTextureToBuffer(
-    { texture: texOut },
-    { buffer: readbackBuffer, bytesPerRow },
-    [w, h],
-  );
+  encoder.copyTextureToBuffer({ texture: texOut }, { buffer: readbackBuffer, bytesPerRow }, [w, h]);
   device.queue.submit([encoder.finish()]);
 
   await readbackBuffer.mapAsync(GPUMapMode.READ);

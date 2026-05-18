@@ -17,7 +17,7 @@ Three independent agent rounds have hit the same two blockers:
 
 1. **Playwright headless on WSL2** launches Chromium with
    `--use-angle=vulkan --enable-features=Vulkan --enable-unsafe-webgpu
-   --ignore-gpu-blocklist` but `navigator.gpu.requestAdapter()` still
+--ignore-gpu-blocklist` but `navigator.gpu.requestAdapter()` still
    returns `{vendor:'google', architecture:'swiftshader'}` — the
    software fallback. WebGPU partially works on SwiftShader (DDGI runs;
    ReSTIR's `requestDevice()` returns null for compute features). The
@@ -48,7 +48,7 @@ SwiftShader (which mis-attributes 143 fps DDGI throughput to hardware).
 
 The bug fixes themselves are CPU-test correct and at least partly
 algorithmically correct on SwiftShader (RC moved 0/3 → 3/3 caustic
-chroma channels post-fix on the *same* software adapter), so the
+chroma channels post-fix on the _same_ software adapter), so the
 missing piece is end-to-end runtime confirmation that the fixes
 behave correctly on actual GPU at framerate.
 
@@ -58,13 +58,13 @@ behave correctly on actual GPU at framerate.
 
 ### 2.1 What we have
 
-| Environment | GPU adapter reachable? | RAF runs? | Compute (`requestDevice`)? | Notes |
-|---|---|---|---|---|
-| Playwright headless (Chromium snap, WSL2) | SwiftShader only | Yes | Yes (limited features) | Current default. Cannot reach NVIDIA ICD. |
-| Playwright headless (CI mode flag) | SwiftShader (forced) | Yes | Yes | `--use-angle=swiftshader` baked in, intentional. |
-| MCP-Chrome (Windows host, hidden tab) | RTX 4090 / Lovelace ✅ | **No** (throttled) | Yes (probed) | Verified this round. RAF throttled in hidden tab. |
-| MCP-Chrome (Windows host, foregrounded tab) | RTX 4090 / Lovelace ✅ | Yes | Yes | Worked in some prior rounds; user-action dependent. |
-| User opens app in their own Chrome | RTX 4090 / Lovelace ✅ | Yes | Yes | Manual. No agent automation. |
+| Environment                                 | GPU adapter reachable? | RAF runs?          | Compute (`requestDevice`)? | Notes                                               |
+| ------------------------------------------- | ---------------------- | ------------------ | -------------------------- | --------------------------------------------------- |
+| Playwright headless (Chromium snap, WSL2)   | SwiftShader only       | Yes                | Yes (limited features)     | Current default. Cannot reach NVIDIA ICD.           |
+| Playwright headless (CI mode flag)          | SwiftShader (forced)   | Yes                | Yes                        | `--use-angle=swiftshader` baked in, intentional.    |
+| MCP-Chrome (Windows host, hidden tab)       | RTX 4090 / Lovelace ✅ | **No** (throttled) | Yes (probed)               | Verified this round. RAF throttled in hidden tab.   |
+| MCP-Chrome (Windows host, foregrounded tab) | RTX 4090 / Lovelace ✅ | Yes                | Yes                        | Worked in some prior rounds; user-action dependent. |
+| User opens app in their own Chrome          | RTX 4090 / Lovelace ✅ | Yes                | Yes                        | Manual. No agent automation.                        |
 
 ### 2.2 What CDP / Playwright support that's relevant
 
@@ -78,14 +78,14 @@ behave correctly on actual GPU at framerate.
   the NVIDIA driver directly. This bypasses the WSL2 ICD problem
   entirely if Playwright runs from PowerShell or the Windows side.
 - Chrome flags `--disable-background-timer-throttling
-  --disable-renderer-backgrounding
-  --disable-backgrounding-occluded-windows` keep RAF running even when
+--disable-renderer-backgrounding
+--disable-backgrounding-occluded-windows` keep RAF running even when
   the tab is occluded. (Note: `--disable-background-timer-throttling`
   was removed around Chrome 78; the other two still work and override
   RAF throttling for hidden/occluded tabs.)
 - R3F supports `frameloop="always" | "demand" | "never"` plus
   `useThree(s => s.invalidate)` for manual frame ticking. This lets a
-  spec drive frames *without* relying on RAF — but it requires an
+  spec drive frames _without_ relying on RAF — but it requires an
   invalidate call from JS, which is straightforward to inject from
   Playwright/CDP.
 
@@ -119,7 +119,7 @@ Seven distinct paths, ordered roughly easy→hard:
 **Per-run cost**: user clicks the MCP-Chrome window, runs validation
 within a 2-3 minute wall-clock window, then can switch back. ~30 s
 of user attention per round.
-**Reliability**: high *during the foregrounded window*. Has worked
+**Reliability**: high _during the foregrounded window_. Has worked
 in past rounds (commits `995d649`, `8644ec8` referenced "RTX 4090
 verified via MCP-Chrome").
 **Validates**: full e2e — adapter info, frame rendering, FPS, chroma,
@@ -127,7 +127,7 @@ console errors. Same surface as Playwright.
 **Requires user action per validation?** Yes.
 
 Trade-off: explicit user gesture per round. Doesn't scale to autonomous
-build-loop work, but is the lowest-friction path for the *next* round
+build-loop work, but is the lowest-friction path for the _next_ round
 of validation right now.
 
 ### Option B — Drive R3F manually via `frameloop="never"` + injected invalidate
@@ -137,7 +137,7 @@ test-only toggle that sets `<Canvas frameloop="never">` and exposes
 `window.__INVALIDATE__` from a `<RenderInvalidator>` child. Leave
 production at `frameloop="always"`. ~30 lines.
 **Per-run cost**: same as current Playwright runs.
-**Reliability**: high *if* the underlying RAF-independent code path
+**Reliability**: high _if_ the underlying RAF-independent code path
 works. WebGPU's `device.queue.submit` doesn't depend on RAF; only the
 R3F scheduler does. Driving frames from MCP-Chrome JS would side-step
 RAF throttling entirely.
@@ -149,7 +149,7 @@ restructure.
 
 Trade-off: requires touching the test surface code (the briefing
 forbids changing the existing test specs but allows adding new
-infrastructure). Might miss issues that *only* show up under sustained
+infrastructure). Might miss issues that _only_ show up under sustained
 RAF-driven framerate (TDR, GPU memory pressure over many frames).
 
 ### Option C — Playwright headed + `channel: 'chrome'` + run from Windows
@@ -157,15 +157,16 @@ RAF-driven framerate (TDR, GPU memory pressure over many frames).
 **Setup**: install Playwright on the Windows side (or run from a
 PowerShell shell that talks to the Windows-installed Node), update
 `playwright.config.ts` with `headless: false` + `channel: 'chrome'`
-+ `launchOptions.args` minus the WSL2 ANGLE flags. Tests run on the
-real Chrome with `Page.bringToFront()` available via Playwright API.
-~1 hour setup.
-**Per-run cost**: same as current Playwright (8-15 s per spec).
-**Reliability**: high. This is the canonical path. The user's Chrome
-already reaches the RTX 4090 (proven via MCP-Chrome).
-**Validates**: full e2e — adapter, FPS, chroma, console errors, in
-sustained RAF mode.
-**Requires user action per validation?** No, after one-time setup.
+
+- `launchOptions.args` minus the WSL2 ANGLE flags. Tests run on the
+  real Chrome with `Page.bringToFront()` available via Playwright API.
+  ~1 hour setup.
+  **Per-run cost**: same as current Playwright (8-15 s per spec).
+  **Reliability**: high. This is the canonical path. The user's Chrome
+  already reaches the RTX 4090 (proven via MCP-Chrome).
+  **Validates**: full e2e — adapter, FPS, chroma, console errors, in
+  sustained RAF mode.
+  **Requires user action per validation?** No, after one-time setup.
 
 Trade-off: requires running Playwright from outside WSL2. Might break
 the WSL2-side dev-server lifecycle (`webServer.command` in
@@ -194,7 +195,7 @@ C is taken.
 **Setup**: install `mesa-vulkan-drivers` + `vulkan-dzn` on WSL2,
 configure `VK_ICD_FILENAMES` to point at the dzn JSON manifest, verify
 `vulkaninfo` reports the NVIDIA D3D12 device. Then re-run Playwright
-headless on WSL2; Chromium's ANGLE/Vulkan path *might* pick up the
+headless on WSL2; Chromium's ANGLE/Vulkan path _might_ pick up the
 bridge. ~2-4 hours of setup with realistic chance of failure (per
 multiple WSL2/NVIDIA forum threads, `dzn` driver detection is finicky
 on Ubuntu 24.04).
@@ -203,7 +204,7 @@ on Ubuntu 24.04).
 Chromium may still pick SwiftShader because of how ANGLE probes for
 adapters. Multiple users on the NVIDIA forums report exactly this
 outcome.
-**Validates**: full e2e, *if it works*. Adapter would be reported as
+**Validates**: full e2e, _if it works_. Adapter would be reported as
 `vendor: microsoft, architecture: dzn` (D3D12-bridged) or similar —
 still hardware-backed, but not the same code path as native NVIDIA on
 Windows. A different runtime than production users will see.
@@ -240,7 +241,7 @@ checks DevTools for adapter info and console errors.
 **Per-run cost**: 5-10 minutes of user time per round per branch (3
 branches × 5 min = 15-30 min total).
 **Reliability**: highest possible — actual user, actual env.
-**Validates**: full e2e *qualitatively*. No machine-readable
+**Validates**: full e2e _qualitatively_. No machine-readable
 chroma std-dev or FPS samples; the user reports impressions.
 **Requires user action per validation?** Yes, fully.
 
@@ -258,6 +259,7 @@ full RAF, no user action per round, same test code. F prevents future
 silent-SwiftShader regressions across all environments.
 
 The combination addresses every documented failure mode:
+
 - WSL2 SwiftShader fallback → bypassed (test runs from Windows side)
 - Hidden-tab RAF throttling → bypassed (foreground flags + headed mode)
 - Silent SwiftShader pass → caught at adapter-probe time

@@ -51,35 +51,36 @@ export type DenoiserId =
  * 'oidn-final' is `[]` because the registry rejects it before any
  * dispatch and it never adds slots.
  */
-export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabel[]>> = Object.freeze({
-  'none': Object.freeze([]),
-  'atrous': Object.freeze(['atrous-0', 'atrous-1', 'atrous-2']),
-  'atrous-variance': Object.freeze([
-    'welford-temporal',
-    'atrous-variance-variance',
-    'atrous-variance-atrous-0',
-    'atrous-variance-atrous-1',
-    'atrous-variance-atrous-2',
-  ]),
-  'svgf-real': Object.freeze([
-    'svgf-real-reproj',
-    'svgf-real-moments',
-    'svgf-real-7x7',
-    'svgf-real-atrous-0',
-    'svgf-real-atrous-1',
-    'svgf-real-atrous-2',
-    'svgf-real-atrous-3',
-    'svgf-real-atrous-4',
-  ]),
-  'neural': Object.freeze([
-    'welford-temporal',
-    'atrous-variance-variance',
-    'atrous-variance-atrous-0',
-    'atrous-variance-atrous-1',
-    'atrous-variance-atrous-2',
-  ]),
-  'oidn-final': Object.freeze([]),
-} as Record<DenoiserId, readonly PassLabel[]>);
+export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabel[]>> =
+  Object.freeze({
+    none: Object.freeze([]),
+    atrous: Object.freeze(['atrous-0', 'atrous-1', 'atrous-2']),
+    'atrous-variance': Object.freeze([
+      'welford-temporal',
+      'atrous-variance-variance',
+      'atrous-variance-atrous-0',
+      'atrous-variance-atrous-1',
+      'atrous-variance-atrous-2',
+    ]),
+    'svgf-real': Object.freeze([
+      'svgf-real-reproj',
+      'svgf-real-moments',
+      'svgf-real-7x7',
+      'svgf-real-atrous-0',
+      'svgf-real-atrous-1',
+      'svgf-real-atrous-2',
+      'svgf-real-atrous-3',
+      'svgf-real-atrous-4',
+    ]),
+    neural: Object.freeze([
+      'welford-temporal',
+      'atrous-variance-variance',
+      'atrous-variance-atrous-0',
+      'atrous-variance-atrous-1',
+      'atrous-variance-atrous-2',
+    ]),
+    'oidn-final': Object.freeze([]),
+  } as Record<DenoiserId, readonly PassLabel[]>);
 
 /**
  * Initialization context handed to {@link Denoiser.initialize}.
@@ -200,9 +201,7 @@ export class DenoiserRegistry {
     const d = this._denoisers.get(id);
     if (d === undefined) {
       const known = [...this._denoisers.keys()].join(', ');
-      throw new Error(
-        `DenoiserRegistry: unknown denoiser "${id}"; known: [${known}]`,
-      );
+      throw new Error(`DenoiserRegistry: unknown denoiser "${id}"; known: [${known}]`);
     }
     if (d.disabled === true) {
       throw new Error(

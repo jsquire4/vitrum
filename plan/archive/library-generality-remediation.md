@@ -24,59 +24,59 @@ This plan tracks the findings from the audit pass and which have landed vs which
 
 ## Landed in `956cab0` (salvaged from remediation worktree, audit fixes that didn't conflict with main)
 
-| ID | Status | What |
-|---|---|---|
-| B2 | ✅ landed | `probeUpdateRays.wgsl` `sampleSkyColor` now reads `frameParams.skyTint × .skyIrradiance` instead of the hardcoded daylight gradient |
-| M9 | ✅ landed | `DDGI_MAX_MATERIALS` is now compile-time-injectable via `makeProbeUpdateRaysWGSL(maxMaterials)`; runtime warning when scene exceeds the cap |
-| M11 | ✅ landed | `ProbeGrid.computeFromBounds` accepts `maxProbesPerAxis` override; wired through `DDGI` → `HybridEngine` |
-| M13 | ✅ landed | Probe-pass `NORMAL_BIAS` now `gridParams.spacing × 0.001` instead of hardcoded `0.02` |
-| M14 | ✅ landed | Glass-step in `probeUpdateRays.wgsl` and `probeRayCast.wgsl` now `gridParams.spacing × 0.01` (and a configurable `slabStepSize` parameter) instead of hardcoded `0.5 m` |
-| Q1 | ✅ landed | `plan/phase-6-status.md` — Sprints 9/10a/11 moved from "deferred" to "complete" |
-| (M6/M7/M8 partial) | ✅ landed | minor sigma + depth-tolerance cleanup in `spatial.wgsl` / `temporal.wgsl` |
+| ID                 | Status    | What                                                                                                                                                                    |
+| ------------------ | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B2                 | ✅ landed | `probeUpdateRays.wgsl` `sampleSkyColor` now reads `frameParams.skyTint × .skyIrradiance` instead of the hardcoded daylight gradient                                     |
+| M9                 | ✅ landed | `DDGI_MAX_MATERIALS` is now compile-time-injectable via `makeProbeUpdateRaysWGSL(maxMaterials)`; runtime warning when scene exceeds the cap                             |
+| M11                | ✅ landed | `ProbeGrid.computeFromBounds` accepts `maxProbesPerAxis` override; wired through `DDGI` → `HybridEngine`                                                                |
+| M13                | ✅ landed | Probe-pass `NORMAL_BIAS` now `gridParams.spacing × 0.001` instead of hardcoded `0.02`                                                                                   |
+| M14                | ✅ landed | Glass-step in `probeUpdateRays.wgsl` and `probeRayCast.wgsl` now `gridParams.spacing × 0.01` (and a configurable `slabStepSize` parameter) instead of hardcoded `0.5 m` |
+| Q1                 | ✅ landed | `plan/phase-6-status.md` — Sprints 9/10a/11 moved from "deferred" to "complete"                                                                                         |
+| (M6/M7/M8 partial) | ✅ landed | minor sigma + depth-tolerance cleanup in `spatial.wgsl` / `temporal.wgsl`                                                                                               |
 
 ## Landed in this batch (cleanup + correctness surgery on main HEAD)
 
-| ID | Status | What |
-|---|---|---|
-| B5 | ✅ landed | dropped the empirical `* 0.08` trim on `Lo_skyAperture` in `shade.wgsl`. The upstream `skyVisScalar × skyTint × skyIrradiance × albedo × INV_PI` is already the correct outgoing radiance for a Lambertian receiver under the sky dome |
-| B6 | ✅ landed | reservoir copy is no longer a separate command-buffer submission. Folded `copyBufferToBuffer` calls into the main `encoder` before `queue.submit`, eliminating the temporal-reservoir race at high FPS |
-| B7 | ✅ landed | `HybridEngine` now throws `TypeError` at construction if `denoiser` is anything other than `'atrous' | 'svgf'`. The `@vitrum/core` contract advertises additional modes ('none', 'bmfr', 'oidn-final') that this backend does not implement; previously they silently coerced to SVGF |
-| Q2 | ✅ landed | `WalkaroundGPUPipeline.ts` tier-output comment corrected — risGi.wgsl consumes the tier |
-| Q3 | ✅ landed | `timestampQueries.ts` doc-table updated for post-Sprint-18-follow-up slot counts (24/25/26/27) |
-| Q4 | ✅ landed | dead `_prevAccum`/`_gNormalDepth`/`_motionVectors` params removed from `buildSVGFVarianceBindGroup` |
-| Q5 | ✅ landed | `compositeLinearSampler` renamed to `compositeSampler` (it was `nearest`, not `linear`); dead `void PPG_DIRECTIONS` import removed |
+| ID  | Status    | What                                                                                                                                                                                                                                   |
+| --- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| B5  | ✅ landed | dropped the empirical `* 0.08` trim on `Lo_skyAperture` in `shade.wgsl`. The upstream `skyVisScalar × skyTint × skyIrradiance × albedo × INV_PI` is already the correct outgoing radiance for a Lambertian receiver under the sky dome |
+| B6  | ✅ landed | reservoir copy is no longer a separate command-buffer submission. Folded `copyBufferToBuffer` calls into the main `encoder` before `queue.submit`, eliminating the temporal-reservoir race at high FPS                                 |
+| B7  | ✅ landed | `HybridEngine` now throws `TypeError` at construction if `denoiser` is anything other than `'atrous'                                                                                                                                   | 'svgf'`. The `@vitrum/core` contract advertises additional modes ('none', 'bmfr', 'oidn-final') that this backend does not implement; previously they silently coerced to SVGF |
+| Q2  | ✅ landed | `WalkaroundGPUPipeline.ts` tier-output comment corrected — risGi.wgsl consumes the tier                                                                                                                                                |
+| Q3  | ✅ landed | `timestampQueries.ts` doc-table updated for post-Sprint-18-follow-up slot counts (24/25/26/27)                                                                                                                                         |
+| Q4  | ✅ landed | dead `_prevAccum`/`_gNormalDepth`/`_motionVectors` params removed from `buildSVGFVarianceBindGroup`                                                                                                                                    |
+| Q5  | ✅ landed | `compositeLinearSampler` renamed to `compositeSampler` (it was `nearest`, not `linear`); dead `void PPG_DIRECTIONS` import removed                                                                                                     |
 
 ## Landed 2026-05-12 — host-side options (Batch 1: B8, M3, M4, M5)
 
 Pure host-side changes, no UBO plumbing needed. Defaults preserve Cornell.
 
-| ID | Status | What |
-|---|---|---|
-| B8 | ✅ landed | `HybridEngineOptions.cameraMoveResetThresholdSq?` |
-| M3 | ✅ landed | `HybridEngineOptions.temporalAccumAlpha?` |
-| M4 | ✅ landed | `HybridEngineOptions.targetFrameIntervalMs?: number \| null` |
-| M5 | ✅ landed | `defaultIsSceneReady` heuristic relaxed `total >= 200` → `total > 0` |
+| ID  | Status    | What                                                                 |
+| --- | --------- | -------------------------------------------------------------------- |
+| B8  | ✅ landed | `HybridEngineOptions.cameraMoveResetThresholdSq?`                    |
+| M3  | ✅ landed | `HybridEngineOptions.temporalAccumAlpha?`                            |
+| M4  | ✅ landed | `HybridEngineOptions.targetFrameIntervalMs?: number \| null`         |
+| M5  | ✅ landed | `defaultIsSceneReady` heuristic relaxed `total >= 200` → `total > 0` |
 
 ## Landed 2026-05-12 — UBO-plumbed tunables (Batch 2: B1, B3, B4, M1, M6, M7, M8, M12)
 
 `WalkaroundUBO` grew from 256 → 288 bytes with 7 new tunable fields; `GTAOUniforms` grew from 16 → 32 bytes with 1 new field + padding; the `emitterGeometry(...)` helper signature grew a `dist2Floor` argument so the three call sites all pass `ubo.emitterDist2Floor` consistently.
 
-| ID | Status | What |
-|---|---|---|
-| B1 | ✅ landed | `HybridEngineOptions.caustic: { boost?, visClamp? }` |
-| B3 | ✅ landed | `HybridEngineOptions.gtao.bilateralDepthSigma?` |
-| B4 | ✅ landed | `HybridEngineOptions.directFireflyClamp?` |
-| M1 | ✅ landed | `HybridEngineOptions.gtao: { radiusPx?, intensity?, depthThresholdWorldUnits? }` |
-| M6 | ✅ landed | `HybridEngineOptions.temporalMClampDI?` |
-| M7 | ✅ landed | `HybridEngineOptions.spatialReuseRadiusPx?` |
-| M8 | ✅ landed | `HybridEngineOptions.spatialDepthTolFloor?` |
-| M12 | ✅ landed | `HybridEngineOptions.emitterDist2Floor?` |
+| ID  | Status    | What                                                                             |
+| --- | --------- | -------------------------------------------------------------------------------- |
+| B1  | ✅ landed | `HybridEngineOptions.caustic: { boost?, visClamp? }`                             |
+| B3  | ✅ landed | `HybridEngineOptions.gtao.bilateralDepthSigma?`                                  |
+| B4  | ✅ landed | `HybridEngineOptions.directFireflyClamp?`                                        |
+| M1  | ✅ landed | `HybridEngineOptions.gtao: { radiusPx?, intensity?, depthThresholdWorldUnits? }` |
+| M6  | ✅ landed | `HybridEngineOptions.temporalMClampDI?`                                          |
+| M7  | ✅ landed | `HybridEngineOptions.spatialReuseRadiusPx?`                                      |
+| M8  | ✅ landed | `HybridEngineOptions.spatialDepthTolFloor?`                                      |
+| M12 | ✅ landed | `HybridEngineOptions.emitterDist2Floor?`                                         |
 
 ## Landed 2026-05-12 — sample-budget + PPG sizing (Batch 3: M2, M10)
 
-| ID | Status | What |
-|---|---|---|
-| M2 | ✅ landed | `HybridEngineOptions.adaptiveSamplingThresholds?: [low, high]` |
+| ID  | Status    | What                                                                                                  |
+| --- | --------- | ----------------------------------------------------------------------------------------------------- |
+| M2  | ✅ landed | `HybridEngineOptions.adaptiveSamplingThresholds?: [low, high]`                                        |
 | M10 | ✅ landed | `HybridEngineOptions.ppgMaxSpatialCells?` plumbed through `createFrameResources` → `createPPGBuffers` |
 
 ---
@@ -89,7 +89,7 @@ These notes are kept here for traceability; all of them have been remediated in 
 
 #### B1 — `shade.wgsl:254–256` `CAUSTIC_BOOST = 22.0` + `visClamp = 0.6`
 
-A 22× direct-sun multiplier compensating for Brown-Beer-Lambert attenuation in the Cornell stained-glass scene. For scenes without glass, the path is multiplied by 0 and harmless; for scenes *with* glass but a different sun intensity, the boost produces a physically unjustified contribution.
+A 22× direct-sun multiplier compensating for Brown-Beer-Lambert attenuation in the Cornell stained-glass scene. For scenes without glass, the path is multiplied by 0 and harmless; for scenes _with_ glass but a different sun intensity, the boost produces a physically unjustified contribution.
 
 **Remediation**: expose `HybridEngineOptions.caustic?: { boost?: number; visClamp?: number }`. Defaults `1.0` / `1.0` (no boost, no clamp). Plumb through `WalkaroundUBO` (`ubo.causticBoost`, `ubo.causticVisClamp`). Cornell stained-glass scenes opt in explicitly.
 
@@ -129,7 +129,7 @@ Tuned to Cornell's variance dynamic range. HDR scenes will permanently classify 
 
 Framerate-dependent. At 30 FPS doubles temporal lag; at 120 FPS halves it.
 
-**Remediation**: expose `HybridEngineOptions.temporalAccumAlpha?: number`. Optionally derive default as `1 − exp(−dt × k)` so the temporal *feel* is FPS-independent.
+**Remediation**: expose `HybridEngineOptions.temporalAccumAlpha?: number`. Optionally derive default as `1 − exp(−dt × k)` so the temporal _feel_ is FPS-independent.
 
 #### M4 — `TARGET_FRAME_INTERVAL_MS = 1000/60 − 1` (60 FPS hard cap)
 

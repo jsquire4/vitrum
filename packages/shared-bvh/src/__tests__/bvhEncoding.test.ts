@@ -62,7 +62,9 @@ interface BinDataTest {
 }
 
 function saBox(ax: number, ay: number, az: number, bx: number, by: number, bz: number): number {
-  const dx = bx - ax, dy = by - ay, dz = bz - az;
+  const dx = bx - ax,
+    dy = by - ay,
+    dz = bz - az;
   if (dx <= 0 || dy <= 0 || dz <= 0) return 0;
   return 2 * (dx * dy + dy * dz + dz * dx);
 }
@@ -72,14 +74,14 @@ function makeEmptyBinTest(): BinDataTest {
 }
 
 interface MirrorBvhResult {
-  bvhNodes: Float32Array;        // 8 × f32 per node (same layout as pt-webgpu)
+  bvhNodes: Float32Array; // 8 × f32 per node (same layout as pt-webgpu)
   reorderedIndices: Uint32Array; // stride 4 (vec4u, .w = 0)
   totalNodes: number;
 }
 
 function buildMirrorBvh(
   positions: Float32Array, // stride 4 (vec4f)
-  indices: Uint32Array,    // stride 4 (vec4u, .w unused)
+  indices: Uint32Array, // stride 4 (vec4u, .w unused)
 ): MirrorBvhResult {
   const triCount = Math.floor(indices.length / 4);
   if (triCount === 0) {
@@ -95,11 +97,21 @@ function buildMirrorBvh(
     const i0 = indices[t * 4] ?? 0;
     const i1 = indices[t * 4 + 1] ?? 0;
     const i2 = indices[t * 4 + 2] ?? 0;
-    const ax = positions[i0 * 4] ?? 0, ay = positions[i0 * 4 + 1] ?? 0, az = positions[i0 * 4 + 2] ?? 0;
-    const bx = positions[i1 * 4] ?? 0, by = positions[i1 * 4 + 1] ?? 0, bz = positions[i1 * 4 + 2] ?? 0;
-    const cx = positions[i2 * 4] ?? 0, cy = positions[i2 * 4 + 1] ?? 0, cz = positions[i2 * 4 + 2] ?? 0;
-    const mnX = Math.min(ax, bx, cx), mnY = Math.min(ay, by, cy), mnZ = Math.min(az, bz, cz);
-    const mxX = Math.max(ax, bx, cx), mxY = Math.max(ay, by, cy), mxZ = Math.max(az, bz, cz);
+    const ax = positions[i0 * 4] ?? 0,
+      ay = positions[i0 * 4 + 1] ?? 0,
+      az = positions[i0 * 4 + 2] ?? 0;
+    const bx = positions[i1 * 4] ?? 0,
+      by = positions[i1 * 4 + 1] ?? 0,
+      bz = positions[i1 * 4 + 2] ?? 0;
+    const cx = positions[i2 * 4] ?? 0,
+      cy = positions[i2 * 4 + 1] ?? 0,
+      cz = positions[i2 * 4 + 2] ?? 0;
+    const mnX = Math.min(ax, bx, cx),
+      mnY = Math.min(ay, by, cy),
+      mnZ = Math.min(az, bz, cz);
+    const mxX = Math.max(ax, bx, cx),
+      mxY = Math.max(ay, by, cy),
+      mxZ = Math.max(az, bz, cz);
     records.push({
       triIndex: t,
       min: [mnX, mnY, mnZ],
@@ -149,11 +161,17 @@ function buildMirrorBvh(
     }
 
     const parentSA = saBox(
-      node.min[0], node.min[1], node.min[2],
-      node.max[0], node.max[1], node.max[2],
+      node.min[0],
+      node.min[1],
+      node.min[2],
+      node.max[0],
+      node.max[1],
+      node.max[2],
     );
     const leafCost = subset.length;
-    let bestCost = Infinity, bestAxis = 0, bestSplit = 0;
+    let bestCost = Infinity,
+      bestAxis = 0,
+      bestSplit = 0;
 
     for (let axis = 0; axis < 3; axis++) {
       const span = cMax[axis]! - cMin[axis]!;
@@ -174,42 +192,97 @@ function buildMirrorBvh(
       }
 
       // Prefix sweep
-      const pMinX = new Float32Array(NUM_BINS_TEST), pMinY = new Float32Array(NUM_BINS_TEST), pMinZ = new Float32Array(NUM_BINS_TEST);
-      const pMaxX = new Float32Array(NUM_BINS_TEST), pMaxY = new Float32Array(NUM_BINS_TEST), pMaxZ = new Float32Array(NUM_BINS_TEST);
+      const pMinX = new Float32Array(NUM_BINS_TEST),
+        pMinY = new Float32Array(NUM_BINS_TEST),
+        pMinZ = new Float32Array(NUM_BINS_TEST);
+      const pMaxX = new Float32Array(NUM_BINS_TEST),
+        pMaxY = new Float32Array(NUM_BINS_TEST),
+        pMaxZ = new Float32Array(NUM_BINS_TEST);
       const pCnt = new Int32Array(NUM_BINS_TEST);
-      let bmnX = Infinity, bmnY = Infinity, bmnZ = Infinity, bmxX = -Infinity, bmxY = -Infinity, bmxZ = -Infinity, cnt = 0;
+      let bmnX = Infinity,
+        bmnY = Infinity,
+        bmnZ = Infinity,
+        bmxX = -Infinity,
+        bmxY = -Infinity,
+        bmxZ = -Infinity,
+        cnt = 0;
       for (let i = 0; i < NUM_BINS_TEST; i++) {
         const b = bins[i]!;
-        bmnX = Math.min(bmnX, b.min[0]); bmnY = Math.min(bmnY, b.min[1]); bmnZ = Math.min(bmnZ, b.min[2]);
-        bmxX = Math.max(bmxX, b.max[0]); bmxY = Math.max(bmxY, b.max[1]); bmxZ = Math.max(bmxZ, b.max[2]);
+        bmnX = Math.min(bmnX, b.min[0]);
+        bmnY = Math.min(bmnY, b.min[1]);
+        bmnZ = Math.min(bmnZ, b.min[2]);
+        bmxX = Math.max(bmxX, b.max[0]);
+        bmxY = Math.max(bmxY, b.max[1]);
+        bmxZ = Math.max(bmxZ, b.max[2]);
         cnt += b.count;
-        pMinX[i] = bmnX; pMinY[i] = bmnY; pMinZ[i] = bmnZ;
-        pMaxX[i] = bmxX; pMaxY[i] = bmxY; pMaxZ[i] = bmxZ;
+        pMinX[i] = bmnX;
+        pMinY[i] = bmnY;
+        pMinZ[i] = bmnZ;
+        pMaxX[i] = bmxX;
+        pMaxY[i] = bmxY;
+        pMaxZ[i] = bmxZ;
         pCnt[i] = cnt;
       }
 
       // Suffix sweep
-      const sMinX = new Float32Array(NUM_BINS_TEST), sMinY = new Float32Array(NUM_BINS_TEST), sMinZ = new Float32Array(NUM_BINS_TEST);
-      const sMaxX = new Float32Array(NUM_BINS_TEST), sMaxY = new Float32Array(NUM_BINS_TEST), sMaxZ = new Float32Array(NUM_BINS_TEST);
+      const sMinX = new Float32Array(NUM_BINS_TEST),
+        sMinY = new Float32Array(NUM_BINS_TEST),
+        sMinZ = new Float32Array(NUM_BINS_TEST);
+      const sMaxX = new Float32Array(NUM_BINS_TEST),
+        sMaxY = new Float32Array(NUM_BINS_TEST),
+        sMaxZ = new Float32Array(NUM_BINS_TEST);
       const sCnt = new Int32Array(NUM_BINS_TEST);
-      bmnX = Infinity; bmnY = Infinity; bmnZ = Infinity; bmxX = -Infinity; bmxY = -Infinity; bmxZ = -Infinity; cnt = 0;
+      bmnX = Infinity;
+      bmnY = Infinity;
+      bmnZ = Infinity;
+      bmxX = -Infinity;
+      bmxY = -Infinity;
+      bmxZ = -Infinity;
+      cnt = 0;
       for (let i = NUM_BINS_TEST - 1; i >= 0; i--) {
         const b = bins[i]!;
-        bmnX = Math.min(bmnX, b.min[0]); bmnY = Math.min(bmnY, b.min[1]); bmnZ = Math.min(bmnZ, b.min[2]);
-        bmxX = Math.max(bmxX, b.max[0]); bmxY = Math.max(bmxY, b.max[1]); bmxZ = Math.max(bmxZ, b.max[2]);
+        bmnX = Math.min(bmnX, b.min[0]);
+        bmnY = Math.min(bmnY, b.min[1]);
+        bmnZ = Math.min(bmnZ, b.min[2]);
+        bmxX = Math.max(bmxX, b.max[0]);
+        bmxY = Math.max(bmxY, b.max[1]);
+        bmxZ = Math.max(bmxZ, b.max[2]);
         cnt += b.count;
-        sMinX[i] = bmnX; sMinY[i] = bmnY; sMinZ[i] = bmnZ;
-        sMaxX[i] = bmxX; sMaxY[i] = bmxY; sMaxZ[i] = bmxZ;
+        sMinX[i] = bmnX;
+        sMinY[i] = bmnY;
+        sMinZ[i] = bmnZ;
+        sMaxX[i] = bmxX;
+        sMaxY[i] = bmxY;
+        sMaxZ[i] = bmxZ;
         sCnt[i] = cnt;
       }
 
       for (let split = 0; split < NUM_BINS_TEST - 1; split++) {
-        const lc = pCnt[split] ?? 0, rc = sCnt[split + 1] ?? 0;
+        const lc = pCnt[split] ?? 0,
+          rc = sCnt[split + 1] ?? 0;
         if (lc === 0 || rc === 0) continue;
-        const lSA = saBox(pMinX[split]!, pMinY[split]!, pMinZ[split]!, pMaxX[split]!, pMaxY[split]!, pMaxZ[split]!);
-        const rSA = saBox(sMinX[split + 1]!, sMinY[split + 1]!, sMinZ[split + 1]!, sMaxX[split + 1]!, sMaxY[split + 1]!, sMaxZ[split + 1]!);
+        const lSA = saBox(
+          pMinX[split]!,
+          pMinY[split]!,
+          pMinZ[split]!,
+          pMaxX[split]!,
+          pMaxY[split]!,
+          pMaxZ[split]!,
+        );
+        const rSA = saBox(
+          sMinX[split + 1]!,
+          sMinY[split + 1]!,
+          sMinZ[split + 1]!,
+          sMaxX[split + 1]!,
+          sMaxY[split + 1]!,
+          sMaxZ[split + 1]!,
+        );
         const cost = parentSA > 0 ? (lSA * lc + rSA * rc) / parentSA : lSA * lc + rSA * rc;
-        if (cost < bestCost) { bestCost = cost; bestAxis = axis; bestSplit = split; }
+        if (cost < bestCost) {
+          bestCost = cost;
+          bestAxis = axis;
+          bestSplit = split;
+        }
       }
     }
 
@@ -222,7 +295,8 @@ function buildMirrorBvh(
     }
 
     const span = cMax[bestAxis]! - cMin[bestAxis]!;
-    const left: TriRec[] = [], right: TriRec[] = [];
+    const left: TriRec[] = [],
+      right: TriRec[] = [];
     for (const r of subset) {
       const t = (r.centroid[bestAxis]! - cMin[bestAxis]!) / span;
       const bi = Math.min(NUM_BINS_TEST - 1, Math.floor(t * NUM_BINS_TEST));
@@ -308,8 +382,12 @@ function traceBvh(
   bvhNodes: Float32Array,
   positions: Float32Array,
   indices: Uint32Array,
-  ox: number, oy: number, oz: number,
-  dx: number, dy: number, dz: number,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
   tMin: number,
   tMax: number,
 ): TraceHit {
@@ -344,15 +422,18 @@ function traceBvh(
     const bmaxZ = bvhNodes[base + 5]!;
 
     // Slab test (Williams 2005)
-    const tx0 = (bminX - ox) * idx, tx1 = (bmaxX - ox) * idx;
-    const ty0 = (bminY - oy) * idy, ty1 = (bmaxY - oy) * idy;
-    const tz0 = (bminZ - oz) * idz, tz1 = (bmaxZ - oz) * idz;
+    const tx0 = (bminX - ox) * idx,
+      tx1 = (bmaxX - ox) * idx;
+    const ty0 = (bminY - oy) * idy,
+      ty1 = (bmaxY - oy) * idy;
+    const tz0 = (bminZ - oz) * idz,
+      tz1 = (bmaxZ - oz) * idz;
     const tNear = Math.max(Math.min(tx0, tx1), Math.min(ty0, ty1), Math.min(tz0, tz1), tMin);
-    const tFar  = Math.min(Math.max(tx0, tx1), Math.max(ty0, ty1), Math.max(tz0, tz1), closest);
+    const tFar = Math.min(Math.max(tx0, tx1), Math.max(ty0, ty1), Math.max(tz0, tz1), closest);
     if (tNear > tFar) continue;
 
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_CHECK;
+    const isLeaf = splitOrCount >>> 16 === LEAFNODE_CHECK;
 
     if (isLeaf) {
       const count = splitOrCount & 0x0000ffff;
@@ -363,21 +444,37 @@ function traceBvh(
         const i0 = indices[t * 4] ?? 0;
         const i1 = indices[t * 4 + 1] ?? 0;
         const i2 = indices[t * 4 + 2] ?? 0;
-        const ax = positions[i0 * 4] ?? 0, ay = positions[i0 * 4 + 1] ?? 0, az = positions[i0 * 4 + 2] ?? 0;
-        const bx = positions[i1 * 4] ?? 0, by = positions[i1 * 4 + 1] ?? 0, bz = positions[i1 * 4 + 2] ?? 0;
-        const cx = positions[i2 * 4] ?? 0, cy = positions[i2 * 4 + 1] ?? 0, cz = positions[i2 * 4 + 2] ?? 0;
+        const ax = positions[i0 * 4] ?? 0,
+          ay = positions[i0 * 4 + 1] ?? 0,
+          az = positions[i0 * 4 + 2] ?? 0;
+        const bx = positions[i1 * 4] ?? 0,
+          by = positions[i1 * 4 + 1] ?? 0,
+          bz = positions[i1 * 4 + 2] ?? 0;
+        const cx = positions[i2 * 4] ?? 0,
+          cy = positions[i2 * 4 + 1] ?? 0,
+          cz = positions[i2 * 4 + 2] ?? 0;
 
         // Möller-Trumbore
-        const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-        const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
-        const hx = dy * e2z - dz * e2y, hy = dz * e2x - dx * e2z, hz = dx * e2y - dy * e2x;
+        const e1x = bx - ax,
+          e1y = by - ay,
+          e1z = bz - az;
+        const e2x = cx - ax,
+          e2y = cy - ay,
+          e2z = cz - az;
+        const hx = dy * e2z - dz * e2y,
+          hy = dz * e2x - dx * e2z,
+          hz = dx * e2y - dy * e2x;
         const det = e1x * hx + e1y * hy + e1z * hz;
         if (Math.abs(det) < 1e-8) continue;
         const invDet = 1.0 / det;
-        const sx = ox - ax, sy = oy - ay, sz = oz - az;
+        const sx = ox - ax,
+          sy = oy - ay,
+          sz = oz - az;
         const u = (sx * hx + sy * hy + sz * hz) * invDet;
         if (u < 0 || u > 1) continue;
-        const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+        const qx = sy * e1z - sz * e1y,
+          qy = sz * e1x - sx * e1z,
+          qz = sx * e1y - sy * e1x;
         const v = (dx * qx + dy * qy + dz * qz) * invDet;
         if (v < 0 || u + v > 1) continue;
         const hitT = (e2x * qx + e2y * qy + e2z * qz) * invDet;
@@ -407,8 +504,14 @@ function traceBvh(
 function makeUnitBoxMesh(): { positions: Float32Array; indices: Uint32Array } {
   // 8 box corners
   const verts: [number, number, number][] = [
-    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], // front face z=0
-    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1], // back  face z=1
+    [0, 0, 0],
+    [1, 0, 0],
+    [1, 1, 0],
+    [0, 1, 0], // front face z=0
+    [0, 0, 1],
+    [1, 0, 1],
+    [1, 1, 1],
+    [0, 1, 1], // back  face z=1
   ];
 
   // Positions: stride 4 (vec4f, .w = 0)
@@ -423,10 +526,14 @@ function makeUnitBoxMesh(): { positions: Float32Array; indices: Uint32Array } {
   // 4 faces × 2 triangles = 8 triangles
   // Using only 4 faces (front, back, left, right) — enough for a non-trivial BVH.
   const tris: [number, number, number][] = [
-    [0, 1, 2], [0, 2, 3], // front (z=0)
-    [5, 4, 7], [5, 7, 6], // back  (z=1)
-    [4, 0, 3], [4, 3, 7], // left  (x=0)
-    [1, 5, 6], [1, 6, 2], // right (x=1)
+    [0, 1, 2],
+    [0, 2, 3], // front (z=0)
+    [5, 4, 7],
+    [5, 7, 6], // back  (z=1)
+    [4, 0, 3],
+    [4, 3, 7], // left  (x=0)
+    [1, 5, 6],
+    [1, 6, 2], // right (x=1)
   ];
 
   // Indices: stride 4 (vec4u, .w = 0)
@@ -457,7 +564,7 @@ describe('33-G BVH encoding round-trip', () => {
     let foundInterior = false;
     for (let i = 0; i < totalNodes; i++) {
       const splitOrCount = u32[i * 8 + 7] ?? 0;
-      const isLeaf = (splitOrCount >>> 16) === LEAFNODE_CHECK;
+      const isLeaf = splitOrCount >>> 16 === LEAFNODE_CHECK;
       if (isLeaf) continue;
       foundInterior = true;
       const offset = u32[i * 8 + 6] ?? 0;
@@ -482,18 +589,22 @@ describe('33-G BVH encoding round-trip', () => {
     const dv = new DataView(nodeBuffer);
 
     // Node 0: interior, right child at ABSOLUTE index 2 (invalid — should be relative 2).
-    dv.setFloat32(0, -1, true); dv.setFloat32(4, -1, true); dv.setFloat32(8, -1, true);  // min
-    dv.setFloat32(12, 1, true); dv.setFloat32(16, 1, true); dv.setFloat32(20, 1, true);  // max
-    dv.setUint32(24, 2, true);  // rightChildOrTriOffset = absolute index 2 (≥ totalNodes=3 is not invalid per se,
+    dv.setFloat32(0, -1, true);
+    dv.setFloat32(4, -1, true);
+    dv.setFloat32(8, -1, true); // min
+    dv.setFloat32(12, 1, true);
+    dv.setFloat32(16, 1, true);
+    dv.setFloat32(20, 1, true); // max
+    dv.setUint32(24, 2, true); // rightChildOrTriOffset = absolute index 2 (≥ totalNodes=3 is not invalid per se,
     // but let's use a value >= totalNodes to trigger the check)
-    dv.setUint32(28, 0, true);  // splitAxis = 0 (interior)
+    dv.setUint32(28, 0, true); // splitAxis = 0 (interior)
 
     // Node 1: leaf
-    dv.setUint32(24 + 32, 0, true);         // triOffset
+    dv.setUint32(24 + 32, 0, true); // triOffset
     dv.setUint32(28 + 32, 0xffff0001, true); // LEAFNODE_FLAG | 1
 
     // Node 2: leaf
-    dv.setUint32(24 + 64, 1, true);         // triOffset
+    dv.setUint32(24 + 64, 1, true); // triOffset
     dv.setUint32(28 + 64, 0xffff0001, true); // LEAFNODE_FLAG | 1
 
     // Override node 0's offset to something >= totalNodes (3) to trigger the validator.
@@ -535,12 +646,22 @@ describe('33-G BVH encoding round-trip', () => {
         dz = rand() * 2 - 1;
         len = Math.sqrt(dx * dx + dy * dy + dz * dz);
       } while (len < 0.01 || len > 1.0);
-      dx /= len; dy /= len; dz /= len;
+      dx /= len;
+      dy /= len;
+      dz /= len;
 
       const result1 = traceBvh(
-        result.bvhNodes, positions, result.reorderedIndices,
-        ox, oy, oz, dx, dy, dz,
-        1e-6, 1000.0,
+        result.bvhNodes,
+        positions,
+        result.reorderedIndices,
+        ox,
+        oy,
+        oz,
+        dx,
+        dy,
+        dz,
+        1e-6,
+        1000.0,
       );
 
       if (result1.hit) {
@@ -554,9 +675,12 @@ describe('33-G BVH encoding round-trip', () => {
         const hy = oy + dy * result1.tHit;
         const hz = oz + dz * result1.tHit;
         const onBox =
-          hx >= -1e-4 && hx <= 1 + 1e-4 &&
-          hy >= -1e-4 && hy <= 1 + 1e-4 &&
-          hz >= -1e-4 && hz <= 1 + 1e-4;
+          hx >= -1e-4 &&
+          hx <= 1 + 1e-4 &&
+          hy >= -1e-4 &&
+          hy <= 1 + 1e-4 &&
+          hz >= -1e-4 &&
+          hz <= 1 + 1e-4;
         if (!onBox) {
           allHitsValid = false;
         }
@@ -574,10 +698,17 @@ describe('33-G BVH encoding round-trip', () => {
 
     // Ray from (0.5, 0.5, -1) in +Z direction — should hit the front face (z=0) at t=1.
     const hit = traceBvh(
-      result.bvhNodes, positions, result.reorderedIndices,
-      0.5, 0.5, -1.0,
-      0.0, 0.0, 1.0,
-      1e-6, 100.0,
+      result.bvhNodes,
+      positions,
+      result.reorderedIndices,
+      0.5,
+      0.5,
+      -1.0,
+      0.0,
+      0.0,
+      1.0,
+      1e-6,
+      100.0,
     );
 
     expect(hit.hit).toBe(true);
@@ -615,9 +746,9 @@ function make10x10GridMesh(): { positions: Float32Array; indices: Uint32Array } 
   for (let row = 0; row <= GRID; row++) {
     for (let col = 0; col <= GRID; col++) {
       const vi = row * (GRID + 1) + col;
-      positions[vi * 4 + 0] = col;      // X ∈ [0, 10]
-      positions[vi * 4 + 1] = 0.0;      // Y = 0
-      positions[vi * 4 + 2] = row;      // Z ∈ [0, 10]
+      positions[vi * 4 + 0] = col; // X ∈ [0, 10]
+      positions[vi * 4 + 1] = 0.0; // Y = 0
+      positions[vi * 4 + 2] = row; // Z ∈ [0, 10]
       positions[vi * 4 + 3] = 0.0;
     }
   }
@@ -629,10 +760,10 @@ function make10x10GridMesh(): { positions: Float32Array; indices: Uint32Array } 
   for (let row = 0; row < GRID; row++) {
     for (let col = 0; col < GRID; col++) {
       // Quad corners
-      const tl = row * (GRID + 1) + col;       // top-left
-      const tr = tl + 1;                        // top-right
+      const tl = row * (GRID + 1) + col; // top-left
+      const tr = tl + 1; // top-right
       const bl = (row + 1) * (GRID + 1) + col; // bottom-left
-      const br = bl + 1;                        // bottom-right
+      const br = bl + 1; // bottom-right
 
       // Triangle 0: tl, tr, bl
       indices[ti * 4 + 0] = tl;
@@ -660,8 +791,12 @@ function make10x10GridMesh(): { positions: Float32Array; indices: Uint32Array } 
 function traceBruteForce(
   positions: Float32Array,
   indices: Uint32Array,
-  ox: number, oy: number, oz: number,
-  dx: number, dy: number, dz: number,
+  ox: number,
+  oy: number,
+  oz: number,
+  dx: number,
+  dy: number,
+  dz: number,
   tMin: number,
   tMax: number,
 ): { hit: boolean; tHit: number } {
@@ -673,20 +808,36 @@ function traceBruteForce(
     const i0 = indices[t * 4] ?? 0;
     const i1 = indices[t * 4 + 1] ?? 0;
     const i2 = indices[t * 4 + 2] ?? 0;
-    const ax = positions[i0 * 4] ?? 0, ay = positions[i0 * 4 + 1] ?? 0, az = positions[i0 * 4 + 2] ?? 0;
-    const bx = positions[i1 * 4] ?? 0, by = positions[i1 * 4 + 1] ?? 0, bz = positions[i1 * 4 + 2] ?? 0;
-    const cx = positions[i2 * 4] ?? 0, cy = positions[i2 * 4 + 1] ?? 0, cz = positions[i2 * 4 + 2] ?? 0;
+    const ax = positions[i0 * 4] ?? 0,
+      ay = positions[i0 * 4 + 1] ?? 0,
+      az = positions[i0 * 4 + 2] ?? 0;
+    const bx = positions[i1 * 4] ?? 0,
+      by = positions[i1 * 4 + 1] ?? 0,
+      bz = positions[i1 * 4 + 2] ?? 0;
+    const cx = positions[i2 * 4] ?? 0,
+      cy = positions[i2 * 4 + 1] ?? 0,
+      cz = positions[i2 * 4 + 2] ?? 0;
 
-    const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
-    const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
-    const hx = dy * e2z - dz * e2y, hy = dz * e2x - dx * e2z, hz = dx * e2y - dy * e2x;
+    const e1x = bx - ax,
+      e1y = by - ay,
+      e1z = bz - az;
+    const e2x = cx - ax,
+      e2y = cy - ay,
+      e2z = cz - az;
+    const hx = dy * e2z - dz * e2y,
+      hy = dz * e2x - dx * e2z,
+      hz = dx * e2y - dy * e2x;
     const det = e1x * hx + e1y * hy + e1z * hz;
     if (Math.abs(det) < 1e-8) continue;
     const invDet = 1.0 / det;
-    const sx = ox - ax, sy = oy - ay, sz = oz - az;
+    const sx = ox - ax,
+      sy = oy - ay,
+      sz = oz - az;
     const u = (sx * hx + sy * hy + sz * hz) * invDet;
     if (u < 0 || u > 1) continue;
-    const qx = sy * e1z - sz * e1y, qy = sz * e1x - sx * e1z, qz = sx * e1y - sy * e1x;
+    const qx = sy * e1z - sz * e1y,
+      qy = sz * e1x - sx * e1z,
+      qz = sx * e1y - sy * e1x;
     const v = (dx * qx + dy * qy + dz * qz) * invDet;
     if (v < 0 || u + v > 1) continue;
     const hitT = (e2x * qx + e2y * qy + e2z * qz) * invDet;
@@ -720,14 +871,14 @@ describe('T1.D3 — BVH 200-tri complex-scene round-trip', () => {
     };
 
     const NUM_RAYS = 1_000;
-    let missMatch = 0;      // BVH misses where brute-force hits
-    let tHitMismatch = 0;   // |tHit_bvh - tHit_brute| >= 1e-5
+    let missMatch = 0; // BVH misses where brute-force hits
+    let tHitMismatch = 0; // |tHit_bvh - tHit_brute| >= 1e-5
     let hitCount = 0;
 
     for (let r = 0; r < NUM_RAYS; r++) {
       // Ray origin: random position above the grid plane.
       const ox = rand() * 12 - 1; // X ∈ [-1, 11]
-      const oy = rand() * 8 + 1;  // Y ∈ [1, 9]  (above the plane)
+      const oy = rand() * 8 + 1; // Y ∈ [1, 9]  (above the plane)
       const oz = rand() * 12 - 1; // Z ∈ [-1, 11]
 
       // Direction: straight down (-Y) to guarantee deterministic brute-force result.
@@ -737,18 +888,35 @@ describe('T1.D3 — BVH 200-tri complex-scene round-trip', () => {
       const dy = -1.0;
       const dz = (rand() - 0.5) * 0.4;
       const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const ndx = dx / len, ndy = dy / len, ndz = dz / len;
+      const ndx = dx / len,
+        ndy = dy / len,
+        ndz = dz / len;
 
       const bvhResult = traceBvh(
-        built.bvhNodes, positions, built.reorderedIndices,
-        ox, oy, oz, ndx, ndy, ndz,
-        1e-4, 1000.0,
+        built.bvhNodes,
+        positions,
+        built.reorderedIndices,
+        ox,
+        oy,
+        oz,
+        ndx,
+        ndy,
+        ndz,
+        1e-4,
+        1000.0,
       );
 
       const bruteResult = traceBruteForce(
-        positions, indices,
-        ox, oy, oz, ndx, ndy, ndz,
-        1e-4, 1000.0,
+        positions,
+        indices,
+        ox,
+        oy,
+        oz,
+        ndx,
+        ndy,
+        ndz,
+        1e-4,
+        1000.0,
       );
 
       if (bruteResult.hit) {

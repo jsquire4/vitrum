@@ -9,12 +9,7 @@
 // a point at their transform origin (best-effort — analytic shapes are
 // expected to be rare in user scenes).
 
-import type {
-  Scene,
-  ScenePrimitive,
-  Mat4,
-  Vec3,
-} from '@vitrum/core';
+import type { Scene, ScenePrimitive, Mat4, Vec3 } from '@vitrum/core';
 
 export interface SceneAABB {
   readonly min: Vec3;
@@ -102,8 +97,12 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
     const local = vertexAabb(prim.positions);
     if (local == null) return null;
     const triPerInstance = triangleCountFor(prim.positions, prim.indices);
-    let aMinX = Infinity, aMinY = Infinity, aMinZ = Infinity;
-    let aMaxX = -Infinity, aMaxY = -Infinity, aMaxZ = -Infinity;
+    let aMinX = Infinity,
+      aMinY = Infinity,
+      aMinZ = Infinity;
+    let aMaxX = -Infinity,
+      aMaxY = -Infinity,
+      aMaxZ = -Infinity;
     for (const m of prim.instances) {
       const t = transformAabb(local, m);
       if (t.min[0] < aMinX) aMinX = t.min[0];
@@ -124,10 +123,7 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
       const local = vertexAabb(prim.fallbackMesh.positions);
       if (local != null) {
         const transformed = transformAabb(local, prim.transform);
-        const triCount = triangleCountFor(
-          prim.fallbackMesh.positions,
-          prim.fallbackMesh.indices,
-        );
+        const triCount = triangleCountFor(prim.fallbackMesh.positions, prim.fallbackMesh.indices);
         return { ...transformed, triangles: triCount };
       }
     }
@@ -158,9 +154,12 @@ function vertexAabb(positions: Float32Array): { min: Vec3; max: Vec3 } | null {
     const x = positions[i]!;
     const y = positions[i + 1]!;
     const z = positions[i + 2]!;
-    if (x < minX) minX = x; else if (x > maxX) maxX = x;
-    if (y < minY) minY = y; else if (y > maxY) maxY = y;
-    if (z < minZ) minZ = z; else if (z > maxZ) maxZ = z;
+    if (x < minX) minX = x;
+    else if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    else if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    else if (z > maxZ) maxZ = z;
   }
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
@@ -185,12 +184,18 @@ function transformAabb(
     [local.max[0], local.max[1], local.min[2]],
     [local.max[0], local.max[1], local.max[2]],
   ];
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity;
+  let maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
   for (const c of corners) {
-    const x = c[0], y = c[1], z = c[2];
-    const tx = m[0]! * x + m[4]! * y + m[8]!  * z + m[12]!;
-    const ty = m[1]! * x + m[5]! * y + m[9]!  * z + m[13]!;
+    const x = c[0],
+      y = c[1],
+      z = c[2];
+    const tx = m[0]! * x + m[4]! * y + m[8]! * z + m[12]!;
+    const ty = m[1]! * x + m[5]! * y + m[9]! * z + m[13]!;
     const tz = m[2]! * x + m[6]! * y + m[10]! * z + m[14]!;
     if (tx < minX) minX = tx;
     if (tx > maxX) maxX = tx;

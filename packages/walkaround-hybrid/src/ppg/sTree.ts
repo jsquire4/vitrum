@@ -18,10 +18,7 @@
  *   rebuilds by extending its flat node array — no static grid.
  */
 
-import {
-  PPG_CELL_SPLIT_THRESHOLD,
-  PPG_DTREE_INITIAL_DEPTH,
-} from './ppgConstants.js';
+import { PPG_CELL_SPLIT_THRESHOLD, PPG_DTREE_INITIAL_DEPTH } from './ppgConstants.js';
 import type { AABB, STree, STreeNode, DTree } from './types.js';
 import { buildEmptyDTree } from './dTree.js';
 
@@ -50,9 +47,12 @@ function cloneAABB(a: AABB): AABB {
 /** Return true if point p is inside aabb. */
 export function aabbContains(aabb: AABB, p: [number, number, number]): boolean {
   return (
-    p[0] >= aabb.min[0] && p[0] <= aabb.max[0] &&
-    p[1] >= aabb.min[1] && p[1] <= aabb.max[1] &&
-    p[2] >= aabb.min[2] && p[2] <= aabb.max[2]
+    p[0] >= aabb.min[0] &&
+    p[0] <= aabb.max[0] &&
+    p[1] >= aabb.min[1] &&
+    p[1] <= aabb.max[1] &&
+    p[2] >= aabb.min[2] &&
+    p[2] <= aabb.max[2]
   );
 }
 
@@ -101,10 +101,7 @@ export function buildSTree(sceneBounds: AABB): STree {
  * ALL training and guide directions live in the WORLD frame (deviation 4 fix).
  * Position must be in world space.
  */
-export function findSTreeLeaf(
-  sTree: STree,
-  position: [number, number, number],
-): number {
+export function findSTreeLeaf(sTree: STree, position: [number, number, number]): number {
   let idx = 0;
   while (true) {
     const node = sTree.nodes[idx]!;
@@ -154,11 +151,7 @@ export function sTreeAccumulate(
 }
 
 /** Forward declaration — implemented in dTree.ts and re-imported here. */
-function dTreeAccumulateFlux(
-  dTree: DTree,
-  octUV: [number, number],
-  flux: number,
-): void {
+function dTreeAccumulateFlux(dTree: DTree, octUV: [number, number], flux: number): void {
   // Inline traversal to avoid circular import: descend the quadtree.
   let idx = 0;
   while (true) {
@@ -172,7 +165,7 @@ function dTreeAccumulateFlux(
     const uMid = (node.u0 + node.u1) * 0.5;
     const vMid = (node.v0 + node.v1) * 0.5;
     const goRight = octUV[0] >= uMid;
-    const goDown  = octUV[1] >= vMid;
+    const goDown = octUV[1] >= vMid;
     // firstChild ordering: 0=NW(left,top), 1=NE(right,top), 2=SW(left,bot), 3=SE(right,bot)
     idx = node.firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0);
   }
@@ -215,9 +208,9 @@ export function splitOverflowLeaves(
 
   for (let i = 0; i < initialLen; i++) {
     const node = sTree.nodes[i]!;
-    if (node.splitAxis !== -1) continue;          // interior node
-    if (node.sampleCount <= threshold) continue;  // not over threshold
-    if (leafCount >= maxCells) break;             // hard cap
+    if (node.splitAxis !== -1) continue; // interior node
+    if (node.sampleCount <= threshold) continue; // not over threshold
+    if (leafCount >= maxCells) break; // hard cap
 
     // Split this leaf.
     const axis = longestAxis(node.aabb);
@@ -225,18 +218,18 @@ export function splitOverflowLeaves(
 
     // Clone parent dTree for each child.
     const parentDTree = sTree.dTrees[node.dTreeIndex]!;
-    const leftDTreeIdx  = sTree.dTrees.length;
+    const leftDTreeIdx = sTree.dTrees.length;
     const rightDTreeIdx = leftDTreeIdx + 1;
     sTree.dTrees.push(cloneDTree(parentDTree));
     sTree.dTrees.push(cloneDTree(parentDTree));
 
     // Build child AABBs.
-    const leftAABB  = cloneAABB(node.aabb);
+    const leftAABB = cloneAABB(node.aabb);
     const rightAABB = cloneAABB(node.aabb);
-    leftAABB.max[axis]  = splitVal;
+    leftAABB.max[axis] = splitVal;
     rightAABB.min[axis] = splitVal;
 
-    const leftIdx  = sTree.nodes.length;
+    const leftIdx = sTree.nodes.length;
     const rightIdx = leftIdx + 1;
 
     sTree.nodes.push({
@@ -259,9 +252,9 @@ export function splitOverflowLeaves(
     });
 
     // Promote parent to interior node.
-    node.splitAxis  = axis;
+    node.splitAxis = axis;
     node.splitValue = splitVal;
-    node.leftChild  = leftIdx;
+    node.leftChild = leftIdx;
     node.rightChild = rightIdx;
     node.dTreeIndex = -1;
     node.sampleCount = 0;
@@ -282,7 +275,7 @@ function countLeaves(sTree: STree): number {
 /** Deep-clone a dTree (used when splitting an sTree leaf). */
 function cloneDTree(src: DTree): DTree {
   return {
-    nodes: src.nodes.map(n => ({ ...n })),
+    nodes: src.nodes.map((n) => ({ ...n })),
     totalFlux: src.totalFlux,
   };
 }

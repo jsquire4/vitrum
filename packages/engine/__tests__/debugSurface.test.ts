@@ -52,9 +52,7 @@ class DebuggableFakeEngine implements Engine {
     },
     bvhNodes: () => {
       this.bvhCalls++;
-      return new Float32Array([
-        -1, -1, -1, +1, +1, +1, 0, 0,
-      ]);
+      return new Float32Array([-1, -1, -1, +1, +1, +1, 0, 0]);
     },
   };
 }

@@ -8,16 +8,8 @@ function makeScene(): Scene {
       {
         kind: 'mesh',
         id: 'tri',
-        positions: new Float32Array([
-          0, 0, 0,
-          1, 0, 0,
-          0, 1, 0,
-        ]),
-        normals: new Float32Array([
-          0, 0, 1,
-          0, 0, 1,
-          0, 0, 1,
-        ]),
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
         material: {
           baseColor: [0.25, 0.5, 0.75],
           roughness: 0.4,
@@ -90,12 +82,7 @@ describe('buildPackedScene', () => {
         hdri: {
           width: 2,
           height: 2,
-          data: new Float32Array([
-            4, 1, 1,
-            1, 4, 1,
-            1, 1, 4,
-            2, 2, 2,
-          ]),
+          data: new Float32Array([4, 1, 1, 1, 4, 1, 1, 1, 4, 2, 2, 2]),
         },
       },
     };

@@ -9,7 +9,12 @@ export function buildCornellBoxThreeScene(): THREE.Scene {
   const red = new THREE.MeshPhysicalMaterial({ color: 0xab3a2f, roughness: 1, metalness: 0 });
   const green = new THREE.MeshPhysicalMaterial({ color: 0x2d7a3e, roughness: 1, metalness: 0 });
 
-  const mk = (geo: THREE.BufferGeometry, mat: THREE.MeshPhysicalMaterial, pos: Vec3, scale: Vec3) => {
+  const mk = (
+    geo: THREE.BufferGeometry,
+    mat: THREE.MeshPhysicalMaterial,
+    pos: Vec3,
+    scale: Vec3,
+  ) => {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(pos[0], pos[1], pos[2]);
     mesh.scale.set(scale[0], scale[1], scale[2]);

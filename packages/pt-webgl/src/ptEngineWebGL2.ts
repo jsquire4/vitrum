@@ -1,6 +1,4 @@
-import {
-  PerspectiveCamera,
-} from 'three';
+import { PerspectiveCamera } from 'three';
 import type {
   WebGLRenderer,
   WebGLRenderTarget,
@@ -247,7 +245,11 @@ function defaultSchedulerOptions(
     'vitrum.ptWebgl.samplesPerFrame',
     base.initialSamplesPerFrame,
   );
-  const requestedTileSize = extensionNumber(extensions, 'vitrum.ptWebgl.tileSize', base.initialTileSize);
+  const requestedTileSize = extensionNumber(
+    extensions,
+    'vitrum.ptWebgl.tileSize',
+    base.initialTileSize,
+  );
   const maxSamplesPerFrame = clampInt(
     extensionNumber(extensions, 'vitrum.ptWebgl.maxSamplesPerFrame', base.maxSamplesPerFrame),
     base.minSamplesPerFrame,
@@ -256,15 +258,30 @@ function defaultSchedulerOptions(
   return {
     qualityMode,
     adaptive: extensionBoolean(extensions, 'vitrum.ptWebgl.adaptiveScheduler', base.adaptive),
-    targetBatchMs: Math.max(0, extensionNumber(extensions, 'vitrum.ptWebgl.targetBatchMs', base.targetBatchMs)),
+    targetBatchMs: Math.max(
+      0,
+      extensionNumber(extensions, 'vitrum.ptWebgl.targetBatchMs', base.targetBatchMs),
+    ),
     minSamplesPerFrame: base.minSamplesPerFrame,
     maxSamplesPerFrame,
-    initialSamplesPerFrame: clampInt(requestedSamplesPerFrame, base.minSamplesPerFrame, maxSamplesPerFrame),
+    initialSamplesPerFrame: clampInt(
+      requestedSamplesPerFrame,
+      base.minSamplesPerFrame,
+      maxSamplesPerFrame,
+    ),
     initialTileSize: clampInt(requestedTileSize, 1, base.maxTileSize),
-    maxTileSize: clampInt(extensionNumber(extensions, 'vitrum.ptWebgl.maxTileSize', base.maxTileSize), 1, 8),
+    maxTileSize: clampInt(
+      extensionNumber(extensions, 'vitrum.ptWebgl.maxTileSize', base.maxTileSize),
+      1,
+      8,
+    ),
     renderTargetBudgetBytes: Math.max(
       64 * 1024 * 1024,
-      extensionNumber(extensions, 'vitrum.ptWebgl.renderTargetBudgetBytes', base.renderTargetBudgetBytes),
+      extensionNumber(
+        extensions,
+        'vitrum.ptWebgl.renderTargetBudgetBytes',
+        base.renderTargetBudgetBytes,
+      ),
     ),
   };
 }
@@ -300,9 +317,10 @@ function disposeObject3DTree(obj: Object3D): void {
     if (mesh.isMesh === true) {
       mesh.geometry?.dispose();
       const m = mesh.material as TMaterial | TMaterial[] | undefined;
-      if (Array.isArray(m)) m.forEach((x) => {
-        x.dispose?.();
-      });
+      if (Array.isArray(m))
+        m.forEach((x) => {
+          x.dispose?.();
+        });
       else m?.dispose?.();
     }
   });
@@ -369,15 +387,18 @@ export class PTEngineWebGL2 implements Engine {
     // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     const causticOpts = opts.causticOptions ?? {};
-    const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
-    const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
+    const mneeIter =
+      typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
+    const mneeChain =
+      typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
     this.#spectralRendering = opts.extensions?.['vitrum.ptWebgl.spectralRendering'] === true;
     const requestedRadianceClamp = opts.extensions?.['vitrum.ptWebgl.radianceClamp'];
-    this.#radianceClamp = typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
-      ? Math.max(0, requestedRadianceClamp)
-      : 0;
+    this.#radianceClamp =
+      typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
+        ? Math.max(0, requestedRadianceClamp)
+        : 0;
     // Sprint 10c: BDPT option from extensions.
     // 'vitrum.ptWebgl.bdpt' (boolean) enables BDPT mode for PT_FINAL caustic renders.
     // 'vitrum.ptWebgl.bdptMaxLightBounces' (1–3) controls light-subpath depth.
@@ -386,9 +407,10 @@ export class PTEngineWebGL2 implements Engine {
     // with their ForkBridgeBdptOptions including the ping-pong texture reference.
     this.#bdpt = opts.extensions?.['vitrum.ptWebgl.bdpt'] === true;
     const requestedBdptBounces = opts.extensions?.['vitrum.ptWebgl.bdptMaxLightBounces'];
-    this.#bdptMaxLightBounces = typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
-      ? Math.min(3, Math.floor(requestedBdptBounces))
-      : 3;
+    this.#bdptMaxLightBounces =
+      typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
+        ? Math.min(3, Math.floor(requestedBdptBounces))
+        : 3;
     this.#schedulerOptions = defaultSchedulerOptions(opts.extensions);
     this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
     this.#tileSize = this.#schedulerOptions.initialTileSize;
@@ -409,7 +431,10 @@ export class PTEngineWebGL2 implements Engine {
     if (this.#pixelAdaptiveSampling) {
       this.#tileVariancePass = new TileVariancePass(MAX_TILE_GRID);
     }
-    gpu.pathTracer.configureAdditiveAccumulation(this.#additiveAccumulation, this.#additiveAccumulation);
+    gpu.pathTracer.configureAdditiveAccumulation(
+      this.#additiveAccumulation,
+      this.#additiveAccumulation,
+    );
     this.#renderer.domElement?.addEventListener?.('webglcontextlost', () => {
       this.#contextLost = true;
       this.#samplesPerFrame = 1;
@@ -466,31 +491,29 @@ export class PTEngineWebGL2 implements Engine {
   #detectDeviceLimits(): DeviceLimits {
     const gl = this.#renderer.getContext();
     const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-    const rendererFromDebug = debugInfo == null
-      ? null
-      : gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+    const rendererFromDebug =
+      debugInfo == null ? null : gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
     const rendererFallback = gl.getParameter(gl.RENDERER);
     const maxTextureSize = Number(gl.getParameter(gl.MAX_TEXTURE_SIZE));
     const maxRenderbufferSize = Number(gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
     return {
       maxTextureSize: Number.isFinite(maxTextureSize) && maxTextureSize > 0 ? maxTextureSize : 4096,
-      maxRenderbufferSize: Number.isFinite(maxRenderbufferSize) && maxRenderbufferSize > 0
-        ? maxRenderbufferSize
-        : 4096,
-      renderer: typeof rendererFromDebug === 'string' && rendererFromDebug.length > 0
-        ? rendererFromDebug
-        : typeof rendererFallback === 'string'
-          ? rendererFallback
-          : 'unknown WebGL renderer',
+      maxRenderbufferSize:
+        Number.isFinite(maxRenderbufferSize) && maxRenderbufferSize > 0
+          ? maxRenderbufferSize
+          : 4096,
+      renderer:
+        typeof rendererFromDebug === 'string' && rendererFromDebug.length > 0
+          ? rendererFromDebug
+          : typeof rendererFallback === 'string'
+            ? rendererFallback
+            : 'unknown WebGL renderer',
     };
   }
 
   #estimateRenderTargetBytes(width: number, height: number): number {
     return (
-      width *
-      height *
-      BYTES_PER_RGBA16F_PIXEL *
-      ESTIMATED_RENDER_TARGET_COUNT +
+      width * height * BYTES_PER_RGBA16F_PIXEL * ESTIMATED_RENDER_TARGET_COUNT +
       DEFAULT_RENDER_TARGET_OVERHEAD_BYTES
     );
   }
@@ -498,11 +521,13 @@ export class PTEngineWebGL2 implements Engine {
   #planRenderSize(width: number, height: number): RenderSizePlan {
     const requestedWidth = Math.max(1, Math.floor(width));
     const requestedHeight = Math.max(1, Math.floor(height));
-    const maxDimension = Math.max(1, Math.min(this.#limits.maxTextureSize, this.#limits.maxRenderbufferSize));
+    const maxDimension = Math.max(
+      1,
+      Math.min(this.#limits.maxTextureSize, this.#limits.maxRenderbufferSize),
+    );
     let scale = Math.min(1, maxDimension / requestedWidth, maxDimension / requestedHeight);
-    let guardrail: string | null = scale < 1
-      ? `capped to WebGL max render dimension ${maxDimension}`
-      : null;
+    let guardrail: string | null =
+      scale < 1 ? `capped to WebGL max render dimension ${maxDimension}` : null;
     let plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
     let plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
     let estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
@@ -511,15 +536,19 @@ export class PTEngineWebGL2 implements Engine {
         1,
         this.#schedulerOptions.renderTargetBudgetBytes - DEFAULT_RENDER_TARGET_OVERHEAD_BYTES,
       );
-      const pixelBytes = Math.max(1, plannedWidth * plannedHeight * BYTES_PER_RGBA16F_PIXEL * ESTIMATED_RENDER_TARGET_COUNT);
+      const pixelBytes = Math.max(
+        1,
+        plannedWidth * plannedHeight * BYTES_PER_RGBA16F_PIXEL * ESTIMATED_RENDER_TARGET_COUNT,
+      );
       const memoryScale = Math.min(1, Math.sqrt(targetBytes / pixelBytes));
       scale *= memoryScale;
       plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
       plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
       estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
-      guardrail = guardrail == null
-        ? `downscaled to fit ${Math.round(this.#schedulerOptions.renderTargetBudgetBytes / 1024 / 1024)} MiB render-target budget`
-        : `${guardrail}; downscaled to fit render-target budget`;
+      guardrail =
+        guardrail == null
+          ? `downscaled to fit ${Math.round(this.#schedulerOptions.renderTargetBudgetBytes / 1024 / 1024)} MiB render-target budget`
+          : `${guardrail}; downscaled to fit render-target budget`;
     }
     return {
       width: plannedWidth,
@@ -543,7 +572,11 @@ export class PTEngineWebGL2 implements Engine {
     w: number,
     h: number,
   ): void {
-    if (this.#pixelAdaptiveSampling && this.#additiveAccumulation && this.#tileVariancePass != null) {
+    if (
+      this.#pixelAdaptiveSampling &&
+      this.#additiveAccumulation &&
+      this.#tileVariancePass != null
+    ) {
       if (sppBefore >= 2 && sppBefore % this.#pixelAdaptiveCadence === 0) {
         computeAdaptiveTileRepeatFactors(
           this.#tileVariancePass,
@@ -566,7 +599,10 @@ export class PTEngineWebGL2 implements Engine {
     if (!this.#schedulerOptions.adaptive || this.#schedulerOptions.targetBatchMs <= 0) return;
     if (this.#contextLost) {
       this.#samplesPerFrame = 1;
-      this.#tileSize = Math.min(this.#schedulerOptions.maxTileSize, Math.max(this.#tileSize, DEFAULT_TILE_SIZE));
+      this.#tileSize = Math.min(
+        this.#schedulerOptions.maxTileSize,
+        Math.max(this.#tileSize, DEFAULT_TILE_SIZE),
+      );
       return;
     }
     const target = this.#schedulerOptions.targetBatchMs;
@@ -580,7 +616,10 @@ export class PTEngineWebGL2 implements Engine {
       }
       return;
     }
-    if (batchMs < target * 0.55 && this.#samplesPerFrame < this.#schedulerOptions.maxSamplesPerFrame) {
+    if (
+      batchMs < target * 0.55 &&
+      this.#samplesPerFrame < this.#schedulerOptions.maxSamplesPerFrame
+    ) {
       this.#samplesPerFrame = Math.min(
         this.#schedulerOptions.maxSamplesPerFrame,
         Math.max(this.#samplesPerFrame + 1, Math.ceil(this.#samplesPerFrame * 1.2)),
@@ -750,7 +789,10 @@ export class PTEngineWebGL2 implements Engine {
     let spp = this.#pathTracer.samples;
     const sppBefore = spp;
     const batchStart = nowMs();
-    const samplesThisFrame = Math.min(this.#samplesPerFrame, Math.max(0, Math.ceil(targetSpp - spp)));
+    const samplesThisFrame = Math.min(
+      this.#samplesPerFrame,
+      Math.max(0, Math.ceil(targetSpp - spp)),
+    );
 
     const tilesX = Math.max(1, Math.floor(this.#pathTracer.tiles.x));
     const tilesY = Math.max(1, Math.floor(this.#pathTracer.tiles.y));
@@ -795,7 +837,11 @@ export class PTEngineWebGL2 implements Engine {
         spp,
       };
       for (const sub of this.#frameSubs) {
-        try { sub(stats); } catch { /* swallow */ }
+        try {
+          sub(stats);
+        } catch {
+          /* swallow */
+        }
       }
     }
     if (this.#progressSubs.length > 0 && sppDelta > 0) {
@@ -807,7 +853,11 @@ export class PTEngineWebGL2 implements Engine {
         fraction: Math.min(1, spp / target),
       };
       for (const sub of this.#progressSubs) {
-        try { sub(progress); } catch { /* swallow */ }
+        try {
+          sub(progress);
+        } catch {
+          /* swallow */
+        }
       }
     }
 
@@ -889,7 +939,10 @@ export class PTEngineWebGL2 implements Engine {
 export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async (
   opts: PTEngineWebGL2Options,
 ): Promise<Engine> => {
-  if (opts.device == null || typeof (opts.device as { getContext?: unknown }).getContext !== 'function') {
+  if (
+    opts.device == null ||
+    typeof (opts.device as { getContext?: unknown }).getContext !== 'function'
+  ) {
     throw new TypeError(
       'createPTEngine_WebGL2: device must be a THREE.WebGLRenderer instance (got null/undefined or an object without a getContext() method)',
     );
@@ -944,4 +997,4 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
   );
   slot.set('ready');
   return engine;
-}
+};

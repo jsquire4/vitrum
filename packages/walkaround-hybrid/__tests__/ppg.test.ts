@@ -45,7 +45,7 @@ const SCENE_AABB: import('../src/ppg/types.js').AABB = {
 describe('PPG sTree — adaptive split (Müller §3.1)', () => {
   it('splits a leaf when sample count exceeds PPG_CELL_SPLIT_THRESHOLD', () => {
     const tree = buildSTree(SCENE_AABB);
-    expect(tree.nodes.length).toBe(1);  // single root leaf
+    expect(tree.nodes.length).toBe(1); // single root leaf
 
     // Accumulate threshold + 1 samples uniformly inside the root cell.
     for (let i = 0; i < PPG_CELL_SPLIT_THRESHOLD + 1; i++) {
@@ -63,23 +63,26 @@ describe('PPG sTree — adaptive split (Müller §3.1)', () => {
     // Both children cover disjoint halves of the parent's longest axis.
     const left = tree.nodes[1]!;
     const right = tree.nodes[2]!;
-    expect(left.splitAxis).toBe(-1);   // leaf
-    expect(right.splitAxis).toBe(-1);  // leaf
+    expect(left.splitAxis).toBe(-1); // leaf
+    expect(right.splitAxis).toBe(-1); // leaf
 
     // The disjoint AABBs together cover the parent.
-    const leftCovers = (left.aabb.max[0] - left.aabb.min[0]) +
-                       (right.aabb.max[0] - right.aabb.min[0]);
+    const leftCovers =
+      left.aabb.max[0] - left.aabb.min[0] + (right.aabb.max[0] - right.aabb.min[0]);
     const parentExtent = SCENE_AABB.max[0] - SCENE_AABB.min[0];
     // Either the X axis was split, OR another axis. Verify total volume preserved.
-    const leftVol = (left.aabb.max[0] - left.aabb.min[0]) *
-                    (left.aabb.max[1] - left.aabb.min[1]) *
-                    (left.aabb.max[2] - left.aabb.min[2]);
-    const rightVol = (right.aabb.max[0] - right.aabb.min[0]) *
-                     (right.aabb.max[1] - right.aabb.min[1]) *
-                     (right.aabb.max[2] - right.aabb.min[2]);
-    const parentVol = (SCENE_AABB.max[0] - SCENE_AABB.min[0]) *
-                      (SCENE_AABB.max[1] - SCENE_AABB.min[1]) *
-                      (SCENE_AABB.max[2] - SCENE_AABB.min[2]);
+    const leftVol =
+      (left.aabb.max[0] - left.aabb.min[0]) *
+      (left.aabb.max[1] - left.aabb.min[1]) *
+      (left.aabb.max[2] - left.aabb.min[2]);
+    const rightVol =
+      (right.aabb.max[0] - right.aabb.min[0]) *
+      (right.aabb.max[1] - right.aabb.min[1]) *
+      (right.aabb.max[2] - right.aabb.min[2]);
+    const parentVol =
+      (SCENE_AABB.max[0] - SCENE_AABB.min[0]) *
+      (SCENE_AABB.max[1] - SCENE_AABB.min[1]) *
+      (SCENE_AABB.max[2] - SCENE_AABB.min[2]);
     expect(leftVol + rightVol).toBeCloseTo(parentVol, 6);
     // Quiet the unused-var warning — leftCovers + parentExtent kept for diagnostic
     // value when reading test failures.
@@ -94,7 +97,7 @@ describe('PPG sTree — adaptive split (Müller §3.1)', () => {
     }
     splitOverflowLeaves(tree);
     expect(tree.nodes.length).toBe(1);
-    expect(tree.nodes[0]!.splitAxis).toBe(-1);  // -1 = leaf
+    expect(tree.nodes[0]!.splitAxis).toBe(-1); // -1 = leaf
   });
 
   it('findSTreeLeaf returns root for any in-bounds point on a fresh tree', () => {
@@ -151,7 +154,7 @@ describe('PPG dTree — adaptive refinement (Müller §3.2)', () => {
     // Boost totalFlux so no individual leaf exceeds ρ × total.
     // With 16 leaves at flux=1 each and totalFlux=200, each leaf is 0.5%
     // which is below ρ=1%.
-    dTree.totalFlux = totalLeafFlux * 12.5;  // makes per-leaf ratio = 0.005 (< 0.01)
+    dTree.totalFlux = totalLeafFlux * 12.5; // makes per-leaf ratio = 0.005 (< 0.01)
     refineDTree(dTree);
 
     expect(dTree.nodes.length).toBe(before);

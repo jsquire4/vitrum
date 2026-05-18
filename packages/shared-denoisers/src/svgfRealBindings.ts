@@ -40,9 +40,9 @@ export interface SVGFReprojUniforms {
 export const SVGF_REPROJ_UNIFORMS_SIZE_BYTES = 16 as const;
 
 export const SVGF_REPROJ_DEFAULT_UNIFORMS: SVGFReprojUniforms = {
-  sigmaDepth:  SVGF_REAL_DEFAULT_SIGMA_DEPTH,
+  sigmaDepth: SVGF_REAL_DEFAULT_SIGMA_DEPTH,
   sigmaNormal: SVGF_REAL_DEFAULT_SIGMA_NORMAL,
-  alphaMin:    SVGF_REAL_DEFAULT_ALPHA_MIN,
+  alphaMin: SVGF_REAL_DEFAULT_ALPHA_MIN,
 } as const;
 
 /**
@@ -52,10 +52,14 @@ export const SVGF_REPROJ_DEFAULT_UNIFORMS: SVGFReprojUniforms = {
  * @param target - Destination ArrayBuffer (must be ≥ offset + SVGF_REPROJ_UNIFORMS_SIZE_BYTES).
  * @param offset - Byte offset into target (default: 0).
  */
-export function packSVGFReprojUniforms(u: SVGFReprojUniforms, target: ArrayBuffer, offset = 0): void {
+export function packSVGFReprojUniforms(
+  u: SVGFReprojUniforms,
+  target: ArrayBuffer,
+  offset = 0,
+): void {
   const view = new DataView(target, offset, SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
-  view.setFloat32(0,  u.sigmaDepth,  true);
-  view.setFloat32(4,  u.sigmaNormal, true);
-  view.setFloat32(8,  u.alphaMin,   true);
-  view.setUint32( 12, 0,            true); // _pad
+  view.setFloat32(0, u.sigmaDepth, true);
+  view.setFloat32(4, u.sigmaNormal, true);
+  view.setFloat32(8, u.alphaMin, true);
+  view.setUint32(12, 0, true); // _pad
 }

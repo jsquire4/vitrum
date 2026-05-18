@@ -30,7 +30,9 @@ describe('sampleEquiAngular — options', () => {
   it('uses degenerateFallbackLength when the light lies on the ray', () => {
     const lightOnRay: Vec3 = [0, 0, 10];
     const L = 33;
-    const { t, pdf } = sampleEquiAngular(0.5, ORIGIN, DIR_Z, lightOnRay, { degenerateFallbackLength: L });
+    const { t, pdf } = sampleEquiAngular(0.5, ORIGIN, DIR_Z, lightOnRay, {
+      degenerateFallbackLength: L,
+    });
     expect(t).toBeCloseTo(L * 0.5, 6);
     expect(pdf).toBeCloseTo(1 / L, 6);
   });
@@ -100,7 +102,8 @@ describe('sampleEquiAngular — closer light → tighter pdf around t_closest', 
     // Far light: 50 units perpendicular to the ray
     const lightFar: Vec3 = [0, 50, tClosest];
 
-    let meanNear = 0, meanFar = 0;
+    let meanNear = 0,
+      meanFar = 0;
     const tsNear: number[] = [];
     const tsFar: number[] = [];
 
@@ -117,7 +120,8 @@ describe('sampleEquiAngular — closer light → tighter pdf around t_closest', 
     meanNear /= N;
     meanFar /= N;
 
-    let varNear = 0, varFar = 0;
+    let varNear = 0,
+      varFar = 0;
     for (let i = 0; i < N; i++) {
       varNear += (tsNear[i]! - meanNear) ** 2;
       varFar += (tsFar[i]! - meanFar) ** 2;

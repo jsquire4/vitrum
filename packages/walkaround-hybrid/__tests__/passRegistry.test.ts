@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
-import type { Pass, PassDispatchContext, PassGateOptions, PassInitContext } from '../src/pipeline/Pass.js';
+import type {
+  Pass,
+  PassDispatchContext,
+  PassGateOptions,
+  PassInitContext,
+} from '../src/pipeline/Pass.js';
 import type { PassLabel } from '../src/pipeline/timestampQueries.js';
 
 /**
@@ -145,9 +150,7 @@ describe('PassRegistry', () => {
     it('respects gate state changes across calls', () => {
       reg.register(stubPass('only-svgf', [], (o) => o.denoiserMode === 'svgf-real'));
       const off = reg.activePasses(DEFAULT_OPTS).map((p) => p.id);
-      const on = reg
-        .activePasses({ ...DEFAULT_OPTS, denoiserMode: 'svgf-real' })
-        .map((p) => p.id);
+      const on = reg.activePasses({ ...DEFAULT_OPTS, denoiserMode: 'svgf-real' }).map((p) => p.id);
       expect(off).toEqual([]);
       expect(on).toEqual(['only-svgf']);
     });

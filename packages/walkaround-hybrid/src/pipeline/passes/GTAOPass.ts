@@ -10,11 +10,7 @@
  */
 
 import { buildGTAOBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class GTAOPass implements Pass {
@@ -45,7 +41,9 @@ export class GTAOPass implements Pass {
       inputs.gtaoIntensity,
       inputs.gtaoDepthThreshold,
       inputs.gtaoBilateralDepthSigma,
-      0, 0, 0,
+      0,
+      0,
+      0,
     ]);
     device.queue.writeBuffer(resources.gtao.gtaoUboBuffer, 0, gtaoUboBytes);
 
@@ -55,7 +53,8 @@ export class GTAOPass implements Pass {
     const wgGtaoY = Math.ceil(halfH / 8);
 
     const bg = buildGTAOBindGroup(
-      device, bglCache,
+      device,
+      bglCache,
       resources.common.gNormalDepthTexture.createView(),
       resources.gtao.aoHalfTexture.createView(),
       resources.gtao.gtaoUboBuffer,

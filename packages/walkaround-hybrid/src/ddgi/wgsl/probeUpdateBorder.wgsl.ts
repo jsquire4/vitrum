@@ -51,7 +51,7 @@
 // BORDER_WG_SIZE = 4*(CELL+2) covers every border texel in one thread stripe.
 // Interior threads are discarded cheaply by the border-check below.
 
-export const PROBE_UPDATE_BORDER_IRR_WGSL = /* wgsl */`
+export const PROBE_UPDATE_BORDER_IRR_WGSL = /* wgsl */ `
 
 const IRR_CELL:   u32 = 8u;
 const IRR_STRIDE: u32 = 10u;   // CELL + BORDER (BORDER=2)
@@ -158,7 +158,7 @@ fn probeUpdateBorderIrradiance(
 // -----------------------------------------------------------------
 // Visibility border pass (VIS_CELL = 16)
 // -----------------------------------------------------------------
-export const PROBE_UPDATE_BORDER_VIS_WGSL = /* wgsl */`
+export const PROBE_UPDATE_BORDER_VIS_WGSL = /* wgsl */ `
 
 const VIS_CELL:   u32 = 16u;
 const VIS_STRIDE: u32 = 18u;   // CELL + BORDER

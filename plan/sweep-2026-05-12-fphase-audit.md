@@ -96,12 +96,12 @@
 
 ## Summary
 
-| Check | Verdict | Notes |
-|-------|---------|-------|
-| F1 — bsdfAreaLightConnectionContribution | 🟡 | Code correct; prior agent's PDF-cancellation explanation was wrong (MIS-based, not count-multiplied). Not a defect. |
-| F2 — Binned SAH builder | 🟢 | All 4 structural claims verified exactly. |
-| F3 — Halton axis-angle conversion | 🟢 | Shoemake form, unit quaternion, Rodrigues consumer all verified. |
-| F4 — RC merge solid-angle weighting | 🟡 | Merge formula correct; WGSL uses 1-quad approx vs TS's SUB=16 (intentional, documented). |
-| F5 — Albedo demodulation plumbing | 🟢 | All bindings allocated, bound, and dispatched correctly. `atrousVarianceWebGPU.ts` name in plan was stale. |
+| Check                                    | Verdict | Notes                                                                                                               |
+| ---------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------- |
+| F1 — bsdfAreaLightConnectionContribution | 🟡      | Code correct; prior agent's PDF-cancellation explanation was wrong (MIS-based, not count-multiplied). Not a defect. |
+| F2 — Binned SAH builder                  | 🟢      | All 4 structural claims verified exactly.                                                                           |
+| F3 — Halton axis-angle conversion        | 🟢      | Shoemake form, unit quaternion, Rodrigues consumer all verified.                                                    |
+| F4 — RC merge solid-angle weighting      | 🟡      | Merge formula correct; WGSL uses 1-quad approx vs TS's SUB=16 (intentional, documented).                            |
+| F5 — Albedo demodulation plumbing        | 🟢      | All bindings allocated, bound, and dispatched correctly. `atrousVarianceWebGPU.ts` name in plan was stale.          |
 
 **No code defects found.** Two plan-doc imprecisions: F1 PDF mechanism description wrong (but code correct), F5 filename reference stale (but code correct).

@@ -53,7 +53,7 @@ describe('dispatch workgroup counts (match TSL compute() semantics)', () => {
   it('cast pass C0 dispatch: ceil(totalRays / 64)', () => {
     const c0 = CASCADE_DIMS[0]!;
     const totalRays = c0.probes[0] * c0.probes[1] * c0.probes[2] * c0.rays;
-    const expected  = Math.ceil(totalRays / 64);
+    const expected = Math.ceil(totalRays / 64);
     // C0: 16*9*14*16 = 32256. ceil(32256/64) = 504.
     expect(totalRays).toBe(32256);
     expect(expected).toBe(504);
@@ -79,8 +79,9 @@ describe('dispatch workgroup counts (match TSL compute() semantics)', () => {
   it('all merge pass dispatches are positive integers', () => {
     for (let lower = 0; lower < CASCADE_COUNT - 1; lower++) {
       const lowerDim = CASCADE_DIMS[lower]!;
-      const totalLower = lowerDim.probes[0] * lowerDim.probes[1] * lowerDim.probes[2] * lowerDim.rays;
-      const dispatchX  = Math.ceil(totalLower / 64);
+      const totalLower =
+        lowerDim.probes[0] * lowerDim.probes[1] * lowerDim.probes[2] * lowerDim.rays;
+      const dispatchX = Math.ceil(totalLower / 64);
       expect(dispatchX).toBeGreaterThan(0);
       expect(Number.isInteger(dispatchX)).toBe(true);
     }
@@ -172,8 +173,8 @@ describe('PROBE_RAY_CAST_WGSL', () => {
     // TSL primitives must not appear as JS/TS expressions in the WGSL module string.
     // Comments mentioning these terms are acceptable (they document the conversion).
     // The key invariant: no import statements or JS function calls remain.
-    expect(PROBE_RAY_CAST_WGSL).not.toContain("import {");
-    expect(PROBE_RAY_CAST_WGSL).not.toContain("import type");
+    expect(PROBE_RAY_CAST_WGSL).not.toContain('import {');
+    expect(PROBE_RAY_CAST_WGSL).not.toContain('import type');
     // No TypeScript type annotations
     expect(PROBE_RAY_CAST_WGSL).not.toContain(': GPUBuffer');
     // Confirm it's valid WGSL shell (starts with whitespace/comment then WGSL content)
@@ -307,7 +308,9 @@ describe('E2 — CascadeUniforms triIntersectEpsilon UBO-plumb', () => {
 
   it('PROBE_RAY_CAST_WGSL: intersectsTriangle accepts triEps parameter', () => {
     // The function signature must include the epsilon parameter.
-    expect(PROBE_RAY_CAST_WGSL).toContain('fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f, triEps: f32 )');
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'fn intersectsTriangle( ray: Ray, a: vec3f, b: vec3f, c: vec3f, triEps: f32 )',
+    );
   });
 
   it('CascadeUniforms struct size unchanged: still 40 f32/u32 = 160 bytes', () => {

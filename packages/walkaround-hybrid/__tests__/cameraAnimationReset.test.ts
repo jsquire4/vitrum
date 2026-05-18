@@ -23,10 +23,10 @@ import { WalkaroundGPUPipeline } from '../src/pipeline/WalkaroundGPUPipeline.js'
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 type PipelinePrivate = {
-  _accumFrameIndex:            number;
+  _accumFrameIndex: number;
   _cameraMoveResetThresholdSq: number;
-  _lastCameraPos:              [number, number, number];
-  _temporalAccumAlpha:         number;
+  _lastCameraPos: [number, number, number];
+  _temporalAccumAlpha: number;
 };
 
 /**
@@ -130,7 +130,7 @@ describe('Camera-move threshold: squared-distance arithmetic', () => {
 
   function cameraMoveIsAboveThreshold(
     lastPos: [number, number, number],
-    newPos:  [number, number, number],
+    newPos: [number, number, number],
     thresholdSq: number,
   ): boolean {
     const dx = newPos[0] - lastPos[0];

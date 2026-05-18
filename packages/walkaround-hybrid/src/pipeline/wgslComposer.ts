@@ -70,7 +70,7 @@ export function composeWgsl(
       if (!dep) {
         throw new Error(
           `[wgslComposer] Module '${mod.name}' requires unknown module '${depName}' ` +
-          `(path: ${[...path, mod.name].join(' -> ')})`,
+            `(path: ${[...path, mod.name].join(' -> ')})`,
         );
       }
       visit(dep, [...path, mod.name]);

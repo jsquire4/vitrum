@@ -75,6 +75,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine>;
 ```
 
 Internal:
+
 - **Capability detection:** `navigator.gpu?.requestAdapter()` for WebGPU;
   fall back to WebGL2.
 - **Backend pick:**
@@ -95,12 +96,14 @@ Internal:
   GPU device (if engine-owned), and any persistent textures.
 
 **Acceptance:**
+
 - `await createEngine({ canvas, scene: threeScene, camera: threeCamera })`
   produces a working engine with no other config.
 - Switching `prefer: 'quality'` swaps to PT without changing other code.
 - `engine.dispose()` followed by `engine.dispose()` is idempotent.
 
 **Tests:** `packages/core/__tests__/createEngine.test.ts`:
+
 - Default-construction smoke test (mocked canvas + GPU).
 - Capability-based pick (mock WebGPU absent → PT chosen).
 - AABB-derived defaults match the formula.
@@ -147,6 +150,7 @@ Sections:
    100k tris@30fps dGPU; reference renders).
 
 **Acceptance:**
+
 - A graphics dev can read the README in 10 minutes and have a working
   vitrum integration.
 - The 5-line example actually works copy-pasted into a Vite project
@@ -166,18 +170,21 @@ is the template). Each MUST run `npm install && npm run dev` to a working
 demo without further setup.
 
 **`examples/hero-viewer/`** — drop-in glTF viewer:
+
 - 5-line setup (matches the README hello-world).
 - Drag-drop a .glb file → renders.
 - Camera orbit controls (use `three/examples/jsm/controls/OrbitControls`).
 - Engine pick toggle (PT / walkaround) in UI.
 
 **`examples/hero-lighting-designer/`** — interactive lighting:
+
 - Static scene (small architectural interior).
 - 3–5 draggable lights; UI panel for color, intensity, type.
 - Real-time GI updates (forces walkaround-hybrid).
 - Frame-time HUD (uses T3.E telemetry).
 
 **`examples/hero-product-viz/`** — PT product render:
+
 - Static jewelry / glass scene (commission a small one or use a free CC0
   glTF; cite source).
 - Progressive PT render with "samples accumulated" counter.
@@ -185,6 +192,7 @@ demo without further setup.
 - "Save high-res render" button (renders at 4K, saves .png).
 
 **Acceptance:**
+
 - Each demo runs cleanly on first try.
 - Each is <200 LoC of host code (the engine handles the heavy lift).
 - Each demonstrates a feature that the README capability matrix calls out.
@@ -204,6 +212,7 @@ export async function loadGltfScene(
 ```
 
 Internally:
+
 1. Load the glTF/glb via `three/examples/jsm/loaders/GLTFLoader`.
 2. Convert THREE.Scene → vitrum Scene via existing `sceneFromThreeJS`.
 3. Extract embedded cameras and lights if present; surface as defaults.
@@ -235,10 +244,10 @@ export interface Engine {
 
 export interface FrameStats {
   frameTimeMs: number;
-  gpuTimeMs?: number;       // if timestamp queries supported
+  gpuTimeMs?: number; // if timestamp queries supported
   passTimings?: Record<string, number>;
-  spp?: number;             // for PT
-  bvhDepth?: number;        // diagnostic
+  spp?: number; // for PT
+  bvhDepth?: number; // diagnostic
   estimatedGpuMemoryBytes?: number;
 }
 
@@ -251,12 +260,14 @@ export interface ProgressStats {
 ```
 
 **Implementation:**
+
 - `WalkaroundHybridEngine`: emits `frameTimeMs` from rAF deltas; `passTimings`
   from existing `timestampQueries.ts`; estimated memory from
   `resourceManager.ts` totals.
 - `PTEngine_WebGL2`: emits `spp` progress.
 
 **Acceptance:**
+
 - Hero-lighting-designer's frame-time HUD subscribes via `onFrame()`.
 - Hero-product-viz's progress bar subscribes via `onProgress()`.
 
@@ -267,6 +278,7 @@ export interface ProgressStats {
 ## Phase T3.F — Lifecycle helpers + `<VitrumCanvas>` React component
 
 **Files:**
+
 - `packages/three-bindings/src/react/VitrumCanvas.tsx` (new — opt-in React
   helper; package gets `react` as a peer dep marked optional).
 - `packages/three-bindings/src/lifecycle/vanilla.ts` (vanilla equivalent
@@ -280,10 +292,11 @@ import { VitrumCanvas } from '@vitrum/three-bindings/react';
   camera={camera}
   prefer="realtime"
   onFrame={(stats) => setFps(1000 / stats.frameTimeMs)}
-/>
+/>;
 ```
 
 The component:
+
 - Creates a `<canvas>` ref.
 - `useEffect` calls `createEngine()` on mount, `engine.dispose()` on unmount.
 - Survives Canvas remount (via key-stable engine instance in a ref).
@@ -294,7 +307,7 @@ The component:
 // Vanilla
 import { attachVitrum } from '@vitrum/three-bindings/lifecycle';
 const handle = await attachVitrum({ canvas, scene, camera, prefer: 'auto' });
-handle.dispose();  // unmount
+handle.dispose(); // unmount
 ```
 
 **Tests:** mount/unmount cycle test (jsdom + mocked GPU); visibility-pause
@@ -354,6 +367,7 @@ vitrum Scene conversion in the factory, so the engine itself only needs
 the `setScene()` path.
 
 Steps:
+
 1. Mark `threeScene` option as `@deprecated` in HybridEngineOptions.
 2. Internally, `createEngine()` calls `sceneFromThreeJS(threeScene)`
    then `engine.setScene(vitrumScene)`. Construction no longer plumbs
@@ -375,6 +389,7 @@ The engine assumes static scenes. Camera animation works (camera is
 per-frame in `FrameInput`). Dynamic geometry: untested.
 
 Steps:
+
 1. Author 3 test cases:
    - **Camera-only animation:** orbit camera around a static scene; verify
      temporal accumulator resets cleanly on motion.
@@ -407,6 +422,7 @@ working.
 This is gating; everything else has to land first.
 
 Steps:
+
 1. Verify each `packages/*/package.json` has correct `main`, `types`,
    `exports`, `files`, `repository`, `license`, `description`.
 2. Run `npm pack --dry-run` per package to confirm shipped contents
@@ -444,6 +460,7 @@ published.
 **Total: ~23.5 days, compressible to ~2 weeks with parallelism.**
 
 Wave-by-wave:
+
 - Wave 1 (parallel): T3.A (3d), T3.G (5d), T3.I (2d) — 5d wall-time
 - Wave 2 (after T3.A): T3.B + T3.D + T3.E + T3.F + T3.H — ~3d wall-time
   (parallel)
@@ -467,11 +484,12 @@ If a different name is needed (e.g., scope already taken), tell me.
 
 **Hero scenes — sourcing.** The hero examples need 1–2 polished glTF
 scenes (interior + jewelry). Options:
+
 - Commission small ones (slow + costs).
 - Use Khronos sample assets (free CC0; but generic-looking).
 - Use Sketchfab CC0 scenes (curated, cite source).
 - Build minimal procedural scenes (cheap; less impressive).
-Recommend Sketchfab CC0 + cite for time/cost balance.
+  Recommend Sketchfab CC0 + cite for time/cost balance.
 
 **`<VitrumCanvas>` React-only?** The plan ships React + vanilla. If you
 want Vue/Svelte/Solid wrappers too, they're each ~½ day extra. Recommend

@@ -43,9 +43,9 @@ import {
 function makeUpwardQuad(halfSize: number, materialId: number): Triangle[] {
   const hs = halfSize;
   const v0: Vec3 = [-hs, 0, -hs];
-  const v1: Vec3 = [ hs, 0, -hs];
-  const v2: Vec3 = [ hs, 0,  hs];
-  const v3: Vec3 = [-hs, 0,  hs];
+  const v1: Vec3 = [hs, 0, -hs];
+  const v2: Vec3 = [hs, 0, hs];
+  const v3: Vec3 = [-hs, 0, hs];
   return [
     { v0, v1, v2, materialId },
     { v0, v1: v2, v2: v3, materialId },
@@ -68,17 +68,17 @@ function makeUnitCube(materialId: number): Triangle[] {
     faces.push({ v0: a, v1: c, v2: d, materialId });
   }
   // +Y face (top), inside normal = -Y
-  pushFace([-1,1,-1],[1,1,-1],[1,1,1],[-1,1,1]);
+  pushFace([-1, 1, -1], [1, 1, -1], [1, 1, 1], [-1, 1, 1]);
   // -Y face (bottom), inside normal = +Y
-  pushFace([-1,-1,1],[1,-1,1],[1,-1,-1],[-1,-1,-1]);
+  pushFace([-1, -1, 1], [1, -1, 1], [1, -1, -1], [-1, -1, -1]);
   // +X face (right), inside normal = -X
-  pushFace([1,-1,-1],[1,-1,1],[1,1,1],[1,1,-1]);
+  pushFace([1, -1, -1], [1, -1, 1], [1, 1, 1], [1, 1, -1]);
   // -X face (left), inside normal = +X
-  pushFace([-1,-1,1],[-1,-1,-1],[-1,1,-1],[-1,1,1]);
+  pushFace([-1, -1, 1], [-1, -1, -1], [-1, 1, -1], [-1, 1, 1]);
   // +Z face (front), inside normal = -Z
-  pushFace([-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]);
+  pushFace([-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]);
   // -Z face (back), inside normal = +Z
-  pushFace([1,-1,-1],[-1,-1,-1],[-1,1,-1],[1,1,-1]);
+  pushFace([1, -1, -1], [-1, -1, -1], [-1, 1, -1], [1, 1, -1]);
   return faces;
 }
 
@@ -87,7 +87,14 @@ function makeUnitCube(materialId: number): Triangle[] {
 // ---------------------------------------------------------------------------
 
 function lambertMat(albedo: Vec3): Material {
-  return { albedo, roughness: 1.0, metallic: 0.0, transmission: 0.0, ior: 1.5, emission: [0,0,0] };
+  return {
+    albedo,
+    roughness: 1.0,
+    metallic: 0.0,
+    transmission: 0.0,
+    ior: 1.5,
+    emission: [0, 0, 0],
+  };
 }
 
 function mirrorMat(): Material {
@@ -95,7 +102,14 @@ function mirrorMat(): Material {
   // all materials as Lambertian. To test mirror reflection we bypass
   // integratePath and use a single reflect + env-lookup directly.
   // This material is only used as a placeholder in the scene.
-  return { albedo: [1,1,1], roughness: 0.0, metallic: 1.0, transmission: 0.0, ior: 1.5, emission: [0,0,0] };
+  return {
+    albedo: [1, 1, 1],
+    roughness: 0.0,
+    metallic: 1.0,
+    transmission: 0.0,
+    ior: 1.5,
+    emission: [0, 0, 0],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +160,7 @@ const TEST1_TOL = 0.05;
 // ---------------------------------------------------------------------------
 
 const TEST2_N = 2000;
-const TEST2_TOL = 0.15;  // wider: single-sample NEE for area lights has high variance
+const TEST2_TOL = 0.15; // wider: single-sample NEE for area lights has high variance
 
 // ---------------------------------------------------------------------------
 // Test 3 — White furnace
@@ -213,9 +227,9 @@ function makeAreaLight(materialId: number): Triangle[] {
   const y = 2.0;
   // For a -Y facing quad, wind CCW from below (+Y view = CW, so reversed):
   const v0: Vec3 = [-h, y, -h];
-  const v1: Vec3 = [ h, y, -h];
-  const v2: Vec3 = [ h, y,  h];
-  const v3: Vec3 = [-h, y,  h];
+  const v1: Vec3 = [h, y, -h];
+  const v2: Vec3 = [h, y, h];
+  const v3: Vec3 = [-h, y, h];
   // cross(v1-v0, v2-v0) = cross([1,0,0],[1,0,1]) = [0,0,-1]×... let's just
   // ensure the normal points down by using the winding: v0->v2->v1.
   return [
@@ -239,7 +253,6 @@ function reflect(dir: Vec3, normal: Vec3): Vec3 {
 // ---------------------------------------------------------------------------
 
 describe('MC convergence tests — 33-C', () => {
-
   // -------------------------------------------------------------------------
   // Test 1: Lambertian disc → analytic exitance
   // -------------------------------------------------------------------------
@@ -254,13 +267,15 @@ describe('MC convergence tests — 33-C', () => {
         triangles: makeUpwardQuad(5.0, 0),
         materials: [mat],
         lights: [{ kind: 'directional', light: { dir: [0, 1, 0], radiance: 1.0 } }],
-        envSample: () => [0, 0, 0],   // no env; light is directional only
+        envSample: () => [0, 0, 0], // no env; light is directional only
       };
 
       // Primary ray: shoot downward from Y=1 toward the disc at Y=0.
       // Camera position varies in XZ to sample different points on the disc.
       const cameraY = 1.0;
-      let sumR = 0, sumG = 0, sumB = 0;
+      let sumR = 0,
+        sumG = 0,
+        sumB = 0;
 
       for (let i = 0; i < TEST1_N; i++) {
         // Jitter the hit point in a 2×2 patch (well within the 10×10 quad).
@@ -270,7 +285,9 @@ describe('MC convergence tests — 33-C', () => {
         const ray = { origin, dir: [0, -1, 0] as Vec3 };
 
         const [r, g, b] = integratePath(scene, ray, rng, { maxBounces: 1 });
-        sumR += r; sumG += g; sumB += b;
+        sumR += r;
+        sumG += g;
+        sumB += b;
       }
 
       const meanR = sumR / TEST1_N;
@@ -301,8 +318,8 @@ describe('MC convergence tests — 33-C', () => {
       // for the NEE path — the integrator uses point lights for direct sampling.
       // Flux: L_e=1, area=1. For a point receiver at origin, the solid angle
       // subtended = 1·cos(0°)/r² = 1/4 sr.  L_o=(ρ/π)·L_e·Ω ≈ (0.5/π)·0.25
-      const lightPos: Vec3   = [0, 2, 0];
-      const lightRad: Vec3   = [1, 1, 1]; // radiance / sr (treated as intensity here)
+      const lightPos: Vec3 = [0, 2, 0];
+      const lightRad: Vec3 = [1, 1, 1]; // radiance / sr (treated as intensity here)
 
       const scene: Scene = {
         triangles: makeUpwardQuad(5.0, 0),
@@ -311,13 +328,17 @@ describe('MC convergence tests — 33-C', () => {
         envSample: () => [0, 0, 0],
       };
 
-      let sumR = 0, sumG = 0, sumB = 0;
+      let sumR = 0,
+        sumG = 0,
+        sumB = 0;
 
       for (let i = 0; i < TEST2_N; i++) {
         const origin: Vec3 = [0, 1, 0]; // camera above receiver
         const ray = { origin, dir: [0, -1, 0] as Vec3 };
         const [r, g, b] = integratePath(scene, ray, rng, { maxBounces: 1 });
-        sumR += r; sumG += g; sumB += b;
+        sumR += r;
+        sumG += g;
+        sumB += b;
       }
 
       const meanR = sumR / TEST2_N;
@@ -357,13 +378,15 @@ describe('MC convergence tests — 33-C', () => {
 
       const whiteMat = lambertMat([1, 1, 1]);
       const scene: Scene = {
-        triangles: makeUpwardQuad(100.0, 0),   // very large disc — nearly infinite plane
+        triangles: makeUpwardQuad(100.0, 0), // very large disc — nearly infinite plane
         materials: [whiteMat],
-        lights: [],                             // no direct lights; env only
-        envSample: () => [1, 1, 1] as Vec3,    // uniform L=1
+        lights: [], // no direct lights; env only
+        envSample: () => [1, 1, 1] as Vec3, // uniform L=1
       };
 
-      let sumR = 0, sumG = 0, sumB = 0;
+      let sumR = 0,
+        sumG = 0,
+        sumB = 0;
 
       for (let i = 0; i < TEST3_N; i++) {
         // Camera scattered over the disc surface area.
@@ -374,7 +397,9 @@ describe('MC convergence tests — 33-C', () => {
 
         // maxBounces=3: hit disc → cosine-bounce → hits env (L=1).
         const [r, g, b] = integratePath(scene, ray, rng, { maxBounces: 3 });
-        sumR += r; sumG += g; sumB += b;
+        sumR += r;
+        sumG += g;
+        sumB += b;
       }
 
       const meanR = sumR / TEST3_N;
@@ -422,7 +447,7 @@ describe('MC convergence tests — 33-C', () => {
         // Vary the incoming direction slightly so it's not exactly −Y,
         // but still within ±2° of −Y (so the reflected direction stays within
         // 2° of +Y, inside the 5° env window).
-        const dxz = ((lcg(rng) - 0.5) * 2 * Math.sin((2 * Math.PI) / 180));
+        const dxz = (lcg(rng) - 0.5) * 2 * Math.sin((2 * Math.PI) / 180);
         const incidentDir: Vec3 = safeNormalize([dxz, -1, dxz]);
 
         // Reflect about the mirror normal.

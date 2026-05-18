@@ -29,7 +29,7 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
-export const PROBE_RAY_CAST_WGSL = /* wgsl */`
+export const PROBE_RAY_CAST_WGSL = /* wgsl */ `
 
 // ─── three-mesh-bvh: constants ───────────────────────────────────────────────
 

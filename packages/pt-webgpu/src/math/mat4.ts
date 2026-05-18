@@ -120,9 +120,15 @@ export function transformDirection(m: Mat4, v: Vec3): [number, number, number] {
  */
 export function transformNormal(m: Mat4, v: Vec3): [number, number, number] {
   const [m00, m10, m20, m01, m11, m21, m02, m12, m22] = [
-    m[0] ?? 0, m[1] ?? 0, m[2] ?? 0,
-    m[4] ?? 0, m[5] ?? 0, m[6] ?? 0,
-    m[8] ?? 0, m[9] ?? 0, m[10] ?? 0,
+    m[0] ?? 0,
+    m[1] ?? 0,
+    m[2] ?? 0,
+    m[4] ?? 0,
+    m[5] ?? 0,
+    m[6] ?? 0,
+    m[8] ?? 0,
+    m[9] ?? 0,
+    m[10] ?? 0,
   ];
   // Cofactor matrix of the 3×3 upper-left submatrix.
   // c_ij = (-1)^(i+j) * M_ij  (minor of row i, col j).

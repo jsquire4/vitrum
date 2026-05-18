@@ -11,7 +11,7 @@
  * creates zero-byte placeholder buffers to keep the bind-group layout consistent.
  */
 
-export const RELU_WGSL = /* wgsl */`
+export const RELU_WGSL = /* wgsl */ `
 struct ReluParams {
   count : u32,  // total number of elements
   _pad0 : u32,

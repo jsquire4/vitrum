@@ -32,10 +32,15 @@ export interface WgpuProbeResult {
  * (fps, chroma, etc.) — Option F of the hardware-GPU validation spec
  * exists specifically to catch this case at mount time.
  */
-export function isSwiftShaderAdapter(info: {
-  vendor?: string | null;
-  architecture?: string | null;
-} | null | undefined): boolean {
+export function isSwiftShaderAdapter(
+  info:
+    | {
+        vendor?: string | null;
+        architecture?: string | null;
+      }
+    | null
+    | undefined,
+): boolean {
   if (!info) return false;
   const vendor = (info.vendor ?? '').toLowerCase();
   const arch = (info.architecture ?? '').toLowerCase();
@@ -70,8 +75,8 @@ async function readAdapterInfo(
 ): Promise<{ vendor: string; architecture: string }> {
   for (let i = 0; i <= retries; i++) {
     const info = adapter.info;
-    const vendor = ((info?.vendor ?? '')).toString();
-    const architecture = ((info?.architecture ?? '')).toString();
+    const vendor = (info?.vendor ?? '').toString();
+    const architecture = (info?.architecture ?? '').toString();
     if (vendor.length > 0 || architecture.length > 0) {
       return { vendor, architecture };
     }

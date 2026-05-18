@@ -400,10 +400,11 @@ function defaultIsSceneReady(scene: THREE.Scene): boolean {
 
 /** Get the preferred swap-chain format from the browser GPU. */
 function getPreferredSwapChainFormat(): GPUTextureFormat {
-  return (typeof navigator !== 'undefined' && 'gpu' in navigator
-    ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
-        .getPreferredCanvasFormat?.() ?? 'bgra8unorm'
-    : 'bgra8unorm');
+  return typeof navigator !== 'undefined' && 'gpu' in navigator
+    ? ((
+        navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat }
+      ).getPreferredCanvasFormat?.() ?? 'bgra8unorm')
+    : 'bgra8unorm';
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -411,7 +412,6 @@ function getPreferredSwapChainFormat(): GPUTextureFormat {
 // ────────────────────────────────────────────────────────────────────────────
 
 export class HybridEngine implements Engine {
-
   // ── Engine contract fields ─────────────────────────────────────────────
   private _state: EngineState = 'uninitialized';
   readonly capabilities: EngineCapabilities;
@@ -421,29 +421,29 @@ export class HybridEngine implements Engine {
   }
 
   // ── Creation-time options (immutable after construction) ───────────────
-  private readonly _device:               GPUDevice;
+  private readonly _device: GPUDevice;
   // Mutable since T-resize: the host calls `setSize()` whenever the
   // canvas resizes; the pipeline reallocates its FrameResources without
   // a full engine teardown. See `setSize()` for the resize contract.
-  private _width:                number;
-  private _height:               number;
+  private _width: number;
+  private _height: number;
   /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
    *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
-  private readonly _threeScene:           THREE.Scene | null;
+  private readonly _threeScene: THREE.Scene | null;
   /** Lazily-synthesized THREE.Scene root from the most recent vitrum
    *  setScene() — caches `vitrumSceneToThree(_lastScene)` so DDGI updateFrame
    *  doesn't re-traverse on every frame. Reset on every setScene(). */
-  private _synthesizedThreeScene:         THREE.Scene | null = null;
-  private readonly _isSceneReady:         () => boolean;
+  private _synthesizedThreeScene: THREE.Scene | null = null;
+  private readonly _isSceneReady: () => boolean;
   // Lighting fields are NOT readonly — updateLighting() mutates them at runtime.
-  private _primaryLightDir:               [number, number, number];
-  private _primaryLightIntensity:         number;
-  private _skyTint:                       [number, number, number];
-  private _skyIrradiance:                 number;
-  private readonly _ctorLights:           readonly DDGILight[];
-  private readonly _debug:                boolean;
-  private readonly _verbose:             boolean;
-  private readonly _maxBounces:           number;
+  private _primaryLightDir: [number, number, number];
+  private _primaryLightIntensity: number;
+  private _skyTint: [number, number, number];
+  private _skyIrradiance: number;
+  private readonly _ctorLights: readonly DDGILight[];
+  private readonly _debug: boolean;
+  private readonly _verbose: boolean;
+  private readonly _maxBounces: number;
 
   /** Rolling window of per-frame timings (newest last, cap 240 entries).
    *  Only populated when `debug === true`. Hosts that want a UI gauge
@@ -535,8 +535,8 @@ export class HybridEngine implements Engine {
   private readonly _triIntersectEpsilon: number;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
-  private _pipeline:    WalkaroundGPUPipeline | null = null;
-  private _bvhBuffers:  SceneBVHBuffers | null       = null;
+  private _pipeline: WalkaroundGPUPipeline | null = null;
+  private _bvhBuffers: SceneBVHBuffers | null = null;
 
   // ── Scene (from @vitrum/core contract) ────────────────────────────────
   /** Last scene passed via `setScene()`. When it contains `mesh` primitives,
@@ -548,29 +548,27 @@ export class HybridEngine implements Engine {
   private _ddgiTraversalScene: THREE.Scene | null = null;
 
   // ── DDGI subsystem ─────────────────────────────────────────────────────
-  private _ddgi:    DDGI;
-  private _ddgiOn:  boolean = true;
+  private _ddgi: DDGI;
+  private _ddgiOn: boolean = true;
 
   // ── Per-frame throttle ─────────────────────────────────────────────────
   private _lastFrameTs = 0;
 
   // ── Diagnostic counters (debug only) ──────────────────────────────────
   private _dbg = {
-    initStart:          0,
-    initCount:          0,
-    disposeCount:       0,
-    skipNoPipeline:     0,
-    skipNoBvh:          0,
-    skipNoSwapView:     0,
-    skipFrameInterval:  0,
-    framesDispatched:   0,
-    lastReportTs:       0,
+    initStart: 0,
+    initCount: 0,
+    disposeCount: 0,
+    skipNoPipeline: 0,
+    skipNoBvh: 0,
+    skipNoSwapView: 0,
+    skipFrameInterval: 0,
+    framesDispatched: 0,
+    lastReportTs: 0,
   };
 
   // ── Layer toggles (debug console interface) ────────────────────────────
-  private _layerEnabled: Map<string, boolean> = new Map([
-    ['ddgi', true],
-  ]);
+  private _layerEnabled: Map<string, boolean> = new Map([['ddgi', true]]);
 
   // ── Initialisation cancellation ───────────────────────────────────────
   /** Set to true by dispose() to cancel an in-flight async init. */
@@ -617,17 +615,17 @@ export class HybridEngine implements Engine {
   private readonly _getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
 
   constructor(opts: HybridEngineOptions) {
-    this._device                = opts.device;
-    this._width                 = opts.width;
-    this._height                = opts.height;
-    this._threeScene            = opts.threeScene ?? null;
-    this._primaryLightDir       = opts.primaryLightDir;
+    this._device = opts.device;
+    this._width = opts.width;
+    this._height = opts.height;
+    this._threeScene = opts.threeScene ?? null;
+    this._primaryLightDir = opts.primaryLightDir;
     this._primaryLightIntensity = opts.primaryLightIntensity;
-    this._skyTint               = opts.skyTint;
-    this._skyIrradiance         = opts.skyIrradiance;
-    this._debug                 = opts.debug ?? false;
-    this._verbose               = opts.verbose ?? false;
-    this._maxBounces            = opts.maxBounces ?? 4;
+    this._skyTint = opts.skyTint;
+    this._skyIrradiance = opts.skyIrradiance;
+    this._debug = opts.debug ?? false;
+    this._verbose = opts.verbose ?? false;
+    this._maxBounces = opts.maxBounces ?? 4;
     // Audit B7: validate the denoiser option at construction so an unsupported
     // value (e.g. `'none'`, `'bmfr'`, `'oidn-final'` from the @vitrum/core
     // EngineOptions contract) does not silently coerce to atrous-variance and produce
@@ -643,62 +641,66 @@ export class HybridEngine implements Engine {
     ) {
       throw new TypeError(
         `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
-        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural'. ` +
-        `If you need 'none' / 'bmfr' / 'oidn-final' from @vitrum/core, ` +
-        `pick a backend that implements those modes.`,
+          `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural'. ` +
+          `If you need 'none' / 'bmfr' / 'oidn-final' from @vitrum/core, ` +
+          `pick a backend that implements those modes.`,
       );
     }
     // T2.H2 — 'neural' requires neuralWeights to be provided.
     if (opts.denoiser === 'neural' && !opts.neuralWeights) {
       throw new TypeError(
         `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
-        `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
-        `or train one with tools/neural-denoiser-training/train.py. ` +
-        `See tools/neural-denoiser-training/README.md for instructions.`,
+          `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
+          `or train one with tools/neural-denoiser-training/train.py. ` +
+          `See tools/neural-denoiser-training/README.md for instructions.`,
       );
     }
     if (opts.denoiser === 'svgf') {
       console.warn(
         `[walkaround-hybrid] denoiser: 'svgf' is deprecated; use 'atrous-variance'. ` +
-        `The shipping implementation is à-trous + variance scalar lookup, NOT real Schied 2017 SVGF. ` +
-        `For real Schied 2017 SVGF, pass denoiser: 'svgf-real' (T2.H1).`,
+          `The shipping implementation is à-trous + variance scalar lookup, NOT real Schied 2017 SVGF. ` +
+          `For real Schied 2017 SVGF, pass denoiser: 'svgf-real' (T2.H1).`,
       );
     }
-    this._denoiser = opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');
+    this._denoiser =
+      opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');
     this._neuralWeights = opts.neuralWeights;
-    this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
-      ? opts.targetFrameIntervalMs
-      : DEFAULT_TARGET_FRAME_INTERVAL_MS;
+    this._targetFrameIntervalMs =
+      opts.targetFrameIntervalMs !== undefined
+        ? opts.targetFrameIntervalMs
+        : DEFAULT_TARGET_FRAME_INTERVAL_MS;
     this._cameraMoveResetThresholdSq = opts.cameraMoveResetThresholdSq ?? 1.0;
-    this._temporalAccumAlpha    = opts.temporalAccumAlpha ?? 0.01;
+    this._temporalAccumAlpha = opts.temporalAccumAlpha ?? 0.01;
     // Library-generality tunables. Defaults preserve Cornell behaviour;
     // hosts on different scene scales / intensities should override.
-    this._emitterDist2Floor     = opts.emitterDist2Floor    ?? 0.01;
-    this._directFireflyClamp    = opts.directFireflyClamp   ?? 4.0;
-    this._causticBoost          = opts.caustic?.boost       ?? 1.0;
-    this._causticVisClamp       = opts.caustic?.visClamp    ?? 1.0;
-    this._temporalMClampDI      = opts.temporalMClampDI     ?? 20;
-    this._spatialReuseRadiusPx  = opts.spatialReuseRadiusPx ?? 30.0;
-    this._spatialDepthTolFloor  = opts.spatialDepthTolFloor ?? 0.05;
+    this._emitterDist2Floor = opts.emitterDist2Floor ?? 0.01;
+    this._directFireflyClamp = opts.directFireflyClamp ?? 4.0;
+    this._causticBoost = opts.caustic?.boost ?? 1.0;
+    this._causticVisClamp = opts.caustic?.visClamp ?? 1.0;
+    this._temporalMClampDI = opts.temporalMClampDI ?? 20;
+    this._spatialReuseRadiusPx = opts.spatialReuseRadiusPx ?? 30.0;
+    this._spatialDepthTolFloor = opts.spatialDepthTolFloor ?? 0.05;
     // GTAO defaults match the previous hard-coded values in the pipeline.
-    this._gtaoRadiusPx          = opts.gtao?.radiusPx                ?? 32.0;
-    this._gtaoIntensity         = opts.gtao?.intensity               ?? 2.0;
-    this._gtaoDepthThreshold    = opts.gtao?.depthThresholdWorldUnits ?? 2.0;
-    this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma   ?? 0.25;
-    this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
-    this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
-    this._triIntersectEpsilon    = opts.triIntersectEpsilon ?? 1e-5;
+    this._gtaoRadiusPx = opts.gtao?.radiusPx ?? 32.0;
+    this._gtaoIntensity = opts.gtao?.intensity ?? 2.0;
+    this._gtaoDepthThreshold = opts.gtao?.depthThresholdWorldUnits ?? 2.0;
+    this._gtaoBilateralDepthSigma = opts.gtao?.bilateralDepthSigma ?? 0.25;
+    this._adaptiveSamplingThresholdLow = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
+    this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.1;
+    this._triIntersectEpsilon = opts.triIntersectEpsilon ?? 1e-5;
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
     // signal (e.g. wait for an async asset).
-    this._isSceneReady          = opts.isSceneReady ?? (() => {
-      if (this._coreSceneSuppliesMeshes()) return true;
-      return this._threeScene != null && defaultIsSceneReady(this._threeScene);
-    });
+    this._isSceneReady =
+      opts.isSceneReady ??
+      (() => {
+        if (this._coreSceneSuppliesMeshes()) return true;
+        return this._threeScene != null && defaultIsSceneReady(this._threeScene);
+      });
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
-    this._getPipelineRebuildKey     = opts.getPipelineRebuildKey;
+    this._getPipelineRebuildKey = opts.getPipelineRebuildKey;
     this._rebuildKeyFingerprintSeen = HybridEngine._fingerprintRebuildKey(
       opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
     );
@@ -710,22 +712,22 @@ export class HybridEngine implements Engine {
     }
 
     this.capabilities = {
-      supportsIncrementalScene:  false,
+      supportsIncrementalScene: false,
       // supportsMotionBlur === false. WalkaroundGPUPipeline does allocate a
       // motionVectorTexture, but it's for SVGF temporal reprojection (encoded
       // as `motion-vectors-zero` — a 2D screen-space delta), not for accumu-
       // lating samples across a shutter interval. True motion-blur SPP
       // accumulation is incompatible with the walkaround engine's per-frame
       // cadence — see resourceManager.ts ("motion-vectors-zero" label).
-      supportsMotionBlur:        false,
-      supportsAuxBuffers:        false,
-      accumulates:               false,
-      maxSamplesPerPixel:        Infinity,
-      maxBounces:                this._maxBounces,
-      supportedAnalyticShapes:   new Set<string>(),
+      supportsMotionBlur: false,
+      supportsAuxBuffers: false,
+      accumulates: false,
+      maxSamplesPerPixel: Infinity,
+      maxBounces: this._maxBounces,
+      supportedAnalyticShapes: new Set<string>(),
       // Emitter kinds handled by DDGI _uploadLights: sun, fixture, teaLight
       // mapped to core taxonomy: directional, point
-      supportedEmitterKinds:     new Set<string>(['directional', 'point']),
+      supportedEmitterKinds: new Set<string>(['directional', 'point']),
       // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
       // compatible with the walkaround engine's frame cadence; the walkaround
       // engine always reports 'none'. Track via
@@ -758,7 +760,9 @@ export class HybridEngine implements Engine {
     // T3.H removal: drop the cached synthesized THREE.Scene; the next BVH
     // build / DDGI updateFrame will re-derive it from the new vitrum Scene.
     if (this._synthesizedThreeScene != null) {
-      try { disposeVitrumThreeSceneRoot(this._synthesizedThreeScene); } catch {}
+      try {
+        disposeVitrumThreeSceneRoot(this._synthesizedThreeScene);
+      } catch {}
       this._synthesizedThreeScene = null;
     }
 
@@ -943,16 +947,24 @@ export class HybridEngine implements Engine {
 
     const pipeline = this._pipeline;
     const bvh = this._bvhBuffers;
-    if (!pipeline) { if (dbg) dbg.skipNoPipeline++; return skipOutput; }
-    if (!bvh)      { if (dbg) dbg.skipNoBvh++;      return skipOutput; }
+    if (!pipeline) {
+      if (dbg) dbg.skipNoPipeline++;
+      return skipOutput;
+    }
+    if (!bvh) {
+      if (dbg) dbg.skipNoBvh++;
+      return skipOutput;
+    }
 
     const now = performance.now();
     // Audit M4: configurable FPS cap. `null` disables the throttle so VR /
     // 90+ Hz displays get every frame. Default preserves Cornell's 60-FPS
     // soft-cap.
-    if (this._targetFrameIntervalMs !== null &&
-        this._lastFrameTs !== 0 &&
-        now - this._lastFrameTs < this._targetFrameIntervalMs) {
+    if (
+      this._targetFrameIntervalMs !== null &&
+      this._lastFrameTs !== 0 &&
+      now - this._lastFrameTs < this._targetFrameIntervalMs
+    ) {
       if (dbg) dbg.skipFrameInterval++;
       // CRITICAL on >60Hz displays: even though the heavy pipeline is
       // throttled to 60 FPS, the host's rAF still acquires a fresh swap-
@@ -973,8 +985,9 @@ export class HybridEngine implements Engine {
     // Core's FrameInput types swap-chain fields opaquely (BackendTexture /
     // BackendTextureFormat). The walkaround backend requires WebGPU; cast at
     // this boundary so the rest of HybridEngine works with concrete types.
-    const swapView   = input.swapChainView as GPUTextureView | undefined;
-    const swapFmt    = (input.swapChainFormat as GPUTextureFormat | undefined) ?? getPreferredSwapChainFormat();
+    const swapView = input.swapChainView as GPUTextureView | undefined;
+    const swapFmt =
+      (input.swapChainFormat as GPUTextureFormat | undefined) ?? getPreferredSwapChainFormat();
 
     if (!swapView) {
       if (dbg) dbg.skipNoSwapView++;
@@ -987,15 +1000,17 @@ export class HybridEngine implements Engine {
       if (dbg.lastReportTs === 0) dbg.lastReportTs = now;
       if (now - dbg.lastReportTs > 5_000) {
         const elapsed = (now - dbg.lastReportTs) / 1_000;
-        const gpu = (pipeline as unknown as { lastGpuTimings?: Record<string, number> })
-          .lastGpuTimings ?? {};
+        const gpu =
+          (pipeline as unknown as { lastGpuTimings?: Record<string, number> }).lastGpuTimings ?? {};
         const gpuTotal = gpu['total'];
         console.log('[hybrid:debug] rate (5s window)', {
           framesDispatched: dbg.framesDispatched,
           fps: (dbg.framesDispatched / elapsed).toFixed(2),
           skipReasons: {
-            noPipeline: dbg.skipNoPipeline, noBvh: dbg.skipNoBvh,
-            noSwapView: dbg.skipNoSwapView, frameInterval: dbg.skipFrameInterval,
+            noPipeline: dbg.skipNoPipeline,
+            noBvh: dbg.skipNoBvh,
+            noSwapView: dbg.skipNoSwapView,
+            frameInterval: dbg.skipFrameInterval,
           },
           gpuTotalMs: gpuTotal !== undefined ? +gpuTotal.toFixed(2) : 'n/a',
           gpuPerPassMs: gpu,
@@ -1025,8 +1040,8 @@ export class HybridEngine implements Engine {
       const ddgiScene = this._ddgiTraversalScene ?? this._ensureThreeSceneRoot();
       if (ddgiScene != null) {
         void this._ddgi.updateFrame({
-          scene:   ddgiScene,
-          device:  this._device,
+          scene: ddgiScene,
+          device: this._device,
           enabled: true,
         });
       }
@@ -1051,48 +1066,48 @@ export class HybridEngine implements Engine {
     const W = this._width;
     const H = this._height;
 
-    const viewMatrix  = input.viewMatrix;
-    const projMatrix  = input.projMatrix;
-    const prevView    = (input.prevViewMatrix ?? input.viewMatrix);
-    const prevProj    = (input.prevProjMatrix ?? input.projMatrix);
-    const camPos      = input.cameraPosition as [number, number, number];
+    const viewMatrix = input.viewMatrix;
+    const projMatrix = input.projMatrix;
+    const prevView = input.prevViewMatrix ?? input.viewMatrix;
+    const prevProj = input.prevProjMatrix ?? input.projMatrix;
+    const camPos = input.cameraPosition as [number, number, number];
 
     // `FrameInput.quality.bounces` is ignored: ReSTIR + shade WGSL use a fixed
     // path depth baked at shader compile time (see `capabilities.maxBounces`).
 
     pipeline.renderFrame({
-      viewMatrix:            new Float32Array(viewMatrix),
-      projMatrix:            new Float32Array(projMatrix),
-      prevViewMatrix:        new Float32Array(prevView),
-      prevProjMatrix:        new Float32Array(prevProj),
-      cameraPos:             camPos,
-      screenWidth:           W,
-      screenHeight:          H,
-      frameSeed:             input.frameSeed,
-      totalEmissivePower:    bvh.totalEmissivePower ?? 1.0,
-      emitterCount:          bvh.emitters?.count ?? 0,
-      primaryLightDir:       this._primaryLightDir,
+      viewMatrix: new Float32Array(viewMatrix),
+      projMatrix: new Float32Array(projMatrix),
+      prevViewMatrix: new Float32Array(prevView),
+      prevProjMatrix: new Float32Array(prevProj),
+      cameraPos: camPos,
+      screenWidth: W,
+      screenHeight: H,
+      frameSeed: input.frameSeed,
+      totalEmissivePower: bvh.totalEmissivePower ?? 1.0,
+      emitterCount: bvh.emitters?.count ?? 0,
+      primaryLightDir: this._primaryLightDir,
       primaryLightIntensity: this._primaryLightIntensity,
-      skyTint:               this._skyTint,
-      skyIrradiance:         this._skyIrradiance,
+      skyTint: this._skyTint,
+      skyIrradiance: this._skyIrradiance,
       // Library-generality tunables (audit follow-up). Defaults preserve
       // Cornell behaviour; hosts override via HybridEngineOptions.
-      emitterDist2Floor:     this._emitterDist2Floor,
-      directFireflyClamp:    this._directFireflyClamp,
-      causticBoost:          this._causticBoost,
-      causticVisClamp:       this._causticVisClamp,
-      temporalMClampDI:      this._temporalMClampDI,
-      spatialReuseRadiusPx:  this._spatialReuseRadiusPx,
-      spatialDepthTolFloor:  this._spatialDepthTolFloor,
-      gtaoRadiusPx:          this._gtaoRadiusPx,
-      gtaoIntensity:         this._gtaoIntensity,
-      gtaoDepthThreshold:    this._gtaoDepthThreshold,
+      emitterDist2Floor: this._emitterDist2Floor,
+      directFireflyClamp: this._directFireflyClamp,
+      causticBoost: this._causticBoost,
+      causticVisClamp: this._causticVisClamp,
+      temporalMClampDI: this._temporalMClampDI,
+      spatialReuseRadiusPx: this._spatialReuseRadiusPx,
+      spatialDepthTolFloor: this._spatialDepthTolFloor,
+      gtaoRadiusPx: this._gtaoRadiusPx,
+      gtaoIntensity: this._gtaoIntensity,
+      gtaoDepthThreshold: this._gtaoDepthThreshold,
       gtaoBilateralDepthSigma: this._gtaoBilateralDepthSigma,
-      adaptiveSamplingThresholdLow:  this._adaptiveSamplingThresholdLow,
+      adaptiveSamplingThresholdLow: this._adaptiveSamplingThresholdLow,
       adaptiveSamplingThresholdHigh: this._adaptiveSamplingThresholdHigh,
-      triIntersectEpsilon:   this._triIntersectEpsilon,
-      swapChainView:         swapView,
-      swapChainFormat:       swapFmt,
+      triIntersectEpsilon: this._triIntersectEpsilon,
+      swapChainView: swapView,
+      swapChainFormat: swapFmt,
     });
 
     const dt = performance.now() - t0;
@@ -1113,7 +1128,9 @@ export class HybridEngine implements Engine {
         spp: 1,
       };
       for (const sub of this._frameSubs) {
-        try { sub(stats); } catch (err) {
+        try {
+          sub(stats);
+        } catch (err) {
           if (this._verbose) console.warn('[HybridEngine] onFrame subscriber threw', err);
         }
       }
@@ -1136,9 +1153,9 @@ export class HybridEngine implements Engine {
     }
 
     return {
-      primaryRadiance:    swapView,   // swap chain is the output surface
+      primaryRadiance: swapView, // swap chain is the output surface
       samplesAccumulated: 1,
-      isConverged:        false,      // walkaround never converges; resamples every frame
+      isConverged: false, // walkaround never converges; resamples every frame
     };
   }
 
@@ -1254,19 +1271,19 @@ export class HybridEngine implements Engine {
       // need a parent-link traversal we don't have here; the visualiser
       // can colour by node-index ratio as a passable proxy.
       const src = new Float32Array(buf);
-      const nodeCount = (buf).byteLength / 32;
+      const nodeCount = buf.byteLength / 32;
       const out = new Float32Array(nodeCount * 8);
       for (let i = 0; i < nodeCount; i++) {
-        const so = i * 8;   // 8 f32 lanes per source node
-        const oo = i * 8;   // 8 f32 lanes per output node
+        const so = i * 8; // 8 f32 lanes per source node
+        const oo = i * 8; // 8 f32 lanes per output node
         out[oo + 0] = src[so + 0]!; // minX
         out[oo + 1] = src[so + 1]!; // minY
         out[oo + 2] = src[so + 2]!; // minZ
         out[oo + 3] = src[so + 4]!; // maxX
         out[oo + 4] = src[so + 5]!; // maxY
         out[oo + 5] = src[so + 6]!; // maxZ
-        out[oo + 6] = 0;            // depth — TODO: parent traversal
-        out[oo + 7] = 0;            // pad
+        out[oo + 6] = 0; // depth — TODO: parent traversal
+        out[oo + 7] = 0; // pad
       }
       return out;
     },
@@ -1288,10 +1305,10 @@ export class HybridEngine implements Engine {
       // 'total' = current swap chain — not exposed as a persistent
       //   texture; consumers can blit from the canvas directly.
       return {
-        direct:   res.common?.hdrColorTexture    ?? null,
+        direct: res.common?.hdrColorTexture ?? null,
         indirect: res.common?.hdrIndirectTexture ?? null,
-        ao:       res.gtao?.aoFullTexture        ?? null,
-        total:    null,
+        ao: res.gtao?.aoFullTexture ?? null,
+        total: null,
       };
     },
   };
@@ -1358,8 +1375,10 @@ export class HybridEngine implements Engine {
         framesDispatched: dbg.framesDispatched,
         deferredTeardown: this._pendingTeardown,
         skipReasons: {
-          noPipeline: dbg.skipNoPipeline, noBvh: dbg.skipNoBvh,
-          noSwapView: dbg.skipNoSwapView, frameInterval: dbg.skipFrameInterval,
+          noPipeline: dbg.skipNoPipeline,
+          noBvh: dbg.skipNoBvh,
+          noSwapView: dbg.skipNoSwapView,
+          frameInterval: dbg.skipFrameInterval,
         },
       });
     }
@@ -1413,8 +1432,11 @@ export class HybridEngine implements Engine {
       dbg.initCount++;
       dbg.initStart = performance.now();
       console.log(`[hybrid:debug] init #${dbg.initCount} START`, {
-        W: this._width, H: this._height, device: !!device,
-        t: dbg.initStart.toFixed(0), seq: mySeq,
+        W: this._width,
+        H: this._height,
+        device: !!device,
+        t: dbg.initStart.toFixed(0),
+        seq: mySeq,
       });
     }
 
@@ -1439,14 +1461,21 @@ export class HybridEngine implements Engine {
       if (this._disposed || mySeq !== this._initSeq) {
         if (this._debug) {
           console.log('[hybrid:debug] init aborted during scene-readiness poll', {
-            pollIters, disposed: this._disposed, raced: mySeq !== this._initSeq, seq: mySeq,
+            pollIters,
+            disposed: this._disposed,
+            raced: mySeq !== this._initSeq,
+            seq: mySeq,
           });
         }
         return;
       }
 
       if (this._debug) {
-        console.log('[hybrid:debug] scene-ready', { pollIters, elapsed: Date.now() - pollStart, seq: mySeq });
+        console.log('[hybrid:debug] scene-ready', {
+          pollIters,
+          elapsed: Date.now() - pollStart,
+          seq: mySeq,
+        });
       }
 
       // Locals — must be disposed if we lose the race before publishing to
@@ -1471,13 +1500,13 @@ export class HybridEngine implements Engine {
           // threeScene. The host hasn't given us anything to render against.
           throw new Error(
             '[HybridEngine] BVH source unavailable: setScene(vitrumScene) ' +
-            'supplied no mesh primitives and no `threeScene` was passed at ' +
-            'construction. Call engine.setScene(sceneFromThreeJS(yourThreeScene)) ' +
-            'or pass `threeScene` directly to the engine constructor.',
+              'supplied no mesh primitives and no `threeScene` was passed at ' +
+              'construction. Call engine.setScene(sceneFromThreeJS(yourThreeScene)) ' +
+              'or pass `threeScene` directly to the engine constructor.',
           );
         }
         bvh = buildReSTIRSceneBVH([bvhRoot], {
-          primaryLightDir:       new THREE.Vector3(...this._primaryLightDir),
+          primaryLightDir: new THREE.Vector3(...this._primaryLightDir),
           primaryLightIntensity: this._primaryLightIntensity,
         });
         const bvhMs = performance.now() - bvhStart;
@@ -1488,8 +1517,10 @@ export class HybridEngine implements Engine {
         if (this._disposed || this._pendingTeardown || mySeq !== this._initSeq) {
           if (this._debug) {
             console.log('[hybrid:debug] init lost race pre-_ddgiTraversalScene write', {
-              disposed: this._disposed, pendingTeardown: this._pendingTeardown,
-              raced: mySeq !== this._initSeq, seq: mySeq,
+              disposed: this._disposed,
+              pendingTeardown: this._pendingTeardown,
+              raced: mySeq !== this._initSeq,
+              seq: mySeq,
             });
           }
           // Locals will be disposed by the finally block.
@@ -1523,18 +1554,14 @@ export class HybridEngine implements Engine {
           await inferenceGraph.initialize(device, this._neuralWeights, this._width, this._height);
         }
 
-        await pipeline.initialize(
-          bvhPublished,
-          getPreferredSwapChainFormat(),
-          {
-            verbose: this._verbose || this._debug,
-            denoiser: this._denoiser,
-            cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
-            temporalAccumAlpha: this._temporalAccumAlpha,
-            // exactOptionalPropertyTypes: omit the key entirely when undefined.
-            ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
-          },
-        );
+        await pipeline.initialize(bvhPublished, getPreferredSwapChainFormat(), {
+          verbose: this._verbose || this._debug,
+          denoiser: this._denoiser,
+          cameraMoveResetThresholdSq: this._cameraMoveResetThresholdSq,
+          temporalAccumAlpha: this._temporalAccumAlpha,
+          // exactOptionalPropertyTypes: omit the key entirely when undefined.
+          ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
+        });
         const pipelineMs = performance.now() - pipelineStart;
 
         // Final shared-state write checkpoint — pipeline.initialize() awaits
@@ -1546,8 +1573,10 @@ export class HybridEngine implements Engine {
           if (this._debug) {
             console.log('[hybrid:debug] init lost race post-pipeline.initialize', {
               pipelineMs: pipelineMs.toFixed(1),
-              disposed: this._disposed, pendingTeardown: this._pendingTeardown,
-              raced: mySeq !== this._initSeq, seq: mySeq,
+              disposed: this._disposed,
+              pendingTeardown: this._pendingTeardown,
+              raced: mySeq !== this._initSeq,
+              seq: mySeq,
             });
           }
           // Also tear down the BVH we already published to _bvhBuffers if
@@ -1557,9 +1586,11 @@ export class HybridEngine implements Engine {
             this._bvhBuffers = null;
           }
           // And the traversal scene we published if it's still ours.
-          if (this._ddgiTraversalScene !== null
-              && this._ddgiTraversalScene === bvhRoot
-              && bvhRoot !== this._threeScene) {
+          if (
+            this._ddgiTraversalScene !== null &&
+            this._ddgiTraversalScene === bvhRoot &&
+            bvhRoot !== this._threeScene
+          ) {
             disposeVitrumThreeSceneRoot(this._ddgiTraversalScene);
             this._ddgiTraversalScene = null;
           }
@@ -1594,15 +1625,17 @@ export class HybridEngine implements Engine {
           this._ddgi.setLights([...this._ctorLights, ...ddgiRectLights]);
         }
 
-        this._pipeline     = pipeline;
+        this._pipeline = pipeline;
         pipeline = null; // ownership transferred to engine
-        this._state        = 'ready';
+        this._state = 'ready';
 
         if (this._debug) {
           const dbg = this._dbg;
           const totalMs = performance.now() - dbg.initStart;
           console.log(`[hybrid:debug] init #${dbg.initCount} COMPLETE`, {
-            pipelineMs: pipelineMs.toFixed(1), totalMs: totalMs.toFixed(1), seq: mySeq,
+            pipelineMs: pipelineMs.toFixed(1),
+            totalMs: totalMs.toFixed(1),
+            seq: mySeq,
           });
         }
       } catch (err) {
@@ -1619,13 +1652,19 @@ export class HybridEngine implements Engine {
         // a race / error / dispose, whichever weren't transferred get freed
         // here so we don't leak ~1 GB of GPU resources per loser.
         if (pipeline) {
-          try { pipeline.dispose(); } catch {}
+          try {
+            pipeline.dispose();
+          } catch {}
         }
         if (bvh) {
-          try { disposeSceneBVH(bvh); } catch {}
+          try {
+            disposeSceneBVH(bvh);
+          } catch {}
         }
         if (bvhRoot && bvhOwnedSynthesized) {
-          try { disposeVitrumThreeSceneRoot(bvhRoot); } catch {}
+          try {
+            disposeVitrumThreeSceneRoot(bvhRoot);
+          } catch {}
         }
         // If dispose() raced and left _pendingTeardown set, finalise the
         // teardown now. The newest writer (us, if we published successfully)
@@ -1634,12 +1673,16 @@ export class HybridEngine implements Engine {
         // checkpoints will see _pendingTeardown and bail before publishing.
         if (this._pendingTeardown && mySeq === this._initSeq) {
           if (this._debug) {
-            console.log('[hybrid:debug] init finally — finalising deferred teardown', { seq: mySeq });
+            console.log('[hybrid:debug] init finally — finalising deferred teardown', {
+              seq: mySeq,
+            });
           }
           this._teardownPipeline();
           // _ddgi.dispose() was deferred by dispose() since init was in-flight;
           // it's safe to call now because no chain is using it any more.
-          try { this._ddgi.dispose(); } catch {}
+          try {
+            this._ddgi.dispose();
+          } catch {}
           this._state = 'disposed';
         }
         // Always clear _initRunning at the end of OUR chain — but only if
@@ -1720,7 +1763,8 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> =
   ) {
     throw new TypeError(
       '[createWalkaroundEngine_Hybrid] opts.device must be a live GPUDevice. ' +
-      'Received: ' + String(opts.device),
+        'Received: ' +
+        String(opts.device),
     );
   }
 
@@ -1742,4 +1786,4 @@ export const createWalkaroundEngine_Hybrid: EngineFactory<HybridEngineOptions> =
   // benefit (Fix 1 already eliminates the race-leak class).
   engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
   return engine;
-}
+};

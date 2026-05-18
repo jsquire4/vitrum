@@ -55,6 +55,7 @@ Add two new bind group builder functions:
 **`buildSVGFVarianceBindGroup(device, textures, welfordBuffer, uniformBuffer)`**
 
 Bind group matching `SVGFVarianceBindGroupLayout`:
+
 ```
 binding 0 — inputColor:    current frame noisy color texture (rgba16float)
 binding 1 — prevRadiance:  previous frame accumulated color (rgba16float)
@@ -72,6 +73,7 @@ The Welford buffer at binding 5 is the same `RG32Float` texture that Sprint 9's
 **`buildSVGFAtrousBindGroup(device, inputColor, outputColor, normal, depth, varianceMap, uniformBuffer)`**
 
 Bind group matching `SVGFAtrousBindGroupLayout`:
+
 ```
 binding 0 — inputColor:  ping-pong input (rgba16float)
 binding 1 — outputColor: ping-pong output (rgba16float, storage write)
@@ -92,28 +94,20 @@ Replace the current à-trous dispatch loop with the SVGF two-pass dispatch:
 packSVGFVarianceUniforms({ frameCount: this._frameCount }, this._svgfVarianceUniformBuf);
 commandEncoder.setPipeline(this._svgfVariancePipeline);
 commandEncoder.setBindGroup(0, this._svgfVarianceBindGroup);
-commandEncoder.dispatchWorkgroups(
-  Math.ceil(width / 16),
-  Math.ceil(height / 16),
-);
+commandEncoder.dispatchWorkgroups(Math.ceil(width / 16), Math.ceil(height / 16));
 
 // Pass 2: à-trous wavelet, 5 iterations
 for (let iter = 0; iter < 5; iter++) {
-  packSVGFUniforms(
-    { iteration: iter, ...SVGF_DEFAULT_UNIFORMS },
-    this._svgfAtrousUniformBuf,
-  );
+  packSVGFUniforms({ iteration: iter, ...SVGF_DEFAULT_UNIFORMS }, this._svgfAtrousUniformBuf);
   const atrousBindGroup = this._buildAtrousPingPong(iter);
   commandEncoder.setPipeline(this._svgfAtrousPipeline);
   commandEncoder.setBindGroup(0, atrousBindGroup);
-  commandEncoder.dispatchWorkgroups(
-    Math.ceil(width / 16),
-    Math.ceil(height / 16),
-  );
+  commandEncoder.dispatchWorkgroups(Math.ceil(width / 16), Math.ceil(height / 16));
 }
 ```
 
 Ping-pong: maintain two `rgba16float` textures (`_atrousPing`, `_atrousPong`).
+
 - Even iterations: read from ping, write to pong.
 - Odd iterations: read from pong, write to ping.
 - Input to iteration 0: the noisy accumulated color from the accumulator pass.
@@ -131,6 +125,7 @@ Pass `frameCount` to `packSVGFVarianceUniforms` each frame.
 ## Welford buffer compatibility
 
 The Sprint 9 Welford variance buffer is a `RG32Float` texture where:
+
 - `.r` = Welford mean (running average of luminance)
 - `.g` = Welford M2 (sum of squared deltas)
 
@@ -141,9 +136,11 @@ in a `WelfordVariance` struct locally.
 **Key constraint (Decision 13)**: the `WelfordVariance` struct layout in `svgf.wgsl.ts`
 must remain byte-for-byte identical to the canonical definition in
 `walkaround-hybrid/src/shaders/common.wgsl.ts @version 1`. Both declare:
+
 ```wgsl
 struct WelfordVariance { mean: f32, m2: f32 };
 ```
+
 If the canonical layout changes, bump the @version comment and update SVGF's local copy.
 
 ---
@@ -160,6 +157,7 @@ may be referenced by tests or future denoisers. Only remove the walkaround wirin
 ## Uniform defaults
 
 Use `SVGF_DEFAULT_UNIFORMS` for initial tuning:
+
 ```
 sigmaColor  = 10.0   — variance-guided; relaxed to handle caustic variance
 sigmaNormal = 128.0  — preserves came/lead strip edges aggressively

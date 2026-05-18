@@ -160,19 +160,19 @@ function fitCoefficients(r: number, g: number, b: number): [number, number, numb
 
   // row 0: coefficients for c0 — derived from 3-node Vandermonde inverse
   // with nodes [LAMBDA_B=450, LAMBDA_G=550, LAMBDA_R=700] nm.
-  const v00 =  15.4;                              // =  154 / 10
-  const v01 = -21.0;                              // = -210 / 10
-  const v02 =  6.6;                               // =   66 / 10
+  const v00 = 15.4; // =  154 / 10
+  const v01 = -21.0; // = -210 / 10
+  const v02 = 6.6; // =   66 / 10
 
   // row 1: coefficients for c1
-  const v10 = -5.0e-2;                            // = -5 / 100
-  const v11 =  7.666_666_666_666_666_7e-2;        // = 23 / 300
-  const v12 = -2.666_666_666_666_666_7e-2;        // = -4 / 150
+  const v10 = -5.0e-2; // = -5 / 100
+  const v11 = 7.666_666_666_666_666_7e-2; // = 23 / 300
+  const v12 = -2.666_666_666_666_666_7e-2; // = -4 / 150
 
   // row 2: coefficients for c2
-  const v20 =  4.0e-5;                            // = 4 / 100000
-  const v21 = -6.666_666_666_666_666_7e-5;        // = -2 / 30000
-  const v22 =  2.666_666_666_666_666_7e-5;        // = 4 / 150000
+  const v20 = 4.0e-5; // = 4 / 100000
+  const v21 = -6.666_666_666_666_666_7e-5; // = -2 / 30000
+  const v22 = 2.666_666_666_666_666_7e-5; // = 4 / 150000
 
   const c0 = v00 * y[0]! + v01 * y[1]! + v02 * y[2]!;
   const c1 = v10 * y[0]! + v11 * y[1]! + v12 * y[2]!;

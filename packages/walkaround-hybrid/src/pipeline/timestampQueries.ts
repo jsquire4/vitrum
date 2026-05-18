@@ -204,10 +204,7 @@ export function makeTimestampState(): TimestampState {
  * Initialize timestamp query infrastructure if the adapter supports the
  * feature and we are in DEV mode. Mutates `state` in place.
  */
-export function initTimestampQueries(
-  device: GPUDevice,
-  state: TimestampState,
-): void {
+export function initTimestampQueries(device: GPUDevice, state: TimestampState): void {
   // DEV guard: Vite injects `import.meta.env.DEV`; in non-Vite toolchains
   // the property is absent and we default to enabling queries (safe — the
   // feature-gate below only activates on adapters that expose timestamp-query).
@@ -233,12 +230,17 @@ export function initTimestampQueries(
     });
     // WebGPU exposes timestampPeriod via adapter info (ns per tick).
     // Some browsers normalize to 1ns by spec.
-    const adapterInfo = (device as unknown as { adapterInfo?: { timestampPeriod?: number } }).adapterInfo;
+    const adapterInfo = (device as unknown as { adapterInfo?: { timestampPeriod?: number } })
+      .adapterInfo;
     state.periodNs = adapterInfo?.timestampPeriod ?? 1.0;
-    console.log('[hybrid:debug] timestamp queries enabled',
-      { maxPasses: N, periodNs: state.periodNs });
+    console.log('[hybrid:debug] timestamp queries enabled', {
+      maxPasses: N,
+      periodNs: state.periodNs,
+    });
   } else {
-    console.log('[hybrid:debug] timestamp queries unavailable on this adapter; falling back to JS-submit timing only');
+    console.log(
+      '[hybrid:debug] timestamp queries unavailable on this adapter; falling back to JS-submit timing only',
+    );
   }
 }
 
@@ -263,35 +265,38 @@ export function kickTimestampReadback(
   const periodNs = state.periodNs;
   const N = labels.length;
 
-  target.mapAsync(GPUMapMode.READ).then(() => {
-    try {
-      const range = target.getMappedRange();
-      const view = new BigInt64Array(range.slice(0));
-      target.unmap();
-      const next: Record<string, number> = {};
-      let total = 0;
-      for (let i = 0; i < N; i++) {
-        const begin = view[i * 2] ?? 0n;
-        const end   = view[i * 2 + 1] ?? 0n;
-        // Monotonic clocks should never decrement, but at boot the first
-        // frame's begin/end can be 0n — skip those.
-        if (end <= begin) continue;
-        const ms = Number(end - begin) * periodNs / 1_000_000;
-        const label = labels[i];
-        if (label !== undefined) next[label] = +ms.toFixed(3);
-        total += ms;
+  target
+    .mapAsync(GPUMapMode.READ)
+    .then(() => {
+      try {
+        const range = target.getMappedRange();
+        const view = new BigInt64Array(range.slice(0));
+        target.unmap();
+        const next: Record<string, number> = {};
+        let total = 0;
+        for (let i = 0; i < N; i++) {
+          const begin = view[i * 2] ?? 0n;
+          const end = view[i * 2 + 1] ?? 0n;
+          // Monotonic clocks should never decrement, but at boot the first
+          // frame's begin/end can be 0n — skip those.
+          if (end <= begin) continue;
+          const ms = (Number(end - begin) * periodNs) / 1_000_000;
+          const label = labels[i];
+          if (label !== undefined) next[label] = +ms.toFixed(3);
+          total += ms;
+        }
+        next['total'] = +total.toFixed(3);
+        state.lastGpuTimings = next;
+        state.lastGpuTimingsFrame = frameCount;
+      } catch {
+        // ignore — buffer was likely unmapped during a dispose race
+      } finally {
+        state.readbackInFlight = null;
       }
-      next['total'] = +total.toFixed(3);
-      state.lastGpuTimings = next;
-      state.lastGpuTimingsFrame = frameCount;
-    } catch {
-      // ignore — buffer was likely unmapped during a dispose race
-    } finally {
+    })
+    .catch(() => {
       state.readbackInFlight = null;
-    }
-  }).catch(() => {
-    state.readbackInFlight = null;
-  });
+    });
 }
 
 /**
@@ -358,7 +363,7 @@ export async function readTimestampsOnce(
     const end = view[i * 2 + 1] ?? 0n;
     rawBigints.push(`${String(begin)}/${String(end)}`);
     if (end <= begin) continue;
-    const ms = Number(end - begin) * state.periodNs / 1_000_000;
+    const ms = (Number(end - begin) * state.periodNs) / 1_000_000;
     const label = layout.labels[i];
     if (label) perPass[label] = +ms.toFixed(3);
     total += ms;

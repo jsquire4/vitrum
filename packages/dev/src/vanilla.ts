@@ -75,11 +75,7 @@ export function attachDebugOverlays(
   container: HTMLElement,
   opts: AttachDebugOverlaysOptions = {},
 ): DebugOverlaysHandle {
-  const {
-    overlays = ['frameTime', 'denoiserToggle'],
-    frameTimeAvgWindow = 60,
-    scene,
-  } = opts;
+  const { overlays = ['frameTime', 'denoiserToggle'], frameTimeAvgWindow = 60, scene } = opts;
 
   const cleanupFns: Array<() => void> = [];
   const nodes: HTMLElement[] = [];
@@ -93,12 +89,20 @@ export function attachDebugOverlays(
   if (overlays.includes('frameTime')) {
     const ring = new RingBuffer(frameTimeAvgWindow);
     const div = makeDiv({
-      position: 'absolute', top: '8px', right: '8px',
-      background: 'rgba(0,0,0,0.65)', color: '#e0e0e0',
-      fontFamily: 'monospace', fontSize: '11px',
-      padding: '6px 8px', borderRadius: '4px',
-      userSelect: 'none', pointerEvents: 'none',
-      lineHeight: '1.6', minWidth: '140px', zIndex: '9999',
+      position: 'absolute',
+      top: '8px',
+      right: '8px',
+      background: 'rgba(0,0,0,0.65)',
+      color: '#e0e0e0',
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      padding: '6px 8px',
+      borderRadius: '4px',
+      userSelect: 'none',
+      pointerEvents: 'none',
+      lineHeight: '1.6',
+      minWidth: '140px',
+      zIndex: '9999',
     });
 
     const frameRow = makeRow('frame', '— ms');
@@ -141,11 +145,18 @@ export function attachDebugOverlays(
     let enabled = engine.debug?.isDenoiserEnabled?.() ?? true;
 
     const badge = makeDiv({
-      position: 'absolute', top: '8px', left: '8px',
-      background: 'rgba(0,0,0,0.65)', color: '#e0e0e0',
-      fontFamily: 'monospace', fontSize: '11px',
-      padding: '4px 8px', borderRadius: '4px',
-      userSelect: 'none', cursor: 'pointer', zIndex: '9998',
+      position: 'absolute',
+      top: '8px',
+      left: '8px',
+      background: 'rgba(0,0,0,0.65)',
+      color: '#e0e0e0',
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      padding: '4px 8px',
+      borderRadius: '4px',
+      userSelect: 'none',
+      cursor: 'pointer',
+      zIndex: '9998',
       borderLeft: `3px solid ${enabled ? '#7dfa7d' : '#fa7d7d'}`,
     });
 
@@ -161,10 +172,9 @@ export function attachDebugOverlays(
       if (hasDebug) {
         engine.debug!.setDenoiserEnabled!(enabled);
       } else {
-         
         console.warn(
           '[attachDebugOverlays] denoiserToggle: engine.debug.setDenoiserEnabled() ' +
-          'not implemented — T3.G followup.'
+            'not implemented — T3.G followup.',
         );
       }
       updateBadge();
@@ -190,17 +200,27 @@ export function attachDebugOverlays(
   ];
 
   for (const [key, label, extraStyle] of stubOverlays) {
-    if (!overlays.includes(key as AttachDebugOverlaysOptions['overlays'] extends ReadonlyArray<infer T> ? T : never)) continue;
-     
+    if (
+      !overlays.includes(
+        key as AttachDebugOverlaysOptions['overlays'] extends ReadonlyArray<infer T> ? T : never,
+      )
+    )
+      continue;
+
     console.warn(
       `[attachDebugOverlays] "${key}" is a stub — requires engine.debug API (T3.G followup). ` +
-      'Rendering placeholder badge.'
+        'Rendering placeholder badge.',
     );
     const badge = makeDiv({
-      background: 'rgba(0,0,0,0.65)', color: '#ffb347',
-      fontFamily: 'monospace', fontSize: '11px',
-      padding: '4px 8px', borderRadius: '4px',
-      userSelect: 'none', pointerEvents: 'none', zIndex: '9997',
+      background: 'rgba(0,0,0,0.65)',
+      color: '#ffb347',
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      padding: '4px 8px',
+      borderRadius: '4px',
+      userSelect: 'none',
+      pointerEvents: 'none',
+      zIndex: '9997',
       ...extraStyle,
     });
     badge.textContent = `${label} [stub — T3.G followup]`;

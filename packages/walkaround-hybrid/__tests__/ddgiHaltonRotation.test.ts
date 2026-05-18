@@ -36,24 +36,26 @@ function haltonBase(i: number, base: number): number {
 // ─── Axis-angle → rotation matrix (Rodrigues) ────────────────────────────────
 // Mirrors the WGSL `rotateAngleAxis` in shared-samplers/hammersley.wgsl.ts.
 
-type Mat3 = [
-  number, number, number,
-  number, number, number,
-  number, number, number,
-];
+type Mat3 = [number, number, number, number, number, number, number, number, number];
 
 function rodriguesMatrix(ax: number, ay: number, az: number, angle: number): Mat3 {
   if (angle < 1e-6) {
-    return [1, 0, 0,  0, 1, 0,  0, 0, 1];
+    return [1, 0, 0, 0, 1, 0, 0, 0, 1];
   }
   const c = Math.cos(angle);
   const s = Math.sin(angle);
   const t = 1 - c;
   // Rodrigues: R = I·cos + [axis×]·sin + axis⊗axis·(1-cos)
   return [
-    t*ax*ax + c,     t*ax*ay - s*az, t*ax*az + s*ay,
-    t*ax*ay + s*az,  t*ay*ay + c,    t*ay*az - s*ax,
-    t*ax*az - s*ay,  t*ay*az + s*ax, t*az*az + c,
+    t * ax * ax + c,
+    t * ax * ay - s * az,
+    t * ax * az + s * ay,
+    t * ax * ay + s * az,
+    t * ay * ay + c,
+    t * ay * az - s * ax,
+    t * ax * az - s * ay,
+    t * ay * az + s * ax,
+    t * az * az + c,
   ];
 }
 
@@ -72,11 +74,7 @@ function matMul(A: Mat3, B: Mat3): Mat3 {
 }
 
 function matTranspose(M: Mat3): Mat3 {
-  return [
-    M[0]!, M[3]!, M[6]!,
-    M[1]!, M[4]!, M[7]!,
-    M[2]!, M[5]!, M[8]!,
-  ];
+  return [M[0]!, M[3]!, M[6]!, M[1]!, M[4]!, M[7]!, M[2]!, M[5]!, M[8]!];
 }
 
 function frobenius(M: Mat3): number {
@@ -124,7 +122,9 @@ function buildRotationMatrix(frameIndex: number): Mat3 {
 
   let ax: number, ay: number, az: number;
   if (sinHalf < 1e-6) {
-    ax = 1; ay = 0; az = 0;
+    ax = 1;
+    ay = 0;
+    az = 0;
   } else {
     ax = qx / sinHalf;
     ay = qy / sinHalf;
@@ -161,10 +161,9 @@ function randomUnitVector(rng: () => number): [number, number, number] {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('ddgi Halton SO(3) rotation — F3 re-verification', () => {
-
   // ── 1. Validity: R·R^T = I, det(R) = 1 ──────────────────────────────────────
   it('R·R^T ≈ I and det(R) ≈ 1 for 1000 frame indices', () => {
-    const identity: Mat3 = [1,0,0, 0,1,0, 0,0,1];
+    const identity: Mat3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
     for (let f = 0; f < 1000; f++) {
       const R = buildRotationMatrix(f);
       const RT = matTranspose(R);
@@ -172,9 +171,15 @@ describe('ddgi Halton SO(3) rotation — F3 re-verification', () => {
 
       // Frobenius distance from identity should be < 1e-5.
       const diffFrob = frobenius([
-        RRT[0]!-1, RRT[1]!, RRT[2]!,
-        RRT[3]!, RRT[4]!-1, RRT[5]!,
-        RRT[6]!, RRT[7]!, RRT[8]!-1,
+        RRT[0]! - 1,
+        RRT[1]!,
+        RRT[2]!,
+        RRT[3]!,
+        RRT[4]! - 1,
+        RRT[5]!,
+        RRT[6]!,
+        RRT[7]!,
+        RRT[8]! - 1,
       ] as Mat3);
       expect(diffFrob, `frame ${f}: R·R^T ≠ I (Frob = ${diffFrob.toFixed(6)})`).toBeLessThan(1e-5);
 
@@ -203,13 +208,16 @@ describe('ddgi Halton SO(3) rotation — F3 re-verification', () => {
     const expected = N_FRAMES / 8;
     let chi2 = 0;
     for (let i = 0; i < 8; i++) {
-      const diff = (octantCounts[i]! - expected);
-      chi2 += diff * diff / expected;
+      const diff = octantCounts[i]! - expected;
+      chi2 += (diff * diff) / expected;
     }
 
     // Allow generous threshold (chi2 < 40 for 8 buckets, p ≈ 5e-6 critical).
     // If chi2 > 40, the distribution is significantly non-uniform.
-    expect(chi2, `chi-squared = ${chi2.toFixed(2)}, octants = [${octantCounts.join(', ')}]`).toBeLessThan(40);
+    expect(
+      chi2,
+      `chi-squared = ${chi2.toFixed(2)}, octants = [${octantCounts.join(', ')}]`,
+    ).toBeLessThan(40);
   });
 
   // ── 3. Decorrelation: R(f)·R(f+1)^T is NOT near identity ────────────────────
@@ -224,9 +232,15 @@ describe('ddgi Halton SO(3) rotation — F3 re-verification', () => {
       const diff = matMul(R0, R1T);
       // Frobenius distance from identity of R0·R1^T:
       const frobDist = frobenius([
-        diff[0]!-1, diff[1]!, diff[2]!,
-        diff[3]!, diff[4]!-1, diff[5]!,
-        diff[6]!, diff[7]!, diff[8]!-1,
+        diff[0]! - 1,
+        diff[1]!,
+        diff[2]!,
+        diff[3]!,
+        diff[4]! - 1,
+        diff[5]!,
+        diff[6]!,
+        diff[7]!,
+        diff[8]! - 1,
       ] as Mat3);
       if (frobDist > 0.5) countAboveThreshold++;
     }
@@ -234,7 +248,9 @@ describe('ddgi Halton SO(3) rotation — F3 re-verification', () => {
     // At least 80% of frame pairs should have Frobenius distance > 0.5.
     // (Identity rotation has Frob distance 0; any non-trivial rotation exceeds 0.5.)
     const fraction = countAboveThreshold / N_PAIRS;
-    expect(fraction, `Only ${(fraction*100).toFixed(1)}% of pairs decorrelated (expected ≥ 80%)`).toBeGreaterThanOrEqual(0.8);
+    expect(
+      fraction,
+      `Only ${(fraction * 100).toFixed(1)}% of pairs decorrelated (expected ≥ 80%)`,
+    ).toBeGreaterThanOrEqual(0.8);
   });
-
 });

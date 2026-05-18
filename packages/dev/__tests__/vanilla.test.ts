@@ -57,16 +57,24 @@ function makeEngine(): Engine {
   };
   let s: EngineState = 'ready';
   return {
-    get state() { return s; },
+    get state() {
+      return s;
+    },
     capabilities: caps,
     setScene() {},
     renderFrame() {
       return { primaryRadiance: null, samplesAccumulated: 0, isConverged: false };
     },
     reset() {},
-    pause() { s = 'paused'; },
-    resume() { s = 'ready'; },
-    dispose() { s = 'disposed'; },
+    pause() {
+      s = 'paused';
+    },
+    resume() {
+      s = 'ready';
+    },
+    dispose() {
+      s = 'disposed';
+    },
   };
 }
 
@@ -84,120 +92,109 @@ describe('attachDebugOverlays', () => {
     expect(typeof mod.attachDebugOverlays).toBe('function');
   });
 
-  it.skipIf(!hasDom)(
-    'attaches DOM nodes to the container',
-    async () => {
-      const { attachDebugOverlays } = await import('../src/vanilla.js');
-      const container = document.createElement('div');
-      document.body.appendChild(container);
+  it.skipIf(!hasDom)('attaches DOM nodes to the container', async () => {
+    const { attachDebugOverlays } = await import('../src/vanilla.js');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
 
-      const engine = makeEngine() as DebuggableEngine;
-      const handle = attachDebugOverlays(engine, container, {
-        overlays: ['frameTime'],
-      });
+    const engine = makeEngine() as DebuggableEngine;
+    const handle = attachDebugOverlays(engine, container, {
+      overlays: ['frameTime'],
+    });
 
-      expect(container.children.length).toBeGreaterThan(0);
+    expect(container.children.length).toBeGreaterThan(0);
 
-      handle.dispose();
-      expect(container.children.length).toBe(0);
+    handle.dispose();
+    expect(container.children.length).toBe(0);
 
-      document.body.removeChild(container);
-    }
-  );
+    document.body.removeChild(container);
+  });
 
-  it.skipIf(!hasDom)(
-    'dispose() is idempotent (can be called twice)',
-    async () => {
-      const { attachDebugOverlays } = await import('../src/vanilla.js');
-      const container = document.createElement('div');
-      document.body.appendChild(container);
+  it.skipIf(!hasDom)('dispose() is idempotent (can be called twice)', async () => {
+    const { attachDebugOverlays } = await import('../src/vanilla.js');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
 
-      const engine = makeEngine() as DebuggableEngine;
-      const handle = attachDebugOverlays(engine, container, {
-        overlays: ['frameTime'],
-      });
+    const engine = makeEngine() as DebuggableEngine;
+    const handle = attachDebugOverlays(engine, container, {
+      overlays: ['frameTime'],
+    });
 
-      handle.dispose();
-      expect(() => handle.dispose()).not.toThrow();
+    handle.dispose();
+    expect(() => handle.dispose()).not.toThrow();
 
-      document.body.removeChild(container);
-    }
-  );
+    document.body.removeChild(container);
+  });
 
-  it.skipIf(!hasDom)(
-    'engine.onFrame path: subscribes and unsubscribes cleanly',
-    async () => {
-      const { attachDebugOverlays } = await import('../src/vanilla.js');
-      const container = document.createElement('div');
-      document.body.appendChild(container);
+  it.skipIf(!hasDom)('engine.onFrame path: subscribes and unsubscribes cleanly', async () => {
+    const { attachDebugOverlays } = await import('../src/vanilla.js');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
 
-      let subscribedCb: ((s: { frameTimeMs: number }) => void) | null = null;
-      let unsubscribeCalled = false;
+    let subscribedCb: ((s: { frameTimeMs: number }) => void) | null = null;
+    let unsubscribeCalled = false;
 
-      const engine = makeEngine() as DebuggableEngine;
-      (engine as unknown as Record<string, unknown>)['onFrame'] = (cb: (s: { frameTimeMs: number }) => void) => {
-        subscribedCb = cb;
-        return () => { unsubscribeCalled = true; };
+    const engine = makeEngine() as DebuggableEngine;
+    (engine as unknown as Record<string, unknown>)['onFrame'] = (
+      cb: (s: { frameTimeMs: number }) => void,
+    ) => {
+      subscribedCb = cb;
+      return () => {
+        unsubscribeCalled = true;
       };
+    };
 
-      const handle = attachDebugOverlays(engine, container, { overlays: ['frameTime'] });
+    const handle = attachDebugOverlays(engine, container, { overlays: ['frameTime'] });
 
-      // Simulate a frame event
-      if (subscribedCb !== null) {
-        (subscribedCb as (s: { frameTimeMs: number }) => void)({ frameTimeMs: 16.67 });
-      }
-      // DOM nodes exist
-      expect(container.children.length).toBeGreaterThan(0);
-
-      handle.dispose();
-      expect(unsubscribeCalled).toBe(true);
-      expect(container.children.length).toBe(0);
-
-      document.body.removeChild(container);
+    // Simulate a frame event
+    if (subscribedCb !== null) {
+      (subscribedCb as (s: { frameTimeMs: number }) => void)({ frameTimeMs: 16.67 });
     }
-  );
+    // DOM nodes exist
+    expect(container.children.length).toBeGreaterThan(0);
 
-  it.skipIf(!hasDom)(
-    'rAF fallback path: starts rAF loop and cancels on dispose',
-    async () => {
-      const { attachDebugOverlays } = await import('../src/vanilla.js');
-      const container = document.createElement('div');
-      document.body.appendChild(container);
+    handle.dispose();
+    expect(unsubscribeCalled).toBe(true);
+    expect(container.children.length).toBe(0);
 
-      // Engine has no onFrame — should fall back to rAF
-      const engine = makeEngine() as DebuggableEngine;
-      const handle = attachDebugOverlays(engine, container, { overlays: ['frameTime'] });
+    document.body.removeChild(container);
+  });
 
-      expect(rafCallbacks.size).toBeGreaterThan(0);
+  it.skipIf(!hasDom)('rAF fallback path: starts rAF loop and cancels on dispose', async () => {
+    const { attachDebugOverlays } = await import('../src/vanilla.js');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
 
-      handle.dispose();
-      expect(rafCallbacks.size).toBe(0);
+    // Engine has no onFrame — should fall back to rAF
+    const engine = makeEngine() as DebuggableEngine;
+    const handle = attachDebugOverlays(engine, container, { overlays: ['frameTime'] });
 
-      document.body.removeChild(container);
-    }
-  );
+    expect(rafCallbacks.size).toBeGreaterThan(0);
 
-  it.skipIf(!hasDom)(
-    'stub overlays emit console.warn and render badge',
-    async () => {
-      const { attachDebugOverlays } = await import('../src/vanilla.js');
-      const container = document.createElement('div');
-      document.body.appendChild(container);
+    handle.dispose();
+    expect(rafCallbacks.size).toBe(0);
 
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { /* suppress */ });
+    document.body.removeChild(container);
+  });
 
-      const engine = makeEngine() as DebuggableEngine;
-      const handle = attachDebugOverlays(engine, container, {
-        overlays: ['ddgiAtlas'],
-      });
+  it.skipIf(!hasDom)('stub overlays emit console.warn and render badge', async () => {
+    const { attachDebugOverlays } = await import('../src/vanilla.js');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('[attachDebugOverlays]'),
-      );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {
+      /* suppress */
+    });
 
-      handle.dispose();
-      warnSpy.mockRestore();
-      document.body.removeChild(container);
-    }
-  );
+    const engine = makeEngine() as DebuggableEngine;
+    const handle = attachDebugOverlays(engine, container, {
+      overlays: ['ddgiAtlas'],
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[attachDebugOverlays]'));
+
+    handle.dispose();
+    warnSpy.mockRestore();
+    document.body.removeChild(container);
+  });
 });

@@ -9,14 +9,14 @@
 
 ## Summary
 
-| Category | Count |
-|---|---|
-| Files changed on both branches (git "changed in both") | 4 |
-| Syntactic conflicts (git cannot auto-merge) | **0** |
-| Semantic conflicts (git merged cleanly but result is broken) | **1** |
-| Deletion-vs-modification conflicts | **0** (see §Deletion Clarifications) |
-| Files changed on main only (auto-merged, take A) | 43 |
-| Files changed on feat/plan-gaps only (auto-merged, take B) | 82 |
+| Category                                                     | Count                                |
+| ------------------------------------------------------------ | ------------------------------------ |
+| Files changed on both branches (git "changed in both")       | 4                                    |
+| Syntactic conflicts (git cannot auto-merge)                  | **0**                                |
+| Semantic conflicts (git merged cleanly but result is broken) | **1**                                |
+| Deletion-vs-modification conflicts                           | **0** (see §Deletion Clarifications) |
+| Files changed on main only (auto-merged, take A)             | 43                                   |
+| Files changed on feat/plan-gaps only (auto-merged, take B)   | 82                                   |
 
 The merge will **not stop with conflict markers**. But one file (`packages/core/src/scene.ts`) will produce a **TypeScript compile error** after the clean auto-merge because both branches independently added `SpectralCurve` at nearby-but-not-identical locations, resulting in two declarations of the same interface.
 
@@ -34,12 +34,14 @@ The merge will **not stop with conflict markers**. But one file (`packages/core/
 - **A** independently added a fully-documented `SpectralCurve` interface in a new `// Spectral rendering types (RFE-01)` section block (~line 32 in base), preceded by a Wilkie 2014 citation JSDoc. A also added `SurfaceAbsorptionLayer` (RFE-03), `ThinFilmLayer` + `ThinFilmStack` (RFE-04), plus richer versions of the same two Material fields (`spectralAttenuation`, `dispersionAbbeNumber`) further down in the Material interface body, with full JSDoc including OpenPBR reference.
 
 **Merge result (verified)**: git places both additions in the result because they occupy slightly different source offsets. The merged file has:
+
 - Two `export interface SpectralCurve { ... }` declarations (lines ~35 and ~61 in merged file).
 - Two `spectralAttenuation?: SpectralCurve` fields and two `dispersionAbbeNumber?: number` fields in `interface Material` (lines ~199 and ~242).
 
 TypeScript will reject the duplicate interface declarations with `error TS2300: Duplicate identifier 'SpectralCurve'`.
 
 **Conflict region** (merged file):
+
 ```
 Line ~35:  export interface SpectralCurve { ... }  ← B's minimal declaration
 Line ~61:  export interface SpectralCurve { ... }  ← A's documented declaration (RFE-01 block)
@@ -110,22 +112,23 @@ Net result: A's full type surface wins; B contributes nothing unique to this fil
 
 The prompt listed several files as suspected "deletion vs modification" conflicts. After reading the actual branch trees (`git ls-tree -r`), none of these are deletion conflicts:
 
-| File / Directory | Reality |
-|---|---|
-| `plan/sprint-10c-pt-fork-patch.md` | Added by A after merge-base; B never had it. Git adds it to merge result automatically. |
-| `plan/sprint-12-pt-fork-patch.md` | Same — A-only addition. |
-| `plan/sprint-13-walkaround-integration.md` | Same — A-only addition. |
-| `plan/sprints-1-11-audit.md` | Same — A-only addition. |
-| `plan/sprint-11-ppg-integration.md` | Existed at merge-base; A modified it (added BLOCKING CONDITIONS section); B left it unchanged. Git takes A's version. |
-| `tools/neural-denoiser-training/` (4 files) | A-only additions (README, dataset_spec, export_weights, train.py). B never had them. Git adds them to merge result. |
+| File / Directory                                   | Reality                                                                                                                                  |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan/sprint-10c-pt-fork-patch.md`                 | Added by A after merge-base; B never had it. Git adds it to merge result automatically.                                                  |
+| `plan/sprint-12-pt-fork-patch.md`                  | Same — A-only addition.                                                                                                                  |
+| `plan/sprint-13-walkaround-integration.md`         | Same — A-only addition.                                                                                                                  |
+| `plan/sprints-1-11-audit.md`                       | Same — A-only addition.                                                                                                                  |
+| `plan/sprint-11-ppg-integration.md`                | Existed at merge-base; A modified it (added BLOCKING CONDITIONS section); B left it unchanged. Git takes A's version.                    |
+| `tools/neural-denoiser-training/` (4 files)        | A-only additions (README, dataset_spec, export_weights, train.py). B never had them. Git adds them to merge result.                      |
 | `packages/walkaround-hybrid/src/neural/` (8 files) | A-only additions (InferenceGraph.ts, unetArchitecture.ts, 5 WGSL files, sprint13 test). B never had them. Git adds them to merge result. |
-| `_staging/legacy-source/` (24 files) | B deleted all of them; A did NOT modify any of them (confirmed: none appear in A's change set vs base). Git accepts B's deletions. |
+| `_staging/legacy-source/` (24 files)               | B deleted all of them; A did NOT modify any of them (confirmed: none appear in A's change set vs base). Git accepts B's deletions.       |
 
 ---
 
 ## Auto-mergeable file list (changes on one branch only)
 
 **A-only additions that B will gain after merge** (no conflict, git takes A):
+
 - `packages/core/src/engine.ts` — causticStrategy added to EngineCapabilities + EngineOptions
 - `packages/shared-samplers/src/index.ts` — BDPT + spectral exports added
 - `packages/shared-samplers/src/{bdptMIS,bdptVertex,cauchyIor,cieCmf,wavelengthSampling,mixturePdf}.ts` — Sprint 10c/12 implementations
@@ -139,6 +142,7 @@ The prompt listed several files as suspected "deletion vs modification" conflict
 - `tools/neural-denoiser-training/*` — training pipeline documentation
 
 **B-only additions that A will gain after merge** (no conflict, git takes B):
+
 - `examples/shared/`, `examples/two-engines-one-scene/` — new G2 demo + shared Cornell builder
 - `examples/cornell-box/` (modified) — uses shared Cornell helper
 - `packages/babylon-bindings/` — stub package

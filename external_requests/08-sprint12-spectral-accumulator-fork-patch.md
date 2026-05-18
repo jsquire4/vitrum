@@ -28,6 +28,7 @@ today can only consume scalar or RGB attenuation, not a per-wavelength μ(λ) cu
 
 **Decision gate (from `plan/sprint-12-pt-fork-patch.md §7`):** before beginning this
 ~24-working-day fork rewrite, confirm one or more of the trigger conditions with the user:
+
 - Uranium glass (fluorescence emission by wavelength)
 - Dichroic film (multi-order thin-film interference — 3-colour approximation shows aliasing)
 - Bevel rainbows where Sprint 8's 3-colour fan is visibly discrete in hero renders
@@ -39,14 +40,15 @@ Do NOT begin the kernel rewrite without trigger confirmation. See `plan/sprint-1
 
 ## What data the app already provides (ready to consume)
 
-| Source | Field | Coverage |
-|--------|-------|----------|
+| Source                                        | Field                             | Coverage            |
+| --------------------------------------------- | --------------------------------- | ------------------- |
 | `material.userData.vitrumSpectralAttenuation` | `LocalSpectralCurve` (81 samples) | 7 colorant families |
-| `material.userData.vitrumThinFilmStack` | `LocalThinFilmStack` (35 layers) | dichroic only |
-| `LocalMaterial.spectralAttenuation` | forwarded | same |
-| `LocalMaterial.thinFilmStack` | forwarded | same |
+| `material.userData.vitrumThinFilmStack`       | `LocalThinFilmStack` (35 layers)  | dichroic only       |
+| `LocalMaterial.spectralAttenuation`           | forwarded                         | same                |
+| `LocalMaterial.thinFilmStack`                 | forwarded                         | same                |
 
 Host-side utilities already shipped in `@vitrum/shared-samplers`:
+
 - `sampleHeroWavelength`, `wavelengthToRGB`, `Y_CMF_INTEGRAL` in `src/wavelengthSampling.ts`
 - CIE 1931 2° CMF tables (81 entries), `sampleCMF`, `xyzToLinearSRGB` in `src/cieCmf.ts`
 - `cauchyIOR`, `CAUCHY_CROWN_GLASS`, `CAUCHY_FLINT_GLASS`, `CAUCHY_LEAD_CRYSTAL` in `src/cauchyIor.ts`

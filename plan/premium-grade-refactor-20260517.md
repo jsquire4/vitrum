@@ -83,21 +83,21 @@ A change in any workstream is "done" only when it meets ALL of:
 
 ## 2. Workstreams (13 total)
 
-| # | Workstream | Theme | Wave | Parallel-safe with | First-PR candidate |
-|---|------------|-------|------|--------------------|--------------------|
-| W1 | Pass + Resource + Denoiser registry abstraction | B | 1 | W2, W3, W7 | **YES — first PR** |
-| W2 | Dedup canonicalisation (BVH/oct/luminance/MaterialEntry) | C | 1 | W1, W3, W7 | |
-| W3 | Contract hygiene (Material mutability, AnalyticShape, denoiser DU, BackendTexture brand) | D | 1 | W1, W2, W7 | |
-| W4 | God-file dissolution (HybridEngine, WalkaroundGPUPipeline, pathTraceBruteforce, etc.) | A | 2 | W5, W6, W11 | depends on W1 |
-| W5 | Per-pass BGL (eliminate dead bindings, drop shared PipelineLayouts) | I | 2 | W4, W6 | depends on W1 |
-| W6 | Hidden-globals de-singletonization (sharedWebGpuDevice, iblBaker, __WGPU__) | E | 2 | W4, W5, W11 | depends on W3 |
-| W7 | Stale + misplaced + dead-code sweep | G + H | 1 | all | |
-| W8 | Scaffold-1: RC extraction → `@vitrum/walkaround-rc` | F (RC) | 3 | W9, W10, W11, W12 | depends on W2 (BVH canonicalize) + W4 (pass abstraction) |
-| W9 | Scaffold-2: PPG GPU dTree traversal finish | F (PPG) | 3 | W8, W10, W11, W12 | depends on W1, W4, W5 |
-| W10 | Scaffold-3: Neural denoiser finish | F (Neural) | 4 | W11 | depends on W1, W3, W5 |
-| W11 | Scaffold-4: OIDN `'oidn-final'` wire | F (OIDN) | 3 | W8, W9, W10, W12 | depends on W3 |
-| W12 | Scaffold-5: Dev overlays finish (DDGIAtlasViewer, BVHVisualizer, GISignalSplit, MaterialInspector) | D14 | 3 | W8, W9, W10, W11 | depends on W3 |
-| W13 | Documentation reconciliation (CLAUDE.md, CHANGELOG.md, plan/, memory/) | G (stale-docs) | 4 | — | depends on everything |
+| #   | Workstream                                                                                         | Theme          | Wave | Parallel-safe with | First-PR candidate                                       |
+| --- | -------------------------------------------------------------------------------------------------- | -------------- | ---- | ------------------ | -------------------------------------------------------- |
+| W1  | Pass + Resource + Denoiser registry abstraction                                                    | B              | 1    | W2, W3, W7         | **YES — first PR**                                       |
+| W2  | Dedup canonicalisation (BVH/oct/luminance/MaterialEntry)                                           | C              | 1    | W1, W3, W7         |                                                          |
+| W3  | Contract hygiene (Material mutability, AnalyticShape, denoiser DU, BackendTexture brand)           | D              | 1    | W1, W2, W7         |                                                          |
+| W4  | God-file dissolution (HybridEngine, WalkaroundGPUPipeline, pathTraceBruteforce, etc.)              | A              | 2    | W5, W6, W11        | depends on W1                                            |
+| W5  | Per-pass BGL (eliminate dead bindings, drop shared PipelineLayouts)                                | I              | 2    | W4, W6             | depends on W1                                            |
+| W6  | Hidden-globals de-singletonization (sharedWebGpuDevice, iblBaker, **WGPU**)                        | E              | 2    | W4, W5, W11        | depends on W3                                            |
+| W7  | Stale + misplaced + dead-code sweep                                                                | G + H          | 1    | all                |                                                          |
+| W8  | Scaffold-1: RC extraction → `@vitrum/walkaround-rc`                                                | F (RC)         | 3    | W9, W10, W11, W12  | depends on W2 (BVH canonicalize) + W4 (pass abstraction) |
+| W9  | Scaffold-2: PPG GPU dTree traversal finish                                                         | F (PPG)        | 3    | W8, W10, W11, W12  | depends on W1, W4, W5                                    |
+| W10 | Scaffold-3: Neural denoiser finish                                                                 | F (Neural)     | 4    | W11                | depends on W1, W3, W5                                    |
+| W11 | Scaffold-4: OIDN `'oidn-final'` wire                                                               | F (OIDN)       | 3    | W8, W9, W10, W12   | depends on W3                                            |
+| W12 | Scaffold-5: Dev overlays finish (DDGIAtlasViewer, BVHVisualizer, GISignalSplit, MaterialInspector) | D14            | 3    | W8, W9, W10, W11   | depends on W3                                            |
+| W13 | Documentation reconciliation (CLAUDE.md, CHANGELOG.md, plan/, memory/)                             | G (stale-docs) | 4    | —                  | depends on everything                                    |
 
 ### Wave structure
 
@@ -120,6 +120,7 @@ A change in any workstream is "done" only when it meets ALL of:
 ~25-30 edits across 6-9 files (verified at sweep time).
 
 **Sub-tasks:**
+
 1. Define a `Pass` interface in `walkaround-hybrid/src/pipeline/Pass.ts`:
    - `id: string`, `bindGroupLayout(): GPUBindGroupLayout`,
      `bindGroup(res: FrameResources): GPUBindGroup`,
@@ -135,7 +136,7 @@ A change in any workstream is "done" only when it meets ALL of:
 3. Replace the 4-string `denoiser` union switched across 5 files with a
    **Denoiser Registry** in `walkaround-hybrid/src/pipeline/denoisers/`.
    Each denoiser exports `{ id, allocate(device, dims), bindGroupLayout,
-   pipeline, dispatch, destroy }`. `HybridEngine` consults the registry by
+pipeline, dispatch, destroy }`. `HybridEngine` consults the registry by
    id. Adding a denoiser = adding a registry entry + sub-struct allocator;
    no edits elsewhere.
 4. Replace the position-encoded pass order in
@@ -151,6 +152,7 @@ A change in any workstream is "done" only when it meets ALL of:
    universal prepend; passes opt-in.
 
 **File paths (writes):**
+
 - `packages/walkaround-hybrid/src/pipeline/Pass.ts` (new)
 - `packages/walkaround-hybrid/src/pipeline/PassRegistry.ts` (new)
 - `packages/walkaround-hybrid/src/pipeline/denoisers/{index,atrous,atrousVariance,svgfReal,neural,oidnFinal,none}.ts` (new)
@@ -160,6 +162,7 @@ A change in any workstream is "done" only when it meets ALL of:
 - `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (consume PASS_ORDER)
 
 **Test plan:**
+
 - **Behavior preservation:** every existing walkaround test runs unchanged
   and passes.
 - **New tests:** `Pass.test.ts` covering registry registration,
@@ -171,6 +174,7 @@ A change in any workstream is "done" only when it meets ALL of:
   pure structural refactor — bits should not change).
 
 **Reference-render captures:**
+
 - `tools/reference-renders/W1-pre/hero-{1080p,720p}.png`
 - `tools/reference-renders/W1-post/hero-{1080p,720p}.png`
 - Diff report appended to `tools/reference-renders/sweep-2026-05-11-diff-report.md` pattern.
@@ -245,6 +249,7 @@ coverage.
 `pt-webgl`.
 
 **Test plan:**
+
 - **Behavior preservation:** ALL existing tests must pass. Any test
   asserting bit-exact WGSL output replaced with import-graph assertion.
 - **New tests:**
@@ -253,11 +258,12 @@ coverage.
   - `materialEntryPacking.test.ts`: byte layout, default values.
   - `defineUbo` codegen: round-trip pack-then-decode equality.
 - **Reference renders:** mandatory — even though math should be identical,
-  octahedral C3 fixes a *bug* (sign(0) collapse at axis boundaries). The
+  octahedral C3 fixes a _bug_ (sign(0) collapse at axis boundaries). The
   hero render is the verification. Capture before/after the C3 fix
   specifically.
 
 **Reference-render captures:**
+
 - `tools/reference-renders/W2-C3-pre/hero-axis-aligned.png`
 - `tools/reference-renders/W2-C3-post/hero-axis-aligned.png`
 - (others: bit-identical, skip captures)
@@ -294,8 +300,8 @@ quicksand.
    host-app-agnostic again.
 4. **D4 Denoiser discriminated union** — replace the string union with
    `Denoiser = { kind: 'none' } | { kind: 'atrous' } | { kind:
-   'atrous-variance' } | { kind: 'svgf-real' } | { kind: 'neural';
-   weights: NeuralWeights } | { kind: 'oidn-final'; modelUrl: string }`.
+'atrous-variance' } | { kind: 'svgf-real' } | { kind: 'neural';
+weights: NeuralWeights } | { kind: 'oidn-final'; modelUrl: string }`.
    Per-mode requirements are type-enforced; the registry in W1 consumes
    this DU.
 5. **D5 isHardwareGpu** — drop the REQUIRED+DEPRECATED field; staging dir
@@ -307,11 +313,11 @@ quicksand.
    `primaryRadiance: BackendTexture | null` + the
    `samplesAccumulated === 0` sentinel with
    `output: { kind: 'skipped'; reason: string } | { kind: 'rendered';
-   texture: BackendTexture; samplesAccumulated: number }`.
+texture: BackendTexture; samplesAccumulated: number }`.
 8. **D8 Engine interface** — replace the 6 optional members with a
    discriminated `EngineCapabilities` object the engine declares once at
    construction; callers query capabilities and dispatch. Drop `typeof
-   engine.foo?.X === 'function'` checks everywhere.
+engine.foo?.X === 'function'` checks everywhere.
 9. **D9 createEngine proxy** — proxy `updateEnvironment` (currently
    dropped); add to the unit-test that every Engine method round-trips
    through the proxy.
@@ -350,6 +356,7 @@ quicksand.
 new `packages/stained-glass-extensions/` (if D2/D3 produces it).
 
 **Test plan:**
+
 - **Behavior preservation:** every existing test passes. Tests asserting
   string union values updated to assert discriminated union shape.
 - **New tests:** D7 round-trip (skipped frame yields skipped, rendered
@@ -394,9 +401,9 @@ necessity).
    W1 (per-algorithm sub-structs). This subtask is verification.
 4. **A4 pt-webgpu pathTraceBruteforce.wgsl (1908 LOC)** — split into
    `frameParams.wgsl`, `bindings.wgsl`, `bsdf/{layered,glossy,dielectric,
-   conductor,diffuse,mis}.wgsl`, `bvh.wgsl` (imports
+conductor,diffuse,mis}.wgsl`, `bvh.wgsl` (imports
    shared-bvh/bvhTraverse from C1), `lights/{rectArea,meshArea,emissive,
-   environment}.wgsl`, `mnee.wgsl`, `photonMap.wgsl`, `materialDecode.wgsl`,
+environment}.wgsl`, `mnee.wgsl`, `photonMap.wgsl`, `materialDecode.wgsl`,
    `main.wgsl`. Shared `BsdfSample` struct used by all sample/PDF/eval
    triples.
 5. **A5 shade.wgsl (485 LOC, 380-LOC shadeMain)** — extract per-lighting-term
@@ -429,6 +436,7 @@ necessity).
 extensively; `pt-webgpu/src/`; `shared-denoisers/src/`.
 
 **Test plan:**
+
 - **Behavior preservation:** the full test suite must pass after each
   sub-task. This is the most fragile workstream — recommend per-god-file
   PRs.
@@ -441,6 +449,7 @@ extensively; `pt-webgpu/src/`; `shared-denoisers/src/`.
   visually justified.
 
 **Reference-render captures:**
+
 - `tools/reference-renders/W4-A{N}-pre/{hero,cornell-box,hero-product-viz}-1080p.png`
 - `tools/reference-renders/W4-A{N}-post/{...}.png`
 - A/B diff committed in the PR body.
@@ -476,6 +485,7 @@ declarations), `walkaround-hybrid/src/pipeline/bindGroupLayouts.ts`,
 `walkaround-hybrid/src/pipeline/BGLCache.ts` (probably collapses).
 
 **Test plan:**
+
 - Behavior preservation only. Existing tests cover correctness; this is a
   bind-group reshape.
 - **Reference renders:** mandatory bit-equality at hero scene; if not
@@ -491,7 +501,7 @@ loud GPU validation errors in test.
 ### W6 — Hidden-globals de-singletonization (Theme E)
 
 **Goal:** CLAUDE.md key principle #2 ("host owns lifecycle") becomes
-*actually true*. No module-level GPU resources, no
+_actually true_. No module-level GPU resources, no
 `window.__WGPU__` writes from engine internals.
 
 **Sub-tasks:**
@@ -510,9 +520,9 @@ loud GPU validation errors in test.
    host-bridge `WindowDebugBridge` that the host (the example app or dev
    panel) wires up by subscribing to `engine.onFrame`. The engine never
    touches `window`.
-4. **E4 cascadeDispatch._sharedDispatcher** — zero callers, deleted in W7
+4. **E4 cascadeDispatch.\_sharedDispatcher** — zero callers, deleted in W7
    dead-code sweep; verify after W8 RC extraction.
-5. **E5 `gpuBufferOf(attr)` __gpuBuffer reach-through** — eliminated by W8
+5. **E5 `gpuBufferOf(attr)` \_\_gpuBuffer reach-through** — eliminated by W8
    (RC extraction rewrites to raw `GPUBuffer` ownership). Cross-stream
    dependency.
 6. **E6 pt-webgl `_pathTracer.material.uniforms`** — encapsulate the
@@ -526,6 +536,7 @@ loud GPU validation errors in test.
 `packages/pt-webgl/src/{ptEngineWebGL2,forkUniformBridge}.ts`.
 
 **Test plan:**
+
 - New tests: `iblBakerCache.test.ts` cache instance isolation;
   `sharedWebGpuDevice.test.ts` removed (module deleted).
 - Behavior preservation across denoiser drivers (each must accept a passed
@@ -672,12 +683,14 @@ three.js renderer privates.
    from W2 is what the new package imports.
 
 **File paths:**
+
 - New: `packages/walkaround-rc/{package.json, tsconfig.json, src/**, __tests__/**, README.md, notes/TSL_TO_RAW_MAPPING.md}`
 - Delete: `packages/walkaround-hybrid/src/rc/*`
 - Update: `packages/walkaround-hybrid/{README.md, package.json}`,
   workspace `package.json` if RC is symlinked.
 
 **Test plan:**
+
 - All existing `rc/` tests move to the new package and pass.
 - New test: `RCDispatcher.test.ts` verifies raw-GPUBuffer ownership (no
   reach-through into private renderer state).
@@ -690,7 +703,7 @@ wired into HybridEngine per sweep finding B7).
 **Estimated sprints:** 1.
 
 **Risk:** medium — the `__gpuBuffer` rewrite is the load-bearing piece. If
-RC's three.js storage-attribute integration was the *only* way to get the
+RC's three.js storage-attribute integration was the _only_ way to get the
 data on GPU, replacing it with raw buffers means writing the data plumbing
 ourselves. Test: standalone-render integration test catches this.
 
@@ -711,7 +724,7 @@ production code path matches the CPU side that's already well-built.
 1. **Write `serialiseDTree(dTree): Float32Array`** — CPU producer. Output
    layout: per-cell header (`leafCount`, `totalFlux`, `pad0`, `pad1`)
    followed by N leaves of `(uvMinU, uvMinV, uvMaxU, uvMaxV, flux,
-   solidAng, _pad, _pad)` packed as f32 octets. Documented at the top of
+solidAng, _pad, _pad)` packed as f32 octets. Documented at the top of
    `ppg/dTree.ts`. Add tests: shape-correctness, round-trip via a CPU
    deserialiser (already exists conceptually — extract).
 2. **Write GPU sTree GPU buffer producer** — CPU `sTree.ts` serialise
@@ -750,6 +763,7 @@ ppgGuide.wgsl,ppgUpdate.wgsl,types,serialise,passModule}.ts`,
 `packages/walkaround-hybrid/src/shaders/shade.wgsl.ts`.
 
 **Test plan:**
+
 - Pre-existing CPU `ppg/dTree.test.ts`, `ppg/sTree.test.ts` continue to
   pass.
 - New GPU-side tests, CPU-oracle parity.
@@ -758,6 +772,7 @@ ppgGuide.wgsl,ppgUpdate.wgsl,types,serialise,passModule}.ts`,
   baseline at equal SPP.
 
 **Reference renders:**
+
 - `tools/reference-renders/W9-pre-ppg-off/scene-caustics-1080p-1024spp.png`
 - `tools/reference-renders/W9-post-ppg-on/scene-caustics-1080p-1024spp.png`
 - Variance-reduction expected; document the ratio in the PR body.
@@ -782,7 +797,7 @@ end to end.
 
 **Sub-tasks:**
 
-1. **Wire INPUT_PACKER_WGSL into InferenceGraph._runInputPack** — replace
+1. **Wire INPUT_PACKER_WGSL into InferenceGraph.\_runInputPack** — replace
    the 3 planar `copyBufferToBuffer` calls (currently incorrect layout
    per F2) with a `device.createComputePipeline` over `INPUT_PACKER_WGSL`;
    bind noisy/albedo/normals; output to enc_input in interleaved layout
@@ -814,12 +829,14 @@ end to end.
 8. **Demote internal-only debug exports.**
 
 **File paths:**
+
 - `packages/walkaround-hybrid/src/neural/{InferenceGraph,
-  inputPacker,unetArchitecture,weights}.ts`
+inputPacker,unetArchitecture,weights}.ts`
 - `packages/walkaround-hybrid/notes/unet-shape-resolution.md` (new)
 - `examples/neural-denoiser/{package.json,index.html,src/**}` (new)
 
 **Test plan:**
+
 - `InferenceGraph.dispose()` no-leak test.
 - `inputPacker.test.ts` — pack 3 separate buffers, assert interleaved
   output matches CPU oracle.
@@ -828,6 +845,7 @@ end to end.
 - Example renders successfully (build-time test).
 
 **Reference renders:**
+
 - `tools/reference-renders/W10-pre/cornell-box-1spp.png`
 - `tools/reference-renders/W10-post-neural/cornell-box-1spp-denoised.png`
 - The denoised result with random weights won't look great — expected.
@@ -873,6 +891,7 @@ and pt-webgl.
    pass vs 16spp without.
 
 **File paths:**
+
 - `packages/walkaround-hybrid/src/HybridEngine.ts`
 - `packages/walkaround-hybrid/src/pipeline/denoisers/oidnFinal.ts` (new, per W1)
 - `packages/pt-webgl/src/ptEngineWebGL2.ts`
@@ -880,12 +899,14 @@ and pt-webgl.
 - `examples/oidn-final/**` (new)
 
 **Test plan:**
+
 - Integration: render hero scene at 16spp + OIDN; compare against a 1024spp
   reference. Should match within bounded PSNR.
 - Demote test: `_hwcToNchw` is not in `index.ts` exports;
   `__test__/oidnBridge.test.ts` imports from internal path.
 
 **Reference renders:**
+
 - `tools/reference-renders/W11/hero-1024spp-reference.png`
 - `tools/reference-renders/W11/hero-16spp-oidn.png`
 - PSNR / SSIM committed in PR body.
@@ -918,18 +939,20 @@ GISignalSplit, MaterialInspector) become real, useful debug UI.
    implemented per HybridEngine.ts:1273-1294). Split-screen 4-up: direct,
    indirect, ao, total.
 4. **MaterialInspector picker** — wire to `engine.debug.pickPrimitive(x,
-   y)`. Currently NOT implemented in HybridEngine.debug; add the
+y)`. Currently NOT implemented in HybridEngine.debug; add the
    implementation: read the gNormalDepth texture's primitive-id channel
    at (x, y). Click on screen → show material editor for the picked
    material.
 
 **File paths:**
+
 - `packages/dev/src/react/{DDGIAtlasViewer,BVHVisualizer,GISignalSplit,
-  MaterialInspector}.tsx`
+MaterialInspector}.tsx`
 - `packages/walkaround-hybrid/src/HybridEngine.ts` (add `pickPrimitive`
-  + parent-link traversal for bvhNodes depth)
+  - parent-link traversal for bvhNodes depth)
 
 **Test plan:**
+
 - Each overlay has a render test (happy-dom + minimal mock engine).
 - MaterialInspector picker has a coord → primitive-id test.
 
@@ -982,7 +1005,7 @@ folder cleaned.
    (Áfra 2019), ReSTIR-GI (Ouyang 2021), per-channel SVGF (Schied 2017),
    Estévez-Kulla 2018 (light tree — IF the actual implementation is
    Shirley-1996 Median-split per the 05-11 sweep finding, the CREDITS
-   entry should reflect the *true* implementation).
+   entry should reflect the _true_ implementation).
 9. **READMEs** — every package's README aligned to its true state. The
    walkaround-hybrid README in particular gets the W8 RC-removal update.
 
@@ -1069,6 +1092,7 @@ standing discretion on worktree placement; place at `~/projects/vitrum-w1-pass-r
 **Tag (on merge):** `refactor/W1-pass-registry`.
 
 **Acceptance criteria for the first PR:**
+
 1. `Pass` interface + `PassRegistry` exist and are used by at least one
    pass (start with `shade` — the central pass).
 2. `Denoiser` discriminated-union type defined in `@vitrum/core`.
@@ -1082,16 +1106,16 @@ standing discretion on worktree placement; place at `~/projects/vitrum-w1-pass-r
 
 ## 7. Risk register
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| W10 neural reveals architectural bugs beyond shape mismatches | medium-high | scope creep | time-box the architecture-rework subtask; if it balloons, ship the dispose-fix + input-packer-wire + comment-strip cleanly and explicitly mark `'neural'` mode as build-smoke-only in the example README. Do NOT ship "kind of works" — that's a band-aid per user preferences. |
-| W4 god-file dissolution silently breaks visual output | high (volume of moved code) | high (looks like W4 worked but image regressed) | mandatory before/after reference renders per sub-task; bit-equality check in CI |
-| W8 RC `__gpuBuffer` rewrite turns out to need three.js storage-attribute integration we can't replace | low | medium | standalone-render integration test; if the integration was load-bearing, document it as a limitation and explore an alternative data-marshaling path in scope |
-| W1 Pass abstraction doesn't fit ReSTIR/PPG (multi-pass per algorithm with internal state) | medium | medium | design Pass interface with `PassGroup` extension upfront; first-class support for multi-pass algorithms. Validate with ReSTIR-DI (3 passes — RIS + temporal + spatial) before locking. |
-| W3 contract changes break stained-glass host app (pre-extraction consumer) | low (extracted in 05-12) | low | the stained-glass app is no longer a consumer per CLAUDE.md; verify in W3-D2 (AnalyticShape `h-channel-came`) |
-| W6 sharedWebGpuDevice removal breaks denoiser drivers in their test harnesses | medium | low | drivers accept passed device; tests pass a vitest-managed device. Standard refactor. |
-| W2 C5 MaterialEntry unification changes default roughness silently (0.5 vs 1.0) | high | medium | reference renders catch this; document the chosen default (probably 0.5 per the more common usage) in PR body |
-| Cross-stream interleaving (W2-C3 + W8 race) | low | medium | sequence W2-C3 before W8 explicitly (W7 dependency note) |
+| Risk                                                                                                  | Likelihood                  | Impact                                          | Mitigation                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| W10 neural reveals architectural bugs beyond shape mismatches                                         | medium-high                 | scope creep                                     | time-box the architecture-rework subtask; if it balloons, ship the dispose-fix + input-packer-wire + comment-strip cleanly and explicitly mark `'neural'` mode as build-smoke-only in the example README. Do NOT ship "kind of works" — that's a band-aid per user preferences. |
+| W4 god-file dissolution silently breaks visual output                                                 | high (volume of moved code) | high (looks like W4 worked but image regressed) | mandatory before/after reference renders per sub-task; bit-equality check in CI                                                                                                                                                                                                 |
+| W8 RC `__gpuBuffer` rewrite turns out to need three.js storage-attribute integration we can't replace | low                         | medium                                          | standalone-render integration test; if the integration was load-bearing, document it as a limitation and explore an alternative data-marshaling path in scope                                                                                                                   |
+| W1 Pass abstraction doesn't fit ReSTIR/PPG (multi-pass per algorithm with internal state)             | medium                      | medium                                          | design Pass interface with `PassGroup` extension upfront; first-class support for multi-pass algorithms. Validate with ReSTIR-DI (3 passes — RIS + temporal + spatial) before locking.                                                                                          |
+| W3 contract changes break stained-glass host app (pre-extraction consumer)                            | low (extracted in 05-12)    | low                                             | the stained-glass app is no longer a consumer per CLAUDE.md; verify in W3-D2 (AnalyticShape `h-channel-came`)                                                                                                                                                                   |
+| W6 sharedWebGpuDevice removal breaks denoiser drivers in their test harnesses                         | medium                      | low                                             | drivers accept passed device; tests pass a vitest-managed device. Standard refactor.                                                                                                                                                                                            |
+| W2 C5 MaterialEntry unification changes default roughness silently (0.5 vs 1.0)                       | high                        | medium                                          | reference renders catch this; document the chosen default (probably 0.5 per the more common usage) in PR body                                                                                                                                                                   |
+| Cross-stream interleaving (W2-C3 + W8 race)                                                           | low                         | medium                                          | sequence W2-C3 before W8 explicitly (W7 dependency note)                                                                                                                                                                                                                        |
 
 ---
 
@@ -1101,7 +1125,7 @@ Do not relitigate or fold these into this plan:
 
 - Numerical/math/physics bugs from `in-flight-sweep-20260511.md`. They have
   their own tracking. Some refactors (W2 C3, W4-A4 BSDF split) will
-  *expose* them; if so, file in the 05-11 tracker and coordinate; do not
+  _expose_ them; if so, file in the 05-11 tracker and coordinate; do not
   fix in-stream unless the fix is a one-line opportunistic improvement.
 - Upstream PRs to `gkjohnson/three-gpu-pathtracer`.
 - npm publish.
@@ -1167,7 +1191,7 @@ sub-task specifics:
 - Git branch listing confirms 2 stale worktree branches present.
 - Existing recent commits: most recent meaningful structural commit is
   `38463d1 feat(core,walkaround-hybrid,dev,engine): T3.G followup — wire
-  engine.debug surface` — confirms the debug surface IS shipped.
+engine.debug surface` — confirms the debug surface IS shipped.
 
 This pre-flight investigation took ~2 dozen file reads. The plan is
 grounded in the current code state, not the sweep findings alone.

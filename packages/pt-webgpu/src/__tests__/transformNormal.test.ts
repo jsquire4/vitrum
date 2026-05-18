@@ -20,12 +20,7 @@ function dot(a: [number, number, number], b: [number, number, number]): number {
 /** Column-major 4×4 matrix representing a diagonal (scale-only) matrix. */
 function scaleMat4(sx: number, sy: number, sz: number): Float32Array {
   // Column-major: col0 = [sx,0,0,0], col1 = [0,sy,0,0], col2 = [0,0,sz,0], col3 = [0,0,0,1]
-  return new Float32Array([
-    sx, 0, 0, 0,
-    0, sy, 0, 0,
-    0, 0, sz, 0,
-    0, 0, 0, 1,
-  ]);
+  return new Float32Array([sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, 0, 0, 0, 1]);
 }
 
 /** Column-major 4×4 rotation matrix, 90° around Y-axis. */
@@ -33,12 +28,7 @@ function rotY90Mat4(): Float32Array {
   const c = Math.cos(Math.PI / 2);
   const s = Math.sin(Math.PI / 2);
   // col0=[c,0,-s,0], col1=[0,1,0,0], col2=[s,0,c,0], col3=[0,0,0,1]
-  return new Float32Array([
-    c, 0, -s, 0,
-    0, 1, 0, 0,
-    s, 0, c, 0,
-    0, 0, 0, 1,
-  ]);
+  return new Float32Array([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]);
 }
 
 // ────────────────────────────────────────────────────────────────────────────

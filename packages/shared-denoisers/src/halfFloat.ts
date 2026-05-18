@@ -20,7 +20,7 @@ export function float32ToFloat16Bits(value: number): number {
 
   if (exponent <= 0) {
     if (exponent < -10) {
-      return (sign >>> 0);
+      return sign >>> 0;
     }
     mantissa |= 0x0080_0000;
     const shift = 14 - exponent;

@@ -1,6 +1,7 @@
 # feat/plan-gaps Bug Review — 2026-05-09
 
 ## Summary
+
 - Findings: HIGH=3, MEDIUM=3, LOW=2
 
 ---
@@ -38,6 +39,7 @@ The correct upper bound for a u32 fixed-point accumulation is `f32(0xFFFFFFFFu)`
 ### H-3 — Welford varianceBuffer is never written; Sprint 9 + SVGF both read stale zeros
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/pipeline/resourceManager.ts:441` — buffer allocated
 - `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts:415,488` — buffer bound as input
 - No shader in the pipeline writes to it
@@ -124,16 +126,16 @@ More critically: any consumer on `main` that destructures `{ nodes, nodePowerPre
 
 ## Audit findings carryover status (A's fixes vs B's state)
 
-| Finding | A (main) fix | B (feat/plan-gaps) state | Diff |
-|---------|-------------|--------------------------|------|
-| H-1 ppgLeafSlot stride (32u→64u) | Fixed: `leafIdx * 64u` | **REVERTED** to `leafIdx * 32u` | Regression |
-| H-2 lumFixed clamp (0xFFFFFFu→0xFFFFFFFFu) | Fixed: full u32 range | **REVERTED** to `f32(0xFFFFFFu)` | Regression |
-| M-1 `nodePowerPrefixSum` naming | Renamed to `cdf` with clarified JSDoc | Renamed to `cdf` with contradictory JSDoc (calls it a "true CDF" but values exceed 1.0) | Partial; semantic ambiguity introduced |
-| M-2 sigmaColor comment in svgfBindings | Comment noted scene-specific tuning | Comment deleted; replaced with generic Schied citation | Regression (context lost) |
-| M-4 BLOCKING CONDITION comment in ppgSample | Prominent box warning present | **REMOVED** — replaced with single-sentence note that incorrectly calls brute-force O(N) "acceptable" | Regression: safety signal gone |
-| M-5 `mixturePdf` throw guard | Guard present: throws on all-zero probabilities | **REMOVED** | Regression |
-| M-6 svgfBindings iteration JSDoc | States "N times, host controls count" | Hardcoded to "5 times" | Partial: now mismatches the `SVGFUniforms.iteration` field comment which still says "0-4 (unbounded)" |
-| L-2 centroid degeneracy fallback | Power-median fallback present | **REMOVED** | Regression (see M-2 above) |
+| Finding                                     | A (main) fix                                    | B (feat/plan-gaps) state                                                                              | Diff                                                                                                  |
+| ------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| H-1 ppgLeafSlot stride (32u→64u)            | Fixed: `leafIdx * 64u`                          | **REVERTED** to `leafIdx * 32u`                                                                       | Regression                                                                                            |
+| H-2 lumFixed clamp (0xFFFFFFu→0xFFFFFFFFu)  | Fixed: full u32 range                           | **REVERTED** to `f32(0xFFFFFFu)`                                                                      | Regression                                                                                            |
+| M-1 `nodePowerPrefixSum` naming             | Renamed to `cdf` with clarified JSDoc           | Renamed to `cdf` with contradictory JSDoc (calls it a "true CDF" but values exceed 1.0)               | Partial; semantic ambiguity introduced                                                                |
+| M-2 sigmaColor comment in svgfBindings      | Comment noted scene-specific tuning             | Comment deleted; replaced with generic Schied citation                                                | Regression (context lost)                                                                             |
+| M-4 BLOCKING CONDITION comment in ppgSample | Prominent box warning present                   | **REMOVED** — replaced with single-sentence note that incorrectly calls brute-force O(N) "acceptable" | Regression: safety signal gone                                                                        |
+| M-5 `mixturePdf` throw guard                | Guard present: throws on all-zero probabilities | **REMOVED**                                                                                           | Regression                                                                                            |
+| M-6 svgfBindings iteration JSDoc            | States "N times, host controls count"           | Hardcoded to "5 times"                                                                                | Partial: now mismatches the `SVGFUniforms.iteration` field comment which still says "0-4 (unbounded)" |
+| L-2 centroid degeneracy fallback            | Power-median fallback present                   | **REMOVED**                                                                                           | Regression (see M-2 above)                                                                            |
 
 ---
 

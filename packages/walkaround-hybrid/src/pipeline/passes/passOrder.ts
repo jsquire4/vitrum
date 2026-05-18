@@ -63,12 +63,7 @@ export const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.f
   { id: 'indirect-temporal-accum', labels: ['indirect-temporal-accum'] },
   {
     id: 'atrous-indirect-3',
-    labels: [
-      'atrous-indirect-0',
-      'atrous-indirect-1',
-      'atrous-indirect-2',
-      'atrous-indirect-3',
-    ],
+    labels: ['atrous-indirect-0', 'atrous-indirect-1', 'atrous-indirect-2', 'atrous-indirect-3'],
   },
   { id: 'indirect-combine', labels: ['indirect-combine'] },
   { id: 'temporalAccum', labels: ['temporalAccum'] },
@@ -102,9 +97,7 @@ export const DDGI_BORDER_LABELS: readonly PassLabel[] = Object.freeze([
 /** Build the ordered label array for a given denoiser config. Used by
  *  `buildPassLayout` AND by the orchestrator if it wants to verify its
  *  runtime registry matches the static layout. */
-export function composePassLabels(
-  denoiserLabels: readonly PassLabel[],
-): readonly PassLabel[] {
+export function composePassLabels(denoiserLabels: readonly PassLabel[]): readonly PassLabel[] {
   const result: PassLabel[] = [];
   for (let i = 0; i < NON_DENOISER_PASS_ORDER.length; i++) {
     if (i === DENOISER_INSERTION_INDEX) {

@@ -45,9 +45,9 @@ export type SceneNodeId = string;
  * Reference: Wilkie et al., "Hero Wavelength Spectral Sampling," EGSR 2014.
  */
 export interface SpectralCurve {
-  readonly wavelengthStart: number;  // nm, e.g. 380
-  readonly wavelengthEnd: number;    // nm, e.g. 700
-  readonly values: Float32Array;     // μ(λ) in units matching attenuationDistance; length ≥ 3
+  readonly wavelengthStart: number; // nm, e.g. 380
+  readonly wavelengthEnd: number; // nm, e.g. 700
+  readonly values: Float32Array; // μ(λ) in units matching attenuationDistance; length ≥ 3
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -173,17 +173,17 @@ export interface ThinFilmStack {
 export interface Material {
   // ── Base PBR ────────────────────────────────────────────────────────────
   baseColor: Vec3;
-  roughness: number;            // 0 = mirror, 1 = matte
-  metallic: number;             // 0 = dielectric, 1 = pure metal
+  roughness: number; // 0 = mirror, 1 = matte
+  metallic: number; // 0 = dielectric, 1 = pure metal
   emissive?: Vec3;
   emissiveIntensity?: number;
 
   // ── Transmission / refraction ───────────────────────────────────────────
-  transmission?: number;        // 0 = opaque, 1 = fully transparent
-  ior?: number;                  // index of refraction
-  attenuationColor?: Vec3;       // Beer-Lambert: color the medium absorbs to
-  attenuationDistance?: number;  // Beer-Lambert: depth at which attenuationColor reached
-  thickness?: number;            // Beer-Lambert: actual slab thickness
+  transmission?: number; // 0 = opaque, 1 = fully transparent
+  ior?: number; // index of refraction
+  attenuationColor?: Vec3; // Beer-Lambert: color the medium absorbs to
+  attenuationDistance?: number; // Beer-Lambert: depth at which attenuationColor reached
+  thickness?: number; // Beer-Lambert: actual slab thickness
 
   // ── Texture maps (opaque handles, see TextureRef) ───────────────────────
   baseColorMap?: TextureRef;
@@ -358,12 +358,12 @@ export interface MeshPrimitive {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
   readonly uvs?: Float32Array;
-  readonly tangents?: Float32Array;       // xyzw per vertex; w = bitangent sign
+  readonly tangents?: Float32Array; // xyzw per vertex; w = bitangent sign
   readonly indices?: Uint32Array | Uint16Array;
   readonly material: Material;
-  readonly transform?: Mat4;              // identity if absent
-  readonly castShadow?: boolean;          // default true
-  readonly receiveShadow?: boolean;       // default true
+  readonly transform?: Mat4; // identity if absent
+  readonly castShadow?: boolean; // default true
+  readonly receiveShadow?: boolean; // default true
 }
 
 /** Same geometry repeated at many transforms. Backend may build a single BVH
@@ -392,23 +392,20 @@ export interface AnalyticPrimitive {
   readonly kind: 'analytic';
   readonly id: SceneNodeId;
   readonly shape: AnalyticShape;
-  readonly params: Float32Array;          // shape-specific layout, see AnalyticShape
+  readonly params: Float32Array; // shape-specific layout, see AnalyticShape
   readonly material: Material;
   readonly transform?: Mat4;
   readonly fallbackMesh?: Omit<MeshPrimitive, 'kind' | 'id' | 'material' | 'transform'>;
 }
 
 export type AnalyticShape =
-  | 'sphere'           // params: [cx, cy, cz, radius]
-  | 'box'              // params: [cx, cy, cz, hx, hy, hz]
-  | 'capsule'          // params: [ax, ay, az, bx, by, bz, radius]
-  | 'cylinder'         // params: [cx, cy, cz, radius, halfHeight]
-  | 'h-channel-came';  // params: [length, railWidth, blockHeight, webThickness] — H-channel rail primitive, Phase 6 sprint 5
+  | 'sphere' // params: [cx, cy, cz, radius]
+  | 'box' // params: [cx, cy, cz, hx, hy, hz]
+  | 'capsule' // params: [ax, ay, az, bx, by, bz, radius]
+  | 'cylinder' // params: [cx, cy, cz, radius, halfHeight]
+  | 'h-channel-came'; // params: [length, railWidth, blockHeight, webThickness] — H-channel rail primitive, Phase 6 sprint 5
 
-export type ScenePrimitive =
-  | MeshPrimitive
-  | InstancedMeshPrimitive
-  | AnalyticPrimitive;
+export type ScenePrimitive = MeshPrimitive | InstancedMeshPrimitive | AnalyticPrimitive;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Emitters — anything that gives off light
@@ -426,12 +423,12 @@ export interface EmitterBase {
   readonly id: SceneNodeId;
   readonly color: Vec3;
   readonly intensity: number;
-  readonly castShadow?: boolean;          // default true
+  readonly castShadow?: boolean; // default true
 }
 
 export interface DirectionalEmitter extends EmitterBase {
   readonly kind: 'directional';
-  readonly direction: Vec3;               // unit vector pointing AT the light
+  readonly direction: Vec3; // unit vector pointing AT the light
   /** Optional: angular subtense for soft shadows. 0 = perfectly directional. */
   readonly angularDiameter?: number;
 }
@@ -446,23 +443,23 @@ export interface DiscAreaEmitter extends EmitterBase {
 export interface RectAreaEmitter extends EmitterBase {
   readonly kind: 'rect-area';
   readonly position: Vec3;
-  readonly uAxis: Vec3;                   // half-width vector
-  readonly vAxis: Vec3;                   // half-height vector (uAxis × vAxis = normal)
+  readonly uAxis: Vec3; // half-width vector
+  readonly vAxis: Vec3; // half-height vector (uAxis × vAxis = normal)
 }
 
 export interface PointEmitter extends EmitterBase {
   readonly kind: 'point';
   readonly position: Vec3;
-  readonly distance?: number;             // attenuation falloff distance
-  readonly decay?: number;                // 0 = no decay, 2 = physical inverse-square
+  readonly distance?: number; // attenuation falloff distance
+  readonly decay?: number; // 0 = no decay, 2 = physical inverse-square
 }
 
 export interface SpotEmitter extends EmitterBase {
   readonly kind: 'spot';
   readonly position: Vec3;
   readonly direction: Vec3;
-  readonly angle: number;                 // half-cone angle in radians
-  readonly penumbra?: number;             // 0–1; 0 = hard edge, 1 = full penumbra
+  readonly angle: number; // half-cone angle in radians
+  readonly penumbra?: number; // 0–1; 0 = hard edge, 1 = full penumbra
   readonly distance?: number;
   readonly decay?: number;
 }
@@ -480,16 +477,13 @@ export interface MeshAreaEmitter extends EmitterBase {
 // Environment — hemispheric / global light source
 // ────────────────────────────────────────────────────────────────────────────
 
-export type SceneEnvironment =
-  | HdriEnvironment
-  | ProceduralSkyEnvironment
-  | NoneEnvironment;
+export type SceneEnvironment = HdriEnvironment | ProceduralSkyEnvironment | NoneEnvironment;
 
 export interface HdriEnvironment {
   readonly kind: 'hdri';
   readonly hdri: TextureRef;
-  readonly intensity?: number;            // default 1
-  readonly rotationY?: number;            // radians, default 0
+  readonly intensity?: number; // default 1
+  readonly rotationY?: number; // radians, default 0
 }
 
 export interface ProceduralSkyEnvironment {

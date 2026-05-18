@@ -58,7 +58,7 @@ function ggxD(nDotH: number, alpha: number): number {
 /** Mirror of smithG1 (WGSL line 302). */
 function smithG1(nDotV: number, roughness: number): number {
   const r = roughness + 1.0;
-  const k = (r * r) * 0.125;
+  const k = r * r * 0.125;
   return nDotV / Math.max(nDotV * (1.0 - k) + k, 1e-6);
 }
 
@@ -122,18 +122,14 @@ interface PointLight {
  *
  * Returns: f(wi) * nDotL * L / dist²
  */
-function evalPointLightContrib(
-  light: PointLight,
-  recvPos: Vec3,
-  rho: number,
-): number {
+function evalPointLightContrib(light: PointLight, recvPos: Vec3, rho: number): number {
   const toLight = sub3(light.pos, recvPos);
   const dist2 = Math.max(dot3(toLight, toLight), 1e-5);
   const wi = normalize3(toLight);
   const nDotL = Math.max(wi[2], 0.0); // normal = +Z
   if (nDotL <= 1e-5) return 0.0;
   const f = evaluateLambertianBrdf(rho, wi);
-  return f * nDotL * light.intensity / dist2;
+  return (f * nDotL * light.intensity) / dist2;
 }
 
 /**
@@ -169,7 +165,7 @@ function evalPointLightContribMIS(
   const lightPdf = dist2 / Math.max(1.0 * area, 1e-10); // solid-angle pdf for area light
   const brdfPdf = lambertianPdf(wi);
   const misWeight = powerHeuristic(lightPdf, brdfPdf);
-  return f * nDotL * light.intensity / dist2 * misWeight;
+  return ((f * nDotL * light.intensity) / dist2) * misWeight;
 }
 
 // ---------------------------------------------------------------------------

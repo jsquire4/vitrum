@@ -13,7 +13,7 @@
  * Bindings 1 and 2 not used (host passes placeholder 4-byte buffers).
  */
 
-export const BILINEAR_UPSAMPLE_WGSL = /* wgsl */`
+export const BILINEAR_UPSAMPLE_WGSL = /* wgsl */ `
 struct UpsampleParams {
   inputH  : u32,
   inputW  : u32,

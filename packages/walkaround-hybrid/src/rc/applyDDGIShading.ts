@@ -26,7 +26,19 @@ import type { MeshPhysicalNodeMaterial, MeshStandardNodeMaterial } from 'three/w
 import { StorageTexture } from 'three/webgpu';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyNode = any;
-import { add, vec4, mul, output, materialColor, uniform, texture, positionWorld, normalWorld, wgslFn, renderOutput } from 'three/tsl';
+import {
+  add,
+  vec4,
+  mul,
+  output,
+  materialColor,
+  uniform,
+  texture,
+  positionWorld,
+  normalWorld,
+  wgslFn,
+  renderOutput,
+} from 'three/tsl';
 import type { ProbeGrid, AtlasTextureSlot } from '../ddgi/probeGrid.js';
 import { DDGI_SAMPLE_WGSL } from '../ddgi/ddgiSampleWgsl.js';
 import { upgradeToNodeMaterial } from '../lib/nodeMaterialUpgrade.js';
@@ -64,7 +76,7 @@ function slotToStorageTexture(slot: AtlasTextureSlot): StorageTexture {
 // compositor safe), but the per-pixel output reaching the canvas is now properly
 // gamma-encoded sRGB with ACES highlight roll-off.
 const OUTPUT_TONE_MAPPING = THREE.ACESFilmicToneMapping;
-const OUTPUT_COLOR_SPACE  = THREE.SRGBColorSpace;
+const OUTPUT_COLOR_SPACE = THREE.SRGBColorSpace;
 
 // Singleton wgslFn for the DDGI sample function — created once, shared
 // across all materials.
@@ -82,11 +94,7 @@ interface InjectedEntry {
 }
 const _injectedMaterials = new WeakMap<THREE.Mesh, InjectedEntry>();
 
-export function applyDDGIShading(
-  scene: THREE.Scene,
-  probeGrid: ProbeGrid,
-  enabled = true,
-): void {
+export function applyDDGIShading(scene: THREE.Scene, probeGrid: ProbeGrid, enabled = true): void {
   if (!probeGrid.irradianceA || !probeGrid.irradianceB) return;
 
   const irrTex = slotToStorageTexture(probeGrid.irradianceReadTex);
@@ -134,11 +142,22 @@ export function applyDDGIShading(
 
     // DDGI irradiance sample at this fragment.
     const ddgiIrr = sampleFn(
-      positionWorld, normalWorld,
-      irrTexNode, visTexNode, irrTexNode.sampler,
-      oX, oY, oZ, sp,
-      dx, dy, dz,
-      iW, iH, vW, vH,
+      positionWorld,
+      normalWorld,
+      irrTexNode,
+      visTexNode,
+      irrTexNode.sampler,
+      oX,
+      oY,
+      oZ,
+      sp,
+      dx,
+      dy,
+      dz,
+      iW,
+      iH,
+      vW,
+      vH,
     );
 
     // Lambertian receiver: outgoing diffuse from indirect = (albedo/π) · E_ddgi.
@@ -152,8 +171,11 @@ export function applyDDGIShading(
     const ddgiContrib = mul(ddgiIrr, mul(materialColor as AnyNode, PI_INV));
 
     const linearOutput = add(output, vec4(ddgiContrib as AnyNode, 0.0));
-    (nodeMat as MeshPhysicalNodeMaterial & { outputNode: unknown }).outputNode =
-      renderOutput(linearOutput, OUTPUT_TONE_MAPPING, OUTPUT_COLOR_SPACE);
+    (nodeMat as MeshPhysicalNodeMaterial & { outputNode: unknown }).outputNode = renderOutput(
+      linearOutput,
+      OUTPUT_TONE_MAPPING,
+      OUTPUT_COLOR_SPACE,
+    );
     nodeMat.needsUpdate = true;
     _injectedMaterials.set(obj, { original: originalMat, upgraded: nodeMat });
   });

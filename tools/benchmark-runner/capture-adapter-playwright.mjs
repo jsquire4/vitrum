@@ -15,12 +15,12 @@ const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5173/
  * or false to skip. Default validator: non-empty string.
  */
 const ENV_TO_QUERY = [
-  { env: 'VITRUM_SCENARIO_ID',         query: 'vitrumScenario' },
-  { env: 'VITRUM_SEED',                query: 'vitrumSeed' },
-  { env: 'VITRUM_WIDTH',               query: 'vitrumWidth' },
-  { env: 'VITRUM_HEIGHT',              query: 'vitrumHeight' },
-  { env: 'VITRUM_BOUNCES',             query: 'vitrumBounces' },
-  { env: 'VITRUM_SPP',                 query: 'vitrumSpp' },
+  { env: 'VITRUM_SCENARIO_ID', query: 'vitrumScenario' },
+  { env: 'VITRUM_SEED', query: 'vitrumSeed' },
+  { env: 'VITRUM_WIDTH', query: 'vitrumWidth' },
+  { env: 'VITRUM_HEIGHT', query: 'vitrumHeight' },
+  { env: 'VITRUM_BOUNCES', query: 'vitrumBounces' },
+  { env: 'VITRUM_SPP', query: 'vitrumSpp' },
   {
     env: 'VITRUM_CAUSTIC_STRATEGY',
     query: 'vitrumCaustic',
@@ -31,14 +31,14 @@ const ENV_TO_QUERY = [
     query: 'vitrumDisplay',
     validate: (v) => ['raw', 'bilateral', 'oidn', 'wgsl', 'svgf'].includes(v),
   },
-  { env: 'VITRUM_OIDN_MODEL',          query: 'vitrumOidnModel' },
-  { env: 'VITRUM_WGSL_SIGMA',          query: 'vitrumWgslSigma' },
+  { env: 'VITRUM_OIDN_MODEL', query: 'vitrumOidnModel' },
+  { env: 'VITRUM_WGSL_SIGMA', query: 'vitrumWgslSigma' },
   {
     env: 'VITRUM_WEBGPU_SHARED',
     query: 'vitrumWebGpuShared',
     validate: (v) => v === '0' || v === '1',
   },
-  { env: 'VITRUM_SVGF_ATROUS',         query: 'vitrumSvgfAtrous' },
+  { env: 'VITRUM_SVGF_ATROUS', query: 'vitrumSvgfAtrous' },
 ];
 
 function captureUrlWithScenarioParams() {
@@ -123,8 +123,8 @@ try {
 
   const telemetry = await page
     .evaluate(() => {
-      const msPerSample = (globalThis).VITRUM_MS_PER_SAMPLE;
-      const extra = (globalThis).VITRUM_CAPTURE_TELEMETRY;
+      const msPerSample = globalThis.VITRUM_MS_PER_SAMPLE;
+      const extra = globalThis.VITRUM_CAPTURE_TELEMETRY;
       if (typeof msPerSample !== 'number' || !Number.isFinite(msPerSample)) return null;
       return {
         ...(extra && typeof extra === 'object' ? extra : {}),

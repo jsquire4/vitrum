@@ -36,7 +36,7 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
-export const PPG_UPDATE_WGSL = /* wgsl */`
+export const PPG_UPDATE_WGSL = /* wgsl */ `
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Müller et al. 2017 §3.3 — training on INCOMING radiance (L_i).
 // DEVIATION 3 FIX: ppgLiSamples is the L_i binding, not Lo.

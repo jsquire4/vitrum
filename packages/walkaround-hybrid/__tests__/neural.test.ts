@@ -41,14 +41,22 @@ import { BILINEAR_UPSAMPLE_WGSL } from '../src/neural/wgsl/bilinearUpsample.wgsl
 let lcgState = 1234567891;
 function lcg(): number {
   lcgState = (lcgState * 1664525 + 1013904223) & 0xffffffff;
-  return (lcgState >>> 0) / 0x100000000;  // [0, 1)
+  return (lcgState >>> 0) / 0x100000000; // [0, 1)
 }
-function lcgReset(): void { lcgState = 1234567891; }
-function lcgFloat(min = -1, max = 1): number { return min + lcg() * (max - min); }
+function lcgReset(): void {
+  lcgState = 1234567891;
+}
+function lcgFloat(min = -1, max = 1): number {
+  return min + lcg() * (max - min);
+}
 
 // ─── Helper: simulate tensor dim propagation ───────────────────────────────────
 
-interface TensorDims { H: number; W: number; C: number; }
+interface TensorDims {
+  H: number;
+  W: number;
+  C: number;
+}
 
 function computeGraphDims(
   spec: ReturnType<typeof buildUNetSpec>,
@@ -57,8 +65,8 @@ function computeGraphDims(
 ): Map<string, TensorDims> {
   const dims = new Map<string, TensorDims>();
   dims.set('noisyColor', { H, W, C: 3 });
-  dims.set('albedo',     { H, W, C: 3 });
-  dims.set('normals',    { H, W, C: 3 });
+  dims.set('albedo', { H, W, C: 3 });
+  dims.set('normals', { H, W, C: 3 });
 
   for (const layer of spec.layers) {
     const inDims = layer.inputs.length > 0 ? dims.get(layer.inputs[0]!) : undefined;
@@ -75,8 +83,8 @@ function computeGraphDims(
       case 'conv2d': {
         const kH = layer.params.kH ?? 3;
         const kW = layer.params.kW ?? 3;
-        const s  = layer.params.stride ?? 1;
-        const p  = layer.params.padding ?? 0;
+        const s = layer.params.stride ?? 1;
+        const p = layer.params.padding ?? 0;
         outH = Math.floor((outH + 2 * p - kH) / s) + 1;
         outW = Math.floor((outW + 2 * p - kW) / s) + 1;
         break;
@@ -110,10 +118,11 @@ describe('Test 1 — U-Net spec spatial coherence (Bug 1 fix)', () => {
     const spec = buildUNetSpec();
 
     // Use a realistic 64×64 resolution.
-    const W = 64, H = 64;
+    const W = 64,
+      H = 64;
     const dims = computeGraphDims(spec, W, H);
 
-    const skipLayers = spec.layers.filter(l => l.kind === 'skipAdd');
+    const skipLayers = spec.layers.filter((l) => l.kind === 'skipAdd');
     expect(skipLayers.length).toBeGreaterThan(0);
 
     const mismatches: string[] = [];
@@ -134,8 +143,8 @@ describe('Test 1 — U-Net spec spatial coherence (Bug 1 fix)', () => {
       if (a.H !== b.H || a.W !== b.W || a.C !== b.C) {
         mismatches.push(
           `${layer.name}: shape mismatch — ` +
-          `'${layer.inputs[0]}' = [${a.H}×${a.W}×${a.C}] vs ` +
-          `'${layer.inputs[1]}' = [${b.H}×${b.W}×${b.C}]`,
+            `'${layer.inputs[0]}' = [${a.H}×${a.W}×${a.C}] vs ` +
+            `'${layer.inputs[1]}' = [${b.H}×${b.W}×${b.C}]`,
         );
       }
     }
@@ -149,7 +158,8 @@ describe('Test 1 — U-Net spec spatial coherence (Bug 1 fix)', () => {
 
   it('skip sources (enc1_feat, enc2_feat, enc3_feat) are at correct spatial resolutions', () => {
     const spec = buildUNetSpec();
-    const W = 128, H = 64;
+    const W = 128,
+      H = 64;
     const dims = computeGraphDims(spec, W, H);
 
     // Verify encoder skip sources have the expected spatial dimensions.
@@ -174,7 +184,8 @@ describe('Test 1 — U-Net spec spatial coherence (Bug 1 fix)', () => {
 
   it('decoder outputs are at correct spatial resolutions', () => {
     const spec = buildUNetSpec();
-    const W = 128, H = 64;
+    const W = 128,
+      H = 64;
     const dims = computeGraphDims(spec, W, H);
 
     // dec3_up: tconv from H/8 → H/4 (96 channels)
@@ -238,12 +249,13 @@ describe('Test 2 — WGSL binding declarations match host dispatch order (Bug 3 
       expect(
         allowed,
         `${name}: binding ${slot} (var '${varName}') has no expected-role entry. ` +
-        `Known slots: ${Object.keys(EXPECTED_BINDING_ROLES).join(', ')}`,
+          `Known slots: ${Object.keys(EXPECTED_BINDING_ROLES).join(', ')}`,
       ).toBeDefined();
 
       if (allowed) {
-        const found = allowed.some(role => varName.toLowerCase().includes(role.toLowerCase()) ||
-                                           varName === role);
+        const found = allowed.some(
+          (role) => varName.toLowerCase().includes(role.toLowerCase()) || varName === role,
+        );
         expect(
           found,
           `${name}: binding ${slot} var '${varName}' not in expected roles [${allowed.join(', ')}]`,
@@ -255,11 +267,11 @@ describe('Test 2 — WGSL binding declarations match host dispatch order (Bug 3 
   it('conv2d.wgsl has correct canonical binding layout', () => {
     const bindings = parseBindings(CONV2D_WGSL);
     expect(bindings.size).toBeGreaterThanOrEqual(5);
-    expect(bindings.has(0)).toBe(true);  // input
-    expect(bindings.has(1)).toBe(true);  // weights
-    expect(bindings.has(2)).toBe(true);  // biases
-    expect(bindings.has(3)).toBe(true);  // output
-    expect(bindings.has(4)).toBe(true);  // params
+    expect(bindings.has(0)).toBe(true); // input
+    expect(bindings.has(1)).toBe(true); // weights
+    expect(bindings.has(2)).toBe(true); // biases
+    expect(bindings.has(3)).toBe(true); // output
+    expect(bindings.has(4)).toBe(true); // params
 
     // Verify the output is read_write (not read-only).
     expect(CONV2D_WGSL).toContain('@binding(3)');
@@ -281,17 +293,17 @@ describe('Test 2 — WGSL binding declarations match host dispatch order (Bug 3 
   it('relu.wgsl uses binding 0 for input, 3 for output, 4 for params', () => {
     const bindings = parseBindings(RELU_WGSL);
     // relu only uses 0, 3, 4 (no weights/biases).
-    expect(bindings.has(0)).toBe(true);   // input
-    expect(bindings.has(3)).toBe(true);   // output
-    expect(bindings.has(4)).toBe(true);   // params
+    expect(bindings.has(0)).toBe(true); // input
+    expect(bindings.has(3)).toBe(true); // output
+    expect(bindings.has(4)).toBe(true); // params
   });
 
   it('skipConnection.wgsl uses binding 0 for inputA, 1 for inputB, 3 for output', () => {
     const bindings = parseBindings(SKIP_CONNECTION_WGSL);
-    expect(bindings.has(0)).toBe(true);   // inputA (decoder up-sample output)
-    expect(bindings.has(1)).toBe(true);   // inputB (encoder skip source)
-    expect(bindings.has(3)).toBe(true);   // output (sum)
-    expect(bindings.has(4)).toBe(true);   // params
+    expect(bindings.has(0)).toBe(true); // inputA (decoder up-sample output)
+    expect(bindings.has(1)).toBe(true); // inputB (encoder skip source)
+    expect(bindings.has(3)).toBe(true); // output (sum)
+    expect(bindings.has(4)).toBe(true); // params
 
     // Must NOT use binding 2 (biases slot — skip has no biases).
     // Binding 2 absence means the skip layer is clean.
@@ -300,9 +312,9 @@ describe('Test 2 — WGSL binding declarations match host dispatch order (Bug 3 
 
   it('bilinearUpsample.wgsl uses binding 0 for input, 3 for output', () => {
     const bindings = parseBindings(BILINEAR_UPSAMPLE_WGSL);
-    expect(bindings.has(0)).toBe(true);   // inputBuf
-    expect(bindings.has(3)).toBe(true);   // outputBuf
-    expect(bindings.has(4)).toBe(true);   // params
+    expect(bindings.has(0)).toBe(true); // inputBuf
+    expect(bindings.has(3)).toBe(true); // outputBuf
+    expect(bindings.has(4)).toBe(true); // params
   });
 });
 
@@ -337,47 +349,59 @@ describe('Test 3 — Uniform buffer write check (Bug 4 fix)', () => {
     const { InferenceGraph } = await import('../src/neural/InferenceGraph.js');
     const spec = buildUNetSpec();
     const graph = new InferenceGraph(spec) as unknown as {
-      _packUniform: (layer: LayerSpec, dims: Map<string, { H: number; W: number; C: number }>) => ArrayBuffer;
-      _computeTensorDims: (W: number, H: number) => Map<string, { H: number; W: number; C: number }>;
+      _packUniform: (
+        layer: LayerSpec,
+        dims: Map<string, { H: number; W: number; C: number }>,
+      ) => ArrayBuffer;
+      _computeTensorDims: (
+        W: number,
+        H: number,
+      ) => Map<string, { H: number; W: number; C: number }>;
     };
 
     const dims = graph._computeTensorDims(64, 64);
-    const enc1Layer = spec.layers.find(l => l.name === 'enc1_conv');
+    const enc1Layer = spec.layers.find((l) => l.name === 'enc1_conv');
     expect(enc1Layer).toBeDefined();
 
     const buf = graph._packUniform(enc1Layer!, dims);
-    expect(buf.byteLength).toBe(32);  // 8 u32 × 4 bytes = 32
+    expect(buf.byteLength).toBe(32); // 8 u32 × 4 bytes = 32
 
     // Verify the u32 values encode correct shape params.
     const u32 = new Uint32Array(buf);
-    expect(u32[2]).toBe(9);   // inC = 9 (input from enc_input)
-    expect(u32[3]).toBe(24);  // outC = 24 (enc1_conv output)
-    expect(u32[4]).toBe(3);   // kH = 3
-    expect(u32[5]).toBe(3);   // kW = 3
-    expect(u32[6]).toBe(1);   // stride = 1
-    expect(u32[7]).toBe(1);   // padding = 1
+    expect(u32[2]).toBe(9); // inC = 9 (input from enc_input)
+    expect(u32[3]).toBe(24); // outC = 24 (enc1_conv output)
+    expect(u32[4]).toBe(3); // kH = 3
+    expect(u32[5]).toBe(3); // kW = 3
+    expect(u32[6]).toBe(1); // stride = 1
+    expect(u32[7]).toBe(1); // padding = 1
   });
 
   it('_packUniform for transposedConv2d encodes stride=2 and padding=0', async () => {
     const { InferenceGraph } = await import('../src/neural/InferenceGraph.js');
     const spec = buildUNetSpec();
     const graph = new InferenceGraph(spec) as unknown as {
-      _packUniform: (layer: LayerSpec, dims: Map<string, { H: number; W: number; C: number }>) => ArrayBuffer;
-      _computeTensorDims: (W: number, H: number) => Map<string, { H: number; W: number; C: number }>;
+      _packUniform: (
+        layer: LayerSpec,
+        dims: Map<string, { H: number; W: number; C: number }>,
+      ) => ArrayBuffer;
+      _computeTensorDims: (
+        W: number,
+        H: number,
+      ) => Map<string, { H: number; W: number; C: number }>;
     };
 
     const dims = graph._computeTensorDims(64, 64);
-    const dec3Layer = spec.layers.find(l => l.name === 'dec3_up');
+    const dec3Layer = spec.layers.find((l) => l.name === 'dec3_up');
     expect(dec3Layer).toBeDefined();
 
     const buf = graph._packUniform(dec3Layer!, dims);
     const u32 = new Uint32Array(buf);
 
     // kH=2, kW=2, stride=2, padding=0 (PyTorch ConvTranspose2d bug fix)
-    expect(u32[4]).toBe(2);   // kH
-    expect(u32[5]).toBe(2);   // kW
-    expect(u32[6]).toBe(2);   // stride
-    expect(u32[7]).toBe(0);   // padding
+    expect(u32[4]).toBe(2); // kH
+    expect(u32[5]).toBe(2); // kW
+    expect(u32[6]).toBe(2); // stride
+    expect(u32[7]).toBe(0); // padding
   });
 });
 
@@ -390,18 +414,24 @@ describe('Test 4 — Weight loader round-trip (weights.ts)', () => {
     const layers: LayerWeights[] = [
       {
         name: 'enc1_conv',
-        weights: new Float32Array(Array.from({ length: 9 * 24 * 3 * 3 }, () => lcgFloat(-0.5, 0.5))),
-        biases:  new Float32Array(Array.from({ length: 24 },              () => lcgFloat(-0.1, 0.1))),
+        weights: new Float32Array(
+          Array.from({ length: 9 * 24 * 3 * 3 }, () => lcgFloat(-0.5, 0.5)),
+        ),
+        biases: new Float32Array(Array.from({ length: 24 }, () => lcgFloat(-0.1, 0.1))),
       },
       {
         name: 'enc1_down',
-        weights: new Float32Array(Array.from({ length: 24 * 24 * 3 * 3 }, () => lcgFloat(-0.5, 0.5))),
-        biases:  new Float32Array(Array.from({ length: 24 },              () => lcgFloat(-0.1, 0.1))),
+        weights: new Float32Array(
+          Array.from({ length: 24 * 24 * 3 * 3 }, () => lcgFloat(-0.5, 0.5)),
+        ),
+        biases: new Float32Array(Array.from({ length: 24 }, () => lcgFloat(-0.1, 0.1))),
       },
       {
         name: 'proj',
-        weights: new Float32Array(Array.from({ length: 24 * 3 * 1 * 1 }, () => lcgFloat(-0.5, 0.5))),
-        biases:  new Float32Array(Array.from({ length: 3 },              () => lcgFloat(-0.1, 0.1))),
+        weights: new Float32Array(
+          Array.from({ length: 24 * 3 * 1 * 1 }, () => lcgFloat(-0.5, 0.5)),
+        ),
+        biases: new Float32Array(Array.from({ length: 3 }, () => lcgFloat(-0.1, 0.1))),
       },
     ];
     return { layers };
@@ -424,13 +454,13 @@ describe('Test 4 — Weight loader round-trip (weights.ts)', () => {
 
   it('round-trip: serialize → deserialize → bit-equal weights', () => {
     const original = makeTestWeights();
-    const buf       = serializeWeightsToArrayBuffer(original);
-    const loaded    = loadWeightsFromArrayBuffer(buf);
+    const buf = serializeWeightsToArrayBuffer(original);
+    const loaded = loadWeightsFromArrayBuffer(buf);
 
     expect(loaded.layers.length).toBe(original.layers.length);
 
     for (let i = 0; i < original.layers.length; i++) {
-      const origLayer  = original.layers[i]!;
+      const origLayer = original.layers[i]!;
       const loadedLayer = loaded.layers[i]!;
 
       expect(loadedLayer.name).toBe(origLayer.name);
@@ -442,7 +472,7 @@ describe('Test 4 — Weight loader round-trip (weights.ts)', () => {
         if (origLayer.weights[j] !== loadedLayer.weights[j]) {
           throw new Error(
             `Weight mismatch in layer '${origLayer.name}' at index ${j}: ` +
-            `expected ${origLayer.weights[j]}, got ${loadedLayer.weights[j]}`,
+              `expected ${origLayer.weights[j]}, got ${loadedLayer.weights[j]}`,
           );
         }
       }
@@ -450,7 +480,7 @@ describe('Test 4 — Weight loader round-trip (weights.ts)', () => {
         if (origLayer.biases[j] !== loadedLayer.biases[j]) {
           throw new Error(
             `Bias mismatch in layer '${origLayer.name}' at index ${j}: ` +
-            `expected ${origLayer.biases[j]}, got ${loadedLayer.biases[j]}`,
+              `expected ${origLayer.biases[j]}, got ${loadedLayer.biases[j]}`,
           );
         }
       }
@@ -460,7 +490,7 @@ describe('Test 4 — Weight loader round-trip (weights.ts)', () => {
   it('loadWeightsFromArrayBuffer throws on wrong magic', () => {
     const buf = new ArrayBuffer(12);
     const view = new DataView(buf);
-    view.setUint32(0, 0xDEADBEEF, true);  // wrong magic
+    view.setUint32(0, 0xdeadbeef, true); // wrong magic
     view.setUint32(4, 1, true);
     view.setUint32(8, 0, true);
 
@@ -471,7 +501,7 @@ describe('Test 4 — Weight loader round-trip (weights.ts)', () => {
     const buf = new ArrayBuffer(12);
     const view = new DataView(buf);
     view.setUint32(0, VITRUM_MODEL_MAGIC, true);
-    view.setUint32(4, 99, true);  // unsupported version
+    view.setUint32(4, 99, true); // unsupported version
     view.setUint32(8, 0, true);
 
     expect(() => loadWeightsFromArrayBuffer(buf)).toThrow(/unsupported version/i);
@@ -499,12 +529,17 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
    * by showing that when params are correctly applied, the output is non-trivial.
    */
   function cpuConv2d(
-    input:   Float32Array,  // [H × W × inC]
-    weights: Float32Array,  // [outC × inC × kH × kW] (OIKW)
-    biases:  Float32Array,  // [outC]
-    H: number, W: number, inC: number,
-    outC: number, kH: number, kW: number,
-    stride: number, padding: number,
+    input: Float32Array, // [H × W × inC]
+    weights: Float32Array, // [outC × inC × kH × kW] (OIKW)
+    biases: Float32Array, // [outC]
+    H: number,
+    W: number,
+    inC: number,
+    outC: number,
+    kH: number,
+    kW: number,
+    stride: number,
+    padding: number,
   ): Float32Array {
     const outH = Math.floor((H + 2 * padding - kH) / stride) + 1;
     const outW = Math.floor((W + 2 * padding - kW) / stride) + 1;
@@ -525,7 +560,7 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
               if (ix < 0 || ix >= W) continue;
               for (let ic = 0; ic < inC; ic++) {
                 const inIdx = iy * W * inC + ix * inC + ic;
-                const wIdx  = oc * inC * kH * kW + ic * kH * kW + kh * kW + kw;
+                const wIdx = oc * inC * kH * kW + ic * kH * kW + kh * kW + kw;
                 acc += input[inIdx]! * weights[wIdx]!;
               }
             }
@@ -538,24 +573,29 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
   }
 
   function relu(x: Float32Array): Float32Array {
-    return new Float32Array(x.map(v => Math.max(0, v)));
+    return new Float32Array(x.map((v) => Math.max(0, v)));
   }
 
   it('32×32×9 input through enc1_conv + relu produces finite output in [-5, 5]', () => {
     lcgReset();
 
-    const H = 32, W = 32;
-    const inC = 9, outC = 24, kH = 3, kW = 3;
-    const stride = 1, padding = 1;
+    const H = 32,
+      W = 32;
+    const inC = 9,
+      outC = 24,
+      kH = 3,
+      kW = 3;
+    const stride = 1,
+      padding = 1;
 
     // Deterministic random input (noisy RGB 0.0–1.0 range).
     const input = new Float32Array(H * W * inC).fill(0).map(() => lcg());
 
     // Deterministic random weights (small initialization, Xavier-scale).
-    const scale = Math.sqrt(2.0 / (inC * kH * kW));  // He init scale
-    const weights = new Float32Array(outC * inC * kH * kW).fill(0).map(() =>
-      lcgFloat(-scale, scale),
-    );
+    const scale = Math.sqrt(2.0 / (inC * kH * kW)); // He init scale
+    const weights = new Float32Array(outC * inC * kH * kW)
+      .fill(0)
+      .map(() => lcgFloat(-scale, scale));
     const biases = new Float32Array(outC).fill(0).map(() => lcgFloat(-0.01, 0.01));
 
     // Forward pass.
@@ -580,7 +620,7 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
     expect(infCount).toBe(0);
 
     // ReLU output must be non-negative.
-    const negCount = Array.from(activated).filter(v => v < 0).length;
+    const negCount = Array.from(activated).filter((v) => v < 0).length;
     expect(negCount).toBe(0);
 
     // At small He-init scale, values should be bounded.
@@ -607,7 +647,7 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
     expect(anyMismatch).toBe(false);
 
     // Result is finite.
-    const finite = Array.from(sum).every(v => Number.isFinite(v));
+    const finite = Array.from(sum).every((v) => Number.isFinite(v));
     expect(finite).toBe(true);
   });
 
@@ -620,8 +660,8 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
 
     // At f32 (4 bytes): 426k params × 4 = 1.7 MB → within 1–3 MB budget.
     const bytesF32 = spec.paramCount * 4;
-    expect(bytesF32).toBeGreaterThan(1_000_000);  // > 1 MB
-    expect(bytesF32).toBeLessThan(3_000_000);     // < 3 MB
+    expect(bytesF32).toBeGreaterThan(1_000_000); // > 1 MB
+    expect(bytesF32).toBeLessThan(3_000_000); // < 3 MB
   });
 
   it('WALKAROUND_DENOISER_UNET_SPEC has 9 input channels and 3 output channels', () => {
@@ -634,27 +674,30 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
     const { HybridEngine } = await import('../src/HybridEngine.js');
 
     const mockDevice = {
-      createCommandEncoder:     () => ({}),
-      createBuffer:             () => ({}),
-      createShaderModule:       () => ({}),
-      createComputePipeline:    () => ({}),
-      createBindGroupLayout:    () => ({}),
-      createBindGroup:          () => ({}),
-      createPipelineLayout:     () => ({}),
-      queue:                    { writeBuffer: () => {}, submit: () => {} },
+      createCommandEncoder: () => ({}),
+      createBuffer: () => ({}),
+      createShaderModule: () => ({}),
+      createComputePipeline: () => ({}),
+      createBindGroupLayout: () => ({}),
+      createBindGroup: () => ({}),
+      createPipelineLayout: () => ({}),
+      queue: { writeBuffer: () => {}, submit: () => {} },
     } as unknown as GPUDevice;
 
-    expect(() => new HybridEngine({
-      device:               mockDevice,
-      width:                64,
-      height:               64,
-      primaryLightDir:      [0, -1, 0],
-      primaryLightIntensity:1,
-      skyTint:              [0.2, 0.4, 0.8],
-      skyIrradiance:        0.5,
-      threeScene:           {} as unknown as import('three').Scene,
-      denoiser:             'neural',
-      // neuralWeights intentionally omitted
-    })).toThrow(/neural.*weights|neuralWeights.*required/i);
+    expect(
+      () =>
+        new HybridEngine({
+          device: mockDevice,
+          width: 64,
+          height: 64,
+          primaryLightDir: [0, -1, 0],
+          primaryLightIntensity: 1,
+          skyTint: [0.2, 0.4, 0.8],
+          skyIrradiance: 0.5,
+          threeScene: {} as unknown as import('three').Scene,
+          denoiser: 'neural',
+          // neuralWeights intentionally omitted
+        }),
+    ).toThrow(/neural.*weights|neuralWeights.*required/i);
   });
 });

@@ -80,8 +80,8 @@ Rationale for the existing order:
 
 **Files moving in:**
 
-| Source | Target |
-|---|---|
+| Source                       | Target                              |
+| ---------------------------- | ----------------------------------- |
 | `walkaround/gpuDetection.ts` | `packages/core/src/gpuDetection.ts` |
 
 **Transformations needed:**
@@ -109,12 +109,12 @@ Rationale for the existing order:
 
 **Files moving in:**
 
-| Source | Target |
-|---|---|
-| `walkaround/lib/bvhCommon.ts` | `packages/shared-bvh/src/bvhCommon.ts` |
-| `walkaround/lib/bvhCommon.test.ts` | `packages/shared-bvh/src/__tests__/bvhCommon.test.ts` |
-| `walkaround/wgsl/octahedral.wgsl.ts` | `packages/shared-bvh/src/wgsl/octahedral.wgsl.ts` |
-| `walkaround/sceneBvh.ts` | `packages/shared-bvh/src/sceneBvh.ts` |
+| Source                               | Target                                                |
+| ------------------------------------ | ----------------------------------------------------- |
+| `walkaround/lib/bvhCommon.ts`        | `packages/shared-bvh/src/bvhCommon.ts`                |
+| `walkaround/lib/bvhCommon.test.ts`   | `packages/shared-bvh/src/__tests__/bvhCommon.test.ts` |
+| `walkaround/wgsl/octahedral.wgsl.ts` | `packages/shared-bvh/src/wgsl/octahedral.wgsl.ts`     |
+| `walkaround/sceneBvh.ts`             | `packages/shared-bvh/src/sceneBvh.ts`                 |
 
 > **Note on `wgpuSupport.ts`**: Originally listed in this section per the legacy directory layout (it lived next to `bvhCommon.ts`). On Phase 1 Step 2 dispatch we verified by grep that no file in `_staging/` consumes `wgpuSupport` beyond the now-extracted `gpuDetection.ts`. Since `wgpuSupport` is a pure WebGPU capability utility (probeWebGPU, isSwiftShaderAdapter, classifyAdapter — no BVH coupling), it permanently lives in `@vitrum/core` (where Step 1 placed it). The plan correction was applied during Step 2.
 
@@ -151,8 +151,8 @@ Rationale for the existing order:
 
 **Files moving in:**
 
-| Source | Target |
-|---|---|
+| Source                               | Target                                                 |
+| ------------------------------------ | ------------------------------------------------------ |
 | `walkaround/wgsl/hammersley.wgsl.ts` | `packages/shared-samplers/src/wgsl/hammersley.wgsl.ts` |
 
 **Files NOT here yet (Phase 6 sprints land them later):**
@@ -216,14 +216,14 @@ This is the highest-priority extraction for Phase 6 because Sprint 1 lands here.
 
 **Files moving in:**
 
-| Source | Target | Notes |
-|---|---|---|
-| `pathtracerConstants.ts` | `packages/pt-webgl/src/constants.ts` | Split: library-grade parts only (see below) |
-| `ptIblBaker.ts` | `packages/pt-webgl/src/iblBaker.ts` | Needs renderer coupling decision (Q-PT-2) |
-| `ptDebounce.ts` | `packages/pt-webgl/src/debounce.ts` | Pure function, no coupling |
-| `lightingState.ts` | `packages/pt-webgl/src/lightingState.ts` | Replace `SkyParams` import |
-| `skyParams.ts` | `packages/pt-webgl/src/skyParams.ts` | Partial — see below |
-| `lightingIntensityTable.ts` | `packages/pt-webgl/src/lightingIntensityTable.ts` | PARTIAL — split required |
+| Source                      | Target                                            | Notes                                       |
+| --------------------------- | ------------------------------------------------- | ------------------------------------------- |
+| `pathtracerConstants.ts`    | `packages/pt-webgl/src/constants.ts`              | Split: library-grade parts only (see below) |
+| `ptIblBaker.ts`             | `packages/pt-webgl/src/iblBaker.ts`               | Needs renderer coupling decision (Q-PT-2)   |
+| `ptDebounce.ts`             | `packages/pt-webgl/src/debounce.ts`               | Pure function, no coupling                  |
+| `lightingState.ts`          | `packages/pt-webgl/src/lightingState.ts`          | Replace `SkyParams` import                  |
+| `skyParams.ts`              | `packages/pt-webgl/src/skyParams.ts`              | Partial — see below                         |
+| `lightingIntensityTable.ts` | `packages/pt-webgl/src/lightingIntensityTable.ts` | PARTIAL — split required                    |
 
 **Files staying host-only (not extracted):**
 
@@ -237,28 +237,35 @@ This is the highest-priority extraction for Phase 6 because Sprint 1 lands here.
 **Transformations per file:**
 
 **`pathtracerConstants.ts` → `packages/pt-webgl/src/constants.ts`:**
+
 - `PT_TARGET_SAMPLES`, `PT_TARGET_SAMPLES_BASE`, `PT_TARGET_SAMPLES_FIXTURES`, `PT_BOUNCES`, `PT_FILTERED_GLOSSY_FACTOR`, `PT_RESOLUTION_FACTOR`, `PT_LOW_RES_SCALE` → library-grade exports. These become defaults wired into `createPTEngine_WebGL2` options defaults.
 - `PTPipelineConfig`, `PT_PREVIEW`, `PT_FINAL` → export as `PT_PREVIEW_OPTIONS` and `PT_FINAL_OPTIONS` of type `Partial<EngineOptions>`.
 - Timing budgets (`PT_HONEYCOMB_TIMING_BUDGET_MS`, etc.) → host-side concern (these are e2e test parameters, not engine config). Do NOT extract; note in a comment in the source file.
 
 **`lightingIntensityTable.ts` — SPLIT REQUIRED:**
+
 - Lines 1–73 (pure physics functions: `COLOR_TEMP_HEX`, `SUN_INTENSITY`, `getSunIntensity`, `pointIntensityFromLumens`, `rectAreaIntensityFromLumens`) → `packages/pt-webgl/src/lightingIntensityTable.ts`.
 - Lines 75–111 (`PT_IBL_INTENSITY`, `PT_BACKGROUND_INTENSITY`) — depend on host `BackdropMode` type via `import type { BackdropMode } from '@/store/uiSlice'`. These STAY host-only. Verified by reading the file (line 75 confirmed: `import type { BackdropMode } from '@/store/uiSlice'`; line 94 uses `satisfies Record<BackdropMode, number>`).
 
 **`skyParams.ts`:**
+
 - `SkyParams` interface → collapse into `@vitrum/core`'s `ProceduralSkyEnvironment` (or keep as a pt-webgl–internal type if `ProceduralSkyEnvironment` isn't yet in core). `skyParamsFor()` and `worldSunPosition()` → `packages/pt-webgl/src/skyParams.ts`.
 
 **`lightingState.ts`:**
+
 - `computeLightingState` is a pure function. Replace `SkyParams` import with `ProceduralSkyEnvironment` from core (or the pt-webgl–internal `SkyParams` type from above).
 
 **`ptDebounce.ts`:**
+
 - Pure function; no changes needed.
 
 **`ptIblBaker.ts`:**
+
 - Depends on `SkyParams` → replace as above.
 - Accepts `THREE.WebGLRenderer` (verified: line 108 `renderer: THREE.WebGLRenderer`). Resolved as RD-9: the pt-webgl factory contract narrows `device` to `THREE.WebGLRenderer`.
 
 **Sun geometry constants from `lighting/renderers/sunPathTraced.tsx`:**
+
 - `PT_SUN_DISTANCE`, `SUN_ANGULAR_RADIUS`, `PT_SUN_DISC_DIAMETER`, `PT_SUN_AREA_INTENSITY` → `packages/pt-webgl/src/sunGeometry.ts`. These are pure constants with no React coupling.
 
 **Definition of done:**
@@ -273,6 +280,7 @@ This is the highest-priority extraction for Phase 6 because Sprint 1 lands here.
 **Effort:** 2–4 days. The split of `lightingIntensityTable.ts` and the `SkyParams` collapse are the riskiest steps.
 
 **Risks:** Medium.
+
 - The `ptIblBaker.ts` / `THREE.WebGLRenderer` coupling is resolved: Q-PT-2 locked as RD-9; `device: THREE.WebGLRenderer` is the pt-webgl contract.
 - Q-PT-4 resolved by deletion (RD-10): quality dials live on `FrameInput.quality`; `Engine` has no `updateOptions()` and none is needed.
 
@@ -284,34 +292,35 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 
 **Files moving in:**
 
-| Source | Target |
-|---|---|
-| `walkaround/engines/restir/WalkaroundGPUPipeline.ts` | `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` (~350 LOC, public API) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/resourceManager.ts` (~200 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/bindGroupLayouts.ts` (~250 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/bindGroupBuilders.ts` (~200 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts` (~200 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (~100 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/uboUpdater.ts` (~60 LOC) | Split per RD-11 |
-| `walkaround/engines/restir/bvhCompute.ts` | `packages/walkaround-hybrid/src/restir/bvhCompute.ts` |
-| `walkaround/engines/restir/shaders/common.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/common.wgsl.ts` |
-| `walkaround/engines/restir/shaders/ris.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/ris.wgsl.ts` |
-| `walkaround/engines/restir/shaders/temporal.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/temporal.wgsl.ts` |
-| `walkaround/engines/restir/shaders/spatial.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/spatial.wgsl.ts` |
-| `walkaround/engines/restir/shaders/shade.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/shade.wgsl.ts` |
-| `walkaround/engines/restir/shaders/composite.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/composite.wgsl.ts` |
-| `walkaround/useHybridLayeredGI.ts` | `packages/walkaround-hybrid/src/HybridEngine.ts` (de-React-ified; becomes the `Engine` implementation body) |
-| `walkaround/useDDGI.ts` | `packages/walkaround-hybrid/src/ddgi/DDGI.ts` (de-React-ified) |
-| `walkaround/probeUpdatePass.ts` | `packages/walkaround-hybrid/src/ddgi/probeUpdatePass.ts` |
-| `walkaround/probeGrid.ts` | `packages/walkaround-hybrid/src/ddgi/probeGrid.ts` |
-| `walkaround/ddgiAtlasLayout.ts` | `packages/walkaround-hybrid/src/ddgi/ddgiAtlasLayout.ts` |
-| `walkaround/ddgiSampleWgsl.ts` | `packages/walkaround-hybrid/src/ddgi/ddgiSampleWgsl.ts` |
-| `walkaround/sceneBvh.ts` | `packages/walkaround-hybrid/src/bvh/sceneBvh.ts` |
-| `walkaround/wgsl/probeUpdateRays.wgsl.ts` | `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts` |
-| `walkaround/wgsl/probeUpdateBlend.wgsl.ts` | `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts` |
-| `walkaround/lib/nodeMaterialUpgrade.ts` | `packages/walkaround-hybrid/src/lib/nodeMaterialUpgrade.ts` |
+| Source                                                | Target                                                                                                      |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------- |
+| `walkaround/engines/restir/WalkaroundGPUPipeline.ts`  | `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` (~350 LOC, public API)                   | Split per RD-11 |
+|                                                       | `packages/walkaround-hybrid/src/pipeline/resourceManager.ts` (~200 LOC)                                     | Split per RD-11 |
+|                                                       | `packages/walkaround-hybrid/src/pipeline/bindGroupLayouts.ts` (~250 LOC)                                    | Split per RD-11 |
+|                                                       | `packages/walkaround-hybrid/src/pipeline/bindGroupBuilders.ts` (~200 LOC)                                   | Split per RD-11 |
+|                                                       | `packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts` (~200 LOC)                                    | Split per RD-11 |
+|                                                       | `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (~100 LOC)                                    | Split per RD-11 |
+|                                                       | `packages/walkaround-hybrid/src/pipeline/uboUpdater.ts` (~60 LOC)                                           | Split per RD-11 |
+| `walkaround/engines/restir/bvhCompute.ts`             | `packages/walkaround-hybrid/src/restir/bvhCompute.ts`                                                       |
+| `walkaround/engines/restir/shaders/common.wgsl.ts`    | `packages/walkaround-hybrid/src/shaders/common.wgsl.ts`                                                     |
+| `walkaround/engines/restir/shaders/ris.wgsl.ts`       | `packages/walkaround-hybrid/src/shaders/ris.wgsl.ts`                                                        |
+| `walkaround/engines/restir/shaders/temporal.wgsl.ts`  | `packages/walkaround-hybrid/src/shaders/temporal.wgsl.ts`                                                   |
+| `walkaround/engines/restir/shaders/spatial.wgsl.ts`   | `packages/walkaround-hybrid/src/shaders/spatial.wgsl.ts`                                                    |
+| `walkaround/engines/restir/shaders/shade.wgsl.ts`     | `packages/walkaround-hybrid/src/shaders/shade.wgsl.ts`                                                      |
+| `walkaround/engines/restir/shaders/composite.wgsl.ts` | `packages/walkaround-hybrid/src/shaders/composite.wgsl.ts`                                                  |
+| `walkaround/useHybridLayeredGI.ts`                    | `packages/walkaround-hybrid/src/HybridEngine.ts` (de-React-ified; becomes the `Engine` implementation body) |
+| `walkaround/useDDGI.ts`                               | `packages/walkaround-hybrid/src/ddgi/DDGI.ts` (de-React-ified)                                              |
+| `walkaround/probeUpdatePass.ts`                       | `packages/walkaround-hybrid/src/ddgi/probeUpdatePass.ts`                                                    |
+| `walkaround/probeGrid.ts`                             | `packages/walkaround-hybrid/src/ddgi/probeGrid.ts`                                                          |
+| `walkaround/ddgiAtlasLayout.ts`                       | `packages/walkaround-hybrid/src/ddgi/ddgiAtlasLayout.ts`                                                    |
+| `walkaround/ddgiSampleWgsl.ts`                        | `packages/walkaround-hybrid/src/ddgi/ddgiSampleWgsl.ts`                                                     |
+| `walkaround/sceneBvh.ts`                              | `packages/walkaround-hybrid/src/bvh/sceneBvh.ts`                                                            |
+| `walkaround/wgsl/probeUpdateRays.wgsl.ts`             | `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts`                                          |
+| `walkaround/wgsl/probeUpdateBlend.wgsl.ts`            | `packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts`                                         |
+| `walkaround/lib/nodeMaterialUpgrade.ts`               | `packages/walkaround-hybrid/src/lib/nodeMaterialUpgrade.ts`                                                 |
 
 **RC subsystem (resolved by RD-12):**
+
 - `walkaround/cascadePyramid.ts`, `walkaround/cascadeDispatch.ts`, `walkaround/useCascadeBuffers.ts`, `walkaround/bvhCompute.ts`, `walkaround/applyDDGIShading.ts`, `walkaround/giReceiver.ts`, `walkaround/walkaroundDiffuseLighting.ts`
 - These extract into `@vitrum/walkaround-hybrid` with a TSL→raw WebGPU conversion per RD-12. Missing shaders must be staged first (RD-13).
 
@@ -328,21 +337,25 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 **Transformations needed:**
 
 **`WalkaroundGPUPipeline.ts`:**
+
 - Already exports `HYBRID_WEBGPU_REQUIRED_LIMITS` as a library-grade constant (verified: line 53). This becomes a top-level export of `@vitrum/walkaround-hybrid`.
 - `PipelineFrameInputs.sunDirection` / `.sunIntensity` rename to `primaryLightDir` / `primaryLightIntensity` per C1 in path-tracer-library-readiness.md.
 - Export `HYBRID_WEBGPU_REQUIRED_LIMITS` from the package's `index.ts`.
 - The god-file split is resolved as RD-11: 7 sub-modules extracted during walkaround-hybrid extraction. See Section 5.
 
 **`probeUpdatePass.ts`:**
+
 - Imports `LightSource from '../lighting/lightSourceTypes'` (verified: line 21). Replace with a package-internal `DDGILight` interface defining only the fields actually used. Verified fields used: `l.kind` (string: `'sun' | 'fixture' | 'teaLight'`), `l.intensity`, and via unsafe cast `l.position`. This interface should be declared in `packages/walkaround-hybrid/src/ddgi/types.ts`. LOC count verified: 615 lines (not the "400–600" estimate — exact count is 615).
 - The `StorageTexture` import from `three/webgpu` and `backend.device` access couple this to Three.js WebGPU renderer internals. This is known per Q-WA-9 and is accepted — `@vitrum/walkaround-hybrid` will carry `three/webgpu` as a peer dep on the DDGI path.
 
 **`useHybridLayeredGI.ts` → `HybridEngine.ts`:**
+
 - Strip React hooks (`useEffect`, `useState`, `useRef`, `useCallback`). Replace with explicit `initialize()`, `renderFrame()`, `dispose()` lifecycle methods implementing the `Engine` interface.
 - Remove Redux imports (`useAppSelector`, `selectMount`, etc.). Callers pass these values as constructor or method arguments.
 - Verify: the hook currently accepts `scene`, `bvh`, `sunDirection`, `ddgiEnabled`, `rcEnabled`, `device` — these become constructor opts or factory parameters.
 
 **`useDDGI.ts` → `DDGI.ts`:**
+
 - Same de-React treatment. Strip `useRef`/`useEffect`/`useCallback`.
 - Becomes a class with `initialize()`, `update(frameInputs)`, `dispose()` methods.
 
@@ -360,6 +373,7 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 **Effort:** 8–12 days. The de-React-ification of `useHybridLayeredGI.ts` and `useDDGI.ts` is the most difficult transformation; the `WalkaroundGPUPipeline.ts` 7-way split (RD-11) adds 3–5 days, and the RC TSL→raw WebGPU conversion (RD-12) adds ~5 days.
 
 **Risks:** High.
+
 - RISK-1 (missing RC shaders) — mitigated by RD-13; shader staging is a hard prerequisite.
 - RISK-2 (TSL vs raw WebGPU) — residual risk after RD-12 protocol; see Section 9 RISK-7.
 - Q-WA-9 (`three/webgpu` peer dep on DDGI path — confirmed, accepted).
@@ -370,9 +384,9 @@ The largest, highest-complexity extraction. Covers DDGI + RC + ReSTIR DI pipelin
 
 **Files moving in:**
 
-| Source | Target |
-|---|---|
-| `walkaround/engines/restir/shaders/atrous.wgsl.ts` | `packages/shared-denoisers/src/wgsl/atrous.wgsl.ts` |
+| Source                                                    | Target                                                     |
+| --------------------------------------------------------- | ---------------------------------------------------------- |
+| `walkaround/engines/restir/shaders/atrous.wgsl.ts`        | `packages/shared-denoisers/src/wgsl/atrous.wgsl.ts`        |
 | `walkaround/engines/restir/shaders/temporalAccum.wgsl.ts` | `packages/shared-denoisers/src/wgsl/temporalAccum.wgsl.ts` |
 
 **Note:** These WGSL modules are imported by `WalkaroundGPUPipeline.ts` (verified: line 32, `import { ATROUS_WGSL } from './shaders/atrous.wgsl'`; line 33 `import { TEMPORAL_ACCUM_WGSL }`). The extraction order requires `shared-denoisers` to be stubbed (barrel + empty WGSL exports) before `walkaround-hybrid` compiles. Alternatively, extract walkaround-hybrid first and leave these two files in place as internal modules, then migrate them to `shared-denoisers` as a follow-up. See Section 6 (sequencing) for the recommended approach.
@@ -430,6 +444,7 @@ Resolved by deletion 2026-05-09. The `Engine` interface has no `updateOptions()`
 
 **RD-11: Q-WA-6 — Split `WalkaroundGPUPipeline.ts` during extraction.**  
 Resolved 2026-05-09. The 1287-LOC god file is decomposed into 7 sub-modules during the walkaround-hybrid extraction (NOT a follow-on refactor sprint). Target structure under `packages/walkaround-hybrid/src/pipeline/`:
+
 - `WalkaroundGPUPipeline.ts` (stripped, ~350 LOC) — public API: ctor, `initialize()`, `renderFrame()`, `dispose()`, `updateEmitters()`, `setDDGIInputs()`
 - `resourceManager.ts` (~200 LOC) — `uploadBuffer()`, all `createBuffer`/`createTexture` calls, dispose
 - `bindGroupLayouts.ts` (~250 LOC) — `get*BindGroupLayout()` private methods
@@ -552,17 +567,17 @@ After all extractions complete:
 
 ## 8. Interaction with Phase 6 Sprints
 
-| Sprint | Extraction prerequisite | What lands in `@vitrum/*` |
-|---|---|---|
-| **Sprint 1** (PT preview perf, 3.5 hrs) | pt-webgl + three-bindings extractions complete | `PT_PREVIEW_OPTIONS` defaults wired in `createPTEngine_WebGL2`; `THREE.WebGLRenderer` integration; `resolutionFactor: 0.5` option honored; HDRI 404 fix lands in `ptIblBaker.ts` |
-| **Sprint 2** (per-cell luminance, 1 day) | walkaround-hybrid extracted (at least DDGI + ReSTIR BVH packer) | `cellPower` added to `engines/restir/bvhCompute.ts` in walkaround-hybrid |
-| **Sprint 3** (sampling theory, 5.5 days) | pt-webgl stable | New `@vitrum/shared-samplers` exports: light tree CDF, mixture PDF. `pt-webgl` fork patches for mixture PDF in GLSL |
-| **Sprint 4** (BSDF cost, 3.5 days) | pt-webgl stable | Fork-internal patches; no new `@vitrum/*` files but pt-webgl builds against updated fork |
-| **Sprint 5** (analytic came, 5 days) | pt-webgl stable; `@vitrum/core`'s `AnalyticShape` extended | `AnalyticShape` discriminated union gets `'came-segment'` kind in core; pt-webgl's `supportedAnalyticShapes` set updated; `sunGeometry.ts` constants consumed |
-| **Sprint 6** (spatial filter, 5 days) | shared-denoisers fully extracted | New denoiser class in `@vitrum/shared-denoisers` implementing a hexagonal edge-stopping filter |
-| **Sprint 7** (volume + SSS, 7 days) | pt-webgl + shared-samplers stable | HG phase function in shared-samplers; fork patches for volume in pt-webgl |
-| **Sprint 8** (RGB-3λ, 5 days) | pt-webgl stable | Fork patches; Jakob+Hanika rider in shared-samplers |
-| **Sprint 9** (walkaround convergence, 5 days) | walkaround-hybrid fully extracted | `WelfordVariance` struct in `common.wgsl`; adaptive sampling dispatch in `HybridEngine.ts`; checkerboard resolve in walkaround-hybrid |
+| Sprint                                        | Extraction prerequisite                                         | What lands in `@vitrum/*`                                                                                                                                                        |
+| --------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Sprint 1** (PT preview perf, 3.5 hrs)       | pt-webgl + three-bindings extractions complete                  | `PT_PREVIEW_OPTIONS` defaults wired in `createPTEngine_WebGL2`; `THREE.WebGLRenderer` integration; `resolutionFactor: 0.5` option honored; HDRI 404 fix lands in `ptIblBaker.ts` |
+| **Sprint 2** (per-cell luminance, 1 day)      | walkaround-hybrid extracted (at least DDGI + ReSTIR BVH packer) | `cellPower` added to `engines/restir/bvhCompute.ts` in walkaround-hybrid                                                                                                         |
+| **Sprint 3** (sampling theory, 5.5 days)      | pt-webgl stable                                                 | New `@vitrum/shared-samplers` exports: light tree CDF, mixture PDF. `pt-webgl` fork patches for mixture PDF in GLSL                                                              |
+| **Sprint 4** (BSDF cost, 3.5 days)            | pt-webgl stable                                                 | Fork-internal patches; no new `@vitrum/*` files but pt-webgl builds against updated fork                                                                                         |
+| **Sprint 5** (analytic came, 5 days)          | pt-webgl stable; `@vitrum/core`'s `AnalyticShape` extended      | `AnalyticShape` discriminated union gets `'came-segment'` kind in core; pt-webgl's `supportedAnalyticShapes` set updated; `sunGeometry.ts` constants consumed                    |
+| **Sprint 6** (spatial filter, 5 days)         | shared-denoisers fully extracted                                | New denoiser class in `@vitrum/shared-denoisers` implementing a hexagonal edge-stopping filter                                                                                   |
+| **Sprint 7** (volume + SSS, 7 days)           | pt-webgl + shared-samplers stable                               | HG phase function in shared-samplers; fork patches for volume in pt-webgl                                                                                                        |
+| **Sprint 8** (RGB-3λ, 5 days)                 | pt-webgl stable                                                 | Fork patches; Jakob+Hanika rider in shared-samplers                                                                                                                              |
+| **Sprint 9** (walkaround convergence, 5 days) | walkaround-hybrid fully extracted                               | `WelfordVariance` struct in `common.wgsl`; adaptive sampling dispatch in `HybridEngine.ts`; checkerboard resolve in walkaround-hybrid                                            |
 
 ---
 
@@ -610,62 +625,62 @@ RD-12's protocol (ground-truth capture, unit tests, code review, README disclaim
 
 ## Appendix A: Complete Staging File Disposition Table
 
-| File | Target | Status |
-|---|---|---|
-| `pathtracerConstants.ts` | `@vitrum/pt-webgl/src/constants.ts` (partial) | Extract |
-| `ptIblBaker.ts` | `@vitrum/pt-webgl/src/iblBaker.ts` | Extract (pending Q-PT-2) |
-| `ptDebounce.ts` | `@vitrum/pt-webgl/src/debounce.ts` | Extract |
-| `lightingState.ts` | `@vitrum/pt-webgl/src/lightingState.ts` | Extract |
-| `skyParams.ts` | `@vitrum/pt-webgl/src/skyParams.ts` (partial) | Extract |
-| `lightingIntensityTable.ts` | `@vitrum/pt-webgl/src/lightingIntensityTable.ts` (lines 1–73 only) | Partial extract + split |
-| `cameraLookPresets.ts` | Host-only | Do not extract |
-| `outdoorHdri.ts` | Host-only | Do not extract |
-| `outdoorScenePresets.ts` | Host-only | Do not extract |
-| `ptEnvironment.ts` | Host-only | Do not extract |
-| `lighting/usePTPipelineConfig.ts` | Host-only (Redux) | Do not extract |
-| `lighting/usePTSampleTarget.ts` | Host-only (Redux) | Do not extract |
-| `walkaround/gpuDetection.ts` | `@vitrum/core/src/gpuDetection.ts` | Extract |
-| `walkaround/lib/bvhCommon.ts` | `@vitrum/shared-bvh/src/bvhCommon.ts` | Extract |
-| `walkaround/lib/bvhCommon.test.ts` | `@vitrum/shared-bvh/src/__tests__/bvhCommon.test.ts` | Extract |
-| `walkaround/lib/wgpuSupport.ts` | `@vitrum/shared-bvh/src/wgpuSupport.ts` | Extract |
-| `walkaround/lib/nodeMaterialUpgrade.ts` | `@vitrum/walkaround-hybrid/src/lib/nodeMaterialUpgrade.ts` | Extract |
-| `walkaround/lib/useSceneBVH.ts` | Host-only (React hook; blueprint for library non-React equivalent) | Do not extract as hook |
-| `walkaround/wgsl/hammersley.wgsl.ts` | `@vitrum/shared-samplers/src/wgsl/hammersley.wgsl.ts` | Extract |
-| `walkaround/wgsl/octahedral.wgsl.ts` | `@vitrum/shared-bvh/src/wgsl/octahedral.wgsl.ts` | Extract |
-| `walkaround/wgsl/probeUpdateRays.wgsl.ts` | `@vitrum/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts` | Extract |
-| `walkaround/wgsl/probeUpdateBlend.wgsl.ts` | `@vitrum/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts` | Extract |
-| `walkaround/sceneBvh.ts` | `@vitrum/shared-bvh/src/sceneBvh.ts` | Extract |
-| `walkaround/probeGrid.ts` | `@vitrum/walkaround-hybrid/src/ddgi/probeGrid.ts` | Extract |
-| `walkaround/probeUpdatePass.ts` | `@vitrum/walkaround-hybrid/src/ddgi/probeUpdatePass.ts` | Extract (replace `LightSource` import) |
-| `walkaround/ddgiAtlasLayout.ts` | `@vitrum/walkaround-hybrid/src/ddgi/ddgiAtlasLayout.ts` | Extract |
-| `walkaround/ddgiSampleWgsl.ts` | `@vitrum/walkaround-hybrid/src/ddgi/ddgiSampleWgsl.ts` | Extract |
-| `walkaround/useDDGI.ts` | `@vitrum/walkaround-hybrid/src/ddgi/DDGI.ts` | Extract + de-React |
-| `walkaround/useHybridLayeredGI.ts` | `@vitrum/walkaround-hybrid/src/HybridEngine.ts` | Extract + de-React |
-| `walkaround/useSceneBVH.ts` | Host-only (RC's older hook) | Do not extract |
-| `walkaround/cascadePyramid.ts` | `@vitrum/walkaround-hybrid/src/rc/cascadePyramid.ts` | Extract + TSL→raw conversion (RD-12) |
-| `walkaround/cascadeDispatch.ts` | `@vitrum/walkaround-hybrid/src/rc/cascadeDispatch.ts` | Extract + TSL→raw conversion (RD-12) |
-| `walkaround/useCascadeBuffers.ts` | `@vitrum/walkaround-hybrid/src/rc/useCascadeBuffers.ts` | Extract + TSL→raw conversion (RD-12) |
-| `walkaround/bvhCompute.ts` | `@vitrum/walkaround-hybrid/src/rc/bvhCompute.ts` | Extract + TSL→raw conversion (RD-12) |
-| `walkaround/applyDDGIShading.ts` | `@vitrum/walkaround-hybrid/src/rc/applyDDGIShading.ts` | Extract + TSL→raw conversion (RD-12) |
-| `walkaround/giReceiver.ts` | `@vitrum/walkaround-hybrid/src/rc/giReceiver.ts` | Extract + TSL→raw conversion (RD-12) |
-| `walkaround/walkaroundDiffuseLighting.ts` | `@vitrum/walkaround-hybrid/src/rc/walkaroundDiffuseLighting.ts` | Extract + TSL→raw conversion (RD-12) |
-| `walkaround/engineRegistry.ts` | Host-only (Redux) | Do not extract |
-| `walkaround/engines/restir/WalkaroundGPUPipeline.ts` | `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` (~350 LOC) | Extract + 7-way split (RD-11) |
-| | `packages/walkaround-hybrid/src/pipeline/resourceManager.ts` (~200 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/bindGroupLayouts.ts` (~250 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/bindGroupBuilders.ts` (~200 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts` (~200 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (~100 LOC) | Split per RD-11 |
-| | `packages/walkaround-hybrid/src/pipeline/uboUpdater.ts` (~60 LOC) | Split per RD-11 |
-| `walkaround/engines/restir/bvhCompute.ts` | `@vitrum/walkaround-hybrid/src/restir/bvhCompute.ts` | Extract |
-| `walkaround/engines/restir/walkaroundBridgeTypes.ts` | Host-only (window globals) | Do not extract |
-| `walkaround/engines/restir/shaders/common.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/common.wgsl.ts` | Extract |
-| `walkaround/engines/restir/shaders/ris.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/ris.wgsl.ts` | Extract |
-| `walkaround/engines/restir/shaders/temporal.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/temporal.wgsl.ts` | Extract |
-| `walkaround/engines/restir/shaders/spatial.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/spatial.wgsl.ts` | Extract |
-| `walkaround/engines/restir/shaders/shade.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/shade.wgsl.ts` | Extract |
-| `walkaround/engines/restir/shaders/composite.wgsl.ts` | `@vitrum/walkaround-hybrid/src/shaders/composite.wgsl.ts` | Extract |
-| `walkaround/engines/restir/shaders/atrous.wgsl.ts` | `@vitrum/shared-denoisers/src/wgsl/atrous.wgsl.ts` | Extract (after walkaround-hybrid stable) |
-| `walkaround/engines/restir/shaders/temporalAccum.wgsl.ts` | `@vitrum/shared-denoisers/src/wgsl/temporalAccum.wgsl.ts` | Extract (after walkaround-hybrid stable) |
-| (host) `shaders/walkaround/probeRayCast.wgsl` | `_staging/legacy-source/src/rendering/scene/walkaround/shaders/probeRayCast.wgsl` then → `@vitrum/walkaround-hybrid/src/rc/wgsl/probeRayCast.wgsl` | Stage then extract (RD-13) |
-| (host) `shaders/walkaround/cascadeMerge.wgsl` | `_staging/legacy-source/src/rendering/scene/walkaround/shaders/cascadeMerge.wgsl` then → `@vitrum/walkaround-hybrid/src/rc/wgsl/cascadeMerge.wgsl` | Stage then extract (RD-13) |
+| File                                                      | Target                                                                                                                                             | Status                                   |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `pathtracerConstants.ts`                                  | `@vitrum/pt-webgl/src/constants.ts` (partial)                                                                                                      | Extract                                  |
+| `ptIblBaker.ts`                                           | `@vitrum/pt-webgl/src/iblBaker.ts`                                                                                                                 | Extract (pending Q-PT-2)                 |
+| `ptDebounce.ts`                                           | `@vitrum/pt-webgl/src/debounce.ts`                                                                                                                 | Extract                                  |
+| `lightingState.ts`                                        | `@vitrum/pt-webgl/src/lightingState.ts`                                                                                                            | Extract                                  |
+| `skyParams.ts`                                            | `@vitrum/pt-webgl/src/skyParams.ts` (partial)                                                                                                      | Extract                                  |
+| `lightingIntensityTable.ts`                               | `@vitrum/pt-webgl/src/lightingIntensityTable.ts` (lines 1–73 only)                                                                                 | Partial extract + split                  |
+| `cameraLookPresets.ts`                                    | Host-only                                                                                                                                          | Do not extract                           |
+| `outdoorHdri.ts`                                          | Host-only                                                                                                                                          | Do not extract                           |
+| `outdoorScenePresets.ts`                                  | Host-only                                                                                                                                          | Do not extract                           |
+| `ptEnvironment.ts`                                        | Host-only                                                                                                                                          | Do not extract                           |
+| `lighting/usePTPipelineConfig.ts`                         | Host-only (Redux)                                                                                                                                  | Do not extract                           |
+| `lighting/usePTSampleTarget.ts`                           | Host-only (Redux)                                                                                                                                  | Do not extract                           |
+| `walkaround/gpuDetection.ts`                              | `@vitrum/core/src/gpuDetection.ts`                                                                                                                 | Extract                                  |
+| `walkaround/lib/bvhCommon.ts`                             | `@vitrum/shared-bvh/src/bvhCommon.ts`                                                                                                              | Extract                                  |
+| `walkaround/lib/bvhCommon.test.ts`                        | `@vitrum/shared-bvh/src/__tests__/bvhCommon.test.ts`                                                                                               | Extract                                  |
+| `walkaround/lib/wgpuSupport.ts`                           | `@vitrum/shared-bvh/src/wgpuSupport.ts`                                                                                                            | Extract                                  |
+| `walkaround/lib/nodeMaterialUpgrade.ts`                   | `@vitrum/walkaround-hybrid/src/lib/nodeMaterialUpgrade.ts`                                                                                         | Extract                                  |
+| `walkaround/lib/useSceneBVH.ts`                           | Host-only (React hook; blueprint for library non-React equivalent)                                                                                 | Do not extract as hook                   |
+| `walkaround/wgsl/hammersley.wgsl.ts`                      | `@vitrum/shared-samplers/src/wgsl/hammersley.wgsl.ts`                                                                                              | Extract                                  |
+| `walkaround/wgsl/octahedral.wgsl.ts`                      | `@vitrum/shared-bvh/src/wgsl/octahedral.wgsl.ts`                                                                                                   | Extract                                  |
+| `walkaround/wgsl/probeUpdateRays.wgsl.ts`                 | `@vitrum/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts`                                                                                  | Extract                                  |
+| `walkaround/wgsl/probeUpdateBlend.wgsl.ts`                | `@vitrum/walkaround-hybrid/src/ddgi/wgsl/probeUpdateBlend.wgsl.ts`                                                                                 | Extract                                  |
+| `walkaround/sceneBvh.ts`                                  | `@vitrum/shared-bvh/src/sceneBvh.ts`                                                                                                               | Extract                                  |
+| `walkaround/probeGrid.ts`                                 | `@vitrum/walkaround-hybrid/src/ddgi/probeGrid.ts`                                                                                                  | Extract                                  |
+| `walkaround/probeUpdatePass.ts`                           | `@vitrum/walkaround-hybrid/src/ddgi/probeUpdatePass.ts`                                                                                            | Extract (replace `LightSource` import)   |
+| `walkaround/ddgiAtlasLayout.ts`                           | `@vitrum/walkaround-hybrid/src/ddgi/ddgiAtlasLayout.ts`                                                                                            | Extract                                  |
+| `walkaround/ddgiSampleWgsl.ts`                            | `@vitrum/walkaround-hybrid/src/ddgi/ddgiSampleWgsl.ts`                                                                                             | Extract                                  |
+| `walkaround/useDDGI.ts`                                   | `@vitrum/walkaround-hybrid/src/ddgi/DDGI.ts`                                                                                                       | Extract + de-React                       |
+| `walkaround/useHybridLayeredGI.ts`                        | `@vitrum/walkaround-hybrid/src/HybridEngine.ts`                                                                                                    | Extract + de-React                       |
+| `walkaround/useSceneBVH.ts`                               | Host-only (RC's older hook)                                                                                                                        | Do not extract                           |
+| `walkaround/cascadePyramid.ts`                            | `@vitrum/walkaround-hybrid/src/rc/cascadePyramid.ts`                                                                                               | Extract + TSL→raw conversion (RD-12)     |
+| `walkaround/cascadeDispatch.ts`                           | `@vitrum/walkaround-hybrid/src/rc/cascadeDispatch.ts`                                                                                              | Extract + TSL→raw conversion (RD-12)     |
+| `walkaround/useCascadeBuffers.ts`                         | `@vitrum/walkaround-hybrid/src/rc/useCascadeBuffers.ts`                                                                                            | Extract + TSL→raw conversion (RD-12)     |
+| `walkaround/bvhCompute.ts`                                | `@vitrum/walkaround-hybrid/src/rc/bvhCompute.ts`                                                                                                   | Extract + TSL→raw conversion (RD-12)     |
+| `walkaround/applyDDGIShading.ts`                          | `@vitrum/walkaround-hybrid/src/rc/applyDDGIShading.ts`                                                                                             | Extract + TSL→raw conversion (RD-12)     |
+| `walkaround/giReceiver.ts`                                | `@vitrum/walkaround-hybrid/src/rc/giReceiver.ts`                                                                                                   | Extract + TSL→raw conversion (RD-12)     |
+| `walkaround/walkaroundDiffuseLighting.ts`                 | `@vitrum/walkaround-hybrid/src/rc/walkaroundDiffuseLighting.ts`                                                                                    | Extract + TSL→raw conversion (RD-12)     |
+| `walkaround/engineRegistry.ts`                            | Host-only (Redux)                                                                                                                                  | Do not extract                           |
+| `walkaround/engines/restir/WalkaroundGPUPipeline.ts`      | `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` (~350 LOC)                                                                      | Extract + 7-way split (RD-11)            |
+|                                                           | `packages/walkaround-hybrid/src/pipeline/resourceManager.ts` (~200 LOC)                                                                            | Split per RD-11                          |
+|                                                           | `packages/walkaround-hybrid/src/pipeline/bindGroupLayouts.ts` (~250 LOC)                                                                           | Split per RD-11                          |
+|                                                           | `packages/walkaround-hybrid/src/pipeline/bindGroupBuilders.ts` (~200 LOC)                                                                          | Split per RD-11                          |
+|                                                           | `packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts` (~200 LOC)                                                                           | Split per RD-11                          |
+|                                                           | `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (~100 LOC)                                                                           | Split per RD-11                          |
+|                                                           | `packages/walkaround-hybrid/src/pipeline/uboUpdater.ts` (~60 LOC)                                                                                  | Split per RD-11                          |
+| `walkaround/engines/restir/bvhCompute.ts`                 | `@vitrum/walkaround-hybrid/src/restir/bvhCompute.ts`                                                                                               | Extract                                  |
+| `walkaround/engines/restir/walkaroundBridgeTypes.ts`      | Host-only (window globals)                                                                                                                         | Do not extract                           |
+| `walkaround/engines/restir/shaders/common.wgsl.ts`        | `@vitrum/walkaround-hybrid/src/shaders/common.wgsl.ts`                                                                                             | Extract                                  |
+| `walkaround/engines/restir/shaders/ris.wgsl.ts`           | `@vitrum/walkaround-hybrid/src/shaders/ris.wgsl.ts`                                                                                                | Extract                                  |
+| `walkaround/engines/restir/shaders/temporal.wgsl.ts`      | `@vitrum/walkaround-hybrid/src/shaders/temporal.wgsl.ts`                                                                                           | Extract                                  |
+| `walkaround/engines/restir/shaders/spatial.wgsl.ts`       | `@vitrum/walkaround-hybrid/src/shaders/spatial.wgsl.ts`                                                                                            | Extract                                  |
+| `walkaround/engines/restir/shaders/shade.wgsl.ts`         | `@vitrum/walkaround-hybrid/src/shaders/shade.wgsl.ts`                                                                                              | Extract                                  |
+| `walkaround/engines/restir/shaders/composite.wgsl.ts`     | `@vitrum/walkaround-hybrid/src/shaders/composite.wgsl.ts`                                                                                          | Extract                                  |
+| `walkaround/engines/restir/shaders/atrous.wgsl.ts`        | `@vitrum/shared-denoisers/src/wgsl/atrous.wgsl.ts`                                                                                                 | Extract (after walkaround-hybrid stable) |
+| `walkaround/engines/restir/shaders/temporalAccum.wgsl.ts` | `@vitrum/shared-denoisers/src/wgsl/temporalAccum.wgsl.ts`                                                                                          | Extract (after walkaround-hybrid stable) |
+| (host) `shaders/walkaround/probeRayCast.wgsl`             | `_staging/legacy-source/src/rendering/scene/walkaround/shaders/probeRayCast.wgsl` then → `@vitrum/walkaround-hybrid/src/rc/wgsl/probeRayCast.wgsl` | Stage then extract (RD-13)               |
+| (host) `shaders/walkaround/cascadeMerge.wgsl`             | `_staging/legacy-source/src/rendering/scene/walkaround/shaders/cascadeMerge.wgsl` then → `@vitrum/walkaround-hybrid/src/rc/wgsl/cascadeMerge.wgsl` | Stage then extract (RD-13)               |

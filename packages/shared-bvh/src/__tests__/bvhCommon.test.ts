@@ -35,10 +35,7 @@
 
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import {
-  buildSceneBVH,
-  type SceneBVHCommonResult,
-} from '../bvhCommon.js';
+import { buildSceneBVH, type SceneBVHCommonResult } from '../bvhCommon.js';
 
 // MeshBVH exposes _roots at runtime but it's not in the .d.ts. We need
 // the runtime field to assert the root count.
@@ -54,11 +51,7 @@ interface BvhWithRoots {
  * Build 6 hex boundary vertices (flat-top, centred at cx/cy, radius r) in
  * the order expected by extrudeHexGeometry below.
  */
-function hexBoundaryXY(
-  cx: number,
-  cy: number,
-  r: number,
-): Array<{ x: number; y: number }> {
+function hexBoundaryXY(cx: number, cy: number, r: number): Array<{ x: number; y: number }> {
   const verts: Array<{ x: number; y: number }> = [];
   for (let i = 0; i < 6; i++) {
     const a = -Math.PI / 2 + (i * Math.PI) / 3;
@@ -85,9 +78,9 @@ function extrudeHexGeometry(
   // Front face (z=0): centre + 6 boundary verts → n vertices
   // Back  face (z=d): centre + 6 boundary verts → n vertices
   // Side quads: 6 quads × 4 verts = 24 vertices (unshared for clean normals)
-  const frontVerts = n + 1;  // 7
-  const backVerts  = n + 1;  // 7
-  const sideVerts  = n * 4;  // 24
+  const frontVerts = n + 1; // 7
+  const backVerts = n + 1; // 7
+  const sideVerts = n * 4; // 24
   const totalVerts = frontVerts + backVerts + sideVerts; // 38
 
   const positions = new Float32Array(totalVerts * 3);
@@ -116,10 +109,10 @@ function extrudeHexGeometry(
   for (let i = 0; i < n; i++) {
     const ni = (i + 1) % n;
     sideBase.push(
-      write(boundary[i]!.x,  boundary[i]!.y,  0),
+      write(boundary[i]!.x, boundary[i]!.y, 0),
       write(boundary[ni]!.x, boundary[ni]!.y, 0),
       write(boundary[ni]!.x, boundary[ni]!.y, depthZ),
-      write(boundary[i]!.x,  boundary[i]!.y,  depthZ),
+      write(boundary[i]!.x, boundary[i]!.y, depthZ),
     );
   }
 
@@ -197,7 +190,9 @@ function buildHoneycombScene(opts: { includeFloor: boolean }): SceneBuildResult 
     }
   }
   if (opts.includeFloor) {
-    const ROOM_W = 192, ROOM_D = 168, FLOOR_Y = -64;
+    const ROOM_W = 192,
+      ROOM_D = 168,
+      FLOOR_Y = -64;
     const floorGeo = new THREE.PlaneGeometry(ROOM_W, ROOM_D, 32, 32);
     const floorMat = new THREE.MeshStandardMaterial({ color: 0x808080 });
     const floorMesh = new THREE.Mesh(floorGeo, floorMat);
@@ -260,9 +255,7 @@ function countCorrectlyClassifiedTriangles(
 function countGlassTris(result: SceneBVHCommonResult): number {
   let count = 0;
   for (let t = 0; t < result.triMaterialId.length; t++) {
-    if (
-      classifyMaterial(result.materials[result.triMaterialId[t]!]!) === 'glass'
-    ) {
+    if (classifyMaterial(result.materials[result.triMaterialId[t]!]!) === 'glass') {
       count++;
     }
   }
@@ -275,8 +268,9 @@ function countGlassTris(result: SceneBVHCommonResult): number {
 
 describe('buildSceneBVH — single-root + per-tri matId survives BVH index reorder', () => {
   it('20 hex panels alone — single-root BVH, all glass tris correctly classified', () => {
-    const { scene, expectedKindPerMesh, vertCountPerMesh } =
-      buildHoneycombScene({ includeFloor: false });
+    const { scene, expectedKindPerMesh, vertCountPerMesh } = buildHoneycombScene({
+      includeFloor: false,
+    });
     const result = buildSceneBVH(scene);
 
     // Concern (a): single root.
@@ -285,22 +279,27 @@ describe('buildSceneBVH — single-root + per-tri matId survives BVH index reord
 
     // Concern (b): per-tri matId reorder safety.
     const { correct, total } = countCorrectlyClassifiedTriangles(
-      result, expectedKindPerMesh, vertCountPerMesh,
+      result,
+      expectedKindPerMesh,
+      vertCountPerMesh,
     );
     expect(correct).toBe(total);
     expect(total).toBeGreaterThan(150); // 20 extruded hex cells → many tris
   });
 
   it('20 hex panels + tessellated floor — single-root BVH with 100% correct matId assignment', () => {
-    const { scene, expectedKindPerMesh, vertCountPerMesh } =
-      buildHoneycombScene({ includeFloor: true });
+    const { scene, expectedKindPerMesh, vertCountPerMesh } = buildHoneycombScene({
+      includeFloor: true,
+    });
     const result = buildSceneBVH(scene);
 
     const internal = result.bvh as unknown as BvhWithRoots;
     expect(internal._roots.length).toBe(1);
 
     const { correct, total } = countCorrectlyClassifiedTriangles(
-      result, expectedKindPerMesh, vertCountPerMesh,
+      result,
+      expectedKindPerMesh,
+      vertCountPerMesh,
     );
     expect(correct).toBe(total);
     expect(total).toBeGreaterThan(2000); // hex panels + 2048 floor tris
@@ -369,12 +368,18 @@ describe('buildSceneBVH — positionStride 3 vs 4 layout', () => {
   });
 
   it('triMaterialId classification is independent of positionStride choice', () => {
-    const { scene: s3, expectedKindPerMesh: e3, vertCountPerMesh: v3 } =
-      buildHoneycombScene({ includeFloor: true });
+    const {
+      scene: s3,
+      expectedKindPerMesh: e3,
+      vertCountPerMesh: v3,
+    } = buildHoneycombScene({ includeFloor: true });
     const r3 = buildSceneBVH(s3, { positionStride: 3 });
 
-    const { scene: s4, expectedKindPerMesh: e4, vertCountPerMesh: v4 } =
-      buildHoneycombScene({ includeFloor: true });
+    const {
+      scene: s4,
+      expectedKindPerMesh: e4,
+      vertCountPerMesh: v4,
+    } = buildHoneycombScene({ includeFloor: true });
     const r4 = buildSceneBVH(s4, { positionStride: 4 });
 
     const c3 = countCorrectlyClassifiedTriangles(r3, e3, v3);
@@ -409,8 +414,8 @@ describe('buildSceneBVH — proxyMeshNames substitution', () => {
     expect(floorMesh).not.toBeNull();
     const originalGeo = (floorMesh as unknown as THREE.Mesh).geometry;
     const originalTriCount =
-      ((originalGeo.index?.count ?? 0) / 3) ||
-      ((originalGeo.attributes['position'] as THREE.BufferAttribute).count / 3);
+      (originalGeo.index?.count ?? 0) / 3 ||
+      (originalGeo.attributes['position'] as THREE.BufferAttribute).count / 3;
     expect(originalTriCount).toBeGreaterThan(1000); // 32×32 = 2048 tris
 
     const proxiedResult = buildSceneBVH(scene, {
@@ -424,9 +429,7 @@ describe('buildSceneBVH — proxyMeshNames substitution', () => {
     // The merged BVH should walk far fewer floor tris than the visual
     // mesh has (2 proxy tris vs 2048 visual tris) — so total tri count
     // is dominated by the 20 hex panels, not the floor.
-    const baselineNoFloor = buildSceneBVH(
-      buildHoneycombScene({ includeFloor: false }).scene,
-    );
+    const baselineNoFloor = buildSceneBVH(buildHoneycombScene({ includeFloor: false }).scene);
     const proxiedTriCount = proxiedResult.indices.length / 3;
     const baselineTriCount = baselineNoFloor.indices.length / 3;
     // Proxy adds 2 floor tris on top of the panel tris.

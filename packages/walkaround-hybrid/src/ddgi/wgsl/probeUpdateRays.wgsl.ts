@@ -28,14 +28,16 @@ const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
  *        `maxMaterials × DDGI_MATERIAL_STRIDE_BYTES` bytes.
  */
 export function makeProbeUpdateRaysWGSL(maxMaterials: number): string {
-  if (maxMaterials < 1) throw new RangeError(`makeProbeUpdateRaysWGSL: maxMaterials must be >= 1, got ${maxMaterials}`);
+  if (maxMaterials < 1)
+    throw new RangeError(`makeProbeUpdateRaysWGSL: maxMaterials must be >= 1, got ${maxMaterials}`);
   return makeProbeUpdateRaysWGSLImpl(maxMaterials);
 }
 
 /** @deprecated Use {@link makeProbeUpdateRaysWGSL}(64) instead. */
 export const PROBE_UPDATE_RAYS_WGSL = /* wgsl */ makeProbeUpdateRaysWGSLImpl(64);
 
-function makeProbeUpdateRaysWGSLImpl(maxMaterials: number): string { return /* wgsl */`
+function makeProbeUpdateRaysWGSLImpl(maxMaterials: number): string {
+  return /* wgsl */ `
 
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
@@ -569,5 +571,5 @@ fn probeUpdateRays(
     }
   }
 }
-`; }
-
+`;
+}

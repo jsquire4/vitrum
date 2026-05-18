@@ -76,11 +76,16 @@ interface BuildItem {
  * Compute the union AABB of a slice of build items.
  * Returns [min3, max3] world-space corners.
  */
-function unionAabb(
-  items: BuildItem[],
-): { min: [number, number, number]; max: [number, number, number] } {
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+function unionAabb(items: BuildItem[]): {
+  min: [number, number, number];
+  max: [number, number, number];
+} {
+  let minX = Infinity,
+    minY = Infinity,
+    minZ = Infinity;
+  let maxX = -Infinity,
+    maxY = -Infinity,
+    maxZ = -Infinity;
   for (const item of items) {
     minX = Math.min(minX, item.aabbMin[0]);
     minY = Math.min(minY, item.aabbMin[1]);
@@ -132,8 +137,12 @@ function buildSubtree(items: BuildItem[], nodes: LightTreeNode[]): number {
   }
 
   // Compute AABB of centroids to find longest axis
-  let cMinX = Infinity, cMinY = Infinity, cMinZ = Infinity;
-  let cMaxX = -Infinity, cMaxY = -Infinity, cMaxZ = -Infinity;
+  let cMinX = Infinity,
+    cMinY = Infinity,
+    cMinZ = Infinity;
+  let cMaxX = -Infinity,
+    cMaxY = -Infinity,
+    cMaxZ = -Infinity;
   for (const item of items) {
     cMinX = Math.min(cMinX, item.centroid[0]);
     cMinY = Math.min(cMinY, item.centroid[1]);

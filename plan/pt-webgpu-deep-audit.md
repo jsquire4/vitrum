@@ -16,15 +16,15 @@
 
 **Issue**: The CPU writer sets matrices at `paramsF32.set(invVp, 80)` / `paramsF32.set(vp, 96)` / `paramsF32.set(prevVp, 112)`, corresponding to byte offsets 320 / 384 / 448. The WGSL `FrameParams` struct (pathTraceBruteforce.wgsl.ts:17-46) places `invViewProj` at byte offset 304, `viewProj` at 368, `prevViewProj` at 432. Derivation:
 
-| Cumulative field layout | Byte offset |
-|---|---|
-| 8 × u32 prefix | 0–31 |
-| 9 × vec4f (camera through environmentSun) | 32–175 |
-| 4 × vec4f (rectArea pos/U/V/radiance) | 176–239 |
-| 4 × vec4f (meshArea A/B/C/radiance) | 240–303 |
-| **invViewProj: mat4x4f** (align 16) | **304** |
-| viewProj: mat4x4f | 368 |
-| prevViewProj: mat4x4f | 432 |
+| Cumulative field layout                   | Byte offset |
+| ----------------------------------------- | ----------- |
+| 8 × u32 prefix                            | 0–31        |
+| 9 × vec4f (camera through environmentSun) | 32–175      |
+| 4 × vec4f (rectArea pos/U/V/radiance)     | 176–239     |
+| 4 × vec4f (meshArea A/B/C/radiance)       | 240–303     |
+| **invViewProj: mat4x4f** (align 16)       | **304**     |
+| viewProj: mat4x4f                         | 368         |
+| prevViewProj: mat4x4f                     | 432         |
 
 CPU is writing `invViewProj` at byte 320 (16 bytes late). Bytes 304–319 are left as zeros from the `new ArrayBuffer(512)` initialization. From the shader's perspective, `invViewProj`'s first column is `[0, 0, 0, 0]`, making `generatePrimaryRay` multiply NDC coordinates by a singular matrix — all rays emerge with undefined direction (NaN or degenerate). The same 16-byte shift corrupts `viewProj` (motion vectors) and `prevViewProj` (reprojection).
 
@@ -65,12 +65,15 @@ CPU is writing `invViewProj` at byte 320 (16 bytes late). Bytes 304–319 are le
 **File**: `packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts:873-878`
 
 **Issue**: In the diffuse branch:
+
 ```wgsl
 ray.direction = cosineHemisphereSample(&rng, normal);
 let kd = (vec3f(1.0) - fresnel) * (1.0 - metallic);
 throughput = throughput * (kd * baseColor) / max(diffProb, 1e-4);
 ```
+
 The throughput update should be `throughput * (kd * baseColor / pi) * pi / diffProb` because:
+
 - `cosineHemisphereSample` samples with PDF `NdotL / pi`
 - The BRDF for the diffuse lobe is `kd * baseColor / pi`
 - The path weight update is `BRDF * NdotL / PDF = (kd * baseColor / pi) * NdotL / (NdotL / pi) = kd * baseColor`
@@ -117,7 +120,7 @@ For scenes with only a rect-area light and no other lights, `lightCount = 1` so 
 
 ## LOW severity
 
-### L-1 — Stale JSDoc: `PackedSceneData.materials` says "2 * vec4f per material" (is 3)
+### L-1 — Stale JSDoc: `PackedSceneData.materials` says "2 \* vec4f per material" (is 3)
 
 **File**: `packages/pt-webgpu/src/scene/uploadSceneBuffers.ts:11`
 
@@ -168,17 +171,21 @@ Both `updatePrimitive` and `updateEmitter` call `#assertLive` (which already che
 ## Per-category notes
 
 ### A. CPU struct packing vs shader struct reading
+
 - H-1 found: matrix offsets 16 bytes off (invViewProj/viewProj/prevViewProj).
 - M-1 confirmed: `environmentSunStrength` at wrong vec4 slot.
 - All scalar/vec4 fields before the matrices were verified individually and are correct. Fields [0]-[7] (u32s), [8]-[75] (all vec4f light/env fields) match WGSL struct members exactly.
 
 ### B. Bind group layout vs shader binding mismatch
+
 - 18 bindings (0–17) in both the CPU bind group (index.ts:424-443) and the shader's `@group(0) @binding(N)` declarations. Order and types match. Textures are `texture_storage_2d<rgba16float, write>` on both sides. Storage buffers: shader uses `read` for positions/indices/etc. and `read_write` for accumBuffer/varianceMomentsBuffer, matching CPU `STORAGE` usage. No mismatch found.
 
 ### C. Workgroup size vs dispatch count
+
 - Shader: `@workgroup_size(8, 8, 1)`. Dispatch: `Math.ceil(width / 8)` × `Math.ceil(height / 8)` (index.ts:450-454). `Math.ceil` is correct — edge pixels are covered. Guard at shader line 707 (`if gid.x >= params.width || gid.y >= params.height`) handles the overshoot. Clean.
 
 ### D. WGSL math correctness
+
 - Russian roulette: throughput is divided by `survival` AFTER the random test (line 885: `throughput = throughput / survival`). Correct ordering.
 - Fresnel: `fresnelSchlick(cosThetaO, f0)` where `cosThetaO = dot(normal, wo)`. For the direct-BRDF call, `evaluateBrdf` uses `vDotH = dot(wo, h)` for Fresnel (line 124). Both formulations are internally consistent (pixel-level Fresnel uses `dot(N,V)` for the stochastic branch selection; BRDF uses `dot(H,V)` for specular lobe). The watcher was correct; no double-accounting bug.
 - TIR handling: `validRefract = dot(refr, refr) > 1e-8` (line 861), fallback to reflect. Correct.
@@ -186,17 +193,20 @@ Both `updatePrimitive` and `updateEmitter` call `#assertLive` (which already che
 - M-3 above: NEE rect-area/mesh-area bypass `directLi * lightCount` scaling — real bug.
 
 ### E. Resource lifecycle
+
 - `dispose()` calls `#destroyAccumTexture()` (which destroys all 5 textures + 2 buffers) and then `#paramsBuffer?.destroy()` and `#sceneBuffers?.destroy()`. All allocated resources are covered.
 - `#destroyAccumTexture` is called before reallocation in `#ensureAccumResources` (line 157). Clean.
 - `#computePipeline` and `#bindGroupLayout` are set to `null` in `dispose()` but not explicitly destroyed (they are GC-collected; WebGPU objects without a `destroy()` method rely on GC). This is correct WebGPU usage for pipelines and bind group layouts.
 
 ### F. Scene → GPU upload edge cases
+
 - Empty `Scene.primitives`: `buildCpuBvh` with `triCount === 0` returns an 8-float empty node, `bvhNodeCount = 1`, `triangleCount = 0`. The shader early-exits when `bvhNodeCount > 0 && arrayLength(&bvhNodes) > 0` (it will enter the loop but find no triangles). Safe.
 - `AnalyticPrimitive`: packer processes them fully — shape IDs, transforms, params packed. Shader intersects them. Capabilities says empty set (M-4 above).
 - `MeshAreaEmitter` with missing `meshId`: returns `hasMeshAreaLight: false` with a warning. Safe.
 - `Material.baseColorMap`: ignored (not packer reads it). Silent. Correct behavior for a prototype that documents "No texture support."
 
 ### G. Capabilities accuracy
+
 - `supportsAuxBuffers: true`: all four aux textures and variance moments buffer are allocated and populated. Verified clean.
 - `accumulates: true`: progressive accumulation in `accumBuffer` + running average. Correct.
 - `supportsMotionBlur: false`: `shutterTime` is not read anywhere. Correct.
@@ -205,17 +215,20 @@ Both `updatePrimitive` and `updateEmitter` call `#assertLive` (which already che
 - `maxBounces`: clamped to `PROTOTYPE_MAX_BOUNCES = 8` and shader loop caps at `min(params.maxBounces, 8u)`. Consistent.
 
 ### H. TypeScript
+
 - No `as any` or `as unknown as` casts found in pt-webgpu source files.
 - `paramsU32[N]` and `paramsF32[N]` typed array accesses are not flagged by `noUncheckedIndexedAccess` because they write (not read) — only reads produce `T | undefined`. All reads from scene buffers use `?? 0` guards. Clean.
 - 3 pre-existing tsc errors in `pt-webgl/src/index.ts` (duplicate @types/three, `isScene: boolean` vs `true`, `isCamera: boolean` vs `true`). Pre-existing, not introduced by pt-webgpu work.
 
 ### I. Engine interface contract
+
 - All 7 required `Engine` methods present with correct signatures.
 - State transitions: `'initializing'` → `'ready'` in factory (line 543), `'paused'` on pause(), back to `'ready'` on resume(), `'disposed'` on dispose(). Correct.
 - After `dispose()`, `renderFrame` hits `#assertLive` which checks `state === 'disposed'` first (line 106). Throws correctly.
 - `setScene` does NOT call `#assertLive` — it only checks `state === 'disposed'`. This means `setScene` works even in `'paused'` state, which is correct (scene can be updated while paused).
 
 ### J. Subtle issues
+
 - `multiplyMat4(input.projMatrix, input.viewMatrix)`: column-major convention. `VP = P * V` in column-major is the standard Three.js convention; `vp = projMatrix * viewMatrix` gives the combined VP matrix where V is applied first. Correct.
 - `invertMat4` returning `null` for near-singular matrices: the fallback at line 312 uses an identity matrix, which would make ray generation use NDC-space coordinates as world-space. This is visually wrong but safe (no crash, no NaN). An assertion or warning would improve debuggability.
 - No race conditions: all GPU submission is synchronous from the JS side (submit/writeBuffer are fire-and-forget). No async awaits in the render path.

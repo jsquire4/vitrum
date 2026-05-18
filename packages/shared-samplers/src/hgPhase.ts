@@ -58,7 +58,7 @@ export function evaluateHG(cosTheta: number, g: number): number {
   const g2 = g * g;
   const denom = 1 + g2 - 2 * g * cosTheta;
   // denom^(3/2)
-  return INV_4PI * (1 - g2) / (denom * Math.sqrt(denom));
+  return (INV_4PI * (1 - g2)) / (denom * Math.sqrt(denom));
 }
 
 /**
@@ -73,11 +73,7 @@ export function evaluateHG(cosTheta: number, g: number): number {
  * @param g  - Anisotropy parameter in (-1, 1).
  * @returns  Outgoing direction in local space (unit vector; wo where +Z = wi).
  */
-export function sampleHG(
-  u1: number,
-  u2: number,
-  g: number,
-): readonly [number, number, number] {
+export function sampleHG(u1: number, u2: number, g: number): readonly [number, number, number] {
   g = Math.max(-0.9999, Math.min(0.9999, g));
 
   let cosTheta: number;

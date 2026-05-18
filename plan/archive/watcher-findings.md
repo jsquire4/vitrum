@@ -1,19 +1,20 @@
 # Watcher Findings — started 2026-05-09 ~session start
 
 Watcher process: long-running sonnet, ~45 min monitor window.
-Baseline commit: `1036a8c` "fix: wire vitrum.Material ↔ THREE userData.vitrum* round-trip"
+Baseline commit: `1036a8c` "fix: wire vitrum.Material ↔ THREE userData.vitrum\* round-trip"
 
 ---
 
 ## Iteration 0 (start — baseline)
 
-- **Baseline commit**: `1036a8c` "fix: wire vitrum.Material ↔ THREE userData.vitrum* round-trip"
+- **Baseline commit**: `1036a8c` "fix: wire vitrum.Material ↔ THREE userData.vitrum\* round-trip"
 - **tsc**: clean (exit 0)
 - **Tests**: 567 passing across all packages
 
 ### Uncommitted state at start (significant — major pt-webgpu work staged)
 
 Modified tracked files:
+
 - `CHANGELOG.md` — adds pt-webgpu prototype entry
 - `README.md` — updates pt-webgpu description from stub to active prototype
 - `packages/pt-webgpu/package.json` — adds `vitest` devDep + `"test": "vitest run"` script
@@ -22,6 +23,7 @@ Modified tracked files:
 - `plan/phase-6-status.md` — updates test count note + changes "stub" to "prototype"
 
 New untracked files:
+
 - `packages/pt-webgpu/README.md`
 - `packages/pt-webgpu/src/__tests__/buildCpuBvh.test.ts` (2 tests)
 - `packages/pt-webgpu/src/__tests__/scenePack.test.ts` (3 tests)
@@ -70,7 +72,7 @@ The `tMax` is `max(dist - 2e-3, 1e-3)` — this clips the shadow ray 2mm before 
 
 **LOW — params buffer layout verification**
 
-`index.ts:282` allocates `new ArrayBuffer(224)`. The WGSL `FrameParams` struct at the shader side: width(u32) + height + frameIndex + frameSeed + triangleCount + maxBounces + bvhNodeCount + _pad0 = 8 u32s = 32 bytes, then cameraPos(vec4f) + lightDir(vec4f) + pointLightPos(vec4f) + pointLightRadiance(vec4f) + environmentTint(vec4f) + environmentSun(vec4f) = 6 × 16 = 96 bytes, then invViewProj(mat4x4f) = 64 bytes. Total WGSL struct = 32 + 96 + 64 = 192 bytes. Buffer allocated: 224 bytes. The 32 extra bytes are fine — WGSL uniform buffers can be larger than the struct, and 224 is safe. The CPU writes invVp at `paramsF32.set(invVp, 32)` (byte offset 128) which puts it at bytes 128-192, matching the struct layout (8×4=32 bytes prefix + 6×16=96 bytes = 128 bytes before invViewProj). Layout is correct.
+`index.ts:282` allocates `new ArrayBuffer(224)`. The WGSL `FrameParams` struct at the shader side: width(u32) + height + frameIndex + frameSeed + triangleCount + maxBounces + bvhNodeCount + \_pad0 = 8 u32s = 32 bytes, then cameraPos(vec4f) + lightDir(vec4f) + pointLightPos(vec4f) + pointLightRadiance(vec4f) + environmentTint(vec4f) + environmentSun(vec4f) = 6 × 16 = 96 bytes, then invViewProj(mat4x4f) = 64 bytes. Total WGSL struct = 32 + 96 + 64 = 192 bytes. Buffer allocated: 224 bytes. The 32 extra bytes are fine — WGSL uniform buffers can be larger than the struct, and 224 is safe. The CPU writes invVp at `paramsF32.set(invVp, 32)` (byte offset 128) which puts it at bytes 128-192, matching the struct layout (8×4=32 bytes prefix + 6×16=96 bytes = 128 bytes before invViewProj). Layout is correct.
 
 **INFO — Materials now pack roughness + metallic correctly**
 
@@ -89,6 +91,7 @@ Shader at lines 146-150 does barycentric interpolation of per-vertex normals fro
 CLEAN: No tsc errors, no test regressions. The prior HIGH-severity capability over-claims are resolved. The implementation is substantially more capable than the prior review's state.
 
 Remaining items to watch:
+
 1. `supportsIncrementalScene: true` + README contradiction about "No incremental updates" — stale doc.
 2. Dead `pathTraceSeed.wgsl.ts` still present.
 3. Engine lifecycle (factory validation, state machine) still has zero test coverage.
@@ -98,7 +101,7 @@ Remaining items to watch:
 ## Iteration 0.5 (watcher restart — 2026-05-10 baseline)
 
 **Watcher**: second run (sonnet-based poller), picking up from prior watcher's Iteration 0.
-**Baseline commit**: `1036a8c` "fix: wire vitrum.Material ↔ THREE userData.vitrum* round-trip"
+**Baseline commit**: `1036a8c` "fix: wire vitrum.Material ↔ THREE userData.vitrum\* round-trip"
 **HEAD at start**: `1036a8c`
 **tsc**: clean
 **Tests**: 569 passing (prior watcher said 567 — 2 additional from pt-webgpu buildCpuBvh.test.ts + scenePack.test.ts)
@@ -106,6 +109,7 @@ Remaining items to watch:
 ### State at watcher start
 
 Parallel agent has significant uncommitted work on pt-webgpu:
+
 - `CHANGELOG.md`, `README.md`, `plan/library-architecture.md`, `plan/phase-6-status.md` — doc updates reflecting pt-webgpu prototype upgrade
 - `packages/pt-webgpu/package.json` — adds vitest devDep + test script
 - `packages/pt-webgpu/src/index.ts` — full engine rewrite (440 LOC, all Engine interface methods)
@@ -121,6 +125,7 @@ New untracked external_requests files: 09-14 + 15-readme-index-update.md, IMPLEM
 ### Remediation applied
 
 **FIXED — `external_requests/README.md` stale RFE statuses (RFE-15 request)**:
+
 - RFE-01: `Proposed` → `Partial` (Sprint 12 spectral accumulator applied; Beer-Lambert + payload restructure deferred per IMPLEMENTATION-STATUS.md)
 - RFE-02: `Proposed` → `Applied` (Sprint 7 volume scattering fully applied, fork commit `260c432`)
 - RFE-04: `Proposed` → `Partial` (Sprint 12 helper functions applied; TMM evaluator blocked on RFE-13)
@@ -164,6 +169,7 @@ The pt-webgpu working tree has been further worked on since the initial baseline
 **1. Engine now claims and provides `supportsAuxBuffers: true`** (index.ts:95).
 
 The engine allocates four new aux textures (rgba16float each):
+
 - `normalDepthTexture` — first-hit normal in xyz, depth in w
 - `albedoTexture` — first-hit base color in rgb
 - `varianceTexture` — running luminance variance broadcast to rgb
@@ -180,11 +186,13 @@ New slots: `transmission` (m2.x), `ior` (m2.y), plus 2 padding floats. `material
 **STALE COMMENT (LOW)**: `uploadSceneBuffers.ts:10` still says `// 2 * vec4f per material` — should be `3 * vec4f per material`. Cleanup needed.
 
 **3. Spot light support added end-to-end**:
+
 - `firstSpotLight()` extracts position, normalized direction, `cos(angle)`, intensity-scaled radiance.
 - `capabilities.supportedEmitterKinds` adds `'spot'`.
 - Shader has a spot-light branch with cone falloff using `smoothstep(spotCosAngle, 1.0, coneCos)` for soft-edge cones — correct cosine inside cone, hard cutoff outside.
 
 **4. Shader now has real BSDF (not just Lambert/specular)**:
+
 - Schlick Fresnel approximation (`fresnelSchlick` function at line 83).
 - Diffuse BRDF = `(1 − F) * (1 − metallic) * baseColor / π`.
 - Three-way stochastic branch: transmission (probabilistic by `transProb = transmission * (1 − metallic)`), specular, or diffuse.
@@ -193,6 +201,7 @@ New slots: `transmission` (m2.x), `ior` (m2.y), plus 2 padding floats. `material
 - Russian roulette unchanged from before.
 
 **5. Motion vectors computed via prev-VP reprojection**:
+
 - `prevViewMatrix` and `prevProjMatrix` read from `FrameInput`. Default to current matrices if absent (`input.prevProjMatrix ?? input.projMatrix`) — first-frame safe.
 - Stored in `motionVectorsTexture` rg channels.
 
@@ -215,20 +224,22 @@ I read both the CPU writer (`paramsF32` writes at lines 322-385) and WGSL `Frame
 ### MEDIUM-severity bug — `environmentSunStrength` written to wrong vec4 slot
 
 Reading the CPU writer at index.ts:371-378:
+
 ```ts
-paramsF32[36] = environmentTint[0];   // tint.r
-paramsF32[37] = environmentTint[1];   // tint.g
-paramsF32[38] = environmentTint[2];   // tint.b
-paramsF32[39] = environmentSunStrength;   // tint.w  ← here
-paramsF32[40] = environmentSunDirection[0];   // sun.x
-paramsF32[41] = environmentSunDirection[1];   // sun.y
-paramsF32[42] = environmentSunDirection[2];   // sun.z
-paramsF32[43] = 0;                        // sun.w  ← here
+paramsF32[36] = environmentTint[0]; // tint.r
+paramsF32[37] = environmentTint[1]; // tint.g
+paramsF32[38] = environmentTint[2]; // tint.b
+paramsF32[39] = environmentSunStrength; // tint.w  ← here
+paramsF32[40] = environmentSunDirection[0]; // sun.x
+paramsF32[41] = environmentSunDirection[1]; // sun.y
+paramsF32[42] = environmentSunDirection[2]; // sun.z
+paramsF32[43] = 0; // sun.w  ← here
 ```
 
 This packs `environmentTint = (r, g, b, sunStrength)` and `environmentSun = (x, y, z, 0)`.
 
 Shader at pathTraceBruteforce.wgsl.ts:73-74 reads:
+
 ```wgsl
 let sunDir = safe_normalize(params.environmentSun.xyz);
 let sunGlow = pow(max(0.0, dot(dir, sunDir)), 512.0) * params.environmentSun.w;
@@ -251,7 +262,7 @@ No tsc errors, no test regressions. The bug noted above is a semantic shader/CPU
 
 - **2 new actionable concerns:**
   1. **MEDIUM bug** — `environmentSunStrength` written to wrong vec4 component; sun glow silently 0.
-  2. **LOW stale comment** — `PackedSceneData.materials` JSDoc says "2 * vec4f per material"; now 3.
+  2. **LOW stale comment** — `PackedSceneData.materials` JSDoc says "2 \* vec4f per material"; now 3.
 - **5 substantial improvements landed** since iter 0: Fresnel BSDF, transmission, spot lights, aux buffers (G-buffer + variance + motion vectors), `supportsAuxBuffers: true` aligned with implementation.
 
 ---
@@ -275,12 +286,14 @@ The other agent appears to have read my iteration-1 finding flagging the missing
 ### pt-webgpu: more progress since iter 1
 
 The pt-webgpu source has continued evolving rapidly. Cumulative additions seen:
+
 - `index.ts` ~17K → 21K
 - `uploadSceneBuffers.ts` ~7K → 19K (substantial — area-light scene packers added)
 - `pathTraceBruteforce.wgsl.ts` ~14K → 21K (GGX BRDF, area light sampling)
 - `scenePack.test.ts` 5 → 6 tests
 
 Verified additions in this iteration:
+
 - **Rect-area light** support: `rectAreaPosition`, `rectAreaUAxis`, `rectAreaVAxis`, `rectAreaRadiance`, `hasRectAreaLight` packed end-to-end.
 - **Mesh-area light** (single-triangle approximation): `meshAreaTriA/B/C`, `meshAreaRadiance`, `hasMeshAreaLight`.
 - **GGX BRDF**: `ggxD` (NDF) and `smithG1` (geometric attenuation) functions added at shader lines 98-104.
@@ -291,21 +304,22 @@ I read the WGSL `FrameParams` struct (`pathTraceBruteforce.wgsl.ts:17-46`) and t
 
 **WGSL struct layout** (per WGSL spec; all primitives are align-16 vec4f or align-16 mat4x4f):
 
-| Field | WGSL byte offset |
-|---|---|
-| (8 × u32 prefix) | 0-31 |
-| 9 × vec4f (camera/lights/env) | 32-175 |
-| rectAreaPos/U/V/Radiance (4 × vec4f) | 176-239 |
-| meshAreaTriA/B/C/Radiance (4 × vec4f) | 240-303 |
-| **invViewProj: mat4x4f** | **304-367** |
-| **viewProj: mat4x4f** | **368-431** |
-| **prevViewProj: mat4x4f** | **432-495** |
+| Field                                 | WGSL byte offset |
+| ------------------------------------- | ---------------- |
+| (8 × u32 prefix)                      | 0-31             |
+| 9 × vec4f (camera/lights/env)         | 32-175           |
+| rectAreaPos/U/V/Radiance (4 × vec4f)  | 176-239          |
+| meshAreaTriA/B/C/Radiance (4 × vec4f) | 240-303          |
+| **invViewProj: mat4x4f**              | **304-367**      |
+| **viewProj: mat4x4f**                 | **368-431**      |
+| **prevViewProj: mat4x4f**             | **432-495**      |
 
 **CPU writer** (`index.ts:411-417`):
+
 ```ts
-paramsF32.set(invVp, 80);    // byte 320
-paramsF32.set(vp, 96);       // byte 384
-paramsF32.set(prevVp, 112);  // byte 448
+paramsF32.set(invVp, 80); // byte 320
+paramsF32.set(vp, 96); // byte 384
+paramsF32.set(prevVp, 112); // byte 448
 ```
 
 CPU writes the matrices at byte offsets 320 / 384 / 448 — **16 bytes off** from where WGSL expects them (304 / 368 / 432).
@@ -313,6 +327,7 @@ CPU writes the matrices at byte offsets 320 / 384 / 448 — **16 bytes off** fro
 The bytes 304-319 are left as zeros (untouched ArrayBuffer). From WGSL's perspective, `invViewProj`'s first 4 floats read `[0, 0, 0, 0, ...]` — corrupted. Each subsequent matrix reads partly from the previous matrix's slot and partly from the next.
 
 **Symptoms expected** when the GPU runs this code:
+
 - All camera ray reconstructions in `generatePrimaryRay` would be broken (`invViewProj` is multiplied by NDC corner vectors).
 - Motion vectors via `projectToNdc(firstHitPos, params.viewProj)` and `prevViewProj` would be garbage.
 - Visually: the renderer would either draw a single-color screen or extremely warped output.
@@ -332,6 +347,7 @@ CPU still writes `paramsF32[39] = environmentSunStrength` (lands in `environment
 ### Pre-existing tsc baseline error — package-level pt-webgl has 3 type errors
 
 While running tsc verification I discovered that the workspace tsc command actually exits with 2 and 3 type errors in `packages/pt-webgl/src/index.ts`:
+
 1. Line 179: `Scene<Object3DEventMap>` not assignable to `Scene` — `isScene: boolean` vs `isScene: true` covariance.
 2. Line 205: `PerspectiveCamera` similar issue with `isCamera: boolean`.
 3. Line 306: `WebGLRenderer` from `~/projects/vitrum/node_modules/@types/three` not assignable to `WebGLRenderer` from `~/projects/three-gpu-pathtracer/node_modules/@types/three` — duplicate type instances.
@@ -387,6 +403,7 @@ src/forkUniformBridge.ts(89,16): error TS2379: ... 'scatteringCoeffRgb' incompat
 ```
 
 Both are strict-mode violations:
+
 - Line 48: `cdf[i] /= total;` — TypeScript correctly notes `cdf[i]` could be undefined when accessed via index. Fix: capture `cdf[i]` to a local before division, or guard with non-null assertion.
 - Line 89: `out.push({...scatteringCoeffRgb: scatterRgb})` where `scatterRgb` is `readonly [...] | undefined`. The `DriveSourceMaterial` interface declares `scatteringCoeffRgb?: readonly [number, number, number]` — under `exactOptionalPropertyTypes: true`, the value cannot be `undefined`; the property must either be omitted or have the specified type. Fix: only include `scatteringCoeffRgb` in the object literal when `scatterRgb !== undefined`.
 
@@ -402,6 +419,7 @@ Tests still pass (573 total now, up from 570). The new code is wired into `index
 ### pt-webgpu uniform buffer layout mismatch — unchanged
 
 The matrix-offset bug from iter 2 remains unfixed:
+
 - `index.ts:412-418`: `paramsF32.set(invVp, 80); paramsF32.set(vp, 96); paramsF32.set(prevVp, 112);` (bytes 320 / 384 / 448)
 - WGSL struct expects matrices at bytes 304 / 368 / 432.
 
@@ -439,6 +457,7 @@ pt-webgl tsc now back to its pre-existing 3-error baseline (no new regressions).
 ### B. New file: `packages/pt-webgl/src/__tests__/forkUniformBridge.test.ts` (84 LOC, 2 tests)
 
 This addresses my iter-4 finding "MEDIUM observation: forkUniformBridge has zero tests". Two tests:
+
 1. `'drives scattering and dispersion uniforms from material userData'` — sets `vitrumScatteringCoefficient`, `vitrumScatteringAnisotropy`, `vitrumScatteringCoefficientRGB`, `vitrumDispersionAbbeNumber` on a `MeshPhysicalMaterial.userData`; verifies `u_volumeDensity`, `u_sssSigmaT`, `u_anisotropyG`, `u_scatterAlbedo`, `u_ior0`, `u_dispersionStrength`, `iorCauchyB`, `uYCmfIntegral` are all populated correctly.
 2. `'drives thin-film layer uniforms from userData stack'` — sets `vitrumThinFilmStack` with 2 layers; verifies `uThinFilmEnabled === 1`, `uThinFilmLayerCount === 2`, `uThinFilmLayerIors[0..1]` and `uThinFilmLayerThicknessNm[0..1]` are populated.
 
@@ -450,7 +469,7 @@ A parallel agent did a deep audit of pt-webgpu and **independently confirmed bot
 
 - **H-1**: matrix offset bug (16 bytes off) — confirmed with the exact same byte-offset table I derived at iter 2. The audit doc cites WGSL spec for `mat4x4f` alignment-16 and notes the fix is the same one I suggested: `paramsF32.set(invVp, 76); paramsF32.set(vp, 92); paramsF32.set(prevVp, 108);`.
 - **M-1**: `environmentSunStrength` packing bug — same fix proposed (swap `paramsF32[39]` and `paramsF32[43]`).
-- Confirms my iter-1 LOW finding about the stale "2 * vec4f per material" JSDoc.
+- Confirms my iter-1 LOW finding about the stale "2 \* vec4f per material" JSDoc.
 
 Additional findings from the audit (NOT previously flagged by me):
 
@@ -478,11 +497,13 @@ Added `@vitrum/shared-samplers` entry to `packages/pt-webgl` workspace dependenc
 ### Iteration 5 summary
 
 **Major positives:**
+
 - Iter-4 tsc regressions fixed.
 - Iter-4 "missing tests" gap closed with `forkUniformBridge.test.ts`.
 - Independent deep audit confirms my iter-2 H-1 bug + iter-1 M-1 bug + iter-1 LOW finding.
 
 **Outstanding (un-addressed):**
+
 - H-1 matrix-offset bug in pt-webgpu still in tree.
 - M-1 sun-glow bug in pt-webgpu still in tree.
 - 5 additional findings in deep audit (H-2, M-3, M-4, M-5, L-5) all also un-addressed in code.
@@ -508,4 +529,3 @@ If iteration 8 is also idle, the loop will end early on 3-consecutive-idle.
 ---
 
 ## Iteration 8 (pending)
-

@@ -312,14 +312,14 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
  */
 export function buildDDGIPlaceholderUBO(): Float32Array {
   const placeholder = new Float32Array(16);
-  placeholder[3] = 24;                              // spacing (default probe spacing)
-  new Uint32Array(placeholder.buffer)[4] = 1;       // dimsX — isDDGIWired() checks dimsX > 1u
-  new Uint32Array(placeholder.buffer)[5] = 1;       // dimsY
-  new Uint32Array(placeholder.buffer)[6] = 1;       // dimsZ
-  placeholder[8]  = 1;                              // irrW (matches 1×1 placeholder texture)
-  placeholder[9]  = 1;                              // irrH
-  placeholder[10] = 1;                              // visW
-  placeholder[11] = 1;                              // visH
+  placeholder[3] = 24; // spacing (default probe spacing)
+  new Uint32Array(placeholder.buffer)[4] = 1; // dimsX — isDDGIWired() checks dimsX > 1u
+  new Uint32Array(placeholder.buffer)[5] = 1; // dimsY
+  new Uint32Array(placeholder.buffer)[6] = 1; // dimsZ
+  placeholder[8] = 1; // irrW (matches 1×1 placeholder texture)
+  placeholder[9] = 1; // irrH
+  placeholder[10] = 1; // visW
+  placeholder[11] = 1; // visH
   return placeholder;
 }
 
@@ -348,8 +348,8 @@ export function packDDGIGridParams(p: {
   u32[5] = p.dims.y;
   u32[6] = p.dims.z;
   u32[7] = 0;
-  f32[8]  = p.irradianceAtlasW;
-  f32[9]  = p.irradianceAtlasH;
+  f32[8] = p.irradianceAtlasW;
+  f32[9] = p.irradianceAtlasH;
   f32[10] = p.visibilityAtlasW;
   f32[11] = p.visibilityAtlasH;
   return buf;
@@ -380,9 +380,7 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
     size: [w, h],
     format: 'rg32float',
     usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 }
 
@@ -431,21 +429,24 @@ export function createFrameResources(
   const hdrColorTexture = device.createTexture({
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
   // Sprint 18 — separate indirect-channel HDR target.
   const hdrIndirectTexture = device.createTexture({
     label: 'hdrIndirect',
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
   // Sprint 18 — combined output of indirect-combine pass; fed to temporalAccum.
   const combinedDenoisedTexture = device.createTexture({
     label: 'combinedDenoised',
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
   // Sprint 18 follow-up — total radiance fed to welford so the tier
   // classification sees the full signal (direct + indirect).
@@ -494,12 +495,14 @@ export function createFrameResources(
   const denoisedPingTexture = device.createTexture({
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
   const denoisedPongTexture = device.createTexture({
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
   // Temporal accumulator ping-pong (rgba16float). Read prev / write
@@ -507,12 +510,14 @@ export function createFrameResources(
   const accumTextureA = device.createTexture({
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
   const accumTextureB = device.createTexture({
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
   // 1×1 placeholder texture for G-buffer bind group slots.
@@ -527,7 +532,12 @@ export function createFrameResources(
   // Using (0,0,0) for the zero-depth (sky) placeholder causes dot(n,n) = 3 →
   // pow(3, sigmaN=128) → Inf, and Inf/Inf = NaN propagation through the denoiser.
   const placeholderData = new Float32Array([0.5, 0.5, 1.0, 0.0]); // encodes normal=(0,0,1), depth=0
-  device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
+  device.queue.writeTexture(
+    { texture: placeholderTexture },
+    placeholderData,
+    { bytesPerRow: 16 },
+    [1, 1],
+  );
 
   // UBO: camera matrices + per-frame params + library-generality tunables
   // (304 bytes — see WALKAROUND_UBO_SIZE_BYTES in uboUpdater.ts and the
@@ -616,9 +626,7 @@ export function createFrameResources(
     size: [W, H],
     format: 'rgba16float',
     usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
   // Sprint 15 — GTAO textures (half-res input, full-res upsampled output).
@@ -645,24 +653,22 @@ export function createFrameResources(
     size: [W, H],
     format: 'rgba16float',
     usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST,
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   // Seed aoFullTexture with 1.0 (f16 1.0 = 0x3C00) so first-frame shade
   // reads return "unoccluded" before gtao writes a real value.
   // rgba16float = 8 bytes/texel; pack 1.0 in .r, zeros in .g/.b/.a.
   {
     const bytesPerTexel = 8;
-    const rowBytes = Math.max(256, Math.ceil(W * bytesPerTexel / 256) * 256);
+    const rowBytes = Math.max(256, Math.ceil((W * bytesPerTexel) / 256) * 256);
     const buf = new Uint8Array(rowBytes * H);
     for (let y = 0; y < H; y++) {
       const rowOff = y * rowBytes;
       for (let x = 0; x < W; x++) {
         const o = rowOff + x * bytesPerTexel;
         // .r = 1.0 (0x3C00); .g/.b/.a = 0
-        buf[o]     = 0x00;
-        buf[o + 1] = 0x3C;
+        buf[o] = 0x00;
+        buf[o + 1] = 0x3c;
         // (remaining 6 bytes stay 0 from Uint8Array init)
       }
     }
@@ -713,9 +719,7 @@ export function createFrameResources(
     size: [W, H],
     format: 'rgba16float',
     usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
   // ── T2.H1 — 1×1 r32uint zero placeholder for object IDs (svgf-real).
@@ -749,55 +753,76 @@ export function createFrameResources(
   // no behavioural change.
   const svgfHistoryLengthTextureA = device.createTexture({
     label: 'svgf-real-history-length-a',
-    size: [W, H], format: 'r32uint', usage: svgfHistUsage,
+    size: [W, H],
+    format: 'r32uint',
+    usage: svgfHistUsage,
   });
   const svgfHistoryLengthTextureB = device.createTexture({
     label: 'svgf-real-history-length-b',
-    size: [W, H], format: 'r32uint', usage: svgfHistUsage,
+    size: [W, H],
+    format: 'r32uint',
+    usage: svgfHistUsage,
   });
   // Initialise both to 0 so the first frame treats all pixels as disoccluded.
   // r32uint = 4 bytes/texel.
   {
-    const bpr = Math.max(256, Math.ceil(W * 4 / 256) * 256);
+    const bpr = Math.max(256, Math.ceil((W * 4) / 256) * 256);
     const zeroBuf = new Uint8Array(bpr * H);
-    device.queue.writeTexture({ texture: svgfHistoryLengthTextureA }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });
-    device.queue.writeTexture({ texture: svgfHistoryLengthTextureB }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });
+    device.queue.writeTexture(
+      { texture: svgfHistoryLengthTextureA },
+      zeroBuf,
+      { bytesPerRow: bpr },
+      { width: W, height: H, depthOrArrayLayers: 1 },
+    );
+    device.queue.writeTexture(
+      { texture: svgfHistoryLengthTextureB },
+      zeroBuf,
+      { bytesPerRow: bpr },
+      { width: W, height: H, depthOrArrayLayers: 1 },
+    );
   }
   const svgfMomUsage =
     GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
   const svgfMomentsTextureA = device.createTexture({
     label: 'svgf-real-moments-a',
-    size: [W, H], format: 'rg32float', usage: svgfMomUsage,
+    size: [W, H],
+    format: 'rg32float',
+    usage: svgfMomUsage,
   });
   const svgfMomentsTextureB = device.createTexture({
     label: 'svgf-real-moments-b',
-    size: [W, H], format: 'rg32float', usage: svgfMomUsage,
+    size: [W, H],
+    format: 'rg32float',
+    usage: svgfMomUsage,
   });
   const svgfRadUsage =
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
+    GPUTextureUsage.STORAGE_BINDING |
+    GPUTextureUsage.TEXTURE_BINDING |
+    GPUTextureUsage.COPY_DST |
+    GPUTextureUsage.COPY_SRC;
   const svgfPrevRadianceTextureA = device.createTexture({
     label: 'svgf-real-prev-radiance-a',
-    size: [W, H], format: 'rgba16float', usage: svgfRadUsage,
+    size: [W, H],
+    format: 'rgba16float',
+    usage: svgfRadUsage,
   });
   const svgfPrevRadianceTextureB = device.createTexture({
     label: 'svgf-real-prev-radiance-b',
-    size: [W, H], format: 'rgba16float', usage: svgfRadUsage,
+    size: [W, H],
+    format: 'rgba16float',
+    usage: svgfRadUsage,
   });
   const svgfVarianceTexture = device.createTexture({
     label: 'svgf-real-variance',
     size: [W, H],
     format: 'rg32float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING,
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
   const svgfVarianceMomentsIntermedTexture = device.createTexture({
     label: 'svgf-real-variance-moments-intermed',
     size: [W, H],
     format: 'rg32float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING,
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
 
   // ── Assemble per-algorithm sub-structs ────────────────────────────────────

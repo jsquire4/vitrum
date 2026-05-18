@@ -43,7 +43,7 @@ the values produced by stainedGlass today.
 
 ## Future option (deferred)
 
-Once the @vitrum/* → @stained-glass/physics dependency direction is sorted
+Once the @vitrum/\* → @stained-glass/physics dependency direction is sorted
 (currently stainedGlass depends on vitrum; cross-import in the other
 direction is not yet set up), vitrum could optionally:
 

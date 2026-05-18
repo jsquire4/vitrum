@@ -3,13 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "description": "WebGPU-native path tracing backend for @vitrum/core (pre-alpha prototype; internal — not production).",
-  "keywords": ["webgpu", "path-tracing", "vitrum"],
+  "keywords": [
+    "webgpu",
+    "path-tracing",
+    "vitrum"
+  ],
   "author": "jsquire4",
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git",

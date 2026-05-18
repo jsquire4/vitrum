@@ -85,10 +85,7 @@ export function powerHeuristic(pdf1: number, pdf2: number, beta: number = 2): nu
  *   no active sampling strategy, which is a caller logic error. At least one strategy
  *   must have a non-zero selection probability.
  */
-export function mixturePdf(
-  probabilities: readonly number[],
-  pdfs: readonly number[],
-): number {
+export function mixturePdf(probabilities: readonly number[], pdfs: readonly number[]): number {
   if (probabilities.length === 0 || pdfs.length === 0) {
     throw new Error('mixturePdf: arrays must not be empty');
   }
@@ -102,7 +99,7 @@ export function mixturePdf(
   if (probSum === 0) {
     throw new Error(
       'mixturePdf: MIS strategy weights cannot all be zero — at least one strategy must have non-zero probability. ' +
-      'A zero-denominator mixture PDF would cause division by zero in MIS weight computation.',
+        'A zero-denominator mixture PDF would cause division by zero in MIS weight computation.',
     );
   }
   let result = 0;

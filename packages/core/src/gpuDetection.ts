@@ -78,9 +78,8 @@ export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
   const publishToWindow = options?.publishToWindow !== false;
   cached = (async () => {
     const probe = await probeWebGPU();
-    const adapterKind: WgpuAdapterKind = probe.supported && probe.adapterKind != null
-      ? probe.adapterKind
-      : 'unknown';
+    const adapterKind: WgpuAdapterKind =
+      probe.supported && probe.adapterKind != null ? probe.adapterKind : 'unknown';
     const result: GpuDetection = {
       isWebGPU: probe.supported,
       adapterKind,

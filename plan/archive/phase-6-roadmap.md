@@ -21,7 +21,8 @@ See `plan/sprint-0-api-contract.md` for the full breakdown. Sprint 0 landed the 
 Take our renderer from "produces a great-looking image" (Phase 5 baseline) to "produces an image that competes with offline production renderers (Arnold, Cycles, Renderman) for stained-glass scenes specifically." The non-negotiable target: **a hero render that's indistinguishable from a photograph of a real stained-glass window in a sunlit room**, plus an interactive PT preview that converges fast enough to dial-in lighting and material edits in seconds-not-minutes.
 
 This roadmap is the synthesis of:
-- Audits of *Ray Tracing in One Weekend / The Next Week / The Rest of Your Life* and erichlof's `THREE.js-PathTracing-Renderer`
+
+- Audits of _Ray Tracing in One Weekend / The Next Week / The Rest of Your Life_ and erichlof's `THREE.js-PathTracing-Renderer`
 - Five domain-specialist planning passes (light transport, convergence, preview perf, BSDF/traversal, scene fidelity)
 - Bleeding-edge frontier techniques flagged as not-in-any-of-the-audits (SVGF, OIDN, PPG, hero-wavelength spectral, neural denoising)
 
@@ -44,34 +45,34 @@ When a feature is needed in BOTH modes, that's two implementations, not one. Eac
 
 ## 3. Mode-scope matrix
 
-| Sprint | Technique | Walkaround | PT preview | PT final | Shared infra |
-|---|---|---|---|---|---|
-| 1 | HDRI 404 fix | — | ✓ | ✓ | — |
-| 1 | Preview bounces 5→3 | — | ✓ | — | — |
-| 1 | Resolution factor 0.5 | — | ✓ | — | — |
-| 1 | Skip post-process during accum | — | ✓ | — | — |
-| 1 | OrbitControls damping tuning | ✓ | ✓ | — | shared |
-| 2 | Per-cell luminance precompute | ✓ | ✓ | ✓ | shared (BVH build) |
-| 3 | Mixture PDF sampling | — | ✓ | ✓ | fork |
-| 3 | Light tree | — | ✓ | ✓ | fork |
-| 3 | Back-face NEE resample | — | ✓ | ✓ | fork |
-| 4 | lobeMask bitfield | — | ✓ | ✓ | fork |
-| 4 | Lite BSDF for indirect | — | ✓ | ✓ | fork |
-| 4 | Material LOD by depth | — | ✓ | ✓ | fork |
-| 5 | Analytic came (CSG) | — | ✓ | ✓ | fork + JS uploader |
-| 6 | Rough refraction lobe | — | ✓ | ✓ | fork |
-| 6 | Edge-stopping spatial filter | — | ✓ | — | post-pipeline |
-| 7 | SSS (opalescent/glueChip/ringMottled) | — | ✓ | ✓ | fork |
-| 7 | Volume + equi-angular | — | ✓ | ✓ | fork |
-| 8 | RGB-as-3λ spectral | — | ✓ | ✓ | fork |
-| 9 | Adaptive sampling | ✓ | — | — | walkaround only |
-| 9 | Checkerboard upsampling | ✓ | — | — | walkaround only |
-| 10a | SVGF spatiotemporal denoising | ✓ | ✓ | — | both (separate impls) |
-| 10b | OIDN final-pass via ONNX | — | — | ✓ | post-pipeline |
-| 10c | BDPT for caustics | — | — | ✓ | fork (gated re-eval) |
-| 11 | PPG path guiding | ✓ | — | — | walkaround only |
-| 12 | Hero-wavelength spectral | — | ✓ | ✓ | fork (kernel rewrite) |
-| 13 | Custom WebGPU neural denoiser | ✓ | — | — | walkaround only |
+| Sprint | Technique                             | Walkaround | PT preview | PT final | Shared infra          |
+| ------ | ------------------------------------- | ---------- | ---------- | -------- | --------------------- |
+| 1      | HDRI 404 fix                          | —          | ✓          | ✓        | —                     |
+| 1      | Preview bounces 5→3                   | —          | ✓          | —        | —                     |
+| 1      | Resolution factor 0.5                 | —          | ✓          | —        | —                     |
+| 1      | Skip post-process during accum        | —          | ✓          | —        | —                     |
+| 1      | OrbitControls damping tuning          | ✓          | ✓          | —        | shared                |
+| 2      | Per-cell luminance precompute         | ✓          | ✓          | ✓        | shared (BVH build)    |
+| 3      | Mixture PDF sampling                  | —          | ✓          | ✓        | fork                  |
+| 3      | Light tree                            | —          | ✓          | ✓        | fork                  |
+| 3      | Back-face NEE resample                | —          | ✓          | ✓        | fork                  |
+| 4      | lobeMask bitfield                     | —          | ✓          | ✓        | fork                  |
+| 4      | Lite BSDF for indirect                | —          | ✓          | ✓        | fork                  |
+| 4      | Material LOD by depth                 | —          | ✓          | ✓        | fork                  |
+| 5      | Analytic came (CSG)                   | —          | ✓          | ✓        | fork + JS uploader    |
+| 6      | Rough refraction lobe                 | —          | ✓          | ✓        | fork                  |
+| 6      | Edge-stopping spatial filter          | —          | ✓          | —        | post-pipeline         |
+| 7      | SSS (opalescent/glueChip/ringMottled) | —          | ✓          | ✓        | fork                  |
+| 7      | Volume + equi-angular                 | —          | ✓          | ✓        | fork                  |
+| 8      | RGB-as-3λ spectral                    | —          | ✓          | ✓        | fork                  |
+| 9      | Adaptive sampling                     | ✓          | —          | —        | walkaround only       |
+| 9      | Checkerboard upsampling               | ✓          | —          | —        | walkaround only       |
+| 10a    | SVGF spatiotemporal denoising         | ✓          | ✓          | —        | both (separate impls) |
+| 10b    | OIDN final-pass via ONNX              | —          | —          | ✓        | post-pipeline         |
+| 10c    | BDPT for caustics                     | —          | —          | ✓        | fork (gated re-eval)  |
+| 11     | PPG path guiding                      | ✓          | —          | —        | walkaround only       |
+| 12     | Hero-wavelength spectral              | —          | ✓          | ✓        | fork (kernel rewrite) |
+| 13     | Custom WebGPU neural denoiser         | ✓          | —          | —        | walkaround only       |
 
 Legend: ✓ = in scope; — = explicitly out of scope; **fork** = patch to `github:jsquire4/three-gpu-pathtracer`.
 
@@ -92,6 +93,7 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: `outdoorScenePresets.ts`, `pathtracerConstants.ts`, `PathTracingLayer.tsx`, `PTPostProcessing.tsx`, `StageOrbitControls.tsx`.
 
 **Definition of done**:
+
 - Outdoor HDRI presets load successfully (browser network panel shows 200, not 404)
 - PT_PREVIEW.bounces = 3 in `pathtracerConstants.ts`
 - PT_PREVIEW renders at 0.5× DPR (verify via `pathtracer._pathTracer.target.width` halving)
@@ -115,6 +117,7 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: `src/rendering/scene/walkaround/engines/restir/bvhCompute.ts` + fork's `light_sampling_functions.glsl.js` Material struct extension.
 
 **Definition of done**:
+
 - `cellPower` uniform populated and visible in `__WG__` debug bridge (walkaround)
 - `light.power` field populated in fork's lights texture (PT)
 - Round-trip test: setting `Le[i]=2×` doubles `cellPower[i]` in both modes
@@ -137,6 +140,7 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: fork's `direct_lighting.glsl.js`, new `light_tree.glsl.js`, `sampling.glsl.js`.
 
 **Definition of done**:
+
 - Mixture PDF (BSDF + env + light) replaces binary branch — verify via shader inspection
 - Light tree CDF built CPU-side on scene change; binary-search lookup in GLSL
 - Back-face NEE samples redraw up to 4× before contributing zero
@@ -159,6 +163,7 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: fork's `bsdf_functions.glsl.js`, `surface_record_struct.glsl.js`, `get_surface_record_function.glsl.js`.
 
 **Definition of done**:
+
 - `lobeMask` bitfield computed from material at `getSurfaceRecord` time
 - Sheen / clearcoat / iridescence branches gated on bit
 - `liteMode` flag set for `state.depth > 1`; reduces `bsdfEval` to Lambertian + GGX-only
@@ -182,11 +187,13 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: fork's `trace_scene_function.glsl.js`, `shape_intersection_functions.glsl.js`, `PhysicalPathTracingMaterial.js` (uniforms); new `cameUniformUploader.ts` in our project; `WebGLMultipleRenderTargets` allocation in PT pipeline layer.
 
 **MRT G-buffer rider scope** (Decision 12):
+
 - Allocate `WebGLMultipleRenderTargets` with 3 channels: `gColor` (location 0), `gNormalDepth` (location 1, encoded normal + linear depth), `gAlbedo` (location 2, base-color unlit)
 - Add fragment outputs to `PhysicalPathTracingMaterial.js` populating each channel from the primary-hit surface record
 - Layout locked here; downstream sprints just read from the existing buffers
 
 **Definition of done**:
+
 - 500-segment came UBO populated from `EdgeLines.tsx`-equivalent code path
 - `intersectCameSegment` + `intersectCameNode` analytic functions in shader
 - `traceScene` runs both BVH and analytic-came intersection, picks closest hit
@@ -208,12 +215,14 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Goal**: composable visual upgrades that ship after the perf foundation.
 
 **Mode scope**:
+
 - Rough refraction lobe-on-refracted-ray: PT preview + final (fork patch)
 - Edge-stopping spatial filter: PT preview only (it's a low-spp clean-up; PT_FINAL has high enough spp that the filter would over-blur)
 
 **Files**: fork's `bsdf_functions.glsl.js` (rough refraction); new `src/rendering/scene/PTSpatialDenoiser.tsx` (37-tap hexagonal kernel as `postprocessing` Effect subclass).
 
 **Definition of done**:
+
 - Rough refraction perturbs refracted ray direction by GGX-distributed roughness lobe (NOT surface normal — that's our existing Phase 4 patch); composes additively
 - Spatial denoiser mounted FIRST in EffectComposer chain (before Bloom)
 - Spatial denoiser auto-disables when `pathtracer.samples > 24` (temporal accumulation has converged)
@@ -236,6 +245,7 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: fork's `path_tracer.glsl.js` (main loop restructure for volume scatter events), new `volume_march.glsl.js`, `bsdf.glsl.js` (HG phase function shared with SSS), `materials_data_function.glsl.js` (SSS material flag), `PhotorealismControls.tsx` (haze + scatter UI).
 
 **Definition of done**:
+
 - Single-scatter SSS: `TRANSLUCENT` material flag; opalescent/glueChip/ringMottled cells map to it; scatter distance sampled exponentially with HG anisotropy
 - Volume: global homogeneous medium with `density`, `scatterAlbedo`, `anisotropy g` uniforms
 - Equi-angular PDF (Szécsi/Kulla-Conty): volume-scatter NEE samples distance-along-ray weighted toward closest point to primary light
@@ -261,6 +271,7 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: fork's dielectric BSDF in `bsdf.glsl.js`; `glassMaterialProfiles.ts` (add `dispersionStrength?: number`); `createBakedGlassMaterial.ts` (`onBeforeCompile` shader injection); `bevels.ts` baker (remove fake noise-split).
 
 **Definition of done**:
+
 - Per-channel IOR computed via Cauchy formula: `iorRGB = ior + B/λ² + C/λ⁴` at λ ∈ {700, 550, 450} nm
 - `dispersionStrength` slider exposed for bevel cells (default 0.018 from Abbe ~32 for lead crystal; 0 for non-bevel)
 - Jakob+Hanika spectral upsampling (Decision 10): each RGB channel's IOR derived from a 3-coefficient polynomial spectrum (6 GLSL instructions per channel), not hardcoded Cauchy values. Rainbow is smooth across the visible spectrum, not 3 discrete bands.
@@ -283,6 +294,7 @@ Each sprint specifies: **goal**, **mode scope**, **files**, **definition of done
 **Files**: walkaround's `accumulate.wgsl`, new `sample_budget.wgsl`, new `resolve.wgsl` (checkerboard); `HybridRenderer.ts` orchestration; `common.wgsl` (Welford struct).
 
 **Definition of done**:
+
 - Welford variance buffer (RG32Float texture) populated each frame
 - `WelfordVariance` struct extracted to `common.wgsl` as a versioned named type (Decision 13). Layout pinned to prevent Sprints 10a/11/13 from independently re-declaring incompatible variants.
 - Per-pixel sample-count tier (1/2/4 rays/frame) driven by variance threshold
@@ -311,6 +323,7 @@ These are gated behind explicit **trigger criteria**, not automatically schedule
 **Trigger criterion**: ship after Sprint 9. SVGF + adaptive sampling are complementary.
 
 **Definition of done**:
+
 - Walkaround à-trous replaced with SVGF: variance-guided, temporally-stable
 - PT preview spatial filter replaced with SVGF variant
 - Visual A/B at 8 samples: indistinguishable from 64-sample reference for diffuse surfaces
@@ -328,6 +341,7 @@ These are gated behind explicit **trigger criteria**, not automatically schedule
 **Trigger criterion**: ship anytime; orthogonal to other sprints.
 
 **Definition of done**:
+
 - ONNX Runtime Web loads the OIDN albedo/normal/color UNet (5–10 MB bundle)
 - "Denoise" button in PT_FINAL UI runs inference on the accumulated buffer + auxiliary G-buffers (G-buffers come from Sprint 5 MRT scaffold)
 - Output saves alongside the raw render
@@ -349,6 +363,7 @@ These are gated behind explicit **trigger criteria**, not automatically schedule
 **Trigger criterion**: ship ONLY IF Sprint 7 (volume + equi-angular) doesn't visually close the caustic-convergence gap. Re-evaluate after Sprint 7 with a hero-render side-by-side comparison.
 
 **Definition of done**:
+
 - Light subpath kernel: traces from each emitter up to N=3 bounces, stores vertices in MRT/SSBO
 - Eye-subpath connection routine: at each eye vertex, attempt connections to every stored light vertex, evaluate joint PDF + MIS weight
 - Visual A/B: floor caustic from sun-through-panel converges at ~256 samples in PT_FINAL vs. ~1024+ samples for pure NEE
@@ -366,6 +381,7 @@ These are gated behind explicit **trigger criteria**, not automatically schedule
 **Trigger criterion**: ship after Sprint 9 + 10a. PPG composes with adaptive sampling and SVGF — adaptive prioritizes high-variance pixels, PPG cuts that variance via guided directions, SVGF cleans up what's left.
 
 **Definition of done**:
+
 - PPG kd-tree allocated as WebGPU storage buffer (sparse, capped at ~10K spatial cells)
 - Each cell holds a quad-tree of directional bins (16-direction discretization initially)
 - Per-frame: collect path-completion samples into the structure; ping-pong update on alternate frames
@@ -385,6 +401,7 @@ These are gated behind explicit **trigger criteria**, not automatically schedule
 **Trigger criterion**: ship ONLY IF user adds materials that need spectral correctness — uranium glass (fluorescence), dichroic film (multi-order interference), gemstones (absorption bands), or wants smooth-spectrum bevel rainbows beyond 3-color fans.
 
 **Definition of done**:
+
 - Ray payload changes from `vec3 throughput` to `float wavelength + float throughput`
 - Every BSDF evaluation site updated to wavelength-aware variant
 - Spectral accumulator + CIE CMF reconstruction at display
@@ -406,11 +423,13 @@ The placeholder implementation in `packages/shared-samplers/src/jakobHanika.ts` 
 **Mode scope**: walkaround only (real-time path); PT final uses Sprint 10b's ONNX-based OIDN final pass.
 
 **Trigger criterion** (Decision 14): ship ONLY IF
+
 1. SVGF (Sprint 10a) leaves a visible quality gap AND
 2. WebNN API is still 12+ months from production-ready AND
 3. PPG (Sprint 11) has shipped and didn't close the noise gap on its own
 
 **Definition of done**:
+
 - Training pipeline (Python/PyTorch) generates reference noisy/clean pairs from offline path-tracer + walkaround output
 - Model architecture: UNet, ~1–3 MB weights, trained on ~10K image pairs
 - Inference graph: WebGPU compute shaders for conv2d, transposed conv2d, ReLU, skip connections
@@ -425,22 +444,22 @@ The placeholder implementation in `packages/shared-samplers/src/jakobHanika.ts` 
 
 Decisions locked during planning, surfaced for transparency:
 
-| # | Decision | Choice | Rationale |
-|---|---|---|---|
-| 1 | Spectral approach | RGB-as-3λ (Sprint 8) + Jakob+Hanika upsampling (Sprint 8b rider) | More realistic to ship; captures 80% of visible effect; Sprint 12 hero-wavelength gated on actual need |
-| 2 | Adaptive sampling on PT mode | Skip — walkaround only | PT-side workaround is too coarse to be worth 5-day budget |
-| 3 | BDPT | Sprint 10c, **vanilla BDPT** (NOT ReSTIR BDPT), gated re-eval | See decision 8 below |
-| 4 | No tier overrides | Confirmed | All audit-derived sprints stay in baseline plan |
-| 5 | Walkaround/PT crossover handling | Two implementations per "Both" feature | Per render-mode invariant |
-| 6 | Mesh-came retained as PT fallback | Yes | Sprint 5 analytic-came opts in via flag; mesh stays in BVH |
-| 7 | Sprint 7 volume scope | Uniform medium only | Per-region density deferred to a future sprint if needed |
-| 8 | Sprint 10c BDPT path | Stick with vanilla BDPT, NOT ReSTIR BDPT (Hedstrom 2025) | Verified 2026-05-09: ReSTIR BDPT is hardwired to DirectX 12 + DXR + Falcor + RTX hardware. Slang→WGSL exists but uses DXR ray queries which need the WebGPU ray query extension (Chrome-flags-only, no Firefox/Safari timeline). Honest port = 3–5 months. Citations: github.com/Shmaug/ReSTIR-BDPT. |
-| 9 | Sprint 11 path-guiding path | Stick with PPG (Müller 2017), NOT NRC (Müller 2021) | Verified 2026-05-09: original NRC paper never released open source; production NVIDIA-RTX/NRC is closed binaries tied to RTXGI 2.0 + DXR; SIGGRAPH Asia 2025 mobile NRC paper uses HLSL/Vulkan on Samsung Xclipse with tensor-core MLP, not portable to WebGPU. Online training requires backward-pass autograd in compute shaders, which has no production WebGPU framework. PPG has LOWER implementation risk for our stack. Citations: github.com/NVIDIA-RTX/NRC, dl.acm.org/doi/10.1145/3757376.3771399. |
-| 10 | Sprint 8b spectral upsampling rider | Add Jakob+Hanika 2019 spectral upsampling (1–2 days) | 2019 paper, 6 GLSL instructions per channel, layers cleanly on top of Sprint 8 RGB-as-3λ. Captures most of Sprint 12 visual payoff with no kernel rewrite. Source: rgl.epfl.ch/publications/Jakob2019Spectral. |
-| 11 | Sprint 10b WebNN execution provider | Add `webnn` execution provider to ONNX Runtime Web config (1-day rider) | Few-line change in ORT-Web, near-zero risk, gives free near-native acceleration on Edge/Chrome with WebNN behind-flag. Falls back to WebGPU/WASM. |
-| 12 | Sprint 5 MRT G-buffer scaffold | Add as Sprint 5 rider (+1 day) | While `trace_scene_function.glsl.js` is already open. Saves ~2 days of rework across Sprints 6/10a/10b that all need normal+depth+albedo MRT. |
-| 13 | Sprint 9 Welford struct in common.wgsl | Add as Sprint 9 rider (+2 hrs) | Versioned named struct prevents Sprints 10a/11/13 from independently re-declaring incompatible variance struct layouts. |
-| 14 | Sprint 13 trigger update | Add NRC-failed criterion | Trigger now: SVGF gap visible AND WebNN still behind flag AND PPG (Sprint 11) didn't close noise gap. |
+| #   | Decision                               | Choice                                                                  | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --- | -------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Spectral approach                      | RGB-as-3λ (Sprint 8) + Jakob+Hanika upsampling (Sprint 8b rider)        | More realistic to ship; captures 80% of visible effect; Sprint 12 hero-wavelength gated on actual need                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 2   | Adaptive sampling on PT mode           | Skip — walkaround only                                                  | PT-side workaround is too coarse to be worth 5-day budget                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 3   | BDPT                                   | Sprint 10c, **vanilla BDPT** (NOT ReSTIR BDPT), gated re-eval           | See decision 8 below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| 4   | No tier overrides                      | Confirmed                                                               | All audit-derived sprints stay in baseline plan                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| 5   | Walkaround/PT crossover handling       | Two implementations per "Both" feature                                  | Per render-mode invariant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| 6   | Mesh-came retained as PT fallback      | Yes                                                                     | Sprint 5 analytic-came opts in via flag; mesh stays in BVH                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 7   | Sprint 7 volume scope                  | Uniform medium only                                                     | Per-region density deferred to a future sprint if needed                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| 8   | Sprint 10c BDPT path                   | Stick with vanilla BDPT, NOT ReSTIR BDPT (Hedstrom 2025)                | Verified 2026-05-09: ReSTIR BDPT is hardwired to DirectX 12 + DXR + Falcor + RTX hardware. Slang→WGSL exists but uses DXR ray queries which need the WebGPU ray query extension (Chrome-flags-only, no Firefox/Safari timeline). Honest port = 3–5 months. Citations: github.com/Shmaug/ReSTIR-BDPT.                                                                                                                                                                                                         |
+| 9   | Sprint 11 path-guiding path            | Stick with PPG (Müller 2017), NOT NRC (Müller 2021)                     | Verified 2026-05-09: original NRC paper never released open source; production NVIDIA-RTX/NRC is closed binaries tied to RTXGI 2.0 + DXR; SIGGRAPH Asia 2025 mobile NRC paper uses HLSL/Vulkan on Samsung Xclipse with tensor-core MLP, not portable to WebGPU. Online training requires backward-pass autograd in compute shaders, which has no production WebGPU framework. PPG has LOWER implementation risk for our stack. Citations: github.com/NVIDIA-RTX/NRC, dl.acm.org/doi/10.1145/3757376.3771399. |
+| 10  | Sprint 8b spectral upsampling rider    | Add Jakob+Hanika 2019 spectral upsampling (1–2 days)                    | 2019 paper, 6 GLSL instructions per channel, layers cleanly on top of Sprint 8 RGB-as-3λ. Captures most of Sprint 12 visual payoff with no kernel rewrite. Source: rgl.epfl.ch/publications/Jakob2019Spectral.                                                                                                                                                                                                                                                                                               |
+| 11  | Sprint 10b WebNN execution provider    | Add `webnn` execution provider to ONNX Runtime Web config (1-day rider) | Few-line change in ORT-Web, near-zero risk, gives free near-native acceleration on Edge/Chrome with WebNN behind-flag. Falls back to WebGPU/WASM.                                                                                                                                                                                                                                                                                                                                                            |
+| 12  | Sprint 5 MRT G-buffer scaffold         | Add as Sprint 5 rider (+1 day)                                          | While `trace_scene_function.glsl.js` is already open. Saves ~2 days of rework across Sprints 6/10a/10b that all need normal+depth+albedo MRT.                                                                                                                                                                                                                                                                                                                                                                |
+| 13  | Sprint 9 Welford struct in common.wgsl | Add as Sprint 9 rider (+2 hrs)                                          | Versioned named struct prevents Sprints 10a/11/13 from independently re-declaring incompatible variance struct layouts.                                                                                                                                                                                                                                                                                                                                                                                      |
+| 14  | Sprint 13 trigger update               | Add NRC-failed criterion                                                | Trigger now: SVGF gap visible AND WebNN still behind flag AND PPG (Sprint 11) didn't close noise gap.                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ### Items rejected after verification
 
@@ -534,6 +553,7 @@ A sprint isn't "done" until its benchmark file exists and all DoD items are chec
 ## 10. Memory + tracking
 
 This roadmap is the source of truth. When a sprint kicks off:
+
 1. TaskCreate matching the sprint
 2. Update `MEMORY.md` index entry pointing here
 3. On completion: write the benchmark file, mark TaskUpdate completed, update `MEMORY.md`

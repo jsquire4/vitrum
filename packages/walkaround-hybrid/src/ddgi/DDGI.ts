@@ -90,27 +90,27 @@ export interface DDGIFrameInputs {
 }
 
 export class DDGI {
-  private _bvh:         SceneBvh;
-  private _grid:        ProbeGrid;
-  private _pass:        ProbeUpdatePass;
-  private _ready:       boolean  = false;
-  private _lastFrameMs: number   = 0;
-  private _frame:       number   = 0;
-  private _inited:      boolean  = false;
-  private _gpuOk:       boolean  = false;
-  private _lastFrameTs: number   = 0;
-  private _debug:       boolean;
+  private _bvh: SceneBvh;
+  private _grid: ProbeGrid;
+  private _pass: ProbeUpdatePass;
+  private _ready: boolean = false;
+  private _lastFrameMs: number = 0;
+  private _frame: number = 0;
+  private _inited: boolean = false;
+  private _gpuOk: boolean = false;
+  private _lastFrameTs: number = 0;
+  private _debug: boolean;
   // M11: probe grid parameters forwarded to computeFromBounds each frame.
-  private _probeSpacing:      number | undefined;
-  private _maxProbesPerAxis:  number;
+  private _probeSpacing: number | undefined;
+  private _maxProbesPerAxis: number;
 
   constructor(opts: DDGIOptions = {}) {
     this._debug = opts.debug ?? false;
-    this._probeSpacing     = opts.probeSpacing;
+    this._probeSpacing = opts.probeSpacing;
     this._maxProbesPerAxis = opts.maxProbesPerAxis ?? 16;
-    this._bvh   = new SceneBvh();
-    this._grid  = new ProbeGrid();
-    this._pass  = new ProbeUpdatePass(this._bvh, this._grid, {
+    this._bvh = new SceneBvh();
+    this._grid = new ProbeGrid();
+    this._pass = new ProbeUpdatePass(this._bvh, this._grid, {
       debug: this._debug,
       ...(opts.maxMaterials !== undefined ? { maxMaterials: opts.maxMaterials } : {}),
     });
@@ -118,12 +118,24 @@ export class DDGI {
 
   // ── Read-only accessors matching the old DDGIHandle shape ─────────────────
 
-  get bvh():        SceneBvh    { return this._bvh; }
-  get probeGrid():  ProbeGrid   { return this._grid; }
-  get pass():       ProbeUpdatePass { return this._pass; }
-  get ready():      boolean     { return this._ready; }
-  get lastFrameMs(): number     { return this._lastFrameMs; }
-  get probeCount(): number      { return this._grid.probeCount; }
+  get bvh(): SceneBvh {
+    return this._bvh;
+  }
+  get probeGrid(): ProbeGrid {
+    return this._grid;
+  }
+  get pass(): ProbeUpdatePass {
+    return this._pass;
+  }
+  get ready(): boolean {
+    return this._ready;
+  }
+  get lastFrameMs(): number {
+    return this._lastFrameMs;
+  }
+  get probeCount(): number {
+    return this._grid.probeCount;
+  }
 
   // ── Light configuration ───────────────────────────────────────────────────
 
@@ -172,8 +184,7 @@ export class DDGI {
 
     // 60 FPS frame cap (preserves useDDGI behaviour).
     const now = performance.now();
-    if (this._lastFrameTs !== 0 &&
-        now - this._lastFrameTs < TARGET_FRAME_INTERVAL_MS) {
+    if (this._lastFrameTs !== 0 && now - this._lastFrameTs < TARGET_FRAME_INTERVAL_MS) {
       return;
     }
     this._lastFrameTs = now;
@@ -198,7 +209,9 @@ export class DDGI {
       const ok = await this._pass.init(rendererAdapter);
       this._gpuOk = ok;
       if (!ok) {
-        console.warn('[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).');
+        console.warn(
+          '[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).',
+        );
         // Don't return — still update BVH + mark ready so waitForFunction
         // gates in tests don't hang.
       }
@@ -257,8 +270,8 @@ export class DDGI {
     this._pass.dispose();
     this._grid.dispose();
     this._bvh.dispose();
-    this._ready   = false;
-    this._inited  = false;
-    this._gpuOk   = false;
+    this._ready = false;
+    this._inited = false;
+    this._gpuOk = false;
   }
 }

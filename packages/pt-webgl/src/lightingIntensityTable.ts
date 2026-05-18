@@ -12,30 +12,30 @@
  *  when initialising a Three.js light; r3f will gamma-linearise via
  *  `outputColorSpace`. */
 export const COLOR_TEMP_HEX = {
-  candle:        0xFF8100, // 1850 K — wax flame, tea light
-  incandescent:  0xFFA757, // 2700 K — household 60W A19
-  halogen:       0xFFB16E, // 3000 K — halogen / warm LED
-  ledWarm:       0xFFB16E, // 3000 K — warm white LED bulb
-  sunset:        0xFFB16E, // 3000–4000 K — golden-hour sun
-  ledNeutral:    0xFFCEA6, // 4000 K — fluorescent / neutral LED
-  ledCool:       0xFFDABB, // 4500 K — neutral-cool LED
-  moonlight:     0xFFD3AD, // 4100 K — reflected sunlight
-  ledDaylight:   0xFFE4CE, // 5000 K — daylight LED
-  noonSun:       0xFFF0E8, // 5500–5800 K — direct noon sun
-  overcastSky:   0xF6F7FF, // 6900 K — overcast daytime sky
-  blueSkyZenith: 0xE6EBFF, // 7500–8000 K — open zenith
-  twilight:      0xCADAFF, // 10000 K — deep twilight blue
+  candle: 0xff8100, // 1850 K — wax flame, tea light
+  incandescent: 0xffa757, // 2700 K — household 60W A19
+  halogen: 0xffb16e, // 3000 K — halogen / warm LED
+  ledWarm: 0xffb16e, // 3000 K — warm white LED bulb
+  sunset: 0xffb16e, // 3000–4000 K — golden-hour sun
+  ledNeutral: 0xffcea6, // 4000 K — fluorescent / neutral LED
+  ledCool: 0xffdabb, // 4500 K — neutral-cool LED
+  moonlight: 0xffd3ad, // 4100 K — reflected sunlight
+  ledDaylight: 0xffe4ce, // 5000 K — daylight LED
+  noonSun: 0xfff0e8, // 5500–5800 K — direct noon sun
+  overcastSky: 0xf6f7ff, // 6900 K — overcast daytime sky
+  blueSkyZenith: 0xe6ebff, // 7500–8000 K — open zenith
+  twilight: 0xcadaff, // 10000 K — deep twilight blue
 } as const;
 
 /** Three.js DirectionalLight intensity values for the sun by time-of-day.
  *  Post-r155 physical-lights default values — units match pre-r155 × π. */
 export const SUN_INTENSITY = {
-  noon:           Math.PI,        // pre-r155 1.0 × π — clear-sky noon
-  afternoon:      Math.PI * 0.7,  // late-day clear sun
-  sunset:         Math.PI * 0.3,  // golden-hour sun
-  overcast:       0.0,            // sun hidden — IBL-only illumination
-  twilight:       Math.PI * 0.02, // deep twilight directional
-  moonlight:      Math.PI * 0.001,// full moon
+  noon: Math.PI, // pre-r155 1.0 × π — clear-sky noon
+  afternoon: Math.PI * 0.7, // late-day clear sun
+  sunset: Math.PI * 0.3, // golden-hour sun
+  overcast: 0.0, // sun hidden — IBL-only illumination
+  twilight: Math.PI * 0.02, // deep twilight directional
+  moonlight: Math.PI * 0.001, // full moon
 } as const;
 
 /** Map a normalized time-of-day t ∈ [0,1] to DirectionalLight intensity for

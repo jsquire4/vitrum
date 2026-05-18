@@ -91,12 +91,11 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
     onToggle?.(next);
 
     if (next && !hasDebug) {
-       
       console.warn(
         '[GISignalSplit] engine.debug.giSignalTextures() is not implemented. ' +
-        'GISignalSplit requires the T3.G followup: HybridEngine must expose ' +
-        'engine.debug.giSignalTextures() returning {direct, indirect, ao, total}. ' +
-        'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
+          'GISignalSplit requires the T3.G followup: HybridEngine must expose ' +
+          'engine.debug.giSignalTextures() returning {direct, indirect, ao, total}. ' +
+          'See packages/dev/src/types.ts:EngineDebugSurface for the interface.',
       );
     }
   };

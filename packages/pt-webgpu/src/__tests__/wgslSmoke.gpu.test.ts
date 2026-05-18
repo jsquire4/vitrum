@@ -31,23 +31,22 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
     if (!gpu) {
       throw new Error(
         'WebGPU navigator.gpu is unavailable — this test must run in vitest ' +
-        'browser mode with --enable-unsafe-webgpu and a software/hardware ' +
-        'WebGPU adapter present. See packages/pt-webgpu/vitest.gpu.config.ts.',
+          'browser mode with --enable-unsafe-webgpu and a software/hardware ' +
+          'WebGPU adapter present. See packages/pt-webgpu/vitest.gpu.config.ts.',
       );
     }
     adapter = await gpu.requestAdapter();
     if (!adapter) {
       throw new Error(
         'gpu.requestAdapter() returned null — no WebGPU adapter is available. ' +
-        'Check the SwiftShader/Vulkan flags in vitest.gpu.config.ts.',
+          'Check the SwiftShader/Vulkan flags in vitest.gpu.config.ts.',
       );
     }
     device = await adapter.requestDevice({
       requiredLimits: {
         // Request the adapter's max so we can run the pipeline-create test
         // when the adapter actually supports the shader's binding count.
-        maxStorageBuffersPerShaderStage:
-          adapter.limits.maxStorageBuffersPerShaderStage,
+        maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
       },
     });
   });
@@ -69,7 +68,7 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
     expect(errors.length).toBe(0);
   });
 
-  it('pipeline creates when the adapter supports the shader\'s storage-buffer count', async () => {
+  it("pipeline creates when the adapter supports the shader's storage-buffer count", async () => {
     const supported = adapter!.limits.maxStorageBuffersPerShaderStage;
     const module = device!.createShaderModule({
       label: 'pt-webgpu-pipeline-smoke',

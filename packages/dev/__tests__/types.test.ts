@@ -31,16 +31,28 @@ function makeMinimalEngine(): Engine {
   };
   let state: EngineState = 'ready';
   return {
-    get state() { return state; },
+    get state() {
+      return state;
+    },
     capabilities: caps,
-    setScene() { /* no-op */ },
+    setScene() {
+      /* no-op */
+    },
     renderFrame() {
       return { primaryRadiance: null, samplesAccumulated: 0, isConverged: false };
     },
-    reset() { /* no-op */ },
-    pause() { state = 'paused'; },
-    resume() { state = 'ready'; },
-    dispose() { state = 'disposed'; },
+    reset() {
+      /* no-op */
+    },
+    pause() {
+      state = 'paused';
+    },
+    resume() {
+      state = 'ready';
+    },
+    dispose() {
+      state = 'disposed';
+    },
   };
 }
 
@@ -79,7 +91,9 @@ describe('@vitrum/dev types', () => {
     // Manually attach onFrame (simulates T3.E landing)
     (engine as unknown as Record<string, unknown>)['onFrame'] = (cb: (s: FrameStats) => void) => {
       cb({ frameTimeMs: 16.7 });
-      return () => { /* no-op unsubscribe */ };
+      return () => {
+        /* no-op unsubscribe */
+      };
     };
     if (typeof engine.onFrame === 'function') {
       const unsub = engine.onFrame((stats) => calls.push(stats));

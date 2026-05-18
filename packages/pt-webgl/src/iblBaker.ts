@@ -172,14 +172,7 @@ export function bakeSkyEquirect(
 
   // 3. Read pixels into a Uint16Array (HalfFloat raw bits).
   const buffer = new Uint16Array(EQUIRECT_WIDTH * EQUIRECT_HEIGHT * 4);
-  renderer.readRenderTargetPixels(
-    equirectRT,
-    0,
-    0,
-    EQUIRECT_WIDTH,
-    EQUIRECT_HEIGHT,
-    buffer,
-  );
+  renderer.readRenderTargetPixels(equirectRT, 0, 0, EQUIRECT_WIDTH, EQUIRECT_HEIGHT, buffer);
 
   renderer.setRenderTarget(prevTarget);
   renderer.autoClear = prevAutoClear;

@@ -1,6 +1,7 @@
 # Vitrum Complexity Sweep — 2026-05-09
 
 ## Summary
+
 - Files scanned: 62 TypeScript source files (excludes `_staging/`, `node_modules`, `dist`)
 - Total LOC: 12,694 (raw); estimated ~8,000 code-only lines after blanks + comments stripped
 - HOT hotspots: 2
@@ -11,16 +12,16 @@
 
 ## Per-package size summary
 
-| Package | File count | Total LOC | Largest file (LOC) |
-|---|---|---|---|
-| `walkaround-hybrid` | 34 | 8,908 | `shaders/common.wgsl.ts` (832) |
-| `shared-bvh` | 5 | 1,233 | `bvhCommon.ts` (569) |
-| `core` | 7 | 909 | `engine.ts` (201) |
-| `pt-webgl` | 8 | 732 | `iblBaker.ts` (224) |
-| `three-bindings` | 1 | 354 | `index.ts` (354) |
-| `shared-denoisers` | 3 | 200 | `wgsl/atrous.wgsl.ts` (114) |
-| `shared-samplers` | 2 | 57 | `wgsl/hammersley.wgsl.ts` (~50) |
-| `pt-webgpu` | 1 | 8 | `index.ts` (8) |
+| Package             | File count | Total LOC | Largest file (LOC)              |
+| ------------------- | ---------- | --------- | ------------------------------- |
+| `walkaround-hybrid` | 34         | 8,908     | `shaders/common.wgsl.ts` (832)  |
+| `shared-bvh`        | 5          | 1,233     | `bvhCommon.ts` (569)            |
+| `core`              | 7          | 909       | `engine.ts` (201)               |
+| `pt-webgl`          | 8          | 732       | `iblBaker.ts` (224)             |
+| `three-bindings`    | 1          | 354       | `index.ts` (354)                |
+| `shared-denoisers`  | 3          | 200       | `wgsl/atrous.wgsl.ts` (114)     |
+| `shared-samplers`   | 2          | 57        | `wgsl/hammersley.wgsl.ts` (~50) |
+| `pt-webgpu`         | 1          | 8         | `index.ts` (8)                  |
 
 ---
 
@@ -29,6 +30,7 @@
 ### HOT-1 DDGI UBO placeholder layout duplicated across two files
 
 **Files**:
+
 - `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` lines 503–511
 - `packages/walkaround-hybrid/src/pipeline/resourceManager.ts` lines 173–181
 
@@ -39,6 +41,7 @@
 `WalkaroundGPUPipeline.setDDGIInputs(null)` (line 502) packs the placeholder fresh every time it is called (i.e., every frame when DDGI is off), allocating a new `Float32Array(16)` per call in the hot path.
 
 **Suggested decomposition**:
+
 1. Move the zero-DDGI UBO pack into `resourceManager.ts` as an exported `buildDDGIPlaceholderUBO(): Float32Array` helper (4 lines).
 2. Replace both duplicated blocks with a single call to that helper.
 3. Cache the result in `WalkaroundGPUPipeline` so `setDDGIInputs(null)` reuses a pre-built `ArrayBuffer` instead of allocating per call.
@@ -178,6 +181,7 @@ The TypeScript wrapper is 3 lines (import comment + `export const COMMON_WGSL = 
 The class itself is a thin coordinator: `initialize()` calls `uploadBuffer`, `createFrameResources`, `compilePipelines`, `initTimestampQueries`. `renderFrame()` calls `updateUBO`, 7 `build*BindGroup` calls, then sequences GPU encoder calls. `dispose()` calls `destroyFrameResources`, `disposeTimestampState`. There is no complex logic in the class itself — all algorithmic work lives in the modules.
 
 The split is **not cosmetic**. Each module is independently readable:
+
 - `resourceManager.ts` (222 LOC): knows nothing about shaders or bind groups.
 - `bindGroupLayouts.ts` (154 LOC): knows nothing about frame resources.
 - `bindGroupBuilders.ts` (244 LOC): knows about layouts and resources, knows nothing about pipelines.
@@ -193,15 +197,15 @@ One structural note: `WalkaroundGPUPipeline.ts` still holds all BVH buffer field
 
 Notable instances, in priority order:
 
-| File | Line(s) | Value | Issue |
-|---|---|---|---|
-| `restir/bvhCompute.ts` | 405, 477 | `153, 148, 140` | Default warm-gray RGBA duplicated in two functions |
-| `pipeline/resourceManager.ts` | 173–181 | `24, 1, 1, 1, 1` | DDGI placeholder UBO spacing + dims (duplicated in WalkaroundGPUPipeline.ts:503–511) |
-| `pipeline/WalkaroundGPUPipeline.ts` | 503–511 | `24, 1, 1, 1, 1` | Same DDGI placeholder UBO (see HOT-1) |
-| `ddgi/probeGrid.ts` | 37 | `24` | Default probe spacing, appears in 3 files |
-| `pipeline/WalkaroundGPUPipeline.ts` | 396 | `1.0` | Camera-move reset threshold (see WARM-4) |
-| `ddgi/probeUpdatePass.ts` | 207 | `64 * 64` | Material buffer size: 64 materials × 64 bytes. Functional but not named |
-| `walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` | 365 | `3` | À-trous iteration count — could be `ATROUS_ITERATIONS = 3` |
+| File                                                      | Line(s)  | Value            | Issue                                                                                |
+| --------------------------------------------------------- | -------- | ---------------- | ------------------------------------------------------------------------------------ |
+| `restir/bvhCompute.ts`                                    | 405, 477 | `153, 148, 140`  | Default warm-gray RGBA duplicated in two functions                                   |
+| `pipeline/resourceManager.ts`                             | 173–181  | `24, 1, 1, 1, 1` | DDGI placeholder UBO spacing + dims (duplicated in WalkaroundGPUPipeline.ts:503–511) |
+| `pipeline/WalkaroundGPUPipeline.ts`                       | 503–511  | `24, 1, 1, 1, 1` | Same DDGI placeholder UBO (see HOT-1)                                                |
+| `ddgi/probeGrid.ts`                                       | 37       | `24`             | Default probe spacing, appears in 3 files                                            |
+| `pipeline/WalkaroundGPUPipeline.ts`                       | 396      | `1.0`            | Camera-move reset threshold (see WARM-4)                                             |
+| `ddgi/probeUpdatePass.ts`                                 | 207      | `64 * 64`        | Material buffer size: 64 materials × 64 bytes. Functional but not named              |
+| `walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` | 365      | `3`              | À-trous iteration count — could be `ATROUS_ITERATIONS = 3`                           |
 
 The `EMITTER_STRIDE = 80` and `EMITTER_FLOATS = EMITTER_STRIDE / 4` constants in `restir/bvhCompute.ts` (lines 144–145) are the **positive example** — size math done once at the top, referenced by index throughout. Apply this pattern to the unnamed constants above.
 

@@ -18,12 +18,8 @@ import {
   svgfVarianceFromMomentsCPU,
   svgf7x7FallbackCPU,
 } from '../src/svgfRealWebGPU.js';
-import {
-  SVGF_REPROJ_DEFAULT_UNIFORMS,
-} from '../src/svgfRealBindings.js';
-import {
-  SVGF_HISTORY_MIN_FOR_MOMENTS,
-} from '../src/wgsl/svgfVarianceFromMoments.wgsl.js';
+import { SVGF_REPROJ_DEFAULT_UNIFORMS } from '../src/svgfRealBindings.js';
+import { SVGF_HISTORY_MIN_FOR_MOMENTS } from '../src/wgsl/svgfVarianceFromMoments.wgsl.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -33,7 +29,7 @@ function makeGeo(W: number, H: number, depth: number, nx: number, ny: number, nz
   // Pack normals 0..1: world-space (nx, ny, nz) → (nx/2+0.5, ny/2+0.5, nz/2+0.5)
   const norm = new Float32Array(px * 3);
   for (let i = 0; i < px; i++) {
-    norm[i * 3]     = nx / 2 + 0.5;
+    norm[i * 3] = nx / 2 + 0.5;
     norm[i * 3 + 1] = ny / 2 + 0.5;
     norm[i * 3 + 2] = nz / 2 + 0.5;
   }
@@ -44,7 +40,7 @@ function makeGeo(W: number, H: number, depth: number, nx: number, ny: number, nz
 function makeColor(W: number, H: number, r: number, g: number, b: number): Float32Array {
   const arr = new Float32Array(W * H * 3);
   for (let i = 0; i < W * H; i++) {
-    arr[i * 3]     = r;
+    arr[i * 3] = r;
     arr[i * 3 + 1] = g;
     arr[i * 3 + 2] = b;
   }
@@ -55,7 +51,8 @@ function makeColor(W: number, H: number, r: number, g: number, b: number): Float
 
 describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
   it('should accumulate history and drive alpha toward alphaMin over multiple frames', () => {
-    const W = 4, H = 4;
+    const W = 4,
+      H = 4;
     const color = makeColor(W, H, 0.5, 0.3, 0.2);
     const { depth1, norm, objId } = makeGeo(W, H, 2.0, 0, 0, 1);
     const motion = new Float32Array(W * H * 2).fill(0); // zero motion
@@ -88,10 +85,7 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
       expect(h).toBe(frame + 1);
 
       // α = max(alphaMin, 1/(h+1)) — should decrease as h grows.
-      const expectedAlpha = Math.max(
-        SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
-        1 / (h + 1),
-      );
+      const expectedAlpha = Math.max(SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin, 1 / (h + 1));
       if (frame > 0) {
         expect(expectedAlpha).toBeLessThanOrEqual(lastAlpha + 1e-9);
       }
@@ -110,7 +104,8 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
   });
 
   it('should converge blended color toward input when input is constant', () => {
-    const W = 2, H = 2;
+    const W = 2,
+      H = 2;
     const color = makeColor(W, H, 0.8, 0.6, 0.4);
     const { depth1, norm, objId } = makeGeo(W, H, 1.0, 0, 1, 0);
     const motion = new Float32Array(W * H * 2).fill(0);
@@ -142,7 +137,7 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
 
     // After 40 frames, blended color should be within ±0.01 of input.
     for (let i = 0; i < W * H; i++) {
-      expect(prevColor[i * 3]     ?? 0).toBeCloseTo(0.8, 1);
+      expect(prevColor[i * 3] ?? 0).toBeCloseTo(0.8, 1);
       expect(prevColor[i * 3 + 1] ?? 0).toBeCloseTo(0.6, 1);
       expect(prevColor[i * 3 + 2] ?? 0).toBeCloseTo(0.4, 1);
     }
@@ -153,7 +148,8 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
 
 describe('svgfReprojCPU — disocclusion reset', () => {
   it('should reset history to 1 and α=1 on depth jump', () => {
-    const W = 2, H = 2;
+    const W = 2,
+      H = 2;
     const color = makeColor(W, H, 0.5, 0.5, 0.5);
     const { norm, objId } = makeGeo(W, H, 2.0, 0, 0, 1);
     const motion = new Float32Array(W * H * 2).fill(0);
@@ -189,14 +185,15 @@ describe('svgfReprojCPU — disocclusion reset', () => {
 
     // Output color should be the current frame's input (α=1).
     for (let i = 0; i < W * H; i++) {
-      expect(result.colorOut[i * 3]     ?? 0).toBeCloseTo(0.5, 5);
+      expect(result.colorOut[i * 3] ?? 0).toBeCloseTo(0.5, 5);
       expect(result.colorOut[i * 3 + 1] ?? 0).toBeCloseTo(0.5, 5);
       expect(result.colorOut[i * 3 + 2] ?? 0).toBeCloseTo(0.5, 5);
     }
   });
 
   it('should reset history on object-id mismatch', () => {
-    const W = 1, H = 1;
+    const W = 1,
+      H = 1;
     const color = makeColor(W, H, 0.3, 0.3, 0.3);
     const { depth1, norm } = makeGeo(W, H, 1.0, 0, 0, 1);
     const motion = new Float32Array(2).fill(0);
@@ -233,20 +230,21 @@ describe('svgfVarianceFromMomentsCPU — Eq. 5', () => {
   it('should compute Var = max(0, M2 - M1²) within ±1e-6', () => {
     const cases: [number, number, number][] = [
       // [M1, M2, expectedVar]
-      [0.5, 0.2, 0],         // M2 < M1² → clamped to 0 (0.2 - 0.25 = -0.05 → max(0,_) = 0)
-      [0.5, 0.5, 0.25],      // M2 - M1² = 0.5 - 0.25 = 0.25
-      [0.3, 0.5, 0.41],      // 0.5 - 0.09 = 0.41
-      [1.0, 1.5, 0.5],       // 1.5 - 1.0 = 0.5
-      [0.0, 0.0, 0.0],       // trivial
+      [0.5, 0.2, 0], // M2 < M1² → clamped to 0 (0.2 - 0.25 = -0.05 → max(0,_) = 0)
+      [0.5, 0.5, 0.25], // M2 - M1² = 0.5 - 0.25 = 0.25
+      [0.3, 0.5, 0.41], // 0.5 - 0.09 = 0.41
+      [1.0, 1.5, 0.5], // 1.5 - 1.0 = 0.5
+      [0.0, 0.0, 0.0], // trivial
     ];
 
-    const W = cases.length, H = 1;
+    const W = cases.length,
+      H = 1;
     const momentsIn = new Float32Array(W * H * 2);
     const expectedVars: number[] = [];
 
     for (let i = 0; i < W; i++) {
       const [m1, m2, ev] = cases[i]!;
-      momentsIn[i * 2]     = m1;
+      momentsIn[i * 2] = m1;
       momentsIn[i * 2 + 1] = m2;
       expectedVars.push(ev);
     }
@@ -263,13 +261,17 @@ describe('svgfVarianceFromMomentsCPU — Eq. 5', () => {
   });
 
   it('should return 0 for pixels with insufficient history', () => {
-    const W = 3, H = 1;
+    const W = 3,
+      H = 1;
     const momentsIn = new Float32Array([0.5, 0.5, 0.4, 0.6, 0.3, 0.5]);
     // History below threshold.
     const historyIn = new Uint32Array([0, 1, 2]);
 
     const result = svgfVarianceFromMomentsCPU({
-      momentsIn, historyIn, width: W, height: H,
+      momentsIn,
+      historyIn,
+      width: W,
+      height: H,
       historyMin: SVGF_HISTORY_MIN_FOR_MOMENTS,
     });
 
@@ -283,7 +285,8 @@ describe('svgfVarianceFromMomentsCPU — Eq. 5', () => {
 
 describe('svgf7x7FallbackCPU — spatial variance for new pixels', () => {
   it('should compute 7×7 box variance for history=0 pixels', () => {
-    const W = 7, H = 7;
+    const W = 7,
+      H = 7;
     const px = W * H;
 
     // Constant color → spatial variance = 0.
@@ -306,14 +309,15 @@ describe('svgf7x7FallbackCPU — spatial variance for new pixels', () => {
   });
 
   it('should match CPU 7×7 box variance on a known noisy pattern', () => {
-    const W = 9, H = 9;
+    const W = 9,
+      H = 9;
     const px = W * H;
 
     // Alternating luminance pattern — odd pixels bright, even pixels dark.
     const noisy = new Float32Array(px * 3);
     for (let i = 0; i < px; i++) {
-      const v = (i % 2 === 0) ? 0.0 : 1.0;
-      noisy[i * 3]     = v;
+      const v = i % 2 === 0 ? 0.0 : 1.0;
+      noisy[i * 3] = v;
       noisy[i * 3 + 1] = v;
       noisy[i * 3 + 2] = v;
     }
@@ -340,7 +344,7 @@ describe('svgf7x7FallbackCPU — spatial variance for new pixels', () => {
 
     // Pixels with sufficient history should pass through varianceIn unchanged.
     const histWithHistory = new Uint32Array(px).fill(10);
-    const varWithHistory  = new Float32Array(px).fill(0.42);
+    const varWithHistory = new Float32Array(px).fill(0.42);
     const passthrough = svgf7x7FallbackCPU({
       currColor: noisy,
       historyIn: histWithHistory,
@@ -364,7 +368,8 @@ describe('svgfReprojCPU — end-to-end identity convergence', () => {
     // ≈ 0.95^200 ≈ 3.5e-5 — well within ±1% tolerance. The α_min clamp is
     // INTENTIONAL per Schied 2017 §4.2 to prevent stuck-history; testing that
     // 50 frames hits ±0.5% would falsely demand the clamp didn't exist.
-    const W = 3, H = 3;
+    const W = 3,
+      H = 3;
     const input = makeColor(W, H, 0.7, 0.4, 0.1);
     const { depth1, norm, objId } = makeGeo(W, H, 1.5, 0, 0, 1);
     const motion = new Float32Array(W * H * 2).fill(0);
@@ -397,7 +402,7 @@ describe('svgfReprojCPU — end-to-end identity convergence', () => {
     // After 200 frames at α_min ≈ 0.05, the EMA residual is ~(0.95)^200 ≈ 3.5e-5.
     // We assert ±1% — generous to absorb any α_min variation across implementations.
     for (let i = 0; i < W * H; i++) {
-      expect(prevColor[i * 3]     ?? 0).toBeCloseTo(0.7, 1);  // ±0.05
+      expect(prevColor[i * 3] ?? 0).toBeCloseTo(0.7, 1); // ±0.05
       expect(prevColor[i * 3 + 1] ?? 0).toBeCloseTo(0.4, 1);
       expect(prevColor[i * 3 + 2] ?? 0).toBeCloseTo(0.1, 1);
     }
@@ -417,14 +422,16 @@ describe('SVGF WGSL exports', () => {
   });
 
   it('svgfVarianceFromMoments WGSL should be non-empty and contain entry point', async () => {
-    const { SVGF_VARIANCE_FROM_MOMENTS_WGSL } = await import('../src/wgsl/svgfVarianceFromMoments.wgsl.js');
+    const { SVGF_VARIANCE_FROM_MOMENTS_WGSL } =
+      await import('../src/wgsl/svgfVarianceFromMoments.wgsl.js');
     expect(typeof SVGF_VARIANCE_FROM_MOMENTS_WGSL).toBe('string');
     expect(SVGF_VARIANCE_FROM_MOMENTS_WGSL).toContain('svgfVarianceFromMomentsMain');
     expect(SVGF_VARIANCE_FROM_MOMENTS_WGSL).toContain('@compute');
   });
 
   it('svgf7x7SpatialFallback WGSL should be non-empty and contain entry point', async () => {
-    const { SVGF_7X7_SPATIAL_FALLBACK_WGSL } = await import('../src/wgsl/svgf7x7SpatialFallback.wgsl.js');
+    const { SVGF_7X7_SPATIAL_FALLBACK_WGSL } =
+      await import('../src/wgsl/svgf7x7SpatialFallback.wgsl.js');
     expect(typeof SVGF_7X7_SPATIAL_FALLBACK_WGSL).toBe('string');
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('svgf7x7FallbackMain');
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain('@compute');
@@ -435,16 +442,19 @@ describe('SVGF WGSL exports', () => {
 
 describe('packSVGFReprojUniforms', () => {
   it('should round-trip the default uniforms correctly', async () => {
-    const { packSVGFReprojUniforms, SVGF_REPROJ_DEFAULT_UNIFORMS, SVGF_REPROJ_UNIFORMS_SIZE_BYTES } =
-      await import('../src/svgfRealBindings.js');
+    const {
+      packSVGFReprojUniforms,
+      SVGF_REPROJ_DEFAULT_UNIFORMS,
+      SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
+    } = await import('../src/svgfRealBindings.js');
 
     const buf = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
     packSVGFReprojUniforms(SVGF_REPROJ_DEFAULT_UNIFORMS, buf);
     const dv = new DataView(buf);
 
-    expect(dv.getFloat32(0,  true)).toBeCloseTo(SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaDepth,  5);
-    expect(dv.getFloat32(4,  true)).toBeCloseTo(SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaNormal, 5);
-    expect(dv.getFloat32(8,  true)).toBeCloseTo(SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,    5);
-    expect(dv.getUint32( 12, true)).toBe(0); // _pad
+    expect(dv.getFloat32(0, true)).toBeCloseTo(SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaDepth, 5);
+    expect(dv.getFloat32(4, true)).toBeCloseTo(SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaNormal, 5);
+    expect(dv.getFloat32(8, true)).toBeCloseTo(SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin, 5);
+    expect(dv.getUint32(12, true)).toBe(0); // _pad
   });
 });

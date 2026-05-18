@@ -56,10 +56,10 @@ async function main(): Promise<void> {
   // present and required by mode; throws if required-but-missing; returns
   // a 1×1 placeholder if not-required (so loops can still reference the
   // variable without conditional plumbing throughout).
-  const canvasPt    = document.querySelector<HTMLCanvasElement>('#c-pt');
-  const canvasWgpu  = document.querySelector<HTMLCanvasElement>('#c-wgpu');
+  const canvasPt = document.querySelector<HTMLCanvasElement>('#c-pt');
+  const canvasWgpu = document.querySelector<HTMLCanvasElement>('#c-wgpu');
   const canvasPtGpu = document.querySelector<HTMLCanvasElement>('#c-ptgpu');
-  const statusEl    = nonNull(document.querySelector<HTMLDivElement>('#status'), '#status');
+  const statusEl = nonNull(document.querySelector<HTMLDivElement>('#status'), '#status');
 
   const lines: [string, string, string] = ['', '', ''];
 
@@ -76,7 +76,10 @@ async function main(): Promise<void> {
   // (pt-webgl.html / walkaround.html / pt-webgpu.html) sets the
   // body[data-engine-mode] attribute, which we read here as a fallback.
   const bodyMode = (document.body.getAttribute('data-engine-mode') ?? 'all') as
-    | 'all' | 'ptwebgl' | 'walkaround' | 'ptwebgpu';
+    | 'all'
+    | 'ptwebgl'
+    | 'walkaround'
+    | 'ptwebgpu';
   const mode = (params.get('mode') ?? bodyMode) as typeof bodyMode;
   // `walkaround-webgl2.html` sets data-walkaround-mode="1" to force pt-webgl
   // into interactive + camera-motion defaults so the page behaves like a
@@ -90,11 +93,14 @@ async function main(): Promise<void> {
       : walkaroundFallback,
     ppgEnabled: params.get('ppgEnabled') === '1',
     denoiser: (params.get('denoiser') ?? 'svgf') as 'svgf' | 'atrous',
-    quality: (params.get('quality')
-      ?? (walkaroundFallback ? 'interactive' : 'capture')) as 'interactive' | 'final' | 'capture' | 'safe',
+    quality: (params.get('quality') ?? (walkaroundFallback ? 'interactive' : 'capture')) as
+      | 'interactive'
+      | 'final'
+      | 'capture'
+      | 'safe',
     ptWebgpuBounces: parseInt(params.get('ptWebgpuBounces') ?? '4', 10) || 4,
-    samplesTarget: parseInt(params.get('samplesTarget')
-      ?? (walkaroundFallback ? '256' : '32'), 10) || 32,
+    samplesTarget:
+      parseInt(params.get('samplesTarget') ?? (walkaroundFallback ? '256' : '32'), 10) || 32,
     scene: (params.get('scene') ?? 'cornell') as 'cornell' | 'complex',
   };
   const RUN = {
@@ -116,7 +122,12 @@ async function main(): Promise<void> {
       lastGpuTimingsFrame?: number;
     };
     ptWebgpu?: { state: string; spp: number; target: number; converged: boolean };
-    memory?: { usedJSHeapMB: number; totalJSHeapMB: number; jsHeapLimitMB: number; sampledAtFrame: number };
+    memory?: {
+      usedJSHeapMB: number;
+      totalJSHeapMB: number;
+      jsHeapLimitMB: number;
+      sampledAtFrame: number;
+    };
     cameraMotion?: { angleDeg: number; moving: boolean };
   } = { flags: FLAGS };
   (globalThis as unknown as { __vitrum: typeof telemetry }).__vitrum = telemetry;
@@ -136,7 +147,11 @@ async function main(): Promise<void> {
   // browser; this catches JS-side growth (closures, event listeners, etc.).
   function pollMemory(frameIdx: number): void {
     if (frameIdx % 30 !== 0) return;
-    const m = (performance as unknown as { memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } }).memory;
+    const m = (
+      performance as unknown as {
+        memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number };
+      }
+    ).memory;
     if (!m) return;
     telemetry.memory = {
       usedJSHeapMB: +(m.usedJSHeapSize / (1024 * 1024)).toFixed(2),
@@ -150,9 +165,8 @@ async function main(): Promise<void> {
     statusEl.textContent = lines.join('\n').trim() || '…';
   }
 
-  const threeScene = FLAGS.scene === 'complex'
-    ? buildComplexThreeScene()
-    : buildCornellBoxThreeScene();
+  const threeScene =
+    FLAGS.scene === 'complex' ? buildComplexThreeScene() : buildCornellBoxThreeScene();
   const vitrumScene: Scene = sceneFromThreeJS(threeScene);
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
@@ -164,9 +178,10 @@ async function main(): Promise<void> {
   if (!RUN.ptWebgl || !canvasPt) {
     lines[0] = '';
   }
-  const renderer = (RUN.ptWebgl && canvasPt)
-    ? new THREE.WebGLRenderer({ canvas: canvasPt, antialias: false, alpha: false })
-    : null;
+  const renderer =
+    RUN.ptWebgl && canvasPt
+      ? new THREE.WebGLRenderer({ canvas: canvasPt, antialias: false, alpha: false })
+      : null;
   if (renderer) {
     renderer.setPixelRatio(1);
     renderer.setClearColor(0x111111, 1);
@@ -291,7 +306,7 @@ async function main(): Promise<void> {
       ...(requiredFeatures.length > 0 ? { requiredFeatures } : {}),
     });
     const format = navigator.gpu.getPreferredCanvasFormat();
-    const ctx = (RUN.walkaround && canvasWgpu) ? canvasWgpu.getContext('webgpu') : null;
+    const ctx = RUN.walkaround && canvasWgpu ? canvasWgpu.getContext('webgpu') : null;
     if (RUN.walkaround && canvasWgpu && !ctx) {
       lines[1] = 'Walkaround: getContext("webgpu") failed.';
       refreshStatus();
@@ -315,28 +330,31 @@ async function main(): Promise<void> {
     const primaryLightDir: [number, number, number] = [raw[0] / len, raw[1] / len, raw[2] / len];
 
     // Expose the device + engine on window for the diagnostic probe.
-    (globalThis as unknown as { __vitrumDevice: GPUDevice; __vitrumWalkaround?: unknown }).__vitrumDevice = device;
-    const hybrid = (RUN.walkaround && canvasWgpu && gpuCtx)
-      ? await createWalkaroundEngine_Hybrid({
-          device,
-          width: canvasWgpu.width,
-          height: canvasWgpu.height,
-          threeScene,
-          primaryLightDir,
-          // Cornell box is an indoor scene with one area light at the top.
-          // Sun (`primaryLightIntensity`) and sky (`skyIrradiance`) belong
-          // to the original stained-glass-studio context the engine was
-          // built around; firing them for Cornell adds spurious extra
-          // illumination (notably a bright peach stripe at the red-wall
-          // edge from grazing-angle sun shading + skyAperture probes).
-          primaryLightIntensity: 0,
-          skyTint: [0.55, 0.72, 1.0],
-          skyIrradiance: 0,
-          isSceneReady: () => true,
-          denoiser: FLAGS.denoiser,
-          ppgEnabled: FLAGS.ppgEnabled,
-        })
-      : null;
+    (
+      globalThis as unknown as { __vitrumDevice: GPUDevice; __vitrumWalkaround?: unknown }
+    ).__vitrumDevice = device;
+    const hybrid =
+      RUN.walkaround && canvasWgpu && gpuCtx
+        ? await createWalkaroundEngine_Hybrid({
+            device,
+            width: canvasWgpu.width,
+            height: canvasWgpu.height,
+            threeScene,
+            primaryLightDir,
+            // Cornell box is an indoor scene with one area light at the top.
+            // Sun (`primaryLightIntensity`) and sky (`skyIrradiance`) belong
+            // to the original stained-glass-studio context the engine was
+            // built around; firing them for Cornell adds spurious extra
+            // illumination (notably a bright peach stripe at the red-wall
+            // edge from grazing-angle sun shading + skyAperture probes).
+            primaryLightIntensity: 0,
+            skyTint: [0.55, 0.72, 1.0],
+            skyIrradiance: 0,
+            isSceneReady: () => true,
+            denoiser: FLAGS.denoiser,
+            ppgEnabled: FLAGS.ppgEnabled,
+          })
+        : null;
     if (hybrid) {
       (globalThis as unknown as { __vitrumWalkaround: typeof hybrid }).__vitrumWalkaround = hybrid;
       hybrid.setScene(vitrumScene);
@@ -365,11 +383,14 @@ async function main(): Promise<void> {
       // lands after the new swap chain is acquired but before this frame's
       // composite runs, the canvas presents an uninitialised (black) image
       // for one frame, producing visible dark flashes.
-      let lastW = canvasWgpu.width, lastH = canvasWgpu.height;
+      let lastW = canvasWgpu.width,
+        lastH = canvasWgpu.height;
       function wgpuLoop(): void {
         if (!hybrid || !canvasWgpu || !gpuCtx) return;
-        if (canvasWgpu.clientWidth !== lastW / window.devicePixelRatio ||
-            canvasWgpu.clientHeight !== lastH / window.devicePixelRatio) {
+        if (
+          canvasWgpu.clientWidth !== lastW / window.devicePixelRatio ||
+          canvasWgpu.clientHeight !== lastH / window.devicePixelRatio
+        ) {
           configureWgpu();
           lastW = canvasWgpu.width;
           lastH = canvasWgpu.height;
@@ -406,7 +427,9 @@ async function main(): Promise<void> {
           frame: wFrame,
           debugTimingsLen: hyb.debugTimings?.length ?? 0,
           ...(hyb.lastGpuTimings ? { lastGpuTimings: hyb.lastGpuTimings } : {}),
-          ...(hyb.lastGpuTimingsFrame != null ? { lastGpuTimingsFrame: hyb.lastGpuTimingsFrame } : {}),
+          ...(hyb.lastGpuTimingsFrame != null
+            ? { lastGpuTimingsFrame: hyb.lastGpuTimingsFrame }
+            : {}),
         };
         pollMemory(wFrame);
         requestAnimationFrame(wgpuLoop);
@@ -428,10 +451,15 @@ async function main(): Promise<void> {
       resizeCanvasToDisplaySize(canvasPtGpu);
       const ptGpuEngine = await createPTEngine_WebGPU({ device });
       ptGpuEngine.setScene(vitrumScene);
-      (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu = ptGpuEngine;
+      (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu =
+        ptGpuEngine;
       const ptGpuSamplesTarget = FLAGS.samplesTarget;
       let ptGpuFrame = 0;
-      let lastCameraPos: [number, number, number] = [camera.position.x, camera.position.y, camera.position.z];
+      let lastCameraPos: [number, number, number] = [
+        camera.position.x,
+        camera.position.y,
+        camera.position.z,
+      ];
       function ptGpuLoop(): void {
         if (ptGpuEngine.state !== 'ready') {
           lines[2] = `pt-webgpu: state=${ptGpuEngine.state}`;
@@ -461,7 +489,11 @@ async function main(): Promise<void> {
           },
           frameIndex: ptGpuFrame,
           frameSeed: (ptGpuFrame * 6364136223846793005 + 1442695040888963407) >>> 0,
-          quality: { samplesTarget: ptGpuSamplesTarget, bounces: FLAGS.ptWebgpuBounces, resolutionFactor: 1 },
+          quality: {
+            samplesTarget: ptGpuSamplesTarget,
+            bounces: FLAGS.ptWebgpuBounces,
+            resolutionFactor: 1,
+          },
         };
         const out = ptGpuEngine.renderFrame(input);
         ptGpuFrame++;

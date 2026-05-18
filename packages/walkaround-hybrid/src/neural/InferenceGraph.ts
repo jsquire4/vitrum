@@ -33,21 +33,11 @@
 
 import type { UNetSpec, LayerSpec, LayerKind } from './unetArchitecture.js';
 import type { ModelWeights, LayerWeights } from './weights.js';
-import {
-  CONV2D_WGSL,
-} from './wgsl/conv2d.wgsl.js';
-import {
-  TRANSPOSED_CONV2D_WGSL,
-} from './wgsl/transposedConv2d.wgsl.js';
-import {
-  RELU_WGSL,
-} from './wgsl/relu.wgsl.js';
-import {
-  SKIP_CONNECTION_WGSL,
-} from './wgsl/skipConnection.wgsl.js';
-import {
-  BILINEAR_UPSAMPLE_WGSL,
-} from './wgsl/bilinearUpsample.wgsl.js';
+import { CONV2D_WGSL } from './wgsl/conv2d.wgsl.js';
+import { TRANSPOSED_CONV2D_WGSL } from './wgsl/transposedConv2d.wgsl.js';
+import { RELU_WGSL } from './wgsl/relu.wgsl.js';
+import { SKIP_CONNECTION_WGSL } from './wgsl/skipConnection.wgsl.js';
+import { BILINEAR_UPSAMPLE_WGSL } from './wgsl/bilinearUpsample.wgsl.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -58,15 +48,15 @@ interface TensorDims {
 }
 
 interface TensorBuffer {
-  buf:    GPUBuffer;
-  dims:   TensorDims;
-  label:  string;
+  buf: GPUBuffer;
+  dims: TensorDims;
+  label: string;
 }
 
 /** Per-layer GPU state: pipeline + buffers + cached bind group. */
 interface LayerGPUState {
   readonly layerName: string;
-  readonly pipeline:  GPUComputePipeline;
+  readonly pipeline: GPUComputePipeline;
   readonly uniformBuf: GPUBuffer;
   /** Cached bind group — invalidated (set to null) if any buffer identity changes. */
   cachedBindGroup: GPUBindGroup | null;
@@ -77,20 +67,20 @@ interface LayerGPUState {
 // ── WGSL entry points per layer kind ─────────────────────────────────────────
 
 const WGSL_ENTRY: Record<LayerKind, string> = {
-  conv2d:          'conv2dMain',
-  transposedConv2d:'transposedConv2dMain',
-  relu:            'reluMain',
-  skipAdd:         'skipConnectionMain',
-  bilinearUpsample:'bilinearUpsampleMain',
-  inputPack:       '',  // handled CPU-side by packing pass
+  conv2d: 'conv2dMain',
+  transposedConv2d: 'transposedConv2dMain',
+  relu: 'reluMain',
+  skipAdd: 'skipConnectionMain',
+  bilinearUpsample: 'bilinearUpsampleMain',
+  inputPack: '', // handled CPU-side by packing pass
 };
 
 const WGSL_SOURCE: Partial<Record<LayerKind, string>> = {
-  conv2d:          CONV2D_WGSL,
-  transposedConv2d:TRANSPOSED_CONV2D_WGSL,
-  relu:            RELU_WGSL,
-  skipAdd:         SKIP_CONNECTION_WGSL,
-  bilinearUpsample:BILINEAR_UPSAMPLE_WGSL,
+  conv2d: CONV2D_WGSL,
+  transposedConv2d: TRANSPOSED_CONV2D_WGSL,
+  relu: RELU_WGSL,
+  skipAdd: SKIP_CONNECTION_WGSL,
+  bilinearUpsample: BILINEAR_UPSAMPLE_WGSL,
 };
 
 // Uniform buffer size: 5 u32 fields, padded to 32 bytes (8×u32).
@@ -102,11 +92,10 @@ const PLACEHOLDER_BYTES = 4;
 // ── InferenceGraph ────────────────────────────────────────────────────────────
 
 export class InferenceGraph {
-
-  private _device:       GPUDevice | null = null;
-  private _spec:         UNetSpec;
-  private _W:            number = 0;
-  private _H:            number = 0;
+  private _device: GPUDevice | null = null;
+  private _spec: UNetSpec;
+  private _W: number = 0;
+  private _H: number = 0;
 
   /** Named tensor buffers allocated during initialize(). */
   private _tensors: Map<string, TensorBuffer> = new Map();
@@ -129,7 +118,9 @@ export class InferenceGraph {
 
   // ── Public API ─────────────────────────────────────────────────────────────
 
-  get ready(): boolean { return this._ready; }
+  get ready(): boolean {
+    return this._ready;
+  }
 
   /**
    * Initialize GPU resources for the given resolution.
@@ -142,14 +133,12 @@ export class InferenceGraph {
    */
   async initialize(device: GPUDevice, weights: ModelWeights, W: number, H: number): Promise<void> {
     this._device = device;
-    this._W      = W;
-    this._H      = H;
-    this._ready  = false;
+    this._W = W;
+    this._H = H;
+    this._ready = false;
 
     // Build the weight lookup by name.
-    const weightsByName = new Map<string, LayerWeights>(
-      weights.layers.map(lw => [lw.name, lw]),
-    );
+    const weightsByName = new Map<string, LayerWeights>(weights.layers.map((lw) => [lw.name, lw]));
 
     // Placeholder buffer (for unused binding slots).
     this._placeholderBuf = device.createBuffer({
@@ -218,15 +207,18 @@ export class InferenceGraph {
 
       // Bug 6 fix: build bind group now; cache it with buffer identity keys.
       const { bindGroup, bufKeys } = this._buildBindGroup(
-        pipeline, layer, weightsByName, uniformBuf,
+        pipeline,
+        layer,
+        weightsByName,
+        uniformBuf,
       );
 
       this._layerStates[i] = {
-        layerName:      layer.name,
+        layerName: layer.name,
         pipeline,
         uniformBuf,
         cachedBindGroup: bindGroup,
-        cachedBufKeys:   bufKeys,
+        cachedBufKeys: bufKeys,
       };
     }
 
@@ -249,9 +241,9 @@ export class InferenceGraph {
    */
   run(
     noisyColorBuf: GPUBuffer,
-    albedoBuf:     GPUBuffer,
-    normalsBuf:    GPUBuffer,
-    outputBuf:     GPUBuffer,
+    albedoBuf: GPUBuffer,
+    normalsBuf: GPUBuffer,
+    outputBuf: GPUBuffer,
     commandEncoder?: GPUCommandEncoder,
   ): void {
     if (!this._ready || !this._device) {
@@ -286,7 +278,10 @@ export class InferenceGraph {
         // Rebuild bind group with fresh buffer references.
         const weightsByName = new Map<string, LayerWeights>(); // already uploaded
         const { bindGroup, bufKeys } = this._buildBindGroup(
-          state.pipeline, layer, weightsByName, state.uniformBuf,
+          state.pipeline,
+          layer,
+          weightsByName,
+          state.uniformBuf,
         );
         state.cachedBindGroup = bindGroup;
         (state as { cachedBufKeys: readonly string[] }).cachedBufKeys = bufKeys;
@@ -304,7 +299,7 @@ export class InferenceGraph {
 
       const outDims = tensorDimsMap.get(layer.output);
       if (outDims) {
-        const groups = Math.ceil(outDims.H * outDims.W * outDims.C / 256);
+        const groups = Math.ceil((outDims.H * outDims.W * outDims.C) / 256);
         pass.dispatchWorkgroups(groups, 1, 1);
       }
       pass.end();
@@ -314,8 +309,10 @@ export class InferenceGraph {
     const denoisedTensor = this._tensors.get('denoised');
     if (denoisedTensor) {
       enc.copyBufferToBuffer(
-        denoisedTensor.buf, 0,
-        outputBuf, 0,
+        denoisedTensor.buf,
+        0,
+        outputBuf,
+        0,
         denoisedTensor.dims.H * denoisedTensor.dims.W * denoisedTensor.dims.C * 4,
       );
     }
@@ -355,7 +352,7 @@ export class InferenceGraph {
     this._placeholderBuf = null;
 
     this._device = null;
-    this._ready  = false;
+    this._ready = false;
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────
@@ -369,8 +366,8 @@ export class InferenceGraph {
 
     // Seed the three input tensors.
     dims.set('noisyColor', { H, W, C: 3 });
-    dims.set('albedo',     { H, W, C: 3 });
-    dims.set('normals',    { H, W, C: 3 });
+    dims.set('albedo', { H, W, C: 3 });
+    dims.set('normals', { H, W, C: 3 });
 
     for (const layer of this._spec.layers) {
       const inDims = layer.inputs.length > 0 ? dims.get(layer.inputs[0]!) : undefined;
@@ -389,8 +386,8 @@ export class InferenceGraph {
         case 'conv2d': {
           const kH = layer.params.kH ?? 3;
           const kW = layer.params.kW ?? 3;
-          const s  = layer.params.stride ?? 1;
-          const p  = layer.params.padding ?? 0;
+          const s = layer.params.stride ?? 1;
+          const p = layer.params.padding ?? 0;
           outH = Math.floor((outH + 2 * p - kH) / s) + 1;
           outW = Math.floor((outW + 2 * p - kW) / s) + 1;
           break;
@@ -436,7 +433,7 @@ export class InferenceGraph {
       if (layer.inputs.length !== 2) {
         throw new Error(
           `[InferenceGraph] Bug 1: skipAdd layer '${layer.name}' must have exactly 2 inputs, ` +
-          `got ${layer.inputs.length}`,
+            `got ${layer.inputs.length}`,
         );
       }
       const a = tensorDimsMap.get(layer.inputs[0]!);
@@ -444,14 +441,14 @@ export class InferenceGraph {
       if (!a || !b) {
         throw new Error(
           `[InferenceGraph] Bug 1: skipAdd layer '${layer.name}' — ` +
-          `input tensor not found: '${!a ? layer.inputs[0] : layer.inputs[1]}'`,
+            `input tensor not found: '${!a ? layer.inputs[0] : layer.inputs[1]}'`,
         );
       }
       if (a.H !== b.H || a.W !== b.W || a.C !== b.C) {
         throw new Error(
           `[InferenceGraph] Bug 1: skipAdd layer '${layer.name}' shape mismatch: ` +
-          `'${layer.inputs[0]}' = [${a.H}×${a.W}×${a.C}] vs ` +
-          `'${layer.inputs[1]}' = [${b.H}×${b.W}×${b.C}]`,
+            `'${layer.inputs[0]}' = [${a.H}×${a.W}×${a.C}] vs ` +
+            `'${layer.inputs[1]}' = [${b.H}×${b.W}×${b.C}]`,
         );
       }
     }
@@ -491,7 +488,8 @@ export class InferenceGraph {
       case 'relu':
       case 'skipAdd':
       case 'bilinearUpsample': {
-        const count = (inDims?.H ?? this._H) * (inDims?.W ?? this._W) * (inDims?.C ?? layer.params.inC);
+        const count =
+          (inDims?.H ?? this._H) * (inDims?.W ?? this._W) * (inDims?.C ?? layer.params.inC);
         u32[0] = count;
         // remaining fields: 0 (padding)
         break;
@@ -580,10 +578,10 @@ export class InferenceGraph {
       label: `neural-bg-${layer.name}`,
       layout: pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: inputBuf  } },
+        { binding: 0, resource: { buffer: inputBuf } },
         { binding: 1, resource: { buffer: weightsBuf } },
-        { binding: 2, resource: { buffer: biasesBuf  } },
-        { binding: 3, resource: { buffer: outputBuf  } },
+        { binding: 2, resource: { buffer: biasesBuf } },
+        { binding: 3, resource: { buffer: outputBuf } },
         { binding: 4, resource: { buffer: uniformBuf } },
       ],
     });
@@ -600,10 +598,10 @@ export class InferenceGraph {
   }
 
   private _getCurrentBufKeys(layer: LayerSpec): readonly string[] {
-    const inputName  = layer.inputs[0] ?? 'enc_input';
+    const inputName = layer.inputs[0] ?? 'enc_input';
     const outputName = layer.output;
-    const inputBuf   = this._tensors.get(inputName)?.buf ?? this._placeholderBuf!;
-    const outputBuf  = this._tensors.get(outputName)?.buf ?? this._placeholderBuf!;
+    const inputBuf = this._tensors.get(inputName)?.buf ?? this._placeholderBuf!;
+    const outputBuf = this._tensors.get(outputName)?.buf ?? this._placeholderBuf!;
     return [
       inputBuf.label ?? '',
       '', // weights are static after initialize
@@ -634,8 +632,8 @@ export class InferenceGraph {
   private _runInputPack(
     enc: GPUCommandEncoder,
     noisyColorBuf: GPUBuffer,
-    albedoBuf:     GPUBuffer,
-    normalsBuf:    GPUBuffer,
+    albedoBuf: GPUBuffer,
+    normalsBuf: GPUBuffer,
   ): void {
     const encInputTensor = this._tensors.get('enc_input');
     if (!encInputTensor) return;
@@ -651,9 +649,9 @@ export class InferenceGraph {
     // normals    → channels 6-8 (byte offset H×W×6×4)
     // Note: this produces a planar layout [noisyColor | albedo | normals],
     // not the interleaved per-pixel layout. A production pack shader is in inputPacker.ts.
-    enc.copyBufferToBuffer(noisyColorBuf, 0, encInputTensor.buf, 0,               bytesPerChannel);
-    enc.copyBufferToBuffer(albedoBuf,     0, encInputTensor.buf, bytesPerChannel,  bytesPerChannel);
-    enc.copyBufferToBuffer(normalsBuf,    0, encInputTensor.buf, bytesPerChannel * 2, bytesPerChannel);
+    enc.copyBufferToBuffer(noisyColorBuf, 0, encInputTensor.buf, 0, bytesPerChannel);
+    enc.copyBufferToBuffer(albedoBuf, 0, encInputTensor.buf, bytesPerChannel, bytesPerChannel);
+    enc.copyBufferToBuffer(normalsBuf, 0, encInputTensor.buf, bytesPerChannel * 2, bytesPerChannel);
   }
 }
 

@@ -9,11 +9,7 @@
  * variance-reduced primary visibility.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class RISGIPass implements Pass {
@@ -31,9 +27,14 @@ export class RISGIPass implements Pass {
 
   dispatch(ctx: PassDispatchContext): void {
     const {
-      encoder, computeDesc,
-      frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup,
-      halfWgX, halfWgY,
+      encoder,
+      computeDesc,
+      frameBindGroup,
+      sceneBindGroup,
+      uboBindGroup,
+      hybridLayersBindGroup,
+      halfWgX,
+      halfWgY,
     } = ctx;
     const pass = encoder.beginComputePass(computeDesc('gi-ris'));
     pass.setPipeline(this._pipeline);

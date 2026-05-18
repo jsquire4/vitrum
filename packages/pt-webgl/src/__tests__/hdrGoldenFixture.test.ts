@@ -19,7 +19,9 @@ describe('HDR accumulation golden fixture', () => {
     const path = join(fixtureDir, '..', '..', 'fixtures', 'hdrAccumGolden.bin');
     const disk = readFileSync(path);
     expect(disk.byteLength).toBe(HDR_ACCUM_GOLDEN_BYTE_LENGTH);
-    const fromDisk = decodeHdrAccumGoldenBin(disk.buffer.slice(disk.byteOffset, disk.byteOffset + disk.byteLength));
+    const fromDisk = decodeHdrAccumGoldenBin(
+      disk.buffer.slice(disk.byteOffset, disk.byteOffset + disk.byteLength),
+    );
     const fromB64 = hdrAccumGoldenBinFromBase64(HDR_ACCUM_GOLDEN_BASE64);
     expect(Array.from(fromDisk)).toEqual(Array.from(fromB64));
   });

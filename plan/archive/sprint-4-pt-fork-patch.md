@@ -20,11 +20,11 @@
 Sprint 4 reduces BSDF evaluation cost by ~50–60% through three complementary
 techniques, ordered by implementation dependency:
 
-| Priority | Technique | Effort | File(s) |
-|---|---|---|---|
-| P1 | lobeMask bitfield | 1 day | `get_surface_record_function.glsl.js` |
-| P2 | Lite BSDF for indirect bounces | 1.5 days | `bsdf_functions.glsl.js` |
-| P3 | Material LOD by depth | 1 day | `get_surface_record_function.glsl.js` |
+| Priority | Technique                      | Effort   | File(s)                               |
+| -------- | ------------------------------ | -------- | ------------------------------------- |
+| P1       | lobeMask bitfield              | 1 day    | `get_surface_record_function.glsl.js` |
+| P2       | Lite BSDF for indirect bounces | 1.5 days | `bsdf_functions.glsl.js`              |
+| P3       | Material LOD by depth          | 1 day    | `get_surface_record_function.glsl.js` |
 
 **Dependencies**: none — fully fork-internal, builds on Phase 4 fork base.
 P2 uses the `lobeMask` introduced in P1; P3 is independent of P1 and P2.
@@ -47,6 +47,7 @@ evaluates math that returns zero anyway.
 
 1. Add a `uint lobeMask` field to `SurfaceRec` (or `surface_record_struct.glsl.js`
    if the struct is defined there separately — locate the actual file):
+
    ```glsl
    uint lobeMask; // bitfield: bit 0 = diffuse, bit 1 = specular/GGX,
                   //           bit 2 = sheen, bit 3 = clearcoat,
@@ -54,6 +55,7 @@ evaluates math that returns zero anyway.
    ```
 
 2. In `getSurfaceRecord`, compute `lobeMask` from the material parameters:
+
    ```glsl
    rec.lobeMask = 0u;
    if (rec.roughness > 0.0 || rec.metallic < 1.0) rec.lobeMask |= 1u;  // diffuse
@@ -78,6 +80,7 @@ evaluates math that returns zero anyway.
 file — check with `grep -rn "struct SurfaceRec" src/`.
 
 **DoD verification** (GPU required):
+
 - Shader source inspection: `lobeMask` field present in SurfaceRec; `bsdfEval`
   contains `if ((rec.lobeMask & 4u) != 0u)` guards.
 - On a stained-glass scene (sheen=0, clearcoat=0, iridescence=0): verify
@@ -99,7 +102,7 @@ important contribution; perceptual sensitivity drops sharply after depth 1.
 **Change description**:
 
 1. Add a `bool liteMode` parameter to `bsdfEval` (or, preferably, a `bool
-   liteMode` field on `SurfaceRec` so it flows naturally through the call chain
+liteMode` field on `SurfaceRec` so it flows naturally through the call chain
    without signature changes).
 
 2. In the main path tracing loop (`path_tracer.glsl.js` or equivalent), set
@@ -133,6 +136,7 @@ before and after P2. If visible degradation is present, apply `forceFullBSDF`
 to those material types in the host material builder.
 
 **DoD verification** (GPU required):
+
 - Profile ms/sample on a glass-and-came scene at 192 samples, with all three
   Sprint 4 changes applied: target ≥40% reduction vs pre-sprint baseline.
 - Shader inspection: `bsdfEval` has a `liteMode` branch; indirect paths
@@ -160,11 +164,13 @@ fetch cost is fixed per sample regardless of throughput.
 
 2. In `getSurfaceRecord`, compare the current path depth (`state.depth` or
    equivalent) against `materialLodDepth`:
+
    ```glsl
    bool useTextures = (state.depth <= materialLodDepth);
    ```
 
 3. Gate each texture fetch on `useTextures`:
+
    ```glsl
    vec4 baseColor = useTextures
        ? texture2D(baseColorMap, uv)
@@ -188,6 +194,7 @@ The pt-webgl backend reads `options.extensions?.['three-gpu-pathtracer.materialL
 and passes it to `PhysicalPathTracingMaterial`'s uniform setter.
 
 **DoD verification** (GPU required):
+
 - Profile ms/sample on a 6-bounce glass scene: texture fetches at depth ≥ 3
   are skipped. Verify via browser GPU profiling (Chrome DevTools WebGL timeline):
   texture read bandwidth at depth ≥ 3 should be near zero.
@@ -203,13 +210,13 @@ and passes it to `PhysicalPathTracingMaterial`'s uniform setter.
 ## Sprint 4 DoD checklist
 
 - [ ] P1: `lobeMask` bitfield in SurfaceRec; sheen/clearcoat/iridescence
-       branches gated.
+      branches gated.
 - [ ] P2: `liteMode` flag active at `state.depth > 1`; reduces `bsdfEval`
-       to Lambertian + GGX + transmission.
+      to Lambertian + GGX + transmission.
 - [ ] P3: `materialLodDepth=2` uniform; texture fetches skipped when
-       `state.depth > 2`.
+      `state.depth > 2`.
 - [ ] Profile: ms/sample ≥40% reduction on a glass-and-came scene vs.
-       pre-sprint baseline. Captured in `plan/sprint-4-benchmark.md`.
+      pre-sprint baseline. Captured in `plan/sprint-4-benchmark.md`.
 - [ ] No visual regression on opaque scenes (< 0.1% mean pixel error).
 - [ ] `forceFullBSDF` flag documented for opal/glueChip/ringMottled if
-       degradation is observed.
+      degradation is observed.

@@ -121,6 +121,7 @@ done
 ```
 
 Notes:
+
 - Omit `VITRUM_CAPTURE_SMOKE=1` for formal captures. The new scenarios use
   1280×720, so a software-renderer fallback will be slow and likely incorrect.
 - Run on a machine/browser profile with confirmed GPU acceleration
@@ -165,12 +166,13 @@ For each of the 11 scenarios in `sweep-2026-05-11-diff-report.md`:
 1. Compute PSNR between the `.pre-sweep.png` and `.post-sweep.png` pair using
    any image-diff tool (e.g., `magick compare -metric PSNR pre.png post.png`).
 2. Compute mean luminance of each image (e.g., `magick identify -verbose img.png
-   | grep Mean`).
+| grep Mean`).
 3. Record both values in the Pre-sweep / Post-sweep / Δ columns.
 4. A/B the images side-by-side and confirm the directional change described
    in the **Expected change** field. Mark **Visual sign-off** as ☑ when satisfied.
 
 Acceptance criteria (per plan/sweep-2026-05-12-followup.md § Phase A4):
+
 - Visual changes must be in the direction the math predicts (see each scenario's
   **Expected change** field).
 - No new artifacts introduced that were not present in the pre-sweep image.

@@ -9,15 +9,15 @@ if (typeof (globalThis as { ProgressEvent?: unknown }).ProgressEvent === 'undefi
     total = 0;
     lengthComputable = false;
     type: string;
-    constructor(type: string) { this.type = type; }
+    constructor(type: string) {
+      this.type = type;
+    }
   };
 }
 
 const { loadGltfScene } = await import('../gltfLoader.js');
-const {
-  tinyTriangleGltfJson,
-  tinyTriangleGltfJsonNoCamera,
-} = await import('../../__tests__/fixtures/tiny-triangle.gltf.js');
+const { tinyTriangleGltfJson, tinyTriangleGltfJsonNoCamera } =
+  await import('../../__tests__/fixtures/tiny-triangle.gltf.js');
 
 // GLTFLoader.parse accepts a JSON string for text-form glTF, OR an
 // ArrayBuffer for GLB. We feed JSON-as-Blob (and ArrayBuffer) to verify

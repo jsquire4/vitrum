@@ -8,7 +8,7 @@ and correct single-scatter SSS for opalescent / glueChip / ringMottled glass typ
 specifies what must be patched in the fork once Sprint 7 kicks off.
 
 **Volume scope decision (Decision 7)**: uniform homogeneous medium only.
-Per-region density volumes are explicitly deferred.  A `volumeQuality` slider
+Per-region density volumes are explicitly deferred. A `volumeQuality` slider
 can cap the density to maintain PT_FINAL budget if needed.
 
 ---
@@ -20,6 +20,7 @@ can cap the density to maintain PT_FINAL budget if needed.
 The main path-tracing loop gains a volume scatter event at each bounce.
 
 **Current loop** (simplified):
+
 ```glsl
 for (int i = 0; i < bounces; i++) {
   traceScene(ray, hit);
@@ -29,6 +30,7 @@ for (int i = 0; i < bounces; i++) {
 ```
 
 **Sprint 7 loop**:
+
 ```glsl
 for (int i = 0; i < bounces; i++) {
   traceScene(ray, hit);
@@ -111,6 +113,7 @@ float volumeMarch(vec3 ro, vec3 rd, float tSurface, float u) {
 ## 3. HG phase function and equi-angular — GLSL mirror
 
 The JavaScript implementations in `@vitrum/shared-samplers`:
+
 - `evaluateHG / sampleHG / pdfHG` (`hgPhase.ts`)
 - `sampleEquiAngular` (`equiAngular.ts`)
 
@@ -149,8 +152,9 @@ const uint TRANSLUCENT_BIT = 0x10u;  // bit 4
 ```
 
 Map these glass types to `TRANSLUCENT`:
+
 - `opalescent` → `TRANSLUCENT_BIT | SCATTER_PARAMS(sigma_t=0.5, g=0.3)`
-- `glueChip`   → `TRANSLUCENT_BIT | SCATTER_PARAMS(sigma_t=1.0, g=-0.1)`
+- `glueChip` → `TRANSLUCENT_BIT | SCATTER_PARAMS(sigma_t=1.0, g=-0.1)`
 - `ringMottled`→ `TRANSLUCENT_BIT | SCATTER_PARAMS(sigma_t=0.8, g=0.1)`
 
 These are initial defaults; the host should expose per-type sliders in
@@ -177,12 +181,14 @@ sssAnisotropyG:  { value: 0.0 },
 ## 7. Definition of done
 
 **Vitrum-side** (already complete after Sprint 7 implementation):
+
 - [x] `evaluateHG / sampleHG / pdfHG` in `@vitrum/shared-samplers/src/hgPhase.ts`
 - [x] `sampleEquiAngular` in `@vitrum/shared-samplers/src/equiAngular.ts`
 - [x] All tests pass (HG normalization, equi-angular distribution property)
 - [x] Volume scope locked: uniform medium only (Decision 7)
 
 **Fork-side** (to be verified in `~/projects/three-gpu-pathtracer/`):
+
 - [ ] `path_tracer.glsl.js` — main loop with volume scatter event
 - [ ] `volume_march.glsl.js` — new file: exponential scatter, equi-angular PDF, HG
 - [ ] `bsdf_functions.glsl.js` — SSS single scatter via HG
@@ -196,12 +202,12 @@ sssAnisotropyG:  { value: 0.0 },
 ## 8. Risk notes
 
 - **Volume per-sample cost**: each volume march adds ~1 RNG call + exponential
-  + possibly a NEE sample.  Expected +20% per-sample cost.  If PT_FINAL budget
-  is exceeded for hero scenes, expose a `volumeQuality: 'low' | 'full'` slider
-  in the host app to disable equi-angular NEE in the low mode.
+  - possibly a NEE sample. Expected +20% per-sample cost. If PT_FINAL budget
+    is exceeded for hero scenes, expose a `volumeQuality: 'low' | 'full'` slider
+    in the host app to disable equi-angular NEE in the low mode.
 
 - **Equi-angular vs. exponential MIS**: for scenes with the light inside the
-  volume, pure equi-angular sampling degrades.  The proper solution is MIS
+  volume, pure equi-angular sampling degrades. The proper solution is MIS
   between equi-angular and exponential distance sampling (Kulla & Conty §4).
   Sprint 7 starts with equi-angular only; MIS upgrade is a follow-up if
   variance is high for interior-light scenes.

@@ -5,8 +5,12 @@ describe('linearTileIndexFromVarianceReadPixelsPy', () => {
   it('maps bottom readPixels row py=0 to largest fork ty', () => {
     const tilesX = 4;
     const tilesY = 3;
-    expect(linearTileIndexFromVarianceReadPixelsPy(0, 0, tilesX, tilesY)).toBe((tilesY - 1) * tilesX);
-    expect(linearTileIndexFromVarianceReadPixelsPy(0, 3, tilesX, tilesY)).toBe((tilesY - 1) * tilesX + 3);
+    expect(linearTileIndexFromVarianceReadPixelsPy(0, 0, tilesX, tilesY)).toBe(
+      (tilesY - 1) * tilesX,
+    );
+    expect(linearTileIndexFromVarianceReadPixelsPy(0, 3, tilesX, tilesY)).toBe(
+      (tilesY - 1) * tilesX + 3,
+    );
   });
 
   it('maps top readPixels row to ty=0', () => {

@@ -10,10 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
-import {
-  MAX_PASS_COUNT,
-  buildPassLayout,
-} from '../src/pipeline/timestampQueries.js';
+import { MAX_PASS_COUNT, buildPassLayout } from '../src/pipeline/timestampQueries.js';
 
 describe('Sprint 16 — RIS_GI WGSL', () => {
   it('declares risGiMain entry point with 8x8 workgroup', () => {

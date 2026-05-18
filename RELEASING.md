@@ -5,6 +5,7 @@ This document describes how to publish vitrum's packages to npm. **Until the use
 ## Pre-publish checklist
 
 1. **All quality gates green.** From the repo root:
+
    ```sh
    npm run typecheck     # all 9 packages clean
    npm test              # all packages clean
@@ -62,13 +63,13 @@ npm publish --workspaces --tag alpha --access public
 
 vitrum stays at `0.0.0` until the first publish. The first published version is `0.1.0-alpha.1`. SemVer applies once the package leaves alpha:
 
-| Bump          | When                                                        |
-| ------------- | ----------------------------------------------------------- |
-| `0.1.0-alpha.X` | Pre-alpha iteration; any breaking change.                 |
-| `0.1.0`       | First non-alpha release. From here on, SemVer applies.     |
-| `0.1.X`       | Bugfixes + non-breaking adds.                              |
-| `0.2.0`       | Breaking change to a public type or function signature.    |
-| `1.0.0`       | API stable. Documented breaking-change policy in effect.   |
+| Bump            | When                                                     |
+| --------------- | -------------------------------------------------------- |
+| `0.1.0-alpha.X` | Pre-alpha iteration; any breaking change.                |
+| `0.1.0`         | First non-alpha release. From here on, SemVer applies.   |
+| `0.1.X`         | Bugfixes + non-breaking adds.                            |
+| `0.2.0`         | Breaking change to a public type or function signature.  |
+| `1.0.0`         | API stable. Documented breaking-change policy in effect. |
 
 ## Post-publish
 

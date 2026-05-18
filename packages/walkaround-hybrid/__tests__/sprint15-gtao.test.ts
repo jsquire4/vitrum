@@ -12,10 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { GTAO_WGSL } from '../src/shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
-import {
-  MAX_PASS_COUNT,
-  buildPassLayout,
-} from '../src/pipeline/timestampQueries.js';
+import { MAX_PASS_COUNT, buildPassLayout } from '../src/pipeline/timestampQueries.js';
 
 describe('Sprint 15 — GTAO WGSL', () => {
   it('GTAO_WGSL contains gtaoMain entry point', () => {
@@ -137,7 +134,7 @@ describe('Sprint 15 — pass layout integration', () => {
 //            Intel XeGTAO.hlsli (iarc0/iarc1 form).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const PI_CONST      = Math.PI;
+const PI_CONST = Math.PI;
 const PI_HALF_CONST = Math.PI / 2;
 
 /** TypeScript mirror of the WGSL gtaoSliceIntegral(h, n, cosN). */
@@ -159,9 +156,12 @@ function computeSliceVisibility(
   const viewAxis: [number, number, number] = [0.0, 0.0, -1.0];
 
   const dot3 = (a: [number, number, number], b: [number, number, number]): number =>
-    a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
-  const sub3 = (a: [number, number, number], s: number, v: [number, number, number]): [number, number, number] =>
-    [a[0] - s*v[0], a[1] - s*v[1], a[2] - s*v[2]];
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const sub3 = (
+    a: [number, number, number],
+    s: number,
+    v: [number, number, number],
+  ): [number, number, number] => [a[0] - s * v[0], a[1] - s * v[1], a[2] - s * v[2]];
   const len3 = (a: [number, number, number]): number => Math.sqrt(dot3(a, a));
   const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
@@ -174,7 +174,7 @@ function computeSliceVisibility(
   const n = signNorm * Math.acos(cosN);
 
   const h0_raw = -Math.acos(clamp(horizonNeg, -1.0, 1.0));
-  const h1_raw =  Math.acos(clamp(horizonPos, -1.0, 1.0));
+  const h1_raw = Math.acos(clamp(horizonPos, -1.0, 1.0));
 
   const h0 = n + clamp(h0_raw - n, -PI_HALF_CONST, PI_HALF_CONST);
   const h1 = n + clamp(h1_raw - n, -PI_HALF_CONST, PI_HALF_CONST);
@@ -344,7 +344,7 @@ describe('E1 — GTAO multi-bounce term (Jiménez 2016 §5.2 / Eq. 16)', () => {
    */
   it('output always in [0, 1] for all ρ, vis combinations', () => {
     const albedoValues = [0.0, 0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0];
-    const visValues    = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
+    const visValues = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0];
     for (const albedo of albedoValues) {
       for (const vis of visValues) {
         const aMb = multiBounceFactor(albedo, vis);

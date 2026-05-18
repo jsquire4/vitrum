@@ -162,18 +162,18 @@ describe('packBDPTVertex / unpackBDPTVertex', () => {
     const buf = new Float32Array(BDPT_VERTEX_FLOATS);
     packBDPTVertex(v, buf, 0);
     // Texel 0
-    expect(buf[0]).toBeCloseTo(7);   // position.x
-    expect(buf[1]).toBeCloseTo(8);   // position.y
-    expect(buf[2]).toBeCloseTo(9);   // position.z
+    expect(buf[0]).toBeCloseTo(7); // position.x
+    expect(buf[1]).toBeCloseTo(8); // position.y
+    expect(buf[2]).toBeCloseTo(9); // position.z
     expect(buf[3]).toBeCloseTo(BDPT_KIND_EYE); // kind
     // Texel 1
-    expect(buf[4]).toBeCloseTo(1);   // normal.x
-    expect(buf[5]).toBeCloseTo(0);   // normal.y
-    expect(buf[6]).toBeCloseTo(0);   // normal.z
+    expect(buf[4]).toBeCloseTo(1); // normal.x
+    expect(buf[5]).toBeCloseTo(0); // normal.y
+    expect(buf[6]).toBeCloseTo(0); // normal.z
     expect(buf[7]).toBeCloseTo(0.3); // pdfFwd
     // Texel 2
-    expect(buf[8]).toBeCloseTo(0.1);  // throughput.x
-    expect(buf[9]).toBeCloseTo(0.2);  // throughput.y
+    expect(buf[8]).toBeCloseTo(0.1); // throughput.x
+    expect(buf[9]).toBeCloseTo(0.2); // throughput.y
     expect(buf[10]).toBeCloseTo(0.3); // throughput.z
     expect(buf[11]).toBeCloseTo(0.4); // pdfRev
   });
@@ -249,20 +249,14 @@ describe('buildBDPTStrategyPDFs_partial', () => {
 
   it('strategy k=0 (pure eye tracing) uses only eye subpath PDFs', () => {
     // k=0: 0 light vertices, t eye vertices → product of all eye pdfFwds
-    const eye = [
-      makeVertex({ pdfFwd: 0.5 }),
-      makeVertex({ pdfFwd: 0.4 }),
-    ];
+    const eye = [makeVertex({ pdfFwd: 0.5 }), makeVertex({ pdfFwd: 0.4 })];
     const pdfs = buildBDPTStrategyPDFs_partial([], eye);
     // k=0: eye product = 0.5 * 0.4 = 0.2
     expect(pdfs[0]).toBeCloseTo(0.5 * 0.4, 6);
   });
 
   it('strategy k=s (max light vertices) uses only light subpath PDFs', () => {
-    const light = [
-      makeVertex({ pdfFwd: 0.6 }),
-      makeVertex({ pdfFwd: 0.7 }),
-    ];
+    const light = [makeVertex({ pdfFwd: 0.6 }), makeVertex({ pdfFwd: 0.7 })];
     const pdfs = buildBDPTStrategyPDFs_partial(light, []);
     // k=s=2: light product = 0.6 * 0.7 = 0.42
     expect(pdfs[2]).toBeCloseTo(0.6 * 0.7, 6);
@@ -324,7 +318,7 @@ describe('bdptConnectionMIS_partial', () => {
     const pdfs = buildBDPTStrategyPDFs_partial(light, eye);
 
     // Only non-zero strategies should contribute; sum of their weights = 1
-    const nonZero = Array.from(pdfs).filter(p => p > 0);
+    const nonZero = Array.from(pdfs).filter((p) => p > 0);
     if (nonZero.length > 0) {
       let sum = 0;
       for (let k = 0; k < pdfs.length; k++) {

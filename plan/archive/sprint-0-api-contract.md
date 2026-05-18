@@ -19,6 +19,7 @@ These files exist as of the initial Sprint 0 commit. **Step 1 is done.**
 ### Step 2 — first backend stub (~1 day)
 
 Create `@vitrum/pt-webgl/src/index.ts` as a stub that:
+
 - Implements the `Engine` interface (every method exists, may throw `Not implemented` initially)
 - Accepts a `WebGLRenderingContext` via `createPTEngine_WebGL2(options)` factory
 - Returns sensible `EngineCapabilities` for the WebGL2 + three-gpu-pathtracer-fork use case
@@ -27,12 +28,14 @@ Create `@vitrum/pt-webgl/src/index.ts` as a stub that:
 ### Step 3 — three-bindings stub (~0.5 day)
 
 Create `@vitrum/three-bindings/src/index.ts` exporting:
+
 - `sceneFromThreeJS(threeScene: THREE.Scene): Scene` — walks the scene graph, converts every `THREE.Mesh`/`THREE.Light` to the corresponding `@vitrum/core` type
 - Initially throws on unsupported types (instanced meshes, custom shaders); each Phase 6 sprint adds support
 
 ### Step 4 — host-app migration scaffold (~0.5 day)
 
 The host application (whichever app first consumes vitrum) gets a `src/rendering/vitrum-bridge/` directory containing:
+
 - `useVitrumPTEngine.ts` — React hook that mirrors the current `usePathtracer` lifecycle but creates an `@vitrum/pt-webgl` engine instead of a raw three-gpu-pathtracer instance
 - `useVitrumWalkaroundEngine.ts` — same for walkaround-hybrid
 

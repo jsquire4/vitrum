@@ -85,11 +85,7 @@
       "resolution": "1280x720",
       "bounces": 10,
       "spp": 1024,
-      "causticVariants": [
-        "none",
-        "manifold-nee",
-        "photon-map"
-      ],
+      "causticVariants": ["none", "manifold-nee", "photon-map"],
       "status": "blocked-missing-baseline",
       "beforeImageHash": null,
       "afterImageHash": null,

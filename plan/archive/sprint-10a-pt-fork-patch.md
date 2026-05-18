@@ -20,6 +20,7 @@ TypeScript bindings (`svgfBindings.ts`) are complete. This document covers the
 ## Prerequisite: Sprint 5 MRT G-buffer scaffold
 
 SVGF requires three G-buffer channels per pixel at primary hit:
+
 - **Color** (noisy accumulated radiance) — already available from the PT accumulation target.
 - **Normal** (world-space) — available from Sprint 5's `gNormalDepth` MRT channel (`.xyz`).
 - **Depth** (linear camera-space) — available from Sprint 5's `gNormalDepth` MRT channel (`.w`).
@@ -38,6 +39,7 @@ The PT preview currently has no motion vector pass — this is a new requirement
 ### 1. Motion vector output
 
 In `PhysicalPathTracingMaterial.js`, add a fourth MRT output `gMotion` (RG32F):
+
 ```glsl
 // In the fragment shader, at primary hit:
 vec4 prevClip = prevViewProjMatrix * vec4(worldPos, 1.0);
@@ -51,6 +53,7 @@ Uniforms needed: `prevViewProjMatrix` (mat4), `targetWidth`, `targetHeight`.
 ### 2. MRT layout update
 
 Update `WebGLMultipleRenderTargets` allocation from 3 to 4 channels:
+
 ```
 target 0: gColor       (rgba16float) — noisy accumulated radiance
 target 1: gNormalDepth (rgba16float) — .xyz = world normal, .w = linear depth
@@ -80,9 +83,9 @@ Create a new `PTSVGFDenoiser.tsx` as a `postprocessing` Effect subclass:
 // Pseudocode — not a complete implementation.
 class PTSVGFDenoiser extends Effect {
   private svgfVariancePipeline: WebGLProgram | null = null;
-  private svgfAtrousPipeline:   WebGLProgram | null = null;
-  private pingBuffer:           WebGLTexture | null = null;
-  private pongBuffer:           WebGLTexture | null = null;
+  private svgfAtrousPipeline: WebGLProgram | null = null;
+  private pingBuffer: WebGLTexture | null = null;
+  private pongBuffer: WebGLTexture | null = null;
 
   // Called per-frame when pathtracer.samples < AUTO_DISABLE_THRESHOLD.
   override render(renderer, inputBuffer, outputBuffer) {
@@ -112,6 +115,7 @@ SVGF must remain first in the chain (before Bloom), same as the hexagonal filter
 ## Uniform defaults for PT preview
 
 Use `SVGF_DEFAULT_UNIFORMS` from `@vitrum/shared-denoisers/svgfBindings`:
+
 ```
 sigmaColor  = 10.0   (variance-guided; wider tolerance at low sample counts)
 sigmaNormal = 128.0  (preserve sharp panel edges)

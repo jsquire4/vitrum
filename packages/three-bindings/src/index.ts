@@ -17,8 +17,17 @@ import { convertMesh, emissiveMeshAreaEmitter, stripEmissive } from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
 
-export { vitrumSceneToThree, disposeVitrumThreeSceneRoot, applyEnvironment } from './vitrumSceneToThree.js';
-export { loadGltfScene, type LoadedGltf, type GltfCamera, type LoadGltfSceneOptions } from './gltfLoader.js';
+export {
+  vitrumSceneToThree,
+  disposeVitrumThreeSceneRoot,
+  applyEnvironment,
+} from './vitrumSceneToThree.js';
+export {
+  loadGltfScene,
+  type LoadedGltf,
+  type GltfCamera,
+  type LoadGltfSceneOptions,
+} from './gltfLoader.js';
 export { VITRUM_USER_DATA_KEYS } from './userDataKeys.js';
 export {
   extractThreePbrScalars,
@@ -95,7 +104,7 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
         rawMat != null &&
         (rawMat as THREE.MeshBasicMaterial).isMeshBasicMaterial === true &&
         ((rawMat as THREE.MeshBasicMaterial).transparent === true ||
-         ((rawMat as THREE.MeshBasicMaterial).opacity ?? 1) <= 0.01);
+          ((rawMat as THREE.MeshBasicMaterial).opacity ?? 1) <= 0.01);
       if (isBasicTransparent) return;
       const prim = convertMesh(mesh);
       const meshEmitter = emissiveMeshAreaEmitter(mesh);

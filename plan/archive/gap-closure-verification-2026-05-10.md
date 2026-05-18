@@ -43,15 +43,15 @@ Deterministic artifact manifest for the acceptance matrix:
 - `plan/gap-closure-artifacts-2026-05-10.json`
 - Status: `BLOCKED` for all scenarios in this environment (null hash/perf fields, blocker recorded).
 
-| Scenario ID | Status | Evidence collected now | Remaining evidence |
-|---|---|---|---|
-| `rfe03-layered-front-back` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
-| `rfe07-11-sss-mixed-panels` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
-| `rfe08-13-spectral-payload` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
-| `rfe14-thinfilm-angle-shift` | Blocked in this environment | Build/test/typecheck pass | Before/after image hashes + delta/perf |
-| `rfe09-bridge-global-cmf` | Blocked in this environment | Unit tests + build pass | Uniform runtime snapshots + A/B |
-| `rfe05-caustic-strategy` | Blocked in this environment | Strategy wiring + mode branches + tests present | 3-mode captures + perf |
-| `ptwgpu-parity-material-fields` | Blocked in this environment | Rich payload + shader consumption + tests | A/B hashes + perf |
+| Scenario ID                     | Status                      | Evidence collected now                          | Remaining evidence                     |
+| ------------------------------- | --------------------------- | ----------------------------------------------- | -------------------------------------- |
+| `rfe03-layered-front-back`      | Blocked in this environment | Build/test/typecheck pass                       | Before/after image hashes + delta/perf |
+| `rfe07-11-sss-mixed-panels`     | Blocked in this environment | Build/test/typecheck pass                       | Before/after image hashes + delta/perf |
+| `rfe08-13-spectral-payload`     | Blocked in this environment | Build/test/typecheck pass                       | Before/after image hashes + delta/perf |
+| `rfe14-thinfilm-angle-shift`    | Blocked in this environment | Build/test/typecheck pass                       | Before/after image hashes + delta/perf |
+| `rfe09-bridge-global-cmf`       | Blocked in this environment | Unit tests + build pass                         | Uniform runtime snapshots + A/B        |
+| `rfe05-caustic-strategy`        | Blocked in this environment | Strategy wiring + mode branches + tests present | 3-mode captures + perf                 |
+| `ptwgpu-parity-material-fields` | Blocked in this environment | Rich payload + shader consumption + tests       | A/B hashes + perf                      |
 
 ## Artifact Bundle Format (to be populated during GPU run)
 

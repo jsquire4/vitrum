@@ -111,7 +111,12 @@ export class BilateralPreviewCanvas {
 }
 
 /** Simple Reinhard + γ preview for OIDN float RGB output on a 2D canvas. */
-export function writeTonemappedRgbToCanvas(canvas: HTMLCanvasElement, rgb: Float32Array, w: number, h: number): void {
+export function writeTonemappedRgbToCanvas(
+  canvas: HTMLCanvasElement,
+  rgb: Float32Array,
+  w: number,
+  h: number,
+): void {
   canvas.style.display = 'block';
   canvas.width = w;
   canvas.height = h;

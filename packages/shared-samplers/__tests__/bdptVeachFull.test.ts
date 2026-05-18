@@ -37,7 +37,7 @@ function makeVertex(
 ): BDPTFullVertex {
   return {
     position: [x, 0, z],
-    normal:   [0, 1, 0],
+    normal: [0, 1, 0],
     pdfFwd,
     pdfRev,
     isSpecular,
@@ -73,24 +73,24 @@ describe('T1 — 3-vertex path MIS weights sum to 1', () => {
   // normal = [1,0,0] (pointing along the path) so cos θ = 1 at each vertex.
 
   const v0: BDPTFullVertex = {
-    position:   [0, 0, 0],
-    normal:     [1, 0, 0],
-    pdfFwd:     0.4,
-    pdfRev:     0.2,
+    position: [0, 0, 0],
+    normal: [1, 0, 0],
+    pdfFwd: 0.4,
+    pdfRev: 0.2,
     isSpecular: false,
   };
   const v1: BDPTFullVertex = {
-    position:   [1, 0, 0],
-    normal:     [1, 0, 0],
-    pdfFwd:     0.5,
-    pdfRev:     0.3,
+    position: [1, 0, 0],
+    normal: [1, 0, 0],
+    pdfFwd: 0.5,
+    pdfRev: 0.3,
     isSpecular: false,
   };
   const v2: BDPTFullVertex = {
-    position:   [2, 0, 0],
-    normal:     [1, 0, 0],
-    pdfFwd:     0.6,
-    pdfRev:     0.4,
+    position: [2, 0, 0],
+    normal: [1, 0, 0],
+    pdfFwd: 0.6,
+    pdfRev: 0.4,
     isSpecular: false,
   };
 
@@ -181,7 +181,7 @@ describe('T3 — specular vertex forces zero weight on affected strategies', () 
   const vertices: BDPTFullVertex[] = [
     { position: [0, 0, 0], normal: [1, 0, 0], pdfFwd: 0.5, pdfRev: 0.3, isSpecular: false },
     { position: [1, 0, 0], normal: [1, 0, 0], pdfFwd: 0.4, pdfRev: 0.2, isSpecular: false },
-    { position: [2, 0, 0], normal: [1, 0, 0], pdfFwd: 0.6, pdfRev: 0.5, isSpecular: true  }, // specular
+    { position: [2, 0, 0], normal: [1, 0, 0], pdfFwd: 0.6, pdfRev: 0.5, isSpecular: true }, // specular
     { position: [3, 0, 0], normal: [1, 0, 0], pdfFwd: 0.3, pdfRev: 0.4, isSpecular: false },
   ];
 
@@ -254,8 +254,10 @@ describe('T4 — recursive ratio invariance', () => {
 
   function gAdj(i: number): number {
     return geometricTermG(
-      verts[i - 1]!.position, verts[i - 1]!.normal,
-      verts[i]!.position,     verts[i]!.normal,
+      verts[i - 1]!.position,
+      verts[i - 1]!.normal,
+      verts[i]!.position,
+      verts[i]!.normal,
     );
   }
 
@@ -319,36 +321,29 @@ describe('T5 — geometricTermG matches analytic formula', () => {
     // posJ = (2,0,0), normalJ = (-1,0,0)  [facing each other]
     // dir = (1,0,0); cosI = 1, cosJ = 1; dist² = 4
     // G = 1·1/4 = 0.25
-    const g = geometricTermG(
-      [0, 0, 0], [1, 0, 0],
-      [2, 0, 0], [-1, 0, 0],
-    );
+    const g = geometricTermG([0, 0, 0], [1, 0, 0], [2, 0, 0], [-1, 0, 0]);
     expect(g).toBeCloseTo(0.25, 12);
   });
 
   it('same-direction normals also give 0.25 (absolute cosines)', () => {
     // With same normals the cosines have opposite signs in the dot-product
     // sense, but we take |cos θ| so the result is still 0.25.
-    const g = geometricTermG(
-      [0, 0, 0], [1, 0, 0],
-      [2, 0, 0], [1, 0, 0],
-    );
+    const g = geometricTermG([0, 0, 0], [1, 0, 0], [2, 0, 0], [1, 0, 0]);
     expect(g).toBeCloseTo(0.25, 12);
   });
 
   it('coincident points → G = 0', () => {
-    const g = geometricTermG(
-      [1, 2, 3], [0, 1, 0],
-      [1, 2, 3], [0, 1, 0],
-    );
+    const g = geometricTermG([1, 2, 3], [0, 1, 0], [1, 2, 3], [0, 1, 0]);
     expect(g).toBe(0);
   });
 
   it('normal perpendicular to connection direction → G = 0', () => {
     // Connection along X; normal along Z ⊥ X → cos θ = 0 on one side
     const g = geometricTermG(
-      [0, 0, 0], [0, 0, 1],  // normal along Z
-      [1, 0, 0], [1, 0, 0],
+      [0, 0, 0],
+      [0, 0, 1], // normal along Z
+      [1, 0, 0],
+      [1, 0, 0],
     );
     expect(g).toBeCloseTo(0, 12);
   });
@@ -360,18 +355,12 @@ describe('T5 — geometricTermG matches analytic formula', () => {
     // cosI = |1| = 1, cosJ = |1/√2| = 1/√2
     // G = 1 · (1/√2) / 9 = 1/(9√2)
     const inv9sqrt2 = 1 / (9 * Math.SQRT2);
-    const g = geometricTermG(
-      [0, 0, 0], [1, 0, 0],
-      [3, 0, 0], [1 / Math.SQRT2, 1 / Math.SQRT2, 0],
-    );
+    const g = geometricTermG([0, 0, 0], [1, 0, 0], [3, 0, 0], [1 / Math.SQRT2, 1 / Math.SQRT2, 0]);
     expect(g).toBeCloseTo(inv9sqrt2, 12);
   });
 
   it('distance 1 unit, both normals aligned with direction → G = 1', () => {
-    const g = geometricTermG(
-      [0, 0, 0], [1, 0, 0],
-      [1, 0, 0], [1, 0, 0],
-    );
+    const g = geometricTermG([0, 0, 0], [1, 0, 0], [1, 0, 0], [1, 0, 0]);
     expect(g).toBeCloseTo(1.0, 12);
   });
 });
@@ -395,7 +384,7 @@ describe('T6 — camera/light endpoint corner cases', () => {
     // Specular at v1 blocks rightward sweep; all weight on s=0.
     const vertices: BDPTFullVertex[] = [
       { position: [0, 0, 0], normal: [1, 0, 0], pdfFwd: 0.5, pdfRev: 0.4, isSpecular: false },
-      { position: [1, 0, 0], normal: [1, 0, 0], pdfFwd: 0.3, pdfRev: 0.2, isSpecular: true  },
+      { position: [1, 0, 0], normal: [1, 0, 0], pdfFwd: 0.3, pdfRev: 0.2, isSpecular: true },
     ];
     const pdfs = buildBDPTStrategyPDFs_full(vertices, 0, 0.5);
     // Right sweep from s=0 hits v1.isSpecular → p_1 = 0.
@@ -409,7 +398,7 @@ describe('T6 — camera/light endpoint corner cases', () => {
     // selectedS = 1 means the light subpath generated the full path.
     // Specular at v0 blocks leftward sweep; all weight on s=1.
     const vertices: BDPTFullVertex[] = [
-      { position: [0, 0, 0], normal: [1, 0, 0], pdfFwd: 0.5, pdfRev: 0.4, isSpecular: true  },
+      { position: [0, 0, 0], normal: [1, 0, 0], pdfFwd: 0.5, pdfRev: 0.4, isSpecular: true },
       { position: [1, 0, 0], normal: [1, 0, 0], pdfFwd: 0.3, pdfRev: 0.2, isSpecular: false },
     ];
     const pdfs = buildBDPTStrategyPDFs_full(vertices, 1, 0.3);

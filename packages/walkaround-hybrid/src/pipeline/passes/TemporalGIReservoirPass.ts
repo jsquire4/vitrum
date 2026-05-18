@@ -6,11 +6,7 @@
  */
 
 import { buildTemporalGiBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class TemporalGIReservoirPass implements Pass {
@@ -29,7 +25,8 @@ export class TemporalGIReservoirPass implements Pass {
   dispatch(ctx: PassDispatchContext): void {
     const { device, encoder, computeDesc, bglCache, resources, halfWgX, halfWgY } = ctx;
     const bg = buildTemporalGiBindGroup(
-      device, bglCache,
+      device,
+      bglCache,
       resources.restirGI.reservoirGiCurrentBuffer,
       resources.restirGI.reservoirGiPreviousBuffer,
       resources.common.uboBuffer,

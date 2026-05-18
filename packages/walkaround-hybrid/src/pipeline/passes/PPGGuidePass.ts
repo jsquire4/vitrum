@@ -10,11 +10,7 @@
  * host opted in AND the PPG pipelines compiled successfully.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassGateOptions } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 

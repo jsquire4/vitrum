@@ -21,6 +21,7 @@ The fork is at: `~/projects/three-gpu-pathtracer/` (branch `phase4-normalmap-sha
 ## File 1: `src/shader/structs/lights_struct.glsl.js`
 
 **Current `Light` struct** (lines 16–37):
+
 ```glsl
 struct Light {
     vec3 position;
@@ -45,6 +46,7 @@ struct Light {
 ```
 
 **Add `power` field** after `area`:
+
 ```glsl
 struct Light {
     vec3 position;
@@ -88,6 +90,7 @@ l.power = s5.a;   // Sprint 2: populated by LightsInfoUniformStruct for all ligh
 ```
 
 For rect-area lights (which currently only read s0–s3), add s4/s5 reads:
+
 ```glsl
 } else {
     // rect-area and dir lights: read s4/s5 for the power field
@@ -116,12 +119,13 @@ the top of the loop on lines 62–65). We just need to write `cellPower` into th
 **Locate the per-light encoding loop** starting at line 54.
 
 **At the end of the loop**, after all light-type-specific writes, add:
+
 ```js
 // Sprint 2 (Phase 6): write userData.cellPower into s5.a for ALL light types.
 // vitrumSceneToThree() sets userData.cellPower on every THREE light created from
 // a @vitrum/core SceneEmitter. Fallback = 0 for lights not from vitrum.
-const s5aIndex = baseIndex + (5 * 4) + 3; // pixel 5, channel .a
-floatArray[ s5aIndex ] = l.userData?.cellPower ?? 0;
+const s5aIndex = baseIndex + 5 * 4 + 3; // pixel 5, channel .a
+floatArray[s5aIndex] = l.userData?.cellPower ?? 0;
 ```
 
 `baseIndex = i * LIGHT_PIXELS * 4` so pixel 5 starts at `baseIndex + 5*4 = baseIndex + 20`,
@@ -160,6 +164,7 @@ offsets in step 5 of sample 5.
 ## Summary for host integrator
 
 To apply the fork patch:
+
 1. Edit `~/projects/three-gpu-pathtracer/src/shader/structs/lights_struct.glsl.js`
    — add `float power;` field to `Light` struct (after `float area;`).
 2. Update `readLightInfo` to read `s5.a` into `l.power` for all light types.

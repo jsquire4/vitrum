@@ -19,11 +19,11 @@ import type { ProgressStats } from '@vitrum/core';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const canvas      = document.querySelector<HTMLCanvasElement>('#c')!;
-const statusEl    = document.querySelector<HTMLDivElement>('#status')!;
-const sppLabel    = document.querySelector<HTMLDivElement>('#spp-label')!;
-const sppBar      = document.querySelector<HTMLDivElement>('#spp-bar')!;
-const btnSave     = document.querySelector<HTMLButtonElement>('#btn-save')!;
+const canvas = document.querySelector<HTMLCanvasElement>('#c')!;
+const statusEl = document.querySelector<HTMLDivElement>('#status')!;
+const sppLabel = document.querySelector<HTMLDivElement>('#spp-label')!;
+const sppBar = document.querySelector<HTMLDivElement>('#spp-bar')!;
+const btnSave = document.querySelector<HTMLButtonElement>('#btn-save')!;
 
 // ── Material params ───────────────────────────────────────────────────────────
 
@@ -36,7 +36,9 @@ function buildScene(): THREE.Scene {
 
   // Pedestal / shelf — neutral matte base
   const pedestalMat = new THREE.MeshPhysicalMaterial({
-    color: 0xf0ede8, roughness: 0.4, metalness: 0.0,
+    color: 0xf0ede8,
+    roughness: 0.4,
+    metalness: 0.0,
   });
   // Curved shelf: cylinder used as a wide low drum
   const shelf = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.2, 0.15, 48), pedestalMat);
@@ -46,11 +48,11 @@ function buildScene(): THREE.Scene {
   // Glass primary: tall sphere with material-editor params
   const glassMat = new THREE.MeshPhysicalMaterial({
     color: 0xd4eaf8,
-    roughness:    mat.roughness,
-    metalness:    mat.metallic,
+    roughness: mat.roughness,
+    metalness: mat.metallic,
     transmission: mat.transmission,
-    ior:          mat.ior,
-    thickness:    0.4,
+    ior: mat.ior,
+    thickness: 0.4,
     attenuationColor: new THREE.Color(0.85, 0.95, 1.0),
     attenuationDistance: 1.2,
   });
@@ -61,8 +63,10 @@ function buildScene(): THREE.Scene {
   // Secondary glass: smaller icosahedron, fixed clear glass
   const clearMat = new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
-    roughness: 0.02, metalness: 0.0,
-    transmission: 0.98, ior: 1.52,
+    roughness: 0.02,
+    metalness: 0.0,
+    transmission: 0.98,
+    ior: 1.52,
     thickness: 0.2,
   });
   const glassIco = new THREE.Mesh(new THREE.IcosahedronGeometry(0.22, 2), clearMat);
@@ -151,7 +155,7 @@ function scheduleRebuild(): void {
 
 function bindSlider(id: string, key: keyof typeof mat, decimals = 2): void {
   const slider = document.querySelector<HTMLInputElement>(`#${id}`)!;
-  const valEl  = document.querySelector<HTMLSpanElement>(`#v-${id}`)!;
+  const valEl = document.querySelector<HTMLSpanElement>(`#v-${id}`)!;
   slider.addEventListener('input', () => {
     const v = parseFloat(slider.value);
     mat[key] = v;
@@ -160,10 +164,10 @@ function bindSlider(id: string, key: keyof typeof mat, decimals = 2): void {
   });
 }
 
-bindSlider('roughness',    'roughness');
-bindSlider('metallic',     'metallic');
+bindSlider('roughness', 'roughness');
+bindSlider('metallic', 'metallic');
 bindSlider('transmission', 'transmission');
-bindSlider('ior',          'ior');
+bindSlider('ior', 'ior');
 
 // ── High-res save ─────────────────────────────────────────────────────────────
 //
@@ -175,7 +179,9 @@ bindSlider('ior',          'ior');
 // NOTE: 4K renders at 512 SPP typically take 20–60 seconds depending on GPU.
 // Be patient — the browser may appear to freeze while the GPU is busy.
 
-btnSave.addEventListener('click', () => { void saveHighRes(); });
+btnSave.addEventListener('click', () => {
+  void saveHighRes();
+});
 
 async function saveHighRes(): Promise<void> {
   btnSave.disabled = true;
@@ -185,19 +191,19 @@ async function saveHighRes(): Promise<void> {
   engineHandle?.engine.pause();
 
   const MAX_DIM = Math.min(screen.width * 4, 3840);
-  const aspect  = canvas.clientWidth / Math.max(canvas.clientHeight, 1);
-  const saveW   = MAX_DIM;
-  const saveH   = Math.round(MAX_DIM / aspect);
+  const aspect = canvas.clientWidth / Math.max(canvas.clientHeight, 1);
+  const saveW = MAX_DIM;
+  const saveH = Math.round(MAX_DIM / aspect);
 
   const offscreen = document.createElement('canvas');
-  offscreen.width  = saveW;
+  offscreen.width = saveW;
   offscreen.height = saveH;
 
   let saveEngine: import('@vitrum/core').Engine | null = null;
   try {
     saveEngine = await createEngine({
       canvas: offscreen,
-      scene:  currentVitrumScene,
+      scene: currentVitrumScene,
       prefer: 'quality',
       advanced: {
         maxSamplesPerPixel: SPP_TARGET,
@@ -214,23 +220,34 @@ async function saveHighRes(): Promise<void> {
     await new Promise<void>((resolve) => {
       let frame = 0;
       function tick(): void {
-        if (!saveEngine) { resolve(); return; }
+        if (!saveEngine) {
+          resolve();
+          return;
+        }
         saveCam.updateMatrixWorld();
         const view = new Float32Array(saveCam.matrixWorldInverse.elements);
         const proj = new Float32Array(saveCam.projectionMatrix.elements);
         const out = saveEngine.renderFrame({
-          viewMatrix:      view,
-          projMatrix:      proj,
-          cameraPosition:  [saveCam.position.x, saveCam.position.y, saveCam.position.z],
-          viewport:        { width: saveW, height: saveH, devicePixelRatio: 1 },
-          frameIndex:      frame,
-          frameSeed:       (frame * 1664525 + 1013904223) >>> 0,
-          quality:         { samplesTarget: SPP_TARGET, bounces: 8, resolutionFactor: 1, filteredGlossyFactor: 0.5 },
+          viewMatrix: view,
+          projMatrix: proj,
+          cameraPosition: [saveCam.position.x, saveCam.position.y, saveCam.position.z],
+          viewport: { width: saveW, height: saveH, devicePixelRatio: 1 },
+          frameIndex: frame,
+          frameSeed: (frame * 1664525 + 1013904223) >>> 0,
+          quality: {
+            samplesTarget: SPP_TARGET,
+            bounces: 8,
+            resolutionFactor: 1,
+            filteredGlossyFactor: 0.5,
+          },
         });
         frame++;
         const spp = Math.round(out.samplesAccumulated);
         statusEl.textContent = `Saving… SPP ${spp} / ${SPP_TARGET} at ${saveW}×${saveH}`;
-        if (out.isConverged) { resolve(); return; }
+        if (out.isConverged) {
+          resolve();
+          return;
+        }
         requestAnimationFrame(tick);
       }
       requestAnimationFrame(tick);
@@ -248,7 +265,11 @@ async function saveHighRes(): Promise<void> {
   } catch (err) {
     statusEl.textContent = `Save failed: ${String(err)}`;
   } finally {
-    try { saveEngine?.dispose(); } catch { /* ignore */ }
+    try {
+      saveEngine?.dispose();
+    } catch {
+      /* ignore */
+    }
     offscreen.remove();
     engineHandle?.engine.resume();
     btnSave.disabled = false;

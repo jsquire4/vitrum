@@ -16,11 +16,7 @@
  */
 
 import { buildAccumBindGroup, type UboRef } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class TemporalAccumPass implements Pass {
@@ -42,7 +38,9 @@ export class TemporalAccumPass implements Pass {
   dispatch(ctx: PassDispatchContext): void {
     const { device, encoder, computeDesc, bglCache, wgX16, wgY16, frameState } = ctx;
     const bg = buildAccumBindGroup(
-      device, bglCache, this._uboRef,
+      device,
+      bglCache,
+      this._uboRef,
       frameState.combinedDenoised.createView(),
       frameState.readAccum.createView(),
       frameState.writeAccum.createView(),

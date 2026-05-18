@@ -18,7 +18,7 @@ const SEG: CameSegment = {
   startWorld: [1, 2, 3],
   endWorld: [4, 5, 6],
   railWidth: 0.008,
-  blockHeight: 0.010,
+  blockHeight: 0.01,
   webThickness: 0.001,
 };
 
@@ -134,13 +134,16 @@ describe('packCameUBO', () => {
   describe('cap enforcement', () => {
     it('respects maxSegments and discards excess (with console.warn)', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      const segs = Array.from({ length: 5 }, (_, i): CameSegment => ({
-        startWorld: [i, 0, 0],
-        endWorld: [i + 1, 0, 0],
-        railWidth: 0.01,
-        blockHeight: 0.01,
-        webThickness: 0.001,
-      }));
+      const segs = Array.from(
+        { length: 5 },
+        (_, i): CameSegment => ({
+          startWorld: [i, 0, 0],
+          endWorld: [i + 1, 0, 0],
+          railWidth: 0.01,
+          blockHeight: 0.01,
+          webThickness: 0.001,
+        }),
+      );
       const result = packCameUBO(segs, [], { maxSegments: 3 });
       expect(result.segmentCount).toBe(3);
       expect(result.segments).toHaveLength(48); // 3 × 16
@@ -150,10 +153,13 @@ describe('packCameUBO', () => {
 
     it('respects maxNodes and discards excess (with console.warn)', () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-      const ns = Array.from({ length: 5 }, (_, i): CameNode => ({
-        position: [i, 0, 0],
-        radius: 0.005,
-      }));
+      const ns = Array.from(
+        { length: 5 },
+        (_, i): CameNode => ({
+          position: [i, 0, 0],
+          radius: 0.005,
+        }),
+      );
       const result = packCameUBO([], ns, { maxNodes: 2 });
       expect(result.nodeCount).toBe(2);
       expect(result.nodes).toHaveLength(8); // 2 × 4

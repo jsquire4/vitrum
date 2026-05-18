@@ -3,13 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "description": "Adapter — THREE.Scene → @vitrum/core Scene + glTF loader. See plan/library-architecture.md.",
-  "keywords": ["webgpu", "webgl2", "three", "gltf", "vitrum"],
+  "keywords": [
+    "webgpu",
+    "webgl2",
+    "three",
+    "gltf",
+    "vitrum"
+  ],
   "author": "jsquire4",
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git",

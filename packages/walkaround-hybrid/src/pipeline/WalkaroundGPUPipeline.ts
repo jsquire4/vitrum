@@ -45,9 +45,7 @@ import {
   destroyFrameResources,
   type FrameResources,
 } from './resourceManager.js';
-import {
-  type BGLCache,
-} from './bindGroupLayouts.js';
+import { type BGLCache } from './bindGroupLayouts.js';
 import {
   buildFrameBindGroup,
   buildSceneBindGroup,
@@ -56,19 +54,10 @@ import {
   buildCompositeBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
-import {
-  DenoiserRegistry,
-  type Denoiser,
-  type DenoiserId,
-} from './denoisers/index.js';
+import { DenoiserRegistry, type Denoiser, type DenoiserId } from './denoisers/index.js';
 import { registerBuiltinDenoisers } from './denoisers/registerBuiltinDenoisers.js';
 import { PassRegistry } from './PassRegistry.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassFrameState,
-  PassGateOptions,
-} from './Pass.js';
+import type { Pass, PassDispatchContext, PassFrameState, PassGateOptions } from './Pass.js';
 import {
   AtrousIndirectPass,
   CompositePass,
@@ -145,9 +134,7 @@ export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
  * timings) are handled separately by the host and are not part of the
  * required-features contract.
  */
-export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = [
-  'texture-formats-tier1',
-];
+export const HYBRID_WEBGPU_REQUIRED_FEATURES: readonly GPUFeatureName[] = ['texture-formats-tier1'];
 
 /**
  * Default camera squared-distance threshold for temporal accumulator reset.
@@ -286,7 +273,7 @@ export class WalkaroundGPUPipeline {
   private _res!: FrameResources;
 
   // Temporal accumulator ping-pong state
-  private _accumPingPongIndex = 0;       // 0 = read A, write B; 1 = swap
+  private _accumPingPongIndex = 0; // 0 = read A, write B; 1 = swap
   private _accumFrameIndex = 0;
   private _lastCameraPos: [number, number, number] = [0, 0, 0];
 
@@ -349,11 +336,11 @@ export class WalkaroundGPUPipeline {
   /** Sprint 18 — separate UBO for the indirect-channel atrous chain so it
    *  doesn't race the legacy denoiser's per-iteration sigma writes. */
   private _atrousIndirectUboRef: UboRef = { buf: undefined };
-  private _accumUboRef: UboRef  = { buf: undefined };
+  private _accumUboRef: UboRef = { buf: undefined };
   // Sprint 9 — adaptive sampling UBOs.
   private _sampleBudgetUboRef: UboRef = { buf: undefined };
-  private _sampleCountUboRef:  UboRef = { buf: undefined };
-  private _resolveUboRef:      UboRef = { buf: undefined };
+  private _sampleCountUboRef: UboRef = { buf: undefined };
+  private _resolveUboRef: UboRef = { buf: undefined };
   private get _perPassUboRefs(): readonly UboRef[] {
     return [
       this._atrousIndirectUboRef,
@@ -376,7 +363,7 @@ export class WalkaroundGPUPipeline {
 
   constructor(device: GPUDevice, width: number, height: number) {
     this._device = device;
-    this._width  = width;
+    this._width = width;
     this._height = height;
   }
 
@@ -417,16 +404,20 @@ export class WalkaroundGPUPipeline {
     this._swapChainFormat = swapChainFormat;
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
-    this._bvhNodesBuffer    = uploadBuffer(d, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
-    this._bvhIndexBuffer    = uploadBuffer(d, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
-    this._bvhBeerBuffer     = uploadBuffer(d, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
-    this._bvhPositionBuffer = uploadBuffer(d, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
+    this._bvhNodesBuffer = uploadBuffer(d, bvhBuffers.bvhNodes.cpuData, GPUBufferUsage.STORAGE);
+    this._bvhIndexBuffer = uploadBuffer(d, bvhBuffers.bvhIndex.cpuData, GPUBufferUsage.STORAGE);
+    this._bvhBeerBuffer = uploadBuffer(d, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
+    this._bvhPositionBuffer = uploadBuffer(
+      d,
+      bvhBuffers.bvhPositions.cpuData,
+      GPUBufferUsage.STORAGE,
+    );
     // bvhNormals + bvhUvs are CPU-only on the walkaround path: UVs are packed
     // into bvhPosition[*].w (see restir/packingHelpers.packUVIntoPositionW)
     // and face normals are reconstructed in shader from the BVH-resolved
     // primary hit. No need to upload them.
-    this._emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
-    this._emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
+    this._emitterBuffer = uploadBuffer(d, bvhBuffers.emitters.cpuData, GPUBufferUsage.STORAGE);
+    this._emitterCdfBuffer = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData, GPUBufferUsage.STORAGE);
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
@@ -441,15 +432,15 @@ export class WalkaroundGPUPipeline {
     // the always-on AtrousIndirectPass.
     this._atrousPipeline = compiled.atrousPipeline;
     this._denoiserMode = options?.denoiser ?? 'atrous-variance';
-    this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
-      ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
-    this._temporalAccumAlpha = options?.temporalAccumAlpha
-      ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
+    this._cameraMoveResetThresholdSq =
+      options?.cameraMoveResetThresholdSq ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
+    this._temporalAccumAlpha = options?.temporalAccumAlpha ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
 
     // T2.H3 — PPG is enabled iff host opted-in AND both pipelines compiled.
-    this._ppgEnabled = (options?.ppgEnabled ?? false) &&
+    this._ppgEnabled =
+      (options?.ppgEnabled ?? false) &&
       compiled.ppgUpdatePipeline !== undefined &&
-      compiled.ppgGuidePipeline  !== undefined;
+      compiled.ppgGuidePipeline !== undefined;
 
     // ── Denoiser registry: build, register builtins, look up + initialise
     //    the active denoiser. Disabled placeholders (neural / oidn-final)
@@ -485,20 +476,26 @@ export class WalkaroundGPUPipeline {
     // never blocks on first-frame buffer creation. Denoiser-owned UBOs
     // are allocated inside each `Denoiser.initialize()`.
     const U = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
-    this._accumUboRef.buf  = d.createBuffer({ label: 'accum-ubo',  size: 16, usage: U });
+    this._accumUboRef.buf = d.createBuffer({ label: 'accum-ubo', size: 16, usage: U });
     // Sprint 9 — adaptive sampling UBOs (always allocated; passes always run).
-    this._sampleBudgetUboRef.buf = d.createBuffer({ label: 'sample-budget-ubo', size: 16, usage: U });
-    this._sampleCountUboRef.buf  = d.createBuffer({ label: 'sample-count-ubo',  size: 16, usage: U });
-    this._resolveUboRef.buf      = d.createBuffer({ label: 'resolve-ubo',       size: 16, usage: U });
+    this._sampleBudgetUboRef.buf = d.createBuffer({
+      label: 'sample-budget-ubo',
+      size: 16,
+      usage: U,
+    });
+    this._sampleCountUboRef.buf = d.createBuffer({ label: 'sample-count-ubo', size: 16, usage: U });
+    this._resolveUboRef.buf = d.createBuffer({ label: 'resolve-ubo', size: 16, usage: U });
 
     // ── Pass registry: instantiate + register all non-denoiser passes ────
     // Order of registration is irrelevant; the registry topologically sorts.
     const registry = new PassRegistry();
-    registry.register(new SampleBudgetPass(
-      compiled.sampleBudgetPipeline,
-      this._sampleBudgetUboRef,
-      this._sampleCountUboRef,
-    ));
+    registry.register(
+      new SampleBudgetPass(
+        compiled.sampleBudgetPipeline,
+        this._sampleBudgetUboRef,
+        this._sampleCountUboRef,
+      ),
+    );
     registry.register(new RISPass(compiled.risPipeline));
     registry.register(new TemporalReservoirPass(compiled.temporalPipeline));
     registry.register(new SpatialReservoirPass(compiled.spatialPipeline));
@@ -508,14 +505,13 @@ export class WalkaroundGPUPipeline {
     registry.register(new ShadePass(compiled.shadePipeline));
     registry.register(new GTAOPass(compiled.gtaoPipeline));
     registry.register(new GTAOUpsamplePass(compiled.gtaoUpsamplePipeline));
-    registry.register(new IndirectTemporalAccumPass(
-      compiled.indirectTemporalAccumPipeline,
-      this._indirectAccumPingPongRef,
-    ));
-    registry.register(new AtrousIndirectPass(
-      compiled.atrousPipeline,
-      this._atrousIndirectUboRef,
-    ));
+    registry.register(
+      new IndirectTemporalAccumPass(
+        compiled.indirectTemporalAccumPipeline,
+        this._indirectAccumPingPongRef,
+      ),
+    );
+    registry.register(new AtrousIndirectPass(compiled.atrousPipeline, this._atrousIndirectUboRef));
     registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
     registry.register(new TemporalAccumPass(compiled.accumPipeline, this._accumUboRef));
     registry.register(new ResolvePass(compiled.resolvePipeline, this._resolveUboRef));
@@ -534,21 +530,30 @@ export class WalkaroundGPUPipeline {
     // ── Initialize all passes in parallel ────────────────────────────────
     this._passRegistry = registry;
     this._sortedPasses = registry.sortedPasses();
-    this._denoiserSplitIndex = this._sortedPasses.findIndex(
-      (p) => p.id === DENOISER_AFTER_PASS_ID,
-    );
+    this._denoiserSplitIndex = this._sortedPasses.findIndex((p) => p.id === DENOISER_AFTER_PASS_ID);
     if (this._denoiserSplitIndex < 0) {
-      throw new Error(
-        `WalkaroundGPUPipeline: pass "${DENOISER_AFTER_PASS_ID}" not registered`,
-      );
+      throw new Error(`WalkaroundGPUPipeline: pass "${DENOISER_AFTER_PASS_ID}" not registered`);
     }
-    await Promise.all(this._sortedPasses.map((p) => p.initialize({
-      device: d, width: W, height: H, bglCache: this._bglCache, frameResources: this._res,
-    })));
+    await Promise.all(
+      this._sortedPasses.map((p) =>
+        p.initialize({
+          device: d,
+          width: W,
+          height: H,
+          bglCache: this._bglCache,
+          frameResources: this._res,
+        }),
+      ),
+    );
 
     this._initialized = true;
     if (options?.verbose) {
-      console.log('[ReSTIR] Pipeline initialized', { W, H, bvhNodes: bvhBuffers.bvhNodes.count, emitters: bvhBuffers.emitterCount });
+      console.log('[ReSTIR] Pipeline initialized', {
+        W,
+        H,
+        bvhNodes: bvhBuffers.bvhNodes.count,
+        emitters: bvhBuffers.emitterCount,
+      });
     }
   }
 
@@ -560,8 +565,16 @@ export class WalkaroundGPUPipeline {
   updateEmitters(bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf'>): void {
     this._emitterBuffer.destroy();
     this._emitterCdfBuffer.destroy();
-    this._emitterBuffer    = uploadBuffer(this._device, bvhBuffers.emitters.cpuData,    GPUBufferUsage.STORAGE);
-    this._emitterCdfBuffer = uploadBuffer(this._device, bvhBuffers.emitterCdf.cpuData,  GPUBufferUsage.STORAGE);
+    this._emitterBuffer = uploadBuffer(
+      this._device,
+      bvhBuffers.emitters.cpuData,
+      GPUBufferUsage.STORAGE,
+    );
+    this._emitterCdfBuffer = uploadBuffer(
+      this._device,
+      bvhBuffers.emitterCdf.cpuData,
+      GPUBufferUsage.STORAGE,
+    );
   }
 
   /**
@@ -620,7 +633,10 @@ export class WalkaroundGPUPipeline {
     const d = this._device;
     const finalTex = this._res.common.resolvedTexture;
     const bgComposite = buildCompositeBindGroup(
-      d, this._bglCache, finalTex.createView(), this._res.common.compositeSampler,
+      d,
+      this._bglCache,
+      finalTex.createView(),
+      this._res.common.compositeSampler,
     );
     // The CompositePass instance owns the compiled render pipeline; reuse
     // it here so a single source of truth for the composite shader stays
@@ -630,12 +646,14 @@ export class WalkaroundGPUPipeline {
     const encoder = d.createCommandEncoder({ label: 'composite-only' });
     const pass = encoder.beginRenderPass({
       label: 'composite-only',
-      colorAttachments: [{
-        view: swapChainView,
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      }],
+      colorAttachments: [
+        {
+          view: swapChainView,
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        },
+      ],
     });
     pass.setPipeline(compositePass.pipeline);
     pass.setBindGroup(0, bgComposite);
@@ -678,39 +696,41 @@ export class WalkaroundGPUPipeline {
     // ── Build shared bind groups (frame/scene/ubo/hybrid-layers) ─────────
     const bgFrame = buildFrameBindGroup(d, this._bglCache, {
       placeholderView,
-      reservoirCurrentBuffer:  this._res.restirDI.reservoirCurrentBuffer,
+      reservoirCurrentBuffer: this._res.restirDI.reservoirCurrentBuffer,
       reservoirPreviousBuffer: this._res.restirDI.reservoirPreviousBuffer,
-      reservoirSpatialBuffer:  this._res.restirDI.reservoirSpatialBuffer,
-      hdrColorTexture:         this._res.common.hdrColorTexture,
-      nearestSampler:          this._res.common.nearestSampler,
-      gNormalDepthTexture:     this._res.common.gNormalDepthTexture,
+      reservoirSpatialBuffer: this._res.restirDI.reservoirSpatialBuffer,
+      hdrColorTexture: this._res.common.hdrColorTexture,
+      nearestSampler: this._res.common.nearestSampler,
+      gNormalDepthTexture: this._res.common.gNormalDepthTexture,
       reservoirGiCurrentBuffer: this._res.restirGI.reservoirGiCurrentBuffer,
-      hdrIndirectTexture:      this._res.common.hdrIndirectTexture,
-      hdrTotalTexture:         this._res.common.hdrTotalTexture,
+      hdrIndirectTexture: this._res.common.hdrIndirectTexture,
+      hdrTotalTexture: this._res.common.hdrTotalTexture,
       // Item 24 — albedo demodulation (Schied 2017 §4.1).
-      albedoTexture:           this._res.common.albedoTexture,
+      albedoTexture: this._res.common.albedoTexture,
     });
     const bgScene = buildSceneBindGroup(d, this._bglCache, {
-      bvhNodesBuffer:    this._bvhNodesBuffer,
-      bvhIndexBuffer:    this._bvhIndexBuffer,
+      bvhNodesBuffer: this._bvhNodesBuffer,
+      bvhIndexBuffer: this._bvhIndexBuffer,
       bvhPositionBuffer: this._bvhPositionBuffer,
-      emitterBuffer:     this._emitterBuffer,
-      emitterCdfBuffer:  this._emitterCdfBuffer,
-      bvhBeerBuffer:     this._bvhBeerBuffer,
+      emitterBuffer: this._emitterBuffer,
+      emitterCdfBuffer: this._emitterCdfBuffer,
+      bvhBeerBuffer: this._bvhBeerBuffer,
     });
-    const bgUbo   = buildUboBindGroup(
-      d, this._bglCache, this._res.common.uboBuffer,
+    const bgUbo = buildUboBindGroup(
+      d,
+      this._bglCache,
+      this._res.common.uboBuffer,
       this._res.gtao.aoFullTexture.createView(),
       this._res.common.tierTexture.createView(),
     );
     // Sprint 16 — DDGI hybrid layers slot 3 — shared by gi-ris and shade.
     const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
-      ddgiIrrTex:              this._ddgiIrrTex,
-      ddgiVisTex:              this._ddgiVisTex,
-      ddgiPlaceholderRgba16f:  this._res.ddgi.ddgiPlaceholderRgba16f,
-      ddgiPlaceholderRg16f:    this._res.ddgi.ddgiPlaceholderRg16f,
-      nearestSampler:          this._res.common.nearestSampler,
-      ddgiUboBuffer:           this._res.ddgi.ddgiUboBuffer,
+      ddgiIrrTex: this._ddgiIrrTex,
+      ddgiVisTex: this._ddgiVisTex,
+      ddgiPlaceholderRgba16f: this._res.ddgi.ddgiPlaceholderRgba16f,
+      ddgiPlaceholderRg16f: this._res.ddgi.ddgiPlaceholderRg16f,
+      nearestSampler: this._res.common.nearestSampler,
+      ddgiUboBuffer: this._res.ddgi.ddgiUboBuffer,
     });
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────
@@ -718,8 +738,8 @@ export class WalkaroundGPUPipeline {
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
 
-    const wgX  = Math.ceil(W / 8);
-    const wgY  = Math.ceil(H / 8);
+    const wgX = Math.ceil(W / 8);
+    const wgY = Math.ceil(H / 8);
     const wgX16 = Math.ceil(W / 16);
     const wgY16 = Math.ceil(H / 16);
     const halfWgX = Math.ceil(Math.floor(W / 2) / 8);
@@ -749,10 +769,14 @@ export class WalkaroundGPUPipeline {
     }
 
     // Resolve the temporal-accumulator ping-pong slots for this frame.
-    const readAccum  = this._accumPingPongIndex === 0
-      ? this._res.common.accumTextureA : this._res.common.accumTextureB;
-    const writeAccum = this._accumPingPongIndex === 0
-      ? this._res.common.accumTextureB : this._res.common.accumTextureA;
+    const readAccum =
+      this._accumPingPongIndex === 0
+        ? this._res.common.accumTextureA
+        : this._res.common.accumTextureB;
+    const writeAccum =
+      this._accumPingPongIndex === 0
+        ? this._res.common.accumTextureB
+        : this._res.common.accumTextureA;
 
     const gNormalDepthView = this._res.common.gNormalDepthTexture.createView();
 
@@ -769,8 +793,8 @@ export class WalkaroundGPUPipeline {
 
     // ── Build the shared per-pass dispatch context ───────────────────────
     const frameState: PassFrameState = {
-      denoisedDirect: this._res.common.hdrColorTexture,   // overwritten by denoiser dispatch
-      indirectAccumOut: this._res.common.indirectAccumPingTexture,  // overwritten by indirect-temporal-accum
+      denoisedDirect: this._res.common.hdrColorTexture, // overwritten by denoiser dispatch
+      indirectAccumOut: this._res.common.indirectAccumPingTexture, // overwritten by indirect-temporal-accum
       denoisedIndirect: this._res.common.indirectDenoisedPingTexture, // overwritten by atrous-indirect
       combinedDenoised: this._res.common.combinedDenoisedTexture,
       writeAccum,
@@ -792,7 +816,12 @@ export class WalkaroundGPUPipeline {
       sceneBindGroup: bgScene,
       uboBindGroup: bgUbo,
       hybridLayersBindGroup: bgHybrid,
-      wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
+      wgX,
+      wgY,
+      wgX16,
+      wgY16,
+      halfWgX,
+      halfWgY,
       gNormalDepthView,
       computeDesc,
       renderTimestampWrites,
@@ -867,13 +896,17 @@ export class WalkaroundGPUPipeline {
     // orchestrator to know about it specially. Two lines here vs a 30-line
     // file is the right trade.
     encoder.copyBufferToBuffer(
-      this._res.restirDI.reservoirCurrentBuffer, 0,
-      this._res.restirDI.reservoirPreviousBuffer, 0,
+      this._res.restirDI.reservoirCurrentBuffer,
+      0,
+      this._res.restirDI.reservoirPreviousBuffer,
+      0,
       this._res.restirDI.reservoirCurrentBuffer.size,
     );
     encoder.copyBufferToBuffer(
-      this._res.restirGI.reservoirGiCurrentBuffer, 0,
-      this._res.restirGI.reservoirGiPreviousBuffer, 0,
+      this._res.restirGI.reservoirGiCurrentBuffer,
+      0,
+      this._res.restirGI.reservoirGiPreviousBuffer,
+      0,
       this._res.restirGI.reservoirGiCurrentBuffer.size,
     );
 
@@ -896,7 +929,7 @@ export class WalkaroundGPUPipeline {
     kickTimestampReadback(this._tsState, this._frameCount, passLayout.labels);
     // Mirror public telemetry fields from the state object so callers
     // can read them as before.
-    this.lastGpuTimings      = this._tsState.lastGpuTimings;
+    this.lastGpuTimings = this._tsState.lastGpuTimings;
     this.lastGpuTimingsFrame = this._tsState.lastGpuTimingsFrame;
 
     this._frameCount++;
@@ -937,11 +970,13 @@ export class WalkaroundGPUPipeline {
    *    layout (origin vec3 + spacing f32 + dims vec3u + pad u32 +
    *    irradianceAtlasW/H + visibilityAtlasW/H).
    */
-  setDDGIInputs(inputs: {
-    irradianceTex: GPUTexture;
-    visibilityTex: GPUTexture;
-    gridParams: ArrayBuffer;
-  } | null): void {
+  setDDGIInputs(
+    inputs: {
+      irradianceTex: GPUTexture;
+      visibilityTex: GPUTexture;
+      gridParams: ArrayBuffer;
+    } | null,
+  ): void {
     if (inputs === null) {
       this._ddgiIrrTex = null;
       this._ddgiVisTex = null;
@@ -952,7 +987,11 @@ export class WalkaroundGPUPipeline {
       if (this._ddgiPlaceholderUBO === null) {
         this._ddgiPlaceholderUBO = buildDDGIPlaceholderUBO();
       }
-      this._device.queue.writeBuffer(this._res.ddgi.ddgiUboBuffer, 0, this._ddgiPlaceholderUBO.buffer);
+      this._device.queue.writeBuffer(
+        this._res.ddgi.ddgiUboBuffer,
+        0,
+        this._ddgiPlaceholderUBO.buffer,
+      );
     } else {
       this._ddgiIrrTex = inputs.irradianceTex;
       this._ddgiVisTex = inputs.visibilityTex;

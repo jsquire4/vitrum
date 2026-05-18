@@ -18,9 +18,15 @@
  */
 
 import {
-  Fn, vec3, float, uniform,
-  positionWorld, normalWorld,
-  dot, max, clamp,
+  Fn,
+  vec3,
+  float,
+  uniform,
+  positionWorld,
+  normalWorld,
+  dot,
+  max,
+  clamp,
   storage,
 } from 'three/tsl';
 import type { CascadeBuffers } from './cascadePyramid.js';
@@ -30,13 +36,15 @@ import { computeOctahedralSolidAngles } from './octahedralSolidAngles.js';
 /** Octahedron decode: 2D unit-square uv → unit direction. */
 function octDirForIndex(idx: number, gridSize: number): [number, number, number] {
   const gx = (idx % gridSize) + 0.5;
-  const gy = (Math.floor(idx / gridSize)) + 0.5;
-  const px = gx / gridSize * 2 - 1;
-  const py = gy / gridSize * 2 - 1;
-  let nx = px, ny = py;
+  const gy = Math.floor(idx / gridSize) + 0.5;
+  const px = (gx / gridSize) * 2 - 1;
+  const py = (gy / gridSize) * 2 - 1;
+  let nx = px,
+    ny = py;
   const nz = 1.0 - Math.abs(px) - Math.abs(py);
   if (nz < 0) {
-    const tx = nx, ty = ny;
+    const tx = nx,
+      ty = ny;
     nx = (1.0 - Math.abs(ty)) * (tx >= 0 ? 1 : -1);
     ny = (1.0 - Math.abs(tx)) * (ty >= 0 ? 1 : -1);
   }
@@ -64,8 +72,8 @@ export function buildWalkaroundLightingNode(
   cascadeBuffers: CascadeBuffers,
 ): WalkaroundLightingNodes {
   const c0Dim = CASCADE_DIMS[0];
-  const RAYS   = c0Dim.rays;                         // 16
-  const GRID   = Math.round(Math.sqrt(RAYS));        // 4
+  const RAYS = c0Dim.rays; // 16
+  const GRID = Math.round(Math.sqrt(RAYS)); // 4
   const [PX, PY, PZ] = c0Dim.probes;
 
   // Precompute oct-decoded directions for all 16 bins as constants.
@@ -87,9 +95,9 @@ export function buildWalkaroundLightingNode(
   const uOriginX = uniform(cascadeBuffers.probeOriginWorld.x, 'float');
   const uOriginY = uniform(cascadeBuffers.probeOriginWorld.y, 'float');
   const uOriginZ = uniform(cascadeBuffers.probeOriginWorld.z, 'float');
-  const uSizeX   = uniform(cascadeBuffers.roomSize.x, 'float');
-  const uSizeY   = uniform(cascadeBuffers.roomSize.y, 'float');
-  const uSizeZ   = uniform(cascadeBuffers.roomSize.z, 'float');
+  const uSizeX = uniform(cascadeBuffers.roomSize.x, 'float');
+  const uSizeY = uniform(cascadeBuffers.roomSize.y, 'float');
+  const uSizeZ = uniform(cascadeBuffers.roomSize.z, 'float');
 
   // C0 storage reference. Use cascadeBuffers.gpuCascades[0] — the same
   // StorageBufferAttribute instance that cascadeDispatch writes into.
@@ -98,7 +106,7 @@ export function buildWalkaroundLightingNode(
   // If the StorageBufferAttribute INSTANCE itself changes (e.g. room
   // bounds resize → CascadeBufferManager reallocates), the caller must
   // call buildWalkaroundLightingNode again to rebuild the node graph.
-  const c0Attr  = cascadeBuffers.gpuCascades[0]!;
+  const c0Attr = cascadeBuffers.gpuCascades[0]!;
   // AnyNode cast: storage() from three/tsl has conservative typings that don't
   // accept the StorageBufferAttribute + string-type combo at strict TSC level.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -134,21 +142,19 @@ export function buildWalkaroundLightingNode(
           for (let dx = 0; dx < 2; dx++) {
             // AnyNode casts: TSL clamp() / toInt() / mul() have strict typed overloads
             // that don't model mixed-int-float chains well at TSC level.
-            const cx = clamp(gridIx.add(float(dx)).toInt() as AnyNode, 0, (PX - 1)) as AnyNode;
-            const cy = clamp(gridIy.add(float(dy)).toInt() as AnyNode, 0, (PY - 1)) as AnyNode;
-            const cz = clamp(gridIz.add(float(dz)).toInt() as AnyNode, 0, (PZ - 1)) as AnyNode;
+            const cx = clamp(gridIx.add(float(dx)).toInt() as AnyNode, 0, PX - 1) as AnyNode;
+            const cy = clamp(gridIy.add(float(dy)).toInt() as AnyNode, 0, PY - 1) as AnyNode;
+            const cz = clamp(gridIz.add(float(dz)).toInt() as AnyNode, 0, PZ - 1) as AnyNode;
 
-            const probeIdx = (cx)
-              .add((cy).mul(PX))
-              .add((cz).mul(PX * PY));
-            const outIdx = (probeIdx).mul(RAYS).add(d);
+            const probeIdx = cx.add(cy.mul(PX)).add(cz.mul(PX * PY));
+            const outIdx = probeIdx.mul(RAYS).add(d);
 
             const wx = dx === 0 ? float(1).sub(fx) : fx;
             const wy = dy === 0 ? float(1).sub(fy) : fy;
             const wz = dz === 0 ? float(1).sub(fz) : fz;
-            const w  = (wx as AnyNode).mul(wy).mul(wz);
+            const w = (wx as AnyNode).mul(wy).mul(wz);
 
-            const rad = (c0Storage).element(outIdx).xyz;
+            const rad = c0Storage.element(outIdx).xyz;
             (sample as AnyNode).addAssign(rad.mul(w));
           }
         }

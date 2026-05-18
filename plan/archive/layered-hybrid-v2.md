@@ -12,6 +12,7 @@ final_color = direct_lighting × sun_visibility(RC)
 ```
 
 Where:
+
 - **ReSTIR DI** owns the shade kernel — primary-ray-cast, importance-sampled
   reservoir resampling for direct lighting from emissive lights.
 - **DDGI** runs as a compute prerequisite. Updates the irradiance/visibility
@@ -31,6 +32,7 @@ sits at ~30 FPS).
 
 Path A (TSL injection per material via `material.outputNode`) was the
 original "glorious hybrid" plan. It crashed because:
+
 - WebGPU renderer's RenderObject cache desynced when the composer reassigned
   `outputNode` mid-session. Per-frame `Nodes.delete(undefined).usedTimes`
   storm froze Chrome.
@@ -38,6 +40,7 @@ original "glorious hybrid" plan. It crashed because:
   fragile across Three.js NodeMaterial versions.
 
 Path B (compute prerequisite, ReSTIR owns the frame) avoids both pitfalls:
+
 - ReSTIR's `WalkaroundGPUPipeline` already manually composites to the swap
   chain. No TSL involvement.
 - DDGI / RC compute results live in shared storage textures + buffers.
@@ -64,14 +67,16 @@ panel-emitter contributions reach walls/floor via the probe atlas
 instead of being limited to single-bounce ReSTIR-GI.
 
 Sub-phases:
+
 - 1.1 (913eefd): HybridLayeredStage skeleton — useDDGI + ReSTIR coexisting
 - 1.1.1 (ee5d309): DDGI gate + OrbitControls
 - 1.2A (1bfc599): WalkaroundGPUPipeline DDGI bind group infrastructure
 - 1.2B-shader (d86cbef): shade.wgsl declarations + smoke-test gate
 - 1.2B-real+wire (75265b0): ddgiSampleFromBindings + per-frame setDDGIInputs
-- 1.2B-toggle (89903e7): __HYBRID_LAYERS__.ddgi=false properly reverts UBO
+- 1.2B-toggle (89903e7): **HYBRID_LAYERS**.ddgi=false properly reverts UBO
 
 Changes:
+
 1. Add `HybridLayeredStage.tsx` (new). Mounts when
    `walkaroundEngine === 'hybrid'`. Replaces the v1 ReSTIR routing.
    Owns:
@@ -120,11 +125,12 @@ Two viable approaches for the blocker:
 
 2. **Request higher device limit**: in StudioScene's gl factory,
    create the WebGPURenderer with `requiredLimits:
-   { maxStorageBuffersPerShaderStage: 16 }`. Modern hardware supports
+{ maxStorageBuffersPerShaderStage: 16 }`. Modern hardware supports
    it; software fallback (SwiftShader) doesn't. Re-tests would need
    to gate on `isHardwareGpu` AND the requested feature.
 
 Once unblocked:
+
 1. Add cascade bind group (group 4) to WalkaroundGPUPipeline.
 2. Add `pipeline.setRCInputs(packedBuffer, levelOffsetsUbo)`.
 3. Modify shade.wgsl: add `cascadeSampleSunVisibility(worldPos)` →
@@ -169,6 +175,7 @@ Per the original glorious-hybrid plan; Phase 5-6 of that plan.
 ## File map
 
 ### Changed
+
 - `src/rendering/scene/StudioScene.tsx` — route 'hybrid' to
   HybridLayeredStage instead of RestirStage.
 - `src/rendering/scene/walkaround/engines/restir/shaders/shade.wgsl.ts` —
@@ -178,9 +185,11 @@ Per the original glorious-hybrid plan; Phase 5-6 of that plan.
   inputs.
 
 ### New
+
 - `src/rendering/scene/walkaround/HybridLayeredStage.tsx` — Path-B stage
   that owns DDGI compute + RC compute + ReSTIR pipeline.
 
 ### Untouched (orphaned Path-A scaffolding kept for reference)
+
 - `HybridStage.tsx`, `HybridContext.ts`, `useHybridFrameLoop.ts`,
   `applyHybridShading.ts`, `layers/*.ts` — Path-A approach, kept in tree.

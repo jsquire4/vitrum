@@ -6,13 +6,13 @@
 
 ## What was built in Sprint 9
 
-| Artifact | Location | Status |
-|---|---|---|
-| `WelfordVariance` struct + helpers | `src/shaders/common.wgsl.ts` | Shipped in `COMMON_WGSL` |
-| `sampleBudgetKernel` compute shader | `src/shaders/sampleBudget.wgsl.ts` | Complete, not dispatched |
-| `resolveKernel` compute shader | `src/shaders/resolve.wgsl.ts` | Complete, not dispatched |
-| `createVarianceBuffer` helper | `src/pipeline/resourceManager.ts` | Exported; allocates at init |
-| Variance buffer in `FrameResources` | `src/pipeline/resourceManager.ts` | Allocated, not written |
+| Artifact                            | Location                           | Status                      |
+| ----------------------------------- | ---------------------------------- | --------------------------- |
+| `WelfordVariance` struct + helpers  | `src/shaders/common.wgsl.ts`       | Shipped in `COMMON_WGSL`    |
+| `sampleBudgetKernel` compute shader | `src/shaders/sampleBudget.wgsl.ts` | Complete, not dispatched    |
+| `resolveKernel` compute shader      | `src/shaders/resolve.wgsl.ts`      | Complete, not dispatched    |
+| `createVarianceBuffer` helper       | `src/pipeline/resourceManager.ts`  | Exported; allocates at init |
+| Variance buffer in `FrameResources` | `src/pipeline/resourceManager.ts`  | Allocated, not written      |
 
 ## What integration requires
 
@@ -24,7 +24,7 @@ When GPU verification is available, integrate in this order.
 
 ```ts
 export { SAMPLE_BUDGET_WGSL } from './sampleBudget.wgsl.js';
-export { RESOLVE_WGSL }        from './resolve.wgsl.js';
+export { RESOLVE_WGSL } from './resolve.wgsl.js';
 ```
 
 ### 2. Compile new pipelines in `pipelineCompiler.ts`
@@ -86,17 +86,18 @@ const resolvePipeline = device.createComputePipeline({
 
 Add to `FrameResources` (in `resourceManager.ts`):
 
-| Field | Format | Usage | Notes |
-|---|---|---|---|
-| `tierTexture` | `r32uint` | `STORAGE_BINDING` | Per-pixel tier byte (1/2/4). Written by sample-budget, read by next-frame RIS. |
-| `resolvedRadianceTexture` | `rgba16float` | `STORAGE_BINDING \| TEXTURE_BINDING` | Output of resolve pass; replaces composite's current input. |
-| `motionVectorTexture` | `rg32float` | `STORAGE_BINDING` | Written by a new G-buffer motion-vector pass (or host-provided). If not available, pass 1×1 zero texture (resolve falls back to zero-motion). |
+| Field                     | Format        | Usage                                | Notes                                                                                                                                         |
+| ------------------------- | ------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `tierTexture`             | `r32uint`     | `STORAGE_BINDING`                    | Per-pixel tier byte (1/2/4). Written by sample-budget, read by next-frame RIS.                                                                |
+| `resolvedRadianceTexture` | `rgba16float` | `STORAGE_BINDING \| TEXTURE_BINDING` | Output of resolve pass; replaces composite's current input.                                                                                   |
+| `motionVectorTexture`     | `rg32float`   | `STORAGE_BINDING`                    | Written by a new G-buffer motion-vector pass (or host-provided). If not available, pass 1×1 zero texture (resolve falls back to zero-motion). |
 
 The `varianceBuffer` field is already in `FrameResources` from Sprint 9.
 
 ### 5. New render-frame dispatch order in `WalkaroundGPUPipeline.renderFrame()`
 
 Current dispatch order (7 passes):
+
 1. RIS
 2. Temporal reuse
 3. Spatial reuse × 2
@@ -106,6 +107,7 @@ Current dispatch order (7 passes):
 7. Composite blit
 
 New dispatch order with adaptive sampling (10 passes):
+
 1. RIS (reads prev-frame `tierTexture` to dispatch tier-appropriate rays per pixel)
 2. Temporal reuse
 3. Spatial reuse × 2
@@ -170,6 +172,7 @@ any conditional change at the WGSL level.
 ## Test coverage added in Sprint 9
 
 See `__tests__/sprint9-welford.test.ts` for:
+
 - WelfordVariance struct presence in `COMMON_WGSL`
 - `welfordUpdate` and `welfordVariance` function presence
 - RG32Float layout assertion (8 bytes per texel)

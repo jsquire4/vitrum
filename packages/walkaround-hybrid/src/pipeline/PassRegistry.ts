@@ -77,9 +77,7 @@ export class PassRegistry {
     for (const [id, pass] of this._passes) {
       for (const dep of pass.dependencies) {
         if (!this._passes.has(dep)) {
-          throw new Error(
-            `PassRegistry: pass "${id}" declares unknown dependency "${dep}"`,
-          );
+          throw new Error(`PassRegistry: pass "${id}" declares unknown dependency "${dep}"`);
         }
         inDegree.set(id, (inDegree.get(id) ?? 0) + 1);
         dependents.get(dep)!.push(id);
@@ -109,14 +107,8 @@ export class PassRegistry {
     }
 
     if (sorted.length !== this._passes.size) {
-      const remaining = [...this._passes.keys()].filter(
-        (id) => !sorted.includes(id),
-      );
-      throw new Error(
-        `PassRegistry: cycle detected involving passes [${remaining.join(
-          ', ',
-        )}]`,
-      );
+      const remaining = [...this._passes.keys()].filter((id) => !sorted.includes(id));
+      throw new Error(`PassRegistry: cycle detected involving passes [${remaining.join(', ')}]`);
     }
 
     return Object.freeze(sorted);

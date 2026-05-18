@@ -109,12 +109,18 @@ describe('pt-webgl capabilities', () => {
 
     engine.setScene({} as never);
     const out = engine.renderFrame(makeFrame(8192, 8192));
-    const telemetry = (out as { telemetry?: { renderWidth: number; renderHeight: number; guardrail: string | null } }).telemetry;
+    const telemetry = (
+      out as { telemetry?: { renderWidth: number; renderHeight: number; guardrail: string | null } }
+    ).telemetry;
 
     expect(telemetry?.renderWidth).toBeLessThan(8192);
     expect(telemetry?.renderHeight).toBeLessThan(8192);
     expect(telemetry?.guardrail).toContain('render-target budget');
-    expect(renderer._setSize).toHaveBeenCalledWith(telemetry?.renderWidth, telemetry?.renderHeight, false);
+    expect(renderer._setSize).toHaveBeenCalledWith(
+      telemetry?.renderWidth,
+      telemetry?.renderHeight,
+      false,
+    );
   });
 
   it('adapts sample batches upward when the GPU budget has headroom', async () => {
@@ -129,8 +135,12 @@ describe('pt-webgl capabilities', () => {
     });
 
     engine.setScene({} as never);
-    const first = engine.renderFrame(makeFrame(320, 180)) as { telemetry?: { samplesPerFrame: number } };
-    const second = engine.renderFrame({ ...makeFrame(320, 180), frameIndex: 1 }) as { telemetry?: { samplesPerFrame: number } };
+    const first = engine.renderFrame(makeFrame(320, 180)) as {
+      telemetry?: { samplesPerFrame: number };
+    };
+    const second = engine.renderFrame({ ...makeFrame(320, 180), frameIndex: 1 }) as {
+      telemetry?: { samplesPerFrame: number };
+    };
 
     expect(first.telemetry?.samplesPerFrame).toBe(1);
     expect(second.telemetry?.samplesPerFrame).toBeGreaterThanOrEqual(2);

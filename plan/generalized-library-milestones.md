@@ -10,14 +10,14 @@ This document is the **forward plan** for turning vitrum from “strong extracti
 
 The library meets the vision when all of the following are true:
 
-| Gate | Meaning |
-|------|--------|
-| **G1 — Contract exerciser** | At least one **`examples/*`** app runs **purely** against **`@vitrum/core` + one `Engine` + one binding** (no placeholder entrypoints). |
-| **G2 — Two engines, one scene** | The same **`Scene`** (or trivial variant) can be rendered by **`@vitrum/pt-webgl`** and **`@vitrum/walkaround-hybrid`** behind the same **`Engine`** API (capabilities differ; the host code path is the same shape). |
-| **G3 — PT backend is real** | **`@vitrum/pt-webgl`** implements **`setScene`**, **`renderFrame`**, **`reset`**, **`dispose`** against the **forked** three-gpu-pathtracer — not permanent `throw` stubs. |
-| **G4 — Staging empty or honest** | **`_staging/`** is empty **or** contains only a short README that lists **explicit host-only** leftovers with no claim to be “next migration” unless ticketed. |
-| **G5 — No duplicate truth** | Pathtracer / env / lighting helpers exist in **one** package per concern (today: avoid parallel `lightingIntensityTable`-class drift between `packages/pt-webgl` and `_staging`). |
-| **G6 — Docs match repo** | [README.md](../README.md) intro is cleaned up; [\_staging/README.md](../_staging/README.md) reflects the **remaining** file set; package READMEs state **what is stable** vs experimental. |
+| Gate                             | Meaning                                                                                                                                                                                                               |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **G1 — Contract exerciser**      | At least one **`examples/*`** app runs **purely** against **`@vitrum/core` + one `Engine` + one binding** (no placeholder entrypoints).                                                                               |
+| **G2 — Two engines, one scene**  | The same **`Scene`** (or trivial variant) can be rendered by **`@vitrum/pt-webgl`** and **`@vitrum/walkaround-hybrid`** behind the same **`Engine`** API (capabilities differ; the host code path is the same shape). |
+| **G3 — PT backend is real**      | **`@vitrum/pt-webgl`** implements **`setScene`**, **`renderFrame`**, **`reset`**, **`dispose`** against the **forked** three-gpu-pathtracer — not permanent `throw` stubs.                                            |
+| **G4 — Staging empty or honest** | **`_staging/`** is empty **or** contains only a short README that lists **explicit host-only** leftovers with no claim to be “next migration” unless ticketed.                                                        |
+| **G5 — No duplicate truth**      | Pathtracer / env / lighting helpers exist in **one** package per concern (today: avoid parallel `lightingIntensityTable`-class drift between `packages/pt-webgl` and `_staging`).                                     |
+| **G6 — Docs match repo**         | [README.md](../README.md) intro is cleaned up; [\_staging/README.md](../_staging/README.md) reflects the **remaining** file set; package READMEs state **what is stable** vs experimental.                            |
 
 Phase 7+ items (`@vitrum/pt-webgpu` MVP) are **not** required for this milestone set — they are the next generalized dimension after G1–G6.
 
@@ -122,7 +122,7 @@ Phase 7+ items (`@vitrum/pt-webgpu` MVP) are **not** required for this milestone
 
 ---
 
-## 4. What this plan does *not* include
+## 4. What this plan does _not_ include
 
 - **Full `@vitrum/pt-webgpu`** (Phase 7+; see [phase-6-roadmap.md](./phase-6-roadmap.md)).
 - **Neural denoiser training** or **OIDN** product integration — tracked under shared-denoisers / roadmap sprints.
@@ -153,8 +153,8 @@ Parallel track: **RFE Tier 1 types** can land during **M0–M2** without waiting
 
 ## 6. Reference links
 
-- [library-architecture.md](./library-architecture.md) — package boundaries  
-- [sprint-0-api-contract.md](./sprint-0-api-contract.md) — Sprint 0 contract origin  
-- [phase-6-roadmap.md](./phase-6-roadmap.md) — fork sprint content  
-- [cursor-recommended-plan.md](./cursor-recommended-plan.md) — phases A–D + RFE §13  
+- [library-architecture.md](./library-architecture.md) — package boundaries
+- [sprint-0-api-contract.md](./sprint-0-api-contract.md) — Sprint 0 contract origin
+- [phase-6-roadmap.md](./phase-6-roadmap.md) — fork sprint content
+- [cursor-recommended-plan.md](./cursor-recommended-plan.md) — phases A–D + RFE §13
 - [\_staging/README.md](../_staging/README.md) — remaining legacy index (update in M0/M3)

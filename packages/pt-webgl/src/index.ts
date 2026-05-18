@@ -16,7 +16,12 @@ export {
 } from './hdrGoldenFixture.js';
 export { applyFrameToPerspectiveCamera } from './frameCamera.js';
 export { packCameUBO } from './cameUniformUploader.js';
-export type { CameSegment, CameNode, CameUploadOptions, CamePackedUBO } from './cameUniformUploader.js';
+export type {
+  CameSegment,
+  CameNode,
+  CameUploadOptions,
+  CamePackedUBO,
+} from './cameUniformUploader.js';
 
 export { PTEngineWebGL2, createPTEngine_WebGL2 } from './ptEngineWebGL2.js';
 export type {

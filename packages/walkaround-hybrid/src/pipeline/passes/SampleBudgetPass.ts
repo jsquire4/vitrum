@@ -10,15 +10,8 @@
  * Audit refs: M2 (thresholds host-overridable), Sprint 9 wire-in notes.
  */
 
-import {
-  buildSampleBudgetBindGroup,
-  type UboRef,
-} from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import { buildSampleBudgetBindGroup, type UboRef } from '../bindGroupBuilders.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class SampleBudgetPass implements Pass {
@@ -59,7 +52,8 @@ export class SampleBudgetPass implements Pass {
       new Uint32Array([Math.max(ctx.frameIndex + 1, 1), 0, 0, 0]),
     );
     const bg = buildSampleBudgetBindGroup(
-      device, ctx.bglCache,
+      device,
+      ctx.bglCache,
       resources.common.varianceBuffer.createView(),
       resources.common.tierTexture.createView(),
       this._budgetUboRef.buf!,

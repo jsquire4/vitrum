@@ -43,7 +43,7 @@ Replace the binary env-vs-light branch with a three-way mixture PDF:
      higher `pBSDF`; rough/diffuse get lower.
    - `pEnv` — proportional to env map intensity (existing `envMapIntensity` uniform).
      `pEnv = (1 - pBSDF) * envWeight` where `envWeight = envMapIntensity /
-     (envMapIntensity + totalLightPower)`.
+(envMapIntensity + totalLightPower)`.
    - `pLight = 1 - pBSDF - pEnv`.
 
 2. Sample one strategy uniformly (draw a random in [0,1), select by CDF of
@@ -63,6 +63,7 @@ Replace the binary env-vs-light branch with a three-way mixture PDF:
 from a uniform already populated by the existing lights texture fill.
 
 **DoD verification** (GPU required):
+
 - Shader inspection: `direct_lighting.glsl.js` no longer contains a single
   `if (rand < 0.5)` branch for env-vs-light selection.
 - Render the reference scene at 32 samples: verify no fireflies introduced
@@ -90,6 +91,7 @@ texel row 2: [aabbMax.y, aabbMax.z, pad, pad]
 ```
 
 GLSL traversal function signature:
+
 ```glsl
 // Descend the light tree from the root, returning a leaf emitter index.
 // xi        — uniform random in [0, 1)
@@ -99,6 +101,7 @@ int sampleLightTree(float xi, vec3 shadePos);
 ```
 
 Algorithm:
+
 1. Start at node 0 (root).
 2. Read `[emitterIndex, totalPower, leftChild, rightChild]` from row 0.
 3. If `leftChild == -1`, this is a leaf → return `int(emitterIndex)`.
@@ -122,6 +125,7 @@ Algorithm:
 **Change description**:
 
 After scene upload (where the lights texture is currently built), additionally:
+
 1. Extract `cellPower` per light from the light list (already available as
    `light.power` from Sprint 2).
 2. Compute centroids and AABBs from each light's `position`, `u`, `v`, `area`.
@@ -145,6 +149,7 @@ The PDF for the light sample is now the product of tree-descent selection
 probabilities × (1 / light.area) for the surface-area PDF at the leaf.
 
 **DoD verification** (GPU required):
+
 - Open `PhysicalPathTracingMaterial` uniforms inspector: `lightTreeSampler` exists
   and has non-zero node count.
 - Render at 192 samples: measure floor-pixel stddev. Target ≥3× reduction vs.
@@ -198,6 +203,7 @@ as the MIS denominator — this slightly biases the estimate but avoids the cost
 PDF correction and remains unbiased in expectation over many paths.
 
 **DoD verification** (GPU required):
+
 - Render a transmissive panel scene with a light source behind the panel.
   Before: pixels on the transmissive side show back-face fireflies or dark
   splotches. After: back-face artifacts are absent or greatly reduced.
@@ -217,6 +223,7 @@ captured in `plan/sprint-3-benchmark.md`. The benchmark procedure:
 HDR sky. Camera looking toward floor receiving colored light patches.
 
 **Measurement procedure**:
+
 1. Render at exactly 192 samples with PT_FINAL settings (1.0× DPR, full bounces).
 2. Capture the raw Float32 accumulation buffer before tone mapping.
 3. For a 16×16 region of floor pixels directly under the brightest panel:

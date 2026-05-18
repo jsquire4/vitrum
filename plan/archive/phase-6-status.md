@@ -24,11 +24,11 @@
   scope: both.
 
 - **Sprint 3** — Sampling theory upgrade. Light tree CDF builder (`buildLightTreeCDF`)
-  + mixture PDF MIS heuristics (`mixturePDF`, `sampleMixturePDF`) landed in
-  `@vitrum/shared-samplers`. Back-face NEE resample logic documented. Fork patch
-  (`direct_lighting.glsl.js`, new `light_tree.glsl.js`) in
-  `plan/sprint-3-pt-fork-patch.md`. Commit range: `ef31201`. Tests: included in
-  shared-samplers suite (54 total). Mode scope: PT.
+  - mixture PDF MIS heuristics (`mixturePDF`, `sampleMixturePDF`) landed in
+    `@vitrum/shared-samplers`. Back-face NEE resample logic documented. Fork patch
+    (`direct_lighting.glsl.js`, new `light_tree.glsl.js`) in
+    `plan/sprint-3-pt-fork-patch.md`. Commit range: `ef31201`. Tests: included in
+    shared-samplers suite (54 total). Mode scope: PT.
 
 - **Sprint 4** — BSDF cost reduction. `lobeMask` bitfield helper + `liteMode`
   material flag authored in `@vitrum/shared-samplers`. Fork patch
@@ -101,6 +101,7 @@ dependency. Host-side checklist (install ORT-Web, bundle OIDN ONNX model,
 #### Sprint 10c — BDPT for caustics: COMPLETE (vitrum-side scaffold)
 
 `@vitrum/shared-samplers` ships:
+
 - `src/bdptVertex.ts` — `BDPTVertex` interface, kind constants (0–3),
   `BDPT_VERTEX_FLOATS` (12), `BDPT_VERTEX_BYTES` (48),
   `BDPT_MAX_LIGHT_BOUNCES` (3), `BDPT_MAX_EYE_BOUNCES` (12),
@@ -129,6 +130,7 @@ the fork patch is applied and verified.
 #### Sprint 11 — PPG path guiding: COMPLETE (vitrum-side + dispatch wired)
 
 `@vitrum/walkaround-hybrid` ships:
+
 - `src/ppg/types.ts` — `PPGDirectionalBin`, `PPGQuadTreeNode`, `PPGSpatialCell`,
   `PPGBuffers`, `PPG_MAX_SPATIAL_CELLS` (10,000), byte-stride constants.
 - `src/ppg/wgsl/ppgSample.wgsl.ts` — `PPG_SAMPLE_WGSL` WGSL fragment for guided
@@ -148,6 +150,7 @@ Dense linear-array kd-tree with O(N) nearest-cell lookup. Tests: 81 (PPG suite).
 #### Sprint 12 — Hero-wavelength spectral: COMPLETE (vitrum-side spectral utilities)
 
 `@vitrum/shared-samplers` ships:
+
 - `src/cieCmf.ts` — CIE 1931 2° standard observer CMF tables (81 entries each,
   380–780 nm at 5 nm steps), CIE D65 illuminant, `sampleCMF(λ)` linear-interpolating
   lookup, `xyzToLinearSRGB` using Bradford-adapted D65 matrix (IEC 61966-2-1).
@@ -172,6 +175,7 @@ that document for the re-surface decision point. Tests: 50 (spectral suite).
 `@vitrum/walkaround-hybrid` ships:
 
 **WGSL inference kernels** (`src/neural/wgsl/`):
+
 - `conv2d.wgsl.ts` — `CONV2D_WGSL`: 2D convolution with SAME padding, stride, dilation.
   Entry point: `conv2dKernel`. Workgroup 8×8×1. Bindings @group(0) @binding(0–4).
 - `transposedConv2d.wgsl.ts` — `TRANSPOSED_CONV2D_WGSL`: transposed (deconvolutional)
@@ -183,11 +187,13 @@ that document for the re-surface decision point. Tests: 50 (spectral suite).
   center-aligned coordinates. Entry point: `bilinearUpsampleKernel`.
 
 **Inference orchestrator** (`src/neural/InferenceGraph.ts`):
+
 - `InferenceGraph` class: wires kernels into a DAG, allocates GPU buffers, dispatches
   per-layer compute passes. `initialize(device)` / `run(device, encoder, inputs, outputs)` / `dispose()`.
 - Types: `InferenceGraphSpec`, `ModelWeights`, `InferenceLayer`, `InferenceLayerKind`.
 
 **UNet architecture spec** (`src/neural/unetArchitecture.ts`):
+
 - `WALKAROUND_DENOISER_UNET_SPEC`: canonical 9→24→48→96→192→96→48→24→3 UNet.
   426,075 parameters (~1.63 MB f32, within 1–3 MB DoD target).
   Input: 9ch (noisy RGB + albedo + normals). Output: 3ch denoised RGB.
@@ -195,6 +201,7 @@ that document for the re-surface decision point. Tests: 50 (spectral suite).
   tensor name arrays.
 
 **Training pipeline scaffolding** (`tools/neural-denoiser-training/`):
+
 - `README.md`: setup, prerequisites, workflow.
 - `dataset_spec.md`: noisy/clean pair spec (10K target, .npz format, preprocessing).
 - `train.py.md`: PyTorch pseudocode matching `WALKAROUND_DENOISER_UNET_SPEC` exactly.
@@ -215,16 +222,16 @@ Each of these is documented and ready to apply. Apply in sprint order (2 before 
 etc.). Visual A/B verification required after each; reference renders saved to
 `tools/reference-renders/`.
 
-| Sprint | Patch doc | Fork files | DoD gate |
-|---|---|---|---|
-| 2 | `plan/sprint-2-pt-fork-patch.md` | `lights_struct.glsl.js`, `LightsInfoUniformStruct.js` | Pixel-diff identical pre/post (passive field) |
-| 3 | `plan/sprint-3-pt-fork-patch.md` | `direct_lighting.glsl.js`, new `light_tree.glsl.js`, `sampling.glsl.js` | ≥3× floor-pixel stddev reduction at 192 samples |
-| 4 | `plan/sprint-4-pt-fork-patch.md` | `bsdf_functions.glsl.js`, `surface_record_struct.glsl.js`, `get_surface_record_function.glsl.js` | ≥40% ms/sample reduction on glass-and-came scene |
-| 5 | `plan/sprint-5-pt-fork-patch.md` | `trace_scene_function.glsl.js`, `shape_intersection_functions.glsl.js`, `PhysicalPathTracingMaterial.js` | ≥30% BVH node-visit reduction; MRT targets allocated |
-| 6 | `plan/sprint-6-pt-fork-patch.md` | `bsdf_functions.glsl.js` (rough refraction lobe) | Visual A/B: hammered glass shows volumetric scatter blur |
-| 7 | `plan/sprint-7-pt-fork-patch.md` | `path_tracer.glsl.js`, new `volume_march.glsl.js`, `bsdf.glsl.js`, `materials_data_function.glsl.js` | God-ray shafts visible at ≥0.5 density; opal shows milky glow |
-| 8 | `plan/sprint-8-pt-fork-patch.md` | `bsdf_functions.glsl.js` (per-channel IOR, Jakob+Hanika rider) | Bevel rainbow shows smooth spectrum; no chromatic aberration on non-bevels |
-| 10a (PT preview) | `plan/sprint-10a-pt-fork-patch.md` | `PhysicalPathTracingMaterial.js` (gMotion MRT channel, prevViewProjMatrix uniform) | SVGF integration in PTSVGFDenoiser.tsx; motion vectors populated |
+| Sprint           | Patch doc                          | Fork files                                                                                               | DoD gate                                                                   |
+| ---------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| 2                | `plan/sprint-2-pt-fork-patch.md`   | `lights_struct.glsl.js`, `LightsInfoUniformStruct.js`                                                    | Pixel-diff identical pre/post (passive field)                              |
+| 3                | `plan/sprint-3-pt-fork-patch.md`   | `direct_lighting.glsl.js`, new `light_tree.glsl.js`, `sampling.glsl.js`                                  | ≥3× floor-pixel stddev reduction at 192 samples                            |
+| 4                | `plan/sprint-4-pt-fork-patch.md`   | `bsdf_functions.glsl.js`, `surface_record_struct.glsl.js`, `get_surface_record_function.glsl.js`         | ≥40% ms/sample reduction on glass-and-came scene                           |
+| 5                | `plan/sprint-5-pt-fork-patch.md`   | `trace_scene_function.glsl.js`, `shape_intersection_functions.glsl.js`, `PhysicalPathTracingMaterial.js` | ≥30% BVH node-visit reduction; MRT targets allocated                       |
+| 6                | `plan/sprint-6-pt-fork-patch.md`   | `bsdf_functions.glsl.js` (rough refraction lobe)                                                         | Visual A/B: hammered glass shows volumetric scatter blur                   |
+| 7                | `plan/sprint-7-pt-fork-patch.md`   | `path_tracer.glsl.js`, new `volume_march.glsl.js`, `bsdf.glsl.js`, `materials_data_function.glsl.js`     | God-ray shafts visible at ≥0.5 density; opal shows milky glow              |
+| 8                | `plan/sprint-8-pt-fork-patch.md`   | `bsdf_functions.glsl.js` (per-channel IOR, Jakob+Hanika rider)                                           | Bevel rainbow shows smooth spectrum; no chromatic aberration on non-bevels |
+| 10a (PT preview) | `plan/sprint-10a-pt-fork-patch.md` | `PhysicalPathTracingMaterial.js` (gMotion MRT channel, prevViewProjMatrix uniform)                       | SVGF integration in PTSVGFDenoiser.tsx; motion vectors populated           |
 
 ### Host-side changes needed
 
@@ -282,26 +289,26 @@ etc.). Visual A/B verification required after each; reference renders saved to
 
 ## Sprint artifact index
 
-| Document | Summary |
-|---|---|
-| `plan/sprint-0-api-contract.md` | Sprint 0 API contract — `@vitrum/core` public types, backend stubs, workspace tsc |
-| `plan/sprint-1-host-checklist.md` | Sprint 1 host items — HDRI 404, DPR halving, EffectComposer skip, OrbitControls damping |
-| `plan/sprint-2-pt-fork-patch.md` | Sprint 2 fork patch — `float power` field on Light struct; `s5.a` packing in LightsInfoUniformStruct |
-| `plan/sprint-3-pt-fork-patch.md` | Sprint 3 fork patch — mixture PDF + light tree CDF + back-face NEE resample in fork shaders |
-| `plan/sprint-4-pt-fork-patch.md` | Sprint 4 fork patch — lobeMask bitfield + lite BSDF + material LOD in fork shaders |
-| `plan/sprint-5-pt-fork-patch.md` | Sprint 5 fork patch — analytic H-channel came intersection + `traceScene` hybrid BVH/analytic |
-| `plan/sprint-5-mrt-gbuffer-spec.md` | Sprint 5 MRT G-buffer layout — gColor/gNormalDepth/gAlbedo format + channel details, locked |
-| `plan/sprint-6-pt-fork-patch.md` | Sprint 6 fork patch — rough refraction lobe additive on BSDF refracted direction |
-| `plan/sprint-7-pt-fork-patch.md` | Sprint 7 fork patch — volume march loop restructure + SSS TRANSLUCENT flag + HG phase + equi-angular PDF |
-| `plan/sprint-8-pt-fork-patch.md` | Sprint 8 fork patch — Cauchy per-channel IOR + Jakob+Hanika polynomial spectrum rider |
-| `plan/sprint-9-walkaround-integration.md` | Sprint 9 integration spec — Welford variance buffer, sample-budget + resolve shader wiring |
-| `plan/sprint-10a-walkaround-integration.md` | Sprint 10a walkaround integration — SVGF two-pass dispatch replacing à-trous |
-| `plan/sprint-10a-pt-fork-patch.md` | Sprint 10a PT preview integration — motion vector MRT channel, PTSVGFDenoiser replacement |
-| `plan/sprint-10b-host-checklist.md` | Sprint 10b host checklist — ORT-Web install, OIDN model bundle, "Denoise" button, float32 readback |
-| `plan/sprint-11-ppg-integration.md` | Sprint 11 PPG integration spec — pipeline compilation, BGL, shade-pass changes, frame-parity |
-| `plan/sprint-10c-pt-fork-patch.md` | Sprint 10c (BDPT) active patch spec — light/eye subpath kernels, ping-pong vertex storage, MIS weight GLSL; Appendix A preserves original trigger criterion |
-| `plan/sprint-12-pt-fork-patch.md` | Sprint 12 active patch spec — CIE CMF tables, hero-wavelength sampling, Cauchy IOR, fork-side kernel rewrite spec (gated) |
-| `plan/sprint-13-walkaround-integration.md` | Sprint 13 integration spec — InferenceGraph wiring into renderFrame, bind groups, gating, memory, dispatch sizing |
+| Document                                    | Summary                                                                                                                                                     |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `plan/sprint-0-api-contract.md`             | Sprint 0 API contract — `@vitrum/core` public types, backend stubs, workspace tsc                                                                           |
+| `plan/sprint-1-host-checklist.md`           | Sprint 1 host items — HDRI 404, DPR halving, EffectComposer skip, OrbitControls damping                                                                     |
+| `plan/sprint-2-pt-fork-patch.md`            | Sprint 2 fork patch — `float power` field on Light struct; `s5.a` packing in LightsInfoUniformStruct                                                        |
+| `plan/sprint-3-pt-fork-patch.md`            | Sprint 3 fork patch — mixture PDF + light tree CDF + back-face NEE resample in fork shaders                                                                 |
+| `plan/sprint-4-pt-fork-patch.md`            | Sprint 4 fork patch — lobeMask bitfield + lite BSDF + material LOD in fork shaders                                                                          |
+| `plan/sprint-5-pt-fork-patch.md`            | Sprint 5 fork patch — analytic H-channel came intersection + `traceScene` hybrid BVH/analytic                                                               |
+| `plan/sprint-5-mrt-gbuffer-spec.md`         | Sprint 5 MRT G-buffer layout — gColor/gNormalDepth/gAlbedo format + channel details, locked                                                                 |
+| `plan/sprint-6-pt-fork-patch.md`            | Sprint 6 fork patch — rough refraction lobe additive on BSDF refracted direction                                                                            |
+| `plan/sprint-7-pt-fork-patch.md`            | Sprint 7 fork patch — volume march loop restructure + SSS TRANSLUCENT flag + HG phase + equi-angular PDF                                                    |
+| `plan/sprint-8-pt-fork-patch.md`            | Sprint 8 fork patch — Cauchy per-channel IOR + Jakob+Hanika polynomial spectrum rider                                                                       |
+| `plan/sprint-9-walkaround-integration.md`   | Sprint 9 integration spec — Welford variance buffer, sample-budget + resolve shader wiring                                                                  |
+| `plan/sprint-10a-walkaround-integration.md` | Sprint 10a walkaround integration — SVGF two-pass dispatch replacing à-trous                                                                                |
+| `plan/sprint-10a-pt-fork-patch.md`          | Sprint 10a PT preview integration — motion vector MRT channel, PTSVGFDenoiser replacement                                                                   |
+| `plan/sprint-10b-host-checklist.md`         | Sprint 10b host checklist — ORT-Web install, OIDN model bundle, "Denoise" button, float32 readback                                                          |
+| `plan/sprint-11-ppg-integration.md`         | Sprint 11 PPG integration spec — pipeline compilation, BGL, shade-pass changes, frame-parity                                                                |
+| `plan/sprint-10c-pt-fork-patch.md`          | Sprint 10c (BDPT) active patch spec — light/eye subpath kernels, ping-pong vertex storage, MIS weight GLSL; Appendix A preserves original trigger criterion |
+| `plan/sprint-12-pt-fork-patch.md`           | Sprint 12 active patch spec — CIE CMF tables, hero-wavelength sampling, Cauchy IOR, fork-side kernel rewrite spec (gated)                                   |
+| `plan/sprint-13-walkaround-integration.md`  | Sprint 13 integration spec — InferenceGraph wiring into renderFrame, bind groups, gating, memory, dispatch sizing                                           |
 
 ---
 

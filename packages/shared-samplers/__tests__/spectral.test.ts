@@ -151,7 +151,7 @@ describe('sampleCMF', () => {
     // Index 34 = (550 - 380) / 5
     const [, y] = sampleCMF(550);
     // Table value at 550 nm is 0.994950 (index 34); near but not peak (555 nm)
-    expect(y).toBeCloseTo(0.994950, 3);
+    expect(y).toBeCloseTo(0.99495, 3);
   });
 
   it('sampleCMF(555) Y ≈ 1.0 (luminous efficiency peak)', () => {
@@ -275,7 +275,7 @@ describe('sampleHeroWavelength', () => {
       if (lambdaNm >= 500 && lambdaNm <= 600) inPeak++;
     }
     // The Y CMF integrates most of its mass in ~480–640 nm; 500–600 nm ≈ ~40–50%.
-    expect(inPeak / N).toBeGreaterThan(0.40);
+    expect(inPeak / N).toBeGreaterThan(0.4);
   });
 
   it('u=0.5 samples near the luminance peak (within 480–620 nm)', () => {
@@ -397,7 +397,7 @@ describe('cauchyIOR', () => {
   it('crown glass at 550 nm → n in [1.510, 1.525]', () => {
     const { A, B, C } = CAUCHY_CROWN_GLASS;
     const n = cauchyIOR(550, A, B, C);
-    expect(n).toBeGreaterThan(1.510);
+    expect(n).toBeGreaterThan(1.51);
     expect(n).toBeLessThan(1.525);
   });
 
@@ -424,7 +424,7 @@ describe('cauchyIOR', () => {
   it('IOR increases toward shorter wavelengths (blue refracts more than red)', () => {
     const { A, B, C } = CAUCHY_LEAD_CRYSTAL;
     const nBlue = cauchyIOR(450, A, B, C);
-    const nRed  = cauchyIOR(700, A, B, C);
+    const nRed = cauchyIOR(700, A, B, C);
     expect(nBlue).toBeGreaterThan(nRed);
   });
 });
@@ -453,8 +453,8 @@ describe('abbeNumber', () => {
 
   it('higher dispersion (larger B) gives lower Abbe number', () => {
     const A = 1.5;
-    const vLow  = abbeNumber(A, 0.005, 0);  // low dispersion
-    const vHigh = abbeNumber(A, 0.015, 0);  // high dispersion
+    const vLow = abbeNumber(A, 0.005, 0); // low dispersion
+    const vHigh = abbeNumber(A, 0.015, 0); // high dispersion
     expect(vLow).toBeGreaterThan(vHigh);
   });
 
@@ -553,7 +553,9 @@ describe('sampleHeroWavelengthMIS', () => {
     // Drive a wide u-grid through MIS; bin the results into blue/green/red bands.
     // With uniform strategy selection over X/Y/Z, we expect roughly balanced coverage.
     const N = 6000;
-    let blue = 0, green = 0, red = 0;
+    let blue = 0,
+      green = 0,
+      red = 0;
     for (let i = 0; i < N; i++) {
       // Use a Halton-like scrambled pair to avoid axis-aligned aliasing
       const us = ((i * 7919) % 1009) / 1009;

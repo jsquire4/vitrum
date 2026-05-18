@@ -4,11 +4,7 @@
  * Reuses the shared frame/scene/ubo bind groups; no pass-private state.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class TemporalReservoirPass implements Pass {

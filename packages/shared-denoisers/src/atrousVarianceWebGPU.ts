@@ -14,7 +14,10 @@
  * may omit it and accept the console warning plus zero-filled variance input.
  */
 
-import { ATROUS_VARIANCE_WGSL, ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE } from './wgsl/atrousVariance.wgsl.js';
+import {
+  ATROUS_VARIANCE_WGSL,
+  ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE,
+} from './wgsl/atrousVariance.wgsl.js';
 import {
   ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
   ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
@@ -55,7 +58,10 @@ const atrousVariancePipelinesByDevice = new WeakMap<GPUDevice, AtrousVariancePip
 function atrousVariancePipelines(device: GPUDevice): AtrousVariancePipelineBundle {
   let bundle = atrousVariancePipelinesByDevice.get(device);
   if (bundle == null) {
-    const shaderModule = device.createShaderModule({ label: 'atrous-variance', code: ATROUS_VARIANCE_WGSL });
+    const shaderModule = device.createShaderModule({
+      label: 'atrous-variance',
+      code: ATROUS_VARIANCE_WGSL,
+    });
     bundle = {
       variance: device.createComputePipeline({
         label: 'atrous-variance-variance',
@@ -119,18 +125,27 @@ function fillRgba32fTexture(
   height: number,
   rgbaPerPixel: readonly [number, number, number, number],
 ): void {
-  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const o = row + x * 4;
-        buf[o] = rgbaPerPixel[0]!;
-        buf[o + 1] = rgbaPerPixel[1]!;
-        buf[o + 2] = rgbaPerPixel[2]!;
-        buf[o + 3] = rgbaPerPixel[3]!;
+  uploadTexture2D(
+    device,
+    texture,
+    width,
+    height,
+    RGBA32F_BPP,
+    Float32Array,
+    4,
+    (buf, rowStride) => {
+      for (let y = 0; y < height; y += 1) {
+        const row = y * rowStride;
+        for (let x = 0; x < width; x += 1) {
+          const o = row + x * 4;
+          buf[o] = rgbaPerPixel[0]!;
+          buf[o + 1] = rgbaPerPixel[1]!;
+          buf[o + 2] = rgbaPerPixel[2]!;
+          buf[o + 3] = rgbaPerPixel[3]!;
+        }
       }
-    }
-  });
+    },
+  );
 }
 
 function uploadRgbAsRgba32f(
@@ -140,19 +155,28 @@ function uploadRgbAsRgba32f(
   width: number,
   height: number,
 ): void {
-  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const si = (y * width + x) * 3;
-        const o = row + x * 4;
-        buf[o] = rgb[si] ?? 0;
-        buf[o + 1] = rgb[si + 1] ?? 0;
-        buf[o + 2] = rgb[si + 2] ?? 0;
-        buf[o + 3] = 1;
+  uploadTexture2D(
+    device,
+    texture,
+    width,
+    height,
+    RGBA32F_BPP,
+    Float32Array,
+    4,
+    (buf, rowStride) => {
+      for (let y = 0; y < height; y += 1) {
+        const row = y * rowStride;
+        for (let x = 0; x < width; x += 1) {
+          const si = (y * width + x) * 3;
+          const o = row + x * 4;
+          buf[o] = rgb[si] ?? 0;
+          buf[o + 1] = rgb[si + 1] ?? 0;
+          buf[o + 2] = rgb[si + 2] ?? 0;
+          buf[o + 3] = 1;
+        }
       }
-    }
-  });
+    },
+  );
 }
 
 function uploadRgbAsRgba16f(
@@ -162,22 +186,38 @@ function uploadRgbAsRgba16f(
   width: number,
   height: number,
 ): void {
-  uploadTexture2D(device, texture, width, height, RGBA16F_BPP, Uint8Array, 1, (buf, rowStrideBytes) => {
-    const dv = new DataView(buf.buffer);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const si = (y * width + x) * 3;
-        const byte = y * rowStrideBytes + x * 8;
-        dv.setUint16(byte + 0, float32ToFloat16Bits(rgb[si] ?? 0), true);
-        dv.setUint16(byte + 2, float32ToFloat16Bits(rgb[si + 1] ?? 0), true);
-        dv.setUint16(byte + 4, float32ToFloat16Bits(rgb[si + 2] ?? 0), true);
-        dv.setUint16(byte + 6, float32ToFloat16Bits(1), true);
+  uploadTexture2D(
+    device,
+    texture,
+    width,
+    height,
+    RGBA16F_BPP,
+    Uint8Array,
+    1,
+    (buf, rowStrideBytes) => {
+      const dv = new DataView(buf.buffer);
+      for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+          const si = (y * width + x) * 3;
+          const byte = y * rowStrideBytes + x * 8;
+          dv.setUint16(byte + 0, float32ToFloat16Bits(rgb[si] ?? 0), true);
+          dv.setUint16(byte + 2, float32ToFloat16Bits(rgb[si + 1] ?? 0), true);
+          dv.setUint16(byte + 4, float32ToFloat16Bits(rgb[si + 2] ?? 0), true);
+          dv.setUint16(byte + 6, float32ToFloat16Bits(1), true);
+        }
       }
-    }
-  });
+    },
+  );
 }
 
-function fillRg32f(device: GPUDevice, texture: GPUTexture, width: number, height: number, r: number, g: number): void {
+function fillRg32f(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+  r: number,
+  g: number,
+): void {
   uploadTexture2D(device, texture, width, height, RG32F_BPP, Float32Array, 4, (buf, rowStride) => {
     for (let y = 0; y < height; y += 1) {
       const row = y * rowStride;
@@ -198,19 +238,28 @@ function uploadLinearDepthAsRgba32f(
   width: number,
   height: number,
 ): void {
-  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const si = y * width + x;
-        const o = row + x * 4;
-        buf[o] = depth[si] ?? 0;
-        buf[o + 1] = 0;
-        buf[o + 2] = 0;
-        buf[o + 3] = 0;
+  uploadTexture2D(
+    device,
+    texture,
+    width,
+    height,
+    RGBA32F_BPP,
+    Float32Array,
+    4,
+    (buf, rowStride) => {
+      for (let y = 0; y < height; y += 1) {
+        const row = y * rowStride;
+        for (let x = 0; x < width; x += 1) {
+          const si = y * width + x;
+          const o = row + x * 4;
+          buf[o] = depth[si] ?? 0;
+          buf[o + 1] = 0;
+          buf[o + 2] = 0;
+          buf[o + 3] = 0;
+        }
       }
-    }
-  });
+    },
+  );
 }
 
 /** Interleaved RG floats per pixel → rg32float texture (motion or Welford RG). */
@@ -246,14 +295,18 @@ function uploadInterleavedRgAsRg32f(
  */
 
 /** Divide rgb by albedo; returns a new Float32Array of the demodulated signal. */
-function demodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
+function demodulateAlbedo(
+  rgb: Float32Array,
+  albedo: Float32Array,
+  pixelCount: number,
+): Float32Array {
   const out = new Float32Array(rgb.length);
   for (let i = 0; i < pixelCount; i += 1) {
     const si = i * 3;
-    const ar = Math.max(albedo[si]     ?? 0, 1e-3);
+    const ar = Math.max(albedo[si] ?? 0, 1e-3);
     const ag = Math.max(albedo[si + 1] ?? 0, 1e-3);
     const ab = Math.max(albedo[si + 2] ?? 0, 1e-3);
-    out[si]     = (rgb[si]     ?? 0) / ar;
+    out[si] = (rgb[si] ?? 0) / ar;
     out[si + 1] = (rgb[si + 1] ?? 0) / ag;
     out[si + 2] = (rgb[si + 2] ?? 0) / ab;
   }
@@ -261,13 +314,17 @@ function demodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: n
 }
 
 /** Multiply rgb by albedo in-place; returns the same Float32Array. */
-function remodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
+function remodulateAlbedo(
+  rgb: Float32Array,
+  albedo: Float32Array,
+  pixelCount: number,
+): Float32Array {
   for (let i = 0; i < pixelCount; i += 1) {
     const si = i * 3;
-    const ar = albedo[si]     !== undefined ? albedo[si]     : 1;
+    const ar = albedo[si] !== undefined ? albedo[si] : 1;
     const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
     const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
-    rgb[si]     = (rgb[si]     ?? 0) * ar;
+    rgb[si] = (rgb[si] ?? 0) * ar;
     rgb[si + 1] = (rgb[si + 1] ?? 0) * ag;
     rgb[si + 2] = (rgb[si + 2] ?? 0) * ab;
   }
@@ -289,10 +346,16 @@ export function assertAtrousVarianceWebGPUBufferShapes(opts: AtrousVarianceWebGP
     if (!cond) throw new Error(`runAtrousVarianceWebGPU: ${detail}`);
   };
   if (opts.prevRadianceRgb != null) {
-    need(opts.prevRadianceRgb.length >= px * 3, 'prevRadianceRgb length must be >= width * height * 3');
+    need(
+      opts.prevRadianceRgb.length >= px * 3,
+      'prevRadianceRgb length must be >= width * height * 3',
+    );
   }
   if (opts.gbufferNormalsRgb != null) {
-    need(opts.gbufferNormalsRgb.length >= px * 3, 'gbufferNormalsRgb length must be >= width * height * 3');
+    need(
+      opts.gbufferNormalsRgb.length >= px * 3,
+      'gbufferNormalsRgb length must be >= width * height * 3',
+    );
   }
   if (opts.linearDepth != null) {
     need(opts.linearDepth.length >= px, 'linearDepth length must be >= width * height');
@@ -316,7 +379,12 @@ function warnMissingWelfordTemporal(frameCount: number): void {
   );
 }
 
-function readRgba16fToRgbFloat(device: GPUDevice, texture: GPUTexture, width: number, height: number): Promise<Float32Array> {
+function readRgba16fToRgbFloat(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+): Promise<Float32Array> {
   const bpp = 8;
   const bpr = alignedTextureCopyBytesPerRow(width, bpp);
   const buf = device.createBuffer({
@@ -406,18 +474,27 @@ export interface AtrousVarianceWebGPUOptions {
  * Runs à-trous variance estimation then ping-pong à-trous filtering.
  * Transient textures and buffers are freed per call; the GPU device is pooled by default.
  */
-export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions): Promise<Float32Array> {
+export async function runAtrousVarianceWebGPU(
+  opts: AtrousVarianceWebGPUOptions,
+): Promise<Float32Array> {
   const w = opts.width;
   const h = opts.height;
   const frameCount = opts.frameCount ?? 0;
   const rawAtrous = opts.atrousIterations ?? ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS;
-  const atrousIterations = Math.min(ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
+  const atrousIterations = Math.min(
+    ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS,
+    Math.max(1, Math.floor(rawAtrous)),
+  );
   const reuseShared = opts.reuseSharedWebGpuDevice !== false && opts.device == null;
   const sigmaColor = opts.sigmaColor ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
   const sigmaNormal = opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal;
   const sigmaDepth = opts.sigmaDepth ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;
-  const synNormal = opts.syntheticGbufferFallback?.normalRgb ?? ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS.normalRgb;
-  const synDepth = opts.syntheticGbufferFallback?.linearDepth ?? ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS.linearDepth;
+  const synNormal =
+    opts.syntheticGbufferFallback?.normalRgb ??
+    ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS.normalRgb;
+  const synDepth =
+    opts.syntheticGbufferFallback?.linearDepth ??
+    ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS.linearDepth;
   assertAtrousVarianceWebGPUBufferShapes(opts);
   if (opts.welfordMeanM2 == null) {
     warnMissingWelfordTemporal(frameCount);
@@ -492,7 +569,8 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
     label: 'atrous-variance-variance-out',
     size: [w, h],
     format: 'rg32float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
   const pingPongUsage =
@@ -591,9 +669,8 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   // The demodulated buffer is used ONLY for colorPingA (the à-trous input);
   // inputColor (the variance pass input) receives the original rgb so the
   // variance estimate reflects the actual noisy signal energy.
-  const rgbForAtrous = opts.albedoRgb != null
-    ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h)
-    : opts.rgb;
+  const rgbForAtrous =
+    opts.albedoRgb != null ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h) : opts.rgb;
   uploadRgbAsRgba16f(device, colorPingA, rgbForAtrous, w, h);
 
   // Build the alternating bind groups up front: A→B for even iterations,

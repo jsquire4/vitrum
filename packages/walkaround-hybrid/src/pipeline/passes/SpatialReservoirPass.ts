@@ -6,11 +6,7 @@
  * is the dominant variance reducer in the pipeline.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class SpatialReservoirPass implements Pass {

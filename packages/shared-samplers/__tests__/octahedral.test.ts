@@ -32,10 +32,7 @@ function octEncodeTS(v: [number, number, number]): [number, number] {
   // 0 must map to +1, not 0. Use ternary to match WGSL select() semantics.
   const sx = n[0] >= 0 ? 1 : -1;
   const sy = n[1] >= 0 ? 1 : -1;
-  return [
-    (1.0 - Math.abs(n[1])) * sx,
-    (1.0 - Math.abs(n[0])) * sy,
-  ];
+  return [(1.0 - Math.abs(n[1])) * sx, (1.0 - Math.abs(n[0])) * sy];
 }
 
 /** Mirror of octahedralCore.wgsl.ts:15–22 (octDecode).
@@ -85,7 +82,6 @@ function uniformSphereSample(rand: () => number): [number, number, number] {
 // ---------------------------------------------------------------------------
 
 describe('octahedral encode/decode (33-E)', () => {
-
   // 1. Encode → decode round-trip identity for generic sphere samples
   it('round-trip identity for 1000 uniform sphere samples', () => {
     const rand = makeLcg(0xdeadbeef);
@@ -97,7 +93,10 @@ describe('octahedral encode/decode (33-E)', () => {
       const dot = v[0] * dec[0] + v[1] * dec[1] + v[2] * dec[2];
       if (dot <= 0.9999) {
         failures++;
-        expect(dot, `sample ${i}: dot=${dot}, v=[${v}], enc=[${enc}], dec=[${dec}]`).toBeGreaterThan(0.9999);
+        expect(
+          dot,
+          `sample ${i}: dot=${dot}, v=[${v}], enc=[${enc}], dec=[${dec}]`,
+        ).toBeGreaterThan(0.9999);
       }
     }
     expect(failures).toBe(0);
@@ -133,8 +132,11 @@ describe('octahedral encode/decode (33-E)', () => {
     }
 
     // Every cell should be reachable — no dead zones means no broken bijection regions
-    const deadCells = occupied.filter(v => v === 0).length;
-    expect(deadCells, `${deadCells} of ${GRID * GRID} grid cells had zero samples (dead zone in bijection)`).toBe(0);
+    const deadCells = occupied.filter((v) => v === 0).length;
+    expect(
+      deadCells,
+      `${deadCells} of ${GRID * GRID} grid cells had zero samples (dead zone in bijection)`,
+    ).toBe(0);
   });
 
   // 3. Boundary handling
@@ -151,9 +153,7 @@ describe('octahedral encode/decode (33-E)', () => {
 
     function nearEq(a: [number, number, number], b: [number, number, number], tol = EPS): boolean {
       return (
-        Math.abs(a[0] - b[0]) < tol &&
-        Math.abs(a[1] - b[1]) < tol &&
-        Math.abs(a[2] - b[2]) < tol
+        Math.abs(a[0] - b[0]) < tol && Math.abs(a[1] - b[1]) < tol && Math.abs(a[2] - b[2]) < tol
       );
     }
 
@@ -221,7 +221,7 @@ describe('octahedral encode/decode (33-E)', () => {
       [1, 0, 0],
       [0, 1, 0],
       [0, 0, 1],
-      [0.577350, 0.577350, 0.577350],
+      [0.57735, 0.57735, 0.57735],
       [-0.5, 0.3, -0.812404],
     ];
 
@@ -232,5 +232,4 @@ describe('octahedral encode/decode (33-E)', () => {
       expect(e1[1]).toBe(e2[1]);
     }
   });
-
 });

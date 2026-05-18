@@ -197,7 +197,7 @@ export async function denoiseFinal(
   if (outputTensor == null) {
     throw new Error(
       `[oidnBridge] ONNX model output not found. ` +
-      `Expected output named '${outputPrimaryKey}' or 'color'. Got keys: ${Object.keys(results).join(', ')}`,
+        `Expected output named '${outputPrimaryKey}' or 'color'. Got keys: ${Object.keys(results).join(', ')}`,
     );
   }
 
@@ -273,9 +273,7 @@ interface _OrtModule {
 
 /** Subset of onnxruntime-web's InferenceSession we depend on. */
 interface _OrtSession {
-  run: (
-    feeds: Record<string, unknown>,
-  ) => Promise<Record<string, { data: Float32Array }>>;
+  run: (feeds: Record<string, unknown>) => Promise<Record<string, { data: Float32Array }>>;
 }
 
 async function _loadORT(): Promise<_OrtModule> {
@@ -293,15 +291,14 @@ async function _loadORT(): Promise<_OrtModule> {
     // with a descriptive error.
     //
     // See: https://www.typescriptlang.org/docs/handbook/2/modules.html
-    const importFn = new Function('id', 'return import(id)') as
-      (id: string) => Promise<unknown>;
+    const importFn = new Function('id', 'return import(id)') as (id: string) => Promise<unknown>;
     const mod = await importFn('onnxruntime-web');
     return mod as _OrtModule;
   } catch (cause) {
     throw new Error(
       `[oidnBridge] Could not load 'onnxruntime-web'. ` +
-      `Install it as a project dependency: npm install onnxruntime-web. ` +
-      `See Sprint 10b spec (plan/archive/phase-6-roadmap.md) for details.`,
+        `Install it as a project dependency: npm install onnxruntime-web. ` +
+        `See Sprint 10b spec (plan/archive/phase-6-roadmap.md) for details.`,
       { cause },
     );
   }

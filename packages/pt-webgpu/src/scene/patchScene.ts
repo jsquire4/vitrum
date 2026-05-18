@@ -1,6 +1,10 @@
 import type { Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
 
-export function patchPrimitiveInScene(scene: Scene, id: string, patch: Partial<ScenePrimitive>): Scene {
+export function patchPrimitiveInScene(
+  scene: Scene,
+  id: string,
+  patch: Partial<ScenePrimitive>,
+): Scene {
   let matched = false;
   const primitives = scene.primitives.map((primitive) => {
     if (primitive.id !== id) return primitive;

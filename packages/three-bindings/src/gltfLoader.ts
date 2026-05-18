@@ -79,7 +79,9 @@ async function toArrayBuffer(source: string | Blob | File | ArrayBuffer): Promis
   if (typeof source === 'string') {
     const resp = await fetch(source);
     if (!resp.ok) {
-      throw new Error(`loadGltfScene: failed to fetch ${source}: ${resp.status} ${resp.statusText}`);
+      throw new Error(
+        `loadGltfScene: failed to fetch ${source}: ${resp.status} ${resp.statusText}`,
+      );
     }
     return await resp.arrayBuffer();
   }
@@ -128,7 +130,9 @@ function extractFirstCamera(gltf: GLTF): GltfCamera | undefined {
   const viewMatrix = new Float32Array(matWorldInverse.elements);
   const projMatrix = new Float32Array(proj.elements);
   const cameraPosition: Vec3 = [
-    matWorld.elements[12], matWorld.elements[13], matWorld.elements[14],
+    matWorld.elements[12],
+    matWorld.elements[13],
+    matWorld.elements[14],
   ];
 
   return { viewMatrix, projMatrix, cameraPosition };

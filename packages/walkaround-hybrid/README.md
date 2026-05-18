@@ -5,6 +5,7 @@
 WebGPU **ReSTIR DI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass. **Radiance Cascades (RC)** are implemented under `src/rc/` for standalone dispatch and material-wrapper flows; composition back into `HybridEngine`’s shade pass is tracked (see `HybridEngine.ts` file header and [plan/walkaround-without-three.md](../../plan/walkaround-without-three.md)).
 
 Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
+
 - **DDGI** (Dynamic Diffuse Global Illumination) — probe-atlas irradiance, updated via compute each frame.
 - **RC** (Radiance Cascades) — see `src/rc/` for cascade compute and TSL hooks; not currently added to the `HybridEngine` combined shading sum.
 - **ReSTIR DI** (Reservoir-based Spatiotemporal Importance Resampling) — direct illumination with temporal + spatial reuse.
@@ -51,6 +52,7 @@ under a "maximum-diligence-without-GPU-verification" protocol per the
 extraction plan's RD-12.
 
 **What was done**:
+
 - Compute kernels (`cascadeDispatch.ts`) converted from TSL `compute()`/`storage()`
   to raw `GPUComputePipeline` + `passEncoder.dispatchWorkgroups()`. WGSL kernel
   source captured verbatim from the TSL `wgslFn()` arguments and assembled into
@@ -65,6 +67,7 @@ extraction plan's RD-12.
   `walkaroundDiffuseLighting.ts` node.
 
 **Residual risk**:
+
 - Workgroup sizing, dispatch dimensions, cascade indexing, and merge-pass color
   space have NOT been visually verified against the original.
 - The `StorageBufferAttribute.__gpuBuffer` accessor used in `cascadeDispatch.ts`

@@ -52,39 +52,45 @@ interface BinData {
   count: number;
 }
 
-function getPosition(positions: Float32Array, vertexIndex: number): readonly [number, number, number] {
+function getPosition(
+  positions: Float32Array,
+  vertexIndex: number,
+): readonly [number, number, number] {
   const base = vertexIndex * 4;
   return [positions[base] ?? 0, positions[base + 1] ?? 0, positions[base + 2] ?? 0];
 }
 
-function min3(a: readonly [number, number, number], b: readonly [number, number, number], c: readonly [number, number, number]): [number, number, number] {
-  return [
-    Math.min(a[0], b[0], c[0]),
-    Math.min(a[1], b[1], c[1]),
-    Math.min(a[2], b[2], c[2]),
-  ];
+function min3(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+  c: readonly [number, number, number],
+): [number, number, number] {
+  return [Math.min(a[0], b[0], c[0]), Math.min(a[1], b[1], c[1]), Math.min(a[2], b[2], c[2])];
 }
 
-function max3(a: readonly [number, number, number], b: readonly [number, number, number], c: readonly [number, number, number]): [number, number, number] {
-  return [
-    Math.max(a[0], b[0], c[0]),
-    Math.max(a[1], b[1], c[1]),
-    Math.max(a[2], b[2], c[2]),
-  ];
+function max3(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+  c: readonly [number, number, number],
+): [number, number, number] {
+  return [Math.max(a[0], b[0], c[0]), Math.max(a[1], b[1], c[1]), Math.max(a[2], b[2], c[2])];
 }
 
-function triCentroid(min: readonly [number, number, number], max: readonly [number, number, number]): [number, number, number] {
-  return [
-    0.5 * (min[0] + max[0]),
-    0.5 * (min[1] + max[1]),
-    0.5 * (min[2] + max[2]),
-  ];
+function triCentroid(
+  min: readonly [number, number, number],
+  max: readonly [number, number, number],
+): [number, number, number] {
+  return [0.5 * (min[0] + max[0]), 0.5 * (min[1] + max[1]), 0.5 * (min[2] + max[2])];
 }
 
 /** Surface area of an AABB. Returns 0 for degenerate (empty) boxes. */
 function surfaceArea(
-  minX: number, minY: number, minZ: number,
-  maxX: number, maxY: number, maxZ: number,
+  minX: number,
+  minY: number,
+  minZ: number,
+  maxX: number,
+  maxY: number,
+  maxZ: number,
 ): number {
   const dx = maxX - minX;
   const dy = maxY - minY;
@@ -209,8 +215,12 @@ export function buildCpuBvh(
 
     // Parent surface area (for SAH cost normalisation).
     const parentSA = surfaceArea(
-      node.min[0], node.min[1], node.min[2],
-      node.max[0], node.max[1], node.max[2],
+      node.min[0],
+      node.min[1],
+      node.min[2],
+      node.max[0],
+      node.max[1],
+      node.max[2],
     );
     // Leaf cost: traversal terminates here, each triangle pays one test.
     // (In relative SAH units, the leaf cost is just N; the parent SA cancels
@@ -243,8 +253,12 @@ export function buildCpuBvh(
       const prefixCount = new Int32Array(NUM_BINS);
 
       {
-        let bminX = Infinity, bminY = Infinity, bminZ = Infinity;
-        let bmaxX = -Infinity, bmaxY = -Infinity, bmaxZ = -Infinity;
+        let bminX = Infinity,
+          bminY = Infinity,
+          bminZ = Infinity;
+        let bmaxX = -Infinity,
+          bmaxY = -Infinity,
+          bmaxZ = -Infinity;
         let cnt = 0;
         for (let i = 0; i < NUM_BINS; i++) {
           const b = bins[i]!;
@@ -255,8 +269,12 @@ export function buildCpuBvh(
           bmaxY = Math.max(bmaxY, b.max[1]);
           bmaxZ = Math.max(bmaxZ, b.max[2]);
           cnt += b.count;
-          prefixMinX[i] = bminX; prefixMinY[i] = bminY; prefixMinZ[i] = bminZ;
-          prefixMaxX[i] = bmaxX; prefixMaxY[i] = bmaxY; prefixMaxZ[i] = bmaxZ;
+          prefixMinX[i] = bminX;
+          prefixMinY[i] = bminY;
+          prefixMinZ[i] = bminZ;
+          prefixMaxX[i] = bmaxX;
+          prefixMaxY[i] = bmaxY;
+          prefixMaxZ[i] = bmaxZ;
           prefixCount[i] = cnt;
         }
       }
@@ -271,8 +289,12 @@ export function buildCpuBvh(
       const suffixCount = new Int32Array(NUM_BINS);
 
       {
-        let bminX = Infinity, bminY = Infinity, bminZ = Infinity;
-        let bmaxX = -Infinity, bmaxY = -Infinity, bmaxZ = -Infinity;
+        let bminX = Infinity,
+          bminY = Infinity,
+          bminZ = Infinity;
+        let bmaxX = -Infinity,
+          bmaxY = -Infinity,
+          bmaxZ = -Infinity;
         let cnt = 0;
         for (let i = NUM_BINS - 1; i >= 0; i--) {
           const b = bins[i]!;
@@ -283,8 +305,12 @@ export function buildCpuBvh(
           bmaxY = Math.max(bmaxY, b.max[1]);
           bmaxZ = Math.max(bmaxZ, b.max[2]);
           cnt += b.count;
-          suffixMinX[i] = bminX; suffixMinY[i] = bminY; suffixMinZ[i] = bminZ;
-          suffixMaxX[i] = bmaxX; suffixMaxY[i] = bmaxY; suffixMaxZ[i] = bmaxZ;
+          suffixMinX[i] = bminX;
+          suffixMinY[i] = bminY;
+          suffixMinZ[i] = bminZ;
+          suffixMaxX[i] = bmaxX;
+          suffixMaxY[i] = bmaxY;
+          suffixMaxZ[i] = bmaxZ;
           suffixCount[i] = cnt;
         }
       }
@@ -296,19 +322,28 @@ export function buildCpuBvh(
         if (leftCount === 0 || rightCount === 0) continue;
 
         const leftSA = surfaceArea(
-          prefixMinX[split]!, prefixMinY[split]!, prefixMinZ[split]!,
-          prefixMaxX[split]!, prefixMaxY[split]!, prefixMaxZ[split]!,
+          prefixMinX[split]!,
+          prefixMinY[split]!,
+          prefixMinZ[split]!,
+          prefixMaxX[split]!,
+          prefixMaxY[split]!,
+          prefixMaxZ[split]!,
         );
         const rightSA = surfaceArea(
-          suffixMinX[split + 1]!, suffixMinY[split + 1]!, suffixMinZ[split + 1]!,
-          suffixMaxX[split + 1]!, suffixMaxY[split + 1]!, suffixMaxZ[split + 1]!,
+          suffixMinX[split + 1]!,
+          suffixMinY[split + 1]!,
+          suffixMinZ[split + 1]!,
+          suffixMaxX[split + 1]!,
+          suffixMaxY[split + 1]!,
+          suffixMaxZ[split + 1]!,
         );
 
         // SAH cost (unnormalised — parentSA cancels when comparing to leafCost).
         // cost = (leftSA * leftCount + rightSA * rightCount) / parentSA
-        const cost = parentSA > 0
-          ? (leftSA * leftCount + rightSA * rightCount) / parentSA
-          : leftSA * leftCount + rightSA * rightCount;
+        const cost =
+          parentSA > 0
+            ? (leftSA * leftCount + rightSA * rightCount) / parentSA
+            : leftSA * leftCount + rightSA * rightCount;
 
         if (cost < bestCost) {
           bestCost = cost;
@@ -376,7 +411,7 @@ export function buildCpuBvh(
     for (let i = 0; i < n; i++) {
       const node = nodes[i];
       if (node == null) continue;
-      const isLeaf = (node.splitAxisOrTriCount >>> 16) === LEAFNODE_CHECK;
+      const isLeaf = node.splitAxisOrTriCount >>> 16 === LEAFNODE_CHECK;
       if (isLeaf) continue;
       const offset = node.rightChildOrTriOffset;
       if (offset < 1 || offset >= n) {

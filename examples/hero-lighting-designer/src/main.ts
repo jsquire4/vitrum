@@ -18,22 +18,26 @@ import type { FrameStats } from '@vitrum/core';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const canvas   = document.querySelector<HTMLCanvasElement>('#c')!;
-const hudEl    = document.querySelector<HTMLDivElement>('#hud')!;
+const canvas = document.querySelector<HTMLCanvasElement>('#c')!;
+const hudEl = document.querySelector<HTMLDivElement>('#hud')!;
 const statusEl = document.querySelector<HTMLDivElement>('#status')!;
 
 // ── Light state ───────────────────────────────────────────────────────────────
 
 interface LightParams {
-  r: number; g: number; b: number;
+  r: number;
+  g: number;
+  b: number;
   intensity: number;
-  x: number; y: number; z: number;
+  x: number;
+  y: number;
+  z: number;
 }
 
 const lights: LightParams[] = [
-  { r: 255, g: 100, b: 68,  intensity: 8, x: -2, y: 2.5, z:  1 },
-  { r: 68,  g: 136, b: 255, intensity: 6, x:  2, y: 2.5, z: -1 },
-  { r: 255, g: 255, b: 170, intensity: 3, x:  0, y: 3.5, z:  3 },
+  { r: 255, g: 100, b: 68, intensity: 8, x: -2, y: 2.5, z: 1 },
+  { r: 68, g: 136, b: 255, intensity: 6, x: 2, y: 2.5, z: -1 },
+  { r: 255, g: 255, b: 170, intensity: 3, x: 0, y: 3.5, z: 3 },
 ];
 
 // ── Procedural architectural interior ────────────────────────────────────────
@@ -43,28 +47,51 @@ const lights: LightParams[] = [
 function buildRoom(): THREE.Scene {
   const scene = new THREE.Scene();
 
-  const wallMat = new THREE.MeshPhysicalMaterial({ color: 0xddddd0, roughness: 0.85, metalness: 0 });
-  const floorMat = new THREE.MeshPhysicalMaterial({ color: 0x8b7355, roughness: 0.7,  metalness: 0 });
-  const ceilMat  = new THREE.MeshPhysicalMaterial({ color: 0xf5f5f5, roughness: 0.9,  metalness: 0 });
-  const woodMat  = new THREE.MeshPhysicalMaterial({ color: 0x6b4226, roughness: 0.6,  metalness: 0 });
-  const metalMat = new THREE.MeshPhysicalMaterial({ color: 0xaaaaaa, roughness: 0.3,  metalness: 0.8 });
+  const wallMat = new THREE.MeshPhysicalMaterial({
+    color: 0xddddd0,
+    roughness: 0.85,
+    metalness: 0,
+  });
+  const floorMat = new THREE.MeshPhysicalMaterial({
+    color: 0x8b7355,
+    roughness: 0.7,
+    metalness: 0,
+  });
+  const ceilMat = new THREE.MeshPhysicalMaterial({ color: 0xf5f5f5, roughness: 0.9, metalness: 0 });
+  const woodMat = new THREE.MeshPhysicalMaterial({ color: 0x6b4226, roughness: 0.6, metalness: 0 });
+  const metalMat = new THREE.MeshPhysicalMaterial({
+    color: 0xaaaaaa,
+    roughness: 0.3,
+    metalness: 0.8,
+  });
 
-  const add = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0) => {
+  const add = (
+    geo: THREE.BufferGeometry,
+    mat: THREE.Material,
+    x: number,
+    y: number,
+    z: number,
+    rx = 0,
+    ry = 0,
+    rz = 0,
+  ) => {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, y, z);
     mesh.rotation.set(rx, ry, rz);
     scene.add(mesh);
   };
 
-  const W = 8, H = 4.5, D = 10;
+  const W = 8,
+    H = 4.5,
+    D = 10;
   const t = 0.1;
 
   // Floor, ceiling, walls
-  add(new THREE.BoxGeometry(W, t, D),  floorMat, 0, 0,     0);
-  add(new THREE.BoxGeometry(W, t, D),  ceilMat,  0, H,     0);
-  add(new THREE.BoxGeometry(t, H, D),  wallMat, -W / 2, H / 2, 0);   // left wall
-  add(new THREE.BoxGeometry(t, H, D),  wallMat,  W / 2, H / 2, 0);   // right wall
-  add(new THREE.BoxGeometry(W, H, t),  wallMat,  0, H / 2, -D / 2);  // back wall
+  add(new THREE.BoxGeometry(W, t, D), floorMat, 0, 0, 0);
+  add(new THREE.BoxGeometry(W, t, D), ceilMat, 0, H, 0);
+  add(new THREE.BoxGeometry(t, H, D), wallMat, -W / 2, H / 2, 0); // left wall
+  add(new THREE.BoxGeometry(t, H, D), wallMat, W / 2, H / 2, 0); // right wall
+  add(new THREE.BoxGeometry(W, H, t), wallMat, 0, H / 2, -D / 2); // back wall
   // Front wall omitted so the camera can look in.
 
   // Furniture: table
@@ -149,7 +176,7 @@ function scheduleSceneUpdate(): void {
 
 function bindSlider(id: string, onChange: (v: number) => void): void {
   const slider = document.querySelector<HTMLInputElement>(`#${id}`)!;
-  const valEl  = document.querySelector<HTMLSpanElement>(`#v-${id}`)!;
+  const valEl = document.querySelector<HTMLSpanElement>(`#v-${id}`)!;
   slider.addEventListener('input', () => {
     const v = parseFloat(slider.value);
     valEl.textContent = Number.isInteger(v) ? String(v) : v.toFixed(1);
@@ -166,13 +193,30 @@ function bindLightSliders(idx: number): void {
     swatchEl.style.background = `rgb(${lp.r},${lp.g},${lp.b})`;
   };
 
-  bindSlider(`l${idx}-r`, (v) => { lp.r = v; updateSwatch(); });
-  bindSlider(`l${idx}-g`, (v) => { lp.g = v; updateSwatch(); });
-  bindSlider(`l${idx}-b`, (v) => { lp.b = v; updateSwatch(); });
-  bindSlider(`l${idx}-i`, (v) => { lp.intensity = v; });
-  bindSlider(`l${idx}-x`, (v) => { lp.x = v; });
-  bindSlider(`l${idx}-y`, (v) => { lp.y = v; });
-  bindSlider(`l${idx}-z`, (v) => { lp.z = v; });
+  bindSlider(`l${idx}-r`, (v) => {
+    lp.r = v;
+    updateSwatch();
+  });
+  bindSlider(`l${idx}-g`, (v) => {
+    lp.g = v;
+    updateSwatch();
+  });
+  bindSlider(`l${idx}-b`, (v) => {
+    lp.b = v;
+    updateSwatch();
+  });
+  bindSlider(`l${idx}-i`, (v) => {
+    lp.intensity = v;
+  });
+  bindSlider(`l${idx}-x`, (v) => {
+    lp.x = v;
+  });
+  bindSlider(`l${idx}-y`, (v) => {
+    lp.y = v;
+  });
+  bindSlider(`l${idx}-z`, (v) => {
+    lp.z = v;
+  });
 }
 
 bindLightSliders(0);

@@ -34,6 +34,7 @@
 ### `@vitrum/shared-samplers`
 
 **Owns**:
+
 - Sobol QMC sequence generation
 - Hammersley sampling + golden-ratio rotation
 - Light tree CDF construction (Phase 6 Sprint 3)
@@ -49,6 +50,7 @@
 ### `@vitrum/shared-denoisers`
 
 **Owns**:
+
 - À-trous wavelet (current walkaround denoiser, Phase 6 baseline)
 - SVGF (Phase 6 Sprint 10a)
 - BMFR (Phase 6 Sprint 10a candidate; **not shipped** in `@vitrum/shared-denoisers` yet)
@@ -62,7 +64,7 @@
 
 **Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), `three-mesh-bvh`. BVH/denoiser building blocks used indirectly via the fork and three.js stack, not as direct `@vitrum/shared-bvh` / `shared-denoisers` dependencies today.
 
-### `@vitrum/pt-webgpu` *(prototype, evolving toward Phase 7 goals)*
+### `@vitrum/pt-webgpu` _(prototype, evolving toward Phase 7 goals)_
 
 **Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active pre-alpha prototype (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
 
@@ -90,12 +92,17 @@ ptEngine.setScene(scene);
 
 // In useFrame:
 const output = ptEngine.renderFrame({
-  viewMatrix, projMatrix, cameraPosition,
-  viewport, frameIndex, frameSeed,
+  viewMatrix,
+  projMatrix,
+  cameraPosition,
+  viewport,
+  frameIndex,
+  frameSeed,
 });
 ```
 
 The host application retains:
+
 - Domain composition logic (panel cell layout, came/solder generation, glass material profiles)
 - Three.js scene assembly
 - React lifecycle wrapping (`PathTracingLayer`, `WalkaroundStage`, etc. become thin host wrappers around `@vitrum/*` engines)
@@ -109,25 +116,25 @@ Phase 6 Sprint 0 (next, 2–3 days) defines the contract and creates the package
 
 Subsequent sprints land their deliverables in vitrum packages, not the host app's source tree:
 
-| Sprint | Work | Lands in |
-|---|---|---|
-| 0 (this one) | Contract + package skeletons | `@vitrum/core` |
-| 1 | PT preview perf wins | `@vitrum/pt-webgl` config options |
-| 2 | Per-cell luminance precompute | `@vitrum/shared-samplers` |
-| 3 | Mixture PDF + light tree + back-face NEE | `@vitrum/shared-samplers` |
-| 4 | BSDF cost reduction (lobeMask + lite BSDF + material LOD) | `@vitrum/pt-webgl` (fork-internal patches) |
-| 5 | Analytic CSG came + MRT G-buffer | `@vitrum/pt-webgl` engine internals; CSG primitive type in `@vitrum/core` |
-| 6 | Rough refraction + spatial denoiser | BSDF in `@vitrum/pt-webgl`; denoiser in `@vitrum/shared-denoisers` |
-| 7 | Volume + SSS + equi-angular | `@vitrum/pt-webgl` (fork) + HG phase in `@vitrum/shared-samplers` |
-| 8 | RGB-as-3λ + Jakob+Hanika | `@vitrum/pt-webgl` + spectral utility in `@vitrum/shared-samplers` |
-| 9 | Adaptive sampling + checkerboard | `@vitrum/walkaround-hybrid` + Welford struct in `@vitrum/shared-samplers` |
-| 10a | SVGF / BMFR | `@vitrum/shared-denoisers` |
-| 10b | OIDN ONNX final pass | `@vitrum/shared-denoisers/oidn-bridge` |
-| 10c | Vanilla BDPT | `@vitrum/pt-webgl` |
-| 11 | PPG | `@vitrum/walkaround-hybrid` (or its own package if substantial) |
-| 12 | Hero spectral | `@vitrum/pt-webgl` AND/OR `@vitrum/pt-webgpu` |
-| 13 | Custom WebGPU neural denoiser | `@vitrum/research/` then `@vitrum/shared-denoisers` |
-| 6.5 | ReSTIR BDPT in walkaround | `@vitrum/walkaround-hybrid` extension or `@vitrum/walkaround-restir-bdpt` |
+| Sprint       | Work                                                      | Lands in                                                                  |
+| ------------ | --------------------------------------------------------- | ------------------------------------------------------------------------- |
+| 0 (this one) | Contract + package skeletons                              | `@vitrum/core`                                                            |
+| 1            | PT preview perf wins                                      | `@vitrum/pt-webgl` config options                                         |
+| 2            | Per-cell luminance precompute                             | `@vitrum/shared-samplers`                                                 |
+| 3            | Mixture PDF + light tree + back-face NEE                  | `@vitrum/shared-samplers`                                                 |
+| 4            | BSDF cost reduction (lobeMask + lite BSDF + material LOD) | `@vitrum/pt-webgl` (fork-internal patches)                                |
+| 5            | Analytic CSG came + MRT G-buffer                          | `@vitrum/pt-webgl` engine internals; CSG primitive type in `@vitrum/core` |
+| 6            | Rough refraction + spatial denoiser                       | BSDF in `@vitrum/pt-webgl`; denoiser in `@vitrum/shared-denoisers`        |
+| 7            | Volume + SSS + equi-angular                               | `@vitrum/pt-webgl` (fork) + HG phase in `@vitrum/shared-samplers`         |
+| 8            | RGB-as-3λ + Jakob+Hanika                                  | `@vitrum/pt-webgl` + spectral utility in `@vitrum/shared-samplers`        |
+| 9            | Adaptive sampling + checkerboard                          | `@vitrum/walkaround-hybrid` + Welford struct in `@vitrum/shared-samplers` |
+| 10a          | SVGF / BMFR                                               | `@vitrum/shared-denoisers`                                                |
+| 10b          | OIDN ONNX final pass                                      | `@vitrum/shared-denoisers/oidn-bridge`                                    |
+| 10c          | Vanilla BDPT                                              | `@vitrum/pt-webgl`                                                        |
+| 11           | PPG                                                       | `@vitrum/walkaround-hybrid` (or its own package if substantial)           |
+| 12           | Hero spectral                                             | `@vitrum/pt-webgl` AND/OR `@vitrum/pt-webgpu`                             |
+| 13           | Custom WebGPU neural denoiser                             | `@vitrum/research/` then `@vitrum/shared-denoisers`                       |
+| 6.5          | ReSTIR BDPT in walkaround                                 | `@vitrum/walkaround-hybrid` extension or `@vitrum/walkaround-restir-bdpt` |
 
 The host application's renderer subdirectory eventually empties as its files move to vitrum packages. Same for the PT pipeline files. The host's role narrows to "domain composition + UI + scene assembly."
 

@@ -4,6 +4,7 @@
 
 The neural denoiser requires paired noisy/clean renders of the same scene.
 Each pair consists of:
+
 - A **noisy** 1 spp path-traced render (WebGPU walkaround output)
 - Auxiliary G-buffers: **albedo** and **world-space normals**
 - A **clean** 4096 spp reference render (same camera, scene, lighting)
@@ -49,6 +50,7 @@ Decode with `n * 2 - 1` to recover world-space [-1, 1] normals.
 3. Aim for 1000–5000 unique camera positions per scene.
 
 Reference scenes for collecting training data:
+
 - `examples/cornell-box.html`
 - `examples/multi-material.html`
 

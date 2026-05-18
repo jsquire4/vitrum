@@ -3,8 +3,8 @@
 **Date:** 2026-05-12 | **Branch:** `feat/tier3-dropin` | **Phase:** T3.I
 
 Honest accounting of what works, what doesn't, and at what cost when the host
-animates the scene.  Every claim is tied to the code that was read, not to
-comments or plan docs.  "Inferred — not verified" labels appear where GPU
+animates the scene. Every claim is tied to the code that was read, not to
+comments or plan docs. "Inferred — not verified" labels appear where GPU
 execution could not be exercised in a headless test environment.
 
 ---
@@ -54,7 +54,7 @@ execution could not be exercised in a headless test environment.
 ### walkaround-hybrid
 
 The temporal accumulator in `WalkaroundGPUPipeline` is governed by
-`_accumFrameIndex`.  When it is 0, the GPU blend weight `alpha = 1.0` (no
+`_accumFrameIndex`. When it is 0, the GPU blend weight `alpha = 1.0` (no
 history); when > 0, `alpha = _temporalAccumAlpha` (default 0.01, i.e. 99%
 history retention).
 
@@ -94,7 +94,7 @@ The value is forwarded to `WalkaroundGPUPipeline.renderFrame()` as
 - `temporal.wgsl` (ReSTIR-DI temporal reuse): `let prevView = ubo.prevViewMatrix;`
   (`packages/walkaround-hybrid/src/shaders/temporal.wgsl.ts:72`)
 - `temporalGi.wgsl` (ReSTIR-GI temporal reuse): `let prevClip = ubo.projMatrix *
-  ubo.prevViewMatrix * vec4f(worldPos, 1.0);`
+ubo.prevViewMatrix * vec4f(worldPos, 1.0);`
   (`packages/walkaround-hybrid/src/shaders/temporalGi.wgsl.ts:70`)
 
 When the host does not supply `prevViewMatrix`, both reprojection paths use the
@@ -112,11 +112,11 @@ The default `cameraMoveResetThresholdSq = 1.0` is calibrated to Cornell's
 ~2-unit room and OrbitControls' damped motion (~0.1–0.5 units/frame over ~30
 frames after a drag release). At other scales:
 
-| Scene diagonal | Recommended threshold | Notes |
-|---|---|---|
+| Scene diagonal     | Recommended threshold     | Notes                                  |
+| ------------------ | ------------------------- | -------------------------------------- |
 | 0.01 m (jewellery) | `(0.01 × 0.001)² = 1e-10` | Default never trips; ghost permanently |
-| 2 m (Cornell room) | `(2 × 0.001)² = 4e-6` | Default `1.0` is too large by 250 000× |
-| 100 m (city block) | `(100 × 0.001)² = 0.01` | Default `1.0` allows 1 m camera drift |
+| 2 m (Cornell room) | `(2 × 0.001)² = 4e-6`     | Default `1.0` is too large by 250 000× |
+| 100 m (city block) | `(100 × 0.001)² = 0.01`   | Default `1.0` allows 1 m camera drift  |
 
 The T3.A unified factory derives `cameraMoveResetThresholdSq = (D × 0.001)²`
 from scene AABB diagonal `D`; this is the right fix for the scale problem.
@@ -135,6 +135,7 @@ then increments normally. Net effect: one guaranteed clean frame at startup.
 New test:
 `packages/walkaround-hybrid/__tests__/cameraAnimationReset.test.ts` (8 tests,
 all green). Tests cover:
+
 - `requestAccumReset()` sets `_accumFrameIndex = 0`
 - Default threshold is `1.0`
 - `alpha = 1.0` when `_accumFrameIndex === 0`, otherwise `_temporalAccumAlpha`
@@ -221,12 +222,12 @@ DDGI convergence.
 
 **Convergence summary:**
 
-| Channel | Latency at 60 fps | Comment |
-|---|---|---|
-| Direct light (ReSTIR-DI) | ~333 ms | M-clamp dilution at 20 frames |
-| Indirect / GI (DDGI) | ~133 ms | 8-frame STRIDE re-cycle |
-| Indirect (ReSTIR-GI) | ~133 ms | Follows DDGI atlas readiness |
-| Temporal accumulator | 1 frame | `requestAccumReset()` forces α=1 |
+| Channel                  | Latency at 60 fps | Comment                          |
+| ------------------------ | ----------------- | -------------------------------- |
+| Direct light (ReSTIR-DI) | ~333 ms           | M-clamp dilution at 20 frames    |
+| Indirect / GI (DDGI)     | ~133 ms           | 8-frame STRIDE re-cycle          |
+| Indirect (ReSTIR-GI)     | ~133 ms           | Follows DDGI atlas readiness     |
+| Temporal accumulator     | 1 frame           | `requestAccumReset()` forces α=1 |
 
 **Per-emitter patching (`updateEmitter`):**
 
@@ -284,6 +285,7 @@ setScene(scene: Scene): void {
 ```
 
 `_initPipeline()` polls for scene readiness (up to 5 s), then:
+
 1. Calls `buildReSTIRSceneBVH()` — CPU-side BVH build, merges all geometry,
    packs emitter list.
 2. Creates a new `WalkaroundGPUPipeline` and calls `pipeline.initialize()` —
@@ -325,7 +327,8 @@ For 60 fps dynamic geometry a proper implementation would need:
   transform).
 
 None of this is implemented. The current path (full rebuild + pipeline teardown
-+ shader recompile) is not viable at 60 fps for any non-trivial mesh.
+
+- shader recompile) is not viable at 60 fps for any non-trivial mesh.
 
 **pt-webgl:**
 

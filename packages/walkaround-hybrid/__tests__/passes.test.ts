@@ -220,7 +220,9 @@ describe('Pass entries — topological registration', () => {
     reg.register(new SpatialGIReservoirPass(stubPipeline));
     reg.register(new PPGGuidePass(stubPipeline));
     reg.register(new PPGUpdatePass(stubPipeline));
-    const active = reg.activePasses({ denoiserMode: 'atrous-variance', ppgEnabled: false }).map((p) => p.id);
+    const active = reg
+      .activePasses({ denoiserMode: 'atrous-variance', ppgEnabled: false })
+      .map((p) => p.id);
     expect(active).not.toContain('ppg-guide');
     expect(active).not.toContain('ppg-update');
     expect(active).toContain('shade');

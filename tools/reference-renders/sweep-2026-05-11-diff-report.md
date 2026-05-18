@@ -15,13 +15,14 @@ Visual sign-off requires a human A/B review on the GPU machine.
 **Expected change:** Highlight should narrow and brighten at 45° elevation post-fix.
 No change expected in the diffuse floor or background.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -32,13 +33,14 @@ No change expected in the diffuse floor or background.
 **Expected change:** Floor irradiance should be ≈ 2× single-light reference at convergence.
 Both lights should contribute independently; no shadow-darkening artifact between them.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -51,13 +53,14 @@ direction. At roughness=0.7, a broad lobe matching GGX VNDF shape. The lobe-shap
 progression should match the theoretical GGX NDF at each roughness step.
 Capture one image per `roughnessVariants` entry: 0.1, 0.3, 0.5, 0.7.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -69,13 +72,14 @@ Capture one image per `roughnessVariants` entry: 0.1, 0.3, 0.5, 0.7.
 ~half that of the white-wall variant (albedo=1.0) once the EMA converges (frame ≥ 64).
 Capture one image per `wallAlbedoVariants` entry: 0.5, 1.0.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -87,13 +91,14 @@ Capture one image per `wallAlbedoVariants` entry: 0.5, 1.0.
 post-fix. Pre-fix, the pow(8) kernel and frozen rotation produced visible directional
 banding. Any remaining banding in the post-sweep frame is a regression.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -105,13 +110,14 @@ banding. Any remaining banding in the post-sweep frame is a regression.
 darkening rings post-M8 border-mirror fill. Any per-cell ring pattern in the post-sweep
 image is a regression in the border-fill logic.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -123,13 +129,14 @@ image is a regression in the border-fill logic.
 pyramid. All cascade levels should converge to the same uniform irradiance value;
 inter-cascade brightness discontinuities indicate a merge-integral regression.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -142,13 +149,14 @@ outside the corner should be unchanged (AO ≈ 1.0 there). Any brightening in th
 corner relative to pre-sweep is a regression; any darkening of the open sky is also
 a regression.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -160,13 +168,14 @@ a regression.
 through the atrous spatial filter post-fix. Any colour bleeding across tile boundaries
 (grey halo at the tile edge) is a regression in the variance-guided edge-stop function.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -179,13 +188,14 @@ normal with scale(2,1,1). Pre-fix, a naive model-matrix normal transform without
 produces a shearing artifact. Highlight centre should shift toward the elongated axis
 post-fix rather than remaining aligned with the unscaled geometry normal.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD
 
 ---
@@ -198,11 +208,12 @@ Pre-fix the path length was clamped at 32 wu, yielding T ≈ exp(-σ·32) and an
 erroneously bright exit radiance. Post-fix the slab should appear visibly darker
 for any σ > 0.
 
-| Metric | Pre-sweep | Post-sweep | Δ |
-|---|---|---|---|
-| PSNR vs analytic ref | TBD | TBD | TBD |
-| Mean luminance | TBD | TBD | TBD |
-| Visual sign-off | TBD ☐ | TBD ☐ | — |
+| Metric               | Pre-sweep | Post-sweep | Δ   |
+| -------------------- | --------- | ---------- | --- |
+| PSNR vs analytic ref | TBD       | TBD        | TBD |
+| Mean luminance       | TBD       | TBD        | TBD |
+| Visual sign-off      | TBD ☐     | TBD ☐      | —   |
 
 **Notes:**
+
 - TBD

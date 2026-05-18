@@ -29,7 +29,7 @@ when a render-quality gap motivates the investment.
 Schied, C., Kaplanyan, A., Wyman, C., Patney, A., Chaitanya, C.R.A., Burgess, J.,
 Liu, S., Dachsbacher, C., Lefohn, A., Salvi, M.
 "Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced
-Global Illumination." *High-Performance Graphics*, 2017.
+Global Illumination." _High-Performance Graphics_, 2017.
 https://research.nvidia.com/publication/2017-07_spatiotemporal-variance-guided-filtering
 
 Key sections: §4 (full algorithm), Eq. 1–5.
@@ -44,44 +44,54 @@ The renamed `atrous-variance` pipeline implements only the spatial stage.
 ### Stage 1 — Temporal reprojection and variance accumulation
 
 **Eq. 1 — Linear reprojection:**
+
 ```
 p_prev = P · V_prev · x
 ```
+
 Use the per-pixel motion vector (from G-buffer) to find the previous-frame screen-space
 position of the current pixel. Sample previous radiance and moments at that position
 using bilinear gather.
 
 **Eq. 2 — Disocclusion test:**
+
 ```
 reject if |z - z_prev| > σ_z · max(z, z_prev)
 reject if dot(n, n_prev) < σ_n
 ```
+
 Additionally reject if `objId != objId_prev` (object identity, prevents blending across
 independently-moving objects). Both depth and normal thresholds (`σ_z`, `σ_n`) should be
 UBO-plumbed tunables.
 
 **Eq. 3 — Per-pixel history length:**
+
 ```
 h_i ← h_prev + 1  (if accepted)
 h_i ← 0           (if rejected / disoccluded)
 ```
+
 Requires a persistent `historyLength` texture (`r16uint`, one value per pixel). Reset on
 disocclusion; increments otherwise.
 
 **Eq. 4 — Exponential moving average (EMA) with α-clamp:**
+
 ```
 α = max(α_min, 1/(h_i + 1))
 color_out = α · color_in + (1 − α) · color_prev
 M1_out    = α · color_in + (1 − α) · M1_prev      (first moment)
 M2_out    = α · color_in² + (1 − α) · M2_prev     (second moment)
 ```
+
 `α_min` prevents the EMA weight from becoming arbitrarily small at large history counts.
 Schied uses `α_min = 0.05`; should be a UBO tunable.
 
 **Eq. 5 — Per-pixel variance from moments:**
+
 ```
 Var_i = M2_i − M1_i²
 ```
+
 Clamp to `[0, ∞)`. Requires a persistent `momentsHistory` texture (`rg32float`: M1, M2).
 
 ### Stage 2 — Spatial à-trous filtering with variance-guided edge stops
@@ -112,12 +122,12 @@ into the filtered output.
 
 ## New GPU resources required
 
-| Resource | Format | Lifetime | Notes |
-|---|---|---|---|
-| `historyLength` | `r16uint`, full res | Persistent (frame-to-frame) | Reset on disocclusion |
-| `momentsHistory` | `rg32float`, full res | Persistent | M1 and M2 per pixel |
-| `prevRadiance` | `rgba16float`, full res | Persistent | Previous frame color post-EMA |
-| Motion vector input | `rg32float`, full res | Per-frame | Must be wired from G-buffer |
+| Resource            | Format                  | Lifetime                    | Notes                         |
+| ------------------- | ----------------------- | --------------------------- | ----------------------------- |
+| `historyLength`     | `r16uint`, full res     | Persistent (frame-to-frame) | Reset on disocclusion         |
+| `momentsHistory`    | `rg32float`, full res   | Persistent                  | M1 and M2 per pixel           |
+| `prevRadiance`      | `rgba16float`, full res | Persistent                  | Previous frame color post-EMA |
+| Motion vector input | `rg32float`, full res   | Per-frame                   | Must be wired from G-buffer   |
 
 The current `atrous-variance` bind group declares `prevRadiance`, `motionVec`,
 `gbufNormal`, `gbufDepth` as bindings but never samples them. Real SVGF requires these
@@ -152,9 +162,11 @@ wire: temporal → variance → atrous.
 ## Albedo demodulation (Schied §4.1, independent but closely related)
 
 Before the temporal pass: divide noisy color by per-pixel albedo:
+
 ```
 lighting = color / max(albedo, 0.001)
 ```
+
 Filter `lighting` through the SVGF pipeline. After à-trous: re-multiply by albedo.
 This prevents albedo-correlated high-frequency texture edges from spreading into the
 lighting estimate during filtering. Requires an albedo G-buffer texture. See

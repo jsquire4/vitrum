@@ -58,8 +58,7 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
     return engine.debug?.isDenoiserEnabled?.() ?? true;
   });
 
-  const hasDebug =
-    typeof engine.debug?.setDenoiserEnabled === 'function';
+  const hasDebug = typeof engine.debug?.setDenoiserEnabled === 'function';
 
   const doToggle = (): void => {
     const next = !enabled;
@@ -68,11 +67,10 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
       engine.debug!.setDenoiserEnabled!(next);
       setEnabled(next);
     } else {
-       
       console.warn(
         '[DenoiserABToggle] engine.debug.setDenoiserEnabled() is not implemented. ' +
-        'Implement it in HybridEngine to wire the denoiser toggle. ' +
-        'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
+          'Implement it in HybridEngine to wire the denoiser toggle. ' +
+          'See packages/dev/src/types.ts:EngineDebugSurface for the interface.',
       );
       // Still flip local state so UI responds (even though engine doesn't).
       setEnabled(next);
@@ -98,9 +96,7 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
   }, [toggleKey, enabled, hasDebug]);
 
   const stateColor = !hasDebug ? STUB_COLOR : enabled ? ENABLED_COLOR : DISABLED_COLOR;
-  const stateLabel = !hasDebug
-    ? 'denoiser [stub]'
-    : `denoiser ${enabled ? '■ on' : '□ off'}`;
+  const stateLabel = !hasDebug ? 'denoiser [stub]' : `denoiser ${enabled ? '■ on' : '□ off'}`;
   const keyLabel = toggleKey !== null ? ` [${toggleKey.toUpperCase()}]` : '';
 
   return (
@@ -116,7 +112,8 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
         if (e.key === 'Enter' || e.key === ' ') doToggle();
       }}
     >
-      {stateLabel}{keyLabel}
+      {stateLabel}
+      {keyLabel}
     </div>
   );
 };

@@ -3,13 +3,21 @@
   "version": "0.0.0",
   "private": true,
   "description": "Dev-only debug overlay components for @vitrum engines. Add as a devDependency; never ship in production.",
-  "keywords": ["debug", "overlays", "vitrum", "dev-tools"],
+  "keywords": [
+    "debug",
+    "overlays",
+    "vitrum",
+    "dev-tools"
+  ],
   "author": "jsquire4",
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git",

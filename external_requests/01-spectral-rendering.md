@@ -65,9 +65,9 @@ interface Material {
  * values: per-sample coefficient. Must have >= 3 entries, uniformly spaced.
  */
 export interface SpectralCurve {
-  readonly wavelengthStart: number;   // nm, e.g. 380
-  readonly wavelengthEnd: number;     // nm, e.g. 700
-  readonly values: Float32Array;      // μ(λ) in units matching attenuationDistance
+  readonly wavelengthStart: number; // nm, e.g. 380
+  readonly wavelengthEnd: number; // nm, e.g. 700
+  readonly values: Float32Array; // μ(λ) in units matching attenuationDistance
 }
 ```
 
@@ -114,7 +114,7 @@ const cobaltBlueAttenuation: SpectralCurve = {
   wavelengthStart: 380,
   wavelengthEnd: 700,
   // μ(λ) in mm⁻¹: low absorption in blue, high in green/red
-  values: new Float32Array([0.05, 0.04, 0.10, 0.60, 0.90, 0.85, 0.60, 0.30, 0.10]),
+  values: new Float32Array([0.05, 0.04, 0.1, 0.6, 0.9, 0.85, 0.6, 0.3, 0.1]),
 };
 
 const material: Material = {
@@ -123,7 +123,7 @@ const material: Material = {
   metallic: 0.0,
   transmission: 1.0,
   ior: 1.52,
-  attenuationDistance: 3.0,           // mm; fallback for non-spectral backends
+  attenuationDistance: 3.0, // mm; fallback for non-spectral backends
   attenuationColor: [0.0, 0.05, 0.9], // fallback RGB approximation
   spectralAttenuation: cobaltBlueAttenuation,
 };
@@ -138,7 +138,7 @@ const lensGlass: Material = {
   metallic: 0.0,
   transmission: 1.0,
   ior: 1.78,
-  dispersionAbbeNumber: 25.0,  // dense flint; strong dispersion
+  dispersionAbbeNumber: 25.0, // dense flint; strong dispersion
 };
 ```
 
@@ -149,9 +149,9 @@ const lensGlass: Material = {
 
 ## 8. References
 
-[1] A. Wilkie, S. Nawaz, M. Droske, A. Weidlich, J. Hanika. "Hero Wavelength Spectral Sampling." *Computer Graphics Forum (Proc. EGSR 2014)*, vol. 33, no. 4, pp. 123–131, 2014. DOI: 10.1111/cgf.12419.
+[1] A. Wilkie, S. Nawaz, M. Droske, A. Weidlich, J. Hanika. "Hero Wavelength Spectral Sampling." _Computer Graphics Forum (Proc. EGSR 2014)_, vol. 33, no. 4, pp. 123–131, 2014. DOI: 10.1111/cgf.12419.
 
-[2] M. Rubin. "Optical Properties of Soda-Lime Silica Glasses." *Solar Energy Materials*, vol. 12, no. 4, pp. 275–288, 1985. (Cauchy fit for soda-lime glass; indexed at refractiveindex.info.)
+[2] M. Rubin. "Optical Properties of Soda-Lime Silica Glasses." _Solar Energy Materials_, vol. 12, no. 4, pp. 275–288, 1985. (Cauchy fit for soda-lime glass; indexed at refractiveindex.info.)
 
 [3] Schott AG. "N-BK7 Optical Glass Data Sheet." Schott Advanced Optics. Available at us.schott.com. (n_d = 1.5168, V_d = 64.17; Sellmeier coefficients.)
 

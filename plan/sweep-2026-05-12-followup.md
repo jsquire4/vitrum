@@ -33,6 +33,7 @@ Currently 7 RFE scenarios are defined; one baseline PNG exists
 **A1. Define new verification scenarios (one per algorithmic change):**
 
 Add to `scenario-presets.mjs`:
+
 - `m5-glass-fresnel-grazing` — glass sphere on a textured floor; camera at
   45° above horizon to expose grazing-angle Fresnel highlight. Verifies
   Item 16 (frDielectric branch).
@@ -50,7 +51,7 @@ Add to `scenario-presets.mjs`:
   environment. With Halton SO(3) (Item 6) + Lambertian cosine kernel
   (Item 20), all probe atlas values should converge to a uniform value;
   the rendered sphere should appear uniformly lit. Pre-fix: pow(8) kernel
-  + frozen rotation produced visible directional banding.
+  - frozen rotation produced visible directional banding.
 - `m8-ddgi-no-seam-darkening` — surface with smooth normals seen at a
   glancing angle to expose probe-atlas seams. Should show no
   cell-grid darkening rings after M8 border-fill landed.
@@ -74,6 +75,7 @@ For each scenario, add `{ scenarioId, seed, resolution, bounces, spp }`
 in `scenario-presets.mjs`. Use seeds that make MC noise reproducible.
 
 **A2. Generate baseline PNGs against `main` (pre-sweep):**
+
 ```bash
 git checkout main
 VITRUM_GPU_CAPTURE=1 \
@@ -88,6 +90,7 @@ Same procedure. Move to `…/<scenarioId>.png.post-sweep`.
 
 **A4. A/B compare:**
 For each scenario, eyeball + numeric diff (PSNR / SSIM). Acceptance:
+
 - Visual changes must be in the direction the math predicts
   (e.g., m9-gtao-corner-shadows post-sweep should be DARKER in corners,
   unchanged in open-sky pixels).
@@ -121,6 +124,7 @@ already in M3.
 
 **B1. New package or in-package?**
 Two options:
+
 - **(a)** Add to `packages/pt-webgpu/__tests__/`, mirroring the WGSL
   in TS test-only helpers. Pro: collocated. Con: large per-test mirror
   duplication.
@@ -130,6 +134,7 @@ Two options:
   can import.
 
 **B2. Mirror scope (test-only utility):**
+
 - Cosine-hemisphere sample + PDF (already in shared-samplers — re-export)
 - GGX VNDF sample + PDF (mirror Heitz 2018 Algorithm 1 once; use across
   pt-webgpu + future BSDF tests)
@@ -143,13 +148,17 @@ Two options:
 All in pure TypeScript with deterministic LCG seeded RNG.
 
 **B3. Integrator skeleton (≤200 lines):**
+
 ```ts
 function integratePath(scene, ray, rng, opts): Vec3 {
   let throughput = vec3(1);
-  let radiance   = vec3(0);
+  let radiance = vec3(0);
   for (let bounce = 0; bounce < opts.maxBounces; bounce++) {
     const hit = traverseBvh(scene.bvh, ray);
-    if (!hit) { radiance = add(radiance, mul(throughput, scene.envSample(ray.dir))); break; }
+    if (!hit) {
+      radiance = add(radiance, mul(throughput, scene.envSample(ray.dir)));
+      break;
+    }
     // NEE direct light:
     const direct = sampleDirectLight(scene, hit, rng);
     radiance = add(radiance, mul(throughput, direct));
@@ -169,6 +178,7 @@ function integratePath(scene, ray, rng, opts): Vec3 {
 ```
 
 **B4. Test fixtures (4 tests, in `packages/pt-webgpu/__tests__/mcConvergence.test.ts`):**
+
 - **Lambertian sphere → analytic exitance**: unit sphere with `albedo = 0.7`, directional light `L = 1, θ_L = 30°`. Analytic: `L_exitant_per_sr = π · ρ · L · cos(θ_L) / π = ρ · L · cos(θ_L)`. Tolerance ±1% at N=2000 spp.
 - **Single-bounce diffuse from area light**: infinite plane illuminated by uniform unit-area light. Analytic from solid-angle integral. ±2% at N=2000 spp.
 - **White furnace (ρ=1, environment L=1)**: any scene path-trace should converge to L=1 at every pixel (energy conservation). ±0.5% per channel at N=5000 spp; this is the strict catch-everything regression test.
@@ -182,14 +192,15 @@ suite latency. Or always-on if total adds <30s.
 **Effort estimate:** 3–4 days. The TS mirrors are mechanical; integrator
 correctness needs care.
 
-**Decision point — BVH traversal scope:** the tracer needs *some* BVH
+**Decision point — BVH traversal scope:** the tracer needs _some_ BVH
 traversal to work on real geometry. Two options:
+
 - (a) Use the same binned-SAH builder from M6 in pt-webgpu. Same
   encoding; tests catch encoding drift.
 - (b) Use a brute-force "hit nearest tri" inner loop. Simpler; fast
   enough at small triangle counts.
-Recommend (b) for the tracer's own test fixtures (≤50 tris); the BVH
-correctness is already covered by 33-G.
+  Recommend (b) for the tracer's own test fixtures (≤50 tris); the BVH
+  correctness is already covered by 33-G.
 
 ---
 
@@ -200,6 +211,7 @@ zero behavior tests. Pass-layout structural tests and the M8 mirror
 formula tests exist; nothing measures atlas content vs analytic.
 
 **C1. CPU mirror of the DDGI pipeline (`packages/walkaround-hybrid/__tests__/ddgiPipeline.test.ts`):**
+
 - Mirror `probeUpdateRays.wgsl.ts` ray accumulation (post-M7: stores
   raw L_i — no albedo/π baking).
 - Mirror `probeUpdateBlend.wgsl.ts` cosine-weighted hemisphere
@@ -208,6 +220,7 @@ formula tests exist; nothing measures atlas content vs analytic.
 - Mirror `applyDDGIShading.ts` receiver math: `L_o = (albedo/π) · E`.
 
 **C2. Behavior assertions (4 tests):**
+
 - **Uniform white room → atlas converges to L_in**: scene = closed
   white box (ρ=1, all six faces) lit by uniform interior emission
   L=1. After 50 frames of Halton SO(3) ray sampling + EMA blend, the
@@ -255,6 +268,7 @@ File: `packages/pt-webgpu/__tests__/energyConservation.test.ts` (extend).
 **D2. 2-light sum-MIS correctness.**
 
 For Item 15 (multi-light area MIS), add a CPU test:
+
 - Scene: 2 point lights at known positions, flat surface, evaluate
   the BSDF→light MIS contribution.
 - Expected: brightness ≈ 2× single-light variant; per-light contributions
@@ -281,6 +295,7 @@ must agree within 1e-5 for every ray.
 Currently deferred because GTAO bind group has no albedo G-buffer.
 
 Steps:
+
 1. Wire the existing `hdrAlbedoOut` (now produced by M9.C shade pass)
    into the GTAO bind group. Update `bindGroupLayouts.ts` and
    `bindGroupBuilders.ts`.
@@ -299,6 +314,7 @@ Steps:
 **E2. M4 #36 — `TRI_INTERSECT_EPSILON` in `rc/wgsl/probeRayCast.wgsl.ts`:**
 
 That shader binds `CascadeUniforms`, not `WalkaroundUBO`. Two options:
+
 - **(a)** Add `triIntersectEpsilon: f32` to `CascadeUniforms` struct
   (touches `cascadeBuffers.ts` + `cascadeDispatch.ts` + the WGSL).
   Plumb through `HybridEngine.triIntersectEpsilon` option that already
@@ -327,6 +343,7 @@ re-verified:
 **F1. M5 `bsdfAreaLightConnectionContribution` rewrite:**
 Read `pathTraceBruteforce.wgsl.ts` `bsdfAreaLightConnectionContribution`
 end-to-end. Verify:
+
 - Loop iterates `params.rectAreaLightCount` AND
   `params.meshAreaLightCount` (not just one or the other).
 - Closest-hit selection picks the light at min `t`.
@@ -340,6 +357,7 @@ math is wrong, the brightness test fails.
 **F2. M6 binned SAH builder:**
 Read `packages/pt-webgpu/src/scene/buildCpuBvh.ts` `build()` end-to-end.
 Verify:
+
 - SAH cost formula: `cost = traversal + leftSA·leftCount + rightSA·rightCount`
   (not just left+right counts without SA weighting).
 - Leaf-cost vs split-cost early-exit threshold sane.
@@ -353,6 +371,7 @@ by 30%; allow margin). This is informational, not strict.
 **F3. M7 Halton axis-angle conversion:**
 Read `packages/walkaround-hybrid/src/ddgi/probeUpdatePass.ts:670–718`.
 Verify:
+
 - Shoemake quaternion form correct (sigma1/sigma2 split is right).
 - `sin(θ/2) = sqrt(1 - qw²)` correct (Shoemake gives a unit
   quaternion, so `qw² + qx² + qy² + qz² = 1`).
@@ -368,6 +387,7 @@ det(R) = 1 always; verify R · R^T = I.
 **F4. M9.A RC merge solid-angle weighting integration:**
 Read `cascadeMerge.wgsl.ts` `octCellSolidAngle` + the merge formula.
 Verify:
+
 - `octCellSolidAngle(cx, cy, N)` returns the same value as the
   Float32Array from `computeOctahedralSolidAngles(N)[cy*N + cx]`.
 - Merge formula `Σ child · Ω_child / Σ Ω_child` is the weighted
@@ -380,6 +400,7 @@ mirror that runs on CI).
 
 **F5. M9.C albedo demodulation pipeline plumbing:**
 Read the 10 files M9.C touched. For each:
+
 - `shade.wgsl.ts`: confirm `Lo_indirect` no longer multiplies by
   `albedo`; `hdrAlbedoOut` written; `hdrTotalOut` re-applies albedo.
 - `indirectCombine.wgsl.ts`: confirm `output = direct + filtered_lighting · albedo`.
@@ -412,6 +433,7 @@ finding in the closeout retrospective.
 This file is a real RFE-09 proposal ("Runtime Lighting Updates Without
 Pipeline Rebuild") — substantive content, not garbage. It was added
 during the sweep without explicit attribution in any milestone. Action:
+
 - Confirm it's the RFE proposal, not an artifact.
 - If keeping, add a one-line entry to `external_requests/IMPLEMENTATION-STATUS.md`
   noting RFE-09 is now Proposed (currently shown as Applied per M10
@@ -422,6 +444,7 @@ during the sweep without explicit attribution in any milestone. Action:
 M4.D agent claimed they fixed a "pre-existing build blocker" in
 `walkaround-hybrid/src/shaders/common.wgsl.ts` by changing backtick-
 quoted code examples in WGSL comments to single quotes. Verify:
+
 - The change is comments-only (no shader semantics affected).
 - The `git blame` on the affected lines shows the backticks pre-dated
   the sweep.
@@ -545,16 +568,16 @@ Folded into this in-flight branch since the user explicitly authorized
   `scatteringCoefficient` are dropped at the bridge. Cobalt, iron,
   Se/Cd, gold-ruby glass all render via RGB approximation in current
   PT renders. Fix requires:
-    1. pt-webgl: per-material spectral upload path
-       (`forkUniformBridge.ts` extension).
-    2. Fork: extend `MaterialsTexture` packing to carry per-material
-       spectral data (Sprint 12 was "partial" — this completes it).
-    3. Fork: BSDF spectral consumer reads from MaterialsTexture
-       instead of global tables.
-  Naturally folds into the H6 chain since both are fork-side work
-  and Sprint 5's MRT G-buffer infrastructure is the structural
-  prerequisite. Schedule as **H6.6 — Sprint 12 completion** after
-  Sprint 10c (H6.5). Multi-day fork patch.
+  1. pt-webgl: per-material spectral upload path
+     (`forkUniformBridge.ts` extension).
+  2. Fork: extend `MaterialsTexture` packing to carry per-material
+     spectral data (Sprint 12 was "partial" — this completes it).
+  3. Fork: BSDF spectral consumer reads from MaterialsTexture
+     instead of global tables.
+     Naturally folds into the H6 chain since both are fork-side work
+     and Sprint 5's MRT G-buffer infrastructure is the structural
+     prerequisite. Schedule as **H6.6 — Sprint 12 completion** after
+     Sprint 10c (H6.5). Multi-day fork patch.
 
 **Surprising finding NOT in scope here** — surprise #3 in the audit:
 walkaround engine bypasses `sceneFromThreeJS` and reads raw THREE.Scene.
@@ -584,6 +607,7 @@ PT mode renders them but slowly. BDPT cuts the final-render time
 usable client-facing render workflow and a "render overnight" workflow.
 
 **Sub-phases (serial):**
+
 - **H6.1** — Apply Sprint 4 fork patch per `plan/archive/sprint-4-pt-fork-patch.md`. Small.
 - **H6.2** — Apply Sprint 5 MRT G-buffer per `plan/archive/sprint-5-pt-fork-patch.md` + `sprint-5-mrt-gbuffer-spec.md`. STRUCTURAL fork change.
 - **H6.3** — Regression-test Sprints 7 (volume scatter, fork commit `260c432`), 8 (chromatic dispersion `7ffd15d`), 12 (hero spectral `8917492`), 14 (layered BSDF `ee379dc`) against the new MRT base. Forward-port any broken integrator paths.
@@ -595,6 +619,7 @@ usable client-facing render workflow and a "render overnight" workflow.
 **Effort:** 3–4 weeks. The risk is H6.3 — Sprints 7/8/12/14 may not adapt cleanly to MRT and need re-authoring.
 
 **Verification gates:**
+
 - After H6.2: existing fork build + smoke render must succeed (catches obvious regressions).
 - After H6.3: each of Sprints 7/8/12/14 must produce visually-equivalent output to its pre-MRT version on a reference scene.
 - After H6.5: BDPT vs unidirectional-PT on a glass+caustic scene must show measurable variance reduction at fixed sample count (the whole reason BDPT exists).

@@ -18,7 +18,12 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { convertMaterial } from '../material.js';
 import { vitrumSceneToThree } from '../vitrumSceneToThree.js';
-import type { Material as VitrumMaterial, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
+import type {
+  Material as VitrumMaterial,
+  SpectralCurve,
+  ThinFilmStack,
+  SurfaceAbsorptionLayer,
+} from '@vitrum/core';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -143,7 +148,9 @@ describe('convertMaterial: THREE userData.vitrum* → vitrum.Material', () => {
 describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () => {
   it('stamps vitrumDispersionAbbeNumber (RFE-06)', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       dispersionAbbeNumber: 30,
     });
     expect(threeMat.userData['vitrumDispersionAbbeNumber']).toBe(30);
@@ -151,7 +158,9 @@ describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () =>
 
   it('stamps vitrumScatteringCoefficient and vitrumScatteringAnisotropy (RFE-07)', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       scatteringCoefficient: 2.5,
       scatteringAnisotropy: 0.75,
     });
@@ -161,7 +170,9 @@ describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () =>
 
   it('stamps vitrumScatteringCoefficientRGB (RFE-07)', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       scatteringCoefficientRGB: [0.1, 0.2, 0.3],
     });
     expect(threeMat.userData['vitrumScatteringCoefficientRGB']).toEqual([0.1, 0.2, 0.3]);
@@ -174,7 +185,9 @@ describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () =>
       values: new Float32Array(81).fill(0.5),
     };
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       spectralAttenuation: curve,
     });
     const stamped = threeMat.userData['vitrumSpectralAttenuation'] as SpectralCurve | undefined;
@@ -185,11 +198,16 @@ describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () =>
 
   it('stamps vitrumThinFilmStack (RFE-08)', () => {
     const stack: ThinFilmStack = {
-      layers: [{ ior: 2.5, thicknessNm: 80 }, { ior: 1.46, thicknessNm: 120 }],
+      layers: [
+        { ior: 2.5, thicknessNm: 80 },
+        { ior: 1.46, thicknessNm: 120 },
+      ],
       incidentIor: 1.0,
     };
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       thinFilmStack: stack,
     });
     const stamped = threeMat.userData['vitrumThinFilmStack'] as ThinFilmStack | undefined;
@@ -199,7 +217,9 @@ describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () =>
 
   it('stamps vitrumFrontLayer and vitrumBackLayer (RFE-03)', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       frontLayer: { transmission: [0.9, 0.85, 0.8] },
       backLayer: { transmission: [0.7, 0.7, 0.7] },
     });
@@ -209,7 +229,9 @@ describe('vitrumSceneToThree: vitrum.Material → THREE userData.vitrum*', () =>
 
   it('does NOT stamp absent RFE fields (no phantom keys)', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
     });
     expect(threeMat.userData['vitrumDispersionAbbeNumber']).toBeUndefined();
     expect(threeMat.userData['vitrumScatteringCoefficient']).toBeUndefined();
@@ -246,7 +268,9 @@ describe('convertMaterial: anisotropy + anisotropyRotation (Gap 5)', () => {
 describe('vitrumSceneToThree: anisotropy + anisotropyRotation written to THREE material (Gap 5)', () => {
   it('writes anisotropy and anisotropyRotation onto the THREE material', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       anisotropy: 0.7,
       anisotropyRotation: 0.3,
     });
@@ -256,7 +280,9 @@ describe('vitrumSceneToThree: anisotropy + anisotropyRotation written to THREE m
 
   it('preserves anisotropy=0 when explicitly set in vitrum Material', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       anisotropy: 0,
     });
     expect(threeMat.anisotropy).toBe(0);
@@ -267,7 +293,9 @@ describe('vitrumSceneToThree: anisotropy + anisotropyRotation written to THREE m
     // When anisotropy is absent the THREE material must have its own default (0).
     // We verify the field was not artificially overwritten by the converter.
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
     });
     // THREE default is 0; as long as we haven't broken the default this passes.
     expect(threeMat.anisotropy).toBe(0);
@@ -322,7 +350,9 @@ describe('Dichroic LUT round-trip (Fix 3)', () => {
     const reflectanceLut = { __marker: 'reflectance' };
     const transmittanceLut = { __marker: 'transmittance' };
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
       extensions: {
         dichroicLUTs: { reflectance: reflectanceLut, transmittance: transmittanceLut },
       },
@@ -333,7 +363,9 @@ describe('Dichroic LUT round-trip (Fix 3)', () => {
 
   it('does NOT stamp dichroic keys when extensions.dichroicLUTs is absent (no phantom keys)', () => {
     const threeMat = vitrumMatToThreeMat({
-      baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
     });
     expect(threeMat.userData['vitrumDichroicReflectanceLUT']).toBeUndefined();
     expect(threeMat.userData['vitrumDichroicTransmittanceLUT']).toBeUndefined();
@@ -387,11 +419,17 @@ describe('Full round-trip: THREE userData.vitrum* → vitrum.Material → THREE 
     original.userData['vitrumScatteringAnisotropy'] = 0.75;
     original.userData['vitrumScatteringCoefficientRGB'] = [0.1, 0.2, 0.3];
     original.userData['vitrumSpectralAttenuation'] = {
-      wavelengthStart: 380, wavelengthEnd: 780, values: spectralValues,
+      wavelengthStart: 380,
+      wavelengthEnd: 780,
+      values: spectralValues,
     } satisfies SpectralCurve;
     original.userData['vitrumThinFilmStack'] = thinFilm;
-    original.userData['vitrumFrontLayer'] = { transmission: [0.9, 0.85, 0.8] } satisfies SurfaceAbsorptionLayer;
-    original.userData['vitrumBackLayer'] = { transmission: [0.7, 0.7, 0.7] } satisfies SurfaceAbsorptionLayer;
+    original.userData['vitrumFrontLayer'] = {
+      transmission: [0.9, 0.85, 0.8],
+    } satisfies SurfaceAbsorptionLayer;
+    original.userData['vitrumBackLayer'] = {
+      transmission: [0.7, 0.7, 0.7],
+    } satisfies SurfaceAbsorptionLayer;
 
     // Step 2: THREE → vitrum
     const vitrumMat = convertMaterial(original);

@@ -7,6 +7,7 @@
 **Motivation**: The fork's Sprint 7 and Sprint 8 shader patches are already applied (commits `260c432`, `7ffd15d`), and `sceneToThree.ts` already stamps `userData.vitrum*` on THREE materials. But no code ever reads those stamps and calls `pathTracer.material.u_volumeDensity = ...` or the equivalent. All fork uniforms sit at zero default. The applied patches are effectively dead until this bridge exists.
 
 **Scope**:
+
 - `@vitrum/pt-webgl` (`packages/pt-webgl/src/sceneToThree.ts`, `packages/pt-webgl/src/index.ts`) — primary implementation site
 - Fork (`PhysicalPathTracingMaterial.js`) — no changes needed; uniforms are already declared and wired in the shader
 - `@vitrum/shared-samplers` — read-only consumer: `jakobHanika.ts` and `cauchyIor.ts` supply coefficient conversion math
@@ -15,6 +16,7 @@
 - Touches fork? No new fork patches required.
 
 **Dependencies**:
+
 - RFE-06 (Sprint 8 dispersion fork patch) — APPLIED (`7ffd15d`)
 - RFE-07 (Sprint 7 volume scattering fork patch) — APPLIED (`260c432`)
 - RFE-08 / Sprint 12 spectral — PARTIAL; the CMF upload portion of this RFE can land now; Beer-Lambert per-λ path is gated on RFE-13 (ray-payload restructure)
@@ -25,6 +27,7 @@
 **Effort**: M — the math specs are fully written in `plan/sprint-8-pt-fork-patch.md §1` and the helpers exist in `@vitrum/shared-samplers`. The work is wiring + unit tests + a visual A/B render against a scattering scene and a dispersion scene. No new algorithms needed.
 
 **Risk**:
+
 - Uniform upload timing: must happen after `WebGLPathTracer` constructs its internal `PhysicalPathTracingMaterial` instance. If upload happens before the material is initialized the values will be clobbered. Needs a post-scene-set hook or deferred upload.
 - CMF array upload (`uCmfX[81]` etc.) is a one-time engine-init cost; must not be called per-frame.
 - Spectral Beer-Lambert half (RFE-08 full) is gated on RFE-13; implementing it prematurely will produce dead code or a broken contract.
@@ -41,11 +44,13 @@
 **Motivation**: External consumers and future contributors need to know the work is done and the `vitrum*` prefix convention is canonical.
 
 **Scope**:
+
 - `@vitrum/three-bindings` (`packages/three-bindings/src/material.ts`) — already implemented at lines 93–157; no action needed
 - `@vitrum/pt-webgl` (`sceneToThree.ts`) — stamping side already implemented at lines 100–136; no action needed
 - Fork, host app, `@vitrum/core` — no changes needed
 
 **Dependencies**:
+
 - RFE-03 `frontLayer`/`backLayer` — propagation is done; BSDF evaluation side deferred on RFE-12
 - RFE-06, 07, 08 — all userData keys are read and forwarded; confirmed at `material.ts` lines 93–157
 

@@ -42,24 +42,24 @@ function borderMirror(
   lx: number,
   ly: number,
 ): { mirror: [number, number]; isBorder: boolean } {
-  const onLeftEdge   = lx === 0;
-  const onRightEdge  = lx === N + 1;
-  const onTopEdge    = ly === 0;
+  const onLeftEdge = lx === 0;
+  const onRightEdge = lx === N + 1;
+  const onTopEdge = ly === 0;
   const onBottomEdge = ly === N + 1;
-  const isBorder     = onLeftEdge || onRightEdge || onTopEdge || onBottomEdge;
+  const isBorder = onLeftEdge || onRightEdge || onTopEdge || onBottomEdge;
   if (!isBorder) return { mirror: [lx, ly], isBorder: false };
 
   // Corners
-  if (onTopEdge    && onLeftEdge)  return { mirror: [N,     N    ], isBorder: true };
-  if (onTopEdge    && onRightEdge) return { mirror: [1,     N    ], isBorder: true };
-  if (onBottomEdge && onLeftEdge)  return { mirror: [N,     1    ], isBorder: true };
-  if (onBottomEdge && onRightEdge) return { mirror: [1,     1    ], isBorder: true };
+  if (onTopEdge && onLeftEdge) return { mirror: [N, N], isBorder: true };
+  if (onTopEdge && onRightEdge) return { mirror: [1, N], isBorder: true };
+  if (onBottomEdge && onLeftEdge) return { mirror: [N, 1], isBorder: true };
+  if (onBottomEdge && onRightEdge) return { mirror: [1, 1], isBorder: true };
 
   // Edges
-  if (onTopEdge)    return { mirror: [N + 1 - lx, 2        ], isBorder: true };
-  if (onBottomEdge) return { mirror: [N + 1 - lx, N - 1    ], isBorder: true };
-  if (onLeftEdge)   return { mirror: [2,           N + 1 - ly], isBorder: true };
-  if (onRightEdge)  return { mirror: [N - 1,       N + 1 - ly], isBorder: true };
+  if (onTopEdge) return { mirror: [N + 1 - lx, 2], isBorder: true };
+  if (onBottomEdge) return { mirror: [N + 1 - lx, N - 1], isBorder: true };
+  if (onLeftEdge) return { mirror: [2, N + 1 - ly], isBorder: true };
+  if (onRightEdge) return { mirror: [N - 1, N + 1 - ly], isBorder: true };
 
   // Unreachable
   return { mirror: [lx, ly], isBorder: false };
@@ -72,8 +72,8 @@ function runBorderFill(
   interior: Float32Array, // N*N rgba values (row-major, 4 floats each)
 ): Float32Array {
   const stride = N + 2;
-  const total  = stride * stride;
-  const atlas  = new Float32Array(total * 4); // rgba per texel
+  const total = stride * stride;
+  const atlas = new Float32Array(total * 4); // rgba per texel
 
   // Write interior into atlas (at local offset (+1, +1)).
   for (let y = 0; y < N; y++) {
@@ -93,8 +93,8 @@ function runBorderFill(
       const { mirror, isBorder } = borderMirror(N, lx, ly);
       if (!isBorder) continue;
       const [mx, my] = mirror;
-      const srcIdx   = (my * stride + mx) * 4;
-      const dstIdx   = (ly * stride + lx) * 4;
+      const srcIdx = (my * stride + mx) * 4;
+      const dstIdx = (ly * stride + lx) * 4;
       atlas[dstIdx + 0] = atlas[srcIdx + 0];
       atlas[dstIdx + 1] = atlas[srcIdx + 1];
       atlas[dstIdx + 2] = atlas[srcIdx + 2];
@@ -106,7 +106,12 @@ function runBorderFill(
 }
 
 /** Read a single texel from a flat atlas (rgba, row-major). */
-function readTexel(atlas: Float32Array, stride: number, lx: number, ly: number): [number, number, number, number] {
+function readTexel(
+  atlas: Float32Array,
+  stride: number,
+  lx: number,
+  ly: number,
+): [number, number, number, number] {
   const i = (ly * stride + lx) * 4;
   return [atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3]];
 }
@@ -134,7 +139,7 @@ function bilinear(
 // ---------------------------------------------------------------------------
 
 describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
-  const IRR_N = 8;  // IRR_CELL
+  const IRR_N = 8; // IRR_CELL
   const VIS_N = 16; // VIS_CELL
 
   // Test 1 — Mirror targets are always interior for every N in {8, 16}.
@@ -219,7 +224,7 @@ describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
           interior[i * 4 + 2] = 0.9;
           interior[i * 4 + 3] = 1.0;
         }
-        const atlas  = runBorderFill(N, interior);
+        const atlas = runBorderFill(N, interior);
         const stride = N + 2;
         const EPS = 1e-6;
 
@@ -260,13 +265,13 @@ describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
       // The atlas UV maps [0,1] octahedral → [1, 1+N] pixel range with +0.5 centering.
       // At u=0, the sample point falls at pixel x=1.0 (between border x=0 and interior x=1).
       // Bilinear uses pixels at x=0 (border) and x=1 (first interior column).
-      const vy   = 4; // arbitrary interior y (interior row 4 = local ly=5)
-      const tl   = readTexel(atlas, stride, 0, vy);      // border left
-      const tr   = readTexel(atlas, stride, 1, vy);      // interior first col
-      const bl   = readTexel(atlas, stride, 0, vy + 1);  // border left, next row
-      const br   = readTexel(atlas, stride, 1, vy + 1);  // interior first col, next row
-      const u    = 0.0; // exactly at the seam — bilinear: border contributes (1-0)=100%
-      const v    = 0.0;
+      const vy = 4; // arbitrary interior y (interior row 4 = local ly=5)
+      const tl = readTexel(atlas, stride, 0, vy); // border left
+      const tr = readTexel(atlas, stride, 1, vy); // interior first col
+      const bl = readTexel(atlas, stride, 0, vy + 1); // border left, next row
+      const br = readTexel(atlas, stride, 1, vy + 1); // interior first col, next row
+      const u = 0.0; // exactly at the seam — bilinear: border contributes (1-0)=100%
+      const v = 0.0;
       const sampled = bilinear(tl, tr, bl, br, u, v);
 
       // With a zero border (bug state), sampled[0] = 0.
@@ -287,13 +292,13 @@ describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
       const atlas = runBorderFill(N, interior);
 
       // At u=1, sample point is between interior last column (lx=N=8) and right border (lx=N+1=9).
-      const vy  = 3;
-      const tl  = readTexel(atlas, stride, N,     vy);
-      const tr  = readTexel(atlas, stride, N + 1, vy);
-      const bl  = readTexel(atlas, stride, N,     vy + 1);
-      const br  = readTexel(atlas, stride, N + 1, vy + 1);
-      const u   = 1.0; // full weight on right border column
-      const v   = 0.0;
+      const vy = 3;
+      const tl = readTexel(atlas, stride, N, vy);
+      const tr = readTexel(atlas, stride, N + 1, vy);
+      const bl = readTexel(atlas, stride, N, vy + 1);
+      const br = readTexel(atlas, stride, N + 1, vy + 1);
+      const u = 1.0; // full weight on right border column
+      const v = 0.0;
       const sampled = bilinear(tl, tr, bl, br, u, v);
 
       const EPS = 1e-5;
@@ -312,13 +317,13 @@ describe('DDGI atlas border-mirror math (CPU replica, no GPU required)', () => {
       }
       const atlas = runBorderFill(N, interior);
 
-      const lx  = 3; // arbitrary x in interior
-      const tl  = readTexel(atlas, stride, lx,     0); // border top
-      const tr  = readTexel(atlas, stride, lx + 1, 0); // border top, next col
-      const bl  = readTexel(atlas, stride, lx,     1); // interior first row
-      const br  = readTexel(atlas, stride, lx + 1, 1); // interior first row, next col
-      const u   = 0.0;
-      const v   = 0.0; // full weight on top border
+      const lx = 3; // arbitrary x in interior
+      const tl = readTexel(atlas, stride, lx, 0); // border top
+      const tr = readTexel(atlas, stride, lx + 1, 0); // border top, next col
+      const bl = readTexel(atlas, stride, lx, 1); // interior first row
+      const br = readTexel(atlas, stride, lx + 1, 1); // interior first row, next col
+      const u = 0.0;
+      const v = 0.0; // full weight on top border
       const sampled = bilinear(tl, tr, bl, br, u, v);
 
       const EPS = 1e-5;
@@ -423,7 +428,7 @@ describe('non-uniform interior — source-row sanity', () => {
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
         const i = (r * N + c) * 4;
-        interior[i + 0] = r + 1;  // row label 1..N
+        interior[i + 0] = r + 1; // row label 1..N
         interior[i + 1] = 0;
         interior[i + 2] = 0;
         interior[i + 3] = 1;
@@ -436,7 +441,7 @@ describe('non-uniform interior — source-row sanity', () => {
     // value r=2 in every position.
     for (let lx = 1; lx <= N; lx++) {
       const [r, g, b, a] = readTexel(atlas, stride, lx, 0);
-      expect(r).toBe(2);  // ← source row label is 2 (NOT 1)
+      expect(r).toBe(2); // ← source row label is 2 (NOT 1)
       expect(g).toBe(0);
       expect(b).toBe(0);
       expect(a).toBe(1);
@@ -501,8 +506,8 @@ describe('non-uniform interior — source-row sanity', () => {
       }
     }
     const atlas = runBorderFill(N, interior);
-    expect(readTexel(atlas, stride, 1, 0)[0]).toBe(8);   // lx=1 → mirror source col=8
-    expect(readTexel(atlas, stride, 8, 0)[0]).toBe(1);   // lx=8 → mirror source col=1
-    expect(readTexel(atlas, stride, 4, 0)[0]).toBe(5);   // lx=4 → mirror source col=5
+    expect(readTexel(atlas, stride, 1, 0)[0]).toBe(8); // lx=1 → mirror source col=8
+    expect(readTexel(atlas, stride, 8, 0)[0]).toBe(1); // lx=8 → mirror source col=1
+    expect(readTexel(atlas, stride, 4, 0)[0]).toBe(5); // lx=4 → mirror source col=5
   });
 });

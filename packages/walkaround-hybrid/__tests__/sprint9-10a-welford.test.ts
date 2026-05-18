@@ -252,7 +252,7 @@ describe('RESOLVE_WGSL — checkerboard upsampling + temporal reprojection', () 
   });
 
   it('isShadedPixel uses checkerboard (px + py) & 1 == frameParity', () => {
-    expect(RESOLVE_WGSL).toContain('(px + py) & 1u') ;
+    expect(RESOLVE_WGSL).toContain('(px + py) & 1u');
     expect(RESOLVE_WGSL).toContain('frameParity');
   });
 
@@ -424,7 +424,7 @@ describe('FrameResources — varianceBuffer field (Sprint 9)', () => {
     // This validates that the varianceBuffer field is present in the returned object
     // without running a real GPU pipeline.
     const textureMock = { destroy: vi.fn(), createView: vi.fn(() => ({})) };
-    const bufferMock  = { destroy: vi.fn() };
+    const bufferMock = { destroy: vi.fn() };
     const samplerMock = {};
 
     const mockQueue = {
@@ -432,7 +432,7 @@ describe('FrameResources — varianceBuffer field (Sprint 9)', () => {
       writeTexture: vi.fn(),
     };
     const mockDevice = {
-      createBuffer:  vi.fn(() => bufferMock),
+      createBuffer: vi.fn(() => bufferMock),
       createTexture: vi.fn(() => textureMock),
       createSampler: vi.fn(() => samplerMock),
       queue: mockQueue,
@@ -452,11 +452,11 @@ describe('FrameResources — varianceBuffer field (Sprint 9)', () => {
   it('destroyFrameResources calls destroy on varianceBuffer', async () => {
     const destroyMock = vi.fn();
     const textureMock = { destroy: destroyMock, createView: vi.fn(() => ({})) };
-    const bufferMock  = { destroy: vi.fn() };
+    const bufferMock = { destroy: vi.fn() };
     const samplerMock = {};
 
     const mockDevice = {
-      createBuffer:  vi.fn(() => bufferMock),
+      createBuffer: vi.fn(() => bufferMock),
       createTexture: vi.fn(() => textureMock),
       createSampler: vi.fn(() => samplerMock),
       queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },

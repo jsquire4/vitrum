@@ -3,13 +3,22 @@
   "version": "0.0.0",
   "private": true,
   "description": "Sampling utilities for path tracers and walkaround engines: QMC sequences, light tree CDF, MIS heuristics, hero-wavelength MIS.",
-  "keywords": ["sampling", "qmc", "monte-carlo", "vitrum", "path-tracing"],
+  "keywords": [
+    "sampling",
+    "qmc",
+    "monte-carlo",
+    "vitrum",
+    "path-tracing"
+  ],
   "author": "jsquire4",
   "license": "MIT",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/jsquire4/vitrum.git",

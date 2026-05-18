@@ -45,6 +45,7 @@ pass (H-1, H-2, M-3, L-1, L-3).
 and hero-wavelength spectral sampling.
 
 **What was implemented**:
+
 - `SpectralCurve` interface added to `packages/core/src/scene.ts`.
 - `Material.spectralAttenuation?: SpectralCurve` field added with JSDoc
   citing Wilkie et al. EGSR 2014.
@@ -74,6 +75,7 @@ code.
 `scatteringCoefficientRGB` fields on `Material` for volumetric delta tracking.
 
 **What was implemented**:
+
 - Three fields added to `Material` in `packages/core/src/scene.ts`.
 - JSDoc cites Henyey & Greenstein 1941 (phase function) and Novák et al. 2018
   (delta tracking / null-collision framework).
@@ -96,6 +98,7 @@ existing infrastructure.
 `backLayer` fields on `Material` for per-face BSDF asymmetry.
 
 **What was implemented**:
+
 - `SurfaceAbsorptionLayer` interface added to `packages/core/src/scene.ts`
   with `transmission: Vec3`, `roughness?: number`, `normalMap?: TextureRef`,
   `normalScale?: number`.
@@ -122,6 +125,7 @@ field on `Material` for Transfer Matrix Method evaluation of multi-layer optical
 coatings (Bragg reflectors, dichroic glass, structural color).
 
 **What was implemented**:
+
 - `ThinFilmLayer` interface: `ior: number`, `extinctionCoefficient?: number`,
   `thicknessNm: number`.
 - `ThinFilmStack` interface: `layers: ReadonlyArray<ThinFilmLayer>`,
@@ -149,6 +153,7 @@ in external_requests/04-multilayer-thinfilm.md §3.
 `EngineCapabilities`.
 
 **What was implemented**:
+
 - `EngineOptions.causticStrategy?: 'none' | 'manifold-nee' | 'photon-map'`
   added with full JSDoc citing Hanika et al. 2015.
 - `EngineOptions.mneeMaxIterations?: number` (default 8) added.
@@ -166,6 +171,7 @@ in external_requests/04-multilayer-thinfilm.md §3.
   are incompatible with the walkaround engine's frame cadence.
 
 **Files modified**:
+
 - `packages/core/src/engine.ts`
 - `packages/pt-webgl/src/index.ts`
 - `packages/walkaround-hybrid/src/HybridEngine.ts`
@@ -203,6 +209,7 @@ Comment updated to reflect the correct maximum.
 
 `_hwcToNchw` and `_nchwToHwc` exported with underscore prefix from
 `oidnBridge.ts`. 6 direct round-trip tests added to `oidnBridge.test.ts`:
+
 - 1×1×3 single pixel round-trip
 - 2×2×3 identity round-trip
 - Explicit NCHW channel layout verification for 2×2×3

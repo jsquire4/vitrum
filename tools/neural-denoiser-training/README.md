@@ -61,17 +61,17 @@ const engine = await createWalkaroundEngine_Hybrid({
 The U-Net follows Ronneberger et al. 2015 with the Chaitanya et al. 2017
 9-channel input layout (noisy RGB + albedo + world normals).
 
-| Stage         | Shape               |
-|---------------|---------------------|
-| Input         | H × W × 9           |
-| Encoder L1    | H/2 × W/2 × 24      |
-| Encoder L2    | H/4 × W/4 × 48      |
-| Encoder L3    | H/8 × W/8 × 96      |
-| Bottleneck    | H/8 × W/8 × 192     |
-| Decoder L3    | H/4 × W/4 × 96      |
-| Decoder L2    | H/2 × W/2 × 48      |
-| Decoder L1    | H × W × 24          |
-| Output        | H × W × 3 (RGB)     |
+| Stage      | Shape           |
+| ---------- | --------------- |
+| Input      | H × W × 9       |
+| Encoder L1 | H/2 × W/2 × 24  |
+| Encoder L2 | H/4 × W/4 × 48  |
+| Encoder L3 | H/8 × W/8 × 96  |
+| Bottleneck | H/8 × W/8 × 192 |
+| Decoder L3 | H/4 × W/4 × 96  |
+| Decoder L2 | H/2 × W/2 × 48  |
+| Decoder L1 | H × W × 24      |
+| Output     | H × W × 3 (RGB) |
 
 **Parameters:** ~426,075 (~1.63 MB at f32)
 

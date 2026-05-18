@@ -49,14 +49,11 @@ describe('Beer-Lambert attenuation (Item 18)', () => {
   const sigmaT = 0.1;
   const distances = [1, 10, 32, 100, 10_000, 1e6];
 
-  it.each(distances)(
-    'exp(-sigmaT * %s) is finite and >= 0',
-    (d) => {
-      const T = Math.exp(-sigmaT * d);
-      expect(Number.isFinite(T)).toBe(true);
-      expect(T).toBeGreaterThanOrEqual(0);
-    },
-  );
+  it.each(distances)('exp(-sigmaT * %s) is finite and >= 0', (d) => {
+    const T = Math.exp(-sigmaT * d);
+    expect(Number.isFinite(T)).toBe(true);
+    expect(T).toBeGreaterThanOrEqual(0);
+  });
 
   it('attenuation approaches 0 for d=1e6 (not NaN or Inf)', () => {
     const T = Math.exp(-sigmaT * 1e6);

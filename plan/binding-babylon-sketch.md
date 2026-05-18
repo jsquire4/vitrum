@@ -8,15 +8,15 @@ Validate that `@vitrum/core` **`Scene`** field names are sufficient when the hos
 
 ## Mapping table (conceptual)
 
-| `@vitrum/core` | Babylon analogue (sketch) |
-|----------------|---------------------------|
-| `MeshPrimitive.positions/normals/uvs/indices` | `VertexBuffer` / `Geometry.getVerticesData` — copy into `Float32Array` / typed index buffer |
-| `MeshPrimitive.transform` | `mesh.getWorldMatrix()` → column-major `Float32Array(16)` |
-| `Material` PBR fields | `PBRMaterial` / `StandardMaterial` albedo, roughness, metalness, etc. |
-| `TextureRef` | Babylon `Texture` handle as **opaque** `unknown`, or serializable `{ url, colorSpace }` if backend loads by URL |
-| `RectAreaEmitter` | Area light or emissive plane mesh → map `uAxis`/`vAxis` from width/height + world rotation |
-| `DirectionalEmitter` | `DirectionalLight.direction` (invert if Babylon uses “direction to scene”) |
-| `SceneEnvironment` `hdri` | `CubeTexture` / equirect `Texture` as opaque ref or file ref |
+| `@vitrum/core`                                | Babylon analogue (sketch)                                                                                       |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `MeshPrimitive.positions/normals/uvs/indices` | `VertexBuffer` / `Geometry.getVerticesData` — copy into `Float32Array` / typed index buffer                     |
+| `MeshPrimitive.transform`                     | `mesh.getWorldMatrix()` → column-major `Float32Array(16)`                                                       |
+| `Material` PBR fields                         | `PBRMaterial` / `StandardMaterial` albedo, roughness, metalness, etc.                                           |
+| `TextureRef`                                  | Babylon `Texture` handle as **opaque** `unknown`, or serializable `{ url, colorSpace }` if backend loads by URL |
+| `RectAreaEmitter`                             | Area light or emissive plane mesh → map `uAxis`/`vAxis` from width/height + world rotation                      |
+| `DirectionalEmitter`                          | `DirectionalLight.direction` (invert if Babylon uses “direction to scene”)                                      |
+| `SceneEnvironment` `hdri`                     | `CubeTexture` / equirect `Texture` as opaque ref or file ref                                                    |
 
 ## Contract rules
 

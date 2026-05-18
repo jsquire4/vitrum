@@ -7,7 +7,14 @@
  */
 
 import type * as THREE from 'three';
-import type { SceneEmitter, Vec3, DirectionalEmitter, RectAreaEmitter, PointEmitter, SpotEmitter } from '@vitrum/core';
+import type {
+  SceneEmitter,
+  Vec3,
+  DirectionalEmitter,
+  RectAreaEmitter,
+  PointEmitter,
+  SpotEmitter,
+} from '@vitrum/core';
 import { colorToVec3 } from './material.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -54,10 +61,7 @@ export function warnOnce(warnedTypes: Set<string>, typeName: string, label: stri
  *   but skippable (AmbientLight, HemisphereLight).
  * @throws Error if the light type is entirely unrecognised.
  */
-export function convertLight(
-  light: THREE.Light,
-  warnedTypes: Set<string>,
-): SceneEmitter | null {
+export function convertLight(light: THREE.Light, warnedTypes: Set<string>): SceneEmitter | null {
   const label = light.name || light.uuid;
   const color = colorToVec3(light.color);
   const id = light.uuid;

@@ -17,6 +17,7 @@ The node declares a `var<storage, ...>` binding in the generated WGSL. The optio
 `.toReadOnly()` call sets access mode to `read`; without it defaults to `read_write`.
 
 **In `cascadeDispatch.ts`** (compute kernel):
+
 - `storage(sceneBVH.bvhNodes, 'BVHNode', count).toReadOnly()` → read-only storage
 - `storage(sceneBVH.indices,  'vec3u', count).toReadOnly()` → read-only storage
 - `storage(sceneBVH.positions, 'vec3f', count).toReadOnly()` → read-only storage
@@ -38,11 +39,12 @@ The node declares a `var<storage, ...>` binding in the generated WGSL. The optio
 const layoutEntry: GPUBindGroupLayoutEntry = {
   binding: N,
   visibility: GPUShaderStage.COMPUTE,
-  buffer: { type: 'read-only-storage' },   // or 'storage' for writable
+  buffer: { type: 'read-only-storage' }, // or 'storage' for writable
 };
 ```
 
 **WGSL declaration**:
+
 ```wgsl
 // read-only:  @group(0) @binding(N) var<storage, read> myBuffer: array<MyType>;
 // read-write: @group(0) @binding(N) var<storage, read_write> myBuffer: array<MyType>;
@@ -53,24 +55,24 @@ uses explicit indices. The convention adopted here (matching parameter order in 
 `wgslFn` kernel signature):
 
 **Cast pass bindings** (one bind group per cascade):
-| binding | name          | access         | WGSL type                             |
+| binding | name | access | WGSL type |
 |---------|---------------|----------------|---------------------------------------|
-| 0       | bvh           | read-only      | `array<BVHNode>`                      |
-| 1       | geom_index    | read-only      | `array<vec3u>`                        |
-| 2       | geom_position | read-only      | `array<vec3f>`                        |
-| 3       | materials     | read-only      | `array<MaterialEntry>`                |
-| 4       | triMatId      | read-only      | `array<u32>`                          |
-| 5       | cascadeOut    | read_write     | `array<vec4f>`                        |
-| 6       | envMap        | texture        | `texture_2d<f32>`                     |
-| 7       | envSampler    | sampler        | `sampler`                             |
-| 8       | u_arr         | read-only      | `array<CascadeUniforms>`              |
+| 0 | bvh | read-only | `array<BVHNode>` |
+| 1 | geom_index | read-only | `array<vec3u>` |
+| 2 | geom_position | read-only | `array<vec3f>` |
+| 3 | materials | read-only | `array<MaterialEntry>` |
+| 4 | triMatId | read-only | `array<u32>` |
+| 5 | cascadeOut | read_write | `array<vec4f>` |
+| 6 | envMap | texture | `texture_2d<f32>` |
+| 7 | envSampler | sampler | `sampler` |
+| 8 | u_arr | read-only | `array<CascadeUniforms>` |
 
 **Merge pass bindings** (one bind group per merge step):
-| binding | name         | access         | WGSL type          |
+| binding | name | access | WGSL type |
 |---------|--------------|----------------|--------------------|
-| 0       | upperCascade | read-only      | `array<vec4f>`     |
-| 1       | lowerCascade | read_write     | `array<vec4f>`     |
-| 2       | m_arr        | read-only      | `array<MergeUniforms>` |
+| 0 | upperCascade | read-only | `array<vec4f>` |
+| 1 | lowerCascade | read_write | `array<vec4f>` |
+| 2 | m_arr | read-only | `array<MergeUniforms>` |
 
 **Subtlety — BVH buffers shared across passes**: In TSL, the BVH `storage()` nodes are
 created once and reused across all 5 cast passes. In raw WebGPU, the same `GPUBuffer`
@@ -133,13 +135,15 @@ argument is `[totalInvocations, workgroupSize]` where Three.js computes
 `ceil(totalInvocations / workgroupSize)` workgroup dispatches.
 
 In practice:
+
 ```typescript
 // TSL:
-wgslFn_node.compute(totalRays, [64])
+wgslFn_node.compute(totalRays, [64]);
 // means: dispatch ceil(totalRays / 64) workgroups, each with 64 threads
 ```
 
 **Raw WebGPU equivalent**:
+
 ```typescript
 const workgroupCount = Math.ceil(totalRays / 64);
 passEncoder.dispatchWorkgroups(workgroupCount);
@@ -192,6 +196,7 @@ compute kernel as `texture_2d<f32>` and `sampler` bindings. In raw WebGPU these 
 a `GPUTextureView` and `GPUSampler` created from a `GPUTexture`.
 
 **Raw WebGPU equivalent** (for the env texture in cast passes):
+
 - `GPUBindGroupLayoutEntry` at binding 6: `{ texture: { sampleType: 'float', viewDimension: '2d' } }`
 - `GPUBindGroupLayoutEntry` at binding 7: `{ sampler: { type: 'filtering' } }`
 - Bind group entry 6: `{ binding: 6, resource: gpuTexture.createView() }`
@@ -284,14 +289,14 @@ is whitespace-agnostic.
 
 ## Summary: what was TSL-only vs. what was converted
 
-| File | TSL primitives | Converted? |
-|------|---------------|-----------|
-| `cascadeDispatch.ts` | `storage()`, `compute()`, `instanceIndex`, `texture()`, `sampler()`, `StorageBufferAttribute` refs | YES — converted to raw GPUComputePipeline |
-| `cascadePyramid.ts` | `StorageBufferAttribute` (direct instantiation) | TSL-preserved (retained as-is) |
-| `bvhCompute.ts` (RC) | `StorageBufferAttribute` (direct instantiation) | TSL-preserved (retained as-is) |
-| `useCascadeBuffers.ts` | React hooks only (no TSL) | De-React only → `CascadeBuffers` class |
-| `applyDDGIShading.ts` | `wgslFn`, `texture`, `uniform`, `add`, `vec4`, `mul`, `output`, `materialColor`, `renderOutput`, `positionWorld`, `normalWorld` | TSL-preserved per Option (i) |
-| `giReceiver.ts` | `MeshPhysicalNodeMaterial`, `output`, `renderOutput` | TSL-preserved; React hook stripped |
-| `walkaroundDiffuseLighting.ts` | `Fn`, `vec3`, `float`, `uniform`, `storage`, `positionWorld`, `normalWorld`, `dot`, `max`, `clamp` | TSL-preserved per Option (i) |
-| `probeRayCast.wgsl.ts` | `wgslFn`, `wgsl` (inline WGSL strings) | WGSL extracted verbatim into `rc/wgsl/` |
-| `cascadeMerge.wgsl.ts` | `wgslFn`, `wgsl` (inline WGSL strings) | WGSL extracted verbatim into `rc/wgsl/` |
+| File                           | TSL primitives                                                                                                                  | Converted?                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `cascadeDispatch.ts`           | `storage()`, `compute()`, `instanceIndex`, `texture()`, `sampler()`, `StorageBufferAttribute` refs                              | YES — converted to raw GPUComputePipeline |
+| `cascadePyramid.ts`            | `StorageBufferAttribute` (direct instantiation)                                                                                 | TSL-preserved (retained as-is)            |
+| `bvhCompute.ts` (RC)           | `StorageBufferAttribute` (direct instantiation)                                                                                 | TSL-preserved (retained as-is)            |
+| `useCascadeBuffers.ts`         | React hooks only (no TSL)                                                                                                       | De-React only → `CascadeBuffers` class    |
+| `applyDDGIShading.ts`          | `wgslFn`, `texture`, `uniform`, `add`, `vec4`, `mul`, `output`, `materialColor`, `renderOutput`, `positionWorld`, `normalWorld` | TSL-preserved per Option (i)              |
+| `giReceiver.ts`                | `MeshPhysicalNodeMaterial`, `output`, `renderOutput`                                                                            | TSL-preserved; React hook stripped        |
+| `walkaroundDiffuseLighting.ts` | `Fn`, `vec3`, `float`, `uniform`, `storage`, `positionWorld`, `normalWorld`, `dot`, `max`, `clamp`                              | TSL-preserved per Option (i)              |
+| `probeRayCast.wgsl.ts`         | `wgslFn`, `wgsl` (inline WGSL strings)                                                                                          | WGSL extracted verbatim into `rc/wgsl/`   |
+| `cascadeMerge.wgsl.ts`         | `wgslFn`, `wgsl` (inline WGSL strings)                                                                                          | WGSL extracted verbatim into `rc/wgsl/`   |

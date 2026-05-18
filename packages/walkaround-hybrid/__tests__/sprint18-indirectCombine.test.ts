@@ -12,10 +12,7 @@
 import { describe, expect, it } from 'vitest';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { INDIRECT_COMBINE_WGSL } from '../src/shaders/indirectCombine.wgsl.js';
-import {
-  MAX_PASS_COUNT,
-  buildPassLayout,
-} from '../src/pipeline/timestampQueries.js';
+import { MAX_PASS_COUNT, buildPassLayout } from '../src/pipeline/timestampQueries.js';
 
 describe('Sprint 18 — shade.wgsl split output', () => {
   it('declares the hdrIndirectOut storage texture at frame BGL binding 12', () => {
@@ -35,7 +32,6 @@ describe('Sprint 18 — shade.wgsl split output', () => {
     expect(SHADE_WGSL).toMatch(/textureStore\(hdrColorOut,\s*gid\.xy,\s*vec4f\(clampedDirect/);
     expect(SHADE_WGSL).toMatch(/textureStore\(hdrIndirectOut,\s*gid\.xy,\s*vec4f\(clampedIndirect/);
   });
-
 });
 
 describe('Sprint 18 — indirect-combine WGSL', () => {
@@ -52,7 +48,9 @@ describe('Sprint 18 — indirect-combine WGSL', () => {
   });
 
   it('sums denoised direct + denoised indirect into the combined texture', () => {
-    expect(INDIRECT_COMBINE_WGSL).toMatch(/textureStore\(ic_combinedOut,\s*gid\.xy,\s*vec4f\(direct\s*\+\s*indirect/);
+    expect(INDIRECT_COMBINE_WGSL).toMatch(
+      /textureStore\(ic_combinedOut,\s*gid\.xy,\s*vec4f\(direct\s*\+\s*indirect/,
+    );
   });
 });
 
@@ -61,7 +59,7 @@ describe('Sprint 18 — pass-layout placement', () => {
     for (const denoiserMode of ['atrous-variance', 'atrous'] as const) {
       const layout = buildPassLayout({ denoiserMode });
       const combine = layout.labels.indexOf('indirect-combine');
-      const accum   = layout.labels.indexOf('temporalAccum');
+      const accum = layout.labels.indexOf('temporalAccum');
       expect(combine).toBeGreaterThanOrEqual(0);
       // Item 3 (DDGI border fill): ddgi-border-irr and ddgi-border-vis now sit
       // between indirect-combine and temporalAccum so the border is filled

@@ -57,11 +57,16 @@ import { StorageBufferAttribute } from 'three/webgpu';
 // Previous (paper-derived) dimensions: C0=64×36×56×16 = 2.06M rays (too slow: ~4fps measured).
 // Reduced by 4× in each probe dimension to bring within budget while retaining spatial coverage.
 export const CASCADE_DIMS = [
-  { probes: [16,  9, 14] as [number, number, number], rays: 16,   intervalNear: 0,    intervalFar: 12   },
-  { probes: [ 8,  5,  7] as [number, number, number], rays: 64,   intervalNear: 12,   intervalFar: 36   },
-  { probes: [ 4,  3,  4] as [number, number, number], rays: 256,  intervalNear: 36,   intervalFar: 96   },
-  { probes: [ 3,  2,  3] as [number, number, number], rays: 1024, intervalNear: 96,   intervalFar: 240  },
-  { probes: [ 2,  2,  2] as [number, number, number], rays: 4096, intervalNear: 240,  intervalFar: 1e9  },
+  { probes: [16, 9, 14] as [number, number, number], rays: 16, intervalNear: 0, intervalFar: 12 },
+  { probes: [8, 5, 7] as [number, number, number], rays: 64, intervalNear: 12, intervalFar: 36 },
+  { probes: [4, 3, 4] as [number, number, number], rays: 256, intervalNear: 36, intervalFar: 96 },
+  { probes: [3, 2, 3] as [number, number, number], rays: 1024, intervalNear: 96, intervalFar: 240 },
+  {
+    probes: [2, 2, 2] as [number, number, number],
+    rays: 4096,
+    intervalNear: 240,
+    intervalFar: 1e9,
+  },
 ] as const;
 
 export type CascadeDim = (typeof CASCADE_DIMS)[number];
@@ -100,7 +105,7 @@ export interface CascadeBuffers {
  * renderer the first time they are uploaded.
  */
 export function allocateCascades(bounds: THREE.Box3): CascadeBuffers {
-  const size   = bounds.getSize(new THREE.Vector3());
+  const size = bounds.getSize(new THREE.Vector3());
   const origin = bounds.min.clone();
   const cascades = CASCADE_DIMS.map((c) => {
     const len = cascadeBufferSize(c);
@@ -131,7 +136,7 @@ const DEBUG_COLORS: [number, number, number][] = [
 
 export function fillCascadeDebug(b: CascadeBuffers): void {
   CASCADE_DIMS.forEach((c, k) => {
-    const buf   = b.cascades[k];
+    const buf = b.cascades[k];
     if (!buf) return;
     const color = DEBUG_COLORS[k] ?? [0.5, 0.5, 0.5];
     const total = cascadeTotalRays(c);
@@ -139,7 +144,7 @@ export function fillCascadeDebug(b: CascadeBuffers): void {
       buf[i * 4 + 0] = color[0];
       buf[i * 4 + 1] = color[1];
       buf[i * 4 + 2] = color[2];
-      buf[i * 4 + 3] = 0;  // alpha=0 means "escaped" (for merge pass to merge from upper)
+      buf[i * 4 + 3] = 0; // alpha=0 means "escaped" (for merge pass to merge from upper)
     }
   });
 }

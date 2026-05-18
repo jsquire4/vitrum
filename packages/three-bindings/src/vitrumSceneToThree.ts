@@ -54,7 +54,8 @@ function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
   if (m.roughnessMap != null && isTexture(m.roughnessMap)) mat.roughnessMap = m.roughnessMap;
   if (m.metallicMap != null && isTexture(m.metallicMap)) mat.metalnessMap = m.metallicMap;
   if (m.emissiveMap != null && isTexture(m.emissiveMap)) mat.emissiveMap = m.emissiveMap;
-  if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
+  if (m.transmissionMap != null && isTexture(m.transmissionMap))
+    mat.transmissionMap = m.transmissionMap;
 }
 
 /** Stamp vitrum-specific extension fields into `mat.userData` using the
@@ -122,11 +123,7 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
     mat.transmission = m.transmission;
     if (m.ior != null) mat.ior = m.ior;
     if (m.attenuationColor != null) {
-      mat.attenuationColor.set(
-        m.attenuationColor[0],
-        m.attenuationColor[1],
-        m.attenuationColor[2],
-      );
+      mat.attenuationColor.set(m.attenuationColor[0], m.attenuationColor[1], m.attenuationColor[2]);
     }
     if (m.attenuationDistance != null) mat.attenuationDistance = m.attenuationDistance;
     if (m.thickness != null) mat.thickness = m.thickness;
@@ -144,7 +141,9 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
 }
 
 function isTexture(x: unknown): x is Texture {
-  return x != null && typeof x === 'object' && 'isTexture' in x && (x as Texture).isTexture === true;
+  return (
+    x != null && typeof x === 'object' && 'isTexture' in x && (x as Texture).isTexture === true
+  );
 }
 
 function meshPrimitiveToThree(p: MeshPrimitive, meshAreaRadianceRgb?: Vec3): Mesh {
@@ -178,11 +177,11 @@ function meshEmitterBoostByPrimitiveId(scene: VitrumScene): Map<string, [number,
   for (const e of scene.emitters) {
     if (e.kind !== 'mesh-area') continue;
     const id = String(e.meshId);
-    const add = [
-      e.color[0] * e.intensity,
-      e.color[1] * e.intensity,
-      e.color[2] * e.intensity,
-    ] as [number, number, number];
+    const add = [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity] as [
+      number,
+      number,
+      number,
+    ];
     const prev = map.get(id);
     if (!prev) {
       map.set(id, [...add]);
@@ -200,7 +199,9 @@ function meshEmitterBoostByPrimitiveId(scene: VitrumScene): Map<string, [number,
  * Half-span along tangent/bitangent is √π·r/2 per axis so the rectangular patch has
  * the same π·radius² footprint as an ideal disc (different sampling density).
  */
-function discAreaEmitterToRectThree(e: Extract<SceneEmitter, { kind: 'disc-area' }>): RectAreaLight | null {
+function discAreaEmitterToRectThree(
+  e: Extract<SceneEmitter, { kind: 'disc-area' }>,
+): RectAreaLight | null {
   console.warn(
     `[vitrum/three-bindings] DiscAreaEmitter "${e.id}" converted to RectAreaLight ` +
       `(area-preserving rectangle approximation; Three has no native disc-area light). ` +
@@ -249,10 +250,7 @@ function discAreaEmitterToRectThree(e: Extract<SceneEmitter, { kind: 'disc-area'
 function emitterToThree(e: SceneEmitter): Object3D | null {
   switch (e.kind) {
     case 'directional': {
-      const L = new DirectionalLight(
-        new Color(e.color[0], e.color[1], e.color[2]),
-        e.intensity,
-      );
+      const L = new DirectionalLight(new Color(e.color[0], e.color[1], e.color[2]), e.intensity);
       L.name = String(e.id);
       const d = e.direction;
       _u.set(d[0], d[1], d[2]).multiplyScalar(1000);
@@ -289,10 +287,12 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
       L.matrix.setPosition(L.position);
       L.matrixAutoUpdate = false;
       L.matrixWorld.copy(L.matrix);
-      const crossLen = _z.crossVectors(
-        _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]),
-        _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]),
-      ).length();
+      const crossLen = _z
+        .crossVectors(
+          _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]),
+          _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]),
+        )
+        .length();
       const rectArea = 4 * crossLen;
       L.userData['cellPower'] = luminance(e.color, e.intensity) * rectArea;
       return L;
@@ -397,9 +397,7 @@ export function applyEnvironment(threeScene: Scene, env: VitrumScene['environmen
     }
     return;
   }
-  console.warn(
-    '@vitrum/three-bindings: procedural-sky environment not wired — use HDRI or none',
-  );
+  console.warn('@vitrum/three-bindings: procedural-sky environment not wired — use HDRI or none');
   threeScene.background = new Color(0.02, 0.02, 0.03);
   threeScene.environment = null;
 }

@@ -20,12 +20,7 @@
 //     (b) GPU: read the primitive-ID G-buffer pixel at (x,y) after the shade pass.
 //   Option (b) is more accurate; requires a primitive-ID attachment in the shade pass.
 
-import React, {
-  type FC,
-  type ChangeEvent,
-  useEffect,
-  useState,
-} from 'react';
+import React, { type FC, type ChangeEvent, useEffect, useState } from 'react';
 import type { Material, Vec3 } from '@vitrum/core';
 import type { DebuggableEngine } from '../types.js';
 
@@ -156,18 +151,20 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
     }
   };
 
-  const updateNumber = (key: keyof Material) =>
+  const updateNumber =
+    (key: keyof Material) =>
     (e: ChangeEvent<HTMLInputElement>): void => {
       const v = parseFloat(e.target.value);
       if (!isNaN(v)) updateField(key, v as Material[typeof key]);
     };
 
-  const updateColor = (key: keyof Material) =>
+  const updateColor =
+    (key: keyof Material) =>
     (e: ChangeEvent<HTMLInputElement>): void => {
       updateField(key, hexToVec3(e.target.value) as Material[typeof key]);
     };
 
-  const emissiveColor = draft.emissive ?? [0, 0, 0] satisfies Vec3;
+  const emissiveColor = draft.emissive ?? ([0, 0, 0] satisfies Vec3);
 
   return (
     <div className={className} style={PANEL_STYLE} role="dialog" aria-label="Material Inspector">
@@ -179,15 +176,15 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
           tabIndex={0}
           aria-label="Close inspector"
           onClick={() => setPanelOpen(false)}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setPanelOpen(false); }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') setPanelOpen(false);
+          }}
         >
           ✕
         </span>
       </div>
 
-      <div style={{ color: '#666', fontSize: 10, marginBottom: 6 }}>
-        id: {selectedPrimitiveId}
-      </div>
+      <div style={{ color: '#666', fontSize: 10, marginBottom: 6 }}>id: {selectedPrimitiveId}</div>
 
       {/* baseColor */}
       <div style={ROW_STYLE}>
@@ -206,7 +203,9 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
         <span style={LABEL_STYLE}>roughness</span>
         <input
           type="number"
-          min={0} max={1} step={0.01}
+          min={0}
+          max={1}
+          step={0.01}
           value={draft.roughness}
           onChange={updateNumber('roughness')}
           style={INPUT_STYLE}
@@ -218,7 +217,9 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
         <span style={LABEL_STYLE}>metallic</span>
         <input
           type="number"
-          min={0} max={1} step={0.01}
+          min={0}
+          max={1}
+          step={0.01}
           value={draft.metallic}
           onChange={updateNumber('metallic')}
           style={INPUT_STYLE}
@@ -243,7 +244,8 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
           <span style={LABEL_STYLE}>emissInt.</span>
           <input
             type="number"
-            min={0} step={0.1}
+            min={0}
+            step={0.1}
             value={draft.emissiveIntensity ?? 1}
             onChange={updateNumber('emissiveIntensity')}
             style={INPUT_STYLE}
@@ -257,7 +259,9 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
           <span style={LABEL_STYLE}>transmission</span>
           <input
             type="number"
-            min={0} max={1} step={0.01}
+            min={0}
+            max={1}
+            step={0.01}
             value={draft.transmission}
             onChange={updateNumber('transmission')}
             style={INPUT_STYLE}
@@ -271,7 +275,9 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
           <span style={LABEL_STYLE}>ior</span>
           <input
             type="number"
-            min={1} max={3} step={0.01}
+            min={1}
+            max={3}
+            step={0.01}
             value={draft.ior}
             onChange={updateNumber('ior')}
             style={INPUT_STYLE}

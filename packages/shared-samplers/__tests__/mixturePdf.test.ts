@@ -58,7 +58,12 @@ describe('balanceHeuristic', () => {
 
 describe('powerHeuristic', () => {
   it('with β=1 matches balanceHeuristic', () => {
-    const cases: [number, number][] = [[2, 3], [5, 1], [0.5, 0.5], [100, 1]];
+    const cases: [number, number][] = [
+      [2, 3],
+      [5, 1],
+      [0.5, 0.5],
+      [100, 1],
+    ];
     for (const [p1, p2] of cases) {
       expect(powerHeuristic(p1, p2, 1)).toBeCloseTo(balanceHeuristic(p1, p2));
     }

@@ -90,10 +90,22 @@ describe('extractThreePbrScalars — P2-6.1 cross-engine helper', () => {
     const p = extractThreePbrScalars(mat);
 
     const expected = new Float32Array([
-      0.9, 0.95, 1, 0,          // baseColor + pad
-      0, 0, 0, 0.05,            // emissive + roughness (METAL is 0; ROUGH=0.05)
-      0, 1.52, 1, 0,            // metallic, ior, transmission, pad
-      0.8, 0.85, 0.9, 0,        // attenuationColor + flags placeholder
+      0.9,
+      0.95,
+      1,
+      0, // baseColor + pad
+      0,
+      0,
+      0,
+      0.05, // emissive + roughness (METAL is 0; ROUGH=0.05)
+      0,
+      1.52,
+      1,
+      0, // metallic, ior, transmission, pad
+      0.8,
+      0.85,
+      0.9,
+      0, // attenuationColor + flags placeholder
     ]);
     // flags slot is written via u32view — encode that here too.
     const buf = new Float32Array(16);

@@ -18,7 +18,7 @@
  * This format is round-tripped by tools/neural-denoiser-training/export_weights.py.
  */
 
-export const VITRUM_MODEL_MAGIC   = 0xDEAF1984 >>> 0;
+export const VITRUM_MODEL_MAGIC = 0xdeaf1984 >>> 0;
 export const VITRUM_MODEL_VERSION = 1;
 
 // ── ModelWeights ──────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ export function loadWeightsFromArrayBuffer(bytes: ArrayBuffer): ModelWeights {
   if (magic !== VITRUM_MODEL_MAGIC) {
     throw new Error(
       `[loadWeightsFromArrayBuffer] invalid magic: expected 0x${VITRUM_MODEL_MAGIC.toString(16).toUpperCase()}, ` +
-      `got 0x${magic.toString(16).toUpperCase()}`,
+        `got 0x${magic.toString(16).toUpperCase()}`,
     );
   }
 
@@ -118,12 +118,12 @@ export function loadWeightsFromArrayBuffer(bytes: ArrayBuffer): ModelWeights {
 
   // ── Layer records ─────────────────────────────────────────────────────────
   for (let i = 0; i < layerCount; i++) {
-    const nameLen     = readU32();
-    const name        = readString(nameLen);
+    const nameLen = readU32();
+    const name = readString(nameLen);
     const weightCount = readU32();
-    const weights     = readF32Array(weightCount);
-    const biasCount   = readU32();
-    const biases      = readF32Array(biasCount);
+    const weights = readF32Array(weightCount);
+    const biasCount = readU32();
+    const biases = readF32Array(biasCount);
     layers.push({ name, weights, biases });
   }
 
@@ -143,17 +143,17 @@ export function serializeWeightsToArrayBuffer(weights: ModelWeights): ArrayBuffe
   let totalBytes = 12; // magic + version + layerCount
   for (const layer of weights.layers) {
     const nameBytes = new TextEncoder().encode(layer.name);
-    totalBytes += 4;                          // nameLen
-    totalBytes += nameBytes.byteLength;       // name
-    totalBytes += 4;                          // weightCount
-    totalBytes += layer.weights.length * 4;   // weights (f32)
-    totalBytes += 4;                          // biasCount
-    totalBytes += layer.biases.length * 4;    // biases (f32)
+    totalBytes += 4; // nameLen
+    totalBytes += nameBytes.byteLength; // name
+    totalBytes += 4; // weightCount
+    totalBytes += layer.weights.length * 4; // weights (f32)
+    totalBytes += 4; // biasCount
+    totalBytes += layer.biases.length * 4; // biases (f32)
   }
 
-  const buf  = new ArrayBuffer(totalBytes);
+  const buf = new ArrayBuffer(totalBytes);
   const view = new DataView(buf);
-  const u8   = new Uint8Array(buf);
+  const u8 = new Uint8Array(buf);
   let offset = 0;
 
   function writeU32(v: number): void {

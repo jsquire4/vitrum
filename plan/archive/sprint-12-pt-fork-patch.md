@@ -1,6 +1,6 @@
 # Sprint 12 — Hero-Wavelength Spectral PT Fork Patch
 
-**Status**: Vitrum-side COMPLETE.  Fork-side kernel rewrite is GATED (see §7 Decision Point).
+**Status**: Vitrum-side COMPLETE. Fork-side kernel rewrite is GATED (see §7 Decision Point).
 **Supersedes**: `plan/sprint-12-deferred.md` (deleted).
 **Created**: 2026-05-09
 **Mode scope**: PT preview + PT final.
@@ -10,11 +10,11 @@
 ## Overview
 
 Sprint 12 replaces Sprint 8's RGB-as-3λ approximation with full hero-wavelength
-spectral path tracing.  Each path samples one wavelength stochastically; the
+spectral path tracing. Each path samples one wavelength stochastically; the
 scalar throughput is reconstructed as RGB at the accumulator via CIE CMF lookup.
 
 **Vitrum-side utilities are complete and tested.** The fork-side kernel rewrite is
-a separate, large engineering effort (estimated 4–5 weeks).  This document
+a separate, large engineering effort (estimated 4–5 weeks). This document
 specifies the full patch so it is ready to execute when the trigger condition is
 met.
 
@@ -24,15 +24,15 @@ met.
 
 The following are shipped and tested in `@vitrum/shared-samplers`:
 
-| File | Status |
-|---|---|
-| `src/cieCmf.ts` | NEW — CIE 1931 2° CMF tables (81 entries), D65 illuminant, `sampleCMF`, `xyzToLinearSRGB` |
-| `src/wavelengthSampling.ts` | NEW — `sampleHeroWavelength`, `wavelengthToRGB`, `Y_CMF_INTEGRAL` |
-| `src/cauchyIor.ts` | NEW — `cauchyIOR`, `abbeNumber`, `CAUCHY_CROWN_GLASS`, `CAUCHY_FLINT_GLASS`, `CAUCHY_LEAD_CRYSTAL` |
-| `src/index.ts` | UPDATED — all Sprint 12 symbols re-exported |
-| `__tests__/spectral.test.ts` | NEW — 50 tests covering all three modules |
+| File                         | Status                                                                                             |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| `src/cieCmf.ts`              | NEW — CIE 1931 2° CMF tables (81 entries), D65 illuminant, `sampleCMF`, `xyzToLinearSRGB`          |
+| `src/wavelengthSampling.ts`  | NEW — `sampleHeroWavelength`, `wavelengthToRGB`, `Y_CMF_INTEGRAL`                                  |
+| `src/cauchyIor.ts`           | NEW — `cauchyIOR`, `abbeNumber`, `CAUCHY_CROWN_GLASS`, `CAUCHY_FLINT_GLASS`, `CAUCHY_LEAD_CRYSTAL` |
+| `src/index.ts`               | UPDATED — all Sprint 12 symbols re-exported                                                        |
+| `__tests__/spectral.test.ts` | NEW — 50 tests covering all three modules                                                          |
 
-**Tests**: 50 new tests added.  All 431 workspace tests pass.
+**Tests**: 50 new tests added. All 431 workspace tests pass.
 **TypeScript strict**: clean across `@vitrum/shared-samplers`.
 
 ---
@@ -42,12 +42,14 @@ The following are shipped and tested in `@vitrum/shared-samplers`:
 ### 2.1 Ray payload change
 
 **Current** (Sprint 8 RGB-as-3λ):
+
 ```glsl
 // Payload carries a vec3 throughput (one value per RGB channel)
 vec3 throughput = vec3(1.0);
 ```
 
 **Sprint 12** (hero-wavelength):
+
 ```glsl
 // Payload carries scalar wavelength + scalar throughput
 float wavelength;  // nm, in [380, 780]
@@ -55,6 +57,7 @@ float throughput;  // scalar (dimensionless)
 ```
 
 **Affected files**:
+
 - `src/shader/shaders/pathtracing/path_tracer.glsl.js` — payload struct, main loop
 - Every function that passes or reads throughput (6–8 call sites throughout the tracer)
 
@@ -89,7 +92,7 @@ float sampleHeroWavelength(float u, out float pdf) {
 ```
 
 **Host side**: upload the 82-entry CDF array + 81-entry Y table + Y_CMF_INTEGRAL
-once after renderer init.  These are static constants from `@vitrum/shared-samplers`.
+once after renderer init. These are static constants from `@vitrum/shared-samplers`.
 
 ### 2.3 BSDF wavelength-awareness
 
@@ -107,6 +110,7 @@ float iorAtLambda = uIorA + uIorB / (lambdaUm * lambdaUm) + uIorC / pow(lambdaUm
 ```
 
 **New uniforms on `PhysicalPathTracingMaterial.js`**:
+
 ```javascript
 // Sprint 12 Cauchy coefficients (replaces scalar ior + dispersionStrength)
 iorCauchyA: { value: 1.5 },      // base IOR
@@ -118,6 +122,7 @@ yCmfIntegral: { value: 106.857 },             // ∫ Y dλ (nm)
 ```
 
 **Host-side initialization** (once, after renderer init):
+
 ```typescript
 import { Y_CMF_INTEGRAL, CIE_Y_TABLE } from '@vitrum/shared-samplers';
 
@@ -130,6 +135,7 @@ material.uniforms.yCmfIntegral.value = Y_CMF_INTEGRAL;
 ```
 
 **Affected fork files**:
+
 - `src/shader/shaders/pathtracing/bsdf_functions.glsl.js` — all BSDF eval sites
 - `src/shader/shaders/pathtracing/direct_lighting.glsl.js` — PDF MIS denominator
 - `PhysicalPathTracingMaterial.js` — new uniforms
@@ -159,11 +165,13 @@ gl_FragColor += vec4(rgb, 1.0);
 ```
 
 **New fork file**: `src/shader/shaders/pathtracing/spectral_accumulator.glsl.js`
+
 - Contains: `sampleCmfX`, `sampleCmfY`, `sampleCmfZ` (linear interpolation on uniform arrays)
 - XYZ → linear sRGB matrix
 - `vec3 wavelengthToRGB(float lambda, float throughput, float pdfLambda)`
 
 **Additional uniforms**:
+
 ```javascript
 cmfX: { value: new Float32Array(81) },  // CIE x̄ table
 cmfY: { value: new Float32Array(81) },  // CIE ȳ table (same as yCmfY)
@@ -173,7 +181,7 @@ cmfZ: { value: new Float32Array(81) },  // CIE z̄ table
 ### 2.5 Accumulation target format change
 
 The framebuffer accumulates RGB contributions (not XYZ); no format change needed
-on the `WebGLRenderTarget`.  The XYZ → sRGB conversion happens inside the shader
+on the `WebGLRenderTarget`. The XYZ → sRGB conversion happens inside the shader
 before accumulation.
 
 ---
@@ -181,6 +189,7 @@ before accumulation.
 ## 3. Cauchy IOR migration from Sprint 8
 
 Sprint 8 used two shader uniforms:
+
 - `uIor0` — base IOR
 - `uDispersionStrength` — scalar Cauchy B coefficient in nm² scale
 
@@ -188,6 +197,7 @@ Sprint 12 replaces these with three Cauchy coefficients (A, B, C) in µm scale,
 matching the `cauchyIOR(lambdaNm, A, B, C)` signature in `cauchyIor.ts`.
 
 **Migration mapping** (host-side, in `createBakedGlassMaterial.ts`):
+
 ```typescript
 import { CAUCHY_LEAD_CRYSTAL, cauchyIOR } from '@vitrum/shared-samplers';
 
@@ -221,35 +231,35 @@ material.uniforms.iorCauchyC.value = C;
 
 ### Effort estimate
 
-| Phase | Scope | Effort |
-|---|---|---|
-| Ray payload restructure | path_tracer.glsl.js | 3 days |
-| BSDF wavelength-awareness | bsdf_functions.glsl.js, direct_lighting.glsl.js | 5 days |
-| Spectral accumulator | spectral_accumulator.glsl.js | 4 days |
-| Uniform wiring | PhysicalPathTracingMaterial.js, host-side | 2 days |
-| Validation + visual A/B | Reference renders, DoD checklist | 5 days |
-| Buffer | Integration friction, edge cases | 5 days |
-| **Total** | | **~24 working days (~5 weeks)** |
+| Phase                     | Scope                                           | Effort                          |
+| ------------------------- | ----------------------------------------------- | ------------------------------- |
+| Ray payload restructure   | path_tracer.glsl.js                             | 3 days                          |
+| BSDF wavelength-awareness | bsdf_functions.glsl.js, direct_lighting.glsl.js | 5 days                          |
+| Spectral accumulator      | spectral_accumulator.glsl.js                    | 4 days                          |
+| Uniform wiring            | PhysicalPathTracingMaterial.js, host-side       | 2 days                          |
+| Validation + visual A/B   | Reference renders, DoD checklist                | 5 days                          |
+| Buffer                    | Integration friction, edge cases                | 5 days                          |
+| **Total**                 |                                                 | **~24 working days (~5 weeks)** |
 
 ### Risk callouts
 
 1. **Fork divergence**: every future `git pull` from `gkjohnson/three-gpu-pathtracer`
-   after this patch becomes a multi-day merge.  The payload restructure is a
+   after this patch becomes a multi-day merge. The payload restructure is a
    pervasive change that touches every shader function; merge conflicts are
    near-guaranteed on upstream updates.
 
 2. **Performance regression**: hero-wavelength tracing reduces effective variance
    reduction vs. the 3-sample RGB-as-3λ approach for scenes dominated by broad
-   spectral features.  Expect 10–30% more samples needed for the same noise level
-   on non-dispersive glass.  For bevel materials with true spectral variation, the
+   spectral features. Expect 10–30% more samples needed for the same noise level
+   on non-dispersive glass. For bevel materials with true spectral variation, the
    tradeoff is favorable.
 
 3. **Uniform array upload cost**: 81-entry CMF arrays × 3 channels + 82-entry CDF.
-   At 4 bytes per float, total uniform upload is ~1.2 KB per draw call.  Negligible
+   At 4 bytes per float, total uniform upload is ~1.2 KB per draw call. Negligible
    vs. texture uploads; not a bottleneck.
 
 4. **Edge case: wavelength outside CMF range**: the accumulator must clamp or
-   return 0 for λ < 380 or λ > 780 nm.  Mirror the `sampleCMF` guard from
+   return 0 for λ < 380 or λ > 780 nm. Mirror the `sampleCMF` guard from
    `cieCmf.ts` in GLSL.
 
 5. **Achromatic glass**: for glass with no dispersion (`iorCauchyB = 0`), the
@@ -262,7 +272,7 @@ material.uniforms.iorCauchyC.value = C;
 ## 6. Jakob+Hanika rider compatibility
 
 Sprint 8b's `jakobHanika.ts` spectral upsampling remains valid for host-side RGB →
-spectral-coefficient conversion.  In the Sprint 12 context, the polynomial
+spectral-coefficient conversion. In the Sprint 12 context, the polynomial
 coefficients can optionally modulate the throughput at each wavelength:
 
 ```glsl
@@ -283,10 +293,12 @@ instead of the 3-discrete-band approximation from Sprint 8.
 > fork maintenance burden?**
 
 From the roadmap Decision 1:
+
 > "Jakob+Hanika upsampling may make Sprint 12 unnecessary entirely for the bevel
 > use case."
 
 **Trigger condition**: start fork work ONLY IF the user confirms one or more of:
+
 - Uranium glass (fluorescence emission by wavelength)
 - Dichroic film (multi-order thin-film interference — 3-colour approximation shows aliasing)
 - Gemstones with visible absorption bands (e.g., alexandrite colour-shift at ~680 nm)

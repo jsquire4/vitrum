@@ -51,11 +51,7 @@ function discAreaPackedAsRect(e: DiscAreaEmitter): {
     position: [e.position[0], e.position[1], e.position[2]],
     uAxis,
     vAxis,
-    radiance: [
-      e.color[0] * e.intensity,
-      e.color[1] * e.intensity,
-      e.color[2] * e.intensity,
-    ],
+    radiance: [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity],
   };
 }
 
@@ -75,11 +71,7 @@ export function defaultDirectionalIrradiance(scene: Scene): readonly [number, nu
   const directional = scene.emitters.find((e) => e.kind === 'directional');
   if (directional == null) return [1, 1, 1];
   const scale = directional.intensity;
-  return [
-    directional.color[0] * scale,
-    directional.color[1] * scale,
-    directional.color[2] * scale,
-  ];
+  return [directional.color[0] * scale, directional.color[1] * scale, directional.color[2] * scale];
 }
 
 /**
@@ -103,7 +95,9 @@ function packMeshAreaTriangle(
 } | null {
   const primitive = scene.primitives.find((p) => p.id === emitter.meshId);
   if (primitive == null || primitive.kind === 'analytic') {
-    warnings.push(`Mesh-area emitter "${emitter.id}" references missing or non-mesh primitive "${emitter.meshId}".`);
+    warnings.push(
+      `Mesh-area emitter "${emitter.id}" references missing or non-mesh primitive "${emitter.meshId}".`,
+    );
     return null;
   }
   const positions = primitive.positions;
@@ -115,7 +109,9 @@ function packMeshAreaTriangle(
       return generated;
     })();
   if (indices.length < 3 || positions.length < 9) {
-    warnings.push(`Mesh-area emitter "${emitter.id}" references primitive "${emitter.meshId}" with no triangles.`);
+    warnings.push(
+      `Mesh-area emitter "${emitter.id}" references primitive "${emitter.meshId}" with no triangles.`,
+    );
     return null;
   }
   const i0 = indices[0] ?? 0;
@@ -129,7 +125,8 @@ function packMeshAreaTriangle(
   let a = fetchPos(i0);
   let b = fetchPos(i1);
   let c = fetchPos(i2);
-  const transform = primitive.kind === 'instanced-mesh' ? primitive.instances[0] : primitive.transform;
+  const transform =
+    primitive.kind === 'instanced-mesh' ? primitive.instances[0] : primitive.transform;
   if (transform != null) {
     a = transformPoint(transform, a);
     b = transformPoint(transform, b);
@@ -207,7 +204,9 @@ export function packEmitterArrays(scene: Scene): {
     spotLightCount += 1;
   }
 
-  const rectAreaLightsData = new Float32Array(MAX_RECT_AREA_LIGHTS * RECT_AREA_LIGHT_FLOAT_STRIDE).fill(0);
+  const rectAreaLightsData = new Float32Array(
+    MAX_RECT_AREA_LIGHTS * RECT_AREA_LIGHT_FLOAT_STRIDE,
+  ).fill(0);
   let rectAreaLightCount = 0;
   for (const e of scene.emitters) {
     if (e.kind !== 'rect-area' && e.kind !== 'disc-area') continue;
@@ -221,11 +220,7 @@ export function packEmitterArrays(scene: Scene): {
       position = [e.position[0], e.position[1], e.position[2]];
       uAxis = [e.uAxis[0], e.uAxis[1], e.uAxis[2]];
       vAxis = [e.vAxis[0], e.vAxis[1], e.vAxis[2]];
-      rgb = [
-        e.color[0] * e.intensity,
-        e.color[1] * e.intensity,
-        e.color[2] * e.intensity,
-      ];
+      rgb = [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity];
     } else {
       if (Number.isFinite(e.radius) && e.radius < 1e-8) {
         warnings.push(
@@ -263,7 +258,9 @@ export function packEmitterArrays(scene: Scene): {
     rectAreaLightCount += 1;
   }
 
-  const meshAreaLightsData = new Float32Array(MAX_MESH_AREA_LIGHTS * MESH_AREA_LIGHT_FLOAT_STRIDE).fill(0);
+  const meshAreaLightsData = new Float32Array(
+    MAX_MESH_AREA_LIGHTS * MESH_AREA_LIGHT_FLOAT_STRIDE,
+  ).fill(0);
   let meshAreaLightCount = 0;
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;

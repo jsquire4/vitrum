@@ -185,7 +185,9 @@ describe('PTEngineWebGL2.updateEnvironment', () => {
     // First put an HDRI env in place
     const hdri = new Texture();
     (engine as unknown as { updateEnvironment: (e: unknown) => void }).updateEnvironment({
-      kind: 'hdri', hdri, intensity: 2,
+      kind: 'hdri',
+      hdri,
+      intensity: 2,
     });
     expect(internalScene.environment).toBe(hdri);
 
@@ -203,9 +205,13 @@ describe('PTEngineWebGL2.updateEnvironment', () => {
 
     const hdri = new Texture();
     (engine as unknown as { updateEnvironment: (e: unknown) => void }).updateEnvironment({
-      kind: 'hdri', hdri, intensity: 3,
+      kind: 'hdri',
+      hdri,
+      intensity: 3,
     });
-    (engine as unknown as { updateEnvironment: (e: unknown) => void }).updateEnvironment({ kind: 'none' });
+    (engine as unknown as { updateEnvironment: (e: unknown) => void }).updateEnvironment({
+      kind: 'none',
+    });
     expect(internalScene.environment).toBeNull();
   });
 

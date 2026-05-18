@@ -49,10 +49,15 @@ const HEADFUL = process.env.VITRUM_SHADER_CI_HEADFUL === '1';
 const SCENARIOS = (() => {
   const env = process.env.VITRUM_SHADER_CI_SCENARIOS;
   if (env == null || env.trim().length === 0) return ALL_SCENARIOS;
-  const requested = env.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  const requested = env
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
   const unknown = requested.filter((s) => !ALL_SCENARIOS.includes(s));
   if (unknown.length > 0) {
-    console.error(`shader-compile-ci: unknown scenarios in VITRUM_SHADER_CI_SCENARIOS: ${unknown.join(', ')}`);
+    console.error(
+      `shader-compile-ci: unknown scenarios in VITRUM_SHADER_CI_SCENARIOS: ${unknown.join(', ')}`,
+    );
     console.error(`                    valid: ${ALL_SCENARIOS.join(', ')}`);
     process.exit(2);
   }
@@ -120,11 +125,17 @@ function startVite() {
     },
   );
   let viteOutput = '';
-  child.stdout.on('data', (b) => { viteOutput += b.toString(); });
-  child.stderr.on('data', (b) => { viteOutput += b.toString(); });
+  child.stdout.on('data', (b) => {
+    viteOutput += b.toString();
+  });
+  child.stderr.on('data', (b) => {
+    viteOutput += b.toString();
+  });
   child.on('exit', (code, signal) => {
     if (code != null && code !== 0) {
-      console.error(`vite exited prematurely (code ${code}, signal ${signal}). Last output:\n${viteOutput.slice(-1000)}`);
+      console.error(
+        `vite exited prematurely (code ${code}, signal ${signal}). Last output:\n${viteOutput.slice(-1000)}`,
+      );
     }
   });
   return { child, getOutput: () => viteOutput };
@@ -156,10 +167,9 @@ async function runScenario(browser, scenarioId) {
   let timedOut = false;
   try {
     await page.goto(makeUrl(scenarioId), { waitUntil: 'load', timeout: PER_SCENARIO_TIMEOUT_MS });
-    await page
-      .waitForFunction(() => globalThis.VITRUM_CAPTURE_READY === true, null, {
-        timeout: PER_SCENARIO_TIMEOUT_MS,
-      });
+    await page.waitForFunction(() => globalThis.VITRUM_CAPTURE_READY === true, null, {
+      timeout: PER_SCENARIO_TIMEOUT_MS,
+    });
     ready = true;
   } catch (err) {
     timedOut = true;
@@ -179,17 +189,31 @@ async function main() {
   console.log(`shader-compile-ci: starting vite on :${PORT} (cornell-box)`);
   const { child: vite, getOutput } = startVite();
 
-  process.on('SIGINT', () => { try { vite.kill('SIGTERM'); } catch {} process.exit(130); });
-  process.on('SIGTERM', () => { try { vite.kill('SIGTERM'); } catch {} process.exit(143); });
+  process.on('SIGINT', () => {
+    try {
+      vite.kill('SIGTERM');
+    } catch {}
+    process.exit(130);
+  });
+  process.on('SIGTERM', () => {
+    try {
+      vite.kill('SIGTERM');
+    } catch {}
+    process.exit(143);
+  });
 
   const viteUp = await waitForVite(30000);
   if (!viteUp) {
     console.error('shader-compile-ci: vite never came up. Last output:');
     console.error(getOutput().slice(-1500));
-    try { vite.kill('SIGTERM'); } catch {}
+    try {
+      vite.kill('SIGTERM');
+    } catch {}
     process.exit(2);
   }
-  console.log(`shader-compile-ci: vite ready, launching headless Chromium (${SCENARIOS.length} scenario(s))`);
+  console.log(
+    `shader-compile-ci: vite ready, launching headless Chromium (${SCENARIOS.length} scenario(s))`,
+  );
 
   let chromium;
   try {
@@ -198,7 +222,9 @@ async function main() {
     console.error('shader-compile-ci: playwright is not installed in this workspace.');
     console.error('                   try: npm install --workspace=@vitrum/shader-compile-ci');
     console.error(String(err));
-    try { vite.kill('SIGTERM'); } catch {}
+    try {
+      vite.kill('SIGTERM');
+    } catch {}
     process.exit(3);
   }
 
@@ -221,15 +247,18 @@ async function main() {
       const t0 = Date.now();
       const result = await runScenario(browser, scenarioId);
       const elapsed = Date.now() - t0;
-      const status = result.errors.length === 0 && result.ready
-        ? `✓ OK (${elapsed} ms)`
-        : `✗ FAIL (${elapsed} ms)`;
+      const status =
+        result.errors.length === 0 && result.ready
+          ? `✓ OK (${elapsed} ms)`
+          : `✗ FAIL (${elapsed} ms)`;
       console.log(`  ${scenarioId.padEnd(18)} ${status}`);
       results.push({ ...result, elapsedMs: elapsed });
     }
   } finally {
     await browser.close().catch(() => {});
-    try { vite.kill('SIGTERM'); } catch {}
+    try {
+      vite.kill('SIGTERM');
+    } catch {}
   }
 
   const failed = results.filter((r) => r.errors.length > 0 || !r.ready);
@@ -252,7 +281,9 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`\nshader-compile-ci: all ${results.length} scenario(s) compiled cleanly in ${Date.now() - startedAt} ms`);
+  console.log(
+    `\nshader-compile-ci: all ${results.length} scenario(s) compiled cleanly in ${Date.now() - startedAt} ms`,
+  );
   process.exit(0);
 }
 

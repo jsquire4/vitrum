@@ -30,11 +30,7 @@ import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
 // Packing helpers (applyBeerLambert, packUVIntoPositionW, packBVHIndexW,
 // packBVHBeerColors) live in restir/packingHelpers.ts.
 // Emitter list construction lives in restir/emitterList.ts.
-import {
-  packUVIntoPositionW,
-  packBVHIndexW,
-  packBVHBeerColors,
-} from './packingHelpers.js';
+import { packUVIntoPositionW, packBVHIndexW, packBVHBeerColors } from './packingHelpers.js';
 import { buildEmitterList } from './emitterList.js';
 
 /** A WebGPU storage buffer handle (GPU-side ArrayBuffer wrapper). */
@@ -153,26 +149,13 @@ export function buildReSTIRSceneBVH(
   // The shared `positions` is stride-4 with .w left zero.  ReSTIR packs UV
   // into .w (16-bit unorm pair, bitcast-as-f32) so the GPU shade pass can
   // unpack per-vertex UV without spending another storage-buffer slot.
-  const positionsWithUV = packUVIntoPositionW(
-    shared.positions,
-    shared.uvAttribute,
-    vertCount,
-  );
+  const positionsWithUV = packUVIntoPositionW(shared.positions, shared.uvAttribute, vertCount);
 
   // ── 3. Pack bvhIndex.w with RGBA8 raw attCol + (trans4 | texType4) ──────
-  const indexBuf = packBVHIndexW(
-    shared.indices,
-    shared.triMaterialId,
-    shared.materials,
-    triCount,
-  );
+  const indexBuf = packBVHIndexW(shared.indices, shared.triMaterialId, shared.materials, triCount);
 
   // ── 3b. Pack bvh_beer with the Beer-Lambert visible color per tri. ──────
-  const beerBuf = packBVHBeerColors(
-    shared.triMaterialId,
-    shared.materials,
-    triCount,
-  );
+  const beerBuf = packBVHBeerColors(shared.triMaterialId, shared.materials, triCount);
 
   // ── 4. Build emitter list (transmissive + emissive triangles) ──────────
   // Non-mesh scene lights (THREE.RectAreaLight from
@@ -253,9 +236,7 @@ export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
  * `EmitterTri.Le` for radiance and ignores the legacy `intensity` slot) sees
  * the correct power.
  */
-function collectRectAreaLightEmitterTris(
-  sceneRoots: THREE.Object3D[],
-): {
+function collectRectAreaLightEmitterTris(sceneRoots: THREE.Object3D[]): {
   vA: [number, number, number];
   vB: [number, number, number];
   vC: [number, number, number];
@@ -288,9 +269,9 @@ function collectRectAreaLightEmitterTris(
       const hHalf = light.height * 0.5;
 
       _ll.set(-wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
-      _lr.set( wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
-      _ur.set( wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
-      _ul.set(-wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
+      _lr.set(wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
+      _ur.set(wHalf, hHalf, 0).applyMatrix4(light.matrixWorld);
+      _ul.set(-wHalf, hHalf, 0).applyMatrix4(light.matrixWorld);
 
       // Triangle area: half the rect parallelogram (one rect = 2 tris).
       _ab.subVectors(_lr, _ll);
@@ -332,4 +313,3 @@ function collectRectAreaLightEmitterTris(
   }
   return out;
 }
-

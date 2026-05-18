@@ -7,11 +7,7 @@
  */
 
 import { buildGTAOUpsampleBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class GTAOUpsamplePass implements Pass {
@@ -30,7 +26,8 @@ export class GTAOUpsamplePass implements Pass {
   dispatch(ctx: PassDispatchContext): void {
     const { device, encoder, computeDesc, bglCache, resources, wgX, wgY } = ctx;
     const bg = buildGTAOUpsampleBindGroup(
-      device, bglCache,
+      device,
+      bglCache,
       resources.gtao.aoHalfTexture.createView(),
       resources.common.gNormalDepthTexture.createView(),
       resources.gtao.aoFullTexture.createView(),

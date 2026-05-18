@@ -15,7 +15,7 @@
  * output pixel for one output channel.
  */
 
-export const CONV2D_WGSL = /* wgsl */`
+export const CONV2D_WGSL = /* wgsl */ `
 // ── Conv2DParams uniform (Bug 4 fix: written by host before dispatch) ─────────
 struct Conv2DParams {
   inputH  : u32,

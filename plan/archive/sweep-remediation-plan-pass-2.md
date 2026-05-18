@@ -13,6 +13,7 @@ The order below is dependency-driven: regression hazards first, then dead-code r
 ### P2-1.1 Delete dead `_bvhNormalBuffer` / `_bvhUvBuffer` allocations
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts:179,180,277,278,796,797`
 - `packages/walkaround-hybrid/src/restir/bvhCompute.ts:72,74,234-239`
 
@@ -35,11 +36,13 @@ No in-repo readers. Backwards compatibility is moot pre-publish.
 ### P2-2.2 Migrate `isHardwareGpu` reader and drop the deprecation
 
 **Files:**
+
 - `packages/core/src/wgpuSupport.ts:15-22` — `WgpuProbeResult.isHardwareGpu`
 - `packages/core/src/gpuDetection.ts:34-39` — `GpuDetection.isHardwareGpu`
 - `packages/walkaround-hybrid/src/ddgi/probeUpdatePass.ts:137` — sole remaining reader
 
 **Fix:**
+
 1. Update probeUpdatePass.ts:137 to `if (gpu.isWebGPU && gpu.adapterKind === 'swiftshader')`.
 2. Remove `isHardwareGpu` from both interfaces and from the implementation in `wgpuSupport.ts` (lines ~141–152 set the field).
 3. Remove from JSDocs.
@@ -51,6 +54,7 @@ No in-repo readers. Backwards compatibility is moot pre-publish.
 The `cellPower` buffer is built every BVH rebuild but no consumer reads it.
 
 **Fix (choose one):**
+
 - Option A (remove): drop the field from `SceneBVHBuffers`, the build site in `emitterList.ts`, and the population in bvhCompute.ts. Reclaim the CPU memory.
 - Option B (defer-mark): keep but rename to `_deferredCellPower` and add a single-source-of-truth comment pointing at the eventual consumer.
 
@@ -107,6 +111,7 @@ TODO is honest but there's no host that uses THREE.Sky yet.
 ### P2-4.1 Single canonical DDGI grid-params packer
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/ddgi/probeGrid.ts:43-67` (`buildUniformData`)
 - `packages/walkaround-hybrid/src/pipeline/resourceManager.ts:287-330` (`packDDGIGridParams`)
 
@@ -135,6 +140,7 @@ The inline classification block does 3 things in one nested if.
 **File:** `packages/pt-webgpu/src/scene/uploadSceneBuffers.ts` (1058 lines, 8 concerns)
 
 **Fix (multi-step):**
+
 1. Extract material packing (lines 181-289) → `materialPacking.ts`.
 2. Extract environment params (lines 528-665) → `environmentPacking.ts`.
 3. Extract the four `firstXLight` resolvers + the four `packX` array loops into a single `extractLights(scene)` in `emitterPacking.ts` that returns `{ singletonSlots, arrays }`. Collapses 4× near-identical loops into one generic.
@@ -151,6 +157,7 @@ Four near-identical emitter array loops.
 ### P2-4.6 Replace `passIdx: number` with named pass IDs in WalkaroundGPUPipeline
 
 **Files:**
+
 - `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts` (multiple call sites of `computeDesc`)
 - `packages/walkaround-hybrid/src/pipeline/timestampQueries.ts` (consumer)
 
@@ -185,6 +192,7 @@ Private static placed at top of class body.
 ### P2-6.1 Extract shared `getMaterialPacked` helper
 
 **Files (current duplications):**
+
 - `packages/walkaround-hybrid/src/ddgi/probeUpdatePass.ts:347-388` (DDGIMaterial pack)
 - `packages/walkaround-hybrid/src/restir/packingHelpers.ts:79-92` (resolveTriColor)
 - `packages/pt-webgpu/src/scene/uploadSceneBuffers.ts:196-271` (materialToPackedVec4s)

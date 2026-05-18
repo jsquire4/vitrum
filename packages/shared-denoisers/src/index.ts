@@ -11,10 +11,7 @@ export * from './wgsl/atrous.wgsl.js';
 export * from './wgsl/temporalAccum.wgsl.js';
 
 // Canonical WelfordVariance — single source for cross-package variance state.
-export {
-  WELFORD_VARIANCE_WGSL,
-  WELFORD_VARIANCE_VERSION,
-} from './wgsl/welfordVariance.wgsl.js';
+export { WELFORD_VARIANCE_WGSL, WELFORD_VARIANCE_VERSION } from './wgsl/welfordVariance.wgsl.js';
 
 // Sprint 10a — à-trous + variance-guided denoiser (formerly SVGF)
 export {
@@ -42,15 +39,8 @@ export type {
 } from './atrousVarianceBindings.js';
 
 // Sprint 10b — OIDN
-export {
-  denoiseFinal,
-  preloadOIDNModel,
-  clearOIDNCache,
-} from './oidnBridge.js';
-export type {
-  OIDNDenoiseInputs,
-  OIDNDenoiseOptions,
-} from './oidnBridge.js';
+export { denoiseFinal, preloadOIDNModel, clearOIDNCache } from './oidnBridge.js';
+export type { OIDNDenoiseInputs, OIDNDenoiseOptions } from './oidnBridge.js';
 
 // HDR bilateral (WebGPU compute, luminance edge-stop — no G-buffer)
 export {
@@ -70,7 +60,10 @@ export {
   assertAtrousVarianceWebGPUBufferShapes,
   ATROUS_VARIANCE_SYNTHETIC_GBUFFER_DEFAULTS,
 } from './atrousVarianceWebGPU.js';
-export type { AtrousVarianceWebGPUOptions, AtrousVarianceSyntheticGbufferFallback } from './atrousVarianceWebGPU.js';
+export type {
+  AtrousVarianceWebGPUOptions,
+  AtrousVarianceSyntheticGbufferFallback,
+} from './atrousVarianceWebGPU.js';
 
 // ── T2.H1 — Real Schied 2017 SVGF ('svgf-real' mode) ─────────────────────────
 // Implements bilinear reprojection + disocclusion test + per-pixel history +

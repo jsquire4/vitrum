@@ -30,7 +30,7 @@ import { mixturePdf } from '../src/mixturePdf.js';
 function makeLcg(seed: number) {
   let state = seed >>> 0; // ensure unsigned 32-bit
   return function next(): number {
-    state = ((Math.imul(state, 1664525) + 1013904223) >>> 0);
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
     return state / 4294967296;
   };
 }
@@ -77,7 +77,7 @@ function uniformSphereSample(rng: () => number): readonly [number, number, numbe
 describe('HG phase PDF normalizes (∫ p dω ≈ 1)', () => {
   // 1D midpoint rule: ∫_{-1}^{1} p(cosθ, g) × 2π dcosθ
   // step Δ(cosθ) = 2/N; sum × 2π × Δ(cosθ) = sum × 2π × 2/N
-  const N   = 50_000;
+  const N = 50_000;
   const TOL = 0.005; // 0.5 %
 
   it.each([-0.5, 0, 0.3, 0.8] as const)(
@@ -114,34 +114,34 @@ describe('equiAngular PDF matches sample return', () => {
   type Vec3 = readonly [number, number, number];
 
   const ORIGIN: Vec3 = [0, 0, 0];
-  const DIR_Z: Vec3  = [0, 0, 1];
+  const DIR_Z: Vec3 = [0, 0, 1];
 
   // Fixed light setup for a non-degenerate scenario
   // Light at [0, 2, 10]: tClosest = 10, D = 2
-  const LIGHT: Vec3    = [0, 2, 10];
-  const T_CLOSEST      = 10;
-  const D              = 2;
-  const SCENE_T_MAX    = 100;
+  const LIGHT: Vec3 = [0, 2, 10];
+  const T_CLOSEST = 10;
+  const D = 2;
+  const SCENE_T_MAX = 100;
 
   // Closed-form PDF: p(t) = D / (thetaRange × (D² + (t - tClosest)²))
   function analyticalPdf(t: number): number {
-    const thetaMin   = Math.atan2(-T_CLOSEST, D);
-    const thetaMax   = Math.atan2(SCENE_T_MAX - T_CLOSEST, D);
+    const thetaMin = Math.atan2(-T_CLOSEST, D);
+    const thetaMax = Math.atan2(SCENE_T_MAX - T_CLOSEST, D);
     const thetaRange = thetaMax - thetaMin;
-    const dt         = t - T_CLOSEST;
+    const dt = t - T_CLOSEST;
     return D / (thetaRange * (D * D + dt * dt));
   }
 
   it('returned pdf matches closed-form formula within 1% (N=10k samples)', () => {
-    const N   = 10_000;
+    const N = 10_000;
     const rng = makeLcg(0xc0ffee42);
     const TOL = 0.01; // 1 %
 
     for (let i = 0; i < N; i++) {
-      const u             = rng();
-      const { t, pdf }    = sampleEquiAngular(u, ORIGIN, DIR_Z, LIGHT, { sceneTMax: SCENE_T_MAX });
-      const expected      = analyticalPdf(t);
-      const relErr        = Math.abs(pdf - expected) / Math.max(expected, 1e-12);
+      const u = rng();
+      const { t, pdf } = sampleEquiAngular(u, ORIGIN, DIR_Z, LIGHT, { sceneTMax: SCENE_T_MAX });
+      const expected = analyticalPdf(t);
+      const relErr = Math.abs(pdf - expected) / Math.max(expected, 1e-12);
       expect(relErr).toBeLessThan(TOL);
     }
   });
@@ -149,9 +149,9 @@ describe('equiAngular PDF matches sample return', () => {
   it('∫₀^tMax p(t) dt ≈ 1 via trapezoidal rule (N=1000 grid points)', () => {
     // Integrate analyticalPdf over [0, SCENE_T_MAX] using the trapezoidal rule.
     // A correct normalized PDF should integrate to 1.
-    const N   = 1_000;
-    const h   = SCENE_T_MAX / N;
-    let   sum = 0;
+    const N = 1_000;
+    const h = SCENE_T_MAX / N;
+    let sum = 0;
     for (let i = 0; i <= N; i++) {
       const t = i * h;
       const w = i === 0 || i === N ? 0.5 : 1.0; // trapezoidal weights
@@ -182,37 +182,37 @@ describe('mixturePdf weighted sum matches analytic formula', () => {
     {
       label: 'single strategy (prob=1)',
       probs: [1.0],
-      pdfs:  [3.5],
+      pdfs: [3.5],
       expected: 3.5,
     },
     {
       label: 'single strategy (prob=0.5)',
       probs: [0.5],
-      pdfs:  [2.0],
+      pdfs: [2.0],
       expected: 1.0,
     },
     {
       label: 'two equal strategies 0.5/0.5',
       probs: [0.5, 0.5],
-      pdfs:  [4.0, 2.0],
+      pdfs: [4.0, 2.0],
       expected: 3.0, // 0.5*4 + 0.5*2
     },
     {
       label: 'three strategies BSDF/env/light',
       probs: [0.4, 0.3, 0.3],
-      pdfs:  [2.0, 1.0, 5.0],
+      pdfs: [2.0, 1.0, 5.0],
       expected: 0.4 * 2.0 + 0.3 * 1.0 + 0.3 * 5.0, // = 2.6
     },
     {
       label: 'zero-probability strategy contributes nothing',
       probs: [1.0, 0.0],
-      pdfs:  [3.0, 999.0],
+      pdfs: [3.0, 999.0],
       expected: 3.0,
     },
     {
       label: 'three strategies with unequal weights',
       probs: [0.2, 0.5, 0.3],
-      pdfs:  [10.0, 1.0, 4.0],
+      pdfs: [10.0, 1.0, 4.0],
       expected: 0.2 * 10.0 + 0.5 * 1.0 + 0.3 * 4.0, // = 2.0 + 0.5 + 1.2 = 3.7
     },
   ];
@@ -235,22 +235,22 @@ describe('mixturePdf weighted sum matches analytic formula', () => {
 // (e.g. 1/π vs 1/(4π) confusion).
 
 describe('Uniform-sphere PDF normalizes (∫ 1/(4π) dω ≈ 1)', () => {
-  const N   = 50_000;
+  const N = 50_000;
   const TOL = 0.005; // 0.5 %
 
   it('MC integral of 1/(4π) over S² ≈ 1 at N=50k', () => {
-    const rng        = makeLcg(0x1a2b3c4d);
-    const INV_4PI    = 1 / (4 * Math.PI);
-    let   sum        = 0;
+    const rng = makeLcg(0x1a2b3c4d);
+    const INV_4PI = 1 / (4 * Math.PI);
+    let sum = 0;
 
     for (let i = 0; i < N; i++) {
       uniformSphereSample(rng); // draw a direction (all have equal probability)
-      sum += INV_4PI;           // f(dᵢ) = pdf of uniform sphere = 1/(4π)
+      sum += INV_4PI; // f(dᵢ) = pdf of uniform sphere = 1/(4π)
     }
 
     // MC integral: (4π / N) × Σ f(dᵢ) = (4π/N) × N × (1/(4π)) = 1 exactly
     // but float accumulation means we verify numerically
-    const integral = (4 * Math.PI / N) * sum;
+    const integral = ((4 * Math.PI) / N) * sum;
     expect(integral).toBeGreaterThan(1 - TOL);
     expect(integral).toBeLessThan(1 + TOL);
   });

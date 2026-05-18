@@ -60,9 +60,7 @@ export function extractAttribute(
   return new Float32Array(arr);
 }
 
-export function extractIndex(
-  geo: THREE.BufferGeometry,
-): Uint32Array | Uint16Array | undefined {
+export function extractIndex(geo: THREE.BufferGeometry): Uint32Array | Uint16Array | undefined {
   const idx = geo.index;
   if (idx == null) return undefined;
   const arr = idx.array;
@@ -101,12 +99,12 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
       `@vitrum/three-bindings: unsupported multi-material mesh at "${label}" (${obj.material.length} materials). ` +
-      `Only the first material will be used. Supported types are added per Phase 6 sprint.`,
+        `Only the first material will be used. Supported types are added per Phase 6 sprint.`,
     );
   }
 
   const rawMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-  const isStd  = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
+  const isStd = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
   const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
   // MeshBasicMaterial is the third accepted type. It renders unlit in three.js;
   // we synthesize a flat-emissive vitrum material so it appears as a self-lit

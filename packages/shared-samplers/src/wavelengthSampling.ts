@@ -60,7 +60,10 @@ import {
  * Used to build importance-sampling tables for X, Y, and Z CMFs.  The CDF
  * has length CIE_TABLE_LENGTH + 1 (CDF[0] = 0, CDF[N] = 1 by construction).
  */
-function buildIntegralAndCdf(table: Readonly<Float32Array>): { integral: number; cdf: Float64Array } {
+function buildIntegralAndCdf(table: Readonly<Float32Array>): {
+  integral: number;
+  cdf: Float64Array;
+} {
   let integral = 0;
   for (let i = 0; i < CIE_TABLE_LENGTH; i++) {
     const w = i === 0 || i === CIE_TABLE_LENGTH - 1 ? 0.5 : 1.0;

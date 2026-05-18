@@ -29,69 +29,69 @@ installWebGPUPolyfills();
  */
 const FIELD_MIGRATION_TABLE = [
   // common ────────────────────────────────────────────────────────────────
-  ['hdrColorTexture',                'common'],
-  ['gNormalDepthTexture',            'common'],
-  ['denoisedPingTexture',            'common'],
-  ['denoisedPongTexture',            'common'],
-  ['accumTextureA',                  'common'],
-  ['accumTextureB',                  'common'],
-  ['placeholderTexture',             'common'],
-  ['uboBuffer',                      'common'],
-  ['nearestSampler',                 'common'],
-  ['compositeSampler',               'common'],
-  ['motionVectorTexture',            'common'],
-  ['tierTexture',                    'common'],
-  ['resolvedTexture',                'common'],
-  ['hdrTotalTexture',                'common'],
-  ['albedoTexture',                  'common'],
-  ['hdrIndirectTexture',             'common'],
-  ['combinedDenoisedTexture',        'common'],
-  ['indirectDenoisedPingTexture',    'common'],
-  ['indirectDenoisedPongTexture',    'common'],
-  ['indirectAccumPingTexture',       'common'],
-  ['indirectAccumPongTexture',       'common'],
-  ['varianceBuffer',                 'common'],
-  ['varianceBufferAux',              'common'],
-  ['atrousVarianceEstimateTexture',  'common'],
+  ['hdrColorTexture', 'common'],
+  ['gNormalDepthTexture', 'common'],
+  ['denoisedPingTexture', 'common'],
+  ['denoisedPongTexture', 'common'],
+  ['accumTextureA', 'common'],
+  ['accumTextureB', 'common'],
+  ['placeholderTexture', 'common'],
+  ['uboBuffer', 'common'],
+  ['nearestSampler', 'common'],
+  ['compositeSampler', 'common'],
+  ['motionVectorTexture', 'common'],
+  ['tierTexture', 'common'],
+  ['resolvedTexture', 'common'],
+  ['hdrTotalTexture', 'common'],
+  ['albedoTexture', 'common'],
+  ['hdrIndirectTexture', 'common'],
+  ['combinedDenoisedTexture', 'common'],
+  ['indirectDenoisedPingTexture', 'common'],
+  ['indirectDenoisedPongTexture', 'common'],
+  ['indirectAccumPingTexture', 'common'],
+  ['indirectAccumPongTexture', 'common'],
+  ['varianceBuffer', 'common'],
+  ['varianceBufferAux', 'common'],
+  ['atrousVarianceEstimateTexture', 'common'],
 
   // restirDI ──────────────────────────────────────────────────────────────
-  ['reservoirCurrentBuffer',         'restirDI'],
-  ['reservoirPreviousBuffer',        'restirDI'],
-  ['reservoirSpatialBuffer',         'restirDI'],
+  ['reservoirCurrentBuffer', 'restirDI'],
+  ['reservoirPreviousBuffer', 'restirDI'],
+  ['reservoirSpatialBuffer', 'restirDI'],
 
   // restirGI ──────────────────────────────────────────────────────────────
-  ['reservoirGiCurrentBuffer',       'restirGI'],
-  ['reservoirGiPreviousBuffer',      'restirGI'],
-  ['reservoirGiSpatialBuffer',       'restirGI'],
+  ['reservoirGiCurrentBuffer', 'restirGI'],
+  ['reservoirGiPreviousBuffer', 'restirGI'],
+  ['reservoirGiSpatialBuffer', 'restirGI'],
 
   // ddgi ──────────────────────────────────────────────────────────────────
-  ['ddgiPlaceholderRgba16f',         'ddgi'],
-  ['ddgiPlaceholderRg16f',           'ddgi'],
-  ['ddgiUboBuffer',                  'ddgi'],
+  ['ddgiPlaceholderRgba16f', 'ddgi'],
+  ['ddgiPlaceholderRg16f', 'ddgi'],
+  ['ddgiUboBuffer', 'ddgi'],
 
   // gtao ──────────────────────────────────────────────────────────────────
-  ['aoHalfTexture',                  'gtao'],
-  ['aoFullTexture',                  'gtao'],
-  ['gtaoUboBuffer',                  'gtao'],
+  ['aoHalfTexture', 'gtao'],
+  ['aoFullTexture', 'gtao'],
+  ['gtaoUboBuffer', 'gtao'],
 
   // svgf ──────────────────────────────────────────────────────────────────
-  ['svgfObjIdPlaceholderTexture',    'svgf'],
-  ['svgfHistoryLengthTextureA',      'svgf'],
-  ['svgfHistoryLengthTextureB',      'svgf'],
-  ['svgfMomentsTextureA',            'svgf'],
-  ['svgfMomentsTextureB',            'svgf'],
-  ['svgfPrevRadianceTextureA',       'svgf'],
-  ['svgfPrevRadianceTextureB',       'svgf'],
-  ['svgfVarianceTexture',            'svgf'],
+  ['svgfObjIdPlaceholderTexture', 'svgf'],
+  ['svgfHistoryLengthTextureA', 'svgf'],
+  ['svgfHistoryLengthTextureB', 'svgf'],
+  ['svgfMomentsTextureA', 'svgf'],
+  ['svgfMomentsTextureB', 'svgf'],
+  ['svgfPrevRadianceTextureA', 'svgf'],
+  ['svgfPrevRadianceTextureB', 'svgf'],
+  ['svgfVarianceTexture', 'svgf'],
   ['svgfVarianceMomentsIntermedTexture', 'svgf'],
 ] as const;
 
 function makeMockDevice() {
   const textureMock = { destroy: vi.fn(), createView: vi.fn(() => ({})) };
-  const bufferMock  = { destroy: vi.fn(), size: 256 };
+  const bufferMock = { destroy: vi.fn(), size: 256 };
   const samplerMock = {};
   return {
-    createBuffer:  vi.fn(() => bufferMock),
+    createBuffer: vi.fn(() => bufferMock),
     createTexture: vi.fn(() => textureMock),
     createSampler: vi.fn(() => samplerMock),
     queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },
@@ -101,18 +101,34 @@ function makeMockDevice() {
 describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
   it('returns exactly the 8 declared sub-structs', () => {
     const res = createFrameResources(makeMockDevice(), 64, 64);
-    expect(Object.keys(res).sort()).toEqual(
-      ['common', 'ddgi', 'gtao', 'neural', 'ppg', 'restirDI', 'restirGI', 'svgf'],
-    );
+    expect(Object.keys(res).sort()).toEqual([
+      'common',
+      'ddgi',
+      'gtao',
+      'neural',
+      'ppg',
+      'restirDI',
+      'restirGI',
+      'svgf',
+    ]);
   });
 
   it('every legacy field appears under its declared sub-struct', () => {
-    const res = createFrameResources(makeMockDevice(), 64, 64) as unknown as Record<string, Record<string, unknown>>;
+    const res = createFrameResources(makeMockDevice(), 64, 64) as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
     for (const [legacyField, subStruct] of FIELD_MIGRATION_TABLE) {
       const bucket = res[subStruct];
       expect(bucket, `sub-struct '${subStruct}' should exist`).toBeDefined();
-      expect(bucket, `legacy field '${legacyField}' should live under '${subStruct}'`).toHaveProperty(legacyField);
-      expect(bucket![legacyField], `'${subStruct}.${legacyField}' must be non-null`).not.toBeUndefined();
+      expect(
+        bucket,
+        `legacy field '${legacyField}' should live under '${subStruct}'`,
+      ).toHaveProperty(legacyField);
+      expect(
+        bucket![legacyField],
+        `'${subStruct}.${legacyField}' must be non-null`,
+      ).not.toBeUndefined();
     }
   });
 
@@ -139,14 +155,19 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
   });
 
   it('field-set under each sub-struct exactly matches the migration table', () => {
-    const res = createFrameResources(makeMockDevice(), 64, 64) as unknown as Record<string, Record<string, unknown>>;
+    const res = createFrameResources(makeMockDevice(), 64, 64) as unknown as Record<
+      string,
+      Record<string, unknown>
+    >;
     const buckets: Record<string, string[]> = {};
     for (const [field, sub] of FIELD_MIGRATION_TABLE) {
       (buckets[sub] ??= []).push(field);
     }
     for (const [subStruct, expected] of Object.entries(buckets)) {
       const actual = Object.keys(res[subStruct]!).sort();
-      expect(actual, `'${subStruct}' field list must match migration table`).toEqual(expected.slice().sort());
+      expect(actual, `'${subStruct}' field list must match migration table`).toEqual(
+        expected.slice().sort(),
+      );
     }
   });
 });

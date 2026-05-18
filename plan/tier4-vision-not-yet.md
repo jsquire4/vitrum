@@ -4,11 +4,12 @@
 >
 > This document captures moonshot ideas for the renderer's eventual SOTA
 > direction. It is **gated** behind:
+>
 > 1. Tiers 1, 2, and 3 fully landed.
 > 2. Validated in the `~/projects/stainedGlass` consumer app — i.e.,
 >    the drop-in API actually works for a real host, hero examples
 >    actually render, and we've used the library ourselves long enough
->    to know what *we* would change.
+>    to know what _we_ would change.
 > 3. An explicit "go" from the user.
 >
 > Until those three conditions hold, this doc is reference only. No
@@ -61,6 +62,7 @@ for designers (the stainedGlass user) — they stop waiting, start
 iterating.
 
 **What's required:**
+
 - Shared scene state across backends. Already mostly there via
   `@vitrum/core/Scene` post-extraction; the M6 cross-package BVH
   consistency makes shared BVH possible.
@@ -81,7 +83,7 @@ iterating.
 ### Path 3 — Neural radiance caching (Müller 2021)
 
 **Concept:** A tiny MLP (4-layer, 64-neuron) queries radiance at any
-point + outgoing direction. Trained *online during rendering* on PT
+point + outgoing direction. Trained _online during rendering_ on PT
 samples the user has already paid for. Radiance-cache hits skip remaining
 bounces — at bounce N, query the cache; if confidence > threshold,
 terminate and use the cached value; else continue tracing.
@@ -96,6 +98,7 @@ scene. With it, 1–2 seconds. The visible behavior to the user is
 difference between cool and shippable.
 
 **What's required:**
+
 - Tiny MLP forward pass in WGSL. ~200 lines (much simpler than the
   U-Net scaffold M2.3 deleted).
 - Hash-grid frequency encoding for the input position (Müller's "Instant
@@ -123,8 +126,8 @@ the moonshots will inevitably introduce.
 ## Path 2 — ReSTIR PT (the SOTA-leap)
 
 **Concept:** Generalize ReSTIR from direct/indirect GI sampling to
-*full path-space integration*. Bitterli + Wyman 2022 "ReSTIR PT" + Wyman
-SIGGRAPH 2023 GRIS framework. Maintain reservoirs over *paths* (not just
+_full path-space integration_. Bitterli + Wyman 2022 "ReSTIR PT" + Wyman
+SIGGRAPH 2023 GRIS framework. Maintain reservoirs over _paths_ (not just
 lights or visible-point hits), reuse them temporally and spatially.
 
 **Why it matters:** 5–20× faster convergence on hard light transport
@@ -138,6 +141,7 @@ audience, Path 1+3 is the demo; ReSTIR PT is the technical talk at a
 conference.
 
 **What's required:**
+
 - Path reservoir storage — beyond the current per-pixel ReSTIR-DI/GI
   reservoirs (M9), store full path samples per pixel.
 - Generalized RIS with Talbot-style pairwise MIS over paths.
@@ -163,10 +167,11 @@ an edit; only the affected region locally invalidates and re-converges.
 
 **Why it matters:** This is the change that turns rendering from a
 per-session start-from-zero task into a continuous artifact. Designers
-stop waiting at the start of every session. The render *evolves* across
+stop waiting at the start of every session. The render _evolves_ across
 their workflow.
 
 **What's required:**
+
 - Serialization for the walkaround DDGI atlas + RC cascades + ReSTIR
   history (or, if we have Path 1, the PT accumulator state).
 - Versioning so a scene-change correctly invalidates the cache.

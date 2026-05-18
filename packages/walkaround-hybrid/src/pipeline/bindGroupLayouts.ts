@@ -45,22 +45,50 @@ export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
   cache.frame = device.createBindGroupLayout({
     label: 'frame-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
       { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 8, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 8,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       { binding: 9, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
       // gNormalDepth — written by shade pass (normal in xyz, primary-hit
       // distance in w); read by the à-trous denoiser for edge stopping.
       // Declared in all four compute pass bind groups (RIS / temporal /
       // spatial / shade) for layout compatibility, but only shade actually
       // writes to it. Bound to the same texture in every dispatch.
-      { binding: 10, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 10,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       // Sprint 16 — half-res GI reservoir (read_write storage buffer).
       // Written by risGiMain; read by shade.wgsl to compute Lo_indirect.
       // Sized for (W/2) × (H/2) × 80 bytes (RESERVOIR_GI_STRIDE × u32).
@@ -69,15 +97,27 @@ export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
       // by shade as `Lo_indirect × ao`. Other shaders that bind the frame BGL
       // (ris, temporal, spatial, risGi) do not reference this binding; only
       // shade declares it, but it must be present in the layout for compat.
-      { binding: 12, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 12,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       // Sprint 18 follow-up — total-radiance HDR output (rgba16float storage).
       // Written by shade as direct + indirect. Welford reads it so the variance
       // / tier estimate covers the full signal, not just the direct channel.
-      { binding: 13, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 13,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       // Item 24 — albedo demodulation (Schied 2017 §4.1). Written by shade
       // alongside hdrIndirectOut; read by indirectCombine to re-modulate the
       // denoised lighting signal back to full outgoing radiance.
-      { binding: 14, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 14,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
     ],
   });
   return cache.frame;
@@ -107,7 +147,11 @@ export function getUboBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBi
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       // Sprint 15 — full-res GTAO occlusion factor (r16float), 1-frame lagged.
       // Sampled in shade to modulate the diffuse / indirect light terms.
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       // Sprint 9 / Original-#2 wire-in — per-pixel adaptive-sampling tier
       // (r32uint, written by sample-budget pass). risGi.wgsl reads it to
       // scale the RIS-GI candidate count (M_GI) per pixel — high-variance
@@ -125,22 +169,45 @@ export function getAtrousBindGroupLayout(device: GPUDevice, cache: BGLCache): GP
   cache.atrous = device.createBindGroupLayout({
     label: 'atrous-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ],
   });
   return cache.atrous;
 }
 
-export function getCompositeBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+export function getCompositeBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
   if (cache.composite) return cache.composite;
   cache.composite = device.createBindGroupLayout({
     label: 'composite-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.FRAGMENT,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'non-filtering' } },
     ],
   });
@@ -153,11 +220,23 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
     label: 'accum-bgl',
     entries: [
       // 0: currentAtrous (read)
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       // 1: prevAccum (read)
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       // 2: accumOut (write)
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       // 3: AccumUBO
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ],
@@ -182,13 +261,24 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  * together. The RC subsystem remains live for the standalone 'rc'
  * walkaround engine.
  */
-export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+export function getHybridLayersBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
   if (cache.hybridLayers) return cache.hybridLayers;
   cache.hybridLayers = device.createBindGroupLayout({
     label: 'hybrid-layers-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ],
@@ -213,8 +303,16 @@ export function getSampleBudgetBindGroupLayout(
     label: 'sample-budget-bgl',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32uint' } },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'r32uint' },
+      },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ],
   });
@@ -230,19 +328,32 @@ export function getSampleBudgetBindGroupLayout(
  *   3 — motion vectors (rg32float, sampled, unfilterable)
  *   4 — resolved out (rgba16float, write-only storage)
  */
-export function getResolveBindGroupLayout(
-  device: GPUDevice,
-  cache: BGLCache,
-): GPUBindGroupLayout {
+export function getResolveBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.resolve) return cache.resolve;
   cache.resolve = device.createBindGroupLayout({
     label: 'resolve-bgl',
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
     ],
   });
   return cache.resolve;
@@ -255,19 +366,28 @@ export function getResolveBindGroupLayout(
  *   2 — GTAOUniforms ubo
  *   3 — gtao_albedo (rgba16float, sampled — E1 Jiménez 2016 §5.2 multi-bounce term)
  */
-export function getGTAOBindGroupLayout(
-  device: GPUDevice,
-  cache: BGLCache,
-): GPUBindGroupLayout {
+export function getGTAOBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.gtao) return cache.gtao;
   cache.gtao = device.createBindGroupLayout({
     label: 'gtao-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       // E1 — hdrAlbedoOut (shade pass M9.C) wired for multi-bounce factor.
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
     ],
   });
   return cache.gtao;
@@ -288,9 +408,21 @@ export function getGTAOUpsampleBindGroupLayout(
   cache.gtaoUpsample = device.createBindGroupLayout({
     label: 'gtao-upsample-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ],
   });
@@ -359,9 +491,21 @@ export function getIndirectTemporalAccumBindGroupLayout(
   cache.indirectTemporalAccum = device.createBindGroupLayout({
     label: 'indirect-temporal-accum-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
     ],
   });
   return cache.indirectTemporalAccum;
@@ -383,15 +527,34 @@ export function getIndirectCombineBindGroupLayout(
   cache.indirectCombine = device.createBindGroupLayout({
     label: 'indirect-combine-bgl',
     entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: { access: 'write-only', format: 'rgba16float' },
+      },
       // Item 24 — albedo demodulation (Schied 2017 §4.1).
       // Re-modulates the denoised indirect lighting signal by albedo.
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: 'unfilterable-float' },
+      },
     ],
   });
   return cache.indirectCombine;
 }
-

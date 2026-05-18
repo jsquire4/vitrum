@@ -8,7 +8,16 @@
 // a fake engine and asserts the public T3.E surface compiles.
 
 import { describe, it, expect } from 'vitest';
-import type { Engine, FrameStats, ProgressStats, EngineCapabilities, EngineState, FrameOutput, FrameInput, Scene } from '@vitrum/core';
+import type {
+  Engine,
+  FrameStats,
+  ProgressStats,
+  EngineCapabilities,
+  EngineState,
+  FrameOutput,
+  FrameInput,
+  Scene,
+} from '@vitrum/core';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Smoke: a minimal Engine implementation can declare the optional T3.E
@@ -77,9 +86,9 @@ describe('Engine T3.E contract', () => {
   });
 
   it('ProgressStats discriminates by kind', () => {
-    const a: ProgressStats = { kind: 'pt-spp',           current:  64, target: 256, fraction: 0.25 };
-    const b: ProgressStats = { kind: 'denoiser-converge', current:  10, target: 100, fraction: 0.10 };
-    const c: ProgressStats = { kind: 'ddgi-warmup',      current:   3, target:  30, fraction: 0.10 };
+    const a: ProgressStats = { kind: 'pt-spp', current: 64, target: 256, fraction: 0.25 };
+    const b: ProgressStats = { kind: 'denoiser-converge', current: 10, target: 100, fraction: 0.1 };
+    const c: ProgressStats = { kind: 'ddgi-warmup', current: 3, target: 30, fraction: 0.1 };
     expect([a.kind, b.kind, c.kind]).toEqual(['pt-spp', 'denoiser-converge', 'ddgi-warmup']);
   });
 
@@ -103,15 +112,18 @@ describe('Engine T3.E contract', () => {
     const e = new FakeEngine();
     const seen: number[] = [];
     const off = e.onProgress((p) => seen.push(p.fraction));
-    e._progressSubs.forEach((cb) => cb({ kind: 'pt-spp', current: 16, target: 64, fraction: 0.25 }));
+    e._progressSubs.forEach((cb) =>
+      cb({ kind: 'pt-spp', current: 16, target: 64, fraction: 0.25 }),
+    );
     off();
-    e._progressSubs.forEach((cb) => cb({ kind: 'pt-spp', current: 32, target: 64, fraction: 0.50 }));
+    e._progressSubs.forEach((cb) => cb({ kind: 'pt-spp', current: 32, target: 64, fraction: 0.5 }));
     expect(seen).toEqual([0.25]);
   });
 
   it('multiple subscribers each get the callback', () => {
     const e = new FakeEngine();
-    const a: number[] = [], b: number[] = [];
+    const a: number[] = [],
+      b: number[] = [];
     e.onFrame((s) => a.push(s.frameTimeMs));
     e.onFrame((s) => b.push(s.frameTimeMs));
     e._frameSubs.forEach((cb) => cb({ frameTimeMs: 16.7 }));

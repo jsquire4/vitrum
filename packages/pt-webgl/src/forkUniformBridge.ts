@@ -170,8 +170,16 @@ export function driveForkMaterialUniforms(
           ? 2
           : 0;
     setUniform(material, 'uCausticStrategy', strategyCode);
-    setUniform(material, 'uMneeMaxIterations', sanitizePositiveFinite(causticOptions.mneeMaxIterations, 8, 16));
-    setUniform(material, 'uMneeMaxChainLength', sanitizePositiveFinite(causticOptions.mneeMaxChainLength, 3, 8));
+    setUniform(
+      material,
+      'uMneeMaxIterations',
+      sanitizePositiveFinite(causticOptions.mneeMaxIterations, 8, 16),
+    );
+    setUniform(
+      material,
+      'uMneeMaxChainLength',
+      sanitizePositiveFinite(causticOptions.mneeMaxChainLength, 3, 8),
+    );
   }
 
   // Sprint 10c — BDPT uniform bridge.
@@ -186,9 +194,10 @@ export function driveForkMaterialUniforms(
     const effectivelyEnabled = bdptOptions.enabled && lightPathTex != null;
     setUniform(material, 'uBdptEnabled', effectivelyEnabled);
     setUniform(material, 'uBdptLightPathTex', lightPathTex);
-    const maxBounces = bdptOptions.maxLightBounces != null
-      ? sanitizePositiveFinite(bdptOptions.maxLightBounces, 3, 3)
-      : 3;
+    const maxBounces =
+      bdptOptions.maxLightBounces != null
+        ? sanitizePositiveFinite(bdptOptions.maxLightBounces, 3, 3)
+        : 3;
     setUniform(material, 'uBdptMaxLightBounces', maxBounces);
   } else {
     // BDPT not requested — ensure it's off (idempotent; safe to call every frame).

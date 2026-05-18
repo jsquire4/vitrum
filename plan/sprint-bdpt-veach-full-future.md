@@ -33,7 +33,7 @@ Chapter 10: Bidirectional Path Tracing, §10.3 Multiple Importance Sampling.
 http://graphics.stanford.edu/papers/veach_thesis/
 
 **Supporting reference:**
-Pharr, M., Jakob, W., Humphreys, G. *Physically Based Rendering*, 4th ed.
+Pharr, M., Jakob, W., Humphreys, G. _Physically Based Rendering_, 4th ed.
 §16.3 "Bidirectional Path Tracing."
 Equation 16.16: the recursive `p_{s+1}/p_s` ratio for strategy PDF enumeration.
 https://pbr-book.org/4ed/Light_Transport_III_Bidirectional_Methods/Bidirectional_Path_Tracing
@@ -82,6 +82,7 @@ r_i = pL_{t-i-1} / pC_{s-i}  · G(x_i, x_{i+1})
 ```
 
 where:
+
 - `pL_{j}` = PDF of the light subpath sampling vertex `j` from vertex `j-1`
 - `pC_{j}` = PDF of the camera subpath sampling vertex `j` from vertex `j-1`
 - `G(xi, xj)` = geometry term: `cos(θi) · cos(θj) / ||xi − xj||²`
@@ -90,6 +91,7 @@ This allows computing all `k+2` strategy probabilities in `O(k)` time by sweepin
 the ratios from `s=0` to `s=k+1` — no per-strategy full path re-evaluation.
 
 **Implementation of the ratio sweep (pseudocode):**
+
 ```ts
 // Given: camera subpath vertices[0..s-1], light subpath vertices[0..t-1]
 // Connection: camera[s-1] ↔ light[t-1]
@@ -99,23 +101,23 @@ the ratios from `s=0` to `s=k+1` — no per-strategy full path re-evaluation.
 
 let pC = productOfCameraPDFs(vertices, s);
 let pL = productOfLightPDFs(vertices, t);
-let pFull = pC * pL;  // p_{s,t}
+let pFull = pC * pL; // p_{s,t}
 
 // Enumerate leftward (decrement s, increment t)
 let p = pFull;
-let weights: number[] = new Array(k+2).fill(0);
-weights[s] = 1;  // the chosen strategy; weight = p^β / Σ p_i^β
+let weights: number[] = new Array(k + 2).fill(0);
+weights[s] = 1; // the chosen strategy; weight = p^β / Σ p_i^β
 
 for (let i = s - 1; i >= 0; i--) {
   // r_i = pL[...] / pC[...] * G
-  p *= pL_ratio(i) / pC_ratio(i) * G(connection(i));
+  p *= (pL_ratio(i) / pC_ratio(i)) * G(connection(i));
   weights[i] = p ** beta;
 }
 
 // Reset and enumerate rightward (increment s, decrement t)
 p = pFull;
 for (let i = s + 1; i <= k + 1; i++) {
-  p *= pC_ratio(i) / pL_ratio(i) * G(connection(i));
+  p *= (pC_ratio(i) / pL_ratio(i)) * G(connection(i));
   weights[i] = p ** beta;
 }
 
@@ -177,17 +179,21 @@ these endpoint conventions.
 **Camera endpoint (s=0, vertex x_0):**
 The camera samples an outgoing direction from x_0 (the camera position). For a pinhole
 camera, the PDF of sampling direction `ω_0` is:
+
 ```
 p_camera(ω_0) = 1 / (A_lens · cos(θ_0)³)  [area PDF on film plane]
 ```
+
 or equivalently in solid angle as the camera's importance function. The importance must
 be evaluated for each path that reaches x_0 from any strategy, not just the chosen one.
 
 **Light endpoint (t=0, vertex x_k):**
 For area lights, the PDF of sampling a point x_k on the emitter surface is:
+
 ```
 p_light(x_k) = 1 / A_emitter   [area PDF]
 ```
+
 For environment lights (infinite sphere), the PDF is a directional PDF from the envmap
 sampling distribution.
 

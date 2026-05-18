@@ -4,7 +4,7 @@
  * to decorrelate frames (golden-ratio rotation on the sphere).
  */
 
-export const HAMMERSLEY_WGSL = /* wgsl */`
+export const HAMMERSLEY_WGSL = /* wgsl */ `
 
 fn radicalInverse_VdC(n: u32) -> f32 {
   var bits = (n << 16u) | (n >> 16u);

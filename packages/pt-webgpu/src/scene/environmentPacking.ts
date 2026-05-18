@@ -100,7 +100,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       cdf[i + 1] = totalWeight;
     }
     if (totalWeight > 1e-12) {
-      const dOmegaBase = (2 * Math.PI / width) * (Math.PI / height);
+      const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
       for (let i = 0; i < pixelCount; i += 1) {
         cdf[i + 1] = (cdf[i + 1] ?? 0) / totalWeight;
         const y = (i / width) | 0;

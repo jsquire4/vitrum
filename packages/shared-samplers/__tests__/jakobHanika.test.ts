@@ -17,15 +17,17 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { rgbToSpectralCoefficients, evaluateSpectrum, VISIBLE_LAMBDA_MIN, VISIBLE_LAMBDA_MAX } from '../src/jakobHanika.js';
+import {
+  rgbToSpectralCoefficients,
+  evaluateSpectrum,
+  VISIBLE_LAMBDA_MIN,
+  VISIBLE_LAMBDA_MAX,
+} from '../src/jakobHanika.js';
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
 /** Sample the spectrum at N evenly spaced wavelengths across [380, 780]. */
-function sampleSpectrum(
-  coeffs: readonly [number, number, number],
-  n = 40,
-): number[] {
+function sampleSpectrum(coeffs: readonly [number, number, number], n = 40): number[] {
   const samples: number[] = [];
   for (let i = 0; i < n; i++) {
     const lambda = VISIBLE_LAMBDA_MIN + ((VISIBLE_LAMBDA_MAX - VISIBLE_LAMBDA_MIN) * i) / (n - 1);
@@ -90,7 +92,7 @@ describe('rgbToSpectralCoefficients — achromatic', () => {
 describe('rgbToSpectralCoefficients — chromatic primaries', () => {
   it('pure red (1,0,0): spectrum peaks near 700nm (higher than near 450nm)', () => {
     const coeffs = rgbToSpectralCoefficients(1, 0, 0);
-    const atRed  = evaluateSpectrum(coeffs, 700);
+    const atRed = evaluateSpectrum(coeffs, 700);
     const atBlue = evaluateSpectrum(coeffs, 450);
     expect(atRed).toBeGreaterThan(atBlue);
   });
@@ -98,8 +100,8 @@ describe('rgbToSpectralCoefficients — chromatic primaries', () => {
   it('pure green (0,1,0): spectrum peaks near 550nm', () => {
     const coeffs = rgbToSpectralCoefficients(0, 1, 0);
     const atGreen = evaluateSpectrum(coeffs, 550);
-    const atRed   = evaluateSpectrum(coeffs, 700);
-    const atBlue  = evaluateSpectrum(coeffs, 450);
+    const atRed = evaluateSpectrum(coeffs, 700);
+    const atBlue = evaluateSpectrum(coeffs, 450);
     expect(atGreen).toBeGreaterThan(atRed);
     expect(atGreen).toBeGreaterThan(atBlue);
   });
@@ -107,7 +109,7 @@ describe('rgbToSpectralCoefficients — chromatic primaries', () => {
   it('pure blue (0,0,1): spectrum peaks near 450nm (higher than near 700nm)', () => {
     const coeffs = rgbToSpectralCoefficients(0, 0, 1);
     const atBlue = evaluateSpectrum(coeffs, 450);
-    const atRed  = evaluateSpectrum(coeffs, 700);
+    const atRed = evaluateSpectrum(coeffs, 700);
     expect(atBlue).toBeGreaterThan(atRed);
   });
 });
@@ -128,7 +130,9 @@ describe('rgbToSpectralCoefficients — black', () => {
 
 describe('rgbToSpectralCoefficients — determinism', () => {
   it('same RGB → identical coefficients on repeated calls', () => {
-    const r = 0.3, g = 0.7, b = 0.2;
+    const r = 0.3,
+      g = 0.7,
+      b = 0.2;
     const c1 = rgbToSpectralCoefficients(r, g, b);
     const c2 = rgbToSpectralCoefficients(r, g, b);
     expect(c1[0]).toBe(c2[0]);

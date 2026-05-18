@@ -125,7 +125,9 @@ export class ProbeGrid {
     const cz = Math.min(nz, cap);
 
     const changed =
-      cx !== this.dims.x || cy !== this.dims.y || cz !== this.dims.z ||
+      cx !== this.dims.x ||
+      cy !== this.dims.y ||
+      cz !== this.dims.z ||
       !this.worldOrigin.equals(boundingBox.min) ||
       this.worldSpacing !== PROBE_SPACING;
 
@@ -160,9 +162,9 @@ export class ProbeGrid {
     this.visibilityB = makeSlot(visW, visH);
 
     this._params = {
-      origin:   this.worldOrigin.clone(),
-      spacing:  this.worldSpacing,
-      dims:     { ...this.dims },
+      origin: this.worldOrigin.clone(),
+      spacing: this.worldSpacing,
+      dims: { ...this.dims },
       irradianceAtlasW: irrW,
       irradianceAtlasH: irrH,
       visibilityAtlasW: visW,

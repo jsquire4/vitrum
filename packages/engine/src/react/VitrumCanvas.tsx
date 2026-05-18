@@ -59,9 +59,15 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
 
     // Keep the latest dynamic props in refs so the engine sees them
     // without having to be torn down + recreated when they change.
-    React.useEffect(() => { qualityRef.current = props.quality; },     [props.quality]);
-    React.useEffect(() => { onFrameRef.current = props.onFrame; },     [props.onFrame]);
-    React.useEffect(() => { onProgressRef.current = props.onProgress; }, [props.onProgress]);
+    React.useEffect(() => {
+      qualityRef.current = props.quality;
+    }, [props.quality]);
+    React.useEffect(() => {
+      onFrameRef.current = props.onFrame;
+    }, [props.onFrame]);
+    React.useEffect(() => {
+      onProgressRef.current = props.onProgress;
+    }, [props.onProgress]);
 
     // Effect dependency captures the structural inputs only. Mutable refs
     // bypass the dep array for dynamic props.
@@ -78,8 +84,12 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         ...(props.prefer ? { prefer: props.prefer } : {}),
         ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
         ...(qualityRef.current ? { quality: qualityRef.current } : {}),
-        onFrame: (stats) => { onFrameRef.current?.(stats); },
-        onProgress: (progress) => { onProgressRef.current?.(progress); },
+        onFrame: (stats) => {
+          onFrameRef.current?.(stats);
+        },
+        onProgress: (progress) => {
+          onProgressRef.current?.(progress);
+        },
       })
         .then((h) => {
           if (cancelled) {

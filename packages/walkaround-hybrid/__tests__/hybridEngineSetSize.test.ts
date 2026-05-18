@@ -27,7 +27,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as THREE from 'three';
 
 interface ResizeState {
-  pipelineInitDeferreds: Array<{ promise: Promise<void>; resolve: () => void; reject: (e: unknown) => void }>;
+  pipelineInitDeferreds: Array<{
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (e: unknown) => void;
+  }>;
   pipelineConstructed: MockPipeline[];
   pipelineResizeCalls: Array<{ pipelineIdx: number; w: number; h: number }>;
   buildBVHCalls: Array<{ idx: number }>;
@@ -78,9 +82,14 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
       this.height = h;
       let resolve!: () => void;
       let reject!: (e: unknown) => void;
-      const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
       state.pipelineInitDeferreds.push({ promise, resolve, reject });
-      this.dispose = vi.fn(() => { this.disposed = true; });
+      this.dispose = vi.fn(() => {
+        this.disposed = true;
+      });
       const idx = this.index;
       this.resize = vi.fn((nw: number, nh: number) => {
         this.width = nw;
@@ -119,13 +128,13 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       const idx = state.buildBVHCalls.length;
       state.buildBVHCalls.push({ idx });
       return {
-        bvhNodes:        { cpuData: new ArrayBuffer(32), count: 1 },
-        bvhIndex:        { cpuData: new ArrayBuffer(16), count: 1 },
-        bvhBeerColors:   { cpuData: new ArrayBuffer(16), count: 1 },
-        bvhPositions:    { cpuData: new ArrayBuffer(16), count: 1 },
-        emitters:        { cpuData: new ArrayBuffer(16), count: 0 },
-        emitterCdf:      { cpuData: new ArrayBuffer(16), count: 0 },
-        emitterCount:    0,
+        bvhNodes: { cpuData: new ArrayBuffer(32), count: 1 },
+        bvhIndex: { cpuData: new ArrayBuffer(16), count: 1 },
+        bvhBeerColors: { cpuData: new ArrayBuffer(16), count: 1 },
+        bvhPositions: { cpuData: new ArrayBuffer(16), count: 1 },
+        emitters: { cpuData: new ArrayBuffer(16), count: 0 },
+        emitterCdf: { cpuData: new ArrayBuffer(16), count: 0 },
+        emitterCount: 0,
         totalEmissivePower: 0,
       };
     }),
@@ -144,7 +153,8 @@ import { HybridEngine } from '../src/HybridEngine.js';
 import type { Scene } from '@vitrum/core';
 
 function getState(): ResizeState {
-  return (globalThis as unknown as { __HYBRID_RESIZE_STATE__: ResizeState }).__HYBRID_RESIZE_STATE__;
+  return (globalThis as unknown as { __HYBRID_RESIZE_STATE__: ResizeState })
+    .__HYBRID_RESIZE_STATE__;
 }
 
 function makeMockDevice(): GPUDevice {
@@ -157,17 +167,20 @@ function makeMockDevice(): GPUDevice {
 function makeEngine(w = 64, h = 64): HybridEngine {
   const scene = new THREE.Scene();
   const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 3));
+  geom.setAttribute(
+    'position',
+    new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 3),
+  );
   scene.add(new THREE.Mesh(geom, new THREE.MeshBasicMaterial()));
   return new HybridEngine({
-    device:                makeMockDevice(),
-    width:                 w,
-    height:                h,
-    threeScene:            scene,
-    primaryLightDir:       [0, -1, 0],
+    device: makeMockDevice(),
+    width: w,
+    height: h,
+    threeScene: scene,
+    primaryLightDir: [0, -1, 0],
     primaryLightIntensity: 1.0,
-    skyTint:               [1, 1, 1],
-    skyIrradiance:         1.0,
+    skyTint: [1, 1, 1],
+    skyIrradiance: 1.0,
   });
 }
 
@@ -178,7 +191,7 @@ const SCENE_WITH_MESH: Scene = {
       kind: 'mesh',
       mesh: {
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        indices:   new Uint32Array([0, 1, 2]),
+        indices: new Uint32Array([0, 1, 2]),
       },
       material: { kind: 'lambertian', albedo: [1, 1, 1] },
     } as unknown as Scene['primitives'][number],

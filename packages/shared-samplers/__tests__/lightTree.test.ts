@@ -130,9 +130,7 @@ describe('buildLightTree', () => {
   });
 
   it('throws if emitter arrays are empty', () => {
-    expect(() =>
-      buildLightTree({ powers: [], centroids: [], aabbs: [] }),
-    ).toThrow();
+    expect(() => buildLightTree({ powers: [], centroids: [], aabbs: [] })).toThrow();
   });
 
   it('throws on length mismatch between powers/centroids/aabbs', () => {
@@ -297,7 +295,8 @@ describe('33-F leaf PDF partition', () => {
     for (let s = 0; s < N; s++) {
       const u = rng();
       // Binary search for the first cdf[i] >= u.
-      let lo = 0, hi = cdf.length - 1;
+      let lo = 0,
+        hi = cdf.length - 1;
       while (lo < hi) {
         const mid = (lo + hi) >> 1;
         if (cdf[mid]! < u) lo = mid + 1;

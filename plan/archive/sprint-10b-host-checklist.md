@@ -20,6 +20,7 @@
 ### 1. Install onnxruntime-web
 
 In the host application's `package.json`:
+
 ```json
 "dependencies": {
   "onnxruntime-web": "^1.18.0"
@@ -32,6 +33,7 @@ Then `npm install`. This is not installed in the vitrum workspace (optional peer
 ### 2. Bundle the OIDN ONNX model file
 
 Obtain the OIDN ONNX model from the official OpenImageDenoise project:
+
 - Project: https://github.com/OpenImageDenoise/oidn
 - Look for the `oidn-X.Y.Z.x86_64.linux.tar.gz` release, which includes ONNX exports.
 - Typical model variants:
@@ -43,11 +45,13 @@ The model with albedo + normal inputs produces the highest quality output; these
 G-buffers are available from the Sprint 5 MRT scaffold (`gAlbedo`, `gNormalDepth`).
 
 Place the model file in the host's public/static assets directory:
+
 ```
 public/models/oidn_rt_hdr_alb_nrm.onnx
 ```
 
 Pass the path to `denoiseFinal`:
+
 ```typescript
 await denoiseFinal(inputs, { modelUrl: '/models/oidn_rt_hdr_alb_nrm.onnx' });
 ```
@@ -63,9 +67,9 @@ const [isDenoising, setIsDenoising] = useState(false);
 async function handleDenoise() {
   setIsDenoising(true);
   try {
-    const color  = captureFloat32FromAccumBuffer();   // HxWx3 RGB float
-    const normal = captureFloat32FromGBufferNormal();  // HxWx3 float (optional)
-    const albedo = captureFloat32FromGBufferAlbedo();  // HxWx3 float (optional)
+    const color = captureFloat32FromAccumBuffer(); // HxWx3 RGB float
+    const normal = captureFloat32FromGBufferNormal(); // HxWx3 float (optional)
+    const albedo = captureFloat32FromGBufferAlbedo(); // HxWx3 float (optional)
 
     const denoised = await denoiseFinal(
       { color, normal, albedo, width: renderWidth, height: renderHeight },
@@ -103,10 +107,14 @@ function captureFloat32FromAccumBuffer(): Float32Array {
 }
 
 // Normal: read from gNormalDepth target, extract .xyz channels.
-function captureFloat32FromGBufferNormal(): Float32Array { /* similar pattern */ }
+function captureFloat32FromGBufferNormal(): Float32Array {
+  /* similar pattern */
+}
 
 // Albedo: read from gAlbedo target.
-function captureFloat32FromGBufferAlbedo(): Float32Array { /* similar pattern */ }
+function captureFloat32FromGBufferAlbedo(): Float32Array {
+  /* similar pattern */
+}
 ```
 
 Note: `renderer.readRenderTargetPixels` is synchronous and blocks the main thread.
@@ -119,8 +127,9 @@ To avoid latency on first click, pre-warm during the PT accumulation phase:
 
 ```typescript
 // When PT_FINAL mode is entered or accumulation starts:
-preloadOIDNModel({ modelUrl: '/models/oidn_rt_hdr_alb_nrm.onnx' })
-  .catch(err => console.warn('[OIDN] Preload failed:', err));
+preloadOIDNModel({ modelUrl: '/models/oidn_rt_hdr_alb_nrm.onnx' }).catch((err) =>
+  console.warn('[OIDN] Preload failed:', err),
+);
 ```
 
 This downloads and initializes the ONNX session in the background while samples
@@ -129,6 +138,7 @@ accumulate. On first `denoiseFinal` call, the session is already cached.
 ### 6. Save the denoised output alongside the raw render
 
 The existing PT final save-to-file flow should offer two options:
+
 - "Save raw" — the undenoised accumulation buffer (existing behavior).
 - "Save denoised" — appears after denoising runs; saves the OIDN output.
 
@@ -136,7 +146,8 @@ The existing PT final save-to-file flow should offer two options:
 function saveDenoisedAsPNG(denoised: Float32Array, width: number, height: number) {
   // Convert Float32 linear → 8-bit sRGB on a canvas.
   const canvas = document.createElement('canvas');
-  canvas.width = width; canvas.height = height;
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d')!;
   const imageData = ctx.createImageData(width, height);
   for (let i = 0; i < width * height; i++) {
@@ -146,19 +157,19 @@ function saveDenoisedAsPNG(denoised: Float32Array, width: number, height: number
     imageData.data[i * 4 + 3] = 255;
   }
   ctx.putImageData(imageData, 0, 0);
-  canvas.toBlob(blob => triggerDownload(blob, 'render-denoised.png'), 'image/png');
+  canvas.toBlob((blob) => triggerDownload(blob, 'render-denoised.png'), 'image/png');
 }
 ```
 
 ### 7. Browser support fallback
 
-| Browser | WebNN | WebGPU | WASM |
-|---------|-------|--------|------|
-| Chrome 120+ (WebNN flag) | ✓ | ✓ | ✓ |
-| Edge 120+ (WebNN flag) | ✓ | ✓ | ✓ |
-| Firefox 120+ | — | ✓ | ✓ |
-| Safari 17+ | — | ✓ | ✓ |
-| Any browser | — | — | ✓ |
+| Browser                  | WebNN | WebGPU | WASM |
+| ------------------------ | ----- | ------ | ---- |
+| Chrome 120+ (WebNN flag) | ✓     | ✓      | ✓    |
+| Edge 120+ (WebNN flag)   | ✓     | ✓      | ✓    |
+| Firefox 120+             | —     | ✓      | ✓    |
+| Safari 17+               | —     | ✓      | ✓    |
+| Any browser              | —     | —      | ✓    |
 
 ORT-Web picks the first available provider in the configured list. No host-side
 feature detection is needed — ORT handles the fallback automatically.
@@ -167,6 +178,7 @@ If WebNN is detected as available, OIDN inference on a 2K frame should complete
 in <2 seconds. On WebGPU fallback: 2–5 seconds. On WASM: 10–30 seconds.
 
 Consider showing an estimated time tooltip when the denoising is triggered:
+
 ```typescript
 const providerHint = await detectFastestProvider(); // 'webnn'|'webgpu'|'wasm'
 const estimatedSeconds = { webnn: 2, webgpu: 5, wasm: 30 }[providerHint] ?? 30;
@@ -177,6 +189,7 @@ showToast(`Denoising… (~${estimatedSeconds}s)`);
 
 The OIDN model session occupies ~100–500 MB of GPU/CPU memory while loaded.
 Call `clearOIDNCache()` when:
+
 - The host navigates away from the PT final view.
 - The user switches to a different render mode (walkaround, raster).
 - The device is under memory pressure (listen to `document.addEventListener('memorywarning', ...)`).
@@ -200,6 +213,7 @@ Call `clearOIDNCache()` when:
 ## Sprint 10b acceptance benchmark
 
 Capture before/after comparison on a 2K hero render of the stained-glass scene:
+
 - **Before**: raw PT_FINAL at 192 samples (standard convergence setting).
 - **After**: same render denoised with OIDN.
 - Expected: visible Monte Carlo noise eliminated; sharp glass boundaries preserved;

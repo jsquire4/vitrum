@@ -16,19 +16,20 @@ specifies what must be patched in the fork once Sprint 6 kicks off.
 
 **Goal**: perturb refracted ray direction by a GGX-distributed roughness lobe,
 additive to the existing Phase 4 normal-map patch (which perturbs surface
-normals, not refraction directions).  This is a separate physical effect:
+normals, not refraction directions). This is a separate physical effect:
 rough glass has scattered transmission lobes, not just scattered normals.
 
 #### Existing state (Phase 4)
 
 Phase 4 added normal-map perturbation:
+
 ```glsl
 // Phase 4 contribution:
 normal = perturbNormalByMap(surfaceRecord.normalMap, normal, tangent, bitangent);
 refractedDir = refract(incidentDir, normal, eta);
 ```
 
-The Phase 4 patch modifies the surface normal before refraction.  The rough
+The Phase 4 patch modifies the surface normal before refraction. The rough
 refraction lobe is a DIFFERENT perturbation applied to the refracted direction
 AFTER computing the specular refraction:
 
@@ -82,7 +83,7 @@ refDir = perturbDirectionByGGX(refDir, rough, rand(), rand());
 ```
 
 **Composition with Phase 4**: Phase 4 modifies `N` before this call;
-Sprint 6 modifies `refDir` after.  They compose correctly in order.
+Sprint 6 modifies `refDir` after. They compose correctly in order.
 
 #### Definition of done
 
@@ -130,21 +131,21 @@ if (useSpatialFilter) {
 ## 3. Risk notes
 
 - **Rough refraction + Phase 4 ordering**: always verify that Phase 4 runs
-  BEFORE Sprint 6 at the call site.  If both patches land in the same
+  BEFORE Sprint 6 at the call site. If both patches land in the same
   sampleBSDF block, the order must be:
   1. Phase 4: apply normal map to `N`
   2. Sprint 6: compute `refDir = refract(-V, N, eta)`, then perturb by GGX
 
 - **Firefly risk**: very rough glass (roughness > 0.8) combined with bright
   caustic emitters can produce firefly spikes where the perturbed refraction
-  samples a very-bright emitter at low probability.  Mitigation: the existing
+  samples a very-bright emitter at low probability. Mitigation: the existing
   `filteredGlossyFactor` clamp already handles fireflies in direct lighting;
   verify it applies to transmission samples too.
 
 - **Spatial filter σ tuning**: the three σ values (color, normal, depth) require
-  scene-specific tuning.  Suggested starting points:
-  - sigmaColor  = 0.1 (HDR chromaticity; tight enough to preserve caustic edges)
+  scene-specific tuning. Suggested starting points:
+  - sigmaColor = 0.1 (HDR chromaticity; tight enough to preserve caustic edges)
   - sigmaNormal = 32.0 (as exponent; harsh threshold for geometry edges)
-  - sigmaDepth  = 0.01 (world units; tight to prevent depth-discontinuity blur)
+  - sigmaDepth = 0.01 (world units; tight to prevent depth-discontinuity blur)
 
   These should be surfaced as props in the host's `PTSpatialDenoiser` component.
