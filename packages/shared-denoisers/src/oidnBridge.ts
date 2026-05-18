@@ -282,21 +282,18 @@ async function _loadORT(): Promise<_OrtModule> {
   try {
     // Dynamic import of the optional peerDependency 'onnxruntime-web'.
     //
-    // We use Function() to construct the import call indirectly, preventing
-    // TypeScript's static module resolver from attempting to type-check
-    // 'onnxruntime-web' at compile time. This is the standard idiom for
-    // optional runtime dependencies that must not cause compile errors when
-    // the package is absent.
+    // Conventional pattern: a direct `await import(...)` with a `@ts-expect-error`
+    // suppressing the type-checker's "Cannot find module" complaint. Bundlers
+    // (Vite, webpack, esbuild) handle the missing-package case via this package's
+    // `peerDependenciesMeta.optional: true` declaration in package.json.
     //
-    // At runtime: if the host has installed onnxruntime-web, the import
-    // succeeds and we cast to _OrtModule. If not, it throws and we rethrow
-    // with a descriptive error.
-    //
-    // See: https://www.typescriptlang.org/docs/handbook/2/modules.html
-    const importFn = new Function('id', 'return import(id)') as
-      (id: string) => Promise<unknown>;
-    const mod = await importFn('onnxruntime-web');
-    return mod as _OrtModule;
+    // (Previously used `new Function('id', 'return import(id)')` to evade the
+    // type checker; that pattern is CSP-unsafe — `unsafe-eval` directives block
+    // it. The direct-import + ts-expect-error idiom is CSP-clean and the
+    // documented TypeScript pattern for optional peer deps.)
+    // @ts-expect-error optional peer dependency — see peerDependenciesMeta in package.json
+    const mod = await import('onnxruntime-web');
+    return mod as unknown as _OrtModule;
   } catch (cause) {
     throw new Error(
       `[oidnBridge] Could not load 'onnxruntime-web'. ` +
