@@ -17,6 +17,22 @@ import { attachVitrum, createEngine, type AttachVitrumHandle } from '@vitrum/eng
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import type { ProgressStats } from '@vitrum/core';
 
+// ── Capture protocol globals (consumed by tools/benchmark-runner/capture-adapter-playwright.mjs) ──
+//
+// When the page is opened with `?vitrumScenario=hero-product-viz&vitrumAutoStart=1`, the
+// example skips the interactive flow and renders to convergence, then sets the
+// VITRUM_CAPTURE_READY sentinel that the Playwright adapter waits on.
+declare global {
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_READY: boolean | undefined;
+  // eslint-disable-next-line no-var
+  var VITRUM_MS_PER_SAMPLE: number | undefined;
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_TELEMETRY: Record<string, unknown> | undefined;
+  // eslint-disable-next-line no-var
+  var VITRUM_CAPTURE_CANVAS_SELECTOR: string | undefined;
+}
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
 const canvas      = document.querySelector<HTMLCanvasElement>('#c')!;
@@ -24,6 +40,40 @@ const statusEl    = document.querySelector<HTMLDivElement>('#status')!;
 const sppLabel    = document.querySelector<HTMLDivElement>('#spp-label')!;
 const sppBar      = document.querySelector<HTMLDivElement>('#spp-bar')!;
 const btnSave     = document.querySelector<HTMLButtonElement>('#btn-save')!;
+
+// ── Capture-mode config from URL params ──────────────────────────────────────
+//
+// Capture mode is active when `vitrumScenario` is present. It overrides
+// interactive defaults: fixed canvas size, deterministic SPP target, no slider
+// wiring (the page never receives user input during capture).
+function parsePositiveInt(raw: string | null, dflt: number): number {
+  if (!raw) return dflt;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
+}
+const captureParams = new URLSearchParams(window.location.search);
+const captureMode = captureParams.has('vitrumScenario');
+// vitrumAutoStart is honoured for protocol parity with cornell-box; hero-product-viz
+// already boots on module load, so it's a no-op here aside from documenting intent.
+void captureParams.get('vitrumAutoStart');
+const captureWidth  = parsePositiveInt(captureParams.get('vitrumWidth'),  1280);
+const captureHeight = parsePositiveInt(captureParams.get('vitrumHeight'),  720);
+const captureSpp    = parsePositiveInt(captureParams.get('vitrumSpp'),    512);
+const captureBounces = parsePositiveInt(captureParams.get('vitrumBounces'), 8);
+
+globalThis.VITRUM_CAPTURE_READY = false;
+globalThis.VITRUM_MS_PER_SAMPLE = undefined;
+globalThis.VITRUM_CAPTURE_TELEMETRY = undefined;
+globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR = '#c';
+
+if (captureMode) {
+  // Lock canvas to requested capture size — Playwright will screenshot the
+  // locator, so on-screen pixels must match the requested image dimensions.
+  canvas.style.width  = `${captureWidth}px`;
+  canvas.style.height = `${captureHeight}px`;
+  canvas.width  = captureWidth;
+  canvas.height = captureHeight;
+}
 
 // ── Material params ───────────────────────────────────────────────────────────
 
@@ -92,22 +142,49 @@ function buildScene(): THREE.Scene {
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 
-const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 50);
+const camera = new THREE.PerspectiveCamera(
+  38,
+  captureMode ? captureWidth / captureHeight : 1,
+  0.05,
+  50,
+);
 camera.position.set(0, 1.2, 3.0);
 camera.lookAt(0, 0.5, 0);
 
 // ── Engine lifecycle ──────────────────────────────────────────────────────────
 
-const SPP_TARGET = 512;
+const SPP_TARGET = captureMode ? captureSpp : 512;
+const BOUNCES    = captureMode ? captureBounces : 8;
 
 let engineHandle: AttachVitrumHandle | null = null;
 let currentVitrumScene = sceneFromThreeJS(buildScene());
+const initTimeMs = performance.now();
+
+function finalizeCapture(samplesAccumulated: number): void {
+  if (globalThis.VITRUM_CAPTURE_READY === true) return;
+  const elapsed = performance.now() - initTimeMs;
+  globalThis.VITRUM_MS_PER_SAMPLE = elapsed / Math.max(samplesAccumulated, 1);
+  globalThis.VITRUM_CAPTURE_TELEMETRY = {
+    scenarioId: 'hero-product-viz',
+    samplesAccumulated,
+    msPerSample: globalThis.VITRUM_MS_PER_SAMPLE,
+    captureCanvasSelector: '#c',
+  };
+  globalThis.VITRUM_CAPTURE_READY = true;
+  console.info(
+    `[vitrum-capture] hero-product-viz ready: ${samplesAccumulated} SPP in ${elapsed.toFixed(0)} ms`,
+  );
+}
 
 const onProgress = (p: ProgressStats): void => {
   if (p.kind !== 'pt-spp') return;
   const pct = Math.round(p.fraction * 100);
   sppLabel.textContent = `SPP: ${Math.round(p.current)} / ${Math.round(p.target)}`;
   sppBar.style.width = `${pct}%`;
+  // Capture-mode: signal ready when convergence reached.
+  if (captureMode && p.fraction >= 1) {
+    finalizeCapture(p.current);
+  }
 };
 
 async function init(): Promise<void> {
@@ -120,15 +197,22 @@ async function init(): Promise<void> {
       prefer: 'quality',
       quality: {
         samplesTarget: SPP_TARGET,
-        bounces: 8,
+        bounces: BOUNCES,
         resolutionFactor: 1,
         filteredGlossyFactor: 0.5,
       },
       onProgress,
     });
-    statusEl.textContent = 'Rendering… adjust sliders to change material';
+    statusEl.textContent = captureMode
+      ? `Capture mode — rendering ${SPP_TARGET} SPP at ${captureWidth}x${captureHeight}…`
+      : 'Rendering… adjust sliders to change material';
   } catch (err) {
     statusEl.textContent = `Engine error: ${String(err)}`;
+    if (captureMode) {
+      // Surface the failure so capture-suite's telemetry tail picks it up.
+      globalThis.VITRUM_CAPTURE_TELEMETRY = { error: String(err) };
+      globalThis.VITRUM_CAPTURE_READY = true;
+    }
   }
 }
 
@@ -137,6 +221,10 @@ async function init(): Promise<void> {
 let rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleRebuild(): void {
+  // Capture mode locks materials to their defaults — slider input is ignored so
+  // a stray pointer event from headless Chromium can't reset accumulation
+  // mid-capture.
+  if (captureMode) return;
   if (rebuildTimer !== null) clearTimeout(rebuildTimer);
   rebuildTimer = setTimeout(() => {
     rebuildTimer = null;

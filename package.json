@@ -19,6 +19,10 @@
     "shader-compile-ci": "npm run shader-compile-ci --workspace @vitrum/shader-compile-ci",
     "benchmark:gap-closure": "npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner",
     "verify:mechanical": "npm run typecheck && npm test && npm run fork-shader-smoke && npm run shader-compile-ci",
+    "capture:refs": "./scripts/capture-all-refs.sh",
+    "capture:refs:quick": "./scripts/capture-all-refs.sh --quick",
+    "capture:refs:hero": "./scripts/capture-all-refs.sh --hero",
+    "capture:diff": "node ./tools/reference-renders/diff-baselines.mjs",
     "release:dry-run": "npm pack --dry-run --workspaces --if-present"
   },
   "devDependencies": {
