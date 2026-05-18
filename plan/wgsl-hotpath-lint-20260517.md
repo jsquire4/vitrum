@@ -1,5 +1,32 @@
 # WGSL hot-path foot-gun audit — 2026-05-17
 
+## Status update — 2026-05-18
+
+All six UNCLEAR items below have been verified-resolved by direct file read:
+
+- **#1 `evalPointLight` dist guard** — `probeUpdateRays.wgsl:290` now has
+  `if (dist < 1e-6) { return vec3f(0.0); }` (commit `7cc57ff`).
+- **#2 `cascadeMerge` `worldPos / roomSize`** — host-side fix: cascade
+  allocator floors each `roomSize` axis at 1µm (commit `1ce3a61`; verified
+  at `cascadePyramid.ts:108-112` after W8 Phase 1A's tuple-typed rewrite).
+- **#3 `octEncode` zero-vector** — `shared-samplers/wgsl/octahedralCore.wgsl:13`
+  now uses `dir / max(abs(x)+abs(y)+abs(z), 1e-20)` (commit `db8b645`).
+- **#4 camera unprojection w-divide** — `temporalGi.wgsl:65-66` now uses
+  `select(1.0, far4.w, abs(far4.w) > 1e-30)` (commit `7f0e725`).
+- **#5 ppgUpdate `normalize` zero vector** — guarded at the source: the
+  current `ppgUpdate.wgsl:170` short-circuits with
+  `if (dirLen2 < 1e-12) { return; }` before normalising.
+- **#6 `bilinearUpsample` `inputH/W - 1u` underflow** — confirmed correctly
+  scoped to host validation per the audit's own recommendation; the host
+  guarantees `inputH/W >= 1` at dispatch time, so the in-shader subtraction
+  cannot underflow in practice. No in-shader fix needed.
+
+The original `REAL-RISK` finding (`surfaceTextures.wgsl:173` `safeInvDir`)
+was applied in-place at audit time. No remaining open items from this audit.
+
+---
+
+
 Read-only lint sweep across every `.wgsl` / `.wgsl.ts` source under `packages/`.
 Looking specifically for the three known classes of bug that have repeatedly
 bitten the engine:
