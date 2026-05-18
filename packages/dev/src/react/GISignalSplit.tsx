@@ -10,14 +10,15 @@
 //   (b) A 4-up blit pass that reads four textures and renders them into
 //       quadrants of a 2D canvas overlay.
 //
-// The interface is declared in types.ts (EngineDebugSurface.giSignalTextures).
+// HybridEngine ships engine.debug.giSignalTextures() since the T3.G
+// followup landed; the remaining work is the 4-up blit in this component.
 //
-// TODO T3.G followup: wire this once HybridEngine implements engine.debug.
-//   1. HybridEngine: expose engine.debug.giSignalTextures() with direct,
-//      indirect, ao, total GPUTextures (or null per-channel).
+// TODO: wire the engine.debug.giSignalTextures() output into a 4-up canvas.
+//   1. engine.debug.giSignalTextures() → {direct, indirect, ao, total}
+//      (already exposed; total may be null when SVGF is bypassed).
 //   2. GISignalSplit: allocate a <canvas> overlay covering the render canvas.
-//   3. Each frame: blit the 4 textures into the 4 quadrants via copyTextureToBuffer
-//      (WebGPU) or framebuffer readback (WebGL2).
+//   3. Each frame: blit the 4 textures into the 4 quadrants via
+//      copyTextureToBuffer (WebGPU) or framebuffer readback (WebGL2).
 //   4. Draw channel labels ("direct", "indirect", "AO", "total") in each quad.
 
 import React, { type FC, useState } from 'react';

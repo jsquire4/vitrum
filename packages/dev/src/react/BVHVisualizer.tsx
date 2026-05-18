@@ -9,14 +9,18 @@
 //       color-coded by depth onto the screen.
 //   (c) Projecting 3D AABB corners through the current view+proj matrix.
 //
-// None of these are available without engine.debug.bvhNodes() (see types.ts).
-// The BVH node array exists in HybridEngine but is not surfaced.
+// HybridEngine ships engine.debug.bvhNodes() since the T3.G followup
+// landed; the remaining work is the 2D-canvas projection in this component.
+// Note: the current bvhNodes() output zeroes out the `depth` field — a
+// parent-link traversal is still pending. The depth-coloured visualisation
+// will need either that field populated or a separate pre-pass.
 //
-// TODO T3.G followup: wire this once HybridEngine implements engine.debug.
-//   1. engine.debug.bvhNodes() → Float32Array of [min, max, depth] per node.
+// TODO: wire the engine.debug.bvhNodes() readback into a canvas overlay.
+//   1. engine.debug.bvhNodes() → Float32Array of [min, max, depth, pad] per
+//      node (depth currently 0; parent traversal TODO upstream).
 //   2. Create a <canvas> overlay (same size as WebGPU canvas) in front of it.
-//   3. Per-frame: project each node's 8 corners through viewProj; draw box in
-//      depth-mapped color (hsl(depth * 30, 80%, 60%)).
+//   3. Per-frame: project each node's 8 corners through viewProj; draw box
+//      in depth-mapped color (hsl(depth * 30, 80%, 60%)).
 //   4. Toggle key (default 'B') shows/hides the overlay.
 
 import React, { type FC, useEffect, useRef, useState } from 'react';

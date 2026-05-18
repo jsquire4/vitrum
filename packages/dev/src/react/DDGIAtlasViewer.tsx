@@ -8,13 +8,13 @@
 // Both require deep pipeline access (the GPUDevice, the atlas GPUTexture handle,
 // and a blit renderpass) that HybridEngine does not expose today.
 //
-// The engine.debug.atlasTexture() and .visibilityAtlasTexture() APIs are
-// declared in types.ts (EngineDebugSurface) — the component will fully work
-// once HybridEngine implements them.
+// HybridEngine ships engine.debug.atlasTexture() and
+// .visibilityAtlasTexture() since the T3.G followup landed; the remaining
+// work is the GPUTexture → 2D canvas blit in this component.
 //
-// TODO T3.G followup: wire this once HybridEngine implements engine.debug.
+// TODO: wire the engine.debug textures into a 2D canvas overlay.
 //   1. Allocate a small 2D canvas overlay.
-//   2. Per-frame: engine.debug.atlasTexture() → GPUTexture.
+//   2. Per-frame: engine.debug.atlasTexture() → GPUTexture (already exposed).
 //   3. GPUCommandEncoder: copyTextureToBuffer → readback → draw to canvas.
 //   4. Probe-click: map click coords to probe grid cell, emit highlight.
 

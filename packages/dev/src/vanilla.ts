@@ -9,10 +9,14 @@
 //     when available.
 //
 // Stub overlays (console.warn + static badge):
-//   - DDGIAtlasViewer, BVHVisualizer, GISignalSplit, MaterialInspector —
-//     all require engine.debug APIs not yet implemented in HybridEngine.
-//     Each emits one console.warn on attach and renders a static badge.
-//     TODO T3.G followup: implement when HybridEngine surfaces engine.debug.
+//   - DDGIAtlasViewer, BVHVisualizer, GISignalSplit: engine.debug surface is
+//     now exposed by HybridEngine (T3.G followup landed); the remaining work
+//     is the per-component texture→canvas blit / readback. Each emits one
+//     console.warn on attach and renders a static badge until the blit lands.
+//   - MaterialInspector: still genuinely engine-blocked — needs
+//     engine.debug.pickPrimitive() which HybridEngine intentionally leaves
+//     out until a real picking pass exists.
+//     TODO: ship the blit code in each component; pickPrimitive() upstream.
 
 import type { Scene } from '@vitrum/core';
 import type { DebuggableEngine, FrameStats } from './types.js';
