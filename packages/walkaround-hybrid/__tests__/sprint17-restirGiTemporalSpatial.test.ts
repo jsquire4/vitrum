@@ -31,8 +31,8 @@ describe('Sprint 17 — temporal-GI WGSL', () => {
     expect(TEMPORAL_GI_WGSL).toContain('@group(0) @binding(2) var<uniform> ubo: WalkaroundUBO');
   });
 
-  it('clamps M to a bounded history (post-Sprint-18-followup default = 50; see comment)', () => {
-    expect(TEMPORAL_GI_WGSL).toMatch(/M_CLAMP_GI:\s*u32\s*=\s*\d+u/);
+  it('clamps M to a bounded history via the UBO (Cornell default 50; the WGSL const was migrated to ubo.restirGiMClamp in the 2026-05-18 sweep so library consumers can override per scene)', () => {
+    expect(TEMPORAL_GI_WGSL).toContain('ubo.restirGiMClamp');
   });
 
   it('reprojects via the previous-frame view matrix', () => {
@@ -62,18 +62,18 @@ describe('Sprint 17 — spatial-GI WGSL', () => {
     expect(SPATIAL_GI_WGSL).toContain('@group(0) @binding(2) var<uniform> ubo: WalkaroundUBO');
   });
 
-  it('pulls K_SPATIAL_GI = 5 random neighbours from a 12-pixel disc', () => {
+  it('pulls K_SPATIAL_GI = 5 random neighbours from a UBO-driven disc radius (the radius const was migrated to ubo.restirGiSpatialRadiusPx in the 2026-05-18 sweep; Cornell default 12.0 px lives on HybridEngineOptions)', () => {
     expect(SPATIAL_GI_WGSL).toContain('K_SPATIAL_GI: u32 = 5u');
-    expect(SPATIAL_GI_WGSL).toContain('SPATIAL_RADIUS_GI: f32 = 12.0');
+    expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialRadiusPx');
   });
 
   it('clamps M at 500 (spatial-reuse history bound)', () => {
     expect(SPATIAL_GI_WGSL).toContain('M_CLAMP_SPATIAL: u32 = 500u');
   });
 
-  it('applies geometric-consistency reject + Jacobian shift', () => {
-    expect(SPATIAL_GI_WGSL).toContain('NORMAL_DOT_MIN_S');
-    expect(SPATIAL_GI_WGSL).toContain('DEPTH_REL_TOL_S');
+  it('applies geometric-consistency reject + Jacobian shift (normal-alignment + coplanarity bounds migrated to UBO in the 2026-05-18 sweep)', () => {
+    expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialNormalDotMin');
+    expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialCoplanarTol');
     expect(SPATIAL_GI_WGSL).toContain('jacobianReconnectionShift');
   });
 

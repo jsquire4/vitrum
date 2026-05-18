@@ -167,12 +167,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       // reads of 5..8 are possible — but for a Cornell-scale scene with
       // Le=12, legitimate near-light wall irradiance is also in this band,
       // so we can't reject those samples without truncating real indirect.
-      // The cap at 5.0 admits the realistic indirect range while bounding
-      // pathological DDGI atlas readings (which would otherwise produce
-      // ~10× per-channel spikes in Lo).  The previous tighter reject+cap
-      // (>2.0 reject, min 1.0) was over-truncating: the magnitude audit
-      // showed it was a 5-10× *under*-energizer of the indirect channel.
-      let irrAtXs = min(sampleDDGIAtPoint(xs, ns), vec3f(5.0));
+      // The cap (Cornell-tuned default 5.0, exposed via ubo.restirGiIrrClamp)
+      // admits the realistic indirect range while bounding pathological DDGI
+      // atlas readings (which would otherwise produce ~10× per-channel spikes
+      // in Lo). The previous tighter reject+cap (>2.0 reject, min 1.0) was
+      // over-truncating: the magnitude audit showed it was a 5-10× *under*-
+      // energizer of the indirect channel.
+      let irrAtXs = min(sampleDDGIAtPoint(xs, ns), vec3f(ubo.restirGiIrrClamp));
       let xsMat = decodeMaterialColor(bounceHit.matColorPacked);
       Lo = irrAtXs * xsMat.rgb * INV_PI;
     } else {
@@ -211,8 +212,9 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         let pHatZ = luminance(r.Lo) * cosThetaZ * INV_PI;
         let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
         // Cap W to bound firefly contribution from tiny pHat denominators
-        // (grazing cos or near-zero Lo luminance). See common.wgsl §RESTIR_GI_W_CAP.
-        r.W = min(W_raw, RESTIR_GI_W_CAP);
+        // (grazing cos or near-zero Lo luminance). Cornell default 16.0
+        // lives on ubo.restirGiWCap; see common.wgsl for the rationale.
+        r.W = min(W_raw, ubo.restirGiWCap);
       }
     } else {
       r.W = 0.0;

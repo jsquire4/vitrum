@@ -390,6 +390,96 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly triIntersectEpsilon?: number;
 
+  /**
+   * 2026-05-18 sweep — Probe-side glass-transmission perceptual mix scale.
+   * When a DDGI probe ray hits a transmissive surface, the probe's radiance
+   * is `mix(roomRadiance, transmitted, mat.transmission * glassMixScale)`.
+   * Cornell default 0.7 leaves 30 % of the room radiance on fully-transparent
+   * glass; raise toward 1 for sky-tint-dominated transmission, lower toward 0
+   * to keep room-bounce contribution dominant.
+   *
+   * @default 0.7
+   */
+  readonly glassMixScale?: number;
+
+  /**
+   * 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap.
+   * Bounds firefly contribution from tiny `p̂` denominators. Cornell default
+   * 16.0 admits legitimate variance the unbiased estimator needs while
+   * bounding pathological grazing-angle samples.
+   *
+   * @default 16.0
+   */
+  readonly restirGiWCap?: number;
+
+  /**
+   * 2026-05-18 sweep — DDGI irradiance clamp at the ReSTIR-GI reconnection
+   * vertex (`risGi`). Caps `sampleDDGIAtPoint(xs, ns)` per channel.
+   *
+   * **Light-intensity-sensitive.** Cornell default 5.0 is calibrated for
+   * Le=12 indirect-band peaks.  Brighter emitters need higher caps.
+   *
+   * @default 5.0
+   */
+  readonly restirGiIrrClamp?: number;
+
+  /**
+   * 2026-05-18 sweep — ReSTIR-GI temporal previous-frame M clamp. Higher
+   * makes the chosen sample change less often → less per-frame pattern
+   * jitter; lower lets new samples take over faster.
+   *
+   * **Framerate-sensitive.** Cornell default 50 ≈ 0.83 s at 60 FPS.
+   *
+   * @default 50
+   */
+  readonly restirGiMClamp?: number;
+
+  /**
+   * 2026-05-18 sweep — ReSTIR-GI spatial-reuse disc radius (half-res pixels).
+   * The spatial-reuse pass samples K=5 neighbours within this radius.
+   *
+   * **Resolution-sensitive.** Cornell default 12.0 px.  Hosts at very high
+   * resolution may scale by `screenHeight / 1080`.
+   *
+   * @default 12.0
+   */
+  readonly restirGiSpatialRadiusPx?: number;
+
+  /**
+   * 2026-05-18 sweep — ReSTIR-GI spatial-reuse normal-alignment minimum
+   * cosine.  Neighbour reservoirs whose normal makes an angle larger than
+   * `acos(restirGiSpatialNormalDotMin)` with the centre pixel are rejected.
+   *
+   * Cornell default 0.906 ≈ cos(25°).
+   *
+   * @default 0.906
+   */
+  readonly restirGiSpatialNormalDotMin?: number;
+
+  /**
+   * 2026-05-18 sweep — ReSTIR-GI spatial-reuse coplanarity tolerance in
+   * **world units**.  Neighbour reservoirs whose position deviates from the
+   * centre pixel's tangent plane by more than this amount are rejected.
+   *
+   * **Scene-scale-sensitive.** Cornell default 0.05 (5 cm).  Hosts on
+   * different scales should pass `sceneDiagonal × 1e-3` ish.
+   *
+   * @default 0.05
+   */
+  readonly restirGiSpatialCoplanarTol?: number;
+
+  /**
+   * 2026-05-18 sweep — per-channel HDR clamp on the indirect-radiance
+   * channel before the atrous chain (`shade.wgsl`).  Kills firefly tails
+   * that survive ReSTIR W-capping and atrous variance estimation.
+   *
+   * **Light-intensity-sensitive.** Cornell default `[1.0, 1.0, 1.0]`.
+   * Brighter scenes need proportionally higher per-channel caps.
+   *
+   * @default [1.0, 1.0, 1.0]
+   */
+  readonly indirectFireflyClamp?: readonly [number, number, number];
+
   // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
 
   /**
@@ -572,6 +662,22 @@ export class HybridEngine implements Engine {
   private readonly _adaptiveSamplingThresholdHigh: number;
   /** D12 — written into WalkaroundUBO each frame. */
   private readonly _triIntersectEpsilon: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO + DDGI FrameParams each frame. */
+  private readonly _glassMixScale: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO each frame. */
+  private readonly _restirGiWCap: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO each frame. */
+  private readonly _restirGiIrrClamp: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO each frame. */
+  private readonly _restirGiMClamp: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO each frame. */
+  private readonly _restirGiSpatialRadiusPx: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO each frame. */
+  private readonly _restirGiSpatialNormalDotMin: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO each frame. */
+  private readonly _restirGiSpatialCoplanarTol: number;
+  /** 2026-05-18 sweep — written into WalkaroundUBO each frame. */
+  private readonly _indirectFireflyClamp: readonly [number, number, number];
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -748,6 +854,17 @@ export class HybridEngine implements Engine {
     this._adaptiveSamplingThresholdLow  = opts.adaptiveSamplingThresholds?.[0] ?? 0.01;
     this._adaptiveSamplingThresholdHigh = opts.adaptiveSamplingThresholds?.[1] ?? 0.10;
     this._triIntersectEpsilon    = opts.triIntersectEpsilon ?? 1e-5;
+    // 2026-05-18 sweep — eight more Cornell-tuned magic constants. Defaults
+    // exactly match the prior hardcoded WGSL constants so existing Cornell
+    // renders are byte-identical; hosts override via HybridEngineOptions.
+    this._glassMixScale                = opts.glassMixScale                ?? 0.7;
+    this._restirGiWCap                 = opts.restirGiWCap                 ?? 16.0;
+    this._restirGiIrrClamp             = opts.restirGiIrrClamp             ?? 5.0;
+    this._restirGiMClamp               = opts.restirGiMClamp               ?? 50;
+    this._restirGiSpatialRadiusPx      = opts.restirGiSpatialRadiusPx      ?? 12.0;
+    this._restirGiSpatialNormalDotMin  = opts.restirGiSpatialNormalDotMin  ?? 0.906;
+    this._restirGiSpatialCoplanarTol   = opts.restirGiSpatialCoplanarTol   ?? 0.05;
+    this._indirectFireflyClamp         = opts.indirectFireflyClamp         ?? [1.0, 1.0, 1.0];
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -1509,6 +1626,16 @@ export class HybridEngine implements Engine {
       adaptiveSamplingThresholdLow:  this._adaptiveSamplingThresholdLow,
       adaptiveSamplingThresholdHigh: this._adaptiveSamplingThresholdHigh,
       triIntersectEpsilon:   this._triIntersectEpsilon,
+      // 2026-05-18 sweep — eight more Cornell-tuned magic constants
+      // threaded through the UBO so library consumers can override them.
+      glassMixScale:                this._glassMixScale,
+      restirGiWCap:                 this._restirGiWCap,
+      restirGiIrrClamp:             this._restirGiIrrClamp,
+      restirGiMClamp:               this._restirGiMClamp,
+      restirGiSpatialRadiusPx:      this._restirGiSpatialRadiusPx,
+      restirGiSpatialNormalDotMin:  this._restirGiSpatialNormalDotMin,
+      restirGiSpatialCoplanarTol:   this._restirGiSpatialCoplanarTol,
+      indirectFireflyClamp:         this._indirectFireflyClamp,
       swapChainView:         swapView,
       swapChainFormat:       swapFmt,
     });
@@ -2025,6 +2152,9 @@ export class HybridEngine implements Engine {
         // matches shade.wgsl's Lo_emit. `setSunIntensityMultiplier` is a
         // public method on ProbeUpdatePass — no cast needed.
         this._ddgi.pass.setSunIntensityMultiplier(this._primaryLightIntensity);
+        // 2026-05-18 sweep — forward `glassMixScale` so probeUpdateRays.wgsl
+        // reads the host-overridable value instead of a hardcoded const.
+        this._ddgi.pass.setGlassMixScale(this._glassMixScale);
 
         // Auto-collect THREE.RectAreaLight from the scene as DDGI point
         // lights (centroid + flux-equivalent intensity). DDGI's per-probe

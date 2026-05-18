@@ -54,14 +54,18 @@ const INFINITY: f32        = 1e20;
 const PI: f32              = 3.14159265359;
 const BVH_STACK_DEPTH: u32 = 60u;
 
-// Probe-side glass-transmission perceptual scale. When a probe ray hits
-// glass we mix room radiance with sky-tinted transmitted radiance,
-// weighted by mat.transmission * this constant. At 0.7, fully-transparent
-// glass (transmission=1.0) leaves 30% of the original room radiance in
-// the probe's irradiance estimate — this prevents bright sky from totally
-// drowning out indirect-bounce contribution and matches the perceptual
-// cell-vibrance balance dialed in during the 2026-05 caustic sweep.
-const GLASS_TRANSMISSION_PROBE_SCALE: f32 = 0.7;
+// Probe-side glass-transmission perceptual scale lives on the probe-side
+// FrameParams UBO (frameParams.glassMixScale); the canonical Cornell-tuned
+// default 0.7 is written by ProbeUpdatePass._uploadFrameParams from the
+// HybridEngine option glassMixScale. When a probe ray hits glass we mix
+// room radiance with sky-tinted transmitted radiance, weighted by
+// mat.transmission * frameParams.glassMixScale. At 0.7 fully-transparent
+// glass leaves 30% of the room radiance in the probe's irradiance estimate
+// — preventing bright sky from drowning indirect-bounce contribution.
+//
+// The mirror field also lives on WalkaroundUBO (ubo.glassMixScale) as the
+// canonical single source of truth: probeUpdateRays binds FrameParams, not
+// WalkaroundUBO, so the host packs the same scalar into both UBOs.
 
 // -----------------------------------------------------------------
 // BVH structures (mirrored from three-mesh-bvh)
@@ -153,6 +157,10 @@ struct FrameParams {
   // Cornell-tuned values so existing behaviour is unchanged.
   skyTint:        vec3f,
   skyIrradiance:  f32,
+  // 2026-05-18 sweep — glass-transmission perceptual mix scale.  Written
+  // by ProbeUpdatePass._uploadFrameParams from HybridEngineOptions.glassMixScale.
+  glassMixScale:  f32,
+  _pad2: u32, _pad3: u32, _pad4: u32,
 }
 
 // -----------------------------------------------------------------
@@ -565,7 +573,7 @@ fn probeUpdateRays(
         if ((mat.flags & 1u) != 0u) {
           // Glass: add transmitted environment contribution.
           let transmitted = sampleSkyColor(dir) * mat.attenuationColor;
-          radiance = mix(radiance, transmitted, mat.transmission * GLASS_TRANSMISSION_PROBE_SCALE);
+          radiance = mix(radiance, transmitted, mat.transmission * frameParams.glassMixScale);
         }
 
         out.hitRadiance  = radiance;

@@ -546,10 +546,12 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Lo at the reconnection vertex can still be high), spikes pass through
   // atrous unchanged and admit a multi-percent jolt into the temporal
   // accumulator even at α=0.01, manifesting as a "dancing" residual noise
-  // pattern.  Cap indirect at 1.0 — well above Cornell's plausible
-  // converged indirect brightness (~0.3 worst case), generous head-room
-  // for legitimate color-bleed peaks, but kills the firefly tail.
-  let clampedIndirect = min(indirectRadiance, vec3f(1.0));
+  // pattern.  The Cornell-tuned cap (1.0,1.0,1.0) is well above Cornell's
+  // plausible converged indirect brightness (~0.3 worst case), generous
+  // head-room for legitimate color-bleed peaks, but kills the firefly tail.
+  // Library consumers override via HybridEngineOptions.indirectFireflyClamp
+  // (per-channel vec3 so a tinted scene can clamp each channel independently).
+  let clampedIndirect = min(indirectRadiance, ubo.indirectFireflyClamp);
   // Write LINEAR HDR radiance to hdrColorOut — do NOT tone-map here.
   // Tone mapping must happen AFTER the à-trous denoiser so that the denoiser
   // operates in linear HDR space. The composite pass applies ACES filmic + sRGB.

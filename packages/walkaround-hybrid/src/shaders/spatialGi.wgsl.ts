@@ -30,22 +30,25 @@ export const SPATIAL_GI_WGSL = /* wgsl */ `
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
 const K_SPATIAL_GI: u32 = 5u;
-const SPATIAL_RADIUS_GI: f32 = 12.0;     // pixels (half-res space)
 const M_CLAMP_SPATIAL: u32 = 500u;
-const NORMAL_DOT_MIN_S: f32 = 0.906;     // cos(25°)
-// Coplanar-distance tolerance — neighbour must lie within this perpendicular
-// distance of the centre pixel's tangent plane.  Replaces the older
-// camera-distance ratio test (DEPTH_REL_TOL_S) which rejected neighbours
-// in corner geometry where the same wall recedes from the camera at a
-// steep angle — verified via reservoir probe that the camera-ratio test
-// was rejecting essentially all 5 neighbours on left-wall-near-back-corner
-// pixels, locking each pixel into its own initial-RIS sample.  The plane
-// test instead asks "are these points on the same surface" which is what
-// the spatial filter actually needs.  0.05 world units = 5 cm tolerance.
-const COPLANAR_TOL_S: f32 = 0.05;
+// SPATIAL_RADIUS_GI / NORMAL_DOT_MIN_S / COPLANAR_TOL_S now live on the
+// WalkaroundUBO so library consumers can override the Cornell-tuned defaults:
+//   ubo.restirGiSpatialRadiusPx         (default 12.0 — half-res pixels)
+//   ubo.restirGiSpatialNormalDotMin     (default 0.906 ≈ cos(25°))
+//   ubo.restirGiSpatialCoplanarTol      (default 0.05 — 5 cm world units)
+//
+// Coplanar-distance tolerance rationale: neighbour must lie within this
+// perpendicular distance of the centre pixel's tangent plane.  Replaces the
+// older camera-distance ratio test (DEPTH_REL_TOL_S) which rejected
+// neighbours in corner geometry where the same wall recedes from the camera
+// at a steep angle — verified via reservoir probe that the camera-ratio
+// test was rejecting essentially all 5 neighbours on left-wall-near-back-
+// corner pixels, locking each pixel into its own initial-RIS sample.  The
+// plane test instead asks "are these points on the same surface" which is
+// what the spatial filter actually needs.
 
 fn sampleDiscPx(rng: ptr<function, u32>) -> vec2f {
-  let r = SPATIAL_RADIUS_GI * sqrt(rand_f32(rng));
+  let r = ubo.restirGiSpatialRadiusPx * sqrt(rand_f32(rng));
   let phi = 6.2831853 * rand_f32(rng);
   return vec2f(r * cos(phi), r * sin(phi));
 }
@@ -87,9 +90,9 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     if (rQ.M == 0u || rQ.W <= 0.0) { continue; }
 
     // Geometric-consistency: normal alignment + coplanarity to centre pixel.
-    if (dot(rCenter.nv, rQ.nv) < NORMAL_DOT_MIN_S) { continue; }
+    if (dot(rCenter.nv, rQ.nv) < ubo.restirGiSpatialNormalDotMin) { continue; }
     let planeDist = abs(dot(rQ.xv - rCenter.xv, rCenter.nv));
-    if (planeDist > COPLANAR_TOL_S) { continue; }
+    if (planeDist > ubo.restirGiSpatialCoplanarTol) { continue; }
 
     // Jacobian shift: rQ's reservoir holds (xs, ns, Lo) seen from rQ.xv;
     // re-weight it for evaluation at rCenter.xv.
@@ -121,7 +124,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let cosThetaF = max(0.0, dot(rOut.nv, wiF));
       let pHatF = luminance(rOut.Lo) * cosThetaF * INV_PI;
       let W_raw = select(0.0, rOut.w_sum / (f32(rOut.M) * pHatF), pHatF > 1e-9);
-      rOut.W = min(W_raw, RESTIR_GI_W_CAP);
+      rOut.W = min(W_raw, ubo.restirGiWCap);
     } else {
       rOut.W = 0.0;
     }

@@ -590,11 +590,14 @@ export function createFrameResources(
   const placeholderData = new Float32Array([0.5, 0.5, 1.0, 0.0]); // encodes normal=(0,0,1), depth=0
   device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
 
-  // UBO: camera matrices + per-frame params + library-generality tunables
-  // (304 bytes — see WALKAROUND_UBO_SIZE_BYTES in uboUpdater.ts and the
-  // WalkaroundUBO struct in common.wgsl).
+  // UBO: camera matrices + per-frame params + library-generality tunables.
+  // Size must match WALKAROUND_UBO_SIZE_BYTES in uboUpdater.ts and the
+  // WalkaroundUBO struct in common.wgsl. Kept as a literal here (rather than
+  // imported from uboUpdater.ts) to avoid a circular import: uboUpdater.ts
+  // type-imports PipelineFrameInputs from WalkaroundGPUPipeline.ts, which
+  // already imports this file.
   const uboBuffer = device.createBuffer({
-    size: 304,
+    size: 336,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 

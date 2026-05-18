@@ -69,6 +69,14 @@ const DDGI_FRAME_PARAMS_UBO = defineUbo([
   { name: '_pad1',          type: 'u32'   },
   { name: 'skyTint',        type: 'vec3f' },
   { name: 'skyIrradiance',  type: 'f32'   },
+  // 2026-05-18 sweep — glass-transmission perceptual mix scale (Cornell-tuned
+  // default 0.7). Mirrors WalkaroundUBO.glassMixScale so probeUpdateRays.wgsl
+  // reads a host-overridable value instead of a hardcoded const. Followed by
+  // three u32 pad slots to round the struct out to the next vec4 boundary.
+  { name: 'glassMixScale',  type: 'f32'   },
+  { name: '_pad2',          type: 'u32'   },
+  { name: '_pad3',          type: 'u32'   },
+  { name: '_pad4',          type: 'u32'   },
 ] as const);
 
 // W2-C13 follow-up — BlendParams (probeUpdateBlend.wgsl). Two-field UBO,
@@ -258,6 +266,11 @@ export class ProbeUpdatePass {
   private _skyTint: [number, number, number] = [0.4, 0.6, 1.0];
   private _skyIrradiance = 2.0;
 
+  // 2026-05-18 sweep — glass-transmission perceptual mix used inside
+  // probeUpdateRays. Cornell-tuned default 0.7 preserves current behaviour;
+  // hosts override via HybridEngineOptions.glassMixScale.
+  private _glassMixScale = 0.7;
+
   // Max materials for the WGSL compile-time array size (M9 audit remediation).
   private _ddgiMaxMaterials: number;
 
@@ -299,6 +312,18 @@ export class ProbeUpdatePass {
   setSkyParams(tint: [number, number, number], irradiance: number): void {
     this._skyTint = tint;
     this._skyIrradiance = irradiance;
+  }
+
+  /**
+   * Override the glass-transmission perceptual mix scale used inside
+   * probeUpdateRays when a probe ray hits glass. Written into FrameParams
+   * as `glassMixScale`. Cornell-tuned default 0.7 leaves 30 % of room
+   * radiance on transmission=1 glass; raise toward 1.0 for fully glass-
+   * dominated transmission scenes (the indirect bounce becomes the sky
+   * tint entirely) or lower toward 0 to suppress sky tinting through glass.
+   */
+  setGlassMixScale(value: number): void {
+    this._glassMixScale = value;
   }
 
   /**
@@ -420,7 +445,7 @@ export class ProbeUpdatePass {
       materialsBuf:    makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
       lightsBuf:       makeBuffer(16 * 80 + 16, UB),
       gridParamsBuf:   makeBuffer(64, UB),
-      frameParamsBuf:  makeBuffer(48, UB),
+      frameParamsBuf:  makeBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
       blendParamsBuf:  makeBuffer(16, UB),
       borderIrrUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
       borderVisUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
@@ -748,6 +773,8 @@ export class ProbeUpdatePass {
       _pad0: 0, _pad1: 0,
       skyTint:       [this._skyTint[0], this._skyTint[1], this._skyTint[2]] as const,
       skyIrradiance: this._skyIrradiance,
+      glassMixScale: this._glassMixScale,
+      _pad2: 0, _pad3: 0, _pad4: 0,
     });
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data);
   }
