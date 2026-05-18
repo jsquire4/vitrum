@@ -451,6 +451,12 @@ export class PTEngineWebGL2 implements Engine {
         'mesh-area',
       ]),
       causticStrategy: this.#causticStrategy,
+      // W3-D16: PT-WebGL2 is the only backend that exposes a discrete
+      // scheduler quality mode. Order is meaningful — fastest → slowest /
+      // highest-fidelity. Hosts that want a "quality preset" dropdown read
+      // this and route the choice through
+      // `EngineOptions.extensions['vitrum.ptWebgl.qualityMode']`.
+      qualityModes: ['interactive', 'safe', 'final', 'capture'] as const,
     };
   }
 
@@ -789,10 +795,17 @@ export class PTEngineWebGL2 implements Engine {
     };
     // T3.E telemetry hooks. We fire AFTER #lastTelemetry is populated so
     // subscribers can also peek via the FrameOutput.telemetry passthrough.
+    // W3-D16: emit canonical FrameStats fields (`samplesAccumulated`,
+    // `backend`) alongside the legacy `spp` for back-compat. `frameIndex` is
+    // intentionally omitted — three-gpu-pathtracer drives the underlying
+    // accumulator and the SPP itself is the meaningful "what frame are we
+    // on" counter for this backend.
     if (this.#frameSubs.length > 0) {
       const stats: FrameStats = {
         frameTimeMs: batchMs,
         spp,
+        samplesAccumulated: spp,
+        backend: 'webgl2',
       };
       for (const sub of this.#frameSubs) {
         try { sub(stats); } catch { /* swallow */ }

@@ -1106,11 +1106,17 @@ export class HybridEngine implements Engine {
         .lastGpuTimings;
       const passTimings = gpu;
       const gpuTotal = gpu?.['total'];
+      // W3-D16: emit canonical FrameStats — `samplesAccumulated` synonym for
+      // `spp`, `backend: 'webgpu'`. Walkaround doesn't carry an internal
+      // monotone frame counter (the host's `FrameInput.frameIndex` is the
+      // source of truth) so `frameIndex` is omitted.
       const stats: FrameStats = {
         frameTimeMs: dt,
         ...(gpuTotal !== undefined ? { gpuTimeMs: gpuTotal } : {}),
         ...(passTimings ? { passTimings } : {}),
         spp: 1,
+        samplesAccumulated: 1,
+        backend: 'webgpu',
       };
       for (const sub of this._frameSubs) {
         try { sub(stats); } catch (err) {

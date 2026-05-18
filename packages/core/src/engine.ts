@@ -85,6 +85,27 @@ export interface EngineCapabilities {
    * CGF 34(4), 2015.
    */
   readonly causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
+
+  // ── Quality-mode introspection (W3-D16) ─────────────────────────────────
+  /**
+   * Named scheduler quality modes the backend honors via
+   * `EngineOptions.extensions['<backend>.qualityMode']` (or equivalent
+   * backend-specific routing). When omitted or empty, the backend does NOT
+   * expose discrete quality presets; per-frame `FrameInput.quality` dials are
+   * the only control surface.
+   *
+   * Today only `@vitrum/pt-webgl` ships an adaptive scheduler with named
+   * modes (`'interactive' | 'final' | 'capture' | 'safe'`). `@vitrum/pt-webgpu`
+   * and `@vitrum/walkaround-hybrid` leave this absent. A host that wants to
+   * surface a "quality" dropdown can introspect this field and hide the UI
+   * when it's missing.
+   *
+   * The shape is `readonly string[]` (not a `Set`) because the array order is
+   * meaningful: backends list modes from lowest-cost / fastest to
+   * highest-cost / highest-quality, so a host that wants a default ramp can
+   * use the natural order.
+   */
+  readonly qualityModes?: readonly string[];
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -238,10 +259,33 @@ export interface EngineDebugSurface {
 // Telemetry (T3.E)
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Per-frame statistics surfaced via {@link Engine.onFrame}.  Optional
- *  fields reflect backend capability — `gpuTimeMs` requires
- *  `timestamp-query` on the WebGPU side; `passTimings` requires per-pass
- *  instrumentation; `spp` is meaningful only for accumulating engines. */
+/** Per-frame statistics surfaced via {@link Engine.onFrame}.
+ *
+ *  **Canonical shape (W3-D16).** All backends that implement {@link Engine.onFrame}
+ *  emit objects matching this interface. `frameTimeMs` is the only required
+ *  field; every other field is optional so a backend that lacks the
+ *  instrumentation (no timestamp-query, no per-pass labels, no accumulation,
+ *  no BVH owned at the engine layer) can simply omit them rather than emit
+ *  zeroes or sentinel values that look like real measurements.
+ *
+ *  Field provenance — what currently populates each field:
+ *
+ *  | Field                       | pt-webgl       | pt-webgpu       | walkaround-hybrid |
+ *  | --------------------------- | -------------- | --------------- | ----------------- |
+ *  | `frameTimeMs`               | yes (scheduler) | yes (perf.now)  | yes (perf.now)    |
+ *  | `gpuTimeMs`                 | no             | no              | yes (when timestamp-query available) |
+ *  | `passTimings`               | no             | no              | yes (when timestamp-query available) |
+ *  | `spp` (alias `samplesAccumulated`) | yes (running SPP) | yes (running SPP) | yes (always 1)    |
+ *  | `samplesAccumulated`        | yes (running SPP) | yes (running SPP) | yes (always 1)    |
+ *  | `frameIndex`                | no             | yes (monotone)  | no                |
+ *  | `backend`                   | `'webgl2'`     | `'webgpu'`      | `'webgpu'`        |
+ *  | `bvhDepth`                  | no             | no              | no                |
+ *  | `estimatedGpuMemoryBytes`   | no             | no              | no                |
+ *
+ *  Fields not populated by a given backend are simply absent (`undefined`),
+ *  not zero.  Hosts should `if (stats.gpuTimeMs !== undefined)` rather than
+ *  trust a zero.
+ */
 export interface FrameStats {
   /** Wall-clock duration of `renderFrame()` in milliseconds. */
   readonly frameTimeMs: number;
@@ -250,8 +294,24 @@ export interface FrameStats {
   /** Optional per-pass breakdown (label → milliseconds). */
   readonly passTimings?: Readonly<Record<string, number>>;
   /** Samples accumulated this frame (PT-style engines).  Walkaround engines
-   *  emit `1`. */
+   *  emit `1`.  Retained for back-compat with pre-W3-D16 consumers; new
+   *  consumers SHOULD read {@link samplesAccumulated} instead — backends emit
+   *  both fields with identical values. */
   readonly spp?: number;
+  /** Cumulative samples-per-pixel in the engine's accumulator at the moment
+   *  this frame finished.  Synonym for {@link spp}; canonical W3-D16 name.
+   *  PT engines: running total since last `reset()`. Walkaround engines:
+   *  `1` (they resample every frame rather than accumulate). */
+  readonly samplesAccumulated?: number;
+  /** Monotone per-engine frame counter.  Increments by 1 on each successful
+   *  `renderFrame()` call (paused frames don't bump it).  Diagnostic for
+   *  matching telemetry events against host-side render-loop traces. */
+  readonly frameIndex?: number;
+  /** Which backend produced this frame. Open string for forward compatibility
+   *  with future backends (CPU fallback, raytracer, etc.) but the documented
+   *  values today are `'webgl2'` (pt-webgl), `'webgpu'` (pt-webgpu,
+   *  walkaround-hybrid). */
+  readonly backend?: 'webgl2' | 'webgpu' | (string & {});
   /** BVH max depth — diagnostic for traversal cost. */
   readonly bvhDepth?: number;
   /** Approximate engine-owned GPU memory (sum of texture + buffer bytes). */
