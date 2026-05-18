@@ -172,8 +172,10 @@ export interface AtrousSigmas {
   sigmaC: number;
 }
 
-/** Direct-channel default — tight stops, preserves shadow / caustic edges. */
-export const ATROUS_DIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
+/** Direct-channel default — tight stops, preserves shadow / caustic edges.
+ *  File-local — only consumed inside this module's atrous-sigma builder;
+ *  2026-05-18 dead-code sweep verified zero external consumers. */
+const ATROUS_DIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
   sigmaN: 128.0,
   sigmaZ: 5.0,
   sigmaC: 0.05,

@@ -29,8 +29,12 @@ import * as THREE from 'three';
  *   64..67 : intensity (4 bytes)
  * Padded to 80 bytes (5 × vec4f) for 16-byte alignment.
  */
-export const EMITTER_STRIDE = 80;
-export const EMITTER_FLOATS = EMITTER_STRIDE / 4;
+// EMITTER_STRIDE / EMITTER_FLOATS — file-local (only used inside this
+// module's emitter packer). The matching layout comment in
+// restir/bvhCompute.ts:131 references the names by spelling, not by
+// import. 2026-05-18 dead-code sweep verified zero non-self consumers.
+const EMITTER_STRIDE = 80;
+const EMITTER_FLOATS = EMITTER_STRIDE / 4;
 
 function luminance(r: number, g: number, b: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;

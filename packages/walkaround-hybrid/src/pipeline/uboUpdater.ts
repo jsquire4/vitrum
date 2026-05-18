@@ -38,9 +38,11 @@
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
 
-/** Size of the WalkaroundUBO in bytes. Exported so the GPU buffer
- *  allocator can match. */
-export const WALKAROUND_UBO_SIZE_BYTES = 336;
+/** Size of the WalkaroundUBO in bytes. File-local — `resourceManager.ts`
+ *  intentionally duplicates the literal `336` rather than import this name
+ *  to avoid a circular import (see resourceManager.ts:594-598). 2026-05-18
+ *  dead-code sweep verified zero non-self consumers; demoted from `export`. */
+const WALKAROUND_UBO_SIZE_BYTES = 336;
 
 export function updateUBO(
   device: GPUDevice,

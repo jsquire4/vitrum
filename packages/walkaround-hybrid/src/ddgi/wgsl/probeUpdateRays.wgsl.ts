@@ -32,8 +32,9 @@ export function makeProbeUpdateRaysWGSL(maxMaterials: number): string {
   return makeProbeUpdateRaysWGSLImpl(maxMaterials);
 }
 
-/** @deprecated Use {@link makeProbeUpdateRaysWGSL}(64) instead. */
-export const PROBE_UPDATE_RAYS_WGSL = /* wgsl */ makeProbeUpdateRaysWGSLImpl(64);
+// @deprecated `PROBE_UPDATE_RAYS_WGSL` (bound to a 64-ray default)
+// removed 2026-05-18 dead-code sweep — supplanted by
+// `makeProbeUpdateRaysWGSL(64)`; zero non-self consumers.
 
 function makeProbeUpdateRaysWGSLImpl(maxMaterials: number): string { return /* wgsl */`
 

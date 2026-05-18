@@ -55,7 +55,10 @@ export interface NonDenoiserPassEntry {
  * latent bug deliberately preserved here for bit-identical layout
  * output. A future PPG enable workstream will add explicit slots.)
  */
-export const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
+// File-local. The matching JSDoc + comment references in
+// timestampQueries.ts (lines 127 + 137) cite the name by spelling, not by
+// import. 2026-05-18 dead-code sweep verified zero non-self consumers.
+const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'sample-budget', labels: ['sample-budget'] },
   { id: 'ris', labels: ['ris'] },
   { id: 'temporal', labels: ['temporal'] },
@@ -104,7 +107,9 @@ const DENOISER_INSERTION_INDEX = (() => {
  * Insertion point: between `indirect-combine` and `temporalAccum` —
  * matches the historical layout in `buildPassLayout`.
  */
-export const DDGI_BORDER_LABELS: readonly PassLabel[] = Object.freeze([
+// File-local — consumed only inside `buildPassLayout`. 2026-05-18
+// dead-code sweep verified zero non-self consumers.
+const DDGI_BORDER_LABELS: readonly PassLabel[] = Object.freeze([
   'ddgi-border-irr',
   'ddgi-border-vis',
 ]);
