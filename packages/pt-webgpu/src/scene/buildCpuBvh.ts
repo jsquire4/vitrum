@@ -369,8 +369,11 @@ export function buildCpuBvh(
 
   // Dev/test mode: verify the relative-offset encoding invariant.
   // Every interior node's rightChildOrTriOffset must satisfy 1 ≤ offset < totalNodes.
-  // Gated behind NODE_ENV so it is zero-cost in production bundles.
-  if (typeof process !== 'undefined' && process.env?.['NODE_ENV'] !== 'production') {
+  // Gated behind NODE_ENV so it is zero-cost in production bundles. Accessed via
+  // `globalThis` so consumers without `@types/node` typecheck cleanly (the check
+  // is dev-only and still skips in any environment lacking `process`).
+  const globalProc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  if (globalProc !== undefined && globalProc.env?.['NODE_ENV'] !== 'production') {
     const LEAFNODE_CHECK = 0xffff;
     const n = nodes.length;
     for (let i = 0; i < n; i++) {

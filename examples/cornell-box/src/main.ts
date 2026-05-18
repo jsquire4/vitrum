@@ -372,10 +372,13 @@ function buildCornellScene(config: CaptureConfig): THREE.Scene {
 }
 
 async function main(): Promise<void> {
-  const canvas = document.querySelector<HTMLCanvasElement>('#c');
+  const canvasOrNull = document.querySelector<HTMLCanvasElement>('#c');
   const statusEl = document.querySelector<HTMLDivElement>('#status');
   const startButton = document.querySelector<HTMLButtonElement>('#start');
-  if (!canvas || !statusEl) throw new Error('missing #c or #status');
+  if (!canvasOrNull || !statusEl) throw new Error('missing #c or #status');
+  // Re-bind to a non-nullable local so closures (`resize`, etc.) inherit the
+  // narrowed type rather than `HTMLCanvasElement | null` from the querySelector.
+  const canvas: HTMLCanvasElement = canvasOrNull;
   const config = parseCaptureConfig();
   const spectralRendering =
     config.scenarioId.includes('spectral') ||

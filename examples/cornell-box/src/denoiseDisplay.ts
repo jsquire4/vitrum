@@ -96,9 +96,12 @@ export class BilateralPreviewCanvas {
   }
 
   render(tex: THREE.Texture, width: number, height: number): void {
-    const mat = this.mesh.material;
-    mat.uniforms['uTex'].value = tex;
-    mat.uniforms['uTexel'].value.set(1 / Math.max(width, 1), 1 / Math.max(height, 1));
+    const { uniforms } = this.mesh.material;
+    const uTex = uniforms['uTex'];
+    const uTexel = uniforms['uTexel'];
+    if (uTex == null || uTexel == null) throw new Error('BilateralPreviewCanvas: shader uniforms missing');
+    uTex.value = tex;
+    uTexel.value.set(1 / Math.max(width, 1), 1 / Math.max(height, 1));
     this.renderer.setSize(width, height, false);
     this.renderer.render(this.scene, this.camera);
   }

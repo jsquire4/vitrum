@@ -424,8 +424,11 @@ async function main(): Promise<void> {
     // unconfigured — pt-webgpu writes to its internal HDR accum and does
     // not present to a swap chain.
     if (!RUN.ptWebgpu || !canvasPtGpu) return;
+    // Re-bind to a non-nullable local so the rAF closure below inherits the
+    // narrowed type rather than `HTMLCanvasElement | null` from the outer scope.
+    const ptGpuCanvas: HTMLCanvasElement = canvasPtGpu;
     try {
-      resizeCanvasToDisplaySize(canvasPtGpu);
+      resizeCanvasToDisplaySize(ptGpuCanvas);
       const ptGpuEngine = await createPTEngine_WebGPU({ device });
       ptGpuEngine.setScene(vitrumScene);
       (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu = ptGpuEngine;
@@ -455,8 +458,8 @@ async function main(): Promise<void> {
           projMatrix: mat4FromThree(camera.projectionMatrix),
           cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
           viewport: {
-            width: canvasPtGpu.width,
-            height: canvasPtGpu.height,
+            width: ptGpuCanvas.width,
+            height: ptGpuCanvas.height,
             devicePixelRatio: window.devicePixelRatio,
           },
           frameIndex: ptGpuFrame,
