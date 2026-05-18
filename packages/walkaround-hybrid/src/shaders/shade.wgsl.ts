@@ -293,11 +293,11 @@ fn lo_sky_aperture(
   let sin45 = 0.7071068;
   var skyAccum = 0.0;
   var weightAccum = 0.0;
-  let luminanceWeights = vec3f(0.2126, 0.7152, 0.0722);
-  // Centre tap (along normal, weight 1.0).
+  // Centre tap (along normal, weight 1.0). luminance(c) is the canonical
+  // Rec.709 helper from COMMON_WGSL (shade requires common).
   {
     let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, normal, 1e6);
-    let lum = dot(v, luminanceWeights);
+    let lum = luminance(v);
     skyAccum = skyAccum + lum * 1.0;
     weightAccum = weightAccum + 1.0;
   }
@@ -308,25 +308,25 @@ fn lo_sky_aperture(
   let diag3 = safe_normalize(normal * cos45 - bitangent * sin45);
   {
     let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag0, 1e6);
-    let lum = dot(v, luminanceWeights);
+    let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
     let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag1, 1e6);
-    let lum = dot(v, luminanceWeights);
+    let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
     let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag2, 1e6);
-    let lum = dot(v, luminanceWeights);
+    let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
     let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag3, 1e6);
-    let lum = dot(v, luminanceWeights);
+    let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
