@@ -2,7 +2,16 @@
 
 A single autonomous `/implement-plan` + `/loop` session shipped essentially the entire `premium-grade-refactor-20260517.md` plan (W1–W13) PLUS every closeable `items_to_fix.md` entry. This doc indexes the 54 session branches + 90 commits so reviewers can navigate.
 
-**Status:** all branches LOCAL; no remote pushes per CLAUDE.md doctrine. User decides push timing + merge order.
+> **Status correction (2026-05-18).** Several claims below were aspirational at the time and have since drifted:
+>
+> - **"All branches LOCAL" → all branches PUSHED.** Subsequent 2026-05-18 sweeps merged every sweep branch into `main` and pushed to `origin/main` (the integration arc landed through `aa1bac1` and beyond). Sibling agent worktrees were pruned 2026-05-18.
+> - **"2 new packages: @vitrum/walkaround-rc, @vitrum/stained-glass-extensions" — verified 2026-05-18: neither directory exists in `packages/`.** The W3-D2+D3 commit `0f323bb` referenced `stained-glass-extensions` but never committed the package directory; W8's "RC extraction → @vitrum/walkaround-rc" was reframed during the 2026-05-18 sprint as in-package wiring (`HybridEngineRC.ts` / `RCSubsystem`), not extraction.
+> - **"B2 (RC) CLOSED" — not yet.** B2 is the active W8 sprint as of 2026-05-18: Phase 1A (THREE-free cascade data types), Phase 1B (raw-GPU `dispatchFrameRaw` entry), Phase 2 (`rcEnabled` + `RCSubsystem`) shipped. Phase 3 (shade.wgsl Lo_rc sample + MIS composition) and Phase 4 (acceptance test) remain — see [w8-rc-mis-composition.md](./w8-rc-mis-composition.md).
+> - **B1 (PPG) "Phase 1+2 shipped, Phase 3 deferred"** — verified 2026-05-18 (PPG dispatch is a real `dispatchWorkgroups(wgCount,1,1)` via the W9 GPU traversal kernel; `ppg-dispatch.test.ts` pins the wiring).
+>
+> Everything else below is unchanged.
+
+**Status (historical, 2026-05-17):** all branches LOCAL; no remote pushes per CLAUDE.md doctrine. User decides push timing + merge order.
 
 ## Quick stats
 
