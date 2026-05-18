@@ -1,5 +1,5 @@
 import { PT_WEBGPU_COMMON_WGSL } from './common.wgsl.js';
-import { HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
+import { HAMMERSLEY_WGSL, LUMINANCE_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from './pathTrace/material.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL } from './pathTrace/intersection.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from './pathTrace/bsdf.wgsl.js';
@@ -47,6 +47,7 @@ export const PT_WEBGPU_TRACE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_COMMON_WGSL}
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_CORE_WGSL}
+${LUMINANCE_WGSL}
 ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
