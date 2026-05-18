@@ -170,7 +170,10 @@ fn bvhTraceTintedVisibility(
 
     let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
     let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    let invDir = vec3f(1.0) / dir;
+    // Williams 2005 IEEE-safe inverse-direction (see common.wgsl.ts).
+    // Raw 1/dir produces +/-Inf on axis-aligned rays; 0 * +/-Inf = NaN
+    // poisons the slab test if the ray origin coincides with an AABB face.
+    let invDir = safeInvDir(dir);
     let t1 = (nMin - origin) * invDir;
     let t2 = (nMax - origin) * invDir;
     let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
