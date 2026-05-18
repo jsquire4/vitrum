@@ -31,6 +31,7 @@ import type {
   EngineOptions,
   EngineState,
   FrameStats,
+  GpuMemoryBreakdown,
 } from '@vitrum/core';
 import type { Scene, ScenePrimitive } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
@@ -38,7 +39,8 @@ import { refitBvhBounds } from '@vitrum/shared-bvh';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import { packDDGIGridParams } from './pipeline/resourceManager.js';
+import { packDDGIGridParams, type FrameResources } from './pipeline/resourceManager.js';
+import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
 import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
@@ -740,6 +742,11 @@ export class HybridEngine implements Engine {
       // external_requests/05-manifold-nee.md §4 for the approved approximation
       // path if real-time caustic approximation is added.
       causticStrategy: 'none',
+      // W3-D8 — this engine ships a `debug` surface (DDGI atlases, BVH nodes,
+      // GI signal textures, and now estimatedGpuMemoryBytes). Hosts can
+      // structurally opt-in to the dev-overlay panel without typeof-checking
+      // every method.
+      debugSurface: true,
     };
   }
 
@@ -1453,11 +1460,20 @@ export class HybridEngine implements Engine {
         .lastGpuTimings;
       const passTimings = gpu;
       const gpuTotal = gpu?.['total'];
+      // GPU memory breakdown — call through the same debug-surface helper
+      // so a single source of truth governs the numbers a dev overlay sees
+      // via `engine.debug.estimatedGpuMemoryBytes()` vs the streaming
+      // FrameStats hook. Cheap (O(field count)), pure host-side arithmetic.
+      const memBreakdown = this.debug.estimatedGpuMemoryBytes?.() ?? undefined;
       const stats: FrameStats = {
         frameTimeMs: dt,
         ...(gpuTotal !== undefined ? { gpuTimeMs: gpuTotal } : {}),
         ...(passTimings ? { passTimings } : {}),
         spp: 1,
+        ...(memBreakdown ? {
+          gpuMemoryBytes: memBreakdown,
+          estimatedGpuMemoryBytes: memBreakdown.total,
+        } : {}),
       };
       for (const sub of this._frameSubs) {
         try { sub(stats); } catch (err) {
@@ -1644,6 +1660,17 @@ export class HybridEngine implements Engine {
         ao:       res.gtao?.aoFullTexture        ?? null,
         total:    null,
       };
+    },
+    estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
+      // Same structural-cast pattern as giSignalTextures. We reach into the
+      // pipeline's private `_res` because the FrameResources are
+      // pipeline-owned and the HybridEngine doesn't keep its own handle.
+      // Returns null pre-init / post-dispose; that's the documented
+      // contract on EngineDebugSurface.
+      const p = this._pipeline as unknown as { _res?: FrameResources } | null;
+      const res = p?._res;
+      if (res == null) return null;
+      return estimateFrameResourcesMemory(res);
     },
   };
 

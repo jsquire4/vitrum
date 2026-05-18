@@ -793,6 +793,15 @@ export class PTEngineWebGL2 implements Engine {
       const stats: FrameStats = {
         frameTimeMs: batchMs,
         spp,
+        // GPU-memory budget — pt-webgl wraps three-gpu-pathtracer, whose
+        // render-target textures are opaque to us. We reuse the scheduler's
+        // existing `sizePlan.estimatedBytes` (a worst-case `width × height ×
+        // RGBA16F × renderTargetCount + overhead` estimate, already plumbed
+        // into the telemetry payload) as the scalar `estimatedGpuMemoryBytes`.
+        // The structured `gpuMemoryBytes` breakdown is intentionally omitted:
+        // the underlying fork doesn't expose per-pass texture handles, so a
+        // by-category split would either be invented or stale.
+        estimatedGpuMemoryBytes: sizePlan.estimatedBytes,
       };
       for (const sub of this.#frameSubs) {
         try { sub(stats); } catch { /* swallow */ }

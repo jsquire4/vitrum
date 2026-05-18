@@ -1,11 +1,13 @@
 import type {
   Engine,
   EngineCapabilities,
+  EngineDebugSurface,
   EngineFactory,
   EngineOptions,
   EngineState,
   FrameInput,
   FrameOutput,
+  GpuMemoryBreakdown,
   Scene,
   SceneEmitter,
   ScenePrimitive,
@@ -114,8 +116,60 @@ class PTEngineWebGPU implements Engine {
       supportedAnalyticShapes: new Set<string>(PT_WEBGPU_ANALYTIC_SHAPES.slice(1)),
       supportedEmitterKinds: new Set<string>(['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area']),
       causticStrategy: this.#causticStrategy,
+      // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
+      debugSurface: true,
     };
   }
+
+  // ── Debug introspection (T3.G followup) ────────────────────────────────
+  // Prototype backend exposes only the GPU-memory estimate for now — atlas
+  // / BVH / pick / denoiser-toggle hooks are walkaround-hybrid concepts
+  // that don't apply to a brute-force compute path tracer.
+  readonly debug: EngineDebugSurface = {
+    estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
+      const W = this.#accumWidth;
+      const H = this.#accumHeight;
+      // Pre-init / pre-renderFrame: no accum textures yet.
+      if (W <= 0 || H <= 0 || this.#accumTexture == null) return null;
+
+      // Per-texel bytes inferred from the actual format at allocation time
+      // (see #ensureAccumResources: accum / normalDepth / albedo / variance
+      // / motionVectors are all rgba16float = 8 bytes/texel).
+      const RGBA16F = 8;
+      const texPixels = W * H;
+      const accumBytes        = texPixels * RGBA16F;
+      const normalDepthBytes  = texPixels * RGBA16F;
+      const albedoBytes       = texPixels * RGBA16F;
+      const varianceBytes     = texPixels * RGBA16F;
+      const motionBytes       = texPixels * RGBA16F;
+      const accumBufBytes     = this.#accumBufferByteSize;
+      const varMomentBufBytes = this.#varianceMomentsBuffer != null
+        ? this.#accumBufferByteSize : 0;
+      const paramsBufBytes    = this.#paramsBuffer != null ? 512 : 0;
+      // Scene buffers (BVH, materials, indices, etc.) are owned by
+      // UploadedSceneBuffers; size accounting there would require touching
+      // the uploader — left for a follow-up so this commit stays focused.
+
+      const commonTexBytes = accumBytes + normalDepthBytes + albedoBytes
+        + varianceBytes + motionBytes;
+      const commonBufBytes = accumBufBytes + varMomentBufBytes + paramsBufBytes;
+      const total = commonTexBytes + commonBufBytes;
+
+      return Object.freeze({
+        total,
+        byCategory: Object.freeze({
+          common: total,
+        }),
+        byTextureFormat: Object.freeze({
+          rgba16float: commonTexBytes,
+        }),
+        byBufferUsage: Object.freeze({
+          storage: accumBufBytes + varMomentBufBytes,
+          uniform: paramsBufBytes,
+        }),
+      });
+    },
+  };
 
   #assertLive(method: string): void {
     if (this.#slot.get() === 'disposed') {
