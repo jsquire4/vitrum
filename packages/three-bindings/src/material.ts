@@ -11,8 +11,18 @@
  */
 
 import type * as THREE from 'three';
-import type { Material, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
+import type { MaterialSpec, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
 import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
+
+/**
+ * Mutable staging shape used internally by the converters to assemble the
+ * field bag before freezing into a `MaterialSpec`. `MaterialSpec` itself is
+ * readonly per W3-D1, but the builders construct via conditional assignment
+ * and then narrow on return.
+ */
+type MaterialDraft = {
+  -readonly [P in keyof MaterialSpec]: MaterialSpec[P];
+};
 
 /** THREE.MeshPhysicalMaterial default index of refraction. Used as the
  *  "no-op" guard so callers that did not customize IOR don't generate
@@ -42,8 +52,8 @@ function isPhysical(m: ThreeStdMat): m is ThreePhysMat {
 // Material converter
 // ────────────────────────────────────────────────────────────────────────────
 
-export function convertMaterial(m: ThreeStdMat): Material {
-  const base: Material = {
+export function convertMaterial(m: ThreeStdMat): MaterialSpec {
+  const base: MaterialDraft = {
     baseColor: colorToVec3(m.color),
     roughness: m.roughness,
     metallic: m.metalness,
@@ -208,9 +218,9 @@ export function convertMaterial(m: ThreeStdMat): Material {
  * Maps that the basic material carries (`map`, `alphaMap`) are forwarded;
  * other PBR maps are not relevant for the basic material type.
  */
-export function convertBasicMaterial(m: THREE.MeshBasicMaterial): Material {
+export function convertBasicMaterial(m: THREE.MeshBasicMaterial): MaterialSpec {
   const c = colorToVec3(m.color);
-  const base: Material = {
+  const base: MaterialDraft = {
     baseColor: c,
     roughness: 1.0,
     metallic: 0.0,
