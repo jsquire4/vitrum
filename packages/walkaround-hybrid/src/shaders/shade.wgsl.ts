@@ -6,6 +6,17 @@
  * traces one indirect bounce (ReSTIR GI), and writes HDR color to hdrColorOut.
  *
  * This is the primary-ray-cast fallback mode.
+ *
+ * W4-A5 — `shadeMain` is split into one helper per lighting term:
+ *   lo_emit, lo_direct, lo_sun_caustic, lo_sky_aperture, lo_indirect.
+ * Each helper reads module-scope state (UBO + storage + textures) directly
+ * and takes only the local surface scalars/vectors it needs as parameters.
+ * `shadeMain` becomes a clean composition: sky-miss early-out → primary
+ * re-cast → call each helper → AO modulate + firefly clamp → texture store.
+ *
+ * Stained-glass-specific defaults (Lo_emit `bvh_beer` read, Lo_sunCaustic
+ * UBO-driven causticBoost/Clamp) remain inlined for now; they will move to
+ * host-side extension hooks once `stained-glass-extensions` lands.
  */
 
 // Atlas-layout constants are consumed by ddgiSampleWgsl.ts (the canonical
@@ -100,6 +111,302 @@ fn loadSpatialDI(pixelIdx: u32) -> ReservoirDI {
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
 // they are prepended to SHADE_WGSL at compile time.
 
+// ──────────────────────────────────────────────────────────────────────────
+// Per-lighting-term helpers (W4-A5).
+//
+// Each fn computes one Lo_* term in isolation. The helpers read module-scope
+// state (ubo, bvh, emitters, spatialReservoir, reservoirGiCurrent, bvh_beer)
+// directly; only the per-pixel locals are passed as params. Gating (isGlass /
+// isMetal) lives inside each helper so shadeMain stays a flat composition.
+// ──────────────────────────────────────────────────────────────────────────
+
+// ── Self-emission for primary glass hits ─────────────────────────────────
+//
+// Le ≈ attenuationColor × transmission × sunIntensity × |sunDot| × textureMod.
+// attenuationColor is read from bvh_beer (Beer-Lambert visible color =
+// pow(rawAttCol, thickness/attDist)) — separate from bvhIndex.w which
+// carries the RAW attCol used by emitter Le and tinted-visibility.
+fn lo_emit(
+  matColor:         vec4f,
+  normal:           vec3f,
+  isGlass:          bool,
+  uv:               vec2f,
+  matColorPacked:   u32,
+  triIndex:         u32,
+) -> vec3f {
+  if (!isGlass) { return vec3f(0.0); }
+  let sunDot = abs(dot(ubo.sunDirection, normal));
+  if (sunDot <= 0.05) { return vec3f(0.0); }
+  let trans = matColor.a;
+  let texId = decodeSurfaceTextureId(matColorPacked);
+  let texMod = surfaceTextureMod(uv, texId);
+  let beerPacked = bvh_beer[triIndex];
+  let beerAlbedo = vec3f(
+    f32((beerPacked >> 24u) & 0xFFu) / 255.0,
+    f32((beerPacked >> 16u) & 0xFFu) / 255.0,
+    f32((beerPacked >>  8u) & 0xFFu) / 255.0,
+  );
+  return beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;
+}
+
+// --- Direct lighting (ReSTIR DI) ---
+//
+// Gated to !isGlass — on a near-mirror glass primary hit (rough=0.05) the GGX BRDF
+// sample of a NEIGHBOURING emitter cell pulls in that cell's color and
+// mixes it into the cell being shaded — chromatic pollution that washes
+// saturated authored colors toward pastel.
+// Came / solder (isMetal) skip Lo_direct: ReSTIR DI's single-sample
+// variance produces high-amplitude firefly speckle on thin metallic
+// strips that atrous can't smooth.
+fn lo_direct(
+  pixelIdx: u32,
+  pos:      vec3f,
+  normal:   vec3f,
+  wo:       vec3f,
+  albedo:   vec3f,
+  rough:    f32,
+  metal:    f32,
+  isGlass:  bool,
+  isMetal:  bool,
+  rng:      ptr<function, u32>,
+) -> vec3f {
+  if (isGlass || isMetal) { return vec3f(0.0); }
+  let r = loadSpatialDI(pixelIdx);
+  if (r.W <= 0.0 || r.M == 0u) { return vec3f(0.0); }
+  let lid = r.lightId;
+  if (lid >= ubo.emitterCount) { return vec3f(0.0); }
+  let e  = emitters[lid];
+  // Stochastic xi instead of (0.5, 0.5). The deterministic centre-sample
+  // bites hard on rect-area lights split into two triangles: the two
+  // tris have different centroids, so ReSTIR flipping between them
+  // produces a bimodal radiance per frame (visible flicker). Random xi
+  // distributes the sample point across the triangle each frame;
+  // temporalAccum integrates the variance out.
+  let lsXi = vec2f(rand_f32(rng), rand_f32(rng));
+  let ls = sampleEmitterPoint(e, lsXi);
+  let toL = ls.pos - pos;
+  let dist = length(toL);
+  if (dist <= 1e-4) { return vec3f(0.0); }
+  let wi    = toL / dist;
+  let nDotL = max(0.0, dot(normal, wi));
+  let nlDotL = max(0.0, dot(-e.normal, wi));
+  if (nDotL <= 1e-6 || nlDotL <= 1e-6) { return vec3f(0.0); }
+  let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon);
+  if (occ) { return vec3f(0.0); }
+  let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
+  let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
+  return e.Le * brdf * G * r.W;
+}
+
+// --- Direct sun lighting with glass-aware tinted shadow ray ───────────
+//
+// Bullet 4 (caustics on receivers): the sun is treated as a directional
+// light reaching the floor/walls.  The shadow ray from the receiver
+// toward the sun walks every triangle along the path:
+//   - opaque hit  → fully shadowed (visibility = vec3f(0))
+//   - glass hit   → multiply visibility by the cell's tint factor
+//   - clear hit   → unchanged
+// Same skip-on-metal rule: through-glass shadow rays from a came
+// bead's irregular surface produce variable visibility per pixel → speckle.
+// The ReSTIR-GI Lo_indirect term covers came illumination via the
+// half-res reservoir read further below.
+fn lo_sun_caustic(
+  gid:     vec2u,
+  pos:     vec3f,
+  normal:  vec3f,
+  albedo:  vec3f,
+  isGlass: bool,
+  isMetal: bool,
+) -> vec3f {
+  if (isGlass || isMetal) { return vec3f(0.0); }
+  // Direction TOWARD the sun.  ubo.sunDirection is the unit vector from
+  // the world origin toward the sun.
+  // Sun-cone sampling for physically-correct caustic penumbra.
+  // Real sun has 0.5° angular diameter → 0.25° radius → tan ≈ 0.00436.
+  //
+  // Sampling strategy: PER-PIXEL DETERMINISTIC, no per-frame variance.
+  // Each pixel always samples the SAME point on the sun cone (a
+  // function of its (x, y) position only).
+  let sunBase = ubo.sunDirection;
+  let SUN_ANGULAR_RADIUS = 0.00436;
+  let hx = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453);
+  let hy = fract(sin(f32(gid.x) * 93.989  + f32(gid.y) * 67.345) * 24634.6345);
+  let xi = vec2f(hx, hy);
+  let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
+  let tan = safe_normalize(cross(upRef, sunBase));
+  let bit = cross(sunBase, tan);
+  let r2 = SUN_ANGULAR_RADIUS * sqrt(xi.x);
+  let phi = 6.2831853 * xi.y;
+  let toSun = safe_normalize(sunBase + tan * (r2 * cos(phi)) + bit * (r2 * sin(phi)));
+  let nDotSun = max(0.0, dot(normal, toSun));
+  if (nDotSun <= 1e-6) { return vec3f(0.0); }
+  let vis = bvhTraceTintedVisibility(
+    &bvh_index, &bvh_position, &bvh, &bvh_beer,
+    pos + normal * 1e-3, toSun, 1e6,
+  );
+  // Sun irradiance × tinted visibility × Lambert(receiver) × CAUSTIC_BOOST.
+  // CAUSTIC_BOOST 10 → 22: less-saturated cells (e.g., brown) Beer-Lambert
+  // to pow(0.55, 6) ≈ 0.028 — caustics from those cells were below ambient
+  // floor brightness, invisible against the soft DDGI cell-tint blob.
+  // Audit B1: CAUSTIC_BOOST and the visibility clamp are now UBO-driven.
+  // Cornell stained-glass uses 22.0 / 0.6 (the historical calibration);
+  // generic scenes pass 1.0 / 1.0 (no boost, no clamp).
+  let visClamped = min(vis, vec3f(ubo.causticVisClamp));
+  return visClamped * ubo.sunIntensity * nDotSun * albedo * INV_PI * ubo.causticBoost;
+}
+
+// ── Multi-tap sky aperture probe ──────────────────────────────────────
+//
+// For non-glass surfaces, ambient-only DDGI doesn't deliver
+// perceptible diffuse-sky illumination. Without an explicit aperture
+// probe, the back-wall + side walls + floor outside the small caustic
+// patch render pitch black, which is un-physical for a room with a
+// daylit window.
+//
+// Probe approach: trace 5 deterministic rays — one along the
+// receiver normal + four more rotated 45° toward the sun direction
+// (a square-pyramid pattern around the surface "up axis").
+fn lo_sky_aperture(
+  pos:     vec3f,
+  normal:  vec3f,
+  albedo:  vec3f,
+  isGlass: bool,
+  isMetal: bool,
+) -> vec3f {
+  if (isGlass || isMetal) { return vec3f(0.0); }
+  let skyTint = ubo.skyTint;
+  let skyIrradiance = ubo.skyIrradiance;
+  let originSky = pos + normal * 1e-3;
+  let upAxis = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(normal.y) < 0.99);
+  let tangent = safe_normalize(cross(upAxis, normal));
+  let bitangent = cross(normal, tangent);
+  // 5 taps: centre (0°), four 45° diagonals. Each tap accumulates a
+  // SCALAR luminance — opaque hit → 0, clear sky → 1, glass-tinted
+  // → ~0.3 (luminance of the tint vector). Going scalar instead of
+  // vec3f kills the panel-edge banding.
+  let cos45 = 0.7071068;
+  let sin45 = 0.7071068;
+  var skyAccum = 0.0;
+  var weightAccum = 0.0;
+  let luminanceWeights = vec3f(0.2126, 0.7152, 0.0722);
+  // Centre tap (along normal, weight 1.0).
+  {
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, normal, 1e6);
+    let lum = dot(v, luminanceWeights);
+    skyAccum = skyAccum + lum * 1.0;
+    weightAccum = weightAccum + 1.0;
+  }
+  // Four diagonal taps at 45° off-normal.
+  let diag0 = safe_normalize(normal * cos45 + tangent * sin45);
+  let diag1 = safe_normalize(normal * cos45 - tangent * sin45);
+  let diag2 = safe_normalize(normal * cos45 + bitangent * sin45);
+  let diag3 = safe_normalize(normal * cos45 - bitangent * sin45);
+  {
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag0, 1e6);
+    let lum = dot(v, luminanceWeights);
+    skyAccum = skyAccum + lum * cos45;
+    weightAccum = weightAccum + cos45;
+  }
+  {
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag1, 1e6);
+    let lum = dot(v, luminanceWeights);
+    skyAccum = skyAccum + lum * cos45;
+    weightAccum = weightAccum + cos45;
+  }
+  {
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag2, 1e6);
+    let lum = dot(v, luminanceWeights);
+    skyAccum = skyAccum + lum * cos45;
+    weightAccum = weightAccum + cos45;
+  }
+  {
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag3, 1e6);
+    let lum = dot(v, luminanceWeights);
+    skyAccum = skyAccum + lum * cos45;
+    weightAccum = weightAccum + cos45;
+  }
+  let skyVisScalar = skyAccum / max(weightAccum, 1e-6);
+  let skyVisAvg = vec3f(skyVisScalar);
+  return skyVisAvg * skyTint * skyIrradiance * albedo * INV_PI;
+}
+
+// --- Indirect lighting (Sprint 16 — ReSTIR-GI one-bounce resampling) ---
+//
+// The trilinear DDGI atlas read had visible cell-grid splotches on
+// smooth walls (structural single-bounce limitation). ReSTIR-GI runs
+// a half-res RIS pass that picks ONE probe-direction sample per pixel
+// by importance, then resamples spatially+temporally (Sprints 17-18).
+// The result is per-pixel screen-space — the probe grid stops being
+// the per-pixel basis, so cell artefacts go away.
+//
+// Lo_indirect_lighting = Lo * W * cos(N, wi) * INV_PI  (albedo-demodulated)
+//   - Lo, W from the GI reservoir (half-res; bilinear-blend across 4 cells)
+//   - cos × INV_PI is the receiver Lambertian BRDF response
+//   - albedo is intentionally OMITTED here (Item 24 — Schied 2017 §4.1
+//     albedo demodulation). The à-trous chain filters the pure lighting
+//     signal; indirectCombine re-multiplies by albedo after denoising.
+// Gating: glass/metal surfaces skip this (their Lo_emit drives).
+//         The reservoir was empty-stored by risGi in those cases.
+//
+// Sprint 18 follow-up — bilinear blend across 4 surrounding half-res
+// reservoirs.  The original nearest-neighbour read halfPx = gid/2u made
+// every 2x2 full-res quad share one chosen sample; adjacent quads picked
+// different random samples, so the indirect signal had a sharp 2-pixel
+// discontinuity at every quad boundary.  risGi re-rolls samples each frame,
+// so the discontinuity pattern shifted every frame and the temporal
+// accumulator could not converge to a fixed point.  Blending 4 neighbours
+// with bilinear weights at half-res fractional coord (gid*0.5) eliminates
+// the quad grid.
+fn lo_indirect(
+  gid:     vec2u,
+  dims:    vec2u,
+  pos:     vec3f,
+  normal:  vec3f,
+  isGlass: bool,
+  isMetal: bool,
+) -> vec3f {
+  if (isGlass || isMetal) { return vec3f(0.0); }
+  var Lo_indirect = vec3f(0.0);
+  let halfDims = dims / 2u;
+  let halfPxF = vec2f(gid) * 0.5;
+  let hx0 = u32(floor(halfPxF.x));
+  let hy0 = u32(floor(halfPxF.y));
+  let fx = halfPxF.x - f32(hx0);
+  let fy = halfPxF.y - f32(hy0);
+  let bw00 = (1.0 - fx) * (1.0 - fy);
+  let bw10 =        fx  * (1.0 - fy);
+  let bw01 = (1.0 - fx) *        fy;
+  let bw11 =        fx  *        fy;
+  var totalW: f32 = 0.0;
+  for (var k: u32 = 0u; k < 4u; k = k + 1u) {
+    var hx = hx0;
+    var hy = hy0;
+    var bw: f32 = 0.0;
+    if      (k == 0u) { hx = hx0;          hy = hy0;          bw = bw00; }
+    else if (k == 1u) { hx = hx0 + 1u;     hy = hy0;          bw = bw10; }
+    else if (k == 2u) { hx = hx0;          hy = hy0 + 1u;     bw = bw01; }
+    else              { hx = hx0 + 1u;     hy = hy0 + 1u;     bw = bw11; }
+    if (hx >= halfDims.x) { hx = halfDims.x - 1u; }
+    if (hy >= halfDims.y) { hy = halfDims.y - 1u; }
+    if (bw < 1e-5) { continue; }
+    let giIdx = hy * halfDims.x + hx;
+    let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+    if (g.W <= 0.0 || g.M == 0u) { continue; }
+    let toS = g.xs - pos;
+    let distS = length(toS);
+    if (distS <= 1e-4) { continue; }
+    let wi = toS / distS;
+    let cosTheta = max(0.0, dot(normal, wi));
+    // Item 24: omit albedo here; indirectCombine applies it post-denoising.
+    Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * bw;
+    totalW = totalW + bw;
+  }
+  if (totalW > 1e-3) {
+    Lo_indirect = Lo_indirect / totalW;
+  }
+  return Lo_indirect;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
@@ -131,6 +438,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
+  // ── Primary-hit surface derivation ───────────────────────────────────────
   let pos    = primaryRay.origin + primaryRay.direction * primaryHit.dist;
   let normal = primaryHit.normal;
   let wo     = -primaryRay.direction;
@@ -148,261 +456,21 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let depthSigned = primaryHit.dist * select(1.0, -1.0, isGlass);
   textureStore(gNormalDepthOut, gid.xy, vec4f(normal * 0.5 + 0.5, depthSigned));
 
-  // matColor + isGlass already decoded above for the G-buffer write.
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
   let albedo   = matColor.rgb;
   let rough    = select(0.85, 0.05, isGlass);
   let metal    = 0.0;
 
-  // ── Self-emission for primary glass hits ─────────────────────────────────
+  // ── Per-term lighting composition ────────────────────────────────────────
   //
-  // Le ≈ attenuationColor × transmission × sunIntensity × |sunDot| × textureMod.
-  // attenuationColor is read from bvh_beer (Beer-Lambert visible color =
-  // pow(rawAttCol, thickness/attDist)) — separate from bvhIndex.w which
-  // carries the RAW attCol used by emitter Le and tinted-visibility.
-  var Lo_emit = vec3f(0.0);
-  if (isGlass) {
-    let sunDot = abs(dot(ubo.sunDirection, normal));
-    if (sunDot > 0.05) {
-      let trans = matColor.a;
-      let texId = decodeSurfaceTextureId(primaryHit.matColorPacked);
-      let texMod = surfaceTextureMod(primaryHit.uv, texId);
-      let beerPacked = bvh_beer[primaryHit.triIndex];
-      let beerAlbedo = vec3f(
-        f32((beerPacked >> 24u) & 0xFFu) / 255.0,
-        f32((beerPacked >> 16u) & 0xFFu) / 255.0,
-        f32((beerPacked >>  8u) & 0xFFu) / 255.0,
-      );
-      Lo_emit = beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;
-    }
-  }
-
-  // --- Direct lighting (ReSTIR DI) ---
-  //
-  // Gated to !isGlass — on a near-mirror glass primary hit (rough=0.05) the GGX BRDF
-  // sample of a NEIGHBOURING emitter cell pulls in that cell's color and
-  // mixes it into the cell being shaded — chromatic pollution that washes
-  // saturated authored colors toward pastel.
-  let r = loadSpatialDI(pixelIdx);
-  var Lo_direct = vec3f(0.0);
-  // Came / solder (isMetal) skip Lo_direct: ReSTIR DI's single-sample
-  // variance produces high-amplitude firefly speckle on thin metallic
-  // strips that atrous can't smooth.
-  if (!isGlass && !isMetal && r.W > 0.0 && r.M > 0u) {
-    let lid = r.lightId;
-    if (lid < ubo.emitterCount) {
-      let e  = emitters[lid];
-      // Stochastic xi instead of (0.5, 0.5). The deterministic centre-sample
-      // bites hard on rect-area lights split into two triangles: the two
-      // tris have different centroids, so ReSTIR flipping between them
-      // produces a bimodal radiance per frame (visible flicker). Random xi
-      // distributes the sample point across the triangle each frame;
-      // temporalAccum integrates the variance out.
-      let lsXi = vec2f(rand_f32(&rng), rand_f32(&rng));
-      let ls = sampleEmitterPoint(e, lsXi);
-      let toL = ls.pos - pos;
-      let dist = length(toL);
-      if (dist > 1e-4) {
-        let wi    = toL / dist;
-        let nDotL = max(0.0, dot(normal, wi));
-        let nlDotL = max(0.0, dot(-e.normal, wi));
-        if (nDotL > 1e-6 && nlDotL > 1e-6) {
-          let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon);
-          if (!occ) {
-            let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
-            let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
-            Lo_direct = e.Le * brdf * G * r.W;
-          }
-        }
-      }
-    }
-  }
-
-  // --- Direct sun lighting with glass-aware tinted shadow ray ───────────
-  //
-  // Bullet 4 (caustics on receivers): the sun is treated as a directional
-  // light reaching the floor/walls.  The shadow ray from the receiver
-  // toward the sun walks every triangle along the path:
-  //   - opaque hit  → fully shadowed (visibility = vec3f(0))
-  //   - glass hit   → multiply visibility by the cell's tint factor
-  //   - clear hit   → unchanged
-  var Lo_sunCaustic = vec3f(0.0);
-  var Lo_skyAperture = vec3f(0.0);
-  // Same skip-on-metal rule: through-glass shadow rays from a came
-  // bead's irregular surface produce variable visibility per pixel → speckle.
-  // The ReSTIR-GI Lo_indirect term covers came illumination via the
-  // half-res reservoir read further below.
-  if (!isGlass && !isMetal) {
-    // Direction TOWARD the sun.  ubo.sunDirection is the unit vector from
-    // the world origin toward the sun.
-    // Sun-cone sampling for physically-correct caustic penumbra.
-    // Real sun has 0.5° angular diameter → 0.25° radius → tan ≈ 0.00436.
-    //
-    // Sampling strategy: PER-PIXEL DETERMINISTIC, no per-frame variance.
-    // Each pixel always samples the SAME point on the sun cone (a
-    // function of its (x, y) position only).
-    let sunBase = ubo.sunDirection;
-    let SUN_ANGULAR_RADIUS = 0.00436;
-    let hx = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453);
-    let hy = fract(sin(f32(gid.x) * 93.989  + f32(gid.y) * 67.345) * 24634.6345);
-    let xi = vec2f(hx, hy);
-    let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
-    let tan = safe_normalize(cross(upRef, sunBase));
-    let bit = cross(sunBase, tan);
-    let r2 = SUN_ANGULAR_RADIUS * sqrt(xi.x);
-    let phi = 6.2831853 * xi.y;
-    let toSun = safe_normalize(sunBase + tan * (r2 * cos(phi)) + bit * (r2 * sin(phi)));
-    let nDotSun = max(0.0, dot(normal, toSun));
-    if (nDotSun > 1e-6) {
-      let vis = bvhTraceTintedVisibility(
-        &bvh_index, &bvh_position, &bvh, &bvh_beer,
-        pos + normal * 1e-3, toSun, 1e6,
-      );
-      // Sun irradiance × tinted visibility × Lambert(receiver) × CAUSTIC_BOOST.
-      // CAUSTIC_BOOST 10 → 22: less-saturated cells (e.g., brown) Beer-Lambert
-      // to pow(0.55, 6) ≈ 0.028 — caustics from those cells were below ambient
-      // floor brightness, invisible against the soft DDGI cell-tint blob.
-      // Audit B1: CAUSTIC_BOOST and the visibility clamp are now UBO-driven.
-      // Cornell stained-glass uses 22.0 / 0.6 (the historical calibration);
-      // generic scenes pass 1.0 / 1.0 (no boost, no clamp).
-      let visClamped = min(vis, vec3f(ubo.causticVisClamp));
-      Lo_sunCaustic = visClamped * ubo.sunIntensity * nDotSun * albedo * INV_PI * ubo.causticBoost;
-    }
-
-    // ── Multi-tap sky aperture probe ──────────────────────────────────────
-    //
-    // For non-glass surfaces, ambient-only DDGI doesn't deliver
-    // perceptible diffuse-sky illumination. Without an explicit aperture
-    // probe, the back-wall + side walls + floor outside the small caustic
-    // patch render pitch black, which is un-physical for a room with a
-    // daylit window.
-    //
-    // Probe approach: trace 5 deterministic rays — one along the
-    // receiver normal + four more rotated 45° toward the sun direction
-    // (a square-pyramid pattern around the surface "up axis").
-    let skyTint = ubo.skyTint;
-    let skyIrradiance = ubo.skyIrradiance;
-    let originSky = pos + normal * 1e-3;
-    let upAxis = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(normal.y) < 0.99);
-    let tangent = safe_normalize(cross(upAxis, normal));
-    let bitangent = cross(normal, tangent);
-    // 5 taps: centre (0°), four 45° diagonals. Each tap accumulates a
-    // SCALAR luminance — opaque hit → 0, clear sky → 1, glass-tinted
-    // → ~0.3 (luminance of the tint vector). Going scalar instead of
-    // vec3f kills the panel-edge banding.
-    let cos45 = 0.7071068;
-    let sin45 = 0.7071068;
-    var skyAccum = 0.0;
-    var weightAccum = 0.0;
-    let luminanceWeights = vec3f(0.2126, 0.7152, 0.0722);
-    // Centre tap (along normal, weight 1.0).
-    {
-      let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, normal, 1e6);
-      let lum = dot(v, luminanceWeights);
-      skyAccum = skyAccum + lum * 1.0;
-      weightAccum = weightAccum + 1.0;
-    }
-    // Four diagonal taps at 45° off-normal.
-    let diag0 = safe_normalize(normal * cos45 + tangent * sin45);
-    let diag1 = safe_normalize(normal * cos45 - tangent * sin45);
-    let diag2 = safe_normalize(normal * cos45 + bitangent * sin45);
-    let diag3 = safe_normalize(normal * cos45 - bitangent * sin45);
-    {
-      let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag0, 1e6);
-      let lum = dot(v, luminanceWeights);
-      skyAccum = skyAccum + lum * cos45;
-      weightAccum = weightAccum + cos45;
-    }
-    {
-      let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag1, 1e6);
-      let lum = dot(v, luminanceWeights);
-      skyAccum = skyAccum + lum * cos45;
-      weightAccum = weightAccum + cos45;
-    }
-    {
-      let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag2, 1e6);
-      let lum = dot(v, luminanceWeights);
-      skyAccum = skyAccum + lum * cos45;
-      weightAccum = weightAccum + cos45;
-    }
-    {
-      let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag3, 1e6);
-      let lum = dot(v, luminanceWeights);
-      skyAccum = skyAccum + lum * cos45;
-      weightAccum = weightAccum + cos45;
-    }
-    let skyVisScalar = skyAccum / max(weightAccum, 1e-6);
-    let skyVisAvg = vec3f(skyVisScalar);
-    Lo_skyAperture = skyVisAvg * skyTint * skyIrradiance * albedo * INV_PI;
-  }
-
-  // --- Indirect lighting (Sprint 16 — ReSTIR-GI one-bounce resampling) ---
-  //
-  // The trilinear DDGI atlas read had visible cell-grid splotches on
-  // smooth walls (structural single-bounce limitation). ReSTIR-GI runs
-  // a half-res RIS pass that picks ONE probe-direction sample per pixel
-  // by importance, then resamples spatially+temporally (Sprints 17-18).
-  // The result is per-pixel screen-space — the probe grid stops being
-  // the per-pixel basis, so cell artefacts go away.
-  //
-  // Lo_indirect_lighting = Lo * W * cos(N, wi) * INV_PI  (albedo-demodulated)
-  //   - Lo, W from the GI reservoir (half-res; bilinear-blend across 4 cells)
-  //   - cos × INV_PI is the receiver Lambertian BRDF response
-  //   - albedo is intentionally OMITTED here (Item 24 — Schied 2017 §4.1
-  //     albedo demodulation). The à-trous chain filters the pure lighting
-  //     signal; indirectCombine re-multiplies by albedo after denoising.
-  // Gating: glass/metal surfaces skip this (their Lo_emit drives).
-  //         The reservoir was empty-stored by risGi in those cases.
-  //
-  // Sprint 18 follow-up — bilinear blend across 4 surrounding half-res
-  // reservoirs.  The original nearest-neighbour read halfPx = gid/2u made
-  // every 2x2 full-res quad share one chosen sample; adjacent quads picked
-  // different random samples, so the indirect signal had a sharp 2-pixel
-  // discontinuity at every quad boundary.  risGi re-rolls samples each frame,
-  // so the discontinuity pattern shifted every frame and the temporal
-  // accumulator could not converge to a fixed point.  Blending 4 neighbours
-  // with bilinear weights at half-res fractional coord (gid*0.5) eliminates
-  // the quad grid.
-  var Lo_indirect = vec3f(0.0);
-  if (!isGlass && !isMetal) {
-    let halfDims = dims / 2u;
-    let halfPxF = vec2f(gid.xy) * 0.5;
-    let hx0 = u32(floor(halfPxF.x));
-    let hy0 = u32(floor(halfPxF.y));
-    let fx = halfPxF.x - f32(hx0);
-    let fy = halfPxF.y - f32(hy0);
-    let bw00 = (1.0 - fx) * (1.0 - fy);
-    let bw10 =        fx  * (1.0 - fy);
-    let bw01 = (1.0 - fx) *        fy;
-    let bw11 =        fx  *        fy;
-    var totalW: f32 = 0.0;
-    for (var k: u32 = 0u; k < 4u; k = k + 1u) {
-      var hx = hx0;
-      var hy = hy0;
-      var bw: f32 = 0.0;
-      if      (k == 0u) { hx = hx0;          hy = hy0;          bw = bw00; }
-      else if (k == 1u) { hx = hx0 + 1u;     hy = hy0;          bw = bw10; }
-      else if (k == 2u) { hx = hx0;          hy = hy0 + 1u;     bw = bw01; }
-      else              { hx = hx0 + 1u;     hy = hy0 + 1u;     bw = bw11; }
-      if (hx >= halfDims.x) { hx = halfDims.x - 1u; }
-      if (hy >= halfDims.y) { hy = halfDims.y - 1u; }
-      if (bw < 1e-5) { continue; }
-      let giIdx = hy * halfDims.x + hx;
-      let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
-      if (g.W <= 0.0 || g.M == 0u) { continue; }
-      let toS = g.xs - pos;
-      let distS = length(toS);
-      if (distS <= 1e-4) { continue; }
-      let wi = toS / distS;
-      let cosTheta = max(0.0, dot(normal, wi));
-      // Item 24: omit albedo here; indirectCombine applies it post-denoising.
-      Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * bw;
-      totalW = totalW + bw;
-    }
-    if (totalW > 1e-3) {
-      Lo_indirect = Lo_indirect / totalW;
-    }
-  }
+  // Locals are named identically to their helper outputs (Lo_emit, Lo_direct,
+  // Lo_sunCaustic, Lo_skyAperture, Lo_indirect) so the structural-contract
+  // tests in sprint18-indirectCombine.test.ts continue to match.
+  let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, primaryHit.matColorPacked, primaryHit.triIndex);
+  let Lo_direct     = lo_direct(pixelIdx, pos, normal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
+  let Lo_sunCaustic = lo_sun_caustic(gid.xy, pos, normal, albedo, isGlass, isMetal);
+  let Lo_skyAperture = lo_sky_aperture(pos, normal, albedo, isGlass, isMetal);
+  let Lo_indirect   = lo_indirect(gid.xy, dims, pos, normal, isGlass, isMetal);
 
   // Active terms (current pipeline state):
   //   Lo_emit         glass primary hit, deterministic per pixel
