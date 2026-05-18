@@ -8,8 +8,12 @@
  * with an extra `intensity` multiplier needed by the light-packing path;
  * both forms share this base.
  *
- * For the WGSL canonical, see `LUMINANCE_WGSL` (TODO: hoist from inline
- * copies in shade.wgsl / atrousVariance.wgsl / etc.).
+ * For the WGSL canonical, see `./wgsl/luminance.wgsl.ts` (`LUMINANCE_WGSL`
+ * exported from package index). Migration to that canonical is ongoing —
+ * shade.wgsl (walkaround-hybrid, via the W1-R6 include graph) and
+ * hdrLuminanceBilateral.wgsl (shared-denoisers, via direct prepend) consume
+ * it; further inline copies in atrousVariance / svgfReprojection /
+ * spatialFilter / ppgUpdate / pt-webgpu/material remain.
  */
 export function luminance(r: number, g: number, b: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;

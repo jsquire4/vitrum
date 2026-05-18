@@ -8,10 +8,18 @@
  * References: bilateral filtering (Tomasi & Manduchi); luminance edge-stop common in HDR denoise probes.
  */
 
+import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
+
 /** Must match `@workgroup_size` below (dispatch uses this value). */
 export const HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE = 8 as const;
 
+// `LUMINANCE_WGSL` provides the canonical `fn luminance(c: vec3f) -> f32`
+// + `const LUM_W709: vec3f` (Rec.709 weights). Prepended here at module
+// build time so the standalone shader compile via `device.createShaderModule`
+// sees the canonical definitions before the local code uses them.
 export const HDR_LUMINANCE_BILATERAL_WGSL = /* wgsl */ `
+${LUMINANCE_WGSL}
+
 struct BilateralParams {
   sigmaLuminance: f32,
   _pad0: f32,
@@ -22,10 +30,6 @@ struct BilateralParams {
 @group(0) @binding(0) var texIn: texture_2d<f32>;
 @group(0) @binding(1) var texOut: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var<uniform> params: BilateralParams;
-
-fn luminance(c: vec3<f32>) -> f32 {
-  return dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
-}
 
 @compute @workgroup_size(8, 8, 1)
 fn hdrLuminanceBilateralMain(@builtin(global_invocation_id) gid: vec3<u32>) {
