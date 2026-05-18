@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { computeSceneAABB } from '../src/sceneAABB.js';
-import type { Scene, MeshPrimitive, InstancedMeshPrimitive, Material, Mat4 } from '@vitrum/core';
+import type { Scene, MeshPrimitive, InstancedMeshPrimitive, MaterialSpec, Mat4 } from '@vitrum/core';
 
-const MAT: Material = {
+const MAT: MaterialSpec = {
   baseColor: [0.5, 0.5, 0.5],
   metallic: 0,
   roughness: 0.5,

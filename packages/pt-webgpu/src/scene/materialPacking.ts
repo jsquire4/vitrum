@@ -1,4 +1,4 @@
-import type { Material } from '@vitrum/core';
+import type { MaterialSpec } from '@vitrum/core';
 import { CIE_LAMBDA_MIN, CIE_LAMBDA_MAX } from '@vitrum/shared-samplers';
 
 const THIN_FILM_LAYER_LIMIT = 8;
@@ -12,7 +12,7 @@ export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 const SPECTRAL_LAMBDA_MIN_NM = CIE_LAMBDA_MIN;
 const SPECTRAL_LAMBDA_MAX_NM = CIE_LAMBDA_MAX;
 
-function sampleSpectralCurve(curve: Material['spectralAttenuation'], lambdaNm: number): number {
+function sampleSpectralCurve(curve: MaterialSpec['spectralAttenuation'], lambdaNm: number): number {
   if (curve == null || curve.values.length === 0) return 0;
   const start = curve.wavelengthStart;
   const end = curve.wavelengthEnd;
@@ -26,7 +26,7 @@ function sampleSpectralCurve(curve: Material['spectralAttenuation'], lambdaNm: n
   return a + (b - a) * (f - i0);
 }
 
-export function materialToPackedVec4s(material: Material): number[] {
+export function materialToPackedVec4s(material: MaterialSpec): number[] {
   const finite = (v: number, fallback = 0): number => (Number.isFinite(v) ? v : fallback);
   const clamp01 = (v: number): number => Math.min(1, Math.max(0, finite(v)));
   const base = material.baseColor;
