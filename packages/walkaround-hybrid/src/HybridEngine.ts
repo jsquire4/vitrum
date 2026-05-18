@@ -1247,12 +1247,16 @@ export class HybridEngine implements Engine {
       const bvh = this._bvhBuffers;
       const buf = bvh?.bvhNodes?.cpuData;
       if (buf == null) return null;
-      // three-mesh-bvh node layout: 32 bytes per node, treated as
-      // [minX, minY, minZ, leftIdx_u32_as_f32, maxX, maxY, maxZ,
-      //  triCountOrRightIdx_u32_as_f32]. Repackage into the public
-      // contract: [min, max, depth=0 placeholder, pad=0]. Depth would
-      // need a parent-link traversal we don't have here; the visualiser
-      // can colour by node-index ratio as a passable proxy.
+      // BVH node layout: 32 bytes/node, 8 × u32, shared by shared-bvh and
+      // pt-webgpu's buildCpuBvh:
+      //   f32[0..2] bounds.min xyz
+      //   f32[3..5] bounds.max xyz
+      //   u32[6]    rightChildOrTriOffset
+      //   u32[7]    splitAxisOrTriCount
+      // Repackage into the public contract: [min, max, depth=0 placeholder,
+      // pad=0]. Depth would need a parent-link traversal we don't have
+      // here; the visualiser can colour by node-index ratio as a passable
+      // proxy.
       const src = new Float32Array(buf);
       const nodeCount = (buf as ArrayBuffer).byteLength / 32;
       const out = new Float32Array(nodeCount * 8);
@@ -1262,9 +1266,9 @@ export class HybridEngine implements Engine {
         out[oo + 0] = src[so + 0]!; // minX
         out[oo + 1] = src[so + 1]!; // minY
         out[oo + 2] = src[so + 2]!; // minZ
-        out[oo + 3] = src[so + 4]!; // maxX
-        out[oo + 4] = src[so + 5]!; // maxY
-        out[oo + 5] = src[so + 6]!; // maxZ
+        out[oo + 3] = src[so + 3]!; // maxX
+        out[oo + 4] = src[so + 4]!; // maxY
+        out[oo + 5] = src[so + 5]!; // maxZ
         out[oo + 6] = 0;            // depth — TODO: parent traversal
         out[oo + 7] = 0;            // pad
       }
