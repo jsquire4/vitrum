@@ -18,7 +18,7 @@
 // to drive frames manually (offline render, headless test, video encoder)
 // can do so without the engine fighting it.
 
-import type { Scene, ScenePrimitive, SceneEmitter } from './scene.js';
+import type { Scene, ScenePrimitive, SceneEmitter } from './scene/index.js';
 import type { FrameInput, FrameOutput } from './frame.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ export interface Engine {
    *  path (current HybridEngine is reactive to its own scene-source rather
    *  than host-driven env scrubs) may omit this method; hosts MUST
    *  typeof-check before calling. */
-  updateEnvironment?(env: import('./scene.js').SceneEnvironment | null): void;
+  updateEnvironment?(env: import('./scene/index.js').SceneEnvironment | null): void;
 
   // ── Frame-level rendering ───────────────────────────────────────────────
 

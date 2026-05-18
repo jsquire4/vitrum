@@ -3,7 +3,7 @@
 // Primary surface: scene/frame/engine contracts. Small Tier-2 browser probes
 // (`probeWebGPU`, `detectGpu`) live here for shared chroma / mount gates.
 
-export * from './scene.js';
+export * from './scene/index.js';
 export * from './frame.js';
 export * from './engine.js';
 export type { GpuDetection, DetectGpuOptions } from './gpuDetection.js';
