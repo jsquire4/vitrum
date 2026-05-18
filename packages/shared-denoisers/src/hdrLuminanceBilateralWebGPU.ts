@@ -10,6 +10,7 @@ import {
 } from './wgsl/hdrLuminanceBilateral.wgsl.js';
 import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
+import { uploadRgbAsRgba32f, RGBA32F_BPP } from './webGpuTextureUpload.js';
 
 /** Default luminance edge-stop σ for `runHdrLuminanceBilateralWebGPU` (matches Cornell `vitrumWgslSigma`). */
 export const HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE = 0.06 as const;
@@ -94,26 +95,10 @@ export async function runHdrLuminanceBilateralWebGPU(
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
-  // rgba32float texels are 16 bytes (4 × f32).
-  const RGBA32F_BPP = 16;
+  // Upload tight RGB as rgba32float (alpha=1) via the shared helper; the
+  // readback below uses the same row alignment.
   const bytesPerRow = alignedTextureCopyBytesPerRow(w, RGBA32F_BPP);
-  const uploadSize = bytesPerRow * h;
-  const upload = new Float32Array(uploadSize / 4);
-  for (let y = 0; y < h; y += 1) {
-    const rowOff = (y * bytesPerRow) / 4;
-    for (let x = 0; x < w; x += 1) {
-      const si = (y * w + x) * 3;
-      upload[rowOff + x * 4 + 0] = rgb[si] ?? 0;
-      upload[rowOff + x * 4 + 1] = rgb[si + 1] ?? 0;
-      upload[rowOff + x * 4 + 2] = rgb[si + 2] ?? 0;
-      upload[rowOff + x * 4 + 3] = 1;
-    }
-  }
-
-  device.queue.writeTexture({ texture: texIn }, upload.buffer as GPUAllowSharedBufferSource, {
-    bytesPerRow,
-    rowsPerImage: h,
-  }, [w, h]);
+  uploadRgbAsRgba32f(device, texIn, rgb, w, h);
 
   // BilateralParams UBO: 4 × f32 = 16 bytes.
   const HDR_BILATERAL_UBO_SIZE_BYTES = 16;

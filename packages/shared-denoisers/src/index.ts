@@ -106,14 +106,16 @@ export {
 } from './svgfRealBindings.js';
 export type { SVGFReprojUniforms } from './svgfRealBindings.js';
 // One-shot WebGPU host pipeline (CPU-backed, allocates transient textures):
+export { runSVGFRealWebGPU } from './svgfRealWebGPU.js';
+export type { SVGFRealWebGPUOptions } from './svgfRealWebGPU.js';
+// CPU emulation oracles (test helpers; live in svgfRealCpu.ts but also re-exported
+// from svgfRealWebGPU.ts for backward compatibility with existing test imports):
 export {
-  runSVGFRealWebGPU,
   svgfReprojCPU,
   svgfVarianceFromMomentsCPU,
   svgf7x7FallbackCPU,
-} from './svgfRealWebGPU.js';
+} from './svgfRealCpu.js';
 export type {
-  SVGFRealWebGPUOptions,
   SVGFReprojCPUInput,
   SVGFReprojCPUOutput,
-} from './svgfRealWebGPU.js';
+} from './svgfRealCpu.js';
