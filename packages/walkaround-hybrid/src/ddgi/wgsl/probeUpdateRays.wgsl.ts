@@ -7,7 +7,7 @@
  */
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
-import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
+import { OCTAHEDRAL_WGSL, MATERIAL_ENTRY_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 const WG_SIZE = 32;
@@ -20,7 +20,7 @@ const RAYS_PER_THREAD = Math.ceil(RAYS_PER_PROBE / WG_SIZE);
  * materials — and allows scenes with more materials to raise the cap.
  *
  * M9 audit remediation: `DDGI_MAX_MATERIALS` was previously hardcoded as
- * `array<DDGIMaterial, 64>` in the WGSL. Now driven by
+ * `array<MaterialEntry, 64>` in the WGSL. Now driven by
  * `HybridEngineOptions.ddgiMaxMaterials` (default 64).
  *
  * @param maxMaterials Maximum number of distinct materials. Must be >= 1.
@@ -39,6 +39,7 @@ function makeProbeUpdateRaysWGSLImpl(maxMaterials: number): string { return /* w
 
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
+${MATERIAL_ENTRY_WGSL}
 
 const WG_SIZE: u32       = ${WG_SIZE}u;
 const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
@@ -91,20 +92,16 @@ struct IntersectionResult {
 }
 
 // -----------------------------------------------------------------
-// DDGI material table
+// DDGI material table — uses the canonical MaterialEntry struct
+// declared by @vitrum/shared-bvh/wgsl/materialEntry.wgsl.ts
+// (injected above via MATERIAL_ENTRY_WGSL).
+//
+// Pre-W2-C5 this file declared a local DDGIMaterial struct with a
+// different field order (no attenuationDistance / thickness). The
+// canonical struct carries both, which lets future revisions of
+// traceSunVisibility apply full Beer-Lambert tint (today still uses
+// the simplified attenColor * transmission blend below).
 // -----------------------------------------------------------------
-struct DDGIMaterial {
-  baseColor: vec3f,
-  _pad0: f32,
-  emissive: vec3f,
-  roughness: f32,
-  metalness: f32,
-  ior: f32,
-  transmission: f32,
-  _pad1: f32,
-  attenuationColor: vec3f,
-  flags: u32,   // bit 0 = isGlass, bit 1 = isLight
-}
 
 // -----------------------------------------------------------------
 // Light uniforms
@@ -181,7 +178,7 @@ struct ProbeRay {
 @group(0) @binding(3) var<storage, read> bvh_normal:      array<vec3f>;
 @group(0) @binding(4) var<storage, read> bvh_materialId:  array<u32>;
 
-@group(1) @binding(0) var<uniform> materials:     array<DDGIMaterial, ${maxMaterials}>;
+@group(1) @binding(0) var<uniform> materials:     array<MaterialEntry, ${maxMaterials}>;
 @group(1) @binding(1) var<uniform> lights:        DDGILightUniforms;
 
 @group(2) @binding(0) var<storage, read_write> rayResults:   array<ProbeRay>;
@@ -319,12 +316,12 @@ fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
 //   - Hit glass        -> tint * transmission, then continue past the slab
 //                        and recurse (bounded to 3 glass crossings).
 //
-// Beer-Lambert simplification: DDGI's DDGIMaterial struct does not carry
-// the per-tri thickness / attenuationDistance needed for full
-// exp(-attenColor * thickness / attenDist). We use a simplified per-cell
-// tint (attenuationColor * transmission) for byte-compatibility with the
-// legacy single-hit path. Full Beer-Lambert can be added later if
-// DDGIMaterial gains thickness + attenDist fields.
+// Beer-Lambert simplification: this kernel still uses the simplified
+// per-cell tint (attenuationColor * transmission) — the legacy single-
+// hit-Cornell-tuned behaviour. The canonical MaterialEntry now carries
+// thickness and attenuationDistance (W2-C5), so a future revision can
+// promote this to full exp(-attenColor * thickness / attenDist) without
+// changing the buffer layout.
 fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
   var visibility = vec3f(1.0);
   var rayOrigin  = origin;

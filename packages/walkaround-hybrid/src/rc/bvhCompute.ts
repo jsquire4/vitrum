@@ -31,7 +31,13 @@
 import { StorageBufferAttribute } from 'three/webgpu';
 import * as THREE from 'three';
 import type { MeshBVH } from 'three-mesh-bvh';
-import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
+import {
+  buildSceneBVH as buildSharedBVH,
+  packMaterials,
+  MATERIAL_ENTRY_FLOATS,
+  type MaterialEntryInput,
+} from '@vitrum/shared-bvh';
+import { extractThreePbrScalars } from '@vitrum/three-bindings';
 
 export interface SceneBVH {
   bvh:           MeshBVH;
@@ -49,62 +55,66 @@ export interface BvhBuildOpts {
 }
 
 /**
- * Pack THREE.Material array into RC's cascade-compute MaterialEntry SSBO
- * layout (16 × f32 = 64 bytes per entry). Matches the flat-struct decode
- * in `probeRayCast.wgsl.ts`.
+ * Adapt a THREE.Material to the canonical {@link MaterialEntryInput} bag.
+ * Pure function; identical signature to the DDGI adapter in
+ * `ddgi/probeUpdatePass.ts`, but kept module-local because each engine
+ * owns whatever quirks its own material-type encoding has.
  *
- * Layout per entry (offsets in floats):
- *   [0]  colorR     [1]  colorG     [2]  colorB     [3]  colorA (= 1.0)
- *   [4]  transmission [5] ior       [6]  attenColorR [7] attenColorG
- *   [8]  attenColorB  [9] attenDist [10] roughness  [11] metalness
- *   [12] emissiveR  [13] emissiveG  [14] emissiveB  [15] thickness
+ * RC-specific quirks vs the bare {@link extractThreePbrScalars} default:
+ *   - `thickness` falls back to 0.1 (small but non-zero) when the source
+ *     material doesn't specify one. RC's per-tri Beer-Lambert uses
+ *     `thickness / attenuationDistance` and needs a non-zero numerator to
+ *     produce ANY attenuation on opaque-cast non-physical materials whose
+ *     attenuationColor field was nonetheless populated. Pre-W2-C5 the
+ *     legacy RC packer also defaulted to 0.1.
+ *   - `emissive` is pre-multiplied by `emissiveIntensity` so the GPU side
+ *     sees a single radiance triple. Same as the legacy packer.
+ */
+function threeToMaterialEntryInput(mat: THREE.Material): MaterialEntryInput {
+  const pbr = extractThreePbrScalars(mat);
+  const emI = pbr.emissiveIntensity;
+  return {
+    baseColor: pbr.baseColor,
+    roughness: pbr.roughness,
+    metalness: pbr.metallic,
+    emissive: [
+      pbr.emissive[0] * emI,
+      pbr.emissive[1] * emI,
+      pbr.emissive[2] * emI,
+    ],
+    ior: pbr.ior,
+    transmission: pbr.transmission,
+    attenuationColor: pbr.attenuationColor,
+    attenuationDistance: pbr.attenuationDistance,
+    // RC's per-tri Beer-Lambert expects a non-zero default thickness; match
+    // the pre-W2-C5 legacy packer's 0.1 fallback.
+    thickness: pbr.thickness > 0 ? pbr.thickness : 0.1,
+  };
+}
+
+/**
+ * Pack a list of THREE materials into the canonical MaterialEntry SSBO layout
+ * (16 × f32 = 64 bytes per entry) consumed by `probeRayCast.wgsl.ts`.
+ *
+ * Pre-W2-C5 this packer produced a different 16-float order (colorR/G/B/A,
+ * then transmission/ior, then attenuationColor/Distance, then
+ * roughness/metalness, then emissiveR/G/B, then thickness). The canonical
+ * layout (see `@vitrum/shared-bvh/materialEntry.ts`) is shared with DDGI and
+ * uses `vec3f` for color triples. Every byte rotates; the shader's field-
+ * access sites (e.g. `mat.baseColor`, `mat.attenuationDistance`,
+ * `mat.thickness`) updated together to match.
  *
  * Empty material list → emits a single zeroed-out entry so the SSBO has at
- * least 16 floats.
+ * least 16 floats (every WGSL `array<T>` storage binding needs ≥1 element).
  */
 function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
   if (materials.length === 0) {
-    return new Float32Array(16);
+    // packMaterials() already returns a 1-entry zero-pad for empty input,
+    // but the legacy RC contract returned exactly 16 floats. Keep that
+    // explicit so callers asserting on `.byteLength === 64` keep passing.
+    return new Float32Array(MATERIAL_ENTRY_FLOATS);
   }
-  const out = new Float32Array(materials.length * 16);
-  for (let i = 0; i < materials.length; i++) {
-    const mat = materials[i]!;
-    const o = i * 16;
-    // Read MeshStandard-shaped fields (color/roughness/metalness/emissive)
-    // from the casted material — these are present on both
-    // MeshStandardMaterial and MeshPhysicalMaterial, and fall back to
-    // safe defaults when the cast lacks them.
-    const std = mat as Partial<THREE.MeshStandardMaterial>;
-    out[o + 0] = std.color?.r ?? 0.8;
-    out[o + 1] = std.color?.g ?? 0.8;
-    out[o + 2] = std.color?.b ?? 0.8;
-    out[o + 3] = 1.0;
-    out[o + 4] = 0;
-    out[o + 5] = 1.5;
-    out[o + 6] = 1;
-    out[o + 7] = 1;
-    out[o + 8] = 1;
-    out[o + 9] = 1e9;
-    out[o + 10] = std.roughness ?? 1;
-    out[o + 11] = std.metalness ?? 0;
-    const emI = std.emissiveIntensity ?? 1;
-    out[o + 12] = (std.emissive?.r ?? 0) * emI;
-    out[o + 13] = (std.emissive?.g ?? 0) * emI;
-    out[o + 14] = (std.emissive?.b ?? 0) * emI;
-    out[o + 15] = 0.1;
-
-    // Physical-only overrides: transmission, IOR, attenuation, thickness.
-    if (mat instanceof THREE.MeshPhysicalMaterial) {
-      out[o + 4] = mat.transmission ?? 0;
-      out[o + 5] = mat.ior ?? 1.5;
-      out[o + 6] = mat.attenuationColor?.r ?? 1;
-      out[o + 7] = mat.attenuationColor?.g ?? 1;
-      out[o + 8] = mat.attenuationColor?.b ?? 1;
-      out[o + 9] = mat.attenuationDistance ?? 1e9;
-      out[o + 15] = mat.thickness ?? 0.1;
-    }
-  }
-  return out;
+  return packMaterials(materials.map(threeToMaterialEntryInput));
 }
 
 /**

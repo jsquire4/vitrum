@@ -29,8 +29,10 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
-export const PROBE_RAY_CAST_WGSL = /* wgsl */`
+import { MATERIAL_ENTRY_WGSL } from '@vitrum/shared-bvh';
 
+export const PROBE_RAY_CAST_WGSL = /* wgsl */`
+${MATERIAL_ENTRY_WGSL}
 // ─── three-mesh-bvh: constants ───────────────────────────────────────────────
 
 const BVH_STACK_DEPTH = 60u;
@@ -292,27 +294,13 @@ struct CascadeUniforms {
 };
 
 // ─── MaterialEntry struct ─────────────────────────────────────────────────────
-// 16 × f32 = 64 bytes per entry.  Uses individual f32 members (not vec3f) to
-// guarantee CPU/GPU layout identity.  Matches packCascadeMaterials() in bvhCompute.ts.
-
-struct MaterialEntry {
-  colorR      : f32,
-  colorG      : f32,
-  colorB      : f32,
-  colorA      : f32,
-  transmission: f32,
-  ior         : f32,
-  attenColorR : f32,
-  attenColorG : f32,
-  attenColorB : f32,
-  attenDist   : f32,
-  roughness   : f32,
-  metalness   : f32,
-  emissiveR   : f32,
-  emissiveG   : f32,
-  emissiveB   : f32,
-  thickness   : f32,
-};
+// Canonical 16 × f32 = 64 bytes per entry — declared by
+// @vitrum/shared-bvh/wgsl/materialEntry.wgsl.ts and injected at the top of
+// this file via the MATERIAL_ENTRY_WGSL template substitution. Pre-W2-C5
+// this file declared a flat-struct local copy (colorR/G/B/A, attenColorR/G/B,
+// etc.); the canonical struct uses vec3<f32> for color triples and the
+// field-rename collapses two drifted layouts (DDGI / RC) into one.
+// (ReSTIR did not use this struct — it packs per-tri RGBA8 into bvhIndex.w.)
 
 // ─── Octahedral helpers (from @vitrum/shared-bvh octahedral.wgsl.ts) ─────────
 // Call sites use octDecode(uv * 2.0 - 1.0) to remap from [0,1] to [-1,1].
@@ -382,9 +370,9 @@ fn traceSunVisibility(
       return vec3f(0.0);
     }
     let gThick    = max(0.001, sMat.thickness);
-    let gAttenCol = vec3f(sMat.attenColorR, sMat.attenColorG, sMat.attenColorB);
-    let gColor    = vec3f(sMat.colorR,      sMat.colorG,      sMat.colorB);
-    let beerAtten = exp(-gAttenCol * (gThick / max(0.001, sMat.attenDist)));
+    let gAttenCol = sMat.attenuationColor;
+    let gColor    = sMat.baseColor;
+    let beerAtten = exp(-gAttenCol * (gThick / max(0.001, sMat.attenuationDistance)));
     visibility = visibility * gColor * beerAtten;
     let hitPos = rayOrigin + sunDir * sHit.dist;
     rayOrigin  = hitPos + sunDir * slabStepSize;
@@ -471,9 +459,9 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let hitPos = ray.origin + ray.direction * hit.dist;
     let n      = hit.normal;
 
-    let matColor    = vec3f(mat.colorR,     mat.colorG,     mat.colorB);
-    let matAtten    = vec3f(mat.attenColorR, mat.attenColorG, mat.attenColorB);
-    let matEmissive = vec3f(mat.emissiveR,  mat.emissiveG,  mat.emissiveB);
+    let matColor    = mat.baseColor;
+    let matAtten    = mat.attenuationColor;
+    let matEmissive = mat.emissive;
 
     let sunVis = traceSunVisibility(
       &rc_bvh, &rc_geom_index, &rc_geom_position, &rc_materials, &rc_triMatId,
@@ -490,7 +478,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     var transContrib = vec3f(0.0);
     if (mat.transmission > 0.5) {
       let glassThickness = max(0.001, mat.thickness);
-      let beerAttenColor = exp(-matAtten * (glassThickness / max(0.001, mat.attenDist)));
+      let beerAttenColor = exp(-matAtten * (glassThickness / max(0.001, mat.attenuationDistance)));
       var refRay = Ray();
       // M14: step past the glass face proportionally rather than 0.5 units.
       refRay.origin    = hitPos + ray.direction * slabStep;
@@ -506,7 +494,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
         let secondPos   = refRay.origin + refRay.direction * secondHit.dist;
         let secondMatId = rc_triMatId[secondHit.indices.w];
         let secondMat   = rc_materials[secondMatId];
-        let secondColor = vec3f(secondMat.colorR, secondMat.colorG, secondMat.colorB);
+        let secondColor = secondMat.baseColor;
         let sunVis2 = traceSunVisibility(
           &rc_bvh, &rc_geom_index, &rc_geom_position, &rc_materials, &rc_triMatId,
           secondPos + secondHit.normal * 0.01,

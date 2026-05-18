@@ -1,6 +1,8 @@
 export * from './bvhCommon.js';
 export * from './sceneBvh.js';
+export * from './materialEntry.js';
 export * from './wgsl/octahedral.wgsl.js';
+export * from './wgsl/materialEntry.wgsl.js';
 
 /**
  * Index-buffer stride used by the BVH index array.
