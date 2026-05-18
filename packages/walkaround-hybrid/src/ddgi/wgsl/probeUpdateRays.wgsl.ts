@@ -376,6 +376,11 @@ fn evalPointLight(lightPos: vec3f, lightColor: vec3f, intensity: f32,
                   hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   let toLight = lightPos - hitPos;
   let dist    = length(toLight);
+  // Guard against probe-light coincidence (point light embedded in or behind
+  // geometry the probe ray hit). Without this, dist==0 yields toLight/dist
+  // = NaN, and the downstream nDotL early-out does not catch NaN because any
+  // NaN comparison is false, so the NaN propagates into the probe radiance.
+  if (dist < 1e-6) { return vec3f(0.0); }
   let lightDir = toLight / dist;
   let nDotL = max(0.0, dot(hitNormal, lightDir));
   if (nDotL < 1e-3) { return vec3f(0.0); }
