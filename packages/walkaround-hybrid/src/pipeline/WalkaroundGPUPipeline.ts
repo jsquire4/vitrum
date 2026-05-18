@@ -40,16 +40,10 @@ import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
 import {
   uploadBuffer,
-  buildDDGIPlaceholderUBO,
   createFrameResources,
   destroyFrameResources,
-  allocatePPGResources,
   type FrameResources,
 } from './resourceManager.js';
-import { buildSTree } from '../ppg/sTree.js';
-import type { AABB, STree } from '../ppg/types.js';
-import { serialiseSTree } from '../ppg/serialise.js';
-import { PPG_MIS_ALPHA } from '../ppg/ppgConstants.js';
 import {
   type BGLCache,
 } from './bindGroupLayouts.js';
@@ -57,10 +51,11 @@ import {
   buildFrameBindGroup,
   buildSceneBindGroup,
   buildUboBindGroup,
-  buildHybridLayersBindGroup,
   buildCompositeBindGroup,
   type UboRef,
 } from './bindGroupBuilders.js';
+import { PPGCoordinator } from './PPGCoordinator.js';
+import { DDGIBindingState } from './DDGIBindingState.js';
 import {
   DenoiserRegistry,
   type Denoiser,
@@ -172,49 +167,6 @@ const DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ = 1.0;
  * see audit M3.
  */
 const DEFAULT_TEMPORAL_ACCUM_ALPHA = 0.01;
-
-/**
- * W9 — derive a world-space AABB for the PPG sTree from the uploaded BVH data.
- *
- * The walkaround pipeline doesn't surface its scene bounds as a first-class
- * field; we recover them by scanning the BVH position buffer (which the host
- * always uploads, per `restir/bvhCompute.ts`). If the buffer is empty we
- * fall back to a generous default that contains any plausible scene.
- *
- * Phase 1: this AABB is used for two things — the sTree root cell extents
- * (so adaptive splits subdivide the actual scene volume), and the placeholder
- * "scene centre" query position uploaded into the guide UBO (until Phase 2
- * wires a per-pixel surface-position buffer).
- */
-function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: number } }): AABB {
-  const view = new Float32Array(bvh.bvhPositions.cpuData);
-  if (view.length < 4) {
-    return { min: [-10, -10, -10], max: [10, 10, 10] };
-  }
-  // BVH position layout: vec4f per vertex (xyz + packed UV in w). Stride 4.
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i + 3 <= view.length; i += 4) {
-    const x = view[i]!, y = view[i + 1]!, z = view[i + 2]!;
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (z < minZ) minZ = z;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-    if (z > maxZ) maxZ = z;
-  }
-  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
-    return { min: [-10, -10, -10], max: [10, 10, 10] };
-  }
-  // Pad by 1% to avoid edge-case boundary queries.
-  const padX = (maxX - minX) * 0.01 + 1e-3;
-  const padY = (maxY - minY) * 0.01 + 1e-3;
-  const padZ = (maxZ - minZ) * 0.01 + 1e-3;
-  return {
-    min: [minX - padX, minY - padY, minZ - padZ],
-    max: [maxX + padX, maxY + padY, maxZ + padZ],
-  };
-}
 
 export interface PipelineFrameInputs {
   /** Camera view matrix (column-major mat4x4f, 16 floats). The pipeline
@@ -341,14 +293,20 @@ export class WalkaroundGPUPipeline {
   private _accumFrameIndex = 0;
   private _lastCameraPos: [number, number, number] = [0, 0, 0];
 
-  // DDGI inputs (layered hybrid). Null → placeholder textures.
-  private _ddgiIrrTex: GPUTexture | null = null;
-  private _ddgiVisTex: GPUTexture | null = null;
+  // DDGI atlas binding state (layered hybrid). Owns the optional host-
+  // supplied irradiance + visibility atlases and the cached placeholder UBO
+  // for the no-DDGI fallback. Constructed once in the pipeline ctor; the
+  // device handle is captured at that point so renderFrame / setDDGIInputs
+  // can stay device-agnostic on this side.
+  private readonly _ddgi: DDGIBindingState;
 
-  // Cached DDGI placeholder UBO — reused by setDDGIInputs(null) so we don't
-  // allocate a fresh Float32Array(16) every frame when DDGI is disabled.
-  // Populated lazily on first setDDGIInputs(null) call.
-  private _ddgiPlaceholderUBO: Float32Array | null = null;
+  // PPG (Müller 2017) state — enabled flag, scene-bounds AABB, CPU sTree,
+  // and the three serialise/upload writers used to be loose private members
+  // (`_ppgEnabled`, `_ppgSTree`, `_ppgSceneAABB`, plus three methods).
+  // Concentrated here so the orchestrator can stay focused on pass
+  // scheduling. T2.H3 — `PPGCoordinator.enabled` mirrors the gate forwarded
+  // into `PassGateOptions.ppgEnabled`.
+  private readonly _ppg: PPGCoordinator;
 
   /** Shared à-trous pipeline. Used by the legacy `AtrousDenoiser` (passed
    *  in via the dispatch context) AND by the always-on
@@ -375,16 +333,6 @@ export class WalkaroundGPUPipeline {
   private _cameraMoveResetThresholdSq = DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
   /** Audit M3 — populated at initialize() time from HybridEngineOptions. */
   private _temporalAccumAlpha = DEFAULT_TEMPORAL_ACCUM_ALPHA;
-  /** T2.H3 — PPG is enabled iff both pipelines were compiled successfully. */
-  private _ppgEnabled = false;
-  /** W9 — CPU-side PPG model (sTree + per-cell dTrees). Allocated at
-   *  initialize() when ppgEnabled is true; serialised to GPU buffers per
-   *  frame (Phase 1: static empty tree uploaded once). */
-  private _ppgSTree: STree | null = null;
-  /** Scene-bounds AABB carried in the guide UBO so the kernel can map flat
-   *  pixel indices to the (placeholder) world-space query position for sTree
-   *  descent. Set from the BVH bounds at initialize() time. */
-  private _ppgSceneAABB: AABB = { min: [-10, -10, -10], max: [10, 10, 10] };
   /** Sprint 18 follow-up — ping-pong index for the indirect temporal
    *  accumulator. Lives on the pipeline because the value persists across
    *  frames; the {@link IndirectTemporalAccumPass} reads + advances it
@@ -436,6 +384,8 @@ export class WalkaroundGPUPipeline {
     this._device = device;
     this._width  = width;
     this._height = height;
+    this._ddgi = new DDGIBindingState(device);
+    this._ppg  = new PPGCoordinator(device);
   }
 
   /**
@@ -512,7 +462,10 @@ export class WalkaroundGPUPipeline {
       ?? DEFAULT_TEMPORAL_ACCUM_ALPHA;
 
     // T2.H3 — PPG is enabled iff host opted-in AND both pipelines compiled.
-    this._ppgEnabled = (options?.ppgEnabled ?? false) &&
+    // The flag itself is computed here; `_ppg.initialize()` below acts on it
+    // (allocates resources, builds sTree, uploads UBOs) once the pass
+    // registry is wired.
+    const ppgEnabled = (options?.ppgEnabled ?? false) &&
       compiled.ppgUpdatePipeline !== undefined &&
       compiled.ppgGuidePipeline  !== undefined;
 
@@ -615,23 +568,12 @@ export class WalkaroundGPUPipeline {
     })));
 
     // ── W9 — PPG GPU buffer init (opt-in) ────────────────────────────────
-    // When ppgEnabled, allocate the static PPG storage buffers, build a fresh
-    // sTree (single-cell at scene bounds), serialise it, and upload to the
-    // GPU. The kernels descend the serialised buffers each frame; the CPU
-    // refines + re-uploads on rebuild cycles (Phase 2 follow-up).
-    if (this._ppgEnabled) {
-      // Derive scene bounds from the uploaded BVH if available — for Phase 1
-      // we use a generous default that contains any plausible walkaround
-      // scene. The world-space query position is currently the scene centre
-      // (see ppgGuide.wgsl.ts), so the exact bound doesn't drive correctness
-      // until Phase 2 wires a per-pixel position buffer.
-      this._ppgSceneAABB = derivePPGSceneAABB(bvhBuffers);
-      this._ppgSTree = buildSTree(this._ppgSceneAABB);
-      allocatePPGResources(d, this._res, W, H);
-      this._uploadPPGTree();
-      this._writePPGGuideUBO();
-      this._writePPGUpdateUBO();
-    }
+    // Delegated to PPGCoordinator: derives scene-bounds AABB from the BVH,
+    // builds a fresh single-cell sTree, allocates PPG GPU storage buffers,
+    // and uploads the serialised tree + both UBOs. No-op when ppgEnabled
+    // is false. The kernels descend the serialised buffers each frame; the
+    // CPU refines + re-uploads on rebuild cycles (Phase 2 follow-up).
+    this._ppg.initialize(bvhBuffers, this._res, W, H, ppgEnabled, this._frameCount);
 
     this._initialized = true;
     if (options?.verbose) {
@@ -742,13 +684,9 @@ export class WalkaroundGPUPipeline {
     // W9 — re-allocate PPG resolution-dependent buffers + re-upload the
     // (unchanged) sTree topology so the new bind groups have valid GPU
     // buffers to bind. The CPU sTree itself isn't size-dependent and
-    // survives the resize unchanged.
-    if (this._ppgEnabled) {
-      allocatePPGResources(this._device, this._res, width, height);
-      this._uploadPPGTree();
-      this._writePPGGuideUBO();
-      this._writePPGUpdateUBO();
-    }
+    // survives the resize unchanged. No-op inside the coordinator when
+    // PPG is disabled.
+    this._ppg.onResize(this._res, width, height, this._frameCount);
     // Reset transient per-frame state — ping-pong reads from the previous
     // frame's texture, but the new textures are blank, so we must restart
     // the accumulator at α=1 and re-seed history.
@@ -828,9 +766,7 @@ export class WalkaroundGPUPipeline {
     // W9 — refresh the PPG guide UBO so the kernel's per-frame RNG salt
     // (and any future per-frame inputs) stay current. The update UBO is
     // static-per-resolution and need not be re-uploaded each frame.
-    if (this._ppgEnabled) {
-      this._writePPGGuideUBO();
-    }
+    this._ppg.refreshGuideUBO(this._res, W, H, this._frameCount);
 
     // ── Build placeholder texture view ────────────────────────────────────
     const placeholderView = this._res.common.placeholderTexture.createView();
@@ -864,14 +800,7 @@ export class WalkaroundGPUPipeline {
       this._res.common.tierTexture.createView(),
     );
     // Sprint 16 — DDGI hybrid layers slot 3 — shared by gi-ris and shade.
-    const bgHybrid = buildHybridLayersBindGroup(d, this._bglCache, {
-      ddgiIrrTex:              this._ddgiIrrTex,
-      ddgiVisTex:              this._ddgiVisTex,
-      ddgiPlaceholderRgba16f:  this._res.ddgi.ddgiPlaceholderRgba16f,
-      ddgiPlaceholderRg16f:    this._res.ddgi.ddgiPlaceholderRg16f,
-      nearestSampler:          this._res.common.nearestSampler,
-      ddgiUboBuffer:           this._res.ddgi.ddgiUboBuffer,
-    });
+    const bgHybrid = this._ddgi.buildBindGroup(d, this._bglCache, this._res);
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────
     const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode });
@@ -961,7 +890,7 @@ export class WalkaroundGPUPipeline {
 
     const gateOpts: PassGateOptions = {
       denoiserMode: this._denoiserMode,
-      ppgEnabled: this._ppgEnabled,
+      ppgEnabled: this._ppg.enabled,
     };
 
     // ── Pass loop, part 1 — up to and including gtao-upsample ────────────
@@ -1063,76 +992,6 @@ export class WalkaroundGPUPipeline {
     return true;
   }
 
-  /**
-   * W9 — Serialise the CPU sTree + per-cell dTrees and upload to the GPU
-   * storage buffers. Called once at init; Phase 2 will call this after each
-   * refinement cycle. No-op when PPG is disabled.
-   */
-  private _uploadPPGTree(): void {
-    if (!this._ppgEnabled || !this._ppgSTree) return;
-    const ppg = this._res.ppg;
-    if (!ppg.sTreeBuf || !ppg.dTreeBuf || !ppg.dTreeOffsetsBuf) return;
-    const { sTreeBuf, dTreeBuf, dTreeOffsets } = serialiseSTree(this._ppgSTree);
-    this._device.queue.writeBuffer(ppg.sTreeBuf, 0, sTreeBuf.buffer, sTreeBuf.byteOffset, sTreeBuf.byteLength);
-    this._device.queue.writeBuffer(ppg.dTreeBuf, 0, dTreeBuf.buffer, dTreeBuf.byteOffset, dTreeBuf.byteLength);
-    this._device.queue.writeBuffer(ppg.dTreeOffsetsBuf, 0, dTreeOffsets.buffer, dTreeOffsets.byteOffset, dTreeOffsets.byteLength);
-  }
-
-  /**
-   * W9 — Pack and upload the guide-kernel UBO. Layout matches `PPGGuideUBO`
-   * in `ppgGuide.wgsl.ts` (12 × f32 = 48 bytes):
-   *   [0]    pixelCount      (u32)
-   *   [1]    imgWidth        (u32)
-   *   [2]    alpha           (f32, MIS mixing weight)
-   *   [3]    frameSeed       (u32)
-   *   [4..6] sceneMin xyz    (f32)
-   *   [7..9] sceneMax xyz    (f32)
-   *   [10..11] padding
-   */
-  private _writePPGGuideUBO(): void {
-    if (!this._ppgEnabled) return;
-    const buf = this._res.ppg.guideUboBuffer;
-    if (!buf) return;
-    const data = new ArrayBuffer(48);
-    const u32 = new Uint32Array(data);
-    const f32 = new Float32Array(data);
-    const pixelCount = this._width * this._height;
-    u32[0] = pixelCount;
-    u32[1] = this._width;
-    f32[2] = PPG_MIS_ALPHA;
-    u32[3] = this._frameCount >>> 0;
-    f32[4] = this._ppgSceneAABB.min[0];
-    f32[5] = this._ppgSceneAABB.min[1];
-    f32[6] = this._ppgSceneAABB.min[2];
-    f32[7] = this._ppgSceneAABB.max[0];
-    f32[8] = this._ppgSceneAABB.max[1];
-    f32[9] = this._ppgSceneAABB.max[2];
-    u32[10] = 0;
-    u32[11] = 0;
-    this._device.queue.writeBuffer(buf, 0, data);
-  }
-
-  /**
-   * W9 — Pack and upload the update-kernel UBO. Layout (16 bytes):
-   *   [0] sampleCount  (u32)
-   *   [1] fluxBudget   (u32) — total atomic slots
-   *   [2..3] padding
-   */
-  private _writePPGUpdateUBO(): void {
-    if (!this._ppgEnabled) return;
-    const buf = this._res.ppg.updateUboBuffer;
-    if (!buf) return;
-    const fluxAtomics = this._res.ppg.fluxAtomicsBuf;
-    const fluxBudget = fluxAtomics ? Math.floor(fluxAtomics.size / 4) : 0;
-    const data = new ArrayBuffer(16);
-    const u32 = new Uint32Array(data);
-    u32[0] = this._width * this._height;
-    u32[1] = fluxBudget;
-    u32[2] = 0;
-    u32[3] = 0;
-    this._device.queue.writeBuffer(buf, 0, data);
-  }
-
   dispose(): void {
     this._bvhNodesBuffer?.destroy();
     this._bvhIndexBuffer?.destroy();
@@ -1154,6 +1013,12 @@ export class WalkaroundGPUPipeline {
     // T2.H2 — dispose the neural InferenceGraph if present (reserved for W10).
     this._inferenceGraph?.dispose();
     this._inferenceGraph = null;
+    // Per-feature state objects (PPG / DDGI binding). Neither owns
+    // destroy()-able GPU buffers of its own — PPG buffers live in
+    // FrameResources.ppg (released above); DDGI atlases are host-owned.
+    // These calls simply drop held references.
+    this._ppg.dispose();
+    this._ddgi.dispose();
   }
 
   /**
@@ -1172,23 +1037,6 @@ export class WalkaroundGPUPipeline {
     visibilityTex: GPUTexture;
     gridParams: ArrayBuffer;
   } | null): void {
-    if (inputs === null) {
-      this._ddgiIrrTex = null;
-      this._ddgiVisTex = null;
-      // Restore placeholder UBO (dims=1×1×1) so shade.wgsl's
-      // isDDGIWired() check returns false and Lo_ddgi drops to zero.
-      // Cache the placeholder to avoid allocating Float32Array(16) every
-      // frame when DDGI is disabled (HOT-1 fix).
-      if (this._ddgiPlaceholderUBO === null) {
-        this._ddgiPlaceholderUBO = buildDDGIPlaceholderUBO();
-      }
-      this._device.queue.writeBuffer(this._res.ddgi.ddgiUboBuffer, 0, this._ddgiPlaceholderUBO.buffer);
-    } else {
-      this._ddgiIrrTex = inputs.irradianceTex;
-      this._ddgiVisTex = inputs.visibilityTex;
-      if (inputs.gridParams.byteLength > 0) {
-        this._device.queue.writeBuffer(this._res.ddgi.ddgiUboBuffer, 0, inputs.gridParams);
-      }
-    }
+    this._ddgi.setInputs(inputs, this._res);
   }
 }
