@@ -36,16 +36,17 @@ export function resizeCanvasToDisplaySize(canvas: HTMLCanvasElement): boolean {
 }
 
 /**
- * Parse a query-string integer with a default. Returns `defaultValue` if the
- * value is missing, not a finite integer, or ≤ 0.
+ * Parse a query-string positive integer with a default. Returns
+ * `defaultValue` if the value is missing, not finite, or ≤ 0. Non-integer
+ * inputs are floored (so `?vitrumWidth=1280.5` yields 1280) — matches the
+ * existing behavior across cornell-box / hero-product-viz / hero-viewer.
  *
- * Each example had its own slight variant of this (cornell-box uses a
- * factored `parseNumber`; hero-* uses fresh `Number(raw)`); the contract is
- * the same and the drift is harmless but argued for consolidation.
+ * Each example had its own slight variant of this; centralized here so a
+ * bug fix only needs to happen once.
  */
 export function parsePositiveInt(raw: string | null | undefined, defaultValue: number): number {
   if (raw == null) return defaultValue;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return defaultValue;
-  return n;
+  if (!Number.isFinite(n) || n <= 0) return defaultValue;
+  return Math.floor(n);
 }

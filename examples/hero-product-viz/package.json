@@ -12,6 +12,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@vitrum-examples/shared": "file:../shared",
     "@vitrum/core": "file:../../packages/core",
     "@vitrum/engine": "file:../../packages/engine",
     "@vitrum/three-bindings": "file:../../packages/three-bindings",

@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { attachVitrum, type AttachVitrumHandle, type EnginePreference } from '@vitrum/engine';
 import { loadGltfScene, sceneFromThreeJS } from '@vitrum/three-bindings';
+import { parsePositiveInt } from '@vitrum-examples/shared';
 
 // ── Capture protocol globals (consumed by tools/benchmark-runner/capture-adapter-playwright.mjs) ──
 //
@@ -32,11 +33,6 @@ declare global {
   var VITRUM_CAPTURE_CANVAS_SELECTOR: string | undefined;
 }
 
-function parsePositiveInt(raw: string | null, dflt: number): number {
-  if (!raw) return dflt;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
-}
 const captureParams = new URLSearchParams(window.location.search);
 const captureMode = captureParams.has('vitrumScenario');
 const captureWidth  = parsePositiveInt(captureParams.get('vitrumWidth'),  1280);

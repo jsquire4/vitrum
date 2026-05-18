@@ -16,6 +16,7 @@ import * as THREE from 'three';
 import { attachVitrum, createEngine, type AttachVitrumHandle } from '@vitrum/engine';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import type { ProgressStats } from '@vitrum/core';
+import { parsePositiveInt } from '@vitrum-examples/shared';
 
 // ── Capture protocol globals (consumed by tools/benchmark-runner/capture-adapter-playwright.mjs) ──
 //
@@ -46,11 +47,6 @@ const btnSave     = document.querySelector<HTMLButtonElement>('#btn-save')!;
 // Capture mode is active when `vitrumScenario` is present. It overrides
 // interactive defaults: fixed canvas size, deterministic SPP target, no slider
 // wiring (the page never receives user input during capture).
-function parsePositiveInt(raw: string | null, dflt: number): number {
-  if (!raw) return dflt;
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : dflt;
-}
 const captureParams = new URLSearchParams(window.location.search);
 const captureMode = captureParams.has('vitrumScenario');
 // vitrumAutoStart is honoured for protocol parity with cornell-box; hero-product-viz
