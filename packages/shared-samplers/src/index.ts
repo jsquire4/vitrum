@@ -65,8 +65,14 @@ export {
 
 export {
   sampleHeroWavelength,
+  sampleHeroWavelengthMIS,
   wavelengthToRGB,
+  X_CMF_INTEGRAL,
   Y_CMF_INTEGRAL,
+  Z_CMF_INTEGRAL,
+  X_CMF_CDF,
+  Y_CMF_CDF,
+  Z_CMF_CDF,
   HERO_LAMBDA_MIN,
   HERO_LAMBDA_MAX,
 } from './wavelengthSampling.js';
