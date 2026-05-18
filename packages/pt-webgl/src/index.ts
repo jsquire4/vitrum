@@ -38,7 +38,10 @@ export type {
 } from './oidnFinalDispatcher.js';
 
 export * from './constants.js';
-export { bakeSkyEquirect, clearSkyEquirectCache } from './iblBaker.js';
+// sunGeometry now lives in @vitrum/scene-lighting (re-exported below via
+// `export * from '@vitrum/scene-lighting'`).
+export { IblBakerCache, bakeSkyEquirect, clearSkyEquirectCache } from './iblBaker.js';
+export type { IblBakerCacheOptions } from './iblBaker.js';
 export { debounceMsForEditRate, PT_DEBOUNCE_MS_NORMAL, PT_DEBOUNCE_MS_BURST } from './debounce.js';
 
 // Re-exported from @vitrum/scene-lighting — the four lighting-state modules

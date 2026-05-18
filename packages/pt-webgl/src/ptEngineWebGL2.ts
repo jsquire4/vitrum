@@ -36,6 +36,9 @@ import {
   type DenoisedFrame,
   type OIDNBridgeLoader,
 } from './oidnFinalDispatcher.js';
+import { IblBakerCache } from './iblBaker.js';
+import type { SkyParams } from '@vitrum/scene-lighting';
+import type { DataTexture } from 'three';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Device-tier threshold for analytic came (Sprint 5)
@@ -385,6 +388,13 @@ export class PTEngineWebGL2 implements Engine {
    *  {@link OIDNFinalDispatcher} for the kick-and-return state machine. */
   readonly #oidnDispatcher: OIDNFinalDispatcher | null;
 
+  /** Per-engine analytic-sky bake cache. Replaces the previous module-level
+   *  singleton in `iblBaker.ts` so multi-engine hosts no longer share GPU
+   *  state across renderers. Hosts that need a sky equirect for
+   *  `scene.environment` should call {@link bakeSkyEquirect} on the engine
+   *  rather than the deprecated free function. Disposed in {@link dispose}. */
+  readonly #iblBakerCache: IblBakerCache;
+
   constructor(opts: PTEngineWebGL2Options, gpu: PTEngineWebGL2Init, slot: StateSlot) {
     this.#slot = slot;
     this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
@@ -464,6 +474,46 @@ export class PTEngineWebGL2 implements Engine {
     } else {
       this.#oidnDispatcher = null;
     }
+
+    // Per-engine IBL bake cache. Construct with default LRU capacity (matches
+    // the previous module-singleton sizing). Capacity is overridable from
+    // extensions for hosts that scrub atmospheric params more aggressively
+    // than the default day-cycle bucket count.
+    const requestedCacheCapacity = opts.extensions?.['vitrum.ptWebgl.iblBakerMaxEntries'];
+    const cacheOpts =
+      typeof requestedCacheCapacity === 'number' && Number.isFinite(requestedCacheCapacity)
+        ? { maxEntries: Math.max(1, Math.floor(requestedCacheCapacity)) }
+        : undefined;
+    this.#iblBakerCache = new IblBakerCache(cacheOpts);
+  }
+
+  /**
+   * Bake (or fetch the cached bake of) an analytic Preetham sky equirect using
+   * this engine's per-instance {@link IblBakerCache}. The returned
+   * `DataTexture` is suitable for `scene.environment` and is owned by the
+   * engine — DO NOT dispose it directly. Eviction and {@link dispose} handle
+   * cleanup.
+   *
+   * Multi-engine hosts that previously called the deprecated free function
+   * {@link bakeSkyEquirect} (module-level) should migrate here so each engine
+   * owns its own cache and the textures stay bound to the renderer that
+   * produced them.
+   */
+  bakeSkyEquirect(params: SkyParams): DataTexture {
+    if (this.#slot.get() === 'disposed') {
+      throw new Error('bakeSkyEquirect: engine is disposed');
+    }
+    return this.#iblBakerCache.bake(this.#renderer, params);
+  }
+
+  /**
+   * Inspect the engine's IBL bake cache — primarily for tests, debug overlays,
+   * and hosts that want to surface cache-occupancy telemetry. Mutating the
+   * returned reference is not supported; use {@link bakeSkyEquirect} and
+   * {@link dispose} as the public seams.
+   */
+  get iblBakerCache(): IblBakerCache {
+    return this.#iblBakerCache;
   }
 
   get state(): EngineState {
@@ -986,6 +1036,7 @@ export class PTEngineWebGL2 implements Engine {
       this.#threeSceneRoot = null;
     }
     this.#oidnDispatcher?.dispose();
+    this.#iblBakerCache.dispose();
     this.#pathTracer.dispose();
     this.#slot.set('disposed');
   }
