@@ -27,9 +27,16 @@ import {
   ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS,
   ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
 } from './atrousVarianceConstants.js';
-import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
 import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
-import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
+import {
+  fillRg32f,
+  fillRgba32f as fillRgba32fTexture,
+  uploadInterleavedRgAsRg32f,
+  uploadLinearDepthAsRgba32f,
+  uploadRgbAsRgba16f,
+  uploadRgbAsRgba32f,
+  readRgba16fToRgb,
+} from './webGpuTextureUpload.js';
 
 export interface AtrousVarianceSyntheticGbufferFallback {
   readonly normalRgb?: readonly [number, number, number];
@@ -71,167 +78,6 @@ function atrousVariancePipelines(device: GPUDevice): AtrousVariancePipelineBundl
     atrousVariancePipelinesByDevice.set(device, bundle);
   }
   return bundle;
-}
-
-// Bytes-per-pixel constants for the formats we upload to.
-const RGBA32F_BPP = 16 as const;
-const RGBA16F_BPP = 8 as const;
-const RG32F_BPP = 8 as const;
-
-/**
- * Generic stride-aware texture upload helper.
- *
- * Allocates a row-padded staging buffer (driver requires 256-byte aligned
- * bytesPerRow on writeTexture) using the supplied typed-array ctor, lets
- * the caller fill it, then forwards to writeTexture. All six previous
- * format-specific helpers below funnel through this primitive.
- *
- * The `fill` callback receives the destination row stride in *elements*
- * (not bytes), so it can compute per-row offsets without re-deriving the
- * alignment math at every call site.
- */
-function uploadTexture2D<T extends Float32Array | Uint8Array>(
-  device: GPUDevice,
-  texture: GPUTexture,
-  width: number,
-  height: number,
-  bpp: number,
-  TypedArrayCtor: new (lengthInElements: number) => T,
-  bytesPerElement: number,
-  fill: (buf: T, rowStrideElements: number) => void,
-): void {
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const rowStrideElements = bpr / bytesPerElement;
-  const upload = new TypedArrayCtor(rowStrideElements * height);
-  fill(upload, rowStrideElements);
-  device.queue.writeTexture(
-    { texture },
-    upload.buffer as GPUAllowSharedBufferSource,
-    { bytesPerRow: bpr, rowsPerImage: height },
-    [width, height],
-  );
-}
-
-function fillRgba32fTexture(
-  device: GPUDevice,
-  texture: GPUTexture,
-  width: number,
-  height: number,
-  rgbaPerPixel: readonly [number, number, number, number],
-): void {
-  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const o = row + x * 4;
-        buf[o] = rgbaPerPixel[0]!;
-        buf[o + 1] = rgbaPerPixel[1]!;
-        buf[o + 2] = rgbaPerPixel[2]!;
-        buf[o + 3] = rgbaPerPixel[3]!;
-      }
-    }
-  });
-}
-
-function uploadRgbAsRgba32f(
-  device: GPUDevice,
-  texture: GPUTexture,
-  rgb: Float32Array,
-  width: number,
-  height: number,
-): void {
-  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const si = (y * width + x) * 3;
-        const o = row + x * 4;
-        buf[o] = rgb[si] ?? 0;
-        buf[o + 1] = rgb[si + 1] ?? 0;
-        buf[o + 2] = rgb[si + 2] ?? 0;
-        buf[o + 3] = 1;
-      }
-    }
-  });
-}
-
-function uploadRgbAsRgba16f(
-  device: GPUDevice,
-  texture: GPUTexture,
-  rgb: Float32Array,
-  width: number,
-  height: number,
-): void {
-  uploadTexture2D(device, texture, width, height, RGBA16F_BPP, Uint8Array, 1, (buf, rowStrideBytes) => {
-    const dv = new DataView(buf.buffer);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const si = (y * width + x) * 3;
-        const byte = y * rowStrideBytes + x * 8;
-        dv.setUint16(byte + 0, float32ToFloat16Bits(rgb[si] ?? 0), true);
-        dv.setUint16(byte + 2, float32ToFloat16Bits(rgb[si + 1] ?? 0), true);
-        dv.setUint16(byte + 4, float32ToFloat16Bits(rgb[si + 2] ?? 0), true);
-        dv.setUint16(byte + 6, float32ToFloat16Bits(1), true);
-      }
-    }
-  });
-}
-
-function fillRg32f(device: GPUDevice, texture: GPUTexture, width: number, height: number, r: number, g: number): void {
-  uploadTexture2D(device, texture, width, height, RG32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const o = row + x * 2;
-        buf[o] = r;
-        buf[o + 1] = g;
-      }
-    }
-  });
-}
-
-/** Linear depth → rgba32float texel `.r` (matches SVGF gbufferDepth sampling). */
-function uploadLinearDepthAsRgba32f(
-  device: GPUDevice,
-  texture: GPUTexture,
-  depth: Float32Array,
-  width: number,
-  height: number,
-): void {
-  uploadTexture2D(device, texture, width, height, RGBA32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const si = y * width + x;
-        const o = row + x * 4;
-        buf[o] = depth[si] ?? 0;
-        buf[o + 1] = 0;
-        buf[o + 2] = 0;
-        buf[o + 3] = 0;
-      }
-    }
-  });
-}
-
-/** Interleaved RG floats per pixel → rg32float texture (motion or Welford RG). */
-function uploadInterleavedRgAsRg32f(
-  device: GPUDevice,
-  texture: GPUTexture,
-  rg: Float32Array,
-  width: number,
-  height: number,
-): void {
-  uploadTexture2D(device, texture, width, height, RG32F_BPP, Float32Array, 4, (buf, rowStride) => {
-    for (let y = 0; y < height; y += 1) {
-      const row = y * rowStride;
-      for (let x = 0; x < width; x += 1) {
-        const si = (y * width + x) * 2;
-        const o = row + x * 2;
-        buf[o] = rg[si] ?? 0;
-        buf[o + 1] = rg[si + 1] ?? 0;
-      }
-    }
-  });
 }
 
 /**
@@ -314,35 +160,6 @@ function warnMissingWelfordTemporal(frameCount: number): void {
   console.warn(
     `[@vitrum/shared-denoisers] runAtrousVarianceWebGPU: frameCount >= ${ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT} but welfordMeanM2 was not supplied — temporal variance uses zeros. Provide RG32 mean+M₂ from the path accumulator when using temporal à-trous variance denoiser.`,
   );
-}
-
-function readRgba16fToRgbFloat(device: GPUDevice, texture: GPUTexture, width: number, height: number): Promise<Float32Array> {
-  const bpp = 8;
-  const bpr = alignedTextureCopyBytesPerRow(width, bpp);
-  const buf = device.createBuffer({
-    size: bpr * height,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-  });
-  const encoder = device.createCommandEncoder();
-  encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
-  device.queue.submit([encoder.finish()]);
-  return buf.mapAsync(GPUMapMode.READ).then(() => {
-    const raw = new Uint8Array(buf.getMappedRange());
-    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-    const out = new Float32Array(width * height * 3);
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const byte = y * bpr + x * 8;
-        const di = (y * width + x) * 3;
-        out[di] = float16BitsToFloat32(dv.getUint16(byte + 0, true));
-        out[di + 1] = float16BitsToFloat32(dv.getUint16(byte + 2, true));
-        out[di + 2] = float16BitsToFloat32(dv.getUint16(byte + 4, true));
-      }
-    }
-    buf.unmap();
-    buf.destroy();
-    return out;
-  });
 }
 
 export interface AtrousVarianceWebGPUOptions {
@@ -637,7 +454,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   const readTex = atrousIterations % 2 === 0 ? colorPingA : colorPingB;
 
   const finalTex = readTex;
-  const rgbOut = await readRgba16fToRgbFloat(device, finalTex, w, h);
+  const rgbOut = await readRgba16fToRgb(device, finalTex, w, h);
 
   // Item 24 — albedo re-modulation: multiply the filtered lighting by albedo
   // to restore the correct denoised outgoing radiance.
