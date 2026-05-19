@@ -49,7 +49,8 @@
  *   - `packages/shared-denoisers/src/atrousVarianceBindings.ts`
  *   - `packages/shared-denoisers/src/svgfRealBindings.ts`
  *   - `packages/pt-webgpu/src/index.ts` (FrameParams)
- *   - `packages/walkaround-hybrid/src/rc/cascadeDispatch.ts` (Cascade/Merge UBOs)
+ *   - `packages/walkaround-rc/src/cascadeDispatch.ts` (Cascade/Merge UBOs;
+ *     was at `walkaround-hybrid/src/rc/` pre-W8-followup, moved 2026-05-18)
  * Earlier revisions of this docstring claimed atrousVarianceBindings.ts was
  * the proof-of-concept adopter; that migration was planned but not landed.
  */
