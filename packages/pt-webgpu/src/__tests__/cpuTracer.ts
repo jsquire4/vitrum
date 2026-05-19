@@ -123,12 +123,17 @@ function maxComp(v: Vec3): number {
 }
 
 // ---------------------------------------------------------------------------
-// safeInvDir — mirror of common.wgsl.ts:64 (Williams 2005)
+// safeInvDir — mirror of common.wgsl.ts:64 (Williams 2005). For an exact-zero
+// d.x, returns +1e30 (matching the WGSL `select(-1e30, 1e30, d.x >= 0.0)`
+// form — `+0 >= 0` is true in IEEE 754). The earlier `Math.sign(x) * 1e30`
+// form returned 0 for x=0, collapsing the slab test and giving false
+// positives for axis-aligned rays whose origin sat outside the parallel slab.
 // ---------------------------------------------------------------------------
 
 function safeInvDir(d: Vec3): Vec3 {
   function safeInv(x: number): number {
-    return Math.abs(x) < 1e-30 ? Math.sign(x) * 1e30 : 1.0 / x;
+    if (Math.abs(x) < 1e-30) return x >= 0 ? 1e30 : -1e30;
+    return 1.0 / x;
   }
   return [safeInv(d[0]), safeInv(d[1]), safeInv(d[2])];
 }

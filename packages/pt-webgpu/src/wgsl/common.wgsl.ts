@@ -64,11 +64,15 @@ fn safe_normalize(v: vec3f) -> vec3f {
 fn safeInvDir(d: vec3f) -> vec3f {
   // Williams 2005 §4 IEEE-safe form. When a direction component is
   // exactly zero, 0 * Inf = NaN poisons the slab test if the ray origin
-  // coincides with an AABB face. Substitute a tiny signed value.
+  // coincides with an AABB face. The select(-1e30, 1e30, d.x >= 0) form
+  // picks a definite sign even for d.x == 0 (WGSL sign(0) == 0, which
+  // would collapse the slab contribution and give false positives for
+  // axis-aligned rays whose origin sat outside the AABB on the parallel
+  // axis). Mirrors @vitrum/shared-bvh/src/wgsl/bvhIntersect.wgsl.ts:131.
   return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
+    select(1.0 / d.x, select(-1e30, 1e30, d.x >= 0.0), abs(d.x) < 1e-30),
+    select(1.0 / d.y, select(-1e30, 1e30, d.y >= 0.0), abs(d.y) < 1e-30),
+    select(1.0 / d.z, select(-1e30, 1e30, d.z >= 0.0), abs(d.z) < 1e-30),
   );
 }
 
