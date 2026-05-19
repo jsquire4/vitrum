@@ -147,9 +147,15 @@ extraction plan's RD-12.
 **Residual risk**:
 - Workgroup sizing, dispatch dimensions, cascade indexing, and merge-pass color
   space have NOT been visually verified against the original.
-- The `StorageBufferAttribute.__gpuBuffer` accessor used in `cascadeDispatch.ts`
-  is a Three.js WebGPU renderer internal property. If Three.js changes this
-  internal API, `RCDispatcher.initialize()` will throw.
+- The `StorageBufferAttribute.__gpuBuffer` reach-through that this section
+  used to flag was dropped 2026-05-18 along with the THREE-tied
+  `RCDispatcher.dispatchFrame` entry point; only the raw-GPU
+  `dispatchFrameRaw` path remains, and `RCSubsystem` allocates its own
+  `GPUBuffer` handles via `device.createBuffer`. The TSL-side material
+  wrappers (`GIReceiver`, `buildWalkaroundLightingNode`) still consume
+  `StorageBufferAttribute` because three.js's TSL only binds three.js-
+  native data types; that coupling is intrinsic to TSL, not a reach-
+  through.
 - Library consumers running RC for the first time should A/B against a
   known-good reference before reporting visual discrepancies as bugs.
 - Issues filed against the RC path should be triaged with this in mind.

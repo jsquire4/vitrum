@@ -28,20 +28,9 @@
  * Workgroup size: 64 — matches `.compute(totalRays, [64])` in original.
  */
 
-import * as THREE from 'three';
-import type { WebGPURenderer } from 'three/webgpu';
-import type { StorageBufferAttribute } from 'three/webgpu';
-import { CASCADE_DIMS, CASCADE_COUNT, fillCascadeDebug, type CascadeBuffers } from './cascadePyramid.js';
-import type { SceneBVH } from './bvhCompute.js';
+import { CASCADE_DIMS, CASCADE_COUNT } from './cascadePyramid.js';
 import { PROBE_RAY_CAST_WGSL } from './wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from './wgsl/cascadeMerge.wgsl.js';
-
-/** Narrow view of three.js WebGPU backend for raw buffer + texture binding. */
-interface WebGPUBackendView {
-  readonly isWebGPUBackend?: boolean;
-  readonly device?: GPUDevice;
-  get?: (resource: unknown) => unknown;
-}
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
@@ -78,35 +67,18 @@ interface DispatchHandles {
 
 // ─── Public interface ─────────────────────────────────────────────────────────
 
-export interface RCDispatchOpts {
-  /** Three.js WebGPU renderer — used to access the raw GPUDevice and backend. */
-  gl:             WebGPURenderer;
-  sceneBVH:       SceneBVH;
-  cascadeBuffers: CascadeBuffers;
-  sunDirection:   THREE.Vector3;
-  sunColor:       THREE.Color;
-  envEquirect:    THREE.Texture | null;
-  frameSeed:      number;
-  /**
-   * E2 — Möller–Trumbore coplanarity threshold (default 1e-5 for metre-scale).
-   * Plumbed from HybridEngine.triIntersectEpsilon into CascadeUniforms so the
-   * RC shader uses the same epsilon as the WalkaroundUBO shaders.
-   */
-  triIntersectEpsilon?: number;
-  /** Smoke-test / fallback mode: fill cascades with debug colours, skip ray-cast. */
-  debugFill?:     boolean;
-}
-
 /**
- * Raw-GPU-types variant of {@link RCDispatchOpts} used by hosts that already
- * own a `GPUDevice` + raw `GPUBuffer` handles (e.g. `HybridEngine`, which
- * runs the WGSL shade pipeline directly and does not use THREE's WebGPU
- * renderer backend).
+ * Raw-GPU dispatch options. Hosts that own a `GPUDevice` + raw `GPUBuffer`
+ * handles (e.g. `HybridEngine`, which runs the WGSL shade pipeline directly
+ * and does not use THREE's WebGPU renderer backend) pass this directly to
+ * `RCDispatcher.dispatchFrameRaw`.
  *
- * Added in W8 Phase 1B (2026-05-18). The THREE-tied `RCDispatchOpts` survives
- * for the legacy host TSL path (`walkaroundDiffuseLighting.ts` consumers)
- * and is implemented as an adapter that extracts raw buffers + textures
- * from the THREE renderer and delegates to {@link RCDispatcher.dispatchFrameRaw}.
+ * History: the W8 Phase 1B refactor (2026-05-18) split this out from a
+ * THREE-tied `RCDispatchOpts` that extracted GPU handles via
+ * `StorageBufferAttribute.__gpuBuffer` reach-through. The legacy THREE-tied
+ * path was dropped on 2026-05-18 once `RCSubsystem` (the in-engine consumer)
+ * was confirmed to be the only call site and was already using this raw
+ * variant. The `__gpuBuffer` accessor is gone from the dispatcher.
  */
 export interface RCDispatchOptsRaw {
   /** Raw WebGPU device — caller-owned. */
@@ -229,30 +201,6 @@ function buildMergeUniformData(
   return d;
 }
 
-// ─── GPU buffer helpers ───────────────────────────────────────────────────────
-
-/**
- * Retrieve the raw `GPUBuffer` backing a `StorageBufferAttribute`.
- *
- * Three.js WebGPU renderer allocates the GPU buffer on first use and stores
- * it on the attribute's `__gpuBuffer` property (renderer-internal).  Callers
- * must ensure the renderer has already processed the attribute (i.e. the
- * scene has been rendered at least once) before calling `initialize()`.
- *
- * This is the same access pattern the Three.js backend itself uses internally.
- */
-function gpuBufferOf(attr: StorageBufferAttribute): GPUBuffer {
-   
-  const buf = (attr as unknown as Record<string, unknown>)['__gpuBuffer'] as GPUBuffer | undefined;
-  if (!buf) {
-    throw new Error(
-      '[RCDispatcher] StorageBufferAttribute GPU buffer not yet allocated. ' +
-      'Ensure the Three.js WebGPU renderer has processed the scene before calling initialize().',
-    );
-  }
-  return buf;
-}
-
 // ─── RCDispatcher class ───────────────────────────────────────────────────────
 
 /**
@@ -260,8 +208,14 @@ function gpuBufferOf(attr: StorageBufferAttribute): GPUBuffer {
  *
  * Lifecycle:
  *   1. Construct with `new RCDispatcher()`.
- *   2. Call `dispatchFrame(opts)` each frame.  Handles lazy init internally.
+ *   2. Call `dispatchFrameRaw(opts)` each frame.  Handles lazy init internally.
  *   3. Call `dispose()` to release GPU resources.
+ *
+ * History: this used to expose a THREE-tied `dispatchFrame(opts: RCDispatchOpts)`
+ * that reached into `StorageBufferAttribute.__gpuBuffer` (renderer-internal) to
+ * extract raw `GPUBuffer` handles. That path was dropped 2026-05-18 once
+ * `RCSubsystem` was confirmed to be the only consumer and was already calling
+ * the raw entry directly.
  */
 export class RCDispatcher {
   private _handles: DispatchHandles | null = null;
@@ -270,70 +224,8 @@ export class RCDispatcher {
 
   /**
    * Dispatch the cascade compute pipeline for one frame.
-   *
-   * On the first call (or after `dispose()`), pipelines and bind groups are
-   * compiled/created lazily.  If WebGPU is not the active backend, falls back
-   * to filling all cascades with debug colours.
-   */
-  async dispatchFrame(opts: RCDispatchOpts): Promise<void> {
-    const { gl, cascadeBuffers } = opts;
-
-    if (opts.debugFill) {
-      this._debugFill(cascadeBuffers);
-      return;
-    }
-
-    // Guard: compute dispatch requires a real WebGPU backend.
-    const backend = (gl).backend as WebGPUBackendView | undefined;
-    if (backend?.isWebGPUBackend !== true || backend.device == null) {
-      this._debugFill(cascadeBuffers);
-      return;
-    }
-
-    const device: GPUDevice = backend.device;
-
-    // W8 Phase 1B (2026-05-18) — adapt the THREE-tied opts to the raw-GPU
-    // `dispatchFrameRaw` entry. Extracts each StorageBufferAttribute to its
-    // underlying `GPUBuffer` and converts `THREE.Vector3` / `THREE.Color`
-    // sun parameters to plain `[x,y,z]` / `[r,g,b]` tuples.
-    const { sceneBVH } = opts;
-    const cascadeBufs: GPUBuffer[] = cascadeBuffers.gpuCascades.map(gpuBufferOf);
-
-    let envTextureView: GPUTextureView | null = null;
-    let envSampler:     GPUSampler | null = null;
-    const envBinding = this._buildEnvBinding(device, opts);
-    envTextureView = envBinding.envTextureView;
-    envSampler     = envBinding.envSampler;
-
-    await this.dispatchFrameRaw({
-      device,
-      bvhNodesBuf:      gpuBufferOf(sceneBVH.bvhNodes),
-      bvhIndicesBuf:    gpuBufferOf(sceneBVH.indices),
-      bvhPositionsBuf:  gpuBufferOf(sceneBVH.positions),
-      materialsBuf:     gpuBufferOf(sceneBVH.materials),
-      triMaterialIdBuf: gpuBufferOf(sceneBVH.triMaterialId),
-      cascadeBufs,
-      probeOriginWorld: cascadeBuffers.probeOriginWorld,
-      roomSize:         cascadeBuffers.roomSize,
-      sunDirection:     [opts.sunDirection.x, opts.sunDirection.y, opts.sunDirection.z],
-      sunColor:         [opts.sunColor.r, opts.sunColor.g, opts.sunColor.b],
-      envTextureView,
-      envSampler,
-      frameSeed:         opts.frameSeed,
-      ...(opts.triIntersectEpsilon !== undefined
-        ? { triIntersectEpsilon: opts.triIntersectEpsilon }
-        : {}),
-    });
-  }
-
-  /**
-   * THREE-free entry point — accepts raw `GPUDevice` + raw `GPUBuffer` handles
-   * directly. Used by hosts that own a `GPUDevice` and don't go through a
-   * THREE WebGPU renderer backend (e.g. `HybridEngine`).
-   *
-   * W8 Phase 1B (2026-05-18) — added alongside the legacy {@link dispatchFrame}.
-   * The legacy path delegates to this method after extracting raw buffers
-   * from the THREE renderer.
+   * Pipelines and bind groups are compiled/created lazily on the first call
+   * (or after `dispose()`).
    */
   async dispatchFrameRaw(opts: RCDispatchOptsRaw): Promise<void> {
     if (opts.debugFill) {
@@ -408,11 +300,6 @@ export class RCDispatcher {
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
-  private _debugFill(cascadeBuffers: CascadeBuffers): void {
-    fillCascadeDebug(cascadeBuffers);
-    for (const attr of cascadeBuffers.gpuCascades) attr.needsUpdate = true;
-  }
-
   /** Build bind group layout for a cast pass (9 entries: 5 BVH+mat SSBOs + cascade +
    *  env texture + sampler + uniform). */
   private _castBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
@@ -445,63 +332,9 @@ export class RCDispatcher {
   }
 
   /**
-   * Resolve the environment texture GPU binding. Accesses the Three.js WebGPU
-   * renderer's internal `backend.get(texture)` handle to find the uploaded
-   * `GPUTexture`. Falls back to a 1×1 black placeholder when the renderer has
-   * not yet uploaded the env texture (common on first frame).
-   *
-   * Extracted from `_buildHandles` to keep the 173-line setup method readable.
-   * (WARM-3 fix: was embedded mid-function between BVH extraction and cast loop.)
-   */
-  private _buildEnvBinding(
-    device: GPUDevice,
-    opts: RCDispatchOpts,
-  ): { envTextureView: GPUTextureView; envSampler: GPUSampler } {
-    const fallbackEnv = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
-    fallbackEnv.needsUpdate = true;
-    const envThree = opts.envEquirect ?? fallbackEnv;
-    const backend = opts.gl.backend as WebGPUBackendView | undefined;
-    const envGpuData = backend?.get?.(envThree) as { texture?: GPUTexture } | undefined;
-    const envGpuTex  = envGpuData?.texture;
-
-    if (envGpuTex) {
-      return {
-        envTextureView: envGpuTex.createView({ label: 'rc-env-view' }),
-        envSampler: device.createSampler({
-          label:        'rc-env-sampler',
-          magFilter:    'linear',
-          minFilter:    'linear',
-          addressModeU: 'repeat',
-          addressModeV: 'clamp-to-edge',
-        }),
-      };
-    }
-
-    // Fallback: create a 1×1 placeholder until the renderer uploads the env texture.
-    const placeholderTex = device.createTexture({
-      label:  'rc-env-placeholder',
-      size:   [1, 1],
-      format: 'rgba8unorm',
-      usage:  GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    device.queue.writeTexture(
-      { texture: placeholderTex },
-      new Uint8Array([0, 0, 0, 255]),
-      { bytesPerRow: 4 },
-      [1, 1],
-    );
-    return {
-      envTextureView: placeholderTex.createView({ label: 'rc-env-placeholder-view' }),
-      envSampler: device.createSampler({ label: 'rc-env-placeholder-sampler' }),
-    };
-  }
-
-  /**
    * Resolve the env binding for the raw (THREE-free) path. When the caller
    * supplies both `envTextureView` and `envSampler`, use them. Otherwise
    * create a 1×1 black placeholder.
-   *
-   * Added in W8 Phase 1B (2026-05-18).
    */
   private _resolveEnvBindingRaw(
     device: GPUDevice,

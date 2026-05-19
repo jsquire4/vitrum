@@ -221,9 +221,9 @@ describe('RCDispatcher', () => {
     expect(dispatcher).toBeInstanceOf(RCDispatcher);
   });
 
-  it('has dispatchFrame and dispose methods', () => {
+  it('has dispatchFrameRaw and dispose methods', () => {
     const dispatcher = new RCDispatcher();
-    expect(typeof dispatcher.dispatchFrame).toBe('function');
+    expect(typeof dispatcher.dispatchFrameRaw).toBe('function');
     expect(typeof dispatcher.dispose).toBe('function');
   });
 
@@ -324,11 +324,12 @@ describe('E2 — CascadeUniforms triIntersectEpsilon UBO-plumb', () => {
     expect(arr.byteLength).toBe(160);
   });
 
-  it('RCDispatchOpts exposes triIntersectEpsilon option (optional, default 1e-5)', () => {
-    // Structural: the interface is a TypeScript construct; verify by checking that
-    // RCDispatcher can be instantiated and that dispatchCascadePasses accepts opts
-    // with triIntersectEpsilon without TypeScript errors (compilation test).
-    // We confirm by checking that the WGSL references triEps from u.triIntersectEpsilon.
+  it('RCDispatchOptsRaw exposes triIntersectEpsilon option (optional, default 1e-5)', () => {
+    // Structural: the interface is a TypeScript construct; verify by checking
+    // that the WGSL references triEps from u.triIntersectEpsilon (the host
+    // packs the field into CascadeUniforms unconditionally). The legacy
+    // THREE-tied `RCDispatchOpts` was dropped on 2026-05-18; only
+    // `RCDispatchOptsRaw` remains, and it preserves the same field.
     expect(PROBE_RAY_CAST_WGSL).toContain('u.triIntersectEpsilon');
   });
 });

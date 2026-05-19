@@ -23,9 +23,12 @@ export type { CascadeAABB, CascadeDim, CascadeBuffers } from './cascadePyramid.j
 export { buildRCSceneBVH } from './bvhCompute.js';
 export type { SceneBVH, BvhBuildOpts } from './bvhCompute.js';
 
-// Cascade dispatch — raw WebGPU compute.
+// Cascade dispatch — raw WebGPU compute. The THREE-tied `RCDispatchOpts`
+// and `dispatchFrame` path were dropped 2026-05-18 once the raw-GPU
+// `dispatchFrameRaw` / `RCDispatchOptsRaw` path absorbed the only consumer
+// (`@vitrum/walkaround-hybrid`'s `RCSubsystem`).
 export { RCDispatcher } from './cascadeDispatch.js';
-export type { RCDispatchOpts, RCDispatchOptsRaw } from './cascadeDispatch.js';
+export type { RCDispatchOptsRaw } from './cascadeDispatch.js';
 
 // Cascade buffer manager.
 export { CascadeBufferManager } from './cascadeBuffers.js';

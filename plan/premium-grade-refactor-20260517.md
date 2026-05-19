@@ -637,14 +637,20 @@ opportunistically across all waves.
 
 ### W8 — Scaffold-1: RC extraction → `@vitrum/walkaround-rc` — SHIPPED 2026-05-18
 
-**Status:** Phase 1A/1B/2/3/4 in-package wiring shipped 2026-05-18; the
-follow-up package extraction landed the same day via `b065676`. The
-section below is preserved for the original sub-task list. The
-`three.js __gpuBuffer reach-through` rewrite (sub-task 2) was NOT done —
-the existing `StorageBufferAttribute.__gpuBuffer` accessor remains. That
-is a known coupling documented in
-`packages/walkaround-hybrid/README.md` "Residual risk" section; a future
-sprint can finish that cleanup if a three.js internal API change forces it.
+**Status:** All sub-tasks shipped 2026-05-18:
+- Phase 1A/1B/2/3/4 in-package wiring shipped earlier (multiple commits).
+- Package extraction shipped via `b065676` (Radiance Cascades subsystem
+  moved into `@vitrum/walkaround-rc`).
+- Sub-task 2 (`StorageBufferAttribute.__gpuBuffer` reach-through rewrite)
+  shipped same day: the legacy THREE-tied `RCDispatcher.dispatchFrame` +
+  `RCDispatchOpts` + `gpuBufferOf` helper were dropped. `RCSubsystem`
+  allocates its own raw `GPUBuffer` handles via `device.createBuffer` and
+  drives `dispatchFrameRaw` directly. The TSL-side material wrappers
+  (`GIReceiver`, `buildWalkaroundLightingNode`) still consume
+  `StorageBufferAttribute` because three.js's TSL only binds three.js-
+  native data types — that's intrinsic to TSL, not a reach-through.
+
+The section below is preserved for the original sub-task list.
 
 **Goal:** RC becomes a real, independent package that does not reach into
 three.js renderer privates.

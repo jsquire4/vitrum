@@ -81,7 +81,6 @@ export type {
   CascadeAABB,
   CascadeDim,
   CascadeBuffers,
-  RCDispatchOpts,
   RCDispatchOptsRaw,
   GIReceiverExclusionPredicate,
   GIReceiverOptions,
