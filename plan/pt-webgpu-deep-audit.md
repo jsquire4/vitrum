@@ -6,6 +6,17 @@
 - Confirmed pre-existing (watcher Iteration 1/2): `environmentSunStrength` packing bug (MEDIUM, confirmed), matrix offset bug (HIGH, confirmed with exact offsets), stale JSDoc comment (LOW, confirmed)
 - Test count snapshot: 570 passing across workspace (pt-webgpu contributes 11 tests); tsc exits 2 with 3 pre-existing errors in `pt-webgl/src/index.ts` (not pt-webgpu regressions)
 
+## Status update — 2026-05-18
+
+Several findings verified-closed by direct read on 2026-05-18:
+
+- **H-2 (`supportsIncrementalScene: true` causing tight-loop full BVH rebuilds)** — FIXED. `packages/pt-webgpu/src/index.ts:109` now reads `supportsIncrementalScene: false` with the comment "Honest reporting — updatePrimitive/updateEmitter currently delegate to setScene; flip to true when real incremental patching lands."
+- **M-1 (`environmentSunStrength` written to wrong vec4 component)** — FIXED. `paramsF32[35] = sb.environmentSunStrength` (offset 140 = `environmentSunDirection.w`) is now correct; the pad at index 31 stays 0 for `environmentTint.w`.
+- **Glossy BSDF sampling/PDF mismatch** (Item 14 from the 2026-05-11 sweep, frequently relisted as a pt-webgpu pre-alpha bug) — FIXED. `packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts:124` ships `sampleGgxVndfTangent` (Heitz 2018 Algorithm 1); `glossyReflectionSample:166` calls it directly so sampling and PDF use the same distribution. Shipped via commit `a7dd51a`.
+- **H-1 (uniform buffer matrix offset 16 bytes off)** — needs re-verification. The FrameParams struct has been substantially refactored since the 2026-05-10 audit (W4-A4 split into pathTrace/* modules + new packing); the CPU writer at `index.ts:274-280` now uses indices 36/52/68 rather than the 80/96/112 the audit cited. A fresh struct-layout walk against the current WGSL is needed before claiming open or closed.
+
+The remaining MEDIUM + LOW findings are not re-verified in this status pass.
+
 ---
 
 ## HIGH severity
