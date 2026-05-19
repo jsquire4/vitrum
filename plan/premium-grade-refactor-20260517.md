@@ -452,39 +452,29 @@ test-driven mitigation; reference renders catch silent visual breaks.
 
 ---
 
-### W5 — Per-pass BGL (Theme I)
+### W5 — Per-pass BGL (Theme I) — CLOSED 2026-05-18
 
-**Goal:** every shader declares only the bindings it actually uses; shared
-PipelineLayouts go away; the "for BGL compat, unused" dead bindings
-disappear.
+**Status:**
+- **I1** (ris/temporal/spatial dead bindings) — **shipped** in `97d455b`
+  (refactor(walkaround-hybrid/shaders): W5-I1 — drop dead bindings from
+  ris/temporal/spatial WGSL).
+- **I2** (`ic_gNormalDepth` in indirectCombine) — **shipped** in `f542b90`
+  (refactor(walkaround-hybrid/indirect-combine): W5-I2 — drop dead
+  gNormalDepth binding).
+- **I3** (atrousVariance double-binding split) — **intentionally not done**.
+  The `varIn_*` vs `atrous_*` prefix is a cosmetic split across two entry
+  points in one WGSL module. WGSL allows a shader entry point to declare
+  a subset of its BGL's bindings, so the unused slots have zero runtime
+  cost — the only "fix" would be to split the module in two, which would
+  multiply WGSL composer entries + shader compile cost for no behavioural
+  gain. The W1-R5 pass-registry + W1-R6 include-graph already deliver the
+  per-pass BGL surface (see `pipeline/bindGroupLayouts.ts:BGLCache` —
+  `atrous`, `gtao`, `temporalGi`, `spatialGi`, `indirectCombine`,
+  `indirectTemporalAccum`, etc. all have separate getters).
 
-**Sub-tasks:**
-
-1. **I1** — ris/temporal/spatial/shade currently share a 10-binding
-   `group(0)` for layout compat. After W1 + W4-A5, each Pass declares its
-   own BGL via its `bindGroupLayout()`. Verify ris/spatial drop ~70% of
-   bindings (the dead ones per the sweep).
-2. **I2 indirectCombine `ic_gNormalDepth`** — declared "for BGL compat,
-   unused" — drop with the per-pass BGL move.
-3. **I3 atrousVariance double-binding** — the `varIn_*` vs `atrous_*`
-   prefix workaround for two entry points goes away when each entry point
-   has its own BGL.
-
-**File paths:** `walkaround-hybrid/src/shaders/*.wgsl.ts` (binding
-declarations), `walkaround-hybrid/src/pipeline/bindGroupLayouts.ts`,
-`walkaround-hybrid/src/pipeline/bindGroupBuilders.ts`,
-`walkaround-hybrid/src/pipeline/BGLCache.ts` (probably collapses).
-
-**Test plan:**
-- Behavior preservation only. Existing tests cover correctness; this is a
-  bind-group reshape.
-- **Reference renders:** mandatory bit-equality at hero scene; if not
-  bit-equal something migrated wrong.
-
-**Estimated sprints:** 1.
-
-**Risk:** medium — bind-group misindexing is a footgun, but it produces
-loud GPU validation errors in test.
+The original goal — "every shader declares only the bindings it actually
+uses" — is met for every Pass except the dual-entry-point shader where
+splitting would be net-negative. W5 is closed.
 
 ---
 
