@@ -18,7 +18,7 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { convertMaterial } from '../material.js';
 import { vitrumSceneToThree } from '../vitrumSceneToThree.js';
-import type { Material as VitrumMaterial, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
+import type { MaterialSpec as VitrumMaterial, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers

@@ -26,7 +26,7 @@ import React, {
   useEffect,
   useState,
 } from 'react';
-import type { Material, Vec3 } from '@vitrum/core';
+import type { MaterialSpec, Vec3 } from '@vitrum/core';
 import type { DebuggableEngine } from '../types.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -124,7 +124,7 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
   selectedPrimitiveId,
   className,
 }) => {
-  const [draft, setDraft] = useState<Material | null>(null);
+  const [draft, setDraft] = useState<MaterialSpec | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
 
   const hasPickAPI = typeof engine.debug?.pickPrimitive === 'function';
@@ -147,8 +147,8 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
 
   // ── Field update helpers ──────────────────────────────────────────────────
 
-  const updateField = <K extends keyof Material>(key: K, value: Material[K]): void => {
-    const next: Material = { ...draft, [key]: value };
+  const updateField = <K extends keyof MaterialSpec>(key: K, value: MaterialSpec[K]): void => {
+    const next: MaterialSpec = { ...draft, [key]: value };
     setDraft(next);
     // updatePrimitive is optional on Engine; fall back to nothing if absent.
     if (typeof engine.updatePrimitive === 'function') {
@@ -156,15 +156,15 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
     }
   };
 
-  const updateNumber = (key: keyof Material) =>
+  const updateNumber = (key: keyof MaterialSpec) =>
     (e: ChangeEvent<HTMLInputElement>): void => {
       const v = parseFloat(e.target.value);
-      if (!isNaN(v)) updateField(key, v as Material[typeof key]);
+      if (!isNaN(v)) updateField(key, v as MaterialSpec[typeof key]);
     };
 
-  const updateColor = (key: keyof Material) =>
+  const updateColor = (key: keyof MaterialSpec) =>
     (e: ChangeEvent<HTMLInputElement>): void => {
-      updateField(key, hexToVec3(e.target.value) as Material[typeof key]);
+      updateField(key, hexToVec3(e.target.value) as MaterialSpec[typeof key]);
     };
 
   const emissiveColor = draft.emissive ?? [0, 0, 0] satisfies Vec3;

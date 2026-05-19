@@ -316,16 +316,6 @@ export interface MaterialSpec {
   readonly extensions?: Readonly<Record<string, unknown>>;
 }
 
-/**
- * Backwards-compat alias for the pre-W3-D1 name. New code should use
- * {@link MaterialSpec} directly. The alias is preserved to avoid breaking
- * existing imports from `@vitrum/core`; it will be removed once all
- * in-tree consumers migrate.
- *
- * @deprecated since 2026-05-17 (W3-D1) — use `MaterialSpec`.
- */
-export type Material = MaterialSpec;
-
 /** Opaque texture reference. The scene-binding layer creates these; backends
  *  consume them. The shape varies — for WebGL2 backends it might be a
  *  `WebGLTexture` plus metadata, for WebGPU it might be a `GPUTexture`, for

@@ -12,7 +12,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
   MeshPrimitive,
-  Material as VitrumMaterial,
+  MaterialSpec as VitrumMaterial,
   NoneEnvironment,
   Vec3,
 } from '@vitrum/core';

@@ -30,7 +30,7 @@ export type {
   Scene,
   ScenePrimitive,
   SceneEmitter,
-  Material,
+  MaterialSpec,
   FrameInput,
   FrameOutput,
   Viewport,
