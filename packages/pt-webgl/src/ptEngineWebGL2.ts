@@ -38,7 +38,7 @@ import {
 } from './oidnFinalDispatcher.js';
 import { IblBakerCache } from './iblBaker.js';
 import type { SkyParams } from '@vitrum/scene-lighting';
-import type { DataTexture } from 'three';
+import type { DataTexture, Texture } from 'three';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Device-tier threshold for analytic came (Sprint 5)
@@ -358,7 +358,7 @@ export class PTEngineWebGL2 implements Engine {
    *  {@link bdptAdvanceFrame}; null until the host calls that method.
    *  When non-null + `#bdpt === true`, every renderFrame's connect pass
    *  reads this texture for cached light vertices. */
-  #bdptLightPathTex: unknown | null = null;
+  #bdptLightPathTex: Texture | null = null;
   readonly #limits: DeviceLimits;
   readonly #schedulerOptions: SchedulerOptions;
 
@@ -541,7 +541,7 @@ export class PTEngineWebGL2 implements Engine {
    *   (typically `BdptLightPathBuffer.texture`). Pass `null` to disable
    *   BDPT for the next frame as a safety guard.
    */
-  bdptAdvanceFrame(lightPathTex: unknown | null): void {
+  bdptAdvanceFrame(lightPathTex: Texture | null): void {
     this.#bdptLightPathTex = lightPathTex;
     if (!this.#bdpt) return;
     driveForkMaterialUniforms(
