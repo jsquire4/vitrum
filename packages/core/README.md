@@ -14,7 +14,7 @@ This is the **load-bearing** type surface every other vitrum package compiles ag
 - `EngineOptions`, `EngineCapabilities`, `FrameInput`, `FrameOutput`, `FrameStats` — the per-call types.
 - `Scene` and primitives — `MeshPrimitive`, `InstancedMeshPrimitive`, `AnalyticPrimitive`, `MaterialSpec`, `SceneEmitter`, `SceneEnvironment`, `Camera`.
 - `Mat4`, `Vec3`, `BackendTexture<TBackend>`, `BackendTextureFormat<TBackend>` — branded primitive types.
-- `DenoiserConfig` — discriminated union for denoiser selection with per-mode required config.
+- `EngineOptions.denoiser` — string union (`'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural'`) selecting the denoiser pipeline at engine creation. Backend-specific construction-time config (e.g. neural weights, OIDN model URL) flows through `extensions`.
 - `GpuDetection`, `probeWebGPU()` — adapter capability inspection.
 
 ## Design principles
