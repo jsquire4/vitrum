@@ -34,41 +34,43 @@
 
 import type { SkinnedMeshPrimitive } from '@vitrum/core';
 
-/** Multiply two column-major 4x4 matrices into `out` (`a · b`). */
-function mat4Mul(out: Float32Array, a: Float32Array, b: Float32Array, bOff: number): void {
-  // Loop unrolled for clarity; not the perf bottleneck (called once per bone).
-  const a00 = a[0]!, a10 = a[1]!, a20 = a[2]!, a30 = a[3]!;
-  const a01 = a[4]!, a11 = a[5]!, a21 = a[6]!, a31 = a[7]!;
-  const a02 = a[8]!, a12 = a[9]!, a22 = a[10]!, a32 = a[11]!;
-  const a03 = a[12]!, a13 = a[13]!, a23 = a[14]!, a33 = a[15]!;
+/**
+ * Multiply two column-major 4x4 matrices: `out[outOff..+16] = a[aOff..+16] · b[bOff..+16]`.
+ * No scratch allocation; reads + writes via offsets so callers can point all
+ * three slots at sub-ranges of larger packed buffers.
+ */
+function mat4Mul(
+  out: Float32Array, outOff: number,
+  a: Float32Array, aOff: number,
+  b: Float32Array, bOff: number,
+): void {
+  const a00 = a[aOff +  0]!, a10 = a[aOff +  1]!, a20 = a[aOff +  2]!, a30 = a[aOff +  3]!;
+  const a01 = a[aOff +  4]!, a11 = a[aOff +  5]!, a21 = a[aOff +  6]!, a31 = a[aOff +  7]!;
+  const a02 = a[aOff +  8]!, a12 = a[aOff +  9]!, a22 = a[aOff + 10]!, a32 = a[aOff + 11]!;
+  const a03 = a[aOff + 12]!, a13 = a[aOff + 13]!, a23 = a[aOff + 14]!, a33 = a[aOff + 15]!;
 
   for (let c = 0; c < 4; c++) {
     const b0 = b[bOff + 0 + c * 4]!;
     const b1 = b[bOff + 1 + c * 4]!;
     const b2 = b[bOff + 2 + c * 4]!;
     const b3 = b[bOff + 3 + c * 4]!;
-    out[0 + c * 4] = a00 * b0 + a01 * b1 + a02 * b2 + a03 * b3;
-    out[1 + c * 4] = a10 * b0 + a11 * b1 + a12 * b2 + a13 * b3;
-    out[2 + c * 4] = a20 * b0 + a21 * b1 + a22 * b2 + a23 * b3;
-    out[3 + c * 4] = a30 * b0 + a31 * b1 + a32 * b2 + a33 * b3;
+    out[outOff + 0 + c * 4] = a00 * b0 + a01 * b1 + a02 * b2 + a03 * b3;
+    out[outOff + 1 + c * 4] = a10 * b0 + a11 * b1 + a12 * b2 + a13 * b3;
+    out[outOff + 2 + c * 4] = a20 * b0 + a21 * b1 + a22 * b2 + a23 * b3;
+    out[outOff + 3 + c * 4] = a30 * b0 + a31 * b1 + a32 * b2 + a33 * b3;
   }
 }
 
-/** Pre-compute combined = bones * boneInverses, packed contiguously. */
+/** Pre-compute combined = bones · boneInverses, packed contiguously. */
 function combineSkinMatrices(
   bones: Float32Array,
   boneInverses: Float32Array,
   boneCount: number,
 ): Float32Array {
   const combined = new Float32Array(boneCount * 16);
-  const bonesSlice = new Float32Array(16);
   for (let i = 0; i < boneCount; i++) {
     const off = i * 16;
-    for (let k = 0; k < 16; k++) bonesSlice[k] = bones[off + k]!;
-    const outView = combined.subarray(off, off + 16);
-    // mat4Mul writes into `out` directly indexed [0..16); use a temporary
-    // 16-length view to satisfy that contract.
-    mat4Mul(outView, bonesSlice, boneInverses, off);
+    mat4Mul(combined, off, bones, off, boneInverses, off);
   }
   return combined;
 }
