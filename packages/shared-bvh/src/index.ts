@@ -2,6 +2,7 @@ export * from './bvhCommon.js';
 export * from './buildArrayBvh.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
+export * from './tlas.js';
 export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';
