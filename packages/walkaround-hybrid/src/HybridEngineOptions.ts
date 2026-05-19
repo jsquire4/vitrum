@@ -95,9 +95,10 @@ export interface HybridEngineOptions extends EngineOptions {
    * via `vitrumSceneToThree()` and the `threeScene` field is never read. The
    * @vitrum/engine `createEngine()` facade always takes the latter path.
    *
-   * Was required pre-T3.H (deprecated 2026-05-12, removed 2026-05-12). Hosts
-   * that previously passed `threeScene: someScene` can drop the field if they
-   * also call `setScene(sceneFromThreeJS(someScene))` afterwards. If they do
+   * Was REQUIRED pre-T3.H; the requirement was dropped 2026-05-12 (the
+   * field itself stays as an escape hatch). Hosts that previously passed
+   * `threeScene: someScene` can drop it if they also call
+   * `setScene(sceneFromThreeJS(someScene))` afterwards. If they do
    * neither (no mesh primitives in setScene + no threeScene), the engine
    * throws on pipeline init with a clear error.
    */
