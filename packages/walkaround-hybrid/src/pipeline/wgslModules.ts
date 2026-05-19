@@ -65,12 +65,14 @@ import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
 import { PPG_GUIDE_MODULE } from '../ppg/ppgGuide.wgsl.js';
 import type { WgslModule } from './wgslComposer.js';
 
-// Re-exports so consumers can import every module from a single, central index.
+// Re-exports for consumers that pull individual modules by name (e.g.,
+// pipelineCompiler.ts iterates them when assembling individual compute
+// pipelines). The five symbols that knip flagged as dead re-exports
+// (COMMON_MODULE, SURFACE_TEXTURES_MODULE, RESTIR_PHAT_MODULE,
+// RESTIR_CAST_PRIMARY_MODULE, DDGI_SAMPLE_MODULE) are intentionally
+// omitted here — they're consumed only via the WGSL_MODULES Map below,
+// so the named re-export was unused weight on the public surface.
 export {
-  COMMON_MODULE,
-  SURFACE_TEXTURES_MODULE,
-  RESTIR_PHAT_MODULE,
-  RESTIR_CAST_PRIMARY_MODULE,
   RIS_MODULE,
   TEMPORAL_MODULE,
   SPATIAL_MODULE,
@@ -87,7 +89,6 @@ export {
   INDIRECT_TEMPORAL_ACCUM_MODULE,
   COMPOSITE_VERT_MODULE,
   COMPOSITE_FRAG_MODULE,
-  DDGI_SAMPLE_MODULE,
   PPG_UPDATE_MODULE,
   PPG_GUIDE_MODULE,
 };
@@ -106,7 +107,7 @@ export {
  * module that already requires 'common' should NOT also require 'luminance'
  * — that would emit two definitions and WGSL would reject the redefinition.
  */
-export const LUMINANCE_MODULE: WgslModule = {
+const LUMINANCE_MODULE: WgslModule = {
   name: 'luminance',
   source: LUMINANCE_WGSL,
   requires: [],
@@ -121,7 +122,7 @@ export const LUMINANCE_MODULE: WgslModule = {
  * Note: `common` does NOT include octahedral, so modules that want it
  * must declare the dependency explicitly.
  */
-export const OCTAHEDRAL_CORE_MODULE: WgslModule = {
+const OCTAHEDRAL_CORE_MODULE: WgslModule = {
   name: 'octahedralCore',
   source: OCTAHEDRAL_CORE_WGSL,
   requires: [],
@@ -172,7 +173,7 @@ export const SVGF_7X7_SPATIAL_FALLBACK_MODULE: WgslModule = {
 /** Fragment-only — registered for completeness; never resolved via `requires`
  *  because the modules that need WelfordVariance template-interpolate the
  *  raw string into their own source. */
-export const WELFORD_VARIANCE_MODULE: WgslModule = {
+const WELFORD_VARIANCE_MODULE: WgslModule = {
   name: 'welfordVariance',
   source: WELFORD_VARIANCE_WGSL,
   requires: [],
