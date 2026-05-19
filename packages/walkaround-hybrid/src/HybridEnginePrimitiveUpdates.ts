@@ -213,6 +213,123 @@ export function transformRefit(
 }
 
 /**
+ * Positions-only refit fast path (A3 — 2026-05-18).
+ *
+ * When `patch.positions` is the ONLY geometry field touched (no
+ * `normals` / `uvs` / `tangents` / `indices` / `instances` / `params` /
+ * `shape` / `fallbackMesh` / `kind`) AND the new positions match the
+ * cached vertex count, BVH topology is preserved — only the AABB bounds
+ * need to refit against the new vertex positions.
+ *
+ * Cost: O(triangles) refit walk (~1 ms / 30k tris on the same machine
+ * that takes ~50 ms for a full SAH rebuild) + one stride-4 vertex slice
+ * upload. Same fast-path shape as {@link transformRefit}.
+ *
+ * Falls through to {@link topologyRebuild} when:
+ *  - the BVH hasn't been published yet (pipeline init in flight)
+ *  - no vertex range matches the primitive id (emitter-only primitive)
+ *  - the new positions length doesn't match the cached vertex count
+ *    (true topology change disguised as a positions patch).
+ */
+export function positionsRefit(
+  id: string,
+  patch: Partial<ScenePrimitive>,
+  ctx: PrimitiveUpdateContext,
+): PrimitiveUpdateResult {
+  const bvh = ctx.bvhBuffers;
+  if (bvh == null) return topologyRebuild(id, patch, ctx);
+
+  const range = bvh.meshVertexRanges.find((r) => r.name === id);
+  if (range == null || range.vertexCount === 0) {
+    return topologyRebuild(id, patch, ctx);
+  }
+
+  const newLocalPositions = (patch as { positions?: ArrayLike<number> }).positions;
+  if (newLocalPositions == null) {
+    // Caller-side bug: dispatcher routed here without patch.positions.
+    return topologyRebuild(id, patch, ctx);
+  }
+  // 3 floats per vertex. Vertex count mismatch ⇒ true topology change.
+  if (newLocalPositions.length !== range.vertexCount * 3) {
+    return topologyRebuild(id, patch, ctx);
+  }
+
+  const root = ctx.threeRoot;
+  if (root == null) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): no THREE scene available for positions refit.`,
+    );
+  }
+  let mesh: THREE.Mesh | null = null;
+  root.traverseVisible((obj) => {
+    if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
+      mesh = obj as THREE.Mesh;
+    }
+  });
+  if (mesh == null) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
+    );
+  }
+  const meshRef = mesh as THREE.Mesh;
+
+  // Update the THREE.Mesh's geometry so a later transformRefit picks up
+  // the latest local positions. The BufferAttribute itself owns its
+  // backing Float32Array, so we construct a fresh one from the patch
+  // (no aliasing surprises).
+  meshRef.geometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(new Float32Array(Array.from(newLocalPositions)), 3),
+  );
+
+  // The BVH stores WORLD-space positions in a stride-4 layout
+  // ([x, y, z, uvPacked] per vertex). Apply the cached matrixWorldAtBuild
+  // to lift the new local positions into world space, preserving the .w
+  // (UV pack) lane from the existing slice.
+  const matWorld = new THREE.Matrix4().fromArray(Array.from(range.matrixWorldAtBuild));
+  const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
+  const STRIDE = 4;
+  const baseVertex = range.vertexStart;
+  const sliceVerts = range.vertexCount;
+  const tmp = new THREE.Vector3();
+  for (let v = 0; v < sliceVerts; v++) {
+    const off = (baseVertex + v) * STRIDE;
+    tmp.x = newLocalPositions[v * 3] ?? 0;
+    tmp.y = newLocalPositions[v * 3 + 1] ?? 0;
+    tmp.z = newLocalPositions[v * 3 + 2] ?? 0;
+    tmp.applyMatrix4(matWorld);
+    positionsF32[off + 0] = tmp.x;
+    positionsF32[off + 1] = tmp.y;
+    positionsF32[off + 2] = tmp.z;
+    // .w (UV pack) preserved.
+  }
+
+  // Refit BVH bounds in place against the freshly-updated positions.
+  const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
+  refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
+
+  // Upload the refit nodes + the affected position slice to GPU.
+  const positionsByteOffset = baseVertex * STRIDE * 4; // f32 = 4 bytes
+  const positionsByteLength = sliceVerts * STRIDE * 4;
+  const positionsSlice = bvh.bvhPositions.cpuData.slice(
+    positionsByteOffset,
+    positionsByteOffset + positionsByteLength,
+  );
+  ctx.pipeline?.refreshBvhRefit(
+    bvh.bvhNodes.cpuData.slice(0),
+    { byteOffset: positionsByteOffset, data: positionsSlice },
+  );
+
+  // Reset the accumulator + invalidate DDGI — vertex positions changed,
+  // history pixels reference the old geometry. Same invalidation cost as
+  // transformRefit.
+  ctx.pipeline?.requestAccumReset();
+  ctx.ddgi.invalidateProbeCache();
+
+  return { bvhBuffers: bvh };
+}
+
+/**
  * Topology-change full-rebuild path (Option (a) per items_to_fix.md A3).
  *
  * Picked over Option (b) ("`rebuildBvhLeaf(bvh, leafIndex, newTriangles)`

@@ -329,7 +329,7 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     expect(slice.data.byteLength).toBe(48);
   });
 
-  it('topology patch (positions) triggers full BVH rebuild but NOT a pipeline recompile', async () => {
+  it('positions-only patch (A3 fast path) refits BVH bounds — no full rebuild, no pipeline recompile', async () => {
     const engine = makeEngine();
     const s = getState();
 
@@ -341,19 +341,72 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     const pipelineCountBefore = s.pipelineConstructed.length;
     const buildCountBefore    = s.buildBVHCalls.length;
 
+    // Same vertex count (3 verts × 3 floats = 9) as the original mesh-a
+    // geometry — the BVH topology is preserved; only the AABB bounds
+    // need to refit.
     engine.updatePrimitive!('mesh-a', {
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 0]), // resized triangle
     });
 
-    // Pipeline compile counter STILL stays flat — no new pipeline.
+    // A3 fast path — neither pipeline recompile NOR full BVH rebuild.
     expect(s.pipelineConstructed.length).toBe(pipelineCountBefore);
-    // But the BVH rebuild counter DID increment (Option (a) — full rebuild).
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore);
+
+    const pipeline = s.pipelineConstructed[0]!;
+    expect(pipeline.refreshBvhRefit).toHaveBeenCalledTimes(1);
+    expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+    expect(pipeline.requestAccumReset).toHaveBeenCalled();
+  });
+
+  it('true topology patch (indices) triggers full BVH rebuild but NOT a pipeline recompile', async () => {
+    const engine = makeEngine();
+    const s = getState();
+
+    engine.setScene(SCENE_WITH_MESH);
+    await waitForPipelineCount(1);
+    s.pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+
+    const pipelineCountBefore = s.pipelineConstructed.length;
+    const buildCountBefore    = s.buildBVHCalls.length;
+
+    // Index buffer change — true topology change. The A3 fast path
+    // does NOT trigger; this routes through topologyRebuild (Option (a)).
+    engine.updatePrimitive!('mesh-a', {
+      indices: new Uint32Array([0, 2, 1]), // winding flipped
+    });
+
+    expect(s.pipelineConstructed.length).toBe(pipelineCountBefore);
     expect(s.buildBVHCalls.length).toBe(buildCountBefore + 1);
 
     const pipeline = s.pipelineConstructed[0]!;
     expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
     expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
     expect(pipeline.requestAccumReset).toHaveBeenCalled();
+  });
+
+  it('positions patch with mismatched vertex count falls through to topology rebuild', async () => {
+    const engine = makeEngine();
+    const s = getState();
+
+    engine.setScene(SCENE_WITH_MESH);
+    await waitForPipelineCount(1);
+    s.pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+
+    const buildCountBefore = s.buildBVHCalls.length;
+
+    // 4 vertices supplied vs cached 3 → vertex count mismatch.
+    // positionsRefit detects this and routes to topologyRebuild.
+    engine.updatePrimitive!('mesh-a', {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]),
+    });
+
+    // Full rebuild ran, not refit.
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore + 1);
+    const pipeline = s.pipelineConstructed[0]!;
+    expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+    expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
   });
 
   it('material-only patch throws with a clear sibling-branch pointer', async () => {

@@ -56,7 +56,7 @@ import { disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import type { ModelWeights } from './neural/weights.js';
-import { transformRefit, topologyRebuild, type PrimitiveUpdateContext } from './HybridEnginePrimitiveUpdates.js';
+import { transformRefit, positionsRefit, topologyRebuild, type PrimitiveUpdateContext } from './HybridEnginePrimitiveUpdates.js';
 import { PipelineInitCoordinator, type PipelineInitHost } from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
@@ -519,18 +519,36 @@ export class HybridEngine implements Engine {
       );
     }
 
+    // Three.js BVH refit (fast path) preserves topology when only AABB
+    // bounds need updating. Three flavours:
+    //   - Transform only       → transformRefit  (~1 ms / 30k tris)
+    //   - Positions only       → positionsRefit  (A3, ~1 ms / 30k tris)
+    //   - True topology change → topologyRebuild (~50 ms / 30k tris)
+    // "Positions only" means new vertex data on the SAME index buffer +
+    // SAME vertex count. The positionsRefit path falls through to
+    // topologyRebuild internally if the count doesn't match.
     const topologyFields = [
-      'positions', 'normals', 'uvs', 'tangents', 'indices',
+      'normals', 'uvs', 'tangents', 'indices',
       'instances', 'params', 'shape', 'fallbackMesh', 'kind',
     ] as const;
     const hasTopologyChange = topologyFields.some(
       (f) => (patch as Record<string, unknown>)[f] !== undefined,
     );
+    const hasPositionsChange = (patch as Record<string, unknown>)['positions'] !== undefined;
     const hasTransformChange = (patch as Record<string, unknown>)['transform'] !== undefined;
     const hasMaterialChange  = (patch as Record<string, unknown>)['material']  !== undefined;
 
     if (hasTopologyChange) {
+      // True topology change — even if `positions` is also in the patch
+      // it has to round-trip through the full SAH rebuild because the
+      // index buffer / vertex layout changed.
       const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
+      this._bvhBuffers = result.bvhBuffers;
+      return;
+    }
+    if (hasPositionsChange) {
+      // A3 fast path — same topology, new vertex positions.
+      const result = positionsRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
       return;
     }
