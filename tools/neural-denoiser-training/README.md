@@ -85,6 +85,25 @@ Vitrum ships no trained weights. You must collect a dataset and train.
 The walkaround engine uses `'atrous-variance'` denoising by default;
 `'neural'` is opt-in and requires weights to be provided at engine creation.
 
+## What's shipped vs what you build
+
+| Piece                                    | Status                        |
+|------------------------------------------|-------------------------------|
+| U-Net architecture (PyTorch + WGSL)      | Shipped (`train.py`, `@vitrum/walkaround-hybrid/src/neural/`) |
+| Weight format + binary serialiser        | Shipped (`export_weights.py` + `loadWeightsFromArrayBuffer`)  |
+| InferenceGraph (GPU runtime)             | Shipped (`@vitrum/walkaround-hybrid` W10)                     |
+| Training script                          | Shipped (`train.py`)                                          |
+| Dataset format spec                      | Shipped (`dataset_spec.md`)                                   |
+| **Pre-trained weights**                  | **Not shipped — host trains their own**                       |
+| **Batched G-buffer capture runner**      | **Not shipped — host rolls their own** (see `dataset_spec.md` §"Capture-runner gap") |
+| **Reference Cornell test dataset**       | **Not shipped — too large + scene-licensing concerns**        |
+
+The first two "not shipped" items are the actionable host workflow. The
+third (a published reference dataset) is intentionally absent because
+even a small Cornell-spp dataset is ~50–500 MB of PNG and is best
+collected fresh by each consumer against the rendering pipeline they
+actually intend to ship.
+
 ## References
 
 - Ronneberger, Fischer, Brox 2015. U-Net. MICCAI. https://arxiv.org/abs/1505.04597

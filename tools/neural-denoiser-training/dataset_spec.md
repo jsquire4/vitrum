@@ -42,15 +42,40 @@ Decode with `n * 2 - 1` to recover world-space [-1, 1] normals.
 
 1. Render the same scene from diverse camera positions and lighting conditions.
 2. For each camera/lighting configuration:
-   a. Render at 1 spp → save as `noisy/frame_NNNN.png`
+   a. Render at 1 spp (walkaround-hybrid HDR color tonemapped) → save as `noisy/frame_NNNN.png`
    b. Save the albedo G-buffer → `noisy/frame_NNNN_albedo.png`
    c. Save the world normals G-buffer → `noisy/frame_NNNN_normal.png`
-   d. Render at 4096 spp → save as `clean/frame_NNNN.png`
+   d. Render at 4096 spp (pt-webgl reference) → save as `clean/frame_NNNN.png`
 3. Aim for 1000–5000 unique camera positions per scene.
 
 Reference scenes for collecting training data:
-- `examples/cornell-box.html`
-- `examples/multi-material.html`
+- `examples/cornell-box/` (vite project — `npm run dev` from the directory).
+  Both noisy and clean captures come from this scene at different SPP
+  targets. The cornell-box example already exposes the relevant scene; a
+  batched-capture runner is a future addition (see "Capture-runner gap"
+  below).
+
+### Capture-runner gap
+
+This repo does NOT currently ship a batched G-buffer capture script. To
+build a real dataset a host has to:
+
+1. Drive the walkaround engine through 1000+ camera positions and save
+   `noisy/`, `noisy/*_albedo`, `noisy/*_normal` PNGs each frame
+   (the walkaround-hybrid pipeline writes `hdrColorTexture`,
+   `hdrAlbedoTexture`, and `gNormalDepthTexture` — read back via
+   `device.queue.submit` + `copyTextureToBuffer` + `mapAsync(READ)`).
+2. Re-render the same camera positions through `pt-webgl` at 4096 spp
+   for the clean reference, save as `clean/`.
+3. Apply the same tonemapping operator to both noisy and clean before
+   saving (Reinhard `L / (1 + L)` is the default; whatever you pick must
+   match what `train.py` expects since it loads PNGs as already-tonemapped
+   LDR).
+
+The vitrum benchmark-runner (`tools/benchmark-runner/`) already wraps a
+Playwright headless capture loop and could be extended with a dataset-
+collection mode. Filed as a future enhancement; not blocking training
+for any host willing to roll their own capture.
 
 ## Minimum Dataset Size
 
