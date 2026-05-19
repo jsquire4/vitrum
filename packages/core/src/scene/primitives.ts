@@ -111,6 +111,24 @@ export interface SkinnedMeshPrimitive {
   /** Inverse bind matrices: `boneCount * 16` column-major f32s. */
   readonly boneInverses: Float32Array;
   /**
+   * Mesh bind matrix (the mesh's world transform at bind time). 16
+   * column-major f32s. Optional; identity if omitted. Three.js's
+   * `SkinnedMesh.bindMatrix` ≠ identity when the host called
+   * `mesh.bind(skeleton, customBindMatrix)` OR when `mesh.bind(skeleton)`
+   * was called after positioning the mesh away from the origin.
+   *
+   * Solver formula with non-identity bindMatrix (see three.js's skinning
+   * vertex shader for the canonical reference):
+   *   skinVertex   = bindMatrix       · restPos
+   *   skinnedWorld = Σ w[k] · ( bones[idx[k]] · boneInverses[idx[k]] ) · skinVertex
+   *   skinnedLocal = bindMatrixInverse · skinnedWorld
+   *
+   * For glTF (typical: mesh at origin, bind at origin) bindMatrix is
+   * identity and the formula collapses to the simpler form.
+   */
+  readonly bindMatrix?: Float32Array;
+  readonly bindMatrixInverse?: Float32Array;
+  /**
    * Blend-shape (morph-target) deltas. Each entry is a position delta of
    * length `vertexCount * 3` (Δx,Δy,Δz per vertex). glTF convention —
    * displacement from the rest pose, applied before skinning:

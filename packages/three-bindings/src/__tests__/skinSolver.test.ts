@@ -221,6 +221,53 @@ describe('solveSkin', () => {
     expect(positions[2]).toBeCloseTo(0);
   });
 
+  it('bindMatrix is honored — non-identity bind round-trips to identity skinning', () => {
+    // bindMatrix = translate(5, 0, 0); bindMatrixInverse = translate(-5, 0, 0).
+    // bones[0].matrixWorld = bindMatrix; boneInverse[0] = bindMatrixInverse.
+    // For a vertex at rest position (0,0,0):
+    //   skinVertex   = bindMatrix · (0,0,0) = (5, 0, 0)
+    //   skinned      = (bones · boneInv) · (5,0,0) = identity · (5,0,0) = (5, 0, 0)
+    //   bindMatrixInverse · skinned = (5,0,0) + (-5,0,0,1)_col = (0, 0, 0)
+    // → solver should yield rest pose unchanged (the canonical bind-pose
+    //   identity property).
+    const trans = (tx: number): Float32Array => new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      tx, 0, 0, 1,
+    ]);
+    const prim: SkinnedMeshPrimitive = {
+      kind: 'skinned-mesh',
+      id: 'bind-test',
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([0, 1, 0]),
+      skinIndices: new Uint32Array([0, 0, 0, 0]),
+      skinWeights: new Float32Array([1, 0, 0, 0]),
+      bones: trans(5),
+      boneInverses: trans(-5),
+      bindMatrix: trans(5),
+      bindMatrixInverse: trans(-5),
+      material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+    };
+    const { positions } = solveSkin(prim);
+    expect(positions[0]).toBeCloseTo(0);
+    expect(positions[1]).toBeCloseTo(0);
+    expect(positions[2]).toBeCloseTo(0);
+  });
+
+  it('throws when bindMatrix has wrong length', () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      bindMatrix: new Float32Array(15),
+      bindMatrixInverse: IDENT4(),
+    };
+    expect(() => solveSkin(prim)).toThrow(/bindMatrix/);
+  });
+
   it('throws when input buffer lengths are inconsistent', () => {
     const bad: SkinnedMeshPrimitive = {
       kind: 'skinned-mesh',

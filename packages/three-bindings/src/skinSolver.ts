@@ -6,13 +6,19 @@
  * push through `engine.updatePrimitive(id, { positions, normals })`.
  *
  * Algorithm: linear blend skinning (LBS) per glTF 2.0 / three.js convention,
- * preceded by morph-target blending when the primitive carries blend shapes:
+ * preceded by morph-target blending when the primitive carries blend shapes,
+ * and respecting `bindMatrix` / `bindMatrixInverse` when supplied:
  *
  *   morphedPos[v]    = restPos[v]    + Σ_t morphWeights[t] · morphTargets[t][v]
  *   morphedNormal[v] = restNormal[v] + Σ_t morphWeights[t] · morphTargetNormals[t][v]
- *   skinMatrix[v] = Σ_k weights[v,k] · ( bones[idx[v,k]] · boneInverses[idx[v,k]] )
- *   deformedPos[v]    = skinMatrix[v] · morphedPos[v]              (w=1 transform)
- *   deformedNormal[v] = mat3(skinMatrix[v]) · morphedNormal[v]     (w=0 transform)
+ *   skinVertex[v]   = bindMatrix       · morphedPos[v]            (skip if bindMatrix omitted)
+ *   skinMatrix[v]   = Σ_k weights[v,k] · ( bones[idx[v,k]] · boneInverses[idx[v,k]] )
+ *   skinnedWorld[v] = skinMatrix[v]    · skinVertex[v]            (w=1 transform)
+ *   deformedPos[v]  = bindMatrixInverse · skinnedWorld[v]         (skip if omitted)
+ *
+ * Normals follow the same pipeline with the mat3 (upper-3x3) variant of
+ * each matrix. For glTF-typical use bindMatrix is identity and the
+ * pipeline collapses to the simpler `deformedPos = skinMatrix · morphedPos`.
  *
  * Per-bone `combined = bones · boneInverses` is precomputed once per call
  * (boneCount 4x4 matrix muls) instead of once per vertex×bone.
@@ -169,16 +175,41 @@ export function solveSkin(
   const restPositions = morphedPositions ?? prim.positions;
   const restNormals = morphedNormals ?? prim.normals;
 
+  // Bind-matrix support: when the SkinnedMesh was bound with a non-identity
+  // bindMatrix, we must pre-transform rest positions to bind-pose-world
+  // space, apply the LBS, then untransform back. glTF-typical hosts skip
+  // these branches because `bindMatrix` is identity (omitted).
+  const bm = prim.bindMatrix;
+  const bmi = prim.bindMatrixInverse;
+  const hasBind = bm != null && bmi != null;
+  if (hasBind && (bm.length !== 16 || bmi.length !== 16)) {
+    throw new Error(
+      `solveSkin: bindMatrix / bindMatrixInverse must be 16-element column-major matrices.`,
+    );
+  }
+
   // Per-vertex accumulation. We do not allocate a per-vertex 4x4 skinMatrix;
   // instead we accumulate the 12 entries needed for point + direction
   // transforms directly (m00..m23, omitting the projective row).
   for (let v = 0; v < vertCount; v++) {
-    const px = restPositions[v * 3 + 0]!;
-    const py = restPositions[v * 3 + 1]!;
-    const pz = restPositions[v * 3 + 2]!;
-    const nx = restNormals[v * 3 + 0]!;
-    const ny = restNormals[v * 3 + 1]!;
-    const nz = restNormals[v * 3 + 2]!;
+    let px = restPositions[v * 3 + 0]!;
+    let py = restPositions[v * 3 + 1]!;
+    let pz = restPositions[v * 3 + 2]!;
+    let nx = restNormals[v * 3 + 0]!;
+    let ny = restNormals[v * 3 + 1]!;
+    let nz = restNormals[v * 3 + 2]!;
+
+    // Pre-multiply by bindMatrix when present (local → bind-world).
+    if (hasBind) {
+      const tx = bm[0]! * px + bm[4]! * py + bm[8]! * pz + bm[12]!;
+      const ty = bm[1]! * px + bm[5]! * py + bm[9]! * pz + bm[13]!;
+      const tz = bm[2]! * px + bm[6]! * py + bm[10]! * pz + bm[14]!;
+      px = tx; py = ty; pz = tz;
+      const dnx = bm[0]! * nx + bm[4]! * ny + bm[8]! * nz;
+      const dny = bm[1]! * nx + bm[5]! * ny + bm[9]! * nz;
+      const dnz = bm[2]! * nx + bm[6]! * ny + bm[10]! * nz;
+      nx = dnx; ny = dny; nz = dnz;
+    }
 
     // Accumulator entries: skin[r,c] for r in 0..3, c in 0..4 (we only need
     // the top 3 rows). Indexed below by `s<r><c>` where r ∈ {0,1,2}.
@@ -206,10 +237,10 @@ export function solveSkin(
       s23 += w * combined[off + 14]!;
     }
 
-    // Position transform (w = 1).
-    positions[v * 3 + 0] = s00 * px + s01 * py + s02 * pz + s03;
-    positions[v * 3 + 1] = s10 * px + s11 * py + s12 * pz + s13;
-    positions[v * 3 + 2] = s20 * px + s21 * py + s22 * pz + s23;
+    // Position transform (w = 1) → skinned-world space.
+    let outX = s00 * px + s01 * py + s02 * pz + s03;
+    let outY = s10 * px + s11 * py + s12 * pz + s13;
+    let outZ = s20 * px + s21 * py + s22 * pz + s23;
 
     // Normal transform (w = 0). Uses the upper 3x3 of the skin matrix
     // directly; for rigid bones (rotations only) this is correct. For
@@ -218,6 +249,22 @@ export function solveSkin(
     let dnx = s00 * nx + s01 * ny + s02 * nz;
     let dny = s10 * nx + s11 * ny + s12 * nz;
     let dnz = s20 * nx + s21 * ny + s22 * nz;
+
+    // Post-multiply by bindMatrixInverse to return to mesh-local space.
+    if (hasBind) {
+      const tx = bmi[0]! * outX + bmi[4]! * outY + bmi[8]! * outZ + bmi[12]!;
+      const ty = bmi[1]! * outX + bmi[5]! * outY + bmi[9]! * outZ + bmi[13]!;
+      const tz = bmi[2]! * outX + bmi[6]! * outY + bmi[10]! * outZ + bmi[14]!;
+      outX = tx; outY = ty; outZ = tz;
+      const tnx = bmi[0]! * dnx + bmi[4]! * dny + bmi[8]! * dnz;
+      const tny = bmi[1]! * dnx + bmi[5]! * dny + bmi[9]! * dnz;
+      const tnz = bmi[2]! * dnx + bmi[6]! * dny + bmi[10]! * dnz;
+      dnx = tnx; dny = tny; dnz = tnz;
+    }
+
+    positions[v * 3 + 0] = outX;
+    positions[v * 3 + 1] = outY;
+    positions[v * 3 + 2] = outZ;
     const invLen = 1 / Math.sqrt(dnx * dnx + dny * dny + dnz * dnz + 1e-20);
     dnx *= invLen; dny *= invLen; dnz *= invLen;
     normals[v * 3 + 0] = dnx;

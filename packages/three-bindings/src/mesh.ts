@@ -216,6 +216,23 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
     }
   }
 
+  // Mesh bind matrix: identity for glTF-typical use, but non-identity when
+  // the host called `mesh.bind(skeleton, customBindMatrix)` or bound after
+  // positioning the mesh. Three.js stores both bindMatrix and its inverse.
+  // We only emit them when bindMatrix is not identity (saves bytes + makes
+  // the common case clearly identity-defaulted).
+  const bm = obj.bindMatrix.elements;
+  const isIdentityBind =
+    bm[0] === 1 && bm[5] === 1 && bm[10] === 1 && bm[15] === 1 &&
+    bm[1] === 0 && bm[2] === 0 && bm[3] === 0 &&
+    bm[4] === 0 && bm[6] === 0 && bm[7] === 0 &&
+    bm[8] === 0 && bm[9] === 0 && bm[11] === 0 &&
+    bm[12] === 0 && bm[13] === 0 && bm[14] === 0;
+  const bindMatrix = isIdentityBind ? undefined : new Float32Array(obj.bindMatrix.elements);
+  const bindMatrixInverse = isIdentityBind
+    ? undefined
+    : new Float32Array(obj.bindMatrixInverse.elements);
+
   const uvs = extractAttribute(geo, 'uv');
   const tangents = extractAttribute(geo, 'tangent');
   const indices = extractIndex(geo);
@@ -298,5 +315,7 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
     ...(morphTargets != null ? { morphTargets } : {}),
     ...(morphTargetNormals != null ? { morphTargetNormals } : {}),
     ...(morphWeights != null ? { morphWeights } : {}),
+    ...(bindMatrix != null ? { bindMatrix } : {}),
+    ...(bindMatrixInverse != null ? { bindMatrixInverse } : {}),
   };
 }
