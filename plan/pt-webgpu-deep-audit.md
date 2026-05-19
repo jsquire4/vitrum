@@ -210,7 +210,7 @@ Both `updatePrimitive` and `updateEmitter` call `#assertLive` (which already che
 ### G. Capabilities accuracy
 - `supportsAuxBuffers: true`: all four aux textures and variance moments buffer are allocated and populated. Verified clean.
 - `accumulates: true`: progressive accumulation in `accumBuffer` + running average. Correct.
-- `supportsMotionBlur: false`: `shutterTime` is not read anywhere. Correct.
+- Motion blur: the original audit reported `supportsMotionBlur: false` and noted `shutterTime` is unread. Both fields were dropped from the contract on 2026-05-17 (W3-D18; re-dropped 2026-05-18 after a file-split regression). No further action.
 - `supportedAnalyticShapes: new Set<string>()`: incorrect — all 5 shapes are implemented. See M-4.
 - `supportedEmitterKinds`: advertises `['directional', 'point', 'spot', 'rect-area', 'mesh-area']`. All five are wired CPU-side and shader-side. `disc-area` correctly absent. Clean.
 - `maxBounces`: clamped to `PROTOTYPE_MAX_BOUNCES = 8` and shader loop caps at `min(params.maxBounces, 8u)`. Consistent.

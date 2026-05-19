@@ -219,8 +219,8 @@ recommended unless Options C/D fall through.
 `requestAdapter()`, check `adapter.info.vendor === 'google' &&
 adapter.info.architecture === 'swiftshader'` and either (a) refuse to
 mount with a clear error overlay or (b) render but log a single
-prominent warning. Surface the result through `__WG__.isHardwareGpu`
-which the spec already reads. ~20 lines.
+prominent warning. Surface the result through `__WG__.adapterKind`
+(`!== 'swiftshader'`) which the spec already reads. ~20 lines.
 **Per-run cost**: zero.
 **Reliability**: 100% — string match is deterministic.
 **Validates**: nothing new; just makes existing tests fail loudly
