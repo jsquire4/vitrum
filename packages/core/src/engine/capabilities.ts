@@ -11,9 +11,6 @@ export interface EngineCapabilities {
    *  always call `setScene` for any change. */
   readonly supportsIncrementalScene: boolean;
 
-  /** Engine consumes `FrameInput.shutterTime`. */
-  readonly supportsMotionBlur: boolean;
-
   /** Engine reports `FrameOutput.variance` and `FrameOutput.motionVectors`,
    *  enabling external denoisers + adaptive sampling. */
   readonly supportsAuxBuffers: boolean;

@@ -107,7 +107,6 @@ class PTEngineWebGPU implements Engine {
   get capabilities(): EngineCapabilities {
     return {
       supportsIncrementalScene: false, // Honest reporting — updatePrimitive/updateEmitter currently delegate to setScene; flip to true when real incremental patching lands.
-      supportsMotionBlur: false,
       supportsAuxBuffers: true,
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,

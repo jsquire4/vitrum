@@ -20,7 +20,6 @@ import { wrapWithIdempotentDispose } from '../src/createEngine.js';
 
 const NULL_CAPS: EngineCapabilities = {
   supportsIncrementalScene: false,
-  supportsMotionBlur: false,
   supportsAuxBuffers: false,
   accumulates: false,
   maxSamplesPerPixel: Infinity,

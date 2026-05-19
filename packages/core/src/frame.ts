@@ -106,12 +106,6 @@ export interface FrameInput {
    *  for resolutionFactor). */
   readonly quality?: FrameQualitySettings;
 
-  // ── Optional: motion blur ───────────────────────────────────────────────
-  /** Shutter time in [0, 1], representing a position within a single shutter
-   *  interval. Engines that report `capabilities.supportsMotionBlur = true`
-   *  use this to sample the time-varying scene. Engines that don't ignore. */
-  readonly shutterTime?: number;
-
   // ── Optional: backend-specific output target ────────────────────────────
   /** Backend-opaque swap-chain target. WebGPU backends (`@vitrum/pt-webgpu`,
    *  `@vitrum/walkaround-hybrid`) expect a `GPUTextureView`. WebGL backends

@@ -532,7 +532,6 @@ export class PTEngineWebGL2 implements Engine {
 
     return {
       supportsIncrementalScene: false,
-      supportsMotionBlur: false,
       supportsAuxBuffers: false,
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,

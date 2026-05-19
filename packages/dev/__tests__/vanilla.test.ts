@@ -46,7 +46,6 @@ afterEach(() => {
 function makeEngine(): Engine {
   const caps: EngineCapabilities = {
     supportsIncrementalScene: false,
-    supportsMotionBlur: false,
     supportsAuxBuffers: false,
     accumulates: false,
     maxSamplesPerPixel: Infinity,
