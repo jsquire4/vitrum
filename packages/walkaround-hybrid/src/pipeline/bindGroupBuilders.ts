@@ -489,7 +489,6 @@ export function buildIndirectCombineBindGroup(
   cache: BGLCache,
   denoisedDirectView: GPUTextureView,
   hdrIndirectView: GPUTextureView,
-  gNormalDepthView: GPUTextureView,
   combinedOutView: GPUTextureView,
   /** Item 24 — albedo texture view for re-modulation after indirect denoising. */
   albedoView: GPUTextureView,
@@ -500,10 +499,9 @@ export function buildIndirectCombineBindGroup(
     entries: [
       { binding: 0, resource: denoisedDirectView },
       { binding: 1, resource: hdrIndirectView },
-      { binding: 2, resource: gNormalDepthView },
-      { binding: 3, resource: combinedOutView },
+      { binding: 2, resource: combinedOutView },
       // Item 24 — re-modulate denoised indirect by albedo (Schied 2017 §4.1).
-      { binding: 4, resource: albedoView },
+      { binding: 3, resource: albedoView },
     ],
   });
 }

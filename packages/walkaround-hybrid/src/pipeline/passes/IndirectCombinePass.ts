@@ -4,7 +4,6 @@
  * Reads:
  *   - `frameState.denoisedDirect`  (set by the active denoiser dispatch)
  *   - `frameState.denoisedIndirect` (set by `AtrousIndirectPass`)
- *   - `gNormalDepthView` (edge-stop)
  *   - `albedoTexture` (Item 24 / Schied 2017 §4.1 re-modulation)
  *
  * Writes `common.combinedDenoisedTexture` which `TemporalAccumPass` reads
@@ -38,13 +37,16 @@ export class IndirectCombinePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, gNormalDepthView, frameState } = ctx;
+    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, frameState } = ctx;
     const combinedTex = resources.common.combinedDenoisedTexture;
+    // W5-I2 (2026-05-18): gNormalDepthView removed from this call — the
+    // indirect-combine shader never read it (declared "for BGL compat,
+    // unused"). The PassDispatchContext field stays for the other passes
+    // that genuinely use it.
     const bg = buildIndirectCombineBindGroup(
       device, bglCache,
       frameState.denoisedDirect.createView(),
       frameState.denoisedIndirect.createView(),
-      gNormalDepthView,
       combinedTex.createView(),
       // Item 24 — re-modulate denoised indirect by albedo (Schied 2017 §4.1).
       resources.common.albedoTexture.createView(),

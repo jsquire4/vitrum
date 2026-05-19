@@ -17,9 +17,13 @@
  * Bindings:
  *   @group(0) @binding(0) denoisedDirect  (sampled, unfilterable)
  *   @group(0) @binding(1) denoisedIndirect (sampled, unfilterable) — demodulated lighting
- *   @group(0) @binding(2) gNormalDepth    (sampled, unfilterable) — BGL compat, unused
- *   @group(0) @binding(3) combinedOut     (rgba16float, write-only storage)
- *   @group(0) @binding(4) albedo          (sampled, unfilterable) — Item 24 re-modulation
+ *   @group(0) @binding(2) combinedOut     (rgba16float, write-only storage)
+ *   @group(0) @binding(3) albedo          (sampled, unfilterable) — Item 24 re-modulation
+ *
+ * W5-I2 cleanup (2026-05-18): the previous `gNormalDepth` binding at slot 2
+ * was declared "for BGL compat, unused" and never read by the shader body —
+ * dropped along with its host-side BGL entry + builder argument. Bindings
+ * 3/4 renumbered to 2/3.
  *
  * Reference: Schied et al. 2017, "Spatiotemporal Variance-Guided Filtering",
  *   HPG §4.1: "We demodulate the lighting from the albedo of the first hit
@@ -32,11 +36,10 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 export const INDIRECT_COMBINE_WGSL = /* wgsl */ `
 @group(0) @binding(0) var ic_denoisedDirect:   texture_2d<f32>;
 @group(0) @binding(1) var ic_denoisedIndirect: texture_2d<f32>;
-@group(0) @binding(2) var ic_gNormalDepth:     texture_2d<f32>;
-@group(0) @binding(3) var ic_combinedOut:      texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var ic_combinedOut:      texture_storage_2d<rgba16float, write>;
 // Item 24 — albedo demodulation (Schied 2017 §4.1). Written by shade as the
 // visible-point diffuse colour; used here to re-modulate the denoised lighting.
-@group(0) @binding(4) var ic_albedo:           texture_2d<f32>;
+@group(0) @binding(3) var ic_albedo:           texture_2d<f32>;
 
 @compute @workgroup_size(16, 16, 1)
 fn indirectCombineMain(@builtin(global_invocation_id) gid: vec3u) {

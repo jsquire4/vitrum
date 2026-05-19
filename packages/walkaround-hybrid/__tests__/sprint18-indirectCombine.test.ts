@@ -44,11 +44,15 @@ describe('Sprint 18 — indirect-combine WGSL', () => {
     expect(INDIRECT_COMBINE_WGSL).toContain('@workgroup_size(16, 16, 1)');
   });
 
-  it('binds denoisedDirect, denoisedIndirect, gNormalDepth, and combinedOut', () => {
+  it('binds denoisedDirect, denoisedIndirect, combinedOut, and albedo', () => {
+    // W5-I2 (2026-05-18): previous slot-2 `ic_gNormalDepth` was declared
+    // "for BGL compat" but never read; dropped along with the host-side
+    // BGL entry. Bindings 3/4 renumbered to 2/3.
     expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(0) var ic_denoisedDirect');
     expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(1) var ic_denoisedIndirect');
-    expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(2) var ic_gNormalDepth');
-    expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(3) var ic_combinedOut');
+    expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(2) var ic_combinedOut');
+    expect(INDIRECT_COMBINE_WGSL).toContain('@group(0) @binding(3) var ic_albedo');
+    expect(INDIRECT_COMBINE_WGSL).not.toContain('ic_gNormalDepth');
   });
 
   it('sums denoised direct + denoised indirect into the combined texture', () => {
