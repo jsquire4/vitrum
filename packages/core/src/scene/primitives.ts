@@ -110,6 +110,22 @@ export interface SkinnedMeshPrimitive {
   readonly bones: Float32Array;
   /** Inverse bind matrices: `boneCount * 16` column-major f32s. */
   readonly boneInverses: Float32Array;
+  /**
+   * Blend-shape (morph-target) deltas. Each entry is a position delta of
+   * length `vertexCount * 3` (Δx,Δy,Δz per vertex). glTF convention —
+   * displacement from the rest pose, applied before skinning:
+   *
+   *   morphedPos = restPos + Σ_t morphWeights[t] · morphTargets[t]
+   *
+   * If a host has absolute-position morphs (the older three.js
+   * `morphTargetsRelative === false` mode), the adapter converts to
+   * deltas at extract time. Optional `morphTargetNormals` carries
+   * matching normal deltas; omit for position-only morphs.
+   */
+  readonly morphTargets?: ReadonlyArray<Float32Array>;
+  readonly morphTargetNormals?: ReadonlyArray<Float32Array>;
+  /** Per-target influence weights, length = morphTargets.length. */
+  readonly morphWeights?: Float32Array;
   readonly material: MaterialSpec;
   readonly transform?: Mat4;
   readonly castShadow?: boolean;

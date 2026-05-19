@@ -98,6 +98,17 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
     const triCount = triangleCountFor(prim.positions, prim.indices);
     return { ...transformed, triangles: triCount };
   }
+  if (prim.kind === 'skinned-mesh') {
+    // Use rest-pose positions for the scene AABB. Deformed bounds change
+    // every frame in principle, but a static initial AABB is sufficient
+    // for camera framing / probe-grid allocation; in-flight pose-driven
+    // refit of the BVH is a separate concern.
+    const local = vertexAabb(prim.positions);
+    if (local == null) return null;
+    const transformed = transformAabb(local, prim.transform);
+    const triCount = triangleCountFor(prim.positions, prim.indices);
+    return { ...transformed, triangles: triCount };
+  }
   if (prim.kind === 'instanced-mesh') {
     const local = vertexAabb(prim.positions);
     if (local == null) return null;

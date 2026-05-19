@@ -16,6 +16,7 @@ import type {
   NoneEnvironment,
   Vec3,
 } from '@vitrum/core';
+import { solveSkin } from './skinSolver.js';
 import {
   BufferGeometry,
   BufferAttribute,
@@ -151,6 +152,33 @@ function meshPrimitiveToThree(p: MeshPrimitive, meshAreaRadianceRgb?: Vec3): Mes
   const geo = new BufferGeometry();
   geo.setAttribute('position', new BufferAttribute(p.positions, 3));
   geo.setAttribute('normal', new BufferAttribute(p.normals, 3));
+  if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
+  if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
+  if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
+  const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb);
+  const mesh = new Mesh(geo, mat);
+  mesh.name = String(p.id);
+  const m = new Matrix4();
+  if (p.transform) m.fromArray(p.transform);
+  else m.identity();
+  mesh.matrix.copy(m);
+  mesh.matrixWorld.copy(m);
+  mesh.matrixAutoUpdate = false;
+  return mesh;
+}
+
+/** Convert a SkinnedMeshPrimitive to a static THREE.Mesh by pre-solving
+ *  the current pose. C1 (2026-05-19) — pt-webgl/pt-webgpu treat the result
+ *  as a regular mesh; per-frame pose updates flow through
+ *  `engine.updatePrimitive(id, { positions, normals })` from solveSkin. */
+function skinnedMeshPrimitiveToThree(
+  p: import('@vitrum/core').SkinnedMeshPrimitive,
+  meshAreaRadianceRgb?: Vec3,
+): Mesh {
+  const { positions, normals } = solveSkin(p);
+  const geo = new BufferGeometry();
+  geo.setAttribute('position', new BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new BufferAttribute(normals, 3));
   if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
   if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
   if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
@@ -417,7 +445,9 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
   const threeScene = new Scene();
   const meshBoost = meshEmitterBoostByPrimitiveId(vitrumScene);
   const meshPrimitiveIds = new Set(
-    vitrumScene.primitives.filter((p) => p.kind === 'mesh').map((p) => String(p.id)),
+    vitrumScene.primitives
+      .filter((p) => p.kind === 'mesh' || p.kind === 'skinned-mesh')
+      .map((p) => String(p.id)),
   );
   for (const e of vitrumScene.emitters) {
     if (e.kind === 'mesh-area' && !meshPrimitiveIds.has(String(e.meshId))) {
@@ -430,6 +460,9 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
     if (p.kind === 'mesh') {
       const add = meshBoost.get(String(p.id));
       threeScene.add(meshPrimitiveToThree(p, add));
+    } else if (p.kind === 'skinned-mesh') {
+      const add = meshBoost.get(String(p.id));
+      threeScene.add(skinnedMeshPrimitiveToThree(p, add));
     } else {
       throw new Error(
         `Unsupported @vitrum/core primitive kind "${(p as ScenePrimitive).kind}" in vitrumSceneToThree. Supported types are added per Phase 6 sprint.`,

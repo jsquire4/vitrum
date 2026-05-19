@@ -221,6 +221,45 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
   const indices = extractIndex(geo);
   const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
 
+  // ── Morph targets ────────────────────────────────────────────────────────
+  // glTF default (three.js `morphTargetsRelative === true`) → already deltas.
+  // Absolute mode → subtract `positions` to obtain a delta.
+  let morphTargets: Float32Array[] | undefined;
+  let morphTargetNormals: Float32Array[] | undefined;
+  let morphWeights: Float32Array | undefined;
+  const posMorphs = geo.morphAttributes.position;
+  if (posMorphs != null && posMorphs.length > 0) {
+    const relative = geo.morphTargetsRelative;
+    morphTargets = [];
+    for (const attr of posMorphs) {
+      const arr = attr.array instanceof Float32Array
+        ? new Float32Array(attr.array)
+        : new Float32Array(attr.array);
+      if (!relative) {
+        // Absolute → delta: arr[i] - positions[i]
+        for (let i = 0; i < arr.length; i++) arr[i] = arr[i]! - positions[i]!;
+      }
+      morphTargets.push(arr);
+    }
+    const normMorphs = geo.morphAttributes.normal;
+    if (normMorphs != null && normMorphs.length === posMorphs.length) {
+      morphTargetNormals = [];
+      for (const attr of normMorphs) {
+        const arr = attr.array instanceof Float32Array
+          ? new Float32Array(attr.array)
+          : new Float32Array(attr.array);
+        if (!relative) {
+          for (let i = 0; i < arr.length; i++) arr[i] = arr[i]! - normals[i]!;
+        }
+        morphTargetNormals.push(arr);
+      }
+    }
+    const influences = obj.morphTargetInfluences;
+    morphWeights = influences != null
+      ? new Float32Array(influences)
+      : new Float32Array(posMorphs.length);   // default all zero
+  }
+
   // Multi-material handling mirrors convertMesh.
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
@@ -256,5 +295,8 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
     ...(uvs != null ? { uvs } : {}),
     ...(tangents != null ? { tangents } : {}),
     ...(indices != null ? { indices } : {}),
+    ...(morphTargets != null ? { morphTargets } : {}),
+    ...(morphTargetNormals != null ? { morphTargetNormals } : {}),
+    ...(morphWeights != null ? { morphWeights } : {}),
   };
 }

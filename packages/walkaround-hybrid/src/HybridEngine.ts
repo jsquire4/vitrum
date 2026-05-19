@@ -1287,10 +1287,12 @@ export class HybridEngine implements Engine {
 
   // ── Private helpers ────────────────────────────────────────────────────
 
-  /** True when `_lastScene` supplies at least one triangle mesh primitive. */
+  /** True when `_lastScene` supplies at least one triangle mesh primitive
+   *  (rest-pose skinned meshes count — host pushes deformed positions via
+   *  `updatePrimitive`, but the BVH still needs a non-empty scene to build). */
   private _coreSceneSuppliesMeshes(): boolean {
     const s = this._lastScene;
-    return s != null && s.primitives.some((p) => p.kind === 'mesh');
+    return s != null && s.primitives.some((p) => p.kind === 'mesh' || p.kind === 'skinned-mesh');
   }
 
   /**
