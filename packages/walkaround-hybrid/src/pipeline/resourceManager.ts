@@ -14,9 +14,11 @@
  * W1-R2 (2026-05-17) — the formerly 41-field flat `FrameResources` god-struct
  * is now split into 8 per-algorithm sub-structs (`common`, `restirDI`,
  * `restirGI`, `ddgi`, `gtao`, `svgf`, `ppg`, `neural`). Sub-struct boundaries
- * map to the per-algorithm passes in `pipeline/passes/*`. `ppg` and `neural`
- * are empty placeholders for W9 (PPG GPU dTree) and W10 (neural denoiser
- * finish) respectively. See plan/premium-grade-refactor-20260517.md §W1-R2
+ * map to the per-algorithm passes in `pipeline/passes/*`. The `ppg` and
+ * `neural` sub-structs were empty placeholders at the W1-R2 landing time;
+ * both have since been populated — `ppg` by the W9 finish (PPG GPU dTree
+ * traversal + per-pixel position binding), `neural` by W10 (the U-Net
+ * inference graph). See plan/premium-grade-refactor-20260517.md §W1-R2
  * and complexity-sweep-20260517 findings A3 + B6.
  */
 
