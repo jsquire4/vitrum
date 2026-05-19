@@ -3,7 +3,7 @@
 **Audit date (original):** 2026-05-17
 **Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Five new open items filed 2026-05-19** (E1/E2/E3/E4/E5 — see Section E): a 2026-05-17 merge race silently lost five sprint commits (W2-C6 shared-samplers WGSL primitives; W3-D6 Mat4 brand; W3-D7 FrameOutput discriminated union; W3-D19 BackendTexture brand; W6-E1 `reuseSharedWebGpuDevice` default flip) — the commits exist in `git log` but their changes are not in HEAD. All five are type-system / structural / API-hygiene improvements, not runtime bugs.
+> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Six new open items filed 2026-05-19** (E1–E6 — see Section E): a 2026-05-17 merge race silently lost six sprint commits (W2-C6 shared-samplers WGSL primitives; W3-D6 Mat4 brand; W3-D7 FrameOutput discriminated union; W3-D19 BackendTexture brand; W6-E1 `reuseSharedWebGpuDevice` default flip; W6-E6 `ForkAccess` indirection) — the commits exist in `git log` but their changes are not in HEAD. All six are type-system / structural / API-hygiene improvements, not runtime bugs. W4/W7/W11/W12/W13 have not been audited yet.
 
 ---
 
@@ -133,19 +133,22 @@ reconciliation. Descriptions kept below for posterity.
 
 ## Section E — Open items discovered 2026-05-19
 
-### E1–E5 — five sprint-of-2026-05-17 commits lost via merge races
+### E1–E6 — six sprint-of-2026-05-17 commits lost via merge races
 
-All five landed as standalone feature commits in the May 17 sprint but their
+All six landed as standalone feature commits in the May 17 sprint but their
 changes did not survive into HEAD because subsequent commits were branched
 from pre-feature parents and silently overwrote them on merge. The features
 still exist as commits in `git log`; they just have zero footprint in the
-current code. All five are type-system / structural / API-hygiene changes —
-none of them is a runtime correctness bug, the pre-sprint behaviour is what's
+current code. All six are type-system / structural / API-hygiene changes —
+none is a runtime correctness bug, the pre-sprint behaviour is what's
 running. The fix in each case is to re-apply the change plus update all
 consumers; the touch radius is moderate but not load-bearing today. Bundle
 these on the next contract-hygiene pass since E1 + E3 both touch `frame.ts`,
-E4 touches sites that E2 also brushes against, and E5 is a self-contained
-breaking-change to three files.
+E4 touches sites that E2 also brushes against, and E5 / E6 are self-contained
+to a small set of files.
+
+The audit so far has spot-checked W2/W3/W6 sub-bullets. W4/W7/W11/W12/W13
+have not been comprehensively audited — additional losses may surface.
 
 ### E1. W3-D7 FrameOutput discriminated union — lost in a merge race
 
@@ -165,6 +168,14 @@ breaking-change to three files.
 - **Verification:** `grep -c "__mat4Brand" packages/core/src/scene/math.ts` → 0; `grep -rn "asMat4" packages/*/src --include="*.ts"` → 0 callers.
 - **Fix:** re-port the D6 changes to `scene/math.ts` (brand + asMat4), then re-update the 21 implicit-cast construction sites that D6 originally fixed (three-bindings, pt-webgpu, engine).
 - **Why deferred:** type-system improvement, not a runtime bug. Catch on next contract-hygiene pass.
+
+### E6. W6-E6 ForkAccess indirection — lost the same way
+
+- **Where:** `packages/pt-webgl/src/`. Commit `a6a3c90` (W6-E6, 2026-05-17) added `forkAccess.ts` (static `ForkAccess` class with `getMaterial(tracer)` + `getRenderTexture(tracer)`) and migrated `forkUniformBridge.ts` + `ptEngineWebGL2.ts` off direct `tracer._pathTracer.material.uniforms` reach-throughs.
+- **Symptom:** if the upstream three-gpu-pathtracer fork renames `_pathTracer` (or upstreams an official accessor), `forkUniformBridge.ts` and `ptEngineWebGL2.ts` break in lockstep and have to be hand-patched at every reach-through site — the exact problem the indirection was meant to solve.
+- **Verification:** `packages/pt-webgl/src/forkAccess.ts` is missing. `grep -n "_pathTracer" packages/pt-webgl/src/forkUniformBridge.ts` returns the pre-E6 direct-cast form: `const tracer = pathTracer as { _pathTracer?: { material?: PathTracerMaterialLike } }; const material = tracer._pathTracer?.material ?? null;`.
+- **Fix:** re-apply `a6a3c90`. Test-only helper `makeForkPathTracerStubForTests` also needs re-adding (the original commit added it).
+- **Why deferred:** structural refactor, not a runtime bug. Bundle with E1–E5.
 
 ### E5. W6-E1 reuseSharedWebGpuDevice default flip — lost the same way
 

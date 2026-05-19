@@ -60,12 +60,15 @@ Read in this order to onboard:
 > parents and overwrote them. Verified-lost so far: **W2-C6** (shared-samplers
 > WGSL primitives), **W3-D6** (Mat4 brand), **W3-D7** (FrameOutput discriminated
 > union), **W3-D19** (BackendTexture brand), **W6-E1** (`reuseSharedWebGpuDevice`
-> default flip). All five are flagged inline as "NOT IN HEAD" with verification
+> default flip), **W6-E6** (`ForkAccess` indirection). All six are flagged inline as "NOT IN HEAD" with verification
 > steps; full fix plans in `items_to_fix.md` Section E. Until those are
 > re-applied, treat any "shipped" W2 / W3 / W6 bullet that changes a contract,
 > default value, or public symbol as suspect — verify by `grep`-ing for the
 > claimed symbol before relying on it. (The runtime behavior is the pre-sprint
 > behavior; the losses are scope/structure improvements, not correctness bugs.)
+> The audit so far has spot-checked W2/W3/W6; the rest of W4/W7/W11/W12/W13 has
+> not been comprehensively audited — those bullets may also contain merge-race
+> losses. Add to Section E as more are found.
 
 ### W3 — contract hygiene (surgical core/* moves)
 
@@ -86,7 +89,7 @@ Read in this order to onboard:
 - E1 — **NOT IN HEAD.** The feature commit (`3dbe11a`) was supposed to flip `reuseSharedWebGpuDevice`'s default from `true` to `false` (callers must opt in) per the host-owns-lifecycle design principle. The commit's diff replaced `!== false` with `=== true` in the three denoiser dispatchers. Verified 2026-05-19: `grep -n "reuseSharedWebGpuDevice !== false" packages/shared-denoisers/src/*.ts` returns 3 hits — the pre-E1 form. Same merge-race casualty pattern as D6/D7/D19/C6.
 - E2 — module-level `iblBaker` cache replaced with per-engine `IblBakerCache` instance (`feat/w6-hidden-globals-pt-webgl`, `6a5106f`).
 - E3 — `window.__WGPU__` write removed from `HybridEngine.renderFrame` (use `onFrame`) (`7d85bb0`).
-- E6 — fork-private `_pathTracer` access encapsulated behind a `ForkAccess` indirection (`a6a3c90`).
+- E6 — **NOT IN HEAD.** The feature commit (`a6a3c90`) introduced `packages/pt-webgl/src/forkAccess.ts` (`ForkAccess` static class) and migrated `forkUniformBridge.ts` + `ptEngineWebGL2.ts` to go through `ForkAccess.getMaterial(tracer)` / `ForkAccess.getRenderTexture(tracer)`. Verified 2026-05-19: `packages/pt-webgl/src/forkAccess.ts` is missing; `grep -n "_pathTracer" packages/pt-webgl/src/forkUniformBridge.ts` returns the pre-E6 direct-cast form (`tracer._pathTracer?.material ?? null`). Same merge-race pattern.
 
 ### W7 — dead-code + misplaced-code cleanup
 
