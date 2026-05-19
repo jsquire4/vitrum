@@ -153,7 +153,7 @@ export class RCSubsystem {
         !this._probeOriginWorld || !this._roomSize) {
       return;
     }
-    void this._dispatcher.dispatchFrameRaw({
+    this._dispatcher.dispatchFrameRaw({
       device: this._device,
       bvhNodesBuf:      this._bvhBuffers.bvhNodesBuf,
       bvhIndicesBuf:    this._bvhBuffers.bvhIndicesBuf,

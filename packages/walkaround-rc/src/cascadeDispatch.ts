@@ -218,7 +218,7 @@ export class RCDispatcher {
    * Pipelines and bind groups are compiled/created lazily on the first call
    * (or after `dispose()`).
    */
-  async dispatchFrameRaw(opts: RCDispatchOptsRaw): Promise<void> {
+  dispatchFrameRaw(opts: RCDispatchOptsRaw): void {
     const device = opts.device;
     if (!this._handles) {
       try {
