@@ -36,16 +36,19 @@ export interface Material {
   emission: Vec3;
 }
 
-/** Simple delta-function directional light (infinite distance). */
-export interface DirectionalLight {
+/** Simple delta-function directional light (infinite distance).
+ *  File-local — consumed only by `Light` union below; tests construct
+ *  `Light` values directly. */
+interface DirectionalLight {
   /** Unit direction toward the light. */
   dir: Vec3;
   /** Radiance scalar (white). */
   radiance: number;
 }
 
-/** Minimal point light (position + radiance). */
-export interface PointLight { pos: Vec3; radiance: Vec3 }
+/** Minimal point light (position + radiance).
+ *  File-local — see `DirectionalLight` rationale. */
+interface PointLight { pos: Vec3; radiance: Vec3 }
 
 export type Light = { kind: 'directional'; light: DirectionalLight }
                   | { kind: 'point';       light: PointLight };

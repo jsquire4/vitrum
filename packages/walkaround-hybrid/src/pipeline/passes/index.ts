@@ -38,4 +38,3 @@ export { IndirectCombinePass } from './IndirectCombinePass.js';
 export { TemporalAccumPass } from './TemporalAccumPass.js';
 export { ResolvePass } from './ResolvePass.js';
 export { CompositePass } from './CompositePass.js';
-export type { PingPongRef } from './passRefs.js';

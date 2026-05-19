@@ -16,4 +16,3 @@
  */
 
 export { buildArrayBvh as buildCpuBvh } from '@vitrum/shared-bvh';
-export type { CpuBvhBuildResult } from '@vitrum/shared-bvh';
