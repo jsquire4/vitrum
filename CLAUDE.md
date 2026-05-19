@@ -48,11 +48,22 @@ Read in this order to onboard:
 - C2 — THREE-independent `buildArrayBvh` hoisted from `pt-webgpu` into `shared-bvh` (`feat/w2-c2-bvh-builder-shared`, `44598ad`).
 - C3 — canonical octEncode/octDecode (was buggy `sign(0)→0` collapse) (`8fec673`).
 - C4 — `probeAtlasUv` reused instead of 3 inline atlas-coord derivations (`3446817`).
-- C6 — PCG / cosineHemisphere / ONB / Fresnel / GGX primitives canonicalised into `shared-samplers` (`feat/w2-c6-c15-pcg-hash-primitives`, `da286d7`).
+- C6 — **NOT IN HEAD.** The feature commit (`da286d7`) introduced `packages/shared-samplers/src/wgsl/pcg.wgsl.ts` (80 LOC) and `bsdfPrimitives.wgsl.ts` (108 LOC), and migrated walkaround-hybrid + pt-webgpu off their local copies. Both files are missing from HEAD as of 2026-05-19; `walkaround-hybrid/src/shaders/common.wgsl.ts` and `pt-webgpu/src/wgsl/common.wgsl.ts` once again contain byte-identical local `fn pcgInit` / `fn pcgNext` definitions. Same merge-race pattern as D6/D7/D19. See `items_to_fix.md` E4.
 - C15 — pixel-hash function canonicalised into `shared-samplers/wgsl/hash` (`651619e`).
 - C10 — Rec.709 luminance vector canonicalised across `shared-samplers` / `shared-denoisers` / `walkaround-hybrid` (`feat/w2-small-dedups-c10-c11-c12`, `54ae795`).
 - C11 — duplicated B3-spline atrous kernel collapsed (`76120b9`).
 - C12 — `GTAOUniforms` struct deduped across `gtao` + `gtaoUpsample` shaders (`8a40ffe`).
+
+> **Caveat — May 17 merge-race losses (filed 2026-05-19).** Several feature
+> commits from the 2026-05-17 sprint exist in `git log` but their changes were
+> silently dropped from HEAD when subsequent commits merged from pre-feature
+> parents and overwrote them. Verified-lost so far: **W2-C6** (shared-samplers
+> WGSL primitives), **W3-D6** (Mat4 brand), **W3-D7** (FrameOutput discriminated
+> union), **W3-D19** (BackendTexture brand). All four are flagged inline as
+> "NOT IN HEAD" with verification steps; full fix plans in `items_to_fix.md`
+> Section E. Until those are re-applied, treat any W3 "shipped" bullet that
+> changes the public type contract as suspect — verify by `grep`-ing for the
+> claimed symbol before relying on it.
 
 ### W3 — contract hygiene (surgical core/* moves)
 

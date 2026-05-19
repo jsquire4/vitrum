@@ -3,7 +3,7 @@
 **Audit date (original):** 2026-05-17
 **Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Three new open items filed 2026-05-19** (E1/E2/E3 — see Section E): a 2026-05-17 merge race silently lost three W3 contract-hygiene commits (D6 Mat4 brand, D7 FrameOutput discriminated union, D19 BackendTexture brand) — the commits exist in `git log` but their changes are not in HEAD. All three are type-system improvements, not runtime bugs.
+> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Four new open items filed 2026-05-19** (E1/E2/E3/E4 — see Section E): a 2026-05-17 merge race silently lost four sprint commits (W2-C6 shared-samplers WGSL primitives; W3-D6 Mat4 brand; W3-D7 FrameOutput discriminated union; W3-D19 BackendTexture brand) — the commits exist in `git log` but their changes are not in HEAD. All four are type-system / structural improvements, not runtime bugs.
 
 ---
 
@@ -133,16 +133,18 @@ reconciliation. Descriptions kept below for posterity.
 
 ## Section E — Open items discovered 2026-05-19
 
-### E1, E2, E3 — three W3 contract-hygiene commits lost via merge races
+### E1, E2, E3, E4 — four sprint-of-2026-05-17 commits lost via merge races
 
-All three landed as standalone feature commits in the May 17 sprint but their
-contract changes did not survive into HEAD because subsequent commits were
-branched from pre-feature parents and silently overwrote them on merge. The
-features still exist as commits in `git log`; they just have zero footprint in
-the current code. All three are type-system improvements that don't affect
-runtime correctness — the old contract still works at runtime. The fix in
-each case is to re-apply the contract change plus update all consumers; the
-touch radius is moderate but not load-bearing today.
+All four landed as standalone feature commits in the May 17 sprint but their
+changes did not survive into HEAD because subsequent commits were branched
+from pre-feature parents and silently overwrote them on merge. The features
+still exist as commits in `git log`; they just have zero footprint in the
+current code. All four are type-system / structural improvements that don't
+affect runtime correctness — the old shape still works. The fix in each case
+is to re-apply the change plus update all consumers; the touch radius is
+moderate but not load-bearing today. Bundle these on the next contract-
+hygiene pass since E1 + E3 both touch `frame.ts` and E4 touches sites that
+E2 also brushes against.
 
 ### E1. W3-D7 FrameOutput discriminated union — lost in a merge race
 
@@ -162,6 +164,13 @@ touch radius is moderate but not load-bearing today.
 - **Verification:** `grep -c "__mat4Brand" packages/core/src/scene/math.ts` → 0; `grep -rn "asMat4" packages/*/src --include="*.ts"` → 0 callers.
 - **Fix:** re-port the D6 changes to `scene/math.ts` (brand + asMat4), then re-update the 21 implicit-cast construction sites that D6 originally fixed (three-bindings, pt-webgpu, engine).
 - **Why deferred:** type-system improvement, not a runtime bug. Catch on next contract-hygiene pass.
+
+### E4. W2-C6 shared-samplers WGSL primitives — lost the same way
+
+- **Where:** `packages/shared-samplers/src/wgsl/`. Commit `da286d7` (W2-C6, 2026-05-17) introduced `pcg.wgsl.ts` (80 LOC: `pcgInit`, `pcgNext`, `rand_f32`, `rand_f32_2`, `rand_f32_3`) and `bsdfPrimitives.wgsl.ts` (108 LOC: `buildONB`, `sampleCosineHemisphere`, `cosineHemispherePdf`, `fresnelSchlick`) as canonical sources, and migrated walkaround-hybrid + pt-webgpu off their local copies. Neither file is in HEAD; both local copies are back. Verified 2026-05-19: `ls packages/shared-samplers/src/wgsl/` returns only `hammersley.wgsl.ts`, `luminance.wgsl.ts`, `octahedralCore.wgsl.ts`. `grep -A5 "fn pcgInit" packages/pt-webgpu/src/wgsl/common.wgsl.ts packages/walkaround-hybrid/src/shaders/common.wgsl.ts` returns byte-identical 6-line definitions in both files.
+- **Symptom:** parallel WGSL primitives evolving in two places. The original C6 motivation — capitalisation drift (`buildONB` vs `buildOnb`) and arg-order drift (`sampleCosineHemisphere(n, rng)` vs `cosineHemisphereSample(rng, n)`) — has had time to re-accumulate.
+- **Fix:** re-apply `da286d7` cleanly. The original commit's stat: `pcg.wgsl.ts` +80, `bsdfPrimitives.wgsl.ts` +108, walkaround-hybrid common -75 LOC, pt-webgpu common -35 LOC, pathTraceBruteforce -38 LOC.
+- **Why deferred:** structural cleanup, not a runtime bug. Bundle with E1/E2/E3 on the next contract-hygiene pass.
 
 ### E3. W3-D19 BackendTexture brand — lost in the same D7↔D18 merge race
 
