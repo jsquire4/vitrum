@@ -149,11 +149,11 @@ export function applyDDGIShading(
     const PI_INV = uniform(1.0 / Math.PI);
     // AnyNode casts below are needed because three/tsl typings are conservative
     // and don't model wgslFn return types precisely.
-    const ddgiContrib = mul(ddgiIrr as AnyNode, mul(materialColor as AnyNode, PI_INV as AnyNode));
+    const ddgiContrib = mul(ddgiIrr, mul(materialColor as AnyNode, PI_INV));
 
-    const linearOutput = add(output, vec4(ddgiContrib as AnyNode, 0.0 as AnyNode));
+    const linearOutput = add(output, vec4(ddgiContrib as AnyNode, 0.0));
     (nodeMat as MeshPhysicalNodeMaterial & { outputNode: unknown }).outputNode =
-      renderOutput(linearOutput as AnyNode, OUTPUT_TONE_MAPPING, OUTPUT_COLOR_SPACE);
+      renderOutput(linearOutput, OUTPUT_TONE_MAPPING, OUTPUT_COLOR_SPACE);
     nodeMat.needsUpdate = true;
     _injectedMaterials.set(obj, { original: originalMat, upgraded: nodeMat });
   });

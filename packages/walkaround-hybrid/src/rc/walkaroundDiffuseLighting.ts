@@ -104,7 +104,7 @@ export function buildWalkaroundLightingNode(
   // AnyNode cast: storage() from three/tsl has conservative typings that don't
   // accept the StorageBufferAttribute + string-type combo at strict TSC level.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const c0Storage = (storage as any)(c0Attr, 'vec4f', c0Attr.count).toReadOnly() as AnyNode;
+  const c0Storage = (storage as any)(c0Attr, 'vec4f', c0Attr.count).toReadOnly();
 
   // Build the diffuse GI term: sum over 16 C0 directions weighted by cosine.
   // Trilinear probe interpolation via 8-corner loop (unrolled outside for TSL).
@@ -136,21 +136,21 @@ export function buildWalkaroundLightingNode(
           for (let dx = 0; dx < 2; dx++) {
             // AnyNode casts: TSL clamp() / toInt() / mul() have strict typed overloads
             // that don't model mixed-int-float chains well at TSC level.
-            const cx = clamp(gridIx.add(float(dx)).toInt() as AnyNode, 0 as AnyNode, (PX - 1) as AnyNode) as AnyNode;
-            const cy = clamp(gridIy.add(float(dy)).toInt() as AnyNode, 0 as AnyNode, (PY - 1) as AnyNode) as AnyNode;
-            const cz = clamp(gridIz.add(float(dz)).toInt() as AnyNode, 0 as AnyNode, (PZ - 1) as AnyNode) as AnyNode;
+            const cx = clamp(gridIx.add(float(dx)).toInt() as AnyNode, 0, (PX - 1)) as AnyNode;
+            const cy = clamp(gridIy.add(float(dy)).toInt() as AnyNode, 0, (PY - 1)) as AnyNode;
+            const cz = clamp(gridIz.add(float(dz)).toInt() as AnyNode, 0, (PZ - 1)) as AnyNode;
 
-            const probeIdx = (cx as AnyNode)
-              .add((cy as AnyNode).mul(PX))
-              .add((cz as AnyNode).mul(PX * PY));
-            const outIdx = (probeIdx as AnyNode).mul(RAYS).add(d);
+            const probeIdx = (cx)
+              .add((cy).mul(PX))
+              .add((cz).mul(PX * PY));
+            const outIdx = (probeIdx).mul(RAYS).add(d);
 
             const wx = dx === 0 ? float(1).sub(fx) : fx;
             const wy = dy === 0 ? float(1).sub(fy) : fy;
             const wz = dz === 0 ? float(1).sub(fz) : fz;
             const w  = (wx as AnyNode).mul(wy).mul(wz);
 
-            const rad = (c0Storage as AnyNode).element(outIdx).xyz;
+            const rad = (c0Storage).element(outIdx).xyz;
             (sample as AnyNode).addAssign(rad.mul(w));
           }
         }

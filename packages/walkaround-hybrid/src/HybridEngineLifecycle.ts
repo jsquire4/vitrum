@@ -404,7 +404,7 @@ export class PipelineInitCoordinator {
       // depends on. ReSTIR DI still drives the high-frequency direct
       // term from the actual rect geometry — DDGI here only feeds the
       // low-frequency indirect.
-      const ddgiRectLights = collectDDGILightsFromRectAreaLights(bvhRoot!);
+      const ddgiRectLights = collectDDGILightsFromRectAreaLights(bvhRoot);
       if (ddgiRectLights.length > 0) {
         host.ddgi.setLights([...host.ctorLights, ...ddgiRectLights]);
       }

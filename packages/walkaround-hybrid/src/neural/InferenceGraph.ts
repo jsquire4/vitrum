@@ -250,7 +250,7 @@ export class InferenceGraph {
       const pipeline = await device.createComputePipelineAsync({
         label: `neural-pipeline-${layer.name}`,
         layout: 'auto',
-        compute: { module: sm, entryPoint: WGSL_ENTRY[layer.kind]! },
+        compute: { module: sm, entryPoint: WGSL_ENTRY[layer.kind] },
       });
 
       // Uniform buffer (Bug 4 fix: written immediately below).
@@ -348,7 +348,7 @@ export class InferenceGraph {
       // Dispatch.
       const pass = enc.beginComputePass({ label: `neural-${layer.name}` });
       pass.setPipeline(state.pipeline);
-      pass.setBindGroup(0, state.cachedBindGroup!);
+      pass.setBindGroup(0, state.cachedBindGroup);
 
       const outDims = tensorDimsMap.get(layer.output);
       if (outDims) {

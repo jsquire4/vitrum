@@ -523,12 +523,12 @@ export class ProbeUpdatePass {
     if (!this._grid.irradianceA) this._grid.allocateAtlases();
 
     // Get/create GPU textures for the atlases.
-    const irrReadTex  = this._getOrCreateAtlasTexture(device, this._grid.irradianceReadTex!, 'rgba16float');
-    const irrWriteTex = this._getOrCreateAtlasTexture(device, this._grid.irradianceWriteTex!, 'rgba16float');
+    const irrReadTex  = this._getOrCreateAtlasTexture(device, this._grid.irradianceReadTex, 'rgba16float');
+    const irrWriteTex = this._getOrCreateAtlasTexture(device, this._grid.irradianceWriteTex, 'rgba16float');
     // Visibility atlas: allocated as RGBAFormat (rgba16float) because WebGPU does not
     // support rg16float as a storage texture. The WGSL shader declares rgba16float too.
-    const visReadTex  = this._getOrCreateAtlasTexture(device, this._grid.visibilityReadTex!, 'rgba16float');
-    const visWriteTex = this._getOrCreateAtlasTexture(device, this._grid.visibilityWriteTex!, 'rgba16float');
+    const visReadTex  = this._getOrCreateAtlasTexture(device, this._grid.visibilityReadTex, 'rgba16float');
+    const visWriteTex = this._getOrCreateAtlasTexture(device, this._grid.visibilityWriteTex, 'rgba16float');
 
     // Run compute passes.
     const encoder = device.createCommandEncoder();

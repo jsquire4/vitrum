@@ -100,7 +100,7 @@ export class RCSubsystem {
    */
   buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
     if (!this._cascadeBufs || !this._probeOriginWorld || !this._roomSize) return null;
-    const c0 = CASCADE_DIMS[0]!;
+    const c0 = CASCADE_DIMS[0];
     return {
       cascade0Buffer: this._cascadeBufs[0]!,
       paramsBytes: packRCParams(
@@ -184,7 +184,7 @@ export class RCSubsystem {
    *  arithmetic for sampling. */
   getCascadeC0Dims(): { probes: readonly [number, number, number]; rays: number } | null {
     if (!this._cascadeBufs) return null;
-    const c0 = CASCADE_DIMS[0]!;
+    const c0 = CASCADE_DIMS[0];
     return { probes: c0.probes, rays: c0.rays };
   }
 

@@ -100,7 +100,7 @@ function getPreferredSwapChainFormat(): GPUTextureFormat {
   return (typeof navigator !== 'undefined' && 'gpu' in navigator
     ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
         .getPreferredCanvasFormat?.() ?? 'bgra8unorm'
-    : 'bgra8unorm') as GPUTextureFormat;
+    : 'bgra8unorm');
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -488,7 +488,7 @@ export class HybridEngine implements Engine {
     if (this._threeScene != null) return this._threeScene;
     if (this._synthesizedThreeScene != null) return this._synthesizedThreeScene;
     if (this._lastScene != null && this._coreSceneSuppliesMeshes()) {
-      this._synthesizedThreeScene = vitrumSceneToThree(this._lastScene) as THREE.Scene;
+      this._synthesizedThreeScene = vitrumSceneToThree(this._lastScene);
       return this._synthesizedThreeScene;
     }
     return null;
@@ -892,10 +892,10 @@ export class HybridEngine implements Engine {
     const W = this._width;
     const H = this._height;
 
-    const viewMatrix  = input.viewMatrix  as Float32Array;
-    const projMatrix  = input.projMatrix  as Float32Array;
-    const prevView    = (input.prevViewMatrix ?? input.viewMatrix) as Float32Array;
-    const prevProj    = (input.prevProjMatrix ?? input.projMatrix) as Float32Array;
+    const viewMatrix  = input.viewMatrix;
+    const projMatrix  = input.projMatrix;
+    const prevView    = (input.prevViewMatrix ?? input.viewMatrix);
+    const prevProj    = (input.prevProjMatrix ?? input.projMatrix);
     const camPos      = input.cameraPosition as [number, number, number];
 
     // `FrameInput.quality.bounces` is ignored: ReSTIR + shade WGSL use a fixed
@@ -1096,7 +1096,7 @@ export class HybridEngine implements Engine {
       // Repackage into the public contract: [min, max, depth, pad].
       const src    = new Float32Array(buf);
       const srcU32 = new Uint32Array(buf);
-      const nodeCount = (buf as ArrayBuffer).byteLength / 32;
+      const nodeCount = (buf).byteLength / 32;
 
       // Depth pass — iterative DFS from root (depth-first encoding means
       // the left child sits at idx+1; the right child is at

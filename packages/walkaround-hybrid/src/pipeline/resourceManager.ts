@@ -943,7 +943,7 @@ export function createFrameResources(
   // `HybridEngineOptions.ppgEnabled === true`. Default leaves every slot
   // undefined so the pipeline can treat PPG as truly opt-in.
   const ppg: PPGFrameResources = {};
-  const neural: NeuralFrameResources = Object.freeze({}) as NeuralFrameResources;
+  const neural: NeuralFrameResources = Object.freeze({});
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
 }

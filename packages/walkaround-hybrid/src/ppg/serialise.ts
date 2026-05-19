@@ -248,7 +248,7 @@ export function serialiseSTree(sTree: STree): SerialisedSTree {
   // Single concatenated dTreeBuf.
   const dTreeBuf = new Float32Array(Math.max(totalF32, DTREE_HEADER_F32));
   for (let k = 0; k < NDT; k++) {
-    dTreeBuf.set(perDTreeBufs[k]!, offsets[k]!);
+    dTreeBuf.set(perDTreeBufs[k]!, offsets[k]);
   }
 
   // sTree node buffer.
