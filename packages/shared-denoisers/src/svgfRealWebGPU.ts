@@ -47,7 +47,7 @@ import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 import {
   uploadRgbAsRgba16f,
-  uploadRg32f,
+  uploadInterleavedRgAsRg32f,
   uploadR32f,
   uploadR32Uint,
   uploadR16Uint,
@@ -282,7 +282,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   uploadRgbAsRgba16f(device, prevColorTex, prevForChain, w, h);
 
   if (opts.motionRg != null) {
-    uploadRg32f(device, motionTex, opts.motionRg, w, h);
+    uploadInterleavedRgAsRg32f(device, motionTex, opts.motionRg, w, h);
   } else {
     fillRg32f(device, motionTex, w, h, 0, 0);
   }
@@ -329,7 +329,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
     fillR16Uint(device, histInTex, w, h, 0);
   }
   if (opts.momentsIn != null) {
-    uploadRg32f(device, momentsInTex, opts.momentsIn, w, h);
+    uploadInterleavedRgAsRg32f(device, momentsInTex, opts.momentsIn, w, h);
   } else {
     fillRg32f(device, momentsInTex, w, h, 0, 0);
   }

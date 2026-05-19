@@ -19,7 +19,11 @@ export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';
 export { sampleEquiAngular } from './equiAngular.js';
 export type { EquiAngularSample, EquiAngularOptions } from './equiAngular.js';
 export {
-  rgbToApproxSpectralCoefficients,
+  // `rgbToSpectralCoefficients` is the stable public alias; the underlying
+  // `rgbToApproxSpectralCoefficients` is marked @internal in jakobHanika.ts
+  // and is not re-exported from the package surface. Tests + production
+  // code use the stable name; the @internal name stays in-module so the
+  // doc comment trail to "approximation, slated for replacement" remains.
   rgbToSpectralCoefficients,
   evaluateSpectrum,
 } from './jakobHanika.js';

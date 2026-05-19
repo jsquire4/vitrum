@@ -210,7 +210,7 @@ function fitCoefficients(r: number, g: number, b: number): [number, number, numb
  * @param b - Blue channel, linear sRGB [0, 1].
  * @returns (c0, c1, c2) polynomial coefficients.
  */
-export function rgbToApproxSpectralCoefficients(
+function rgbToApproxSpectralCoefficients(
   r: number,
   g: number,
   b: number,
