@@ -22,10 +22,11 @@ Peers: `three`, `three-mesh-bvh` (required by the path tracer). Optional: `xatla
 
 - **`createPTEngine_WebGL2({ device })`** — `device` is a `THREE.WebGLRenderer` with a **WebGL2** context.
 - **`setScene(scene)`** — accepts a `@vitrum/core` `Scene` (e.g. from `sceneFromThreeJS` in `@vitrum/three-bindings`).
-- **`renderFrame(FrameInput)`** — drives **three-gpu-pathtracer**’s `WebGLPathTracer` (samples, bounces, resolution).
+- **`renderFrame(FrameInput)`** — drives **three-gpu-pathtracer**'s `WebGLPathTracer` (samples, bounces, resolution).
 - **`causticStrategy` options** — bridged to fork-facing uniforms (`none`, `manifold-nee`, `photon-map`) with mode-distinct shader behavior. `EngineCapabilities.causticStrategy` reports the selected strategy.
+- **BDPT (Sprint 10c)** — opt in via `extensions['vitrum.ptWebgl.bdpt'] = true` + `extensions['vitrum.ptWebgl.bdptMaxLightBounces']` (1–3). Then per frame: `const bdpt = new BdptLightPathBuffer({ maxLightBounces: 3 })` once, and `engine.bdptAdvanceFrame(bdpt.texture)` before each `renderFrame()`. See `examples/cornell-box` (`?vitrumBdpt=1`) for the wiring.
 
-Helpers: **`vitrumSceneToThree`**, **`applyFrameToPerspectiveCamera`** for advanced integration.
+Helpers: **`applyFrameToPerspectiveCamera`** for advanced integration, **`BdptLightPathBuffer`** + **`BdptLightPathBufferOptions`** for the BDPT host-side ping-pong texture. For the THREE-direction adapter (`vitrumSceneToThree`), depend on `@vitrum/three-bindings`.
 
 ## Stability
 
