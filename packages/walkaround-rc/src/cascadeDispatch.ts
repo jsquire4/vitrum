@@ -112,12 +112,6 @@ export interface RCDispatchOptsRaw {
   frameSeed:          number;
   /** Möller–Trumbore coplanarity threshold. Default 1e-5. */
   triIntersectEpsilon?: number;
-  /** Debug-fill mode bypasses GPU compute and writes test colours to CPU
-   *  Float32Arrays. Only useful for the legacy `RCDispatchOpts` path which
-   *  also owns CPU `Float32Array` mirrors of the cascades. The raw path
-   *  has no CPU mirror, so when `debugFill: true` here the dispatcher
-   *  simply returns without dispatching. */
-  debugFill?:         boolean;
 }
 
 // ─── Uniform data builders ────────────────────────────────────────────────────
@@ -125,11 +119,8 @@ export interface RCDispatchOptsRaw {
 
 /** Write CascadeUniforms into an existing Float32Array (avoids realloc per frame).
  *
- * W8 Phase 1B (2026-05-18) — sunDir / sunColor / cascade geometry all take
- * plain `readonly [number, number, number]` tuples; no `THREE.Vector3` /
- * `THREE.Color` dependency. The legacy `RCDispatchOpts` (THREE-tied) path
- * converts `THREE.Vector3 → [x,y,z]` and `THREE.Color → [r,g,b]` at the
- * call site before invoking this helper.
+ * sunDir / sunColor / cascade geometry are plain `readonly [number, number, number]`
+ * tuples — no `THREE.Vector3` / `THREE.Color` coupling.
  */
 function buildCascadeUniformDataInto(
   d: Float32Array,
@@ -228,13 +219,6 @@ export class RCDispatcher {
    * (or after `dispose()`).
    */
   async dispatchFrameRaw(opts: RCDispatchOptsRaw): Promise<void> {
-    if (opts.debugFill) {
-      // Raw path has no CPU-side mirror to fill; just no-op for the
-      // smoke-test case. (Hosts wanting CPU debug fill should use the
-      // legacy `dispatchFrame` path which owns CPU Float32Arrays.)
-      return;
-    }
-
     const device = opts.device;
     if (!this._handles) {
       try {
@@ -365,9 +349,9 @@ export class RCDispatcher {
    * Build all pipelines and bind groups (one-time setup).
    * Called lazily on first `dispatchFrameRaw()`.
    *
-   * W8 Phase 1B (2026-05-18) — refactored to take {@link RCDispatchOptsRaw}
-   * (raw GPU types). The legacy THREE-tied {@link dispatchFrame} entry adapts
-   * its inputs and calls {@link dispatchFrameRaw}, which calls this method.
+   * Takes {@link RCDispatchOptsRaw} (raw GPU types). The W8 Phase 1B
+   * refactor (2026-05-18) extracted this from a THREE-tied builder; the
+   * legacy entry was dropped the same day.
    */
   private _buildHandlesRaw(device: GPUDevice, opts: RCDispatchOptsRaw): DispatchHandles {
     // Compile shader modules (shared across all cast passes / merge passes).
