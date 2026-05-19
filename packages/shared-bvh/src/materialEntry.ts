@@ -19,7 +19,8 @@
  *     ·attenuationColor·flags(u32). It carried NEITHER attenuationDistance
  *     nor thickness, so the per-cell Beer-Lambert tint was a simplified
  *     `attenColor * transmission`.
- *   - `walkaround-hybrid/src/rc/bvhCompute.ts` packed 16 floats with
+ *   - `walkaround-rc/src/bvhCompute.ts` (formerly `walkaround-hybrid/src/rc/` —
+ *     extracted to `@vitrum/walkaround-rc` 2026-05-18 W8 follow-up) packed 16 floats with
  *     colorR·G·B·colorA(=1)·transmission·ior·attenColorR·G·B·attenDist·
  *     roughness·metalness·emissiveR·G·B·thickness. Same logical content but
  *     a completely different field order.
