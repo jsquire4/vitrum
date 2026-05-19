@@ -6,16 +6,65 @@
 - Confirmed pre-existing (watcher Iteration 1/2): `environmentSunStrength` packing bug (MEDIUM, confirmed), matrix offset bug (HIGH, confirmed with exact offsets), stale JSDoc comment (LOW, confirmed)
 - Test count snapshot: 570 passing across workspace (pt-webgpu contributes 11 tests); tsc exits 2 with 3 pre-existing errors in `pt-webgl/src/index.ts` (not pt-webgpu regressions)
 
-## Status update — 2026-05-18
+## Status update — 2026-05-19: all findings closed
 
-Several findings verified-closed by direct read on 2026-05-18:
+Every HIGH + MEDIUM + LOW finding from this audit has been re-verified
+by direct file read and is now closed. Per-finding map:
 
-- **H-2 (`supportsIncrementalScene: true` causing tight-loop full BVH rebuilds)** — FIXED. `packages/pt-webgpu/src/index.ts:109` now reads `supportsIncrementalScene: false` with the comment "Honest reporting — updatePrimitive/updateEmitter currently delegate to setScene; flip to true when real incremental patching lands."
-- **M-1 (`environmentSunStrength` written to wrong vec4 component)** — FIXED. `paramsF32[35] = sb.environmentSunStrength` (offset 140 = `environmentSunDirection.w`) is now correct; the pad at index 31 stays 0 for `environmentTint.w`.
-- **Glossy BSDF sampling/PDF mismatch** (Item 14 from the 2026-05-11 sweep, frequently relisted as a pt-webgpu pre-alpha bug) — FIXED. `packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts:124` ships `sampleGgxVndfTangent` (Heitz 2018 Algorithm 1); `glossyReflectionSample:166` calls it directly so sampling and PDF use the same distribution. Shipped via commit `a7dd51a`.
-- **H-1 (uniform buffer matrix offset 16 bytes off)** — needs re-verification. The FrameParams struct has been substantially refactored since the 2026-05-10 audit (W4-A4 split into pathTrace/* modules + new packing); the CPU writer at `index.ts:274-280` now uses indices 36/52/68 rather than the 80/96/112 the audit cited. A fresh struct-layout walk against the current WGSL is needed before claiming open or closed.
+- **H-1 (matrix offsets 16 bytes off)** — FIXED. The FrameParams struct
+  was refactored (W4-A4 split into `pathTrace/*` modules); the regression
+  test at `packages/pt-webgpu/src/__tests__/wgslContract.test.ts:61`
+  (commit `105cbed`) walks the WGSL struct under spec alignment rules and
+  asserts the CPU writer's matrix offsets (144/208/272 bytes ⇔ f32 indices
+  36/52/68) match.
+- **H-2 (`supportsIncrementalScene: true`)** — FIXED. Now reads `false`
+  at `packages/pt-webgpu/src/index.ts:109` with the honest "flip when
+  real incremental patching lands" comment.
+- **M-1 (`environmentSunStrength` wrong vec4 component)** — FIXED.
+  `paramsF32[35] = sb.environmentSunStrength` lands at byte offset 140 =
+  `environmentSun.w`, matching the shader's read at
+  `pathTrace/connect.wgsl.ts:29,68,129`.
+- **M-2 (cosine-hemisphere PDF division)** — NOT A BUG per the audit's
+  own analysis (the cancellation `(BRDF/π)·NdotL/(NdotL/π) = BRDF` is
+  correct; no code change ever needed).
+- **M-3 (rect-area / mesh-area writes to `*radiance` bypassing
+  `directLi`)** — FIXED. The `pathTrace/kernel.wgsl.ts` rewrite inlines
+  the rect-area and mesh-area sampling at lines 291-359, writing
+  `directLi = ...` in the same accumulator the directional/point/spot
+  paths use. Line 387 then applies the `* f32(lightCount)` MIS scaling
+  uniformly.
+- **M-4 (`supportedAnalyticShapes` empty set)** — FIXED. Now reads from
+  `PT_WEBGPU_ANALYTIC_SHAPES.slice(1)`
+  (sphere/box/capsule/cylinder/h-channel-came). The 2026-05-18 tightening
+  also flipped the type from `ReadonlySet<string>` to
+  `ReadonlySet<AnalyticShape>`.
+- **M-5 (pause-before-setScene)** — NOT A CRASH BUG (audit's own
+  classification). The inconsistency is documented in `#assertLive` —
+  no action.
+- **L-1 (stale "2 * vec4f per material" JSDoc)** — FIXED. The comment
+  at `uploadSceneBuffers.ts:31` now uses the `MATERIAL_VEC4_STRIDE`
+  symbolic reference.
+- **L-2 (dead `pathTraceSeed.wgsl.ts`)** — FIXED. File deleted.
+- **L-3 (varianceMomentsBuffer sizing)** — NOT A BUG (audit's own
+  classification).
+- **L-4 (instanced-mesh `instances[0]` for mesh-area light)** —
+  documented limitation (single-triangle approximation is already lossy).
+- **L-5 (redundant `#scene == null` guards)** — FIXED. The duplicate
+  guards in `updatePrimitive`/`updateEmitter` are gone; the non-null
+  assertion documents the invariant.
 
-The remaining MEDIUM + LOW findings are not re-verified in this status pass.
+**Glossy BSDF sampling/PDF mismatch** (Item 14 from the 2026-05-11 sweep,
+frequently relisted) — FIXED via commit `a7dd51a`:
+`packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts:124` ships
+`sampleGgxVndfTangent` (Heitz 2018 Algorithm 1); `glossyReflectionSample`
+calls it directly so sampling and PDF use the same distribution.
+
+The package remains pre-alpha — see `packages/pt-webgpu/README.md` for
+the explicit pre-alpha boundary. The remaining gaps are NOT code bugs
+found by this audit; they are the absence of GPU-verified visual
+reference captures, public API stability commitments, and feature
+completeness relative to the WebGL fork (spectral parity, full
+hero-wavelength MIS, denoiser integration).
 
 ---
 

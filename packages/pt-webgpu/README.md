@@ -2,9 +2,33 @@
 
 WebGPU-native path tracing backend prototype for `@vitrum/core`.
 
-## Current status
+## Pre-alpha boundary
 
-This package is now functional (no longer a stub), but still pre-alpha:
+This package is **pre-alpha — internal use only**. The production WebGL2
+path tracer is `@vitrum/pt-webgl` (wraps the `three-gpu-pathtracer`
+fork); `@vitrum/pt-webgpu` is the experimental WebGPU-native prototype
+that will eventually replace it once feature parity + GPU verification
+land. Until then:
+
+- **No public API stability**. Types, options, and binding shapes can
+  change in any commit.
+- **No GPU-verified visual reference**. The CPU/struct-layout audit
+  (`plan/pt-webgpu-deep-audit.md`) is closed (all HIGH + MEDIUM + LOW
+  findings fixed or NOT-A-BUG by 2026-05-19), but no end-to-end visual
+  parity check against `@vitrum/pt-webgl` exists. Renders may be
+  numerically correct yet visually different in ways the audit doesn't
+  catch.
+- **Not in `createEngine`'s `prefer: 'auto'` selection** — hosts that
+  want pt-webgpu must opt in explicitly. The facade selects between
+  `pt-webgl` (quality) and `walkaround-hybrid` (realtime) only.
+- **Not for npm publish.** `private: true` is the publish-safety belt;
+  see `RELEASING.md`.
+
+## Implemented (verified clean)
+
+This package is now functional (no longer a stub) and the deep-audit
+findings are all closed; the pre-alpha label is about productionisation,
+not correctness. What's implemented:
 
 - Progressive accumulation renderer (compute shader)
 - CPU-built BVH with GPU BVH traversal
