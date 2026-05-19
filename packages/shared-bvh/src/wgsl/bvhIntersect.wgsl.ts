@@ -113,14 +113,26 @@ struct IntersectionResult {
 
 // ─── Williams 2005 §4 IEEE-safe inverse-direction helper ─────────────────────
 // Prevents NaN from 0 * ±Inf in slab tests when a ray direction component
-// is exactly zero. WGSL sign(0) == 0, so a zero component yields
-// 0 * 1e30 == 0, which is correct (a zero-direction axis contributes
-// nothing to tNear/tFar; entry/exit are determined by the other two axes).
+// is exactly zero. For the zero/near-zero case the inv-component is set
+// to a large signed sentinel (±1e30) so the slab test still picks up
+// whether the ray's origin is inside the AABB on the parallel axis:
+//
+//   - origin inside the X slab → t0/t1 ~= ±1e30, contributes ~unbounded
+//     range, and the other two axes determine entry/exit (correct).
+//   - origin outside the X slab → t0 and t1 are both far negative or both
+//     far positive, so tNear pushes past tFar and the slab test rejects.
+//
+// Earlier revision used sign(d.x) * 1e30, but WGSL sign(0) == 0 so an
+// exact-zero direction yielded 0, collapsing the X slab's contribution
+// to t0 == t1 == 0 regardless of origin position — a false positive for
+// rays whose origin sat outside the AABB on the parallel axis. The
+// select(-1e30, 1e30, d.x >= 0.0) form picks a definite sign even when
+// d.x is exactly zero (treated as positive, matching IEEE 754 +0 >= 0).
 fn safeInvDir(d: vec3f) -> vec3f {
   return vec3f(
-    select(1.0 / d.x, sign(d.x) * 1e30, abs(d.x) < 1e-30),
-    select(1.0 / d.y, sign(d.y) * 1e30, abs(d.y) < 1e-30),
-    select(1.0 / d.z, sign(d.z) * 1e30, abs(d.z) < 1e-30),
+    select(1.0 / d.x, select(-1e30, 1e30, d.x >= 0.0), abs(d.x) < 1e-30),
+    select(1.0 / d.y, select(-1e30, 1e30, d.y >= 0.0), abs(d.y) < 1e-30),
+    select(1.0 / d.z, select(-1e30, 1e30, d.z >= 0.0), abs(d.z) < 1e-30),
   );
 }
 
