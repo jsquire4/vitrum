@@ -125,6 +125,10 @@ export function startGpuTextureBlit(
 
   let cancelled = false;
   let inFlight = false;
+  // Per-message dedup so a sustained failure doesn't fill the console.
+  // Stringify by error name + message; structured stack traces stay in
+  // the first occurrence.
+  const seenFailures = new Set<string>();
 
   async function tick(): Promise<void> {
     if (cancelled || inFlight) return;
@@ -162,9 +166,16 @@ export function startGpuTextureBlit(
       ctx.putImageData(imageData, 0, 0);
     } catch (err) {
       // Painting is best-effort; never let a readback failure tear the
-      // overlay down. Log once per failure type.
-      // eslint-disable-next-line no-console
-      console.warn(`[dev/${label}] readback failed:`, err);
+      // overlay down. Log once per failure key (name + message) to keep
+      // a sustained failure (texture state lost, device-lost mid-blit,
+      // etc.) from filling the console at the readback rate.
+      const e = err instanceof Error ? err : new Error(String(err));
+      const key = `${e.name}:${e.message}`;
+      if (!seenFailures.has(key)) {
+        seenFailures.add(key);
+        // eslint-disable-next-line no-console
+        console.warn(`[dev/${label}] readback failed:`, err);
+      }
     } finally {
       inFlight = false;
     }
