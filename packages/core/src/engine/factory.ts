@@ -53,26 +53,21 @@ export interface EngineOptions {
   // ── Denoiser composition ────────────────────────────────────────────────
   /** Denoiser pipeline wired at engine creation. Changing the denoiser
    *  requires recompiling shaders and resizing auxiliary buffers — so it is
-   *  a creation-time structural decision, not a per-frame dial. */
-  /** `'svgf'` is a deprecated alias for `'atrous-variance'`; backends that ship
-   *  à-trous + variance-scalar lookup should accept both.
+   *  a creation-time structural decision, not a per-frame dial.
    *
-   *  `'svgf-real'` — T2.H1 — full Schied 2017 SVGF with bilinear motion-vector
+   *  `'svgf-real'` — full Schied 2017 SVGF with bilinear motion-vector
    *  reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
    *  history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
    *  variance-from-moments (Eq. 5), and 7×7 spatial fallback for disoccluded
    *  pixels (§4.3). Implemented in `@vitrum/shared-denoisers` and wired in
-   *  `@vitrum/walkaround-hybrid`.
+   *  `@vitrum/walkaround-hybrid`. GPU memory budget at 1080p: ~52 MB of
+   *  new persistent textures.
    *
-   *  GPU memory budget for `'svgf-real'` at 1080p: ~52 MB of new persistent
-   *  textures (historyLength r16uint + momentsHistory rg32float + prevRadiance
-   *  rgba16float + motionVec rg32float). */
-  /**
-   * `'neural'` — T2.H2 — GPU U-Net denoiser. Requires backend-specific weight
-   * provisioning (e.g. `HybridEngineOptions.neuralWeights` in
-   * `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
+   *  `'neural'` — GPU U-Net denoiser. Requires backend-specific weight
+   *  provisioning (e.g. `HybridEngineOptions.neuralWeights` in
+   *  `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.
    */
-  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural';
+  readonly denoiser?: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'oidn-final' | 'neural';
 
   // ── Specular caustics strategy (RFE-05) ────────────────────────────────
   /**

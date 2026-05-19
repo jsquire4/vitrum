@@ -56,7 +56,7 @@ async function main(): Promise<void> {
   // URL params drive validation-harness toggles. Pre-defined keys:
   //   ?cameraMotion=1            — slow orbit of the camera (drives #4 motion path)
   //   ?ppgEnabled=1              — enable PPG (#6 path)
-  //   ?denoiser=atrous           — use legacy 3-iter atrous instead of SVGF (#7)
+  //   ?denoiser=atrous           — use legacy 3-iter atrous instead of atrous-variance (#7)
   //   ?quality=interactive|final|capture|safe — pt-webgl scheduler mode (#9)
   //   ?ptWebgpuBounces=N         — pt-webgpu bounce-depth override (default 4)
   //   ?samplesTarget=N           — pt-webgl + pt-webgpu convergence target
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
       ? params.get('cameraMotion') === '1'
       : walkaroundFallback,
     ppgEnabled: params.get('ppgEnabled') === '1',
-    denoiser: (params.get('denoiser') ?? 'svgf') as 'svgf' | 'atrous',
+    denoiser: (params.get('denoiser') ?? 'atrous-variance') as 'atrous-variance' | 'atrous',
     quality: (params.get('quality')
       ?? (walkaroundFallback ? 'interactive' : 'capture')) as 'interactive' | 'final' | 'capture' | 'safe',
     ptWebgpuBounces: parseInt(params.get('ptWebgpuBounces') ?? '4', 10) || 4,

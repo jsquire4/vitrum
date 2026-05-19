@@ -129,9 +129,6 @@ export interface HybridEngineOptions extends EngineOptions {
    *   (§4.3). Requires historyLength (r16uint) + momentsHistory (rg32float) +
    *   prevRadiance (rgba16float) persistent textures: ~52 MB at 1080p.
    *
-   *   `'svgf'` is a deprecated alias for `'atrous-variance'`; triggers a
-   *   one-time console warning.
-   *
    *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
    *   et al. 2015). Requires `neuralWeights` to be provided. Default still
    *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
@@ -145,7 +142,7 @@ export interface HybridEngineOptions extends EngineOptions {
    *   (URL or path to the bundled .onnx model file). Optional peer dep
    *   `onnxruntime-web` must be installed at runtime.
    */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf' | 'neural' | 'oidn-final';
+  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
 
   /**
    * Pre-loaded model weights for the neural denoiser (T2.H2).

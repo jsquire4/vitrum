@@ -295,13 +295,11 @@ export class HybridEngine implements Engine {
     // value (e.g. `'none'`, `'bmfr'` from the @vitrum/core EngineOptions
     // contract) does not silently coerce to atrous-variance and produce
     // wrong output. Supported values are explicitly enumerated here.
-    // 'svgf' is accepted as a deprecated alias — logs a one-time warning, then normalises.
     if (
       opts.denoiser !== undefined &&
       opts.denoiser !== 'atrous' &&
       opts.denoiser !== 'atrous-variance' &&
       opts.denoiser !== 'svgf-real' &&
-      opts.denoiser !== 'svgf' &&
       opts.denoiser !== 'neural' &&
       opts.denoiser !== 'oidn-final'
     ) {
@@ -339,14 +337,7 @@ export class HybridEngine implements Engine {
         `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
       );
     }
-    if (opts.denoiser === 'svgf') {
-      console.warn(
-        `[walkaround-hybrid] denoiser: 'svgf' is deprecated; use 'atrous-variance'. ` +
-        `The shipping implementation is à-trous + variance scalar lookup, NOT real Schied 2017 SVGF. ` +
-        `For real Schied 2017 SVGF, pass denoiser: 'svgf-real' (T2.H1).`,
-      );
-    }
-    this._denoiser = opts.denoiser === 'svgf' ? 'atrous-variance' : (opts.denoiser ?? 'atrous-variance');
+    this._denoiser = opts.denoiser ?? 'atrous-variance';
     this._neuralWeights = opts.neuralWeights;
     this._oidnModelUrl = _oidnModelUrl;
     this._oidnExecutionProviders = _whExt?.oidnExecutionProviders;
