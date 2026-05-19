@@ -1,6 +1,17 @@
 # Dead-export audit — 2026-05-17
 
 > **Read-only audit.** No exports were removed or renamed. Findings only.
+>
+> **Status (2026-05-18):** the numbers below are stale. The post-audit
+> cleanup sweep (c76b476, a8b312c, 5f72a0f, a786a27, 2e0b9cc, 1cdd534,
+> plus follow-ups landed across 2026-05-18) dropped or demoted ~100 dead
+> exports across `walkaround-hybrid`, `shared-denoisers`, `pt-webgpu`,
+> `pt-webgl`, `three-bindings`, and `core`. The post-W8-extraction
+> walkaround-rc + walkaround-hybrid split also redistributes counts. Run
+> `npx knip --include exports --reporter compact` from the workspace
+> root for a live picture — as of 2026-05-18 it reports only ~2 unused
+> exports, both intentional design surfaces (`TUNABLE_DEFINITIONS`
+> diagnostic table, `wgslModules.ts` central WGSL barrel).
 
 This audit enumerates every named export from each workspace package's
 `src/index.ts`, then searches the workspace for consumers. The intent is to
