@@ -16,17 +16,11 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const TEMPORAL_WGSL = /* wgsl */ `
 
-// Bind groups re-declared (same layout as ris.wgsl -- required in WGSL).
-@group(0) @binding(0) var gDepth:     texture_2d<f32>;
-@group(0) @binding(1) var gNormal:    texture_2d<f32>;
-@group(0) @binding(2) var gAlbedo:    texture_2d<f32>;
-@group(0) @binding(3) var gRough:     texture_2d<f32>;
-@group(0) @binding(4) var motionVec:  texture_2d<f32>;
+// Group 0: only the slots temporal actually reads / writes. The shared
+// FrameBindGroup layout carries 10 entries for shade; WGSL allows the
+// shader to declare a subset (W5-I1 cleanup 2026-05-18).
 @group(0) @binding(5) var<storage, read_write> currentReservoir:  array<u32>;
 @group(0) @binding(6) var<storage, read>       previousReservoir: array<u32>;
-@group(0) @binding(7) var<storage, read_write> spatialReservoir:  array<u32>;
-@group(0) @binding(8) var hdrColorOut: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(9) var nearestSampler: sampler;
 
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;

@@ -24,19 +24,12 @@ export const RIS_WGSL = /* wgsl */ `
 // Bind group declarations
 // ============================================================
 
-// Group 0: per-frame G-buffer + reservoirs
-// (G-buffer textures are bound but not used in primary-ray-cast mode;
-//  they are kept for bind group layout compatibility with other passes)
-@group(0) @binding(0) var gDepth:     texture_2d<f32>;
-@group(0) @binding(1) var gNormal:    texture_2d<f32>;
-@group(0) @binding(2) var gAlbedo:    texture_2d<f32>;
-@group(0) @binding(3) var gRough:     texture_2d<f32>;
-@group(0) @binding(4) var motionVec:  texture_2d<f32>;
+// Group 0: only the slots ris actually reads. The shared FrameBindGroup
+// layout carries 10 entries (gDepth/Normal/Albedo/Rough/motionVec/
+// 3 reservoirs/hdrColorOut/nearestSampler) for temporal/spatial/shade;
+// WGSL allows the shader to declare a subset (W5-I1 cleanup 2026-05-18).
 @group(0) @binding(5) var<storage, read_write> currentReservoir:  array<u32>;
-@group(0) @binding(6) var<storage, read>       previousReservoir: array<u32>;
-@group(0) @binding(7) var<storage, read_write> spatialReservoir:  array<u32>;
 @group(0) @binding(8) var hdrColorOut: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(9) var nearestSampler: sampler;
 
 // Group 1: static scene BVH + emitters
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
