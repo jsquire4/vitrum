@@ -12,13 +12,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { CASCADE_DIMS, CASCADE_COUNT } from '../src/rc/cascadePyramid.js';
-import { PROBE_RAY_CAST_WGSL } from '../src/rc/wgsl/probeRayCast.wgsl.js';
-import { CASCADE_MERGE_WGSL } from '../src/rc/wgsl/cascadeMerge.wgsl.js';
-import { RCDispatcher } from '../src/rc/cascadeDispatch.js';
-import { CascadeBufferManager } from '../src/rc/cascadeBuffers.js';
-import { GIReceiver } from '../src/rc/giReceiver.js';
-import { buildWalkaroundLightingNode } from '../src/rc/walkaroundDiffuseLighting.js';
+import { CASCADE_DIMS, CASCADE_COUNT } from '../src/cascadePyramid.js';
+import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
+import { CASCADE_MERGE_WGSL } from '../src/wgsl/cascadeMerge.wgsl.js';
+import { RCDispatcher } from '../src/cascadeDispatch.js';
+import { CascadeBufferManager } from '../src/cascadeBuffers.js';
+import { GIReceiver } from '../src/giReceiver.js';
+import { buildWalkaroundLightingNode } from '../src/walkaroundDiffuseLighting.js';
 
 // ─── CASCADE_DIMS invariants ─────────────────────────────────────────────────
 
@@ -333,27 +333,10 @@ describe('E2 — CascadeUniforms triIntersectEpsilon UBO-plumb', () => {
   });
 });
 
-// ─── Sprint 2 — cellPower buffer export / shape ───────────────────────────────
-
-describe('SceneBVHBuffers.cellPower (Sprint 2 foundation)', () => {
-  it('buildReSTIRSceneBVH is exported from restir/bvhCompute (structural smoke test)', async () => {
-    // Confirms the module compiled with the new cellPower field — the
-    // detailed value tests live in sprint2-cellPower.test.ts.
-    const mod = await import('../src/restir/bvhCompute.js');
-    expect(typeof mod.buildReSTIRSceneBVH).toBe('function');
-    expect(typeof mod.disposeSceneBVH).toBe('function');
-  });
-
-  it('scene BGL has 6 read-only-storage entries (cellPower NOT yet in scene BGL — Sprint 3)', () => {
-    // Sprint 2 adds cellPower to SceneBVHBuffers and uploads it in
-    // WalkaroundGPUPipeline.initialize, but intentionally does NOT add
-    // it to the scene bind group layout (binding 6) because no WGSL
-    // shader reads it yet.  Sprint 3's light tree shader will add binding 6
-    // and the BGL entry count will change from 6 to 7.
-    //
-    // This test pins the current count = 6 so Sprint 3 has a clear
-    // "change this expect from 6 to 7" marker.
-    const SCENE_BGL_ENTRY_COUNT = 6;
-    expect(SCENE_BGL_ENTRY_COUNT).toBe(6);
-  });
-});
+// Sprint 2 "cellPower buffer export / shape" describe block removed during
+// the 2026-05-18 walkaround-rc extraction (W8 follow-up): the block tested
+// `restir/bvhCompute` exports (lives in `@vitrum/walkaround-hybrid`, not
+// here) and a literal-vs-literal BGL count. The TypeScript surface check
+// is already covered by the typechecker; the BGL-count pin had no real
+// expectation against. If RESTIR-side smoke coverage is wanted, add it to
+// `@vitrum/walkaround-hybrid/__tests__/`.

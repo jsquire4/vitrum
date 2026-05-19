@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeOctahedralSolidAngles } from '../src/rc/octahedralSolidAngles.js';
+import { computeOctahedralSolidAngles } from '../src/octahedralSolidAngles.js';
 
 const TWO_PI = 2 * Math.PI;
 const FOUR_PI = 4 * Math.PI;

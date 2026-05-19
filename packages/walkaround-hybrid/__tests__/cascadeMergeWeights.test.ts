@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeOctahedralSolidAngles } from '../src/rc/octahedralSolidAngles.js';
+import { computeOctahedralSolidAngles } from '@vitrum/walkaround-rc';
 
 // ─── TS mirror of WGSL `octCellSolidAngle(cx, cy, N)` ───────────────────────
 // Mirrors the WGSL function in cascadeMerge.wgsl.ts:65–76 exactly:

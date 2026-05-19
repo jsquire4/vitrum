@@ -120,7 +120,12 @@ src/
 
 ### RC subsystem: TSL→raw WebGPU port not GPU-verified
 
-The RC (Radiance Cascades) subsystem in `src/rc/` was ported from a TSL-based
+The RC (Radiance Cascades) subsystem moved to `@vitrum/walkaround-rc` on
+2026-05-18 (W8 follow-up). The public API is re-exported here for
+back-compat; the residual-risk notes below still apply to the now-extracted
+package.
+
+The RC subsystem (now in `@vitrum/walkaround-rc/src/`) was ported from a TSL-based
 implementation to raw WebGPU during Phase 4 Step 4 of the extraction plan,
 under a "maximum-diligence-without-GPU-verification" protocol per the
 extraction plan's RD-12.
@@ -152,9 +157,9 @@ extraction plan's RD-12.
 **Verification status**: structural (TypeScript compile + binding-shape unit
 tests), not behavioral (no GPU render comparison).
 
-**Affected files**: `src/rc/cascadeDispatch.ts`, `src/rc/cascadePyramid.ts`,
-`src/rc/cascadeBuffers.ts`, `src/rc/wgsl/probeRayCast.wgsl.ts`,
-`src/rc/wgsl/cascadeMerge.wgsl.ts`.
+**Affected files** (all now in `@vitrum/walkaround-rc`): `src/cascadeDispatch.ts`,
+`src/cascadePyramid.ts`, `src/cascadeBuffers.ts`, `src/wgsl/probeRayCast.wgsl.ts`,
+`src/wgsl/cascadeMerge.wgsl.ts`.
 
 ### DDGI path: `three/webgpu` renderer internals coupling
 

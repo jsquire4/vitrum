@@ -24,9 +24,7 @@
 
 import type * as THREE from 'three';
 import type { StorageBufferAttribute } from 'three/webgpu';
-import { RCDispatcher } from './rc/cascadeDispatch.js';
-import { buildRCSceneBVH, type SceneBVH } from './rc/bvhCompute.js';
-import { CASCADE_DIMS } from './rc/cascadePyramid.js';
+import { RCDispatcher, buildRCSceneBVH, CASCADE_DIMS, type SceneBVH } from '@vitrum/walkaround-rc';
 
 interface RCBVHBuffers {
   readonly bvhNodesBuf:      GPUBuffer;

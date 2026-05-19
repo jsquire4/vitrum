@@ -60,41 +60,37 @@ export {
 } from './surfaceTextureIds.js';
 
 // ─── RC subsystem ─────────────────────────────────────────────────────────────
-// Cascade pyramid storage layout.
+// RC was extracted into `@vitrum/walkaround-rc` on 2026-05-18 (W8 follow-up).
+// Re-export the public surface here for back-compat — hosts that imported these
+// names from `@vitrum/walkaround-hybrid` keep working.
 export {
   CASCADE_DIMS,
   CASCADE_COUNT,
   allocateCascades,
   disposeCascades,
   fillCascadeDebug,
-} from './rc/cascadePyramid.js';
-export type { CascadeAABB, CascadeDim, CascadeBuffers } from './rc/cascadePyramid.js';
-
-// RC BVH builder (StorageBufferAttribute-typed adapter over @vitrum/shared-bvh).
-export { buildRCSceneBVH } from './rc/bvhCompute.js';
-export type { SceneBVH as RCSceneBVH, BvhBuildOpts as RCBvhBuildOpts } from './rc/bvhCompute.js';
-
-// Cascade dispatch — raw WebGPU compute (converted from TSL per RD-12).
-export { RCDispatcher } from './rc/cascadeDispatch.js';
-export type { RCDispatchOpts, RCDispatchOptsRaw } from './rc/cascadeDispatch.js';
-
-// Cascade buffer manager (de-React-ified from useCascadeBuffers).
-export { CascadeBufferManager } from './rc/cascadeBuffers.js';
-
-// GI receiver material wrapper (TSL-preserved; requires three/webgpu + three/tsl).
-export { GIReceiver } from './rc/giReceiver.js';
-export type { GIReceiverExclusionPredicate, GIReceiverOptions } from './rc/giReceiver.js';
-
-// Walkaround diffuse lighting node (TSL-preserved; requires three/tsl).
-export { buildWalkaroundLightingNode } from './rc/walkaroundDiffuseLighting.js';
-export type { WalkaroundLightingNodes } from './rc/walkaroundDiffuseLighting.js';
+  buildRCSceneBVH,
+  RCDispatcher,
+  CascadeBufferManager,
+  GIReceiver,
+  buildWalkaroundLightingNode,
+  PROBE_RAY_CAST_WGSL,
+  CASCADE_MERGE_WGSL,
+} from '@vitrum/walkaround-rc';
+export type {
+  CascadeAABB,
+  CascadeDim,
+  CascadeBuffers,
+  RCDispatchOpts,
+  RCDispatchOptsRaw,
+  GIReceiverExclusionPredicate,
+  GIReceiverOptions,
+  WalkaroundLightingNodes,
+} from '@vitrum/walkaround-rc';
+export type { SceneBVH as RCSceneBVH, BvhBuildOpts as RCBvhBuildOpts } from '@vitrum/walkaround-rc';
 
 // DDGI shading injection (TSL-preserved; requires three/webgpu + three/tsl).
 export { applyDDGIShading, disposeApplyDDGIShadingCache } from './ddgi/applyDDGIShading.js';
-
-// Raw WGSL shader strings (for host inspection or headless testing).
-export { PROBE_RAY_CAST_WGSL } from './rc/wgsl/probeRayCast.wgsl.js';
-export { CASCADE_MERGE_WGSL } from './rc/wgsl/cascadeMerge.wgsl.js';
 
 export type { FrameResourceOptions } from './pipeline/resourceManager.js';
 
