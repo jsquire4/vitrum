@@ -8,15 +8,18 @@
 //   - DenoiserABToggle: keyboard 'D' + button badge; engine.debug.setDenoiserEnabled
 //     when available.
 //
-// Stub overlays (console.warn + static badge):
-//   - DDGIAtlasViewer, BVHVisualizer, GISignalSplit: engine.debug surface is
-//     now exposed by HybridEngine (T3.G followup landed); the remaining work
-//     is the per-component texture→canvas blit / readback. Each emits one
-//     console.warn on attach and renders a static badge until the blit lands.
-//   - MaterialInspector: still genuinely engine-blocked — needs
+// Vanilla-stub overlays (console.warn + static badge):
+//   - DDGIAtlasViewer / BVHVisualizer / GISignalSplit are fully-implemented
+//     in React (`@vitrum/dev/react/{DDGIAtlasViewer,BVHVisualizer,
+//     GISignalSplit}.tsx`, ~370 LOC total; W12 sprint). Their engine.debug
+//     APIs (`atlasTexture()` / `bvhNodes()` / `giSignalTextures()`) are
+//     live on HybridEngine. The vanilla path here remains a placeholder
+//     badge because porting the React canvas-blit + memoized-readback
+//     code to plain DOM is a separate workstream — most non-React hosts
+//     already embed a React shell for tools and use the React entry point.
+//   - MaterialInspector is engine-blocked on both sides — needs
 //     engine.debug.pickPrimitive() which HybridEngine intentionally leaves
 //     out until a real picking pass exists.
-//     TODO: ship the blit code in each component; pickPrimitive() upstream.
 
 import type { Scene } from '@vitrum/core';
 import type { DebuggableEngine, FrameStats } from './types.js';
@@ -197,8 +200,12 @@ export function attachDebugOverlays(
     if (!overlays.includes(key as AttachDebugOverlaysOptions['overlays'] extends ReadonlyArray<infer T> ? T : never)) continue;
      
     console.warn(
-      `[attachDebugOverlays] "${key}" is a stub — requires engine.debug API (T3.G followup). ` +
-      'Rendering placeholder badge.'
+      `[attachDebugOverlays] "${key}" is React-only in the current build. ` +
+      `Use @vitrum/dev/react/${key === 'ddgiAtlas' ? 'DDGIAtlasViewer'
+        : key === 'bvhVisualizer' ? 'BVHVisualizer'
+        : key === 'giSignalSplit' ? 'GISignalSplit'
+        : 'MaterialInspector'} for the full implementation. ` +
+      'Rendering placeholder badge for the vanilla host.'
     );
     const badge = makeDiv({
       background: 'rgba(0,0,0,0.65)', color: '#ffb347',
@@ -207,7 +214,7 @@ export function attachDebugOverlays(
       userSelect: 'none', pointerEvents: 'none', zIndex: '9997',
       ...extraStyle,
     });
-    badge.textContent = `${label} [stub — T3.G followup]`;
+    badge.textContent = `${label} [vanilla stub — use @vitrum/dev/react]`;
     add(badge);
   }
 
