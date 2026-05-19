@@ -66,6 +66,20 @@ export function detectWebGPUSwapChain(canvas: HTMLCanvasElement): WebGPUSwapChai
   }
 }
 
+/** Resolve a quality option (value or getter) to its current value.
+ *  Called inside the rAF tick so live-getters (`() => ref.current`) propagate
+ *  on the very next frame without engine recreation.
+ *
+ *  @internal Exported for unit-test access. */
+export function resolveQualityOption(
+  q: AttachVitrumOptions['quality'],
+): NonNullable<FrameInput['quality']> | undefined {
+  if (q == null) return undefined;
+  return typeof q === 'function'
+    ? (q as () => NonNullable<FrameInput['quality']> | undefined)()
+    : (q as NonNullable<FrameInput['quality']>);
+}
+
 /** Per WebGPU spec, `getCurrentTexture()` MUST be called inside the rAF
  *  tick and the resulting view is single-use (do NOT cache across frames).
  *  Returns undefined when the context is null (WebGL host) or acquisition
@@ -90,8 +104,16 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    *  animation) and the helper pushes the latest matrices into renderFrame. */
   readonly camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   /** Per-frame quality dials. Honoured if non-null; otherwise the engine's
-   *  defaults apply. */
-  readonly quality?: NonNullable<FrameInput['quality']>;
+   *  defaults apply.
+   *
+   *  Pass a value for static quality, or a `() => quality | undefined`
+   *  getter for live propagation (the RAF tick invokes it every frame, so
+   *  React refs / mutable state can swap quality without engine recreation).
+   *  React's `<VitrumCanvas>` uses the getter form internally so its
+   *  `quality` prop propagates without remount. */
+  readonly quality?:
+    | NonNullable<FrameInput['quality']>
+    | (() => NonNullable<FrameInput['quality']> | undefined);
   /** Frame-level callback. Convenience over engine.onFrame() — fires after
    *  every successful renderFrame() with the engine's FrameStats. */
   readonly onFrame?: (stats: FrameStats) => void;
@@ -202,6 +224,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     const proj = new Float32Array(opts.camera.projectionMatrix.elements);
     // A2 — acquire the per-frame swap-chain view for WebGPU backends.
     const swapChainView = acquireSwapChainView(webgpuContext);
+    const quality = resolveQualityOption(opts.quality);
 
     const input: FrameInput = {
       viewMatrix: view,
@@ -212,7 +235,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       viewport: { width: viewportW, height: viewportH, devicePixelRatio: viewportDpr },
       frameIndex,
       frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,
-      ...(opts.quality ? { quality: opts.quality } : {}),
+      ...(quality ? { quality } : {}),
       ...(swapChainView != null ? { swapChainView, swapChainFormat: webgpuFormat } : {}),
     };
     try {

@@ -11,8 +11,9 @@
 //     'visible' (delegated to attachVitrum's pauseOnHidden default).
 //   - The component re-creates the engine when `scene` or `prefer`
 //     changes (those are creation-time decisions on the Engine contract;
-//     no mutate-in-place path). For `quality` changes we just push a
-//     fresh FrameInput.quality on the next frame — no engine churn.
+//     no mutate-in-place path). For `quality` changes we push the latest
+//     value into the rAF tick via a getter closure over a ref — no engine
+//     churn, and prop updates propagate on the very next frame.
 //
 // `react` is an OPTIONAL peer dep of @vitrum/engine; this file does not
 // load unless the host explicitly imports `@vitrum/engine/react`. Non-React
@@ -34,13 +35,12 @@ export interface VitrumCanvasProps {
   camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
   /** Quality vs speed hint. See CreateEngineOptions.prefer. */
   prefer?: EnginePreference;
-  /** Per-frame quality dials. CURRENT BEHAVIOUR: read once at mount time
-   *  and passed into `attachVitrum`; subsequent prop changes do NOT
-   *  propagate until the component remounts. The mutable ref kept by
-   *  this component for symmetry with onFrame/onProgress is not consulted
-   *  by `attachVitrum`'s rAF tick. (Earlier revisions of this JSDoc
-   *  claimed live propagation; that was aspirational. To get live quality
-   *  updates today, force a remount via `key`.) */
+  /** Per-frame quality dials. Prop changes propagate live: the latest
+   *  value is read by `attachVitrum`'s rAF tick every frame via a getter
+   *  closure over a mutable ref, so updates never trigger engine teardown
+   *  + recreate. (Earlier revisions of `attachVitrum` accepted only a
+   *  static value, which made this prop mount-only; the getter overload
+   *  added on 2026-05-18 fixed that.) */
   quality?: NonNullable<FrameInput['quality']>;
   /** Frame-level telemetry (forwards engine.onFrame). */
   onFrame?: (stats: FrameStats) => void;
@@ -82,7 +82,10 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         camera: props.camera,
         ...(props.prefer ? { prefer: props.prefer } : {}),
         ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
-        ...(qualityRef.current ? { quality: qualityRef.current } : {}),
+        // Live-propagation: pass a getter so the rAF tick reads the latest
+        // `props.quality` each frame (qualityRef.current is updated by the
+        // useEffect at line 67 whenever props.quality changes).
+        quality: () => qualityRef.current,
         onFrame: (stats) => { onFrameRef.current?.(stats); },
         onProgress: (progress) => { onProgressRef.current?.(progress); },
       })
