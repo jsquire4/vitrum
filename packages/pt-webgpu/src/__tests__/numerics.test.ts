@@ -8,11 +8,13 @@
  * The `safeInvDir` helper below is a TypeScript model used to reason about
  * the slab-test math from JS — there is no shared TS implementation to
  * re-export (the production `safeInvDir` lives only as a WGSL string in
- * `shared-bvh/src/wgsl/bvhIntersect.wgsl.ts:119`, and its semantics for the
- * exact-zero case differ from this mirror: WGSL uses `sign(0)*1e30 = 0`,
- * relying on downstream ray-triangle tests to reject false positives,
- * while this TS mirror uses a `±1e20` sentinel so the slab test handles
- * the outside-slab case directly). Keep the mirror local to this test.
+ * `shared-bvh/src/wgsl/bvhIntersect.wgsl.ts:131`). This mirror's
+ * exact-zero handling now matches the WGSL post-fix-2026-05-19:
+ * both use ±sentinel (this mirror uses ±1e20, WGSL uses ±1e30 — value
+ * differs, sign convention matches). The canonical CPU mirror with
+ * matching ±1e30 semantics lives in `@vitrum/shared-bvh`'s
+ * `__tests__/safeInvDir.test.ts`; this file's mirror is older and
+ * intentionally local.
  */
 
 import { describe, expect, it } from 'vitest';
