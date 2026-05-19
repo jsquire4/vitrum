@@ -175,7 +175,7 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let cosThetaF = max(0.0, dot(rCur.nv, wiF));
       let pHatF = luminance(rCur.Lo) * cosThetaF * INV_PI;
       let W_raw = select(0.0, rCur.w_sum / (f32(rCur.M) * pHatF), pHatF > 1e-9);
-      rCur.W = min(W_raw, RESTIR_GI_W_CAP);
+      rCur.W = min(W_raw, ubo.restirGiWCap);
     } else {
       rCur.W = 0.0;
     }
