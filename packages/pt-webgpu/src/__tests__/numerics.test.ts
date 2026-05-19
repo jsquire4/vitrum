@@ -5,8 +5,14 @@
  * - Item 18: removing the `min(hit.dist, 32.0)` Beer-Lambert clamp is numerically safe.
  * - Item 28: a safeInvDir helper prevents 0*Inf=NaN in axis-aligned ray–AABB slab tests.
  *
- * The safeInvDir helper below is a TypeScript mirror of the WGSL proposed in Item 28.
- * TODO(M4-#28): once source has safeInvDir, replace this mirror with a re-export.
+ * The `safeInvDir` helper below is a TypeScript model used to reason about
+ * the slab-test math from JS — there is no shared TS implementation to
+ * re-export (the production `safeInvDir` lives only as a WGSL string in
+ * `shared-bvh/src/wgsl/bvhIntersect.wgsl.ts:119`, and its semantics for the
+ * exact-zero case differ from this mirror: WGSL uses `sign(0)*1e30 = 0`,
+ * relying on downstream ray-triangle tests to reject false positives,
+ * while this TS mirror uses a `±1e20` sentinel so the slab test handles
+ * the outside-slab case directly). Keep the mirror local to this test.
  */
 
 import { describe, expect, it } from 'vitest';
