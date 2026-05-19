@@ -101,8 +101,13 @@ function makeMinimalCtx(
       }
     : {};
 
-  // Cast through unknown — we only touch resources.ppg in the PPG pass paths.
-  const resources = { ppg: ppgResources } as unknown as PassDispatchContext['resources'];
+  // Cast through unknown — we only touch resources.ppg + .restirGI in the PPG pass paths.
+  // W9 Phase 2: PPGGuidePass also reads `resources.restirGI.reservoirGiCurrentBuffer`
+  // for the per-pixel primary-hit position lookup.
+  const resources = {
+    ppg: ppgResources,
+    restirGI: { reservoirGiCurrentBuffer: makeMockBuffer() },
+  } as unknown as PassDispatchContext['resources'];
 
   const ctx: PassDispatchContext = {
     device,

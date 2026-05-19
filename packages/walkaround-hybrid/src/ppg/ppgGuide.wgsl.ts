@@ -38,11 +38,12 @@
  * If those constants change there, they must change here in lock-step.
  *
  * Bindings:
- *   group(0) binding(0) — ppgSTreeBuf:    array<f32>   (serialised sTree nodes)
- *   group(0) binding(1) — ppgDTreeBuf:    array<f32>   (serialised dTree nodes, concatenated)
- *   group(0) binding(2) — ppgDTreeOffsets: array<u32>  (dTreeIndex → f32 offset into ppgDTreeBuf)
- *   group(0) binding(3) — ppgSampleOut:   array<vec4<f32>> (output: xyz=dir world, w=pdf)
- *   group(1) binding(0) — ppgGuideUBO:    struct { ... }
+ *   group(0) binding(0) — ppgSTreeBuf:        array<f32>   (serialised sTree nodes)
+ *   group(0) binding(1) — ppgDTreeBuf:        array<f32>   (serialised dTree nodes, concatenated)
+ *   group(0) binding(2) — ppgDTreeOffsets:    array<u32>   (dTreeIndex → f32 offset into ppgDTreeBuf)
+ *   group(0) binding(3) — ppgSampleOut:       array<vec4<f32>> (output: xyz=dir world, w=pdf)
+ *   group(0) binding(4) — ppgReservoirGiBuf:  array<u32>   (half-res ReservoirGI; reads xv + M for per-pixel sTree lookup — W9 Phase 2)
+ *   group(1) binding(0) — ppgGuideUBO:        struct { ... }
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -55,16 +56,16 @@ export const PPG_GUIDE_WGSL = /* wgsl */`
 // W9: real flat-buffer traversal (no more uniform-grid stub).
 
 struct PPGGuideUBO {
-  pixelCount    : u32,   // total pixels to shade
-  imgWidth      : u32,   // dimension to recover (x, y) from flat pixel id
+  pixelCount    : u32,   // total full-res pixels to write samples for
+  imgWidth      : u32,   // full-res width — recovers (x, y) from flat pix id and maps to half-res reservoir
   alpha         : f32,   // MIS mixing weight α ∈ [0.1, 0.9] (Müller §3.4)
   frameSeed     : u32,   // RNG salt — varies per frame for stratified sampling
-  sceneMinX     : f32,   // cell-position oracle (world-space) — TODO: replace
-  sceneMinY     : f32,   //   with a per-pixel position buffer once primary-hit
-  sceneMinZ     : f32,   //   readback lands (W9 Phase 1 uses scene-centre as
-  sceneMaxX     : f32,   //   a placeholder; the kernel still produces valid
-  sceneMaxY     : f32,   //   samples — they just all share one sTree cell
-  sceneMaxZ     : f32,   //   until the position buffer is wired).
+  sceneMinX     : f32,   // scene AABB — used as fallback for pixels whose
+  sceneMinY     : f32,   //   half-res GI reservoir is degenerate (M==0,
+  sceneMinZ     : f32,   //   e.g. sky misses, first frame, or surfaces
+  sceneMaxX     : f32,   //   that haven't had a valid ReSTIR-GI initial-RIS
+  sceneMaxY     : f32,   //   sample yet). Avoids degenerate sTree lookup.
+  sceneMaxZ     : f32,
   _pad0         : u32,
   _pad1         : u32,
 }
@@ -74,10 +75,16 @@ struct PPGGuideUBO {
 //   ppgDTreeBuf: per-cell dTree blocks concatenated; each is [N, leafN, total, _]
 //                followed by N × 8 f32 dNode records.
 //   ppgDTreeOffsets: ppgDTreeOffsets[k] = f32 base offset of cell k's dTree.
+//   ppgReservoirGiBuf: half-res ReservoirGI storage (see common.wgsl
+//                RESERVOIR_GI_STRIDE = 20 u32 / 80 bytes per reservoir).
+//                xv (primary-hit world position) lives at u32 offsets 0..2;
+//                M (sample count) at offset 15. We read these to compute the
+//                per-pixel sTree lookup position — Phase 2 of W9 sweep #5 fix.
 @group(0) @binding(0) var<storage, read>       ppgSTreeBuf     : array<f32>;
 @group(0) @binding(1) var<storage, read>       ppgDTreeBuf     : array<f32>;
 @group(0) @binding(2) var<storage, read>       ppgDTreeOffsets : array<u32>;
 @group(0) @binding(3) var<storage, read_write> ppgSampleOut    : array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read>       ppgReservoirGiBuf : array<u32>;
 @group(1) @binding(0) var<uniform>             ppgGuideUBO     : PPGGuideUBO;
 
 // Layout constants — MUST stay in sync with serialise.ts.
@@ -184,21 +191,49 @@ fn dTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
   return dTreeOffset + DTREE_HEADER_F32; // unreachable on a well-formed tree
 }
 
+// W9 Phase 2 — read this-pixel's primary-hit world position from the half-res
+// ReSTIR-GI reservoir written by the spatial-2 pass. Mirrors the layout
+// documented in common.wgsl: xv at u32 offsets 0..2, M at offset 15. Returns
+// scene-centre when the reservoir is degenerate (M==0) so sTree lookup
+// stays well-defined for pixels without a valid ReSTIR-GI sample (sky
+// misses, first frame, etc.).
+const RESERVOIR_GI_STRIDE_LOCAL : u32 = 20u;
+
+fn fetchPrimaryHitPos(fullResX: u32, fullResY: u32) -> vec3<f32> {
+  // Half-res reservoirs cover 2×2 full-res tiles; map full-res → half-res.
+  let halfWidth  = max(1u, ppgGuideUBO.imgWidth >> 1u);
+  let halfX = fullResX >> 1u;
+  let halfY = fullResY >> 1u;
+  let halfPx = halfY * halfWidth + halfX;
+  let b = halfPx * RESERVOIR_GI_STRIDE_LOCAL;
+  let M = ppgReservoirGiBuf[b + 15u];
+  if (M == 0u) {
+    return vec3<f32>(
+      0.5 * (ppgGuideUBO.sceneMinX + ppgGuideUBO.sceneMaxX),
+      0.5 * (ppgGuideUBO.sceneMinY + ppgGuideUBO.sceneMaxY),
+      0.5 * (ppgGuideUBO.sceneMinZ + ppgGuideUBO.sceneMaxZ),
+    );
+  }
+  return vec3<f32>(
+    bitcast<f32>(ppgReservoirGiBuf[b + 0u]),
+    bitcast<f32>(ppgReservoirGiBuf[b + 1u]),
+    bitcast<f32>(ppgReservoirGiBuf[b + 2u]),
+  );
+}
+
 @compute @workgroup_size(64)
 fn ppgGuideMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let pix = gid.x;
   if (pix >= ppgGuideUBO.pixelCount) { return; }
 
-  // sTree cell: W9 Phase 1 uses scene-centre as a placeholder for the per-pixel
-  // surface position (Phase 2 will read this from a primary-hit position buffer).
-  // With a single-cell sTree this is a no-op; with a split sTree the kernel
-  // still picks SOME cell deterministically and learns its directional dist.
-  let sceneCentre = vec3<f32>(
-    0.5 * (ppgGuideUBO.sceneMinX + ppgGuideUBO.sceneMaxX),
-    0.5 * (ppgGuideUBO.sceneMinY + ppgGuideUBO.sceneMaxY),
-    0.5 * (ppgGuideUBO.sceneMinZ + ppgGuideUBO.sceneMaxZ),
-  );
-  let sBase = sTreeFindLeafBase(sceneCentre);
+  // W9 Phase 2 fix — read the per-pixel primary-hit world position from the
+  // half-res ReSTIR-GI reservoir's xv field. Falls back to scene-centre if
+  // the reservoir is degenerate (M==0). Replaces the W9 Phase 1 placeholder
+  // that mapped every pixel to a single sTree cell (sweep finding #5).
+  let fullX = pix % ppgGuideUBO.imgWidth;
+  let fullY = pix / ppgGuideUBO.imgWidth;
+  let hitPos = fetchPrimaryHitPos(fullX, fullY);
+  let sBase = sTreeFindLeafBase(hitPos);
   let dTreeIndex = u32(ppgSTreeBuf[sBase + 10u]);
   // dTreeOffsets is u32; safe to read with default 0 if the table is degenerate.
   let dOff = ppgDTreeOffsets[dTreeIndex];

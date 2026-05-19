@@ -12,10 +12,14 @@
  *
  * Bind group layout (from `layout: 'auto'` on the WGSL kernel):
  *   group(0):
- *     binding(0) sTreeBuf     (storage, read)
- *     binding(1) dTreeBuf     (storage, read)
- *     binding(2) dTreeOffsets (storage, read)
- *     binding(3) sampleOut    (storage, read_write)
+ *     binding(0) sTreeBuf            (storage, read)
+ *     binding(1) dTreeBuf            (storage, read)
+ *     binding(2) dTreeOffsets        (storage, read)
+ *     binding(3) sampleOut           (storage, read_write)
+ *     binding(4) reservoirGiCurrent  (storage, read) — W9 Phase 2: per-pixel
+ *                                    primary-hit position (xv) for sTree lookup.
+ *                                    Written by SpatialGIReservoirPass `gi-spatial-2`
+ *                                    which is our declared dependency.
  *   group(1):
  *     binding(0) guideUboBuffer (uniform)
  */
@@ -67,6 +71,9 @@ export class PPGGuidePass implements Pass {
     }
 
     // Build bind groups for both groups from the auto layout.
+    // W9 Phase 2: binding 4 reads the spatial-fused GI reservoir buffer
+    // (xv = per-pixel primary-hit position). The 'gi-spatial-2' dependency
+    // declared above guarantees this buffer is the post-spatial-reuse output.
     const bg0 = device.createBindGroup({
       label: 'ppg-guide-bg0',
       layout: this._pipeline.getBindGroupLayout(0),
@@ -75,6 +82,7 @@ export class PPGGuidePass implements Pass {
         { binding: 1, resource: { buffer: ppg.dTreeBuf } },
         { binding: 2, resource: { buffer: ppg.dTreeOffsetsBuf } },
         { binding: 3, resource: { buffer: ppg.sampleOutBuf } },
+        { binding: 4, resource: { buffer: resources.restirGI.reservoirGiCurrentBuffer } },
       ],
     });
     const bg1 = device.createBindGroup({
