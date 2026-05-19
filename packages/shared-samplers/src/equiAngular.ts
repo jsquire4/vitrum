@@ -1,14 +1,14 @@
 /**
  * equiAngular.ts — Equi-angular sampling for volume single-scatter NEE.
  *
- * Equi-angular sampling (also known as the "Szécsi trick" or Kulla-Conty
+ * Equi-angular sampling (also known as the "Szécsi trick" or Kulla-Fajardo
  * distance sampling) samples a scatter distance along a ray weighted toward
  * the point on the ray closest to a point light source.  This dramatically
  * reduces variance when the light is close to the ray compared to uniform
  * distance sampling, which concentrates samples near t=0 regardless of
  * light position.
  *
- * Algorithm (Kulla & Conty 2012, §3):
+ * Algorithm (Kulla & Fajardo 2012, §3):
  *   Given a ray with origin o and unit direction d, and a point light at p:
  *   1. Project p onto the ray: t_closest = dot(p - o, d)
  *      (the parameter where the ray passes closest to p)
@@ -27,10 +27,12 @@
  * Per-region density volumes are explicitly out of scope for Sprint 7.
  *
  * References:
- *   Kulla & Conty 2012, "Importance Sampling Techniques for Path Tracing
- *   in Participating Media", EGSR.  (Often credited as "Kulla-Conty" in
- *   renderer literature; Szécsi popularised the same idea independently in
- *   real-time contexts.)
+ *   Kulla & Fajardo 2012, "Importance Sampling Techniques for Path Tracing
+ *   in Participating Media", EGSR. Earlier revisions of this file cited
+ *   "Kulla & Conty" — that's a different (later) Sony Imageworks author
+ *   pairing on unrelated papers; Marcos Fajardo is the actual co-author
+ *   here. Szécsi popularised the same idea independently in real-time
+ *   contexts.
  *
  *   Pharr, Jakob, Humphreys "Physically Based Rendering" 4th ed., §14.1.2.
  *
@@ -142,7 +144,7 @@ export function sampleEquiAngular(
   const t = D * Math.tan(theta) + tClosest;
 
   // Step 5: PDF in t-space, evaluated at the CLAMPED t so the returned
-  // (t, pdf) pair is self-consistent (Kulla & Conty 2012, §3).
+  // (t, pdf) pair is self-consistent (Kulla & Fajardo 2012, §3).
   // p(t) = 1 / (D · thetaRange · (1 + ((t - t_closest)/D)²))
   //
   // History: the 2026-05-11 in-flight sweep (Tier D) flagged a clamp/PDF

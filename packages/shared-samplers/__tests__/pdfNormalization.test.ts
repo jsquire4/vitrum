@@ -14,7 +14,7 @@
  *
  * References:
  *   PBR4e §11.4 Eq. 11.4  — HG phase function normalization
- *   Kulla & Conty 2012 §3  — equi-angular PDF formula
+ *   Kulla & Fajardo 2012 §3  — equi-angular PDF formula
  *   Veach & Guibas 1995    — mixture PDF (balance / power heuristic)
  */
 
@@ -101,14 +101,14 @@ describe('HG phase PDF normalizes (∫ p dω ≈ 1)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // For each sample (t, pdf) drawn from sampleEquiAngular(u, ...):
-//   Recompute closed-form PDF from Kulla-Conty §3:
+//   Recompute closed-form PDF from Kulla-Fajardo §3:
 //     p(t) = D / (thetaRange × (D² + (t - tClosest)²))
 //   which simplifies from 1 / (D · thetaRange · (1 + ((t-tClosest)/D)²))
 //   by multiplying num+denom by D².
 //
 // Also verify that ∫₀^tMax p(t) dt ≈ 1 via trapezoidal rule on a fine grid.
 //
-// Reference: Kulla & Conty 2012 §3; Pharr et al. PBR4e §14.1.2.
+// Reference: Kulla & Fajardo 2012 §3; Pharr et al. PBR4e §14.1.2.
 
 describe('equiAngular PDF matches sample return', () => {
   type Vec3 = readonly [number, number, number];
