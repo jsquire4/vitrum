@@ -59,11 +59,13 @@ Read in this order to onboard:
 > silently dropped from HEAD when subsequent commits merged from pre-feature
 > parents and overwrote them. Verified-lost so far: **W2-C6** (shared-samplers
 > WGSL primitives), **W3-D6** (Mat4 brand), **W3-D7** (FrameOutput discriminated
-> union), **W3-D19** (BackendTexture brand). All four are flagged inline as
-> "NOT IN HEAD" with verification steps; full fix plans in `items_to_fix.md`
-> Section E. Until those are re-applied, treat any W3 "shipped" bullet that
-> changes the public type contract as suspect — verify by `grep`-ing for the
-> claimed symbol before relying on it.
+> union), **W3-D19** (BackendTexture brand), **W6-E1** (`reuseSharedWebGpuDevice`
+> default flip). All five are flagged inline as "NOT IN HEAD" with verification
+> steps; full fix plans in `items_to_fix.md` Section E. Until those are
+> re-applied, treat any "shipped" W2 / W3 / W6 bullet that changes a contract,
+> default value, or public symbol as suspect — verify by `grep`-ing for the
+> claimed symbol before relying on it. (The runtime behavior is the pre-sprint
+> behavior; the losses are scope/structure improvements, not correctness bugs.)
 
 ### W3 — contract hygiene (surgical core/* moves)
 
@@ -81,7 +83,7 @@ Read in this order to onboard:
 
 ### W6 — hidden-globals de-singletonization
 
-- E1 — `reuseSharedWebGpuDevice` default flipped to `false`; singleton renamed for test-only clarity (`feat/w6-hidden-globals-e1-e3`, `3dbe11a`).
+- E1 — **NOT IN HEAD.** The feature commit (`3dbe11a`) was supposed to flip `reuseSharedWebGpuDevice`'s default from `true` to `false` (callers must opt in) per the host-owns-lifecycle design principle. The commit's diff replaced `!== false` with `=== true` in the three denoiser dispatchers. Verified 2026-05-19: `grep -n "reuseSharedWebGpuDevice !== false" packages/shared-denoisers/src/*.ts` returns 3 hits — the pre-E1 form. Same merge-race casualty pattern as D6/D7/D19/C6.
 - E2 — module-level `iblBaker` cache replaced with per-engine `IblBakerCache` instance (`feat/w6-hidden-globals-pt-webgl`, `6a5106f`).
 - E3 — `window.__WGPU__` write removed from `HybridEngine.renderFrame` (use `onFrame`) (`7d85bb0`).
 - E6 — fork-private `_pathTracer` access encapsulated behind a `ForkAccess` indirection (`a6a3c90`).

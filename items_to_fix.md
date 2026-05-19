@@ -3,7 +3,7 @@
 **Audit date (original):** 2026-05-17
 **Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Four new open items filed 2026-05-19** (E1/E2/E3/E4 — see Section E): a 2026-05-17 merge race silently lost four sprint commits (W2-C6 shared-samplers WGSL primitives; W3-D6 Mat4 brand; W3-D7 FrameOutput discriminated union; W3-D19 BackendTexture brand) — the commits exist in `git log` but their changes are not in HEAD. All four are type-system / structural improvements, not runtime bugs.
+> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Five new open items filed 2026-05-19** (E1/E2/E3/E4/E5 — see Section E): a 2026-05-17 merge race silently lost five sprint commits (W2-C6 shared-samplers WGSL primitives; W3-D6 Mat4 brand; W3-D7 FrameOutput discriminated union; W3-D19 BackendTexture brand; W6-E1 `reuseSharedWebGpuDevice` default flip) — the commits exist in `git log` but their changes are not in HEAD. All five are type-system / structural / API-hygiene improvements, not runtime bugs.
 
 ---
 
@@ -133,18 +133,19 @@ reconciliation. Descriptions kept below for posterity.
 
 ## Section E — Open items discovered 2026-05-19
 
-### E1, E2, E3, E4 — four sprint-of-2026-05-17 commits lost via merge races
+### E1–E5 — five sprint-of-2026-05-17 commits lost via merge races
 
-All four landed as standalone feature commits in the May 17 sprint but their
+All five landed as standalone feature commits in the May 17 sprint but their
 changes did not survive into HEAD because subsequent commits were branched
 from pre-feature parents and silently overwrote them on merge. The features
 still exist as commits in `git log`; they just have zero footprint in the
-current code. All four are type-system / structural improvements that don't
-affect runtime correctness — the old shape still works. The fix in each case
-is to re-apply the change plus update all consumers; the touch radius is
-moderate but not load-bearing today. Bundle these on the next contract-
-hygiene pass since E1 + E3 both touch `frame.ts` and E4 touches sites that
-E2 also brushes against.
+current code. All five are type-system / structural / API-hygiene changes —
+none of them is a runtime correctness bug, the pre-sprint behaviour is what's
+running. The fix in each case is to re-apply the change plus update all
+consumers; the touch radius is moderate but not load-bearing today. Bundle
+these on the next contract-hygiene pass since E1 + E3 both touch `frame.ts`,
+E4 touches sites that E2 also brushes against, and E5 is a self-contained
+breaking-change to three files.
 
 ### E1. W3-D7 FrameOutput discriminated union — lost in a merge race
 
@@ -164,6 +165,14 @@ E2 also brushes against.
 - **Verification:** `grep -c "__mat4Brand" packages/core/src/scene/math.ts` → 0; `grep -rn "asMat4" packages/*/src --include="*.ts"` → 0 callers.
 - **Fix:** re-port the D6 changes to `scene/math.ts` (brand + asMat4), then re-update the 21 implicit-cast construction sites that D6 originally fixed (three-bindings, pt-webgpu, engine).
 - **Why deferred:** type-system improvement, not a runtime bug. Catch on next contract-hygiene pass.
+
+### E5. W6-E1 reuseSharedWebGpuDevice default flip — lost the same way
+
+- **Where:** `packages/shared-denoisers/src/{atrousVarianceWebGPU,hdrLuminanceBilateralWebGPU,svgfRealWebGPU}.ts`. Commit `3dbe11a` (W6-E1, 2026-05-17) was a breaking change: flipped `reuseSharedWebGpuDevice`'s effective default from `true` to `false` so callers without an explicit `device` would error rather than silently reuse a process-wide singleton (a design-principle violation — host-owns-lifecycle). The diff changed `opts.reuseSharedWebGpuDevice !== false` to `opts.reuseSharedWebGpuDevice === true` in all three dispatchers.
+- **Symptom:** the pre-E1 implicit-singleton behaviour is back. Callers without a `device` arg silently reuse the global, masking the host-ownership contract violation E1 was meant to surface.
+- **Verification:** `grep -n "reuseSharedWebGpuDevice !== false" packages/shared-denoisers/src/*.ts` returns 3 hits (the pre-E1 form). The post-E1 form (`=== true`) is not in HEAD.
+- **Fix:** re-apply `3dbe11a` and update any test that called the dispatchers without `device` (those would have been updated in the original commit).
+- **Why deferred:** breaking-change re-application has the same cost in a single commit; bundle with E1–E4 on the next contract-hygiene pass.
 
 ### E4. W2-C6 shared-samplers WGSL primitives — lost the same way
 
