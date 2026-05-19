@@ -17,7 +17,7 @@ Dev-only debug overlay components for `@vitrum` engines. Add as a **devDependenc
 
 ## Capability gating
 
-Each component reads `engine.capabilities.debugSurface` and the corresponding `engine.debug.<method>` to decide whether to render. If the underlying engine doesn't expose the data the component needs, it renders a one-line "not available on this engine" badge instead of failing.
+Each component duck-types the specific `engine.debug.<method>` it needs and renders a one-line "not available on this engine" badge if it's absent. The coarse `engine.capabilities.debugSurface` flag exists on the contract but isn't consulted here — the method-level check is finer-grained (the surface can expose `bvhNodes` without `pickPrimitive`, for example).
 
 ## Status
 
