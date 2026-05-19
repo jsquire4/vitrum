@@ -53,6 +53,7 @@ import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { packDDGIGridParams, type FrameResources } from './pipeline/resourceManager.js';
 import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
+import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
@@ -1117,71 +1118,14 @@ export class HybridEngine implements Engine {
       return atlas?.visibility ?? null;
     },
     bvhNodes: (): Float32Array | null => {
-      const bvh = this._bvhBuffers;
-      const buf = bvh?.bvhNodes?.cpuData;
+      const buf = this._bvhBuffers?.bvhNodes?.cpuData;
       if (buf == null) return null;
-      // BVH node layout: 32 bytes/node, 8 × u32, shared by shared-bvh and
-      // pt-webgpu's buildCpuBvh:
-      //   f32[0..2] bounds.min xyz
-      //   f32[3..5] bounds.max xyz
-      //   u32[6]    rightChildOrTriOffset
-      //   u32[7]    splitAxisOrTriCount  (leaf when (high16 == 0xFFFF))
-      // Repackage into the public contract: [min, max, depth, pad].
-      const src    = new Float32Array(buf);
-      const srcU32 = new Uint32Array(buf);
-      const nodeCount = (buf).byteLength / 32;
-
-      // Depth pass — iterative DFS from root (depth-first encoding means
-      // the left child sits at idx+1; the right child is at
-      // srcU32[idx*8 + 6]). Leaves are flagged by the high 16 bits of the
-      // split-axis word being 0xFFFF (matches `BVH_LEAFNODE_FLAG` in
-      // `shared-bvh/wgsl/bvhIntersect.wgsl.ts:64`).
-      const depths = new Uint32Array(nodeCount);
-      if (nodeCount > 0) {
-        // Stack reused for the traversal — pre-allocate at the BVH stack
-        // depth (60 per `BVH_INTERSECT_STACK_DEPTH`) plus headroom for
-        // unbalanced trees.
-        const stack = new Int32Array(nodeCount); // worst-case linear chain
-        const stackD = new Uint32Array(nodeCount);
-        let sp = 0;
-        stack[sp]  = 0;
-        stackD[sp] = 0;
-        sp++;
-        while (sp > 0) {
-          sp--;
-          const idx = stack[sp]!;
-          const d   = stackD[sp]!;
-          if (idx < 0 || idx >= nodeCount) continue;
-          depths[idx] = d;
-          const splitWord = srcU32[idx * 8 + 7]!;
-          const isLeaf = (splitWord & 0xffff0000) === 0xffff0000;
-          if (isLeaf) continue;
-          const rightChild = srcU32[idx * 8 + 6]!;
-          // Push right first so left (idx+1) pops first — preserves a
-          // left-then-right walk for deterministic dev-overlay colours.
-          stack[sp]  = rightChild;
-          stackD[sp] = d + 1;
-          sp++;
-          stack[sp]  = idx + 1;
-          stackD[sp] = d + 1;
-          sp++;
-        }
-      }
-
-      const out = new Float32Array(nodeCount * 8);
-      for (let i = 0; i < nodeCount; i++) {
-        const so = i * 8;   // 8 f32 lanes per source node
-        const oo = i * 8;   // 8 f32 lanes per output node
-        out[oo + 0] = src[so + 0]!; // minX
-        out[oo + 1] = src[so + 1]!; // minY
-        out[oo + 2] = src[so + 2]!; // minZ
-        out[oo + 3] = src[so + 3]!; // maxX
-        out[oo + 4] = src[so + 4]!; // maxY
-        out[oo + 5] = src[so + 5]!; // maxZ
-        out[oo + 6] = depths[i]!;   // depth (root=0; via DFS parent walk)
-        out[oo + 7] = 0;            // pad
-      }
-      return out;
+      // Repack the internal 8-u32 layout into the public 8-f32 contract.
+      // Logic + leaf-flag check live in packBvhNodesForDebug so they can
+      // be unit-tested without standing up a HybridEngine — the prior
+      // in-line code shipped with a load-bearing signed-int32 bitwise bug
+      // (every leaf was classified as interior) that no test caught.
+      return packBvhNodesForDebug(buf);
     },
     giSignalTextures: () => {
       // W1-R2 — _res is the nested FrameResources struct. The debug surface
