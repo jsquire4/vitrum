@@ -38,7 +38,13 @@ import { upgradeToNodeMaterial } from '../lib/nodeMaterialUpgrade.js';
 // here, cached by slot identity so TSL keeps its bindings stable across
 // frames. The wrappers themselves carry no GPU data; three.js's WebGPU
 // backend manages whatever GPUTexture it allocates for them.
-const _slotStorageTextureCache = new WeakMap<AtlasTextureSlot, StorageTexture>();
+//
+// The parallel `_trackedStorageTextures` Set exists so `disposeApply-
+// DDGIShadingCache()` can call `.dispose()` on each StorageTexture —
+// dropping the WeakMap alone does NOT free the underlying GPU resource;
+// the StorageTexture's `dispose()` method is what releases it.
+let _slotStorageTextureCache = new WeakMap<AtlasTextureSlot, StorageTexture>();
+const _trackedStorageTextures = new Set<StorageTexture>();
 function slotToStorageTexture(slot: AtlasTextureSlot): StorageTexture {
   let tex = _slotStorageTextureCache.get(slot);
   if (!tex) {
@@ -49,8 +55,25 @@ function slotToStorageTexture(slot: AtlasTextureSlot): StorageTexture {
     tex.magFilter = THREE.LinearFilter;
     tex.needsUpdate = true;
     _slotStorageTextureCache.set(slot, tex);
+    _trackedStorageTextures.add(tex);
   }
   return tex;
+}
+
+/** Dispose all StorageTexture wrappers cached by `slotToStorageTexture`
+ *  and reset the module-level caches. Call this from the host's engine
+ *  teardown to release the underlying GPU resources — WeakMap-based GC
+ *  is insufficient because StorageTexture owns a GPUTexture that only
+ *  three.js's `.dispose()` call frees.
+ *
+ *  Idempotent. */
+export function disposeApplyDDGIShadingCache(): void {
+  for (const tex of _trackedStorageTextures) {
+    try { tex.dispose(); } catch {}
+  }
+  _trackedStorageTextures.clear();
+  _slotStorageTextureCache = new WeakMap();
+  _ddgiSampleFnCached = null;
 }
 
 // WebGPU is configured with NoToneMapping + LinearSRGBColorSpace at the
