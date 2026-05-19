@@ -38,7 +38,7 @@ import {
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
   SVGF_7X7_SPATIAL_FALLBACK_WGSL,
 } from '@vitrum/shared-denoisers';
-import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
+import { LUMINANCE_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 import { COMMON_MODULE } from '../shaders/common.wgsl.js';
 import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
@@ -48,6 +48,7 @@ import { RIS_MODULE } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_MODULE } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../shaders/spatial.wgsl.js';
 import { SHADE_MODULE } from '../shaders/shade.wgsl.js';
+import { SAMPLE_CASCADE_C0_MODULE } from '../shaders/sampleCascadeC0.wgsl.js';
 import { RIS_GI_MODULE } from '../shaders/risGi.wgsl.js';
 import { TEMPORAL_GI_MODULE } from '../shaders/temporalGi.wgsl.js';
 import { SPATIAL_GI_MODULE } from '../shaders/spatialGi.wgsl.js';
@@ -111,6 +112,21 @@ export const LUMINANCE_MODULE: WgslModule = {
   requires: [],
 };
 
+/**
+ * Canonical octahedral encode/decode pair from @vitrum/shared-samplers.
+ * Consumers `requires: ['octahedralCore']` for `fn octEncode(dir: vec3f) -> vec2f`
+ * and `fn octDecode(oct: vec2f) -> vec3f` (Cigolle et al. 2014 — A Survey
+ * of Efficient Representations for Independent Unit Vectors).
+ *
+ * Note: `common` does NOT include octahedral, so modules that want it
+ * must declare the dependency explicitly.
+ */
+export const OCTAHEDRAL_CORE_MODULE: WgslModule = {
+  name: 'octahedralCore',
+  source: OCTAHEDRAL_CORE_WGSL,
+  requires: [],
+};
+
 /** Pre-R6 concat: `COMMON_WGSL + ATROUS_WGSL` (pipelineCompiler.ts:112). */
 export const ATROUS_MODULE: WgslModule = {
   name: 'atrous',
@@ -171,6 +187,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // Foundation
   [COMMON_MODULE.name, COMMON_MODULE],
   [LUMINANCE_MODULE.name, LUMINANCE_MODULE],
+  [OCTAHEDRAL_CORE_MODULE.name, OCTAHEDRAL_CORE_MODULE],
   [WELFORD_VARIANCE_MODULE.name, WELFORD_VARIANCE_MODULE],
 
   // Walkaround-local shader helpers
@@ -186,6 +203,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [TEMPORAL_MODULE.name, TEMPORAL_MODULE],
   [SPATIAL_MODULE.name, SPATIAL_MODULE],
   [SHADE_MODULE.name, SHADE_MODULE],
+  [SAMPLE_CASCADE_C0_MODULE.name, SAMPLE_CASCADE_C0_MODULE],
 
   // ReSTIR-GI passes
   [RIS_GI_MODULE.name, RIS_GI_MODULE],

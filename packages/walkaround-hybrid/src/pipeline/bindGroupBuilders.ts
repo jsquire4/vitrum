@@ -285,6 +285,13 @@ interface HybridLayersResources {
   ddgiPlaceholderRg16f: GPUTexture;
   nearestSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
+  // W8 Phase 3 (2026-05-18) — RC cascade-0 + params. Both fields are
+  // always-present GPUBuffers (a 16-byte and a 64-byte placeholder
+  // when RC is disabled) so the bind group can be built unconditionally;
+  // the shader's `rcParams.enabled` bit gates whether the cascade-0
+  // sample is actually integrated into Lo_indirect.
+  rcCascade0Buffer: GPUBuffer;
+  rcParamsBuffer:   GPUBuffer;
 }
 
 export function buildHybridLayersBindGroup(
@@ -302,6 +309,8 @@ export function buildHybridLayersBindGroup(
       { binding: 1, resource: visTex.createView() },
       { binding: 2, resource: r.nearestSampler },
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
+      { binding: 4, resource: { buffer: r.rcCascade0Buffer } },
+      { binding: 5, resource: { buffer: r.rcParamsBuffer } },
     ],
   });
 }

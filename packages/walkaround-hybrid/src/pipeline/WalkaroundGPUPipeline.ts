@@ -1026,4 +1026,20 @@ export class WalkaroundGPUPipeline {
   } | null): void {
     this._ddgi.setInputs(inputs, this._res);
   }
+
+  /**
+   * W8 Phase 3 (2026-05-18) — bind RC cascade-0 inputs for the shade pass.
+   * Called per frame from `HybridEngine.renderFrame` when `rcEnabled`.
+   * Pass `null` to revert to placeholder (RC contribution becomes 0).
+   *
+   * `paramsBytes` is the packed {@link RCParams} struct from
+   * `HybridEngineRC.packRCParams(...)` — see that file for the WGSL-aligned
+   * 64-byte layout.
+   */
+  setRCInputs(inputs: {
+    cascade0Buffer: GPUBuffer;
+    paramsBytes: ArrayBuffer;
+  } | null): void {
+    this._ddgi.setRCInputs(inputs);
+  }
 }

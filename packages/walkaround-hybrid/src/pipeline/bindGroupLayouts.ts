@@ -169,18 +169,27 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  * Phase 2B — combined hybrid-layers bind group (slot 3, shade only).
  * DDGI + RC inputs packed into one group because Lovelace's adapter
  * caps `maxBindGroups = 4` (verified empirically); a 5th group is
- * rejected. maxBindingsPerBindGroup is 1000 so 4 bindings is fine.
+ * rejected. maxBindingsPerBindGroup is 1000 so 6 bindings is fine.
  * Layout:
  *   DDGI section
  *     0 — irradiance atlas (texture_2d<f32>, unfilterable)
  *     1 — visibility atlas (texture_2d<f32>, unfilterable)
  *     2 — non-filtering sampler
  *     3 — DDGI grid uniform (64 bytes)
+ *   RC section (W8 Phase 3, 2026-05-18)
+ *     4 — cascade-0 storage buffer (read-only) — `array<vec4f>` packed
+ *         (probeX·probeY·probeZ·rays) entries. Always bound; a 1-vec4f
+ *         placeholder backs the slot when RC is disabled.
+ *     5 — RCParams uniform (64 bytes) — probeOrigin/roomSize/probeCount/
+ *         raysPerProbe/rayGridSize + rcWeight + enabled bit. The
+ *         `enabled == 0u` short-circuits sampleCascadeC0 to vec3f(0),
+ *         so the same bind group works for rcEnabled=true and false
+ *         without a pipeline recompile.
  *
- * Note: RC bindings were dropped — Lo_rc was computed and discarded;
- * the cascade buffers, params UBO, and setRCInputs wiring all retired
- * together. The RC subsystem remains live for the standalone 'rc'
- * walkaround engine.
+ * shade.wgsl reads bindings 0-5; risGi.wgsl reads only 0-3. WebGPU
+ * spec allows pipelines to reference a subset of layout entries, so
+ * the unified BGL works for both. Bind groups must still provide
+ * resources for all 6 entries (placeholders for unused).
  */
 export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.hybridLayers) return cache.hybridLayers;
@@ -191,6 +200,8 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
     ],
   });
   return cache.hybridLayers;

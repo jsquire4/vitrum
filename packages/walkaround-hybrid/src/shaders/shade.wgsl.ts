@@ -409,7 +409,18 @@ fn lo_indirect(
   if (totalW > 1e-3) {
     Lo_indirect = Lo_indirect / totalW;
   }
-  return Lo_indirect;
+  // W8 Phase 3 — Track-A MIS composition with Sannikov 2023 Radiance
+  // Cascades. When rcEnabled the cascade-0 sample is mixed with the
+  // ReSTIR-GI estimate using a host-supplied weight w_rc; the two are
+  // forced to sum to 1 (balance heuristic over two unbiased-modulo-bias
+  // estimators of the same diffuse-indirect integral). When rcEnabled
+  // is false the rcParams.enabled bit is 0 and sampleCascadeC0 returns
+  // 0, leaving Lo_restirGi unchanged — bit-identical to the pre-Phase-3
+  // path.
+  let Lo_rc = sampleCascadeC0(pos, normal);
+  let wRc = clamp(rcParams.rcWeight, 0.0, 1.0);
+  let wRestirGi = 1.0 - wRc;
+  return wRestirGi * Lo_indirect + wRc * Lo_rc;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -580,5 +591,5 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SHADE_MODULE: WgslModule = {
   name: 'shade',
   source: SHADE_WGSL,
-  requires: ['common', 'surfaceTextures', 'ddgiSample'],
+  requires: ['common', 'surfaceTextures', 'ddgiSample', 'sampleCascadeC0'],
 };

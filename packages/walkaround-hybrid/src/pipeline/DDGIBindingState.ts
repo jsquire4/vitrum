@@ -31,6 +31,15 @@ export interface DDGISetInputs {
   gridParams: ArrayBuffer;
 }
 
+/** W8 Phase 3 (2026-05-18) — RC cascade-0 + params handed to the shade
+ *  pass alongside the DDGI atlas (same bind group, slots 4-5). */
+export interface RCSetInputs {
+  /** Raw cascade-0 GPUBuffer from RCSubsystem (probeX·probeY·probeZ·rays × vec4f). */
+  cascade0Buffer: GPUBuffer;
+  /** Packed RCParams uniform bytes (64 bytes) — see packRCParams in HybridEngineRC.ts. */
+  paramsBytes: ArrayBuffer;
+}
+
 export class DDGIBindingState {
   private readonly _device: GPUDevice;
   /** DDGI inputs (layered hybrid). Null → placeholder textures. */
@@ -40,6 +49,19 @@ export class DDGIBindingState {
    *  allocate a fresh Float32Array(16) every frame when DDGI is disabled.
    *  Populated lazily on first setInputs(null) call. */
   private _placeholderUBO: Float32Array | null = null;
+
+  /** W8 Phase 3 — RC cascade-0 buffer (host-supplied via setRCInputs) or
+   *  the 16-byte placeholder created at first setRCInputs(null). */
+  private _rcCascade0: GPUBuffer | null = null;
+  /** Placeholder buffers for the RC slot when RC is disabled. WebGPU does
+   *  not allow null bindings on a layout entry, so we create a 16-byte
+   *  storage placeholder + a 64-byte UBO placeholder (enabled = 0u) on
+   *  first need. Both live for the engine's lifetime; dispose() releases. */
+  private _rcCascade0Placeholder: GPUBuffer | null = null;
+  private _rcParamsPlaceholder:   GPUBuffer | null = null;
+  /** Real RC params buffer when RC is enabled (host-allocated 64 bytes;
+   *  contents rewritten by setRCInputs each frame). Null when RC disabled. */
+  private _rcParamsBuffer: GPUBuffer | null = null;
 
   constructor(device: GPUDevice) {
     this._device = device;
@@ -78,16 +100,74 @@ export class DDGIBindingState {
   }
 
   /**
+   * Bind RC cascade-0 inputs from {@link RCSubsystem}. Pass `null` when RC
+   * is disabled or the subsystem has no scene yet — the bind group then
+   * uses 16-byte / 64-byte placeholder buffers (the rcParams placeholder
+   * has `enabled = 0u` so `sampleCascadeC0` short-circuits to vec3f(0)).
+   *
+   * Per-frame: when `inputs != null`, host code passes the cascade-0
+   * GPUBuffer + a fresh `paramsBytes` ArrayBuffer (64 bytes) capturing the
+   * current rcWeight + probe geometry. The buffer contents are written
+   * via `device.queue.writeBuffer`.
+   */
+  setRCInputs(inputs: RCSetInputs | null): void {
+    if (inputs === null) {
+      this._rcCascade0 = null;
+      this._rcParamsBuffer = null;
+      // Placeholders are allocated lazily at first buildBindGroup() so we
+      // don't allocate GPU buffers in setRCInputs(null) called before the
+      // pipeline exists.
+      return;
+    }
+    this._rcCascade0 = inputs.cascade0Buffer;
+    if (this._rcParamsBuffer === null) {
+      this._rcParamsBuffer = this._device.createBuffer({
+        label: 'rc-params-ubo',
+        size: 64,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+    this._device.queue.writeBuffer(this._rcParamsBuffer, 0, inputs.paramsBytes);
+  }
+
+  private _ensureRCPlaceholders(): { cascade0: GPUBuffer; params: GPUBuffer } {
+    if (this._rcCascade0Placeholder === null) {
+      this._rcCascade0Placeholder = this._device.createBuffer({
+        label: 'rc-cascade0-placeholder',
+        size: 16,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+      new Float32Array(this._rcCascade0Placeholder.getMappedRange()).set([0, 0, 0, 0]);
+      this._rcCascade0Placeholder.unmap();
+    }
+    if (this._rcParamsPlaceholder === null) {
+      this._rcParamsPlaceholder = this._device.createBuffer({
+        label: 'rc-params-placeholder',
+        size: 64,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+      // All-zero contents — including the `enabled` field at byte offset 28
+      // (uint32 word index 7) so sampleCascadeC0 short-circuits.
+      new Uint8Array(this._rcParamsPlaceholder.getMappedRange()).fill(0);
+      this._rcParamsPlaceholder.unmap();
+    }
+    return { cascade0: this._rcCascade0Placeholder, params: this._rcParamsPlaceholder };
+  }
+
+  /**
    * Build the hybrid-layers bind group for the current frame, falling back
    * to the placeholder textures when no host-supplied DDGI atlases have
    * been bound. Delegates to {@link buildHybridLayersBindGroup} so the
-   * caller layout (binding slots 0..3) stays in one place.
+   * caller layout (binding slots 0..5) stays in one place.
    */
   buildBindGroup(
     device: GPUDevice,
     bglCache: BGLCache,
     frameResources: FrameResources,
   ): GPUBindGroup {
+    const rcPh = this._ensureRCPlaceholders();
     return buildHybridLayersBindGroup(device, bglCache, {
       ddgiIrrTex:             this._irrTex,
       ddgiVisTex:             this._visTex,
@@ -95,15 +175,22 @@ export class DDGIBindingState {
       ddgiPlaceholderRg16f:   frameResources.ddgi.ddgiPlaceholderRg16f,
       nearestSampler:         frameResources.common.nearestSampler,
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
+      rcCascade0Buffer:       this._rcCascade0 ?? rcPh.cascade0,
+      rcParamsBuffer:         this._rcParamsBuffer ?? rcPh.params,
     });
   }
 
   /** Release held atlas references (the host owns those GPUTextures; we only
    *  drop our references). The cached placeholder UBO is a plain
-   *  Float32Array — no GPU resource to release. */
+   *  Float32Array — no GPU resource to release. RC placeholder + params
+   *  GPUBuffers ARE owned here and get destroyed. */
   dispose(): void {
     this._irrTex = null;
     this._visTex = null;
     this._placeholderUBO = null;
+    this._rcCascade0 = null;
+    if (this._rcParamsBuffer) { this._rcParamsBuffer.destroy(); this._rcParamsBuffer = null; }
+    if (this._rcCascade0Placeholder) { this._rcCascade0Placeholder.destroy(); this._rcCascade0Placeholder = null; }
+    if (this._rcParamsPlaceholder) { this._rcParamsPlaceholder.destroy(); this._rcParamsPlaceholder = null; }
   }
 }

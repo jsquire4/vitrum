@@ -21,7 +21,7 @@ import {
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
   TEMPORAL_ACCUM_WGSL,
 } from '@vitrum/shared-denoisers';
-import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
+import { LUMINANCE_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 import { composeWgsl, type WgslModule } from '../src/pipeline/wgslComposer.js';
 import {
@@ -64,6 +64,7 @@ import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
+import { SAMPLE_CASCADE_C0_WGSL } from '../src/shaders/sampleCascadeC0.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
 import { SPATIAL_GI_WGSL } from '../src/shaders/spatialGi.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../src/shaders/surfaceTextures.wgsl.js';
@@ -208,9 +209,22 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('shade: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + SHADE_WGSL', () => {
+  it('shade: COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + OCTAHEDRAL_CORE_WGSL + SAMPLE_CASCADE_C0_WGSL + SHADE_WGSL', () => {
+    // W8 Phase 3 (2026-05-18) — SHADE_MODULE.requires now includes
+    // 'sampleCascadeC0', which itself requires 'octahedralCore'. The
+    // composer emits dependencies depth-first, so the order becomes:
+    //   common → surfaceTextures (requires common) → ddgiSample (requires
+    //   common) → sampleCascadeC0 (requires common + octahedralCore) →
+    //   shade. `common` is emitted once at the top via the dedup rule.
+    //   `octahedralCore` is emitted just before sampleCascadeC0 since it
+    //   has no other deps.
     expect(composeWgsl(SHADE_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + SHADE_WGSL,
+      COMMON_WGSL +
+      SURFACE_TEXTURES_WGSL +
+      DDGI_SAMPLE_WGSL +
+      OCTAHEDRAL_CORE_WGSL +
+      SAMPLE_CASCADE_C0_WGSL +
+      SHADE_WGSL,
     );
   });
 

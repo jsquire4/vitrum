@@ -229,6 +229,9 @@ export class HybridEngine implements Engine {
 
   // ── RC subsystem (W8 Phase 2 — opt-in via opts.rcEnabled) ───────────────
   private _rc: RCSubsystem | null = null;
+  /** W8 Phase 3 — balance-heuristic MIS weight for RC in Lo_indirect.
+   *  Effective only when _rc != null. Default 0.5 when rcEnabled is true. */
+  private _rcWeight: number = 0;
 
   // ── Per-frame throttle ─────────────────────────────────────────────────
   private _lastFrameTs = 0;
@@ -383,6 +386,12 @@ export class HybridEngine implements Engine {
     // changes; dispatch happens per-frame in renderFrame() below.
     if (opts.rcEnabled === true) {
       this._rc = new RCSubsystem(this._device);
+      // W8 Phase 3 — host-overridable MIS weight (default 0.5 = equal
+      // mix with ReSTIR-GI). When rcEnabled is false the weight stays 0
+      // and pipeline.setRCInputs(null) routes the bind group to the
+      // placeholder buffers (rcParams.enabled = 0u short-circuits the
+      // shader's sample to vec3f(0)).
+      this._rcWeight = Math.max(0, Math.min(1, opts.rcWeight ?? 0.5));
     }
 
     this.capabilities = {
@@ -854,6 +863,14 @@ export class HybridEngine implements Engine {
         frameSeed:           input.frameSeed,
         triIntersectEpsilon: this._tunables.triIntersectEpsilon,
       });
+      // W8 Phase 3 — surface cascade-0 + rcParams to the shade pass so
+      // sampleCascadeC0(...) integrates them into Lo_indirect. The
+      // shader's `rcParams.enabled = 1u` activates the MIS mix with
+      // weight `_rcWeight`.
+      const rcInputs = this._rc.buildRCInputs(this._rcWeight);
+      pipeline.setRCInputs(rcInputs);
+    } else {
+      pipeline.setRCInputs(null);
     }
 
     // ── DDGI atlas wire ─────────────────────────────────────────────────

@@ -487,4 +487,23 @@ export interface HybridEngineOptions extends EngineOptions {
    * @see plan/w8-rc-mis-composition.md for the full sprint plan.
    */
   readonly rcEnabled?: boolean;
+
+  /**
+   * W8 Phase 3 — Track-A balance-heuristic MIS weight for the Radiance
+   * Cascades contribution to `Lo_indirect`. The ReSTIR-GI contribution
+   * receives `1 - rcWeight`; the two are forced to sum to 1 so the
+   * estimator stays normalised regardless of host choice.
+   *
+   * Range: [0, 1]. Default: 0.5 when `rcEnabled: true`, 0 otherwise.
+   *
+   * Tuning notes:
+   *   - 0.0 — pure ReSTIR-GI (matches pre-Phase-3 behaviour).
+   *   - 1.0 — pure RC; ReSTIR-GI's reservoir read is multiplied by 0
+   *     in the indirect sum. Useful for verifying cascade-0 alone.
+   *   - 0.5 — equal-weight mix. Should look like ReSTIR-GI's diffuse
+   *     gain damped by half + half of RC's smoother spatial signal.
+   *
+   * @default 0.5 (effective only when rcEnabled === true)
+   */
+  readonly rcWeight?: number;
 }

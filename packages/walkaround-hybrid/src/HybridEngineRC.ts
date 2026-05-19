@@ -43,6 +43,40 @@ interface RCFrameInputs {
   readonly triIntersectEpsilon: number;
 }
 
+/**
+ * Pack the WGSL {@link sampleCascadeC0.wgsl} `RCParams` struct (64 bytes).
+ * Layout — must match the WGSL struct declaration exactly:
+ *   probeOriginWorld: vec3f  (offset 0..11)
+ *   rcWeight:         f32    (offset 12..15)
+ *   roomSize:         vec3f  (offset 16..27)
+ *   enabled:          u32    (offset 28..31)
+ *   probeCount:       vec3u  (offset 32..43)
+ *   raysPerProbe:     u32    (offset 44..47)
+ *   rayGridSize:      u32    (offset 48..51)
+ *   _pad0/1/2:        3 × u32 (offset 52..63)
+ */
+export function packRCParams(
+  probeOriginWorld: readonly [number, number, number],
+  roomSize:         readonly [number, number, number],
+  probeCount:       readonly [number, number, number],
+  raysPerProbe:     number,
+  rcWeight:         number,
+  enabled:          boolean,
+): ArrayBuffer {
+  const buf = new ArrayBuffer(64);
+  const f = new Float32Array(buf);
+  const u = new Uint32Array(buf);
+  f[0] = probeOriginWorld[0]; f[1] = probeOriginWorld[1]; f[2] = probeOriginWorld[2];
+  f[3] = rcWeight;
+  f[4] = roomSize[0]; f[5] = roomSize[1]; f[6] = roomSize[2];
+  u[7] = enabled ? 1 : 0;
+  u[8] = probeCount[0]; u[9] = probeCount[1]; u[10] = probeCount[2];
+  u[11] = raysPerProbe;
+  u[12] = Math.max(1, Math.round(Math.sqrt(raysPerProbe))); // rayGridSize
+  // u[13..15] pad (already zero from ArrayBuffer init).
+  return buf;
+}
+
 export class RCSubsystem {
   private readonly _device: GPUDevice;
   private _dispatcher: RCDispatcher | null = null;
@@ -53,6 +87,31 @@ export class RCSubsystem {
 
   constructor(device: GPUDevice) {
     this._device = device;
+  }
+
+  /**
+   * Build the per-frame `RCParams` bytes for the shade pass's RC sample.
+   * Returns null when no scene is set yet — caller should call
+   * `pipeline.setRCInputs(null)` in that case (places the bind group on
+   * the rcParams placeholder which has `enabled = 0u`).
+   *
+   * `rcWeight` ∈ [0, 1] is the W8 Track-A balance-heuristic weight on
+   * Lo_rc; the ReSTIR-GI contribution gets (1 - rcWeight).
+   */
+  buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
+    if (!this._cascadeBufs || !this._probeOriginWorld || !this._roomSize) return null;
+    const c0 = CASCADE_DIMS[0]!;
+    return {
+      cascade0Buffer: this._cascadeBufs[0]!,
+      paramsBytes: packRCParams(
+        this._probeOriginWorld,
+        this._roomSize,
+        c0.probes,
+        c0.rays,
+        rcWeight,
+        true,
+      ),
+    };
   }
 
   /**
