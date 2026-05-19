@@ -15,6 +15,15 @@ Both structural gaps called out below have been closed:
 - **"7 of 10 packages have no README at all"** → fixed. Verified by directory listing on 2026-05-18: all 11 packages (10 original + `@vitrum/scene-lighting` added afterward) have `README.md` files. Landed via `chore/missing-package-readmes` (`ec58f48`, commit `0ab2d54`) + the W13 README-audit pass (`fc882f6`).
 - **22 algorithms with missing CREDITS.md citations** → backfilled by `docs(credits): add missing citations + mark unimplemented techniques as candidates` (commit `70f53cd`, merged via `6860e5a`).
 
+## Follow-up — 2026-05-19
+
+The four "inconsistency" entries in the table further down (Sannikov / Wilkie / Kulla / PBR4e) have all been resolved this session:
+
+- **Sannikov 2023 vs 2024** (`aa57da5`): CREDITS.md + README.md were citing "Radiance Cascades: A Novel High-Resolution Formal Solution for Multidimensional Non-LTE Radiative Transfer, 2024" — that's a 1990 Bowman et al. paper on stellar atmosphere radiative transfer, NOT Sannikov. Replaced with the correct title "Radiance Cascades: A Novel Approach to Calculating Global Illumination, 2023". All 12 source-code references already cited this correctly; CREDITS + README were the inconsistent side.
+- **Wilkie 2014 vs 2015** (`866b599`): standardized on 2014 (the actual EGSR 2014 / CGF v33 #4 publication year) across `shared-samplers/src/wavelengthSampling.ts`, `shared-samplers/__tests__/spectral.test.ts`, `pt-webgl/src/forkUniformBridge.ts`, and `README.md`. Earlier "Fascione" attribution in wavelengthSampling.ts also corrected (the actual authors are Wilkie, Nawaz, Droske, Weidlich, Hanika — Fascione is a different Manuka-renderer paper line).
+- **Kulla & Fajardo (not Kulla & Conty)** (`687632b`): the 2012 EGSR equi-angular paper is Kulla & Fajardo. `equiAngular.ts` + `pdfNormalization.test.ts` updated; CREDITS.md was already right.
+- **PBR4e textbook section** (`dc531c0`): added §"Textbook references" to CREDITS.md listing PBR4e + Veach 1997 with per-file cite trails.
+
 The per-algorithm gap tables below describe the 2026-05-17 audit-time state. Treat them as historical; a fresh re-audit is needed before claiming the citation rule is now satisfied algorithm-by-algorithm.
 
 ---
