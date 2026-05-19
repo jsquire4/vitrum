@@ -24,7 +24,6 @@
     "lint": "eslint src --ext .ts,.tsx"
   },
   "dependencies": {
-    "@vitrum/core": "file:../core",
     "@vitrum/shared-samplers": "file:../shared-samplers"
   },
   "peerDependencies": {
