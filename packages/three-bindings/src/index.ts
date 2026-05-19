@@ -13,7 +13,7 @@
 
 import type * as THREE from 'three';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
-import { convertMesh, emissiveMeshAreaEmitter, stripEmissive } from './mesh.js';
+import { convertMesh, convertSkinnedMesh, emissiveMeshAreaEmitter, stripEmissive } from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
 
@@ -63,10 +63,16 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
         `Unsupported THREE type at "${label}": InstancedMesh. Supported types are added per Phase 6 sprint.`,
       );
     }
+
+    // ── Skinned meshes ─────────────────────────────────────────────────────
+    // C1 (2026-05-19) — convert rest-pose + current pose. Per-frame skin
+    // updates are pushed via `engine.updatePrimitive(...)`. Engines that
+    // don't implement skinning report so via EngineCapabilities and may
+    // render the rest pose statically.
     if ((obj as THREE.SkinnedMesh).isSkinnedMesh === true) {
-      throw new Error(
-        `Unsupported THREE type at "${label}": SkinnedMesh. Supported types are added per Phase 6 sprint.`,
-      );
+      if (obj.visible === false) return;
+      primitives.push(convertSkinnedMesh(obj as THREE.SkinnedMesh));
+      return;
     }
 
     // ── Meshes ──────────────────────────────────────────────────────────────

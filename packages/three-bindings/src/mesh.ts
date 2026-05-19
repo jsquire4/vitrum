@@ -7,7 +7,7 @@
  */
 
 import type * as THREE from 'three';
-import type { MeshPrimitive, Mat4, SceneEmitter } from '@vitrum/core';
+import type { MeshPrimitive, SkinnedMeshPrimitive, Mat4, SceneEmitter } from '@vitrum/core';
 import { convertMaterial, convertBasicMaterial } from './material.js';
 import { luminance } from './math.js';
 
@@ -133,6 +133,124 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
     id: obj.uuid,
     positions,
     normals,
+    transform,
+    material,
+    ...(uvs != null ? { uvs } : {}),
+    ...(tangents != null ? { tangents } : {}),
+    ...(indices != null ? { indices } : {}),
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// SkinnedMesh converter — C1 (2026-05-19)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Convert a THREE.SkinnedMesh into a SkinnedMeshPrimitive.
+ *
+ * Captures the rest-pose geometry + the current pose's bone matrices.
+ * Per-frame pose changes are pushed via `HybridEngine.updatePrimitive`
+ * (host responsibility — call `obj.skeleton.update()` first, then re-extract
+ * `bones` and submit). See `SkinnedMeshPrimitive` JSDoc in @vitrum/core for
+ * the deformation formula.
+ */
+export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive {
+  const geo = obj.geometry;
+  const label = obj.name || obj.uuid;
+
+  const positions = extractAttribute(geo, 'position');
+  if (positions == null) {
+    throw new Error(`SkinnedMesh "${label}" has no position attribute.`);
+  }
+  const normals = extractAttribute(geo, 'normal');
+  if (normals == null) {
+    throw new Error(
+      `SkinnedMesh "${label}" has no normal attribute. Compute normals before calling sceneFromThreeJS.`,
+    );
+  }
+
+  // SkinnedMesh requires skinIndex + skinWeight attributes per glTF 2.0.
+  const skinIndexAttr = geo.getAttribute('skinIndex');
+  if (skinIndexAttr == null) {
+    throw new Error(`SkinnedMesh "${label}" has no skinIndex attribute.`);
+  }
+  const skinWeightAttr = geo.getAttribute('skinWeight');
+  if (skinWeightAttr == null) {
+    throw new Error(`SkinnedMesh "${label}" has no skinWeight attribute.`);
+  }
+  // Widen skinIndex (typically Uint16Array) to Uint32Array for the contract.
+  // The narrower-typed array is upcasted without loss; downstream skinning
+  // solvers index a Float32Array bones buffer with these values.
+  const skinIndices = new Uint32Array(skinIndexAttr.array);
+  // skinWeight may be Float32Array already; coerce if not.
+  const skinWeights = skinWeightAttr.array instanceof Float32Array
+    ? skinWeightAttr.array
+    : new Float32Array(skinWeightAttr.array);
+
+  // Skeleton: flatten per-bone matrices into single Float32Arrays.
+  const skel = obj.skeleton;
+  if (skel == null) {
+    throw new Error(`SkinnedMesh "${label}" has no skeleton.`);
+  }
+  const boneCount = skel.bones.length;
+  if (boneCount === 0) {
+    throw new Error(`SkinnedMesh "${label}" has an empty skeleton (0 bones).`);
+  }
+  if (skel.boneInverses.length !== boneCount) {
+    throw new Error(
+      `SkinnedMesh "${label}" skeleton has ${boneCount} bones but ${skel.boneInverses.length} inverse-bind matrices.`,
+    );
+  }
+  // Ensure the bone matrices reflect the current scene hierarchy.
+  for (const bone of skel.bones) {
+    bone.updateMatrixWorld(true);
+  }
+  const bones = new Float32Array(boneCount * 16);
+  const boneInverses = new Float32Array(boneCount * 16);
+  for (let i = 0; i < boneCount; i++) {
+    const boneMat = skel.bones[i]!.matrixWorld.elements;     // column-major 16 f32s
+    const invMat  = skel.boneInverses[i]!.elements;
+    for (let k = 0; k < 16; k++) {
+      bones[i * 16 + k] = boneMat[k]!;
+      boneInverses[i * 16 + k] = invMat[k]!;
+    }
+  }
+
+  const uvs = extractAttribute(geo, 'uv');
+  const tangents = extractAttribute(geo, 'tangent');
+  const indices = extractIndex(geo);
+  const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
+
+  // Multi-material handling mirrors convertMesh.
+  if (Array.isArray(obj.material) && obj.material.length > 1) {
+    console.warn(
+      `@vitrum/three-bindings: unsupported multi-material SkinnedMesh at "${label}" (${obj.material.length} materials). ` +
+      `Only the first material will be used.`,
+    );
+  }
+  const rawMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+  const isStd  = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
+  const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
+  const isBasic = (rawMat as THREE.MeshBasicMaterial | null)?.isMeshBasicMaterial === true;
+  if (rawMat == null || (!isStd && !isPhys && !isBasic)) {
+    const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
+    throw new Error(
+      `Unsupported THREE type at "${label}": SkinnedMesh material ${typeName}. Supported types are added per Phase 6 sprint.`,
+    );
+  }
+  const material = isBasic
+    ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
+    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
+
+  return {
+    kind: 'skinned-mesh',
+    id: obj.uuid,
+    positions,
+    normals,
+    skinIndices,
+    skinWeights,
+    bones,
+    boneInverses,
     transform,
     material,
     ...(uvs != null ? { uvs } : {}),

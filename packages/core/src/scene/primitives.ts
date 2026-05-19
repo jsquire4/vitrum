@@ -62,7 +62,62 @@ export type AnalyticShape =
   | 'cylinder'         // params: [cx, cy, cz, radius, halfHeight]
   | 'h-channel-came';  // params: [length, railWidth, blockHeight, webThickness] — H-channel rail primitive, Phase 6 sprint 5
 
+/**
+ * Skinned mesh — vertex positions deformed each frame by a skeleton of
+ * bone matrices. C1 (2026-05-19) initial contract for the foundation
+ * adapter (`sceneFromThreeJS` acceptance). Per-frame skinning solver
+ * + BVH refit are tracked separately.
+ *
+ * Layout follows glTF 2.0 / THREE.SkinnedMesh:
+ * - `positions`/`normals`/`uvs`/`indices` — REST-pose geometry
+ *   (positions in mesh-local space).
+ * - `skinIndices` — 4 bone indices per vertex (Uint32Array, length
+ *   `vertexCount * 4`). Index `0` is the implicit "no bone" with weight
+ *   forcing it to a no-op when paired with `skinWeights[i*4+k] === 0`.
+ * - `skinWeights` — 4 weights per vertex (Float32Array, length
+ *   `vertexCount * 4`). Must sum to 1.0 per vertex per glTF convention;
+ *   the adapter does NOT renormalise.
+ * - `bones` — bone-local-to-world matrices for the current pose.
+ *   `boneCount` × 16 floats (column-major). Hosts update this each
+ *   frame (or whenever the skeleton pose changes); engines use it +
+ *   `boneInverses` to compute per-vertex deformed positions:
+ *     `deformed = Σ weight[k] · bones[skinIndex[k]] · boneInverses[skinIndex[k]] · restPos`
+ * - `boneInverses` — inverse bind matrices. `boneCount` × 16 floats.
+ *   Captured at bind time; constant for the life of the primitive.
+ * - `material` / `transform` mirror `MeshPrimitive`.
+ *
+ * The CPU-side solver lives in `@vitrum/three-bindings` (C1 follow-up);
+ * the engine ingests the deformed positions through the existing
+ * `HybridEngine.updatePrimitive` positions-refit fast path (A3).
+ *
+ * Backends that don't implement skinning should report this in
+ * `EngineCapabilities` and either skip the primitive (with a warning)
+ * or render the rest pose statically.
+ */
+export interface SkinnedMeshPrimitive {
+  readonly kind: 'skinned-mesh';
+  readonly id: SceneNodeId;
+  readonly positions: Float32Array;   // rest-pose, mesh-local
+  readonly normals: Float32Array;     // rest-pose, mesh-local
+  readonly uvs?: Float32Array;
+  readonly tangents?: Float32Array;
+  readonly indices?: Uint32Array | Uint16Array;
+  /** 4 bone indices per vertex (length `vertexCount * 4`). */
+  readonly skinIndices: Uint32Array;
+  /** 4 bone weights per vertex (length `vertexCount * 4`); sum to 1. */
+  readonly skinWeights: Float32Array;
+  /** Per-frame bone world matrices: `boneCount * 16` column-major f32s. */
+  readonly bones: Float32Array;
+  /** Inverse bind matrices: `boneCount * 16` column-major f32s. */
+  readonly boneInverses: Float32Array;
+  readonly material: MaterialSpec;
+  readonly transform?: Mat4;
+  readonly castShadow?: boolean;
+  readonly receiveShadow?: boolean;
+}
+
 export type ScenePrimitive =
   | MeshPrimitive
   | InstancedMeshPrimitive
-  | AnalyticPrimitive;
+  | AnalyticPrimitive
+  | SkinnedMeshPrimitive;

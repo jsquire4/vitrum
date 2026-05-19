@@ -55,14 +55,74 @@ describe('sceneFromThreeJS', () => {
     expect(() => sceneFromThreeJS(s)).toThrow(/InstancedMesh/);
   });
 
-  it('throws on SkinnedMesh', () => {
+  it('converts SkinnedMesh into a skinned-mesh primitive (C1 — 2026-05-19)', () => {
     const s = new THREE.Scene();
-    const sm = new THREE.SkinnedMesh(
-      new THREE.BoxGeometry(1, 1, 1),
-      new THREE.MeshPhysicalMaterial(),
-    );
+
+    // Build a minimal SkinnedMesh: 1 bone, 1 inverse-bind, 8 box-cube
+    // vertices each bound to bone 0 with weight 1.
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    // BoxGeometry doesn't ship skinIndex/skinWeight — add them.
+    const vertCount = geo.attributes.position!.count;
+    const skinIdx = new Uint16Array(vertCount * 4);     // all bone 0
+    const skinW = new Float32Array(vertCount * 4);
+    for (let i = 0; i < vertCount; i++) {
+      skinW[i * 4 + 0] = 1.0;                            // 100% bone 0
+    }
+    geo.setAttribute('skinIndex', new THREE.BufferAttribute(skinIdx, 4));
+    geo.setAttribute('skinWeight', new THREE.BufferAttribute(skinW, 4));
+
+    const bone = new THREE.Bone();
+    bone.position.set(0, 0, 0);
+    const skeleton = new THREE.Skeleton([bone]);
+
+    const sm = new THREE.SkinnedMesh(geo, new THREE.MeshPhysicalMaterial({ color: 0x99aabb }));
+    sm.add(bone);
+    sm.bind(skeleton);
     s.add(sm);
-    expect(() => sceneFromThreeJS(s)).toThrow(/SkinnedMesh/);
+
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives.length).toBe(1);
+    const prim = v.primitives[0]!;
+    expect(prim.kind).toBe('skinned-mesh');
+    if (prim.kind !== 'skinned-mesh') return;            // narrow for TS
+    expect(prim.positions.length).toBe(vertCount * 3);
+    expect(prim.normals.length).toBe(vertCount * 3);
+    expect(prim.skinIndices.length).toBe(vertCount * 4);
+    expect(prim.skinWeights.length).toBe(vertCount * 4);
+    // Every vertex points at bone 0.
+    for (let i = 0; i < vertCount; i++) {
+      expect(prim.skinIndices[i * 4 + 0]).toBe(0);
+    }
+    // Skeleton: 1 bone, 1 inverse-bind, 16 floats each.
+    expect(prim.bones.length).toBe(16);
+    expect(prim.boneInverses.length).toBe(16);
+  });
+
+  it('throws on SkinnedMesh missing skinIndex attribute', () => {
+    const s = new THREE.Scene();
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    // Intentionally do NOT add skinIndex/skinWeight.
+    const bone = new THREE.Bone();
+    const sm = new THREE.SkinnedMesh(geo, new THREE.MeshPhysicalMaterial());
+    sm.add(bone);
+    sm.bind(new THREE.Skeleton([bone]));
+    s.add(sm);
+    expect(() => sceneFromThreeJS(s)).toThrow(/skinIndex/);
+  });
+
+  it('throws on SkinnedMesh with empty skeleton', () => {
+    const s = new THREE.Scene();
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    const vertCount = geo.attributes.position!.count;
+    geo.setAttribute('skinIndex', new THREE.BufferAttribute(new Uint16Array(vertCount * 4), 4));
+    const w = new Float32Array(vertCount * 4);
+    for (let i = 0; i < vertCount; i++) w[i * 4] = 1.0;
+    geo.setAttribute('skinWeight', new THREE.BufferAttribute(w, 4));
+
+    const sm = new THREE.SkinnedMesh(geo, new THREE.MeshPhysicalMaterial());
+    sm.bind(new THREE.Skeleton([]));
+    s.add(sm);
+    expect(() => sceneFromThreeJS(s)).toThrow(/empty skeleton/);
   });
 
   it('throws on ShaderMaterial', () => {
