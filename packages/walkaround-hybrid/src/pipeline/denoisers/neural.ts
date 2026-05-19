@@ -1,18 +1,22 @@
 /**
- * NeuralDenoiser — placeholder for the U-Net neural denoiser (T2.H2 /
- * Chaitanya et al. 2017 / Ronneberger 2015).
+ * NeuralDenoiser — diagnostic stub for the registry-side `'neural'` entry.
  *
- * Reserved for W10 — see `plan/premium-grade-refactor-20260517.md §W10`.
- * Registered as `disabled: true` so `DenoiserRegistry.lookup('neural')`
- * throws a clear error with workstream context, instead of silently
- * falling back to atrous-variance (the legacy behaviour, which the W1-R3
- * refactor removed because no consumer currently selects `'neural'` — see
- * complexity-sweep dead-code analysis).
+ * The actual U-Net neural denoiser (T2.H2 / Chaitanya et al. 2017 /
+ * Ronneberger 2015) IS wired in `HybridEngineLifecycle.ts:322` against
+ * `InferenceGraph` from `../../neural/InferenceGraph.ts` — that path is
+ * the W10 finish. It bypasses the denoiser-registry dispatch because the
+ * neural pipeline owns its own texture→buffer→inference→texture bridging
+ * separately from the registry's per-pass slot allocation.
  *
- * The walkaround-hybrid InferenceGraph scaffold already exists (see
- * `src/neural/InferenceGraph.ts` + `src/neural/unetArchitecture.ts`);
- * W10 will wire it through this denoiser entry once the
- * texture→buffer→inference→texture bridging in HybridEngine is finished.
+ * This stub remains so `DenoiserRegistry.ids()` enumerates `'neural'`
+ * (preserving stable diagnostic ordering across denoiser sets) and so
+ * `lookup('neural')` throws the canonical "registered but disabled"
+ * error if a future caller mistakenly routes through the registry
+ * instead of the dedicated HybridEngineLifecycle path.
+ *
+ * If neural is ever migrated to the registry surface (so the per-pass
+ * allocator can manage its buffers uniformly with the other denoisers),
+ * delete `disabled = true` and implement `initialize/dispatch` here.
  */
 
 import {
@@ -25,14 +29,15 @@ import {
 export class NeuralDenoiser implements Denoiser {
   readonly id = 'neural' as const;
   readonly disabled = true;
-  /** W10 placeholder: mirrors the atrous-variance layout so a host that
-   *  switches to 'neural' before W10 lands does not trip the
-   *  buildPassLayout slot-count invariant. */
+  /** Mirrors the atrous-variance layout — the slot allocator inspects this
+   *  even for `disabled` entries when buildPassLayout enumerates the union
+   *  of all registered denoisers. */
   readonly passLabels = DENOISER_PASS_LABELS['neural'];
 
   async initialize(_ctx: DenoiserInitContext): Promise<void> {
     // No-op — the registry guards against ever reaching this path while
-    // `disabled === true`. W10 will replace this stub.
+    // `disabled === true`. The W10 neural pipeline runs out-of-band
+    // through HybridEngineLifecycle; see file-level JSDoc.
   }
 
   dispatch(_ctx: DenoiserDispatchContext): GPUTexture | null {

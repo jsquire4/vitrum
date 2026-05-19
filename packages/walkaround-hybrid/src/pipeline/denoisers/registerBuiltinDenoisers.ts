@@ -25,9 +25,10 @@ import { SVGFRealDenoiser } from './svgfReal.js';
 /**
  * Per-denoiser construction-time configuration. Backends that need
  * non-default construction args expose them via a single config bag
- * here. Today the only entry is `oidn` — but PPG / Neural will accept
- * weight URLs through this same surface when their workstreams land
- * (W9 / W10).
+ * here. Today the only entry is `oidn` (the neural denoiser's own
+ * weight URL is plumbed through `HybridEngineOptions.neuralWeights`,
+ * not the registry, because the neural pipeline runs out-of-band — see
+ * `denoisers/neural.ts` JSDoc).
  *
  * When `oidn.modelUrl` is undefined (the default), the OIDN entry
  * registers as a `disabled` placeholder: `DenoiserRegistry.ids()` still
@@ -50,11 +51,14 @@ export function registerBuiltinDenoisers(
   registry.register(new AtrousDenoiser());
   registry.register(new AtrousVarianceDenoiser());
   registry.register(new SVGFRealDenoiser());
-  // Disabled placeholders — registered for diagnostic enumeration via
-  // DenoiserRegistry.ids(), but `lookup()` throws if a host selects one
-  // before the corresponding workstream finishes (W10) OR (for OIDN, W11)
-  // without supplying construction-time config.
+  // Diagnostic stub — registered for `DenoiserRegistry.ids()` enumeration
+  // and to throw the canonical "registered but disabled" error if a host
+  // mistakenly routes through the registry. The actual W10 neural
+  // pipeline runs out-of-band through HybridEngineLifecycle (see
+  // `denoisers/neural.ts` JSDoc).
   registry.register(new NeuralDenoiser());
-  // W11 — OIDN: enabled when modelUrl is provided, registered-but-disabled otherwise.
+  // OIDN: enabled when modelUrl is provided, registered-but-disabled
+  // otherwise so callers selecting 'oidn-final' without config fail fast
+  // with a clear remediation message.
   registry.register(new OIDNFinalDenoiser(options?.oidn));
 }
