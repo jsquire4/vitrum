@@ -185,7 +185,13 @@ describe('buildTlas — larger spatial distribution', () => {
     // Use maxLeafInstances=1 so the candidate set equals the precise hit set
     // (see tlasIntersect docstring re: leaf-level conservatism).
     const tlas = buildTlas(insts, { maxLeafInstances: 1 });
-    expect(tlas.nodeCount).toBeGreaterThan(0);
+    // 100 leaves at maxLeafInstances=1; the binary tree built by SAH adds
+    // at most N-1 interior nodes for N leaves (a balanced tree hits that
+    // ceiling). 100 leaves → up to 199 total nodes; minimum is 100 if
+    // every record were a leaf-only fallback (which can't happen at
+    // N=100 with distinct centroids).
+    expect(tlas.nodeCount).toBeGreaterThanOrEqual(100);
+    expect(tlas.nodeCount).toBeLessThanOrEqual(199);
 
     // Ray along +X at row y=3.5 hits the 10 instances on that row (y ∈ [6, 7]).
     // (3 * 2 = 6, instance AABB is [6..7] on Y; ray y=6.5 misses none on that row.)
