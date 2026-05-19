@@ -79,7 +79,7 @@ function extractIndex(
 // ────────────────────────────────────────────────────────────────────────────
 
 export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
-  const geo = obj.geometry as THREE.BufferGeometry;
+  const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
   const positions = extractAttribute(geo, 'position');

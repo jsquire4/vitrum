@@ -51,7 +51,7 @@ export async function getSharedWebGPUDevice(): Promise<GPUDevice> {
 }
 
 async function acquireSharedDevice(capturedGen: number): Promise<GPUDevice> {
-  const adapter = await navigator.gpu!.requestAdapter({ powerPreference: 'high-performance' });
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (adapter == null) {
     throw new Error('getSharedWebGPUDevice: failed to request GPU adapter');
   }

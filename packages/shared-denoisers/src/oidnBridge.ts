@@ -293,7 +293,7 @@ async function _loadORT(): Promise<_OrtModule> {
     // documented TypeScript pattern for optional peer deps.)
     // @ts-expect-error optional peer dependency — see peerDependenciesMeta in package.json
     const mod = await import('onnxruntime-web');
-    return mod as unknown as _OrtModule;
+    return mod;
   } catch (cause) {
     throw new Error(
       `[oidnBridge] Could not load 'onnxruntime-web'. ` +
@@ -319,7 +319,7 @@ async function _getOrCreateSession(
   }
 
   const session = await ort.InferenceSession.create(modelUrl, {
-    executionProviders: executionProviders as string[],
+    executionProviders: executionProviders,
   });
 
   _sessionCache.set(modelUrl, session);

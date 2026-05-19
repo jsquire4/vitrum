@@ -159,9 +159,9 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
     rawSpectral != null &&
     typeof rawSpectral === 'object' &&
     !Array.isArray(rawSpectral) &&
-    'wavelengthStart' in (rawSpectral as object) &&
-    'wavelengthEnd' in (rawSpectral as object) &&
-    'values' in (rawSpectral as object)
+    'wavelengthStart' in (rawSpectral) &&
+    'wavelengthEnd' in (rawSpectral) &&
+    'values' in (rawSpectral)
   ) {
     base.spectralAttenuation = rawSpectral as SpectralCurve;
   }

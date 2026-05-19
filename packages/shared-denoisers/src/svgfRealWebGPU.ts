@@ -106,7 +106,7 @@ export function svgfRealRemodulateAlbedo(
 ): Float32Array {
   for (let i = 0; i < pixelCount; i += 1) {
     const si = i * 3;
-    const ar = albedo[si]     !== undefined ? albedo[si]!     : 1;
+    const ar = albedo[si]     !== undefined ? albedo[si]     : 1;
     const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
     const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
     rgb[si]     = (rgb[si]     ?? 0) * ar;
@@ -309,8 +309,8 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
         normBuf[o+3] = 0;
       }
     }
-    device.queue.writeTexture({ texture: currNormTex }, normBuf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w,h]);
-    device.queue.writeTexture({ texture: prevNormTex }, normBuf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w,h]);
+    device.queue.writeTexture({ texture: currNormTex }, normBuf.buffer, { bytesPerRow: bpr }, [w,h]);
+    device.queue.writeTexture({ texture: prevNormTex }, normBuf.buffer, { bytesPerRow: bpr }, [w,h]);
   } else {
     fillRgba32f(device, currNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
     fillRgba32f(device, prevNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
@@ -460,7 +460,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   for (let iter = 0; iter < atrousIterations; iter++) {
     const pass = encoder.beginComputePass({ label: `svgf-atrous-${iter}` });
     pass.setPipeline(atrousPipeline);
-    pass.setBindGroup(0, atrousBGs[iter]!);
+    pass.setBindGroup(0, atrousBGs[iter]);
     pass.dispatchWorkgroups(Math.ceil(w / wgA), Math.ceil(h / wgA));
     pass.end();
   }

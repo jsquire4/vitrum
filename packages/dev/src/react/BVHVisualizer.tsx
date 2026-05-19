@@ -100,7 +100,7 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
 
   if (visible && !hasDebug && !warnedRef.current) {
     warnedRef.current = true;
-    // eslint-disable-next-line no-console
+     
     console.warn(
       '[BVHVisualizer] engine.debug.bvhNodes() is not implemented. ' +
       'BVHVisualizer requires the T3.G followup: HybridEngine must expose ' +

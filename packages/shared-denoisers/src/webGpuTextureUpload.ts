@@ -58,7 +58,7 @@ function uploadTexture2D<T extends Float32Array | Uint8Array | Uint32Array>(
   fill(upload, rowStrideElements);
   device.queue.writeTexture(
     { texture },
-    upload.buffer as GPUAllowSharedBufferSource,
+    upload.buffer,
     { bytesPerRow: bpr, rowsPerImage: height },
     [width, height],
   );

@@ -92,7 +92,7 @@ function ensureMeshNormals(root: THREE.Object3D): void {
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
-    const geom = mesh.geometry as THREE.BufferGeometry;
+    const geom = mesh.geometry;
     if (geom?.attributes?.['normal'] == null && typeof geom?.computeVertexNormals === 'function') {
       geom.computeVertexNormals();
     }
@@ -105,7 +105,7 @@ function ensureThreeScene(gltf: GLTF): THREE.Scene {
   const root = gltf.scene as unknown as THREE.Object3D & { isScene?: boolean };
   if (root.isScene) return root as THREE.Scene;
   const wrapper = new THREE.Scene();
-  wrapper.add(root as THREE.Object3D);
+  wrapper.add(root);
   return wrapper;
 }
 
@@ -128,7 +128,7 @@ function extractFirstCamera(gltf: GLTF): GltfCamera | undefined {
   const viewMatrix = new Float32Array(matWorldInverse.elements);
   const projMatrix = new Float32Array(proj.elements);
   const cameraPosition: Vec3 = [
-    matWorld.elements[12]!, matWorld.elements[13]!, matWorld.elements[14]!,
+    matWorld.elements[12], matWorld.elements[13], matWorld.elements[14],
   ];
 
   return { viewMatrix, projMatrix, cameraPosition };

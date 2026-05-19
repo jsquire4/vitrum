@@ -278,7 +278,7 @@ export class IblBakerCache {
 
   #evictOldestIfNeeded(): void {
     while (this.#entries.size > this.#capacity) {
-      const oldestKey = this.#entries.keys().next().value as string | undefined;
+      const oldestKey = this.#entries.keys().next().value;
       if (!oldestKey) break;
       const entry = this.#entries.get(oldestKey);
       this.#entries.delete(oldestKey);

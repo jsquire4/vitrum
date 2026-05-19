@@ -185,8 +185,8 @@ export function packBDPTVertex(v: BDPTVertex, target: Float32Array, offset: numb
 export function unpackBDPTVertex(source: Float32Array, offset: number): BDPTVertex {
   const rawKind = source[offset + 3] ?? 3;
   const kind = (rawKind === 0 || rawKind === 1 || rawKind === 2)
-    ? (rawKind as 0 | 1 | 2)
-    : (3 as 3);
+    ? (rawKind)
+    : (3 as const);
 
   return {
     position: [

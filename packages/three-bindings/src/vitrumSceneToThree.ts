@@ -215,7 +215,7 @@ function discAreaEmitterToRectThree(e: Extract<SceneEmitter, { kind: 'disc-area'
     return null;
   }
   n.normalize();
-  let up = _x.set(0, 1, 0);
+  const up = _x.set(0, 1, 0);
   if (Math.abs(n.y) > 0.999) {
     up.set(1, 0, 0);
   }

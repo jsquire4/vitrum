@@ -73,9 +73,9 @@ export interface CreateEngineOptions {
 const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
 
 /** Generic-default lighting baselines (overridable via `advanced`). */
-const DEFAULT_PRIMARY_LIGHT_DIR: Vec3 = Object.freeze([0.3, -0.7, 0.6]) as Vec3;
+const DEFAULT_PRIMARY_LIGHT_DIR: Vec3 = Object.freeze([0.3, -0.7, 0.6]);
 const DEFAULT_PRIMARY_LIGHT_INTENSITY = 1.0;
-const DEFAULT_SKY_TINT: Vec3 = Object.freeze([0.5, 0.7, 1.0]) as Vec3;
+const DEFAULT_SKY_TINT: Vec3 = Object.freeze([0.5, 0.7, 1.0]);
 const DEFAULT_SKY_IRRADIANCE = 0.3;
 
 export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
@@ -89,7 +89,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
   const sceneInputIsThree = isThreeScene(opts.scene);
   const vitrumScene: Scene = sceneInputIsThree
     ? sceneFromThreeJS(opts.scene as unknown as Parameters<typeof sceneFromThreeJS>[0])
-    : (opts.scene as Scene);
+    : (opts.scene);
 
   const aabb = computeSceneAABB(vitrumScene);
   const gpu = await detectGpu({ publishToWindow: false });
@@ -207,11 +207,11 @@ async function constructWalkaround(
   // backend gets a black canvas. We configure here (not in attachVitrum)
   // because createEngine owns the GPUDevice handle.
   try {
-    const ctx = opts.canvas.getContext('webgpu') as GPUCanvasContext | null;
+    const ctx = opts.canvas.getContext('webgpu');
     if (ctx != null) {
       const format = (typeof navigator !== 'undefined' && 'gpu' in navigator
         ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
-            .getPreferredCanvasFormat?.() ?? ('bgra8unorm' as GPUTextureFormat)
+            .getPreferredCanvasFormat?.() ?? ('bgra8unorm')
         : ('bgra8unorm' as GPUTextureFormat));
       ctx.configure({
         device,
@@ -335,7 +335,7 @@ export function wrapWithIdempotentDispose(
         // Returning a no-op output keeps host RAF loops from crashing if
         // they race the dispose. The host is expected to stop rendering
         // when state === 'disposed'.
-        return { samplesAccumulated: 0, isConverged: true, primaryRadiance: null } as ReturnType<Engine['renderFrame']>;
+        return { samplesAccumulated: 0, isConverged: true, primaryRadiance: null };
       }
       return engine.renderFrame(input);
     },

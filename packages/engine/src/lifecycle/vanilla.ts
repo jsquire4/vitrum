@@ -49,7 +49,7 @@ interface WebGPUSwapChainInfo {
  *  @internal Exported for unit-test access. */
 export function detectWebGPUSwapChain(canvas: HTMLCanvasElement): WebGPUSwapChainInfo {
   try {
-    const ctx = canvas.getContext('webgpu') as GPUCanvasContext | null;
+    const ctx = canvas.getContext('webgpu');
     if (ctx == null) return { context: null, format: undefined };
     const cfg = (ctx as unknown as {
       getConfiguration?: () => { format?: GPUTextureFormat } | null;
@@ -59,7 +59,7 @@ export function detectWebGPUSwapChain(canvas: HTMLCanvasElement): WebGPUSwapChai
         ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
             .getPreferredCanvasFormat?.()
         : undefined)
-        ?? ('bgra8unorm' as GPUTextureFormat));
+        ?? ('bgra8unorm'));
     return { context: ctx, format };
   } catch {
     return { context: null, format: undefined };

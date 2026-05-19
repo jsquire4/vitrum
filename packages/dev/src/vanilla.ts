@@ -165,7 +165,7 @@ export function attachDebugOverlays(
       if (hasDebug) {
         engine.debug!.setDenoiserEnabled!(enabled);
       } else {
-        // eslint-disable-next-line no-console
+         
         console.warn(
           '[attachDebugOverlays] denoiserToggle: engine.debug.setDenoiserEnabled() ' +
           'not implemented — T3.G followup.'
@@ -195,7 +195,7 @@ export function attachDebugOverlays(
 
   for (const [key, label, extraStyle] of stubOverlays) {
     if (!overlays.includes(key as AttachDebugOverlaysOptions['overlays'] extends ReadonlyArray<infer T> ? T : never)) continue;
-    // eslint-disable-next-line no-console
+     
     console.warn(
       `[attachDebugOverlays] "${key}" is a stub — requires engine.debug API (T3.G followup). ` +
       'Rendering placeholder badge.'

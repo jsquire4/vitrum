@@ -15,7 +15,7 @@ export function float32ToFloat16Bits(value: number): number {
   }
 
   const sign = (x >> 16) & 0x8000;
-  let exponent = ((x >> 23) & 0xff) - 127 + 15;
+  const exponent = ((x >> 23) & 0xff) - 127 + 15;
   let mantissa = x & 0x007f_ffff;
 
   if (exponent <= 0) {

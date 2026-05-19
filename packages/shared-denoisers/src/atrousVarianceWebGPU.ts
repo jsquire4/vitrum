@@ -110,7 +110,7 @@ function demodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: n
 function remodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
   for (let i = 0; i < pixelCount; i += 1) {
     const si = i * 3;
-    const ar = albedo[si]     !== undefined ? albedo[si]!     : 1;
+    const ar = albedo[si]     !== undefined ? albedo[si]     : 1;
     const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
     const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
     rgb[si]     = (rgb[si]     ?? 0) * ar;
@@ -340,7 +340,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   if (opts.gbufferNormalsRgb != null) {
     uploadRgbAsRgba32f(device, gbufferNormal, opts.gbufferNormalsRgb, w, h);
   } else {
-    fillRgba32fTexture(device, gbufferNormal, w, h, [synNormal[0]!, synNormal[1]!, synNormal[2]!, 0]);
+    fillRgba32fTexture(device, gbufferNormal, w, h, [synNormal[0], synNormal[1], synNormal[2], 0]);
   }
   if (opts.linearDepth != null) {
     uploadLinearDepthAsRgba32f(device, gbufferDepth, opts.linearDepth, w, h);
@@ -442,7 +442,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   for (let iter = 0; iter < atrousIterations; iter += 1) {
     const passA = encoder.beginComputePass();
     passA.setPipeline(atrousPipeline);
-    passA.setBindGroup(0, atrousBindGroups[iter]!);
+    passA.setBindGroup(0, atrousBindGroups[iter]);
     passA.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
     passA.end();
   }

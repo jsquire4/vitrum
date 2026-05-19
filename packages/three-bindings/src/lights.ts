@@ -99,9 +99,9 @@ export function convertLight(
     // Column 0 = local X (half-width), column 1 = local Y (half-height).
     const hw = rl.width / 2;
     const hh = rl.height / 2;
-    const uAxis: Vec3 = [me[0]! * hw, me[1]! * hw, me[2]! * hw];
-    const vAxis: Vec3 = [me[4]! * hh, me[5]! * hh, me[6]! * hh];
-    const position: Vec3 = [me[12]!, me[13]!, me[14]!];
+    const uAxis: Vec3 = [me[0] * hw, me[1] * hw, me[2] * hw];
+    const vAxis: Vec3 = [me[4] * hh, me[5] * hh, me[6] * hh];
+    const position: Vec3 = [me[12], me[13], me[14]];
     const emitter: RectAreaEmitter = {
       kind: 'rect-area',
       id,

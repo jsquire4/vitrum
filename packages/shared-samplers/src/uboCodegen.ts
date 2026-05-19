@@ -361,7 +361,7 @@ export function defineUbo<const F extends readonly UboFieldSpec[]>(fields: F): U
         case 'mat4x4f': {
           const m: number[] = new Array(16);
           for (let i = 0; i < 16; i++) m[i] = view.getFloat32(base + i * 4, true);
-          out[f.name] = m as readonly number[];
+          out[f.name] = m;
           break;
         }
         default: {

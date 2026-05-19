@@ -92,7 +92,7 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
     onToggle?.(next);
 
     if (next && !hasDebug) {
-      // eslint-disable-next-line no-console
+       
       console.warn(
         '[GISignalSplit] engine.debug.giSignalTextures() is not implemented. ' +
         'GISignalSplit requires the T3.G followup: HybridEngine must expose ' +
