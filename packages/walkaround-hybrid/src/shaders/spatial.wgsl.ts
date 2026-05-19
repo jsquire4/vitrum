@@ -120,6 +120,10 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     r.w_sum += w;
     if (rand_f32(&rng) * r.w_sum < w && w > 0.0) {
       r.lightId = nbr.lightId;
+      // 2026-05-18 sweep finding #3 — carry the neighbor's sample-xi
+      // forward so the next visibility test reconstructs the same point
+      // on the light, not the centroid.
+      r.xi      = nbr.xi;
     }
   }
 

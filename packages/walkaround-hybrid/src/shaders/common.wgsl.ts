@@ -186,24 +186,34 @@ struct GBufferSample {
 };
 
 // ============================================================
-// ReSTIR DI Reservoir (16 bytes)
+// ReSTIR DI Reservoir (24 bytes — 6 × u32)
 // ============================================================
+//
+// The xi field (2 × f32 stored as 2 × u32 via bitcast) captures the
+// random sample params used by sampleEmitterPoint when this candidate
+// won the WRS. Without it the visibility test stage couldn't reconstruct
+// the original sample point and fell back to centroid — a real bias
+// (visibility at centroid vs at the actual sample disagrees for any
+// emitter whose extent is comparable to the occluder's). Bitterli 2020
+// section 4 documents this as the canonical "store xi alongside lightId" path.
 struct ReservoirDI {
   lightId: u32,
   M:       u32,
   w_sum:   f32,
   W:       f32,
+  xi:      vec2f,    // sampled (u, v) on the chosen emitter
 };
 
 fn emptyReservoirDI() -> ReservoirDI {
-  return ReservoirDI(0u, 0u, 0.0, 0.0);
+  return ReservoirDI(0u, 0u, 0.0, 0.0, vec2f(0.0, 0.0));
 }
 
-fn updateReservoirDI(r: ptr<function, ReservoirDI>, lid: u32, w: f32, rng: ptr<function, u32>) {
+fn updateReservoirDI(r: ptr<function, ReservoirDI>, lid: u32, xi: vec2f, w: f32, rng: ptr<function, u32>) {
   (*r).M += 1u;
   (*r).w_sum += w;
   if (rand_f32(rng) * (*r).w_sum < w) {
     (*r).lightId = lid;
+    (*r).xi      = xi;
   }
 }
 
@@ -212,16 +222,29 @@ fn updateReservoirDI(r: ptr<function, ReservoirDI>, lid: u32, w: f32, rng: ptr<f
 // 16 bytes = 4 × u32 per pixel. lightId, M are u32; w_sum and W are
 // bit-cast to/from u32 to preserve f32 precision through the storage buffer.
 // ============================================================
-const RESERVOIR_DI_STRIDE = 4u;
+// 6 u32 = 24 bytes per reservoir (was 4 u32 = 16 bytes pre-xi).
+const RESERVOIR_DI_STRIDE = 6u;
 
 fn loadReservoirDI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) -> ReservoirDI {
   let base = pixelIdx * RESERVOIR_DI_STRIDE;
-  return ReservoirDI(buf[base], buf[base + 1u], bitcast<f32>(buf[base + 2u]), bitcast<f32>(buf[base + 3u]));
+  return ReservoirDI(
+    buf[base],
+    buf[base + 1u],
+    bitcast<f32>(buf[base + 2u]),
+    bitcast<f32>(buf[base + 3u]),
+    vec2f(bitcast<f32>(buf[base + 4u]), bitcast<f32>(buf[base + 5u])),
+  );
 }
 
 fn loadReservoirDI_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> ReservoirDI {
   let base = pixelIdx * RESERVOIR_DI_STRIDE;
-  return ReservoirDI(buf[base], buf[base + 1u], bitcast<f32>(buf[base + 2u]), bitcast<f32>(buf[base + 3u]));
+  return ReservoirDI(
+    buf[base],
+    buf[base + 1u],
+    bitcast<f32>(buf[base + 2u]),
+    bitcast<f32>(buf[base + 3u]),
+    vec2f(bitcast<f32>(buf[base + 4u]), bitcast<f32>(buf[base + 5u])),
+  );
 }
 
 fn storeReservoirDI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32, r: ReservoirDI) {
@@ -230,6 +253,8 @@ fn storeReservoirDI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32,
   buf[base + 1u] = r.M;
   buf[base + 2u] = bitcast<u32>(r.w_sum);
   buf[base + 3u] = bitcast<u32>(r.W);
+  buf[base + 4u] = bitcast<u32>(r.xi.x);
+  buf[base + 5u] = bitcast<u32>(r.xi.y);
 }
 
 // ============================================================

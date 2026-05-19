@@ -113,6 +113,10 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   combined.w_sum += w_prev;
   if (rand_f32(&rng) * combined.w_sum < w_prev && w_prev > 0.0) {
     combined.lightId = prev.lightId;
+    // 2026-05-18 sweep finding #3 — carry the chosen sample's xi forward
+    // so a downstream visibility test (this frame's spatial pass + shade)
+    // reconstructs the same point on the light, not the centroid.
+    combined.xi      = prev.xi;
   }
 
   // Recompute W.

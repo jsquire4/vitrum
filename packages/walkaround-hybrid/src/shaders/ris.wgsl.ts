@@ -114,10 +114,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // --- M_LIGHT candidates from emitter distribution ---
   for (var i = 0u; i < M_LIGHT; i++) {
-    let xi  = rand_f32(&rng);
-    let lid = sampleEmitterIdx(&emitterCdf, emCount, xi);
+    let xiEm = rand_f32(&rng);
+    let lid = sampleEmitterIdx(&emitterCdf, emCount, xiEm);
     let e   = emitters[lid];
-    let ls  = sampleEmitterPoint(e, rand2(&rng));
+    let xiTri = rand2(&rng);
+    let ls  = sampleEmitterPoint(e, xiTri);
 
     let toL   = ls.pos - pos;
     let dist2 = dot(toL, toL);
@@ -140,14 +141,19 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let emitterPmf = max(1e-15, (luminance(e.Le) * e.area) / totalPower);
     let pX = max(1e-15, emitterPmf * ls.pdfArea);
     let w = select(0.0, pHat / pX, pHat > 0.0);
-    updateReservoirDI(&r, lid, w, &rng);
+    updateReservoirDI(&r, lid, xiTri, w, &rng);
   }
 
   // --- Visibility test on chosen candidate ---
   if (r.M > 0u && r.w_sum > 0.0) {
     let lid = r.lightId;
     let e   = emitters[lid];
-    let ls  = sampleEmitterPoint(e, vec2f(0.5, 0.5));  // centroid
+    // 2026-05-18 sweep finding #3 fix — sample the EXACT point that was
+    // chosen by the WRS (r.xi), not the centroid. The centroid bias was
+    // a real correctness gap: visibility at the centroid disagrees with
+    // visibility at the sample for any emitter whose extent is comparable
+    // to the occluder's.
+    let ls  = sampleEmitterPoint(e, r.xi);
     let toL = ls.pos - pos;
     let dist = length(toL);
     let wi  = toL / dist;
