@@ -12,6 +12,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "test:gpu": "npm run test:gpu --workspaces --if-present",
+    "test:all": "npm run test:all --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint . --ext .ts,.tsx",
     "lint:workspaces": "npm run lint --workspaces --if-present",
