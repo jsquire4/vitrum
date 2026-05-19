@@ -123,7 +123,7 @@ Two parallel queues:
    - **W1** all 6 rounds done; **W2** done; **W3** D1/D2/D3/D4/D5/D6/D7/D8/D12/D13/D15/D16/D17/D18/D19 all merged; **W4** A4/A5/A7/A8/A9 + the HybridEngine decomp + WalkaroundGPUPipeline split + probeUpdatePass split all merged (A6 was never separately scoped); **W5** I1/I2 shipped (`97d455b`, `f542b90`); I3 (atrousVariance double-binding split) intentionally not done — cosmetic-only, would multiply shader-module compile cost; **W6** E1/E2/E3/E6 done; **W7** all sub-items done; **W8** RC into HybridEngine done end-to-end (Phases 1A/1B/2/3/4); **W9** PPG GPU dTree merged; **W10** neural-full-finish merged; **W11** OIDN wire done; **W12** dev overlays done; **W13** README/plan-archive done.
    - **W8 follow-up shipped (2026-05-18)**: `@vitrum/walkaround-rc` package extracted from `walkaround-hybrid/src/rc/`. The package owns RC's cascade pyramid, BVH compute, dispatch state machine, buffer manager, receiver material wrapper, and raw WGSL strings. `walkaround-hybrid` re-exports the public surface for back-compat. Composition with DDGI / ReSTIR-GI (Track-A MIS) still happens in `walkaround-hybrid` via `HybridEngineRC.ts`.
 
-Older active docs: `phase-7-restir-gi.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `pt-webgpu-deep-audit.md`. Sprint 10c (BDPT dispatch) and Sprint 14 (layered BSDF) remain gated.
+Older active docs: `phase-7-restir-gi.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `pt-webgpu-deep-audit.md`. Sprint 10c (BDPT GPU dispatch) APPLIED 2026-05-12 (fork `98f4446` + vitrum `398dfce`); Sprint 14 (layered BSDF) APPLIED 2026-05-11 (fork `ee379dc`). Both await GPU A/B verification (host-side workflow), not code work.
 
 ## Sibling repository: the path-tracer fork
 
