@@ -81,30 +81,26 @@ export function startGpuTextureBlit(
   canvas.width = width;
   canvas.height = height;
 
-  // Allocate one staging buffer + reuse across readbacks.
+  // Allocate one staging buffer + reuse across readbacks. The decoder
+  // writes into a 3-component scratch (rgb) so we avoid per-pixel object
+  // / DataView allocations (~650k/s at 10 Hz × 256² texture before this).
   let bytesPerPixel: number;
-  let decode: (bytes: Uint8Array, byteOffset: number) => [number, number, number];
+  let decode: (dv: DataView, byteOffset: number, outRGB: Float32Array) => void;
   switch (format) {
     case 'rgba16float':
       bytesPerPixel = 8;
-      decode = (bytes, b) => {
-        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        return [
-          halfBitsToFloat(dv.getUint16(b + 0, true)),
-          halfBitsToFloat(dv.getUint16(b + 2, true)),
-          halfBitsToFloat(dv.getUint16(b + 4, true)),
-        ];
+      decode = (dv, b, outRGB) => {
+        outRGB[0] = halfBitsToFloat(dv.getUint16(b + 0, true));
+        outRGB[1] = halfBitsToFloat(dv.getUint16(b + 2, true));
+        outRGB[2] = halfBitsToFloat(dv.getUint16(b + 4, true));
       };
       break;
     case 'rgba32float':
       bytesPerPixel = 16;
-      decode = (bytes, b) => {
-        const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-        return [
-          dv.getFloat32(b + 0, true),
-          dv.getFloat32(b + 4, true),
-          dv.getFloat32(b + 8, true),
-        ];
+      decode = (dv, b, outRGB) => {
+        outRGB[0] = dv.getFloat32(b + 0, true);
+        outRGB[1] = dv.getFloat32(b + 4, true);
+        outRGB[2] = dv.getFloat32(b + 8, true);
       };
       break;
     default:
@@ -124,6 +120,8 @@ export function startGpuTextureBlit(
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
   });
   const imageData = ctx.createImageData(width, height);
+  // Scratch RGB target — reused across every pixel of every readback.
+  const rgbScratch = new Float32Array(3);
 
   let cancelled = false;
   let inFlight = false;
@@ -144,18 +142,19 @@ export function startGpuTextureBlit(
         stagingBuffer.unmap();
         return;
       }
-      const mapped = new Uint8Array(stagingBuffer.getMappedRange());
-      // Copy into a JS-owned array — the mapped range is invalidated by unmap().
+      const mapped = stagingBuffer.getMappedRange();
+      // One DataView per readback (was: one per pixel).
+      const dv = new DataView(mapped);
       const rowBytes = bytesPerRow;
       const out = imageData.data;
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const srcOff = y * rowBytes + x * bytesPerPixel;
-          const [r, g, b] = decode(mapped, srcOff);
+          decode(dv, srcOff, rgbScratch);
           const dstOff = (y * width + x) * 4;
-          out[dstOff + 0] = tonemapByte(r);
-          out[dstOff + 1] = tonemapByte(g);
-          out[dstOff + 2] = tonemapByte(b);
+          out[dstOff + 0] = tonemapByte(rgbScratch[0]!);
+          out[dstOff + 1] = tonemapByte(rgbScratch[1]!);
+          out[dstOff + 2] = tonemapByte(rgbScratch[2]!);
           out[dstOff + 3] = 255;
         }
       }
