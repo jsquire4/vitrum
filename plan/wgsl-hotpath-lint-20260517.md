@@ -24,6 +24,19 @@ All six UNCLEAR items below have been verified-resolved by direct file read:
 The original `REAL-RISK` finding (`surfaceTextures.wgsl:173` `safeInvDir`)
 was applied in-place at audit time. No remaining open items from this audit.
 
+**Follow-up 2026-05-19:** the audit caught the SYMPTOM (`surfaceTextures.wgsl`
+using `vec3f(1.0)/dir` directly) but the swap-to-`safeInvDir` it triggered
+turned out to mask a deeper bug INSIDE `safeInvDir` itself: the
+`sign(d.x) * 1e30` sentinel collapsed to `0` for exact-zero direction
+components (WGSL `sign(0) == 0`), causing slab tests to give false positives
+for axis-aligned rays whose origin sat outside the AABB on the parallel
+axis. Fixed in commits `3327e8c` (shared-bvh) + `2740d92` (pt-webgpu
+duplicate) by switching to `select(-1e30, 1e30, d.x >= 0.0)`. See
+`packages/shared-bvh/src/__tests__/safeInvDir.test.ts` for the regression
+test. Audit lesson: a fix that goes "use the canonical helper" is only as
+safe as the helper itself — the underlying primitive needs its own
+regression coverage, which `shared-bvh` now has.
+
 ---
 
 
