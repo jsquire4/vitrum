@@ -6,9 +6,10 @@
 
 Several blockers identified below have since been resolved. Verified-current state:
 
-- **README/LICENSE** (blocker #5) — **fully resolved**. All 11 packages (10 audited + `@vitrum/scene-lighting` added afterward) now have both a `README.md` and a `LICENSE` file. The follow-up fixes landed via `chore/missing-package-readmes` (`ec58f48`), `chore/per-package-license-files-20260517` (`cc5bc50`), and the W13 README-audit pass (`fc882f6` + `0ab2d54`).
+- **README/LICENSE** (blocker #5) — **fully resolved**. All 12 packages (10 audited + `@vitrum/scene-lighting` + `@vitrum/walkaround-rc`, both added afterward) now have both a `README.md` and a `LICENSE` file. The follow-up fixes landed via `chore/missing-package-readmes` (`ec58f48`), `chore/per-package-license-files-20260517` (`cc5bc50`), the W13 README-audit pass (`fc882f6` + `0ab2d54`), and the W8 walkaround-rc extraction (`b065676` + this commit).
 - **scene-lighting package metadata** (added post-audit) — brought to workspace parity 2026-05-18 (commit `63f207f` added keywords/author/license/files/repository/lint script).
-- Blockers #1 (no build step), #2 (private), #3 (`file:` fork dep), #4 (`file:` intra-workspace deps), and the per-package `homepage`/`bugs` gap remain open — they are intentional pre-alpha state per `RELEASING.md`. The per-package rows below are accurate for those fields but stale wrt README/LICENSE.
+- **walkaround-rc package metadata** (extracted post-audit) — README.md + LICENSE in place; package.json mirrors the walkaround-hybrid shape.
+- Blockers #1 (no build step), #2 (private), #3 (`file:` fork dep), #4 (`file:` intra-workspace deps), and the per-package `homepage`/`bugs` gap remain open — they are intentional pre-alpha state per `RELEASING.md`. The per-package rows below are accurate for those fields but stale wrt README/LICENSE and predate the `scene-lighting` + `walkaround-rc` splits.
 
 ## Scope
 
