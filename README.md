@@ -119,7 +119,7 @@ This is the design choice that makes the library survive Canvas remount, route c
 - **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI) with stochastic direct illumination (ReSTIR-DI) and a single-bounce indirect (ReSTIR-GI), denoised with per-channel SVGF + GTAO. ([packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md))
 - **NormalMap-perturbed NEE shadow rays** — produces textured caustics through transmissive materials in pure NEE; lives in the `three-gpu-pathtracer` fork.
 - **Hybrid analytic-CSG + BVH-mesh intersection** — closed-form quadrics + triangle meshes in the same path-tracing kernel. Production renderers usually pick one or the other.
-- **Hero-wavelength MIS** (Wilkie et al. 2015) — one-sample MIS across X/Y/Z CMFs ships in the WebGL2 PT spectral path.
+- **Hero-wavelength MIS** (Wilkie et al. 2014) — one-sample MIS across X/Y/Z CMFs ships in the WebGL2 PT spectral path.
 
 ## Built on prior work
 
@@ -132,7 +132,7 @@ See [CREDITS.md](./CREDITS.md) for the full attribution list (~30 papers + libra
 - **Radiance Cascades** (Sannikov, 2023)
 - **ReSTIR DI / GI** (Bitterli et al., 2020 / Ouyang et al., 2021)
 - **SVGF** (Schied et al., 2017)
-- **Hero Wavelength Spectral Sampling** (Wilkie et al., 2015)
+- **Hero Wavelength Spectral Sampling** (Wilkie et al., 2014)
 - **Disney BSDF** (Burley, 2012)
 
 ## License

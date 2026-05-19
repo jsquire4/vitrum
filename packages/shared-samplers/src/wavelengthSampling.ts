@@ -21,7 +21,11 @@
  * The XYZ is then converted to linear sRGB for display accumulation.
  *
  * References:
- *   Fascione, L. et al. "Hero Wavelength Spectral Sampling", EGSR 2015.
+ *   Wilkie, A. et al. "Hero Wavelength Spectral Sampling", EGSR 2014
+ *     (Computer Graphics Forum v33 #4). The author has been miscited
+ *     as Fascione in earlier revisions of this file — Fascione et al.
+ *     wrote related Manuka-renderer papers that build on this work,
+ *     not the canonical hero-wavelength reference.
  *   CIE 015:2018 Colorimetry.
  *   Pharr, M. et al. "Physically Based Rendering", 4th ed., §4.6.2.
  *
@@ -168,7 +172,7 @@ export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number
 
 /**
  * Sample a hero wavelength using one-sample multiple-importance sampling
- * across the X, Y, and Z CMFs (Wilkie et al. extension to Fascione 2015).
+ * across the X, Y, and Z CMFs (extension of Wilkie et al. 2014 §3.3).
  *
  * Y-only importance sampling — the legacy `sampleHeroWavelength` — clusters
  * samples around 555 nm because Y(λ) peaks there. At low SPP this leaves
@@ -189,8 +193,8 @@ export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number
  * This is the balance-heuristic combination — variance-optimal for additive
  * estimators when individual strategy variances are similar.
  *
- * Reference: Wilkie, A. et al. "Hero Wavelength Spectral Sampling", EGSR 2015,
- * §3.3 (Multi-strategy hero wavelength sampling).
+ * Reference: Wilkie, A. et al. "Hero Wavelength Spectral Sampling", EGSR 2014
+ * (Computer Graphics Forum v33 #4), §3.3 (Multi-strategy hero wavelength sampling).
  *
  * @param uStrategy - Uniform random in [0, 1) used to pick X / Y / Z.
  * @param uLambda   - Uniform random in [0, 1) used for inverse-CDF on the chosen strategy.

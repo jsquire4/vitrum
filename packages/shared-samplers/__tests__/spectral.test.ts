@@ -466,7 +466,7 @@ describe('abbeNumber', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// MIS hero-wavelength sampling (Wilkie et al. extension to Fascione 2015)
+// MIS hero-wavelength sampling — extension of Wilkie et al. 2014 §3.3
 // ════════════════════════════════════════════════════════════════════════════════
 
 describe('X_CMF_INTEGRAL / Z_CMF_INTEGRAL', () => {

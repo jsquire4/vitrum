@@ -111,7 +111,7 @@ export function driveForkMaterialUniforms(
   setUniform(material, 'uCmfX', CIE_X_TABLE);
   setUniform(material, 'uCmfY', CIE_Y_TABLE);
   setUniform(material, 'uCmfZ', CIE_Z_TABLE);
-  // CDFs for the GLSL MIS hero-wavelength sampler (Wilkie 2015 §3.3).
+  // CDFs for the GLSL MIS hero-wavelength sampler (Wilkie 2014 §3.3).
   // Y-only sampling collapses blue/red to near-zero at low SPP because Y(λ)
   // is heavily concentrated near 555 nm; uploading X and Z CDFs lets the
   // shader pick from any of three strategies with balance-heuristic mixture pdf.
