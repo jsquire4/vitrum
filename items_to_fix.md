@@ -1,16 +1,17 @@
 # vitrum — items to fix
 
-**Audit date:** 2026-05-17
-**Auditor:** Claude (judge mode)
-**Method:** every item below was verified by opening the cited file at the cited line on 2026-05-17 and reading the actual code. No item is on this list because a sweep doc said so — only because the bug or gap is present in the working tree right now.
+**Audit date (original):** 2026-05-17
+**Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note.** The 2026-05-11 in-flight sweep and 2026-05-17 complexity sweep both identified ~10 correctness bugs and several contract gaps. Independent verification on 2026-05-17 found that **the great majority have been fixed since.** This file lists only what survived re-verification.
+> **Health note (2026-05-18).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The only remaining vitrum-side follow-up tracked elsewhere is the W8 RC extraction (`@vitrum/walkaround-rc` package), which is a structural improvement on shipped functionality rather than an open bug.
 
 ---
 
-## Section A — Open in the public API surface (HIGH)
+## Section A — Public API surface (all closed 2026-05-17 → 2026-05-18)
 
-These affect any consumer of `@vitrum/engine`'s top-level facade.
+These affected any consumer of `@vitrum/engine`'s top-level facade. All four
+items shipped during the post-audit cleanup session — see Section D.0 for the
+commit map. The descriptions are kept below for posterity.
 
 ### A1. `createEngine` proxy drops `updateEnvironment` pass-through
 
@@ -53,9 +54,13 @@ These affect any consumer of `@vitrum/engine`'s top-level facade.
 
 ---
 
-## Section B — Scaffold pretending (MEDIUM)
+## Section B — Scaffold pretending (all closed)
 
-Public surfaces that don't actually do what they appear to do. Either ship them or remove them.
+Public surfaces that didn't actually do what they appeared to. All four items
+shipped — B1 (PPG GPU dispatch) closed 2026-05-18; B2 (RC into HybridEngine)
+closed via the W8 sprint (2026-05-18, see CLAUDE.md "Where things actually
+stand"); B3 (neural inputPacker) and B4 (OIDN bridge consumers) both closed
+during the items-to-fix landings. Descriptions kept below for posterity.
 
 ### B1. PPG GPU dispatch is `dispatchWorkgroups(0, 0, 0)`
 
@@ -92,9 +97,10 @@ Public surfaces that don't actually do what they appear to do. Either ship them 
 
 ---
 
-## Section C — Doc rot (LOW effort, HIGH leverage)
+## Section C — Doc rot (all closed)
 
-These keep misleading future agents reading the repo cold.
+All four items closed during the items-to-fix landings + W13 documentation
+reconciliation. Descriptions kept below for posterity.
 
 ### C1. CLAUDE.md "What's done" section is at least one major work-package behind
 
@@ -143,7 +149,9 @@ The following items from Sections A / B / C of THIS audit (filed 2026-05-17) hav
 - **C4** — per-package READMEs audited for accuracy in W13 (`chore/w13-readme-audit-plan-archive`, commit `fc882f6`).
 - **B1** — PPG dispatch is now a real `dispatchWorkgroups(wgCount, 1, 1)` call wired through the W9 GPU flat-buffer traversal kernel. Verified at `packages/walkaround-hybrid/src/pipeline/passes/PPGGuidePass.ts:94` (and the file header's "no more dispatchWorkgroups(0,0,0)" callout). The `ppg-dispatch.test.ts` suite pins the wiring (5 tests passing, run 2026-05-18). The earlier "stub" comment block referenced at `WalkaroundGPUPipeline.ts:819-829` is gone — that file's PPG integration now flows through `PPGCoordinator` (post W1-R5 + walkaround-pipeline-split).
 
-Still open from this audit: **B2** (RC → W8). All Section A and Section C items are closed; B1 closed on 2026-05-18.
+- **B2** — RC subsystem now wired into HybridEngine via the W8 sprint (Phases 1A/1B/2/3/4 all landed 2026-05-18). `RCSubsystem` constructed in `HybridEngine.ts:388` when `opts.rcEnabled === true`; cascade-0 buffer composed into `shade.wgsl` via Track-A balance-heuristic MIS; `rcAcceptance.gpu.test.ts` harness scaffold + reference-render landings in `tools/reference-renders/W8-rc-{off,on}/`. See [plan/w8-rc-mis-composition.md](./plan/w8-rc-mis-composition.md) for the full sprint trace. The remaining follow-up — extract `walkaround-hybrid/src/rc/` into a standalone `@vitrum/walkaround-rc` package — is a structural improvement on shipped functionality, not an open bug.
+
+All Section A, B, and C items from this audit are closed.
 
 ### D.1 — Verified-stale items removed (original 2026-05-17 list)
 
