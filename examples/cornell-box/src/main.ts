@@ -9,7 +9,7 @@ import type {
   PTEngineWebGL2QualityMode,
 } from '@vitrum/pt-webgl';
 import * as THREE from 'three';
-import { createPTEngine_WebGL2, readAccumulationRgbFloat } from '@vitrum/pt-webgl';
+import { createPTEngine_WebGL2, readAccumulationRgbFloat, BdptLightPathBuffer } from '@vitrum/pt-webgl';
 import { sceneFromThreeJS, VITRUM_USER_DATA_KEYS as K } from '@vitrum/three-bindings';
 import {
   HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE,
@@ -71,6 +71,16 @@ interface CaptureConfig {
    * background-tab capture where rAF cadence is the bottleneck.  */
   readonly samplesPerFrame: number | null;
   readonly causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
+  /** C3 (2026-05-19) — opt into the fork's BDPT integrator path.
+   *  URL: ?vitrumBdpt=1 (default off). Maps to
+   *  `extensions['vitrum.ptWebgl.bdpt']: true` + a `BdptLightPathBuffer`
+   *  allocation; the engine's per-frame `bdptAdvanceFrame()` hands the
+   *  texture to the fork uniforms. Without a host-side light-subpath
+   *  draw pass the texture is zeros — the demo wiring is API-level,
+   *  not visual-acceptance. */
+  readonly bdpt: boolean;
+  /** C3 — clamp 1..3, only honoured when `bdpt === true`. URL: vitrumBdptBounces */
+  readonly bdptMaxLightBounces: number;
   readonly isCapture: boolean;
   readonly autoStart: boolean;
   readonly qualityMode: PTEngineWebGL2QualityMode;
@@ -272,6 +282,8 @@ function parseCaptureConfig(): CaptureConfig {
       ? Math.max(1, Math.min(128, parsePositiveInt(params.get('vitrumSpf'), 1)))
       : null,
     causticStrategy,
+    bdpt: params.get('vitrumBdpt') === '1',
+    bdptMaxLightBounces: Math.max(1, Math.min(3, parsePositiveInt(params.get('vitrumBdptBounces'), 3))),
     isCapture,
     autoStart: params.get('vitrumAutoStart') === '1',
     qualityMode,
@@ -487,6 +499,12 @@ async function main(): Promise<void> {
       'vitrum.ptWebgl.pixelAdaptiveSampling': config.pixelAdaptiveSampling,
       'vitrum.ptWebgl.pixelAdaptiveCadence': config.pixelAdaptiveCadence,
       'vitrum.ptWebgl.additiveAccumulation': config.pixelAdaptiveSampling,
+      ...(config.bdpt
+        ? {
+            'vitrum.ptWebgl.bdpt': true,
+            'vitrum.ptWebgl.bdptMaxLightBounces': config.bdptMaxLightBounces,
+          }
+        : {}),
       // Capture-mode default is 1 sample/frame for telemetry granularity. That
       // ties wall-clock convergence to rAF cadence, which collapses under
       // background-tab throttling. Allow URL override via vitrumSpf so capture
@@ -501,6 +519,19 @@ async function main(): Promise<void> {
   })) as PTEngineWebGL2;
   setStatus('Uploading scene to path tracer...');
   engine.setScene(vitrumScene);
+
+  // C3 (2026-05-19) — BDPT light-path texture lifecycle. Allocated only
+  // when `?vitrumBdpt=1`. The buffer's texture is handed to the engine
+  // each frame via `bdptAdvanceFrame()` so the fork's connection pass
+  // reads from it. NOTE: a real BDPT host populates the texture via its
+  // own light-subpath draw pass before bdptAdvanceFrame(); this example
+  // demonstrates the API call wiring without that draw pass, so the
+  // BDPT contribution is currently zeros — the visual A/B against
+  // ?vitrumBdpt=0 is intentionally minimal until a light-subpath
+  // dispatch lands in @vitrum/pt-webgl.
+  const bdptBuffer: BdptLightPathBuffer | null = config.bdpt
+    ? new BdptLightPathBuffer(renderer, { maxLightBounces: config.bdptMaxLightBounces })
+    : null;
 
   let frame = 0;
   const startMs = performance.now();
@@ -604,6 +635,12 @@ async function main(): Promise<void> {
       },
     };
 
+    // C3 — hand the light-path texture to the fork's connect pass before
+    // each renderFrame. The engine's bdptAdvanceFrame() forwards to
+    // driveForkMaterialUniforms; if BDPT is disabled the call is a no-op.
+    if (bdptBuffer != null) {
+      engine.bdptAdvanceFrame(bdptBuffer.texture);
+    }
     const out = engine.renderFrame(input) as PTEngineWebGL2FrameOutput;
     frame++;
     const displayedSpp = Number.isInteger(out.samplesAccumulated)

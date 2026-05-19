@@ -354,6 +354,11 @@ export class PTEngineWebGL2 implements Engine {
   // Forwarded to fork uBdptEnabled / uBdptMaxLightBounces / uBdptLightPathTex uniforms.
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
+  /** Sprint 10c — most-recently-supplied BDPT light-path texture. Set via
+   *  {@link bdptAdvanceFrame}; null until the host calls that method.
+   *  When non-null + `#bdpt === true`, every renderFrame's connect pass
+   *  reads this texture for cached light vertices. */
+  #bdptLightPathTex: unknown | null = null;
   readonly #limits: DeviceLimits;
   readonly #schedulerOptions: SchedulerOptions;
 
@@ -513,6 +518,47 @@ export class PTEngineWebGL2 implements Engine {
    */
   get iblBakerCache(): IblBakerCache {
     return this.#iblBakerCache;
+  }
+
+  /**
+   * Sprint 10c — host-driven BDPT frame advance. Updates the fork's
+   * `uBdptLightPathTex` uniform so the next `renderFrame` call's
+   * connection pass reads from the supplied texture for cached light
+   * vertices.
+   *
+   * Hosts are expected to populate the texture via their own light-subpath
+   * draw pass BEFORE calling this method; the engine doesn't own that
+   * draw call (it's a fork shader the host must drive). See
+   * {@link BdptLightPathBuffer} in `@vitrum/pt-webgl/bdptLightPathBuffer`
+   * for the recommended host-side texture lifecycle.
+   *
+   * Calling this method on an engine that didn't opt in to BDPT (no
+   * `extensions['vitrum.ptWebgl.bdpt']: true` at construction) is a
+   * no-op — the fork's `FEATURE_BDPT` define is unset and the connection
+   * GLSL is compiled out.
+   *
+   * @param lightPathTex - The light-subpath texture from your host helper
+   *   (typically `BdptLightPathBuffer.texture`). Pass `null` to disable
+   *   BDPT for the next frame as a safety guard.
+   */
+  bdptAdvanceFrame(lightPathTex: unknown | null): void {
+    this.#bdptLightPathTex = lightPathTex;
+    if (!this.#bdpt) return;
+    driveForkMaterialUniforms(
+      this.#pathTracer,
+      {
+        strategy: this.#causticStrategy,
+        mneeMaxIterations: this.#mneeMaxIterations,
+        mneeMaxChainLength: this.#mneeMaxChainLength,
+        spectralRendering: this.#spectralRendering,
+        radianceClamp: this.#radianceClamp,
+      },
+      {
+        enabled: this.#bdpt,
+        maxLightBounces: this.#bdptMaxLightBounces,
+        lightPathTex,
+      },
+    );
   }
 
   get state(): EngineState {

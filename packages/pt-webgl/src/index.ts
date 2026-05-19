@@ -54,3 +54,9 @@ export * from '@vitrum/scene-lighting';
 // Sprint 10c — BDPT option types for host callers that drive fork uniforms directly.
 export type { ForkBridgeBdptOptions, ForkBridgeCausticOptions } from './forkUniformBridge.js';
 export { driveForkMaterialUniforms } from './forkUniformBridge.js';
+
+// Sprint 10c follow-up (C3, 2026-05-19) — host-side light-path texture
+// helper for BDPT. The engine's bdptAdvanceFrame() method takes the
+// helper's texture and forwards it to the fork's uniforms per frame.
+export { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
+export type { BdptLightPathBufferOptions } from './bdptLightPathBuffer.js';

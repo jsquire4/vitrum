@@ -68,7 +68,18 @@ export const CASCADE_DIMS = [
   { probes: [ 2,  2,  2] as [number, number, number], rays: 4096, intervalNear: 240,  intervalFar: 1e9  },
 ] as const;
 
-export type CascadeDim = (typeof CASCADE_DIMS)[number];
+/**
+ * One cascade level's geometry. Structural type so hosts can pass custom
+ * dims via `HybridEngineOptions.cascadeDims` (B3b, 2026-05-19) without
+ * their tuple literals being narrowed to the Cornell-tuned defaults'
+ * union of literal types.
+ */
+export interface CascadeDim {
+  readonly probes: readonly [number, number, number];
+  readonly rays: number;
+  readonly intervalNear: number;
+  readonly intervalFar: number;
+}
 export const CASCADE_COUNT = CASCADE_DIMS.length;
 
 /** Total rays per cascade (probeX * probeY * probeZ * raysPerProbe). */
