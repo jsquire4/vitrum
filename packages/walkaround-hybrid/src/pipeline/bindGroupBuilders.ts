@@ -211,7 +211,7 @@ export function buildAtrousBindGroup(
   gNormalView: GPUTextureView,
   gDepthView: GPUTextureView,
   stepWidth: number,
-  sigmas: Readonly<AtrousSigmas> = ATROUS_DIRECT_SIGMAS,
+  sigmas: Readonly<AtrousSigmas>,
 ): GPUBindGroup {
   if (!uboRef.buf) {
     uboRef.buf = device.createBuffer({
