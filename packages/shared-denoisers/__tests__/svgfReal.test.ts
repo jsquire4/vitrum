@@ -13,10 +13,15 @@
  */
 
 import { describe, it, expect } from 'vitest';
+// CPU test oracles live in svgfRealCpu.ts (extracted W4-A7); the albedo
+// modulation helpers stay in svgfRealWebGPU.ts where the runtime SVGF
+// pipeline orchestrator consumes them.
 import {
   svgfReprojCPU,
   svgfVarianceFromMomentsCPU,
   svgf7x7FallbackCPU,
+} from '../src/svgfRealCpu.js';
+import {
   svgfRealDemodulateAlbedo,
   svgfRealRemodulateAlbedo,
 } from '../src/svgfRealWebGPU.js';
