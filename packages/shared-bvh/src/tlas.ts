@@ -166,10 +166,12 @@ function buildLeaf(records: ReadonlyArray<InstanceRecord>): TlasNodeBuild {
   };
 }
 
-function pickSplit(records: ReadonlyArray<InstanceRecord>, numBins: number)
-  : { axis: number; binIdx: number; cost: number } | null
-{
-  // Compute centroid bounds.
+interface CentroidBounds {
+  readonly cMin: readonly [number, number, number];
+  readonly cMax: readonly [number, number, number];
+}
+
+function computeCentroidBounds(records: ReadonlyArray<InstanceRecord>): CentroidBounds {
   let cMinX = Infinity, cMinY = Infinity, cMinZ = Infinity;
   let cMaxX = -Infinity, cMaxY = -Infinity, cMaxZ = -Infinity;
   for (const r of records) {
@@ -180,8 +182,14 @@ function pickSplit(records: ReadonlyArray<InstanceRecord>, numBins: number)
     if (r.centroid[1] > cMaxY) cMaxY = r.centroid[1];
     if (r.centroid[2] > cMaxZ) cMaxZ = r.centroid[2];
   }
+  return { cMin: [cMinX, cMinY, cMinZ], cMax: [cMaxX, cMaxY, cMaxZ] };
+}
+
+function pickSplit(records: ReadonlyArray<InstanceRecord>, cb: CentroidBounds, numBins: number)
+  : { axis: number; binIdx: number; cost: number } | null
+{
   const extents: readonly [number, number, number] = [
-    cMaxX - cMinX, cMaxY - cMinY, cMaxZ - cMinZ,
+    cb.cMax[0] - cb.cMin[0], cb.cMax[1] - cb.cMin[1], cb.cMax[2] - cb.cMin[2],
   ];
   // Degenerate: all centroids coincide → cannot split.
   if (extents[0] <= 0 && extents[1] <= 0 && extents[2] <= 0) return null;
@@ -191,7 +199,7 @@ function pickSplit(records: ReadonlyArray<InstanceRecord>, numBins: number)
   for (let axis = 0; axis < 3; axis++) {
     const ext = extents[axis]!;
     if (ext <= 0) continue;
-    const cMin = axis === 0 ? cMinX : axis === 1 ? cMinY : cMinZ;
+    const cMin = cb.cMin[axis]!;
     const bins: AabbBin[] = [];
     for (let b = 0; b < numBins; b++) bins.push(emptyBin());
 
@@ -244,18 +252,13 @@ function pickSplit(records: ReadonlyArray<InstanceRecord>, numBins: number)
 
 function partitionByBin(
   records: ReadonlyArray<InstanceRecord>,
+  cb: CentroidBounds,
   axis: number,
   binIdx: number,
   numBins: number,
 ): { left: InstanceRecord[]; right: InstanceRecord[] } {
-  // Recompute centroid bounds on this axis (cheap; same loop as pickSplit).
-  let cMin = Infinity, cMax = -Infinity;
-  for (const r of records) {
-    const c = r.centroid[axis]!;
-    if (c < cMin) cMin = c;
-    if (c > cMax) cMax = c;
-  }
-  const ext = cMax - cMin;
+  const cMin = cb.cMin[axis]!;
+  const ext = cb.cMax[axis]! - cMin;
   const left: InstanceRecord[] = [];
   const right: InstanceRecord[] = [];
   for (const r of records) {
@@ -284,7 +287,11 @@ function buildRecursive(
     return thisIdx;
   }
 
-  const split = pickSplit(records, numBins);
+  // Compute centroid bounds ONCE; both SAH evaluation and partitioning
+  // consume them. Mirrors the BLAS builder pattern in `buildArrayBvh.ts`
+  // (avoids the redundant rescan partitionByBin used to do).
+  const cb = computeCentroidBounds(records);
+  const split = pickSplit(records, cb, numBins);
   if (split == null || split.cost >= records.length) {
     // No improving split — emit a leaf even if larger than maxLeaf.
     const leaf = buildLeaf(records);
@@ -302,7 +309,7 @@ function buildRecursive(
     splitAxisOrInstanceCount: split.axis,
   });
 
-  const { left, right } = partitionByBin(records, split.axis, split.binIdx, numBins);
+  const { left, right } = partitionByBin(records, cb, split.axis, split.binIdx, numBins);
   if (left.length === 0 || right.length === 0) {
     // Degenerate split → fall back to a leaf.
     const leaf = buildLeaf(records);
