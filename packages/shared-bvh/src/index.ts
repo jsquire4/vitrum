@@ -1,4 +1,8 @@
-export * from './bvhCommon.js';
+// Re-apply of W7-G5 (lost in May-17 merge race per items_to_fix.md E7):
+// list each bvhCommon export explicitly so internal helpers like
+// `validateBvhEncoding` (test-only) don't leak onto the public surface.
+export { buildSceneBVH, refitBvhBounds } from './bvhCommon.js';
+export type { SceneBVHCommonResult, SceneBVHCommonOpts } from './bvhCommon.js';
 export * from './buildArrayBvh.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';

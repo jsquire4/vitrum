@@ -11,7 +11,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { buildArrayBvh, validateBvhEncoding } from '../index.js';
+import { buildArrayBvh } from '../index.js';
+// validateBvhEncoding is an internal-only helper; tests import it from the
+// implementation module directly (the index.ts surface intentionally hides
+// it — see items_to_fix.md E7).
+import { validateBvhEncoding } from '../bvhCommon.js';
 
 const LEAFNODE_FLAG = 0xffff;
 

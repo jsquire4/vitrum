@@ -57,11 +57,11 @@ Read in this order to onboard:
 > **Caveat — May 17 merge-race losses (filed 2026-05-19).** Several feature
 > commits from the 2026-05-17 sprint exist in `git log` but their changes were
 > silently dropped from HEAD when subsequent commits merged from pre-feature
-> parents and overwrote them. Verified-lost so far: **W2-C6** (shared-samplers
+> parents and overwrote them. Verified-lost: **W2-C6** (shared-samplers
 > WGSL primitives), **W3-D6** (Mat4 brand), **W3-D7** (FrameOutput discriminated
 > union), **W3-D19** (BackendTexture brand), **W6-E1** (`reuseSharedWebGpuDevice`
-> default flip), **W6-E6** (`ForkAccess` indirection), **W7-G5** (`validateBvhEncoding`
-> un-export). All seven are flagged inline as "NOT IN HEAD" with verification
+> default flip), **W6-E6** (`ForkAccess` indirection); **W7-G5** (`validateBvhEncoding`
+> un-export) was lost and is now **re-applied** as of 2026-05-19. The six remaining are flagged inline as "NOT IN HEAD" with verification
 > steps; full fix plans in `items_to_fix.md` Section E. Until those are
 > re-applied, treat any "shipped" W2 / W3 / W6 bullet that changes a contract,
 > default value, or public symbol as suspect — verify by `grep`-ing for the
@@ -94,7 +94,7 @@ Read in this order to onboard:
 
 ### W7 — dead-code + misplaced-code cleanup
 
-- Dead-code batch (G2/G3/G7/G9 — in HEAD; G5 NOT IN HEAD) (`feat/w7-dead-code-batch`): deleted deprecated `bdptConnectionMIS_partial` / `buildBDPTStrategyPDFs_partial` (G2 ✓); `rgbToApproxSpectralCoefficients` aliasing (G3 ✓); un-exported internal helpers `extractAttribute`/`extractIndex`/`warnOnce` from three-bindings (G7 ✓); deleted redundant emitter-constants re-exports from `uploadSceneBuffers` (G9 ✓). **G5 NOT IN HEAD**: the dedicated commit (`95d029a`) replaced `export * from './bvhCommon.js'` with a selective named export excluding `validateBvhEncoding`. Verified 2026-05-19: `packages/shared-bvh/src/index.ts` is back to `export * from './bvhCommon.js'`, and `validateBvhEncoding` is back on the public surface (tests at `packages/shared-bvh/src/__tests__/buildArrayBvh.test.ts:14` import it from `'../index.js'`). Same merge-race casualty pattern.
+- Dead-code batch (G2/G3/G5/G7/G9 — all in HEAD as of 2026-05-19) (`feat/w7-dead-code-batch`): deleted deprecated `bdptConnectionMIS_partial` / `buildBDPTStrategyPDFs_partial` (G2 ✓); `rgbToApproxSpectralCoefficients` aliasing (G3 ✓); un-exported `validateBvhEncoding` from `shared-bvh/index.ts` (G5 — was a merge-race casualty per `items_to_fix.md` E7, **re-applied 2026-05-19**); un-exported internal helpers `extractAttribute`/`extractIndex`/`warnOnce` from three-bindings (G7 ✓); deleted redundant emitter-constants re-exports from `uploadSceneBuffers` (G9 ✓).
 - Misplaced-code moves (H1/H4/H5/H7/H8) (`feat/w7-misplaced-code-moves`): albedo demodulate/remodulate extracted to its own file (H8, `84f474b`); BDPT bounce-budget constants moved to pt-webgl (H7, `bf5e524`); Halton-Shoemake quaternion sampler moved to shared-samplers (H5, `bae8066`); plus H1, H4.
 - Tail (G6/G8/I) (`feat/w7-tail-g6-g8-stale`): `SPATIAL_FILTER_WGSL` exported from package index (G6, `1d27529`); shared-samplers exports triaged + test-oracle items marked `@internal` (G8, `539b049`); stale "post-Sprint X" comments reworded (I, `9199dcd`).
 - H2/H3 (`feat/w7-h2-h3-plus-future-doc-accuracy`): DDGI-specific atlas-octahedral helpers + `SceneBvh` wrapper class moved out of `shared-bvh` into `walkaround-hybrid/ddgi` (`ea2e975..084de2b`); `plan/sprint-{neural,ppg}-future.md` reworded to reflect that those subsystems are revived/in-flight, not deleted (`69f1237`).

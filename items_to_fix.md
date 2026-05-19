@@ -3,7 +3,7 @@
 **Audit date (original):** 2026-05-17
 **Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Seven new open items filed 2026-05-19** (E1–E7 — see Section E): a 2026-05-17 merge race silently lost seven sprint commits (W2-C6 shared-samplers WGSL primitives; W3-D6 Mat4 brand; W3-D7 FrameOutput discriminated union; W3-D19 BackendTexture brand; W6-E1 `reuseSharedWebGpuDevice` default flip; W6-E6 `ForkAccess` indirection; W7-G5 `validateBvhEncoding` un-export) — the commits exist in `git log` but their changes are not in HEAD. All seven are type-system / structural / API-hygiene improvements, not runtime bugs. W4/W11/W12/W13 have not been audited yet.
+> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Seven items filed 2026-05-19** (E1–E7 — see Section E): a 2026-05-17 merge race silently lost seven sprint commits (W2-C6 shared-samplers WGSL primitives; W3-D6 Mat4 brand; W3-D7 FrameOutput discriminated union; W3-D19 BackendTexture brand; W6-E1 `reuseSharedWebGpuDevice` default flip; W6-E6 `ForkAccess` indirection; W7-G5 `validateBvhEncoding` un-export). All were type-system / structural / API-hygiene improvements, not runtime bugs. **E7 re-applied 2026-05-19** during the audit session; E1–E6 still open. W4/W11/W12/W13 have not been audited yet.
 
 ---
 
@@ -141,11 +141,13 @@ from pre-feature parents and silently overwrote them on merge. The features
 still exist as commits in `git log`; they just have zero footprint in the
 current code. All seven are type-system / structural / API-hygiene changes —
 none is a runtime correctness bug, the pre-sprint behaviour is what's
-running. The fix in each case is to re-apply the change plus update all
-consumers; the touch radius is moderate but not load-bearing today. Bundle
-these on the next contract-hygiene pass since E1 + E3 both touch `frame.ts`,
-E4 touches sites that E2 also brushes against, E5 / E6 are self-contained
-to a small set of files, and E7 is a single-line index.ts edit.
+running.
+
+**Status as of 2026-05-19:**
+- E7 (W7-G5) — **re-applied** during the audit session (single-file edit).
+- E1–E6 — still open; bundle on the next contract-hygiene pass since
+  E1 + E3 both touch `frame.ts`, E4 touches sites that E2 also brushes against,
+  and E5 / E6 are self-contained to a small set of files.
 
 The audit so far has spot-checked W2/W3/W6/W7 sub-bullets. W4/W11/W12/W13
 have not been comprehensively audited — additional losses may surface.
@@ -169,13 +171,9 @@ have not been comprehensively audited — additional losses may surface.
 - **Fix:** re-port the D6 changes to `scene/math.ts` (brand + asMat4), then re-update the 21 implicit-cast construction sites that D6 originally fixed (three-bindings, pt-webgpu, engine).
 - **Why deferred:** type-system improvement, not a runtime bug. Catch on next contract-hygiene pass.
 
-### E7. W7-G5 validateBvhEncoding un-export — lost the same way
+### E7. W7-G5 validateBvhEncoding un-export — **RE-APPLIED 2026-05-19**
 
-- **Where:** `packages/shared-bvh/src/index.ts`. Commit `95d029a` (W7-G5, 2026-05-17) was a one-file change: replace `export * from './bvhCommon.js'` with a selective named export `export { buildSceneBVH } from './bvhCommon.js'` + types so `validateBvhEncoding` (an internal-only helper used by the encoding tests) leaves the public surface.
-- **Symptom:** `validateBvhEncoding` is publicly exported again — `packages/shared-bvh/src/__tests__/buildArrayBvh.test.ts:14` imports it from `'../index.js'` and the import resolves. Any external consumer that picked it up would be relying on an internal that the maintainer never meant to expose.
-- **Verification:** `grep -n "validateBvhEncoding\|export \* from './bvhCommon.js'" packages/shared-bvh/src/index.ts` → the `export *` line is present (W7-G5 was supposed to remove it).
-- **Fix:** re-apply `95d029a` — single-file diff in `packages/shared-bvh/src/index.ts`. Tests that import `validateBvhEncoding` should switch to `'../bvhCommon.js'` (one already does — `bvhEncoding.test.ts:31`).
-- **Why deferred:** one-line cleanup; bundle with E1–E6 next pass.
+Re-applied during the same session that filed the audit. `packages/shared-bvh/src/index.ts` now uses selective named exports (`buildSceneBVH`, `refitBvhBounds`, the two interface types) from `bvhCommon.js` instead of `export * from`. `validateBvhEncoding` leaves the public surface. Both shared-bvh test files that needed it now import from `'../bvhCommon.js'` directly. All downstream packages (walkaround-hybrid, walkaround-rc, pt-webgpu, pt-webgl, engine) typecheck clean — the external surface of @vitrum/shared-bvh that they actually use is unchanged.
 
 ### E6. W6-E6 ForkAccess indirection — lost the same way
 
