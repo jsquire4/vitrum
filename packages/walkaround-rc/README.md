@@ -23,8 +23,11 @@ via `HybridEngineRC`; this package is the algorithm itself.
 - `CascadeBufferManager` — per-engine cascade ping-pong buffer ownership.
 - `buildRCSceneBVH` / `SceneBVH` — `StorageBufferAttribute`-typed adapter
   over `@vitrum/shared-bvh`.
-- `CASCADE_DIMS` / `CASCADE_COUNT` — cascade pyramid sizes (Cornell-tuned
-  defaults; future revisions will derive from scene AABB).
+- `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` — default cascade pyramid
+  sizes (Cornell-tuned). Hosts override per-engine via
+  `HybridEngineOptions.cascadeDims: readonly CascadeDim[]` (B3b, 2026-05-19);
+  `RCDispatcher` + `RCSubsystem` accept a custom dims tuple in their
+  constructors so non-Cornell-scale scenes can ship their own pyramid.
 - `GIReceiver` — `NodeMaterial` wrapper that samples cascade-0 from the
   TSL side. Requires `three/webgpu` + `three/tsl`.
 - `buildWalkaroundLightingNode` — TSL diffuse-lighting node used by
