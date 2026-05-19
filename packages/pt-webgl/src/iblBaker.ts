@@ -32,8 +32,8 @@ import type { SkyParams } from '@vitrum/scene-lighting';
  * Multi-renderer hosts: instantiate one {@link IblBakerCache} per
  * `WebGLRenderer` and feed it through your engine wrapper. A baked sky texture
  * is bound to the GL context that produced it, so caches MUST NOT be shared
- * across renderers. The free-function {@link bakeSkyEquirect} retains a
- * process-global cache for back-compat and is deprecated.
+ * across renderers. The previous module-level free-function bridge
+ * (`bakeSkyEquirect` / `clearSkyEquirectCache`) was dropped 2026-05-18.
  */
 
 const CUBE_SIZE = 256;
