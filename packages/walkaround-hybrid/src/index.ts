@@ -148,10 +148,10 @@ export type { SerialisedSTree } from './ppg/serialise.js';
 // Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model binary.
 export { InferenceGraph } from './neural/InferenceGraph.js';
 // `neural/unetArchitecture.js` is intentionally NOT re-exported here. It is
-// dynamically imported inside `HybridEngine.ts` so apps that never opt into
-// the 'neural' denoiser mode don't pay the bundle cost. Re-exporting it
-// here makes the dynamic import ineffective (statically reachable from the
-// package root). Tests import directly via `./neural/unetArchitecture.js`.
+// dynamically imported inside `HybridEngineLifecycle.ts` so apps that never
+// opt into the 'neural' denoiser mode don't pay the bundle cost. Re-exporting
+// it here makes the dynamic import ineffective (statically reachable from
+// the package root). Tests import directly via `./neural/unetArchitecture.js`.
 export {
   buildRandomWeightsForSpec,
   loadWeightsFromArrayBuffer,
