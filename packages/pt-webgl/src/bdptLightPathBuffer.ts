@@ -21,7 +21,7 @@
  *   },
  * });
  *
- * const bdpt = new BdptLightPathBuffer(engine.renderer, { maxLightBounces: 3 });
+ * const bdpt = new BdptLightPathBuffer({ maxLightBounces: 3 });
  *
  * function frame() {
  *   // 1. Run the host's light-subpath draw pass into bdpt.renderTarget
@@ -85,10 +85,7 @@ export class BdptLightPathBuffer {
 
   private _disposed = false;
 
-  constructor(
-    _renderer: THREE.WebGLRenderer,
-    options: BdptLightPathBufferOptions = {},
-  ) {
+  constructor(options: BdptLightPathBufferOptions = {}) {
     const max = options.maxLightBounces ?? 3;
     if (!Number.isFinite(max) || max < 1 || max > 3) {
       throw new RangeError(

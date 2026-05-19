@@ -15,16 +15,9 @@ import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
 import { BdptLightPathBuffer } from '../bdptLightPathBuffer.js';
 
-// Fake renderer — BdptLightPathBuffer takes a WebGLRenderer in the
-// signature for forward-compat (some THREE versions thread allocation
-// through the renderer) but doesn't dereference it at construct time.
-function fakeRenderer(): THREE.WebGLRenderer {
-  return {} as unknown as THREE.WebGLRenderer;
-}
-
 describe('BdptLightPathBuffer (C3)', () => {
   it('allocates a width × 3 RGBA32F WebGLRenderTarget with the requested maxLightBounces', () => {
-    const buf = new BdptLightPathBuffer(fakeRenderer(), { maxLightBounces: 3 });
+    const buf = new BdptLightPathBuffer({ maxLightBounces: 3 });
     expect(buf.maxLightBounces).toBe(3);
     expect(buf.renderTarget.width).toBe(3);
     expect(buf.renderTarget.height).toBe(3);
@@ -38,7 +31,7 @@ describe('BdptLightPathBuffer (C3)', () => {
   });
 
   it('defaults maxLightBounces to 3 when omitted', () => {
-    const buf = new BdptLightPathBuffer(fakeRenderer());
+    const buf = new BdptLightPathBuffer();
     expect(buf.maxLightBounces).toBe(3);
     expect(buf.renderTarget.width).toBe(3);
     buf.dispose();
@@ -46,7 +39,7 @@ describe('BdptLightPathBuffer (C3)', () => {
 
   it('accepts maxLightBounces in [1, 3]', () => {
     for (const max of [1, 2, 3] as const) {
-      const buf = new BdptLightPathBuffer(fakeRenderer(), { maxLightBounces: max });
+      const buf = new BdptLightPathBuffer({ maxLightBounces: max });
       expect(buf.maxLightBounces).toBe(max);
       expect(buf.renderTarget.width).toBe(max);
       buf.dispose();
@@ -54,23 +47,23 @@ describe('BdptLightPathBuffer (C3)', () => {
   });
 
   it('rejects maxLightBounces outside [1, 3] — fork hard-cap', () => {
-    expect(() => new BdptLightPathBuffer(fakeRenderer(), { maxLightBounces: 0 }))
+    expect(() => new BdptLightPathBuffer({ maxLightBounces: 0 }))
       .toThrow(/BDPT_MAX_LIGHT_BOUNCES = 3/);
-    expect(() => new BdptLightPathBuffer(fakeRenderer(), { maxLightBounces: 4 }))
+    expect(() => new BdptLightPathBuffer({ maxLightBounces: 4 }))
       .toThrow(/BDPT_MAX_LIGHT_BOUNCES = 3/);
-    expect(() => new BdptLightPathBuffer(fakeRenderer(), { maxLightBounces: NaN }))
+    expect(() => new BdptLightPathBuffer({ maxLightBounces: NaN }))
       .toThrow(/must be in 1\.\.3/);
   });
 
   it('exposes `.texture` as a direct alias for `.renderTarget.texture`', () => {
-    const buf = new BdptLightPathBuffer(fakeRenderer(), { maxLightBounces: 3 });
+    const buf = new BdptLightPathBuffer({ maxLightBounces: 3 });
     expect(buf.texture).toBe(buf.renderTarget.texture);
     expect(buf.texture.name).toBe('vitrum.bdpt.lightPath');
     buf.dispose();
   });
 
   it('dispose() is idempotent', () => {
-    const buf = new BdptLightPathBuffer(fakeRenderer());
+    const buf = new BdptLightPathBuffer();
     expect(buf.disposed).toBe(false);
     buf.dispose();
     expect(buf.disposed).toBe(true);

@@ -530,7 +530,7 @@ async function main(): Promise<void> {
   // ?vitrumBdpt=0 is intentionally minimal until a light-subpath
   // dispatch lands in @vitrum/pt-webgl.
   const bdptBuffer: BdptLightPathBuffer | null = config.bdpt
-    ? new BdptLightPathBuffer(renderer, { maxLightBounces: config.bdptMaxLightBounces })
+    ? new BdptLightPathBuffer({ maxLightBounces: config.bdptMaxLightBounces })
     : null;
 
   let frame = 0;
