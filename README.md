@@ -92,12 +92,14 @@ This is the design choice that makes the library survive Canvas remount, route c
   ↓
 @vitrum/core               Engine contract; types only, no GPU code
 @vitrum/three-bindings     THREE.Scene → vitrum Scene + glTF loader
-@vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI + SVGF + GTAO
+@vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI/GI + SVGF + GTAO + PPG + neural; composes RC
+@vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + GPU dispatch + receiver)
 @vitrum/pt-webgl           WebGL2 PT (wraps three-gpu-pathtracer fork)
 @vitrum/pt-webgpu          WebGPU-native PT (pre-alpha, internal)
 @vitrum/shared-bvh         Software BVH compute (CPU + GPU)
 @vitrum/shared-samplers    Sobol, Hammersley, light tree, hero-wavelength MIS
 @vitrum/shared-denoisers   À-trous, SVGF, OIDN bridge
+@vitrum/scene-lighting     Host-side lighting state (time-of-day, sun, sky)
 @vitrum/dev                Debug overlays (devDep)
 ```
 
