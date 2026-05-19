@@ -127,7 +127,10 @@ export function startGpuTextureBlit(
   let inFlight = false;
   // Per-message dedup so a sustained failure doesn't fill the console.
   // Stringify by error name + message; structured stack traces stay in
-  // the first occurrence.
+  // the first occurrence. Capped so a pathological producer that varies
+  // its error message every call (e.g. embeds a timestamp) can't grow
+  // the set unboundedly across the blit's lifetime.
+  const SEEN_FAILURES_MAX = 32;
   const seenFailures = new Set<string>();
 
   async function tick(): Promise<void> {
@@ -171,7 +174,7 @@ export function startGpuTextureBlit(
       // etc.) from filling the console at the readback rate.
       const e = err instanceof Error ? err : new Error(String(err));
       const key = `${e.name}:${e.message}`;
-      if (!seenFailures.has(key)) {
+      if (!seenFailures.has(key) && seenFailures.size < SEEN_FAILURES_MAX) {
         seenFailures.add(key);
         // eslint-disable-next-line no-console
         console.warn(`[dev/${label}] readback failed:`, err);
