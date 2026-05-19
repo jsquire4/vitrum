@@ -129,7 +129,7 @@ See [CREDITS.md](./CREDITS.md) for the full attribution list (~30 papers + libra
 - **three-gpu-pathtracer** (Garrett Johnson, MIT)
 - **three-mesh-bvh** (Garrett Johnson, MIT)
 - **DDGI** (Majercik et al., 2019)
-- **Radiance Cascades** (Sannikov, 2024)
+- **Radiance Cascades** (Sannikov, 2023)
 - **ReSTIR DI / GI** (Bitterli et al., 2020 / Ouyang et al., 2021)
 - **SVGF** (Schied et al., 2017)
 - **Hero Wavelength Spectral Sampling** (Wilkie et al., 2015)

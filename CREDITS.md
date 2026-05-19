@@ -37,7 +37,7 @@ Each technique is cited at its implementation site in the source code. This list
 ### Real-time global illumination
 
 - **DDGI (Dynamic Diffuse Global Illumination)** — Zander Majercik, Jean-Philippe Guertin, Derek Nowrouzezahrai, Morgan McGuire, "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields," JCGT 2019
-- **Radiance Cascades** — Alexander Sannikov, "Radiance Cascades: A Novel High-Resolution Formal Solution for Multidimensional Non-LTE Radiative Transfer," 2024
+- **Radiance Cascades** — Alexander Sannikov, "Radiance Cascades: A Novel Approach to Calculating Global Illumination," 2023
 - **ReSTIR DI (Reservoir-based Spatiotemporal Importance Resampling)** — Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron Lefohn, Wojciech Jarosz, "Spatiotemporal reservoir resampling for real-time ray tracing with dynamic direct lighting," SIGGRAPH 2020
 - **ReSTIR GI (diffuse-indirect resampling)** — Zander Majercik, Adam Marrs, Josef Spjut, Morgan McGuire, "Dynamic Diffuse Global Illumination Resampling," SIGGRAPH 2021 (§4.2 initial-sample RIS, §4.5 temporal/spatial reuse)
 
