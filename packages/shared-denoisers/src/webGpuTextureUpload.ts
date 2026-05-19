@@ -25,9 +25,6 @@ const R32F_BPP    = 4  as const;
 const R32U_BPP    = 4  as const;
 const R16U_BPP    = 2  as const;
 
-// Re-export so callers can keep a single import for upload + alignment math.
-export { alignedTextureCopyBytesPerRow };
-
 /**
  * Generic stride-aware texture upload helper.
  *
