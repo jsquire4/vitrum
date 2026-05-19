@@ -24,8 +24,8 @@
  */
 
 import {
-  ATROUS_INDIRECT_SIGMAS,
   buildAtrousBindGroup,
+  type AtrousSigmas,
   type UboRef,
 } from '../bindGroupBuilders.js';
 import type {
@@ -68,8 +68,15 @@ export class AtrousIndirectPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, gNormalDepthView, frameState } = ctx;
+    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, gNormalDepthView, frameState, inputs } = ctx;
     const common = resources.common;
+    // B3a — per-frame indirect sigmas from HybridEngineOptions (host
+    // override) or Cornell defaults `[32, 20, 0.5]`.
+    const sigmas: AtrousSigmas = {
+      sigmaN: inputs.atrousIndirectSigmas[0],
+      sigmaZ: inputs.atrousIndirectSigmas[1],
+      sigmaC: inputs.atrousIndirectSigmas[2],
+    };
     let inputTex: GPUTexture = frameState.indirectAccumOut;
     for (let iter = 0; iter < ATROUS_INDIRECT_ITERATIONS; iter++) {
       const stepWidth = 1 << iter;
@@ -80,7 +87,7 @@ export class AtrousIndirectPass implements Pass {
         device, bglCache, this._uboRef,
         inputTex.createView(), outputTex.createView(),
         gNormalDepthView, gNormalDepthView, stepWidth,
-        ATROUS_INDIRECT_SIGMAS,
+        sigmas,
       );
       const label = `atrous-indirect-${iter}` as PassLabel;
       const pass = encoder.beginComputePass(computeDesc(label));

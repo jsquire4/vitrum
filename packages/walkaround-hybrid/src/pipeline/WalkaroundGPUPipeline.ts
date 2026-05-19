@@ -261,6 +261,13 @@ export interface PipelineFrameInputs {
   /** 2026-05-18 sweep — per-channel HDR clamp on the indirect channel
    *  (shade.wgsl). Cornell default [1.0, 1.0, 1.0]. */
   indirectFireflyClamp: readonly [number, number, number];
+  /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
+   *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
+   *  direct-path chain. */
+  atrousDirectSigmas: readonly [number, number, number];
+  /** 2026-05-19 B3a — atrous INDIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
+   *  Cornell default `[32.0, 20.0, 0.5]`. Consumed by AtrousIndirectPass. */
+  atrousIndirectSigmas: readonly [number, number, number];
   /** Audit M1 — GTAO sampling radius in pixels; Cornell default 32. */
   gtaoRadiusPx: number;
   /** Audit M1 — GTAO intensity exponent; Cornell default 2.0. */

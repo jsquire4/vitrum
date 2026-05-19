@@ -209,6 +209,14 @@ export class HybridEngine implements Engine {
   /** 2026-05-18 sweep — per-channel HDR clamp on indirect-radiance.  Tuple-typed,
    *  so it lives here instead of the number-typed `Tunables` table. */
   private readonly _indirectFireflyClamp: readonly [number, number, number];
+  /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
+   *  Cornell default `[128.0, 5.0, 0.05]`. Tuple-typed so it lives on the
+   *  engine directly rather than in the number-only `Tunables` table. */
+  private readonly _atrousDirectSigmas: readonly [number, number, number];
+  /** 2026-05-19 B3a — atrous INDIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
+   *  Cornell default `[32.0, 20.0, 0.5]`. Broader on every axis since
+   *  ReSTIR-GI already smooths the indirect signal. */
+  private readonly _atrousIndirectSigmas: readonly [number, number, number];
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -351,6 +359,11 @@ export class HybridEngine implements Engine {
     // 2026-05-18 sweep — `indirectFireflyClamp` is tuple-typed so it lives
     // outside the number-typed Tunables table; default preserves Cornell.
     this._indirectFireflyClamp = opts.indirectFireflyClamp ?? [1.0, 1.0, 1.0];
+    // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas; tuple-typed same as
+    // indirectFireflyClamp. Cornell defaults preserve the prior hardcoded
+    // ATROUS_DIRECT_SIGMAS / ATROUS_INDIRECT_SIGMAS constants.
+    this._atrousDirectSigmas   = opts.atrousDirectSigmas   ?? [128.0, 5.0, 0.05];
+    this._atrousIndirectSigmas = opts.atrousIndirectSigmas ?? [32.0, 20.0, 0.5];
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -924,6 +937,11 @@ export class HybridEngine implements Engine {
       // 2026-05-18 sweep — tuple-typed clamp lives outside the number-only
       // Tunables table; same library-generality intent.
       indirectFireflyClamp:  this._indirectFireflyClamp,
+      // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas. Per-frame splat so
+      // the atrous denoisers (direct + indirect chains) read overrides
+      // without round-tripping through WalkaroundUBO.
+      atrousDirectSigmas:    this._atrousDirectSigmas,
+      atrousIndirectSigmas:  this._atrousIndirectSigmas,
       swapChainView:         swapView,
       swapChainFormat:       swapFmt,
     });

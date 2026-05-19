@@ -166,16 +166,17 @@ export interface UboRef { buf: GPUBuffer | undefined }
  * signal is already temporally smoothed by ReSTIR-GI and tolerates
  * wider blurs across depth / normal / chroma transitions.
  */
-interface AtrousSigmas {
+export interface AtrousSigmas {
   sigmaN: number;
   sigmaZ: number;
   sigmaC: number;
 }
 
 /** Direct-channel default — tight stops, preserves shadow / caustic edges.
- *  File-local — only consumed inside this module's atrous-sigma builder;
- *  2026-05-18 dead-code sweep verified zero external consumers. */
-const ATROUS_DIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
+ *  Exported for AtrousDenoiser's default; per-frame overrides flow from
+ *  `HybridEngineOptions.atrousDirectSigmas` through `PipelineFrameInputs`
+ *  (B3a, 2026-05-19). */
+export const ATROUS_DIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
   sigmaN: 128.0,
   sigmaZ: 5.0,
   sigmaC: 0.05,
@@ -191,6 +192,9 @@ const ATROUS_DIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
  *            no hard-shadow edges to preserve.
  *   σc=0.5 → ~10× direct's color tolerance — allows blur across color-bleed
  *            transitions which are low-frequency anyway.
+ *
+ * Per-frame overrides flow from `HybridEngineOptions.atrousIndirectSigmas`
+ * through `PipelineFrameInputs` (B3a, 2026-05-19).
  */
 export const ATROUS_INDIRECT_SIGMAS: Readonly<AtrousSigmas> = Object.freeze({
   sigmaN: 32.0,

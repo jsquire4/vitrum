@@ -50,12 +50,21 @@ export class AtrousDenoiser implements Denoiser {
       resources,
       bglCache,
       gNormalDepthView,
+      atrousDirectSigmas,
       wgX16,
       wgY16,
       computeDesc,
       sharedAtrousPipeline,
     } = ctx;
     const common = resources.common;
+
+    // B3a — per-frame direct sigmas from HybridEngineOptions (host
+    // override) or Cornell defaults `[128, 5, 0.05]`.
+    const sigmas = {
+      sigmaN: atrousDirectSigmas[0],
+      sigmaZ: atrousDirectSigmas[1],
+      sigmaC: atrousDirectSigmas[2],
+    };
 
     let inputTex: GPUTexture = common.hdrColorTexture;
     for (let iter = 0; iter < ATROUS_ITERATIONS; iter++) {
@@ -66,6 +75,7 @@ export class AtrousDenoiser implements Denoiser {
         device, bglCache, this._uboRef,
         inputTex.createView(), outputTex.createView(),
         gNormalDepthView, gNormalDepthView, stepWidth,
+        sigmas,
       );
       const label = `atrous-${iter}` as `atrous-${0 | 1 | 2}`;
       const pass = encoder.beginComputePass(computeDesc(label));

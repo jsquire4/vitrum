@@ -437,6 +437,39 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly indirectFireflyClamp?: readonly [number, number, number];
 
+  /**
+   * Atrous DIRECT-channel sigmas `[sigmaN, sigmaZ, sigmaC]` for the
+   * shadow/caustic-edge-preserving wavelet filter applied to the direct
+   * radiance channel after RIS/spatial reuse.
+   *
+   * - `sigmaN` — normal-alignment falloff (cos-similarity sharpness)
+   * - `sigmaZ` — depth-tolerance in world units
+   * - `sigmaC` — color-distance tolerance (HDR linear scalar)
+   *
+   * Cornell default `[128.0, 5.0, 0.05]` — tight stops that preserve hard
+   * shadow + caustic edges. Hosts on different scene scales should pass
+   * a proportional `sigmaZ` (depth is the only world-unit-scaled axis).
+   *
+   * @default [128.0, 5.0, 0.05]
+   */
+  readonly atrousDirectSigmas?: readonly [number, number, number];
+
+  /**
+   * Atrous INDIRECT-channel sigmas `[sigmaN, sigmaZ, sigmaC]` for the
+   * wavelet filter applied to the ReSTIR-GI indirect channel.
+   *
+   * Broader on every axis than the direct sigmas because ReSTIR-GI
+   * already smooths the indirect signal temporally + spatially; the
+   * remaining 2×2 quad variance (from half-res reservoir reads) just
+   * needs a wide low-pass.
+   *
+   * Cornell default `[32.0, 20.0, 0.5]`. Hosts on different scene scales
+   * should pass a proportional `sigmaZ`.
+   *
+   * @default [32.0, 20.0, 0.5]
+   */
+  readonly atrousIndirectSigmas?: readonly [number, number, number];
+
   // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
 
   /**

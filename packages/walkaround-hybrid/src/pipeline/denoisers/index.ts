@@ -132,6 +132,9 @@ export interface DenoiserDispatchContext {
   readonly bglCache: BGLCache;
   /** Pre-resolved G-buffer normal+depth view used as edge-stop input. */
   readonly gNormalDepthView: GPUTextureView;
+  /** B3a (2026-05-19) — atrous DIRECT-channel sigmas the active denoiser
+   *  may use for its edge-stop filter. Cornell default `[128, 5, 0.05]`. */
+  readonly atrousDirectSigmas: readonly [number, number, number];
   /** Current temporal-accumulator read texture (the AtrousVariance
    *  denoiser needs this for the welford alpha-reset path). */
   readonly readAccum: GPUTexture;

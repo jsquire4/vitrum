@@ -153,6 +153,7 @@ function fakeDispatchCtx(
     sharedAtrousPipeline: {} as GPUComputePipeline,
     bglCache: {} as DenoiserDispatchContext['bglCache'],
     gNormalDepthView: {} as GPUTextureView,
+    atrousDirectSigmas: [128.0, 5.0, 0.05] as const,
     readAccum: {} as GPUTexture,
     isMoving: false,
     wgX16: 4,
