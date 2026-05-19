@@ -1,14 +1,20 @@
 # Premium-grade refactor plan — 2026-05-17
 
-> **Status:** drafted, awaiting human review.
+> **Status (2026-05-18): all 13 workstreams shipped.** W1 / W2 / W3 / W4 /
+> W5 / W6 / W7 / W8 (in-package wiring + `@vitrum/walkaround-rc` extraction)
+> / W9 (per-pixel PPG position) / W10 / W11 / W12 / W13 all closed — see
+> CLAUDE.md "What's next" for the per-workstream commit map. The
+> per-workstream sections below are kept for posterity so a cold reader can
+> see the original goals and per-sub-task scope.
+>
 > **Input:** complexity sweep findings synthesized in
 > `~/.claude/projects/-home-jsquire4-projects-vitrum/memory/complexity-sweep-20260517.md`
 > (Themes A–I, 178 raw findings).
 > **Out of scope:** math/physics/numerical correctness — tracked separately in
 > `~/.claude/projects/-home-jsquire4-projects-vitrum/memory/in-flight-sweep-20260511.md`.
-> **Goal:** dissolve the structural perimeter that holds vitrum below
-> $200/mo subscription-tier library quality. The algorithm cores are
-> library-grade; this plan only touches structure, API hygiene, scaffold
+> **Goal:** dissolve the structural perimeter that held vitrum below
+> $200/mo subscription-tier library quality. The algorithm cores were
+> library-grade; this plan only touched structure, API hygiene, scaffold
 > finishing, dedup, and dead-code.
 
 ---
@@ -629,7 +635,16 @@ opportunistically across all waves.
 
 ---
 
-### W8 — Scaffold-1: RC extraction → `@vitrum/walkaround-rc`
+### W8 — Scaffold-1: RC extraction → `@vitrum/walkaround-rc` — SHIPPED 2026-05-18
+
+**Status:** Phase 1A/1B/2/3/4 in-package wiring shipped 2026-05-18; the
+follow-up package extraction landed the same day via `b065676`. The
+section below is preserved for the original sub-task list. The
+`three.js __gpuBuffer reach-through` rewrite (sub-task 2) was NOT done —
+the existing `StorageBufferAttribute.__gpuBuffer` accessor remains. That
+is a known coupling documented in
+`packages/walkaround-hybrid/README.md` "Residual risk" section; a future
+sprint can finish that cleanup if a three.js internal API change forces it.
 
 **Goal:** RC becomes a real, independent package that does not reach into
 three.js renderer privates.
@@ -691,7 +706,14 @@ rc/).
 
 ---
 
-### W9 — Scaffold-2: PPG GPU dTree traversal finish
+### W9 — Scaffold-2: PPG GPU dTree traversal finish — SHIPPED 2026-05-18
+
+**Status:** Phase 1 (real flat-buffer sTree + dTree traversal in
+`ppgGuide.wgsl` / `ppgUpdate.wgsl`, replacing the uniform-grid stubs) was
+shipped per CLAUDE.md "W9 PPG GPU dTree merged." Phase 2 (per-pixel
+primary-hit position from the half-res ReSTIR-GI reservoir's `xv` field,
+replacing the `sceneCentre` placeholder) shipped 2026-05-18 via `2f7155b`.
+The section below is preserved for the original sub-task scope.
 
 **Goal:** PPG `ppgEnabled: true` actually does path guiding. The
 production code path matches the CPU side that's already well-built.
