@@ -337,7 +337,7 @@ export class InferenceGraph {
           state.pipeline, layer, weightsByName, state.uniformBuf,
         );
         state.cachedBindGroup = bindGroup;
-        (state as { cachedBufKeys: readonly string[] }).cachedBufKeys = bufKeys;
+        state.cachedBufKeys = bufKeys;
       }
 
       // Bug 4 fix: re-write uniform with current dims (handles resize).
