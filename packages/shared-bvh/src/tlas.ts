@@ -436,9 +436,9 @@ export function refitTlas(
   for (let i = data.nodeCount - 1; i >= 0; i--) {
     const base = i * TLAS_NODE_STRIDE_U32;
     const split = data.nodes[base + 7]!;
-    // Compare via unsigned coercion — `&` treats operands as int32 in JS,
-    // which would turn 0xFFFF0000 into -65536 and break equality.
-    const isLeaf = ((split & 0xffff0000) >>> 0) === TLAS_LEAFNODE_FLAG;
+    // Extract upper 16 bits as unsigned; mirrors the BLAS leaf-flag check
+    // in buildArrayBvh.ts and avoids the int32-sign trap of `& 0xFFFF0000`.
+    const isLeaf = (split >>> 16) === 0xffff;
     if (isLeaf) {
       const offset = data.nodes[base + 6]!;
       const count = split & 0x0000ffff;

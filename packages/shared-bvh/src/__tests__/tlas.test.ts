@@ -25,7 +25,7 @@ describe('buildTlas', () => {
     expect(f32[0]).toBe(0); expect(f32[1]).toBe(0); expect(f32[2]).toBe(0);
     expect(f32[3]).toBe(1); expect(f32[4]).toBe(1); expect(f32[5]).toBe(1);
     // Leaf flag in u32[7].
-    expect(((tlas.nodes[7]! & 0xffff0000) >>> 0)).toBe(0xffff0000);
+    expect(tlas.nodes[7]! >>> 16).toBe(0xffff);
     expect((tlas.nodes[7]! & 0x0000ffff)).toBe(1);
   });
 
@@ -38,7 +38,7 @@ describe('buildTlas', () => {
     expect(f32[0]).toBe(0);   expect(f32[1]).toBe(0);   expect(f32[2]).toBe(0);
     expect(f32[3]).toBe(11);  expect(f32[4]).toBe(11);  expect(f32[5]).toBe(11);
     // Root is interior — high bits ≠ TLAS leaf flag.
-    expect((tlas.nodes[7]! & 0xffff0000)).not.toBe(0xffff0000);
+    expect(tlas.nodes[7]! >>> 16).not.toBe(0xffff);
   });
 
   it('preserves blasId per-instance', () => {
