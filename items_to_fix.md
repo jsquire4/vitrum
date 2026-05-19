@@ -3,7 +3,7 @@
 **Audit date (original):** 2026-05-17
 **Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/` (10 source files including `cascadeDispatch.ts`, `cascadePyramid.ts`, `giReceiver.ts`). There are no open items in this file as of 2026-05-19.
+> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/` (10 source files including `cascadeDispatch.ts`, `cascadePyramid.ts`, `giReceiver.ts`). **One new open item filed 2026-05-19**: see Section E1 — W3-D7 FrameOutput discriminated-union shipped at commit `40cd837` but its contract change was silently lost in a D7↔D18 merge race; current HEAD still uses the old null-sentinel.
 
 ---
 
@@ -128,6 +128,21 @@ reconciliation. Descriptions kept below for posterity.
 
 - **Sample:** `packages/walkaround-hybrid/README.md:5` says "WebGPU **ReSTIR DI** walkaround engine with **DDGI** probe updates and atlas sampling. **Radiance Cascades (RC)** are implemented under `src/rc/` for standalone dispatch and material-wrapper flows; composition back into `HybridEngine`'s shade pass is tracked (see file header and plan/walkaround-without-three.md)." — This is **honest** (verified). No change required.
 - **Fix needed elsewhere:** Audit each package's README for similar honest-vs-overclaim distinctions. Headline test: "if a new consumer reads the README, will they expect a feature that isn't actually wired into the engine?"
+
+---
+
+## Section E — Open items discovered 2026-05-19
+
+### E1. W3-D7 FrameOutput discriminated union — lost in a merge race
+
+- **Where:** `packages/core/src/frame.ts`. Commit `40cd837` (W3-D7, 2026-05-17) introduced `FrameOutput = FrameSkipped | FrameRendered` with a `kind` discriminant. Commit `9ea12c9` (W3-D18, ~50 min later) branched from `80c2388` (D17, pre-D7) instead of from D7, and when its frame.ts changes merged they overwrote D7's. The net result: D7's code is unreachable from HEAD even though the commit is in the history.
+- **Symptom:** the `FrameOutput` contract is back to `primaryRadiance: BackendTexture | null` + `samplesAccumulated === 0` skip sentinel — the exact pattern D7 was supposed to eliminate. Hosts that didn't check `samplesAccumulated > 0` before reading `primaryRadiance` would silently dereference null; the type system can't catch them.
+- **Verification:** `git show HEAD:packages/core/src/frame.ts | grep -c FrameRendered` → 0. `grep -rn "FrameRendered\|FrameSkipped\|kind: 'rendered'" packages --include="*.ts"` → 0 consumers anywhere.
+- **Fix:** re-apply D7's contract change, then propagate to:
+  - producers: `walkaround-hybrid/src/HybridEngine.ts`, `pt-webgl/src/ptEngineWebGL2.ts`, `pt-webgpu/src/index.ts` (and any examples returning FrameOutput from a stub).
+  - consumers: `engine/src/createEngine.ts` (the post-dispose stub at the `disposed` guard), examples (`cornell-box`, `two-engines-one-scene`, `hero-product-viz`), tests that fake `renderFrame()`.
+  - new test: re-add `packages/engine/__tests__/frameOutputShape.test.ts` pinning the union.
+- **Why deferred:** the touch radius is large (~10 files + tests). Bookkeeping cost > benefit until the next contract-hygiene pass; the current null-sentinel API still works at runtime.
 
 ---
 
