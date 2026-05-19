@@ -74,6 +74,13 @@ Each technique is cited at its implementation site in the source code. This list
 
 - **Bidirectional path tracing (BDPT)** — Eric P. Lafortune, Yves D. Willems, "Bi-directional Path Tracing," CompuGraphics 1993 (partial: vertex tables + connection-strategy MIS math under `shared-samplers/src/bdpt*` — full caustic dispatch gated on Sprint 10c per `plan/phase-7-restir-gi.md`)
 
+### Textbook references
+
+Foundational textbooks cited from JSDoc comments across the codebase:
+
+- **PBR4e** — Matt Pharr, Wenzel Jakob, Greg Humphreys, "Physically Based Rendering: From Theory to Implementation," 4th edition, MIT Press, 2023. Cited from `shared-samplers/src/{bdptVertex,bdptMIS,hgPhase}.ts`, `shared-samplers/__tests__/pdfNormalization.test.ts`, `walkaround-hybrid/src/shaders/common.wgsl.ts`, `pt-webgpu/src/wgsl/pathTrace/*.wgsl.ts`. Referenced for: HG phase normalisation (§11.4), equi-angular volume PDF (§14.1.2), BDPT MIS recursive ratio (§16.3.5 Eq. 16.16), hero-wavelength MIS reconstruction (§4.6.2), barycentric reconstruction (§6.8).
+- **Veach 1997** — Eric Veach, "Robust Monte Carlo Methods for Light Transport Simulation," PhD thesis, Stanford University. Cited from `shared-samplers/src/bdptMIS.ts` (§10.3 BDPT MIS connection formulae). The canonical reference for multiple-importance-sampling theory.
+
 ## Candidate techniques (not yet implemented)
 
 The following techniques are tracked as roadmap candidates. They are documented here for transparency about what vitrum is *not* yet shipping, and to credit the prior art that future implementations would build on. See `plan/` for current status.
