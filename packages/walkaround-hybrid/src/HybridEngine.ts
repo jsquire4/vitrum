@@ -52,6 +52,7 @@ import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { packDDGIGridParams, type FrameResources } from './pipeline/resourceManager.js';
 import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
+import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
@@ -360,10 +361,12 @@ export class HybridEngine implements Engine {
     // outside the number-typed Tunables table; default preserves Cornell.
     this._indirectFireflyClamp = opts.indirectFireflyClamp ?? [1.0, 1.0, 1.0];
     // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas; tuple-typed same as
-    // indirectFireflyClamp. Cornell defaults preserve the prior hardcoded
-    // ATROUS_DIRECT_SIGMAS / ATROUS_INDIRECT_SIGMAS constants.
-    this._atrousDirectSigmas   = opts.atrousDirectSigmas   ?? [128.0, 5.0, 0.05];
-    this._atrousIndirectSigmas = opts.atrousIndirectSigmas ?? [32.0, 20.0, 0.5];
+    // indirectFireflyClamp. Defaults sourced from the single-source-of-truth
+    // constants in bindGroupBuilders.ts (no duplicated literals).
+    this._atrousDirectSigmas   = opts.atrousDirectSigmas
+      ?? [ATROUS_DIRECT_SIGMAS.sigmaN, ATROUS_DIRECT_SIGMAS.sigmaZ, ATROUS_DIRECT_SIGMAS.sigmaC];
+    this._atrousIndirectSigmas = opts.atrousIndirectSigmas
+      ?? [ATROUS_INDIRECT_SIGMAS.sigmaN, ATROUS_INDIRECT_SIGMAS.sigmaZ, ATROUS_INDIRECT_SIGMAS.sigmaC];
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
