@@ -220,7 +220,13 @@ fn bvhTraceTintedVisibility(
             let ab = b - a; let ac = c - a; let ap = p - a;
             let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
             let d20 = dot(ap, ab); let d21 = dot(ap, ac);
-            let denom = d00 * d11 - d01 * d01;
+            // Floor the Gram determinant at 1e-8 so a fully-degenerate
+            // colinear-vertex triangle (Moller-Trumbore det would still
+            // be nonzero for non-parallel rays but the Gram det is 0)
+            // can't divide-by-zero. Matches pt-webgpu's intersection
+            // helper. See plan/wgsl-hotpath-lint-20260517.md LIKELY-SAFE
+            // table for the consistency-target rationale.
+            let denom = max(d00 * d11 - d01 * d01, 1e-8);
             var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
             var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
             let bw = 1.0 - u - v;
