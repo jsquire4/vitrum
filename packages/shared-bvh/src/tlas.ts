@@ -541,7 +541,7 @@ export function tlasIntersect(
     if (!nodeAabbIntersects(nodeIdx)) continue;
     const base = nodeIdx * TLAS_NODE_STRIDE_U32;
     const split = data.nodes[base + 7]!;
-    const isLeaf = ((split & 0xffff0000) >>> 0) === TLAS_LEAFNODE_FLAG;
+    const isLeaf = (split >>> 16) === 0xffff;
     if (isLeaf) {
       const offset = data.nodes[base + 6]!;
       const count = split & 0x0000ffff;
