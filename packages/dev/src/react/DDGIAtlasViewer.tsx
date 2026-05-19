@@ -1,25 +1,13 @@
 // DDGIAtlasViewer — pop-out panel showing irradiance + visibility atlases live.
 //
-// Implementation mode: INTERFACE STUB (approach (b))
-//
-// Rationale: Displaying a live GPUTexture as a canvas requires either:
-//   (a) a WebGPU readback (GPUBuffer → ArrayBuffer → ImageData) every frame, or
-//   (b) rendering the atlas into a dedicated 2D canvas via a blit pass.
-// Both require deep pipeline access (the GPUDevice, the atlas GPUTexture handle,
-// and a blit renderpass) that HybridEngine does not expose today.
-//
-// HybridEngine ships engine.debug.atlasTexture() and
-// .visibilityAtlasTexture() since the T3.G followup landed; the remaining
-// work is the GPUTexture → 2D canvas blit in this component.
-//
-// TODO: wire the engine.debug textures into a 2D canvas overlay.
-//   1. Allocate a small 2D canvas overlay.
-//   2. Per-frame: engine.debug.atlasTexture() → GPUTexture (already exposed).
-//   3. GPUCommandEncoder: copyTextureToBuffer → readback → draw to canvas.
-//   4. Probe-click: map click coords to probe grid cell, emit highlight.
+// A3 (2026-05-19) — wired to engine.debug.{device,atlasTexture,
+// visibilityAtlasTexture}() via the shared `startGpuTextureBlit` helper.
+// Readback runs throttled (~10 Hz) to keep GPU→CPU fences off the main
+// render path. Engine surfaces fall back to a placeholder badge.
 
-import React, { type FC } from 'react';
+import React, { type FC, useEffect, useRef } from 'react';
 import type { DebuggableEngine } from '../types.js';
+import { startGpuTextureBlit } from './gpuTextureBlit.js';
 
 export interface DDGIAtlasViewerProps {
   /** The engine to inspect. Must implement engine.debug (T3.G followup). */
@@ -55,38 +43,70 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
   visible = true,
   className,
 }) => {
+  const irrCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const visCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const hasAtlas = typeof engine.debug?.atlasTexture === 'function';
+  const hasVisibilityAtlas = typeof engine.debug?.visibilityAtlasTexture === 'function';
+  const hasDevice = typeof engine.debug?.device === 'function';
+
+  // A3 (2026-05-19) — wire the canvas-blit readback. Re-runs when the
+  // atlas/visibility texture handles change identity (the engine swaps
+  // them on setScene + on ping-pong resolve). The throttled tick paints
+  // the atlases at ~10 Hz so the GPU→CPU fence stays off the render path.
+  useEffect(() => {
+    if (!visible || !hasAtlas || !hasDevice) return;
+    const device = engine.debug?.device?.();
+    const atlas = engine.debug?.atlasTexture?.();
+    if (device == null || atlas == null) return;
+    const canvas = irrCanvasRef.current;
+    if (canvas == null) return;
+    return startGpuTextureBlit(canvas, device, atlas, {
+      throttleMs: 100,
+      label: 'ddgi-irr-atlas',
+    });
+  }, [engine, visible, hasAtlas, hasDevice]);
+
+  useEffect(() => {
+    if (!visible || !hasVisibilityAtlas || !hasDevice) return;
+    const device = engine.debug?.device?.();
+    const atlas = engine.debug?.visibilityAtlasTexture?.();
+    if (device == null || atlas == null) return;
+    const canvas = visCanvasRef.current;
+    if (canvas == null) return;
+    return startGpuTextureBlit(canvas, device, atlas, {
+      throttleMs: 100,
+      label: 'ddgi-vis-atlas',
+    });
+  }, [engine, visible, hasVisibilityAtlas, hasDevice]);
+
   if (!visible) return null;
 
-  const hasDebug = typeof engine.debug?.atlasTexture === 'function';
-
-  if (!hasDebug) {
-    // Warn once on every mount (not every render).
-     
-    console.warn(
-      '[DDGIAtlasViewer] engine.debug.atlasTexture() is not implemented. ' +
-      'DDGIAtlasViewer requires the T3.G followup: HybridEngine must expose ' +
-      'engine.debug with atlasTexture() and visibilityAtlasTexture(). ' +
-      'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
+  if (!hasAtlas) {
+    return (
+      <div className={className} style={PANEL_STYLE} role="region" aria-label="DDGI Atlas Viewer">
+        <div style={{ fontWeight: 'bold', marginBottom: 4 }}>DDGI Atlas Viewer</div>
+        <div style={WARN_STYLE}>
+          Requires <code>engine.debug.atlasTexture()</code> — backend hasn't
+          wired the debug surface.
+        </div>
+      </div>
     );
   }
 
   return (
     <div className={className} style={PANEL_STYLE} role="region" aria-label="DDGI Atlas Viewer">
       <div style={{ fontWeight: 'bold', marginBottom: 4 }}>DDGI Atlas Viewer</div>
-      {hasDebug ? (
-        // Future: render atlas canvas here once HybridEngine wires engine.debug.
-        <div style={WARN_STYLE}>Atlas canvas not yet rendered (T3.G followup).</div>
-      ) : (
-        <div style={WARN_STYLE}>
-          Requires engine.debug API — coming in T3.G followup.
-          <br />
-          HybridEngine must implement <code>engine.debug.atlasTexture()</code>.
-        </div>
-      )}
+      <div style={{ fontSize: 10, color: '#aaa', marginBottom: 2 }}>Irradiance</div>
+      <canvas ref={irrCanvasRef} style={{ display: 'block', maxWidth: 200, imageRendering: 'pixelated' }} />
+      {hasVisibilityAtlas ? (
+        <>
+          <div style={{ fontSize: 10, color: '#aaa', marginTop: 6, marginBottom: 2 }}>Visibility</div>
+          <canvas ref={visCanvasRef} style={{ display: 'block', maxWidth: 200, imageRendering: 'pixelated' }} />
+        </>
+      ) : null}
       <div style={{ marginTop: 6, color: '#666', fontSize: 10 }}>
-        Irradiance &amp; visibility atlases will render here.
-        <br />
-        Click a probe to highlight it in 3D.
+        Live readback @ ~10 Hz. Reinhard-tonemapped.
       </div>
     </div>
   );

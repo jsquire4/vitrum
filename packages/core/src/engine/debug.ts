@@ -10,6 +10,14 @@
  *  engine (the caller MUST NOT destroy them); they're invalidated on the
  *  next setScene() / dispose(). */
 export interface EngineDebugSurface {
+  /** A3 (2026-05-19) — the engine's GPUDevice handle (WebGPU backends)
+   *  or null (WebGL backends or pre-init). Dev overlays (DDGIAtlasViewer,
+   *  BVHVisualizer, GISignalSplit) need this to issue
+   *  `copyTextureToBuffer` + `mapAsync(READ)` readbacks for their
+   *  canvas-blit rendering. Backends MUST NOT destroy or hand off
+   *  ownership — the caller is read-only. */
+  device?(): GPUDevice | null;
+
   /** DDGI irradiance atlas (the GPUTexture the probe-update pass writes
    *  to). Returns null when DDGI is disabled or not yet initialised. */
   atlasTexture?(): GPUTexture | null;

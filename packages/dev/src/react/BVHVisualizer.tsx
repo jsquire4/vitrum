@@ -1,29 +1,12 @@
-// BVHVisualizer — overlay BVH bounding boxes color-coded by depth.
+// BVHVisualizer — diagnostic panel showing BVH structure (depth histogram,
+// node count, depth statistics) via `engine.debug.bvhNodes()`.
 //
-// Implementation mode: INTERFACE STUB (approach (b))
-//
-// Rationale: Drawing BVH bounding boxes on top of the WebGPU canvas requires:
-//   (a) Reading the BVH node array back from the GPU (or maintaining a CPU-side
-//       mirror that the engine already builds during BVH construction).
-//   (b) A separate WebGL2/Canvas2D/SVG overlay pass that rasterizes the AABBs
-//       color-coded by depth onto the screen.
-//   (c) Projecting 3D AABB corners through the current view+proj matrix.
-//
-// HybridEngine ships engine.debug.bvhNodes() since the T3.G followup
-// landed; the remaining work is the 2D-canvas projection in this component.
-//
-// The bvhNodes() output now populates the `depth` field via an iterative
-// DFS over the BVH's depth-first node ordering (root=0; left child at
-// idx+1; right child at the rightChildOrTriOffset word). Depth-coloured
-// visualisation can render `hsl(depth * 30, 80%, 60%)` directly.
-//
-// TODO: wire the engine.debug.bvhNodes() readback into a canvas overlay.
-//   1. engine.debug.bvhNodes() → Float32Array of [min, max, depth, pad] per
-//      node — `depth` is now real (W8 follow-up, 2026-05-18).
-//   2. Create a <canvas> overlay (same size as WebGPU canvas) in front of it.
-//   3. Per-frame: project each node's 8 corners through viewProj; draw box
-//      in depth-mapped color (hsl(depth * 30, 80%, 60%)).
-//   4. Toggle key (default 'B') shows/hides the overlay.
+// A3 (2026-05-19) — wired to read the Float32Array node table and render
+// a depth-histogram bar chart + summary stats on a 2D canvas. Does NOT
+// project AABBs onto the WebGPU canvas — that would require view+proj
+// matrices the debug surface doesn't expose. Hosts wanting an AABB
+// overlay can render their own pass with the same `bvhNodes()` output
+// + the host's camera matrices.
 
 import React, { type FC, useEffect, useRef, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
@@ -72,6 +55,74 @@ const WARN_STYLE: React.CSSProperties = {
   zIndex: 9997,
 };
 
+const PANEL_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  bottom: 44,
+  right: 8,
+  background: 'rgba(0,0,0,0.75)',
+  color: '#e0e0e0',
+  fontFamily: 'monospace',
+  fontSize: 11,
+  padding: '8px 10px',
+  borderRadius: 4,
+  zIndex: 9998,
+  minWidth: 240,
+};
+
+interface BvhStats {
+  readonly nodeCount: number;
+  readonly maxDepth: number;
+  readonly avgDepth: number;
+  readonly histogram: ReadonlyArray<number>; // count per depth level
+}
+
+function computeBvhStats(nodes: Float32Array): BvhStats {
+  // 8 floats per node: [minX, minY, minZ, maxX, maxY, maxZ, depth, pad].
+  // bvhNodes() of HybridEngine populates `depth` via iterative DFS.
+  const nodeCount = Math.floor(nodes.length / 8);
+  if (nodeCount === 0) {
+    return { nodeCount: 0, maxDepth: 0, avgDepth: 0, histogram: [] };
+  }
+  let maxDepth = 0;
+  let sumDepth = 0;
+  const histogram: number[] = [];
+  for (let i = 0; i < nodeCount; i++) {
+    const d = Math.floor(nodes[i * 8 + 6] ?? 0);
+    if (d > maxDepth) maxDepth = d;
+    sumDepth += d;
+    while (histogram.length <= d) histogram.push(0);
+    histogram[d] = (histogram[d] ?? 0) + 1;
+  }
+  return {
+    nodeCount,
+    maxDepth,
+    avgDepth: sumDepth / nodeCount,
+    histogram,
+  };
+}
+
+function renderHistogram(canvas: HTMLCanvasElement, stats: BvhStats): void {
+  const ctx = canvas.getContext('2d');
+  if (ctx == null) return;
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (stats.histogram.length === 0) return;
+  const maxCount = Math.max(...stats.histogram);
+  if (maxCount === 0) return;
+  // Per-bar width sized to fit. Bar `i` is at horizontal slot `i`.
+  const barW = Math.max(1, Math.floor(W / stats.histogram.length));
+  for (let d = 0; d < stats.histogram.length; d++) {
+    const count = stats.histogram[d] ?? 0;
+    const barH = Math.round((count / maxCount) * (H - 4));
+    const x = d * barW;
+    const y = H - barH;
+    // hsl(depth * 30, ...) per the W8-follow-up's depth-color convention
+    ctx.fillStyle = `hsl(${(d * 30) % 360}, 80%, 60%)`;
+    ctx.fillRect(x, y, Math.max(1, barW - 1), barH);
+  }
+}
+
 export const BVHVisualizer: FC<BVHVisualizerProps> = ({
   engine,
   toggleKey = 'b',
@@ -79,7 +130,8 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
   className,
 }) => {
   const [visible, setVisible] = useState(initiallyVisible);
-  const warnedRef = useRef(false);
+  const [stats, setStats] = useState<BvhStats | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Keyboard toggle
   useEffect(() => {
@@ -98,16 +150,23 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
 
   const hasDebug = typeof engine.debug?.bvhNodes === 'function';
 
-  if (visible && !hasDebug && !warnedRef.current) {
-    warnedRef.current = true;
-     
-    console.warn(
-      '[BVHVisualizer] engine.debug.bvhNodes() is not implemented. ' +
-      'BVHVisualizer requires the T3.G followup: HybridEngine must expose ' +
-      'engine.debug.bvhNodes() returning a Float32Array of node AABBs. ' +
-      'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
-    );
-  }
+  // A3 (2026-05-19) — re-poll BVH stats every 500 ms while visible.
+  // bvhNodes() returns a host-side Float32Array (already CPU-readable),
+  // so no GPU readback needed — the cost is one pass over ~N nodes.
+  useEffect(() => {
+    if (!visible || !hasDebug) return;
+    const tick = (): void => {
+      const nodes = engine.debug?.bvhNodes?.();
+      if (nodes == null) return;
+      const s = computeBvhStats(nodes);
+      setStats(s);
+      const canvas = canvasRef.current;
+      if (canvas != null) renderHistogram(canvas, s);
+    };
+    tick();
+    const interval = setInterval(tick, 500);
+    return () => { clearInterval(interval); };
+  }, [engine, visible, hasDebug]);
 
   const label = toggleKey !== null
     ? `BVH [${toggleKey.toUpperCase()}] ${visible ? '■ on' : '□ off'}`
@@ -117,12 +176,27 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
     <>
       {visible && !hasDebug && (
         <div style={WARN_STYLE}>
-          BVHVisualizer: requires engine.debug API (T3.G followup).
-          <br />
-          Implement <code>engine.debug.bvhNodes()</code> in HybridEngine.
+          BVHVisualizer: requires <code>engine.debug.bvhNodes()</code>.
         </div>
       )}
-      {/* Future: <canvas> overlay drawn here when hasDebug is true. */}
+      {visible && hasDebug && (
+        <div style={PANEL_STYLE} role="region" aria-label="BVH Visualizer">
+          <div style={{ fontWeight: 'bold', marginBottom: 4 }}>BVH structure</div>
+          {stats != null ? (
+            <>
+              <div>nodes: {stats.nodeCount}</div>
+              <div>max depth: {stats.maxDepth}</div>
+              <div>avg depth: {stats.avgDepth.toFixed(2)}</div>
+              <div style={{ fontSize: 10, color: '#aaa', marginTop: 6, marginBottom: 2 }}>
+                Nodes per depth (hsl-coded):
+              </div>
+              <canvas ref={canvasRef} width={220} height={48} style={{ display: 'block' }} />
+            </>
+          ) : (
+            <div style={{ color: '#aaa' }}>Waiting for BVH build…</div>
+          )}
+        </div>
+      )}
       <div
         className={className}
         style={BADGE_STYLE}

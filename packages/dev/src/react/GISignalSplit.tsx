@@ -1,28 +1,13 @@
 // GISignalSplit — 2×2 split-screen view of direct / indirect / AO / total.
 //
-// Implementation mode: INTERFACE STUB (approach (b))
-//
-// Rationale: A split-screen view of GI signal channels requires:
-//   (a) The engine to expose separate direct-light, indirect-light, AO, and
-//       composited textures as GPUTextures. In HybridEngine these live in
-//       separate render passes (DDGI receiver → ReSTIR-DI → SVGF) but are
-//       not independently surfaced.
-//   (b) A 4-up blit pass that reads four textures and renders them into
-//       quadrants of a 2D canvas overlay.
-//
-// HybridEngine ships engine.debug.giSignalTextures() since the T3.G
-// followup landed; the remaining work is the 4-up blit in this component.
-//
-// TODO: wire the engine.debug.giSignalTextures() output into a 4-up canvas.
-//   1. engine.debug.giSignalTextures() → {direct, indirect, ao, total}
-//      (already exposed; total may be null when SVGF is bypassed).
-//   2. GISignalSplit: allocate a <canvas> overlay covering the render canvas.
-//   3. Each frame: blit the 4 textures into the 4 quadrants via
-//      copyTextureToBuffer (WebGPU) or framebuffer readback (WebGL2).
-//   4. Draw channel labels ("direct", "indirect", "AO", "total") in each quad.
+// A3 (2026-05-19) — wired to read engine.debug.giSignalTextures() and
+// blit each channel through the shared `startGpuTextureBlit` helper.
+// Readback runs throttled (~10 Hz) so the GPU→CPU fence stays off the
+// render path. Each channel paints into its own 2D-canvas quadrant.
 
-import React, { type FC, useState } from 'react';
+import React, { type FC, useEffect, useRef, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
+import { startGpuTextureBlit } from './gpuTextureBlit.js';
 
 export interface GISignalSplitProps {
   /** The engine to inspect. Must implement engine.debug.giSignalTextures (T3.G followup). */
@@ -61,18 +46,39 @@ const OVERLAY_STYLE: React.CSSProperties = {
 };
 
 const QUADRANT_STYLE: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
+  position: 'relative',
   border: '1px solid rgba(255,255,255,0.15)',
   background: 'rgba(0,0,0,0.4)',
-  color: '#ffb347',
-  fontFamily: 'monospace',
-  fontSize: 12,
-  fontStyle: 'italic',
+  overflow: 'hidden',
 };
 
-const LABELS = ['direct', 'indirect', 'AO', 'total'] as const;
+const CHANNEL_KEYS = ['direct', 'indirect', 'ao', 'total'] as const;
+type ChannelKey = (typeof CHANNEL_KEYS)[number];
+const CHANNEL_LABELS: Record<ChannelKey, string> = {
+  direct: 'direct',
+  indirect: 'indirect',
+  ao: 'AO',
+  total: 'total',
+};
+
+const QUADRANT_CANVAS_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  width: '100%',
+  height: '100%',
+  imageRendering: 'pixelated',
+};
+
+const QUADRANT_LABEL_STYLE: React.CSSProperties = {
+  position: 'absolute',
+  top: 4,
+  left: 4,
+  color: '#ffb347',
+  fontFamily: 'monospace',
+  fontSize: 11,
+  textShadow: '0 0 4px rgba(0,0,0,0.8)',
+  zIndex: 2,
+};
 
 export const GISignalSplit: FC<GISignalSplitProps> = ({
   engine,
@@ -84,33 +90,60 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
   const isControlled = activeProp !== undefined;
   const active = isControlled ? activeProp : internalActive;
 
+  const directRef = useRef<HTMLCanvasElement>(null);
+  const indirectRef = useRef<HTMLCanvasElement>(null);
+  const aoRef = useRef<HTMLCanvasElement>(null);
+  const totalRef = useRef<HTMLCanvasElement>(null);
+  const refs: Record<ChannelKey, React.RefObject<HTMLCanvasElement>> = {
+    direct: directRef, indirect: indirectRef, ao: aoRef, total: totalRef,
+  };
+
   const hasDebug = typeof engine.debug?.giSignalTextures === 'function';
+  const hasDevice = typeof engine.debug?.device === 'function';
+
+  // A3 (2026-05-19) — start one readback loop per channel when active.
+  // Each useEffect's cleanup tears down its own readback; the 4 readbacks
+  // share the engine queue but each has its own staging buffer.
+  useEffect(() => {
+    if (!active || !hasDebug || !hasDevice) return;
+    const device = engine.debug?.device?.();
+    const channels = engine.debug?.giSignalTextures?.();
+    if (device == null || channels == null) return;
+
+    const teardowns: Array<() => void> = [];
+    for (const key of CHANNEL_KEYS) {
+      const tex = channels[key];
+      const canvas = refs[key].current;
+      if (tex == null || canvas == null) continue;
+      teardowns.push(startGpuTextureBlit(canvas, device, tex, {
+        throttleMs: 100,
+        label: `gi-${key}`,
+      }));
+    }
+    return () => {
+      for (const t of teardowns) t();
+    };
+    // The refs object is stable; only `engine`, `active`, and capability
+    // booleans change identity in a way that matters.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, active, hasDebug, hasDevice]);
 
   const toggle = (): void => {
     const next = !active;
     if (!isControlled) setInternalActive(next);
     onToggle?.(next);
-
-    if (next && !hasDebug) {
-       
-      console.warn(
-        '[GISignalSplit] engine.debug.giSignalTextures() is not implemented. ' +
-        'GISignalSplit requires the T3.G followup: HybridEngine must expose ' +
-        'engine.debug.giSignalTextures() returning {direct, indirect, ao, total}. ' +
-        'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
-      );
-    }
   };
 
   return (
     <>
       {active && (
         <div style={OVERLAY_STYLE} className={className}>
-          {LABELS.map((label) => (
-            <div key={label} style={QUADRANT_STYLE}>
-              {hasDebug
-                ? `[${label}]` // Future: replaced with blitted texture canvas
-                : `${label} — requires engine.debug (T3.G followup)`}
+          {CHANNEL_KEYS.map((key) => (
+            <div key={key} style={QUADRANT_STYLE}>
+              <canvas ref={refs[key]} style={QUADRANT_CANVAS_STYLE} />
+              <div style={QUADRANT_LABEL_STYLE}>
+                {hasDebug ? CHANNEL_LABELS[key] : `${CHANNEL_LABELS[key]} — requires engine.debug`}
+              </div>
             </div>
           ))}
         </div>

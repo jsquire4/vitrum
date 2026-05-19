@@ -1100,6 +1100,11 @@ export class HybridEngine implements Engine {
    *  absent so DenoiserABToggle / MaterialInspector fall back to their
    *  warn paths until those land. */
   readonly debug: EngineDebugSurface = {
+    // A3 (2026-05-19) — expose the device handle so dev-overlay components
+    // can issue `copyTextureToBuffer` + `mapAsync(READ)` readbacks on the
+    // textures the methods below return. Read-only — caller MUST NOT
+    // destroy or reconfigure the device.
+    device: (): GPUDevice | null => this._device,
     atlasTexture: (): GPUTexture | null => {
       const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
       return atlas?.irradiance ?? null;
