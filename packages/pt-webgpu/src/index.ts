@@ -1,4 +1,5 @@
 import type {
+  AnalyticShape,
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
@@ -112,8 +113,16 @@ class PTEngineWebGPU implements Engine {
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
       // Slot 0 is the "unknown" sentinel; supported shapes start at index 1.
-      supportedAnalyticShapes: new Set<string>(PT_WEBGPU_ANALYTIC_SHAPES.slice(1)),
-      supportedEmitterKinds: new Set<string>(['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area']),
+      // Slot 0 is 'unknown' — strip before advertising. The remaining entries
+      // are AnalyticShape-typed in the source array; cast through unknown here
+      // because TS narrows the literal-tuple type back to a generic readonly
+      // string[] after slice(1).
+      supportedAnalyticShapes: new Set(
+        PT_WEBGPU_ANALYTIC_SHAPES.slice(1) as unknown as readonly AnalyticShape[],
+      ),
+      supportedEmitterKinds: new Set<SceneEmitter['kind']>(
+        ['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area'],
+      ),
       causticStrategy: this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
       debugSurface: true,

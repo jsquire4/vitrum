@@ -22,7 +22,7 @@ import type {
   ProgressStats,
 } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
-import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment, AnalyticShape } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
@@ -525,7 +525,7 @@ export class PTEngineWebGL2 implements Engine {
     // sufficient fragment uniform vectors (Sprint 5 device-tier fallback).
     // On low-end GPUs (MAX_FRAGMENT_UNIFORM_VECTORS < 256) the came UBO
     // is too expensive; mesh-came geometry in the BVH is used as fallback.
-    const analyticShapes = new Set<string>();
+    const analyticShapes = new Set<AnalyticShape>();
     if (this.#supportsAnalyticCame) {
       analyticShapes.add('h-channel-came');
     }
@@ -537,7 +537,7 @@ export class PTEngineWebGL2 implements Engine {
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
       supportedAnalyticShapes: analyticShapes,
-      supportedEmitterKinds: new Set<string>([
+      supportedEmitterKinds: new Set<SceneEmitter['kind']>([
         'directional',
         'rect-area',
         'disc-area',

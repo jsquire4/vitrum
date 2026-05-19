@@ -407,10 +407,10 @@ export class HybridEngine implements Engine {
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
       maxBounces:                this._maxBounces,
-      supportedAnalyticShapes:   new Set<string>(),
+      supportedAnalyticShapes:   new Set(),
       // Emitter kinds handled by DDGI _uploadLights: sun, fixture, teaLight
       // mapped to core taxonomy: directional, point
-      supportedEmitterKinds:     new Set<string>(['directional', 'point']),
+      supportedEmitterKinds:     new Set(['directional', 'point']),
       // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
       // compatible with the walkaround engine's frame cadence; the walkaround
       // engine always reports 'none'. Track via

@@ -5,6 +5,9 @@
 // gating on it. The shape is intentionally read-only — capabilities are an
 // engine-identity property, not a per-frame dial.
 
+import type { AnalyticShape } from '../scene/primitives.js';
+import type { SceneEmitter } from '../scene/emitters.js';
+
 export interface EngineCapabilities {
   /** Engine supports `updatePrimitive` / `updateEmitter` patches, falling
    *  back to full `setScene` for unsupported diffs. When false, hosts must
@@ -33,11 +36,14 @@ export interface EngineCapabilities {
    *  `FrameInput.quality.bounces` is clamped to this value. */
   readonly maxBounces: number;
 
-  /** Set of analytic-primitive `kind` values this engine supports. */
-  readonly supportedAnalyticShapes: ReadonlySet<string>;
+  /** Set of analytic-primitive `shape` values this engine supports. Each
+   *  element is one of the {@link AnalyticShape} union members (rather than
+   *  raw `string`) so an engine that misspells a shape ID at construction
+   *  fails to typecheck instead of silently advertising support. */
+  readonly supportedAnalyticShapes: ReadonlySet<AnalyticShape>;
 
-  /** Set of emitter `kind` values this engine supports. */
-  readonly supportedEmitterKinds: ReadonlySet<string>;
+  /** Set of {@link SceneEmitter} `kind` values this engine supports. */
+  readonly supportedEmitterKinds: ReadonlySet<SceneEmitter['kind']>;
 
   // ── Specular caustics (RFE-05) ──────────────────────────────────────────
   /**
