@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { computeSceneAABB } from '../src/sceneAABB.js';
-import type { Scene, MeshPrimitive, InstancedMeshPrimitive, MaterialSpec, Mat4 } from '@vitrum/core';
+import type {
+  Scene,
+  MeshPrimitive,
+  InstancedMeshPrimitive,
+  SkinnedMeshPrimitive,
+  MaterialSpec,
+  Mat4,
+} from '@vitrum/core';
 
 const MAT: MaterialSpec = {
   baseColor: [0.5, 0.5, 0.5],
@@ -113,5 +120,36 @@ describe('computeSceneAABB', () => {
     expect(aabb.max[0]).toBeCloseTo(3.5);
     // 12 tris × 2 instances
     expect(aabb.triangleCount).toBe(24);
+  });
+
+  it('measures a skinned mesh using its rest-pose positions (C1, 2026-05-19)', () => {
+    const cube = unitCube('rest');
+    const skinned: SkinnedMeshPrimitive = {
+      kind: 'skinned-mesh',
+      id: 'skin',
+      positions: cube.positions,
+      normals: cube.normals,
+      indices: cube.indices!,
+      material: cube.material,
+      // 8 verts × 4 bones-per-vert
+      skinIndices: new Uint32Array(8 * 4),
+      // All weight on bone 0.
+      skinWeights: (() => {
+        const w = new Float32Array(8 * 4);
+        for (let i = 0; i < 8; i++) w[i * 4] = 1.0;
+        return w;
+      })(),
+      // One identity bone + one identity bone-inverse.
+      bones: new Float32Array([
+        1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1,
+      ]),
+      boneInverses: new Float32Array([
+        1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1,
+      ]),
+    };
+    const aabb = computeSceneAABB(emptyScene([skinned]));
+    expect(aabb.min).toEqual([-0.5, -0.5, -0.5]);
+    expect(aabb.max).toEqual([0.5, 0.5, 0.5]);
+    expect(aabb.triangleCount).toBe(12);
   });
 });
