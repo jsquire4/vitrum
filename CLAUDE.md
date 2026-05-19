@@ -120,14 +120,17 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 
 ## What's next
 
-Two parallel queues:
+All prior queues — `items_to_fix.md` Sections A/B/C, the 13-workstream `plan/premium-grade-refactor-20260517.md` plan, the original 10-item README-promise plan (A1–A4, B1–B3, C1–C3, D) — are fully shipped as of 2026-05-19.
 
-1. **`items_to_fix.md` remaining Section B item** — B2 (RC into HybridEngine) **shipped 2026-05-18** via W8 Phases 1A/1B/2/3/4. See the file at the repo root for verified-current locations. **A3 incremental-leaf BVH** shipped 2026-05-19 via `426a4c2` (positions-only refit fast path): `HybridEngine.updatePrimitive` now routes positions-only patches through `positionsRefit` (~1 ms / 30k tris using `refitBvhBounds`) instead of full SAH rebuild. True topology changes (index buffer, vertex count) still use `topologyRebuild` because three-mesh-bvh's MeshBVH builder is monolithic — surgical leaf replacement was correctly rejected on cost-benefit; the win was extending the existing transform-refit machinery to also cover positions-only diffs (the common case for animated / morphed geometry).
-2. **`plan/premium-grade-refactor-20260517.md` — all 13 workstreams shipped.** Verified by git-log grep on 2026-05-18:
-   - **W1** all 6 rounds done; **W2** done; **W3** D1/D2/D3/D4/D5/D6/D7/D8/D12/D13/D15/D16/D17/D18/D19 all merged; **W4** A4/A5/A7/A8/A9 + the HybridEngine decomp + WalkaroundGPUPipeline split + probeUpdatePass split all merged (A6 was never separately scoped); **W5** I1/I2 shipped (`97d455b`, `f542b90`); I3 (atrousVariance double-binding split) intentionally not done — cosmetic-only, would multiply shader-module compile cost; **W6** E1/E2/E3/E6 done; **W7** all sub-items done; **W8** RC into HybridEngine done end-to-end (Phases 1A/1B/2/3/4); **W9** PPG GPU dTree merged; **W10** neural-full-finish merged; **W11** OIDN wire done; **W12** dev overlays done; **W13** README/plan-archive done.
-   - **W8 follow-up shipped (2026-05-18)**: `@vitrum/walkaround-rc` package extracted from `walkaround-hybrid/src/rc/`. The package owns RC's cascade pyramid, BVH compute, dispatch state machine, buffer manager, receiver material wrapper, and raw WGSL strings. `walkaround-hybrid` re-exports the public surface for back-compat. Composition with DDGI / ReSTIR-GI (Track-A MIS) still happens in `walkaround-hybrid` via `HybridEngineRC.ts`.
+The honest remaining work is **multi-week pipeline integration** on top of foundations that just landed:
 
-Older active docs: `phase-7-restir-gi.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `pt-webgpu-deep-audit.md`. Sprint 10c (BDPT GPU dispatch) APPLIED 2026-05-12 (fork `98f4446` + vitrum `398dfce`); Sprint 14 (layered BSDF) APPLIED 2026-05-11 (fork `ee379dc`). Both await GPU A/B verification (host-side workflow), not code work.
+1. **C2 TLAS pipeline wiring** (multi-week). The TLAS module (`@vitrum/shared-bvh/src/tlas.ts`) ships `buildTlas` / `refitTlas` / `tlasIntersect`. What's NOT done: WGSL traverse-into-BLAS dispatch, bvh-common adapter that emits per-mesh BLAS roots (today's single-merged-BVH path takes over), and host bookkeeping to keep TLAS + per-mesh BLAS handles in sync. Estimated 8–12 weeks per the original plan-implementation sizing.
+
+2. **C1 GPU compute skinning** (optional follow-up). The CPU `solveSkin` baseline handles a single hero character at ~30 µs/1k verts. A WGSL compute variant would unlock multi-character scenes. Inverse-transpose for scaled bones (rather than today's upper-3x3) is a math correctness follow-up; defer until a test scene with scaled bones appears.
+
+3. **GPU A/B verification** (host-side workflow): Sprint 10c (BDPT GPU dispatch) APPLIED 2026-05-12 (fork `98f4446` + vitrum `398dfce`); Sprint 14 (layered BSDF) APPLIED 2026-05-11 (fork `ee379dc`). Both need reference renders captured, not more code.
+
+Older active docs: `phase-7-restir-gi.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `pt-webgpu-deep-audit.md`.
 
 ## Sibling repository: the path-tracer fork
 

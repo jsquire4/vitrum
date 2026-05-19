@@ -3,7 +3,7 @@
 **Audit date (original):** 2026-05-17
 **Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note (2026-05-18).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The only remaining vitrum-side follow-up tracked elsewhere is the W8 RC extraction (`@vitrum/walkaround-rc` package), which is a structural improvement on shipped functionality rather than an open bug.
+> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/` (10 source files including `cascadeDispatch.ts`, `cascadePyramid.ts`, `giReceiver.ts`). There are no open items in this file as of 2026-05-19.
 
 ---
 
@@ -149,7 +149,7 @@ The following items from Sections A / B / C of THIS audit (filed 2026-05-17) hav
 - **C4** — per-package READMEs audited for accuracy in W13 (`chore/w13-readme-audit-plan-archive`, commit `fc882f6`).
 - **B1** — PPG dispatch is now a real `dispatchWorkgroups(wgCount, 1, 1)` call wired through the W9 GPU flat-buffer traversal kernel. Verified at `packages/walkaround-hybrid/src/pipeline/passes/PPGGuidePass.ts:94` (and the file header's "no more dispatchWorkgroups(0,0,0)" callout). The `ppg-dispatch.test.ts` suite pins the wiring (5 tests passing, run 2026-05-18). The earlier "stub" comment block referenced at `WalkaroundGPUPipeline.ts:819-829` is gone — that file's PPG integration now flows through `PPGCoordinator` (post W1-R5 + walkaround-pipeline-split).
 
-- **B2** — RC subsystem now wired into HybridEngine via the W8 sprint (Phases 1A/1B/2/3/4 all landed 2026-05-18). `RCSubsystem` constructed in `HybridEngine.ts:388` when `opts.rcEnabled === true`; cascade-0 buffer composed into `shade.wgsl` via Track-A balance-heuristic MIS; `rcAcceptance.gpu.test.ts` harness scaffold + reference-render landings in `tools/reference-renders/W8-rc-{off,on}/`. See [plan/w8-rc-mis-composition.md](./plan/w8-rc-mis-composition.md) for the full sprint trace. The remaining follow-up — extract `walkaround-hybrid/src/rc/` into a standalone `@vitrum/walkaround-rc` package — is a structural improvement on shipped functionality, not an open bug.
+- **B2** — RC subsystem now wired into HybridEngine via the W8 sprint (Phases 1A/1B/2/3/4 all landed 2026-05-18). `RCSubsystem` constructed in `HybridEngine.ts:388` when `opts.rcEnabled === true`; cascade-0 buffer composed into `shade.wgsl` via Track-A balance-heuristic MIS; `rcAcceptance.gpu.test.ts` harness scaffold + reference-render landings in `tools/reference-renders/W8-rc-{off,on}/`. See [plan/w8-rc-mis-composition.md](./plan/w8-rc-mis-composition.md) for the full sprint trace. The W8 follow-up — extracting `walkaround-hybrid/src/rc/` into a standalone `@vitrum/walkaround-rc` package — also shipped 2026-05-18 (verify: `ls packages/walkaround-rc/src/`).
 
 All Section A, B, and C items from this audit are closed.
 
