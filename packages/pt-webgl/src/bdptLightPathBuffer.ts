@@ -43,12 +43,13 @@
  * engine.dispose();
  * ```
  *
- * Lifecycle: the texture is allocated lazily on the first frame the host
- * touches `bdpt.renderTarget` / `bdpt.texture`; `dispose()` releases it.
- * `BdptLightPathBuffer` is intentionally a single-texture wrapper rather
- * than a true ping-pong because the fork's connect pass reads the same
- * texture every iteration (Veach 1997 §10.3) — the "advance" is the host
- * re-writing it once per accumulation tick.
+ * Lifecycle: the WebGLRenderTarget is constructed eagerly (three.js
+ * defers the actual GL texture allocation until first use, but the JS
+ * wrapper is live immediately). `dispose()` releases the underlying GL
+ * resources. `BdptLightPathBuffer` is intentionally a single-texture
+ * wrapper rather than a true ping-pong because the fork's connect pass
+ * reads the same texture every iteration (Veach 1997 §10.3) — the
+ * "advance" is the host re-writing it once per accumulation tick.
  *
  * References:
  * - Veach 1997, "Robust Monte Carlo Methods for Light Transport Simulation,"
