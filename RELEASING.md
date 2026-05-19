@@ -6,8 +6,9 @@ This document describes how to publish vitrum's packages to npm. **Until the use
 
 1. **All quality gates green.** From the repo root:
    ```sh
-   npm run typecheck     # all 9 packages clean
-   npm test              # all packages clean
+   npm run typecheck     # all 12 packages clean
+   npm test              # all packages clean (~1209 tests across 11 workspace packages, 3 intentional GPU-only skips)
+   npm run test:gpu      # GPU-browser tests — requires `npx playwright install chromium`
    npm run fork-shader-smoke
    npm run shader-compile-ci
    ```
