@@ -3,7 +3,7 @@
 **Audit date (original):** 2026-05-17
 **Status reconciliation (2026-05-18):** every item in Sections A / B / C is now closed. The descriptions below remain for posterity so future agents can see what was once broken and where the fix landed. The "How the judge will verify" footer still applies for any new items added to this file going forward.
 
-> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/` (10 source files including `cascadeDispatch.ts`, `cascadePyramid.ts`, `giReceiver.ts`). **One new open item filed 2026-05-19**: see Section E1 — W3-D7 FrameOutput discriminated-union shipped at commit `40cd837` but its contract change was silently lost in a D7↔D18 merge race; current HEAD still uses the old null-sentinel.
+> **Health note (2026-05-19).** All Section A (public API), Section B (scaffold-pretending), and Section C (doc rot) items have been verified-closed by direct file read. See Section D.0 for the per-item commit map. The W8 RC extraction follow-up (`@vitrum/walkaround-rc` package) also shipped 2026-05-18 — verify via `ls packages/walkaround-rc/src/`. **Three new open items filed 2026-05-19** (E1/E2/E3 — see Section E): a 2026-05-17 merge race silently lost three W3 contract-hygiene commits (D6 Mat4 brand, D7 FrameOutput discriminated union, D19 BackendTexture brand) — the commits exist in `git log` but their changes are not in HEAD. All three are type-system improvements, not runtime bugs.
 
 ---
 
@@ -133,6 +133,17 @@ reconciliation. Descriptions kept below for posterity.
 
 ## Section E — Open items discovered 2026-05-19
 
+### E1, E2, E3 — three W3 contract-hygiene commits lost via merge races
+
+All three landed as standalone feature commits in the May 17 sprint but their
+contract changes did not survive into HEAD because subsequent commits were
+branched from pre-feature parents and silently overwrote them on merge. The
+features still exist as commits in `git log`; they just have zero footprint in
+the current code. All three are type-system improvements that don't affect
+runtime correctness — the old contract still works at runtime. The fix in
+each case is to re-apply the contract change plus update all consumers; the
+touch radius is moderate but not load-bearing today.
+
 ### E1. W3-D7 FrameOutput discriminated union — lost in a merge race
 
 - **Where:** `packages/core/src/frame.ts`. Commit `40cd837` (W3-D7, 2026-05-17) introduced `FrameOutput = FrameSkipped | FrameRendered` with a `kind` discriminant. Commit `9ea12c9` (W3-D18, ~50 min later) branched from `80c2388` (D17, pre-D7) instead of from D7, and when its frame.ts changes merged they overwrote D7's. The net result: D7's code is unreachable from HEAD even though the commit is in the history.
@@ -143,6 +154,22 @@ reconciliation. Descriptions kept below for posterity.
   - consumers: `engine/src/createEngine.ts` (the post-dispose stub at the `disposed` guard), examples (`cornell-box`, `two-engines-one-scene`, `hero-product-viz`), tests that fake `renderFrame()`.
   - new test: re-add `packages/engine/__tests__/frameOutputShape.test.ts` pinning the union.
 - **Why deferred:** the touch radius is large (~10 files + tests). Bookkeeping cost > benefit until the next contract-hygiene pass; the current null-sentinel API still works at runtime.
+
+### E2. W3-D6 Mat4 brand — lost in the scene.ts split
+
+- **Where:** `packages/core/src/scene/math.ts:10`. Commit `e845cc5` (W3-D6, 2026-05-17) brand-typed `Mat4` as `Float32Array & __mat4Brand` and added an `asMat4(arr): Mat4` constructor that throws on length ≠ 16. Commit `cead5ab` (2026-05-18) split the monolithic `scene.ts` into 6 sibling files (`scene/{math,emitters,environment,primitives,material,index}.ts`). The split was done against a pre-D6 working copy, and the new `scene/math.ts` was created with the unbranded `Mat4 = Float32Array` form.
+- **Symptom:** any `Float32Array` of any length silently satisfies the `Mat4` type. The D6 motivation — preventing 9-element upper-3×3 normal matrices from being passed as 16-element Mat4 — is gone. `asMat4` doesn't exist; callers that should have routed through it for length validation just `as Mat4` cast.
+- **Verification:** `grep -c "__mat4Brand" packages/core/src/scene/math.ts` → 0; `grep -rn "asMat4" packages/*/src --include="*.ts"` → 0 callers.
+- **Fix:** re-port the D6 changes to `scene/math.ts` (brand + asMat4), then re-update the 21 implicit-cast construction sites that D6 originally fixed (three-bindings, pt-webgpu, engine).
+- **Why deferred:** type-system improvement, not a runtime bug. Catch on next contract-hygiene pass.
+
+### E3. W3-D19 BackendTexture brand — lost in the same D7↔D18 merge race
+
+- **Where:** `packages/core/src/frame.ts:193`. Commit `5863cda` (W3-D19, 2026-05-17) replaced `export type BackendTexture = unknown` with `BackendTexture<TBackend>` + `BackendTextureFormat<TBackend>` nominal brands keyed by `unique symbol`. The D17/D18 merge race that dropped D7 (see E1) also overwrote D19 because D19 was branched off D7.
+- **Symptom:** WebGPU `swapChainView` can be silently set to a WebGL `WebGLTexture` and vice versa — the type system can't catch it. `as*BackendTexture` constructors + `narrowTo*` helpers in `walkaround-hybrid` / `pt-webgpu` / `pt-webgl` are also gone (verified 2026-05-19: `grep -rn "asWebGPUBackendTexture\|narrowToWebGPU\|asWebGLBackendTexture" packages/*/src` → 0).
+- **Verification:** `packages/core/src/frame.ts:193` reads `export type BackendTexture = unknown;` — the pre-D19 form.
+- **Fix:** re-apply D19 (5 of the original commit's files: core types + 3 backend brand helpers + 1 example). Companion test `packages/engine/__tests__/backendTextureBrand.test.ts` also needs re-adding.
+- **Why deferred:** type-system improvement, not a runtime bug. Bundle with E1 (FrameOutput union) since both touch frame.ts.
 
 ---
 

@@ -56,12 +56,13 @@ Read in this order to onboard:
 
 ### W3 — contract hygiene (surgical core/* moves)
 
-- D5/D6/D13/D15 — Mat4 branded as `Float32Array & __mat4Brand`; stopped re-exporting raw WGSL strings (internal-only now); moved underscored test-only exports off public surface (`feat/w3-contract-hygiene-d5-d6-d13-d15`, `e845cc5..becfbae`).
+- D5/D13/D15 — stopped re-exporting raw WGSL strings (internal-only now); moved underscored test-only exports off public surface (`feat/w3-contract-hygiene-d5-d6-d13-d15`, `e845cc5..becfbae`).
+- D6 — **NOT IN HEAD.** The feature commit (`e845cc5`) branded `Mat4` as `Float32Array & __mat4Brand` with an `asMat4(arr)` length-validated constructor, but the scene.ts → 6-sibling split (`cead5ab`, sweep A-6) was based on a pre-D6 state of scene.ts and overwrote D6's brand on merge. Verified 2026-05-19: `grep -c "__mat4Brand" packages/core/src/scene/math.ts` returns 0; `packages/core/src/scene/math.ts:10` is `export type Mat4 = Float32Array;` — the unbranded form D6 was meant to replace.
 - D7 — **NOT IN HEAD.** The feature commit (`40cd837`) replaced `FrameOutput` null+sentinel with a `{kind:'skipped'|'rendered'}` discriminated union, but a subsequent merge race with D18 (`9ea12c9`, branched off D17 instead of D7) silently dropped the change from `packages/core/src/frame.ts`. Verified 2026-05-19: `git show HEAD:packages/core/src/frame.ts | grep -c FrameRendered` returns 0; zero consumers exist across `packages/`. The old null-sentinel contract is still load-bearing. Re-applying D7 would require touching all producers + consumers + tests; deferred until the next contract-hygiene pass.
 - D8 — typed `EngineCapabilities`-driven feature query replaces `typeof` checks across `core` + `engine` (`feat/w3-d8-engine-capabilities`, `1355be1`).
 - D16 — canonical `FrameStats` + `qualityModes` capability in `@vitrum/core`; `pt-webgpu` now emits `onFrame` stats (`feat/w3-d16-uniform-telemetry`, `197510c..8c96e4b`).
 - D17 — verified `Material.extensions` IS used by `three-bindings` dichroic LUT — keep (`80c2388`); D18 — dropped `supportsMotionBlur` + `FrameInput.shutterTime` (no consumer in roadmap) (`9ea12c9`).
-- D19 — `BackendTexture` / `BackendTextureFormat` branded with backend type parameter (`feat/w3-d19-backendtexture-branding`, `5863cda`).
+- D19 — **NOT IN HEAD.** The feature commit (`5863cda`) replaced `export type BackendTexture = unknown` with `BackendTexture<TBackend>` nominal brands + `as*BackendTexture` constructors. Same merge-race pattern as D7: D19 was branched from D7 (which was branched from D5), and the D17/D18 merge that lost D7 also lost D19's `frame.ts` brand definitions. Verified 2026-05-19: `packages/core/src/frame.ts:193` is `export type BackendTexture = unknown;` — the unbranded pre-D19 form. The `as*BackendTexture` / `narrowTo*` helpers in `walkaround-hybrid` / `pt-webgpu` / `pt-webgl` may also be gone — TODO verify on next re-application.
 
 ### W4 — god-file dissolution (first wave)
 
