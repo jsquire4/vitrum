@@ -87,13 +87,13 @@ const DDGI_BLEND_PARAMS_UBO = defineUbo([
   { name: 'hysteresis',     type: 'f32' },
 ] as const);
 
-// Re-export so existing consumers (`import { RAYS_PER_PROBE } from
-// 'walkaround-hybrid/ddgi/probeUpdatePass'`) keep working. The constant
-// lives in `./ddgiConstants.ts` to break the ESM import cycle between
-// this module and its WGSL template files (host imports WGSL, WGSL
-// imports the constant; before extraction the WGSL would read TDZ for
-// `RAYS_PER_PROBE` and throw at evaluation time).
-export { RAYS_PER_PROBE };
+// `RAYS_PER_PROBE` lives in `./ddgiConstants.ts` to break the ESM import
+// cycle between this module and its WGSL template files (host imports
+// WGSL, WGSL imports the constant; before extraction the WGSL would read
+// TDZ for `RAYS_PER_PROBE` and throw at evaluation time). The previous
+// back-compat re-export was dropped 2026-05-18 after grep confirmed every
+// consumer imports directly from `ddgiConstants.js`.
+
 // ProbeRay struct: 12 floats / 2 u32 → 16 × 4 bytes = 64 bytes each
 const PROBE_RAY_STRIDE_BYTES = 64;
 
