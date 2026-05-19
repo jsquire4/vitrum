@@ -120,8 +120,16 @@ export interface CascadeBuffers {
  * Accepts a {@link CascadeAABB} (plain `{min,max}`) so this module is THREE-free.
  * Callers with a `THREE.Box3` should convert via
  * `{ min: [b.min.x, b.min.y, b.min.z], max: [b.max.x, b.max.y, b.max.z] }`.
+ *
+ * B3b (2026-05-19) — `dims` parameter is optional; defaults to the Cornell-
+ * tuned `CASCADE_DIMS`. Hosts on different scene scales (or aspect ratios)
+ * override via `HybridEngineOptions.cascadeDims` which flows into the
+ * RCSubsystem and lands here.
  */
-export function allocateCascades(bounds: CascadeAABB): CascadeBuffers {
+export function allocateCascades(
+  bounds: CascadeAABB,
+  dims: readonly CascadeDim[] = CASCADE_DIMS,
+): CascadeBuffers {
   // Floor each axis at 1µm so a degenerate scene (e.g. a flat plane with
   // zero extent on one axis) never feeds a zero divisor into the cascade
   // merge UV mapping (`worldPos / roomSize` at cascadeMerge.wgsl:111) or
@@ -133,7 +141,7 @@ export function allocateCascades(bounds: CascadeAABB): CascadeBuffers {
   const sz = Math.max(bounds.max[2] - bounds.min[2], 1e-6);
   const origin: readonly [number, number, number] = [bounds.min[0], bounds.min[1], bounds.min[2]];
   const size: readonly [number, number, number]   = [sx, sy, sz];
-  const cascades = CASCADE_DIMS.map((c) => {
+  const cascades = dims.map((c) => {
     const len = cascadeBufferSize(c);
     return new Float32Array(len);
   });

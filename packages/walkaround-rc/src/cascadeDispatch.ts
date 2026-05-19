@@ -28,7 +28,7 @@
  * Workgroup size: 64 — matches `.compute(totalRays, [64])` in original.
  */
 
-import { CASCADE_DIMS, CASCADE_COUNT } from './cascadePyramid.js';
+import { CASCADE_DIMS, type CascadeDim } from './cascadePyramid.js';
 import { PROBE_RAY_CAST_WGSL } from './wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from './wgsl/cascadeMerge.wgsl.js';
 
@@ -121,6 +121,10 @@ export interface RCDispatchOptsRaw {
  *
  * sunDir / sunColor / cascade geometry are plain `readonly [number, number, number]`
  * tuples — no `THREE.Vector3` / `THREE.Color` coupling.
+ *
+ * B3b (2026-05-19) — `dims` parameter replaces the module-level
+ * `CASCADE_DIMS` lookup. Per-instance dims flow from
+ * `HybridEngineOptions.cascadeDims` through `RCDispatcher.constructor`.
  */
 function buildCascadeUniformDataInto(
   d: Float32Array,
@@ -132,8 +136,9 @@ function buildCascadeUniformDataInto(
   envIntensity: number,
   frameSeed: number,
   triIntersectEpsilon: number,  // E2: UBO-plumbed (was local WGSL const)
+  dims: readonly CascadeDim[] = CASCADE_DIMS,
 ): void {
-  const dim = CASCADE_DIMS[k]!;
+  const dim = dims[k]!;
   const rayGridSize = Math.round(Math.sqrt(dim.rays));
   const o = probeOriginWorld;
   const s = roomSize;
@@ -158,14 +163,14 @@ function buildCascadeUniformDataInto(
   d[20] = sunColor[0]; d[21] = sunColor[1]; d[22] = sunColor[2];
   d[23] = envIntensity;
   ui[24] = frameSeed;
-  ui[25] = CASCADE_COUNT - 1;
+  ui[25] = dims.length - 1;
   d[26] = triIntersectEpsilon;  // E2: was _pad4[0]
   ui[27] = 0;                   // _pad4a
 }
 
 function buildMergeUniformData(
-  lowerDim: (typeof CASCADE_DIMS)[number],
-  upperDim: (typeof CASCADE_DIMS)[number],
+  lowerDim: CascadeDim,
+  upperDim: CascadeDim,
   probeOriginWorld: readonly [number, number, number],
   roomSize:         readonly [number, number, number],
 ): Float32Array {
@@ -212,6 +217,14 @@ export class RCDispatcher {
   private _handles: DispatchHandles | null = null;
   private _castShaderModule:  GPUShaderModule | null = null;
   private _mergeShaderModule: GPUShaderModule | null = null;
+  /** B3b (2026-05-19) — per-instance cascade dimensions. Defaults to the
+   *  Cornell-tuned `CASCADE_DIMS`; hosts override via constructor for
+   *  non-Cornell aspect ratios / scene scales. */
+  private readonly _cascadeDims: readonly CascadeDim[];
+
+  constructor(cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
+    this._cascadeDims = cascadeDims;
+  }
 
   /**
    * Dispatch the cascade compute pipeline for one frame.
@@ -231,7 +244,8 @@ export class RCDispatcher {
     const handles = this._handles;
 
     // Update per-frame uniforms for each cast pass.
-    for (let k = 0; k < CASCADE_COUNT; k++) {
+    const dims = this._cascadeDims;
+    for (let k = 0; k < dims.length; k++) {
       const pass = handles.castPasses[k]!;
       buildCascadeUniformDataInto(
         pass.cascadeParamsRaw, k,
@@ -239,6 +253,7 @@ export class RCDispatcher {
         opts.sunDirection, opts.sunColor,
         1.0, opts.frameSeed,
         opts.triIntersectEpsilon ?? 1e-5,
+        dims,
       );
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
     }
@@ -247,8 +262,8 @@ export class RCDispatcher {
     const commandEncoder = device.createCommandEncoder({ label: 'RCDispatcher' });
     const passEncoder = commandEncoder.beginComputePass({ label: 'rc-cascade' });
 
-    // Cast passes C0 → C4.
-    for (let k = 0; k < CASCADE_COUNT; k++) {
+    // Cast passes C0 → C(N-1).
+    for (let k = 0; k < dims.length; k++) {
       const pass = handles.castPasses[k]!;
       passEncoder.setPipeline(pass.pipeline);
       passEncoder.setBindGroup(0, handles.castBindGroups[k]);
@@ -389,8 +404,9 @@ export class RCDispatcher {
     const castPasses: CastPassHandles[] = [];
     const castBindGroups: GPUBindGroup[] = [];
 
-    for (let k = 0; k < CASCADE_COUNT; k++) {
-      const dim = CASCADE_DIMS[k]!;
+    const cascadeDims = this._cascadeDims;
+    for (let k = 0; k < cascadeDims.length; k++) {
+      const dim = cascadeDims[k]!;
       const totalRays = dim.probes[0] * dim.probes[1] * dim.probes[2] * dim.rays;
 
       // Create per-pass pipeline.
@@ -419,6 +435,7 @@ export class RCDispatcher {
         opts.sunDirection, opts.sunColor,
         1.0, opts.frameSeed,
         opts.triIntersectEpsilon ?? 1e-5,
+        cascadeDims,
       );
       const cascadeParamsBuf = device.createBuffer({
         label:  `rc-cast-C${k}-uniforms`,
@@ -457,9 +474,9 @@ export class RCDispatcher {
     const mergePasses: MergePassHandles[] = [];
     const mergeBindGroups: GPUBindGroup[] = [];
 
-    for (let lower = CASCADE_COUNT - 2; lower >= 0; lower--) {
-      const lowerDim = CASCADE_DIMS[lower]!;
-      const upperDim = CASCADE_DIMS[lower + 1]!;
+    for (let lower = cascadeDims.length - 2; lower >= 0; lower--) {
+      const lowerDim = cascadeDims[lower]!;
+      const upperDim = cascadeDims[lower + 1]!;
       const totalLower = lowerDim.probes[0] * lowerDim.probes[1] * lowerDim.probes[2] * lowerDim.rays;
 
       const pipeline = device.createComputePipeline({

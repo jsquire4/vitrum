@@ -24,7 +24,7 @@
 
 import type * as THREE from 'three';
 import type { StorageBufferAttribute } from 'three/webgpu';
-import { RCDispatcher, buildRCSceneBVH, CASCADE_DIMS, type SceneBVH } from '@vitrum/walkaround-rc';
+import { RCDispatcher, buildRCSceneBVH, CASCADE_DIMS, type SceneBVH, type CascadeDim } from '@vitrum/walkaround-rc';
 
 interface RCBVHBuffers {
   readonly bvhNodesBuf:      GPUBuffer;
@@ -77,14 +77,19 @@ export function packRCParams(
 
 export class RCSubsystem {
   private readonly _device: GPUDevice;
+  /** B3b (2026-05-19) — per-instance cascade dimensions. Cornell default
+   *  ships in `@vitrum/walkaround-rc/CASCADE_DIMS`. Host overrides via
+   *  `HybridEngineOptions.cascadeDims`. */
+  private readonly _cascadeDims: readonly CascadeDim[];
   private _dispatcher: RCDispatcher | null = null;
   private _bvhBuffers: RCBVHBuffers | null = null;
   private _cascadeBufs: GPUBuffer[] | null = null;
   private _probeOriginWorld: readonly [number, number, number] | null = null;
   private _roomSize:         readonly [number, number, number] | null = null;
 
-  constructor(device: GPUDevice) {
+  constructor(device: GPUDevice, cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
     this._device = device;
+    this._cascadeDims = cascadeDims;
   }
 
   /**
@@ -98,7 +103,7 @@ export class RCSubsystem {
    */
   buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
     if (!this._cascadeBufs || !this._probeOriginWorld || !this._roomSize) return null;
-    const c0 = CASCADE_DIMS[0];
+    const c0 = this._cascadeDims[0]!;
     return {
       cascade0Buffer: this._cascadeBufs[0]!,
       paramsBytes: packRCParams(
@@ -135,7 +140,7 @@ export class RCSubsystem {
     ];
 
     this._cascadeBufs = this._allocateCascadeBuffers();
-    this._dispatcher  = new RCDispatcher();
+    this._dispatcher  = new RCDispatcher(this._cascadeDims);
   }
 
   /**
@@ -182,7 +187,7 @@ export class RCSubsystem {
    *  arithmetic for sampling. */
   getCascadeC0Dims(): { probes: readonly [number, number, number]; rays: number } | null {
     if (!this._cascadeBufs) return null;
-    const c0 = CASCADE_DIMS[0];
+    const c0 = this._cascadeDims[0]!;
     return { probes: c0.probes, rays: c0.rays };
   }
 
@@ -238,7 +243,7 @@ export class RCSubsystem {
   }
 
   private _allocateCascadeBuffers(): GPUBuffer[] {
-    return CASCADE_DIMS.map((c, k) => {
+    return this._cascadeDims.map((c, k) => {
       const totalRays = c.probes[0] * c.probes[1] * c.probes[2] * c.rays;
       // vec4f per ray = 16 bytes. COPY_SRC so a future debug readback works.
       return this._device.createBuffer({

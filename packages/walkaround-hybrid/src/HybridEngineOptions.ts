@@ -13,6 +13,7 @@ import type * as THREE from 'three';
 import type { EngineOptions } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
 import type { ModelWeights } from './neural/weights.js';
+import type { CascadeDim } from '@vitrum/walkaround-rc';
 
 /**
  * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
@@ -536,4 +537,21 @@ export interface HybridEngineOptions extends EngineOptions {
    * @default 0.5 (effective only when rcEnabled === true)
    */
   readonly rcWeight?: number;
+
+  /**
+   * B3b (2026-05-19) — Cornell-tuned cascade-pyramid dimensions override.
+   * Each entry specifies `probes` (3D probe grid), `rays` per probe, and
+   * the `intervalNear`/`intervalFar` world-space slab bounds for that
+   * cascade level. The default 5-cascade pyramid in
+   * `@vitrum/walkaround-rc/CASCADE_DIMS` is tuned for Cornell-aspect-ratio
+   * scenes at metre-scale.
+   *
+   * Hosts on different scene shapes should pass dims sized to the scene's
+   * aspect ratio (`probes` along the dominant axis); hosts on different
+   * scene scales should pass proportional `intervalNear`/`intervalFar`
+   * world-unit bounds.
+   *
+   * @default CASCADE_DIMS from @vitrum/walkaround-rc
+   */
+  readonly cascadeDims?: readonly CascadeDim[];
 }
