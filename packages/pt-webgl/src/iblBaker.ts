@@ -287,55 +287,8 @@ export class IblBakerCache {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Back-compat free-function API (process-global singleton).
-//
-// WARNING: Module-level singleton — shared across all WebGLRenderer instances
-// in the same JS process. A baked sky texture is bound to the GL context that
-// produced it, so consumers that create multiple renderers concurrently MUST
-// NOT use this path. Instantiate one {@link IblBakerCache} per renderer
-// instead.
-// ────────────────────────────────────────────────────────────────────────────
-
-let processGlobalCache: IblBakerCache | null = null;
-
-function getProcessGlobalCache(): IblBakerCache {
-  if (processGlobalCache == null) {
-    processGlobalCache = new IblBakerCache();
-  }
-  return processGlobalCache;
-}
-
-/**
- * @deprecated Use `new IblBakerCache()` and call `cache.bake(renderer, params)`
- * instead. The free-function form reads/writes a process-global cache, which
- * is unsafe in multi-renderer hosts because baked DataTextures are bound to
- * the GL context that produced them. This wrapper is retained only for
- * back-compat with single-renderer callers and will be removed in a future
- * release.
- */
-export function bakeSkyEquirect(
-  renderer: THREE.WebGLRenderer,
-  params: SkyParams,
-): THREE.DataTexture {
-  return getProcessGlobalCache().bake(renderer, params);
-}
-
-/**
- * @deprecated Use `IblBakerCache#clear()` or `IblBakerCache#dispose()` on the
- * per-instance cache instead. Drops every entry held by the process-global
- * cache used by {@link bakeSkyEquirect}.
- */
-export function clearSkyEquirectCache(): void {
-  if (processGlobalCache != null) {
-    processGlobalCache.clear();
-  }
-}
-
-/**
- * @deprecated Use `IblBakerCache#size` on the per-instance cache instead.
- * Inspect the process-global cache size — for tests and debug overlays only.
- */
-export function _skyEquirectCacheSize(): number {
-  return processGlobalCache?.size ?? 0;
-}
+// Note: the old process-global `bakeSkyEquirect` / `clearSkyEquirectCache` /
+// `_skyEquirectCacheSize` free-functions were removed on 2026-05-18 after the
+// per-engine `IblBakerCache` migration (W6-E2). Use `new IblBakerCache()` —
+// or `PTEngineWebGL2.bakeSkyEquirect` — for any host that needs the
+// renderer-bound bake path.

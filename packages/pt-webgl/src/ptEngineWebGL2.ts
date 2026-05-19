@@ -391,8 +391,8 @@ export class PTEngineWebGL2 implements Engine {
   /** Per-engine analytic-sky bake cache. Replaces the previous module-level
    *  singleton in `iblBaker.ts` so multi-engine hosts no longer share GPU
    *  state across renderers. Hosts that need a sky equirect for
-   *  `scene.environment` should call {@link bakeSkyEquirect} on the engine
-   *  rather than the deprecated free function. Disposed in {@link dispose}. */
+   *  `scene.environment` should call `bakeSkyEquirect` on the engine
+   *  instance (defined below). Disposed in {@link dispose}. */
   readonly #iblBakerCache: IblBakerCache;
 
   constructor(opts: PTEngineWebGL2Options, gpu: PTEngineWebGL2Init, slot: StateSlot) {
@@ -494,10 +494,9 @@ export class PTEngineWebGL2 implements Engine {
    * engine — DO NOT dispose it directly. Eviction and {@link dispose} handle
    * cleanup.
    *
-   * Multi-engine hosts that previously called the deprecated free function
-   * {@link bakeSkyEquirect} (module-level) should migrate here so each engine
-   * owns its own cache and the textures stay bound to the renderer that
-   * produced them.
+   * The previous module-level free-function `bakeSkyEquirect` was removed
+   * on 2026-05-18 (W6-E2 follow-up); every host should call this per-engine
+   * method so cache contents stay bound to the renderer that produced them.
    */
   bakeSkyEquirect(params: SkyParams): DataTexture {
     if (this.#slot.get() === 'disposed') {
