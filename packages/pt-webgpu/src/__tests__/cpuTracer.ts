@@ -85,7 +85,7 @@ export function sub(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
-export function mul(a: Vec3, b: Vec3): Vec3 {
+function mul(a: Vec3, b: Vec3): Vec3 {
   return [a[0] * b[0], a[1] * b[1], a[2] * b[2]];
 }
 
@@ -105,7 +105,7 @@ export function cross(a: Vec3, b: Vec3): Vec3 {
   ];
 }
 
-export function length3(v: Vec3): number {
+function length3(v: Vec3): number {
   return Math.sqrt(dot(v, v));
 }
 
@@ -115,7 +115,7 @@ export function safeNormalize(v: Vec3): Vec3 {
   return len < 1e-8 ? [0, 1, 0] : scale(v, 1 / len);
 }
 
-export function maxComp(v: Vec3): number {
+function maxComp(v: Vec3): number {
   return Math.max(v[0], Math.max(v[1], v[2]));
 }
 
@@ -123,7 +123,7 @@ export function maxComp(v: Vec3): number {
 // safeInvDir — mirror of common.wgsl.ts:64 (Williams 2005)
 // ---------------------------------------------------------------------------
 
-export function safeInvDir(d: Vec3): Vec3 {
+function safeInvDir(d: Vec3): Vec3 {
   function safeInv(x: number): number {
     return Math.abs(x) < 1e-30 ? Math.sign(x) * 1e30 : 1.0 / x;
   }
@@ -136,7 +136,7 @@ export function safeInvDir(d: Vec3): Vec3 {
 // eps guards degenerate (near-parallel) cases.
 // ---------------------------------------------------------------------------
 
-export function intersectTriangleMT(
+function intersectTriangleMT(
   rayOrigin: Vec3,
   rayDir: Vec3,
   v0: Vec3, v1: Vec3, v2: Vec3,
@@ -164,7 +164,7 @@ export function intersectTriangleMT(
 // Returns { tNear, tFar } or null on miss.
 // ---------------------------------------------------------------------------
 
-export function intersectAabb(
+function intersectAabb(
   rayOrigin: Vec3,
   rayDir: Vec3,
   bMin: Vec3,
@@ -214,7 +214,7 @@ function buildOnb(n: Vec3): { t: Vec3; b: Vec3 } {
   return { t, b };
 }
 
-export function cosineHemisphereSample(
+function cosineHemisphereSample(
   rng: Rng,
   n: Vec3,
 ): { dir: Vec3; pdf: number } {
@@ -241,7 +241,7 @@ export function cosineHemisphereSample(
 // Heitz 2018, Algorithm 1. Input/output in tangent-space (N = +Z).
 // ---------------------------------------------------------------------------
 
-export function sampleGgxVndfTangent(
+function sampleGgxVndfTangent(
   wo: Vec3,
   alpha: number,
   rng: Rng,
@@ -273,7 +273,7 @@ export function sampleGgxVndfTangent(
 // frDielectric — mirror of WGSL:303 (PBR4e §9.3).
 // ---------------------------------------------------------------------------
 
-export function frDielectric(cosTheta_i: number, eta: number): number {
+function frDielectric(cosTheta_i: number, eta: number): number {
   let ct = Math.min(Math.max(cosTheta_i, -1.0), 1.0);
   let e  = eta;
   if (ct < 0.0) { e = 1.0 / e; ct = -ct; }
@@ -290,7 +290,7 @@ export function frDielectric(cosTheta_i: number, eta: number): number {
 // Schlick Fresnel — mirror of fresnelSchlick (WGSL:289), scalar variant.
 // ---------------------------------------------------------------------------
 
-export function schlickFresnel(f0: number, cos: number): number {
+function schlickFresnel(f0: number, cos: number): number {
   const m  = Math.min(Math.max(1.0 - cos, 0.0), 1.0);
   const m2 = m * m;
   const m5 = m2 * m2 * m;
@@ -301,7 +301,7 @@ export function schlickFresnel(f0: number, cos: number): number {
 // Power heuristic (β=2) — mirror of powerHeuristic (WGSL:332, Veach §9.2).
 // ---------------------------------------------------------------------------
 
-export function powerHeuristic(a: number, b: number): number {
+function powerHeuristic(a: number, b: number): number {
   const a2 = a * a;
   const b2 = b * b;
   return a2 / Math.max(a2 + b2, 1e-6);

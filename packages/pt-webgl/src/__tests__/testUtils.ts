@@ -7,8 +7,11 @@ import { vi } from 'vitest';
 
 /** Minimal WebGL2 context stub that satisfies WebGLPathTracer's capability
  *  probes. Returns a finite max-fragment-uniform-vectors so caustic and
- *  spectral feature gates light up; reports a fake renderer string. */
-export class FakeWebGL2RenderingContext {
+ *  spectral feature gates light up; reports a fake renderer string.
+ *
+ *  File-local — tests consume the class indirectly via {@link
+ *  installWebGL2GlobalStub} and {@link makeRendererStub}. */
+class FakeWebGL2RenderingContext {
   readonly MAX_FRAGMENT_UNIFORM_VECTORS = 0x8dfd;
   readonly MAX_TEXTURE_SIZE = 0x0d33;
   readonly MAX_RENDERBUFFER_SIZE = 0x84e8;
