@@ -78,21 +78,15 @@ ReSTIR-only usage does not trigger the DDGI or RC-material-wrapper paths.
 
 ```
 src/
-  HybridEngine.ts        — Engine implementation (de-React-ified useHybridLayeredGI)
+  HybridEngine.ts        — Engine implementation (orchestrator after W4 decomp)
+  HybridEngineRC.ts      — RCSubsystem owning per-engine cascade allocation +
+                           dispatch; bridges @vitrum/walkaround-rc into the hybrid frame.
+  HybridEnginePrimitiveUpdates.ts — Dispatcher for engine.updatePrimitive (transform-
+                           refit / positions-refit / topology-rebuild branches).
   hostScene/             — Three-side scene adapters consumed by HybridEngine
   ddgi/                  — DDGI subsystem (probe grid, update pass, atlas layout)
-  rc/                    — RC subsystem (cascade pyramid, dispatch, material wrappers)
-    cascadePyramid.ts    — storage layout + allocation
-    bvhCompute.ts        — RC BVH builder (StorageBufferAttribute adapter)
-    cascadeBuffers.ts    — CascadeBufferManager (de-React-ified useCascadeBuffers)
-    cascadeDispatch.ts   — RCDispatcher (raw WebGPU compute; converted from TSL)
-    giReceiver.ts        — GIReceiver class (TSL-preserved NodeMaterial wrapper)
-    walkaroundDiffuseLighting.ts — TSL node for C0 cascade sampling
-    applyDDGIShading.ts  — TSL-based DDGI outputNode injection
-    wgsl/
-      probeRayCast.wgsl.ts — Assembled raw WGSL for probe ray-cast compute kernel
-      cascadeMerge.wgsl.ts — Assembled raw WGSL for cascade merge compute kernel
-    TSL_TO_RAW_MAPPING.md — Documents every TSL primitive → raw WebGPU mapping
+    applyDDGIShading.ts  — TSL-based DDGI outputNode injection (the only RC-adjacent
+                           file that stayed here — DDGI-specific, not part of RC).
   pipeline/              — Declarative Pass / PassRegistry, denoiser registry, FrameResources
     Pass.ts, PassRegistry.ts — Pass interface + registry (W1-R1)
     passes/              — One file per pass (RIS, RIS-GI, Temporal[GI], Spatial[GI],
@@ -115,6 +109,11 @@ src/
                            via denoiser: 'neural'); WGSL kernels under neural/wgsl/
   lib/                   — Shared utilities (nodeMaterialUpgrade)
 ```
+
+The Radiance Cascades subsystem (`cascadePyramid`, `cascadeDispatch`, `cascadeBuffers`,
+`giReceiver`, `walkaroundDiffuseLighting`, `bvhCompute`, raw WGSL) was extracted
+2026-05-18 into [`@vitrum/walkaround-rc`](../walkaround-rc/). `walkaround-hybrid`
+re-exports the public surface for back-compat.
 
 ## Known Issues
 
