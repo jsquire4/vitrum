@@ -25,14 +25,17 @@ export interface FrameStats {
   /** BVH max depth — diagnostic for traversal cost. */
   readonly bvhDepth?: number;
   /**
-   * Approximate engine-owned GPU memory (sum of texture + buffer bytes).
-   * Backwards-compatible scalar form — emitted by backends that have not
-   * been wired up to the structured breakdown. Hosts that want a structured
-   * report should prefer {@link FrameStats.gpuMemoryBytes}.
+   * Approximate engine-owned GPU memory in bytes (sum of texture + buffer
+   * bytes). Scalar form, intended as the lowest common denominator: every
+   * backend can produce SOME estimate even when it can't break the bytes
+   * down by category (e.g. `pt-webgl` wraps three-gpu-pathtracer whose
+   * render targets are opaque to vitrum, so a structured split would be
+   * invented or stale).
    *
-   * @deprecated Prefer {@link FrameStats.gpuMemoryBytes}; this scalar
-   * remains for backends that have not yet integrated the structured
-   * surface.
+   * When a backend can produce a meaningful structured split, it emits
+   * {@link FrameStats.gpuMemoryBytes} alongside this scalar. Hosts that
+   * want the breakdown prefer the structured form; hosts that just need
+   * a single number read this field.
    */
   readonly estimatedGpuMemoryBytes?: number;
   /**
