@@ -110,9 +110,18 @@ function ensureThreeScene(gltf: GLTF): THREE.Scene {
 }
 
 function extractFirstCamera(gltf: GLTF): GltfCamera | undefined {
-  const cameras = gltf.cameras;
-  if (!cameras || cameras.length === 0) return undefined;
-  const cam = cameras[0]!;
+  let cam: THREE.Camera | undefined;
+  if (gltf.scene != null) {
+    gltf.scene.updateMatrixWorld(true);
+    gltf.scene.traverse((obj) => {
+      if (cam == null && (obj as THREE.Camera).isCamera === true) {
+        cam = obj as THREE.Camera;
+      }
+    });
+  }
+  // Use only scene-attached cameras. Detached glTF camera objects can carry
+  // identity world transforms and produce invalid view matrices.
+  if (cam == null) return undefined;
   cam.updateMatrixWorld(true);
 
   // Camera world matrix: glTF stores model-space; matrixWorld is the

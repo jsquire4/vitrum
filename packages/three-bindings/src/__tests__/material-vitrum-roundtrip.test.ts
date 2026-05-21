@@ -274,6 +274,33 @@ describe('vitrumSceneToThree: anisotropy + anisotropyRotation written to THREE m
   });
 });
 
+describe('vitrumSceneToThree: emissive / alphaMap mapping', () => {
+  it('treats vitrum emissive as final radiance color (no double intensity scaling)', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      emissive: [2, 3, 4],
+      emissiveIntensity: 5,
+    });
+    expect(threeMat.emissive.r).toBeCloseTo(2);
+    expect(threeMat.emissive.g).toBeCloseTo(3);
+    expect(threeMat.emissive.b).toBeCloseTo(4);
+    expect(threeMat.emissiveIntensity).toBe(1);
+  });
+
+  it('forwards alphaMap from vitrum material', () => {
+    const alphaMap = new THREE.Texture();
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      alphaMap,
+    });
+    expect(threeMat.alphaMap).toBe(alphaMap);
+  });
+});
+
 describe('Full round-trip: anisotropy THREE → vitrum → THREE (Gap 5)', () => {
   it('preserves anisotropy=0.7 and anisotropyRotation=0.3 through the full round-trip', () => {
     const original = new THREE.MeshPhysicalMaterial({ color: 0xffffff });

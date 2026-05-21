@@ -47,4 +47,16 @@ describe('createPTEngine_WebGPU', () => {
     expect(engine.state).toBe('ready');
     engine.dispose();
   });
+
+  it('rejects devices below required storage-buffer limit', async () => {
+    const lowLimitDevice = {
+      createCommandEncoder: vi.fn(),
+      limits: { maxStorageBuffersPerShaderStage: 10 },
+    } as unknown as GPUDevice;
+    await expect(
+      createPTEngine_WebGPU({
+        device: lowLimitDevice,
+      }),
+    ).rejects.toThrow(/maxStorageBuffersPerShaderStage/);
+  });
 });

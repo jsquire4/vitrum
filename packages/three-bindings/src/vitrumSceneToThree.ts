@@ -55,6 +55,7 @@ function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
   if (m.roughnessMap != null && isTexture(m.roughnessMap)) mat.roughnessMap = m.roughnessMap;
   if (m.metallicMap != null && isTexture(m.metallicMap)) mat.metalnessMap = m.metallicMap;
   if (m.emissiveMap != null && isTexture(m.emissiveMap)) mat.emissiveMap = m.emissiveMap;
+  if (m.alphaMap != null && isTexture(m.alphaMap)) mat.alphaMap = m.alphaMap;
   if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
 }
 
@@ -105,12 +106,12 @@ function stampVitrumUserData(mat: MeshPhysicalMaterial, m: VitrumMaterial): void
 /** Additive diffuse emission from `mesh-area` emitters referencing this mesh (`color * intensity`). */
 function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysicalMaterial {
   const color = new Color(m.baseColor[0], m.baseColor[1], m.baseColor[2]);
-  const baseIntensity = m.emissiveIntensity ?? 1;
   const ba = meshAreaRgb ?? [0, 0, 0];
-  const ei = Math.max(baseIntensity, 1e-8);
-  const er = (m.emissive?.[0] ?? 0) * ei + ba[0];
-  const eg = (m.emissive?.[1] ?? 0) * ei + ba[1];
-  const eb = (m.emissive?.[2] ?? 0) * ei + ba[2];
+  // Material.emissive is treated as final radiance-space color in @vitrum/core.
+  // Keep emissiveIntensity=1 to avoid accidental double-scaling on round-trip.
+  const er = (m.emissive?.[0] ?? 0) + ba[0];
+  const eg = (m.emissive?.[1] ?? 0) + ba[1];
+  const eb = (m.emissive?.[2] ?? 0) + ba[2];
   const mat = new MeshPhysicalMaterial({
     color,
     roughness: m.roughness,
