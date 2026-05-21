@@ -2,7 +2,7 @@
   "name": "@vitrum-examples/hero-lighting-designer",
   "version": "0.0.0",
   "private": true,
-  "description": "Interactive lighting designer — 3 adjustable point lights in a procedural room, real-time GI via walkaround-hybrid.",
+  "description": "Interactive lighting designer \u2014 3 adjustable point lights in a procedural room, real-time GI via walkaround-hybrid.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,7 @@
     "@vitrum/three-bindings": "file:../../packages/three-bindings",
     "@vitrum/walkaround-hybrid": "file:../../packages/walkaround-hybrid",
     "@vitrum/pt-webgl": "file:../../packages/pt-webgl",
-    "three": "^0.184.0",
+    "three": "^0.171.0",
     "three-gpu-pathtracer": "file:../../../three-gpu-pathtracer",
     "three-mesh-bvh": "^0.7.4",
     "xatlas-web": "^0.1.0"

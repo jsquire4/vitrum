@@ -75,7 +75,7 @@ cd "$REPO_ROOT"
 
 # Start the example dev server in background.
 echo "[capture-suite] Starting vite dev server (cornell-box)..."
-( cd examples/cornell-box && exec npx vite --port 5173 --host 127.0.0.1 ) >/tmp/cornell-vite.log 2>&1 &
+( cd examples/cornell-box && exec npx vite --port 5174 --strictPort --host 127.0.0.1 ) >/tmp/cornell-vite.log 2>&1 &
 VITE_PID=$!
 
 # Cleanup on exit (Ctrl-C, error, success).
@@ -92,7 +92,7 @@ trap cleanup EXIT
 # Wait for vite to be ready (HTTP 200 on /).
 echo -n "[capture-suite] Waiting for vite "
 for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:5173/ -o /dev/null 2>/dev/null; then
+  if curl -fsS http://127.0.0.1:5174/ -o /dev/null 2>/dev/null; then
     echo " ready."
     break
   fi
@@ -107,7 +107,7 @@ for i in $(seq 1 30); do
 done
 
 # Build the URL with extra query (e.g., bdpt) if any.
-BASE_URL="http://127.0.0.1:5173/"
+BASE_URL="http://127.0.0.1:5174/"
 if [[ -n "$EXTRA_QUERY" ]]; then
   # Strip leading & if present; the adapter appends ? + scenario params.
   EXTRA_QUERY="${EXTRA_QUERY#&}"
@@ -134,8 +134,8 @@ for scenario_short in "${SCENARIOS[@]}"; do
     VITRUM_BOUNCES="$BOUNCES" VITRUM_SPP="$SPP" \
     VITRUM_CAPTURE_TIMEOUT_MS="$TIMEOUT_MS" \
     VITRUM_CAPTURE_URL="$BASE_URL" \
-    node ./tools/benchmark-runner/capture-adapter-playwright.mjs 2>&1 | tail -1)
-  rc=$?
+    node ./tools/benchmark-runner/capture-adapter-playwright.mjs 2>&1 | tail -1) || true
+  rc=${PIPESTATUS[0]:-1}
   set -e
 
   end_ts=$(date +%s)

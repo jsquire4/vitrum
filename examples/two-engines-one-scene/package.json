@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
   },
   "license": "MIT",
   "dependencies": {
@@ -17,7 +18,7 @@
     "@vitrum/pt-webgpu": "file:../../packages/pt-webgpu",
     "@vitrum/three-bindings": "file:../../packages/three-bindings",
     "@vitrum/walkaround-hybrid": "file:../../packages/walkaround-hybrid",
-    "three": "^0.184.0",
+    "three": "^0.171.0",
     "three-gpu-pathtracer": "file:../../../three-gpu-pathtracer",
     "three-mesh-bvh": "^0.7.4",
     "xatlas-web": "^0.1.0"

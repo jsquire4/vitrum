@@ -19,19 +19,19 @@
 // hosts never pay the cost.
 
 import * as React from 'react';
-import * as THREE from 'three';
+import type { Scene as ThreeScene, PerspectiveCamera, OrthographicCamera } from 'three';
 import type { Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
 import type { AttachVitrumHandle } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
-import type { EnginePreference } from '../createEngine.js';
+import type { EnginePreference, CreateEngineOptions } from '../createEngine.js';
 
 export interface VitrumCanvasProps {
   /** Scene description (vitrum or THREE). */
-  scene: Scene | THREE.Scene;
+  scene: Scene | ThreeScene;
   /** Camera the engine reads each frame. Host mutates this (orbit
    *  controls, scripted animation); the canvas pushes its matrices into
    *  renderFrame on every RAF tick. */
-  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
+  camera: PerspectiveCamera | OrthographicCamera;
   /** Quality vs speed hint. See CreateEngineOptions.prefer. */
   prefer?: EnginePreference;
   /** Per-frame quality dials. Changing this prop does NOT reconstruct
@@ -43,6 +43,10 @@ export interface VitrumCanvasProps {
   onProgress?: (progress: ProgressStats) => void;
   /** Pause RAF loop on tab-hidden (default true). */
   pauseOnHidden?: boolean;
+  /** Optional backend debug toggle forwarded to createEngine/attachVitrum. */
+  debug?: CreateEngineOptions['debug'];
+  /** Optional backend-specific advanced options forwarded as-is. */
+  advanced?: CreateEngineOptions['advanced'];
   /** Forwarded to the underlying canvas element. */
   style?: React.CSSProperties;
   /** Forwarded to the underlying canvas element. */
@@ -54,12 +58,14 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
     const handleRef = React.useRef<AttachVitrumHandle | null>(null);
     const qualityRef = React.useRef<VitrumCanvasProps['quality']>(props.quality);
+    const cameraRef = React.useRef<VitrumCanvasProps['camera']>(props.camera);
     const onFrameRef = React.useRef<VitrumCanvasProps['onFrame']>(props.onFrame);
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
 
     // Keep the latest dynamic props in refs so the engine sees them
     // without having to be torn down + recreated when they change.
     React.useEffect(() => { qualityRef.current = props.quality; },     [props.quality]);
+    React.useEffect(() => { cameraRef.current = props.camera; },       [props.camera]);
     React.useEffect(() => { onFrameRef.current = props.onFrame; },     [props.onFrame]);
     React.useEffect(() => { onProgressRef.current = props.onProgress; }, [props.onProgress]);
 
@@ -74,8 +80,12 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       attachVitrum({
         canvas,
         scene: props.scene,
-        camera: props.camera,
+        camera: cameraRef.current,
+        cameraSource: () => cameraRef.current,
+        qualitySource: () => qualityRef.current,
         ...(props.prefer ? { prefer: props.prefer } : {}),
+        ...(props.advanced != null ? { advanced: props.advanced } : {}),
+        ...(props.debug != null ? { debug: props.debug } : {}),
         ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
         ...(qualityRef.current ? { quality: qualityRef.current } : {}),
         onFrame: (stats) => { onFrameRef.current?.(stats); },
@@ -98,7 +108,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         attached?.dispose();
         handleRef.current = null;
       };
-    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden]);
+    }, [props.scene, props.prefer, props.pauseOnHidden, props.advanced, props.debug]);
 
     // forwardRef plumbing.
     React.useImperativeHandle(externalRef, () => canvasRef.current as HTMLCanvasElement, []);

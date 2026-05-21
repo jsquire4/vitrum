@@ -92,7 +92,9 @@ function buildScene(): THREE.Scene {
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 
-const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 50);
+const initialW = Math.max(canvas.clientWidth, 1);
+const initialH = Math.max(canvas.clientHeight, 1);
+const camera = new THREE.PerspectiveCamera(38, initialW / initialH, 0.05, 50);
 camera.position.set(0, 1.2, 3.0);
 camera.lookAt(0, 0.5, 0);
 

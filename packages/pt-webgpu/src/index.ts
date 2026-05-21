@@ -302,7 +302,7 @@ class PTEngineWebGPU implements Engine {
     this.#motionVectorsTexture = this.#device.createTexture({
       label: 'vitrum.pt-webgpu.motionVectors',
       size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
+      format: 'rg32float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     });
     this.#motionVectorsView = this.#motionVectorsTexture.createView();

@@ -131,6 +131,16 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
     if (m.attenuationDistance != null) mat.attenuationDistance = m.attenuationDistance;
     if (m.thickness != null) mat.thickness = m.thickness;
   }
+  if (m.sheen != null) mat.sheen = m.sheen;
+  if (m.sheenColor != null) mat.sheenColor.set(m.sheenColor[0], m.sheenColor[1], m.sheenColor[2]);
+  if (m.sheenRoughness != null) mat.sheenRoughness = m.sheenRoughness;
+  if (m.clearcoat != null) mat.clearcoat = m.clearcoat;
+  if (m.clearcoatRoughness != null) mat.clearcoatRoughness = m.clearcoatRoughness;
+  if (m.iridescence != null) mat.iridescence = m.iridescence;
+  if (m.iridescenceIor != null) mat.iridescenceIOR = m.iridescenceIor;
+  if (m.iridescenceThicknessRange != null) {
+    mat.iridescenceThicknessRange = [m.iridescenceThicknessRange[0], m.iridescenceThicknessRange[1]];
+  }
   // Gap 5 (stainedGlass audit 2026-05-12) — write anisotropy directly onto
   // the THREE material (not into userData) to match how the fork consumes it.
   // Write when defined, including 0, so an explicit 0 round-trips cleanly.
@@ -394,14 +404,21 @@ export function applyEnvironment(threeScene: Scene, env: VitrumScene['environmen
       );
       threeScene.background = new Color(0, 0, 0);
       threeScene.environment = null;
+      threeScene.environmentIntensity = 1;
+      threeScene.backgroundIntensity = 1;
+      threeScene.environmentRotation.set(0, 0, 0);
+      threeScene.backgroundRotation.set(0, 0, 0);
     }
     return;
   }
-  console.warn(
-    '@vitrum/three-bindings: procedural-sky environment not wired — use HDRI or none',
-  );
-  threeScene.background = new Color(0.02, 0.02, 0.03);
+  // Deterministic procedural fallback: derive a simple sky tint from turbidity/rayleigh.
+  const k = Math.max(0, Math.min(2, env.rayleigh * 0.5 + env.mieCoefficient * 10));
+  threeScene.background = new Color(0.15 + 0.05 * k, 0.2 + 0.1 * k, 0.3 + 0.2 * k).multiplyScalar(env.intensity ?? 1);
   threeScene.environment = null;
+  threeScene.environmentIntensity = 1;
+  threeScene.backgroundIntensity = 1;
+  threeScene.environmentRotation.set(0, 0, 0);
+  threeScene.backgroundRotation.set(0, 0, 0);
 }
 
 /**

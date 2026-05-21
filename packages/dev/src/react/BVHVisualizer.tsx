@@ -92,7 +92,8 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
 
   const hasDebug = typeof engine.debug?.bvhNodes === 'function';
 
-  if (visible && !hasDebug && !warnedRef.current) {
+  useEffect(() => {
+    if (!visible || hasDebug || warnedRef.current) return;
     warnedRef.current = true;
     // eslint-disable-next-line no-console
     console.warn(
@@ -101,7 +102,7 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
       'engine.debug.bvhNodes() returning a Float32Array of node AABBs. ' +
       'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
     );
-  }
+  }, [visible, hasDebug]);
 
   const label = toggleKey !== null
     ? `BVH [${toggleKey.toUpperCase()}] ${visible ? '■ on' : '□ off'}`

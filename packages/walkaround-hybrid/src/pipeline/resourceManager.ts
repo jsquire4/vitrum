@@ -226,6 +226,10 @@ export interface SVGFFrameResources {
    * by svgfVarianceFromMomentsMain; read by svgf7x7FallbackMain.
    */
   svgfVarianceMomentsIntermedTexture: GPUTexture;
+  /** T2.H1 walkaround bridge — extracted linear depth (r32float), ping-pong pair. */
+  svgfDepthTextureA: GPUTexture;
+  /** T2.H1 walkaround bridge — extracted linear depth (r32float), ping-pong pair. */
+  svgfDepthTextureB: GPUTexture;
 }
 
 /**
@@ -799,6 +803,18 @@ export function createFrameResources(
       GPUTextureUsage.STORAGE_BINDING |
       GPUTextureUsage.TEXTURE_BINDING,
   });
+  const svgfDepthTextureA = device.createTexture({
+    label: 'svgf-real-depth-a',
+    size: [W, H],
+    format: 'r32float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  const svgfDepthTextureB = device.createTexture({
+    label: 'svgf-real-depth-b',
+    size: [W, H],
+    format: 'r32float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+  });
 
   // ── Assemble per-algorithm sub-structs ────────────────────────────────────
   // Allocation above is unchanged from the legacy flat layout; the bucketing
@@ -867,6 +883,8 @@ export function createFrameResources(
     svgfPrevRadianceTextureB,
     svgfVarianceTexture,
     svgfVarianceMomentsIntermedTexture,
+    svgfDepthTextureA,
+    svgfDepthTextureB,
   };
 
   // PPG + neural are placeholders for W9 / W10. Frozen empty objects so any
@@ -944,6 +962,8 @@ export function destroyFrameResources(r: FrameResources): void {
   r.svgf.svgfPrevRadianceTextureB.destroy();
   r.svgf.svgfVarianceTexture.destroy();
   r.svgf.svgfVarianceMomentsIntermedTexture.destroy();
+  r.svgf.svgfDepthTextureA.destroy();
+  r.svgf.svgfDepthTextureB.destroy();
 
   // ppg / neural — empty placeholders; nothing to destroy until W9 / W10.
 }

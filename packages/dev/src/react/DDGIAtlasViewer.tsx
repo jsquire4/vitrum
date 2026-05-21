@@ -55,12 +55,14 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
   visible = true,
   className,
 }) => {
+  const warnedRef = React.useRef(false);
   if (!visible) return null;
 
   const hasDebug = typeof engine.debug?.atlasTexture === 'function';
 
-  if (!hasDebug) {
-    // Warn once on every mount (not every render).
+  React.useEffect(() => {
+    if (hasDebug || warnedRef.current) return;
+    warnedRef.current = true;
     // eslint-disable-next-line no-console
     console.warn(
       '[DDGIAtlasViewer] engine.debug.atlasTexture() is not implemented. ' +
@@ -68,7 +70,7 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
       'engine.debug with atlasTexture() and visibilityAtlasTexture(). ' +
       'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
     );
-  }
+  }, [hasDebug]);
 
   return (
     <div className={className} style={PANEL_STYLE} role="region" aria-label="DDGI Atlas Viewer">

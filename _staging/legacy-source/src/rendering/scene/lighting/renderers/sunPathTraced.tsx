@@ -26,17 +26,15 @@
 //   vs. area-light_irradiance = intensity·area·cos(θ)·cos(disc_normal)/r².
 //   For our distance/radius this works out to ~5×10⁴ cd/m².
 
-import { useSelector } from 'react-redux';
-import { useRef, useEffect } from 'react';
-import { ShapedAreaLight, ShapedAreaLightImpl } from '@react-three/gpu-pathtracer';
-import { selectActiveTimeOfDay } from '@/store/selectors';
-import type { SunLight } from '../lightSourceTypes';
-import { resolveColorHex } from '../lightSourceTypes';
-import { getSunIntensity } from '../../lightingIntensityTable';
-import { worldSunPosition, skyParamsFor } from '../../skyParams';
+import { useEffect } from 'react';
+import {
+  PT_SUN_DISTANCE,
+  PT_SUN_DISC_DIAMETER,
+  SUN_ANGULAR_RADIUS,
+} from '@vitrum/pt-webgl';
 
 interface Props {
-  src: SunLight;
+  src: unknown;
 }
 
 // These constants are now exported from `@vitrum/pt-webgl/sunGeometry`; update
@@ -48,18 +46,6 @@ interface Props {
  * order ~200 inches; at 10000 inches the angular spread across the
  * room is ~1.1°, well under the sun-disc angular size).
  */
-const PT_SUN_DISTANCE = 10000;
-
-/** Sun's angular radius as seen from Earth. ~0.25° = 0.00436 rad. */
-const SUN_ANGULAR_RADIUS = 0.00436;
-
-/**
- * Disc diameter at PT_SUN_DISTANCE that subtends 2 × SUN_ANGULAR_RADIUS
- * (the full sun-disc angular size). With distance=10000, this yields
- * a disc ~87 inches in diameter — large in absolute terms but small
- * angular size from the room.
- */
-const PT_SUN_DISC_DIAMETER = 2 * PT_SUN_DISTANCE * Math.tan(SUN_ANGULAR_RADIUS);
 
 /**
  * RectAreaLight intensity calibration. ShapedAreaLight inherits
@@ -89,56 +75,15 @@ const PT_SUN_AREA_INTENSITY = 50_000;
  * to guarantee the disc faces the room before the first BVH build.
  */
 export function SunPathTraced({ src }: Props) {
-  // Sweep finding (correctness 2026-05-08 Bug 18): active selector picks
-  // viewport vs roomDoc timeOfDay based on the active document.
-  const timeOfDay = useSelector(selectActiveTimeOfDay);
-  const ref = useRef<ShapedAreaLightImpl | null>(null);
-
-  // Sun direction from skyParams; distance scaled out to PT_SUN_DISTANCE.
-  // skyParams already carries the sun direction in `sunPosition` (post
-  // Y×0.4 scaling — keeps the backlit-panel character at noon).
-  const baseDir = worldSunPosition(skyParamsFor(timeOfDay));
-  const dirLen = Math.hypot(baseDir[0], baseDir[1], baseDir[2]) || 1;
-  const ux = baseDir[0] / dirLen;
-  const uy = baseDir[1] / dirLen;
-  const uz = baseDir[2] / dirLen;
-  const px = ux * PT_SUN_DISTANCE;
-  const py = uy * PT_SUN_DISTANCE;
-  const pz = uz * PT_SUN_DISTANCE;
-
-  const colorHex = resolveColorHex(src.color);
-
-  // Sun intensity multiplier from props × time-of-day bucket.
-  // Bucket 0 (overcast/twilight) gives Math.PI × 0.001-ish (very dim);
-  // we still want SOME PT sun in those cases since the env IBL also
-  // scales down. Final intensity = PT_SUN_AREA_INTENSITY × bucket
-  // factor × user-multiplier, keeping the existing diurnal contract.
-  const baseIntensity = src.followsTimeOfDay ? getSunIntensity(timeOfDay) : Math.PI;
-  // Convert directional bucket to area-light scalar by dividing by
-  // Math.PI (the noon baseline) so noon=1.0.
-  const diurnalFactor = baseIntensity / Math.PI;
-  const intensity = PT_SUN_AREA_INTENSITY * diurnalFactor * src.intensity;
-
-  // Aim the disc toward the room origin so its emissive face points at
-  // the scene. lookAt mutates matrixWorld; do it whenever position changes.
   useEffect(() => {
-    const light = ref.current;
-    if (!light) return;
-    light.lookAt(0, 0, 0);
-    light.updateMatrixWorld();
-  }, [px, py, pz]);
-
-  return (
-    <ShapedAreaLight
-      ref={ref as unknown as React.Ref<typeof ShapedAreaLightImpl>}
-      color={colorHex}
-      intensity={intensity}
-      width={PT_SUN_DISC_DIAMETER}
-      height={PT_SUN_DISC_DIAMETER}
-      isCircular
-      position={[px, py, pz]}
-    />
-  );
+    if (typeof console !== 'undefined') {
+      console.warn(
+        '[staging] SunPathTraced is a host-only renderer component. src=',
+        src,
+      );
+    }
+  }, [src]);
+  return null;
 }
 
 // Re-export the constants so PT_IBL_INTENSITY recalibration can

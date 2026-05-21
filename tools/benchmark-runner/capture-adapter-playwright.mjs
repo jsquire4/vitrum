@@ -7,7 +7,7 @@ if (!outputPng) {
   process.exit(2);
 }
 
-const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5173/';
+const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5174/';
 
 /**
  * Mapping table: ENV name → URL query key + optional validator.
@@ -39,6 +39,21 @@ const ENV_TO_QUERY = [
     validate: (v) => v === '0' || v === '1',
   },
   { env: 'VITRUM_SVGF_ATROUS',         query: 'vitrumSvgfAtrous' },
+  { env: 'VITRUM_BACKEND',             query: 'vitrumBackend' },
+  { env: 'VITRUM_FRAMES',              query: 'vitrumFrames' },
+  { env: 'VITRUM_ENVIRONMENT_MODE',    query: 'vitrumEnvironmentMode' },
+  { env: 'VITRUM_GI_MODE',             query: 'vitrumGiMode' },
+  { env: 'VITRUM_SCENE_VARIANT',       query: 'vitrumSceneVariant' },
+  { env: 'VITRUM_CAMERA_ELEVATION_DEG',query: 'vitrumCameraElevationDeg' },
+  { env: 'VITRUM_RECT_AREA_LIGHT_COUNT', query: 'vitrumRectAreaLightCount' },
+  { env: 'VITRUM_GLANCING_ANGLE_DEG',  query: 'vitrumGlancingAngleDeg' },
+  { env: 'VITRUM_FLOOR_VARIANT',       query: 'vitrumFloorVariant' },
+  { env: 'VITRUM_ROUGHNESS',           query: 'vitrumRoughness' },
+  { env: 'VITRUM_WALL_ALBEDO',         query: 'vitrumWallAlbedo' },
+  { env: 'VITRUM_INSTANCE_SCALE',      query: 'vitrumInstanceScale' },
+  { env: 'VITRUM_GLASS_WIDTH',         query: 'vitrumGlassWidth' },
+  { env: 'VITRUM_GLASS_HEIGHT',        query: 'vitrumGlassHeight' },
+  { env: 'VITRUM_GLASS_THICKNESS',     query: 'vitrumGlassThickness' },
 ];
 
 function captureUrlWithScenarioParams() {
@@ -51,6 +66,20 @@ function captureUrlWithScenarioParams() {
       u.searchParams.set(query, val);
     }
     u.searchParams.set('vitrumAutoStart', '1');
+    // two-engines-one-scene host uses `mode` while cornell-box uses vitrum* keys.
+    // Mirror VITRUM_BACKEND into mode so either host family can be targeted
+    // with the same environment payload.
+    const backend = process.env.VITRUM_BACKEND;
+    const modeFromBackend = backend === 'pt-webgl'
+      ? 'ptwebgl'
+      : backend === 'walkaround-hybrid'
+        ? 'walkaround'
+        : backend === 'pt-webgpu'
+          ? 'ptwebgpu'
+          : null;
+    if (modeFromBackend != null && !u.searchParams.has('mode')) {
+      u.searchParams.set('mode', modeFromBackend);
+    }
     // Special case: SVGF frame count accepts two env aliases.
     const svgfFrames = process.env.VITRUM_SVGF_FRAME_COUNT ?? process.env.VITRUM_SVGF_FRAMES;
     if (svgfFrames && svgfFrames.length > 0) {
@@ -97,14 +126,9 @@ try {
   if (settleMs > 0) {
     await page.waitForTimeout(settleMs);
   }
-  await page
-    .waitForFunction(() => globalThis.VITRUM_CAPTURE_READY === true, null, {
-      timeout: Math.max(1000, timeoutMs - settleMs),
-    })
-    .catch(async () => {
-      // Best effort; many pages won't expose this sentinel.
-      await page.waitForTimeout(1500);
-    });
+  await page.waitForFunction(() => globalThis.VITRUM_CAPTURE_READY === true, null, {
+    timeout: Math.max(1000, timeoutMs - settleMs),
+  });
 
   const selectorFromEnv = process.env.VITRUM_CAPTURE_SELECTOR;
   // Cornell sets globalThis.VITRUM_CAPTURE_CANVAS_SELECTOR when raw vs denoise canvas should be snapped.

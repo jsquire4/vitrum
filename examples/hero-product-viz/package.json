@@ -2,7 +2,7 @@
   "name": "@vitrum-examples/hero-product-viz",
   "version": "0.0.0",
   "private": true,
-  "description": "PT product visualizer — progressive path tracer with material editor and high-res save.",
+  "description": "PT product visualizer \u2014 progressive path tracer with material editor and high-res save.",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -17,7 +17,7 @@
     "@vitrum/three-bindings": "file:../../packages/three-bindings",
     "@vitrum/walkaround-hybrid": "file:../../packages/walkaround-hybrid",
     "@vitrum/pt-webgl": "file:../../packages/pt-webgl",
-    "three": "^0.184.0",
+    "three": "^0.171.0",
     "three-gpu-pathtracer": "file:../../../three-gpu-pathtracer",
     "three-mesh-bvh": "^0.7.4",
     "xatlas-web": "^0.1.0"

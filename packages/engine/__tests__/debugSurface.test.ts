@@ -17,6 +17,7 @@ import type {
   FrameOutput,
   Scene,
 } from '@vitrum/core';
+import { _wrapWithIdempotentDisposeForTests } from '../src/createEngine.js';
 
 const NULL_CAPS: EngineCapabilities = {
   supportsIncrementalScene: false,
@@ -105,5 +106,14 @@ describe('EngineDebugSurface contract', () => {
     e.debug.bvhNodes!();
     expect(e.atlasCalls).toBe(2);
     expect(e.bvhCalls).toBe(1);
+  });
+
+  it('idempotent proxy preserves debug surface and marks disposed frames unconverged', () => {
+    const e = new DebuggableFakeEngine();
+    const proxy = _wrapWithIdempotentDisposeForTests(e, () => {});
+    expect(proxy.debug?.atlasTexture).toBeTypeOf('function');
+    proxy.dispose();
+    const out = proxy.renderFrame({} as FrameInput);
+    expect(out.isConverged).toBe(false);
   });
 });

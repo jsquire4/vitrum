@@ -18,12 +18,14 @@
 // host's renderFrame call. createEngine() itself does NOT attach an
 // observer; it just hands back an Engine.
 
-import type { Scene, Engine, Vec3 } from '@vitrum/core';
+import type { Scene, Engine, Vec3, FrameInput } from '@vitrum/core';
 import { detectGpu } from '@vitrum/core';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
   type HybridEngineOptions,
+  HYBRID_WEBGPU_REQUIRED_FEATURES,
+  HYBRID_WEBGPU_REQUIRED_LIMITS,
 } from '@vitrum/walkaround-hybrid';
 import {
   createPTEngine_WebGL2,
@@ -66,6 +68,13 @@ export interface CreateEngineOptions {
   readonly debug?: boolean;
 }
 
+const WALKAROUND_SUPPORTED_DENOISERS = new Set([
+  'atrous',
+  'atrous-variance',
+  'svgf-real',
+  'svgf',
+]);
+
 /** Threshold above which 'auto' falls back from walkaround-hybrid to
  *  pt-webgl. The walkaround stack's BVH/ReSTIR working set scales with
  *  triangle count; ~500k is where 8 GB-class consumer GPUs start to
@@ -93,7 +102,8 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
 
   const aabb = computeSceneAABB(vitrumScene);
   const gpu = await detectGpu({ publishToWindow: false });
-  const backend = pickBackend(opts.prefer ?? 'auto', gpu.isWebGPU, aabb.triangleCount);
+  const backend = pickBackend(opts.prefer ?? 'auto', gpu.isWebGPU, aabb.triangleCount, gpu.adapterKind);
+  validateDenoiserForBackend(backend, opts.advanced);
 
   if (backend === 'walkaround-hybrid') {
     return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree);
@@ -101,14 +111,32 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
   return await constructPathTracer(opts, vitrumScene, sceneInputIsThree);
 }
 
+function validateDenoiserForBackend(
+  backend: 'walkaround-hybrid' | 'pt-webgl',
+  advanced: CreateEngineOptions['advanced'],
+): void {
+  if (advanced == null || typeof advanced !== 'object' || !('denoiser' in advanced)) return;
+  const denoiser = (advanced as { denoiser?: unknown }).denoiser;
+  if (denoiser == null) return;
+  if (backend === 'walkaround-hybrid' && !WALKAROUND_SUPPORTED_DENOISERS.has(String(denoiser))) {
+    throw new TypeError(
+      `[createEngine] unsupported denoiser '${String(denoiser)}' for backend '${backend}'. ` +
+      `Supported denoisers: 'atrous' | 'atrous-variance' | 'svgf-real' | 'svgf'. ` +
+      `Use prefer:'quality' for PT-WebGL denoiser paths.`,
+    );
+  }
+}
+
 export function pickBackend(
   prefer: EnginePreference,
   hasWebGPU: boolean,
   triangleCount: number,
+  adapterKind?: string,
 ): 'walkaround-hybrid' | 'pt-webgl' {
+  const hasHardwareWebGPU = hasWebGPU && adapterKind !== 'swiftshader';
   if (prefer === 'quality') return 'pt-webgl';
   if (prefer === 'realtime') {
-    if (!hasWebGPU) {
+    if (!hasHardwareWebGPU) {
       // Realtime requested but WebGPU unavailable — fall back to PT and
       // let the host see "quality" mode. We do NOT throw because the most
       // common cause is "browser doesn't ship WebGPU yet" and crashing
@@ -117,7 +145,7 @@ export function pickBackend(
     }
     return 'walkaround-hybrid';
   }
-  if (hasWebGPU && triangleCount < AUTO_REALTIME_TRIANGLE_BUDGET) {
+  if (hasHardwareWebGPU && triangleCount < AUTO_REALTIME_TRIANGLE_BUDGET) {
     return 'walkaround-hybrid';
   }
   return 'pt-webgl';
@@ -151,11 +179,15 @@ async function constructWalkaround(
   aabb: SceneAABB,
   sceneInputIsThree: boolean,
 ): Promise<Engine> {
-  const adapter = await navigator.gpu.requestAdapter();
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
-  const device = await adapter.requestDevice();
+  const requiredFeatures = HYBRID_WEBGPU_REQUIRED_FEATURES.filter((f) => adapter.features.has(f));
+  const device = await adapter.requestDevice({
+    requiredLimits: HYBRID_WEBGPU_REQUIRED_LIMITS,
+    ...(requiredFeatures.length > 0 ? { requiredFeatures } : {}),
+  });
 
   const D = aabb.diagonal;
   const scaleDefaults = deriveScaleDefaults(D);
@@ -179,10 +211,11 @@ async function constructWalkaround(
     ? (opts.scene as unknown as Parameters<typeof createWalkaroundEngine_Hybrid>[0]['threeScene'])
     : undefined;
 
+  const initialSize = getCanvasPhysicalSize(opts.canvas);
   const merged: HybridEngineOptions = {
     device,
-    width: Math.max(1, opts.canvas.width),
-    height: Math.max(1, opts.canvas.height),
+    width: initialSize.width,
+    height: initialSize.height,
     primaryLightDir,
     primaryLightIntensity: DEFAULT_PRIMARY_LIGHT_INTENSITY,
     skyTint,
@@ -199,8 +232,37 @@ async function constructWalkaround(
   const engine = await createWalkaroundEngine_Hybrid(merged);
   engine.setScene(vitrumScene);
 
+  const gpuCanvas = opts.canvas.getContext('webgpu');
+  const swapChainFormat = (typeof navigator !== 'undefined' && navigator.gpu)
+    ? navigator.gpu.getPreferredCanvasFormat()
+    : undefined;
+
+  const syncAndConfigureSwapChain = (targetW: number, targetH: number): void => {
+    if (gpuCanvas == null || swapChainFormat == null) return;
+    const width = Math.max(1, Math.floor(targetW));
+    const height = Math.max(1, Math.floor(targetH));
+    if (opts.canvas.width !== width) opts.canvas.width = width;
+    if (opts.canvas.height !== height) opts.canvas.height = height;
+    gpuCanvas.configure({
+      device,
+      format: swapChainFormat,
+      alphaMode: 'premultiplied',
+    });
+  };
+  syncAndConfigureSwapChain(initialSize.width, initialSize.height);
+
   return wrapWithIdempotentDispose(engine, () => {
+    try { gpuCanvas?.unconfigure(); } catch {}
     try { device.destroy(); } catch {}
+  }, (input) => {
+    if (gpuCanvas == null || swapChainFormat == null) return input;
+    if (input.swapChainView != null || input.swapChainFormat != null) return input;
+    syncAndConfigureSwapChain(input.viewport.width, input.viewport.height);
+    return {
+      ...input,
+      swapChainView: gpuCanvas.getCurrentTexture().createView(),
+      swapChainFormat,
+    };
   });
 }
 
@@ -269,23 +331,31 @@ function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
 function wrapWithIdempotentDispose(
   engine: Engine,
   postDispose: () => void,
+  mapFrameInput?: (input: FrameInput) => FrameInput,
 ): Engine {
   let disposed = false;
   const proxy: Engine = {
     get state() { return engine.state; },
     get capabilities() { return engine.capabilities; },
     setScene(scene) { if (!disposed) engine.setScene(scene); },
-    ...(engine.updatePrimitive
+    ...(engine.capabilities.supportsIncrementalScene && engine.updatePrimitive
       ? {
           updatePrimitive: (id: string, patch: Parameters<NonNullable<Engine['updatePrimitive']>>[1]) => {
             if (!disposed) engine.updatePrimitive!(id, patch);
           },
         }
       : {}),
-    ...(engine.updateEmitter
+    ...(engine.capabilities.supportsIncrementalScene && engine.updateEmitter
       ? {
           updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
             if (!disposed) engine.updateEmitter!(id, patch);
+          },
+        }
+      : {}),
+    ...(engine.updateEnvironment
+      ? {
+          updateEnvironment: (environment: Parameters<NonNullable<Engine['updateEnvironment']>>[0]) => {
+            if (!disposed) engine.updateEnvironment!(environment);
           },
         }
       : {}),
@@ -294,9 +364,9 @@ function wrapWithIdempotentDispose(
         // Returning a no-op output keeps host RAF loops from crashing if
         // they race the dispose. The host is expected to stop rendering
         // when state === 'disposed'.
-        return { samplesAccumulated: 0, isConverged: true, primaryRadiance: null } as ReturnType<Engine['renderFrame']>;
+        return { samplesAccumulated: 0, isConverged: false, primaryRadiance: null } as ReturnType<Engine['renderFrame']>;
       }
-      return engine.renderFrame(input);
+      return engine.renderFrame(mapFrameInput ? mapFrameInput(input) : input);
     },
     reset() { if (!disposed) engine.reset(); },
     pause() { if (!disposed) engine.pause(); },
@@ -331,4 +401,19 @@ function wrapWithIdempotentDispose(
     ...(engine.debug ? { debug: engine.debug } : {}),
   };
   return proxy;
+}
+
+export const _wrapWithIdempotentDisposeForTests = wrapWithIdempotentDispose;
+export const _validateDenoiserForBackendForTests = validateDenoiserForBackend;
+
+function getCanvasPhysicalSize(canvas: HTMLCanvasElement): { width: number; height: number } {
+  const cssW = canvas.clientWidth;
+  const cssH = canvas.clientHeight;
+  const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
+  const width = cssW > 0 ? Math.floor(cssW * dpr) : Math.floor(canvas.width);
+  const height = cssH > 0 ? Math.floor(cssH * dpr) : Math.floor(canvas.height);
+  return {
+    width: Math.max(1, width),
+    height: Math.max(1, height),
+  };
 }

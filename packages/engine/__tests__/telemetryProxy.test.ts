@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Engine, FrameStats, ProgressStats, EngineCapabilities, EngineState, FrameOutput, FrameInput, Scene } from '@vitrum/core';
+import { _wrapWithIdempotentDisposeForTests } from '../src/createEngine.js';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Smoke: a minimal Engine implementation can declare the optional T3.E
@@ -117,5 +118,26 @@ describe('Engine T3.E contract', () => {
     e._frameSubs.forEach((cb) => cb({ frameTimeMs: 16.7 }));
     expect(a).toEqual([16.7]);
     expect(b).toEqual([16.7]);
+  });
+
+  it('proxy forwards optional updateEnvironment when available', () => {
+    const e = new FakeEngine() as Engine & { updateEnvironment?: (env: Scene['environment']) => void; called?: number };
+    e.called = 0;
+    e.updateEnvironment = () => { e.called = (e.called ?? 0) + 1; };
+    const proxy = _wrapWithIdempotentDisposeForTests(e, () => {});
+    proxy.updateEnvironment?.({ kind: 'none' });
+    expect(e.called).toBe(1);
+  });
+
+  it('proxy omits incremental methods when capability is false', () => {
+    const e = new FakeEngine() as Engine & {
+      updatePrimitive?: Engine['updatePrimitive'];
+      updateEmitter?: Engine['updateEmitter'];
+    };
+    e.updatePrimitive = () => {};
+    e.updateEmitter = () => {};
+    const proxy = _wrapWithIdempotentDisposeForTests(e, () => {});
+    expect(proxy.updatePrimitive).toBeUndefined();
+    expect(proxy.updateEmitter).toBeUndefined();
   });
 });

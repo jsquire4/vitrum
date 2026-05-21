@@ -77,7 +77,14 @@ async function main(): Promise<void> {
   // body[data-engine-mode] attribute, which we read here as a fallback.
   const bodyMode = (document.body.getAttribute('data-engine-mode') ?? 'all') as
     | 'all' | 'ptwebgl' | 'walkaround' | 'ptwebgpu';
-  const mode = (params.get('mode') ?? bodyMode) as typeof bodyMode;
+  const backendMode = (() => {
+    const backend = params.get('vitrumBackend');
+    if (backend === 'pt-webgl') return 'ptwebgl' as const;
+    if (backend === 'walkaround-hybrid') return 'walkaround' as const;
+    if (backend === 'pt-webgpu') return 'ptwebgpu' as const;
+    return null;
+  })();
+  const mode = (params.get('mode') ?? backendMode ?? bodyMode) as typeof bodyMode;
   // `walkaround-webgl2.html` sets data-walkaround-mode="1" to force pt-webgl
   // into interactive + camera-motion defaults so the page behaves like a
   // WebGL2 walkaround (cross-engine fallback for users without WebGPU).
@@ -424,8 +431,9 @@ async function main(): Promise<void> {
     // unconfigured — pt-webgpu writes to its internal HDR accum and does
     // not present to a swap chain.
     if (!RUN.ptWebgpu || !canvasPtGpu) return;
+    const canvasPtGpuEl = canvasPtGpu;
     try {
-      resizeCanvasToDisplaySize(canvasPtGpu);
+      resizeCanvasToDisplaySize(canvasPtGpuEl);
       const ptGpuEngine = await createPTEngine_WebGPU({ device });
       ptGpuEngine.setScene(vitrumScene);
       (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu = ptGpuEngine;
@@ -455,8 +463,8 @@ async function main(): Promise<void> {
           projMatrix: mat4FromThree(camera.projectionMatrix),
           cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
           viewport: {
-            width: canvasPtGpu.width,
-            height: canvasPtGpu.height,
+            width: canvasPtGpuEl.width,
+            height: canvasPtGpuEl.height,
             devicePixelRatio: window.devicePixelRatio,
           },
           frameIndex: ptGpuFrame,

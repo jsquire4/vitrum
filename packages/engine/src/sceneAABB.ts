@@ -11,6 +11,7 @@
 
 import type {
   Scene,
+  SceneEmitter,
   ScenePrimitive,
   Mat4,
   Vec3,
@@ -58,6 +59,17 @@ export function computeSceneAABB(scene: Scene): SceneAABB {
     if (contribution.max[1] > maxY) maxY = contribution.max[1];
     if (contribution.max[2] > maxZ) maxZ = contribution.max[2];
     triangleCount += contribution.triangles;
+  }
+  for (const emitter of scene.emitters) {
+    const contribution = emitterBounds(emitter);
+    if (contribution == null) continue;
+    foundAny = true;
+    if (contribution.min[0] < minX) minX = contribution.min[0];
+    if (contribution.min[1] < minY) minY = contribution.min[1];
+    if (contribution.min[2] < minZ) minZ = contribution.min[2];
+    if (contribution.max[0] > maxX) maxX = contribution.max[0];
+    if (contribution.max[1] > maxY) maxY = contribution.max[1];
+    if (contribution.max[2] > maxZ) maxZ = contribution.max[2];
   }
 
   if (!foundAny) {
@@ -113,6 +125,7 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
       if (t.max[1] > aMaxY) aMaxY = t.max[1];
       if (t.max[2] > aMaxZ) aMaxZ = t.max[2];
     }
+    if (prim.instances.length === 0) return null;
     return {
       min: [aMinX, aMinY, aMinZ],
       max: [aMaxX, aMaxY, aMaxZ],
@@ -120,6 +133,11 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
     };
   }
   if (prim.kind === 'analytic') {
+    const paramBounds = analyticParamBounds(prim.shape, prim.params);
+    if (paramBounds != null) {
+      const transformed = transformAabb(paramBounds, prim.transform);
+      return { ...transformed, triangles: 0 };
+    }
     if (prim.fallbackMesh != null) {
       const local = vertexAabb(prim.fallbackMesh.positions);
       if (local != null) {
@@ -142,6 +160,75 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
       };
     }
     return null;
+  }
+  return null;
+}
+
+function analyticParamBounds(
+  shape: 'sphere' | 'box' | 'capsule' | 'cylinder' | 'h-channel-came',
+  params: Float32Array,
+): { min: Vec3; max: Vec3 } | null {
+  if (shape === 'sphere' && params.length >= 4) {
+    const [cx, cy, cz, r] = [params[0]!, params[1]!, params[2]!, Math.abs(params[3]!)];
+    return { min: [cx - r, cy - r, cz - r], max: [cx + r, cy + r, cz + r] };
+  }
+  if (shape === 'box' && params.length >= 6) {
+    const [cx, cy, cz, hx, hy, hz] = [params[0]!, params[1]!, params[2]!, Math.abs(params[3]!), Math.abs(params[4]!), Math.abs(params[5]!)];
+    return { min: [cx - hx, cy - hy, cz - hz], max: [cx + hx, cy + hy, cz + hz] };
+  }
+  if (shape === 'capsule' && params.length >= 7) {
+    const [ax, ay, az, bx, by, bz, r0] = [params[0]!, params[1]!, params[2]!, params[3]!, params[4]!, params[5]!, Math.abs(params[6]!)];
+    return {
+      min: [Math.min(ax, bx) - r0, Math.min(ay, by) - r0, Math.min(az, bz) - r0],
+      max: [Math.max(ax, bx) + r0, Math.max(ay, by) + r0, Math.max(az, bz) + r0],
+    };
+  }
+  if (shape === 'cylinder' && params.length >= 5) {
+    const [cx, cy, cz, r0, hh] = [params[0]!, params[1]!, params[2]!, Math.abs(params[3]!), Math.abs(params[4]!)];
+    return { min: [cx - r0, cy - hh, cz - r0], max: [cx + r0, cy + hh, cz + r0] };
+  }
+  if (shape === 'h-channel-came' && params.length >= 4) {
+    const [length, railWidth, blockHeight] = [Math.abs(params[0]!), Math.abs(params[1]!), Math.abs(params[2]!)];
+    const hx = length * 0.5;
+    const hy = blockHeight * 0.5;
+    const hz = railWidth * 0.5;
+    return { min: [-hx, -hy, -hz], max: [hx, hy, hz] };
+  }
+  return null;
+}
+
+function emitterBounds(emitter: SceneEmitter): { min: Vec3; max: Vec3 } | null {
+  if (emitter.kind === 'directional') return null;
+  if (emitter.kind === 'point' || emitter.kind === 'spot') {
+    const [x, y, z] = emitter.position;
+    return { min: [x, y, z], max: [x, y, z] };
+  }
+  if (emitter.kind === 'disc-area') {
+    const [x, y, z] = emitter.position;
+    const r = Math.abs(emitter.radius);
+    return { min: [x - r, y - r, z - r], max: [x + r, y + r, z + r] };
+  }
+  if (emitter.kind === 'rect-area') {
+    const p = emitter.position;
+    const u = emitter.uAxis;
+    const v = emitter.vAxis;
+    const points: Vec3[] = [
+      [p[0] + u[0] + v[0], p[1] + u[1] + v[1], p[2] + u[2] + v[2]],
+      [p[0] + u[0] - v[0], p[1] + u[1] - v[1], p[2] + u[2] - v[2]],
+      [p[0] - u[0] + v[0], p[1] - u[1] + v[1], p[2] - u[2] + v[2]],
+      [p[0] - u[0] - v[0], p[1] - u[1] - v[1], p[2] - u[2] - v[2]],
+    ];
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (const c of points) {
+      if (c[0] < minX) minX = c[0];
+      if (c[1] < minY) minY = c[1];
+      if (c[2] < minZ) minZ = c[2];
+      if (c[0] > maxX) maxX = c[0];
+      if (c[1] > maxY) maxY = c[1];
+      if (c[2] > maxZ) maxZ = c[2];
+    }
+    return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
   }
   return null;
 }

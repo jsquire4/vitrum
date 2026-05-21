@@ -83,4 +83,19 @@ describe('RingBuffer', () => {
     // (0.1 + 0.2 + 0.3) / 3 = 0.2; Float64 is precise enough
     expect(rb.mean()).toBeCloseTo(0.2, 12);
   });
+
+  it('throws for non-positive or non-finite capacity', () => {
+    expect(() => new RingBuffer(0)).toThrow();
+    expect(() => new RingBuffer(-1)).toThrow();
+    expect(() => new RingBuffer(Number.NaN)).toThrow();
+  });
+
+  it('ignores non-finite pushed values', () => {
+    const rb = new RingBuffer(3);
+    rb.push(10);
+    rb.push(Number.NaN);
+    rb.push(Number.POSITIVE_INFINITY);
+    expect(rb.filled).toBe(1);
+    expect(rb.mean()).toBe(10);
+  });
 });

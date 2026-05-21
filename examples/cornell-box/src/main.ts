@@ -376,6 +376,8 @@ async function main(): Promise<void> {
   const statusEl = document.querySelector<HTMLDivElement>('#status');
   const startButton = document.querySelector<HTMLButtonElement>('#start');
   if (!canvas || !statusEl) throw new Error('missing #c or #status');
+  const canvasEl = canvas;
+  const statusNode = statusEl;
   const config = parseCaptureConfig();
   const spectralRendering =
     config.scenarioId.includes('spectral') ||
@@ -385,7 +387,7 @@ async function main(): Promise<void> {
   const setStatus = (message: string): void => {
     if (message === lastStatusText) return;
     lastStatusText = message;
-    statusEl.textContent = message;
+    statusNode.textContent = message;
   };
   globalThis.VITRUM_CAPTURE_READY = false;
   globalThis.VITRUM_MS_PER_SAMPLE = undefined;
@@ -395,15 +397,15 @@ async function main(): Promise<void> {
   if (!config.autoStart) {
     setStatus('Ready. Press Start WebGL render.');
     if (startButton) startButton.hidden = false;
-    canvas.style.cursor = 'pointer';
+    canvasEl.style.cursor = 'pointer';
     await new Promise<void>((resolve) => {
       const start = () => {
         if (startButton) startButton.hidden = true;
-        canvas.style.cursor = 'default';
+        canvasEl.style.cursor = 'default';
         resolve();
       };
-      canvas.addEventListener('click', start, { once: true });
-      statusEl.addEventListener('click', start, { once: true });
+      canvasEl.addEventListener('click', start, { once: true });
+      statusNode.addEventListener('click', start, { once: true });
       startButton?.addEventListener('click', start, { once: true });
     });
   } else if (startButton) {
@@ -412,7 +414,7 @@ async function main(): Promise<void> {
 
   setStatus('Creating WebGL renderer...');
   const renderer = new THREE.WebGLRenderer({
-    canvas,
+    canvas: canvasEl,
     antialias: false,
     alpha: false,
     preserveDrawingBuffer: config.isCapture,
@@ -477,8 +479,8 @@ async function main(): Promise<void> {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     if (config.isCapture) {
-      canvas.style.width = `${w}px`;
-      canvas.style.height = `${h}px`;
+      canvasEl.style.width = `${w}px`;
+      canvasEl.style.height = `${h}px`;
     }
     renderer.setSize(w, h, false);
   }
@@ -573,11 +575,11 @@ async function main(): Promise<void> {
     }
 
     if (config.denoiseDisplay === 'bilateral' && bilateral != null && denoiseCanvas != null) {
-      canvas.style.visibility = 'hidden';
+      canvasEl.style.visibility = 'hidden';
       denoiseCanvas.style.display = 'block';
       bilateral.render(engine.getAccumulationRenderTarget().texture as THREE.Texture, renderWidth, renderHeight);
     } else if (config.denoiseDisplay !== 'oidn' && config.denoiseDisplay !== 'wgsl' && config.denoiseDisplay !== 'svgf') {
-      canvas.style.visibility = 'visible';
+      canvasEl.style.visibility = 'visible';
       if (denoiseCanvas != null) denoiseCanvas.style.display = 'none';
     }
 
@@ -604,7 +606,7 @@ async function main(): Promise<void> {
           const rt = engine.getAccumulationRenderTarget();
           const rgb = readAccumulationRgbFloat(renderer, rt, renderWidth, renderHeight, lastDivideByAlpha);
           const dod = await denoise(rgb);
-          canvas.style.visibility = 'hidden';
+          canvasEl.style.visibility = 'hidden';
           denoiseCanvas.style.display = 'block';
           writeTonemappedRgbToCanvas(denoiseCanvas, dod, renderWidth, renderHeight);
           succeededRef.value = true;
@@ -612,7 +614,7 @@ async function main(): Promise<void> {
           finalizeVitrumCapture(successLabel, capFrame);
         } catch (err) {
           console.warn(warnText, err);
-          canvas.style.visibility = 'visible';
+          canvasEl.style.visibility = 'visible';
           startedRef.value = false;
           succeededRef.value = false;
           updateCaptureCanvasHint();

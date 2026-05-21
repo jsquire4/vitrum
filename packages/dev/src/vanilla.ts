@@ -157,8 +157,8 @@ export function attachDebugOverlays(
     add(badge);
 
     const toggle = (): void => {
-      enabled = !enabled;
       if (hasDebug) {
+        enabled = !enabled;
         engine.debug!.setDenoiserEnabled!(enabled);
       } else {
         // eslint-disable-next-line no-console
@@ -183,7 +183,7 @@ export function attachDebugOverlays(
 
   // ── Stub overlays ────────────────────────────────────────────────────────
   const stubOverlays: Array<[string, string, object]> = [
-    ['ddgiAtlas', 'DDGI Atlas', { position: 'absolute', top: '8px', left: '8px' }],
+    ['ddgiAtlas', 'DDGI Atlas', { position: 'absolute', top: '36px', left: '8px' }],
     ['bvhVisualizer', 'BVH Viz [B]', { position: 'absolute', bottom: '8px', right: '8px' }],
     ['giSignalSplit', 'GI Split', { position: 'absolute', bottom: '8px', left: '8px' }],
     ['materialInspector', 'Mat. Inspector', { position: 'absolute', top: '48px', right: '8px' }],
@@ -207,8 +207,11 @@ export function attachDebugOverlays(
     add(badge);
   }
 
-  // Suppress unused `scene` warning — it's kept for future materialInspector wiring.
-  void scene;
+  // Use the scene option to enrich stub diagnostics for material inspector.
+  if (overlays.includes('materialInspector') && scene == null) {
+    // eslint-disable-next-line no-console
+    console.warn('[attachDebugOverlays] materialInspector overlay requested without `scene`; live material lookup will remain unavailable until scene is provided.');
+  }
 
   return {
     dispose(): void {

@@ -35,7 +35,9 @@ let prefer: EnginePreference = 'realtime';
 
 // ── Three.js camera + orbit controls ─────────────────────────────────────────
 
-const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.01, 1000);
+const initialW = Math.max(canvas.clientWidth, 1);
+const initialH = Math.max(canvas.clientHeight, 1);
+const camera = new THREE.PerspectiveCamera(45, initialW / initialH, 0.01, 1000);
 camera.position.set(0, 1, 3);
 
 const orbit = new OrbitControls(camera, canvas);
@@ -184,6 +186,8 @@ canvas.addEventListener('drop', (e) => {
 // ── Window resize ─────────────────────────────────────────────────────────────
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  const w = Math.max(canvas.clientWidth, 1);
+  const h = Math.max(canvas.clientHeight, 1);
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
 });

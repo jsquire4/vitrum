@@ -8,7 +8,7 @@
  *   4. svgfAtrousMain (×5)      — variance-guided à-trous chain (reuses ATROUS_VARIANCE_WGSL)
  *
  * GPU memory budget (see svgfRealConstants.ts for full breakdown):
- *   New persistent textures: historyLength (r16uint) + momentsHistory (rg32float)
+ *   New persistent textures: historyLength (r32uint) + momentsHistory (rg32float)
  *   + prevRadiance (rgba16float) + motionVec (rg32float) ≈ 52 MB at 1080p.
  *
  * This one-shot path allocates and destroys all textures per call. In the
@@ -398,14 +398,14 @@ function uploadRg32f(
   );
 }
 
-function fillR16Uint(device: GPUDevice, texture: GPUTexture, w: number, h: number, value: number): void {
-  const bpr = alignedTextureCopyBytesPerRow(w, 2);
+function fillR32Uint(device: GPUDevice, texture: GPUTexture, w: number, h: number, value: number): void {
+  const bpr = alignedTextureCopyBytesPerRow(w, 4);
   const buf = new Uint8Array(bpr * h);
   const dv  = new DataView(buf.buffer);
-  const v   = value & 0xFFFF;
+  const v = value >>> 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      dv.setUint16(y * bpr + x * 2, v, true);
+      dv.setUint32(y * bpr + x * 4, v, true);
     }
   }
   device.queue.writeTexture({ texture }, buf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w, h]);
@@ -592,12 +592,12 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   const prevDepthTex = device.createTexture({ label: 'svgf-prev-depth', size: [w,h], format: 'r32float',    usage: texB|texC });
   const prevNormTex  = device.createTexture({ label: 'svgf-prev-norm',  size: [w,h], format: 'rgba32float', usage: texB|texC });
   const prevObjTex   = device.createTexture({ label: 'svgf-prev-obj',   size: [w,h], format: 'r32uint',     usage: texB|texC });
-  const histInTex    = device.createTexture({ label: 'svgf-hist-in',    size: [w,h], format: 'r16uint',     usage: texB|texC });
+  const histInTex    = device.createTexture({ label: 'svgf-hist-in',    size: [w,h], format: 'r32uint',     usage: texB|texC });
   const momentsInTex = device.createTexture({ label: 'svgf-mom-in',     size: [w,h], format: 'rg32float',   usage: texB|texC });
 
   // Reprojection outputs
   const colorOutTex  = device.createTexture({ label: 'svgf-color-out', size: [w,h], format: 'rgba16float', usage: texS|texB|texC });
-  const histOutTex   = device.createTexture({ label: 'svgf-hist-out',  size: [w,h], format: 'r16uint',     usage: texS|texB|texC });
+  const histOutTex   = device.createTexture({ label: 'svgf-hist-out',  size: [w,h], format: 'r32uint',     usage: texS|texB|texC });
   const momOutTex    = device.createTexture({ label: 'svgf-mom-out',   size: [w,h], format: 'rg32float',   usage: texS|texB|texC });
 
   // Variance from moments output
@@ -662,19 +662,19 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
     uploadR32Uint(device, prevObjTex, zeros32, w, h);
   }
   if (opts.historyLengthIn != null) {
-    fillR16Uint(device, histInTex, w, h, 0);
+    fillR32Uint(device, histInTex, w, h, 0);
     // Upload actual values
-    const bpr = alignedTextureCopyBytesPerRow(w, 2);
+    const bpr = alignedTextureCopyBytesPerRow(w, 4);
     const hBuf = new Uint8Array(bpr * h);
     const dv = new DataView(hBuf.buffer);
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        dv.setUint16(y * bpr + x * 2, (opts.historyLengthIn[y * w + x] ?? 0) & 0xFFFF, true);
+        dv.setUint32(y * bpr + x * 4, (opts.historyLengthIn[y * w + x] ?? 0) >>> 0, true);
       }
     }
     device.queue.writeTexture({ texture: histInTex }, hBuf.buffer as GPUAllowSharedBufferSource, { bytesPerRow: bpr }, [w,h]);
   } else {
-    fillR16Uint(device, histInTex, w, h, 0);
+    fillR32Uint(device, histInTex, w, h, 0);
   }
   if (opts.momentsIn != null) {
     uploadRg32f(device, momentsInTex, opts.momentsIn, w, h);

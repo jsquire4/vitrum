@@ -64,19 +64,19 @@ declare global {
   }
 }
 
-let cached: Promise<GpuDetection> | null = null;
+const cacheByPublish = new Map<boolean, Promise<GpuDetection>>();
 
 /**
  * Detect whether the runtime is on a real hardware GPU. Memoized — safe
  * to call from multiple call sites; only one adapter is actually requested.
  * By default the first call also assigns `window.__WG__` (see
- * {@link DetectGpuOptions.publishToWindow}). Options apply only to the first
- * invocation until {@link _resetCacheUnsafe} clears the cache.
+ * {@link DetectGpuOptions.publishToWindow}).
  */
 export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
-  if (cached) return cached;
   const publishToWindow = options?.publishToWindow !== false;
-  cached = (async () => {
+  const cached = cacheByPublish.get(publishToWindow);
+  if (cached) return cached;
+  const probePromise = (async () => {
     const probe = await probeWebGPU();
     const adapterKind: WgpuAdapterKind = probe.supported && probe.adapterKind != null
       ? probe.adapterKind
@@ -93,11 +93,17 @@ export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
     }
     return result;
   })();
-  return cached;
+  cacheByPublish.set(publishToWindow, probePromise);
+  return probePromise;
 }
 
 function publish(result: GpuDetection): void {
   if (typeof window !== 'undefined') {
     window.__WG__ = result;
   }
+}
+
+/** Test-only cache reset hook. */
+export function _resetCacheUnsafe(): void {
+  cacheByPublish.clear();
 }

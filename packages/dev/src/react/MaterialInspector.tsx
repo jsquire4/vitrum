@@ -62,8 +62,58 @@ function vec3ToHex(v: Vec3): string {
 }
 
 function hexToVec3(h: string): Vec3 {
+  if (!/^#[0-9a-fA-F]{6}$/.test(h)) {
+    return [0, 0, 0];
+  }
   const n = parseInt(h.slice(1), 16);
   return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255];
+}
+
+function cloneMaterial(material: Material): Material {
+  return {
+    ...material,
+    baseColor: [...material.baseColor] as Vec3,
+    ...(material.emissive ? { emissive: [...material.emissive] as Vec3 } : {}),
+    ...(material.attenuationColor ? { attenuationColor: [...material.attenuationColor] as Vec3 } : {}),
+    ...(material.sheenColor ? { sheenColor: [...material.sheenColor] as Vec3 } : {}),
+    ...(material.iridescenceThicknessRange
+      ? { iridescenceThicknessRange: [...material.iridescenceThicknessRange] as readonly [number, number] }
+      : {}),
+    ...(material.spectralAttenuation
+      ? {
+          spectralAttenuation: {
+            wavelengthStart: material.spectralAttenuation.wavelengthStart,
+            wavelengthEnd: material.spectralAttenuation.wavelengthEnd,
+            values: new Float32Array(material.spectralAttenuation.values),
+          },
+        }
+      : {}),
+    ...(material.frontLayer
+      ? {
+          frontLayer: {
+            ...material.frontLayer,
+            transmission: [...material.frontLayer.transmission] as Vec3,
+          },
+        }
+      : {}),
+    ...(material.backLayer
+      ? {
+          backLayer: {
+            ...material.backLayer,
+            transmission: [...material.backLayer.transmission] as Vec3,
+          },
+        }
+      : {}),
+    ...(material.thinFilmStack
+      ? {
+          thinFilmStack: {
+            ...material.thinFilmStack,
+            layers: material.thinFilmStack.layers.map((l) => ({ ...l })),
+          },
+        }
+      : {}),
+    ...(material.extensions ? { extensions: { ...material.extensions } } : {}),
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -138,7 +188,7 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
     const prim = scene.primitives.find((p) => p.id === selectedPrimitiveId);
     if (prim) {
       // Deep-clone the material so edits don't mutate the scene object.
-      setDraft({ ...prim.material });
+      setDraft(cloneMaterial(prim.material));
       setPanelOpen(true);
     }
   }, [selectedPrimitiveId, scene]);

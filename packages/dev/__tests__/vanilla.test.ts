@@ -200,4 +200,57 @@ describe('attachDebugOverlays', () => {
       document.body.removeChild(container);
     }
   );
+
+  it.skipIf(!hasDom)(
+    'ddgiAtlas stub does not overlap denoiser toggle default top position',
+    async () => {
+      const { attachDebugOverlays } = await import('../src/vanilla.js');
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const engine = makeEngine() as DebuggableEngine;
+
+      const handle = attachDebugOverlays(engine, container, {
+        overlays: ['denoiserToggle', 'ddgiAtlas'],
+      });
+
+      const denoiser = Array.from(container.children).find((el) =>
+        (el as HTMLElement).textContent?.includes('denoiser')
+      ) as HTMLElement | undefined;
+      const ddgi = Array.from(container.children).find((el) =>
+        (el as HTMLElement).textContent?.includes('DDGI Atlas')
+      ) as HTMLElement | undefined;
+
+      expect(denoiser).toBeDefined();
+      expect(ddgi).toBeDefined();
+      expect(denoiser!.style.top).not.toBe(ddgi!.style.top);
+
+      handle.dispose();
+      document.body.removeChild(container);
+    }
+  );
+
+  it.skipIf(!hasDom)(
+    'denoiser keyboard toggle does not change label when setter is missing',
+    async () => {
+      const { attachDebugOverlays } = await import('../src/vanilla.js');
+      const container = document.createElement('div');
+      document.body.appendChild(container);
+      const engine = makeEngine() as DebuggableEngine;
+
+      const handle = attachDebugOverlays(engine, container, {
+        overlays: ['denoiserToggle'],
+      });
+
+      const badge = Array.from(container.children).find((el) =>
+        (el as HTMLElement).textContent?.includes('denoiser')
+      ) as HTMLElement;
+      const before = badge.textContent;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd' }));
+      const after = badge.textContent;
+      expect(after).toBe(before);
+
+      handle.dispose();
+      document.body.removeChild(container);
+    }
+  );
 });

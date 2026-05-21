@@ -13,20 +13,24 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import * as THREE from 'three';
+import type { Scene as ThreeScene, PerspectiveCamera, OrthographicCamera } from 'three';
 import type { Engine, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
 import { createEngine, type CreateEngineOptions } from '../createEngine.js';
 
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
   /** Scene description. Either a vitrum Scene or a THREE.Scene. */
-  readonly scene: Scene | THREE.Scene;
+  readonly scene: Scene | ThreeScene;
   /** THREE camera the engine reads viewMatrix / projMatrix / position from
    *  every frame. The host mutates this camera (orbit controls, scripted
    *  animation) and the helper pushes the latest matrices into renderFrame. */
-  readonly camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
+  readonly camera: PerspectiveCamera | OrthographicCamera;
   /** Per-frame quality dials. Honoured if non-null; otherwise the engine's
    *  defaults apply. */
   readonly quality?: NonNullable<FrameInput['quality']>;
+  /** Optional live source read every frame; used by React wrapper to avoid reattach. */
+  readonly qualitySource?: () => NonNullable<FrameInput['quality']> | undefined;
+  /** Optional live camera source read every frame; defaults to static `camera` prop. */
+  readonly cameraSource?: () => PerspectiveCamera | OrthographicCamera;
   /** Frame-level callback. Convenience over engine.onFrame() — fires after
    *  every successful renderFrame() with the engine's FrameStats. */
   readonly onFrame?: (stats: FrameStats) => void;
@@ -78,8 +82,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const cr = entry.contentRect;
-        viewportW = Math.max(1, Math.floor(cr.width));
-        viewportH = Math.max(1, Math.floor(cr.height));
+        const dpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
+        viewportW = Math.max(1, Math.floor(cr.width * dpr));
+        viewportH = Math.max(1, Math.floor(cr.height * dpr));
       }
       viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
     });
@@ -112,19 +117,21 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   const tick = (): void => {
     if (stopped) return;
     rafHandle = requestAnimationFrame(tick);
-    opts.camera.updateMatrixWorld();
-    const view = new Float32Array(opts.camera.matrixWorldInverse.elements);
-    const proj = new Float32Array(opts.camera.projectionMatrix.elements);
+    const camera = opts.cameraSource?.() ?? opts.camera;
+    const quality = opts.qualitySource?.() ?? opts.quality;
+    camera.updateMatrixWorld();
+    const view = new Float32Array(camera.matrixWorldInverse.elements);
+    const proj = new Float32Array(camera.projectionMatrix.elements);
     const input: FrameInput = {
       viewMatrix: view,
       projMatrix: proj,
-      cameraPosition: [opts.camera.position.x, opts.camera.position.y, opts.camera.position.z],
+      cameraPosition: [camera.position.x, camera.position.y, camera.position.z],
       ...(prevView ? { prevViewMatrix: prevView } : {}),
       ...(prevProj ? { prevProjMatrix: prevProj } : {}),
       viewport: { width: viewportW, height: viewportH, devicePixelRatio: viewportDpr },
       frameIndex,
       frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,
-      ...(opts.quality ? { quality: opts.quality } : {}),
+      ...(quality ? { quality } : {}),
     };
     try {
       engine.renderFrame(input);

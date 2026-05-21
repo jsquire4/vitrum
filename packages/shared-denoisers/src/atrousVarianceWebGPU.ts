@@ -190,7 +190,7 @@ function fillRg32f(device: GPUDevice, texture: GPUTexture, width: number, height
   });
 }
 
-/** Linear depth → rgba32float texel `.r` (matches SVGF gbufferDepth sampling). */
+/** Linear depth → rgba32float texel `.w` (matches shared atrous depth sampling). */
 function uploadLinearDepthAsRgba32f(
   device: GPUDevice,
   texture: GPUTexture,
@@ -204,10 +204,10 @@ function uploadLinearDepthAsRgba32f(
       for (let x = 0; x < width; x += 1) {
         const si = y * width + x;
         const o = row + x * 4;
-        buf[o] = depth[si] ?? 0;
+        buf[o] = 0;
         buf[o + 1] = 0;
         buf[o + 2] = 0;
-        buf[o + 3] = 0;
+        buf[o + 3] = depth[si] ?? 0;
       }
     }
   });
@@ -528,7 +528,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   if (opts.linearDepth != null) {
     uploadLinearDepthAsRgba32f(device, gbufferDepth, opts.linearDepth, w, h);
   } else {
-    fillRgba32fTexture(device, gbufferDepth, w, h, [synDepth, 0, 0, 0]);
+    fillRgba32fTexture(device, gbufferDepth, w, h, [0, 0, 0, synDepth]);
   }
   if (opts.motionRg != null) {
     uploadInterleavedRgAsRg32f(device, motionVectors, opts.motionRg, w, h);

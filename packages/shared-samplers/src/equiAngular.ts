@@ -141,12 +141,11 @@ export function sampleEquiAngular(
   const theta = thetaMin + u * thetaRange;
   const t = D * Math.tan(theta) + tClosest;
 
-  // Step 5: PDF in t-space, evaluated at the CLAMPED t so the returned
-  // (t, pdf) pair is self-consistent (Kulla & Conty 2012, §3).
+  // Step 5: PDF in t-space, evaluated at the sampled t (Kulla & Conty 2012, §3).
   // p(t) = 1 / (D · thetaRange · (1 + ((t - t_closest)/D)²))
-  const tClamped = Math.max(0, t);
-  const ratio = (tClamped - tClosest) / D;
+  if (t < 0) return { t: 0, pdf: 0 };
+  const ratio = (t - tClosest) / D;
   const pdf = 1 / (D * thetaRange * (1 + ratio * ratio));
 
-  return { t: tClamped, pdf };
+  return { t, pdf };
 }

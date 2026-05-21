@@ -217,6 +217,7 @@ export class ProbeUpdatePass {
   // shade.wgsl — without this, DDGI runs at 1/5 the magnitude of Lo_emit
   // and walls render dark.
   private _sunIntensityMul = 1;
+  private _sunDirection: [number, number, number] = [0, -1, 0];
 
   // Sky tint and irradiance scale used by sampleSkyColor() in
   // probeUpdateRays.wgsl for miss rays. Defaults replicate the legacy
@@ -248,6 +249,10 @@ export class ProbeUpdatePass {
    *  the sun's Le matches shade.wgsl's Lo_emit. */
   setSunIntensityMultiplier(mul: number): void {
     this._sunIntensityMul = mul;
+  }
+
+  setSunDirection(direction: [number, number, number]): void {
+    this._sunDirection = direction;
   }
 
   /**
@@ -607,9 +612,9 @@ export class ProbeUpdatePass {
         data[base + 5] = 0;    // pos.y
         data[base + 6] = 0;    // pos.z
         data[base + 7] = l.intensity * this._sunIntensityMul; // intensity
-        data[base + 8] = 0;    // dir.x
-        data[base + 9] = -1;   // dir.y (sun is from above)
-        data[base + 10] = 0;   // dir.z
+        data[base + 8] = this._sunDirection[0];
+        data[base + 9] = this._sunDirection[1];
+        data[base + 10] = this._sunDirection[2];
         data[base + 11] = 0;   // innerCone (unused for sun)
         data[base + 12] = 1;   // color.r
         data[base + 13] = 0.95;// color.g

@@ -13,6 +13,7 @@ const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
 const INV_2PI = 0.15915494309189535;
 const INFINITY = 1e20;
+const TRI_INTERSECT_EPSILON = 1e-5;
 
 struct BVHNode {
   boundsMin: array<f32, 3>,
@@ -77,7 +78,7 @@ fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) ->
   let e2 = c - a;
   let h = cross(dir, e2);
   let det = dot(e1, h);
-  if (abs(det) < params.triIntersectEpsilon) {
+  if (abs(det) < TRI_INTERSECT_EPSILON) {
     return INFINITY;
   }
   let invDet = 1.0 / det;
@@ -92,7 +93,7 @@ fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) ->
     return INFINITY;
   }
   let t = dot(e2, q) * invDet;
-  if (t < params.triIntersectEpsilon) {
+  if (t < TRI_INTERSECT_EPSILON) {
     return INFINITY;
   }
   return t;

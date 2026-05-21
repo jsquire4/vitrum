@@ -55,7 +55,7 @@ struct FrameParams {
 @group(0) @binding(9) var normalDepthTexture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(10) var albedoTexture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(12) var motionVectorsTexture: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(12) var motionVectorsTexture: texture_storage_2d<rg32float, write>;
 @group(0) @binding(13) var<storage, read_write> varianceMomentsBuffer: array<vec4f>;
 @group(0) @binding(14) var<storage, read> analyticHeaders: array<vec4f>;
 @group(0) @binding(15) var<storage, read> analyticParams: array<vec4f>;

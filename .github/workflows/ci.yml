@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: jsquire4/three-gpu-pathtracer
-          ref: main
+          ref: phase4-normalmap-shadow-rays
           path: three-gpu-pathtracer
 
       - name: Set up Node
@@ -36,6 +36,10 @@ jobs:
       - name: Typecheck
         working-directory: vitrum
         run: npm run typecheck
+
+      - name: Typecheck staging shims
+        working-directory: vitrum
+        run: npm run typecheck:staging
 
       - name: Test
         working-directory: vitrum
@@ -60,6 +64,16 @@ jobs:
       - name: Shader-compile CI guard
         working-directory: vitrum
         run: npm run shader-compile-ci
+
+      - name: Benchmark gap-closure strict (capture-enabled runners)
+        if: ${{ env.VITRUM_GPU_CAPTURE == '1' }}
+        working-directory: vitrum
+        run: VITRUM_STRICT_GAP_CLOSURE=1 npm run benchmark:gap-closure
+
+      - name: Benchmark gap-closure skipped (no capture runner)
+        if: ${{ env.VITRUM_GPU_CAPTURE != '1' }}
+        working-directory: vitrum
+        run: echo "Skipping benchmark gap-closure: this runner is not capture-capable (VITRUM_GPU_CAPTURE!=1)."
 
       - name: Release dry run
         working-directory: vitrum

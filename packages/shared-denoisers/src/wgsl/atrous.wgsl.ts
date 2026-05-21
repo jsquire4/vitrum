@@ -43,7 +43,7 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let cCenter = textureLoad(inputColor,    gid.xy, 0).rgb;
-  let nCenter = textureLoad(gbufferNormal, gid.xy, 0).xyz * 2.0 - 1.0;
+  let nCenter = textureLoad(gbufferNormal, gid.xy, 0).xyz;
   // Depth lives in .w (alpha channel of the rgba16float G-buffer authored by
   // the shade pass).  Sky pixels write depth=0; non-sky pixels write
   // primary-hit distance, SIGN-FLIPPED for glass primary hits (the shade
@@ -73,7 +73,7 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let pu  = vec2u(p);
 
       let cP = textureLoad(inputColor,    pu, 0).rgb;
-      let nP = textureLoad(gbufferNormal, pu, 0).xyz * 2.0 - 1.0;
+      let nP = textureLoad(gbufferNormal, pu, 0).xyz;
       let zP = textureLoad(gbufferDepth,  pu, 0).w;
 
       let kIdx = u32((dy + 2) * 5 + (dx + 2));

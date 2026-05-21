@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickBackend, deriveScaleDefaults } from '../src/createEngine.js';
+import { pickBackend, deriveScaleDefaults, _validateDenoiserForBackendForTests } from '../src/createEngine.js';
 
 describe('pickBackend', () => {
   it('returns pt-webgl when prefer is quality, regardless of WebGPU', () => {
@@ -9,6 +9,11 @@ describe('pickBackend', () => {
 
   it('returns walkaround-hybrid when prefer is realtime + WebGPU available', () => {
     expect(pickBackend('realtime', true,  10_000_000)).toBe('walkaround-hybrid');
+  });
+
+  it('falls back to pt-webgl on SwiftShader even when WebGPU exists', () => {
+    expect(pickBackend('realtime', true, 10_000, 'swiftshader')).toBe('pt-webgl');
+    expect(pickBackend('auto', true, 10_000, 'swiftshader')).toBe('pt-webgl');
   });
 
   it('falls back to pt-webgl when prefer is realtime but WebGPU absent', () => {
@@ -56,5 +61,25 @@ describe('deriveScaleDefaults', () => {
   it('temporalAccumAlpha is scene-scale-independent', () => {
     expect(deriveScaleDefaults(0.01).temporalAccumAlpha).toBe(0.01);
     expect(deriveScaleDefaults(100).temporalAccumAlpha).toBe(0.01);
+  });
+});
+
+describe('validateDenoiserForBackend', () => {
+  it('rejects unsupported walkaround denoisers before backend construction', () => {
+    expect(() =>
+      _validateDenoiserForBackendForTests('walkaround-hybrid', { denoiser: 'neural' } as unknown as object),
+    ).toThrow(/unsupported denoiser/i);
+    expect(() =>
+      _validateDenoiserForBackendForTests('walkaround-hybrid', { denoiser: 'none' } as unknown as object),
+    ).toThrow(/unsupported denoiser/i);
+  });
+
+  it('accepts walkaround-supported denoisers', () => {
+    expect(() =>
+      _validateDenoiserForBackendForTests('walkaround-hybrid', { denoiser: 'atrous-variance' } as unknown as object),
+    ).not.toThrow();
+    expect(() =>
+      _validateDenoiserForBackendForTests('walkaround-hybrid', { denoiser: 'svgf-real' } as unknown as object),
+    ).not.toThrow();
   });
 });

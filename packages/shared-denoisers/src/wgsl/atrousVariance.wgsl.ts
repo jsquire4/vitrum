@@ -144,6 +144,8 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let frameCount = varUBO.frameCount;
+  let prevLum = textureLoad(varIn_prevRadiance, gid.xy, 0).r;
+  let mv = textureLoad(varIn_motionVec, gid.xy, 0).xy;
 
   var variance: f32;
 
@@ -181,6 +183,7 @@ fn svgfVarianceMain(@builtin(global_invocation_id) gid: vec3u) {
     variance = welfordVariance(state, frameCount);
   }
 
+  variance += 0.0 * (prevLum + mv.x + mv.y);
   textureStore(varOut_varianceOut, gid.xy, vec4f(variance, f32(frameCount), 0.0, 0.0));
 }
 
@@ -217,9 +220,8 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid.xy >= dims)) { return; }
 
   let cCenter = textureLoad(atrous_inputColor, gid.xy, 0).rgb;
-  // Match walkaround atrous.wgsl: packed normal (0..1) → world normal; depth in .x
-  let nCenter = textureLoad(atrous_gbufNormal, gid.xy, 0).xyz * 2.0 - 1.0;
-  let zCenter = textureLoad(atrous_gbufDepth, gid.xy, 0).x;
+  let nCenter = textureLoad(atrous_gbufNormal, gid.xy, 0).xyz;
+  let zCenter = textureLoad(atrous_gbufDepth, gid.xy, 0).w;
 
   // Sky / miss pixels pass through unfiltered.
   if (zCenter <= 0.0) {
@@ -250,8 +252,8 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let pu  = vec2u(p);
 
       let cP = textureLoad(atrous_inputColor, pu, 0).rgb;
-      let nP = textureLoad(atrous_gbufNormal, pu, 0).xyz * 2.0 - 1.0;
-      let zP = textureLoad(atrous_gbufDepth,  pu, 0).x;
+      let nP = textureLoad(atrous_gbufNormal, pu, 0).xyz;
+      let zP = textureLoad(atrous_gbufDepth,  pu, 0).w;
 
       let kIdx = u32((dy + 2) * 5 + (dx + 2));
       let h    = ATROUS_VARIANCE_KERNEL[kIdx];

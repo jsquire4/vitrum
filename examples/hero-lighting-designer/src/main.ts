@@ -100,7 +100,9 @@ function buildRoom(): THREE.Scene {
 
 // ── Three camera ──────────────────────────────────────────────────────────────
 
-const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 100);
+const initialW = Math.max(canvas.clientWidth, 1);
+const initialH = Math.max(canvas.clientHeight, 1);
+const camera = new THREE.PerspectiveCamera(50, initialW / initialH, 0.05, 100);
 camera.position.set(0, 1.6, 4.5);
 camera.lookAt(0, 1.2, 0);
 
@@ -182,7 +184,9 @@ bindLightSliders(2);
 // ── Resize ────────────────────────────────────────────────────────────────────
 
 window.addEventListener('resize', () => {
-  camera.aspect = canvas.clientWidth / canvas.clientHeight;
+  const w = Math.max(canvas.clientWidth, 1);
+  const h = Math.max(canvas.clientHeight, 1);
+  camera.aspect = w / h;
   camera.updateProjectionMatrix();
 });
 

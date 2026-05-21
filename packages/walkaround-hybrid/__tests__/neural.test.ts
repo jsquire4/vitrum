@@ -630,7 +630,7 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
     expect(spec.outputChannels).toBe(3);
   });
 
-  it('HybridEngine constructor throws with helpful message when neural + no weights', async () => {
+  it('HybridEngine constructor rejects neural mode with a clear unsupported-mode message', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
 
     const mockDevice = {
@@ -655,6 +655,6 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
       threeScene:           {} as unknown as import('three').Scene,
       denoiser:             'neural',
       // neuralWeights intentionally omitted
-    })).toThrow(/neural.*weights|neuralWeights.*required/i);
+    })).toThrow(/unsupported denoiser|supports:/i);
   });
 });

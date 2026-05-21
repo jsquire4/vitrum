@@ -290,19 +290,19 @@ function snapshotPreBuildMaterials(
   const matMap = new Map<THREE.Material, number>();
   const sigMap = new Map<string, number>();
   for (const mesh of meshes) {
-    const meshMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-    if (!meshMat || matMap.has(meshMat)) continue;
-    const sig = matSig(meshMat);
-    const existing = sigMap.get(sig);
-    if (existing !== undefined) {
-      // Different THREE.Material instance, same PBR signature — alias the
-      // identity to the existing canonical slot.
-      matMap.set(meshMat, existing);
-    } else {
-      const idx = matLut.length;
-      sigMap.set(sig, idx);
-      matMap.set(meshMat, idx);
-      matLut.push(meshMat);
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const meshMat of mats) {
+      if (!meshMat || matMap.has(meshMat)) continue;
+      const sig = matSig(meshMat);
+      const existing = sigMap.get(sig);
+      if (existing !== undefined) {
+        matMap.set(meshMat, existing);
+      } else {
+        const idx = matLut.length;
+        sigMap.set(sig, idx);
+        matMap.set(meshMat, idx);
+        matLut.push(meshMat);
+      }
     }
   }
 
@@ -317,7 +317,9 @@ function snapshotPreBuildMaterials(
     for (let gi = 0; gi < origGroups.length; gi++) {
       const group = origGroups[gi]!;
       const mesh = meshes[gi] ?? meshes[meshes.length - 1]!;
-      const meshMat = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      const meshMat = Array.isArray(mesh.material)
+        ? mesh.material[group.materialIndex ?? 0] ?? mesh.material[0]
+        : mesh.material;
       const matIdx = meshMat ? (matMap.get(meshMat) ?? 0) : 0;
       const idxStart = group.start;
       const idxEnd = idxStart + group.count;

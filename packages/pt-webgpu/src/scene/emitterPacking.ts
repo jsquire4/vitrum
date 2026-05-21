@@ -23,6 +23,19 @@ function discAreaPackedAsRect(e: DiscAreaEmitter): {
   const ny = e.normal[1];
   const nz = e.normal[2];
   const nLen = Math.hypot(nx, ny, nz);
+  if (!Number.isFinite(nLen) || nLen < 1e-8) {
+    const s = (Math.sqrt(Math.PI) * e.radius) / 2;
+    return {
+      position: [e.position[0], e.position[1], e.position[2]],
+      uAxis: [s, 0, 0],
+      vAxis: [0, 0, s],
+      radiance: [
+        e.color[0] * e.intensity,
+        e.color[1] * e.intensity,
+        e.color[2] * e.intensity,
+      ],
+    };
+  }
   const ux = nx / nLen;
   const uy = ny / nLen;
   const uz = nz / nLen;
@@ -129,7 +142,9 @@ function packMeshAreaTriangle(
   let a = fetchPos(i0);
   let b = fetchPos(i1);
   let c = fetchPos(i2);
-  const transform = primitive.kind === 'instanced-mesh' ? primitive.instances[0] : primitive.transform;
+  const transform = primitive.kind === 'instanced-mesh'
+    ? primitive.instances.find((m) => m != null)
+    : primitive.transform;
   if (transform != null) {
     a = transformPoint(transform, a);
     b = transformPoint(transform, b);

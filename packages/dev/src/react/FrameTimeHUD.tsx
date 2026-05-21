@@ -29,10 +29,14 @@ export class RingBuffer {
   private sum = 0;
 
   constructor(readonly capacity: number) {
+    if (!Number.isFinite(capacity) || capacity < 1) {
+      throw new RangeError(`RingBuffer capacity must be >= 1, got ${capacity}`);
+    }
     this.buf = new Float64Array(capacity);
   }
 
   push(value: number): void {
+    if (!Number.isFinite(value)) return;
     const old = this.buf[this.head] ?? 0;
     this.sum -= old;
     this.buf[this.head] = value;
@@ -125,14 +129,12 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
   }, [averageWindow]);
 
   useEffect(() => {
-    const ring = ringRef.current;
-
     // ── Path A: engine.onFrame present (T3.E) ───────────────────────────
     if (typeof engine.onFrame === 'function') {
       const unsubscribe = engine.onFrame((stats) => {
-        ring.push(stats.frameTimeMs);
+        ringRef.current.push(stats.frameTimeMs);
         setLatest(stats);
-        setAvgMs(ring.mean());
+        setAvgMs(ringRef.current.mean());
       });
       return () => {
         unsubscribe();
@@ -144,10 +146,10 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
     function tick(now: number): void {
       if (lastRafTimeRef.current !== null) {
         const dt = now - lastRafTimeRef.current;
-        ring.push(dt);
+        ringRef.current.push(dt);
         const synthetic: FrameStats = { frameTimeMs: dt };
         setLatest(synthetic);
-        setAvgMs(ring.mean());
+        setAvgMs(ringRef.current.mean());
       }
       lastRafTimeRef.current = now;
       rafRef.current = requestAnimationFrame(tick);
@@ -161,7 +163,7 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
       }
       lastRafTimeRef.current = null;
     };
-  }, [engine]);
+  }, [engine, averageWindow]);
 
   const fps = avgMs > 0 ? (1000 / avgMs).toFixed(1) : '—';
   const frameMs = latest?.frameTimeMs.toFixed(2) ?? '—';

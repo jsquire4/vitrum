@@ -1,12 +1,18 @@
 import { createHash } from 'node:crypto';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { GAP_CLOSURE_SCENARIOS } from './scenario-presets.mjs';
 
-const scenarios = GAP_CLOSURE_SCENARIOS;
+const scenarioFilter = (process.env.VITRUM_SCENARIO_FILTER ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+const scenarios = scenarioFilter.length === 0
+  ? GAP_CLOSURE_SCENARIOS
+  : GAP_CLOSURE_SCENARIOS.filter((s) => scenarioFilter.some((needle) => s.scenarioId.includes(needle)));
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -76,9 +82,51 @@ function parseResolution(resolution) {
   };
 }
 
+function stableLabel(v) {
+  if (typeof v === 'number') return Number.isInteger(v) ? String(v) : String(v).replace('.', '_');
+  return String(v);
+}
+
 function scenarioVariants(scenario) {
-  if (Array.isArray(scenario.causticVariants) && scenario.causticVariants.length > 0) return scenario.causticVariants;
-  return ['candidate'];
+  const axes = [];
+  if (Array.isArray(scenario.causticVariants) && scenario.causticVariants.length > 0) {
+    axes.push({
+      key: 'caustic',
+      values: scenario.causticVariants,
+      envName: 'VITRUM_CAUSTIC_STRATEGY',
+    });
+  }
+  if (Array.isArray(scenario.roughnessVariants) && scenario.roughnessVariants.length > 0) {
+    axes.push({
+      key: 'roughness',
+      values: scenario.roughnessVariants,
+      envName: 'VITRUM_ROUGHNESS',
+    });
+  }
+  if (Array.isArray(scenario.wallAlbedoVariants) && scenario.wallAlbedoVariants.length > 0) {
+    axes.push({
+      key: 'wall-albedo',
+      values: scenario.wallAlbedoVariants,
+      envName: 'VITRUM_WALL_ALBEDO',
+    });
+  }
+  if (axes.length === 0) {
+    return [{ id: 'candidate', env: {} }];
+  }
+  let variants = [{ id: 'candidate', env: {} }];
+  for (const axis of axes) {
+    const next = [];
+    for (const base of variants) {
+      for (const value of axis.values) {
+        next.push({
+          id: `${base.id}__${axis.key}-${stableLabel(value)}`,
+          env: { ...base.env, [axis.envName]: String(value) },
+        });
+      }
+    }
+    variants = next;
+  }
+  return variants;
 }
 
 function captureScenarioSettings(scenario) {
@@ -101,6 +149,10 @@ function runCommand(command, env, timeoutMs) {
   return runCommandWithTimeout(command, { cwd: repoRoot, env, timeoutMs });
 }
 
+function withIfDefined(target, key, value) {
+  if (value !== undefined && value !== null) target[key] = String(value);
+}
+
 async function runCapture(scenario, variant, outputImagePath) {
   const effectiveScenario = captureScenarioSettings(scenario);
   const { width, height } = parseResolution(effectiveScenario.resolution);
@@ -119,16 +171,34 @@ async function runCapture(scenario, variant, outputImagePath) {
         'VITRUM_CAPTURE_CMD is unset. Provide a deterministic capture adapter command that writes VITRUM_OUTPUT_PNG.',
     };
   }
-  const run = await runCommand(captureCommand, {
+  const env = {
     VITRUM_SCENARIO_ID: effectiveScenario.scenarioId,
     VITRUM_SEED: String(effectiveScenario.seed),
     VITRUM_WIDTH: String(width),
     VITRUM_HEIGHT: String(height),
     VITRUM_BOUNCES: String(effectiveScenario.bounces),
     VITRUM_SPP: String(effectiveScenario.spp),
-    VITRUM_CAUSTIC_STRATEGY: variant,
     VITRUM_OUTPUT_PNG: outputImagePath,
-  }, captureProcessTimeoutMs);
+    ...variant.env,
+  };
+  withIfDefined(env, 'VITRUM_BACKEND', effectiveScenario.backend);
+  withIfDefined(env, 'VITRUM_FRAMES', effectiveScenario.frames);
+  withIfDefined(env, 'VITRUM_ENVIRONMENT_MODE', effectiveScenario.environmentMode);
+  withIfDefined(env, 'VITRUM_GI_MODE', effectiveScenario.giMode);
+  withIfDefined(env, 'VITRUM_SCENE_VARIANT', effectiveScenario.sceneVariant);
+  withIfDefined(env, 'VITRUM_CAMERA_ELEVATION_DEG', effectiveScenario.cameraElevationDeg);
+  withIfDefined(env, 'VITRUM_RECT_AREA_LIGHT_COUNT', effectiveScenario.rectAreaLightCount);
+  withIfDefined(env, 'VITRUM_GLANCING_ANGLE_DEG', effectiveScenario.glancingAngleDeg);
+  withIfDefined(env, 'VITRUM_FLOOR_VARIANT', effectiveScenario.floorVariant);
+  if (Array.isArray(effectiveScenario.instanceScale) && effectiveScenario.instanceScale.length === 3) {
+    env.VITRUM_INSTANCE_SCALE = effectiveScenario.instanceScale.join(',');
+  }
+  if (effectiveScenario.glassDimensions != null) {
+    withIfDefined(env, 'VITRUM_GLASS_WIDTH', effectiveScenario.glassDimensions.width);
+    withIfDefined(env, 'VITRUM_GLASS_HEIGHT', effectiveScenario.glassDimensions.height);
+    withIfDefined(env, 'VITRUM_GLASS_THICKNESS', effectiveScenario.glassDimensions.thickness);
+  }
+  const run = await runCommand(captureCommand, env, captureProcessTimeoutMs);
   const imageExists = await fileExists(outputImagePath);
   if (run.code !== 0 || !imageExists) {
     return {
@@ -163,87 +233,118 @@ async function runCapture(scenario, variant, outputImagePath) {
 }
 
 async function evaluateScenario(scenario) {
+  console.log(`[gap-closure] scenario start: ${scenario.scenarioId}`);
   const scenarioDir = resolve(captureDir, scenario.scenarioId);
   await mkdir(scenarioDir, { recursive: true });
   const variants = scenarioVariants(scenario);
-
-  const baselineImagePath = resolve(baselineDir, `${scenario.scenarioId}.png`);
-  const baselineExistsBefore = await fileExists(baselineImagePath);
-  let baselineCaptureInfo = null;
-  if (!baselineExistsBefore && allowBaselineGen) {
-    await mkdir(baselineDir, { recursive: true });
-    baselineCaptureInfo = await runCapture(scenario, 'baseline', baselineImagePath);
-    if (baselineCaptureInfo.ok) {
-      await writePerfSidecar(baselineImagePath, baselineCaptureInfo.perfTelemetry);
-    }
-  }
-  const baselineExists = await fileExists(baselineImagePath);
-  if (!baselineExists) {
-    return {
-      ...scenario,
-      status: baselineCaptureInfo?.status ?? 'blocked-missing-baseline',
-      beforeImageHash: null,
-      afterImageHash: null,
-      deltaSummary:
-        baselineCaptureInfo?.reason ??
-        `Missing baseline image at ${baselineImagePath}. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.`,
-      perfBaselineMsPerSample: null,
-      perfCandidateMsPerSample: null,
-      passFail: 'BLOCKED',
-    };
-  }
-
-  const baselineHash = await sha256(baselineImagePath);
-  const baselineTelemetry = baselineCaptureInfo?.perfTelemetry ?? (await readPerfSidecar(baselineImagePath));
-  const perfBaseline = baselineTelemetry?.msPerSample ?? null;
-  let aggregateCandidateHash = '';
+  const baselineCaptureInfos = [];
   const perfSamples = [];
   const perfTelemetrySamples = [];
   const modeSummaries = [];
+  const beforeHashes = {};
+  const afterHashes = {};
+  const mismatches = [];
   for (const variant of variants) {
-    const outputImagePath = resolve(scenarioDir, `${variant}.png`);
+    const outputImagePath = resolve(scenarioDir, `${variant.id}.png`);
+    const baselineVariantPath = resolve(baselineDir, `${scenario.scenarioId}-${variant.id}.png`);
+    const baselineDefaultPath = resolve(baselineDir, `${scenario.scenarioId}.png`);
+    let baselineImagePath = baselineVariantPath;
+    let baselineExistsBefore = await fileExists(baselineImagePath);
+    if (!baselineExistsBefore) {
+      baselineImagePath = baselineDefaultPath;
+      baselineExistsBefore = await fileExists(baselineImagePath);
+    }
+    let baselineCaptureInfo = null;
+    if (!baselineExistsBefore && allowBaselineGen) {
+      await mkdir(baselineDir, { recursive: true });
+      baselineCaptureInfo = await runCapture(scenario, variant, baselineVariantPath);
+      if (baselineCaptureInfo.ok) {
+        await writePerfSidecar(baselineVariantPath, baselineCaptureInfo.perfTelemetry);
+        // Keep legacy single-file layout for non-axis scenarios while also
+        // writing the canonical variant-aware filename.
+        if (variant.id === 'candidate') {
+          await copyFile(baselineVariantPath, baselineDefaultPath);
+          await writePerfSidecar(
+            baselineDefaultPath,
+            baselineCaptureInfo.perfTelemetry,
+          );
+        }
+        baselineImagePath = baselineVariantPath;
+      }
+    }
+    if (!(await fileExists(baselineImagePath))) {
+      return {
+        ...scenario,
+        status: baselineCaptureInfo?.status ?? 'blocked-missing-baseline',
+        beforeImageHash: null,
+        afterImageHash: null,
+        deltaSummary:
+          baselineCaptureInfo?.reason ??
+          `Missing baseline image at ${baselineImagePath}. Set VITRUM_ALLOW_BASELINE_GEN=1 with a working adapter to generate it.`,
+        perfBaselineMsPerSample: null,
+        perfCandidateMsPerSample: null,
+        passFail: 'BLOCKED',
+      };
+    }
+    const baselineHash = await sha256(baselineImagePath);
+    beforeHashes[variant.id] = baselineHash;
+    const baselineTelemetry = baselineCaptureInfo?.perfTelemetry ?? (await readPerfSidecar(baselineImagePath));
+    if (baselineTelemetry != null) baselineCaptureInfos.push(baselineTelemetry);
+
     const capture = await runCapture(scenario, variant, outputImagePath);
     if (!capture.ok) {
       return {
         ...scenario,
         status: capture.status,
-        beforeImageHash: baselineHash,
+        beforeImageHash: beforeHashes,
         afterImageHash: null,
-        deltaSummary: `Capture for variant "${variant}" failed: ${capture.reason}`,
-        perfBaselineMsPerSample: perfBaseline,
+        deltaSummary: `Capture for variant "${variant.id}" failed: ${capture.reason}`,
+        perfBaselineMsPerSample: null,
         perfCandidateMsPerSample: null,
         passFail: 'BLOCKED',
       };
     }
     const variantHash = await sha256(outputImagePath);
-    aggregateCandidateHash += `${variant}:${variantHash}|`;
+    afterHashes[variant.id] = variantHash;
+    const identical = baselineHash === variantHash;
+    if (!identical) mismatches.push(`${variant.id}: baseline=${baselineHash.slice(0, 12)} candidate=${variantHash.slice(0, 12)}`);
     if (capture.perfMsPerSample != null) {
       perfSamples.push(capture.perfMsPerSample);
     }
     if (capture.perfTelemetry != null) {
-      perfTelemetrySamples.push({ variant, ...capture.perfTelemetry });
+      perfTelemetrySamples.push({ variant: variant.id, ...capture.perfTelemetry });
       await writePerfSidecar(outputImagePath, capture.perfTelemetry);
     }
-    modeSummaries.push(`${variant}:${variantHash.slice(0, 12)}`);
+    modeSummaries.push(`${variant.id}:${variantHash.slice(0, 12)}`);
+    console.log(`[gap-closure] ${scenario.scenarioId}/${variant.id} captured`);
   }
 
-  const afterHash = createHash('sha256').update(aggregateCandidateHash).digest('hex');
+  const beforeHash = createHash('sha256').update(JSON.stringify(beforeHashes)).digest('hex');
+  const afterHash = createHash('sha256').update(JSON.stringify(afterHashes)).digest('hex');
+  const perfBaselineValues = baselineCaptureInfos
+    .map((t) => t?.msPerSample)
+    .filter((x) => typeof x === 'number' && Number.isFinite(x));
+  const perfBaseline = perfBaselineValues.length === 0
+    ? null
+    : perfBaselineValues.reduce((a, b) => a + b, 0) / perfBaselineValues.length;
   const perfCandidate =
     perfSamples.length === 0
       ? null
       : perfSamples.reduce((a, b) => a + b, 0) / perfSamples.length;
-  const identical = baselineHash === afterHash;
-  const failedByHash = failOnIdentical && identical;
+  const hasMismatch = mismatches.length > 0;
+  const failedByHash = (failOnIdentical && !hasMismatch) || (!failOnIdentical && hasMismatch);
   return {
     ...scenario,
-    status: failedByHash ? 'failed-identical-hash' : 'captured',
-    beforeImageHash: baselineHash,
-    afterImageHash: afterHash,
-    deltaSummary: `variants[${modeSummaries.join(', ')}]`,
+    status: failedByHash ? (hasMismatch ? 'failed-baseline-mismatch' : 'failed-identical-hash') : 'captured',
+    beforeImageHash: beforeHashes,
+    afterImageHash: afterHashes,
+    deltaSummary: hasMismatch
+      ? `mismatch[${mismatches.join('; ')}] variants[${modeSummaries.join(', ')}]`
+      : `match variants[${modeSummaries.join(', ')}]`,
     perfBaselineMsPerSample: perfBaseline,
     perfCandidateMsPerSample: perfCandidate,
     perfTelemetry: {
-      baseline: baselineTelemetry,
+      baseline: baselineCaptureInfos,
       candidates: perfTelemetrySamples,
     },
     passFail: failedByHash ? 'FAIL' : 'PASS',

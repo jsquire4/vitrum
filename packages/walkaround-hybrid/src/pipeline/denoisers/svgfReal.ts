@@ -57,6 +57,7 @@ export class SVGFRealDenoiser implements Denoiser {
   private _momentsPipeline!: GPUComputePipeline;
   private _fallbackPipeline!: GPUComputePipeline;
   private _atrousPipeline!: GPUComputePipeline;
+  private _depthExtractPipeline!: GPUComputePipeline;
 
   /** Reprojection UBO — packed once at init time, stable per frame. */
   private readonly _reprojUboRef: UboRef = { buf: undefined };
@@ -86,12 +87,27 @@ export class SVGFRealDenoiser implements Denoiser {
     const atrousSM = device.createShaderModule({
       label: 'svgf-real-atrous-variance', code: composeWgsl(ATROUS_VARIANCE_MODULE, WGSL_MODULES),
     });
+    const depthExtractSM = device.createShaderModule({
+      label: 'svgf-real-depth-extract',
+      code: /* wgsl */ `
+@group(0) @binding(0) var inNormalDepth: texture_2d<f32>;
+@group(0) @binding(1) var outDepth: texture_storage_2d<r32float, write>;
+@compute @workgroup_size(16, 16, 1)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let dims = textureDimensions(inNormalDepth);
+  if (any(gid.xy >= dims)) { return; }
+  let nd = textureLoad(inNormalDepth, gid.xy, 0);
+  textureStore(outDepth, gid.xy, vec4f(abs(nd.w), 0.0, 0.0, 0.0));
+}
+`,
+    });
 
     for (const [label, sm] of [
       ['svgf-reproj', reprojSM],
       ['svgf-moments', momentsSM],
       ['svgf-7x7', fallbackSM],
       ['svgf-real-atrous-variance', atrousSM],
+      ['svgf-real-depth-extract', depthExtractSM],
     ] as [string, GPUShaderModule][]) {
       const info = await sm.getCompilationInfo();
       const errors = info.messages.filter((m) => m.type === 'error');
@@ -125,6 +141,11 @@ export class SVGFRealDenoiser implements Denoiser {
     this._atrousPipeline = await device.createComputePipelineAsync({
       label: 'svgf-real-atrous', layout: 'auto',
       compute: { module: atrousSM, entryPoint: 'svgfAtrousMain' },
+    });
+    this._depthExtractPipeline = await device.createComputePipelineAsync({
+      label: 'svgf-real-depth-extract',
+      layout: 'auto',
+      compute: { module: depthExtractSM, entryPoint: 'main' },
     });
 
     // ── Eager reproj UBO allocation + default pack ────────────────────────
@@ -170,6 +191,23 @@ export class SVGFRealDenoiser implements Denoiser {
     const radWrite = this._pingPong === 0 ? svgf.svgfPrevRadianceTextureB : svgf.svgfPrevRadianceTextureA;
 
     const reproj = this._reprojPipeline;
+    const depthRead = this._pingPong === 0 ? svgf.svgfDepthTextureA : svgf.svgfDepthTextureB;
+    const depthWrite = this._pingPong === 0 ? svgf.svgfDepthTextureB : svgf.svgfDepthTextureA;
+    {
+      const depthBg = device.createBindGroup({
+        label: 'svgf-real-depth-extract-bg',
+        layout: this._depthExtractPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: common.gNormalDepthTexture.createView() },
+          { binding: 1, resource: depthWrite.createView() },
+        ],
+      });
+      const pass = encoder.beginComputePass(computeDesc('svgf-real-reproj'));
+      pass.setPipeline(this._depthExtractPipeline);
+      pass.setBindGroup(0, depthBg);
+      pass.dispatchWorkgroups(wgX16, wgY16, 1);
+      pass.end();
+    }
     {
       const bg = device.createBindGroup({
         label: 'svgf-real-reproj-bg',
@@ -178,10 +216,10 @@ export class SVGFRealDenoiser implements Denoiser {
           { binding: 0, resource: common.hdrColorTexture.createView() },          // currColor (sampled)
           { binding: 1, resource: radRead.createView() },                          // prevColor (sampled)
           { binding: 2, resource: common.motionVectorTexture.createView() },       // motionVec
-          { binding: 3, resource: common.gNormalDepthTexture.createView() },       // currDepth (.r)
+          { binding: 3, resource: depthWrite.createView() },                        // currDepth (r32float extracted from gNormalDepth.w)
           { binding: 4, resource: common.gNormalDepthTexture.createView() },       // currNormal (.xyz 0..1)
           { binding: 5, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
-          { binding: 6, resource: common.gNormalDepthTexture.createView() },       // prevDepth (1-frame lag)
+          { binding: 6, resource: depthRead.createView() },                         // prevDepth
           { binding: 7, resource: common.gNormalDepthTexture.createView() },       // prevNormal (1-frame lag)
           { binding: 8, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // prevObjId (placeholder)
           { binding: 9, resource: histRead.createView() },                         // historyLengthIn

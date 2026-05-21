@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeSceneAABB } from '../src/sceneAABB.js';
-import type { Scene, MeshPrimitive, InstancedMeshPrimitive, Material, Mat4 } from '@vitrum/core';
+import type { Scene, MeshPrimitive, InstancedMeshPrimitive, Material, Mat4, AnalyticPrimitive } from '@vitrum/core';
 
 const MAT: Material = {
   baseColor: [0.5, 0.5, 0.5],
@@ -113,5 +113,48 @@ describe('computeSceneAABB', () => {
     expect(aabb.max[0]).toBeCloseTo(3.5);
     // 12 tris × 2 instances
     expect(aabb.triangleCount).toBe(24);
+  });
+
+  it('ignores empty instanced-mesh instance arrays instead of returning infinities', () => {
+    const cube = unitCube('inst-empty');
+    const inst: InstancedMeshPrimitive = {
+      kind: 'instanced-mesh',
+      id: 'ie',
+      positions: cube.positions,
+      normals: cube.normals,
+      indices: cube.indices!,
+      material: cube.material,
+      instances: [],
+    };
+    const aabb = computeSceneAABB(emptyScene([inst]));
+    expect(aabb.min).toEqual([-0.5, -0.5, -0.5]);
+    expect(aabb.max).toEqual([0.5, 0.5, 0.5]);
+    expect(Number.isFinite(aabb.diagonal)).toBe(true);
+  });
+
+  it('uses analytic primitive params for bounds when no fallback mesh is present', () => {
+    const sphere: AnalyticPrimitive = {
+      kind: 'analytic',
+      id: 's',
+      shape: 'sphere',
+      params: new Float32Array([2, 3, 4, 1]),
+      material: MAT,
+    };
+    const aabb = computeSceneAABB(emptyScene([sphere]));
+    expect(aabb.min).toEqual([1, 2, 3]);
+    expect(aabb.max).toEqual([3, 4, 5]);
+  });
+
+  it('includes non-directional emitters in scene bounds', () => {
+    const scene: Scene = {
+      primitives: [],
+      emitters: [
+        { kind: 'point', id: 'p', color: [1, 1, 1], intensity: 1, position: [10, 0, 0] },
+      ],
+      environment: { kind: 'none' },
+    };
+    const aabb = computeSceneAABB(scene);
+    expect(aabb.center[0]).toBe(10);
+    expect(aabb.diagonal).toBe(1);
   });
 });

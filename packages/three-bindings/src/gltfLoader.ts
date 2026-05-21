@@ -110,9 +110,20 @@ function ensureThreeScene(gltf: GLTF): THREE.Scene {
 }
 
 function extractFirstCamera(gltf: GLTF): GltfCamera | undefined {
-  const cameras = gltf.cameras;
-  if (!cameras || cameras.length === 0) return undefined;
-  const cam = cameras[0]!;
+  let cam: THREE.Camera | undefined;
+  if (gltf.scene != null) {
+    gltf.scene.updateMatrixWorld(true);
+    gltf.scene.traverse((obj) => {
+      if (cam == null && (obj as THREE.Camera).isCamera === true) {
+        cam = obj as THREE.Camera;
+      }
+    });
+  }
+  if (cam == null) {
+    const cameras = gltf.cameras;
+    if (!cameras || cameras.length === 0) return undefined;
+    cam = cameras[0]!;
+  }
   cam.updateMatrixWorld(true);
 
   // Camera world matrix: glTF stores model-space; matrixWorld is the

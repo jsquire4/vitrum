@@ -4,7 +4,11 @@ Baseline PNGs for GPU verification and gap-closure runs live under `baseline/`.
 
 ## Layout
 
-- **`baseline/<scenarioId>.png`** — expected image for each entry in
+- **`baseline/<scenarioId>-<variantId>.png`** — canonical baseline image per
+  scenario variant (`candidate` when no axis variants exist).
+- **`baseline/<scenarioId>.png`** — compatibility alias for
+  `<scenarioId>-candidate.png`.
+  Expected scenarios come from
   [tools/benchmark-runner/scenario-presets.mjs](../benchmark-runner/scenario-presets.mjs)
   (mirrors [plan/gap-closure-acceptance-matrix.md](../../plan/gap-closure-acceptance-matrix.md)).
 - **`<scenarioId>.png.json`** (optional) — perf sidecar written by the benchmark
@@ -18,7 +22,7 @@ From the repo root, with a working GPU capture adapter:
 VITRUM_GPU_CAPTURE=1 \
 VITRUM_ALLOW_BASELINE_GEN=1 \
 VITRUM_CAPTURE_CMD="node ./tools/benchmark-runner/capture-adapter-playwright.mjs" \
-VITRUM_CAPTURE_URL="http://127.0.0.1:5173/" \
+VITRUM_CAPTURE_URL="http://127.0.0.1:5174/" \
 npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner
 ```
 
