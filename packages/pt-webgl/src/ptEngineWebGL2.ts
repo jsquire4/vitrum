@@ -110,6 +110,7 @@ interface WebGLPathTracerCompat {
    *  no geometry re-upload. Used by `PTEngineWebGL2.updateEnvironment()` to
    *  service host-driven timeOfDay scrubs cheaply. */
   updateEnvironment?(): void;
+  configureAdditiveAccumulation?(enabled: boolean, blendFrames: boolean): void;
   /** Optional fork field — the wrapper stores a reference to the THREE scene
    *  most recently passed to `setScene()`. updateEnvironment() reads
    *  `scene.environment*` off this reference, so the host MUST mutate the
@@ -117,7 +118,8 @@ interface WebGLPathTracerCompat {
   scene?: unknown;
   dispose?(): void;
   samples: number;
-  tiles: { setScalar: (n: number) => void };
+  tileRepeatFactors?: Uint8Array | null;
+  tiles: { setScalar: (n: number) => void; set(x: number, y: number): void; x: number; y: number };
   bounces: number;
   filterGlossyFactor: number;
   fastUpdate: boolean;
@@ -347,6 +349,8 @@ export class PTEngineWebGL2 implements Engine {
   #lastRenderWidth = 0;
   #lastRenderHeight = 0;
   #contextLost = false;
+  #contextLostHandler: ((ev: Event) => void) | null = null;
+  #lastTargetSpp = 16;
   #lastTelemetry: PTEngineWebGL2Telemetry | undefined;
   #additiveAccumulation = false;
   #pixelAdaptiveSampling = false;
@@ -409,12 +413,17 @@ export class PTEngineWebGL2 implements Engine {
     if (this.#pixelAdaptiveSampling) {
       this.#tileVariancePass = new TileVariancePass(MAX_TILE_GRID);
     }
-    gpu.pathTracer.configureAdditiveAccumulation(this.#additiveAccumulation, this.#additiveAccumulation);
-    this.#renderer.domElement?.addEventListener?.('webglcontextlost', () => {
+    const tracerCompat = gpu.pathTracer as unknown as WebGLPathTracerCompat;
+    tracerCompat.configureAdditiveAccumulation?.(
+      this.#additiveAccumulation,
+      this.#additiveAccumulation,
+    );
+    this.#contextLostHandler = () => {
       this.#contextLost = true;
       this.#samplesPerFrame = 1;
       this.#tileSize = Math.max(this.#tileSize, DEFAULT_TILE_SIZE);
-    });
+    };
+    this.#renderer.domElement?.addEventListener?.('webglcontextlost', this.#contextLostHandler);
     this.#pathTracer.renderDelay = 0;
     this.#pathTracer.minSamples = 0;
     this.#pathTracer.fadeDuration = 0;
@@ -543,6 +552,7 @@ export class PTEngineWebGL2 implements Engine {
     w: number,
     h: number,
   ): void {
+    const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
     if (this.#pixelAdaptiveSampling && this.#additiveAccumulation && this.#tileVariancePass != null) {
       if (sppBefore >= 2 && sppBefore % this.#pixelAdaptiveCadence === 0) {
         computeAdaptiveTileRepeatFactors(
@@ -555,10 +565,10 @@ export class PTEngineWebGL2 implements Engine {
           tilesY,
           this.#tileFactorsScratch,
         );
-        this.#pathTracer.tileRepeatFactors = this.#tileFactorsScratch.subarray(0, tileCount);
+        tracerCompat.tileRepeatFactors = this.#tileFactorsScratch.subarray(0, tileCount);
       }
     } else if (!this.#pixelAdaptiveSampling) {
-      this.#pathTracer.tileRepeatFactors = null;
+      tracerCompat.tileRepeatFactors = null;
     }
   }
 
@@ -707,7 +717,7 @@ export class PTEngineWebGL2 implements Engine {
     this.#assertLive('renderFrame');
     if (this.#slot.get() === 'paused') {
       const spp = this.#pathTracer.samples;
-      const cap = this.#maxSamplesLimit;
+      const cap = Math.max(1, Math.min(this.#lastTargetSpp, this.#maxSamplesLimit));
       return {
         primaryRadiance: this.#pathTracer.target.texture,
         samplesAccumulated: spp,
@@ -726,6 +736,7 @@ export class PTEngineWebGL2 implements Engine {
     const q = input.quality ?? {};
     const b = Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit);
     const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
+    this.#lastTargetSpp = targetSpp;
     this.#pathTracer.bounces = b;
     this.#pathTracer.transmissiveBounces = Math.min(b, this.#maxBouncesLimit);
     this.#pathTracer.filterGlossyFactor = q.filteredGlossyFactor ?? 0;
@@ -873,6 +884,12 @@ export class PTEngineWebGL2 implements Engine {
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
+    if (this.#contextLostHandler != null) {
+      try {
+        this.#renderer.domElement?.removeEventListener?.('webglcontextlost', this.#contextLostHandler);
+      } catch {}
+      this.#contextLostHandler = null;
+    }
     if (this.#tileVariancePass != null) {
       this.#tileVariancePass.dispose();
       this.#tileVariancePass = null;
@@ -882,6 +899,8 @@ export class PTEngineWebGL2 implements Engine {
       this.#threeSceneRoot = null;
     }
     this.#pathTracer.dispose();
+    this.#frameSubs.length = 0;
+    this.#progressSubs.length = 0;
     this.#slot.set('disposed');
   }
 }

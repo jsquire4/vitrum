@@ -39,5 +39,12 @@ export function resolveEnvironment(threeScene: THREE.Scene): SceneEnvironment {
     const rotationY = threeScene.environmentRotation?.y ?? 0;
     return { kind: 'hdri', hdri: threeScene.environment, intensity, rotationY };
   }
+  // Some hosts use background-only HDRI setups (environment unset).
+  if ((threeScene.background as THREE.Texture | null | undefined)?.isTexture === true) {
+    const bg = threeScene.background as THREE.Texture;
+    const intensity = threeScene.backgroundIntensity ?? 1;
+    const rotationY = threeScene.backgroundRotation?.y ?? 0;
+    return { kind: 'hdri', hdri: bg, intensity, rotationY };
+  }
   return { kind: 'none' };
 }

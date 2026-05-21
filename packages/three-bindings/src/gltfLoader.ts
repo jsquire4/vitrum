@@ -119,11 +119,9 @@ function extractFirstCamera(gltf: GLTF): GltfCamera | undefined {
       }
     });
   }
-  if (cam == null) {
-    const cameras = gltf.cameras;
-    if (!cameras || cameras.length === 0) return undefined;
-    cam = cameras[0]!;
-  }
+  // Use only scene-attached cameras. Detached glTF camera objects can carry
+  // identity world transforms and produce invalid view matrices.
+  if (cam == null) return undefined;
   cam.updateMatrixWorld(true);
 
   // Camera world matrix: glTF stores model-space; matrixWorld is the

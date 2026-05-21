@@ -67,4 +67,18 @@ describe('resolveEnvironment', () => {
     expect(env.intensity).toBeCloseTo(0.4);
     expect(env.rotationY).toBeCloseTo(-Math.PI / 4);
   });
+
+  it('uses background texture when environment is unset', () => {
+    const scene = new THREE.Scene();
+    const bg = makeFakeHdriTexture();
+    scene.background = bg;
+    scene.backgroundIntensity = 0.75;
+    scene.backgroundRotation.set(0, Math.PI / 8, 0);
+    const env = resolveEnvironment(scene);
+    expect(env.kind).toBe('hdri');
+    if (env.kind !== 'hdri') return;
+    expect(env.hdri).toBe(bg);
+    expect(env.intensity).toBeCloseTo(0.75);
+    expect(env.rotationY).toBeCloseTo(Math.PI / 8);
+  });
 });

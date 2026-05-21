@@ -32,6 +32,7 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
 const PROTOTYPE_MAX_BOUNCES = 8;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
+const REQUIRED_STORAGE_BUFFERS_PER_STAGE = 18;
 
 interface StateSlot {
   readonly get: () => EngineState;
@@ -162,12 +163,10 @@ class PTEngineWebGPU implements Engine {
   #buildParamsBuffer(input: FrameInput, width: number, height: number): ArrayBuffer {
     const sb = this.#sceneBuffers!;
     const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
-    const invVp = invertMat4(vp) ?? new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]);
+    const invVp = invertMat4(vp);
+    if (invVp == null) {
+      throw new Error('renderFrame: non-invertible view-projection matrix');
+    }
 
     const paramsArrayBuffer = new ArrayBuffer(512);
     const paramsU32 = new Uint32Array(paramsArrayBuffer);
@@ -548,6 +547,16 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
   if (opts.denoiser != null && opts.denoiser !== 'none') {
     console.warn(
       `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but prototype backend has no denoiser integration yet.`,
+    );
+  }
+  const maxStorageBuffers = opts.device.limits?.maxStorageBuffersPerShaderStage;
+  if (
+    typeof maxStorageBuffers === 'number' &&
+    Number.isFinite(maxStorageBuffers) &&
+    maxStorageBuffers < REQUIRED_STORAGE_BUFFERS_PER_STAGE
+  ) {
+    throw new Error(
+      `createPTEngine_WebGPU: adapter limit maxStorageBuffersPerShaderStage=${maxStorageBuffers} is below required ${REQUIRED_STORAGE_BUFFERS_PER_STAGE}`,
     );
   }
   const slot = makeStateSlot();
