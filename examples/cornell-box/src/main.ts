@@ -532,6 +532,32 @@ async function main(): Promise<void> {
   const bdptBuffer: BdptLightPathBuffer | null = config.bdpt
     ? new BdptLightPathBuffer({ maxLightBounces: config.bdptMaxLightBounces })
     : null;
+  let disposed = false;
+  const disposeAll = (): void => {
+    if (disposed) return;
+    disposed = true;
+    try {
+      bilateral?.dispose();
+    } catch {
+      // ignore best-effort cleanup
+    }
+    try {
+      bdptBuffer?.dispose();
+    } catch {
+      // ignore best-effort cleanup
+    }
+    try {
+      engine.dispose();
+    } catch {
+      // ignore best-effort cleanup
+    }
+    try {
+      renderer.dispose();
+    } catch {
+      // ignore best-effort cleanup
+    }
+  };
+  window.addEventListener('beforeunload', disposeAll, { once: true });
 
   let frame = 0;
   const startMs = performance.now();
@@ -612,6 +638,7 @@ async function main(): Promise<void> {
   }
 
   function loop(): void {
+    if (disposed) return;
     if (frame === 0) {
       setStatus('Rendering first sample...');
     }

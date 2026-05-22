@@ -96,6 +96,20 @@ export function acquireSwapChainView(ctx: GPUCanvasContext | null): GPUTextureVi
   }
 }
 
+/** Convert CSS-pixel canvas dimensions to the physical viewport contract. */
+export function toPhysicalViewport(
+  cssWidth: number,
+  cssHeight: number,
+  dpr: number,
+): Pick<FrameInput['viewport'], 'width' | 'height' | 'devicePixelRatio'> {
+  const safeDpr = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  return {
+    width: Math.max(1, Math.floor(cssWidth * safeDpr)),
+    height: Math.max(1, Math.floor(cssHeight * safeDpr)),
+    devicePixelRatio: safeDpr,
+  };
+}
+
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
   /** Scene description. Either a vitrum Scene or a THREE.Scene. */
   readonly scene: Scene | THREE.Scene;
@@ -163,24 +177,22 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // can only be resized via `setSize(w, h)`. Duck-type for that method
   // and call it when the host's canvas dimensions change so WebGPU hosts
   // using attachVitrum get correct resize behaviour out of the box.
-  let viewportW = Math.max(1, opts.canvas.width);
-  let viewportH = Math.max(1, opts.canvas.height);
+  let viewportW = Math.max(1, Math.floor(opts.canvas.width));
+  let viewportH = Math.max(1, Math.floor(opts.canvas.height));
   let viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
   const engineSetSize = (engine as unknown as { setSize?: (w: number, h: number) => void }).setSize;
   let resizeObserver: ResizeObserver | undefined;
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver((entries) => {
+      viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
       for (const entry of entries) {
         const cr = entry.contentRect;
-        viewportW = Math.max(1, Math.floor(cr.width));
-        viewportH = Math.max(1, Math.floor(cr.height));
+        const viewport = toPhysicalViewport(cr.width, cr.height, viewportDpr);
+        viewportW = viewport.width;
+        viewportH = viewport.height;
       }
-      viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
       if (typeof engineSetSize === 'function') {
-        // Pass physical pixels (DPR-applied) to match the engine's render-
-        // target allocation convention. HybridEngine.setSize is a no-op when
-        // the dimensions match, so this is cheap on no-op resizes.
-        try { engineSetSize.call(engine, Math.max(1, Math.floor(viewportW * viewportDpr)), Math.max(1, Math.floor(viewportH * viewportDpr))); } catch {}
+        try { engineSetSize.call(engine, viewportW, viewportH); } catch {}
       }
     });
     resizeObserver.observe(opts.canvas);

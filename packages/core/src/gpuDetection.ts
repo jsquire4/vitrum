@@ -85,6 +85,16 @@ export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
   return cached;
 }
 
+/**
+ * Clears the memoized detectGpu probe result.
+ *
+ * @internal Test-only escape hatch for environments that need deterministic
+ * first-call behavior across test cases.
+ */
+export function _resetCacheUnsafe(): void {
+  cached = null;
+}
+
 function publish(result: GpuDetection): void {
   if (typeof window !== 'undefined') {
     window.__WG__ = result;

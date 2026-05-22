@@ -164,7 +164,13 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
       const matId = nextMaterialId++;
       materials.push(...materialToPackedVec4s(primitive.material));
       const transform = primitive.transform ?? IDENTITY_MAT4;
-      const invTransform = invertMat4(transform) ?? IDENTITY_MAT4;
+      const maybeInvTransform = invertMat4(transform);
+      if (maybeInvTransform == null) {
+        warnings.push(
+          `Analytic primitive "${primitive.id}" has non-invertible transform; using identity worldToLocal fallback.`,
+        );
+      }
+      const invTransform = maybeInvTransform ?? IDENTITY_MAT4;
       const paramsOffset = Math.floor(analyticParams.length / 4);
       const p = primitive.params;
       analyticParams.push(

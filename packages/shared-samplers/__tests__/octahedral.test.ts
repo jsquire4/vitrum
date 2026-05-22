@@ -46,10 +46,12 @@ function octDecodeTS(oct: [number, number]): [number, number, number] {
   let nx = oct[0];
   let ny = oct[1];
   if (nz < 0.0) {
-    // xy = (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y))
+    // Mirror WGSL select() semantics so 0 maps to +1.
     const origNx = nx;
-    nx = (1.0 - Math.abs(ny)) * Math.sign(origNx);
-    ny = (1.0 - Math.abs(origNx)) * Math.sign(ny);
+    const sx = origNx >= 0 ? 1 : -1;
+    const sy = ny >= 0 ? 1 : -1;
+    nx = (1.0 - Math.abs(ny)) * sx;
+    ny = (1.0 - Math.abs(origNx)) * sy;
   }
   const len = Math.hypot(nx, ny, nz);
   return [nx / len, ny / len, nz / len];

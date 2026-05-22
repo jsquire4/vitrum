@@ -147,11 +147,11 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     // not hardcoded [0]. The main direct-light loop still uses rb = ri * 4u.
     // We verify a representative sample is present and the .w-stuffing reads
     // are gone.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('pointLights[0].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('pointLights[1].rgb');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[0].xyz');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[1].w');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[2].rgb');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('pointLights[pointBase].xyz');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('pointLights[pointBase + 1u].rgb');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[spotBase].xyz');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[spotBase + 1u].w');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('spotLights[spotBase + 2u].rgb');
     // Item 15: rectAreaLights and meshAreaLights now use loop-indexed rb/mb.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb].xyz');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('rectAreaLights[rb + 3u].rgb');

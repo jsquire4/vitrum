@@ -42,7 +42,8 @@ describe.skipIf(!RC_ACCEPTANCE_ENABLED)('W8 — Radiance Cascades GPU acceptance
     // any machine; when VITRUM_RC_ACCEPTANCE=1 is set with a real GPU
     // adapter + the harness wired in, this assertion exercises the full
     // Phase 3 stack.
-    expect(RC_ACCEPTANCE_ENABLED).toBe(true);
+    expect(process.env['VITRUM_RC_ACCEPTANCE']).toBe('1');
+    expect(typeof navigator !== 'undefined' && navigator.gpu != null).toBe(true);
   });
 
   it('rcEnabled: true → false toggles bit-identically on the bind-group path (no recompile)', () => {
@@ -55,6 +56,14 @@ describe.skipIf(!RC_ACCEPTANCE_ENABLED)('W8 — Radiance Cascades GPU acceptance
     //
     // Harness checks: count `device.createComputePipeline` calls before
     // and after `engine.setRCWeight(0)` (api not yet added — Phase 5).
-    expect(RC_ACCEPTANCE_ENABLED).toBe(true);
+    expect(process.env['VITRUM_RC_ACCEPTANCE']).toBe('1');
+    expect(typeof navigator !== 'undefined' && navigator.gpu != null).toBe(true);
+  });
+});
+
+describe('W8 — Radiance Cascades acceptance gate', () => {
+  it('is opt-in only and remains disabled by default', () => {
+    const enabled = process.env['VITRUM_RC_ACCEPTANCE'] === '1';
+    expect(RC_ACCEPTANCE_ENABLED).toBe(enabled);
   });
 });

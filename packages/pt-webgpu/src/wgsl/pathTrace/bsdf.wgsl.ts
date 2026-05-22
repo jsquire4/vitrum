@@ -153,8 +153,8 @@ fn sampleGgxVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f
  * surface-tangent ONB axes (caller computes via buildOnb).
  * Returns a BsdfSample where:
  *   wi    — world-space reflection direction
- *   pdf   — GGX half-vector PDF d * nDotH / (4 * vDotH), matching the
- *           convention used by brdfDirectionalPdf for MIS consistency
+ *   pdf   — VNDF reflection PDF D(h) * G1(wo) / (4 * NdotV), matching
+ *           brdfDirectionalPdf's specular branch for MIS consistency
  *   value — unitless microfacet specular kernel D * G / (4 * nDotV * nDotL);
  *           Fresnel and albedo are integrated by callers at the throughput
  *           level (matches sampleNextBounceDirection's existing pattern).
@@ -184,7 +184,8 @@ fn glossyReflectionSample(rng: ptr<function, u32>, wo: vec3f, n: vec3f, t: vec3f
     result.pdf = 0.0;
     result.value = vec3f(0.0);
   } else {
-    result.pdf = d * nDotH / max(4.0 * vDotH, 1e-6);
+    let g1Wo = smithG1(nDotV, roughness);
+    result.pdf = (d * g1Wo) / max(4.0 * nDotV, 1e-6);
     let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
     result.value = vec3f((d * g) / max(4.0 * nDotV * nDotL, 1e-6));
   }

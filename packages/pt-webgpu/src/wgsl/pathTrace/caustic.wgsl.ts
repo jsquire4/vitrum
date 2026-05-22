@@ -152,8 +152,8 @@ fn photonMapContribution(
 ) -> vec3f {
   var availableLightCount = 0u;
   if (params.lightDir.w > 1e-6) { availableLightCount = availableLightCount + 1u; }
-  if (params.pointLightCount > 0u) { availableLightCount = availableLightCount + 1u; }
-  if (params.spotLightCount > 0u) { availableLightCount = availableLightCount + 1u; }
+  if (params.pointLightCount > 0u) { availableLightCount = availableLightCount + params.pointLightCount; }
+  if (params.spotLightCount > 0u) { availableLightCount = availableLightCount + params.spotLightCount; }
   if (availableLightCount == 0u) { return vec3f(0.0); }
   let photonCount = u32(clamp(f32(params.mneeMaxIterations) * 2.0, 8.0, 32.0));
   let maxChain = clamp(params.mneeMaxChainLength, 1u, 8u);
@@ -184,28 +184,32 @@ fn photonMapContribution(
       current = current + 1u;
     }
     if (params.pointLightCount > 0u) {
-      if (current == pick) {
-        photonOrigin = pointLights[0].xyz;
+      if (pick >= current && pick < current + params.pointLightCount) {
+        let pointIdx = pick - current;
+        let pointBase = pointIdx * 2u;
+        photonOrigin = pointLights[pointBase].xyz;
         photonDir = uniformSphere(vec2f(rand_f32(rng), rand_f32(rng)));
-        photonFlux = pointLights[1].rgb;
+        photonFlux = pointLights[pointBase + 1u].rgb;
         seeded = true;
       }
-      current = current + 1u;
+      current = current + params.pointLightCount;
     }
-    if (params.spotLightCount > 0u && current == pick) {
-      photonOrigin = spotLights[0].xyz;
+    if (params.spotLightCount > 0u && pick >= current && pick < current + params.spotLightCount) {
+      let spotIdx = pick - current;
+      let spotBase = spotIdx * 3u;
+      photonOrigin = spotLights[spotBase].xyz;
       let coneXi = vec2f(rand_f32(rng), rand_f32(rng));
-      let cosMin = spotLights[1].w;
+      let cosMin = spotLights[spotBase + 1u].w;
       let cosTheta = mix(cosMin, 1.0, coneXi.x);
       let sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
       let phi = 2.0 * PI * coneXi.y;
       let local = vec3f(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
-      let spotAxis = safe_normalize(-spotLights[1].xyz);
+      let spotAxis = safe_normalize(-spotLights[spotBase + 1u].xyz);
       var t: vec3f;
       var b: vec3f;
       buildOnb(spotAxis, &t, &b);
       photonDir = safe_normalize(local.x * t + local.y * b + local.z * spotAxis);
-      photonFlux = spotLights[2].rgb;
+      photonFlux = spotLights[spotBase + 2u].rgb;
       seeded = true;
     }
     if (!seeded) {

@@ -176,7 +176,7 @@ export interface AtrousVarianceWebGPUOptions {
   /** Explicit device; never destroyed by this call. */
   readonly device?: GPUDevice;
   /**
-   * When true (default), uses getSharedWebGPUDevice. When false, one-shot device + destroy.
+   * When true, uses getSharedWebGPUDevice. Default: false.
    */
   readonly reuseSharedWebGpuDevice?: boolean;
 
@@ -229,7 +229,7 @@ export async function runAtrousVarianceWebGPU(opts: AtrousVarianceWebGPUOptions)
   const frameCount = opts.frameCount ?? 0;
   const rawAtrous = opts.atrousIterations ?? ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS;
   const atrousIterations = Math.min(ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
-  const reuseShared = opts.reuseSharedWebGpuDevice !== false && opts.device == null;
+  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
   const sigmaColor = opts.sigmaColor ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
   const sigmaNormal = opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal;
   const sigmaDepth = opts.sigmaDepth ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;

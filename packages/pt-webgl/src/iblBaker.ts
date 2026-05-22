@@ -182,77 +182,80 @@ export class IblBakerCache {
 
     const prevTarget = renderer.getRenderTarget();
     const prevAutoClear = renderer.autoClear;
-    renderer.autoClear = true;
-    cubeCamera.update(renderer, tempScene);
+    let equirectRT: THREE.WebGLRenderTarget | null = null;
+    let quadMat: THREE.ShaderMaterial | null = null;
+    let quadGeom: THREE.PlaneGeometry | null = null;
+    try {
+      renderer.autoClear = true;
+      cubeCamera.update(renderer, tempScene);
 
-    // 2. Cube → 2D equirect via fullscreen quad + custom shader.
-    const equirectRT = new THREE.WebGLRenderTarget(EQUIRECT_WIDTH, EQUIRECT_HEIGHT, {
-      type: THREE.HalfFloatType,
-      format: THREE.RGBAFormat,
-      generateMipmaps: false,
-    });
+      // 2. Cube → 2D equirect via fullscreen quad + custom shader.
+      equirectRT = new THREE.WebGLRenderTarget(EQUIRECT_WIDTH, EQUIRECT_HEIGHT, {
+        type: THREE.HalfFloatType,
+        format: THREE.RGBAFormat,
+        generateMipmaps: false,
+      });
 
-    const quadMat = new THREE.ShaderMaterial({
-      uniforms: { tCube: { value: cubeTarget.texture } },
-      vertexShader: CUBE_TO_EQUIRECT_VERT,
-      fragmentShader: CUBE_TO_EQUIRECT_FRAG,
-      depthWrite: false,
-      depthTest: false,
-    });
-    const quadGeom = new THREE.PlaneGeometry(2, 2);
-    const quad = new THREE.Mesh(quadGeom, quadMat);
-    const quadScene = new THREE.Scene();
-    quadScene.add(quad);
-    const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      quadMat = new THREE.ShaderMaterial({
+        uniforms: { tCube: { value: cubeTarget.texture } },
+        vertexShader: CUBE_TO_EQUIRECT_VERT,
+        fragmentShader: CUBE_TO_EQUIRECT_FRAG,
+        depthWrite: false,
+        depthTest: false,
+      });
+      quadGeom = new THREE.PlaneGeometry(2, 2);
+      const quad = new THREE.Mesh(quadGeom, quadMat);
+      const quadScene = new THREE.Scene();
+      quadScene.add(quad);
+      const quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 
-    renderer.setRenderTarget(equirectRT);
-    renderer.clear();
-    renderer.render(quadScene, quadCamera);
+      renderer.setRenderTarget(equirectRT);
+      renderer.clear();
+      renderer.render(quadScene, quadCamera);
 
-    // 3. Read pixels into a Uint16Array (HalfFloat raw bits).
-    const buffer = new Uint16Array(EQUIRECT_WIDTH * EQUIRECT_HEIGHT * 4);
-    renderer.readRenderTargetPixels(
-      equirectRT,
-      0,
-      0,
-      EQUIRECT_WIDTH,
-      EQUIRECT_HEIGHT,
-      buffer,
-    );
+      // 3. Read pixels into a Uint16Array (HalfFloat raw bits).
+      const buffer = new Uint16Array(EQUIRECT_WIDTH * EQUIRECT_HEIGHT * 4);
+      renderer.readRenderTargetPixels(
+        equirectRT,
+        0,
+        0,
+        EQUIRECT_WIDTH,
+        EQUIRECT_HEIGHT,
+        buffer,
+      );
 
-    renderer.setRenderTarget(prevTarget);
-    renderer.autoClear = prevAutoClear;
+      // 4. Build the CPU-readable DataTexture. The buffer is the keepalive;
+      //    EquirectHdrInfoUniform.updateFrom reads `image.data` directly.
+      const dataTex = new THREE.DataTexture(
+        buffer,
+        EQUIRECT_WIDTH,
+        EQUIRECT_HEIGHT,
+        THREE.RGBAFormat,
+        THREE.HalfFloatType,
+      );
+      dataTex.mapping = THREE.EquirectangularReflectionMapping;
+      dataTex.minFilter = THREE.LinearFilter;
+      dataTex.magFilter = THREE.LinearFilter;
+      dataTex.wrapS = THREE.RepeatWrapping;
+      dataTex.wrapT = THREE.ClampToEdgeWrapping;
+      dataTex.colorSpace = THREE.NoColorSpace;
+      dataTex.needsUpdate = true;
 
-    // 4. Build the CPU-readable DataTexture. The buffer is the keepalive;
-    //    EquirectHdrInfoUniform.updateFrom reads `image.data` directly.
-    const dataTex = new THREE.DataTexture(
-      buffer,
-      EQUIRECT_WIDTH,
-      EQUIRECT_HEIGHT,
-      THREE.RGBAFormat,
-      THREE.HalfFloatType,
-    );
-    dataTex.mapping = THREE.EquirectangularReflectionMapping;
-    dataTex.minFilter = THREE.LinearFilter;
-    dataTex.magFilter = THREE.LinearFilter;
-    dataTex.wrapS = THREE.RepeatWrapping;
-    dataTex.wrapT = THREE.ClampToEdgeWrapping;
-    dataTex.colorSpace = THREE.NoColorSpace;
-    dataTex.needsUpdate = true;
-
-    // 5. Tear down GPU intermediates — the DataTexture (with CPU buffer) survives.
-    quadMat.dispose();
-    quadGeom.dispose();
-    equirectRT.dispose();
-    cubeTarget.dispose();
-    sky.material.dispose();
-    sky.geometry.dispose();
-    tempScene.remove(sky);
-
-    const entry: CachedBake = { texture: dataTex };
-    this.#entries.set(key, entry);
-    this.#evictOldestIfNeeded();
-    return dataTex;
+      const entry: CachedBake = { texture: dataTex };
+      this.#entries.set(key, entry);
+      this.#evictOldestIfNeeded();
+      return dataTex;
+    } finally {
+      renderer.setRenderTarget(prevTarget);
+      renderer.autoClear = prevAutoClear;
+      quadMat?.dispose();
+      quadGeom?.dispose();
+      equirectRT?.dispose();
+      cubeTarget.dispose();
+      sky.material.dispose();
+      sky.geometry.dispose();
+      tempScene.remove(sky);
+    }
   }
 
   /**

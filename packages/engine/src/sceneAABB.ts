@@ -112,6 +112,7 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
   if (prim.kind === 'instanced-mesh') {
     const local = vertexAabb(prim.positions);
     if (local == null) return null;
+    if (prim.instances.length === 0) return null;
     const triPerInstance = triangleCountFor(prim.positions, prim.indices);
     let aMinX = Infinity, aMinY = Infinity, aMinZ = Infinity;
     let aMaxX = -Infinity, aMaxY = -Infinity, aMaxZ = -Infinity;

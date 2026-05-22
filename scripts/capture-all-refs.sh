@@ -57,13 +57,33 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --quick)   WIDTH=512;  HEIGHT=512;  SPP=64;   BOUNCES=4;  shift ;;
     --hero)    WIDTH=1920; HEIGHT=1080; SPP=2048; BOUNCES=12; TIMEOUT_MS=600000; shift ;;
-    --label)   LABEL="$2"; shift 2 ;;
-    --only)    ONLY="$2";  shift 2 ;;
-    --diff)    DIFF_AGAINST="$2"; shift 2 ;;
+    --label)
+      [[ $# -ge 2 ]] || { echo "--label requires a value" >&2; exit 2; }
+      LABEL="$2"
+      shift 2
+      ;;
+    --only)
+      [[ $# -ge 2 ]] || { echo "--only requires a value (all|cornell|hero-product|hero-viewer)" >&2; exit 2; }
+      ONLY="$2"
+      shift 2
+      ;;
+    --diff)
+      [[ $# -ge 2 ]] || { echo "--diff requires a baseline label/directory name" >&2; exit 2; }
+      DIFF_AGAINST="$2"
+      shift 2
+      ;;
     -h|--help) usage ;;
     *) echo "Unknown arg: $1" >&2; usage ;;
   esac
 done
+
+case "${ONLY}" in
+  all|cornell|hero-product|hero-viewer) ;;
+  *)
+    echo "--only must be one of: all, cornell, hero-product, hero-viewer" >&2
+    exit 2
+    ;;
+esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -116,6 +136,17 @@ stop_vite() {
     sleep 1
     kill -KILL "${pid}" 2>/dev/null || true
   fi
+}
+
+remove_pid() {
+  local target="$1"
+  local next=()
+  for pid in "${VITE_PIDS[@]}"; do
+    if [[ "${pid}" != "${target}" ]]; then
+      next+=("${pid}")
+    fi
+  done
+  VITE_PIDS=("${next[@]}")
 }
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -204,7 +235,7 @@ if [[ "${ONLY}" == "all" || "${ONLY}" == "hero-product" ]]; then
     VITE_PIDS+=("$pid")
     capture_one "hero-product-viz" "5174"
     stop_vite "$pid"
-    VITE_PIDS=("${VITE_PIDS[@]/$pid}")
+    remove_pid "$pid"
   else
     SUMMARY+=("FAIL hero-product-viz (vite did not start)")
   fi
@@ -220,7 +251,7 @@ if [[ "${ONLY}" == "all" || "${ONLY}" == "hero-viewer" ]]; then
     capture_one "hero-viewer-realtime" "5175" "vitrumPrefer=realtime"
     capture_one "hero-viewer-quality"  "5175" "vitrumPrefer=quality"
     stop_vite "$pid"
-    VITE_PIDS=("${VITE_PIDS[@]/$pid}")
+    remove_pid "$pid"
   else
     SUMMARY+=("FAIL hero-viewer (vite did not start)")
   fi

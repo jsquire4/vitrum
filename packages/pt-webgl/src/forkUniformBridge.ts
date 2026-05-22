@@ -66,10 +66,19 @@ function sanitizePositiveFinite(value: number, fallback: number, max: number): n
   return Math.max(1, Math.min(max, Math.floor(value)));
 }
 
+const missingUniformWarnings = new Set<string>();
+
 function setUniform<T>(material: PathTracerMaterialLike | null, name: string, value: T): void {
   const u = material?.uniforms?.[name] as UniformRef<T> | undefined;
   if (u != null) {
     u.value = value;
+    return;
+  }
+  if (!missingUniformWarnings.has(name)) {
+    missingUniformWarnings.add(name);
+    console.warn(
+      `@vitrum/pt-webgl: fork uniform "${name}" missing on path tracer material; check fork/bridge compatibility.`,
+    );
   }
 }
 

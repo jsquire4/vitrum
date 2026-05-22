@@ -63,6 +63,10 @@ interface DispatchHandles {
   /** Bind groups: one array<GPUBindGroup> per cast pass (index k), one per merge pass. */
   castBindGroups:  GPUBindGroup[];
   mergeBindGroups: GPUBindGroup[];
+  /** Owned placeholder env texture when caller provided none. */
+  placeholderEnvTexture?: GPUTexture;
+  /** True when envSampler is dispatcher-owned and should be destroyed on dispose. */
+  ownsEnvSampler?: boolean;
 }
 
 // ─── Public interface ─────────────────────────────────────────────────────────
@@ -217,6 +221,7 @@ export class RCDispatcher {
   private _handles: DispatchHandles | null = null;
   private _castShaderModule:  GPUShaderModule | null = null;
   private _mergeShaderModule: GPUShaderModule | null = null;
+  private _lastError: Error | null = null;
   /** B3b (2026-05-19) — per-instance cascade dimensions. Defaults to the
    *  Cornell-tuned `CASCADE_DIMS`; hosts override via constructor for
    *  non-Cornell aspect ratios / scene scales. */
@@ -224,6 +229,10 @@ export class RCDispatcher {
 
   constructor(cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
     this._cascadeDims = cascadeDims;
+  }
+
+  get lastError(): Error | null {
+    return this._lastError;
   }
 
   /**
@@ -236,9 +245,11 @@ export class RCDispatcher {
     if (!this._handles) {
       try {
         this._handles = this._buildHandlesRaw(device, opts);
+        this._lastError = null;
       } catch (err: unknown) {
-        console.error('[RCDispatcher] buildHandlesRaw failed:', err);
-        return;
+        const error = err instanceof Error ? err : new Error(String(err));
+        this._lastError = error;
+        throw new Error(`[RCDispatcher] buildHandlesRaw failed: ${error.message}`);
       }
     }
     const handles = this._handles;
@@ -291,8 +302,10 @@ export class RCDispatcher {
       for (const pass of this._handles.mergePasses) {
         pass.cascadeParamsBuf.destroy();
       }
+      this._handles.placeholderEnvTexture?.destroy();
       this._handles = null;
     }
+    this._lastError = null;
     this._castShaderModule  = null;
     this._mergeShaderModule = null;
   }
@@ -338,9 +351,18 @@ export class RCDispatcher {
   private _resolveEnvBindingRaw(
     device: GPUDevice,
     opts: RCDispatchOptsRaw,
-  ): { envTextureView: GPUTextureView; envSampler: GPUSampler } {
+  ): {
+    envTextureView: GPUTextureView;
+    envSampler: GPUSampler;
+    placeholderEnvTexture?: GPUTexture;
+    ownsEnvSampler: boolean;
+  } {
     if (opts.envTextureView && opts.envSampler) {
-      return { envTextureView: opts.envTextureView, envSampler: opts.envSampler };
+      return {
+        envTextureView: opts.envTextureView,
+        envSampler: opts.envSampler,
+        ownsEnvSampler: false,
+      };
     }
     const placeholderTex = device.createTexture({
       label:  'rc-env-placeholder',
@@ -357,6 +379,8 @@ export class RCDispatcher {
     return {
       envTextureView: placeholderTex.createView({ label: 'rc-env-placeholder-view' }),
       envSampler: device.createSampler({ label: 'rc-env-placeholder-sampler' }),
+      placeholderEnvTexture: placeholderTex,
+      ownsEnvSampler: true,
     };
   }
 
@@ -398,7 +422,12 @@ export class RCDispatcher {
 
     // Env texture + sampler. If the caller supplied both, use them; otherwise
     // create a 1×1 black placeholder.
-    const { envTextureView, envSampler } = this._resolveEnvBindingRaw(device, opts);
+    const {
+      envTextureView,
+      envSampler,
+      placeholderEnvTexture,
+      ownsEnvSampler,
+    } = this._resolveEnvBindingRaw(device, opts);
 
     // ── Cast passes (one per cascade) ──────────────────────────────────────
     const castPasses: CastPassHandles[] = [];
@@ -517,7 +546,16 @@ export class RCDispatcher {
       mergeBindGroups.push(bindGroup);
     }
 
-    return { castPasses, mergePasses, envTextureView, envSampler, castBindGroups, mergeBindGroups };
+    return {
+      castPasses,
+      mergePasses,
+      envTextureView,
+      envSampler,
+      castBindGroups,
+      mergeBindGroups,
+      ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
+      ownsEnvSampler,
+    };
   }
 }
 

@@ -15,6 +15,7 @@
     "@vitrum-examples/shared": "file:../shared",
     "@vitrum/core": "file:../../packages/core",
     "@vitrum/engine": "file:../../packages/engine",
+    "@vitrum/pt-webgl": "file:../../packages/pt-webgl",
     "@vitrum/three-bindings": "file:../../packages/three-bindings",
     "three": "^0.184.0"
   },

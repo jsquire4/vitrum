@@ -110,10 +110,14 @@ describe('bind group layout entry counts (match TSL storage() declarations)', ()
   it('cast pass BGL: binding count derived from probeRayCast.wgsl.ts source', () => {
     // Derived from the actual WGSL source so the assertion catches drift if
     // a new binding is added without updating the host bind-group layout
-    // cache. Current authoritative count is 10 (5 BVH+mat + cascadeOut +
-    // envMap + envSampler + uniforms + activeProbes).
-    const castBindings = (PROBE_RAY_CAST_WGSL.match(/@binding\(/g) ?? []).length;
-    expect(castBindings).toBe(10);
+    // cache. Current authoritative count is 9 (5 BVH+mat + cascadeOut +
+    // envMap + envSampler + uniforms).
+    const rcBindingMatches = [...PROBE_RAY_CAST_WGSL.matchAll(/@group\(0\)\s+@binding\((\d+)\)\s+var[^\n]*rc_/g)];
+    const bindingIds = new Set(rcBindingMatches.map((m) => Number(m[1])));
+    expect(bindingIds.size).toBe(9);
+    for (let i = 0; i <= 8; i += 1) {
+      expect(bindingIds.has(i)).toBe(true);
+    }
   });
 
   it('merge pass BGL: 3 entries — verified by counting @binding(...) in WGSL source', () => {

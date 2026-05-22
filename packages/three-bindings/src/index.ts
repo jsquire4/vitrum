@@ -1,7 +1,7 @@
 /**
  * @vitrum/three-bindings — THREE.Scene → @vitrum/core Scene adapter.
  *
- * Public API: `sceneFromThreeJS` plus Tier 1 extension constants (`spectral.ts`).
+ * Public API: `sceneFromThreeJS` plus conversion helpers and loaders.
  * All sub-converters live in dedicated modules:
  *
  *   material.ts   — convertMaterial (MeshStandard + MeshPhysical) + convertBasicMaterial
@@ -72,7 +72,18 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
     // render the rest pose statically.
     if ((obj as THREE.SkinnedMesh).isSkinnedMesh === true) {
       if (obj.visible === false) return;
-      primitives.push(convertSkinnedMesh(obj as THREE.SkinnedMesh));
+      const skinned = obj as THREE.SkinnedMesh;
+      const prim = convertSkinnedMesh(skinned);
+      const meshEmitter = emissiveMeshAreaEmitter(skinned);
+      if (meshEmitter != null) {
+        emitters.push(meshEmitter);
+        primitives.push({
+          ...prim,
+          material: { ...prim.material, emissive: [0, 0, 0], emissiveIntensity: 0 },
+        });
+        return;
+      }
+      primitives.push(prim);
       return;
     }
 

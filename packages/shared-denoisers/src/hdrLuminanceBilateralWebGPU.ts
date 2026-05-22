@@ -24,8 +24,8 @@ export interface HdrLuminanceBilateralWebGPUOptions {
   /** Use this device; never destroyed by this call. */
   readonly device?: GPUDevice;
   /**
-   * When true (default), uses a cached process-wide device via getSharedWebGPUDevice.
-   * When false, allocates a dedicated device per call and destroys it afterward.
+   * When true, uses a cached process-wide device via getSharedWebGPUDevice.
+   * When false (default), allocates a dedicated device per call and destroys it afterward.
    */
   readonly reuseSharedWebGpuDevice?: boolean;
 }
@@ -55,7 +55,7 @@ export async function runHdrLuminanceBilateralWebGPU(
 ): Promise<Float32Array> {
   const { rgb, width: w, height: h } = opts;
   const sigma = opts.sigmaLuminance ?? HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE;
-  const reuseShared = opts.reuseSharedWebGpuDevice !== false && opts.device == null;
+  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
   if (typeof navigator === 'undefined' || navigator.gpu == null) {
     throw new Error('runHdrLuminanceBilateralWebGPU: WebGPU not available in this browser');
   }

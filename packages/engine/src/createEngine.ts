@@ -305,7 +305,8 @@ export function wrapWithIdempotentDispose(
   postDispose: () => void,
 ): Engine {
   let disposed = false;
-  const proxy: Engine = {
+  const maybeSetSize = (engine as unknown as { setSize?: (w: number, h: number) => void }).setSize;
+  const proxy: Engine & { setSize?: (w: number, h: number) => void } = {
     get state() { return engine.state; },
     get capabilities() { return engine.capabilities; },
     setScene(scene) { if (!disposed) engine.setScene(scene); },
@@ -330,12 +331,19 @@ export function wrapWithIdempotentDispose(
           },
         }
       : {}),
+    ...(typeof maybeSetSize === 'function'
+      ? {
+          setSize: (w: number, h: number) => {
+            if (!disposed) maybeSetSize.call(engine, w, h);
+          },
+        }
+      : {}),
     renderFrame(input) {
       if (disposed) {
         // Returning a no-op output keeps host RAF loops from crashing if
         // they race the dispose. The host is expected to stop rendering
         // when state === 'disposed'.
-        return { samplesAccumulated: 0, isConverged: true, primaryRadiance: null };
+        return { samplesAccumulated: 0, isConverged: false, primaryRadiance: null };
       }
       return engine.renderFrame(input);
     },

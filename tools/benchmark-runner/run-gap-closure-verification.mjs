@@ -77,8 +77,37 @@ function parseResolution(resolution) {
 }
 
 function scenarioVariants(scenario) {
-  if (Array.isArray(scenario.causticVariants) && scenario.causticVariants.length > 0) return scenario.causticVariants;
-  return ['candidate'];
+  const causticVariants =
+    Array.isArray(scenario.causticVariants) && scenario.causticVariants.length > 0
+      ? scenario.causticVariants
+      : ['candidate'];
+  const roughnessVariants =
+    Array.isArray(scenario.roughnessVariants) && scenario.roughnessVariants.length > 0
+      ? scenario.roughnessVariants
+      : [null];
+  const wallAlbedoVariants =
+    Array.isArray(scenario.wallAlbedoVariants) && scenario.wallAlbedoVariants.length > 0
+      ? scenario.wallAlbedoVariants
+      : [null];
+
+  const variants = [];
+  for (const caustic of causticVariants) {
+    for (const roughness of roughnessVariants) {
+      for (const wallAlbedo of wallAlbedoVariants) {
+        const tags = [];
+        if (caustic != null) tags.push(`caustic=${caustic}`);
+        if (roughness != null) tags.push(`roughness=${roughness}`);
+        if (wallAlbedo != null) tags.push(`wallAlbedo=${wallAlbedo}`);
+        variants.push({
+          id: tags.length === 0 ? 'candidate' : tags.join('__'),
+          caustic,
+          roughness,
+          wallAlbedo,
+        });
+      }
+    }
+  }
+  return variants;
 }
 
 function captureScenarioSettings(scenario) {
@@ -126,7 +155,12 @@ async function runCapture(scenario, variant, outputImagePath) {
     VITRUM_HEIGHT: String(height),
     VITRUM_BOUNCES: String(effectiveScenario.bounces),
     VITRUM_SPP: String(effectiveScenario.spp),
-    VITRUM_CAUSTIC_STRATEGY: variant,
+    VITRUM_CAUSTIC_STRATEGY: variant.caustic ?? '',
+    VITRUM_ROUGHNESS: variant.roughness != null ? String(variant.roughness) : '',
+    VITRUM_WALL_ALBEDO: variant.wallAlbedo != null ? String(variant.wallAlbedo) : '',
+    VITRUM_BACKEND: typeof effectiveScenario.backend === 'string' ? effectiveScenario.backend : '',
+    VITRUM_FRAMES: effectiveScenario.frames != null ? String(effectiveScenario.frames) : '',
+    VITRUM_SCENARIO_JSON: JSON.stringify(effectiveScenario),
     VITRUM_OUTPUT_PNG: outputImagePath,
   }, captureProcessTimeoutMs);
   const imageExists = await fileExists(outputImagePath);
@@ -172,7 +206,11 @@ async function evaluateScenario(scenario) {
   let baselineCaptureInfo = null;
   if (!baselineExistsBefore && allowBaselineGen) {
     await mkdir(baselineDir, { recursive: true });
-    baselineCaptureInfo = await runCapture(scenario, 'baseline', baselineImagePath);
+    baselineCaptureInfo = await runCapture(
+      scenario,
+      { id: 'baseline', caustic: 'baseline', roughness: null, wallAlbedo: null },
+      baselineImagePath,
+    );
     if (baselineCaptureInfo.ok) {
       await writePerfSidecar(baselineImagePath, baselineCaptureInfo.perfTelemetry);
     }
@@ -201,7 +239,7 @@ async function evaluateScenario(scenario) {
   const perfTelemetrySamples = [];
   const modeSummaries = [];
   for (const variant of variants) {
-    const outputImagePath = resolve(scenarioDir, `${variant}.png`);
+    const outputImagePath = resolve(scenarioDir, `${variant.id}.png`);
     const capture = await runCapture(scenario, variant, outputImagePath);
     if (!capture.ok) {
       return {
@@ -209,22 +247,22 @@ async function evaluateScenario(scenario) {
         status: capture.status,
         beforeImageHash: baselineHash,
         afterImageHash: null,
-        deltaSummary: `Capture for variant "${variant}" failed: ${capture.reason}`,
+        deltaSummary: `Capture for variant "${variant.id}" failed: ${capture.reason}`,
         perfBaselineMsPerSample: perfBaseline,
         perfCandidateMsPerSample: null,
         passFail: 'BLOCKED',
       };
     }
     const variantHash = await sha256(outputImagePath);
-    aggregateCandidateHash += `${variant}:${variantHash}|`;
+    aggregateCandidateHash += `${variant.id}:${variantHash}|`;
     if (capture.perfMsPerSample != null) {
       perfSamples.push(capture.perfMsPerSample);
     }
     if (capture.perfTelemetry != null) {
-      perfTelemetrySamples.push({ variant, ...capture.perfTelemetry });
+      perfTelemetrySamples.push({ variant: variant.id, ...capture.perfTelemetry });
       await writePerfSidecar(outputImagePath, capture.perfTelemetry);
     }
-    modeSummaries.push(`${variant}:${variantHash.slice(0, 12)}`);
+    modeSummaries.push(`${variant.id}:${variantHash.slice(0, 12)}`);
   }
 
   const afterHash = createHash('sha256').update(aggregateCandidateHash).digest('hex');
@@ -232,8 +270,13 @@ async function evaluateScenario(scenario) {
     perfSamples.length === 0
       ? null
       : perfSamples.reduce((a, b) => a + b, 0) / perfSamples.length;
-  const identical = baselineHash === afterHash;
-  const failedByHash = failOnIdentical && identical;
+  const variantHashes = aggregateCandidateHash
+    .split('|')
+    .filter(Boolean)
+    .map((entry) => entry.split(':').slice(1).join(':'));
+  const allVariantsMatchBaseline =
+    variantHashes.length > 0 && variantHashes.every((hash) => hash === baselineHash);
+  const failedByHash = failOnIdentical && allVariantsMatchBaseline;
   return {
     ...scenario,
     status: failedByHash ? 'failed-identical-hash' : 'captured',

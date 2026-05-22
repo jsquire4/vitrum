@@ -480,16 +480,49 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
 
 /** Dispose geometries/materials under a root built by {@link vitrumSceneToThree}. */
 export function disposeVitrumThreeSceneRoot(root: Object3D): void {
+  const disposedTextures = new Set<Texture>();
+  const maybeDisposeTexture = (tex: Texture | null | undefined): void => {
+    if (tex == null || disposedTextures.has(tex)) return;
+    disposedTextures.add(tex);
+    tex.dispose();
+  };
+
   root.traverse((o) => {
     const mesh = o as Mesh;
     if (mesh.isMesh === true) {
       mesh.geometry?.dispose();
       const m = mesh.material;
       if (Array.isArray(m)) {
-        for (const x of m) x?.dispose?.();
+        for (const x of m) {
+          const mat = x as MeshPhysicalMaterial | undefined;
+          if (mat != null) {
+            maybeDisposeTexture(mat.map);
+            maybeDisposeTexture(mat.normalMap);
+            maybeDisposeTexture(mat.roughnessMap);
+            maybeDisposeTexture(mat.metalnessMap);
+            maybeDisposeTexture(mat.emissiveMap);
+            maybeDisposeTexture(mat.alphaMap);
+            maybeDisposeTexture(mat.transmissionMap);
+          }
+          x?.dispose?.();
+        }
       } else {
+        const mat = m as MeshPhysicalMaterial | undefined;
+        if (mat != null) {
+          maybeDisposeTexture(mat.map);
+          maybeDisposeTexture(mat.normalMap);
+          maybeDisposeTexture(mat.roughnessMap);
+          maybeDisposeTexture(mat.metalnessMap);
+          maybeDisposeTexture(mat.emissiveMap);
+          maybeDisposeTexture(mat.alphaMap);
+          maybeDisposeTexture(mat.transmissionMap);
+        }
         m?.dispose?.();
       }
     }
   });
+
+  const rootScene = root as unknown as Scene;
+  maybeDisposeTexture(rootScene.environment as Texture | null | undefined);
+  maybeDisposeTexture(rootScene.background as Texture | null | undefined);
 }

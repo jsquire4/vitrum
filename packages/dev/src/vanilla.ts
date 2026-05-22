@@ -201,10 +201,10 @@ export function attachDebugOverlays(
      
     console.warn(
       `[attachDebugOverlays] "${key}" is React-only in the current build. ` +
-      `Use @vitrum/dev/react/${key === 'ddgiAtlas' ? 'DDGIAtlasViewer'
+      `Import ${key === 'ddgiAtlas' ? 'DDGIAtlasViewer'
         : key === 'bvhVisualizer' ? 'BVHVisualizer'
         : key === 'giSignalSplit' ? 'GISignalSplit'
-        : 'MaterialInspector'} for the full implementation. ` +
+        : 'MaterialInspector'} from @vitrum/dev for the full implementation. ` +
       'Rendering placeholder badge for the vanilla host.'
     );
     const badge = makeDiv({

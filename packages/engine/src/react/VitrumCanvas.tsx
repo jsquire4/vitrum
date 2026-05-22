@@ -24,7 +24,7 @@ import * as THREE from 'three';
 import type { Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
 import type { AttachVitrumHandle } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
-import type { EnginePreference } from '../createEngine.js';
+import type { EnginePreference, CreateEngineOptions } from '../createEngine.js';
 
 export interface VitrumCanvasProps {
   /** Scene description (vitrum or THREE). */
@@ -48,6 +48,12 @@ export interface VitrumCanvasProps {
   onProgress?: (progress: ProgressStats) => void;
   /** Pause RAF loop on tab-hidden (default true). */
   pauseOnHidden?: boolean;
+  /** Backend-specific createEngine overrides. */
+  advanced?: CreateEngineOptions['advanced'];
+  /** Enable backend debug surfaces. */
+  debug?: boolean;
+  /** Called when attachVitrum fails. */
+  onAttachError?: (error: unknown) => void;
   /** Forwarded to the underlying canvas element. */
   style?: React.CSSProperties;
   /** Forwarded to the underlying canvas element. */
@@ -82,6 +88,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         camera: props.camera,
         ...(props.prefer ? { prefer: props.prefer } : {}),
         ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
+        ...(props.advanced != null ? { advanced: props.advanced } : {}),
+        ...(props.debug != null ? { debug: props.debug } : {}),
         // Live-propagation: pass a getter so the rAF tick reads the latest
         // `props.quality` each frame (qualityRef.current is updated by the
         // useEffect at line 67 whenever props.quality changes).
@@ -98,6 +106,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           attached = h;
         })
         .catch((err) => {
+          props.onAttachError?.(err);
           console.error('[VitrumCanvas] attachVitrum failed:', err);
         });
 
@@ -106,7 +115,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         attached?.dispose();
         handleRef.current = null;
       };
-    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden]);
+    }, [props.scene, props.camera, props.prefer, props.pauseOnHidden, props.advanced, props.debug, props.onAttachError]);
 
     // forwardRef plumbing.
     React.useImperativeHandle(externalRef, () => canvasRef.current as HTMLCanvasElement, []);

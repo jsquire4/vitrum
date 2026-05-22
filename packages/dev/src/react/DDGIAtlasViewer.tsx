@@ -49,6 +49,9 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
   const hasAtlas = typeof engine.debug?.atlasTexture === 'function';
   const hasVisibilityAtlas = typeof engine.debug?.visibilityAtlasTexture === 'function';
   const hasDevice = typeof engine.debug?.device === 'function';
+  const debugDevice = hasDevice ? engine.debug?.device?.() ?? null : null;
+  const irradianceAtlas = hasAtlas ? engine.debug?.atlasTexture?.() ?? null : null;
+  const visibilityAtlas = hasVisibilityAtlas ? engine.debug?.visibilityAtlasTexture?.() ?? null : null;
 
   // A3 (2026-05-19) — wire the canvas-blit readback. Re-runs when the
   // atlas/visibility texture handles change identity (the engine swaps
@@ -56,29 +59,25 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
   // the atlases at ~10 Hz so the GPU→CPU fence stays off the render path.
   useEffect(() => {
     if (!visible || !hasAtlas || !hasDevice) return;
-    const device = engine.debug?.device?.();
-    const atlas = engine.debug?.atlasTexture?.();
-    if (device == null || atlas == null) return;
+    if (debugDevice == null || irradianceAtlas == null) return;
     const canvas = irrCanvasRef.current;
     if (canvas == null) return;
-    return startGpuTextureBlit(canvas, device, atlas, {
+    return startGpuTextureBlit(canvas, debugDevice, irradianceAtlas, {
       throttleMs: 100,
       label: 'ddgi-irr-atlas',
     });
-  }, [engine, visible, hasAtlas, hasDevice]);
+  }, [visible, hasAtlas, hasDevice, debugDevice, irradianceAtlas]);
 
   useEffect(() => {
     if (!visible || !hasVisibilityAtlas || !hasDevice) return;
-    const device = engine.debug?.device?.();
-    const atlas = engine.debug?.visibilityAtlasTexture?.();
-    if (device == null || atlas == null) return;
+    if (debugDevice == null || visibilityAtlas == null) return;
     const canvas = visCanvasRef.current;
     if (canvas == null) return;
-    return startGpuTextureBlit(canvas, device, atlas, {
+    return startGpuTextureBlit(canvas, debugDevice, visibilityAtlas, {
       throttleMs: 100,
       label: 'ddgi-vis-atlas',
     });
-  }, [engine, visible, hasVisibilityAtlas, hasDevice]);
+  }, [visible, hasVisibilityAtlas, hasDevice, debugDevice, visibilityAtlas]);
 
   if (!visible) return null;
 

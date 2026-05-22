@@ -100,6 +100,8 @@ export interface CascadeAABB {
 }
 
 export interface CascadeBuffers {
+  /** Cascade dimensions used for allocation. */
+  dims: readonly CascadeDim[];
   /** One Float32Array per cascade, length = probeX*probeY*probeZ*rays*4 floats. */
   cascades: Float32Array[];
   /**
@@ -158,7 +160,7 @@ export function allocateCascades(
   });
   // itemSize=4 (vec4f: r,g,b,a per ray). count = total rays per cascade.
   const gpuCascades = cascades.map((arr) => new StorageBufferAttribute(arr, 4));
-  return { cascades, gpuCascades, probeOriginWorld: origin, roomSize: size };
+  return { dims, cascades, gpuCascades, probeOriginWorld: origin, roomSize: size };
 }
 
 /** Dispose: clear references (Float32Arrays are GC'd). */
@@ -180,7 +182,7 @@ const DEBUG_COLORS: [number, number, number][] = [
 ];
 
 export function fillCascadeDebug(b: CascadeBuffers): void {
-  CASCADE_DIMS.forEach((c, k) => {
+  b.dims.forEach((c, k) => {
     const buf   = b.cascades[k];
     if (!buf) return;
     const color = DEBUG_COLORS[k] ?? [0.5, 0.5, 0.5];

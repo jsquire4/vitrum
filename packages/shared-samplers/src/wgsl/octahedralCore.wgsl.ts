@@ -25,7 +25,9 @@ fn octEncode(dir: vec3f) -> vec2f {
 fn octDecode(oct: vec2f) -> vec3f {
   let n = vec3f(oct, 1.0 - abs(oct.x) - abs(oct.y));
   if (n.z < 0.0) {
-    let xy = (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
+    let sx = select(-1.0, 1.0, n.x >= 0.0);
+    let sy = select(-1.0, 1.0, n.y >= 0.0);
+    let xy = (1.0 - abs(n.yx)) * vec2f(sx, sy);
     return normalize(vec3f(xy, n.z));
   }
   return normalize(n);

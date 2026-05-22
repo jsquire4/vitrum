@@ -33,9 +33,11 @@ const NULL_CAPS: EngineCapabilities = {
  *  the proxy forwards correctly. */
 function makeFakeEngine(opts: { withUpdateEnvironment: boolean }): Engine & {
   updateEnvironmentSpy?: ReturnType<typeof vi.fn>;
+  setSizeSpy: ReturnType<typeof vi.fn>;
 } {
   const updateEnvironmentSpy = opts.withUpdateEnvironment ? vi.fn() : undefined;
-  const engine: Engine & { updateEnvironmentSpy?: ReturnType<typeof vi.fn> } = {
+  const setSizeSpy = vi.fn();
+  const engine = {
     state: 'ready' as EngineState,
     capabilities: NULL_CAPS,
     setScene(_: Scene): void {},
@@ -45,13 +47,18 @@ function makeFakeEngine(opts: { withUpdateEnvironment: boolean }): Engine & {
     reset(): void {},
     pause(): void {},
     resume(): void {},
+    // setSize is backend-specific and intentionally not part of the Engine contract.
+    setSize: (w: number, h: number) => setSizeSpy(w, h),
     dispose(): void {},
     ...(updateEnvironmentSpy
       ? { updateEnvironment: (env: SceneEnvironment | null) => updateEnvironmentSpy(env) }
       : {}),
+  } as Engine & {
+    updateEnvironmentSpy?: ReturnType<typeof vi.fn>;
+    setSize: (w: number, h: number) => void;
   };
   if (updateEnvironmentSpy) engine.updateEnvironmentSpy = updateEnvironmentSpy;
-  return engine;
+  return Object.assign(engine, { setSizeSpy });
 }
 
 describe('wrapWithIdempotentDispose — updateEnvironment forwarding (A1)', () => {
@@ -103,5 +110,25 @@ describe('wrapWithIdempotentDispose — updateEnvironment forwarding (A1)', () =
     proxy.dispose();
     expect(disposeSpy).toHaveBeenCalledTimes(1);
     expect(postDisposeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards backend-specific setSize when present', () => {
+    const engine = makeFakeEngine({ withUpdateEnvironment: true });
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    const setSize = (proxy as unknown as { setSize?: (w: number, h: number) => void }).setSize;
+    expect(typeof setSize).toBe('function');
+    setSize!(1280, 720);
+    expect(engine.setSizeSpy).toHaveBeenCalledTimes(1);
+    expect(engine.setSizeSpy).toHaveBeenCalledWith(1280, 720);
+  });
+
+  it('returns a skipped non-converged frame after dispose', () => {
+    const engine = makeFakeEngine({ withUpdateEnvironment: true });
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    proxy.dispose();
+    const output = proxy.renderFrame({} as FrameInput);
+    expect(output.samplesAccumulated).toBe(0);
+    expect(output.isConverged).toBe(false);
+    expect(output.primaryRadiance).toBeNull();
   });
 });

@@ -100,22 +100,22 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
 
   const hasDebug = typeof engine.debug?.giSignalTextures === 'function';
   const hasDevice = typeof engine.debug?.device === 'function';
+  const debugDevice = hasDevice ? engine.debug?.device?.() ?? null : null;
+  const channelTextures = hasDebug ? engine.debug?.giSignalTextures?.() ?? null : null;
 
   // A3 (2026-05-19) — start one readback loop per channel when active.
   // Each useEffect's cleanup tears down its own readback; the 4 readbacks
   // share the engine queue but each has its own staging buffer.
   useEffect(() => {
     if (!active || !hasDebug || !hasDevice) return;
-    const device = engine.debug?.device?.();
-    const channels = engine.debug?.giSignalTextures?.();
-    if (device == null || channels == null) return;
+    if (debugDevice == null || channelTextures == null) return;
 
     const teardowns: Array<() => void> = [];
     for (const key of CHANNEL_KEYS) {
-      const tex = channels[key];
+      const tex = channelTextures[key];
       const canvas = refs[key].current;
       if (tex == null || canvas == null) continue;
-      teardowns.push(startGpuTextureBlit(canvas, device, tex, {
+      teardowns.push(startGpuTextureBlit(canvas, debugDevice, tex, {
         throttleMs: 100,
         label: `gi-${key}`,
       }));
@@ -123,10 +123,10 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
     return () => {
       for (const t of teardowns) t();
     };
-    // The refs object is stable; only `engine`, `active`, and capability
-    // booleans change identity in a way that matters.
+    // The refs object is stable; channel textures are included so readback
+    // loops restart if the engine swaps debug texture handles.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, active, hasDebug, hasDevice]);
+  }, [active, hasDebug, hasDevice, debugDevice, channelTextures]);
 
   const toggle = (): void => {
     const next = !active;

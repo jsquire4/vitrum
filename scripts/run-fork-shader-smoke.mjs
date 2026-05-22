@@ -11,7 +11,12 @@ import { existsSync } from 'node:fs';
 const root = resolve(fileURLToPath(import.meta.url), '..', '..');
 const forkDir = resolve(process.env.VITRUM_FORK_DIR ?? resolve(root, '..', 'three-gpu-pathtracer'));
 const script = resolve(forkDir, 'scripts/shader-smoke-check.js');
-const expectedForkBranch = process.env.VITRUM_EXPECTED_FORK_BRANCH ?? 'main';
+const expectedForkBranch =
+  process.env.VITRUM_EXPECTED_FORK_BRANCH ?? 'phase4-normalmap-shadow-rays';
+if (expectedForkBranch.trim().length === 0) {
+  console.error('VITRUM_EXPECTED_FORK_BRANCH cannot be empty.');
+  process.exit(2);
+}
 if (!existsSync(script)) {
   console.error(`Fork shader smoke script missing: ${script}`);
   console.error('Set VITRUM_FORK_DIR to your three-gpu-pathtracer checkout.');

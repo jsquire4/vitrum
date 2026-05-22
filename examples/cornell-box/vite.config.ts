@@ -9,6 +9,7 @@ const repoRoot = path.resolve(__dirname, '../..');
 // rotating it; settled on a stable name so reference renders accumulate
 // in one place.
 const captureDir = path.resolve(repoRoot, 'tools/reference-renders/cornell-box-captures');
+const MAX_CAPTURE_BYTES = 64 * 1024 * 1024;
 
 export default defineConfig({
   resolve: {
@@ -38,7 +39,18 @@ export default defineConfig({
           const name = (url.searchParams.get('name') ?? 'capture').replace(/[^a-zA-Z0-9._-]/g, '_');
           const filePath = path.join(captureDir, `${name}.png`);
           const chunks: Buffer[] = [];
-          req.on('data', (c) => chunks.push(c));
+          let total = 0;
+          req.on('data', (c) => {
+            total += c.length;
+            if (total > MAX_CAPTURE_BYTES) {
+              chunks.length = 0;
+              res.statusCode = 413;
+              res.end(`capture payload too large (>${MAX_CAPTURE_BYTES} bytes)`);
+              req.destroy();
+              return;
+            }
+            chunks.push(c);
+          });
           req.on('end', () => {
             const buf = Buffer.concat(chunks);
             fs.writeFileSync(filePath, buf);

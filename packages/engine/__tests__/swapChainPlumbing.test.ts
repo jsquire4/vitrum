@@ -13,7 +13,11 @@
 // the tick). Together they pin the FrameInput shape promised by A2.
 
 import { describe, it, expect, vi } from 'vitest';
-import { detectWebGPUSwapChain, acquireSwapChainView } from '../src/lifecycle/vanilla.js';
+import {
+  detectWebGPUSwapChain,
+  acquireSwapChainView,
+  toPhysicalViewport,
+} from '../src/lifecycle/vanilla.js';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Test helpers — fake canvas, fake GPUCanvasContext.
@@ -155,5 +159,21 @@ describe('FrameInput swap-chain plumbing (A2)', () => {
     } as { swapChainView?: unknown; swapChainFormat?: unknown };
     expect(frameInput.swapChainView).toBeUndefined();
     expect(frameInput.swapChainFormat).toBeUndefined();
+  });
+});
+
+describe('viewport contract plumbing', () => {
+  it('converts CSS dimensions to physical pixels with DPR', () => {
+    const viewport = toPhysicalViewport(640.8, 359.4, 2);
+    expect(viewport.width).toBe(1281);
+    expect(viewport.height).toBe(718);
+    expect(viewport.devicePixelRatio).toBe(2);
+  });
+
+  it('guards non-finite DPR and enforces minimum dimensions', () => {
+    const viewport = toPhysicalViewport(0, 0, Number.NaN);
+    expect(viewport.width).toBe(1);
+    expect(viewport.height).toBe(1);
+    expect(viewport.devicePixelRatio).toBe(1);
   });
 });

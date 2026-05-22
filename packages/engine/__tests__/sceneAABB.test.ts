@@ -122,6 +122,23 @@ describe('computeSceneAABB', () => {
     expect(aabb.triangleCount).toBe(24);
   });
 
+  it('ignores empty instanced-mesh entries and keeps fallback bounds stable', () => {
+    const cube = unitCube('inst-empty');
+    const inst: InstancedMeshPrimitive = {
+      kind: 'instanced-mesh',
+      id: 'i-empty',
+      positions: cube.positions,
+      normals: cube.normals,
+      indices: cube.indices!,
+      material: cube.material,
+      instances: [],
+    };
+    const aabb = computeSceneAABB(emptyScene([inst]));
+    expect(aabb.diagonal).toBe(1.0);
+    expect(aabb.triangleCount).toBe(0);
+    expect(aabb.center).toEqual([0, 0, 0]);
+  });
+
   it('measures a skinned mesh using its rest-pose positions (C1, 2026-05-19)', () => {
     const cube = unitCube('rest');
     const skinned: SkinnedMeshPrimitive = {

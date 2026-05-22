@@ -119,7 +119,9 @@ export function writeTonemappedRgbToCanvas(canvas: HTMLCanvasElement, rgb: Float
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d');
-  if (ctx == null) return;
+  if (ctx == null) {
+    throw new Error('writeTonemappedRgbToCanvas: 2D canvas context unavailable');
+  }
   const img = ctx.createImageData(w, h);
   const d = img.data;
   const reinhard = (x: number): number => x / (1 + Math.max(x, 0));

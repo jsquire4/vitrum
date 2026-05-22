@@ -147,11 +147,6 @@ export type { SerialisedSTree } from './ppg/serialise.js';
 // The 'neural' denoiser mode in HybridEngine is opt-in (default: atrous-variance).
 // Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model binary.
 export { InferenceGraph } from './neural/InferenceGraph.js';
-// `neural/unetArchitecture.js` is intentionally NOT re-exported here. It is
-// dynamically imported inside `HybridEngineLifecycle.ts` so apps that never
-// opt into the 'neural' denoiser mode don't pay the bundle cost. Re-exporting
-// it here makes the dynamic import ineffective (statically reachable from
-// the package root). Tests import directly via `./neural/unetArchitecture.js`.
 export {
   buildRandomWeightsForSpec,
   loadWeightsFromArrayBuffer,
@@ -160,3 +155,4 @@ export {
   VITRUM_MODEL_VERSION,
 } from './neural/weights.js';
 export type { ModelWeights, LayerWeights } from './neural/weights.js';
+export { WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';

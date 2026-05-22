@@ -13,7 +13,8 @@
  */
 
 import * as THREE from 'three';
-import { attachVitrum, createEngine, type AttachVitrumHandle } from '@vitrum/engine';
+import { attachVitrum, type AttachVitrumHandle } from '@vitrum/engine';
+import { createPTEngine_WebGL2, readAccumulationRgbFloat } from '@vitrum/pt-webgl';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import type { ProgressStats } from '@vitrum/core';
 import { parsePositiveInt } from '@vitrum-examples/shared';
@@ -172,6 +173,27 @@ function finalizeCapture(samplesAccumulated: number): void {
   );
 }
 
+function writeTonemappedPngDataUrl(rgb: Float32Array, width: number, height: number): string {
+  const exportCanvas = document.createElement('canvas');
+  exportCanvas.width = width;
+  exportCanvas.height = height;
+  const ctx = exportCanvas.getContext('2d');
+  if (ctx == null) throw new Error('PNG export failed: 2D context unavailable');
+  const img = ctx.createImageData(width, height);
+  const px = img.data;
+  const reinhard = (x: number): number => x / (1 + Math.max(x, 0));
+  const toByte = (x: number): number => Math.min(255, Math.max(0, Math.floor(255 * reinhard(x) ** (1 / 2.2))));
+  for (let i = 0; i < width * height; i += 1) {
+    const j = i * 4;
+    px[j] = toByte(rgb[i * 3] ?? 0);
+    px[j + 1] = toByte(rgb[i * 3 + 1] ?? 0);
+    px[j + 2] = toByte(rgb[i * 3 + 2] ?? 0);
+    px[j + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return exportCanvas.toDataURL('image/png');
+}
+
 const onProgress = (p: ProgressStats): void => {
   if (p.kind !== 'pt-spp') return;
   const pct = Math.round(p.fraction * 100);
@@ -278,16 +300,22 @@ async function saveHighRes(): Promise<void> {
   offscreen.height = saveH;
 
   let saveEngine: import('@vitrum/core').Engine | null = null;
+  let saveRenderer: THREE.WebGLRenderer | null = null;
   try {
-    saveEngine = await createEngine({
+    saveRenderer = new THREE.WebGLRenderer({
       canvas: offscreen,
-      scene:  currentVitrumScene,
-      prefer: 'quality',
-      advanced: {
-        maxSamplesPerPixel: SPP_TARGET,
-        maxBounces: 8,
-      },
+      antialias: false,
+      alpha: false,
+      preserveDrawingBuffer: false,
     });
+    saveRenderer.setPixelRatio(1);
+    saveRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    saveEngine = await createPTEngine_WebGL2({
+      device: saveRenderer,
+      maxSamplesPerPixel: SPP_TARGET,
+      maxBounces: 8,
+    });
+    saveEngine.setScene(currentVitrumScene);
 
     const saveCam = new THREE.PerspectiveCamera(38, saveW / saveH, 0.05, 50);
     saveCam.position.copy(camera.position);
@@ -320,9 +348,9 @@ async function saveHighRes(): Promise<void> {
       requestAnimationFrame(tick);
     });
 
-    // toBlob requires preserveDrawingBuffer on the WebGL context, which the
-    // factory doesn't set. We fall back to toDataURL (synchronous, same output).
-    const dataUrl = offscreen.toDataURL('image/png');
+    const accumTexture = (saveEngine as import('@vitrum/pt-webgl').PTEngineWebGL2).getAccumulationRenderTarget();
+    const accumRgb = readAccumulationRgbFloat(saveRenderer, accumTexture, saveW, saveH, true);
+    const dataUrl = writeTonemappedPngDataUrl(accumRgb, saveW, saveH);
     const a = document.createElement('a');
     a.href = dataUrl;
     a.download = `vitrum-product-${saveW}x${saveH}.png`;
@@ -333,6 +361,7 @@ async function saveHighRes(): Promise<void> {
     statusEl.textContent = `Save failed: ${String(err)}`;
   } finally {
     try { saveEngine?.dispose(); } catch { /* ignore */ }
+    try { saveRenderer?.dispose(); } catch { /* ignore */ }
     offscreen.remove();
     engineHandle?.engine.resume();
     btnSave.disabled = false;

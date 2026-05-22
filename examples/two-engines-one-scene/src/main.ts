@@ -418,7 +418,10 @@ async function main(): Promise<void> {
     // narrowed type rather than `HTMLCanvasElement | null` from the outer scope.
     const ptGpuCanvas: HTMLCanvasElement = canvasPtGpu;
     try {
-      resizeCanvasToDisplaySize(ptGpuCanvas);
+      const resizePtGpu = (): void => {
+        resizeCanvasToDisplaySize(ptGpuCanvas);
+      };
+      resizePtGpu();
       const ptGpuEngine = await createPTEngine_WebGPU({ device });
       ptGpuEngine.setScene(vitrumScene);
       (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu = ptGpuEngine;
@@ -469,6 +472,7 @@ async function main(): Promise<void> {
         if (!out.isConverged || FLAGS.cameraMotion) requestAnimationFrame(ptGpuLoop);
       }
       requestAnimationFrame(ptGpuLoop);
+      window.addEventListener('resize', resizePtGpu);
     } catch (e) {
       lines[2] = `pt-webgpu: init failed — ${String(e)}`;
       console.error('[two-engines] pt-webgpu init failed', e);

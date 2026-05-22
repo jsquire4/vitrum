@@ -74,8 +74,7 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
         'Implement it in HybridEngine to wire the denoiser toggle. ' +
         'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
       );
-      // Still flip local state so UI responds (even though engine doesn't).
-      setEnabled(next);
+      // Keep UI state honest when backend wiring is unavailable.
     }
   };
 

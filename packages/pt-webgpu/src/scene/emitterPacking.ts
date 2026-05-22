@@ -27,6 +27,14 @@ function discAreaPackedAsRect(e: DiscAreaEmitter): {
   const ny = e.normal[1];
   const nz = e.normal[2];
   const nLen = Math.hypot(nx, ny, nz);
+  if (nLen < 1e-8) {
+    return {
+      position: [e.position[0], e.position[1], e.position[2]],
+      uAxis: [0, 0, 0],
+      vAxis: [0, 0, 0],
+      radiance: [0, 0, 0],
+    };
+  }
   const ux = nx / nLen;
   const uy = ny / nLen;
   const uz = nz / nLen;
@@ -42,6 +50,14 @@ function discAreaPackedAsRect(e: DiscAreaEmitter): {
   const ty = az * ux - ax * uz;
   const tz = ax * uy - ay * ux;
   const tLen = Math.hypot(tx, ty, tz);
+  if (tLen < 1e-8) {
+    return {
+      position: [e.position[0], e.position[1], e.position[2]],
+      uAxis: [0, 0, 0],
+      vAxis: [0, 0, 0],
+      radiance: [0, 0, 0],
+    };
+  }
   const tcx = tx / tLen;
   const tcy = ty / tLen;
   const tcz = tz / tLen;
@@ -234,6 +250,12 @@ export function packEmitterArrays(scene: Scene): {
       if (Number.isFinite(e.radius) && e.radius < 1e-8) {
         warnings.push(
           `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has near-zero radius; skipped.`,
+        );
+        continue;
+      }
+      if (Math.hypot(e.normal[0], e.normal[1], e.normal[2]) < 1e-8) {
+        warnings.push(
+          `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has degenerate normal; skipped.`,
         );
         continue;
       }

@@ -7,7 +7,7 @@ if (!outputPng) {
   process.exit(2);
 }
 
-const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5173/';
+const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:4173/';
 
 /**
  * Mapping table: ENV name → URL query key + optional validator.
@@ -39,6 +39,10 @@ const ENV_TO_QUERY = [
     validate: (v) => v === '0' || v === '1',
   },
   { env: 'VITRUM_SVGF_ATROUS',         query: 'vitrumSvgfAtrous' },
+  { env: 'VITRUM_BACKEND',             query: 'vitrumBackend' },
+  { env: 'VITRUM_FRAMES',              query: 'vitrumFrames' },
+  { env: 'VITRUM_ROUGHNESS',           query: 'vitrumRoughness' },
+  { env: 'VITRUM_WALL_ALBEDO',         query: 'vitrumWallAlbedo' },
 ];
 
 function captureUrlWithScenarioParams() {
@@ -55,6 +59,10 @@ function captureUrlWithScenarioParams() {
     const svgfFrames = process.env.VITRUM_SVGF_FRAME_COUNT ?? process.env.VITRUM_SVGF_FRAMES;
     if (svgfFrames && svgfFrames.length > 0) {
       u.searchParams.set('vitrumSvgfFrameCount', svgfFrames);
+    }
+    const scenarioJson = process.env.VITRUM_SCENARIO_JSON;
+    if (scenarioJson && scenarioJson.length > 0) {
+      u.searchParams.set('vitrumScenarioConfig', scenarioJson);
     }
     return u.toString();
   } catch {

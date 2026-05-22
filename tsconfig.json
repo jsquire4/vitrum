@@ -13,7 +13,9 @@
       "@vitrum/shared-bvh": ["packages/shared-bvh/src/index.ts"],
       "@vitrum/shared-denoisers": ["packages/shared-denoisers/src/index.ts"],
       "@vitrum/shared-samplers": ["packages/shared-samplers/src/index.ts"],
+      "@vitrum/scene-lighting": ["packages/scene-lighting/src/index.ts"],
       "@vitrum/three-bindings": ["packages/three-bindings/src/index.ts"],
+      "@vitrum/walkaround-rc": ["packages/walkaround-rc/src/index.ts"],
       "@vitrum/walkaround-hybrid": ["packages/walkaround-hybrid/src/index.ts"]
     }
   },

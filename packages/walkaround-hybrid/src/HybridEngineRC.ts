@@ -124,6 +124,10 @@ export class RCSubsystem {
    */
   setScene(threeScene: THREE.Scene): void {
     this._disposeSceneBuffers();
+    if (this._dispatcher) {
+      this._dispatcher.dispose();
+      this._dispatcher = null;
+    }
 
     const bvh = buildRCSceneBVH(threeScene);
     this._bvhBuffers = this._uploadBVH(bvh);
@@ -140,7 +144,7 @@ export class RCSubsystem {
     ];
 
     this._cascadeBufs = this._allocateCascadeBuffers();
-    this._dispatcher  = new RCDispatcher(this._cascadeDims);
+    this._dispatcher = new RCDispatcher(this._cascadeDims);
   }
 
   /**

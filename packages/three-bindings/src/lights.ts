@@ -14,9 +14,14 @@ import { colorToVec3 } from './material.js';
 // Helpers
 // ────────────────────────────────────────────────────────────────────────────
 
-function normalizeVec3(x: number, y: number, z: number): Vec3 {
+function normalizeVec3(x: number, y: number, z: number, label?: string): Vec3 {
   const len = Math.sqrt(x * x + y * y + z * z);
-  if (len === 0) return [0, 0, -1];
+  if (len === 0) {
+    if (label != null) {
+      console.warn(`@vitrum/three-bindings: light "${label}" has zero-length direction; using fallback [0,0,-1].`);
+    }
+    return [0, 0, -1];
+  }
   return [x / len, y / len, z / len];
 }
 
@@ -81,7 +86,7 @@ export function convertLight(
     const dx = dl.position.x - dl.target.position.x;
     const dy = dl.position.y - dl.target.position.y;
     const dz = dl.position.z - dl.target.position.z;
-    const direction = normalizeVec3(dx, dy, dz);
+    const direction = normalizeVec3(dx, dy, dz, label);
     const emitter: DirectionalEmitter = {
       kind: 'directional',
       id,
@@ -135,7 +140,7 @@ export function convertLight(
     const dx = sl.position.x - sl.target.position.x;
     const dy = sl.position.y - sl.target.position.y;
     const dz = sl.position.z - sl.target.position.z;
-    const direction = normalizeVec3(dx, dy, dz);
+    const direction = normalizeVec3(dx, dy, dz, label);
     const emitter: SpotEmitter = {
       kind: 'spot',
       id,

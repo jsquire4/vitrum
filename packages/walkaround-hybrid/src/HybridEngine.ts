@@ -566,17 +566,23 @@ export class HybridEngine implements Engine {
       // index buffer / vertex layout changed.
       const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
+      const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
+      if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
       return;
     }
     if (hasPositionsChange) {
       // A3 fast path — same topology, new vertex positions.
       const result = positionsRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
+      const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
+      if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
       return;
     }
     if (hasTransformChange) {
       const result = transformRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
+      const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
+      if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
       return;
     }
     if (hasMaterialChange) {

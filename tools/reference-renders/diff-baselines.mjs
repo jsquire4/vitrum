@@ -35,7 +35,11 @@ import { resolve, join } from 'node:path';
 // ── arg parsing ──────────────────────────────────────────────────────────────
 
 function parseArgs(argv) {
-  const out = { tolerance: 0.001 };
+  const out = {
+    tolerance: 0.001,
+    candidate: process.env.VITRUM_DIFF_CANDIDATE_DIR ?? 'tools/benchmark-runner/results/captures',
+    baseline: process.env.VITRUM_DIFF_BASELINE_DIR ?? 'tools/reference-renders/baseline',
+  };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--candidate') out.candidate = argv[++i];

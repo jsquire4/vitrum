@@ -878,6 +878,7 @@ export class PTEngineWebGL2 implements Engine {
       applyFrameToPerspectiveCamera(this.#camera, input);
       (this.#pathTracer as unknown as WebGLPathTracerCompat).setCamera(this.#camera);
       this.#cameraSignature = cameraSignature;
+      this.#oidnDispatcher?.invalidate();
     }
 
     const q = input.quality ?? {};

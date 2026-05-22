@@ -179,7 +179,7 @@ export interface SVGFRealWebGPUOptions {
 
   /** Explicit GPU device (never destroyed by this call). */
   readonly device?: GPUDevice;
-  /** When false, requests an ephemeral device (and destroys it after). Default: true. */
+  /** When true, uses process-shared WebGPU device; otherwise uses ephemeral device. Default: false. */
   readonly reuseSharedWebGpuDevice?: boolean;
 }
 
@@ -192,7 +192,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   const h = opts.height;
   const rawAtrous = opts.atrousIterations ?? SVGF_REAL_DEFAULT_ATROUS_ITERATIONS;
   const atrousIterations = Math.min(SVGF_REAL_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
-  const reuseShared = opts.reuseSharedWebGpuDevice !== false && opts.device == null;
+  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
   const sigmaColor  = opts.sigmaColor  ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
   const sigmaNormal = opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal;
   const sigmaDepth  = opts.sigmaDepth  ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;

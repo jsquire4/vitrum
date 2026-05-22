@@ -95,7 +95,11 @@ export class SceneBvh {
       if (DDGI_MESH_FILTER(obj)) meshes.push(obj as THREE.Mesh);
     });
 
-    if (meshes.length === 0) return;
+    if (meshes.length === 0) {
+      this._buffers = null;
+      this._lastGeometryVersion = -1;
+      return;
+    }
 
     // Geometry-version dirty check — sum of every mesh's geometry version
     // bumps plus the mesh count. Cheap to compute, stable across frames
