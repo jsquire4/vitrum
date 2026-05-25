@@ -131,6 +131,19 @@ Adapter contract:
 3. Optional: print one-line JSON including `msPerSample`, e.g.:
    `{"msPerSample":0.42}`.
 
+### Acceptance metrics artifacts
+
+Gated GPU acceptance tests consume harness-produced JSON metrics files:
+
+- `packages/walkaround-hybrid/__tests__/rcAcceptance.gpu.test.ts`
+  reads `VITRUM_RC_ACCEPTANCE_METRICS`.
+- `packages/walkaround-hybrid/__tests__/neuralAcceptance.test.ts`
+  reads `VITRUM_NEURAL_ACCEPTANCE_METRICS`.
+- `packages/walkaround-rc/__tests__/rcBehavior.gpu.test.ts`
+  reads `VITRUM_RC_BEHAVIOR_METRICS`.
+
+Each file is expected to contain numeric fields documented in the test itself.
+
 Example (Playwright adapter in this folder):
 
 ```bash
@@ -155,7 +168,7 @@ uses 1280×720 / 512–1024 SPP and can exhaust software WebGL implementations.
 
 ## Fork shader regression (no GPU)
 
-From the vitrum repo root (with sibling `three-gpu-pathtracer` checkout):
+From the vitrum repo root:
 
 ```bash
 npm run fork-shader-smoke

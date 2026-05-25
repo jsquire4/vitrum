@@ -23,12 +23,13 @@
  *      RC introduces a visible, non-zero difference; tight enough to fail
  *      if the `rcParams.enabled` short-circuit doesn't lift).
  *
- * The harness for steps 1–3 lives in `tools/benchmark-runner/` once it
- * grows an `rc-acceptance` mode; today this file documents the contract
- * + ships the skip-gate so the main `npm test` suite stays portable.
+ * The capture harness writes a JSON metrics artifact consumed by this test via
+ * `VITRUM_RC_ACCEPTANCE_METRICS`. This keeps default `npm test` portable while
+ * making the gated path executable and assertive when enabled.
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const RC_ACCEPTANCE_ENABLED =
   typeof process !== 'undefined' &&
@@ -36,14 +37,43 @@ const RC_ACCEPTANCE_ENABLED =
   process.env['VITRUM_RC_ACCEPTANCE'] === '1';
 
 describe.skipIf(!RC_ACCEPTANCE_ENABLED)('W8 — Radiance Cascades GPU acceptance', () => {
+  function readMetrics(): {
+    readonly rcDeltaMean: number;
+    readonly pipelineCreatesBefore: number;
+    readonly pipelineCreatesAfter: number;
+  } {
+    const path = process.env['VITRUM_RC_ACCEPTANCE_METRICS'];
+    if (!path) {
+      throw new Error(
+        'VITRUM_RC_ACCEPTANCE=1 requires VITRUM_RC_ACCEPTANCE_METRICS=<json file> ' +
+        'produced by tools/benchmark-runner.',
+      );
+    }
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+      rcDeltaMean?: unknown;
+      pipelineCreatesBefore?: unknown;
+      pipelineCreatesAfter?: unknown;
+    };
+    if (
+      typeof parsed.rcDeltaMean !== 'number' ||
+      typeof parsed.pipelineCreatesBefore !== 'number' ||
+      typeof parsed.pipelineCreatesAfter !== 'number'
+    ) {
+      throw new Error(
+        `Invalid RC acceptance metrics JSON at ${path}. ` +
+        'Expected numeric rcDeltaMean, pipelineCreatesBefore, pipelineCreatesAfter.',
+      );
+    }
+    return {
+      rcDeltaMean: parsed.rcDeltaMean,
+      pipelineCreatesBefore: parsed.pipelineCreatesBefore,
+      pipelineCreatesAfter: parsed.pipelineCreatesAfter,
+    };
+  }
+
   it('rcEnabled: true produces a visible Lo_indirect delta vs rcEnabled: false (Cornell box, 32 frames)', () => {
-    // Harness lives in tools/benchmark-runner/ — see file header above for
-    // the procedure. The skip-gate ensures the main suite stays green on
-    // any machine; when VITRUM_RC_ACCEPTANCE=1 is set with a real GPU
-    // adapter + the harness wired in, this assertion exercises the full
-    // Phase 3 stack.
-    expect(process.env['VITRUM_RC_ACCEPTANCE']).toBe('1');
-    expect(typeof navigator !== 'undefined' && navigator.gpu != null).toBe(true);
+    const metrics = readMetrics();
+    expect(metrics.rcDeltaMean).toBeGreaterThan(0.005);
   });
 
   it('rcEnabled: true → false toggles bit-identically on the bind-group path (no recompile)', () => {
@@ -54,10 +84,8 @@ describe.skipIf(!RC_ACCEPTANCE_ENABLED)('W8 — Radiance Cascades GPU acceptance
     // runtime (re-boots are allowed; per-frame toggles via rcWeight are
     // the contract today).
     //
-    // Harness checks: count `device.createComputePipeline` calls before
-    // and after `engine.setRCWeight(0)` (api not yet added — Phase 5).
-    expect(process.env['VITRUM_RC_ACCEPTANCE']).toBe('1');
-    expect(typeof navigator !== 'undefined' && navigator.gpu != null).toBe(true);
+    const metrics = readMetrics();
+    expect(metrics.pipelineCreatesAfter).toBe(metrics.pipelineCreatesBefore);
   });
 });
 

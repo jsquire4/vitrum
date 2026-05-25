@@ -16,7 +16,7 @@ import * as THREE from 'three';
 import { attachVitrum, type AttachVitrumHandle } from '@vitrum/engine';
 import { createPTEngine_WebGL2, readAccumulationRgbFloat } from '@vitrum/pt-webgl';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
-import type { ProgressStats } from '@vitrum/core';
+import { asMat4, type ProgressStats } from '@vitrum/core';
 import { parsePositiveInt } from '@vitrum-examples/shared';
 
 // ── Capture protocol globals (consumed by tools/benchmark-runner/capture-adapter-playwright.mjs) ──
@@ -328,8 +328,8 @@ async function saveHighRes(): Promise<void> {
       function tick(): void {
         if (!saveEngine) { resolve(); return; }
         saveCam.updateMatrixWorld();
-        const view = new Float32Array(saveCam.matrixWorldInverse.elements);
-        const proj = new Float32Array(saveCam.projectionMatrix.elements);
+        const view = asMat4(new Float32Array(saveCam.matrixWorldInverse.elements));
+        const proj = asMat4(new Float32Array(saveCam.projectionMatrix.elements));
         const out = saveEngine.renderFrame({
           viewMatrix:      view,
           projMatrix:      proj,

@@ -132,30 +132,32 @@ export interface Viewport {
 // Frame outputs (engine → host, every frame)
 // ────────────────────────────────────────────────────────────────────────────
 
-export interface FrameOutput {
-  /**
-   * Primary radiance buffer — the final converged-or-converging color image.
-   * Format depends on backend: WebGPU returns a `GPUTexture`, WebGL2 returns
-   * the renderer's framebuffer or a `WebGLTexture` handle.
-   *
-   * **Skip frames:** When `samplesAccumulated === 0`, the engine elected to
-   * skip this frame (e.g. frame-rate throttle, pipeline not yet ready, paused
-   * state). On skip frames `primaryRadiance` is `null` — hosts MUST check
-   * `samplesAccumulated > 0` before treating `primaryRadiance` as a valid
-   * texture handle. Example guard:
-   *
-   * ```ts
-   * const out = engine.renderFrame(input);
-   * if (out.samplesAccumulated > 0 && out.primaryRadiance != null) {
-   *   // safe to use out.primaryRadiance
-   * }
-   * ```
-   *
-   * Walkaround engines set `samplesAccumulated = 1` on every rendered frame
-   * (they resample rather than accumulate). `samplesAccumulated = 0` is the
-   * universal "skip frame" sentinel.
-   */
-  readonly primaryRadiance: BackendTexture | null;
+interface FrameOutputBase {
+  /** Number of accumulated samples-per-pixel. Increments each `renderFrame`
+   *  call until target reached. Resets to 0 on `engine.reset()`. */
+  readonly samplesAccumulated: number;
+
+  /** True when the engine considers the image converged enough to display
+   *  the post-processing pipeline. PT engines flip this at sample target;
+   *  walkaround engines flip it once temporal accumulation has stabilized. */
+  readonly isConverged: boolean;
+}
+
+/** Engine skipped rendering this frame (paused, throttled, or not ready). */
+export interface FrameSkipped extends FrameOutputBase {
+  readonly kind: 'skipped';
+  readonly samplesAccumulated: 0;
+  readonly isConverged: false;
+}
+
+/** Engine produced render targets for this frame. */
+export interface FrameRendered extends FrameOutputBase {
+  readonly kind: 'rendered';
+
+  /** Primary radiance buffer — the final converged-or-converging color image.
+   *  Format depends on backend: WebGPU returns a `GPUTexture`, WebGL2 returns
+   *  the renderer's framebuffer or a `WebGLTexture` handle. */
+  readonly primaryRadiance: BackendTexture;
 
   // ── Optional G-buffer (Phase 6 sprint 5 introduces these) ──────────────
   /** Encoded normal + linear depth. RGBA16F: xyz = world-space normal,
@@ -175,24 +177,54 @@ export interface FrameOutput {
    *  Reserved for future temporal-reprojection denoiser (real Schied 2017
    *  SVGF, see plan/sprint-svgf-real-future.md) + checkerboard upsampling. */
   readonly motionVectors?: BackendTexture;
-
-  // ── Convergence stats ──────────────────────────────────────────────────
-  /** Number of accumulated samples-per-pixel. Increments each `renderFrame`
-   *  call until target reached. Resets to 0 on `engine.reset()`. */
-  readonly samplesAccumulated: number;
-
-  /** True when the engine considers the image converged enough to display
-   *  the post-processing pipeline. PT engines flip this at sample target;
-   *  walkaround engines flip it once temporal accumulation has stabilized. */
-  readonly isConverged: boolean;
 }
+
+export type FrameOutput = FrameSkipped | FrameRendered;
 
 /** Opaque texture handle. The shape varies per backend; hosts pass it back
  *  through `engine.renderFrame` outputs into post-processing chains, save
  *  pipelines, etc. without inspecting it. */
-export type BackendTexture = unknown;
+declare const BACKEND_TEXTURE_BRAND: unique symbol;
+export type BackendTexture<
+  TBackend extends string = string,
+  THandle = any,
+> = THandle & { readonly [BACKEND_TEXTURE_BRAND]: TBackend };
 
 /** Opaque texture-format token. Backend-specific (e.g. WebGPU uses
  *  `GPUTextureFormat` string literals); the core contract treats it as
  *  opaque so backend types don't bleed in here. */
-export type BackendTextureFormat = unknown;
+declare const BACKEND_TEXTURE_FORMAT_BRAND: unique symbol;
+export type BackendTextureFormat<
+  TBackend extends string = string,
+  TFormat = any,
+> = TFormat & { readonly [BACKEND_TEXTURE_FORMAT_BRAND]: TBackend };
+
+/** Brand a backend texture handle at the boundary where backend identity is known. */
+export function asBackendTexture<TBackend extends string, THandle>(
+  value: THandle,
+): BackendTexture<TBackend, THandle> {
+  return value as BackendTexture<TBackend, THandle>;
+}
+
+/** Brand a backend texture format token at the boundary where backend identity is known. */
+export function asBackendTextureFormat<TBackend extends string, TFormat>(
+  value: TFormat,
+): BackendTextureFormat<TBackend, TFormat> {
+  return value as BackendTextureFormat<TBackend, TFormat>;
+}
+
+/** Narrow any backend texture handle to a specific backend identity. */
+export function narrowToBackendTexture<TBackend extends string, THandle = unknown>(
+  value: BackendTexture | null | undefined,
+): BackendTexture<TBackend, THandle> | null {
+  if (value == null) return null;
+  return value as BackendTexture<TBackend, THandle>;
+}
+
+/** Narrow any backend texture format token to a specific backend identity. */
+export function narrowToBackendTextureFormat<TBackend extends string, TFormat = unknown>(
+  value: BackendTextureFormat | null | undefined,
+): BackendTextureFormat<TBackend, TFormat> | null {
+  if (value == null) return null;
+  return value as BackendTextureFormat<TBackend, TFormat>;
+}

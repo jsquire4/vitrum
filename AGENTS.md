@@ -1,6 +1,6 @@
 # Agent brief — vitrum
 
-> If you're a new Claude Code agent working in this repo, **read this first.**
+> If you're a new Codex agent working in this repo, **read this first.**
 
 ## What this project is
 
@@ -127,7 +127,7 @@ Read in this order to onboard:
 - `fix/pt-webgl-tests-three-gpu-pathtracer-dep` (`ce87517`): factory + `materialsTextureSpectral` tests were made resilient to the old missing sibling `three-gpu-pathtracer` repo (now superseded by the absorbed workspace package).
 - `fix/gpu-tests-opt-in` (`006debc`): GPU-browser tests now opt-in via env flag; default `npm test` no longer requires Playwright.
 - `fix/examples-typecheck` (`ac1b593`): `cornell-box` + `two-engines-one-scene` examples + `pt-webgpu` process ref typecheck clean.
-- `chore/gitignore-cron-lock` (`df2d877`): `.claude/scheduled_tasks.lock` gitignored.
+- `chore/gitignore-cron-lock` (`df2d877`): `.Codex/scheduled_tasks.lock` gitignored.
 - Branch / worktree cleanup: 5 stale branches deleted; 2 zombie worktrees removed (items_to_fix C2 follow-up).
 
 ## Where things actually stand (read this before claiming "ready")
@@ -180,7 +180,7 @@ Mechanical checks: **`npm run typecheck`** (TypeScript, all packages with a `typ
 
 ## Memory location
 
-This project's per-session memory: `/home/jsquire4/.claude/projects/-home-jsquire4-projects-vitrum/memory/` (already seeded with foundational entries — read `MEMORY.md` there for the index).
+This project's per-session memory: `/home/jsquire4/.Codex/projects/-home-jsquire4-projects-vitrum/memory/` (already seeded with foundational entries — read `MEMORY.md` there for the index).
 
 ## When in doubt
 

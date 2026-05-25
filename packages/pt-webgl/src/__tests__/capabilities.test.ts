@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
 
@@ -59,8 +60,8 @@ vi.mock('three-gpu-pathtracer', () => {
 
 function makeFrame(width: number, height: number) {
   return {
-    viewMatrix: new Float32Array(16),
-    projMatrix: new Float32Array(16),
+    viewMatrix: asMat4(new Float32Array(16)),
+    projMatrix: asMat4(new Float32Array(16)),
     cameraPosition: [0, 0, 0] as const,
     viewport: { width, height, devicePixelRatio: 1 },
     frameIndex: 0,

@@ -13,6 +13,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
@@ -225,7 +226,7 @@ class PTEngineWebGPU implements Engine {
   #buildParamsBuffer(input: FrameInput, width: number, height: number): ArrayBuffer {
     const sb = this.#sceneBuffers!;
     const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
-    const invVp = invertMat4(vp);
+    const invVp = invertMat4(asMat4(vp));
     if (invVp == null) {
       throw new Error('renderFrame: non-invertible view-projection matrix');
     }
@@ -449,6 +450,7 @@ class PTEngineWebGPU implements Engine {
       const pq = input.quality ?? {};
       const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
       return {
+        kind: 'rendered',
         primaryRadiance: this.#accumTexture,
         normalDepth: this.#normalDepthTexture ?? undefined,
         albedo: this.#albedoTexture ?? undefined,
@@ -536,6 +538,7 @@ class PTEngineWebGPU implements Engine {
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
     const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
     return {
+      kind: 'rendered',
       primaryRadiance: this.#accumTexture,
       normalDepth: this.#normalDepthTexture ?? undefined,
       albedo: this.#albedoTexture ?? undefined,

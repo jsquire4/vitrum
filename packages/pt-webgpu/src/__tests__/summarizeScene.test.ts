@@ -8,6 +8,7 @@ import type {
   AnalyticPrimitive,
   SkinnedMeshPrimitive,
 } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 
 const MAT: MaterialSpec = {
   baseColor: [0.5, 0.5, 0.5],
@@ -23,7 +24,7 @@ function mesh(id: string): MeshPrimitive {
 }
 function instanced(id: string, count: number): InstancedMeshPrimitive {
   const instances = Array.from({ length: count }, () =>
-    new Float32Array([1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]),
+    asMat4([1, 0, 0, 0,  0, 1, 0, 0,  0, 0, 1, 0,  0, 0, 0, 1]),
   );
   return { kind: 'instanced-mesh', id, positions: POS_TRIPLE, normals: NORM_TRIPLE, material: MAT, instances };
 }

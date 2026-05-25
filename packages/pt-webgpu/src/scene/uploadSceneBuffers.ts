@@ -1,4 +1,4 @@
-import type { Scene, SceneEmitter } from '@vitrum/core';
+import { asMat4, type Scene, type SceneEmitter } from '@vitrum/core';
 import { transformNormal, transformPoint } from '../math/mat4.js';
 import { invertMat4 } from '../math/mat4.js';
 import { buildCpuBvh } from './buildCpuBvh.js';
@@ -100,7 +100,7 @@ function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBuffer
   return buffer;
 }
 
-const IDENTITY_MAT4 = new Float32Array([
+const IDENTITY_MAT4 = asMat4([
   1, 0, 0, 0,
   0, 1, 0, 0,
   0, 0, 1, 0,
@@ -170,7 +170,7 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
           `Analytic primitive "${primitive.id}" has non-invertible transform; using identity worldToLocal fallback.`,
         );
       }
-      const invTransform = maybeInvTransform ?? IDENTITY_MAT4;
+      const invTransform = asMat4(maybeInvTransform ?? IDENTITY_MAT4);
       const paramsOffset = Math.floor(analyticParams.length / 4);
       const p = primitive.params;
       analyticParams.push(

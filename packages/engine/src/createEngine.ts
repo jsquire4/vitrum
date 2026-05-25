@@ -310,14 +310,14 @@ export function wrapWithIdempotentDispose(
     get state() { return engine.state; },
     get capabilities() { return engine.capabilities; },
     setScene(scene) { if (!disposed) engine.setScene(scene); },
-    ...(engine.updatePrimitive
+    ...(engine.capabilities.supportsIncrementalScene && engine.updatePrimitive
       ? {
           updatePrimitive: (id: string, patch: Parameters<NonNullable<Engine['updatePrimitive']>>[1]) => {
             if (!disposed) engine.updatePrimitive!(id, patch);
           },
         }
       : {}),
-    ...(engine.updateEmitter
+    ...(engine.capabilities.supportsIncrementalScene && engine.updateEmitter
       ? {
           updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
             if (!disposed) engine.updateEmitter!(id, patch);
@@ -343,7 +343,7 @@ export function wrapWithIdempotentDispose(
         // Returning a no-op output keeps host RAF loops from crashing if
         // they race the dispose. The host is expected to stop rendering
         // when state === 'disposed'.
-        return { samplesAccumulated: 0, isConverged: false, primaryRadiance: null };
+        return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
       }
       return engine.renderFrame(input);
     },

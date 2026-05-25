@@ -9,13 +9,10 @@ import {
   Y_CMF_INTEGRAL,
   Z_CMF_INTEGRAL,
 } from '@vitrum/shared-samplers';
+import { ForkAccess, type PathTracerMaterialLike } from './forkAccess.js';
 
 interface UniformRef<T> {
   value: T;
-}
-
-interface PathTracerMaterialLike {
-  uniforms?: Record<string, UniformRef<unknown>>;
 }
 
 export interface ForkBridgeCausticOptions {
@@ -113,8 +110,7 @@ export function driveForkMaterialUniforms(
   causticOptions?: ForkBridgeCausticOptions,
   bdptOptions?: ForkBridgeBdptOptions,
 ): void {
-  const tracer = pathTracer as { _pathTracer?: { material?: PathTracerMaterialLike } };
-  const material = tracer._pathTracer?.material ?? null;
+  const material = ForkAccess.getMaterial(pathTracer);
   if (material == null) return;
 
   setUniform(material, 'uCmfX', CIE_X_TABLE);

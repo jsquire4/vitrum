@@ -1,3 +1,5 @@
+import { PCG_WGSL } from '@vitrum/shared-samplers';
+
 /**
  * Early shared WGSL include for pt-webgpu.
  *
@@ -34,24 +36,7 @@ struct HitResult {
   normal: vec3f,
 };
 
-fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32 {
-  var state = px * 1664525u + py * 1013904223u + frameSeed * 22695477u;
-  state ^= state >> 17u;
-  state ^= state << 31u;
-  state ^= state >> 11u;
-  return state;
-}
-
-fn pcgNext(state: ptr<function, u32>) -> u32 {
-  (*state) = (*state) * 747796405u + 2891336453u;
-  var word = (((*state) >> (((*state) >> 28u) + 4u)) ^ (*state)) * 277803737u;
-  word = (word >> 22u) ^ word;
-  return word;
-}
-
-fn rand_f32(state: ptr<function, u32>) -> f32 {
-  return f32(pcgNext(state)) / f32(0xFFFFFFFFu);
-}
+${PCG_WGSL}
 
 fn safe_normalize(v: vec3f) -> vec3f {
   let len = length(v);

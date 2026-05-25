@@ -21,9 +21,9 @@
  *    `fallbackMesh` / `kind`) → call {@link topologyRebuild}: re-run
  *    `buildReSTIRSceneBVH`, destroy + re-upload the four BVH GPU buffers,
  *    reset the accumulator.
- *  - material-only patches → throw with a pointer to the material fast
- *    path on the sibling branch (the dispatcher in HybridEngine handles
- *    the throw; this module only owns geometry / transform).
+ *  - material-only patches are handled by `HybridEngine` by rebuilding from
+ *    a patched scene snapshot; this module intentionally owns only geometry /
+ *    transform update algorithms.
  *
  * The hot-path branch design is preserved from the pre-extraction code
  * verbatim — no behaviour change.
@@ -339,8 +339,7 @@ export function positionsRefit(
  *    re-implementing SAH partitioning (Option (b) is genuinely
  *    invasive).
  *  - Topology changes are rarer than transform / material edits — the
- *    fast paths (this branch's (c) + the material branch's bytes-only
- *    re-upload) handle the common case. When topology DOES change,
+ *    fast paths handle the common case. When topology DOES change,
  *    paying ~50 ms for a clean rebuild is the right trade vs. multi-
  *    sprint engineering on a custom partial-rebuilder.
  *

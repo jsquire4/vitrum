@@ -45,7 +45,7 @@ import type {
   FrameStats,
   GpuMemoryBreakdown,
 } from '@vitrum/core';
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
@@ -408,13 +408,9 @@ export class HybridEngine implements Engine {
     }
 
     this.capabilities = {
-      // Set true once any updatePrimitive path ships. This branch
-      // (`feat/a3-geometry-change-bvh-leaf-rebuild`) ships the transform
-      // refit + topology rebuild paths; the sibling branch ships the
-      // material-only fast path. Either alone is enough to advertise
-      // incremental-scene support: hosts can call `updatePrimitive` and
-      // get either the fast path (this branch's transform refit / sibling's
-      // material bytes write) or the safe fall-through (full BVH rebuild).
+      // Incremental scene patches are implemented: transform/positions fast
+      // paths plus full-rebuild fallbacks for material/topology edits, and
+      // emitter patching via scene-level rebuild.
       supportsIncrementalScene:  true,
       supportsAuxBuffers:        false,
       accumulates:               false,
@@ -519,9 +515,9 @@ export class HybridEngine implements Engine {
   //     `fallbackMesh` / `kind`) → full-rebuild path (a): re-run
   //     `buildReSTIRSceneBVH`, destroy + reupload all four BVH GPU
   //     buffers, reset the accumulator.
-  //  - material-only patches → throw with a clear pointer (the merger's
-  //     job is to replace this branch with the material-fast-path branch's
-  //     dispatch logic).
+  //  - material-only patches → patch scene primitive + rebuild via setScene()
+  //     for correctness (material-byte upload optimization can still be
+  //     layered later without changing host contract behavior).
   //
   // Implementations live in `HybridEnginePrimitiveUpdates.ts`; this method
   // is the routing dispatcher.
@@ -534,12 +530,13 @@ export class HybridEngine implements Engine {
         `Call setScene(scene) before updatePrimitive.`,
       );
     }
-    const prim = this._lastScene.primitives.find((p) => String(p.id) === id);
-    if (!prim) {
+    const primIndex = this._lastScene.primitives.findIndex((p) => String(p.id) === id);
+    if (primIndex < 0) {
       throw new Error(
         `HybridEngine.updatePrimitive("${id}"): primitive id not found in current scene.`,
       );
     }
+    const prim = this._lastScene.primitives[primIndex]!;
 
     // Three.js BVH refit (fast path) preserves topology when only AABB
     // bounds need updating. Three flavours:
@@ -586,15 +583,13 @@ export class HybridEngine implements Engine {
       return;
     }
     if (hasMaterialChange) {
-      // Reserved for the material-only fast-path branch
-      // (`feat/a3-hybridengine-incremental-updates`). Until that branch
-      // is merged, send a clear pointer rather than silently no-op.
-      throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): material-only fast path lives on ` +
-        `the sibling branch \`feat/a3-hybridengine-incremental-updates\` (commit d0d22b0). ` +
-        `This branch (\`feat/a3-geometry-change-bvh-leaf-rebuild\`) handles geometry / ` +
-        `transform patches only. The merger combines both code paths.`,
-      );
+      const nextPrimitives = this._lastScene.primitives.slice();
+      nextPrimitives[primIndex] = { ...prim, ...patch } as ScenePrimitive;
+      this.setScene({
+        ...this._lastScene,
+        primitives: nextPrimitives,
+      });
+      return;
     }
 
     // No recognised patch field — treat as a no-op rather than throw so
@@ -614,7 +609,28 @@ export class HybridEngine implements Engine {
     };
   }
 
-  updateEmitter?: never;
+  updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
+    if (this._lastScene == null) {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): no scene set. ` +
+        `Call setScene(scene) before updateEmitter.`,
+      );
+    }
+    const idx = this._lastScene.emitters.findIndex((e) => String(e.id) === id);
+    if (idx < 0) {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): emitter id not found in current scene.`,
+      );
+    }
+    const current = this._lastScene.emitters[idx]!;
+    const nextEmitter = { ...current, ...patch } as SceneEmitter;
+    const nextEmitters = this._lastScene.emitters.slice();
+    nextEmitters[idx] = nextEmitter;
+    this.setScene({
+      ...this._lastScene,
+      emitters: nextEmitters,
+    });
+  }
 
   // ── Runtime lighting update ────────────────────────────────────────────
 
@@ -747,8 +763,8 @@ export class HybridEngine implements Engine {
    *
    * The 60 FPS internal throttle is enforced here: on high-refresh-rate
    * displays, frames arriving faster than ~16.67 ms apart are skipped and
-   * this returns a "skip" FrameOutput (samplesAccumulated: 0, isConverged:
-   * false, primaryRadiance: null).
+   * this returns a "skip" FrameOutput (`kind: 'skipped'`,
+   * `samplesAccumulated: 0`, `isConverged: false`).
    *
    * Note: `input.viewport` is ignored by HybridEngine — its WebGPU render
    * targets (DDGI atlas, ReSTIR reservoirs, history textures, accumulation
@@ -759,7 +775,7 @@ export class HybridEngine implements Engine {
    */
   renderFrame(input: FrameInput): FrameOutput {
     const skipOutput: FrameOutput = {
-      primaryRadiance: null,
+      kind: 'skipped',
       samplesAccumulated: 0,
       isConverged: false,
     };
@@ -1011,6 +1027,7 @@ export class HybridEngine implements Engine {
     }
 
     return {
+      kind:               'rendered',
       primaryRadiance:    swapView,   // swap chain is the output surface
       samplesAccumulated: 1,
       isConverged:        false,      // walkaround never converges; resamples every frame

@@ -37,7 +37,7 @@ class DebuggableFakeEngine implements Engine {
 
   setScene(_: Scene): void {}
   renderFrame(_: FrameInput): FrameOutput {
-    return { samplesAccumulated: 1, isConverged: false, primaryRadiance: null };
+    return { kind: 'rendered', samplesAccumulated: 1, isConverged: false, primaryRadiance: {} };
   }
   reset(): void {}
   pause(): void {}

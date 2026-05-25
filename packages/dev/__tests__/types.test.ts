@@ -34,7 +34,7 @@ function makeMinimalEngine(): Engine {
     capabilities: caps,
     setScene() { /* no-op */ },
     renderFrame() {
-      return { primaryRadiance: null, samplesAccumulated: 0, isConverged: false };
+      return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     },
     reset() { /* no-op */ },
     pause() { state = 'paused'; },
