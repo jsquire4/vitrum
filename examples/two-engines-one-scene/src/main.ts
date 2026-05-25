@@ -2,7 +2,13 @@
  * Gate G2: identical @vitrum/core Scene drives pt-webgl (WebGL2) and walkaround-hybrid (WebGPU).
  */
 
-import type { Engine, FrameInput, Scene } from '@vitrum/core';
+import {
+  asBackendTexture,
+  asBackendTextureFormat,
+  type Engine,
+  type FrameInput,
+  type Scene,
+} from '@vitrum/core';
 import {
   buildComplexThreeScene,
   buildCornellBoxThreeScene,
@@ -380,8 +386,8 @@ async function main(): Promise<void> {
           },
           frameIndex: wFrame,
           frameSeed: (wFrame * 1664525 + 1013904223) >>> 0,
-          swapChainView: view,
-          swapChainFormat: format,
+          swapChainView: asBackendTexture<'webgpu', GPUTextureView>(view),
+          swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>(format),
           quality: { bounces: 4 },
         };
         hybrid.renderFrame(input);

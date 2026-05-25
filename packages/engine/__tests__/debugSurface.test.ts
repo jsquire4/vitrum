@@ -17,6 +17,7 @@ import type {
   FrameOutput,
   Scene,
 } from '@vitrum/core';
+import { asBackendTexture } from '@vitrum/core';
 
 const NULL_CAPS: EngineCapabilities = {
   supportsIncrementalScene: false,
@@ -37,7 +38,12 @@ class DebuggableFakeEngine implements Engine {
 
   setScene(_: Scene): void {}
   renderFrame(_: FrameInput): FrameOutput {
-    return { kind: 'rendered', samplesAccumulated: 1, isConverged: false, primaryRadiance: {} };
+    return {
+      kind: 'rendered',
+      samplesAccumulated: 1,
+      isConverged: false,
+      primaryRadiance: asBackendTexture<'test', {}>({}),
+    };
   }
   reset(): void {}
   pause(): void {}

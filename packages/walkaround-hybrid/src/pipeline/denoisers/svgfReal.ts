@@ -158,9 +158,9 @@ export class SVGFRealDenoiser implements Denoiser {
     // We use gNormalDepthTexture for both curr and prev depth/normal: one-frame
     // lag on the previous-frame G-buffer is acceptable for a real-time engine
     // and avoids allocating a full second G-buffer. Object IDs are not available
-    // in the current walkaround pipeline; a 1×1 placeholder (id=0) is used so
-    // the id-mismatch check always passes — this is conservative (never rejects
-    // valid reprojection) and can be improved when objId outputs are added.
+    // in the current walkaround pipeline; we bind conservative placeholders
+    // (curr=0, prev=1) so obj-id mismatch rejects temporal reuse instead of
+    // accepting potentially stale history.
     // Select ping-pong slots: read from A, write to B (or vice versa).
     const histRead = this._pingPong === 0 ? svgf.svgfHistoryLengthTextureA : svgf.svgfHistoryLengthTextureB;
     const histWrite = this._pingPong === 0 ? svgf.svgfHistoryLengthTextureB : svgf.svgfHistoryLengthTextureA;
@@ -183,7 +183,7 @@ export class SVGFRealDenoiser implements Denoiser {
           { binding: 5, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
           { binding: 6, resource: common.gNormalDepthTexture.createView() },       // prevDepth (1-frame lag)
           { binding: 7, resource: common.gNormalDepthTexture.createView() },       // prevNormal (1-frame lag)
-          { binding: 8, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // prevObjId (placeholder)
+          { binding: 8, resource: svgf.svgfPrevObjIdPlaceholderTexture.createView() }, // prevObjId (conservative placeholder)
           { binding: 9, resource: histRead.createView() },                         // historyLengthIn
           { binding: 10, resource: momRead.createView() },                         // momentsIn
           { binding: 11, resource: radWrite.createView() },                        // colorOut (storage write)

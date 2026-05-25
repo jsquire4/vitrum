@@ -15,7 +15,7 @@
 
 import * as THREE from 'three';
 import type { Engine, Scene, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
-import { asMat4 } from '@vitrum/core';
+import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineOptions } from '../createEngine.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -175,13 +175,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // A4 — generic PT engines honour viewport-per-frame, but HybridEngine
   // (WebGPU walkaround) does not — its DDGI atlas / ReSTIR reservoirs /
   // history textures / accumulation buffer are sized at construction and
-  // can only be resized via `setSize(w, h)`. Duck-type for that method
-  // and call it when the host's canvas dimensions change so WebGPU hosts
-  // using attachVitrum get correct resize behaviour out of the box.
+  // can only be resized via `setSize(w, h)`. Call it when available so
+  // WebGPU hosts using attachVitrum get correct resize behaviour out of box.
   let viewportW = Math.max(1, Math.floor(opts.canvas.width));
   let viewportH = Math.max(1, Math.floor(opts.canvas.height));
   let viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
-  const engineSetSize = (engine as unknown as { setSize?: (w: number, h: number) => void }).setSize;
+  const engineSetSize = engine.setSize;
   let resizeObserver: ResizeObserver | undefined;
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver((entries) => {
@@ -193,7 +192,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         viewportH = viewport.height;
       }
       if (typeof engineSetSize === 'function') {
-        try { engineSetSize.call(engine, viewportW, viewportH); } catch {}
+        try { engineSetSize(viewportW, viewportH); } catch {}
       }
     });
     resizeObserver.observe(opts.canvas);
@@ -249,7 +248,14 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       frameIndex,
       frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,
       ...(quality ? { quality } : {}),
-      ...(swapChainView != null ? { swapChainView, swapChainFormat: webgpuFormat } : {}),
+      ...(swapChainView != null
+        ? {
+            swapChainView: asBackendTexture<'webgpu', GPUTextureView>(swapChainView),
+            ...(webgpuFormat != null
+              ? { swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>(webgpuFormat) }
+              : {}),
+          }
+        : {}),
     };
     try {
       engine.renderFrame(input);

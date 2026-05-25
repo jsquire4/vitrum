@@ -107,9 +107,11 @@ export interface FrameInput {
   readonly quality?: FrameQualitySettings;
 
   // ── Optional: backend-specific output target ────────────────────────────
-  /** Backend-opaque swap-chain target. WebGPU backends (`@vitrum/pt-webgpu`,
-   *  `@vitrum/walkaround-hybrid`) expect a `GPUTextureView`. WebGL backends
-   *  ignore both fields and write to their own framebuffer; the host then
+  /** Backend-opaque swap-chain target. Some WebGPU backends (notably
+   *  `@vitrum/walkaround-hybrid`) require a fresh `GPUTextureView` each frame.
+   *  Others (`@vitrum/pt-webgpu`) currently render to internal textures and
+   *  ignore this field. WebGL backends ignore both fields and write to their
+   *  own framebuffer; the host then
    *  reads via `FrameOutput.primaryRadiance`. Typed as opaque so the
    *  backend-agnostic core does not pull in WebGPU type declarations.
    *  Backends document what they require and cast at the boundary. */
@@ -139,7 +141,8 @@ interface FrameOutputBase {
 
   /** True when the engine considers the image converged enough to display
    *  the post-processing pipeline. PT engines flip this at sample target;
-   *  walkaround engines flip it once temporal accumulation has stabilized. */
+   *  real-time walkaround engines typically keep this false because they
+   *  resample every frame instead of converging to a terminal image. */
   readonly isConverged: boolean;
 }
 
@@ -187,7 +190,7 @@ export type FrameOutput = FrameSkipped | FrameRendered;
 declare const BACKEND_TEXTURE_BRAND: unique symbol;
 export type BackendTexture<
   TBackend extends string = string,
-  THandle = any,
+  THandle = unknown,
 > = THandle & { readonly [BACKEND_TEXTURE_BRAND]: TBackend };
 
 /** Opaque texture-format token. Backend-specific (e.g. WebGPU uses
@@ -196,7 +199,7 @@ export type BackendTexture<
 declare const BACKEND_TEXTURE_FORMAT_BRAND: unique symbol;
 export type BackendTextureFormat<
   TBackend extends string = string,
-  TFormat = any,
+  TFormat = unknown,
 > = TFormat & { readonly [BACKEND_TEXTURE_FORMAT_BRAND]: TBackend };
 
 /** Brand a backend texture handle at the boundary where backend identity is known. */

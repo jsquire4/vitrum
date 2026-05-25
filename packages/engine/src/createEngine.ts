@@ -305,8 +305,7 @@ export function wrapWithIdempotentDispose(
   postDispose: () => void,
 ): Engine {
   let disposed = false;
-  const maybeSetSize = (engine as unknown as { setSize?: (w: number, h: number) => void }).setSize;
-  const proxy: Engine & { setSize?: (w: number, h: number) => void } = {
+  const proxy: Engine = {
     get state() { return engine.state; },
     get capabilities() { return engine.capabilities; },
     setScene(scene) { if (!disposed) engine.setScene(scene); },
@@ -331,10 +330,17 @@ export function wrapWithIdempotentDispose(
           },
         }
       : {}),
-    ...(typeof maybeSetSize === 'function'
+    ...(engine.setSize
       ? {
           setSize: (w: number, h: number) => {
-            if (!disposed) maybeSetSize.call(engine, w, h);
+            if (!disposed) engine.setSize!(w, h);
+          },
+        }
+      : {}),
+    ...(engine.updateLighting
+      ? {
+          updateLighting: (opts: Parameters<NonNullable<Engine['updateLighting']>>[0]) => {
+            if (!disposed) engine.updateLighting!(opts);
           },
         }
       : {}),

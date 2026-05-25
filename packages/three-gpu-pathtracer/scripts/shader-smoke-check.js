@@ -23,6 +23,7 @@ const bsdf = read('./src/shader/bsdf/bsdf_functions.glsl.js');
 const spectral = read('./src/shader/bsdf/spectral_accumulator.glsl.js');
 const util = read('./src/shader/common/util_functions.glsl.js');
 const materialMain = read('./src/materials/pathtracing/PhysicalPathTracingMaterial.js');
+const lightSampling = read('./src/shader/sampling/light_sampling_functions.glsl.js');
 
 expectMatch(renderStructs, /float wavelength;/, 'RenderState missing wavelength field');
 expectMatch(renderStructs, /float wavelengthPdf;/, 'RenderState missing wavelengthPdf field');
@@ -112,6 +113,16 @@ expectMatch(
 	util,
 	/transmissionAttenuationHero\s*\(\s*sampler2D materialsTex/,
 	'transmissionAttenuationHero must accept materials sampler for spectral lookup',
+);
+expectNoMatch(
+	lightSampling,
+	/denominator is potentially zero/,
+	'light sampling must not retain zero-denominator TODOs in area-light PDF code',
+);
+expectMatch(
+	lightSampling,
+	/lightRec\.pdf\s*=\s*max\s*\(/,
+	'area-light sampling must clamp PDFs to finite positive values',
 );
 
 expectMatch(

@@ -8,5 +8,5 @@ export * from './frame.js';
 export * from './engine/index.js';
 export type { GpuDetection, DetectGpuOptions } from './gpuDetection.js';
 export type { WgpuAdapterKind, WgpuProbeResult } from './wgpuSupport.js';
-export { detectGpu, _resetCacheUnsafe } from './gpuDetection.js';
+export { detectGpu } from './gpuDetection.js';
 export { probeWebGPU, isSwiftShaderAdapter } from './wgpuSupport.js';

@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Engine, FrameStats, ProgressStats, EngineCapabilities, EngineState, FrameOutput, FrameInput, Scene } from '@vitrum/core';
+import { asBackendTexture } from '@vitrum/core';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Smoke: a minimal Engine implementation can declare the optional T3.E
@@ -33,7 +34,12 @@ class FakeEngine implements Engine {
 
   setScene(_: Scene): void {}
   renderFrame(_: FrameInput): FrameOutput {
-    return { kind: 'rendered', samplesAccumulated: 1, isConverged: false, primaryRadiance: {} };
+    return {
+      kind: 'rendered',
+      samplesAccumulated: 1,
+      isConverged: false,
+      primaryRadiance: asBackendTexture<'test', {}>({}),
+    };
   }
   reset(): void {}
   pause(): void {}

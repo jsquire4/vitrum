@@ -22,7 +22,7 @@
  * tricks) so the denoiser has something to denoise.
  */
 
-import type { FrameInput } from '@vitrum/core';
+import { asBackendTexture, asBackendTextureFormat, type FrameInput } from '@vitrum/core';
 import { buildCornellBoxThreeScene, mat4FromThree, resizeCanvasToDisplaySize } from '@vitrum-examples/shared';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
@@ -188,8 +188,8 @@ async function main(): Promise<void> {
       },
       frameIndex: frame,
       frameSeed: (frame * 1664525 + 1013904223) >>> 0,
-      swapChainView: view,
-      swapChainFormat: format,
+      swapChainView: asBackendTexture<'webgpu', GPUTextureView>(view),
+      swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>(format),
       quality: { bounces: 4 },
     };
     hybrid.renderFrame(input);

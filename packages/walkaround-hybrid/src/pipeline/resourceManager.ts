@@ -216,6 +216,10 @@ export interface SVGFFrameResources {
    * test (oPrev != objIdCurr → 0 != 0 = false) never rejects reprojection.
    */
   svgfObjIdPlaceholderTexture: GPUTexture;
+  /** Conservative prev-object-id placeholder (value 1). When bound as prevObjId
+   *  against currObjId=0, reprojection rejects history instead of accepting
+   *  stale cross-object reuse while true object IDs are unavailable. */
+  svgfPrevObjIdPlaceholderTexture: GPUTexture;
   /**
    * T2.H1 — Per-pixel history length A (r16uint, full-res).
    * Ping-pong pair with svgfHistoryLengthTextureB.
@@ -794,9 +798,10 @@ export function createFrameResources(
       GPUTextureUsage.COPY_SRC,
   });
 
-  // ── T2.H1 — 1×1 r32uint zero placeholder for object IDs (svgf-real).
-  // Object IDs are not available in this pipeline; reading 0 from both
-  // curr and prev means the id-mismatch test never rejects reprojection.
+  // ── T2.H1 — 1×1 r32uint placeholders for object IDs (svgf-real).
+  // Object IDs are not available in this pipeline yet. We bind curr=0 and
+  // prev=1 to conservatively reject history reuse instead of accepting stale
+  // reprojection across unknown object boundaries.
   const svgfObjIdPlaceholderTexture = device.createTexture({
     label: 'svgf-real-objid-placeholder',
     size: [1, 1],
@@ -806,6 +811,18 @@ export function createFrameResources(
   device.queue.writeTexture(
     { texture: svgfObjIdPlaceholderTexture },
     new Uint32Array([0]),
+    { bytesPerRow: 4 },
+    [1, 1],
+  );
+  const svgfPrevObjIdPlaceholderTexture = device.createTexture({
+    label: 'svgf-real-prev-objid-placeholder',
+    size: [1, 1],
+    format: 'r32uint',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture: svgfPrevObjIdPlaceholderTexture },
+    new Uint32Array([1]),
     { bytesPerRow: 4 },
     [1, 1],
   );
@@ -935,6 +952,7 @@ export function createFrameResources(
 
   const svgf: SVGFFrameResources = {
     svgfObjIdPlaceholderTexture,
+    svgfPrevObjIdPlaceholderTexture,
     svgfHistoryLengthTextureA,
     svgfHistoryLengthTextureB,
     svgfMomentsTextureA,
@@ -1013,6 +1031,7 @@ export function destroyFrameResources(r: FrameResources): void {
 
   // svgf
   r.svgf.svgfObjIdPlaceholderTexture.destroy();
+  r.svgf.svgfPrevObjIdPlaceholderTexture.destroy();
   r.svgf.svgfHistoryLengthTextureA.destroy();
   r.svgf.svgfHistoryLengthTextureB.destroy();
   r.svgf.svgfMomentsTextureA.destroy();

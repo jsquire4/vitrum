@@ -5,14 +5,39 @@
 // gating on it. The shape is intentionally read-only — capabilities are an
 // engine-identity property, not a per-frame dial.
 
-import type { AnalyticShape } from '../scene/primitives.js';
+import type { AnalyticShape, ScenePrimitive } from '../scene/primitives.js';
 import type { SceneEmitter } from '../scene/emitters.js';
+import type { SceneEnvironment } from '../scene/environment.js';
+
+export interface IncrementalPatchSupport {
+  /** Primitive transform-only patch path (no full scene rebuild). */
+  readonly transform: boolean;
+  /** Primitive positions-only patch path (same topology). */
+  readonly positions: boolean;
+  /** Material-only patch path without full scene replacement. */
+  readonly material: boolean;
+  /** Emitter patch path without full scene replacement. */
+  readonly emitter: boolean;
+  /** Topology-changing patch path without full scene replacement. */
+  readonly topology: boolean;
+}
+
+export type FramePresentationMode =
+  /** Backend requires host-supplied swap-chain textures every frame. */
+  | 'swapchain-required'
+  /** Backend renders to an internal texture and returns it via `primaryRadiance`. */
+  | 'offscreen-texture'
+  /** Backend can use either path depending on host/plumbing. */
+  | 'swapchain-optional';
 
 export interface EngineCapabilities {
   /** Engine supports `updatePrimitive` / `updateEmitter` patches, falling
    *  back to full `setScene` for unsupported diffs. When false, hosts must
    *  always call `setScene` for any change. */
   readonly supportsIncrementalScene: boolean;
+  /** Granular patch matrix. When omitted, callers should assume the
+   *  conservative behavior implied by `supportsIncrementalScene`. */
+  readonly incrementalPatchSupport?: IncrementalPatchSupport;
 
   /** Engine reports `FrameOutput.variance` and `FrameOutput.motionVectors`,
    *  enabling external denoisers + adaptive sampling. */
@@ -44,6 +69,15 @@ export interface EngineCapabilities {
 
   /** Set of {@link SceneEmitter} `kind` values this engine supports. */
   readonly supportedEmitterKinds: ReadonlySet<SceneEmitter['kind']>;
+  /** Set of scene primitive kinds this backend can ingest directly from
+   *  `Scene.primitives` without adapter-side throws. */
+  readonly supportedPrimitiveKinds?: ReadonlySet<ScenePrimitive['kind']>;
+  /** Set of environment kinds this backend can consume as authored. */
+  readonly supportedEnvironmentKinds?: ReadonlySet<SceneEnvironment['kind']>;
+  /** Host-facing present mode for `FrameInput.swapChainView`. */
+  readonly presentationMode?: FramePresentationMode;
+  /** Backend-specific feature IDs that are intentionally non-final / approximate. */
+  readonly experimentalFeatures?: ReadonlySet<string>;
 
   // ── Specular caustics (RFE-05) ──────────────────────────────────────────
   /**

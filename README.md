@@ -72,6 +72,24 @@ Set `prefer: 'realtime'` for interactive viewers, lighting designers, scrub-the-
 
 Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl`) are also installable directly if you need backend-specific knobs that the facade doesn't surface.
 
+## Capability Contract Notes
+
+`engine.capabilities` is now the authoritative behavior matrix. Hosts should gate behavior off:
+
+- `supportedPrimitiveKinds`, `supportedEnvironmentKinds`, `supportedEmitterKinds`
+- `incrementalPatchSupport` (granular patch-path truth, not just a boolean)
+- `presentationMode` (`swapchain-required` vs `offscreen-texture`)
+- `experimentalFeatures` (explicit non-final algorithm seams)
+
+This removes prior silent divergence between advertised and actual backend behavior.
+
+## Migration Notes (2026-05 Coherence Sweep)
+
+- `FrameInput.swapChainView` / `swapChainFormat` now require branded handles from `asBackendTexture` / `asBackendTextureFormat`.
+- `@vitrum/core` no longer exports `_resetCacheUnsafe`.
+- Stained-glass-specific contracts moved under `@vitrum/stained-glass-extensions`.
+- `@vitrum/walkaround-hybrid` package root is intentionally trimmed; treat non-documented root exports as unstable internals.
+
 ## Lifecycle (the white-whale insight)
 
 The engine accepts a device handle but **does not own** the device's lifetime. You own when the device is created, when it's lost, when it's reset. The engine owns its GPU resources for as long as you say.

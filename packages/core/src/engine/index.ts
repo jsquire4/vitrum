@@ -75,6 +75,12 @@ export interface Engine {
    *  than host-driven env scrubs) may omit this method; hosts MUST
    *  typeof-check before calling. */
   updateEnvironment?(env: import('../scene/index.js').SceneEnvironment | null): void;
+  /** Resize persistent backend render targets. Backends that honour
+   *  `FrameInput.viewport` per frame may omit this. */
+  setSize?(width: number, height: number): void;
+  /** Backend-specific runtime lighting update path for engines that do not map
+   *  lighting state 1:1 onto `SceneEnvironment`. */
+  updateLighting?(opts: Readonly<Record<string, unknown>>): void;
 
   // ── Frame-level rendering ───────────────────────────────────────────────
 
@@ -89,9 +95,9 @@ export interface Engine {
    *  buffer is overwritten. */
   renderFrame(input: FrameInput): FrameOutput;
 
-  /** Reset the accumulator. Hosts call this when the camera moves, the scene
-   *  changes, or the user wants to start over. Engines may also reset
-   *  internally on `setScene`. */
+  /** Reset runtime history/accumulation state. PT engines typically clear
+   *  sample accumulation buffers; real-time engines may rebuild temporal
+   *  resources or reinitialize history pipelines as needed. */
   reset(): void;
 
   // ── Pause / resume / dispose ────────────────────────────────────────────

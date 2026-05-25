@@ -25,6 +25,7 @@
     "@vitrum/scene-lighting": "file:../scene-lighting",
     "@vitrum/shared-denoisers": "file:../shared-denoisers",
     "@vitrum/shared-samplers": "file:../shared-samplers",
+    "@vitrum/stained-glass-extensions": "file:../stained-glass-extensions",
     "@vitrum/three-bindings": "file:../three-bindings",
     "three-gpu-pathtracer": "file:../three-gpu-pathtracer",
     "xatlas-web": "^0.1.0"

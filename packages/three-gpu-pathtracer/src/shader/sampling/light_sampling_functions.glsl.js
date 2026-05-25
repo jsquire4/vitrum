@@ -70,7 +70,10 @@ export const light_sampling_functions = /* glsl */`
 				float cosTheta = dot( rayDirection, normal );
 				didHit = true;
 				lightRec.dist = dist;
-				lightRec.pdf = ( dist * dist ) / ( light.area * cosTheta );
+				// Guard against grazing angles / degenerate area terms causing
+				// divide-by-zero or negative PDFs in MIS weights.
+				float denom = max( abs( light.area * cosTheta ), EPSILON );
+				lightRec.pdf = max( ( dist * dist ) / denom, EPSILON );
 				lightRec.emission = light.color * light.intensity;
 				lightRec.direction = rayDirection;
 				lightRec.type = light.type;
@@ -116,8 +119,10 @@ export const light_sampling_functions = /* glsl */`
 		lightRec.dist = dist;
 		lightRec.direction = direction;
 
-		// TODO: the denominator is potentially zero
-		lightRec.pdf = lightDistSq / ( light.area * dot( direction, lightNormal ) );
+		// Guard against grazing-angle and zero-area degeneracies so MIS weights
+		// never see NaN/Inf PDFs from area-light sampling.
+		float denom = max( abs( light.area * dot( direction, lightNormal ) ), EPSILON );
+		lightRec.pdf = max( lightDistSq / denom, EPSILON );
 		lightRec.discretePdf = 1.0;
 
 		return lightRec;

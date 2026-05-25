@@ -45,7 +45,8 @@ import type {
   FrameStats,
   GpuMemoryBreakdown,
 } from '@vitrum/core';
-import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
+import { asBackendTexture } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
@@ -412,14 +413,26 @@ export class HybridEngine implements Engine {
       // paths plus full-rebuild fallbacks for material/topology edits, and
       // emitter patching via scene-level rebuild.
       supportsIncrementalScene:  true,
+      incrementalPatchSupport: {
+        transform: true,
+        positions: true,
+        material: false,
+        emitter: false,
+        topology: true,
+      },
       supportsAuxBuffers:        false,
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
       maxBounces:                this._maxBounces,
       supportedAnalyticShapes:   new Set(),
+      supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh']),
       // Emitter kinds handled by DDGI _uploadLights: sun, fixture, teaLight
-      // mapped to core taxonomy: directional, point
-      supportedEmitterKinds:     new Set(['directional', 'point']),
+      // mapped to core taxonomy: rect-area/disc-area/mesh-area (disc is
+      // converted to rect in the adapter path).
+      supportedEmitterKinds:     new Set<SceneEmitter['kind']>(['rect-area', 'disc-area', 'mesh-area']),
+      supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri']),
+      presentationMode:          'swapchain-required',
+      experimentalFeatures:      new Set(['svgf-real-conservative-objid']),
       // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
       // compatible with the walkaround engine's frame cadence; the walkaround
       // engine always reports 'none'. Track via
@@ -1028,7 +1041,7 @@ export class HybridEngine implements Engine {
 
     return {
       kind:               'rendered',
-      primaryRadiance:    swapView,   // swap chain is the output surface
+      primaryRadiance:    asBackendTexture<'webgpu', GPUTextureView>(swapView), // swap chain is the output surface
       samplesAccumulated: 1,
       isConverged:        false,      // walkaround never converges; resamples every frame
     };

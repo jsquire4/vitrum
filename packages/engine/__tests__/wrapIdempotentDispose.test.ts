@@ -16,6 +16,7 @@ import type {
   Scene,
   SceneEnvironment,
 } from '@vitrum/core';
+import { asBackendTexture } from '@vitrum/core';
 import { wrapWithIdempotentDispose } from '../src/createEngine.js';
 
 const NULL_CAPS: EngineCapabilities = {
@@ -42,12 +43,16 @@ function makeFakeEngine(opts: { withUpdateEnvironment: boolean }): Engine & {
     capabilities: NULL_CAPS,
     setScene(_: Scene): void {},
     renderFrame(_: FrameInput): FrameOutput {
-      return { kind: 'rendered', samplesAccumulated: 1, isConverged: false, primaryRadiance: {} };
+      return {
+        kind: 'rendered',
+        samplesAccumulated: 1,
+        isConverged: false,
+        primaryRadiance: asBackendTexture<'test', {}>({}),
+      };
     },
     reset(): void {},
     pause(): void {},
     resume(): void {},
-    // setSize is backend-specific and intentionally not part of the Engine contract.
     setSize: (w: number, h: number) => setSizeSpy(w, h),
     dispose(): void {},
     ...(updateEnvironmentSpy
@@ -115,7 +120,7 @@ describe('wrapWithIdempotentDispose — updateEnvironment forwarding (A1)', () =
   it('forwards backend-specific setSize when present', () => {
     const engine = makeFakeEngine({ withUpdateEnvironment: true });
     const proxy = wrapWithIdempotentDispose(engine, () => {});
-    const setSize = (proxy as unknown as { setSize?: (w: number, h: number) => void }).setSize;
+    const setSize = proxy.setSize;
     expect(typeof setSize).toBe('function');
     setSize!(1280, 720);
     expect(engine.setSizeSpy).toHaveBeenCalledTimes(1);

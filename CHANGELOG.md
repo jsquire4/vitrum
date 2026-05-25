@@ -10,6 +10,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Coherence + contract truthfulness sweep (2026-05-25):**
+  - `EngineCapabilities` gained explicit capability matrix fields: `supportedPrimitiveKinds`, `supportedEnvironmentKinds`, `incrementalPatchSupport`, `presentationMode`, and `experimentalFeatures`.
+  - New `@vitrum/stained-glass-extensions` package extracted stained-glass-specific wire contracts (`SURFACE_TEXTURE_ID`, `VITRUM_USER_DATA_KEYS`, came UBO packer).
+  - Area-light PDF robustness guards landed in fork shader sampling (`light_sampling_functions.glsl.js`) with smoke-check coverage to prevent NaN/Inf regressions.
+  - SVGF-real object-ID fallback switched to conservative history rejection (`currObjId=0`, `prevObjId=1`) until true object-ID buffers are wired.
+
+### Changed
+
+- `FrameInput` swap-chain handles are now strictly branded backend textures; host callsites must brand `swapChainView` / `swapChainFormat` using `asBackendTexture` and `asBackendTextureFormat`.
+- `@vitrum/pt-webgl` and `@vitrum/pt-webgpu` now expose patch methods through the engine surface and truthfully report patch granularity via `incrementalPatchSupport`.
+- `@vitrum/walkaround-hybrid` root export surface is trimmed to engine-facing API; broad internal shader/PPG/RC exports were removed from the package root.
+
+### Breaking
+
+- `@vitrum/core` no longer exports `_resetCacheUnsafe`.
+- `@vitrum/walkaround-hybrid` package-root internals are no longer part of the stable API surface; import only documented public symbols from package root.
+
 - **Single-wave contract and merge-race remediation (2026-05-24):**
   - Re-landed shared WGSL primitive modules (`pcg.wgsl.ts`, `bsdfPrimitives.wgsl.ts`) in `@vitrum/shared-samplers` and removed duplicated local copies in walkaround-hybrid/pt-webgpu common shader sources.
   - Re-landed branded core contract types in `@vitrum/core`: `Mat4` (`asMat4`/`isMat4`), branded backend texture helpers, and `FrameOutput` discriminated union (`FrameRendered | FrameSkipped`).

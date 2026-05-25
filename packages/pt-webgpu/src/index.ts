@@ -13,7 +13,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { asMat4 } from '@vitrum/core';
+import { asBackendTexture, asMat4 } from '@vitrum/core';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
@@ -109,7 +109,14 @@ class PTEngineWebGPU implements Engine {
 
   get capabilities(): EngineCapabilities {
     return {
-      supportsIncrementalScene: false, // Honest reporting — updatePrimitive/updateEmitter currently delegate to setScene; flip to true when real incremental patching lands.
+      supportsIncrementalScene: true, // Patch methods are available and currently route through full setScene rebuilds.
+      incrementalPatchSupport: {
+        transform: false,
+        positions: false,
+        material: false,
+        emitter: false,
+        topology: false,
+      },
       supportsAuxBuffers: true,
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
@@ -125,6 +132,14 @@ class PTEngineWebGPU implements Engine {
       supportedEmitterKinds: new Set<SceneEmitter['kind']>(
         ['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area'],
       ),
+      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>([
+        'mesh', 'instanced-mesh', 'analytic', 'skinned-mesh',
+      ]),
+      supportedEnvironmentKinds: new Set<Scene['environment']['kind']>([
+        'none', 'hdri', 'procedural-sky',
+      ]),
+      presentationMode: 'offscreen-texture',
+      experimentalFeatures: new Set(['prototype-backend']),
       causticStrategy: this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
       debugSurface: true,
@@ -449,13 +464,25 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'paused') {
       const pq = input.quality ?? {};
       const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
+      const accumTexture = this.#accumTexture;
+      if (accumTexture == null) {
+        return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+      }
       return {
         kind: 'rendered',
-        primaryRadiance: this.#accumTexture,
-        normalDepth: this.#normalDepthTexture ?? undefined,
-        albedo: this.#albedoTexture ?? undefined,
-        variance: this.#varianceTexture ?? undefined,
-        motionVectors: this.#motionVectorsTexture ?? undefined,
+        primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexture),
+        ...(this.#normalDepthTexture != null
+          ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
+          : {}),
+        ...(this.#albedoTexture != null
+          ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
+          : {}),
+        ...(this.#varianceTexture != null
+          ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
+          : {}),
+        ...(this.#motionVectorsTexture != null
+          ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
+          : {}),
         samplesAccumulated: this.#samplesAccumulated,
         isConverged: this.#samplesAccumulated >= targetSppPaused,
       };
@@ -537,13 +564,25 @@ class PTEngineWebGPU implements Engine {
 
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
     const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
+    const accumTexture = this.#accumTexture;
+    if (accumTexture == null) {
+      return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+    }
     return {
       kind: 'rendered',
-      primaryRadiance: this.#accumTexture,
-      normalDepth: this.#normalDepthTexture ?? undefined,
-      albedo: this.#albedoTexture ?? undefined,
-      variance: this.#varianceTexture ?? undefined,
-      motionVectors: this.#motionVectorsTexture ?? undefined,
+      primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexture),
+      ...(this.#normalDepthTexture != null
+        ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
+        : {}),
+      ...(this.#albedoTexture != null
+        ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
+        : {}),
+      ...(this.#varianceTexture != null
+        ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
+        : {}),
+      ...(this.#motionVectorsTexture != null
+        ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
+        : {}),
       samplesAccumulated: this.#samplesAccumulated,
       isConverged: this.#samplesAccumulated >= targetSpp,
     };

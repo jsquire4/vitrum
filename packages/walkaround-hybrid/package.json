@@ -25,6 +25,7 @@
     "@vitrum/shared-bvh": "file:../shared-bvh",
     "@vitrum/shared-samplers": "file:../shared-samplers",
     "@vitrum/shared-denoisers": "file:../shared-denoisers",
+    "@vitrum/stained-glass-extensions": "file:../stained-glass-extensions",
     "@vitrum/three-bindings": "file:../three-bindings",
     "@vitrum/walkaround-rc": "file:../walkaround-rc"
   },

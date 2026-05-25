@@ -21,8 +21,9 @@ import type {
   FrameStats,
   ProgressStats,
 } from '@vitrum/core';
+import { asBackendTexture } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
-import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment, AnalyticShape } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
@@ -40,24 +41,6 @@ import {
 import { IblBakerCache } from './iblBaker.js';
 import type { SkyParams } from '@vitrum/scene-lighting';
 import type { DataTexture, Texture } from 'three';
-
-// ────────────────────────────────────────────────────────────────────────────
-// Device-tier threshold for analytic came (Sprint 5)
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Minimum value of gl.MAX_FRAGMENT_UNIFORM_VECTORS required to enable the
- * analytic H-channel came intersection path in the fork shader.
- *
- * The came UBO packs up to 500 segments × 16 floats + 200 nodes × 4 floats
- * = 8800 floats, but the shader itself only declares a small fixed number of
- * uniform vector slots for the came struct arrays.  Low-end GPUs that report
- * MAX_FRAGMENT_UNIFORM_VECTORS < 256 (the WebGL minimum guarantee is 16, the
- * common low-end desktop/mobile floor is 256) lack the budget for the came
- * UBO binding.  On those devices the analytic path is disabled and the BVH
- * mesh came geometry is used as fallback (Decision 6 in the roadmap).
- */
-const MIN_UNIFORM_VECTORS_FOR_CAME = 256;
 
 export interface PTEngineWebGL2Options extends EngineOptions {
   readonly device: WebGLRenderer;
@@ -150,6 +133,40 @@ interface RenderSizePlan {
   readonly height: number;
   readonly estimatedBytes: number;
   readonly guardrail: string | null;
+}
+
+function patchPrimitiveInScene(scene: Scene, id: string, patch: Partial<ScenePrimitive>): Scene {
+  const idx = scene.primitives.findIndex((p) => String(p.id) === id);
+  if (idx < 0) throw new Error(`updatePrimitive: primitive "${id}" not found in current scene`);
+  const current = scene.primitives[idx]!;
+  if (patch.id !== undefined && String(patch.id) !== String(current.id)) {
+    throw new Error(`updatePrimitive: primitive "${id}" id cannot be changed`);
+  }
+  if (patch.kind !== undefined && patch.kind !== current.kind) {
+    throw new Error(
+      `updatePrimitive: primitive "${id}" kind cannot change from "${current.kind}" to "${patch.kind}"`,
+    );
+  }
+  const next = scene.primitives.slice();
+  next[idx] = { ...current, ...patch } as ScenePrimitive;
+  return { ...scene, primitives: next };
+}
+
+function patchEmitterInScene(scene: Scene, id: string, patch: Partial<SceneEmitter>): Scene {
+  const idx = scene.emitters.findIndex((e) => String(e.id) === id);
+  if (idx < 0) throw new Error(`updateEmitter: emitter "${id}" not found in current scene`);
+  const current = scene.emitters[idx]!;
+  if (patch.id !== undefined && String(patch.id) !== String(current.id)) {
+    throw new Error(`updateEmitter: emitter "${id}" id cannot be changed`);
+  }
+  if (patch.kind !== undefined && patch.kind !== current.kind) {
+    throw new Error(
+      `updateEmitter: emitter "${id}" kind cannot change from "${current.kind}" to "${patch.kind}"`,
+    );
+  }
+  const next = scene.emitters.slice();
+  next[idx] = { ...current, ...patch } as SceneEmitter;
+  return { ...scene, emitters: next };
 }
 
 interface SchedulerOptions {
@@ -332,9 +349,6 @@ interface PTEngineWebGL2Init {
   readonly renderer: WebGLRenderer;
   readonly pathTracer: WebGLPathTracer;
   readonly camera: PerspectiveCamera;
-  /** True when the GL context reports MAX_FRAGMENT_UNIFORM_VECTORS >= 256.
-   *  Controls whether 'h-channel-came' is included in supportedAnalyticShapes. */
-  readonly supportsAnalyticCame: boolean;
 }
 
 export class PTEngineWebGL2 implements Engine {
@@ -343,7 +357,6 @@ export class PTEngineWebGL2 implements Engine {
   readonly #renderer: WebGLRenderer;
   readonly #pathTracer: WebGLPathTracer;
   readonly #camera: PerspectiveCamera;
-  readonly #supportsAnalyticCame: boolean;
 
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
@@ -437,7 +450,6 @@ export class PTEngineWebGL2 implements Engine {
     this.#renderer = gpu.renderer;
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
-    this.#supportsAnalyticCame = gpu.supportsAnalyticCame;
     this.#limits = this.#detectDeviceLimits();
     const adaptiveRequested = opts.extensions?.['vitrum.ptWebgl.pixelAdaptiveSampling'] === true;
     this.#additiveAccumulation =
@@ -575,22 +587,24 @@ export class PTEngineWebGL2 implements Engine {
   }
 
   get capabilities(): EngineCapabilities {
-    // Analytic H-channel came is enabled only when the GL context has
-    // sufficient fragment uniform vectors (Sprint 5 device-tier fallback).
-    // On low-end GPUs (MAX_FRAGMENT_UNIFORM_VECTORS < 256) the came UBO
-    // is too expensive; mesh-came geometry in the BVH is used as fallback.
-    const analyticShapes = new Set<AnalyticShape>();
-    if (this.#supportsAnalyticCame) {
-      analyticShapes.add('h-channel-came');
-    }
-
+    const experimental = new Set<string>();
+    if (this.#bdpt) experimental.add('bdpt-approximate');
+    if (this.#spectralRendering) experimental.add('spectral-jakob-hanika-placeholder');
     return {
-      supportsIncrementalScene: false,
+      supportsIncrementalScene: true,
+      incrementalPatchSupport: {
+        transform: false,
+        positions: false,
+        material: false,
+        emitter: false,
+        topology: false,
+      },
       supportsAuxBuffers: false,
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
-      supportedAnalyticShapes: analyticShapes,
+      supportedAnalyticShapes: new Set(),
+      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh']),
       supportedEmitterKinds: new Set<SceneEmitter['kind']>([
         'directional',
         'rect-area',
@@ -599,6 +613,9 @@ export class PTEngineWebGL2 implements Engine {
         'spot',
         'mesh-area',
       ]),
+      supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri']),
+      presentationMode: 'offscreen-texture',
+      ...(experimental.size > 0 ? { experimentalFeatures: experimental } : {}),
       causticStrategy: this.#causticStrategy,
     };
   }
@@ -840,12 +857,14 @@ export class PTEngineWebGL2 implements Engine {
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {
     this.#assertLive('updatePrimitive');
-    throw new Error('Not implemented: updatePrimitive (pt-webgl requires full setScene)');
+    const next = patchPrimitiveInScene(this.#vitrumScene!, _id, _patch);
+    this.setScene(next);
   }
 
   updateEmitter(_id: string, _patch: Partial<SceneEmitter>): void {
     this.#assertLive('updateEmitter');
-    throw new Error('Not implemented: updateEmitter (pt-webgl requires full setScene)');
+    const next = patchEmitterInScene(this.#vitrumScene!, _id, _patch);
+    this.setScene(next);
   }
 
   #makeCameraSignature(input: FrameInput): string {
@@ -876,7 +895,7 @@ export class PTEngineWebGL2 implements Engine {
       }
       return {
         kind: 'rendered',
-        primaryRadiance,
+        primaryRadiance: asBackendTexture<'webgl', typeof primaryRadiance>(primaryRadiance),
         samplesAccumulated: spp,
         isConverged: spp >= cap,
         telemetry: this.#lastTelemetry,
@@ -1018,7 +1037,7 @@ export class PTEngineWebGL2 implements Engine {
     }
     return {
       kind: 'rendered',
-      primaryRadiance,
+      primaryRadiance: asBackendTexture<'webgl', typeof primaryRadiance>(primaryRadiance),
       samplesAccumulated: spp,
       isConverged,
       telemetry: this.#lastTelemetry,
@@ -1186,17 +1205,10 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
 
   const camera = new PerspectiveCamera();
 
-  // Sprint 5 device-tier fallback: query MAX_FRAGMENT_UNIFORM_VECTORS once at
-  // engine creation.  This parameter is fixed for a GL context's lifetime so
-  // there's no need to query it per-frame.  The result is baked into the
-  // engine's capabilities and does not change.
-  const maxFragUniforms = glContext.getParameter(glContext.MAX_FRAGMENT_UNIFORM_VECTORS) as number;
-  const supportsAnalyticCame = maxFragUniforms >= MIN_UNIFORM_VECTORS_FOR_CAME;
-
   const slot = makeStateSlot();
   const engine = new PTEngineWebGL2(
     opts,
-    { renderer, pathTracer, camera, supportsAnalyticCame },
+    { renderer, pathTracer, camera },
     slot,
   );
   slot.set('ready');
