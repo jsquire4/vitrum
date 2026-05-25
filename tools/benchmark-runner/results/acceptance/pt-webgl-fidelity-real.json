@@ -1,6 +1,6 @@
 {
   "schemaVersion": "pt-webgl-fidelity-2026-05-25",
-  "generatedAt": "2026-05-25T22:12:53.312Z",
+  "generatedAt": "2026-05-25T22:15:54.336Z",
   "inputDir": "/home/jsquire4/projects/vitrum/tools/reference-renders/pt-webgl-fidelity",
   "requiredScenarios": [
     "rfe03-layered-front-back",
