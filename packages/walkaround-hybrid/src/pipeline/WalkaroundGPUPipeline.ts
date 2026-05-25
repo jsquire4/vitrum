@@ -77,6 +77,7 @@ import {
   GTAOUpsamplePass,
   IndirectCombinePass,
   IndirectTemporalAccumPass,
+  MotionVectorsPass,
   PPGGuidePass,
   PPGUpdatePass,
   ResolvePass,
@@ -495,6 +496,9 @@ export class WalkaroundGPUPipeline {
     //    the workstream that will land the real implementation.
     this._denoiserRegistry = new DenoiserRegistry();
     registerBuiltinDenoisers(this._denoiserRegistry, {
+      ...(options?.inferenceGraph !== undefined
+        ? { neuralInferenceGraph: options.inferenceGraph }
+        : {}),
       // exactOptionalPropertyTypes-safe: only forward `oidn` when supplied.
       ...(options?.oidn !== undefined ? { oidn: options.oidn } : {}),
     });
@@ -546,6 +550,7 @@ export class WalkaroundGPUPipeline {
     registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline));
     registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline));
     registry.register(new ShadePass(compiled.shadePipeline));
+    registry.register(new MotionVectorsPass(compiled.motionVectorsPipeline));
     registry.register(new GTAOPass(compiled.gtaoPipeline));
     registry.register(new GTAOUpsamplePass(compiled.gtaoUpsamplePipeline));
     // Virtual pass — promotes the polymorphic denoiser dispatch into the
@@ -964,6 +969,10 @@ export class WalkaroundGPUPipeline {
     resolveTimestamps(encoder, this._tsState, this._frameCount, passLayout.slotCount);
 
     d.queue.submit([encoder.finish()]);
+
+    // W9 follow-up — periodic training/refine cycle:
+    // fluxAtomics GPU readback -> CPU dTree/sTree refinement -> re-upload.
+    this._ppg.maybeRunTrainingRefine(this._res, this._frameCount);
 
     // Per-frame denoiser cleanup. Runs after `queue.submit()` — the GPU
     // queue holds its own reference to the encoded command buffer, so

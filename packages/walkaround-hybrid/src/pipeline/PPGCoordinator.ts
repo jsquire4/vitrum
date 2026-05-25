@@ -16,7 +16,8 @@
  */
 
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
-import { buildSTree, resetAccumulators } from '../ppg/sTree.js';
+import { buildSTree, resetAccumulators, splitOverflowLeaves } from '../ppg/sTree.js';
+import { refineDTree } from '../ppg/dTree.js';
 import { serialiseSTree } from '../ppg/serialise.js';
 import { PPG_MIS_ALPHA } from '../ppg/ppgConstants.js';
 import type { AABB, STree } from '../ppg/types.js';
@@ -72,6 +73,8 @@ function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: 
  */
 export class PPGCoordinator {
   private readonly _device: GPUDevice;
+  private static readonly _FLUX_SCALE = 65536.0;
+  private static readonly _DEFAULT_READBACK_INTERVAL_FRAMES = 64;
   private _enabled = false;
   /** CPU-side PPG model (sTree + per-cell dTrees). Allocated at
    *  initialize() when ppgEnabled is true; serialised to GPU buffers per
@@ -81,6 +84,9 @@ export class PPGCoordinator {
    *  pixel indices to the (placeholder) world-space query position for sTree
    *  descent. Set from the BVH bounds at initialize() time. */
   private _sceneAABB: AABB = { min: [-10, -10, -10], max: [10, 10, 10] };
+  private _fluxReadbackBuffer: GPUBuffer | null = null;
+  private _fluxReadbackInFlight = false;
+  private _lastFluxReadbackFrame = -1;
 
   constructor(device: GPUDevice) {
     this._device = device;
@@ -168,6 +174,64 @@ export class PPGCoordinator {
     this._writeGuideUBO(frameResources, width, height, frameCount);
   }
 
+  /**
+   * Run one PPG training/refine cycle when enough frames have elapsed:
+   *
+   * 1) Copy `fluxAtomicsBuf` into a MAP_READ staging buffer.
+   * 2) Merge decoded flux into CPU-side dTrees.
+   * 3) Run `refineDTree` + `splitOverflowLeaves`.
+   * 4) Re-serialise and upload the updated sTree.
+   * 5) Reset CPU and GPU accumulators for the next training window.
+   *
+   * Fire-and-forget async; renderFrame remains synchronous.
+   */
+  maybeRunTrainingRefine(
+    frameResources: FrameResources,
+    frameCount: number,
+    intervalFrames: number = PPGCoordinator._DEFAULT_READBACK_INTERVAL_FRAMES,
+  ): void {
+    if (!this._enabled || this._sTree == null) return;
+    const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
+    if (!fluxAtomicsBuf) return;
+    if (this._fluxReadbackInFlight) return;
+    if (this._lastFluxReadbackFrame >= 0
+      && frameCount - this._lastFluxReadbackFrame < intervalFrames) {
+      return;
+    }
+
+    this._lastFluxReadbackFrame = frameCount;
+    this._fluxReadbackInFlight = true;
+
+    if (this._fluxReadbackBuffer == null || this._fluxReadbackBuffer.size !== fluxAtomicsBuf.size) {
+      this._fluxReadbackBuffer?.destroy();
+      this._fluxReadbackBuffer = this._device.createBuffer({
+        label: 'ppg-flux-readback',
+        size: fluxAtomicsBuf.size,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+    }
+
+    const enc = this._device.createCommandEncoder({ label: 'ppg-flux-readback-copy' });
+    enc.copyBufferToBuffer(fluxAtomicsBuf, 0, this._fluxReadbackBuffer, 0, fluxAtomicsBuf.size);
+    this._device.queue.submit([enc.finish()]);
+
+    void this._device.queue.onSubmittedWorkDone()
+      .then(async () => {
+        if (this._fluxReadbackBuffer == null || this._sTree == null) return;
+        await this._fluxReadbackBuffer.mapAsync(GPUMapMode.READ);
+        const mapped = this._fluxReadbackBuffer.getMappedRange();
+        const raw = new Uint32Array(mapped.slice(0));
+        this._fluxReadbackBuffer.unmap();
+        this._mergeFluxAndRefine(raw, frameResources);
+      })
+      .catch((err) => {
+        console.warn('[PPGCoordinator] training refine readback failed:', err);
+      })
+      .finally(() => {
+        this._fluxReadbackInFlight = false;
+      });
+  }
+
   /** PPG owns no destroy()-able buffers of its own — the PPG GPU buffers
    *  live inside `FrameResources.ppg` and are released by
    *  `destroyFrameResources`. `dispose` here exists for API symmetry with
@@ -186,6 +250,10 @@ export class PPGCoordinator {
   dispose(): void {
     this._enabled = false;
     this._sTree = null;
+    this._fluxReadbackInFlight = false;
+    this._lastFluxReadbackFrame = -1;
+    this._fluxReadbackBuffer?.destroy();
+    this._fluxReadbackBuffer = null;
   }
 
   /**
@@ -265,5 +333,49 @@ export class PPGCoordinator {
     u32[2] = 0;
     u32[3] = 0;
     this._device.queue.writeBuffer(buf, 0, data);
+  }
+
+  private _mergeFluxAndRefine(rawFlux: Uint32Array, frameResources: FrameResources): void {
+    const sTree = this._sTree;
+    if (!sTree) return;
+    const offsetsBuf = frameResources.ppg.dTreeOffsetsBuf;
+    const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
+    if (!offsetsBuf || !fluxAtomicsBuf) return;
+
+    const maxSpatialCells = Math.max(1, Math.floor(offsetsBuf.size / 4));
+    const maxDTreeNodesPerCell = Math.max(1, Math.floor(rawFlux.length / maxSpatialCells));
+    const activeCells = Math.min(sTree.dTrees.length, maxSpatialCells);
+
+    for (let dTreeIdx = 0; dTreeIdx < activeCells; dTreeIdx++) {
+      const dTree = sTree.dTrees[dTreeIdx]!;
+      let totalFlux = 0;
+      const nodeLimit = Math.min(dTree.nodes.length, maxDTreeNodesPerCell);
+      for (let nodeIdx = 0; nodeIdx < nodeLimit; nodeIdx++) {
+        const slot = dTreeIdx * maxDTreeNodesPerCell + nodeIdx;
+        const node = dTree.nodes[nodeIdx]!;
+        const flux = rawFlux[slot]! / PPGCoordinator._FLUX_SCALE;
+        node.flux = flux;
+        if (node.isLeaf) totalFlux += flux;
+      }
+      dTree.totalFlux = totalFlux;
+      refineDTree(dTree);
+    }
+
+    // Spatial refinement after directional refinement.
+    // Deliberately run once per readback window, not per frame.
+    splitOverflowLeaves(sTree);
+
+    this._uploadTree(frameResources);
+    resetAccumulators(sTree);
+
+    // Reset GPU flux accumulators for the next training window.
+    const zeros = new Uint32Array(rawFlux.length);
+    this._device.queue.writeBuffer(
+      fluxAtomicsBuf,
+      0,
+      zeros.buffer,
+      zeros.byteOffset,
+      zeros.byteLength,
+    );
   }
 }

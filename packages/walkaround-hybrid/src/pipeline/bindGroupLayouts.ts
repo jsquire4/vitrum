@@ -26,6 +26,8 @@ export interface BGLCache {
   sampleBudget?: GPUBindGroupLayout;
   /** Sprint 9 — resolve pass bind group layout. */
   resolve?: GPUBindGroupLayout;
+  /** Motion-vector generation pass bind group layout. */
+  motionVectors?: GPUBindGroupLayout;
   /** Sprint 15 — GTAO half-res compute pass bind group layout. */
   gtao?: GPUBindGroupLayout;
   /** Sprint 15 — GTAO bilateral upsample pass bind group layout. */
@@ -257,6 +259,28 @@ export function getResolveBindGroupLayout(
     ],
   });
   return cache.resolve;
+}
+
+/**
+ * Motion-vectors pass BGL. Matches `motionVectors.wgsl.ts`:
+ *   0 — gNormalDepth in (rgba16float sampled, unfilterable)
+ *   1 — motion out (rg32float write-only storage)
+ *   2 — WalkaroundUBO (uniform)
+ */
+export function getMotionVectorsBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.motionVectors) return cache.motionVectors;
+  cache.motionVectors = device.createBindGroupLayout({
+    label: 'motion-vectors-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.motionVectors;
 }
 
 /**

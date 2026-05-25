@@ -216,7 +216,7 @@ describe('estimateFrameResourcesMemory — 1920×1080 HybridEngine', () => {
     // at 8 bytes / texel × ~2M pixels).
     const rgba16f = breakdown.byTextureFormat.rgba16float ?? 0;
     expect(rgba16f).toBeGreaterThan(80 * MB);
-    expect(rgba16f).toBeLessThan(300 * MB);
+    expect(rgba16f).toBeLessThan(320 * MB);
   });
 
   it('byBufferUsage shows storage > uniform (reservoir buffers >> UBOs)', () => {

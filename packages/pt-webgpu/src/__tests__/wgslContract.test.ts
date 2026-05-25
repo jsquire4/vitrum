@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 describe('pt-webgpu WGSL material contract', () => {
   it('uses the bounded rich material payload layout', () => {
@@ -102,5 +105,36 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(matrixOffsets['viewProj']).toBe(208);
     expect(matrixOffsets['prevViewProj']).toBe(272);
     expect(offset).toBeLessThanOrEqual(512);
+  });
+
+  it('declares TLAS storage bindings and host bind-group wiring in lockstep', () => {
+    // Shader-side contract: TLAS buffers occupy bindings 24..27.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(24) var<storage, read> tlasNodes');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(25) var<storage, read> tlasInstanceIndices');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(26) var<storage, read> tlasBlasRoots');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(27) var<storage, read> tlasInstanceWorldToLocal');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(28) var<storage, read> tlasInstanceLocalToWorld');
+
+    // Host-side contract: bind-group creation must provide matching bindings,
+    // and the storage-buffer limit guard must account for them.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const indexSource = readFileSync(resolve(here, '../index.ts'), 'utf8');
+    expect(indexSource).toMatch(/REQUIRED_STORAGE_BUFFERS_PER_STAGE\s*=\s*23/);
+    expect(indexSource).toContain('{ binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } }');
+    expect(indexSource).toContain('{ binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } }');
+    expect(indexSource).toContain('{ binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } }');
+    expect(indexSource).toContain('{ binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } }');
+    expect(indexSource).toContain('{ binding: 28, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } }');
+  });
+
+  it('keeps TLAS hit reconstruction in world space', () => {
+    // TLAS traversal must convert local-space BLAS hits back into world
+    // distance/normal so denoising and shading stay frame-stable.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let worldHitPos = transformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let worldDist = dot(worldHitPos - ray.origin, ray.direction);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('(*hit).dist = worldDist;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      '(*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);',
+    );
   });
 });

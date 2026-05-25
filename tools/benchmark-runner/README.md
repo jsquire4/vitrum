@@ -12,6 +12,8 @@ benchmark file template.
 - `npm run benchmark --workspace @vitrum/benchmark-runner`
 - `npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner`
 - `npm run benchmark:qualitymodes --workspace @vitrum/benchmark-runner`
+- `npm run benchmark:acceptance-metrics --workspace @vitrum/benchmark-runner`
+- `npm run benchmark:pt-webgl-fidelity --workspace @vitrum/benchmark-runner`
 
 These commands execute `run-gap-closure-verification.mjs` and write:
 
@@ -141,8 +143,66 @@ Gated GPU acceptance tests consume harness-produced JSON metrics files:
   reads `VITRUM_NEURAL_ACCEPTANCE_METRICS`.
 - `packages/walkaround-rc/__tests__/rcBehavior.gpu.test.ts`
   reads `VITRUM_RC_BEHAVIOR_METRICS`.
+- `packages/pt-webgpu/src/__tests__/tlasPromotionAcceptance.test.ts`
+  reads `VITRUM_PTWGPU_TLAS_METRICS`.
 
 Each file is expected to contain numeric fields documented in the test itself.
+For PT-WebGPU TLAS promotion specifically, the metrics JSON includes
+`tlasVsLegacyMeanAbs`, `tlasVsLegacyP95Abs`, and `tlasVsLegacyMaxAbs`.
+Current schema id: `ptwgpu-tlas-metrics-2026-05-25`.
+It also includes `orderedStats`, per-threshold `pass` booleans, and capture
+metadata (`imageWidth`, `imageHeight`, `roi`) to make CI failures self-diagnosing.
+The acceptance test thresholds are controlled via:
+
+- `VITRUM_PTWGPU_TLAS_MAX_DELTA` (mean, default `0.02`)
+- `VITRUM_PTWGPU_TLAS_MAX_P95_DELTA` (p95, default `0.06`)
+- `VITRUM_PTWGPU_TLAS_MAX_PEAK_DELTA` (max, default `0.2`)
+- `VITRUM_PTWGPU_TLAS_STRICT=1` (benchmark runner exits non-zero if TLAS metrics exceed those thresholds)
+
+You can generate these JSON artifacts from captured PNG pairs:
+
+```bash
+VITRUM_RC_OFF_PNG=tools/reference-renders/W8-rc-off.png \
+VITRUM_RC_ON_PNG=tools/reference-renders/W8-rc-on.png \
+VITRUM_NEURAL_ATROUS_PNG=tools/reference-renders/neural-atrous.png \
+VITRUM_NEURAL_PNG=tools/reference-renders/neural.png \
+VITRUM_PTWGPU_LEGACY_PNG=tools/reference-renders/ptwgpu-legacy.png \
+VITRUM_PTWGPU_TLAS_PNG=tools/reference-renders/ptwgpu-tlas.png \
+npm run benchmark:acceptance-metrics --workspace @vitrum/benchmark-runner
+```
+
+The command prints ready-to-export paths:
+
+- `VITRUM_RC_ACCEPTANCE_METRICS=...`
+- `VITRUM_RC_BEHAVIOR_METRICS=...`
+- `VITRUM_NEURAL_ACCEPTANCE_METRICS=...`
+- `VITRUM_PTWGPU_TLAS_METRICS=...`
+
+### PT-WebGL fidelity acceptance artifact
+
+`benchmark:pt-webgl-fidelity` scans paired PNGs under
+`tools/reference-renders/pt-webgl-fidelity/`:
+
+- `<scenario>.baseline.png`
+- `<scenario>.candidate.png`
+
+It computes RGB PSNR + mean absolute delta and writes a JSON artifact consumed by
+`packages/pt-webgl/src/__tests__/fidelityAcceptance.test.ts`.
+
+```bash
+npm run benchmark:pt-webgl-fidelity --workspace @vitrum/benchmark-runner
+```
+
+The command prints:
+
+- `VITRUM_PTWEBGL_FIDELITY_METRICS=...`
+
+Useful knobs:
+
+- `VITRUM_PTWEBGL_FIDELITY_REQUIRED` (comma-separated scenario IDs; defaults derive from `scenario-presets.mjs` RFE scenarios)
+- `VITRUM_PTWEBGL_FIDELITY_MIN_PSNR` (global threshold, default `28`)
+- `VITRUM_PTWEBGL_FIDELITY_MIN_PSNR_BY_SCENARIO` (JSON object, e.g. `{"rfe05-caustic-strategy":26}`)
+- `VITRUM_PTWEBGL_FIDELITY_STRICT=1` (exit non-zero when required scenarios are missing or any row fails threshold)
 
 Example (Playwright adapter in this folder):
 

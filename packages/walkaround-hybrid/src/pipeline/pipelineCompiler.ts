@@ -36,6 +36,7 @@ import {
   GTAO_UPSAMPLE_MODULE,
   INDIRECT_COMBINE_MODULE,
   INDIRECT_TEMPORAL_ACCUM_MODULE,
+  MOTION_VECTORS_MODULE,
   PPG_GUIDE_MODULE,
   PPG_UPDATE_MODULE,
   RESOLVE_MODULE,
@@ -60,6 +61,7 @@ import {
   getHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getMotionVectorsBindGroupLayout,
   getGTAOBindGroupLayout,
   getGTAOUpsampleBindGroupLayout,
   getTemporalGiBindGroupLayout,
@@ -78,6 +80,7 @@ interface CompiledPipelines {
   temporalPipeline: GPUComputePipeline;
   spatialPipeline: GPUComputePipeline;
   shadePipeline: GPUComputePipeline;
+  motionVectorsPipeline: GPUComputePipeline;
   /** Shared à-trous pipeline — used by the legacy `AtrousDenoiser` AND by
    *  the always-on indirect-channel chain
    *  (`WalkaroundGPUPipeline._dispatchAtrousIndirect`). */
@@ -127,13 +130,14 @@ export async function compilePipelines(
   // self-contained. Both modules declare `requires: []`.
   const sampleBudgetSM = device.createShaderModule({ label: 'sample-budget', code: composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES) });
   const resolveSM      = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,       WGSL_MODULES) });
+  const motionVectorsSM = device.createShaderModule({ label: 'motion-vectors', code: composeWgsl(MOTION_VECTORS_MODULE, WGSL_MODULES) });
 
   // Check for compile errors on every shader module before proceeding.
   const modules: [string, GPUShaderModule][] = [
     ['ris', risSM], ['temporal', temporalSM], ['spatial', spatialSM],
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
-    ['sample-budget', sampleBudgetSM], ['resolve', resolveSM],
+    ['sample-budget', sampleBudgetSM], ['resolve', resolveSM], ['motion-vectors', motionVectorsSM],
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
@@ -182,6 +186,9 @@ export async function compilePipelines(
   const resolveLayout = device.createPipelineLayout({
     bindGroupLayouts: [getResolveBindGroupLayout(device, bglCache)],
   });
+  const motionVectorsLayout = device.createPipelineLayout({
+    bindGroupLayouts: [getMotionVectorsBindGroupLayout(device, bglCache)],
+  });
   const gtaoLayout = device.createPipelineLayout({
     bindGroupLayouts: [getGTAOBindGroupLayout(device, bglCache)],
   });
@@ -213,6 +220,11 @@ export async function compilePipelines(
       device.createComputePipelineAsync({ label: 'spatial',  layout: computeLayout, compute: { module: spatialSM,  entryPoint: 'spatialMain'  } }),
       device.createComputePipelineAsync({ label: 'shade',    layout: shadeLayout,   compute: { module: shadeSM,    entryPoint: 'shadeMain'    } }),
     ]);
+  const motionVectorsPipeline = await device.createComputePipelineAsync({
+    label: 'motion-vectors',
+    layout: motionVectorsLayout,
+    compute: { module: motionVectorsSM, entryPoint: 'motionVectorsMain' },
+  });
 
   const atrousPipeline = await device.createComputePipelineAsync({
     label: 'atrous', layout: atrousLayout,
@@ -362,6 +374,7 @@ export async function compilePipelines(
     temporalPipeline,
     spatialPipeline,
     shadePipeline,
+    motionVectorsPipeline,
     atrousPipeline,
     accumPipeline,
     compositePipeline,

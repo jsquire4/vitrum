@@ -264,18 +264,30 @@ export function wrapWithIdempotentDispose(
   postDispose: () => void,
 ): Engine {
   let disposed = false;
+  const patchSupport = engine.capabilities.incrementalPatchSupport;
+  const primitivePatchAdvertised = patchSupport == null
+    ? engine.capabilities.supportsIncrementalScene
+    : (
+        patchSupport.transform
+        || patchSupport.positions
+        || patchSupport.material
+        || patchSupport.topology
+      );
+  const emitterPatchAdvertised = patchSupport == null
+    ? engine.capabilities.supportsIncrementalScene
+    : patchSupport.emitter;
   const proxy: Engine = {
     get state() { return engine.state; },
     get capabilities() { return engine.capabilities; },
     setScene(scene) { if (!disposed) engine.setScene(scene); },
-    ...(engine.capabilities.supportsIncrementalScene && engine.updatePrimitive
+    ...(primitivePatchAdvertised && engine.updatePrimitive
       ? {
           updatePrimitive: (id: string, patch: Parameters<NonNullable<Engine['updatePrimitive']>>[1]) => {
             if (!disposed) engine.updatePrimitive!(id, patch);
           },
         }
       : {}),
-    ...(engine.capabilities.supportsIncrementalScene && engine.updateEmitter
+    ...(emitterPatchAdvertised && engine.updateEmitter
       ? {
           updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
             if (!disposed) engine.updateEmitter!(id, patch);

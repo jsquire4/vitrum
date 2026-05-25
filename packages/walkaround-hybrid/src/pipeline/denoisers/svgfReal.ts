@@ -181,8 +181,8 @@ export class SVGFRealDenoiser implements Denoiser {
           { binding: 3, resource: common.gNormalDepthTexture.createView() },       // currDepth (.r)
           { binding: 4, resource: common.gNormalDepthTexture.createView() },       // currNormal (.xyz 0..1)
           { binding: 5, resource: svgf.svgfObjIdPlaceholderTexture.createView() }, // currObjId (1×1 r32uint, val=0)
-          { binding: 6, resource: common.gNormalDepthTexture.createView() },       // prevDepth (1-frame lag)
-          { binding: 7, resource: common.gNormalDepthTexture.createView() },       // prevNormal (1-frame lag)
+          { binding: 6, resource: svgf.svgfPrevNormalDepthTexture.createView() },   // prevDepth
+          { binding: 7, resource: svgf.svgfPrevNormalDepthTexture.createView() },   // prevNormal
           { binding: 8, resource: svgf.svgfPrevObjIdPlaceholderTexture.createView() }, // prevObjId (conservative placeholder)
           { binding: 9, resource: histRead.createView() },                         // historyLengthIn
           { binding: 10, resource: momRead.createView() },                         // momentsIn
@@ -290,6 +290,16 @@ export class SVGFRealDenoiser implements Denoiser {
       pass.end();
       inputTex = outTex;
     }
+    // Publish current-frame normal+depth for next-frame reprojection checks.
+    encoder.copyTextureToTexture(
+      { texture: common.gNormalDepthTexture },
+      { texture: svgf.svgfPrevNormalDepthTexture },
+      {
+        width: common.gNormalDepthTexture.width,
+        height: common.gNormalDepthTexture.height,
+        depthOrArrayLayers: 1,
+      },
+    );
     return inputTex;
   }
 

@@ -14,8 +14,12 @@ function makeStubPathTracer() {
           uCmfX: { value: null as unknown },
           uCmfY: { value: null as unknown },
           uCmfZ: { value: null as unknown },
+          uXCmfCdf: { value: null as unknown },
           uYCmfCdf: { value: null as unknown },
+          uZCmfCdf: { value: null as unknown },
+          uXCmfIntegral: { value: 0 },
           uYCmfIntegral: { value: 0 },
+          uZCmfIntegral: { value: 0 },
           uSpectralRendering: { value: -1 },
           uRadianceClamp: { value: -1 },
           // Sprint 10c — BDPT uniforms

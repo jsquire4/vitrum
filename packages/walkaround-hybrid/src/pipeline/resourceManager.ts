@@ -72,7 +72,7 @@ export interface CommonFrameResources {
   uboBuffer: GPUBuffer;
   nearestSampler: GPUSampler;
   compositeSampler: GPUSampler;
-  /** Screen-space motion (RG32F); zeros until a motion-vector pass exists. */
+  /** Screen-space motion (RG32F), written each frame by MotionVectorsPass. */
   motionVectorTexture: GPUTexture;
   /**
    * Sprint 9 — Per-pixel sample tier (r32uint, 1 / 2 / 4). Written by the
@@ -220,6 +220,11 @@ export interface SVGFFrameResources {
    *  against currObjId=0, reprojection rejects history instead of accepting
    *  stale cross-object reuse while true object IDs are unavailable. */
   svgfPrevObjIdPlaceholderTexture: GPUTexture;
+  /**
+   * Previous-frame normal+depth history for reprojection validity checks.
+   * Copied from `common.gNormalDepthTexture` after each denoiser dispatch.
+   */
+  svgfPrevNormalDepthTexture: GPUTexture;
   /**
    * T2.H1 — Per-pixel history length A (r16uint, full-res).
    * Ping-pong pair with svgfHistoryLengthTextureB.
@@ -557,7 +562,10 @@ export function createFrameResources(
   const gNormalDepthTexture = device.createTexture({
     size: [W, H],
     format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+    usage:
+      GPUTextureUsage.STORAGE_BINDING |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC,
   });
 
   // Ping-pong denoised textures.
@@ -665,7 +673,10 @@ export function createFrameResources(
     label: 'motion-vectors-zero',
     size: [W, H],
     format: 'rg32float',
-    usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+    usage:
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.STORAGE_BINDING,
   });
   const rowBytes = 8 * W;
   const bytesPerRow = Math.max(256, Math.ceil(rowBytes / 256) * 256);
@@ -826,6 +837,14 @@ export function createFrameResources(
     { bytesPerRow: 4 },
     [1, 1],
   );
+  const svgfPrevNormalDepthTexture = device.createTexture({
+    label: 'svgf-real-prev-normal-depth',
+    size: [W, H],
+    format: 'rgba16float',
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST,
+  });
 
   // ── T2.H1 — Real SVGF persistent textures (always allocated; zero overhead
   // when mode is not 'svgf-real' because they're idle). At 1080p total ≈52 MB.
@@ -953,6 +972,7 @@ export function createFrameResources(
   const svgf: SVGFFrameResources = {
     svgfObjIdPlaceholderTexture,
     svgfPrevObjIdPlaceholderTexture,
+    svgfPrevNormalDepthTexture,
     svgfHistoryLengthTextureA,
     svgfHistoryLengthTextureB,
     svgfMomentsTextureA,
@@ -1032,6 +1052,7 @@ export function destroyFrameResources(r: FrameResources): void {
   // svgf
   r.svgf.svgfObjIdPlaceholderTexture.destroy();
   r.svgf.svgfPrevObjIdPlaceholderTexture.destroy();
+  r.svgf.svgfPrevNormalDepthTexture.destroy();
   r.svgf.svgfHistoryLengthTextureA.destroy();
   r.svgf.svgfHistoryLengthTextureB.destroy();
   r.svgf.svgfMomentsTextureA.destroy();

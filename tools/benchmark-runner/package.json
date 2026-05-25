@@ -6,9 +6,14 @@
   "scripts": {
     "benchmark": "node ./run-gap-closure-verification.mjs",
     "benchmark:gap-closure": "node ./run-gap-closure-verification.mjs",
-    "benchmark:qualitymodes": "node ./run-quality-mode-bench.mjs"
+    "benchmark:qualitymodes": "node ./run-quality-mode-bench.mjs",
+    "benchmark:acceptance-metrics": "node ./run-acceptance-metrics.mjs",
+    "benchmark:pt-webgl-fidelity": "node ./run-pt-webgl-fidelity-acceptance.mjs"
   },
   "devDependencies": {
     "playwright": "^1.59.1"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
   }
 }

@@ -13,6 +13,7 @@ import { NoneDenoiser } from '../src/pipeline/denoisers/none.js';
 import { OIDNFinalDenoiser } from '../src/pipeline/denoisers/oidnFinal.js';
 import { SVGFRealDenoiser } from '../src/pipeline/denoisers/svgfReal.js';
 import { registerBuiltinDenoisers } from '../src/pipeline/denoisers/registerBuiltinDenoisers.js';
+import type { InferenceGraph } from '../src/neural/InferenceGraph.js';
 
 /**
  * Build a minimal stub Denoiser for registry-shape tests. None of the
@@ -181,5 +182,14 @@ describe('registerBuiltinDenoisers', () => {
     const reg = new DenoiserRegistry();
     registerBuiltinDenoisers(reg); // no options
     expect(() => reg.lookup('oidn-final')).toThrow(/registered but disabled/);
+  });
+
+  it('registers neural as ENABLED when a neuralInferenceGraph is supplied', () => {
+    const reg = new DenoiserRegistry();
+    const fakeInferenceGraph = { ready: true } as unknown as InferenceGraph;
+    registerBuiltinDenoisers(reg, { neuralInferenceGraph: fakeInferenceGraph });
+    const d = reg.lookup('neural');
+    expect(d.id).toBe('neural');
+    expect(d.disabled).toBe(false);
   });
 });

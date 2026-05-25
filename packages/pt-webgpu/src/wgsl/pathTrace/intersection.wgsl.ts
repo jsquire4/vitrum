@@ -449,11 +449,15 @@ fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>
         if (permIdx >= arrayLength(&tlasInstanceIndices)) { continue; }
         let instIdx = tlasInstanceIndices[permIdx];
         let m = instIdx * 4u;
-        if (m + 3u >= arrayLength(&tlasInstanceTransforms)) { continue; }
-        let w2l0 = tlasInstanceTransforms[m];
-        let w2l1 = tlasInstanceTransforms[m + 1u];
-        let w2l2 = tlasInstanceTransforms[m + 2u];
-        let w2l3 = tlasInstanceTransforms[m + 3u];
+        if (m + 3u >= arrayLength(&tlasInstanceWorldToLocal) || m + 3u >= arrayLength(&tlasInstanceLocalToWorld)) { continue; }
+        let w2l0 = tlasInstanceWorldToLocal[m];
+        let w2l1 = tlasInstanceWorldToLocal[m + 1u];
+        let w2l2 = tlasInstanceWorldToLocal[m + 2u];
+        let w2l3 = tlasInstanceWorldToLocal[m + 3u];
+        let l2w0 = tlasInstanceLocalToWorld[m];
+        let l2w1 = tlasInstanceLocalToWorld[m + 1u];
+        let l2w2 = tlasInstanceLocalToWorld[m + 2u];
+        let l2w3 = tlasInstanceLocalToWorld[m + 3u];
         var localRay: Ray;
         localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
         localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
@@ -461,12 +465,14 @@ fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>
         let blasRoot = select(0u, tlasBlasRoots[instIdx], instIdx < arrayLength(&tlasBlasRoots));
         _ = traceMeshBvh(localRay, tMin, (*hit).dist, true, &localHit, blasRoot);
         if (localHit.didHit && localHit.dist > tMin && localHit.dist < (*hit).dist) {
-          // TLAS instances currently use identity worldToLocal in host packing.
-          // Keep distance/normal in local space until per-instance L2W lands.
+          let localHitPos = localRay.origin + localRay.direction * localHit.dist;
+          let worldHitPos = transformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
+          let worldDist = dot(worldHitPos - ray.origin, ray.direction);
+          if (worldDist <= tMin || worldDist >= (*hit).dist) { continue; }
           (*hit).didHit = true;
-          (*hit).dist = localHit.dist;
+          (*hit).dist = worldDist;
           (*hit).triIndex = localHit.triIndex;
-          (*hit).normal = localHit.normal;
+          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
         }
       }
     } else {

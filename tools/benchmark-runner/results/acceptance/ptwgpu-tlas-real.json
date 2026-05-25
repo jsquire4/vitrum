@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "ptwgpu-tlas-metrics-2026-05-25",
+  "tlasVsLegacyMeanAbs": 0,
+  "tlasVsLegacyP95Abs": 0,
+  "tlasVsLegacyMaxAbs": 0,
+  "nanPixelCount": 0,
+  "orderedStats": true,
+  "thresholds": {
+    "maxMeanAbs": 0.02,
+    "maxP95Abs": 0.06,
+    "maxPeakAbs": 0.2
+  },
+  "pass": {
+    "mean": true,
+    "p95": true,
+    "peak": true,
+    "overall": true
+  },
+  "imageWidth": 640,
+  "imageHeight": 320,
+  "roi": {
+    "x0": 0.25,
+    "y0": 0.25,
+    "x1": 0.75,
+    "y1": 0.75
+  }
+}

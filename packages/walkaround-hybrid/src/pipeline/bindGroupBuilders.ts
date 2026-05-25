@@ -21,6 +21,7 @@ import {
   getHybridLayersBindGroupLayout,
   getSampleBudgetBindGroupLayout,
   getResolveBindGroupLayout,
+  getMotionVectorsBindGroupLayout,
   getGTAOBindGroupLayout,
   getGTAOUpsampleBindGroupLayout,
   getTemporalGiBindGroupLayout,
@@ -379,6 +380,24 @@ export function buildResolveBindGroup(
       { binding: 2, resource: prevRadianceView },
       { binding: 3, resource: motionVectorsView },
       { binding: 4, resource: resolvedWriteView },
+    ],
+  });
+}
+
+export function buildMotionVectorsBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  gNormalDepthView: GPUTextureView,
+  motionVectorsWriteView: GPUTextureView,
+  uboBuffer: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'motion-vectors-bg',
+    layout: getMotionVectorsBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: gNormalDepthView },
+      { binding: 1, resource: motionVectorsWriteView },
+      { binding: 2, resource: { buffer: uboBuffer } },
     ],
   });
 }

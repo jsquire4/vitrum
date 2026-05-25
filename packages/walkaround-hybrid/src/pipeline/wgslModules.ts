@@ -48,6 +48,7 @@ import { RIS_MODULE } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_MODULE } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../shaders/spatial.wgsl.js';
 import { SHADE_MODULE } from '../shaders/shade.wgsl.js';
+import { MOTION_VECTORS_MODULE } from '../shaders/motionVectors.wgsl.js';
 import { SAMPLE_CASCADE_C0_MODULE } from '../shaders/sampleCascadeC0.wgsl.js';
 import { RIS_GI_MODULE } from '../shaders/risGi.wgsl.js';
 import { TEMPORAL_GI_MODULE } from '../shaders/temporalGi.wgsl.js';
@@ -77,6 +78,7 @@ export {
   TEMPORAL_MODULE,
   SPATIAL_MODULE,
   SHADE_MODULE,
+  MOTION_VECTORS_MODULE,
   RIS_GI_MODULE,
   TEMPORAL_GI_MODULE,
   SPATIAL_GI_MODULE,
@@ -204,6 +206,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [TEMPORAL_MODULE.name, TEMPORAL_MODULE],
   [SPATIAL_MODULE.name, SPATIAL_MODULE],
   [SHADE_MODULE.name, SHADE_MODULE],
+  [MOTION_VECTORS_MODULE.name, MOTION_VECTORS_MODULE],
   [SAMPLE_CASCADE_C0_MODULE.name, SAMPLE_CASCADE_C0_MODULE],
 
   // ReSTIR-GI passes

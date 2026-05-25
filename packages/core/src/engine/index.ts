@@ -33,6 +33,7 @@ export * from './capabilities.js';
 export * from './debug.js';
 export * from './telemetry.js';
 export * from './factory.js';
+export * from './promiseLedger.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Engine — the public façade

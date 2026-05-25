@@ -21,6 +21,7 @@ import { NoneDenoiser } from './none.js';
 import { OIDNFinalDenoiser } from './oidnFinal.js';
 import type { OIDNFinalDenoiserOptions } from './oidnFinal.js';
 import { SVGFRealDenoiser } from './svgfReal.js';
+import type { InferenceGraph } from '../../neural/InferenceGraph.js';
 
 /**
  * Per-denoiser construction-time configuration. Backends that need
@@ -41,6 +42,8 @@ interface RegisterBuiltinDenoisersOptions {
   /** W11 — OIDN final-pass denoiser config. Forwarded from
    *  `HybridEngineOptions.extensions['walkaround-hybrid'].oidnModelUrl`. */
   readonly oidn?: OIDNFinalDenoiserOptions;
+  /** W10 — pre-initialized neural graph (enables registry lookup). */
+  readonly neuralInferenceGraph?: InferenceGraph;
 }
 
 export function registerBuiltinDenoisers(
@@ -51,12 +54,12 @@ export function registerBuiltinDenoisers(
   registry.register(new AtrousDenoiser());
   registry.register(new AtrousVarianceDenoiser());
   registry.register(new SVGFRealDenoiser());
-  // Diagnostic stub — registered for `DenoiserRegistry.ids()` enumeration
-  // and to throw the canonical "registered but disabled" error if a host
-  // mistakenly routes through the registry. The actual W10 neural
-  // pipeline runs out-of-band through HybridEngineLifecycle (see
-  // `denoisers/neural.ts` JSDoc).
-  registry.register(new NeuralDenoiser());
+  // Enabled when a graph is supplied; registered-but-disabled otherwise.
+  registry.register(
+    options?.neuralInferenceGraph !== undefined
+      ? new NeuralDenoiser({ inferenceGraph: options.neuralInferenceGraph })
+      : new NeuralDenoiser(),
+  );
   // OIDN: enabled when modelUrl is provided, registered-but-disabled
   // otherwise so callers selecting 'oidn-final' without config fail fast
   // with a clear remediation message.

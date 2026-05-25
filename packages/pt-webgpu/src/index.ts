@@ -19,6 +19,9 @@ import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type Up
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
+import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPacking.js';
+import { defaultDirectionalIrradiance, defaultDirectionalLight, packEmitterArrays } from './scene/emitterPacking.js';
+import { environmentParams } from './scene/environmentPacking.js';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
@@ -38,7 +41,11 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
 const PROTOTYPE_MAX_BOUNCES = 8;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
-const REQUIRED_STORAGE_BUFFERS_PER_STAGE = 18;
+// Bind group 0 currently consumes 23 storage-buffer bindings in the trace pass
+// (positions/normals/indices/materials/BVH + variance moments + analytic +
+// environment + light arrays + TLAS buffers). Keep this guard in lockstep so
+// devices that cannot bind the full layout fail fast at construction time.
+const REQUIRED_STORAGE_BUFFERS_PER_STAGE = 23;
 
 interface StateSlot {
   readonly get: () => EngineState;
@@ -92,6 +99,10 @@ class PTEngineWebGPU implements Engine {
   #computePipeline: GPUComputePipeline | null = null;
   #bindGroupLayout: GPUBindGroupLayout | null = null;
 
+  static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
+    PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
+  );
+
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot) {
     this.#slot = slot;
     this.#device = opts.device;
@@ -111,12 +122,14 @@ class PTEngineWebGPU implements Engine {
 
   get capabilities(): EngineCapabilities {
     return {
-      supportsIncrementalScene: false, // Patch APIs exist but all facets rebuild via setScene until true partial uploads land.
+      // Material-only primitive patches are uploaded in-place; all other facets
+      // currently rebuild through setScene until broader partial uploads land.
+      supportsIncrementalScene: true,
       incrementalPatchSupport: {
         transform: false,
         positions: false,
-        material: false,
-        emitter: false,
+        material: true,
+        emitter: true,
         topology: false,
       },
       supportsAuxBuffers: true,
@@ -146,6 +159,33 @@ class PTEngineWebGPU implements Engine {
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
       debugSurface: true,
     };
+  }
+
+  #materialIndexForPrimitive(scene: Scene, primitiveId: string): number | null {
+    let materialIndex = 0;
+    for (const primitive of scene.primitives) {
+      let contributesMaterial = false;
+      if (primitive.kind === 'analytic') {
+        contributesMaterial = PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES.has(primitive.shape);
+      } else {
+        contributesMaterial = true;
+      }
+      if (primitive.id === primitiveId) {
+        return contributesMaterial ? materialIndex : null;
+      }
+      if (contributesMaterial) materialIndex += 1;
+    }
+    return null;
+  }
+
+  #canFastPathMaterialPatch(
+    patch: Partial<ScenePrimitive>,
+  ): patch is Partial<ScenePrimitive> & { material: ScenePrimitive['material'] } {
+    if (patch.material == null) return false;
+    for (const key of Object.keys(patch)) {
+      if (key !== 'material' && key !== 'id' && key !== 'kind') return false;
+    }
+    return true;
   }
 
   // ── Debug introspection (T3.G followup) ────────────────────────────────
@@ -276,6 +316,7 @@ class PTEngineWebGPU implements Engine {
     paramsU32[FrameParamsSlot.environmentMapHeight] = sb.environmentMapHeight >>> 0;
     paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
     paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
+    // Slot 19 (_pad1) is padding; zero-initialized by ArrayBuffer.
     paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
     paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
     paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
@@ -450,13 +491,150 @@ class PTEngineWebGPU implements Engine {
     this.#assertLive('updatePrimitive');
     // #assertLive already throws when #scene is null; the non-null assertion
     // captures that invariant for the type checker.
-    const nextScene = patchPrimitiveInScene(this.#scene!, id, patch);
+    const currentScene = this.#scene!;
+    const nextScene = patchPrimitiveInScene(currentScene, id, patch);
+    if (this.#canFastPathMaterialPatch(patch) && this.#sceneBuffers != null) {
+      const materialIndex = this.#materialIndexForPrimitive(nextScene, id);
+      const primitive = nextScene.primitives.find((p) => p.id === id);
+      if (materialIndex != null && primitive != null) {
+        const packed = materialToPackedVec4s(primitive.material);
+        if (packed.length === MATERIAL_FLOAT_STRIDE) {
+          const materialData = new Float32Array(packed);
+          const floatOffset = materialIndex * MATERIAL_FLOAT_STRIDE;
+          const byteOffset = floatOffset * Float32Array.BYTES_PER_ELEMENT;
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.materialsBuffer,
+            byteOffset,
+            materialData.buffer,
+            materialData.byteOffset,
+            materialData.byteLength,
+          );
+          this.#sceneBuffers.materials.set(materialData, floatOffset);
+          this.#scene = nextScene;
+          this.reset();
+          return;
+        }
+      }
+    }
     this.setScene(nextScene);
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
     this.#assertLive('updateEmitter');
-    const nextScene = patchEmitterInScene(this.#scene!, id, patch);
+    const currentScene = this.#scene!;
+    const nextScene = patchEmitterInScene(currentScene, id, patch);
+    if (this.#sceneBuffers != null) {
+      const packed = packEmitterArrays(nextScene);
+      this.#device.queue.writeBuffer(
+        this.#sceneBuffers.pointLightsBuffer,
+        0,
+        packed.pointLightsData.buffer,
+        packed.pointLightsData.byteOffset,
+        packed.pointLightsData.byteLength,
+      );
+      this.#device.queue.writeBuffer(
+        this.#sceneBuffers.spotLightsBuffer,
+        0,
+        packed.spotLightsData.buffer,
+        packed.spotLightsData.byteOffset,
+        packed.spotLightsData.byteLength,
+      );
+      this.#device.queue.writeBuffer(
+        this.#sceneBuffers.rectAreaLightsBuffer,
+        0,
+        packed.rectAreaLightsData.buffer,
+        packed.rectAreaLightsData.byteOffset,
+        packed.rectAreaLightsData.byteLength,
+      );
+      this.#device.queue.writeBuffer(
+        this.#sceneBuffers.meshAreaLightsBuffer,
+        0,
+        packed.meshAreaLightsData.buffer,
+        packed.meshAreaLightsData.byteOffset,
+        packed.meshAreaLightsData.byteLength,
+      );
+      this.#sceneBuffers.pointLightsData.set(packed.pointLightsData);
+      this.#sceneBuffers.spotLightsData.set(packed.spotLightsData);
+      this.#sceneBuffers.rectAreaLightsData.set(packed.rectAreaLightsData);
+      this.#sceneBuffers.meshAreaLightsData.set(packed.meshAreaLightsData);
+      const mutableSceneBuffers = this.#sceneBuffers as unknown as {
+        pointLightCount: number;
+        spotLightCount: number;
+        rectAreaLightCount: number;
+        meshAreaLightCount: number;
+        directionalLight: readonly [number, number, number];
+        directionalIrradiance: readonly [number, number, number];
+      };
+      mutableSceneBuffers.pointLightCount = packed.pointLightCount;
+      mutableSceneBuffers.spotLightCount = packed.spotLightCount;
+      mutableSceneBuffers.rectAreaLightCount = packed.rectAreaLightCount;
+      mutableSceneBuffers.meshAreaLightCount = packed.meshAreaLightCount;
+      mutableSceneBuffers.directionalLight = defaultDirectionalLight(nextScene);
+      mutableSceneBuffers.directionalIrradiance = defaultDirectionalIrradiance(nextScene);
+      this.#scene = nextScene;
+      for (const warning of packed.warnings) {
+        console.warn(`[vitrum/pt-webgpu] ${warning}`);
+      }
+      this.reset();
+      return;
+    }
+    this.setScene(nextScene);
+  }
+
+  updateEnvironment(env: Scene['environment'] | null): void {
+    this.#assertLive('updateEnvironment');
+    const currentScene = this.#scene!;
+    const nextScene: Scene = {
+      ...currentScene,
+      environment: env ?? { kind: 'none' },
+    };
+    if (this.#sceneBuffers != null) {
+      const packed = environmentParams(nextScene);
+      const texelLenMatches = packed.hdriTexels.length === this.#sceneBuffers.environmentMapTexels.length;
+      const cdfLenMatches = packed.hdriCdf.length === this.#sceneBuffers.environmentMapCdf.length;
+      if (texelLenMatches && cdfLenMatches) {
+        if (packed.hdriTexels.byteLength > 0) {
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.environmentMapTexelsBuffer,
+            0,
+            packed.hdriTexels.buffer,
+            packed.hdriTexels.byteOffset,
+            packed.hdriTexels.byteLength,
+          );
+        }
+        if (packed.hdriCdf.byteLength > 0) {
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.environmentMapCdfBuffer,
+            0,
+            packed.hdriCdf.buffer,
+            packed.hdriCdf.byteOffset,
+            packed.hdriCdf.byteLength,
+          );
+        }
+        const mutableSceneBuffers = this.#sceneBuffers as unknown as {
+          environmentTint: readonly [number, number, number];
+          environmentSunDirection: readonly [number, number, number];
+          environmentSunStrength: number;
+          environmentMapWidth: number;
+          environmentMapHeight: number;
+          hasEnvironmentMap: boolean;
+        };
+        mutableSceneBuffers.environmentTint = packed.tint;
+        mutableSceneBuffers.environmentSunDirection = packed.sunDirection;
+        mutableSceneBuffers.environmentSunStrength = packed.sunStrength;
+        mutableSceneBuffers.environmentMapWidth = packed.hdriWidth;
+        mutableSceneBuffers.environmentMapHeight = packed.hdriHeight;
+        mutableSceneBuffers.hasEnvironmentMap = packed.hasHdri;
+        this.#sceneBuffers.environmentMapTexels.set(packed.hdriTexels);
+        this.#sceneBuffers.environmentMapCdf.set(packed.hdriCdf);
+        this.#scene = nextScene;
+        for (const warning of packed.warnings) {
+          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        }
+        this.reset();
+        return;
+      }
+    }
     this.setScene(nextScene);
   }
 
@@ -550,7 +728,8 @@ class PTEngineWebGPU implements Engine {
           { binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } },
           { binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } },
           { binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
-          { binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceTransformsBuffer } },
+          { binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } },
+          { binding: 28, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } },
         ],
       });
       this.#pathTraceBindGroup = bindGroup;

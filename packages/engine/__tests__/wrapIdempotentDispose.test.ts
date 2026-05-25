@@ -156,7 +156,17 @@ describe('wrapWithIdempotentDispose — updateEnvironment forwarding (A1)', () =
     const updateEmitterSpy = vi.fn();
     const engine = {
       ...makeFakeEngine({ withUpdateEnvironment: true }),
-      capabilities: { ...NULL_CAPS, supportsIncrementalScene: true },
+      capabilities: {
+        ...NULL_CAPS,
+        supportsIncrementalScene: true,
+        incrementalPatchSupport: {
+          transform: true,
+          positions: false,
+          material: false,
+          emitter: true,
+          topology: false,
+        },
+      },
       updatePrimitive: updatePrimitiveSpy,
       updateEmitter: updateEmitterSpy,
     } as Engine;
@@ -167,5 +177,29 @@ describe('wrapWithIdempotentDispose — updateEnvironment forwarding (A1)', () =
     proxy.updateEmitter?.('e', {});
     expect(updatePrimitiveSpy).toHaveBeenCalledTimes(1);
     expect(updateEmitterSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits patch methods when incremental facets advertise full-rebuild only', () => {
+    const updatePrimitiveSpy = vi.fn();
+    const updateEmitterSpy = vi.fn();
+    const engine = {
+      ...makeFakeEngine({ withUpdateEnvironment: true }),
+      capabilities: {
+        ...NULL_CAPS,
+        supportsIncrementalScene: true,
+        incrementalPatchSupport: {
+          transform: false,
+          positions: false,
+          material: false,
+          emitter: false,
+          topology: false,
+        },
+      },
+      updatePrimitive: updatePrimitiveSpy,
+      updateEmitter: updateEmitterSpy,
+    } as Engine;
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    expect(proxy.updatePrimitive).toBeUndefined();
+    expect(proxy.updateEmitter).toBeUndefined();
   });
 });

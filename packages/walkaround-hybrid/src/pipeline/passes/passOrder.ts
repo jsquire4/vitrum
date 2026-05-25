@@ -61,6 +61,7 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'gi-temporal', labels: ['gi-temporal'] },
   { id: 'gi-spatial-2', labels: ['gi-spatial-1', 'gi-spatial-2'] },
   { id: 'shade', labels: ['shade'] },
+  { id: 'motion-vectors', labels: ['motion-vectors'] },
   { id: 'gtao', labels: ['gtao'] },
   { id: 'gtao-upsample', labels: ['gtao-upsample'] },
   { id: 'ppg-update', labels: ['ppg-update'] },

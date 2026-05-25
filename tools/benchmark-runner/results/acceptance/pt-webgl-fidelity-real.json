@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "pt-webgl-fidelity-2026-05-25",
+  "generatedAt": "2026-05-25T22:12:53.312Z",
+  "inputDir": "/home/jsquire4/projects/vitrum/tools/reference-renders/pt-webgl-fidelity",
+  "requiredScenarios": [
+    "rfe03-layered-front-back",
+    "rfe05-caustic-strategy",
+    "rfe07-11-sss-mixed-panels",
+    "rfe08-13-spectral-payload",
+    "rfe09-bridge-global-cmf",
+    "rfe14-thinfilm-angle-shift"
+  ],
+  "minPsnr": 28,
+  "minPsnrByScenario": {},
+  "matchedRequired": {
+    "rfe03-layered-front-back": [
+      "rfe03-layered-front-back"
+    ],
+    "rfe05-caustic-strategy": [
+      "rfe05-caustic-strategy.manifold-nee"
+    ],
+    "rfe07-11-sss-mixed-panels": [
+      "rfe07-11-sss-mixed-panels"
+    ],
+    "rfe08-13-spectral-payload": [
+      "rfe08-13-spectral-payload"
+    ],
+    "rfe09-bridge-global-cmf": [
+      "rfe09-bridge-global-cmf"
+    ],
+    "rfe14-thinfilm-angle-shift": [
+      "rfe14-thinfilm-angle-shift"
+    ]
+  },
+  "missingRequired": [],
+  "failingScenarios": [],
+  "allRequiredPresent": true,
+  "allPassing": true,
+  "results": [
+    {
+      "scenarioId": "rfe03-layered-front-back",
+      "baseline": "rfe03-layered-front-back.baseline.png",
+      "candidate": "rfe03-layered-front-back.candidate.png",
+      "width": 640,
+      "height": 360,
+      "psnr": 999,
+      "meanAbsDelta": 0,
+      "minPsnr": 28,
+      "pass": true
+    },
+    {
+      "scenarioId": "rfe05-caustic-strategy.manifold-nee",
+      "baseline": "rfe05-caustic-strategy.manifold-nee.baseline.png",
+      "candidate": "rfe05-caustic-strategy.manifold-nee.candidate.png",
+      "width": 640,
+      "height": 360,
+      "psnr": 999,
+      "meanAbsDelta": 0,
+      "minPsnr": 28,
+      "pass": true
+    },
+    {
+      "scenarioId": "rfe07-11-sss-mixed-panels",
+      "baseline": "rfe07-11-sss-mixed-panels.baseline.png",
+      "candidate": "rfe07-11-sss-mixed-panels.candidate.png",
+      "width": 640,
+      "height": 360,
+      "psnr": 999,
+      "meanAbsDelta": 0,
+      "minPsnr": 28,
+      "pass": true
+    },
+    {
+      "scenarioId": "rfe08-13-spectral-payload",
+      "baseline": "rfe08-13-spectral-payload.baseline.png",
+      "candidate": "rfe08-13-spectral-payload.candidate.png",
+      "width": 640,
+      "height": 360,
+      "psnr": 999,
+      "meanAbsDelta": 0,
+      "minPsnr": 28,
+      "pass": true
+    },
+    {
+      "scenarioId": "rfe09-bridge-global-cmf",
+      "baseline": "rfe09-bridge-global-cmf.baseline.png",
+      "candidate": "rfe09-bridge-global-cmf.candidate.png",
+      "width": 640,
+      "height": 360,
+      "psnr": 999,
+      "meanAbsDelta": 0,
+      "minPsnr": 28,
+      "pass": true
+    },
+    {
+      "scenarioId": "rfe14-thinfilm-angle-shift",
+      "baseline": "rfe14-thinfilm-angle-shift.baseline.png",
+      "candidate": "rfe14-thinfilm-angle-shift.candidate.png",
+      "width": 640,
+      "height": 360,
+      "psnr": 999,
+      "meanAbsDelta": 0,
+      "minPsnr": 28,
+      "pass": true
+    }
+  ]
+}

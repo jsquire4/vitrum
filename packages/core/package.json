@@ -24,10 +24,12 @@
   "peerDependencies": {},
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "lint": "eslint src --ext .ts,.tsx"
   },
   "devDependencies": {
     "@webgpu/types": "^0.1.40",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^1.6.1"
   }
 }

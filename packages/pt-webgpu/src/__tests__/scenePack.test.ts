@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
 function makeScene(): Scene {
@@ -63,6 +64,79 @@ describe('buildPackedScene core packing', () => {
     const packed = buildPackedScene(makeScene());
     expect(packed.tlasNodes.length).toBeGreaterThan(0);
     expect(packed.tlasBlasRoots[0]).toBe(0);
-    expect(packed.tlasInstanceTransforms.length).toBe(16);
+    expect(packed.tlasInstanceWorldToLocal.length).toBe(16);
+    expect(packed.tlasInstanceLocalToWorld.length).toBe(16);
+  });
+
+  it('packs instanced meshes as one BLAS with multiple TLAS instances', () => {
+    const instancedScene: Scene = {
+      primitives: [{
+        kind: 'instanced-mesh',
+        id: 'inst-tri',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        instances: [
+          asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+          ])),
+          asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            2, 0, 0, 1,
+          ])),
+        ],
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(instancedScene);
+    expect(packed.triangleCount).toBe(1);
+    expect(packed.tlasBlasRoots.length).toBe(2);
+    expect(packed.tlasBlasRoots[0]).toBe(0);
+    expect(packed.tlasBlasRoots[1]).toBe(0);
+    expect(packed.tlasInstanceWorldToLocal.length).toBe(32);
+    expect(packed.tlasInstanceLocalToWorld.length).toBe(32);
+    // Translation lives in mat4[12] in this column-major pack.
+    expect(packed.tlasInstanceLocalToWorld[28]).toBeCloseTo(2, 5);
+    expect(packed.tlasInstanceWorldToLocal[28]).toBeCloseTo(-2, 5);
+  });
+
+  it('keeps mesh geometry local and expresses mesh transform via TLAS matrices', () => {
+    const translatedScene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'translated-tri',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.4, metallic: 0.1 },
+        transform: asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          3, 0, 0, 1,
+        ])),
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(translatedScene);
+    expect(packed.triangleCount).toBe(1);
+    // Vertex payload remains in local space; TLAS matrices carry placement.
+    expect(Array.from(packed.positions.slice(0, 12))).toEqual([
+      0, 0, 0, 0,
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+    ]);
+    expect(packed.tlasBlasRoots.length).toBe(1);
+    expect(packed.tlasBlasRoots[0]).toBe(0);
+    expect(packed.tlasInstanceLocalToWorld[12]).toBeCloseTo(3, 5);
+    expect(packed.tlasInstanceWorldToLocal[12]).toBeCloseTo(-3, 5);
   });
 });

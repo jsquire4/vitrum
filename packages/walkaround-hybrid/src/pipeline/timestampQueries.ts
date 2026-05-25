@@ -42,6 +42,7 @@ export type PassLabel =
   | 'gi-spatial-1'
   | 'gi-spatial-2'
   | 'shade'
+  | 'motion-vectors'
   | 'gtao'
   | 'gtao-upsample'
   | 'welford-temporal'
@@ -99,9 +100,10 @@ export type PassLabel =
  *          31 (T2.H1: svgf-real replaces the 5 atrous-variance passes with 8
  *          svgf-real passes — reproj, moments, 7×7, 5 × atrous iters).
  *          33 (T2.H3: PPG paper-faithful opt-in — adds ppg-update + ppg-guide
- *          when ppgEnabled=true; layout returns 31 when ppgEnabled=false).
+ *          when ppgEnabled=true; layout returns 31 when ppgEnabled=false) →
+ *          34 (W2 motion-vectors pass between shade and gtao).
  */
-export const MAX_PASS_COUNT = 33;
+export const MAX_PASS_COUNT = 34;
 
 interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is

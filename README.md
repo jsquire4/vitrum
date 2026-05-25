@@ -2,7 +2,7 @@
 
 A WebGPU + WebGL2 **path tracing & global illumination engine** for the browser. THREE.js-friendly, host-agnostic, drop-in.
 
-> **Status**: pre-alpha, private. Not yet on npm. Public release planned after the foundational packages stabilize.
+> **Status**: release-candidate track, private monorepo. Not yet on npm. Public release follows final packaging, ecosystem docs, and cross-host verification.
 
 ## What is vitrum
 

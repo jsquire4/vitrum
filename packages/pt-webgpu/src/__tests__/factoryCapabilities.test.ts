@@ -24,6 +24,21 @@ describe('createPTEngine_WebGPU', () => {
     expect(engine.capabilities.causticStrategy).toBe('photon-map');
   });
 
+  it('reports current incremental patch support matrix', async () => {
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+    });
+    const patch = engine.capabilities.incrementalPatchSupport;
+    expect(engine.capabilities.supportsIncrementalScene).toBe(true);
+    expect(patch).toEqual({
+      transform: false,
+      positions: false,
+      material: true,
+      emitter: true,
+      topology: false,
+    });
+  });
+
   it('transitions state ready → disposed across the lifecycle', async () => {
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
