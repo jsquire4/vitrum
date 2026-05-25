@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildPassLayout, MAX_PASS_COUNT } from '../src/pipeline/timestampQueries.js';
 
 describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
-  describe('atrous-variance mode (28 slots)', () => {
+  describe('atrous-variance mode (30 slots)', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
 
     it('prepends sample-budget at slot 0 (runs before RIS)', () => {
@@ -21,26 +21,67 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('shade')).toBe(9);
     });
 
-    it('places gtao + gtao-upsample at slots 10, 11', () => {
+    it('places gtao + gtao-upsample + ppg passes at slots 10..13', () => {
       expect(layout.index('gtao')).toBe(10);
       expect(layout.index('gtao-upsample')).toBe(11);
+      expect(layout.index('ppg-update')).toBe(12);
+      expect(layout.index('ppg-guide')).toBe(13);
     });
 
-    it('places welford-temporal at slot 12 (after gtao + upsample)', () => {
-      expect(layout.index('welford-temporal')).toBe(12);
+    it('places welford-temporal at slot 14 (after ppg)', () => {
+      expect(layout.index('welford-temporal')).toBe(14);
     });
 
     it('places atrous-variance-variance + 3 atrous-variance-atrous slots in order', () => {
-      expect(layout.index('atrous-variance-variance')).toBe(13);
-      expect(layout.index('atrous-variance-atrous-0')).toBe(14);
-      expect(layout.index('atrous-variance-atrous-2')).toBe(16);
+      expect(layout.index('atrous-variance-variance')).toBe(15);
+      expect(layout.index('atrous-variance-atrous-0')).toBe(16);
+      expect(layout.index('atrous-variance-atrous-2')).toBe(18);
     });
 
     it('places indirect-temporal-accum, 4 atrous-indirect slots, indirect-combine, ddgi-border-irr/vis, then temporal+resolve+composite tail', () => {
+      expect(layout.index('indirect-temporal-accum')).toBe(19);
+      expect(layout.index('atrous-indirect-0')).toBe(20);
+      expect(layout.index('atrous-indirect-1')).toBe(21);
+      expect(layout.index('atrous-indirect-2')).toBe(22);
+      expect(layout.index('atrous-indirect-3')).toBe(23);
+      expect(layout.index('indirect-combine')).toBe(24);
+      expect(layout.index('ddgi-border-irr')).toBe(25);
+      expect(layout.index('ddgi-border-vis')).toBe(26);
+      expect(layout.index('temporalAccum')).toBe(27);
+      expect(layout.index('resolve')).toBe(28);
+      expect(layout.index('composite')).toBe(29);
+    });
+
+    it('does not include legacy atrous-0 label', () => {
+      expect(() => layout.index('atrous-0')).toThrow(/not active/);
+    });
+
+    it('reports 30 slots', () => {
+      expect(layout.slotCount).toBe(30);
+      expect(layout.labels).toHaveLength(30);
+    });
+  });
+
+  describe('legacy atrous mode (28 slots)', () => {
+    const layout = buildPassLayout({ denoiserMode: 'atrous' });
+
+    it('GI block at 5..8; shade at 9; gtao + upsample + ppg at 10..13; atrous-0..2 at 14..16', () => {
+      expect(layout.index('sample-budget')).toBe(0);
+      expect(layout.index('gi-ris')).toBe(5);
+      expect(layout.index('gi-spatial-2')).toBe(8);
+      expect(layout.index('shade')).toBe(9);
+      expect(layout.index('gtao')).toBe(10);
+      expect(layout.index('gtao-upsample')).toBe(11);
+      expect(layout.index('ppg-update')).toBe(12);
+      expect(layout.index('ppg-guide')).toBe(13);
+      expect(layout.index('atrous-0')).toBe(14);
+      expect(layout.index('atrous-1')).toBe(15);
+      expect(layout.index('atrous-2')).toBe(16);
+    });
+
+    it('places indirect-temporal-accum, atrous-indirect-0..3, indirect-combine, ddgi-border-irr/vis, then temporalAccum/resolve/composite tail', () => {
       expect(layout.index('indirect-temporal-accum')).toBe(17);
       expect(layout.index('atrous-indirect-0')).toBe(18);
-      expect(layout.index('atrous-indirect-1')).toBe(19);
-      expect(layout.index('atrous-indirect-2')).toBe(20);
       expect(layout.index('atrous-indirect-3')).toBe(21);
       expect(layout.index('indirect-combine')).toBe(22);
       expect(layout.index('ddgi-border-irr')).toBe(23);
@@ -50,53 +91,12 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(layout.index('composite')).toBe(27);
     });
 
-    it('does not include ppg-update', () => {
-      expect(() => layout.index('ppg-update')).toThrow(/not active/);
-    });
-
-    it('does not include legacy atrous-0 label', () => {
-      expect(() => layout.index('atrous-0')).toThrow(/not active/);
-    });
-
-    it('reports 28 slots', () => {
-      expect(layout.slotCount).toBe(28);
-      expect(layout.labels).toHaveLength(28);
-    });
-  });
-
-  describe('legacy atrous mode (26 slots)', () => {
-    const layout = buildPassLayout({ denoiserMode: 'atrous' });
-
-    it('GI block at 5..8; shade at 9; gtao + upsample at 10, 11; atrous-0..2 at 12..14', () => {
-      expect(layout.index('sample-budget')).toBe(0);
-      expect(layout.index('gi-ris')).toBe(5);
-      expect(layout.index('gi-spatial-2')).toBe(8);
-      expect(layout.index('shade')).toBe(9);
-      expect(layout.index('gtao')).toBe(10);
-      expect(layout.index('gtao-upsample')).toBe(11);
-      expect(layout.index('atrous-0')).toBe(12);
-      expect(layout.index('atrous-1')).toBe(13);
-      expect(layout.index('atrous-2')).toBe(14);
-    });
-
-    it('places indirect-temporal-accum, atrous-indirect-0..3, indirect-combine, ddgi-border-irr/vis, then temporalAccum/resolve/composite tail', () => {
-      expect(layout.index('indirect-temporal-accum')).toBe(15);
-      expect(layout.index('atrous-indirect-0')).toBe(16);
-      expect(layout.index('atrous-indirect-3')).toBe(19);
-      expect(layout.index('indirect-combine')).toBe(20);
-      expect(layout.index('ddgi-border-irr')).toBe(21);
-      expect(layout.index('ddgi-border-vis')).toBe(22);
-      expect(layout.index('temporalAccum')).toBe(23);
-      expect(layout.index('resolve')).toBe(24);
-      expect(layout.index('composite')).toBe(25);
-    });
-
     it('does not include atrous-variance labels', () => {
       expect(() => layout.index('welford-temporal')).toThrow(/not active/);
     });
 
-    it('reports 26 slots', () => {
-      expect(layout.slotCount).toBe(26);
+    it('reports 28 slots', () => {
+      expect(layout.slotCount).toBe(28);
     });
   });
 

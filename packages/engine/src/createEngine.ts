@@ -18,7 +18,7 @@
 // host's renderFrame call. createEngine() itself does NOT attach an
 // observer; it just hands back an Engine.
 
-import type { Scene, Engine, Vec3 } from '@vitrum/core';
+import type { Scene, Engine } from '@vitrum/core';
 import { detectGpu } from '@vitrum/core';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
@@ -31,6 +31,19 @@ import {
 } from '@vitrum/pt-webgl';
 
 import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
+import {
+  DEFAULT_PRIMARY_LIGHT_DIR,
+  DEFAULT_PRIMARY_LIGHT_INTENSITY,
+  DEFAULT_SKY_IRRADIANCE,
+  DEFAULT_SKY_TINT,
+  deriveScaleDefaults,
+  pickBackend,
+  type EnginePreference,
+  type ScaleDefaults,
+} from './createEngineScale.js';
+
+export type { EnginePreference, ScaleDefaults };
+export { pickBackend, deriveScaleDefaults };
 
 // Deliberately structurally-typed to avoid a hard `import * as THREE` here —
 // users may bring their own three.js version. The factory only reads the
@@ -40,8 +53,6 @@ interface ThreeSceneLike {
   // remaining fields are passed through to three-bindings / threeScene
   readonly [key: string]: unknown;
 }
-
-export type EnginePreference = 'realtime' | 'quality' | 'auto';
 
 export interface CreateEngineOptions {
   /** Canvas the engine renders into. Used to obtain the GPU context. */
@@ -66,18 +77,6 @@ export interface CreateEngineOptions {
   readonly debug?: boolean;
 }
 
-/** Threshold above which 'auto' falls back from walkaround-hybrid to
- *  pt-webgl. The walkaround stack's BVH/ReSTIR working set scales with
- *  triangle count; ~500k is where 8 GB-class consumer GPUs start to
- *  struggle. Hosts with 24 GB cards should pass `prefer: 'realtime'`. */
-const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
-
-/** Generic-default lighting baselines (overridable via `advanced`). */
-const DEFAULT_PRIMARY_LIGHT_DIR: Vec3 = Object.freeze([0.3, -0.7, 0.6]);
-const DEFAULT_PRIMARY_LIGHT_INTENSITY = 1.0;
-const DEFAULT_SKY_TINT: Vec3 = Object.freeze([0.5, 0.7, 1.0]);
-const DEFAULT_SKY_IRRADIANCE = 0.3;
-
 export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
   if (opts.canvas == null) {
     throw new TypeError('createEngine: opts.canvas is required');
@@ -99,46 +98,6 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
     return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree);
   }
   return await constructPathTracer(opts, vitrumScene, sceneInputIsThree);
-}
-
-export function pickBackend(
-  prefer: EnginePreference,
-  hasWebGPU: boolean,
-  triangleCount: number,
-): 'walkaround-hybrid' | 'pt-webgl' {
-  if (prefer === 'quality') return 'pt-webgl';
-  if (prefer === 'realtime') {
-    if (!hasWebGPU) {
-      // Realtime requested but WebGPU unavailable — fall back to PT and
-      // let the host see "quality" mode. We do NOT throw because the most
-      // common cause is "browser doesn't ship WebGPU yet" and crashing
-      // the page is worse than rendering at lower frame-rate.
-      return 'pt-webgl';
-    }
-    return 'walkaround-hybrid';
-  }
-  if (hasWebGPU && triangleCount < AUTO_REALTIME_TRIANGLE_BUDGET) {
-    return 'walkaround-hybrid';
-  }
-  return 'pt-webgl';
-}
-
-/** Defaults that depend on scene scale D = AABB diagonal. Kept exported so
- *  the test suite can re-derive them from the same formula. */
-export interface ScaleDefaults {
-  readonly cameraMoveResetThresholdSq: number;
-  readonly temporalAccumAlpha: number;
-  readonly emitterDist2Floor: number;
-  readonly triIntersectEpsilon: number;
-}
-
-export function deriveScaleDefaults(D: number): ScaleDefaults {
-  return {
-    cameraMoveResetThresholdSq: (D * 1e-3) ** 2,
-    temporalAccumAlpha: 0.01,
-    emitterDist2Floor: (D * 1e-4) ** 2,
-    triIntersectEpsilon: D * 1e-6,
-  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

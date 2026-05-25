@@ -45,15 +45,9 @@ interface NonDenoiserPassEntry {
  * on `gtao-upsample + 1` — means `composePassLabels` has a single source
  * of truth (this table) instead of an implicit constant pointing into it.
  *
- * PPGGuidePass + PPGUpdatePass are deliberately omitted — they have been
- * out of the timestamp layout since the D7 sweep removed PPG-only slots,
- * and `buildPassLayout` never appended their labels. The Pass classes
- * still dispatch via `computeDesc('ppg-guide')` / `'ppg-update'` when
- * ppgEnabled is true; that call returns `{ label }` only because no
- * adapter currently has both timestamp-query AND ppgEnabled together
- * (in that combo `layout.index('ppg-guide')` would throw — a pre-R5
- * latent bug deliberately preserved here for bit-identical layout
- * output. A future PPG enable workstream will add explicit slots.)
+ * PPG update + guide passes are included so timestamp-query layouts
+ * stay aligned when `ppgEnabled` is true (see `PPGUpdatePass` /
+ * `PPGGuidePass`).
  */
 // File-local. The matching JSDoc + comment references in
 // timestampQueries.ts (lines 127 + 137) cite the name by spelling, not by
@@ -69,6 +63,8 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'shade', labels: ['shade'] },
   { id: 'gtao', labels: ['gtao'] },
   { id: 'gtao-upsample', labels: ['gtao-upsample'] },
+  { id: 'ppg-update', labels: ['ppg-update'] },
+  { id: 'ppg-guide', labels: ['ppg-guide'] },
   // Virtual denoiser-adapter slot — labels come from the active Denoiser
   // and are spliced here by `composePassLabels`.
   { id: 'denoiser-adapter', labels: [] },

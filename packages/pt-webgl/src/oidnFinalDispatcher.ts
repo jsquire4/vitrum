@@ -111,6 +111,11 @@ export interface OIDNBridgeLike {
     modelUrl: string;
     executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
   }) => Promise<void>;
+  readonly releaseOIDNCacheEntry?: (opts: {
+    modelUrl: string;
+    executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+  }) => void;
+  /** @deprecated Prefer {@link releaseOIDNCacheEntry} for per-engine dispose. */
   readonly clearOIDNCache?: () => void;
 }
 
@@ -130,6 +135,7 @@ const _defaultLoader: OIDNBridgeLoader = async () => {
   return {
     denoiseFinal: mod.denoiseFinal,
     preloadOIDNModel: mod.preloadOIDNModel,
+    releaseOIDNCacheEntry: mod.releaseOIDNCacheEntry,
     clearOIDNCache: mod.clearOIDNCache,
   };
 };
@@ -289,23 +295,23 @@ export class OIDNFinalDispatcher {
   }
 
   /**
-   * Release any cached state. Calls the bridge's `clearOIDNCache` so the
-   * ONNX InferenceSession is freed.
-   *
-   * After dispose, future {@link kickIfReady} calls are no-ops and
-   * {@link getLatestDenoised} continues to return whatever was last
-   * resolved (so a host that disposed the engine after a successful
-   * denoise can still save the result).
+   * Release this engine's cached ONNX session entry (model URL + EP tuple).
+   * Falls back to global `clearOIDNCache` only when the bridge lacks ref-count API.
    */
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    if (this.#bridge?.clearOIDNCache != null) {
-      try {
+    const opts = this.#executionProviders !== undefined
+      ? { modelUrl: this.#modelUrl, executionProviders: this.#executionProviders }
+      : { modelUrl: this.#modelUrl };
+    try {
+      if (this.#bridge?.releaseOIDNCacheEntry != null) {
+        this.#bridge.releaseOIDNCacheEntry(opts);
+      } else if (this.#bridge?.clearOIDNCache != null) {
         this.#bridge.clearOIDNCache();
-      } catch {
-        /* swallow — disposal must not throw */
       }
+    } catch {
+      /* swallow — disposal must not throw */
     }
   }
 }

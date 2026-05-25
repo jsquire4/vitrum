@@ -4,4 +4,4 @@ export {
   SURFACE_TEXTURE_ID,
   type SurfaceTextureId,
   type SurfaceTextureName,
-} from '../../stained-glass-extensions/src/surfaceTextureIds.js';
+} from '@vitrum/stained-glass-extensions';

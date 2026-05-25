@@ -31,7 +31,7 @@ findings are all closed; the pre-alpha label is about productionisation,
 not correctness. What's implemented:
 
 - Progressive accumulation renderer (compute shader)
-- CPU-built BVH with GPU BVH traversal
+- CPU-built BVH with GPU BVH traversal; CPU TLAS build via `buildSceneTlas()` (`scene/tlasBridge.ts`) for multi-instance follow-up
 - Multi-bounce sampling (clamped by `maxBounces`)
 - Material-driven diffuse/specular/emissive shading with a prototype transmission/refraction branch
 - Extended packed-material payload path with bounded rich scattering/layered/thin-film/spectral fields (**22 vec4s / material**: 8 thin-film layers × `(ior, thicknessNm, extinctionCoefficient)` plus stack `incidentIor` / `angleDependent`, and 32 spectral samples)

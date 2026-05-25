@@ -27,19 +27,3 @@ export const BORDER = 2;
 
 export const IRR_STRIDE = IRR_CELL + BORDER; // 10
 export const VIS_STRIDE = VIS_CELL + BORDER; // 18
-
-/**
- * WGSL fragment that defines the four atlas-layout constants as `let`
- * locals. Inject this into a WGSL function body via JS template-literal
- * interpolation so the same numeric values land in every sampler.
- *
- * Example:
- *   const sampler = `fn ddgiSampleFromBindings(...) -> vec3f {
- *     ${ATLAS_LAYOUT_WGSL_LOCALS}
- *     ...
- *   }`;
- */
-export const ATLAS_LAYOUT_WGSL_LOCALS = `let irrCell = ${IRR_CELL}u;
-    let visCell = ${VIS_CELL}u;
-    let irrStride = ${IRR_STRIDE}u;
-    let visStride = ${VIS_STRIDE}u;`;

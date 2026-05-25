@@ -373,7 +373,6 @@ export class PTEngineWebGL2 implements Engine {
    *  {@link bdptAdvanceFrame}; null until the host calls that method.
    *  When non-null + `#bdpt === true`, every renderFrame's connect pass
    *  reads this texture for cached light vertices. */
-  #bdptLightPathTex: Texture | null = null;
   readonly #limits: DeviceLimits;
   readonly #schedulerOptions: SchedulerOptions;
 
@@ -563,7 +562,6 @@ export class PTEngineWebGL2 implements Engine {
    *   BDPT for the next frame as a safety guard.
    */
   bdptAdvanceFrame(lightPathTex: Texture | null): void {
-    this.#bdptLightPathTex = lightPathTex;
     if (!this.#bdpt) return;
     driveForkMaterialUniforms(
       this.#pathTracer,

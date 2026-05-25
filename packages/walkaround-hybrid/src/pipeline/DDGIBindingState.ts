@@ -113,7 +113,10 @@ export class DDGIBindingState {
   setRCInputs(inputs: RCSetInputs | null): void {
     if (inputs === null) {
       this._rcCascade0 = null;
-      this._rcParamsBuffer = null;
+      if (this._rcParamsBuffer) {
+        this._rcParamsBuffer.destroy();
+        this._rcParamsBuffer = null;
+      }
       // Placeholders are allocated lazily at first buildBindGroup() so we
       // don't allocate GPU buffers in setRCInputs(null) called before the
       // pipeline exists.

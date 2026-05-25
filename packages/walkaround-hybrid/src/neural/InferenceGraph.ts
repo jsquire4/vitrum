@@ -134,6 +134,9 @@ export class InferenceGraph {
   /** Whether initialize() has completed successfully. */
   private _ready = false;
 
+  /** Uploaded layer weights — retained for bind-group rebuild on buffer resize. */
+  private _weightsByName: Map<string, LayerWeights> = new Map();
+
   /** Uniform-write call count — exposed for test instrumentation (Bug 4 check). */
   _uniformWriteCount = 0;
 
@@ -163,10 +166,11 @@ export class InferenceGraph {
     // F4 fix: clear any pre-existing tracked buffers from a previous init.
     this._allocatedBuffers = [];
 
-    // Build the weight lookup by name.
+    // Build the weight lookup by name (retained for bind-group rebuild in run()).
     const weightsByName = new Map<string, LayerWeights>(
       weights.layers.map(lw => [lw.name, lw]),
     );
+    this._weightsByName = weightsByName;
 
     // Placeholder buffer (for unused binding slots).
     this._placeholderBuf = device.createBuffer({
@@ -331,10 +335,9 @@ export class InferenceGraph {
       // Bug 6 fix: re-validate bind group buffer identity.
       const currentKeys = this._getCurrentBufKeys(layer);
       if (!keysEqual(state.cachedBufKeys, currentKeys)) {
-        // Rebuild bind group with fresh buffer references.
-        const weightsByName = new Map<string, LayerWeights>(); // already uploaded
+        // Rebuild bind group with fresh buffer references (keep trained weights).
         const { bindGroup, bufKeys } = this._buildBindGroup(
-          state.pipeline, layer, weightsByName, state.uniformBuf,
+          state.pipeline, layer, this._weightsByName, state.uniformBuf,
         );
         state.cachedBindGroup = bindGroup;
         state.cachedBufKeys = bufKeys;
@@ -352,8 +355,8 @@ export class InferenceGraph {
 
       const outDims = tensorDimsMap.get(layer.output);
       if (outDims) {
-        const groups = Math.ceil(outDims.H * outDims.W * outDims.C / 256);
-        pass.dispatchWorkgroups(groups, 1, 1);
+        const [gx, gy, gz] = this._dispatchWorkgroups(layer.kind, outDims);
+        pass.dispatchWorkgroups(gx, gy, gz);
       }
       pass.end();
     }
@@ -415,6 +418,29 @@ export class InferenceGraph {
 
     this._device = null;
     this._ready  = false;
+    this._weightsByName.clear();
+  }
+
+  /** Workgroup layout must match neural/wgsl/* @compute entry points. */
+  private _dispatchWorkgroups(
+    kind: LayerKind,
+    dims: TensorDims,
+  ): [number, number, number] {
+    switch (kind) {
+      case 'conv2d':
+      case 'transposedConv2d':
+      case 'bilinearUpsample':
+        return [
+          Math.ceil(dims.H / 8),
+          Math.ceil(dims.W / 8),
+          dims.C,
+        ];
+      case 'relu':
+      case 'skipAdd':
+        return [Math.ceil((dims.H * dims.W * dims.C) / 256), 1, 1];
+      default:
+        return [1, 1, 1];
+    }
   }
 
   // ── Private helpers ────────────────────────────────────────────────────────

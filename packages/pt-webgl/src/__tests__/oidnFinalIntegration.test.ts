@@ -414,12 +414,12 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     engine.dispose();
   });
 
-  it('dispose() forwards to bridge clearOIDNCache when the bridge has been loaded', async () => {
-    const clearOIDNCache = vi.fn();
+  it('dispose() releases the OIDN session cache entry via releaseOIDNCacheEntry', async () => {
+    const releaseOIDNCacheEntry = vi.fn();
     const bridge: OIDNBridgeLike = {
       denoiseFinal: vi.fn(async () => new Float32Array(32 * 16 * 3)),
       preloadOIDNModel: vi.fn(async () => undefined),
-      clearOIDNCache,
+      releaseOIDNCacheEntry,
     };
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
@@ -434,7 +434,10 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     await new Promise((res) => setImmediate(res));
 
     engine.dispose();
-    expect(clearOIDNCache).toHaveBeenCalledTimes(1);
+    expect(releaseOIDNCacheEntry).toHaveBeenCalledTimes(1);
+    expect(releaseOIDNCacheEntry).toHaveBeenCalledWith({
+      modelUrl: '/models/oidn_rt_hdr.onnx',
+    });
   });
 
   it("getDenoisedFrame returns null when 'oidn-final' was not selected", async () => {

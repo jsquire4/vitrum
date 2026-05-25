@@ -38,9 +38,10 @@ const oidnMocks = vi.hoisted(() => ({
     // Echo input back as if OIDN denoised it (identity output is fine for the test).
     return new Float32Array(inputs.color);
   }),
+  releaseOIDNCacheEntry: vi.fn(() => undefined),
   clearOIDNCache: vi.fn(() => undefined),
 }));
-const { preloadOIDNModel, denoiseFinal, clearOIDNCache } = oidnMocks;
+const { preloadOIDNModel, denoiseFinal, releaseOIDNCacheEntry } = oidnMocks;
 
 vi.mock('@vitrum/shared-denoisers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@vitrum/shared-denoisers')>();
@@ -48,6 +49,7 @@ vi.mock('@vitrum/shared-denoisers', async (importOriginal) => {
     ...actual,
     preloadOIDNModel: oidnMocks.preloadOIDNModel,
     denoiseFinal: oidnMocks.denoiseFinal,
+    releaseOIDNCacheEntry: oidnMocks.releaseOIDNCacheEntry,
     clearOIDNCache: oidnMocks.clearOIDNCache,
   };
 });
@@ -167,7 +169,7 @@ function fakeDispatchCtx(
 beforeEach(() => {
   preloadOIDNModel.mockClear();
   denoiseFinal.mockClear();
-  clearOIDNCache.mockClear();
+  releaseOIDNCacheEntry.mockClear();
 });
 
 describe('OIDNFinalDenoiser — disabled flag (W11)', () => {
@@ -321,14 +323,14 @@ describe('OIDNFinalDenoiser.dispatch', () => {
 });
 
 describe('OIDNFinalDenoiser.dispose', () => {
-  it('clears the OIDN session cache via clearOIDNCache', async () => {
+  it('releases the OIDN session cache entry via releaseOIDNCacheEntry', async () => {
     const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
     const device = fakeDevice();
     await d.initialize(fakeInitCtx(device));
 
-    expect(clearOIDNCache).not.toHaveBeenCalled();
+    expect(releaseOIDNCacheEntry).not.toHaveBeenCalled();
     d.dispose();
-    expect(clearOIDNCache).toHaveBeenCalledTimes(1);
+    expect(releaseOIDNCacheEntry).toHaveBeenCalledTimes(1);
   });
 
   it('destroys the owned denoised-output texture', async () => {
@@ -348,9 +350,7 @@ describe('OIDNFinalDenoiser.dispose', () => {
   it('is safe to call before initialize (no-op on undisposed state)', () => {
     const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
     expect(() => d.dispose()).not.toThrow();
-    // clearOIDNCache still called — module-global cache is host-wide, the
-    // denoiser is conservative about evicting on every dispose.
-    expect(clearOIDNCache).toHaveBeenCalled();
+    expect(releaseOIDNCacheEntry).toHaveBeenCalled();
   });
 });
 

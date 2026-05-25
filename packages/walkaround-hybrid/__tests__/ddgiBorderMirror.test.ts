@@ -391,15 +391,15 @@ describe('buildPassLayout — DDGI border fill slots', () => {
     expect(layout.index('ddgi-border-irr')).toBeGreaterThan(layout.index('indirect-combine'));
   });
 
-  it('atrous-variance layout reports 28 slots (MAX_PASS_COUNT)', () => {
+  it('atrous-variance layout reports 30 slots (MAX_PASS_COUNT)', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
-    expect(layout.slotCount).toBe(28);
+    expect(layout.slotCount).toBe(30);
     expect(layout.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
   });
 
-  it('atrous layout reports 26 slots', () => {
+  it('atrous layout reports 28 slots', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous' });
-    expect(layout.slotCount).toBe(26);
+    expect(layout.slotCount).toBe(28);
   });
 
   it('MAX_PASS_COUNT is 31 (T2.H1 svgf-real adds 8 new pass slots)', () => {

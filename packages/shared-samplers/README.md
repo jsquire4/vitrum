@@ -10,10 +10,11 @@ Sampling utilities for path tracers and walkaround engines: QMC sequences, light
 - `defineUbo` — declarative WGSL UBO codegen helper (W2-C13). Pack + unpack + WGSL struct generation from a single field-type table.
 - `CIE_X/Y/Z_TABLE`, `CIE_X/Y/Z_INTEGRAL`, `CIE_X/Y/Z_CDF`, `sampleHeroWavelengthMIS` — spectral sampling consumed by pt-webgl.
 
-**NOT yet hoisted (still duplicated in consumer packages):**
-- PCG random, cosine-hemisphere sample, ONB, Fresnel-Schlick, GGX (D + G1) — these primitives are inlined separately in `walkaround-hybrid/src/shaders/common.wgsl` and `pt-webgpu/src/wgsl/common.wgsl`. W2-C6 plan calls for hoisting them as `PCG_WGSL` / `BSDF_PRIMITIVES_WGSL`; that work has not landed. Open follow-up.
-- Per-pixel pixel-hash (`fract(sin(dot(...)) * 43758.5453)`) — inlined in 3 sites: `shade.wgsl`, `gtao.wgsl`, `surfaceTextures.wgsl`. W2-C6 plan calls for a `HASH_WGSL` canonical.
-- Rec.709 `luminance` formula — duplicated in 14+ TS + WGSL files. `three-bindings/src/math.ts:12` has the TS canonical. WGSL canonical (`LUMINANCE_WGSL`) is not yet exported.
+**Hoisted WGSL primitives (also exported from package index):**
+- `PCG_WGSL`, `BSDF_PRIMITIVES_WGSL`, `LUMINANCE_WGSL` — canonical declarations; consumers should import via `wgslModules.ts` `requires` rather than inlining duplicates.
+
+**Still duplicated in some consumer packages (open follow-up):**
+- Per-pixel pixel-hash — some walkaround shaders still inline the legacy `fract(sin(dot(...)))` form; prefer `HASH_WGSL` from this package when touching those files.
 - Halton+Shoemake uniform-SO(3) sampler — implemented inline in `ddgi/probeUpdatePass.ts:670+` (W6-E2 work). Not yet hoisted.
 
 **Test/spec oracle (marked `@internal`, not re-exported from package index):**

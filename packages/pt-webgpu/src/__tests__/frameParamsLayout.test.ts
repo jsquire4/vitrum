@@ -92,7 +92,7 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'environmentMapWidth: u32',
       'environmentMapHeight: u32',
       'triIntersectEpsilon: f32',
-      '_pad1: u32',
+      'tlasNodeCount: u32',
       'cameraPos: vec4f',
       'lightDir: vec4f',
       'environmentTint: vec4f',

@@ -16,7 +16,7 @@
  */
 
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
-import { buildSTree } from '../ppg/sTree.js';
+import { buildSTree, resetAccumulators } from '../ppg/sTree.js';
 import { serialiseSTree } from '../ppg/serialise.js';
 import { PPG_MIS_ALPHA } from '../ppg/ppgConstants.js';
 import type { AABB, STree } from '../ppg/types.js';
@@ -172,6 +172,17 @@ export class PPGCoordinator {
    *  live inside `FrameResources.ppg` and are released by
    *  `destroyFrameResources`. `dispose` here exists for API symmetry with
    *  the other state objects extracted in the same refactor. */
+  /**
+   * Reset per-leaf sample counts and dTree flux after a training readback
+   * cycle (Müller §3.3). Call once CPU has merged GPU flux atomics into the
+   * sTree and before the next frame's update pass accumulates fresh stats.
+   */
+  resetTrainingAccumulators(): void {
+    if (this._sTree) {
+      resetAccumulators(this._sTree);
+    }
+  }
+
   dispose(): void {
     this._enabled = false;
     this._sTree = null;

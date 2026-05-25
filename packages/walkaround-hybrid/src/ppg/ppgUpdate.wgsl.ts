@@ -82,6 +82,8 @@ struct PPGUpdateUBO {
 // Layout constants — MUST stay in sync with serialise.ts.
 const DTREE_HEADER_F32 : u32 = 4u;
 const DTREE_NODE_STRIDE: u32 = 8u;
+// Must match allocatePPGResources default (resourceManager.ts).
+const MAX_DTREE_NODES_PER_CELL : u32 = 341u;
 const STREE_HEADER_F32 : u32 = 4u;
 const STREE_NODE_STRIDE: u32 = 16u;
 
@@ -190,17 +192,9 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   // Walk the dTree to the leaf for this direction.
   let leafBase = dTreeFindLeafBase(dOff, uv);
 
-  // Bin index for the atomic accumulator: one u32 per dTree node slot. The
-  // CPU side decodes this via the dTree's node ordering (refineDTree reads
-  // dTree.nodes[i].flux). We map leafBase (an f32 offset) to a slot index by
-  // dividing by DTREE_NODE_STRIDE (the leaf's node index within the buffer's
-  // f32 layout: (leafBase − HEADER) / STRIDE within the cell's dTree, but
-  // we want a GLOBAL slot here for the readback).
-  // The atomic buffer's slot k corresponds to the f32 offset
-  //   dTreeOffset + HEADER + k * STRIDE.
-  // For W9 Phase 1 we accumulate per-node-slot indexed by
-  //   slot = (leafBase) / STRIDE, capped at fluxBudget.
-  let slot = leafBase / DTREE_NODE_STRIDE;
+  // Global atomic slot: fixed grid of maxDTreeNodesPerCell slots per spatial cell.
+  let nodeIdx = (leafBase - dOff - DTREE_HEADER_F32) / DTREE_NODE_STRIDE;
+  let slot = dTreeIndex * MAX_DTREE_NODES_PER_CELL + nodeIdx;
   if (slot >= ppgUBO.fluxBudget) { return; }
 
   // Encode lum as fixed-point and accumulate atomically.

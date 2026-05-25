@@ -17,6 +17,7 @@ import { asBackendTexture, asMat4 } from '@vitrum/core';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
+import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
@@ -28,6 +29,7 @@ import {
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export { summarizeScene };
 export type { SceneSummary };
+export { buildSceneTlas, type TlasInstance, type TlasData } from './scene/tlasBridge.js';
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
   readonly device: GPUDevice;
@@ -109,7 +111,7 @@ class PTEngineWebGPU implements Engine {
 
   get capabilities(): EngineCapabilities {
     return {
-      supportsIncrementalScene: true, // Patch methods are available and currently route through full setScene rebuilds.
+      supportsIncrementalScene: false, // Patch APIs exist but all facets rebuild via setScene until true partial uploads land.
       incrementalPatchSupport: {
         transform: false,
         positions: false,
@@ -249,58 +251,58 @@ class PTEngineWebGPU implements Engine {
     const paramsArrayBuffer = new ArrayBuffer(512);
     const paramsU32 = new Uint32Array(paramsArrayBuffer);
     const paramsF32 = new Float32Array(paramsArrayBuffer);
-    paramsU32[0] = width;
-    paramsU32[1] = height;
-    paramsU32[2] = input.frameIndex >>> 0;
-    paramsU32[3] = input.frameSeed >>> 0;
-    paramsU32[4] = sb.triangleCount >>> 0;
-    paramsU32[5] = this.#activeBounces >>> 0;
-    paramsU32[6] = sb.bvhNodeCount >>> 0;
-    paramsU32[7] = sb.analyticCount >>> 0;
-    paramsU32[8] = sb.pointLightCount >>> 0;
-    paramsU32[9] = sb.spotLightCount >>> 0;
-    paramsU32[10] = sb.rectAreaLightCount >>> 0;
-    paramsU32[11] = sb.meshAreaLightCount >>> 0;
-    paramsU32[12] = this.#mneeMaxIterations >>> 0;
-    paramsU32[13] = this.#mneeMaxChainLength >>> 0;
-    paramsU32[14] = sb.hasEnvironmentMap ? 1 : 0;
-    paramsU32[15] =
+    paramsU32[FrameParamsSlot.width] = width;
+    paramsU32[FrameParamsSlot.height] = height;
+    paramsU32[FrameParamsSlot.frameIndex] = input.frameIndex >>> 0;
+    paramsU32[FrameParamsSlot.frameSeed] = input.frameSeed >>> 0;
+    paramsU32[FrameParamsSlot.triangleCount] = sb.triangleCount >>> 0;
+    paramsU32[FrameParamsSlot.maxBounces] = this.#activeBounces >>> 0;
+    paramsU32[FrameParamsSlot.bvhNodeCount] = sb.bvhNodeCount >>> 0;
+    paramsU32[FrameParamsSlot.analyticCount] = sb.analyticCount >>> 0;
+    paramsU32[FrameParamsSlot.pointLightCount] = sb.pointLightCount >>> 0;
+    paramsU32[FrameParamsSlot.spotLightCount] = sb.spotLightCount >>> 0;
+    paramsU32[FrameParamsSlot.rectAreaLightCount] = sb.rectAreaLightCount >>> 0;
+    paramsU32[FrameParamsSlot.meshAreaLightCount] = sb.meshAreaLightCount >>> 0;
+    paramsU32[FrameParamsSlot.mneeMaxIterations] = this.#mneeMaxIterations >>> 0;
+    paramsU32[FrameParamsSlot.mneeMaxChainLength] = this.#mneeMaxChainLength >>> 0;
+    paramsU32[FrameParamsSlot.hasEnvironmentMap] = sb.hasEnvironmentMap ? 1 : 0;
+    paramsU32[FrameParamsSlot.causticStrategy] =
       this.#causticStrategy === 'manifold-nee'
         ? 1
         : this.#causticStrategy === 'photon-map'
           ? 2
           : 0;
-    paramsU32[16] = sb.environmentMapWidth >>> 0;
-    paramsU32[17] = sb.environmentMapHeight >>> 0;
-    paramsF32[18] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
-    // Slot 19 (_pad1) is padding; zero-initialized by ArrayBuffer.
-    paramsF32[20] = input.cameraPosition[0];
-    paramsF32[21] = input.cameraPosition[1];
-    paramsF32[22] = input.cameraPosition[2];
-    paramsF32[23] = 1;
-    paramsF32[24] = sb.directionalLight[0];
-    paramsF32[25] = sb.directionalLight[1];
-    paramsF32[26] = sb.directionalLight[2];
-    paramsF32[27] =
+    paramsU32[FrameParamsSlot.environmentMapWidth] = sb.environmentMapWidth >>> 0;
+    paramsU32[FrameParamsSlot.environmentMapHeight] = sb.environmentMapHeight >>> 0;
+    paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
+    paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
+    paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
+    paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
+    paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
+    paramsF32[FrameParamsSlot.cameraPos + 3] = 1;
+    paramsF32[FrameParamsSlot.lightDir] = sb.directionalLight[0];
+    paramsF32[FrameParamsSlot.lightDir + 1] = sb.directionalLight[1];
+    paramsF32[FrameParamsSlot.lightDir + 2] = sb.directionalLight[2];
+    paramsF32[FrameParamsSlot.lightDir + 3] =
       (sb.directionalIrradiance[0] +
         sb.directionalIrradiance[1] +
         sb.directionalIrradiance[2]) /
       3;
-    paramsF32[28] = sb.environmentTint[0];
-    paramsF32[29] = sb.environmentTint[1];
-    paramsF32[30] = sb.environmentTint[2];
-    paramsF32[31] = 0;
-    paramsF32[32] = sb.environmentSunDirection[0];
-    paramsF32[33] = sb.environmentSunDirection[1];
-    paramsF32[34] = sb.environmentSunDirection[2];
-    paramsF32[35] = sb.environmentSunStrength;
-    paramsF32.set(invVp, 36);
-    paramsF32.set(vp, 52);
+    paramsF32[FrameParamsSlot.environmentTint] = sb.environmentTint[0];
+    paramsF32[FrameParamsSlot.environmentTint + 1] = sb.environmentTint[1];
+    paramsF32[FrameParamsSlot.environmentTint + 2] = sb.environmentTint[2];
+    paramsF32[FrameParamsSlot.environmentTint + 3] = 0;
+    paramsF32[FrameParamsSlot.environmentSun] = sb.environmentSunDirection[0];
+    paramsF32[FrameParamsSlot.environmentSun + 1] = sb.environmentSunDirection[1];
+    paramsF32[FrameParamsSlot.environmentSun + 2] = sb.environmentSunDirection[2];
+    paramsF32[FrameParamsSlot.environmentSun + 3] = sb.environmentSunStrength;
+    paramsF32.set(invVp, FrameParamsSlot.invViewProj);
+    paramsF32.set(vp, FrameParamsSlot.viewProj);
     const prevVp = multiplyMat4(
       input.prevProjMatrix ?? input.projMatrix,
       input.prevViewMatrix ?? input.viewMatrix,
     );
-    paramsF32.set(prevVp, 68);
+    paramsF32.set(prevVp, FrameParamsSlot.prevViewProj);
     return paramsArrayBuffer;
   }
 
@@ -545,6 +547,10 @@ class PTEngineWebGPU implements Engine {
           { binding: 21, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
           { binding: 22, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
           { binding: 23, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
+          { binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } },
+          { binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } },
+          { binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
+          { binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceTransformsBuffer } },
         ],
       });
       this.#pathTraceBindGroup = bindGroup;

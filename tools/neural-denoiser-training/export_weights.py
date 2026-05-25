@@ -31,9 +31,6 @@ Requirements: PyTorch >= 2.0, numpy
 import argparse
 import os
 import struct
-import sys
-from pathlib import Path
-
 import numpy as np
 import torch
 

@@ -7,6 +7,7 @@ import { defineConfig } from 'vitest/config';
  * so worktrees no longer need sibling-repo path discovery.
  */
 const pathtracerRoot = path.resolve(__dirname, '../three-gpu-pathtracer');
+const stainedGlassRoot = path.resolve(__dirname, '../stained-glass-extensions');
 
 export default defineConfig({
   test: {
@@ -14,6 +15,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@vitrum/stained-glass-extensions': path.join(stainedGlassRoot, 'src/index.ts'),
       // Top-level package import (e.g. `import { WebGLPathTracer } from 'three-gpu-pathtracer'`).
       'three-gpu-pathtracer': path.join(pathtracerRoot, 'src/index.js'),
       // Stable alias for subpath imports — keeps tests off brittle `../../../../../`

@@ -307,13 +307,29 @@ async function _loadORT(): Promise<_OrtModule> {
 /**
  * Get or create a cached ONNX InferenceSession for the given modelUrl.
  */
+function _sessionCacheKey(opts: OIDNDenoiseOptions): string {
+  const eps = (opts.executionProviders ?? ['webnn', 'webgpu', 'wasm']).join('|');
+  return `${opts.modelUrl}\0${eps}`;
+}
+
+/**
+ * Release one cached session (model URL + execution-provider tuple).
+ * Prefer this over {@link clearOIDNCache} when disposing a single engine instance.
+ */
+export function releaseOIDNCacheEntry(
+  opts: Pick<OIDNDenoiseOptions, 'modelUrl' | 'executionProviders'>,
+): void {
+  _sessionCache.delete(_sessionCacheKey(opts as OIDNDenoiseOptions));
+}
+
 async function _getOrCreateSession(
   ort: Awaited<ReturnType<typeof _loadORT>>,
   opts: OIDNDenoiseOptions,
 ): Promise<unknown> {
   const { modelUrl, executionProviders = ['webnn', 'webgpu', 'wasm'] } = opts;
+  const key = _sessionCacheKey(opts);
 
-  const cached = _sessionCache.get(modelUrl);
+  const cached = _sessionCache.get(key);
   if (cached !== undefined) {
     return cached;
   }
@@ -322,7 +338,7 @@ async function _getOrCreateSession(
     executionProviders: executionProviders,
   });
 
-  _sessionCache.set(modelUrl, session);
+  _sessionCache.set(key, session);
   return session;
 }
 

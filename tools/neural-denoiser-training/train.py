@@ -30,7 +30,6 @@ Requirements: PyTorch >= 2.0, torchvision, Pillow, numpy
 import argparse
 import os
 import struct
-import sys
 from pathlib import Path
 
 import numpy as np

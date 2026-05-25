@@ -38,8 +38,8 @@ struct FrameParams {
   causticStrategy: u32,
   environmentMapWidth: u32,
   environmentMapHeight: u32,
-  triIntersectEpsilon: f32, // UBO-plumbed (D12); default 1e-5 (metre-scale)
-  _pad1: u32,
+  triIntersectEpsilon: f32, // UBO-plumbed (D12); default metre-scale
+  tlasNodeCount: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -73,6 +73,10 @@ struct FrameParams {
 @group(0) @binding(21) var<storage, read> spotLights: array<vec4f>;
 @group(0) @binding(22) var<storage, read> rectAreaLights: array<vec4f>;
 @group(0) @binding(23) var<storage, read> meshAreaLights: array<vec4f>;
+@group(0) @binding(24) var<storage, read> tlasNodes: array<BVHNode>;
+@group(0) @binding(25) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(0) @binding(26) var<storage, read> tlasBlasRoots: array<u32>;
+@group(0) @binding(27) var<storage, read> tlasInstanceTransforms: array<vec4f>;
 
 const LEAFNODE_FLAG = 0xffff0000u;
 const MATERIAL_VEC4_STRIDE = 22u;

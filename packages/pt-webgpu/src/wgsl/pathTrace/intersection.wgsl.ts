@@ -253,8 +253,9 @@ fn traceMeshBvh(
   tMaxBound: f32,
   closest: bool,
   hit: ptr<function, SceneHit>,
+  rootNode: u32,
 ) -> bool {
-  if (params.bvhNodeCount == 0u || arrayLength(&bvhNodes) == 0u) {
+  if (params.bvhNodeCount == 0u || arrayLength(&bvhNodes) == 0u || rootNode >= min(params.bvhNodeCount, arrayLength(&bvhNodes))) {
     return false;
   }
   if (closest) {
@@ -266,7 +267,7 @@ fn traceMeshBvh(
 
   var stack: array<u32, 64>;
   var stackPtr = 0u;
-  stack[stackPtr] = 0u;
+  stack[stackPtr] = rootNode;
   stackPtr = stackPtr + 1u;
 
   while (stackPtr > 0u) {
@@ -419,16 +420,79 @@ fn traceAnalyticShapes(
   return false;
 }
 
+fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>) -> bool {
+  if (params.tlasNodeCount == 0u || arrayLength(&tlasNodes) == 0u || arrayLength(&tlasInstanceIndices) == 0u) {
+    return traceMeshBvh(ray, tMin, tMax, true, hit, 0u);
+  }
+  (*hit).didHit = false;
+  (*hit).dist = tMax;
+  (*hit).triIndex = 0u;
+  (*hit).normal = vec3f(0.0, 1.0, 0.0);
+  var stack: array<u32, 64>;
+  var stackPtr = 0u;
+  stack[stackPtr] = 0u;
+  stackPtr = stackPtr + 1u;
+  while (stackPtr > 0u) {
+    stackPtr = stackPtr - 1u;
+    let nodeIdx = stack[stackPtr];
+    if (nodeIdx >= min(params.tlasNodeCount, arrayLength(&tlasNodes))) { continue; }
+    let node = tlasNodes[nodeIdx];
+    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
+    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
+    if (!intersectAabb(ray, bmin, bmax, tMin, (*hit).dist)) { continue; }
+    let splitOrCount = node.splitAxisOrTriCount;
+    if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
+      let count = splitOrCount & 0x0000ffffu;
+      let start = node.rightChildOrTriOffset;
+      for (var i = 0u; i < count; i = i + 1u) {
+        let permIdx = start + i;
+        if (permIdx >= arrayLength(&tlasInstanceIndices)) { continue; }
+        let instIdx = tlasInstanceIndices[permIdx];
+        let m = instIdx * 4u;
+        if (m + 3u >= arrayLength(&tlasInstanceTransforms)) { continue; }
+        let w2l0 = tlasInstanceTransforms[m];
+        let w2l1 = tlasInstanceTransforms[m + 1u];
+        let w2l2 = tlasInstanceTransforms[m + 2u];
+        let w2l3 = tlasInstanceTransforms[m + 3u];
+        var localRay: Ray;
+        localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
+        localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
+        var localHit: SceneHit;
+        let blasRoot = select(0u, tlasBlasRoots[instIdx], instIdx < arrayLength(&tlasBlasRoots));
+        _ = traceMeshBvh(localRay, tMin, (*hit).dist, true, &localHit, blasRoot);
+        if (localHit.didHit && localHit.dist > tMin && localHit.dist < (*hit).dist) {
+          // TLAS instances currently use identity worldToLocal in host packing.
+          // Keep distance/normal in local space until per-instance L2W lands.
+          (*hit).didHit = true;
+          (*hit).dist = localHit.dist;
+          (*hit).triIndex = localHit.triIndex;
+          (*hit).normal = localHit.normal;
+        }
+      }
+    } else {
+      let leftChild = nodeIdx + 1u;
+      let rightChild = nodeIdx + node.rightChildOrTriOffset;
+      if (stackPtr + 2u < 64u) {
+        stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
+        stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
+      } else {
+        return (*hit).didHit;
+      }
+    }
+  }
+  return (*hit).didHit;
+}
+
 fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
   var hit: SceneHit;
-  _ = traceMeshBvh(ray, tMin, tMax, true, &hit);
+  _ = traceTlasClosest(ray, tMin, tMax, &hit);
   _ = traceAnalyticShapes(ray, tMin, tMax, true, &hit);
   return hit;
 }
 
 fn traceAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
   var hit: SceneHit;
-  if (traceMeshBvh(ray, tMin, tMax, false, &hit)) {
+  if (traceTlasClosest(ray, tMin, tMax, &hit)) {
     return true;
   }
   if (traceAnalyticShapes(ray, tMin, tMax, false, &hit)) {

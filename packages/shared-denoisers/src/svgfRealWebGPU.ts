@@ -242,7 +242,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
 
   // Reprojection outputs
   const colorOutTex  = device.createTexture({ label: 'svgf-color-out', size: [w,h], format: 'rgba16float', usage: texS|texB|texC });
-  const histOutTex   = device.createTexture({ label: 'svgf-hist-out',  size: [w,h], format: 'r16uint',     usage: texS|texB|texC });
+  const histOutTex   = device.createTexture({ label: 'svgf-hist-out',  size: [w,h], format: 'r32uint',     usage: texS|texB|texC });
   const momOutTex    = device.createTexture({ label: 'svgf-mom-out',   size: [w,h], format: 'rg32float',   usage: texS|texB|texC });
 
   // Variance from moments output

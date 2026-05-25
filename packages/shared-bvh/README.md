@@ -8,7 +8,7 @@ Shared BVH builder + canonical layout used by DDGI, RC, and ReSTIR GI engines (p
 - `buildArrayBvh(positions, indices, triMaterialIds, opts)` — THREE-independent binned-SAH builder (Wald 2007). Takes raw `Float32Array`/`Uint32Array` inputs.
 - `buildTlas(instances, opts?)` / `refitTlas(data, newAabbs)` / `tlasIntersect(data, origin, dir, tMax?)` — Top-Level Acceleration Structure. Binned SAH over instance world AABBs; same 32-byte node layout as BLAS so `bvhIntersect.wgsl` primitives can be reused with only the leaf-payload decode varying. `tlasIntersect` is a CPU reference oracle (leaf-conservative candidate set; production traversal happens in WGSL via the BLAS). Foundation for multi-mesh moving-object scenes; pipeline wiring downstream is a separate multi-week effort.
 - `MaterialEntry` — canonical 16-float (64-byte) material struct + `packMaterials(mats)` packer. Shared by DDGI and RC; ReSTIR uses a different per-triangle u32 packing scheme.
-- `BVH_TRAVERSE_WGSL` — canonical WGSL string (Möller–Trumbore + AABB slab + 60-deep stack traversal) consumed by every WGSL-side BVH reader.
+- `BVH_INTERSECT_WGSL` — canonical WGSL string (Möller–Trumbore + AABB slab + 60-deep stack traversal) consumed by every WGSL-side BVH reader.
 - `MATERIAL_ENTRY_WGSL` — canonical WGSL struct declaration for the material entry, kept in lockstep with the TS packer.
 
 ## Node layout

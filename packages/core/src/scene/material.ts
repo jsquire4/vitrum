@@ -316,6 +316,43 @@ export interface MaterialSpec {
   readonly extensions?: Readonly<Record<string, unknown>>;
 }
 
+/** Feature slices for adapters and partial material updates (W3 contract hygiene). */
+export type BasePbrMaterialFields = Pick<
+  MaterialSpec,
+  'baseColor' | 'roughness' | 'metallic' | 'emissive' | 'emissiveIntensity'
+>;
+export type TransmissionMaterialFields = Pick<
+  MaterialSpec,
+  'transmission' | 'ior' | 'attenuationColor' | 'attenuationDistance' | 'thickness'
+>;
+export type MaterialMapFields = Pick<
+  MaterialSpec,
+  | 'baseColorMap'
+  | 'normalMap'
+  | 'normalScale'
+  | 'roughnessMap'
+  | 'metallicMap'
+  | 'transmissionMap'
+  | 'emissiveMap'
+  | 'alphaMap'
+>;
+export type DisneyBsdMaterialFields = Pick<
+  MaterialSpec,
+  | 'sheen'
+  | 'sheenColor'
+  | 'sheenRoughness'
+  | 'clearcoat'
+  | 'clearcoatRoughness'
+  | 'iridescence'
+  | 'iridescenceIor'
+  | 'iridescenceThicknessRange'
+>;
+export type VolumeMaterialFields = Pick<
+  MaterialSpec,
+  'scatteringCoefficient' | 'scatteringAnisotropy' | 'scatteringCoefficientRGB'
+>;
+export type LayeredBsdMaterialFields = Pick<MaterialSpec, 'frontLayer' | 'backLayer' | 'thinFilmStack'>;
+
 /** Opaque texture reference. The scene-binding layer creates these; backends
  *  consume them. The shape varies — for WebGL2 backends it might be a
  *  `WebGLTexture` plus metadata, for WebGPU it might be a `GPUTexture`, for

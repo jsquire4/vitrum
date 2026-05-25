@@ -29,7 +29,8 @@
     "capture:refs:quick": "./scripts/capture-all-refs.sh --quick",
     "capture:refs:hero": "./scripts/capture-all-refs.sh --hero",
     "capture:diff": "node ./tools/reference-renders/diff-baselines.mjs",
-    "release:dry-run": "npm pack --dry-run --workspaces --if-present"
+    "release:dry-run": "npm pack --dry-run --workspaces --if-present",
+    "codegen:wgsl-layouts": "node ./tools/generate-wgsl-layouts.mjs"
   },
   "engines": {
     "node": ">=20"

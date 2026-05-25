@@ -49,7 +49,7 @@
 import {
   preloadOIDNModel,
   denoiseFinal,
-  clearOIDNCache,
+  releaseOIDNCacheEntry,
   type OIDNDenoiseInputs,
 } from '@vitrum/shared-denoisers';
 import {
@@ -430,12 +430,14 @@ export class OIDNFinalDenoiser implements Denoiser {
       this._denoisedOutputTexture = null;
     }
     this._haveDenoisedOutput = false;
-    // Drop the cached ONNX session so the next engine (if any) re-creates
-    // it. Note: clearOIDNCache is module-global — if the host has multiple
-    // engines sharing the same modelUrl, this evicts their session too.
-    // Acceptable: each engine's `initialize` calls `preloadOIDNModel`
-    // which will re-create on next dispatch.
-    clearOIDNCache();
+    if (!this.disabled && this._modelUrl.length > 0) {
+      releaseOIDNCacheEntry({
+        modelUrl: this._modelUrl,
+        ...(this._executionProviders !== undefined
+          ? { executionProviders: this._executionProviders }
+          : {}),
+      });
+    }
     this._device = null;
   }
 }

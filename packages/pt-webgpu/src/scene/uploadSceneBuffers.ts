@@ -2,6 +2,7 @@ import { asMat4, type Scene, type SceneEmitter } from '@vitrum/core';
 import { transformNormal, transformPoint } from '../math/mat4.js';
 import { invertMat4 } from '../math/mat4.js';
 import { buildCpuBvh } from './buildCpuBvh.js';
+import { buildSceneTlas } from './tlasBridge.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
 import { environmentParams } from './environmentPacking.js';
 import {
@@ -30,6 +31,10 @@ interface PackedSceneData {
   readonly triMaterialIds: Uint32Array;
   readonly materials: Float32Array; // MATERIAL_VEC4_STRIDE * vec4f per material
   readonly bvhNodes: Float32Array; // 8 floats (32 bytes) per node
+  readonly tlasNodes: Uint32Array; // 8 u32 words (32 bytes) per node
+  readonly tlasInstanceIndices: Uint32Array;
+  readonly tlasBlasRoots: Uint32Array;
+  readonly tlasInstanceTransforms: Float32Array; // 16 floats per instance
   readonly analyticHeaders: Float32Array; // vec4f per analytic primitive: [shapeId, materialId, paramsOffset, 0]
   readonly analyticParams: Float32Array; // vec4f array, two vec4f per analytic primitive (8 floats)
   readonly analyticLocalToWorld: Float32Array; // 4 vec4f (mat4) per analytic primitive
@@ -65,6 +70,7 @@ interface PackedSceneData {
  */
 export interface UploadedSceneBuffers extends PackedSceneData {
   readonly bvhNodeCount: number;
+  readonly tlasNodeCount: number;
   readonly materialCount: number;
   readonly positionsBuffer: GPUBuffer;
   readonly normalsBuffer: GPUBuffer;
@@ -82,6 +88,10 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly spotLightsBuffer: GPUBuffer;
   readonly rectAreaLightsBuffer: GPUBuffer;
   readonly meshAreaLightsBuffer: GPUBuffer;
+  readonly tlasNodesBuffer: GPUBuffer;
+  readonly tlasInstanceIndicesBuffer: GPUBuffer;
+  readonly tlasBlasRootsBuffer: GPUBuffer;
+  readonly tlasInstanceTransformsBuffer: GPUBuffer;
   readonly destroy: () => void;
 }
 
@@ -122,6 +132,52 @@ export const PT_WEBGPU_ANALYTIC_SHAPES = [
 function analyticShapeId(shape: string): number {
   const idx = (PT_WEBGPU_ANALYTIC_SHAPES as readonly string[]).indexOf(shape);
   return idx > 0 ? idx : 0;
+}
+
+
+function buildGlobalTlasFromPackedPositions(positions: Float32Array): {
+  tlasNodes: Uint32Array;
+  tlasInstanceIndices: Uint32Array;
+  tlasBlasRoots: Uint32Array;
+  tlasInstanceTransforms: Float32Array;
+} {
+  if (positions.length < 4) {
+    return {
+      tlasNodes: new Uint32Array(0),
+      tlasInstanceIndices: new Uint32Array(0),
+      tlasBlasRoots: new Uint32Array(0),
+      tlasInstanceTransforms: new Float32Array(0),
+    };
+  }
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i + 3 < positions.length; i += 4) {
+    const x = positions[i] ?? 0;
+    const y = positions[i + 1] ?? 0;
+    const z = positions[i + 2] ?? 0;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    maxZ = Math.max(maxZ, z);
+  }
+  const tlas = buildSceneTlas([{
+    blasId: 0,
+    aabbMin: [minX, minY, minZ],
+    aabbMax: [maxX, maxY, maxZ],
+    worldToLocal: IDENTITY_MAT4,
+  }]);
+  return {
+    tlasNodes: tlas.nodes,
+    tlasInstanceIndices: tlas.instanceIndices,
+    tlasBlasRoots: tlas.blasRoots,
+    tlasInstanceTransforms: tlas.instanceTransforms,
+  };
 }
 
 export function buildPackedScene(scene: Scene): PackedSceneData {
@@ -241,6 +297,7 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
   const packedIndices = new Uint32Array(indices);
   const packedTriMaterialIds = new Uint32Array(triMaterialIds);
   const bvhBuild = buildCpuBvh(packedPositions, packedIndices, packedTriMaterialIds);
+  const tlasBuild = buildGlobalTlasFromPackedPositions(packedPositions);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);
   warnings.push(...environment.warnings);
@@ -253,6 +310,10 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
     triMaterialIds: bvhBuild.reorderedTriMaterialIds,
     materials: new Float32Array(materials),
     bvhNodes: bvhBuild.bvhNodes,
+    tlasNodes: tlasBuild.tlasNodes,
+    tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
+    tlasBlasRoots: tlasBuild.tlasBlasRoots,
+    tlasInstanceTransforms: tlasBuild.tlasInstanceTransforms,
     analyticHeaders: new Float32Array(analyticHeaders),
     analyticParams: new Float32Array(analyticParams),
     analyticLocalToWorld: new Float32Array(analyticLocalToWorld),
@@ -307,10 +368,15 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const spotLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData);
   const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
   const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
+  const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
+  const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
+  const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);
+  const tlasInstanceTransformsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceTransforms', packed.tlasInstanceTransforms);
 
   return {
     ...packed,
     bvhNodeCount: Math.floor(packed.bvhNodes.length / 8),
+    tlasNodeCount: Math.floor(packed.tlasNodes.length / 8),
     materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),
     positionsBuffer,
     normalsBuffer,
@@ -328,6 +394,10 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     spotLightsBuffer,
     rectAreaLightsBuffer,
     meshAreaLightsBuffer,
+    tlasNodesBuffer,
+    tlasInstanceIndicesBuffer,
+    tlasBlasRootsBuffer,
+    tlasInstanceTransformsBuffer,
     destroy: () => {
       positionsBuffer.destroy();
       normalsBuffer.destroy();
@@ -345,6 +415,10 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       spotLightsBuffer.destroy();
       rectAreaLightsBuffer.destroy();
       meshAreaLightsBuffer.destroy();
+      tlasNodesBuffer.destroy();
+      tlasInstanceIndicesBuffer.destroy();
+      tlasBlasRootsBuffer.destroy();
+      tlasInstanceTransformsBuffer.destroy();
     },
   };
 }

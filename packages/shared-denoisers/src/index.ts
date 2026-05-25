@@ -46,6 +46,7 @@ export {
   denoiseFinal,
   preloadOIDNModel,
   clearOIDNCache,
+  releaseOIDNCacheEntry,
 } from './oidnBridge.js';
 export type {
   OIDNDenoiseInputs,
