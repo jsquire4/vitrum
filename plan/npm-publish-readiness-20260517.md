@@ -39,7 +39,7 @@ Total publishable-candidate packages: **10** (root is workspace-only, will stay 
 
 1. **No package has a real build.** Every package's `main`/`types`/`exports` point at `./src/*.ts`. `dist/` directories exist but contain only `tsconfig.tsbuildinfo` — no `.js` and no `.d.ts`. Every package-level `tsconfig.json` (except `core`) sets `"noEmit": true`. There is no `build` script in any package. Until a build step lands, npm consumers cannot `import` from `@vitrum/*` (TypeScript-from-source assumes the consumer has a TS transpile step *and* the same `tsconfig` options — both unsafe to assume).
 2. **Every package is `private: true`.** Intentional today (safety belt — `RELEASING.md` calls this out explicitly), but enumerated here as a publish-time flag that must be flipped per package.
-3. **`@vitrum/pt-webgl` depends on `three-gpu-pathtracer` via `file:../../../three-gpu-pathtracer`** — npm cannot publish a tarball with a sibling-repo `file:` dep. `RELEASING.md` already documents this; the resolution is to publish the fork (e.g. `@jsquire4/three-gpu-pathtracer`) and pin a version specifier.
+3. **`@vitrum/pt-webgl` depends on `three-gpu-pathtracer` via `file:../three-gpu-pathtracer`** — the sibling-repo blocker is closed. Publish still needs a deliberate package identity/version for the absorbed renderer, or `pt-webgl` stays private.
 4. **All intra-workspace deps use `file:../X` specifiers.** Every cross-package dep (`@vitrum/core`, `@vitrum/shared-*`, `@vitrum/three-bindings`, `@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl`) must be rewritten to a real semver specifier (e.g. `^0.1.0-alpha.1`) before publish, in lockstep with bumping every package's `version` off `0.0.0`.
 5. **Most packages have no README.md and no per-package LICENSE.** Only `pt-webgl`, `pt-webgpu`, and `walkaround-hybrid` have READMEs; none of the 10 packages have a `LICENSE` file (the repo root has one, but `npm publish` ships the package directory's tarball — root files are not included).
 
@@ -201,16 +201,16 @@ The dependency block has the load-bearing publish blocker:
   "@vitrum/core":            "file:../core",
   "@vitrum/shared-samplers": "file:../shared-samplers",
   "@vitrum/three-bindings":  "file:../three-bindings",
-  "three-gpu-pathtracer":    "file:../../../three-gpu-pathtracer",
+  "three-gpu-pathtracer":    "file:../three-gpu-pathtracer",
   "three-mesh-bvh":          ">=0.7.4",
   "xatlas-web":              "^0.1.0"
 }
 ```
 
-- `three-gpu-pathtracer: file:../../../three-gpu-pathtracer` — **npm tarballs cannot reference a sibling-repo `file:` dep**. Publish will fail or, worse, succeed with a broken install on the consumer side. `RELEASING.md` already enumerates the three resolutions (publish the fork, wait for upstream merge, vendor). This is the one issue that gates `pt-webgl` from ever publishing.
+- `three-gpu-pathtracer: file:../three-gpu-pathtracer` — now points at the absorbed workspace package. Before public publish, choose a real package name/version for this renderer (for example `@vitrum/three-gpu-pathtracer`) or keep `pt-webgl` private.
 - `three-mesh-bvh` declared as both a regular dep AND a peer dep — **inconsistency**. Pick one. Since the import is direct in source (`import { ... } from 'three-mesh-bvh'`) but three.js is a peer dep, the right model is to make `three-mesh-bvh` a peer too (it has a `three` peer of its own; users should pin it once).
 - `fixtures/` directory exists at the package root (`packages/pt-webgl/fixtures/hdrAccumGolden.bin`) — currently NOT listed in `files`, so it won't ship. Confirm this is intentional (test-only fixture).
-- `src/__tests__/materialsTextureSpectral.test.ts` imports via `'../../../../../three-gpu-pathtracer/src/uniforms/MaterialsTexture.js'` — that's a relative path out of the workspace into the sibling repo. Tests don't ship to npm (they're inside `src/__tests__/` which currently does ship — see cross-cutting note below), but the path becomes broken in any consumer environment.
+- `src/__tests__/materialsTextureSpectral.test.ts` imports the absorbed renderer subpath through a Vitest alias. Tests don't ship to npm (they're inside `src/__tests__/` which currently does ship — see cross-cutting note below), but package `files` should exclude tests before publish.
 
 Peer deps: `three >=0.167.0 <0.190`, `three-mesh-bvh >=0.7.4`. `three-mesh-bvh` appearing as BOTH a regular dep AND a peer dep is the duplication problem.
 
@@ -364,10 +364,10 @@ Every package has `private: true` today as the safety belt `RELEASING.md` descri
 | `@vitrum/walkaround-hybrid` | yes | the WebGPU GI backend |
 | `@vitrum/engine` | yes | the facade — required entry point |
 | `@vitrum/dev` | yes (as devDep) | debug overlays |
-| `@vitrum/pt-webgl` | **gated** | blocked on `three-gpu-pathtracer` fork-publish |
+| `@vitrum/pt-webgl` | **gated** | blocked on renderer package publish/private decision |
 | `@vitrum/pt-webgpu` | **probably no** | pre-alpha prototype; keep `private:true` past 0.1.0-alpha.1 |
 
-`RELEASING.md` already calls out the pt-webgl gating with three resolutions. Status quo: keep pt-webgl private for 0.1.0-alpha.1; ship engine with WebGL2 backend disabled or dynamically imported.
+`RELEASING.md` already calls out the pt-webgl gating. Status quo: keep pt-webgl private for 0.1.0-alpha.1 unless the absorbed renderer package is published under a vitrum-owned package name.
 
 ### C. `file:` workspace deps must become version specifiers
 
@@ -381,7 +381,7 @@ Counted across the workspace, there are **11 distinct `file:` specifiers** that 
 6. `pt-webgl` → `core`
 7. `pt-webgl` → `shared-samplers`
 8. `pt-webgl` → `three-bindings`
-9. `pt-webgl` → `three-gpu-pathtracer` (sibling-repo file dep — separate Section D below)
+9. `pt-webgl` → `three-gpu-pathtracer` (absorbed renderer workspace package — separate Section D below)
 10. `pt-webgpu` → `core`
 11. `pt-webgpu` → `shared-samplers`
 12. `shared-bvh` → `core`
@@ -399,9 +399,9 @@ Counted across the workspace, there are **11 distinct `file:` specifiers** that 
 
 The conventional npm-workspace pattern is `"@vitrum/core": "^0.1.0-alpha.1"` with the lockfile resolving locally during dev. (Newer npm supports `"@vitrum/core": "workspace:*"` syntax that rewrites at publish time — viable alternative.)
 
-### D. The `three-gpu-pathtracer` fork blocker
+### D. The `three-gpu-pathtracer` renderer package
 
-Already documented in `RELEASING.md` §"The `three-gpu-pathtracer` fork dep". The cleanest option (per RELEASING.md option 1) is publishing the fork under `@jsquire4/three-gpu-pathtracer` and pinning a version. Until that happens, `@vitrum/pt-webgl` cannot publish.
+Already documented in `RELEASING.md` §"The `three-gpu-pathtracer` renderer package". The sibling checkout blocker is closed; the remaining decision is whether to publish the absorbed renderer under a vitrum-owned scope/name and pin that version, or keep `@vitrum/pt-webgl` private.
 
 Knock-on effect: `@vitrum/engine` depends on `@vitrum/pt-webgl`. The facade either:
 
@@ -490,7 +490,7 @@ These are ordered by "minimum effort for maximum publish-readiness move". An "S"
 7. **[M] Promote `@types/three` and `@webgpu/types` to optional peer dependencies** on the relevant packages (so consumer install warnings reflect intent).
 8. **[L] Set up the real build pipeline** — per-package `tsconfig.build.json`, per-package `build` script, point `main`/`types`/`exports` at `./dist/*.js` and `./dist/*.d.ts`, drop `noEmit:true` from build configs, exclude `__tests__` from the build, add `prepublishOnly: "npm run build"`. Verify with `npm pack --dry-run --workspaces`. This is the single largest piece of work and the actual gate.
 9. **[L] Rewrite all 21 `file:` intra-workspace deps to version specifiers** (or `workspace:*`). Lockstep-bump every package from `0.0.0` to `0.1.0-alpha.1`. Update `package-lock.json`.
-10. **[L] Resolve the `three-gpu-pathtracer` fork**: publish the fork as `@jsquire4/three-gpu-pathtracer@0.7.X` (or comparable), rewrite the `file:` specifier in `@vitrum/pt-webgl` to a real version, and verify the `@vitrum/engine` facade can either link `pt-webgl` or dynamically degrade. This is the heaviest non-build task.
+10. **[L] Resolve the `three-gpu-pathtracer` renderer package for publish**: publish the absorbed package as `@vitrum/three-gpu-pathtracer@0.7.X` (or comparable), rewrite the `file:` specifier in `@vitrum/pt-webgl` to a real version, and verify the `@vitrum/engine` facade can either link `pt-webgl` or dynamically degrade.
 11. **[S] Flip `private: false`** on every package that's in scope for 0.1.0-alpha.1. Do this as the last commit before publishing — never earlier.
 
 ---

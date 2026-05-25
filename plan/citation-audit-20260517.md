@@ -38,7 +38,7 @@ The per-algorithm gap tables below describe the 2026-05-17 audit-time state. Tre
   `Wald`, `Möller`, `Jiménez`, `Burley`, `Veach`, `Wilkie`, `Jakob`, `Hanika`,
   `Schlick`, `Kulla`, `Henyey`, `Cauchy`, `Karis`, `Karras`, `Dammertz`,
   `Sobol`, `Cigolle`, `Chaitanya`, `Ronneberger`, `Shirley`).
-- Sibling fork at `~/projects/three-gpu-pathtracer/` (license file presence
+- Absorbed renderer package at `packages/three-gpu-pathtracer/` (license file presence
   and compatibility only — out-of-repo).
 
 ## Verification protocol
@@ -169,7 +169,7 @@ Action: either move these to a `## Roadmap / future work` subsection of CREDITS.
 |---|---|---|
 | Root LICENSE present | `/home/jsquire4/projects/vitrum/LICENSE` — MIT, Copyright 2026 jsquire4 | ✓ OK |
 | Per-package LICENSE files | **None** of `packages/*/` carries a LICENSE file (verified `ls packages/*/ \| grep -i license`) | ✗ **Should add** — each package's `package.json` declares `"license": "MIT"` but at npm publish time the package tarball is what consumers see; npm convention is each package carries its own LICENSE. Currently this is partially mitigated by the `"private": true` flag on every package, but as soon as the user removes `private` (planned for public release), the missing LICENSE files become a publication blocker. |
-| `pt-webgl` fork pin | `pt-webgl/package.json` pins `three-gpu-pathtracer: file:../../../three-gpu-pathtracer` (sibling) — fork is MIT (verified at `~/projects/three-gpu-pathtracer/LICENSE`) | ✓ License compatible. README correctly flags that `private: true` must stay until the file-pin is replaced with a publishable artifact. |
+| `pt-webgl` renderer pin | `pt-webgl/package.json` pins `three-gpu-pathtracer: file:../three-gpu-pathtracer` (absorbed workspace package) — renderer is MIT (verified at `packages/three-gpu-pathtracer/LICENSE`) | ✓ License compatible. README correctly flags that `private: true` must stay until the renderer has an intentional public package name/version. |
 | `three-mesh-bvh` dependency | `node_modules/three-mesh-bvh/LICENSE` — MIT, Copyright Garrett Johnson 2018 | ✓ License compatible |
 | `postprocessing` (Zlib) | Listed in CREDITS as Zlib licence | Zlib is permissive but the wording differs from MIT; if redistributing postprocessing's source, attach the original Zlib licence. (vitrum does not redistribute postprocessing source — uses npm dependency — so this is observational only.) |
 | Citation rule violation surface | The CLAUDE.md citation rule states three required sites. Of the 36 algorithms catalogued in §1, **22 have at least one citation site missing** — see §2 for the actionable list. | ✗ Active rule violation; backfill is in scope before public-alpha. |

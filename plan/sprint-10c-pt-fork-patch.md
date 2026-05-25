@@ -23,7 +23,7 @@ Before applying this patch:
 1. Sprints 2–7 fork patches must be applied in order (see their `plan/sprint-N-pt-fork-patch.md`).
 2. Sprint 5 MRT G-buffer scaffold must be active (`WebGLMultipleRenderTargets` allocated
    with at least 3 channels — gColor, gNormalDepth, gAlbedo).
-3. `npm run build` clean in `~/projects/three-gpu-pathtracer/`.
+3. `npm run build` clean in `packages/three-gpu-pathtracer/`.
 4. Sprint 7 caustic-gap re-evaluation must have been performed (see Appendix A).
 
 ---

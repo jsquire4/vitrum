@@ -226,7 +226,7 @@ for any consumer (including `_staging/`).
 | Source | Imported package | Notes |
 |---|---|---|
 | `packages/walkaround-hybrid/src/rc/bvhCompute.ts:33` | `three-mesh-bvh` | Type-only `import type { MeshBVH }`. Type imports are erased at runtime, so not strictly required as a runtime dep — but it should still be a devDependency for the typecheck to resolve. |
-| `packages/pt-webgl/src/__tests__/materialsTextureSpectral.test.ts:40` | `@vitrum-fork/three-gpu-pathtracer` | Test imports a forked package name that's not in `package.json` — see CLAUDE.md note about the local fork. May resolve via npm workspace symlink or `paths` mapping. Verify before adjusting. |
+| `packages/pt-webgl/src/__tests__/materialsTextureSpectral.test.ts:40` | `@vitrum-pathtracer` | Historical note: this used to point at a sibling fork alias. It now resolves to the absorbed `packages/three-gpu-pathtracer` workspace package via Vitest alias. |
 | `tsconfig.base.json` | `@webgpu/types` | Declared in `compilerOptions.types`. Resolved per-package; correct architecturally — each package that emits WebGPU types includes `@webgpu/types` in its devDeps. |
 
 ## Unlisted binaries
@@ -305,9 +305,10 @@ must be verified by reading the file:
    compilation smoke-tests show up as live, but constants exported "for
    debugging" (e.g., `ATROUS_KERNEL_VALUES`) may legitimately have no
    import-time consumer.
-6. **Cross-fork imports.** `@vitrum-fork/three-gpu-pathtracer` lives in
-   `~/projects/three-gpu-pathtracer` as a `file:` reference; resolves at
-   install time but knip's static scan flags it as unlisted.
+6. **Renderer subpath imports.** `@vitrum-pathtracer` is a Vitest-only alias
+   for the absorbed `packages/three-gpu-pathtracer` package; static scans may
+   still flag it as unlisted because it is test-runner configuration, not a
+   package.json dependency.
 7. **Test fixtures via globals.** Test setup files that mutate
    `globalThis` (e.g., `FakeWebGL2RenderingContext` install pattern) are
    invisible to knip's static graph.

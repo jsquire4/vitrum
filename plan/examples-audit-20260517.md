@@ -137,7 +137,7 @@ Workspace `npm run typecheck` re-run post-fix: green (no regression).
 - `npm run typecheck` at workspace root **passes** — `cornell-box` and `two-engines-one-scene` are silently skipped via `--if-present` because they don't declare a `typecheck` script.
 - All four runnable examples have matching `dev` / `build` / `preview` scripts, `private: true`, and `description` set in `package.json`.
 - All `file:../../packages/*` deps resolve to existing directories.
-- Vite `dedupe: ['three', 'three-mesh-bvh', 'three-gpu-pathtracer']` is consistent across all examples (necessary because `three-gpu-pathtracer` is consumed via `file:../../../three-gpu-pathtracer`).
+- Vite `dedupe: ['three', 'three-mesh-bvh', 'three-gpu-pathtracer']` is consistent across all examples (necessary because `three-gpu-pathtracer` is consumed as an in-repo workspace package).
 - Port assignments per `vite.config.ts`: cornell-box 5174, two-engines 5175, hero-viewer 5176, hero-lighting-designer 5177, hero-product-viz 5178. Each README's "open http://localhost:NNNN" matches its vite config.
 
 ## Recommendations summary
