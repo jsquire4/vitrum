@@ -30,15 +30,25 @@ npm org create vitrum      # creates the @vitrum org, costs $0 for public packag
 
 If `vitrum` was claimed by someone else between now and publish day, fall back to a different scope (e.g. `@jsquire4-vitrum`) and rewrite every `package.json`'s `name` and `dependencies` accordingly.
 
-## The `three-gpu-pathtracer` fork dep
+## The `three-gpu-pathtracer` renderer package
 
-`@vitrum/pt-webgl` currently depends on `three-gpu-pathtracer` via `file:../../../three-gpu-pathtracer` — a sibling-repo file dep that npm cannot publish. **This must be resolved before pt-webgl can publish.** Options:
+`@vitrum/pt-webgl` depends on the absorbed in-repo
+`packages/three-gpu-pathtracer` workspace package via
+`file:../three-gpu-pathtracer`. The old sibling-repo fork dependency is gone,
+so CI and local development no longer need a checkout next to `vitrum/`.
 
-1. **Publish the fork to npm** under your own scope (e.g. `@jsquire4/three-gpu-pathtracer`). Update `pt-webgl/package.json` to depend on the published version. Cleanest; what we'd want long-term.
-2. **Wait for the fork's patches to land upstream** in `gkjohnson/three-gpu-pathtracer` and depend on the upstream version. Best for ecosystem health; slowest.
-3. **Vendor the fork's relevant files into pt-webgl** at publish time. Worst for maintenance; not recommended.
+Before publishing `@vitrum/pt-webgl`, decide how to publish this renderer
+package:
 
-Until one of these happens, `@vitrum/pt-webgl` cannot publish but the rest of the workspace can. The facade `@vitrum/engine` will need to dynamically import the WebGL2 backend and gracefully degrade when it isn't available — or the WebGL2 path stays disabled in the published facade.
+1. **Publish the absorbed package under a vitrum-owned scope** (for example
+   `@vitrum/three-gpu-pathtracer`) and update `pt-webgl/package.json` to use
+   that version. Cleanest public-release path.
+2. **Keep `pt-webgl` private** while other packages publish.
+3. **Bundle/vendor the renderer into `pt-webgl` at publish time.** Avoid unless
+   package-level separation becomes more trouble than it is worth.
+
+Until that packaging decision is made, `@vitrum/pt-webgl` remains private even
+though it no longer depends on files outside this repository.
 
 ## Publishing
 

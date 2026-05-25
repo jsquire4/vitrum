@@ -27,6 +27,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { Scene as ThreeScene, Texture } from 'three';
 import type { WebGLRenderTarget } from 'three';
 import type { FrameInput } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import type { OIDNBridgeLike } from '../oidnFinalDispatcher.js';
 import { installWebGL2GlobalStub, makeRendererStub } from './testUtils.js';
@@ -112,8 +113,8 @@ function makeFrameInput(samplesTarget: number): FrameInput {
   return {
     frameIndex: _frameCounter,
     frameSeed: _frameCounter,
-    viewMatrix: new Float32Array(16),
-    projMatrix: new Float32Array(16),
+    viewMatrix: asMat4(new Float32Array(16)),
+    projMatrix: asMat4(new Float32Array(16)),
     cameraPosition: [0, 0, 0],
     viewport: { width: 32, height: 16, devicePixelRatio: 1 },
     quality: { samplesTarget, bounces: 2, resolutionFactor: 1 },

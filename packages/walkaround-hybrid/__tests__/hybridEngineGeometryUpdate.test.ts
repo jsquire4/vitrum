@@ -193,7 +193,7 @@ vi.mock('@vitrum/three-bindings', async () => {
 });
 
 import { HybridEngine } from '../src/HybridEngine.js';
-import type { Scene } from '@vitrum/core';
+import { asMat4, type Scene } from '@vitrum/core';
 
 function getState(): GeoUpdateState {
   return (globalThis as unknown as { __HYBRID_GEO_STATE__: GeoUpdateState }).__HYBRID_GEO_STATE__;
@@ -232,6 +232,19 @@ const SCENE_WITH_MESH: Scene = {
   ],
   emitters: [],
   environment: { kind: 'none' },
+};
+
+const SCENE_WITH_EMITTER: Scene = {
+  ...SCENE_WITH_MESH,
+  emitters: [
+    {
+      id: 'sun-a',
+      kind: 'directional',
+      color: [1, 1, 1],
+      intensity: 1,
+      direction: [0, -1, 0],
+    },
+  ],
 };
 
 beforeEach(() => {
@@ -276,7 +289,7 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
 
     // Push a transform-only patch (translate the mesh +5 along X).
     engine.updatePrimitive!('mesh-a', {
-      transform: new Float32Array([
+      transform: asMat4([
         1, 0, 0, 0,
         0, 1, 0, 0,
         0, 0, 1, 0,
@@ -307,7 +320,7 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     await drainMicrotasks();
 
     engine.updatePrimitive!('mesh-a', {
-      transform: new Float32Array([
+      transform: asMat4([
         1, 0, 0, 0,
         0, 1, 0, 0,
         0, 0, 1, 0,
@@ -409,7 +422,7 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
   });
 
-  it('material-only patch throws with a clear sibling-branch pointer', async () => {
+  it('material-only patch routes through rebuild path (no throw)', async () => {
     const engine = makeEngine();
     const s = getState();
 
@@ -418,13 +431,11 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     s.pipelineInitDeferreds[0]!.resolve();
     await drainMicrotasks();
 
-    // Material-only patches are reserved for the sibling branch
-    // (`feat/a3-hybridengine-incremental-updates`). This branch throws
-    // with a pointer so the host knows where the support lives.
-    expect(() => engine.updatePrimitive!('mesh-a', {
+    const buildCountBefore = s.buildBVHCalls.length;
+    engine.updatePrimitive!('mesh-a', {
       material: { kind: 'lambertian', albedo: [0.5, 0.2, 0.7] },
-    } as unknown as Parameters<NonNullable<typeof engine.updatePrimitive>>[1]))
-      .toThrow(/feat\/a3-hybridengine-incremental-updates/);
+    } as unknown as Parameters<NonNullable<typeof engine.updatePrimitive>>[1]);
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore + 1);
   });
 
   it('unknown primitive id throws', async () => {
@@ -437,14 +448,43 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     await drainMicrotasks();
 
     expect(() => engine.updatePrimitive!('mesh-not-found', {
-      transform: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+      transform: asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
     })).toThrow(/not found/);
   });
 
   it('call before setScene throws (no scene state)', () => {
     const engine = makeEngine();
     expect(() => engine.updatePrimitive!('mesh-a', {
-      transform: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+      transform: asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
     })).toThrow(/no scene set/);
+  });
+});
+
+describe('HybridEngine.updateEmitter', () => {
+  it('rebuilds scene state when emitter patch is applied', async () => {
+    const engine = makeEngine();
+    const s = getState();
+    engine.setScene(SCENE_WITH_EMITTER);
+    await waitForPipelineCount(1);
+    s.pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+    const buildCountBefore = s.buildBVHCalls.length;
+    engine.updateEmitter!('sun-a', { intensity: 2 });
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore + 1);
+  });
+
+  it('throws on unknown emitter id', async () => {
+    const engine = makeEngine();
+    const s = getState();
+    engine.setScene(SCENE_WITH_EMITTER);
+    await waitForPipelineCount(1);
+    s.pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+    expect(() => engine.updateEmitter!('missing', { intensity: 2 })).toThrow(/not found/);
+  });
+
+  it('throws when called before setScene', () => {
+    const engine = makeEngine();
+    expect(() => engine.updateEmitter!('sun-a', { intensity: 2 })).toThrow(/no scene set/);
   });
 });

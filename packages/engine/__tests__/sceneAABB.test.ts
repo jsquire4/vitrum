@@ -8,6 +8,7 @@ import type {
   MaterialSpec,
   Mat4,
 } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 
 const MAT: MaterialSpec = {
   baseColor: [0.5, 0.5, 0.5],
@@ -68,7 +69,7 @@ describe('computeSceneAABB', () => {
   it('honours an affine transform on a mesh primitive', () => {
     // translate +10 on X via column-major identity * translate(10, 0, 0)
     // prettier-ignore
-    const xform = new Float32Array([
+    const xform = asMat4([
       1, 0, 0, 0,
       0, 1, 0, 0,
       0, 0, 1, 0,
@@ -82,7 +83,7 @@ describe('computeSceneAABB', () => {
 
   it('grows the AABB across multiple primitives', () => {
     // prettier-ignore
-    const right = new Float32Array([
+    const right = asMat4([
       1, 0, 0, 0,
       0, 1, 0, 0,
       0, 0, 1, 0,
@@ -101,10 +102,10 @@ describe('computeSceneAABB', () => {
     const instances: ReadonlyArray<Mat4> = [
       // identity
       // prettier-ignore
-      new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
+      asMat4([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]),
       // translate +3 X
       // prettier-ignore
-      new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 3,0,0,1]),
+      asMat4([1,0,0,0, 0,1,0,0, 0,0,1,0, 3,0,0,1]),
     ];
     const inst: InstancedMeshPrimitive = {
       kind: 'instanced-mesh',

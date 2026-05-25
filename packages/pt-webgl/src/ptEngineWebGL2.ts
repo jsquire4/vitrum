@@ -26,6 +26,7 @@ import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment, AnalyticSha
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
+import { ForkAccess } from './forkAccess.js';
 import {
   MAX_TILE_GRID,
   TileVariancePass,
@@ -141,7 +142,6 @@ interface WebGLPathTracerCompat {
   bounces: number;
   filterGlossyFactor: number;
   fastUpdate: boolean;
-  _pathTracer?: { material?: { uniforms?: Record<string, { value: unknown }> } };
   domElement?: HTMLCanvasElement;
 }
 
@@ -865,8 +865,18 @@ export class PTEngineWebGL2 implements Engine {
     if (this.#slot.get() === 'paused') {
       const spp = this.#pathTracer.samples;
       const cap = Math.max(1, Math.min(this.#lastTargetSpp, this.#maxSamplesLimit));
+      const primaryRadiance = ForkAccess.getRenderTexture(this.#pathTracer);
+      if (primaryRadiance == null) {
+        return {
+          kind: 'skipped',
+          samplesAccumulated: 0,
+          isConverged: false,
+          telemetry: this.#lastTelemetry,
+        };
+      }
       return {
-        primaryRadiance: this.#pathTracer.target.texture,
+        kind: 'rendered',
+        primaryRadiance,
         samplesAccumulated: spp,
         isConverged: spp >= cap,
         telemetry: this.#lastTelemetry,
@@ -997,8 +1007,18 @@ export class PTEngineWebGL2 implements Engine {
       );
     }
 
+    const primaryRadiance = ForkAccess.getRenderTexture(this.#pathTracer);
+    if (primaryRadiance == null) {
+      return {
+        kind: 'skipped',
+        samplesAccumulated: 0,
+        isConverged: false,
+        telemetry: this.#lastTelemetry,
+      };
+    }
     return {
-      primaryRadiance: this.#pathTracer.target.texture,
+      kind: 'rendered',
+      primaryRadiance,
       samplesAccumulated: spp,
       isConverged,
       telemetry: this.#lastTelemetry,

@@ -1,20 +1,19 @@
 # @vitrum/pt-webgl
 
-WebGL2 **path tracing** backend implementing `@vitrum/core`’s **`Engine`** contract via **[three-gpu-pathtracer](https://github.com/gkjohnson/three-gpu-pathtracer)** (use the project fork — see [CLAUDE.md](../../CLAUDE.md)).
+WebGL2 **path tracing** backend implementing `@vitrum/core`’s **`Engine`** contract via the absorbed [`three-gpu-pathtracer`](../three-gpu-pathtracer/) workspace package.
 
-## Fork dependency
+## Renderer dependency
 
-`package.json` pins the renderer as:
+`package.json` pins the renderer as an in-repo workspace file dependency:
 
 ```json
-"three-gpu-pathtracer": "file:../../../three-gpu-pathtracer"
+"three-gpu-pathtracer": "file:../three-gpu-pathtracer"
 ```
 
-Adjust the relative path if your checkout layout differs. The intended layout is `vitrum/` and `three-gpu-pathtracer/` as **sibling** directories under the same parent.
-
-This package is marked `private` while the dependency is a sibling `file:` pin.
-For public npm release, replace this with a published fork package or a
-commit-pinned git dependency and remove `private`.
+The renderer package is intentionally kept package-shaped rather than folded
+directly into `pt-webgl/src`, so the backend wrapper and path-tracer
+implementation remain separately understandable. The old sibling checkout is
+no longer required for vitrum development.
 
 Peers: `three`, `three-mesh-bvh` (required by the path tracer). Optional: `xatlas-web` (UV unwrap path in the upstream library).
 

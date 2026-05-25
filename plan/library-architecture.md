@@ -5,7 +5,7 @@
 1. **The contract is the thing that's fixed.** Backends are swappable; scene bindings are swappable; denoisers are composable. The public types in `@vitrum/core` are the load-bearing interface.
 2. **The host owns lifecycle.** Engine accepts a device handle but does not own the device. Engine accepts frame inputs but does not own the cadence. This is the design choice that makes `@vitrum/*` survive Canvas remounts and other host-level lifecycle churn.
 3. **Generalize over time.** Today's contract handles the most pressing concrete needs. Each Phase 6 sprint generalizes one more dimension. The `Material.extensions`, `EngineOptions.extensions`, and `AnalyticShape` discriminated union are the explicit extension points where generalization happens without breaking the contract.
-4. **No upstream PRs (yet).** While vitrum is pre-prime-time, `@vitrum/pt-webgl` consumes the sibling-checkout `three-gpu-pathtracer` fork via `file:` (see `packages/pt-webgl/package.json`). Upstream contribution is a v1+ concern.
+4. **No upstream PRs (yet).** While vitrum is pre-prime-time, `@vitrum/pt-webgl` consumes the absorbed `packages/three-gpu-pathtracer` renderer package via `file:` (see `packages/pt-webgl/package.json`). Upstream contribution is a v1+ concern.
 
 ## Package responsibilities
 

@@ -19,6 +19,9 @@ Read in this order to onboard:
 
 ## What's done
 
+- **2026-05-24 reconciliation:** merge-race backlog items E1-E7 were re-landed.
+  Treat any older "NOT IN HEAD" caveats below as historical audit notes.
+
 - **Phase 6 (Sprints 0–13) complete**; **Phase 7 walkaround-hybrid (Sprints 14–18) shipped**: layered BSDF fork patch, half-res GTAO + bilateral upsample (S15), ReSTIR-GI RIS (S16), ReSTIR-GI temporal+spatial reuse (S17), per-channel SVGF on direct + indirect (S18), plus extensive firefly / dim-magnitude root-cause work and library-generality remediation. Workspace `tsc --noEmit` clean; **all** vitest tests pass (~660+ across workspaces — the 2–3 previously-skipped GPU-only paths were enabled via happy-dom / vitest browser mode; GPU-browser tests are opt-in via env flag so default `npm test` no longer requires Playwright).
 - **Packages**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (à-trous-variance, `svgf-real` Schied 2017, OIDN bridge), `pt-webgl` (wraps three-gpu-pathtracer fork — production PT), `pt-webgpu` (pre-alpha prototype WebGPU PT — internal, not production), `walkaround-rc` (Radiance Cascades subsystem — cascade pyramid + dispatch + receiver), `walkaround-hybrid` (DDGI + ReSTIR-DI + ReSTIR-GI + PPG + real neural U-Net denoiser + GTAO + per-channel SVGF; composes RC via `HybridEngineRC`), `engine` (`createEngine` / `attachVitrum` facade), `dev` (debug overlays).
 - **Extraction**: `_staging/legacy-source/` contains only host-app React/Redux files intentionally not extracted (see `_staging/README.md`).
@@ -121,7 +124,7 @@ Read in this order to onboard:
 
 ### Repo / infra housekeeping
 
-- `fix/pt-webgl-tests-three-gpu-pathtracer-dep` (`ce87517`): factory + `materialsTextureSpectral` tests resilient to missing sibling `three-gpu-pathtracer` repo (worktree-path resolution).
+- `fix/pt-webgl-tests-three-gpu-pathtracer-dep` (`ce87517`): factory + `materialsTextureSpectral` tests were made resilient to the old missing sibling `three-gpu-pathtracer` repo (now superseded by the absorbed workspace package).
 - `fix/gpu-tests-opt-in` (`006debc`): GPU-browser tests now opt-in via env flag; default `npm test` no longer requires Playwright.
 - `fix/examples-typecheck` (`ac1b593`): `cornell-box` + `two-engines-one-scene` examples + `pt-webgpu` process ref typecheck clean.
 - `chore/gitignore-cron-lock` (`df2d877`): `.claude/scheduled_tasks.lock` gitignored.
@@ -150,17 +153,17 @@ The honest remaining work is **multi-week pipeline integration** on top of found
 
 Older active docs: `phase-7-restir-gi.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `pt-webgpu-deep-audit.md`.
 
-## Sibling repository: the path-tracer fork
+## Absorbed path-tracer package
 
-`~/projects/three-gpu-pathtracer/` — local working copy of a fork of `gkjohnson/three-gpu-pathtracer` at branch `phase4-normalmap-shadow-rays`. The Phase 4 normalMap-perturbed-NEE-shadow-ray patch is committed there. `@vitrum/pt-webgl` will wrap this fork as its WebGL2 backend implementation.
+`packages/three-gpu-pathtracer/` is the absorbed fork of `gkjohnson/three-gpu-pathtracer`. It is now part of the vitrum monorepo and should be changed on the active vitrum branch like any other package. Do **not** rely on or create sibling checkout branches for vitrum work; older archived sprint docs may mention the pre-absorption sibling-checkout workflow, but that workflow has been retired. Keep the package boundary intact unless the user explicitly asks to collapse it further into `@vitrum/pt-webgl`.
 
-When `@vitrum/pt-webgl` reaches the point of importing from it, the cleanest pattern is `npm install file:../three-gpu-pathtracer` from the package directory, with a clear note in pt-webgl's README about the version pin. The fork's remote: `git@github.com:jsquire4/three-gpu-pathtracer.git`.
+`@vitrum/pt-webgl` depends on it via `file:../three-gpu-pathtracer`. For npm release, decide whether to publish this renderer package under a vitrum-owned scope or keep `pt-webgl` private.
 
 ## Conventions
 
 - **No upstream PRs yet.** The fork stays local until vitrum is prime-time-ready. Do not create upstream PRs to `gkjohnson/three-gpu-pathtracer` without explicit user instruction.
 - **No npm publish yet.** Local-only via npm workspaces (`file:./packages/*`). Do not publish without explicit user instruction.
-- **No remote pushes without instruction.** Both `~/projects/vitrum` and `~/projects/three-gpu-pathtracer` have remotes; do not push without the user saying so.
+- **No remote pushes without instruction.** Do not push `~/projects/vitrum` without the user saying so.
 
 ## Key design principles (in priority order)
 

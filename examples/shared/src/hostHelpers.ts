@@ -6,7 +6,7 @@
  * helper bug fix only needs to happen once.
  */
 
-import type { Mat4 } from '@vitrum/core';
+import { asMat4, type Mat4 } from '@vitrum/core';
 import type * as THREE from 'three';
 
 /**
@@ -15,7 +15,7 @@ import type * as THREE from 'three';
  * are identical, so this is a `new Float32Array(m.elements)` wrap.
  */
 export function mat4FromThree(m: THREE.Matrix4): Mat4 {
-  return new Float32Array(m.elements);
+  return asMat4(new Float32Array(m.elements));
 }
 
 /**

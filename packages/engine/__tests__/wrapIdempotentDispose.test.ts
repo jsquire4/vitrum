@@ -42,7 +42,7 @@ function makeFakeEngine(opts: { withUpdateEnvironment: boolean }): Engine & {
     capabilities: NULL_CAPS,
     setScene(_: Scene): void {},
     renderFrame(_: FrameInput): FrameOutput {
-      return { samplesAccumulated: 1, isConverged: false, primaryRadiance: null };
+      return { kind: 'rendered', samplesAccumulated: 1, isConverged: false, primaryRadiance: {} };
     },
     reset(): void {},
     pause(): void {},
@@ -127,8 +127,40 @@ describe('wrapWithIdempotentDispose — updateEnvironment forwarding (A1)', () =
     const proxy = wrapWithIdempotentDispose(engine, () => {});
     proxy.dispose();
     const output = proxy.renderFrame({} as FrameInput);
+    expect(output.kind).toBe('skipped');
     expect(output.samplesAccumulated).toBe(0);
     expect(output.isConverged).toBe(false);
-    expect(output.primaryRadiance).toBeNull();
+  });
+
+  it('omits incremental patch methods when capability is false', () => {
+    const updatePrimitiveSpy = vi.fn();
+    const updateEmitterSpy = vi.fn();
+    const engine = {
+      ...makeFakeEngine({ withUpdateEnvironment: true }),
+      capabilities: { ...NULL_CAPS, supportsIncrementalScene: false },
+      updatePrimitive: updatePrimitiveSpy,
+      updateEmitter: updateEmitterSpy,
+    } as Engine;
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    expect(proxy.updatePrimitive).toBeUndefined();
+    expect(proxy.updateEmitter).toBeUndefined();
+  });
+
+  it('forwards incremental patch methods when capability is true', () => {
+    const updatePrimitiveSpy = vi.fn();
+    const updateEmitterSpy = vi.fn();
+    const engine = {
+      ...makeFakeEngine({ withUpdateEnvironment: true }),
+      capabilities: { ...NULL_CAPS, supportsIncrementalScene: true },
+      updatePrimitive: updatePrimitiveSpy,
+      updateEmitter: updateEmitterSpy,
+    } as Engine;
+    const proxy = wrapWithIdempotentDispose(engine, () => {});
+    expect(typeof proxy.updatePrimitive).toBe('function');
+    expect(typeof proxy.updateEmitter).toBe('function');
+    proxy.updatePrimitive?.('p', {});
+    proxy.updateEmitter?.('e', {});
+    expect(updatePrimitiveSpy).toHaveBeenCalledTimes(1);
+    expect(updateEmitterSpy).toHaveBeenCalledTimes(1);
   });
 });

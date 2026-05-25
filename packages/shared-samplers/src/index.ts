@@ -11,6 +11,11 @@
 export * from './wgsl/hammersley.wgsl.js';
 export { OCTAHEDRAL_CORE_WGSL } from './wgsl/octahedralCore.wgsl.js';
 export { LUMINANCE_WGSL, LUMINANCE_MODULE_NAME } from './wgsl/luminance.wgsl.js';
+export { PCG_WGSL, PCG_MODULE_NAME } from './wgsl/pcg.wgsl.js';
+export {
+  BSDF_PRIMITIVES_WGSL,
+  BSDF_PRIMITIVES_MODULE_NAME,
+} from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
 export { buildLightTree, packLightTreeForGPU } from './lightTree.js';
 export type { LightTreeNode, LightTreeBuildInput } from './lightTree.js';

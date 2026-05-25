@@ -10,7 +10,7 @@ cd examples/cornell-box
 npm run dev
 ```
 
-Browser: **WebGL2** only. Path tracer uses the **sibling** `three-gpu-pathtracer` repo (see `packages/pt-webgl/README.md`).
+Browser: **WebGL2** only. Path tracer uses the absorbed `packages/three-gpu-pathtracer` workspace package (see `packages/pt-webgl/README.md`).
 
 ## What it does
 

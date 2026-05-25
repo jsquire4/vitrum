@@ -60,7 +60,7 @@ function makeEngine(): Engine {
     capabilities: caps,
     setScene() {},
     renderFrame() {
-      return { primaryRadiance: null, samplesAccumulated: 0, isConverged: false };
+      return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     },
     reset() {},
     pause() { s = 'paused'; },

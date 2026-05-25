@@ -14,7 +14,8 @@
 //   - Idempotent dispose.
 
 import * as THREE from 'three';
-import type { Engine, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
+import type { Engine, Scene, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineOptions } from '../createEngine.js';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -223,8 +224,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
   // RAF loop.
   let frameIndex = 0;
-  let prevView: Float32Array | undefined;
-  let prevProj: Float32Array | undefined;
+  let prevView: Mat4 | undefined;
+  let prevProj: Mat4 | undefined;
   let rafHandle: number | null = null;
   let stopped = false;
 
@@ -232,8 +233,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     if (stopped) return;
     rafHandle = requestAnimationFrame(tick);
     opts.camera.updateMatrixWorld();
-    const view = new Float32Array(opts.camera.matrixWorldInverse.elements);
-    const proj = new Float32Array(opts.camera.projectionMatrix.elements);
+    const view = asMat4(new Float32Array(opts.camera.matrixWorldInverse.elements));
+    const proj = asMat4(new Float32Array(opts.camera.projectionMatrix.elements));
     // A2 — acquire the per-frame swap-chain view for WebGPU backends.
     const swapChainView = acquireSwapChainView(webgpuContext);
     const quality = resolveQualityOption(opts.quality);

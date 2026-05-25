@@ -20,24 +20,18 @@
  *        a trained checkpoint (the smoke-test path the W10 example uses).
  *
  *   2. GPU acceptance test (skipped unless `VITRUM_NEURAL_ACCEPTANCE=1`):
- *      - Renders a Cornell box with `denoiser: 'neural'` vs `denoiser:
- *        'atrous-variance'`, computes per-channel variance over a flat
- *        wall region, asserts neural variance < atrous-variance variance
- *        (numerical denoising claim — requires a real WebGPU device + a
- *        trained `vi-neural-weights` checkpoint at
- *        `tools/reference-renders/neural-weights/vi-neural-weights.bin`).
+ *      - Reads harness-produced metrics from `VITRUM_NEURAL_ACCEPTANCE_METRICS`
+ *        and asserts neural variance is at least 20% lower per channel than
+ *        atrous-variance on the benchmark ROI.
  *
- *      This test is intentionally environment-gated because:
- *        - Node test environments don't have a real `GPUDevice`.
- *        - Random He-init weights do NOT denoise — they amplify noise. So
- *          the numerical claim only holds with real trained weights.
- *        - CI runners without GPUs would fail on this test forever; gating
- *          via `VITRUM_NEURAL_ACCEPTANCE` keeps it as a manual-run smoke
- *          for the W10 owner without breaking the main suite.
+ *      This test is intentionally environment-gated because Node test
+ *      environments do not expose a real `GPUDevice`, and the acceptance
+ *      metric requires trained weights + a benchmark capture harness.
  */
 
 import { describe, it, expect, vi } from 'vitest';
 import * as THREE from 'three';
+import { readFileSync } from 'node:fs';
 import { buildRandomWeightsForSpec } from '../src/neural/weights.js';
 import type { ModelWeights } from '../src/neural/weights.js';
 import { WALKAROUND_DENOISER_UNET_SPEC } from '../src/neural/unetArchitecture.js';
@@ -205,28 +199,42 @@ const GPU_ACCEPTANCE_ENABLED =
   process.env['VITRUM_NEURAL_ACCEPTANCE'] === '1';
 
 describe.skipIf(!GPU_ACCEPTANCE_ENABLED)('W10 — neural denoiser GPU acceptance (numerical noise comparison)', () => {
+  function readMetrics(): {
+    readonly atrousVariance: readonly [number, number, number];
+    readonly neuralVariance: readonly [number, number, number];
+  } {
+    const path = process.env['VITRUM_NEURAL_ACCEPTANCE_METRICS'];
+    if (!path) {
+      throw new Error(
+        'VITRUM_NEURAL_ACCEPTANCE=1 requires VITRUM_NEURAL_ACCEPTANCE_METRICS=<json file> ' +
+        'produced by tools/benchmark-runner.',
+      );
+    }
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+      atrousVariance?: unknown;
+      neuralVariance?: unknown;
+    };
+    const toTriplet = (value: unknown, name: string): [number, number, number] => {
+      if (
+        !Array.isArray(value) ||
+        value.length !== 3 ||
+        value.some((v) => typeof v !== 'number' || !Number.isFinite(v))
+      ) {
+        throw new Error(`Invalid ${name} in ${path}; expected [number, number, number].`);
+      }
+      return [value[0] as number, value[1] as number, value[2] as number];
+    };
+    return {
+      atrousVariance: toTriplet(parsed.atrousVariance, 'atrousVariance'),
+      neuralVariance: toTriplet(parsed.neuralVariance, 'neuralVariance'),
+    };
+  }
+
   it('on a noisy Cornell-box render, neural denoiser reduces flat-region variance vs atrous-variance', async () => {
-    // Intentionally not implemented as an in-process test — see file header.
-    // The harness for this lives in `tools/benchmark-runner/` and writes
-    // `tools/reference-renders/W10-post-neural/cornell-box-1spp-denoised.png`
-    // for visual A/B. Bridging that harness here would require a real
-    // WebGPU device and a trained checkpoint at
-    // `tools/reference-renders/neural-weights/vi-neural-weights.bin`.
-    //
-    // When `VITRUM_NEURAL_ACCEPTANCE=1` is set in CI with those
-    // preconditions met, this test would:
-    //
-    //   1. boot HybridEngine with denoiser='atrous-variance', render 1 spp
-    //      Cornell, read back a flat-wall ROI, compute per-channel variance.
-    //   2. boot HybridEngine with denoiser='neural' + loaded weights,
-    //      render same scene + same frame seed, read back the same ROI,
-    //      compute variance.
-    //   3. assert neural-variance < atrous-variance-variance by at least
-    //      20% per channel (Chaitanya et al. 2017 reports ~5× improvement;
-    //      20% is conservative for a small training set).
-    //
-    // The skip-gate ensures the main suite stays green on every machine.
-    expect(GPU_ACCEPTANCE_ENABLED).toBe(true);
+    const metrics = readMetrics();
+    for (let i = 0; i < 3; i += 1) {
+      expect(metrics.neuralVariance[i]!).toBeLessThan(metrics.atrousVariance[i]! * 0.8);
+    }
   });
 });
 

@@ -196,10 +196,18 @@ describe('T1.D2 — 2-light sum-MIS correctness (Item 15)', () => {
     expect(contribA).toBeGreaterThan(0);
     expect(contribB).toBeGreaterThan(0);
 
-    // The 2-light sum should equal the individual contributions added together
-    // (no MIS interaction for independent point lights, no shadowing).
-    const relErr = Math.abs(sum - (contribA + contribB)) / Math.max(sum, 1e-12);
-    expect(relErr).toBeLessThan(0.05); // ≤5% (exact here, 0 error)
+    // Compare against the independently-derived analytic expectation for this
+    // geometry:
+    //   dist² = 1² + 0² + 3² = 10
+    //   n·l   = 3 / sqrt(10)
+    //   f     = rho / π
+    //   per-light = f * (n·l) * I / dist²
+    const dist2 = 10;
+    const nDotL = 3 / Math.sqrt(dist2);
+    const expectedEach = (rho / Math.PI) * nDotL * (1 / dist2);
+    const expectedSum = expectedEach * 2;
+    const relErr = Math.abs(sum - expectedSum) / Math.max(expectedSum, 1e-12);
+    expect(relErr).toBeLessThan(1e-6);
 
     // Sanity: each light contributes non-trivially.
     expect(contribA).toBeGreaterThan(1e-3);

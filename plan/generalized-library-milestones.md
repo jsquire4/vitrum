@@ -26,7 +26,7 @@ Phase 7+ items (`@vitrum/pt-webgpu` MVP) are **not** required for this milestone
 ## 2. Current snapshot (anchor for the plan)
 
 - **`@vitrum/walkaround-hybrid`**: Substantial **`HybridEngine`** + pipeline; implements **`Engine`**; still **three.js-leaning** internally (acceptable for Milestone M2 below).
-- **`@vitrum/pt-webgl`**: **`WebGLPathTracer`** wired; **`setScene` / `renderFrame`** implemented; fork via **`file:../../../three-gpu-pathtracer`** (see package README).
+- **`@vitrum/pt-webgl`**: **`WebGLPathTracer`** wired; **`setScene` / `renderFrame`** implemented; renderer via **`file:../three-gpu-pathtracer`** (see package README).
 - **`_staging/`**: Mostly **host React** reference; staging README maps files to package vs host ownership; duplicate PT tables removed where superseded.
 - **`examples/cornell-box`**: **Vite** demo — THREE → `sceneFromThreeJS` → `createPTEngine_WebGL2`.
 - **RFEs / contract growth**: Follow [cursor-recommended-plan.md](./cursor-recommended-plan.md) §13 (Tier 1 types early; Tier 2 implementation in Phase C sprints).

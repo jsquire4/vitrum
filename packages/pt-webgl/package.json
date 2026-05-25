@@ -26,7 +26,7 @@
     "@vitrum/shared-denoisers": "file:../shared-denoisers",
     "@vitrum/shared-samplers": "file:../shared-samplers",
     "@vitrum/three-bindings": "file:../three-bindings",
-    "three-gpu-pathtracer": "file:../../../three-gpu-pathtracer",
+    "three-gpu-pathtracer": "file:../three-gpu-pathtracer",
     "xatlas-web": "^0.1.0"
   },
   "peerDependencies": {
