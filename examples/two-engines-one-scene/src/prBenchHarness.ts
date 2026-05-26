@@ -31,7 +31,8 @@ function firstMeshPrimitive(scene: Scene): ScenePrimitive | null {
   return scene.primitives.find((p) => p.kind === 'mesh' || p.kind === 'skinned-mesh') ?? null;
 }
 
-function p95(values: number[]): number {
+/** Exported for unit tests. */
+export function percentile95(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95));
@@ -152,7 +153,7 @@ export function installPrBenchApi(
       scenario: 'PR-hybrid-frame-sample',
       ok: times.length >= Math.min(frames, 8) && engine.state === 'ready',
       elapsedMs: performance.now() - t0,
-      p95FrameMs: p95(times),
+      p95FrameMs: percentile95(times),
       sampleCount: times.length,
       engineState: engine.state,
       ...(times.length < 8 ? { error: `only ${times.length} frame samples` } : {}),

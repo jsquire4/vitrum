@@ -100,6 +100,7 @@ async function main() {
   const strict = process.env.VITRUM_WAVE4_STRICT === '1';
   const includeMechanical = process.env.VITRUM_WAVE4_SKIP_MECHANICAL !== '1';
   const includeQualitySmoke = process.env.VITRUM_WAVE4_INCLUDE_QUALITY_SMOKE === '1';
+  const includePrHybrid = process.env.VITRUM_WAVE4_INCLUDE_PR_HYBRID === '1';
 
   const steps = [];
   if (includeMechanical) {
@@ -125,6 +126,17 @@ async function main() {
       VITRUM_LIFECYCLE_SOAK_ITERATION_MS: process.env.VITRUM_LIFECYCLE_SOAK_ITERATION_MS ?? '3000',
     },
   });
+
+  if (includePrHybrid) {
+    steps.push({
+      id: 'pr_hybrid_material_churn',
+      description: 'PR-6 hybrid material-churn bench (requires two-engines dev server)',
+      required: false,
+      command:
+        'VITRUM_PR_SCENARIO=PR-hybrid-material-churn npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner',
+      timeoutMs: parseTimeoutMs('VITRUM_WAVE4_PR_HYBRID_TIMEOUT_MS', 15 * 60_000),
+    });
+  }
 
   if (includeQualitySmoke) {
     steps.push({
@@ -160,6 +172,7 @@ async function main() {
     strict,
     includeMechanical,
     includeQualitySmoke,
+    includePrHybrid,
     node: process.version,
     platform: process.platform,
     cwd: repoRoot,
