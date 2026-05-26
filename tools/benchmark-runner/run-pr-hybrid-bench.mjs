@@ -112,6 +112,16 @@ async function runScenario(browser, scenarioId) {
     });
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
+    const bootError = await page.evaluate(() => {
+      const status = document.querySelector('#status')?.textContent ?? '';
+      if (/requestDevice|OperationError|maxStorageTextures|maxStorageBuffers/i.test(status)) {
+        return status.slice(0, 500);
+      }
+      return null;
+    });
+    if (bootError != null) {
+      throw new Error(`walkaround page failed WebGPU init: ${bootError}`);
+    }
     const scenarioBenchTimeoutMs =
       scenarioId === 'PR-hybrid-200k-static'
         ? Number(process.env.VITRUM_PR_200K_TIMEOUT_MS ?? String(Math.max(benchTimeoutMs, 300_000)))
