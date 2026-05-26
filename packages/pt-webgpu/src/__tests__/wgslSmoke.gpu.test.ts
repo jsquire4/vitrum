@@ -12,11 +12,11 @@
  */
 import { describe, expect, it, beforeAll } from 'vitest';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
-
-/** Storage-buffer count in PT_WEBGPU_TRACE_WGSL's compute stage. Update if
- *  the shader's binding list changes. Used to gate the pipeline-create
- *  assertion against the active adapter's max. */
-const REQUIRED_STORAGE_BUFFERS = 18;
+import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
+import {
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+} from '../webgpuLimits.js';
 
 const gpu: GPU | undefined =
   typeof navigator !== 'undefined' && (navigator as { gpu?: GPU }).gpu
@@ -69,30 +69,25 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
     expect(errors.length).toBe(0);
   });
 
-  it('pipeline creates when the adapter supports the shader\'s storage-buffer count', async () => {
+  it('full pipeline creates when the adapter supports 23 storage buffers', async () => {
     const supported = adapter!.limits.maxStorageBuffersPerShaderStage;
     const module = device!.createShaderModule({
-      label: 'pt-webgpu-pipeline-smoke',
+      label: 'pt-webgpu-pipeline-smoke-full',
       code: PT_WEBGPU_TRACE_WGSL,
     });
 
-    if (supported >= REQUIRED_STORAGE_BUFFERS) {
-      // Hardware path — full pipeline creation should succeed end-to-end.
+    if (supported >= PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE) {
       await device!.createComputePipelineAsync({
-        label: 'pt-webgpu-smoke-pipeline',
+        label: 'pt-webgpu-smoke-pipeline-full',
         layout: 'auto',
         compute: { module, entryPoint: 'main' },
       });
-      // No throw = pass; expect at least the assertion below to keep vitest happy.
-      expect(supported).toBeGreaterThanOrEqual(REQUIRED_STORAGE_BUFFERS);
+      expect(supported).toBeGreaterThanOrEqual(PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
     } else {
-      // Software path (SwiftShader-Vulkan caps at 10). Assert pipeline
-      // creation fails with the EXACT limit error so a future regression
-      // (e.g. the shader silently fitting under the cap) is detectable.
       let caughtMessage: string | null = null;
       try {
         await device!.createComputePipelineAsync({
-          label: 'pt-webgpu-smoke-pipeline',
+          label: 'pt-webgpu-smoke-pipeline-full',
           layout: 'auto',
           compute: { module, entryPoint: 'main' },
         });
@@ -101,8 +96,54 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
       }
       expect(caughtMessage).not.toBeNull();
       expect(caughtMessage).toMatch(/storage buffers .* exceeds the maximum/i);
-      // Also document the constraint on the adapter for diagnostic logs.
-      expect(supported).toBeLessThan(REQUIRED_STORAGE_BUFFERS);
+      expect(supported).toBeLessThan(PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+    }
+  });
+
+  it('lite WGSL parses without compile errors', async () => {
+    const module = device!.createShaderModule({
+      label: 'pt-webgpu-smoke-lite',
+      code: PT_WEBGPU_TRACE_LITE_WGSL,
+    });
+    const info = await module.getCompilationInfo();
+    const errors = info.messages.filter((m) => m.type === 'error');
+    if (errors.length > 0) {
+      throw new Error(
+        `lite WGSL compile error(s):\n${errors
+          .map((e) => `  line ${e.lineNum}: ${e.message}`)
+          .join('\n')}`,
+      );
+    }
+    expect(errors.length).toBe(0);
+  });
+
+  it('lite pipeline creates when the adapter supports the lite binding count', async () => {
+    const supported = adapter!.limits.maxStorageBuffersPerShaderStage;
+    const module = device!.createShaderModule({
+      label: 'pt-webgpu-pipeline-smoke-lite',
+      code: PT_WEBGPU_TRACE_LITE_WGSL,
+    });
+
+    if (supported >= PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) {
+      await device!.createComputePipelineAsync({
+        label: 'pt-webgpu-smoke-pipeline-lite',
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' },
+      });
+      expect(supported).toBeGreaterThanOrEqual(PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+    } else {
+      let caughtMessage: string | null = null;
+      try {
+        await device!.createComputePipelineAsync({
+          label: 'pt-webgpu-pipeline-smoke-lite',
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' },
+        });
+      } catch (err) {
+        caughtMessage = String((err as Error)?.message ?? err);
+      }
+      expect(caughtMessage).not.toBeNull();
+      expect(caughtMessage).toMatch(/storage buffers .* exceeds the maximum/i);
     }
   });
 });

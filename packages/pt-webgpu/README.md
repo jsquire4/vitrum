@@ -51,8 +51,43 @@ not baseline correctness. What's implemented:
   - `variance`
   - `motionVectors`
 
+## Adapter tiers (storage-buffer limits)
+
+**If you have a normal discrete GPU, you already get the full path.** Nothing is
+“turned off” in code — the engine calls `resolvePtWebgpuTraceTier(device)` at
+construction and picks **`full`** whenever the device reports
+`maxStorageBuffersPerShaderStage ≥ 23` and `maxStorageTexturesPerShaderStage ≥ 5`.
+That layout includes TLAS, analytic shapes, HDRI, point/spot/rect/mesh area lights,
+motion vectors, variance moments, and caustic strategies. Check the browser console
+for `[vitrum/pt-webgpu] Full trace tier: …` on startup.
+
+The **lite** tier exists only as a **CI / SwiftShader fallback** (often **10** /
+**4** limits in headless Chromium on Linux). WSL2 without GPU passthrough frequently
+hits lite even when the machine has a GPU elsewhere — use native Windows/macOS Chrome
+or pass through the GPU to WSL if you need full tier there.
+
+Optional override: `createPTEngine_WebGPU({ device, traceTier: 'full' })` fails fast
+if the adapter cannot bind the full shader (so you know limits are wrong, not that
+features are missing).
+
+When the device cannot satisfy the full layout, the factory automatically selects
+**lite** (`capabilities.experimentalFeatures` includes `pt-webgpu-lite-tier`):
+
+| Tier | Limits | Features |
+|------|--------|----------|
+| **full** | ≥23 buffers, ≥5 textures | TLAS, analytics, HDRI, all emitter arrays, motion vectors, variance moments, caustics |
+| **lite** | ≥8 buffers, ≥4 textures | Merged-mesh BVH, directional + procedural sky, core G-buffer aux |
+
+Host device acquisition should use `ptWebgpuRequiredLimitsForAdapter(adapter)` (not the
+full-only `PT_WEBGPU_REQUIRED_LIMITS`) so `requestDevice` succeeds on lite-capable
+adapters. WG-0 baseline capture (`npm run benchmark:seed-wg0`) runs on lite tier in CI.
+
+Shader entry points: `PT_WEBGPU_TRACE_WGSL` (full), `PT_WEBGPU_TRACE_LITE_WGSL` (lite).
+
 ## Known limitations
 
+- **Lite tier** disables TLAS, analytic shapes, HDRI texel buffers, point/spot/area lights,
+  motion vectors, and caustic strategies regardless of scene content.
 - Hero-wavelength spectral parity with the WebGL fork is **not** claimed: thin-film evaluation uses **RGB wavelength probes** (see `plan/renderer-fidelity-matrix.md`).
 - Experimental BRDF/MIS path — transmission hemisphere MIS uses a **simplified** PDF branch in `brdfDirectionalPdf`.
 - Incremental patch support remains partial by design: `transform/material/emitter` fast paths are implemented; `positions/topology` still fall back to rebuild

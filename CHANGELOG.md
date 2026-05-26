@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **pt-webgpu lite trace tier (2026-05-26):** second shader layout (`PT_WEBGPU_TRACE_LITE_WGSL`) for adapters capped at 10 storage buffers / 4 storage textures (SwiftShader-class). `selectPtWebgpuTraceTier`, `ptWebgpuRequiredLimitsForAdapter`, and automatic factory fallback with `pt-webgpu-lite-tier` capability flag. Enables WG-0 baseline capture on software WebGPU.
+- **WG-0 baseline (2026-05-26):** `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png` seeded via `npm run benchmark:seed-wg0` on lite tier.
+
 - **Wave-4 reliability gate runners (2026-05-26):**
   - `@vitrum/benchmark-runner` gained `run-lifecycle-soak.mjs` for repeated lifecycle churn checks (navigation/quality/size permutations with telemetry-progress assertions and optional dev-server auto-start).
   - Added `run-wave4-hardening.mjs` orchestration gate (`hardening:wave4`) combining mechanical checks, strict lifecycle soak, and optional quality-mode smoke pass into a single report artifact under `tools/benchmark-runner/results/wave4/`.

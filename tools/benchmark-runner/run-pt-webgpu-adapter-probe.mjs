@@ -49,8 +49,16 @@ const report = await page.evaluate(async () => {
     ok: true,
     maxStorageBuffersPerShaderStage: limits.maxStorageBuffersPerShaderStage,
     maxStorageTexturesPerShaderStage: limits.maxStorageTexturesPerShaderStage,
-    ptWebgpuRequiredBuffers: 23,
-    ptWebgpuCanRun: limits.maxStorageBuffersPerShaderStage >= 23,
+    ptWebgpuFullRequiredBuffers: 23,
+    ptWebgpuLiteRequiredBuffers: 8,
+    ptWebgpuFullTier: limits.maxStorageBuffersPerShaderStage >= 23,
+    ptWebgpuLiteTier:
+      limits.maxStorageBuffersPerShaderStage >= 8 &&
+      limits.maxStorageTexturesPerShaderStage >= 4,
+    ptWebgpuCanRun:
+      limits.maxStorageBuffersPerShaderStage >= 23 ||
+      (limits.maxStorageBuffersPerShaderStage >= 8 &&
+        limits.maxStorageTexturesPerShaderStage >= 4),
     hybridTextureRequest: 8,
     hybridDeviceLikely:
       limits.maxStorageTexturesPerShaderStage >= 4,

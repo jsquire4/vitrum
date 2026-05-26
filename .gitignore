@@ -29,4 +29,5 @@ tools/benchmark-runner/results/quality-modes-*.json
 tools/benchmark-runner/results/gap-closure-verification-20*.json
 tools/benchmark-runner/results/lifecycle-soak-*.json
 tools/benchmark-runner/results/pr-hybrid/
+tools/benchmark-runner/results/captures/
 tools/benchmark-runner/results/hybrid-lifecycle-soak-*.json

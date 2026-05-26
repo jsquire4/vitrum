@@ -42,8 +42,14 @@ Host harness wiring:
 # Terminal A
 npm run dev --workspace @vitrum-examples/two-engines-one-scene
 
-# Terminal B — material / emitter churn (needs WebGPU + Playwright)
+# Terminal B — material / emitter churn (needs hardware WebGPU: ≥16 storage buffers, ≥8 storage textures)
 npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
+
+# CPU-only CI — skips GPU scenarios when adapter is SwiftShader-class (10/4 limits)
+VITRUM_PR_START_SERVER=1 npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
+
+# GPU runner — fail instead of skip when limits are insufficient
+VITRUM_PR_REQUIRE_GPU=1 VITRUM_PR_START_SERVER=1 npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
 
 # Single scenario
 VITRUM_PR_SCENARIO=PR-hybrid-material-churn npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner

@@ -31,6 +31,8 @@ import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPa
 import { defaultDirectionalIrradiance, defaultDirectionalLight, packEmitterArrays } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
+import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
+import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
@@ -41,14 +43,29 @@ export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export {
   PT_WEBGPU_REQUIRED_LIMITS,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   mergeAdapterRequiredLimits,
+  ptWebgpuRequiredLimitsForAdapter,
 } from './webgpuLimits.js';
+export {
+  resolvePtWebgpuTraceTier,
+  selectPtWebgpuTraceTier,
+  type PtWebgpuTraceTier,
+} from './traceTier.js';
+export { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 export { summarizeScene };
 export type { SceneSummary };
 export { buildSceneTlas, type TlasInstance, type TlasData } from './scene/tlasBridge.js';
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
   readonly device: GPUDevice;
+  /**
+   * Override adapter-based tier selection. Omit to auto-pick: `full` when the device
+   * supports ≥23 storage buffers and ≥5 storage textures (TLAS, HDRI, area lights,
+   * caustics, etc.); `lite` only on constrained software adapters.
+   */
+  readonly traceTier?: PtWebgpuTraceTier;
 }
 
 const EXPERIMENTAL_MAX_BOUNCES = 8;
@@ -60,13 +77,6 @@ const IDENTITY_MAT4 = asMat4(new Float32Array([
   0, 0, 1, 0,
   0, 0, 0, 1,
 ]));
-// Bind group 0 currently consumes 23 storage-buffer bindings in the trace pass
-// (positions/normals/indices/materials/BVH + variance moments + analytic +
-// environment + light arrays + TLAS buffers). Keep this guard in lockstep so
-// devices that cannot bind the full layout fail fast at construction time.
-import { PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
-
-const REQUIRED_STORAGE_BUFFERS_PER_STAGE = PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
 
 interface StateSlot {
   readonly get: () => EngineState;
@@ -91,6 +101,7 @@ class PTEngineWebGPU implements Engine {
   readonly #causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
+  readonly #traceTier: PtWebgpuTraceTier;
 
   #scene: Scene | null = null;
   #sceneBuffers: UploadedSceneBuffers | null = null;
@@ -126,9 +137,10 @@ class PTEngineWebGPU implements Engine {
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
   );
 
-  constructor(opts: PTEngineWebGPUOptions, slot: StateSlot) {
+  constructor(opts: PTEngineWebGPUOptions, slot: StateSlot, traceTier: PtWebgpuTraceTier) {
     this.#slot = slot;
     this.#device = opts.device;
+    this.#traceTier = traceTier;
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
@@ -177,8 +189,11 @@ class PTEngineWebGPU implements Engine {
         'none', 'hdri', 'procedural-sky',
       ]),
       presentationMode: 'offscreen-texture',
-      experimentalFeatures: new Set(['experimental-backend']),
-      causticStrategy: this.#causticStrategy,
+      experimentalFeatures: new Set([
+        'experimental-backend',
+        ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
+      ]),
+      causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
       debugSurface: true,
     };
@@ -514,23 +529,27 @@ class PTEngineWebGPU implements Engine {
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
     });
     this.#varianceView = this.#varianceTexture.createView();
-    this.#motionVectorsTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.motionVectors',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.#motionVectorsView = this.#motionVectorsTexture.createView();
+    if (this.#traceTier === 'full') {
+      this.#motionVectorsTexture = this.#device.createTexture({
+        label: 'vitrum.pt-webgpu.motionVectors',
+        size: { width, height, depthOrArrayLayers: 1 },
+        format: 'rgba16float',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+      });
+      this.#motionVectorsView = this.#motionVectorsTexture.createView();
+    }
     this.#accumBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.accum.buffer',
       size: Math.max(16, targetByteSize),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.#varianceMomentsBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.varianceMoments.buffer',
-      size: Math.max(16, targetByteSize),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
+    if (this.#traceTier === 'full') {
+      this.#varianceMomentsBuffer = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.varianceMoments.buffer',
+        size: Math.max(16, targetByteSize),
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+    }
     this.#accumBufferByteSize = targetByteSize;
     this.#accumWidth = width;
     this.#accumHeight = height;
@@ -548,9 +567,11 @@ class PTEngineWebGPU implements Engine {
       size: 512,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    const traceWgsl =
+      this.#traceTier === 'lite' ? PT_WEBGPU_TRACE_LITE_WGSL : PT_WEBGPU_TRACE_WGSL;
     const module = this.#device.createShaderModule({
-      label: 'vitrum.pt-webgpu.pathTrace',
-      code: PT_WEBGPU_TRACE_WGSL,
+      label: `vitrum.pt-webgpu.pathTrace.${this.#traceTier}`,
+      code: traceWgsl,
     });
     this.#computePipeline = this.#device.createComputePipeline({
       label: 'vitrum.pt-webgpu.pathTrace.pipeline',
@@ -917,9 +938,9 @@ class PTEngineWebGPU implements Engine {
       this.#normalDepthView == null ||
       this.#albedoView == null ||
       this.#varianceView == null ||
-      this.#motionVectorsView == null ||
+      (this.#traceTier === 'full' && this.#motionVectorsView == null) ||
       this.#accumBuffer == null ||
-      this.#varianceMomentsBuffer == null ||
+      (this.#traceTier === 'full' && this.#varianceMomentsBuffer == null) ||
       this.#paramsBuffer == null ||
       this.#computePipeline == null ||
       this.#bindGroupLayout == null ||
@@ -969,40 +990,44 @@ class PTEngineWebGPU implements Engine {
 
     let bindGroup = this.#pathTraceBindGroup;
     if (bindGroup == null) {
+      const liteEntries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: this.#accumView },
+        { binding: 1, resource: { buffer: this.#paramsBuffer } },
+        { binding: 2, resource: { buffer: this.#accumBuffer } },
+        { binding: 3, resource: { buffer: this.#sceneBuffers.positionsBuffer } },
+        { binding: 4, resource: { buffer: this.#sceneBuffers.indicesBuffer } },
+        { binding: 5, resource: { buffer: this.#sceneBuffers.triMaterialIdsBuffer } },
+        { binding: 6, resource: { buffer: this.#sceneBuffers.materialsBuffer } },
+        { binding: 7, resource: { buffer: this.#sceneBuffers.bvhNodesBuffer } },
+        { binding: 8, resource: { buffer: this.#sceneBuffers.normalsBuffer } },
+        { binding: 9, resource: this.#normalDepthView },
+        { binding: 10, resource: this.#albedoView },
+        { binding: 11, resource: this.#varianceView },
+      ];
+      const fullEntries: GPUBindGroupEntry[] = [
+        ...liteEntries,
+        { binding: 12, resource: this.#motionVectorsView! },
+        { binding: 13, resource: { buffer: this.#varianceMomentsBuffer! } },
+        { binding: 14, resource: { buffer: this.#sceneBuffers.analyticHeadersBuffer } },
+        { binding: 15, resource: { buffer: this.#sceneBuffers.analyticParamsBuffer } },
+        { binding: 16, resource: { buffer: this.#sceneBuffers.analyticLocalToWorldBuffer } },
+        { binding: 17, resource: { buffer: this.#sceneBuffers.analyticWorldToLocalBuffer } },
+        { binding: 18, resource: { buffer: this.#sceneBuffers.environmentMapTexelsBuffer } },
+        { binding: 19, resource: { buffer: this.#sceneBuffers.environmentMapCdfBuffer } },
+        { binding: 20, resource: { buffer: this.#sceneBuffers.pointLightsBuffer } },
+        { binding: 21, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
+        { binding: 22, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
+        { binding: 23, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
+        { binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } },
+        { binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } },
+        { binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
+        { binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } },
+        { binding: 28, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } },
+      ];
       bindGroup = this.#device.createBindGroup({
-        label: 'vitrum.pt-webgpu.pathTrace.bindgroup',
+        label: `vitrum.pt-webgpu.pathTrace.bindgroup.${this.#traceTier}`,
         layout: this.#bindGroupLayout,
-        entries: [
-          { binding: 0, resource: this.#accumView },
-          { binding: 1, resource: { buffer: this.#paramsBuffer } },
-          { binding: 2, resource: { buffer: this.#accumBuffer } },
-          { binding: 3, resource: { buffer: this.#sceneBuffers.positionsBuffer } },
-          { binding: 4, resource: { buffer: this.#sceneBuffers.indicesBuffer } },
-          { binding: 5, resource: { buffer: this.#sceneBuffers.triMaterialIdsBuffer } },
-          { binding: 6, resource: { buffer: this.#sceneBuffers.materialsBuffer } },
-          { binding: 7, resource: { buffer: this.#sceneBuffers.bvhNodesBuffer } },
-          { binding: 8, resource: { buffer: this.#sceneBuffers.normalsBuffer } },
-          { binding: 9, resource: this.#normalDepthView },
-          { binding: 10, resource: this.#albedoView },
-          { binding: 11, resource: this.#varianceView },
-          { binding: 12, resource: this.#motionVectorsView },
-          { binding: 13, resource: { buffer: this.#varianceMomentsBuffer } },
-          { binding: 14, resource: { buffer: this.#sceneBuffers.analyticHeadersBuffer } },
-          { binding: 15, resource: { buffer: this.#sceneBuffers.analyticParamsBuffer } },
-          { binding: 16, resource: { buffer: this.#sceneBuffers.analyticLocalToWorldBuffer } },
-          { binding: 17, resource: { buffer: this.#sceneBuffers.analyticWorldToLocalBuffer } },
-          { binding: 18, resource: { buffer: this.#sceneBuffers.environmentMapTexelsBuffer } },
-          { binding: 19, resource: { buffer: this.#sceneBuffers.environmentMapCdfBuffer } },
-          { binding: 20, resource: { buffer: this.#sceneBuffers.pointLightsBuffer } },
-          { binding: 21, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
-          { binding: 22, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
-          { binding: 23, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
-          { binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } },
-          { binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } },
-          { binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
-          { binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } },
-          { binding: 28, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } },
-        ],
+        entries: this.#traceTier === 'lite' ? liteEntries : fullEntries,
       });
       this.#pathTraceBindGroup = bindGroup;
     }
@@ -1139,18 +1164,20 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
       `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but experimental backend has no denoiser integration yet.`,
     );
   }
-  const maxStorageBuffers = opts.device.limits?.maxStorageBuffersPerShaderStage;
-  if (
-    typeof maxStorageBuffers === 'number' &&
-    Number.isFinite(maxStorageBuffers) &&
-    maxStorageBuffers < REQUIRED_STORAGE_BUFFERS_PER_STAGE
-  ) {
-    throw new Error(
-      `createPTEngine_WebGPU: adapter limit maxStorageBuffersPerShaderStage=${maxStorageBuffers} is below required ${REQUIRED_STORAGE_BUFFERS_PER_STAGE}`,
+  const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
+  if (traceTier === 'full') {
+    console.info(
+      '[vitrum/pt-webgpu] Full trace tier: TLAS, analytic shapes, HDRI, area lights, motion/variance aux, caustics.',
+    );
+  } else {
+    console.warn(
+      '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional + procedural sky only. ' +
+        'Analytic shapes, TLAS, HDRI, area lights, and caustics are disabled. ' +
+        'On a discrete GPU host, request a device with ≥23 storage buffers and ≥5 storage textures, or pass traceTier: "full" after verifying limits.',
     );
   }
   const slot = makeStateSlot();
-  const engine = new PTEngineWebGPU(opts, slot);
+  const engine = new PTEngineWebGPU(opts, slot, traceTier);
   slot.set('ready');
   return engine;
 };

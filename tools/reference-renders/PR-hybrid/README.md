@@ -10,6 +10,12 @@ Primary-release hybrid benchmarks (`plan/primary-release-and-webgpu-pt-parity-20
 | `material-edit/` | Material churn still frame | `PR-hybrid-material-churn` bench |
 | `200k-static/` | ~200k tri bench frame | `PR-hybrid-200k-static` bench |
 
+## Adapter requirements
+
+`walkaround-hybrid` needs **≥16** storage buffers and **≥8** storage textures per shader stage.
+SwiftShader (10 / 4) cannot run hybrid; `npm run benchmark:pr-hybrid` **skips** GPU scenarios on
+such hosts unless `VITRUM_PR_REQUIRE_GPU=1` (then the run fails). Use `npm run benchmark:pr-mechanical` on CPU-only CI.
+
 ## Capture workflow (GPU host)
 
 ```bash

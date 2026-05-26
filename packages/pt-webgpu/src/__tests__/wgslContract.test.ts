@@ -118,8 +118,10 @@ describe('pt-webgpu WGSL material contract', () => {
     // Host-side contract: bind-group creation must provide matching bindings,
     // and the storage-buffer limit guard must account for them.
     const here = dirname(fileURLToPath(import.meta.url));
+    const limitsSource = readFileSync(resolve(here, '../webgpuLimits.ts'), 'utf8');
     const indexSource = readFileSync(resolve(here, '../index.ts'), 'utf8');
-    expect(indexSource).toMatch(/REQUIRED_STORAGE_BUFFERS_PER_STAGE\s*=\s*23/);
+    expect(limitsSource).toMatch(/PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE\s*=\s*23/);
+    expect(indexSource).toContain('selectPtWebgpuTraceTier');
     expect(indexSource).toContain('{ binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } }');
     expect(indexSource).toContain('{ binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } }');
     expect(indexSource).toContain('{ binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } }');

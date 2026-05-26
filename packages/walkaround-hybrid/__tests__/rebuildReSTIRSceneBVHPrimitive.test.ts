@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { packSceneFromCore, rebuildPrimitiveBlas } from '@vitrum/shared-bvh';
 import * as THREE from 'three';
+import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
 import {
   buildReSTIRSceneBVHFromVitrumScene,
   rebuildReSTIRSceneBVHPrimitive,
@@ -73,8 +74,9 @@ describe('rebuildReSTIRSceneBVHPrimitive', () => {
     if ('ok' in rebuilt && rebuilt.ok === false) {
       throw new Error(rebuilt.reason);
     }
-    expect(rebuilt.bvhPositions.byteLength).toBe(buffers.bvhPositions.byteLength);
-    expect(rebuilt.scenePack?.triangleCount).toBe(buffers.scenePack?.triangleCount);
+    const nextBuffers = rebuilt as SceneBVHBuffers;
+    expect(nextBuffers.bvhPositions.byteLength).toBe(buffers.bvhPositions.byteLength);
+    expect(nextBuffers.scenePack?.triangleCount).toBe(buffers.scenePack?.triangleCount);
 
     const blas = rebuildPrimitiveBlas(moved, 'box-b', buffers.scenePack!, {
       tlas: true,

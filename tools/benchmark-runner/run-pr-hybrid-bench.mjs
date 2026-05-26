@@ -39,6 +39,12 @@ const serverPollMs = Number(process.env.VITRUM_PR_SERVER_POLL_MS ?? 500);
 const headless = process.env.VITRUM_BENCH_HEADLESS !== '0';
 const navTimeoutMs = Number(process.env.VITRUM_PR_NAV_TIMEOUT_MS ?? 90_000);
 const benchTimeoutMs = Number(process.env.VITRUM_PR_BENCH_TIMEOUT_MS ?? 120_000);
+/** @see {@link HYBRID_WEBGPU_REQUIRED_LIMITS} in @vitrum/walkaround-hybrid */
+const HYBRID_MIN_STORAGE_BUFFERS = 16;
+const HYBRID_MIN_STORAGE_TEXTURES = 8;
+const requireGpu = process.env.VITRUM_PR_REQUIRE_GPU === '1';
+const skipIfInsufficient =
+  process.env.VITRUM_PR_SKIP_IF_ADAPTER_INSUFFICIENT !== '0';
 
 const SCENARIO_QUERY = {
   'PR-hybrid-material-churn': {
@@ -171,6 +177,54 @@ async function runScenario(browser, scenarioId) {
   return payload;
 }
 
+/**
+ * @param {import('playwright').Browser} browser
+ * @param {string} pageUrl
+ */
+async function probeHybridAdapterLimits(browser, pageUrl) {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  try {
+    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
+    return await page.evaluate(async () => {
+      if (!navigator.gpu) return null;
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) return null;
+      return {
+        maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
+        maxStorageTexturesPerShaderStage: adapter.limits.maxStorageTexturesPerShaderStage,
+      };
+    });
+  } finally {
+    await context.close();
+  }
+}
+
+function hybridAdapterCanRun(limits) {
+  if (limits == null) return false;
+  return (
+    limits.maxStorageBuffersPerShaderStage >= HYBRID_MIN_STORAGE_BUFFERS &&
+    limits.maxStorageTexturesPerShaderStage >= HYBRID_MIN_STORAGE_TEXTURES
+  );
+}
+
+function skippedRow(scenarioId, url, skipReason, limits) {
+  const startedAt = new Date().toISOString();
+  const payload = {
+    scenarioId,
+    startedAt,
+    finishedAt: startedAt,
+    url,
+    pass: !requireGpu,
+    skipped: true,
+    skipReason,
+    adapterLimits: limits,
+    bench: null,
+  };
+  payload.hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+  return payload;
+}
+
 async function main() {
   const only = process.env.VITRUM_PR_SCENARIO?.trim();
   const scenarios = only
@@ -205,10 +259,43 @@ async function main() {
   });
   const rows = [];
   try {
-    for (const scenarioId of scenarios) {
-      console.log(`[pr-hybrid] ${scenarioId}`);
-      // eslint-disable-next-line no-await-in-loop
-      rows.push(await runScenario(browser, scenarioId));
+    const adapterLimits = await probeHybridAdapterLimits(browser, captureUrlBase);
+    const canRunHybrid = hybridAdapterCanRun(adapterLimits);
+    if (!canRunHybrid) {
+      const msg =
+        `[pr-hybrid] adapter insufficient for walkaround-hybrid ` +
+        `(need ≥${HYBRID_MIN_STORAGE_BUFFERS} storage buffers and ≥${HYBRID_MIN_STORAGE_TEXTURES} storage textures; ` +
+        `got ${adapterLimits?.maxStorageBuffersPerShaderStage ?? 'n/a'} / ` +
+        `${adapterLimits?.maxStorageTexturesPerShaderStage ?? 'n/a'}).`;
+      if (skipIfInsufficient && !requireGpu) {
+        console.warn(`${msg} Skipping GPU scenarios (set VITRUM_PR_REQUIRE_GPU=1 on a hardware GPU host).`);
+        for (const scenarioId of scenarios) {
+          rows.push(
+            skippedRow(
+              scenarioId,
+              buildUrl(scenarioId),
+              'adapter-insufficient',
+              adapterLimits,
+            ),
+          );
+        }
+      } else {
+        console.error(msg);
+        for (const scenarioId of scenarios) {
+          rows.push({
+            ...skippedRow(scenarioId, buildUrl(scenarioId), 'adapter-insufficient', adapterLimits),
+            pass: false,
+            skipped: false,
+            error: msg,
+          });
+        }
+      }
+    } else {
+      for (const scenarioId of scenarios) {
+        console.log(`[pr-hybrid] ${scenarioId}`);
+        // eslint-disable-next-line no-await-in-loop
+        rows.push(await runScenario(browser, scenarioId));
+      }
     }
   } finally {
     await browser.close();

@@ -591,8 +591,8 @@ Use this as the sprint backlog source of truth. Every item must land or be expli
 
 ### Program WG (38 items)
 
-- [ ] WG-0.1 benchmark runner pt-webgpu capture
-- [ ] WG-0.2 baseline PNGs (7 scenarios)
+- [x] WG-0.1 benchmark runner pt-webgpu capture (`capturePtWebgpu.mjs`, lite tier on SwiftShader)
+- [ ] WG-0.2 baseline PNGs (7 scenarios) — `ptwgpu-parity-material-fields.png` seeded; 6 remaining
 - [ ] WG-0.3 fidelity matrix columns
 - [ ] WG-0.4 CI docs
 - [ ] WG-1.1 denoise module

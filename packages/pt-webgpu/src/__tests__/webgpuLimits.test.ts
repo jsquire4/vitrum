@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_REQUIRED_LIMITS,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   mergeAdapterRequiredLimits,
+  ptWebgpuRequiredLimitsForAdapter,
 } from '../webgpuLimits.js';
 
 describe('webgpuLimits', () => {
@@ -26,5 +28,18 @@ describe('webgpuLimits', () => {
     });
     expect(merged.maxStorageBuffersPerShaderStage).toBe(10);
     expect(merged.maxStorageTexturesPerShaderStage).toBe(4);
+  });
+
+  it('ptWebgpuRequiredLimitsForAdapter picks lite caps on SwiftShader-class adapters', () => {
+    const adapter = {
+      limits: {
+        maxStorageBuffersPerShaderStage: 10,
+        maxStorageTexturesPerShaderStage: 4,
+      },
+    } as GPUAdapter;
+    expect(ptWebgpuRequiredLimitsForAdapter(adapter)).toEqual({
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageTexturesPerShaderStage: 4,
+    });
   });
 });

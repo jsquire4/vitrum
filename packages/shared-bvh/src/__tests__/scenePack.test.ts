@@ -267,7 +267,11 @@ describe('packSceneFromCore (SP-*)', () => {
     };
     const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
     const movedB = boxMesh('box-b', [0.05, 0, 0], [0.45, 0.45, 0.45]);
-    const nextScene = { primitives: [scene.primitives[0]!, movedB], emitters: [], environment: { kind: 'none' } };
+    const nextScene: Scene = {
+      primitives: [scene.primitives[0]!, movedB],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
     const opts = { tlas: true, resolveMaterialId: () => 0 };
 
     const t0 = performance.now();

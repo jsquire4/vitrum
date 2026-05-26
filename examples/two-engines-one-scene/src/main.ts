@@ -25,7 +25,7 @@ import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 import {
   createPTEngine_WebGPU,
   mergeAdapterRequiredLimits,
-  PT_WEBGPU_REQUIRED_LIMITS,
+  ptWebgpuRequiredLimitsForAdapter,
 } from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
@@ -323,7 +323,7 @@ async function main(): Promise<void> {
       : [];
     const deviceRequiredLimits = RUN.walkaround
       ? HYBRID_WEBGPU_REQUIRED_LIMITS
-      : PT_WEBGPU_REQUIRED_LIMITS;
+      : ptWebgpuRequiredLimitsForAdapter(adapter);
     let device: GPUDevice;
     try {
       device = await adapter.requestDevice({

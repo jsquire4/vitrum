@@ -78,15 +78,31 @@ describe('createPTEngine_WebGPU', () => {
     engine.dispose();
   });
 
-  it('rejects devices below required storage-buffer limit', async () => {
+  it('accepts lite-tier adapters (SwiftShader-class limits)', async () => {
+    const liteDevice = {
+      createCommandEncoder: vi.fn(),
+      limits: {
+        maxStorageBuffersPerShaderStage: 10,
+        maxStorageTexturesPerShaderStage: 4,
+      },
+    } as unknown as GPUDevice;
+    const engine = await createPTEngine_WebGPU({ device: liteDevice });
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-lite-tier')).toBe(true);
+    engine.dispose();
+  });
+
+  it('rejects devices below lite storage-buffer limit', async () => {
     const lowLimitDevice = {
       createCommandEncoder: vi.fn(),
-      limits: { maxStorageBuffersPerShaderStage: 10 },
+      limits: {
+        maxStorageBuffersPerShaderStage: 4,
+        maxStorageTexturesPerShaderStage: 4,
+      },
     } as unknown as GPUDevice;
     await expect(
       createPTEngine_WebGPU({
         device: lowLimitDevice,
       }),
-    ).rejects.toThrow(/maxStorageBuffersPerShaderStage/);
+    ).rejects.toThrow(/below the lite tier/i);
   });
 });
