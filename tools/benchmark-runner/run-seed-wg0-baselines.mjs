@@ -49,6 +49,37 @@ async function main() {
     );
     captureUrl = ready.url;
     console.log(`[seed-wg0] server ready in ${ready.readyMs}ms at ${captureUrl}`);
+    const probe = await runCommandWithTimeout(
+      'node ./run-pt-webgpu-adapter-probe.mjs',
+      {
+        cwd: here,
+        env: {
+          VITRUM_PROBE_URL: captureUrl.endsWith('/')
+            ? `${captureUrl}pt-webgpu.html`
+            : `${captureUrl}/pt-webgpu.html`,
+        },
+        timeoutMs: 60_000,
+      },
+    );
+    const probeLine = probe.stdout.split('\n').find((l) => l.trim().startsWith('{'));
+    if (probeLine != null) {
+      try {
+        const parsed = JSON.parse(probeLine);
+        if (parsed.ptWebgpuCanRun === false) {
+          console.error(
+            '[seed-wg0] adapter cannot run pt-webgpu (need maxStorageBuffersPerShaderStage >= 23). ' +
+              `Host reports ${parsed.maxStorageBuffersPerShaderStage}. ` +
+              'Use a hardware WebGPU machine or set VITRUM_SEED_SKIP_PROBE=1 to attempt anyway.',
+          );
+          if (process.env.VITRUM_SEED_SKIP_PROBE !== '1') {
+            stopDevServer(devServer);
+            process.exit(2);
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   const run = await runCommandWithTimeout(
