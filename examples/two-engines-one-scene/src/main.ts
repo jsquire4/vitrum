@@ -102,6 +102,7 @@ async function main(): Promise<void> {
     samplesTarget: parseInt(params.get('samplesTarget')
       ?? (walkaroundFallback ? '256' : '32'), 10) || 32,
     scene: (params.get('scene') ?? 'cornell') as 'cornell' | 'complex',
+    vitrumSeed: parseInt(params.get('vitrumSeed') ?? '0', 10) || 0,
     bvhMode: (params.get('bvhMode') ?? '') as '' | 'merged' | 'tlas',
     prBench: (params.get('prBench') ?? null) as PrBenchMode | null,
     prBenchIters: parseInt(params.get('prBenchIters') ?? '100', 10) || 100,
@@ -242,7 +243,7 @@ async function main(): Promise<void> {
         devicePixelRatio: window.devicePixelRatio,
       },
       frameIndex: ptFrame,
-      frameSeed: (ptFrame * 9973 + 12345) >>> 0,
+      frameSeed: (FLAGS.vitrumSeed + ptFrame * 9973 + 12345) >>> 0,
       quality: {
         samplesTarget,
         bounces: 8,
@@ -430,7 +431,7 @@ async function main(): Promise<void> {
             devicePixelRatio: window.devicePixelRatio,
           },
           frameIndex: wFrame,
-          frameSeed: (wFrame * 1664525 + 1013904223) >>> 0,
+          frameSeed: (FLAGS.vitrumSeed + wFrame * 1664525 + 1013904223) >>> 0,
           swapChainView: asBackendTexture<'webgpu', GPUTextureView>(view),
           swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>(format),
           quality: { bounces: 4 },
@@ -507,7 +508,7 @@ async function main(): Promise<void> {
             devicePixelRatio: window.devicePixelRatio,
           },
           frameIndex: ptGpuFrame,
-          frameSeed: (ptGpuFrame * 6364136223846793005 + 1442695040888963407) >>> 0,
+          frameSeed: (FLAGS.vitrumSeed + ptGpuFrame * 6364136223846793005 + 1442695040888963407) >>> 0,
           quality: { samplesTarget: ptGpuSamplesTarget, bounces: FLAGS.ptWebgpuBounces, resolutionFactor: 1 },
         };
         const out = ptGpuEngine.renderFrame(input);
