@@ -129,6 +129,13 @@ async function main() {
 
   if (includePrHybrid) {
     steps.push({
+      id: 'pr_hybrid_mechanical',
+      description: 'PR-6 benchmark scene presets (CPU-only)',
+      required: true,
+      command: 'npm run benchmark:pr-mechanical --workspace @vitrum/benchmark-runner',
+      timeoutMs: parseTimeoutMs('VITRUM_WAVE4_PR_MECHANICAL_TIMEOUT_MS', 3 * 60_000),
+    });
+    steps.push({
       id: 'pr_hybrid_material_churn',
       description: 'PR-6 hybrid material-churn bench (requires two-engines dev server)',
       required: false,
