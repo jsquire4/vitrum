@@ -253,6 +253,7 @@ describe('packSceneFromCore (SP-*)', () => {
     const bindingA = rebuilt.pack.primitiveTlasBindings.find((b) => b.primitiveId === 'box-a');
     expect(bindingA?.vertexStart).toBe(0);
     expect(rebuilt.pack.positions[0]).toBe(packed.positions[0]);
+    if (rebuilt.ok) expect(rebuilt.strategy).toBe('splice');
   });
 
   it('rebuildPrimitiveBlas full-repacks when triangle count changes', () => {
@@ -273,6 +274,7 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(rebuilt.ok).toBe(true);
     if (!rebuilt.ok) return;
     expect(rebuilt.pack.triangleCount).toBeGreaterThan(packed.triangleCount);
+    if (rebuilt.ok) expect(rebuilt.strategy).toBe('full');
   });
 
   it('rebuildPrimitiveBlas fails when primitive was not in previous pack', () => {

@@ -136,6 +136,14 @@ async function main() {
       timeoutMs: parseTimeoutMs('VITRUM_WAVE4_PR_MECHANICAL_TIMEOUT_MS', 3 * 60_000),
     });
     steps.push({
+      id: 'hybrid_lifecycle_soak',
+      description: 'PR-6 hybrid lifecycle soak (material patch every N frames)',
+      required: false,
+      command:
+        'VITRUM_HYBRID_SOAK_START_SERVER=1 VITRUM_HYBRID_SOAK_ITERATIONS=2 npm run benchmark:hybrid-lifecycle-soak --workspace @vitrum/benchmark-runner',
+      timeoutMs: parseTimeoutMs('VITRUM_WAVE4_HYBRID_SOAK_TIMEOUT_MS', 20 * 60_000),
+    });
+    steps.push({
       id: 'pr_hybrid_material_churn',
       description: 'PR-6 hybrid material-churn bench (requires two-engines dev server)',
       required: false,

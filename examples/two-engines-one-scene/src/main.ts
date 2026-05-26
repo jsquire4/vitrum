@@ -34,6 +34,10 @@ import {
   type HybridEngine,
 } from '@vitrum/walkaround-hybrid';
 import {
+  installHybridSoakApi,
+  maybeAutoRunHybridSoak,
+} from './hybridSoakHarness.js';
+import {
   installPrBenchApi,
   maybeAutoRunPrBench,
   type PrBenchMode,
@@ -116,6 +120,10 @@ async function main(): Promise<void> {
     prBenchIters: parseInt(params.get('prBenchIters') ?? '100', 10) || 100,
     prBenchFrames: parseInt(params.get('prBenchFrames') ?? '120', 10) || 120,
     prBenchAuto: params.get('prBenchAuto') === '1',
+    hybridSoakAuto: params.get('hybridSoakAuto') === '1',
+    hybridSoakFrames: parseInt(params.get('hybridSoakFrames') ?? '120', 10) || 120,
+    hybridSoakMaterialEvery: parseInt(params.get('hybridSoakMaterialEvery') ?? '10', 10) || 10,
+    hybridSoakEmitterEvery: parseInt(params.get('hybridSoakEmitterEvery') ?? '0', 10) || 0,
   };
   const RUN = {
     ptWebgl: mode === 'all' || mode === 'ptwebgl',
@@ -405,6 +413,7 @@ async function main(): Promise<void> {
         prBenchAuto: FLAGS.prBenchAuto,
         ...(FLAGS.prBenchScenario ? { prBenchScenario: FLAGS.prBenchScenario } : {}),
       });
+      const hybridSoakApi = installHybridSoakApi(hybridEngine, vitrumScene);
       if (FLAGS.prBenchAuto && FLAGS.prBench != null) {
         void maybeAutoRunPrBench(hybridEngine, vitrumScene, {
           prBench: FLAGS.prBench,
@@ -413,6 +422,14 @@ async function main(): Promise<void> {
           prBenchAuto: true,
           ...(FLAGS.prBenchScenario ? { prBenchScenario: FLAGS.prBenchScenario } : {}),
         }, prBenchApi);
+      }
+      if (FLAGS.hybridSoakAuto) {
+        void maybeAutoRunHybridSoak(hybridEngine, vitrumScene, {
+          hybridSoakAuto: true,
+          hybridSoakFrames: FLAGS.hybridSoakFrames,
+          hybridSoakMaterialEvery: FLAGS.hybridSoakMaterialEvery,
+          hybridSoakEmitterEvery: FLAGS.hybridSoakEmitterEvery,
+        }, hybridSoakApi);
       }
     }
 

@@ -30,6 +30,7 @@
     "benchmark:pr-hybrid": "npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner",
     "benchmark:seed-wg0": "npm run benchmark:seed-wg0 --workspace @vitrum/benchmark-runner",
     "benchmark:pr-mechanical": "npm run benchmark:pr-mechanical --workspace @vitrum/benchmark-runner",
+    "benchmark:hybrid-lifecycle-soak": "npm run benchmark:hybrid-lifecycle-soak --workspace @vitrum/benchmark-runner",
     "verify:mechanical": "npm run typecheck && npm test && npm run fork-shader-smoke && npm run shader-compile-ci",
     "capture:refs": "./scripts/capture-all-refs.sh",
     "capture:refs:quick": "./scripts/capture-all-refs.sh --quick",

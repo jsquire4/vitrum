@@ -415,7 +415,7 @@ function splicePrimitiveBlasIntoPack(
     || slice.triCount !== binding.triCount
     || slice.bvhNodeCount !== oldNodeCount
   ) {
-    return { ok: true, pack: packSceneFromCore(scene, opts) };
+    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
   }
 
   const positions = new Float32Array(prev.positions);
@@ -468,12 +468,13 @@ function splicePrimitiveBlasIntoPack(
 
   const collected = collectTlasInstancesFromBindings(scene, primitiveTlasBindings);
   if (!collected.ok) {
-    return { ok: true, pack: packSceneFromCore(scene, opts) };
+    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
   }
   const tlasBuild = buildTlasFromInstances(collected.instances);
 
   return {
     ok: true,
+    strategy: 'splice',
     pack: {
       positions,
       normals,
@@ -830,7 +831,7 @@ export function computeWorldAabbForBindings(
 }
 
 export type RebuildPrimitiveBlasResult =
-  | { readonly ok: true; readonly pack: ScenePackResult }
+  | { readonly ok: true; readonly pack: ScenePackResult; readonly strategy: 'splice' | 'full' }
   | { readonly ok: false; readonly reason: string };
 
 /**
@@ -862,7 +863,7 @@ export function rebuildPrimitiveBlas(
 
   const slice = packOneMeshLikePrimitive(primitive, opts.resolveMaterialId(primitiveId));
   if (slice == null) {
-    return { ok: true, pack: packSceneFromCore(scene, opts) };
+    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
   }
 
   return splicePrimitiveBlasIntoPack(prev, bindingIndex, slice, scene, opts);

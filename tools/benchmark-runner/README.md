@@ -55,6 +55,14 @@ VITRUM_PR_START_SERVER=1 VITRUM_PR_SCENARIO=PR-hybrid-200k-static npm run benchm
 `PR-hybrid-200k-static` uses `?scene=bench200k&targetTriangles=200000` on
 `walkaround.html`. `PR-hybrid-tlas-10-inst` uses `?scene=tlas10inst&bvhMode=tlas`.
 
+Hybrid lifecycle soak (PR-6 extension — material patch every N frames):
+
+```bash
+VITRUM_HYBRID_SOAK_START_SERVER=1 npm run benchmark:hybrid-lifecycle-soak --workspace @vitrum/benchmark-runner
+```
+
+Query params on `walkaround.html`: `hybridSoakAuto=1`, `hybridSoakFrames`, `hybridSoakMaterialEvery`, `hybridSoakEmitterEvery`.
+
 WG-0 pt-webgpu PNG capture:
 
 ```bash
