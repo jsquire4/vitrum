@@ -30,9 +30,12 @@ import * as THREE from 'three';
 import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
 import {
   buildReSTIRSceneBVHFromVitrumScene,
+  rebuildReSTIRSceneBVHPrimitive,
   resolveReSTIRBvhMode,
   type ReSTIRBvhMode,
 } from './sceneBvhFromCore.js';
+
+export { rebuildReSTIRSceneBVHPrimitive };
 
 // Packing helpers (applyBeerLambert, packUVIntoPositionW, packBVHIndexW,
 // packBVHBeerColors) live in restir/packingHelpers.ts.
@@ -158,6 +161,8 @@ export interface SceneBVHBuffers {
   };
   /** Stable per-primitive TLAS bindings from `packSceneFromCore`. */
   primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+  /** Last CPU pack from `packSceneFromCore` / `rebuildPrimitiveBlas` (TLAS mode). */
+  scenePack?: import('@vitrum/shared-bvh').ScenePackResult;
   /** Non-fatal pack warnings (skipped primitives, bad transforms, …). */
   warnings?: readonly string[];
 }

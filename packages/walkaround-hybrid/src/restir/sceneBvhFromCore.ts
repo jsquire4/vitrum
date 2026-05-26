@@ -4,7 +4,12 @@
  */
 
 import type { Scene } from '@vitrum/core';
-import { buildSceneBVH as buildSharedBVH, packSceneFromCore } from '@vitrum/shared-bvh';
+import {
+  buildSceneBVH as buildSharedBVH,
+  packSceneFromCore,
+  rebuildPrimitiveBlas,
+  type ScenePackResult,
+} from '@vitrum/shared-bvh';
 import * as THREE from 'three';
 import {
   packUVIntoPositionW,
@@ -72,18 +77,17 @@ function makeStorageHandle(
   };
 }
 
-/** Build ReSTIR buffers from a vitrum scene (local BLAS concat + TLAS). */
-export function buildReSTIRSceneBVHFromVitrumScene(
+function buffersFromScenePack(
   scene: Scene,
   sceneRoots: readonly THREE.Object3D[],
+  geo: ScenePackResult,
+  materials: THREE.Material[],
   options: {
     primaryLightDir?: THREE.Vector3;
     primaryLightIntensity?: number;
     proxyMeshNames?: Set<string>;
-  } = {},
+  },
 ): SceneBVHBuffers {
-  const { materials, resolveMaterialId } = buildMaterialResolver(sceneRoots);
-  const geo = packSceneFromCore(scene, { tlas: true, resolveMaterialId });
   const triCount = geo.triangleCount;
   const vertCount = geo.positions.length / 4;
 
@@ -158,6 +162,48 @@ export function buildReSTIRSceneBVHFromVitrumScene(
       nodeCount: geo.tlasNodeCount,
     },
     primitiveTlasBindings: geo.primitiveTlasBindings,
+    scenePack: geo,
     warnings: geo.warnings,
   };
+}
+
+/** Build ReSTIR buffers from a vitrum scene (local BLAS concat + TLAS). */
+export function buildReSTIRSceneBVHFromVitrumScene(
+  scene: Scene,
+  sceneRoots: readonly THREE.Object3D[],
+  options: {
+    primaryLightDir?: THREE.Vector3;
+    primaryLightIntensity?: number;
+    proxyMeshNames?: Set<string>;
+  } = {},
+): SceneBVHBuffers {
+  const { materials, resolveMaterialId } = buildMaterialResolver(sceneRoots);
+  const geo = packSceneFromCore(scene, { tlas: true, resolveMaterialId });
+  return buffersFromScenePack(scene, sceneRoots, geo, materials, options);
+}
+
+/** PR-4.3 — topology rebuild via `rebuildPrimitiveBlas` (full repack v1). */
+export function rebuildReSTIRSceneBVHPrimitive(
+  scene: Scene,
+  primitiveId: string,
+  sceneRoots: readonly THREE.Object3D[],
+  prev: SceneBVHBuffers,
+  options: {
+    primaryLightDir?: THREE.Vector3;
+    primaryLightIntensity?: number;
+    proxyMeshNames?: Set<string>;
+  } = {},
+): SceneBVHBuffers | { ok: false; reason: string } {
+  if (prev.scenePack == null) {
+    return { ok: false, reason: 'previous buffers have no scenePack snapshot' };
+  }
+  const { materials, resolveMaterialId } = buildMaterialResolver(sceneRoots);
+  const rebuilt = rebuildPrimitiveBlas(scene, primitiveId, prev.scenePack, {
+    tlas: true,
+    resolveMaterialId,
+  });
+  if (!rebuilt.ok) {
+    return { ok: false, reason: rebuilt.reason };
+  }
+  return buffersFromScenePack(scene, sceneRoots, rebuilt.pack, materials, options);
 }

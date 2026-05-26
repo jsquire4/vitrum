@@ -21,6 +21,7 @@ import {
   stopDevServer,
   waitForServerReady,
 } from './devServer.mjs';
+import { WEBGPU_CHROMIUM_LAUNCH } from './playwrightWebGpu.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -174,7 +175,10 @@ async function main() {
     console.log(`[pr-hybrid] using ${captureUrlBase}`);
   }
 
-  const browser = await chromium.launch({ headless });
+  const browser = await chromium.launch({
+    ...WEBGPU_CHROMIUM_LAUNCH,
+    headless,
+  });
   const rows = [];
   try {
     for (const scenarioId of scenarios) {

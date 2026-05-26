@@ -9,6 +9,9 @@ PNG baselines for `tools/benchmark-runner/run-gap-closure-verification.mjs`.
 npm run dev --workspace @vitrum-examples/two-engines-one-scene
 
 # Terminal B — seed pt-webgpu parity baseline (smoke resolution when VITRUM_CAPTURE_SMOKE=1)
+#
+# Requires a WebGPU adapter with maxStorageBuffersPerShaderStage ≥ 23 (SwiftShader
+# caps at 10 — use a hardware-GPU machine for WG-0 PNG commits).
 VITRUM_GPU_CAPTURE=1 \
 VITRUM_ALLOW_BASELINE_GEN=1 \
 VITRUM_GAP_SCENARIOS=ptwgpu-parity-material-fields \

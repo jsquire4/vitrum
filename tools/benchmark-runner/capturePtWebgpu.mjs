@@ -17,6 +17,7 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
+import { WEBGPU_CHROMIUM_LAUNCH } from './playwrightWebGpu.mjs';
 
 const outputPng = process.env.VITRUM_OUTPUT_PNG;
 if (!outputPng) {
@@ -53,17 +54,30 @@ try {
   process.exit(3);
 }
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch(WEBGPU_CHROMIUM_LAUNCH);
 try {
   const page = await browser.newPage({ viewport: { width, height } });
   const url = buildUrl();
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+  const bootError = await page.evaluate(() => {
+    const status = document.querySelector('#status')?.textContent ?? '';
+    if (/requestDevice|OperationError|init failed|maxStorageBuffers/i.test(status)) {
+      return status.slice(0, 500);
+    }
+    return null;
+  });
+  if (bootError != null) {
+    throw new Error(`pt-webgpu page failed to acquire device: ${bootError}`);
+  }
   await page.waitForFunction(
-    () => {
+    (targetSpp) => {
       const p = globalThis.__vitrum?.ptWebgpu;
-      return p != null && (p.isConverged === true || p.spp >= 8);
+      if (p == null) return false;
+      const converged = p.converged === true || p.isConverged === true;
+      const spp = typeof p.spp === 'number' ? p.spp : 0;
+      return converged || spp >= targetSpp;
     },
-    null,
+    samplesTarget,
     { timeout: timeoutMs, polling: 200 },
   );
 
@@ -78,7 +92,12 @@ try {
     const p = globalThis.__vitrum?.ptWebgpu;
     return p == null
       ? null
-      : { spp: p.spp, lastFrameMs: p.lastFrameMs, isConverged: p.isConverged };
+      : {
+          spp: p.spp,
+          target: p.target,
+          converged: p.converged ?? p.isConverged,
+          state: p.state,
+        };
   });
 
   const report = {

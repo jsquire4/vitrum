@@ -20,7 +20,11 @@ import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
 // pt-webgpu accumulates to an internal HDR texture, leaving the host to
 // implement display). The engine drive verifies WGSL params layout,
 // scene buffer uploads, and the path-trace dispatch on real hardware.
-import { createPTEngine_WebGPU } from '@vitrum/pt-webgpu';
+import {
+  createPTEngine_WebGPU,
+  mergeAdapterRequiredLimits,
+  PT_WEBGPU_REQUIRED_LIMITS,
+} from '@vitrum/pt-webgpu';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
@@ -293,10 +297,21 @@ async function main(): Promise<void> {
     const requiredFeatures: GPUFeatureName[] = tsAvailable
       ? ['timestamp-query' as GPUFeatureName]
       : [];
-    const device = await adapter.requestDevice({
-      requiredLimits: HYBRID_WEBGPU_REQUIRED_LIMITS,
-      ...(requiredFeatures.length > 0 ? { requiredFeatures } : {}),
-    });
+    const deviceRequiredLimits = RUN.walkaround
+      ? HYBRID_WEBGPU_REQUIRED_LIMITS
+      : PT_WEBGPU_REQUIRED_LIMITS;
+    let device: GPUDevice;
+    try {
+      device = await adapter.requestDevice({
+        requiredLimits: mergeAdapterRequiredLimits(adapter, deviceRequiredLimits),
+        ...(requiredFeatures.length > 0 ? { requiredFeatures } : {}),
+      });
+    } catch (deviceError) {
+      const msg = deviceError instanceof Error ? deviceError.message : String(deviceError);
+      lines[1] = `WebGPU device: ${msg}`;
+      refreshStatus();
+      return;
+    }
     const format = navigator.gpu.getPreferredCanvasFormat();
     const ctx = (RUN.walkaround && canvasWgpu) ? canvasWgpu.getContext('webgpu') : null;
     if (RUN.walkaround && canvasWgpu && !ctx) {

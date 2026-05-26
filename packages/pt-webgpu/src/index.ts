@@ -38,6 +38,11 @@ import {
 } from '@vitrum/shared-samplers';
 
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
+export {
+  PT_WEBGPU_REQUIRED_LIMITS,
+  PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  mergeAdapterRequiredLimits,
+} from './webgpuLimits.js';
 export { summarizeScene };
 export type { SceneSummary };
 export { buildSceneTlas, type TlasInstance, type TlasData } from './scene/tlasBridge.js';
@@ -59,7 +64,9 @@ const IDENTITY_MAT4 = asMat4(new Float32Array([
 // (positions/normals/indices/materials/BVH + variance moments + analytic +
 // environment + light arrays + TLAS buffers). Keep this guard in lockstep so
 // devices that cannot bind the full layout fail fast at construction time.
-const REQUIRED_STORAGE_BUFFERS_PER_STAGE = 23;
+import { PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from './webgpuLimits.js';
+
+const REQUIRED_STORAGE_BUFFERS_PER_STAGE = PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
 
 interface StateSlot {
   readonly get: () => EngineState;

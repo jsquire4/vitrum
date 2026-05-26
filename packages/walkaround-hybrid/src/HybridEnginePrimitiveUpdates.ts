@@ -42,6 +42,7 @@ import { applyVitrumMaterialToMesh } from '@vitrum/three-bindings';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
 import {
   buildReSTIRSceneBVHForScene,
+  rebuildReSTIRSceneBVHPrimitive,
   disposeSceneBVH,
   rebuildEmitterBuffersFromSceneRoots,
 } from './restir/bvhCompute.js';
@@ -671,13 +672,33 @@ export function topologyRebuild(
   // released after the new ones are uploaded.
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
   const oldBuffers = ctx.bvhBuffers;
-  const newBuffers = buildReSTIRSceneBVHForScene(updatedScene, [root], {
-    primaryLightDir:       new THREE.Vector3(...ctx.primaryLightDir),
+  const bvhOpts = {
+    primaryLightDir: new THREE.Vector3(...ctx.primaryLightDir),
     primaryLightIntensity: ctx.primaryLightIntensity,
     ...(ctx.restirBvhModeOverride !== undefined
       ? { bvhMode: ctx.restirBvhModeOverride }
       : {}),
-  });
+  };
+  let newBuffers: SceneBVHBuffers;
+  if (
+    oldBuffers != null &&
+    oldBuffers.bvhMode === 'tlas' &&
+    oldBuffers.scenePack != null
+  ) {
+    const rebuilt = rebuildReSTIRSceneBVHPrimitive(
+      updatedScene,
+      id,
+      [root],
+      oldBuffers,
+      bvhOpts,
+    );
+    newBuffers =
+      'ok' in rebuilt && rebuilt.ok === false
+        ? buildReSTIRSceneBVHForScene(updatedScene, [root], bvhOpts)
+        : (rebuilt as SceneBVHBuffers);
+  } else {
+    newBuffers = buildReSTIRSceneBVHForScene(updatedScene, [root], bvhOpts);
+  }
   if (oldBuffers) disposeSceneBVH(oldBuffers);
 
   // Refresh the four BVH GPU buffers + (in case emissive geometry
