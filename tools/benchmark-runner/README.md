@@ -72,6 +72,14 @@ VITRUM_OUTPUT_PNG=tools/reference-renders/baseline/ptwgpu-cornell.png \
 
 Set `VITRUM_GPU_CAPTURE=1` in CI only when Playwright + WebGPU are available (WG-0.4).
 
+Adapter capability probe (no render):
+
+```bash
+VITRUM_PROBE_START_SERVER=1 npm run benchmark:pt-webgpu-adapter-probe --workspace @vitrum/benchmark-runner
+```
+
+Expect `ptWebgpuCanRun: true` on hardware GPUs (`maxStorageBuffersPerShaderStage >= 23`). SwiftShader typically reports 10 — sufficient for hybrid smoke only.
+
 ### WG-0.2 baseline seed + verify
 
 `ptwgpu-parity-material-fields` uses the built-in `capturePtWebgpu.mjs` adapter when

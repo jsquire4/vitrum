@@ -17,6 +17,7 @@
     "benchmark:pr-hybrid": "node ./run-pr-hybrid-bench.mjs",
     "benchmark:pr-mechanical": "node ./run-pr-hybrid-mechanical.mjs",
     "benchmark:hybrid-lifecycle-soak": "node ./run-hybrid-lifecycle-soak.mjs",
+    "benchmark:pt-webgpu-adapter-probe": "node ./run-pt-webgpu-adapter-probe.mjs",
     "benchmark:capture-pt-webgpu": "node ./capturePtWebgpu.mjs",
     "benchmark:seed-wg0": "node ./run-seed-wg0-baselines.mjs"
   },
