@@ -15,6 +15,7 @@
     "@vitrum/core": "file:../../packages/core",
     "@vitrum/engine": "file:../../packages/engine",
     "@vitrum/three-bindings": "file:../../packages/three-bindings",
+    "@vitrum/walkaround-hybrid": "file:../../packages/walkaround-hybrid",
     "three": "^0.184.0"
   },
   "devDependencies": {

@@ -95,6 +95,82 @@ function resolveTriColor(mat: THREE.Material, applyBeer: boolean): THREE.Color {
   return physMat.color ?? stdMat?.color ?? new THREE.Color(0.6, 0.58, 0.55);
 }
 
+/** Pack one triangle's index lanes + material byte into an existing vec4u buffer. */
+export function packBVHIndexWTri(
+  indexBuf: Uint32Array,
+  indices: Uint32Array,
+  triMaterialId: Uint32Array,
+  materials: readonly THREE.Material[],
+  tri: number,
+): void {
+  const base4 = tri * 4;
+  indexBuf[base4 + 0] = indices[tri * 3 + 0]!;
+  indexBuf[base4 + 1] = indices[tri * 3 + 1]!;
+  indexBuf[base4 + 2] = indices[tri * 3 + 2]!;
+
+  const matId = triMaterialId[tri]!;
+  const mat = materials[matId];
+  let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
+  let transmission = 0;
+  let texTypeId = 0;
+  let isMetal = 0;
+  if (mat) {
+    const physMat = mat as THREE.MeshPhysicalMaterial;
+    const stdMat  = mat as THREE.MeshStandardMaterial;
+    transmission = (physMat.transmission ?? 0);
+    const color = resolveTriColor(mat, /* applyBeer */ false);
+    r = Math.round(color.r * 255) & 0xFF;
+    g = Math.round(color.g * 255) & 0xFF;
+    b = Math.round(color.b * 255) & 0xFF;
+    const surfTex = (mat.userData as { surfaceTextureId?: number } | undefined)?.surfaceTextureId;
+    texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
+    const metalness = (stdMat?.metalness ?? 0);
+    isMetal = metalness > 1e-4 ? 1 : 0;
+  }
+  const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
+  const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
+  indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
+}
+
+/** Pack one triangle's Beer-Lambert visible color into a parallel u32 buffer. */
+export function packBVHBeerColorTri(
+  beerBuf: Uint32Array,
+  triMaterialId: Uint32Array,
+  materials: readonly THREE.Material[],
+  tri: number,
+): void {
+  const matId = triMaterialId[tri]!;
+  const mat = materials[matId];
+  let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
+  if (mat) {
+    const color = resolveTriColor(mat, /* applyBeer */ true);
+    r = Math.round(Math.min(1, color.r) * 255) & 0xFF;
+    g = Math.round(Math.min(1, color.g) * 255) & 0xFF;
+    b = Math.round(Math.min(1, color.b) * 255) & 0xFF;
+  }
+  beerBuf[tri] = (r << 24) | (g << 16) | (b << 8);
+}
+
+/**
+ * Re-pack `bvhIndex.w` and `bvh_beer` for a contiguous triangle subrange.
+ * Used by the material-only `updatePrimitive` fast path.
+ */
+export function repackBVHMaterialRange(
+  indexBuf: Uint32Array,
+  beerBuf: Uint32Array,
+  indices: Uint32Array,
+  triMaterialId: Uint32Array,
+  materials: readonly THREE.Material[],
+  triStart: number,
+  triCount: number,
+): void {
+  const triEnd = triStart + triCount;
+  for (let t = triStart; t < triEnd; t++) {
+    packBVHIndexWTri(indexBuf, indices, triMaterialId, materials, t);
+    packBVHBeerColorTri(beerBuf, triMaterialId, materials, t);
+  }
+}
+
 /**
  * Pack vertex indices + RGBA8 baseColor + (trans4|texType4) into vec4u
  * per-triangle (4 u32 = 16 bytes per triangle).
@@ -108,33 +184,7 @@ export function packBVHIndexW(
   const indexBuf = new Uint32Array(triCount * 4);
 
   for (let t = 0; t < triCount; t++) {
-    const base4 = t * 4;
-    indexBuf[base4 + 0] = indices[t * 3 + 0]!;
-    indexBuf[base4 + 1] = indices[t * 3 + 1]!;
-    indexBuf[base4 + 2] = indices[t * 3 + 2]!;
-
-    const matId = triMaterialId[t]!;
-    const mat = materials[matId];
-    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
-    let transmission = 0;
-    let texTypeId = 0;
-    let isMetal = 0;
-    if (mat) {
-      const physMat = mat as THREE.MeshPhysicalMaterial;
-      const stdMat  = mat as THREE.MeshStandardMaterial;
-      transmission = (physMat.transmission ?? 0);
-      const color = resolveTriColor(mat, /* applyBeer */ false);
-      r = Math.round(color.r * 255) & 0xFF;
-      g = Math.round(color.g * 255) & 0xFF;
-      b = Math.round(color.b * 255) & 0xFF;
-      const surfTex = (mat.userData as { surfaceTextureId?: number } | undefined)?.surfaceTextureId;
-      texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
-      const metalness = (stdMat?.metalness ?? 0);
-      isMetal = metalness > 1e-4 ? 1 : 0;
-    }
-    const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
-    const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
-    indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
+    packBVHIndexWTri(indexBuf, indices, triMaterialId, materials, t);
   }
   return indexBuf;
 }
@@ -150,16 +200,7 @@ export function packBVHBeerColors(
 ): Uint32Array<ArrayBuffer> {
   const beerBuf = new Uint32Array(triCount);
   for (let t = 0; t < triCount; t++) {
-    const matId = triMaterialId[t]!;
-    const mat = materials[matId];
-    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
-    if (mat) {
-      const color = resolveTriColor(mat, /* applyBeer */ true);
-      r = Math.round(Math.min(1, color.r) * 255) & 0xFF;
-      g = Math.round(Math.min(1, color.g) * 255) & 0xFF;
-      b = Math.round(Math.min(1, color.b) * 255) & 0xFF;
-    }
-    beerBuf[t] = (r << 24) | (g << 16) | (b << 8);
+    packBVHBeerColorTri(beerBuf, triMaterialId, materials, t);
   }
   return beerBuf;
 }

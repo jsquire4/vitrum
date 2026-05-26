@@ -55,6 +55,7 @@ interface MockPipeline {
   setDDGIInputs: ReturnType<typeof vi.fn>;
   renderFrame: ReturnType<typeof vi.fn>;
   refreshBvhRefit: ReturnType<typeof vi.fn>;
+  refreshBvhMaterialSlice: ReturnType<typeof vi.fn>;
   refreshBvhFullRebuild: ReturnType<typeof vi.fn>;
   updateEmitters: ReturnType<typeof vi.fn>;
 }
@@ -83,6 +84,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
     public setDDGIInputs = vi.fn();
     public renderFrame = vi.fn();
     public refreshBvhRefit = vi.fn();
+    public refreshBvhMaterialSlice = vi.fn();
     public refreshBvhFullRebuild = vi.fn();
     public updateEmitters = vi.fn();
 
@@ -147,7 +149,7 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       totalEmissivePower: 0,
       mergedGeometry:  new THREE.BufferGeometry(),
       meshVertexRanges: [
-        { name: 'mesh-a', vertexStart: 0, vertexCount: 3,
+        { name: 'mesh-a', vertexStart: 0, vertexCount: 3, triStart: 0, triCount: 1,
           matrixWorldAtBuild: new Float32Array([
             1, 0, 0, 0,
             0, 1, 0, 0,
@@ -198,6 +200,7 @@ vi.mock('@vitrum/three-bindings', async () => {
   return {
     vitrumSceneToThree: vi.fn(() => makeSyntheticScene()),
     disposeVitrumThreeSceneRoot: vi.fn(),
+    applyVitrumMaterialToMesh: vi.fn(),
   };
 });
 
@@ -431,7 +434,7 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
   });
 
-  it('material-only patch routes through rebuild path (no throw)', async () => {
+  it('material-only patch uses material fast path (no full BVH rebuild)', async () => {
     const engine = makeEngine();
     const s = getState();
 
@@ -441,10 +444,13 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     await drainMicrotasks();
 
     const buildCountBefore = s.buildBVHCalls.length;
+    const pipeline = s.pipelineConstructed[0]!;
     engine.updatePrimitive!('mesh-a', {
-      material: { kind: 'lambertian', albedo: [0.5, 0.2, 0.7] },
-    } as unknown as Parameters<NonNullable<typeof engine.updatePrimitive>>[1]);
-    expect(s.buildBVHCalls.length).toBe(buildCountBefore + 1);
+      material: { baseColor: [0.5, 0.2, 0.7], roughness: 0.5, metallic: 0 },
+    });
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore);
+    expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalled();
+    expect(pipeline.requestAccumReset).toHaveBeenCalled();
   });
 
   it('unknown primitive id throws', async () => {

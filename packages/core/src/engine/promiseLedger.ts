@@ -48,7 +48,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     incrementalPatchSupport: {
       transform: true,
       positions: true,
-      material: false,
+      material: true,
       emitter: true,
       topology: true,
     },

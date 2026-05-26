@@ -676,6 +676,7 @@ export class ProbeUpdatePass {
       } else if (l.kind === 'fixture' || l.kind === 'teaLight') {
         udata[ubase] = 1; // LIGHT_POINT
         const pos = l.position;
+        const col = l.color;
         data[base + 4]  = pos?.x ?? 0;
         data[base + 5]  = pos?.y ?? 0;
         data[base + 6]  = pos?.z ?? 0;
@@ -684,9 +685,9 @@ export class ProbeUpdatePass {
         data[base + 9]  = 0;
         data[base + 10] = 0;
         data[base + 11] = 0;
-        data[base + 12] = 1;
-        data[base + 13] = 1;
-        data[base + 14] = 1;
+        data[base + 12] = col?.r ?? 1;
+        data[base + 13] = col?.g ?? 1;
+        data[base + 14] = col?.b ?? 1;
         data[base + 15] = 0;
       }
     });

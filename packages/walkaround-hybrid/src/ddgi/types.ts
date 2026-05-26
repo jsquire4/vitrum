@@ -36,6 +36,9 @@ export interface DDGILight {
    *  did not expose position on the base type — DDGILight makes it explicit
    *  and optional (sun lights have no meaningful position). */
   readonly position?: { readonly x: number; readonly y: number; readonly z: number };
+
+  /** RGB radiance multiplier for point-like lights (`fixture` / `teaLight`). */
+  readonly color?: { readonly r: number; readonly g: number; readonly b: number };
 }
 
 // `DDGIDeviceHandle` interface removed 2026-05-18 — was defined here but

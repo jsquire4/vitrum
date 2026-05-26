@@ -21,20 +21,25 @@
  *    `fallbackMesh` / `kind`) → call {@link topologyRebuild}: re-run
  *    `buildReSTIRSceneBVH`, destroy + re-upload the four BVH GPU buffers,
  *    reset the accumulator.
- *  - material-only patches are handled by `HybridEngine` by rebuilding from
- *    a patched scene snapshot; this module intentionally owns only geometry /
- *    transform update algorithms.
+ *  - material-only patches → {@link materialPatch}: re-pack affected
+ *    `bvhIndex.w` / `bvh_beer` slices and partial GPU upload (no `setScene`).
  *
  * The hot-path branch design is preserved from the pre-extraction code
  * verbatim — no behaviour change.
  */
 
 import * as THREE from 'three';
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum/core';
 import { refitBvhBounds } from '@vitrum/shared-bvh';
+import { applyVitrumMaterialToMesh } from '@vitrum/three-bindings';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
-import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
+import {
+  buildReSTIRSceneBVH,
+  disposeSceneBVH,
+  rebuildEmitterBuffersFromSceneRoots,
+} from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import { repackBVHMaterialRange } from './restir/packingHelpers.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
@@ -214,9 +219,10 @@ export function transformRefit(
   // invalidate so probes re-converge over the next STRIDE frames.
   ctx.ddgi.invalidateProbeCache();
 
+  const meshPatch = patch as Partial<MeshPrimitive>;
   const updatedScene =
-    patch.transform !== undefined
-      ? applyPrimitivePatchToScene(ctx.lastScene, id, { transform: patch.transform })
+    meshPatch.transform !== undefined
+      ? applyPrimitivePatchToScene(ctx.lastScene, id, { transform: meshPatch.transform })
       : ctx.lastScene;
 
   return { bvhBuffers: bvh, updatedScene };
@@ -336,12 +342,13 @@ export function positionsRefit(
   ctx.pipeline?.requestAccumReset();
   ctx.ddgi.invalidateProbeCache();
 
-  const posPatch: Partial<ScenePrimitive> = {
-    positions: new Float32Array(Array.from(newLocalPositions)),
-  };
-  if (patch.normals !== undefined) {
-    posPatch.normals = new Float32Array(Array.from(patch.normals));
-  }
+  const meshPosPatch = patch as Partial<MeshPrimitive>;
+  const posPatch: Partial<MeshPrimitive> = meshPosPatch.normals !== undefined
+    ? {
+        positions: new Float32Array(Array.from(newLocalPositions)),
+        normals: new Float32Array(Array.from(meshPosPatch.normals)),
+      }
+    : { positions: new Float32Array(Array.from(newLocalPositions)) };
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
 
   return { bvhBuffers: bvh, updatedScene };
@@ -482,4 +489,130 @@ export function topologyRebuild(
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
 
   return { bvhBuffers: newBuffers, updatedScene };
+}
+
+const TRANSMISSION_GLASS_THRESHOLD = 0.01;
+
+function vitrumMaterialTransmission(material: MaterialSpec | undefined): number {
+  return material?.transmission ?? 0;
+}
+
+/**
+ * Material-only fast path — re-pack affected triangle slices in
+ * `bvhIndex` / `bvhBeerColors` and partial GPU upload (no SAH rebuild,
+ * no `setScene`, no pipeline recompile).
+ */
+export function materialPatch(
+  id: string,
+  patch: Partial<ScenePrimitive>,
+  ctx: PrimitiveUpdateContext,
+): PrimitiveUpdateResult {
+  const bvh = ctx.bvhBuffers;
+  if (bvh == null || ctx.pipeline == null) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): BVH or pipeline not ready for material patch.`,
+    );
+  }
+  if (patch.material === undefined) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): materialPatch requires patch.material.`,
+    );
+  }
+
+  const range = bvh.meshVertexRanges.find((r) => r.name === id);
+  if (range == null || range.triCount === 0) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): no triangle range for material patch.`,
+    );
+  }
+
+  const root = ctx.threeRoot;
+  if (root == null) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): no THREE scene available for material patch.`,
+    );
+  }
+
+  let mesh: THREE.Mesh | null = null;
+  root.traverseVisible((obj) => {
+    if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
+      mesh = obj as THREE.Mesh;
+    }
+  });
+  if (mesh == null) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
+    );
+  }
+  const meshRef = mesh as THREE.Mesh;
+
+  const primIndex = ctx.lastScene.primitives.findIndex((p) => String(p.id) === id);
+  const prevPrim = primIndex >= 0 ? ctx.lastScene.primitives[primIndex] : undefined;
+  const prevTransmission = vitrumMaterialTransmission(
+    prevPrim && 'material' in prevPrim ? prevPrim.material : undefined,
+  );
+  const nextTransmission = vitrumMaterialTransmission(patch.material);
+
+  applyVitrumMaterialToMesh(meshRef, patch.material);
+
+  const triMaterialIds = new Uint32Array(bvh.triangleMaterialIds.cpuData);
+  const matIds = new Set<number>();
+  for (let t = range.triStart; t < range.triStart + range.triCount; t++) {
+    matIds.add(triMaterialIds[t]!);
+  }
+  const threeMat = meshRef.material as THREE.Material;
+  for (const matId of matIds) {
+    (bvh.buildMaterials as THREE.Material[])[matId] = threeMat;
+  }
+
+  const indexView = new Uint32Array(bvh.bvhIndex.cpuData);
+  const beerView = new Uint32Array(bvh.bvhBeerColors.cpuData);
+  repackBVHMaterialRange(
+    indexView,
+    beerView,
+    bvh.bvhIndicesStride3,
+    triMaterialIds,
+    bvh.buildMaterials,
+    range.triStart,
+    range.triCount,
+  );
+
+  const indexByteOffset = range.triStart * 16;
+  const beerByteOffset = range.triStart * 4;
+  ctx.pipeline.refreshBvhMaterialSlice(
+    {
+      byteOffset: indexByteOffset,
+      data: bvh.bvhIndex.cpuData.slice(indexByteOffset, indexByteOffset + range.triCount * 16),
+    },
+    {
+      byteOffset: beerByteOffset,
+      data: bvh.bvhBeerColors.cpuData.slice(beerByteOffset, beerByteOffset + range.triCount * 4),
+    },
+  );
+
+  const crossedGlassThreshold =
+    (prevTransmission <= TRANSMISSION_GLASS_THRESHOLD && nextTransmission > TRANSMISSION_GLASS_THRESHOLD)
+    || (prevTransmission > TRANSMISSION_GLASS_THRESHOLD && nextTransmission <= TRANSMISSION_GLASS_THRESHOLD);
+
+  let outBvh: SceneBVHBuffers = bvh;
+  if (crossedGlassThreshold) {
+    ctx.ddgi.invalidateProbeCache();
+    const emitterSlice = rebuildEmitterBuffersFromSceneRoots([root], bvh, {
+      primaryLightDir: new THREE.Vector3(...ctx.primaryLightDir),
+      primaryLightIntensity: ctx.primaryLightIntensity,
+    });
+    outBvh = {
+      ...bvh,
+      emitters: emitterSlice.emitters,
+      emitterCdf: emitterSlice.emitterCdf,
+      emitterCount: emitterSlice.emitterCount,
+      totalEmissivePower: emitterSlice.totalEmissivePower,
+    };
+    ctx.pipeline.updateEmitters(outBvh);
+  }
+
+  ctx.pipeline.requestAccumReset();
+
+  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
+  return { bvhBuffers: outBvh, updatedScene };
 }

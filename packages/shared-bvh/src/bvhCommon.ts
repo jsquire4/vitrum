@@ -162,7 +162,13 @@ export interface SceneBVHCommonResult {
    * the returned buffers. Used by `HybridEngine.updatePrimitive`'s
    * transform-only refit fast path.
    */
-  meshVertexRanges: ReadonlyArray<{ name: string; vertexStart: number; vertexCount: number }>;
+  meshVertexRanges: ReadonlyArray<{
+    name: string;
+    vertexStart: number;
+    vertexCount: number;
+    triStart: number;
+    triCount: number;
+  }>;
 }
 
 export interface SceneBVHCommonOpts {
@@ -521,7 +527,13 @@ export function buildSceneBVH(
   // HybridEngine.updatePrimitive's transform-only refit) use them to
   // refresh one mesh's worldspace positions in place without touching
   // the rest of the merged vertex buffer.
-  const meshVertexRanges: Array<{ name: string; vertexStart: number; vertexCount: number }> = [];
+  const meshVertexRanges: Array<{
+    name: string;
+    vertexStart: number;
+    vertexCount: number;
+    triStart: number;
+    triCount: number;
+  }> = [];
   {
     const origGroups2 = merged.groups;
     const idxArr2 = merged.index!.array;
@@ -542,19 +554,34 @@ export function buildSceneBVH(
         }
         const vertexStart = Number.isFinite(mn) ? mn : 0;
         const vertexCount = Number.isFinite(mx) ? mx - vertexStart + 1 : 0;
-        meshVertexRanges.push({ name: mesh.name, vertexStart, vertexCount });
+        const triStart = Math.floor(g.start / 3);
+        const triCount = Math.floor(g.count / 3);
+        meshVertexRanges.push({ name: mesh.name, vertexStart, vertexCount, triStart, triCount });
       }
     } else if (meshes.length === 1) {
       // Single-material merge (no groups) — one mesh covers all vertices.
       const total = (merged.attributes['position'] as THREE.BufferAttribute).count;
-      meshVertexRanges.push({ name: meshes[0]!.name, vertexStart: 0, vertexCount: total });
+      const triCount = Math.floor(merged.index!.count / 3);
+      meshVertexRanges.push({
+        name: meshes[0]!.name,
+        vertexStart: 0,
+        vertexCount: total,
+        triStart: 0,
+        triCount,
+      });
     } else {
       // Defensive fallback: group metadata absent / mismatched. Emit
       // empty ranges so `meshVertexRanges.length === meshes.length`
       // — the caller's id→range lookup will return vertexCount=0 and
       // skip the refit, preferring the topology-rebuild path.
       for (const mesh of meshes) {
-        meshVertexRanges.push({ name: mesh.name, vertexStart: 0, vertexCount: 0 });
+        meshVertexRanges.push({
+          name: mesh.name,
+          vertexStart: 0,
+          vertexCount: 0,
+          triStart: 0,
+          triCount: 0,
+        });
       }
     }
   }

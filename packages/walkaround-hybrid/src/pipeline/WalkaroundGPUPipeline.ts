@@ -648,6 +648,19 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
+   * Material-only fast path — partial upload of packed `bvhIndex` and
+   * `bvh_beer` slices after CPU re-pack (PR-1).
+   */
+  refreshBvhMaterialSlice(
+    indexSlice: { byteOffset: number; data: ArrayBuffer },
+    beerSlice: { byteOffset: number; data: ArrayBuffer },
+  ): void {
+    if (!this._initialized) return;
+    this._device.queue.writeBuffer(this._bvhIndexBuffer, indexSlice.byteOffset, indexSlice.data);
+    this._device.queue.writeBuffer(this._bvhBeerBuffer, beerSlice.byteOffset, beerSlice.data);
+  }
+
+  /**
    * Full BVH-buffer reupload — destroy + recreate the four BVH GPU
    * buffers (nodes, index, beer, positions) from a freshly-built
    * `SceneBVHBuffers`. Used by `HybridEngine.updatePrimitive`'s topology-

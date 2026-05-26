@@ -63,8 +63,18 @@ import {
 import { applyEmitterPatchToScene } from './scenePatch.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import type { ModelWeights } from './neural/weights.js';
-import { transformRefit, positionsRefit, topologyRebuild, type PrimitiveUpdateContext } from './HybridEnginePrimitiveUpdates.js';
-import { PipelineInitCoordinator, type PipelineInitHost } from './HybridEngineLifecycle.js';
+import {
+  transformRefit,
+  positionsRefit,
+  topologyRebuild,
+  materialPatch,
+  type PrimitiveUpdateContext,
+} from './HybridEnginePrimitiveUpdates.js';
+import {
+  PipelineInitCoordinator,
+  collectDDGILightsFromThreeRoot,
+  type PipelineInitHost,
+} from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
@@ -420,7 +430,7 @@ export class HybridEngine implements Engine {
       incrementalPatchSupport: {
         transform: true,
         positions: true,
-        material: false,
+        material: true,
         emitter: true,
         topology: true,
       },
@@ -603,12 +613,9 @@ export class HybridEngine implements Engine {
       return;
     }
     if (hasMaterialChange) {
-      const nextPrimitives = this._lastScene.primitives.slice();
-      nextPrimitives[primIndex] = { ...prim, ...patch } as ScenePrimitive;
-      this.setScene({
-        ...this._lastScene,
-        primitives: nextPrimitives,
-      });
+      const result = materialPatch(id, patch, this._buildPrimitiveUpdateContext());
+      this._bvhBuffers = result.bvhBuffers;
+      this._lastScene = result.updatedScene;
       return;
     }
 
@@ -680,7 +687,22 @@ export class HybridEngine implements Engine {
     };
 
     this._pipeline?.updateEmitters(this._bvhBuffers);
+    this._syncDdgiLightsFromThreeRoot();
     this._pipeline?.requestAccumReset();
+  }
+
+  /** Re-upload DDGI point/rect lights from the live THREE scene (no `setScene`). */
+  refreshDdgiLightsFromThreeScene(): void {
+    this._syncDdgiLightsFromThreeRoot();
+    this._pipeline?.requestAccumReset();
+  }
+
+  private _syncDdgiLightsFromThreeRoot(): void {
+    const root = this._ensureThreeSceneRoot();
+    if (root == null) return;
+    const sceneLights = collectDDGILightsFromThreeRoot(root);
+    this._ddgi.setLights([...this._ctorLights, ...sceneLights]);
+    this._ddgi.invalidateProbeCache();
   }
 
   // ── Runtime lighting update ────────────────────────────────────────────

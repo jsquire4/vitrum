@@ -15,7 +15,15 @@ Distribution and release governance are explicitly out of scope.
 | W4 — Reliability hardening | **Complete** | `run-lifecycle-soak.mjs`, `run-wave4-hardening.mjs`, `npm run hardening:wave4` |
 | W5 — Consolidation | **Complete** | `plan/backend-maturity-matrix-2026-05-26.md`, README/AGENTS/CLAUDE/library-architecture alignment |
 
-## Verification commands (run on this revision)
+## Verification evidence (HEAD `5312e00`, 2026-05-26)
+
+| Gate | Result | Artifact |
+|------|--------|----------|
+| `npm run verify:mechanical` | **pass** | ~566s; all workspace tests + shader-compile-ci (7 scenarios) |
+| `npm run baseline:wave0` | **pass** | `tools/benchmark-runner/results/wave0/wave0-baseline-2026-05-26T09-37-47-689Z.json` |
+| `VITRUM_WAVE4_SKIP_MECHANICAL=1 npm run hardening:wave4` | **pass** | `tools/benchmark-runner/results/wave4/wave4-hardening-2026-05-26T09-50-38-707Z.json` (lifecycle soak: 4 iterations, 0 failures) |
+
+Re-run commands:
 
 ```bash
 npm run verify:mechanical

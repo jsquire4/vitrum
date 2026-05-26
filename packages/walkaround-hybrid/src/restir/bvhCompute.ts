@@ -116,6 +116,8 @@ export interface SceneBVHBuffers {
     name: string;
     vertexStart: number;
     vertexCount: number;
+    triStart: number;
+    triCount: number;
     matrixWorldAtBuild: Float32Array;
   }>;
   /**
@@ -337,11 +339,19 @@ export function rebuildEmitterBuffersFromSceneRoots(
  */
 function enrichMeshVertexRangesWithMatrix(
   sceneRoots: THREE.Object3D[],
-  rawRanges: ReadonlyArray<{ name: string; vertexStart: number; vertexCount: number }>,
+  rawRanges: ReadonlyArray<{
+    name: string;
+    vertexStart: number;
+    vertexCount: number;
+    triStart: number;
+    triCount: number;
+  }>,
 ): ReadonlyArray<{
   name: string;
   vertexStart: number;
   vertexCount: number;
+  triStart: number;
+  triCount: number;
   matrixWorldAtBuild: Float32Array;
 }> {
   const byName = new Map<string, THREE.Object3D>();
@@ -365,6 +375,8 @@ function enrichMeshVertexRangesWithMatrix(
       name: r.name,
       vertexStart: r.vertexStart,
       vertexCount: r.vertexCount,
+      triStart: r.triStart,
+      triCount: r.triCount,
       matrixWorldAtBuild: m,
     };
   });

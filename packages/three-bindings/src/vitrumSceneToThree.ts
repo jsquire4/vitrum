@@ -145,6 +145,23 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
   return mat;
 }
 
+/**
+ * Apply a vitrum `MaterialSpec` onto an existing THREE.Mesh (material-only
+ * fast path for walkaround-hybrid / host incremental updates).
+ */
+export function applyVitrumMaterialToMesh(
+  mesh: Mesh,
+  material: VitrumMaterial,
+  meshAreaRadianceRgb?: Vec3,
+): void {
+  const next = vitrumMaterialToThree(material, meshAreaRadianceRgb);
+  const prev = mesh.material;
+  mesh.material = next;
+  if (prev instanceof MeshPhysicalMaterial && prev !== next) {
+    prev.dispose();
+  }
+}
+
 function isTexture(x: unknown): x is Texture {
   return x != null && typeof x === 'object' && 'isTexture' in x && (x as Texture).isTexture === true;
 }

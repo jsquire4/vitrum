@@ -404,9 +404,9 @@ export class PipelineInitCoordinator {
       // depends on. ReSTIR DI still drives the high-frequency direct
       // term from the actual rect geometry — DDGI here only feeds the
       // low-frequency indirect.
-      const ddgiRectLights = collectDDGILightsFromRectAreaLights(bvhRoot);
-      if (ddgiRectLights.length > 0) {
-        host.ddgi.setLights([...host.ctorLights, ...ddgiRectLights]);
+      const ddgiSceneLights = collectDDGILightsFromThreeRoot(bvhRoot);
+      if (ddgiSceneLights.length > 0) {
+        host.ddgi.setLights([...host.ctorLights, ...ddgiSceneLights]);
       }
 
       host.publishPipeline(pipeline);
@@ -483,6 +483,32 @@ export class PipelineInitCoordinator {
  * total-flux conversion are negligible against the multiple-of-10 dynamic
  * range that distinguishes "lit colour bleed" from "atlas reads zero".
  */
+/** Project `THREE.PointLight` instances to DDGI point-light fixtures. */
+export function collectDDGIPointLightsFromRoot(root: THREE.Object3D): DDGILight[] {
+  const out: DDGILight[] = [];
+  root.updateMatrixWorld(true);
+  root.traverseVisible((obj) => {
+    if (!(obj instanceof THREE.PointLight)) return;
+    const pl = obj;
+    out.push({
+      kind: 'fixture',
+      intensity: pl.intensity,
+      on: true,
+      position: { x: pl.position.x, y: pl.position.y, z: pl.position.z },
+      color: { r: pl.color.r, g: pl.color.g, b: pl.color.b },
+    });
+  });
+  return out;
+}
+
+/** Rect-area + point lights from a THREE scene root for DDGI probe updates. */
+export function collectDDGILightsFromThreeRoot(root: THREE.Object3D): DDGILight[] {
+  return [
+    ...collectDDGILightsFromRectAreaLights(root),
+    ...collectDDGIPointLightsFromRoot(root),
+  ];
+}
+
 function collectDDGILightsFromRectAreaLights(root: THREE.Object3D): DDGILight[] {
   const out: DDGILight[] = [];
   const _wp = new THREE.Vector3();
