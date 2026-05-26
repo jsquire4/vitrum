@@ -137,4 +137,31 @@ describe('pt-webgpu WGSL material contract', () => {
       '(*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);',
     );
   });
+
+  it('uses conservative local-ray bounds for TLAS instance traversal under scaling', () => {
+    // Local instance-space t does not match world-space t under non-uniform
+    // transforms, so BLAS queries must run unbounded and clamp in world space.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, tMin, INFINITY, true, &localHit, blasRoot, true);');
+  });
+
+  it('skips bary/normal reconstruction on TLAS any-hit instance traversal', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('captureShadingDetails: bool');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('traceMeshBvh(localRay, tMin, INFINITY, true, &localHit, blasRoot, false);');
+  });
+
+  it('returns closest-hit result from traceMeshBvh when in closest mode', () => {
+    // Regression guard: closest-mode traversal must return didHit so
+    // traceAny fallback paths without TLAS still report mesh occlusion.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return select(false, (*hit).didHit, closest);');
+  });
+
+  it('routes traceAny through TLAS any-hit traversal', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn traceTlasAny(ray: Ray, tMin: f32, tMax: f32) -> bool');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (traceTlasAny(ray, tMin, tMax)) {');
+  });
+
+  it('uses conservative any-hit stack-overflow handling to avoid light leaks', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('Conservative any-hit overflow policy: prefer occlusion over light leak.');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return true;');
+  });
 });

@@ -1,23 +1,61 @@
 # @vitrum/benchmark-runner
 
-Phase 6 sprint deliverables drop benchmark scripts here. Each benchmark file is
-named `sprint-<N>-<name>.ts` and writes its before/after metrics to
-`tools/benchmark-runner/results/sprint-<N>.json`.
-
-See `plan/archive/phase-6-roadmap.md` Section 9 (Verification protocol) for the
-benchmark file template.
+This workspace contains executable benchmark and hardening runners (`run-*.mjs`)
+for sweep gates, capture diffs, and backend reliability evidence.
 
 ## Current runner
 
 - `npm run benchmark --workspace @vitrum/benchmark-runner`
 - `npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner`
 - `npm run benchmark:qualitymodes --workspace @vitrum/benchmark-runner`
+- `npm run benchmark:lifecycle-soak --workspace @vitrum/benchmark-runner`
+- `npm run benchmark:wave4-hardening --workspace @vitrum/benchmark-runner`
 - `npm run benchmark:acceptance-metrics --workspace @vitrum/benchmark-runner`
 - `npm run benchmark:pt-webgl-fidelity --workspace @vitrum/benchmark-runner`
+- `npm run benchmark:wave0-baseline --workspace @vitrum/benchmark-runner`
+- `npm run typecheck --workspace @vitrum/benchmark-runner`
+- `npm test --workspace @vitrum/benchmark-runner`
 
-These commands execute `run-gap-closure-verification.mjs` and write:
+Primary outputs include:
 
 - `tools/benchmark-runner/results/gap-closure-verification-2026-05-10.json`
+- `tools/benchmark-runner/results/quality-modes-<timestamp>.json`
+- `tools/benchmark-runner/results/lifecycle-soak-<timestamp>.json`
+- `tools/benchmark-runner/results/wave0/wave0-baseline-<timestamp>.json`
+- `tools/benchmark-runner/results/wave4/wave4-hardening-<timestamp>.json`
+
+## Wave 0 baseline orchestration
+
+`run-wave0-baseline.mjs` captures the initial sweep baseline in one command:
+
+```bash
+npm run baseline:wave0
+```
+
+It executes a sequential baseline gate:
+
+1. `npm run verify:mechanical`
+2. gap-closure benchmark smoke pass
+3. quality-modes benchmark smoke pass
+4. optional quick reference capture (`VITRUM_WAVE0_CAPTURE_REFS=1`)
+
+The quality-mode step is marked `warn` (non-blocking by default) when either:
+- scenario rows fail (`summary.failures > 0`), or
+- telemetry warmup never became ready (`warmupReady: false` rows).
+
+It writes a timestamped report JSON to:
+
+- `tools/benchmark-runner/results/wave0/wave0-baseline-<timestamp>.json`
+
+Current Wave 0 schema id: `vitrum-wave0-baseline-2026-05-26`.
+
+Useful env knobs:
+
+- `VITRUM_WAVE0_MECHANICAL_TIMEOUT_MS`
+- `VITRUM_WAVE0_GAP_TIMEOUT_MS`
+- `VITRUM_WAVE0_QUALITY_TIMEOUT_MS`
+- `VITRUM_WAVE0_CAPTURE_TIMEOUT_MS`
+- `VITRUM_WAVE0_CAPTURE_REFS=1` (include `capture:refs:quick` step)
 
 ## Per-qualityMode benchmark
 
@@ -52,11 +90,15 @@ npm run benchmark:qualitymodes --workspace @vitrum/benchmark-runner
 - `VITRUM_CAPTURE_URL` — dev-server URL (default `http://127.0.0.1:5174/`)
 - `VITRUM_BENCH_DURATION_MS` — poll window per (scenario, mode) (default `30000`)
 - `VITRUM_BENCH_POLL_MS` — poll interval (default `100`)
+- `VITRUM_BENCH_NAV_TIMEOUT_MS` — page navigation timeout (default `max(60000, 2×duration)`)
+- `VITRUM_BENCH_WARMUP_TIMEOUT_MS` — max wait for first live telemetry before timed sampling starts (default `min(navTimeout, 30000)`)
 - `VITRUM_BENCH_SAMPLES_TARGET` — `vitrumSpp` for the URL (default `128`)
 - `VITRUM_BENCH_WIDTH` / `VITRUM_BENCH_HEIGHT` — render size (default `1280x720`)
 - `VITRUM_BENCH_QUALITY_MODES` — comma-separated subset (default all 4)
 - `VITRUM_BENCH_SCENARIOS` — comma-separated subset (default `cornell-box`)
 - `VITRUM_BENCH_HEADLESS` — `0` for headed Chromium (default `1`)
+- `VITRUM_BENCH_FAIL_FAST` — `1` to abort immediately on first scenario/mode failure
+- `VITRUM_BENCH_STRICT` — `1` to exit non-zero if any scenario/mode row fails
 
 ### Worktree note
 
@@ -80,6 +122,8 @@ runs in, because the path is resolved relative to the script file location.
     {
       "scenario": "cornell-box",
       "qualityMode": "interactive",
+      "warmupMs": 1432,
+      "warmupReady": true,
       "framesRendered": 142,
       "totalSpp": 128,
       "sppPerSec": 4.26,
@@ -92,6 +136,69 @@ runs in, because the path is resolved relative to the script file location.
   ]
 }
 ```
+
+## Lifecycle soak benchmark
+
+`run-lifecycle-soak.mjs` stress-tests repeated navigation/quality/size churn while
+checking live telemetry progress (`window.__vitrum.ptWebgl`).
+
+```bash
+npm run benchmark:lifecycle-soak --workspace @vitrum/benchmark-runner
+```
+
+Output:
+
+- `tools/benchmark-runner/results/lifecycle-soak-<timestamp>.json`
+
+Current lifecycle soak schema id: `lifecycle-soak-2026-05-26`.
+
+Useful knobs:
+
+- `VITRUM_CAPTURE_URL` (default `http://127.0.0.1:5174/`)
+- `VITRUM_LIFECYCLE_SOAK_ITERATIONS` (default `12`)
+- `VITRUM_LIFECYCLE_SOAK_ITERATION_MS` (default `4000`)
+- `VITRUM_LIFECYCLE_SOAK_POLL_MS` (default `100`)
+- `VITRUM_LIFECYCLE_SOAK_NAV_TIMEOUT_MS` (default `90000`)
+- `VITRUM_LIFECYCLE_SOAK_READY_TIMEOUT_MS` (default `60000`)
+- `VITRUM_LIFECYCLE_SOAK_SPP` (default `256`)
+- `VITRUM_LIFECYCLE_SOAK_SCENARIOS` (comma-separated, default `cornell-box`)
+- `VITRUM_LIFECYCLE_SOAK_QUALITY_MODES` (comma-separated, default `interactive,safe,final,capture`)
+- `VITRUM_LIFECYCLE_SOAK_STRICT=1` (exit non-zero when any iteration fails)
+- `VITRUM_LIFECYCLE_SOAK_START_SERVER=1` (launch local dev server before soak)
+- `VITRUM_LIFECYCLE_SOAK_DEV_CMD` (override dev-server launch command)
+- `VITRUM_LIFECYCLE_SOAK_SERVER_READY_TIMEOUT_MS` (dev-server readiness timeout)
+- `VITRUM_LIFECYCLE_SOAK_SERVER_POLL_MS` (dev-server readiness poll interval)
+
+When server auto-start is enabled and Vite moves to a fallback port (for example
+`5174` in use -> `5175`), the runner auto-detects the advertised local URL and
+targets that URL for the soak iterations.
+
+## Wave 4 hardening orchestration
+
+`run-wave4-hardening.mjs` is the reliability gate bundle for this sweep:
+
+1. `verify:mechanical` (unless skipped)
+2. strict lifecycle soak (`benchmark:lifecycle-soak` with strict mode)
+3. optional quality-mode smoke benchmark
+
+```bash
+npm run hardening:wave4
+```
+
+Output:
+
+- `tools/benchmark-runner/results/wave4/wave4-hardening-<timestamp>.json`
+
+Current Wave 4 schema id: `vitrum-wave4-hardening-2026-05-26`.
+
+Useful knobs:
+
+- `VITRUM_WAVE4_SKIP_MECHANICAL=1`
+- `VITRUM_WAVE4_INCLUDE_QUALITY_SMOKE=1`
+- `VITRUM_WAVE4_MECHANICAL_TIMEOUT_MS`
+- `VITRUM_WAVE4_SOAK_TIMEOUT_MS`
+- `VITRUM_WAVE4_QUALITY_TIMEOUT_MS`
+- `VITRUM_WAVE4_STRICT=1` (treat warnings as failing gate)
 
 ## GPU capture mode
 

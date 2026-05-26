@@ -70,11 +70,11 @@
 
 **Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), `three-mesh-bvh`. BVH/denoiser building blocks used indirectly via the fork and three.js stack, not as direct `@vitrum/shared-bvh` / `shared-denoisers` dependencies today.
 
-### `@vitrum/pt-webgpu` *(prototype, evolving toward Phase 7 goals)*
+### `@vitrum/pt-webgpu` *(experimental backend, evolving toward Phase 7 goals)*
 
-**Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active pre-alpha prototype (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
+**Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active experimental backend (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
 
-**Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`. Notably **not** `three-gpu-pathtracer`; optional denoiser integration may add `@vitrum/shared-denoisers` later.
+**Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`. Notably **not** `three-gpu-pathtracer`; optional denoiser integration may add `@vitrum/shared-denoisers` later.
 
 ### `@vitrum/walkaround-hybrid`
 

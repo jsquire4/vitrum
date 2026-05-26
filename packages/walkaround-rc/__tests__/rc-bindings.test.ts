@@ -168,6 +168,13 @@ describe('PROBE_RAY_CAST_WGSL', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('fn octDecode');
   });
 
+  it('uses canonical sign-safe octahedral decode implementation', () => {
+    // Canonical shared-samplers oct decode avoids sign(0) collapse by using select().
+    expect(PROBE_RAY_CAST_WGSL).toContain('select(-1.0, 1.0, n.x >= 0.0)');
+    expect(PROBE_RAY_CAST_WGSL).toContain('select(-1.0, 1.0, n.y >= 0.0)');
+    expect(PROBE_RAY_CAST_WGSL).not.toContain('vec2f(sign(n.x), sign(n.y))');
+  });
+
   it('contains traceSunVisibility helper', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('fn traceSunVisibility');
   });
@@ -214,6 +221,12 @@ describe('CASCADE_MERGE_WGSL', () => {
 
   it('contains trilinearSampleUpper helper', () => {
     expect(CASCADE_MERGE_WGSL).toContain('fn trilinearSampleUpper');
+  });
+
+  it('uses canonical octDecode helper for solid-angle estimation', () => {
+    expect(CASCADE_MERGE_WGSL).toContain('fn octDecode(');
+    expect(CASCADE_MERGE_WGSL).toContain('octDecode(vec2f(u0, v0))');
+    expect(CASCADE_MERGE_WGSL).not.toContain('fn octDecodeForMerge(');
   });
 });
 

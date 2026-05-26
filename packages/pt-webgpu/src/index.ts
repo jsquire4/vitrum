@@ -8,14 +8,22 @@ import type {
   EngineState,
   FrameInput,
   FrameOutput,
+  FrameStats,
   GpuMemoryBreakdown,
+  ProgressStats,
   Scene,
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
 import { asBackendTexture, asMat4 } from '@vitrum/core';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
-import { buildPackedScene, uploadPackedScene, PT_WEBGPU_ANALYTIC_SHAPES, type UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
+import {
+  buildPackedScene,
+  rebuildTlasForSceneTransforms,
+  uploadPackedScene,
+  PT_WEBGPU_ANALYTIC_SHAPES,
+  type UploadedSceneBuffers,
+} from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
@@ -38,9 +46,15 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   readonly device: GPUDevice;
 }
 
-const PROTOTYPE_MAX_BOUNCES = 8;
+const EXPERIMENTAL_MAX_BOUNCES = 8;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
+const IDENTITY_MAT4 = asMat4(new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]));
 // Bind group 0 currently consumes 23 storage-buffer bindings in the trace pass
 // (positions/normals/indices/materials/BVH + variance moments + analytic +
 // environment + light arrays + TLAS buffers). Keep this guard in lockstep so
@@ -98,6 +112,8 @@ class PTEngineWebGPU implements Engine {
   #paramsBuffer: GPUBuffer | null = null;
   #computePipeline: GPUComputePipeline | null = null;
   #bindGroupLayout: GPUBindGroupLayout | null = null;
+  #onFrameSubs = new Set<(stats: FrameStats) => void>();
+  #onProgressSubs = new Set<(progress: ProgressStats) => void>();
 
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
@@ -106,7 +122,7 @@ class PTEngineWebGPU implements Engine {
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot) {
     this.#slot = slot;
     this.#device = opts.device;
-    this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, PROTOTYPE_MAX_BOUNCES));
+    this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     const causticOpts = opts.causticOptions ?? {};
@@ -126,7 +142,7 @@ class PTEngineWebGPU implements Engine {
       // currently rebuild through setScene until broader partial uploads land.
       supportsIncrementalScene: true,
       incrementalPatchSupport: {
-        transform: false,
+        transform: true,
         positions: false,
         material: true,
         emitter: true,
@@ -154,7 +170,7 @@ class PTEngineWebGPU implements Engine {
         'none', 'hdri', 'procedural-sky',
       ]),
       presentationMode: 'offscreen-texture',
-      experimentalFeatures: new Set(['prototype-backend']),
+      experimentalFeatures: new Set(['experimental-backend']),
       causticStrategy: this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
       debugSurface: true,
@@ -178,6 +194,19 @@ class PTEngineWebGPU implements Engine {
     return null;
   }
 
+  #analyticIndexForPrimitive(scene: Scene, primitiveId: string): number | null {
+    let analyticIndex = 0;
+    for (const primitive of scene.primitives) {
+      if (primitive.kind !== 'analytic') continue;
+      if (!PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES.has(primitive.shape)) continue;
+      if (primitive.id === primitiveId) {
+        return analyticIndex;
+      }
+      analyticIndex += 1;
+    }
+    return null;
+  }
+
   #canFastPathMaterialPatch(
     patch: Partial<ScenePrimitive>,
   ): patch is Partial<ScenePrimitive> & { material: ScenePrimitive['material'] } {
@@ -188,8 +217,47 @@ class PTEngineWebGPU implements Engine {
     return true;
   }
 
+  #canFastPathTransformPatch(
+    primitive: ScenePrimitive,
+    patch: Partial<ScenePrimitive>,
+  ): boolean {
+    const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
+    if (primitive.kind === 'instanced-mesh') {
+      if (!keys.every((k) => k === 'instances')) return false;
+      return 'instances' in patch;
+    }
+    if (primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh') {
+      if (!keys.every((k) => k === 'transform')) return false;
+      return 'transform' in patch;
+    }
+    if (primitive.kind === 'analytic') {
+      if (!keys.every((k) => k === 'transform')) return false;
+      return 'transform' in patch;
+    }
+    return false;
+  }
+
+  #canReuseTlasBufferLengths(
+    sb: UploadedSceneBuffers,
+    next: {
+      readonly tlasNodes: Uint32Array;
+      readonly tlasInstanceIndices: Uint32Array;
+      readonly tlasBlasRoots: Uint32Array;
+      readonly tlasInstanceWorldToLocal: Float32Array;
+      readonly tlasInstanceLocalToWorld: Float32Array;
+    },
+  ): boolean {
+    return (
+      next.tlasNodes.byteLength === sb.tlasNodes.byteLength &&
+      next.tlasInstanceIndices.byteLength === sb.tlasInstanceIndices.byteLength &&
+      next.tlasBlasRoots.byteLength === sb.tlasBlasRoots.byteLength &&
+      next.tlasInstanceWorldToLocal.byteLength === sb.tlasInstanceWorldToLocal.byteLength &&
+      next.tlasInstanceLocalToWorld.byteLength === sb.tlasInstanceLocalToWorld.byteLength
+    );
+  }
+
   // ── Debug introspection (T3.G followup) ────────────────────────────────
-  // Prototype backend exposes only the GPU-memory estimate for now — atlas
+  // Experimental backend exposes only the GPU-memory estimate for now — atlas
   // / BVH / pick / denoiser-toggle hooks are walkaround-hybrid concepts
   // that don't apply to a brute-force compute path tracer.
   readonly debug: EngineDebugSurface = {
@@ -244,6 +312,26 @@ class PTEngineWebGPU implements Engine {
     }
     if (this.#scene == null) {
       throw new Error(`${method}: call setScene() before ${method}`);
+    }
+  }
+
+  #emitFrameStats(stats: FrameStats): void {
+    for (const cb of this.#onFrameSubs) {
+      try {
+        cb(stats);
+      } catch {
+        // Telemetry callbacks must not break rendering.
+      }
+    }
+  }
+
+  #emitProgress(progress: ProgressStats): void {
+    for (const cb of this.#onProgressSubs) {
+      try {
+        cb(progress);
+      } catch {
+        // Telemetry callbacks must not break rendering.
+      }
     }
   }
 
@@ -492,7 +580,132 @@ class PTEngineWebGPU implements Engine {
     // #assertLive already throws when #scene is null; the non-null assertion
     // captures that invariant for the type checker.
     const currentScene = this.#scene!;
+    const currentPrimitive = currentScene.primitives.find((p) => p.id === id) ?? null;
     const nextScene = patchPrimitiveInScene(currentScene, id, patch);
+    if (
+      currentPrimitive != null &&
+      currentPrimitive.kind === 'analytic' &&
+      this.#sceneBuffers != null &&
+      this.#canFastPathTransformPatch(currentPrimitive, patch)
+    ) {
+      const analyticIndex = this.#analyticIndexForPrimitive(nextScene, id);
+      if (analyticIndex != null) {
+        const nextPrimitive = nextScene.primitives.find((p) => p.id === id);
+        if (nextPrimitive != null && nextPrimitive.kind === 'analytic') {
+          const localToWorld = asMat4(nextPrimitive.transform ?? IDENTITY_MAT4);
+          const maybeWorldToLocal = invertMat4(localToWorld);
+          const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
+          if (maybeWorldToLocal == null) {
+            console.warn(
+              `[vitrum/pt-webgpu] Primitive "${nextPrimitive.id}" has non-invertible analytic transform; using identity fallback.`,
+            );
+          }
+          const byteOffset = analyticIndex * 16 * Float32Array.BYTES_PER_ELEMENT;
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.analyticLocalToWorldBuffer,
+            byteOffset,
+            localToWorld.buffer,
+            localToWorld.byteOffset,
+            localToWorld.byteLength,
+          );
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.analyticWorldToLocalBuffer,
+            byteOffset,
+            worldToLocal.buffer,
+            worldToLocal.byteOffset,
+            worldToLocal.byteLength,
+          );
+          this.#sceneBuffers.analyticLocalToWorld.set(localToWorld, analyticIndex * 16);
+          this.#sceneBuffers.analyticWorldToLocal.set(worldToLocal, analyticIndex * 16);
+          this.#scene = nextScene;
+          this.reset();
+          return;
+        }
+      }
+    }
+    if (
+      currentPrimitive != null &&
+      this.#sceneBuffers != null &&
+      this.#canFastPathTransformPatch(currentPrimitive, patch)
+    ) {
+      const tlas = rebuildTlasForSceneTransforms(
+        nextScene,
+        this.#sceneBuffers.primitiveTlasBindings,
+        {
+          tlasNodes: this.#sceneBuffers.tlasNodes,
+          tlasInstanceIndices: this.#sceneBuffers.tlasInstanceIndices,
+          tlasBlasRoots: this.#sceneBuffers.tlasBlasRoots,
+          tlasInstanceWorldToLocal: this.#sceneBuffers.tlasInstanceWorldToLocal,
+        },
+      );
+      if (tlas.ok && this.#canReuseTlasBufferLengths(this.#sceneBuffers, tlas)) {
+        if (tlas.tlasNodes.byteLength > 0) {
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.tlasNodesBuffer,
+            0,
+            tlas.tlasNodes.buffer,
+            tlas.tlasNodes.byteOffset,
+            tlas.tlasNodes.byteLength,
+          );
+        }
+        if (tlas.tlasInstanceIndices.byteLength > 0) {
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.tlasInstanceIndicesBuffer,
+            0,
+            tlas.tlasInstanceIndices.buffer,
+            tlas.tlasInstanceIndices.byteOffset,
+            tlas.tlasInstanceIndices.byteLength,
+          );
+        }
+        if (tlas.tlasBlasRoots.byteLength > 0) {
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.tlasBlasRootsBuffer,
+            0,
+            tlas.tlasBlasRoots.buffer,
+            tlas.tlasBlasRoots.byteOffset,
+            tlas.tlasBlasRoots.byteLength,
+          );
+        }
+        if (tlas.tlasInstanceWorldToLocal.byteLength > 0) {
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.tlasInstanceWorldToLocalBuffer,
+            0,
+            tlas.tlasInstanceWorldToLocal.buffer,
+            tlas.tlasInstanceWorldToLocal.byteOffset,
+            tlas.tlasInstanceWorldToLocal.byteLength,
+          );
+        }
+        if (tlas.tlasInstanceLocalToWorld.byteLength > 0) {
+          this.#device.queue.writeBuffer(
+            this.#sceneBuffers.tlasInstanceLocalToWorldBuffer,
+            0,
+            tlas.tlasInstanceLocalToWorld.buffer,
+            tlas.tlasInstanceLocalToWorld.byteOffset,
+            tlas.tlasInstanceLocalToWorld.byteLength,
+          );
+        }
+        const mutableSceneBuffers = this.#sceneBuffers as unknown as {
+          tlasNodes: Uint32Array;
+          tlasInstanceIndices: Uint32Array;
+          tlasBlasRoots: Uint32Array;
+          tlasInstanceWorldToLocal: Float32Array;
+          tlasInstanceLocalToWorld: Float32Array;
+          tlasNodeCount: number;
+        };
+        mutableSceneBuffers.tlasNodes = tlas.tlasNodes;
+        mutableSceneBuffers.tlasInstanceIndices = tlas.tlasInstanceIndices;
+        mutableSceneBuffers.tlasBlasRoots = tlas.tlasBlasRoots;
+        mutableSceneBuffers.tlasInstanceWorldToLocal = tlas.tlasInstanceWorldToLocal;
+        mutableSceneBuffers.tlasInstanceLocalToWorld = tlas.tlasInstanceLocalToWorld;
+        mutableSceneBuffers.tlasNodeCount = Math.floor(tlas.tlasNodes.length / 8);
+        this.#scene = nextScene;
+        for (const warning of tlas.warnings) {
+          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        }
+        this.reset();
+        return;
+      }
+    }
     if (this.#canFastPathMaterialPatch(patch) && this.#sceneBuffers != null) {
       const materialIndex = this.#materialIndexForPrimitive(nextScene, id);
       const primitive = nextScene.primitives.find((p) => p.id === id);
@@ -640,6 +853,7 @@ class PTEngineWebGPU implements Engine {
 
   renderFrame(input: FrameInput): FrameOutput {
     this.#assertLive('renderFrame');
+    const frameStartMs = globalThis.performance?.now?.() ?? Date.now();
 
     if (this.#slot.get() === 'paused') {
       const pq = input.quality ?? {};
@@ -648,7 +862,7 @@ class PTEngineWebGPU implements Engine {
       if (accumTexture == null) {
         return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
       }
-      return {
+      const output: FrameOutput = {
         kind: 'rendered',
         primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexture),
         ...(this.#normalDepthTexture != null
@@ -666,10 +880,25 @@ class PTEngineWebGPU implements Engine {
         samplesAccumulated: this.#samplesAccumulated,
         isConverged: this.#samplesAccumulated >= targetSppPaused,
       };
+      const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
+      const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
+      this.#emitFrameStats({
+        frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
+        spp: 0,
+        ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
+      });
+      this.#emitProgress({
+        kind: 'pt-spp',
+        current: this.#samplesAccumulated,
+        target: targetSppPaused,
+        fraction: targetSppPaused > 0 ? Math.max(0, Math.min(1, this.#samplesAccumulated / targetSppPaused)) : 1,
+      });
+      return output;
     }
 
     const q = input.quality ?? {};
     this.#activeBounces = Math.max(1, Math.min(q.bounces ?? this.#maxBouncesLimit, this.#maxBouncesLimit));
+    const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
     const resolution = q.resolutionFactor ?? 1;
     const width = Math.max(1, Math.floor(input.viewport.width * resolution));
     const height = Math.max(1, Math.floor(input.viewport.height * resolution));
@@ -690,6 +919,42 @@ class PTEngineWebGPU implements Engine {
       this.#sceneBuffers == null
     ) {
       throw new Error('renderFrame: failed to initialize WebGPU pipeline resources');
+    }
+
+    const accumTexture = this.#accumTexture;
+    if (accumTexture != null && this.#samplesAccumulated >= targetSpp) {
+      const output: FrameOutput = {
+        kind: 'rendered',
+        primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexture),
+        ...(this.#normalDepthTexture != null
+          ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
+          : {}),
+        ...(this.#albedoTexture != null
+          ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
+          : {}),
+        ...(this.#varianceTexture != null
+          ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
+          : {}),
+        ...(this.#motionVectorsTexture != null
+          ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
+          : {}),
+        samplesAccumulated: this.#samplesAccumulated,
+        isConverged: true,
+      };
+      const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
+      const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
+      this.#emitFrameStats({
+        frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
+        spp: 0,
+        ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
+      });
+      this.#emitProgress({
+        kind: 'pt-spp',
+        current: this.#samplesAccumulated,
+        target: targetSpp,
+        fraction: 1,
+      });
+      return output;
     }
 
     const paramsArrayBuffer = this.#buildParamsBuffer(input, width, height);
@@ -748,14 +1013,13 @@ class PTEngineWebGPU implements Engine {
     this.#device.queue.submit([encoder.finish()]);
 
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
-    const targetSpp = Math.min(q.samplesTarget ?? 16, this.#maxSamplesLimit);
-    const accumTexture = this.#accumTexture;
-    if (accumTexture == null) {
+    const accumTexturePost = this.#accumTexture;
+    if (accumTexturePost == null) {
       return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     }
-    return {
+    const output: FrameOutput = {
       kind: 'rendered',
-      primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexture),
+      primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexturePost),
       ...(this.#normalDepthTexture != null
         ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
         : {}),
@@ -771,6 +1035,20 @@ class PTEngineWebGPU implements Engine {
       samplesAccumulated: this.#samplesAccumulated,
       isConverged: this.#samplesAccumulated >= targetSpp,
     };
+    const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
+    const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
+    this.#emitFrameStats({
+      frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
+      spp: 1,
+      ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
+    });
+    this.#emitProgress({
+      kind: 'pt-spp',
+      current: this.#samplesAccumulated,
+      target: targetSpp,
+      fraction: targetSpp > 0 ? Math.max(0, Math.min(1, this.#samplesAccumulated / targetSpp)) : 1,
+    });
+    return output;
   }
 
   reset(): void {
@@ -804,7 +1082,23 @@ class PTEngineWebGPU implements Engine {
     this.#computePipeline = null;
     this.#bindGroupLayout = null;
     this.#scene = null;
+    this.#onFrameSubs.clear();
+    this.#onProgressSubs.clear();
     this.#slot.set('disposed');
+  }
+
+  onFrame(cb: (stats: FrameStats) => void): () => void {
+    this.#onFrameSubs.add(cb);
+    return () => {
+      this.#onFrameSubs.delete(cb);
+    };
+  }
+
+  onProgress(cb: (progress: ProgressStats) => void): () => void {
+    this.#onProgressSubs.add(cb);
+    return () => {
+      this.#onProgressSubs.delete(cb);
+    };
   }
 }
 
@@ -828,14 +1122,14 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
       `createPTEngine_WebGPU: maxSamplesPerPixel structural cap must be >= 1 (got ${maxSpp})`,
     );
   }
-  if (maxBounces !== undefined && maxBounces > PROTOTYPE_MAX_BOUNCES) {
+  if (maxBounces !== undefined && maxBounces > EXPERIMENTAL_MAX_BOUNCES) {
     console.warn(
-      `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to prototype limit ${PROTOTYPE_MAX_BOUNCES}.`,
+      `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to experimental limit ${EXPERIMENTAL_MAX_BOUNCES}.`,
     );
   }
   if (opts.denoiser != null && opts.denoiser !== 'none') {
     console.warn(
-      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but prototype backend has no denoiser integration yet.`,
+      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but experimental backend has no denoiser integration yet.`,
     );
   }
   const maxStorageBuffers = opts.device.limits?.maxStorageBuffersPerShaderStage;

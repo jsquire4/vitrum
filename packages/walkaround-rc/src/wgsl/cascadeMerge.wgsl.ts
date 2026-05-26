@@ -21,7 +21,10 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
+import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
+
 export const CASCADE_MERGE_WGSL = /* wgsl */`
+${OCTAHEDRAL_CORE_WGSL}
 
 // ─── octCellSolidAngle ───────────────────────────────────────────────────────
 // Per-bin solid-angle estimate for a cell at grid position (cx, cy) in an
@@ -41,18 +44,6 @@ export const CASCADE_MERGE_WGSL = /* wgsl */`
 // Independent Unit Vectors", JCGT §A.2 — octahedral Jacobian / texel area.
 // Reference: Sannikov 2023, §3 — cascade conservation law.
 
-fn octDecodeForMerge(u: f32, v: f32) -> vec3f {
-  var nx = u;
-  var ny = v;
-  let nz = 1.0 - abs(u) - abs(v);
-  if nz < 0.0 {
-    let ox = nx;
-    nx = (1.0 - abs(ny)) * select(-1.0, 1.0, ox >= 0.0);
-    ny = (1.0 - abs(ox)) * select(-1.0, 1.0, ny >= 0.0);
-  }
-  return normalize(vec3f(nx, ny, nz));
-}
-
 // Spherical quad area via two-triangle cross-product approximation.
 fn sphericalQuadAreaForMerge(p00: vec3f, p10: vec3f, p01: vec3f, p11: vec3f) -> f32 {
   let d1 = cross(p10 - p00, p01 - p00);
@@ -68,10 +59,10 @@ fn octCellSolidAngle(cx: u32, cy: u32, N: u32) -> f32 {
   let v0 = -1.0 + f32(cy) * cellWidth;
   let u1 = u0 + cellWidth;
   let v1 = v0 + cellWidth;
-  let p00 = octDecodeForMerge(u0, v0);
-  let p10 = octDecodeForMerge(u1, v0);
-  let p01 = octDecodeForMerge(u0, v1);
-  let p11 = octDecodeForMerge(u1, v1);
+  let p00 = octDecode(vec2f(u0, v0));
+  let p10 = octDecode(vec2f(u1, v0));
+  let p01 = octDecode(vec2f(u0, v1));
+  let p11 = octDecode(vec2f(u1, v1));
   return sphericalQuadAreaForMerge(p00, p10, p01, p11);
 }
 

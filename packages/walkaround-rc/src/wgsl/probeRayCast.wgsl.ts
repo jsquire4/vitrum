@@ -30,6 +30,7 @@
  */
 
 import { MATERIAL_ENTRY_WGSL, BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
+import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 export const PROBE_RAY_CAST_WGSL = /* wgsl */`
 ${MATERIAL_ENTRY_WGSL}
@@ -99,26 +100,9 @@ struct CascadeUniforms {
 // field-rename collapses two drifted layouts (DDGI / RC) into one.
 // (ReSTIR did not use this struct — it packs per-tri RGBA8 into bvhIndex.w.)
 
-// ─── Octahedral helpers (from @vitrum/shared-bvh octahedral.wgsl.ts) ─────────
+// ─── Octahedral helpers (canonical from @vitrum/shared-samplers) ─────────────
 // Call sites use octDecode(uv * 2.0 - 1.0) to remap from [0,1] to [-1,1].
-
-fn octEncode(dir: vec3f) -> vec2f {
-  // Zero-vector guard — see octahedralCore.wgsl for rationale.
-  let n = dir / max(abs(dir.x) + abs(dir.y) + abs(dir.z), 1e-20);
-  if (n.z >= 0.0) {
-    return n.xy;
-  }
-  return (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
-}
-
-fn octDecode(oct: vec2f) -> vec3f {
-  let n = vec3f(oct, 1.0 - abs(oct.x) - abs(oct.y));
-  if (n.z < 0.0) {
-    let xy = (1.0 - abs(n.yx)) * vec2f(sign(n.x), sign(n.y));
-    return normalize(vec3f(xy, n.z));
-  }
-  return normalize(n);
-}
+${OCTAHEDRAL_CORE_WGSL}
 
 // ─── Probe-ray helpers ────────────────────────────────────────────────────────
 // Verbatim from probeRayHelpers wgslFn in probeRayCast.wgsl.ts.

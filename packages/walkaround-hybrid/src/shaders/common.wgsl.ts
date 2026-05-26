@@ -18,7 +18,7 @@
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
 import { BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
-import { BSDF_PRIMITIVES_WGSL, PCG_WGSL } from '@vitrum/shared-samplers';
+import { BSDF_PRIMITIVES_WGSL, LUMINANCE_WGSL, PCG_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const COMMON_WGSL = /* wgsl */ `
@@ -389,9 +389,7 @@ ${BSDF_PRIMITIVES_WGSL}
 // ============================================================
 // Utility
 // ============================================================
-fn luminance(c: vec3f) -> f32 {
-  return dot(c, vec3f(0.2126, 0.7152, 0.0722));
-}
+${LUMINANCE_WGSL}
 
 fn safe_normalize(v: vec3f) -> vec3f {
   let len = length(v);

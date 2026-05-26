@@ -83,6 +83,14 @@ Backend packages (`@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl`) are also inst
 
 This removes prior silent divergence between advertised and actual backend behavior.
 
+## Sweep Gate Commands
+
+For local technical-maturity verification in this monorepo:
+
+- `npm run baseline:wave0` — baseline gate bundle (mechanical + benchmark smoke + optional quick refs)
+- `npm run hardening:wave4` — reliability gate bundle (mechanical, strict lifecycle soak, optional quality smoke)
+- `npm run verify:mechanical` — workspace typecheck + tests + shader smoke/compile checks
+
 ## Migration Notes (2026-05 Coherence Sweep)
 
 - `FrameInput.swapChainView` / `swapChainFormat` now require branded handles from `asBackendTexture` / `asBackendTextureFormat`.
@@ -113,7 +121,7 @@ This is the design choice that makes the library survive Canvas remount, route c
 @vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI/GI + SVGF + GTAO + PPG + neural; composes RC
 @vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + GPU dispatch + receiver)
 @vitrum/pt-webgl           WebGL2 PT (wraps three-gpu-pathtracer fork)
-@vitrum/pt-webgpu          WebGPU-native PT (pre-alpha, internal)
+@vitrum/pt-webgpu          WebGPU-native PT (experimental backend)
 @vitrum/shared-bvh         Software BVH compute (CPU + GPU)
 @vitrum/shared-samplers    Sobol, Hammersley, light tree, hero-wavelength MIS
 @vitrum/shared-denoisers   À-trous, SVGF, OIDN bridge

@@ -33,6 +33,7 @@
  *   - VITRUM_CAPTURE_URL          base URL for the dev server (default 5174)
  *   - VITRUM_BENCH_DURATION_MS    poll window per (scenario, mode) (default 30000)
  *   - VITRUM_BENCH_POLL_MS        polling interval (default 100)
+ *   - VITRUM_BENCH_WARMUP_TIMEOUT_MS max wait for first live telemetry before timed sampling
  *   - VITRUM_BENCH_SAMPLES_TARGET vitrumSpp for the URL (default 128)
  *   - VITRUM_BENCH_WIDTH          render width (default 1280)
  *   - VITRUM_BENCH_HEIGHT         render height (default 720)
@@ -47,16 +48,40 @@ import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+function parseNumberEnv(name, fallback, opts = {}) {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new Error(`${name} must be a finite number (got "${raw}").`);
+  }
+  const min = opts.min ?? -Infinity;
+  const max = opts.max ?? Infinity;
+  if (value < min || value > max) {
+    throw new Error(`${name} must be within [${min}, ${max}] (got ${value}).`);
+  }
+  return opts.integer === true ? Math.trunc(value) : value;
+}
+
 const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5174/';
-const benchDurationMs = Math.max(1_000, Number(process.env.VITRUM_BENCH_DURATION_MS ?? '30000'));
-const pollIntervalMs = Math.max(10, Number(process.env.VITRUM_BENCH_POLL_MS ?? '100'));
-const samplesTarget = Math.max(1, Number(process.env.VITRUM_BENCH_SAMPLES_TARGET ?? '128'));
-const renderWidth = Math.max(1, Number(process.env.VITRUM_BENCH_WIDTH ?? '1280'));
-const renderHeight = Math.max(1, Number(process.env.VITRUM_BENCH_HEIGHT ?? '720'));
+const benchDurationMs = parseNumberEnv('VITRUM_BENCH_DURATION_MS', 30_000, { min: 1_000, integer: true });
+const pollIntervalMs = parseNumberEnv('VITRUM_BENCH_POLL_MS', 100, { min: 10, integer: true });
+const samplesTarget = parseNumberEnv('VITRUM_BENCH_SAMPLES_TARGET', 128, { min: 1, integer: true });
+const renderWidth = parseNumberEnv('VITRUM_BENCH_WIDTH', 1280, { min: 1, integer: true });
+const renderHeight = parseNumberEnv('VITRUM_BENCH_HEIGHT', 720, { min: 1, integer: true });
 const headless = process.env.VITRUM_BENCH_HEADLESS !== '0';
-// Page settle / nav timeouts derived from the bench duration so a very short
-// run doesn't get killed by a 30 s networkidle wait.
-const navTimeoutMs = Math.max(10_000, benchDurationMs);
+const strict = process.env.VITRUM_BENCH_STRICT === '1';
+const failFast = process.env.VITRUM_BENCH_FAIL_FAST === '1';
+// Page settle / nav timeouts are configurable because capture mode can take
+// longer than interactive/safe/final to compile on constrained machines.
+const navTimeoutMs = parseNumberEnv('VITRUM_BENCH_NAV_TIMEOUT_MS', Math.max(60_000, benchDurationMs * 2), {
+  min: 10_000,
+  integer: true,
+});
+const warmupTimeoutMs = parseNumberEnv('VITRUM_BENCH_WARMUP_TIMEOUT_MS', Math.min(navTimeoutMs, 30_000), {
+  min: 1_000,
+  integer: true,
+});
 
 const DEFAULT_QUALITY_MODES = ['interactive', 'safe', 'final', 'capture'];
 const DEFAULT_SCENARIOS = [
@@ -138,6 +163,8 @@ async function runOne(browser, scenario, qualityMode) {
   let totalFrames = 0;
   let didConverge = false;
   let pollErrorCount = 0;
+  let warmupMs = 0;
+  let warmupReady = false;
 
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
@@ -154,6 +181,35 @@ async function runOne(browser, scenario, qualityMode) {
       .catch(() => {
         // Telemetry never appeared — record an empty sample for visibility.
       });
+
+    const warmupStart = Date.now();
+    while (Date.now() - warmupStart < warmupTimeoutMs) {
+      const reading = await page
+        .evaluate(() => {
+          const p = globalThis.__vitrum?.ptWebgl;
+          if (p == null) return null;
+          return {
+            spp: p.spp,
+            lastFrameMs: p.lastFrameMs,
+            frame: p.frame,
+          };
+        })
+        .catch(() => {
+          pollErrorCount++;
+          return null;
+        });
+      if (
+        reading != null &&
+        ((typeof reading.frame === 'number' && reading.frame > 0) ||
+          (typeof reading.spp === 'number' && reading.spp > 0) ||
+          (typeof reading.lastFrameMs === 'number' && reading.lastFrameMs > 0))
+      ) {
+        warmupReady = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
+    }
+    warmupMs = Date.now() - warmupStart;
 
     const deadline = Date.now() + benchDurationMs;
     while (Date.now() < deadline) {
@@ -215,6 +271,8 @@ async function runOne(browser, scenario, qualityMode) {
     startedAt,
     finishedAt: new Date().toISOString(),
     durationMs: benchDurationMs,
+    warmupMs,
+    warmupReady,
     framesRendered: totalFrames,
     totalSpp,
     sppPerSec,
@@ -236,26 +294,52 @@ async function runOne(browser, scenario, qualityMode) {
 }
 
 async function main() {
-  const jsHeapMb = Number(process.env.VITRUM_JS_HEAP_MB ?? '4096');
+  const jsHeapMb = parseNumberEnv('VITRUM_JS_HEAP_MB', 4096, { min: 256, integer: true });
   const browser = await chromium.launch({
     headless,
     args: ['--disable-dev-shm-usage', `--js-flags=--max-old-space-size=${jsHeapMb}`],
   });
 
   const entries = [];
+  const failures = [];
   try {
     // Sequential — GPU contention makes parallel runs noisy.
     for (const scenario of scenarios) {
       for (const qualityMode of qualityModes) {
         console.log(`[bench] running ${scenario} × ${qualityMode}...`);
-        // eslint-disable-next-line no-await-in-loop
-        const result = await runOne(browser, scenario, qualityMode);
-        entries.push(result);
-        console.log(
-          `[bench]   frames=${result.framesRendered} totalSpp=${result.totalSpp}` +
-            ` sppPerSec=${result.sppPerSec == null ? 'n/a' : result.sppPerSec.toFixed(2)}` +
-            ` meanFrameMs=${result.meanFrameMs == null ? 'n/a' : result.meanFrameMs.toFixed(2)}`,
-        );
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const result = await runOne(browser, scenario, qualityMode);
+          entries.push({ ...result, status: 'ok' });
+          console.log(
+            `[bench]   frames=${result.framesRendered} totalSpp=${result.totalSpp}` +
+              ` sppPerSec=${result.sppPerSec == null ? 'n/a' : result.sppPerSec.toFixed(2)}` +
+              ` meanFrameMs=${result.meanFrameMs == null ? 'n/a' : result.meanFrameMs.toFixed(2)}`,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failures.push({ scenario, qualityMode, message });
+          entries.push({
+            scenario,
+            qualityMode,
+            startedAt: new Date().toISOString(),
+            finishedAt: new Date().toISOString(),
+            durationMs: benchDurationMs,
+            status: 'error',
+            error: message,
+            config: {
+              url: buildUrl(scenario, qualityMode),
+              renderWidth,
+              renderHeight,
+              samplesTarget,
+              pollIntervalMs,
+            },
+          });
+          console.error(`[bench]   ERROR ${scenario} × ${qualityMode}: ${message}`);
+          if (failFast) {
+            throw error;
+          }
+        }
       }
     }
   } finally {
@@ -269,18 +353,30 @@ async function main() {
       platform: process.platform,
       node: process.version,
       headless,
+      strict,
+      failFast,
       captureUrlBase,
       benchDurationMs,
       pollIntervalMs,
+      warmupTimeoutMs,
     },
     qualityModes,
     scenarios,
     results: entries,
+    summary: {
+      total: entries.length,
+      failures: failures.length,
+      failedPairs: failures,
+    },
   };
 
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
   console.log(`Wrote ${outputPath}`);
+  if (strict && failures.length > 0) {
+    console.error(`[bench] strict mode: ${failures.length} failed scenario/quality pair(s).`);
+    process.exit(1);
+  }
 }
 
 await main();

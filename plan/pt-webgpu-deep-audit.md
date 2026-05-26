@@ -59,12 +59,11 @@ frequently relisted) — FIXED via commit `a7dd51a`:
 `sampleGgxVndfTangent` (Heitz 2018 Algorithm 1); `glossyReflectionSample`
 calls it directly so sampling and PDF use the same distribution.
 
-The package remains pre-alpha — see `packages/pt-webgpu/README.md` for
-the explicit pre-alpha boundary. The remaining gaps are NOT code bugs
-found by this audit; they are the absence of GPU-verified visual
-reference captures, public API stability commitments, and feature
-completeness relative to the WebGL fork (spectral parity, full
-hero-wavelength MIS, denoiser integration).
+The package is an **experimental backend** — see `packages/pt-webgpu/README.md`
+for the explicit boundary. The remaining gaps are NOT code bugs found by
+this audit; they are the absence of GPU-verified visual reference captures,
+public API stability commitments, and feature completeness relative to the
+WebGL fork (spectral parity, full hero-wavelength MIS, denoiser integration).
 
 ---
 

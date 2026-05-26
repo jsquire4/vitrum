@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
-import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
+import { buildPackedScene, rebuildTlasForSceneTransforms } from '../scene/uploadSceneBuffers.js';
 
 function makeScene(): Scene {
   return {
@@ -138,5 +138,45 @@ describe('buildPackedScene core packing', () => {
     expect(packed.tlasBlasRoots[0]).toBe(0);
     expect(packed.tlasInstanceLocalToWorld[12]).toBeCloseTo(3, 5);
     expect(packed.tlasInstanceWorldToLocal[12]).toBeCloseTo(-3, 5);
+  });
+
+  it('refits existing TLAS nodes for transform-only scene changes', () => {
+    const base = makeScene();
+    const baseMesh = base.primitives[0];
+    if (baseMesh == null || baseMesh.kind !== 'mesh') {
+      throw new Error('test setup error: expected mesh primitive');
+    }
+    const packed = buildPackedScene(base);
+    const moved: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...baseMesh,
+          transform: asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            2, 0, 0, 1,
+          ])),
+        },
+      ],
+    };
+    const rebuilt = rebuildTlasForSceneTransforms(
+      moved,
+      packed.primitiveTlasBindings,
+      {
+        tlasNodes: packed.tlasNodes,
+        tlasInstanceIndices: packed.tlasInstanceIndices,
+        tlasBlasRoots: packed.tlasBlasRoots,
+        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+      },
+    );
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.tlasNodes.length).toBe(packed.tlasNodes.length);
+    expect(Array.from(rebuilt.tlasInstanceIndices)).toEqual(Array.from(packed.tlasInstanceIndices));
+    expect(rebuilt.tlasInstanceLocalToWorld[12]).toBeCloseTo(2, 5);
+    expect(rebuilt.tlasInstanceWorldToLocal[12]).toBeCloseTo(-2, 5);
+    expect(rebuilt.tlasNodes[0]).not.toBe(packed.tlasNodes[0]);
   });
 });

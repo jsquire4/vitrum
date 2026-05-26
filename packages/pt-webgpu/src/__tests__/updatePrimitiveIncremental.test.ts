@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
 
@@ -33,6 +34,52 @@ function makeScene(): Scene {
   };
 }
 
+function makeInstancedScene(): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'instanced-mesh',
+        id: 'instanced-a',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [0.7, 0.7, 0.7], roughness: 0.4, metallic: 0.1 },
+        instances: [
+          asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1,
+          ])),
+          asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            2, 0, 0, 1,
+          ])),
+        ],
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+function makeAnalyticScene(): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'analytic',
+        id: 'analytic-a',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 0.5]),
+        material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.5, metallic: 0.1 },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function makeStubDevice() {
   const writeBuffer = vi.fn();
   const createBuffer = vi.fn((_desc: unknown) => ({
@@ -55,7 +102,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(engine.capabilities.supportsIncrementalScene).toBe(true);
     expect(patchSupport?.material).toBe(true);
     expect(patchSupport?.positions).toBe(false);
-    expect(patchSupport?.transform).toBe(false);
+    expect(patchSupport?.transform).toBe(true);
   });
 
   it('updates material slot in-place without rebuilding scene buffers', async () => {
@@ -96,5 +143,103 @@ describe('pt-webgpu incremental primitive updates', () => {
 
     expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
     expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 1);
+  });
+
+  it('updates TLAS buffers in-place for transform-only mesh patches', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeScene());
+
+    const writesBefore = writeBuffer.mock.calls.length;
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    engine.updatePrimitive?.('mesh-b', {
+      transform: asMat4(new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        2, 0, 0, 1,
+      ])),
+    });
+
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
+  });
+
+  it('updates TLAS buffers in-place for instanced transform patches', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeInstancedScene());
+
+    const writesBefore = writeBuffer.mock.calls.length;
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    engine.updatePrimitive?.('instanced-a', {
+      instances: [
+        asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          1, 0, 0, 1,
+        ])),
+        asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          3, 0, 0, 1,
+        ])),
+      ],
+    });
+
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
+  });
+
+  it('falls back to full rebuild when instanced transform count changes', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeInstancedScene());
+
+    const writesBefore = writeBuffer.mock.calls.length;
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    engine.updatePrimitive?.('instanced-a', {
+      instances: [
+        asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          1, 0, 0, 1,
+        ])),
+      ],
+    });
+
+    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 5);
+  });
+
+  it('updates analytic transform buffers in-place', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeAnalyticScene());
+
+    const writesBefore = writeBuffer.mock.calls.length;
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    engine.updatePrimitive?.('analytic-a', {
+      transform: asMat4(new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        1, 0, 0, 1,
+      ])),
+    });
+
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 2);
   });
 });

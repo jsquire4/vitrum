@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Wave-4 reliability gate runners (2026-05-26):**
+  - `@vitrum/benchmark-runner` gained `run-lifecycle-soak.mjs` for repeated lifecycle churn checks (navigation/quality/size permutations with telemetry-progress assertions and optional dev-server auto-start).
+  - Added `run-wave4-hardening.mjs` orchestration gate (`hardening:wave4`) combining mechanical checks, strict lifecycle soak, and optional quality-mode smoke pass into a single report artifact under `tools/benchmark-runner/results/wave4/`.
+  - Added benchmark-runner workspace validation scripts (`npm run typecheck --workspace @vitrum/benchmark-runner`, `npm test --workspace @vitrum/benchmark-runner`) using syntax checks across all local runner entrypoints.
+
 - **Coherence + contract truthfulness sweep (2026-05-25):**
   - `EngineCapabilities` gained explicit capability matrix fields: `supportedPrimitiveKinds`, `supportedEnvironmentKinds`, `incrementalPatchSupport`, `presentationMode`, and `experimentalFeatures`.
   - New `@vitrum/stained-glass-extensions` package extracted stained-glass-specific wire contracts (`SURFACE_TEXTURE_ID`, `VITRUM_USER_DATA_KEYS`, came UBO packer).
@@ -17,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - SVGF-real object-ID fallback switched to conservative history rejection (`currObjId=0`, `prevObjId=1`) until true object-ID buffers are wired.
 
 ### Changed
+
+- Benchmark-runner env parsing now fail-fast for invalid numeric configuration values (quality-mode bench + lifecycle soak), preventing silent NaN-driven false positives.
+- Project maturity wording is normalized from "pre-alpha/prototype" to "experimental backend" across active architecture docs (`README.md`, `AGENTS.md`, `CLAUDE.md`, `plan/library-architecture.md`).
 
 - `FrameInput` swap-chain handles are now strictly branded backend textures; host callsites must brand `swapChainView` / `swapChainFormat` using `asBackendTexture` and `asBackendTextureFormat`.
 - `@vitrum/pt-webgl` and `@vitrum/pt-webgpu` now expose patch methods through the engine surface and truthfully report patch granularity via `incrementalPatchSupport`.

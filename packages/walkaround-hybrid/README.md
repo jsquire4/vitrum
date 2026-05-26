@@ -1,8 +1,8 @@
 # @vitrum/walkaround-hybrid
 
-**Stability:** pre-alpha — `HybridEngine` and shader/pipeline APIs may change until the extraction milestones in `plan/generalized-library-milestones.md` are closed.
+**Stability:** production-grade for the shipped walkaround pipeline (DDGI, ReSTIR-DI/GI, GTAO, SVGF, RC, PPG, neural). Public API surface is still evolving with host-contract work in `@vitrum/core`.
 
-WebGPU **ReSTIR DI + ReSTIR-GI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass, **GTAO** ambient occlusion (half-res + bilateral upsample), per-channel **SVGF / à-trous-variance** denoising on direct + indirect, and opt-in **PPG** path guiding, **neural U-Net** denoiser, and **Radiance Cascades** (W8 sprint in flight). RC is currently behind `HybridEngineOptions.rcEnabled` and dispatches cascades each frame against the engine's own raw `GPUBuffer` allocation (no THREE WebGPU renderer dependency); cascade-0 sampling in the shade pass + MIS composition with DDGI / ReSTIR-GI is W8 Phase 3 work (see [plan/w8-rc-mis-composition.md](../../plan/w8-rc-mis-composition.md)).
+WebGPU **ReSTIR DI + ReSTIR-GI** walkaround engine with **DDGI** probe updates and atlas sampling in the shade pass, **GTAO** ambient occlusion (half-res + bilateral upsample), per-channel **SVGF / à-trous-variance** denoising on direct + indirect, and opt-in **PPG** path guiding, **neural U-Net** denoiser, and **Radiance Cascades** (W8 shipped). RC is opt-in via `HybridEngineOptions.rcEnabled` and dispatches cascades each frame against the engine's own raw `GPUBuffer` allocation (no THREE WebGPU renderer dependency); cascade-0 sampling + MIS composition with DDGI / ReSTIR-GI are documented in [plan/w8-rc-mis-composition.md](../../plan/w8-rc-mis-composition.md).
 
 Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **DDGI** (Dynamic Diffuse Global Illumination) — probe-atlas irradiance, updated via compute each frame.

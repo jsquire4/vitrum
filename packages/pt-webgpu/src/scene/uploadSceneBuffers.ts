@@ -1,8 +1,8 @@
-import { asMat4, type Scene, type SceneEmitter } from '@vitrum/core';
+import { asMat4, type Scene, type SceneEmitter, type ScenePrimitive } from '@vitrum/core';
 import { transformPoint } from '../math/mat4.js';
 import { invertMat4 } from '../math/mat4.js';
 import { buildCpuBvh } from './buildCpuBvh.js';
-import { buildSceneTlas } from './tlasBridge.js';
+import { buildSceneTlas, refitSceneTlas } from './tlasBridge.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
 import { environmentParams } from './environmentPacking.js';
 import {
@@ -38,6 +38,8 @@ interface PackedSceneData {
   readonly tlasInstanceWorldToLocal: Float32Array;
   /** Local-to-world matrices, 16 floats per instance. */
   readonly tlasInstanceLocalToWorld: Float32Array;
+  /** Stable primitive→TLAS binding metadata for transform-only fast paths. */
+  readonly primitiveTlasBindings: readonly PrimitiveTlasBinding[];
   readonly analyticHeaders: Float32Array; // vec4f per analytic primitive: [shapeId, materialId, paramsOffset, 0]
   readonly analyticParams: Float32Array; // vec4f array, two vec4f per analytic primitive (8 floats)
   readonly analyticLocalToWorld: Float32Array; // 4 vec4f (mat4) per analytic primitive
@@ -97,6 +99,15 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly tlasInstanceWorldToLocalBuffer: GPUBuffer;
   readonly tlasInstanceLocalToWorldBuffer: GPUBuffer;
   readonly destroy: () => void;
+}
+
+export interface PrimitiveTlasBinding {
+  readonly primitiveId: string;
+  readonly primitiveKind: 'mesh' | 'instanced-mesh' | 'skinned-mesh';
+  readonly blasRoot: number;
+  readonly instanceCount: number;
+  readonly localAabbMin: readonly [number, number, number];
+  readonly localAabbMax: readonly [number, number, number];
 }
 
 function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBufferView): GPUBuffer {
@@ -248,6 +259,7 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
   const triMaterialIds: number[] = [];
   const bvhNodeWords: number[] = [];
   const pendingTlasInstances: PendingTlasInstance[] = [];
+  const primitiveTlasBindings: PrimitiveTlasBinding[] = [];
   const materials: number[] = [];
   const analyticHeaders: number[] = [];
   const analyticParams: number[] = [];
@@ -265,7 +277,7 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
       k === 'mesh-area';
     if (!supported) {
       warnings.push(
-        `Emitter "${(emitter as SceneEmitter).id}" (${String(k)}) ignored; prototype supports directional, point, spot, rect-area, disc-area (packed as rect), and mesh-area emitters only.`,
+        `Emitter "${(emitter as SceneEmitter).id}" (${String(k)}) ignored; experimental backend supports directional, point, spot, rect-area, disc-area (packed as rect), and mesh-area emitters only.`,
       );
     }
   }
@@ -417,6 +429,14 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
         aabbMax: worldAabb.max,
       });
     }
+    primitiveTlasBindings.push({
+      primitiveId: primitive.id,
+      primitiveKind: primitive.kind,
+      blasRoot: nodeBase,
+      instanceCount: transforms.length,
+      localAabbMin: localAabb.min,
+      localAabbMax: localAabb.max,
+    });
   }
 
   const packedPositions = new Float32Array(positions);
@@ -442,6 +462,7 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
     tlasBlasRoots: tlasBuild.tlasBlasRoots,
     tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+    primitiveTlasBindings,
     analyticHeaders: new Float32Array(analyticHeaders),
     analyticParams: new Float32Array(analyticParams),
     analyticLocalToWorld: new Float32Array(analyticLocalToWorld),
@@ -467,6 +488,128 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
     hasEnvironmentMap: environment.hasHdri,
     environmentMapTexels: environment.hdriTexels,
     environmentMapCdf: environment.hdriCdf,
+  };
+}
+
+export function rebuildTlasForSceneTransforms(
+  scene: Scene,
+  primitiveTlasBindings: readonly PrimitiveTlasBinding[],
+  prevTlas?: {
+    readonly tlasNodes: Uint32Array;
+    readonly tlasInstanceIndices: Uint32Array;
+    readonly tlasBlasRoots: Uint32Array;
+    readonly tlasInstanceWorldToLocal: Float32Array;
+  },
+):
+  | ({
+      readonly ok: true;
+      readonly tlasNodes: Uint32Array;
+      readonly tlasInstanceIndices: Uint32Array;
+      readonly tlasBlasRoots: Uint32Array;
+      readonly tlasInstanceWorldToLocal: Float32Array;
+      readonly tlasInstanceLocalToWorld: Float32Array;
+      readonly warnings: readonly string[];
+    })
+  | ({
+      readonly ok: false;
+      readonly reason: string;
+    })
+{
+  const primitiveById = new Map<string, ScenePrimitive>();
+  for (const primitive of scene.primitives) {
+    primitiveById.set(primitive.id, primitive);
+  }
+  const warnings: string[] = [];
+  const pendingTlasInstances: PendingTlasInstance[] = [];
+  const refitAabbs: Array<{ min: readonly [number, number, number]; max: readonly [number, number, number] }> = [];
+  for (const binding of primitiveTlasBindings) {
+    const primitive = primitiveById.get(binding.primitiveId);
+    if (primitive == null) {
+      return {
+        ok: false,
+        reason: `rebuildTlasForSceneTransforms: primitive "${binding.primitiveId}" no longer exists.`,
+      };
+    }
+    if (primitive.kind !== binding.primitiveKind) {
+      return {
+        ok: false,
+        reason: `rebuildTlasForSceneTransforms: primitive "${binding.primitiveId}" changed kind ` +
+          `from "${binding.primitiveKind}" to "${primitive.kind}".`,
+      };
+    }
+    const transforms =
+      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
+    if (transforms.length !== binding.instanceCount) {
+      return {
+        ok: false,
+        reason: `rebuildTlasForSceneTransforms: primitive "${binding.primitiveId}" instance count changed ` +
+          `from ${binding.instanceCount} to ${transforms.length}.`,
+      };
+    }
+    for (const transform of transforms) {
+      const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
+      const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
+      if (maybeWorldToLocal == null) {
+        warnings.push(
+          `Primitive "${primitive.id}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
+        );
+      }
+      const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
+      const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
+      const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
+      refitAabbs.push(worldAabb);
+      pendingTlasInstances.push({
+        blasRoot: binding.blasRoot,
+        worldToLocal,
+        localToWorld,
+        aabbMin: worldAabb.min,
+        aabbMax: worldAabb.max,
+      });
+    }
+  }
+  if (
+    prevTlas != null &&
+    prevTlas.tlasNodes.length > 0 &&
+    prevTlas.tlasInstanceIndices.length === refitAabbs.length &&
+    prevTlas.tlasBlasRoots.length === refitAabbs.length &&
+    prevTlas.tlasInstanceWorldToLocal.length === refitAabbs.length * 16
+  ) {
+    const refitNodes = new Uint32Array(prevTlas.tlasNodes);
+    refitSceneTlas(
+      {
+        nodes: refitNodes,
+        nodeCount: Math.floor(refitNodes.length / 8),
+        instanceIndices: prevTlas.tlasInstanceIndices,
+        blasRoots: prevTlas.tlasBlasRoots,
+        instanceTransforms: prevTlas.tlasInstanceWorldToLocal,
+      },
+      refitAabbs,
+    );
+    const l2w = new Float32Array(pendingTlasInstances.length * 16);
+    const w2l = new Float32Array(pendingTlasInstances.length * 16);
+    for (let i = 0; i < pendingTlasInstances.length; i += 1) {
+      l2w.set(pendingTlasInstances[i]!.localToWorld, i * 16);
+      w2l.set(pendingTlasInstances[i]!.worldToLocal, i * 16);
+    }
+    return {
+      ok: true,
+      tlasNodes: refitNodes,
+      tlasInstanceIndices: prevTlas.tlasInstanceIndices,
+      tlasBlasRoots: prevTlas.tlasBlasRoots,
+      tlasInstanceWorldToLocal: w2l,
+      tlasInstanceLocalToWorld: l2w,
+      warnings,
+    };
+  }
+  const tlas = buildTlasFromInstances(pendingTlasInstances);
+  return {
+    ok: true,
+    tlasNodes: tlas.tlasNodes,
+    tlasInstanceIndices: tlas.tlasInstanceIndices,
+    tlasBlasRoots: tlas.tlasBlasRoots,
+    tlasInstanceWorldToLocal: tlas.tlasInstanceWorldToLocal,
+    tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
+    warnings,
   };
 }
 

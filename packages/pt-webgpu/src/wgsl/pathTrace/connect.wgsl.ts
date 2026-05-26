@@ -212,7 +212,7 @@ fn bsdfAreaLightConnectionContribution(
   }
   // Sum MIS over all area lights: iterate every rect and mesh light, keep the
   // closest unoccluded hit. Cost is O(N_lights) intersection tests — acceptable
-  // for prototype scenes with ≤ 8 lights (D9 decision).
+  // for experimental scenes with ≤ 8 lights (D9 decision).
   // Ref: Veach 1997 Ch. 9 — sum-MIS is unbiased; choosing the closest hit along
   //      the BSDF-sampled direction is correct because the sample is a direction,
   //      not a point, so only the nearest light along that direction contributes.

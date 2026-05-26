@@ -31,12 +31,27 @@ describe('createPTEngine_WebGPU', () => {
     const patch = engine.capabilities.incrementalPatchSupport;
     expect(engine.capabilities.supportsIncrementalScene).toBe(true);
     expect(patch).toEqual({
-      transform: false,
+      transform: true,
       positions: false,
       material: true,
       emitter: true,
       topology: false,
     });
+    expect(engine.capabilities.experimentalFeatures?.has('experimental-backend')).toBe(true);
+  });
+
+  it('exposes frame/progress telemetry subscriptions', async () => {
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+    });
+    expect(typeof engine.onFrame).toBe('function');
+    expect(typeof engine.onProgress).toBe('function');
+    const offFrame = engine.onFrame?.(() => {});
+    const offProgress = engine.onProgress?.(() => {});
+    expect(typeof offFrame).toBe('function');
+    expect(typeof offProgress).toBe('function');
+    offFrame?.();
+    offProgress?.();
   });
 
   it('transitions state ready → disposed across the lifecycle', async () => {

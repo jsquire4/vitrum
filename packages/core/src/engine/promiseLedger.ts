@@ -110,7 +110,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
   'pt-webgpu': {
     supportsIncrementalScene: true,
     incrementalPatchSupport: {
-      transform: false,
+      transform: true,
       positions: false,
       material: true,
       emitter: true,
@@ -129,8 +129,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       updateEnvironment: true,
       setSize: false,
       updateLighting: false,
-      onFrame: false,
-      onProgress: false,
+      onFrame: true,
+      onProgress: true,
       debug: true,
     },
     frameInputPromises: {
