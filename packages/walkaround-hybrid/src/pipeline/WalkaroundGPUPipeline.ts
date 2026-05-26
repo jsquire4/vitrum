@@ -658,6 +658,18 @@ export class WalkaroundGPUPipeline {
     );
   }
 
+  /** PR-4 — upload refit TLAS nodes + instance transforms (topology unchanged). */
+  refreshTlasRefit(
+    tlasNodes: ArrayBuffer,
+    worldToLocal: ArrayBuffer,
+    localToWorld: ArrayBuffer,
+  ): void {
+    if (!this._initialized) return;
+    this._device.queue.writeBuffer(this._tlasNodesBuffer, 0, tlasNodes);
+    this._device.queue.writeBuffer(this._tlasInstanceWorldToLocalBuffer, 0, worldToLocal);
+    this._device.queue.writeBuffer(this._tlasInstanceLocalToWorldBuffer, 0, localToWorld);
+  }
+
   /**
    * Material-only fast path — partial upload of packed `bvhIndex` and
    * `bvh_beer` slices after CPU re-pack (PR-1).

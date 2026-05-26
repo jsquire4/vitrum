@@ -30,7 +30,7 @@
 
 import * as THREE from 'three';
 import type { MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum/core';
-import { refitBvhBounds } from '@vitrum/shared-bvh';
+import { refitBvhBounds, refitTlasTransforms, type TlasGpuSnapshot } from '@vitrum/shared-bvh';
 import { applyVitrumMaterialToMesh } from '@vitrum/three-bindings';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
 import {
@@ -119,8 +119,68 @@ export function transformRefit(
     // full rebuild so the next setScene picks up the new transform.
     return topologyRebuild(id, patch, ctx);
   }
-  // TLAS pack stores local-space BLAS vertices — merged-world refit is wrong until PR-4.
   if (bvh.bvhMode === 'tlas') {
+    const meshPatch = patch as Partial<MeshPrimitive>;
+    const transformOnly =
+      meshPatch.transform !== undefined &&
+      meshPatch.positions === undefined &&
+      meshPatch.normals === undefined &&
+      meshPatch.uvs === undefined &&
+      meshPatch.tangents === undefined &&
+      meshPatch.indices === undefined;
+    if (transformOnly && bvh.tlas != null && bvh.primitiveTlasBindings.length > 0) {
+      const root = ctx.threeRoot;
+      if (root == null) {
+        throw new Error(
+          `HybridEngine.updatePrimitive("${id}"): no THREE scene available for TLAS refit.`,
+        );
+      }
+      let mesh: THREE.Mesh | null = null;
+      root.traverseVisible((obj) => {
+        if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
+          mesh = obj as THREE.Mesh;
+        }
+      });
+      if (mesh == null) {
+        throw new Error(
+          `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
+        );
+      }
+      const meshRef = mesh as THREE.Mesh;
+      if (meshPatch.transform && meshPatch.transform.length >= 16) {
+        const m = new THREE.Matrix4().fromArray(Array.from(meshPatch.transform));
+        meshRef.matrix.copy(m);
+        meshRef.matrixWorld.copy(m);
+        meshRef.matrixAutoUpdate = false;
+      }
+      const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, {
+        transform: meshPatch.transform,
+      });
+      const prev: TlasGpuSnapshot = {
+        tlasNodes: new Uint32Array(bvh.tlas.nodes.cpuData),
+        tlasInstanceIndices: new Uint32Array(bvh.tlas.instanceIndices.cpuData),
+        tlasBlasRoots: new Uint32Array(bvh.tlas.blasRoots.cpuData),
+        tlasInstanceWorldToLocal: new Float32Array(bvh.tlas.worldToLocal.cpuData),
+      };
+      const refit = refitTlasTransforms(updatedScene, bvh.primitiveTlasBindings, prev);
+      if (refit.ok) {
+        bvh.tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
+        bvh.tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
+        bvh.tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
+        ctx.pipeline?.refreshTlasRefit(
+          bvh.tlas.nodes.cpuData,
+          bvh.tlas.worldToLocal.cpuData,
+          bvh.tlas.localToWorld.cpuData,
+        );
+        const range = bvh.meshVertexRanges.find((r) => r.name === id);
+        if (range != null && meshPatch.transform && meshPatch.transform.length >= 16) {
+          range.matrixWorldAtBuild.set(new Float32Array(meshPatch.transform));
+        }
+        ctx.pipeline?.requestAccumReset();
+        ctx.ddgi.invalidateProbeCache();
+        return { bvhBuffers: bvh, updatedScene };
+      }
+    }
     return topologyRebuild(id, patch, ctx);
   }
 
