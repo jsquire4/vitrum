@@ -290,6 +290,8 @@ async function main(): Promise<void> {
   await (async (): Promise<void> => {
     if (!RUN.walkaround && !RUN.ptWebgpu) return;
     if (!canvasWgpu && !canvasPtGpu) return;
+    lines[1] = 'WebGPU: requesting adapter…';
+    refreshStatus();
     if (!navigator.gpu) {
       lines[1] = 'Walkaround: no WebGPU — skipped (PT demonstrates shared Scene).';
       refreshStatus();

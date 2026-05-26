@@ -223,6 +223,58 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(bounds!.max[0]).toBeGreaterThanOrEqual(5);
   });
 
+  it('rebuildPrimitiveBlas splices in-place when topology size is unchanged', () => {
+    const scene: Scene = {
+      primitives: [
+        boxMesh('box-a', [0, 0, 0], [0.5, 0.5, 0.5]),
+        boxMesh('box-b', [0, 0, 0], [0.4, 0.4, 0.4]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const bindingB = packed.primitiveTlasBindings.find((b) => b.primitiveId === 'box-b');
+    expect(bindingB).toBeDefined();
+    const anchorIdx = (bindingB!.vertexStart + 1) * 4 + 1;
+    const anchorBefore = packed.positions[anchorIdx]!;
+
+    const movedB = boxMesh('box-b', [0.1, 0.1, 0.1], [0.5, 0.5, 0.5]);
+    const rebuilt = rebuildPrimitiveBlas(
+      { primitives: [scene.primitives[0]!, movedB], emitters: [], environment: { kind: 'none' } },
+      'box-b',
+      packed,
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.triangleCount).toBe(packed.triangleCount);
+    expect(rebuilt.pack.positions.length).toBe(packed.positions.length);
+    expect(rebuilt.pack.positions[anchorIdx]).not.toBe(anchorBefore);
+    const bindingA = rebuilt.pack.primitiveTlasBindings.find((b) => b.primitiveId === 'box-a');
+    expect(bindingA?.vertexStart).toBe(0);
+    expect(rebuilt.pack.positions[0]).toBe(packed.positions[0]);
+  });
+
+  it('rebuildPrimitiveBlas full-repacks when triangle count changes', () => {
+    const packed = packSceneFromCore(
+      { primitives: [unitTriMesh('shape')], emitters: [], environment: { kind: 'none' } },
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    const rebuilt = rebuildPrimitiveBlas(
+      {
+        primitives: [boxMesh('shape', [0, 0, 0], [1, 1, 1])],
+        emitters: [],
+        environment: { kind: 'none' },
+      },
+      'shape',
+      packed,
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.triangleCount).toBeGreaterThan(packed.triangleCount);
+  });
+
   it('rebuildPrimitiveBlas fails when primitive was not in previous pack', () => {
     const packed = packSceneFromCore(
       { primitives: [unitTriMesh('a')], emitters: [], environment: { kind: 'none' } },
