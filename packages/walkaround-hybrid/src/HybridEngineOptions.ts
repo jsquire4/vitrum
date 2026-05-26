@@ -172,11 +172,15 @@ export interface HybridEngineOptions extends EngineOptions {
    *   - `'walkaround-hybrid'.oidnExecutionProviders` (W11) — optional
    *     override of the ONNX Runtime Web execution-provider order;
    *     default `['webnn', 'webgpu', 'wasm']` (Decision 11).
+   *   - `'walkaround-hybrid'.bvhMode` (PR-2) — `'merged'` | `'tlas'` to
+   *     force CPU pack mode. When omitted, multi-mesh / instanced vitrum
+   *     scenes default to TLAS pack (GPU traversal still merged until PR-3).
    */
   readonly extensions?: Readonly<Record<string, unknown>> & {
     readonly 'walkaround-hybrid'?: {
       readonly oidnModelUrl?: string;
       readonly oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+      readonly bvhMode?: 'merged' | 'tlas';
     };
   };
 

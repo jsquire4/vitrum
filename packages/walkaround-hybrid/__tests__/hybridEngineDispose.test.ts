@@ -95,22 +95,32 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
     };
   }
   const state = g.__HYBRID_DISPOSE_STATE__;
+  const buildFn = vi.fn(() => {
+    const idx = state.buildBVHCalls.length;
+    state.buildBVHCalls.push({ idx });
+    return {
+      bvhMode: 'merged' as const,
+      primitiveTlasBindings: [],
+      bvhNodes:        { cpuData: new ArrayBuffer(32), count: 1 },
+      bvhIndex:        { cpuData: new ArrayBuffer(16), count: 1 },
+      bvhBeerColors:   { cpuData: new ArrayBuffer(16), count: 1 },
+      bvhPositions:    { cpuData: new ArrayBuffer(16), count: 1 },
+      emitters:        { cpuData: new ArrayBuffer(16), count: 0 },
+      emitterCdf:      { cpuData: new ArrayBuffer(16), count: 0 },
+      emitterCount:    0,
+      totalEmissivePower: 0,
+      mergedGeometry:  new THREE.BufferGeometry(),
+      meshVertexRanges: [],
+      bvhIndicesStride3: new Uint32Array(0),
+      triangleMaterialIds: { cpuData: new ArrayBuffer(4), count: 0, byteLength: 4 },
+      buildMaterials: [],
+      emitterNormals: new Float32Array(0),
+      __testIdx: idx,
+    };
+  });
   return {
-    buildReSTIRSceneBVH: vi.fn(() => {
-      const idx = state.buildBVHCalls.length;
-      state.buildBVHCalls.push({ idx });
-      return {
-        bvhNodes:        { cpuData: new ArrayBuffer(32), count: 1 },
-        bvhIndex:        { cpuData: new ArrayBuffer(16), count: 1 },
-        bvhBeerColors:   { cpuData: new ArrayBuffer(16), count: 1 },
-        bvhPositions:    { cpuData: new ArrayBuffer(16), count: 1 },
-        emitters:        { cpuData: new ArrayBuffer(16), count: 0 },
-        emitterCdf:      { cpuData: new ArrayBuffer(16), count: 0 },
-        emitterCount:    0,
-        totalEmissivePower: 0,
-        __testIdx: idx,
-      };
-    }),
+    buildReSTIRSceneBVH: buildFn,
+    buildReSTIRSceneBVHForScene: buildFn,
     disposeSceneBVH: vi.fn((b: unknown) => {
       state.disposeBVHCalls.push(b);
     }),

@@ -34,10 +34,11 @@ import { refitBvhBounds } from '@vitrum/shared-bvh';
 import { applyVitrumMaterialToMesh } from '@vitrum/three-bindings';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
 import {
-  buildReSTIRSceneBVH,
+  buildReSTIRSceneBVHForScene,
   disposeSceneBVH,
   rebuildEmitterBuffersFromSceneRoots,
 } from './restir/bvhCompute.js';
+import type { ReSTIRBvhMode } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import { repackBVHMaterialRange } from './restir/packingHelpers.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
@@ -65,6 +66,8 @@ export interface PrimitiveUpdateContext {
   readonly primaryLightIntensity: number;
   /** Current vitrum scene snapshot — kept in sync on successful fast paths. */
   readonly lastScene: Scene;
+  /** Optional pack-mode override from engine extensions. */
+  readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
 
 /** Result of a primitive-update call. */
@@ -114,6 +117,10 @@ export function transformRefit(
   if (bvh == null) {
     // Pipeline still initialising — nothing to refit. Fall through to a
     // full rebuild so the next setScene picks up the new transform.
+    return topologyRebuild(id, patch, ctx);
+  }
+  // TLAS pack stores local-space BLAS vertices — merged-world refit is wrong until PR-4.
+  if (bvh.bvhMode === 'tlas') {
     return topologyRebuild(id, patch, ctx);
   }
 
@@ -468,10 +475,14 @@ export function topologyRebuild(
 
   // Rebuild the BVH from the patched THREE scene. The old buffers are
   // released after the new ones are uploaded.
+  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
   const oldBuffers = ctx.bvhBuffers;
-  const newBuffers = buildReSTIRSceneBVH([root], {
+  const newBuffers = buildReSTIRSceneBVHForScene(updatedScene, [root], {
     primaryLightDir:       new THREE.Vector3(...ctx.primaryLightDir),
     primaryLightIntensity: ctx.primaryLightIntensity,
+    ...(ctx.restirBvhModeOverride !== undefined
+      ? { bvhMode: ctx.restirBvhModeOverride }
+      : {}),
   });
   if (oldBuffers) disposeSceneBVH(oldBuffers);
 
@@ -485,8 +496,6 @@ export function topologyRebuild(
   // changed, history is meaningless.
   ctx.pipeline?.requestAccumReset();
   ctx.ddgi.invalidateProbeCache();
-
-  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
 
   return { bvhBuffers: newBuffers, updatedScene };
 }

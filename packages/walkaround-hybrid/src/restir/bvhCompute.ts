@@ -24,8 +24,15 @@
  *   - Emitter list construction (80-byte EmitterTri struct + power-CDF).
  */
 
+import type { Scene } from '@vitrum/core';
+import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
 import * as THREE from 'three';
 import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
+import {
+  buildReSTIRSceneBVHFromVitrumScene,
+  resolveReSTIRBvhMode,
+  type ReSTIRBvhMode,
+} from './sceneBvhFromCore.js';
 
 // Packing helpers (applyBeerLambert, packUVIntoPositionW, packBVHIndexW,
 // packBVHBeerColors) live in restir/packingHelpers.ts.
@@ -36,6 +43,12 @@ import {
   packBVHBeerColors,
 } from './packingHelpers.js';
 import { buildEmitterList } from './emitterList.js';
+import {
+  collectRectAreaLightEmitterTris,
+  enrichMeshVertexRangesWithMatrix,
+} from './bvhSceneHelpers.js';
+
+export { collectRectAreaLightEmitterTris, enrichMeshVertexRangesWithMatrix };
 
 /** A WebGPU storage buffer handle (GPU-side ArrayBuffer wrapper). */
 interface StorageBufferHandle {
@@ -62,6 +75,8 @@ interface StorageBufferHandle {
  */
 
 export interface SceneBVHBuffers {
+  /** CPU pack mode — GPU traversal stays merged until PR-3 when `tlas`. */
+  bvhMode: ReSTIRBvhMode;
   /** BVHNode[] array — 32 bytes/node. */
   bvhNodes: StorageBufferHandle;
   /** vec3u[] (3×u32) per triangle — vertex indices into bvhPositions. */
@@ -132,6 +147,40 @@ export interface SceneBVHBuffers {
   buildMaterials: readonly THREE.Material[];
   /** Stride-4 world-space normals from the last BVH build (emitter list input). */
   emitterNormals: Float32Array;
+  /** TLAS storage buffers — populated when `bvhMode === 'tlas'`. */
+  tlas?: {
+    nodes: StorageBufferHandle;
+    instanceIndices: StorageBufferHandle;
+    blasRoots: StorageBufferHandle;
+    worldToLocal: StorageBufferHandle;
+    localToWorld: StorageBufferHandle;
+    nodeCount: number;
+  };
+  /** Stable per-primitive TLAS bindings from `packSceneFromCore`. */
+  primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+  /** Non-fatal pack warnings (skipped primitives, bad transforms, …). */
+  warnings?: readonly string[];
+}
+
+export type { ReSTIRBvhMode };
+export { resolveReSTIRBvhMode };
+
+/** Pick merged vs TLAS CPU pack and build ReSTIR buffers. */
+export function buildReSTIRSceneBVHForScene(
+  scene: Scene,
+  sceneRoots: THREE.Object3D[],
+  options: {
+    bvhMode?: ReSTIRBvhMode;
+    primaryLightDir?: THREE.Vector3;
+    primaryLightIntensity?: number;
+    proxyMeshNames?: Set<string>;
+  } = {},
+): SceneBVHBuffers {
+  const mode = resolveReSTIRBvhMode(scene, options.bvhMode);
+  if (mode === 'tlas') {
+    return buildReSTIRSceneBVHFromVitrumScene(scene, sceneRoots, options);
+  }
+  return buildReSTIRSceneBVH(sceneRoots, options);
 }
 
 // EmitterTri layout, EMITTER_STRIDE / EMITTER_FLOATS, and the
@@ -239,6 +288,7 @@ export function buildReSTIRSceneBVH(
   // it is NOT uploaded to the GPU as a separate buffer.
   // materialColors was removed (M-1 cleanup) — colors are packed into bvhIndex[*].w.
   return {
+    bvhMode: 'merged',
     bvhNodes: {
       cpuData: shared.bvhNodes.buffer.slice(0) as ArrayBuffer,
       byteLength: shared.bvhNodes.byteLength,
@@ -277,6 +327,7 @@ export function buildReSTIRSceneBVH(
     bvhIndicesStride3: shared.indices,
     buildMaterials: shared.materials,
     emitterNormals: shared.normals,
+    primitiveTlasBindings: [],
   };
 }
 
@@ -326,154 +377,8 @@ export function rebuildEmitterBuffersFromSceneRoots(
   };
 }
 
-/**
- * Walk `sceneRoots` once to find each named mesh and snapshot its
- * `matrixWorld.elements` — required by `HybridEngine.updatePrimitive`'s
- * transform-only refit path. Names are unique (host stamps primitive ids
- * onto `mesh.name`), so the first match per name wins.
- *
- * Meshes without a match (the host renamed or removed them between
- * build and refit) get a fallback identity matrix; the refit will then
- * misposition that mesh, but the topology-rebuild path catches it on
- * the next setScene.
- */
-function enrichMeshVertexRangesWithMatrix(
-  sceneRoots: THREE.Object3D[],
-  rawRanges: ReadonlyArray<{
-    name: string;
-    vertexStart: number;
-    vertexCount: number;
-    triStart: number;
-    triCount: number;
-  }>,
-): ReadonlyArray<{
-  name: string;
-  vertexStart: number;
-  vertexCount: number;
-  triStart: number;
-  triCount: number;
-  matrixWorldAtBuild: Float32Array;
-}> {
-  const byName = new Map<string, THREE.Object3D>();
-  for (const root of sceneRoots) {
-    root.traverseVisible((obj) => {
-      if (!byName.has(obj.name)) byName.set(obj.name, obj);
-    });
-  }
-  const out = rawRanges.map((r) => {
-    const obj = byName.get(r.name);
-    // Snapshot the matrix-world elements at build time. Use a fresh
-    // Float32Array so subsequent host edits to obj.matrixWorld don't
-    // mutate our snapshot.
-    const m = obj ? new Float32Array(obj.matrixWorld.elements) : new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]);
-    return {
-      name: r.name,
-      vertexStart: r.vertexStart,
-      vertexCount: r.vertexCount,
-      triStart: r.triStart,
-      triCount: r.triCount,
-      matrixWorldAtBuild: m,
-    };
-  });
-  return out;
-}
-
 /** Dispose CPU-side geometry + GPU buffers (call on unmount). */
 export function disposeSceneBVH(buffers: SceneBVHBuffers): void {
   buffers.mergedGeometry.dispose();
-}
-
-/**
- * Walk the scene roots for `THREE.RectAreaLight` instances and convert each
- * to a pair of emitter triangles (front-emitting along the light's local -Z
- * face, matching THREE.RectAreaLight's convention).
- *
- * Folds `light.intensity` into Le so the WGSL shade kernel (which reads only
- * `EmitterTri.Le` for radiance and ignores the legacy `intensity` slot) sees
- * the correct power.
- */
-function collectRectAreaLightEmitterTris(
-  sceneRoots: THREE.Object3D[],
-): {
-  vA: [number, number, number];
-  vB: [number, number, number];
-  vC: [number, number, number];
-  normal: [number, number, number];
-  area: number;
-  Le: [number, number, number];
-}[] {
-  const out: {
-    vA: [number, number, number];
-    vB: [number, number, number];
-    vC: [number, number, number];
-    normal: [number, number, number];
-    area: number;
-    Le: [number, number, number];
-  }[] = [];
-  const _ll = new THREE.Vector3();
-  const _lr = new THREE.Vector3();
-  const _ur = new THREE.Vector3();
-  const _ul = new THREE.Vector3();
-  const _normal = new THREE.Vector3();
-  const _ab = new THREE.Vector3();
-  const _ac = new THREE.Vector3();
-
-  for (const root of sceneRoots) {
-    root.updateMatrixWorld(true);
-    root.traverseVisible((obj) => {
-      if (!(obj instanceof THREE.RectAreaLight)) return;
-      const light = obj;
-      const wHalf = light.width * 0.5;
-      const hHalf = light.height * 0.5;
-
-      _ll.set(-wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
-      _lr.set( wHalf, -hHalf, 0).applyMatrix4(light.matrixWorld);
-      _ur.set( wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
-      _ul.set(-wHalf,  hHalf, 0).applyMatrix4(light.matrixWorld);
-
-      // Triangle area: half the rect parallelogram (one rect = 2 tris).
-      _ab.subVectors(_lr, _ll);
-      _ac.subVectors(_ur, _ll);
-      _normal.crossVectors(_ab, _ac);
-      const crossLen = _normal.length();
-      if (crossLen < 1e-8) return;
-
-      // Emission direction is THREE.RectAreaLight's local -Z, transformed
-      // by the light's world basis. The geometric face normal from the
-      // vertex cross product points along local +Z (away from emission),
-      // so we cannot use it directly — sample-cosine tests in the shade
-      // kernel would reject every surface in front of the light.
-      _normal.setFromMatrixColumn(light.matrixWorld, 2).normalize().negate();
-
-      const triArea = crossLen * 0.5;
-      const c = light.color;
-      const I = light.intensity;
-      const Le: [number, number, number] = [c.r * I, c.g * I, c.b * I];
-      const N: [number, number, number] = [_normal.x, _normal.y, _normal.z];
-
-      out.push({
-        vA: [_ll.x, _ll.y, _ll.z],
-        vB: [_lr.x, _lr.y, _lr.z],
-        vC: [_ur.x, _ur.y, _ur.z],
-        normal: N,
-        area: triArea,
-        Le,
-      });
-      out.push({
-        vA: [_ll.x, _ll.y, _ll.z],
-        vB: [_ur.x, _ur.y, _ur.z],
-        vC: [_ul.x, _ul.y, _ul.z],
-        normal: N,
-        area: triArea,
-        Le,
-      });
-    });
-  }
-  return out;
 }
 

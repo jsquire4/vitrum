@@ -22,6 +22,10 @@ export interface PrimitiveTlasBinding {
   readonly primitiveKind: 'mesh' | 'instanced-mesh' | 'skinned-mesh';
   readonly blasRoot: number;
   readonly instanceCount: number;
+  readonly vertexStart: number;
+  readonly vertexCount: number;
+  readonly triStart: number;
+  readonly triCount: number;
   readonly localAabbMin: readonly [number, number, number];
   readonly localAabbMax: readonly [number, number, number];
 }
@@ -373,6 +377,10 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
         primitiveKind: primitive.kind,
         blasRoot: nodeBase,
         instanceCount: transforms.length,
+        vertexStart: vertexBase,
+        vertexCount,
+        triStart: triBase,
+        triCount,
         localAabbMin: localAabb.min,
         localAabbMax: localAabb.max,
       });

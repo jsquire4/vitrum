@@ -66,14 +66,19 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       triangleMaterialIds: { cpuData: new Uint32Array([0]).buffer, byteLength: 4, count: 1 },
       buildMaterials: [new THREE.MeshStandardMaterial({ color: 0x99948c })],
       emitterNormals: new Float32Array(16),
+      bvhMode: 'merged' as const,
+      primitiveTlasBindings: [],
     };
   }
 
+  const buildFn = vi.fn(() => {
+    state.buildBVHCalls.push({});
+    return makeFakeBuffers();
+  });
+
   return {
-    buildReSTIRSceneBVH: vi.fn(() => {
-      state.buildBVHCalls.push({});
-      return makeFakeBuffers();
-    }),
+    buildReSTIRSceneBVH: buildFn,
+    buildReSTIRSceneBVHForScene: buildFn,
     rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
       emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
       emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },

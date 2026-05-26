@@ -58,6 +58,7 @@ import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
 import {
   rebuildEmitterBuffersFromSceneRoots,
+  type ReSTIRBvhMode,
   type SceneBVHBuffers,
 } from './restir/bvhCompute.js';
 import { applyEmitterPatchToScene } from './scenePatch.js';
@@ -216,6 +217,8 @@ export class HybridEngine implements Engine {
   /** W11 — OIDN config (populated when _denoiser === 'oidn-final'). */
   private readonly _oidnModelUrl: string | undefined;
   private readonly _oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
+  /** PR-2 — optional ReSTIR CPU pack mode override (`extensions['walkaround-hybrid'].bvhMode`). */
+  private readonly _restirBvhModeOverride: ReSTIRBvhMode | undefined;
   /** Audit M4 — null disables the FPS cap; configured at construction. */
   private readonly _targetFrameIntervalMs: number | null;
   /** Per-frame audit tunable record (frozen; spread into pipeline.renderFrame).
@@ -348,6 +351,7 @@ export class HybridEngine implements Engine {
       'walkaround-hybrid'?: {
         oidnModelUrl?: string;
         oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+        bvhMode?: 'merged' | 'tlas';
       };
     })?.['walkaround-hybrid'];
     const _oidnModelUrl = _whExt?.oidnModelUrl;
@@ -366,6 +370,7 @@ export class HybridEngine implements Engine {
     this._neuralWeights = opts.neuralWeights;
     this._oidnModelUrl = _oidnModelUrl;
     this._oidnExecutionProviders = _whExt?.oidnExecutionProviders;
+    this._restirBvhModeOverride = _whExt?.bvhMode;
     this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
       ? opts.targetFrameIntervalMs
       : DEFAULT_TARGET_FRAME_INTERVAL_MS;
@@ -631,7 +636,7 @@ export class HybridEngine implements Engine {
         'HybridEngine.updatePrimitive: no scene set. Call setScene(scene) first.',
       );
     }
-    return {
+    const ctx: PrimitiveUpdateContext = {
       bvhBuffers:            this._bvhBuffers,
       threeRoot:             this._ensureThreeSceneRoot(),
       pipeline:              this._pipeline,
@@ -640,6 +645,10 @@ export class HybridEngine implements Engine {
       primaryLightIntensity: this._primaryLightIntensity,
       lastScene:             this._lastScene,
     };
+    if (this._restirBvhModeOverride !== undefined) {
+      return { ...ctx, restirBvhModeOverride: this._restirBvhModeOverride };
+    }
+    return ctx;
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
@@ -1379,6 +1388,7 @@ export class HybridEngine implements Engine {
       get lastScene() { return self._lastScene; },
       get primaryLightDir() { return self._primaryLightDir; },
       get primaryLightIntensity() { return self._primaryLightIntensity; },
+      get restirBvhModeOverride() { return self._restirBvhModeOverride; },
       get denoiser() { return self._denoiser; },
       get neuralWeights() { return self._neuralWeights; },
       get oidnModelUrl() { return self._oidnModelUrl; },

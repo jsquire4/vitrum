@@ -45,8 +45,8 @@
 
 import * as THREE from 'three';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
-import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import { buildReSTIRSceneBVHForScene, disposeSceneBVH } from './restir/bvhCompute.js';
+import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCompute.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
@@ -70,6 +70,8 @@ export interface PipelineInitHost {
   readonly lastScene: Scene | null;
   readonly primaryLightDir: readonly [number, number, number];
   readonly primaryLightIntensity: number;
+  /** Optional override from `extensions['walkaround-hybrid'].bvhMode`. */
+  readonly restirBvhModeOverride: ReSTIRBvhMode | undefined;
   readonly denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
   readonly neuralWeights: ModelWeights | undefined;
   readonly oidnModelUrl: string | undefined;
@@ -274,10 +276,26 @@ export class PipelineInitCoordinator {
           'or pass `threeScene` directly to the engine constructor.',
         );
       }
-      bvh = buildReSTIRSceneBVH([bvhRoot], {
+      const bvhBuildOpts = {
         primaryLightDir:       new THREE.Vector3(...host.primaryLightDir),
         primaryLightIntensity: host.primaryLightIntensity,
-      });
+        ...(host.restirBvhModeOverride !== undefined
+          ? { bvhMode: host.restirBvhModeOverride }
+          : {}),
+      };
+      if (host.coreSceneSuppliesMeshes() && host.lastScene != null) {
+        bvh = buildReSTIRSceneBVHForScene(host.lastScene, [bvhRoot], bvhBuildOpts);
+      } else {
+        bvh = buildReSTIRSceneBVHForScene(
+          host.lastScene ?? {
+            primitives: [],
+            emitters: [],
+            environment: { kind: 'none' },
+          },
+          [bvhRoot],
+          { ...bvhBuildOpts, bvhMode: 'merged' },
+        );
+      }
       const bvhMs = performance.now() - bvhStart;
 
       // ── Phase: publishBvh (first shared-state checkpoint) ────────────
