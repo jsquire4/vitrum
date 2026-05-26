@@ -140,6 +140,16 @@ This is the design choice that makes the library survive Canvas remount, route c
 | Cornell spectral (hero MIS) | pt-webgl          | 512×512    | 64 SPP             | ~20 s total    |
 | Living room (~200k tris)    | walkaround-hybrid | 1080p      | real-time          | 14–22 ms / frame |
 
+PR-6 regression benches (JSON under `tools/benchmark-runner/results/`, needs hardware WebGPU):
+
+```bash
+npm run benchmark:pr-mechanical          # CPU-only scene budgets
+VITRUM_PR_START_SERVER=1 npm run benchmark:pr-hybrid
+VITRUM_HYBRID_SOAK_START_SERVER=1 npm run benchmark:hybrid-lifecycle-soak
+```
+
+Bench reports include `p95FrameMs` and `estimatedGpuMemoryBytes` when the hybrid pipeline is initialized (~8 GB iGPU tier documented in PR-6 plan).
+
 ## What's novel here
 
 - **Layered hybrid GI** — WebGPU pipeline combining diffuse probe GI (DDGI) with stochastic direct illumination (ReSTIR-DI) and a single-bounce indirect (ReSTIR-GI), denoised with per-channel SVGF + GTAO. ([packages/walkaround-hybrid/README.md](packages/walkaround-hybrid/README.md))

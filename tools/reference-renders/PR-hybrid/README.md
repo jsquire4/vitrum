@@ -1,0 +1,23 @@
+# PR-hybrid reference captures
+
+Primary-release hybrid benchmarks (`plan/primary-release-and-webgpu-pt-parity-2026-05-26.md`).
+
+## Scenarios
+
+| Directory | Source | Capture |
+|-----------|--------|---------|
+| `tlas-on/` | Cornell 2-mesh TLAS vs merged A/B | `walkaround.html?scene=tlas10inst&bvhMode=tlas` |
+| `material-edit/` | Material churn still frame | `PR-hybrid-material-churn` bench |
+| `200k-static/` | ~200k tri bench frame | `PR-hybrid-200k-static` bench |
+
+## Capture workflow (GPU host)
+
+```bash
+# Terminal A
+npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0.1 --port 5175
+
+# Terminal B — records JSON + optional canvas PNG from bench harness
+VITRUM_PR_START_SERVER=1 VITRUM_PR_SCENARIO=PR-hybrid-200k-static npm run benchmark:pr-hybrid
+```
+
+Commit PNGs here after visual review; record SHA-256 from `tools/benchmark-runner/results/pr-hybrid/*.json`.

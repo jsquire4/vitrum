@@ -4,7 +4,7 @@
  * Exposes `window.__vitrumPrBench` on the walkaround-hybrid example page.
  */
 
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { GpuMemoryBreakdown, Scene, ScenePrimitive } from '@vitrum/core';
 import type { HybridEngine } from '@vitrum/walkaround-hybrid';
 
 export type PrBenchMode = 'material-churn' | 'emitter-churn' | 'frame-sample';
@@ -26,7 +26,20 @@ export interface PrBenchResult {
   readonly p95FrameMs?: number;
   readonly sampleCount?: number;
   readonly engineState: string;
+  readonly estimatedGpuMemoryBytes?: number;
+  readonly gpuMemoryBreakdown?: GpuMemoryBreakdown | null;
   readonly error?: string;
+}
+
+function readGpuMemory(engine: HybridEngine): {
+  estimatedGpuMemoryBytes?: number;
+  gpuMemoryBreakdown: GpuMemoryBreakdown | null;
+} {
+  const breakdown = engine.debug.estimatedGpuMemoryBytes?.() ?? null;
+  return {
+    ...(breakdown != null ? { estimatedGpuMemoryBytes: breakdown.total } : {}),
+    gpuMemoryBreakdown: breakdown,
+  };
 }
 
 function firstMeshPrimitive(scene: Scene): ScenePrimitive | null {
@@ -98,6 +111,7 @@ export function installPrBenchApi(
         elapsedMs: performance.now() - t0,
         iterations,
         engineState: engine.state,
+        ...readGpuMemory(engine),
       };
     } catch (e) {
       return {
@@ -135,6 +149,7 @@ export function installPrBenchApi(
         elapsedMs: performance.now() - t0,
         iterations,
         engineState: engine.state,
+        ...readGpuMemory(engine),
       };
     } catch (e) {
       return {
@@ -158,6 +173,7 @@ export function installPrBenchApi(
       p95FrameMs: percentile95(times),
       sampleCount: times.length,
       engineState: engine.state,
+      ...readGpuMemory(engine),
       ...(times.length < 8 ? { error: `only ${times.length} frame samples` } : {}),
     };
   };

@@ -2,7 +2,7 @@
  * PR-6 hybrid lifecycle soak hooks (Playwright-driven).
  */
 
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { GpuMemoryBreakdown, Scene, ScenePrimitive } from '@vitrum/core';
 import type { HybridEngine } from '@vitrum/walkaround-hybrid';
 
 export interface HybridSoakFlags {
@@ -19,6 +19,8 @@ export interface HybridSoakResult {
   readonly emitterPatches: number;
   readonly engineState: string;
   readonly lastWalkFrame: number;
+  readonly estimatedGpuMemoryBytes?: number;
+  readonly gpuMemoryBreakdown?: GpuMemoryBreakdown | null;
   readonly error?: string;
 }
 
@@ -66,6 +68,7 @@ export function installHybridSoakApi(engine: HybridEngine, scene: Scene): {
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
     }
 
+    const mem = engine.debug.estimatedGpuMemoryBytes?.() ?? null;
     return {
       ok: engine.state === 'ready' && framesPolled >= Math.min(8, flags.hybridSoakFrames),
       framesPolled,
@@ -73,6 +76,7 @@ export function installHybridSoakApi(engine: HybridEngine, scene: Scene): {
       emitterPatches,
       engineState: engine.state,
       lastWalkFrame,
+      ...(mem != null ? { estimatedGpuMemoryBytes: mem.total, gpuMemoryBreakdown: mem } : {}),
       ...(framesPolled < 8 ? { error: `only ${framesPolled} frames polled` } : {}),
     };
   };
