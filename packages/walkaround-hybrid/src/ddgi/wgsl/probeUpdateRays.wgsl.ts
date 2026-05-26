@@ -7,7 +7,12 @@
  */
 
 import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
-import { OCTAHEDRAL_WGSL, MATERIAL_ENTRY_WGSL, BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
+import {
+  OCTAHEDRAL_WGSL,
+  MATERIAL_ENTRY_WGSL,
+  BVH_INTERSECT_WGSL,
+  TLAS_TRAVERSAL_WGSL,
+} from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 
 const WG_SIZE = 32;
@@ -42,6 +47,7 @@ ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
 ${MATERIAL_ENTRY_WGSL}
 ${BVH_INTERSECT_WGSL}
+${TLAS_TRAVERSAL_WGSL}
 
 const WG_SIZE: u32       = ${WG_SIZE}u;
 const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
@@ -168,13 +174,26 @@ struct ProbeRay {
 }
 
 // -----------------------------------------------------------------
-// Bindings
+// Bindings — vec4 storage matches ReSTIR / shared scenePack (PR-5.2).
 // -----------------------------------------------------------------
-@group(0) @binding(0) var<storage, read> bvh:             array<BVHNode>;
-@group(0) @binding(1) var<storage, read> bvh_position:    array<vec3f>;
-@group(0) @binding(2) var<storage, read> bvh_index:       array<vec3u>;
-@group(0) @binding(3) var<storage, read> bvh_normal:      array<vec3f>;
-@group(0) @binding(4) var<storage, read> bvh_materialId:  array<u32>;
+struct DdgiTraceParams {
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  _pad0: u32,
+  _pad1: u32,
+}
+
+@group(0) @binding(0)  var<storage, read> bvh:                      array<BVHNode>;
+@group(0) @binding(1)  var<storage, read> bvh_position:             array<vec4f>;
+@group(0) @binding(2)  var<storage, read> bvh_index:                array<vec4u>;
+@group(0) @binding(3)  var<storage, read> bvh_normal:                array<vec4f>;
+@group(0) @binding(4)  var<storage, read> bvh_materialId:           array<u32>;
+@group(0) @binding(5)  var<storage, read> tlasNodes:                array<BVHNode>;
+@group(0) @binding(6)  var<storage, read> tlasInstanceIndices:     array<u32>;
+@group(0) @binding(7)  var<storage, read> tlasBlasRoots:            array<u32>;
+@group(0) @binding(8)  var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(0) @binding(9)  var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+@group(0) @binding(10) var<uniform>       ddgiTrace:                DdgiTraceParams;
 
 @group(1) @binding(0) var<uniform> materials:     array<MaterialEntry, ${maxMaterials}>;
 @group(1) @binding(1) var<uniform> lights:        DDGILightUniforms;
@@ -187,29 +206,37 @@ struct ProbeRay {
 @group(2) @binding(5) var<uniform>             frameParams:  FrameParams;
 
 // -----------------------------------------------------------------
-// BVH traversal — canonical helpers come from @vitrum/shared-bvh
-// BVH_INTERSECT_WGSL (injected at the top of this file). The pre-canonical
-// local helpers safeInvDir, intersectsAABBDist, intersectsTriangleBVH
-// (hardcoded triEps = 1e-5), and bvhTraceFirstHit (60-LOC traversal loop)
-// were here and have been removed. The four call sites below thread
-// DDGI_TRI_EPSILON through canonical bvhIntersectFirstHitV3 — replacing
-// the pre-canonical hardcoded constant with a single named local that a
-// future revision can promote to a UBO field without touching the call
-// sites.
+// BVH traversal — merged world BLAS or TLAS+local BLAS (PR-5.2).
 // -----------------------------------------------------------------
 const DDGI_TRI_EPSILON: f32 = 1e-5;
 
-// Adapter shim — preserves the pre-canonical bvhTraceFirstHit(ray) call
-// signature used at four sites below (traceSunVisibility, the point-light
-// shadow query, the main probe-ray cast, etc.) by threading DDGI_TRI_EPSILON
-// into the canonical vec3-storage entry point. Inlining the canonical
-// directly at each call site would also work; the shim keeps the diff
-// concentrated and the call sites readable.
+fn safe_normalize(v: vec3f) -> vec3f {
+  let len2 = dot(v, v);
+  if (len2 < 1e-20) { return vec3f(0.0, 1.0, 0.0); }
+  return v * inverseSqrt(len2);
+}
+
+fn traceSceneFirstHitDdgi(ray: Ray) -> IntersectionResult {
+  if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
+    return traceTlasFirstHit(
+      &tlasNodes,
+      &tlasInstanceIndices,
+      &tlasBlasRoots,
+      &tlasInstanceWorldToLocal,
+      &tlasInstanceLocalToWorld,
+      ddgiTrace.tlasNodeCount,
+      &bvh_index,
+      &bvh_position,
+      &bvh,
+      ray,
+      DDGI_TRI_EPSILON,
+    );
+  }
+  return bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, ray, DDGI_TRI_EPSILON);
+}
+
 fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
-  return bvhIntersectFirstHitV3(
-    &bvh_index, &bvh_position, &bvh, ray,
-    DDGI_TRI_EPSILON,
-  );
+  return traceSceneFirstHitDdgi(ray);
 }
 
 // -----------------------------------------------------------------
@@ -417,9 +444,9 @@ fn probeUpdateRays(
         let i0 = hit.indices.x;
         let i1 = hit.indices.y;
         let i2 = hit.indices.z;
-        let n0 = bvh_normal[i0];
-        let n1 = bvh_normal[i1];
-        let n2 = bvh_normal[i2];
+        let n0 = bvh_normal[i0].xyz;
+        let n1 = bvh_normal[i1].xyz;
+        let n2 = bvh_normal[i2].xyz;
         let smoothNormal = normalize(
           hit.barycoord.x * n0 +
           hit.barycoord.y * n1 +

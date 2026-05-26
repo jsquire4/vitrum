@@ -32,6 +32,7 @@ import {
 } from '@vitrum/shared-bvh';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
+import type { DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
 import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
@@ -195,6 +196,12 @@ interface GPUResources {
   idxBuf:        GPUBuffer;
   normBuf:       GPUBuffer;
   matIdBuf:      GPUBuffer;
+  tlasNodesBuf:  GPUBuffer;
+  tlasInstIdxBuf: GPUBuffer;
+  tlasBlasRootsBuf: GPUBuffer;
+  tlasW2lBuf:    GPUBuffer;
+  tlasL2wBuf:    GPUBuffer;
+  traceParamsBuf: GPUBuffer;
   // Uniform buffers
   materialsBuf:    GPUBuffer;
   lightsBuf:       GPUBuffer;
@@ -238,10 +245,25 @@ export interface ProbeUpdatePassOptions {
   maxMaterials?: number;
 }
 
+/** Pad stride-3 triangle indices for vec4u WGSL storage (standalone SceneBvh path). */
+function padTriangleIndicesToVec4(indices: Uint32Array): Uint32Array {
+  const triCount = Math.floor(indices.length / 3);
+  const out = new Uint32Array(triCount * 4);
+  for (let t = 0; t < triCount; t += 1) {
+    out[t * 4] = indices[t * 3]!;
+    out[t * 4 + 1] = indices[t * 3 + 1]!;
+    out[t * 4 + 2] = indices[t * 3 + 2]!;
+    out[t * 4 + 3] = 0;
+  }
+  return out;
+}
+
 export class ProbeUpdatePass {
   private _bvh:  SceneBvh;
   private _grid: ProbeGrid;
   private _gpu:  GPUResources | null = null;
+  /** When set, probe rays use ReSTIR buffers (PR-5.1) instead of SceneBvh rebuild. */
+  private _restirSnapshot: DdgiRestirBvhSnapshot | null = null;
   private _lastBvhVersion = -1;
   private _frameIndex = 0;
   private _maxProbes = 0;
@@ -283,6 +305,11 @@ export class ProbeUpdatePass {
       console.warn(`[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`);
       this._ddgiMaxMaterials = 1;
     }
+  }
+
+  /** PR-5.1 — share ReSTIR scene buffers; pass `null` to fall back to SceneBvh. */
+  setRestirBvhSnapshot(snapshot: DdgiRestirBvhSnapshot | null): void {
+    this._restirSnapshot = snapshot;
   }
 
   setLights(lights: DDGILight[]): void {
@@ -442,6 +469,12 @@ export class ProbeUpdatePass {
       idxBuf:          makeBuffer(12, RO),
       normBuf:         makeBuffer(12, RO),
       matIdBuf:        makeBuffer(4,  RO),
+      tlasNodesBuf:    makeBuffer(16, RO),
+      tlasInstIdxBuf:  makeBuffer(16, RO),
+      tlasBlasRootsBuf: makeBuffer(16, RO),
+      tlasW2lBuf:      makeBuffer(16, RO),
+      tlasL2wBuf:      makeBuffer(16, RO),
+      traceParamsBuf:  makeBuffer(16, UB),
       materialsBuf:    makeBuffer(this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
       lightsBuf:       makeBuffer(16 * 80 + 16, UB),
       gridParamsBuf:   makeBuffer(64, UB),
@@ -468,18 +501,27 @@ export class ProbeUpdatePass {
       if (!this._gpu) return;
     }
     const { device } = this._gpu;
-    const buffers = this._bvh.buffers;
-    if (!buffers) return;
+    const snap = this._restirSnapshot;
+    const legacyBuffers = snap == null ? this._bvh.buffers : null;
+    if (snap == null && legacyBuffers == null) return;
     if (this._grid.dirty) this._grid.allocateAtlases();
 
     const probeCount = this._grid.probeCount;
     if (probeCount === 0) return;
 
-    // Rebuild BVH GPU buffers if scene changed.
-    const bvhVersion = buffers.bvhNodes.length + buffers.positions.length;
-    if (bvhVersion !== this._lastBvhVersion) {
-      this._rebuildBvhBuffers(device, buffers);
-      this._lastBvhVersion = bvhVersion;
+    if (snap != null) {
+      if (snap.contentVersion !== this._lastBvhVersion) {
+        this._rebuildBvhBuffersFromRestir(device, snap);
+        this._lastBvhVersion = snap.contentVersion;
+      }
+      this._uploadTraceParams(device, snap);
+    } else if (legacyBuffers != null) {
+      const bvhVersion = legacyBuffers.bvhNodes.length + legacyBuffers.positions.length;
+      if (bvhVersion !== this._lastBvhVersion) {
+        this._rebuildBvhBuffers(device, legacyBuffers);
+        this._lastBvhVersion = bvhVersion;
+      }
+      this._uploadTraceParams(device, { bvhMode: 'merged', tlasNodeCount: 0 });
     }
 
     // Reallocate ray results buffer if probe count changed.
@@ -513,7 +555,8 @@ export class ProbeUpdatePass {
     device.queue.writeBuffer(this._gpu.activeProbesBuf, 0, activeArr);
 
     // Update uniforms.
-    this._uploadMaterials(device, buffers.materials);
+    const materials = snap?.materials ?? legacyBuffers!.materials;
+    this._uploadMaterials(device, [...materials]);
     this._uploadLights(device);
     this._uploadGridParams(device);
     this._uploadFrameParams(device);
@@ -603,6 +646,49 @@ export class ProbeUpdatePass {
     }
   }
 
+  private _uploadTraceParams(
+    device: GPUDevice,
+    params: { bvhMode: 'merged' | 'tlas'; tlasNodeCount: number },
+  ): void {
+    const u = new Uint32Array([
+      params.bvhMode === 'tlas' ? 1 : 0,
+      params.tlasNodeCount,
+      0,
+      0,
+    ]);
+    device.queue.writeBuffer(this._gpu!.traceParamsBuf, 0, u);
+  }
+
+  private _rebuildBvhBuffersFromRestir(
+    device: GPUDevice,
+    snap: DdgiRestirBvhSnapshot,
+  ): void {
+    const RO = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
+    const upload = (oldBuf: GPUBuffer, data: ArrayBufferLike): GPUBuffer => {
+      oldBuf.destroy();
+      const arr = data instanceof ArrayBuffer ? data : new Uint8Array(data).buffer;
+      const buf = device.createBuffer({
+        size: Math.max(arr.byteLength, 16),
+        usage: RO,
+      });
+      device.queue.writeBuffer(buf, 0, arr);
+      return buf;
+    };
+    const g = this._gpu!;
+    g.bvhBuf = upload(g.bvhBuf, snap.bvhNodes);
+    g.posBuf = upload(g.posBuf, snap.positions);
+    g.idxBuf = upload(g.idxBuf, snap.bvhIndex);
+    g.normBuf = upload(g.normBuf, snap.normals);
+    g.matIdBuf = upload(g.matIdBuf, snap.triMaterialIds);
+    const empty = new ArrayBuffer(16);
+    const tlas = snap.tlas;
+    g.tlasNodesBuf = upload(g.tlasNodesBuf, tlas?.nodes ?? empty);
+    g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, tlas?.instanceIndices ?? empty);
+    g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, tlas?.blasRoots ?? empty);
+    g.tlasW2lBuf = upload(g.tlasW2lBuf, tlas?.worldToLocal ?? empty);
+    g.tlasL2wBuf = upload(g.tlasL2wBuf, tlas?.localToWorld ?? empty);
+  }
+
   private _rebuildBvhBuffers(
     device: GPUDevice,
     buffers: SceneBvhBuffers,
@@ -618,11 +704,19 @@ export class ProbeUpdatePass {
       device.queue.writeBuffer(buf, 0, arr);
       return buf;
     };
-    this._gpu!.bvhBuf  = upload(this._gpu!.bvhBuf,  buffers.bvhNodes.buffer);
-    this._gpu!.posBuf  = upload(this._gpu!.posBuf,   buffers.positions.buffer);
-    this._gpu!.idxBuf  = upload(this._gpu!.idxBuf,   buffers.indices.buffer);
-    this._gpu!.normBuf = upload(this._gpu!.normBuf,  buffers.normals.buffer);
-    this._gpu!.matIdBuf= upload(this._gpu!.matIdBuf, buffers.triMaterialId.buffer);
+    const idx4 = padTriangleIndicesToVec4(buffers.indices);
+    const g = this._gpu!;
+    g.bvhBuf = upload(g.bvhBuf, buffers.bvhNodes.buffer);
+    g.posBuf = upload(g.posBuf, buffers.positions.buffer);
+    g.idxBuf = upload(g.idxBuf, idx4.buffer);
+    g.normBuf = upload(g.normBuf, buffers.normals.buffer);
+    g.matIdBuf = upload(g.matIdBuf, buffers.triMaterialId.buffer);
+    const empty = new ArrayBuffer(16);
+    g.tlasNodesBuf = upload(g.tlasNodesBuf, empty);
+    g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, empty);
+    g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, empty);
+    g.tlasW2lBuf = upload(g.tlasW2lBuf, empty);
+    g.tlasL2wBuf = upload(g.tlasL2wBuf, empty);
   }
 
   private _uploadMaterials(device: GPUDevice, mats: THREE.Material[]): void {
@@ -845,6 +939,12 @@ export class ProbeUpdatePass {
         { binding: 2, resource: { buffer: g.idxBuf } },
         { binding: 3, resource: { buffer: g.normBuf } },
         { binding: 4, resource: { buffer: g.matIdBuf } },
+        { binding: 5, resource: { buffer: g.tlasNodesBuf } },
+        { binding: 6, resource: { buffer: g.tlasInstIdxBuf } },
+        { binding: 7, resource: { buffer: g.tlasBlasRootsBuf } },
+        { binding: 8, resource: { buffer: g.tlasW2lBuf } },
+        { binding: 9, resource: { buffer: g.tlasL2wBuf } },
+        { binding: 10, resource: { buffer: g.traceParamsBuf } },
       ],
     });
     const bg1 = g.device.createBindGroup({

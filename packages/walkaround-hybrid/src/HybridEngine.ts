@@ -969,6 +969,9 @@ export class HybridEngine implements Engine {
       // host-provided threeScene escape hatch, lazily-synthesized fallback.
       const ddgiScene = this._ddgiTraversalScene ?? this._ensureThreeSceneRoot();
       if (ddgiScene != null) {
+        if (this._bvhBuffers != null) {
+          this._ddgi.syncRestirBvhBuffers(this._bvhBuffers, this._lastScene ?? undefined);
+        }
         void this._ddgi.updateFrame({
           scene:   ddgiScene,
           device:  this._device,
