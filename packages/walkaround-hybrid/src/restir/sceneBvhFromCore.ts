@@ -182,7 +182,7 @@ export function buildReSTIRSceneBVHFromVitrumScene(
   return buffersFromScenePack(scene, sceneRoots, geo, materials, options);
 }
 
-/** PR-4.3 — topology rebuild via `rebuildPrimitiveBlas` (full repack v1). */
+/** PR-4.3 — topology rebuild via `rebuildPrimitiveBlas` (in-place splice or full repack). */
 export function rebuildReSTIRSceneBVHPrimitive(
   scene: Scene,
   primitiveId: string,

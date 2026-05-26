@@ -256,6 +256,33 @@ describe('packSceneFromCore (SP-*)', () => {
     if (rebuilt.ok) expect(rebuilt.strategy).toBe('splice');
   });
 
+  it('rebuildPrimitiveBlas splice beats full packSceneFromCore on two-box scene', () => {
+    const scene: Scene = {
+      primitives: [
+        boxMesh('box-a', [0, 0, 0], [0.5, 0.5, 0.5]),
+        boxMesh('box-b', [0, 0, 0], [0.4, 0.4, 0.4]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const movedB = boxMesh('box-b', [0.05, 0, 0], [0.45, 0.45, 0.45]);
+    const nextScene = { primitives: [scene.primitives[0]!, movedB], emitters: [], environment: { kind: 'none' } };
+    const opts = { tlas: true, resolveMaterialId: () => 0 };
+
+    const t0 = performance.now();
+    const spliced = rebuildPrimitiveBlas(nextScene, 'box-b', packed, opts);
+    const spliceMs = performance.now() - t0;
+
+    const t1 = performance.now();
+    packSceneFromCore(nextScene, opts);
+    const fullMs = performance.now() - t1;
+
+    expect(spliced.ok).toBe(true);
+    if (spliced.ok) expect(spliced.strategy).toBe('splice');
+    expect(spliceMs).toBeLessThan(fullMs);
+  });
+
   it('rebuildPrimitiveBlas full-repacks when triangle count changes', () => {
     const packed = packSceneFromCore(
       { primitives: [unitTriMesh('shape')], emitters: [], environment: { kind: 'none' } },
