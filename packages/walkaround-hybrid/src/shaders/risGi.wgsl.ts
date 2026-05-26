@@ -42,6 +42,11 @@ export const RIS_GI_WGSL = /* wgsl */ `
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
 @group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 // Sprint 9 — adaptive sampling tier (r32uint, full-res). 1 = low variance,
@@ -109,7 +114,12 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let primaryRay = generatePrimaryRay_common(
     fullPx.x, fullPx.y, fullDims.x, fullDims.y, ubo.cameraPos, invVP,
   );
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay, ubo.triIntersectEpsilon);
+  let hit = traceSceneFirstHit(
+    ubo.bvhMode, ubo.tlasNodeCount,
+    &bvh_index, &bvh_position, &bvh,
+    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+    primaryRay, ubo.triIntersectEpsilon);
   if (!hit.didHit) {
     storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
     return;
@@ -147,8 +157,12 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     // Trace from the visible point along wi. Reconnection vertex is the
     // first BVH hit (or sky-miss at RECONNECT_MAX_DIST).
     let bounceRay = Ray(pos + normal * NORMAL_BIAS_GI, wi);
-    let bounceHit = bvhIntersectFirstHit(
-      &bvh_index, &bvh_position, &bvh, bounceRay, ubo.triIntersectEpsilon,
+    let bounceHit = traceSceneFirstHit(
+      ubo.bvhMode, ubo.tlasNodeCount,
+      &bvh_index, &bvh_position, &bvh,
+      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+      bounceRay, ubo.triIntersectEpsilon,
     );
 
     var xs:  vec3f;
@@ -202,8 +216,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      let occ = bvhIntersectAny(
+      let occ = traceSceneAny(
+        ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
+        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
         shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon, true,
       );
       if (occ) {

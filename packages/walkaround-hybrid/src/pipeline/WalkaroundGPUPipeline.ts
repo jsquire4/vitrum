@@ -40,6 +40,7 @@ import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
 import {
   uploadBuffer,
+  createDummyStorageBuffer,
   createFrameResources,
   destroyFrameResources,
   type FrameResources,
@@ -262,6 +263,10 @@ export interface PipelineFrameInputs {
   /** 2026-05-18 sweep — per-channel HDR clamp on the indirect channel
    *  (shade.wgsl). Cornell default [1.0, 1.0, 1.0]. */
   indirectFireflyClamp: readonly [number, number, number];
+  /** PR-3 — 0 = merged world BVH, 1 = TLAS + local BLAS traversal. */
+  bvhMode: number;
+  /** PR-3 — TLAS node count from CPU pack (0 forces merged path in WGSL). */
+  tlasNodeCount: number;
   /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
    *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
    *  direct-path chain. */
@@ -304,6 +309,11 @@ export class WalkaroundGPUPipeline {
   private _bvhIndexBuffer!: GPUBuffer;
   private _bvhBeerBuffer!: GPUBuffer;
   private _bvhPositionBuffer!: GPUBuffer;
+  private _tlasNodesBuffer!: GPUBuffer;
+  private _tlasInstanceIndicesBuffer!: GPUBuffer;
+  private _tlasBlasRootsBuffer!: GPUBuffer;
+  private _tlasInstanceWorldToLocalBuffer!: GPUBuffer;
+  private _tlasInstanceLocalToWorldBuffer!: GPUBuffer;
   private _emitterBuffer!: GPUBuffer;
   private _emitterCdfBuffer!: GPUBuffer;
 
@@ -462,6 +472,7 @@ export class WalkaroundGPUPipeline {
     // primary hit. No need to upload them.
     this._emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
     this._emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
+    this._uploadTlasBuffers(d, bvhBuffers);
     // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
@@ -674,17 +685,49 @@ export class WalkaroundGPUPipeline {
    * up automatically next frame.
    */
   refreshBvhFullRebuild(
-    bvhBuffers: Pick<SceneBVHBuffers, 'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhPositions'>,
+    bvhBuffers: Pick<
+      SceneBVHBuffers,
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
+    >,
   ): void {
     if (!this._initialized) return;
     this._bvhNodesBuffer.destroy();
     this._bvhIndexBuffer.destroy();
     this._bvhBeerBuffer.destroy();
     this._bvhPositionBuffer.destroy();
+    this._destroyTlasBuffers();
     this._bvhNodesBuffer    = uploadBuffer(this._device, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
     this._bvhIndexBuffer    = uploadBuffer(this._device, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
     this._bvhBeerBuffer     = uploadBuffer(this._device, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
     this._bvhPositionBuffer = uploadBuffer(this._device, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
+    this._uploadTlasBuffers(this._device, bvhBuffers as SceneBVHBuffers);
+  }
+
+  private _destroyTlasBuffers(): void {
+    this._tlasNodesBuffer?.destroy();
+    this._tlasInstanceIndicesBuffer?.destroy();
+    this._tlasBlasRootsBuffer?.destroy();
+    this._tlasInstanceWorldToLocalBuffer?.destroy();
+    this._tlasInstanceLocalToWorldBuffer?.destroy();
+  }
+
+  private _uploadTlasBuffers(device: GPUDevice, bvh: SceneBVHBuffers): void {
+    const usage = GPUBufferUsage.STORAGE;
+    const dummy = () => createDummyStorageBuffer(device, 'tlas-dummy');
+    if (bvh.bvhMode === 'tlas' && bvh.tlas != null) {
+      const t = bvh.tlas;
+      this._tlasNodesBuffer = uploadBuffer(device, t.nodes.cpuData, usage);
+      this._tlasInstanceIndicesBuffer = uploadBuffer(device, t.instanceIndices.cpuData, usage);
+      this._tlasBlasRootsBuffer = uploadBuffer(device, t.blasRoots.cpuData, usage);
+      this._tlasInstanceWorldToLocalBuffer = uploadBuffer(device, t.worldToLocal.cpuData, usage);
+      this._tlasInstanceLocalToWorldBuffer = uploadBuffer(device, t.localToWorld.cpuData, usage);
+    } else {
+      this._tlasNodesBuffer = dummy();
+      this._tlasInstanceIndicesBuffer = dummy();
+      this._tlasBlasRootsBuffer = dummy();
+      this._tlasInstanceWorldToLocalBuffer = dummy();
+      this._tlasInstanceLocalToWorldBuffer = dummy();
+    }
   }
 
   /**
@@ -831,6 +874,11 @@ export class WalkaroundGPUPipeline {
       emitterBuffer:     this._emitterBuffer,
       emitterCdfBuffer:  this._emitterCdfBuffer,
       bvhBeerBuffer:     this._bvhBeerBuffer,
+      tlasNodesBuffer: this._tlasNodesBuffer,
+      tlasInstanceIndicesBuffer: this._tlasInstanceIndicesBuffer,
+      tlasBlasRootsBuffer: this._tlasBlasRootsBuffer,
+      tlasInstanceWorldToLocalBuffer: this._tlasInstanceWorldToLocalBuffer,
+      tlasInstanceLocalToWorldBuffer: this._tlasInstanceLocalToWorldBuffer,
     });
     const bgUbo   = buildUboBindGroup(
       d, this._bglCache, this._res.common.uboBuffer,
@@ -1013,6 +1061,7 @@ export class WalkaroundGPUPipeline {
     this._bvhIndexBuffer?.destroy();
     this._bvhBeerBuffer?.destroy();
     this._bvhPositionBuffer?.destroy();
+    this._destroyTlasBuffers();
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
     if (this._res) destroyFrameResources(this._res);

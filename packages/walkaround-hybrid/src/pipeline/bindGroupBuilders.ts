@@ -114,6 +114,11 @@ interface SceneBindGroupResources {
   emitterBuffer: GPUBuffer;
   emitterCdfBuffer: GPUBuffer;
   bvhBeerBuffer: GPUBuffer;
+  tlasNodesBuffer: GPUBuffer;
+  tlasInstanceIndicesBuffer: GPUBuffer;
+  tlasBlasRootsBuffer: GPUBuffer;
+  tlasInstanceWorldToLocalBuffer: GPUBuffer;
+  tlasInstanceLocalToWorldBuffer: GPUBuffer;
 }
 
 export function buildSceneBindGroup(
@@ -131,6 +136,11 @@ export function buildSceneBindGroup(
       { binding: 3, resource: { buffer: r.emitterBuffer } },
       { binding: 4, resource: { buffer: r.emitterCdfBuffer } },
       { binding: 5, resource: { buffer: r.bvhBeerBuffer } },    // u32: per-tri Beer-Lambert visible color
+      { binding: 6, resource: { buffer: r.tlasNodesBuffer } },
+      { binding: 7, resource: { buffer: r.tlasInstanceIndicesBuffer } },
+      { binding: 8, resource: { buffer: r.tlasBlasRootsBuffer } },
+      { binding: 9, resource: { buffer: r.tlasInstanceWorldToLocalBuffer } },
+      { binding: 10, resource: { buffer: r.tlasInstanceLocalToWorldBuffer } },
     ],
   });
 }

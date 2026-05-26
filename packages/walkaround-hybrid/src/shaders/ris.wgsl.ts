@@ -38,6 +38,11 @@ export const RIS_WGSL = /* wgsl */ `
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
 @group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
 @group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
+@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 // Group 2: uniform buffer (WalkaroundUBO struct defined in COMMON_WGSL)
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -83,7 +88,12 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let invVP = invertMat4_common(vp);
 
   let primaryRay = generatePrimaryRay_common(gid.x, gid.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let hit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay, ubo.triIntersectEpsilon);
+  let hit = traceSceneFirstHit(
+    ubo.bvhMode, ubo.tlasNodeCount,
+    &bvh_index, &bvh_position, &bvh,
+    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+    primaryRay, ubo.triIntersectEpsilon);
 
   if (!hit.didHit) {
     // Sky pixel -- write sky color directly to HDR output, empty reservoir.
@@ -160,7 +170,12 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let shadowOrig = pos + normal * 1e-3;
     // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
     // (light passes through glass; per-channel tinted-visibility handles tint).
-    let occluded = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+    let occluded = traceSceneAny(
+      ubo.bvhMode, ubo.tlasNodeCount,
+      &bvh_index, &bvh_position, &bvh,
+      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+      shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
     if (occluded) {
       r.w_sum = 0.0;
       r.W     = 0.0;

@@ -1,6 +1,6 @@
 /**
  * UBO updater — writes per-frame camera + lighting + tunables into the
- * 336-byte WalkaroundUBO uniform buffer.
+ * 352-byte WalkaroundUBO uniform buffer.
  *
  * UBO layout (mixed f32 / u32 — see WalkaroundUBO struct in common.wgsl):
  *   offset   0: viewMatrix                  (mat4×4f = 64 bytes)
@@ -32,8 +32,11 @@
  *   offset 312: restirGiSpatialCoplanarTol  (f32 = 4 bytes) — sweep 2026-05-18
  *   offset 316: _padPreVec3                 (f32 = 4 bytes — align next vec3 to 16)
  *   offset 320: indirectFireflyClamp        (vec3f = 12 bytes) — sweep 2026-05-18
- *   offset 332: _padEnd                     (f32 = 4 bytes — round size up to 336)
- * Total: 336 bytes (336 % 16 == 0).
+ *   offset 332: _padEnd                     (f32 = 4 bytes)
+ *   offset 336: bvhMode                     (u32 = 4 bytes) — PR-3
+ *   offset 340: tlasNodeCount               (u32 = 4 bytes)
+ *   offset 344–348: _tracePad               (u32 × 2)
+ * Total: 352 bytes (352 % 16 == 0).
  */
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
@@ -42,7 +45,7 @@ import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
  *  intentionally duplicates the literal `336` rather than import this name
  *  to avoid a circular import (see resourceManager.ts:594-598). 2026-05-18
  *  dead-code sweep verified zero non-self consumers; demoted from `export`. */
-const WALKAROUND_UBO_SIZE_BYTES = 336;
+const WALKAROUND_UBO_SIZE_BYTES = 352;
 
 export function updateUBO(
   device: GPUDevice,
@@ -95,6 +98,8 @@ export function updateUBO(
   f32[81] = inputs.indirectFireflyClamp[1];
   f32[82] = inputs.indirectFireflyClamp[2];
   // f32[83] = _padEnd (zero).
+  u32[84] = inputs.bvhMode >>> 0;
+  u32[85] = inputs.tlasNodeCount >>> 0;
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

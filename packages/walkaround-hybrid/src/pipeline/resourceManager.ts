@@ -355,6 +355,11 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
   return buf;
 }
 
+/** 16-byte zeroed storage buffer for unused scene-BGL slots (merged BVH mode). */
+export function createDummyStorageBuffer(device: GPUDevice, label: string): GPUBuffer {
+  return uploadBuffer(device, new ArrayBuffer(16), GPUBufferUsage.STORAGE);
+}
+
 /**
  * Build the DDGI "placeholder" UBO data — the zero-grid uniform that causes
  * shade.wgsl's `isDDGIWired()` check to return false (dimsX ≤ 1).
@@ -615,7 +620,7 @@ export function createFrameResources(
   // type-imports PipelineFrameInputs from WalkaroundGPUPipeline.ts, which
   // already imports this file.
   const uboBuffer = device.createBuffer({
-    size: 336,
+    size: 352,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 

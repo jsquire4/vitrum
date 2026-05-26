@@ -71,6 +71,11 @@ export const SHADE_WGSL = /* wgsl */ `
 // primary glass hits to make Lo_emit reproduce PT's transmitted-radiance
 // saturation. bvh_index.w stays raw attCol for receiver paths.
 @group(1) @binding(5) var<storage, read> bvh_beer:     array<u32>;
+@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -196,7 +201,12 @@ fn lo_direct(
   if (nDotL <= 1e-6 || nlDotL <= 1e-6) { return vec3f(0.0); }
   // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
   // (light passes through glass; per-channel tinted-visibility handles tint).
-  let occ = bvhIntersectAny(&bvh_index, &bvh_position, &bvh, pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+  let occ = traceSceneAny(
+    ubo.bvhMode, ubo.tlasNodeCount,
+    &bvh_index, &bvh_position, &bvh,
+    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+    pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
   if (occ) { return vec3f(0.0); }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
   let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
@@ -435,7 +445,12 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
   let primaryRay = generatePrimaryRay_common(gid.x, gid.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let primaryHit = bvhIntersectFirstHit(&bvh_index, &bvh_position, &bvh, primaryRay, ubo.triIntersectEpsilon);
+  let primaryHit = traceSceneFirstHit(
+    ubo.bvhMode, ubo.tlasNodeCount,
+    &bvh_index, &bvh_position, &bvh,
+    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+    primaryRay, ubo.triIntersectEpsilon);
 
   if (!primaryHit.didHit) {
     // Sky pixel: output sky color (already written by RIS pass, but keep consistent).

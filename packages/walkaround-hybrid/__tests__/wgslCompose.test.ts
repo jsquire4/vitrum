@@ -191,6 +191,13 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // composed-bytes for any pass equals the pre-refactor composed bytes
   // with the duplicated helper bodies relocated to the shared section.
 
+  it('common includes PR-3 traceScene helpers and TLAS traversal', () => {
+    expect(COMMON_WGSL).toContain('fn traceSceneFirstHit');
+    expect(COMMON_WGSL).toContain('fn traceTlasFirstHit');
+    expect(COMMON_WGSL).toContain('bvhMode:');
+    expect(COMMON_WGSL).toContain('tlasNodeCount:');
+  });
+
   it('ris: COMMON_WGSL + RESTIR_PHAT_WGSL + RIS_WGSL', () => {
     expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
       COMMON_WGSL + RESTIR_PHAT_WGSL + RIS_WGSL,

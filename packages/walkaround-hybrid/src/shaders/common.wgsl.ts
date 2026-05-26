@@ -17,7 +17,7 @@
  */
 
 import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
-import { BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
+import { BVH_INTERSECT_WGSL, TLAS_TRAVERSAL_WGSL } from '@vitrum/shared-bvh';
 import { BSDF_PRIMITIVES_WGSL, LUMINANCE_WGSL, PCG_WGSL } from '@vitrum/shared-samplers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
@@ -123,7 +123,11 @@ struct WalkaroundUBO {
   restirGiSpatialCoplanarTol: f32,     //  offset 312 — spatialGi tangent-plane distance tolerance
   _padPreVec3:                f32,     //  offset 316 — pad to align vec3f to 16-byte boundary
   indirectFireflyClamp:       vec3f,   //  offset 320 — shade indirect channel per-channel HDR clamp
-  _padEnd:                    f32,     //  offset 332 — round struct size up to 336 (multiple of 16)
+  _padEnd:                    f32,     //  offset 332 — align vec3 to 336
+  bvhMode:                    u32,     //  offset 336 — 0 merged world BVH, 1 TLAS+local BLAS
+  tlasNodeCount:              u32,     //  offset 340 — TLAS node count (0 → merged path)
+  _tracePad0:                 u32,     //  offset 344
+  _tracePad1:                 u32,     //  offset 348 — struct size 352 bytes
 };
 
 // Emitter geometry term G with a configurable dist² clamp applied at
@@ -155,6 +159,78 @@ fn emitterGeometry(nlDotL: f32, dist2: f32, dist2Floor: f32) -> f32 {
 //     per-channel bvhTraceTintedVisibility helper in shade).
 // ============================================================
 ${BVH_INTERSECT_WGSL}
+${TLAS_TRAVERSAL_WGSL}
+
+// Scene traversal — merged world BVH vs TLAS+local BLAS (PR-3).
+fn traceSceneFirstHit(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  ray: Ray,
+  triEps: f32,
+) -> IntersectionResult {
+  if (bvhMode == 1u && tlasNodeCount > 0u) {
+    return traceTlasFirstHit(
+      tlasNodes,
+      tlasInstanceIndices,
+      tlasBlasRoots,
+      tlasInstanceWorldToLocal,
+      tlasInstanceLocalToWorld,
+      tlasNodeCount,
+      bvh_index,
+      bvh_position,
+      bvh,
+      ray,
+      triEps,
+    );
+  }
+  return bvhIntersectFirstHit(bvh_index, bvh_position, bvh, ray, triEps);
+}
+
+fn traceSceneAny(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  origin: vec3f,
+  dir: vec3f,
+  tMax: f32,
+  triEps: f32,
+  skipGlass: bool,
+) -> bool {
+  if (bvhMode == 1u && tlasNodeCount > 0u) {
+    return traceTlasAny(
+      tlasNodes,
+      tlasInstanceIndices,
+      tlasBlasRoots,
+      tlasInstanceWorldToLocal,
+      tlasInstanceLocalToWorld,
+      tlasNodeCount,
+      bvh_index,
+      bvh_position,
+      bvh,
+      origin,
+      dir,
+      tMax,
+      triEps,
+      skipGlass,
+    );
+  }
+  return bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass);
+}
 
 // ============================================================
 // Emitter struct (80 bytes per emitter, 16-byte aligned)

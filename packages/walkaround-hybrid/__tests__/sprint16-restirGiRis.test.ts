@@ -64,7 +64,7 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
   });
 
   it('runs the final visibility test on the chosen sample and zeroes W on occlusion', () => {
-    expect(RIS_GI_WGSL).toContain('bvhIntersectAny');
+    expect(RIS_GI_WGSL).toContain('traceSceneAny');
     expect(RIS_GI_WGSL).toMatch(/if \(occ\)/);
     expect(RIS_GI_WGSL).toMatch(/r\.W\s*=\s*0\.0/);
   });

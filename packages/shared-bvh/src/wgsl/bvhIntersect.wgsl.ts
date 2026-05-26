@@ -195,6 +195,17 @@ fn bvhIntersectFirstHit(
   ray: Ray,
   triEps: f32,
 ) -> IntersectionResult {
+  return bvhIntersectFirstHitAtRoot(bvh_index, bvh_position, bvh, ray, triEps, 0u);
+}
+
+fn bvhIntersectFirstHitAtRoot(
+  bvh_index:    ptr<storage, array<vec4u>,   read>,
+  bvh_position: ptr<storage, array<vec4f>,   read>,
+  bvh:          ptr<storage, array<BVHNode>, read>,
+  ray: Ray,
+  triEps: f32,
+  rootNode: u32,
+) -> IntersectionResult {
   var best: IntersectionResult;
   best.didHit = false;
   best.dist   = BVH_INTERSECT_INFINITY;
@@ -203,7 +214,7 @@ fn bvhIntersectFirstHit(
 
   var stack: array<u32, 60>;  // BVH_INTERSECT_STACK_DEPTH
   var pointer: i32 = 0;
-  stack[0] = 0u;
+  stack[0] = rootNode;
 
   let invDir = safeInvDir(ray.direction);
 
@@ -306,9 +317,23 @@ fn bvhIntersectAny(
   triEps: f32,
   skipGlass: bool,
 ) -> bool {
+  return bvhIntersectAnyAtRoot(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass, 0u);
+}
+
+fn bvhIntersectAnyAtRoot(
+  bvh_index:    ptr<storage, array<vec4u>,   read>,
+  bvh_position: ptr<storage, array<vec4f>,   read>,
+  bvh:          ptr<storage, array<BVHNode>, read>,
+  origin: vec3f,
+  dir:    vec3f,
+  tMax:   f32,
+  triEps: f32,
+  skipGlass: bool,
+  rootNode: u32,
+) -> bool {
   var stack: array<u32, 60>;  // BVH_INTERSECT_STACK_DEPTH
   var stackPtr = 0u;
-  stack[stackPtr] = 0u; stackPtr = stackPtr + 1u;
+  stack[stackPtr] = rootNode; stackPtr = stackPtr + 1u;
 
   let invDir = safeInvDir(dir);
 

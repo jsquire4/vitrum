@@ -19,6 +19,7 @@ export {
 export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';
+export * from './wgsl/tlasTraversal.wgsl.js';
 
 /**
  * Index-buffer stride used by the BVH index array.

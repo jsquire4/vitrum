@@ -1050,6 +1050,8 @@ export class HybridEngine implements Engine {
       // 2026-05-18 sweep — tuple-typed clamp lives outside the number-only
       // Tunables table; same library-generality intent.
       indirectFireflyClamp:  this._indirectFireflyClamp,
+      bvhMode:               bvh.bvhMode === 'tlas' ? 1 : 0,
+      tlasNodeCount:         bvh.tlas?.nodeCount ?? 0,
       // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas. Per-frame splat so
       // the atrous denoisers (direct + indirect chains) read overrides
       // without round-tripping through WalkaroundUBO.
