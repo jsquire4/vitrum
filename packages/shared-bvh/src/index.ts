@@ -7,6 +7,15 @@ export * from './buildArrayBvh.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
 export * from './tlas.js';
+export {
+  packSceneFromCore,
+  refitTlasTransforms,
+  type PrimitiveTlasBinding,
+  type ScenePackOptions,
+  type ScenePackResult,
+  type TlasGpuSnapshot,
+  type RefitTlasResult,
+} from './scenePack.js';
 export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';

@@ -1,8 +1,10 @@
 import { asMat4, type Scene, type SceneEmitter, type ScenePrimitive } from '@vitrum/core';
-import { transformPoint } from '../math/mat4.js';
+import {
+  packSceneFromCore,
+  refitTlasTransforms,
+  type PrimitiveTlasBinding,
+} from '@vitrum/shared-bvh';
 import { invertMat4 } from '../math/mat4.js';
-import { buildCpuBvh } from './buildCpuBvh.js';
-import { buildSceneTlas, refitSceneTlas } from './tlasBridge.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
 import { environmentParams } from './environmentPacking.js';
 import {
@@ -101,14 +103,7 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly destroy: () => void;
 }
 
-export interface PrimitiveTlasBinding {
-  readonly primitiveId: string;
-  readonly primitiveKind: 'mesh' | 'instanced-mesh' | 'skinned-mesh';
-  readonly blasRoot: number;
-  readonly instanceCount: number;
-  readonly localAabbMin: readonly [number, number, number];
-  readonly localAabbMax: readonly [number, number, number];
-}
+export type { PrimitiveTlasBinding };
 
 function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBufferView): GPUBuffer {
   const minSize = data.byteLength === 0 ? 16 : data.byteLength;
@@ -149,118 +144,17 @@ function analyticShapeId(shape: string): number {
   return idx > 0 ? idx : 0;
 }
 
-interface PendingTlasInstance {
-  readonly aabbMin: readonly [number, number, number];
-  readonly aabbMax: readonly [number, number, number];
-  readonly worldToLocal: Float32Array;
-  readonly localToWorld: Float32Array;
-  readonly blasRoot: number;
-}
-
-function buildTlasFromInstances(instances: readonly PendingTlasInstance[]): {
-  tlasNodes: Uint32Array;
-  tlasInstanceIndices: Uint32Array;
-  tlasBlasRoots: Uint32Array;
-  tlasInstanceWorldToLocal: Float32Array;
-  tlasInstanceLocalToWorld: Float32Array;
-} {
-  if (instances.length === 0) {
-    return {
-      tlasNodes: new Uint32Array(0),
-      tlasInstanceIndices: new Uint32Array(0),
-      tlasBlasRoots: new Uint32Array(0),
-      tlasInstanceWorldToLocal: new Float32Array(0),
-      tlasInstanceLocalToWorld: new Float32Array(0),
-    };
-  }
-  const tlas = buildSceneTlas(
-    instances.map((instance) => ({
-      blasId: instance.blasRoot,
-      aabbMin: instance.aabbMin,
-      aabbMax: instance.aabbMax,
-      worldToLocal: instance.worldToLocal,
-    })),
-  );
-  const l2w = new Float32Array(instances.length * 16);
-  for (let i = 0; i < instances.length; i += 1) {
-    l2w.set(instances[i]!.localToWorld, i * 16);
-  }
-  return {
-    tlasNodes: tlas.nodes,
-    tlasInstanceIndices: tlas.instanceIndices,
-    tlasBlasRoots: tlas.blasRoots,
-    tlasInstanceWorldToLocal: tlas.instanceTransforms,
-    tlasInstanceLocalToWorld: l2w,
-  };
-}
-
-function computeLocalAabb(positions: Float32Array): {
-  min: readonly [number, number, number];
-  max: readonly [number, number, number];
-} | null {
-  if (positions.length < 3) return null;
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let minZ = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  let maxZ = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i + 2 < positions.length; i += 3) {
-    const x = positions[i] ?? 0;
-    const y = positions[i + 1] ?? 0;
-    const z = positions[i + 2] ?? 0;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    minZ = Math.min(minZ, z);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-    maxZ = Math.max(maxZ, z);
-  }
-  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
-}
-
-function transformAabb(
-  min: readonly [number, number, number],
-  max: readonly [number, number, number],
-  localToWorld: Float32Array,
-): {
-  min: readonly [number, number, number];
-  max: readonly [number, number, number];
-} {
-  let outMinX = Number.POSITIVE_INFINITY;
-  let outMinY = Number.POSITIVE_INFINITY;
-  let outMinZ = Number.POSITIVE_INFINITY;
-  let outMaxX = Number.NEGATIVE_INFINITY;
-  let outMaxY = Number.NEGATIVE_INFINITY;
-  let outMaxZ = Number.NEGATIVE_INFINITY;
-
-  for (let c = 0; c < 8; c += 1) {
-    const corner: [number, number, number] = [
-      (c & 1) === 0 ? min[0] : max[0],
-      (c & 2) === 0 ? min[1] : max[1],
-      (c & 4) === 0 ? min[2] : max[2],
-    ];
-    const p = transformPoint(asMat4(localToWorld), corner);
-    outMinX = Math.min(outMinX, p[0]);
-    outMinY = Math.min(outMinY, p[1]);
-    outMinZ = Math.min(outMinZ, p[2]);
-    outMaxX = Math.max(outMaxX, p[0]);
-    outMaxY = Math.max(outMaxY, p[1]);
-    outMaxZ = Math.max(outMaxZ, p[2]);
-  }
-
-  return { min: [outMinX, outMinY, outMinZ], max: [outMaxX, outMaxY, outMaxZ] };
+function isMeshLikePrimitive(
+  primitive: ScenePrimitive,
+): primitive is Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }> {
+  return primitive.kind === 'mesh'
+    || primitive.kind === 'skinned-mesh'
+    || primitive.kind === 'instanced-mesh';
 }
 
 export function buildPackedScene(scene: Scene): PackedSceneData {
-  const positions: number[] = [];
-  const normals: number[] = [];
-  const indices: number[] = [];
-  const triMaterialIds: number[] = [];
-  const bvhNodeWords: number[] = [];
-  const pendingTlasInstances: PendingTlasInstance[] = [];
-  const primitiveTlasBindings: PrimitiveTlasBinding[] = [];
   const materials: number[] = [];
+  const meshMaterialIds = new Map<string, number>();
   const analyticHeaders: number[] = [];
   const analyticParams: number[] = [];
   const analyticLocalToWorld: number[] = [];
@@ -319,155 +213,42 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
       continue;
     }
 
+    if (!isMeshLikePrimitive(primitive)) {
+      continue;
+    }
     const matId = nextMaterialId++;
+    meshMaterialIds.set(primitive.id, matId);
     materials.push(...materialToPackedVec4s(primitive.material));
-
-    const basePositions = primitive.positions;
-    const vertexCount = Math.floor(basePositions.length / 3);
-    if (vertexCount < 3) {
-      warnings.push(`Primitive "${primitive.id}" has fewer than 3 vertices; skipping.`);
-      continue;
-    }
-    const baseIndices =
-      primitive.indices ??
-      (() => {
-        const generated = new Uint32Array(vertexCount);
-        for (let i = 0; i < generated.length; i += 1) generated[i] = i;
-        return generated;
-      })();
-    const triCount = Math.floor(baseIndices.length / 3);
-    if (triCount === 0) {
-      warnings.push(`Primitive "${primitive.id}" has no triangles; skipping.`);
-      continue;
-    }
-
-    const localPositions = new Float32Array(vertexCount * 4);
-    const localNormals = new Float32Array(vertexCount * 4);
-    for (let i = 0; i < vertexCount; i += 1) {
-      localPositions[i * 4] = basePositions[i * 3] ?? 0;
-      localPositions[i * 4 + 1] = basePositions[i * 3 + 1] ?? 0;
-      localPositions[i * 4 + 2] = basePositions[i * 3 + 2] ?? 0;
-      localPositions[i * 4 + 3] = 0;
-
-      localNormals[i * 4] = primitive.normals[i * 3] ?? 0;
-      localNormals[i * 4 + 1] = primitive.normals[i * 3 + 1] ?? 1;
-      localNormals[i * 4 + 2] = primitive.normals[i * 3 + 2] ?? 0;
-      localNormals[i * 4 + 3] = 0;
-    }
-
-    const localIndices = new Uint32Array(triCount * 4);
-    for (let t = 0; t < triCount; t += 1) {
-      localIndices[t * 4] = baseIndices[t * 3] ?? 0;
-      localIndices[t * 4 + 1] = baseIndices[t * 3 + 1] ?? 0;
-      localIndices[t * 4 + 2] = baseIndices[t * 3 + 2] ?? 0;
-      localIndices[t * 4 + 3] = 0;
-    }
-    const localTriMaterialIds = new Uint32Array(triCount);
-    localTriMaterialIds.fill(matId);
-    const localBvh = buildCpuBvh(localPositions, localIndices, localTriMaterialIds);
-
-    const vertexBase = Math.floor(positions.length / 4);
-    const triBase = triMaterialIds.length;
-    const nodeBase = Math.floor(bvhNodeWords.length / 8);
-    const localNodeWords = new Uint32Array(localBvh.bvhNodes.buffer, localBvh.bvhNodes.byteOffset, localBvh.bvhNodes.length);
-
-    for (let i = 0; i < localPositions.length; i += 1) positions.push(localPositions[i] ?? 0);
-    for (let i = 0; i < localNormals.length; i += 1) normals.push(localNormals[i] ?? 0);
-    for (let i = 0; i + 3 < localBvh.reorderedIndices.length; i += 4) {
-      indices.push(
-        (localBvh.reorderedIndices[i] ?? 0) + vertexBase,
-        (localBvh.reorderedIndices[i + 1] ?? 0) + vertexBase,
-        (localBvh.reorderedIndices[i + 2] ?? 0) + vertexBase,
-        localBvh.reorderedIndices[i + 3] ?? 0,
-      );
-    }
-    for (let i = 0; i < localBvh.reorderedTriMaterialIds.length; i += 1) {
-      triMaterialIds.push(localBvh.reorderedTriMaterialIds[i] ?? matId);
-    }
-
-    for (let n = 0; n + 7 < localNodeWords.length; n += 8) {
-      const splitOrCount = localNodeWords[n + 7] ?? 0;
-      const isLeaf = (splitOrCount & 0xffff0000) === 0xffff0000;
-      bvhNodeWords.push(
-        localNodeWords[n] ?? 0,
-        localNodeWords[n + 1] ?? 0,
-        localNodeWords[n + 2] ?? 0,
-        localNodeWords[n + 3] ?? 0,
-        localNodeWords[n + 4] ?? 0,
-        localNodeWords[n + 5] ?? 0,
-        isLeaf ? (localNodeWords[n + 6] ?? 0) + triBase : (localNodeWords[n + 6] ?? 0),
-        splitOrCount,
-      );
-    }
-
-    const localAabb = computeLocalAabb(basePositions);
-    if (localAabb == null) {
-      continue;
-    }
-    const transforms =
-      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-    if (transforms.length === 0) {
-      warnings.push(`Instanced primitive "${primitive.id}" has no instances; skipping TLAS instance upload.`);
-      continue;
-    }
-    for (const transform of transforms) {
-      const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-      const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
-      if (maybeWorldToLocal == null) {
-        warnings.push(
-          `Primitive "${primitive.id}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
-        );
-      }
-      const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
-      const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-      const worldAabb = transformAabb(localAabb.min, localAabb.max, localToWorld);
-      pendingTlasInstances.push({
-        blasRoot: nodeBase,
-        worldToLocal,
-        localToWorld,
-        aabbMin: worldAabb.min,
-        aabbMax: worldAabb.max,
-      });
-    }
-    primitiveTlasBindings.push({
-      primitiveId: primitive.id,
-      primitiveKind: primitive.kind,
-      blasRoot: nodeBase,
-      instanceCount: transforms.length,
-      localAabbMin: localAabb.min,
-      localAabbMax: localAabb.max,
-    });
   }
 
-  const packedPositions = new Float32Array(positions);
-  const packedNormals = new Float32Array(normals);
-  const packedIndices = new Uint32Array(indices);
-  const packedTriMaterialIds = new Uint32Array(triMaterialIds);
-  const packedBvhNodes = new Float32Array(new Uint32Array(bvhNodeWords).buffer);
-  const tlasBuild = buildTlasFromInstances(pendingTlasInstances);
+  const geo = packSceneFromCore(scene, {
+    tlas: true,
+    resolveMaterialId: (id) => meshMaterialIds.get(id) ?? 0,
+  });
+  warnings.push(...geo.warnings);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);
   warnings.push(...environment.warnings);
   warnings.push(...emitArrays.warnings);
 
   return {
-    positions: packedPositions,
-    normals: packedNormals,
-    indices: packedIndices,
-    triMaterialIds: packedTriMaterialIds,
+    positions: geo.positions,
+    normals: geo.normals,
+    indices: geo.indices,
+    triMaterialIds: geo.triMaterialIds,
     materials: new Float32Array(materials),
-    bvhNodes: packedBvhNodes,
-    tlasNodes: tlasBuild.tlasNodes,
-    tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
-    tlasBlasRoots: tlasBuild.tlasBlasRoots,
-    tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
-    tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
-    primitiveTlasBindings,
+    bvhNodes: geo.bvhNodes,
+    tlasNodes: geo.tlasNodes,
+    tlasInstanceIndices: geo.tlasInstanceIndices,
+    tlasBlasRoots: geo.tlasBlasRoots,
+    tlasInstanceWorldToLocal: geo.tlasInstanceWorldToLocal,
+    tlasInstanceLocalToWorld: geo.tlasInstanceLocalToWorld,
+    primitiveTlasBindings: geo.primitiveTlasBindings,
     analyticHeaders: new Float32Array(analyticHeaders),
     analyticParams: new Float32Array(analyticParams),
     analyticLocalToWorld: new Float32Array(analyticLocalToWorld),
     analyticWorldToLocal: new Float32Array(analyticWorldToLocal),
-    triangleCount: packedTriMaterialIds.length,
+    triangleCount: geo.triangleCount,
     analyticCount: Math.floor(analyticHeaders.length / 4),
     warnings,
     directionalLight: defaultDirectionalLight(scene),
@@ -500,117 +281,8 @@ export function rebuildTlasForSceneTransforms(
     readonly tlasBlasRoots: Uint32Array;
     readonly tlasInstanceWorldToLocal: Float32Array;
   },
-):
-  | ({
-      readonly ok: true;
-      readonly tlasNodes: Uint32Array;
-      readonly tlasInstanceIndices: Uint32Array;
-      readonly tlasBlasRoots: Uint32Array;
-      readonly tlasInstanceWorldToLocal: Float32Array;
-      readonly tlasInstanceLocalToWorld: Float32Array;
-      readonly warnings: readonly string[];
-    })
-  | ({
-      readonly ok: false;
-      readonly reason: string;
-    })
-{
-  const primitiveById = new Map<string, ScenePrimitive>();
-  for (const primitive of scene.primitives) {
-    primitiveById.set(primitive.id, primitive);
-  }
-  const warnings: string[] = [];
-  const pendingTlasInstances: PendingTlasInstance[] = [];
-  const refitAabbs: Array<{ min: readonly [number, number, number]; max: readonly [number, number, number] }> = [];
-  for (const binding of primitiveTlasBindings) {
-    const primitive = primitiveById.get(binding.primitiveId);
-    if (primitive == null) {
-      return {
-        ok: false,
-        reason: `rebuildTlasForSceneTransforms: primitive "${binding.primitiveId}" no longer exists.`,
-      };
-    }
-    if (primitive.kind !== binding.primitiveKind) {
-      return {
-        ok: false,
-        reason: `rebuildTlasForSceneTransforms: primitive "${binding.primitiveId}" changed kind ` +
-          `from "${binding.primitiveKind}" to "${primitive.kind}".`,
-      };
-    }
-    const transforms =
-      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-    if (transforms.length !== binding.instanceCount) {
-      return {
-        ok: false,
-        reason: `rebuildTlasForSceneTransforms: primitive "${binding.primitiveId}" instance count changed ` +
-          `from ${binding.instanceCount} to ${transforms.length}.`,
-      };
-    }
-    for (const transform of transforms) {
-      const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-      const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
-      if (maybeWorldToLocal == null) {
-        warnings.push(
-          `Primitive "${primitive.id}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
-        );
-      }
-      const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
-      const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-      const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
-      refitAabbs.push(worldAabb);
-      pendingTlasInstances.push({
-        blasRoot: binding.blasRoot,
-        worldToLocal,
-        localToWorld,
-        aabbMin: worldAabb.min,
-        aabbMax: worldAabb.max,
-      });
-    }
-  }
-  if (
-    prevTlas != null &&
-    prevTlas.tlasNodes.length > 0 &&
-    prevTlas.tlasInstanceIndices.length === refitAabbs.length &&
-    prevTlas.tlasBlasRoots.length === refitAabbs.length &&
-    prevTlas.tlasInstanceWorldToLocal.length === refitAabbs.length * 16
-  ) {
-    const refitNodes = new Uint32Array(prevTlas.tlasNodes);
-    refitSceneTlas(
-      {
-        nodes: refitNodes,
-        nodeCount: Math.floor(refitNodes.length / 8),
-        instanceIndices: prevTlas.tlasInstanceIndices,
-        blasRoots: prevTlas.tlasBlasRoots,
-        instanceTransforms: prevTlas.tlasInstanceWorldToLocal,
-      },
-      refitAabbs,
-    );
-    const l2w = new Float32Array(pendingTlasInstances.length * 16);
-    const w2l = new Float32Array(pendingTlasInstances.length * 16);
-    for (let i = 0; i < pendingTlasInstances.length; i += 1) {
-      l2w.set(pendingTlasInstances[i]!.localToWorld, i * 16);
-      w2l.set(pendingTlasInstances[i]!.worldToLocal, i * 16);
-    }
-    return {
-      ok: true,
-      tlasNodes: refitNodes,
-      tlasInstanceIndices: prevTlas.tlasInstanceIndices,
-      tlasBlasRoots: prevTlas.tlasBlasRoots,
-      tlasInstanceWorldToLocal: w2l,
-      tlasInstanceLocalToWorld: l2w,
-      warnings,
-    };
-  }
-  const tlas = buildTlasFromInstances(pendingTlasInstances);
-  return {
-    ok: true,
-    tlasNodes: tlas.tlasNodes,
-    tlasInstanceIndices: tlas.tlasInstanceIndices,
-    tlasBlasRoots: tlas.tlasBlasRoots,
-    tlasInstanceWorldToLocal: tlas.tlasInstanceWorldToLocal,
-    tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
-    warnings,
-  };
+) {
+  return refitTlasTransforms(scene, primitiveTlasBindings, prevTlas);
 }
 
 export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): UploadedSceneBuffers {
