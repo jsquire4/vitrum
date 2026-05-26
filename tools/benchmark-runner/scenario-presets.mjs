@@ -234,3 +234,48 @@ export const GAP_CLOSURE_SCENARIOS = [
     glassDimensions: { width: 20, height: 20, thickness: 100 },
   },
 ];
+
+/**
+ * PR-6 primary-release hybrid benchmarks (plan/primary-release-and-webgpu-pt-parity).
+ * Host capture pages should read `vitrumScenario` + `vitrumBackend=walkaround`.
+ */
+export const PR_HYBRID_BENCHMARK_SCENARIOS = [
+  {
+    scenarioId: 'PR-hybrid-200k-static',
+    seed: 26001,
+    resolution: '1280x720',
+    backend: 'walkaround',
+    targetTriangleCount: 200_000,
+    frames: 120,
+    metric: 'p95FrameMs',
+  },
+  {
+    scenarioId: 'PR-hybrid-tlas-10-inst',
+    seed: 26002,
+    resolution: '1280x720',
+    backend: 'walkaround',
+    instanceCount: 10,
+    bvhMode: 'tlas',
+    frames: 120,
+    metric: 'p95FrameMs',
+  },
+  {
+    scenarioId: 'PR-hybrid-material-churn',
+    seed: 26003,
+    resolution: '1280x720',
+    backend: 'walkaround',
+    frames: 64,
+    materialPatchIterations: 100,
+    metric: 'zeroPipelineReinit',
+  },
+  {
+    scenarioId: 'PR-hybrid-emitter-churn',
+    seed: 26004,
+    resolution: '1280x720',
+    backend: 'walkaround',
+    emitterCount: 3,
+    frames: 64,
+    emitterPatchIterations: 100,
+    metric: 'emitterBufferRefreshMs',
+  },
+];

@@ -24,6 +24,21 @@ Primary outputs include:
 - `tools/benchmark-runner/results/wave0/wave0-baseline-<timestamp>.json`
 - `tools/benchmark-runner/results/wave4/wave4-hardening-<timestamp>.json`
 
+## PR-6 hybrid release benchmarks (metadata)
+
+Scenario ids for the primary-release program live in `scenario-presets.mjs` as
+`PR_HYBRID_BENCHMARK_SCENARIOS`:
+
+| Scenario ID | Intent |
+|-------------|--------|
+| `PR-hybrid-200k-static` | p95 frame time on ~200k tri static scene |
+| `PR-hybrid-tlas-10-inst` | p95 frame time with 10 instanced meshes (TLAS) |
+| `PR-hybrid-material-churn` | 100× `updatePrimitive` material-only, zero pipeline reinit |
+| `PR-hybrid-emitter-churn` | 100× `updateEmitter` intensity patch |
+
+Host harness wiring (capture page + Playwright runner) is tracked in
+`plan/primary-release-and-webgpu-pt-parity-implementation-deep.md` §PR-6.
+
 ## Wave 0 baseline orchestration
 
 `run-wave0-baseline.mjs` captures the initial sweep baseline in one command:
