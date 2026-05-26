@@ -52,6 +52,7 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1280x720',
     bounces: 8,
     spp: 512,
+    backend: 'pt-webgpu',
   },
 
   // -------------------------------------------------------------------------
@@ -239,6 +240,11 @@ export const GAP_CLOSURE_SCENARIOS = [
  * PR-6 primary-release hybrid benchmarks (plan/primary-release-and-webgpu-pt-parity).
  * Host capture pages should read `vitrumScenario` + `vitrumBackend=walkaround`.
  */
+/** WG-0.2 — pt-webgpu scenarios that use `capturePtWebgpu.mjs` when GPU capture is on. */
+export const WG0_PT_WEBGPU_SCENARIOS = [
+  'ptwgpu-parity-material-fields',
+];
+
 export const PR_HYBRID_BENCHMARK_SCENARIOS = [
   {
     scenarioId: 'PR-hybrid-200k-static',

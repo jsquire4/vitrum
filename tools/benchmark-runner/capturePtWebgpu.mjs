@@ -26,6 +26,10 @@ if (!outputPng) {
 
 const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5175/pt-webgpu.html';
 const samplesTarget = Number(process.env.VITRUM_SPP ?? '64');
+const bounces = Number(process.env.VITRUM_BOUNCES ?? '8');
+const width = Number(process.env.VITRUM_WIDTH ?? '1280');
+const height = Number(process.env.VITRUM_HEIGHT ?? '720');
+const seed = process.env.VITRUM_SEED ?? '777';
 const timeoutMs = Number(process.env.VITRUM_CAPTURE_TIMEOUT_MS ?? 120_000);
 const scenarioId = process.env.VITRUM_SCENARIO_ID ?? 'ptwgpu-capture';
 
@@ -33,6 +37,8 @@ function buildUrl() {
   const u = new URL(captureUrlBase);
   u.searchParams.set('mode', 'ptwebgpu');
   u.searchParams.set('samplesTarget', String(samplesTarget));
+  u.searchParams.set('ptWebgpuBounces', String(bounces));
+  u.searchParams.set('vitrumSeed', String(seed));
   if (process.env.VITRUM_SCENE) {
     u.searchParams.set('scene', process.env.VITRUM_SCENE);
   }
@@ -49,7 +55,7 @@ try {
 
 const browser = await chromium.launch({ headless: true });
 try {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({ viewport: { width, height } });
   const url = buildUrl();
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   await page.waitForFunction(

@@ -15,7 +15,8 @@
     "benchmark:pt-webgl-fidelity": "node ./run-pt-webgl-fidelity-acceptance.mjs",
     "benchmark:wave0-baseline": "node ./run-wave0-baseline.mjs",
     "benchmark:pr-hybrid": "node ./run-pr-hybrid-bench.mjs",
-    "benchmark:capture-pt-webgpu": "node ./capturePtWebgpu.mjs"
+    "benchmark:capture-pt-webgpu": "node ./capturePtWebgpu.mjs",
+    "benchmark:seed-wg0": "node ./run-seed-wg0-baselines.mjs"
   },
   "devDependencies": {
     "playwright": "^1.59.1"

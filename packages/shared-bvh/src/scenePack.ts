@@ -584,8 +584,22 @@ export type RebuildPrimitiveBlasResult =
  */
 export function rebuildPrimitiveBlas(
   scene: Scene,
-  _primitiveId: string,
+  primitiveId: string,
+  prev: ScenePackResult,
   opts: ScenePackOptions,
 ): RebuildPrimitiveBlasResult {
+  const binding = prev.primitiveTlasBindings.find((b) => b.primitiveId === primitiveId);
+  if (binding == null) {
+    const prim = scene.primitives.find((p) => p.id === primitiveId);
+    if (prim == null) {
+      return { ok: false, reason: `primitive "${primitiveId}" not found in scene or previous pack` };
+    }
+    return {
+      ok: false,
+      reason: `primitive "${primitiveId}" was not in the previous TLAS pack (topology-only rebuild requires full scene pack)`,
+    };
+  }
+  // PR-4.3 v1: full repack preserves correctness; in-place BLAS splice follows.
+  void binding;
   return { ok: true, pack: packSceneFromCore(scene, opts) };
 }

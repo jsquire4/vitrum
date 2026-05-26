@@ -58,6 +58,24 @@ VITRUM_OUTPUT_PNG=tools/reference-renders/baseline/ptwgpu-cornell.png \
 
 Set `VITRUM_GPU_CAPTURE=1` in CI only when Playwright + WebGPU are available (WG-0.4).
 
+### WG-0.2 baseline seed + verify
+
+`ptwgpu-parity-material-fields` uses the built-in `capturePtWebgpu.mjs` adapter when
+`VITRUM_CAPTURE_CMD` is unset:
+
+```bash
+# One-shot seed (starts two-engines dev server, smoke resolution by default)
+VITRUM_PR_START_SERVER=1 npm run benchmark:seed-wg0 --workspace @vitrum/benchmark-runner
+
+# Verify against committed baseline PNG
+VITRUM_GPU_CAPTURE=1 VITRUM_GAP_SCENARIOS=ptwgpu-parity-material-fields \
+  npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner
+```
+
+Baselines live under `tools/reference-renders/baseline/` (see README there).
+
+Filter gap-closure to a subset: `VITRUM_GAP_SCENARIOS=id1,id2`.
+
 ## Wave 0 baseline orchestration
 
 `run-wave0-baseline.mjs` captures the initial sweep baseline in one command:

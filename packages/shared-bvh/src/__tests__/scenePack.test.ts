@@ -4,6 +4,7 @@ import { asMat4 } from '@vitrum/core';
 import {
   computeWorldAabbForBindings,
   packSceneFromCore,
+  rebuildPrimitiveBlas,
   refitTlasTransforms,
 } from '../scenePack.js';
 import { tlasIntersect } from '../tlas.js';
@@ -220,6 +221,22 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(bounds).not.toBeNull();
     expect(bounds!.min[0]).toBeLessThanOrEqual(0);
     expect(bounds!.max[0]).toBeGreaterThanOrEqual(5);
+  });
+
+  it('rebuildPrimitiveBlas fails when primitive was not in previous pack', () => {
+    const packed = packSceneFromCore(
+      { primitives: [unitTriMesh('a')], emitters: [], environment: { kind: 'none' } },
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    const rebuilt = rebuildPrimitiveBlas(
+      { primitives: [unitTriMesh('b')], emitters: [], environment: { kind: 'none' } },
+      'b',
+      packed,
+      { tlas: true, resolveMaterialId: () => 0 },
+    );
+    expect(rebuilt.ok).toBe(false);
+    if (rebuilt.ok) return;
+    expect(rebuilt.reason).toContain('b');
   });
 
   it('SP-4: removed primitive fails refit with explicit id', () => {

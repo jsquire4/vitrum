@@ -16,13 +16,25 @@ import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PR_HYBRID_BENCHMARK_SCENARIOS } from './scenario-presets.mjs';
+import {
+  launchDevServer,
+  stopDevServer,
+  waitForServerReady,
+} from './devServer.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, '..', '..');
 const resultsDir = resolve(here, 'results', 'pr-hybrid');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outPath = resolve(resultsDir, `pr-hybrid-${stamp}.json`);
 
-const captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5175/walkaround.html';
+let captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5175/walkaround.html';
+const startServer = process.env.VITRUM_PR_START_SERVER === '1';
+const serverCommand =
+  process.env.VITRUM_PR_DEV_CMD ??
+  'npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0.1 --port 5175';
+const serverReadyTimeoutMs = Number(process.env.VITRUM_PR_SERVER_READY_TIMEOUT_MS ?? 90_000);
+const serverPollMs = Number(process.env.VITRUM_PR_SERVER_POLL_MS ?? 500);
 const headless = process.env.VITRUM_BENCH_HEADLESS !== '0';
 const navTimeoutMs = Number(process.env.VITRUM_PR_NAV_TIMEOUT_MS ?? 90_000);
 const benchTimeoutMs = Number(process.env.VITRUM_PR_BENCH_TIMEOUT_MS ?? 120_000);
@@ -146,6 +158,22 @@ async function main() {
   }
 
   await mkdir(resultsDir, { recursive: true });
+
+  let devServer = null;
+  if (startServer) {
+    console.log('[pr-hybrid] starting dev server…');
+    devServer = launchDevServer(serverCommand, repoRoot);
+    const ready = await waitForServerReady(
+      devServer,
+      captureUrlBase.replace(/\/[^/]*$/, '/'),
+      serverReadyTimeoutMs,
+      serverPollMs,
+    );
+    const base = ready.url.endsWith('/') ? ready.url : `${ready.url}/`;
+    captureUrlBase = `${base}walkaround.html`;
+    console.log(`[pr-hybrid] using ${captureUrlBase}`);
+  }
+
   const browser = await chromium.launch({ headless });
   const rows = [];
   try {
@@ -156,6 +184,7 @@ async function main() {
     }
   } finally {
     await browser.close();
+    if (devServer) stopDevServer(devServer);
   }
 
   const failures = rows.filter((r) => !r.pass).length;

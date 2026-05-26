@@ -19,7 +19,23 @@ const resultDate = (process.env.VITRUM_RESULT_DATE ?? new Date().toISOString().s
 const outputPath = resolve(here, `results/gap-closure-verification-${resultDate}.json`);
 
 const captureEnabled = process.env.VITRUM_GPU_CAPTURE === '1';
-const captureCommand = process.env.VITRUM_CAPTURE_CMD ?? '';
+const captureCommandOverride = process.env.VITRUM_CAPTURE_CMD?.trim() ?? '';
+
+function defaultCaptureCommand(scenario) {
+  if (scenario.backend === 'pt-webgpu') {
+    return `node ${resolve(here, 'capturePtWebgpu.mjs')}`;
+  }
+  return '';
+}
+
+const scenarioFilter = (process.env.VITRUM_GAP_SCENARIOS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0);
+const activeScenarios =
+  scenarioFilter.length > 0
+    ? scenarios.filter((s) => scenarioFilter.includes(s.scenarioId))
+    : scenarios;
 const allowBaselineGen = process.env.VITRUM_ALLOW_BASELINE_GEN === '1';
 const failOnIdentical = process.env.VITRUM_FAIL_ON_IDENTICAL_HASH === '1';
 const smokeCapture = process.env.VITRUM_CAPTURE_SMOKE === '1';
@@ -140,12 +156,14 @@ async function runCapture(scenario, variant, outputImagePath) {
       reason: 'VITRUM_GPU_CAPTURE is not enabled (expected 1).',
     };
   }
+  const captureCommand = captureCommandOverride || defaultCaptureCommand(effectiveScenario);
   if (!captureCommand) {
     return {
       ok: false,
       status: 'blocked-no-capture-adapter',
       reason:
-        'VITRUM_CAPTURE_CMD is unset. Provide a deterministic capture adapter command that writes VITRUM_OUTPUT_PNG.',
+        'VITRUM_CAPTURE_CMD is unset and no default adapter exists for this scenario backend. ' +
+        'Set VITRUM_CAPTURE_CMD or use backend "pt-webgpu" for the built-in capturePtWebgpu adapter.',
     };
   }
   const run = await runCommand(captureCommand, {
@@ -297,23 +315,23 @@ async function evaluateScenario(scenario) {
 // instance, so scenarios run sequentially when VITRUM_GPU_CAPTURE=1 to avoid
 // driver contention. CPU-only verification (no capture) parallelizes
 // freely. Override via VITRUM_GAP_CONCURRENCY (positive integer).
-const defaultConcurrency = captureEnabled ? 1 : Math.max(1, scenarios.length);
+const defaultConcurrency = captureEnabled ? 1 : Math.max(1, activeScenarios.length);
 const concurrency = Math.max(
   1,
   Number(process.env.VITRUM_GAP_CONCURRENCY ?? defaultConcurrency) || 1,
 );
 const entries = [];
 if (concurrency <= 1) {
-  for (const scenario of scenarios) {
+  for (const scenario of activeScenarios) {
     // eslint-disable-next-line no-await-in-loop
     entries.push(await evaluateScenario(scenario));
   }
-} else if (concurrency >= scenarios.length) {
-  entries.push(...(await Promise.all(scenarios.map(evaluateScenario))));
+} else if (concurrency >= activeScenarios.length) {
+  entries.push(...(await Promise.all(activeScenarios.map(evaluateScenario))));
 } else {
   // Bounded pool: run `concurrency` workers that pull from a shared queue.
-  const queue = scenarios.slice();
-  const results = new Array(scenarios.length);
+  const queue = activeScenarios.slice();
+  const results = new Array(activeScenarios.length);
   let nextIdx = 0;
   const workers = Array.from({ length: concurrency }, async () => {
     while (true) {
@@ -334,7 +352,9 @@ const report = {
     platform: process.platform,
     node: process.version,
     gpuCaptureEnabled: captureEnabled,
-    captureCommandConfigured: captureCommand.length > 0,
+    captureCommandConfigured:
+      captureCommandOverride.length > 0 || activeScenarios.some((s) => defaultCaptureCommand(s).length > 0),
+    scenarioFilter: scenarioFilter.length > 0 ? scenarioFilter : null,
     allowBaselineGeneration: allowBaselineGen,
   },
   results: entries,
