@@ -49,7 +49,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       transform: true,
       positions: true,
       material: false,
-      emitter: false,
+      emitter: true,
       topology: true,
     },
     supportsAuxBuffers: false,

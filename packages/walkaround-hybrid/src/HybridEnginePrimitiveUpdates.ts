@@ -30,8 +30,9 @@
  */
 
 import * as THREE from 'three';
-import type { ScenePrimitive } from '@vitrum/core';
+import type { Scene, ScenePrimitive } from '@vitrum/core';
 import { refitBvhBounds } from '@vitrum/shared-bvh';
+import { applyPrimitivePatchToScene } from './scenePatch.js';
 import { buildReSTIRSceneBVH, disposeSceneBVH } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
@@ -57,6 +58,8 @@ export interface PrimitiveUpdateContext {
   /** Primary directional light intensity, threaded into a rebuild's
    *  BVH-builder. */
   readonly primaryLightIntensity: number;
+  /** Current vitrum scene snapshot — kept in sync on successful fast paths. */
+  readonly lastScene: Scene;
 }
 
 /** Result of a primitive-update call. */
@@ -67,6 +70,8 @@ export interface PrimitiveUpdateResult {
    *  - For {@link topologyRebuild}, the freshly-built replacement; the old
    *    buffer has already been disposed inside the function. */
   readonly bvhBuffers: SceneBVHBuffers;
+  /** Patched vitrum scene after a successful geometry update. */
+  readonly updatedScene: Scene;
 }
 
 /**
@@ -209,7 +214,12 @@ export function transformRefit(
   // invalidate so probes re-converge over the next STRIDE frames.
   ctx.ddgi.invalidateProbeCache();
 
-  return { bvhBuffers: bvh };
+  const updatedScene =
+    patch.transform !== undefined
+      ? applyPrimitivePatchToScene(ctx.lastScene, id, { transform: patch.transform })
+      : ctx.lastScene;
+
+  return { bvhBuffers: bvh, updatedScene };
 }
 
 /**
@@ -326,7 +336,15 @@ export function positionsRefit(
   ctx.pipeline?.requestAccumReset();
   ctx.ddgi.invalidateProbeCache();
 
-  return { bvhBuffers: bvh };
+  const posPatch: Partial<ScenePrimitive> = {
+    positions: new Float32Array(Array.from(newLocalPositions)),
+  };
+  if (patch.normals !== undefined) {
+    posPatch.normals = new Float32Array(Array.from(patch.normals));
+  }
+  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
+
+  return { bvhBuffers: bvh, updatedScene };
 }
 
 /**
@@ -461,5 +479,7 @@ export function topologyRebuild(
   ctx.pipeline?.requestAccumReset();
   ctx.ddgi.invalidateProbeCache();
 
-  return { bvhBuffers: newBuffers };
+  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
+
+  return { bvhBuffers: newBuffers, updatedScene };
 }

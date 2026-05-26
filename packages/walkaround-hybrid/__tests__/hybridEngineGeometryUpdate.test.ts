@@ -156,6 +156,9 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
           ]) },
       ],
       bvhIndicesStride3: new Uint32Array([0, 1, 2]),
+      triangleMaterialIds: { cpuData: new Uint32Array(1).buffer, byteLength: 4, count: 1 },
+      buildMaterials: [new THREE.MeshStandardMaterial()],
+      emitterNormals: new Float32Array(16),
     };
   }
 
@@ -165,6 +168,12 @@ vi.mock('../src/restir/bvhCompute.js', async () => {
       state.buildBVHCalls.push({ idx });
       return makeFakeBuffers();
     }),
+    rebuildEmitterBuffersFromSceneRoots: vi.fn(() => ({
+      emitters: { cpuData: new ArrayBuffer(80), byteLength: 80, count: 1 },
+      emitterCdf: { cpuData: new Float32Array(1).buffer, byteLength: 4, count: 1 },
+      emitterCount: 1,
+      totalEmissivePower: 2,
+    })),
     disposeSceneBVH: vi.fn(),
   };
 });
@@ -461,7 +470,7 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
 });
 
 describe('HybridEngine.updateEmitter', () => {
-  it('rebuilds scene state when emitter patch is applied', async () => {
+  it('refreshes emitter buffers without setScene when emitter patch is applied', async () => {
     const engine = makeEngine();
     const s = getState();
     engine.setScene(SCENE_WITH_EMITTER);
@@ -469,8 +478,11 @@ describe('HybridEngine.updateEmitter', () => {
     s.pipelineInitDeferreds[0]!.resolve();
     await drainMicrotasks();
     const buildCountBefore = s.buildBVHCalls.length;
+    const pipeline = s.pipelineConstructed[0]!;
     engine.updateEmitter!('sun-a', { intensity: 2 });
-    expect(s.buildBVHCalls.length).toBe(buildCountBefore + 1);
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore);
+    expect(pipeline.updateEmitters).toHaveBeenCalled();
+    expect(pipeline.requestAccumReset).toHaveBeenCalled();
   });
 
   it('throws on unknown emitter id', async () => {

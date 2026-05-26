@@ -126,6 +126,10 @@ export interface SceneBVHBuffers {
    * stride-3 form here for the refit fast path.
    */
   bvhIndicesStride3: Uint32Array;
+  /** THREE materials aligned with `triangleMaterialIds` (CPU-only, for emitter rebuild). */
+  buildMaterials: readonly THREE.Material[];
+  /** Stride-4 world-space normals from the last BVH build (emitter list input). */
+  emitterNormals: Float32Array;
 }
 
 // EmitterTri layout, EMITTER_STRIDE / EMITTER_FLOATS, and the
@@ -269,6 +273,54 @@ export function buildReSTIRSceneBVH(
     mergedGeometry: shared.bvh.geometry,
     meshVertexRanges: enrichMeshVertexRangesWithMatrix(sceneRoots, shared.meshVertexRanges),
     bvhIndicesStride3: shared.indices,
+    buildMaterials: shared.materials,
+    emitterNormals: shared.normals,
+  };
+}
+
+/**
+ * Rebuild only the ReSTIR emitter list + power CDF from the current scene
+ * graph and the cached BVH geometry (no SAH rebuild). Used by
+ * `HybridEngine.updateEmitter` fast path.
+ */
+export function rebuildEmitterBuffersFromSceneRoots(
+  sceneRoots: THREE.Object3D[],
+  bvh: Pick<
+    SceneBVHBuffers,
+    | 'bvhIndicesStride3'
+    | 'bvhPositions'
+    | 'emitterNormals'
+    | 'triangleMaterialIds'
+    | 'buildMaterials'
+  >,
+  options: {
+    primaryLightDir?: THREE.Vector3;
+    primaryLightIntensity?: number;
+  } = {},
+): Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf' | 'emitterCount' | 'totalEmissivePower'> {
+  const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots);
+  const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(
+    bvh.bvhIndicesStride3,
+    new Float32Array(bvh.bvhPositions.cpuData),
+    bvh.emitterNormals,
+    new Uint32Array(bvh.triangleMaterialIds.cpuData),
+    [...bvh.buildMaterials],
+    { ...options, extraEmitters },
+  );
+  const emitterCount = cdfArray.length;
+  return {
+    emitters: {
+      cpuData: emitterFloats.buffer as ArrayBuffer,
+      byteLength: emitterFloats.byteLength,
+      count: emitterCount,
+    },
+    emitterCdf: {
+      cpuData: cdfArray.buffer as ArrayBuffer,
+      byteLength: cdfArray.byteLength,
+      count: emitterCount,
+    },
+    emitterCount,
+    totalEmissivePower,
   };
 }
 

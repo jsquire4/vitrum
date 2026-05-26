@@ -56,7 +56,11 @@ import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
 import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
-import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+import {
+  rebuildEmitterBuffersFromSceneRoots,
+  type SceneBVHBuffers,
+} from './restir/bvhCompute.js';
+import { applyEmitterPatchToScene } from './scenePatch.js';
 import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
 import type { ModelWeights } from './neural/weights.js';
 import { transformRefit, positionsRefit, topologyRebuild, type PrimitiveUpdateContext } from './HybridEnginePrimitiveUpdates.js';
@@ -417,7 +421,7 @@ export class HybridEngine implements Engine {
         transform: true,
         positions: true,
         material: false,
-        emitter: false,
+        emitter: true,
         topology: true,
       },
       supportsAuxBuffers:        false,
@@ -576,6 +580,7 @@ export class HybridEngine implements Engine {
       // index buffer / vertex layout changed.
       const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
+      this._lastScene = result.updatedScene;
       const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
       if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
       return;
@@ -584,6 +589,7 @@ export class HybridEngine implements Engine {
       // A3 fast path — same topology, new vertex positions.
       const result = positionsRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
+      this._lastScene = result.updatedScene;
       const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
       if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
       return;
@@ -591,6 +597,7 @@ export class HybridEngine implements Engine {
     if (hasTransformChange) {
       const result = transformRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
+      this._lastScene = result.updatedScene;
       const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
       if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
       return;
@@ -612,6 +619,11 @@ export class HybridEngine implements Engine {
 
   /** Build the per-call resource context the primitive-update helpers consume. */
   private _buildPrimitiveUpdateContext(): PrimitiveUpdateContext {
+    if (this._lastScene == null) {
+      throw new Error(
+        'HybridEngine.updatePrimitive: no scene set. Call setScene(scene) first.',
+      );
+    }
     return {
       bvhBuffers:            this._bvhBuffers,
       threeRoot:             this._ensureThreeSceneRoot(),
@@ -619,6 +631,7 @@ export class HybridEngine implements Engine {
       ddgi:                  this._ddgi,
       primaryLightDir:       this._primaryLightDir,
       primaryLightIntensity: this._primaryLightIntensity,
+      lastScene:             this._lastScene,
     };
   }
 
@@ -635,14 +648,39 @@ export class HybridEngine implements Engine {
         `HybridEngine.updateEmitter("${id}"): emitter id not found in current scene.`,
       );
     }
-    const current = this._lastScene.emitters[idx]!;
-    const nextEmitter = { ...current, ...patch } as SceneEmitter;
-    const nextEmitters = this._lastScene.emitters.slice();
-    nextEmitters[idx] = nextEmitter;
-    this.setScene({
-      ...this._lastScene,
-      emitters: nextEmitters,
-    });
+    if (this._bvhBuffers == null) {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): BVH not ready. Wait for setScene init to finish.`,
+      );
+    }
+    const threeRoot = this._ensureThreeSceneRoot();
+    if (threeRoot == null) {
+      throw new Error(
+        `HybridEngine.updateEmitter("${id}"): no THREE scene available.`,
+      );
+    }
+
+    this._lastScene = applyEmitterPatchToScene(this._lastScene, id, patch);
+
+    const emitterSlice = rebuildEmitterBuffersFromSceneRoots(
+      [threeRoot],
+      this._bvhBuffers,
+      {
+        primaryLightDir: new THREE.Vector3(...this._primaryLightDir),
+        primaryLightIntensity: this._primaryLightIntensity,
+      },
+    );
+
+    this._bvhBuffers = {
+      ...this._bvhBuffers,
+      emitters: emitterSlice.emitters,
+      emitterCdf: emitterSlice.emitterCdf,
+      emitterCount: emitterSlice.emitterCount,
+      totalEmissivePower: emitterSlice.totalEmissivePower,
+    };
+
+    this._pipeline?.updateEmitters(this._bvhBuffers);
+    this._pipeline?.requestAccumReset();
   }
 
   // ── Runtime lighting update ────────────────────────────────────────────

@@ -29,4 +29,4 @@ Helpers: **`applyFrameToPerspectiveCamera`** for advanced integration, **`BdptLi
 
 ## Stability
 
-**Pre-alpha** — public `Engine` shapes follow `@vitrum/core`; implementation details and supported scene subset may change. Unsupported primitives/emitters are skipped or called out in console warnings. Runtime visual/perf verification for the latest RFE paths remains required before release use.
+**Release-candidate track** — public `Engine` shapes follow `@vitrum/core`. Implementation details and supported scene subset may still change before a public npm release. Unsupported primitives/emitters are skipped or called out in console warnings. `updatePrimitive` / `updateEmitter` apply patches via `setScene` (full scene rebuild on the fork path); see `EngineCapabilities.incrementalPatchSupport`.
