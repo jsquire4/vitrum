@@ -13,7 +13,9 @@
     "benchmark:wave4-hardening": "node ./run-wave4-hardening.mjs",
     "benchmark:acceptance-metrics": "node ./run-acceptance-metrics.mjs",
     "benchmark:pt-webgl-fidelity": "node ./run-pt-webgl-fidelity-acceptance.mjs",
-    "benchmark:wave0-baseline": "node ./run-wave0-baseline.mjs"
+    "benchmark:wave0-baseline": "node ./run-wave0-baseline.mjs",
+    "benchmark:pr-hybrid": "node ./run-pr-hybrid-bench.mjs",
+    "benchmark:capture-pt-webgpu": "node ./capturePtWebgpu.mjs"
   },
   "devDependencies": {
     "playwright": "^1.59.1"

@@ -25,7 +25,13 @@ import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
   HYBRID_WEBGPU_REQUIRED_LIMITS,
+  type HybridEngine,
 } from '@vitrum/walkaround-hybrid';
+import {
+  installPrBenchApi,
+  maybeAutoRunPrBench,
+  type PrBenchMode,
+} from './prBenchHarness.js';
 
 if (typeof console !== 'undefined' && console.debug) {
   console.debug('[two-engines] pt-webgpu factory loaded:', typeof createPTEngine_WebGPU);
@@ -92,6 +98,11 @@ async function main(): Promise<void> {
     samplesTarget: parseInt(params.get('samplesTarget')
       ?? (walkaroundFallback ? '256' : '32'), 10) || 32,
     scene: (params.get('scene') ?? 'cornell') as 'cornell' | 'complex',
+    bvhMode: (params.get('bvhMode') ?? '') as '' | 'merged' | 'tlas',
+    prBench: (params.get('prBench') ?? null) as PrBenchMode | null,
+    prBenchIters: parseInt(params.get('prBenchIters') ?? '100', 10) || 100,
+    prBenchFrames: parseInt(params.get('prBenchFrames') ?? '120', 10) || 120,
+    prBenchAuto: params.get('prBenchAuto') === '1',
   };
   const RUN = {
     ptWebgl: mode === 'all' || mode === 'ptwebgl',
@@ -331,6 +342,9 @@ async function main(): Promise<void> {
           isSceneReady: () => true,
           denoiser: FLAGS.denoiser,
           ppgEnabled: FLAGS.ppgEnabled,
+          ...(FLAGS.bvhMode !== ''
+            ? { extensions: { 'walkaround-hybrid': { bvhMode: FLAGS.bvhMode } } }
+            : {}),
         })
       : null;
     if (hybrid) {
@@ -351,6 +365,22 @@ async function main(): Promise<void> {
       }
       lines[1] = 'Walkaround: rendering';
       refreshStatus();
+
+      const hybridEngine = hybrid as HybridEngine;
+      const prBenchApi = installPrBenchApi(hybridEngine, vitrumScene, {
+        prBench: FLAGS.prBench,
+        prBenchIters: FLAGS.prBenchIters,
+        prBenchFrames: FLAGS.prBenchFrames,
+        prBenchAuto: FLAGS.prBenchAuto,
+      });
+      if (FLAGS.prBenchAuto && FLAGS.prBench != null) {
+        void maybeAutoRunPrBench(hybridEngine, vitrumScene, {
+          prBench: FLAGS.prBench,
+          prBenchIters: FLAGS.prBenchIters,
+          prBenchFrames: FLAGS.prBenchFrames,
+          prBenchAuto: true,
+        }, prBenchApi);
+      }
     }
 
     if (hybrid && canvasWgpu && gpuCtx) {

@@ -36,8 +36,27 @@ Scenario ids for the primary-release program live in `scenario-presets.mjs` as
 | `PR-hybrid-material-churn` | 100× `updatePrimitive` material-only, zero pipeline reinit |
 | `PR-hybrid-emitter-churn` | 100× `updateEmitter` intensity patch |
 
-Host harness wiring (capture page + Playwright runner) is tracked in
-`plan/primary-release-and-webgpu-pt-parity-implementation-deep.md` §PR-6.
+Host harness wiring:
+
+```bash
+# Terminal A
+npm run dev --workspace @vitrum-examples/two-engines-one-scene
+
+# Terminal B — material / emitter churn (needs WebGPU + Playwright)
+npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
+
+# Single scenario
+VITRUM_PR_SCENARIO=PR-hybrid-material-churn npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
+```
+
+WG-0 pt-webgpu PNG capture:
+
+```bash
+VITRUM_OUTPUT_PNG=tools/reference-renders/baseline/ptwgpu-cornell.png \
+  npm run benchmark:capture-pt-webgpu --workspace @vitrum/benchmark-runner
+```
+
+Set `VITRUM_GPU_CAPTURE=1` in CI only when Playwright + WebGPU are available (WG-0.4).
 
 ## Wave 0 baseline orchestration
 
