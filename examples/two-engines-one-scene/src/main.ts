@@ -10,8 +10,10 @@ import {
   type Scene,
 } from '@vitrum/core';
 import {
+  buildBenchmark200kThreeScene,
   buildComplexThreeScene,
   buildCornellBoxThreeScene,
+  buildTlas10InstThreeScene,
   mat4FromThree,
   resizeCanvasToDisplaySize,
 } from '@vitrum-examples/shared';
@@ -101,7 +103,13 @@ async function main(): Promise<void> {
     ptWebgpuBounces: parseInt(params.get('ptWebgpuBounces') ?? '4', 10) || 4,
     samplesTarget: parseInt(params.get('samplesTarget')
       ?? (walkaroundFallback ? '256' : '32'), 10) || 32,
-    scene: (params.get('scene') ?? 'cornell') as 'cornell' | 'complex',
+    scene: (params.get('scene') ?? 'cornell') as
+      | 'cornell'
+      | 'complex'
+      | 'bench200k'
+      | 'tlas10inst',
+    targetTriangles: parseInt(params.get('targetTriangles') ?? '200000', 10) || 200_000,
+    prBenchScenario: params.get('prBenchScenario') ?? '',
     vitrumSeed: parseInt(params.get('vitrumSeed') ?? '0', 10) || 0,
     bvhMode: (params.get('bvhMode') ?? '') as '' | 'merged' | 'tlas',
     prBench: (params.get('prBench') ?? null) as PrBenchMode | null,
@@ -162,9 +170,14 @@ async function main(): Promise<void> {
     statusEl.textContent = lines.join('\n').trim() || '…';
   }
 
-  const threeScene = FLAGS.scene === 'complex'
-    ? buildComplexThreeScene()
-    : buildCornellBoxThreeScene();
+  const threeScene =
+    FLAGS.scene === 'bench200k'
+      ? buildBenchmark200kThreeScene(FLAGS.targetTriangles)
+      : FLAGS.scene === 'tlas10inst'
+        ? buildTlas10InstThreeScene()
+        : FLAGS.scene === 'complex'
+          ? buildComplexThreeScene()
+          : buildCornellBoxThreeScene();
   const vitrumScene: Scene = sceneFromThreeJS(threeScene);
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
@@ -388,6 +401,7 @@ async function main(): Promise<void> {
         prBenchIters: FLAGS.prBenchIters,
         prBenchFrames: FLAGS.prBenchFrames,
         prBenchAuto: FLAGS.prBenchAuto,
+        ...(FLAGS.prBenchScenario ? { prBenchScenario: FLAGS.prBenchScenario } : {}),
       });
       if (FLAGS.prBenchAuto && FLAGS.prBench != null) {
         void maybeAutoRunPrBench(hybridEngine, vitrumScene, {
@@ -395,6 +409,7 @@ async function main(): Promise<void> {
           prBenchIters: FLAGS.prBenchIters,
           prBenchFrames: FLAGS.prBenchFrames,
           prBenchAuto: true,
+          ...(FLAGS.prBenchScenario ? { prBenchScenario: FLAGS.prBenchScenario } : {}),
         }, prBenchApi);
       }
     }

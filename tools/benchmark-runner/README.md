@@ -47,7 +47,13 @@ npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
 
 # Single scenario
 VITRUM_PR_SCENARIO=PR-hybrid-material-churn npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
+
+# Auto-start dev server + 200k scene (5 min bench timeout default)
+VITRUM_PR_START_SERVER=1 VITRUM_PR_SCENARIO=PR-hybrid-200k-static npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
 ```
+
+`PR-hybrid-200k-static` uses `?scene=bench200k&targetTriangles=200000` on
+`walkaround.html`. `PR-hybrid-tlas-10-inst` uses `?scene=tlas10inst&bvhMode=tlas`.
 
 WG-0 pt-webgpu PNG capture:
 

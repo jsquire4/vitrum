@@ -57,16 +57,19 @@ const SCENARIO_QUERY = {
     prBench: 'frame-sample',
     prBenchAuto: '1',
     mode: 'walkaround',
-    scene: 'complex',
+    scene: 'tlas10inst',
     bvhMode: 'tlas',
     prBenchFrames: '120',
+    prBenchScenario: 'PR-hybrid-tlas-10-inst',
   },
   'PR-hybrid-200k-static': {
     prBench: 'frame-sample',
     prBenchAuto: '1',
     mode: 'walkaround',
-    scene: 'complex',
+    scene: 'bench200k',
+    targetTriangles: '200000',
     prBenchFrames: '120',
+    prBenchScenario: 'PR-hybrid-200k-static',
   },
 };
 
@@ -109,10 +112,21 @@ async function runScenario(browser, scenarioId) {
     });
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
+    const scenarioBenchTimeoutMs =
+      scenarioId === 'PR-hybrid-200k-static'
+        ? Number(process.env.VITRUM_PR_200K_TIMEOUT_MS ?? String(Math.max(benchTimeoutMs, 300_000)))
+        : benchTimeoutMs;
+    await page.waitForFunction(
+      () => globalThis.__vitrum?.walkaround?.state === 'ready',
+      null,
+      { timeout: scenarioBenchTimeoutMs, polling: 250 },
+    ).catch(() => {
+      /* walkaround may still be initializing BVH on very large scenes */
+    });
     await page.waitForFunction(
       () => globalThis.__vitrumPrBenchLast != null || globalThis.__vitrumPrBench != null,
       null,
-      { timeout: benchTimeoutMs, polling: 200 },
+      { timeout: scenarioBenchTimeoutMs, polling: 250 },
     );
 
     if (benchResult == null) {

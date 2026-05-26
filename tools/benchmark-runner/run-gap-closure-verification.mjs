@@ -180,6 +180,7 @@ async function runCapture(scenario, variant, outputImagePath) {
     VITRUM_FRAMES: effectiveScenario.frames != null ? String(effectiveScenario.frames) : '',
     VITRUM_SCENARIO_JSON: JSON.stringify(effectiveScenario),
     VITRUM_OUTPUT_PNG: outputImagePath,
+    VITRUM_CAPTURE_TIMEOUT_MS: String(captureProcessTimeoutMs),
   }, captureProcessTimeoutMs);
   const imageExists = await fileExists(outputImagePath);
   if (run.code !== 0 || !imageExists) {

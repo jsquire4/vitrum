@@ -14,6 +14,8 @@ export interface PrBenchFlags {
   readonly prBenchIters: number;
   readonly prBenchFrames: number;
   readonly prBenchAuto: boolean;
+  /** JSON scenario id from `run-pr-hybrid-bench.mjs` (e.g. PR-hybrid-200k-static). */
+  readonly prBenchScenario?: string;
 }
 
 export interface PrBenchResult {
@@ -150,7 +152,7 @@ export function installPrBenchApi(
     const t0 = performance.now();
     const times = await waitForFrameSamples(engine, frames, Math.max(frames * 200, 30_000));
     return {
-      scenario: 'PR-hybrid-frame-sample',
+      scenario: flags.prBenchScenario ?? 'PR-hybrid-frame-sample',
       ok: times.length >= Math.min(frames, 8) && engine.state === 'ready',
       elapsedMs: performance.now() - t0,
       p95FrameMs: percentile95(times),
