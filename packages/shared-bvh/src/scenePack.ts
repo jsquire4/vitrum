@@ -136,7 +136,7 @@ function transformPoint(m: Mat4, p: Vec3): [number, number, number] {
   return [tx, ty, tz];
 }
 
-function computeLocalAabb(positions: Float32Array): {
+export function computeLocalAabb(positions: Float32Array): {
   min: readonly [number, number, number];
   max: readonly [number, number, number];
 } | null {
@@ -532,4 +532,60 @@ export function refitTlasTransforms(
     tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
     warnings,
   };
+}
+
+/** Union world-space AABB over all TLAS instances (for RC cascade bounds). */
+export function computeWorldAabbForBindings(
+  scene: Scene,
+  bindings: readonly PrimitiveTlasBinding[],
+): {
+  min: readonly [number, number, number];
+  max: readonly [number, number, number];
+} | null {
+  const byId = new Map<string, ScenePrimitive>();
+  for (const primitive of scene.primitives) {
+    byId.set(primitive.id, primitive);
+  }
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  let any = false;
+  for (const binding of bindings) {
+    const primitive = byId.get(binding.primitiveId);
+    if (primitive == null || !isMeshLike(primitive)) continue;
+    const transforms =
+      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? IDENTITY_MAT4];
+    for (const transform of transforms) {
+      const l2w = asMat4(transform ?? IDENTITY_MAT4);
+      const world = transformAabb(binding.localAabbMin, binding.localAabbMax, l2w);
+      minX = Math.min(minX, world.min[0]);
+      minY = Math.min(minY, world.min[1]);
+      minZ = Math.min(minZ, world.min[2]);
+      maxX = Math.max(maxX, world.max[0]);
+      maxY = Math.max(maxY, world.max[1]);
+      maxZ = Math.max(maxZ, world.max[2]);
+      any = true;
+    }
+  }
+  if (!any) return null;
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
+export type RebuildPrimitiveBlasResult =
+  | { readonly ok: true; readonly pack: ScenePackResult }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Repack the full scene after one primitive's topology changed (PR-4.3).
+ * Surgical in-place BLAS splice is deferred; callers rebuild ReSTIR buffers.
+ */
+export function rebuildPrimitiveBlas(
+  scene: Scene,
+  _primitiveId: string,
+  opts: ScenePackOptions,
+): RebuildPrimitiveBlasResult {
+  return { ok: true, pack: packSceneFromCore(scene, opts) };
 }

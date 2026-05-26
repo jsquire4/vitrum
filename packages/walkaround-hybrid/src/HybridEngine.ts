@@ -70,6 +70,7 @@ import {
   topologyRebuild,
   materialPatch,
   type PrimitiveUpdateContext,
+  type PrimitiveUpdateResult,
 } from './HybridEnginePrimitiveUpdates.js';
 import {
   PipelineInitCoordinator,
@@ -596,8 +597,7 @@ export class HybridEngine implements Engine {
       const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
       this._lastScene = result.updatedScene;
-      const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
-      if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
+      this._applyPrimitiveUpdateRc(result);
       return;
     }
     if (hasPositionsChange) {
@@ -605,16 +605,14 @@ export class HybridEngine implements Engine {
       const result = positionsRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
       this._lastScene = result.updatedScene;
-      const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
-      if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
+      this._applyPrimitiveUpdateRc(result);
       return;
     }
     if (hasTransformChange) {
       const result = transformRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
       this._lastScene = result.updatedScene;
-      const rcRoot = this._rc ? this._ensureThreeSceneRoot() : null;
-      if (this._rc && rcRoot != null) this._rc.setScene(rcRoot);
+      this._applyPrimitiveUpdateRc(result);
       return;
     }
     if (hasMaterialChange) {
@@ -627,6 +625,17 @@ export class HybridEngine implements Engine {
     // No recognised patch field — treat as a no-op rather than throw so
     // hosts can pass through optional patches without checking each
     // field's presence.
+  }
+
+  /** PR-5.5 — TLAS refit updates RC bounds without rebuilding cascade BVH. */
+  private _applyPrimitiveUpdateRc(result: PrimitiveUpdateResult): void {
+    if (!this._rc) return;
+    if (result.rcRefitBounds != null) {
+      this._rc.refitCascadeBounds(result.rcRefitBounds.min, result.rcRefitBounds.max);
+      return;
+    }
+    const rcRoot = this._ensureThreeSceneRoot();
+    if (rcRoot != null) this._rc.setScene(rcRoot);
   }
 
   /** Build the per-call resource context the primitive-update helpers consume. */

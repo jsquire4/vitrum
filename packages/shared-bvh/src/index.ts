@@ -10,11 +10,15 @@ export * from './tlas.js';
 export {
   packSceneFromCore,
   refitTlasTransforms,
+  rebuildPrimitiveBlas,
+  computeLocalAabb,
+  computeWorldAabbForBindings,
   type PrimitiveTlasBinding,
   type ScenePackOptions,
   type ScenePackResult,
   type TlasGpuSnapshot,
   type RefitTlasResult,
+  type RebuildPrimitiveBlasResult,
 } from './scenePack.js';
 export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';

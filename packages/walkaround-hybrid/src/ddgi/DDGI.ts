@@ -152,6 +152,14 @@ export class DDGI {
     this._ready = false;
   }
 
+  /**
+   * PR-5 — TLAS transform-only refit: nudge probe temporal blend without a
+   * full atlas wipe (geometry unchanged; instance matrices moved).
+   */
+  markInstancesDirty(): void {
+    this._frame = Math.max(0, this._frame - Math.floor(STRIDE / 2));
+  }
+
   // ── Per-frame update ──────────────────────────────────────────────────────
 
   /**

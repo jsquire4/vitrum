@@ -122,6 +122,23 @@ export class RCSubsystem {
    * Cost: ~50 ms for ~30K-tri scenes (matches `buildRCSceneBVH` cost).
    * Call when the scene source changes.
    */
+  /**
+   * Update cascade grid origin/size without rebuilding the RC BVH (PR-5.5).
+   * Used after TLAS transform refit when only instance matrices moved.
+   */
+  refitCascadeBounds(
+    boundsMin: readonly [number, number, number],
+    boundsMax: readonly [number, number, number],
+  ): void {
+    if (!this._cascadeBufs) return;
+    this._probeOriginWorld = [boundsMin[0], boundsMin[1], boundsMin[2]];
+    this._roomSize = [
+      Math.max(boundsMax[0] - boundsMin[0], 1e-6),
+      Math.max(boundsMax[1] - boundsMin[1], 1e-6),
+      Math.max(boundsMax[2] - boundsMin[2], 1e-6),
+    ];
+  }
+
   setScene(threeScene: THREE.Scene): void {
     this._disposeSceneBuffers();
     if (this._dispatcher) {

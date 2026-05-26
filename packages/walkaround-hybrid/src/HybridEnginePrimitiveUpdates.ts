@@ -30,7 +30,14 @@
 
 import * as THREE from 'three';
 import type { MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum/core';
-import { refitBvhBounds, refitTlasTransforms, type TlasGpuSnapshot } from '@vitrum/shared-bvh';
+import {
+  computeLocalAabb,
+  computeWorldAabbForBindings,
+  refitBvhBounds,
+  refitTlasTransforms,
+  type PrimitiveTlasBinding,
+  type TlasGpuSnapshot,
+} from '@vitrum/shared-bvh';
 import { applyVitrumMaterialToMesh } from '@vitrum/three-bindings';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
 import {
@@ -80,6 +87,14 @@ export interface PrimitiveUpdateResult {
   readonly bvhBuffers: SceneBVHBuffers;
   /** Patched vitrum scene after a successful geometry update. */
   readonly updatedScene: Scene;
+  /**
+   * PR-5.5 — when set, HybridEngine should call `RCSubsystem.refitCascadeBounds`
+   * instead of a full `setScene` rebuild (TLAS transform / positions refit).
+   */
+  readonly rcRefitBounds?: {
+    readonly min: readonly [number, number, number];
+    readonly max: readonly [number, number, number];
+  };
 }
 
 /**
@@ -177,8 +192,16 @@ export function transformRefit(
           range.matrixWorldAtBuild.set(new Float32Array(meshPatch.transform));
         }
         ctx.pipeline?.requestAccumReset();
-        ctx.ddgi.invalidateProbeCache();
-        return { bvhBuffers: bvh, updatedScene };
+        ctx.ddgi.markInstancesDirty();
+        const rcBounds = computeWorldAabbForBindings(
+          updatedScene,
+          bvh.primitiveTlasBindings,
+        );
+        return {
+          bvhBuffers: bvh,
+          updatedScene,
+          ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
+        };
       }
     }
     return topologyRebuild(id, patch, ctx);
@@ -322,16 +345,127 @@ export function positionsRefit(
   const bvh = ctx.bvhBuffers;
   if (bvh == null) return topologyRebuild(id, patch, ctx);
 
+  const newLocalPositions = (patch as { positions?: ArrayLike<number> }).positions;
+  if (newLocalPositions == null) {
+    return topologyRebuild(id, patch, ctx);
+  }
+
+  if (bvh.bvhMode === 'tlas' && bvh.tlas != null) {
+    const binding = bvh.primitiveTlasBindings.find((b) => b.primitiveId === id);
+    if (binding == null || binding.vertexCount === 0) {
+      return topologyRebuild(id, patch, ctx);
+    }
+    if (newLocalPositions.length !== binding.vertexCount * 3) {
+      return topologyRebuild(id, patch, ctx);
+    }
+
+    const root = ctx.threeRoot;
+    if (root == null) {
+      throw new Error(
+        `HybridEngine.updatePrimitive("${id}"): no THREE scene available for TLAS positions refit.`,
+      );
+    }
+    let mesh: THREE.Mesh | null = null;
+    root.traverseVisible((obj) => {
+      if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
+        mesh = obj as THREE.Mesh;
+      }
+    });
+    if (mesh == null) {
+      throw new Error(
+        `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
+      );
+    }
+    const meshRef = mesh as THREE.Mesh;
+    meshRef.geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(new Float32Array(Array.from(newLocalPositions)), 3),
+    );
+
+    const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
+    const STRIDE = 4;
+    const baseVertex = binding.vertexStart;
+    const sliceVerts = binding.vertexCount;
+    for (let v = 0; v < sliceVerts; v += 1) {
+      const off = (baseVertex + v) * STRIDE;
+      positionsF32[off + 0] = newLocalPositions[v * 3] ?? 0;
+      positionsF32[off + 1] = newLocalPositions[v * 3 + 1] ?? 0;
+      positionsF32[off + 2] = newLocalPositions[v * 3 + 2] ?? 0;
+    }
+
+    const localAabb = computeLocalAabb(new Float32Array(Array.from(newLocalPositions)));
+    if (localAabb == null) {
+      return topologyRebuild(id, patch, ctx);
+    }
+    const bindings: PrimitiveTlasBinding[] = bvh.primitiveTlasBindings.map((b) =>
+      b.primitiveId === id
+        ? {
+            ...b,
+            localAabbMin: localAabb.min,
+            localAabbMax: localAabb.max,
+          }
+        : b,
+    );
+
+    const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
+    refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
+
+    const positionsByteOffset = baseVertex * STRIDE * 4;
+    const positionsByteLength = sliceVerts * STRIDE * 4;
+    const positionsSlice = bvh.bvhPositions.cpuData.slice(
+      positionsByteOffset,
+      positionsByteOffset + positionsByteLength,
+    );
+    ctx.pipeline?.refreshBvhRefit(
+      bvh.bvhNodes.cpuData.slice(0),
+      { byteOffset: positionsByteOffset, data: positionsSlice },
+    );
+
+    const meshPosPatch = patch as Partial<MeshPrimitive>;
+    const posPatch: Partial<MeshPrimitive> = meshPosPatch.normals !== undefined
+      ? {
+          positions: new Float32Array(Array.from(newLocalPositions)),
+          normals: new Float32Array(Array.from(meshPosPatch.normals)),
+        }
+      : { positions: new Float32Array(Array.from(newLocalPositions)) };
+    const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
+
+    const prev: TlasGpuSnapshot = {
+      tlasNodes: new Uint32Array(bvh.tlas.nodes.cpuData),
+      tlasInstanceIndices: new Uint32Array(bvh.tlas.instanceIndices.cpuData),
+      tlasBlasRoots: new Uint32Array(bvh.tlas.blasRoots.cpuData),
+      tlasInstanceWorldToLocal: new Float32Array(bvh.tlas.worldToLocal.cpuData),
+    };
+    const refit = refitTlasTransforms(updatedScene, bindings, prev);
+    if (refit.ok) {
+      bvh.tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
+      bvh.tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
+      bvh.tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
+      ctx.pipeline?.refreshTlasRefit(
+        bvh.tlas.nodes.cpuData,
+        bvh.tlas.worldToLocal.cpuData,
+        bvh.tlas.localToWorld.cpuData,
+      );
+    } else {
+      return topologyRebuild(id, patch, ctx);
+    }
+
+    ctx.pipeline?.requestAccumReset();
+    ctx.ddgi.invalidateProbeCache();
+    const rcBounds = computeWorldAabbForBindings(updatedScene, bindings);
+    const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
+    return {
+      bvhBuffers: outBvh,
+      updatedScene,
+      ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
+    };
+  }
+
   const range = bvh.meshVertexRanges.find((r) => r.name === id);
   if (range == null || range.vertexCount === 0) {
     return topologyRebuild(id, patch, ctx);
   }
 
-  const newLocalPositions = (patch as { positions?: ArrayLike<number> }).positions;
-  if (newLocalPositions == null) {
-    // Caller-side bug: dispatcher routed here without patch.positions.
-    return topologyRebuild(id, patch, ctx);
-  }
   // 3 floats per vertex. Vertex count mismatch ⇒ true topology change.
   if (newLocalPositions.length !== range.vertexCount * 3) {
     return topologyRebuild(id, patch, ctx);

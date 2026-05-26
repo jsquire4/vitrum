@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Mat4, Scene, Vec3 } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
-import { packSceneFromCore, refitTlasTransforms } from '../scenePack.js';
+import {
+  computeWorldAabbForBindings,
+  packSceneFromCore,
+  refitTlasTransforms,
+} from '../scenePack.js';
 import { tlasIntersect } from '../tlas.js';
 
 function unitTriMesh(id: string, transform?: Mat4): Scene['primitives'][number] {
@@ -142,6 +146,80 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(packed.primitiveTlasBindings[0]?.instanceCount).toBe(4);
     expect(packed.tlasBlasRoots.length).toBe(4);
     expect(packed.tlasInstanceLocalToWorld.length).toBe(64);
+  });
+
+  it('T-4.3: instance count change fails refit (forces topology rebuild)', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'instanced-mesh',
+        id: 'inst',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        instances: [
+          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
+          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1])),
+        ],
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const extraInstance = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      2, 0, 0, 1,
+    ]));
+    const instPrim = scene.primitives[0]!;
+    if (instPrim.kind !== 'instanced-mesh') {
+      throw new Error('expected instanced-mesh');
+    }
+    const sceneMore: Scene = {
+      ...scene,
+      primitives: [{
+        kind: 'instanced-mesh',
+        id: instPrim.id,
+        positions: instPrim.positions,
+        normals: instPrim.normals,
+        material: instPrim.material,
+        instances: [...instPrim.instances, extraInstance],
+      }],
+    };
+    const rebuilt = refitTlasTransforms(
+      sceneMore,
+      packed.primitiveTlasBindings,
+      {
+        tlasNodes: packed.tlasNodes,
+        tlasInstanceIndices: packed.tlasInstanceIndices,
+        tlasBlasRoots: packed.tlasBlasRoots,
+        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+      },
+    );
+    expect(rebuilt.ok).toBe(false);
+    if (rebuilt.ok) return;
+    expect(rebuilt.reason).toMatch(/instance/i);
+  });
+
+  it('computeWorldAabbForBindings unions instance world bounds', () => {
+    const scene: Scene = {
+      primitives: [
+        boxMesh('box-a', [0, 0, 0], [1, 1, 1]),
+        boxMesh('box-b', [0, 0, 0], [1, 1, 1], asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          5, 0, 0, 1,
+        ]))),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const bounds = computeWorldAabbForBindings(scene, packed.primitiveTlasBindings);
+    expect(bounds).not.toBeNull();
+    expect(bounds!.min[0]).toBeLessThanOrEqual(0);
+    expect(bounds!.max[0]).toBeGreaterThanOrEqual(5);
   });
 
   it('SP-4: removed primitive fails refit with explicit id', () => {
