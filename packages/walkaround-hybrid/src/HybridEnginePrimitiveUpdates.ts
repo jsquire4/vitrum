@@ -873,7 +873,16 @@ export function topologyRebuild(
   ctx.pipeline?.requestAccumReset();
   ctx.ddgi.invalidateProbeCache();
 
-  return { bvhBuffers: newBuffers, updatedScene };
+  const rcBounds =
+    newBuffers.bvhMode === 'tlas' && newBuffers.primitiveTlasBindings.length > 0
+      ? computeWorldAabbForBindings(updatedScene, newBuffers.primitiveTlasBindings)
+      : null;
+
+  return {
+    bvhBuffers: newBuffers,
+    updatedScene,
+    ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
+  };
 }
 
 const TRANSMISSION_GLASS_THRESHOLD = 0.01;

@@ -696,6 +696,10 @@ export class HybridEngine implements Engine {
       }
       return;
     }
+    if (this._bvhBuffers?.bvhMode === 'tlas') {
+      this._rc.syncRestirBvhBuffers(this._bvhBuffers);
+      return;
+    }
     const rcRoot = this._ensureThreeSceneRoot();
     if (rcRoot != null) this._rc.setScene(rcRoot);
   }
