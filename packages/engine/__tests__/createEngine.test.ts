@@ -2,9 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { pickBackend, deriveScaleDefaults } from '../src/createEngine.js';
 
 describe('pickBackend', () => {
-  it('returns pt-webgl when prefer is quality, regardless of WebGPU', () => {
-    expect(pickBackend('quality', true,  10_000)).toBe('pt-webgl');
-    expect(pickBackend('quality', false, 10_000)).toBe('pt-webgl');
+  it('returns pt-webgl for quality on single-mesh scenes', () => {
+    expect(pickBackend('quality', true, 10_000, false)).toBe('pt-webgl');
+    expect(pickBackend('quality', false, 10_000, false)).toBe('pt-webgl');
+  });
+
+  it('returns pt-webgpu for quality when scene needs TLAS and WebGPU is available', () => {
+    expect(pickBackend('quality', true, 10_000, true)).toBe('pt-webgpu');
+    expect(pickBackend('quality', false, 10_000, true)).toBe('pt-webgl');
   });
 
   it('returns pt-webgpu for quality-webgpu when WebGPU is available', () => {

@@ -14,7 +14,7 @@
  *   VITRUM_RC_SKIP_CAPTURE      1 — only run metrics on existing PNGs
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,8 +36,22 @@ const benchPort = process.env.VITRUM_BENCH_DEV_PORT ?? '5175';
 const startServer = process.env.VITRUM_RC_START_SERVER !== '0';
 const skipCapture = process.env.VITRUM_RC_SKIP_CAPTURE === '1';
 
-const offPng = resolve(refOff, 'cornell-walkaround-rc-off.png');
-const onPng = resolve(refOn, 'cornell-walkaround-rc-on.png');
+const offPng = process.env.VITRUM_RC_OFF_PNG
+  ? resolve(repoRoot, process.env.VITRUM_RC_OFF_PNG)
+  : resolve(refOff, 'cornell-walkaround-rc-off.png');
+const onPng = process.env.VITRUM_RC_ON_PNG
+  ? resolve(repoRoot, process.env.VITRUM_RC_ON_PNG)
+  : resolve(refOn, 'cornell-walkaround-rc-on.png');
+
+async function assertReadablePng(path, label) {
+  try {
+    await access(path);
+  } catch {
+    throw new Error(
+      `${label} missing at ${path}. Run capture (default) or place PNGs before VITRUM_RC_SKIP_CAPTURE=1.`,
+    );
+  }
+}
 
 function runMetrics(envExtra) {
   return runCommandWithTimeout('node ./run-acceptance-metrics.mjs', {
@@ -110,7 +124,7 @@ async function main() {
         if (devServer) stopDevServer(devServer);
         process.exit(2);
       }
-      console.warn(`${msg}; skipping capture.`);
+      console.warn(`${msg}; skipping capture and metrics (set VITRUM_RC_REQUIRE_GPU=1 to fail).`);
       await browser.close();
       if (devServer) stopDevServer(devServer);
       process.exit(0);
@@ -119,6 +133,9 @@ async function main() {
     await browser.close();
     if (devServer) stopDevServer(devServer);
   }
+
+  await assertReadablePng(offPng, 'RC off PNG');
+  await assertReadablePng(onPng, 'RC on PNG');
 
   await mkdir(resultsDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -133,6 +150,11 @@ async function main() {
     VITRUM_PIPELINE_CREATES_BEFORE: '0',
     VITRUM_PIPELINE_CREATES_AFTER: '0',
   });
+  if (metrics.code !== 0) {
+    throw new Error(
+      `run-acceptance-metrics failed (code=${metrics.code}): ${metrics.stderr || metrics.stdout}`,
+    );
+  }
 
   const manifest = {
     capturedAt: new Date().toISOString(),

@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **createEngine TLAS routing (2026-05-27):** `auditSceneNeedsTlas` in `@vitrum/core`; `pickBackend` steers `quality` and warns when multi-mesh scenes would land on merged-BVH pt-webgl without WebGPU.
 - **W8 RC acceptance harness (2026-05-27):** `npm run benchmark:rc-acceptance` captures Cornell walkaround PNGs (`rcEnabled` off/on) and runs `benchmark:acceptance-metrics`; two-engines URL params `rcEnabled` / `rcWeight`; `npm run benchmark:bdpt-layered-refs` wraps layered + BDPT cornell captures.
 - **pt-webgl TLAS audit (2026-05-27):** `auditPtWebglSceneForTlas` + `PTEngineWebGL2.getSceneTlasAudit()` warn on multi-mesh / instanced scenes (merged BVH limitation).
 - **C2 TLAS deepening (2026-05-27):** `fingerprintBuffers` + split `blasContentVersion`/`tlasContentVersion`; DDGI/RC TLAS-only `writeBuffer` refit on transform; `isTlasOnlyVersionBump` / `fingerprintTlasBuffers` in `@vitrum/shared-bvh`; `isRestirTlasOnlyRefit` shared by DDGI + RC; `makeRestirBvhSnapshot`; RC `rcTraceFirstHit`; topology rebuild RC bounds on TLAS; `updatePrimitive` + `publishBvh` sync DDGI ReSTIR BVH immediately (not only on `renderFrame`); unit pins for TLAS `transformRefit` / `positionsRefit` / eager DDGI sync; pt-webgpu `uploadScenePackTlasOnly` (transform) + `uploadScenePackBlasOnly` (BLAS splice when TLAS fingerprint unchanged).

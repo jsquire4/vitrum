@@ -1,30 +1,30 @@
 # W8 — Radiance Cascades reference renders (rcEnabled: false baseline)
 
-This directory holds Cornell-box captures from a HybridEngine with
-`rcEnabled: false` (i.e., the pre-W8 indirect path: ReSTIR-GI only).
+Cornell-box captures from HybridEngine with `rcEnabled: false` (ReSTIR-GI indirect only).
 
-Pairs with `tools/reference-renders/W8-rc-on/` which captures the same
-scene + same frame seeds with `rcEnabled: true, rcWeight: 1.0` (pure RC).
+Pairs with `../W8-rc-on/` (`rcEnabled: true`, `rcWeight: 1`).
 
-## Capture protocol
+## Capture
 
-When `tools/benchmark-runner/` grows an `rc-acceptance` mode (Phase 4
-follow-up), it should produce two files:
+```bash
+npm run benchmark:rc-acceptance
+```
 
-- `cornell-box-1080p-32spp.png` — 1080p Cornell with the standard
-  directional sun + interior emitters, 32 frames accumulated.
-- `cornell-box-indirect-1080p-32spp.png` — same render with the indirect
-  texture isolated (no `Lo_direct`/`Lo_emit` contribution) so the RC vs
-  ReSTIR-GI difference is visible on the floor/walls.
+Writes:
 
-## A/B procedure
+- `cornell-walkaround-rc-off.png` — this directory
+- `cornell-walkaround-rc-on.png` — `W8-rc-on/`
 
-The `rcAcceptance.gpu.test.ts` acceptance test (gated by
-`VITRUM_RC_ACCEPTANCE=1`) is the authoritative numerical check. The
-visual diff between this directory and `W8-rc-on/` is the human-eye
-sanity check.
+Metrics JSON under `tools/benchmark-runner/results/acceptance/`. Run the gated vitest with:
+
+```bash
+VITRUM_RC_ACCEPTANCE=1 \
+  VITRUM_RC_ACCEPTANCE_METRICS=tools/benchmark-runner/results/acceptance/<rc-acceptance-metrics>.json \
+  npm test --workspace @vitrum/walkaround-hybrid -- rcAcceptance.gpu
+```
+
+Env: `VITRUM_RC_CAPTURE_FRAMES` (default 48), `VITRUM_RC_SEED` (default 1701), `VITRUM_RC_REQUIRE_GPU=1` to fail when adapter is insufficient.
 
 ## Status
 
-- 2026-05-18: directory seeded. Captures pending the benchmark-runner
-  harness wire (see `plan/w8-rc-mis-composition.md` Phase 4).
+Harness shipped 2026-05-27 (`run-rc-acceptance.mjs`). PNGs are populated when the capture command runs on a WebGPU-capable host.

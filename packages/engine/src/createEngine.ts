@@ -19,7 +19,7 @@
 // observer; it just hands back an Engine.
 
 import type { Scene, Engine } from '@vitrum/core';
-import { detectGpu } from '@vitrum/core';
+import { auditSceneNeedsTlas, detectGpu } from '@vitrum/core';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
@@ -97,8 +97,17 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
     : (opts.scene);
 
   const aabb = computeSceneAABB(vitrumScene);
+  const tlasAudit = auditSceneNeedsTlas(vitrumScene);
   const gpu = await detectGpu({ publishToWindow: false });
-  const backend = pickBackend(opts.prefer ?? 'auto', gpu.isWebGPU, aabb.triangleCount);
+  const backend = pickBackend(
+    opts.prefer ?? 'auto',
+    gpu.isWebGPU,
+    aabb.triangleCount,
+    tlasAudit.needsTlas,
+  );
+  if (tlasAudit.needsTlas && backend === 'pt-webgl') {
+    console.warn(`[vitrum/createEngine] ${tlasAudit.detail}`);
+  }
 
   if (backend === 'walkaround-hybrid') {
     return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree);

@@ -32,9 +32,13 @@ export function pickBackend(
   prefer: EnginePreference,
   hasWebGPU: boolean,
   triangleCount: number,
+  needsTlas = false,
 ): 'walkaround-hybrid' | 'pt-webgl' | 'pt-webgpu' {
   if (prefer === 'quality-webgpu') return hasWebGPU ? 'pt-webgpu' : 'pt-webgl';
-  if (prefer === 'quality') return 'pt-webgl';
+  if (prefer === 'quality') {
+    if (needsTlas && hasWebGPU) return 'pt-webgpu';
+    return 'pt-webgl';
+  }
   if (prefer === 'realtime') {
     if (!hasWebGPU) return 'pt-webgl';
     return 'walkaround-hybrid';
@@ -44,6 +48,10 @@ export function pickBackend(
   }
   if (hasWebGPU) {
     return 'pt-webgpu';
+  }
+  if (needsTlas) {
+    // WebGL-only host: merged BVH is the only pt-webgl path; caller should warn.
+    return 'pt-webgl';
   }
   return 'pt-webgl';
 }
