@@ -208,6 +208,9 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 				uBdptEnabled: { value: false },
 				uBdptMaxLightBounces: { value: BDPT_MAX_LIGHT_BOUNCES },
 				uBdptLightPathTex: { value: null },
+				// Light-subpath draw pass (0 = eye path trace, 1 = write one vertex column).
+				uBdptLightSubpathPass: { value: 0 },
+				uBdptVertexCol: { value: 0 },
 			},
 
 			vertexShader: /* glsl */`
@@ -385,6 +388,8 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 
 				uniform sampler2D uBdptLightPathTex;
 				uniform int uBdptMaxLightBounces;
+				uniform int uBdptLightSubpathPass;
+				uniform int uBdptVertexCol;
 
 				#endif
 
@@ -451,6 +456,66 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 					rng_initialize( gl_FragCoord.xy, seed );
 					sobolPixelIndex = ( uint( gl_FragCoord.x ) << 16 ) | uint( gl_FragCoord.y );
 					sobolPathIndex = uint( seed );
+
+					#if FEATURE_BDPT
+
+					// Sprint 10c — dedicated light-subpath draw (one column per dispatch).
+					if ( uBdptLightSubpathPass != 0 ) {
+
+						envRotation3x3 = mat3( environmentRotation );
+						invEnvRotation3x3 = inverse( envRotation3x3 );
+						lightsDenom =
+							( environmentIntensity == 0.0 || envMapInfo.totalSum == 0.0 ) && lights.count != 0u ?
+								float( lights.count ) :
+								float( lights.count + 1u );
+
+						RenderState bdptState = initRenderState();
+						bdptState.wavelength = 550.0;
+						bdptState.wavelengthPdf = 1.0;
+						#if FEATURE_FOG
+
+						Ray fogRay;
+						fogRay.origin = vec3( 0.0 );
+						fogRay.direction = vec3( 0.0, 1.0, 0.0 );
+						bdptState.fogMaterial.fogVolume = bvhIntersectFogVolumeHit(
+							fogRay.origin, - fogRay.direction,
+							materialIndexAttribute, materials,
+							bdptState.fogMaterial
+						);
+
+						#endif
+
+						vec4 bdptV0;
+						vec4 bdptV1;
+						vec4 bdptV2;
+						writeLightSubpathVertex(
+							uBdptVertexCol,
+							uBdptMaxLightBounces,
+							uBdptLightPathTex,
+							bdptState.fogMaterial,
+							bdptV0,
+							bdptV1,
+							bdptV2
+						);
+
+						if ( int( gl_FragCoord.x ) != uBdptVertexCol ) {
+							discard;
+						}
+
+						int bdptRow = int( gl_FragCoord.y );
+						if ( bdptRow == 0 ) {
+							pc_fragColor = bdptV0;
+						} else if ( bdptRow == 1 ) {
+							pc_fragColor = bdptV1;
+						} else {
+							pc_fragColor = bdptV2;
+						}
+						gNormalDepth = vec4( 0.0 );
+						gAlbedo = vec4( 0.0 );
+						return;
+					}
+
+					#endif
 
 					// get camera ray
 					Ray ray = getCameraRay();

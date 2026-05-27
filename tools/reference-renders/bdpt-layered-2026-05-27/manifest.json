@@ -1,22 +1,22 @@
 {
-  "capturedAt": "2026-05-27T23:12:39.586Z",
+  "capturedAt": "2026-05-27T23:31:42.814Z",
   "outDir": "tools/reference-renders/bdpt-layered-2026-05-27",
   "steps": [
     {
       "scenario": "cornell-layered",
       "ok": true,
-      "stdout": "yered-2026-05-27\n  ✓ cornell-layered  (17s, 552331 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/cornell-layered.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2697603)..."
+      "stdout": "yered-2026-05-27\n  ✓ cornell-layered  (15s, 543823 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/cornell-layered.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2720883)..."
     },
     {
       "scenario": "cornell-layered-bdpt",
       "ok": true,
-      "stdout": "ed-2026-05-27\n  ✓ cornell-layered  (4s, 10873 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/cornell-layered-bdpt.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2698026)...",
+      "stdout": "-2026-05-27\n  ✓ cornell-layered  (23s, 490332 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/cornell-layered-bdpt.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2721382)...",
       "png": "tools/reference-renders/bdpt-layered-2026-05-27/cornell-layered-bdpt.png"
     },
     {
       "scenario": "cornell-parity-bdpt",
       "ok": true,
-      "stdout": "ed-2026-05-27\n  ✓ cornell-parity  (37s, 542688 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/cornell-parity-bdpt.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2698346)...",
+      "stdout": "ed-2026-05-27\n  ✓ cornell-parity  (22s, 544605 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/cornell-parity-bdpt.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2727239)...",
       "png": "tools/reference-renders/bdpt-layered-2026-05-27/cornell-parity-bdpt.png"
     }
   ],

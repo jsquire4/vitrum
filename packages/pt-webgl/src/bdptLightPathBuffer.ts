@@ -61,6 +61,10 @@ import type { Scene } from '@vitrum/core';
 import * as THREE from 'three';
 import type { WebGLRenderer } from 'three';
 import { fillBdptLightPathWebGL } from './bdpt/fillBdptLightPathWebGL.js';
+import {
+  runBdptLightSubpathPass,
+  type BdptLightSubpathTracer,
+} from './bdpt/runBdptLightSubpathPass.js';
 
 export interface BdptLightPathBufferOptions {
   /**
@@ -124,15 +128,28 @@ export class BdptLightPathBuffer {
   }
 
   /**
-   * CPU bounce-0 fill from a @vitrum/core Scene (rect/point/spot/directional emitters).
-   * Call once per frame before `engine.bdptAdvanceFrame(this.texture)`.
+   * Fill light-path texture from scene emitters. Uses the fork GPU subpath pass when
+   * `pathTracer` is supplied; otherwise CPU bounce-0 upload via `fillBdptLightPathWebGL`.
    */
-  fillFromScene(renderer: WebGLRenderer, scene: Scene, frameSeed: number): void {
+  fillFromScene(
+    renderer: WebGLRenderer,
+    scene: Scene,
+    frameSeed: number,
+    pathTracer?: BdptLightSubpathTracer | null,
+  ): void {
     if (this._disposed) {
       throw new Error('[BdptLightPathBuffer] fillFromScene after dispose');
     }
-    // Upload only — do not bind/clear this.renderTarget on the shared renderer; that
-    // leaked GL state and blacked the path-tracer canvas on some drivers.
+    if (pathTracer != null) {
+      runBdptLightSubpathPass(
+        renderer,
+        pathTracer,
+        this.renderTarget,
+        this.maxLightBounces,
+        frameSeed,
+      );
+      return;
+    }
     fillBdptLightPathWebGL(renderer, this.texture, this.maxLightBounces, scene, frameSeed);
   }
 }

@@ -33,6 +33,8 @@ import {
   applyVitrumMaterialToMesh,
   findMeshByPrimitiveId,
 } from '@vitrum/three-bindings';
+import type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
+import { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
 import { bdptForceGpuBind, isSoftwareGlRenderer } from './bdpt/isSoftwareGlRenderer.js';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
 import { ForkAccess } from './forkAccess.js';
@@ -126,6 +128,11 @@ interface WebGLPathTracerCompat {
   /** Re-pack light buffers from the cached scene without BVH rebuild (PR-8). */
   updateLights?(): void;
   configureAdditiveAccumulation?(enabled: boolean, blendFrames: boolean): void;
+  renderBdptLightSubpathPass?(
+    lightPathTarget: import('three').WebGLRenderTarget,
+    maxLightBounces: number,
+    frameSeed: number,
+  ): void;
   /** Optional fork field — the wrapper stores a reference to the THREE scene
    *  most recently passed to `setScene()`. updateEnvironment() reads
    *  `scene.environment*` off this reference, so the host MUST mutate the
@@ -687,6 +694,29 @@ export class PTEngineWebGL2 implements Engine {
    *   (typically `BdptLightPathBuffer.texture`). Pass `null` to disable
    *   BDPT for the next frame as a safety guard.
    */
+  /**
+   * Populate a {@link BdptLightPathBuffer} via the fork GPU light-subpath pass when
+   * hardware GL is available; otherwise CPU bounce-0 fill.
+   */
+  fillBdptLightPath(buffer: BdptLightPathBuffer, frameSeed: number): void {
+    this.#assertLive('fillBdptLightPath');
+    if (!this.#bdpt) return;
+    const scene = this.#vitrumScene;
+    if (scene == null) {
+      throw new Error('fillBdptLightPath: call setScene() first');
+    }
+    const tracer = this.#pathTracer as unknown as WebGLPathTracerCompat;
+    const useGpu =
+      (!isSoftwareGlRenderer(this.#limits.renderer) || bdptForceGpuBind()) &&
+      typeof tracer.renderBdptLightSubpathPass === 'function';
+    buffer.fillFromScene(
+      this.#renderer,
+      scene,
+      frameSeed,
+      useGpu ? (tracer as BdptLightSubpathTracer) : null,
+    );
+  }
+
   bdptAdvanceFrame(lightPathTex: Texture | null): void {
     if (!this.#bdpt) return;
     const softwareGl = isSoftwareGlRenderer(this.#limits.renderer) && !bdptForceGpuBind();

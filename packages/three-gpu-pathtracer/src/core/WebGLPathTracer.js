@@ -541,6 +541,15 @@ export class WebGLPathTracer {
 
 	}
 
+	/**
+	 * Fill the BDPT light-path texture on GPU (see PathTracingRenderer.renderBdptLightSubpathPass).
+	 */
+	renderBdptLightSubpathPass( lightPathTarget, maxLightBounces, frameSeed = 0 ) {
+
+		this._pathTracer.renderBdptLightSubpathPass( lightPathTarget, maxLightBounces, frameSeed );
+
+	}
+
 	dispose() {
 
 		this._quad.dispose();

@@ -61,6 +61,8 @@ export { driveForkMaterialUniforms } from './forkUniformBridge.js';
 export { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
 export type { BdptLightPathBufferOptions } from './bdptLightPathBuffer.js';
 export { fillBdptLightPathWebGL } from './bdpt/fillBdptLightPathWebGL.js';
+export { runBdptLightSubpathPass } from './bdpt/runBdptLightSubpathPass.js';
+export type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
 export { sampleBdptBounce0FromScene } from './bdpt/bdptSceneEmittersCpu.js';
 
 export { auditPtWebglSceneForTlas } from './sceneTlasAudit.js';

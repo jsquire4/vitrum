@@ -422,6 +422,59 @@ export class PathTracingRenderer {
 
 	}
 
+	/**
+	 * Sprint 10c — GPU light-subpath fill into `lightPathTarget` (RGBA32F, W×3).
+	 * Writes one vertex column per bounce via `writeLightSubpathVertex` in the
+	 * path-tracing material (uBdptLightSubpathPass). Does not advance PT samples.
+	 */
+	renderBdptLightSubpathPass( lightPathTarget, maxLightBounces, frameSeed = 0 ) {
+
+		const material = this.material;
+		const renderer = this._renderer;
+
+		if ( ! material.defines.FEATURE_BDPT ) {
+
+			return;
+
+		}
+
+		const prevPass = material.uniforms.uBdptLightSubpathPass.value;
+		const prevTex = material.uniforms.uBdptLightPathTex.value;
+		const w = lightPathTarget.width;
+		const h = lightPathTarget.height;
+		material.uniforms.resolution.value.set( w, h );
+		material.uniforms.uBdptMaxLightBounces.value = maxLightBounces;
+
+		material.onBeforeRender();
+		if ( this.isCompiling ) {
+
+			return;
+
+		}
+
+		const prevRT = renderer.getRenderTarget();
+		const prevAutoClear = renderer.autoClear;
+		renderer.autoClear = true;
+
+		for ( let col = 0; col < maxLightBounces; col ++ ) {
+
+			material.uniforms.uBdptVertexCol.value = col;
+			material.uniforms.uBdptLightSubpathPass.value = 1;
+			material.uniforms.uBdptLightPathTex.value = lightPathTarget.texture;
+			material.uniforms.seed.value = ( frameSeed + col * 9973 ) >>> 0;
+			renderer.setRenderTarget( lightPathTarget );
+			renderer.setViewport( 0, 0, w, h );
+			this._fsQuad.render( renderer );
+
+		}
+
+		material.uniforms.uBdptLightSubpathPass.value = prevPass;
+		material.uniforms.uBdptLightPathTex.value = prevTex;
+		renderer.setRenderTarget( prevRT );
+		renderer.autoClear = prevAutoClear;
+
+	}
+
 	update() {
 
 		// ensure we've updated our defines before rendering so we can ensure we

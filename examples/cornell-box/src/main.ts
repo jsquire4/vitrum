@@ -657,7 +657,7 @@ async function main(): Promise<void> {
     };
 
     if (bdptBuffer != null) {
-      bdptBuffer.fillFromScene(renderer, vitrumScene, input.frameSeed);
+      engine.fillBdptLightPath(bdptBuffer, input.frameSeed);
       engine.bdptAdvanceFrame(bdptBuffer.texture);
     }
     const out = engine.renderFrame(input) as PTEngineWebGL2FrameOutput;
