@@ -27,6 +27,10 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 />
 ```
 
+## Scene layout helpers
+
+`auditSceneNeedsTlas(scene)` (from `@vitrum/core`, re-exported here) classifies multi-mesh / instanced layouts. `createEngine()` uses it for backend pick + walkaround `bvhMode: 'tlas'` defaults.
+
 ## Backend selection
 
 `createEngine()` picks a backend from `CreateEngineOptions.prefer` (`'realtime' | 'quality' | 'quality-webgpu' | 'auto'`) plus runtime probing:

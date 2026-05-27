@@ -7,10 +7,12 @@ export {
   createEngine,
   pickBackend,
   deriveScaleDefaults,
+  mergeWalkaroundTlasExtension,
   type CreateEngineOptions,
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngine.js';
+export { auditSceneNeedsTlas, type SceneTlasAudit } from '@vitrum/core';
 export { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 
 // Lifecycle helpers — vanilla attachVitrum() is also available as a

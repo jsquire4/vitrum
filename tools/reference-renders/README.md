@@ -5,6 +5,17 @@ session branches before merge. The capture flow is **the verification gate** the
 premium-grade refactor plan calls "mandatory" for any change that touches a
 backend's visible output (see `plan/premium-grade-refactor-20260517.md` §1.2).
 
+## Mechanical acceptance gates (no GPU)
+
+These run in `npm run verify:mechanical` and pin harness contracts only — **not** visual quality.
+
+| Gate | Command |
+|------|---------|
+| W8 RC off/on | `npm run benchmark:rc-acceptance-mechanical` |
+| BDPT vs layered | `npm run benchmark:bdpt-layered-mechanical` |
+
+Fixture PNGs live under `W8-rc-{off,on}/` and `bdpt-layered-mechanical/`. Replace with real GPU captures when refreshing baselines (`benchmark:rc-acceptance-full`, `benchmark:bdpt-layered-refs`).
+
 ## Quick start — capture refs on the current branch
 
 ```bash

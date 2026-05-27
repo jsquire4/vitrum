@@ -29,7 +29,9 @@
     "benchmark:rc-acceptance-full": "node ./run-rc-acceptance-full.mjs",
     "benchmark:rc-acceptance-mechanical": "node ./run-rc-acceptance-mechanical.mjs",
     "write-rc-mechanical-fixtures": "node ./write-rc-mechanical-fixtures.mjs",
-    "benchmark:bdpt-layered-refs": "node ./run-bdpt-layered-refs.mjs"
+    "benchmark:bdpt-layered-refs": "node ./run-bdpt-layered-refs.mjs",
+    "benchmark:bdpt-layered-mechanical": "node ./run-bdpt-layered-mechanical.mjs",
+    "write-bdpt-layered-mechanical-fixtures": "node ./write-bdpt-layered-mechanical-fixtures.mjs"
   },
   "devDependencies": {
     "playwright": "^1.59.1"

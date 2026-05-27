@@ -718,6 +718,7 @@ export class PTEngineWebGL2 implements Engine {
     const experimental = new Set<string>();
     if (this.#bdpt) experimental.add('bdpt-approximate');
     if (this.#spectralRendering) experimental.add('spectral-jakob-hanika-placeholder');
+    if (this.#lastTlasAudit?.needsTlas) experimental.add('merged-bvh-only');
     return {
       supportsIncrementalScene: true,
       incrementalPatchSupport: {
