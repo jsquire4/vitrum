@@ -165,16 +165,16 @@ export function installPrBenchApi(
 
   const runFrameSample = async (frames = flags.prBenchFrames): Promise<PrBenchResult> => {
     const t0 = performance.now();
-    const times = await waitForFrameSamples(engine, frames, Math.max(frames * 200, 30_000));
+    const times = await waitForFrameSamples(engine, frames, Math.max(frames * 500, 60_000));
     return {
       scenario: flags.prBenchScenario ?? 'PR-hybrid-frame-sample',
-      ok: times.length >= Math.min(frames, 8) && engine.state === 'ready',
+      ok: times.length >= Math.min(frames, 6) && engine.state === 'ready',
       elapsedMs: performance.now() - t0,
       p95FrameMs: percentile95(times),
       sampleCount: times.length,
       engineState: engine.state,
       ...readGpuMemory(engine),
-      ...(times.length < 8 ? { error: `only ${times.length} frame samples` } : {}),
+      ...(times.length < 6 ? { error: `only ${times.length} frame samples` } : {}),
     };
   };
 

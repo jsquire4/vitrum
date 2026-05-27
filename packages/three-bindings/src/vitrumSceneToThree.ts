@@ -12,6 +12,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
   MeshPrimitive,
+  InstancedMeshPrimitive,
   MaterialSpec as VitrumMaterial,
   NoneEnvironment,
   Vec3,
@@ -24,6 +25,7 @@ import {
   DirectionalLight,
   DoubleSide,
   Matrix4,
+  InstancedMesh,
   Mesh,
   MeshPhysicalMaterial,
   Object3D,
@@ -210,6 +212,29 @@ function skinnedMeshPrimitiveToThree(
   mesh.matrixWorld.copy(m);
   mesh.matrixAutoUpdate = false;
   return mesh;
+}
+
+function instancedMeshPrimitiveToThree(
+  p: InstancedMeshPrimitive,
+  meshAreaRadianceRgb?: Vec3,
+): InstancedMesh {
+  const geo = new BufferGeometry();
+  geo.setAttribute('position', new BufferAttribute(p.positions, 3));
+  geo.setAttribute('normal', new BufferAttribute(p.normals, 3));
+  if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
+  if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
+  if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
+  const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb);
+  const im = new InstancedMesh(geo, mat, p.instances.length);
+  im.name = String(p.id);
+  const m = new Matrix4();
+  for (let i = 0; i < p.instances.length; i += 1) {
+    m.fromArray(p.instances[i]!);
+    im.setMatrixAt(i, m);
+  }
+  im.instanceMatrix.needsUpdate = true;
+  im.matrixAutoUpdate = false;
+  return im;
 }
 
 const _u = new Vector3();
@@ -454,17 +479,14 @@ export function applyEnvironment(threeScene: Scene, env: VitrumScene['environmen
  * Convert a `@vitrum/core` scene graph into a throwaway or persistent `THREE.Scene`
  * (meshes + lights + environment handles).
  *
- * Only `mesh` primitives are supported. `InstancedMeshPrimitive` (kind `'instanced-mesh'`)
- * is not implemented and will throw — consistent with how `sceneFromThreeJS` handles
- * unsupported THREE types. Implement `InstancedMesh` conversion before passing
- * instanced primitives to this function.
+ * Supports `mesh`, `skinned-mesh`, and `instanced-mesh` primitives.
  */
 export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
   const threeScene = new Scene();
   const meshBoost = meshEmitterBoostByPrimitiveId(vitrumScene);
   const meshPrimitiveIds = new Set(
     vitrumScene.primitives
-      .filter((p) => p.kind === 'mesh' || p.kind === 'skinned-mesh')
+      .filter((p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh')
       .map((p) => String(p.id)),
   );
   for (const e of vitrumScene.emitters) {
@@ -481,6 +503,9 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
     } else if (p.kind === 'skinned-mesh') {
       const add = meshBoost.get(String(p.id));
       threeScene.add(skinnedMeshPrimitiveToThree(p, add));
+    } else if (p.kind === 'instanced-mesh') {
+      const add = meshBoost.get(String(p.id));
+      threeScene.add(instancedMeshPrimitiveToThree(p, add));
     } else {
       throw new Error(
         `Unsupported @vitrum/core primitive kind "${(p as ScenePrimitive).kind}" in vitrumSceneToThree. Supported types are added per Phase 6 sprint.`,

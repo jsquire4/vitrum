@@ -4,6 +4,7 @@ import {
   buildTlas10InstThreeScene,
   countThreeSceneTriangles,
 } from '@vitrum-examples/shared';
+import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import * as THREE from 'three';
 
 describe('PR-6 benchmark scenes', () => {
@@ -24,5 +25,12 @@ describe('PR-6 benchmark scenes', () => {
       }
     });
     expect(instCount).toBe(1);
+  });
+
+  it('tlas10inst converts through sceneFromThreeJS for TLAS pack', () => {
+    const vitrum = sceneFromThreeJS(buildTlas10InstThreeScene());
+    const inst = vitrum.primitives.find((p) => p.kind === 'instanced-mesh');
+    expect(inst?.kind).toBe('instanced-mesh');
+    if (inst?.kind === 'instanced-mesh') expect(inst.instances).toHaveLength(10);
   });
 });

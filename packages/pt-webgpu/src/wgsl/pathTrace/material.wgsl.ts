@@ -64,7 +64,7 @@ struct FrameParams {
 @group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;
 `;
 
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL = /* wgsl */ `
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = /* wgsl */ `
 struct FrameParams {
   width: u32,
   height: u32,
@@ -109,22 +109,35 @@ struct FrameParams {
 @group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(12) var motionVectorsTexture: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(13) var<storage, read_write> varianceMomentsBuffer: array<vec4f>;
-@group(0) @binding(14) var<storage, read> analyticHeaders: array<vec4f>;
-@group(0) @binding(15) var<storage, read> analyticParams: array<vec4f>;
-@group(0) @binding(16) var<storage, read> analyticLocalToWorld: array<vec4f>;
-@group(0) @binding(17) var<storage, read> analyticWorldToLocal: array<vec4f>;
-@group(0) @binding(18) var<storage, read> environmentMapTexels: array<vec4f>;
-@group(0) @binding(19) var<storage, read> environmentMapCdf: array<f32>;
-@group(0) @binding(20) var<storage, read> pointLights: array<vec4f>;
-@group(0) @binding(21) var<storage, read> spotLights: array<vec4f>;
-@group(0) @binding(22) var<storage, read> rectAreaLights: array<vec4f>;
-@group(0) @binding(23) var<storage, read> meshAreaLights: array<vec4f>;
-@group(0) @binding(24) var<storage, read> tlasNodes: array<BVHNode>;
-@group(0) @binding(25) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(0) @binding(26) var<storage, read> tlasBlasRoots: array<u32>;
-@group(0) @binding(27) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(0) @binding(28) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 `;
+
+/** Group 1 — analytics + env + area lights (10 storage buffers; adapters ≥10/stage). */
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
+@group(1) @binding(0) var<storage, read> analyticHeaders: array<vec4f>;
+@group(1) @binding(1) var<storage, read> analyticParams: array<vec4f>;
+@group(1) @binding(2) var<storage, read> analyticLocalToWorld: array<vec4f>;
+@group(1) @binding(3) var<storage, read> analyticWorldToLocal: array<vec4f>;
+@group(1) @binding(4) var<storage, read> environmentMapTexels: array<vec4f>;
+@group(1) @binding(5) var<storage, read> environmentMapCdf: array<f32>;
+@group(1) @binding(6) var<storage, read> pointLights: array<vec4f>;
+@group(1) @binding(7) var<storage, read> spotLights: array<vec4f>;
+@group(1) @binding(8) var<storage, read> rectAreaLights: array<vec4f>;
+@group(1) @binding(9) var<storage, read> meshAreaLights: array<vec4f>;
+`;
+
+/** Group 2 — TLAS instance table (5 storage buffers). */
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
+@group(2) @binding(0) var<storage, read> tlasNodes: array<BVHNode>;
+@group(2) @binding(1) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(2) @binding(2) var<storage, read> tlasBlasRoots: array<u32>;
+@group(2) @binding(3) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+`;
+
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
+  PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL +
+  PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL +
+  PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL = /* wgsl */ `
 const LEAFNODE_FLAG = 0xffff0000u;
@@ -363,7 +376,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
 }
 `;
 
-/** Full trace pass — 23 storage-buffer bindings (group 0). */
+/** Full trace pass — 3 bind groups (≤10 storage buffers per group). */
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL =
   PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL + PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL;
 

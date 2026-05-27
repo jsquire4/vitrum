@@ -67,7 +67,7 @@ async function main() {
         const parsed = JSON.parse(probeLine);
         if (parsed.ptWebgpuCanRun === false) {
           console.error(
-            '[seed-wg0] adapter cannot run pt-webgpu (need full tier ≥23 storage buffers or lite tier ≥8 buffers + ≥4 storage textures). ' +
+            '[seed-wg0] adapter cannot run pt-webgpu (need full tier ≥10 storage buffers + ≥5 textures, or lite tier ≥8 buffers + ≥4 textures). ' +
               `Host reports buffers=${parsed.maxStorageBuffersPerShaderStage}, textures=${parsed.maxStorageTexturesPerShaderStage}. ` +
               'Use a WebGPU-capable machine or set VITRUM_SEED_SKIP_PROBE=1 to attempt anyway.',
           );

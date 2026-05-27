@@ -44,15 +44,27 @@ describe('sceneFromThreeJS', () => {
   });
 
   // ── Unsupported types throw ───────────────────────────────────────────────
-  it('throws on InstancedMesh', () => {
+  it('converts InstancedMesh into instanced-mesh primitive (TLAS path)', () => {
     const s = new THREE.Scene();
     const im = new THREE.InstancedMesh(
       new THREE.BoxGeometry(1, 1, 1),
       new THREE.MeshPhysicalMaterial(),
-      1,
+      3,
     );
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < 3; i += 1) {
+      m.makeTranslation(i * 2, 0, 0);
+      im.setMatrixAt(i, m);
+    }
+    im.instanceMatrix.needsUpdate = true;
     s.add(im);
-    expect(() => sceneFromThreeJS(s)).toThrow(/InstancedMesh/);
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(1);
+    const prim = v.primitives[0]!;
+    expect(prim.kind).toBe('instanced-mesh');
+    if (prim.kind !== 'instanced-mesh') return;
+    expect(prim.instances).toHaveLength(3);
+    expect(prim.id).toBe(im.uuid);
   });
 
   it('converts SkinnedMesh into a skinned-mesh primitive (C1 — 2026-05-19)', () => {

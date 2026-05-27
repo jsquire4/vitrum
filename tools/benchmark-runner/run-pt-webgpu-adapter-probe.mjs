@@ -1,10 +1,10 @@
 /**
- * Reports WebGPU adapter limits in headless Chromium (no vitrum render).
+ * Reports WebGPU adapter limits in Chromium (tries hardware GPU before SwiftShader).
  */
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WEBGPU_CHROMIUM_LAUNCH } from './playwrightWebGpu.mjs';
+import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 import { launchDevServer, stopDevServer, waitForServerReady } from './devServer.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,36 +37,30 @@ if (probeUrl == null) {
   process.exit(2);
 }
 
-const browser = await chromium.launch(WEBGPU_CHROMIUM_LAUNCH);
-const page = await browser.newPage();
-await page.goto(probeUrl, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-const report = await page.evaluate(async () => {
-  if (!navigator.gpu) return { ok: false, reason: 'no navigator.gpu' };
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) return { ok: false, reason: 'requestAdapter returned null' };
-  const limits = adapter.limits;
-  return {
-    ok: true,
-    maxStorageBuffersPerShaderStage: limits.maxStorageBuffersPerShaderStage,
-    maxStorageTexturesPerShaderStage: limits.maxStorageTexturesPerShaderStage,
-    ptWebgpuFullRequiredBuffers: 23,
-    ptWebgpuLiteRequiredBuffers: 8,
-    ptWebgpuFullTier: limits.maxStorageBuffersPerShaderStage >= 23,
-    ptWebgpuLiteTier:
-      limits.maxStorageBuffersPerShaderStage >= 8 &&
-      limits.maxStorageTexturesPerShaderStage >= 4,
-    ptWebgpuCanRun:
-      limits.maxStorageBuffersPerShaderStage >= 23 ||
-      (limits.maxStorageBuffersPerShaderStage >= 8 &&
-        limits.maxStorageTexturesPerShaderStage >= 4),
-    hybridTextureRequest: 8,
-    hybridDeviceLikely:
-      limits.maxStorageTexturesPerShaderStage >= 4,
-  };
-});
+const probeOrigin = new URL(probeUrl).origin + '/';
+const { browser, profile, caps, attempts } = await launchWebGpuBrowser(chromium, probeOrigin);
 await browser.close();
 if (devServer) stopDevServer(devServer);
 
-const out = { probeUrl, ...report };
-console.log(JSON.stringify(out, null, 2));
+const report = {
+  probeUrl,
+  launchProfile: profile,
+  attempts,
+  ok: caps.ok,
+  vendor: caps.vendor,
+  architecture: caps.architecture,
+  description: caps.description,
+  maxStorageBuffersPerShaderStage: caps.maxStorageBuffersPerShaderStage,
+  maxStorageTexturesPerShaderStage: caps.maxStorageTexturesPerShaderStage,
+  ptWebgpuFullRequiredBuffers: 10,
+  ptWebgpuFullRequiredTextures: 5,
+  ptWebgpuLiteRequiredBuffers: 8,
+  ptWebgpuFullTier: caps.ptWebgpuFullTier,
+  ptWebgpuLiteTier: caps.ptWebgpuLiteTier,
+  ptWebgpuCanRun: caps.ptWebgpuFullTier || caps.ptWebgpuLiteTier,
+  hybridCanRun: caps.hybridCanRun,
+  hybridTextureRequest: 8,
+};
+
+console.log(JSON.stringify(report, null, 2));
 process.exit(report.ok ? 0 : 1);

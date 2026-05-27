@@ -1,6 +1,5 @@
 /**
- * ReSTIR BVH build via `@vitrum/shared-bvh` `packSceneFromCore` (TLAS CPU path).
- * GPU traversal stays merged until PR-3; this lands the buffer layout + bindings.
+ * ReSTIR BVH build via `@vitrum/shared-bvh` `packSceneFromCore` (per-primitive BLAS + TLAS).
  */
 
 import type { Scene } from '@vitrum/core';
@@ -43,26 +42,34 @@ function buildMaterialResolver(sceneRoots: readonly THREE.Object3D[]): {
   resolveMaterialId: (primitiveId: string) => number;
 } {
   const materials: THREE.Material[] = [];
-  const byName = new Map<string, number>();
+  const byKey = new Map<string, number>();
+  const registerMaterial = (obj: THREE.Mesh | THREE.InstancedMesh): void => {
+    const raw = obj.material;
+    const mat = (Array.isArray(raw) ? raw[0] : raw) as THREE.Material | undefined;
+    if (mat == null) return;
+    let idx = materials.indexOf(mat);
+    if (idx < 0) {
+      idx = materials.length;
+      materials.push(mat);
+    }
+    const keys = [obj.uuid, obj.name].filter((k) => k.length > 0);
+    for (const key of keys) {
+      if (!byKey.has(key)) byKey.set(key, idx);
+    }
+  };
   for (const root of sceneRoots) {
     root.traverseVisible((obj) => {
-      if (!(obj instanceof THREE.Mesh)) return;
-      const name = obj.name;
-      if (byName.has(name)) return;
-      const raw = obj.material;
-      const mat = (Array.isArray(raw) ? raw[0] : raw) as THREE.Material | undefined;
-      if (mat == null) return;
-      let idx = materials.indexOf(mat);
-      if (idx < 0) {
-        idx = materials.length;
-        materials.push(mat);
+      if (obj instanceof THREE.InstancedMesh) {
+        registerMaterial(obj);
+        return;
       }
-      byName.set(name, idx);
+      if (!(obj instanceof THREE.Mesh)) return;
+      registerMaterial(obj);
     });
   }
   return {
     materials,
-    resolveMaterialId: (id) => byName.get(id) ?? 0,
+    resolveMaterialId: (id) => byKey.get(id) ?? 0,
   };
 }
 
@@ -98,7 +105,9 @@ function buffersFromScenePack(
   const sharedWorld = buildSharedBVH(sceneRoots as THREE.Object3D[], {
     positionStride: 4,
     proxyMeshNames: options.proxyMeshNames ?? new Set<string>(),
-    filter: (obj: THREE.Object3D) => obj instanceof THREE.Mesh,
+    // InstancedMesh extends Mesh; exclude it — geometry lives in packSceneFromCore TLAS.
+    filter: (obj: THREE.Object3D) =>
+      obj instanceof THREE.Mesh && (obj as THREE.InstancedMesh).isInstancedMesh !== true,
   });
   const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots as THREE.Object3D[]);
   const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(

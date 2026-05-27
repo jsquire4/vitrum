@@ -4,10 +4,21 @@
  * Host pages that also run walkaround-hybrid must use
  * `HYBRID_WEBGPU_REQUIRED_LIMITS` from `@vitrum/walkaround-hybrid` instead.
  */
-export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 23;
+/**
+ * Full tier uses 3 bind groups; peak storage buffers in any one group is 10
+ * (group 1: analytics + env + area lights).
+ */
+export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 10;
+
+/** @deprecated Use {@link PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP}. */
+export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
+  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP;
 
 /** Lite trace pass: bindings 2–8 (7) + read_write accum at 2 → 8 storage buffers. */
 export const PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 8;
+
+/** Full tier group 0 uses 5 storage textures (output + G-buffer aux). */
+export const PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE = 5;
 
 /** Lite trace pass: output + normalDepth + albedo + variance. */
 export const PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE = 4;
@@ -23,10 +34,13 @@ export function ptWebgpuRequiredLimitsForAdapter(
   const maxBuffers = adapter.limits.maxStorageBuffersPerShaderStage;
   const maxTextures = adapter.limits.maxStorageTexturesPerShaderStage;
   if (
-    maxBuffers >= PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
-    maxTextures >= 5
+    maxBuffers >= PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP &&
+    maxTextures >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE
   ) {
-    return PT_WEBGPU_REQUIRED_LIMITS;
+    return {
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+      maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    };
   }
   return {
     maxStorageBuffersPerShaderStage: Math.min(

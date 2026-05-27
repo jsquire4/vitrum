@@ -48,6 +48,19 @@ import {
 } from './restir/bvhCompute.js';
 import type { ReSTIRBvhMode } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
+
+/** `sceneFromThreeJS` keys primitives by `Object3D.uuid`; tests may use `name`. */
+function findMeshByPrimitiveId(root: THREE.Object3D, id: string): THREE.Mesh | null {
+  let mesh: THREE.Mesh | null = null;
+  root.traverseVisible((obj) => {
+    if (mesh != null) return;
+    if (!(obj as THREE.Mesh).isMesh) return;
+    if (obj.uuid === id || obj.name === id) {
+      mesh = obj as THREE.Mesh;
+    }
+  });
+  return mesh;
+}
 import { repackBVHMaterialRange } from './restir/packingHelpers.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import type { DDGI } from './ddgi/DDGI.js';
@@ -151,18 +164,12 @@ export function transformRefit(
           `HybridEngine.updatePrimitive("${id}"): no THREE scene available for TLAS refit.`,
         );
       }
-      let mesh: THREE.Mesh | null = null;
-      root.traverseVisible((obj) => {
-        if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-          mesh = obj as THREE.Mesh;
-        }
-      });
-      if (mesh == null) {
+      const meshRef = findMeshByPrimitiveId(root, id);
+      if (meshRef == null) {
         throw new Error(
           `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
         );
       }
-      const meshRef = mesh as THREE.Mesh;
       if (meshPatch.transform && meshPatch.transform.length >= 16) {
         const m = new THREE.Matrix4().fromArray(Array.from(meshPatch.transform));
         meshRef.matrix.copy(m);
@@ -222,18 +229,12 @@ export function transformRefit(
       `HybridEngine.updatePrimitive("${id}"): no THREE scene available for refit.`,
     );
   }
-  let mesh: THREE.Mesh | null = null;
-  root.traverseVisible((obj) => {
-    if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-      mesh = obj as THREE.Mesh;
-    }
-  });
-  if (mesh == null) {
+  const meshRef = findMeshByPrimitiveId(root, id);
+  if (meshRef == null) {
     throw new Error(
       `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
     );
   }
-  const meshRef = mesh as THREE.Mesh;
 
   // Apply the new transform. The Scene contract says transform is a
   // 16-element column-major Mat4 (see core/src/scene.ts:MeshPrimitive).
@@ -366,18 +367,12 @@ export function positionsRefit(
         `HybridEngine.updatePrimitive("${id}"): no THREE scene available for TLAS positions refit.`,
       );
     }
-    let mesh: THREE.Mesh | null = null;
-    root.traverseVisible((obj) => {
-      if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-        mesh = obj as THREE.Mesh;
-      }
-    });
-    if (mesh == null) {
+    const meshRef = findMeshByPrimitiveId(root, id);
+    if (meshRef == null) {
       throw new Error(
         `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
       );
     }
-    const meshRef = mesh as THREE.Mesh;
     meshRef.geometry.setAttribute(
       'position',
       new THREE.BufferAttribute(new Float32Array(Array.from(newLocalPositions)), 3),
@@ -478,18 +473,12 @@ export function positionsRefit(
       `HybridEngine.updatePrimitive("${id}"): no THREE scene available for positions refit.`,
     );
   }
-  let mesh: THREE.Mesh | null = null;
-  root.traverseVisible((obj) => {
-    if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-      mesh = obj as THREE.Mesh;
-    }
-  });
-  if (mesh == null) {
+  const meshRef = findMeshByPrimitiveId(root, id);
+  if (meshRef == null) {
     throw new Error(
       `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
     );
   }
-  const meshRef = mesh as THREE.Mesh;
 
   // Update the THREE.Mesh's geometry so a later transformRefit picks up
   // the latest local positions. The BufferAttribute itself owns its
@@ -596,18 +585,12 @@ export function topologyRebuild(
   // Other fields (`instances`, `params`, `shape`, `fallbackMesh`,
   // `kind`) require a wholesale primitive replacement; throw with a
   // clear pointer so the host knows to use setScene().
-  let mesh: THREE.Mesh | null = null;
-  root.traverseVisible((obj) => {
-    if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-      mesh = obj as THREE.Mesh;
-    }
-  });
-  if (mesh == null) {
+  const meshRef = findMeshByPrimitiveId(root, id);
+  if (meshRef == null) {
     throw new Error(
       `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
     );
   }
-  const meshRef = mesh as THREE.Mesh;
 
   const p = patch as {
     transform?: ArrayLike<number>;
@@ -757,18 +740,12 @@ export function materialPatch(
     );
   }
 
-  let mesh: THREE.Mesh | null = null;
-  root.traverseVisible((obj) => {
-    if (mesh == null && obj.name === id && (obj as THREE.Mesh).isMesh) {
-      mesh = obj as THREE.Mesh;
-    }
-  });
-  if (mesh == null) {
+  const meshRef = findMeshByPrimitiveId(root, id);
+  if (meshRef == null) {
     throw new Error(
       `HybridEngine.updatePrimitive("${id}"): primitive has no THREE.Mesh in the synthesized scene.`,
     );
   }
-  const meshRef = mesh as THREE.Mesh;
 
   const primIndex = ctx.lastScene.primitives.findIndex((p) => String(p.id) === id);
   const prevPrim = primIndex >= 0 ? ctx.lastScene.primitives[primIndex] : undefined;

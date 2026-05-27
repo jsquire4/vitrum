@@ -13,7 +13,13 @@
 
 import type * as THREE from 'three';
 import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
-import { convertMesh, convertSkinnedMesh, emissiveMeshAreaEmitter, stripEmissive } from './mesh.js';
+import {
+  convertInstancedMesh,
+  convertMesh,
+  convertSkinnedMesh,
+  emissiveMeshAreaEmitter,
+  stripEmissive,
+} from './mesh.js';
 import { convertLight } from './lights.js';
 import { resolveEnvironment } from './environment.js';
 
@@ -65,9 +71,12 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
 
     // ── Unsupported mesh sub-types ──────────────────────────────────────────
     if ((obj as THREE.InstancedMesh).isInstancedMesh === true) {
-      throw new Error(
-        `Unsupported THREE type at "${label}": InstancedMesh. Supported types are added per Phase 6 sprint.`,
-      );
+      if (obj.visible === false) return;
+      const inst = obj as THREE.InstancedMesh;
+      const rawMat = Array.isArray(inst.material) ? inst.material[0] : inst.material;
+      if ((rawMat as THREE.Material | null)?.visible === false) return;
+      primitives.push(convertInstancedMesh(inst));
+      return;
     }
 
     // ── Skinned meshes ─────────────────────────────────────────────────────

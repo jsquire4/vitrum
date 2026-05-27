@@ -62,8 +62,8 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   readonly device: GPUDevice;
   /**
    * Override adapter-based tier selection. Omit to auto-pick: `full` when the device
-   * supports ≥23 storage buffers and ≥5 storage textures (TLAS, HDRI, area lights,
-   * caustics, etc.); `lite` only on constrained software adapters.
+   * supports ≥10 storage buffers per bind group and ≥5 storage textures (split
+   * full layout: TLAS, HDRI, area lights, caustics, etc.); `lite` on 8/4 adapters.
    */
   readonly traceTier?: PtWebgpuTraceTier;
 }
@@ -124,8 +124,10 @@ class PTEngineWebGPU implements Engine {
   #accumWidth = 0;
   #accumHeight = 0;
 
-  /** Reused bind group until scene buffers or accum views are recreated. */
+  /** Reused bind groups until scene buffers or accum views are recreated. */
   #pathTraceBindGroup: GPUBindGroup | null = null;
+  #pathTraceBindGroup1: GPUBindGroup | null = null;
+  #pathTraceBindGroup2: GPUBindGroup | null = null;
 
   #paramsBuffer: GPUBuffer | null = null;
   #computePipeline: GPUComputePipeline | null = null;
@@ -555,6 +557,8 @@ class PTEngineWebGPU implements Engine {
     this.#accumHeight = height;
     this.#samplesAccumulated = 0;
     this.#pathTraceBindGroup = null;
+    this.#pathTraceBindGroup1 = null;
+    this.#pathTraceBindGroup2 = null;
     this.#clearAccumBuffer();
   }
 
@@ -592,6 +596,8 @@ class PTEngineWebGPU implements Engine {
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
     this.#pathTraceBindGroup = null;
+    this.#pathTraceBindGroup1 = null;
+    this.#pathTraceBindGroup2 = null;
     this.#scene = scene;
     const sceneSummary = summarizeScene(scene);
     if (sceneSummary.primitiveCount === 0) {
@@ -1004,38 +1010,58 @@ class PTEngineWebGPU implements Engine {
         { binding: 10, resource: this.#albedoView },
         { binding: 11, resource: this.#varianceView },
       ];
-      const fullEntries: GPUBindGroupEntry[] = [
+      const fullGroup0Entries: GPUBindGroupEntry[] = [
         ...liteEntries,
         { binding: 12, resource: this.#motionVectorsView! },
         { binding: 13, resource: { buffer: this.#varianceMomentsBuffer! } },
-        { binding: 14, resource: { buffer: this.#sceneBuffers.analyticHeadersBuffer } },
-        { binding: 15, resource: { buffer: this.#sceneBuffers.analyticParamsBuffer } },
-        { binding: 16, resource: { buffer: this.#sceneBuffers.analyticLocalToWorldBuffer } },
-        { binding: 17, resource: { buffer: this.#sceneBuffers.analyticWorldToLocalBuffer } },
-        { binding: 18, resource: { buffer: this.#sceneBuffers.environmentMapTexelsBuffer } },
-        { binding: 19, resource: { buffer: this.#sceneBuffers.environmentMapCdfBuffer } },
-        { binding: 20, resource: { buffer: this.#sceneBuffers.pointLightsBuffer } },
-        { binding: 21, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
-        { binding: 22, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
-        { binding: 23, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
-        { binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } },
-        { binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } },
-        { binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
-        { binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } },
-        { binding: 28, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } },
+      ];
+      const fullGroup1Entries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: { buffer: this.#sceneBuffers.analyticHeadersBuffer } },
+        { binding: 1, resource: { buffer: this.#sceneBuffers.analyticParamsBuffer } },
+        { binding: 2, resource: { buffer: this.#sceneBuffers.analyticLocalToWorldBuffer } },
+        { binding: 3, resource: { buffer: this.#sceneBuffers.analyticWorldToLocalBuffer } },
+        { binding: 4, resource: { buffer: this.#sceneBuffers.environmentMapTexelsBuffer } },
+        { binding: 5, resource: { buffer: this.#sceneBuffers.environmentMapCdfBuffer } },
+        { binding: 6, resource: { buffer: this.#sceneBuffers.pointLightsBuffer } },
+        { binding: 7, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
+        { binding: 8, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
+        { binding: 9, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
+      ];
+      const fullGroup2Entries: GPUBindGroupEntry[] = [
+        { binding: 0, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } },
+        { binding: 1, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } },
+        { binding: 2, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
+        { binding: 3, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } },
+        { binding: 4, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } },
       ];
       bindGroup = this.#device.createBindGroup({
-        label: `vitrum.pt-webgpu.pathTrace.bindgroup.${this.#traceTier}`,
+        label: `vitrum.pt-webgpu.pathTrace.bindgroup0.${this.#traceTier}`,
         layout: this.#bindGroupLayout,
-        entries: this.#traceTier === 'lite' ? liteEntries : fullEntries,
+        entries: this.#traceTier === 'lite' ? liteEntries : fullGroup0Entries,
       });
       this.#pathTraceBindGroup = bindGroup;
+      if (this.#traceTier === 'full') {
+        this.#pathTraceBindGroup1 = this.#device.createBindGroup({
+          label: 'vitrum.pt-webgpu.pathTrace.bindgroup1.full',
+          layout: this.#computePipeline.getBindGroupLayout(1),
+          entries: fullGroup1Entries,
+        });
+        this.#pathTraceBindGroup2 = this.#device.createBindGroup({
+          label: 'vitrum.pt-webgpu.pathTrace.bindgroup2.full',
+          layout: this.#computePipeline.getBindGroupLayout(2),
+          entries: fullGroup2Entries,
+        });
+      }
     }
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
     pass.setPipeline(this.#computePipeline);
     pass.setBindGroup(0, bindGroup);
+    if (this.#traceTier === 'full' && this.#pathTraceBindGroup1 != null && this.#pathTraceBindGroup2 != null) {
+      pass.setBindGroup(1, this.#pathTraceBindGroup1);
+      pass.setBindGroup(2, this.#pathTraceBindGroup2);
+    }
     pass.dispatchWorkgroups(
       Math.ceil(width / WORKGROUP_SIZE),
       Math.ceil(height / WORKGROUP_SIZE),
@@ -1107,6 +1133,8 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'disposed') return;
     this.#destroyAccumTexture();
     this.#pathTraceBindGroup = null;
+    this.#pathTraceBindGroup1 = null;
+    this.#pathTraceBindGroup2 = null;
     this.#paramsBuffer?.destroy();
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = null;
@@ -1173,7 +1201,7 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
     console.warn(
       '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged-mesh BVH, directional + procedural sky only. ' +
         'Analytic shapes, TLAS, HDRI, area lights, and caustics are disabled. ' +
-        'On a discrete GPU host, request a device with ≥23 storage buffers and ≥5 storage textures, or pass traceTier: "full" after verifying limits.',
+        'On a discrete GPU host, request a device with ≥10 storage buffers per group and ≥5 storage textures, or pass traceTier: "full" after verifying limits.',
     );
   }
   const slot = makeStateSlot();

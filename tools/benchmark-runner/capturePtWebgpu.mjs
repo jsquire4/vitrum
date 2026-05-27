@@ -17,7 +17,7 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
-import { WEBGPU_CHROMIUM_LAUNCH } from './playwrightWebGpu.mjs';
+import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 
 const outputPng = process.env.VITRUM_OUTPUT_PNG;
 if (!outputPng) {
@@ -54,9 +54,14 @@ try {
   process.exit(3);
 }
 
-const browser = await chromium.launch(WEBGPU_CHROMIUM_LAUNCH);
+const probeOrigin = new URL(captureUrlBase).origin + '/';
+const { browser, page, profile, caps } = await launchWebGpuBrowser(chromium, probeOrigin);
+console.error(
+  `[capturePtWebgpu] launchProfile=${profile} ptFull=${caps.ptWebgpuFullTier} ` +
+    `buffers=${caps.maxStorageBuffersPerShaderStage} vendor=${caps.vendor ?? ''}`,
+);
 try {
-  const page = await browser.newPage({ viewport: { width, height } });
+  await page.setViewportSize({ width, height });
   const url = buildUrl();
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   const bootError = await page.evaluate(() => {

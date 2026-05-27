@@ -6,8 +6,15 @@
  * materials — the caller (`sceneFromThreeJS`) should not silently skip meshes.
  */
 
-import type * as THREE from 'three';
-import type { MeshPrimitive, SkinnedMeshPrimitive, Mat4, SceneEmitter } from '@vitrum/core';
+import * as THREE from 'three';
+import {
+  asMat4,
+  type InstancedMeshPrimitive,
+  type MeshPrimitive,
+  type SkinnedMeshPrimitive,
+  type Mat4,
+  type SceneEmitter,
+} from '@vitrum/core';
 import { convertMaterial, convertBasicMaterial } from './material.js';
 import { luminance } from './math.js';
 
@@ -135,6 +142,73 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
     normals,
     transform,
     material,
+    ...(uvs != null ? { uvs } : {}),
+    ...(tangents != null ? { tangents } : {}),
+    ...(indices != null ? { indices } : {}),
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// InstancedMesh converter — multi-mesh TLAS production path
+// ────────────────────────────────────────────────────────────────────────────
+
+export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPrimitive {
+  const geo = obj.geometry;
+  const label = obj.name || obj.uuid;
+
+  const positions = extractAttribute(geo, 'position');
+  if (positions == null) {
+    throw new Error(`InstancedMesh "${label}" has no position attribute.`);
+  }
+
+  const normals = extractAttribute(geo, 'normal');
+  if (normals == null) {
+    throw new Error(
+      `InstancedMesh "${label}" has no normal attribute. Compute normals before calling sceneFromThreeJS.`,
+    );
+  }
+
+  const uvs = extractAttribute(geo, 'uv');
+  const tangents = extractAttribute(geo, 'tangent');
+  const indices = extractIndex(geo);
+
+  if (Array.isArray(obj.material) && obj.material.length > 1) {
+    console.warn(
+      `@vitrum/three-bindings: unsupported multi-material InstancedMesh at "${label}". ` +
+        `Only the first material will be used.`,
+    );
+  }
+
+  const rawMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
+  const isStd = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
+  const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
+  const isBasic = (rawMat as THREE.MeshBasicMaterial | null)?.isMeshBasicMaterial === true;
+  if (rawMat == null || (!isStd && !isPhys && !isBasic)) {
+    const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
+    throw new Error(
+      `Unsupported THREE type at "${label}": material ${typeName}. Supported types are added per Phase 6 sprint.`,
+    );
+  }
+
+  const material = isBasic
+    ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
+    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
+
+  const instances: Mat4[] = [];
+  const tmp = new THREE.Matrix4();
+  for (let i = 0; i < obj.count; i += 1) {
+    obj.getMatrixAt(i, tmp);
+    tmp.premultiply(obj.matrixWorld);
+    instances.push(asMat4(new Float32Array(tmp.elements)));
+  }
+
+  return {
+    kind: 'instanced-mesh',
+    id: obj.uuid,
+    positions,
+    normals,
+    material,
+    instances,
     ...(uvs != null ? { uvs } : {}),
     ...(tangents != null ? { tangents } : {}),
     ...(indices != null ? { indices } : {}),

@@ -108,25 +108,20 @@ describe('pt-webgpu WGSL material contract', () => {
   });
 
   it('declares TLAS storage bindings and host bind-group wiring in lockstep', () => {
-    // Shader-side contract: TLAS buffers occupy bindings 24..27.
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(24) var<storage, read> tlasNodes');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(25) var<storage, read> tlasInstanceIndices');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(26) var<storage, read> tlasBlasRoots');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(27) var<storage, read> tlasInstanceWorldToLocal');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(0) @binding(28) var<storage, read> tlasInstanceLocalToWorld');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(2) @binding(0) var<storage, read> tlasNodes');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(2) @binding(1) var<storage, read> tlasInstanceIndices');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(2) @binding(2) var<storage, read> tlasBlasRoots');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(2) @binding(3) var<storage, read> tlasInstanceWorldToLocal');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('@group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld');
 
-    // Host-side contract: bind-group creation must provide matching bindings,
-    // and the storage-buffer limit guard must account for them.
     const here = dirname(fileURLToPath(import.meta.url));
     const limitsSource = readFileSync(resolve(here, '../webgpuLimits.ts'), 'utf8');
     const indexSource = readFileSync(resolve(here, '../index.ts'), 'utf8');
-    expect(limitsSource).toMatch(/PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE\s*=\s*23/);
+    expect(limitsSource).toMatch(/PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP\s*=\s*10/);
     expect(indexSource).toContain('selectPtWebgpuTraceTier');
-    expect(indexSource).toContain('{ binding: 24, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } }');
-    expect(indexSource).toContain('{ binding: 25, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } }');
-    expect(indexSource).toContain('{ binding: 26, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } }');
-    expect(indexSource).toContain('{ binding: 27, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } }');
-    expect(indexSource).toContain('{ binding: 28, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } }');
+    expect(indexSource).toContain('pathTrace.bindgroup2.full');
+    expect(indexSource).toContain('{ binding: 0, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } }');
+    expect(indexSource).toContain('setBindGroup(2, this.#pathTraceBindGroup2)');
   });
 
   it('keeps TLAS hit reconstruction in world space', () => {

@@ -10,9 +10,7 @@ import {
 describe('webgpuLimits', () => {
   it('PT limits request storage buffers only (no storage texture bump)', () => {
     expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageTexturesPerShaderStage).toBeUndefined();
-    expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage).toBe(
-      PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-    );
+    expect(PT_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage).toBe(10);
   });
 
   it('mergeAdapterRequiredLimits clamps to adapter caps', () => {

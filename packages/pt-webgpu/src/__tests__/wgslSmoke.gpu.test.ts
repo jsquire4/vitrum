@@ -69,7 +69,7 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
     expect(errors.length).toBe(0);
   });
 
-  it('full pipeline creates when the adapter supports 23 storage buffers', async () => {
+  it('full pipeline creates when the adapter supports split full tier (10 buffers/group)', async () => {
     const supported = adapter!.limits.maxStorageBuffersPerShaderStage;
     const module = device!.createShaderModule({
       label: 'pt-webgpu-pipeline-smoke-full',

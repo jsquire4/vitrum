@@ -402,6 +402,11 @@ async function main(): Promise<void> {
         refreshStatus();
         return;
       }
+      telemetry.walkaround = {
+        state: hybrid.state,
+        frame: 0,
+        debugTimingsLen: 0,
+      };
       lines[1] = 'Walkaround: rendering';
       refreshStatus();
 

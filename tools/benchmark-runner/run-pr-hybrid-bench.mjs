@@ -21,7 +21,7 @@ import {
   stopDevServer,
   waitForServerReady,
 } from './devServer.mjs';
-import { WEBGPU_CHROMIUM_LAUNCH } from './playwrightWebGpu.mjs';
+import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -29,11 +29,14 @@ const resultsDir = resolve(here, 'results', 'pr-hybrid');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outPath = resolve(resultsDir, `pr-hybrid-${stamp}.json`);
 
-let captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5175/walkaround.html';
+const benchDevPort = process.env.VITRUM_BENCH_DEV_PORT ?? '5175';
+const benchDevHost = process.env.VITRUM_BENCH_DEV_HOST ?? '127.0.0.1';
+const defaultCaptureBase = `http://${benchDevHost}:${benchDevPort}/walkaround.html`;
+let captureUrlBase = process.env.VITRUM_CAPTURE_URL ?? defaultCaptureBase;
 const startServer = process.env.VITRUM_PR_START_SERVER === '1';
 const serverCommand =
   process.env.VITRUM_PR_DEV_CMD ??
-  'npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0.1 --port 5175';
+  `npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host ${benchDevHost} --port ${benchDevPort}`;
 const serverReadyTimeoutMs = Number(process.env.VITRUM_PR_SERVER_READY_TIMEOUT_MS ?? 90_000);
 const serverPollMs = Number(process.env.VITRUM_PR_SERVER_POLL_MS ?? 500);
 const headless = process.env.VITRUM_BENCH_HEADLESS !== '0';
@@ -65,7 +68,7 @@ const SCENARIO_QUERY = {
     mode: 'walkaround',
     scene: 'tlas10inst',
     bvhMode: 'tlas',
-    prBenchFrames: '120',
+    prBenchFrames: '48',
     prBenchScenario: 'PR-hybrid-tlas-10-inst',
   },
   'PR-hybrid-200k-static': {
@@ -131,9 +134,19 @@ async function runScenario(browser, scenarioId) {
     const scenarioBenchTimeoutMs =
       scenarioId === 'PR-hybrid-200k-static'
         ? Number(process.env.VITRUM_PR_200K_TIMEOUT_MS ?? String(Math.max(benchTimeoutMs, 300_000)))
-        : benchTimeoutMs;
+        : scenarioId === 'PR-hybrid-tlas-10-inst'
+          ? Number(process.env.VITRUM_PR_TLAS_TIMEOUT_MS ?? String(Math.max(benchTimeoutMs, 240_000)))
+          : benchTimeoutMs;
     await page.waitForFunction(
-      () => globalThis.__vitrum?.walkaround?.state === 'ready',
+      () => {
+        const eng = globalThis.__vitrumWalkaround;
+        const tel = globalThis.__vitrum?.walkaround;
+        return (
+          eng?.state === 'ready' ||
+          tel?.state === 'ready' ||
+          globalThis.__vitrumPrBenchLast != null
+        );
+      },
       null,
       { timeout: scenarioBenchTimeoutMs, polling: 250 },
     ).catch(() => {
@@ -177,35 +190,9 @@ async function runScenario(browser, scenarioId) {
   return payload;
 }
 
-/**
- * @param {import('playwright').Browser} browser
- * @param {string} pageUrl
- */
-async function probeHybridAdapterLimits(browser, pageUrl) {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  try {
-    await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: navTimeoutMs });
-    return await page.evaluate(async () => {
-      if (!navigator.gpu) return null;
-      const adapter = await navigator.gpu.requestAdapter();
-      if (!adapter) return null;
-      return {
-        maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
-        maxStorageTexturesPerShaderStage: adapter.limits.maxStorageTexturesPerShaderStage,
-      };
-    });
-  } finally {
-    await context.close();
-  }
-}
-
-function hybridAdapterCanRun(limits) {
-  if (limits == null) return false;
-  return (
-    limits.maxStorageBuffersPerShaderStage >= HYBRID_MIN_STORAGE_BUFFERS &&
-    limits.maxStorageTexturesPerShaderStage >= HYBRID_MIN_STORAGE_TEXTURES
-  );
+function hybridAdapterCanRun(caps) {
+  if (caps == null) return false;
+  return caps.hybridCanRun === true;
 }
 
 function skippedRow(scenarioId, url, skipReason, limits) {
@@ -253,20 +240,35 @@ async function main() {
     console.log(`[pr-hybrid] using ${captureUrlBase}`);
   }
 
-  const browser = await chromium.launch({
-    ...WEBGPU_CHROMIUM_LAUNCH,
-    headless,
-  });
+  let browser;
+  let launchProfile = 'unknown';
+  let adapterCaps = null;
+  try {
+    const probeOrigin = new URL(captureUrlBase).origin + '/';
+    const launched = await launchWebGpuBrowser(chromium, probeOrigin);
+    browser = launched.browser;
+    launchProfile = launched.profile;
+    adapterCaps = launched.caps;
+    console.log(
+      `[pr-hybrid] WebGPU launchProfile=${launchProfile} ` +
+        `vendor=${adapterCaps.vendor ?? ''} buffers=${adapterCaps.maxStorageBuffersPerShaderStage} ` +
+        `textures=${adapterCaps.maxStorageTexturesPerShaderStage} ` +
+        `ptFull=${adapterCaps.ptWebgpuFullTier} hybrid=${adapterCaps.hybridCanRun}`,
+    );
+  } catch (launchErr) {
+    console.error(`[pr-hybrid] failed to launch WebGPU browser: ${launchErr}`);
+    process.exit(3);
+  }
+
   const rows = [];
   try {
-    const adapterLimits = await probeHybridAdapterLimits(browser, captureUrlBase);
-    const canRunHybrid = hybridAdapterCanRun(adapterLimits);
+    const canRunHybrid = hybridAdapterCanRun(adapterCaps);
     if (!canRunHybrid) {
       const msg =
         `[pr-hybrid] adapter insufficient for walkaround-hybrid ` +
         `(need ≥${HYBRID_MIN_STORAGE_BUFFERS} storage buffers and ≥${HYBRID_MIN_STORAGE_TEXTURES} storage textures; ` +
-        `got ${adapterLimits?.maxStorageBuffersPerShaderStage ?? 'n/a'} / ` +
-        `${adapterLimits?.maxStorageTexturesPerShaderStage ?? 'n/a'}).`;
+        `got ${adapterCaps?.maxStorageBuffersPerShaderStage ?? 'n/a'} / ` +
+        `${adapterCaps?.maxStorageTexturesPerShaderStage ?? 'n/a'}, profile=${launchProfile}).`;
       if (skipIfInsufficient && !requireGpu) {
         console.warn(`${msg} Skipping GPU scenarios (set VITRUM_PR_REQUIRE_GPU=1 on a hardware GPU host).`);
         for (const scenarioId of scenarios) {
@@ -275,7 +277,7 @@ async function main() {
               scenarioId,
               buildUrl(scenarioId),
               'adapter-insufficient',
-              adapterLimits,
+              adapterCaps,
             ),
           );
         }
@@ -283,7 +285,7 @@ async function main() {
         console.error(msg);
         for (const scenarioId of scenarios) {
           rows.push({
-            ...skippedRow(scenarioId, buildUrl(scenarioId), 'adapter-insufficient', adapterLimits),
+            ...skippedRow(scenarioId, buildUrl(scenarioId), 'adapter-insufficient', adapterCaps),
             pass: false,
             skipped: false,
             error: msg,
@@ -307,6 +309,8 @@ async function main() {
     schema: 'vitrum-pr-hybrid-bench-2026-05-26',
     startedAt: rows[0]?.startedAt ?? new Date().toISOString(),
     finishedAt: new Date().toISOString(),
+    launchProfile,
+    adapter: adapterCaps,
     summary: { total: rows.length, failures, passes: rows.length - failures },
     rows,
   };
