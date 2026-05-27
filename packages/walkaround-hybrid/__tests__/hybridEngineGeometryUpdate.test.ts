@@ -55,6 +55,7 @@ interface MockPipeline {
   setDDGIInputs: ReturnType<typeof vi.fn>;
   renderFrame: ReturnType<typeof vi.fn>;
   refreshBvhRefit: ReturnType<typeof vi.fn>;
+  refreshBvhNodesOnly: ReturnType<typeof vi.fn>;
   refreshBvhMaterialSlice: ReturnType<typeof vi.fn>;
   refreshBvhFullRebuild: ReturnType<typeof vi.fn>;
   updateEmitters: ReturnType<typeof vi.fn>;
@@ -84,6 +85,7 @@ vi.mock('../src/pipeline/WalkaroundGPUPipeline.js', async () => {
     public setDDGIInputs = vi.fn();
     public renderFrame = vi.fn();
     public refreshBvhRefit = vi.fn();
+    public refreshBvhNodesOnly = vi.fn();
     public refreshBvhMaterialSlice = vi.fn();
     public refreshBvhFullRebuild = vi.fn();
     public updateEmitters = vi.fn();
@@ -357,6 +359,29 @@ describe('HybridEngine.updatePrimitive — geometry change (A3 follow-up)', () =
     // stride-4 float positions → 3 × 4 × 4 = 48 bytes starting at offset 0.
     expect(slice.byteOffset).toBe(0);
     expect(slice.data.byteLength).toBe(48);
+  });
+
+  it('applyGpuSkinnedRefit uploads BVH nodes only (no position slice)', async () => {
+    const engine = makeEngine();
+    const s = getState();
+
+    engine.setScene(SCENE_WITH_MESH);
+    await waitForPipelineCount(1);
+    s.pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+
+    const buildCountBefore = s.buildBVHCalls.length;
+    engine.applyGpuSkinnedRefit(
+      'mesh-a',
+      new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 0]),
+      new Float32Array([0, 1, 0, 0, 1, 0, 0, 0, 1]),
+    );
+
+    expect(s.buildBVHCalls.length).toBe(buildCountBefore);
+    const pipeline = s.pipelineConstructed[0]!;
+    expect(pipeline.refreshBvhNodesOnly).toHaveBeenCalledTimes(1);
+    expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
+    expect(pipeline.requestAccumReset).toHaveBeenCalled();
   });
 
   it('positions-only patch (A3 fast path) refits BVH bounds — no full rebuild, no pipeline recompile', async () => {

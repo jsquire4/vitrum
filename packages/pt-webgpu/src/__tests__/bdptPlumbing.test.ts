@@ -8,5 +8,8 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptLightPath');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptExtendLightSubpath');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptWriteBounce0');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('params.spotLightCount');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptEmitterPower');
+    expect(PT_WEBGPU_TRACE_WGSL).toMatch(/spotLights\[sb \+ 2u\]\.rgb/);
   });
 });

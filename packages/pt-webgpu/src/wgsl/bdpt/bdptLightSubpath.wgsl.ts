@@ -14,6 +14,7 @@ fn bdptEmitterCount() -> u32 {
     n = n + 1u;
   }
   n = n + params.pointLightCount;
+  n = n + params.spotLightCount;
   n = n + params.rectAreaLightCount;
   n = n + params.meshAreaLightCount;
   return n;
@@ -31,6 +32,14 @@ fn bdptEmitterPower(flatIdx: u32) -> f32 {
     if (cur == flatIdx) {
       let rad = pointLights[pi * 2u + 1u].rgb;
       return bdptLightLuminance(rad);
+    }
+    cur = cur + 1u;
+  }
+  for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
+    if (cur == flatIdx) {
+      let sb = si * 3u;
+      let srad = spotLights[sb + 2u].rgb;
+      return bdptLightLuminance(srad);
     }
     cur = cur + 1u;
   }
@@ -129,6 +138,18 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       let pos = pointLights[pi * 2u].xyz;
       let rad = pointLights[pi * 2u + 1u].rgb;
       bdptFinishBounce0(col, pos, vec3f(0.0, 1.0, 0.0), rad, discretePdf, rng);
+      return;
+    }
+    cur = cur + 1u;
+  }
+  for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
+    if (cur == flat) {
+      let sb = si * 3u;
+      let spos = spotLights[sb].xyz;
+      let saxis = spotLights[sb + 1u];
+      let srad = spotLights[sb + 2u].rgb;
+      let spotDir = safe_normalize(saxis.xyz);
+      bdptFinishBounce0(col, spos, spotDir, srad, discretePdf, rng);
       return;
     }
     cur = cur + 1u;
