@@ -13,16 +13,31 @@ import { spawn } from 'node:child_process';
  *
  * Extracted from run-gap-closure-verification.mjs (was ~60 lines inline).
  */
+function wrapCommandForCwd(command, cwd) {
+  if (process.platform !== 'win32' || cwd == null || cwd.length === 0) {
+    return { command, cwd };
+  }
+  if (!cwd.startsWith('\\\\')) {
+    return { command, cwd };
+  }
+  const escaped = cwd.replace(/"/g, '""');
+  return {
+    command: `pushd "${escaped}" && ${command} && popd`,
+    cwd: process.env.SystemRoot ?? 'C:\\Windows',
+  };
+}
+
 export function runCommandWithTimeout(command, opts = {}) {
   const {
     cwd = process.cwd(),
     env = {},
     timeoutMs = 30_000,
   } = opts;
+  const wrapped = wrapCommandForCwd(command, cwd);
   return new Promise((resolveResult) => {
     let settled = false;
-    const child = spawn(command, {
-      cwd,
+    const child = spawn(wrapped.command, {
+      cwd: wrapped.cwd,
       env: { ...process.env, ...env },
       shell: true,
       detached: process.platform !== 'win32',

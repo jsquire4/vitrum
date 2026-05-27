@@ -10,8 +10,9 @@ npm run dev --workspace @vitrum-examples/two-engines-one-scene
 
 # Terminal B — seed pt-webgpu parity baseline (smoke resolution when VITRUM_CAPTURE_SMOKE=1)
 #
-# Requires a WebGPU adapter with maxStorageBuffersPerShaderStage ≥ 23 (SwiftShader
-# caps at 10 — use a hardware-GPU machine for WG-0 PNG commits).
+# Requires a WebGPU adapter with full pt-webgpu tier (≥10 storage buffers/stage
+# and ≥5 storage textures; split bind groups). SwiftShader only gets lite tier —
+# use a hardware-GPU machine (or `npm run benchmark:gpu-windows -- run-seed-wg0-baselines.mjs`).
 VITRUM_GPU_CAPTURE=1 \
 VITRUM_ALLOW_BASELINE_GEN=1 \
 VITRUM_GAP_SCENARIOS=ptwgpu-parity-material-fields \

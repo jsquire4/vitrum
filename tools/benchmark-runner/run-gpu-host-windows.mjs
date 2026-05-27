@@ -48,10 +48,15 @@ const envLines = [
   .join('; ');
 
 const ps = `
-Set-Location '${winRepo}';
-${envLines};
-& '${winNode}' 'tools\\benchmark-runner\\${script.replace(/\//g, '\\')}';
-exit $LASTEXITCODE
+$env:VITRUM_REPO_ROOT = '${winRepo.replace(/'/g, "''")}';
+Push-Location $env:VITRUM_REPO_ROOT;
+try {
+  ${envLines};
+  & '${winNode}' 'tools\\benchmark-runner\\${script.replace(/\//g, '\\')}';
+  exit $LASTEXITCODE
+} finally {
+  Pop-Location
+}
 `;
 
 const result = spawnSync(

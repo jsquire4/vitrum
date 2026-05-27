@@ -5,11 +5,12 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { GAP_CLOSURE_SCENARIOS } from './scenario-presets.mjs';
+import { getRepoRoot } from './repoRoot.mjs';
 
 const scenarios = GAP_CLOSURE_SCENARIOS;
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '..', '..');
+const repoRoot = getRepoRoot(import.meta.url);
 const baselineDir = resolve(repoRoot, process.env.VITRUM_BASELINE_DIR ?? 'tools/reference-renders/baseline');
 const captureDir = resolve(here, 'results/captures');
 // Date is derived at run time so the artifact name reflects when the
@@ -23,7 +24,7 @@ const captureCommandOverride = process.env.VITRUM_CAPTURE_CMD?.trim() ?? '';
 
 function defaultCaptureCommand(scenario) {
   if (scenario.backend === 'pt-webgpu') {
-    return `node ${resolve(here, 'capturePtWebgpu.mjs')}`;
+    return 'node ./tools/benchmark-runner/capturePtWebgpu.mjs';
   }
   return '';
 }
@@ -295,10 +296,11 @@ async function evaluateScenario(scenario) {
     .map((entry) => entry.split(':').slice(1).join(':'));
   const allVariantsMatchBaseline =
     variantHashes.length > 0 && variantHashes.every((hash) => hash === baselineHash);
-  const failedByHash = failOnIdentical && allVariantsMatchBaseline;
+  const failedByIdentical = failOnIdentical && allVariantsMatchBaseline;
+  const passFail = failedByIdentical ? 'FAIL' : allVariantsMatchBaseline ? 'PASS' : 'FAIL';
   return {
     ...scenario,
-    status: failedByHash ? 'failed-identical-hash' : 'captured',
+    status: failedByIdentical ? 'failed-identical-hash' : allVariantsMatchBaseline ? 'captured' : 'hash-mismatch',
     beforeImageHash: baselineHash,
     afterImageHash: afterHash,
     deltaSummary: `variants[${modeSummaries.join(', ')}]`,
@@ -308,7 +310,7 @@ async function evaluateScenario(scenario) {
       baseline: baselineTelemetry,
       candidates: perfTelemetrySamples,
     },
-    passFail: failedByHash ? 'FAIL' : 'PASS',
+    passFail,
   };
 }
 

@@ -14,14 +14,16 @@ import {
   stopDevServer,
   waitForServerReady,
 } from './devServer.mjs';
+import { getRepoRoot } from './repoRoot.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '..', '..');
+const repoRoot = getRepoRoot(import.meta.url);
 
+const benchPort = process.env.VITRUM_BENCH_DEV_PORT ?? '5175';
 const startServer = process.env.VITRUM_SEED_START_SERVER !== '0';
 const serverCommand =
   process.env.VITRUM_SEED_DEV_CMD ??
-  'npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0.1 --port 5175';
+  `npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0.1 --port ${benchPort}`;
 const serverReadyTimeoutMs = Number(process.env.VITRUM_SEED_SERVER_READY_TIMEOUT_MS ?? 90_000);
 const serverPollMs = Number(process.env.VITRUM_SEED_SERVER_POLL_MS ?? 500);
 const gapTimeoutMs = Number(process.env.VITRUM_SEED_GAP_TIMEOUT_MS ?? 20 * 60_000);
@@ -36,7 +38,8 @@ const scenarioIds =
 
 async function main() {
   let devServer = null;
-  let captureUrl = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5175/';
+  let captureUrl =
+    process.env.VITRUM_CAPTURE_URL ?? `http://127.0.0.1:${benchPort}/`;
 
   if (startServer) {
     console.log('[seed-wg0] starting dev server…');
@@ -82,22 +85,20 @@ async function main() {
     }
   }
 
-  const run = await runCommandWithTimeout(
-    'npm run benchmark:gap-closure --workspace @vitrum/benchmark-runner',
-    {
-      cwd: repoRoot,
-      env: {
-        VITRUM_GPU_CAPTURE: '1',
-        VITRUM_ALLOW_BASELINE_GEN: '1',
-        VITRUM_GAP_SCENARIOS: scenarioIds,
-        VITRUM_CAPTURE_URL: captureUrl.endsWith('/')
-          ? `${captureUrl}pt-webgpu.html`
-          : `${captureUrl}/pt-webgpu.html`,
-        VITRUM_CAPTURE_SMOKE: process.env.VITRUM_CAPTURE_SMOKE ?? '1',
-      },
-      timeoutMs: gapTimeoutMs,
+  const gapScript = resolve(repoRoot, 'tools/benchmark-runner/run-gap-closure-verification.mjs');
+  const run = await runCommandWithTimeout(`node ./tools/benchmark-runner/run-gap-closure-verification.mjs`, {
+    cwd: repoRoot,
+    env: {
+      VITRUM_GPU_CAPTURE: '1',
+      VITRUM_ALLOW_BASELINE_GEN: '1',
+      VITRUM_GAP_SCENARIOS: scenarioIds,
+      VITRUM_CAPTURE_URL: captureUrl.endsWith('/')
+        ? `${captureUrl}pt-webgpu.html`
+        : `${captureUrl}/pt-webgpu.html`,
+      VITRUM_CAPTURE_SMOKE: process.env.VITRUM_CAPTURE_SMOKE ?? '1',
     },
-  );
+    timeoutMs: gapTimeoutMs,
+  });
 
   if (devServer) stopDevServer(devServer);
 

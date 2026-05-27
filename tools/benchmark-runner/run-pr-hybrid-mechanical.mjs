@@ -2,13 +2,17 @@
  * Mechanical PR-6 checks (no Playwright / GPU).
  */
 
+import { access } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
-import { PR_HYBRID_BENCHMARK_SCENARIOS } from './scenario-presets.mjs';
+import { PR_HYBRID_BENCHMARK_SCENARIOS, WG0_PT_WEBGPU_SCENARIOS } from './scenario-presets.mjs';
+import { getRepoRoot } from './repoRoot.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, '..', '..');
+const repoRoot = getRepoRoot(import.meta.url);
+const baselineDir = resolve(repoRoot, 'tools/reference-renders/baseline');
 
 const required = [
   'PR-hybrid-200k-static',
@@ -22,6 +26,17 @@ for (const id of required) {
   if (!presetIds.has(id)) {
     failures += 1;
     console.error(`[pr-mechanical] missing preset ${id}`);
+  }
+}
+
+for (const scenarioId of WG0_PT_WEBGPU_SCENARIOS) {
+  const baselinePng = resolve(baselineDir, `${scenarioId}.png`);
+  try {
+    await access(baselinePng, fsConstants.F_OK);
+    console.log(`[pr-mechanical] PASS WG-0 baseline ${scenarioId}.png`);
+  } catch {
+    failures += 1;
+    console.error(`[pr-mechanical] missing WG-0 baseline ${baselinePng}`);
   }
 }
 
