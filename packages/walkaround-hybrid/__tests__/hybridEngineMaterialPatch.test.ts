@@ -14,8 +14,15 @@ type MatUpdateState = {
 vi.mock('../src/ddgi/DDGI.js', () => ({
   DDGI: class MockDDGI {
     ready = true;
-    pass = { setSunIntensityMultiplier: vi.fn(), getReadAtlasGPUTextures: vi.fn() };
+    pass = {
+      setSunIntensityMultiplier: vi.fn(),
+      setGlassMixScale: vi.fn(),
+      getReadAtlasGPUTextures: vi.fn(),
+      setRestirBvhSnapshot: vi.fn(),
+    };
+    syncRestirBvhBuffers = vi.fn();
     invalidateProbeCache = vi.fn();
+    markInstancesDirty = vi.fn();
     setLights = vi.fn();
     updateFrame = vi.fn();
     dispose = vi.fn();

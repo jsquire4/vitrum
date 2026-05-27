@@ -23,6 +23,7 @@ import {
   scenePackResultFromPacked,
   uploadPackedScene,
   uploadScenePackGeometry,
+  uploadScenePackTlasOnly,
   PT_WEBGPU_ANALYTIC_SHAPES,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
@@ -856,65 +857,15 @@ class PTEngineWebGPU implements Engine {
         },
       );
       if (tlas.ok && this.#canReuseTlasBufferLengths(this.#sceneBuffers, tlas)) {
-        if (tlas.tlasNodes.byteLength > 0) {
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.tlasNodesBuffer,
-            0,
-            tlas.tlasNodes.buffer,
-            tlas.tlasNodes.byteOffset,
-            tlas.tlasNodes.byteLength,
-          );
-        }
-        if (tlas.tlasInstanceIndices.byteLength > 0) {
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.tlasInstanceIndicesBuffer,
-            0,
-            tlas.tlasInstanceIndices.buffer,
-            tlas.tlasInstanceIndices.byteOffset,
-            tlas.tlasInstanceIndices.byteLength,
-          );
-        }
-        if (tlas.tlasBlasRoots.byteLength > 0) {
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.tlasBlasRootsBuffer,
-            0,
-            tlas.tlasBlasRoots.buffer,
-            tlas.tlasBlasRoots.byteOffset,
-            tlas.tlasBlasRoots.byteLength,
-          );
-        }
-        if (tlas.tlasInstanceWorldToLocal.byteLength > 0) {
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.tlasInstanceWorldToLocalBuffer,
-            0,
-            tlas.tlasInstanceWorldToLocal.buffer,
-            tlas.tlasInstanceWorldToLocal.byteOffset,
-            tlas.tlasInstanceWorldToLocal.byteLength,
-          );
-        }
-        if (tlas.tlasInstanceLocalToWorld.byteLength > 0) {
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.tlasInstanceLocalToWorldBuffer,
-            0,
-            tlas.tlasInstanceLocalToWorld.buffer,
-            tlas.tlasInstanceLocalToWorld.byteOffset,
-            tlas.tlasInstanceLocalToWorld.byteLength,
-          );
-        }
-        const mutableSceneBuffers = this.#sceneBuffers as unknown as {
-          tlasNodes: Uint32Array;
-          tlasInstanceIndices: Uint32Array;
-          tlasBlasRoots: Uint32Array;
-          tlasInstanceWorldToLocal: Float32Array;
-          tlasInstanceLocalToWorld: Float32Array;
-          tlasNodeCount: number;
-        };
-        mutableSceneBuffers.tlasNodes = tlas.tlasNodes;
-        mutableSceneBuffers.tlasInstanceIndices = tlas.tlasInstanceIndices;
-        mutableSceneBuffers.tlasBlasRoots = tlas.tlasBlasRoots;
-        mutableSceneBuffers.tlasInstanceWorldToLocal = tlas.tlasInstanceWorldToLocal;
-        mutableSceneBuffers.tlasInstanceLocalToWorld = tlas.tlasInstanceLocalToWorld;
-        mutableSceneBuffers.tlasNodeCount = Math.floor(tlas.tlasNodes.length / 8);
+        uploadScenePackTlasOnly(this.#device, this.#sceneBuffers, {
+          tlasNodes: tlas.tlasNodes,
+          tlasInstanceIndices: tlas.tlasInstanceIndices,
+          tlasBlasRoots: tlas.tlasBlasRoots,
+          tlasInstanceWorldToLocal: tlas.tlasInstanceWorldToLocal,
+          tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
+          tlasNodeCount: Math.floor(tlas.tlasNodes.length / 8),
+          primitiveTlasBindings: this.#sceneBuffers.primitiveTlasBindings,
+        });
         this.#scene = nextScene;
         for (const warning of tlas.warnings) {
           console.warn(`[vitrum/pt-webgpu] ${warning}`);

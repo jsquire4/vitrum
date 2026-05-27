@@ -107,3 +107,15 @@ export function makeRestirBvhSnapshot(
     tlasContentVersion,
   };
 }
+
+/** True when only TLAS nodes / instance transforms changed (transform-only refit). */
+export function isRestirTlasOnlyRefit(
+  snap: RestirBvhSnapshot,
+  prev: { readonly blasContentVersion: number; readonly tlasContentVersion: number },
+): boolean {
+  return (
+    snap.tlas != null &&
+    snap.blasContentVersion === prev.blasContentVersion &&
+    snap.tlasContentVersion !== prev.tlasContentVersion
+  );
+}

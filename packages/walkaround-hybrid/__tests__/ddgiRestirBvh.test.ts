@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
 import { asMat4, type Scene } from '@vitrum/core';
-import { makeDdgiRestirBvhSnapshot } from '../src/ddgi/ddgiRestirBvh.js';
+import {
+  isDdgiRestirTlasOnlyRefit,
+  makeDdgiRestirBvhSnapshot,
+} from '../src/ddgi/ddgiRestirBvh.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
 
 function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuffers {
@@ -117,6 +120,18 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
     expect(snapA.blasContentVersion).toBe(snapB.blasContentVersion);
     expect(snapA.tlasContentVersion).not.toBe(snapB.tlasContentVersion);
     expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
+    expect(
+      isDdgiRestirTlasOnlyRefit(snapB, {
+        blasContentVersion: snapA.blasContentVersion,
+        tlasContentVersion: snapA.tlasContentVersion,
+      }),
+    ).toBe(true);
+    expect(
+      isDdgiRestirTlasOnlyRefit(snapB, {
+        blasContentVersion: snapB.blasContentVersion,
+        tlasContentVersion: snapB.tlasContentVersion,
+      }),
+    ).toBe(false);
   });
 
   it('uses world AABB for TLAS when scene is provided', () => {

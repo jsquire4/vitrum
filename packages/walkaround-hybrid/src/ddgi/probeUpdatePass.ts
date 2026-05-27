@@ -32,7 +32,7 @@ import {
 } from '@vitrum/shared-bvh';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
-import type { DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
+import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
 import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
@@ -515,10 +515,11 @@ export class ProbeUpdatePass {
       if (snap.contentVersion !== this._lastBvhVersion) {
         const tlasOnly =
           this._gpu != null &&
-          snap.tlas != null &&
-          snap.blasContentVersion === this._lastBlasVersion &&
-          snap.tlasContentVersion !== this._lastTlasVersion;
-        if (tlasOnly) {
+          isDdgiRestirTlasOnlyRefit(snap, {
+            blasContentVersion: this._lastBlasVersion,
+            tlasContentVersion: this._lastTlasVersion,
+          });
+        if (tlasOnly && snap.tlas != null) {
           this._refitTlasBuffersInPlace(device, snap.tlas);
         } else {
           this._rebuildBvhBuffersFromRestir(device, snap);

@@ -25,7 +25,11 @@ import type * as THREE from 'three';
 import type { StorageBufferAttribute } from 'three/webgpu';
 import { RCDispatcher, buildRCSceneBVH, packCascadeMaterials, CASCADE_DIMS, type SceneBVH, type CascadeDim } from '@vitrum/walkaround-rc';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
-import { makeRestirBvhSnapshot, type RestirBvhSnapshot } from './restir/restirBvhSnapshot.js';
+import {
+  isRestirTlasOnlyRefit,
+  makeRestirBvhSnapshot,
+  type RestirBvhSnapshot,
+} from './restir/restirBvhSnapshot.js';
 
 interface RCBVHBuffers {
   readonly bvhNodesBuf:      GPUBuffer;
@@ -156,10 +160,11 @@ export class RCSubsystem {
     if (snap.contentVersion !== this._lastBvhVersion) {
       const tlasOnly =
         this._bvhBuffers != null &&
-        snap.tlas != null &&
-        snap.blasContentVersion === this._lastBlasVersion &&
-        snap.tlasContentVersion !== this._lastTlasVersion;
-      if (tlasOnly) {
+        isRestirTlasOnlyRefit(snap, {
+          blasContentVersion: this._lastBlasVersion,
+          tlasContentVersion: this._lastTlasVersion,
+        });
+      if (tlasOnly && snap.tlas != null) {
         this._refitTlasGpuBuffers(snap.tlas);
       } else {
         this._disposeBvhBuffersOnly();

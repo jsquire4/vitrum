@@ -336,6 +336,44 @@ export function uploadScenePackGeometry(
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
 
+/** C2 — upload TLAS SSBOs only (transform-only refit; BLAS buffers unchanged). */
+export function uploadScenePackTlasOnly(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  pack: Pick<
+    ScenePackResult,
+    | 'tlasNodes'
+    | 'tlasInstanceIndices'
+    | 'tlasBlasRoots'
+    | 'tlasInstanceWorldToLocal'
+    | 'tlasInstanceLocalToWorld'
+    | 'tlasNodeCount'
+    | 'primitiveTlasBindings'
+  >,
+): void {
+  const write = (buffer: GPUBuffer, data: ArrayBufferView): void => {
+    if (data.byteLength > 0) {
+      device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
+    }
+  };
+  write(sb.tlasNodesBuffer, pack.tlasNodes);
+  write(sb.tlasInstanceIndicesBuffer, pack.tlasInstanceIndices);
+  write(sb.tlasBlasRootsBuffer, pack.tlasBlasRoots);
+  write(sb.tlasInstanceWorldToLocalBuffer, pack.tlasInstanceWorldToLocal);
+  write(sb.tlasInstanceLocalToWorldBuffer, pack.tlasInstanceLocalToWorld);
+  sb.tlasNodes.set(pack.tlasNodes);
+  sb.tlasInstanceIndices.set(pack.tlasInstanceIndices);
+  sb.tlasBlasRoots.set(pack.tlasBlasRoots);
+  sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
+  sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
+  const mutable = sb as unknown as {
+    tlasNodeCount: number;
+    primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+  };
+  mutable.tlasNodeCount = pack.tlasNodeCount;
+  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+}
+
 export function rebuildTlasForSceneTransforms(
   scene: Scene,
   primitiveTlasBindings: readonly PrimitiveTlasBinding[],
