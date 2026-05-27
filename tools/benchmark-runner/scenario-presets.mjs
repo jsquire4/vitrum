@@ -52,6 +52,7 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1280x720',
     bounces: 10,
     spp: 1024,
+    backend: 'pt-webgpu',
     causticVariants: ['none', 'manifold-nee', 'photon-map'],
   },
   {
@@ -256,6 +257,7 @@ export const WG0_PT_WEBGPU_SCENARIOS = [
   'rfe08-13-spectral-payload',
   'rfe14-thinfilm-angle-shift',
   'rfe09-bridge-global-cmf',
+  'rfe05-caustic-strategy',
 ];
 
 export const PR_HYBRID_BENCHMARK_SCENARIOS = [

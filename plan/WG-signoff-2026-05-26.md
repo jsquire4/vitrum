@@ -16,7 +16,7 @@
 | WG-6 Geometry incremental | **Complete** | `packSceneFromCore` via `shared-bvh`; `rebuildPrimitiveBlas` positions splice; ledger `positions: true` |
 | WG-7 BDPT | **Deferred** | Explicit non-goal until product requires stained-glass PT BDPT on WebGPU |
 | WG-8 createEngine opt-in | **Complete** | `prefer: 'quality-webgpu'`, `constructPathTracerWebGPU` in `@vitrum/engine` |
-| WG-9 Extended denoisers | **Deferred** | `svgf-real` not wired on pt-webgpu (walkaround-hybrid only) |
+| WG-9 Extended denoisers | **Complete** | `denoiser: 'svgf-real'` via `SVGFRealDispatcher` + `runSVGFRealWebGPU` (full tier) |
 | WG-10 Signoff | **This document** | See gates below |
 
 ## Definition-of-done gates
@@ -24,7 +24,7 @@
 | ID | Gate | Result | Notes |
 |----|------|--------|-------|
 | WG-D1 | Fidelity matrix rows not **unsupported** / stale **approximate** where implemented | **Pass (mechanical)** | Updated `plan/renderer-fidelity-matrix.md` 2026-05-26 |
-| WG-D2 | Gap-closure scenarios PASS | **Pass (CI mechanical)** | Six pt-webgpu baselines committed; `npm run benchmark:gap-closure-mechanical`; full-res strict re-capture on GPU host optional |
+| WG-D2 | Gap-closure scenarios PASS | **Pass (CI mechanical)** | Seven pt-webgpu baselines committed (+ `rfe05`); `npm run benchmark:gap-closure-mechanical`; `benchmark:gap-closure-gpu` refreshes smoke PNGs |
 | WG-D3 | `oidn-final` executes | **Pass** | Integration tests + runtime dispatcher (not warn-only) |
 | WG-D4 | Hero λ + CMF MIS vs fork | **Pass (CPU/layout)** | CMF tables + integrals in FrameParams; full visual A/B vs fork is host workflow |
 | WG-D5 | `quality-webgpu` documented; `auto` unchanged | **Pass** | `packages/engine/README.md`, `createEngineScale.ts` |
@@ -48,4 +48,3 @@ VITRUM_GPU_CAPTURE=1 npm run benchmark:gap-closure --workspace @vitrum/benchmark
 
 - pt-webgpu in `createEngine({ prefer: 'auto' })` until WG-D2 all-scenario PASS on hardware
 - BDPT port (WG-7)
-- Walkaround denoiser stack on pt-webgpu (WG-9)

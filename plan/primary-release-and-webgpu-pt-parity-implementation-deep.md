@@ -1,7 +1,7 @@
 # Deep Implementation Specification — Primary Release + WebGPU PT Parity
 
 **Date:** 2026-05-26  
-**Status:** Complete on `main` (2026-05-26). Signoff: `plan/PR-signoff-2026-05-26.md`, `plan/WG-signoff-2026-05-26.md`. CI: `npm run benchmark:gap-closure-mechanical` (six pt-webgpu baselines). Deferred by design: WG-7 BDPT, WG-9 svgf-real on pt-webgpu, PR-7/8 optional, pt-webgpu in `auto`.  
+**Status:** Complete with polish on `main` (2026-05-26). Signoff: `plan/PR-signoff-2026-05-26.md`, `plan/WG-signoff-2026-05-26.md`. CI: `benchmark:gap-closure-mechanical`, `benchmark:pr-hybrid-refs`, WG-9 `svgf-real` on pt-webgpu. Deferred: WG-7 BDPT, PR-7/8 optional, pt-webgpu in `auto`.  
 **Out of scope:** npm publish, release governance, cross-host verification policy.
 
 ---

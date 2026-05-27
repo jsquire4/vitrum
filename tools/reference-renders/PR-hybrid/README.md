@@ -26,4 +26,11 @@ npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0
 VITRUM_PR_START_SERVER=1 VITRUM_PR_SCENARIO=PR-hybrid-200k-static npm run benchmark:pr-hybrid
 ```
 
-Commit PNGs here after visual review; record SHA-256 from `tools/benchmark-runner/results/pr-hybrid/*.json`.
+Automated smoke capture:
+
+```bash
+npm run benchmark:pr-hybrid-refs --workspace @vitrum/benchmark-runner
+```
+
+Writes `tlas-on/`, `material-edit/`, `200k-static/` PNGs + `manifest.json` (SHA-256 per file).
+Manual review still recommended before treating as golden references.

@@ -13,6 +13,7 @@ const MECHANICAL_GAP_SCENARIOS = [
   'rfe08-13-spectral-payload',
   'rfe14-thinfilm-angle-shift',
   'rfe09-bridge-global-cmf',
+  'rfe05-caustic-strategy',
 ] as const;
 
 describe('gap-closure mechanical baselines (WG-D2)', () => {

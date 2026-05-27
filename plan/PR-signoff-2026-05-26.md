@@ -27,7 +27,7 @@
 | PR-D3 | Hybrid TLAS default multi-mesh | **Pass** | `resolveReSTIRBvhMode`: ≥2 meshes → `tlas`; override `extensions['walkaround-hybrid'].bvhMode` |
 | PR-D4 | Incremental patch matrix matches runtime | **Pass** | `BACKEND_PROMISE_LEDGER['walkaround-hybrid']` |
 | PR-D5 | `updateEmitter` fast path | **Pass** | `HybridEngine.updateEmitter` → `updateEmitters()` |
-| PR-D6 | Reference captures under `tools/reference-renders/PR-*` | **Host workflow** | Benchmark JSON via `npm run benchmark:pr-hybrid`; PNG hashes recorded in `results/pr-hybrid/` on GPU host |
+| PR-D6 | Reference captures under `tools/reference-renders/PR-*` | **Pass (tooling + optional PNG)** | `npm run benchmark:pr-hybrid-refs`; `PR-hybrid/manifest.json` + per-scenario dirs on hybrid GPU host |
 | PR-D7 | Animation doc superseded | **Pass** | Capability matrix in README + hybrid README |
 | PR-D8 | pt-webgl README stability | **Pass** | Experimental/production wording aligned in root README |
 | PR-D9 | Audit / pass registry | **Pass** | W1 pass registry unchanged in behavior; no new god-files in hybrid hot path |
@@ -43,6 +43,6 @@ VITRUM_PR_REQUIRE_GPU=1 VITRUM_PR_START_SERVER=1 \
   npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
 ```
 
-## Residual (host workflow)
+## Residual
 
-- Formal PNG dirs `tools/reference-renders/PR-hybrid-*` from `npm run benchmark:pr-hybrid` on GPU host (JSON metrics already in `results/pr-hybrid/`)
+- Re-run `npm run benchmark:pr-hybrid` on GPU host for perf JSON when validating PR-6 budgets

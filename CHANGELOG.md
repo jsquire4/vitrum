@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **WG-9 pt-webgpu `svgf-real` (2026-05-26):** `SVGFRealDispatcher` + `denoiser: 'svgf-real'` on full tier; `getDenoisedFrame()` after convergence.
+- **PR-D6 polish (2026-05-26):** `npm run benchmark:pr-hybrid-refs` writes smoke PNGs under `tools/reference-renders/PR-hybrid/`.
 - **Gap-closure mechanical CI (2026-05-26):** `buildGapClosureCornellThreeScene` in `@vitrum-examples/shared`; two-engines `vitrumGapScenario` capture wiring; `npm run benchmark:gap-closure-mechanical`; smoke baselines for `rfe07` / `rfe08`.
 - **pt-webgpu WG-4/5/6 parity (2026-05-26):** layered front/back `activeLayerWeightRgb` at hero λ, η² transmission MIS in `brdfDirectionalPdf`, translucent SSS gate (`isTranslucent`), same-topology `positions` BLAS splice via `rebuildPrimitiveBlas`; core promise ledger `positions: true` for pt-webgpu.
 - **Program signoff docs (2026-05-26):** `plan/WG-signoff-2026-05-26.md`, `plan/PR-signoff-2026-05-26.md`; fidelity + maturity matrices updated.

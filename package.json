@@ -35,6 +35,8 @@
     "benchmark:gpu-windows": "node tools/benchmark-runner/run-gpu-host-windows.mjs",
     "verify:mechanical": "npm run typecheck && npm test && npm run fork-shader-smoke && npm run shader-compile-ci",
     "benchmark:gap-closure-mechanical": "npm run benchmark:gap-closure-mechanical --workspace @vitrum/benchmark-runner",
+    "benchmark:gap-closure-gpu": "npm run benchmark:gap-closure-gpu --workspace @vitrum/benchmark-runner",
+    "benchmark:pr-hybrid-refs": "npm run benchmark:pr-hybrid-refs --workspace @vitrum/benchmark-runner",
     "capture:refs": "./scripts/capture-all-refs.sh",
     "capture:refs:quick": "./scripts/capture-all-refs.sh --quick",
     "capture:refs:hero": "./scripts/capture-all-refs.sh --hero",

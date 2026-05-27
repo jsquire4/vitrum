@@ -5,6 +5,7 @@
 export const PT_WEBGPU_GAP_SCENARIOS = [
   'ptwgpu-parity-material-fields',
   'rfe03-layered-front-back',
+  'rfe05-caustic-strategy',
   'rfe07-11-sss-mixed-panels',
   'rfe08-13-spectral-payload',
   'rfe14-thinfilm-angle-shift',

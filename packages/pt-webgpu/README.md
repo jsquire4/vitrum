@@ -96,7 +96,9 @@ Mechanical parity for the fork-backed WebGL2 path tracer is **implemented** for:
 - Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS, translucent SSS gate
 - `denoiser: 'oidn-final'` with aux readback
 
-**Not in parity / explicit deferrals:** BDPT (pt-webgl only), walkaround denoisers (`atrous-variance`, `svgf-real`, neural), and `createEngine({ prefer: 'auto' })` selection (use `quality-webgpu` or `extensions.backend: 'pt-webgpu'`).
+**Not in parity / explicit deferrals:** BDPT (pt-webgl only), walkaround-only denoisers (`atrous-variance`, neural), and `createEngine({ prefer: 'auto' })` selection (use `quality-webgpu` or `extensions.backend: 'pt-webgpu'`).
+
+**Denoisers on pt-webgpu:** `'none'`, `'oidn-final'` (requires `vitrum.ptWebgpu.oidnModelUrl`), `'svgf-real'` (full tier — Schied 2017 via `@vitrum/shared-denoisers`; optional `vitrum.ptWebgpu.svgfAtrousIterations` 1–5).
 
 Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/WG-signoff-2026-05-26.md`).
 
@@ -107,10 +109,12 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
 - **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
 - **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
 - Incremental `positions`/`normals` require unchanged vertex count; topology edits full-repack.
-- Only `denoiser: 'none' | 'oidn-final'` are wired.
+- `denoiser: 'svgf-real'` requires full tier (albedo + normal-depth aux).
 
-## Intended next steps
+## Polish commands
 
-- Hardware PASS for remaining gap-closure rows
-- Optional WG-9 `svgf-real` on aux buffers
-- Shared BSDF module dedup (W2-C6 style) across pt-webgpu / hybrid
+```bash
+npm run benchmark:gap-closure-mechanical
+npm run benchmark:gap-closure-gpu --workspace @vitrum/benchmark-runner   # refresh smoke baselines
+npm run benchmark:pr-hybrid-refs --workspace @vitrum/benchmark-runner    # PR-D6 PNG dirs (hybrid GPU)
+```

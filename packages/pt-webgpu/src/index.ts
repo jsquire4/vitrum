@@ -41,6 +41,7 @@ import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
 } from './denoise/oidnFinalDispatcher.js';
+import { SVGFRealDispatcher } from './denoise/svgfRealDispatcher.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
@@ -157,7 +158,7 @@ class PTEngineWebGPU implements Engine {
   #bindGroupLayout: GPUBindGroupLayout | null = null;
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
-  readonly #oidnDispatcher: OIDNFinalDispatcher | null;
+  readonly #postDenoiser: OIDNFinalDispatcher | SVGFRealDispatcher | null;
   readonly #extensions: EngineOptions['extensions'];
 
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
@@ -178,7 +179,19 @@ class PTEngineWebGPU implements Engine {
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
 
-    if (opts.denoiser === 'oidn-final') {
+    if (opts.denoiser === 'svgf-real') {
+      if (traceTier === 'lite') {
+        throw new Error(
+          "createPTEngine_WebGPU: denoiser: 'svgf-real' requires full trace tier (albedo + normal-depth aux).",
+        );
+      }
+      const atrousRaw = opts.extensions?.['vitrum.ptWebgpu.svgfAtrousIterations'];
+      const atrousIterations =
+        typeof atrousRaw === 'number' && Number.isFinite(atrousRaw)
+          ? Math.max(1, Math.min(5, Math.floor(atrousRaw)))
+          : 5;
+      this.#postDenoiser = new SVGFRealDispatcher({ atrousIterations });
+    } else if (opts.denoiser === 'oidn-final') {
       const modelUrl = opts.extensions?.['vitrum.ptWebgpu.oidnModelUrl'];
       const epsRaw = opts.extensions?.['vitrum.ptWebgpu.oidnExecutionProviders'];
       const eps = Array.isArray(epsRaw)
@@ -197,13 +210,13 @@ class PTEngineWebGPU implements Engine {
         eps !== undefined && eps.length > 0
           ? { modelUrl, executionProviders: eps }
           : { modelUrl };
-      this.#oidnDispatcher = new OIDNFinalDispatcher(
+      this.#postDenoiser = new OIDNFinalDispatcher(
         dispatcherOpts,
         opts.oidnBridgeLoader,
         opts.oidnReadbackFn,
       );
     } else {
-      this.#oidnDispatcher = null;
+      this.#postDenoiser = null;
     }
   }
 
@@ -248,7 +261,12 @@ class PTEngineWebGPU implements Engine {
       experimentalFeatures: new Set([
         'experimental-backend',
         ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
-        ...(this.#oidnDispatcher != null ? (['pt-webgpu-oidn-final'] as const) : []),
+        ...(this.#postDenoiser instanceof OIDNFinalDispatcher
+          ? (['pt-webgpu-oidn-final'] as const)
+          : []),
+        ...(this.#postDenoiser instanceof SVGFRealDispatcher
+          ? (['pt-webgpu-svgf-real'] as const)
+          : []),
       ]),
       causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
@@ -1199,14 +1217,14 @@ class PTEngineWebGPU implements Engine {
     }
     const isConverged = this.#samplesAccumulated >= targetSpp;
     if (
-      this.#oidnDispatcher != null &&
+      this.#postDenoiser != null &&
       isConverged &&
       this.#samplesAccumulated > 0 &&
       this.#accumTexture != null &&
       this.#albedoTexture != null &&
       this.#normalDepthTexture != null
     ) {
-      this.#oidnDispatcher.kickIfReady(
+      this.#postDenoiser.kickIfReady(
         this.#device,
         {
           color: this.#accumTexture,
@@ -1254,7 +1272,7 @@ class PTEngineWebGPU implements Engine {
 
   reset(): void {
     if (this.#slot.get() === 'disposed') return;
-    this.#oidnDispatcher?.invalidate();
+    this.#postDenoiser?.invalidate();
     this.#samplesAccumulated = 0;
     this.#clearAccumBuffer();
   }
@@ -1264,7 +1282,7 @@ class PTEngineWebGPU implements Engine {
    * inference is in flight / engine was not built with `denoiser: 'oidn-final'`.
    */
   getDenoisedFrame(): DenoisedFrame | null {
-    return this.#oidnDispatcher?.getLatestDenoised() ?? null;
+    return this.#postDenoiser?.getLatestDenoised() ?? null;
   }
 
   pause(): void {
@@ -1283,7 +1301,7 @@ class PTEngineWebGPU implements Engine {
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
-    this.#oidnDispatcher?.dispose();
+    this.#postDenoiser?.dispose();
     this.#destroyAccumTexture();
     this.#pathTraceBindGroup = null;
     this.#pathTraceBindGroup1 = null;
@@ -1344,10 +1362,11 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
   if (
     opts.denoiser != null &&
     opts.denoiser !== 'none' &&
-    opts.denoiser !== 'oidn-final'
+    opts.denoiser !== 'oidn-final' &&
+    opts.denoiser !== 'svgf-real'
   ) {
     console.warn(
-      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none' and 'oidn-final' are wired.`,
+      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none', 'oidn-final', and 'svgf-real' are wired.`,
     );
   }
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);

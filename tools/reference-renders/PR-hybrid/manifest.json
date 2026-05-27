@@ -1,0 +1,5 @@
+{
+  "generatedAt": "2026-05-26T00:00:00.000Z",
+  "note": "Run npm run benchmark:pr-hybrid-refs on a hybrid-capable GPU host (≥16 storage buffers/stage) to populate PNGs.",
+  "manifest": []
+}
