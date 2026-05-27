@@ -1,7 +1,6 @@
 /**
- * CPU fill of the BDPT light-path texture (bounce 0 from scene emitters).
- * Bounces 1..N-1 are left invalid until the GPU light-subpath pass lands;
- * the connection pass skips invalid vertices (kind = 3).
+ * CPU reference fill of the BDPT light-path texture (bounce 0 only).
+ * Production uses GPU `bdptExtendLightSubpath` (col 0 + extension); kept for tests/oracles.
  */
 
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';

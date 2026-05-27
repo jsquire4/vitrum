@@ -997,7 +997,7 @@ Wire `shared-denoisers` svgf-real using aux buffers — separate from pt-webgl p
 | R3 | Emitter list vs local BLAS mismatch | PR-2 keep world emitter build; PR-5 unify |
 | R4 | WalkaroundUBO size drift | Layout test pins offsets |
 | R5 | Spectral parity | CPU oracle before GPU baseline |
-| R6 | Scope creep BDPT | WG-7 explicit defer |
+| R6 | Scope creep BDPT | WG-7 shipped (GPU bounce-0 + extension); fork parity for random emitter CDF is follow-up |
 
 | Decision | Choice |
 |----------|--------|
@@ -1005,7 +1005,7 @@ Wire `shared-denoisers` svgf-real using aux buffers — separate from pt-webgl p
 | D2 | Dummy TLAS buffers in merged mode (one BGL) |
 | D3 | TLAS default multi-mesh |
 | D4 | OIDN before spectral in WG |
-| D5 | pt-webgpu not in auto |
+| D5 | auto picks pt-webgpu at ≥500k tris when WebGPU available |
 
 ---
 

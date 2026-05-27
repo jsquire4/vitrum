@@ -46,7 +46,6 @@ import {
   BdptLightPathBufferWebGPU,
   createBdptLightPathPlaceholder,
 } from './bdpt/bdptLightPathBufferWebGPU.js';
-import { fillBdptLightPathCpu } from './bdpt/fillBdptLightPathCpu.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
@@ -1237,21 +1236,6 @@ class PTEngineWebGPU implements Engine {
           entries: fullGroup2Entries,
         });
       }
-    }
-
-    if (
-      this.#bdpt &&
-      this.#bdptExternalView == null &&
-      this.#bdptLightPath != null &&
-      this.#sceneBuffers != null
-    ) {
-      fillBdptLightPathCpu(
-        this.#device,
-        this.#bdptLightPath.texture,
-        this.#bdptMaxLightBounces,
-        this.#sceneBuffers,
-        input.frameSeed >>> 0,
-      );
     }
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
