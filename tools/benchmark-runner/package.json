@@ -24,7 +24,9 @@
     "benchmark:seed-wg0-fullres": "VITRUM_CAPTURE_SMOKE=0 VITRUM_SEED_START_SERVER=1 node ./run-seed-wg0-baselines.mjs",
     "benchmark:pr-hybrid-refs": "node ./run-pr-hybrid-ref-capture.mjs",
     "benchmark:pr-hybrid-gpu": "node ./run-pr-hybrid-gpu-full.mjs",
-    "benchmark:gap-closure-gpu": "VITRUM_GPU_CAPTURE=1 VITRUM_CAPTURE_SMOKE=1 VITRUM_SEED_START_SERVER=1 node ./run-seed-wg0-baselines.mjs"
+    "benchmark:gap-closure-gpu": "VITRUM_GPU_CAPTURE=1 VITRUM_CAPTURE_SMOKE=1 VITRUM_SEED_START_SERVER=1 node ./run-seed-wg0-baselines.mjs",
+    "benchmark:rc-acceptance": "node ./run-rc-acceptance.mjs",
+    "benchmark:bdpt-layered-refs": "node ./run-bdpt-layered-refs.mjs"
   },
   "devDependencies": {
     "playwright": "^1.59.1"

@@ -46,6 +46,7 @@ import {
   type OIDNBridgeLoader,
 } from './oidnFinalDispatcher.js';
 import { IblBakerCache } from './iblBaker.js';
+import { auditPtWebglSceneForTlas, type PtWebglTlasAudit } from './sceneTlasAudit.js';
 import type { SkyParams } from '@vitrum/scene-lighting';
 import type { DataTexture, Texture } from 'three';
 
@@ -500,6 +501,7 @@ export class PTEngineWebGL2 implements Engine {
   readonly #schedulerOptions: SchedulerOptions;
 
   #vitrumScene: Scene | null = null;
+  #lastTlasAudit: PtWebglTlasAudit | null = null;
   #threeSceneRoot: ThreeScene | null = null;
   #cameraSignature = '';
   #samplesPerFrame: number;
@@ -707,6 +709,11 @@ export class PTEngineWebGL2 implements Engine {
     return this.#slot.get();
   }
 
+  /** C2 — whether the current scene structurally needs TLAS (pt-webgl still uses merged BVH). */
+  getSceneTlasAudit(): PtWebglTlasAudit | null {
+    return this.#lastTlasAudit;
+  }
+
   get capabilities(): EngineCapabilities {
     const experimental = new Set<string>();
     if (this.#bdpt) experimental.add('bdpt-approximate');
@@ -890,6 +897,10 @@ export class PTEngineWebGL2 implements Engine {
     // cached denoised image is also stale. Drop it.
     this.#oidnDispatcher?.invalidate();
     this.#vitrumScene = scene;
+    this.#lastTlasAudit = auditPtWebglSceneForTlas(scene);
+    if (this.#lastTlasAudit.needsTlas) {
+      console.warn(`[vitrum/pt-webgl] ${this.#lastTlasAudit.detail}`);
+    }
     this.#cameraSignature = '';
     const threeScene = vitrumSceneToThree(scene);
     this.#threeSceneRoot = threeScene;

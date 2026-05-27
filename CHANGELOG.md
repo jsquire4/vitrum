@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **W8 RC acceptance harness (2026-05-27):** `npm run benchmark:rc-acceptance` captures Cornell walkaround PNGs (`rcEnabled` off/on) and runs `benchmark:acceptance-metrics`; two-engines URL params `rcEnabled` / `rcWeight`; `npm run benchmark:bdpt-layered-refs` wraps layered + BDPT cornell captures.
+- **pt-webgl TLAS audit (2026-05-27):** `auditPtWebglSceneForTlas` + `PTEngineWebGL2.getSceneTlasAudit()` warn on multi-mesh / instanced scenes (merged BVH limitation).
 - **C2 TLAS deepening (2026-05-27):** `fingerprintBuffers` + split `blasContentVersion`/`tlasContentVersion`; DDGI/RC TLAS-only `writeBuffer` refit on transform; `isTlasOnlyVersionBump` / `fingerprintTlasBuffers` in `@vitrum/shared-bvh`; `isRestirTlasOnlyRefit` shared by DDGI + RC; `makeRestirBvhSnapshot`; RC `rcTraceFirstHit`; topology rebuild RC bounds on TLAS; `updatePrimitive` + `publishBvh` sync DDGI ReSTIR BVH immediately (not only on `renderFrame`); unit pins for TLAS `transformRefit` / `positionsRefit` / eager DDGI sync; pt-webgpu `uploadScenePackTlasOnly` (transform) + `uploadScenePackBlasOnly` (BLAS splice when TLAS fingerprint unchanged).
 - **PR-7 GPU skin refit (2026-05-27):** `applyGpuSkinnedRefit` runs one CPU `solveSkin` after GPU LBS (no duplicate LBS in `GpuSkinningSubsystem`).
 - **PR-8 pt-webgl incremental patches (2026-05-27):** `updatePrimitive({ material })` → `updateMaterials()`; `{ transform }` → fork BVH refit (PR-8b); `{ positions }` same topology → geometry regen (PR-8c); `updateEmitter` → `updateLights()`; ledger `transform` + `positions` + `material` + `emitter: true`.

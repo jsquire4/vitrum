@@ -60,3 +60,6 @@ export { driveForkMaterialUniforms } from './forkUniformBridge.js';
 // helper's texture and forwards it to the fork's uniforms per frame.
 export { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
 export type { BdptLightPathBufferOptions } from './bdptLightPathBuffer.js';
+
+export { auditPtWebglSceneForTlas } from './sceneTlasAudit.js';
+export type { PtWebglTlasAudit } from './sceneTlasAudit.js';

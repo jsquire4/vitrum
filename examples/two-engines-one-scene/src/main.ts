@@ -126,6 +126,8 @@ async function main(): Promise<void> {
       | 'photon-map',
     vitrumPtWebgpuSpectral: params.get('vitrumPtWebgpuSpectral') === '1',
     bvhMode: (params.get('bvhMode') ?? '') as '' | 'merged' | 'tlas',
+    rcEnabled: params.get('rcEnabled') === '1',
+    rcWeight: Math.max(0, Math.min(1, parseFloat(params.get('rcWeight') ?? '1') || 1)),
     prBench: (params.get('prBench') ?? null) as PrBenchMode | null,
     prBenchIters: parseInt(params.get('prBenchIters') ?? '100', 10) || 100,
     prBenchFrames: parseInt(params.get('prBenchFrames') ?? '120', 10) || 120,
@@ -395,6 +397,9 @@ async function main(): Promise<void> {
           ppgEnabled: FLAGS.ppgEnabled,
           ...(FLAGS.bvhMode !== ''
             ? { extensions: { 'walkaround-hybrid': { bvhMode: FLAGS.bvhMode } } }
+            : {}),
+          ...(FLAGS.rcEnabled
+            ? { rcEnabled: true, rcWeight: FLAGS.rcWeight }
             : {}),
         })
       : null;
