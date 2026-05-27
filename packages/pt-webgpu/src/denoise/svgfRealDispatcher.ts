@@ -5,7 +5,7 @@
  * `runSVGFRealWebGPU` from `@vitrum/shared-denoisers` on the host-owned device.
  */
 
-import { runSVGFRealWebGPU } from '@vitrum/shared-denoisers';
+import { runSVGFRealWebGPU, type SVGFRealWebGPUOptions } from '@vitrum/shared-denoisers';
 import {
   readOidnInputsFromTextures,
   type OidnReadbackFn,
@@ -97,24 +97,25 @@ export class SVGFRealDispatcher {
       const gbufferNormalsRgb = new Float32Array(pixelCount * 3);
       for (let i = 0; i < pixelCount; i += 1) {
         const si = i * 3;
-        gbufferNormalsRgb[si] = (normals[si] + 1) * 0.5;
-        gbufferNormalsRgb[si + 1] = (normals[si + 1]! + 1) * 0.5;
-        gbufferNormalsRgb[si + 2] = (normals[si + 2]! + 1) * 0.5;
+        gbufferNormalsRgb[si] = ((normals[si] ?? 0) + 1) * 0.5;
+        gbufferNormalsRgb[si + 1] = ((normals[si + 1] ?? 0) + 1) * 0.5;
+        gbufferNormalsRgb[si + 2] = ((normals[si + 2] ?? 0) + 1) * 0.5;
       }
 
-      const filtered = await this.#runSvgf({
+      const svgfOpts: SVGFRealWebGPUOptions = {
         device,
         reuseSharedWebGpuDevice: false,
         rgb: readback.color,
         width,
         height,
-        albedoRgb: readback.albedo,
         gbufferNormalsRgb,
-        prevRadianceRgb: this.#prevRadiance ?? undefined,
-        historyLengthIn: this.#historyLength ?? undefined,
-        momentsIn: this.#moments ?? undefined,
         atrousIterations: this.#atrousIterations,
-      });
+        ...(readback.albedo != null ? { albedoRgb: readback.albedo } : {}),
+        ...(this.#prevRadiance != null ? { prevRadianceRgb: this.#prevRadiance } : {}),
+        ...(this.#historyLength != null ? { historyLengthIn: this.#historyLength } : {}),
+        ...(this.#moments != null ? { momentsIn: this.#moments } : {}),
+      };
+      const filtered = await this.#runSvgf(svgfOpts);
 
       if (this.#disposed || this.#cohortId !== cohortAtKick) return;
       this.#prevRadiance = filtered.slice();

@@ -888,7 +888,7 @@ export class PTEngineWebGL2 implements Engine {
       if (mesh == null) {
         throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
       }
-      applyVitrumMaterialToMesh(mesh, _patch.material);
+      applyVitrumMaterialToMesh(mesh, _patch.material!);
       const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
       if (typeof tracerCompat.updateMaterials === 'function') {
         tracerCompat.updateMaterials();

@@ -44,6 +44,13 @@ export interface OidnReadbackResult {
   readonly height: number;
 }
 
+export type OidnReadbackFn = (
+  device: GPUDevice,
+  sources: OidnTextureSources,
+  width: number,
+  height: number,
+) => Promise<OidnReadbackResult>;
+
 /**
  * GPU → CPU readback of HDR color and optional G-buffer aux for OIDN.
  * Submits its own command buffer (call after the path-trace pass has landed).

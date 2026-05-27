@@ -56,13 +56,16 @@ export function fillBdptLightPathCpu(
       e1[0]! * e2[1]! - e1[1]! * e2[0]!,
     ];
     const rad = [m[12]!, m[13]!, m[14]!];
-    const len = Math.hypot(n[0], n[1], n[2]) || 1;
-    const normal = [n[0] / len, n[1] / len, n[2] / len];
+    const nx = n[0] ?? 0;
+    const ny = n[1] ?? 0;
+    const nz = n[2] ?? 0;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    const normal = [nx / len, ny / len, nz / len];
     const pdfFwd = 1.0;
-    const throughput = [rad[0] / pdfFwd, rad[1] / pdfFwd, rad[2] / pdfFwd];
-    data[o0 + 0] = pos[0]!;
-    data[o0 + 1] = pos[1]!;
-    data[o0 + 2] = pos[2]!;
+    const throughput = [(rad[0] ?? 0) / pdfFwd, (rad[1] ?? 0) / pdfFwd, (rad[2] ?? 0) / pdfFwd];
+    data[o0 + 0] = pos[0] ?? 0;
+    data[o0 + 1] = pos[1] ?? 0;
+    data[o0 + 2] = pos[2] ?? 0;
     data[o0 + 3] = KIND_LIGHT;
     data[o1 + 0] = normal[0]!;
     data[o1 + 1] = normal[1]!;
