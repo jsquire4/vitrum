@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
+
+installWebGPUPolyfills();
 import { makeRestirBvhSnapshot } from '../src/restir/restirBvhSnapshot.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhCompute.js';
 import * as THREE from 'three';
@@ -55,5 +58,44 @@ describe('RCSubsystem TLAS sync (C2)', () => {
     const rc = new RCSubsystem(device);
     rc.syncRestirBvhBuffers(null);
     expect(device.createBuffer).not.toHaveBeenCalled();
+  });
+
+  it('TLAS-only version bump refits GPU buffers without recreating dispatcher', async () => {
+    const { RCSubsystem } = await import('../src/HybridEngineRC.js');
+    const writeBuffer = vi.fn();
+    const createBuffer = vi.fn(() => ({
+      getMappedRange: () => new ArrayBuffer(256),
+      unmap: vi.fn(),
+      destroy: vi.fn(),
+    }));
+    const device = {
+      createBuffer,
+      queue: { writeBuffer },
+    } as unknown as GPUDevice;
+
+    const base = tlasBuffers();
+    const rc = new RCSubsystem(device);
+    rc.syncRestirBvhBuffers(base as SceneBVHBuffers);
+    const createCallsAfterFirst = createBuffer.mock.calls.length;
+    expect(createCallsAfterFirst).toBeGreaterThan(0);
+
+    const snap = makeRestirBvhSnapshot(base as SceneBVHBuffers);
+    const tlasNodes = new Uint32Array(snap.tlas!.nodes);
+    if (tlasNodes.length > 0) tlasNodes[0]! ^= 0x1;
+    const bumped: SceneBVHBuffers = {
+      ...base,
+      tlas: {
+        ...base.tlas!,
+        nodes: {
+          cpuData: tlasNodes.buffer,
+          byteLength: tlasNodes.byteLength,
+          count: base.tlas!.nodeCount,
+        },
+      },
+    };
+
+    rc.syncRestirBvhBuffers(bumped);
+    expect(createBuffer.mock.calls.length).toBe(createCallsAfterFirst);
+    expect(writeBuffer).toHaveBeenCalled();
   });
 });

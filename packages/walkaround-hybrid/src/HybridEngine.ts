@@ -604,7 +604,7 @@ export class HybridEngine implements Engine {
       const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
       this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateRc(result);
+      this._applyPrimitiveUpdateSubsystems(result);
       return;
     }
     if (hasPositionsChange) {
@@ -612,14 +612,14 @@ export class HybridEngine implements Engine {
       const result = positionsRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
       this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateRc(result);
+      this._applyPrimitiveUpdateSubsystems(result);
       return;
     }
     if (hasTransformChange) {
       const result = transformRefit(id, patch, this._buildPrimitiveUpdateContext());
       this._bvhBuffers = result.bvhBuffers;
       this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateRc(result);
+      this._applyPrimitiveUpdateSubsystems(result);
       return;
     }
     if (hasMaterialChange) {
@@ -664,7 +664,7 @@ export class HybridEngine implements Engine {
     );
     this._bvhBuffers = result.bvhBuffers;
     this._lastScene = result.updatedScene;
-    this._applyPrimitiveUpdateRc(result);
+    this._applyPrimitiveUpdateSubsystems(result);
   }
 
   /** Merged BVH position SSBO for GPU skinning (null before pipeline init). */
@@ -686,8 +686,17 @@ export class HybridEngine implements Engine {
     return this._bvhBuffers?.primitiveTlasBindings ?? null;
   }
 
-  /** PR-5.5 — TLAS refit updates RC bounds without rebuilding cascade BVH. */
-  private _applyPrimitiveUpdateRc(result: PrimitiveUpdateResult): void {
+  /**
+   * After geometry BVH updates: sync DDGI probe rays + RC cascades to the live
+   * ReSTIR buffers without waiting for the next `renderFrame` tick.
+   */
+  private _applyPrimitiveUpdateSubsystems(result: PrimitiveUpdateResult): void {
+    if (this._bvhBuffers != null) {
+      this._ddgi.syncRestirBvhBuffers(
+        this._bvhBuffers,
+        this._lastScene ?? undefined,
+      );
+    }
     if (!this._rc) return;
     if (result.rcRefitBounds != null) {
       this._rc.refitCascadeBounds(result.rcRefitBounds.min, result.rcRefitBounds.max);

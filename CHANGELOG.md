@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **C2 TLAS deepening (2026-05-27):** `fingerprintBuffers` + split `blasContentVersion`/`tlasContentVersion`; DDGI/RC TLAS-only `writeBuffer` refit on transform; `makeRestirBvhSnapshot`; RC `rcTraceFirstHit`; topology rebuild RC bounds on TLAS.
+- **C2 TLAS deepening (2026-05-27):** `fingerprintBuffers` + split `blasContentVersion`/`tlasContentVersion`; DDGI/RC TLAS-only `writeBuffer` refit on transform; `makeRestirBvhSnapshot`; RC `rcTraceFirstHit`; topology rebuild RC bounds on TLAS; `updatePrimitive` syncs DDGI ReSTIR BVH immediately (not only on `renderFrame`).
 - **PR-7 GPU skin refit (2026-05-27):** `applyGpuSkinnedRefit` runs one CPU `solveSkin` after GPU LBS (no duplicate LBS in `GpuSkinningSubsystem`).
 - **PR-8 pt-webgl incremental patches (2026-05-27):** `updatePrimitive({ material })` → `updateMaterials()`; `{ transform }` → fork BVH refit (PR-8b); `{ positions }` same topology → geometry regen (PR-8c); `updateEmitter` → `updateLights()`; ledger `transform` + `positions` + `material` + `emitter: true`.
 - **PR-5.5 hybrid RC on transform (2026-05-27):** merged-mode `transformRefit` returns `rcRefitBounds` from live `bvhPositions` so `RCSubsystem.refitCascadeBounds` runs without full `setScene`.
