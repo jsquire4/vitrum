@@ -39,6 +39,7 @@ export const WEBGPU_HARDWARE_CHROMIUM_LAUNCH = {
   args: [
     ...commonArgs,
     '--disable-software-rasterizer',
+    '--ignore-gpu-blocklist',
     ...(process.env.VITRUM_BENCH_HEADLESS === '0' ? [] : ['--headless=new']),
   ],
 };
@@ -81,3 +82,19 @@ export const WEBGPU_CHROMIUM_LAUNCH_CANDIDATES = (
       ? [WEBGPU_HARDWARE_CHROMIUM_LAUNCH]
       : [WEBGPU_SWIFTSHADER_CHROMIUM_LAUNCH]
 ).map((opts) => withWindowsChromeIfRequested(opts));
+
+/**
+ * Launch Chromium for cornell / WebGL capture scripts. Tries hardware first when
+ * `VITRUM_WEBGPU_ADAPTER=auto` so RGBA32F BDPT uploads are not stuck on SwiftShader.
+ */
+export async function launchChromiumForCapture(chromium) {
+  let lastError;
+  for (const opts of WEBGPU_CHROMIUM_LAUNCH_CANDIDATES) {
+    try {
+      return await chromium.launch(opts);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError ?? new Error('launchChromiumForCapture: no launch candidates');
+}

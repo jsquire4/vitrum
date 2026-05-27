@@ -131,9 +131,8 @@ export class BdptLightPathBuffer {
     if (this._disposed) {
       throw new Error('[BdptLightPathBuffer] fillFromScene after dispose');
     }
-    renderer.setRenderTarget(this.renderTarget);
-    renderer.clear();
-    renderer.setRenderTarget(null);
+    // Upload only — do not bind/clear this.renderTarget on the shared renderer; that
+    // leaked GL state and blacked the path-tracer canvas on some drivers.
     fillBdptLightPathWebGL(renderer, this.texture, this.maxLightBounces, scene, frameSeed);
   }
 }

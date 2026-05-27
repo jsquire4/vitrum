@@ -688,6 +688,8 @@ export class PTEngineWebGL2 implements Engine {
    */
   bdptAdvanceFrame(lightPathTex: Texture | null): void {
     if (!this.#bdpt) return;
+    // RGBA32F light-path uploads break unidirectional PT on SwiftShader; skip binding.
+    const softwareGl = /swiftshader/i.test(this.#limits.renderer);
     driveForkMaterialUniforms(
       this.#pathTracer,
       {
@@ -698,9 +700,9 @@ export class PTEngineWebGL2 implements Engine {
         radianceClamp: this.#radianceClamp,
       },
       {
-        enabled: this.#bdpt,
+        enabled: this.#bdpt && !softwareGl,
         maxLightBounces: this.#bdptMaxLightBounces,
-        lightPathTex,
+        lightPathTex: softwareGl ? null : lightPathTex,
       },
     );
   }

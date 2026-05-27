@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { launchChromiumForCapture } from './playwrightWebGpu.mjs';
 
 const outputPng = process.env.VITRUM_OUTPUT_PNG;
 if (!outputPng) {
@@ -83,16 +84,7 @@ try {
   process.exit(3);
 }
 
-const jsHeapMb = Number(process.env.VITRUM_JS_HEAP_MB ?? '4096');
-const browser = await chromium.launch({
-  headless: true,
-  args: [
-    '--disable-dev-shm-usage',
-    // 1 GiB default is too small for the OIDN model + large viewport reads;
-    // raise to 4 GiB by default and let the env override either direction.
-    `--js-flags=--max-old-space-size=${jsHeapMb}`,
-  ],
-});
+const browser = await launchChromiumForCapture(chromium);
 try {
   const page = await browser.newPage({
     viewport: {

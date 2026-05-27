@@ -40,10 +40,8 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 		this.setDefine( 'FEATURE_BACKGROUND_MAP', this.backgroundMap ? 1 : 0 );
 		this.setDefine( 'FEATURE_FOG', this.materials.features.isUsed( 'FOG' ) ? 1 : 0 );
 
-		// Sprint 10c: sync uBdptEnabled → FEATURE_BDPT define.
-		// FEATURE_BDPT == 1 compiles in the BDPT connection GLSL blocks.
-		// Off by default — only activate for PT_FINAL caustic renders.
-		this.setDefine( 'FEATURE_BDPT', this.uniforms.uBdptEnabled.value === true ? 1 : 0 );
+		// FEATURE_BDPT is toggled from @vitrum/pt-webgl forkUniformBridge (not here) so
+		// setDefine does not run every onBeforeRender and reset the path-tracer accumulator.
 
 	}
 

@@ -40,8 +40,14 @@
         "src/index.{ts,mjs,js}",
         "src/main.{ts,mjs,js}",
         "bin/*.{ts,mjs,js}",
-        "*.{ts,mjs,js}"
+        "*.{ts,mjs,js}",
+        "generate-wgsl-layouts.mjs"
       ]
+    },
+    "packages/three-gpu-pathtracer": {
+      "entry": ["src/index.js"],
+      "project": ["src/**/*.js"],
+      "ignore": ["example/**"]
     }
   }
 }

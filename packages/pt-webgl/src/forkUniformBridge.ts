@@ -154,7 +154,9 @@ export function driveForkMaterialUniforms(
     const lightPathTex = bdptOptions.lightPathTex ?? null;
     const effectivelyEnabled = bdptOptions.enabled && lightPathTex != null;
     setUniform(material, 'uBdptEnabled', effectivelyEnabled);
-    setUniform(material, 'uBdptLightPathTex', lightPathTex);
+    // Only bind when active — leaving a float RGBA32F on the slot breaks SwiftShader PT.
+    setUniform(material, 'uBdptLightPathTex', effectivelyEnabled ? lightPathTex : null);
+    material?.setDefine?.('FEATURE_BDPT', effectivelyEnabled ? 1 : 0);
     const maxBounces = bdptOptions.maxLightBounces != null
       ? sanitizePositiveFinite(bdptOptions.maxLightBounces, 3, 3)
       : 3;
@@ -162,6 +164,8 @@ export function driveForkMaterialUniforms(
   } else {
     // BDPT not requested — ensure it's off (idempotent; safe to call every frame).
     setUniform(material, 'uBdptEnabled', false);
+    setUniform(material, 'uBdptLightPathTex', null);
+    material?.setDefine?.('FEATURE_BDPT', 0);
   }
 
   // RFE-09 stabilization: per-material scalar drives now come from the fork

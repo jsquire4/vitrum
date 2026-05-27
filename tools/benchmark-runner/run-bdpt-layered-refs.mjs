@@ -48,23 +48,36 @@ async function main() {
   if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
     console.log('[bdpt-layered-refs] capturing cornell-layered with vitrumBdpt=1…');
     const bdpt = await runCapture(['--only', 'layered', '--bdpt']);
-    const bdptSrc = resolve(outDir, 'cornell-layered-bdpt.png');
-    const bdptDst = resolve(outDir, 'cornell-layered-bdpt.png');
     steps.push({
       scenario: 'cornell-layered-bdpt',
       ok: bdpt.code === 0,
       stdout: bdpt.stdout.slice(-500),
       png: `tools/reference-renders/${label}/cornell-layered-bdpt.png`,
     });
+
+    if (process.env.VITRUM_BDPT_SKIP_PARITY !== '1') {
+      console.log('[bdpt-layered-refs] capturing cornell-parity with vitrumBdpt=1…');
+      const parityBdpt = await runCapture(['--only', 'parity', '--bdpt']);
+      steps.push({
+        scenario: 'cornell-parity-bdpt',
+        ok: parityBdpt.code === 0,
+        stdout: parityBdpt.stdout.slice(-500),
+        png: `tools/reference-renders/${label}/cornell-parity-bdpt.png`,
+      });
+    }
   }
 
   const layeredGpu = resolve(outDir, 'cornell-layered.png');
   const bdptGpu = resolve(outDir, 'cornell-layered-bdpt.png');
+  const parityBdptGpu = resolve(outDir, 'cornell-parity-bdpt.png');
   const mechDir = resolve(repoRoot, 'tools/reference-renders/bdpt-layered-mechanical');
   try {
     await copyFile(layeredGpu, resolve(mechDir, 'cornell-layered.png'));
     if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
       await copyFile(bdptGpu, resolve(mechDir, 'cornell-layered-bdpt.png'));
+      if (process.env.VITRUM_BDPT_SKIP_PARITY !== '1') {
+        await copyFile(parityBdptGpu, resolve(mechDir, 'cornell-parity-bdpt.png'));
+      }
     }
     console.log(`[bdpt-layered-refs] promoted GPU PNGs → ${mechDir}`);
   } catch (e) {

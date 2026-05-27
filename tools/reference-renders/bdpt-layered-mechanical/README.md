@@ -3,7 +3,8 @@
 Acceptance PNGs for Sprint 10c / 14 (`bdptLayeredAcceptance.gpu.test.ts`).
 
 - `cornell-layered.png` — GPU capture (512×512 quick suite) when promoted from `benchmark:bdpt-layered-refs`.
-- `cornell-layered-bdpt.png` — `?vitrumBdpt=1` uses CPU bounce-0 `fillFromScene` (visible BDPT vs layered). Re-capture via `npm run benchmark:bdpt-layered-refs` on a GPU host.
+- `cornell-layered-bdpt.png` — `?vitrumBdpt=1` on layered (on hardware GL, explicit connections run; SwiftShader captures skip the float light-path bind and match unidirectional brightness).
+- `cornell-parity-bdpt.png` — `?vitrumBdpt=1` on parity (diffuse reference). Re-capture via `npm run benchmark:bdpt-layered-refs` (uses hardware Chromium when available).
 
 ## Regenerate + gate
 
