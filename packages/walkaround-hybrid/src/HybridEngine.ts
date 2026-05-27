@@ -1505,6 +1505,7 @@ export class HybridEngine implements Engine {
 
       publishBvh:             (bvh) => {
         self._bvhBuffers = bvh;
+        self._ddgi.syncRestirBvhBuffers(bvh, self._lastScene ?? undefined);
         if (self._rc == null) return;
         if (bvh.bvhMode === 'tlas') {
           self._rc.syncRestirBvhBuffers(bvh);
