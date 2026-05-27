@@ -49,5 +49,6 @@ Commit `*.png` and optional `*.png.json` sidecars when visuals are approved.
 | `rfe08-13-spectral-payload.png` | WG-2 spectral hero-λ (smoke capture) |
 | `rfe14-thinfilm-angle-shift.png` | WG-2 thin-film stack (smoke capture) |
 | `rfe09-bridge-global-cmf.png` | WG-2 CMF / spectral bridge (smoke capture) |
+| `rfe05-caustic-strategy.png` | Caustic strategy variants (smoke capture; full tier) |
 
 Other gap-closure scenarios still use `VITRUM_CAPTURE_CMD` pointed at the cornell-box host capture page.
