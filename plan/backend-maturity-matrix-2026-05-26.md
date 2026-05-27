@@ -33,12 +33,12 @@ It intentionally excludes release governance and distribution posture.
 
 ## `@vitrum/pt-webgpu`
 
-- Contract conformance: **medium-strong** (capability and telemetry parity substantially improved)
-- Incremental updates: **medium-strong** (transform/material/emitter fast paths with TLAS-aware updates)
-- Deep pipeline integration: **medium-strong** (3-bind-group full tier on 16-buffer Chrome GPUs; TLAS + aux G-buffers; WG-1 `oidn-final` with albedo/normal readback)
-- Lifecycle reliability: **medium-strong** (Wave 4 strict soak harness; host cadence still owns pause/resize policy)
-- Regression harness coverage: **strong** (WG-0 committed baseline + strict gap-closure on hardware; 115+ package tests)
-- Current focus: WG-2 spectral hero-λ / CMF MIS parity vs pt-webgl fork; remaining gap-closure RFE scenarios.
+- Contract conformance: **strong** (ledger-aligned capabilities; `quality-webgpu` engine path; discriminated telemetry)
+- Incremental updates: **strong** (transform/material/emitter + same-topology positions BLAS splice)
+- Deep pipeline integration: **strong** (full/lite tiers; TLAS; spectral hero-λ; layered MIS; OIDN-final; aux G-buffers)
+- Lifecycle reliability: **medium-strong** (Wave 4 soak; host owns pause/resize; not in `auto`)
+- Regression harness coverage: **strong** (WG-0 baseline; gap-closure harness; 120+ package tests)
+- Current focus: hardware gap-closure PASS for RFE scenarios; optional WG-9 `svgf-real`; BDPT deferred (WG-7).
 
 ## Shared Layers (`core`, `engine`, `shared-*`)
 

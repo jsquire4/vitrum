@@ -17,6 +17,7 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1280x720',
     bounces: 8,
     spp: 512,
+    backend: 'pt-webgpu',
   },
   {
     scenarioId: 'rfe08-13-spectral-payload',

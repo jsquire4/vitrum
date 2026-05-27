@@ -84,21 +84,33 @@ adapters. WG-0 baseline capture (`npm run benchmark:seed-wg0`) runs on lite tier
 
 Shader entry points: `PT_WEBGPU_TRACE_WGSL` (full), `PT_WEBGPU_TRACE_LITE_WGSL` (lite).
 
+## Parity with `@vitrum/pt-webgl` (contract surface)
+
+Mechanical parity for the fork-backed WebGL2 path tracer is **implemented** for:
+
+- Progressive path tracing, BVH (+ TLAS on full tier), multi-bounce clamp
+- Packed materials (layers, thin-film stack, spectral grid, dispersion Abbe)
+- Bounded multi-emitter direct lighting (full tier)
+- Analytic shapes, procedural sky + HDRI (full tier)
+- `updatePrimitive` / `updateEmitter` incremental APIs (see ledger)
+- Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS, translucent SSS gate
+- `denoiser: 'oidn-final'` with aux readback
+
+**Not in parity / explicit deferrals:** BDPT (pt-webgl only), walkaround denoisers (`atrous-variance`, `svgf-real`, neural), and `createEngine({ prefer: 'auto' })` selection (use `quality-webgpu` or `extensions.backend: 'pt-webgpu'`).
+
+Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/WG-signoff-2026-05-26.md`).
+
 ## Known limitations
 
 - **Lite tier** disables TLAS, analytic shapes, HDRI texel buffers, point/spot/area lights,
   motion vectors, and caustic strategies regardless of scene content.
-- **Hero-wavelength spectral** (WG-2): opt-in via `extensions['vitrum.ptWebgpu.spectralHeroWavelength']` — CMF MIS sampling, single-λ thin-film TMM, and `heroWavelengthToRgb` accumulation (experimental; not yet gap-closure signed off vs pt-webgl).
-- **Cauchy dispersion** (WG-3): `Material.dispersionAbbeNumber` packed into the material tail; when spectral mode is on, dielectric IOR follows a two-term Cauchy model at the hero λ.
-- Layered front/back absorption uses `activeLayerWeightRgb` at hero λ when spectral mode is on (WG-4); transmission MIS uses η²-scaled refraction PDF in `brdfDirectionalPdf`.
-- Incremental patch support: `transform`, `material`, `emitter`, and **same-topology** `positions`/`normals` (BLAS splice via `rebuildPrimitiveBlas`); topology changes still full-repack
-- **`denoiser: 'oidn-final'`** (WG-1): reads HDR + albedo + normal-depth on convergence via `getDenoisedFrame()`; requires `extensions['vitrum.ptWebgpu.oidnModelUrl']` (use `oidn_rt_hdr_alb_nrm.onnx` for aux). Other denoiser modes are not wired.
-- `causticStrategy` requests map to mode-distinct shader paths; runtime image/perf artifact capture remains blocked in this environment
+- **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
+- **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
+- Incremental `positions`/`normals` require unchanged vertex count; topology edits full-repack.
+- Only `denoiser: 'none' | 'oidn-final'` are wired.
 
 ## Intended next steps
 
-- Replace experimental BRDF path with shared sampler/BSDF contracts
-- Add richer emitter coverage and MIS
-- WG-2 / WG-4 / WG-5 gap-closure GPU captures (`rfe08`, `rfe03`, `rfe07-11`)
-- WG-9 optional `svgf-real` denoiser on aux buffers
-- Add visual regression scenes for GPU-verified parity checks
+- Hardware PASS for remaining gap-closure rows
+- Optional WG-9 `svgf-real` on aux buffers
+- Shared BSDF module dedup (W2-C6 style) across pt-webgpu / hybrid

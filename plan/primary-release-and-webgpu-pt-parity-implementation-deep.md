@@ -1,7 +1,7 @@
 # Deep Implementation Specification — Primary Release + WebGPU PT Parity
 
 **Date:** 2026-05-26  
-**Status:** Implementation-ready specification (replaces the summary plan; this document is the source of truth for execution).  
+**Status:** Implementation complete on `main` (2026-05-26). Signoff: `plan/PR-signoff-2026-05-26.md`, `plan/WG-signoff-2026-05-26.md`. GPU gap-closure PASS and PR reference PNG dirs remain host workflows.  
 **Out of scope:** npm publish, release governance, cross-host verification policy.
 
 ---

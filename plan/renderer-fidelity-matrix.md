@@ -1,6 +1,6 @@
 # Renderer fidelity matrix (living document)
 
-Date: 2026-05-10
+Date: 2026-05-26 (WG program signoff — see `plan/WG-signoff-2026-05-26.md`)
 
 This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl`
 (WebGL2 / fork-backed) vs `@vitrum/pt-webgpu` (WGSL prototype advancing toward parity).
@@ -18,13 +18,15 @@ This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl
 
 | Feature | pt-webgl | pt-webgpu | Mechanical evidence | Runtime evidence | Notes |
 |---------|----------|-----------|---------------------|------------------|-------|
-| Hero-wavelength + CMF accumulation | experimental | approximate | `npm run fork-shader-smoke`; `packages/pt-webgl/src/__tests__/forkUniformBridge.test.ts` | `plan/gap-closure-artifacts-2026-05-10.json` currently `BLOCKED` | WebGPU uses RGB probes for thin-film / spectral visualization |
-| Spectral Beer–Lambert (packed μ) | experimental | experimental | `npm run fork-shader-smoke`; `packages/pt-webgpu/src/__tests__/scenePack.test.ts` | `plan/gap-closure-artifacts-2026-05-10.json` currently `BLOCKED` | WebGL: fork `transmissionAttenuationHero`; WebGPU: grid + `sampleMaterialSpectralMu` |
-| Multi-layer thin film TMM | experimental | approximate | `npm run fork-shader-smoke`; `packages/pt-webgpu/src/__tests__/wgslContract.test.ts` | `plan/gap-closure-artifacts-2026-05-10.json` currently `BLOCKED` | WebGPU: incident IOR, extinction k absorption factor, angle-dependent phase scale |
-| Cauchy dispersion | experimental | unsupported | `npm run fork-shader-smoke` | `plan/gap-closure-artifacts-2026-05-10.json` currently `BLOCKED` | WebGPU lacks full Cauchy bridge in WGSL |
-| Multi emitter direct lighting | experimental | experimental | `packages/pt-webgpu/src/__tests__/scenePack.test.ts`; `packages/pt-webgpu/src/__tests__/wgslContract.test.ts` | `plan/gap-closure-artifacts-2026-05-10.json` currently `BLOCKED` | WebGPU: bounded arrays + uniform counts |
-| Material fields parity (cornell) | supported | approximate | `packages/pt-webgpu/src/__tests__/scenePack.test.ts`; `tools/benchmark-runner/capturePtWebgpu.mjs` | `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png` via `npm run benchmark:seed-wg0` | WG-0.2 harness; promote row after baseline PNG committed |
-| Caustic strategies | experimental | experimental | `packages/pt-webgl/src/__tests__/capabilities.test.ts`; `packages/pt-webgpu/src/__tests__/factoryCapabilities.test.ts` | `plan/gap-closure-artifacts-2026-05-10.json` currently `BLOCKED` | API + uniforms; quality varies by scene |
+| Hero-wavelength + CMF accumulation | experimental | experimental | `heroWavelengthPlumbing.test.ts`; `shared-samplers/wgsl/heroWavelength*.ts`; opt-in extension | `rfe08-13-spectral-payload` preset → hardware capture | WebGPU: hero-λ MIS + `heroWavelengthToRgb`; opt-in `vitrum.ptWebgpu.spectralHeroWavelength` |
+| Spectral Beer–Lambert (packed μ) | experimental | experimental | `scenePack.test.ts`; `scenePack.materials.test.ts` | `rfe08` hardware capture pending | WebGPU: 32-bin grid + hero-λ `sampleMaterialSpectralMu` |
+| Multi-layer thin film TMM | experimental | experimental | `wgslContract.test.ts`; per-λ TMM in kernel when spectral on | `rfe14-thinfilm-angle-shift` hardware capture pending | 8-layer stack + incident IOR; single-λ evaluation at hero |
+| Cauchy dispersion | experimental | experimental | `materialPacking` Abbe + `cauchyIorAtLambda` in WGSL | hardware capture pending | Requires spectral extension + `dispersionAbbeNumber` |
+| Layered front/back + transmission MIS | experimental | experimental | `wgslContract.test.ts` (`activeLayerWeightRgb`, η² PDF) | `rfe03-layered-front-back` preset (`backend: pt-webgpu`) | WG-4 landed 2026-05-26 |
+| SSS / translucent panels | experimental | experimental | `wgslContract.test.ts` (`isTranslucent` gate) | `rfe07-11-sss-mixed-panels` preset | Derived translucent flag (transmission + scatteringCoeff) |
+| Multi emitter direct lighting | experimental | experimental | `scenePack.test.ts`; `wgslContract.test.ts` | hardware capture pending | Full tier: bounded emitter arrays |
+| Material fields parity (cornell) | supported | experimental | `scenePack.test.ts`; `capturePtWebgpu.mjs` | `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png` | WG-0 baseline committed; strict hash on GPU host |
+| Caustic strategies | experimental | experimental | `factoryCapabilities.test.ts` | hardware capture pending | Full tier only; lite tier disables |
 
 ## Evidence gates
 

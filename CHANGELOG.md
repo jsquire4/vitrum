@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **pt-webgpu WG-4/5/6 parity (2026-05-26):** layered front/back `activeLayerWeightRgb` at hero λ, η² transmission MIS in `brdfDirectionalPdf`, translucent SSS gate (`isTranslucent`), same-topology `positions` BLAS splice via `rebuildPrimitiveBlas`; core promise ledger `positions: true` for pt-webgpu.
+- **Program signoff docs (2026-05-26):** `plan/WG-signoff-2026-05-26.md`, `plan/PR-signoff-2026-05-26.md`; fidelity + maturity matrices updated.
 - **pt-webgpu lite + full trace tiers (2026-05-26):** lite layout for SwiftShader-class adapters (≤10 buffers / ≤4 textures); full layout splits path-trace bindings across three groups (≤10 buffers each) so Chrome-class GPUs (16/8) get TLAS, HDRI, area lights, motion/variance aux, and caustics without the old single-group 23-buffer requirement.
 - **Hybrid TLAS production path (2026-05-26):** `InstancedMesh` through `@vitrum/three-bindings`, uuid-aware `updatePrimitive` / ReSTIR material resolution, `hybridTlasTraverse` tests, and Windows GPU PR-hybrid bench runner (`run-gpu-host-windows.mjs`).
 - **WG-0 baseline (2026-05-26):** committed `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png`; strict hash verification via `VITRUM_STRICT_GAP_CLOSURE=1` on hardware (`npm run benchmark:gpu-windows -- run-gap-closure-verification.mjs …`).
