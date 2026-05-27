@@ -363,6 +363,16 @@ struct DecodedMaterial {
   spectralAvgMu: f32,
   spectralSampleCount: u32,
   dispersionAbbe: f32,
+  isTranslucent: bool,
+}
+
+// RFE-03 / fork activeLayerWeight: scalar throughput through face layer at hero λ.
+fn activeLayerWeightRgb(layerRgb: vec3f, heroLambda: f32, spectralEnabled: bool) -> vec3f {
+  if (!spectralEnabled) {
+    return layerRgb;
+  }
+  let lum = max(dot(layerRgb, vec3f(0.2126, 0.7152, 0.0722)), 0.0);
+  return heroWavelengthToRgb(heroLambda, lum, 1.0);
 }
 
 fn decodeMaterial(matId: u32) -> DecodedMaterial {
@@ -404,6 +414,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.spectralAvgMu = max(m19.x, 0.0);
   mat.spectralSampleCount = u32(max(m19.w, 0.0));
   mat.dispersionAbbe = max(m19.y, 0.0);
+  mat.isTranslucent = mat.transmission > 0.0 && mat.scatteringCoeff > 0.0;
   return mat;
 }
 `;

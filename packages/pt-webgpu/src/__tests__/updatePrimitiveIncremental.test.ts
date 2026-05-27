@@ -101,8 +101,24 @@ describe('pt-webgpu incremental primitive updates', () => {
     const patchSupport = engine.capabilities.incrementalPatchSupport;
     expect(engine.capabilities.supportsIncrementalScene).toBe(true);
     expect(patchSupport?.material).toBe(true);
-    expect(patchSupport?.positions).toBe(false);
+    expect(patchSupport?.positions).toBe(true);
     expect(patchSupport?.transform).toBe(true);
+  });
+
+  it('splices positions in-place without recreating scene buffers', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeScene());
+
+    const writesBefore = writeBuffer.mock.calls.length;
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    const shifted = new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]);
+    engine.updatePrimitive?.('mesh-a', { positions: shifted });
+
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore);
   });
 
   it('updates material slot in-place without rebuilding scene buffers', async () => {
@@ -127,7 +143,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
-  it('falls back to full scene rebuild for non-material patches', async () => {
+  it('falls back to full scene rebuild when vertex count changes', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();
     const engine = await createPTEngine_WebGPU({ device });
@@ -138,7 +154,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     const buffersBefore = createBuffer.mock.calls.length;
 
     engine.updatePrimitive?.('mesh-b', {
-      positions: new Float32Array([0, 0, 2, 1, 0, 2, 0, 1, 2]),
+      positions: new Float32Array([0, 0, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2]),
     });
 
     expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);

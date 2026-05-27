@@ -11,6 +11,7 @@ fn manifoldNeeContribution(
   roughness: f32,
   metallic: f32,
   transmission: f32,
+  ior: f32,
   throughput: vec3f,
 ) -> vec3f {
   _ = rng;
@@ -21,6 +22,7 @@ fn manifoldNeeContribution(
   _ = roughness;
   _ = metallic;
   _ = transmission;
+  _ = ior;
   _ = throughput;
   return vec3f(0.0);
 }

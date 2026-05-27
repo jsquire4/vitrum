@@ -111,7 +111,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsIncrementalScene: true,
     incrementalPatchSupport: {
       transform: true,
-      positions: false,
+      positions: true,
       material: true,
       emitter: true,
       topology: false,

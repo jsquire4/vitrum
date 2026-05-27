@@ -37,7 +37,16 @@ fn evaluateBrdf(baseColor: vec3f, roughness: f32, metallic: f32, normal: vec3f, 
   return diff + spec;
 }
 
-fn brdfDirectionalPdf(baseColor: vec3f, roughness: f32, metallic: f32, transmission: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
+fn brdfDirectionalPdf(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> f32 {
   let wiDotN = dot(normal, wi);
   let woDotN = dot(normal, wo);
   let nDotV = max(woDotN, 0.0);
@@ -58,8 +67,11 @@ fn brdfDirectionalPdf(baseColor: vec3f, roughness: f32, metallic: f32, transmiss
   let diffProb = baseDiffProb / sumProb;
   let sameHemisphere = wiDotN * woDotN > 0.0;
   if (!sameHemisphere) {
+    // Refraction lobe PDF (opposite hemispheres): cosine on transmitted side
+    // scaled by η² (PBRT Dielectric / Walter 2007 hemisphere Jacobian).
+    let eta = select(ior, 1.0 / max(ior, 1.0), woDotN > 0.0);
     let nDotT = max(abs(wiDotN), 1e-5);
-    let pdfTransApprox = nDotT * INV_PI;
+    let pdfTransApprox = nDotT * eta * eta * INV_PI;
     return max(transProb * pdfTransApprox, 1e-8);
   }
   let nDotL = max(wiDotN, 0.0);

@@ -3,6 +3,7 @@ import {
   packSceneFromCore,
   refitTlasTransforms,
   type PrimitiveTlasBinding,
+  type ScenePackResult,
 } from '@vitrum/shared-bvh';
 import { invertMat4 } from '../math/mat4.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
@@ -270,6 +271,69 @@ export function buildPackedScene(scene: Scene): PackedSceneData {
     environmentMapTexels: environment.hdriTexels,
     environmentMapCdf: environment.hdriCdf,
   };
+}
+
+/** Snapshot geometry + TLAS from a full pack for {@link rebuildPrimitiveBlas} fast paths. */
+export function scenePackResultFromPacked(packed: PackedSceneData): ScenePackResult {
+  return {
+    positions: packed.positions,
+    normals: packed.normals,
+    indices: packed.indices,
+    triMaterialIds: packed.triMaterialIds,
+    bvhNodes: packed.bvhNodes,
+    triangleCount: packed.triangleCount,
+    tlasNodes: packed.tlasNodes,
+    tlasInstanceIndices: packed.tlasInstanceIndices,
+    tlasBlasRoots: packed.tlasBlasRoots,
+    tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+    tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
+    tlasNodeCount: Math.floor(packed.tlasNodes.length / 8),
+    primitiveTlasBindings: packed.primitiveTlasBindings,
+    warnings: packed.warnings,
+  };
+}
+
+/** In-place GPU + CPU mirror update after BLAS splice / refit (WG-6). */
+export function uploadScenePackGeometry(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  pack: ScenePackResult,
+): void {
+  const write = (buffer: GPUBuffer, data: ArrayBufferView): void => {
+    if (data.byteLength > 0) {
+      device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
+    }
+  };
+  write(sb.positionsBuffer, pack.positions);
+  write(sb.normalsBuffer, pack.normals);
+  write(sb.indicesBuffer, pack.indices);
+  write(sb.triMaterialIdsBuffer, pack.triMaterialIds);
+  write(sb.bvhNodesBuffer, pack.bvhNodes);
+  write(sb.tlasNodesBuffer, pack.tlasNodes);
+  write(sb.tlasInstanceIndicesBuffer, pack.tlasInstanceIndices);
+  write(sb.tlasBlasRootsBuffer, pack.tlasBlasRoots);
+  write(sb.tlasInstanceWorldToLocalBuffer, pack.tlasInstanceWorldToLocal);
+  write(sb.tlasInstanceLocalToWorldBuffer, pack.tlasInstanceLocalToWorld);
+  sb.positions.set(pack.positions);
+  sb.normals.set(pack.normals);
+  sb.indices.set(pack.indices);
+  sb.triMaterialIds.set(pack.triMaterialIds);
+  sb.bvhNodes.set(pack.bvhNodes);
+  sb.tlasNodes.set(pack.tlasNodes);
+  sb.tlasInstanceIndices.set(pack.tlasInstanceIndices);
+  sb.tlasBlasRoots.set(pack.tlasBlasRoots);
+  sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
+  sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
+  const mutable = sb as unknown as {
+    tlasNodeCount: number;
+    bvhNodeCount: number;
+    triangleCount: number;
+    primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+  };
+  mutable.tlasNodeCount = pack.tlasNodeCount;
+  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
+  mutable.triangleCount = pack.triangleCount;
+  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
 
 export function rebuildTlasForSceneTransforms(

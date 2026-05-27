@@ -21,7 +21,10 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('threads transmission probability into directional MIS pdf helper', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let nDotT = max(abs(wiDotN), 1e-5);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('eta * eta * INV_PI');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('transProb * pdfTransApprox');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn activeLayerWeightRgb');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('isTranslucent');
   });
 
   it('accounts for uniform light selection probability in direct lighting', () => {

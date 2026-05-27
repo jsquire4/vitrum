@@ -93,6 +93,7 @@ fn manifoldNeeContribution(
   roughness: f32,
   metallic: f32,
   transmission: f32,
+  ior: f32,
   throughput: vec3f,
 ) -> vec3f {
   if (transmission <= 1e-4 || params.lightDir.w <= 1e-6) {
@@ -128,7 +129,7 @@ fn manifoldNeeContribution(
       continue;
     }
     let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, candidateDir);
-    let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, candidateDir);
+    let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, candidateDir);
     let conePdf = 1.0 / max(2.0 * PI * (1.0 - cos(coneAngle)), 1e-6);
     let samplePdf = conePdf / f32(mneeSteps);
     let misWeight = powerHeuristic(samplePdf, brdfPdf);

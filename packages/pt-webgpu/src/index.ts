@@ -20,10 +20,13 @@ import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import {
   buildPackedScene,
   rebuildTlasForSceneTransforms,
+  scenePackResultFromPacked,
   uploadPackedScene,
+  uploadScenePackGeometry,
   PT_WEBGPU_ANALYTIC_SHAPES,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
+import { rebuildPrimitiveBlas, type ScenePackResult } from '@vitrum/shared-bvh';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL } from '@vitrum/shared-samplers';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
@@ -124,6 +127,7 @@ class PTEngineWebGPU implements Engine {
 
   #scene: Scene | null = null;
   #sceneBuffers: UploadedSceneBuffers | null = null;
+  #geoPack: ScenePackResult | null = null;
   #samplesAccumulated = 0;
   #activeBounces = 1;
 
@@ -214,7 +218,7 @@ class PTEngineWebGPU implements Engine {
       supportsIncrementalScene: true,
       incrementalPatchSupport: {
         transform: true,
-        positions: false,
+        positions: true,
         material: true,
         emitter: true,
         topology: false,
@@ -288,6 +292,39 @@ class PTEngineWebGPU implements Engine {
     if (patch.material == null) return false;
     for (const key of Object.keys(patch)) {
       if (key !== 'material' && key !== 'id' && key !== 'kind') return false;
+    }
+    return true;
+  }
+
+  #canFastPathGeometryPatch(
+    primitive: ScenePrimitive,
+    patch: Partial<ScenePrimitive>,
+  ): boolean {
+    if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') {
+      return false;
+    }
+    const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
+    if (!keys.every((k) => k === 'positions' || k === 'normals')) {
+      return false;
+    }
+    if (!('positions' in patch) && !('normals' in patch)) {
+      return false;
+    }
+    if ('positions' in patch && patch.positions != null) {
+      const cur = primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh'
+        ? primitive.positions
+        : null;
+      if (cur != null && patch.positions.length !== cur.length) {
+        return false;
+      }
+    }
+    if ('normals' in patch && patch.normals != null) {
+      const cur = primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh'
+        ? primitive.normals
+        : null;
+      if (cur != null && patch.normals.length !== cur.length) {
+        return false;
+      }
     }
     return true;
   }
@@ -653,6 +690,7 @@ class PTEngineWebGPU implements Engine {
       throw new Error('setScene: engine is disposed');
     }
     const packed = buildPackedScene(scene);
+    this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
     this.#pathTraceBindGroup = null;
@@ -676,6 +714,30 @@ class PTEngineWebGPU implements Engine {
     const currentScene = this.#scene!;
     const currentPrimitive = currentScene.primitives.find((p) => p.id === id) ?? null;
     const nextScene = patchPrimitiveInScene(currentScene, id, patch);
+    if (
+      currentPrimitive != null &&
+      this.#geoPack != null &&
+      this.#sceneBuffers != null &&
+      this.#canFastPathGeometryPatch(currentPrimitive, patch)
+    ) {
+      const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
+        tlas: true,
+        resolveMaterialId: (pid) => this.#materialIndexForPrimitive(nextScene, pid) ?? 0,
+      });
+      if (rebuilt.ok) {
+        uploadScenePackGeometry(this.#device, this.#sceneBuffers, rebuilt.pack);
+        this.#geoPack = rebuilt.pack;
+        this.#pathTraceBindGroup = null;
+        this.#pathTraceBindGroup1 = null;
+        this.#pathTraceBindGroup2 = null;
+        this.#scene = nextScene;
+        for (const warning of rebuilt.pack.warnings) {
+          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        }
+        this.reset();
+        return;
+      }
+    }
     if (
       currentPrimitive != null &&
       currentPrimitive.kind === 'analytic' &&
@@ -1233,6 +1295,7 @@ class PTEngineWebGPU implements Engine {
     this.#computePipeline = null;
     this.#bindGroupLayout = null;
     this.#scene = null;
+    this.#geoPack = null;
     this.#onFrameSubs.clear();
     this.#onProgressSubs.clear();
     this.#slot.set('disposed');

@@ -9,6 +9,7 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1280x720',
     bounces: 8,
     spp: 512,
+    backend: 'pt-webgpu',
   },
   {
     scenarioId: 'rfe07-11-sss-mixed-panels',
@@ -23,6 +24,8 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1280x720',
     bounces: 10,
     spp: 1024,
+    backend: 'pt-webgpu',
+    extensions: { 'vitrum.ptWebgpu.spectralHeroWavelength': true },
   },
   {
     scenarioId: 'rfe14-thinfilm-angle-shift',

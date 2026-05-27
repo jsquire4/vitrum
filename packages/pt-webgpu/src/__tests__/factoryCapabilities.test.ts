@@ -32,7 +32,7 @@ describe('createPTEngine_WebGPU', () => {
     expect(engine.capabilities.supportsIncrementalScene).toBe(true);
     expect(patch).toEqual({
       transform: true,
-      positions: false,
+      positions: true,
       material: true,
       emitter: true,
       topology: false,

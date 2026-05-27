@@ -161,6 +161,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let thinFilmAngleDependent = mat.thinFilmAngleDependent;
     let spectralAvgMu = mat.spectralAvgMu;
     let spectralSampleCount = mat.spectralSampleCount;
+    let isTranslucent = mat.isTranslucent;
 
     radiance = radiance + throughput * emissive;
 
@@ -172,7 +173,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if (layerRoughness >= 0.0) {
       roughness = clamp(layerRoughness, 0.02, 1.0);
     }
-    baseColor = baseColor * layerTx;
+    let layerW = select(
+      layerTx,
+      activeLayerWeightRgb(layerTx, heroLambda, true),
+      params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
+    );
+    baseColor = baseColor * layerW;
     if (!firstHitValid) {
       firstHitValid = true;
       firstHitPos = hitPos;
@@ -209,7 +215,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       baseColor = mix(baseColor, baseColor * thinFilmReflectTint, filmStrength);
     }
     let throughputAtVertex = throughput;
-    if (transmission > 0.0) {
+    if (transmission > 0.0 && isTranslucent) {
       var spectralMu = vec3f(spectralAvgMu);
       if (spectralSampleCount > 0u) {
         if (params.spectralEnabled != 0u) {
@@ -280,7 +286,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           let shadowRay = Ray(hitPos + normal * 1e-3, envDir);
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, envDir);
-            let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, envDir);
+            let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir);
             let misWeight = powerHeuristic(envPdf, brdfPdf);
             directLi = throughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8);
           }
@@ -300,6 +306,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         roughness,
         metallic,
         transmission,
+        ior,
         throughputAtVertex,
       );
     } else if (caustic == 2u) {
@@ -346,6 +353,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         roughness,
         metallic,
         transmission,
+        ior,
         throughputAtVertex,
       );
       radiance = radiance + bsdfEnvironmentConnectionContribution(
@@ -357,6 +365,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         roughness,
         metallic,
         transmission,
+        ior,
         throughputAtVertex,
       );
     }

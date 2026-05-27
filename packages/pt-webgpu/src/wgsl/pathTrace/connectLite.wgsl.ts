@@ -51,6 +51,7 @@ fn bsdfAreaLightConnectionContribution(
   roughness: f32,
   metallic: f32,
   transmission: f32,
+  ior: f32,
   throughputAtVertex: vec3f,
 ) -> vec3f {
   _ = hitPos;
@@ -61,6 +62,7 @@ fn bsdfAreaLightConnectionContribution(
   _ = roughness;
   _ = metallic;
   _ = transmission;
+  _ = ior;
   _ = throughputAtVertex;
   return vec3f(0.0);
 }
@@ -74,11 +76,12 @@ fn bsdfEnvironmentConnectionContribution(
   roughness: f32,
   metallic: f32,
   transmission: f32,
+  ior: f32,
   throughputAtVertex: vec3f,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) { return vec3f(0.0); }
-  let bsdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, normal, wo, wi);
+  let bsdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
   if (bsdfPdf <= 1e-6) { return vec3f(0.0); }
   let shadowRay = Ray(hitPos + normal * 1e-3, wi);
   if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }

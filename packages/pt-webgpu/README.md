@@ -90,8 +90,8 @@ Shader entry points: `PT_WEBGPU_TRACE_WGSL` (full), `PT_WEBGPU_TRACE_LITE_WGSL` 
   motion vectors, and caustic strategies regardless of scene content.
 - **Hero-wavelength spectral** (WG-2): opt-in via `extensions['vitrum.ptWebgpu.spectralHeroWavelength']` — CMF MIS sampling, single-λ thin-film TMM, and `heroWavelengthToRgb` accumulation (experimental; not yet gap-closure signed off vs pt-webgl).
 - **Cauchy dispersion** (WG-3): `Material.dispersionAbbeNumber` packed into the material tail; when spectral mode is on, dielectric IOR follows a two-term Cauchy model at the hero λ.
-- Experimental BRDF/MIS path — transmission hemisphere MIS uses a **simplified** PDF branch in `brdfDirectionalPdf`.
-- Incremental patch support remains partial by design: `transform/material/emitter` fast paths are implemented; `positions/topology` still fall back to rebuild
+- Layered front/back absorption uses `activeLayerWeightRgb` at hero λ when spectral mode is on (WG-4); transmission MIS uses η²-scaled refraction PDF in `brdfDirectionalPdf`.
+- Incremental patch support: `transform`, `material`, `emitter`, and **same-topology** `positions`/`normals` (BLAS splice via `rebuildPrimitiveBlas`); topology changes still full-repack
 - **`denoiser: 'oidn-final'`** (WG-1): reads HDR + albedo + normal-depth on convergence via `getDenoisedFrame()`; requires `extensions['vitrum.ptWebgpu.oidnModelUrl']` (use `oidn_rt_hdr_alb_nrm.onnx` for aux). Other denoiser modes are not wired.
 - `causticStrategy` requests map to mode-distinct shader paths; runtime image/perf artifact capture remains blocked in this environment
 
@@ -99,6 +99,6 @@ Shader entry points: `PT_WEBGPU_TRACE_WGSL` (full), `PT_WEBGPU_TRACE_LITE_WGSL` 
 
 - Replace experimental BRDF path with shared sampler/BSDF contracts
 - Add richer emitter coverage and MIS
-- WG-2 gap-closure capture vs pt-webgl (`rfe08-13-spectral-payload`)
-- WG-4 layered BSDF + transmission MIS parity
+- WG-2 / WG-4 / WG-5 gap-closure GPU captures (`rfe08`, `rfe03`, `rfe07-11`)
+- WG-9 optional `svgf-real` denoiser on aux buffers
 - Add visual regression scenes for GPU-verified parity checks
