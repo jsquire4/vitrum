@@ -34,7 +34,7 @@ Read in this order to onboard:
 
 - **C1 shipped — SkinnedMesh contract + per-frame CPU solver + morph targets** (`7d0f4d7` + `f3a91ce`, 2026-05-19): `SkinnedMeshPrimitive` added to `@vitrum/core`'s discriminated union; `sceneFromThreeJS` converts THREE.SkinnedMesh; `@vitrum/three-bindings`'s `solveSkin` does LBS with morph-delta pre-blend. Per-frame pose updates flow through `engine.updatePrimitive(id, { positions, normals })`. Downstream consumers (`sceneAABB`, `_coreSceneSuppliesMeshes`, `summarizeScene`, `vitrumSceneToThree`) accept skinned meshes. 19 tests pin the math + adapter shape. GPU compute variant + inverse-transpose normal for scaled bones deferred — baseline already enables real-time single-hero-character skinning.
 
-- **C2 + PR TLAS — shipped end-to-end** (`5cf642b` CPU module; PR-2–4 + WG-6 2026-05-26): `@vitrum/shared-bvh` `packSceneFromCore` / `scenePack.ts`; hybrid ReSTIR + DDGI probe rays default to TLAS when multi-mesh or instanced; incremental transform/positions/topology refit paths; pt-webgpu shares the same packer. RC transform-only refit without full `setScene` is the main GI-subsystem follow-up (see `plan/primary-release-and-webgpu-pt-parity-2026-05-26.md` PR-5).
+- **C2 — TLAS pipeline (2026-05-27 deepening):** `packSceneFromCore` + `fingerprintBuffers`; hybrid ReSTIR/DDGI/RC share TLAS+BLAS traversal; `RCSubsystem.syncRestirBvhBuffers`; incremental refit via `rebuildPrimitiveBlas` / `refitTlasTransforms`. CPU: `buildTlas` / `refitTlas` / `tlasIntersect` (`5cf642b`). pt-webgpu uses the same packer (`WG-6`).
 
 ### W1 — Pass + Resource + Denoiser registry refactor (all 6 rounds shipped)
 
