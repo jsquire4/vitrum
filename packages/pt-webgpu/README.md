@@ -96,9 +96,9 @@ Mechanical parity for the fork-backed WebGL2 path tracer is **implemented** for:
 - Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS, translucent SSS gate
 - `denoiser: 'oidn-final'` with aux readback
 
-**Not in parity / explicit deferrals:** BDPT (pt-webgl only), walkaround-only denoisers (`atrous-variance`, neural), and `createEngine({ prefer: 'auto' })` selection (use `quality-webgpu` or `extensions.backend: 'pt-webgpu'`).
+**Not in parity / explicit deferrals:** BDPT (pt-webgl + fork only), walkaround-only denoisers (`svgf-real`, `atrous-variance`, `neural`), and `createEngine({ prefer: 'auto' })` pt-webgpu selection (use `quality-webgpu` after hardware gap-closure A/B).
 
-**Denoisers on pt-webgpu:** `'none'`, `'oidn-final'` (requires `vitrum.ptWebgpu.oidnModelUrl`), `'svgf-real'` (full tier — Schied 2017 via `@vitrum/shared-denoisers`; optional `vitrum.ptWebgpu.svgfAtrousIterations` 1–5).
+**Denoisers on pt-webgpu:** `'none'`, `'oidn-final'` (requires `vitrum.ptWebgpu.oidnModelUrl`).
 
 Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/WG-signoff-2026-05-26.md`).
 
@@ -109,7 +109,7 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
 - **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
 - **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
 - Incremental `positions`/`normals` require unchanged vertex count; topology edits full-repack.
-- `denoiser: 'svgf-real'` requires full tier (albedo + normal-depth aux).
+- Schied `svgf-real` is **not** wired here — use `@vitrum/walkaround-hybrid` with `denoiser: 'svgf-real'`.
 
 ## Polish commands
 

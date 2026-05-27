@@ -1,0 +1,117 @@
+{
+  "schema": "vitrum-pr-hybrid-bench-2026-05-26",
+  "startedAt": "2026-05-27T06:12:22.137Z",
+  "finishedAt": "2026-05-27T06:12:22.218Z",
+  "launchProfile": "hardware",
+  "adapter": {
+    "profile": "hardware",
+    "ok": true,
+    "vendor": "",
+    "architecture": "",
+    "description": "",
+    "maxStorageBuffersPerShaderStage": 10,
+    "maxStorageTexturesPerShaderStage": 4,
+    "ptWebgpuFullTier": false,
+    "ptWebgpuLiteTier": true,
+    "hybridCanRun": false
+  },
+  "summary": {
+    "total": 4,
+    "failures": 0,
+    "passes": 4
+  },
+  "rows": [
+    {
+      "scenarioId": "PR-hybrid-200k-static",
+      "startedAt": "2026-05-27T06:12:22.137Z",
+      "finishedAt": "2026-05-27T06:12:22.137Z",
+      "url": "http://127.0.0.1:5175/walkaround.html?prBench=frame-sample&prBenchAuto=1&mode=walkaround&scene=bench200k&targetTriangles=200000&prBenchFrames=120&prBenchScenario=PR-hybrid-200k-static",
+      "pass": true,
+      "skipped": true,
+      "skipReason": "adapter-insufficient",
+      "adapterLimits": {
+        "profile": "hardware",
+        "ok": true,
+        "vendor": "",
+        "architecture": "",
+        "description": "",
+        "maxStorageBuffersPerShaderStage": 10,
+        "maxStorageTexturesPerShaderStage": 4,
+        "ptWebgpuFullTier": false,
+        "ptWebgpuLiteTier": true,
+        "hybridCanRun": false
+      },
+      "bench": null,
+      "hash": "8bc1452eca0087b6631ea653c5a7dc2487ae01cc2578338e2a8c8352ae83cab8"
+    },
+    {
+      "scenarioId": "PR-hybrid-tlas-10-inst",
+      "startedAt": "2026-05-27T06:12:22.138Z",
+      "finishedAt": "2026-05-27T06:12:22.138Z",
+      "url": "http://127.0.0.1:5175/walkaround.html?prBench=frame-sample&prBenchAuto=1&mode=walkaround&scene=tlas10inst&bvhMode=tlas&prBenchFrames=48&prBenchScenario=PR-hybrid-tlas-10-inst",
+      "pass": true,
+      "skipped": true,
+      "skipReason": "adapter-insufficient",
+      "adapterLimits": {
+        "profile": "hardware",
+        "ok": true,
+        "vendor": "",
+        "architecture": "",
+        "description": "",
+        "maxStorageBuffersPerShaderStage": 10,
+        "maxStorageTexturesPerShaderStage": 4,
+        "ptWebgpuFullTier": false,
+        "ptWebgpuLiteTier": true,
+        "hybridCanRun": false
+      },
+      "bench": null,
+      "hash": "5c0c2cc0484ea809268ab1a9a80001b64f281d91bf2f34cb7a665c8e495675e3"
+    },
+    {
+      "scenarioId": "PR-hybrid-material-churn",
+      "startedAt": "2026-05-27T06:12:22.138Z",
+      "finishedAt": "2026-05-27T06:12:22.138Z",
+      "url": "http://127.0.0.1:5175/walkaround.html?prBench=material-churn&prBenchAuto=1&mode=walkaround&prBenchIters=100",
+      "pass": true,
+      "skipped": true,
+      "skipReason": "adapter-insufficient",
+      "adapterLimits": {
+        "profile": "hardware",
+        "ok": true,
+        "vendor": "",
+        "architecture": "",
+        "description": "",
+        "maxStorageBuffersPerShaderStage": 10,
+        "maxStorageTexturesPerShaderStage": 4,
+        "ptWebgpuFullTier": false,
+        "ptWebgpuLiteTier": true,
+        "hybridCanRun": false
+      },
+      "bench": null,
+      "hash": "d681cec26c8527fe9ac4635695f3c4bd2dcbad79914620e4f6b5b30a1632cd9b"
+    },
+    {
+      "scenarioId": "PR-hybrid-emitter-churn",
+      "startedAt": "2026-05-27T06:12:22.138Z",
+      "finishedAt": "2026-05-27T06:12:22.138Z",
+      "url": "http://127.0.0.1:5175/walkaround.html?prBench=emitter-churn&prBenchAuto=1&mode=walkaround&prBenchIters=100",
+      "pass": true,
+      "skipped": true,
+      "skipReason": "adapter-insufficient",
+      "adapterLimits": {
+        "profile": "hardware",
+        "ok": true,
+        "vendor": "",
+        "architecture": "",
+        "description": "",
+        "maxStorageBuffersPerShaderStage": 10,
+        "maxStorageTexturesPerShaderStage": 4,
+        "ptWebgpuFullTier": false,
+        "ptWebgpuLiteTier": true,
+        "hybridCanRun": false
+      },
+      "bench": null,
+      "hash": "733963dd7cdc37505ace12aecf0ee2c2744e83c128d69b84978259990d995ecc"
+    }
+  ]
+}

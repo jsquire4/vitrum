@@ -16,7 +16,7 @@
 | WG-6 Geometry incremental | **Complete** | `packSceneFromCore` via `shared-bvh`; `rebuildPrimitiveBlas` positions splice; ledger `positions: true` |
 | WG-7 BDPT | **Deferred** | Explicit non-goal until product requires stained-glass PT BDPT on WebGPU |
 | WG-8 createEngine opt-in | **Complete** | `prefer: 'quality-webgpu'`, `constructPathTracerWebGPU` in `@vitrum/engine` |
-| WG-9 Extended denoisers | **Complete** | `denoiser: 'svgf-real'` via `SVGFRealDispatcher` + `runSVGFRealWebGPU` (full tier) |
+| WG-9 Extended denoisers | **Deferred (hybrid only)** | Schied `svgf-real` ships on `@vitrum/walkaround-hybrid`; pt-webgpu rejects `denoiser: 'svgf-real'` |
 | WG-10 Signoff | **This document** | See gates below |
 
 ## Definition-of-done gates
@@ -46,5 +46,6 @@ VITRUM_GPU_CAPTURE=1 npm run benchmark:gap-closure --workspace @vitrum/benchmark
 
 ## Explicit non-goals (unchanged)
 
-- pt-webgpu in `createEngine({ prefer: 'auto' })` until WG-D2 all-scenario PASS on hardware
-- BDPT port (WG-7)
+- pt-webgpu in `createEngine({ prefer: 'auto' })` until full-res gap-closure A/B vs fork on hardware
+- BDPT on pt-webgpu (WG-7) — pt-webgl + `extensions['vitrum.ptWebgl.bdpt']` only
+- `svgf-real` on pt-webgpu (WG-9) — walkaround-hybrid only

@@ -38,7 +38,7 @@ It intentionally excludes release governance and distribution posture.
 - Deep pipeline integration: **strong** (full/lite tiers; TLAS; spectral hero-λ; layered MIS; OIDN-final; aux G-buffers)
 - Lifecycle reliability: **medium-strong** (Wave 4 soak; host owns pause/resize; not in `auto`)
 - Regression harness coverage: **strong** (WG-0 baseline; gap-closure harness; 120+ package tests)
-- Current focus: hardware gap-closure PASS for RFE scenarios; optional WG-9 `svgf-real`; BDPT deferred (WG-7).
+- Current focus: hardware gap-closure PASS for RFE scenarios; WG-9 `svgf-real` is hybrid-only; BDPT deferred on WebGPU (WG-7, pt-webgl only).
 
 ## Shared Layers (`core`, `engine`, `shared-*`)
 

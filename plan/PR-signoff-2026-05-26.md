@@ -15,7 +15,7 @@
 | PR-5 DDGI + RC alignment | **Complete** | DDGI probe rays use ReSTIR TLAS buffers (`traceTlasFirstHit`); `markInstancesDirty` on transform refit; RC `refitBounds` without full `setScene` |
 | PR-6 Scale + soak | **Complete (mechanical)** | `run-pr-hybrid-bench.mjs`, `run-pr-hybrid-mechanical.mjs`, scenario presets |
 | PR-7 GPU skinning | **Deferred** | CPU `solveSkin` baseline sufficient for hero character |
-| PR-8 pt-webgl incremental | **Deferred** | Optional; pt-webgl already has fork incremental material path |
+| PR-8 pt-webgl incremental | **Deferred (optional)** | `PTEngineWebGL2.updatePrimitive` still calls full `setScene`; fork BDPT/material churn uses `driveForkMaterialUniforms` — hybrid `materialPatch` is the production fast path |
 | PR-9 Signoff | **This document** | |
 
 ## Definition-of-done gates
@@ -43,6 +43,12 @@ VITRUM_PR_REQUIRE_GPU=1 VITRUM_PR_START_SERVER=1 \
   npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
 ```
 
-## Residual
+## Residual (host GPU)
 
-- Re-run `npm run benchmark:pr-hybrid` on GPU host for perf JSON when validating PR-6 budgets
+```bash
+# Perf JSON → tools/reference-renders/PR-hybrid/perf/latest.json (written by bench runner)
+VITRUM_PR_REQUIRE_GPU=1 VITRUM_PR_START_SERVER=1 npm run benchmark:pr-hybrid
+
+# PNG dirs → tools/reference-renders/PR-hybrid/{tlas-on,material-edit,200k-static}/
+npm run benchmark:pr-hybrid-refs
+```

@@ -11,7 +11,7 @@
  *   npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner  # all scenarios
  */
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,8 +26,11 @@ import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const resultsDir = resolve(here, 'results', 'pr-hybrid');
+const prHybridRefRoot = resolve(repoRoot, 'tools/reference-renders/PR-hybrid');
+const prHybridPerfDir = resolve(prHybridRefRoot, 'perf');
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const outPath = resolve(resultsDir, `pr-hybrid-${stamp}.json`);
+const perfLatestPath = resolve(prHybridPerfDir, 'latest.json');
 
 const benchDevPort = process.env.VITRUM_BENCH_DEV_PORT ?? '5175';
 const benchDevHost = process.env.VITRUM_BENCH_DEV_HOST ?? '127.0.0.1';
@@ -314,8 +317,46 @@ async function main() {
     summary: { total: rows.length, failures, passes: rows.length - failures },
     rows,
   };
-  await writeFile(outPath, `${JSON.stringify(report, null, 2)}\n`);
+  const reportJson = `${JSON.stringify(report, null, 2)}\n`;
+  await writeFile(outPath, reportJson);
+  await mkdir(prHybridPerfDir, { recursive: true });
+  await writeFile(perfLatestPath, reportJson);
+
+  const manifestPath = resolve(prHybridRefRoot, 'manifest.json');
+  let prior = { manifest: [] };
+  try {
+    prior = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch {
+    /* first run */
+  }
+  const perfEntries = rows
+    .filter((r) => r.pass && r.bench != null)
+    .map((r) => ({
+      kind: 'perf',
+      scenarioId: r.scenarioId,
+      reportPath: outPath,
+      bench: r.bench,
+    }));
+  const priorManifest = Array.isArray(prior.manifest) ? prior.manifest : [];
+  const withoutPerf = priorManifest.filter((e) => e?.kind !== 'perf');
+  await writeFile(
+    manifestPath,
+    `${JSON.stringify(
+      {
+        generatedAt: report.finishedAt,
+        note:
+          'Perf: npm run benchmark:pr-hybrid (≥16 storage buffers). PNGs: npm run benchmark:pr-hybrid-refs.',
+        latestPerf: perfLatestPath,
+        manifest: [...withoutPerf, ...perfEntries],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+
   console.log(`Wrote ${outPath}`);
+  console.log(`Wrote ${perfLatestPath}`);
+  console.log(`Updated ${manifestPath}`);
   console.log(`VITRUM_PR_HYBRID_REPORT=${outPath}`);
   process.exit(failures > 0 ? 1 : 0);
 }

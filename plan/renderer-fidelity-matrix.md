@@ -27,7 +27,8 @@ This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl
 | Multi emitter direct lighting | experimental | experimental | `scenePack.test.ts`; `wgslContract.test.ts` | hardware capture pending | Full tier: bounded emitter arrays |
 | Material fields parity (cornell) | supported | experimental | `scenePack.test.ts`; `capturePtWebgpu.mjs` | `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png` | WG-0 baseline committed; strict hash on GPU host |
 | Caustic strategies | experimental | experimental | `factoryCapabilities.test.ts` | hardware capture pending | Full tier only; lite tier disables |
-| SVGF-real denoiser | experimental | experimental | `svgfRealIntegration.test.ts` | `denoiser: 'svgf-real'` on full tier | Schied 2017 via `runSVGFRealWebGPU` |
+| SVGF-real denoiser | unsupported | unsupported | `shared-denoisers` + hybrid `svgfReal.ts` | `denoiser: 'svgf-real'` on walkaround-hybrid | pt-webgpu explicitly rejects; pt-webgl uses atrous/OIDN |
+| BDPT (eye↔light connections) | experimental | unsupported | `forkUniformBridge.test.ts` (pt-webgl) | fork `FEATURE_BDPT` + host light-path texture | WG-7 deferred on WebGPU |
 
 ## Evidence gates
 
