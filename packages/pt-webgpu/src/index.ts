@@ -33,6 +33,10 @@ import { environmentParams } from './scene/environmentPacking.js';
 import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
+import {
+  OIDNFinalDispatcher,
+  type DenoisedFrame,
+} from './denoise/oidnFinalDispatcher.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
@@ -66,7 +70,21 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * full layout: TLAS, HDRI, area lights, caustics, etc.); `lite` on 8/4 adapters.
    */
   readonly traceTier?: PtWebgpuTraceTier;
+  /**
+   * Test-only: inject a mock OIDN bridge (mirrors pt-webgl `oidnBridgeLoader`).
+   */
+  readonly oidnBridgeLoader?: import('./denoise/oidnFinalDispatcher.js').OIDNBridgeLoader;
+  /**
+   * Test-only: replace GPU texture readback (defaults to real `copyTextureToBuffer`).
+   */
+  readonly oidnReadbackFn?: import('./denoise/oidnFinalDispatcher.js').OidnReadbackFn;
 }
+
+export type {
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+} from './denoise/oidnFinalDispatcher.js';
 
 const EXPERIMENTAL_MAX_BOUNCES = 8;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
@@ -134,6 +152,7 @@ class PTEngineWebGPU implements Engine {
   #bindGroupLayout: GPUBindGroupLayout | null = null;
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
+  readonly #oidnDispatcher: OIDNFinalDispatcher | null;
 
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
@@ -151,6 +170,34 @@ class PTEngineWebGPU implements Engine {
     const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
+
+    if (opts.denoiser === 'oidn-final') {
+      const modelUrl = opts.extensions?.['vitrum.ptWebgpu.oidnModelUrl'];
+      const epsRaw = opts.extensions?.['vitrum.ptWebgpu.oidnExecutionProviders'];
+      const eps = Array.isArray(epsRaw)
+        ? (epsRaw.filter((p) => p === 'webnn' || p === 'webgpu' || p === 'wasm') as Array<
+            'webnn' | 'webgpu' | 'wasm'
+          >)
+        : undefined;
+      if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
+        throw new Error(
+          "createPTEngine_WebGPU: denoiser: 'oidn-final' requires " +
+            "extensions['vitrum.ptWebgpu.oidnModelUrl'] (non-empty string). " +
+            'Use oidn_rt_hdr_alb_nrm.onnx when supplying albedo + normal aux.',
+        );
+      }
+      const dispatcherOpts =
+        eps !== undefined && eps.length > 0
+          ? { modelUrl, executionProviders: eps }
+          : { modelUrl };
+      this.#oidnDispatcher = new OIDNFinalDispatcher(
+        dispatcherOpts,
+        opts.oidnBridgeLoader,
+        opts.oidnReadbackFn,
+      );
+    } else {
+      this.#oidnDispatcher = null;
+    }
   }
 
   get state(): EngineState {
@@ -194,6 +241,7 @@ class PTEngineWebGPU implements Engine {
       experimentalFeatures: new Set([
         'experimental-backend',
         ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
+        ...(this.#oidnDispatcher != null ? (['pt-webgpu-oidn-final'] as const) : []),
       ]),
       causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
@@ -1075,6 +1123,27 @@ class PTEngineWebGPU implements Engine {
     if (accumTexturePost == null) {
       return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     }
+    const isConverged = this.#samplesAccumulated >= targetSpp;
+    if (
+      this.#oidnDispatcher != null &&
+      isConverged &&
+      this.#samplesAccumulated > 0 &&
+      this.#accumTexture != null &&
+      this.#albedoTexture != null &&
+      this.#normalDepthTexture != null
+    ) {
+      this.#oidnDispatcher.kickIfReady(
+        this.#device,
+        {
+          color: this.#accumTexture,
+          albedo: this.#albedoTexture,
+          normalDepth: this.#normalDepthTexture,
+        },
+        width,
+        height,
+      );
+    }
+
     const output: FrameOutput = {
       kind: 'rendered',
       primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexturePost),
@@ -1091,7 +1160,7 @@ class PTEngineWebGPU implements Engine {
         ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
         : {}),
       samplesAccumulated: this.#samplesAccumulated,
-      isConverged: this.#samplesAccumulated >= targetSpp,
+      isConverged,
     };
     const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
     const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
@@ -1111,8 +1180,17 @@ class PTEngineWebGPU implements Engine {
 
   reset(): void {
     if (this.#slot.get() === 'disposed') return;
+    this.#oidnDispatcher?.invalidate();
     this.#samplesAccumulated = 0;
     this.#clearAccumBuffer();
+  }
+
+  /**
+   * OIDN denoised RGB for the current converged cohort (WG-1), or null while
+   * inference is in flight / engine was not built with `denoiser: 'oidn-final'`.
+   */
+  getDenoisedFrame(): DenoisedFrame | null {
+    return this.#oidnDispatcher?.getLatestDenoised() ?? null;
   }
 
   pause(): void {
@@ -1131,6 +1209,7 @@ class PTEngineWebGPU implements Engine {
 
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
+    this.#oidnDispatcher?.dispose();
     this.#destroyAccumTexture();
     this.#pathTraceBindGroup = null;
     this.#pathTraceBindGroup1 = null;
@@ -1187,9 +1266,13 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
       `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to experimental limit ${EXPERIMENTAL_MAX_BOUNCES}.`,
     );
   }
-  if (opts.denoiser != null && opts.denoiser !== 'none') {
+  if (
+    opts.denoiser != null &&
+    opts.denoiser !== 'none' &&
+    opts.denoiser !== 'oidn-final'
+  ) {
     console.warn(
-      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but experimental backend has no denoiser integration yet.`,
+      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none' and 'oidn-final' are wired.`,
     );
   }
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
