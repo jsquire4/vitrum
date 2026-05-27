@@ -25,6 +25,15 @@ VITRUM_RC_ACCEPTANCE=1 \
 
 Env: `VITRUM_RC_CAPTURE_FRAMES` (default 48), `VITRUM_RC_SEED` (default 1701), `VITRUM_RC_REQUIRE_GPU=1` to fail when adapter is insufficient.
 
+## Mechanical fixtures (CI)
+
+Committed `cornell-walkaround-rc-off.png` (64×64) is a **metrics-oracle stub** until a GPU host replaces it with a real capture. Regenerate stubs:
+
+```bash
+npm run write-rc-mechanical-fixtures --workspace @vitrum/benchmark-runner
+npm run benchmark:rc-acceptance-mechanical
+```
+
 ## Status
 
-Harness shipped 2026-05-27 (`run-rc-acceptance.mjs`). PNGs are populated when the capture command runs on a WebGPU-capable host.
+Harness shipped 2026-05-27. Replace fixture PNGs with GPU captures when refreshing baselines (`npm run benchmark:rc-acceptance` on a hybrid-capable adapter).

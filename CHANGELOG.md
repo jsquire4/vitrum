@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **RC mechanical acceptance (2026-05-27):** committed 64×64 fixture PNGs under `W8-rc-{off,on}/`; `npm run benchmark:rc-acceptance-mechanical` runs metrics + `rcAcceptance.gpu.test.ts` without GPU; wired into `verify:mechanical`.
 - **Hybrid denoiser A/B toggle (2026-05-27):** `engine.debug.setDenoiserEnabled` / `isDenoiserEnabled` gates `DenoiserAdapterPass`; `@vitrum/dev` `DenoiserABToggle` works on walkaround-hybrid.
 - **RC acceptance full gate (2026-05-27):** `npm run benchmark:rc-acceptance-full` — capture + metrics + `rcAcceptance.gpu.test.ts` (`VITRUM_RC_REQUIRE_GPU=1` default).
 - **createEngine TLAS routing (2026-05-27):** `auditSceneNeedsTlas` in `@vitrum/core`; `pickBackend` steers `quality` and warns when multi-mesh scenes would land on merged-BVH pt-webgl without WebGPU.

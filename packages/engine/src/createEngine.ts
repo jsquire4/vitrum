@@ -42,13 +42,14 @@ import {
   DEFAULT_SKY_IRRADIANCE,
   DEFAULT_SKY_TINT,
   deriveScaleDefaults,
+  mergeWalkaroundTlasExtension,
   pickBackend,
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngineScale.js';
 
 export type { EnginePreference, ScaleDefaults };
-export { pickBackend, deriveScaleDefaults };
+export { pickBackend, deriveScaleDefaults, mergeWalkaroundTlasExtension };
 
 // Deliberately structurally-typed to avoid a hard `import * as THREE` here —
 // users may bring their own three.js version. The factory only reads the
@@ -121,22 +122,6 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
 // ────────────────────────────────────────────────────────────────────────────
 // Backend constructors
 // ────────────────────────────────────────────────────────────────────────────
-
-function mergeWalkaroundTlasExtension(
-  advanced: Partial<HybridEngineOptions> | undefined,
-  needsTlas: boolean,
-): Partial<HybridEngineOptions> | undefined {
-  if (!needsTlas) return advanced;
-  const wh = advanced?.extensions?.['walkaround-hybrid'];
-  if (wh?.bvhMode != null) return advanced;
-  return {
-    ...advanced,
-    extensions: {
-      ...(advanced?.extensions ?? {}),
-      'walkaround-hybrid': { ...wh, bvhMode: 'tlas' },
-    },
-  };
-}
 
 async function constructWalkaround(
   opts: CreateEngineOptions,

@@ -1,6 +1,7 @@
 // Scale-derived defaults and backend selection for createEngine().
 
 import type { Vec3 } from '@vitrum/core';
+import type { HybridEngineOptions } from '@vitrum/walkaround-hybrid';
 
 export type EnginePreference = 'realtime' | 'quality' | 'quality-webgpu' | 'auto';
 
@@ -25,6 +26,23 @@ export function deriveScaleDefaults(D: number): ScaleDefaults {
     temporalAccumAlpha: 0.01,
     emitterDist2Floor: (D * 1e-4) ** 2,
     triIntersectEpsilon: D * 1e-6,
+  };
+}
+
+/** When scene layout needs TLAS, default walkaround `bvhMode` unless host set one. */
+export function mergeWalkaroundTlasExtension(
+  advanced: Partial<HybridEngineOptions> | undefined,
+  needsTlas: boolean,
+): Partial<HybridEngineOptions> | undefined {
+  if (!needsTlas) return advanced;
+  const wh = advanced?.extensions?.['walkaround-hybrid'];
+  if (wh?.bvhMode != null) return advanced;
+  return {
+    ...advanced,
+    extensions: {
+      ...(advanced?.extensions ?? {}),
+      'walkaround-hybrid': { ...wh, bvhMode: 'tlas' },
+    },
   };
 }
 

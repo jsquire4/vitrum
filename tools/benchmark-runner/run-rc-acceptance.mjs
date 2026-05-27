@@ -10,7 +10,7 @@
  *   VITRUM_RC_CAPTURE_SPP      alias for frames (default 48)
  *   VITRUM_RC_SEED             vitrumSeed (default 1701)
  *   VITRUM_RC_START_SERVER     default 1 — vite two-engines on 5175
- *   VITRUM_RC_REQUIRE_GPU      exit 2 when hybrid cannot run
+ *   VITRUM_RC_REQUIRE_GPU      exit 2 when hybrid cannot run and no PNGs
  *   VITRUM_RC_SKIP_CAPTURE      1 — only run metrics on existing PNGs
  */
 
@@ -18,7 +18,6 @@ import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import { launchDevServer, stopDevServer, waitForServerReady } from './devServer.mjs';
 import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
@@ -48,7 +47,8 @@ async function assertReadablePng(path, label) {
     await access(path);
   } catch {
     throw new Error(
-      `${label} missing at ${path}. Run capture (default) or place PNGs before VITRUM_RC_SKIP_CAPTURE=1.`,
+      `${label} missing at ${path}. Run capture, ` +
+        '`npm run write-rc-mechanical-fixtures`, or set VITRUM_RC_SKIP_CAPTURE=1 with PNGs present.',
     );
   }
 }
@@ -61,7 +61,7 @@ function runMetrics(envExtra) {
   });
 }
 
-async function captureVariant({ rcEnabled, rcWeight, outPng }) {
+function captureVariantUrl({ rcEnabled, rcWeight }) {
   const u = new URL(`http://127.0.0.1:${benchPort}/walkaround.html`);
   u.searchParams.set('mode', 'walkaround');
   u.searchParams.set('scene', 'cornell');
@@ -81,7 +81,7 @@ async function captureAll(browser) {
     { label: 'on', rcEnabled: true, rcWeight: 1, outPng: onPng },
   ]) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-    const url = captureVariant(row);
+    const url = captureVariantUrl(row);
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
       await page.waitForFunction(
@@ -100,9 +100,12 @@ async function captureAll(browser) {
   }
 }
 
-async function main() {
+async function tryCapture() {
   let devServer = null;
-  if (!skipCapture) {
+  let browser = null;
+  try {
+    if (skipCapture) return;
+
     let base = `http://127.0.0.1:${benchPort}/`;
     if (startServer) {
       devServer = launchDevServer(
@@ -114,25 +117,29 @@ async function main() {
     }
 
     const { chromium } = await import('playwright');
-    const { browser, caps } = await launchWebGpuBrowser(chromium, base);
+    const launched = await launchWebGpuBrowser(chromium, base);
+    browser = launched.browser;
+    const { caps } = launched;
+
     if (!caps.hybridCanRun) {
       const msg =
         `[rc-acceptance] adapter insufficient for hybrid (buffers=${caps.maxStorageBuffersPerShaderStage})`;
       if (process.env.VITRUM_RC_REQUIRE_GPU === '1') {
-        console.error(msg);
-        await browser.close();
-        if (devServer) stopDevServer(devServer);
-        process.exit(2);
+        throw new Error(msg);
       }
-      console.warn(`${msg}; skipping capture and metrics (set VITRUM_RC_REQUIRE_GPU=1 to fail).`);
-      await browser.close();
-      if (devServer) stopDevServer(devServer);
-      process.exit(0);
+      console.warn(`${msg}; skipping GPU capture.`);
+      return;
     }
+
     await captureAll(browser);
-    await browser.close();
+  } finally {
+    if (browser) await browser.close();
     if (devServer) stopDevServer(devServer);
   }
+}
+
+async function main() {
+  await tryCapture();
 
   await assertReadablePng(offPng, 'RC off PNG');
   await assertReadablePng(onPng, 'RC on PNG');

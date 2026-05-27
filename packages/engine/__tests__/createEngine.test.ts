@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { pickBackend, deriveScaleDefaults } from '../src/createEngine.js';
+import { pickBackend, deriveScaleDefaults, mergeWalkaroundTlasExtension } from '../src/createEngine.js';
 
 describe('pickBackend', () => {
   it('returns pt-webgl for quality on single-mesh scenes', () => {
@@ -42,6 +42,25 @@ describe('pickBackend', () => {
   it('auto selects pt-webgpu only above the realtime triangle budget', () => {
     expect(pickBackend('auto', true, 10_000)).toBe('walkaround-hybrid');
     expect(pickBackend('auto', true, 600_000)).toBe('pt-webgpu');
+  });
+});
+
+describe('mergeWalkaroundTlasExtension', () => {
+  it('adds bvhMode tlas when needsTlas and host did not set bvhMode', () => {
+    const merged = mergeWalkaroundTlasExtension({}, true);
+    expect(merged?.extensions?.['walkaround-hybrid']?.bvhMode).toBe('tlas');
+  });
+
+  it('does not override an explicit host bvhMode', () => {
+    const merged = mergeWalkaroundTlasExtension(
+      { extensions: { 'walkaround-hybrid': { bvhMode: 'merged' } } },
+      true,
+    );
+    expect(merged?.extensions?.['walkaround-hybrid']?.bvhMode).toBe('merged');
+  });
+
+  it('no-op when needsTlas is false', () => {
+    expect(mergeWalkaroundTlasExtension(undefined, false)).toBeUndefined();
   });
 });
 

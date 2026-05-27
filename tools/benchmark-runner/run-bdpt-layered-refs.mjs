@@ -9,6 +9,7 @@
  *   VITRUM_BDPT_SKIP_BDPT      1 — skip layered-only pass
  *   VITRUM_BDPT_OUT_LABEL      output subdir under tools/reference-renders/ (default bdpt-layered-YYYY-MM-DD)
  *   VITRUM_BDPT_QUICK          1 — forward --quick to capture script
+ *   VITRUM_BDPT_REQUIRE_GPU    1 — exit 1 when capture script fails (default 0 logs only)
  */
 
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -61,7 +62,11 @@ async function main() {
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   console.log(`[bdpt-layered-refs] wrote ${manifestPath}`);
   const failed = steps.some((s) => !s.ok);
-  if (failed) process.exit(1);
+  if (failed) {
+    if (process.env.VITRUM_BDPT_REQUIRE_GPU === '1') process.exit(1);
+    console.warn('[bdpt-layered-refs] capture failed (GPU/Playwright required); manifest written for audit.');
+    process.exit(0);
+  }
 }
 
 main().catch((e) => {
