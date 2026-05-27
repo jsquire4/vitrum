@@ -13,8 +13,11 @@ import {
   buildBenchmark200kThreeScene,
   buildComplexThreeScene,
   buildCornellBoxThreeScene,
+  buildGapClosureCornellThreeScene,
   buildTlas10InstThreeScene,
+  defaultCausticForGapScenario,
   mat4FromThree,
+  ptWebgpuExtensionsForGapScenario,
   resizeCanvasToDisplaySize,
 } from '@vitrum-examples/shared';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
@@ -115,6 +118,13 @@ async function main(): Promise<void> {
     targetTriangles: parseInt(params.get('targetTriangles') ?? '200000', 10) || 200_000,
     prBenchScenario: params.get('prBenchScenario') ?? '',
     vitrumSeed: parseInt(params.get('vitrumSeed') ?? '0', 10) || 0,
+    vitrumGapScenario: params.get('vitrumGapScenario') ?? '',
+    vitrumCaustic: (params.get('vitrumCaustic') ?? '') as
+      | ''
+      | 'none'
+      | 'manifold-nee'
+      | 'photon-map',
+    vitrumPtWebgpuSpectral: params.get('vitrumPtWebgpuSpectral') === '1',
     bvhMode: (params.get('bvhMode') ?? '') as '' | 'merged' | 'tlas',
     prBench: (params.get('prBench') ?? null) as PrBenchMode | null,
     prBenchIters: parseInt(params.get('prBenchIters') ?? '100', 10) || 100,
@@ -179,13 +189,15 @@ async function main(): Promise<void> {
   }
 
   const threeScene =
-    FLAGS.scene === 'bench200k'
-      ? buildBenchmark200kThreeScene(FLAGS.targetTriangles)
-      : FLAGS.scene === 'tlas10inst'
-        ? buildTlas10InstThreeScene()
-        : FLAGS.scene === 'complex'
-          ? buildComplexThreeScene()
-          : buildCornellBoxThreeScene();
+    FLAGS.vitrumGapScenario.length > 0
+      ? buildGapClosureCornellThreeScene(FLAGS.vitrumGapScenario)
+      : FLAGS.scene === 'bench200k'
+        ? buildBenchmark200kThreeScene(FLAGS.targetTriangles)
+        : FLAGS.scene === 'tlas10inst'
+          ? buildTlas10InstThreeScene()
+          : FLAGS.scene === 'complex'
+            ? buildComplexThreeScene()
+            : buildCornellBoxThreeScene();
   const vitrumScene: Scene = sceneFromThreeJS(threeScene);
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 50);
@@ -513,7 +525,21 @@ async function main(): Promise<void> {
         resizeCanvasToDisplaySize(ptGpuCanvas);
       };
       resizePtGpu();
-      const ptGpuEngine = await createPTEngine_WebGPU({ device });
+      const gapId = FLAGS.vitrumGapScenario;
+      const causticStrategy =
+        FLAGS.vitrumCaustic !== ''
+          ? FLAGS.vitrumCaustic
+          : defaultCausticForGapScenario(gapId, null);
+      const spectralExt =
+        FLAGS.vitrumPtWebgpuSpectral || gapId.includes('spectral')
+          ? { 'vitrum.ptWebgpu.spectralHeroWavelength': true as const }
+          : undefined;
+      const gapExt = gapId.length > 0 ? ptWebgpuExtensionsForGapScenario(gapId) : undefined;
+      const ptGpuEngine = await createPTEngine_WebGPU({
+        device,
+        causticStrategy,
+        extensions: { ...(gapExt ?? {}), ...(spectralExt ?? {}) },
+      });
       ptGpuEngine.setScene(vitrumScene);
       (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu = ptGpuEngine;
       const ptGpuSamplesTarget = FLAGS.samplesTarget;

@@ -111,6 +111,13 @@ async function main() {
       command: 'npm run verify:mechanical',
       timeoutMs: parseTimeoutMs('VITRUM_WAVE4_MECHANICAL_TIMEOUT_MS', 45 * 60_000),
     });
+    steps.push({
+      id: 'gap_closure_mechanical',
+      description: 'pt-webgpu gap-closure baselines (mechanical lock)',
+      required: true,
+      command: 'npm run benchmark:gap-closure-mechanical --workspace @vitrum/benchmark-runner',
+      timeoutMs: parseTimeoutMs('VITRUM_WAVE4_GAP_MECHANICAL_TIMEOUT_MS', 5 * 60_000),
+    });
   }
 
   steps.push({

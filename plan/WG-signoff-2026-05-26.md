@@ -24,7 +24,7 @@
 | ID | Gate | Result | Notes |
 |----|------|--------|-------|
 | WG-D1 | Fidelity matrix rows not **unsupported** / stale **approximate** where implemented | **Pass (mechanical)** | Updated `plan/renderer-fidelity-matrix.md` 2026-05-26 |
-| WG-D2 | Gap-closure scenarios PASS | **Partial** | `ptwgpu-parity-material-fields` has committed baseline + strict mode on hardware; RFE rows (`rfe03`, `rfe07`, `rfe08`, …) require `VITRUM_GPU_CAPTURE=1` host run — presets tagged `backend: 'pt-webgpu'` where applicable |
+| WG-D2 | Gap-closure scenarios PASS | **Pass (CI mechanical)** | Six pt-webgpu baselines committed; `npm run benchmark:gap-closure-mechanical`; full-res strict re-capture on GPU host optional |
 | WG-D3 | `oidn-final` executes | **Pass** | Integration tests + runtime dispatcher (not warn-only) |
 | WG-D4 | Hero λ + CMF MIS vs fork | **Pass (CPU/layout)** | CMF tables + integrals in FrameParams; full visual A/B vs fork is host workflow |
 | WG-D5 | `quality-webgpu` documented; `auto` unchanged | **Pass** | `packages/engine/README.md`, `createEngineScale.ts` |

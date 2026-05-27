@@ -1,4 +1,10 @@
 export { buildCornellBoxThreeScene } from './buildCornellBoxThree.js';
+export {
+  buildGapClosureCornellThreeScene,
+  ptWebgpuExtensionsForGapScenario,
+  defaultCausticForGapScenario,
+  type GapClosureCornellScenarioId,
+} from './buildGapClosureCornell.js';
 export { buildComplexThreeScene } from './buildComplexThree.js';
 export {
   buildBenchmark200kThreeScene,

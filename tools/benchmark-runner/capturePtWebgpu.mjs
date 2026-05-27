@@ -18,6 +18,7 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
+import { captureQueryForScenario } from './gapClosurePtWebgpuMap.mjs';
 
 const outputPng = process.env.VITRUM_OUTPUT_PNG;
 if (!outputPng) {
@@ -36,12 +37,31 @@ const scenarioId = process.env.VITRUM_SCENARIO_ID ?? 'ptwgpu-capture';
 
 function buildUrl() {
   const u = new URL(captureUrlBase);
-  u.searchParams.set('mode', 'ptwebgpu');
-  u.searchParams.set('samplesTarget', String(samplesTarget));
-  u.searchParams.set('ptWebgpuBounces', String(bounces));
-  u.searchParams.set('vitrumSeed', String(seed));
+  let scenarioMeta = null;
+  if (process.env.VITRUM_SCENARIO_JSON) {
+    try {
+      scenarioMeta = JSON.parse(process.env.VITRUM_SCENARIO_JSON);
+    } catch {
+      scenarioMeta = null;
+    }
+  }
+  const q =
+    scenarioMeta != null
+      ? captureQueryForScenario(scenarioMeta)
+      : new URLSearchParams();
+  q.set('mode', 'ptwebgpu');
+  q.set('samplesTarget', String(samplesTarget));
+  q.set('ptWebgpuBounces', String(bounces));
+  q.set('vitrumSeed', String(seed));
+  for (const [key, value] of q.entries()) {
+    u.searchParams.set(key, value);
+  }
   if (process.env.VITRUM_SCENE) {
     u.searchParams.set('scene', process.env.VITRUM_SCENE);
+  }
+  const caustic = process.env.VITRUM_CAUSTIC_STRATEGY?.trim();
+  if (caustic === 'manifold-nee' || caustic === 'photon-map') {
+    u.searchParams.set('vitrumCaustic', caustic);
   }
   return u.toString();
 }

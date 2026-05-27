@@ -8,6 +8,7 @@
     "test": "npm run typecheck",
     "benchmark": "node ./run-gap-closure-verification.mjs",
     "benchmark:gap-closure": "node ./run-gap-closure-verification.mjs",
+    "benchmark:gap-closure-mechanical": "VITRUM_GAP_MECHANICAL=1 node ./run-gap-closure-verification.mjs",
     "benchmark:qualitymodes": "node ./run-quality-mode-bench.mjs",
     "benchmark:lifecycle-soak": "node ./run-lifecycle-soak.mjs",
     "benchmark:wave4-hardening": "node ./run-wave4-hardening.mjs",

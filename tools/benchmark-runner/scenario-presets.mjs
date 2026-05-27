@@ -34,6 +34,8 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1280x720',
     bounces: 10,
     spp: 1024,
+    backend: 'pt-webgpu',
+    extensions: { 'vitrum.ptWebgpu.spectralHeroWavelength': true },
   },
   {
     scenarioId: 'rfe09-bridge-global-cmf',
@@ -41,6 +43,8 @@ export const GAP_CLOSURE_SCENARIOS = [
     resolution: '1024x1024',
     bounces: 8,
     spp: 256,
+    backend: 'pt-webgpu',
+    extensions: { 'vitrum.ptWebgpu.spectralHeroWavelength': true },
   },
   {
     scenarioId: 'rfe05-caustic-strategy',
@@ -247,6 +251,11 @@ export const GAP_CLOSURE_SCENARIOS = [
 /** WG-0.2 — pt-webgpu scenarios that use `capturePtWebgpu.mjs` when GPU capture is on. */
 export const WG0_PT_WEBGPU_SCENARIOS = [
   'ptwgpu-parity-material-fields',
+  'rfe03-layered-front-back',
+  'rfe07-11-sss-mixed-panels',
+  'rfe08-13-spectral-payload',
+  'rfe14-thinfilm-angle-shift',
+  'rfe09-bridge-global-cmf',
 ];
 
 export const PR_HYBRID_BENCHMARK_SCENARIOS = [

@@ -12,7 +12,7 @@
 | PR-2 TLAS CPU pack | **Complete** | `shared-bvh/src/scenePack.ts`, `scenePack.test.ts` |
 | PR-3 TLAS GPU (ReSTIR) | **Complete** | `hybridTlasTraverse.test.ts`, `hybridTlasPrimaryHit.gpu.test.ts`, TLAS WGSL in hybrid shaders |
 | PR-4 TLAS incremental refit | **Complete** | `transformRefit`, `positionsRefit`, `rebuildPrimitiveBlas` in hybrid + pt-webgpu |
-| PR-5 DDGI + RC alignment | **Partial** | RC transform refit without full `setScene`; DDGI still merged-BVH path (Option B documented in plan) |
+| PR-5 DDGI + RC alignment | **Complete** | DDGI probe rays use ReSTIR TLAS buffers (`traceTlasFirstHit`); `markInstancesDirty` on transform refit; RC `refitBounds` without full `setScene` |
 | PR-6 Scale + soak | **Complete (mechanical)** | `run-pr-hybrid-bench.mjs`, `run-pr-hybrid-mechanical.mjs`, scenario presets |
 | PR-7 GPU skinning | **Deferred** | CPU `solveSkin` baseline sufficient for hero character |
 | PR-8 pt-webgl incremental | **Deferred** | Optional; pt-webgl already has fork incremental material path |
@@ -43,7 +43,6 @@ VITRUM_PR_REQUIRE_GPU=1 VITRUM_PR_START_SERVER=1 \
   npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner
 ```
 
-## Residual (not primary-release blockers)
+## Residual (host workflow)
 
-- DDGI probe pass on TLAS buffers (PR-5 Option B: dual BVH until unified `traceSceneClosest` in DDGI)
-- Formal PNG reference dirs `tools/reference-renders/PR-hybrid-*` populated from benchmark host captures
+- Formal PNG dirs `tools/reference-renders/PR-hybrid-*` from `npm run benchmark:pr-hybrid` on GPU host (JSON metrics already in `results/pr-hybrid/`)

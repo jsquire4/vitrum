@@ -44,5 +44,10 @@ Commit `*.png` and optional `*.png.json` sidecars when visuals are approved.
 | File | Scenario |
 |------|----------|
 | `ptwgpu-parity-material-fields.png` | WG-0 pt-webgpu material parity (cornell via two-engines) |
+| `rfe03-layered-front-back.png` | WG-4 layered front/back |
+| `rfe07-11-sss-mixed-panels.png` | WG-5 translucent / SSS (smoke capture) |
+| `rfe08-13-spectral-payload.png` | WG-2 spectral hero-λ (smoke capture) |
+| `rfe14-thinfilm-angle-shift.png` | WG-2 thin-film stack (smoke capture) |
+| `rfe09-bridge-global-cmf.png` | WG-2 CMF / spectral bridge (smoke capture) |
 
 Other gap-closure scenarios still use `VITRUM_CAPTURE_CMD` pointed at the cornell-box host capture page.

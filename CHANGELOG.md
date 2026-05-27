@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Gap-closure mechanical CI (2026-05-26):** `buildGapClosureCornellThreeScene` in `@vitrum-examples/shared`; two-engines `vitrumGapScenario` capture wiring; `npm run benchmark:gap-closure-mechanical`; smoke baselines for `rfe07` / `rfe08`.
 - **pt-webgpu WG-4/5/6 parity (2026-05-26):** layered front/back `activeLayerWeightRgb` at hero λ, η² transmission MIS in `brdfDirectionalPdf`, translucent SSS gate (`isTranslucent`), same-topology `positions` BLAS splice via `rebuildPrimitiveBlas`; core promise ledger `positions: true` for pt-webgpu.
 - **Program signoff docs (2026-05-26):** `plan/WG-signoff-2026-05-26.md`, `plan/PR-signoff-2026-05-26.md`; fidelity + maturity matrices updated.
 - **pt-webgpu lite + full trace tiers (2026-05-26):** lite layout for SwiftShader-class adapters (≤10 buffers / ≤4 textures); full layout splits path-trace bindings across three groups (≤10 buffers each) so Chrome-class GPUs (16/8) get TLAS, HDRI, area lights, motion/variance aux, and caustics without the old single-group 23-buffer requirement.

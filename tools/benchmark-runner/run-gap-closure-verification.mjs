@@ -5,6 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { GAP_CLOSURE_SCENARIOS } from './scenario-presets.mjs';
+import { PT_WEBGPU_BASELINE_SCENARIOS, PT_WEBGPU_GAP_SCENARIOS } from './gapClosurePtWebgpuMap.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
 
 const scenarios = GAP_CLOSURE_SCENARIOS;
@@ -29,15 +30,35 @@ function defaultCaptureCommand(scenario) {
   return '';
 }
 
+const allowBaselineGen = process.env.VITRUM_ALLOW_BASELINE_GEN === '1';
+const gapMechanical = process.env.VITRUM_GAP_MECHANICAL === '1';
+
 const scenarioFilter = (process.env.VITRUM_GAP_SCENARIOS ?? '')
   .split(',')
   .map((s) => s.trim())
   .filter((s) => s.length > 0);
-const activeScenarios =
+let activeScenarios =
   scenarioFilter.length > 0
     ? scenarios.filter((s) => scenarioFilter.includes(s.scenarioId))
     : scenarios;
-const allowBaselineGen = process.env.VITRUM_ALLOW_BASELINE_GEN === '1';
+if (gapMechanical && scenarioFilter.length === 0) {
+  const withBaseline = [];
+  for (const s of scenarios) {
+    const isPtWebgpuRow =
+      s.backend === 'pt-webgpu' || PT_WEBGPU_GAP_SCENARIOS.includes(s.scenarioId);
+    if (!isPtWebgpuRow) continue;
+    const baselinePath = resolve(baselineDir, `${s.scenarioId}.png`);
+    // eslint-disable-next-line no-await-in-loop
+    if (await fileExists(baselinePath)) withBaseline.push(s);
+  }
+  activeScenarios = withBaseline;
+  if (activeScenarios.length === 0) {
+    console.error(
+      '[gap-closure] VITRUM_GAP_MECHANICAL=1: no pt-webgpu scenarios with committed baselines.',
+    );
+    process.exit(1);
+  }
+}
 const failOnIdentical = process.env.VITRUM_FAIL_ON_IDENTICAL_HASH === '1';
 const smokeCapture = process.env.VITRUM_CAPTURE_SMOKE === '1';
 const captureProcessTimeoutMs = Math.max(
@@ -217,11 +238,41 @@ async function runCapture(scenario, variant, outputImagePath) {
 }
 
 async function evaluateScenario(scenario) {
+  const baselineImagePath = resolve(baselineDir, `${scenario.scenarioId}.png`);
+  if (
+    gapMechanical &&
+    (scenario.backend === 'pt-webgpu' || PT_WEBGPU_GAP_SCENARIOS.includes(scenario.scenarioId))
+  ) {
+    const baselineExists = await fileExists(baselineImagePath);
+    if (!baselineExists) {
+      return {
+        ...scenario,
+        status: 'blocked-missing-baseline',
+        beforeImageHash: null,
+        afterImageHash: null,
+        deltaSummary: `Mechanical mode: missing ${baselineImagePath}`,
+        perfBaselineMsPerSample: null,
+        perfCandidateMsPerSample: null,
+        passFail: 'BLOCKED',
+      };
+    }
+    const hash = await sha256(baselineImagePath);
+    return {
+      ...scenario,
+      status: 'mechanical-baseline-locked',
+      beforeImageHash: hash,
+      afterImageHash: hash,
+      deltaSummary: 'mechanical: baseline PNG committed; GPU re-capture skipped (VITRUM_GAP_MECHANICAL=1)',
+      perfBaselineMsPerSample: null,
+      perfCandidateMsPerSample: null,
+      passFail: 'PASS',
+    };
+  }
+
   const scenarioDir = resolve(captureDir, scenario.scenarioId);
   await mkdir(scenarioDir, { recursive: true });
   const variants = scenarioVariants(scenario);
 
-  const baselineImagePath = resolve(baselineDir, `${scenario.scenarioId}.png`);
   const baselineExistsBefore = await fileExists(baselineImagePath);
   let baselineCaptureInfo = null;
   if (!baselineExistsBefore && allowBaselineGen) {
@@ -359,6 +410,7 @@ const report = {
       captureCommandOverride.length > 0 || activeScenarios.some((s) => defaultCaptureCommand(s).length > 0),
     scenarioFilter: scenarioFilter.length > 0 ? scenarioFilter : null,
     allowBaselineGeneration: allowBaselineGen,
+    gapMechanical,
   },
   results: entries,
 };
