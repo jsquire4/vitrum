@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **PR-8 pt-webgl incremental patches (2026-05-27):** `updatePrimitive({ material })` → `WebGLPathTracer.updateMaterials()`; `updatePrimitive({ transform })` → fork BVH `refit` without full `setScene` (PR-8b); `updateEmitter` → `updateLights()` without full `setScene`; ledger `transform` + `material` + `emitter: true`.
+- **PR-8 pt-webgl incremental patches (2026-05-27):** `updatePrimitive({ material })` → `updateMaterials()`; `{ transform }` → fork BVH refit (PR-8b); `{ positions }` same topology → geometry regen (PR-8c); `updateEmitter` → `updateLights()`; ledger `transform` + `positions` + `material` + `emitter: true`.
 - **PR-5.5 hybrid RC on transform (2026-05-27):** merged-mode `transformRefit` returns `rcRefitBounds` from live `bvhPositions` so `RCSubsystem.refitCascadeBounds` runs without full `setScene`.
 - **PR-7 GPU skinning same-frame (2026-05-27):** `gpuSkinBvh.wgsl.ts` LBS writes merged `bvhPositions` on GPU; `refitSkinnedMeshAfterGpuWrite` + `refreshBvhNodesOnly` refit nodes without position re-upload (no frame-lagged readback).
 - **WG-7 BDPT on pt-webgpu (2026-05-27):** GPU `bdptExtendLightSubpath` (bounce-0 power-weighted emitter pick incl. spot + environment/HDRI + extension bounces); `extensions['vitrum.ptWebgpu.bdpt']`; FrameParams `bdptEnabled` / `bdptMaxLightBounces`. CPU `bdptEmitterPickCpu` mirrors GPU weighted pick for `fillBdptLightPathCpu` test oracles.

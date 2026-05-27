@@ -1,4 +1,5 @@
 import {
+  BufferAttribute,
   Matrix4,
   PerspectiveCamera,
 } from 'three';
@@ -171,14 +172,41 @@ function isTransformOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean 
   return true;
 }
 
-/** BVH refit via fork `PathTracingSceneGenerator` (GEOMETRY_ADJUSTED) — no full setScene. */
-function refitPathTracerBvhAfterTransform(
+type PathTracerGenerateResult = {
+  bvhChanged?: boolean;
+  bvh?: unknown;
+  needsMaterialIndexUpdate?: boolean;
+  geometry?: {
+    attributes: {
+      normal?: { array: ArrayLike<number> };
+      tangent?: { array: ArrayLike<number> };
+      uv?: { array: ArrayLike<number> };
+      color?: { array: ArrayLike<number> };
+    };
+  };
+};
+
+/** Regenerate merged geometry + BVH via fork generator — no full `setScene`. */
+function refreshPathTracerSceneGeometry(
   pathTracer: WebGLPathTracer,
   threeRoot: ThreeScene,
 ): boolean {
   const internal = pathTracer as unknown as {
-    _generator?: { initialized?: boolean; generate: () => { bvhChanged?: boolean; bvh?: unknown } };
-    _pathTracer?: { material: { bvh: { updateFrom: (b: unknown) => void } } };
+    _generator?: { initialized?: boolean; generate: () => PathTracerGenerateResult };
+    _pathTracer?: {
+      material: {
+        bvh: { updateFrom: (b: unknown) => void };
+        attributesArray: {
+          updateFrom: (
+            normal: { array: ArrayLike<number> } | undefined,
+            tangent: { array: ArrayLike<number> } | undefined,
+            uv: { array: ArrayLike<number> } | undefined,
+            color: { array: ArrayLike<number> } | undefined,
+          ) => void;
+        };
+        materialIndexAttribute: { updateFrom: (attr: unknown) => void };
+      };
+    };
   };
   const gen = internal._generator;
   if (gen?.initialized !== true) {
@@ -186,10 +214,47 @@ function refitPathTracerBvhAfterTransform(
   }
   threeRoot.updateMatrixWorld(true);
   const result = gen.generate();
-  if (result.bvhChanged === true && result.bvh != null && internal._pathTracer != null) {
-    internal._pathTracer.material.bvh.updateFrom(result.bvh);
+  const mat = internal._pathTracer?.material;
+  if (result.bvhChanged === true && result.bvh != null && mat != null) {
+    mat.bvh.updateFrom(result.bvh);
+    const attrs = result.geometry?.attributes;
+    if (attrs != null) {
+      mat.attributesArray.updateFrom(attrs.normal, attrs.tangent, attrs.uv, attrs.color);
+    }
+    if (result.needsMaterialIndexUpdate === true && result.geometry != null) {
+      const materialIndex = (result.geometry as { attributes: { materialIndex?: unknown } }).attributes
+        .materialIndex;
+      if (materialIndex != null) {
+        mat.materialIndexAttribute.updateFrom(materialIndex);
+      }
+    }
   }
   pathTracer.reset();
+  return true;
+}
+
+function isPositionsOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
+  const rec = patch as Record<string, unknown>;
+  if (rec['positions'] === undefined) return false;
+  for (const key of Object.keys(rec)) {
+    if (key === 'id' || key === 'positions' || key === 'normals') continue;
+    if (rec[key] !== undefined) return false;
+  }
+  return true;
+}
+
+function applyPositionsPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimitive>): boolean {
+  const positions = patch.positions;
+  if (positions == null) return false;
+  const posAttr = mesh.geometry.getAttribute('position');
+  const vertCount = positions.length / 3;
+  if (posAttr != null && posAttr.count !== vertCount) {
+    return false;
+  }
+  mesh.geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
+  if (patch.normals != null) {
+    mesh.geometry.setAttribute('normal', new BufferAttribute(new Float32Array(patch.normals), 3));
+  }
   return true;
 }
 
@@ -650,7 +715,7 @@ export class PTEngineWebGL2 implements Engine {
       supportsIncrementalScene: true,
       incrementalPatchSupport: {
         transform: true,
-        positions: false,
+        positions: true,
         material: true,
         emitter: true,
         topology: false,
@@ -944,7 +1009,27 @@ export class PTEngineWebGL2 implements Engine {
         mesh.matrixWorld.copy(m);
         mesh.matrixAutoUpdate = false;
       }
-      if (!refitPathTracerBvhAfterTransform(this.#pathTracer, this.#threeSceneRoot)) {
+      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
+        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+        this.setScene(next);
+        return;
+      }
+      this.#oidnDispatcher?.invalidate();
+      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+      return;
+    }
+    if (isPositionsOnlyPrimitivePatch(_patch)) {
+      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
+      if (mesh == null) {
+        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
+      }
+      const meshPatch = _patch as Partial<MeshPrimitive>;
+      if (!applyPositionsPatchToMesh(mesh, meshPatch)) {
+        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+        this.setScene(next);
+        return;
+      }
+      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
         const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
         this.setScene(next);
         return;
