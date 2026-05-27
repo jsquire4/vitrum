@@ -122,7 +122,11 @@ IFS=',' read -ra SCENARIOS <<< "$SCENARIOS_RAW"
 SUMMARY=()
 for scenario_short in "${SCENARIOS[@]}"; do
   scenario_id="cornell-${scenario_short}"
-  out_png="${OUT_DIR}/${scenario_id}.png"
+  if [[ -n "$EXTRA_QUERY" && "$EXTRA_QUERY" == *"vitrumBdpt"* ]]; then
+    out_png="${OUT_DIR}/${scenario_id}-bdpt.png"
+  else
+    out_png="${OUT_DIR}/${scenario_id}.png"
+  fi
   echo "[capture-suite] → ${scenario_id} (${WIDTH}x${HEIGHT}, ${SPP} spp, ${BOUNCES} bounces)"
   start_ts=$(date +%s)
 

@@ -1,9 +1,10 @@
 /**
  * Mechanical BDPT vs layered-BSDF harness — metrics + gated vitest, no GPU.
+ * Preserves GPU captures in bdpt-layered-mechanical/ when files are >50KB.
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
@@ -46,8 +47,22 @@ function runNode(script) {
   if (r.status !== 0) process.exit(r.status ?? 1);
 }
 
-async function main() {
+async function ensureFixturePngs() {
+  if (process.env.VITRUM_BDPT_REGENERATE_FIXTURES === '1') {
+    runNode('write-bdpt-layered-mechanical-fixtures.mjs');
+    return;
+  }
+  try {
+    const [layeredSt, bdptSt] = await Promise.all([stat(layeredPng), stat(bdptPng)]);
+    if (layeredSt.size > 50_000 && bdptSt.size > 50_000) return;
+  } catch {
+    /* missing — generate stubs */
+  }
   runNode('write-bdpt-layered-mechanical-fixtures.mjs');
+}
+
+async function main() {
+  await ensureFixturePngs();
 
   const layered = PNG.sync.read(await readFile(layeredPng));
   const bdpt = PNG.sync.read(await readFile(bdptPng));
@@ -64,14 +79,14 @@ async function main() {
     bdptDeltaMean,
     layeredPng: 'tools/reference-renders/bdpt-layered-mechanical/cornell-layered.png',
     bdptPng: 'tools/reference-renders/bdpt-layered-mechanical/cornell-layered-bdpt.png',
-    note: 'Fixture PNGs only — replace via npm run benchmark:bdpt-layered-refs on a GPU host.',
+    note: 'Replace stubs via npm run benchmark:bdpt-layered-refs on a GPU host.',
   };
   await writeFile(metricsPath, `${JSON.stringify(metrics, null, 2)}\n`, 'utf8');
   console.log(`VITRUM_BDPT_LAYERED_METRICS=${metricsPath}`);
   console.log(`bdptDeltaMean=${bdptDeltaMean.toFixed(6)}`);
 
   if (bdptDeltaMean <= 0.005) {
-    throw new Error(`bdptDeltaMean=${bdptDeltaMean} (expected > 0.005 for fixture pair)`);
+    throw new Error(`bdptDeltaMean=${bdptDeltaMean} (expected > 0.005)`);
   }
 
   const test = spawnSync(

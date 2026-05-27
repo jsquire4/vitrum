@@ -1,6 +1,9 @@
 # BDPT vs layered-BSDF — mechanical fixtures
 
-64×64 PNG stubs for the Sprint 10c / 14 acceptance harness (`bdptLayeredAcceptance.gpu.test.ts`). They are **not** GPU renders.
+Acceptance PNGs for Sprint 10c / 14 (`bdptLayeredAcceptance.gpu.test.ts`).
+
+- `cornell-layered.png` — GPU capture (512×512 quick suite) when promoted from `benchmark:bdpt-layered-refs`.
+- `cornell-layered-bdpt.png` — may still be a stub until a successful `?vitrumBdpt=1` capture lands (check file size >50KB).
 
 ## Regenerate + gate
 

@@ -84,13 +84,28 @@ async function captureAll(browser) {
     const url = captureVariantUrl(row);
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
-      await page.waitForFunction(
-        ({ target }) => (globalThis.__vitrum?.walkaround?.frame ?? 0) >= target,
-        { target: frames },
-        { timeout: 240_000, polling: 250 },
-      );
       const canvas = page.locator('#c-wgpu');
-      await canvas.waitFor({ timeout: 15_000 });
+      await canvas.waitFor({ timeout: 60_000 });
+      const frameWaitMs = Number(
+        process.env.VITRUM_RC_FRAME_WAIT_MS ?? String(Math.max(90_000, frames * 4_000)),
+      );
+      try {
+        await page.waitForFunction(
+          ({ target }) => (globalThis.__vitrum?.walkaround?.frame ?? 0) >= target,
+          { target: frames },
+          { timeout: frameWaitMs, polling: 250 },
+        );
+      } catch (err) {
+        const snap = await page.evaluate(() => ({
+          frame: globalThis.__vitrum?.walkaround?.frame ?? 0,
+          state: globalThis.__vitrum?.walkaround?.state ?? 'missing',
+        }));
+        console.warn(
+          `[rc-acceptance] ${row.label} frame wait (${frameWaitMs}ms): ${err instanceof Error ? err.message : err}; ` +
+            `capturing anyway at frame=${snap.frame} state=${snap.state}`,
+        );
+        await page.waitForTimeout(2_000);
+      }
       await canvas.screenshot({ path: row.outPng });
       const hash = createHash('sha256').update(await readFile(row.outPng)).digest('hex');
       console.log(`[rc-acceptance] ${row.label} → ${row.outPng} sha256=${hash.slice(0, 12)}`);

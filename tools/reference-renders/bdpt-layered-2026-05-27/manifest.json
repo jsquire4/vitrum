@@ -1,0 +1,13 @@
+{
+  "capturedAt": "2026-05-27T21:20:08.908Z",
+  "outDir": "tools/reference-renders/bdpt-layered-2026-05-27",
+  "steps": [
+    {
+      "scenario": "cornell-layered-bdpt",
+      "ok": true,
+      "stdout": "d-2026-05-27\n  ✓ cornell-layered  (77s, 15456 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/cornell-layered-bdpt.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-27/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2588893)...",
+      "png": "tools/reference-renders/bdpt-layered-2026-05-27/cornell-layered-bdpt.png"
+    }
+  ],
+  "note": "Layered BSDF fork patch (Sprint 14) + BDPT dispatch (Sprint 10c). Compare cornell-layered.png vs BDPT variant visually; pt-webgpu parity in gap-closure rfe03."
+}

@@ -12,7 +12,7 @@
  *   VITRUM_BDPT_REQUIRE_GPU    1 — exit 1 when capture script fails (default 0 logs only)
  */
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
@@ -48,7 +48,27 @@ async function main() {
   if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
     console.log('[bdpt-layered-refs] capturing cornell-layered with vitrumBdpt=1…');
     const bdpt = await runCapture(['--only', 'layered', '--bdpt']);
-    steps.push({ scenario: 'cornell-layered-bdpt', ok: bdpt.code === 0, stdout: bdpt.stdout.slice(-500) });
+    const bdptSrc = resolve(outDir, 'cornell-layered-bdpt.png');
+    const bdptDst = resolve(outDir, 'cornell-layered-bdpt.png');
+    steps.push({
+      scenario: 'cornell-layered-bdpt',
+      ok: bdpt.code === 0,
+      stdout: bdpt.stdout.slice(-500),
+      png: `tools/reference-renders/${label}/cornell-layered-bdpt.png`,
+    });
+  }
+
+  const layeredGpu = resolve(outDir, 'cornell-layered.png');
+  const bdptGpu = resolve(outDir, 'cornell-layered-bdpt.png');
+  const mechDir = resolve(repoRoot, 'tools/reference-renders/bdpt-layered-mechanical');
+  try {
+    await copyFile(layeredGpu, resolve(mechDir, 'cornell-layered.png'));
+    if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
+      await copyFile(bdptGpu, resolve(mechDir, 'cornell-layered-bdpt.png'));
+    }
+    console.log(`[bdpt-layered-refs] promoted GPU PNGs → ${mechDir}`);
+  } catch (e) {
+    console.warn(`[bdpt-layered-refs] could not promote to mechanical dir: ${e}`);
   }
 
   const manifest = {

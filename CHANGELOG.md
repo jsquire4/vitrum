@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **GPU reference captures (2026-05-27):** `capture-cornell-suite.sh` writes `cornell-layered-bdpt.png` when `--bdpt`; `benchmark:bdpt-layered-refs` promotes GPU PNGs into `bdpt-layered-mechanical/`; real 512×512 layered capture landed (~578KB). RC walkaround capture requires hybrid-capable WebGPU (16 storage buffers/stage) — use `npm run benchmark:rc-acceptance-windows` on WSL+Windows host Chrome; WSL Playwright often reports 10/4 limits.
 - **BDPT/layered mechanical acceptance (2026-05-27):** fixture PNGs under `bdpt-layered-mechanical/`; `npm run benchmark:bdpt-layered-mechanical` + gated `bdptLayeredAcceptance.gpu.test.ts`; in `verify:mechanical`.
 - **pt-webgl TLAS capability tag (2026-05-27):** `experimentalFeatures` includes `merged-bvh-only` when `getSceneTlasAudit().needsTlas`; `@vitrum/engine` re-exports `auditSceneNeedsTlas`.
 - **RC mechanical acceptance (2026-05-27):** committed 64×64 fixture PNGs under `W8-rc-{off,on}/`; `npm run benchmark:rc-acceptance-mechanical` runs metrics + `rcAcceptance.gpu.test.ts` without GPU; wired into `verify:mechanical`.
