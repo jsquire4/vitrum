@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -9,6 +10,13 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 22u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
+  });
+
+  it('includes hero-wavelength MIS helpers when spectral mode is enabled', () => {
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn sampleHeroWavelengthMIS');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn heroWavelengthToRgb');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('params.spectralEnabled != 0u');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('heroLambdaTo01(heroLambda)');
   });
 
   it('threads transmission probability into directional MIS pdf helper', () => {
@@ -96,14 +104,10 @@ describe('pt-webgpu WGSL material contract', () => {
       offset = aligned + s;
     }
 
-    // Byte offsets must match what the CPU packer at
-    // packages/pt-webgpu/src/index.ts:274-280 writes:
-    //   paramsF32.set(invVp, 36)   → byte 36 * 4 = 144
-    //   paramsF32.set(vp, 52)      → byte 52 * 4 = 208
-    //   paramsF32.set(prevVp, 68)  → byte 68 * 4 = 272
-    expect(matrixOffsets['invViewProj']).toBe(144);
-    expect(matrixOffsets['viewProj']).toBe(208);
-    expect(matrixOffsets['prevViewProj']).toBe(272);
+    // Byte offsets must match FrameParamsSlot (tools/generate-wgsl-layouts.mjs).
+    expect(matrixOffsets['invViewProj']).toBe(FrameParamsSlot.invViewProj * 4);
+    expect(matrixOffsets['viewProj']).toBe(FrameParamsSlot.viewProj * 4);
+    expect(matrixOffsets['prevViewProj']).toBe(FrameParamsSlot.prevViewProj * 4);
     expect(offset).toBeLessThanOrEqual(512);
   });
 

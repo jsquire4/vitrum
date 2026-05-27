@@ -25,6 +25,7 @@ import {
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
+import { X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL } from '@vitrum/shared-samplers';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPacking.js';
@@ -153,6 +154,7 @@ class PTEngineWebGPU implements Engine {
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
   readonly #oidnDispatcher: OIDNFinalDispatcher | null;
+  readonly #extensions: EngineOptions['extensions'];
 
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
@@ -161,6 +163,7 @@ class PTEngineWebGPU implements Engine {
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot, traceTier: PtWebgpuTraceTier) {
     this.#slot = slot;
     this.#device = opts.device;
+    this.#extensions = opts.extensions;
     this.#traceTier = traceTier;
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
@@ -476,7 +479,16 @@ class PTEngineWebGPU implements Engine {
     paramsU32[FrameParamsSlot.environmentMapHeight] = sb.environmentMapHeight >>> 0;
     paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
     paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
-    // Slot 19 (_pad1) is padding; zero-initialized by ArrayBuffer.
+    const spectralExt = this.#extensions?.['vitrum.ptWebgpu.spectralHeroWavelength'];
+    const spectralEnabled =
+      spectralExt === true || spectralExt === 1 || spectralExt === '1' || spectralExt === 'true';
+    paramsU32[FrameParamsSlot.spectralEnabled] = spectralEnabled ? 1 : 0;
+    paramsU32[FrameParamsSlot.heroStrategy] = 0;
+    paramsF32[FrameParamsSlot.heroLambdaNm] = 550.0;
+    paramsF32[FrameParamsSlot.heroPdf] = 1.0;
+    paramsF32[FrameParamsSlot.cmfIntegralX] = X_CMF_INTEGRAL;
+    paramsF32[FrameParamsSlot.cmfIntegralY] = Y_CMF_INTEGRAL;
+    paramsF32[FrameParamsSlot.cmfIntegralZ] = Z_CMF_INTEGRAL;
     paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
     paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
     paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];

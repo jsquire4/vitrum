@@ -89,6 +89,8 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
     spectralMinMu = 0;
     spectralMaxMu = 0;
   }
+  const dispersionAbbe = Math.max(finite(material.dispersionAbbeNumber ?? 0), 0);
+  const m19Y = dispersionAbbe > 0 ? dispersionAbbe : spectralMinMu;
   const packed = [
     base[0],
     base[1],
@@ -132,6 +134,6 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
     }
   }
   packed.push(...spectralSamples);
-  packed.push(spectralAvgMu, spectralMinMu, spectralMaxMu, spectralSampleCount);
+  packed.push(spectralAvgMu, m19Y, spectralMaxMu, spectralSampleCount);
   return packed;
 }

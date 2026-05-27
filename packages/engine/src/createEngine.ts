@@ -29,6 +29,11 @@ import {
   createPTEngine_WebGL2,
   type PTEngineWebGL2Options,
 } from '@vitrum/pt-webgl';
+import {
+  createPTEngine_WebGPU,
+  ptWebgpuRequiredLimitsForAdapter,
+  type PTEngineWebGPUOptions,
+} from '@vitrum/pt-webgpu';
 
 import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 import {
@@ -65,6 +70,7 @@ export interface CreateEngineOptions {
   /** Quality vs speed hint:
    *    'realtime' — prefer walkaround-hybrid (WebGPU; ~60fps target).
    *    'quality'  — prefer pt-webgl (WebGL2 path tracer; converged).
+   *    'quality-webgpu' — prefer pt-webgpu when WebGPU is available, else pt-webgl.
    *    'auto'     — pick walkaround-hybrid if WebGPU + tris < 500k,
    *                 else pt-webgl. Default. */
   readonly prefer?: EnginePreference;
@@ -96,6 +102,9 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
 
   if (backend === 'walkaround-hybrid') {
     return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree);
+  }
+  if (backend === 'pt-webgpu') {
+    return await constructPathTracerWebGPU(opts, vitrumScene, sceneInputIsThree);
   }
   return await constructPathTracer(opts, vitrumScene, sceneInputIsThree);
 }
@@ -186,6 +195,45 @@ async function constructWalkaround(
     // headless test canvas with no getContext('webgpu') support) are fine —
     // attachVitrum will simply not plumb swapChainView and HybridEngine
     // will skip frames cleanly.
+  }
+
+  return wrapWithIdempotentDispose(engine, () => {
+    try { device.destroy(); } catch {}
+  });
+}
+
+async function constructPathTracerWebGPU(
+  opts: CreateEngineOptions,
+  vitrumScene: Scene,
+  _sceneInputIsThree: boolean,
+): Promise<Engine> {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter == null) {
+    throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
+  }
+  const device = await adapter.requestDevice({
+    requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter),
+  });
+
+  const merged: PTEngineWebGPUOptions = {
+    device,
+    ...(opts.advanced as Partial<PTEngineWebGPUOptions> | undefined),
+  };
+
+  const engine = await createPTEngine_WebGPU(merged);
+  engine.setScene(vitrumScene);
+
+  try {
+    const ctx = opts.canvas.getContext('webgpu');
+    if (ctx != null) {
+      const format = (typeof navigator !== 'undefined' && 'gpu' in navigator
+        ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
+            .getPreferredCanvasFormat?.() ?? ('bgra8unorm')
+        : ('bgra8unorm' as GPUTextureFormat));
+      ctx.configure({ device, format, alphaMode: 'opaque' });
+    }
+  } catch {
+    // Best-effort canvas configure for attachVitrum swap-chain plumbing.
   }
 
   return wrapWithIdempotentDispose(engine, () => {

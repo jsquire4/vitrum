@@ -41,6 +41,14 @@ struct FrameParams {
   environmentMapHeight: u32,
   triIntersectEpsilon: f32,
   tlasNodeCount: u32,
+  spectralEnabled: u32,
+  heroStrategy: u32,
+  heroLambdaNm: f32,
+  heroPdf: f32,
+  cmfIntegralX: f32,
+  cmfIntegralY: f32,
+  cmfIntegralZ: f32,
+  _padBeforeCamera: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -86,6 +94,14 @@ struct FrameParams {
   environmentMapHeight: u32,
   triIntersectEpsilon: f32, // UBO-plumbed (D12); default metre-scale
   tlasNodeCount: u32,
+  spectralEnabled: u32,
+  heroStrategy: u32,
+  heroLambdaNm: f32,
+  heroPdf: f32,
+  cmfIntegralX: f32,
+  cmfIntegralY: f32,
+  cmfIntegralZ: f32,
+  _padBeforeCamera: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -311,6 +327,20 @@ fn powerHeuristic(pdfA: f32, pdfB: f32) -> f32 {
   return a2 / max(a2 + b2, 1e-6);
 }
 
+// Cauchy dispersion (mirrors @vitrum/shared-samplers/cauchyIor.ts).
+fn cauchyIorAtLambda(lambdaNm: f32, baseIor: f32, abbeV: f32) -> f32 {
+  if (abbeV < 1.0) {
+    return baseIor;
+  }
+  let lambdaUm = lambdaNm * 0.001;
+  let lam2 = lambdaUm * lambdaUm;
+  let lamF = 0.4861;
+  let lamC = 0.6563;
+  let denom = 1.0 / (lamF * lamF) - 1.0 / (lamC * lamC);
+  let B = (baseIor - 1.0) / max(abbeV, 1.0) / max(denom, 1e-6);
+  return baseIor + B / lam2;
+}
+
 struct DecodedMaterial {
   baseColor: vec3f,
   roughness: f32,
@@ -332,6 +362,7 @@ struct DecodedMaterial {
   thinFilmAngleDependent: bool,
   spectralAvgMu: f32,
   spectralSampleCount: u32,
+  dispersionAbbe: f32,
 }
 
 fn decodeMaterial(matId: u32) -> DecodedMaterial {
@@ -372,6 +403,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.thinFilmAngleDependent = m6.w > 0.5;
   mat.spectralAvgMu = max(m19.x, 0.0);
   mat.spectralSampleCount = u32(max(m19.w, 0.0));
+  mat.dispersionAbbe = max(m19.y, 0.0);
   return mat;
 }
 `;

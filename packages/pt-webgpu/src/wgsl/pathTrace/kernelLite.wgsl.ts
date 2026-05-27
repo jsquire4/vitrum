@@ -112,6 +112,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
   var ray = generatePrimaryRay(gid.x, gid.y, jitter);
 
+  var heroLambda = params.heroLambdaNm;
+  var heroPdf = params.heroPdf;
+  if (params.spectralEnabled != 0u) {
+    let hero = sampleHeroWavelengthMIS(rand_f32(&rng), rand_f32(&rng));
+    heroLambda = hero.x;
+    heroPdf = hero.y;
+  }
+
   var radiance = vec3f(0.0);
   var throughput = vec3f(1.0);
   let bounceLimit = max(1u, min(params.maxBounces, 8u));
@@ -135,7 +143,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let emissive = mat.emissive;
     let metallic = mat.metallic;
     let transmission = mat.transmission;
-    let ior = mat.ior;
+    var ior = mat.ior;
+    if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
+      ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
+    }
     let scatteringCoeff = mat.scatteringCoeff;
     let scatteringAnisotropy = mat.scatteringAnisotropy;
     let scatteringRgb = mat.scatteringRgb;
@@ -174,25 +185,43 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var thinFilmTransmitTint = vec3f(1.0);
     if (thinFilmEnabled) {
       let viewCos = clamp(dot(normal, wo), 0.0, 1.0);
-      let rtR = thinFilmTmmRt(matId, thinFilmLayerCountU, 630.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
-      let rtG = thinFilmTmmRt(matId, thinFilmLayerCountU, 540.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
-      let rtB = thinFilmTmmRt(matId, thinFilmLayerCountU, 460.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
-      thinFilmReflectTint = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
-      thinFilmTransmitTint = clamp(vec3f(rtR.y, rtG.y, rtB.y), vec3f(0.0), vec3f(1.0));
+      if (params.spectralEnabled != 0u) {
+        let rt = thinFilmTmmRt(
+          matId,
+          thinFilmLayerCountU,
+          heroLambda,
+          ior,
+          thinFilmIncidentIor,
+          thinFilmAngleDependent,
+          viewCos,
+        );
+        thinFilmReflectTint = vec3f(clamp(rt.x, 0.0, 1.0));
+        thinFilmTransmitTint = vec3f(clamp(rt.y, 0.0, 1.0));
+      } else {
+        let rtR = thinFilmTmmRt(matId, thinFilmLayerCountU, 630.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
+        let rtG = thinFilmTmmRt(matId, thinFilmLayerCountU, 540.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
+        let rtB = thinFilmTmmRt(matId, thinFilmLayerCountU, 460.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
+        thinFilmReflectTint = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
+        thinFilmTransmitTint = clamp(vec3f(rtR.y, rtG.y, rtB.y), vec3f(0.0), vec3f(1.0));
+      }
       let layerStrength = clamp(0.12 + 0.06 * f32(thinFilmLayerCountU), 0.0, 0.55);
       let filmStrength = clamp(layerStrength * (1.0 - roughness), 0.0, 0.6);
       baseColor = mix(baseColor, baseColor * thinFilmReflectTint, filmStrength);
     }
     let throughputAtVertex = throughput;
     if (transmission > 0.0) {
-      let sampledMuR = sampleMaterialSpectralMu(matId, 0.15);
-      let sampledMuG = sampleMaterialSpectralMu(matId, 0.50);
-      let sampledMuB = sampleMaterialSpectralMu(matId, 0.85);
-      let spectralMu = select(
-        vec3f(spectralAvgMu),
-        vec3f(sampledMuR, sampledMuG, sampledMuB),
-        spectralSampleCount > 0u,
-      );
+      var spectralMu = vec3f(spectralAvgMu);
+      if (spectralSampleCount > 0u) {
+        if (params.spectralEnabled != 0u) {
+          let mu = sampleMaterialSpectralMu(matId, heroLambdaTo01(heroLambda));
+          spectralMu = vec3f(mu);
+        } else {
+          let sampledMuR = sampleMaterialSpectralMu(matId, 0.15);
+          let sampledMuG = sampleMaterialSpectralMu(matId, 0.50);
+          let sampledMuB = sampleMaterialSpectralMu(matId, 0.85);
+          spectralMu = vec3f(sampledMuR, sampledMuG, sampledMuB);
+        }
+      }
       let sigmaA = select(vec3f(0.0), max(spectralMu, vec3f(0.0)), hasSpectralAttenuation);
       let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
       let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
@@ -339,9 +368,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
+  var outRadiance = radiance;
+  if (params.spectralEnabled != 0u) {
+    outRadiance = heroWavelengthToRgb(heroLambda, luminance(radiance), heroPdf);
+  }
+
   accumulateFrame(
     gid,
-    radiance,
+    outRadiance,
     firstHitValid,
     firstHitPos,
     firstHitNormal,

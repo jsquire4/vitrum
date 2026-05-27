@@ -2,7 +2,7 @@
 
 import type { Vec3 } from '@vitrum/core';
 
-export type EnginePreference = 'realtime' | 'quality' | 'auto';
+export type EnginePreference = 'realtime' | 'quality' | 'quality-webgpu' | 'auto';
 
 /** Threshold above which 'auto' falls back from walkaround-hybrid to pt-webgl. */
 export const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
@@ -32,7 +32,8 @@ export function pickBackend(
   prefer: EnginePreference,
   hasWebGPU: boolean,
   triangleCount: number,
-): 'walkaround-hybrid' | 'pt-webgl' {
+): 'walkaround-hybrid' | 'pt-webgl' | 'pt-webgpu' {
+  if (prefer === 'quality-webgpu') return hasWebGPU ? 'pt-webgpu' : 'pt-webgl';
   if (prefer === 'quality') return 'pt-webgl';
   if (prefer === 'realtime') {
     if (!hasWebGPU) return 'pt-webgl';

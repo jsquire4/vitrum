@@ -7,6 +7,11 @@ describe('pickBackend', () => {
     expect(pickBackend('quality', false, 10_000)).toBe('pt-webgl');
   });
 
+  it('returns pt-webgpu for quality-webgpu when WebGPU is available', () => {
+    expect(pickBackend('quality-webgpu', true, 10_000)).toBe('pt-webgpu');
+    expect(pickBackend('quality-webgpu', false, 10_000)).toBe('pt-webgl');
+  });
+
   it('returns walkaround-hybrid when prefer is realtime + WebGPU available', () => {
     expect(pickBackend('realtime', true,  10_000_000)).toBe('walkaround-hybrid');
   });

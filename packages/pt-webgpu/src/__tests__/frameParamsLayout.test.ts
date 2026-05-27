@@ -93,6 +93,14 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'environmentMapHeight: u32',
       'triIntersectEpsilon: f32',
       'tlasNodeCount: u32',
+      'spectralEnabled: u32',
+      'heroStrategy: u32',
+      'heroLambdaNm: f32',
+      'heroPdf: f32',
+      'cmfIntegralX: f32',
+      'cmfIntegralY: f32',
+      'cmfIntegralZ: f32',
+      '_padBeforeCamera: u32',
       'cameraPos: vec4f',
       'lightDir: vec4f',
       'environmentTint: vec4f',
@@ -171,19 +179,13 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/params\.rectAreaV\b/);
   });
 
-  it('fits inside the 512-byte UBO with the new layout (336 bytes used)', () => {
-    // Field sizes (WGSL std140-ish for uniform buffers, vec4-aligned):
-    //   19 u32  = 76 bytes  (slot 18 is now triIntersectEpsilon: f32)
-    //    1 f32  =  4 bytes  (triIntersectEpsilon)
-    //    4 vec4f = 64 bytes
-    //    3 mat4x4f = 192 bytes
-    //   total = 336 bytes, fits in 512.
+  it('fits inside the 512-byte UBO with the spectral hero layout (368 bytes used)', () => {
     const u32Count = fields.filter((f) => /:\s*u32\b/.test(f)).length;
     const f32Count = fields.filter((f) => /:\s*f32\b/.test(f)).length;
     const vec4Count = fields.filter((f) => /:\s*vec4f\b/.test(f)).length;
     const mat4Count = fields.filter((f) => /:\s*mat4x4f\b/.test(f)).length;
     const bytes = u32Count * 4 + f32Count * 4 + vec4Count * 16 + mat4Count * 64;
-    expect(bytes).toBe(336);
+    expect(bytes).toBe(368);
     expect(bytes).toBeLessThanOrEqual(512);
   });
 });

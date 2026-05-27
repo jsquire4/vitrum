@@ -29,7 +29,8 @@
     "@vitrum/core": "file:../core",
     "@vitrum/three-bindings": "file:../three-bindings",
     "@vitrum/walkaround-hybrid": "file:../walkaround-hybrid",
-    "@vitrum/pt-webgl": "file:../pt-webgl"
+    "@vitrum/pt-webgl": "file:../pt-webgl",
+    "@vitrum/pt-webgpu": "file:../pt-webgpu"
   },
   "peerDependencies": {
     "three": ">=0.167.0 <0.190",
