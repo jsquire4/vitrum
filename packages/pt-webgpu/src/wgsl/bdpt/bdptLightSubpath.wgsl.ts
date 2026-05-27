@@ -1,59 +1,181 @@
 /**
  * BDPT light-subpath compute — bounce 0 (emitter) + extension bounces k>0.
+ * Bounce 0 uses power-weighted discrete emitter pick (fork `randomLightSample` parity).
  * @see packages/three-gpu-pathtracer/.../bdpt_light_subpath.glsl.js
  */
 export const PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL = /* wgsl */ `
+fn bdptLightLuminance(c: vec3f) -> f32 {
+  return max(dot(c, vec3f(0.2126, 0.7152, 0.0722)), 1e-20);
+}
+
+fn bdptEmitterCount() -> u32 {
+  var n = 0u;
+  if (params.lightDir.w > 1e-6) {
+    n = n + 1u;
+  }
+  n = n + params.pointLightCount;
+  n = n + params.rectAreaLightCount;
+  n = n + params.meshAreaLightCount;
+  return n;
+}
+
+fn bdptEmitterPower(flatIdx: u32) -> f32 {
+  var cur = 0u;
+  if (params.lightDir.w > 1e-6) {
+    if (cur == flatIdx) {
+      return bdptLightLuminance(vec3f(params.lightDir.w));
+    }
+    cur = cur + 1u;
+  }
+  for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
+    if (cur == flatIdx) {
+      let rad = pointLights[pi * 2u + 1u].rgb;
+      return bdptLightLuminance(rad);
+    }
+    cur = cur + 1u;
+  }
+  for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
+    if (cur == flatIdx) {
+      let rb = ri * 4u;
+      let ru = rectAreaLights[rb + 1u].xyz;
+      let rv = rectAreaLights[rb + 2u].xyz;
+      let rr = rectAreaLights[rb + 3u].rgb;
+      let area = max(4.0 * length(cross(ru, rv)), 1e-6);
+      return area * bdptLightLuminance(rr);
+    }
+    cur = cur + 1u;
+  }
+  for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
+    if (cur == flatIdx) {
+      let mb = mi * 4u;
+      let a = meshAreaLights[mb].xyz;
+      let b = meshAreaLights[mb + 1u].xyz;
+      let c = meshAreaLights[mb + 2u].xyz;
+      let mr = meshAreaLights[mb + 3u].rgb;
+      let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
+      return area * bdptLightLuminance(mr);
+    }
+    cur = cur + 1u;
+  }
+  return 1e-20;
+}
+
+fn bdptPickEmitterFlat(rng: ptr<function, u32>, totalPower: f32, emitterCount: u32) -> u32 {
+  if (emitterCount == 0u) {
+    return 0u;
+  }
+  let u = rand_f32(rng) * totalPower;
+  var cum = 0.0;
+  for (var i = 0u; i < emitterCount; i = i + 1u) {
+    let w = bdptEmitterPower(i);
+    cum = cum + w;
+    if (u <= cum) {
+      return i;
+    }
+  }
+  return emitterCount - 1u;
+}
+
 fn bdptWriteInvalid(col: i32) {
   textureStore(bdptLightPath, vec2i(col, 0), vec4f(0.0, 0.0, 0.0, BDPT_KIND_INVALID));
   textureStore(bdptLightPath, vec2i(col, 1), vec4f(0.0));
   textureStore(bdptLightPath, vec2i(col, 2), vec4f(0.0));
 }
 
+fn bdptFinishBounce0(
+  col: i32,
+  emitPos: vec3f,
+  emitNormal: vec3f,
+  emitRad: vec3f,
+  pdfLight: f32,
+  rng: ptr<function, u32>,
+) {
+  let hemi = cosineHemisphereSample(rng, emitNormal);
+  let cosEmit = max(dot(emitNormal, hemi.wi), 0.0);
+  let pdfHemi = hemi.pdf;
+  let pdfJoint = max(pdfLight * pdfHemi, 1e-8);
+  let emitThroughput = emitRad * cosEmit / pdfJoint;
+  textureStore(bdptLightPath, vec2i(col, 0), vec4f(emitPos, 0.0));
+  textureStore(bdptLightPath, vec2i(col, 1), vec4f(emitNormal, pdfJoint));
+  textureStore(bdptLightPath, vec2i(col, 2), vec4f(emitThroughput, pdfHemi));
+}
+
 fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
-  if (params.meshAreaLightCount > 0u) {
-    let mb = 0u;
-    let a = meshAreaLights[mb].xyz;
-    let b = meshAreaLights[mb + 1u].xyz;
-    let c = meshAreaLights[mb + 2u].xyz;
-    let rad = meshAreaLights[mb + 3u].rgb;
-    let emitPos = (a + b + c) / 3.0;
-    let e1 = b - a;
-    let e2 = c - a;
-    let n = cross(e1, e2);
-    let nLen = length(n);
-    if (nLen < 1e-8) {
-      bdptWriteInvalid(col);
+  let emitterCount = bdptEmitterCount();
+  if (emitterCount == 0u) {
+    bdptWriteInvalid(col);
+    return;
+  }
+  var totalPower = 0.0;
+  for (var i = 0u; i < emitterCount; i = i + 1u) {
+    totalPower = totalPower + bdptEmitterPower(i);
+  }
+  let flat = bdptPickEmitterFlat(rng, totalPower, emitterCount);
+  let discretePdf = bdptEmitterPower(flat) / max(totalPower, 1e-20);
+
+  var cur = 0u;
+  if (params.lightDir.w > 1e-6) {
+    if (cur == flat) {
+      let lightDir = safe_normalize(params.lightDir.xyz);
+      let emitPos = -lightDir * 50.0;
+      let irr = params.lightDir.w;
+      bdptFinishBounce0(col, emitPos, lightDir, vec3f(irr), discretePdf, rng);
       return;
     }
-    let emitNormal = n / nLen;
-    let hemi = cosineHemisphereSample(rng, emitNormal);
-    let cosEmit = max(dot(emitNormal, hemi.wi), 0.0);
-    let pdfHemi = hemi.pdf;
-    let pdfJoint = max(pdfHemi, 1e-8);
-    let emitThroughput = rad * cosEmit / pdfJoint;
-    textureStore(bdptLightPath, vec2i(col, 0), vec4f(emitPos, 0.0));
-    textureStore(bdptLightPath, vec2i(col, 1), vec4f(emitNormal, pdfJoint));
-    textureStore(bdptLightPath, vec2i(col, 2), vec4f(emitThroughput, pdfHemi));
-    return;
+    cur = cur + 1u;
   }
-  if (params.pointLightCount > 0u) {
-    let pos = pointLights[0].xyz;
-    let rad = pointLights[1].rgb;
-    let pdfFwd = 1.0;
-    textureStore(bdptLightPath, vec2i(col, 0), vec4f(pos, 0.0));
-    textureStore(bdptLightPath, vec2i(col, 1), vec4f(0.0, 1.0, 0.0, pdfFwd));
-    textureStore(bdptLightPath, vec2i(col, 2), vec4f(rad / pdfFwd, pdfFwd));
-    return;
+  for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
+    if (cur == flat) {
+      let pos = pointLights[pi * 2u].xyz;
+      let rad = pointLights[pi * 2u + 1u].rgb;
+      bdptFinishBounce0(col, pos, vec3f(0.0, 1.0, 0.0), rad, discretePdf, rng);
+      return;
+    }
+    cur = cur + 1u;
   }
-  if (params.lightDir.w > 1e-6) {
-    let lightDir = safe_normalize(params.lightDir.xyz);
-    let emitPos = -lightDir * 50.0;
-    let irr = params.lightDir.w;
-    let pdfFwd = 1.0;
-    textureStore(bdptLightPath, vec2i(col, 0), vec4f(emitPos, 0.0));
-    textureStore(bdptLightPath, vec2i(col, 1), vec4f(lightDir, pdfFwd));
-    textureStore(bdptLightPath, vec2i(col, 2), vec4f(vec3f(irr / pdfFwd), pdfFwd));
-    return;
+  for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
+    if (cur == flat) {
+      let rb = ri * 4u;
+      let rpos = rectAreaLights[rb].xyz;
+      let ru = rectAreaLights[rb + 1u].xyz;
+      let rv = rectAreaLights[rb + 2u].xyz;
+      let rr = rectAreaLights[rb + 3u].rgb;
+      let u = rand_f32(rng) * 2.0 - 1.0;
+      let v = rand_f32(rng) * 2.0 - 1.0;
+      let emitPos = rpos + ru * u + rv * v;
+      let emitNormal = safe_normalize(cross(ru, rv));
+      bdptFinishBounce0(col, emitPos, emitNormal, rr, discretePdf, rng);
+      return;
+    }
+    cur = cur + 1u;
+  }
+  for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
+    if (cur == flat) {
+      let mb = mi * 4u;
+      let a = meshAreaLights[mb].xyz;
+      let b = meshAreaLights[mb + 1u].xyz;
+      let c = meshAreaLights[mb + 2u].xyz;
+      let mr = meshAreaLights[mb + 3u].rgb;
+      let r1 = rand_f32(rng);
+      let r2 = rand_f32(rng);
+      let su = sqrt(r1);
+      let uu = 1.0 - su;
+      let vv = r2 * su;
+      let ww = 1.0 - uu - vv;
+      let emitPos = a * uu + b * vv + c * ww;
+      let e1 = b - a;
+      let e2 = c - a;
+      let n = cross(e1, e2);
+      let nLen = length(n);
+      if (nLen < 1e-8) {
+        bdptWriteInvalid(col);
+        return;
+      }
+      let emitNormal = n / nLen;
+      bdptFinishBounce0(col, emitPos, emitNormal, mr, discretePdf, rng);
+      return;
+    }
+    cur = cur + 1u;
   }
   bdptWriteInvalid(col);
 }

@@ -1,17 +1,16 @@
 /**
- * PR-7 — GPU linear blend skinning; readback completes between frames and is
- * applied at the start of the next `renderFrame` via `updatePrimitive`.
+ * PR-7 — GPU linear blend skinning into the live ReSTIR `bvhPositions` buffer,
+ * then same-frame CPU BVH refit (nodes-only upload) via `applyGpuSkinnedRefit`.
  */
 
 import type { Scene, SkinnedMeshPrimitive } from '@vitrum/core';
 import { combineSkinMatrices, solveSkin } from '@vitrum/three-bindings';
-import { GPU_SKIN_LBS_WGSL } from './gpuSkinLbs.wgsl.js';
+import { GPU_SKIN_BVH_WGSL } from './gpuSkinBvh.wgsl.js';
 import type { HybridEngine } from '../HybridEngine.js';
 
 const UNIFORM = 0x40;
 const STORAGE = 0x80;
 const COPY_DST = 0x02;
-const MAP_READ = 0x01;
 
 interface MeshGpuState {
   readonly vertexCount: number;
@@ -22,17 +21,8 @@ interface MeshGpuState {
   readonly restNormBuffer: GPUBuffer;
   readonly skinIdxBuffer: GPUBuffer;
   readonly skinWeightBuffer: GPUBuffer;
-  readonly outPosBuffer: GPUBuffer;
-  readonly outNormBuffer: GPUBuffer;
-  readonly stagingPos: GPUBuffer;
-  readonly stagingNorm: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
   readonly pipeline: GPUComputePipeline;
-}
-
-interface PendingReadback {
-  readonly positions: Float32Array;
-  readonly normals: Float32Array;
 }
 
 function packVec4Positions(positions: Float32Array, count: number): Float32Array {
@@ -61,18 +51,6 @@ function packVec4Normals(normals: Float32Array, count: number): Float32Array {
   return out;
 }
 
-function unpackVec3(mapped: Float32Array, vertCount: number): Float32Array {
-  const out = new Float32Array(vertCount * 3);
-  for (let i = 0; i < vertCount; i += 1) {
-    const o4 = i * 4;
-    const o3 = i * 3;
-    out[o3] = mapped[o4]!;
-    out[o3 + 1] = mapped[o4 + 1]!;
-    out[o3 + 2] = mapped[o4 + 2]!;
-  }
-  return out;
-}
-
 function destroyMeshState(state: MeshGpuState): void {
   state.uniformBuffer.destroy();
   state.boneBuffer.destroy();
@@ -80,17 +58,13 @@ function destroyMeshState(state: MeshGpuState): void {
   state.restNormBuffer.destroy();
   state.skinIdxBuffer.destroy();
   state.skinWeightBuffer.destroy();
-  state.outPosBuffer.destroy();
-  state.outNormBuffer.destroy();
-  state.stagingPos.destroy();
-  state.stagingNorm.destroy();
 }
 
 export class GpuSkinningSubsystem {
   readonly #device: GPUDevice;
   readonly #preferGpu: boolean;
   readonly #meshes = new Map<string, MeshGpuState>();
-  readonly #pending = new Map<string, PendingReadback>();
+  #bvhPipeline: GPUComputePipeline | null = null;
 
   constructor(device: GPUDevice, preferGpu: boolean) {
     this.#device = device;
@@ -102,14 +76,22 @@ export class GpuSkinningSubsystem {
       destroyMeshState(state);
     }
     this.#meshes.clear();
-    this.#pending.clear();
+    this.#bvhPipeline = null;
   }
 
   run(engine: HybridEngine, scene: Scene): void {
-    for (const [id, pending] of this.#pending) {
-      engine.updatePrimitive(id, { positions: pending.positions, normals: pending.normals });
+    const bvhPositions = engine.getGpuSkinningBvhBuffer();
+    const meshVertexRanges = engine.getMeshVertexRanges();
+    if (bvhPositions == null || meshVertexRanges == null) {
+      return;
     }
-    this.#pending.clear();
+
+    const encoder = this.#device.createCommandEncoder({ label: 'vitrum.gpuSkinBvh' });
+    const gpuSkinnedIds: Array<{
+      id: string;
+      positions: Float32Array;
+      normals: Float32Array;
+    }> = [];
 
     for (const prim of scene.primitives) {
       if (prim.kind !== 'skinned-mesh') continue;
@@ -123,40 +105,46 @@ export class GpuSkinningSubsystem {
         engine.updatePrimitive(id, { positions, normals });
         continue;
       }
-      if (!this.#meshes.has(id)) {
-        const boot = solveSkin(prim);
-        engine.updatePrimitive(id, { positions: boot.positions, normals: boot.normals });
+
+      const range = meshVertexRanges.find((r) => r.name === id);
+      if (range == null || range.vertexCount === 0) {
+        const { positions, normals } = solveSkin(prim);
+        engine.updatePrimitive(id, { positions, normals });
+        continue;
       }
-      const state = this.#ensureMesh(prim);
+
+      const state = this.#ensureMesh(prim, bvhPositions);
       const combined = combineSkinMatrices(prim.bones, prim.boneInverses, state.boneCount);
       this.#device.queue.writeBuffer(state.boneBuffer, 0, new Float32Array(combined));
-      const params = new Uint32Array([state.vertexCount, state.boneCount, 0, 0]);
-      this.#device.queue.writeBuffer(state.uniformBuffer, 0, params);
-      const encoder = this.#device.createCommandEncoder({ label: 'vitrum.gpuSkin.dispatch' });
-      const pass = encoder.beginComputePass({ label: 'vitrum.gpuSkin.pass' });
+
+      const uniformBytes = new ArrayBuffer(80);
+      const u32 = new Uint32Array(uniformBytes);
+      u32[0] = state.vertexCount;
+      u32[1] = range.vertexStart;
+      u32[2] = 0;
+      u32[3] = 0;
+      new Float32Array(uniformBytes).set(range.matrixWorldAtBuild, 4);
+      this.#device.queue.writeBuffer(state.uniformBuffer, 0, uniformBytes);
+
+      const pass = encoder.beginComputePass({ label: `vitrum.gpuSkinBvh.${id}` });
       pass.setPipeline(state.pipeline);
       pass.setBindGroup(0, state.bindGroup);
       pass.dispatchWorkgroups(Math.ceil(state.vertexCount / 64), 1, 1);
       pass.end();
-      encoder.copyBufferToBuffer(state.outPosBuffer, 0, state.stagingPos, 0, state.vertexCount * 16);
-      encoder.copyBufferToBuffer(state.outNormBuffer, 0, state.stagingNorm, 0, state.vertexCount * 16);
+
+      const { positions, normals } = solveSkin(prim);
+      gpuSkinnedIds.push({ id, positions, normals });
+    }
+
+    if (gpuSkinnedIds.length > 0) {
       this.#device.queue.submit([encoder.finish()]);
-      const vertCount = state.vertexCount;
-      void this.#device.queue.onSubmittedWorkDone().then(async () => {
-        await state.stagingPos.mapAsync(MAP_READ);
-        await state.stagingNorm.mapAsync(MAP_READ);
-        const posRange = state.stagingPos.getMappedRange(0, vertCount * 16);
-        const normRange = state.stagingNorm.getMappedRange(0, vertCount * 16);
-        const positions = unpackVec3(new Float32Array(posRange.slice(0)), vertCount);
-        const normals = unpackVec3(new Float32Array(normRange.slice(0)), vertCount);
-        state.stagingPos.unmap();
-        state.stagingNorm.unmap();
-        this.#pending.set(id, { positions, normals });
-      });
+      for (const { id, positions, normals } of gpuSkinnedIds) {
+        engine.applyGpuSkinnedRefit(id, positions, normals);
+      }
     }
   }
 
-  #ensureMesh(prim: SkinnedMeshPrimitive): MeshGpuState {
+  #ensureMesh(prim: SkinnedMeshPrimitive, bvhPositions: GPUBuffer): MeshGpuState {
     const id = String(prim.id);
     const existing = this.#meshes.get(id);
     const vertCount = prim.positions.length / 3;
@@ -168,6 +156,7 @@ export class GpuSkinningSubsystem {
       destroyMeshState(existing);
       this.#meshes.delete(id);
     }
+
     const device = this.#device;
     const restPos = packVec4Positions(prim.positions, vertCount);
     const restNorm = packVec4Normals(prim.normals, vertCount);
@@ -181,43 +170,38 @@ export class GpuSkinningSubsystem {
         size: Math.max(16, size),
         usage: STORAGE | COPY_DST,
       });
-    const restPosBuffer = mkStorage(`vitrum.gpuSkin.${id}.restPos`, vertBytes);
-    const restNormBuffer = mkStorage(`vitrum.gpuSkin.${id}.restNorm`, vertBytes);
-    const skinIdxBuffer = mkStorage(`vitrum.gpuSkin.${id}.skinIdx`, skinIdx.byteLength);
-    const skinWeightBuffer = mkStorage(`vitrum.gpuSkin.${id}.skinW`, skinW.byteLength);
-    const boneBuffer = mkStorage(`vitrum.gpuSkin.${id}.bones`, boneBytes);
-    const outPosBuffer = mkStorage(`vitrum.gpuSkin.${id}.outPos`, vertBytes);
-    const outNormBuffer = mkStorage(`vitrum.gpuSkin.${id}.outNorm`, vertBytes);
-    const stagingPos = device.createBuffer({
-      label: `vitrum.gpuSkin.${id}.stagingPos`,
-      size: vertBytes,
-      usage: MAP_READ | COPY_DST,
-    });
-    const stagingNorm = device.createBuffer({
-      label: `vitrum.gpuSkin.${id}.stagingNorm`,
-      size: vertBytes,
-      usage: MAP_READ | COPY_DST,
-    });
+
+    const restPosBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.restPos`, vertBytes);
+    const restNormBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.restNorm`, vertBytes);
+    const skinIdxBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinIdx`, skinIdx.byteLength);
+    const skinWeightBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinW`, skinW.byteLength);
+    const boneBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.bones`, boneBytes);
     const uniformBuffer = device.createBuffer({
-      label: `vitrum.gpuSkin.${id}.uniform`,
-      size: 16,
+      label: `vitrum.gpuSkinBvh.${id}.uniform`,
+      size: 80,
       usage: UNIFORM | COPY_DST,
     });
+
     device.queue.writeBuffer(restPosBuffer, 0, new Float32Array(restPos));
     device.queue.writeBuffer(restNormBuffer, 0, new Float32Array(restNorm));
     device.queue.writeBuffer(skinIdxBuffer, 0, new Uint32Array(skinIdx));
     device.queue.writeBuffer(skinWeightBuffer, 0, new Float32Array(skinW));
-    const module = device.createShaderModule({
-      label: 'vitrum.gpuSkin.module',
-      code: GPU_SKIN_LBS_WGSL,
-    });
-    const pipeline = device.createComputePipeline({
-      label: 'vitrum.gpuSkin.pipeline',
-      layout: 'auto',
-      compute: { module, entryPoint: 'main' },
-    });
+
+    if (this.#bvhPipeline == null) {
+      const module = device.createShaderModule({
+        label: 'vitrum.gpuSkinBvh.module',
+        code: GPU_SKIN_BVH_WGSL,
+      });
+      this.#bvhPipeline = device.createComputePipeline({
+        label: 'vitrum.gpuSkinBvh.pipeline',
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' },
+      });
+    }
+    const pipeline = this.#bvhPipeline;
+
     const bindGroup = device.createBindGroup({
-      label: `vitrum.gpuSkin.${id}.bindGroup`,
+      label: `vitrum.gpuSkinBvh.${id}.bindGroup`,
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: uniformBuffer } },
@@ -226,10 +210,10 @@ export class GpuSkinningSubsystem {
         { binding: 3, resource: { buffer: skinIdxBuffer } },
         { binding: 4, resource: { buffer: skinWeightBuffer } },
         { binding: 5, resource: { buffer: boneBuffer } },
-        { binding: 6, resource: { buffer: outPosBuffer } },
-        { binding: 7, resource: { buffer: outNormBuffer } },
+        { binding: 6, resource: { buffer: bvhPositions } },
       ],
     });
+
     const state: MeshGpuState = {
       vertexCount: vertCount,
       boneCount,
@@ -239,10 +223,6 @@ export class GpuSkinningSubsystem {
       restNormBuffer,
       skinIdxBuffer,
       skinWeightBuffer,
-      outPosBuffer,
-      outNormBuffer,
-      stagingPos,
-      stagingNorm,
       bindGroup,
       pipeline,
     };

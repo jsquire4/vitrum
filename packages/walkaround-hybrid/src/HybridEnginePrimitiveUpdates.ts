@@ -546,6 +546,82 @@ export function positionsRefit(
 }
 
 /**
+ * PR-7 — GPU LBS already wrote world positions into `bvhPositions`; sync
+ * CPU refit + scene without re-uploading the position slice.
+ */
+export function refitSkinnedMeshAfterGpuWrite(
+  id: string,
+  localPositions: Float32Array,
+  localNormals: Float32Array | undefined,
+  ctx: PrimitiveUpdateContext,
+): PrimitiveUpdateResult {
+  const bvh = ctx.bvhBuffers;
+  if (bvh == null) {
+    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): BVH not ready — call setScene first.`);
+  }
+  const range = bvh.meshVertexRanges.find((r) => r.name === id);
+  if (range == null || range.vertexCount === 0) {
+    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): no mesh vertex range in BVH.`);
+  }
+  if (localPositions.length !== range.vertexCount * 3) {
+    throw new Error(
+      `refitSkinnedMeshAfterGpuWrite("${id}"): expected ${range.vertexCount * 3} floats, got ${localPositions.length}.`,
+    );
+  }
+
+  const root = ctx.threeRoot;
+  if (root == null) {
+    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): no THREE scene for skin refit.`);
+  }
+  const meshRef = findMeshByPrimitiveId(root, id);
+  if (meshRef == null) {
+    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): mesh not found in THREE scene.`);
+  }
+
+  meshRef.geometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(new Float32Array(localPositions), 3),
+  );
+  if (localNormals != null) {
+    meshRef.geometry.setAttribute(
+      'normal',
+      new THREE.BufferAttribute(new Float32Array(localNormals), 3),
+    );
+  }
+
+  const matWorld = new THREE.Matrix4().fromArray(Array.from(range.matrixWorldAtBuild));
+  const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
+  const STRIDE = 4;
+  const baseVertex = range.vertexStart;
+  const sliceVerts = range.vertexCount;
+  const tmp = new THREE.Vector3();
+  for (let v = 0; v < sliceVerts; v += 1) {
+    const off = (baseVertex + v) * STRIDE;
+    tmp.x = localPositions[v * 3] ?? 0;
+    tmp.y = localPositions[v * 3 + 1] ?? 0;
+    tmp.z = localPositions[v * 3 + 2] ?? 0;
+    tmp.applyMatrix4(matWorld);
+    positionsF32[off + 0] = tmp.x;
+    positionsF32[off + 1] = tmp.y;
+    positionsF32[off + 2] = tmp.z;
+  }
+
+  const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
+  refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
+  ctx.pipeline?.refreshBvhNodesOnly(bvh.bvhNodes.cpuData.slice(0));
+  ctx.pipeline?.requestAccumReset();
+  ctx.ddgi.invalidateProbeCache();
+
+  const posPatch: Partial<MeshPrimitive> =
+    localNormals != null
+      ? { positions: new Float32Array(localPositions), normals: new Float32Array(localNormals) }
+      : { positions: new Float32Array(localPositions) };
+  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
+
+  return { bvhBuffers: bvh, updatedScene };
+}
+
+/**
  * Topology-change full-rebuild path (Option (a) per items_to_fix.md A3).
  *
  * Picked over Option (b) ("`rebuildBvhLeaf(bvh, leafIndex, newTriangles)`

@@ -69,6 +69,7 @@ import {
   positionsRefit,
   topologyRebuild,
   materialPatch,
+  refitSkinnedMeshAfterGpuWrite,
   type PrimitiveUpdateContext,
   type PrimitiveUpdateResult,
 } from './HybridEnginePrimitiveUpdates.js';
@@ -630,6 +631,36 @@ export class HybridEngine implements Engine {
     // No recognised patch field — treat as a no-op rather than throw so
     // hosts can pass through optional patches without checking each
     // field's presence.
+  }
+
+  /**
+   * PR-7 — GPU LBS wrote world positions into the live `bvhPositions` buffer;
+   * refit BVH nodes and sync scene without re-uploading the position slice.
+   */
+  applyGpuSkinnedRefit(
+    id: string,
+    localPositions: Float32Array,
+    localNormals?: Float32Array,
+  ): void {
+    const result = refitSkinnedMeshAfterGpuWrite(
+      id,
+      localPositions,
+      localNormals,
+      this._buildPrimitiveUpdateContext(),
+    );
+    this._bvhBuffers = result.bvhBuffers;
+    this._lastScene = result.updatedScene;
+    this._applyPrimitiveUpdateRc(result);
+  }
+
+  /** Merged BVH position SSBO for GPU skinning (null before pipeline init). */
+  getGpuSkinningBvhBuffer(): GPUBuffer | null {
+    return this._pipeline?.getBvhPositionBuffer() ?? null;
+  }
+
+  /** Per-mesh vertex ranges in the merged BVH (for GPU skinning). */
+  getMeshVertexRanges(): SceneBVHBuffers['meshVertexRanges'] | null {
+    return this._bvhBuffers?.meshVertexRanges ?? null;
   }
 
   /** PR-5.5 — TLAS refit updates RC bounds without rebuilding cascade BVH. */

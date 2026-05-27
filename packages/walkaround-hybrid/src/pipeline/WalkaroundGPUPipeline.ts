@@ -658,6 +658,17 @@ export class WalkaroundGPUPipeline {
     );
   }
 
+  /** PR-7 — upload refit BVH nodes only (positions already on GPU). */
+  refreshBvhNodesOnly(bvhNodesBytes: ArrayBuffer): void {
+    if (!this._initialized) return;
+    this._device.queue.writeBuffer(this._bvhNodesBuffer, 0, bvhNodesBytes);
+  }
+
+  /** Live merged vertex buffer for GPU skinning writes. */
+  getBvhPositionBuffer(): GPUBuffer | null {
+    return this._initialized ? this._bvhPositionBuffer : null;
+  }
+
   /** PR-4 — upload refit TLAS nodes + instance transforms (topology unchanged). */
   refreshTlasRefit(
     tlasNodes: ArrayBuffer,
