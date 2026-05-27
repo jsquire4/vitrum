@@ -23,7 +23,7 @@ Read in this order to onboard:
   Treat any older "NOT IN HEAD" caveats below as historical audit notes.
 
 - **Phase 6 (Sprints 0–13) complete**; **Phase 7 walkaround-hybrid (Sprints 14–18) shipped**: layered BSDF fork patch, half-res GTAO + bilateral upsample (S15), ReSTIR-GI RIS (S16), ReSTIR-GI temporal+spatial reuse (S17), per-channel SVGF on direct + indirect (S18), plus extensive firefly / dim-magnitude root-cause work and library-generality remediation. Workspace `tsc --noEmit` clean; **all** vitest tests pass (~660+ across workspaces — the 2–3 previously-skipped GPU-only paths were enabled via happy-dom / vitest browser mode; GPU-browser tests are opt-in via env flag so default `npm test` no longer requires Playwright).
-- **Packages**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (à-trous-variance, `svgf-real` Schied 2017, OIDN bridge), `pt-webgl` (wraps three-gpu-pathtracer fork — production PT), `pt-webgpu` (experimental WebGPU PT backend — internal, not production), `walkaround-rc` (Radiance Cascades subsystem — cascade pyramid + dispatch + receiver), `walkaround-hybrid` (DDGI + ReSTIR-DI + ReSTIR-GI + PPG + real neural U-Net denoiser + GTAO + per-channel SVGF; composes RC via `HybridEngineRC`), `engine` (`createEngine` / `attachVitrum` facade), `stained-glass-extensions` (stained-glass-specific contracts), `dev` (debug overlays).
+- **Packages**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (à-trous-variance, `svgf-real` Schied 2017, OIDN bridge), `pt-webgl` (WebGL2 converged PT — release-candidate track), `pt-webgpu` (WebGPU-native PT peer — feature-complete for contract surface; fidelity rows still `experimental` until promoted in `plan/renderer-fidelity-matrix.md`), `walkaround-rc` (Radiance Cascades subsystem — cascade pyramid + dispatch + receiver), `walkaround-hybrid` (realtime GI — release-candidate track: DDGI + ReSTIR-DI/GI + GTAO + SVGF + opt-in RC/PPG/neural), `engine` (`createEngine` / `attachVitrum` facade), `stained-glass-extensions` (stained-glass-specific contracts), `dev` (debug overlays).
 - **Extraction**: `_staging/legacy-source/` contains only host-app React/Redux files intentionally not extracted (see `_staging/README.md`).
 - **External RFEs**: 01–05 (contract-layer) plus 06/07/08/09/10/12/14 fork patches applied per `external_requests/IMPLEMENTATION-STATUS.md`.
 - **M7 — DDGI Coherent Physical Model shipped** (sweep 2026-05-11 Items 2, 4, 6, 20): producer no longer pre-multiplies `albedo/π`; Lambertian cosine blend kernel (`w` for irradiance, `w²` for visibility) replaces `pow(w,8)` / `pow(w,50)`; per-frame Halton-Shoemake SO(3) `randomRotation`; RC GI receiver applies `materialColor · PI_INV` before injecting via `emissiveNode`. Cited at `probeUpdatePass.ts:670` (Halton-{2,3,5} sequence) and `applyDDGIShading.ts:145-148` (receiver applies `albedo · PI_INV` exactly once).
@@ -34,7 +34,7 @@ Read in this order to onboard:
 
 - **C1 shipped — SkinnedMesh contract + per-frame CPU solver + morph targets** (`7d0f4d7` + `f3a91ce`, 2026-05-19): `SkinnedMeshPrimitive` added to `@vitrum/core`'s discriminated union; `sceneFromThreeJS` converts THREE.SkinnedMesh; `@vitrum/three-bindings`'s `solveSkin` does LBS with morph-delta pre-blend. Per-frame pose updates flow through `engine.updatePrimitive(id, { positions, normals })`. Downstream consumers (`sceneAABB`, `_coreSceneSuppliesMeshes`, `summarizeScene`, `vitrumSceneToThree`) accept skinned meshes. 19 tests pin the math + adapter shape. GPU compute variant + inverse-transpose normal for scaled bones deferred — baseline already enables real-time single-hero-character skinning.
 
-- **C2 shipped — TLAS builder + refit + reference traversal** (`5cf642b`, 2026-05-19): `@vitrum/shared-bvh/src/tlas.ts` exports `buildTlas` (binned SAH over instance world AABBs, same 32-byte node layout as BLAS so `bvhIntersect.wgsl` primitives can be reused), `refitTlas` (O(nodes) bottom-up bounds refresh), and `tlasIntersect` (CPU reference oracle for tests; documented leaf-conservative candidate semantics). 17 tests pin build / refit / traversal / error paths. Pipeline wiring (WGSL traverse-into-BLAS dispatch + bvh-common adapter for per-mesh BLAS roots) is the multi-week follow-up — this module is the load-bearing foundation that lets that work proceed incrementally.
+- **C2 + PR TLAS — shipped end-to-end** (`5cf642b` CPU module; PR-2–4 + WG-6 2026-05-26): `@vitrum/shared-bvh` `packSceneFromCore` / `scenePack.ts`; hybrid ReSTIR + DDGI probe rays default to TLAS when multi-mesh or instanced; incremental transform/positions/topology refit paths; pt-webgpu shares the same packer. RC transform-only refit without full `setScene` is the main GI-subsystem follow-up (see `plan/primary-release-and-webgpu-pt-parity-2026-05-26.md` PR-5).
 
 ### W1 — Pass + Resource + Denoiser registry refactor (all 6 rounds shipped)
 
@@ -51,7 +51,7 @@ Read in this order to onboard:
 - C2 — THREE-independent `buildArrayBvh` hoisted from `pt-webgpu` into `shared-bvh` (`feat/w2-c2-bvh-builder-shared`, `44598ad`).
 - C3 — canonical octEncode/octDecode (was buggy `sign(0)→0` collapse) (`8fec673`).
 - C4 — `probeAtlasUv` reused instead of 3 inline atlas-coord derivations (`3446817`).
-- C6 — **NOT IN HEAD.** The feature commit (`da286d7`) introduced `packages/shared-samplers/src/wgsl/pcg.wgsl.ts` (80 LOC) and `bsdfPrimitives.wgsl.ts` (108 LOC), and migrated walkaround-hybrid + pt-webgpu off their local copies. Both files are missing from HEAD as of 2026-05-19; `walkaround-hybrid/src/shaders/common.wgsl.ts` and `pt-webgpu/src/wgsl/common.wgsl.ts` once again contain byte-identical local `fn pcgInit` / `fn pcgNext` definitions. Same merge-race pattern as D6/D7/D19. See `items_to_fix.md` E4.
+- C6 — shared WGSL primitives (`pcg.wgsl.ts`, `bsdfPrimitives.wgsl.ts`) re-landed 2026-05-24 (merge-race E4 closed).
 - C15 — pixel-hash function canonicalised into `shared-samplers/wgsl/hash` (`651619e`).
 - C10 — Rec.709 luminance vector canonicalised across `shared-samplers` / `shared-denoisers` / `walkaround-hybrid` (`feat/w2-small-dedups-c10-c11-c12`, `54ae795`).
 - C11 — duplicated B3-spline atrous kernel collapsed (`76120b9`).
@@ -135,23 +135,26 @@ Read in this order to onboard:
 The 2026-05-11 deep math/physics sweep + the 2026-05-17 complexity sweep + the 2026-05-17 judge-mode audit + the 2026-05-18 structural sweep have largely been worked through. The `items_to_fix.md` file at the repo root is the **authoritative** open-bug list — each entry was re-verified by opening the cited file before being kept. After W1–W7 / W11 / W12 / W13 / items-to-fix landings + the 2026-05-18 sweep landings (HybridEngine decomp, WalkaroundGPUPipeline split, pathTraceBruteforce split, core/scene + core/engine splits, Cornell-magic UBO migration, iblBaker per-instance hoist, scene-lighting package extract, renderFrame denoiser-pass collapse, webGpuTextureUpload migration, Möller-Trumbore canonical hoist), **Sections A and C of `items_to_fix.md` are empty of open items, and B1 closed on 2026-05-18**; only one Section B item remains:
 
 - **B2 — RC into HybridEngine** — W8 sprint **shipped end-to-end (2026-05-18)**: Phase 1A (cascade data types THREE-free), Phase 1B (`RCDispatcher.dispatchFrameRaw` raw-GPU entry), Phase 2 (`HybridEngineOptions.rcEnabled` + per-engine `RCSubsystem`), Phase 3 (shade.wgsl `sampleCascadeC0` + Track-A balance-heuristic MIS via `rcWeight` option), and Phase 4 (gated `rcAcceptance.gpu.test.ts` + reference-render landings in `tools/reference-renders/W8-rc-{off,on}/`) all landed. The harness for the actual GPU capture lives in `tools/benchmark-runner/` once it grows an `rc-acceptance` mode; the host-side wiring + MIS math is pinned by `packRCParams` tests + the `wgslCompose` order pin. See [plan/w8-rc-mis-composition.md](./plan/w8-rc-mis-composition.md) for the full sprint trace.
-- **`pt-webgpu` glossy BSDF mix-around-mirror sampling/PDF mismatch** — **fixed** (verified 2026-05-18 by direct read at `packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts:124-200`: `sampleGgxVndfTangent` implements Heitz 2018 Algorithm 1 and `glossyReflectionSample` calls it, so sampling + PDF now use the same distribution). Originally shipped via commit `a7dd51a`. `pt-webgpu` remains an experimental backend overall; `plan/pt-webgpu-deep-audit.md` has the per-finding status update.
+- **`pt-webgpu` glossy BSDF sampling/PDF mismatch** — **fixed** (`a7dd51a`; Heitz 2018 VNDF in `bsdf.wgsl.ts`). Deep-audit findings are closed (`plan/pt-webgpu-deep-audit.md`). Remaining pt-webgpu work is **fidelity promotion** (renderer matrix rows still `experimental`) and adapter-tier limits (lite vs full), not baseline path-tracer correctness.
 
 Treat the open items as real, prioritise honestly. Don't paper over with band-aids that suppress symptoms.
 
 ## What's next
 
-All prior queues — `items_to_fix.md` Sections A/B/C, the 13-workstream `plan/premium-grade-refactor-20260517.md` plan, the original 10-item README-promise plan (A1–A4, B1–B3, C1–C3, D) — are fully shipped as of 2026-05-19.
+**Maturity label (do not call the library "pre-alpha"):** root `README.md` places vitrum on the **release-candidate track** for `@vitrum/engine`, `walkaround-hybrid`, and `pt-webgl`. `@vitrum/pt-webgpu` is a **peer PT backend** with closed deep-audit findings; treat "experimental" as per-feature fidelity tier (`plan/renderer-fidelity-matrix.md`), not as "the whole repo is a prototype."
 
-The honest remaining work is **multi-week pipeline integration** on top of foundations that just landed:
+**Programs PR + WG (2026-05-26 signoffs):** primary-release and WebGPU-PT-parity implementation waves are landed in code; see `plan/PR-signoff-2026-05-26.md`, `plan/WG-signoff-2026-05-26.md`, and `plan/backend-maturity-matrix-2026-05-26.md`.
 
-1. **C2 TLAS pipeline wiring** (multi-week). The TLAS module (`@vitrum/shared-bvh/src/tlas.ts`) ships `buildTlas` / `refitTlas` / `tlasIntersect`. What's NOT done: WGSL traverse-into-BLAS dispatch, bvh-common adapter that emits per-mesh BLAS roots (today's single-merged-BVH path takes over), and host bookkeeping to keep TLAS + per-mesh BLAS handles in sync. Estimated 8–12 weeks per the original plan-implementation sizing.
+**Honest remaining deep-pipeline work** (ignore npm / release governance):
 
-2. **C1 GPU compute skinning** (optional follow-up). The CPU `solveSkin` baseline handles a single hero character at ~30 µs/1k verts. A WGSL compute variant would unlock multi-character scenes. Inverse-transpose for scaled bones (rather than today's upper-3x3) is a math correctness follow-up; defer until a test scene with scaled bones appears.
+1. **Fidelity promotion on pt-webgpu** — spectral, thin-film, SSS, caustics, multi-emitter rows are implemented with mechanical tests but still tagged `experimental` until gap-closure scenarios promote them to `supported` in `plan/renderer-fidelity-matrix.md`.
+2. **Hybrid animation ergonomics** — mesh **transform** animation without full `setScene` on walkaround; pt-webgl still rebuilds on transform/positions patches (`incrementalPatchSupport.transform/positions: false`).
+3. **GI subsystem BVH alignment** — RC moving-instance refit without full scene teardown (PR-5.3); optional merged-BVH fallback cleanup.
+4. **GPU skinning compute** — `GpuSkinningSubsystem` + CPU `solveSkin` shipped; WGSL LBS compute + inverse-transpose normals for scaled bones remain optional polish (PR-7 follow-up).
+5. **PPG cost / quality** — wired and dispatching; tuning and large-scene perf per `plan/d2-e6-pt-webgpu-ppg-performance.md`.
+6. **Contract-only denoisers** — BMFR in the type union but not implemented in `shared-denoisers`.
 
-3. **GPU A/B verification** (host-side workflow): Sprint 10c (BDPT GPU dispatch) APPLIED 2026-05-12 (fork `98f4446` + vitrum `398dfce`); Sprint 14 (layered BSDF) APPLIED 2026-05-11 (fork `ee379dc`). Both need reference renders captured, not more code.
-
-Older active docs: `phase-7-restir-gi.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `pt-webgpu-deep-audit.md`.
+Older active docs: `plan/renderer-fidelity-matrix.md`, `plan/primary-release-and-webgpu-pt-parity-2026-05-26.md`, `plan/d2-e6-pt-webgpu-ppg-performance.md`.
 
 ## Absorbed path-tracer package
 

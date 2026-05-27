@@ -18,9 +18,10 @@ land. Until then:
   parity check against `@vitrum/pt-webgl` exists. Renders may be
   numerically correct yet visually different in ways the audit doesn't
   catch.
-- **Not in `createEngine`'s `prefer: 'auto'` selection** — hosts that
-  want pt-webgpu must opt in explicitly. The facade selects between
-  `pt-webgl` (quality) and `walkaround-hybrid` (realtime) only.
+- **`createEngine({ prefer: 'auto' })`** selects pt-webgpu when WebGPU is
+  available and the scene has **≥ 500k triangles**; use `prefer:
+  'quality-webgpu'` to force pt-webgpu on smaller scenes. Below 500k tris,
+  `auto` picks `walkaround-hybrid` for realtime GI.
 - **Not for npm publish.** `private: true` is the publish-safety belt;
   see `RELEASING.md`.
 
