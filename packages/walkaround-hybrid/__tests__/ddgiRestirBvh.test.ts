@@ -96,6 +96,29 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
     expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
   });
 
+  it('splits blas vs tlas content versions on transform-only TLAS refit', () => {
+    const w2lA = new Float32Array(16);
+    w2lA[12] = 0;
+    const w2lB = new Float32Array(16);
+    w2lB[12] = 5;
+    const tlasBase = {
+      nodes: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 2 },
+      instanceIndices: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
+      blasRoots: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
+      worldToLocal: { cpuData: w2lA.buffer, byteLength: w2lA.byteLength, count: 1 },
+      localToWorld: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 1 },
+      nodeCount: 2,
+    };
+    const snapA = makeDdgiRestirBvhSnapshot(minimalSceneBVH({ bvhMode: 'tlas', tlas: tlasBase }));
+    const snapB = makeDdgiRestirBvhSnapshot(minimalSceneBVH({
+      bvhMode: 'tlas',
+      tlas: { ...tlasBase, worldToLocal: { cpuData: w2lB.buffer, byteLength: w2lB.byteLength, count: 1 } },
+    }));
+    expect(snapA.blasContentVersion).toBe(snapB.blasContentVersion);
+    expect(snapA.tlasContentVersion).not.toBe(snapB.tlasContentVersion);
+    expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
+  });
+
   it('uses world AABB for TLAS when scene is provided', () => {
     const scene: Scene = {
       primitives: [{

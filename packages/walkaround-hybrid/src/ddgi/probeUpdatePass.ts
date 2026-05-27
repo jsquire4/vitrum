@@ -265,6 +265,8 @@ export class ProbeUpdatePass {
   /** When set, probe rays use ReSTIR buffers (PR-5.1) instead of SceneBvh rebuild. */
   private _restirSnapshot: DdgiRestirBvhSnapshot | null = null;
   private _lastBvhVersion = -1;
+  private _lastBlasVersion = -1;
+  private _lastTlasVersion = -1;
   private _frameIndex = 0;
   private _maxProbes = 0;
   private _lights: DDGILight[] = [];
@@ -511,8 +513,19 @@ export class ProbeUpdatePass {
 
     if (snap != null) {
       if (snap.contentVersion !== this._lastBvhVersion) {
-        this._rebuildBvhBuffersFromRestir(device, snap);
+        const tlasOnly =
+          this._gpu != null &&
+          snap.tlas != null &&
+          snap.blasContentVersion === this._lastBlasVersion &&
+          snap.tlasContentVersion !== this._lastTlasVersion;
+        if (tlasOnly) {
+          this._refitTlasBuffersInPlace(device, snap.tlas);
+        } else {
+          this._rebuildBvhBuffersFromRestir(device, snap);
+        }
         this._lastBvhVersion = snap.contentVersion;
+        this._lastBlasVersion = snap.blasContentVersion;
+        this._lastTlasVersion = snap.tlasContentVersion;
       }
       this._uploadTraceParams(device, snap);
     } else if (legacyBuffers != null) {
@@ -657,6 +670,17 @@ export class ProbeUpdatePass {
       0,
     ]);
     device.queue.writeBuffer(this._gpu!.traceParamsBuf, 0, u);
+  }
+
+  /** C2 — TLAS transform refit: upload nodes + instance matrices only. */
+  private _refitTlasBuffersInPlace(
+    device: GPUDevice,
+    tlas: NonNullable<DdgiRestirBvhSnapshot['tlas']>,
+  ): void {
+    const g = this._gpu!;
+    device.queue.writeBuffer(g.tlasNodesBuf, 0, tlas.nodes);
+    device.queue.writeBuffer(g.tlasW2lBuf, 0, tlas.worldToLocal);
+    device.queue.writeBuffer(g.tlasL2wBuf, 0, tlas.localToWorld);
   }
 
   private _rebuildBvhBuffersFromRestir(

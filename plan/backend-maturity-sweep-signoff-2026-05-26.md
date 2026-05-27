@@ -44,7 +44,7 @@ VITRUM_LIFECYCLE_SOAK_START_SERVER=1 VITRUM_LIFECYCLE_SOAK_STRICT=1 \
 
 These are multi-week or host-workflow items, not regressions in the shipped sweep scope:
 
-- **C2 TLAS in all hosts** — multi-mesh BLAS dispatch beyond pt-webgpu experimental path
+- **C2 TLAS in all hosts** — hybrid ReSTIR/DDGI/RC shipped (`main` 2026-05-27); pt-webgl remains merged-BVH
 - **GPU reference captures** — formal A/B for BDPT/layered BSDF acceptance (host workflow)
 - **pt-webgpu** — spectral / hero-MIS / denoiser parity vs pt-webgl (feature roadmap)
 

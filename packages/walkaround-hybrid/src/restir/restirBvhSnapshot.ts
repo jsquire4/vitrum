@@ -28,6 +28,10 @@ export interface RestirBvhSnapshot {
   };
   /** Bumps when any mirrored buffer payload changes (not just lengths). */
   readonly contentVersion: number;
+  /** BLAS concat buffers only — stable across TLAS transform-only refit. */
+  readonly blasContentVersion: number;
+  /** TLAS nodes + instance transforms — bumps on transform refit. */
+  readonly tlasContentVersion: number;
 }
 
 export function makeRestirBvhSnapshot(
@@ -58,15 +62,22 @@ export function makeRestirBvhSnapshot(
   }
 
   const tlas = buffers.tlas;
-  const tlasParts = tlas != null
-    ? [
+  const blasContentVersion = fingerprintBuffers(
+    buffers.bvhNodes.cpuData,
+    buffers.bvhPositions.cpuData,
+    buffers.bvhIndex.cpuData,
+    buffers.emitterNormals.buffer as ArrayBuffer,
+    buffers.triangleMaterialIds.cpuData,
+  );
+  const tlasContentVersion = tlas != null
+    ? fingerprintBuffers(
         tlas.nodes.cpuData,
         tlas.instanceIndices.cpuData,
         tlas.blasRoots.cpuData,
         tlas.worldToLocal.cpuData,
         tlas.localToWorld.cpuData,
-      ]
-    : [];
+      )
+    : 0;
 
   return {
     bvhMode: buffers.bvhMode,
@@ -90,12 +101,9 @@ export function makeRestirBvhSnapshot(
         }
       : {}),
     contentVersion: fingerprintBuffers(
-      buffers.bvhNodes.cpuData,
-      buffers.bvhPositions.cpuData,
-      buffers.bvhIndex.cpuData,
-      buffers.emitterNormals.buffer as ArrayBuffer,
-      buffers.triangleMaterialIds.cpuData,
-      ...tlasParts,
+      new Uint32Array([blasContentVersion, tlasContentVersion]).buffer,
     ),
+    blasContentVersion,
+    tlasContentVersion,
   };
 }

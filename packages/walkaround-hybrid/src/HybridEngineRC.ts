@@ -93,6 +93,8 @@ export class RCSubsystem {
   private _bvhMode: 'merged' | 'tlas' = 'merged';
   private _tlasNodeCount = 0;
   private _lastBvhVersion = 0;
+  private _lastBlasVersion = -1;
+  private _lastTlasVersion = -1;
 
   constructor(device: GPUDevice, cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
     this._device = device;
@@ -152,11 +154,22 @@ export class RCSubsystem {
     ];
 
     if (snap.contentVersion !== this._lastBvhVersion) {
+      const tlasOnly =
+        this._bvhBuffers != null &&
+        snap.tlas != null &&
+        snap.blasContentVersion === this._lastBlasVersion &&
+        snap.tlasContentVersion !== this._lastTlasVersion;
+      if (tlasOnly) {
+        this._refitTlasGpuBuffers(snap.tlas);
+      } else {
+        this._disposeBvhBuffersOnly();
+        this._bvhBuffers = this._uploadFromRestirSnapshot(snap);
+        this._dispatcher?.dispose();
+        this._dispatcher = null;
+      }
       this._lastBvhVersion = snap.contentVersion;
-      this._disposeBvhBuffersOnly();
-      this._bvhBuffers = this._uploadFromRestirSnapshot(snap);
-      this._dispatcher?.dispose();
-      this._dispatcher = null;
+      this._lastBlasVersion = snap.blasContentVersion;
+      this._lastTlasVersion = snap.tlasContentVersion;
     }
 
     if (this._cascadeBufs == null) {
@@ -172,6 +185,8 @@ export class RCSubsystem {
     this._bvhMode = 'merged';
     this._tlasNodeCount = 0;
     this._lastBvhVersion = 0;
+    this._lastBlasVersion = -1;
+    this._lastTlasVersion = -1;
     this._disposeSceneBuffers();
     if (this._dispatcher) {
       this._dispatcher.dispose();
@@ -251,6 +266,17 @@ export class RCSubsystem {
       this._dispatcher.dispose();
       this._dispatcher = null;
     }
+  }
+
+  private _refitTlasGpuBuffers(
+    tlas: NonNullable<RestirBvhSnapshot['tlas']>,
+  ): void {
+    const bvh = this._bvhBuffers;
+    if (bvh?.tlasNodesBuf == null) return;
+    const q = this._device.queue;
+    q.writeBuffer(bvh.tlasNodesBuf, 0, tlas.nodes);
+    q.writeBuffer(bvh.tlasInstanceWorldToLocalBuf!, 0, tlas.worldToLocal);
+    q.writeBuffer(bvh.tlasInstanceLocalToWorldBuf!, 0, tlas.localToWorld);
   }
 
   private _uploadFromRestirSnapshot(snap: RestirBvhSnapshot): RCBVHBuffers {
@@ -346,5 +372,7 @@ export class RCSubsystem {
     this._roomSize         = null;
     this._restirSnapshot = null;
     this._lastBvhVersion = 0;
+    this._lastBlasVersion = -1;
+    this._lastTlasVersion = -1;
   }
 }

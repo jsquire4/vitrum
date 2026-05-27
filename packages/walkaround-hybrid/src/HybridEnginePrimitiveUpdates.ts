@@ -677,7 +677,7 @@ export function refitSkinnedMeshAfterGpuWrite(
     );
 
     ctx.pipeline?.requestAccumReset();
-    ctx.ddgi.invalidateProbeCache();
+    ctx.ddgi.markInstancesDirty();
     const rcBounds = computeWorldAabbForBindings(updatedScene, bindings);
     const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
     return {
