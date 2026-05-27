@@ -1,4 +1,5 @@
 import {
+  Matrix4,
   PerspectiveCamera,
 } from 'three';
 import type {
@@ -23,7 +24,7 @@ import type {
 } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
-import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment, MeshPrimitive } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import {
   vitrumSceneToThree,
@@ -157,6 +158,38 @@ function isMaterialOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
     if (key === 'id' || key === 'material') continue;
     if ((patch as Record<string, unknown>)[key] !== undefined) return false;
   }
+  return true;
+}
+
+function isTransformOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
+  const rec = patch as Record<string, unknown>;
+  if (rec['transform'] === undefined) return false;
+  for (const key of Object.keys(rec)) {
+    if (key === 'id' || key === 'transform') continue;
+    if (rec[key] !== undefined) return false;
+  }
+  return true;
+}
+
+/** BVH refit via fork `PathTracingSceneGenerator` (GEOMETRY_ADJUSTED) — no full setScene. */
+function refitPathTracerBvhAfterTransform(
+  pathTracer: WebGLPathTracer,
+  threeRoot: ThreeScene,
+): boolean {
+  const internal = pathTracer as unknown as {
+    _generator?: { initialized?: boolean; generate: () => { bvhChanged?: boolean; bvh?: unknown } };
+    _pathTracer?: { material: { bvh: { updateFrom: (b: unknown) => void } } };
+  };
+  const gen = internal._generator;
+  if (gen?.initialized !== true) {
+    return false;
+  }
+  threeRoot.updateMatrixWorld(true);
+  const result = gen.generate();
+  if (result.bvhChanged === true && result.bvh != null && internal._pathTracer != null) {
+    internal._pathTracer.material.bvh.updateFrom(result.bvh);
+  }
+  pathTracer.reset();
   return true;
 }
 
@@ -616,7 +649,7 @@ export class PTEngineWebGL2 implements Engine {
     return {
       supportsIncrementalScene: true,
       incrementalPatchSupport: {
-        transform: false,
+        transform: true,
         positions: false,
         material: true,
         emitter: true,
@@ -894,6 +927,27 @@ export class PTEngineWebGL2 implements Engine {
         tracerCompat.updateMaterials();
       } else {
         tracerCompat.reset();
+      }
+      this.#oidnDispatcher?.invalidate();
+      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+      return;
+    }
+    if (isTransformOnlyPrimitivePatch(_patch)) {
+      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
+      if (mesh == null) {
+        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
+      }
+      const transform = (_patch as Partial<MeshPrimitive>).transform;
+      if (transform != null && transform.length >= 16) {
+        const m = new Matrix4().fromArray(Array.from(transform));
+        mesh.matrix.copy(m);
+        mesh.matrixWorld.copy(m);
+        mesh.matrixAutoUpdate = false;
+      }
+      if (!refitPathTracerBvhAfterTransform(this.#pathTracer, this.#threeSceneRoot)) {
+        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+        this.setScene(next);
+        return;
       }
       this.#oidnDispatcher?.invalidate();
       this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);

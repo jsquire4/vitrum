@@ -49,6 +49,36 @@ import {
 import type { ReSTIRBvhMode } from './restir/bvhCompute.js';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 
+/** Union world AABB from merged `bvhPositions` (RC bounds after transform refit). */
+function computeWorldAabbFromBvhPositions(
+  bvh: SceneBVHBuffers,
+): { min: readonly [number, number, number]; max: readonly [number, number, number] } | null {
+  const f32 = new Float32Array(bvh.bvhPositions.cpuData);
+  const vertCount = Math.floor(f32.length / 4);
+  if (vertCount === 0) return null;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let v = 0; v < vertCount; v += 1) {
+    const o = v * 4;
+    const x = f32[o]!;
+    const y = f32[o + 1]!;
+    const z = f32[o + 2]!;
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    maxZ = Math.max(maxZ, z);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
 /** `sceneFromThreeJS` keys primitives by `Object3D.uuid`; tests may use `name`. */
 function findMeshByPrimitiveId(root: THREE.Object3D, id: string): THREE.Mesh | null {
   let mesh: THREE.Mesh | null = null;
@@ -317,7 +347,12 @@ export function transformRefit(
       ? applyPrimitivePatchToScene(ctx.lastScene, id, { transform: meshPatch.transform })
       : ctx.lastScene;
 
-  return { bvhBuffers: bvh, updatedScene };
+  const rcBounds = computeWorldAabbFromBvhPositions(bvh);
+  return {
+    bvhBuffers: bvh,
+    updatedScene,
+    ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
+  };
 }
 
 /**

@@ -78,7 +78,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
   'pt-webgl': {
     supportsIncrementalScene: true,
     incrementalPatchSupport: {
-      transform: false,
+      transform: true,
       positions: false,
       material: true,
       emitter: true,
