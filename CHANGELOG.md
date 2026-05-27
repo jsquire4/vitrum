@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Hybrid denoiser A/B toggle (2026-05-27):** `engine.debug.setDenoiserEnabled` / `isDenoiserEnabled` gates `DenoiserAdapterPass`; `@vitrum/dev` `DenoiserABToggle` works on walkaround-hybrid.
+- **RC acceptance full gate (2026-05-27):** `npm run benchmark:rc-acceptance-full` — capture + metrics + `rcAcceptance.gpu.test.ts` (`VITRUM_RC_REQUIRE_GPU=1` default).
 - **createEngine TLAS routing (2026-05-27):** `auditSceneNeedsTlas` in `@vitrum/core`; `pickBackend` steers `quality` and warns when multi-mesh scenes would land on merged-BVH pt-webgl without WebGPU.
 - **W8 RC acceptance harness (2026-05-27):** `npm run benchmark:rc-acceptance` captures Cornell walkaround PNGs (`rcEnabled` off/on) and runs `benchmark:acceptance-metrics`; two-engines URL params `rcEnabled` / `rcWeight`; `npm run benchmark:bdpt-layered-refs` wraps layered + BDPT cornell captures.
 - **pt-webgl TLAS audit (2026-05-27):** `auditPtWebglSceneForTlas` + `PTEngineWebGL2.getSceneTlasAudit()` warn on multi-mesh / instanced scenes (merged BVH limitation).

@@ -5,7 +5,7 @@ Dev-only debug overlay components for `@vitrum` engines. Add as a **devDependenc
 ## Components
 
 - `<FrameTimeHUD>` — per-frame ms histogram + rolling FPS readout.
-- `<DenoiserABToggle>` — UI scaffold for A/B comparator (requires `engine.debug.setDenoiserEnabled` — not yet implemented by any backend; renders a warning until that lands).
+- `<DenoiserABToggle>` — keyboard `D` / badge toggles `engine.debug.setDenoiserEnabled` on `@vitrum/walkaround-hybrid` (bypasses the denoiser pass; raw HDR).
 - `<DDGIAtlasViewer>` — live irradiance + visibility atlas readback via GPU copyTextureToBuffer + canvas blit at ~10 Hz (HybridEngine only).
 - `<BVHVisualizer>` — BVH depth histogram + node-count / leaf-count stats panel, polled at 2 Hz via `engine.debug.bvhNodes()`. (A camera-projected AABB overlay would need view/proj matrices on the debug surface — future work.)
 - `<GISignalSplit>` — 2×2 quadrant view of direct / indirect / AO / total HDR textures via the shared `startGpuTextureBlit` helper.

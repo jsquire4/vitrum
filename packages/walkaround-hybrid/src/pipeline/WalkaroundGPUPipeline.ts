@@ -353,6 +353,8 @@ export class WalkaroundGPUPipeline {
   private _denoiserRegistry: DenoiserRegistry | null = null;
   /** The active denoiser instance for this pipeline (set in initialize). */
   private _activeDenoiser: Denoiser | null = null;
+  /** Runtime bypass for dev A/B toggles (`engine.debug.setDenoiserEnabled`). */
+  private _denoiserPassEnabled = true;
   /** Registry of non-denoiser passes; populated once at boot. */
   private _passRegistry: PassRegistry | null = null;
   /** Sorted pass list cached at boot; reused across frames. */
@@ -572,6 +574,7 @@ export class WalkaroundGPUPipeline {
     registry.register(new DenoiserAdapterPass(
       () => this._activeDenoiser!,
       () => this._atrousPipeline,
+      () => this._denoiserPassEnabled,
     ));
     registry.register(new IndirectTemporalAccumPass(
       compiled.indirectTemporalAccumPipeline,
@@ -801,6 +804,15 @@ export class WalkaroundGPUPipeline {
     // Denoiser-private ping-pong indices (Welford / SVGF) reset inside
     // each Denoiser.resize implementation.
     this._activeDenoiser?.resize(width, height);
+  }
+
+  /** Dev A/B — when false, {@link DenoiserAdapterPass} is gated off (raw HDR). */
+  setDenoiserPassEnabled(enabled: boolean): void {
+    this._denoiserPassEnabled = enabled;
+  }
+
+  isDenoiserPassEnabled(): boolean {
+    return this._denoiserPassEnabled;
   }
 
   /**

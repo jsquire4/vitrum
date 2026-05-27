@@ -11,8 +11,7 @@
 // HybridEngine and expose it via engine.debug. The walkaround-hybrid denoiser
 // is already gated by a flag in the render pipeline; this just surfaces it.
 //
-// TODO T3.G followup: implement engine.debug.setDenoiserEnabled() in
-// HybridEngine by threading a boolean through the SVGF/atrous dispatch path.
+// Wired on HybridEngine via DenoiserAdapterPass runtime gate (2026-05-27).
 
 import React, { type FC, useEffect, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';

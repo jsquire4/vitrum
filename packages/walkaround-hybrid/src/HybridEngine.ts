@@ -219,6 +219,8 @@ export class HybridEngine implements Engine {
   }
 
   private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
+  /** Dev A/B — mirrors `engine.debug.setDenoiserEnabled` (default on). */
+  private _denoiserPassEnabled = true;
   /** T2.H2 — neural denoiser weights (populated when _denoiser === 'neural'). */
   private readonly _neuralWeights: ModelWeights | undefined;
   /** W11 — OIDN config (populated when _denoiser === 'oidn-final'). */
@@ -1300,10 +1302,8 @@ export class HybridEngine implements Engine {
    *  current handle (engine-owned; callers MUST NOT destroy). Returns
    *  null when the relevant subsystem isn't initialised yet.
    *
-   *  Not implemented: pickPrimitive (needs a real picking pass) and the
-   *  denoiser-toggle pair (needs pipeline bypass plumbing). Both stay
-   *  absent so DenoiserABToggle / MaterialInspector fall back to their
-   *  warn paths until those land. */
+   *  Not implemented: pickPrimitive (needs a real picking pass).
+   *  MaterialInspector stays on the warn path until picking lands. */
   readonly debug: EngineDebugSurface = {
     // A3 (2026-05-19) — expose the device handle so dev-overlay components
     // can issue `copyTextureToBuffer` + `mapAsync(READ)` readbacks on the
@@ -1351,6 +1351,11 @@ export class HybridEngine implements Engine {
         ao:       res.gtao?.aoFullTexture        ?? null,
         total:    null,
       };
+    },
+    isDenoiserEnabled: (): boolean => this._denoiserPassEnabled,
+    setDenoiserEnabled: (enabled: boolean): void => {
+      this._denoiserPassEnabled = enabled;
+      this._pipeline?.setDenoiserPassEnabled(enabled);
     },
     estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
       // Same structural-cast pattern as giSignalTextures. We reach into the

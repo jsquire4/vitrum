@@ -40,6 +40,7 @@
     "benchmark:pr-hybrid-gpu": "npm run benchmark:pr-hybrid-gpu --workspace @vitrum/benchmark-runner",
     "benchmark:pr-hybrid-gpu-windows": "node tools/benchmark-runner/run-gpu-host-windows.mjs run-pr-hybrid-gpu-full.mjs VITRUM_PR_REQUIRE_GPU=1",
     "benchmark:rc-acceptance": "npm run benchmark:rc-acceptance --workspace @vitrum/benchmark-runner",
+    "benchmark:rc-acceptance-full": "npm run benchmark:rc-acceptance-full --workspace @vitrum/benchmark-runner",
     "benchmark:bdpt-layered-refs": "npm run benchmark:bdpt-layered-refs --workspace @vitrum/benchmark-runner",
     "capture:refs": "./scripts/capture-all-refs.sh",
     "capture:refs:quick": "./scripts/capture-all-refs.sh --quick",

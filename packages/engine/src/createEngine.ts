@@ -110,7 +110,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
   }
 
   if (backend === 'walkaround-hybrid') {
-    return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree);
+    return await constructWalkaround(opts, vitrumScene, aabb, sceneInputIsThree, tlasAudit.needsTlas);
   }
   if (backend === 'pt-webgpu') {
     return await constructPathTracerWebGPU(opts, vitrumScene, sceneInputIsThree);
@@ -122,11 +122,28 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
 // Backend constructors
 // ────────────────────────────────────────────────────────────────────────────
 
+function mergeWalkaroundTlasExtension(
+  advanced: Partial<HybridEngineOptions> | undefined,
+  needsTlas: boolean,
+): Partial<HybridEngineOptions> | undefined {
+  if (!needsTlas) return advanced;
+  const wh = advanced?.extensions?.['walkaround-hybrid'];
+  if (wh?.bvhMode != null) return advanced;
+  return {
+    ...advanced,
+    extensions: {
+      ...(advanced?.extensions ?? {}),
+      'walkaround-hybrid': { ...wh, bvhMode: 'tlas' },
+    },
+  };
+}
+
 async function constructWalkaround(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
   aabb: SceneAABB,
   sceneInputIsThree: boolean,
+  needsTlas: boolean,
 ): Promise<Engine> {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter == null) {
@@ -170,7 +187,10 @@ async function constructWalkaround(
     emitterDist2Floor: scaleDefaults.emitterDist2Floor,
     triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
     debug: opts.debug ?? false,
-    ...(opts.advanced as Partial<HybridEngineOptions> | undefined),
+    ...mergeWalkaroundTlasExtension(
+      opts.advanced as Partial<HybridEngineOptions> | undefined,
+      needsTlas,
+    ),
   };
 
   const engine = await createWalkaroundEngine_Hybrid(merged);

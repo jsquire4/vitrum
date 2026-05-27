@@ -58,13 +58,16 @@ export class DenoiserAdapterPass implements Pass {
    *  here so the adapter can construct the {@link DenoiserDispatchContext}
    *  without the pipeline keeping a back-reference. */
   private readonly _sharedAtrousPipeline: () => GPUComputePipeline;
+  private readonly _isPassEnabled: () => boolean;
 
   constructor(
     activeDenoiser: () => Denoiser,
     sharedAtrousPipeline: () => GPUComputePipeline,
+    isPassEnabled: () => boolean = () => true,
   ) {
     this._activeDenoiser = activeDenoiser;
     this._sharedAtrousPipeline = sharedAtrousPipeline;
+    this._isPassEnabled = isPassEnabled;
   }
 
   /** Forward the active denoiser's labels so `buildPassLayout`'s slot
@@ -75,7 +78,7 @@ export class DenoiserAdapterPass implements Pass {
   }
 
   gates(): boolean {
-    return this._activeDenoiser().id !== 'none';
+    return this._isPassEnabled() && this._activeDenoiser().id !== 'none';
   }
 
   async initialize(_ctx: PassInitContext): Promise<void> {

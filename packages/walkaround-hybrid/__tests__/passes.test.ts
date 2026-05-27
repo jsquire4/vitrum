@@ -144,6 +144,12 @@ describe('Pass entries — W1-R5 shape invariants', () => {
     expect(p.gates()).toBe(true);
   });
 
+  it('DenoiserAdapterPass: gates() returns false when runtime bypass is off', () => {
+    const realStub = makeStubDenoiser('atrous-variance', []);
+    const p = new DenoiserAdapterPass(() => realStub, () => stubPipeline, () => false);
+    expect(p.gates()).toBe(false);
+  });
+
   it('IndirectTemporalAccumPass: depends on shade, gtao-upsample, denoiser-adapter', () => {
     const p = new IndirectTemporalAccumPass(stubPipeline, stubPingPong);
     expect(p.id).toBe('indirect-temporal-accum');
