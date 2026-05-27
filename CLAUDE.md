@@ -148,7 +148,7 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 **Honest remaining deep-pipeline work** (ignore npm / release governance):
 
 1. **Fidelity promotion on pt-webgpu** — spectral, thin-film, SSS, caustics, multi-emitter rows are implemented with mechanical tests but still tagged `experimental` until gap-closure scenarios promote them to `supported` in `plan/renderer-fidelity-matrix.md`.
-2. **Hybrid animation ergonomics** — mesh **transform** animation without full `setScene` on walkaround; pt-webgl still rebuilds on transform/positions patches (`incrementalPatchSupport.transform/positions: false`).
+2. **Host animation workflows** — walkaround + pt-webgl + pt-webgpu all expose transform/positions incremental patches via `incrementalPatchSupport`; topology and vertex-count changes still require full scene rebuild on pt-webgl/pt-webgpu.
 3. **GI subsystem BVH alignment** — RC moving-instance refit without full scene teardown (PR-5.3); optional merged-BVH fallback cleanup.
 4. **GPU skinning compute** — `GpuSkinningSubsystem` + CPU `solveSkin` shipped; WGSL LBS compute + inverse-transpose normals for scaled bones remain optional polish (PR-7 follow-up).
 5. **PPG cost / quality** — wired and dispatching; tuning and large-scene perf per `plan/d2-e6-pt-webgpu-ppg-performance.md`.

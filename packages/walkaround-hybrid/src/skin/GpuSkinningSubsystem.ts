@@ -87,11 +87,7 @@ export class GpuSkinningSubsystem {
     }
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.gpuSkinBvh' });
-    const gpuSkinnedIds: Array<{
-      id: string;
-      positions: Float32Array;
-      normals: Float32Array;
-    }> = [];
+    const gpuSkinnedIds: string[] = [];
 
     for (const prim of scene.primitives) {
       if (prim.kind !== 'skinned-mesh') continue;
@@ -144,14 +140,13 @@ export class GpuSkinningSubsystem {
       pass.dispatchWorkgroups(Math.ceil(state.vertexCount / 64), 1, 1);
       pass.end();
 
-      const { positions, normals } = solveSkin(prim);
-      gpuSkinnedIds.push({ id, positions, normals });
+      gpuSkinnedIds.push(id);
     }
 
     if (gpuSkinnedIds.length > 0) {
       this.#device.queue.submit([encoder.finish()]);
-      for (const { id, positions, normals } of gpuSkinnedIds) {
-        engine.applyGpuSkinnedRefit(id, positions, normals);
+      for (const id of gpuSkinnedIds) {
+        engine.applyGpuSkinnedRefit(id);
       }
     }
   }

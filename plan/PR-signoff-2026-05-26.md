@@ -5,8 +5,8 @@
 | Wave | Status | Evidence |
 |------|--------|----------|
 | PR-0 … PR-6 | **Complete** | Prior landings + `benchmark:pr-hybrid-gpu` |
-| PR-7 GPU skinning | **Complete (v1)** | `HybridEngineOptions.gpuSkinning` + `GpuSkinningSubsystem` (per-frame `solveSkin` → positions refit); `gpuSkinLbs.wgsl.ts` for compute follow-up |
-| PR-8 pt-webgl incremental | **Complete** | Material: `updateMaterials()`; emitter: `updateLights()`; ledger `material` + `emitter` true |
+| PR-7 GPU skinning | **Complete (v1)** | `gpuSkinning` + `GpuSkinningSubsystem` (`gpuSkinBvh.wgsl`); one CPU `solveSkin` per GPU refit frame |
+| PR-8 pt-webgl incremental | **Complete** | Material / emitter / transform (8b) / positions same-topology (8c); ledger matches |
 | PR-9 Signoff | **This document** | |
 
 ## PR-D6

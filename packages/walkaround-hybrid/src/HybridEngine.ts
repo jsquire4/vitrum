@@ -62,7 +62,11 @@ import {
   type SceneBVHBuffers,
 } from './restir/bvhCompute.js';
 import { applyEmitterPatchToScene } from './scenePatch.js';
-import { vitrumSceneToThree, disposeVitrumThreeSceneRoot } from '@vitrum/three-bindings';
+import {
+  disposeVitrumThreeSceneRoot,
+  solveSkin,
+  vitrumSceneToThree,
+} from '@vitrum/three-bindings';
 import type { ModelWeights } from './neural/weights.js';
 import {
   transformRefit,
@@ -639,13 +643,26 @@ export class HybridEngine implements Engine {
    */
   applyGpuSkinnedRefit(
     id: string,
-    localPositions: Float32Array,
+    localPositions?: Float32Array,
     localNormals?: Float32Array,
   ): void {
+    let positions = localPositions;
+    let normals = localNormals;
+    if (positions == null) {
+      const prim = this._lastScene?.primitives.find(
+        (p) => String(p.id) === id && p.kind === 'skinned-mesh',
+      );
+      if (prim?.kind !== 'skinned-mesh') {
+        throw new Error(`applyGpuSkinnedRefit("${id}"): skinned-mesh primitive not found.`);
+      }
+      const solved = solveSkin(prim);
+      positions = solved.positions;
+      normals = solved.normals;
+    }
     const result = refitSkinnedMeshAfterGpuWrite(
       id,
-      localPositions,
-      localNormals,
+      positions,
+      normals,
       this._buildPrimitiveUpdateContext(),
     );
     this._bvhBuffers = result.bvhBuffers;

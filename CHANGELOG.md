@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **PR-7 GPU skin refit (2026-05-27):** `applyGpuSkinnedRefit` runs one CPU `solveSkin` after GPU LBS (no duplicate LBS in `GpuSkinningSubsystem`).
 - **PR-8 pt-webgl incremental patches (2026-05-27):** `updatePrimitive({ material })` → `updateMaterials()`; `{ transform }` → fork BVH refit (PR-8b); `{ positions }` same topology → geometry regen (PR-8c); `updateEmitter` → `updateLights()`; ledger `transform` + `positions` + `material` + `emitter: true`.
 - **PR-5.5 hybrid RC on transform (2026-05-27):** merged-mode `transformRefit` returns `rcRefitBounds` from live `bvhPositions` so `RCSubsystem.refitCascadeBounds` runs without full `setScene`.
 - **PR-7 GPU skinning same-frame (2026-05-27):** `gpuSkinBvh.wgsl.ts` LBS writes merged `bvhPositions` on GPU; `refitSkinnedMeshAfterGpuWrite` + `refreshBvhNodesOnly` refit nodes without position re-upload (no frame-lagged readback).
