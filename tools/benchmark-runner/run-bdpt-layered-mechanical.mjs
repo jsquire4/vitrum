@@ -53,8 +53,9 @@ async function ensureFixturePngs() {
     return;
   }
   try {
-    const [layeredSt, bdptSt] = await Promise.all([stat(layeredPng), stat(bdptPng)]);
-    if (layeredSt.size > 50_000 && bdptSt.size > 50_000) return;
+    const layeredSt = await stat(layeredPng);
+    // GPU layered capture landed — keep fixtures even when BDPT PNG is smaller (~12–25 KiB).
+    if (layeredSt.size > 50_000) return;
   } catch {
     /* missing — generate stubs */
   }

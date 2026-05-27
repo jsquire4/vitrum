@@ -520,15 +520,9 @@ async function main(): Promise<void> {
   setStatus('Uploading scene to path tracer...');
   engine.setScene(vitrumScene);
 
-  // C3 (2026-05-19) — BDPT light-path texture lifecycle. Allocated only
-  // when `?vitrumBdpt=1`. The buffer's texture is handed to the engine
-  // each frame via `bdptAdvanceFrame()` so the fork's connection pass
-  // reads from it. NOTE: a real BDPT host populates the texture via its
-  // own light-subpath draw pass before bdptAdvanceFrame(); this example
-  // demonstrates the API call wiring without that draw pass, so the
-  // BDPT contribution is currently zeros — the visual A/B against
-  // ?vitrumBdpt=0 is intentionally minimal until a light-subpath
-  // dispatch lands in @vitrum/pt-webgl.
+  // C3 — BDPT light-path texture: CPU bounce-0 fill from vitrumScene each frame
+  // (`BdptLightPathBuffer.fillFromScene`) until the fork's dedicated light-subpath
+  // draw pass lands; extension bounces remain stubbed (cols 1..N invalid).
   const bdptBuffer: BdptLightPathBuffer | null = config.bdpt
     ? new BdptLightPathBuffer({ maxLightBounces: config.bdptMaxLightBounces })
     : null;
@@ -662,10 +656,8 @@ async function main(): Promise<void> {
       },
     };
 
-    // C3 — hand the light-path texture to the fork's connect pass before
-    // each renderFrame. The engine's bdptAdvanceFrame() forwards to
-    // driveForkMaterialUniforms; if BDPT is disabled the call is a no-op.
     if (bdptBuffer != null) {
+      bdptBuffer.fillFromScene(renderer, vitrumScene, input.frameSeed);
       engine.bdptAdvanceFrame(bdptBuffer.texture);
     }
     const out = engine.renderFrame(input) as PTEngineWebGL2FrameOutput;

@@ -57,7 +57,10 @@
  * - `plan/sprint-10c-pt-fork-patch.md` (vitrum repo).
  */
 
+import type { Scene } from '@vitrum/core';
 import * as THREE from 'three';
+import type { WebGLRenderer } from 'three';
+import { fillBdptLightPathWebGL } from './bdpt/fillBdptLightPathWebGL.js';
 
 export interface BdptLightPathBufferOptions {
   /**
@@ -118,5 +121,19 @@ export class BdptLightPathBuffer {
   /** True when `dispose()` has been called. */
   get disposed(): boolean {
     return this._disposed;
+  }
+
+  /**
+   * CPU bounce-0 fill from a @vitrum/core Scene (rect/point/spot/directional emitters).
+   * Call once per frame before `engine.bdptAdvanceFrame(this.texture)`.
+   */
+  fillFromScene(renderer: WebGLRenderer, scene: Scene, frameSeed: number): void {
+    if (this._disposed) {
+      throw new Error('[BdptLightPathBuffer] fillFromScene after dispose');
+    }
+    renderer.setRenderTarget(this.renderTarget);
+    renderer.clear();
+    renderer.setRenderTarget(null);
+    fillBdptLightPathWebGL(renderer, this.texture, this.maxLightBounces, scene, frameSeed);
   }
 }
