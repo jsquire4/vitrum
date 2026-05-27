@@ -1,7 +1,7 @@
 {
   "schema": "vitrum-pr-hybrid-bench-2026-05-26",
-  "startedAt": "2026-05-27T06:12:22.137Z",
-  "finishedAt": "2026-05-27T06:12:22.218Z",
+  "startedAt": "2026-05-27T06:18:05.575Z",
+  "finishedAt": "2026-05-27T06:18:15.929Z",
   "launchProfile": "hardware",
   "adapter": {
     "profile": "hardware",
@@ -9,11 +9,11 @@
     "vendor": "",
     "architecture": "",
     "description": "",
-    "maxStorageBuffersPerShaderStage": 10,
-    "maxStorageTexturesPerShaderStage": 4,
-    "ptWebgpuFullTier": false,
+    "maxStorageBuffersPerShaderStage": 16,
+    "maxStorageTexturesPerShaderStage": 8,
+    "ptWebgpuFullTier": true,
     "ptWebgpuLiteTier": true,
-    "hybridCanRun": false
+    "hybridCanRun": true
   },
   "summary": {
     "total": 4,
@@ -23,95 +23,161 @@
   "rows": [
     {
       "scenarioId": "PR-hybrid-200k-static",
-      "startedAt": "2026-05-27T06:12:22.137Z",
-      "finishedAt": "2026-05-27T06:12:22.137Z",
-      "url": "http://127.0.0.1:5175/walkaround.html?prBench=frame-sample&prBenchAuto=1&mode=walkaround&scene=bench200k&targetTriangles=200000&prBenchFrames=120&prBenchScenario=PR-hybrid-200k-static",
+      "startedAt": "2026-05-27T06:18:05.575Z",
+      "finishedAt": "2026-05-27T06:18:09.928Z",
+      "url": "http://127.0.0.1:5176/walkaround.html?prBench=frame-sample&prBenchAuto=1&mode=walkaround&scene=bench200k&targetTriangles=200000&prBenchFrames=120&prBenchScenario=PR-hybrid-200k-static",
       "pass": true,
-      "skipped": true,
-      "skipReason": "adapter-insufficient",
-      "adapterLimits": {
-        "profile": "hardware",
+      "bench": {
+        "scenario": "PR-hybrid-200k-static",
         "ok": true,
-        "vendor": "",
-        "architecture": "",
-        "description": "",
-        "maxStorageBuffersPerShaderStage": 10,
-        "maxStorageTexturesPerShaderStage": 4,
-        "ptWebgpuFullTier": false,
-        "ptWebgpuLiteTier": true,
-        "hybridCanRun": false
+        "elapsedMs": 2013.5,
+        "p95FrameMs": 0.7000000178813934,
+        "sampleCount": 120,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
       },
-      "bench": null,
-      "hash": "8bc1452eca0087b6631ea653c5a7dc2487ae01cc2578338e2a8c8352ae83cab8"
+      "hash": "7c7c5d6037901e33726960fe8d5ebcfacb7576cba84b907a7da783c5bfb55b21"
     },
     {
       "scenarioId": "PR-hybrid-tlas-10-inst",
-      "startedAt": "2026-05-27T06:12:22.138Z",
-      "finishedAt": "2026-05-27T06:12:22.138Z",
-      "url": "http://127.0.0.1:5175/walkaround.html?prBench=frame-sample&prBenchAuto=1&mode=walkaround&scene=tlas10inst&bvhMode=tlas&prBenchFrames=48&prBenchScenario=PR-hybrid-tlas-10-inst",
+      "startedAt": "2026-05-27T06:18:09.994Z",
+      "finishedAt": "2026-05-27T06:18:12.427Z",
+      "url": "http://127.0.0.1:5176/walkaround.html?prBench=frame-sample&prBenchAuto=1&mode=walkaround&scene=tlas10inst&bvhMode=tlas&prBenchFrames=48&prBenchScenario=PR-hybrid-tlas-10-inst",
       "pass": true,
-      "skipped": true,
-      "skipReason": "adapter-insufficient",
-      "adapterLimits": {
-        "profile": "hardware",
+      "bench": {
+        "scenario": "PR-hybrid-tlas-10-inst",
         "ok": true,
-        "vendor": "",
-        "architecture": "",
-        "description": "",
-        "maxStorageBuffersPerShaderStage": 10,
-        "maxStorageTexturesPerShaderStage": 4,
-        "ptWebgpuFullTier": false,
-        "ptWebgpuLiteTier": true,
-        "hybridCanRun": false
+        "elapsedMs": 829.8000000119209,
+        "p95FrameMs": 0.7000000178813934,
+        "sampleCount": 48,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
       },
-      "bench": null,
-      "hash": "5c0c2cc0484ea809268ab1a9a80001b64f281d91bf2f34cb7a665c8e495675e3"
+      "hash": "54f863155baf80238cfbce572122a47c653b7bbd67204932edf51c895a29e000"
     },
     {
       "scenarioId": "PR-hybrid-material-churn",
-      "startedAt": "2026-05-27T06:12:22.138Z",
-      "finishedAt": "2026-05-27T06:12:22.138Z",
-      "url": "http://127.0.0.1:5175/walkaround.html?prBench=material-churn&prBenchAuto=1&mode=walkaround&prBenchIters=100",
+      "startedAt": "2026-05-27T06:18:12.491Z",
+      "finishedAt": "2026-05-27T06:18:14.062Z",
+      "url": "http://127.0.0.1:5176/walkaround.html?prBench=material-churn&prBenchAuto=1&mode=walkaround&prBenchIters=100",
       "pass": true,
-      "skipped": true,
-      "skipReason": "adapter-insufficient",
-      "adapterLimits": {
-        "profile": "hardware",
+      "bench": {
+        "scenario": "PR-hybrid-material-churn",
         "ok": true,
-        "vendor": "",
-        "architecture": "",
-        "description": "",
-        "maxStorageBuffersPerShaderStage": 10,
-        "maxStorageTexturesPerShaderStage": 4,
-        "ptWebgpuFullTier": false,
-        "ptWebgpuLiteTier": true,
-        "hybridCanRun": false
+        "elapsedMs": 1.600000023841858,
+        "iterations": 100,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
       },
-      "bench": null,
-      "hash": "d681cec26c8527fe9ac4635695f3c4bd2dcbad79914620e4f6b5b30a1632cd9b"
+      "hash": "5cffa337cba66859049b9685ea09e26465a6dae782f23ae9f3710b906143b8d4"
     },
     {
       "scenarioId": "PR-hybrid-emitter-churn",
-      "startedAt": "2026-05-27T06:12:22.138Z",
-      "finishedAt": "2026-05-27T06:12:22.138Z",
-      "url": "http://127.0.0.1:5175/walkaround.html?prBench=emitter-churn&prBenchAuto=1&mode=walkaround&prBenchIters=100",
+      "startedAt": "2026-05-27T06:18:14.120Z",
+      "finishedAt": "2026-05-27T06:18:15.769Z",
+      "url": "http://127.0.0.1:5176/walkaround.html?prBench=emitter-churn&prBenchAuto=1&mode=walkaround&prBenchIters=100",
       "pass": true,
-      "skipped": true,
-      "skipReason": "adapter-insufficient",
-      "adapterLimits": {
-        "profile": "hardware",
+      "bench": {
+        "scenario": "PR-hybrid-emitter-churn",
         "ok": true,
-        "vendor": "",
-        "architecture": "",
-        "description": "",
-        "maxStorageBuffersPerShaderStage": 10,
-        "maxStorageTexturesPerShaderStage": 4,
-        "ptWebgpuFullTier": false,
-        "ptWebgpuLiteTier": true,
-        "hybridCanRun": false
+        "elapsedMs": 3.600000023841858,
+        "iterations": 100,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
       },
-      "bench": null,
-      "hash": "733963dd7cdc37505ace12aecf0ee2c2744e83c128d69b84978259990d995ecc"
+      "hash": "b97f2458bccb93590478e437524cb910725b4f3069550bd1e4be3bfbdcba5e4c"
     }
   ]
 }

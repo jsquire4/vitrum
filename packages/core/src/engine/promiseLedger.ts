@@ -80,8 +80,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     incrementalPatchSupport: {
       transform: false,
       positions: false,
-      material: false,
-      emitter: false,
+      material: true,
+      emitter: true,
       topology: false,
     },
     supportsAuxBuffers: false,

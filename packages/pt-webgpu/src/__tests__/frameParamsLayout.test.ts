@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { FRAME_PARAMS_BYTE_SIZE } from '../scene/frameParamsLayout.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 
 /**
@@ -100,7 +101,11 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'cmfIntegralX: f32',
       'cmfIntegralY: f32',
       'cmfIntegralZ: f32',
-      '_padBeforeCamera: u32',
+      'bdptEnabled: u32',
+      'bdptMaxLightBounces: u32',
+      '_padAuto0: u32',
+      '_padAuto1: u32',
+      '_padAuto2: u32',
       'cameraPos: vec4f',
       'lightDir: vec4f',
       'environmentTint: vec4f',
@@ -179,13 +184,13 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).not.toMatch(/params\.rectAreaV\b/);
   });
 
-  it('fits inside the 512-byte UBO with the spectral hero layout (368 bytes used)', () => {
+  it('fits inside the 512-byte UBO (WGSL-aligned byte size from layout generator)', () => {
     const u32Count = fields.filter((f) => /:\s*u32\b/.test(f)).length;
     const f32Count = fields.filter((f) => /:\s*f32\b/.test(f)).length;
     const vec4Count = fields.filter((f) => /:\s*vec4f\b/.test(f)).length;
     const mat4Count = fields.filter((f) => /:\s*mat4x4f\b/.test(f)).length;
     const bytes = u32Count * 4 + f32Count * 4 + vec4Count * 16 + mat4Count * 64;
-    expect(bytes).toBe(368);
-    expect(bytes).toBeLessThanOrEqual(512);
+    expect(bytes).toBe(FRAME_PARAMS_BYTE_SIZE);
+    expect(FRAME_PARAMS_BYTE_SIZE).toBeLessThanOrEqual(512);
   });
 });

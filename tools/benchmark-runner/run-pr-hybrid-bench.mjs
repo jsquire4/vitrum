@@ -11,7 +11,7 @@
  *   npm run benchmark:pr-hybrid --workspace @vitrum/benchmark-runner  # all scenarios
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ import {
   waitForServerReady,
 } from './devServer.mjs';
 import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
+import { writePrHybridManifest } from './prHybridManifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -322,37 +323,14 @@ async function main() {
   await mkdir(prHybridPerfDir, { recursive: true });
   await writeFile(perfLatestPath, reportJson);
 
-  const manifestPath = resolve(prHybridRefRoot, 'manifest.json');
-  let prior = { manifest: [] };
-  try {
-    prior = JSON.parse(await readFile(manifestPath, 'utf8'));
-  } catch {
-    /* first run */
-  }
   const perfEntries = rows
     .filter((r) => r.pass && r.bench != null)
     .map((r) => ({
       kind: 'perf',
       scenarioId: r.scenarioId,
-      reportPath: outPath,
       bench: r.bench,
     }));
-  const priorManifest = Array.isArray(prior.manifest) ? prior.manifest : [];
-  const withoutPerf = priorManifest.filter((e) => e?.kind !== 'perf');
-  await writeFile(
-    manifestPath,
-    `${JSON.stringify(
-      {
-        generatedAt: report.finishedAt,
-        note:
-          'Perf: npm run benchmark:pr-hybrid (≥16 storage buffers). PNGs: npm run benchmark:pr-hybrid-refs.',
-        latestPerf: perfLatestPath,
-        manifest: [...withoutPerf, ...perfEntries],
-      },
-      null,
-      2,
-    )}\n`,
-  );
+  const manifestPath = await writePrHybridManifest(prHybridRefRoot, { perfEntries });
 
   console.log(`Wrote ${outPath}`);
   console.log(`Wrote ${perfLatestPath}`);

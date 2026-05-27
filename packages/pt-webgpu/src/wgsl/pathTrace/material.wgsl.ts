@@ -48,7 +48,11 @@ struct FrameParams {
   cmfIntegralX: f32,
   cmfIntegralY: f32,
   cmfIntegralZ: f32,
-  _padBeforeCamera: u32,
+  bdptEnabled: u32,
+  bdptMaxLightBounces: u32,
+  _padAuto0: u32,
+  _padAuto1: u32,
+  _padAuto2: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -101,7 +105,11 @@ struct FrameParams {
   cmfIntegralX: f32,
   cmfIntegralY: f32,
   cmfIntegralZ: f32,
-  _padBeforeCamera: u32,
+  bdptEnabled: u32,
+  bdptMaxLightBounces: u32,
+  _padAuto0: u32,
+  _padAuto1: u32,
+  _padAuto2: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -148,6 +156,7 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl *
 @group(2) @binding(2) var<storage, read> tlasBlasRoots: array<u32>;
 @group(2) @binding(3) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+@group(2) @binding(5) var bdptLightPath: texture_storage_2d<rgba32float, read_write>;
 `;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =

@@ -62,7 +62,7 @@ function mat4Mul(
 }
 
 /** Pre-compute combined = bones · boneInverses, packed contiguously. */
-function combineSkinMatrices(
+export function combineSkinMatrices(
   bones: Float32Array,
   boneInverses: Float32Array,
   boneCount: number,

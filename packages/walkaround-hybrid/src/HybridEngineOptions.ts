@@ -42,6 +42,13 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly height: number;
 
   /**
+   * PR-7 — when true, run {@link solveSkin} for every `skinned-mesh` primitive
+   * at the start of each {@link HybridEngine.renderFrame} and refit BLAS via
+   * `updatePrimitive({ positions, normals })`.
+   */
+  readonly gpuSkinning?: boolean;
+
+  /**
    * Predicate the engine polls before kicking off ReSTIR pipeline init.
    * Returns true when the scene has enough geometry to build a BVH.
    * Defaults to the `defaultIsSceneReady` heuristic (any triangle present).

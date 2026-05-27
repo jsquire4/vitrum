@@ -7,7 +7,7 @@ describe('hero-wavelength FrameParams plumbing', () => {
     expect(FrameParamsSlot.spectralEnabled).toBe(20);
     expect(FrameParamsSlot.heroLambdaNm).toBe(22);
     expect(FrameParamsSlot.cmfIntegralY).toBe(25);
-    expect(FrameParamsSlot.cameraPos).toBe(28);
+    expect(FrameParamsSlot.cameraPos).toBe(32);
   });
 
   it('exports CMF integrals matching shared-samplers', () => {

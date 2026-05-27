@@ -28,8 +28,9 @@ export {
   disposeVitrumThreeSceneRoot,
   applyEnvironment,
   applyVitrumMaterialToMesh,
+  findMeshByPrimitiveId,
 } from './vitrumSceneToThree.js';
-export { solveSkin } from './skinSolver.js';
+export { combineSkinMatrices, solveSkin } from './skinSolver.js';
 export { loadGltfScene, type LoadedGltf, type GltfCamera, type LoadGltfSceneOptions } from './gltfLoader.js';
 export { VITRUM_USER_DATA_KEYS } from './userDataKeys.js';
 export {

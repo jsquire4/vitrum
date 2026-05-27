@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { launchDevServer, stopDevServer, waitForServerReady } from './devServer.mjs';
 import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
+import { writePrHybridManifest } from './prHybridManifest.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = getRepoRoot(import.meta.url);
@@ -103,7 +104,12 @@ async function main() {
       await canvas.waitFor({ timeout: 15_000 });
       await canvas.screenshot({ path: pngPath });
       const hash = createHash('sha256').update(await readFile(pngPath)).digest('hex');
-      manifest.push({ scenarioId: row.scenarioId, pngPath, hash });
+      manifest.push({
+        kind: 'png',
+        scenarioId: row.scenarioId,
+        pngPath: `${row.dir}/${row.scenarioId}.png`,
+        hash,
+      });
       console.log(`[pr-ref-capture] wrote ${pngPath} sha256=${hash.slice(0, 12)}`);
     } catch (e) {
       console.error(`[pr-ref-capture] ${row.scenarioId} failed:`, e);
@@ -116,8 +122,7 @@ async function main() {
   await browser.close();
   if (devServer) stopDevServer(devServer);
 
-  const manifestPath = resolve(refRoot, 'manifest.json');
-  await writeFile(manifestPath, `${JSON.stringify({ generatedAt: new Date().toISOString(), manifest }, null, 2)}\n`);
+  const manifestPath = await writePrHybridManifest(refRoot, { pngEntries: manifest });
   console.log(`[pr-ref-capture] manifest ${manifestPath}`);
 }
 

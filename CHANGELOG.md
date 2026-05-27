@@ -10,7 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **WG-9 scope (2026-05-26):** Schied `svgf-real` remains **walkaround-hybrid only**; pt-webgpu rejects `denoiser: 'svgf-real'` at construction.
+- **PR-8 pt-webgl incremental patches (2026-05-27):** `updatePrimitive({ material })` → `WebGLPathTracer.updateMaterials()`; `updateEmitter` → `updateLights()` without full `setScene`; ledger `material` + `emitter: true`.
+- **PR-7 GPU skinning (2026-05-27):** `HybridEngineOptions.gpuSkinning` + LBS compute (`gpuSkinLbs.wgsl.ts`) with frame-lagged readback into A3 positions refit.
+- **WG-7 BDPT on pt-webgpu (2026-05-27):** CPU bounce-0 light-path fill + GPU `bdptExtendLightSubpath` compute; `extensions['vitrum.ptWebgpu.bdpt']`; FrameParams `bdptEnabled` / `bdptMaxLightBounces`.
+- **WG-9 svgf-real on pt-webgpu (2026-05-27):** `SVGFRealDispatcher` wired when `denoiser: 'svgf-real'` on full trace tier.
+- **auto backend (2026-05-27):** `pickBackend('auto')` selects **pt-webgpu** at ≥500k triangles when WebGPU is available.
+- **PR-D6 GPU captures (2026-05-27):** `benchmark:pr-hybrid-gpu` + Windows wrapper; merged `PR-hybrid/manifest.json` (perf + PNG).
 - **PR-D6 polish (2026-05-26):** `npm run benchmark:pr-hybrid-refs` writes smoke PNGs under `tools/reference-renders/PR-hybrid/`.
 - **Gap-closure mechanical CI (2026-05-26):** `buildGapClosureCornellThreeScene` in `@vitrum-examples/shared`; two-engines `vitrumGapScenario` capture wiring; `npm run benchmark:gap-closure-mechanical`; smoke baselines for `rfe07` / `rfe08`.
 - **pt-webgpu WG-4/5/6 parity (2026-05-26):** layered front/back `activeLayerWeightRgb` at hero λ, η² transmission MIS in `brdfDirectionalPdf`, translucent SSS gate (`isTranslucent`), same-topology `positions` BLAS splice via `rebuildPrimitiveBlas`; core promise ledger `positions: true` for pt-webgpu.

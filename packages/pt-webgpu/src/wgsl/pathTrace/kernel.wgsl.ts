@@ -422,6 +422,24 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       radiance = radiance + directLi * f32(lightCount);
     }
 
+    if (params.bdptEnabled != 0u) {
+      let maxLv = min(params.bdptMaxLightBounces, 3u);
+      for (var lvi = 0u; lvi < maxLv; lvi++) {
+        radiance = radiance + evaluateBdptConnection(
+          hitPos,
+          normal,
+          wo,
+          throughputAtVertex,
+          1.0,
+          baseColor,
+          roughness,
+          metallic,
+          transmission,
+          i32(lvi),
+        );
+      }
+    }
+
     let caustic = causticMode();
     if (caustic == 1u) {
       radiance = radiance + manifoldNeeContribution(

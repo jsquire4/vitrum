@@ -42,5 +42,8 @@ export function pickBackend(
   if (hasWebGPU && triangleCount < AUTO_REALTIME_TRIANGLE_BUDGET) {
     return 'walkaround-hybrid';
   }
+  if (hasWebGPU) {
+    return 'pt-webgpu';
+  }
   return 'pt-webgl';
 }

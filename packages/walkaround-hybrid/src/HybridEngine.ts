@@ -80,6 +80,7 @@ import {
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
+import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 
 // Re-export the option / lighting interfaces from their dedicated module so
 // the package's public surface (`./HybridEngine.js` import path) stays
@@ -307,11 +308,15 @@ export class HybridEngine implements Engine {
 
   private readonly _staticPipelineRebuildKey: string | number | null;
   private readonly _getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
+  private readonly _skinning: GpuSkinningSubsystem | null;
 
   constructor(opts: HybridEngineOptions) {
     this._device                = opts.device;
     this._width                 = opts.width;
     this._height                = opts.height;
+    this._skinning              = opts.gpuSkinning
+      ? new GpuSkinningSubsystem(opts.device, true)
+      : null;
     this._threeScene            = opts.threeScene ?? null;
     this._primaryLightDir       = opts.primaryLightDir;
     this._primaryLightIntensity = opts.primaryLightIntensity;
@@ -954,6 +959,10 @@ export class HybridEngine implements Engine {
       }
     }
 
+    if (this._skinning != null && this._lastScene != null) {
+      this._skinning.run(this, this._lastScene);
+    }
+
     // ── DDGI per-frame compute ──────────────────────────────────────────
     // Drive DDGI probe updates as part of this frame tick (fire-and-forget).
     // GPU command queueing (writeBuffer / dispatchWorkgroups / queue.submit) is
@@ -1313,6 +1322,7 @@ export class HybridEngine implements Engine {
     if (teardownNow) {
       // No in-flight init; tear down here and now.
       this._teardownPipeline();
+      this._skinning?.dispose();
       this._ddgi.dispose();
       // W8 Phase 2 — also tear down RC subsystem when active.
       if (this._rc) {

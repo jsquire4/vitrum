@@ -25,7 +25,12 @@ import { asBackendTexture } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
-import { vitrumSceneToThree, applyEnvironment } from '@vitrum/three-bindings';
+import {
+  vitrumSceneToThree,
+  applyEnvironment,
+  applyVitrumMaterialToMesh,
+  findMeshByPrimitiveId,
+} from '@vitrum/three-bindings';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
 import { ForkAccess } from './forkAccess.js';
 import {
@@ -112,6 +117,10 @@ interface WebGLPathTracerCompat {
    *  no geometry re-upload. Used by `PTEngineWebGL2.updateEnvironment()` to
    *  service host-driven timeOfDay scrubs cheaply. */
   updateEnvironment?(): void;
+  /** Re-pack MaterialsTexture from the cached scene without BVH rebuild (PR-8). */
+  updateMaterials?(): void;
+  /** Re-pack light buffers from the cached scene without BVH rebuild (PR-8). */
+  updateLights?(): void;
   configureAdditiveAccumulation?(enabled: boolean, blendFrames: boolean): void;
   /** Optional fork field — the wrapper stores a reference to the THREE scene
    *  most recently passed to `setScene()`. updateEnvironment() reads
@@ -133,6 +142,22 @@ interface RenderSizePlan {
   readonly height: number;
   readonly estimatedBytes: number;
   readonly guardrail: string | null;
+}
+
+function isEmitterOnlyPatch(patch: Partial<SceneEmitter>): boolean {
+  if ('kind' in patch && patch.kind !== undefined) return false;
+  if ('meshPrimitiveId' in patch && patch.meshPrimitiveId !== undefined) return false;
+  if ('transform' in patch && patch.transform !== undefined) return false;
+  return Object.keys(patch).some((k) => k !== 'id');
+}
+
+function isMaterialOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
+  if (patch.material === undefined) return false;
+  for (const key of Object.keys(patch) as (keyof ScenePrimitive)[]) {
+    if (key === 'id' || key === 'material') continue;
+    if ((patch as Record<string, unknown>)[key] !== undefined) return false;
+  }
+  return true;
 }
 
 function patchPrimitiveInScene(scene: Scene, id: string, patch: Partial<ScenePrimitive>): Scene {
@@ -593,8 +618,8 @@ export class PTEngineWebGL2 implements Engine {
       incrementalPatchSupport: {
         transform: false,
         positions: false,
-        material: false,
-        emitter: false,
+        material: true,
+        emitter: true,
         topology: false,
       },
       supportsAuxBuffers: false,
@@ -855,13 +880,47 @@ export class PTEngineWebGL2 implements Engine {
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {
     this.#assertLive('updatePrimitive');
-    const next = patchPrimitiveInScene(this.#vitrumScene!, _id, _patch);
+    if (this.#vitrumScene == null || this.#threeSceneRoot == null) {
+      throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
+    }
+    if (isMaterialOnlyPrimitivePatch(_patch)) {
+      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
+      if (mesh == null) {
+        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
+      }
+      applyVitrumMaterialToMesh(mesh, _patch.material);
+      const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
+      if (typeof tracerCompat.updateMaterials === 'function') {
+        tracerCompat.updateMaterials();
+      } else {
+        tracerCompat.reset();
+      }
+      this.#oidnDispatcher?.invalidate();
+      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+      return;
+    }
+    const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
     this.setScene(next);
   }
 
   updateEmitter(_id: string, _patch: Partial<SceneEmitter>): void {
     this.#assertLive('updateEmitter');
-    const next = patchEmitterInScene(this.#vitrumScene!, _id, _patch);
+    if (this.#vitrumScene == null || this.#threeSceneRoot == null) {
+      throw new Error('updateEmitter: call setScene() before updateEmitter()');
+    }
+    if (isEmitterOnlyPatch(_patch)) {
+      const next = patchEmitterInScene(this.#vitrumScene, _id, _patch);
+      this.#vitrumScene = next;
+      const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
+      if (typeof tracerCompat.updateLights === 'function') {
+        tracerCompat.updateLights();
+      } else {
+        tracerCompat.reset();
+      }
+      this.#oidnDispatcher?.invalidate();
+      return;
+    }
+    const next = patchEmitterInScene(this.#vitrumScene, _id, _patch);
     this.setScene(next);
   }
 

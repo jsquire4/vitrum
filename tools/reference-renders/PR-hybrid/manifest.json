@@ -1,6 +1,167 @@
 {
-  "generatedAt": "2026-05-27T06:12:22.218Z",
-  "note": "Perf: npm run benchmark:pr-hybrid (≥16 storage buffers). PNGs: npm run benchmark:pr-hybrid-refs.",
-  "latestPerf": "/home/jsquire4/projects/vitrum/tools/reference-renders/PR-hybrid/perf/latest.json",
-  "manifest": []
+  "generatedAt": "2026-05-27T06:19:13.085Z",
+  "note": "Perf: npm run benchmark:pr-hybrid-gpu. PNGs: npm run benchmark:pr-hybrid-refs (or pr-hybrid-gpu-full).",
+  "latestPerf": "perf/latest.json",
+  "manifest": [
+    {
+      "kind": "perf",
+      "scenarioId": "PR-hybrid-200k-static",
+      "bench": {
+        "scenario": "PR-hybrid-200k-static",
+        "ok": true,
+        "elapsedMs": 2013.5,
+        "p95FrameMs": 0.7000000178813934,
+        "sampleCount": 120,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
+      }
+    },
+    {
+      "kind": "perf",
+      "scenarioId": "PR-hybrid-tlas-10-inst",
+      "bench": {
+        "scenario": "PR-hybrid-tlas-10-inst",
+        "ok": true,
+        "elapsedMs": 829.8000000119209,
+        "p95FrameMs": 0.7000000178813934,
+        "sampleCount": 48,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
+      }
+    },
+    {
+      "kind": "perf",
+      "scenarioId": "PR-hybrid-material-churn",
+      "bench": {
+        "scenario": "PR-hybrid-material-churn",
+        "ok": true,
+        "elapsedMs": 1.600000023841858,
+        "iterations": 100,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
+      }
+    },
+    {
+      "kind": "perf",
+      "scenarioId": "PR-hybrid-emitter-churn",
+      "bench": {
+        "scenario": "PR-hybrid-emitter-churn",
+        "ok": true,
+        "elapsedMs": 3.600000023841858,
+        "iterations": 100,
+        "engineState": "ready",
+        "estimatedGpuMemoryBytes": 296550888,
+        "gpuMemoryBreakdown": {
+          "total": 296550888,
+          "byCategory": {
+            "common": 127795568,
+            "restirDI": 58982400,
+            "restirGI": 49152000,
+            "ddgi": 80,
+            "gtao": 8192032,
+            "svgf": 52428808,
+            "ppg": 0,
+            "neural": 0
+          },
+          "byTextureFormat": {
+            "rgba16float": 126156816,
+            "rgba32float": 16,
+            "rg32float": 52428800,
+            "r32uint": 9830408
+          },
+          "byBufferUsage": {
+            "uniform": 448,
+            "storage": 108134400
+          }
+        }
+      }
+    },
+    {
+      "kind": "png",
+      "scenarioId": "PR-hybrid-tlas-10-inst",
+      "pngPath": "tlas-on/PR-hybrid-tlas-10-inst.png",
+      "hash": "22533d5335d186495b325180617bf68c37c2760171563393bceb66e5f2ef4081"
+    },
+    {
+      "kind": "png",
+      "scenarioId": "PR-hybrid-material-churn",
+      "pngPath": "material-edit/PR-hybrid-material-churn.png",
+      "hash": "b7bff84a0be5842bc38a79d66cf7431f3714fbc3dc62bd601ba773421ac795a5"
+    },
+    {
+      "kind": "png",
+      "scenarioId": "PR-hybrid-200k-static",
+      "pngPath": "200k-static/PR-hybrid-200k-static.png",
+      "hash": "08939ad5bdc5e538fbcd4db211fe662802f36581632421741d67369476fb5096"
+    }
+  ]
 }

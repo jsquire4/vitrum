@@ -11,6 +11,8 @@ import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from './pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_WGSL } from './pathTrace/connect.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from './pathTrace/caustic.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from './pathTrace/kernel.wgsl.js';
+import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from './bdpt/bdptConnection.wgsl.js';
+import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.js';
 
 /**
  * Brute-force path tracing kernel — orchestrator that concatenates the six
@@ -59,5 +61,7 @@ ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
+${PT_WEBGPU_BDPT_CONNECTION_WGSL}
+${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
 ${PT_WEBGPU_PATH_TRACE_KERNEL_WGSL}
 `;

@@ -15,6 +15,14 @@ Primary-release hybrid benchmarks (`plan/primary-release-and-webgpu-pt-parity-20
 `walkaround-hybrid` needs **≥16** storage buffers and **≥8** storage textures per shader stage.
 After a successful GPU bench, perf JSON is copied to `perf/latest.json` and merged into `manifest.json`.
 
+**One-shot capture (hardware GPU):**
+
+```bash
+npm run benchmark:pr-hybrid-gpu
+# WSL → Windows host:
+npm run benchmark:pr-hybrid-gpu-windows
+```
+
 SwiftShader (10 / 4) cannot run hybrid; `npm run benchmark:pr-hybrid` **skips** GPU scenarios on
 such hosts unless `VITRUM_PR_REQUIRE_GPU=1` (then the run fails). Use `npm run benchmark:pr-mechanical` on CPU-only CI.
 

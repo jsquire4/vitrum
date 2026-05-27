@@ -29,4 +29,4 @@ Helpers: **`applyFrameToPerspectiveCamera`** for advanced integration, **`BdptLi
 
 ## Stability
 
-**Release-candidate track** — public `Engine` shapes follow `@vitrum/core`. Implementation details and supported scene subset may still change before a public npm release. Unsupported primitives/emitters are skipped or called out in console warnings. `updatePrimitive` / `updateEmitter` apply patches via `setScene` (full scene rebuild on the fork path); see `EngineCapabilities.incrementalPatchSupport`.
+**Release-candidate track** — public `Engine` shapes follow `@vitrum/core`. Unsupported primitives/emitters are skipped or warned. **`updatePrimitive` with `{ material }` only** re-packs `MaterialsTexture` via `WebGLPathTracer.updateMaterials()` (no BVH rebuild, PR-8). Any other primitive patch still calls full `setScene()`. `updateEmitter` still uses full `setScene()`. See `EngineCapabilities.incrementalPatchSupport` and `plan/deferred-program-residuals-2026-05-26.md`.

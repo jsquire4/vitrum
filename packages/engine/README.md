@@ -33,7 +33,10 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 - `realtime` → `@vitrum/walkaround-hybrid` (WebGPU DDGI + ReSTIR + per-channel SVGF + GTAO)
 - `quality` → `@vitrum/pt-webgl` (WebGL2 path tracing via the three-gpu-pathtracer fork)
 - `quality-webgpu` → `@vitrum/pt-webgpu` when WebGPU is available, else `pt-webgl`
-- `auto` → picks based on `probeWebGPU()` + scene complexity (`@vitrum/engine/sceneAABB`)
+- `auto` → `walkaround-hybrid` (&lt;500k tris, WebGPU) or **`pt-webgpu`** (≥500k tris, WebGPU), else `pt-webgl`
+- Denoiser `'svgf-real'` → `realtime` (hybrid) or `quality-webgpu` (pt-webgpu full tier)
+
+Use **`quality-webgpu`** to force the WebGPU path tracer on smaller scenes.
 
 Backend-specific tuning goes through `CreateEngineOptions.advanced` (typed as partial backend options) — see each backend's options interface.
 

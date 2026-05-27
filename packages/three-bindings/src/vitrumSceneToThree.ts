@@ -151,6 +151,19 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
  * Apply a vitrum `MaterialSpec` onto an existing THREE.Mesh (material-only
  * fast path for walkaround-hybrid / host incremental updates).
  */
+/** Locate a mesh created by {@link vitrumSceneToThree} (`mesh.name` / `uuid` = primitive id). */
+export function findMeshByPrimitiveId(root: Object3D, id: string): Mesh | null {
+  let found: Mesh | null = null;
+  root.traverseVisible((obj) => {
+    if (found != null) return;
+    if (!(obj as Mesh).isMesh) return;
+    if (obj.uuid === id || obj.name === id) {
+      found = obj as Mesh;
+    }
+  });
+  return found;
+}
+
 export function applyVitrumMaterialToMesh(
   mesh: Mesh,
   material: VitrumMaterial,

@@ -41,6 +41,12 @@ import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
 } from './denoise/oidnFinalDispatcher.js';
+import { SVGFRealDispatcher } from './denoise/svgfRealDispatcher.js';
+import {
+  BdptLightPathBufferWebGPU,
+  createBdptLightPathPlaceholder,
+} from './bdpt/bdptLightPathBufferWebGPU.js';
+import { fillBdptLightPathCpu } from './bdpt/fillBdptLightPathCpu.js';
 import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
@@ -65,6 +71,10 @@ export { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.j
 export { summarizeScene };
 export type { SceneSummary };
 export { buildSceneTlas, type TlasInstance, type TlasData } from './scene/tlasBridge.js';
+export {
+  BdptLightPathBufferWebGPU,
+  type BdptLightPathBufferWebGPUOptions,
+} from './bdpt/bdptLightPathBufferWebGPU.js';
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
   readonly device: GPUDevice;
@@ -154,11 +164,18 @@ class PTEngineWebGPU implements Engine {
 
   #paramsBuffer: GPUBuffer | null = null;
   #computePipeline: GPUComputePipeline | null = null;
+  #bdptSubpathPipeline: GPUComputePipeline | null = null;
   #bindGroupLayout: GPUBindGroupLayout | null = null;
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
-  readonly #postDenoiser: OIDNFinalDispatcher | null;
+  readonly #postDenoiser: OIDNFinalDispatcher | SVGFRealDispatcher | null;
   readonly #extensions: EngineOptions['extensions'];
+  readonly #bdpt: boolean;
+  readonly #bdptMaxLightBounces: number;
+  #bdptLightPath: BdptLightPathBufferWebGPU | null = null;
+  #bdptExternalView: GPUTextureView | null = null;
+  #bdptPlaceholder: GPUTexture | null = null;
+  #bdptPlaceholderView: GPUTextureView | null = null;
 
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
@@ -177,8 +194,25 @@ class PTEngineWebGPU implements Engine {
     const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
-
-    if (opts.denoiser === 'oidn-final') {
+    this.#bdpt = opts.extensions?.['vitrum.ptWebgpu.bdpt'] === true;
+    const requestedBdptBounces = opts.extensions?.['vitrum.ptWebgpu.bdptMaxLightBounces'];
+    this.#bdptMaxLightBounces =
+      typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
+        ? Math.min(3, Math.floor(requestedBdptBounces))
+        : 3;
+    if (opts.denoiser === 'svgf-real') {
+      if (traceTier === 'lite') {
+        throw new Error(
+          "createPTEngine_WebGPU: denoiser: 'svgf-real' requires full trace tier (albedo + normal-depth aux).",
+        );
+      }
+      const atrousRaw = opts.extensions?.['vitrum.ptWebgpu.svgfAtrousIterations'];
+      const atrousIterations =
+        typeof atrousRaw === 'number' && Number.isFinite(atrousRaw)
+          ? Math.max(1, Math.min(5, Math.floor(atrousRaw)))
+          : 5;
+      this.#postDenoiser = new SVGFRealDispatcher({ atrousIterations });
+    } else if (opts.denoiser === 'oidn-final') {
       const modelUrl = opts.extensions?.['vitrum.ptWebgpu.oidnModelUrl'];
       const epsRaw = opts.extensions?.['vitrum.ptWebgpu.oidnExecutionProviders'];
       const eps = Array.isArray(epsRaw)
@@ -251,6 +285,10 @@ class PTEngineWebGPU implements Engine {
         ...(this.#postDenoiser instanceof OIDNFinalDispatcher
           ? (['pt-webgpu-oidn-final'] as const)
           : []),
+        ...(this.#postDenoiser instanceof SVGFRealDispatcher
+          ? (['pt-webgpu-svgf-real'] as const)
+          : []),
+        ...(this.#bdpt ? (['pt-webgpu-bdpt'] as const) : []),
       ]),
       causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
@@ -528,6 +566,9 @@ class PTEngineWebGPU implements Engine {
     paramsF32[FrameParamsSlot.cmfIntegralX] = X_CMF_INTEGRAL;
     paramsF32[FrameParamsSlot.cmfIntegralY] = Y_CMF_INTEGRAL;
     paramsF32[FrameParamsSlot.cmfIntegralZ] = Z_CMF_INTEGRAL;
+    const bdptActive = this.#bdpt && this.#traceTier === 'full';
+    paramsU32[FrameParamsSlot.bdptEnabled] = bdptActive ? 1 : 0;
+    paramsU32[FrameParamsSlot.bdptMaxLightBounces] = this.#bdptMaxLightBounces >>> 0;
     paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
     paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
     paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
@@ -685,6 +726,18 @@ class PTEngineWebGPU implements Engine {
       },
     });
     this.#bindGroupLayout = this.#computePipeline.getBindGroupLayout(0);
+    if (this.#traceTier === 'full' && this.#bdpt) {
+      this.#bdptSubpathPipeline = this.#device.createComputePipeline({
+        label: 'vitrum.pt-webgpu.bdptLightSubpath.pipeline',
+        layout: 'auto',
+        compute: {
+          module,
+          entryPoint: 'bdptExtendLightSubpath',
+        },
+      });
+    } else {
+      this.#bdptSubpathPipeline = null;
+    }
   }
 
   setScene(scene: Scene): void {
@@ -695,6 +748,13 @@ class PTEngineWebGPU implements Engine {
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
+    this.#bdptLightPath?.dispose();
+    this.#bdptLightPath = null;
+    if (this.#bdpt && this.#traceTier === 'full') {
+      this.#bdptLightPath = new BdptLightPathBufferWebGPU(this.#device, {
+        maxLightBounces: this.#bdptMaxLightBounces,
+      });
+    }
     this.#pathTraceBindGroup = null;
     this.#pathTraceBindGroup1 = null;
     this.#pathTraceBindGroup2 = null;
@@ -1157,6 +1217,7 @@ class PTEngineWebGPU implements Engine {
         { binding: 2, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
         { binding: 3, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } },
         { binding: 4, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } },
+        { binding: 5, resource: this.#bdptLightPathView() },
       ];
       bindGroup = this.#device.createBindGroup({
         label: `vitrum.pt-webgpu.pathTrace.bindgroup0.${this.#traceTier}`,
@@ -1178,7 +1239,40 @@ class PTEngineWebGPU implements Engine {
       }
     }
 
+    if (
+      this.#bdpt &&
+      this.#bdptExternalView == null &&
+      this.#bdptLightPath != null &&
+      this.#sceneBuffers != null
+    ) {
+      fillBdptLightPathCpu(
+        this.#device,
+        this.#bdptLightPath.texture,
+        this.#bdptMaxLightBounces,
+        this.#sceneBuffers,
+        input.frameSeed >>> 0,
+      );
+    }
+
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
+    if (
+      this.#bdptSubpathPipeline != null &&
+      this.#bdpt &&
+      this.#bdptExternalView == null &&
+      this.#bdptLightPath != null &&
+      this.#traceTier === 'full' &&
+      this.#pathTraceBindGroup1 != null &&
+      this.#pathTraceBindGroup2 != null
+    ) {
+      const bdptPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.bdptLightSubpath.pass' });
+      bdptPass.setPipeline(this.#bdptSubpathPipeline);
+      bdptPass.setBindGroup(0, bindGroup);
+      bdptPass.setBindGroup(1, this.#pathTraceBindGroup1);
+      bdptPass.setBindGroup(2, this.#pathTraceBindGroup2);
+      bdptPass.dispatchWorkgroups(this.#bdptMaxLightBounces, 1, 1);
+      bdptPass.end();
+    }
+
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
     pass.setPipeline(this.#computePipeline);
     pass.setBindGroup(0, bindGroup);
@@ -1269,6 +1363,23 @@ class PTEngineWebGPU implements Engine {
     return this.#postDenoiser?.getLatestDenoised() ?? null;
   }
 
+  /** WG-7 — supply host-owned light-path texture (or null to use internal CPU fill). */
+  bdptAdvanceFrame(lightPathView: GPUTextureView | null): void {
+    if (!this.#bdpt) return;
+    this.#bdptExternalView = lightPathView;
+    this.#pathTraceBindGroup2 = null;
+  }
+
+  #bdptLightPathView(): GPUTextureView {
+    if (this.#bdptExternalView) return this.#bdptExternalView;
+    if (this.#bdptLightPath) return this.#bdptLightPath.view;
+    if (!this.#bdptPlaceholderView && typeof this.#device.createTexture === 'function') {
+      this.#bdptPlaceholder = createBdptLightPathPlaceholder(this.#device);
+      this.#bdptPlaceholderView = this.#bdptPlaceholder.createView();
+    }
+    return this.#bdptPlaceholderView as GPUTextureView;
+  }
+
   pause(): void {
     if (this.#slot.get() === 'disposed') {
       throw new Error('pause: engine is disposed');
@@ -1286,6 +1397,11 @@ class PTEngineWebGPU implements Engine {
   dispose(): void {
     if (this.#slot.get() === 'disposed') return;
     this.#postDenoiser?.dispose();
+    this.#bdptLightPath?.dispose();
+    this.#bdptLightPath = null;
+    this.#bdptPlaceholder?.destroy();
+    this.#bdptPlaceholder = null;
+    this.#bdptPlaceholderView = null;
     this.#destroyAccumTexture();
     this.#pathTraceBindGroup = null;
     this.#pathTraceBindGroup1 = null;
@@ -1295,6 +1411,7 @@ class PTEngineWebGPU implements Engine {
     this.#sceneBuffers = null;
     this.#paramsBuffer = null;
     this.#computePipeline = null;
+    this.#bdptSubpathPipeline = null;
     this.#bindGroupLayout = null;
     this.#scene = null;
     this.#geoPack = null;
@@ -1343,19 +1460,14 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
       `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to experimental limit ${EXPERIMENTAL_MAX_BOUNCES}.`,
     );
   }
-  if (opts.denoiser === 'svgf-real') {
-    throw new Error(
-      "createPTEngine_WebGPU: denoiser 'svgf-real' is walkaround-hybrid only. " +
-        "Use createEngine({ prefer: 'realtime', denoiser: 'svgf-real' }) or HybridEngine directly.",
-    );
-  }
   if (
     opts.denoiser != null &&
     opts.denoiser !== 'none' &&
-    opts.denoiser !== 'oidn-final'
+    opts.denoiser !== 'oidn-final' &&
+    opts.denoiser !== 'svgf-real'
   ) {
     console.warn(
-      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none' and 'oidn-final' are wired.`,
+      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none', 'oidn-final', and 'svgf-real' are wired.`,
     );
   }
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
