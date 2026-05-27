@@ -663,6 +663,15 @@ export class HybridEngine implements Engine {
     return this._bvhBuffers?.meshVertexRanges ?? null;
   }
 
+  /** Active ReSTIR BVH layout (`merged` world positions vs `tlas` local BLAS). */
+  getBvhMode(): ReSTIRBvhMode | null {
+    return this._bvhBuffers?.bvhMode ?? null;
+  }
+
+  getPrimitiveTlasBindings(): SceneBVHBuffers['primitiveTlasBindings'] | null {
+    return this._bvhBuffers?.primitiveTlasBindings ?? null;
+  }
+
   /** PR-5.5 — TLAS refit updates RC bounds without rebuilding cascade BVH. */
   private _applyPrimitiveUpdateRc(result: PrimitiveUpdateResult): void {
     if (!this._rc) return;

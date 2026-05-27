@@ -113,6 +113,18 @@ export class GpuSkinningSubsystem {
         continue;
       }
 
+      const bvhMode = engine.getBvhMode();
+      let baseVertex = range.vertexStart;
+      if (bvhMode === 'tlas') {
+        const binding = engine.getPrimitiveTlasBindings()?.find((b) => b.primitiveId === id);
+        if (binding == null || binding.vertexCount === 0) {
+          const { positions, normals } = solveSkin(prim);
+          engine.updatePrimitive(id, { positions, normals });
+          continue;
+        }
+        baseVertex = binding.vertexStart;
+      }
+
       const state = this.#ensureMesh(prim, bvhPositions);
       const combined = combineSkinMatrices(prim.bones, prim.boneInverses, state.boneCount);
       this.#device.queue.writeBuffer(state.boneBuffer, 0, new Float32Array(combined));
@@ -120,8 +132,8 @@ export class GpuSkinningSubsystem {
       const uniformBytes = new ArrayBuffer(80);
       const u32 = new Uint32Array(uniformBytes);
       u32[0] = state.vertexCount;
-      u32[1] = range.vertexStart;
-      u32[2] = 0;
+      u32[1] = baseVertex;
+      u32[2] = engine.getBvhMode() === 'tlas' ? 0 : 1;
       u32[3] = 0;
       new Float32Array(uniformBytes).set(range.matrixWorldAtBuild, 4);
       this.#device.queue.writeBuffer(state.uniformBuffer, 0, uniformBytes);

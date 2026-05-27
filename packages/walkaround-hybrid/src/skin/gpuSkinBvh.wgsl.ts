@@ -6,7 +6,9 @@ export const GPU_SKIN_BVH_WGSL = /* wgsl */ `
 struct SkinBvhUniforms {
   vertexCount: u32,
   baseVertex: u32,
-  _pad: vec2u,
+  /** 1 = merged world BVH (apply matrixWorld); 0 = TLAS local BLAS slice. */
+  applyWorld: u32,
+  _pad: u32,
   matrixWorld: mat4x4f,
 };
 
@@ -52,7 +54,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     );
     sp = sp + wi * p4;
   }
-  let world = skinParams.matrixWorld * sp;
-  bvhPositions[outIdx] = vec4f(world.xyz, uvPack);
+  var outPos = sp.xyz;
+  if (skinParams.applyWorld != 0u) {
+    outPos = (skinParams.matrixWorld * sp).xyz;
+  }
+  bvhPositions[outIdx] = vec4f(outPos, uvPack);
 }
 `;

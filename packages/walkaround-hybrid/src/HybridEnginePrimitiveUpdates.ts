@@ -559,15 +559,6 @@ export function refitSkinnedMeshAfterGpuWrite(
   if (bvh == null) {
     throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): BVH not ready — call setScene first.`);
   }
-  const range = bvh.meshVertexRanges.find((r) => r.name === id);
-  if (range == null || range.vertexCount === 0) {
-    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): no mesh vertex range in BVH.`);
-  }
-  if (localPositions.length !== range.vertexCount * 3) {
-    throw new Error(
-      `refitSkinnedMeshAfterGpuWrite("${id}"): expected ${range.vertexCount * 3} floats, got ${localPositions.length}.`,
-    );
-  }
 
   const root = ctx.threeRoot;
   if (root == null) {
@@ -586,6 +577,88 @@ export function refitSkinnedMeshAfterGpuWrite(
     meshRef.geometry.setAttribute(
       'normal',
       new THREE.BufferAttribute(new Float32Array(localNormals), 3),
+    );
+  }
+
+  const posPatch: Partial<MeshPrimitive> =
+    localNormals != null
+      ? { positions: new Float32Array(localPositions), normals: new Float32Array(localNormals) }
+      : { positions: new Float32Array(localPositions) };
+  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
+
+  if (bvh.bvhMode === 'tlas' && bvh.tlas != null) {
+    const binding = bvh.primitiveTlasBindings.find((b) => b.primitiveId === id);
+    if (binding == null || binding.vertexCount === 0) {
+      throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): no TLAS binding for primitive.`);
+    }
+    if (localPositions.length !== binding.vertexCount * 3) {
+      throw new Error(
+        `refitSkinnedMeshAfterGpuWrite("${id}"): expected ${binding.vertexCount * 3} floats, got ${localPositions.length}.`,
+      );
+    }
+
+    const positionsF32 = new Float32Array(bvh.bvhPositions.cpuData);
+    const STRIDE = 4;
+    const baseVertex = binding.vertexStart;
+    const sliceVerts = binding.vertexCount;
+    for (let v = 0; v < sliceVerts; v += 1) {
+      const off = (baseVertex + v) * STRIDE;
+      positionsF32[off + 0] = localPositions[v * 3] ?? 0;
+      positionsF32[off + 1] = localPositions[v * 3 + 1] ?? 0;
+      positionsF32[off + 2] = localPositions[v * 3 + 2] ?? 0;
+    }
+
+    const localAabb = computeLocalAabb(localPositions);
+    if (localAabb == null) {
+      throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): degenerate skinned positions.`);
+    }
+    const bindings: PrimitiveTlasBinding[] = bvh.primitiveTlasBindings.map((b) =>
+      b.primitiveId === id
+        ? { ...b, localAabbMin: localAabb.min, localAabbMax: localAabb.max }
+        : b,
+    );
+
+    const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
+    refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
+    ctx.pipeline?.refreshBvhNodesOnly(bvh.bvhNodes.cpuData.slice(0));
+
+    const prev: TlasGpuSnapshot = {
+      tlasNodes: new Uint32Array(bvh.tlas.nodes.cpuData),
+      tlasInstanceIndices: new Uint32Array(bvh.tlas.instanceIndices.cpuData),
+      tlasBlasRoots: new Uint32Array(bvh.tlas.blasRoots.cpuData),
+      tlasInstanceWorldToLocal: new Float32Array(bvh.tlas.worldToLocal.cpuData),
+    };
+    const refit = refitTlasTransforms(updatedScene, bindings, prev);
+    if (!refit.ok) {
+      throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): TLAS transform refit failed.`);
+    }
+    bvh.tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
+    bvh.tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
+    bvh.tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
+    ctx.pipeline?.refreshTlasRefit(
+      bvh.tlas.nodes.cpuData,
+      bvh.tlas.worldToLocal.cpuData,
+      bvh.tlas.localToWorld.cpuData,
+    );
+
+    ctx.pipeline?.requestAccumReset();
+    ctx.ddgi.invalidateProbeCache();
+    const rcBounds = computeWorldAabbForBindings(updatedScene, bindings);
+    const outBvh: SceneBVHBuffers = { ...bvh, primitiveTlasBindings: bindings };
+    return {
+      bvhBuffers: outBvh,
+      updatedScene,
+      ...(rcBounds != null ? { rcRefitBounds: rcBounds } : {}),
+    };
+  }
+
+  const range = bvh.meshVertexRanges.find((r) => r.name === id);
+  if (range == null || range.vertexCount === 0) {
+    throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): no mesh vertex range in BVH.`);
+  }
+  if (localPositions.length !== range.vertexCount * 3) {
+    throw new Error(
+      `refitSkinnedMeshAfterGpuWrite("${id}"): expected ${range.vertexCount * 3} floats, got ${localPositions.length}.`,
     );
   }
 
@@ -611,12 +684,6 @@ export function refitSkinnedMeshAfterGpuWrite(
   ctx.pipeline?.refreshBvhNodesOnly(bvh.bvhNodes.cpuData.slice(0));
   ctx.pipeline?.requestAccumReset();
   ctx.ddgi.invalidateProbeCache();
-
-  const posPatch: Partial<MeshPrimitive> =
-    localNormals != null
-      ? { positions: new Float32Array(localPositions), normals: new Float32Array(localNormals) }
-      : { positions: new Float32Array(localPositions) };
-  const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
 
   return { bvhBuffers: bvh, updatedScene };
 }

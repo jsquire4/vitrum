@@ -11,5 +11,7 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('params.spotLightCount');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptEmitterPower');
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(/spotLights\[sb \+ 2u\]\.rgb/);
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptHasEnvironmentEmitter');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('sampleEnvironmentImportance');
   });
 });

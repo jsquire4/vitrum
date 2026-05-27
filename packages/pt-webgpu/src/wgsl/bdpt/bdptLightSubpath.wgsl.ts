@@ -8,6 +8,24 @@ fn bdptLightLuminance(c: vec3f) -> f32 {
   return max(dot(c, vec3f(0.2126, 0.7152, 0.0722)), 1e-20);
 }
 
+fn bdptHasEnvironmentEmitter() -> bool {
+  return hasEnvironmentMap() || params.environmentSun.w > 1e-6;
+}
+
+fn bdptEnvironmentPower() -> f32 {
+  if (hasEnvironmentMap()) {
+    let dims = environmentDimensions();
+    let count = dims.x * dims.y;
+    if (count > 0u && arrayLength(&environmentMapCdf) >= count + 1u) {
+      return max(environmentMapCdf[count], 1e-20);
+    }
+  }
+  if (params.environmentSun.w > 1e-6) {
+    return max(params.environmentSun.w, 1e-20) * (4.0 * PI);
+  }
+  return 1e-20;
+}
+
 fn bdptEmitterCount() -> u32 {
   var n = 0u;
   if (params.lightDir.w > 1e-6) {
@@ -17,6 +35,9 @@ fn bdptEmitterCount() -> u32 {
   n = n + params.spotLightCount;
   n = n + params.rectAreaLightCount;
   n = n + params.meshAreaLightCount;
+  if (bdptHasEnvironmentEmitter()) {
+    n = n + 1u;
+  }
   return n;
 }
 
@@ -65,6 +86,11 @@ fn bdptEmitterPower(flatIdx: u32) -> f32 {
       return area * bdptLightLuminance(mr);
     }
     cur = cur + 1u;
+  }
+  if (bdptHasEnvironmentEmitter()) {
+    if (cur == flatIdx) {
+      return bdptEnvironmentPower();
+    }
   }
   return 1e-20;
 }
@@ -197,6 +223,24 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       return;
     }
     cur = cur + 1u;
+  }
+  if (bdptHasEnvironmentEmitter() && cur == flat) {
+    let envSample = sampleEnvironmentImportance(rng);
+    if (envSample.pdf > 1e-8) {
+      let pdfLight = discretePdf * envSample.pdf;
+      let emitDir = envSample.wi;
+      let emitPos = -emitDir * 50.0;
+      bdptFinishBounce0(col, emitPos, emitDir, envSample.value, pdfLight, rng);
+      return;
+    }
+    if (params.environmentSun.w > 1e-6) {
+      let sunDir = safe_normalize(params.environmentSun.xyz);
+      let emitPos = -sunDir * 50.0;
+      bdptFinishBounce0(col, emitPos, sunDir, vec3f(params.environmentSun.w), discretePdf, rng);
+      return;
+    }
+    bdptWriteInvalid(col);
+    return;
   }
   bdptWriteInvalid(col);
 }
