@@ -75,7 +75,7 @@ When the device cannot satisfy the full layout, the factory automatically select
 
 | Tier | Limits | Features |
 |------|--------|----------|
-| **full** | ≥23 buffers, ≥5 textures | TLAS, analytics, HDRI, all emitter arrays, motion vectors, variance moments, caustics |
+| **full** | ≥10 buffers/group, ≥5 textures | TLAS, analytics, HDRI, all emitter arrays, motion vectors, variance moments, caustics (3 bind groups) |
 | **lite** | ≥8 buffers, ≥4 textures | Merged-mesh BVH, directional + procedural sky, core G-buffer aux |
 
 Host device acquisition should use `ptWebgpuRequiredLimitsForAdapter(adapter)` (not the
@@ -91,12 +91,12 @@ Shader entry points: `PT_WEBGPU_TRACE_WGSL` (full), `PT_WEBGPU_TRACE_LITE_WGSL` 
 - Hero-wavelength spectral parity with the WebGL fork is **not** claimed: thin-film evaluation uses **RGB wavelength probes** (see `plan/renderer-fidelity-matrix.md`).
 - Experimental BRDF/MIS path — transmission hemisphere MIS uses a **simplified** PDF branch in `brdfDirectionalPdf`.
 - Incremental patch support remains partial by design: `transform/material/emitter` fast paths are implemented; `positions/topology` still fall back to rebuild
-- No denoiser execution path wired yet (aux outputs are now available for integration)
+- **`denoiser: 'oidn-final'`** (WG-1): reads HDR + albedo + normal-depth on convergence via `getDenoisedFrame()`; requires `extensions['vitrum.ptWebgpu.oidnModelUrl']` (use `oidn_rt_hdr_alb_nrm.onnx` for aux). Other denoiser modes are not wired.
 - `causticStrategy` requests map to mode-distinct shader paths; runtime image/perf artifact capture remains blocked in this environment
 
 ## Intended next steps
 
 - Replace experimental BRDF path with shared sampler/BSDF contracts
 - Add richer emitter coverage and MIS
-- Wire aux buffers + denoiser integration
+- WG-2 spectral hero-λ + CMF MIS parity vs pt-webgl fork
 - Add visual regression scenes for GPU-verified parity checks

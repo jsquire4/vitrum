@@ -35,10 +35,10 @@ It intentionally excludes release governance and distribution posture.
 
 - Contract conformance: **medium-strong** (capability and telemetry parity substantially improved)
 - Incremental updates: **medium-strong** (transform/material/emitter fast paths with TLAS-aware updates)
-- Deep pipeline integration: **medium** (experimental backend, TLAS critical path still being hardened)
+- Deep pipeline integration: **medium-strong** (3-bind-group full tier on 16-buffer Chrome GPUs; TLAS + aux G-buffers; WG-1 `oidn-final` with albedo/normal readback)
 - Lifecycle reliability: **medium-strong** (Wave 4 strict soak harness; host cadence still owns pause/resize policy)
-- Regression harness coverage: **medium-strong** (expanded WGSL and contract tests; GPU reference captures remain host workflow)
-- Current focus: incremental feature parity vs pt-webgl (spectral, denoisers) without destabilizing experimental boundary.
+- Regression harness coverage: **strong** (WG-0 committed baseline + strict gap-closure on hardware; 115+ package tests)
+- Current focus: WG-2 spectral hero-λ / CMF MIS parity vs pt-webgl fork; remaining gap-closure RFE scenarios.
 
 ## Shared Layers (`core`, `engine`, `shared-*`)
 
