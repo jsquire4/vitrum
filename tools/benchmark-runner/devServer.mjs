@@ -65,6 +65,22 @@ export async function waitForServerReady(procInfo, fallbackUrl, timeoutMs, pollM
   throw new Error(`Timed out waiting for dev server at ${activeUrl}.`);
 }
 
+/** Fail fast when the port serves a different Vite app (stale dev server). */
+export async function assertWalkaroundDevServer(baseUrl) {
+  const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+  const res = await fetch(new URL('walkaround.html', base));
+  if (!res.ok) {
+    throw new Error(`walkaround.html GET ${res.status} at ${base}`);
+  }
+  const html = await res.text();
+  if (!html.includes('id="c-wgpu"')) {
+    throw new Error(
+      `Dev server at ${base} is not @vitrum-examples/two-engines-one-scene ` +
+        '(walkaround.html missing #c-wgpu). Free the port or set VITRUM_BENCH_DEV_PORT.',
+    );
+  }
+}
+
 export function stopDevServer(procInfo) {
   const pid = procInfo?.child?.pid;
   if (pid == null) return;

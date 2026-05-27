@@ -3,7 +3,7 @@
 Acceptance PNGs for Sprint 10c / 14 (`bdptLayeredAcceptance.gpu.test.ts`).
 
 - `cornell-layered.png` — GPU capture (512×512 quick suite) when promoted from `benchmark:bdpt-layered-refs`.
-- `cornell-layered-bdpt.png` — may still be a stub until a successful `?vitrumBdpt=1` capture lands (check file size >50KB).
+- `cornell-layered-bdpt.png` — with `?vitrumBdpt=1` the cornell-box example wires BDPT API only (no light-subpath draw pass yet), so the image stays near-black (~12–15 KiB) while layered stays ~500 KiB+. Mechanical harness only requires `bdptDeltaMean > 0.005`.
 
 ## Regenerate + gate
 

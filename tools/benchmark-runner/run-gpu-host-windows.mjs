@@ -4,11 +4,9 @@
  * can reach the RTX 4090 with hybrid-capable limits (typically 16/8).
  *
  * Usage (from repo root):
- *   node tools/benchmark-runner/run-gpu-host-windows.mjs run-pt-webgpu-adapter-probe.mjs
- *   node tools/benchmark-runner/run-gpu-host-windows.mjs run-pr-hybrid-bench.mjs
+ *   node tools/benchmark-runner/run-gpu-host-windows.mjs run-rc-acceptance.mjs VITRUM_RC_REQUIRE_GPU=1
  *
- * Starts the two-engines Vite dev server on the Windows host (port 5176 by
- * default). WSL localhost:5175 often points at a different app than WSL curl.
+ * Uses PowerShell `Set-Location -LiteralPath` on `\\wsl$\…` (CMD `pushd` / npm on UNC cwd fail).
  */
 
 import { spawnSync } from 'node:child_process';
@@ -24,39 +22,37 @@ if (script == null || script.length === 0) {
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
 const wslDistro = process.env.WSL_DISTRO_NAME ?? 'Ubuntu-24.04';
-const winRepo = `\\\\wsl.localhost\\${wslDistro}${repoRoot.replace(/\//g, '\\')}`;
-const winNode = 'C:\\Program Files\\nodejs\\node.exe';
+const winRepo = `\\\\wsl$\\${wslDistro}${repoRoot.replace(/\//g, '\\')}`;
+const winNode = process.env.VITRUM_WIN_NODE ?? 'C:\\Program Files\\nodejs\\node.exe';
 
 const benchPort = process.env.VITRUM_BENCH_DEV_PORT ?? '5176';
 const extraEnv = process.argv.slice(3);
-const envLines = [
-  '$env:VITRUM_WEBGPU_ADAPTER="hardware"',
-  '$env:VITRUM_BENCH_HEADLESS="0"',
-  `$env:VITRUM_BENCH_DEV_PORT="${benchPort}"`,
-  `$env:VITRUM_PROBE_URL="http://127.0.0.1:${benchPort}/"`,
-  `$env:VITRUM_CAPTURE_URL="http://127.0.0.1:${benchPort}/walkaround.html"`,
-  '$env:VITRUM_PR_START_SERVER="1"',
-  ...extraEnv.map((kv) => {
-    const i = kv.indexOf('=');
-    if (i < 0) return '';
-    const k = kv.slice(0, i);
-    const v = kv.slice(i + 1);
-    return `$env:${k}="${v.replace(/"/g, '`"')}"`;
-  }),
-]
-  .filter(Boolean)
+
+/** @type {Record<string, string>} */
+const envMap = {
+  VITRUM_WEBGPU_ADAPTER: 'hardware',
+  VITRUM_BENCH_HEADLESS: '0',
+  VITRUM_BENCH_DEV_PORT: benchPort,
+  VITRUM_PROBE_URL: `http://127.0.0.1:${benchPort}/`,
+  VITRUM_CAPTURE_URL: `http://127.0.0.1:${benchPort}/walkaround.html`,
+};
+
+for (const kv of extraEnv) {
+  const i = kv.indexOf('=');
+  if (i < 0) continue;
+  envMap[kv.slice(0, i)] = kv.slice(i + 1);
+}
+
+const envLines = Object.entries(envMap)
+  .map(([k, v]) => `$env:${k}='${v.replace(/'/g, "''")}'`)
   .join('; ');
 
+const scriptWin = script.replace(/\//g, '\\');
 const ps = `
-$env:VITRUM_REPO_ROOT = '${winRepo.replace(/'/g, "''")}';
-Push-Location $env:VITRUM_REPO_ROOT;
-try {
-  ${envLines};
-  & '${winNode}' 'tools\\benchmark-runner\\${script.replace(/\//g, '\\')}';
-  exit $LASTEXITCODE
-} finally {
-  Pop-Location
-}
+Set-Location -LiteralPath '${winRepo.replace(/'/g, "''")}';
+${envLines};
+& '${winNode.replace(/'/g, "''")}' 'tools\\benchmark-runner\\${scriptWin}';
+exit $LASTEXITCODE
 `;
 
 const result = spawnSync(

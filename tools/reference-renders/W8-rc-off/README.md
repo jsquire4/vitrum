@@ -7,6 +7,10 @@ Pairs with `../W8-rc-on/` (`rcEnabled: true`, `rcWeight: 1`).
 ## Capture
 
 ```bash
+# WSL2 + Windows Chrome (hybrid-capable WebGPU):
+npm run benchmark:rc-acceptance-gpu
+
+# WSL-only (often SwiftShader — skips capture):
 npm run benchmark:rc-acceptance
 ```
 
@@ -27,7 +31,7 @@ Env: `VITRUM_RC_CAPTURE_FRAMES` (default 48), `VITRUM_RC_SEED` (default 1701), `
 
 ## Mechanical fixtures (CI)
 
-Committed `cornell-walkaround-rc-off.png` (64×64) is a **metrics-oracle stub** until a GPU host replaces it with a real capture. Regenerate stubs:
+`cornell-walkaround-rc-off.png` is a **real GPU capture** when refreshed via `benchmark:rc-acceptance-gpu` (~86KB). Regenerate 64×64 mechanical stubs only:
 
 ```bash
 npm run write-rc-mechanical-fixtures --workspace @vitrum/benchmark-runner

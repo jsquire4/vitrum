@@ -9,16 +9,22 @@
  *   VITRUM_RC_CAPTURE_FRAMES   frames before screenshot (default 48)
  *   VITRUM_RC_CAPTURE_SPP      alias for frames (default 48)
  *   VITRUM_RC_SEED             vitrumSeed (default 1701)
- *   VITRUM_RC_START_SERVER     default 1 — vite two-engines on 5175
+ *   VITRUM_RC_START_SERVER     default 1 — vite two-engines on VITRUM_BENCH_DEV_PORT
  *   VITRUM_RC_REQUIRE_GPU      exit 2 when hybrid cannot run and no PNGs
  *   VITRUM_RC_SKIP_CAPTURE      1 — only run metrics on existing PNGs
+ *   VITRUM_BENCH_DEV_PORT      vite port (default 5175); actual URL parsed from vite stdout
  */
 
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launchDevServer, stopDevServer, waitForServerReady } from './devServer.mjs';
+import {
+  assertWalkaroundDevServer,
+  launchDevServer,
+  stopDevServer,
+  waitForServerReady,
+} from './devServer.mjs';
 import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
@@ -61,8 +67,8 @@ function runMetrics(envExtra) {
   });
 }
 
-function captureVariantUrl({ rcEnabled, rcWeight }) {
-  const u = new URL(`http://127.0.0.1:${benchPort}/walkaround.html`);
+function captureVariantUrl(base, { rcEnabled, rcWeight }) {
+  const u = new URL('walkaround.html', base.endsWith('/') ? base : `${base}/`);
   u.searchParams.set('mode', 'walkaround');
   u.searchParams.set('scene', 'cornell');
   u.searchParams.set('samplesTarget', String(frames));
@@ -72,23 +78,49 @@ function captureVariantUrl({ rcEnabled, rcWeight }) {
   return u.toString();
 }
 
-async function captureAll(browser) {
+async function captureAll(browser, base) {
   await mkdir(refOff, { recursive: true });
   await mkdir(refOn, { recursive: true });
+
+  const readyTimeoutMs = Number(process.env.VITRUM_RC_READY_TIMEOUT_MS ?? '120000');
+  const frameWaitMs = Number(
+    process.env.VITRUM_RC_FRAME_WAIT_MS ?? String(Math.max(90_000, frames * 4_000)),
+  );
 
   for (const row of [
     { label: 'off', rcEnabled: false, rcWeight: 0, outPng: offPng },
     { label: 'on', rcEnabled: true, rcWeight: 1, outPng: onPng },
   ]) {
     const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-    const url = captureVariantUrl(row);
+    const url = captureVariantUrl(base, row);
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 90_000 });
       const canvas = page.locator('#c-wgpu');
-      await canvas.waitFor({ timeout: 60_000 });
-      const frameWaitMs = Number(
-        process.env.VITRUM_RC_FRAME_WAIT_MS ?? String(Math.max(90_000, frames * 4_000)),
-      );
+      await canvas.waitFor({ state: 'attached', timeout: readyTimeoutMs });
+
+      await page
+        .waitForFunction(
+          () => {
+            const hy = globalThis.__vitrumWalkaround;
+            const tel = globalThis.__vitrum?.walkaround;
+            return hy?.state === 'ready' || tel?.state === 'ready';
+          },
+          null,
+          { timeout: readyTimeoutMs, polling: 250 },
+        )
+        .catch(async (err) => {
+          const snap = await page.evaluate(() => ({
+            url: location.href,
+            status: document.querySelector('#status')?.textContent?.slice(0, 300),
+            hybrid: globalThis.__vitrumWalkaround?.state,
+            tel: globalThis.__vitrum?.walkaround,
+          }));
+          throw new Error(
+            `[rc-acceptance] ${row.label} hybrid not ready: ${err instanceof Error ? err.message : err}; ` +
+              JSON.stringify(snap),
+          );
+        });
+
       try {
         await page.waitForFunction(
           ({ target }) => (globalThis.__vitrum?.walkaround?.frame ?? 0) >= target,
@@ -118,21 +150,33 @@ async function captureAll(browser) {
 async function tryCapture() {
   let devServer = null;
   let browser = null;
+  let captureBase = process.env.VITRUM_RC_CAPTURE_BASE
+    ? process.env.VITRUM_RC_CAPTURE_BASE.endsWith('/')
+      ? process.env.VITRUM_RC_CAPTURE_BASE
+      : `${process.env.VITRUM_RC_CAPTURE_BASE}/`
+    : `http://127.0.0.1:${benchPort}/`;
   try {
     if (skipCapture) return;
 
-    let base = `http://127.0.0.1:${benchPort}/`;
     if (startServer) {
+      const viteBin = resolve(repoRoot, 'node_modules/vite/bin/vite.js');
+      const exampleDir = resolve(repoRoot, 'examples/two-engines-one-scene');
       devServer = launchDevServer(
-        `npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host 127.0.0.1 --port ${benchPort}`,
-        repoRoot,
+        `node "${viteBin}" --host 127.0.0.1 --port ${benchPort} --strictPort`,
+        exampleDir,
       );
-      const ready = await waitForServerReady(devServer, base, 90_000, 500);
-      base = ready.url.endsWith('/') ? ready.url : `${ready.url}/`;
+      const ready = await waitForServerReady(devServer, captureBase, 90_000, 500);
+      captureBase = ready.url.endsWith('/') ? ready.url : `${ready.url}/`;
+      await assertWalkaroundDevServer(captureBase);
+    } else if (process.env.VITRUM_RC_CAPTURE_BASE) {
+      /* Vite already running (e.g. WSL server + Windows Playwright). */
+    } else {
+      await assertWalkaroundDevServer(captureBase);
     }
+    console.log(`[rc-acceptance] using ${captureBase}`);
 
     const { chromium } = await import('playwright');
-    const launched = await launchWebGpuBrowser(chromium, base);
+    const launched = await launchWebGpuBrowser(chromium, captureBase);
     browser = launched.browser;
     const { caps } = launched;
 
@@ -146,7 +190,7 @@ async function tryCapture() {
       return;
     }
 
-    await captureAll(browser);
+    await captureAll(browser, captureBase);
   } finally {
     if (browser) await browser.close();
     if (devServer) stopDevServer(devServer);
