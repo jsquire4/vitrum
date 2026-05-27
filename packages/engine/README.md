@@ -29,9 +29,10 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 
 ## Backend selection
 
-`createEngine()` picks a backend from `CreateEngineOptions.prefer` (`'realtime' | 'quality' | 'auto'`) plus runtime probing:
+`createEngine()` picks a backend from `CreateEngineOptions.prefer` (`'realtime' | 'quality' | 'quality-webgpu' | 'auto'`) plus runtime probing:
 - `realtime` → `@vitrum/walkaround-hybrid` (WebGPU DDGI + ReSTIR + per-channel SVGF + GTAO)
 - `quality` → `@vitrum/pt-webgl` (WebGL2 path tracing via the three-gpu-pathtracer fork)
+- `quality-webgpu` → `@vitrum/pt-webgpu` when WebGPU is available, else `pt-webgl`
 - `auto` → picks based on `probeWebGPU()` + scene complexity (`@vitrum/engine/sceneAABB`)
 
 Backend-specific tuning goes through `CreateEngineOptions.advanced` (typed as partial backend options) — see each backend's options interface.
