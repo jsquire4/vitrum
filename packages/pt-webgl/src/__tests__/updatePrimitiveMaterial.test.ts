@@ -76,7 +76,7 @@ describe('PTEngineWebGL2.updatePrimitive material-only (PR-8)', () => {
           kind: 'mesh',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]),
-          material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metalness: 0 },
+          material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
         },
       ],
       emitters: [],
@@ -84,8 +84,8 @@ describe('PTEngineWebGL2.updatePrimitive material-only (PR-8)', () => {
     });
 
     setScene.mockClear();
-    engine.updatePrimitive('floor', {
-      material: { baseColor: [0.9, 0.1, 0.1], roughness: 0.2, metalness: 0 },
+    engine.updatePrimitive!('floor', {
+      material: { baseColor: [0.9, 0.1, 0.1], roughness: 0.2, metallic: 0 },
     });
 
     expect(updateMaterials).toHaveBeenCalledTimes(1);
