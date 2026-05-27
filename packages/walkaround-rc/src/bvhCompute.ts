@@ -107,7 +107,8 @@ function threeToMaterialEntryInput(mat: THREE.Material): MaterialEntryInput {
  * Empty material list → emits a single zeroed-out entry so the SSBO has at
  * least 16 floats (every WGSL `array<T>` storage binding needs ≥1 element).
  */
-function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
+/** Pack THREE materials for RC / ReSTIR-shared TLAS probe rays. */
+export function packCascadeMaterials(materials: THREE.Material[]): Float32Array {
   if (materials.length === 0) {
     // packMaterials() already returns a 1-entry zero-pad for empty input,
     // but the legacy RC contract returned exactly 16 floats. Keep that

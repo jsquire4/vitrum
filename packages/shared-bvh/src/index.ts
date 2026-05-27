@@ -24,6 +24,7 @@ export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';
 export * from './wgsl/tlasTraversal.wgsl.js';
+export { fingerprintBuffer, fingerprintBuffers } from './bufferFingerprint.js';
 
 /**
  * Index-buffer stride used by the BVH index array.

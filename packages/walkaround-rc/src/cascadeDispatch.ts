@@ -116,6 +116,15 @@ export interface RCDispatchOptsRaw {
   frameSeed:          number;
   /** Möller–Trumbore coplanarity threshold. Default 1e-5. */
   triIntersectEpsilon?: number;
+
+  /** C2 — TLAS traversal (ReSTIR-shared buffers). Omit for merged-only RC BVH. */
+  bvhMode?: 'merged' | 'tlas';
+  tlasNodeCount?: number;
+  tlasNodesBuf?: GPUBuffer;
+  tlasInstanceIndicesBuf?: GPUBuffer;
+  tlasBlasRootsBuf?: GPUBuffer;
+  tlasInstanceWorldToLocalBuf?: GPUBuffer;
+  tlasInstanceLocalToWorldBuf?: GPUBuffer;
 }
 
 // ─── Uniform data builders ────────────────────────────────────────────────────
@@ -140,6 +149,8 @@ function buildCascadeUniformDataInto(
   envIntensity: number,
   frameSeed: number,
   triIntersectEpsilon: number,  // E2: UBO-plumbed (was local WGSL const)
+  bvhMode: number,
+  tlasNodeCount: number,
   dims: readonly CascadeDim[] = CASCADE_DIMS,
 ): void {
   const dim = dims[k]!;
@@ -169,7 +180,8 @@ function buildCascadeUniformDataInto(
   ui[24] = frameSeed;
   ui[25] = dims.length - 1;
   d[26] = triIntersectEpsilon;  // E2: was _pad4[0]
-  ui[27] = 0;                   // _pad4a
+  ui[27] = bvhMode >>> 0;
+  ui[28] = tlasNodeCount >>> 0;
 }
 
 function buildMergeUniformData(
@@ -258,12 +270,16 @@ export class RCDispatcher {
     const dims = this._cascadeDims;
     for (let k = 0; k < dims.length; k++) {
       const pass = handles.castPasses[k]!;
+      const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
+      const tlasNodeCount = opts.tlasNodeCount ?? 0;
       buildCascadeUniformDataInto(
         pass.cascadeParamsRaw, k,
         opts.probeOriginWorld, opts.roomSize,
         opts.sunDirection, opts.sunColor,
         1.0, opts.frameSeed,
         opts.triIntersectEpsilon ?? 1e-5,
+        bvhMode,
+        tlasNodeCount,
         dims,
       );
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
@@ -312,22 +328,34 @@ export class RCDispatcher {
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
-  /** Build bind group layout for a cast pass (9 entries: 5 BVH+mat SSBOs + cascade +
-   *  env texture + sampler + uniform). */
+  /** Cast pass: BVH+mat SSBOs, cascade out, env, uniforms, optional TLAS (C2). */
   private _castBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
     return device.createBindGroupLayout({
       label: 'rc-cast-bgl',
       entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // bvh
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // geom_index
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // geom_position
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // materials
-        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // triMatId
-        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },           // cascadeOut (rw)
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
         { binding: 6, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },
         { binding: 7, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
-        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // CascadeUniforms
+        { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 12, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 13, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       ],
+    });
+  }
+
+  private _dummyStorageBuffer(device: GPUDevice, label: string): GPUBuffer {
+    return device.createBuffer({
+      label,
+      size: 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
   }
 
@@ -419,6 +447,11 @@ export class RCDispatcher {
     const posBuf      = opts.bvhPositionsBuf;
     const matBuf      = opts.materialsBuf;
     const triMatBuf   = opts.triMaterialIdBuf;
+    const tlasNodesBuf = opts.tlasNodesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-nodes-dummy');
+    const tlasInstBuf = opts.tlasInstanceIndicesBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-inst-dummy');
+    const tlasBlasBuf = opts.tlasBlasRootsBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-blas-dummy');
+    const tlasW2lBuf = opts.tlasInstanceWorldToLocalBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-w2l-dummy');
+    const tlasL2wBuf = opts.tlasInstanceLocalToWorldBuf ?? this._dummyStorageBuffer(device, 'rc-tlas-l2w-dummy');
 
     // Env texture + sampler. If the caller supplied both, use them; otherwise
     // create a 1×1 black placeholder.
@@ -458,12 +491,16 @@ export class RCDispatcher {
       // it, add `envIntensity?: number` to `RCDispatchOpts` and thread it
       // through.
       const cascadeParamsRaw = new Float32Array(40);
+      const bvhMode = opts.bvhMode === 'tlas' ? 1 : 0;
+      const tlasNodeCount = opts.tlasNodeCount ?? 0;
       buildCascadeUniformDataInto(
         cascadeParamsRaw, k,
         opts.probeOriginWorld, opts.roomSize,
         opts.sunDirection, opts.sunColor,
         1.0, opts.frameSeed,
         opts.triIntersectEpsilon ?? 1e-5,
+        bvhMode,
+        tlasNodeCount,
         cascadeDims,
       );
       const cascadeParamsBuf = device.createBuffer({
@@ -492,6 +529,11 @@ export class RCDispatcher {
           { binding: 6, resource: envTextureView },
           { binding: 7, resource: envSampler },
           { binding: 8, resource: { buffer: cascadeParamsBuf } },
+          { binding: 9, resource: { buffer: tlasNodesBuf } },
+          { binding: 10, resource: { buffer: tlasInstBuf } },
+          { binding: 11, resource: { buffer: tlasBlasBuf } },
+          { binding: 12, resource: { buffer: tlasW2lBuf } },
+          { binding: 13, resource: { buffer: tlasL2wBuf } },
         ],
       });
 

@@ -29,36 +29,58 @@
  * See `src/rc/TSL_TO_RAW_MAPPING.md` for the full mapping rationale.
  */
 
-import { MATERIAL_ENTRY_WGSL, BVH_INTERSECT_WGSL } from '@vitrum/shared-bvh';
+import { BVH_INTERSECT_WGSL, MATERIAL_ENTRY_WGSL, TLAS_TRAVERSAL_WGSL } from '@vitrum/shared-bvh';
 import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 export const PROBE_RAY_CAST_WGSL = /* wgsl */`
 ${MATERIAL_ENTRY_WGSL}
 ${BVH_INTERSECT_WGSL}
+${TLAS_TRAVERSAL_WGSL}
 
-// ─── BVH structs + traversal ─────────────────────────────────────────────────
-// Canonical from @vitrum/shared-bvh BVH_INTERSECT_WGSL (injected above).
-// The pre-canonical local copies of: BVH_STACK_DEPTH / INFINITY constants;
-// Ray / BVHBoundingBox / BVHNode (nested-bounds) / IntersectionResult structs;
-// safeInvDir / intersectsBounds / intersectsTriangle / intersectTriangles /
-// bvhIntersectFirstHit helpers — all lived here and have been removed.
-//
-// Call-site migration:
-//   - bvhIntersectFirstHit(geom_index, geom_position, bvh, ray, triEps)
-//     now resolves to the canonical V3 entry, bvhIntersectFirstHitV3 — the
-//     algorithm is unchanged; the canonical uses flat BVHNode boundsMin /
-//     boundsMax fields (rename-only; same memory layout). Below we re-export
-//     the canonical V3 entry under the pre-canonical name so the four
-//     call sites in this file (entry kernel, two glass-bounce traces,
-//     traceSunVisibility) need no rename.
-fn bvhIntersectFirstHit(
-  bvh_index:    ptr<storage, array<vec3u>,   read>,
-  bvh_position: ptr<storage, array<vec3f>,   read>,
-  bvh:          ptr<storage, array<BVHNode>, read>,
-  ray: Ray,
-  triEps: f32,
-) -> IntersectionResult {
-  return bvhIntersectFirstHitV3(bvh_index, bvh_position, bvh, ray, triEps);
+// C2 — merged world BVH vs TLAS+local BLAS (same traversal as ReSTIR / DDGI).
+fn rcTraceFirstHit(ray: Ray, triEps: f32) -> IntersectionResult {
+  let u = rc_u_arr[0];
+  if (u.bvhMode == 1u && u.tlasNodeCount > 0u) {
+    return traceTlasFirstHit(
+      &rc_tlas_nodes,
+      &rc_tlas_instance_indices,
+      &rc_tlas_blas_roots,
+      &rc_tlas_w2l,
+      &rc_tlas_l2w,
+      u.tlasNodeCount,
+      &rc_geom_index,
+      &rc_geom_position,
+      &rc_bvh,
+      ray,
+      triEps,
+    );
+  }
+  return bvhIntersectFirstHit(&rc_geom_index, &rc_geom_position, &rc_bvh, ray, triEps);
+}
+
+fn rcTraceAny(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32, skipGlass: bool) -> bool {
+  let u = rc_u_arr[0];
+  if (u.bvhMode == 1u && u.tlasNodeCount > 0u) {
+    return traceTlasAny(
+      &rc_tlas_nodes,
+      &rc_tlas_instance_indices,
+      &rc_tlas_blas_roots,
+      &rc_tlas_w2l,
+      &rc_tlas_l2w,
+      u.tlasNodeCount,
+      &rc_geom_index,
+      &rc_geom_position,
+      &rc_bvh,
+      origin,
+      dir,
+      tMax,
+      triEps,
+      skipGlass,
+    );
+  }
+  return bvhIntersectAny(
+    &rc_geom_index, &rc_geom_position, &rc_bvh, origin, dir, tMax, triEps, skipGlass,
+  );
 }
 
 // ─── CascadeUniforms struct ───────────────────────────────────────────────────
@@ -88,7 +110,8 @@ struct CascadeUniforms {
   frameSeed         : u32,
   lastCascade       : u32,
   triIntersectEpsilon: f32,  // E2: UBO-plumbed (was local const 1e-5)
-  _pad4a            : u32,
+  bvhMode           : u32,   // C2: 0 merged, 1 TLAS+local BLAS
+  tlasNodeCount     : u32,
 };
 
 // ─── MaterialEntry struct ─────────────────────────────────────────────────────
@@ -126,15 +149,10 @@ fn dirToEquirectUV(d: vec3f) -> vec2f {
 // glass-slab step. Callers compute it from the scene extent
 // (min(roomSize) * 0.001) so the step is proportional to the actual scene.
 fn traceSunVisibility(
-  bvh:           ptr<storage, array<BVHNode>,        read>,
-  geom_index:    ptr<storage, array<vec3u>,          read>,
-  geom_position: ptr<storage, array<vec3f>,          read>,
-  materials:     ptr<storage, array<MaterialEntry>,  read>,
-  triMatId:      ptr<storage, array<u32>,            read>,
   origin:        vec3f,
   sunDir:        vec3f,
   slabStepSize:  f32,
-  triEps:        f32,  // E2: threaded from CascadeUniforms.triIntersectEpsilon
+  triEps:        f32,
 ) -> vec3f {
   var visibility = vec3f(1.0);
   var rayOrigin  = origin;
@@ -142,12 +160,12 @@ fn traceSunVisibility(
     var sRay = Ray();
     sRay.origin    = rayOrigin;
     sRay.direction = sunDir;
-    let sHit = bvhIntersectFirstHit(geom_index, geom_position, bvh, sRay, triEps);
+    let sHit = rcTraceFirstHit(sRay, triEps);
     if (!sHit.didHit) {
       return visibility;
     }
-    let sMatId = (*triMatId)[sHit.indices.w];
-    let sMat   = (*materials)[sMatId];
+    let sMatId = rc_triMatId[sHit.indices.w];
+    let sMat   = rc_materials[sMatId];
     if (sMat.transmission <= 0.5) {
       return vec3f(0.0);
     }
@@ -165,15 +183,20 @@ fn traceSunVisibility(
 // ─── Bind group declarations ──────────────────────────────────────────────────
 // Cast pass: @group(0) bindings 0-8.
 
-@group(0) @binding(0) var<storage, read>       rc_bvh:           array<BVHNode>;
-@group(0) @binding(1) var<storage, read>       rc_geom_index:    array<vec3u>;
-@group(0) @binding(2) var<storage, read>       rc_geom_position: array<vec3f>;
-@group(0) @binding(3) var<storage, read>       rc_materials:     array<MaterialEntry>;
-@group(0) @binding(4) var<storage, read>       rc_triMatId:      array<u32>;
-@group(0) @binding(5) var<storage, read_write> rc_cascadeOut:    array<vec4f>;
-@group(0) @binding(6) var                      rc_envMap:        texture_2d<f32>;
-@group(0) @binding(7) var                      rc_envSampler:    sampler;
-@group(0) @binding(8) var<storage, read>       rc_u_arr:         array<CascadeUniforms>;
+@group(0) @binding(0) var<storage, read>       rc_bvh:                   array<BVHNode>;
+@group(0) @binding(1) var<storage, read>       rc_geom_index:            array<vec4u>;
+@group(0) @binding(2) var<storage, read>       rc_geom_position:         array<vec4f>;
+@group(0) @binding(3) var<storage, read>       rc_materials:             array<MaterialEntry>;
+@group(0) @binding(4) var<storage, read>       rc_triMatId:              array<u32>;
+@group(0) @binding(5) var<storage, read_write> rc_cascadeOut:            array<vec4f>;
+@group(0) @binding(6) var                      rc_envMap:                texture_2d<f32>;
+@group(0) @binding(7) var                      rc_envSampler:            sampler;
+@group(0) @binding(8) var<storage, read>       rc_u_arr:                 array<CascadeUniforms>;
+@group(0) @binding(9) var<storage, read>       rc_tlas_nodes:            array<BVHNode>;
+@group(0) @binding(10) var<storage, read>      rc_tlas_instance_indices: array<u32>;
+@group(0) @binding(11) var<storage, read>      rc_tlas_blas_roots:       array<u32>;
+@group(0) @binding(12) var<storage, read>      rc_tlas_w2l:              array<vec4f>;
+@group(0) @binding(13) var<storage, read>      rc_tlas_l2w:              array<vec4f>;
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 // Verbatim from probeRayCastKernel wgslFn body.
@@ -215,9 +238,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
   // E2: read epsilon from CascadeUniforms (UBO-plumbed from HybridEngine.triIntersectEpsilon).
   let triEps = u.triIntersectEpsilon;
 
-  let hit = bvhIntersectFirstHit(
-    &rc_geom_index, &rc_geom_position, &rc_bvh, ray, triEps
-  );
+  let hit = rcTraceFirstHit(ray, triEps);
 
   // M14: scene-scale-proportional step to clear glass slabs/faces.
   // Uses the smallest room axis * 0.001 so the offset is never
@@ -245,13 +266,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let matAtten    = mat.attenuationColor;
     let matEmissive = mat.emissive;
 
-    let sunVis = traceSunVisibility(
-      &rc_bvh, &rc_geom_index, &rc_geom_position, &rc_materials, &rc_triMatId,
-      hitPos + n * 0.01,
-      u.sunDirection,
-      slabStep,
-      triEps,
-    );
+    let sunVis = traceSunVisibility(hitPos + n * 0.01, u.sunDirection, slabStep, triEps);
     let nDotL  = max(0.0, dot(n, u.sunDirection));
     let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;
 
@@ -265,9 +280,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
       // M14: step past the glass face proportionally rather than 0.5 units.
       refRay.origin    = hitPos + ray.direction * slabStep;
       refRay.direction = ray.direction;
-      let secondHit = bvhIntersectFirstHit(
-        &rc_geom_index, &rc_geom_position, &rc_bvh, refRay, triEps
-      );
+      let secondHit = rcTraceFirstHit(refRay, triEps);
       if (!secondHit.didHit) {
         let envUV = dirToEquirectUV(refRay.direction);
         let envS  = textureSampleLevel(rc_envMap, rc_envSampler, envUV, 0.0);
@@ -278,7 +291,6 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
         let secondMat   = rc_materials[secondMatId];
         let secondColor = secondMat.baseColor;
         let sunVis2 = traceSunVisibility(
-          &rc_bvh, &rc_geom_index, &rc_geom_position, &rc_materials, &rc_triMatId,
           secondPos + secondHit.normal * 0.01,
           u.sunDirection,
           slabStep,

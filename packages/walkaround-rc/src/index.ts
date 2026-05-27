@@ -20,7 +20,7 @@ export {
 export type { CascadeAABB, CascadeDim, CascadeBuffers } from './cascadePyramid.js';
 
 // RC BVH builder (StorageBufferAttribute-typed adapter over @vitrum/shared-bvh).
-export { buildRCSceneBVH } from './bvhCompute.js';
+export { buildRCSceneBVH, packCascadeMaterials } from './bvhCompute.js';
 export type { SceneBVH, BvhBuildOpts } from './bvhCompute.js';
 
 // Cascade dispatch — raw WebGPU compute. The THREE-tied `RCDispatchOpts`

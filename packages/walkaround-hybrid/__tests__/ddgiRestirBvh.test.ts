@@ -65,6 +65,37 @@ describe('makeDdgiRestirBvhSnapshot (PR-5.1)', () => {
     expect(a.contentVersion).not.toBe(b.contentVersion);
   });
 
+  it('bumps contentVersion when TLAS node payload changes at fixed length', () => {
+    const nodesA = new Uint32Array(16);
+    nodesA[0] = 1;
+    const nodesB = new Uint32Array(16);
+    nodesB[0] = 99;
+    const base = minimalSceneBVH({
+      bvhMode: 'tlas',
+      tlas: {
+        nodes: { cpuData: nodesA.buffer, byteLength: nodesA.byteLength, count: 2 },
+        instanceIndices: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
+        blasRoots: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
+        worldToLocal: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 1 },
+        localToWorld: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 1 },
+        nodeCount: 2,
+      },
+    });
+    const snapA = makeDdgiRestirBvhSnapshot(base);
+    const snapB = makeDdgiRestirBvhSnapshot(minimalSceneBVH({
+      bvhMode: 'tlas',
+      tlas: {
+        nodes: { cpuData: nodesB.buffer, byteLength: nodesB.byteLength, count: 2 },
+        instanceIndices: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
+        blasRoots: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
+        worldToLocal: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 1 },
+        localToWorld: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 1 },
+        nodeCount: 2,
+      },
+    }));
+    expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
+  });
+
   it('uses world AABB for TLAS when scene is provided', () => {
     const scene: Scene = {
       primitives: [{

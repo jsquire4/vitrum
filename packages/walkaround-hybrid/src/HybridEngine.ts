@@ -514,10 +514,7 @@ export class HybridEngine implements Engine {
     // scene. Synthesise a fresh THREE root if needed (lazy via
     // `_ensureThreeSceneRoot`). When the host supplied no source, the RC
     // dispatcher stays idle until the next setScene.
-    if (this._rc) {
-      const rcRoot = this._ensureThreeSceneRoot();
-      if (rcRoot != null) this._rc.setScene(rcRoot);
-    }
+    // RC BVH is wired after async ReSTIR BVH publish (see publishBvh).
 
     // Tear down the existing pipeline, reinitialise asynchronously.
     this._teardownPipeline();
@@ -694,6 +691,9 @@ export class HybridEngine implements Engine {
     if (!this._rc) return;
     if (result.rcRefitBounds != null) {
       this._rc.refitCascadeBounds(result.rcRefitBounds.min, result.rcRefitBounds.max);
+      if (this._bvhBuffers?.bvhMode === 'tlas') {
+        this._rc.syncRestirBvhBuffers(this._bvhBuffers);
+      }
       return;
     }
     const rcRoot = this._ensureThreeSceneRoot();
@@ -1056,6 +1056,9 @@ export class HybridEngine implements Engine {
     // when rcEnabled. Cascade-0 buffer is the indirect-diffuse source for
     // Phase 3's shade.wgsl wiring; Phase 2 just exercises the dispatch path.
     if (this._rc) {
+      if (this._bvhBuffers?.bvhMode === 'tlas') {
+        this._rc.syncRestirBvhBuffers(this._bvhBuffers);
+      }
       this._rc.dispatchFrame({
         sunDirection:        this._primaryLightDir,
         // Multiply sun direction by intensity into a Color-ish [r,g,b].
@@ -1487,7 +1490,16 @@ export class HybridEngine implements Engine {
       isSceneReadyForBvh: () => self._sceneReadyForBvh(),
       coreSceneSuppliesMeshes: () => self._coreSceneSuppliesMeshes(),
 
-      publishBvh:             (bvh) => { self._bvhBuffers = bvh; },
+      publishBvh:             (bvh) => {
+        self._bvhBuffers = bvh;
+        if (self._rc == null) return;
+        if (bvh.bvhMode === 'tlas') {
+          self._rc.syncRestirBvhBuffers(bvh);
+        } else {
+          const rcRoot = self._ensureThreeSceneRoot();
+          if (rcRoot != null) self._rc.setScene(rcRoot);
+        }
+      },
       publishTraversalScene:  (s)   => { self._ddgiTraversalScene = s; },
       publishPipeline:        (p)   => { self._pipeline = p; },
       rollbackBvh:            ()    => { self._bvhBuffers = null; },

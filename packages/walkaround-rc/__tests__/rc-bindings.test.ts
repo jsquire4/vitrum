@@ -110,12 +110,11 @@ describe('bind group layout entry counts (match TSL storage() declarations)', ()
   it('cast pass BGL: binding count derived from probeRayCast.wgsl.ts source', () => {
     // Derived from the actual WGSL source so the assertion catches drift if
     // a new binding is added without updating the host bind-group layout
-    // cache. Current authoritative count is 9 (5 BVH+mat + cascadeOut +
-    // envMap + envSampler + uniforms).
+    // cache. Current count is 14 (5 BVH+mat + cascadeOut + env + uniforms + 5 TLAS).
     const rcBindingMatches = [...PROBE_RAY_CAST_WGSL.matchAll(/@group\(0\)\s+@binding\((\d+)\)\s+var[^\n]*rc_/g)];
     const bindingIds = new Set(rcBindingMatches.map((m) => Number(m[1])));
-    expect(bindingIds.size).toBe(9);
-    for (let i = 0; i <= 8; i += 1) {
+    expect(bindingIds.size).toBe(14);
+    for (let i = 0; i <= 13; i += 1) {
       expect(bindingIds.has(i)).toBe(true);
     }
   });
@@ -160,8 +159,10 @@ describe('PROBE_RAY_CAST_WGSL', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('struct MaterialEntry');
   });
 
-  it('contains BVH traversal function bvhIntersectFirstHit', () => {
-    expect(PROBE_RAY_CAST_WGSL).toContain('fn bvhIntersectFirstHit');
+  it('contains TLAS-aware RC traversal helpers', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcTraceFirstHit');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn traceTlasFirstHit');
+    expect(PROBE_RAY_CAST_WGSL).toContain('array<vec4u>');
   });
 
   it('contains octDecode helper', () => {
