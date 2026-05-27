@@ -1,4 +1,8 @@
-# Gap-closure baseline renders (WG-0.2)
+# Reference render baselines
+
+Cornell + hero quick captures (`session-20260527`, 512×512 / 64 SPP) live here as `cornell-*.png` and `hero-*.png`. Regenerate via `npm run capture:refs:quick`, then `scripts/promote-ref-baseline.sh session-20260527`.
+
+## Gap-closure (WG-0.2)
 
 PNG baselines for `tools/benchmark-runner/run-gap-closure-verification.mjs`.
 

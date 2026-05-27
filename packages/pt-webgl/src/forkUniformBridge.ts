@@ -145,8 +145,8 @@ export function driveForkMaterialUniforms(
 
   // Sprint 10c — BDPT uniform bridge.
   // Threads the host-side BDPT options to the fork's uBdptEnabled / uBdptMaxLightBounces /
-  // uBdptLightPathTex uniforms. The fork's FEATURE_BDPT define is synced automatically via
-  // onBeforeRender() from uBdptEnabled.
+  // uBdptLightPathTex uniforms. FEATURE_BDPT define is toggled here (not in onBeforeRender) so
+  // setDefine does not reset the path-tracer accumulator every frame.
   //
   // Safety guard: if lightPathTex is null (uninitialized host), force enabled=false to
   // prevent the shader from sampling an unbound texture slot.

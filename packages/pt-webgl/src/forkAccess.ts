@@ -4,6 +4,7 @@ interface UniformRef<T> {
 
 export interface PathTracerMaterialLike {
   uniforms?: Record<string, UniformRef<unknown>>;
+  setDefine?(name: string, value: number): void;
 }
 
 interface ForkTracerLike {

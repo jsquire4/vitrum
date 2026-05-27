@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Reference baselines (2026-05-27):** `session-20260527` cornell + hero quick captures promoted to `tools/reference-renders/baseline/`; `scripts/promote-ref-baseline.sh` + `npm run capture:promote-baseline`.
+- **BDPT / RC captures (2026-05-27):** `isSoftwareGlRenderer` helper; refreshed `bdpt-layered-mechanical` PNGs; RC acceptance via `benchmark:rc-acceptance-gpu` (WSL vite + Windows Chrome).
 - **BDPT WebGL fixes (2026-05-27):** `forkUniformBridge` toggles `FEATURE_BDPT` + binds `uBdptLightPathTex` only when active; SwiftShader skips float light-path bind (unidirectional PT stays bright); `fillFromScene` no longer clears the shared render target; `packBdptLightPathColumnsWebGL` + tests; capture adapter uses hardware Chromium launch; parity BDPT refs in `benchmark:bdpt-layered-refs`.
 - **Complexity remediation wave-0 (2026-05-27):** `bdptLightSubpathOracle.test.ts` pins `packBdptLightPathColumns`; `rcParamsCodegen.test.ts` pins `RCParamsOffset` vs `packRCParams`; un-exported `collectDDGIPointLightsFromRoot`; removed redundant `resolveReSTIRBvhMode` re-export from `bvhCompute.ts`; BDPT capture script doubles SPP and sets `vitrumSpf=16` when `vitrumBdpt=1`.
 - **pt-webgl BDPT CPU light-path fill (2026-05-27):** `BdptLightPathBuffer.fillFromScene()` + `fillBdptLightPathWebGL` write bounce-0 vertices from `@vitrum/core` emitters; cornell-box `?vitrumBdpt=1` calls it each frame before `bdptAdvanceFrame()`. Extension bounces still need the fork light-subpath draw pass.

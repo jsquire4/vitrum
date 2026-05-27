@@ -33,6 +33,7 @@ import {
   applyVitrumMaterialToMesh,
   findMeshByPrimitiveId,
 } from '@vitrum/three-bindings';
+import { bdptForceGpuBind, isSoftwareGlRenderer } from './bdpt/isSoftwareGlRenderer.js';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
 import { ForkAccess } from './forkAccess.js';
 import {
@@ -688,8 +689,7 @@ export class PTEngineWebGL2 implements Engine {
    */
   bdptAdvanceFrame(lightPathTex: Texture | null): void {
     if (!this.#bdpt) return;
-    // RGBA32F light-path uploads break unidirectional PT on SwiftShader; skip binding.
-    const softwareGl = /swiftshader/i.test(this.#limits.renderer);
+    const softwareGl = isSoftwareGlRenderer(this.#limits.renderer) && !bdptForceGpuBind();
     driveForkMaterialUniforms(
       this.#pathTracer,
       {
