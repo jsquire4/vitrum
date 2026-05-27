@@ -168,7 +168,6 @@ export interface SceneBVHBuffers {
 }
 
 export type { ReSTIRBvhMode };
-export { resolveReSTIRBvhMode };
 
 /** Pick merged vs TLAS CPU pack and build ReSTIR buffers. */
 export function buildReSTIRSceneBVHForScene(

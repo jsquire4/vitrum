@@ -111,9 +111,13 @@ BASE_URL="http://127.0.0.1:5173/"
 if [[ -n "$EXTRA_QUERY" ]]; then
   # Strip leading & if present; the adapter appends ? + scenario params.
   EXTRA_QUERY="${EXTRA_QUERY#&}"
-  # The adapter unconditionally treats VITRUM_CAPTURE_URL as the base; query
-  # params from env are appended via URLSearchParams. To get our extra param
-  # in, we encode it directly into the base URL.
+  if [[ "$EXTRA_QUERY" == *"vitrumBdpt"* ]]; then
+    # BDPT adds per-bounce connection work — converge faster in capture mode.
+    SPP=$((SPP * 2))
+    if [[ "$EXTRA_QUERY" != *"vitrumSpf"* ]]; then
+      EXTRA_QUERY="${EXTRA_QUERY}&vitrumSpf=16"
+    fi
+  fi
   BASE_URL="${BASE_URL}?${EXTRA_QUERY}"
 fi
 

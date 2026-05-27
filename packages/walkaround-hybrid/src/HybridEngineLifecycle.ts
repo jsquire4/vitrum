@@ -502,7 +502,7 @@ export class PipelineInitCoordinator {
  * range that distinguishes "lit colour bleed" from "atlas reads zero".
  */
 /** Project `THREE.PointLight` instances to DDGI point-light fixtures. */
-export function collectDDGIPointLightsFromRoot(root: THREE.Object3D): DDGILight[] {
+function collectDDGIPointLightsFromRoot(root: THREE.Object3D): DDGILight[] {
   const out: DDGILight[] = [];
   root.updateMatrixWorld(true);
   root.traverseVisible((obj) => {
