@@ -336,6 +336,46 @@ export function uploadScenePackGeometry(
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
 
+/** C2 — upload BLAS concat buffers only (TLAS instance data unchanged). */
+export function uploadScenePackBlasOnly(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  pack: Pick<
+    ScenePackResult,
+    | 'positions'
+    | 'normals'
+    | 'indices'
+    | 'triMaterialIds'
+    | 'bvhNodes'
+    | 'triangleCount'
+    | 'primitiveTlasBindings'
+  >,
+): void {
+  const write = (buffer: GPUBuffer, data: ArrayBufferView): void => {
+    if (data.byteLength > 0) {
+      device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
+    }
+  };
+  write(sb.positionsBuffer, pack.positions);
+  write(sb.normalsBuffer, pack.normals);
+  write(sb.indicesBuffer, pack.indices);
+  write(sb.triMaterialIdsBuffer, pack.triMaterialIds);
+  write(sb.bvhNodesBuffer, pack.bvhNodes);
+  sb.positions.set(pack.positions);
+  sb.normals.set(pack.normals);
+  sb.indices.set(pack.indices);
+  sb.triMaterialIds.set(pack.triMaterialIds);
+  sb.bvhNodes.set(pack.bvhNodes);
+  const mutable = sb as unknown as {
+    bvhNodeCount: number;
+    triangleCount: number;
+    primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+  };
+  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
+  mutable.triangleCount = pack.triangleCount;
+  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+}
+
 /** C2 — upload TLAS SSBOs only (transform-only refit; BLAS buffers unchanged). */
 export function uploadScenePackTlasOnly(
   device: GPUDevice,

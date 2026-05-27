@@ -23,11 +23,16 @@ import {
   scenePackResultFromPacked,
   uploadPackedScene,
   uploadScenePackGeometry,
+  uploadScenePackBlasOnly,
   uploadScenePackTlasOnly,
   PT_WEBGPU_ANALYTIC_SHAPES,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
-import { rebuildPrimitiveBlas, type ScenePackResult } from '@vitrum/shared-bvh';
+import {
+  fingerprintTlasBuffers,
+  rebuildPrimitiveBlas,
+  type ScenePackResult,
+} from '@vitrum/shared-bvh';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL } from '@vitrum/shared-samplers';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
@@ -787,7 +792,26 @@ class PTEngineWebGPU implements Engine {
         resolveMaterialId: (pid) => this.#materialIndexForPrimitive(nextScene, pid) ?? 0,
       });
       if (rebuilt.ok) {
-        uploadScenePackGeometry(this.#device, this.#sceneBuffers, rebuilt.pack);
+        const sb = this.#sceneBuffers;
+        const prevTlasFp = fingerprintTlasBuffers({
+          tlasNodes: sb.tlasNodes,
+          tlasInstanceIndices: sb.tlasInstanceIndices,
+          tlasBlasRoots: sb.tlasBlasRoots,
+          tlasInstanceWorldToLocal: sb.tlasInstanceWorldToLocal,
+          tlasInstanceLocalToWorld: sb.tlasInstanceLocalToWorld,
+        });
+        const nextTlasFp = fingerprintTlasBuffers({
+          tlasNodes: rebuilt.pack.tlasNodes,
+          tlasInstanceIndices: rebuilt.pack.tlasInstanceIndices,
+          tlasBlasRoots: rebuilt.pack.tlasBlasRoots,
+          tlasInstanceWorldToLocal: rebuilt.pack.tlasInstanceWorldToLocal,
+          tlasInstanceLocalToWorld: rebuilt.pack.tlasInstanceLocalToWorld,
+        });
+        if (prevTlasFp === nextTlasFp) {
+          uploadScenePackBlasOnly(this.#device, sb, rebuilt.pack);
+        } else {
+          uploadScenePackGeometry(this.#device, sb, rebuilt.pack);
+        }
         this.#geoPack = rebuilt.pack;
         this.#pathTraceBindGroup = null;
         this.#pathTraceBindGroup1 = null;

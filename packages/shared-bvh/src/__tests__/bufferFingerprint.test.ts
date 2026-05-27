@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { fingerprintBuffer, fingerprintBuffers } from '../bufferFingerprint.js';
+import {
+  fingerprintBuffer,
+  fingerprintBuffers,
+  isTlasOnlyVersionBump,
+} from '../bufferFingerprint.js';
 
 describe('bufferFingerprint', () => {
   it('changes when same-length buffer content changes', () => {
@@ -16,5 +20,11 @@ describe('bufferFingerprint', () => {
     const combined = fingerprintBuffers(x.buffer, y.buffer);
     expect(combined).not.toBe(fingerprintBuffer(x.buffer));
     expect(combined).not.toBe(fingerprintBuffer(y.buffer));
+  });
+
+  it('isTlasOnlyVersionBump detects transform-only TLAS bumps', () => {
+    expect(isTlasOnlyVersionBump(10, 11, { blasContentVersion: 10, tlasContentVersion: 10 })).toBe(true);
+    expect(isTlasOnlyVersionBump(10, 10, { blasContentVersion: 10, tlasContentVersion: 10 })).toBe(false);
+    expect(isTlasOnlyVersionBump(11, 12, { blasContentVersion: 10, tlasContentVersion: 10 })).toBe(false);
   });
 });

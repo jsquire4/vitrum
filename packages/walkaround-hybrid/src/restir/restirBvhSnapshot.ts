@@ -5,7 +5,11 @@
 
 import * as THREE from 'three';
 import type { Scene } from '@vitrum/core';
-import { computeWorldAabbForBindings, fingerprintBuffers } from '@vitrum/shared-bvh';
+import {
+  computeWorldAabbForBindings,
+  fingerprintBuffers,
+  isTlasOnlyVersionBump,
+} from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './bvhCompute.js';
 
 export interface RestirBvhSnapshot {
@@ -115,7 +119,6 @@ export function isRestirTlasOnlyRefit(
 ): boolean {
   return (
     snap.tlas != null &&
-    snap.blasContentVersion === prev.blasContentVersion &&
-    snap.tlasContentVersion !== prev.tlasContentVersion
+    isTlasOnlyVersionBump(snap.blasContentVersion, snap.tlasContentVersion, prev)
   );
 }

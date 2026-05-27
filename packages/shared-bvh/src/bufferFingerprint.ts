@@ -44,3 +44,32 @@ export function fingerprintBuffers(...parts: Array<ArrayBuffer | ArrayBufferView
   }
   return h >>> 0;
 }
+
+/** True when only TLAS payload changed (transform-only refit; BLAS concat stable). */
+export function isTlasOnlyVersionBump(
+  blasVersion: number,
+  tlasVersion: number,
+  prev: { readonly blasContentVersion: number; readonly tlasContentVersion: number },
+): boolean {
+  return (
+    blasVersion === prev.blasContentVersion &&
+    tlasVersion !== prev.tlasContentVersion
+  );
+}
+
+/** Fingerprint the five TLAS CPU mirrors (pt-webgpu / hybrid versioning). */
+export function fingerprintTlasBuffers(tlas: {
+  readonly tlasNodes: ArrayBuffer | ArrayBufferView;
+  readonly tlasInstanceIndices: ArrayBuffer | ArrayBufferView;
+  readonly tlasBlasRoots: ArrayBuffer | ArrayBufferView;
+  readonly tlasInstanceWorldToLocal: ArrayBuffer | ArrayBufferView;
+  readonly tlasInstanceLocalToWorld: ArrayBuffer | ArrayBufferView;
+}): number {
+  return fingerprintBuffers(
+    tlas.tlasNodes,
+    tlas.tlasInstanceIndices,
+    tlas.tlasBlasRoots,
+    tlas.tlasInstanceWorldToLocal,
+    tlas.tlasInstanceLocalToWorld,
+  );
+}
