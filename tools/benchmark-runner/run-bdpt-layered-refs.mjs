@@ -26,12 +26,31 @@ const outDir = resolve(repoRoot, 'tools/reference-renders', label);
 const here = dirname(fileURLToPath(import.meta.url));
 
 async function runCapture(extraArgs) {
+  const timeoutMs = Number(process.env.VITRUM_BDPT_TIMEOUT_MS ?? 45 * 60_000);
+  if (process.env.VITRUM_BDPT_NODE_CAPTURE === '1') {
+    const args = [
+      'node',
+      resolve(here, 'capture-cornell-scenarios.mjs'),
+      '--out',
+      outDir,
+      ...extraArgs,
+    ];
+    if (process.env.VITRUM_BDPT_QUICK === '1') args.push('--quick');
+    return runCommandWithTimeout(args.join(' '), {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        VITRUM_BDPT_MIN_PNG_BYTES: process.env.VITRUM_BDPT_MIN_PNG_BYTES ?? '50000',
+      },
+      timeoutMs,
+    });
+  }
   const args = [`${repoRoot}/scripts/capture-cornell-suite.sh`, '--out', outDir, ...extraArgs];
   if (process.env.VITRUM_BDPT_QUICK === '1') args.push('--quick');
   return runCommandWithTimeout(args.join(' '), {
     cwd: repoRoot,
     env: process.env,
-    timeoutMs: Number(process.env.VITRUM_BDPT_TIMEOUT_MS ?? 45 * 60_000),
+    timeoutMs,
   });
 }
 
