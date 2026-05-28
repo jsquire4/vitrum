@@ -16,9 +16,15 @@
  *   skinnedWorld[v] = skinMatrix[v]    · skinVertex[v]            (w=1 transform)
  *   deformedPos[v]  = bindMatrixInverse · skinnedWorld[v]         (skip if omitted)
  *
- * Normals follow the same pipeline with the mat3 (upper-3x3) variant of
- * each matrix. For glTF-typical use bindMatrix is identity and the
- * pipeline collapses to the simpler `deformedPos = skinMatrix · morphedPos`.
+ * Normals transform by the INVERSE-TRANSPOSE of the position transform's
+ * linear (upper-3×3) part (PBR4e §3.10) — `n' = (L⁻¹)ᵀ · n` where
+ * `L = bindMatrixInverse₃ · skinMatrix₃ · bindMatrix₃`. For rigid bones
+ * (rotation-only, no scale) `(L⁻¹)ᵀ == L`, so the result matches a plain
+ * upper-3×3 transform; for non-uniformly-scaled or sheared bones the
+ * inverse-transpose is required to keep the normal perpendicular to the
+ * deformed surface. For glTF-typical use bindMatrix is identity and the
+ * pipeline collapses to `deformedPos = skinMatrix · morphedPos`,
+ * `deformedNormal = (skinMatrix₃⁻¹)ᵀ · morphedNormal`.
  *
  * Per-bone `combined = bones · boneInverses` is precomputed once per call
  * (boneCount 4x4 matrix muls) instead of once per vertex×bone.
@@ -73,6 +79,58 @@ export function combineSkinMatrices(
     mat4Mul(combined, off, bones, off, boneInverses, off);
   }
   return combined;
+}
+
+/**
+ * Inverse-transpose of a 3×3 matrix — the correct normal transform under any
+ * affine deformation whose linear part is `m` (Pharr et al., PBR4e §3.10:
+ * normals transform by `(M⁻¹)ᵀ`, NOT by `M`). For a rigid (rotation-only)
+ * `m` this equals `m` itself, so the result is identical to the old
+ * upper-3×3 direct transform on un-scaled bones; for a scaled/sheared `m`
+ * (non-uniform bone scale) it diverges, and only the inverse-transpose keeps
+ * the normal perpendicular to the deformed surface.
+ *
+ * Inputs / output are row-major 3×3s laid out as
+ * `[m00,m01,m02, m10,m11,m12, m20,m21,m22]`. On a singular `m` (|det| ≈ 0,
+ * e.g. a bone scaled to zero on an axis) we fall back to the input matrix so
+ * the caller still produces a finite (if approximate) normal rather than NaN.
+ *
+ * @returns the 9-element inverse-transpose, written into `out` (allocated if
+ *   omitted).
+ */
+export function mat3InverseTranspose(m: ArrayLike<number>, out?: Float32Array): Float32Array {
+  const r = out ?? new Float32Array(9);
+  const m00 = m[0]!, m01 = m[1]!, m02 = m[2]!;
+  const m10 = m[3]!, m11 = m[4]!, m12 = m[5]!;
+  const m20 = m[6]!, m21 = m[7]!, m22 = m[8]!;
+
+  // Cofactors (these directly give the adjugate; det·M⁻¹ = adjugateᵀ, and the
+  // matrix of cofactors IS (det · M⁻¹)ᵀᵀ = det · (M⁻¹)ᵀ). Dividing the cofactor
+  // matrix by det yields (M⁻¹)ᵀ exactly — which is what we want.
+  const c00 = m11 * m22 - m12 * m21;
+  const c01 = m12 * m20 - m10 * m22;
+  const c02 = m10 * m21 - m11 * m20;
+  const c10 = m02 * m21 - m01 * m22;
+  const c11 = m00 * m22 - m02 * m20;
+  const c12 = m01 * m20 - m00 * m21;
+  const c20 = m01 * m12 - m02 * m11;
+  const c21 = m02 * m10 - m00 * m12;
+  const c22 = m00 * m11 - m01 * m10;
+
+  const det = m00 * c00 + m01 * c01 + m02 * c02;
+  if (Math.abs(det) < 1e-20) {
+    // Singular linear part — fall back to the raw matrix (best-effort).
+    r[0] = m00; r[1] = m01; r[2] = m02;
+    r[3] = m10; r[4] = m11; r[5] = m12;
+    r[6] = m20; r[7] = m21; r[8] = m22;
+    return r;
+  }
+  const inv = 1 / det;
+  // (M⁻¹)ᵀ row i = cofactor row i / det.
+  r[0] = c00 * inv; r[1] = c01 * inv; r[2] = c02 * inv;
+  r[3] = c10 * inv; r[4] = c11 * inv; r[5] = c12 * inv;
+  r[6] = c20 * inv; r[7] = c21 * inv; r[8] = c22 * inv;
+  return r;
 }
 
 /**
@@ -193,24 +251,30 @@ export function solveSkin(
   // Per-vertex accumulation. We do not allocate a per-vertex 4x4 skinMatrix;
   // instead we accumulate the 12 entries needed for point + direction
   // transforms directly (m00..m23, omitting the projective row).
-  for (let v = 0; v < vertCount; v++) {
-    let px = restPositions[v * 3 + 0]!;
-    let py = restPositions[v * 3 + 1]!;
-    let pz = restPositions[v * 3 + 2]!;
-    let nx = restNormals[v * 3 + 0]!;
-    let ny = restNormals[v * 3 + 1]!;
-    let nz = restNormals[v * 3 + 2]!;
+  // Scratch for the per-vertex normal inverse-transpose (row-major 3×3 in,
+  // 9-element out). Reused across vertices to avoid per-vertex allocation.
+  const linRowMajor = new Float32Array(9);
+  const normalMat = new Float32Array(9);
 
-    // Pre-multiply by bindMatrix when present (local → bind-world).
+  for (let v = 0; v < vertCount; v++) {
+    const px = restPositions[v * 3 + 0]!;
+    const py = restPositions[v * 3 + 1]!;
+    const pz = restPositions[v * 3 + 2]!;
+    // Rest-pose normal (pre-bind, pre-skin). Normals are transformed by the
+    // inverse-transpose of the FULL position-linear-part below, so we keep the
+    // un-transformed rest normal here rather than incrementally pushing it
+    // through bind / skin stages (which only happened to be correct for rigid
+    // bones in the pre-inverse-transpose code).
+    const nx = restNormals[v * 3 + 0]!;
+    const ny = restNormals[v * 3 + 1]!;
+    const nz = restNormals[v * 3 + 2]!;
+
+    // Position in (possibly bind-pre-multiplied) space for the skin transform.
+    let bpx = px, bpy = py, bpz = pz;
     if (hasBind) {
-      const tx = bm[0]! * px + bm[4]! * py + bm[8]! * pz + bm[12]!;
-      const ty = bm[1]! * px + bm[5]! * py + bm[9]! * pz + bm[13]!;
-      const tz = bm[2]! * px + bm[6]! * py + bm[10]! * pz + bm[14]!;
-      px = tx; py = ty; pz = tz;
-      const dnx = bm[0]! * nx + bm[4]! * ny + bm[8]! * nz;
-      const dny = bm[1]! * nx + bm[5]! * ny + bm[9]! * nz;
-      const dnz = bm[2]! * nx + bm[6]! * ny + bm[10]! * nz;
-      nx = dnx; ny = dny; nz = dnz;
+      bpx = bm[0]! * px + bm[4]! * py + bm[8]! * pz + bm[12]!;
+      bpy = bm[1]! * px + bm[5]! * py + bm[9]! * pz + bm[13]!;
+      bpz = bm[2]! * px + bm[6]! * py + bm[10]! * pz + bm[14]!;
     }
 
     // Accumulator entries: skin[r,c] for r in 0..3, c in 0..4 (we only need
@@ -240,28 +304,59 @@ export function solveSkin(
     }
 
     // Position transform (w = 1) → skinned-world space.
-    let outX = s00 * px + s01 * py + s02 * pz + s03;
-    let outY = s10 * px + s11 * py + s12 * pz + s13;
-    let outZ = s20 * px + s21 * py + s22 * pz + s23;
+    let outX = s00 * bpx + s01 * bpy + s02 * bpz + s03;
+    let outY = s10 * bpx + s11 * bpy + s12 * bpz + s13;
+    let outZ = s20 * bpx + s21 * bpy + s22 * bpz + s23;
 
-    // Normal transform (w = 0). Uses the upper 3x3 of the skin matrix
-    // directly; for rigid bones (rotations only) this is correct. For
-    // scaled bones an inverse-transpose would be needed — a future
-    // refinement when we ship scaled-bone test scenes.
-    let dnx = s00 * nx + s01 * ny + s02 * nz;
-    let dny = s10 * nx + s11 * ny + s12 * nz;
-    let dnz = s20 * nx + s21 * ny + s22 * nz;
+    // ── Normal transform via inverse-transpose of the combined linear part ──
+    // Build L = the upper-3×3 of (bindMatrixInverse · skinMatrix · bindMatrix)
+    // — the exact linear part the position transform applies to a direction.
+    // For the glTF-typical identity-bind case this is just skinMatrix₃.
+    // Row-major layout [m00,m01,m02, m10,m11,m12, m20,m21,m22].
+    if (hasBind) {
+      // bm3 (upper-3×3 of bindMatrix), column-major source.
+      const b00 = bm[0]!, b01 = bm[4]!, b02 = bm[8]!;
+      const b10 = bm[1]!, b11 = bm[5]!, b12 = bm[9]!;
+      const b20 = bm[2]!, b21 = bm[6]!, b22 = bm[10]!;
+      // sb = skinMatrix₃ · bm3.
+      const sb00 = s00 * b00 + s01 * b10 + s02 * b20;
+      const sb01 = s00 * b01 + s01 * b11 + s02 * b21;
+      const sb02 = s00 * b02 + s01 * b12 + s02 * b22;
+      const sb10 = s10 * b00 + s11 * b10 + s12 * b20;
+      const sb11 = s10 * b01 + s11 * b11 + s12 * b21;
+      const sb12 = s10 * b02 + s11 * b12 + s12 * b22;
+      const sb20 = s20 * b00 + s21 * b10 + s22 * b20;
+      const sb21 = s20 * b01 + s21 * b11 + s22 * b21;
+      const sb22 = s20 * b02 + s21 * b12 + s22 * b22;
+      // L = bmi3 · sb.
+      const i00 = bmi[0]!, i01 = bmi[4]!, i02 = bmi[8]!;
+      const i10 = bmi[1]!, i11 = bmi[5]!, i12 = bmi[9]!;
+      const i20 = bmi[2]!, i21 = bmi[6]!, i22 = bmi[10]!;
+      linRowMajor[0] = i00 * sb00 + i01 * sb10 + i02 * sb20;
+      linRowMajor[1] = i00 * sb01 + i01 * sb11 + i02 * sb21;
+      linRowMajor[2] = i00 * sb02 + i01 * sb12 + i02 * sb22;
+      linRowMajor[3] = i10 * sb00 + i11 * sb10 + i12 * sb20;
+      linRowMajor[4] = i10 * sb01 + i11 * sb11 + i12 * sb21;
+      linRowMajor[5] = i10 * sb02 + i11 * sb12 + i12 * sb22;
+      linRowMajor[6] = i20 * sb00 + i21 * sb10 + i22 * sb20;
+      linRowMajor[7] = i20 * sb01 + i21 * sb11 + i22 * sb21;
+      linRowMajor[8] = i20 * sb02 + i21 * sb12 + i22 * sb22;
+    } else {
+      linRowMajor[0] = s00; linRowMajor[1] = s01; linRowMajor[2] = s02;
+      linRowMajor[3] = s10; linRowMajor[4] = s11; linRowMajor[5] = s12;
+      linRowMajor[6] = s20; linRowMajor[7] = s21; linRowMajor[8] = s22;
+    }
+    mat3InverseTranspose(linRowMajor, normalMat);
+    let dnx = normalMat[0]! * nx + normalMat[1]! * ny + normalMat[2]! * nz;
+    let dny = normalMat[3]! * nx + normalMat[4]! * ny + normalMat[5]! * nz;
+    let dnz = normalMat[6]! * nx + normalMat[7]! * ny + normalMat[8]! * nz;
 
-    // Post-multiply by bindMatrixInverse to return to mesh-local space.
+    // Post-multiply position by bindMatrixInverse to return to mesh-local space.
     if (hasBind) {
       const tx = bmi[0]! * outX + bmi[4]! * outY + bmi[8]! * outZ + bmi[12]!;
       const ty = bmi[1]! * outX + bmi[5]! * outY + bmi[9]! * outZ + bmi[13]!;
       const tz = bmi[2]! * outX + bmi[6]! * outY + bmi[10]! * outZ + bmi[14]!;
       outX = tx; outY = ty; outZ = tz;
-      const tnx = bmi[0]! * dnx + bmi[4]! * dny + bmi[8]! * dnz;
-      const tny = bmi[1]! * dnx + bmi[5]! * dny + bmi[9]! * dnz;
-      const tnz = bmi[2]! * dnx + bmi[6]! * dny + bmi[10]! * dnz;
-      dnx = tnx; dny = tny; dnz = tnz;
     }
 
     positions[v * 3 + 0] = outX;

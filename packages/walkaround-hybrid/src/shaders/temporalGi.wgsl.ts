@@ -185,9 +185,18 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. */
+/** W1-R6 — declarative include-graph entry.
+ *  T9-stepC — narrowed from `['common']` to the modules this pass uses:
+ *    - `WalkaroundUBO` / `INV_PI`            → walkaroundUbo
+ *    - `loadReservoirGI_*` / `storeReservoirGI_rw` / `updateReservoirGI`
+ *                                            → reservoirGi
+ *    - `pcgInit` / `luminance` / `safe_normalize` → sharedPrimitives
+ *    - `jacobianReconnectionShift`           → jacobianShift
+ *    - `invertMat4_common` (reprojection)    → cameraRays (uses `Ray` →
+ *                                              sceneTraversal)
+ *  Verified complete by the static ident-resolution gate. */
 export const TEMPORAL_GI_MODULE: WgslModule = {
   name: 'temporalGi',
   source: TEMPORAL_GI_WGSL,
-  requires: ['common'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'jacobianShift', 'cameraRays'],
 };

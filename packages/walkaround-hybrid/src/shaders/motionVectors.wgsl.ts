@@ -44,9 +44,23 @@ fn motionVectorsMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+/**
+ * T9-stepC — `requires` narrowed from the full `common` aggregate to the
+ * minimal subset this pass actually references (verified by the static
+ * cross-module ident-resolution gate in __tests__/wgslCompose.test.ts):
+ *   - `WalkaroundUBO`               → walkaroundUbo
+ *   - `invertMat4_common` / `generatePrimaryRay_common`
+ *                                   → cameraRays (which uses `Ray` +
+ *                                     `safe_normalize`, hence sceneTraversal +
+ *                                     sharedPrimitives transitively; and
+ *                                     sharedPrimitives uses PI/INV_PI from
+ *                                     walkaroundUbo).
+ * The eight BVH/reservoir/BRDF/emitter/welford modules common otherwise
+ * pulls are unreferenced by motion-vector reprojection, so they are dropped.
+ */
 export const MOTION_VECTORS_MODULE: WgslModule = {
   name: 'motionVectors',
   source: MOTION_VECTORS_WGSL,
-  requires: ['common'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'sharedPrimitives', 'cameraRays'],
 };
 

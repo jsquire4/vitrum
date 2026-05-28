@@ -5,7 +5,7 @@
 
 import type { Scene, ScenePrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
 import { combineSkinMatrices, solveSkin } from '@vitrum/three-bindings';
-import { GPU_SKIN_BVH_WGSL } from './gpuSkinBvh.wgsl.js';
+import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from './gpuSkinBvh.wgsl.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from '../restir/bvhCompute.js';
 
 /**
@@ -48,6 +48,11 @@ interface MeshGpuState {
   readonly restNormBuffer: GPUBuffer;
   readonly skinIdxBuffer: GPUBuffer;
   readonly skinWeightBuffer: GPUBuffer;
+  /** Per-mesh skinned-normal output (stride-4, mesh-local index). Written by
+   *  the inverse-transpose normal LBS in the compute kernel. Not consumed by
+   *  the merged-BVH ray normal (which is geometric) — present for parity with
+   *  the CPU solveSkin reference and future smooth-normal consumers. */
+  readonly skinnedNormalBuffer: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
   readonly pipeline: GPUComputePipeline;
 }
@@ -85,6 +90,7 @@ function destroyMeshState(state: MeshGpuState): void {
   state.restNormBuffer.destroy();
   state.skinIdxBuffer.destroy();
   state.skinWeightBuffer.destroy();
+  state.skinnedNormalBuffer.destroy();
 }
 
 export class GpuSkinningSubsystem {
@@ -210,6 +216,9 @@ export class GpuSkinningSubsystem {
     const skinIdxBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinIdx`, skinIdx.byteLength);
     const skinWeightBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinW`, skinW.byteLength);
     const boneBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.bones`, boneBytes);
+    // Per-mesh skinned-normal output (stride-4, mesh-local index). Same vertex
+    // count as the rest normals; written by the inverse-transpose normal LBS.
+    const skinnedNormalBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinnedNorm`, vertBytes);
     const uniformBuffer = device.createBuffer({
       label: `vitrum.gpuSkinBvh.${id}.uniform`,
       size: 80,
@@ -224,7 +233,7 @@ export class GpuSkinningSubsystem {
     if (this.#bvhPipeline == null) {
       const module = device.createShaderModule({
         label: 'vitrum.gpuSkinBvh.module',
-        code: GPU_SKIN_BVH_WGSL,
+        code: GPU_SKIN_BVH_WITH_NORMALS_WGSL,
       });
       this.#bvhPipeline = device.createComputePipeline({
         label: 'vitrum.gpuSkinBvh.pipeline',
@@ -245,6 +254,7 @@ export class GpuSkinningSubsystem {
         { binding: 4, resource: { buffer: skinWeightBuffer } },
         { binding: 5, resource: { buffer: boneBuffer } },
         { binding: 6, resource: { buffer: bvhPositions } },
+        { binding: 7, resource: { buffer: skinnedNormalBuffer } },
       ],
     });
 
@@ -257,6 +267,7 @@ export class GpuSkinningSubsystem {
       restNormBuffer,
       skinIdxBuffer,
       skinWeightBuffer,
+      skinnedNormalBuffer,
       bindGroup,
       pipeline,
     };

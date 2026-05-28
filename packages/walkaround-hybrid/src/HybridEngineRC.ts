@@ -24,6 +24,7 @@
 import type * as THREE from 'three';
 import type { StorageBufferAttribute } from 'three/webgpu';
 import { RCDispatcher, buildRCSceneBVH, packCascadeMaterials, CASCADE_DIMS, type SceneBVH, type CascadeDim } from '@vitrum/walkaround-rc';
+import { refitBvhBounds } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import {
   isRestirTlasOnlyRefit,
@@ -96,6 +97,23 @@ export class RCSubsystem {
   private _restirSnapshot: RestirBvhSnapshot | null = null;
   private _bvhMode: 'merged' | 'tlas' = 'merged';
   private _tlasNodeCount = 0;
+  /**
+   * Merged-mode CPU mirrors retained from the last `setScene` build, so a
+   * moving-instance refit can recompute node AABBs (`refitBvhBounds`) and
+   * re-upload the updated positions + nodes WITHOUT a full SAH rebuild +
+   * pipeline teardown — the merged-mode analogue of the TLAS
+   * `_refitTlasGpuBuffers` fast path. Null in TLAS mode (the RC BVH buffers
+   * are shared from the ReSTIR snapshot there).
+   *
+   * `_mergedNodesCpu` is the 8-float-per-node packed buffer (refit overwrites
+   * its bounds in place); `_mergedIndicesStride3` is the stride-3 triangle
+   * index buffer refit reads; `_mergedPositionsStride4` mirrors the live GPU
+   * `bvhPositionsBuf` so a partial-range update can be applied + refit run
+   * against the full vertex set.
+   */
+  private _mergedNodesCpu: Float32Array | null = null;
+  private _mergedIndicesStride3: Uint32Array | null = null;
+  private _mergedPositionsStride4: Float32Array | null = null;
   private _lastBvhVersion = 0;
   private _lastBlasVersion = -1;
   private _lastTlasVersion = -1;
@@ -148,6 +166,11 @@ export class RCSubsystem {
     this._restirSnapshot = snap;
     this._bvhMode = 'tlas';
     this._tlasNodeCount = snap.tlasNodeCount;
+    // TLAS mode shares the ReSTIR snapshot buffers — drop any merged-mode CPU
+    // mirrors so a stale merged refit can't run against TLAS-shared geometry.
+    this._mergedNodesCpu = null;
+    this._mergedIndicesStride3 = null;
+    this._mergedPositionsStride4 = null;
 
     const { min, max } = snap.boundingBox;
     this._probeOriginWorld = [min.x, min.y, min.z];
@@ -201,6 +224,13 @@ export class RCSubsystem {
     const bvh = buildRCSceneBVH(threeScene);
     this._bvhBuffers = this._uploadBVH(bvh);
 
+    // Retain CPU mirrors for the merged-mode moving-instance refit fast path.
+    // `.array` is the typed view backing each StorageBufferAttribute; we copy
+    // so a later in-place refit never aliases the attribute the BVH still owns.
+    this._mergedNodesCpu = new Float32Array(bvh.bvhNodes.array as Float32Array);
+    this._mergedIndicesStride3 = new Uint32Array(bvh.indices.array as Uint32Array);
+    this._mergedPositionsStride4 = new Float32Array(bvh.positions.array as Float32Array);
+
     const { min, max } = bvh.bounds;
     this._probeOriginWorld = [min.x, min.y, min.z];
     this._roomSize = [
@@ -211,6 +241,76 @@ export class RCSubsystem {
 
     this._cascadeBufs = this._allocateCascadeBuffers();
     this._dispatcher = new RCDispatcher(this._cascadeDims);
+  }
+
+  /**
+   * PR-5.3 — merged-mode moving-instance refit WITHOUT pipeline teardown.
+   *
+   * The merged RC BVH bakes each mesh's world transform into its vertex
+   * positions (unlike TLAS mode, where instance transforms live in separate
+   * matrices that `_refitTlasGpuBuffers` can re-upload alone). So a moved
+   * instance invalidates both the affected vertex positions AND every BVH
+   * node AABB that bounds them. This path mirrors the TLAS refit by avoiding
+   * the expensive SAH rebuild + buffer realloc + dispatcher recreation:
+   *
+   *   1. Apply the host-supplied updated world positions into the cached
+   *      stride-4 CPU mirror (and the live `bvhPositionsBuf` via writeBuffer).
+   *   2. `refitBvhBounds` recomputes every node's AABB in place from the
+   *      updated positions — O(nodes + tris), ~sub-ms vs ~50 ms for a rebuild.
+   *      Tree topology (split planes, child links, triangle order) is
+   *      preserved, so the GPU traversal + cascade dispatch keep working.
+   *   3. Re-upload the refit nodes; refit the cascade probe bounds.
+   *
+   * The dispatcher, cascade buffers, materials, and index buffers are all
+   * untouched — only positions + nodes change, exactly like the TLAS path
+   * only changes the TLAS payload.
+   *
+   * @param updatedPositionsStride4 the FULL merged stride-4 world-position
+   *   buffer after the move (same length/layout as the build-time positions).
+   *   The host re-derives it the same way ReSTIR's merged `updatePrimitive`
+   *   does (old-world → local via inverse(matrixWorldAtBuild) → new-world).
+   * @param boundsMin / boundsMax updated scene AABB for the cascade probe grid.
+   * @returns `true` if the refit ran; `false` if RC is not in merged mode or
+   *   has no retained CPU mirrors (caller should fall back to `setScene`).
+   */
+  refitMergedInstance(
+    updatedPositionsStride4: Float32Array,
+    boundsMin: readonly [number, number, number],
+    boundsMax: readonly [number, number, number],
+  ): boolean {
+    if (this._bvhMode !== 'merged') return false;
+    const bvh = this._bvhBuffers;
+    if (
+      bvh == null ||
+      this._mergedNodesCpu == null ||
+      this._mergedIndicesStride3 == null ||
+      this._mergedPositionsStride4 == null
+    ) {
+      return false;
+    }
+    if (updatedPositionsStride4.length !== this._mergedPositionsStride4.length) {
+      // Vertex count changed → topology change; the fast path can't apply.
+      return false;
+    }
+
+    // 1. Adopt the new positions into the CPU mirror + live GPU buffer.
+    const posMirror = this._mergedPositionsStride4;
+    posMirror.set(updatedPositionsStride4);
+    this._device.queue.writeBuffer(
+      bvh.bvhPositionsBuf, 0, posMirror.buffer, posMirror.byteOffset, posMirror.byteLength,
+    );
+
+    // 2. Refit node AABBs in place from the updated positions (stride-4).
+    const nodesMirror = this._mergedNodesCpu;
+    refitBvhBounds(nodesMirror, this._mergedIndicesStride3, posMirror, 4);
+
+    // 3. Re-upload the refit nodes; refit cascade probe bounds. Dispatcher +
+    //    cascade buffers stay alive (no teardown).
+    this._device.queue.writeBuffer(
+      bvh.bvhNodesBuf, 0, nodesMirror.buffer, nodesMirror.byteOffset, nodesMirror.byteLength,
+    );
+    this.refitCascadeBounds(boundsMin, boundsMax);
+    return true;
   }
 
   dispatchFrame(inputs: RCFrameInputs): void {
@@ -376,6 +476,9 @@ export class RCSubsystem {
     this._probeOriginWorld = null;
     this._roomSize         = null;
     this._restirSnapshot = null;
+    this._mergedNodesCpu = null;
+    this._mergedIndicesStride3 = null;
+    this._mergedPositionsStride4 = null;
     this._lastBvhVersion = 0;
     this._lastBlasVersion = -1;
     this._lastTlasVersion = -1;

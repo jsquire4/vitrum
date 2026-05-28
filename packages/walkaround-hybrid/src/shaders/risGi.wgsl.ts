@@ -248,9 +248,20 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 `;
 
 /** W1-R6 — declarative include-graph entry.
- *  Order mirrors the pre-R6 concat `COMMON_WGSL + DDGI_SAMPLE_WGSL + RIS_GI_WGSL`. */
+ *  T9-stepC — narrowed from `['common', 'ddgiSample']` to the modules this
+ *  half-res GI-RIS pass actually references:
+ *    - `WalkaroundUBO` / `INV_PI`            → walkaroundUbo
+ *    - primary cast (`traceScene*` / `BVHNode` / `Ray`) → sceneTraversal
+ *    - `ReservoirGI` / `emptyReservoirGI` / `updateReservoirGI` /
+ *      `storeReservoirGI_rw`                 → reservoirGi
+ *    - `pcgInit` / `luminance` / `sampleCosineHemisphere` → sharedPrimitives
+ *    - `decodeMaterialColor` / `decodeIsMetal` → materialDecode
+ *    - `invertMat4_common` / `generatePrimaryRay_common` → cameraRays
+ *    - `ddgiSample`                          → ddgiSample
+ *  Drops emitterSampling / ggxBrdf / jacobianShift / welfordTail (unused).
+ *  Verified complete by the static ident-resolution gate. */
 export const RIS_GI_MODULE: WgslModule = {
   name: 'risGi',
   source: RIS_GI_WGSL,
-  requires: ['common', 'ddgiSample'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample'],
 };

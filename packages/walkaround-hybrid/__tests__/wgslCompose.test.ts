@@ -33,6 +33,7 @@ import {
   GTAO_UPSAMPLE_MODULE,
   INDIRECT_COMBINE_MODULE,
   INDIRECT_TEMPORAL_ACCUM_MODULE,
+  MOTION_VECTORS_MODULE,
   PPG_GUIDE_MODULE,
   PPG_UPDATE_MODULE,
   RESOLVE_MODULE,
@@ -51,7 +52,18 @@ import {
   WELFORD_TEMPORAL_MODULE,
   WGSL_MODULES,
 } from '../src/pipeline/wgslModules.js';
+import { buildSymbolUniverse, checkCrossModuleResolution } from './wgslIdentResolution.js';
 import { COMMON_WGSL } from '../src/shaders/common.wgsl.js';
+// T9-stepC — focused-module sources, for the narrowed-pass byte assertions.
+import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
+import { SCENE_TRAVERSAL_WGSL } from '../src/shaders/sceneTraversal.wgsl.js';
+import { RESERVOIR_GI_WGSL } from '../src/shaders/reservoirGi.wgsl.js';
+import { SHARED_PRIMITIVES_WGSL } from '../src/shaders/sharedPrimitives.wgsl.js';
+import { MATERIAL_DECODE_WGSL } from '../src/shaders/materialDecode.wgsl.js';
+import { CAMERA_RAYS_WGSL } from '../src/shaders/cameraRays.wgsl.js';
+import { JACOBIAN_SHIFT_WGSL } from '../src/shaders/jacobianShift.wgsl.js';
+import { WELFORD_TAIL_WGSL } from '../src/shaders/welfordTail.wgsl.js';
+import { MOTION_VECTORS_WGSL } from '../src/shaders/motionVectors.wgsl.js';
 import { COMPOSITE_FRAG_WGSL, COMPOSITE_VERT_WGSL } from '../src/shaders/composite.wgsl.js';
 import { GTAO_WGSL } from '../src/shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
@@ -270,21 +282,53 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES)).toBe(GTAO_UPSAMPLE_WGSL);
   });
 
-  it('risGi: COMMON_WGSL + DDGI_SAMPLE_WGSL + RIS_GI_WGSL', () => {
+  // T9-stepC — the GI passes were narrowed off the full `common` aggregate to
+  // the minimal focused-module subset each references. The composed output is
+  // now strictly smaller than `COMMON_WGSL + …`; the exact narrowed
+  // composition is pinned below (focused-module sources concatenated in the
+  // pass's declared `requires` order, deps-first, deduped).
+  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + RIS_GI', () => {
     expect(composeWgsl(RIS_GI_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + DDGI_SAMPLE_WGSL + RIS_GI_WGSL,
+      WALKAROUND_UBO_WGSL +
+      SCENE_TRAVERSAL_WGSL +
+      RESERVOIR_GI_WGSL +
+      SHARED_PRIMITIVES_WGSL +
+      MATERIAL_DECODE_WGSL +
+      CAMERA_RAYS_WGSL +
+      DDGI_SAMPLE_WGSL +
+      RIS_GI_WGSL,
     );
   });
 
-  it('temporalGi: COMMON_WGSL + TEMPORAL_GI_WGSL', () => {
+  it('temporalGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + cameraRays + TEMPORAL_GI', () => {
     expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + TEMPORAL_GI_WGSL,
+      WALKAROUND_UBO_WGSL +
+      SCENE_TRAVERSAL_WGSL +
+      RESERVOIR_GI_WGSL +
+      SHARED_PRIMITIVES_WGSL +
+      JACOBIAN_SHIFT_WGSL +
+      CAMERA_RAYS_WGSL +
+      TEMPORAL_GI_WGSL,
     );
   });
 
-  it('spatialGi: COMMON_WGSL + SPATIAL_GI_WGSL', () => {
+  it('spatialGi (narrowed): walkaroundUbo + reservoirGi + sharedPrimitives + jacobianShift + SPATIAL_GI', () => {
     expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + SPATIAL_GI_WGSL,
+      WALKAROUND_UBO_WGSL +
+      RESERVOIR_GI_WGSL +
+      SHARED_PRIMITIVES_WGSL +
+      JACOBIAN_SHIFT_WGSL +
+      SPATIAL_GI_WGSL,
+    );
+  });
+
+  it('motionVectors (narrowed): walkaroundUbo + sceneTraversal + sharedPrimitives + cameraRays + MOTION_VECTORS', () => {
+    expect(composeWgsl(MOTION_VECTORS_MODULE, WGSL_MODULES)).toBe(
+      WALKAROUND_UBO_WGSL +
+      SCENE_TRAVERSAL_WGSL +
+      SHARED_PRIMITIVES_WGSL +
+      CAMERA_RAYS_WGSL +
+      MOTION_VECTORS_WGSL,
     );
   });
 
@@ -304,9 +348,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
 
   // Denoiser entries.
 
-  it('welfordTemporal: COMMON_WGSL + WELFORD_TEMPORAL_WGSL', () => {
+  it('welfordTemporal (narrowed): LUMINANCE_WGSL + WELFORD_TAIL_WGSL + WELFORD_TEMPORAL_WGSL', () => {
+    // T9-stepC — narrowed off `common`: this pass binds its own
+    // WelfordTemporalUBO and only needs `luminance` (Rec.709) + the
+    // WelfordVariance struct/helpers (welfordTail wrapper).
     expect(composeWgsl(WELFORD_TEMPORAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + WELFORD_TEMPORAL_WGSL,
+      LUMINANCE_WGSL + WELFORD_TAIL_WGSL + WELFORD_TEMPORAL_WGSL,
     );
   });
 
@@ -343,5 +390,102 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
 
   it('ppgGuide: standalone (no prepend)', () => {
     expect(composeWgsl(PPG_GUIDE_MODULE, WGSL_MODULES)).toBe(PPG_GUIDE_WGSL);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// 4. T9-stepC — static cross-module identifier-resolution gate
+//
+// There is no GPU in CI to catch a `requires`-narrowed pass that dropped a
+// module it actually needs. This gate tokenizes each pass's composed closure
+// and asserts every LIBRARY symbol the closure references is declared inside
+// that closure. It is the safety net that justifies narrowing each pass's
+// `requires` below the full `common` aggregate.
+// ──────────────────────────────────────────────────────────────────────────
+describe('T9-stepC — static cross-module identifier resolution', () => {
+  // The symbol universe = module-scope declarations across every library
+  // module a pass may include (common's 11 focused modules + the non-common
+  // helpers). A reference to any of these names can ONLY be satisfied by
+  // including the declaring module, so this is the set we resolve against.
+  const LIBRARY_MODULE_NAMES = [
+    'walkaroundUbo', 'sceneTraversal', 'reservoirDi', 'reservoirGi',
+    'sharedPrimitives', 'ggxBrdf', 'materialDecode', 'emitterSampling',
+    'jacobianShift', 'cameraRays', 'welfordTail',
+    'luminance', 'octahedralCore',
+    'surfaceTextures', 'ddgiSample', 'sampleCascadeC0', 'stainedGlassShade',
+    'restirPHat', 'restirCastPrimary',
+  ];
+  const symbolUniverse = buildSymbolUniverse(
+    LIBRARY_MODULE_NAMES.map((n) => {
+      const m = WGSL_MODULES.get(n);
+      if (!m) throw new Error(`library module '${n}' missing from WGSL_MODULES`);
+      return m.source;
+    }),
+  );
+
+  // Every compute/render pass that is the root of a compiled pipeline. The
+  // gate runs against each, narrowed or not — a regression that narrows the
+  // wrong module would surface as an unresolved library symbol here.
+  const ROOT_PASSES = [
+    'ris', 'temporal', 'spatial', 'shade',
+    'risGi', 'temporalGi', 'spatialGi',
+    'welfordTemporal', 'motionVectors',
+    'sampleBudget', 'resolve', 'gtao', 'gtaoUpsample',
+    'indirectCombine', 'indirectTemporalAccum', 'atrous',
+  ];
+
+  it('every root pass resolves all referenced library symbols in its closure', () => {
+    for (const name of ROOT_PASSES) {
+      const mod = WGSL_MODULES.get(name);
+      expect(mod, `root pass '${name}' missing from WGSL_MODULES`).toBeDefined();
+      const composed = composeWgsl(mod!, WGSL_MODULES);
+      const { missing, used } = checkCrossModuleResolution({
+        ownSource: mod!.source,
+        composed,
+        symbolUniverse,
+      });
+      expect(
+        missing,
+        `pass '${name}' references library symbols not declared in its narrowed ` +
+        `closure: [${missing.join(', ')}] (it uses [${used.join(', ')}])`,
+      ).toEqual([]);
+    }
+  });
+
+  // Spot-pin the actual narrowing achieved: each narrowed pass must NOT pull
+  // the modules it was proven not to reference. This guards against a future
+  // accidental re-widening back to `['common']`.
+  it('narrowed passes do not reference the modules they dropped', () => {
+    const droppedExpectations: Record<string, readonly string[]> = {
+      // welfordTemporal binds its own UBO + only needs luminance/welford.
+      welfordTemporal: [
+        'WalkaroundUBO', 'BVHNode', 'traceSceneFirstHit', 'evalGGX',
+        'sampleEmitterPoint', 'jacobianReconnectionShift', 'ReservoirDI',
+      ],
+      // motionVectors: pure reprojection, no reservoirs / BRDF / emitters.
+      motionVectors: [
+        'evalGGX', 'sampleEmitterPoint', 'loadReservoirDI_rw',
+        'jacobianReconnectionShift', 'WelfordVariance',
+      ],
+      // spatialGi: no primary cast, no BRDF, no emitters.
+      spatialGi: [
+        'traceSceneFirstHit', 'evalGGX', 'sampleEmitterPoint', 'BVHNode',
+        'generatePrimaryRay_common',
+      ],
+      // temporalGi: reprojects (needs cameraRays) but no BRDF / emitters.
+      temporalGi: ['evalGGX', 'sampleEmitterPoint', 'WelfordVariance'],
+      // risGi: casts primary + DDGI, but no emitter sampling / GGX / welford.
+      risGi: ['evalGGX', 'sampleEmitterPoint', 'WelfordVariance', 'jacobianReconnectionShift'],
+    };
+    for (const [name, dropped] of Object.entries(droppedExpectations)) {
+      const composed = composeWgsl(WGSL_MODULES.get(name)!, WGSL_MODULES);
+      const composedDecls = buildSymbolUniverse([composed]);
+      for (const sym of dropped) {
+        expect(
+          composedDecls.has(sym),
+          `narrowed pass '${name}' unexpectedly still pulls a module declaring '${sym}'`,
+        ).toBe(false);
+      }
+    }
   });
 });

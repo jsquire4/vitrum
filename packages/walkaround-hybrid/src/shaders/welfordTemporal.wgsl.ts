@@ -16,8 +16,8 @@ struct WelfordTemporalUBO {
   _pad1:       u32,
 };
 
-// luminance(c) — canonical Rec.709 helper from COMMON_WGSL (this module
-// declares requires: 'common', so the W1-R6 composer prepends COMMON_WGSL).
+// luminance(c) — canonical Rec.709 helper from @vitrum/shared-samplers,
+// pulled via the standalone 'luminance' module (T9-stepC narrowing).
 
 @group(0) @binding(0) var w_hdr:  texture_2d<f32>;
 @group(0) @binding(1) var w_prev: texture_2d<f32>;
@@ -45,9 +45,14 @@ fn welfordTemporalMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. */
+/** W1-R6 — declarative include-graph entry.
+ *  T9-stepC — narrowed from `['common']` to the two modules this pass uses:
+ *  `luminance` (Rec.709 helper) + `welfordTail` (WelfordVariance struct +
+ *  welfordUpdate). The pass binds its own `WelfordTemporalUBO`, not the
+ *  WalkaroundUBO, so it needs none of the BVH/reservoir/camera bulk. Verified
+ *  complete by the static ident-resolution gate. */
 export const WELFORD_TEMPORAL_MODULE: WgslModule = {
   name: 'welfordTemporal',
   source: WELFORD_TEMPORAL_WGSL,
-  requires: ['common'],
+  requires: ['luminance', 'welfordTail'],
 };

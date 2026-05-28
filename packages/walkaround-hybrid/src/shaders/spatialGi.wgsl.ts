@@ -134,9 +134,19 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. */
+/** W1-R6 — declarative include-graph entry.
+ *  T9-stepC — narrowed from `['common']` to the modules this pass uses:
+ *    - `WalkaroundUBO` / `INV_PI`            → walkaroundUbo
+ *    - `loadReservoirGI_*` / `storeReservoirGI_rw` / `updateReservoirGI`
+ *                                            → reservoirGi
+ *    - `rand_f32` / `pcgInit` / `luminance`  → sharedPrimitives
+ *                                              (which needs PI/INV_PI from
+ *                                              walkaroundUbo)
+ *    - `jacobianReconnectionShift`           → jacobianShift
+ *  No primary-ray cast → no cameraRays / sceneTraversal. Verified complete by
+ *  the static ident-resolution gate. */
 export const SPATIAL_GI_MODULE: WgslModule = {
   name: 'spatialGi',
   source: SPATIAL_GI_WGSL,
-  requires: ['common'],
+  requires: ['walkaroundUbo', 'reservoirGi', 'sharedPrimitives', 'jacobianShift'],
 };

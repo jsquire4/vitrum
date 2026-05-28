@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SkinnedMeshPrimitive } from '@vitrum/core';
-import { solveSkin } from '../skinSolver.js';
+import { mat3InverseTranspose, solveSkin } from '../skinSolver.js';
 
 // Column-major identity matrix.
 const IDENT4 = (): Float32Array => new Float32Array([
@@ -266,6 +266,101 @@ describe('solveSkin', () => {
       bindMatrixInverse: IDENT4(),
     };
     expect(() => solveSkin(prim)).toThrow(/bindMatrix/);
+  });
+
+  // ── Theme 2 — scaled-bone inverse-transpose normals ─────────────────────
+  // The C1 baseline transformed normals by the plain upper-3×3 of the skin
+  // matrix, which is correct only for rigid bones. For a non-uniformly-scaled
+  // bone the surface normal must transform by the INVERSE-TRANSPOSE; these
+  // tests pin that the two answers genuinely differ and that solveSkin emits
+  // the inverse-transpose result.
+
+  it('non-uniform bone scale: an off-axis normal uses inverse-transpose (≠ plain matrix)', () => {
+    // Column-major scale(2, 1, 1) — stretches X by 2×, Y/Z unchanged.
+    const scaleX2 = new Float32Array([
+      2, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+    // Rest normal (1,1,0)/√2 — a 45° normal in the XY plane (off any axis so
+    // the plain-matrix and inverse-transpose answers diverge).
+    const inv2 = 1 / Math.sqrt(2);
+    const prim = singleBonePrim({
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([inv2, inv2, 0]),
+      bonesMatrix: scaleX2,
+    });
+    const { normals } = solveSkin(prim);
+
+    // INVERSE-TRANSPOSE of scale(2,1,1) = scale(1/2,1,1). Applied to
+    // (1,1,0)/√2 → (0.5/√2, 1/√2, 0), then normalized.
+    const itx = 0.5 * inv2, ity = 1 * inv2, itz = 0;
+    const itLen = Math.sqrt(itx * itx + ity * ity + itz * itz);
+    expect(normals[0]).toBeCloseTo(itx / itLen, 5);
+    expect(normals[1]).toBeCloseTo(ity / itLen, 5);
+    expect(normals[2]).toBeCloseTo(itz / itLen, 5);
+
+    // The (WRONG) plain-upper-3×3 transform would have produced
+    // (2,1,0)/|(2,1,0)| — assert solveSkin's answer is NOT that, proving the
+    // inverse-transpose is actually in effect.
+    const plainX = 2 * inv2, plainY = 1 * inv2;
+    const plainLen = Math.sqrt(plainX * plainX + plainY * plainY);
+    expect(normals[0]).not.toBeCloseTo(plainX / plainLen, 3);
+    expect(normals[1]).not.toBeCloseTo(plainY / plainLen, 3);
+  });
+
+  it('non-uniform scale keeps the deformed normal perpendicular to the deformed surface', () => {
+    // A right-triangle tangent edge (1,1,0)/√2 with a normal (−1,1,0)/√2
+    // (perpendicular in the XY plane). Under scale(3,1,1) on positions, the
+    // edge maps to (3,1,0); the inverse-transpose normal must stay
+    // perpendicular to that deformed edge (dot ≈ 0). A plain-matrix normal
+    // would NOT.
+    const scaleX3 = new Float32Array([
+      3, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+    const inv2 = 1 / Math.sqrt(2);
+    const prim = singleBonePrim({
+      positions: new Float32Array([0, 0, 0]),
+      normals: new Float32Array([-inv2, inv2, 0]),
+      bonesMatrix: scaleX3,
+    });
+    const { normals } = solveSkin(prim);
+
+    // Deformed tangent edge = scale(3,1,1) · (1,1,0) = (3,1,0).
+    const ex = 3, ey = 1, ez = 0;
+    const dot = normals[0]! * ex + normals[1]! * ey + normals[2]! * ez;
+    expect(dot).toBeCloseTo(0, 5);
+  });
+
+  it('mat3InverseTranspose: equals input for a pure rotation; is the scale-reciprocal for a diagonal', () => {
+    // Rotation about Z by 90° (row-major). For an orthonormal R, (R⁻¹)ᵀ = R.
+    const rotZ = [0, -1, 0, 1, 0, 0, 0, 0, 1];
+    const itR = mat3InverseTranspose(rotZ);
+    for (let i = 0; i < 9; i++) expect(itR[i]).toBeCloseTo(rotZ[i]!, 6);
+
+    // Diagonal scale(2,4,5). Inverse-transpose of a diagonal is the
+    // element-wise reciprocal (still diagonal).
+    const scl = [2, 0, 0, 0, 4, 0, 0, 0, 5];
+    const itS = mat3InverseTranspose(scl);
+    expect(itS[0]).toBeCloseTo(1 / 2, 6);
+    expect(itS[4]).toBeCloseTo(1 / 4, 6);
+    expect(itS[8]).toBeCloseTo(1 / 5, 6);
+    expect(itS[1]).toBeCloseTo(0, 6);
+    expect(itS[3]).toBeCloseTo(0, 6);
+  });
+
+  it('mat3InverseTranspose: falls back to the input on a singular matrix (no NaN)', () => {
+    // A rank-2 matrix (third row = first row) → det 0.
+    const singular = [1, 2, 3, 0, 1, 0, 1, 2, 3];
+    const it = mat3InverseTranspose(singular);
+    for (let i = 0; i < 9; i++) {
+      expect(Number.isFinite(it[i]!)).toBe(true);
+      expect(it[i]).toBe(singular[i]);
+    }
   });
 
   it('throws when input buffer lengths are inconsistent', () => {
