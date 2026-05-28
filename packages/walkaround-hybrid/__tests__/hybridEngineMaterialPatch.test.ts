@@ -118,6 +118,15 @@ vi.mock('@vitrum/three-bindings', async () => {
       const m = mesh.material as THREE.MeshStandardMaterial;
       m.color.setRGB(material.baseColor[0]!, material.baseColor[1]!, material.baseColor[2]!);
     }),
+    findMeshByPrimitiveId: vi.fn((root: THREE.Object3D, id: string): THREE.Mesh | null => {
+      let found: THREE.Mesh | null = null;
+      root.traverseVisible((obj) => {
+        if (found != null) return;
+        if (!(obj as THREE.Mesh).isMesh) return;
+        if (obj.uuid === id || obj.name === id) found = obj as THREE.Mesh;
+      });
+      return found;
+    }),
   };
 });
 

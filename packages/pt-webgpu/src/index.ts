@@ -17,6 +17,8 @@ import type {
 import { asBackendTexture, asMat4 } from '@vitrum/core';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import {
+  applyEmitterCountMutation,
+  applyEnvironmentMutation,
   buildPackedScene,
   rebuildTlasForSceneTransforms,
   scenePackResultFromPacked,
@@ -28,6 +30,14 @@ import {
   PT_WEBGPU_SUPPORT,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
+import {
+  analyticIndexForPrimitive,
+  canFastPathGeometryPatch,
+  canFastPathMaterialPatch,
+  canFastPathTransformPatch,
+  canReuseTlasBufferLengths,
+  materialIndexForPrimitive,
+} from './scene/incrementalPatch.js';
 import {
   fingerprintTlasBuffers,
   rebuildPrimitiveBlas,
@@ -296,116 +306,10 @@ class PTEngineWebGPU implements Engine {
     };
   }
 
-  #materialIndexForPrimitive(scene: Scene, primitiveId: string): number | null {
-    let materialIndex = 0;
-    for (const primitive of scene.primitives) {
-      let contributesMaterial = false;
-      if (primitive.kind === 'analytic') {
-        contributesMaterial = PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES.has(primitive.shape);
-      } else {
-        contributesMaterial = true;
-      }
-      if (primitive.id === primitiveId) {
-        return contributesMaterial ? materialIndex : null;
-      }
-      if (contributesMaterial) materialIndex += 1;
-    }
-    return null;
-  }
-
-  #analyticIndexForPrimitive(scene: Scene, primitiveId: string): number | null {
-    let analyticIndex = 0;
-    for (const primitive of scene.primitives) {
-      if (primitive.kind !== 'analytic') continue;
-      if (!PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES.has(primitive.shape)) continue;
-      if (primitive.id === primitiveId) {
-        return analyticIndex;
-      }
-      analyticIndex += 1;
-    }
-    return null;
-  }
-
-  #canFastPathMaterialPatch(
-    patch: Partial<ScenePrimitive>,
-  ): patch is Partial<ScenePrimitive> & { material: ScenePrimitive['material'] } {
-    if (patch.material == null) return false;
-    for (const key of Object.keys(patch)) {
-      if (key !== 'material' && key !== 'id' && key !== 'kind') return false;
-    }
-    return true;
-  }
-
-  #canFastPathGeometryPatch(
-    primitive: ScenePrimitive,
-    patch: Partial<ScenePrimitive>,
-  ): boolean {
-    if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') {
-      return false;
-    }
-    const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
-    if (!keys.every((k) => k === 'positions' || k === 'normals')) {
-      return false;
-    }
-    if (!('positions' in patch) && !('normals' in patch)) {
-      return false;
-    }
-    if ('positions' in patch && patch.positions != null) {
-      const cur = primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh'
-        ? primitive.positions
-        : null;
-      if (cur != null && patch.positions.length !== cur.length) {
-        return false;
-      }
-    }
-    if ('normals' in patch && patch.normals != null) {
-      const cur = primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh'
-        ? primitive.normals
-        : null;
-      if (cur != null && patch.normals.length !== cur.length) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  #canFastPathTransformPatch(
-    primitive: ScenePrimitive,
-    patch: Partial<ScenePrimitive>,
-  ): boolean {
-    const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
-    if (primitive.kind === 'instanced-mesh') {
-      if (!keys.every((k) => k === 'instances')) return false;
-      return 'instances' in patch;
-    }
-    if (primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh') {
-      if (!keys.every((k) => k === 'transform')) return false;
-      return 'transform' in patch;
-    }
-    if (primitive.kind === 'analytic') {
-      if (!keys.every((k) => k === 'transform')) return false;
-      return 'transform' in patch;
-    }
-    return false;
-  }
-
-  #canReuseTlasBufferLengths(
-    sb: UploadedSceneBuffers,
-    next: {
-      readonly tlasNodes: Uint32Array;
-      readonly tlasInstanceIndices: Uint32Array;
-      readonly tlasBlasRoots: Uint32Array;
-      readonly tlasInstanceWorldToLocal: Float32Array;
-      readonly tlasInstanceLocalToWorld: Float32Array;
-    },
-  ): boolean {
-    return (
-      next.tlasNodes.byteLength === sb.tlasNodes.byteLength &&
-      next.tlasInstanceIndices.byteLength === sb.tlasInstanceIndices.byteLength &&
-      next.tlasBlasRoots.byteLength === sb.tlasBlasRoots.byteLength &&
-      next.tlasInstanceWorldToLocal.byteLength === sb.tlasInstanceWorldToLocal.byteLength &&
-      next.tlasInstanceLocalToWorld.byteLength === sb.tlasInstanceLocalToWorld.byteLength
-    );
+  /** Supported analytic shapes (id > 0) — passed to the pure incrementalPatch
+   *  resolvers so they reproduce buildPackedScene's material/analytic ordering. */
+  #supportedAnalyticShapes(): ReadonlySet<string> {
+    return PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES;
   }
 
   // ── Debug introspection (T3.G followup) ────────────────────────────────
@@ -485,6 +389,70 @@ class PTEngineWebGPU implements Engine {
         // Telemetry callbacks must not break rendering.
       }
     }
+  }
+
+  /**
+   * Build the `kind:'rendered'` FrameOutput: primary radiance plus the four
+   * conditionally-present aux textures (normalDepth / albedo / variance /
+   * motionVectors), each wrapped in `asBackendTexture`. Written verbatim at
+   * three return sites (paused fast-out, already-converged fast-out, and the
+   * post-dispatch path) before T14; centralized here. The post-dispatch site
+   * passes `accumTexturePost` as `primary` (re-read after dispatch) while the
+   * fast-outs pass the pre-read `#accumTexture` — that distinction is preserved
+   * by the caller supplying the `primary` texture explicitly.
+   */
+  #frameOutput(
+    primary: GPUTexture,
+    samplesAccumulated: number,
+    isConverged: boolean,
+  ): FrameOutput {
+    return {
+      kind: 'rendered',
+      primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(primary),
+      ...(this.#normalDepthTexture != null
+        ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
+        : {}),
+      ...(this.#albedoTexture != null
+        ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
+        : {}),
+      ...(this.#varianceTexture != null
+        ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
+        : {}),
+      ...(this.#motionVectorsTexture != null
+        ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
+        : {}),
+      samplesAccumulated,
+      isConverged,
+    };
+  }
+
+  /**
+   * Emit the per-frame telemetry pair (onFrame stats + onProgress) that all
+   * three renderFrame return paths share. `spp` is 0 for the no-op fast-outs
+   * and 1 for an actual dispatch; `fraction` is computed from
+   * `current/target` with the same clamp the call sites used (the converged
+   * fast-out previously hard-coded `fraction: 1`, which equals the clamped
+   * ratio once `current >= target`).
+   */
+  #emitFrameTelemetry(
+    frameStartMs: number,
+    spp: number,
+    current: number,
+    target: number,
+  ): void {
+    const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
+    const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
+    this.#emitFrameStats({
+      frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
+      spp,
+      ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
+    });
+    this.#emitProgress({
+      kind: 'pt-spp',
+      current,
+      target,
+      fraction: target > 0 ? Math.max(0, Math.min(1, current / target)) : 1,
+    });
   }
 
   /**
@@ -761,11 +729,12 @@ class PTEngineWebGPU implements Engine {
       currentPrimitive != null &&
       this.#geoPack != null &&
       this.#sceneBuffers != null &&
-      this.#canFastPathGeometryPatch(currentPrimitive, patch)
+      canFastPathGeometryPatch(currentPrimitive, patch)
     ) {
       const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
         tlas: true,
-        resolveMaterialId: (pid) => this.#materialIndexForPrimitive(nextScene, pid) ?? 0,
+        resolveMaterialId: (pid) =>
+          materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
       });
       if (rebuilt.ok) {
         const sb = this.#sceneBuffers;
@@ -804,9 +773,13 @@ class PTEngineWebGPU implements Engine {
       currentPrimitive != null &&
       currentPrimitive.kind === 'analytic' &&
       this.#sceneBuffers != null &&
-      this.#canFastPathTransformPatch(currentPrimitive, patch)
+      canFastPathTransformPatch(currentPrimitive, patch)
     ) {
-      const analyticIndex = this.#analyticIndexForPrimitive(nextScene, id);
+      const analyticIndex = analyticIndexForPrimitive(
+        nextScene,
+        id,
+        this.#supportedAnalyticShapes(),
+      );
       if (analyticIndex != null) {
         const nextPrimitive = nextScene.primitives.find((p) => p.id === id);
         if (nextPrimitive != null && nextPrimitive.kind === 'analytic') {
@@ -844,7 +817,7 @@ class PTEngineWebGPU implements Engine {
     if (
       currentPrimitive != null &&
       this.#sceneBuffers != null &&
-      this.#canFastPathTransformPatch(currentPrimitive, patch)
+      canFastPathTransformPatch(currentPrimitive, patch)
     ) {
       const tlas = rebuildTlasForSceneTransforms(
         nextScene,
@@ -856,7 +829,7 @@ class PTEngineWebGPU implements Engine {
           tlasInstanceWorldToLocal: this.#sceneBuffers.tlasInstanceWorldToLocal,
         },
       );
-      if (tlas.ok && this.#canReuseTlasBufferLengths(this.#sceneBuffers, tlas)) {
+      if (tlas.ok && canReuseTlasBufferLengths(this.#sceneBuffers, tlas)) {
         uploadScenePackTlasOnly(this.#device, this.#sceneBuffers, {
           tlasNodes: tlas.tlasNodes,
           tlasInstanceIndices: tlas.tlasInstanceIndices,
@@ -874,8 +847,12 @@ class PTEngineWebGPU implements Engine {
         return;
       }
     }
-    if (this.#canFastPathMaterialPatch(patch) && this.#sceneBuffers != null) {
-      const materialIndex = this.#materialIndexForPrimitive(nextScene, id);
+    if (canFastPathMaterialPatch(patch) && this.#sceneBuffers != null) {
+      const materialIndex = materialIndexForPrimitive(
+        nextScene,
+        id,
+        this.#supportedAnalyticShapes(),
+      );
       const primitive = nextScene.primitives.find((p) => p.id === id);
       if (materialIndex != null && primitive != null) {
         const packed = materialToPackedVec4s(primitive.material);
@@ -938,20 +915,14 @@ class PTEngineWebGPU implements Engine {
       this.#sceneBuffers.spotLightsData.set(packed.spotLightsData);
       this.#sceneBuffers.rectAreaLightsData.set(packed.rectAreaLightsData);
       this.#sceneBuffers.meshAreaLightsData.set(packed.meshAreaLightsData);
-      const mutableSceneBuffers = this.#sceneBuffers as unknown as {
-        pointLightCount: number;
-        spotLightCount: number;
-        rectAreaLightCount: number;
-        meshAreaLightCount: number;
-        directionalLight: readonly [number, number, number];
-        directionalIrradiance: readonly [number, number, number];
-      };
-      mutableSceneBuffers.pointLightCount = packed.pointLightCount;
-      mutableSceneBuffers.spotLightCount = packed.spotLightCount;
-      mutableSceneBuffers.rectAreaLightCount = packed.rectAreaLightCount;
-      mutableSceneBuffers.meshAreaLightCount = packed.meshAreaLightCount;
-      mutableSceneBuffers.directionalLight = defaultDirectionalLight(nextScene);
-      mutableSceneBuffers.directionalIrradiance = defaultDirectionalIrradiance(nextScene);
+      applyEmitterCountMutation(this.#sceneBuffers, {
+        pointLightCount: packed.pointLightCount,
+        spotLightCount: packed.spotLightCount,
+        rectAreaLightCount: packed.rectAreaLightCount,
+        meshAreaLightCount: packed.meshAreaLightCount,
+        directionalLight: defaultDirectionalLight(nextScene),
+        directionalIrradiance: defaultDirectionalIrradiance(nextScene),
+      });
       this.#scene = nextScene;
       for (const warning of packed.warnings) {
         console.warn(`[vitrum/pt-webgpu] ${warning}`);
@@ -992,20 +963,14 @@ class PTEngineWebGPU implements Engine {
             packed.hdriCdf.byteLength,
           );
         }
-        const mutableSceneBuffers = this.#sceneBuffers as unknown as {
-          environmentTint: readonly [number, number, number];
-          environmentSunDirection: readonly [number, number, number];
-          environmentSunStrength: number;
-          environmentMapWidth: number;
-          environmentMapHeight: number;
-          hasEnvironmentMap: boolean;
-        };
-        mutableSceneBuffers.environmentTint = packed.tint;
-        mutableSceneBuffers.environmentSunDirection = packed.sunDirection;
-        mutableSceneBuffers.environmentSunStrength = packed.sunStrength;
-        mutableSceneBuffers.environmentMapWidth = packed.hdriWidth;
-        mutableSceneBuffers.environmentMapHeight = packed.hdriHeight;
-        mutableSceneBuffers.hasEnvironmentMap = packed.hasHdri;
+        applyEnvironmentMutation(this.#sceneBuffers, {
+          environmentTint: packed.tint,
+          environmentSunDirection: packed.sunDirection,
+          environmentSunStrength: packed.sunStrength,
+          environmentMapWidth: packed.hdriWidth,
+          environmentMapHeight: packed.hdriHeight,
+          hasEnvironmentMap: packed.hasHdri,
+        });
         this.#sceneBuffers.environmentMapTexels.set(packed.hdriTexels);
         this.#sceneBuffers.environmentMapCdf.set(packed.hdriCdf);
         this.#scene = nextScene;
@@ -1030,37 +995,12 @@ class PTEngineWebGPU implements Engine {
       if (accumTexture == null) {
         return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
       }
-      const output: FrameOutput = {
-        kind: 'rendered',
-        primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexture),
-        ...(this.#normalDepthTexture != null
-          ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
-          : {}),
-        ...(this.#albedoTexture != null
-          ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
-          : {}),
-        ...(this.#varianceTexture != null
-          ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
-          : {}),
-        ...(this.#motionVectorsTexture != null
-          ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
-          : {}),
-        samplesAccumulated: this.#samplesAccumulated,
-        isConverged: this.#samplesAccumulated >= targetSppPaused,
-      };
-      const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
-      const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
-      this.#emitFrameStats({
-        frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
-        spp: 0,
-        ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
-      });
-      this.#emitProgress({
-        kind: 'pt-spp',
-        current: this.#samplesAccumulated,
-        target: targetSppPaused,
-        fraction: targetSppPaused > 0 ? Math.max(0, Math.min(1, this.#samplesAccumulated / targetSppPaused)) : 1,
-      });
+      const output = this.#frameOutput(
+        accumTexture,
+        this.#samplesAccumulated,
+        this.#samplesAccumulated >= targetSppPaused,
+      );
+      this.#emitFrameTelemetry(frameStartMs, 0, this.#samplesAccumulated, targetSppPaused);
       return output;
     }
 
@@ -1091,37 +1031,8 @@ class PTEngineWebGPU implements Engine {
 
     const accumTexture = this.#accumTexture;
     if (accumTexture != null && this.#samplesAccumulated >= targetSpp) {
-      const output: FrameOutput = {
-        kind: 'rendered',
-        primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexture),
-        ...(this.#normalDepthTexture != null
-          ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
-          : {}),
-        ...(this.#albedoTexture != null
-          ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
-          : {}),
-        ...(this.#varianceTexture != null
-          ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
-          : {}),
-        ...(this.#motionVectorsTexture != null
-          ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
-          : {}),
-        samplesAccumulated: this.#samplesAccumulated,
-        isConverged: true,
-      };
-      const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
-      const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
-      this.#emitFrameStats({
-        frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
-        spp: 0,
-        ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
-      });
-      this.#emitProgress({
-        kind: 'pt-spp',
-        current: this.#samplesAccumulated,
-        target: targetSpp,
-        fraction: 1,
-      });
+      const output = this.#frameOutput(accumTexture, this.#samplesAccumulated, true);
+      this.#emitFrameTelemetry(frameStartMs, 0, this.#samplesAccumulated, targetSpp);
       return output;
     }
 
@@ -1249,37 +1160,8 @@ class PTEngineWebGPU implements Engine {
       );
     }
 
-    const output: FrameOutput = {
-      kind: 'rendered',
-      primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(accumTexturePost),
-      ...(this.#normalDepthTexture != null
-        ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
-        : {}),
-      ...(this.#albedoTexture != null
-        ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
-        : {}),
-      ...(this.#varianceTexture != null
-        ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
-        : {}),
-      ...(this.#motionVectorsTexture != null
-        ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
-        : {}),
-      samplesAccumulated: this.#samplesAccumulated,
-      isConverged,
-    };
-    const frameEndMs = globalThis.performance?.now?.() ?? Date.now();
-    const mem = this.debug.estimatedGpuMemoryBytes?.() ?? null;
-    this.#emitFrameStats({
-      frameTimeMs: Math.max(0, frameEndMs - frameStartMs),
-      spp: 1,
-      ...(mem != null ? { gpuMemoryBytes: mem, estimatedGpuMemoryBytes: mem.total } : {}),
-    });
-    this.#emitProgress({
-      kind: 'pt-spp',
-      current: this.#samplesAccumulated,
-      target: targetSpp,
-      fraction: targetSpp > 0 ? Math.max(0, Math.min(1, this.#samplesAccumulated / targetSpp)) : 1,
-    });
+    const output = this.#frameOutput(accumTexturePost, this.#samplesAccumulated, isConverged);
+    this.#emitFrameTelemetry(frameStartMs, 1, this.#samplesAccumulated, targetSpp);
     return output;
   }
 

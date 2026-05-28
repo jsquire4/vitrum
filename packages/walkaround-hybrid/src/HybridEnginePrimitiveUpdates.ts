@@ -38,7 +38,7 @@ import {
   type PrimitiveTlasBinding,
   type TlasGpuSnapshot,
 } from '@vitrum/shared-bvh';
-import { applyVitrumMaterialToMesh } from '@vitrum/three-bindings';
+import { applyVitrumMaterialToMesh, findMeshByPrimitiveId } from '@vitrum/three-bindings';
 import { applyPrimitivePatchToScene } from './scenePatch.js';
 import {
   buildReSTIRSceneBVHForScene,
@@ -79,18 +79,6 @@ function computeWorldAabbFromBvhPositions(
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
 
-/** `sceneFromThreeJS` keys primitives by `Object3D.uuid`; tests may use `name`. */
-function findMeshByPrimitiveId(root: THREE.Object3D, id: string): THREE.Mesh | null {
-  let mesh: THREE.Mesh | null = null;
-  root.traverseVisible((obj) => {
-    if (mesh != null) return;
-    if (!(obj as THREE.Mesh).isMesh) return;
-    if (obj.uuid === id || obj.name === id) {
-      mesh = obj as THREE.Mesh;
-    }
-  });
-  return mesh;
-}
 import { repackBVHMaterialRange } from './restir/packingHelpers.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import type { DDGI } from './ddgi/DDGI.js';

@@ -23,6 +23,15 @@ export interface DDGILight {
    *  any other kind is silently skipped in _uploadLights. */
   readonly kind: 'sun' | 'fixture' | 'teaLight' | string;
 
+  /** Optional source-emitter id, preserved when a DDGILight is mapped
+   *  directly from a `@vitrum/core` `SceneEmitter` (see
+   *  `coreEmittersToDDGILights`). Ignored by `_uploadLights` / the GPU
+   *  packer (the DDGI light UBO has no id slot); carried purely so host-
+   *  side code can correlate a DDGI light back to its core emitter for
+   *  incremental updates / introspection. Lights derived from the raw-
+   *  THREE escape-hatch path leave this undefined. */
+  readonly id?: string;
+
   /** Photometric intensity value (arbitrary units; host normalises to
    *  whatever scale the renderer expects). */
   readonly intensity: number;

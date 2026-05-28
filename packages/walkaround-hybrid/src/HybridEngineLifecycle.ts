@@ -52,6 +52,7 @@ import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
+import { coreEmittersToDDGILights } from './coreEmittersToDDGILights.js';
 import type { Scene } from '@vitrum/core';
 
 /**
@@ -405,24 +406,31 @@ export class PipelineInitCoordinator {
       // public method on ProbeUpdatePass — no cast needed.
       host.ddgi.pass.setSunIntensityMultiplier(host.primaryLightIntensity);
 
-      // Auto-collect THREE.RectAreaLight from the scene as DDGI point
-      // lights (centroid + flux-equivalent intensity). DDGI's per-probe
-      // ray-cast pass uses only 'sun' + 'fixture'/'teaLight' kinds —
-      // without this bridge, rect-area lights from `vitrumSceneToThree`
-      // never reach DDGI's `evalDirectLighting`, so probe rays hitting
-      // walls return zero radiance and the irradiance atlas stays
-      // black → no color bleed onto boxes, surfaces render flat-gray
-      // even with DDGI mechanically running.
+      // Collect the scene's analytic lights as DDGI fixture lights
+      // (centroid + flux-equivalent intensity). DDGI's per-probe ray-cast
+      // pass uses only 'sun' + 'fixture'/'teaLight' kinds — without this
+      // bridge, area/point lights never reach DDGI's `evalDirectLighting`,
+      // so probe rays hitting walls return zero radiance and the irradiance
+      // atlas stays black → no colour bleed onto boxes, surfaces render
+      // flat-gray even with DDGI mechanically running.
       //
-      // For a 1×1 rect at intensity 12 (Le=(12,12,12) per channel),
-      // the per-area-element flux is Le × dA. A point at the rect
-      // centroid carrying flux ≈ Le × area integrates roughly the same
-      // total downward power; the DDGI atlas captures the qualitative
-      // colour bleed correctly, which is what the indirect bounce
-      // depends on. ReSTIR DI still drives the high-frequency direct
-      // term from the actual rect geometry — DDGI here only feeds the
-      // low-frequency indirect.
-      const ddgiSceneLights = collectDDGILightsFromThreeRoot(bvhRoot);
+      // Theme T16 — prefer the lossless core-emitter projection when a core
+      // scene is available. `coreEmittersToDDGILights` consumes the
+      // `@vitrum/core` `SceneEmitter` union directly, preserving chroma,
+      // using the true emissive area `4·|uAxis × vAxis|` for rect emitters,
+      // and carrying the source emitter id — fixing the chroma-drop +
+      // wrong-area (`width·height`) errors of the THREE round-trip.
+      //
+      // The THREE-walk `collectDDGILightsFromThreeRoot(bvhRoot)` remains the
+      // escape hatch ONLY when the host supplied a raw `threeScene` (no core
+      // scene): in that case `bvhRoot === host.threeScene` and there is no
+      // core emitter list to read, so we fall back to re-deriving from the
+      // THREE light objects. The gate matches the BVH-source branch above
+      // (`coreSceneSuppliesMeshes()` ⇒ `bvhRoot` came from `vitrumSceneToThree`).
+      const ddgiSceneLights =
+        host.coreSceneSuppliesMeshes() && host.lastScene != null
+          ? coreEmittersToDDGILights(host.lastScene)
+          : collectDDGILightsFromThreeRoot(bvhRoot);
       if (ddgiSceneLights.length > 0) {
         host.ddgi.setLights([...host.ctorLights, ...ddgiSceneLights]);
       }

@@ -353,12 +353,7 @@ export function uploadScenePackGeometry(
   sb.tlasBlasRoots.set(pack.tlasBlasRoots);
   sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
   sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
-  const mutable = sb as unknown as {
-    tlasNodeCount: number;
-    bvhNodeCount: number;
-    triangleCount: number;
-    primitiveTlasBindings: readonly PrimitiveTlasBinding[];
-  };
+  const mutable = asMutableSceneBuffers(sb);
   mutable.tlasNodeCount = pack.tlasNodeCount;
   mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
   mutable.triangleCount = pack.triangleCount;
@@ -395,11 +390,7 @@ export function uploadScenePackBlasOnly(
   sb.indices.set(pack.indices);
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
-  const mutable = sb as unknown as {
-    bvhNodeCount: number;
-    triangleCount: number;
-    primitiveTlasBindings: readonly PrimitiveTlasBinding[];
-  };
+  const mutable = asMutableSceneBuffers(sb);
   mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
   mutable.triangleCount = pack.triangleCount;
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
@@ -435,12 +426,88 @@ export function uploadScenePackTlasOnly(
   sb.tlasBlasRoots.set(pack.tlasBlasRoots);
   sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
   sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
-  const mutable = sb as unknown as {
-    tlasNodeCount: number;
-    primitiveTlasBindings: readonly PrimitiveTlasBinding[];
-  };
+  const mutable = asMutableSceneBuffers(sb);
   mutable.tlasNodeCount = pack.tlasNodeCount;
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+}
+
+/**
+ * Typed mutators for the (otherwise `readonly`) derived count / lighting /
+ * environment fields on {@link UploadedSceneBuffers}. The CPU-side mirror of an
+ * `UploadedSceneBuffers` is logically immutable except for these fields, which
+ * the incremental `updateEmitter` / `updateEnvironment` fast paths rewrite in
+ * place after a partial GPU upload. Centralizing the structural
+ * `as unknown as { … }` casts here (instead of scattering them across `index.ts`
+ * and the geometry/BLAS/TLAS uploaders) keeps the unsafe surface in one typed
+ * place. Behavior-preserving.
+ */
+interface MutableSceneBufferFields {
+  // Geometry-pack derived counts (BLAS / TLAS uploads).
+  bvhNodeCount: number;
+  tlasNodeCount: number;
+  triangleCount: number;
+  primitiveTlasBindings: readonly PrimitiveTlasBinding[];
+  // Emitter counts + directional aggregate (updateEmitter fast path).
+  pointLightCount: number;
+  spotLightCount: number;
+  rectAreaLightCount: number;
+  meshAreaLightCount: number;
+  directionalLight: readonly [number, number, number];
+  directionalIrradiance: readonly [number, number, number];
+  // Environment fields (updateEnvironment fast path).
+  environmentTint: readonly [number, number, number];
+  environmentSunDirection: readonly [number, number, number];
+  environmentSunStrength: number;
+  environmentMapWidth: number;
+  environmentMapHeight: number;
+  hasEnvironmentMap: boolean;
+}
+
+/** Single typed view onto the mutable subset of an UploadedSceneBuffers. */
+function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBufferFields {
+  return sb as unknown as MutableSceneBufferFields;
+}
+
+/** Rewrite emitter counts + directional aggregate after an in-place light upload. */
+export function applyEmitterCountMutation(
+  sb: UploadedSceneBuffers,
+  next: {
+    readonly pointLightCount: number;
+    readonly spotLightCount: number;
+    readonly rectAreaLightCount: number;
+    readonly meshAreaLightCount: number;
+    readonly directionalLight: readonly [number, number, number];
+    readonly directionalIrradiance: readonly [number, number, number];
+  },
+): void {
+  const mutable = asMutableSceneBuffers(sb);
+  mutable.pointLightCount = next.pointLightCount;
+  mutable.spotLightCount = next.spotLightCount;
+  mutable.rectAreaLightCount = next.rectAreaLightCount;
+  mutable.meshAreaLightCount = next.meshAreaLightCount;
+  mutable.directionalLight = next.directionalLight;
+  mutable.directionalIrradiance = next.directionalIrradiance;
+}
+
+/** Rewrite environment fields after an in-place HDRI/sky upload. */
+export function applyEnvironmentMutation(
+  sb: UploadedSceneBuffers,
+  next: {
+    readonly environmentTint: readonly [number, number, number];
+    readonly environmentSunDirection: readonly [number, number, number];
+    readonly environmentSunStrength: number;
+    readonly environmentMapWidth: number;
+    readonly environmentMapHeight: number;
+    readonly hasEnvironmentMap: boolean;
+  },
+): void {
+  const mutable = asMutableSceneBuffers(sb);
+  mutable.environmentTint = next.environmentTint;
+  mutable.environmentSunDirection = next.environmentSunDirection;
+  mutable.environmentSunStrength = next.environmentSunStrength;
+  mutable.environmentMapWidth = next.environmentMapWidth;
+  mutable.environmentMapHeight = next.environmentMapHeight;
+  mutable.hasEnvironmentMap = next.hasEnvironmentMap;
 }
 
 export function rebuildTlasForSceneTransforms(

@@ -121,6 +121,15 @@ vi.mock('@vitrum/three-bindings', () => {
     vitrumSceneToThree: vi.fn(() => scene),
     disposeVitrumThreeSceneRoot: vi.fn(),
     applyVitrumMaterialToMesh: vi.fn(),
+    findMeshByPrimitiveId: vi.fn((root: THREE.Object3D, id: string): THREE.Mesh | null => {
+      let found: THREE.Mesh | null = null;
+      root.traverseVisible((obj) => {
+        if (found != null) return;
+        if (!(obj as THREE.Mesh).isMesh) return;
+        if (obj.uuid === id || obj.name === id) found = obj as THREE.Mesh;
+      });
+      return found;
+    }),
   };
 });
 

@@ -1,5 +1,4 @@
 import {
-  BufferAttribute,
   Matrix4,
   PerspectiveCamera,
 } from 'three';
@@ -37,7 +36,15 @@ import type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
 import { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
 import { bdptForceGpuBind, isSoftwareGlRenderer } from './bdpt/isSoftwareGlRenderer.js';
 import { driveForkMaterialUniforms } from './forkUniformBridge.js';
-import { ForkAccess } from './forkAccess.js';
+import { ForkAccess, type WebGLPathTracerCompat } from './forkAccess.js';
+import {
+  isEmitterOnlyPatch,
+  isMaterialOnlyPrimitivePatch,
+  isTransformOnlyPrimitivePatch,
+  isPositionsOnlyPrimitivePatch,
+  applyPositionsPatchToMesh,
+  refreshPathTracerSceneGeometry,
+} from './scenePatch.js';
 import {
   MAX_TILE_GRID,
   TileVariancePass,
@@ -103,50 +110,9 @@ interface DeviceLimits {
   readonly renderer: string;
 }
 
-/**
- * Typed surface of the fork we depend on. WebGLPathTracer's published types
- * use Three.js Scene/Camera types that diverge slightly between three.js
- * @types versions; this wrapper interface lets us cast once at construction
- * and call methods on the wrapper using our local types. Add methods here as
- * we depend on them — keep the surface minimal.
- */
-interface WebGLPathTracerCompat {
-  setScene(scene: unknown, camera: unknown): void;
-  setCamera(camera: unknown): void;
-  setSize(width: number, height: number): void;
-  reset(): void;
-  renderSample(): void;
-  /** Re-reads `scene.environment` / `scene.environmentIntensity` /
-   *  `scene.environmentRotation` (and the matching background fields) into the
-   *  fork's IBL uniforms WITHOUT touching geometry, materials, or the BVH.
-   *  Internally calls `reset()` (one accumulator-clear) — no BVH rebuild,
-   *  no geometry re-upload. Used by `PTEngineWebGL2.updateEnvironment()` to
-   *  service host-driven timeOfDay scrubs cheaply. */
-  updateEnvironment?(): void;
-  /** Re-pack MaterialsTexture from the cached scene without BVH rebuild (PR-8). */
-  updateMaterials?(): void;
-  /** Re-pack light buffers from the cached scene without BVH rebuild (PR-8). */
-  updateLights?(): void;
-  configureAdditiveAccumulation?(enabled: boolean, blendFrames: boolean): void;
-  renderBdptLightSubpathPass?(
-    lightPathTarget: import('three').WebGLRenderTarget,
-    maxLightBounces: number,
-    frameSeed: number,
-  ): void;
-  /** Optional fork field — the wrapper stores a reference to the THREE scene
-   *  most recently passed to `setScene()`. updateEnvironment() reads
-   *  `scene.environment*` off this reference, so the host MUST mutate the
-   *  same scene object the wrapper has cached, not pass in a new one. */
-  scene?: unknown;
-  dispose?(): void;
-  samples: number;
-  tileRepeatFactors?: Uint8Array | null;
-  tiles: { setScalar: (n: number) => void; set(x: number, y: number): void; x: number; y: number };
-  bounces: number;
-  filterGlossyFactor: number;
-  fastUpdate: boolean;
-  domElement?: HTMLCanvasElement;
-}
+// `WebGLPathTracerCompat` — the typed fork public-surface wrapper — now lives
+// in `forkAccess.ts` alongside the fork-private `ForkAccess` seam (theme T14).
+// Imported above.
 
 interface RenderSizePlan {
   readonly width: number;
@@ -155,122 +121,14 @@ interface RenderSizePlan {
   readonly guardrail: string | null;
 }
 
-function isEmitterOnlyPatch(patch: Partial<SceneEmitter>): boolean {
-  if ('kind' in patch && patch.kind !== undefined) return false;
-  if ('meshPrimitiveId' in patch && patch.meshPrimitiveId !== undefined) return false;
-  if ('transform' in patch && patch.transform !== undefined) return false;
-  return Object.keys(patch).some((k) => k !== 'id');
-}
-
-function isMaterialOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
-  if (patch.material === undefined) return false;
-  for (const key of Object.keys(patch) as (keyof ScenePrimitive)[]) {
-    if (key === 'id' || key === 'material') continue;
-    if ((patch as Record<string, unknown>)[key] !== undefined) return false;
-  }
-  return true;
-}
-
-function isTransformOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
-  const rec = patch as Record<string, unknown>;
-  if (rec['transform'] === undefined) return false;
-  for (const key of Object.keys(rec)) {
-    if (key === 'id' || key === 'transform') continue;
-    if (rec[key] !== undefined) return false;
-  }
-  return true;
-}
-
-type PathTracerGenerateResult = {
-  bvhChanged?: boolean;
-  bvh?: unknown;
-  needsMaterialIndexUpdate?: boolean;
-  geometry?: {
-    attributes: {
-      normal?: { array: ArrayLike<number> };
-      tangent?: { array: ArrayLike<number> };
-      uv?: { array: ArrayLike<number> };
-      color?: { array: ArrayLike<number> };
-    };
-  };
-};
-
-/** Regenerate merged geometry + BVH via fork generator — no full `setScene`. */
-function refreshPathTracerSceneGeometry(
-  pathTracer: WebGLPathTracer,
-  threeRoot: ThreeScene,
-): boolean {
-  const internal = pathTracer as unknown as {
-    _generator?: { initialized?: boolean; generate: () => PathTracerGenerateResult };
-    _pathTracer?: {
-      material: {
-        bvh: { updateFrom: (b: unknown) => void };
-        attributesArray: {
-          updateFrom: (
-            normal: { array: ArrayLike<number> } | undefined,
-            tangent: { array: ArrayLike<number> } | undefined,
-            uv: { array: ArrayLike<number> } | undefined,
-            color: { array: ArrayLike<number> } | undefined,
-          ) => void;
-        };
-        materialIndexAttribute: { updateFrom: (attr: unknown) => void };
-      };
-    };
-  };
-  const gen = internal._generator;
-  if (gen?.initialized !== true) {
-    return false;
-  }
-  threeRoot.updateMatrixWorld(true);
-  const result = gen.generate();
-  const mat = internal._pathTracer?.material;
-  if (result.bvhChanged === true && result.bvh != null && mat != null) {
-    mat.bvh.updateFrom(result.bvh);
-    const attrs = result.geometry?.attributes;
-    if (attrs != null) {
-      mat.attributesArray.updateFrom(attrs.normal, attrs.tangent, attrs.uv, attrs.color);
-    }
-    if (result.needsMaterialIndexUpdate === true && result.geometry != null) {
-      const materialIndex = (result.geometry as { attributes: { materialIndex?: unknown } }).attributes
-        .materialIndex;
-      if (materialIndex != null) {
-        mat.materialIndexAttribute.updateFrom(materialIndex);
-      }
-    }
-  }
-  pathTracer.reset();
-  return true;
-}
-
-function isPositionsOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
-  const rec = patch as Record<string, unknown>;
-  if (rec['positions'] === undefined) return false;
-  for (const key of Object.keys(rec)) {
-    if (key === 'id' || key === 'positions' || key === 'normals') continue;
-    if (rec[key] !== undefined) return false;
-  }
-  return true;
-}
-
-function applyPositionsPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimitive>): boolean {
-  const positions = patch.positions;
-  if (positions == null) return false;
-  const posAttr = mesh.geometry.getAttribute('position');
-  const vertCount = positions.length / 3;
-  if (posAttr != null && posAttr.count !== vertCount) {
-    return false;
-  }
-  mesh.geometry.setAttribute('position', new BufferAttribute(new Float32Array(positions), 3));
-  if (patch.normals != null) {
-    mesh.geometry.setAttribute('normal', new BufferAttribute(new Float32Array(patch.normals), 3));
-  }
-  return true;
-}
-
-// Canonical `patchPrimitiveInScene` / `patchEmitterInScene` now live in
-// `@vitrum/core` (theme T2 dedup); imported above. Backend-specific fast-path
-// predicates (`isMaterialOnlyPrimitivePatch` etc.) remain local — they are a
-// separate concern from the shared snapshot-patch + invariant layer.
+// Canonical `patchPrimitiveInScene` / `patchEmitterInScene` live in
+// `@vitrum/core` (theme T2 dedup); imported above. The backend-specific
+// fast-path classifiers (`isEmitterOnlyPatch` / `isMaterialOnlyPrimitivePatch`
+// / `isTransformOnlyPrimitivePatch` / `isPositionsOnlyPrimitivePatch`), the
+// THREE-side `applyPositionsPatchToMesh` mutator, and the fork geometry-refresh
+// `refreshPathTracerSceneGeometry` live in `./scenePatch.ts` (theme T14); also
+// imported above. They are a separate concern from the shared snapshot-patch +
+// invariant layer.
 
 interface SchedulerOptions {
   readonly qualityMode: PTEngineWebGL2QualityMode;
@@ -409,6 +267,62 @@ function defaultSchedulerOptions(
   };
 }
 
+/** Caustic + MNEE + spectral + radiance-clamp scalar config, parsed once at
+ *  construction. Mirrors the {@link defaultSchedulerOptions} frozen-struct
+ *  pattern so the constructor stays a wiring step, not a parse step. */
+interface CausticConfig {
+  readonly strategy: 'none' | 'manifold-nee' | 'photon-map';
+  readonly mneeMaxIterations: number;
+  readonly mneeMaxChainLength: number;
+  readonly spectralRendering: boolean;
+  readonly radianceClamp: number;
+}
+
+function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
+  // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
+  const causticOpts = opts.causticOptions ?? {};
+  const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
+  const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
+  const requestedRadianceClamp = opts.extensions?.['vitrum.ptWebgl.radianceClamp'];
+  return Object.freeze({
+    strategy: opts.causticStrategy ?? 'none',
+    mneeMaxIterations: Math.max(1, mneeIter),
+    mneeMaxChainLength: Math.max(1, mneeChain),
+    spectralRendering: opts.extensions?.['vitrum.ptWebgl.spectralRendering'] === true,
+    radianceClamp:
+      typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
+        ? Math.max(0, requestedRadianceClamp)
+        : 0,
+  });
+}
+
+/** BDPT scalar config (Sprint 10c), parsed once at construction.
+ *  `'vitrum.ptWebgl.bdpt'` (boolean) enables BDPT mode for PT_FINAL caustic
+ *  renders; `'vitrum.ptWebgl.bdptMaxLightBounces'` (1–3) controls light-subpath
+ *  depth; `'vitrum.ptWebgl.bdptCpuFill'` forces CPU bounce-0 fill. The
+ *  `lightPathTex` is NOT parsed here (it requires a live WebGL texture object);
+ *  hosts that need BDPT call `driveForkMaterialUniforms()` directly with their
+ *  `ForkBridgeBdptOptions` including the ping-pong texture reference. */
+interface BdptConfig {
+  readonly enabled: boolean;
+  readonly maxLightBounces: number;
+  readonly cpuFill: boolean;
+}
+
+function parseBdptConfig(
+  extensions: Readonly<Record<string, unknown>> | undefined,
+): BdptConfig {
+  const requestedBdptBounces = extensions?.['vitrum.ptWebgl.bdptMaxLightBounces'];
+  return Object.freeze({
+    enabled: extensions?.['vitrum.ptWebgl.bdpt'] === true,
+    maxLightBounces:
+      typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
+        ? Math.min(3, Math.floor(requestedBdptBounces))
+        : 3,
+    cpuFill: extensions?.['vitrum.ptWebgl.bdptCpuFill'] === true,
+  });
+}
+
 /**
  * Internal state-setter token. The factory constructs a `StateSlot`, passes it
  * to `PTEngineWebGL2`, then calls `slot.set('ready')`. External callers cannot
@@ -528,30 +442,16 @@ export class PTEngineWebGL2 implements Engine {
     this.#slot = slot;
     this.#maxBouncesLimit = opts.maxBounces ?? DEFAULT_MAX_BOUNCES;
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
-    // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
-    this.#causticStrategy = opts.causticStrategy ?? 'none';
-    const causticOpts = opts.causticOptions ?? {};
-    const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
-    const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
-    this.#mneeMaxIterations = Math.max(1, mneeIter);
-    this.#mneeMaxChainLength = Math.max(1, mneeChain);
-    this.#spectralRendering = opts.extensions?.['vitrum.ptWebgl.spectralRendering'] === true;
-    const requestedRadianceClamp = opts.extensions?.['vitrum.ptWebgl.radianceClamp'];
-    this.#radianceClamp = typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
-      ? Math.max(0, requestedRadianceClamp)
-      : 0;
-    // Sprint 10c: BDPT option from extensions.
-    // 'vitrum.ptWebgl.bdpt' (boolean) enables BDPT mode for PT_FINAL caustic renders.
-    // 'vitrum.ptWebgl.bdptMaxLightBounces' (1–3) controls light-subpath depth.
-    // The lightPathTex is not passed via options (it requires a live WebGL texture
-    // object); hosts that need BDPT must call driveForkMaterialUniforms() directly
-    // with their ForkBridgeBdptOptions including the ping-pong texture reference.
-    this.#bdpt = opts.extensions?.['vitrum.ptWebgl.bdpt'] === true;
-    const requestedBdptBounces = opts.extensions?.['vitrum.ptWebgl.bdptMaxLightBounces'];
-    this.#bdptMaxLightBounces = typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
-      ? Math.min(3, Math.floor(requestedBdptBounces))
-      : 3;
-    this.#bdptCpuFill = opts.extensions?.['vitrum.ptWebgl.bdptCpuFill'] === true;
+    const caustic = parseCausticConfig(opts);
+    this.#causticStrategy = caustic.strategy;
+    this.#mneeMaxIterations = caustic.mneeMaxIterations;
+    this.#mneeMaxChainLength = caustic.mneeMaxChainLength;
+    this.#spectralRendering = caustic.spectralRendering;
+    this.#radianceClamp = caustic.radianceClamp;
+    const bdpt = parseBdptConfig(opts.extensions);
+    this.#bdpt = bdpt.enabled;
+    this.#bdptMaxLightBounces = bdpt.maxLightBounces;
+    this.#bdptCpuFill = bdpt.cpuFill;
     this.#renderer = gpu.renderer;
     this.#limits = this.#detectDeviceLimits();
     this.#bdptCompileShader = !/angle/i.test(this.#limits.renderer);
@@ -1082,6 +982,88 @@ export class PTEngineWebGL2 implements Engine {
     ].join(',');
   }
 
+  /** Assemble the per-frame telemetry record from the just-completed sample
+   *  batch. Pure w.r.t. engine fields it reads (scheduler options, limits,
+   *  accumulation flags) — no side effects. */
+  #buildTelemetry(args: {
+    requestedWidth: number;
+    requestedHeight: number;
+    w: number;
+    h: number;
+    samplesThisFrame: number;
+    batchMs: number;
+    sppDelta: number;
+    sizePlan: RenderSizePlan;
+  }): PTEngineWebGL2Telemetry {
+    const { requestedWidth, requestedHeight, w, h, samplesThisFrame, batchMs, sppDelta, sizePlan } = args;
+    const msPerSample = sppDelta > 0 ? batchMs / sppDelta : null;
+    return {
+      qualityMode: this.#schedulerOptions.qualityMode,
+      renderer: this.#limits.renderer,
+      requestedWidth,
+      requestedHeight,
+      renderWidth: w,
+      renderHeight: h,
+      samplesPerFrame: samplesThisFrame,
+      tileSize: this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING ? 1 : this.#tileSize,
+      batchMs,
+      msPerSample,
+      sppDelta,
+      sppPerSecond: sppDelta > 0 && batchMs > 0 ? (sppDelta * 1000) / batchMs : null,
+      estimatedRenderTargetBytes: sizePlan.estimatedBytes,
+      renderTargetBudgetBytes: this.#schedulerOptions.renderTargetBudgetBytes,
+      guardrail: this.#contextLost
+        ? 'webgl context loss observed; scheduler reduced workload'
+        : sizePlan.guardrail,
+      additiveAccumulation: this.#additiveAccumulation,
+      pixelAdaptiveSampling: this.#pixelAdaptiveSampling,
+    };
+  }
+
+  /** Fan out per-frame {@link FrameStats} and {@link ProgressStats} to the
+   *  T3.E subscriber lists. Subscriber exceptions are swallowed so one bad
+   *  observer can't break the render loop. Progress only fires on frames that
+   *  actually advanced SPP. */
+  #fireTelemetry(args: {
+    spp: number;
+    sppDelta: number;
+    targetSpp: number;
+    batchMs: number;
+    estimatedGpuMemoryBytes: number;
+  }): void {
+    const { spp, sppDelta, targetSpp, batchMs, estimatedGpuMemoryBytes } = args;
+    if (this.#frameSubs.length > 0) {
+      const stats: FrameStats = {
+        frameTimeMs: batchMs,
+        spp,
+        // GPU-memory budget — pt-webgl wraps three-gpu-pathtracer, whose
+        // render-target textures are opaque to us. We reuse the scheduler's
+        // existing `sizePlan.estimatedBytes` (a worst-case `width × height ×
+        // RGBA16F × renderTargetCount + overhead` estimate, already plumbed
+        // into the telemetry payload) as the scalar `estimatedGpuMemoryBytes`.
+        // The structured `gpuMemoryBytes` breakdown is intentionally omitted:
+        // the underlying fork doesn't expose per-pass texture handles, so a
+        // by-category split would either be invented or stale.
+        estimatedGpuMemoryBytes,
+      };
+      for (const sub of this.#frameSubs) {
+        try { sub(stats); } catch { /* swallow */ }
+      }
+    }
+    if (this.#progressSubs.length > 0 && sppDelta > 0) {
+      const target = Math.max(1, targetSpp);
+      const progress: ProgressStats = {
+        kind: 'pt-spp',
+        current: spp,
+        target,
+        fraction: Math.min(1, spp / target),
+      };
+      for (const sub of this.#progressSubs) {
+        try { sub(progress); } catch { /* swallow */ }
+      }
+    }
+  }
+
   renderFrame(input: FrameInput): PTEngineWebGL2FrameOutput {
     this.#assertLive('renderFrame');
     if (this.#slot.get() === 'paused') {
@@ -1156,60 +1138,19 @@ export class PTEngineWebGL2 implements Engine {
     const batchMs = Math.max(0, nowMs() - batchStart);
     const sppDelta = Math.max(0, spp - sppBefore);
     this.#updateScheduler(batchMs);
-    const msPerSample = sppDelta > 0 ? batchMs / sppDelta : null;
-    this.#lastTelemetry = {
-      qualityMode: this.#schedulerOptions.qualityMode,
-      renderer: this.#limits.renderer,
+    this.#lastTelemetry = this.#buildTelemetry({
       requestedWidth,
       requestedHeight,
-      renderWidth: w,
-      renderHeight: h,
-      samplesPerFrame: samplesThisFrame,
-      tileSize: this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING ? 1 : this.#tileSize,
+      w,
+      h,
+      samplesThisFrame,
       batchMs,
-      msPerSample,
       sppDelta,
-      sppPerSecond: sppDelta > 0 && batchMs > 0 ? (sppDelta * 1000) / batchMs : null,
-      estimatedRenderTargetBytes: sizePlan.estimatedBytes,
-      renderTargetBudgetBytes: this.#schedulerOptions.renderTargetBudgetBytes,
-      guardrail: this.#contextLost
-        ? 'webgl context loss observed; scheduler reduced workload'
-        : sizePlan.guardrail,
-      additiveAccumulation: this.#additiveAccumulation,
-      pixelAdaptiveSampling: this.#pixelAdaptiveSampling,
-    };
+      sizePlan,
+    });
     // T3.E telemetry hooks. We fire AFTER #lastTelemetry is populated so
     // subscribers can also peek via the FrameOutput.telemetry passthrough.
-    if (this.#frameSubs.length > 0) {
-      const stats: FrameStats = {
-        frameTimeMs: batchMs,
-        spp,
-        // GPU-memory budget — pt-webgl wraps three-gpu-pathtracer, whose
-        // render-target textures are opaque to us. We reuse the scheduler's
-        // existing `sizePlan.estimatedBytes` (a worst-case `width × height ×
-        // RGBA16F × renderTargetCount + overhead` estimate, already plumbed
-        // into the telemetry payload) as the scalar `estimatedGpuMemoryBytes`.
-        // The structured `gpuMemoryBytes` breakdown is intentionally omitted:
-        // the underlying fork doesn't expose per-pass texture handles, so a
-        // by-category split would either be invented or stale.
-        estimatedGpuMemoryBytes: sizePlan.estimatedBytes,
-      };
-      for (const sub of this.#frameSubs) {
-        try { sub(stats); } catch { /* swallow */ }
-      }
-    }
-    if (this.#progressSubs.length > 0 && sppDelta > 0) {
-      const target = Math.max(1, targetSpp);
-      const progress: ProgressStats = {
-        kind: 'pt-spp',
-        current: spp,
-        target,
-        fraction: Math.min(1, spp / target),
-      };
-      for (const sub of this.#progressSubs) {
-        try { sub(progress); } catch { /* swallow */ }
-      }
-    }
+    this.#fireTelemetry({ spp, sppDelta, targetSpp, batchMs, estimatedGpuMemoryBytes: sizePlan.estimatedBytes });
 
     const isConverged = spp >= targetSpp;
     // W11 follow-up: kick the OIDN dispatcher on every converged frame.
