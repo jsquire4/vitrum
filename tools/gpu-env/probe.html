@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>WebGPU adapter probe</title></head>
+<body>
+<canvas id="c" width="64" height="64"></canvas>
+<pre id="out">probing...</pre>
+<script type="module">
+// Standalone replica of the repo's adapter-cap probe
+// (tools/benchmark-runner/launchWebGpuBrowser.mjs readWebGpuAdapterCaps + the
+//  HYBRID_WEBGPU_REQUIRED_LIMITS / ptWebgpu tier math). Kept dependency-free so
+// it can be served as a static file with no build step.
+async function probe() {
+  if (!navigator.gpu) return { ok: false, reason: 'no navigator.gpu' };
+  let adapter;
+  try {
+    adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  } catch (e) {
+    return { ok: false, reason: 'requestAdapter threw: ' + String(e) };
+  }
+  if (!adapter) return { ok: false, reason: 'requestAdapter returned null' };
+
+  let vendor = '', architecture = '', description = '', device = '';
+  try {
+    const info = adapter.info ?? (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {});
+    vendor = info.vendor ?? '';
+    architecture = info.architecture ?? '';
+    description = info.description ?? '';
+    device = info.device ?? '';
+  } catch { /* optional */ }
+
+  const limits = adapter.limits;
+  const msb = limits.maxStorageBuffersPerShaderStage;
+  const mst = limits.maxStorageTexturesPerShaderStage;
+
+  // Try to actually acquire a device at the hybrid required limits — proves the
+  // adapter doesn't merely *advertise* the limits but can hand out a device.
+  let deviceAtHybridLimits = false, deviceErr = '';
+  try {
+    const dev = await adapter.requestDevice({
+      requiredLimits: {
+        maxStorageBuffersPerShaderStage: 16,
+        maxStorageTexturesPerShaderStage: 8,
+      },
+    });
+    deviceAtHybridLimits = !!dev;
+    if (dev) dev.destroy();
+  } catch (e) {
+    deviceErr = String(e);
+  }
+
+  return {
+    ok: true,
+    vendor, architecture, description, device,
+    maxStorageBuffersPerShaderStage: msb,
+    maxStorageTexturesPerShaderStage: mst,
+    // pt-webgpu tiers (tools/benchmark-runner/launchWebGpuBrowser.mjs:49-57)
+    ptWebgpuFullTier: msb >= 10 && mst >= 5,
+    ptWebgpuLiteTier: msb >= 8 && mst >= 4,
+    // walkaround-hybrid HYBRID_WEBGPU_REQUIRED_LIMITS (16/8)
+    hybridCanRun: msb >= 16 && mst >= 8,
+    deviceAtHybridLimits,
+    deviceErr,
+  };
+}
+const result = await probe();
+globalThis.VITRUM_PROBE_RESULT = result;
+document.getElementById('out').textContent = JSON.stringify(result, null, 2);
+</script>
+</body>
+</html>
