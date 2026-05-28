@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Reference baselines (2026-05-27):** `session-20260527` cornell + hero quick captures promoted to `tools/reference-renders/baseline/`; `scripts/promote-ref-baseline.sh` + `npm run capture:promote-baseline`.
 - **BDPT / RC captures (2026-05-27):** `isSoftwareGlRenderer` helper; refreshed `bdpt-layered-mechanical` PNGs; RC acceptance via `benchmark:rc-acceptance-gpu` (WSL vite + Windows Chrome).
+- **Cornell baseline refresh (2026-05-27):** `capture:refs:quick` session promoted to `tools/reference-renders/baseline/` (6 Cornell + 3 hero PNGs).
 - **BDPT WSL+Windows capture (2026-05-27):** `benchmark:bdpt-layered-refs-gpu` runs cornell-box Vite in WSL and Playwright on Windows Chrome; promotion skips sub-50KB BDPT stubs.
 - **RC mechanical fixtures (2026-05-27):** `write-rc-mechanical-fixtures` writes 64×64 solids under `W8-rc-mechanical-{off,on}/` so `verify:mechanical` no longer clobbers GPU PNGs in `W8-rc-{off,on}/`.
 - **BDPT fill path (2026-05-27):** `fillBdptLightPath` refreshes `driveForkMaterialUniforms` (FEATURE_BDPT on, no tex) immediately before the fork GPU light-subpath draw.
