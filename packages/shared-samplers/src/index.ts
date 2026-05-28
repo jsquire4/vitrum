@@ -25,12 +25,14 @@ export { sampleEquiAngular } from './equiAngular.js';
 export type { EquiAngularSample, EquiAngularOptions } from './equiAngular.js';
 export {
   // `rgbToSpectralCoefficients` is the stable public alias; the underlying
-  // `rgbToApproxSpectralCoefficients` is marked @internal in jakobHanika.ts
-  // and is not re-exported from the package surface. Tests + production
-  // code use the stable name; the @internal name stays in-module so the
-  // doc comment trail to "approximation, slated for replacement" remains.
+  // `rgbToJakobHanikaCoefficients` runs the genuine Jakob & Hanika 2019
+  // Gauss–Newton sigmoid-coefficient solve (see jakobHanika.ts). Tests +
+  // production code use the stable name. `spectralCoefficientsToRGB` is the
+  // exact inverse (integrate S(λ) under D65 + CMFs → linear sRGB), exported
+  // for round-trip verification.
   rgbToSpectralCoefficients,
   evaluateSpectrum,
+  spectralCoefficientsToRGB,
 } from './jakobHanika.js';
 // ── Sprint 10c (BDPT) ────────────────────────────────────────────────────────
 // Sprint 10c (BDPT) — applied 2026-05-12. See external_requests/IMPLEMENTATION-STATUS.md §Sprint 10c.
