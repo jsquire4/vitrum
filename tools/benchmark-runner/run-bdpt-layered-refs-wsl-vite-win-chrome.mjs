@@ -2,7 +2,8 @@
  * BDPT + layered reference captures — cornell-box Vite in WSL, Playwright uses Windows Chrome.
  *
  * WSL bundled Chromium often sees SwiftShader WebGL (~12 KiB BDPT PNGs). Set
- * VITRUM_USE_WIN_CHROME=1 so Playwright launches Windows Chrome for hardware WebGL.
+ * Do not set VITRUM_USE_WIN_CHROME here — Playwright in WSL cannot attach to
+ * Windows Chrome (remote-debugging-pipe). Use headed WSL Chromium + hardware Vulkan.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -34,7 +35,6 @@ try {
       VITRUM_CORNELL_SKIP_VITE: '1',
       VITRUM_CAPTURE_URL: captureBase,
       VITRUM_CORNELL_DEV_PORT: cornellPort,
-      VITRUM_USE_WIN_CHROME: '1',
       VITRUM_BDPT_FORCE_GPU: '1',
       VITRUM_WEBGPU_ADAPTER: 'hardware',
       VITRUM_BENCH_HEADLESS: '0',

@@ -83,21 +83,35 @@ async function main() {
     await copyFile(path, dest);
     return true;
   }
-  try {
-    await promoteIfGpu(layeredGpu, resolve(mechDir, 'cornell-layered.png'), 'cornell-layered');
-    if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
-      await promoteIfGpu(bdptGpu, resolve(mechDir, 'cornell-layered-bdpt.png'), 'cornell-layered-bdpt');
-      if (process.env.VITRUM_BDPT_SKIP_PARITY !== '1') {
-        await promoteIfGpu(
-          parityBdptGpu,
-          resolve(mechDir, 'cornell-parity-bdpt.png'),
-          'cornell-parity-bdpt',
-        );
+  const failed = steps.some((s) => !s.ok);
+  if (!failed) {
+    try {
+      const layeredStep = steps.find((s) => s.scenario === 'cornell-layered');
+      if (layeredStep?.ok) {
+        await promoteIfGpu(layeredGpu, resolve(mechDir, 'cornell-layered.png'), 'cornell-layered');
       }
+      if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
+        const bdptStep = steps.find((s) => s.scenario === 'cornell-layered-bdpt');
+        if (bdptStep?.ok) {
+          await promoteIfGpu(bdptGpu, resolve(mechDir, 'cornell-layered-bdpt.png'), 'cornell-layered-bdpt');
+        }
+        if (process.env.VITRUM_BDPT_SKIP_PARITY !== '1') {
+          const parityStep = steps.find((s) => s.scenario === 'cornell-parity-bdpt');
+          if (parityStep?.ok) {
+            await promoteIfGpu(
+              parityBdptGpu,
+              resolve(mechDir, 'cornell-parity-bdpt.png'),
+              'cornell-parity-bdpt',
+            );
+          }
+        }
+      }
+      console.log(`[bdpt-layered-refs] promoted GPU PNGs (when ≥${minPromoteBytes} B) → ${mechDir}`);
+    } catch (e) {
+      console.warn(`[bdpt-layered-refs] could not promote to mechanical dir: ${e}`);
     }
-    console.log(`[bdpt-layered-refs] promoted GPU PNGs (when ≥${minPromoteBytes} B) → ${mechDir}`);
-  } catch (e) {
-    console.warn(`[bdpt-layered-refs] could not promote to mechanical dir: ${e}`);
+  } else {
+    console.warn('[bdpt-layered-refs] skipping mechanical promotion — one or more captures failed');
   }
 
   const manifest = {
@@ -110,7 +124,6 @@ async function main() {
   const manifestPath = resolve(outDir, 'manifest.json');
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   console.log(`[bdpt-layered-refs] wrote ${manifestPath}`);
-  const failed = steps.some((s) => !s.ok);
   if (failed) {
     if (process.env.VITRUM_BDPT_REQUIRE_GPU === '1') process.exit(1);
     console.warn('[bdpt-layered-refs] capture failed (GPU/Playwright required); manifest written for audit.');
