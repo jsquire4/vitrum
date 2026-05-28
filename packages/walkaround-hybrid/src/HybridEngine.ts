@@ -43,7 +43,6 @@ import type {
   EngineFactory,
   EngineState,
   FrameStats,
-  GpuMemoryBreakdown,
 } from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
@@ -52,9 +51,8 @@ import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { packDDGIGridParams, type FrameResources } from './pipeline/resourceManager.js';
-import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
-import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
+import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
 import {
   rebuildEmitterBuffersFromSceneRoots,
@@ -317,6 +315,8 @@ export class HybridEngine implements Engine {
   private readonly _getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
   private readonly _skinning: GpuSkinningSubsystem | null;
 
+  readonly debug: EngineDebugSurface;
+
   constructor(opts: HybridEngineOptions) {
     this._device                = opts.device;
     this._width                 = opts.width;
@@ -483,6 +483,21 @@ export class HybridEngine implements Engine {
     // coordinator the small surface it needs without exposing private
     // engine fields directly.
     this._initCoordinator = new PipelineInitCoordinator(this._buildInitHost());
+
+    this.debug = createHybridEngineDebugSurface({
+      device: () => this._device,
+      readAtlas: () => this._ddgi?.pass?.getReadAtlasGPUTextures?.() ?? null,
+      bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
+      pipelineResources: () =>
+        (this._pipeline as { _res?: FrameResources } | null)?._res ?? null,
+      denoiserPassEnabled: () => this._denoiserPassEnabled,
+      setDenoiserPassEnabled: (enabled) => {
+        this._denoiserPassEnabled = enabled;
+      },
+      setPipelineDenoiserPassEnabled: (enabled) => {
+        this._pipeline?.setDenoiserPassEnabled(enabled);
+      },
+    });
   }
 
   // ── Scene management ───────────────────────────────────────────────────
@@ -1294,81 +1309,6 @@ export class HybridEngine implements Engine {
   // meaningful 'pt-spp' to report. DDGI warm-up could surface here once
   // we expose probe-update progress; for now the optional method is
   // intentionally absent (consumers must typeof-check per the contract).
-
-  // ── Debug introspection (T3.G followup) ────────────────────────────────
-
-  /** Debug-introspection surface for @vitrum/dev overlays. Each method
-   *  reaches into the live pipeline / DDGI / BVH state and returns the
-   *  current handle (engine-owned; callers MUST NOT destroy). Returns
-   *  null when the relevant subsystem isn't initialised yet.
-   *
-   *  Not implemented: pickPrimitive (needs a real picking pass).
-   *  MaterialInspector stays on the warn path until picking lands. */
-  readonly debug: EngineDebugSurface = {
-    // A3 (2026-05-19) — expose the device handle so dev-overlay components
-    // can issue `copyTextureToBuffer` + `mapAsync(READ)` readbacks on the
-    // textures the methods below return. Read-only — caller MUST NOT
-    // destroy or reconfigure the device.
-    device: (): GPUDevice | null => this._device,
-    atlasTexture: (): GPUTexture | null => {
-      const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
-      return atlas?.irradiance ?? null;
-    },
-    visibilityAtlasTexture: (): GPUTexture | null => {
-      const atlas = this._ddgi?.pass?.getReadAtlasGPUTextures?.();
-      return atlas?.visibility ?? null;
-    },
-    bvhNodes: (): Float32Array | null => {
-      const buf = this._bvhBuffers?.bvhNodes?.cpuData;
-      if (buf == null) return null;
-      // Repack the internal 8-u32 layout into the public 8-f32 contract.
-      // Logic + leaf-flag check live in packBvhNodesForDebug so they can
-      // be unit-tested without standing up a HybridEngine — the prior
-      // in-line code shipped with a load-bearing signed-int32 bitwise bug
-      // (every leaf was classified as interior) that no test caught.
-      return packBvhNodesForDebug(buf);
-    },
-    giSignalTextures: () => {
-      // W1-R2 — _res is the nested FrameResources struct. The debug surface
-      // reaches in via a structural cast (cannot import FrameResources here
-      // without a cyclic dep), so we mirror the sub-struct shape inline.
-      const p = this._pipeline as unknown as {
-        _res?: {
-          common?: { hdrColorTexture?: GPUTexture; hdrIndirectTexture?: GPUTexture };
-          gtao?: { aoFullTexture?: GPUTexture };
-        };
-      } | null;
-      const res = p?._res;
-      if (res == null) return null;
-      // 'direct' = hdrColorTexture (raw shade output, before SVGF).
-      // 'indirect' = hdrIndirectTexture (per-channel SVGF input, Sprint 18).
-      // 'ao' = aoFullTexture (GTAO bilateral upsample output, Sprint 15).
-      // 'total' = current swap chain — not exposed as a persistent
-      //   texture; consumers can blit from the canvas directly.
-      return {
-        direct:   res.common?.hdrColorTexture    ?? null,
-        indirect: res.common?.hdrIndirectTexture ?? null,
-        ao:       res.gtao?.aoFullTexture        ?? null,
-        total:    null,
-      };
-    },
-    isDenoiserEnabled: (): boolean => this._denoiserPassEnabled,
-    setDenoiserEnabled: (enabled: boolean): void => {
-      this._denoiserPassEnabled = enabled;
-      this._pipeline?.setDenoiserPassEnabled(enabled);
-    },
-    estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
-      // Same structural-cast pattern as giSignalTextures. We reach into the
-      // pipeline's private `_res` because the FrameResources are
-      // pipeline-owned and the HybridEngine doesn't keep its own handle.
-      // Returns null pre-init / post-dispose; that's the documented
-      // contract on EngineDebugSurface.
-      const p = this._pipeline as unknown as { _res?: FrameResources } | null;
-      const res = p?._res;
-      if (res == null) return null;
-      return estimateFrameResourcesMemory(res);
-    },
-  };
 
   // ── Dispose ────────────────────────────────────────────────────────────
 
