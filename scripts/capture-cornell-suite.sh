@@ -73,41 +73,49 @@ mkdir -p "$OUT_DIR"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Start the example dev server in background.
-echo "[capture-suite] Starting vite dev server (cornell-box)..."
-( cd examples/cornell-box && exec npx vite --port 5173 --host 127.0.0.1 ) >/tmp/cornell-vite.log 2>&1 &
-VITE_PID=$!
+CORNELL_PORT="${VITRUM_CORNELL_DEV_PORT:-5173}"
+CORNELL_HOST_URL="http://127.0.0.1:${CORNELL_PORT}/"
+VITE_PID=""
 
-# Cleanup on exit (Ctrl-C, error, success).
-cleanup() {
-  if [[ -n "${VITE_PID:-}" ]] && kill -0 "$VITE_PID" 2>/dev/null; then
-    echo "[capture-suite] Stopping vite (pid $VITE_PID)..."
-    kill -TERM "$VITE_PID" 2>/dev/null || true
+if [[ "${VITRUM_CORNELL_SKIP_VITE:-}" == "1" ]]; then
+  echo "[capture-suite] Using external dev server (VITRUM_CORNELL_SKIP_VITE=1) at ${VITRUM_CAPTURE_URL:-$CORNELL_HOST_URL}"
+else
+  # Start the example dev server in background.
+  echo "[capture-suite] Starting vite dev server (cornell-box)..."
+  ( cd examples/cornell-box && exec npx vite --port "${CORNELL_PORT}" --host 127.0.0.1 ) >/tmp/cornell-vite.log 2>&1 &
+  VITE_PID=$!
+
+  # Cleanup on exit (Ctrl-C, error, success).
+  cleanup() {
+    if [[ -n "${VITE_PID:-}" ]] && kill -0 "$VITE_PID" 2>/dev/null; then
+      echo "[capture-suite] Stopping vite (pid $VITE_PID)..."
+      kill -TERM "$VITE_PID" 2>/dev/null || true
+      sleep 1
+      kill -KILL "$VITE_PID" 2>/dev/null || true
+    fi
+  }
+  trap cleanup EXIT
+
+  # Wait for vite to be ready (HTTP 200 on /).
+  echo -n "[capture-suite] Waiting for vite "
+  for i in $(seq 1 30); do
+    if curl -fsS "${CORNELL_HOST_URL}" -o /dev/null 2>/dev/null; then
+      echo " ready."
+      break
+    fi
+    echo -n "."
     sleep 1
-    kill -KILL "$VITE_PID" 2>/dev/null || true
-  fi
-}
-trap cleanup EXIT
-
-# Wait for vite to be ready (HTTP 200 on /).
-echo -n "[capture-suite] Waiting for vite "
-for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:5173/ -o /dev/null 2>/dev/null; then
-    echo " ready."
-    break
-  fi
-  echo -n "."
-  sleep 1
-  if [[ $i -eq 30 ]]; then
-    echo
-    echo "[capture-suite] ERROR — vite never came up. Check /tmp/cornell-vite.log:" >&2
-    tail -20 /tmp/cornell-vite.log >&2
-    exit 1
-  fi
-done
+    if [[ $i -eq 30 ]]; then
+      echo
+      echo "[capture-suite] ERROR — vite never came up. Check /tmp/cornell-vite.log:" >&2
+      tail -20 /tmp/cornell-vite.log >&2
+      exit 1
+    fi
+  done
+fi
 
 # Build the URL with extra query (e.g., bdpt) if any.
-BASE_URL="http://127.0.0.1:5173/"
+BASE_URL="${VITRUM_CAPTURE_URL:-$CORNELL_HOST_URL}"
 if [[ -n "$EXTRA_QUERY" ]]; then
   # Strip leading & if present; the adapter appends ? + scenario params.
   EXTRA_QUERY="${EXTRA_QUERY#&}"
