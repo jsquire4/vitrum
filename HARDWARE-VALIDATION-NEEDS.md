@@ -106,6 +106,14 @@ Acceptance (per `tools/benchmark-runner/README.md` §"Sweep verification capture
 - **Test plan:** run the hybrid pipeline on a real GPU and confirm **every pass's shader compiles** (no `createShaderModule` errors) — i.e. the existing GPU smoke / hybrid init path. If any pass fails to compile, its `requires` is missing a module; widen it.
 - **Acceptance:** full hybrid pipeline initializes + renders a frame on hardware WebGPU with zero shader-compile errors across all passes.
 
+### V9 — real Jakob-Hanika RGB→spectrum upsampling (pt-webgl spectral)  [implemented — needs render]
+- **What changed:** `shared-samplers/src/jakobHanika.ts` replaced the placeholder with the genuine Gauss-Newton sigmoid-coefficient solve (round-trip CPU-pinned to ~1e-7 interior / <5e-3 saturated); pt-webgl's `forkUniformBridge` now uploads real `u_jakobCoeffs` from `vitrum.ptWebgl.spectralAlbedo` when spectral rendering is on. Capability tag `spectral-jakob-hanika-placeholder` → `spectral-jakob-hanika`.
+- **Why GPU:** the fork's `evalSpectrum(u_jakobCoeffs, λ)` reflectance weighting only manifests in a live spectral render (hero-wavelength accumulation), not exercisable under SwiftShader.
+- **Test scene:** a dispersive/transmissive glass scene, `spectralRendering: true` + a saturated `spectralAlbedo` (e.g. `[0.5,0.1,0.7]`), fixed seed, pt-webgl. A/B `bbd32c8` vs `main`.
+- **Expected delta:** the medium picks up the correct chromatic reflectance per hero wavelength (vs the prior flat S≡½); no fireflies; converged image consistent with the CPU round-trip (<5e-3).
+- **Acceptance:** chroma shift in the math-predicted direction; no new artifacts.
+- **NOTE (capture-harness gap, from `plan/fidelity-promotion-playbook.md`):** pt-webgl is WebGL2 — the lavapipe WebGPU device can't validate it; this row needs a real-browser GL capture. And the lavapipe *PNG render-capture* adapter for WebGPU rows is not yet wired (only probe + compute-smoke exist) — building it is a prerequisite for hands-free WSL fidelity captures.
+
 ---
 
 ## 3. Suggested session order

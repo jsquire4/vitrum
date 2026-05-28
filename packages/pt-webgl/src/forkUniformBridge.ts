@@ -8,6 +8,7 @@ import {
   X_CMF_INTEGRAL,
   Y_CMF_INTEGRAL,
   Z_CMF_INTEGRAL,
+  rgbToSpectralCoefficients,
 } from '@vitrum/shared-samplers';
 import { ForkAccess, type PathTracerMaterialLike } from './forkAccess.js';
 
@@ -21,6 +22,17 @@ export interface ForkBridgeCausticOptions {
   readonly mneeMaxChainLength: number;
   readonly spectralRendering?: boolean;
   readonly radianceClamp?: number;
+  /**
+   * Representative linear-sRGB albedo for the dispersive medium, upsampled to a
+   * smooth reflectance spectrum via the real Jakob & Hanika 2019 solve and
+   * uploaded as the `u_jakobCoeffs` (c0, c1, c2) sigmoid-polynomial uniform.
+   *
+   * When `spectralRendering` is true and this is provided, the fork's
+   * `evalSpectrum(u_jakobCoeffs, λ)` evaluates the genuine paper-accurate
+   * reflectance at each hero wavelength. When omitted, `u_jakobCoeffs` keeps
+   * its flat (0,0,0) ⇒ S ≡ ½ default (achromatic spectral weighting).
+   */
+  readonly spectralAlbedo?: readonly [number, number, number] | undefined;
 }
 
 /**
@@ -133,6 +145,35 @@ export function driveForkMaterialUniforms(
   setUniform(material, 'uZCmfIntegral', Z_CMF_INTEGRAL);
   setUniform(material, 'uSpectralRendering', causticOptions?.spectralRendering === true ? 1 : 0);
   setUniform(material, 'uRadianceClamp', causticOptions?.radianceClamp ?? 0);
+
+  // Real Jakob & Hanika 2019 RGB→spectrum upsampling. When spectral rendering
+  // is on and the host supplies a representative medium albedo, solve the genuine
+  // sigmoid-polynomial coefficients (Gauss–Newton fit against the CIE CMFs under
+  // D65) and upload them so the fork's evalSpectrum(u_jakobCoeffs, λ) evaluates a
+  // paper-accurate reflectance — not the flat (0,0,0) ⇒ S ≡ ½ default.
+  // Ref: @vitrum/shared-samplers/src/jakobHanika.ts::rgbToSpectralCoefficients.
+  if (causticOptions?.spectralRendering === true && causticOptions.spectralAlbedo != null) {
+    const [ar, ag, ab] = causticOptions.spectralAlbedo;
+    const [c0, c1, c2] = rgbToSpectralCoefficients(ar, ag, ab);
+    const u = material?.uniforms?.['u_jakobCoeffs'] as
+      | { value: { set?: (x: number, y: number, z: number) => void; x: number; y: number; z: number } }
+      | undefined;
+    if (u != null) {
+      // THREE.Vector3 exposes set(); fall back to field assignment for plain refs.
+      if (typeof u.value.set === 'function') {
+        u.value.set(c0, c1, c2);
+      } else {
+        u.value.x = c0;
+        u.value.y = c1;
+        u.value.z = c2;
+      }
+    } else if (!missingUniformWarnings.has('u_jakobCoeffs')) {
+      missingUniformWarnings.add('u_jakobCoeffs');
+      console.warn(
+        '@vitrum/pt-webgl: fork uniform "u_jakobCoeffs" missing on path tracer material; spectral albedo upsampling skipped.',
+      );
+    }
+  }
   if (causticOptions != null) {
     const strategyCode =
       causticOptions.strategy === 'manifold-nee'

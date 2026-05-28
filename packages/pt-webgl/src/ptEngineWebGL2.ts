@@ -277,6 +277,28 @@ interface CausticConfig {
   readonly mneeMaxChainLength: number;
   readonly spectralRendering: boolean;
   readonly radianceClamp: number;
+  /**
+   * Representative linear-sRGB medium albedo for the real Jakob & Hanika RGB→
+   * spectrum upsampling. Parsed from `vitrum.ptWebgl.spectralAlbedo` (a
+   * 3-element number array). Undefined ⇒ achromatic flat spectral weighting.
+   */
+  readonly spectralAlbedo: readonly [number, number, number] | undefined;
+}
+
+/** Validate a `vitrum.ptWebgl.spectralAlbedo` extension into a finite RGB triple. */
+function parseSpectralAlbedo(
+  value: unknown,
+): readonly [number, number, number] | undefined {
+  if (!Array.isArray(value) || value.length < 3) return undefined;
+  const [r, g, b] = value;
+  if (
+    typeof r !== 'number' || !Number.isFinite(r) ||
+    typeof g !== 'number' || !Number.isFinite(g) ||
+    typeof b !== 'number' || !Number.isFinite(b)
+  ) {
+    return undefined;
+  }
+  return [r, g, b];
 }
 
 function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
@@ -294,6 +316,7 @@ function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
       typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
         ? Math.max(0, requestedRadianceClamp)
         : 0,
+    spectralAlbedo: parseSpectralAlbedo(opts.extensions?.['vitrum.ptWebgl.spectralAlbedo']),
   });
 }
 
@@ -383,6 +406,10 @@ export class PTEngineWebGL2 implements Engine {
   readonly #mneeMaxChainLength: number;
   readonly #spectralRendering: boolean;
   readonly #radianceClamp: number;
+  // Representative linear-sRGB medium albedo for the real Jakob & Hanika RGB→
+  // spectrum upsampling (extensions['vitrum.ptWebgl.spectralAlbedo']). Forwarded
+  // to the fork's u_jakobCoeffs uniform via the bridge.
+  readonly #spectralAlbedo: readonly [number, number, number] | undefined;
   // Sprint 10c — BDPT option. Stored from extensions['vitrum.ptWebgl.bdpt'].
   // Forwarded to fork uBdptEnabled / uBdptMaxLightBounces / uBdptLightPathTex uniforms.
   readonly #bdpt: boolean;
@@ -449,6 +476,7 @@ export class PTEngineWebGL2 implements Engine {
     this.#mneeMaxChainLength = caustic.mneeMaxChainLength;
     this.#spectralRendering = caustic.spectralRendering;
     this.#radianceClamp = caustic.radianceClamp;
+    this.#spectralAlbedo = caustic.spectralAlbedo;
     const bdpt = parseBdptConfig(opts.extensions);
     this.#bdpt = bdpt.enabled;
     this.#bdptMaxLightBounces = bdpt.maxLightBounces;
@@ -592,6 +620,7 @@ export class PTEngineWebGL2 implements Engine {
         mneeMaxChainLength: this.#mneeMaxChainLength,
         spectralRendering: this.#spectralRendering,
         radianceClamp: this.#radianceClamp,
+        spectralAlbedo: this.#spectralAlbedo,
       },
       {
         enabled: this.#bdpt && !softwareGl && this.#bdptCompileShader,
@@ -614,7 +643,11 @@ export class PTEngineWebGL2 implements Engine {
   get capabilities(): EngineCapabilities {
     const experimental = new Set<string>();
     if (this.#bdpt) experimental.add('bdpt-approximate');
-    if (this.#spectralRendering) experimental.add('spectral-jakob-hanika-placeholder');
+    // Real Jakob & Hanika 2019 RGB→spectrum upsampling (Gauss–Newton sigmoid
+    // fit in @vitrum/shared-samplers). Still flagged `experimental` because the
+    // spectral fidelity row is not yet promoted in the renderer-fidelity matrix,
+    // not because the upsampling is a placeholder.
+    if (this.#spectralRendering) experimental.add('spectral-jakob-hanika');
     if (this.#lastTlasAudit?.needsTlas) experimental.add('merged-bvh-only');
     return {
       supportsIncrementalScene: true,
@@ -849,6 +882,7 @@ export class PTEngineWebGL2 implements Engine {
         mneeMaxChainLength: this.#mneeMaxChainLength,
         spectralRendering: this.#spectralRendering,
         radianceClamp: this.#radianceClamp,
+        spectralAlbedo: this.#spectralAlbedo,
       },
       {
         enabled: this.#bdpt,

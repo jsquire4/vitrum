@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { BoxGeometry, Mesh, MeshPhysicalMaterial, Scene } from 'three';
+import { BoxGeometry, Mesh, MeshPhysicalMaterial, Scene, Vector3 } from 'three';
 import { driveForkMaterialUniforms } from '../forkUniformBridge.js';
+import { rgbToSpectralCoefficients, spectralCoefficientsToRGB } from '@vitrum/shared-samplers';
 
 function makeStubPathTracer() {
   return {
@@ -22,6 +23,8 @@ function makeStubPathTracer() {
           uZCmfIntegral: { value: 0 },
           uSpectralRendering: { value: -1 },
           uRadianceClamp: { value: -1 },
+          // Real Jakob & Hanika RGB→spectrum coefficient uniform (THREE.Vector3).
+          u_jakobCoeffs: { value: new Vector3(0, 0, 0) },
           // Sprint 10c — BDPT uniforms
           uBdptEnabled: { value: false as unknown },
           uBdptMaxLightBounces: { value: 0 },
@@ -110,6 +113,63 @@ describe('driveForkMaterialUniforms', () => {
 
     expect(pathTracer._pathTracer.material.uniforms.uSpectralRendering.value).toBe(1);
     expect(pathTracer._pathTracer.material.uniforms.uRadianceClamp.value).toBe(8);
+  });
+
+  // ── Real Jakob & Hanika RGB→spectrum coefficient upload ──────────────────
+
+  it('uploads real Jakob–Hanika coefficients to u_jakobCoeffs when spectralAlbedo + spectralRendering are set', () => {
+    const pathTracer = makeStubPathTracer();
+    const albedo: [number, number, number] = [0.7, 0.2, 0.45];
+    driveForkMaterialUniforms(pathTracer, {
+      strategy: 'none',
+      mneeMaxIterations: 6,
+      mneeMaxChainLength: 2,
+      spectralRendering: true,
+      spectralAlbedo: albedo,
+    });
+
+    const coeffs = pathTracer._pathTracer.material.uniforms.u_jakobCoeffs.value as Vector3;
+    const [c0, c1, c2] = rgbToSpectralCoefficients(...albedo);
+    // The bridge must upload exactly the genuine solver output.
+    expect(coeffs.x).toBe(c0);
+    expect(coeffs.y).toBe(c1);
+    expect(coeffs.z).toBe(c2);
+    // And those coefficients must round-trip back to the source albedo — i.e.
+    // the uploaded uniform really is the paper-accurate upsampling, not a flat
+    // placeholder.
+    const [rr, gg, bb] = spectralCoefficientsToRGB([coeffs.x, coeffs.y, coeffs.z]);
+    expect(rr).toBeCloseTo(albedo[0], 2);
+    expect(gg).toBeCloseTo(albedo[1], 2);
+    expect(bb).toBeCloseTo(albedo[2], 2);
+  });
+
+  it('leaves u_jakobCoeffs at its flat (0,0,0) default when no spectralAlbedo is provided', () => {
+    const pathTracer = makeStubPathTracer();
+    driveForkMaterialUniforms(pathTracer, {
+      strategy: 'none',
+      mneeMaxIterations: 6,
+      mneeMaxChainLength: 2,
+      spectralRendering: true,
+    });
+    const coeffs = pathTracer._pathTracer.material.uniforms.u_jakobCoeffs.value as Vector3;
+    expect(coeffs.x).toBe(0);
+    expect(coeffs.y).toBe(0);
+    expect(coeffs.z).toBe(0);
+  });
+
+  it('does not upload coefficients when spectralRendering is off, even if spectralAlbedo is provided', () => {
+    const pathTracer = makeStubPathTracer();
+    driveForkMaterialUniforms(pathTracer, {
+      strategy: 'none',
+      mneeMaxIterations: 6,
+      mneeMaxChainLength: 2,
+      spectralRendering: false,
+      spectralAlbedo: [0.9, 0.1, 0.3],
+    });
+    const coeffs = pathTracer._pathTracer.material.uniforms.u_jakobCoeffs.value as Vector3;
+    expect(coeffs.x).toBe(0);
+    expect(coeffs.y).toBe(0);
+    expect(coeffs.z).toBe(0);
   });
 
   // ── Sprint 10c — BDPT option flow-through tests ─────────────────────────
