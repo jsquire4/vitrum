@@ -709,22 +709,6 @@ export class PTEngineWebGL2 implements Engine {
     const useGpu =
       (!isSoftwareGlRenderer(this.#limits.renderer) || bdptForceGpuBind()) &&
       typeof tracer.renderBdptLightSubpathPass === 'function';
-    // Ensure BDPT GLSL is compiled before the fork light-subpath draw (FEATURE_BDPT=1, no tex bind yet).
-    driveForkMaterialUniforms(
-      this.#pathTracer,
-      {
-        strategy: this.#causticStrategy,
-        mneeMaxIterations: this.#mneeMaxIterations,
-        mneeMaxChainLength: this.#mneeMaxChainLength,
-        spectralRendering: this.#spectralRendering,
-        radianceClamp: this.#radianceClamp,
-      },
-      {
-        enabled: this.#bdpt,
-        maxLightBounces: this.#bdptMaxLightBounces,
-        lightPathTex: null,
-      },
-    );
     buffer.fillFromScene(
       this.#renderer,
       scene,
