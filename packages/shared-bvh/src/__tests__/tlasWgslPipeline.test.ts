@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { BVH_INTERSECT_WGSL, TLAS_TRAVERSAL_WGSL } from '../wgsl/index.js';
+import { BVH_INTERSECT_WGSL } from '../wgsl/bvhIntersect.wgsl.js';
+import { TLAS_TRAVERSAL_WGSL } from '../wgsl/tlasTraversal.wgsl.js';
 
 /**
  * C2 — pins that TLAS traverse-into-BLAS WGSL is exported for hybrid / RC / DDGI.
