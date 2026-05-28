@@ -443,6 +443,7 @@ export class PathTracingRenderer {
 
 		const prevPass = material.uniforms.uBdptLightSubpathPass.value;
 		const prevTex = material.uniforms.uBdptLightPathTex.value;
+		const prevResolution = material.uniforms.resolution.value.clone();
 		const w = lightPathTarget.width;
 		const h = lightPathTarget.height;
 		material.uniforms.resolution.value.set( w, h );
@@ -473,6 +474,7 @@ export class PathTracingRenderer {
 
 		material.uniforms.uBdptLightSubpathPass.value = prevPass;
 		material.uniforms.uBdptLightPathTex.value = prevTex;
+		material.uniforms.resolution.value.copy( prevResolution );
 		renderer.setRenderTarget( prevRT );
 		renderer.autoClear = prevAutoClear;
 
