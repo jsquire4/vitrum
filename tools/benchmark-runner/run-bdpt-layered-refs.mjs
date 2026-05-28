@@ -12,7 +12,7 @@
  *   VITRUM_BDPT_REQUIRE_GPU    1 — exit 1 when capture script fails (default 0 logs only)
  */
 
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
@@ -71,15 +71,31 @@ async function main() {
   const bdptGpu = resolve(outDir, 'cornell-layered-bdpt.png');
   const parityBdptGpu = resolve(outDir, 'cornell-parity-bdpt.png');
   const mechDir = resolve(repoRoot, 'tools/reference-renders/bdpt-layered-mechanical');
+  const minPromoteBytes = Number(process.env.VITRUM_BDPT_MIN_PROMOTE_BYTES ?? 50_000);
+  async function promoteIfGpu(path, dest, label) {
+    const st = await stat(path);
+    if (st.size < minPromoteBytes) {
+      console.warn(
+        `[bdpt-layered-refs] skip promote ${label}: ${st.size} bytes (< ${minPromoteBytes}); keeping existing mechanical fixture`,
+      );
+      return false;
+    }
+    await copyFile(path, dest);
+    return true;
+  }
   try {
-    await copyFile(layeredGpu, resolve(mechDir, 'cornell-layered.png'));
+    await promoteIfGpu(layeredGpu, resolve(mechDir, 'cornell-layered.png'), 'cornell-layered');
     if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
-      await copyFile(bdptGpu, resolve(mechDir, 'cornell-layered-bdpt.png'));
+      await promoteIfGpu(bdptGpu, resolve(mechDir, 'cornell-layered-bdpt.png'), 'cornell-layered-bdpt');
       if (process.env.VITRUM_BDPT_SKIP_PARITY !== '1') {
-        await copyFile(parityBdptGpu, resolve(mechDir, 'cornell-parity-bdpt.png'));
+        await promoteIfGpu(
+          parityBdptGpu,
+          resolve(mechDir, 'cornell-parity-bdpt.png'),
+          'cornell-parity-bdpt',
+        );
       }
     }
-    console.log(`[bdpt-layered-refs] promoted GPU PNGs → ${mechDir}`);
+    console.log(`[bdpt-layered-refs] promoted GPU PNGs (when ≥${minPromoteBytes} B) → ${mechDir}`);
   } catch (e) {
     console.warn(`[bdpt-layered-refs] could not promote to mechanical dir: ${e}`);
   }
