@@ -24,9 +24,12 @@
 
 import { defineUbo } from '@vitrum/shared-samplers';
 import { createCommonFrameResources } from './frameResources/createCommonFrameResources.js';
+import { createDdgiFrameResources } from './frameResources/createDdgiFrameResources.js';
 import { createRestirDIFrameResources } from './frameResources/createRestirDIFrameResources.js';
 import { createRestirGIFrameResources } from './frameResources/createRestirGIFrameResources.js';
 import { createGtaoFrameResources } from './frameResources/createGtaoFrameResources.js';
+import { createNeuralFrameResources } from './frameResources/createNeuralFrameResources.js';
+import { createSvgfFrameResources } from './frameResources/createSvgfFrameResources.js';
 
 // W2-C13 follow-up — DDGI grid UBO (64 B). Mirrors shade.wgsl's DDGIGridUBO
 // struct (10 active fields ending at offset 48) plus an explicit 16-byte
@@ -494,139 +497,8 @@ export function createFrameResources(
   const restirDI = createRestirDIFrameResources(device, W, H);
   const restirGI = createRestirGIFrameResources(device, W, H);
   const gtao = createGtaoFrameResources(device, W, H);
-
-  // DDGI placeholder textures + UBO. The shade pipeline's 4th bind group
-  // always binds these, so the pipeline validates even when no real DDGI
-  // atlas has been supplied via setDDGIInputs().
-  const ddgiPlaceholderRgba16f = device.createTexture({
-    label: 'ddgi-placeholder-irr',
-    size: [1, 1],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  // Visibility placeholder must match the live atlas format
-  // (probeUpdatePass creates rgba16float). Format consistency is the
-  // safer invariant — bug fix isolated during 2026-05-07 sweep (B5).
-  const ddgiPlaceholderRg16f = device.createTexture({
-    label: 'ddgi-placeholder-vis',
-    size: [1, 1],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  const ddgiUboBuffer = device.createBuffer({
-    label: 'ddgi-ubo',
-    size: 64,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  // Default DDGI uniform — origin (0,0,0), spacing 24, dims (1,1,1),
-  // atlas dims 1×1. shade.wgsl gates DDGI consumption on isDDGIWired()
-  // which checks dimsX > 1u; the placeholder writes dimsX=1 so the gate
-  // returns false and Lo_ddgi=0 until setDDGIInputs() supplies real
-  // grid params from HybridLayeredStage.
-  device.queue.writeBuffer(ddgiUboBuffer, 0, buildDDGIPlaceholderUBO().buffer);
-
-  // ── T2.H1 — 1×1 r32uint placeholders for object IDs (svgf-real).
-  // Object IDs are not available in this pipeline yet. We bind curr=0 and
-  // prev=1 to conservatively reject history reuse instead of accepting stale
-  // reprojection across unknown object boundaries.
-  const svgfObjIdPlaceholderTexture = device.createTexture({
-    label: 'svgf-real-objid-placeholder',
-    size: [1, 1],
-    format: 'r32uint',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  device.queue.writeTexture(
-    { texture: svgfObjIdPlaceholderTexture },
-    new Uint32Array([0]),
-    { bytesPerRow: 4 },
-    [1, 1],
-  );
-  const svgfPrevObjIdPlaceholderTexture = device.createTexture({
-    label: 'svgf-real-prev-objid-placeholder',
-    size: [1, 1],
-    format: 'r32uint',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  device.queue.writeTexture(
-    { texture: svgfPrevObjIdPlaceholderTexture },
-    new Uint32Array([1]),
-    { bytesPerRow: 4 },
-    [1, 1],
-  );
-  const svgfPrevNormalDepthTexture = device.createTexture({
-    label: 'svgf-real-prev-normal-depth',
-    size: [W, H],
-    format: 'rgba16float',
-    usage:
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST,
-  });
-
-  // ── T2.H1 — Real SVGF persistent textures (always allocated; zero overhead
-  // when mode is not 'svgf-real' because they're idle). At 1080p total ≈52 MB.
-  // historyLength: 1920×1080×2 ≈  4 MB
-  // momentsHistory: 1920×1080×8 ≈ 16 MB
-  // prevRadiance: 1920×1080×8 ≈  16 MB
-  // varianceTexture: 1920×1080×8 ≈ 16 MB (merged final)
-  // varianceMomentsIntermed: 1920×1080×8 ≈ 16 MB
-  const svgfHistUsage =
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
-  // Was r16uint; base-spec WebGPU disallows it as a storage texture (needs
-  // texture-formats-tier1). r32uint is base-spec storage-capable. Counter
-  // values stay well under u16 max so the wider format is just 2× memory,
-  // no behavioural change.
-  const svgfHistoryLengthTextureA = device.createTexture({
-    label: 'svgf-real-history-length-a',
-    size: [W, H], format: 'r32uint', usage: svgfHistUsage,
-  });
-  const svgfHistoryLengthTextureB = device.createTexture({
-    label: 'svgf-real-history-length-b',
-    size: [W, H], format: 'r32uint', usage: svgfHistUsage,
-  });
-  // Initialise both to 0 so the first frame treats all pixels as disoccluded.
-  // r32uint = 4 bytes/texel.
-  {
-    const bpr = Math.max(256, Math.ceil(W * 4 / 256) * 256);
-    const zeroBuf = new Uint8Array(bpr * H);
-    device.queue.writeTexture({ texture: svgfHistoryLengthTextureA }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });
-    device.queue.writeTexture({ texture: svgfHistoryLengthTextureB }, zeroBuf, { bytesPerRow: bpr }, { width: W, height: H, depthOrArrayLayers: 1 });
-  }
-  const svgfMomUsage =
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
-  const svgfMomentsTextureA = device.createTexture({
-    label: 'svgf-real-moments-a',
-    size: [W, H], format: 'rg32float', usage: svgfMomUsage,
-  });
-  const svgfMomentsTextureB = device.createTexture({
-    label: 'svgf-real-moments-b',
-    size: [W, H], format: 'rg32float', usage: svgfMomUsage,
-  });
-  const svgfRadUsage =
-    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
-  const svgfPrevRadianceTextureA = device.createTexture({
-    label: 'svgf-real-prev-radiance-a',
-    size: [W, H], format: 'rgba16float', usage: svgfRadUsage,
-  });
-  const svgfPrevRadianceTextureB = device.createTexture({
-    label: 'svgf-real-prev-radiance-b',
-    size: [W, H], format: 'rgba16float', usage: svgfRadUsage,
-  });
-  const svgfVarianceTexture = device.createTexture({
-    label: 'svgf-real-variance',
-    size: [W, H],
-    format: 'rg32float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING,
-  });
-  const svgfVarianceMomentsIntermedTexture = device.createTexture({
-    label: 'svgf-real-variance-moments-intermed',
-    size: [W, H],
-    format: 'rg32float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING,
-  });
+  const ddgi = createDdgiFrameResources(device);
+  const svgf = createSvgfFrameResources(device, W, H);
 
   // ── Assemble per-algorithm sub-structs ────────────────────────────────────
   // Allocation above is unchanged from the legacy flat layout; the bucketing
@@ -634,31 +506,11 @@ export function createFrameResources(
   // sibling fields to exactly one sub-struct — see plan/premium-grade-refactor
   // -20260517.md §W1-R2 for the canonical mapping table.
 
-  const ddgi: DDGIFrameResources = {
-    ddgiPlaceholderRgba16f,
-    ddgiPlaceholderRg16f,
-    ddgiUboBuffer,
-  };
-
-  const svgf: SVGFFrameResources = {
-    svgfObjIdPlaceholderTexture,
-    svgfPrevObjIdPlaceholderTexture,
-    svgfPrevNormalDepthTexture,
-    svgfHistoryLengthTextureA,
-    svgfHistoryLengthTextureB,
-    svgfMomentsTextureA,
-    svgfMomentsTextureB,
-    svgfPrevRadianceTextureA,
-    svgfPrevRadianceTextureB,
-    svgfVarianceTexture,
-    svgfVarianceMomentsIntermedTexture,
-  };
-
   // PPG resources are allocated lazily by `allocatePPGResources` when
   // `HybridEngineOptions.ppgEnabled === true`. Default leaves every slot
   // undefined so the pipeline can treat PPG as truly opt-in.
   const ppg: PPGFrameResources = {};
-  const neural: NeuralFrameResources = Object.freeze({});
+  const neural = createNeuralFrameResources();
 
   return { common, restirDI, restirGI, ddgi, gtao, svgf, ppg, neural };
 }
