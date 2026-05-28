@@ -41,7 +41,9 @@
         "src/main.{ts,mjs,js}",
         "bin/*.{ts,mjs,js}",
         "*.{ts,mjs,js}",
-        "generate-wgsl-layouts.mjs"
+        "generate-wgsl-layouts.mjs",
+        "benchmark-runner/*.mjs",
+        "benchmark-runner/run-*.mjs"
       ]
     },
     "packages/three-gpu-pathtracer": {

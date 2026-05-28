@@ -23,6 +23,7 @@
  */
 
 import { defineUbo } from '@vitrum/shared-samplers';
+import { createRestirDIFrameResources } from './frameResources/createRestirDIFrameResources.js';
 
 // W2-C13 follow-up — DDGI grid UBO (64 B). Mirrors shade.wgsl's DDGIGridUBO
 // struct (10 active fields ending at offset 48) plus an explicit 16-byte
@@ -486,26 +487,7 @@ export function createFrameResources(
   H: number,
   _options?: FrameResourceOptions,
 ): FrameResources {
-  // Reservoir DI: 24 bytes/pixel (6 × u32). 2026-05-18 sweep finding #3 —
-  // added `xi: vec2f` (8 bytes) so the visibility test can reconstruct the
-  // exact sample point chosen by the WRS instead of falling back to the
-  // emitter centroid. WGSL RESERVOIR_DI_STRIDE = 6u; this byte stride
-  // (6 × 4) must match.
-  const RESERVOIR_STRIDE = 24;
-  const totalReservoirBytes = Math.max(W * H * RESERVOIR_STRIDE, 256);
-
-  const reservoirCurrentBuffer = device.createBuffer({
-    size: totalReservoirBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
-  });
-  const reservoirPreviousBuffer = device.createBuffer({
-    size: totalReservoirBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
-  const reservoirSpatialBuffer = device.createBuffer({
-    size: totalReservoirBytes,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-  });
+  const restirDI = createRestirDIFrameResources(device, W, H);
 
   // HDR color output (rgba16float — written by shade, read by atrous).
   // COPY_SRC enables GPU pixel readback for the caustic validation harness.
@@ -948,12 +930,6 @@ export function createFrameResources(
     varianceBuffer,
     varianceBufferAux,
     atrousVarianceEstimateTexture,
-  };
-
-  const restirDI: RestirDIFrameResources = {
-    reservoirCurrentBuffer,
-    reservoirPreviousBuffer,
-    reservoirSpatialBuffer,
   };
 
   const restirGI: RestirGIFrameResources = {

@@ -1,22 +1,22 @@
 {
-  "capturedAt": "2026-05-28T02:24:22.507Z",
+  "capturedAt": "2026-05-28T02:55:43.891Z",
   "outDir": "tools/reference-renders/bdpt-layered-2026-05-28",
   "steps": [
     {
       "scenario": "cornell-layered",
       "ok": true,
-      "stdout": "[capture-cornell] → cornell-layered (512x512, 64 spp, 4 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-layered  (15s, 544883 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered.png"
+      "stdout": "[capture-cornell] → cornell-layered (1280x720, 512 spp, 8 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-layered  (123s, 1258493 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered.png"
     },
     {
       "scenario": "cornell-layered-bdpt",
       "ok": true,
-      "stdout": "[capture-cornell] → cornell-layered (512x512, 128 spp, 4 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-layered  (23s, 486677 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered-bdpt.png",
+      "stdout": "[capture-cornell] → cornell-layered (1280x720, 1024 spp, 8 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-layered  (127s, 1174793 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered-bdpt.png",
       "png": "tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered-bdpt.png"
     },
     {
       "scenario": "cornell-parity-bdpt",
       "ok": true,
-      "stdout": "[capture-cornell] → cornell-parity (512x512, 128 spp, 4 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-parity  (22s, 536030 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-parity-bdpt.png",
+      "stdout": "[capture-cornell] → cornell-parity (1280x720, 1024 spp, 8 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-parity  (126s, 1426237 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-parity-bdpt.png",
       "png": "tools/reference-renders/bdpt-layered-2026-05-28/cornell-parity-bdpt.png"
     }
   ],

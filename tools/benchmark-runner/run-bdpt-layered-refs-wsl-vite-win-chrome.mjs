@@ -1,9 +1,8 @@
 /**
  * BDPT + layered refs — cornell-box Vite in WSL, Playwright in WSL (headed hardware).
  *
- * WSL + vitrumBdptCpuFill produces valid BDPT PNGs. Windows Playwright + BDPT on ANGLE
- * still yields dark frames (~9 KiB); use this harness for mechanical fixture promotion.
- * (RC / hybrid still use run-rc-acceptance-wsl-vite-win-chrome.mjs for Windows Chrome.)
+ * WSL SwiftShader fallback: CPU light-path fill when `VITRUM_BDPT_CPU_FILL=1`.
+ * For mechanical fixture promotion use `run-bdpt-layered-refs-win-chrome.mjs` (hardware WebGL).
  */
 
 import { spawnSync } from 'node:child_process';
@@ -39,7 +38,7 @@ try {
       VITRUM_CORNELL_SKIP_VITE: '1',
       VITRUM_CAPTURE_URL: captureBase,
       VITRUM_CORNELL_DEV_PORT: cornellPort,
-      VITRUM_BDPT_CPU_FILL: '1',
+      VITRUM_BDPT_CPU_FILL: process.env.VITRUM_BDPT_CPU_FILL ?? '1',
       VITRUM_WEBGPU_ADAPTER: 'hardware',
       VITRUM_BENCH_HEADLESS: '0',
       VITRUM_BDPT_REQUIRE_GPU: '1',

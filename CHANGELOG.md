@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **BDPT GPU light-subpath feedback loop (2026-05-28):** `PathTracingRenderer.renderBdptLightSubpathPass` renders to a scratch RT and copies columns via `readRenderTargetPixels` / `writeTexture` so bounce k>0 can read prior columns without sampling the active render target (fixes dark ~8 KiB BDPT on ANGLE/WSL GPU).
 - **BDPT WSL capture harness (2026-05-28):** `benchmark:bdpt-layered-refs-gpu` uses WSL Vite + WSL headed Playwright with `vitrumBdptCpuFill=1` (not Windows Playwright); promoted `bdpt-layered-mechanical` PNGs (~490–545 KiB). Experimental Windows path: `benchmark:bdpt-layered-refs-gpu-win`.
 
 > **Catch-up note (2026-05-17):** entries from `T3.A` through `b87e2e4` (premium-grade refactor plan doc) absorbed from 49 commits on main. ~80 feature/fix branches are currently queued for merge stacked off W1-R6 — not enumerated here; see `git log --all --oneline --not main` for the full list.
