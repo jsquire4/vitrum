@@ -6,7 +6,7 @@
  */
 
 import { asMat4, type Mat4, type Scene, type ScenePrimitive, type Vec3 } from '@vitrum/core';
-import { buildArrayBvh } from './buildArrayBvh.js';
+import { buildArrayBvh, isLeafSplit } from './buildArrayBvh.js';
 import { buildTlas, refitTlas } from './tlas.js';
 
 const IDENTITY_MAT4 = asMat4([
@@ -442,7 +442,7 @@ function splicePrimitiveBlasIntoPack(
   const nodeView = new Uint32Array(bvhNodes.buffer);
   for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
     const splitOrCount = slice.bvhNodeWords[n + 7] ?? 0;
-    const isLeaf = (splitOrCount & 0xffff0000) === 0xffff0000;
+    const isLeaf = isLeafSplit(splitOrCount);
     const w = nodeWordStart + n;
     nodeView[w] = slice.bvhNodeWords[n] ?? 0;
     nodeView[w + 1] = slice.bvhNodeWords[n + 1] ?? 0;
@@ -586,7 +586,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
 
     for (let n = 0; n + 7 < localNodeWords.length; n += 8) {
       const splitOrCount = localNodeWords[n + 7] ?? 0;
-      const isLeaf = (splitOrCount & 0xffff0000) === 0xffff0000;
+      const isLeaf = isLeafSplit(splitOrCount);
       bvhNodeWords.push(
         localNodeWords[n] ?? 0,
         localNodeWords[n + 1] ?? 0,

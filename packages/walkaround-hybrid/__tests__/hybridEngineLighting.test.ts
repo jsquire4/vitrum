@@ -20,9 +20,10 @@
  * sprint9-10a-welford.test.ts for the same pattern).
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import * as THREE from 'three';
 import { HybridEngine } from '../src/HybridEngine.js';
+import { LIGHTING_OPTION_KEYS, type LightingOptions } from '../src/HybridEngineOptions.js';
 
 // ── Minimal mock GPUDevice (constructor stores the value; never called here) ─
 
@@ -197,5 +198,108 @@ describe('HybridEngine.updateLighting — empty call is a no-op', () => {
     expect(ddgi['_frame']).toBe(24);
     expect(ddgi['_ready']).toBe(true);
     expect(mockPipeline.requestAccumReset).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Test 6 — T13 unknown-key guard
+//
+// `Engine.updateLighting` is contractually opaque (Readonly<Record<string,
+// unknown>> in @vitrum/core), so backend-specific keys aren't baked into core.
+// To keep that opacity while surfacing silent drops, HybridEngine.updateLighting
+// console.warns once per unrecognised key. These tests pin (a) the key-set
+// source of truth stays aligned with the LightingOptions interface, (b) valid
+// keys don't warn, and (c) an unknown key warns + is ignored without throwing.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('LIGHTING_OPTION_KEYS — key-set source of truth', () => {
+  it('exactly matches the LightingOptions interface fields', () => {
+    // `Required<LightingOptions>` forces this object to list every interface
+    // field; the round-trip catches drift between the interface and the
+    // exported key list consumed by the runtime guard.
+    const sample: Required<LightingOptions> = {
+      primaryLightDir: [0, -1, 0],
+      primaryLightIntensity: 1,
+      skyTint: [1, 1, 1],
+      skyIrradiance: 1,
+    };
+    expect([...LIGHTING_OPTION_KEYS].sort()).toEqual(Object.keys(sample).sort());
+  });
+});
+
+describe('HybridEngine.updateLighting — unknown-key guard (T13)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('does not warn for valid keys but still applies them', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = makeEngine();
+    const e = engine as unknown as Record<string, unknown>;
+
+    engine.updateLighting({
+      primaryLightDir: [1, 0, 0],
+      primaryLightIntensity: 5,
+      skyTint: [0.2, 0.3, 0.4],
+      skyIrradiance: 9,
+    });
+
+    expect(warn).not.toHaveBeenCalled();
+    expect(e['_primaryLightDir']).toEqual([1, 0, 0]);
+    expect(e['_primaryLightIntensity']).toBe(5);
+    expect(e['_skyTint']).toEqual([0.2, 0.3, 0.4]);
+    expect(e['_skyIrradiance']).toBe(9);
+  });
+
+  it('warns once per unknown key, ignores it, still applies valid keys, does not throw', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = makeEngine();
+    const e = engine as unknown as Record<string, unknown>;
+
+    // `sunIntensity` is a plausible host typo for `primaryLightIntensity`;
+    // the opaque core contract lets it through at compile time.
+    expect(() =>
+      // Cast through Record so the unknown key is accepted (mirrors a host
+      // calling via the opaque `Engine.updateLighting` contract surface).
+      engine.updateLighting({
+        primaryLightIntensity: 7,
+        sunIntensity: 7,
+      } as unknown as Partial<LightingOptions>),
+    ).not.toThrow();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[@vitrum/walkaround-hybrid] updateLighting: ignoring unknown key "sunIntensity"',
+    );
+    // Valid key applied; unknown key did not leak onto engine state.
+    expect(e['_primaryLightIntensity']).toBe(7);
+    expect(e['sunIntensity']).toBeUndefined();
+  });
+
+  it('warns once for each of multiple unknown keys', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = makeEngine();
+
+    engine.updateLighting({
+      bogus: 1,
+      alsoBad: 'x',
+    } as unknown as Partial<LightingOptions>);
+
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      '[@vitrum/walkaround-hybrid] updateLighting: ignoring unknown key "bogus"',
+    );
+    expect(warn).toHaveBeenCalledWith(
+      '[@vitrum/walkaround-hybrid] updateLighting: ignoring unknown key "alsoBad"',
+    );
+  });
+
+  it('does not warn for an empty object', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const engine = makeEngine();
+
+    engine.updateLighting({});
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });

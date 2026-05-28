@@ -12,10 +12,14 @@ import {
 } from '../wavelengthSampling.js';
 
 function tableToWgslConst(name: string, table: Readonly<Float32Array | Float64Array>): string {
-  const vals = Array.from(table)
-    .map((v) => Number(v).toFixed(8))
-    .join(', ');
-  return `const ${name}: array<f32, 82> = array<f32, 82>(${vals});`;
+  // Derive the WGSL fixed-size-array length from the actual table length so the
+  // declared size always matches the initializer count. The three CMF tables
+  // (CIE_X/Y/Z_TABLE) are length 81 (380..780 nm at 5 nm steps); the three CDF
+  // tables (X/Y/Z_CMF_CDF) are length 82 (CIE_TABLE_LENGTH + 1). Hardcoding 82
+  // produced a constructor count mismatch for the 81-length CMF consts.
+  const arr = Array.from(table);
+  const vals = arr.map((v) => Number(v).toFixed(8)).join(', ');
+  return `const ${name}: array<f32, ${arr.length}> = array<f32, ${arr.length}>(${vals});`;
 }
 
 export const HERO_WAVELENGTH_TABLES_WGSL = /* wgsl */ `

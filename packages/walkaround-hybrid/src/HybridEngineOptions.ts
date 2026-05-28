@@ -31,6 +31,48 @@ export interface LightingOptions {
   skyIrradiance?: number;
 }
 
+/**
+ * Source-of-truth key list for {@link LightingOptions}. The
+ * `satisfies readonly (keyof LightingOptions)[]` constraint makes the compiler
+ * reject any key that is not a real `LightingOptions` field, so this list can
+ * only drift out of sync with the interface by deletion (a key removed from
+ * the interface fails the `satisfies` check), never by addition of a typo.
+ *
+ * Consumed by {@link assertKnownLightingKeys} for the runtime unknown-key
+ * guard in `HybridEngine.updateLighting`.
+ */
+export const LIGHTING_OPTION_KEYS = [
+  'primaryLightDir',
+  'primaryLightIntensity',
+  'skyTint',
+  'skyIrradiance',
+] as const satisfies readonly (keyof LightingOptions)[];
+
+const LIGHTING_OPTION_KEY_SET: ReadonlySet<string> = new Set(LIGHTING_OPTION_KEYS);
+
+/**
+ * Cheap, non-throwing unknown-key guard for {@link HybridEngine.updateLighting}.
+ *
+ * `Engine.updateLighting` is contractually opaque (`Readonly<Record<string,
+ * unknown>>` in `@vitrum/core`) — backends own their own lighting vocabulary.
+ * To keep that opacity while still surfacing silent drops, this helper
+ * `console.warn`s once per unrecognised key per call so hosts notice typos /
+ * stale keys instead of having them silently ignored. (No cross-call dedup:
+ * `updateLighting` is host-driven scrubbing, not a per-frame hot path.)
+ *
+ * Does NOT throw and does NOT mutate `opts`; the caller's field-by-field
+ * application logic still runs unchanged for the keys it recognises.
+ */
+export function assertKnownLightingKeys(opts: Readonly<Record<string, unknown>>): void {
+  for (const k of Object.keys(opts)) {
+    if (!LIGHTING_OPTION_KEY_SET.has(k)) {
+      console.warn(
+        `[@vitrum/walkaround-hybrid] updateLighting: ignoring unknown key "${k}"`,
+      );
+    }
+  }
+}
+
 export interface HybridEngineOptions extends EngineOptions {
   /** WebGPU device (narrowed from the opaque `device: unknown` on EngineOptions). */
   readonly device: GPUDevice;

@@ -37,3 +37,10 @@ export type {
   FrameOutput,
   Viewport,
 } from '@vitrum/core';
+
+// Backend-specific lighting vocabulary re-export. `Engine.updateLighting` is
+// contractually opaque in @vitrum/core (Readonly<Record<string, unknown>>),
+// so hosts that drive HybridEngine's per-frame time-of-day scrub can import
+// this concrete type for compile-time key checking without @vitrum/core baking
+// a backend-specific shape into the universal contract.
+export type { LightingOptions } from '@vitrum/walkaround-hybrid';

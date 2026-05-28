@@ -23,7 +23,7 @@ import type {
   FrameStats,
   ProgressStats,
 } from '@vitrum/core';
-import { asBackendTexture } from '@vitrum/core';
+import { asBackendTexture, patchPrimitiveInScene, patchEmitterInScene } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment, MeshPrimitive } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
@@ -267,39 +267,10 @@ function applyPositionsPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimitive>): 
   return true;
 }
 
-function patchPrimitiveInScene(scene: Scene, id: string, patch: Partial<ScenePrimitive>): Scene {
-  const idx = scene.primitives.findIndex((p) => String(p.id) === id);
-  if (idx < 0) throw new Error(`updatePrimitive: primitive "${id}" not found in current scene`);
-  const current = scene.primitives[idx]!;
-  if (patch.id !== undefined && String(patch.id) !== String(current.id)) {
-    throw new Error(`updatePrimitive: primitive "${id}" id cannot be changed`);
-  }
-  if (patch.kind !== undefined && patch.kind !== current.kind) {
-    throw new Error(
-      `updatePrimitive: primitive "${id}" kind cannot change from "${current.kind}" to "${patch.kind}"`,
-    );
-  }
-  const next = scene.primitives.slice();
-  next[idx] = { ...current, ...patch } as ScenePrimitive;
-  return { ...scene, primitives: next };
-}
-
-function patchEmitterInScene(scene: Scene, id: string, patch: Partial<SceneEmitter>): Scene {
-  const idx = scene.emitters.findIndex((e) => String(e.id) === id);
-  if (idx < 0) throw new Error(`updateEmitter: emitter "${id}" not found in current scene`);
-  const current = scene.emitters[idx]!;
-  if (patch.id !== undefined && String(patch.id) !== String(current.id)) {
-    throw new Error(`updateEmitter: emitter "${id}" id cannot be changed`);
-  }
-  if (patch.kind !== undefined && patch.kind !== current.kind) {
-    throw new Error(
-      `updateEmitter: emitter "${id}" kind cannot change from "${current.kind}" to "${patch.kind}"`,
-    );
-  }
-  const next = scene.emitters.slice();
-  next[idx] = { ...current, ...patch } as SceneEmitter;
-  return { ...scene, emitters: next };
-}
+// Canonical `patchPrimitiveInScene` / `patchEmitterInScene` now live in
+// `@vitrum/core` (theme T2 dedup); imported above. Backend-specific fast-path
+// predicates (`isMaterialOnlyPrimitivePatch` etc.) remain local — they are a
+// separate concern from the shared snapshot-patch + invariant layer.
 
 interface SchedulerOptions {
   readonly qualityMode: PTEngineWebGL2QualityMode;

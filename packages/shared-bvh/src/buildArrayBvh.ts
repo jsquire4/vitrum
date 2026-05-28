@@ -38,6 +38,18 @@
 
 const LEAFNODE_FLAG = 0xffff0000;
 
+/**
+ * Leaf-node test for the packed `splitAxisOrTriCount` word (node slot 7).
+ *
+ * Use `(splitWord >>> 16) === 0xffff`, NOT `(splitWord & 0xffff0000) === 0xffff0000`:
+ * a real uint32 leaf word is ≥ 0x80000000, so JS coerces it to a negative
+ * int32 under `&`, which can never `===` the positive literal `0xffff0000`
+ * (4294901760) — that comparison is a dead branch. `>>> 16` stays unsigned.
+ */
+export function isLeafSplit(splitWord: number): boolean {
+  return (splitWord >>> 16) === 0xffff;
+}
+
 /** Default upper bound on triangles per leaf (Wald 2007 §3 sweet spot). */
 const DEFAULT_MAX_LEAF_TRIANGLES = 4;
 
@@ -469,13 +481,11 @@ export function buildArrayBvh(
   // also dragged into the example apps, which have only DOM lib types).
   const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
   if (proc && proc.env?.['NODE_ENV'] !== 'production') {
-    const LEAFNODE_CHECK = 0xffff;
     const n = nodes.length;
     for (let i = 0; i < n; i++) {
       const node = nodes[i];
       if (node == null) continue;
-      const isLeaf = (node.splitAxisOrTriCount >>> 16) === LEAFNODE_CHECK;
-      if (isLeaf) continue;
+      if (isLeafSplit(node.splitAxisOrTriCount)) continue;
       const offset = node.rightChildOrTriOffset;
       if (offset < 1 || offset >= n) {
         throw new Error(

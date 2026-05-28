@@ -87,6 +87,7 @@ import {
 } from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
+import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 
@@ -831,6 +832,12 @@ export class HybridEngine implements Engine {
    * @param opts - Partial lighting overrides. Omitted fields are unchanged.
    */
   updateLighting(opts: Partial<LightingOptions>): void {
+    // `Engine.updateLighting` is contractually opaque (Record<string, unknown>),
+    // so hosts can pass any key without a type error at the core-contract call
+    // site. Warn (don't throw) on keys outside LightingOptions so silent drops
+    // become visible; the field-by-field application below is unchanged.
+    assertKnownLightingKeys(opts as Readonly<Record<string, unknown>>);
+
     let changed = false;
 
     if (opts.primaryLightDir !== undefined) {

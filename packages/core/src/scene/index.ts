@@ -36,3 +36,11 @@ export interface Scene {
   readonly emitters: ReadonlyArray<SceneEmitter>;
   readonly environment: SceneEnvironment;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Pure scene-snapshot patch helpers (canonical invariant layer for all
+// backends' `updatePrimitive` / `updateEmitter` paths). Re-exported last so the
+// `Scene` interface above is in scope for the helpers' type imports.
+// ────────────────────────────────────────────────────────────────────────────
+
+export * from './patchScene.js';

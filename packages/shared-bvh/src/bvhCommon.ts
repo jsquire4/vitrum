@@ -37,6 +37,7 @@
 
 import * as THREE from 'three';
 import { MeshBVH, StaticGeometryGenerator } from 'three-mesh-bvh';
+import { isLeafSplit } from './buildArrayBvh.js';
 
 // MeshBVH exposes `_roots` at runtime but it is not in the published
 // `.d.ts`. We need the field to read the packed BVHNode buffer.
@@ -761,7 +762,6 @@ export function validateBvhEncoding(
   totalNodes: number,
 ): void {
   const UINT32_PER_NODE = 8;
-  const LEAFNODE_FLAG = 0xffff;
   const u32 =
     nodeBytes instanceof Uint32Array
       ? nodeBytes
@@ -770,7 +770,7 @@ export function validateBvhEncoding(
   for (let i = 0; i < totalNodes; i++) {
     const base = i * UINT32_PER_NODE;
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = isLeafSplit(splitOrCount);
     if (isLeaf) continue;
     const offset = u32[base + 6]!;
     if (offset < 1 || offset >= totalNodes) {
@@ -815,7 +815,6 @@ export function validateBvhEncoding(
  */
 function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   const UINT32_PER_NODE = 8;
-  const LEAFNODE_FLAG = 0xFFFF;
   const u32 = new Uint32Array(bvhNodes.buffer, bvhNodes.byteOffset, bvhNodes.length);
   const totalNodes = bvhNodes.length / UINT32_PER_NODE;
   if (totalNodes <= 1) return;
@@ -824,7 +823,7 @@ function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   for (let i = 0; i < totalNodes; i++) {
     const base = i * UINT32_PER_NODE;
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = isLeafSplit(splitOrCount);
     if (isLeaf) continue;
     const value = u32[base + 6]!;
     if (value >= totalNodes) { needsConversion = true; }
@@ -835,7 +834,7 @@ function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   for (let i = 0; i < totalNodes; i++) {
     const base = i * UINT32_PER_NODE;
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = isLeafSplit(splitOrCount);
     if (isLeaf) continue;
     const absoluteU32Idx = u32[base + 6]!;
     const absoluteNodeIdx = absoluteU32Idx / UINT32_PER_NODE;
@@ -881,7 +880,6 @@ export function refitBvhBounds(
   positionStrideFloats: 3 | 4,
 ): void {
   const UINT32_PER_NODE = 8;
-  const LEAFNODE_FLAG = 0xffff;
   const totalNodes = bvhNodes.length / UINT32_PER_NODE;
   if (totalNodes === 0) return;
   const u32 = new Uint32Array(bvhNodes.buffer, bvhNodes.byteOffset, bvhNodes.length);
@@ -906,7 +904,7 @@ export function refitBvhBounds(
       continue;
     }
     const splitOrCount = u32[nodeIdx * UINT32_PER_NODE + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = isLeafSplit(splitOrCount);
     if (isLeaf) {
       order[orderLen++] = nodeIdx;
       continue;
@@ -926,7 +924,7 @@ export function refitBvhBounds(
     const nodeIdx = order[oi]!;
     const base = nodeIdx * UINT32_PER_NODE;
     const splitOrCount = u32[base + 7]!;
-    const isLeaf = (splitOrCount >>> 16) === LEAFNODE_FLAG;
+    const isLeaf = isLeafSplit(splitOrCount);
 
     let mnX = Infinity, mnY = Infinity, mnZ = Infinity;
     let mxX = -Infinity, mxY = -Infinity, mxZ = -Infinity;

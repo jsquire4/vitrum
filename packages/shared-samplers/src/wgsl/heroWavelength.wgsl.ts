@@ -7,7 +7,10 @@ import { HERO_WAVELENGTH_TABLES_WGSL } from './heroWavelengthTables.js';
 export const HERO_WAVELENGTH_WGSL = /* wgsl */ `
 ${HERO_WAVELENGTH_TABLES_WGSL}
 
-fn heroSampleTable(lambdaNm: f32, table: array<f32, 82>) -> f32 {
+// CMF tables (HERO_X/Y/Z_CMF) are 81 entries (380..780 nm at 5 nm steps);
+// HERO_CIE_TABLE_LENGTH == 81u. The CDF tables are 82 entries — sampled by
+// heroSampleCmfCdfInverse below, not by this function.
+fn heroSampleTable(lambdaNm: f32, table: array<f32, 81>) -> f32 {
   if (lambdaNm < HERO_CIE_LAMBDA_MIN || lambdaNm > 780.0) {
     return 0.0;
   }
@@ -33,9 +36,12 @@ fn heroMisMixturePdf(lambdaNm: f32) -> f32 {
   return (x + y + z) / 3.0;
 }
 
+// cmfTable is one of the 81-entry CMF consts (HERO_X/Y/Z_CMF); cdfTable is the
+// matching 82-entry CDF const (HERO_X/Y/Z_CMF_CDF). The CDF has one extra entry
+// (CDF[0] = 0, CDF[N] = 1) so cdfTable[lo + 1u] is in range for lo up to N-1.
 fn heroSampleCmfCdfInverse(
   u: f32,
-  cmfTable: array<f32, 82>,
+  cmfTable: array<f32, 81>,
   cdfTable: array<f32, 82>,
   integral: f32,
 ) -> vec2f {
@@ -53,7 +59,12 @@ fn heroSampleCmfCdfInverse(
   let cdfLo = cdfTable[lo];
   let cdfHi = cdfTable[lo + 1u];
   let vLo = cmfTable[lo];
-  let vHi = cmfTable[lo + 1u];
+  // cmfTable is 81 entries (valid indices 0..80); cdfTable is 82, so lo can
+  // reach 80, at which point lo + 1u (== 81) is out of bounds for cmfTable.
+  // Mirror the TS reference (wavelengthSampling.ts: table[lo + 1] ?? 0):
+  // treat the off-the-end CMF sample as 0 instead of reading past the array.
+  let vHiIdx = lo + 1u;
+  let vHi = select(0.0, cmfTable[min(vHiIdx, HERO_CIE_TABLE_LENGTH - 1u)], vHiIdx < HERO_CIE_TABLE_LENGTH);
   let t = select(0.0, (uClamped - cdfLo) / (cdfHi - cdfLo), cdfHi > cdfLo);
   let lambdaNm = clamp(
     HERO_CIE_LAMBDA_MIN + (f32(lo) + t) * HERO_CIE_LAMBDA_STEP,
