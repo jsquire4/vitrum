@@ -10,14 +10,23 @@ vi.mock('three/addons/lights/RectAreaLightUniformsLib.js', () => ({
   RectAreaLightUniformsLib: { init: vi.fn() },
 }));
 
+// A stub THREE root exposing the minimal Object3D surface the engine touches:
+// `traverse` (used by disposeObject3DTree / expandInstancedMeshesInScene) and
+// `traverseVisible` (used by findAllMeshesByPrimitiveId in the material fast
+// path). The single 'floor' mesh stands in for the converted scene.
+const floorMesh = { isMesh: true, name: 'floor', uuid: 'floor', material: {} };
+function makeStubRoot() {
+  return {
+    traverse: (cb: (o: unknown) => void) => cb(floorMesh),
+    traverseVisible: (cb: (o: unknown) => void) => cb(floorMesh),
+  };
+}
+
 vi.mock('@vitrum/three-bindings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@vitrum/three-bindings')>();
   return {
     ...actual,
-    vitrumSceneToThree: vi.fn(() => ({
-      traverse: () => undefined,
-    })),
-    findMeshByPrimitiveId: vi.fn(() => ({ material: {} })),
+    vitrumSceneToThree: vi.fn(() => makeStubRoot()),
     applyVitrumMaterialToMesh: vi.fn(),
   };
 });

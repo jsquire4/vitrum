@@ -32,6 +32,7 @@ import {
   applyVitrumMaterialToMesh,
   findMeshByPrimitiveId,
 } from '@vitrum/three-bindings';
+import { expandInstancedMeshesInScene, findAllMeshesByPrimitiveId } from './expandInstancedMeshes.js';
 import type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
 import { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
 import { bdptForceGpuBind, isSoftwareGlRenderer } from './bdpt/isSoftwareGlRenderer.js';
@@ -630,19 +631,19 @@ export class PTEngineWebGL2 implements Engine {
       maxBounces: this.#maxBouncesLimit,
       supportedAnalyticShapes: new Set(),
       // vitrumSceneToThree (the THREE-conversion ingestion path) handles
-      // mesh / skinned-mesh and throws on `analytic` (no THREE conversion
-      // path) — so `analytic` stays OUT; partitionSceneBySupport warn-skips
-      // it at setScene before the converter can throw.
+      // mesh / skinned-mesh / instanced-mesh and throws on `analytic` (no
+      // THREE conversion path) — so `analytic` stays OUT; partitionSceneBySupport
+      // warn-skips it at setScene before the converter can throw.
       //
-      // instanced-mesh is NOT supported: vitrumSceneToThree DOES build a
-      // THREE.InstancedMesh, but pt-webgl's BVH path (StaticGeometryGenerator
-      // → convertToStaticGeometry) has no isInstancedMesh / instanceMatrix
-      // handling — it bakes only mesh.matrixWorld (identity for the
-      // InstancedMesh), so an N-instance primitive would render as ONE copy
-      // at the origin. Declaring it would make partitionSceneBySupport flow
-      // it through to silently-wrong output, so it is warn-skipped instead.
-      // Revisit when the fork geometry generator gains instanceMatrix baking.
-      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh']),
+      // instanced-mesh IS supported: vitrumSceneToThree builds a single
+      // THREE.InstancedMesh (shared with walkaround's TLAS path), and
+      // `setScene` then expands it into N baked THREE.Mesh instances via
+      // `expandInstancedMeshesInScene` — BEFORE the fork's BVH/geometry
+      // generator runs — so all N instances render at their correct
+      // per-instance world transforms (the fork's convertToStaticGeometry
+      // bakes only mesh.matrixWorld and ignores instanceMatrix, which is why
+      // pt-webgl pre-bakes the per-instance matrices into separate meshes).
+      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh']),
       supportedEmitterKinds: new Set<SceneEmitter['kind']>([
         'directional',
         'rect-area',
@@ -822,6 +823,17 @@ export class PTEngineWebGL2 implements Engine {
     }
     this.#cameraSignature = '';
     const threeScene = vitrumSceneToThree(scene);
+    // pt-webgl-side instanced-mesh expansion. `vitrumSceneToThree` (shared
+    // with walkaround, which traverses InstancedMesh per-instance transforms
+    // directly in its TLAS path) builds a single THREE.InstancedMesh per
+    // `instanced-mesh` primitive. The absorbed three-gpu-pathtracer fork's
+    // geometry generator bakes only `mesh.matrixWorld` and ignores
+    // `instanceMatrix`, so an InstancedMesh would collapse to ONE copy at the
+    // origin. Expand each into N baked THREE.Mesh instances here — AFTER the
+    // shared converter, BEFORE the fork's BVH/geometry generator — so all N
+    // instances render at their correct per-instance world transforms. See
+    // `expandInstancedMeshes.ts` for the full rationale.
+    expandInstancedMeshesInScene(threeScene);
     this.#threeSceneRoot = threeScene;
     const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
     tracerCompat.setScene(threeScene, this.#camera);
@@ -911,11 +923,19 @@ export class PTEngineWebGL2 implements Engine {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
     if (isMaterialOnlyPrimitivePatch(_patch)) {
-      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
-      if (mesh == null) {
+      // An expanded instanced-mesh has N THREE.Mesh children sharing the
+      // primitive id (and, at setScene time, one shared material). Re-point
+      // the material on ALL of them — `applyVitrumMaterialToMesh` REPLACES
+      // `mesh.material`, so applying to only the first child (what
+      // findMeshByPrimitiveId returns) would leave the other N-1 instances
+      // on the stale material. For a plain mesh this is the single match.
+      const meshes = findAllMeshesByPrimitiveId(this.#threeSceneRoot, _id);
+      if (meshes.length === 0) {
         throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
       }
-      applyVitrumMaterialToMesh(mesh, _patch.material!);
+      for (const mesh of meshes) {
+        applyVitrumMaterialToMesh(mesh, _patch.material!);
+      }
       const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
       if (typeof tracerCompat.updateMaterials === 'function') {
         tracerCompat.updateMaterials();

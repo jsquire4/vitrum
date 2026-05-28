@@ -1,20 +1,21 @@
 /**
  * Capability-set reconciliation + partitionSceneBySupport wiring for pt-webgl.
  *
- * Pins two invariants the 2026-05-28 reconciliation locked in:
+ * Pins these invariants:
  *   1. The declared `supported*Kinds` match what pt-webgl GENUINELY RENDERS,
- *      not just what `vitrumSceneToThree` ingests. `instanced-mesh` is NOT
- *      supported: the converter builds a THREE.InstancedMesh, but pt-webgl's
- *      BVH path (StaticGeometryGenerator → convertToStaticGeometry) ignores
- *      instanceMatrix and bakes only mesh.matrixWorld (identity for the
- *      InstancedMesh), so N instances would render as one copy at the origin.
- *      `analytic` is also NOT supported (no THREE conversion path — the
+ *      not just what `vitrumSceneToThree` ingests. `instanced-mesh` IS
+ *      supported: the converter builds a single THREE.InstancedMesh, and
+ *      pt-webgl's `setScene` expands it into N baked THREE.Mesh instances
+ *      (`expandInstancedMeshesInScene`) BEFORE the fork's geometry generator
+ *      runs, so each instance renders at its real per-instance world
+ *      transform. `analytic` is NOT supported (no THREE conversion path — the
  *      converter throws on it).
  *   2. `setScene` filters the scene through `partitionSceneBySupport(scene,
- *      this.capabilities)` BEFORE calling `vitrumSceneToThree`, so an
- *      unsupported primitive (`instanced-mesh` / `analytic`) is warn-skipped
- *      (NOT thrown / NOT silently flowed through) and only the supported
- *      subset reaches the converter.
+ *      this.capabilities)` BEFORE calling `vitrumSceneToThree`, so a now-
+ *      supported `instanced-mesh` is KEPT (flows through to the converter)
+ *      while an unsupported `analytic` is warn-skipped (NOT thrown / NOT
+ *      silently flowed through) and only the supported subset reaches the
+ *      converter.
  *
  * `vitrumSceneToThree` is mocked with a spy that records the scene it
  * receives so we can assert the converter only ever sees the supported
@@ -119,32 +120,32 @@ describe('pt-webgl capability/partition reconciliation', () => {
     warnSpy?.mockRestore();
   });
 
-  it('declares mesh / skinned-mesh and NOT instanced-mesh / analytic', async () => {
+  it('declares mesh / skinned-mesh / instanced-mesh and NOT analytic', async () => {
     const engine = await createPTEngine_WebGL2({ device: makeRendererStub() as never });
     const kinds = engine.capabilities.supportedPrimitiveKinds!;
     expect(kinds.has('mesh')).toBe(true);
     expect(kinds.has('skinned-mesh')).toBe(true);
-    expect(kinds.has('instanced-mesh')).toBe(false);
+    expect(kinds.has('instanced-mesh')).toBe(true);
     expect(kinds.has('analytic')).toBe(false);
   });
 
-  it('warn-skips an instanced-mesh instead of silently rendering it wrong, keeping supported nodes', async () => {
+  it('keeps an instanced-mesh (now supported) flowing through to the converter, not warn-skipped', async () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGL2({ device: makeRendererStub() as never });
 
     engine.setScene(sceneWith([meshPrimitive('mesh-a'), instancedMeshPrimitive('inst-a')]));
 
-    // A warning was emitted naming the instanced-mesh primitive — pt-webgl's
-    // BVH path can't bake per-instance matrices, so it is dropped rather than
-    // flowed through to a one-copy-at-origin mis-render.
+    // No "not supported" warning for the instanced-mesh: pt-webgl now expands
+    // it into N baked meshes pt-webgl-side, so partitionSceneBySupport keeps
+    // it rather than dropping it.
     const warned = warnSpy.mock.calls.flat().map(String);
-    expect(warned.some((m) => m.includes('inst-a') && m.includes('not supported'))).toBe(true);
+    expect(warned.some((m) => m.includes('inst-a') && m.includes('not supported'))).toBe(false);
 
-    // The converter only saw the supported mesh — instanced-mesh was filtered
-    // out BEFORE vitrumSceneToThree ran.
+    // The converter saw BOTH the mesh and the instanced-mesh — the latter is
+    // no longer filtered out before vitrumSceneToThree.
     const last = seenScenes.at(-1)!;
-    expect(last.primitives.map((p) => String(p.id))).toEqual(['mesh-a']);
-    expect(last.primitives.some((p) => p.kind === 'instanced-mesh')).toBe(false);
+    expect(last.primitives.map((p) => String(p.id))).toEqual(['mesh-a', 'inst-a']);
+    expect(last.primitives.some((p) => p.kind === 'instanced-mesh')).toBe(true);
   });
 
   it('warn-skips an analytic primitive instead of throwing, and keeps supported nodes', async () => {

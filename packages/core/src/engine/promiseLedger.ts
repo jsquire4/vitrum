@@ -97,13 +97,17 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     },
     supportsAuxBuffers: false,
     accumulates: true,
-    // vitrumSceneToThree ingests mesh / skinned-mesh; analytic has no
-    // THREE-conversion path (partitionSceneBySupport warn-skips it).
-    // instanced-mesh NOT supported — the fork geometry generator
-    // (StaticGeometryGenerator → convertToStaticGeometry) ignores
-    // instanceMatrix and bakes only mesh.matrixWorld, so N instances would
-    // render as one copy at the origin; warn-skipped instead.
-    supportedPrimitiveKinds: ['mesh', 'skinned-mesh'],
+    // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh;
+    // analytic has no THREE-conversion path (partitionSceneBySupport
+    // warn-skips it).
+    // instanced-mesh IS supported — vitrumSceneToThree builds a single
+    // THREE.InstancedMesh (shared with walkaround's TLAS path), and pt-webgl's
+    // setScene expands it into N baked THREE.Mesh instances
+    // (`expandInstancedMeshesInScene`) BEFORE the fork's geometry generator
+    // runs, so each instance renders at its real per-instance world transform.
+    // (The fork's convertToStaticGeometry bakes only mesh.matrixWorld and
+    // ignores instanceMatrix, hence the pt-webgl-side pre-bake.)
+    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],
     supportedAnalyticShapes: [],
