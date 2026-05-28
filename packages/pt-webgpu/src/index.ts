@@ -50,9 +50,8 @@ import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPacking.js';
 import { defaultDirectionalIrradiance, defaultDirectionalLight, packEmitterArrays } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
-import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
-import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
+import { GpuResources } from './gpuResources.js';
 import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
@@ -159,31 +158,13 @@ class PTEngineWebGPU implements Engine {
   #samplesAccumulated = 0;
   #activeBounces = 1;
 
-  #accumTexture: GPUTexture | null = null;
-  #accumView: GPUTextureView | null = null;
-  #normalDepthTexture: GPUTexture | null = null;
-  #normalDepthView: GPUTextureView | null = null;
-  #albedoTexture: GPUTexture | null = null;
-  #albedoView: GPUTextureView | null = null;
-  #varianceTexture: GPUTexture | null = null;
-  #varianceView: GPUTextureView | null = null;
-  #motionVectorsTexture: GPUTexture | null = null;
-  #motionVectorsView: GPUTextureView | null = null;
-  #accumBuffer: GPUBuffer | null = null;
-  #varianceMomentsBuffer: GPUBuffer | null = null;
-  #accumBufferByteSize = 0;
-  #accumWidth = 0;
-  #accumHeight = 0;
-
-  /** Reused bind groups until scene buffers or accum views are recreated. */
-  #pathTraceBindGroup: GPUBindGroup | null = null;
-  #pathTraceBindGroup1: GPUBindGroup | null = null;
-  #pathTraceBindGroup2: GPUBindGroup | null = null;
-
-  #paramsBuffer: GPUBuffer | null = null;
-  #computePipeline: GPUComputePipeline | null = null;
-  #bdptSubpathPipeline: GPUComputePipeline | null = null;
-  #bindGroupLayout: GPUBindGroupLayout | null = null;
+  /**
+   * The cohesive GPU-resource-lifecycle cluster (T14-followup extraction): accum
+   * + aux textures and views, accum / varianceMoments / params buffers, the
+   * compute pipeline(s), the group-0 bind-group layout, the cached per-frame bind
+   * groups, and the accum dims. The engine owns exactly one instance.
+   */
+  readonly #gpu: GpuResources;
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
   readonly #postDenoiser: OIDNFinalDispatcher | SVGFRealDispatcher | null;
@@ -218,6 +199,7 @@ class PTEngineWebGPU implements Engine {
       typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
         ? Math.min(3, Math.floor(requestedBdptBounces))
         : 3;
+    this.#gpu = new GpuResources(opts.device, traceTier, this.#bdpt);
     if (opts.denoiser === 'svgf-real') {
       if (traceTier === 'lite') {
         throw new Error(
@@ -318,14 +300,15 @@ class PTEngineWebGPU implements Engine {
   // that don't apply to a brute-force compute path tracer.
   readonly debug: EngineDebugSurface = {
     estimatedGpuMemoryBytes: (): GpuMemoryBreakdown | null => {
-      const W = this.#accumWidth;
-      const H = this.#accumHeight;
+      const gpu = this.#gpu;
+      const W = gpu.accumWidth;
+      const H = gpu.accumHeight;
       // Pre-init / pre-renderFrame: no accum textures yet.
-      if (W <= 0 || H <= 0 || this.#accumTexture == null) return null;
+      if (W <= 0 || H <= 0 || gpu.accumTexture == null) return null;
 
       // Per-texel bytes inferred from the actual format at allocation time
-      // (see #ensureAccumResources: accum / normalDepth / albedo / variance
-      // / motionVectors are all rgba16float = 8 bytes/texel).
+      // (see GpuResources.ensureAccumResources: accum / normalDepth / albedo /
+      // variance / motionVectors are all rgba16float = 8 bytes/texel).
       const RGBA16F = 8;
       const texPixels = W * H;
       const accumBytes        = texPixels * RGBA16F;
@@ -333,10 +316,10 @@ class PTEngineWebGPU implements Engine {
       const albedoBytes       = texPixels * RGBA16F;
       const varianceBytes     = texPixels * RGBA16F;
       const motionBytes       = texPixels * RGBA16F;
-      const accumBufBytes     = this.#accumBufferByteSize;
-      const varMomentBufBytes = this.#varianceMomentsBuffer != null
-        ? this.#accumBufferByteSize : 0;
-      const paramsBufBytes    = this.#paramsBuffer != null ? 512 : 0;
+      const accumBufBytes     = gpu.accumBufferByteSize;
+      const varMomentBufBytes = gpu.varianceMomentsBuffer != null
+        ? gpu.accumBufferByteSize : 0;
+      const paramsBufBytes    = gpu.paramsBuffer != null ? 512 : 0;
       // Scene buffers (BVH, materials, indices, etc.) are owned by
       // UploadedSceneBuffers; size accounting there would require touching
       // the uploader — left for a follow-up so this commit stays focused.
@@ -398,8 +381,8 @@ class PTEngineWebGPU implements Engine {
    * three return sites (paused fast-out, already-converged fast-out, and the
    * post-dispatch path) before T14; centralized here. The post-dispatch site
    * passes `accumTexturePost` as `primary` (re-read after dispatch) while the
-   * fast-outs pass the pre-read `#accumTexture` — that distinction is preserved
-   * by the caller supplying the `primary` texture explicitly.
+   * fast-outs pass the pre-read `#gpu.accumTexture` — that distinction is
+   * preserved by the caller supplying the `primary` texture explicitly.
    */
   #frameOutput(
     primary: GPUTexture,
@@ -409,17 +392,17 @@ class PTEngineWebGPU implements Engine {
     return {
       kind: 'rendered',
       primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(primary),
-      ...(this.#normalDepthTexture != null
-        ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#normalDepthTexture) }
+      ...(this.#gpu.normalDepthTexture != null
+        ? { normalDepth: asBackendTexture<'webgpu', GPUTexture>(this.#gpu.normalDepthTexture) }
         : {}),
-      ...(this.#albedoTexture != null
-        ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#albedoTexture) }
+      ...(this.#gpu.albedoTexture != null
+        ? { albedo: asBackendTexture<'webgpu', GPUTexture>(this.#gpu.albedoTexture) }
         : {}),
-      ...(this.#varianceTexture != null
-        ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#varianceTexture) }
+      ...(this.#gpu.varianceTexture != null
+        ? { variance: asBackendTexture<'webgpu', GPUTexture>(this.#gpu.varianceTexture) }
         : {}),
-      ...(this.#motionVectorsTexture != null
-        ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#motionVectorsTexture) }
+      ...(this.#gpu.motionVectorsTexture != null
+        ? { motionVectors: asBackendTexture<'webgpu', GPUTexture>(this.#gpu.motionVectorsTexture) }
         : {}),
       samplesAccumulated,
       isConverged,
@@ -548,147 +531,6 @@ class PTEngineWebGPU implements Engine {
     return paramsArrayBuffer;
   }
 
-  #destroyAccumTexture(): void {
-    this.#accumTexture?.destroy();
-    this.#accumTexture = null;
-    this.#accumView = null;
-    this.#normalDepthTexture?.destroy();
-    this.#normalDepthTexture = null;
-    this.#normalDepthView = null;
-    this.#albedoTexture?.destroy();
-    this.#albedoTexture = null;
-    this.#albedoView = null;
-    this.#varianceTexture?.destroy();
-    this.#varianceTexture = null;
-    this.#varianceView = null;
-    this.#motionVectorsTexture?.destroy();
-    this.#motionVectorsTexture = null;
-    this.#motionVectorsView = null;
-    this.#accumBuffer?.destroy();
-    this.#accumBuffer = null;
-    this.#varianceMomentsBuffer?.destroy();
-    this.#varianceMomentsBuffer = null;
-    this.#accumBufferByteSize = 0;
-    this.#accumWidth = 0;
-    this.#accumHeight = 0;
-  }
-
-  #clearAccumBuffer(): void {
-    if (this.#accumBuffer == null) return;
-    const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.clearAccum' });
-    encoder.clearBuffer(this.#accumBuffer);
-    if (this.#varianceMomentsBuffer != null) {
-      encoder.clearBuffer(this.#varianceMomentsBuffer);
-    }
-    this.#device.queue.submit([encoder.finish()]);
-  }
-
-  #ensureAccumResources(width: number, height: number): void {
-    const targetByteSize = width * height * 16;
-    const textureReady =
-      this.#accumTexture != null && this.#accumWidth === width && this.#accumHeight === height;
-    const bufferReady = this.#accumBuffer != null && this.#accumBufferByteSize === targetByteSize;
-    if (textureReady && bufferReady) {
-      return;
-    }
-    this.#destroyAccumTexture();
-    this.#accumTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.accum',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-    });
-    this.#accumView = this.#accumTexture.createView();
-    this.#normalDepthTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.normalDepth',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.#normalDepthView = this.#normalDepthTexture.createView();
-    this.#albedoTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.albedo',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.#albedoView = this.#albedoTexture.createView();
-    this.#varianceTexture = this.#device.createTexture({
-      label: 'vitrum.pt-webgpu.variance',
-      size: { width, height, depthOrArrayLayers: 1 },
-      format: 'rgba16float',
-      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-    });
-    this.#varianceView = this.#varianceTexture.createView();
-    if (this.#traceTier === 'full') {
-      this.#motionVectorsTexture = this.#device.createTexture({
-        label: 'vitrum.pt-webgpu.motionVectors',
-        size: { width, height, depthOrArrayLayers: 1 },
-        format: 'rgba16float',
-        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-      });
-      this.#motionVectorsView = this.#motionVectorsTexture.createView();
-    }
-    this.#accumBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.accum.buffer',
-      size: Math.max(16, targetByteSize),
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    if (this.#traceTier === 'full') {
-      this.#varianceMomentsBuffer = this.#device.createBuffer({
-        label: 'vitrum.pt-webgpu.varianceMoments.buffer',
-        size: Math.max(16, targetByteSize),
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-    }
-    this.#accumBufferByteSize = targetByteSize;
-    this.#accumWidth = width;
-    this.#accumHeight = height;
-    this.#samplesAccumulated = 0;
-    this.#pathTraceBindGroup = null;
-    this.#pathTraceBindGroup1 = null;
-    this.#pathTraceBindGroup2 = null;
-    this.#clearAccumBuffer();
-  }
-
-  #ensurePipeline(): void {
-    if (this.#computePipeline != null && this.#bindGroupLayout != null && this.#paramsBuffer != null) {
-      return;
-    }
-    this.#paramsBuffer = this.#device.createBuffer({
-      label: 'vitrum.pt-webgpu.params',
-      size: 512,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    const traceWgsl =
-      this.#traceTier === 'lite' ? PT_WEBGPU_TRACE_LITE_WGSL : PT_WEBGPU_TRACE_WGSL;
-    const module = this.#device.createShaderModule({
-      label: `vitrum.pt-webgpu.pathTrace.${this.#traceTier}`,
-      code: traceWgsl,
-    });
-    this.#computePipeline = this.#device.createComputePipeline({
-      label: 'vitrum.pt-webgpu.pathTrace.pipeline',
-      layout: 'auto',
-      compute: {
-        module,
-        entryPoint: 'main',
-      },
-    });
-    this.#bindGroupLayout = this.#computePipeline.getBindGroupLayout(0);
-    if (this.#traceTier === 'full' && this.#bdpt) {
-      this.#bdptSubpathPipeline = this.#device.createComputePipeline({
-        label: 'vitrum.pt-webgpu.bdptLightSubpath.pipeline',
-        layout: 'auto',
-        compute: {
-          module,
-          entryPoint: 'bdptExtendLightSubpath',
-        },
-      });
-    } else {
-      this.#bdptSubpathPipeline = null;
-    }
-  }
-
   setScene(scene: Scene): void {
     if (this.#slot.get() === 'disposed') {
       throw new Error('setScene: engine is disposed');
@@ -704,9 +546,7 @@ class PTEngineWebGPU implements Engine {
         maxLightBounces: this.#bdptMaxLightBounces,
       });
     }
-    this.#pathTraceBindGroup = null;
-    this.#pathTraceBindGroup1 = null;
-    this.#pathTraceBindGroup2 = null;
+    this.#gpu.invalidateBindGroups();
     this.#scene = scene;
     const sceneSummary = summarizeScene(scene);
     if (sceneSummary.primitiveCount === 0) {
@@ -758,9 +598,7 @@ class PTEngineWebGPU implements Engine {
           uploadScenePackGeometry(this.#device, sb, rebuilt.pack);
         }
         this.#geoPack = rebuilt.pack;
-        this.#pathTraceBindGroup = null;
-        this.#pathTraceBindGroup1 = null;
-        this.#pathTraceBindGroup2 = null;
+        this.#gpu.invalidateBindGroups();
         this.#scene = nextScene;
         for (const warning of rebuilt.pack.warnings) {
           console.warn(`[vitrum/pt-webgpu] ${warning}`);
@@ -988,10 +826,12 @@ class PTEngineWebGPU implements Engine {
     this.#assertLive('renderFrame');
     const frameStartMs = globalThis.performance?.now?.() ?? Date.now();
 
+    const gpu = this.#gpu;
+
     if (this.#slot.get() === 'paused') {
       const pq = input.quality ?? {};
       const targetSppPaused = Math.min(pq.samplesTarget ?? 16, this.#maxSamplesLimit);
-      const accumTexture = this.#accumTexture;
+      const accumTexture = gpu.accumTexture;
       if (accumTexture == null) {
         return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
       }
@@ -1011,25 +851,30 @@ class PTEngineWebGPU implements Engine {
     const width = Math.max(1, Math.floor(input.viewport.width * resolution));
     const height = Math.max(1, Math.floor(input.viewport.height * resolution));
 
-    this.#ensureAccumResources(width, height);
-    this.#ensurePipeline();
+    // A recreate resets the sample accumulator (the prior inline
+    // #ensureAccumResources set #samplesAccumulated = 0 here; that one piece of
+    // engine state is reported back rather than mutated inside GpuResources).
+    if (gpu.ensureAccumResources(width, height)) {
+      this.#samplesAccumulated = 0;
+    }
+    gpu.ensurePipeline();
     if (
-      this.#accumView == null ||
-      this.#normalDepthView == null ||
-      this.#albedoView == null ||
-      this.#varianceView == null ||
-      (this.#traceTier === 'full' && this.#motionVectorsView == null) ||
-      this.#accumBuffer == null ||
-      (this.#traceTier === 'full' && this.#varianceMomentsBuffer == null) ||
-      this.#paramsBuffer == null ||
-      this.#computePipeline == null ||
-      this.#bindGroupLayout == null ||
+      gpu.accumView == null ||
+      gpu.normalDepthView == null ||
+      gpu.albedoView == null ||
+      gpu.varianceView == null ||
+      (this.#traceTier === 'full' && gpu.motionVectorsView == null) ||
+      gpu.accumBuffer == null ||
+      (this.#traceTier === 'full' && gpu.varianceMomentsBuffer == null) ||
+      gpu.paramsBuffer == null ||
+      gpu.computePipeline == null ||
+      gpu.bindGroupLayout == null ||
       this.#sceneBuffers == null
     ) {
       throw new Error('renderFrame: failed to initialize WebGPU pipeline resources');
     }
 
-    const accumTexture = this.#accumTexture;
+    const accumTexture = gpu.accumTexture;
     if (accumTexture != null && this.#samplesAccumulated >= targetSpp) {
       const output = this.#frameOutput(accumTexture, this.#samplesAccumulated, true);
       this.#emitFrameTelemetry(frameStartMs, 0, this.#samplesAccumulated, targetSpp);
@@ -1037,94 +882,35 @@ class PTEngineWebGPU implements Engine {
     }
 
     const paramsArrayBuffer = this.#buildParamsBuffer(input, width, height);
-    this.#device.queue.writeBuffer(this.#paramsBuffer, 0, paramsArrayBuffer);
+    this.#device.queue.writeBuffer(gpu.paramsBuffer, 0, paramsArrayBuffer);
 
-    let bindGroup = this.#pathTraceBindGroup;
-    if (bindGroup == null) {
-      const liteEntries: GPUBindGroupEntry[] = [
-        { binding: 0, resource: this.#accumView },
-        { binding: 1, resource: { buffer: this.#paramsBuffer } },
-        { binding: 2, resource: { buffer: this.#accumBuffer } },
-        { binding: 3, resource: { buffer: this.#sceneBuffers.positionsBuffer } },
-        { binding: 4, resource: { buffer: this.#sceneBuffers.indicesBuffer } },
-        { binding: 5, resource: { buffer: this.#sceneBuffers.triMaterialIdsBuffer } },
-        { binding: 6, resource: { buffer: this.#sceneBuffers.materialsBuffer } },
-        { binding: 7, resource: { buffer: this.#sceneBuffers.bvhNodesBuffer } },
-        { binding: 8, resource: { buffer: this.#sceneBuffers.normalsBuffer } },
-        { binding: 9, resource: this.#normalDepthView },
-        { binding: 10, resource: this.#albedoView },
-        { binding: 11, resource: this.#varianceView },
-      ];
-      const fullGroup0Entries: GPUBindGroupEntry[] = [
-        ...liteEntries,
-        { binding: 12, resource: this.#motionVectorsView! },
-        { binding: 13, resource: { buffer: this.#varianceMomentsBuffer! } },
-      ];
-      const fullGroup1Entries: GPUBindGroupEntry[] = [
-        { binding: 0, resource: { buffer: this.#sceneBuffers.analyticHeadersBuffer } },
-        { binding: 1, resource: { buffer: this.#sceneBuffers.analyticParamsBuffer } },
-        { binding: 2, resource: { buffer: this.#sceneBuffers.analyticLocalToWorldBuffer } },
-        { binding: 3, resource: { buffer: this.#sceneBuffers.analyticWorldToLocalBuffer } },
-        { binding: 4, resource: { buffer: this.#sceneBuffers.environmentMapTexelsBuffer } },
-        { binding: 5, resource: { buffer: this.#sceneBuffers.environmentMapCdfBuffer } },
-        { binding: 6, resource: { buffer: this.#sceneBuffers.pointLightsBuffer } },
-        { binding: 7, resource: { buffer: this.#sceneBuffers.spotLightsBuffer } },
-        { binding: 8, resource: { buffer: this.#sceneBuffers.rectAreaLightsBuffer } },
-        { binding: 9, resource: { buffer: this.#sceneBuffers.meshAreaLightsBuffer } },
-      ];
-      const fullGroup2Entries: GPUBindGroupEntry[] = [
-        { binding: 0, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } },
-        { binding: 1, resource: { buffer: this.#sceneBuffers.tlasInstanceIndicesBuffer } },
-        { binding: 2, resource: { buffer: this.#sceneBuffers.tlasBlasRootsBuffer } },
-        { binding: 3, resource: { buffer: this.#sceneBuffers.tlasInstanceWorldToLocalBuffer } },
-        { binding: 4, resource: { buffer: this.#sceneBuffers.tlasInstanceLocalToWorldBuffer } },
-        { binding: 5, resource: this.#bdptLightPathView() },
-      ];
-      bindGroup = this.#device.createBindGroup({
-        label: `vitrum.pt-webgpu.pathTrace.bindgroup0.${this.#traceTier}`,
-        layout: this.#bindGroupLayout,
-        entries: this.#traceTier === 'lite' ? liteEntries : fullGroup0Entries,
-      });
-      this.#pathTraceBindGroup = bindGroup;
-      if (this.#traceTier === 'full') {
-        this.#pathTraceBindGroup1 = this.#device.createBindGroup({
-          label: 'vitrum.pt-webgpu.pathTrace.bindgroup1.full',
-          layout: this.#computePipeline.getBindGroupLayout(1),
-          entries: fullGroup1Entries,
-        });
-        this.#pathTraceBindGroup2 = this.#device.createBindGroup({
-          label: 'vitrum.pt-webgpu.pathTrace.bindgroup2.full',
-          layout: this.#computePipeline.getBindGroupLayout(2),
-          entries: fullGroup2Entries,
-        });
-      }
-    }
+    const bindGroup = gpu.buildBindGroups(this.#sceneBuffers, () => this.#bdptLightPathView());
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
     if (
-      this.#bdptSubpathPipeline != null &&
+      gpu.bdptSubpathPipeline != null &&
       this.#bdpt &&
       this.#bdptExternalView == null &&
       this.#bdptLightPath != null &&
       this.#traceTier === 'full' &&
-      this.#pathTraceBindGroup1 != null &&
-      this.#pathTraceBindGroup2 != null
+      gpu.pathTraceBindGroup1 != null &&
+      gpu.pathTraceBindGroup2 != null
     ) {
       const bdptPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.bdptLightSubpath.pass' });
-      bdptPass.setPipeline(this.#bdptSubpathPipeline);
+      bdptPass.setPipeline(gpu.bdptSubpathPipeline);
       bdptPass.setBindGroup(0, bindGroup);
-      bdptPass.setBindGroup(1, this.#pathTraceBindGroup1);
-      bdptPass.setBindGroup(2, this.#pathTraceBindGroup2);
+      bdptPass.setBindGroup(1, gpu.pathTraceBindGroup1);
+      bdptPass.setBindGroup(2, gpu.pathTraceBindGroup2);
       bdptPass.dispatchWorkgroups(this.#bdptMaxLightBounces, 1, 1);
       bdptPass.end();
     }
 
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
-    pass.setPipeline(this.#computePipeline);
+    pass.setPipeline(gpu.computePipeline);
     pass.setBindGroup(0, bindGroup);
-    if (this.#traceTier === 'full' && this.#pathTraceBindGroup1 != null && this.#pathTraceBindGroup2 != null) {
-      pass.setBindGroup(1, this.#pathTraceBindGroup1);
-      pass.setBindGroup(2, this.#pathTraceBindGroup2);
+    if (this.#traceTier === 'full' && gpu.pathTraceBindGroup1 != null && gpu.pathTraceBindGroup2 != null) {
+      pass.setBindGroup(1, gpu.pathTraceBindGroup1);
+      pass.setBindGroup(2, gpu.pathTraceBindGroup2);
     }
     pass.dispatchWorkgroups(
       Math.ceil(width / WORKGROUP_SIZE),
@@ -1135,7 +921,7 @@ class PTEngineWebGPU implements Engine {
     this.#device.queue.submit([encoder.finish()]);
 
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
-    const accumTexturePost = this.#accumTexture;
+    const accumTexturePost = gpu.accumTexture;
     if (accumTexturePost == null) {
       return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
     }
@@ -1144,16 +930,16 @@ class PTEngineWebGPU implements Engine {
       this.#postDenoiser != null &&
       isConverged &&
       this.#samplesAccumulated > 0 &&
-      this.#accumTexture != null &&
-      this.#albedoTexture != null &&
-      this.#normalDepthTexture != null
+      gpu.accumTexture != null &&
+      gpu.albedoTexture != null &&
+      gpu.normalDepthTexture != null
     ) {
       this.#postDenoiser.kickIfReady(
         this.#device,
         {
-          color: this.#accumTexture,
-          albedo: this.#albedoTexture,
-          normalDepth: this.#normalDepthTexture,
+          color: gpu.accumTexture,
+          albedo: gpu.albedoTexture,
+          normalDepth: gpu.normalDepthTexture,
         },
         width,
         height,
@@ -1169,7 +955,7 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'disposed') return;
     this.#postDenoiser?.invalidate();
     this.#samplesAccumulated = 0;
-    this.#clearAccumBuffer();
+    this.#gpu.clearAccumBuffer();
   }
 
   /**
@@ -1184,7 +970,10 @@ class PTEngineWebGPU implements Engine {
   bdptAdvanceFrame(lightPathView: GPUTextureView | null): void {
     if (!this.#bdpt) return;
     this.#bdptExternalView = lightPathView;
-    this.#pathTraceBindGroup2 = null;
+    // Drop only group 2 (the BDPT light-path group), matching the prior inline
+    // behavior: group 0 stays cached, so the build branch in renderFrame won't
+    // fire and group 2 remains null until a full scene/accum invalidation.
+    this.#gpu.pathTraceBindGroup2 = null;
   }
 
   #bdptLightPathView(): GPUTextureView {
@@ -1219,17 +1008,12 @@ class PTEngineWebGPU implements Engine {
     this.#bdptPlaceholder?.destroy();
     this.#bdptPlaceholder = null;
     this.#bdptPlaceholderView = null;
-    this.#destroyAccumTexture();
-    this.#pathTraceBindGroup = null;
-    this.#pathTraceBindGroup1 = null;
-    this.#pathTraceBindGroup2 = null;
-    this.#paramsBuffer?.destroy();
+    // Tears down accum textures + buffers, the cached bind groups, and destroys
+    // + nulls the params buffer / pipeline / layout (same order as the prior
+    // inline dispose body). Scene buffers stay engine-owned, destroyed below.
+    this.#gpu.dispose();
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = null;
-    this.#paramsBuffer = null;
-    this.#computePipeline = null;
-    this.#bdptSubpathPipeline = null;
-    this.#bindGroupLayout = null;
     this.#scene = null;
     this.#geoPack = null;
     this.#onFrameSubs.clear();

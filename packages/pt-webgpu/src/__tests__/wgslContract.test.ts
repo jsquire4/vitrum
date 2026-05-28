@@ -124,11 +124,15 @@ describe('pt-webgpu WGSL material contract', () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const limitsSource = readFileSync(resolve(here, '../webgpuLimits.ts'), 'utf8');
     const indexSource = readFileSync(resolve(here, '../index.ts'), 'utf8');
+    // Group-2 bind-group construction was extracted into the GpuResources
+    // sub-struct (T14-followup); the per-frame dispatch (`setBindGroup(2, …)`)
+    // stays in index.ts. Both halves of the host↔WGSL lockstep are asserted.
+    const gpuResourcesSource = readFileSync(resolve(here, '../gpuResources.ts'), 'utf8');
     expect(limitsSource).toMatch(/PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP\s*=\s*10/);
     expect(indexSource).toContain('selectPtWebgpuTraceTier');
-    expect(indexSource).toContain('pathTrace.bindgroup2.full');
-    expect(indexSource).toContain('{ binding: 0, resource: { buffer: this.#sceneBuffers.tlasNodesBuffer } }');
-    expect(indexSource).toContain('setBindGroup(2, this.#pathTraceBindGroup2)');
+    expect(gpuResourcesSource).toContain('pathTrace.bindgroup2.full');
+    expect(gpuResourcesSource).toContain('{ binding: 0, resource: { buffer: sb.tlasNodesBuffer } }');
+    expect(indexSource).toContain('setBindGroup(2, gpu.pathTraceBindGroup2)');
   });
 
   it('keeps TLAS hit reconstruction in world space', () => {
