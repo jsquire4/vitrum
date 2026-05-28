@@ -8,5 +8,11 @@ export * from './frame.js';
 export * from './engine/index.js';
 export type { GpuDetection, DetectGpuOptions } from './gpuDetection.js';
 export type { WgpuAdapterKind, WgpuProbeResult } from './wgpuSupport.js';
+export type {
+  AdapterProfile,
+  RealtimeTier,
+  HeroBackendRec,
+  PtWebgpuTierRec,
+} from './adapterProfile.js';
 export { detectGpu } from './gpuDetection.js';
 export { probeWebGPU, isSwiftShaderAdapter } from './wgpuSupport.js';

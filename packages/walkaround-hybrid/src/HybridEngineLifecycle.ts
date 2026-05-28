@@ -84,6 +84,13 @@ export interface PipelineInitHost {
   readonly ctorLights: readonly DDGILight[];
   readonly ddgi: DDGI;
   readonly preferredSwapChainFormat: GPUTextureFormat;
+  // ── Phase-0 productization — quality-preset structural gating ──────────
+  /** GTAO dispatch mode: `'on'` (half-res) / `'quarter'` / `'off'`. */
+  readonly gtaoMode: 'on' | 'quarter' | 'off';
+  /** ReSTIR-DI spatial-reuse ping-pong pass count (1 or 2). */
+  readonly diSpatialPasses: 1 | 2;
+  /** ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). */
+  readonly giSpatialPasses: 1 | 2;
 
   /** Scene-readiness predicate (engine combines the core-scene mesh
    *  count + optional ctor `isSceneReady` heuristic). */
@@ -143,6 +150,9 @@ export type HybridInitStaticConfig = Pick<
   | 'temporalAccumAlpha'
   | 'ctorLights'
   | 'ddgi'
+  | 'gtaoMode'
+  | 'diSpatialPasses'
+  | 'giSpatialPasses'
 >;
 
 export class PipelineInitCoordinator {
@@ -377,6 +387,12 @@ export class PipelineInitCoordinator {
           denoiser: host.denoiser,
           cameraMoveResetThresholdSq: host.cameraMoveResetThresholdSq,
           temporalAccumAlpha: host.temporalAccumAlpha,
+          // Phase-0 — quality-preset structural gating (GTAO mode + spatial
+          // pass counts). The pipeline gates GTAO + slices spatial labels and
+          // sizes the timestamp layout off the same config.
+          gtaoMode: host.gtaoMode,
+          diSpatialPasses: host.diSpatialPasses,
+          giSpatialPasses: host.giSpatialPasses,
           // exactOptionalPropertyTypes: omit the key entirely when undefined.
           ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
           // W11 — forward OIDN config when denoiser === 'oidn-final'.

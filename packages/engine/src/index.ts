@@ -15,6 +15,17 @@ export {
 export { auditSceneNeedsTlas, type SceneTlasAudit } from '@vitrum/core';
 export { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 
+// Phase-0 productization — graceful-degradation adapter probe. The function
+// lives here (it imports the real backend limit thresholds); the data shape
+// (`AdapterProfile`) is re-exported from @vitrum/core for one-import ergonomics.
+export { probeAdapterProfile } from './adapterProfile.js';
+export type {
+  AdapterProfile,
+  RealtimeTier,
+  HeroBackendRec,
+  PtWebgpuTierRec,
+} from '@vitrum/core';
+
 // Lifecycle helpers — vanilla attachVitrum() is also available as a
 // dedicated entrypoint via `@vitrum/engine/lifecycle`. React's
 // <VitrumCanvas> ships under `@vitrum/engine/react`.

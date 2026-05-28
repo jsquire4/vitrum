@@ -56,6 +56,10 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'sample-budget', labels: ['sample-budget'] },
   { id: 'ris', labels: ['ris'] },
   { id: 'temporal', labels: ['temporal'] },
+  // spatial-2 / gi-spatial-2 label sets are Phase-0 config-driven (1 vs 2
+  // ping-pong passes). The static table carries the FULL (2-pass) labels;
+  // `composePassLabels` slices them to the active pass count so the timestamp
+  // layout matches the dispatched labels exactly (Risk R2).
   { id: 'spatial-2', labels: ['spatial-1', 'spatial-2'] },
   { id: 'gi-ris', labels: ['gi-ris'] },
   { id: 'gi-temporal', labels: ['gi-temporal'] },
@@ -111,19 +115,66 @@ const DDGI_BORDER_LABELS: readonly PassLabel[] = Object.freeze([
   'ddgi-border-vis',
 ]);
 
-/** Build the ordered label array for a given denoiser config. Used by
- *  `buildPassLayout` AND by the orchestrator if it wants to verify its
- *  runtime registry matches the static layout. */
+/**
+ * Phase-0 productization — the per-config knobs that change which pass labels
+ * are emitted. Threaded identically into BOTH the runtime registry (which Pass
+ * instances dispatch) and `buildPassLayout` (timestamp slot layout), so the
+ * two never desync (Risk R2). Optional fields default to the full-fidelity
+ * (ultra) config, so callers that omit them get today's layout unchanged.
+ */
+export interface PassLayoutConfig {
+  /** ReSTIR-DI spatial-reuse ping-pong pass count (1 or 2). Default 2. */
+  readonly diSpatialPasses?: 1 | 2;
+  /** ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). Default 2. */
+  readonly giSpatialPasses?: 1 | 2;
+  /** Whether GTAO + its bilateral upsample run. Default true. */
+  readonly gtaoEnabled?: boolean;
+}
+
+/** Labels the {@link SpatialReservoirPass} emits for a given DI pass count.
+ *  1-pass keeps only the terminal `spatial-2` label (shade depends on it). */
+export function diSpatialPassLabels(passCount: 1 | 2): readonly PassLabel[] {
+  return passCount === 1 ? ['spatial-2'] : ['spatial-1', 'spatial-2'];
+}
+
+/** Labels the {@link SpatialGIReservoirPass} emits for a given GI pass count.
+ *  1-pass keeps only the terminal `gi-spatial-2` label. */
+export function giSpatialPassLabels(passCount: 1 | 2): readonly PassLabel[] {
+  return passCount === 1 ? ['gi-spatial-2'] : ['gi-spatial-1', 'gi-spatial-2'];
+}
+
+/** Build the ordered label array for a given denoiser + Phase-0 quality
+ *  config. Used by `buildPassLayout` AND by the orchestrator if it wants to
+ *  verify its runtime registry matches the static layout.
+ *
+ *  The `config` slices the spatial label sets to the active pass count and
+ *  omits the gtao / gtao-upsample labels when GTAO is gated off, so the
+ *  timestamp slot layout matches exactly what the gated runtime loop
+ *  dispatches. */
 export function composePassLabels(
   denoiserLabels: readonly PassLabel[],
+  config: PassLayoutConfig = {},
 ): readonly PassLabel[] {
+  const diPasses = config.diSpatialPasses ?? 2;
+  const giPasses = config.giSpatialPasses ?? 2;
+  const gtaoOn = config.gtaoEnabled ?? true;
+
   const result: PassLabel[] = [];
   for (let i = 0; i < NON_DENOISER_PASS_ORDER.length; i++) {
     if (i === DENOISER_INSERTION_INDEX) {
       result.push(...denoiserLabels);
     }
     const entry = NON_DENOISER_PASS_ORDER[i]!;
-    result.push(...entry.labels);
+    // Config-driven label sets (the gated/variable passes).
+    if (entry.id === 'spatial-2') {
+      result.push(...diSpatialPassLabels(diPasses));
+    } else if (entry.id === 'gi-spatial-2') {
+      result.push(...giSpatialPassLabels(giPasses));
+    } else if (entry.id === 'gtao' || entry.id === 'gtao-upsample') {
+      if (gtaoOn) result.push(...entry.labels);
+    } else {
+      result.push(...entry.labels);
+    }
     // Splice the DDGI border-fill labels (owned by a separate encoder
     // outside this pipeline) right after `indirect-combine`.
     if (entry.id === 'indirect-combine') {

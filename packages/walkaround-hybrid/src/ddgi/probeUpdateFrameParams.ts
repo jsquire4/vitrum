@@ -52,6 +52,15 @@ export interface ProbeUpdateFrameParamsInput {
   skyTint: readonly [number, number, number];
   skyIrradiance: number;
   glassMixScale: number;
+  /** Phase-0 productization — round-robin probe-update divisor
+   *  (`probesPerFrame = ceil(totalProbes / divisor)`). Default 4 reproduces
+   *  the historical hardcoded `/4` 4-frame full-grid cycle. */
+  updateDivisor?: number;
+}
+
+/** Clamp the divisor to ≥ 1 so `probesPerFrame` never exceeds `totalProbes`. */
+function safeDivisor(divisor: number | undefined): number {
+  return Math.max(1, Math.floor(divisor ?? 4));
 }
 
 export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): ArrayBuffer {
@@ -60,7 +69,7 @@ export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): 
     randomRotation: haltonSO3AxisAngleFromFrameIndex(input.frameIndex),
     frameIndex: input.frameIndex,
     totalProbes: input.totalProbes,
-    probesPerFrame: Math.ceil(input.totalProbes / 4),
+    probesPerFrame: Math.ceil(input.totalProbes / safeDivisor(input.updateDivisor)),
     _pad0: 0,
     _pad1: 0,
     skyTint: [input.skyTint[0], input.skyTint[1], input.skyTint[2]] as const,
@@ -75,10 +84,12 @@ export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): 
 
 export const DDGI_PROBE_BLEND_HYSTERESIS = 0.97;
 
-export function packProbeUpdateBlendParams(totalProbes: number): ArrayBuffer {
+export function packProbeUpdateBlendParams(totalProbes: number, updateDivisor?: number): ArrayBuffer {
   const data = new ArrayBuffer(DDGI_BLEND_PARAMS_UBO.sizeBytes);
   DDGI_BLEND_PARAMS_UBO.pack(new DataView(data), 0, {
-    probesPerFrame: Math.ceil(totalProbes / 4),
+    // MUST match the ray pass's coverage (same divisor) so the blend kernel
+    // only blends probes that received fresh rays this frame.
+    probesPerFrame: Math.ceil(totalProbes / safeDivisor(updateDivisor)),
     hysteresis: DDGI_PROBE_BLEND_HYSTERESIS,
   });
   return data;

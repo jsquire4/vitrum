@@ -122,6 +122,13 @@ export class ProbeUpdatePass {
   // hosts override via HybridEngineOptions.glassMixScale.
   private _glassMixScale = 0.7;
 
+  // Phase-0 productization — DDGI round-robin probe-update divisor. The ray
+  // pass + the blend pass MUST agree on `probesPerFrame = ceil(total/N)`, so
+  // both pack functions read this single field. Default 4 reproduces the
+  // historical hardcoded `/4` (a 4-frame full-grid update cycle). Higher
+  // values (8/16) update fewer probes per frame for the medium/low presets.
+  private _probeUpdateDivisor = 4;
+
   // Max materials for the WGSL compile-time array size (M9 audit remediation).
   private _ddgiMaxMaterials: number;
 
@@ -180,6 +187,18 @@ export class ProbeUpdatePass {
    */
   setGlassMixScale(value: number): void {
     this._glassMixScale = value;
+  }
+
+  /**
+   * Phase-0 productization — set the DDGI round-robin probe-update divisor
+   * (`probesPerFrame = ceil(totalProbes / divisor)`). Higher ⇒ fewer probes
+   * updated per frame ⇒ cheaper per-frame cost but slower GI response to
+   * lighting changes. Default 4 (the historical hardcoded value). The ray pass
+   * and the blend pass both read this so their coverage stays in lockstep.
+   * Clamped to ≥ 1 (a divisor < 1 would request more probes than exist).
+   */
+  setProbeUpdateDivisor(divisor: number): void {
+    this._probeUpdateDivisor = Math.max(1, Math.floor(divisor));
   }
 
   /**
@@ -527,12 +546,15 @@ export class ProbeUpdatePass {
       skyTint: this._skyTint,
       skyIrradiance: this._skyIrradiance,
       glassMixScale: this._glassMixScale,
+      updateDivisor: this._probeUpdateDivisor,
     });
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data);
   }
 
   private _uploadBlendParams(device: GPUDevice): void {
-    const data = packProbeUpdateBlendParams(this._grid.probeCount);
+    // Same divisor as the ray pass so the blend coverage matches the rays
+    // written this frame (a mismatch would blend uncovered probes).
+    const data = packProbeUpdateBlendParams(this._grid.probeCount, this._probeUpdateDivisor);
     device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data);
   }
 

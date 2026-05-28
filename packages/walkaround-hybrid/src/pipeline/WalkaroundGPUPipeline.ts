@@ -132,6 +132,38 @@ export const HYBRID_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
 };
 
 /**
+ * Phase-0 productization — reduced device limits for the hybrid **lite** tier
+ * (Class B/C adapters that cannot satisfy the full 16-buffer / 8-texture
+ * floor but can still run a degraded realtime path).
+ *
+ * The lite tier runs the SAME shade pipeline as full — there is no WGSL fork
+ * (Deliverable 3 decision: runtime UBO/pass gating over an N× pipeline
+ * permutation). The win is on the **storage-buffer axis**: lite forces the
+ * merged-BVH path (`bvhMode:'merged'`), which removes the 5 TLAS scene-group
+ * buffers, dropping the peak storage-buffer count from the full path's 16 to
+ * the merged path's ~10. The **texture** floor stays at 5 because the shade
+ * pass structurally writes 4 storage textures simultaneously + 1 — that cannot
+ * drop without forking shade.wgsl, which the lite-tier decision explicitly
+ * avoids.
+ *
+ * NOTE: these numbers are a *hypothesis* until a device requested with these
+ * limits actually compiles + binds the merged-path shade pipeline on real
+ * hardware (Risk R3 in `plan/phase0-productization.md`). The full 16/8 were
+ * themselves "lift for headroom" choices, not hard minima, so the lite values
+ * are a conservative reduction. The GPU-validation harness confirms them; see
+ * the HARDWARE-VALIDATION lite-tier entry. Both axes MUST stay strictly below
+ * `HYBRID_WEBGPU_REQUIRED_LIMITS` (asserted by a unit test) so the adapter
+ * profile's lite-vs-full verdict is monotone.
+ */
+export const HYBRID_LITE_LIMITS: Record<string, number> = {
+  // Merged-path peak (no 5 TLAS scene-group buffers vs the full 16).
+  maxStorageBuffersPerShaderStage: 10,
+  // Shade's 4 simultaneous storage-texture writes + 1; cannot go lower
+  // without a shade.wgsl fork (the lite decision avoids that fork).
+  maxStorageTexturesPerShaderStage: 5,
+};
+
+/**
  * WebGPU features the hybrid pipeline requires.  Currently none — the
  * pipeline allocates every storage texture using base-spec-storage-capable
  * formats (rgba16float, rgba32float, rg32float, r32uint, rgba32uint). The
@@ -345,6 +377,28 @@ export class WalkaroundGPUPipeline {
   private _atrousPipeline!: GPUComputePipeline;
   /** Active denoiser (looked up from `_denoiserRegistry` after init). */
   private _denoiserMode: DenoiserId = 'atrous-variance';
+  /** Phase-0 productization — quality-preset structural gating, fixed per
+   *  engine instance (set at initialize()). `_gtaoEnabled` feeds the per-frame
+   *  `gateOpts`; `_diSpatialPasses`/`_giSpatialPasses` size both the spatial
+   *  Pass instances AND every `buildPassLayout` call so the timestamp slot
+   *  layout matches the dispatched labels (Risk R2). Defaults preserve the
+   *  pre-Phase-0 full layout (GTAO on, 2 spatial passes each). */
+  private _gtaoEnabled = true;
+  private _diSpatialPasses: 1 | 2 = 2;
+  private _giSpatialPasses: 1 | 2 = 2;
+  /** Bundled layout config passed to every `buildPassLayout` call so the four
+   *  call sites can't drift. */
+  private get _passLayoutConfig(): {
+    diSpatialPasses: 1 | 2;
+    giSpatialPasses: 1 | 2;
+    gtaoEnabled: boolean;
+  } {
+    return {
+      diSpatialPasses: this._diSpatialPasses,
+      giSpatialPasses: this._giSpatialPasses,
+      gtaoEnabled: this._gtaoEnabled,
+    };
+  }
   /** Registry of all built-in denoisers; populated once at boot. */
   private _denoiserRegistry: DenoiserRegistry | null = null;
   /** The active denoiser instance for this pipeline (set in initialize). */
@@ -434,7 +488,7 @@ export class WalkaroundGPUPipeline {
    */
   async readGpuTimingsOnce(): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
     if (!this._initialized) return { perPass: {}, rawBigints: [] };
-    const layout = buildPassLayout({ denoiserMode: this._denoiserMode });
+    const layout = buildPassLayout({ denoiserMode: this._denoiserMode, ...this._passLayoutConfig });
     return readTimestampsOnce(this._device, this._tsState, layout);
   }
 
@@ -462,6 +516,15 @@ export class WalkaroundGPUPipeline {
         modelUrl: string;
         executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
       };
+      /** Phase-0 productization — GTAO dispatch mode. `'off'` gates GTAO +
+       *  its upsample out (the AO target keeps its 1.0 init = no occlusion).
+       *  `'quarter'` is reserved (currently behaves like `'on'` half-res —
+       *  true quarter-res needs a quarter-res AO target, a follow-up). */
+      gtaoMode?: 'on' | 'quarter' | 'off';
+      /** Phase-0 — ReSTIR-DI spatial ping-pong pass count (1 or 2). Default 2. */
+      diSpatialPasses?: 1 | 2;
+      /** Phase-0 — ReSTIR-GI spatial ping-pong pass count (1 or 2). Default 2. */
+      giSpatialPasses?: 1 | 2;
     },
   ): Promise<void> {
     const d = this._device;
@@ -482,6 +545,12 @@ export class WalkaroundGPUPipeline {
     // the always-on AtrousIndirectPass.
     this._atrousPipeline = compiled.atrousPipeline;
     this._denoiserMode = options?.denoiser ?? 'atrous-variance';
+    // Phase-0 productization — quality-preset structural gating. `'quarter'`
+    // is treated as `'on'` for now (true quarter-res AO is a follow-up needing
+    // a quarter-res AO target); only `'off'` gates GTAO out.
+    this._gtaoEnabled = (options?.gtaoMode ?? 'on') !== 'off';
+    this._diSpatialPasses = options?.diSpatialPasses ?? 2;
+    this._giSpatialPasses = options?.giSpatialPasses ?? 2;
     this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
       ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
     this._temporalAccumAlpha = options?.temporalAccumAlpha
@@ -551,10 +620,11 @@ export class WalkaroundGPUPipeline {
     ));
     registry.register(new RISPass(compiled.risPipeline));
     registry.register(new TemporalReservoirPass(compiled.temporalPipeline));
-    registry.register(new SpatialReservoirPass(compiled.spatialPipeline));
+    // Phase-0 — spatial pass count is preset-driven (1 or 2 ping-pong passes).
+    registry.register(new SpatialReservoirPass(compiled.spatialPipeline, this._diSpatialPasses));
     registry.register(new RISGIPass(compiled.risGiPipeline));
     registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline));
-    registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline));
+    registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, this._giSpatialPasses));
     registry.register(new ShadePass(compiled.shadePipeline));
     registry.register(new MotionVectorsPass(compiled.motionVectorsPipeline));
     registry.register(new GTAOPass(compiled.gtaoPipeline));
@@ -849,7 +919,7 @@ export class WalkaroundGPUPipeline {
     );
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────
-    const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode });
+    const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode, ...this._passLayoutConfig });
 
     const encoder = d.createCommandEncoder({ label: 'walkaround-restir' });
 
@@ -937,6 +1007,8 @@ export class WalkaroundGPUPipeline {
     const gateOpts: PassGateOptions = {
       denoiserMode: this._denoiserMode,
       ppgEnabled: this._ppg.enabled,
+      // Phase-0 — gate GTAO + its upsample when the preset disabled it.
+      gtaoEnabled: this._gtaoEnabled,
     };
 
     // ── Unified pass loop ────────────────────────────────────────────────

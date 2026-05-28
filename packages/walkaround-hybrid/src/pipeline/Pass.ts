@@ -41,6 +41,10 @@ export interface PassGateOptions {
   readonly denoiserMode: string;
   /** Whether PPG (path-guiding) is enabled. */
   readonly ppgEnabled: boolean;
+  /** Phase-0 productization — whether GTAO runs this config. `false` (low
+   *  quality preset / `gtaoMode:'off'`) gates off BOTH the GTAO compute pass
+   *  and its bilateral upsample. Absent ⇒ treated as `true` (on). */
+  readonly gtaoEnabled?: boolean;
   /** Extension bag for forward-compatible flags. */
   readonly [extension: string]: unknown;
 }

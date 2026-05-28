@@ -13,6 +13,7 @@ export type { HybridEngineOptions, LightingOptions } from './HybridEngine.js';
 
 export {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
+  HYBRID_LITE_LIMITS,
   HYBRID_WEBGPU_REQUIRED_FEATURES,
 } from './pipeline/WalkaroundGPUPipeline.js';
 

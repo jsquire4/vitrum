@@ -93,6 +93,15 @@ interface PassLayoutOptions {
    *  'oidn-final' is registered as `disabled` and never reaches this layout
    *  builder at runtime — the registry rejects it at `lookup()` time. */
   readonly denoiserMode: import('./denoisers/index.js').DenoiserId;
+  /** Phase-0 productization — ReSTIR-DI spatial ping-pong pass count (1 or 2).
+   *  Default 2. MUST match the {@link SpatialReservoirPass} config so the slot
+   *  layout matches the dispatched labels (Risk R2). */
+  readonly diSpatialPasses?: 1 | 2;
+  /** Phase-0 — ReSTIR-GI spatial ping-pong pass count (1 or 2). Default 2. */
+  readonly giSpatialPasses?: 1 | 2;
+  /** Phase-0 — whether GTAO + upsample run (omits their labels when false).
+   *  Default true. */
+  readonly gtaoEnabled?: boolean;
 }
 
 interface PassLayout {
@@ -119,7 +128,11 @@ export function buildPassLayout(opts: PassLayoutOptions): PassLayout {
   // modules have fully initialised their `*_PASS_LABELS` and
   // `NON_DENOISER_PASS_ORDER` exports.
   const denoiserLabels = DENOISER_PASS_LABELS[opts.denoiserMode];
-  const labels = composePassLabels(denoiserLabels);
+  const labels = composePassLabels(denoiserLabels, {
+    ...(opts.diSpatialPasses !== undefined ? { diSpatialPasses: opts.diSpatialPasses } : {}),
+    ...(opts.giSpatialPasses !== undefined ? { giSpatialPasses: opts.giSpatialPasses } : {}),
+    ...(opts.gtaoEnabled !== undefined ? { gtaoEnabled: opts.gtaoEnabled } : {}),
+  });
 
   const indexMap = new Map<PassLabel, number>();
   labels.forEach((label, i) => indexMap.set(label, i));

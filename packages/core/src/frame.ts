@@ -71,13 +71,23 @@ export interface FrameInput {
    * - Generic PT engines (e.g. `@vitrum/pt-webgl`) honour `viewport.width`
    *   and `viewport.height` every frame; passing different values triggers
    *   an internal render-target resize transparently.
-   * - **`HybridEngine` (`@vitrum/walkaround-hybrid`) does NOT.** Its WebGPU
-   *   render targets (DDGI atlas, ReSTIR reservoirs, history textures,
-   *   accumulation buffer) are sized at construction via
-   *   `HybridEngineOptions.{width,height}` and can only be resized
-   *   explicitly via `HybridEngine.setSize(width, height)`. Pushing a new
-   *   `FrameInput.viewport` is silently ignored — there is no per-frame
-   *   resize-detection branch in `HybridEngine.renderFrame`.
+   * - **`HybridEngine` (`@vitrum/walkaround-hybrid`) does NOT honour
+   *   `viewport`.** Its WebGPU render targets (DDGI atlas, ReSTIR reservoirs,
+   *   history textures, accumulation buffer) are sized to the *canvas* at
+   *   construction via `HybridEngineOptions.{width,height}` and the canvas
+   *   size can only be changed explicitly via `HybridEngine.setSize(width,
+   *   height)`. Pushing a new `FrameInput.viewport` is silently ignored —
+   *   there is no per-frame canvas-resize-detection branch in
+   *   `HybridEngine.renderFrame`.
+   *
+   *   **However, `FrameInput.quality.resolutionFactor` IS honoured per-frame
+   *   by HybridEngine** (Phase-0 productization): it scales the *internal*
+   *   render resolution (= canvas × factor) and the composite pass upscales
+   *   to the full canvas. The internal reallocation is debounced so a host
+   *   ramping the factor continuously does not thrash the temporal
+   *   accumulator. So: changing the *canvas* size still requires `setSize`;
+   *   changing only the internal-resolution scale is per-frame via
+   *   `quality.resolutionFactor`.
    *
    * Hosts driving `HybridEngine` directly MUST call `engine.setSize()`
    * when their canvas dimensions change. Hosts using `attachVitrum()`

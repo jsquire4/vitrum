@@ -17,6 +17,7 @@ vi.mock('../src/ddgi/DDGI.js', () => ({
     invalidateProbeCache = vi.fn();
     markInstancesDirty = vi.fn();
     setLights = vi.fn();
+    setProbeUpdateDivisor = vi.fn();
     updateFrame = vi.fn();
     dispose = vi.fn();
   },

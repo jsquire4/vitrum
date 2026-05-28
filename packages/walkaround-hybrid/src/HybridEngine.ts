@@ -56,6 +56,7 @@ import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
 import {
   fingerprintHybridPipelineRebuildKey,
   getPreferredSwapChainFormat,
+  resolveInternalRenderSize,
   runHybridEngineFrame,
   type HybridEngineFrameDeps,
   type HybridLightingDeps,
@@ -90,6 +91,7 @@ import {
   type HybridInitStaticConfig,
 } from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
+import { resolveQualityPreset } from './HybridEngineQualityPreset.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
@@ -166,12 +168,75 @@ interface ParsedHybridEngineConfig {
   readonly maxBounces: number;
   readonly verbose: boolean;
   readonly debug: boolean;
+  // ── Phase-0 productization — quality-preset-resolved knobs ───────────────
+  /** Resolved GTAO dispatch mode (preset, overridden by `opts.gtaoMode`). */
+  readonly gtaoMode: 'on' | 'quarter' | 'off';
+  /** Resolved ReSTIR-DI spatial pass count (preset, overridden by opts). */
+  readonly diSpatialPasses: 1 | 2;
+  /** Resolved ReSTIR-GI spatial pass count (preset, overridden by opts). */
+  readonly giSpatialPasses: 1 | 2;
+  /** Resolved DDGI round-robin probe-update divisor (preset, overridden by opts). */
+  readonly ddgiUpdateDivisor: number;
+  /** Resolved initial internal-resolution factor (preset; per-frame
+   *  `quality.resolutionFactor` still overrides at runtime). */
+  readonly resolutionFactor: number;
 }
 
 /** Parse + validate `HybridEngineOptions` into the immutable derived config.
  *  Pure (no `this`, no GPU); throws on unsupported/incomplete denoiser config.
  *  See {@link ParsedHybridEngineConfig}. */
 function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngineConfig {
+  // Phase-0 productization — hybrid LITE tier (Deliverable 3). Lite runs the
+  // same pipeline but on a reduced resource budget: it forbids the
+  // resource-heavy optional subsystems and forces the merged-BVH path (drops
+  // the 5 TLAS scene-group buffers). Validated FIRST so the throws are the
+  // host's first signal, and so the merged-mode + qualityTier defaults below
+  // see the lite verdict.
+  const isLite = opts.tier === 'lite';
+  if (isLite) {
+    if (opts.rcEnabled === true) {
+      throw new TypeError(
+        `[HybridEngine] tier:'lite' forbids rcEnabled — Radiance Cascades ` +
+        `allocate 5 extra cascade GPUBuffers + a separate BVH that the lite ` +
+        `resource budget cannot fit. Use tier:'full' (needs a 16-buffer / ` +
+        `8-texture adapter) for RC.`,
+      );
+    }
+    if (opts.ppgEnabled === true) {
+      throw new TypeError(
+        `[HybridEngine] tier:'lite' forbids ppgEnabled — Practical Path ` +
+        `Guiding allocates an sTree/dTree GPU buffer set the lite budget ` +
+        `cannot fit. Use tier:'full' for PPG.`,
+      );
+    }
+    if (opts.denoiser === 'neural') {
+      throw new TypeError(
+        `[HybridEngine] tier:'lite' forbids denoiser:'neural' — the U-Net ` +
+        `InferenceGraph + weight buffers exceed the lite budget. Use ` +
+        `'atrous-variance' / 'atrous' on lite, or tier:'full' for neural.`,
+      );
+    }
+  }
+
+  // Phase-0 productization — resolve the coarse quality preset FIRST, then let
+  // explicit per-knob options OVERRIDE it (preset is a baseline, not a lock).
+  // `ultra` (the default) is byte-identical to the pre-Phase-0 defaults: its
+  // preset values are either the existing defaults or `undefined` (= leave the
+  // engine default), so every `opts.X ?? preset.X` below collapses to the
+  // historical value when neither is set. Lite biases the default tier to
+  // `'medium'` (still overridable by an explicit `qualityTier`).
+  const effectiveQualityTier = opts.qualityTier ?? (isLite ? 'medium' : 'ultra');
+  const preset = resolveQualityPreset(effectiveQualityTier);
+  // Effective options overlay: the preset supplies fallbacks for the knobs it
+  // governs, so the existing table-driven `readTunables` / denoiser /
+  // targetFrameInterval logic picks them up unchanged. Explicit opts win.
+  const effectiveOpts: HybridEngineOptions = {
+    ...opts,
+    ...(opts.adaptiveSamplingThresholds === undefined && preset.adaptiveSamplingThresholds !== undefined
+      ? { adaptiveSamplingThresholds: preset.adaptiveSamplingThresholds }
+      : {}),
+  };
+
   // Audit B7: validate the denoiser option at construction so an unsupported
   // value (e.g. `'none'`, `'bmfr'` from the @vitrum/core EngineOptions
   // contract) does not silently coerce to atrous-variance and produce
@@ -221,17 +286,36 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
   }
 
   return {
-    denoiser: opts.denoiser ?? 'atrous-variance',
+    // Preset supplies the denoiser fallback (low ⇒ 'atrous'); explicit
+    // opts.denoiser wins, then the engine default 'atrous-variance'.
+    denoiser: opts.denoiser ?? preset.denoiser ?? 'atrous-variance',
     neuralWeights: opts.neuralWeights,
     oidnModelUrl,
     oidnExecutionProviders: whExt?.oidnExecutionProviders,
-    restirBvhModeOverride: whExt?.bvhMode,
+    // Lite forces merged BVH (drops the 5 TLAS scene-group buffers — the lite
+    // buffer-axis win) regardless of any host bvhMode override; warn so the
+    // host knows instanced-scene fidelity is reduced on this weak adapter.
+    restirBvhModeOverride: isLite
+      ? (whExt?.bvhMode === 'tlas'
+          ? (console.warn(
+              `[HybridEngine] tier:'lite' overrides bvhMode:'tlas' → 'merged' ` +
+              `(TLAS scene buffers exceed the lite resource budget). Instanced/` +
+              `multi-mesh scene fidelity is reduced. Use tier:'full' for TLAS.`,
+            ), 'merged')
+          : 'merged')
+      : whExt?.bvhMode,
+    // Precedence: explicit opts → preset → engine default (~60 FPS cap).
+    // The preset never carries `null`, so it cannot accidentally disable the
+    // cap; only an explicit `opts.targetFrameIntervalMs: null` does that.
     targetFrameIntervalMs: opts.targetFrameIntervalMs !== undefined
       ? opts.targetFrameIntervalMs
-      : DEFAULT_TARGET_FRAME_INTERVAL_MS,
+      : preset.targetFrameIntervalMs !== undefined
+        ? preset.targetFrameIntervalMs
+        : DEFAULT_TARGET_FRAME_INTERVAL_MS,
     // Library-generality tunables — table-driven; defaults preserve Cornell
-    // behaviour, hosts override via HybridEngineOptions.
-    tunables: readTunables(opts),
+    // behaviour, hosts override via HybridEngineOptions. `effectiveOpts`
+    // carries the preset's adaptiveSamplingThresholds fallback.
+    tunables: readTunables(effectiveOpts),
     initTunables: readInitTunables(opts),
     // 2026-05-18 sweep — `indirectFireflyClamp` is tuple-typed so it lives
     // outside the number-typed Tunables table; default preserves Cornell.
@@ -258,6 +342,13 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     maxBounces: opts.maxBounces ?? 4,
     verbose: opts.verbose ?? false,
     debug: opts.debug ?? false,
+    // Phase-0 productization — quality-preset-resolved structural / gating
+    // knobs. Explicit per-knob opts override the preset.
+    gtaoMode: opts.gtaoMode ?? preset.gtaoMode,
+    diSpatialPasses: opts.diSpatialPasses ?? preset.diSpatialPasses,
+    giSpatialPasses: opts.giSpatialPasses ?? preset.giSpatialPasses,
+    ddgiUpdateDivisor: opts.ddgiUpdateDivisor ?? preset.ddgiUpdateDivisor,
+    resolutionFactor: preset.resolutionFactor,
   };
 }
 
@@ -280,8 +371,28 @@ export class HybridEngine implements Engine {
   // Mutable since T-resize: the host calls `setSize()` whenever the
   // canvas resizes; the pipeline reallocates its FrameResources without
   // a full engine teardown. See `setSize()` for the resize contract.
+  //
+  // Phase-0 productization — `_width/_height` are the CANVAS (swap-chain)
+  // dimensions (what the composite pass blits TO + what `setSize` sets). The
+  // INTERNAL render resolution (what the compute kernels dispatch over) is
+  // `_internalWidth/_internalHeight = canvas × _resolutionFactor`; it equals
+  // the canvas dims when no `quality.resolutionFactor` downscale is active.
+  // The two are kept in sync by `setSize` (recomputes internal from the last
+  // factor) and by the per-frame `quality.resolutionFactor` path in
+  // `HybridEngineFrameOrchestrator` (debounced internal resize).
   private _width:                number;
   private _height:               number;
+  /** Internal render width = `_width × _resolutionFactor`. Drives compute
+   *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
+  private _internalWidth:        number;
+  /** Internal render height = `_height × _resolutionFactor`. */
+  private _internalHeight:       number;
+  /** Last-seen `FrameInput.quality.resolutionFactor` (clamped to (0,1]).
+   *  Default 1.0 (internal == canvas). */
+  private _resolutionFactor:     number = 1.0;
+  /** `performance.now()` of the last accepted resolution-factor resize, for
+   *  the debounce that prevents accumulator thrash (Risk R5). */
+  private _lastResolutionResizeTs: number = 0;
   /** Optional escape-hatch THREE.Scene from ctor opts. Null when the host
    *  goes through the canonical setScene(vitrumScene) path (T3.H removal). */
   private readonly _threeScene:           THREE.Scene | null;
@@ -375,6 +486,16 @@ export class HybridEngine implements Engine {
    *  stained-glass physics. Hosts opt in via `opts.stainedGlass`. Packed
    *  once at ctor; threaded into pipeline.renderFrame each frame. */
   private readonly _stainedGlassFlags: number;
+  /** Phase-0 productization — quality-preset-resolved GTAO dispatch mode.
+   *  `'on'` (half-res) / `'quarter'` / `'off'`. Threaded into the pipeline at
+   *  init so the GTAO + upsample passes gate + dispatch-scale accordingly. */
+  private readonly _gtaoMode: 'on' | 'quarter' | 'off';
+  /** Phase-0 — ReSTIR-DI spatial-reuse ping-pong pass count (1 or 2). */
+  private readonly _diSpatialPasses: 1 | 2;
+  /** Phase-0 — ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). */
+  private readonly _giSpatialPasses: 1 | 2;
+  /** Phase-0 — DDGI round-robin probe-update divisor (default 4). */
+  private readonly _ddgiUpdateDivisor: number;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -459,6 +580,13 @@ export class HybridEngine implements Engine {
     this._device                = opts.device;
     this._width                 = opts.width;
     this._height                = opts.height;
+    // Phase-0 — the quality preset supplies the INITIAL internal-resolution
+    // factor. A per-frame `quality.resolutionFactor` still overrides at runtime
+    // (`_applyResolutionFactor`); this is just the starting point so a
+    // `qualityTier:'low'` engine boots at 0.5 internal res.
+    this._resolutionFactor      = cfg.resolutionFactor;
+    this._internalWidth         = Math.max(1, Math.round(opts.width * cfg.resolutionFactor));
+    this._internalHeight        = Math.max(1, Math.round(opts.height * cfg.resolutionFactor));
     this._skinning              = opts.gpuSkinning
       ? new GpuSkinningSubsystem(opts.device, true)
       : null;
@@ -482,6 +610,10 @@ export class HybridEngine implements Engine {
     this._atrousDirectSigmas    = cfg.atrousDirectSigmas;
     this._atrousIndirectSigmas  = cfg.atrousIndirectSigmas;
     this._stainedGlassFlags     = cfg.stainedGlassFlags;
+    this._gtaoMode              = cfg.gtaoMode;
+    this._diSpatialPasses       = cfg.diSpatialPasses;
+    this._giSpatialPasses       = cfg.giSpatialPasses;
+    this._ddgiUpdateDivisor     = cfg.ddgiUpdateDivisor;
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -497,6 +629,8 @@ export class HybridEngine implements Engine {
     this._rebuildKeyFingerprintSeen = cfg.rebuildKeyFingerprintSeen;
 
     this._ddgi = new DDGI({ debug: this._debug });
+    // Phase-0 — apply the quality-preset DDGI probe-update divisor (default 4).
+    this._ddgi.setProbeUpdateDivisor(this._ddgiUpdateDivisor);
     this._ctorLights = opts.lights ?? [];
     if (this._ctorLights.length > 0) {
       this._ddgi.setLights(this._ctorLights as DDGILight[]);
@@ -1065,11 +1199,58 @@ export class HybridEngine implements Engine {
     }
     this._width = width;
     this._height = height;
+    // Recompute the internal render size from the last-seen resolution factor
+    // so a canvas resize preserves the host's chosen downscale. The pipeline
+    // renders at the INTERNAL size; the composite upscales to the canvas.
+    this._internalWidth = Math.max(1, Math.round(width * this._resolutionFactor));
+    this._internalHeight = Math.max(1, Math.round(height * this._resolutionFactor));
     if (this._pipeline) {
-      this._pipeline.resize(width, height);
+      this._pipeline.resize(this._internalWidth, this._internalHeight);
     }
     // No DDGI invalidation — the irradiance atlas is world-space, not
     // screen-space, so it survives a resize unchanged.
+  }
+
+  /**
+   * §5.1 — apply a per-frame `quality.resolutionFactor`. Computes the target
+   * internal render size (= canvas × clamped factor), and — when it changes
+   * beyond a 2-px threshold and the debounce window has elapsed — resizes the
+   * pipeline's per-frame resources to the internal size. The composite pass
+   * upscales the internal-sized resolvedTexture to the full canvas swap-chain
+   * view, so no swap-chain reconfigure is needed.
+   *
+   * Returns the internal dims to dispatch at this frame (unchanged when the
+   * resize was debounced). Called once per frame from the orchestrator before
+   * `pipeline.renderFrame`.
+   */
+  private _applyResolutionFactor(
+    factor: number | undefined,
+    nowMs: number,
+  ): { width: number; height: number } {
+    // Record the clamped factor so a subsequent setSize() preserves the host's
+    // chosen downscale.
+    this._resolutionFactor =
+      typeof factor === 'number' && Number.isFinite(factor) && factor > 0
+        ? Math.min(1, factor)
+        : 1;
+
+    const decision = resolveInternalRenderSize({
+      swapW: this._width,
+      swapH: this._height,
+      factor,
+      currentW: this._internalWidth,
+      currentH: this._internalHeight,
+      nowMs,
+      lastResizeTs: this._lastResolutionResizeTs,
+    });
+
+    if (decision.shouldResize) {
+      this._internalWidth = decision.targetW;
+      this._internalHeight = decision.targetH;
+      this._lastResolutionResizeTs = nowMs;
+      this._pipeline?.resize(decision.targetW, decision.targetH);
+    }
+    return { width: this._internalWidth, height: this._internalHeight };
   }
 
   // ── Frame rendering ────────────────────────────────────────────────────
@@ -1095,12 +1276,18 @@ export class HybridEngine implements Engine {
    * this returns a "skip" FrameOutput (`kind: 'skipped'`,
    * `samplesAccumulated: 0`, `isConverged: false`).
    *
-   * Note: `input.viewport` is ignored by HybridEngine — its WebGPU render
-   * targets (DDGI atlas, ReSTIR reservoirs, history textures, accumulation
-   * buffer) are sized at construction and resized only via {@link setSize}.
-   * Hosts MUST call `engine.setSize(w, h)` when the canvas dimensions change;
-   * pushing a new `viewport` per frame is silently dropped. See the
-   * `@vitrum/core` FrameInput.viewport JSDoc for the cross-backend contract.
+   * Note: `input.viewport` (the CANVAS size) is ignored by HybridEngine — its
+   * WebGPU render targets (DDGI atlas, ReSTIR reservoirs, history textures,
+   * accumulation buffer) are sized to the canvas at construction and the
+   * canvas size is changed only via {@link setSize}. Hosts MUST call
+   * `engine.setSize(w, h)` when the canvas dimensions change; pushing a new
+   * `viewport` per frame is silently dropped.
+   *
+   * However, `input.quality.resolutionFactor` IS honoured per-frame
+   * (Phase-0 productization): it scales the INTERNAL render resolution
+   * (= canvas × factor) via a debounced {@link _applyResolutionFactor}; the
+   * composite pass upscales to the full canvas. See the `@vitrum/core`
+   * FrameInput.viewport JSDoc for the cross-backend contract.
    */
   renderFrame(input: FrameInput): FrameOutput {
     return runHybridEngineFrame(this._buildFrameDeps(), input);
@@ -1161,6 +1348,9 @@ export class HybridEngine implements Engine {
       },
       width: self._width,
       height: self._height,
+      internalWidth: self._internalWidth,
+      internalHeight: self._internalHeight,
+      applyResolutionFactor: (factor, nowMs) => self._applyResolutionFactor(factor, nowMs),
       skinning: self._skinning,
       lastScene: self._lastScene,
       runSkinning: () => {
@@ -1399,6 +1589,9 @@ export class HybridEngine implements Engine {
       temporalAccumAlpha: this._initTunables.temporalAccumAlpha,
       ctorLights: this._ctorLights,
       ddgi: this._ddgi,
+      gtaoMode: this._gtaoMode,
+      diSpatialPasses: this._diSpatialPasses,
+      giSpatialPasses: this._giSpatialPasses,
     };
   }
 
@@ -1411,8 +1604,12 @@ export class HybridEngine implements Engine {
     const self = this;
     return {
       ...this._initStaticConfig(),
-      get width() { return self._width; },
-      get height() { return self._height; },
+      // Pipeline initializes at the INTERNAL render size (= canvas ×
+      // resolutionFactor). Equal to the canvas size on first init (factor
+      // 1.0); after a factor was applied, a reset() re-inits at the live
+      // internal size so the composite upscale stays correct.
+      get width() { return self._internalWidth; },
+      get height() { return self._internalHeight; },
       get lastScene() { return self._lastScene; },
       get primaryLightDir() { return self._primaryLightDir; },
       get primaryLightIntensity() { return self._primaryLightIntensity; },

@@ -14,6 +14,7 @@ import { buildGTAOBindGroup } from '../bindGroupBuilders.js';
 import type {
   Pass,
   PassDispatchContext,
+  PassGateOptions,
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
@@ -46,8 +47,10 @@ export class GTAOPass implements Pass {
     this._pipeline = pipeline;
   }
 
-  gates(): boolean {
-    return true;
+  /** Phase-0 productization — gate off when the quality preset disables GTAO
+   *  (`gtaoMode:'off'` ⇒ `gtaoEnabled:false`). Absent flag ⇒ on (default). */
+  gates(opts: PassGateOptions): boolean {
+    return opts.gtaoEnabled !== false;
   }
 
   async initialize(_ctx: PassInitContext): Promise<void> {}

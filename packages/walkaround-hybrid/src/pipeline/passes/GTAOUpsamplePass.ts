@@ -10,6 +10,7 @@ import { buildGTAOUpsampleBindGroup } from '../bindGroupBuilders.js';
 import type {
   Pass,
   PassDispatchContext,
+  PassGateOptions,
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
@@ -25,8 +26,11 @@ export class GTAOUpsamplePass implements Pass {
     this._pipeline = pipeline;
   }
 
-  gates(): boolean {
-    return true;
+  /** Phase-0 — gate off in lockstep with {@link GTAOPass}. When GTAO is off,
+   *  `aoFullTexture` keeps its init value (1.0 = no occlusion), so shade reads
+   *  a correct "AO disabled" signal without this pass running. */
+  gates(opts: PassGateOptions): boolean {
+    return opts.gtaoEnabled !== false;
   }
 
   async initialize(_ctx: PassInitContext): Promise<void> {}

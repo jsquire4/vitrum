@@ -233,6 +233,78 @@ export interface HybridEngineOptions extends EngineOptions {
     };
   };
 
+  // ── Phase-0 productization — quality preset (roadmap §4.3 / §5.1) ────────
+
+  /**
+   * Coarse quality preset. Resolves to concrete tunable / UBO / pass-gate
+   * values per the roadmap §4.3 table (see `HybridEngineQualityPreset.ts`).
+   *
+   * The preset is a BASELINE, not a lock: explicit per-knob options in this
+   * same object OVERRIDE the preset (e.g. `{ qualityTier: 'low',
+   * gtao: { radiusPx: 99 } }` keeps the explicit gtao radius while applying
+   * the other low-tier values).
+   *
+   * Default: `'ultra'` — byte-identical to the pre-Phase-0 Cornell-baseline
+   * defaults. Existing hosts that never set this are unaffected.
+   *
+   * @default 'ultra'
+   */
+  readonly qualityTier?: 'ultra' | 'high' | 'medium' | 'low';
+
+  /**
+   * Phase-0 productization — hybrid resource tier (Deliverable 3).
+   *
+   * - `'full'` (default) — the full pipeline: TLAS-capable, RC/PPG/neural
+   *   allowed, requires `HYBRID_WEBGPU_REQUIRED_LIMITS` (16 buf / 8 tex).
+   * - `'lite'` — a reduced-budget path for adapters that meet only
+   *   `HYBRID_LITE_LIMITS` (≈10 buf / 5 tex). Lite runs the SAME shade pipeline
+   *   (no WGSL fork) but:
+   *     - forces `extensions['walkaround-hybrid'].bvhMode = 'merged'` (drops the
+   *       5 TLAS scene-group storage buffers — the buffer-axis win) even when a
+   *       needs-TLAS scene would otherwise default to TLAS, with a `console.warn`
+   *       that instanced-scene fidelity is reduced;
+   *     - FORBIDS `rcEnabled` / `ppgEnabled` / `denoiser:'neural'` (they need
+   *       extra GPU resources / weights) — the constructor throws an actionable
+   *       error if any is set with `tier:'lite'`;
+   *     - biases the default `qualityTier` to `'medium'` (still overridable).
+   *
+   * `@vitrum/engine`'s `createEngine()` selects `'lite'` automatically when the
+   * adapter profile reports `hybridCapable:false && hybridLiteCapable:true`.
+   *
+   * @default 'full'
+   */
+  readonly tier?: 'full' | 'lite';
+
+  /**
+   * Per-knob override for the preset's GTAO dispatch mode. `'on'` = half-res
+   * (default), `'quarter'` = quarter-res dispatch (cheaper, softer AO),
+   * `'off'` = skip GTAO + the bilateral upsample entirely. When omitted, the
+   * value comes from {@link qualityTier}'s preset.
+   */
+  readonly gtaoMode?: 'on' | 'quarter' | 'off';
+
+  /**
+   * Per-knob override for the ReSTIR-DI spatial-reuse ping-pong pass count
+   * (1 or 2). 2 is the full-fidelity variance reducer; 1 halves the spatial
+   * cost. When omitted, comes from {@link qualityTier}'s preset.
+   */
+  readonly diSpatialPasses?: 1 | 2;
+
+  /**
+   * Per-knob override for the ReSTIR-GI spatial-reuse ping-pong pass count
+   * (1 or 2). When omitted, comes from {@link qualityTier}'s preset.
+   */
+  readonly giSpatialPasses?: 1 | 2;
+
+  /**
+   * Per-knob override for the DDGI round-robin probe-update divisor
+   * (`probesPerFrame = ceil(totalProbes / divisor)`). Higher ⇒ fewer probes
+   * updated per frame ⇒ cheaper but slower GI response to lighting changes.
+   * Default (and the historical hardcoded value) is 4. When omitted, comes
+   * from {@link qualityTier}'s preset.
+   */
+  readonly ddgiUpdateDivisor?: number;
+
   // ── Library-generality knobs (audit follow-up) ──────────────────────────
   // All optional; defaults preserve Cornell-test-scene behaviour byte-for-
   // byte. Hosts targeting other scene scales / intensities should set them.

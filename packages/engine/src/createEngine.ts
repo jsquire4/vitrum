@@ -17,13 +17,16 @@
 // Generic PT engines honour FrameInput.viewport per-frame. createEngine()
 // itself does NOT attach an observer.
 
-import type { Scene, Engine } from '@vitrum/core';
+import type { Scene, Engine, AdapterProfile } from '@vitrum/core';
 import { auditSceneNeedsTlas, detectGpu } from '@vitrum/core';
 import { sceneFromThreeJS } from '@vitrum/three-bindings';
 import {
   createWalkaroundEngine_Hybrid,
+  HYBRID_WEBGPU_REQUIRED_LIMITS,
+  HYBRID_LITE_LIMITS,
   type HybridEngineOptions,
 } from '@vitrum/walkaround-hybrid';
+import { probeAdapterProfile } from './adapterProfile.js';
 import {
   createPTEngine_WebGL2,
   type PTEngineWebGL2Options,
@@ -81,6 +84,13 @@ export interface CreateEngineOptions {
 
   /** Debug overlay opt-in. Forwarded to backend as `debug: true`. */
   readonly debug?: boolean;
+
+  /** Phase-0 productization — callback invoked once with the graceful-
+   *  degradation {@link AdapterProfile} when the walkaround-hybrid backend is
+   *  selected (before device acquisition). Lets hosts read the JSON for a HUD
+   *  / CI artifact (§4.1 / §10.3). Not called for the pt-webgl / pt-webgpu
+   *  backends (they have their own tier selection). */
+  readonly onAdapterProfile?: (profile: AdapterProfile) => void;
 }
 
 export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
@@ -133,7 +143,42 @@ async function constructWalkaround(
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
-  const device = await adapter.requestDevice();
+
+  // Phase-0 productization — probe the adapter's graceful-degradation profile
+  // BEFORE requesting the device. This (a) lets us throw the actionable
+  // Class-D error instead of failing opaquely inside HybridEngine init when
+  // the adapter can't bind the hybrid pipeline, (b) selects the lite tier on
+  // a hybrid-incapable-but-lite-capable adapter, and (c) requests the device
+  // with the matching `requiredLimits` (previously NO limits were requested,
+  // so full hybrid silently relied on adapter defaults — a latent gap).
+  const profile = await probeAdapterProfile(adapter);
+  opts.onAdapterProfile?.(profile);
+
+  // `recommendedRealtimeTier === 'unavailable'` captures BOTH the below-lite
+  // case AND the software-adapter (SwiftShader) case — a software adapter can
+  // report passing limits but must never run hybrid (§4.4/§10.4), so gating on
+  // the tier verdict (not just the lite-limit boolean) closes that hole.
+  if (profile.recommendedRealtimeTier === 'unavailable') {
+    // Class D — software rasterizer or below the lite floor. Never init
+    // hybrid here (it would fail opaquely mid-init). Point the host at a
+    // path-tracer fallback.
+    throw new Error(
+      `createEngine: this adapter cannot run the walkaround-hybrid realtime ` +
+      `engine (recommendedRealtimeTier='${profile.recommendedRealtimeTier}', ` +
+      `isSoftwareAdapter=${profile.isSoftwareAdapter}, ` +
+      `maxStorageBuffersPerStage=${profile.maxStorageBuffersPerStage}, ` +
+      `maxStorageTexturesPerStage=${profile.maxStorageTexturesPerStage}). ` +
+      `Pass prefer:'quality' (pt-webgl) or prefer:'quality-webgpu' (pt-webgpu) ` +
+      `to use a path-tracer backend on this hardware.`,
+    );
+  }
+
+  // Full when the adapter meets the full limits; otherwise lite (the profile
+  // already guaranteed hybridLiteCapable above).
+  const useLite = !profile.hybridCapable;
+  const device = await adapter.requestDevice({
+    requiredLimits: useLite ? HYBRID_LITE_LIMITS : HYBRID_WEBGPU_REQUIRED_LIMITS,
+  });
 
   const D = aabb.diagonal;
   const scaleDefaults = deriveScaleDefaults(D);
@@ -157,6 +202,19 @@ async function constructWalkaround(
     ? (opts.scene as unknown as Parameters<typeof createWalkaroundEngine_Hybrid>[0]['threeScene'])
     : undefined;
 
+  // Phase-0 — the recommended realtime tier becomes the DEFAULT qualityTier
+  // (a preset ceiling). Only applied when it is a concrete preset id — at this
+  // point the profile already passed the hybridLiteCapable gate, so it is
+  // 'ultra' (full) or 'medium' (lite). An explicit `advanced.qualityTier`
+  // overrides it (the advanced spread is last).
+  const recommendedTier =
+    profile.recommendedRealtimeTier === 'ultra' ||
+    profile.recommendedRealtimeTier === 'high' ||
+    profile.recommendedRealtimeTier === 'medium' ||
+    profile.recommendedRealtimeTier === 'low'
+      ? profile.recommendedRealtimeTier
+      : undefined;
+
   const merged: HybridEngineOptions = {
     device,
     width: Math.max(1, opts.canvas.width),
@@ -171,9 +229,17 @@ async function constructWalkaround(
     emitterDist2Floor: scaleDefaults.emitterDist2Floor,
     triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
     debug: opts.debug ?? false,
+    // Phase-0 — resource tier + default quality preset. The lite-aware TLAS
+    // merge below + the advanced spread both run AFTER these, so a host's
+    // explicit `advanced.tier` / `advanced.qualityTier` still win.
+    tier: useLite ? 'lite' : 'full',
+    ...(recommendedTier !== undefined ? { qualityTier: recommendedTier } : {}),
     ...mergeWalkaroundTlasExtension(
       opts.advanced as Partial<HybridEngineOptions> | undefined,
-      needsTlas,
+      // Lite forces merged BVH inside HybridEngine regardless; don't auto-set
+      // the TLAS extension when lite, so a needs-TLAS scene still runs merged
+      // on a weak adapter (the engine warns about reduced instanced fidelity).
+      needsTlas && !useLite,
     ),
   };
 

@@ -137,6 +137,14 @@ export class DDGI {
     this._pass.setLights(lights);
   }
 
+  /** Phase-0 productization — set the round-robin probe-update divisor
+   *  (`probesPerFrame = ceil(totalProbes / divisor)`). Forwarded to
+   *  ProbeUpdatePass, which applies it to BOTH the ray pass and the blend
+   *  pass so their coverage stays in lockstep. Default 4. */
+  setProbeUpdateDivisor(divisor: number): void {
+    this._pass.setProbeUpdateDivisor(divisor);
+  }
+
   // ── Probe cache invalidation ──────────────────────────────────────────────
 
   /**

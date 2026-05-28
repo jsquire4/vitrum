@@ -68,8 +68,22 @@ export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoise
   targetFrameIntervalMs: number | null;
   getLastFrameTs: () => number;
   setLastFrameTs: (ts: number) => void;
+  /** Canvas (swap-chain) width — what the composite pass blits TO. */
   width: number;
+  /** Canvas (swap-chain) height. */
   height: number;
+  /** Internal render width (= canvas × resolutionFactor) — what the compute
+   *  kernels dispatch over and the UBO `screenSize` carries. Equals `width`
+   *  when no resolutionFactor downscale is active. */
+  internalWidth: number;
+  /** Internal render height (= canvas × resolutionFactor). */
+  internalHeight: number;
+  /** Honour `FrameInput.quality.resolutionFactor` by (debounced) resizing the
+   *  internal render resolution. Returns the internal dims to dispatch at this
+   *  frame (which may be unchanged if the resize was debounced or the factor
+   *  was unchanged). Pure-ish: the only side effect is `pipeline.resize` +
+   *  engine internal-dim bookkeeping, both owned by the engine. */
+  applyResolutionFactor: (factor: number | undefined, nowMs: number) => { width: number; height: number };
   skinning: GpuSkinningSubsystem | null;
   lastScene: Scene | null;
   runSkinning: () => void;
@@ -87,6 +101,62 @@ export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoise
   debugTimings: Array<{ t: number; ms: number }>;
   debugSurface: EngineDebugSurface;
   presentLastFrame: (view: GPUTextureView) => void;
+}
+
+/** Minimum interval (ms) between internal-resolution reallocations driven by
+ *  `quality.resolutionFactor`. Each reallocation destroys + recreates all
+ *  FrameResources and resets the temporal accumulator (~5-30 ms + a 1-frame
+ *  history reset), so a host ramping the factor continuously must not thrash
+ *  it (Risk R5). 250 ms ≈ 15 frames at 60 FPS. */
+export const RESOLUTION_FACTOR_DEBOUNCE_MS = 250;
+
+/** Resolve the per-frame internal render size from a host `resolutionFactor`,
+ *  debouncing the actual reallocation.
+ *
+ *  Pure function — no GPU, no side effects. The caller (`applyResolutionFactor`
+ *  on the engine deps) owns the `pipeline.resize` + bookkeeping when this
+ *  returns `shouldResize: true`.
+ *
+ *  @param swapW/swapH       Canvas (swap-chain) dimensions.
+ *  @param factor            Host `FrameInput.quality.resolutionFactor` (or undefined).
+ *  @param currentW/currentH Current internal render dimensions.
+ *  @param nowMs             `performance.now()` for the debounce clock.
+ *  @param lastResizeTs      Timestamp of the last accepted resolution resize.
+ *  @returns target internal dims, whether to actually resize this frame, and
+ *           whether the change was debounced (so the caller does NOT update the
+ *           debounce timestamp on a no-op). */
+export function resolveInternalRenderSize(args: {
+  swapW: number;
+  swapH: number;
+  factor: number | undefined;
+  currentW: number;
+  currentH: number;
+  nowMs: number;
+  lastResizeTs: number;
+}): { targetW: number; targetH: number; shouldResize: boolean } {
+  // Clamp factor to (0, 1]. Undefined / out-of-range / non-finite ⇒ 1.0 (full
+  // resolution; regression-safe default identical to pre-Phase-0 behaviour).
+  const f =
+    typeof args.factor === 'number' && Number.isFinite(args.factor) && args.factor > 0
+      ? Math.min(1, args.factor)
+      : 1;
+  const targetW = Math.max(1, Math.round(args.swapW * f));
+  const targetH = Math.max(1, Math.round(args.swapH * f));
+
+  // No meaningful change (within 2 px on either axis) ⇒ never resize. This
+  // catches both "factor unchanged" and "factor changed by a sub-pixel amount"
+  // (the omitted-factor regression-guard path lands here when target == swap).
+  const dw = Math.abs(targetW - args.currentW);
+  const dh = Math.abs(targetH - args.currentH);
+  if (dw < 2 && dh < 2) {
+    return { targetW, targetH, shouldResize: false };
+  }
+
+  // Changed beyond threshold — but debounce the reallocation: at most one
+  // accepted resize per RESOLUTION_FACTOR_DEBOUNCE_MS. First-ever resize
+  // (lastResizeTs === 0) is always allowed.
+  const debounced = args.lastResizeTs !== 0 && args.nowMs - args.lastResizeTs < RESOLUTION_FACTOR_DEBOUNCE_MS;
+  return { targetW, targetH, shouldResize: !debounced };
 }
 
 export function fingerprintHybridPipelineRebuildKey(
@@ -288,14 +358,21 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
   deps.runSkinning();
   runDdgiAndRc(deps, input);
 
+  // §5.1 — honour per-frame `quality.resolutionFactor` by (debounced) scaling
+  // the internal render resolution. The composite pass upscales the
+  // internal-sized resolvedTexture to the full swap-chain view, so the
+  // compute kernels + UBO `screenSize` use the internal dims (not the canvas
+  // dims). Canvas resizes still require `setSize()` (see renderFrame JSDoc).
+  const internal = deps.applyResolutionFactor(input.quality?.resolutionFactor, now);
+
   pipeline.renderFrame({
     viewMatrix: new Float32Array(input.viewMatrix),
     projMatrix: new Float32Array(input.projMatrix),
     prevViewMatrix: new Float32Array(input.prevViewMatrix ?? input.viewMatrix),
     prevProjMatrix: new Float32Array(input.prevProjMatrix ?? input.projMatrix),
     cameraPos: input.cameraPosition as [number, number, number],
-    screenWidth: deps.width,
-    screenHeight: deps.height,
+    screenWidth: internal.width,
+    screenHeight: internal.height,
     frameSeed: input.frameSeed,
     totalEmissivePower: bvh.totalEmissivePower ?? 1.0,
     emitterCount: bvh.emitters?.count ?? 0,
