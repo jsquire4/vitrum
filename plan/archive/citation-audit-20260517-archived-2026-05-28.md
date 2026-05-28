@@ -1,5 +1,9 @@
 # Citation + Prior-Work Audit — 2026-05-17
 
+> **ARCHIVED 2026-05-28.** All findings were actioned by 2026-05-19: the Tier-1 CREDITS.md backfill landed (commit `70f53cd`), all 11 packages received README.md + LICENSE files (commits `ec58f48`, `cc5bc50`, `fc882f6`), and the four citation inconsistencies (Sannikov/Wilkie/Kulla/PBR4e) were resolved (`aa57da5`, `866b599`, `687632b`, `dc531c0`). Current source of truth: `CREDITS.md` in the repo root.
+
+
+
 > Read-only audit of attribution coverage across the vitrum monorepo, against the
 > project rule (`CLAUDE.md`): _"Every algorithm has provenance. Citation goes in
 > three places: source code comment at the implementation site, package README,

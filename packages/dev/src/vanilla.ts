@@ -11,15 +11,15 @@
 // Vanilla-stub overlays (console.warn + static badge):
 //   - DDGIAtlasViewer / BVHVisualizer / GISignalSplit are fully-implemented
 //     in React (`@vitrum/dev/react/{DDGIAtlasViewer,BVHVisualizer,
-//     GISignalSplit}.tsx`, ~370 LOC total; W12 sprint). Their engine.debug
+//     GISignalSplit}.tsx`). Their engine.debug
 //     APIs (`atlasTexture()` / `bvhNodes()` / `giSignalTextures()`) are
 //     live on HybridEngine. The vanilla path here remains a placeholder
 //     badge because porting the React canvas-blit + memoized-readback
 //     code to plain DOM is a separate workstream — most non-React hosts
 //     already embed a React shell for tools and use the React entry point.
-//   - MaterialInspector is engine-blocked on both sides — needs
-//     engine.debug.pickPrimitive() which HybridEngine intentionally leaves
-//     out until a real picking pass exists.
+//   - MaterialInspector React component: panel + live material edit are real;
+//     click-to-pick (engine.debug.pickPrimitive()) is stubbed pending a picking
+//     pass. Vanilla path renders a placeholder badge.
 
 import type { Scene } from '@vitrum/core';
 import type { DebuggableEngine, FrameStats } from './types.js';

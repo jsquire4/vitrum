@@ -36,10 +36,10 @@ import { makeDdgiRestirBvhSnapshot, type DdgiRestirBvhSnapshot } from './ddgiRes
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 
 // Probe round-robin stride. STRIDE=8 means each probe updates every
-// 8th frame (~133ms at 60fps). See useDDGI.ts for full commentary.
+// 8th frame (~133ms at 60fps).
 const STRIDE = 8;
 
-// Target frame interval for the 60 FPS cap (see useDDGI.ts for rationale).
+// Target frame interval for the 60 FPS cap.
 const TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
 
 export interface DDGIOptions {
@@ -182,8 +182,7 @@ export class DDGI {
   // ── Per-frame update ──────────────────────────────────────────────────────
 
   /**
-   * Run one frame of DDGI compute. Mirrors the body of the original
-   * `useDDGI` useFrame callback exactly.
+   * Run one frame of DDGI compute.
    *
    * **Called internally by `HybridEngine.renderFrame` once per frame.**
    * The host does NOT need to call this when using `HybridEngine` — the
@@ -197,7 +196,7 @@ export class DDGI {
   async updateFrame(inputs: DDGIFrameInputs): Promise<void> {
     if (!inputs.enabled) return;
 
-    // 60 FPS frame cap (preserves useDDGI behaviour).
+    // 60 FPS frame cap.
     const now = performance.now();
     if (this._lastFrameTs !== 0 &&
         now - this._lastFrameTs < TARGET_FRAME_INTERVAL_MS) {

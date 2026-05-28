@@ -3,15 +3,6 @@
  * {@link Denoiser}, so denoiser dispatch participates in the same
  * dependency-sorted pass loop as every other stage.
  *
- * Pre-W1-R5b the orchestrator split its per-frame pass loop into TWO halves
- * (up to and including `gtao-upsample`, then `indirect-temporal-accum` …
- * `composite`) bracketing a manual `_activeDenoiser.dispatch()` call. The
- * split index was a separate field on the pipeline. By promoting the
- * denoiser dispatch to a virtual Pass with the right dependency declaration,
- * the orchestrator collapses back to a single uniform for-loop and
- * `frameState.denoisedDirect` becomes a regular ledger entry instead of a
- * special-cased post-dispatch write.
- *
  * Layering note (verbatim from the prior comment at the manual-dispatch
  * site): denoising IS a separate concept from pass scheduling — denoisers
  * return a texture handle (whereas Passes mutate the encoder + frame

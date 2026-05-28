@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — all M0–M5 milestones complete. See README.md + plan/library-architecture.md for current status.
+
 # Plan: toward a generalized vitrum library
 
 This document is the **forward plan** for turning vitrum from “strong extraction on one backend + contract types” into a **credible, host-agnostic, swappable library** as described in [library-architecture.md](./library-architecture.md) and [README.md](../README.md).

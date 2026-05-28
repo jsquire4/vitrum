@@ -14,8 +14,8 @@
  *   denoisers/atrous.ts          (W1-R3 — legacy 3-iter à-trous)
  *   denoisers/atrousVariance.ts  (W1-R3 — Welford + variance + 3 × atrous, default)
  *   denoisers/svgfReal.ts        (W1-R3 — real Schied 2017 SVGF)
- *   denoisers/neural.ts          (W1-R3, `disabled` until W10)
- *   denoisers/oidnFinal.ts       (W1-R3, `disabled` until W11)
+ *   denoisers/neural.ts          (W1-R3, enabled when InferenceGraph supplied; disabled placeholder otherwise)
+ *   denoisers/oidnFinal.ts       (W1-R3, enabled when modelUrl supplied; disabled placeholder otherwise)
  *
  * Concrete entries register themselves via {@link registerBuiltinDenoisers}
  * (see `denoisers/registerBuiltinDenoisers.ts`).
@@ -25,10 +25,9 @@ import type { BGLCache } from '../bindGroupLayouts.js';
 import type { FrameResources } from '../resourceManager.js';
 import type { PassLabel } from '../timestampQueries.js';
 
-/** Identifier union for built-in denoisers. The premium-grade plan
- *  reserves the slots `'neural'` (W10) and `'oidn-final'` (W11) which
- *  ship as registered-but-disabled placeholders until those workstreams
- *  land the real implementations. */
+/** Identifier union for built-in denoisers. Both `'neural'` and `'oidn-final'`
+ *  have real implementations; they register as disabled only when no
+ *  InferenceGraph / modelUrl is supplied. */
 export type DenoiserId =
   | 'none'
   | 'atrous'
@@ -44,12 +43,14 @@ export type DenoiserId =
  * `passLabels` field, and `buildPassLayout` reads from the same map so
  * the GPU timing slots stay in lockstep with the actual dispatch order.
  *
- * 'neural' falls back to the atrous-variance layout: the W10 placeholder
- * never reaches `dispatch` (registry rejects it at `lookup`), so the
- * label list is only consulted defensively by `buildPassLayout`.
+ * 'neural' falls back to the atrous-variance layout: when disabled (no
+ * InferenceGraph supplied) the registry rejects it at `lookup` and the
+ * label list is consulted only by `buildPassLayout`. When enabled, dispatch
+ * emits 2 passes (pack + unpack); the label list over-declares relative to
+ * actual dispatch (see neural.ts).
  *
- * 'oidn-final' is `[]` because the registry rejects it before any
- * dispatch and it never adds slots.
+ * 'oidn-final' is `[]` because OIDN dispatch does not use timestamp-query
+ * pass labels.
  */
 export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabel[]>> = Object.freeze({
   'none': Object.freeze([]),

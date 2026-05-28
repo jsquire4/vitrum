@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — primary-release program complete.
+
 # Primary Release Program — Signoff (2026-05-26)
 
 ## Wave status

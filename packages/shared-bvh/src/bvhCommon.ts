@@ -26,7 +26,7 @@
  *  • MaterialEntry flat-struct packing (RC's cascade compute only).
  *
  * Per-engine consumers wrap this module's output with their own packing:
- *   - DDGI:   wraps `SceneBvh` class around `buildSceneBVH({positionStride: 3})`
+ *   - DDGI:   wraps `SceneBvh` class around `buildSceneBVH({positionStride: 4})`
  *             for dirty-tracking semantics.
  *   - RC:     calls `buildSceneBVH({positionStride: 4})` then packs
  *             `materials` array → `MaterialEntry` flat-struct sibling fn.
@@ -72,9 +72,9 @@ export interface SceneBVHCommonResult {
    * three-mesh-bvh's internal 8 × u32 pack:
    *   f32[0..2]  bounds.min xyz
    *   f32[3..5]  bounds.max xyz
-   *   u32[6]     rightChildOrTriOffset (RELATIVE to current node index for
-   *              internal nodes; absolute for leaves on three-mesh-bvh
-   *              0.9.x)
+   *   u32[6]     rightChildOrTriOffset (RELATIVE offset to right child for
+   *              interior nodes; absolute triangle offset for leaf nodes —
+   *              identical leaf semantics in three-mesh-bvh 0.7.x and 0.9.x)
    *   u32[7]     splitAxisOrTriCount  (LEAFNODE_MASK_32 | count for leaves)
    *
    * Returned as Float32Array for direct DMA to a WebGPU storage buffer.
@@ -281,12 +281,9 @@ function snapshotPreBuildMaterials(
   //
   // Dedup-by-value (not by identity) because hosts that use React/R3F
   // construct fresh THREE.Material instances on re-render even when the
-  // PBR field values are identical. With per-edge `useEdgeMaterial` +
-  // 70+ inline `<meshStandardMaterial>` JSX declarations in the
-  // stainedGlass app, a typical livingRoom scene generated 356 unique
-  // material instances vs. ~30 unique *values* — overflowing DDGI's
-  // 64-material slot cap and forcing per-frame BVH rebuilds. Value-dedup
-  // collapses this back to the structural minimum. — fix 2026-05-12.
+  // PBR field values are identical. Without dedup, redundant instances
+  // overflow DDGI's 64-material slot cap and force per-frame BVH rebuilds.
+  // Value-dedup collapses this back to the structural minimum. — fix 2026-05-12.
   //
   // The signature hashes only the fields the consumers (DDGI / ReSTIR
   // shading / PT path) actually read: baseColor, emissive, emissiveIntensity,
@@ -747,36 +744,6 @@ function packRootBuffer(root0: ArrayBuffer | ArrayBufferView): Float32Array {
 }
 
 /**
- * Normalise the interior-node `rightChildOrTriOffset` field to the
- * canonical "relative node index" encoding that all downstream WGSL
- * shaders assume (`right_child = nodeIdx + offset`).
- *
- * three-mesh-bvh changed the packed-buffer layout between 0.7.x and
- * 0.9.x:
- *  - 0.7.x stores the **absolute u32 index** of the right child
- *    (`uint32Array[stride4 + 6] = nextUnusedPointer / 4`). Values are
- *    multiples of 8 (= UINT32_PER_NODE) and grow with tree size.
- *  - 0.9.x stores the **relative node index**
- *    (`uint32Array[node32 + 6] = rightNodeIdx - currentNodeIdx`). Values
- *    are always strictly less than `totalNodes`.
- *
- * The host application (and `three-gpu-pathtracer`) pin 0.7.x; Vite's
- * `dedupe` collapses shared-bvh's `^0.9.9` declaration down to that
- * 0.7.x at bundle time. Rather than dictating which version the host
- * picks, this helper detects the source layout from the data itself
- * and rewrites in-place so the GPU layout is invariant.
- *
- * Detection rule: under 0.9.x the stored relative offset MUST be less
- * than `totalNodes` (definitionally — it is a node-index delta inside
- * the same buffer). Under 0.7.x the stored absolute u32 index is the
- * right child's node index × UINT32_PER_NODE, so it ranges up to
- * `(totalNodes - 1) × 8`. So: `firstInteriorOffset >= totalNodes`
- * unambiguously identifies the 0.7.x layout.
- *
- * Leaf nodes are untouched — both versions store the triangle offset
- * in the same field with identical semantics.
- */
-/**
  * Verify a relative-offset BVH produced by `buildCpuBvh` (pt-webgpu) or
  * `normalizeBvhInteriorOffsets` (shared-bvh).
  *
@@ -816,6 +783,36 @@ export function validateBvhEncoding(
   }
 }
 
+/**
+ * Normalise the interior-node `rightChildOrTriOffset` field to the
+ * canonical "relative node index" encoding that all downstream WGSL
+ * shaders assume (`right_child = nodeIdx + offset`).
+ *
+ * three-mesh-bvh changed the packed-buffer layout between 0.7.x and
+ * 0.9.x:
+ *  - 0.7.x stores the **absolute u32 index** of the right child
+ *    (`uint32Array[stride4 + 6] = nextUnusedPointer / 4`). Values are
+ *    multiples of 8 (= UINT32_PER_NODE) and grow with tree size.
+ *  - 0.9.x stores the **relative node index**
+ *    (`uint32Array[node32 + 6] = rightNodeIdx - currentNodeIdx`). Values
+ *    are always strictly less than `totalNodes`.
+ *
+ * The host application (and `three-gpu-pathtracer`) pin 0.7.x; Vite's
+ * `dedupe` collapses shared-bvh's `^0.9.9` declaration down to that
+ * 0.7.x at bundle time. Rather than dictating which version the host
+ * picks, this helper detects the source layout from the data itself
+ * and rewrites in-place so the GPU layout is invariant.
+ *
+ * Detection rule: under 0.9.x the stored relative offset MUST be less
+ * than `totalNodes` (definitionally — it is a node-index delta inside
+ * the same buffer). Under 0.7.x the stored absolute u32 index is the
+ * right child's node index × UINT32_PER_NODE, so it ranges up to
+ * `(totalNodes - 1) × 8`. So: `firstInteriorOffset >= totalNodes`
+ * unambiguously identifies the 0.7.x layout.
+ *
+ * Leaf nodes are untouched — both versions store the triangle offset
+ * in the same field with identical semantics.
+ */
 function normalizeBvhInteriorOffsets(bvhNodes: Float32Array): void {
   const UINT32_PER_NODE = 8;
   const LEAFNODE_FLAG = 0xFFFF;

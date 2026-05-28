@@ -4,11 +4,10 @@ WebGPU-native experimental path tracing backend for `@vitrum/core`.
 
 ## Experimental boundary
 
-This package is **experimental and internal-focused**. The production WebGL2
-path tracer is `@vitrum/pt-webgl` (wraps the `three-gpu-pathtracer`
-fork); `@vitrum/pt-webgpu` is the experimental WebGPU-native backend
-that will eventually replace it once feature parity + GPU verification
-land. Until then:
+This package is **experimental and internal-focused**. `@vitrum/pt-webgpu` is
+a peer WebGPU-native path tracing backend that runs alongside `@vitrum/pt-webgl`,
+serving the same contract surface at different quality/capability tiers. Until
+productionisation is complete:
 
 - **No public API stability**. Types, options, and binding shapes can
   change in any commit.

@@ -68,14 +68,8 @@ grepping the workspace for any consumer outside its own source.
 These were each verified by reading the file and grepping the entire workspace
 for any consumer (including `_staging/`).
 
-1. **`packages/shared-denoisers/src/svgfRealPipelineCache.ts`** — entire file
-   (~75 LoC). The module exports `SVGFRealPipelineBundle` and
-   `svgfRealPipelines(device)`. The function was **duplicated as a private
-   helper inside `svgfRealWebGPU.ts:372`** during the W4-A7 extraction; the
-   intended public cache was never wired up. Zero consumers outside the file
-   itself. Safe to delete after confirming nothing in `external_requests/`
-   plans to import it.
-2. **`packages/walkaround-hybrid/src/restir/packingHelpers.ts:WARM_GRAY_DEFAULT_{R,G,B}` + `applyBeerLambert`** — four exports never imported. `WARM_GRAY_DEFAULT_*` are anonymous constants with no usage. `applyBeerLambert` is only declared.
+1. ~~**`packages/shared-denoisers/src/svgfRealPipelineCache.ts`**~~ — **STALE FINDING (2026-05-28).** This file is imported at `svgfRealWebGPU.ts:28` (`import { svgfRealPipelines } from './svgfRealPipelineCache.js'`). Knip's static analysis did not see the `.js` extension import at the time. The `complexity-remediation-20260526.md` correctly re-evaluates this as verdict C (knip false positive — do not delete). File is live; cache is legitimately hoisted.
+2. ~~**`packages/walkaround-hybrid/src/restir/packingHelpers.ts:WARM_GRAY_DEFAULT_{R,G,B}` + `applyBeerLambert`**~~ — **STALE FINDING (2026-05-28).** These were already demoted to file-local (unexported) `const`/`function` in response to this sweep. They are no longer exported. Confirmed by reading `packingHelpers.ts` lines 17-37: no `export` keyword on any of these four symbols. Finding is closed.
 3. **`packages/pt-webgpu/src/scene/emitterPacking.ts` + `uploadSceneBuffers.ts` — 8 `MAX_*_LIGHTS` / `*_FLOAT_STRIDE` constants exported by *both* files.** The duplicated set is unused externally and only locally referenced *within each file*; one of the two declaration sites is dead. (pt-webgpu is pre-alpha, so neither is shipped, but this is the cleanest scoped consolidation.)
 4. **`packages/shared-denoisers/src/webGpuTextureUpload.ts` — 11 unused exports.** `RGBA16F_BPP`, `RG32F_BPP`, `R32F_BPP`, `R32U_BPP`, `R16U_BPP`, `alignedTextureCopyBytesPerRow`, `uploadTexture2D`, `uploadR32f`, `uploadR32Uint`, `uploadR16Uint`, `fillR16Uint`. Bulk-unused helpers from a pre-W4 era; the surviving callers in `shared-denoisers` use only an internal subset. Verify before deletion — these may be intended as a public surface for hosts.
 5. **Examples' unused dependency entries** (zero-risk `package.json` cleanup):
@@ -90,7 +84,7 @@ for any consumer (including `_staging/`).
 | Package | File | Notes |
 |---|---|---|
 | (root) | `eslint.config.js` | Knip can't see it as referenced. The repo's `lint` script runs `eslint .`, which loads it implicitly; this is a **false positive** — keep. |
-| `shared-denoisers` | `packages/shared-denoisers/src/svgfRealPipelineCache.ts` | **Genuinely orphaned.** See top-5 #1. Function duplicated as a private helper in `svgfRealWebGPU.ts`. |
+| `shared-denoisers` | `packages/shared-denoisers/src/svgfRealPipelineCache.ts` | ~~Genuinely orphaned~~ **STALE (2026-05-28) — false positive.** File IS imported at `svgfRealWebGPU.ts:28` via `.js` extension. Keep. See top-5 #1 correction. |
 
 ## Unused EXPORTS (named values) per package
 

@@ -1,8 +1,8 @@
 /**
  * T2.H3 — PPG paper-faithful (Müller et al. 2017) tests.
  *
- * Per `plan/sprint-ppg-rebuild-future.md`, the rebuild fixes the 5 axes the
- * deleted scaffold deviated from. Each test pins one axis or the supporting
+ * The rebuild (shipped W9; plan archived at `plan/archive/sprint-ppg-rebuild-future-archived-2026-05-28.md`)
+ * fixes the 5 axes the deleted scaffold deviated from. Each test pins one axis or the supporting
  * math:
  *
  *   1. sTree adaptive split (§3.1, deviation 1)

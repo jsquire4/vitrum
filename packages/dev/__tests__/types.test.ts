@@ -15,7 +15,7 @@ import type { Engine, EngineCapabilities, EngineState } from '@vitrum/core';
 
 // ── Minimal Engine stub ───────────────────────────────────────────────────────
 // Implements the Engine contract but NOT the DebuggableEngine extensions.
-// This simulates an engine before T3.E / T3.G land.
+// This intentionally does NOT implement the optional DebuggableEngine extensions (onFrame, onProgress, debug).
 
 function makeMinimalEngine(): Engine {
   const caps: EngineCapabilities = {

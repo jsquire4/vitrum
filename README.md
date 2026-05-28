@@ -49,7 +49,7 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | **Light types**               | point / dir / area / sky    | point / dir / area / sky   |
 | **Materials**                 | PBR + transmission          | PBR + clearcoat + transmission + spectral hero-MIS |
 | **Caustics**                  | none (DDGI only)            | manifold-NEE (opt-in)      |
-| **Animation**                 | camera ✓ / lights limited / mesh transform ✗ | camera ✓ / lights ✓ / mesh ✗ |
+| **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; no topology change) | camera ✓ / lights ✓ / mesh ✓ (no topology change) |
 | **Hardware**                  | WebGPU                      | WebGL2                     |
 | **Convergence**               | re-renders every frame      | accumulates SPP            |
 
@@ -126,6 +126,7 @@ This is the design choice that makes the library survive Canvas remount, route c
 @vitrum/shared-samplers    Sobol, Hammersley, light tree, hero-wavelength MIS
 @vitrum/shared-denoisers   À-trous, SVGF, OIDN bridge
 @vitrum/scene-lighting     Host-side lighting state (time-of-day, sun, sky)
+@vitrum/stained-glass-extensions  Stained-glass host contract extensions
 @vitrum/dev                Debug overlays (devDep)
 ```
 

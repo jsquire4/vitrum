@@ -6,7 +6,7 @@ This document describes how to publish vitrum's packages to npm. **Until the use
 
 1. **All quality gates green.** From the repo root:
    ```sh
-   npm run typecheck     # all 12 packages clean
+   npm run typecheck     # all 13 packages clean
    npm test              # all packages clean (~1209 tests across 11 workspace packages, 3 intentional GPU-only skips)
    npm run test:gpu      # GPU-browser tests — requires `npx playwright install chromium`
    npm run fork-shader-smoke
@@ -86,7 +86,7 @@ vitrum stays at `0.0.0` until the first publish. The first published version is 
 1. Tag the release in git: `git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1`.
 2. Cut a GitHub Release pointing at the tag, with the changelog entry as the body.
 3. Verify a fresh `npm install @vitrum/engine@alpha` in a scratch directory installs cleanly + types resolve.
-4. Update the project README's status badge from "pre-alpha, private" to "pre-alpha, public".
+4. Update the project README's status badge from "release-candidate track, private monorepo" to "release-candidate track, public".
 
 ## Rollback
 

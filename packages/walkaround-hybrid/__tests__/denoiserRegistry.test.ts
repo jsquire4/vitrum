@@ -116,7 +116,7 @@ describe('Builtin Denoiser entries', () => {
     expect((d as { disabled?: boolean }).disabled).toBeUndefined();
   });
 
-  it('NeuralDenoiser carries id "neural" and is disabled (W10 placeholder)', () => {
+  it('NeuralDenoiser carries id "neural" and is disabled by default (no InferenceGraph supplied)', () => {
     const d = new NeuralDenoiser();
     expect(d.id).toBe('neural');
     expect(d.disabled).toBe(true);

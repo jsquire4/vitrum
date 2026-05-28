@@ -58,7 +58,7 @@
 
 **Owns**:
 - À-trous wavelet (current walkaround denoiser, Phase 6 baseline)
-- SVGF (Phase 6 Sprint 10a)
+- SVGF — **SHIPPED** (`svgf-real`, Schied 2017; `svgfRealWebGPU.ts` in `shared-denoisers`; available on `walkaround-hybrid` and `pt-webgpu` full tier)
 - BMFR (Phase 6 Sprint 10a candidate; **not shipped** in `@vitrum/shared-denoisers` yet)
 - OIDN final-pass via ONNX Runtime Web + WebNN execution provider (Phase 6 Sprint 10b)
 
@@ -81,6 +81,18 @@
 **Owns**: the WebGPU layered DDGI + RC + ReSTIR DI compute pipeline (the crown jewel — see `_staging/legacy-source/src/rendering/scene/walkaround/engines/restir/`). Implements the `Engine` contract for real-time GI use cases.
 
 **Depends on**: `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`.
+
+### `@vitrum/walkaround-rc`
+
+**Owns**: Radiance Cascades subsystem — cascade pyramid, cascade buffer management, and `RCDispatcher` (raw-GPU and THREE-coupled entry points). Consumed by `@vitrum/walkaround-hybrid`.
+
+**Depends on**: `@vitrum/core`.
+
+### `@vitrum/scene-lighting`
+
+**Owns**: scene-lighting helpers extracted from `walkaround-hybrid` — emitter packing, light-tree CDF construction, and environment-map precompute that are shared across walkaround and PT backends.
+
+**Depends on**: `@vitrum/core`, `@vitrum/shared-samplers`.
 
 ## How a host application consumes vitrum
 
@@ -132,9 +144,9 @@ Subsequent sprints land their deliverables in vitrum packages, not the host app'
 | 10a | SVGF / BMFR | `@vitrum/shared-denoisers` |
 | 10b | OIDN ONNX final pass | `@vitrum/shared-denoisers/oidn-bridge` |
 | 10c | Vanilla BDPT | `@vitrum/pt-webgl` |
-| 11 | PPG | `@vitrum/walkaround-hybrid` (or its own package if substantial) |
+| 11 | PPG — **SHIPPED** (W9) | `@vitrum/walkaround-hybrid` (`src/ppg/`; opt-in via `HybridEngineOptions.ppgEnabled`) |
 | 12 | Hero spectral | `@vitrum/pt-webgl` AND/OR `@vitrum/pt-webgpu` |
-| 13 | Custom WebGPU neural denoiser | `@vitrum/research/` then `@vitrum/shared-denoisers` |
+| 13 | Custom WebGPU neural denoiser — **SHIPPED** | `@vitrum/walkaround-hybrid` (`src/neural/InferenceGraph.ts`; opt-in via `denoiser: 'neural'` + `neuralWeights`) |
 | 6.5 | ReSTIR BDPT in walkaround | `@vitrum/walkaround-hybrid` extension or `@vitrum/walkaround-restir-bdpt` |
 
 The host application's renderer subdirectory eventually empties as its files move to vitrum packages. Same for the PT pipeline files. The host's role narrows to "domain composition + UI + scene assembly."

@@ -1,6 +1,6 @@
 # Spectral Material Attenuation and Dispersion
 
-**Status:** Proposed
+**Status:** Implemented (contract + fork patches applied; GPU A/B pending)
 **Originating need:** Consumer materials whose transmission spectrum varies significantly within a single RGB channel, causing hue drift with geometry thickness that RGB rendering cannot correctly reproduce.
 **Priority:** High
 

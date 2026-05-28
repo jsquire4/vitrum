@@ -520,9 +520,9 @@ export interface HybridEngineOptions extends EngineOptions {
    *     passes) each frame.
    *
    * The cascade-0 buffer is exposed via the pipeline as the indirect-diffuse
-   * source for shade.wgsl. W8 Phase 2 (initial wire — this commit) dispatches
-   * cascades without sampling them in shade. Phase 3 wires sampling + MIS
-   * composition with DDGI / ReSTIR-GI.
+   * source for shade.wgsl. RC inputs are wired into shade.wgsl via
+   * balance-heuristic MIS (W8 Phase 3, rcWeight option). See
+   * plan/w8-rc-mis-composition.md.
    *
    * Default: `false` — RC is opt-in until Phase 3 demonstrates first-bounce
    * indirect quality gain over DDGI-only.

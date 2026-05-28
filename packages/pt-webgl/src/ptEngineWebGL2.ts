@@ -686,27 +686,6 @@ export class PTEngineWebGL2 implements Engine {
   }
 
   /**
-   * Sprint 10c — host-driven BDPT frame advance. Updates the fork's
-   * `uBdptLightPathTex` uniform so the next `renderFrame` call's
-   * connection pass reads from the supplied texture for cached light
-   * vertices.
-   *
-   * Hosts are expected to populate the texture via their own light-subpath
-   * draw pass BEFORE calling this method; the engine doesn't own that
-   * draw call (it's a fork shader the host must drive). See
-   * {@link BdptLightPathBuffer} in `@vitrum/pt-webgl/bdptLightPathBuffer`
-   * for the recommended host-side texture lifecycle.
-   *
-   * Calling this method on an engine that didn't opt in to BDPT (no
-   * `extensions['vitrum.ptWebgl.bdpt']: true` at construction) is a
-   * no-op — the fork's `FEATURE_BDPT` define is unset and the connection
-   * GLSL is compiled out.
-   *
-   * @param lightPathTex - The light-subpath texture from your host helper
-   *   (typically `BdptLightPathBuffer.texture`). Pass `null` to disable
-   *   BDPT for the next frame as a safety guard.
-   */
-  /**
    * Populate a {@link BdptLightPathBuffer} via the fork GPU light-subpath pass when
    * hardware GL is available; otherwise CPU bounce-0 fill.
    */
@@ -1013,10 +992,9 @@ export class PTEngineWebGL2 implements Engine {
     if (typeof tracerCompat.updateEnvironment === 'function') {
       tracerCompat.updateEnvironment();
     } else {
-      // Fork API gap: should never happen with the vendored
-      // three-gpu-pathtracer fork (WebGLPathTracer.updateEnvironment was
-      // present at fork-time and continues to exist). Reset the accumulator
-      // anyway so the host sees fresh samples on the next render.
+      // Defensive guard against future fork divergence: if updateEnvironment()
+      // is ever removed from the vendored three-gpu-pathtracer fork, reset
+      // the accumulator so the host sees fresh samples on the next render.
       console.warn(
         '[pt-webgl] WebGLPathTracer.updateEnvironment() not available; ' +
           'falling back to accumulator reset only — IBL uniforms will not update until next setScene()',

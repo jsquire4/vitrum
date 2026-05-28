@@ -51,8 +51,8 @@ export const RIS_WGSL = /* wgsl */ `
 // storeReservoirDI_rw) live in COMMON_WGSL.
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
-// they are prepended to RIS_WGSL at compile time (see
-// WalkaroundGPUPipeline shader-module concat).
+// injected from common.wgsl via the W1-R6 WGSL include-graph
+// (requires: ['restirPHat'] → 'common').
 
 // W2-C7 — emitter target function p̂ moved to restirPHat.wgsl
 // (canonical restir_di_compute_phat_from_surface(lid, surf)). RIS calls

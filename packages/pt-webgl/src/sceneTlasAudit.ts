@@ -1,5 +1,5 @@
 /**
- * @deprecated Import `auditSceneNeedsTlas` from `@vitrum/core` — kept for pt-webgl callers.
+ * Stable re-export alias of auditSceneNeedsTlas from @vitrum/core, kept for pt-webgl callers.
  */
 
 import { auditSceneNeedsTlas, type SceneTlasAudit } from '@vitrum/core';

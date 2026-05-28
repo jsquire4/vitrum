@@ -172,7 +172,7 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
     base.thinFilmStack = rawThinFilm as ThinFilmStack;
   }
 
-  // RFE-03 (Sprint X — per-face surface absorption layers)
+  // RFE-03 (Sprint 14 — per-face surface absorption layers)
   const rawFront = ud[K.FRONT_LAYER];
   if (rawFront != null && typeof rawFront === 'object' && !Array.isArray(rawFront)) {
     base.frontLayer = rawFront as SurfaceAbsorptionLayer;

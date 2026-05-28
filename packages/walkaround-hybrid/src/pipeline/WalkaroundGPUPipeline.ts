@@ -18,7 +18,7 @@
  *   6. Temporal accumulation: EMA blend with previous frame's HDR
  *   7. Composite render pass: blit accumulated HDR to the swap-chain texture
  *
- * **W1-R5 — declarative pass order.** All 18 non-denoiser stages above are
+ * **W1-R5 — declarative pass order.** All non-denoiser stages (registered below) are
  * implemented as self-contained {@link Pass} entries under
  * `pipeline/passes/` and registered with a {@link PassRegistry}. Frame
  * dispatch is now a pass-loop sandwiching the polymorphic denoiser

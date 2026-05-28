@@ -3,7 +3,7 @@
  *
  * Previously named svgfWebGPU.ts; renamed by sweep-2026-05-11 D3.
  * The denoiser was previously called SVGF but never implemented real
- * Schied 2017 SVGF. Real SVGF is tracked in plan/sprint-svgf-real-future.md.
+ * Schied 2017 SVGF. Real Schied 2017 SVGF ('svgf-real' mode) is implemented in svgfRealWebGPU.ts.
  *
  * When optional g-buffer slices (`gbufferNormalsRgb`, `linearDepth`, `motionRg`,
  * `welfordMeanM2`) are omitted, fills synthetic buffers from

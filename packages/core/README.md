@@ -6,7 +6,7 @@ This is the **load-bearing** type surface every other vitrum package compiles ag
 
 ## Status
 
-**Pre-1.0.** Still in active refactor; breaking changes flagged with `!` in commit messages. Subscribers should pin a specific commit until the v1 freeze (planned after the W1–W13 premium-grade refactor lands).
+**Pre-1.0.** Still in active refactor; breaking changes flagged with `!` in commit messages. Subscribers should pin a specific commit until the v1 freeze (W1–W13 refactors complete; v1 freeze pending final pt-webgpu fidelity promotion).
 
 ## Public surface
 

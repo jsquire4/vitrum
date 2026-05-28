@@ -1,6 +1,6 @@
 # W8 — RC + MIS composition in HybridEngine
 
-**Status:** in flight (started 2026-05-18)
+**Status:** Shipped (2026-05-18, all four phases). Trilinear interpolation in sampleCascadeC0 is a Phase-3b follow-up (nearest-probe only today).
 **Acceptance:** items_to_fix.md B2 — HybridEngine runs a Cornell scene with `denoiser: 'atrous-variance'`, `rcEnabled: true`, and visibly produces higher-quality first-bounce indirect than DDGI-only.
 
 ## Why this is bigger than the audit said

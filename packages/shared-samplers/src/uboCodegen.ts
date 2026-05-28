@@ -44,10 +44,9 @@
  * ─── Rollout status (W2-C13) ─────────────────────────────────────────────────
  * `defineUbo` is the canonical UBO codegen helper. Current adopters:
  *   - `packages/walkaround-hybrid/src/**` — ~8 UBOs migrated.
- *   - `packages/shared-denoisers/src/wgsl/welfordVariance.wgsl.ts` — partial.
+ *   - `packages/shared-denoisers/src/svgfRealBindings.ts`
  * NOT yet migrated (still hand-rolled DataView packers):
  *   - `packages/shared-denoisers/src/atrousVarianceBindings.ts`
- *   - `packages/shared-denoisers/src/svgfRealBindings.ts`
  *   - `packages/pt-webgpu/src/index.ts` (FrameParams)
  *   - `packages/walkaround-rc/src/cascadeDispatch.ts` (Cascade/Merge UBOs;
  *     was at `walkaround-hybrid/src/rc/` pre-W8-followup, moved 2026-05-18)

@@ -6,7 +6,7 @@ import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
  * FrameParams layout contract test.
  *
  * After the Pass-1 4.71 deferral cleanup, the FrameParams UBO is a fixed
- * 336-byte payload in a 512-byte buffer with this layout:
+ * 384-byte payload in a 512-byte buffer with this layout:
  *
  *   u32 slot 0..19   (offsets 0..79):
  *     0  width

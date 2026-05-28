@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — signoff complete; living maturity record is plan/backend-maturity-matrix-2026-05-26.md.
+
 # Backend Maturity Sweep — Signoff (2026-05-26)
 
 Technical sweep completion record for the single-program backend maturity work.

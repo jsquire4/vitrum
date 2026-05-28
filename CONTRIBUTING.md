@@ -13,8 +13,8 @@
   `vitest.gpu.config.ts` for the Chromium flag set).
 - `npm run test:all` — `test` then `test:gpu`. Use this for full local
   validation before pushing.
-- `npm run fork-shader-smoke` — Shader string regression on the sibling
-  `three-gpu-pathtracer` checkout (`../three-gpu-pathtracer`, or `VITRUM_FORK_DIR`).
+- `npm run fork-shader-smoke` — Shader-string regression on the absorbed fork at
+  `packages/three-gpu-pathtracer` (no sibling checkout needed).
 
 ## GPU / reference renders
 

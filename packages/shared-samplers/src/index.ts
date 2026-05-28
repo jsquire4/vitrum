@@ -6,7 +6,6 @@
 // Sprint 8b (Phase 6): Jakob+Hanika spectral upsampling.
 // Sprint 10c (Phase 6): BDPT vertex layout + connection-PMF MIS weights.
 // Sprint 12 (Phase 6): CIE CMF tables, hero-wavelength sampling, Cauchy IOR.
-// Future: Sobol QMC (Sprint 3 fork-side), Welford variance struct (Sprint 9 rider).
 
 export * from './wgsl/hammersley.wgsl.js';
 export { OCTAHEDRAL_CORE_WGSL } from './wgsl/octahedralCore.wgsl.js';
@@ -34,11 +33,8 @@ export {
   evaluateSpectrum,
 } from './jakobHanika.js';
 // ── Sprint 10c (BDPT) ────────────────────────────────────────────────────────
-// Sprint 10c is open (un-deferred by user 2026-05-12). The _full MIS helpers
-// (T2.H4) are the canonical consumer-facing API. Fork-side GLSL dispatch is
-// BLOCKED on Sprints 4–6 fork patches (no spec or fork commits exist for those
-// sprints yet). See plan/sprint-10c-pt-fork-patch.md §Status for full blocker
-// detail and external_requests/IMPLEMENTATION-STATUS.md §Sprint 10c.
+// Sprint 10c (BDPT) — applied 2026-05-12. See external_requests/IMPLEMENTATION-STATUS.md §Sprint 10c.
+// The _full MIS helpers (T2.H4) are the canonical consumer-facing API.
 export {
   BDPT_KIND_LIGHT,
   BDPT_KIND_EYE,

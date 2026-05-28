@@ -13,9 +13,7 @@ export interface SceneSummary {
 }
 
 /**
- * Lightweight scene summary used by the early pt-webgpu port.
- * This captures enough structural information to size buffers and debug
- * unsupported content while the full BVH/material upload path is implemented.
+ * Lightweight scene summary used to size buffers and debug unsupported content.
  */
 export function summarizeScene(scene: Scene): SceneSummary {
   let meshPrimitiveCount = 0;

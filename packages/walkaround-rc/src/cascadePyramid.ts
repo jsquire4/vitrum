@@ -45,15 +45,15 @@
  *
  * Note: `gpuCascades` uses `StorageBufferAttribute` from `three/webgpu` because the
  * C0 buffer is consumed by the TSL `walkaroundDiffuseLighting.ts` node via `storage()`.
- * The `RCDispatcher` (cascadeDispatch.ts) accesses the same GPU buffers through the
- * Three.js WebGPU renderer backend.  See TSL_TO_RAW_MAPPING.md for rationale.
+ * HybridEngine uses its own independently-allocated raw GPUBuffer[]; RCDispatcher.dispatchFrameRaw
+ * receives caller-supplied cascadeBufs directly. See TSL_TO_RAW_MAPPING.md for rationale.
  */
 
 // W8 Phase 1A (2026-05-18) — `THREE.Box3` / `THREE.Vector3` removed from this
 // module; replaced by plain `[x,y,z]` tuples + a {min,max} AABB type. The
 // `StorageBufferAttribute` import survives because the TSL host path still
-// hands the GPU buffer to a TSL `storage()` node; W8 Phase 1B adds a parallel
-// raw-GPUBuffer path so HybridEngine never touches the THREE backend.
+// hands the GPU buffer to a TSL `storage()` node. HybridEngine allocates its
+// own raw GPUBuffer[] independently; this module is used only by the TSL host path.
 import { StorageBufferAttribute } from 'three/webgpu';
 
 // Performance budget: total compute invocations ≤ 200K for 30fps on RTX-class hardware
@@ -112,11 +112,10 @@ export interface CascadeBuffers {
    * the WebGPU runtime allocates a separate GPU buffer per StorageBufferAttribute instance.
    *
    * NOTE (W8 Phase 1A — 2026-05-18): retained for the TSL host path
-   * (`walkaroundDiffuseLighting.ts` → `storage(attr).label(...)`). HybridEngine's
-   * WGSL shade pipeline uses the raw GPUBuffer extracted by `RCDispatcher`
-   * instead, so this field is host-only. W8 Phase 1B will add a parallel
-   * `rawCascades: GPUBuffer[]` field so the HybridEngine path doesn't need to
-   * reach into the THREE renderer backend at all.
+   * (`walkaroundDiffuseLighting.ts` → `storage(attr).label(...)`). HybridEngine
+   * uses its own independently-allocated raw GPUBuffer[]; RCDispatcher.dispatchFrameRaw
+   * receives caller-supplied cascadeBufs. This field is used only by the TSL host path
+   * (GIReceiver / walkaroundDiffuseLighting).
    */
   gpuCascades: StorageBufferAttribute[];
   /** Room AABB min corner in world space (probes start here). Plain tuple — THREE-free. */

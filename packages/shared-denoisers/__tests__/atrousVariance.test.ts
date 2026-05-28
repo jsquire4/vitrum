@@ -3,7 +3,7 @@
  *
  * Previously named svgf.test.ts; renamed by sweep-2026-05-11 D3.
  * The denoiser was previously called SVGF but never implemented real
- * Schied 2017 SVGF. Real SVGF is tracked in plan/sprint-svgf-real-future.md.
+ * Schied 2017 SVGF. Real SVGF is implemented in svgfRealWebGPU.ts (plan archived at plan/archive/sprint-svgf-real-future-archived-2026-05-28.md).
  *
  * Does NOT execute WGSL on a GPU. Verifies:
  *   1. WGSL string exports are non-empty and well-formed.

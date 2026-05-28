@@ -1,5 +1,7 @@
 # `_staging/legacy-source/` extraction audit — 2026-05-17
 
+> **ARCHIVED 2026-05-28.** Findings remain accurate: the staging directory contains only intentional host React/Redux glue (19 files) plus 3 small data tables recommended for `examples/shared/` only if needed. No urgent extractions exist; no duplicates or dead code. The `useSceneBVH` duplicate-row inaccuracy in `_staging/README.md` is a low-priority note. Current source of truth: `_staging/` directory + `_staging/README.md`.
+
 > Read-only audit: every file in `_staging/legacy-source/` opened and
 > categorised against the current `packages/` extraction surface. No code
 > moved; no files deleted. Output is a triage list for a future extraction

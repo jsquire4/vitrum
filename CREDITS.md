@@ -7,6 +7,11 @@ vitrum builds on decades of foundational work in physically-based rendering, rea
 - **three.js** — MIT — Mr.doob et al. — `https://github.com/mrdoob/three.js`
 - **three-gpu-pathtracer** — MIT — Garrett Johnson (gkjohnson) — `https://github.com/gkjohnson/three-gpu-pathtracer`
 - **three-mesh-bvh** — MIT — Garrett Johnson — `https://github.com/gkjohnson/three-mesh-bvh`
+
+## Ecosystem / prior art (not direct dependencies)
+
+The following projects are credited as prior art and ecosystem context. They are not imported by vitrum (vitrum is host-agnostic and carries no React dependency).
+
 - **@react-three/fiber** — MIT — poimandres
 - **@react-three/drei** — MIT — poimandres
 - **@react-three/gpu-pathtracer** — MIT — poimandres
@@ -72,13 +77,13 @@ Each technique is cited at its implementation site in the source code. This list
 
 ### Caustic methods
 
-- **Bidirectional path tracing (BDPT)** — Eric P. Lafortune, Yves D. Willems, "Bi-directional Path Tracing," CompuGraphics 1993 (partial: vertex tables + connection-strategy MIS math under `shared-samplers/src/bdpt*` — full caustic dispatch gated on Sprint 10c per `plan/phase-7-restir-gi.md`)
+- **Bidirectional path tracing (BDPT)** — Eric P. Lafortune, Yves D. Willems, "Bi-directional Path Tracing," CompuGraphics 1993 (partial: vertex tables + connection-strategy MIS math under `shared-samplers/src/bdpt*` — (Sprint 10c applied 2026-05-12; GPU visual A/B remains follow-up))
 
 ### Textbook references
 
 Foundational textbooks cited from JSDoc comments across the codebase:
 
-- **PBR4e** — Matt Pharr, Wenzel Jakob, Greg Humphreys, "Physically Based Rendering: From Theory to Implementation," 4th edition, MIT Press, 2023. Cited from `shared-samplers/src/{bdptVertex,bdptMIS,hgPhase}.ts`, `shared-samplers/__tests__/pdfNormalization.test.ts`, `walkaround-hybrid/src/shaders/common.wgsl.ts`, `pt-webgpu/src/wgsl/pathTrace/*.wgsl.ts`. Referenced for: HG phase normalisation (§11.4), equi-angular volume PDF (§14.1.2), BDPT MIS recursive ratio (§16.3.5 Eq. 16.16), hero-wavelength MIS reconstruction (§4.6.2), barycentric reconstruction (§6.8).
+- **PBR4e** — Matt Pharr, Wenzel Jakob, Greg Humphreys, "Physically Based Rendering: From Theory to Implementation," 4th edition, MIT Press, 2023. Cited from `shared-samplers/src/{bdptVertex,bdptMIS,hgPhase}.ts`, `shared-samplers/__tests__/pdfNormalization.test.ts`, `pt-webgpu/src/wgsl/pathTrace/*.wgsl.ts`. Referenced for: HG phase normalisation (§11.4), equi-angular volume PDF (§14.1.2), BDPT MIS recursive ratio (§16.3.5 Eq. 16.16), hero-wavelength MIS reconstruction (§4.6.2), barycentric reconstruction (§6.8).
 - **Veach 1997** — Eric Veach, "Robust Monte Carlo Methods for Light Transport Simulation," PhD thesis, Stanford University. Cited from `shared-samplers/src/bdptMIS.ts` (§10.3 BDPT MIS connection formulae). The canonical reference for multiple-importance-sampling theory.
 
 ## Candidate techniques (not yet implemented)

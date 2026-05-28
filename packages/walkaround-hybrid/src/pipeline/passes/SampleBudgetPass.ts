@@ -4,7 +4,7 @@
  * Reads the previous-frame Welford variance buffer and writes a per-pixel
  * tier texture (1 = converged, 2 = medium, 4 = high noise). The tier
  * output is consumed by `risGi` (gi_tier scales M_GI per pixel) and is
- * available for `ris.wgsl` (currently unused). The pass runs first in
+ * available for `ris.wgsl`. The pass runs first in
  * the frame so its r32uint output is available downstream.
  *
  * Audit refs: M2 (thresholds host-overridable), Sprint 9 wire-in notes.

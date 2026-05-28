@@ -4,7 +4,7 @@
  * Single source of truth for the WelfordVariance WGSL struct and its
  * update / variance helpers. Imported by:
  *  - `walkaround-hybrid/src/shaders/common.wgsl.ts` (concatenates into COMMON_WGSL)
- *  - `shared-denoisers/src/wgsl/svgf.wgsl.ts` (concatenates into SVGF_WGSL)
+ *  - `shared-denoisers/src/wgsl/atrousVariance.wgsl.ts` (concatenates into ATROUS_VARIANCE_WGSL)
  *
  * Layout (RG32Float texel):
  *   r = mean (running average of luminance)

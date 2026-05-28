@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — SHIPPED (Sprints 15–18). See CLAUDE.md 'what's done'.
+
 # Phase 7 — ReSTIR-GI + Short-Range Screen-Space AO
 
 **Status**: Shipped (Sprints 15–18 on main, 2026-05-17+)

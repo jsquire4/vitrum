@@ -1,5 +1,7 @@
 # Session summary — 2026-05-17 premium-grade refactor
 
+> **ARCHIVED 2026-05-28.** All 54 branches were merged to `main` by 2026-05-18. The 2026-05-18 status correction (stale two-package claim, B2-RC, B1-PPG state) still applies. As of 2026-05-28: `@vitrum/walkaround-rc` and `@vitrum/stained-glass-extensions` both exist in `packages/`; B2 (RC into HybridEngine) shipped fully per CLAUDE.md; B1 (PPG) is wired. This doc is a historical merge-navigation index only. Current source of truth: `git log --oneline` from `29ccf96` forward.
+
 A single autonomous `/implement-plan` + `/loop` session shipped essentially the entire `premium-grade-refactor-20260517.md` plan (W1–W13) PLUS every closeable `items_to_fix.md` entry. This doc indexes the 54 session branches + 90 commits so reviewers can navigate.
 
 > **Status correction (2026-05-18).** Several claims below were aspirational at the time and have since drifted:

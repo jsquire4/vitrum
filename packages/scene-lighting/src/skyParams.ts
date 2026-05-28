@@ -3,7 +3,7 @@
  *
  * `t` is in [0, 1]: 0 = dawn, 0.5 = noon, 1 = dusk.
  *
- * Why SkyParams is kept as a pt-webgl-internal type rather than collapsed into
+ * Why SkyParams lives in @vitrum/scene-lighting rather than being collapsed into
  * core's ProceduralSkyEnvironment: SkyParams.sunPosition is a RAW non-unit
  * Preetham position vector (~1.12–1.41 magnitude across the day arc), while
  * ProceduralSkyEnvironment.sunDirection is a unit vector. The IBL baker and

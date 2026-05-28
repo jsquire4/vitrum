@@ -8,8 +8,8 @@
  *
  * The defining SVGF temporal stages (bilinear reprojection, disocclusion
  * detection, per-pixel history length, variance-guided α-clamp, Schied Eq. 4
- * edge-stop form) are absent. Real Schied 2017 SVGF is tracked in
- * plan/sprint-svgf-real-future.md.
+ * edge-stop form) are absent. Real Schied 2017 SVGF ('svgf-real' mode) is
+ * implemented in svgfRealWebGPU.ts.
  *
  * Previously named svgf.wgsl.ts; renamed by sweep-2026-05-11 D3 to match
  * what the implementation actually does.
@@ -107,7 +107,7 @@ struct AtrousVarianceVarianceUBO {
 // ============================================================
 struct AtrousVarianceAtrousUBO {
   iteration:   u32,   // 0-4 (step width = 1 << iteration)
-  sigmaColor:  f32,   // color edge-stop σ (default 10.0)
+  sigmaColor:  f32,   // color edge-stop σ (default 4.0)
   sigmaNormal: f32,   // normal edge-stop σ as exponent (default 128.0)
   sigmaDepth:  f32,   // depth edge-stop σ in world units (default 1.0)
 };

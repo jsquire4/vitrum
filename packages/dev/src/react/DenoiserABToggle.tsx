@@ -60,9 +60,8 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
     } else {
        
       console.warn(
-        '[DenoiserABToggle] engine.debug.setDenoiserEnabled() is not implemented. ' +
-        'Implement it in HybridEngine to wire the denoiser toggle. ' +
-        'See packages/dev/src/types.ts:EngineDebugSurface for the interface.'
+        '[DenoiserABToggle] engine.debug.setDenoiserEnabled() is not implemented on this backend' +
+        ' — the toggle UI shows state locally but the engine denoiser won\'t change.'
       );
       // Keep UI state honest when backend wiring is unavailable.
     }

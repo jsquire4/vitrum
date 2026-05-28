@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — SHIPPED. Neural U-Net in walkaround-hybrid/src/neural/InferenceGraph.ts; denoiser: 'neural' + neuralWeights. Training tools at tools/neural-denoiser-training/.
+
 # Neural Denoiser — Future Sprint Placeholder
 
 **Status:** Future / unscheduled

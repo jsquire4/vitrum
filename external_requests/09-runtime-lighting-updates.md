@@ -3,7 +3,7 @@
 **Date:** 2026-05-11
 **Requester:** stainedGlass app (`~/projects/stainedGlass`)
 **Priority:** Medium
-**Status:** Proposed
+**Status:** Partially Implemented (updateLighting(patch) batch method shipped; individual updatePrimaryLight/updateSkyDome/updateLights methods and supportsIncrementalLighting capability not added)
 **Affects:** `@vitrum/walkaround-hybrid`
 
 ---

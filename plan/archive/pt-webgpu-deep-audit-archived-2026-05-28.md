@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — all HIGH/MEDIUM/LOW findings closed (2026-05-19). See packages/pt-webgpu/README.md.
+
 # pt-webgpu Deep Bug Audit — 2026-05-10
 
 ## Summary

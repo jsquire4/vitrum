@@ -485,22 +485,6 @@ export class PipelineInitCoordinator {
   }
 }
 
-/**
- * Walk an Object3D tree for `THREE.RectAreaLight` instances and project each
- * onto a `DDGILight` point-light approximation so the DDGI probe-update pass
- * (which only switches on `kind === 'sun' | 'fixture' | 'teaLight'`) can
- * evaluate direct lighting at probe-ray hit points.
- *
- * Approximation rationale: DDGI provides low-frequency indirect bounce — the
- * actual rect geometry only matters for the high-frequency direct term, which
- * ReSTIR DI handles separately from the actual emitter triangles. A point at
- * the rect centroid carrying flux ≈ `color × intensity × area` gives a
- * qualitatively-correct downward irradiance for probes; colour bleed onto
- * surrounding walls (the visible signature of Cornell-style scenes) reaches
- * the irradiance atlas correctly. The remaining factor-of-π errors in
- * total-flux conversion are negligible against the multiple-of-10 dynamic
- * range that distinguishes "lit colour bleed" from "atlas reads zero".
- */
 /** Project `THREE.PointLight` instances to DDGI point-light fixtures. */
 function collectDDGIPointLightsFromRoot(root: THREE.Object3D): DDGILight[] {
   const out: DDGILight[] = [];
@@ -519,7 +503,22 @@ function collectDDGIPointLightsFromRoot(root: THREE.Object3D): DDGILight[] {
   return out;
 }
 
-/** Rect-area + point lights from a THREE scene root for DDGI probe updates. */
+/**
+ * Walk an Object3D tree for `THREE.RectAreaLight` instances and project each
+ * onto a `DDGILight` point-light approximation so the DDGI probe-update pass
+ * (which only switches on `kind === 'sun' | 'fixture' | 'teaLight'`) can
+ * evaluate direct lighting at probe-ray hit points.
+ *
+ * Approximation rationale: DDGI provides low-frequency indirect bounce — the
+ * actual rect geometry only matters for the high-frequency direct term, which
+ * ReSTIR DI handles separately from the actual emitter triangles. A point at
+ * the rect centroid carrying flux ≈ `color × intensity × area` gives a
+ * qualitatively-correct downward irradiance for probes; colour bleed onto
+ * surrounding walls (the visible signature of Cornell-style scenes) reaches
+ * the irradiance atlas correctly. The remaining factor-of-π errors in
+ * total-flux conversion are negligible against the multiple-of-10 dynamic
+ * range that distinguishes "lit colour bleed" from "atlas reads zero".
+ */
 export function collectDDGILightsFromThreeRoot(root: THREE.Object3D): DDGILight[] {
   return [
     ...collectDDGILightsFromRectAreaLights(root),

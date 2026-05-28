@@ -11,6 +11,14 @@ Several blockers identified below have since been resolved. Verified-current sta
 - **walkaround-rc package metadata** (extracted post-audit) — README.md + LICENSE in place; package.json mirrors the walkaround-hybrid shape.
 - Blockers #1 (no build step), #2 (private), #3 (`file:` fork dep), #4 (`file:` intra-workspace deps), and the per-package `homepage`/`bugs` gap remain open — they are intentional pre-alpha state per `RELEASING.md`. The per-package rows below are accurate for those fields but stale wrt README/LICENSE and predate the `scene-lighting` + `walkaround-rc` splits.
 
+## Status update — 2026-05-28
+
+- **Package count now 13** (was 10 at audit-time). New packages since the audit: `@vitrum/scene-lighting`, `@vitrum/walkaround-rc`, `@vitrum/stained-glass-extensions`. All three have README.md + LICENSE; package.json mirrors the existing package shape. Blockers #1–#4 and `homepage`/`bugs` gaps still apply to all 13 publishable packages.
+- **`walkaround-hybrid` dependency block changed**: now lists 7 `file:` specifiers (adds `@vitrum/stained-glass-extensions` + `@vitrum/walkaround-rc`). The Section C count of 21 `file:` references is now higher.
+- **`three-mesh-bvh` dep/peer duplication** (Section E) remains unfixed in `pt-webgl/package.json` and `shared-bvh/package.json` — verified 2026-05-28.
+- **No build step exists** (Section A / blocker #1) — still `noEmit: true` in all packages except `@vitrum/core`; no `build` scripts added. This is the primary publication blocker.
+- Per-package detail rows below are stale for README/LICENSE fields; all other fields (build, entrypoints, `private`, deps) remain accurate.
+
 ## Scope
 
 Audited packages (10): root + 10 workspace packages under `packages/*`.

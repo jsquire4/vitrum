@@ -44,13 +44,6 @@ fn projectToNdc(pos: vec3f, vp: mat4x4f) -> vec2f {
   return clip.xy * invW;
 }
 
-// sampleRectAreaLight (legacy single-rect-area path) and sampleMeshAreaLight
-// (legacy single-mesh-area-light path reading meshAreaLights[0..3] directly)
-// both removed: the multi-light loop in main() reads
-// {rectAreaLights, meshAreaLights}[ri*4 + 0..3] dynamically and already
-// covers the single-light case (count == 1). WGSL strips uncalled functions
-// silently so the dead code wasn't a runtime cost — but it misled readers
-// into believing meshAreaLights[0..3] was a special always-the-first slot.
 
 fn causticMode() -> u32 {
   return params.causticStrategy;

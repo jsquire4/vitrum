@@ -13,7 +13,7 @@ This file covers RFEs 06–14 (fork shader patches, 2026-05-10). For RFEs 01–0
 - Fork **`transmissionEval`** PDF now follows the **Walter et al. EGSR07** microfacet BTDF Jacobian form (`ggxPDF(wo,wh) / (η wi·wh + wo·wh)²`), replacing the incorrect Fresnel-only stub.
 - pt-webgpu **material packing stride** is now **22 vec4s/material** with **thin-film layer triplets** `(ior, thicknessNm, extinctionCoefficient)`, stack **`incidentIor`** + **`angleDependent`**, and **bounded multi-light storage buffers** (`point` / `spot` / `rect-area` / `mesh-area`) bound at `@binding(20–23)` with counts in `FrameParams`.
 - Vitrum **`npm run fork-shader-smoke`** invokes the fork `scripts/shader-smoke-check.js`; Playwright capture adapter appends **`vitrumScenario` / `vitrumSeed` / …** query params for host pages.
-- Final GPU render/perf validation remains pending and tracked in `plan/gap-closure-verification-2026-05-10.md`.
+- Final GPU render/perf validation remains pending and tracked in `plan/archive/gap-closure-verification-2026-05-10.md`.
 
 ## Sprint 4 BSDF Cost Reduction: APPLIED (2026-05-12)
 
@@ -135,7 +135,7 @@ Stays within `MAX_DRAW_BUFFERS=8` limit (3 MRT attachments per draw call).
 1. **pdfRev approximation**: light-subpath kernel uses cosine-hemisphere pdfRev
    (Lambertian). Full Veach requires re-evaluating after path completion. Visually
    acceptable for caustic convergence verification but biases variance estimate.
-   Track: `plan/phase-6-status.md`.
+   Track: `plan/archive/phase-6-status.md`.
 2. **Full strategy enumeration**: 2-strategy MIS approximation (connection vs.
    unidirectional) replaces k+1-strategy recursive sweep. Adequate for caustic
    acceleration; full sweep deferred to a future patch.

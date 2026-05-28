@@ -6,9 +6,10 @@
  *
  * Runs in vitest browser mode under headless Chromium with SwiftShader as
  * the WebGPU adapter. SwiftShader's Vulkan ICD caps
- * maxStorageBuffersPerShaderStage at 10; the bruteforce shader binds 18.
- * Real consumer GPUs (RTX, M-series, recent AMD) ship with 16+ and run
- * the full pipeline. Both code paths are covered here.
+ * maxStorageBuffersPerShaderStage at 10; the bruteforce shader uses multiple
+ * bind groups — see PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE for the
+ * per-stage limit. Real consumer GPUs (RTX, M-series, recent AMD) ship with
+ * 16+ and run the full pipeline. Both code paths are covered here.
  */
 import { describe, expect, it, beforeAll } from 'vitest';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';

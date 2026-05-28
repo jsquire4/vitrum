@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — Completed 2026-05-26; see plan/PR-signoff-2026-05-26.md and plan/WG-signoff-2026-05-26.md.
+
 # Implementation Plan: Primary Release + WebGPU PT Parity (summary)
 
 **Date:** 2026-05-26  

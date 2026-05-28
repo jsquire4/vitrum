@@ -5,12 +5,10 @@
 // ENVIRONMENT (the world's hemispheric light source). The camera lives in
 // FrameInput because it changes per-frame; the scene itself is camera-free.
 //
-// The general case is the union of every shape we might support. The current
-// concrete needs are triangle meshes (panels, walls, floors) and analytic
-// primitives (architectural-pattern shapes such as H-channel came rails;
-// Phase 6 sprint 5 lands them). Future kinds extend the discriminated union
-// without breaking older backends — backends pattern-match on `kind` and
-// ignore unknown kinds with a warning, not a crash.
+// ScenePrimitive is a discriminated union of four kinds: MeshPrimitive,
+// InstancedMeshPrimitive, AnalyticPrimitive, and SkinnedMeshPrimitive.
+// Future kinds extend the union without breaking older backends — backends
+// pattern-match on `kind` and ignore unknown kinds with a warning, not a crash.
 
 export * from './math.js';
 export * from './material.js';

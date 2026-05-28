@@ -78,7 +78,8 @@ interface BvhStats {
 
 function computeBvhStats(nodes: Float32Array): BvhStats {
   // 8 floats per node: [minX, minY, minZ, maxX, maxY, maxZ, depth, pad].
-  // bvhNodes() of HybridEngine populates `depth` via iterative DFS.
+  // Assumes bvhNodes() encodes per-node [minX,minY,minZ,maxX,maxY,maxZ,depth,pad]
+  // — see EngineDebugSurface contract.
   const nodeCount = Math.floor(nodes.length / 8);
   if (nodeCount === 0) {
     return { nodeCount: 0, maxDepth: 0, avgDepth: 0, histogram: [] };

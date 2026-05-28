@@ -1,5 +1,7 @@
 # Dead-export audit — 2026-05-17
 
+> **ARCHIVED 2026-05-28.** The 2026-05-18 status block already notes these numbers are stale: post-audit cleanup dropped ~100 dead exports; as of 2026-05-18 knip reported only ~2 intentional design surfaces. The `walkaround-rc` + `stained-glass-extensions` package splits further redistributed counts. Use `npx knip --include exports --reporter compact` from the repo root for a live picture. Current source of truth: the live codebase.
+
 > **Read-only audit.** No exports were removed or renamed. Findings only.
 >
 > **Status (2026-05-18):** the numbers below are stale. The post-audit

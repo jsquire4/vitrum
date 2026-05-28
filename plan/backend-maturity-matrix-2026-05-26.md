@@ -38,7 +38,7 @@ It intentionally excludes release governance and distribution posture.
 - Deep pipeline integration: **strong** (full/lite tiers; TLAS; spectral hero-λ; layered MIS; OIDN-final; aux G-buffers)
 - Lifecycle reliability: **medium-strong** (Wave 4 soak; host owns pause/resize; not in `auto`)
 - Regression harness coverage: **strong** (WG-0 baseline; gap-closure harness; 120+ package tests)
-- Current focus: hardware gap-closure PASS for RFE scenarios; WG-9 `svgf-real` is hybrid-only; BDPT deferred on WebGPU (WG-7, pt-webgl only).
+- Current focus: hardware gap-closure PASS for RFE scenarios; WG-9 svgf-real available on pt-webgpu full tier and walkaround-hybrid; BDPT v1 shipped on pt-webgpu (CPU light-path fill + evaluateBdptConnection in full-tier kernel via extensions['vitrum.ptWebgpu.bdpt']); GPU light-subpath pass is a follow-up.
 
 ## Shared Layers (`core`, `engine`, `shared-*`)
 

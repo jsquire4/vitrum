@@ -1,14 +1,12 @@
 /**
- * ResolvePass — Sprint 9 sparse-shade gap-fill pass.
+ * ResolvePass — sparse-shade gap-fill pass.
  *
- * Currently runs in passthrough mode (checkerboardOn=0) — every pixel
- * copies through from `writeAccum` to `common.resolvedTexture`. When
- * `shade.wgsl` is upgraded to write sparsely, flip `checkerboardOn=1`
- * in the resolve UBO and the gap-fill branch becomes active. Until
- * then this pass costs one extra texture copy per frame but produces
- * identical output.
+ * Passthrough mode only — checkerboardOn is hardcoded to 0. Every pixel
+ * copies through from `writeAccum` to `common.resolvedTexture`. The
+ * sparse-shade checkerboard path is unexercised pending a sparse-write
+ * upgrade in shade.wgsl.
  *
- * Sprint 9 layout note: resolve uses `@workgroup_size(8, 8, 1)` —
+ * Layout note: resolve uses `@workgroup_size(8, 8, 1)` —
  * dispatch with `wgX/wgY` (`ceil(W/8)`), NOT the 16×16-sized counts.
  */
 

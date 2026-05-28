@@ -25,7 +25,9 @@ export class NeuralDenoiser implements Denoiser {
   readonly disabled: boolean;
   /** Mirrors the atrous-variance layout — the slot allocator inspects this
    *  even for `disabled` entries when buildPassLayout enumerates the union
-   *  of all registered denoisers. */
+   *  of all registered denoisers. Note: when enabled, dispatch emits only 2
+   *  passes (input-pack + output-unpack); the 5-label list over-declares
+   *  relative to actual dispatch. */
   readonly passLabels = DENOISER_PASS_LABELS['neural'];
   private readonly _inferenceGraph: InferenceGraph | undefined;
   private _width = 0;

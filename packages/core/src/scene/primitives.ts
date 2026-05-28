@@ -41,9 +41,8 @@ export interface InstancedMeshPrimitive {
  *  unsupported shapes log a warning and degrade to skip (or to mesh
  *  tessellation if a fallback geometry is provided).
  *
- *  Phase 6 sprint 5 introduces 'h-channel-came' for our analytic came/solder
- *  geometry. Future shapes (gemstones via 'ellipsoid', pillars via 'capsule',
- *  etc.) extend this discriminated union without breaking existing scenes.
+ *  Future shapes (gemstones via 'ellipsoid', pillars via 'capsule', etc.)
+ *  extend this discriminated union without breaking existing scenes.
  */
 export interface AnalyticPrimitive {
   readonly kind: 'analytic';
@@ -60,7 +59,7 @@ export type AnalyticShape =
   | 'box'              // params: [cx, cy, cz, hx, hy, hz]
   | 'capsule'          // params: [ax, ay, az, bx, by, bz, radius]
   | 'cylinder'         // params: [cx, cy, cz, radius, halfHeight]
-  | 'h-channel-came';  // params: [length, railWidth, blockHeight, webThickness] — H-channel rail primitive, Phase 6 sprint 5
+  | 'h-channel-came';  // params: [length, railWidth, blockHeight, webThickness]
 
 /**
  * Skinned mesh — vertex positions deformed each frame by a skeleton of

@@ -232,10 +232,6 @@ export class PPGCoordinator {
       });
   }
 
-  /** PPG owns no destroy()-able buffers of its own — the PPG GPU buffers
-   *  live inside `FrameResources.ppg` and are released by
-   *  `destroyFrameResources`. `dispose` here exists for API symmetry with
-   *  the other state objects extracted in the same refactor. */
   /**
    * Reset per-leaf sample counts and dTree flux after a training readback
    * cycle (Müller §3.3). Call once CPU has merged GPU flux atomics into the

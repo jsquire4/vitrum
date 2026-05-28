@@ -18,8 +18,7 @@
  *
  * Re-build policy:
  * - Geometry topology changes (scene mount swap, room swap) → full rebuild.
- * - Material parameter edits → patch materials SSBO only (planned;
- *   today everything rebuilds).
+ * - Material parameter edits currently trigger a full BVH rebuild (no fast SSBO-only patch path implemented).
  *
  * Caller debounces the rebuild call to avoid thrashing on rapid edits.
  *

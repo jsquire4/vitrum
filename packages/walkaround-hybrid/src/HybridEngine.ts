@@ -11,8 +11,8 @@
  * Implements `@vitrum/core`'s `Engine` interface so a host can swap this
  * backend interchangeably with `@vitrum/pt-webgl`.
  *
- * RC subsystem: shade pass does not sample Lo_rc — see
- * `plan/walkaround-without-three.md` for the re-integration plan.
+ * RC subsystem: cascade dispatch + shade-pass balance-heuristic MIS shipped
+ * (W8 Phase 3). See plan/w8-rc-mis-composition.md.
  *
  * Debug globals:
  *   The original hook wrote to `window.__WGPU__.walkaround` and
@@ -552,14 +552,7 @@ export class HybridEngine implements Engine {
 
   // ── updatePrimitive — geometry-change path ─────────────────────────────
   //
-  // **Scope of this branch (feat/a3-geometry-change-bvh-leaf-rebuild):**
-  // implements the **transform-only fast path** + **topology-change full
-  // rebuild path** of `Engine.updatePrimitive`. The **material-only fast
-  // path** ships separately on `feat/a3-hybridengine-incremental-updates`
-  // (commit `d0d22b0`); the merger combines both code paths into a single
-  // dispatcher.
-  //
-  // **Routing rules (this branch alone)**:
+  // **Routing rules**:
   //  - `patch.transform` present AND no topology fields → fast-path (c):
   //     refit the BVH bounds in-place (no SAH rebuild, no pipeline
   //     recompile, no DDGI atlas invalidation), rewrite the affected

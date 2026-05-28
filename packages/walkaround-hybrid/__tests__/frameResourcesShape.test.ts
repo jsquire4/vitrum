@@ -131,13 +131,13 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
     }
   });
 
-  it('ppg starts empty (lazy-populated by allocatePPGResources); neural is a frozen placeholder', () => {
+  it('ppg starts empty (lazy-populated by allocatePPGResources); neural starts empty (lazy-populated when InferenceGraph is supplied)', () => {
     const res = createFrameResources(makeMockDevice(), 64, 64);
     expect(res.ppg).toBeDefined();
     expect(res.neural).toBeDefined();
     // W9: ppg is `{}` by default; `allocatePPGResources` populates it only
-    // when the host opts in via `ppgEnabled: true`. neural stays a frozen
-    // placeholder until W10.
+    // when the host opts in via `ppgEnabled: true`. neural is `{}` by default;
+    // populated when an InferenceGraph is supplied (W10 shipped).
     expect(Object.keys(res.ppg)).toEqual([]);
     expect(Object.keys(res.neural)).toEqual([]);
   });

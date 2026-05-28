@@ -37,10 +37,6 @@ function normalizeVec3(x: number, y: number, z: number, label?: string): Vec3 {
  *
  * (M-2 fix: moved from module-level singleton to per-call parameter.)
  */
-// File-local. The W7-G7 cleanup (fe2be20) un-exported this from
-// three-bindings/src/index.ts; the matching `export` keyword stayed on
-// the source declaration until 2026-05-18 dead-code sweep confirmed zero
-// non-self consumers.
 function warnOnce(warnedTypes: Set<string>, typeName: string, label: string): void {
   if (warnedTypes.has(typeName)) return;
   warnedTypes.add(typeName);

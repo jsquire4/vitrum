@@ -8,16 +8,17 @@
  *
  * Configurations (slot count in parentheses, current as of Sprint 18
  * follow-up — indirect-temporal-accum + 4-iter atrous-indirect chain):
- *   • legacy atrous (26): sample-budget, ris, temporal, spatial-1,
+ *   • legacy atrous (27): sample-budget, ris, temporal, spatial-1,
  *       spatial-2, gi-ris, gi-temporal, gi-spatial-1, gi-spatial-2, shade,
- *       gtao, gtao-upsample, atrous-0..2, indirect-temporal-accum,
+ *       gtao, gtao-upsample, motion-vectors, atrous-0..2, indirect-temporal-accum,
  *       atrous-indirect-0..3, indirect-combine, ddgi-border-irr,
  *       ddgi-border-vis, temporalAccum, resolve, composite
- *   • atrous-variance (28): sample-budget, …shade, gtao+upsample,
- *       welford-temporal, atrous-variance-variance, atrous-variance-atrous-0..2,
- *       indirect-temporal-accum, atrous-indirect-0..3, indirect-combine,
- *       ddgi-border-irr, ddgi-border-vis, temporalAccum, resolve,
- *       composite — matches MAX_PASS_COUNT
+ *   • atrous-variance (29): sample-budget, …shade, gtao+upsample,
+ *       motion-vectors, welford-temporal, atrous-variance-variance,
+ *       atrous-variance-atrous-0..2, indirect-temporal-accum,
+ *       atrous-indirect-0..3, indirect-combine, ddgi-border-irr,
+ *       ddgi-border-vis, temporalAccum, resolve, composite
+ *       (MAX_PASS_COUNT = 34 is the svgf-real+PPG worst case)
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes

@@ -180,7 +180,7 @@ describe('estimateFrameResourcesMemory — 1920×1080 HybridEngine', () => {
     ]);
   });
 
-  it('PPG and neural categories are 0 (W9 / W10 placeholders)', () => {
+  it('PPG and neural categories are 0 when resources have not been allocated (empty sub-structs)', () => {
     expect(breakdown.byCategory.ppg).toBe(0);
     expect(breakdown.byCategory.neural).toBe(0);
   });

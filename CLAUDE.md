@@ -13,20 +13,20 @@ Read in this order to onboard:
 1. `README.md` — package architecture overview
 2. `plan/library-architecture.md` — package responsibilities, dependencies
 3. `plan/phase-7-restir-gi.md` — current Phase-7 walkaround GI work (Sprints 15–18 shipped: GTAO, ReSTIR-GI RIS/temporal/spatial, per-channel SVGF)
-4. `packages/core/src/{scene,frame,engine}.ts` — the locked-in API contract types
+4. `packages/core/src/scene/` + `src/frame.ts` + `src/engine/` (scene and engine are directories since the A-6/A-7 splits) — the locked-in API contract types
 5. `CREDITS.md` — attribution to ~30 prior works the engine builds on
-6. The other plan/ docs (`generalized-library-milestones.md`, `walkaround-without-three.md`, `pt-webgpu-deep-audit.md`, `d2-e6-pt-webgpu-ppg-performance.md`, `renderer-fidelity-matrix.md`, `premium-grade-refactor-20260517.md`) are the active docs. Completed-sprint artifacts live in `plan/archive/` (the W13 archival pass moved 11 stale plan docs there).
+6. The other plan/ docs (`library-architecture.md`, `walkaround-without-three.md`, `renderer-fidelity-matrix.md`, `backend-maturity-matrix-2026-05-26.md`, `w8-rc-mis-composition.md`, `complexity-remediation-20260526.md`, `premium-grade-refactor-20260517.md`) are the active docs. Completed-sprint artifacts live in `plan/archive/` (the 2026-05-28 context sweep archived ~19 more completed docs there).
 
 ## What's done
 
 - **2026-05-24 reconciliation:** merge-race backlog items E1-E7 were re-landed.
   Treat any older "NOT IN HEAD" caveats below as historical audit notes.
 
-- **Phase 6 (Sprints 0–13) complete**; **Phase 7 walkaround-hybrid (Sprints 14–18) shipped**: layered BSDF fork patch, half-res GTAO + bilateral upsample (S15), ReSTIR-GI RIS (S16), ReSTIR-GI temporal+spatial reuse (S17), per-channel SVGF on direct + indirect (S18), plus extensive firefly / dim-magnitude root-cause work and library-generality remediation. Workspace `tsc --noEmit` clean; **all** vitest tests pass (~660+ across workspaces — the 2–3 previously-skipped GPU-only paths were enabled via happy-dom / vitest browser mode; GPU-browser tests are opt-in via env flag so default `npm test` no longer requires Playwright).
+- **Phase 6 (Sprints 0–13) complete**; **Phase 7 walkaround-hybrid (Sprints 14–18) shipped**: layered BSDF fork patch, half-res GTAO + bilateral upsample (S15), ReSTIR-GI RIS (S16), ReSTIR-GI temporal+spatial reuse (S17), per-channel SVGF on direct + indirect (S18), plus extensive firefly / dim-magnitude root-cause work and library-generality remediation. Workspace `tsc --noEmit` clean; **all** vitest tests pass across workspaces — the 2–3 previously-skipped GPU-only paths were enabled via happy-dom / vitest browser mode; GPU-browser tests are opt-in via env flag so default `npm test` no longer requires Playwright.
 - **Packages**: `core`, `three-bindings`, `shared-bvh`, `shared-samplers` (light tree, BDPT, spectral), `shared-denoisers` (à-trous-variance, `svgf-real` Schied 2017, OIDN bridge), `pt-webgl` (WebGL2 converged PT — release-candidate track), `pt-webgpu` (WebGPU-native PT peer — feature-complete for contract surface; fidelity rows still `experimental` until promoted in `plan/renderer-fidelity-matrix.md`), `walkaround-rc` (Radiance Cascades subsystem — cascade pyramid + dispatch + receiver), `walkaround-hybrid` (realtime GI — release-candidate track: DDGI + ReSTIR-DI/GI + GTAO + SVGF + opt-in RC/PPG/neural), `engine` (`createEngine` / `attachVitrum` facade), `stained-glass-extensions` (stained-glass-specific contracts), `dev` (debug overlays).
 - **Extraction**: `_staging/legacy-source/` contains only host-app React/Redux files intentionally not extracted (see `_staging/README.md`).
 - **External RFEs**: 01–05 (contract-layer) plus 06/07/08/09/10/12/14 fork patches applied per `external_requests/IMPLEMENTATION-STATUS.md`.
-- **M7 — DDGI Coherent Physical Model shipped** (sweep 2026-05-11 Items 2, 4, 6, 20): producer no longer pre-multiplies `albedo/π`; Lambertian cosine blend kernel (`w` for irradiance, `w²` for visibility) replaces `pow(w,8)` / `pow(w,50)`; per-frame Halton-Shoemake SO(3) `randomRotation`; RC GI receiver applies `materialColor · PI_INV` before injecting via `emissiveNode`. Cited at `probeUpdatePass.ts:670` (Halton-{2,3,5} sequence) and `applyDDGIShading.ts:145-148` (receiver applies `albedo · PI_INV` exactly once).
+- **M7 — DDGI Coherent Physical Model shipped** (sweep 2026-05-11 Items 2, 4, 6, 20): producer no longer pre-multiplies `albedo/π`; Lambertian cosine blend kernel (`w` for irradiance, `w²` for visibility) replaces `pow(w,8)` / `pow(w,50)`; per-frame Halton-Shoemake SO(3) `randomRotation`; RC GI receiver applies `materialColor · PI_INV` before injecting via `emissiveNode`. Cited at `probeUpdateFrameParams.ts:19-60` (Halton-{2,3,5} sequence) and `applyDDGIShading.ts:172-175` (receiver applies `albedo · PI_INV` exactly once).
 - **`svgf-real` (Schied 2017) denoiser pipeline shipped** (`@vitrum/shared-denoisers` + `@vitrum/walkaround-hybrid`): real reprojection + variance-from-moments + 7×7 spatial fallback + à-trous wavelet ×5; opt-in via `denoiser: 'svgf-real'` alongside the default `'atrous-variance'` mode.
 - **`HybridEngine.updateLighting()` + `HybridEngine.setSize()`** runtime APIs shipped (no engine recreation for time-of-day scrubbing or canvas resize).
 - **Neural U-Net denoiser revived** (T2.H2 + B3 + F3 + F4): real `'neural'` mode in `HybridEngineOptions.denoiser`; INTERLEAVED `inputPacker.ts` compute shader now wired into `InferenceGraph._runInputPack` (the previous planar-vs-interleaved layout mismatch was real and is fixed); `dispose()` releases weight/bias/uniform buffers (F4); 137-line shape-debate header stripped from `unetArchitecture.ts` (F3); `train.py` / `export_weights.py` are real PyTorch tools.
@@ -41,9 +41,9 @@ Read in this order to onboard:
 - R1 — Pass + Denoiser registry foundation (`11c4698`, `feat/refactor-w1r1-pass-registry-foundation`).
 - R2 — FrameResources god-struct split into 8 per-algorithm sub-structs (`834f441`, `feat/refactor-w1r2-frame-resources-split`).
 - R3+R4 — denoiser migration to self-contained registry entries (`987b3fb`, `feat/refactor-w1r3r4-denoiser-migration`).
-- R5 — declarative `PASS_ORDER` via `PassRegistry`; 18 self-contained Pass classes; `renderFrame` becomes a registry-iteration loop (`60dd48b`, `feat/refactor-w1r5-declarative-pass-order`).
-- R6 — declarative WGSL include-graph; 27-entry `WGSL_MODULES` registry; `composeWgsl` topo-sort replaces 9 hand-rolled `COMMON_WGSL + X_WGSL` concat patterns (`29ccf96`, `feat/refactor-w1r6-wgsl-include-graph`).
-- Aggregate: `WalkaroundGPUPipeline.ts` 1574 → 964 LOC (-39%); 354 → 424 tests; typecheck clean every round.
+- R5 — declarative `PASS_ORDER` via `PassRegistry`; 18 self-contained Pass classes (20 today, after later passes); `renderFrame` becomes a registry-iteration loop (`60dd48b`, `feat/refactor-w1r5-declarative-pass-order`).
+- R6 — declarative WGSL include-graph; 27-entry `WGSL_MODULES` registry (34 today); `composeWgsl` topo-sort replaces 9 hand-rolled `COMMON_WGSL + X_WGSL` concat patterns (`29ccf96`, `feat/refactor-w1r6-wgsl-include-graph`).
+- Aggregate: `WalkaroundGPUPipeline.ts` 1574 → 964 LOC at W1 close (-39%; has since grown with later passes, ~1063 today); 354 → 424 tests; typecheck clean every round.
 
 ### W2 — shared-package dedup / hoisting
 
@@ -57,32 +57,17 @@ Read in this order to onboard:
 - C11 — duplicated B3-spline atrous kernel collapsed (`76120b9`).
 - C12 — `GTAOUniforms` struct deduped across `gtao` + `gtaoUpsample` shaders (`8a40ffe`).
 
-> **Caveat — May 17 merge-race losses (filed 2026-05-19).** Several feature
-> commits from the 2026-05-17 sprint exist in `git log` but their changes were
-> silently dropped from HEAD when subsequent commits merged from pre-feature
-> parents and overwrote them. Verified-lost: **W2-C6** (shared-samplers
-> WGSL primitives), **W3-D6** (Mat4 brand), **W3-D7** (FrameOutput discriminated
-> union), **W3-D19** (BackendTexture brand), **W6-E1** (`reuseSharedWebGpuDevice`
-> default flip), **W6-E6** (`ForkAccess` indirection); **W7-G5** (`validateBvhEncoding`
-> un-export) was lost and is now **re-applied** as of 2026-05-19. The six remaining are flagged inline as "NOT IN HEAD" with verification
-> steps; full fix plans in `items_to_fix.md` Section E. Until those are
-> re-applied, treat any "shipped" W2 / W3 / W6 bullet that changes a contract,
-> default value, or public symbol as suspect — verify by `grep`-ing for the
-> claimed symbol before relying on it. (The runtime behavior is the pre-sprint
-> behavior; the losses are scope/structure improvements, not correctness bugs.)
-> The audit so far has spot-checked W2/W3/W6; the rest of W4/W7/W11/W12/W13 has
-> not been comprehensively audited — those bullets may also contain merge-race
-> losses. Add to Section E as more are found.
+> **Note — May 17 merge-race losses were all re-landed (2026-05-24; re-verified by code-read 2026-05-28).** The 2026-05-17 sprint had several feature commits silently dropped from HEAD by merge races: W2-C6 (shared-samplers WGSL primitives), W3-D6 (Mat4 brand), W3-D7 (FrameOutput union), W3-D19 (BackendTexture brand), W6-E1 (`reuseSharedWebGpuDevice` default), W6-E6 (`ForkAccess`), W7-G5 (`validateBvhEncoding` un-export). **All have since been re-applied and are present in HEAD** — the per-item bullets below were updated to reflect this. The old inline "NOT IN HEAD" labels on D6/D7/D19/E1/E6 were stale and have been corrected.
 
 ### W3 — contract hygiene (surgical core/* moves)
 
 - D5/D13/D15 — stopped re-exporting raw WGSL strings (internal-only now); moved underscored test-only exports off public surface (`feat/w3-contract-hygiene-d5-d6-d13-d15`, `e845cc5..becfbae`).
-- D6 — **NOT IN HEAD.** The feature commit (`e845cc5`) branded `Mat4` as `Float32Array & __mat4Brand` with an `asMat4(arr)` length-validated constructor, but the scene.ts → 6-sibling split (`cead5ab`, sweep A-6) was based on a pre-D6 state of scene.ts and overwrote D6's brand on merge. Verified 2026-05-19: `grep -c "__mat4Brand" packages/core/src/scene/math.ts` returns 0; `packages/core/src/scene/math.ts:10` is `export type Mat4 = Float32Array;` — the unbranded form D6 was meant to replace.
-- D7 — **NOT IN HEAD.** The feature commit (`40cd837`) replaced `FrameOutput` null+sentinel with a `{kind:'skipped'|'rendered'}` discriminated union, but a subsequent merge race with D18 (`9ea12c9`, branched off D17 instead of D7) silently dropped the change from `packages/core/src/frame.ts`. Verified 2026-05-19: `git show HEAD:packages/core/src/frame.ts | grep -c FrameRendered` returns 0; zero consumers exist across `packages/`. The old null-sentinel contract is still load-bearing. Re-applying D7 would require touching all producers + consumers + tests; deferred until the next contract-hygiene pass.
+- D6 — **in HEAD (re-landed 2026-05-24).** `Mat4` is branded: `packages/core/src/scene/math.ts:11` is `export type Mat4 = Float32Array & { readonly [MAT4_BRAND]: 'Mat4' }`, with `asMat4()` (length-validated) + `isMat4()` guards.
+- D7 — **in HEAD (re-landed 2026-05-24).** `FrameOutput` is the `{kind:'skipped'|'rendered'}` discriminated union `FrameSkipped | FrameRendered` at `packages/core/src/frame.ts:150-185`.
 - D8 — typed `EngineCapabilities`-driven feature query replaces `typeof` checks across `core` + `engine` (`feat/w3-d8-engine-capabilities`, `1355be1`).
 - D16 — canonical `FrameStats` + `qualityModes` capability in `@vitrum/core`; `pt-webgpu` now emits `onFrame` stats (`feat/w3-d16-uniform-telemetry`, `197510c..8c96e4b`).
 - D17 — verified `Material.extensions` IS used by `three-bindings` dichroic LUT — keep (`80c2388`); D18 — dropped `supportsMotionBlur` + `FrameInput.shutterTime` (no consumer in roadmap) (`9ea12c9`).
-- D19 — **NOT IN HEAD.** The feature commit (`5863cda`) replaced `export type BackendTexture = unknown` with `BackendTexture<TBackend>` nominal brands + `as*BackendTexture` constructors. Same merge-race pattern as D7: D19 was branched from D7 (which was branched from D5), and the D17/D18 merge that lost D7 also lost D19's `frame.ts` brand definitions. Verified 2026-05-19: `packages/core/src/frame.ts:193` is `export type BackendTexture = unknown;` — the unbranded pre-D19 form. The `as*BackendTexture` / `narrowTo*` helpers in `walkaround-hybrid` / `pt-webgpu` / `pt-webgl` may also be gone — TODO verify on next re-application.
+- D19 — **in HEAD (re-landed 2026-05-24).** `BackendTexture<TBackend, THandle>` is a nominal brand with `asBackendTexture` / `asBackendTextureFormat` / `narrowToBackendTexture` / `narrowToBackendTextureFormat` helpers at `packages/core/src/frame.ts:191-228`.
 
 ### W4 — god-file dissolution (first wave)
 
@@ -90,10 +75,10 @@ Read in this order to onboard:
 
 ### W6 — hidden-globals de-singletonization
 
-- E1 — **NOT IN HEAD.** The feature commit (`3dbe11a`) was supposed to flip `reuseSharedWebGpuDevice`'s default from `true` to `false` (callers must opt in) per the host-owns-lifecycle design principle. The commit's diff replaced `!== false` with `=== true` in the three denoiser dispatchers. Verified 2026-05-19: `grep -n "reuseSharedWebGpuDevice !== false" packages/shared-denoisers/src/*.ts` returns 3 hits — the pre-E1 form. Same merge-race casualty pattern as D6/D7/D19/C6.
+- E1 — **in HEAD (re-landed 2026-05-24).** `reuseSharedWebGpuDevice` is opt-in (`=== true`) in all three shared-denoiser dispatchers (`svgfRealWebGPU.ts:195`, `atrousVarianceWebGPU.ts:232`, `hdrLuminanceBilateralWebGPU.ts:58`), per the host-owns-lifecycle principle.
 - E2 — module-level `iblBaker` cache replaced with per-engine `IblBakerCache` instance (`feat/w6-hidden-globals-pt-webgl`, `6a5106f`).
 - E3 — `window.__WGPU__` write removed from `HybridEngine.renderFrame` (use `onFrame`) (`7d85bb0`).
-- E6 — **NOT IN HEAD.** The feature commit (`a6a3c90`) introduced `packages/pt-webgl/src/forkAccess.ts` (`ForkAccess` static class) and migrated `forkUniformBridge.ts` + `ptEngineWebGL2.ts` to go through `ForkAccess.getMaterial(tracer)` / `ForkAccess.getRenderTexture(tracer)`. Verified 2026-05-19: `packages/pt-webgl/src/forkAccess.ts` is missing; `grep -n "_pathTracer" packages/pt-webgl/src/forkUniformBridge.ts` returns the pre-E6 direct-cast form (`tracer._pathTracer?.material ?? null`). Same merge-race pattern.
+- E6 — **in HEAD (re-landed 2026-05-24).** `packages/pt-webgl/src/forkAccess.ts` exists (`ForkAccess` static class); `forkUniformBridge.ts:115` + `ptEngineWebGL2.ts:1141,1283` go through `ForkAccess.getMaterial` / `ForkAccess.getRenderTexture`.
 
 ### W7 — dead-code + misplaced-code cleanup
 

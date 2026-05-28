@@ -42,9 +42,8 @@
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
 
 /** Size of the WalkaroundUBO in bytes. File-local — `resourceManager.ts`
- *  intentionally duplicates the literal `336` rather than import this name
- *  to avoid a circular import (see resourceManager.ts:594-598). 2026-05-18
- *  dead-code sweep verified zero non-self consumers; demoted from `export`. */
+ *  intentionally duplicates the literal `352` rather than import this name
+ *  to avoid a circular import (see resourceManager.ts). */
 const WALKAROUND_UBO_SIZE_BYTES = 352;
 
 export function updateUBO(

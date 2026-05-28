@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — APPLIED + A/B reference renders captured (tools/reference-renders/bdpt-layered-2026-05-28/).
+
 # Sprint 14 — Layered BSDF Fork Patch Plan (RFE-03 / RFE-12)
 
 **Status: APPLIED on 2026-05-11 at fork commit ee379dc**

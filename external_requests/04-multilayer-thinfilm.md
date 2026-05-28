@@ -1,6 +1,6 @@
 # Multi-Layer Thin-Film Interference via Transfer Matrix Method
 
-**Status:** Proposed
+**Status:** Implemented (core contract + pt-webgl fork TMM applied)
 **Originating need:** Consumer materials with vapor-deposited multi-layer optical stacks (distributed Bragg reflectors, structural-color coatings) cannot be faithfully reproduced with the current single-layer iridescence model, which approximates multi-layer behavior using a heuristic thickness range.
 **Priority:** Medium
 

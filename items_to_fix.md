@@ -231,9 +231,9 @@ All Section A, B, and C items from this audit are closed.
 
 For posterity, the following items were on the previous version of this list, sourced from sweep docs, and **verified-removed** on 2026-05-17:
 
-- DDGI double-albedo bug (producer at `probeUpdateRays.wgsl.ts:549` no longer premultiplies; consumer at `applyDDGIShading.ts:152` applies `albedo · PI_INV` exactly once)
+- DDGI double-albedo bug (producer at `probeUpdateRays.wgsl.ts:477-497` no longer premultiplies; consumer at `applyDDGIShading.ts:172-175` applies `albedo · PI_INV` exactly once)
 - DDGI atlas border never written (border pipelines exist)
-- DDGI randomRotation hard-coded to (0,0,0) (Halton-Shoemake per-frame at `probeUpdatePass.ts:670+`)
+- DDGI randomRotation hard-coded to (0,0,0) (Halton-Shoemake per-frame at `probeUpdateFrameParams.ts:19-60`)
 - RC GI bypasses BRDF (giReceiver.ts:108-110 multiplies by `albedo · PI_INV` before injecting)
 - ReSTIR p̂ inconsistency (all 3 sites use `emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor)`)
 - SVGF "fake" (real svgfReal pipeline with reprojection / variance-from-moments / 7×7 fallback)

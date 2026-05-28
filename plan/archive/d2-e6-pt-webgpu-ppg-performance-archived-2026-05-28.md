@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — D2 shipped (traceMeshBvh unified core, intersection.wgsl.ts); E6 shipped (W9 PPG kd-tree sTree descent, ppgGuide.wgsl.ts).
+
 # Plan: D2 (pt-webgpu trace dedup) + E6 (PPG spatial acceleration)
 
 **Goal:** Reduce maintenance risk and shader cost for two deferred remediation items from `plan/remediation-checklist.md`.

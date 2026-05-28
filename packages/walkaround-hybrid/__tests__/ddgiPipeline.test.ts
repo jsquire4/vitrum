@@ -6,7 +6,7 @@
  * without a GPU.
  *
  * Production files mirrored here:
- *   - probeUpdatePass.ts:670–718          → haltonSO3Rotation
+ *   - probeUpdateFrameParams.ts:~19-60      → haltonSO3Rotation (haltonSO3AxisAngleFromFrameIndex)
  *   - wgsl/hammersley.wgsl.ts             → radicalInverse_VdC, uniformSphere,
  *                                            rotateAngleAxis, ddgiRayDirection
  *   - wgsl/probeUpdateBlend.wgsl.ts       → cosineBlend
@@ -20,7 +20,7 @@ import { describe, it, expect } from 'vitest';
 // Constants — MIRROR OF production sources.
 // ---------------------------------------------------------------------------
 
-/** MIRROR OF probeUpdatePass.ts: HYSTERESIS in probeUpdateBlend.wgsl.ts */
+/** MIRROR OF probeUpdateBlend.wgsl.ts: HYSTERESIS constant */
 const HYSTERESIS = 0.97;
 
 /** MIRROR OF ddgiConstants.ts: RAYS_PER_PROBE */
@@ -42,7 +42,8 @@ function makeLCG(seed: number): () => number {
 
 // ---------------------------------------------------------------------------
 // 1. Halton SO(3) rotation
-//    MIRROR OF probeUpdatePass.ts:670–718 (Shoemake 1992 uniform SO(3)).
+//    MIRROR OF probeUpdateFrameParams.ts:~19-60 (haltonSO3AxisAngleFromFrameIndex,
+//    Shoemake 1992 uniform SO(3)).
 // ---------------------------------------------------------------------------
 
 /** Halton low-discrepancy radical inverse in the given base. */
@@ -59,14 +60,14 @@ function haltonBase(index: number, base: number): number {
 }
 
 /**
- * MIRROR OF probeUpdatePass.ts:670–718
+ * MIRROR OF probeUpdateFrameParams.ts:~19-60 (haltonSO3AxisAngleFromFrameIndex).
  *
  * Returns the per-frame Halton SO(3) rotation as a packed axis-angle vec3
  * [ax*angle, ay*angle, az*angle] — exactly the value written into
  * FrameParams.randomRotation and consumed by the WGSL rotateAngleAxis().
  */
 function haltonSO3Rotation(frameIndex: number): [number, number, number] {
-  const fi = frameIndex + 1; // MIRROR OF: const fi = this._frameIndex + 1
+  const fi = frameIndex + 1; // MIRROR OF: probeUpdateFrameParams.ts haltonSO3AxisAngleFromFrameIndex
   const u1 = haltonBase(fi, 2);
   const u2 = haltonBase(fi, 3);
   const u3 = haltonBase(fi, 5);

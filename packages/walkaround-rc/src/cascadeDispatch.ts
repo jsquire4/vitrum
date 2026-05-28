@@ -11,7 +11,7 @@
  *   - `wgslFn()` bodies → pre-assembled WGSL module strings (see rc/wgsl/)
  *
  * The converted class:
- *   1. Allocates one `GPURenderPipeline` per cascade pass (cast: 5, merge: 4 = 9 total).
+ *   1. Allocates one `GPUComputePipeline` per cascade pass (cast: 5, merge: 4 = 9 total).
  *   2. Creates one bind group per pass from the caller-supplied GPU buffer handles.
  *   3. Dispatches passes in order: cast C0→C4, then merge C3→C0.
  *

@@ -1,5 +1,7 @@
 # `examples/` completeness audit — 2026-05-17
 
+> **ARCHIVED 2026-05-28.** All critical findings were actioned: `cornell-box` and `two-engines-one-scene` both received `typecheck` scripts and compile clean (commit `ac1b593`). The `neural-denoiser` example was added (commit `452a0a6`). Shared helpers were hoisted to `examples/shared/` (commits `77245ea`, `9e77566`). Remaining open items (hero-viewer/hero-product-viz default CC0 assets, examples/shared README) are low-priority polish tracked in `items_to_fix.md` if at all. Current source of truth: the `examples/` directory.
+
 Read-only audit of every demo in `examples/` for completeness, consistency, and
 buildability. Trivial fixes (README typos, missing manifest fields) applied
 in-place; non-trivial findings recorded here only.

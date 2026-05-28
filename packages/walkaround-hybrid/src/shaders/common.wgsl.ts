@@ -516,21 +516,6 @@ fn evalGGX(albedo: vec3f, rough: f32, metal: f32, n: vec3f, wo: vec3f, wi: vec3f
   return (diffuse + specular) * NdotL;
 }
 
-// ============================================================
-// BVH ray traversal — canonical helpers live in @vitrum/shared-bvh
-// (BVH_INTERSECT_WGSL injected at the top of this file). The pre-canonical
-// inline bodies of safeInvDir, bvhIntersectAny, bvhIntersectFirstHit, and
-// intersectTriangle were here and have been removed; consumers continue
-// calling them by the same names from the injected module.
-// The pre-canonical HitResult struct was a rename of IntersectionResult
-// (canonical superset) — call sites migrated:
-//   hit.bary     → hit.barycoord
-//   hit.triIndex → hit.indices.w
-// intersectTriangle now returns IntersectionResult (was f32); the one
-// inline caller in surfaceTextures.wgsl unwraps .dist / .didHit at the
-// call site.
-// ============================================================
-
 // Decode RGB888 + (trans4|texType4) packed material data from bvhIndex[triIdx].w.
 // Returns vec4f(r, g, b, transmission) in [0, 1].  The texture-type id is
 // retrieved separately via decodeSurfaceTextureId.

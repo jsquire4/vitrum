@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — WebGPU-PT-parity program complete.
+
 # WebGPU PT Parity Program — Signoff (2026-05-26)
 
 **Plan:** `plan/primary-release-and-webgpu-pt-parity-implementation-deep.md`

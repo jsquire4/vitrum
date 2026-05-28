@@ -21,8 +21,8 @@
  *    `fallbackMesh` / `kind`) → call {@link topologyRebuild}: re-run
  *    `buildReSTIRSceneBVH`, destroy + re-upload the four BVH GPU buffers,
  *    reset the accumulator.
- *  - material-only patches → {@link materialPatch}: re-pack affected
- *    `bvhIndex.w` / `bvh_beer` slices and partial GPU upload (no `setScene`).
+ *  - material-only patches → {@link materialPatch}: re-pack bvhIndex and
+ *    bvhBeerColors slices and partial GPU upload (no setScene).
  *
  * The hot-path branch design is preserved from the pre-extraction code
  * verbatim — no behaviour change.

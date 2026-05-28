@@ -184,9 +184,8 @@ fn glossyReflectionSample(rng: ptr<function, u32>, wo: vec3f, n: vec3f, t: vec3f
 
   var result: BsdfSample;
   result.wi = wi;
-  // Compute pdf + value at the sampled wi. These are populated so future MIS
-  // code paths can read them without redoing the eval; today's callers in
-  // sampleNextBounceDirection still only consume .wi.
+  // pdf and value are populated for MIS consumers; current sampleNextBounceDirection
+  // callers recompute g1Wi independently.
   let nDotV = max(dot(n, wo), 1e-6);
   let nDotL = max(dot(n, wi), 0.0);
   let nDotH = max(dot(n, hWorld), 0.0);

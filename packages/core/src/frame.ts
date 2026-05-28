@@ -176,9 +176,8 @@ export interface FrameRendered extends FrameOutputBase {
    *  sampling and by some denoisers. RGBA32F format. */
   readonly variance?: BackendTexture;
 
-  /** Per-pixel motion vectors in screen space. RG32F: (dx, dy) in pixels.
-   *  Reserved for future temporal-reprojection denoiser (real Schied 2017
-   *  SVGF, see plan/sprint-svgf-real-future.md) + checkerboard upsampling. */
+  /** Motion vectors for temporal reprojection (svgf-real denoiser) and
+   *  checkerboard upsampling. RG32F: (dx, dy) in pixels. */
   readonly motionVectors?: BackendTexture;
 }
 

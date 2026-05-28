@@ -498,28 +498,9 @@ class PTEngineWebGPU implements Engine {
    * exact offsets. Callers must have already validated that #sceneBuffers
    * is non-null (renderFrame's preconditions handle this).
    *
-   * Layout (336 bytes used out of a 512-byte buffer; trailing bytes are zero):
+   * Layout (384 bytes used out of a 512-byte buffer; trailing bytes are zero):
    *
-   *   u32 slot 0..1   width, height
-   *   u32 slot 2..3   frameIndex, frameSeed
-   *   u32 slot 4..7   triangleCount, activeBounces, bvhNodeCount, analyticCount
-   *   u32 slot 8..11  pointLightCount, spotLightCount, rectAreaLightCount,
-   *                   meshAreaLightCount
-   *   u32 slot 12..13 mneeMaxIterations, mneeMaxChainLength
-   *   u32 slot 14..15 hasEnvironmentMap (0/1), causticStrategy
-   *                   (0=none, 1=manifold-nee, 2=photon-map)
-   *   u32 slot 16..17 environmentMapWidth, environmentMapHeight
-   *   f32 slot 18     triIntersectEpsilon (default 1e-5; metre-scale)
-   *   u32 slot 19     _pad1   (zero; reserved)
-   *
-   *   f32 slot 20..23 cameraPos.xyz + 1.0
-   *   f32 slot 24..27 lightDir.xyz + averageDirectionalIrradiance
-   *   f32 slot 28..31 environmentTint.xyz + 0   (.w unused, write 0)
-   *   f32 slot 32..35 environmentSun.xyz (sun dir) + sun strength
-   *
-   *   f32 slot 36..51 invViewProj (mat4x4f, 16 floats)
-   *   f32 slot 52..67 viewProj    (mat4x4f, 16 floats)
-   *   f32 slot 68..83 prevViewProj(mat4x4f, 16 floats)
+   * Authoritative field layout is auto-generated in scene/frameParamsLayout.generated.ts (FrameParamsSlot).
    *
    * Per-light data lives in dedicated storage buffers at bind slots 20..23;
    * see `packEmitterArrays` for the layout (8 f32 / point light, 12 / spot,

@@ -23,8 +23,8 @@
  *   slot 0 — sample-budget   (this pass)
  *     ↓ writes tier texture (r32uint)
  *   slot 1 — ris
- *     ↓ (tier texture is currently informational only — RIS does not yet
- *        consume it; future work may use tier to gate M_LIGHT)
+ *     ↓ (tier texture is consumed downstream by risGi to scale M_GI per
+ *        pixel; the DI ris pass does not consume it)
  *   slot 5 — shade
  *     ↓ checkerboard sparse write (Sprint 9 companion of this pass)
  *

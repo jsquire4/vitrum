@@ -4,7 +4,7 @@ Adapter between `THREE.Scene` and `@vitrum/core`'s `Scene` type. Plus a glTF loa
 
 ## Public surface
 
-- `sceneFromThreeJS(threeScene)` — traverses a `THREE.Scene`, returns a `@vitrum/core` `Scene` with `primitives`, `emitters`, and `environment`. Accepts `THREE.Mesh` (Standard / Physical / Basic material), `THREE.SkinnedMesh` (rest pose + skeleton + optional morph targets), and the supported `THREE.Light` types; throws on `InstancedMesh` / `ShaderMaterial` / unsupported material types.
+- `sceneFromThreeJS(threeScene)` — traverses a `THREE.Scene`, returns a `@vitrum/core` `Scene` with `primitives`, `emitters`, and `environment`. Accepts `THREE.Mesh` (Standard / Physical / Basic material), `THREE.SkinnedMesh` (rest pose + skeleton + optional morph targets), `THREE.InstancedMesh` (→ `InstancedMeshPrimitive`), and supported `THREE.Light` types; throws on `ShaderMaterial` / `RawShaderMaterial` / unsupported material types.
 - `vitrumSceneToThree(scene)` — reverse direction for hosts displaying a vitrum scene through a THREE renderer. Skinned meshes are pre-solved at conversion; subsequent per-frame pose changes flow through `engine.updatePrimitive(id, { positions, normals })`.
 - `disposeVitrumThreeSceneRoot(root)` — releases the `THREE.Material` / `THREE.BufferGeometry` instances `vitrumSceneToThree` allocated.
 - `applyEnvironment(threeScene, environment)` — wires `THREE.Scene.environment` from `@vitrum/core` `SceneEnvironment` (HDRI / procedural-sky / none).

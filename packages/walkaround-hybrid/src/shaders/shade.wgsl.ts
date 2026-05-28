@@ -117,7 +117,7 @@ fn loadSpatialDI(pixelIdx: u32) -> ReservoirDI {
 }
 
 // invertMat4_common + generatePrimaryRay_common live in common.wgsl;
-// they are prepended to SHADE_WGSL at compile time.
+// injected via common.wgsl (W1-R6 wgslComposer requires chain).
 
 // ──────────────────────────────────────────────────────────────────────────
 // Per-lighting-term helpers (W4-A5).

@@ -4,7 +4,7 @@
 // Phase 5 deliverable: atrous + temporalAccum WGSL fragments.
 // Sprint 6 (Phase 6): 37-tap hexagonal-kernel edge-stopping spatial filter.
 // Sprint 10a (Phase 6): à-trous + variance-guided denoiser (renamed from SVGF by sweep-2026-05-11 D3).
-//   Real Schied 2017 SVGF is tracked in plan/sprint-svgf-real-future.md.
+//   Real Schied 2017 SVGF ('svgf-real' mode) is implemented in svgfRealWebGPU.ts.
 // Sprint 10b (Phase 6): OIDN ONNX final-pass bridge.
 
 export * from './wgsl/atrous.wgsl.js';

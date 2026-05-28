@@ -20,8 +20,8 @@ import type { SceneEnvironment } from '@vitrum/core';
  * - Nothing set → `{ kind: 'none' }`.
  *
  * Asymmetry note: this direction is the THREE → vitrum mapping. The reverse
- * direction (`vitrumSceneToThree`) DOES handle `ProceduralSkyEnvironment` by
- * substituting a procedural sky shader and warning. Mapping the reverse here
+ * direction (`vitrumSceneToThree`) does NOT substitute a procedural sky shader
+ * — it warns and falls through to a dark background. Mapping the reverse here
  * — turning a `THREE.Sky` mesh / shader into a `ProceduralSkyEnvironment` —
  * is unimplemented because no host currently constructs three.js scenes from
  * a `THREE.Sky` source. If a host needs this, read uniforms `{ turbidity,

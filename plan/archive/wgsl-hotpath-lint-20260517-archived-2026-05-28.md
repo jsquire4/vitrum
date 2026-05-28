@@ -1,5 +1,7 @@
 # WGSL hot-path foot-gun audit — 2026-05-17
 
+> **ARCHIVED 2026-05-28.** All findings were actioned by 2026-05-18/19: the single REAL-RISK finding (`surfaceTextures.wgsl.ts:173` bare `1/dir`) was fixed in-place (`safeInvDir`); all 6 UNCLEAR items were verified-resolved per the status block below; and the deeper `safeInvDir` sign-zero bug was subsequently fixed in `shared-bvh` (`3327e8c`) + `pt-webgpu` (`2740d92`). No open items remain. Current source of truth: the WGSL source files under `packages/`.
+
 ## Status update — 2026-05-18
 
 All six UNCLEAR items below have been verified-resolved by direct file read:

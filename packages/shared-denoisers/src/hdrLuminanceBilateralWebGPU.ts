@@ -48,7 +48,7 @@ function bilateralComputePipeline(device: GPUDevice): GPUComputePipeline {
 
 /**
  * Runs one luminance bilateral pass on linear HDR RGB (flattened length w*h*3).
- * By default reuses getSharedWebGPUDevice and caches the compute pipeline per device.
+ * By default allocates an ephemeral device per call. Pass reuseSharedWebGpuDevice: true to reuse the cached process-wide device.
  */
 export async function runHdrLuminanceBilateralWebGPU(
   opts: HdrLuminanceBilateralWebGPUOptions,

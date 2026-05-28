@@ -33,8 +33,7 @@ import { createEngine, type CreateEngineOptions } from '../createEngine.js';
 /** Output of {@link detectWebGPUSwapChain}. Both fields null ⇒ WebGL/host
  *  is not WebGPU-backed (or canvas lacks a WebGPU context); attachVitrum
  *  will then leave `FrameInput.swapChainView` undefined.
- *  File-local — callers consume the type structurally via inference.
- *  2026-05-18 dead-code sweep verified zero non-self consumers. */
+ *  File-local — callers consume the type structurally via inference. */
 interface WebGPUSwapChainInfo {
   readonly context: GPUCanvasContext | null;
   readonly format: GPUTextureFormat | undefined;

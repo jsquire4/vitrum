@@ -28,7 +28,7 @@
  *       gtao: 8_000_000,
  *       ddgi: 25_000_000,
  *       ppg: 0,
- *       neural: 5_000_000,
+ *       neural: 0,         // NeuralFrameResources is an empty placeholder; InferenceGraph owns its tensor buffers
  *     },
  *     byTextureFormat: { rgba16float: ..., r32uint: ..., ... },
  *     byBufferUsage:   { storage: ..., uniform: ..., vertex: ... },

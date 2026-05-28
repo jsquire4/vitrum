@@ -12,11 +12,10 @@
 //     have to plumb GPU primitives,
 //   - returns the @vitrum/core Engine contract with an idempotent dispose.
 //
-// Note on resize: the Engine contract doesn't have a `setCanvasSize()` —
-// viewport size lives on FrameInput.viewport per frame. The <VitrumCanvas>
-// helper in T3.F owns the ResizeObserver + pushes width/height into the
-// host's renderFrame call. createEngine() itself does NOT attach an
-// observer; it just hands back an Engine.
+// Note on resize: HybridEngine (WebGPU) requires setSize(w, h) for in-flight
+// resizes; attachVitrum() owns the ResizeObserver and calls it automatically.
+// Generic PT engines honour FrameInput.viewport per-frame. createEngine()
+// itself does NOT attach an observer.
 
 import type { Scene, Engine } from '@vitrum/core';
 import { auditSceneNeedsTlas, detectGpu } from '@vitrum/core';

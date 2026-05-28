@@ -9,7 +9,7 @@
 // References:
 //   Henyey & Greenstein 1941, "Diffuse radiation in the galaxy"
 //   Pharr, Jakob, Humphreys "Physically Based Rendering" 4th ed., §11.4
-//   Sprint 7 fork patch spec: plan/sprint-7-pt-fork-patch.md
+//   Sprint 7 fork patch spec: plan/archive/sprint-7-pt-fork-patch.md
 //
 // Uniforms provided by PhysicalPathTracingMaterial.js (Sprint 7 additions):
 //   u_volumeDensity  : float  — extinction coefficient σ_t (0 = no medium)

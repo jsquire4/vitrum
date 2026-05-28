@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — SHIPPED (W9). PPG implemented in walkaround-hybrid/src/ppg/; enable via HybridEngineOptions.ppgEnabled.
+
 # PPG Rebuild — Future Sprint Placeholder
 
 **Status:** Future / unscheduled

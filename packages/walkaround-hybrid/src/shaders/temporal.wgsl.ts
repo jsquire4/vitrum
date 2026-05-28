@@ -38,9 +38,7 @@ export const TEMPORAL_WGSL = /* wgsl */ `
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 
 // RESERVOIR_DI_STRIDE / loadReservoirDI_{rw,ro} / storeReservoirDI_rw live in COMMON_WGSL.
-// M_CLAMP is now read from the UBO (ubo.temporalMClampDI) — the compile-time
-// constant is kept only as documentation of the default.
-// const M_CLAMP_DEFAULT = 20u;
+// M_CLAMP is read from the UBO (ubo.temporalMClampDI).
 
 // PrimarySurface struct defined in COMMON_WGSL.
 // W2-C9 — primary-surface cast moved to restirCastPrimary.wgsl

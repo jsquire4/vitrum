@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — self-declared Complete on main (2026-05-26).
+
 # Deep Implementation Specification — Primary Release + WebGPU PT Parity
 
 **Date:** 2026-05-26  

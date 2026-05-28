@@ -14,10 +14,11 @@
  *  - calling before setScene() throws (engine has no scene to mutate)
  *  - null env clears the environment
  *
- * The setup mocks both `three-gpu-pathtracer` (WebGLPathTracer) and
- * `@vitrum/three-bindings` so we can intercept calls and assert on them.
- * `vitrumSceneToThree` is replaced with a stub that returns a real THREE.Scene
- * (so `applyEnvironment` can mutate environmentIntensity etc. on it).
+ * The setup mocks `three-gpu-pathtracer` (WebGLPathTracer) and partially mocks
+ * `@vitrum/three-bindings` (only vitrumSceneToThree is replaced) so we can
+ * intercept calls and assert on them. `vitrumSceneToThree` is replaced with a
+ * stub that returns a real THREE.Scene (so `applyEnvironment` can mutate
+ * environmentIntensity etc. on it).
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';

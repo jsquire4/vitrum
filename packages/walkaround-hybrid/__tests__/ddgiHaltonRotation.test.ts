@@ -2,7 +2,7 @@
  * F3 — Halton SO(3) axis-angle rotation tests.
  *
  * Verifies the CPU-side Halton quasi-random rotation in
- * `probeUpdatePass.ts` (Shoemake 1992 + Rodrigues axis-angle convention)
+ * `probeUpdateFrameParams.ts` (haltonSO3AxisAngleFromFrameIndex, Shoemake 1992 + Rodrigues axis-angle convention)
  * produces valid, uniformly-distributed, decorrelated rotation matrices.
  *
  * Three properties tested:
@@ -101,7 +101,7 @@ function matVec(M: Mat3, v: [number, number, number]): [number, number, number] 
   ];
 }
 
-// ─── Build R(frame) — mirrors probeUpdatePass.ts ─────────────────────────────
+// ─── Build R(frame) — mirrors probeUpdateFrameParams.ts:haltonSO3AxisAngleFromFrameIndex ──
 
 function buildRotationMatrix(frameIndex: number): Mat3 {
   const fi = frameIndex + 1;

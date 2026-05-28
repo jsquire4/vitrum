@@ -6,7 +6,7 @@ WebGPU **ReSTIR DI + ReSTIR-GI** walkaround engine with **DDGI** probe updates a
 
 Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **DDGI** (Dynamic Diffuse Global Illumination) — probe-atlas irradiance, updated via compute each frame.
-- **RC** (Radiance Cascades, Sannikov 2023) — opt-in via `HybridEngineOptions.rcEnabled`; W8 Phase 2 dispatches the 5-cascade pyramid per frame against a raw-GPUBuffer BVH. Sampling in shade.wgsl + MIS composition lands in Phase 3 (see plan doc).
+- **RC** (Radiance Cascades, Sannikov 2023) — opt-in via `HybridEngineOptions.rcEnabled`; W8 Phase 2 dispatches the 5-cascade pyramid per frame against a raw-GPUBuffer BVH. Sampling in shade.wgsl (`sampleCascadeC0`) + balance-heuristic MIS (`rcWeight`) shipped (W8 Phase 3).
 - **ReSTIR DI** (Reservoir-based Spatiotemporal Importance Resampling) — direct illumination with temporal + spatial reuse.
 - **ReSTIR-GI** (Ouyang et al. 2021) — indirect-illumination reservoirs with RIS + temporal + spatial reuse (Sprints 16–17).
 - **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
@@ -24,6 +24,7 @@ All modes share the same engine surface — only the post-shade pass changes.
 | `'atrous-variance'`| ✓       | Welford temporal accumulator + variance lookup + 3-iter à-trous. Current production. |
 | `'svgf-real'`      |         | Real Schied 2017 SVGF (T2.H1) — reprojection, moments, 7×7 filter, 5-tap à-trous.    |
 | `'neural'`         |         | U-Net neural denoiser (T2.H2 / W10). Requires `neuralWeights` — see below.           |
+| `'oidn-final'`     |         | Intel OIDN via ONNX Runtime Web (async; requires `extensions.oidnModelUrl`).         |
 
 ### Neural denoiser — weights interface
 

@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-09
 **Requester:** stainedGlass app (`~/projects/stainedGlass`)
-**Status:** APPLIED IN LOCAL FORK (runtime verification pending).
+**Status:** COMPLETE (fork is the absorbed monorepo package).
 
 ---
 

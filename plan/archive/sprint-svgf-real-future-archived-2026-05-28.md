@@ -1,3 +1,5 @@
+> ARCHIVED 2026-05-28 — SHIPPED. svgf-real is implemented in shared-denoisers/src/svgfRealWebGPU.ts + walkaround-hybrid/src/pipeline/denoisers/svgfReal.ts; denoiser: 'svgf-real' is live in HybridEngine.
+
 # Real SVGF (Schied 2017) — Future Sprint Placeholder
 
 **Status:** Future / unscheduled

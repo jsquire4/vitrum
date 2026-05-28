@@ -38,9 +38,7 @@ export interface VitrumCanvasProps {
   /** Per-frame quality dials. Prop changes propagate live: the latest
    *  value is read by `attachVitrum`'s rAF tick every frame via a getter
    *  closure over a mutable ref, so updates never trigger engine teardown
-   *  + recreate. (Earlier revisions of `attachVitrum` accepted only a
-   *  static value, which made this prop mount-only; the getter overload
-   *  added on 2026-05-18 fixed that.) */
+   *  + recreate. */
   quality?: NonNullable<FrameInput['quality']>;
   /** Frame-level telemetry (forwards engine.onFrame). */
   onFrame?: (stats: FrameStats) => void;

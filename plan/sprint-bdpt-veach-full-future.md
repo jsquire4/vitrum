@@ -1,10 +1,9 @@
 # Full Veach §10.3 BDPT MIS — Future Sprint Placeholder
 
-**Status:** Future / unscheduled
+**Status:** Partially landed — BDPT is dispatching in pt-webgpu (opt-in via extensions['vitrum.ptWebgpu.bdpt']) and pt-webgl (Sprint 10c). What remains unbuilt is full Veach §10.3 multi-strategy MIS weight enumeration.
 **Created:** 2026-05-11
 **Context:** This functionality was renamed during sweep-2026-05-11 because the existing
-implementation was mislabeled. This doc preserves the design intent for when a real
-implementation sprint is scheduled.
+implementation was mislabeled. This doc preserves the design intent for when the full Veach §10.3 MIS sprint is scheduled.
 
 ---
 
@@ -19,8 +18,7 @@ fork-side dispatch, not a complete Veach BDPT strategy PDF enumeration. The name
 `bdptConnectionMIS` implied full Veach §10.3 coverage, which would lead future
 implementers to trust incorrect MIS weights when BDPT is wired into a render path.
 
-BDPT is not currently wired anywhere in the render pipeline. The rename is a few-minute
-mechanical change; this doc schedules the real work.
+BDPT is now dispatching in pt-webgpu (opt-in via extensions['vitrum.ptWebgpu.bdpt']) and in pt-webgl (Sprint 10c). The rename was a few-minute mechanical change; this doc schedules the remaining full Veach §10.3 MIS work.
 
 ---
 
@@ -212,8 +210,7 @@ called for paths with more than 2 competing strategies.
 
 ## Connection to the rest of the pipeline
 
-BDPT is not currently wired into any render path in vitrum. Before scheduling this
-sprint, the following must exist:
+BDPT v1 is wired into pt-webgpu (full-tier kernel, CPU light-path fill + evaluateBdptConnection) and pt-webgl (Sprint 10c). What must be added for full Veach §10.3:
 
 1. A **light subpath tracer** — a GPU compute pass that traces paths from emitters
    toward the camera, storing vertices with their associated PDFs and throughputs.

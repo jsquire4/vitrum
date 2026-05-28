@@ -201,9 +201,8 @@ function fitCoefficients(r: number, g: number, b: number): [number, number, numb
  *
  * ⚠️ Not the paper’s precomputed table — see file-level documentation.
  *
- * @internal Placeholder approximation. Slated for replacement by the
- *           paper's precomputed table in Sprint 12. New code should call the
- *           stable alias `rgbToSpectralCoefficients` defined below.
+ * @internal Placeholder approximation. No precomputed-table upgrade is currently
+ *           scheduled; new code should call the stable alias `rgbToSpectralCoefficients` below.
  *
  * @param r - Red channel, linear sRGB [0, 1].
  * @param g - Green channel, linear sRGB [0, 1].
@@ -269,7 +268,7 @@ export const VISIBLE_LAMBDA_MAX = LAMBDA_MAX;
 /**
  * Stable public alias for the RGB→spectral coefficient fit. Use this name
  * in production code; `rgbToApproxSpectralCoefficients` is the current
- * approximation-only implementation and is marked @internal — the
- * precomputed-table replacement is scheduled to swap in via Sprint 12.
+ * approximation-only implementation and is marked @internal — precomputed-table
+ * replacement is deferred — see file-level docs.
  */
 export const rgbToSpectralCoefficients = rgbToApproxSpectralCoefficients;

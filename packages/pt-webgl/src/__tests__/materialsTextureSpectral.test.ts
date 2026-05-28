@@ -108,7 +108,7 @@ describe('MaterialsTexture spectral packing — H6.6 / SG.D wire-format contract
     }
   });
 
-  it('cobalt-blue spectral curve: hasSpectralAttenuation=1, μ(λ) bins non-zero and peak at red end', () => {
+  it('constant μ=1.0 spectral curve: hasSpectralAttenuation=1, all bins ≈ 1.0 (packing math only)', () => {
     // Cobalt absorbs ~525, 595, 650 nm (red/orange).
     // A flat μ=1.0 constant curve verifies packing math; caller uses real curves.
     const curve = makeConstantSpectralCurve(1.0);

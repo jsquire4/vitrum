@@ -35,10 +35,8 @@ This is the Milestone **M4** answer to: *“What would break if THREE disappeare
 - **Phase 1A** ✅ — `cascadePyramid.ts` + `cascadeBuffers.ts` THREE-free (plain `CascadeAABB` `{min,max}` + `[x,y,z]` tuples replace `THREE.Box3` / `THREE.Vector3`).
 - **Phase 1B** ✅ — `cascadeDispatch.ts` gains a parallel `dispatchFrameRaw(opts: RCDispatchOptsRaw)` entry that takes `GPUDevice` + raw `GPUBuffer`s + plain tuples (no THREE imports in the new path).
 - **Phase 2**  ✅ — `HybridEngineOptions.rcEnabled` toggle + per-engine `RCSubsystem` sidecar that builds its own BVH + cascade `GPUBuffer`s and dispatches each frame. **Cascade-0 output is NOT yet sampled in `shade.wgsl` (Phase 3).**
-- **Phase 3**  ⏳ — `shade.wgsl` reads cascade-0, MIS composition with DDGI / ReSTIR-GI.
-- **Phase 4**  ⏳ — Reference renders + acceptance test (Cornell with `rcEnabled: true` vs DDGI-only).
-
-Until Phase 3 lands, RC dispatch runs when `rcEnabled: true` but does not affect the visible image — useful only for memory-budget + dispatch-path validation.
+- **Phase 3**  ✅ — `shade.wgsl` reads cascade-0, MIS composition with DDGI / ReSTIR-GI.
+- **Phase 4**  ✅ — Reference renders + acceptance test (Cornell with `rcEnabled: true` vs DDGI-only).
 
 ## Related
 
