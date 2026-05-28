@@ -1,23 +1,14 @@
 // DenoiserABToggle — keyboard 'D' toggles denoiser on/off for A/B comparison.
 //
-// Implementation mode: PARTIAL REAL (approach (a) for interface, (b) for control).
-//
-// The toggle UI and keyboard handler are fully implemented. The actual
-// enable/disable call uses engine.debug.setDenoiserEnabled() (declared in
-// types.ts:EngineDebugSurface). When that method is absent, the component
-// renders a warning and the key press is a no-op.
-//
-// To wire this today: add setDenoiserEnabled(enabled: boolean): void to
-// HybridEngine and expose it via engine.debug. The walkaround-hybrid denoiser
-// is already gated by a flag in the render pipeline; this just surfaces it.
-//
-// Wired on HybridEngine via DenoiserAdapterPass runtime gate (2026-05-27).
+// Calls engine.debug.setDenoiserEnabled / isDenoiserEnabled (EngineDebugSurface).
+// HybridEngine wires this via DenoiserAdapterPass (walkaround-hybrid only).
+// Other backends render a stub badge and log once if the debug surface is absent.
 
 import React, { type FC, useEffect, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
 
 export interface DenoiserABToggleProps {
-  /** The engine to control. Must implement engine.debug.setDenoiserEnabled (T3.G followup). */
+  /** Engine with engine.debug.setDenoiserEnabled (HybridEngine). */
   engine: DebuggableEngine;
   /**
    * Keyboard key that toggles the denoiser. Default: 'd'.
