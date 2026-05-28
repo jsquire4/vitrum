@@ -1,5 +1,5 @@
 import { PCG_WGSL } from '@vitrum/shared-samplers';
-import { SAFE_INV_DIR_WGSL } from '@vitrum/shared-bvh';
+import { SAFE_INV_DIR_WGSL, MOLLER_TRUMBORE_WGSL } from '@vitrum/shared-bvh';
 
 /**
  * Early shared WGSL include for pt-webgpu.
@@ -49,39 +49,34 @@ fn safe_normalize(v: vec3f) -> vec3f {
 
 ${SAFE_INV_DIR_WGSL}
 
-// intersectTriangle: pt-webgpu keeps its own scalar-returning Möller–Trumbore
-// (h = cross(dir, e2), det = dot(e1, h)) here rather than composing the
-// canonical @vitrum/shared-bvh intersectTriangle. The canonical returns an
-// IntersectionResult (struct), takes a triEps parameter, uses the
-// geometric-normal determinant form (n = cross(e1,e2), det = -dot(dir,n)) with
-// triEps-tolerant barycentric tests, and is bundled inside BVH_INTERSECT_WGSL
-// alongside BVHNode / Ray struct definitions that would collide with the ones
-// declared in this module. This scalar form is also mirrored by the
-// __tests__/cpuTracer.ts GPU-acceptance oracle, so swapping it is not a pure
-// dedup. safeInvDir IS now shared (imported above as SAFE_INV_DIR_WGSL).
+${MOLLER_TRUMBORE_WGSL}
+
+// intersectTriangle: pt-webgpu's scalar-returning wrapper over the canonical
+// shared Moller-Trumbore core (mollerTrumboreCore, prepended above as
+// MOLLER_TRUMBORE_WGSL from @vitrum/shared-bvh). The MATH is now single-sourced
+// in shared-bvh -- both this wrapper and the canonical struct-returning
+// intersectTriangle in BVH_INTERSECT_WGSL delegate to the same core.
+//
+// pt-webgpu keeps its own thin f32-returning wrapper (rather than composing the
+// full BVH_INTERSECT_WGSL) because its traversal kernels define their own
+// BVHNode / Ray / SceneHit / HitResult structs, which would collide with the
+// ones BVH_INTERSECT_WGSL declares. The wrapper just unpacks the core's
+// TriHit: returns the hit distance t on a hit, INFINITY on a miss. The
+// three pt-webgpu call sites (traceMeshBvh in intersection/intersectionLite,
+// intersectMeshAreaLightRay in connect) compare the returned f32 against their
+// own t-bounds, so the f32 contract is preserved.
+//
+// NUMERICS NOTE (V7): switching to the canonical core changes edge behaviour --
+// the core uses triEps-tolerant SIGNED barycentric tests (u/v/w < -triEps)
+// instead of the old strict u<0||u>1 / v<0||u+v>1 tests, so hits grazing a
+// triangle edge by less than triEps are now accepted (closes shared-edge
+// cracks). The hit distance t for interior hits is algebraically unchanged.
+// The __tests__/cpuTracer.ts oracle mirrors this same core so it stays in sync.
 fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
-  let e1 = b - a;
-  let e2 = c - a;
-  let h = cross(dir, e2);
-  let det = dot(e1, h);
-  if (abs(det) < params.triIntersectEpsilon) {
+  let core = mollerTrumboreCore(origin, dir, a, b, c, params.triIntersectEpsilon);
+  if (!core.hit) {
     return INFINITY;
   }
-  let invDet = 1.0 / det;
-  let s = origin - a;
-  let u = dot(s, h) * invDet;
-  if (u < 0.0 || u > 1.0) {
-    return INFINITY;
-  }
-  let q = cross(s, e1);
-  let v = dot(dir, q) * invDet;
-  if (v < 0.0 || u + v > 1.0) {
-    return INFINITY;
-  }
-  let t = dot(e2, q) * invDet;
-  if (t < params.triIntersectEpsilon) {
-    return INFINITY;
-  }
-  return t;
+  return core.t;
 }
 `;

@@ -88,8 +88,85 @@ fn safeInvDir(d: vec3f) -> vec3f {
 }
 `;
 
+// ─── Möller–Trumbore triangle-intersection CORE (standalone fragment) ─────────
+// Extracted as its own export so renderer-agnostic consumers whose own kernels
+// define their own BVHNode / Ray / SceneHit / HitResult structs (e.g.
+// `@vitrum/pt-webgpu`) can compose JUST the Möller–Trumbore *math* — the single
+// source of truth — without dragging in the struct-defining BVH_INTERSECT_WGSL
+// (which would collide with their local struct declarations). Both the
+// canonical `intersectTriangle` below and pt-webgpu's f32-returning wrapper call
+// `mollerTrumboreCore`, so the algorithm + edge tolerance live in exactly one
+// place.
+//
+// `TriHit` is intentionally a fresh struct name (NOT IntersectionResult /
+// SceneHit / HitResult) so it never collides with any consumer's own hit type.
+//
+// Möller & Trumbore 1997 — single-sided ray/triangle intersection using the
+// geometric-normal determinant form (n = cross(e1,e2); det = -dot(dir,n)),
+// which factors the barycentric solve through DAO = cross(AO, dir):
+//   u = dot(e2, DAO) * invDet
+//   v = -dot(e1, DAO) * invDet
+//   w = 1 - u - v
+//   t = dot(AO, n) * invDet
+// triEps is the coplanarity floor: |det| < triEps ⇒ parallel ⇒ no hit. The
+// barycentric edge tests use a SIGNED triEps tolerance (u/v/w < -triEps), so a
+// hit grazing an edge by less than the floor is ACCEPTED rather than rejected —
+// matching three-mesh-bvh upstream and closing edge cracks at shared
+// triangle boundaries. (The pre-canonical pt-webgpu copy used strict
+// u<0||u>1 / v<0||u+v>1 tests, which could reject a grazing edge hit — that is
+// the behavioural delta this unification removes; see V7 in
+// HARDWARE-VALIDATION-NEEDS.md.)
+//
+// @see CREDITS.md (Möller & Trumbore 1997; three-mesh-bvh)
+export const MOLLER_TRUMBORE_WGSL = /* wgsl */ `
+struct TriHit {
+  hit:  bool,
+  t:    f32,
+  bary: vec3f,   // (w, u, v) on the hit triangle
+  det:  f32,     // signed determinant (-dot(dir, n)); sign(det) is the face side
+};
+
+fn mollerTrumboreCore(
+  origin: vec3f, dir: vec3f,
+  a: vec3f, b: vec3f, c: vec3f,
+  triEps: f32,
+) -> TriHit {
+  var result: TriHit;
+  result.hit  = false;
+  result.t    = 1e20;
+  result.bary = vec3f(0.0);
+  result.det  = 0.0;
+
+  let e1 = b - a;
+  let e2 = c - a;
+  let n  = cross(e1, e2);
+  let det = -dot(dir, n);
+  if (abs(det) < triEps) { return result; }
+
+  let invDet = 1.0 / det;
+  let AO  = origin - a;
+  let DAO = cross(AO, dir);
+
+  let u = dot(e2, DAO) * invDet;
+  let v = -dot(e1, DAO) * invDet;
+  let t = dot(AO, n)    * invDet;
+  let w = 1.0 - u - v;
+
+  if (u < -triEps || v < -triEps || w < -triEps || t < triEps) {
+    return result;
+  }
+
+  result.hit  = true;
+  result.t    = t;
+  result.bary = vec3f(w, u, v);
+  result.det  = det;
+  return result;
+}
+`;
+
 export const BVH_INTERSECT_WGSL = /* wgsl */ `
 ${SAFE_INV_DIR_WGSL}
+${MOLLER_TRUMBORE_WGSL}
 
 // ─── BVH traversal constants ─────────────────────────────────────────────────
 // Stack depth 60 supports balanced BVHs up to 2^60 triangles — unreachable
@@ -153,13 +230,12 @@ struct IntersectionResult {
 // import it standalone. See the SAFE_INV_DIR_WGSL export above.
 
 // ─── Möller–Trumbore triangle intersection ───────────────────────────────────
-// Möller & Trumbore 1997 — single-sided ray/triangle intersection with the
-// edge-cross factoring that avoids the explicit normal computation.
-// triEps is the coplanarity floor: rays whose determinant magnitude falls
-// below it are treated as parallel to the triangle (returns no-hit).
-// Negative-bary tolerance also uses triEps so a hit grazing an edge by
-// less than the floor is accepted instead of rejected — matching the
-// three-mesh-bvh upstream behaviour and the pre-canonical DDGI / RC code.
+// Thin adapter over the shared mollerTrumboreCore fragment (prepended above as
+// MOLLER_TRUMBORE_WGSL): the algorithm + edge tolerance are single-sourced
+// there. This wrapper only re-shapes the core's TriHit into the richer
+// IntersectionResult struct (adds the sign-correct geometric normal). triEps
+// is the coplanarity floor and the signed barycentric edge tolerance; see the
+// core function's comment for the full math + edge-tolerance rationale.
 fn intersectTriangle(
   origin: vec3f, dir: vec3f,
   a: vec3f, b: vec3f, c: vec3f,
@@ -169,29 +245,17 @@ fn intersectTriangle(
   result.didHit = false;
   result.dist = BVH_INTERSECT_INFINITY;
 
+  let core = mollerTrumboreCore(origin, dir, a, b, c, triEps);
+  if (!core.hit) { return result; }
+
   let e1 = b - a;
   let e2 = c - a;
   let n  = cross(e1, e2);
-  let det = -dot(dir, n);
-  if (abs(det) < triEps) { return result; }
-
-  let invDet = 1.0 / det;
-  let AO  = origin - a;
-  let DAO = cross(AO, dir);
-
-  let u = dot(e2, DAO) * invDet;
-  let v = -dot(e1, DAO) * invDet;
-  let t = dot(AO, n)   * invDet;
-  let w = 1.0 - u - v;
-
-  if (u < -triEps || v < -triEps || w < -triEps || t < triEps) {
-    return result;
-  }
 
   result.didHit    = true;
-  result.dist      = t;
-  result.barycoord = vec3f(w, u, v);
-  result.side      = sign(det);
+  result.dist      = core.t;
+  result.barycoord = core.bary;
+  result.side      = sign(core.det);
   result.normal    = result.side * normalize(n);
   return result;
 }

@@ -123,7 +123,7 @@ function maxComp(v: Vec3): number {
 }
 
 // ---------------------------------------------------------------------------
-// safeInvDir — mirror of common.wgsl.ts:64 (Williams 2005). For an exact-zero
+// safeInvDir — mirror of SAFE_INV_DIR_WGSL (shared-bvh, Williams 2005). For an exact-zero
 // d.x, returns +1e30 (matching the WGSL `select(-1e30, 1e30, d.x >= 0.0)`
 // form — `+0 >= 0` is true in IEEE 754). The earlier `Math.sign(x) * 1e30`
 // form returned 0 for x=0, collapsing the slab test and giving false
@@ -139,31 +139,38 @@ function safeInvDir(d: Vec3): Vec3 {
 }
 
 // ---------------------------------------------------------------------------
-// Möller-Trumbore triangle intersection — mirror of common.wgsl.ts:75.
-// Returns { t, u, v } or null on miss.
-// eps guards degenerate (near-parallel) cases.
+// Möller-Trumbore triangle intersection — mirror of the canonical shared core
+// `mollerTrumboreCore` (shared-bvh/wgsl/bvhIntersect.wgsl.ts, MOLLER_TRUMBORE_WGSL),
+// which pt-webgpu's `intersectTriangle` (common.wgsl.ts) now wraps.
+//
+// Returns { t, u, v } or null on miss. `triEps` is BOTH the coplanarity floor
+// (|det| < triEps ⇒ parallel ⇒ miss) AND the signed barycentric edge tolerance
+// (u/v/w < -triEps ⇒ miss). The earlier mirror used the algebraically-equivalent
+// h/s/q factoring with strict u<0||u>1 / v<0||u+v>1 tests; this canonical form
+// uses n = cross(e1,e2); det = -dot(dir,n) and the DAO = cross(AO,dir) barycentric
+// solve with triEps-tolerant edge tests, matching the WGSL it validates.
+// Default 1e-5 matches the host's params.triIntersectEpsilon (index.ts:489).
 // ---------------------------------------------------------------------------
 
 function intersectTriangleMT(
   rayOrigin: Vec3,
   rayDir: Vec3,
   v0: Vec3, v1: Vec3, v2: Vec3,
-  eps = 1e-5,
+  triEps = 1e-5,
 ): { t: number; u: number; v: number } | null {
   const e1 = sub(v1, v0);
   const e2 = sub(v2, v0);
-  const h  = cross(rayDir, e2);
-  const det = dot(e1, h);
-  if (Math.abs(det) < eps) return null;
+  const n  = cross(e1, e2);
+  const det = -dot(rayDir, n);
+  if (Math.abs(det) < triEps) return null;
   const invDet = 1.0 / det;
-  const s = sub(rayOrigin, v0);
-  const u = dot(s, h) * invDet;
-  if (u < 0.0 || u > 1.0) return null;
-  const q = cross(s, e1);
-  const v = dot(rayDir, q) * invDet;
-  if (v < 0.0 || u + v > 1.0) return null;
-  const t = dot(e2, q) * invDet;
-  if (t < eps) return null;
+  const AO  = sub(rayOrigin, v0);
+  const DAO = cross(AO, rayDir);
+  const u = dot(e2, DAO) * invDet;
+  const v = -dot(e1, DAO) * invDet;
+  const t = dot(AO, n) * invDet;
+  const w = 1.0 - u - v;
+  if (u < -triEps || v < -triEps || w < -triEps || t < triEps) return null;
   return { t, u, v };
 }
 
