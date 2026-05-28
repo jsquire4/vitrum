@@ -45,6 +45,7 @@ import type {
   FrameStats,
 } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
+import { partitionSceneBySupport } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
@@ -463,11 +464,37 @@ export class HybridEngine implements Engine {
       maxSamplesPerPixel:        Infinity,
       maxBounces:                this._maxBounces,
       supportedAnalyticShapes:   new Set(),
-      supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh']),
-      // Emitter kinds handled by DDGI _uploadLights: sun, fixture, teaLight
-      // mapped to core taxonomy: rect-area/disc-area/mesh-area (disc is
-      // converted to rect in the adapter path).
-      supportedEmitterKinds:     new Set<SceneEmitter['kind']>(['rect-area', 'disc-area', 'mesh-area']),
+      // BVH + DDGI ingest via vitrumSceneToThree, which handles
+      // mesh / skinned-mesh / instanced-mesh and throws on anything else
+      // (analytic). `analytic` stays OUT — partitionSceneBySupport drops it
+      // with a warning at setScene before the converter can throw.
+      supportedPrimitiveKinds:   new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh']),
+      // Emitter kinds that genuinely reach a renderable state:
+      //   - rect-area / disc-area → THREE.RectAreaLight, harvested as ReSTIR-DI
+      //     direct emitter tris (collectRectAreaLightEmitterTris) AND projected
+      //     to DDGI fixture lights (coreEmittersToDDGILights) for indirect bounce.
+      //   - mesh-area → folded into the referenced mesh's emissive material by
+      //     vitrumSceneToThree, so it reaches both the ReSTIR-DI emissive-triangle
+      //     path and DDGI as emissive geometry.
+      //   - point / spot → projected to DDGI fixture lights by
+      //     coreEmittersToDDGILights (spot is a point-like approximation — the
+      //     probe shader has no cone handling).
+      //
+      // `directional` is NOT supported: the DDGI sun is config-driven via the
+      // constructor opts (primaryLightDir/Intensity) and updateLighting(), NOT
+      // by a scene emitter — coreEmittersToDDGILights returns null for
+      // directional and ReSTIR-DI builds no directional emitter, so a
+      // scene-supplied directional emitter produces no light. Declaring it
+      // would make partitionSceneBySupport flow it through to a silent no-op,
+      // so it is warn-skipped instead. Revisit when scene-directional → DDGI
+      // sun wiring is added.
+      supportedEmitterKinds:     new Set<SceneEmitter['kind']>([
+        'rect-area',
+        'disc-area',
+        'point',
+        'spot',
+        'mesh-area',
+      ]),
       supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri']),
       presentationMode:          'swapchain-required',
       experimentalFeatures:      new Set(['svgf-real-conservative-objid']),
@@ -521,9 +548,25 @@ export class HybridEngine implements Engine {
    * in sync for the non-mesh case and for auxiliary Object3D state you have not
    * serialized into the core `Scene`.
    *
-   * @param scene - The `@vitrum/core` scene (e.g. from `sceneFromThreeJS`).
+   * **Capability filter:** the scene is first partitioned against this engine's
+   * declared `supported*Kinds` (warn + skip). Unsupported kinds — notably
+   * `analytic`, which has no THREE-conversion path — are dropped with a
+   * `console.warn` before conversion, so they never reach (and throw from)
+   * `vitrumSceneToThree`.
+   *
+   * @param inputScene - The `@vitrum/core` scene (e.g. from `sceneFromThreeJS`).
    */
-  setScene(scene: Scene): void {
+  setScene(inputScene: Scene): void {
+    // Capability filter (warn + skip) — consume this engine's OWN declared
+    // support sets to drop kinds it cannot ingest (e.g. `analytic`, whose
+    // THREE-conversion path does not exist) BEFORE `vitrumSceneToThree` runs
+    // in `_ensureThreeSceneRoot` / the lifecycle BVH-build phase. Without this,
+    // an analytic primitive would reach the converter and throw; the warn-skip
+    // model matches pt-webgpu's `buildPackedScene` behaviour.
+    const { supported: scene, warnings } = partitionSceneBySupport(inputScene, this.capabilities);
+    for (const warning of warnings) {
+      console.warn(`[vitrum/walkaround-hybrid] ${warning}`);
+    }
     this._lastScene = scene;
     // T3.H removal: drop the cached synthesized THREE.Scene; the next BVH
     // build / DDGI updateFrame will re-derive it from the new vitrum Scene.

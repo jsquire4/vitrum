@@ -115,7 +115,7 @@ describe('pt-webgl capabilities', () => {
       },
     });
 
-    engine.setScene({} as never);
+    engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
     const out = engine.renderFrame(makeFrame(8192, 8192));
     const telemetry = (out as { telemetry?: { renderWidth: number; renderHeight: number; guardrail: string | null } }).telemetry;
 
@@ -136,7 +136,7 @@ describe('pt-webgl capabilities', () => {
       },
     });
 
-    engine.setScene({} as never);
+    engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
     const first = engine.renderFrame(makeFrame(320, 180)) as { telemetry?: { samplesPerFrame: number } };
     const second = engine.renderFrame({ ...makeFrame(320, 180), frameIndex: 1 }) as { telemetry?: { samplesPerFrame: number } };
 

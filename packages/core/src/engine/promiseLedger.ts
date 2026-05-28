@@ -54,8 +54,19 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     },
     supportsAuxBuffers: false,
     accumulates: false,
-    supportedPrimitiveKinds: ['mesh', 'skinned-mesh'],
-    supportedEmitterKinds: ['rect-area', 'disc-area', 'mesh-area'],
+    // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh; analytic
+    // has no THREE-conversion path (partitionSceneBySupport warn-skips it).
+    // instanced-mesh IS genuine here — walkaround renders instances via the
+    // TLAS per-instance traversal path.
+    supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
+    // rect-area/disc-area → ReSTIR-DI emitter tris + DDGI fixtures; mesh-area →
+    // mesh emissive material; point/spot → DDGI fixture lights (spot
+    // point-approximated). See coreEmittersToDDGILights.
+    // `directional` is NOT supported: the DDGI sun is config-driven via the
+    // constructor/updateLighting (host.primaryLightDir/Intensity), not a scene
+    // emitter — coreEmittersToDDGILights returns null for directional, so a
+    // scene directional is warn-skipped. Revisit when directional→DDGI is wired.
+    supportedEmitterKinds: ['rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],
     supportedAnalyticShapes: [],
     presentationMode: 'swapchain-required',
@@ -86,6 +97,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     },
     supportsAuxBuffers: false,
     accumulates: true,
+    // vitrumSceneToThree ingests mesh / skinned-mesh; analytic has no
+    // THREE-conversion path (partitionSceneBySupport warn-skips it).
+    // instanced-mesh NOT supported — the fork geometry generator
+    // (StaticGeometryGenerator → convertToStaticGeometry) ignores
+    // instanceMatrix and bakes only mesh.matrixWorld, so N instances would
+    // render as one copy at the origin; warn-skipped instead.
     supportedPrimitiveKinds: ['mesh', 'skinned-mesh'],
     supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],

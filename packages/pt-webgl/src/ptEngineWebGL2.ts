@@ -22,7 +22,7 @@ import type {
   FrameStats,
   ProgressStats,
 } from '@vitrum/core';
-import { asBackendTexture, patchPrimitiveInScene, patchEmitterInScene } from '@vitrum/core';
+import { asBackendTexture, patchPrimitiveInScene, patchEmitterInScene, partitionSceneBySupport } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment, MeshPrimitive } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
@@ -629,6 +629,19 @@ export class PTEngineWebGL2 implements Engine {
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
       supportedAnalyticShapes: new Set(),
+      // vitrumSceneToThree (the THREE-conversion ingestion path) handles
+      // mesh / skinned-mesh and throws on `analytic` (no THREE conversion
+      // path) — so `analytic` stays OUT; partitionSceneBySupport warn-skips
+      // it at setScene before the converter can throw.
+      //
+      // instanced-mesh is NOT supported: vitrumSceneToThree DOES build a
+      // THREE.InstancedMesh, but pt-webgl's BVH path (StaticGeometryGenerator
+      // → convertToStaticGeometry) has no isInstancedMesh / instanceMatrix
+      // handling — it bakes only mesh.matrixWorld (identity for the
+      // InstancedMesh), so an N-instance primitive would render as ONE copy
+      // at the origin. Declaring it would make partitionSceneBySupport flow
+      // it through to silently-wrong output, so it is warn-skipped instead.
+      // Revisit when the fork geometry generator gains instanceMatrix baking.
       supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>(['mesh', 'skinned-mesh']),
       supportedEmitterKinds: new Set<SceneEmitter['kind']>([
         'directional',
@@ -783,9 +796,18 @@ export class PTEngineWebGL2 implements Engine {
     }
   }
 
-  setScene(scene: Scene): void {
+  setScene(inputScene: Scene): void {
     if (this.#slot.get() === 'disposed') {
       throw new Error('setScene: engine is disposed');
+    }
+    // Capability filter (warn + skip) — consume this engine's OWN declared
+    // support sets to drop kinds it cannot ingest (e.g. `analytic`, whose
+    // THREE-conversion path does not exist) BEFORE `vitrumSceneToThree` runs.
+    // Without this, an analytic primitive would reach the converter and throw;
+    // the warn-skip model matches pt-webgpu's `buildPackedScene` behaviour.
+    const { supported: scene, warnings } = partitionSceneBySupport(inputScene, this.capabilities);
+    for (const warning of warnings) {
+      console.warn(`[vitrum/pt-webgl] ${warning}`);
     }
     if (this.#threeSceneRoot != null) {
       disposeObject3DTree(this.#threeSceneRoot);

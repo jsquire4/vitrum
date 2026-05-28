@@ -262,15 +262,21 @@ const SCENE_WITH_MESH: Scene = {
   environment: { kind: 'none' },
 };
 
+// Uses a `point` emitter: walkaround-hybrid does NOT support scene-supplied
+// `directional` emitters (the DDGI sun is config-driven via the constructor /
+// updateLighting, so partitionSceneBySupport warn-skips a scene directional and
+// it never lands in `_lastScene`). `point` genuinely reaches DDGI fixture
+// lights, so it survives the partition filter and the updateEmitter fast-path
+// has a real emitter to patch.
 const SCENE_WITH_EMITTER: Scene = {
   ...SCENE_WITH_MESH,
   emitters: [
     {
-      id: 'sun-a',
-      kind: 'directional',
+      id: 'point-a',
+      kind: 'point',
       color: [1, 1, 1],
       intensity: 1,
-      direction: [0, -1, 0],
+      position: [0, 5, 0],
     },
   ],
 };
@@ -524,7 +530,7 @@ describe('HybridEngine.updateEmitter', () => {
     await drainMicrotasks();
     const buildCountBefore = s.buildBVHCalls.length;
     const pipeline = s.pipelineConstructed[0]!;
-    engine.updateEmitter!('sun-a', { intensity: 2 });
+    engine.updateEmitter!('point-a', { intensity: 2 });
     expect(s.buildBVHCalls.length).toBe(buildCountBefore);
     expect(pipeline.updateEmitters).toHaveBeenCalled();
     expect(pipeline.requestAccumReset).toHaveBeenCalled();
@@ -542,6 +548,6 @@ describe('HybridEngine.updateEmitter', () => {
 
   it('throws when called before setScene', () => {
     const engine = makeEngine();
-    expect(() => engine.updateEmitter!('sun-a', { intensity: 2 })).toThrow(/no scene set/);
+    expect(() => engine.updateEmitter!('point-a', { intensity: 2 })).toThrow(/no scene set/);
   });
 });
