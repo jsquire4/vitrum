@@ -59,6 +59,7 @@ if (bdpt) {
   const u = new URL(baseUrl);
   if (!u.searchParams.has('vitrumBdpt')) u.searchParams.set('vitrumBdpt', '1');
   if (!u.searchParams.has('vitrumSpf')) u.searchParams.set('vitrumSpf', '16');
+  if (process.env.VITRUM_BDPT_CPU_FILL === '1') u.searchParams.set('vitrumBdptCpuFill', '1');
   baseUrl = u.toString();
 }
 

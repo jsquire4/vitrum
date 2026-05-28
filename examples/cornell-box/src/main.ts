@@ -81,6 +81,8 @@ interface CaptureConfig {
   readonly bdpt: boolean;
   /** C3 — clamp 1..3, only honoured when `bdpt === true`. URL: vitrumBdptBounces */
   readonly bdptMaxLightBounces: number;
+  /** URL: vitrumBdptCpuFill=1 — CPU light-path fill only (reference captures). */
+  readonly bdptCpuFill: boolean;
   readonly isCapture: boolean;
   readonly autoStart: boolean;
   readonly qualityMode: PTEngineWebGL2QualityMode;
@@ -284,6 +286,7 @@ function parseCaptureConfig(): CaptureConfig {
     causticStrategy,
     bdpt: params.get('vitrumBdpt') === '1',
     bdptMaxLightBounces: Math.max(1, Math.min(3, parsePositiveInt(params.get('vitrumBdptBounces'), 3))),
+    bdptCpuFill: params.get('vitrumBdptCpuFill') === '1',
     isCapture,
     autoStart: params.get('vitrumAutoStart') === '1',
     qualityMode,
@@ -503,6 +506,7 @@ async function main(): Promise<void> {
         ? {
             'vitrum.ptWebgl.bdpt': true,
             'vitrum.ptWebgl.bdptMaxLightBounces': config.bdptMaxLightBounces,
+            ...(config.bdptCpuFill ? { 'vitrum.ptWebgl.bdptCpuFill': true } : {}),
           }
         : {}),
       // Capture-mode default is 1 sample/frame for telemetry granularity. That

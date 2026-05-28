@@ -34,10 +34,12 @@ try {
     'VITRUM_CORNELL_SKIP_VITE=1',
     `VITRUM_CAPTURE_URL=${captureBase}`,
     `VITRUM_CORNELL_DEV_PORT=${cornellPort}`,
+    'VITRUM_BDPT_CPU_FILL=1',
     'VITRUM_BDPT_FORCE_GPU=1',
     'VITRUM_WEBGPU_ADAPTER=hardware',
     'VITRUM_BENCH_HEADLESS=0',
     'VITRUM_BDPT_REQUIRE_GPU=1',
+    `VITRUM_BDPT_QUICK=${process.env.VITRUM_BDPT_QUICK ?? '1'}`,
     `VITRUM_BDPT_OUT_LABEL=${label}`,
     ...process.argv.slice(2).filter((a) => !a.startsWith('VITRUM_BDPT_OUT_LABEL')),
   ];

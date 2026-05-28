@@ -25,8 +25,22 @@ const label =
 const outDir = resolve(repoRoot, 'tools/reference-renders', label);
 const here = dirname(fileURLToPath(import.meta.url));
 
-async function runCapture(extraArgs) {
+function bdptCaptureBaseUrl() {
+  const raw = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5173/';
+  const u = new URL(raw);
+  u.searchParams.set('vitrumBdpt', '1');
+  if (!u.searchParams.has('vitrumSpf')) u.searchParams.set('vitrumSpf', '16');
+  u.searchParams.set('vitrumBdptCpuFill', '1');
+  return u.toString();
+}
+
+async function runCapture(extraArgs, envExtra = {}) {
   const timeoutMs = Number(process.env.VITRUM_BDPT_TIMEOUT_MS ?? 45 * 60_000);
+  const captureEnv = {
+    ...process.env,
+    ...envExtra,
+    VITRUM_BDPT_MIN_PNG_BYTES: envExtra.VITRUM_BDPT_MIN_PNG_BYTES ?? process.env.VITRUM_BDPT_MIN_PNG_BYTES ?? '50000',
+  };
   if (process.env.VITRUM_BDPT_NODE_CAPTURE === '1') {
     const args = [
       'node',
@@ -38,10 +52,7 @@ async function runCapture(extraArgs) {
     if (process.env.VITRUM_BDPT_QUICK === '1') args.push('--quick');
     return runCommandWithTimeout(args.join(' '), {
       cwd: repoRoot,
-      env: {
-        ...process.env,
-        VITRUM_BDPT_MIN_PNG_BYTES: process.env.VITRUM_BDPT_MIN_PNG_BYTES ?? '50000',
-      },
+      env: captureEnv,
       timeoutMs,
     });
   }
@@ -49,7 +60,7 @@ async function runCapture(extraArgs) {
   if (process.env.VITRUM_BDPT_QUICK === '1') args.push('--quick');
   return runCommandWithTimeout(args.join(' '), {
     cwd: repoRoot,
-    env: process.env,
+    env: captureEnv,
     timeoutMs,
   });
 }
@@ -66,7 +77,10 @@ async function main() {
 
   if (process.env.VITRUM_BDPT_SKIP_BDPT !== '1') {
     console.log('[bdpt-layered-refs] capturing cornell-layered with vitrumBdpt=1…');
-    const bdpt = await runCapture(['--only', 'layered', '--bdpt']);
+    const bdpt = await runCapture(['--only', 'layered', '--bdpt'], {
+      VITRUM_CAPTURE_URL: bdptCaptureBaseUrl(),
+      VITRUM_BDPT_CPU_FILL: '1',
+    });
     steps.push({
       scenario: 'cornell-layered-bdpt',
       ok: bdpt.code === 0,
@@ -76,7 +90,10 @@ async function main() {
 
     if (process.env.VITRUM_BDPT_SKIP_PARITY !== '1') {
       console.log('[bdpt-layered-refs] capturing cornell-parity with vitrumBdpt=1…');
-      const parityBdpt = await runCapture(['--only', 'parity', '--bdpt']);
+      const parityBdpt = await runCapture(['--only', 'parity', '--bdpt'], {
+        VITRUM_CAPTURE_URL: bdptCaptureBaseUrl(),
+        VITRUM_BDPT_CPU_FILL: '1',
+      });
       steps.push({
         scenario: 'cornell-parity-bdpt',
         ok: parityBdpt.code === 0,

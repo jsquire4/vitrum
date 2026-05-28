@@ -501,6 +501,8 @@ export class PTEngineWebGL2 implements Engine {
   // Forwarded to fork uBdptEnabled / uBdptMaxLightBounces / uBdptLightPathTex uniforms.
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
+  /** When true, skip the fork GPU light-subpath pass (CPU bounce-0 fill only). */
+  readonly #bdptCpuFill: boolean;
   /** Sprint 10c — most-recently-supplied BDPT light-path texture. Set via
    *  {@link bdptAdvanceFrame}; null until the host calls that method.
    *  When non-null + `#bdpt === true`, every renderFrame's connect pass
@@ -576,6 +578,7 @@ export class PTEngineWebGL2 implements Engine {
     this.#bdptMaxLightBounces = typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
       ? Math.min(3, Math.floor(requestedBdptBounces))
       : 3;
+    this.#bdptCpuFill = opts.extensions?.['vitrum.ptWebgl.bdptCpuFill'] === true;
     this.#schedulerOptions = defaultSchedulerOptions(opts.extensions);
     this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
     this.#tileSize = this.#schedulerOptions.initialTileSize;
@@ -707,6 +710,7 @@ export class PTEngineWebGL2 implements Engine {
     }
     const tracer = this.#pathTracer as unknown as WebGLPathTracerCompat;
     const useGpu =
+      !this.#bdptCpuFill &&
       (!isSoftwareGlRenderer(this.#limits.renderer) || bdptForceGpuBind()) &&
       typeof tracer.renderBdptLightSubpathPass === 'function';
     buffer.fillFromScene(
