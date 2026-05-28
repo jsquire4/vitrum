@@ -2,7 +2,7 @@
  * ReSTIR-DI reservoir ADT + the emitter / G-buffer structs it co-locates.
  *
  * Split out of common.wgsl.ts (T9-stepA): the `EmitterTri` (80-byte) struct,
- * the `GBufferSample` struct, the `ReservoirDI` struct (with stored xi —
+ * the `ReservoirDI` struct (with stored xi —
  * Bitterli 2020 §4), `emptyReservoirDI` / `updateReservoirDI`, and the
  * strided pack/unpack helpers (load/store, 6×u32 stride) shared by
  * ris/temporal/spatial.
@@ -29,20 +29,6 @@ struct EmitterTri {
   area:      f32,     // bytes 60-63
   Le:        vec3f,   // bytes 64-75
   intensity: f32,     // bytes 76-79
-};
-
-// ============================================================
-// Per-pixel G-buffer data
-// ============================================================
-struct GBufferSample {
-  pos:       vec3f,
-  normal:    vec3f,
-  albedo:    vec3f,
-  roughness: f32,
-  metalness: f32,
-  linearDepth: f32,
-  wo:        vec3f,   // outgoing direction to camera
-  isSky:     bool,
 };
 
 // ============================================================
