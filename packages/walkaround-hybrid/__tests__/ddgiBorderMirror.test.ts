@@ -22,6 +22,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import {
+  makeBorderFillWGSL,
+  makeProbeUpdateBorderIrrWGSL,
+  makeProbeUpdateBorderVisWGSL,
+} from '../src/ddgi/wgsl/probeUpdateBorder.wgsl.js';
+import { IRR_CELL, IRR_STRIDE, VIS_CELL, VIS_STRIDE } from '../src/ddgi/ddgiAtlasLayout.js';
 
 // ---------------------------------------------------------------------------
 // TS mirror of the WGSL border-mirror logic.
@@ -504,5 +510,123 @@ describe('non-uniform interior — source-row sanity', () => {
     expect(readTexel(atlas, stride, 1, 0)[0]).toBe(8);   // lx=1 → mirror source col=8
     expect(readTexel(atlas, stride, 8, 0)[0]).toBe(1);   // lx=8 → mirror source col=1
     expect(readTexel(atlas, stride, 4, 0)[0]).toBe(5);   // lx=4 → mirror source col=5
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coverage regression — the emitted WGSL must visit EVERY local position of
+// the cell, not just the first 2*workgroupSize.
+//
+// Pre-existing bug (V5 radiometric): the irradiance pass (workgroupSize=48)
+// used a fixed 2-strip loop covering local positions [0,96), but a 10×10 cell
+// has 100 positions. Thread positions t=96..99 map to (lx = t%10, ly = t/10) =
+// (6,9),(7,9),(8,9),(9,9) — all BOTTOM-edge border texels (ly = N+1 = 9) that
+// were left at their zero-initialized value → seam darkening at the bottom
+// octahedral edge of every probe cell.
+//
+// The fix derives the strip count as ⌈stride²/workgroupSize⌉, so every border
+// texel is now written. These tests parse the emitted loop bound and replay
+// the exact thread→texel mapping to prove full coverage (and would re-fail if
+// the fixed 2-strip loop ever returned).
+// ---------------------------------------------------------------------------
+describe('border-fill WGSL covers every border texel of the cell (V5 regression)', () => {
+  /** Extract the `passIdx < <N>u` loop bound from the emitted WGSL. */
+  function loopStripCount(wgsl: string): number {
+    const m = wgsl.match(/for \(var passIdx = 0u; passIdx < (\d+)u;/);
+    if (!m) throw new Error('could not find the passIdx strip-count loop in emitted WGSL');
+    return Number(m[1]);
+  }
+
+  /**
+   * Replay the WGSL thread→position mapping exactly:
+   * thread `t = lid.x + passIdx*workgroupSize` for lid.x in [0,workgroupSize)
+   * and passIdx in [0,strips); positions ≥ stride² are skipped. Returns the
+   * set of border texels (as "lx,ly") that the pass actually writes.
+   */
+  function coveredBorderTexels(
+    cell: number,
+    stride: number,
+    workgroupSize: number,
+    strips: number,
+  ): Set<string> {
+    const total = stride * stride;
+    const N = cell;
+    const covered = new Set<string>();
+    for (let passIdx = 0; passIdx < strips; passIdx++) {
+      for (let lidx = 0; lidx < workgroupSize; lidx++) {
+        const t = lidx + passIdx * workgroupSize;
+        if (t >= total) continue;
+        const lx = t % stride;
+        const ly = Math.floor(t / stride);
+        const isBorder = lx === 0 || lx === N + 1 || ly === 0 || ly === N + 1;
+        if (isBorder) covered.add(`${lx},${ly}`);
+      }
+    }
+    return covered;
+  }
+
+  /** Enumerate the full border-ring texel set for a (cell, stride) cell. */
+  function allBorderTexels(cell: number, stride: number): Set<string> {
+    const N = cell;
+    const all = new Set<string>();
+    for (let ly = 0; ly < stride; ly++) {
+      for (let lx = 0; lx < stride; lx++) {
+        if (lx === 0 || lx === N + 1 || ly === 0 || ly === N + 1) all.add(`${lx},${ly}`);
+      }
+    }
+    return all;
+  }
+
+  it('irradiance pass (48 threads, 10×10 cell) emits ⌈100/48⌉ = 3 strips', () => {
+    const wgsl = makeProbeUpdateBorderIrrWGSL();
+    const strips = loopStripCount(wgsl);
+    expect(strips).toBe(Math.ceil((IRR_STRIDE * IRR_STRIDE) / 48)); // 3
+    // 48 threads × strips must reach at least all 100 positions.
+    expect(48 * strips).toBeGreaterThanOrEqual(IRR_STRIDE * IRR_STRIDE);
+  });
+
+  it('irradiance pass writes ALL border texels — incl. the four bottom-edge texels the old 2-strip loop missed', () => {
+    const wgsl = makeProbeUpdateBorderIrrWGSL();
+    const strips = loopStripCount(wgsl);
+    const covered = coveredBorderTexels(IRR_CELL, IRR_STRIDE, 48, strips);
+    const all = allBorderTexels(IRR_CELL, IRR_STRIDE);
+
+    // Every border texel of the 10×10 cell is now covered.
+    for (const texel of all) expect(covered.has(texel)).toBe(true);
+    expect(covered.size).toBe(all.size);
+
+    // Explicitly assert the previously-unfilled bottom-edge texels (ly = N+1 = 9,
+    // lx ∈ {6,7,8,9}) — these are positions t = 96..99, missed by the old [0,96) loop.
+    for (const lx of [6, 7, 8, 9]) {
+      expect(covered.has(`${lx},${IRR_CELL + 1}`)).toBe(true);
+    }
+  });
+
+  it('the old fixed 2-strip loop would NOT have covered the four bottom-edge texels (documents the bug)', () => {
+    // Re-run coverage with the buggy strip count of 2 to confirm the gap was real.
+    const buggy = coveredBorderTexels(IRR_CELL, IRR_STRIDE, 48, 2);
+    for (const lx of [6, 7, 8, 9]) {
+      expect(buggy.has(`${lx},${IRR_CELL + 1}`)).toBe(false);
+    }
+  });
+
+  it('visibility pass (256 threads, 18×18 cell) is unchanged at ⌈324/256⌉ = 2 strips and fully covered', () => {
+    const wgsl = makeProbeUpdateBorderVisWGSL();
+    const strips = loopStripCount(wgsl);
+    expect(strips).toBe(2);
+    const covered = coveredBorderTexels(VIS_CELL, VIS_STRIDE, 256, strips);
+    const all = allBorderTexels(VIS_CELL, VIS_STRIDE);
+    for (const texel of all) expect(covered.has(texel)).toBe(true);
+    expect(covered.size).toBe(all.size);
+  });
+
+  it('strip count is derived from stride²/workgroupSize for arbitrary cells', () => {
+    // A pathological tiny workgroup must still fully cover the ring.
+    const wgsl = makeBorderFillWGSL({ cell: 8, stride: 10, workgroupSize: 7, entryPoint: 'probe' });
+    const strips = loopStripCount(wgsl);
+    expect(strips).toBe(Math.ceil(100 / 7)); // 15
+    const covered = coveredBorderTexels(8, 10, 7, strips);
+    const all = allBorderTexels(8, 10);
+    expect(covered.size).toBe(all.size);
   });
 });

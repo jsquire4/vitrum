@@ -46,8 +46,15 @@
  *
  * Dispatch: (probeCount, 1, 1) workgroups of (workgroupSize, 1, 1).
  * Each workgroup handles one probe cell. A workgroup of `workgroupSize`
- * threads covers the (CELL+2)² local positions in ⌈stride²/workgroupSize⌉
- * strips — thread `t` handles positions `lid.x + passIdx*workgroupSize`.
+ * threads covers ALL (CELL+2)² = stride² local positions in
+ * ⌈stride²/workgroupSize⌉ strips — thread `t` handles positions
+ * `lid.x + passIdx*workgroupSize` for `passIdx` in `[0, ⌈stride²/workgroupSize⌉)`.
+ * The strip count is derived from stride²/workgroupSize at emit time so the
+ * pass ALWAYS covers every border texel regardless of workgroupSize (the
+ * previous fixed 2-strip loop left the last `stride² - 2*workgroupSize`
+ * positions unwritten — e.g. for irradiance, stride=10, workgroupSize=48:
+ * 2*48=96 < 100, leaving the four bottom-edge texels lx∈{6,7,8,9}, ly=9
+ * with a zero border → seam darkening at the bottom octahedral edge).
  * Interior threads early-exit cheaply via the border check.
  *
  *   @group(0) @binding(0) — atlasRead  (scratch copy of blend output, rgba16float)
@@ -70,9 +77,10 @@ export interface BorderFillParams {
   /** In-atlas stride = cell + BORDER. IRR_STRIDE=10 / VIS_STRIDE=18. */
   stride: number;
   /**
-   * Compute workgroup size (threads per probe cell). Must satisfy
-   * `2 * workgroupSize >= stride²` so the two-strip loop covers every
-   * local position. IRR=48 (covers 100), VIS=256 (covers 324).
+   * Compute workgroup size (threads per probe cell). Any positive value is
+   * correct: the emitted loop runs `⌈stride²/workgroupSize⌉` strips so every
+   * local position is visited regardless of how this divides stride². IRR=48
+   * (⌈100/48⌉=3 strips), VIS=256 (⌈324/256⌉=2 strips).
    */
   workgroupSize: number;
   /** WGSL entry-point name for the compute pass. */
@@ -86,6 +94,11 @@ export interface BorderFillParams {
  */
 export function makeBorderFillWGSL(params: BorderFillParams): string {
   const { cell, stride, workgroupSize, entryPoint } = params;
+  // Number of workgroup-sized strips needed to visit all stride² local
+  // positions. Derived (not hardcoded) so the loop covers every border texel
+  // for any workgroupSize — see the four-texel coverage bug in the module
+  // docblock. ⌈100/48⌉=3 (irradiance), ⌈324/256⌉=2 (visibility).
+  const stripCount = Math.ceil((stride * stride) / workgroupSize);
   return /* wgsl */`
 
 const CELL:   u32 = ${cell}u;
@@ -154,14 +167,16 @@ fn ${entryPoint}(
   let probeIdx = wid.x;
   if (probeIdx >= ubo.numProbes) { return; }
 
-  // Enumerate the STRIDE*STRIDE local positions using ${workgroupSize}
-  // threads in two strips: thread t covers position lid.x + passIdx*${workgroupSize}.
-  // Positions above stride*stride are skipped; interior threads early-exit.
+  // Enumerate ALL STRIDE*STRIDE local positions using ${workgroupSize}
+  // threads in ${stripCount} strips: thread t covers position
+  // lid.x + passIdx*${workgroupSize}. The strip count ⌈STRIDE²/${workgroupSize}⌉
+  // guarantees full coverage; positions past stride*stride are skipped and
+  // interior threads early-exit.
   let total = STRIDE * STRIDE;
   let origin = cellOrigin(probeIdx);
 
   // 'pass' is a WGSL reserved word; the loop counter is named 'passIdx'.
-  for (var passIdx = 0u; passIdx < 2u; passIdx = passIdx + 1u) {
+  for (var passIdx = 0u; passIdx < ${stripCount}u; passIdx = passIdx + 1u) {
     let t = lid.x + passIdx * ${workgroupSize}u;
     if (t >= total) { continue; }
     let lx = t % STRIDE;
@@ -179,12 +194,15 @@ fn ${entryPoint}(
 
 // -----------------------------------------------------------------
 // Irradiance border pass (IRR_CELL = 8, stride 10). Workgroup 48: the
-// two-strip loop covers local positions [0,48) ∪ [48,96), i.e. the first 96
-// of the 100 positions in a 10×10 cell. The visibility pass (stride 18, 324
-// positions) uses 256 threads, covering [0,256) ∪ [256,512) ⊇ [0,324).
-// NOTE: this is the exact coverage of the historical hand-written shaders
-// and is preserved verbatim by the factory; the workgroup-size values are
-// the load-bearing per-pass parameters, not derived from stride.
+// derived ⌈100/48⌉ = 3-strip loop covers local positions
+// [0,48) ∪ [48,96) ∪ [96,144) ⊇ [0,100), so ALL 100 cell positions (every
+// border texel) are written. The historical hand-written shader used a fixed
+// 2-strip loop ([0,96)) which left the four bottom-edge texels lx∈{6,7,8,9},
+// ly=9 unfilled → a zero border and seam darkening at the bottom octahedral
+// edge; the strip count is now derived from stride²/workgroupSize so the
+// pass cannot under-cover. The visibility pass (stride 18, 324 positions)
+// uses 256 threads: ⌈324/256⌉ = 2 strips, covering [0,256) ∪ [256,512) ⊇
+// [0,324) (behavior unchanged).
 // -----------------------------------------------------------------
 /** Build the irradiance-atlas border-fill WGSL (IRR_CELL/IRR_STRIDE). */
 export function makeProbeUpdateBorderIrrWGSL(): string {
