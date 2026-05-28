@@ -350,19 +350,96 @@ export function refineDTree(
     if (!allLeaves) continue;
     if (maxChildFlux >= mergeThreshold) continue;
 
-    // Merge: parent becomes a leaf, absorbs children's total flux.
+    // Merge: parent becomes a leaf, absorbs children's total flux. The merged
+    // children become unreachable (the parent's `firstChild` is cleared); the
+    // compaction pass below drops them from the flat array so it can't grow
+    // unbounded across refine cycles (A5 fix). We do NOT mutate the children
+    // here — `compactDTree` simply never re-emits anything not reachable from
+    // the root, which naturally discards them.
     let mergedFlux = 0;
     for (let ci = 0; ci < 4; ci++) {
       mergedFlux += dTree.nodes[c + ci]!.flux;
-      // Mark children as defunct (we can't remove from flat array cheaply).
-      dTree.nodes[c + ci]!.isLeaf = false;
-      dTree.nodes[c + ci]!.firstChild = -1;
     }
     node.isLeaf = true;
     node.flux = mergedFlux;
     node.solidAngle = FOUR_PI * (node.u1 - node.u0) * (node.v1 - node.v0);
     node.firstChild = -1;
   }
+
+  // ── Compaction pass (A5 fix) ──────────────────────────────────────────────
+  // The split pass appends to `dTree.nodes`; the merge pass orphans whole
+  // child blocks. Without compaction the flat array grows unbounded across
+  // refine cycles and accumulates orphan nodes — which the GPU flux readback
+  // then clamps at MAX_DTREE_NODES_PER_CELL, silently truncating the live
+  // tree. Rebuild the array from scratch, re-emitting ONLY nodes reachable
+  // from the root and re-patching `firstChild` to the consecutive-children
+  // invariant `buildSubtree` documents.
+  compactDTree(dTree);
+}
+
+/**
+ * Rebuild `dTree.nodes` into a fresh array containing only nodes reachable
+ * from the root, with the consecutive-children layout invariant restored:
+ * every interior node's four children occupy `[firstChild, firstChild+3]`.
+ *
+ * Live-leaf state (flux, solidAngle, octahedral extents, depth) is copied
+ * verbatim, so sampling behaviour (`dTreeSample`, `dTreePdf`, `findDTreeLeaf`)
+ * is unchanged — only orphaned / merged-away nodes are dropped and indices
+ * are renumbered.
+ *
+ * BFS allocation guarantees consecutive children: we pop a node off a queue,
+ * append it, and when it is interior we reserve its four child slots
+ * consecutively (recording the old child indices to process next). This
+ * mirrors the two-phase scheme in {@link buildSubtree}.
+ */
+function compactDTree(dTree: DTree): void {
+  const old = dTree.nodes;
+  if (old.length === 0) return;
+
+  const fresh: DTreeNode[] = [];
+  // Queue holds the OLD index of a node plus the NEW index it was placed at,
+  // so when we expand an interior node we can patch its new `firstChild`.
+  const queue: Array<{ oldIdx: number; newIdx: number }> = [];
+
+  // Place the root first.
+  fresh.push(copyNode(old[0]!));
+  queue.push({ oldIdx: 0, newIdx: 0 });
+
+  let head = 0;
+  while (head < queue.length) {
+    const { oldIdx, newIdx } = queue[head++]!;
+    const oldNode = old[oldIdx]!;
+    if (oldNode.isLeaf || oldNode.firstChild < 0) {
+      // Leaf (or defensively-malformed) node — ensure it reads as a leaf in
+      // the compacted tree and carries no dangling child pointer.
+      fresh[newIdx]!.isLeaf = true;
+      fresh[newIdx]!.firstChild = -1;
+      continue;
+    }
+    // Interior node: reserve four consecutive child slots in the fresh array.
+    const newFirstChild = fresh.length;
+    fresh[newIdx]!.firstChild = newFirstChild;
+    const oldFirstChild = oldNode.firstChild;
+    for (let ci = 0; ci < 4; ci++) {
+      const oldChildIdx = oldFirstChild + ci;
+      fresh.push(copyNode(old[oldChildIdx]!));
+      queue.push({ oldIdx: oldChildIdx, newIdx: newFirstChild + ci });
+    }
+  }
+
+  dTree.nodes = fresh;
+}
+
+/** Shallow copy of a DTreeNode (all fields are primitives). */
+function copyNode(n: DTreeNode): DTreeNode {
+  return {
+    isLeaf: n.isLeaf,
+    u0: n.u0, v0: n.v0, u1: n.u1, v1: n.v1,
+    solidAngle: n.solidAngle,
+    flux: n.flux,
+    firstChild: n.firstChild,
+    depth: n.depth,
+  };
 }
 
 /** Split a single dTree leaf into 4 children (Müller §3.2). */

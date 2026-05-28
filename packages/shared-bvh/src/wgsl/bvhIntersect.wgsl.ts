@@ -53,7 +53,43 @@
  * @see CREDITS.md (Möller & Trumbore 1997; three-mesh-bvh; Williams 2005)
  */
 
+// ─── Williams 2005 §4 IEEE-safe inverse-direction helper (standalone) ────────
+// Extracted as its own export so renderer-agnostic consumers (e.g.
+// `@vitrum/pt-webgpu`, whose own BVH-traversal kernel defines its own BVHNode /
+// Ray / SceneHit structs and therefore cannot compose the full
+// `BVH_INTERSECT_WGSL` without struct-redefinition collisions) can import the
+// canonical `safeInvDir` alone. `BVH_INTERSECT_WGSL` below prepends this string
+// verbatim, so its existing consumers (walkaround-hybrid, walkaround-rc, DDGI)
+// keep getting `safeInvDir` from the same single source with no change.
+//
+// Prevents NaN from 0 * ±Inf in slab tests when a ray direction component
+// is exactly zero. For the zero/near-zero case the inv-component is set
+// to a large signed sentinel (±1e30) so the slab test still picks up
+// whether the ray's origin is inside the AABB on the parallel axis:
+//
+//   - origin inside the X slab → t0/t1 ~= ±1e30, contributes ~unbounded
+//     range, and the other two axes determine entry/exit (correct).
+//   - origin outside the X slab → t0 and t1 are both far negative or both
+//     far positive, so tNear pushes past tFar and the slab test rejects.
+//
+// Earlier revision used sign(d.x) * 1e30, but WGSL sign(0) == 0 so an
+// exact-zero direction yielded 0, collapsing the X slab's contribution
+// to t0 == t1 == 0 regardless of origin position — a false positive for
+// rays whose origin sat outside the AABB on the parallel axis. The
+// select(-1e30, 1e30, d.x >= 0.0) form picks a definite sign even when
+// d.x is exactly zero (treated as positive, matching IEEE 754 +0 >= 0).
+export const SAFE_INV_DIR_WGSL = /* wgsl */ `
+fn safeInvDir(d: vec3f) -> vec3f {
+  return vec3f(
+    select(1.0 / d.x, select(-1e30, 1e30, d.x >= 0.0), abs(d.x) < 1e-30),
+    select(1.0 / d.y, select(-1e30, 1e30, d.y >= 0.0), abs(d.y) < 1e-30),
+    select(1.0 / d.z, select(-1e30, 1e30, d.z >= 0.0), abs(d.z) < 1e-30),
+  );
+}
+`;
+
 export const BVH_INTERSECT_WGSL = /* wgsl */ `
+${SAFE_INV_DIR_WGSL}
 
 // ─── BVH traversal constants ─────────────────────────────────────────────────
 // Stack depth 60 supports balanced BVHs up to 2^60 triangles — unreachable
@@ -111,30 +147,10 @@ struct IntersectionResult {
   uv:             vec2f,
 };
 
-// ─── Williams 2005 §4 IEEE-safe inverse-direction helper ─────────────────────
-// Prevents NaN from 0 * ±Inf in slab tests when a ray direction component
-// is exactly zero. For the zero/near-zero case the inv-component is set
-// to a large signed sentinel (±1e30) so the slab test still picks up
-// whether the ray's origin is inside the AABB on the parallel axis:
-//
-//   - origin inside the X slab → t0/t1 ~= ±1e30, contributes ~unbounded
-//     range, and the other two axes determine entry/exit (correct).
-//   - origin outside the X slab → t0 and t1 are both far negative or both
-//     far positive, so tNear pushes past tFar and the slab test rejects.
-//
-// Earlier revision used sign(d.x) * 1e30, but WGSL sign(0) == 0 so an
-// exact-zero direction yielded 0, collapsing the X slab's contribution
-// to t0 == t1 == 0 regardless of origin position — a false positive for
-// rays whose origin sat outside the AABB on the parallel axis. The
-// select(-1e30, 1e30, d.x >= 0.0) form picks a definite sign even when
-// d.x is exactly zero (treated as positive, matching IEEE 754 +0 >= 0).
-fn safeInvDir(d: vec3f) -> vec3f {
-  return vec3f(
-    select(1.0 / d.x, select(-1e30, 1e30, d.x >= 0.0), abs(d.x) < 1e-30),
-    select(1.0 / d.y, select(-1e30, 1e30, d.y >= 0.0), abs(d.y) < 1e-30),
-    select(1.0 / d.z, select(-1e30, 1e30, d.z >= 0.0), abs(d.z) < 1e-30),
-  );
-}
+// ─── Williams 2005 IEEE-safe inverse-direction helper ────────────────────────
+// safeInvDir is prepended above (the SAFE_INV_DIR_WGSL string is interpolated
+// at the top of this template), extracted so non-composing consumers can
+// import it standalone. See the SAFE_INV_DIR_WGSL export above.
 
 // ─── Möller–Trumbore triangle intersection ───────────────────────────────────
 // Möller & Trumbore 1997 — single-sided ray/triangle intersection with the

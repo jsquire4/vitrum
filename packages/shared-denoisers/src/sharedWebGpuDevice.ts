@@ -82,3 +82,58 @@ export function disposeSharedWebGPUDevice(): void {
     cachedDevice = null;
   }
 }
+
+export interface AcquireDenoiseDeviceOptions {
+  /** Explicit device, when supplied. Never destroyed by `dispose`. */
+  readonly device?: GPUDevice | undefined;
+  /**
+   * When true (and no explicit `device`), reuses the process-shared device via
+   * getSharedWebGPUDevice (also never destroyed by `dispose`). Otherwise an
+   * ephemeral high-performance device is requested per call and destroyed by
+   * `dispose`. Default: false.
+   */
+  readonly reuseSharedWebGpuDevice?: boolean | undefined;
+  /**
+   * Prefix for thrown error messages (e.g. the caller's function name) so
+   * adapter-failure errors stay attributable to the originating dispatcher.
+   */
+  readonly errorLabel: string;
+}
+
+export interface AcquiredDenoiseDevice {
+  readonly device: GPUDevice;
+  /** Destroys the device iff it was acquired ephemerally; no-op otherwise. */
+  readonly dispose: () => void;
+}
+
+/**
+ * Single source for the one-shot denoiser dispatchers' device-acquisition
+ * preamble. Preserves the exact 4-branch selection:
+ *   1. explicit `opts.device`            → returned as-is; `dispose` is a no-op.
+ *   2. `reuseSharedWebGpuDevice === true` → process-shared device; no-op dispose.
+ *   3. otherwise                          → ephemeral high-performance device;
+ *                                           `dispose` destroys it.
+ * Guards `navigator.gpu` availability up front (throws with the caller's label).
+ */
+export async function acquireDenoiseDevice(
+  opts: AcquireDenoiseDeviceOptions,
+): Promise<AcquiredDenoiseDevice> {
+  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
+
+  if (typeof navigator === 'undefined' || navigator.gpu == null) {
+    throw new Error(`${opts.errorLabel}: WebGPU not available`);
+  }
+
+  if (opts.device != null) {
+    return { device: opts.device, dispose: () => {} };
+  }
+  if (reuseShared) {
+    return { device: await getSharedWebGPUDevice(), dispose: () => {} };
+  }
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (adapter == null) {
+    throw new Error(`${opts.errorLabel}: failed to request GPU adapter`);
+  }
+  const device = await adapter.requestDevice();
+  return { device, dispose: () => { device.destroy(); } };
+}

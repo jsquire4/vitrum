@@ -35,19 +35,12 @@ import {
   DDGI_MATERIAL_STRIDE_BYTES,
   packDDGIMaterialsN,
 } from './probeUpdateMaterials.js';
-
-export {
-  DDGI_MAX_MATERIALS,
-  DDGI_MATERIAL_ENTRY_FLOATS,
-  DDGI_MATERIAL_STRIDE_BYTES,
-  packDDGIMaterials,
-} from './probeUpdateMaterials.js';
 import type { ProbeGrid } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
-import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
-import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
+import { makeProbeUpdateBlendIrrWGSL, makeProbeUpdateBlendVisWGSL } from './wgsl/probeUpdateBlend.wgsl.js';
+import { makeProbeUpdateBorderIrrWGSL, makeProbeUpdateBorderVisWGSL } from './wgsl/probeUpdateBorder.wgsl.js';
 import { packDDGIGridParams } from './ddgiGridUbo.js';
 import { detectGpu } from '@vitrum/core';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
@@ -249,22 +242,22 @@ export class ProbeUpdatePass {
         compute: { module: raysModule, entryPoint: 'probeUpdateRays' },
       });
 
-      const blendIrrModule = device.createShaderModule({ code: PROBE_UPDATE_BLEND_IRR_WGSL });
+      const blendIrrModule = device.createShaderModule({ code: makeProbeUpdateBlendIrrWGSL() });
       blendIrrPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: blendIrrModule, entryPoint: 'probeUpdateBlendIrradiance' },
       });
-      const blendVisModule = device.createShaderModule({ code: PROBE_UPDATE_BLEND_VIS_WGSL });
+      const blendVisModule = device.createShaderModule({ code: makeProbeUpdateBlendVisWGSL() });
       blendVisPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: blendVisModule, entryPoint: 'probeUpdateBlendVisibility' },
       });
-      const borderIrrModule = device.createShaderModule({ code: PROBE_UPDATE_BORDER_IRR_WGSL });
+      const borderIrrModule = device.createShaderModule({ code: makeProbeUpdateBorderIrrWGSL() });
       borderIrrPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: borderIrrModule, entryPoint: 'probeUpdateBorderIrradiance' },
       });
-      const borderVisModule = device.createShaderModule({ code: PROBE_UPDATE_BORDER_VIS_WGSL });
+      const borderVisModule = device.createShaderModule({ code: makeProbeUpdateBorderVisWGSL() });
       borderVisPipeline = await device.createComputePipelineAsync({
         layout: 'auto',
         compute: { module: borderVisModule, entryPoint: 'probeUpdateBorderVisibility' },

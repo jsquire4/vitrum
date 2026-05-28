@@ -47,15 +47,6 @@ function cloneAABB(a: AABB): AABB {
   };
 }
 
-/** Return true if point p is inside aabb. */
-export function aabbContains(aabb: AABB, p: [number, number, number]): boolean {
-  return (
-    p[0] >= aabb.min[0] && p[0] <= aabb.max[0] &&
-    p[1] >= aabb.min[1] && p[1] <= aabb.max[1] &&
-    p[2] >= aabb.min[2] && p[2] <= aabb.max[2]
-  );
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // Build
 // ────────────────────────────────────────────────────────────────────────────

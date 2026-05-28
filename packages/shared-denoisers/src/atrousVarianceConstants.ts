@@ -1,11 +1,7 @@
 /**
  * Central numeric policy for à-trous + variance host paths and WGSL (see `wgsl/atrousVariance.wgsl.ts`).
  *
- * Previously named svgfConstants.ts; renamed by sweep-2026-05-11 D3.
- * The à-trous + variance scalar lookup denoiser was previously called SVGF
- * but never implemented real Schied 2017 SVGF (which requires temporal
- * reprojection, disocclusion detection, and per-pixel history). Real Schied 2017
- * SVGF ('svgf-real' mode) is implemented in svgfRealWebGPU.ts.
+ * à-trous + variance denoiser; not Schied SVGF — see svgfRealWebGPU.ts for real SVGF.
  *
  * `ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT` must stay in sync with the WGSL
  * constant `SVGF_TEMPORAL_VARIANCE_MIN_FRAMES` (injected from this value).

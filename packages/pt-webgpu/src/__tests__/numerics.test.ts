@@ -7,8 +7,9 @@
  *
  * The `safeInvDir` helper below is a TypeScript model used to reason about
  * the slab-test math from JS — there is no shared TS implementation to
- * re-export (the production `safeInvDir` lives only as a WGSL string in
- * `shared-bvh/src/wgsl/bvhIntersect.wgsl.ts:131`). This mirror's
+ * re-export (the production `safeInvDir` lives only as a WGSL string, the
+ * `SAFE_INV_DIR_WGSL` export in `shared-bvh/src/wgsl/bvhIntersect.wgsl.ts`).
+ * This mirror's
  * exact-zero handling now matches the WGSL post-fix-2026-05-19:
  * both use ±sentinel (this mirror uses ±1e20, WGSL uses ±1e30 — value
  * differs, sign convention matches). The canonical CPU mirror with

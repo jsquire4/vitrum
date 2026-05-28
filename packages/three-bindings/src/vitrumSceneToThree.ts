@@ -47,6 +47,21 @@ function luminance(color: Vec3, intensity: number): number {
   return rec709Luminance(color[0], color[1], color[2], intensity);
 }
 
+/**
+ * THREE.MeshPhysicalMaterial texture-map field names written by
+ * {@link applyTextureMaps}. Single source of truth so the dispose path
+ * ({@link disposeMaterialTextures}) cannot drift from the apply path.
+ */
+const PHYSICAL_MATERIAL_TEXTURE_FIELDS = [
+  'map',
+  'normalMap',
+  'roughnessMap',
+  'metalnessMap',
+  'emissiveMap',
+  'alphaMap',
+  'transmissionMap',
+] as const satisfies readonly (keyof MeshPhysicalMaterial)[];
+
 /** Apply all texture-map fields from a vitrum Material onto a Three material. */
 function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
   if (m.baseColorMap != null && isTexture(m.baseColorMap)) mat.map = m.baseColorMap;
@@ -181,22 +196,46 @@ function isTexture(x: unknown): x is Texture {
   return x != null && typeof x === 'object' && 'isTexture' in x && (x as Texture).isTexture === true;
 }
 
-function meshPrimitiveToThree(p: MeshPrimitive, meshAreaRadianceRgb?: Vec3): Mesh {
+/**
+ * Build a THREE.BufferGeometry from explicit vertex buffers + the optional
+ * uv/tangent/index attributes shared by mesh & skinned-mesh converters.
+ * `positions`/`normals` are passed explicitly because skinned meshes substitute
+ * the solveSkin-deformed buffers for the rest-pose `p.positions`/`p.normals`.
+ */
+function buildGeometry(
+  p: { uvs?: Float32Array; tangents?: Float32Array; indices?: Uint32Array | Uint16Array },
+  positions: Float32Array,
+  normals: Float32Array,
+): BufferGeometry {
   const geo = new BufferGeometry();
-  geo.setAttribute('position', new BufferAttribute(p.positions, 3));
-  geo.setAttribute('normal', new BufferAttribute(p.normals, 3));
+  geo.setAttribute('position', new BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new BufferAttribute(normals, 3));
   if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
   if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
   if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
+  return geo;
+}
+
+/**
+ * Apply a vitrum primitive transform (column-major 16-float matrix, or none =
+ * identity) onto a THREE object, disabling auto-update so the baked
+ * matrix/matrixWorld are authoritative for the throwaway scene.
+ */
+function applyTransform(obj: Object3D, transform?: Float32Array | readonly number[]): void {
+  const m = new Matrix4();
+  if (transform) m.fromArray(transform as ArrayLike<number>);
+  else m.identity();
+  obj.matrix.copy(m);
+  obj.matrixWorld.copy(m);
+  obj.matrixAutoUpdate = false;
+}
+
+function meshPrimitiveToThree(p: MeshPrimitive, meshAreaRadianceRgb?: Vec3): Mesh {
+  const geo = buildGeometry(p, p.positions, p.normals);
   const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb);
   const mesh = new Mesh(geo, mat);
   mesh.name = String(p.id);
-  const m = new Matrix4();
-  if (p.transform) m.fromArray(p.transform);
-  else m.identity();
-  mesh.matrix.copy(m);
-  mesh.matrixWorld.copy(m);
-  mesh.matrixAutoUpdate = false;
+  applyTransform(mesh, p.transform);
   return mesh;
 }
 
@@ -209,21 +248,11 @@ function skinnedMeshPrimitiveToThree(
   meshAreaRadianceRgb?: Vec3,
 ): Mesh {
   const { positions, normals } = solveSkin(p);
-  const geo = new BufferGeometry();
-  geo.setAttribute('position', new BufferAttribute(positions, 3));
-  geo.setAttribute('normal', new BufferAttribute(normals, 3));
-  if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
-  if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
-  if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
+  const geo = buildGeometry(p, positions, normals);
   const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb);
   const mesh = new Mesh(geo, mat);
   mesh.name = String(p.id);
-  const m = new Matrix4();
-  if (p.transform) m.fromArray(p.transform);
-  else m.identity();
-  mesh.matrix.copy(m);
-  mesh.matrixWorld.copy(m);
-  mesh.matrixAutoUpdate = false;
+  applyTransform(mesh, p.transform);
   return mesh;
 }
 
@@ -231,12 +260,7 @@ function instancedMeshPrimitiveToThree(
   p: InstancedMeshPrimitive,
   meshAreaRadianceRgb?: Vec3,
 ): InstancedMesh {
-  const geo = new BufferGeometry();
-  geo.setAttribute('position', new BufferAttribute(p.positions, 3));
-  geo.setAttribute('normal', new BufferAttribute(p.normals, 3));
-  if (p.uvs) geo.setAttribute('uv', new BufferAttribute(p.uvs, 2));
-  if (p.tangents) geo.setAttribute('tangent', new BufferAttribute(p.tangents, 4));
-  if (p.indices) geo.setIndex(new BufferAttribute(p.indices, 1));
+  const geo = buildGeometry(p, p.positions, p.normals);
   const mat = vitrumMaterialToThree(p.material, meshAreaRadianceRgb);
   const im = new InstancedMesh(geo, mat, p.instances.length);
   im.name = String(p.id);
@@ -280,6 +304,54 @@ function meshEmitterBoostByPrimitiveId(scene: VitrumScene): Map<string, [number,
 }
 
 /**
+ * Build a THREE.RectAreaLight from a position + the two HALF-axis vectors
+ * (`uVec`, `vVec`) spanning the rectangle. Computes the orientation basis, the
+ * full width/height (`2·|axis|`), the world area (`4·|uVec × vVec|`), and the
+ * `cellPower` radiant-flux helper in one place. Returns null when the basis is
+ * degenerate (axes parallel / zero-length).
+ *
+ * The world area is derived from the supplied half-axis vectors BEFORE they are
+ * normalized — callers must pass the scaled vectors, not unit directions.
+ *
+ * NOTE: the returned light's `.name` is left unset; callers that need a named
+ * light assign it (the disc-area path does; the `emitterToThree` rect-area arm
+ * historically did not, and that is preserved here).
+ *
+ * `floorArea` reproduces each caller's original clamp behavior exactly: the
+ * disc-area path floored area/width/height at 1e-6 (`true`); the rect-area arm
+ * used the raw values (`false`). The difference is only observable for
+ * sub-1e-6-area emitters, but is preserved to keep this a true refactor.
+ */
+function buildRectAreaLight(
+  position: Vec3,
+  uVec: Vector3,
+  vVec: Vector3,
+  color: Vec3,
+  intensity: number,
+  floorArea: boolean,
+): RectAreaLight | null {
+  // World area from the (scaled) half-axes, before normalization re-uses them.
+  const crossLen = _x.copy(uVec).cross(_y.copy(vVec)).length();
+  const rectArea = 4 * (floorArea ? Math.max(crossLen, 1e-6) : crossLen);
+  const w = floorArea ? Math.max(2 * uVec.length(), 1e-6) : 2 * uVec.length();
+  const h = floorArea ? Math.max(2 * vVec.length(), 1e-6) : 2 * vVec.length();
+  _x.copy(uVec).normalize();
+  _y.copy(vVec).normalize();
+  _z.crossVectors(_x, _y);
+  if (_z.lengthSq() < 1e-12) return null;
+  _z.normalize();
+  const basis = new Matrix4().makeBasis(_x, _y, _z);
+  const L = new RectAreaLight(new Color(color[0], color[1], color[2]), intensity, w, h);
+  L.position.set(position[0], position[1], position[2]);
+  L.matrix.copy(basis);
+  L.matrix.setPosition(L.position);
+  L.matrixAutoUpdate = false;
+  L.matrixWorld.copy(L.matrix);
+  L.userData['cellPower'] = luminance(color, intensity) * rectArea;
+  return L;
+}
+
+/**
  * Circular disc emitter → approximate axis-aligned-parallelogram rect in three.js.
  * Half-span along tangent/bitangent is √π·r/2 per axis so the rectangular patch has
  * the same π·radius² footprint as an ideal disc (different sampling density).
@@ -308,25 +380,12 @@ function discAreaEmitterToRectThree(e: Extract<SceneEmitter, { kind: 'disc-area'
   t.normalize();
   const b = _v.copy(n).cross(t).normalize();
   const s = (Math.sqrt(Math.PI) * e.radius) / 2;
+  // Scaled half-axes (held in _u/_v so buildRectAreaLight's _x/_y/_z scratch
+  // vectors don't clobber them).
   const uVec = t.multiplyScalar(s);
   const vVec = b.multiplyScalar(s);
-  const rectArea = 4 * Math.max(_x.copy(uVec).cross(_y.copy(vVec)).length(), 1e-6);
-  const w = Math.max(2 * uVec.length(), 1e-6);
-  const h = Math.max(2 * vVec.length(), 1e-6);
-  const L = new RectAreaLight(new Color(e.color[0], e.color[1], e.color[2]), e.intensity, w, h);
-  _x.copy(uVec).normalize();
-  _y.copy(vVec).normalize();
-  _z.crossVectors(_x, _y);
-  if (_z.lengthSq() < 1e-12) return null;
-  _z.normalize();
-  const basis = new Matrix4().makeBasis(_x, _y, _z);
-  L.position.set(e.position[0], e.position[1], e.position[2]);
-  L.matrix.copy(basis);
-  L.matrix.setPosition(L.position);
-  L.matrixAutoUpdate = false;
-  L.matrixWorld.copy(L.matrix);
-  L.name = String(e.id);
-  L.userData['cellPower'] = luminance(e.color, e.intensity) * rectArea;
+  const L = buildRectAreaLight(e.position, uVec, vVec, e.color, e.intensity, true);
+  if (L != null) L.name = String(e.id);
   return L;
 }
 
@@ -349,36 +408,12 @@ function emitterToThree(e: SceneEmitter): Object3D | null {
     case 'rect-area': {
       const uVec = _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]);
       const vVec = _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]);
-      const w = 2 * uVec.length();
-      const h = 2 * vVec.length();
-      const L = new RectAreaLight(
-        new Color(e.color[0], e.color[1], e.color[2]),
-        e.intensity,
-        Math.max(w, 1e-6),
-        Math.max(h, 1e-6),
-      );
-      _x.copy(uVec).normalize();
-      _y.copy(vVec).normalize();
-      _z.crossVectors(_x, _y);
-      if (_z.lengthSq() < 1e-12) {
+      const L = buildRectAreaLight(e.position, uVec, vVec, e.color, e.intensity, false);
+      if (L == null) {
         console.warn(
           `@vitrum/three-bindings: rect-area emitter "${e.id}" has degenerate u/v axes; skipping`,
         );
-        return null;
       }
-      _z.normalize();
-      const basis = new Matrix4().makeBasis(_x, _y, _z);
-      L.position.set(e.position[0], e.position[1], e.position[2]);
-      L.matrix.copy(basis);
-      L.matrix.setPosition(L.position);
-      L.matrixAutoUpdate = false;
-      L.matrixWorld.copy(L.matrix);
-      const crossLen = _z.crossVectors(
-        _u.set(e.uAxis[0], e.uAxis[1], e.uAxis[2]),
-        _v.set(e.vAxis[0], e.vAxis[1], e.vAxis[2]),
-      ).length();
-      const rectArea = 4 * crossLen;
-      L.userData['cellPower'] = luminance(e.color, e.intensity) * rectArea;
       return L;
     }
     case 'point': {
@@ -533,6 +568,22 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
   return threeScene;
 }
 
+/**
+ * Dispose every texture-map field of a material (the set written by
+ * {@link applyTextureMaps}) through the de-dup'd `maybeDisposeTexture` callback.
+ * Field list is derived from {@link PHYSICAL_MATERIAL_TEXTURE_FIELDS} so it can
+ * never drift from the apply path.
+ */
+function disposeMaterialTextures(
+  mat: MeshPhysicalMaterial | undefined,
+  maybeDisposeTexture: (tex: Texture | null | undefined) => void,
+): void {
+  if (mat == null) return;
+  for (const field of PHYSICAL_MATERIAL_TEXTURE_FIELDS) {
+    maybeDisposeTexture(mat[field] as Texture | null | undefined);
+  }
+}
+
 /** Dispose geometries/materials under a root built by {@link vitrumSceneToThree}. */
 export function disposeVitrumThreeSceneRoot(root: Object3D): void {
   const disposedTextures = new Set<Texture>();
@@ -549,29 +600,11 @@ export function disposeVitrumThreeSceneRoot(root: Object3D): void {
       const m = mesh.material;
       if (Array.isArray(m)) {
         for (const x of m) {
-          const mat = x as MeshPhysicalMaterial | undefined;
-          if (mat != null) {
-            maybeDisposeTexture(mat.map);
-            maybeDisposeTexture(mat.normalMap);
-            maybeDisposeTexture(mat.roughnessMap);
-            maybeDisposeTexture(mat.metalnessMap);
-            maybeDisposeTexture(mat.emissiveMap);
-            maybeDisposeTexture(mat.alphaMap);
-            maybeDisposeTexture(mat.transmissionMap);
-          }
+          disposeMaterialTextures(x as MeshPhysicalMaterial | undefined, maybeDisposeTexture);
           x?.dispose?.();
         }
       } else {
-        const mat = m as MeshPhysicalMaterial | undefined;
-        if (mat != null) {
-          maybeDisposeTexture(mat.map);
-          maybeDisposeTexture(mat.normalMap);
-          maybeDisposeTexture(mat.roughnessMap);
-          maybeDisposeTexture(mat.metalnessMap);
-          maybeDisposeTexture(mat.emissiveMap);
-          maybeDisposeTexture(mat.alphaMap);
-          maybeDisposeTexture(mat.transmissionMap);
-        }
+        disposeMaterialTextures(m as MeshPhysicalMaterial | undefined, maybeDisposeTexture);
         m?.dispose?.();
       }
     }

@@ -118,4 +118,33 @@ describe('bdptEmitterPickCpu', () => {
     expect(sample).not.toBeNull();
     expect(sample!.pdfJoint).toBeGreaterThan(0);
   });
+
+  // Regression for the bounce-0 tangent-frame bug: the cosine hemisphere
+  // direction must be `wi = t*x + b*y + n*z`. The original code scaled the
+  // bitangent `b` by `x` instead of `y` (the `y = r*sin(phi)` local was
+  // dead), collapsing the two tangent-plane components to be equal. The
+  // mesh triangle a=[0,0,0], b=[2,0,0], c=[0,2,0] has normal +Z, so with
+  // uHemi=0.37 the sample gives distinct x=0.241576, y=-0.558248 and the
+  // derived hemisphere pdf differs between the buggy and corrected formulas.
+  it('builds the bounce-0 direction with the y-scaled bitangent (mesh emitter)', () => {
+    const mesh = new Float32Array(16);
+    mesh[4] = 2; // b = a + (2,0,0)
+    mesh[9] = 2; // c = a + (0,2,0)
+    mesh[12] = 100;
+    mesh[13] = 100;
+    mesh[14] = 100;
+    const sb = stubScene({ meshAreaLightCount: 1, meshAreaLightsData: mesh });
+
+    const sample = sampleBdptBounce0Cpu(sb, 0, 1, 0.37);
+    expect(sample).not.toBeNull();
+    // Triangle normal is +Z.
+    expect(sample!.emitNormal[0]).toBeCloseTo(0, 6);
+    expect(sample!.emitNormal[1]).toBeCloseTo(0, 6);
+    expect(sample!.emitNormal[2]).toBeCloseTo(1, 6);
+    // pdfHemi = cosEmit / PI with the CORRECTED (b*y) direction.
+    // The buggy (b*x) variant yields 0.2923763342 instead.
+    expect(sample!.pdfHemi).toBeCloseTo(0.25265063960867545, 9);
+    expect(sample!.pdfJoint).toBeCloseTo(0.25265063960867545, 9);
+    expect(sample!.pdfHemi).not.toBeCloseTo(0.2923763342268401, 9);
+  });
 });

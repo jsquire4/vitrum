@@ -15,7 +15,8 @@
  * WalkaroundGPUPipeline (persistent mode), textures are allocated once in
  * createFrameResources() and referenced across frames.
  *
- * Previously named: (new file — no prior SVGF one-shot path existed for real SVGF).
+ * This is the real Schied 2017 SVGF; the à-trous + variance lookup denoiser
+ * in atrousVariance*.ts is a different (non-Schied) filter.
  *
  * References:
  *   Schied et al. "Spatiotemporal Variance-Guided Filtering" HPG 2017.
@@ -40,10 +41,9 @@ import {
   ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
   ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
   packAtrousVarianceAtrousUniforms,
-  packAtrousVarianceVarianceUniforms,
-  ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
 } from './atrousVarianceBindings.js';
-import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
+import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
+import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 import {
   uploadRgbAsRgba16f,
@@ -61,60 +61,15 @@ import {
 // Albedo demodulation helpers — Schied 2017 §4.1.
 // ============================================================
 //
-// Before SVGF's variance + à-trous chain, divide the HDR radiance by the
-// per-pixel albedo so the spatial filter operates on pure lighting (the
-// "lighting estimate" L = c/ρ in Schied 2017 §4.1). After the chain, the
-// filtered lighting is re-multiplied by albedo to restore the physically
-// correct outgoing radiance.
-//
-// The benefit is that high-frequency albedo variation (e.g. a red/green
-// checkerboard) no longer participates in the cross-bilateral weights of
-// the à-trous kernel, so the filter cannot bleed colors across material
-// boundaries that share the same depth + normal.
-//
-// `demodulateAlbedo`: out[i] = rgb[i] / max(albedo[i], 1e-3)   — returns a new array.
-// `remodulateAlbedo`: rgb[i] *= albedo[i]                       — mutates in-place.
-//
-// Both helpers mirror the implementation in `atrousVarianceWebGPU.ts` exactly,
-// so a denoiser switch (atrous-variance ↔ svgf-real) is invariant under the
-// modulation step.
+// The implementations live in albedoModulation.ts (shared with the
+// atrous-variance host path). These exports preserve the historic
+// svgfReal*-prefixed public names for backward-compatible test / host imports.
 
 /** Divide rgb by albedo; returns a new Float32Array of the demodulated signal. */
-export function svgfRealDemodulateAlbedo(
-  rgb: Float32Array,
-  albedo: Float32Array,
-  pixelCount: number,
-): Float32Array {
-  const out = new Float32Array(rgb.length);
-  for (let i = 0; i < pixelCount; i += 1) {
-    const si = i * 3;
-    const ar = Math.max(albedo[si]     ?? 0, 1e-3);
-    const ag = Math.max(albedo[si + 1] ?? 0, 1e-3);
-    const ab = Math.max(albedo[si + 2] ?? 0, 1e-3);
-    out[si]     = (rgb[si]     ?? 0) / ar;
-    out[si + 1] = (rgb[si + 1] ?? 0) / ag;
-    out[si + 2] = (rgb[si + 2] ?? 0) / ab;
-  }
-  return out;
-}
+export const svgfRealDemodulateAlbedo = demodulateAlbedo;
 
 /** Multiply rgb by albedo in-place; returns the same Float32Array. */
-export function svgfRealRemodulateAlbedo(
-  rgb: Float32Array,
-  albedo: Float32Array,
-  pixelCount: number,
-): Float32Array {
-  for (let i = 0; i < pixelCount; i += 1) {
-    const si = i * 3;
-    const ar = albedo[si]     !== undefined ? albedo[si]     : 1;
-    const ag = albedo[si + 1] !== undefined ? albedo[si + 1]! : 1;
-    const ab = albedo[si + 2] !== undefined ? albedo[si + 2]! : 1;
-    rgb[si]     = (rgb[si]     ?? 0) * ar;
-    rgb[si + 1] = (rgb[si + 1] ?? 0) * ag;
-    rgb[si + 2] = (rgb[si + 2] ?? 0) * ab;
-  }
-  return rgb;
-}
+export const svgfRealRemodulateAlbedo = remodulateAlbedo;
 
 // CPU emulation oracles (`svgfReprojCPU`, `svgfVarianceFromMomentsCPU`,
 // `svgf7x7FallbackCPU`) hoisted to svgfRealCpu.ts (W4-A7 extraction;
@@ -192,7 +147,6 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   const h = opts.height;
   const rawAtrous = opts.atrousIterations ?? SVGF_REAL_DEFAULT_ATROUS_ITERATIONS;
   const atrousIterations = Math.min(SVGF_REAL_MAX_ATROUS_ITERATIONS, Math.max(1, Math.floor(rawAtrous)));
-  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
   const sigmaColor  = opts.sigmaColor  ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaColor;
   const sigmaNormal = opts.sigmaNormal ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal;
   const sigmaDepth  = opts.sigmaDepth  ?? ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaDepth;
@@ -203,22 +157,11 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
     alphaMin:    opts.reprojUniforms?.alphaMin    ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
   };
 
-  if (typeof navigator === 'undefined' || navigator.gpu == null) {
-    throw new Error('runSVGFRealWebGPU: WebGPU not available');
-  }
-
-  let device: GPUDevice;
-  let destroyEphemeral: (() => void) | null = null;
-  if (opts.device != null) {
-    device = opts.device;
-  } else if (reuseShared) {
-    device = await getSharedWebGPUDevice();
-  } else {
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (adapter == null) throw new Error('runSVGFRealWebGPU: failed to request GPU adapter');
-    device = await adapter.requestDevice();
-    destroyEphemeral = () => { device.destroy(); };
-  }
+  const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({
+    device: opts.device,
+    reuseSharedWebGpuDevice: opts.reuseSharedWebGpuDevice,
+    errorLabel: 'runSVGFRealWebGPU',
+  });
 
   const { reprojPipeline, momentsPipeline, fallbackPipeline, atrousPipeline } =
     svgfRealPipelines(device);
@@ -489,7 +432,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
   }
   reprojUboGpu.destroy();
   for (const ubo of atrousUbos) ubo.destroy();
-  destroyEphemeral?.();
+  destroyEphemeral();
 
   return result;
 }

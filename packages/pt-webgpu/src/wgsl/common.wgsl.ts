@@ -1,4 +1,5 @@
 import { PCG_WGSL } from '@vitrum/shared-samplers';
+import { SAFE_INV_DIR_WGSL } from '@vitrum/shared-bvh';
 
 /**
  * Early shared WGSL include for pt-webgpu.
@@ -46,21 +47,18 @@ fn safe_normalize(v: vec3f) -> vec3f {
   return v / len;
 }
 
-fn safeInvDir(d: vec3f) -> vec3f {
-  // Williams 2005 §4 IEEE-safe form. When a direction component is
-  // exactly zero, 0 * Inf = NaN poisons the slab test if the ray origin
-  // coincides with an AABB face. The select(-1e30, 1e30, d.x >= 0) form
-  // picks a definite sign even for d.x == 0 (WGSL sign(0) == 0, which
-  // would collapse the slab contribution and give false positives for
-  // axis-aligned rays whose origin sat outside the AABB on the parallel
-  // axis). Mirrors @vitrum/shared-bvh/src/wgsl/bvhIntersect.wgsl.ts:131.
-  return vec3f(
-    select(1.0 / d.x, select(-1e30, 1e30, d.x >= 0.0), abs(d.x) < 1e-30),
-    select(1.0 / d.y, select(-1e30, 1e30, d.y >= 0.0), abs(d.y) < 1e-30),
-    select(1.0 / d.z, select(-1e30, 1e30, d.z >= 0.0), abs(d.z) < 1e-30),
-  );
-}
+${SAFE_INV_DIR_WGSL}
 
+// intersectTriangle: pt-webgpu keeps its own scalar-returning Möller–Trumbore
+// (h = cross(dir, e2), det = dot(e1, h)) here rather than composing the
+// canonical @vitrum/shared-bvh intersectTriangle. The canonical returns an
+// IntersectionResult (struct), takes a triEps parameter, uses the
+// geometric-normal determinant form (n = cross(e1,e2), det = -dot(dir,n)) with
+// triEps-tolerant barycentric tests, and is bundled inside BVH_INTERSECT_WGSL
+// alongside BVHNode / Ray struct definitions that would collide with the ones
+// declared in this module. This scalar form is also mirrored by the
+// __tests__/cpuTracer.ts GPU-acceptance oracle, so swapping it is not a pure
+// dedup. safeInvDir IS now shared (imported above as SAFE_INV_DIR_WGSL).
 fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
   let e1 = b - a;
   let e2 = c - a;

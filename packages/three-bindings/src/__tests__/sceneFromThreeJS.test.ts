@@ -144,6 +144,59 @@ describe('sceneFromThreeJS', () => {
     expect(() => sceneFromThreeJS(s)).toThrow(/ShaderMaterial/);
   });
 
+  // ── convertFirstMaterial (T15 shared narrow) ─────────────────────────────
+  it('accepts MeshBasicMaterial via the shared basic-material dispatch (flat emissive)', () => {
+    const s = new THREE.Scene();
+    const g = new THREE.BoxGeometry(1, 1, 1);
+    const m = new THREE.MeshBasicMaterial({ color: 0x2244ff });
+    s.add(new THREE.Mesh(g, m));
+    const v = sceneFromThreeJS(s);
+    expect(v.primitives).toHaveLength(1);
+    const prim = v.primitives[0]!;
+    expect(prim.kind).toBe('mesh');
+    // convertBasicMaterial synthesizes a flat self-lit color via emissive.
+    expect(prim.material.emissive).toBeDefined();
+  });
+
+  it('throws with the InstancedMesh-prefixed unsupported-material message', () => {
+    const s = new THREE.Scene();
+    const im = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.ShaderMaterial({ vertexShader: '', fragmentShader: '' }),
+      1,
+    );
+    s.add(im);
+    expect(() => sceneFromThreeJS(s)).toThrow(/Unsupported THREE type.*material ShaderMaterial/);
+  });
+
+  it('throws with the SkinnedMesh-subjected unsupported-material message', () => {
+    const s = new THREE.Scene();
+    const geo = new THREE.BoxGeometry(1, 1, 1);
+    const vc = geo.attributes.position!.count;
+    geo.setAttribute('skinIndex', new THREE.BufferAttribute(new Uint16Array(vc * 4), 4));
+    const w = new Float32Array(vc * 4);
+    for (let i = 0; i < vc; i++) w[i * 4] = 1.0;
+    geo.setAttribute('skinWeight', new THREE.BufferAttribute(w, 4));
+    const bone = new THREE.Bone();
+    const sm = new THREE.SkinnedMesh(
+      geo,
+      new THREE.ShaderMaterial({ vertexShader: '', fragmentShader: '' }),
+    );
+    sm.add(bone);
+    sm.bind(new THREE.Skeleton([bone]));
+    s.add(sm);
+    expect(() => sceneFromThreeJS(s)).toThrow(/SkinnedMesh material ShaderMaterial/);
+  });
+
+  it('throws "Mesh ... has no normal attribute" via requireAttribute', () => {
+    const s = new THREE.Scene();
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]), 3));
+    // No normal attribute.
+    s.add(new THREE.Mesh(geo, new THREE.MeshPhysicalMaterial()));
+    expect(() => sceneFromThreeJS(s)).toThrow(/Mesh ".*" has no normal attribute/);
+  });
+
   // ── Warn paths ─────────────────────────────────────────────────────────────
   it('warns once for AmbientLight (unsupported-skippable)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

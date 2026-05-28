@@ -8,7 +8,7 @@ import {
   HDR_LUMINANCE_BILATERAL_WGSL,
   HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE,
 } from './wgsl/hdrLuminanceBilateral.wgsl.js';
-import { getSharedWebGPUDevice } from './sharedWebGpuDevice.js';
+import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 import { uploadRgbAsRgba32f, RGBA32F_BPP } from './webGpuTextureUpload.js';
 
@@ -55,7 +55,6 @@ export async function runHdrLuminanceBilateralWebGPU(
 ): Promise<Float32Array> {
   const { rgb, width: w, height: h } = opts;
   const sigma = opts.sigmaLuminance ?? HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE;
-  const reuseShared = opts.reuseSharedWebGpuDevice === true && opts.device == null;
   if (typeof navigator === 'undefined' || navigator.gpu == null) {
     throw new Error('runHdrLuminanceBilateralWebGPU: WebGPU not available in this browser');
   }
@@ -63,22 +62,11 @@ export async function runHdrLuminanceBilateralWebGPU(
     throw new Error('runHdrLuminanceBilateralWebGPU: invalid rgb buffer or dimensions');
   }
 
-  let device: GPUDevice;
-  let destroyEphemeral: (() => void) | null = null;
-  if (opts.device != null) {
-    device = opts.device;
-  } else if (reuseShared) {
-    device = await getSharedWebGPUDevice();
-  } else {
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (adapter == null) {
-      throw new Error('runHdrLuminanceBilateralWebGPU: failed to request GPU adapter');
-    }
-    device = await adapter.requestDevice();
-    destroyEphemeral = () => {
-      device.destroy();
-    };
-  }
+  const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({
+    device: opts.device,
+    reuseSharedWebGpuDevice: opts.reuseSharedWebGpuDevice,
+    errorLabel: 'runHdrLuminanceBilateralWebGPU',
+  });
 
   const pipeline = bilateralComputePipeline(device);
 
@@ -161,7 +149,7 @@ export async function runHdrLuminanceBilateralWebGPU(
   texOut.destroy();
   ubo.destroy();
   readbackBuffer.destroy();
-  destroyEphemeral?.();
+  destroyEphemeral();
 
   return out;
 }

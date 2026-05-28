@@ -17,6 +17,7 @@
  */
 
 import * as THREE from 'three';
+import { luminance } from '@vitrum/shared-samplers';
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
@@ -35,10 +36,6 @@ import * as THREE from 'three';
 // import. 2026-05-18 dead-code sweep verified zero non-self consumers.
 const EMITTER_STRIDE = 80;
 const EMITTER_FLOATS = EMITTER_STRIDE / 4;
-
-function luminance(r: number, g: number, b: number): number {
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
 
 /**
  * Classify a material + face normal as an emitter, or null if the face
@@ -127,7 +124,6 @@ export function buildEmitterList(
 ): {
   emitterFloats: Float32Array;
   cdfArray: Float32Array;
-  cellPowerArray: Float32Array;
   totalEmissivePower: number;
 } {
   const triCount = indices.length / 3;
@@ -265,10 +261,5 @@ export function buildEmitterList(
     cdfArray[i] = runningSum / totalEmissivePower;
   }
 
-  const cellPowerArray = new Float32Array(emitterCount);
-  for (let i = 0; i < emitterCount; i++) {
-    cellPowerArray[i] = emitterData[i]!.power;
-  }
-
-  return { emitterFloats, cdfArray, cellPowerArray, totalEmissivePower };
+  return { emitterFloats, cdfArray, totalEmissivePower };
 }

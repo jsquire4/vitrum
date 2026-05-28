@@ -135,28 +135,3 @@ export interface STree {
   /** World-space bounding box of the entire scene. */
   sceneBounds: AABB;
 }
-
-// ────────────────────────────────────────────────────────────────────────────
-// Host model handle (GPU↔CPU interface)
-// ────────────────────────────────────────────────────────────────────────────
-
-/**
- * Opaque handle returned by `buildSTree` / `ppgUpdateCPU` to the host.
- * The host passes this handle into `ppgGuide` (direction sampling) and
- * `ppgUpdateCPU` (rebuild after a training frame).
- */
-export interface PPGModelHandle {
-  /** The live spatial + directional tree (CPU-side). */
-  sTree: STree;
-  /**
-   * Serialised flat representation of the tree ready to upload to a GPU
-   * storage buffer. Updated each rebuild cycle.
-   */
-  serialised: Float32Array;
-  /**
-   * Current MIS mixing weight α ∈ [PPG_MIS_ALPHA_MIN, PPG_MIS_ALPHA_MAX].
-   * Fixed at PPG_MIS_ALPHA = 0.5 in this implementation (variance-adaptive
-   * update is a future enhancement — see plan/sprint-ppg-rebuild-future.md).
-   */
-  alpha: number;
-}

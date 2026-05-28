@@ -173,9 +173,9 @@ export class ProbeGrid {
   }
 
   // ProbeGrid UBO packing lives in ddgi/ddgiGridUbo.ts (packDDGIGridParams) —
-  // also re-exported from pipeline/resourceManager.ts. Single source for the
-  // 64-byte layout shared by ProbeUpdatePass and HybridEngine (shade.wgsl).
-  // Callers that need the raw bytes should import packDDGIGridParams directly.
+  // the single source for the 64-byte layout shared by ProbeUpdatePass and
+  // HybridEngine (shade.wgsl). Callers that need the raw bytes should import
+  // packDDGIGridParams directly from ddgiGridUbo.ts.
 
   get probeCount(): number {
     return this.dims.x * this.dims.y * this.dims.z;

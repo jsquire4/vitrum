@@ -1,4 +1,5 @@
 import type { Scene } from '@vitrum/core';
+import { luminance } from '@vitrum/shared-samplers';
 
 interface EnvironmentParams {
   readonly tint: readonly [number, number, number];
@@ -99,7 +100,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       texels[i * 4 + 2] = b;
       const y = (i / width) | 0;
       const theta = ((y + 0.5) / height) * Math.PI;
-      const weight = Math.max(0, (0.2126 * r + 0.7152 * g + 0.0722 * b) * Math.sin(theta));
+      const weight = Math.max(0, luminance(r, g, b) * Math.sin(theta));
       totalWeight += weight;
       cdf[i + 1] = totalWeight;
     }

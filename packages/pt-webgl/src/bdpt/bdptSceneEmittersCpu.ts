@@ -4,6 +4,7 @@
  */
 
 import type { Scene, SceneEmitter, Vec3 } from '@vitrum/core';
+import { luminance as luminance709 } from '@vitrum/shared-samplers';
 
 const PI = Math.PI;
 const KIND_LIGHT = 0;
@@ -17,7 +18,7 @@ export interface BdptBounce0Vertex {
 }
 
 function luminance(rgb: readonly [number, number, number]): number {
-  return Math.max(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2], 1e-20);
+  return Math.max(luminance709(rgb[0], rgb[1], rgb[2]), 1e-20);
 }
 
 function emitterRadiance(e: SceneEmitter): Vec3 {
@@ -65,9 +66,9 @@ function finishBounce0(
   const t = normalize3(cross3(tx, n));
   const b = cross3(n, t);
   const wi = normalize3([
-    t[0] * x + b[0] * x + n[0] * z,
-    t[1] * x + b[1] * x + n[1] * z,
-    t[2] * x + b[2] * x + n[2] * z,
+    t[0] * x + b[0] * y + n[0] * z,
+    t[1] * x + b[1] * y + n[1] * z,
+    t[2] * x + b[2] * y + n[2] * z,
   ]);
   const cosEmit = Math.max(dot3(n, wi), 0);
   const pdfHemi = cosEmit / PI;

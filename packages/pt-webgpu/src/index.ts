@@ -75,7 +75,10 @@ export {
 export { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 export { summarizeScene };
 export type { SceneSummary };
-export { buildSceneTlas, type TlasInstance, type TlasData } from './scene/tlasBridge.js';
+// TLAS build is implemented in `@vitrum/shared-bvh`; pt-webgpu re-exports it
+// under the `buildSceneTlas` name (the prior tlasBridge.ts pass-through wrapper
+// was removed once its only other export, `refitSceneTlas`, was found dead).
+export { buildTlas as buildSceneTlas, type TlasInstance, type TlasData } from '@vitrum/shared-bvh';
 export {
   BdptLightPathBufferWebGPU,
   type BdptLightPathBufferWebGPUOptions,

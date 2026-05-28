@@ -8,11 +8,8 @@
  *
  * The defining SVGF temporal stages (bilinear reprojection, disocclusion
  * detection, per-pixel history length, variance-guided α-clamp, Schied Eq. 4
- * edge-stop form) are absent. Real Schied 2017 SVGF ('svgf-real' mode) is
- * implemented in svgfRealWebGPU.ts.
- *
- * Previously named svgf.wgsl.ts; renamed by sweep-2026-05-11 D3 to match
- * what the implementation actually does.
+ * edge-stop form) are absent. à-trous + variance denoiser; not Schied SVGF —
+ * see svgfRealWebGPU.ts for real SVGF.
  *
  * Two compute entry points:
  *

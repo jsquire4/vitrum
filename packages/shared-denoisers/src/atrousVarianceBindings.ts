@@ -1,9 +1,7 @@
 /**
  * atrousVarianceBindings.ts — TypeScript helpers for wiring up the à-trous + variance denoiser.
  *
- * Previously named svgfBindings.ts; renamed by sweep-2026-05-11 D3.
- * The denoiser was previously called SVGF but never implemented real
- * Schied 2017 SVGF. Real Schied 2017 SVGF ('svgf-real' mode) is implemented in svgfRealWebGPU.ts.
+ * à-trous + variance denoiser; not Schied SVGF — see svgfRealWebGPU.ts for real SVGF.
  *
  * Provides typed descriptors for the bind group layouts and uniform structs.
  * No GPU objects are created here; this is a pure-TypeScript shape/packer

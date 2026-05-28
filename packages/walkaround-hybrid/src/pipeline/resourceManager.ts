@@ -25,8 +25,13 @@
 
 import { createCommonFrameResources } from './frameResources/createCommonFrameResources.js';
 
-export { buildDDGIPlaceholderUBO, packDDGIGridParams } from '../ddgi/ddgiGridUbo.js';
-export type { DDGIGridParamsInput } from '../ddgi/ddgiGridUbo.js';
+// `buildDDGIPlaceholderUBO` is re-exported here because two pipeline-side
+// consumers (frameResources/createDdgiFrameResources.ts, DDGIBindingState.ts)
+// import it via this module. `packDDGIGridParams` / `DDGIGridParamsInput` were
+// also re-exported but had zero importers-via-this-path — all consumers pull
+// them from the canonical `../ddgi/ddgiGridUbo.js` directly — so they were
+// dropped (T10-DDGI dead-re-export cleanup).
+export { buildDDGIPlaceholderUBO } from '../ddgi/ddgiGridUbo.js';
 import { createDdgiFrameResources } from './frameResources/createDdgiFrameResources.js';
 import { createRestirDIFrameResources } from './frameResources/createRestirDIFrameResources.js';
 import { createRestirGIFrameResources } from './frameResources/createRestirGIFrameResources.js';

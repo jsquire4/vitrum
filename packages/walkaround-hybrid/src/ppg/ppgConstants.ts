@@ -55,11 +55,5 @@ export const PPG_DTREE_INITIAL_DEPTH = 2;
  */
 export const PPG_MIS_ALPHA = 0.5;
 
-/** Lower bound for the MIS α clamp (Müller §3.4). */
-export const PPG_MIS_ALPHA_MIN = 0.1;
-
-/** Upper bound for the MIS α clamp (Müller §3.4). */
-export const PPG_MIS_ALPHA_MAX = 0.9;
-
 /** Maximum number of sTree spatial cells (host-configurable default). */
 export const PPG_MAX_SPATIAL_CELLS = 16_384;

@@ -77,6 +77,72 @@ function extractIndex(
   return new Uint32Array(arr);
 }
 
+/**
+ * Extract a required vertex attribute (position/normal), throwing a converter
+ * error labelled with the mesh type when it is missing. `label` is the
+ * caller-facing mesh identifier; `meshTypeName` is the THREE class name used in
+ * the error prefix (e.g. "Mesh", "InstancedMesh", "SkinnedMesh").
+ */
+function requireAttribute(
+  geo: THREE.BufferGeometry,
+  name: 'position' | 'normal',
+  label: string,
+  meshTypeName: string,
+): Float32Array {
+  const arr = extractAttribute(geo, name);
+  if (arr == null) {
+    if (name === 'normal') {
+      throw new Error(
+        `${meshTypeName} "${label}" has no normal attribute. Compute normals before calling sceneFromThreeJS.`,
+      );
+    }
+    throw new Error(`${meshTypeName} "${label}" has no position attribute.`);
+  }
+  return arr;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Material narrowing — shared by all three mesh converters
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Validate + narrow the first material of a (possibly array) THREE material,
+ * dispatching to `convertBasicMaterial` (unlit MeshBasicMaterial → flat
+ * emissive) vs `convertMaterial` (MeshStandard/MeshPhysical). Throws on
+ * unsupported/missing material types. `convertMaterial` handles MeshPhysical
+ * internally, so MeshPhysical is accepted via the same `isStd`/`!isBasic` path
+ * without a separate branch.
+ *
+ * @param meshTypeName THREE class name for the error prefix.
+ * @param errorSubject optional subject inserted before "material" in the
+ *   unsupported-type error (SkinnedMesh historically said "SkinnedMesh material").
+ */
+function convertFirstMaterial(
+  rawMatOrArray: THREE.Material | THREE.Material[] | null,
+  label: string,
+  meshTypeName: string,
+  errorSubject = '',
+) {
+  const rawMat = Array.isArray(rawMatOrArray) ? rawMatOrArray[0] : rawMatOrArray;
+  const isStd = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
+  const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
+  // MeshBasicMaterial is the third accepted type. It renders unlit in three.js;
+  // we synthesize a flat-emissive vitrum material so it appears as a self-lit
+  // flat color regardless of scene lighting. Used by app-side overlay meshes
+  // (panel mount preview, debug overlays, grid layers).
+  const isBasic = (rawMat as THREE.MeshBasicMaterial | null)?.isMeshBasicMaterial === true;
+  if (rawMat == null || (!isStd && !isPhys && !isBasic)) {
+    const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
+    const subject = errorSubject !== '' ? `${errorSubject} ` : '';
+    throw new Error(
+      `Unsupported THREE type at "${label}": ${subject}material ${typeName}. Supported types are added per Phase 6 sprint.`,
+    );
+  }
+  return isBasic
+    ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
+    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Mesh converter
 // ────────────────────────────────────────────────────────────────────────────
@@ -85,17 +151,8 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
-  const positions = extractAttribute(geo, 'position');
-  if (positions == null) {
-    throw new Error(`Mesh "${label}" has no position attribute.`);
-  }
-
-  const normals = extractAttribute(geo, 'normal');
-  if (normals == null) {
-    throw new Error(
-      `Mesh "${label}" has no normal attribute. Compute normals before calling sceneFromThreeJS.`,
-    );
-  }
+  const positions = requireAttribute(geo, 'position', label, 'Mesh');
+  const normals = requireAttribute(geo, 'normal', label, 'Mesh');
 
   const uvs = extractAttribute(geo, 'uv');
   const tangents = extractAttribute(geo, 'tangent');
@@ -112,24 +169,7 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
     );
   }
 
-  const rawMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-  const isStd  = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
-  const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
-  // MeshBasicMaterial is the third accepted type. It renders unlit in three.js;
-  // we synthesize a flat-emissive vitrum material so it appears as a self-lit
-  // flat color regardless of scene lighting. Used by app-side overlay meshes
-  // (panel mount preview, debug overlays, grid layers).
-  const isBasic = (rawMat as THREE.MeshBasicMaterial | null)?.isMeshBasicMaterial === true;
-  if (rawMat == null || (!isStd && !isPhys && !isBasic)) {
-    const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
-    throw new Error(
-      `Unsupported THREE type at "${label}": material ${typeName}. Supported types are added per Phase 6 sprint.`,
-    );
-  }
-
-  const material = isBasic
-    ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
-    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
+  const material = convertFirstMaterial(obj.material, label, 'Mesh');
 
   return {
     kind: 'mesh',
@@ -152,17 +192,8 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
-  const positions = extractAttribute(geo, 'position');
-  if (positions == null) {
-    throw new Error(`InstancedMesh "${label}" has no position attribute.`);
-  }
-
-  const normals = extractAttribute(geo, 'normal');
-  if (normals == null) {
-    throw new Error(
-      `InstancedMesh "${label}" has no normal attribute. Compute normals before calling sceneFromThreeJS.`,
-    );
-  }
+  const positions = requireAttribute(geo, 'position', label, 'InstancedMesh');
+  const normals = requireAttribute(geo, 'normal', label, 'InstancedMesh');
 
   const uvs = extractAttribute(geo, 'uv');
   const tangents = extractAttribute(geo, 'tangent');
@@ -175,20 +206,7 @@ export function convertInstancedMesh(obj: THREE.InstancedMesh): InstancedMeshPri
     );
   }
 
-  const rawMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-  const isStd = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
-  const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
-  const isBasic = (rawMat as THREE.MeshBasicMaterial | null)?.isMeshBasicMaterial === true;
-  if (rawMat == null || (!isStd && !isPhys && !isBasic)) {
-    const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
-    throw new Error(
-      `Unsupported THREE type at "${label}": material ${typeName}. Supported types are added per Phase 6 sprint.`,
-    );
-  }
-
-  const material = isBasic
-    ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
-    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
+  const material = convertFirstMaterial(obj.material, label, 'InstancedMesh');
 
   const instances: Mat4[] = [];
   const tmp = new THREE.Matrix4();
@@ -228,16 +246,8 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
   const geo = obj.geometry;
   const label = obj.name || obj.uuid;
 
-  const positions = extractAttribute(geo, 'position');
-  if (positions == null) {
-    throw new Error(`SkinnedMesh "${label}" has no position attribute.`);
-  }
-  const normals = extractAttribute(geo, 'normal');
-  if (normals == null) {
-    throw new Error(
-      `SkinnedMesh "${label}" has no normal attribute. Compute normals before calling sceneFromThreeJS.`,
-    );
-  }
+  const positions = requireAttribute(geo, 'position', label, 'SkinnedMesh');
+  const normals = requireAttribute(geo, 'normal', label, 'SkinnedMesh');
 
   // SkinnedMesh requires skinIndex + skinWeight attributes per glTF 2.0.
   const skinIndexAttr = geo.getAttribute('skinIndex');
@@ -354,19 +364,7 @@ export function convertSkinnedMesh(obj: THREE.SkinnedMesh): SkinnedMeshPrimitive
       `Only the first material will be used.`,
     );
   }
-  const rawMat = Array.isArray(obj.material) ? obj.material[0] : obj.material;
-  const isStd  = (rawMat as THREE.MeshStandardMaterial | null)?.isMeshStandardMaterial === true;
-  const isPhys = (rawMat as THREE.MeshPhysicalMaterial | null)?.isMeshPhysicalMaterial === true;
-  const isBasic = (rawMat as THREE.MeshBasicMaterial | null)?.isMeshBasicMaterial === true;
-  if (rawMat == null || (!isStd && !isPhys && !isBasic)) {
-    const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
-    throw new Error(
-      `Unsupported THREE type at "${label}": SkinnedMesh material ${typeName}. Supported types are added per Phase 6 sprint.`,
-    );
-  }
-  const material = isBasic
-    ? convertBasicMaterial(rawMat as THREE.MeshBasicMaterial)
-    : convertMaterial(rawMat as THREE.MeshStandardMaterial);
+  const material = convertFirstMaterial(obj.material, label, 'SkinnedMesh', 'SkinnedMesh');
 
   return {
     kind: 'skinned-mesh',

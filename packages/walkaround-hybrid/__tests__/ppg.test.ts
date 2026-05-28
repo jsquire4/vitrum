@@ -110,12 +110,12 @@ describe('PPG sTree — adaptive split (Müller §3.1)', () => {
 describe('PPG dTree — adaptive refinement (Müller §3.2)', () => {
   it('splits a quadtree leaf when its flux fraction > PPG_DTREE_FLUX_FRACTION', () => {
     const dTree = buildEmptyDTree(PPG_DTREE_INITIAL_DEPTH);
-    const initialNodeCount = dTree.nodes.length;
 
     // Concentrate ~all flux into a single leaf cell.
     // Walk the leaves and pick one to spike.
     const leaves = dTree.nodes.filter((n) => n.isLeaf);
     expect(leaves.length).toBeGreaterThan(0);
+    const maxLeafDepthBefore = Math.max(...leaves.map((n) => n.depth));
     const target = leaves[0]!;
     target.flux = 1000.0;
     // Other leaves keep tiny flux so the split predicate fires on the spike.
@@ -127,8 +127,14 @@ describe('PPG dTree — adaptive refinement (Müller §3.2)', () => {
 
     refineDTree(dTree);
 
-    // The spiked leaf should split into 4 quadrants.
-    expect(dTree.nodes.length).toBeGreaterThan(initialNodeCount);
+    // The spiked leaf should split into 4 quadrants — i.e. a leaf one level
+    // deeper than any pre-refine leaf must now exist. (We assert the actual
+    // split semantics rather than `nodes.length` growth: A5's compaction pass
+    // now drops the orphaned children the merge pass collapses in the same
+    // refine call, so raw array length is no longer a valid split proxy.)
+    const leavesAfter = dTree.nodes.filter((n) => n.isLeaf);
+    const maxLeafDepthAfter = Math.max(...leavesAfter.map((n) => n.depth));
+    expect(maxLeafDepthAfter).toBeGreaterThan(maxLeafDepthBefore);
   });
 
   it('does not refine when no leaf exceeds the flux fraction', () => {

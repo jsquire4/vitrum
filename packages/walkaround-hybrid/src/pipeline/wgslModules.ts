@@ -41,6 +41,20 @@ import {
 import { LUMINANCE_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
 import { COMMON_MODULE } from '../shaders/common.wgsl.js';
+// T9-stepA — the eleven focused modules split out of `common`. `common`
+// itself `requires` these in canonical order; they are registered here so
+// the composer can resolve those `requires` names.
+import { WALKAROUND_UBO_MODULE } from '../shaders/walkaroundUbo.wgsl.js';
+import { SCENE_TRAVERSAL_MODULE } from '../shaders/sceneTraversal.wgsl.js';
+import { RESERVOIR_DI_MODULE } from '../shaders/reservoirDi.wgsl.js';
+import { RESERVOIR_GI_MODULE } from '../shaders/reservoirGi.wgsl.js';
+import { SHARED_PRIMITIVES_MODULE } from '../shaders/sharedPrimitives.wgsl.js';
+import { GGX_BRDF_MODULE } from '../shaders/ggxBrdf.wgsl.js';
+import { MATERIAL_DECODE_MODULE } from '../shaders/materialDecode.wgsl.js';
+import { EMITTER_SAMPLING_MODULE } from '../shaders/emitterSampling.wgsl.js';
+import { JACOBIAN_SHIFT_MODULE } from '../shaders/jacobianShift.wgsl.js';
+import { CAMERA_RAYS_MODULE } from '../shaders/cameraRays.wgsl.js';
+import { WELFORD_TAIL_MODULE } from '../shaders/welfordTail.wgsl.js';
 import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
 import { RESTIR_PHAT_MODULE } from '../shaders/restirPHat.wgsl.js';
 import { RESTIR_CAST_PRIMARY_MODULE } from '../shaders/restirCastPrimary.wgsl.js';
@@ -189,6 +203,18 @@ const WELFORD_VARIANCE_MODULE: WgslModule = {
 export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, WgslModule>([
   // Foundation
   [COMMON_MODULE.name, COMMON_MODULE],
+  // T9-stepA — focused modules `common` aggregates (canonical order).
+  [WALKAROUND_UBO_MODULE.name, WALKAROUND_UBO_MODULE],
+  [SCENE_TRAVERSAL_MODULE.name, SCENE_TRAVERSAL_MODULE],
+  [RESERVOIR_DI_MODULE.name, RESERVOIR_DI_MODULE],
+  [RESERVOIR_GI_MODULE.name, RESERVOIR_GI_MODULE],
+  [SHARED_PRIMITIVES_MODULE.name, SHARED_PRIMITIVES_MODULE],
+  [GGX_BRDF_MODULE.name, GGX_BRDF_MODULE],
+  [MATERIAL_DECODE_MODULE.name, MATERIAL_DECODE_MODULE],
+  [EMITTER_SAMPLING_MODULE.name, EMITTER_SAMPLING_MODULE],
+  [JACOBIAN_SHIFT_MODULE.name, JACOBIAN_SHIFT_MODULE],
+  [CAMERA_RAYS_MODULE.name, CAMERA_RAYS_MODULE],
+  [WELFORD_TAIL_MODULE.name, WELFORD_TAIL_MODULE],
   [LUMINANCE_MODULE.name, LUMINANCE_MODULE],
   [OCTAHEDRAL_CORE_MODULE.name, OCTAHEDRAL_CORE_MODULE],
   [WELFORD_VARIANCE_MODULE.name, WELFORD_VARIANCE_MODULE],

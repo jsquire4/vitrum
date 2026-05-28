@@ -2,24 +2,38 @@
  * DDGI Probe Update — Pass 2: Octahedral Atlas Blend.
  *
  * Two separate WGSL modules:
- *   PROBE_UPDATE_BLEND_IRR_WGSL  — irradiance atlas blend (rgba16float, 8×8/probe)
- *   PROBE_UPDATE_BLEND_VIS_WGSL  — visibility atlas blend (rgba16float, 16×16/probe, rg used)
+ *   makeProbeUpdateBlendIrrWGSL() — irradiance atlas blend (rgba16float, 8×8/probe)
+ *   makeProbeUpdateBlendVisWGSL() — visibility atlas blend (rgba16float, 16×16/probe, rg used)
  *
  * Bindings are independent so the two pipelines don't share layouts.
+ *
+ * The cell sizes (IRR_CELL / VIS_CELL) are template-substituted from
+ * `ddgiAtlasLayout.ts` — the single source of truth shared with the
+ * producer (probeGrid.allocateAtlases) and the samplers
+ * (ddgiSampleWgsl.ts + engines/restir/shaders/shade.wgsl.ts). The blend
+ * shaders previously hardcoded `IRR_CELL=8u` / `VIS_CELL=16u` as WGSL
+ * literals, which risked silent drift if the layout ever changed.
+ *
+ * For backward compatibility the previous string exports
+ * (`PROBE_UPDATE_BLEND_IRR_WGSL` / `PROBE_UPDATE_BLEND_VIS_WGSL`) remain
+ * available as consts computed from the factories at module-load time.
  */
 
 import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
+import { IRR_CELL, VIS_CELL } from '../ddgiAtlasLayout.js';
 
-// Common header shared by both shaders
-const COMMON = /* wgsl */`
+// Common header shared by both shaders. IRR_CELL / VIS_CELL are interpolated
+// from ddgiAtlasLayout.ts so the blend pass cannot drift from the producer.
+function makeCommonHeader(): string {
+  return /* wgsl */`
 
 ${OCTAHEDRAL_WGSL}
 
 const RAYS_PER_PROBE: u32 = ${RAYS_PER_PROBE}u;
 const HYSTERESIS:     f32 = 0.97;
-const IRR_CELL:       u32 = 8u;
-const VIS_CELL:       u32 = 16u;
+const IRR_CELL:       u32 = ${IRR_CELL}u;
+const VIS_CELL:       u32 = ${VIS_CELL}u;
 
 struct ProbeRay {
   hitPosition:   vec3f,
@@ -58,13 +72,17 @@ struct FrameBlendParams {
 @group(0) @binding(3) var<uniform>       blendParams:  FrameBlendParams;
 
 `;
+}
 
 // -----------------------------------------------------------------
 // Irradiance blend shader
 // -----------------------------------------------------------------
-export const PROBE_UPDATE_BLEND_IRR_WGSL = /* wgsl */`
+/** Build the DDGI irradiance-atlas blend WGSL with IRR_CELL substituted
+ *  from {@link ddgiAtlasLayout}. */
+export function makeProbeUpdateBlendIrrWGSL(): string {
+  return /* wgsl */`
 
-${COMMON}
+${makeCommonHeader()}
 
 @group(1) @binding(0) var irrPrev:   texture_2d<f32>;
 @group(1) @binding(1) var irrSamp:   sampler;
@@ -147,13 +165,17 @@ fn probeUpdateBlendIrradiance(
 }
 
 `;
+}
 
 // -----------------------------------------------------------------
 // Visibility blend shader
 // -----------------------------------------------------------------
-export const PROBE_UPDATE_BLEND_VIS_WGSL = /* wgsl */`
+/** Build the DDGI visibility-atlas blend WGSL with VIS_CELL substituted
+ *  from {@link ddgiAtlasLayout}. */
+export function makeProbeUpdateBlendVisWGSL(): string {
+  return /* wgsl */`
 
-${COMMON}
+${makeCommonHeader()}
 
 @group(1) @binding(0) var visPrev:   texture_2d<f32>;
 @group(1) @binding(1) var visSamp:   sampler;
@@ -233,3 +255,18 @@ fn probeUpdateBlendVisibility(
 }
 
 `;
+}
+
+/**
+ * @deprecated Prefer {@link makeProbeUpdateBlendIrrWGSL}. Retained as a
+ * module-load const so any external consumer importing the old name keeps
+ * working; computed from the factory so it still reflects ddgiAtlasLayout.
+ */
+export const PROBE_UPDATE_BLEND_IRR_WGSL = makeProbeUpdateBlendIrrWGSL();
+
+/**
+ * @deprecated Prefer {@link makeProbeUpdateBlendVisWGSL}. Retained as a
+ * module-load const so any external consumer importing the old name keeps
+ * working; computed from the factory so it still reflects ddgiAtlasLayout.
+ */
+export const PROBE_UPDATE_BLEND_VIS_WGSL = makeProbeUpdateBlendVisWGSL();
