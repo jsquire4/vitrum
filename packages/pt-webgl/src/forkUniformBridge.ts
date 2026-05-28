@@ -148,8 +148,8 @@ export function driveForkMaterialUniforms(
   // uBdptLightPathTex uniforms. FEATURE_BDPT define is toggled here (not in onBeforeRender) so
   // setDefine does not reset the path-tracer accumulator every frame.
   //
-  // Safety guard: if lightPathTex is null (uninitialized host), force enabled=false to
-  // prevent the shader from sampling an unbound texture slot.
+  // Safety guard: uBdptEnabled stays false until lightPathTex is bound (avoids sampling an
+  // unbound slot). FEATURE_BDPT still compiles when enabled=true and tex is null (GPU fill pass).
   if (bdptOptions != null) {
     const lightPathTex = bdptOptions.lightPathTex ?? null;
     const bdptCompiled = bdptOptions.enabled;

@@ -1,6 +1,6 @@
 # Phase 7 — ReSTIR-GI + Short-Range Screen-Space AO
 
-**Status**: Planned, not started
+**Status**: Shipped (Sprints 15–18 on main, 2026-05-17+)
 **Replaces**: The currently-disabled `Lo_ddgi * 0.0` term in `shade.wgsl`
 **Created**: 2026-05-11
 **Last Sprint**: Sprint 14 (layered-bsdf fork patch — PT-side; walkaround's last was Sprint 13 neural). This phase introduces Sprints 15–18.
