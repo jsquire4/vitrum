@@ -117,9 +117,20 @@ struct WalkaroundUBO {
   _padEnd:                    f32,     //  offset 332 — align vec3 to 336
   bvhMode:                    u32,     //  offset 336 — 0 merged world BVH, 1 TLAS+local BLAS
   tlasNodeCount:              u32,     //  offset 340 — TLAS node count (0 → merged path)
-  _tracePad0:                 u32,     //  offset 344
+  // T5 — stained-glass opt-in flags (repurposed pad slot; byte-size unchanged).
+  // Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0 (both
+  // OFF) → a generic scene gets ZERO stained-glass caustic/aperture physics.
+  // Hosts opt in via HybridEngineOptions.stainedGlass; the bits gate the
+  // early-return in lo_sg_caustic / lo_sg_aperture (stainedGlassShade.wgsl.ts).
+  stainedGlassFlags:          u32,     //  offset 344 — T5 (was _tracePad0)
   _tracePad1:                 u32,     //  offset 348 — struct size 352 bytes
 };
+
+// T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,
+// bit 1 gates the sky-aperture term. Mirrors the host-side packStainedGlassFlags
+// helper in pipeline/uboUpdater.ts (the two MUST agree on bit positions).
+const SG_FLAG_SUN_CAUSTIC: u32 = 1u;   // bit 0
+const SG_FLAG_SKY_APERTURE: u32 = 2u;  // bit 1
 
 // Emitter geometry term G with a configurable dist² clamp applied at
 // every call site. Use this everywhere instead of inlining

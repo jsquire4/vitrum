@@ -50,6 +50,7 @@ import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
+import { packStainedGlassFlags } from './pipeline/uboUpdater.js';
 import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
 import {
   fingerprintHybridPipelineRebuildKey,
@@ -237,6 +238,11 @@ export class HybridEngine implements Engine {
    *  Cornell default `[32.0, 20.0, 0.5]`. Broader on every axis since
    *  ReSTIR-GI already smooths the indirect signal. */
   private readonly _atrousIndirectSigmas: readonly [number, number, number];
+  /** T5 — stained-glass opt-in flag bitfield (bit 0 = sun-caustic, bit 1 =
+   *  sky-aperture). Default 0 (both OFF) → generic scenes get zero
+   *  stained-glass physics. Hosts opt in via `opts.stainedGlass`. Packed
+   *  once at ctor; threaded into pipeline.renderFrame each frame. */
+  private readonly _stainedGlassFlags: number;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -394,6 +400,13 @@ export class HybridEngine implements Engine {
       ?? [ATROUS_DIRECT_SIGMAS.sigmaN, ATROUS_DIRECT_SIGMAS.sigmaZ, ATROUS_DIRECT_SIGMAS.sigmaC];
     this._atrousIndirectSigmas = opts.atrousIndirectSigmas
       ?? [ATROUS_INDIRECT_SIGMAS.sigmaN, ATROUS_INDIRECT_SIGMAS.sigmaZ, ATROUS_INDIRECT_SIGMAS.sigmaC];
+    // T5 — stained-glass opt-in flag bits. Default 0 (both terms OFF); hosts
+    // opt in via opts.stainedGlass. Packed once here (construction-time
+    // config); threaded into pipeline.renderFrame via _denoiserFilterDeps.
+    this._stainedGlassFlags = packStainedGlassFlags({
+      sunCaustic: opts.stainedGlass?.sunCaustic,
+      skyAperture: opts.stainedGlass?.skyAperture,
+    });
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -976,6 +989,7 @@ export class HybridEngine implements Engine {
       indirectFireflyClamp: this._indirectFireflyClamp,
       atrousDirectSigmas: this._atrousDirectSigmas,
       atrousIndirectSigmas: this._atrousIndirectSigmas,
+      stainedGlassFlags: this._stainedGlassFlags,
     };
   }
 

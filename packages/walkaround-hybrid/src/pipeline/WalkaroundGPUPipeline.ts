@@ -264,6 +264,13 @@ export interface PipelineFrameInputs {
   bvhMode: number;
   /** PR-3 — TLAS node count from CPU pack (0 forces merged path in WGSL). */
   tlasNodeCount: number;
+  /** T5 — stained-glass opt-in flag bitfield (lands at UBO offset 344).
+   *  Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0
+   *  (both OFF) → lo_sg_caustic / lo_sg_aperture early-return vec3f(0), so a
+   *  generic scene gets zero stained-glass physics. Hosts opt in via
+   *  HybridEngineOptions.stainedGlass. See pipeline/uboUpdater.ts
+   *  `packStainedGlassFlags`. */
+  stainedGlassFlags: number;
   /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
    *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
    *  direct-path chain. */

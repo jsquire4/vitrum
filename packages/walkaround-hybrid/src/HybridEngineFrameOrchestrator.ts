@@ -49,6 +49,12 @@ export interface HybridDenoiserFilterDeps {
   indirectFireflyClamp: readonly [number, number, number];
   atrousDirectSigmas: readonly [number, number, number];
   atrousIndirectSigmas: readonly [number, number, number];
+  /** T5 — stained-glass opt-in flag bitfield (bit 0 = sun-caustic, bit 1 =
+   *  sky-aperture). Default 0 (both OFF). Splatted into pipeline.renderFrame
+   *  as `stainedGlassFlags`. Lives in this cluster (not the number-only
+   *  {@link Tunables} table) because it is a derived bitfield, not a
+   *  host-overridable scalar tunable. */
+  stainedGlassFlags: number;
 }
 
 export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoiserFilterDeps {
@@ -303,6 +309,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     tlasNodeCount: bvh.tlas?.nodeCount ?? 0,
     atrousDirectSigmas: deps.atrousDirectSigmas,
     atrousIndirectSigmas: deps.atrousIndirectSigmas,
+    stainedGlassFlags: deps.stainedGlassFlags,
     swapChainView: swapView,
     swapChainFormat: swapFmt,
   });

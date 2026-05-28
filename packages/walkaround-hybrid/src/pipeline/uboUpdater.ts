@@ -35,11 +35,38 @@
  *   offset 332: _padEnd                     (f32 = 4 bytes)
  *   offset 336: bvhMode                     (u32 = 4 bytes) — PR-3
  *   offset 340: tlasNodeCount               (u32 = 4 bytes)
- *   offset 344–348: _tracePad               (u32 × 2)
+ *   offset 344: stainedGlassFlags           (u32 = 4 bytes) — T5 (was _tracePad0)
+ *   offset 348: _tracePad1                  (u32 = 4 bytes)
  * Total: 352 bytes (352 % 16 == 0).
  */
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
+
+/**
+ * T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,
+ * bit 1 gates the sky-aperture term. MUST match the `SG_FLAG_SUN_CAUSTIC` /
+ * `SG_FLAG_SKY_APERTURE` constants in `shaders/walkaroundUbo.wgsl.ts` (the two
+ * sides agree on bit positions). Exported so the engine + tests can pack the
+ * flags without re-deriving the bit layout.
+ */
+export const SG_FLAG_SUN_CAUSTIC = 1; // bit 0
+export const SG_FLAG_SKY_APERTURE = 2; // bit 1
+
+/**
+ * Pack the per-engine stained-glass opt-in booleans into the `u32` bitfield
+ * that lands at UBO offset 344. Default (both `false`) → `0`, which makes
+ * `lo_sg_caustic` / `lo_sg_aperture` early-return `vec3f(0)` — a generic scene
+ * gets ZERO stained-glass caustic / aperture physics.
+ */
+export function packStainedGlassFlags(opts: {
+  sunCaustic?: boolean | undefined;
+  skyAperture?: boolean | undefined;
+}): number {
+  let flags = 0;
+  if (opts.sunCaustic) flags |= SG_FLAG_SUN_CAUSTIC;
+  if (opts.skyAperture) flags |= SG_FLAG_SKY_APERTURE;
+  return flags >>> 0;
+}
 
 /** Size of the WalkaroundUBO in bytes. File-local — `resourceManager.ts`
  *  intentionally duplicates the literal `352` rather than import this name
@@ -99,6 +126,9 @@ export function updateUBO(
   // f32[83] = _padEnd (zero).
   u32[84] = inputs.bvhMode >>> 0;
   u32[85] = inputs.tlasNodeCount >>> 0;
+  // T5 — stained-glass opt-in flag bits (repurposed _tracePad0 at offset 344).
+  // 0 → both terms OFF (generic-scene default). u32[87] stays 0 (_tracePad1).
+  u32[86] = inputs.stainedGlassFlags >>> 0;
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

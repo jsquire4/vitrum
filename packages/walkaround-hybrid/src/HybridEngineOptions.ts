@@ -308,11 +308,49 @@ export interface HybridEngineOptions extends EngineOptions {
    * attenuation; generic scenes should leave this at defaults (no boost,
    * no clamp).
    *
+   * NOTE (T5): `caustic.boost` / `caustic.visClamp` only have any effect
+   * when {@link stainedGlass}`.sunCaustic` is also `true`. When the
+   * sun-caustic term is OFF (the default) the caustic-boost calibration is
+   * never reached because `lo_sg_caustic` early-returns `vec3f(0)`.
+   *
    * @default { boost: 1.0, visClamp: 1.0 }
    */
   readonly caustic?: {
     readonly boost?: number;
     readonly visClamp?: number;
+  };
+
+  /**
+   * T5 — opt-in stained-glass-specific lighting physics.
+   *
+   * The hybrid shade pass historically ran two stained-glass-specific direct
+   * lighting terms UNCONDITIONALLY: a sun-caustic term (sun directional light
+   * reaching a receiver through tinted glass, with the {@link caustic}
+   * boost/visClamp calibration) and a 5-tap sky-aperture probe (diffuse sky
+   * illumination through a window cutout). Those terms were physically
+   * appropriate only for cathedral-window / Cornell-stained-glass scenes; a
+   * generic scene received them anyway, which is incorrect.
+   *
+   * T5 moved both terms into an opt-in WGSL module (`stainedGlassShade.wgsl.ts`,
+   * `lo_sg_caustic` / `lo_sg_aperture`) gated by a UBO flag bit — mirroring the
+   * Radiance-Cascades `sampleCascadeC0` precedent. When a flag is unset the
+   * helper early-returns `vec3f(0)`; flag-OFF is therefore bit-identical to "no
+   * such term" without a separate shader compile.
+   *
+   * **Default both `false`** → generic scenes get ZERO caustic / aperture
+   * physics. Stained-glass hosts (e.g. the Cornell-stained-glass example) opt
+   * in with `{ sunCaustic: true, skyAperture: true }`.
+   *
+   * - `sunCaustic` — enable the through-glass sun-caustic term. Pairs with the
+   *   {@link caustic} boost/visClamp calibration.
+   * - `skyAperture` — enable the 5-tap diffuse-sky-aperture probe. Pairs with
+   *   {@link skyTint} / {@link skyIrradiance}.
+   *
+   * @default { sunCaustic: false, skyAperture: false }
+   */
+  readonly stainedGlass?: {
+    readonly sunCaustic?: boolean;
+    readonly skyAperture?: boolean;
   };
 
   /**
