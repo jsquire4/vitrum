@@ -3,10 +3,37 @@
  * then same-frame CPU BVH refit (nodes-only upload) via `applyGpuSkinnedRefit`.
  */
 
-import type { Scene, SkinnedMeshPrimitive } from '@vitrum/core';
+import type { Scene, ScenePrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
 import { combineSkinMatrices, solveSkin } from '@vitrum/three-bindings';
 import { GPU_SKIN_BVH_WGSL } from './gpuSkinBvh.wgsl.js';
-import type { HybridEngine } from '../HybridEngine.js';
+import type { ReSTIRBvhMode, SceneBVHBuffers } from '../restir/bvhCompute.js';
+
+/**
+ * Narrow back-reference the skinning subsystem needs from its host engine.
+ *
+ * Previously `run()` took the whole `HybridEngine`, which made
+ * `skin/GpuSkinningSubsystem.ts` import `../HybridEngine.js` — the package's
+ * only import cycle (HybridEngine imports the subsystem; the subsystem imported
+ * HybridEngine). Depending on this 6-method surface instead breaks the cycle.
+ * `HybridEngine` satisfies it structurally, so the engine passes `this`
+ * unchanged (upcast to `GpuSkinningHost`).
+ */
+export interface GpuSkinningHost {
+  /** Merged-BVH world-position SSBO target for the LBS compute write. */
+  getGpuSkinningBvhBuffer(): GPUBuffer | null;
+  /** Per-mesh vertex ranges in the merged BVH. */
+  getMeshVertexRanges(): SceneBVHBuffers['meshVertexRanges'] | null;
+  /** Active ReSTIR BVH layout (`merged` world positions vs `tlas` local BLAS). */
+  getBvhMode(): ReSTIRBvhMode | null;
+  /** Per-primitive TLAS bindings (vertex ranges in `tlas` mode). */
+  getPrimitiveTlasBindings(): SceneBVHBuffers['primitiveTlasBindings'] | null;
+  /** CPU-skin fallback path: push solved positions/normals through the
+   *  standard incremental geometry update. */
+  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void;
+  /** GPU-skin path: refit BVH nodes after the compute pass wrote world
+   *  positions directly into the live `bvhPositions` buffer. */
+  applyGpuSkinnedRefit(id: string, localPositions?: Float32Array, localNormals?: Float32Array): void;
+}
 
 const UNIFORM = 0x40;
 const STORAGE = 0x80;
@@ -79,9 +106,9 @@ export class GpuSkinningSubsystem {
     this.#bvhPipeline = null;
   }
 
-  run(engine: HybridEngine, scene: Scene): void {
-    const bvhPositions = engine.getGpuSkinningBvhBuffer();
-    const meshVertexRanges = engine.getMeshVertexRanges();
+  run(host: GpuSkinningHost, scene: Scene): void {
+    const bvhPositions = host.getGpuSkinningBvhBuffer();
+    const meshVertexRanges = host.getMeshVertexRanges();
     if (bvhPositions == null || meshVertexRanges == null) {
       return;
     }
@@ -98,24 +125,24 @@ export class GpuSkinningSubsystem {
         prim.morphWeights.some((w) => w !== 0);
       if (!this.#preferGpu || hasMorph || typeof this.#device.createComputePipeline !== 'function') {
         const { positions, normals } = solveSkin(prim);
-        engine.updatePrimitive(id, { positions, normals });
+        host.updatePrimitive(id, { positions, normals });
         continue;
       }
 
       const range = meshVertexRanges.find((r) => r.name === id);
       if (range == null || range.vertexCount === 0) {
         const { positions, normals } = solveSkin(prim);
-        engine.updatePrimitive(id, { positions, normals });
+        host.updatePrimitive(id, { positions, normals });
         continue;
       }
 
-      const bvhMode = engine.getBvhMode();
+      const bvhMode = host.getBvhMode();
       let baseVertex = range.vertexStart;
       if (bvhMode === 'tlas') {
-        const binding = engine.getPrimitiveTlasBindings()?.find((b) => b.primitiveId === id);
+        const binding = host.getPrimitiveTlasBindings()?.find((b) => b.primitiveId === id);
         if (binding == null || binding.vertexCount === 0) {
           const { positions, normals } = solveSkin(prim);
-          engine.updatePrimitive(id, { positions, normals });
+          host.updatePrimitive(id, { positions, normals });
           continue;
         }
         baseVertex = binding.vertexStart;
@@ -129,7 +156,7 @@ export class GpuSkinningSubsystem {
       const u32 = new Uint32Array(uniformBytes);
       u32[0] = state.vertexCount;
       u32[1] = baseVertex;
-      u32[2] = engine.getBvhMode() === 'tlas' ? 0 : 1;
+      u32[2] = host.getBvhMode() === 'tlas' ? 0 : 1;
       u32[3] = 0;
       new Float32Array(uniformBytes).set(range.matrixWorldAtBuild, 4);
       this.#device.queue.writeBuffer(state.uniformBuffer, 0, uniformBytes);
@@ -146,7 +173,7 @@ export class GpuSkinningSubsystem {
     if (gpuSkinnedIds.length > 0) {
       this.#device.queue.submit([encoder.finish()]);
       for (const id of gpuSkinnedIds) {
-        engine.applyGpuSkinnedRefit(id);
+        host.applyGpuSkinnedRefit(id);
       }
     }
   }

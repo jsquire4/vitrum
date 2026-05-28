@@ -401,6 +401,13 @@ export class WalkaroundGPUPipeline {
   private _frameCount = 0;
   private _initialized = false;
 
+  /** Live per-frame GPU resources, or `null` before `initialize()` resolves.
+   *  The engine's debug surface consumes this to expose DDGI/ReSTIR textures
+   *  to dev overlays without reaching into the private `_res` field. */
+  get frameResources(): FrameResources | null {
+    return this._initialized ? this._res : null;
+  }
+
   constructor(device: GPUDevice, width: number, height: number) {
     this._device = device;
     this._width  = width;

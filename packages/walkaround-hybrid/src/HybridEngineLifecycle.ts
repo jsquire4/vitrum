@@ -120,6 +120,31 @@ export interface PipelineInitHost {
   readonly currentTraversalScene: THREE.Scene | null;
 }
 
+/**
+ * The construction-time-immutable slice of {@link PipelineInitHost}. Every
+ * field here is assigned once in the engine constructor and never mutated, so
+ * the engine builds it as a plain-value snapshot spread into `_buildInitHost`
+ * (rather than one live getter per field). Derived via `Pick` so it stays in
+ * lockstep with the host interface — adding an immutable field to the host
+ * surface that belongs here is a one-line edit to this union.
+ */
+export type HybridInitStaticConfig = Pick<
+  PipelineInitHost,
+  | 'device'
+  | 'threeScene'
+  | 'restirBvhModeOverride'
+  | 'denoiser'
+  | 'neuralWeights'
+  | 'oidnModelUrl'
+  | 'oidnExecutionProviders'
+  | 'verbose'
+  | 'debug'
+  | 'cameraMoveResetThresholdSq'
+  | 'temporalAccumAlpha'
+  | 'ctorLights'
+  | 'ddgi'
+>;
+
 export class PipelineInitCoordinator {
   /** Monotonic init sequence — bumped at the start of every
    *  `startInit()` call. Each in-flight async chain captures the value

@@ -6,6 +6,7 @@ import { asBackendTexture } from '@vitrum/core';
 import type * as THREE from 'three';
 import type { DDGI } from './ddgi/DDGI.js';
 import { packDDGIGridParams } from './ddgi/ddgiGridUbo.js';
+import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import type { RCSubsystem } from './HybridEngineRC.js';
 import type { Tunables } from './HybridEngineTuning.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
@@ -30,7 +31,27 @@ export interface HybridEngineFrameDiag {
   lastReportTs: number;
 }
 
-export interface HybridEngineFrameDeps {
+/** Runtime-mutable lighting cluster (the engine's `updateLighting()` mutates
+ *  these). Grouped so a new lighting field is one edit in the engine's
+ *  `_lightingSnapshot()` rather than one per dependency builder. */
+export interface HybridLightingDeps {
+  primaryLightDir: [number, number, number];
+  primaryLightIntensity: number;
+  skyTint: [number, number, number];
+  skyIrradiance: number;
+}
+
+/** Tuple-typed denoiser-filter cluster (firefly clamp + per-channel atrous
+ *  sigmas). Lives outside the number-only {@link Tunables} table because the
+ *  values are tuples; grouped for the same one-edit reason as the lighting
+ *  cluster. */
+export interface HybridDenoiserFilterDeps {
+  indirectFireflyClamp: readonly [number, number, number];
+  atrousDirectSigmas: readonly [number, number, number];
+  atrousIndirectSigmas: readonly [number, number, number];
+}
+
+export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoiserFilterDeps {
   state: EngineState;
   debug: boolean;
   dbg: HybridEngineFrameDiag | null;
@@ -54,14 +75,7 @@ export interface HybridEngineFrameDeps {
   device: GPUDevice;
   tunables: Tunables;
   rc: RCSubsystem | null;
-  primaryLightDir: [number, number, number];
-  primaryLightIntensity: number;
-  skyTint: [number, number, number];
-  skyIrradiance: number;
   rcWeight: number;
-  indirectFireflyClamp: readonly [number, number, number];
-  atrousDirectSigmas: readonly [number, number, number];
-  atrousIndirectSigmas: readonly [number, number, number];
   frameSubs: ReadonlyArray<(stats: FrameStats) => void>;
   verbose: boolean;
   debugTimings: Array<{ t: number; ms: number }>;
@@ -86,28 +100,37 @@ export function getPreferredSwapChainFormat(): GPUTextureFormat {
 
 function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   const ddgiLayerOn = deps.ddgiOn && deps.isLayerEnabled('ddgi');
-  if (ddgiLayerOn) {
-    const ddgiScene = deps.ddgiTraversalScene ?? deps.ensureThreeSceneRoot();
-    if (ddgiScene != null) {
-      if (deps.bvhBuffers != null) {
-        deps.ddgi.syncRestirBvhBuffers(deps.bvhBuffers, deps.lastScene ?? undefined);
-      }
-      void deps.ddgi.updateFrame({
-        scene: ddgiScene,
-        device: deps.device,
-        enabled: true,
-      });
-      if (deps.ddgi.ready) {
-        deps.ddgi.pass.setGlassMixScale(deps.tunables.glassMixScale);
-      }
+  const ddgiScene = ddgiLayerOn
+    ? (deps.ddgiTraversalScene ?? deps.ensureThreeSceneRoot())
+    : null;
+
+  // Per-frame BVH ⇒ GI-subsystem cascade — same owner the post-update /
+  // post-publish paths use, but tlas-sync-only (allowRcSceneRebuild=false so
+  // merged-mode RC is NOT rebuilt every frame), and the DDGI sync gated on the
+  // resolved ddgi-layer scene exactly as before.
+  propagateBvhToGiSubsystems({
+    ddgi: deps.ddgi,
+    rc: deps.rc,
+    bvhBuffers: deps.bvhBuffers,
+    lastScene: deps.lastScene,
+    syncDdgi: ddgiLayerOn && ddgiScene != null,
+    allowRcSceneRebuild: false,
+    ensureThreeSceneRoot: deps.ensureThreeSceneRoot,
+  });
+
+  if (ddgiLayerOn && ddgiScene != null) {
+    void deps.ddgi.updateFrame({
+      scene: ddgiScene,
+      device: deps.device,
+      enabled: true,
+    });
+    if (deps.ddgi.ready) {
+      deps.ddgi.pass.setGlassMixScale(deps.tunables.glassMixScale);
     }
   }
 
   const pipeline = deps.pipeline!;
   if (deps.rc) {
-    if (deps.bvhBuffers?.bvhMode === 'tlas') {
-      deps.rc.syncRestirBvhBuffers(deps.bvhBuffers);
-    }
     deps.rc.dispatchFrame({
       sunDirection: deps.primaryLightDir,
       sunColor: [
@@ -144,8 +167,7 @@ function emitFrameTelemetry(
   now: number,
 ): void {
   if (deps.frameSubs.length > 0) {
-    const gpu = (pipeline as unknown as { lastGpuTimings?: Record<string, number> })
-      .lastGpuTimings;
+    const gpu = pipeline.lastGpuTimings;
     const gpuTotal = gpu?.['total'];
     const memBreakdown = deps.debugSurface.estimatedGpuMemoryBytes?.() ?? undefined;
     const stats: FrameStats = {
@@ -234,8 +256,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     if (dbg.lastReportTs === 0) dbg.lastReportTs = now;
     if (now - dbg.lastReportTs > 5_000) {
       const elapsed = (now - dbg.lastReportTs) / 1_000;
-      const gpu = (pipeline as unknown as { lastGpuTimings?: Record<string, number> })
-        .lastGpuTimings ?? {};
+      const gpu = pipeline.lastGpuTimings ?? {};
       const gpuTotal = gpu['total'];
       console.log('[hybrid:debug] rate (5s window)', {
         framesDispatched: dbg.framesDispatched,

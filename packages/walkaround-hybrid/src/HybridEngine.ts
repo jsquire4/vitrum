@@ -49,7 +49,6 @@ import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import type { FrameResources } from './pipeline/resourceManager.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
 import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
 import {
@@ -57,6 +56,8 @@ import {
   getPreferredSwapChainFormat,
   runHybridEngineFrame,
   type HybridEngineFrameDeps,
+  type HybridLightingDeps,
+  type HybridDenoiserFilterDeps,
 } from './HybridEngineFrameOrchestrator.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
 import {
@@ -84,11 +85,14 @@ import {
   PipelineInitCoordinator,
   collectDDGILightsFromThreeRoot,
   type PipelineInitHost,
+  type HybridInitStaticConfig,
 } from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
+import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
+import { coreEmittersToDDGILights } from './coreEmittersToDDGILights.js';
 import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 
 // Re-export the option / lighting interfaces from their dedicated module so
@@ -183,19 +187,13 @@ export class HybridEngine implements Engine {
    *  adapter doesn't expose `timestamp-query` or when the engine is not yet
    *  initialised. Useful for dev panels + telemetry harnesses. */
   get lastGpuTimings(): Record<string, number> {
-    const p = this._pipeline as unknown as {
-      lastGpuTimings?: Record<string, number>;
-    } | null;
-    return p?.lastGpuTimings ?? {};
+    return this._pipeline?.lastGpuTimings ?? {};
   }
 
   /** Frame index that produced {@link lastGpuTimings}; -1 if no readback
    *  has resolved yet. */
   get lastGpuTimingsFrame(): number {
-    const p = this._pipeline as unknown as {
-      lastGpuTimingsFrame?: number;
-    } | null;
-    return p?.lastGpuTimingsFrame ?? -1;
+    return this._pipeline?.lastGpuTimingsFrame ?? -1;
   }
 
   /**
@@ -207,11 +205,8 @@ export class HybridEngine implements Engine {
    * `timestamp-query` feature.
    */
   async readGpuTimingsOnce(): Promise<{ perPass: Record<string, number>; rawBigints: string[] }> {
-    const p = this._pipeline as unknown as {
-      readGpuTimingsOnce?: () => Promise<{ perPass: Record<string, number>; rawBigints: string[] }>;
-    } | null;
-    if (!p?.readGpuTimingsOnce) return { perPass: {}, rawBigints: [] };
-    return p.readGpuTimingsOnce();
+    if (!this._pipeline) return { perPass: {}, rawBigints: [] };
+    return this._pipeline.readGpuTimingsOnce();
   }
 
   private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
@@ -486,8 +481,7 @@ export class HybridEngine implements Engine {
       device: () => this._device,
       readAtlas: () => this._ddgi?.pass?.getReadAtlasGPUTextures?.() ?? null,
       bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
-      pipelineResources: () =>
-        (this._pipeline as { _res?: FrameResources } | null)?._res ?? null,
+      pipelineResources: () => this._pipeline?.frameResources ?? null,
       denoiserPassEnabled: () => this._denoiserPassEnabled,
       setDenoiserPassEnabled: (enabled) => {
         this._denoiserPassEnabled = enabled;
@@ -699,26 +693,16 @@ export class HybridEngine implements Engine {
    * ReSTIR buffers without waiting for the next `renderFrame` tick.
    */
   private _applyPrimitiveUpdateSubsystems(result: PrimitiveUpdateResult): void {
-    if (this._bvhBuffers != null) {
-      this._ddgi.syncRestirBvhBuffers(
-        this._bvhBuffers,
-        this._lastScene ?? undefined,
-      );
-    }
-    if (!this._rc) return;
-    if (result.rcRefitBounds != null) {
-      this._rc.refitCascadeBounds(result.rcRefitBounds.min, result.rcRefitBounds.max);
-      if (this._bvhBuffers?.bvhMode === 'tlas') {
-        this._rc.syncRestirBvhBuffers(this._bvhBuffers);
-      }
-      return;
-    }
-    if (this._bvhBuffers?.bvhMode === 'tlas') {
-      this._rc.syncRestirBvhBuffers(this._bvhBuffers);
-      return;
-    }
-    const rcRoot = this._ensureThreeSceneRoot();
-    if (rcRoot != null) this._rc.setScene(rcRoot);
+    propagateBvhToGiSubsystems({
+      ddgi: this._ddgi,
+      rc: this._rc,
+      bvhBuffers: this._bvhBuffers,
+      lastScene: this._lastScene,
+      syncDdgi: true,
+      allowRcSceneRebuild: true,
+      ensureThreeSceneRoot: () => this._ensureThreeSceneRoot(),
+      rcRefitBounds: result.rcRefitBounds,
+    });
   }
 
   /** Build the per-call resource context the primitive-update helpers consume. */
@@ -801,7 +785,19 @@ export class HybridEngine implements Engine {
   private _syncDdgiLightsFromThreeRoot(): void {
     const root = this._ensureThreeSceneRoot();
     if (root == null) return;
-    const sceneLights = collectDDGILightsFromThreeRoot(root);
+    // Theme T16 — match the init path's gate (HybridEngineLifecycle): prefer
+    // the lossless core-emitter projection when a core scene supplies meshes,
+    // which preserves chroma, uses the true emissive area `4·|uAxis × vAxis|`
+    // for rect emitters, and carries the source emitter id. Fall back to the
+    // lossy THREE-walk ONLY for the raw-`threeScene` case (no core scene to
+    // read emitters from). Without this, an incremental `updateEmitter` /
+    // `refreshDdgiLightsFromThreeScene` re-derived lights via the lossy walk
+    // and silently dropped chroma / used the wrong area, drifting from the
+    // freshly-built init state.
+    const sceneLights =
+      this._coreSceneSuppliesMeshes() && this._lastScene != null
+        ? coreEmittersToDDGILights(this._lastScene)
+        : collectDDGILightsFromThreeRoot(root);
     this._ddgi.setLights([...this._ctorLights, ...sceneLights]);
     this._ddgi.invalidateProbeCache();
   }
@@ -957,6 +953,32 @@ export class HybridEngine implements Engine {
     return runHybridEngineFrame(this._buildFrameDeps(), input);
   }
 
+  /** Live lighting snapshot — the four runtime-mutable lighting fields
+   *  (`updateLighting()` mutates them). Grouped so both DI builders and any
+   *  future lighting consumer share one source of truth: adding a lighting
+   *  field is a single edit here, not one per builder. Read at call time
+   *  (per-frame snapshot semantics — see {@link _buildFrameDeps}). */
+  private _lightingSnapshot(): HybridLightingDeps {
+    return {
+      primaryLightDir: this._primaryLightDir,
+      primaryLightIntensity: this._primaryLightIntensity,
+      skyTint: this._skyTint,
+      skyIrradiance: this._skyIrradiance,
+    };
+  }
+
+  /** Tuple-typed denoiser-filter cluster (firefly clamp + per-channel atrous
+   *  sigmas). These live outside the number-only {@link Tunables} table
+   *  because they are tuple-valued; grouping them keeps {@link _buildFrameDeps}
+   *  compact and makes a new tuple knob a single edit. */
+  private _denoiserFilterDeps(): HybridDenoiserFilterDeps {
+    return {
+      indirectFireflyClamp: this._indirectFireflyClamp,
+      atrousDirectSigmas: this._atrousDirectSigmas,
+      atrousIndirectSigmas: this._atrousIndirectSigmas,
+    };
+  }
+
   private _buildFrameDeps(): HybridEngineFrameDeps {
     const self = this;
     return {
@@ -1000,14 +1022,9 @@ export class HybridEngine implements Engine {
       device: self._device,
       tunables: self._tunables,
       rc: self._rc,
-      primaryLightDir: self._primaryLightDir,
-      primaryLightIntensity: self._primaryLightIntensity,
-      skyTint: self._skyTint,
-      skyIrradiance: self._skyIrradiance,
+      ...self._lightingSnapshot(),
       rcWeight: self._rcWeight,
-      indirectFireflyClamp: self._indirectFireflyClamp,
-      atrousDirectSigmas: self._atrousDirectSigmas,
-      atrousIndirectSigmas: self._atrousIndirectSigmas,
+      ...self._denoiserFilterDeps(),
       frameSubs: self._frameSubs,
       verbose: self._verbose,
       debugTimings: self._debugTimings,
@@ -1205,31 +1222,46 @@ export class HybridEngine implements Engine {
     }
   }
 
+  /** Construction-time immutable config consumed by the init coordinator.
+   *  Every field here is assigned once in the constructor and never mutated,
+   *  so plain values are behaviorally identical to live getters — grouping
+   *  them collapses ~11 one-line getters into one spread and makes adding a
+   *  ctor-immutable init input a single edit. The MUTABLE fields (width,
+   *  height, lastScene, lighting, current BVH/traversal-scene) stay as live
+   *  getters in {@link _buildInitHost} because the coordinator reads them
+   *  across async phases. */
+  private _initStaticConfig(): HybridInitStaticConfig {
+    return {
+      device: this._device,
+      threeScene: this._threeScene,
+      restirBvhModeOverride: this._restirBvhModeOverride,
+      denoiser: this._denoiser,
+      neuralWeights: this._neuralWeights,
+      oidnModelUrl: this._oidnModelUrl,
+      oidnExecutionProviders: this._oidnExecutionProviders,
+      verbose: this._verbose,
+      debug: this._debug,
+      cameraMoveResetThresholdSq: this._initTunables.cameraMoveResetThresholdSq,
+      temporalAccumAlpha: this._initTunables.temporalAccumAlpha,
+      ctorLights: this._ctorLights,
+      ddgi: this._ddgi,
+    };
+  }
+
   /** Build the back-reference the {@link PipelineInitCoordinator} consumes.
-   *  All getters close over `this`; the coordinator never sees raw field
-   *  references, only the small documented surface in
+   *  Live-mutable inputs are getters closing over `this`; construction-time
+   *  immutables are spread from {@link _initStaticConfig}. The coordinator
+   *  never sees raw field references, only the small documented surface in
    *  `HybridEngineLifecycle.ts`. */
   private _buildInitHost(): PipelineInitHost {
     const self = this;
     return {
-      get device() { return self._device; },
+      ...this._initStaticConfig(),
       get width() { return self._width; },
       get height() { return self._height; },
-      get threeScene() { return self._threeScene; },
       get lastScene() { return self._lastScene; },
       get primaryLightDir() { return self._primaryLightDir; },
       get primaryLightIntensity() { return self._primaryLightIntensity; },
-      get restirBvhModeOverride() { return self._restirBvhModeOverride; },
-      get denoiser() { return self._denoiser; },
-      get neuralWeights() { return self._neuralWeights; },
-      get oidnModelUrl() { return self._oidnModelUrl; },
-      get oidnExecutionProviders() { return self._oidnExecutionProviders; },
-      get verbose() { return self._verbose; },
-      get debug() { return self._debug; },
-      get cameraMoveResetThresholdSq() { return self._initTunables.cameraMoveResetThresholdSq; },
-      get temporalAccumAlpha() { return self._initTunables.temporalAccumAlpha; },
-      get ctorLights() { return self._ctorLights; },
-      get ddgi() { return self._ddgi; },
       get preferredSwapChainFormat() { return getPreferredSwapChainFormat(); },
       get currentBvhBuffers() { return self._bvhBuffers; },
       get currentTraversalScene() { return self._ddgiTraversalScene; },
@@ -1239,14 +1271,15 @@ export class HybridEngine implements Engine {
 
       publishBvh:             (bvh) => {
         self._bvhBuffers = bvh;
-        self._ddgi.syncRestirBvhBuffers(bvh, self._lastScene ?? undefined);
-        if (self._rc == null) return;
-        if (bvh.bvhMode === 'tlas') {
-          self._rc.syncRestirBvhBuffers(bvh);
-        } else {
-          const rcRoot = self._ensureThreeSceneRoot();
-          if (rcRoot != null) self._rc.setScene(rcRoot);
-        }
+        propagateBvhToGiSubsystems({
+          ddgi: self._ddgi,
+          rc: self._rc,
+          bvhBuffers: bvh,
+          lastScene: self._lastScene,
+          syncDdgi: true,
+          allowRcSceneRebuild: true,
+          ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),
+        });
       },
       publishTraversalScene:  (s)   => { self._ddgiTraversalScene = s; },
       publishPipeline:        (p)   => { self._pipeline = p; },
