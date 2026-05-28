@@ -30,6 +30,7 @@ import {
   getIndirectTemporalAccumBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
+import { buildBindGroupFromTable } from './bindGroupDescriptors.js';
 
 // ─── W2-C13 follow-up: UBO codegen for builder-managed UBOs ───────────────────
 // AtrousUBO (atrous.wgsl.ts): {stepWidth, sigmaN, sigmaZ, sigmaC} — 4×f32 = 16 B.
@@ -66,43 +67,31 @@ interface FrameBindGroupResources {
   albedoTexture: GPUTexture;
 }
 
+// Positional resource order MUST match the 'frame' descriptor table in
+// bindGroupDescriptors.ts (which carries the per-binding rationale notes —
+// incl. the inert/placeholder G-buffer slots 0-4 and shade-only 10/12/13/14).
 export function buildFrameBindGroup(
   device: GPUDevice,
   cache: BGLCache,
   r: FrameBindGroupResources,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'frame-bg',
-    layout: getFrameBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: r.placeholderView },   // gDepth (placeholder — not used in primary-ray-cast mode)
-      { binding: 1, resource: r.placeholderView },   // gNormal
-      { binding: 2, resource: r.placeholderView },   // gAlbedo
-      { binding: 3, resource: r.placeholderView },   // gRough
-      { binding: 4, resource: r.placeholderView },   // motionVec
-      { binding: 5, resource: { buffer: r.reservoirCurrentBuffer } },
-      { binding: 6, resource: { buffer: r.reservoirPreviousBuffer } },
-      { binding: 7, resource: { buffer: r.reservoirSpatialBuffer } },
-      { binding: 8, resource: r.hdrColorTexture.createView() },
-      { binding: 9, resource: r.nearestSampler },
-      // gNormalDepth — only the shade pass writes to it; other passes
-      // declare it (in the BGL) but never reference the symbol, so it's
-      // inert for them. Bound to the same texture in every dispatch.
-      { binding: 10, resource: r.gNormalDepthTexture.createView() },
-      // Sprint 16 — half-res ReSTIR-GI reservoir. Only risGi writes to it
-      // (and shade reads it); other DI passes declare it via the BGL but
-      // never reference the symbol.
-      { binding: 11, resource: { buffer: r.reservoirGiCurrentBuffer } },
-      // Sprint 18 — indirect-channel HDR output. Only shade writes to it;
-      // bound to all frame-BGL pipelines for layout compatibility.
-      { binding: 12, resource: r.hdrIndirectTexture.createView() },
-      // Sprint 18 follow-up — total-radiance output (welford input).
-      { binding: 13, resource: r.hdrTotalTexture.createView() },
-      // Item 24 — albedo demodulation: shade writes visible-point albedo here;
-      // indirectCombine reads it to re-modulate the denoised indirect signal.
-      { binding: 14, resource: r.albedoTexture.createView() },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'frame', getFrameBindGroupLayout(device, cache), [
+    r.placeholderView,                          // 0 gDepth (placeholder)
+    r.placeholderView,                          // 1 gNormal (placeholder)
+    r.placeholderView,                          // 2 gAlbedo (placeholder)
+    r.placeholderView,                          // 3 gRough (placeholder)
+    r.placeholderView,                          // 4 motionVec (placeholder)
+    { buffer: r.reservoirCurrentBuffer },       // 5
+    { buffer: r.reservoirPreviousBuffer },      // 6
+    { buffer: r.reservoirSpatialBuffer },       // 7
+    r.hdrColorTexture.createView(),             // 8
+    r.nearestSampler,                           // 9
+    r.gNormalDepthTexture.createView(),         // 10 gNormalDepth (shade-write only)
+    { buffer: r.reservoirGiCurrentBuffer },     // 11 GI reservoir (risGi-write/shade-read)
+    r.hdrIndirectTexture.createView(),          // 12 hdrIndirect (shade-write only)
+    r.hdrTotalTexture.createView(),             // 13 hdrTotal (shade-write only)
+    r.albedoTexture.createView(),               // 14 albedo (shade-write only)
+  ]);
 }
 
 // ── Scene bind group ─────────────────────────────────────────────────────────
@@ -126,23 +115,19 @@ export function buildSceneBindGroup(
   cache: BGLCache,
   r: SceneBindGroupResources,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'scene-bg',
-    layout: getSceneBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: { buffer: r.bvhNodesBuffer } },
-      { binding: 1, resource: { buffer: r.bvhIndexBuffer } },   // vec4u: [0..2]=indices, [3]=RGBA8 raw attCol
-      { binding: 2, resource: { buffer: r.bvhPositionBuffer } },
-      { binding: 3, resource: { buffer: r.emitterBuffer } },
-      { binding: 4, resource: { buffer: r.emitterCdfBuffer } },
-      { binding: 5, resource: { buffer: r.bvhBeerBuffer } },    // u32: per-tri Beer-Lambert visible color
-      { binding: 6, resource: { buffer: r.tlasNodesBuffer } },
-      { binding: 7, resource: { buffer: r.tlasInstanceIndicesBuffer } },
-      { binding: 8, resource: { buffer: r.tlasBlasRootsBuffer } },
-      { binding: 9, resource: { buffer: r.tlasInstanceWorldToLocalBuffer } },
-      { binding: 10, resource: { buffer: r.tlasInstanceLocalToWorldBuffer } },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'scene', getSceneBindGroupLayout(device, cache), [
+    { buffer: r.bvhNodesBuffer },                   // 0
+    { buffer: r.bvhIndexBuffer },                   // 1 vec4u: [0..2]=indices, [3]=RGBA8 raw attCol
+    { buffer: r.bvhPositionBuffer },                // 2
+    { buffer: r.emitterBuffer },                    // 3
+    { buffer: r.emitterCdfBuffer },                 // 4
+    { buffer: r.bvhBeerBuffer },                    // 5 u32: per-tri Beer-Lambert visible color
+    { buffer: r.tlasNodesBuffer },                  // 6
+    { buffer: r.tlasInstanceIndicesBuffer },        // 7
+    { buffer: r.tlasBlasRootsBuffer },              // 8
+    { buffer: r.tlasInstanceWorldToLocalBuffer },   // 9
+    { buffer: r.tlasInstanceLocalToWorldBuffer },   // 10
+  ]);
 }
 
 // ── UBO bind group ───────────────────────────────────────────────────────────
@@ -154,15 +139,11 @@ export function buildUboBindGroup(
   aoFullView: GPUTextureView,
   tierView: GPUTextureView,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'ubo-bg',
-    layout: getUboBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: { buffer: uboBuffer } },
-      { binding: 1, resource: aoFullView },  // Sprint 15 — GTAO occlusion factor
-      { binding: 2, resource: tierView },    // Sprint 9 — adaptive-sampling tier
-    ],
-  });
+  return buildBindGroupFromTable(device, 'ubo', getUboBindGroupLayout(device, cache), [
+    { buffer: uboBuffer },  // 0
+    aoFullView,             // 1 Sprint 15 — GTAO occlusion factor
+    tierView,               // 2 Sprint 9 — adaptive-sampling tier (inert except risGi)
+  ]);
 }
 
 // ── Atrous bind group ────────────────────────────────────────────────────────
@@ -338,14 +319,10 @@ export function buildCompositeBindGroup(
   texView: GPUTextureView,
   compositeSampler: GPUSampler,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'composite-bg',
-    layout: getCompositeBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: texView },
-      { binding: 1, resource: compositeSampler },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'composite', getCompositeBindGroupLayout(device, cache), [
+    texView,            // 0
+    compositeSampler,   // 1
+  ]);
 }
 
 // ── Sample-budget bind group (Sprint 9) ──────────────────────────────────────
@@ -358,16 +335,12 @@ export function buildSampleBudgetBindGroup(
   budgetUbo: GPUBuffer,
   sampleCountUbo: GPUBuffer,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'sample-budget-bg',
-    layout: getSampleBudgetBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: { buffer: budgetUbo } },
-      { binding: 1, resource: varianceView },        // welford variance source (rg32float)
-      { binding: 2, resource: tierWriteView },       // tier output (r32uint)
-      { binding: 3, resource: { buffer: sampleCountUbo } },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'sampleBudget', getSampleBudgetBindGroupLayout(device, cache), [
+    { buffer: budgetUbo },        // 0
+    varianceView,                 // 1 welford variance source (rg32float)
+    tierWriteView,                // 2 tier output (r32uint)
+    { buffer: sampleCountUbo },   // 3
+  ]);
 }
 
 // ── Resolve bind group (Sprint 9) ────────────────────────────────────────────
@@ -381,17 +354,13 @@ export function buildResolveBindGroup(
   motionVectorsView: GPUTextureView,
   resolvedWriteView: GPUTextureView,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'resolve-bg',
-    layout: getResolveBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: { buffer: resolveUbo } },
-      { binding: 1, resource: currentRadianceView },
-      { binding: 2, resource: prevRadianceView },
-      { binding: 3, resource: motionVectorsView },
-      { binding: 4, resource: resolvedWriteView },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'resolve', getResolveBindGroupLayout(device, cache), [
+    { buffer: resolveUbo },   // 0
+    currentRadianceView,      // 1
+    prevRadianceView,         // 2
+    motionVectorsView,        // 3
+    resolvedWriteView,        // 4
+  ]);
 }
 
 export function buildMotionVectorsBindGroup(
@@ -401,15 +370,11 @@ export function buildMotionVectorsBindGroup(
   motionVectorsWriteView: GPUTextureView,
   uboBuffer: GPUBuffer,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'motion-vectors-bg',
-    layout: getMotionVectorsBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: gNormalDepthView },
-      { binding: 1, resource: motionVectorsWriteView },
-      { binding: 2, resource: { buffer: uboBuffer } },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'motionVectors', getMotionVectorsBindGroupLayout(device, cache), [
+    gNormalDepthView,         // 0
+    motionVectorsWriteView,   // 1
+    { buffer: uboBuffer },    // 2
+  ]);
 }
 
 // ── GTAO bind groups (Sprint 15) ─────────────────────────────────────────────
@@ -423,17 +388,12 @@ export function buildGTAOBindGroup(
   /** E1 — hdrAlbedoOut view for Jiménez 2016 §5.2 multi-bounce term. */
   albedoView: GPUTextureView,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'gtao-bg',
-    layout: getGTAOBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: gNormalDepthView },
-      { binding: 1, resource: aoHalfWriteView },
-      { binding: 2, resource: { buffer: gtaoUbo } },
-      // E1 — visible-point albedo from shade pass (hdrAlbedoOut, Item 24).
-      { binding: 3, resource: albedoView },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'gtao', getGTAOBindGroupLayout(device, cache), [
+    gNormalDepthView,       // 0
+    aoHalfWriteView,        // 1
+    { buffer: gtaoUbo },    // 2
+    albedoView,             // 3 E1 — visible-point albedo from shade (Item 24)
+  ]);
 }
 
 export function buildGTAOUpsampleBindGroup(
@@ -444,16 +404,12 @@ export function buildGTAOUpsampleBindGroup(
   aoFullWriteView: GPUTextureView,
   gtaoUbo: GPUBuffer,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'gtao-upsample-bg',
-    layout: getGTAOUpsampleBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: aoHalfReadView },
-      { binding: 1, resource: gNormalDepthView },
-      { binding: 2, resource: aoFullWriteView },
-      { binding: 3, resource: { buffer: gtaoUbo } },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'gtaoUpsample', getGTAOUpsampleBindGroupLayout(device, cache), [
+    aoHalfReadView,         // 0
+    gNormalDepthView,       // 1
+    aoFullWriteView,        // 2
+    { buffer: gtaoUbo },    // 3
+  ]);
 }
 
 // ── GI temporal + spatial bind groups (Sprint 17) ────────────────────────────
@@ -465,15 +421,11 @@ export function buildTemporalGiBindGroup(
   reservoirGiPrevious: GPUBuffer,
   uboBuffer: GPUBuffer,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'temporal-gi-bg',
-    layout: getTemporalGiBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: { buffer: reservoirGiCurrent } },
-      { binding: 1, resource: { buffer: reservoirGiPrevious } },
-      { binding: 2, resource: { buffer: uboBuffer } },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'temporalGi', getTemporalGiBindGroupLayout(device, cache), [
+    { buffer: reservoirGiCurrent },    // 0
+    { buffer: reservoirGiPrevious },   // 1
+    { buffer: uboBuffer },             // 2
+  ]);
 }
 
 export function buildSpatialGiBindGroup(
@@ -484,15 +436,17 @@ export function buildSpatialGiBindGroup(
   uboBuffer: GPUBuffer,
   label: string,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label,
-    layout: getSpatialGiBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: { buffer: inBuffer } },
-      { binding: 1, resource: { buffer: outBuffer } },
-      { binding: 2, resource: { buffer: uboBuffer } },
+  // spatialGi uses two distinct ping-pong labels ('spatial-gi-bg-1/-2'); pass
+  // the caller-supplied label through as the GPU debug-label override.
+  return buildBindGroupFromTable(
+    device, 'spatialGi', getSpatialGiBindGroupLayout(device, cache),
+    [
+      { buffer: inBuffer },    // 0
+      { buffer: outBuffer },   // 1
+      { buffer: uboBuffer },   // 2
     ],
-  });
+    label,
+  );
 }
 
 // ── Indirect temporal accumulator (Sprint 18 follow-up) ──────────────────────
@@ -504,15 +458,11 @@ export function buildIndirectTemporalAccumBindGroup(
   prevAccumView: GPUTextureView,
   outAccumView: GPUTextureView,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'indirect-temporal-accum-bg',
-    layout: getIndirectTemporalAccumBindGroupLayout(device, cache),
-    entries: [
-      { binding: 0, resource: currentRawView },
-      { binding: 1, resource: prevAccumView },
-      { binding: 2, resource: outAccumView },
-    ],
-  });
+  return buildBindGroupFromTable(device, 'indirectTemporalAccum', getIndirectTemporalAccumBindGroupLayout(device, cache), [
+    currentRawView,   // 0
+    prevAccumView,    // 1
+    outAccumView,     // 2
+  ]);
 }
 
 // ── Indirect-combine bind group (Sprint 18) ──────────────────────────────────
@@ -526,16 +476,106 @@ export function buildIndirectCombineBindGroup(
   /** Item 24 — albedo texture view for re-modulation after indirect denoising. */
   albedoView: GPUTextureView,
 ): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'indirect-combine-bg',
-    layout: getIndirectCombineBindGroupLayout(device, cache),
+  return buildBindGroupFromTable(device, 'indirectCombine', getIndirectCombineBindGroupLayout(device, cache), [
+    denoisedDirectView,   // 0
+    hdrIndirectView,      // 1
+    combinedOutView,      // 2
+    albedoView,           // 3 Item 24 — re-modulate by albedo (Schied 2017 §4.1)
+  ]);
+}
+
+// ── PPG bind groups (W9 — Müller 2017 path guiding) ──────────────────────────
+//
+// The PPG guide / update kernels use `layout: 'auto'` (the WGSL declares its
+// own bindings rather than referencing a cached BGL family), so these helpers
+// take the pipeline's `getBindGroupLayout` accessor instead of a `BGLCache`.
+// They centralise the two-group construction the PPG passes previously inlined
+// so every host-side bind group goes through the build*BindGroup convention.
+
+/** Pipeline auto-layout accessor — `GPUComputePipeline.getBindGroupLayout`. */
+export type AutoLayoutFor = (index: number) => GPUBindGroupLayout;
+
+export interface PpgGuideBindGroupResources {
+  sTreeBuf: GPUBuffer;
+  dTreeBuf: GPUBuffer;
+  dTreeOffsetsBuf: GPUBuffer;
+  sampleOutBuf: GPUBuffer;
+  /** W9 Phase 2 — spatial-fused GI reservoir (per-pixel primary-hit xv). */
+  reservoirGiCurrentBuffer: GPUBuffer;
+  guideUboBuffer: GPUBuffer;
+}
+
+/**
+ * Build the two auto-layout bind groups for the PPG guide kernel
+ * (ppgGuide.wgsl.ts):
+ *   group(0): sTree / dTree / dTreeOffsets / sampleOut / reservoirGiCurrent
+ *   group(1): guideUbo
+ */
+export function buildPpgGuideBindGroups(
+  device: GPUDevice,
+  getBindGroupLayout: AutoLayoutFor,
+  r: PpgGuideBindGroupResources,
+): readonly [GPUBindGroup, GPUBindGroup] {
+  const bg0 = device.createBindGroup({
+    label: 'ppg-guide-bg0',
+    layout: getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: denoisedDirectView },
-      { binding: 1, resource: hdrIndirectView },
-      { binding: 2, resource: combinedOutView },
-      // Item 24 — re-modulate denoised indirect by albedo (Schied 2017 §4.1).
-      { binding: 3, resource: albedoView },
+      { binding: 0, resource: { buffer: r.sTreeBuf } },
+      { binding: 1, resource: { buffer: r.dTreeBuf } },
+      { binding: 2, resource: { buffer: r.dTreeOffsetsBuf } },
+      { binding: 3, resource: { buffer: r.sampleOutBuf } },
+      { binding: 4, resource: { buffer: r.reservoirGiCurrentBuffer } },
     ],
   });
+  const bg1 = device.createBindGroup({
+    label: 'ppg-guide-bg1',
+    layout: getBindGroupLayout(1),
+    entries: [{ binding: 0, resource: { buffer: r.guideUboBuffer } }],
+  });
+  return [bg0, bg1];
+}
+
+export interface PpgUpdateBindGroupResources {
+  samplesPosBuf: GPUBuffer;
+  samplesDirBuf: GPUBuffer;
+  samplesLiBuf: GPUBuffer;
+  fluxAtomicsBuf: GPUBuffer;
+  sTreeBuf: GPUBuffer;
+  dTreeBuf: GPUBuffer;
+  dTreeOffsetsBuf: GPUBuffer;
+  updateUboBuffer: GPUBuffer;
+}
+
+/**
+ * Build the two auto-layout bind groups for the PPG update kernel
+ * (ppgUpdate.wgsl.ts):
+ *   group(0): samplesPos / samplesDir / samplesLi / fluxAtomics /
+ *             sTree / dTree / dTreeOffsets
+ *   group(1): updateUbo
+ */
+export function buildPpgUpdateBindGroups(
+  device: GPUDevice,
+  getBindGroupLayout: AutoLayoutFor,
+  r: PpgUpdateBindGroupResources,
+): readonly [GPUBindGroup, GPUBindGroup] {
+  const bg0 = device.createBindGroup({
+    label: 'ppg-update-bg0',
+    layout: getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: r.samplesPosBuf } },
+      { binding: 1, resource: { buffer: r.samplesDirBuf } },
+      { binding: 2, resource: { buffer: r.samplesLiBuf } },
+      { binding: 3, resource: { buffer: r.fluxAtomicsBuf } },
+      { binding: 4, resource: { buffer: r.sTreeBuf } },
+      { binding: 5, resource: { buffer: r.dTreeBuf } },
+      { binding: 6, resource: { buffer: r.dTreeOffsetsBuf } },
+    ],
+  });
+  const bg1 = device.createBindGroup({
+    label: 'ppg-update-bg1',
+    layout: getBindGroupLayout(1),
+    entries: [{ binding: 0, resource: { buffer: r.updateUboBuffer } }],
+  });
+  return [bg0, bg1];
 }
 

@@ -1,0 +1,375 @@
+/**
+ * Bind-group descriptor table — single source of truth for the *uniform*
+ * BGL families (T9-stepB, "staged-both" design).
+ *
+ * # Why this file exists
+ *
+ * Before this table, every bind group lived as TWO hand-written lists that had
+ * to stay in lockstep:
+ *   1. a layout factory in `bindGroupLayouts.ts` (binding → entry type), and
+ *   2. a builder in `bindGroupBuilders.ts` (binding → concrete resource).
+ *
+ * Drift between the two is silent until a `createBindGroup` validation error
+ * at runtime. This descriptor table captures each binding's *kind* once and
+ * generates BOTH sides from it:
+ *   - {@link bglEntriesFor} → the `GPUBindGroupLayoutEntry[]` the cached BGL
+ *     factory in `bindGroupLayouts.ts` consumes.
+ *   - {@link buildBindGroupFromTable} → a generic `buildBindGroup(id,
+ *     resources[])` used by the named builders in `bindGroupBuilders.ts`.
+ *
+ * The companion parity test (`__tests__/bindGroupDescriptorParity.test.ts`)
+ * asserts the generated entry count + binding indices match the layout, so
+ * the lockstep-drift the dual-table invited is now mechanically impossible.
+ *
+ * # Scope — what's in the table vs escape-hatched
+ *
+ * Only the families whose builder is a *straight entries-list* (one resource
+ * per binding, no per-call mutation) live here:
+ *   frame · scene · ubo · gtao · gtaoUpsample · temporalGi · spatialGi ·
+ *   indirectCombine · indirectTemporalAccum · motionVectors · resolve ·
+ *   sampleBudget · composite
+ *
+ * The three NON-uniform builders stay HAND-WRITTEN in `bindGroupBuilders.ts`
+ * (they do work no descriptor can express):
+ *   - `buildAtrousBindGroup` / `buildAccumBindGroup` — lazily create + writeBuffer
+ *     a per-builder UBO (`if (!uboRef.buf)`),
+ *   - `buildHybridLayersBindGroup` — null→placeholder texture fallback.
+ * The `layout:'auto'` denoiser / PPG pipelines also stay outside this system
+ * (their layout is owned by the shader, not a cached BGL).
+ *
+ * # CRITICAL — dead-binding rationale is preserved
+ *
+ * Several frame/ubo bindings are inert placeholders that MUST stay bound for
+ * layout compatibility across pipelines that don't reference them (e.g. the
+ * frame G-buffer slots 0-4, and the shade-only output slots 10/12/13/14).
+ * Their rationale lives in each entry's `note` field below — do NOT prune any
+ * inert binding; dropping it from the layout breaks every pipeline that shares
+ * the BGL.
+ */
+
+/**
+ * Discriminated tag for a single binding's GPU resource type. The string
+ * encodes both the WebGPU layout-entry shape and (for storage textures) the
+ * format, so one tag round-trips to a `GPUBindGroupLayoutEntry`.
+ */
+export type BindingKind =
+  | 'storage-ro'                  // buffer: { type: 'read-only-storage' }
+  | 'storage-rw'                  // buffer: { type: 'storage' }
+  | 'uniform'                     // buffer: { type: 'uniform' }
+  | 'tex'                         // texture: { sampleType: 'unfilterable-float' }
+  | 'tex:uint'                    // texture: { sampleType: 'uint' }
+  | 'sampler:nf'                  // sampler: { type: 'non-filtering' }
+  | 'storage-tex:rgba16float'     // storageTexture: write-only rgba16float
+  | 'storage-tex:rg32float'       // storageTexture: write-only rg32float
+  | 'storage-tex:r32uint';        // storageTexture: write-only r32uint
+
+export interface BindingDescriptor {
+  readonly binding: number;
+  readonly kind: BindingKind;
+  /** Optional rationale — load-bearing for inert / placeholder bindings. */
+  readonly note?: string;
+}
+
+/** Identifier for a table-backed BGL family. Must match a `BGLCache` key. */
+export type BindGroupTableId =
+  | 'frame'
+  | 'scene'
+  | 'ubo'
+  | 'gtao'
+  | 'gtaoUpsample'
+  | 'temporalGi'
+  | 'spatialGi'
+  | 'indirectCombine'
+  | 'indirectTemporalAccum'
+  | 'motionVectors'
+  | 'resolve'
+  | 'sampleBudget'
+  | 'composite';
+
+export interface BindGroupTableEntry {
+  readonly id: BindGroupTableId;
+  /** GPU debug label suffix (`<label>-bgl` / `<label>-bg`). */
+  readonly label: string;
+  /** Shader stage visibility for every binding in this family. */
+  readonly visibility: 'compute' | 'fragment';
+  readonly entries: readonly BindingDescriptor[];
+}
+
+// ── The table ────────────────────────────────────────────────────────────────
+
+export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
+  {
+    id: 'frame',
+    label: 'frame',
+    visibility: 'compute',
+    entries: [
+      // Slots 0-4 — G-buffer placeholders. Inert in primary-ray-cast mode
+      // (no pre-pass writes them) but MUST stay bound: every frame-BGL
+      // pipeline declares them, so dropping them breaks layout compat.
+      { binding: 0, kind: 'tex', note: 'gDepth (placeholder — not used in primary-ray-cast mode)' },
+      { binding: 1, kind: 'tex', note: 'gNormal (placeholder)' },
+      { binding: 2, kind: 'tex', note: 'gAlbedo (placeholder)' },
+      { binding: 3, kind: 'tex', note: 'gRough (placeholder)' },
+      { binding: 4, kind: 'tex', note: 'motionVec (placeholder)' },
+      { binding: 5, kind: 'storage-rw', note: 'reservoirCurrent' },
+      { binding: 6, kind: 'storage-ro', note: 'reservoirPrevious' },
+      { binding: 7, kind: 'storage-rw', note: 'reservoirSpatial' },
+      { binding: 8, kind: 'storage-tex:rgba16float', note: 'hdrColor (write)' },
+      { binding: 9, kind: 'sampler:nf', note: 'nearest sampler' },
+      // Slot 10 — gNormalDepth. Only shade writes it (normal.xyz + primary-hit
+      // distance.w); ris/temporal/spatial declare it via the BGL but never
+      // reference the symbol. Inert for them; bound to the same texture in
+      // every dispatch for layout compat.
+      { binding: 10, kind: 'storage-tex:rgba16float', note: 'gNormalDepth (shade-write only; inert for ris/temporal/spatial)' },
+      // Slot 11 — Sprint 16 half-res ReSTIR-GI reservoir. risGi writes, shade
+      // reads; other DI passes declare it via the BGL but never reference it.
+      { binding: 11, kind: 'storage-rw', note: 'reservoirGiCurrent (risGi-write / shade-read; inert for DI passes)' },
+      // Slot 12 — Sprint 18 indirect-channel HDR output. Only shade writes it;
+      // bound to all frame-BGL pipelines for layout compat.
+      { binding: 12, kind: 'storage-tex:rgba16float', note: 'hdrIndirect (shade-write only; inert for ris/temporal/spatial/risGi)' },
+      // Slot 13 — Sprint 18 follow-up total-radiance output (welford input).
+      // Only shade writes it; inert/placeholder for the other frame-BGL passes.
+      { binding: 13, kind: 'storage-tex:rgba16float', note: 'hdrTotal (shade-write only; welford reads it)' },
+      // Slot 14 — Item 24 albedo demodulation (Schied 2017 §4.1). shade writes
+      // visible-point albedo; indirectCombine reads it. Inert for ris/temporal/
+      // spatial/risGi but must stay bound for frame-BGL layout compat.
+      { binding: 14, kind: 'storage-tex:rgba16float', note: 'albedo (shade-write only; indirectCombine reads it)' },
+    ],
+  },
+  {
+    id: 'scene',
+    label: 'scene',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'storage-ro', note: 'bvhNodes' },
+      { binding: 1, kind: 'storage-ro', note: 'bvhIndex (vec4u: [0..2]=indices, [3]=RGBA8 raw attCol)' },
+      { binding: 2, kind: 'storage-ro', note: 'bvhPositions' },
+      { binding: 3, kind: 'storage-ro', note: 'emitters' },
+      { binding: 4, kind: 'storage-ro', note: 'emitterCdf' },
+      { binding: 5, kind: 'storage-ro', note: 'bvh_beer (Beer-Lambert visible color)' },
+      { binding: 6, kind: 'storage-ro', note: 'tlasNodes' },
+      { binding: 7, kind: 'storage-ro', note: 'tlasInstanceIndices' },
+      { binding: 8, kind: 'storage-ro', note: 'tlasBlasRoots' },
+      { binding: 9, kind: 'storage-ro', note: 'tlasInstanceWorldToLocal (mat4 cols)' },
+      { binding: 10, kind: 'storage-ro', note: 'tlasInstanceLocalToWorld' },
+    ],
+  },
+  {
+    id: 'ubo',
+    label: 'ubo',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'uniform', note: 'WalkaroundUBO (256 bytes)' },
+      { binding: 1, kind: 'tex', note: 'Sprint 15 — full-res GTAO occlusion factor (r16float), 1-frame lagged' },
+      // Slot 2 — Sprint 9 adaptive-sampling tier (r32uint, sample-budget output).
+      // risGi reads it to scale M_GI per pixel; ris/temporal/spatial/shade
+      // declare the slot for layout compat but do not reference the symbol.
+      { binding: 2, kind: 'tex:uint', note: 'adaptive-sampling tier (risGi reads; inert for ris/temporal/spatial/shade)' },
+    ],
+  },
+  {
+    id: 'gtao',
+    label: 'gtao',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'tex', note: 'gNormalDepth' },
+      { binding: 1, kind: 'storage-tex:rgba16float', note: 'aoHalf out (E1 multi-bounce: bumped from r16float)' },
+      { binding: 2, kind: 'uniform', note: 'GTAOUniforms' },
+      { binding: 3, kind: 'tex', note: 'E1 — hdrAlbedoOut (Jiménez 2016 §5.2 multi-bounce term)' },
+    ],
+  },
+  {
+    id: 'gtaoUpsample',
+    label: 'gtao-upsample',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'tex', note: 'aoHalf in (per-channel multi-bounce AO)' },
+      { binding: 1, kind: 'tex', note: 'gNormalDepth' },
+      { binding: 2, kind: 'storage-tex:rgba16float', note: 'aoFull out (per-channel Jiménez 2016 §5.2 AO in .rgb)' },
+      { binding: 3, kind: 'uniform', note: 'GTAOUniforms (audit B3 — bilateralDepthSigma)' },
+    ],
+  },
+  {
+    id: 'temporalGi',
+    label: 'temporal-gi',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'storage-rw', note: 'reservoirGiCurrent' },
+      { binding: 1, kind: 'storage-ro', note: 'reservoirGiPrevious' },
+      { binding: 2, kind: 'uniform', note: 'WalkaroundUBO' },
+    ],
+  },
+  {
+    id: 'spatialGi',
+    label: 'spatial-gi',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'storage-ro', note: 'input reservoir' },
+      { binding: 1, kind: 'storage-rw', note: 'output reservoir' },
+      { binding: 2, kind: 'uniform', note: 'WalkaroundUBO' },
+    ],
+  },
+  {
+    id: 'indirectCombine',
+    label: 'indirect-combine',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'tex', note: 'denoisedDirect' },
+      { binding: 1, kind: 'tex', note: 'hdrIndirect' },
+      { binding: 2, kind: 'storage-tex:rgba16float', note: 'combinedOut' },
+      { binding: 3, kind: 'tex', note: 'Item 24 — albedo demodulation (Schied 2017 §4.1)' },
+    ],
+  },
+  {
+    id: 'indirectTemporalAccum',
+    label: 'indirect-temporal-accum',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'tex', note: 'currentRaw (hdrIndirectTexture)' },
+      { binding: 1, kind: 'tex', note: 'prevAccum (previous frame accumulator output)' },
+      { binding: 2, kind: 'storage-tex:rgba16float', note: 'outAccum (this frame accumulator output)' },
+    ],
+  },
+  {
+    id: 'motionVectors',
+    label: 'motion-vectors',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'tex', note: 'gNormalDepth in' },
+      { binding: 1, kind: 'storage-tex:rg32float', note: 'motion out' },
+      { binding: 2, kind: 'uniform', note: 'WalkaroundUBO' },
+    ],
+  },
+  {
+    id: 'resolve',
+    label: 'resolve',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'uniform', note: 'ResolveUniforms (screen size + frame parity)' },
+      { binding: 1, kind: 'tex', note: 'current radiance' },
+      { binding: 2, kind: 'tex', note: 'previous radiance' },
+      { binding: 3, kind: 'tex', note: 'motion vectors' },
+      { binding: 4, kind: 'storage-tex:rgba16float', note: 'resolved out' },
+    ],
+  },
+  {
+    id: 'sampleBudget',
+    label: 'sample-budget',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'uniform', note: 'SampleBudgetUniforms (thresholds + screen size)' },
+      { binding: 1, kind: 'tex', note: 'variance source (rg32float, welford)' },
+      { binding: 2, kind: 'storage-tex:r32uint', note: 'tier output' },
+      { binding: 3, kind: 'uniform', note: 'SampleCountUniforms (sample-count counter)' },
+    ],
+  },
+  {
+    id: 'composite',
+    label: 'composite',
+    visibility: 'fragment',
+    entries: [
+      { binding: 0, kind: 'tex', note: 'final blit source' },
+      { binding: 1, kind: 'sampler:nf', note: 'composite sampler' },
+    ],
+  },
+];
+
+const TABLE_BY_ID: ReadonlyMap<BindGroupTableId, BindGroupTableEntry> = new Map(
+  BIND_GROUP_TABLE.map((e) => [e.id, e]),
+);
+
+/** Look up a table entry by id; throws on unknown id (registration error). */
+export function getTableEntry(id: BindGroupTableId): BindGroupTableEntry {
+  const e = TABLE_BY_ID.get(id);
+  if (!e) throw new Error(`[bindGroupDescriptors] unknown table id: ${id}`);
+  return e;
+}
+
+// ── kind → WebGPU shape mappers ──────────────────────────────────────────────
+
+function visibilityFlag(v: 'compute' | 'fragment'): number {
+  // Use the runtime global when present (real WebGPU env); otherwise fall back
+  // to the spec-fixed bit constants so the layout factory can also run in a
+  // non-WebGPU test environment (FRAGMENT = 0x2, COMPUTE = 0x4 per the WebGPU
+  // GPUShaderStage flags). The numeric value is what createBindGroupLayout
+  // validates against, so the fallback is byte-identical to the global.
+  const stage: { FRAGMENT: number; COMPUTE: number } =
+    (globalThis as { GPUShaderStage?: { FRAGMENT: number; COMPUTE: number } }).GPUShaderStage
+    ?? { FRAGMENT: 0x2, COMPUTE: 0x4 };
+  return v === 'fragment' ? stage.FRAGMENT : stage.COMPUTE;
+}
+
+/** Map a {@link BindingKind} to the resource-specific part of a layout entry. */
+function layoutResourceFor(kind: BindingKind): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> {
+  switch (kind) {
+    case 'storage-ro':
+      return { buffer: { type: 'read-only-storage' } };
+    case 'storage-rw':
+      return { buffer: { type: 'storage' } };
+    case 'uniform':
+      return { buffer: { type: 'uniform' } };
+    case 'tex':
+      return { texture: { sampleType: 'unfilterable-float' } };
+    case 'tex:uint':
+      return { texture: { sampleType: 'uint' } };
+    case 'sampler:nf':
+      return { sampler: { type: 'non-filtering' } };
+    case 'storage-tex:rgba16float':
+      return { storageTexture: { access: 'write-only', format: 'rgba16float' } };
+    case 'storage-tex:rg32float':
+      return { storageTexture: { access: 'write-only', format: 'rg32float' } };
+    case 'storage-tex:r32uint':
+      return { storageTexture: { access: 'write-only', format: 'r32uint' } };
+  }
+}
+
+/**
+ * Generate the `GPUBindGroupLayoutEntry[]` for a table family. The cached BGL
+ * factory in `bindGroupLayouts.ts` calls this so the layout entries are
+ * derived from the same table the builder uses.
+ */
+export function bglEntriesFor(id: BindGroupTableId): GPUBindGroupLayoutEntry[] {
+  const t = getTableEntry(id);
+  const vis = visibilityFlag(t.visibility);
+  return t.entries.map((d) => ({
+    binding: d.binding,
+    visibility: vis,
+    ...layoutResourceFor(d.kind),
+  }));
+}
+
+/**
+ * Generic positional bind-group builder. Resources are supplied in binding
+ * order (index 0 → first descriptor entry, …). Throws if the resource count
+ * does not match the table's binding count — a loud, immediate failure beats a
+ * silent partial bind group.
+ *
+ * The named builders in `bindGroupBuilders.ts` (`buildFrameBindGroup`, …) are
+ * thin wrappers that assemble the positional array and delegate here, so both
+ * the layout and the bind group flow from this one table.
+ */
+export function buildBindGroupFromTable(
+  device: GPUDevice,
+  id: BindGroupTableId,
+  layout: GPUBindGroupLayout,
+  resources: readonly GPUBindingResource[],
+  /** Override the default `<label>-bg` GPU debug label (e.g. the spatialGi
+   *  ping-pong builder distinguishes its two bind groups by label). */
+  labelOverride?: string,
+): GPUBindGroup {
+  const t = getTableEntry(id);
+  if (resources.length !== t.entries.length) {
+    throw new Error(
+      `[bindGroupDescriptors] '${id}' expects ${t.entries.length} resources, ` +
+        `got ${resources.length}`,
+    );
+  }
+  // Map over `resources` (not the table) so each element is a non-undefined
+  // GPUBindingResource under noUncheckedIndexedAccess; the length check above
+  // guarantees a 1:1 correspondence with the table's binding indices.
+  return device.createBindGroup({
+    label: labelOverride ?? `${t.label}-bg`,
+    layout,
+    entries: resources.map((resource, i) => ({ binding: t.entries[i]!.binding, resource })),
+  });
+}

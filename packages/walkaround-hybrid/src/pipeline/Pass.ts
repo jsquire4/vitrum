@@ -136,6 +136,99 @@ export interface PassDispatchContext {
   readonly frameState: PassFrameState;
 }
 
+/**
+ * Shared compute-dispatch body for the five passes that reuse the
+ * orchestrator-built frame/scene/ubo bind groups (and, optionally, the
+ * hybrid-layers group at slot 3): RIS, temporal, spatial, gi-ris, shade.
+ *
+ * Before this helper each of those passes inlined the identical sequence
+ * `beginComputePass(computeDesc(label)) → setPipeline → setBindGroup 0/1/2
+ * [+ 3] → dispatchWorkgroups → end`. The only per-pass variation is:
+ *   - the timestamp label,
+ *   - whether slot 3 (hybrid-layers) is bound, and
+ *   - whether the dispatch is full-res (`wgX/wgY`) or half-res
+ *     (`halfWgX/halfWgY`).
+ *
+ * Behavior is byte-identical to the prior hand-written bodies.
+ */
+export function dispatchSharedBindGroupPass(
+  ctx: PassDispatchContext,
+  pipeline: GPUComputePipeline,
+  opts: {
+    /** Timestamp label + compute-pass descriptor key. */
+    readonly label: PassLabel;
+    /** Bind the DDGI hybrid-layers group at slot 3 (gi-ris + shade). */
+    readonly useHybridLayers?: boolean;
+    /** Dispatch at half resolution (`halfWgX/halfWgY`) instead of full
+     *  (`wgX/wgY`). Used by the Sprint-16 gi-ris pass. */
+    readonly halfRes?: boolean;
+  },
+): void {
+  const {
+    encoder, computeDesc,
+    frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup,
+    wgX, wgY, halfWgX, halfWgY,
+  } = ctx;
+  const pass = encoder.beginComputePass(computeDesc(opts.label));
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, frameBindGroup);
+  pass.setBindGroup(1, sceneBindGroup);
+  pass.setBindGroup(2, uboBindGroup);
+  if (opts.useHybridLayers) pass.setBindGroup(3, hybridLayersBindGroup);
+  const dx = opts.halfRes ? halfWgX : wgX;
+  const dy = opts.halfRes ? halfWgY : wgY;
+  pass.dispatchWorkgroups(dx, dy, 1);
+  pass.end();
+}
+
+/**
+ * Base class for the five compute passes that share the orchestrator-built
+ * frame/scene/ubo bind groups. Concrete subclasses declare only their
+ * identity (`id`/`dependencies`/`passLabels`) and the dispatch knobs
+ * (`useHybridLayers`/`halfRes`); the dispatch body is provided here.
+ *
+ * The default `dispatch` runs one {@link dispatchSharedBindGroupPass} per
+ * entry in `passLabels`, which covers both single-dispatch passes (one
+ * label) and the spatial-reuse pass (two ping-pong labels sharing one
+ * pipeline + bind group). `gates()` returns true (these passes always run);
+ * `initialize`/`dispose` are no-ops since they reuse the shared compile
+ * output and own no pass-private GPU resources.
+ */
+export abstract class SharedBindGroupPass implements Pass {
+  abstract readonly id: string;
+  abstract readonly dependencies: readonly string[];
+  abstract readonly passLabels: readonly PassLabel[];
+
+  /** Bind the hybrid-layers group at slot 3 (gi-ris + shade override). */
+  protected readonly useHybridLayers: boolean = false;
+  /** Dispatch at half resolution (gi-ris override). */
+  protected readonly halfRes: boolean = false;
+
+  protected readonly _pipeline: GPUComputePipeline;
+
+  constructor(pipeline: GPUComputePipeline) {
+    this._pipeline = pipeline;
+  }
+
+  gates(): boolean {
+    return true;
+  }
+
+  async initialize(_ctx: PassInitContext): Promise<void> {}
+
+  dispatch(ctx: PassDispatchContext): void {
+    for (const label of this.passLabels) {
+      dispatchSharedBindGroupPass(ctx, this._pipeline, {
+        label,
+        useHybridLayers: this.useHybridLayers,
+        halfRes: this.halfRes,
+      });
+    }
+  }
+
+  dispose(): void {}
+}
+
 export interface Pass {
   /** Stable identifier; must be unique within a {@link PassRegistry}. */
   readonly id: string;

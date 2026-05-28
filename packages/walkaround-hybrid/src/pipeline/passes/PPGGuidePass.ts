@@ -24,6 +24,7 @@
  *     binding(0) guideUboBuffer (uniform)
  */
 
+import { buildPpgGuideBindGroups } from '../bindGroupBuilders.js';
 import type {
   Pass,
   PassDispatchContext,
@@ -74,22 +75,18 @@ export class PPGGuidePass implements Pass {
     // W9 Phase 2: binding 4 reads the spatial-fused GI reservoir buffer
     // (xv = per-pixel primary-hit position). The 'gi-spatial-2' dependency
     // declared above guarantees this buffer is the post-spatial-reuse output.
-    const bg0 = device.createBindGroup({
-      label: 'ppg-guide-bg0',
-      layout: this._pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: ppg.sTreeBuf } },
-        { binding: 1, resource: { buffer: ppg.dTreeBuf } },
-        { binding: 2, resource: { buffer: ppg.dTreeOffsetsBuf } },
-        { binding: 3, resource: { buffer: ppg.sampleOutBuf } },
-        { binding: 4, resource: { buffer: resources.restirGI.reservoirGiCurrentBuffer } },
-      ],
-    });
-    const bg1 = device.createBindGroup({
-      label: 'ppg-guide-bg1',
-      layout: this._pipeline.getBindGroupLayout(1),
-      entries: [{ binding: 0, resource: { buffer: ppg.guideUboBuffer } }],
-    });
+    const [bg0, bg1] = buildPpgGuideBindGroups(
+      device,
+      (i) => this._pipeline.getBindGroupLayout(i),
+      {
+        sTreeBuf: ppg.sTreeBuf,
+        dTreeBuf: ppg.dTreeBuf,
+        dTreeOffsetsBuf: ppg.dTreeOffsetsBuf,
+        sampleOutBuf: ppg.sampleOutBuf,
+        reservoirGiCurrentBuffer: resources.restirGI.reservoirGiCurrentBuffer,
+        guideUboBuffer: ppg.guideUboBuffer,
+      },
+    );
 
     const pixelCount = width * height;
     // Workgroup size in the WGSL is 64 (1-D); ceil-div for partial tail.

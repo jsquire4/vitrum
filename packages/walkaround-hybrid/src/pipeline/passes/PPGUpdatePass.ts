@@ -22,6 +22,7 @@
  *     binding(0) updateUboBuffer (uniform)
  */
 
+import { buildPpgUpdateBindGroups } from '../bindGroupBuilders.js';
 import type {
   Pass,
   PassDispatchContext,
@@ -60,24 +61,20 @@ export class PPGUpdatePass implements Pass {
       );
     }
 
-    const bg0 = device.createBindGroup({
-      label: 'ppg-update-bg0',
-      layout: this._pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: ppg.samplesPosBuf } },
-        { binding: 1, resource: { buffer: ppg.samplesDirBuf } },
-        { binding: 2, resource: { buffer: ppg.samplesLiBuf } },
-        { binding: 3, resource: { buffer: ppg.fluxAtomicsBuf } },
-        { binding: 4, resource: { buffer: ppg.sTreeBuf } },
-        { binding: 5, resource: { buffer: ppg.dTreeBuf } },
-        { binding: 6, resource: { buffer: ppg.dTreeOffsetsBuf } },
-      ],
-    });
-    const bg1 = device.createBindGroup({
-      label: 'ppg-update-bg1',
-      layout: this._pipeline.getBindGroupLayout(1),
-      entries: [{ binding: 0, resource: { buffer: ppg.updateUboBuffer } }],
-    });
+    const [bg0, bg1] = buildPpgUpdateBindGroups(
+      device,
+      (i) => this._pipeline.getBindGroupLayout(i),
+      {
+        samplesPosBuf: ppg.samplesPosBuf,
+        samplesDirBuf: ppg.samplesDirBuf,
+        samplesLiBuf: ppg.samplesLiBuf,
+        fluxAtomicsBuf: ppg.fluxAtomicsBuf,
+        sTreeBuf: ppg.sTreeBuf,
+        dTreeBuf: ppg.dTreeBuf,
+        dTreeOffsetsBuf: ppg.dTreeOffsetsBuf,
+        updateUboBuffer: ppg.updateUboBuffer,
+      },
+    );
 
     const sampleCount = width * height;
     const wgCount = Math.max(1, Math.ceil(sampleCount / 64));

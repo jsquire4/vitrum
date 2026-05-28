@@ -5,47 +5,18 @@
  * (post-gi-spatial-2). Writes hdrColorTexture (direct), hdrIndirectTexture
  * (indirect), hdrTotalTexture (direct+indirect), gNormalDepthTexture, and
  * the albedoTexture for downstream demodulation.
+ *
+ * Full-res dispatch with the hybrid-layers (DDGI) group bound at slot 3;
+ * the dispatch body is the shared {@link SharedBindGroupPass}.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import { SharedBindGroupPass } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
-export class ShadePass implements Pass {
+export class ShadePass extends SharedBindGroupPass {
   readonly id = 'shade' as const;
   readonly dependencies: readonly string[] = ['spatial-2', 'gi-spatial-2'];
   readonly passLabels: readonly PassLabel[] = ['shade'];
 
-  private readonly _pipeline: GPUComputePipeline;
-
-  constructor(pipeline: GPUComputePipeline) {
-    this._pipeline = pipeline;
-  }
-
-  gates(): boolean {
-    return true;
-  }
-
-  async initialize(_ctx: PassInitContext): Promise<void> {}
-
-  dispatch(ctx: PassDispatchContext): void {
-    const {
-      encoder, computeDesc,
-      frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup,
-      wgX, wgY,
-    } = ctx;
-    const pass = encoder.beginComputePass(computeDesc('shade'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, frameBindGroup);
-    pass.setBindGroup(1, sceneBindGroup);
-    pass.setBindGroup(2, uboBindGroup);
-    pass.setBindGroup(3, hybridLayersBindGroup);
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-    pass.end();
-  }
-
-  dispose(): void {}
+  protected override readonly useHybridLayers = true;
 }

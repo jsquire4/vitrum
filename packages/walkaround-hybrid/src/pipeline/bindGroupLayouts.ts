@@ -12,7 +12,17 @@
  *   accum   — temporal accumulator I/O textures + AccumUBO
  *   composite — final blit (fragment stage, unfilterable-float + sampler)
  *   hybridLayers — DDGI atlas textures + grid uniform (shade pass slot 3)
+ *
+ * T9-stepB: the *uniform* families (frame/scene/ubo/gtao/gtaoUpsample/
+ * temporalGi/spatialGi/indirectCombine/indirectTemporalAccum/motionVectors/
+ * resolve/sampleBudget/composite) now derive their layout entries from the
+ * single descriptor table in `bindGroupDescriptors.ts` via {@link bglEntriesFor}
+ * — same table the builders consume, so the two can no longer drift. The three
+ * NON-uniform layouts (atrous / accum / hybridLayers — lazy-UBO or
+ * placeholder-fallback builders) stay hand-written below.
  */
+
+import { bglEntriesFor } from './bindGroupDescriptors.js';
 
 export interface BGLCache {
   frame?: GPUBindGroupLayout;
@@ -42,45 +52,13 @@ export interface BGLCache {
   indirectTemporalAccum?: GPUBindGroupLayout;
 }
 
+// frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14)
+// are declared in bindGroupDescriptors.ts with per-binding rationale notes.
 export function getFrameBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.frame) return cache.frame;
   cache.frame = device.createBindGroupLayout({
     label: 'frame-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 8, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      { binding: 9, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'non-filtering' } },
-      // gNormalDepth — written by shade pass (normal in xyz, primary-hit
-      // distance in w); read by the à-trous denoiser for edge stopping.
-      // Declared in all four compute pass bind groups (RIS / temporal /
-      // spatial / shade) for layout compatibility, but only shade actually
-      // writes to it. Bound to the same texture in every dispatch.
-      { binding: 10, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      // Sprint 16 — half-res GI reservoir (read_write storage buffer).
-      // Written by risGiMain; read by shade.wgsl to compute Lo_indirect.
-      // Sized for (W/2) × (H/2) × 80 bytes (RESERVOIR_GI_STRIDE × u32).
-      { binding: 11, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      // Sprint 18 — indirect-channel HDR output (rgba16float storage). Written
-      // by shade as `Lo_indirect × ao`. Other shaders that bind the frame BGL
-      // (ris, temporal, spatial, risGi) do not reference this binding; only
-      // shade declares it, but it must be present in the layout for compat.
-      { binding: 12, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      // Sprint 18 follow-up — total-radiance HDR output (rgba16float storage).
-      // Written by shade as direct + indirect. Welford reads it so the variance
-      // / tier estimate covers the full signal, not just the direct channel.
-      { binding: 13, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      // Item 24 — albedo demodulation (Schied 2017 §4.1). Written by shade
-      // alongside hdrIndirectOut; read by indirectCombine to re-modulate the
-      // denoised lighting signal back to full outgoing radiance.
-      { binding: 14, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-    ],
+    entries: bglEntriesFor('frame'),
   });
   return cache.frame;
 }
@@ -89,40 +67,18 @@ export function getSceneBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
   if (cache.scene) return cache.scene;
   cache.scene = device.createBindGroupLayout({
     label: 'scene-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // bvhNodes
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // bvhIndex (vec4u: [0..2]=indices, [3]=RGBA8 raw attCol)
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // bvhPositions
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // emitters
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // emitterCdf
-      { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // bvh_beer (Beer-Lambert visible color)
-      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // tlasNodes
-      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // tlasInstanceIndices
-      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // tlasBlasRoots
-      { binding: 9, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // tlasInstanceWorldToLocal (mat4 cols)
-      { binding: 10, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // tlasInstanceLocalToWorld
-    ],
+    entries: bglEntriesFor('scene'),
   });
   return cache.scene;
 }
 
+// ubo BGL entries (incl. inert slot 2 — adaptive-sampling tier, read only by
+// risGi) are declared in bindGroupDescriptors.ts with per-binding notes.
 export function getUboBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.ubo) return cache.ubo;
   cache.ubo = device.createBindGroupLayout({
     label: 'ubo-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      // Sprint 15 — full-res GTAO occlusion factor (r16float), 1-frame lagged.
-      // Sampled in shade to modulate the diffuse / indirect light terms.
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      // Sprint 9 / Original-#2 wire-in — per-pixel adaptive-sampling tier
-      // (r32uint, written by sample-budget pass). risGi.wgsl reads it to
-      // scale the RIS-GI candidate count (M_GI) per pixel — high-variance
-      // pixels get more candidates, low-variance pixels get fewer. Other
-      // pipelines that bind this BGL (ris/temporal/spatial/shade) declare
-      // the slot for layout compatibility but do not reference the symbol.
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
-    ],
+    entries: bglEntriesFor('ubo'),
   });
   return cache.ubo;
 }
@@ -146,10 +102,7 @@ export function getCompositeBindGroupLayout(device: GPUDevice, cache: BGLCache):
   if (cache.composite) return cache.composite;
   cache.composite = device.createBindGroupLayout({
     label: 'composite-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'non-filtering' } },
-    ],
+    entries: bglEntriesFor('composite'),
   });
   return cache.composite;
 }
@@ -229,12 +182,7 @@ export function getSampleBudgetBindGroupLayout(
   if (cache.sampleBudget) return cache.sampleBudget;
   cache.sampleBudget = device.createBindGroupLayout({
     label: 'sample-budget-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'r32uint' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-    ],
+    entries: bglEntriesFor('sampleBudget'),
   });
   return cache.sampleBudget;
 }
@@ -255,13 +203,7 @@ export function getResolveBindGroupLayout(
   if (cache.resolve) return cache.resolve;
   cache.resolve = device.createBindGroupLayout({
     label: 'resolve-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-    ],
+    entries: bglEntriesFor('resolve'),
   });
   return cache.resolve;
 }
@@ -279,11 +221,7 @@ export function getMotionVectorsBindGroupLayout(
   if (cache.motionVectors) return cache.motionVectors;
   cache.motionVectors = device.createBindGroupLayout({
     label: 'motion-vectors-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rg32float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-    ],
+    entries: bglEntriesFor('motionVectors'),
   });
   return cache.motionVectors;
 }
@@ -302,13 +240,7 @@ export function getGTAOBindGroupLayout(
   if (cache.gtao) return cache.gtao;
   cache.gtao = device.createBindGroupLayout({
     label: 'gtao-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      // E1 — hdrAlbedoOut (shade pass M9.C) wired for multi-bounce factor.
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-    ],
+    entries: bglEntriesFor('gtao'),
   });
   return cache.gtao;
 }
@@ -329,12 +261,7 @@ export function getGTAOUpsampleBindGroupLayout(
   if (cache.gtaoUpsample) return cache.gtaoUpsample;
   cache.gtaoUpsample = device.createBindGroupLayout({
     label: 'gtao-upsample-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-    ],
+    entries: bglEntriesFor('gtaoUpsample'),
   });
   return cache.gtaoUpsample;
 }
@@ -352,11 +279,7 @@ export function getTemporalGiBindGroupLayout(
   if (cache.temporalGi) return cache.temporalGi;
   cache.temporalGi = device.createBindGroupLayout({
     label: 'temporal-gi-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-    ],
+    entries: bglEntriesFor('temporalGi'),
   });
   return cache.temporalGi;
 }
@@ -377,11 +300,7 @@ export function getSpatialGiBindGroupLayout(
   if (cache.spatialGi) return cache.spatialGi;
   cache.spatialGi = device.createBindGroupLayout({
     label: 'spatial-gi-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-    ],
+    entries: bglEntriesFor('spatialGi'),
   });
   return cache.spatialGi;
 }
@@ -400,11 +319,7 @@ export function getIndirectTemporalAccumBindGroupLayout(
   if (cache.indirectTemporalAccum) return cache.indirectTemporalAccum;
   cache.indirectTemporalAccum = device.createBindGroupLayout({
     label: 'indirect-temporal-accum-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-    ],
+    entries: bglEntriesFor('indirectTemporalAccum'),
   });
   return cache.indirectTemporalAccum;
 }
@@ -427,14 +342,7 @@ export function getIndirectCombineBindGroupLayout(
   if (cache.indirectCombine) return cache.indirectCombine;
   cache.indirectCombine = device.createBindGroupLayout({
     label: 'indirect-combine-bgl',
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format: 'rgba16float' } },
-      // Item 24 — albedo demodulation (Schied 2017 §4.1).
-      // Re-modulates the denoised indirect lighting signal by albedo.
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-    ],
+    entries: bglEntriesFor('indirectCombine'),
   });
   return cache.indirectCombine;
 }

@@ -7,47 +7,19 @@
  * Runs after the DI spatial passes (consumes the spatially-fused DI
  * reservoir from `bgFrame`) so the GI reservoir is built on the
  * variance-reduced primary visibility.
+ *
+ * Dispatch body is the shared {@link SharedBindGroupPass}; this pass only
+ * flips on `useHybridLayers` (slot 3) and `halfRes`.
  */
 
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
-} from '../Pass.js';
+import { SharedBindGroupPass } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
-export class RISGIPass implements Pass {
+export class RISGIPass extends SharedBindGroupPass {
   readonly id = 'gi-ris' as const;
   readonly dependencies: readonly string[] = ['spatial-2'];
   readonly passLabels: readonly PassLabel[] = ['gi-ris'];
 
-  private readonly _pipeline: GPUComputePipeline;
-
-  constructor(pipeline: GPUComputePipeline) {
-    this._pipeline = pipeline;
-  }
-
-  gates(): boolean {
-    return true;
-  }
-
-  async initialize(_ctx: PassInitContext): Promise<void> {}
-
-  dispatch(ctx: PassDispatchContext): void {
-    const {
-      encoder, computeDesc,
-      frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup,
-      halfWgX, halfWgY,
-    } = ctx;
-    const pass = encoder.beginComputePass(computeDesc('gi-ris'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, frameBindGroup);
-    pass.setBindGroup(1, sceneBindGroup);
-    pass.setBindGroup(2, uboBindGroup);
-    pass.setBindGroup(3, hybridLayersBindGroup);
-    pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
-    pass.end();
-  }
-
-  dispose(): void {}
+  protected override readonly useHybridLayers = true;
+  protected override readonly halfRes = true;
 }
