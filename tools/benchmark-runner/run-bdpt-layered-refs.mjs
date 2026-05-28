@@ -115,7 +115,11 @@ async function main() {
   const bdptGpu = resolve(outDir, 'cornell-layered-bdpt.png');
   const parityBdptGpu = resolve(outDir, 'cornell-parity-bdpt.png');
   const mechDir = resolve(repoRoot, 'tools/reference-renders/bdpt-layered-mechanical');
-  const minPromoteBytes = Number(process.env.VITRUM_BDPT_MIN_PROMOTE_BYTES ?? 50_000);
+  // Quick captures (~500 KiB on Windows) must not replace full-res mechanical fixtures (~1.2 MiB).
+  const minPromoteBytes = Number(
+    process.env.VITRUM_BDPT_MIN_PROMOTE_BYTES
+      ?? (process.env.VITRUM_BDPT_QUICK === '1' ? 1_000_000 : 50_000),
+  );
   async function promoteIfGpu(path, dest, label) {
     const st = await stat(path);
     if (st.size < minPromoteBytes) {
