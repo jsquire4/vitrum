@@ -1,22 +1,22 @@
 {
-  "capturedAt": "2026-05-28T02:20:39.781Z",
+  "capturedAt": "2026-05-28T02:24:22.507Z",
   "outDir": "tools/reference-renders/bdpt-layered-2026-05-28",
   "steps": [
     {
       "scenario": "cornell-layered",
       "ok": true,
-      "stdout": "[capture-cornell] → cornell-layered (512x512, 64 spp, 4 bounces)\n\n[capture-cornell] Done. Output dir: \\\\wsl$\\Ubuntu-24.04\\home\\jsquire4\\projects\\vitrum\\tools\\reference-renders\\bdpt-layered-2026-05-28\n  ✓ cornell-layered  (72s, 530231 bytes)  → \\\\wsl$\\Ubuntu-24.04\\home\\jsquire4\\projects\\vitrum\\tools\\reference-renders\\bdpt-layered-2026-05-28\\cornell-layered.png"
+      "stdout": "[capture-cornell] → cornell-layered (512x512, 64 spp, 4 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-layered  (15s, 544883 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered.png"
     },
     {
       "scenario": "cornell-layered-bdpt",
-      "ok": false,
-      "stdout": "estedWidth\":512,\"requestedHeight\":512,\"renderWidth\":512,\"renderHeight\":512,\"samplesPerFrame\":1,\"tileSize\":3,\"batchMs\":0.19999998807907104,\"msPerSample\":12.504687500186265,\"sppDelta\":0.11111111111108585,\"sppPerSecond\":555.5555886691227,\"estimatedRenderTargetBytes\":75497472,\"renderTargetBudgetBytes\":536870912,\"guardrail\":null,\"additiveAccumulation\":false,\"pixelAdaptiveSampling\":false,\"samplesAccumulated\":128,\"denoiseDisplay\":\"raw\",\"captureCanvasSelector\":\"#c\",\"captureFinalizeReason\":\"path-traced\"}",
+      "ok": true,
+      "stdout": "[capture-cornell] → cornell-layered (512x512, 128 spp, 4 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-layered  (23s, 486677 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered-bdpt.png",
       "png": "tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered-bdpt.png"
     },
     {
       "scenario": "cornell-parity-bdpt",
-      "ok": false,
-      "stdout": "estedWidth\":512,\"requestedHeight\":512,\"renderWidth\":512,\"renderHeight\":512,\"samplesPerFrame\":1,\"tileSize\":3,\"batchMs\":0.19999998807907104,\"msPerSample\":12.497656249906868,\"sppDelta\":0.11111111111108585,\"sppPerSecond\":555.5555886691227,\"estimatedRenderTargetBytes\":75497472,\"renderTargetBudgetBytes\":536870912,\"guardrail\":null,\"additiveAccumulation\":false,\"pixelAdaptiveSampling\":false,\"samplesAccumulated\":128,\"denoiseDisplay\":\"raw\",\"captureCanvasSelector\":\"#c\",\"captureFinalizeReason\":\"path-traced\"}",
+      "ok": true,
+      "stdout": "[capture-cornell] → cornell-parity (512x512, 128 spp, 4 bounces)\n\n[capture-cornell] Done. Output dir: /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28\n  ✓ cornell-parity  (22s, 536030 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-parity-bdpt.png",
       "png": "tools/reference-renders/bdpt-layered-2026-05-28/cornell-parity-bdpt.png"
     }
   ],
