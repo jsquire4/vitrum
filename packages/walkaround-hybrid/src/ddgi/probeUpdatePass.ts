@@ -21,15 +21,27 @@
  */
 
 import * as THREE from 'three';
-import { extractThreePbrScalars } from '@vitrum/three-bindings';
 import {
-  packMaterials,
-  MATERIAL_ENTRY_FLOATS,
-  MATERIAL_ENTRY_STRIDE_BYTES,
-  type MaterialEntryInput,
   type SceneBvh,
   type SceneBvhBuffers,
 } from '@vitrum/shared-bvh';
+import {
+  rebuildProbeBvhFromRestir,
+  rebuildProbeBvhFromScene,
+  refitProbeTlasBuffersInPlace,
+} from './probeUpdateBvhBuffers.js';
+import {
+  DDGI_MAX_MATERIALS,
+  DDGI_MATERIAL_STRIDE_BYTES,
+  packDDGIMaterialsN,
+} from './probeUpdateMaterials.js';
+
+export {
+  DDGI_MAX_MATERIALS,
+  DDGI_MATERIAL_ENTRY_FLOATS,
+  DDGI_MATERIAL_STRIDE_BYTES,
+  packDDGIMaterials,
+} from './probeUpdateMaterials.js';
 import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
@@ -97,74 +109,6 @@ const DDGI_BLEND_PARAMS_UBO = defineUbo([
 
 // ProbeRay struct: 12 floats / 2 u32 → 16 × 4 bytes = 64 bytes each
 const PROBE_RAY_STRIDE_BYTES = 64;
-
-// DDGI material buffer sizing constants.
-// `materialsBuf` holds one canonical `MaterialEntry` struct per material slot
-// (see `@vitrum/shared-bvh/materialEntry.ts` for the byte layout; 64 bytes
-// per entry, 16 × f32 lanes, std140-compatible).
-/** Maximum number of distinct materials the DDGI probe pass supports. */
-export const DDGI_MAX_MATERIALS = 64;
-/** Byte stride of one MaterialEntry struct (must match the WGSL layout). */
-export const DDGI_MATERIAL_STRIDE_BYTES = MATERIAL_ENTRY_STRIDE_BYTES;
-/** Float stride of one MaterialEntry (64 bytes = 16 × f32). */
-export const DDGI_MATERIAL_ENTRY_FLOATS = MATERIAL_ENTRY_FLOATS;
-
-/**
- * Adapt a THREE.Material to the canonical {@link MaterialEntryInput} bag
- * via the {@link extractThreePbrScalars} helper. Pure function — does no
- * GPU calls. Kept module-internal because the DDGI host code is the only
- * consumer in this package; other engines that pack materials build their
- * own `MaterialEntryInput[]` adapter (RC's lives in `rc/bvhCompute.ts`).
- */
-function threeToMaterialEntryInput(mat: THREE.Material): MaterialEntryInput {
-  const pbr = extractThreePbrScalars(mat);
-  return {
-    baseColor: pbr.baseColor,
-    roughness: pbr.roughness,
-    metalness: pbr.metallic,
-    emissive: pbr.emissive,
-    ior: pbr.ior,
-    transmission: pbr.transmission,
-    attenuationColor: pbr.attenuationColor,
-    attenuationDistance: pbr.attenuationDistance,
-    thickness: pbr.thickness,
-  };
-}
-
-/**
- * Pack a list of THREE materials into the canonical MaterialEntry struct
- * array (64 bytes per material, 16 floats each). Sized for `DDGI_MAX_MATERIALS`
- * slots — overflow materials silently drop, missing slots zero-fill.
- *
- * Used by both `ProbeUpdatePass._uploadMaterials` (at runtime) and the
- * byte-equivalence test fixture. Returns the underlying ArrayBuffer so
- * callers can pass it directly to `device.queue.writeBuffer`.
- *
- * Pre-W2-C5 this packer produced a DDGI-specific 16-float layout (slot 3 /
- * 11 were padding; roughness lived at slot 7, metalness at slot 8). The
- * canonical layout (see `@vitrum/shared-bvh/materialEntry.ts`) puts
- * roughness at slot 3, metalness at slot 7, and uses slots 10 and 11 for
- * attenuationDistance and thickness (which DDGI did not previously carry).
- * All consumers update together — every byte changes, but no behaviour
- * changes (DDGI's shader didn't read those slots either way, and the
- * reshuffled slots are still addressed by name).
- */
-export function packDDGIMaterials(mats: readonly THREE.Material[]): ArrayBuffer {
-  return packDDGIMaterialsN(mats, DDGI_MAX_MATERIALS);
-}
-
-/**
- * Like {@link packDDGIMaterials} but accepts an explicit max-material count
- * so instances with `maxMaterials !== 64` get a correctly-sized buffer.
- * Internal use only — `packDDGIMaterials` is the public API.
- */
-function packDDGIMaterialsN(mats: readonly THREE.Material[], maxMaterials: number): ArrayBuffer {
-  const inputs = mats.map(threeToMaterialEntryInput);
-  // packMaterials zero-pads short input lists up to `maxCount` entries, so the
-  // resulting Float32Array always has exactly `maxMaterials × ENTRY` floats.
-  const out = packMaterials(inputs, maxMaterials);
-  return out.buffer as ArrayBuffer;
-}
 
 interface GPUResources {
   device: GPUDevice;
@@ -243,19 +187,6 @@ export interface ProbeUpdatePassOptions {
    * @since Sprint 16 (M9 audit remediation)
    */
   maxMaterials?: number;
-}
-
-/** Pad stride-3 triangle indices for vec4u WGSL storage (standalone SceneBvh path). */
-function padTriangleIndicesToVec4(indices: Uint32Array): Uint32Array {
-  const triCount = Math.floor(indices.length / 3);
-  const out = new Uint32Array(triCount * 4);
-  for (let t = 0; t < triCount; t += 1) {
-    out[t * 4] = indices[t * 3]!;
-    out[t * 4 + 1] = indices[t * 3 + 1]!;
-    out[t * 4 + 2] = indices[t * 3 + 2]!;
-    out[t * 4 + 3] = 0;
-  }
-  return out;
 }
 
 export class ProbeUpdatePass {
@@ -520,9 +451,9 @@ export class ProbeUpdatePass {
             tlasContentVersion: this._lastTlasVersion,
           });
         if (tlasOnly && snap.tlas != null) {
-          this._refitTlasBuffersInPlace(device, snap.tlas);
+          refitProbeTlasBuffersInPlace(device, this._gpu, snap.tlas);
         } else {
-          this._rebuildBvhBuffersFromRestir(device, snap);
+          rebuildProbeBvhFromRestir(device, this._gpu, snap);
         }
         this._lastBvhVersion = snap.contentVersion;
         this._lastBlasVersion = snap.blasContentVersion;
@@ -532,7 +463,7 @@ export class ProbeUpdatePass {
     } else if (legacyBuffers != null) {
       const bvhVersion = legacyBuffers.bvhNodes.length + legacyBuffers.positions.length;
       if (bvhVersion !== this._lastBvhVersion) {
-        this._rebuildBvhBuffers(device, legacyBuffers);
+        rebuildProbeBvhFromScene(device, this._gpu, legacyBuffers);
         this._lastBvhVersion = bvhVersion;
       }
       this._uploadTraceParams(device, { bvhMode: 'merged', tlasNodeCount: 0 });
@@ -671,77 +602,6 @@ export class ProbeUpdatePass {
       0,
     ]);
     device.queue.writeBuffer(this._gpu!.traceParamsBuf, 0, u);
-  }
-
-  /** C2 — TLAS transform refit: upload nodes + instance matrices only. */
-  private _refitTlasBuffersInPlace(
-    device: GPUDevice,
-    tlas: NonNullable<DdgiRestirBvhSnapshot['tlas']>,
-  ): void {
-    const g = this._gpu!;
-    device.queue.writeBuffer(g.tlasNodesBuf, 0, tlas.nodes);
-    device.queue.writeBuffer(g.tlasW2lBuf, 0, tlas.worldToLocal);
-    device.queue.writeBuffer(g.tlasL2wBuf, 0, tlas.localToWorld);
-  }
-
-  private _rebuildBvhBuffersFromRestir(
-    device: GPUDevice,
-    snap: DdgiRestirBvhSnapshot,
-  ): void {
-    const RO = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-    const upload = (oldBuf: GPUBuffer, data: ArrayBufferLike): GPUBuffer => {
-      oldBuf.destroy();
-      const arr = data instanceof ArrayBuffer ? data : new Uint8Array(data).buffer;
-      const buf = device.createBuffer({
-        size: Math.max(arr.byteLength, 16),
-        usage: RO,
-      });
-      device.queue.writeBuffer(buf, 0, arr);
-      return buf;
-    };
-    const g = this._gpu!;
-    g.bvhBuf = upload(g.bvhBuf, snap.bvhNodes);
-    g.posBuf = upload(g.posBuf, snap.positions);
-    g.idxBuf = upload(g.idxBuf, snap.bvhIndex);
-    g.normBuf = upload(g.normBuf, snap.normals);
-    g.matIdBuf = upload(g.matIdBuf, snap.triMaterialIds);
-    const empty = new ArrayBuffer(16);
-    const tlas = snap.tlas;
-    g.tlasNodesBuf = upload(g.tlasNodesBuf, tlas?.nodes ?? empty);
-    g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, tlas?.instanceIndices ?? empty);
-    g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, tlas?.blasRoots ?? empty);
-    g.tlasW2lBuf = upload(g.tlasW2lBuf, tlas?.worldToLocal ?? empty);
-    g.tlasL2wBuf = upload(g.tlasL2wBuf, tlas?.localToWorld ?? empty);
-  }
-
-  private _rebuildBvhBuffers(
-    device: GPUDevice,
-    buffers: SceneBvhBuffers,
-  ): void {
-    const RO = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-    const upload = (oldBuf: GPUBuffer, data: ArrayBufferLike): GPUBuffer => {
-      oldBuf.destroy();
-      const arr = data instanceof ArrayBuffer ? data : new Uint8Array(data).buffer;
-      const buf = device.createBuffer({
-        size: Math.max(arr.byteLength, 16),
-        usage: RO,
-      });
-      device.queue.writeBuffer(buf, 0, arr);
-      return buf;
-    };
-    const idx4 = padTriangleIndicesToVec4(buffers.indices);
-    const g = this._gpu!;
-    g.bvhBuf = upload(g.bvhBuf, buffers.bvhNodes.buffer);
-    g.posBuf = upload(g.posBuf, buffers.positions.buffer);
-    g.idxBuf = upload(g.idxBuf, idx4.buffer);
-    g.normBuf = upload(g.normBuf, buffers.normals.buffer);
-    g.matIdBuf = upload(g.matIdBuf, buffers.triMaterialId.buffer);
-    const empty = new ArrayBuffer(16);
-    g.tlasNodesBuf = upload(g.tlasNodesBuf, empty);
-    g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, empty);
-    g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, empty);
-    g.tlasW2lBuf = upload(g.tlasW2lBuf, empty);
-    g.tlasL2wBuf = upload(g.tlasL2wBuf, empty);
   }
 
   private _uploadMaterials(device: GPUDevice, mats: THREE.Material[]): void {

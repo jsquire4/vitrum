@@ -35,7 +35,7 @@ import {
   DDGI_MAX_MATERIALS,
   DDGI_MATERIAL_STRIDE_BYTES,
   DDGI_MATERIAL_ENTRY_FLOATS,
-} from '../src/ddgi/probeUpdatePass.js';
+} from '../src/ddgi/probeUpdateMaterials.js';
 
 const ENTRY = DDGI_MATERIAL_ENTRY_FLOATS;
 
