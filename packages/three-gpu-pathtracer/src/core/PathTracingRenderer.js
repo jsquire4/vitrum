@@ -449,34 +449,44 @@ export class PathTracingRenderer {
 		material.uniforms.resolution.value.set( w, h );
 		material.uniforms.uBdptMaxLightBounces.value = maxLightBounces;
 
-		material.onBeforeRender();
-		if ( this.isCompiling ) {
-
-			return;
-
-		}
-
 		const prevRT = renderer.getRenderTarget();
 		const prevAutoClear = renderer.autoClear;
-		renderer.autoClear = true;
+		const prevViewport = new Vector4();
+		renderer.getViewport( prevViewport );
 
-		for ( let col = 0; col < maxLightBounces; col ++ ) {
+		try {
 
-			material.uniforms.uBdptVertexCol.value = col;
-			material.uniforms.uBdptLightSubpathPass.value = 1;
-			material.uniforms.uBdptLightPathTex.value = lightPathTarget.texture;
-			material.uniforms.seed.value = ( frameSeed + col * 9973 ) >>> 0;
-			renderer.setRenderTarget( lightPathTarget );
-			renderer.setViewport( 0, 0, w, h );
-			this._fsQuad.render( renderer );
+			material.onBeforeRender();
+			if ( this.isCompiling ) {
+
+				return;
+
+			}
+
+			renderer.autoClear = true;
+
+			for ( let col = 0; col < maxLightBounces; col ++ ) {
+
+				material.uniforms.uBdptVertexCol.value = col;
+				material.uniforms.uBdptLightSubpathPass.value = 1;
+				material.uniforms.uBdptLightPathTex.value = lightPathTarget.texture;
+				material.uniforms.seed.value = ( frameSeed + col * 9973 ) >>> 0;
+				renderer.setRenderTarget( lightPathTarget );
+				renderer.setViewport( 0, 0, w, h );
+				this._fsQuad.render( renderer );
+
+			}
+
+		} finally {
+
+			material.uniforms.uBdptLightSubpathPass.value = prevPass;
+			material.uniforms.uBdptLightPathTex.value = prevTex;
+			material.uniforms.resolution.value.copy( prevResolution );
+			renderer.setRenderTarget( prevRT );
+			renderer.setViewport( prevViewport );
+			renderer.autoClear = prevAutoClear;
 
 		}
-
-		material.uniforms.uBdptLightSubpathPass.value = prevPass;
-		material.uniforms.uBdptLightPathTex.value = prevTex;
-		material.uniforms.resolution.value.copy( prevResolution );
-		renderer.setRenderTarget( prevRT );
-		renderer.autoClear = prevAutoClear;
 
 	}
 
