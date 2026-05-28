@@ -1,5 +1,4 @@
 import type {
-  AnalyticShape,
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
@@ -26,6 +25,7 @@ import {
   uploadScenePackBlasOnly,
   uploadScenePackTlasOnly,
   PT_WEBGPU_ANALYTIC_SHAPES,
+  PT_WEBGPU_SUPPORT,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
 import {
@@ -269,23 +269,15 @@ class PTEngineWebGPU implements Engine {
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
-      // Slot 0 is the "unknown" sentinel; supported shapes start at index 1.
-      // Slot 0 is 'unknown' — strip before advertising. The remaining entries
-      // are AnalyticShape-typed in the source array; cast through unknown here
-      // because TS narrows the literal-tuple type back to a generic readonly
-      // string[] after slice(1).
-      supportedAnalyticShapes: new Set(
-        PT_WEBGPU_ANALYTIC_SHAPES.slice(1) as unknown as readonly AnalyticShape[],
-      ),
-      supportedEmitterKinds: new Set<SceneEmitter['kind']>(
-        ['directional', 'point', 'spot', 'rect-area', 'disc-area', 'mesh-area'],
-      ),
-      supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>([
-        'mesh', 'instanced-mesh', 'analytic', 'skinned-mesh',
-      ]),
-      supportedEnvironmentKinds: new Set<Scene['environment']['kind']>([
-        'none', 'hdri', 'procedural-sky',
-      ]),
+      // Advertised support is derived from the SAME `PT_WEBGPU_SUPPORT` sets the
+      // scene packer partitions against (uploadSceneBuffers.ts), so the declared
+      // capability and the ingestion behavior can no longer drift. Copy into
+      // fresh Sets so a host mutating the returned capability object can't
+      // corrupt the packer's source of truth.
+      supportedAnalyticShapes: new Set(PT_WEBGPU_SUPPORT.supportedAnalyticShapes),
+      supportedEmitterKinds: new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
+      supportedPrimitiveKinds: new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
+      supportedEnvironmentKinds: new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
       presentationMode: 'offscreen-texture',
       experimentalFeatures: new Set([
         'experimental-backend',

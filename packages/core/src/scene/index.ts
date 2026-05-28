@@ -44,3 +44,7 @@ export interface Scene {
 // ────────────────────────────────────────────────────────────────────────────
 
 export * from './patchScene.js';
+
+// Capability filter — depends on the `Scene` interface above, so re-exported in
+// the same trailing block as the patch helpers.
+export * from './partitionSceneBySupport.js';

@@ -1,4 +1,12 @@
-import { asMat4, type Scene, type SceneEmitter, type ScenePrimitive } from '@vitrum/core';
+import {
+  asMat4,
+  partitionSceneBySupport,
+  type AnalyticShape,
+  type Scene,
+  type SceneEmitter,
+  type ScenePrimitive,
+  type SupportSets,
+} from '@vitrum/core';
 import {
   packSceneFromCore,
   refitTlasTransforms,
@@ -145,6 +153,38 @@ function analyticShapeId(shape: string): number {
   return idx > 0 ? idx : 0;
 }
 
+/** The capability sets `buildPackedScene` partitions a scene against. These are
+ *  the single source of truth for what pt-webgpu ingests — `index.ts` derives
+ *  the engine's advertised `EngineCapabilities.supported*Kinds` from the same
+ *  values, so the declared sets and the ingestion behavior can no longer drift.
+ *
+ *  Slot 0 of `PT_WEBGPU_ANALYTIC_SHAPES` is the "unknown" sentinel; the real
+ *  supported shapes start at index 1. */
+export const PT_WEBGPU_SUPPORT: Required<SupportSets> = {
+  supportedPrimitiveKinds: new Set<ScenePrimitive['kind']>([
+    'mesh',
+    'instanced-mesh',
+    'analytic',
+    'skinned-mesh',
+  ]),
+  supportedEmitterKinds: new Set<SceneEmitter['kind']>([
+    'directional',
+    'point',
+    'spot',
+    'rect-area',
+    'disc-area',
+    'mesh-area',
+  ]),
+  supportedAnalyticShapes: new Set<AnalyticShape>(
+    PT_WEBGPU_ANALYTIC_SHAPES.slice(1) as readonly AnalyticShape[],
+  ),
+  supportedEnvironmentKinds: new Set<Scene['environment']['kind']>([
+    'none',
+    'hdri',
+    'procedural-sky',
+  ]),
+};
+
 function isMeshLikePrimitive(
   primitive: ScenePrimitive,
 ): primitive is Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }> {
@@ -153,39 +193,28 @@ function isMeshLikePrimitive(
     || primitive.kind === 'instanced-mesh';
 }
 
-export function buildPackedScene(scene: Scene): PackedSceneData {
+export function buildPackedScene(inputScene: Scene): PackedSceneData {
+  // Capability filter (warn + skip). Consume pt-webgpu's OWN declared support
+  // sets to drop unsupported primitive kinds / analytic shapes / emitter kinds,
+  // replacing the hand-rolled boolean-chain skip+warn that previously lived
+  // here. `partitionSceneBySupport` is pure; `scene` below is the supported
+  // subset and `warnings` carries one message per dropped node.
+  const { supported: scene, warnings } = partitionSceneBySupport(inputScene, PT_WEBGPU_SUPPORT);
+
   const materials: number[] = [];
   const meshMaterialIds = new Map<string, number>();
   const analyticHeaders: number[] = [];
   const analyticParams: number[] = [];
   const analyticLocalToWorld: number[] = [];
   const analyticWorldToLocal: number[] = [];
-  const warnings: string[] = [];
-  for (const emitter of scene.emitters) {
-    const k = emitter.kind;
-    const supported =
-      k === 'directional' ||
-      k === 'point' ||
-      k === 'spot' ||
-      k === 'rect-area' ||
-      k === 'disc-area' ||
-      k === 'mesh-area';
-    if (!supported) {
-      warnings.push(
-        `Emitter "${(emitter as SceneEmitter).id}" (${String(k)}) ignored; experimental backend supports directional, point, spot, rect-area, disc-area (packed as rect), and mesh-area emitters only.`,
-      );
-    }
-  }
 
   let nextMaterialId = 0;
 
   for (const primitive of scene.primitives) {
     if (primitive.kind === 'analytic') {
+      // Shape support was already vetted by the capability filter above; any
+      // analytic primitive that reaches here has a known shape id (> 0).
       const shapeId = analyticShapeId(primitive.shape);
-      if (shapeId === 0) {
-        warnings.push(`Analytic primitive "${primitive.id}" has unsupported shape "${primitive.shape}".`);
-        continue;
-      }
       const matId = nextMaterialId++;
       materials.push(...materialToPackedVec4s(primitive.material));
       const transform = primitive.transform ?? IDENTITY_MAT4;
