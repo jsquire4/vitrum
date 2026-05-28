@@ -47,13 +47,11 @@ import {
 import {
   type BGLCache,
 } from './bindGroupLayouts.js';
+import type { UboRef } from './bindGroupBuilders.js';
 import {
-  buildFrameBindGroup,
-  buildSceneBindGroup,
-  buildUboBindGroup,
-  buildCompositeBindGroup,
-  type UboRef,
-} from './bindGroupBuilders.js';
+  buildCompositePresentBindGroup,
+  buildPerFrameBindGroups,
+} from './pipelineBindGroupFactory.js';
 import { PPGCoordinator } from './PPGCoordinator.js';
 import { DDGIBindingState } from './DDGIBindingState.js';
 import {
@@ -760,9 +758,11 @@ export class WalkaroundGPUPipeline {
   presentLastFrame(swapChainView: GPUTextureView): void {
     if (!this._initialized) return;
     const d = this._device;
-    const finalTex = this._res.common.resolvedTexture;
-    const bgComposite = buildCompositeBindGroup(
-      d, this._bglCache, finalTex.createView(), this._res.common.compositeSampler,
+    const bgComposite = buildCompositePresentBindGroup(
+      d,
+      this._bglCache,
+      this._res.common.resolvedTexture,
+      this._res.common.compositeSampler,
     );
     const compositePass = this._compositePass;
     if (compositePass == null) return;
@@ -819,29 +819,19 @@ export class WalkaroundGPUPipeline {
     // ── Build placeholder texture view ────────────────────────────────────
     const placeholderView = this._res.common.placeholderTexture.createView();
 
-    // ── Build shared bind groups (frame/scene/ubo/hybrid-layers) ─────────
-    const bgFrame = buildFrameBindGroup(d, this._bglCache, {
+    const {
+      frame: bgFrame,
+      scene: bgScene,
+      ubo: bgUbo,
+      hybridLayers: bgHybrid,
+    } = buildPerFrameBindGroups(
+      d,
+      this._bglCache,
+      this._res,
+      this._bvhHost.sceneBindGroupResources(),
+      this._ddgi,
       placeholderView,
-      reservoirCurrentBuffer:  this._res.restirDI.reservoirCurrentBuffer,
-      reservoirPreviousBuffer: this._res.restirDI.reservoirPreviousBuffer,
-      reservoirSpatialBuffer:  this._res.restirDI.reservoirSpatialBuffer,
-      hdrColorTexture:         this._res.common.hdrColorTexture,
-      nearestSampler:          this._res.common.nearestSampler,
-      gNormalDepthTexture:     this._res.common.gNormalDepthTexture,
-      reservoirGiCurrentBuffer: this._res.restirGI.reservoirGiCurrentBuffer,
-      hdrIndirectTexture:      this._res.common.hdrIndirectTexture,
-      hdrTotalTexture:         this._res.common.hdrTotalTexture,
-      // Item 24 — albedo demodulation (Schied 2017 §4.1).
-      albedoTexture:           this._res.common.albedoTexture,
-    });
-    const bgScene = buildSceneBindGroup(d, this._bglCache, this._bvhHost.sceneBindGroupResources());
-    const bgUbo   = buildUboBindGroup(
-      d, this._bglCache, this._res.common.uboBuffer,
-      this._res.gtao.aoFullTexture.createView(),
-      this._res.common.tierTexture.createView(),
     );
-    // Sprint 16 — DDGI hybrid layers slot 3 — shared by gi-ris and shade.
-    const bgHybrid = this._ddgi.buildBindGroup(d, this._bglCache, this._res);
 
     // ── Per-frame pre-computed scalars ───────────────────────────────────
     const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode });
