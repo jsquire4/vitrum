@@ -9,10 +9,12 @@ import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 
 const PI = Math.PI;
 
+/** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
 export function bdptLightLuminance(rgb: readonly [number, number, number]): number {
   return Math.max(luminance709(rgb[0], rgb[1], rgb[2]), 1e-20);
 }
 
+/** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
 export function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
   if (sb.hasEnvironmentMap && sb.environmentMapWidth > 0 && sb.environmentMapHeight > 0) {
     return true;
@@ -21,6 +23,7 @@ export function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
   return irr[0] + irr[1] + irr[2] > 1e-6 || sb.environmentSunStrength > 1e-6;
 }
 
+/** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
 export function bdptEnvironmentPower(sb: UploadedSceneBuffers): number {
   if (sb.hasEnvironmentMap && sb.environmentMapWidth > 0 && sb.environmentMapHeight > 0) {
     const count = sb.environmentMapWidth * sb.environmentMapHeight;

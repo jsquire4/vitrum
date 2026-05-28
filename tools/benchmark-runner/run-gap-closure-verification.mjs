@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { GAP_CLOSURE_SCENARIOS } from './scenario-presets.mjs';
-import { PT_WEBGPU_BASELINE_SCENARIOS, PT_WEBGPU_GAP_SCENARIOS } from './gapClosurePtWebgpuMap.mjs';
+import { PT_WEBGPU_GAP_SCENARIOS } from './gapClosurePtWebgpuMap.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
 
 const scenarios = GAP_CLOSURE_SCENARIOS;

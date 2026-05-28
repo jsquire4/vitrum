@@ -28,7 +28,7 @@ const devServer = launchDevServer(
 );
 
 try {
-  const ready = await waitForServerReady(devServer, base, 90_000, 500);
+  await waitForServerReady(devServer, base, 90_000, 500);
   await assertWalkaroundDevServer(base);
   // WSL2 forwards localhost:port to the distro; Windows Playwright uses 127.0.0.1, not the eth0 IP.
   const captureBase = `http://127.0.0.1:${benchPort}/`;

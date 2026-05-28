@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SURFACE_TEXTURE_ID } from '../src/surfaceTextureIds.js';
+import { SURFACE_TEXTURE_ID } from '@vitrum/stained-glass-extensions';
 import { SURFACE_TEXTURES_WGSL } from '../src/shaders/surfaceTextures.wgsl.js';
 
 /**

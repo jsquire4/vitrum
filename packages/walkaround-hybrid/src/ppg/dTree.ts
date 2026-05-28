@@ -228,6 +228,8 @@ export function findDTreeLeaf(dTree: DTree, octUV: [number, number]): number {
  * @param dTree     The directional tree to sample from.
  * @param u0, u1    Uniform random variables in [0, 1).
  * @param totalFlux Total flux across all leaves (pre-computed from dTree state).
+ *
+ * @internal CPU reference oracle for the WGSL D-tree sampler; not public API.
  */
 export function dTreeSample(
   dTree: DTree,

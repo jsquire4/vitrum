@@ -79,30 +79,10 @@ export type PassLabel =
   | 'composite';
 
 /**
- * Maximum slot count across all supported configurations. Used to size the
- * GPU querySet + resolve/readback buffers so allocation survives every
- * runtime layout.
- *
- * History: 15 (base) → 17 (Sprint 9: sample-budget + resolve) →
- *          19 (Sprint 15: gtao + gtao-upsample) → 20 (Sprint 16: gi-ris) →
- *          23 (Sprint 17: gi-temporal + gi-spatial-1 + gi-spatial-2) →
- *          24 (Sprint 18: indirect-combine) →
- *          22 (Original #7: trim 2 dead atrous-variance-atrous slots — iter count
- *          dropped from 5 to 3 in shared-denoisers but layout was stale) →
- *          26 (Sprint 18 follow-up: per-channel indirect atrous — replace the
- *          embedded bilateral in indirect-combine with a real 4-iter
- *          atrous chain (atrous-indirect-0..3) on the indirect channel) →
- *          27 (Sprint 18 follow-up: indirect-temporal-accum — pre-atrous
- *          temporal accumulator with TCBB clip to kill firefly admit
- *          + smooth shadow-region blotches before spatial filter) →
- *          26 (D7 sweep: PPG deleted — max is now atrous-variance without ppg-update) →
- *          28 (Item 3: DDGI atlas border fill — ddgi-border-irr + ddgi-border-vis
- *          appended after indirect-combine and before temporalAccum).
- *          31 (T2.H1: svgf-real replaces the 5 atrous-variance passes with 8
- *          svgf-real passes — reproj, moments, 7×7, 5 × atrous iters).
- *          33 (T2.H3: PPG paper-faithful opt-in — adds ppg-update + ppg-guide
- *          when ppgEnabled=true; layout returns 31 when ppgEnabled=false) →
- *          34 (W2 motion-vectors pass between shade and gtao).
+ * Worst-case slot count across all supported configurations (svgf-real + PPG +
+ * motion-vectors). Used to size the GPU querySet + resolve/readback buffers so
+ * allocation survives every runtime layout. Verify against `buildPassLayout`
+ * if you add a pass.
  */
 export const MAX_PASS_COUNT = 34;
 

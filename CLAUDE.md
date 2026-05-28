@@ -135,7 +135,7 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 1. **Fidelity promotion on pt-webgpu** — spectral, thin-film, SSS, caustics, multi-emitter rows are implemented with mechanical tests but still tagged `experimental` until gap-closure scenarios promote them to `supported` in `plan/renderer-fidelity-matrix.md`.
 2. **Host animation workflows** — walkaround + pt-webgl + pt-webgpu all expose transform/positions incremental patches via `incrementalPatchSupport`; topology and vertex-count changes still require full scene rebuild on pt-webgl/pt-webgpu.
 3. **GI subsystem BVH alignment** — RC moving-instance refit without full scene teardown (PR-5.3); optional merged-BVH fallback cleanup.
-4. **GPU skinning compute** — `GpuSkinningSubsystem` + CPU `solveSkin` shipped; WGSL LBS compute + inverse-transpose normals for scaled bones remain optional polish (PR-7 follow-up).
+4. **GPU skinning compute** — `GpuSkinningSubsystem` + CPU `solveSkin` + WGSL LBS-into-BVH compute (`skin/gpuSkinBvh.wgsl.ts` → merged ReSTIR `bvhPositions`) all shipped; only inverse-transpose normals for scaled bones remain genuinely outstanding (PR-7 follow-up — the skin compute skins positions but does not yet transform normals).
 5. **PPG cost / quality** — wired and dispatching; tuning and large-scene perf per `plan/d2-e6-pt-webgpu-ppg-performance.md`.
 6. **Contract-only denoisers** — BMFR in the type union but not implemented in `shared-denoisers`.
 

@@ -21,10 +21,7 @@
  */
 
 import * as THREE from 'three';
-import {
-  type SceneBvh,
-  type SceneBvhBuffers,
-} from '@vitrum/shared-bvh';
+import { type SceneBvh } from '@vitrum/shared-bvh';
 import {
   rebuildProbeBvhFromRestir,
   rebuildProbeBvhFromScene,

@@ -261,7 +261,7 @@ export interface SVGFFrameResources {
  * (W9, opt-in via `HybridEngineOptions.ppgEnabled`).
  *
  * When PPG is not enabled, every field is `undefined` and the PPG passes are
- * never registered (see `WalkaroundGPUPipeline._ppgEnabled`). When enabled,
+ * never registered (see `PPGCoordinator.enabled`). When enabled,
  * these buffers are uploaded each rebuild cycle and bound into the PPG guide
  * + update passes:
  *
@@ -347,30 +347,10 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
 }
 
 /** 16-byte zeroed storage buffer for unused scene-BGL slots (merged BVH mode). */
-export function createDummyStorageBuffer(device: GPUDevice, label: string): GPUBuffer {
+export function createDummyStorageBuffer(device: GPUDevice, _label: string): GPUBuffer {
   return uploadBuffer(device, new ArrayBuffer(16), GPUBufferUsage.STORAGE);
 }
 
-/**
- * Build the DDGI "placeholder" UBO data — the zero-grid uniform that causes
- * shade.wgsl's `isDDGIWired()` check to return false (dimsX ≤ 1).
- *
- * DDGIGridUniform layout (64 bytes = 16 × f32):
- *   f32[0..2]  origin xyz   — (0,0,0)
- *   f32[3]     spacing      — 24 (matches probeGrid default, irrelevant when wired=false)
- *   u32[4..6]  dims xyz     — (1,1,1) — dimsX=1 gates isDDGIWired() to false
- *   u32[7]     padding      — 0
- *   f32[8..11] irrW,irrH,visW,visH — 1×1 (match 1×1 placeholder textures)
- *   f32[12..15] reserved    — 0
- *
- * This is the canonical, single definition of the placeholder UBO layout.
- * Both `createFrameResources` and `WalkaroundGPUPipeline.setDDGIInputs(null)`
- * call this function rather than duplicating the pack inline.
- *
- * The returned `Float32Array` is freshly allocated each call. For the hot path
- * in `setDDGIInputs(null)`, callers should cache the result — see
- * `WalkaroundGPUPipeline._ddgiPlaceholderUBO`.
- */
 /**
  * Create a per-pixel Welford variance buffer (RG32Float storage texture).
  *

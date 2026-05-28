@@ -4,16 +4,14 @@
  * Requires hybrid-capable WebGPU adapter (≥16 storage buffers / stage).
  */
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { launchDevServer, stopDevServer, waitForServerReady } from './devServer.mjs';
 import { launchWebGpuBrowser } from './launchWebGpuBrowser.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
 import { writePrHybridManifest } from './prHybridManifest.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = getRepoRoot(import.meta.url);
 const refRoot = resolve(repoRoot, 'tools/reference-renders/PR-hybrid');
 

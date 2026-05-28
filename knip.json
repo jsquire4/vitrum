@@ -12,10 +12,9 @@
     "**/coverage/**"
   ],
   "ignoreBinaries": [],
-  "eslint": false,
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.{js,mjs,ts}"]
+      "entry": ["scripts/*.{js,mjs,ts}", "eslint.config.js"]
     },
     "packages/*": {
       "entry": [
@@ -23,6 +22,8 @@
         "src/main.{ts,tsx}",
         "__tests__/**/*.test.{ts,tsx}",
         "__tests__/**/*.spec.{ts,tsx}",
+        "src/**/__tests__/**/*.test.{ts,tsx}",
+        "src/**/__tests__/**/*.spec.{ts,tsx}",
         "vitest.config.{ts,mjs,js}",
         "vitest.gpu.config.{ts,mjs,js}"
       ]
@@ -32,7 +33,9 @@
         "index.html",
         "src/main.{ts,tsx}",
         "src/index.{ts,tsx}",
-        "vite.config.{ts,mjs,js}"
+        "vite.config.{ts,mjs,js}",
+        "__tests__/**/*.test.{ts,tsx}",
+        "__tests__/**/*.spec.{ts,tsx}"
       ]
     },
     "tools/*": {

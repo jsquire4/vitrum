@@ -373,11 +373,12 @@ export class WalkaroundGPUPipeline {
   // Per-pass UBO buffers owned by the pipeline (i.e. NOT owned by a
   // denoiser — denoiser-private UBOs are field-owned by each Denoiser
   // implementation under `denoisers/`). Two access patterns coexist:
-  //  - Builder-managed (lazy): _atrousIndirectUboRef and _accumUboRef
-  //    are passed by reference into buildAtrousBindGroup /
-  //    buildAccumBindGroup, which lazy-allocate on first call so each
-  //    builder owns its UBO lifetime.
-  //  - Eager: the adaptive-sampling UBOs are allocated in initialize().
+  //  - Builder-managed (lazy): _atrousIndirectUboRef is passed by reference
+  //    into buildAtrousBindGroup (via AtrousIndirectPass) which lazy-allocates
+  //    on first dispatch, so the builder owns its UBO lifetime.
+  //  - Eager: _accumUboRef and the adaptive-sampling UBOs
+  //    (_sampleBudgetUboRef / _sampleCountUboRef / _resolveUboRef) are
+  //    allocated upfront in initialize().
   // dispose() walks all via the `_perPassUboRefs` array below so adding
   // a new UBO only requires registering it there.
   /** Sprint 18 — separate UBO for the indirect-channel atrous chain so it

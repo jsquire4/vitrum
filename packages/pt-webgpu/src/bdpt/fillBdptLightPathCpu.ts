@@ -43,7 +43,11 @@ export function packBdptLightPathColumns(
   return data;
 }
 
-/** Pack one vertex column into a Float32Array row-major [width*4 * 3 rows]. */
+/**
+ * Pack one vertex column into a Float32Array row-major [width*4 * 3 rows].
+ *
+ * @internal Kept CPU oracle for the GPU BDPT light-path fill; not public API.
+ */
 export function fillBdptLightPathCpu(
   device: GPUDevice,
   texture: GPUTexture,

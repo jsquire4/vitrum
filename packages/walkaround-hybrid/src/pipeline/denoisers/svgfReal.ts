@@ -249,9 +249,8 @@ export class SVGFRealDenoiser implements Denoiser {
     let inputTex: GPUTexture = radWrite;
     // Collect transient per-iteration UBOs so they can be destroyed after submit().
     // GPUBuffer is a GPU resource — it must be explicitly destroyed; GC does not
-    // release GPU memory. The owner (WalkaroundGPUPipeline.renderFrame) gathers
-    // these via `getTransientUbosForCleanup()` after `device.queue.submit()`
-    // has drained the encoder.
+    // release GPU memory. The pipeline calls this denoiser's `cleanupAfterSubmit()`
+    // hook after `device.queue.submit()` has drained the encoder.
     this._pendingTransientUbos = [];
     for (let iter = 0; iter < SVGF_REAL_DEFAULT_ATROUS_ITERATIONS; iter++) {
       packAtrousVarianceAtrousUniforms(

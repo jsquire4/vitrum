@@ -78,7 +78,9 @@ const M_GI_BASE: u32 = 8u;
 const RECONNECT_MAX_DIST: f32 = 100.0;
 const NORMAL_BIAS_GI: f32 = 1e-3;
 
-// sampleCosineHemisphere is defined in common.wgsl.ts (single source of truth).
+// sampleCosineHemisphere is the canonical helper from @vitrum/shared-samplers'
+// bsdfPrimitives.wgsl, injected into the composed shade module via composeWgsl
+// (SHARED_PRIMITIVES_MODULE → BSDF_PRIMITIVES_WGSL).
 
 fn sampleDDGIAtPoint(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
   return ddgiSample(

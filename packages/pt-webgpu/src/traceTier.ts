@@ -1,5 +1,3 @@
-import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
-import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
 import {
   PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -38,10 +36,6 @@ export function selectPtWebgpuTraceTier(device: GPUDevice): PtWebgpuTraceTier {
       `(${PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE} buffers, ` +
       `${PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE} textures)`,
   );
-}
-
-export function traceWgslForTier(tier: PtWebgpuTraceTier): string {
-  return tier === 'lite' ? PT_WEBGPU_TRACE_LITE_WGSL : PT_WEBGPU_TRACE_WGSL;
 }
 
 /** Auto-detect unless `force` is set; forcing `full` throws when the adapter cannot bind it. */

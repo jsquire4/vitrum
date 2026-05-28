@@ -61,7 +61,7 @@ let cached: Promise<GpuDetection> | null = null;
  * to call from multiple call sites; only one adapter is actually requested.
  * By default the first call also assigns `window.__WG__` (see
  * {@link DetectGpuOptions.publishToWindow}). Options apply only to the first
- * invocation until {@link _resetCacheUnsafe} clears the cache.
+ * invocation.
  */
 export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
   if (cached) return cached;
@@ -83,16 +83,6 @@ export function detectGpu(options?: DetectGpuOptions): Promise<GpuDetection> {
     return result;
   })();
   return cached;
-}
-
-/**
- * Clears the memoized detectGpu probe result.
- *
- * @internal Test-only escape hatch for environments that need deterministic
- * first-call behavior across test cases.
- */
-export function _resetCacheUnsafe(): void {
-  cached = null;
 }
 
 function publish(result: GpuDetection): void {

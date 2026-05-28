@@ -591,7 +591,6 @@ export class HybridEngine implements Engine {
         `HybridEngine.updatePrimitive("${id}"): primitive id not found in current scene.`,
       );
     }
-    const prim = this._lastScene.primitives[primIndex]!;
 
     // Three.js BVH refit (fast path) preserves topology when only AABB
     // bounds need updating. Three flavours:

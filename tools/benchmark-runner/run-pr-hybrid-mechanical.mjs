@@ -4,13 +4,11 @@
 
 import { access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { PR_HYBRID_BENCHMARK_SCENARIOS, WG0_PT_WEBGPU_SCENARIOS } from './scenario-presets.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = getRepoRoot(import.meta.url);
 const baselineDir = resolve(repoRoot, 'tools/reference-renders/baseline');
 

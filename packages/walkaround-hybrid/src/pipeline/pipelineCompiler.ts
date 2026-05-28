@@ -82,8 +82,7 @@ interface CompiledPipelines {
   shadePipeline: GPUComputePipeline;
   motionVectorsPipeline: GPUComputePipeline;
   /** Shared à-trous pipeline — used by the legacy `AtrousDenoiser` AND by
-   *  the always-on indirect-channel chain
-   *  (`WalkaroundGPUPipeline._dispatchAtrousIndirect`). */
+   *  the always-on indirect-channel chain (`AtrousIndirectPass`). */
   atrousPipeline: GPUComputePipeline;
   accumPipeline: GPUComputePipeline;
   compositePipeline: GPURenderPipeline;

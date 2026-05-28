@@ -5,7 +5,7 @@
  * VITRUM_ALLOW_BASELINE_GEN=1 for WG0_PT_WEBGPU_SCENARIOS (or VITRUM_GAP_SCENARIOS).
  */
 
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { WG0_PT_WEBGPU_SCENARIOS } from './scenario-presets.mjs';
@@ -85,7 +85,6 @@ async function main() {
     }
   }
 
-  const gapScript = resolve(repoRoot, 'tools/benchmark-runner/run-gap-closure-verification.mjs');
   const run = await runCommandWithTimeout(`node ./tools/benchmark-runner/run-gap-closure-verification.mjs`, {
     cwd: repoRoot,
     env: {

@@ -43,7 +43,6 @@ const serverCommand =
   `npm run dev --workspace @vitrum-examples/two-engines-one-scene -- --host ${benchDevHost} --port ${benchDevPort}`;
 const serverReadyTimeoutMs = Number(process.env.VITRUM_PR_SERVER_READY_TIMEOUT_MS ?? 90_000);
 const serverPollMs = Number(process.env.VITRUM_PR_SERVER_POLL_MS ?? 500);
-const headless = process.env.VITRUM_BENCH_HEADLESS !== '0';
 const navTimeoutMs = Number(process.env.VITRUM_PR_NAV_TIMEOUT_MS ?? 90_000);
 const benchTimeoutMs = Number(process.env.VITRUM_PR_BENCH_TIMEOUT_MS ?? 120_000);
 /** @see {@link HYBRID_WEBGPU_REQUIRED_LIMITS} in @vitrum/walkaround-hybrid */

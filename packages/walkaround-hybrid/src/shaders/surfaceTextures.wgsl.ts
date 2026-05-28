@@ -175,8 +175,8 @@ fn bvhTraceTintedVisibility(
     // sun-shadow rays, axis-aligned hit normals, sky-aperture taps along
     // ±X/Y/Z), and \`0 * Inf = NaN\` then poisons the slab test when the ray
     // origin sits on the corresponding AABB face. safeInvDir lives in
-    // COMMON_WGSL and is in scope (the pipeline concatenates COMMON_WGSL +
-    // SURFACE_TEXTURES_WGSL + … into the shade module).
+    // @vitrum/shared-bvh's bvhIntersect.wgsl and is in scope because composeWgsl
+    // topo-sorts that module ahead of this one when building the shade module.
     let invDir = safeInvDir(dir);
     let t1 = (nMin - origin) * invDir;
     let t2 = (nMax - origin) * invDir;
