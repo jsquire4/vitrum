@@ -1,10 +1,9 @@
 /**
  * bdpt_light_subpath.glsl.js — BDPT light-subpath kernel (Sprint 10c).
  *
- * This GLSL block is included via `#ifdef BDPT_LIGHT_SUBPATH_PASS` into the
- * light-subpath draw pass — a separate fullscreen-quad draw call that the host
- * issues BDPT_MAX_LIGHT_BOUNCES times (once per bounce) before the main eye-ray
- * accumulation pass.
+ * Included when `FEATURE_BDPT == 1`. The host light-subpath draw uses
+ * `uBdptLightSubpathPass` in PhysicalPathTracingMaterial (one fullscreen draw
+ * per vertex column) via PathTracingRenderer.renderBdptLightSubpathPass().
  *
  * Ping-pong vertex texture layout (RGBA32F, width=BDPT_MAX_LIGHT_BOUNCES=3, height=3):
  *   Texel(col, 0):  position.xyz | kind    (0=light vertex, 3=invalid/empty)

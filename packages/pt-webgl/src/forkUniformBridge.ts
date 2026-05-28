@@ -152,11 +152,13 @@ export function driveForkMaterialUniforms(
   // prevent the shader from sampling an unbound texture slot.
   if (bdptOptions != null) {
     const lightPathTex = bdptOptions.lightPathTex ?? null;
-    const effectivelyEnabled = bdptOptions.enabled && lightPathTex != null;
+    const bdptCompiled = bdptOptions.enabled;
+    const effectivelyEnabled = bdptCompiled && lightPathTex != null;
     setUniform(material, 'uBdptEnabled', effectivelyEnabled);
     // Only bind when active — leaving a float RGBA32F on the slot breaks SwiftShader PT.
     setUniform(material, 'uBdptLightPathTex', effectivelyEnabled ? lightPathTex : null);
-    material?.setDefine?.('FEATURE_BDPT', effectivelyEnabled ? 1 : 0);
+    // Compile BDPT GLSL when the engine opted in, even before lightPathTex exists (GPU fill pass).
+    material?.setDefine?.('FEATURE_BDPT', bdptCompiled ? 1 : 0);
     const maxBounces = bdptOptions.maxLightBounces != null
       ? sanitizePositiveFinite(bdptOptions.maxLightBounces, 3, 3)
       : 3;

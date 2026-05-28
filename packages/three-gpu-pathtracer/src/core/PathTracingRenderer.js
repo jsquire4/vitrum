@@ -432,8 +432,11 @@ export class PathTracingRenderer {
 		const material = this.material;
 		const renderer = this._renderer;
 
-		if ( ! material.defines.FEATURE_BDPT ) {
+		if ( Number( material.defines.FEATURE_BDPT ) !== 1 ) {
 
+			console.warn(
+				'[PathTracingRenderer] renderBdptLightSubpathPass skipped: FEATURE_BDPT is not compiled (enable BDPT at engine creation).',
+			);
 			return;
 
 		}

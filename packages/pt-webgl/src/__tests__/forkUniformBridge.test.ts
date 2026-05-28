@@ -27,6 +27,12 @@ function makeStubPathTracer() {
           uBdptMaxLightBounces: { value: 0 },
           uBdptLightPathTex: { value: null as unknown },
         },
+        defines: { FEATURE_BDPT: 0 as number },
+        setDefine( name: string, value: number ) {
+
+          ( this.defines as Record<string, number> )[ name ] = value;
+
+        },
       },
     },
   };
@@ -145,8 +151,11 @@ describe('driveForkMaterialUniforms', () => {
       { enabled: true, maxLightBounces: 3, lightPathTex: null },
     );
     const uniforms = pathTracer._pathTracer.material.uniforms;
-    // Safety guard: null texture → force disabled to prevent sampling unbound slot.
+    const material = pathTracer._pathTracer.material;
+    // Safety guard: null texture → eye-path connections off; shader still compiles BDPT.
     expect(uniforms.uBdptEnabled.value).toBe(false);
+    expect(uniforms.uBdptLightPathTex.value).toBeNull();
+    expect(material.defines.FEATURE_BDPT).toBe(1);
   });
 
   it('handles mixed-material scenes without clobbering scalar controls', () => {
