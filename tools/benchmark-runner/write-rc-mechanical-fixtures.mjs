@@ -1,7 +1,8 @@
 /**
  * Writes 64×64 mechanical RC acceptance PNGs (not GPU captures).
  * Used by `benchmark:rc-acceptance-mechanical` and default CI until a GPU
- * host refreshes `tools/reference-renders/W8-rc-{off,on}/` with real frames.
+ * GPU captures live in `W8-rc-{off,on}/` and are refreshed via
+ * `benchmark:rc-acceptance-gpu` only.
  */
 
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -24,8 +25,8 @@ function solidPng(width, height, rgb) {
 }
 
 async function main() {
-  const offDir = resolve(repoRoot, 'tools/reference-renders/W8-rc-off');
-  const onDir = resolve(repoRoot, 'tools/reference-renders/W8-rc-on');
+  const offDir = resolve(repoRoot, 'tools/reference-renders/W8-rc-mechanical-off');
+  const onDir = resolve(repoRoot, 'tools/reference-renders/W8-rc-mechanical-on');
   await mkdir(offDir, { recursive: true });
   await mkdir(onDir, { recursive: true });
   const offPath = resolve(offDir, 'cornell-walkaround-rc-off.png');

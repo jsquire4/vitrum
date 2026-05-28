@@ -37,6 +37,8 @@ function main() {
   runNode('run-rc-acceptance.mjs', {
     VITRUM_RC_SKIP_CAPTURE: '1',
     VITRUM_RC_START_SERVER: '0',
+    VITRUM_RC_OFF_PNG: 'tools/reference-renders/W8-rc-mechanical-off/cornell-walkaround-rc-off.png',
+    VITRUM_RC_ON_PNG: 'tools/reference-renders/W8-rc-mechanical-on/cornell-walkaround-rc-on.png',
   });
 
   const metricsPath = process.env.VITRUM_RC_ACCEPTANCE_METRICS ?? latestMetricsPath();
