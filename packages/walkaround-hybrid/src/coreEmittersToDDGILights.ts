@@ -44,16 +44,26 @@
  * `restir/emitterList.ts`, where emitter power is `luminance(color)·area`).
  *
  * Taxonomy mapping (core → DDGI):
- *   - directional → EXCLUDED. The current pipeline routes the primary
- *     directional light to DDGI via `ProbeUpdatePass.setSunIntensityMultiplier`
- *     + the BVH emitter buffers, NOT through a `sun` DDGILight, and the GPU
- *     packer's `sun` path hardcodes the sun direction `(0,-1,0)` and colour
- *     `(1,0.95,0.85)` (it cannot carry a per-emitter direction). Emitting a
- *     `sun` DDGILight here would (a) be mis-oriented and (b) double-count
- *     against the multiplier path. So directional emitters are omitted —
- *     preserving the prior behaviour exactly (the old THREE walk produced a
- *     THREE.DirectionalLight, which `collectDDGILightsFromThreeRoot` did not
- *     collect either).
+ *   - directional → `sun` DDGILight carrying the emitter's REAL direction,
+ *     intensity, and colour. The `@vitrum/core` `direction` field points AT
+ *     the light (toward-light), but the GPU packer's `sun` slot + the WGSL
+ *     probe shader expect a TRAVEL direction (the shader does `lightDir =
+ *     normalize(-light.direction)`), so the mapper NEGATES it. This is the
+ *     authoritative scene-directional → DDGI-sun path: the DDGI sun direction
+ *     is no longer the packer's hardcoded `(0,-1,0)`, and the colour is no
+ *     longer the packer's hardcoded `(1,0.95,0.85)`.
+ *
+ *     Single-count: a `sun` DDGILight carries `intensity = emitter.intensity`
+ *     directly. The host (`HybridEngineLifecycle` / `_syncDdgiLightsFromThreeRoot`)
+ *     sets `ProbeUpdatePass.setSunIntensityMultiplier(1)` whenever a scene
+ *     directional is present, so the packed sun intensity is exactly
+ *     `emitter.intensity` (NOT `emitter.intensity · primaryLightIntensity` —
+ *     the multiplier and the emitter intensity would otherwise double-apply).
+ *     When NO scene directional is present the host keeps the legacy
+ *     `setSunIntensityMultiplier(primaryLightIntensity)` config path (which is
+ *     a no-op for the probe pass today since nothing injects a `sun` light in
+ *     that case — the directional's render contribution flows through
+ *     `shade.wgsl`'s `Lo_emit` instead). See `directionalSunMultiplier`.
  *   - rect-area  → fixture at `position`, area `4·|uAxis × vAxis|`.
  *   - disc-area  → fixture at `position`, area `π·r²`.
  *   - point      → fixture at `position`, scalar intensity (no area).
@@ -85,10 +95,31 @@ function rectAreaFromHalfAxes(uAxis: Vec3, vAxis: Vec3): number {
 }
 
 /** Project a single core emitter onto a DDGILight, or null if the emitter
- *  kind is not represented as an analytic DDGI light (directional, mesh-area)
- *  or is degenerate. */
+ *  kind is not represented as an analytic DDGI light (mesh-area) or is
+ *  degenerate. A `directional` emitter maps to a `sun` DDGILight (see header). */
 export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
   switch (e.kind) {
+    case 'directional': {
+      // Scene directional → DDGI sun. `e.direction` points AT the light
+      // (toward-light); the packer + WGSL want a TRAVEL direction (the shader
+      // negates it back), so negate here. Intensity carried directly (the
+      // host sets sunIntensityMul=1 for the single-count — see header).
+      const len = Math.hypot(e.direction[0], e.direction[1], e.direction[2]);
+      if (len < 1e-12) return null; // degenerate (zero direction)
+      const inv = 1 / len;
+      return {
+        kind: 'sun',
+        id: String(e.id),
+        on: true,
+        intensity: e.intensity,
+        direction: {
+          x: -e.direction[0] * inv,
+          y: -e.direction[1] * inv,
+          z: -e.direction[2] * inv,
+        },
+        color: { r: e.color[0], g: e.color[1], b: e.color[2] },
+      };
+    }
     case 'rect-area': {
       const area = rectAreaFromHalfAxes(e.uAxis, e.vAxis);
       if (area < 1e-12) return null; // degenerate (parallel/zero half-axes)
@@ -126,12 +157,10 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
       };
     }
-    case 'directional':
     case 'mesh-area':
-      // See module header: directional is routed via setSunIntensityMultiplier
-      // + the BVH emitter buffers (the packer's sun path can't carry a
-      // per-emitter direction); mesh-area is folded into the mesh's emissive
-      // material and reaches DDGI as emissive geometry, not an analytic light.
+      // See module header: mesh-area is folded into the referenced mesh's
+      // emissive material by vitrumSceneToThree and reaches DDGI as emissive
+      // geometry probe rays hit, not as an analytic light.
       return null;
     default: {
       // Exhaustiveness guard — a new emitter kind added to the core union
@@ -157,4 +186,35 @@ export function coreEmittersToDDGILights(scene: Scene): DDGILight[] {
     if (light != null) out.push(light);
   }
   return out;
+}
+
+/** True when the scene supplies at least one `directional` emitter — i.e. the
+ *  DDGI sun is driven by a scene-emitter `sun` DDGILight (carrying its own
+ *  intensity) rather than the host's config-only `primaryLightIntensity`. */
+export function sceneHasDirectionalEmitter(scene: Scene): boolean {
+  return scene.emitters.some((e) => e.kind === 'directional');
+}
+
+/**
+ * Resolve the sun-intensity multiplier the host should pass to
+ * `ProbeUpdatePass.setSunIntensityMultiplier` — the single-count knob.
+ *
+ *   - Scene directional present → `1`. The `sun` DDGILight already carries
+ *     `intensity = emitter.intensity`; a multiplier > 1 would double-apply it.
+ *   - No scene directional       → `primaryLightIntensity` (legacy config
+ *     path). This is a no-op for the probe pass today (nothing injects a `sun`
+ *     light absent a scene directional), but kept so a host that manually
+ *     injects a directionless `sun` light still scales by the config intensity
+ *     as before.
+ *
+ * Centralising this keeps the "pick one path" single-count decision in one
+ * place rather than duplicated across the init coordinator and the
+ * incremental `_syncDdgiLightsFromThreeRoot` path.
+ */
+export function directionalSunMultiplier(
+  scene: Scene | null,
+  primaryLightIntensity: number,
+): number {
+  if (scene != null && sceneHasDirectionalEmitter(scene)) return 1;
+  return primaryLightIntensity;
 }

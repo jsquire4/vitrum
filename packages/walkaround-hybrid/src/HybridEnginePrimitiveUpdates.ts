@@ -83,6 +83,66 @@ import { repackBVHMaterialRange } from './restir/packingHelpers.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
+// ── Shared refit helpers (behaviour-preserving extraction, WD sweep) ─────────
+//
+// `transformRefit`, `positionsRefit`, and `refitSkinnedMeshAfterGpuWrite` all
+// repeated three byte-for-byte blocks: (1) snapshot the live TLAS GPU buffers,
+// (2) write a successful `refitTlasTransforms` result back into `bvh.tlas.*` +
+// push it to the pipeline, and (3) refit BVH node bounds against an updated
+// world-position buffer and upload the affected stride-4 vertex slice. These
+// helpers fold each block into one call — no behaviour change (the call
+// sequence + GPU side effects are identical to the inlined code).
+
+const REFIT_STRIDE = 4; // bvhPositions packs world xyz into [0..2] + uv-as-u32 in [3]
+
+/** Snapshot the live TLAS GPU buffers as the `prev` input to `refitTlasTransforms`. */
+function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGpuSnapshot {
+  return {
+    tlasNodes: new Uint32Array(tlas.nodes.cpuData),
+    tlasInstanceIndices: new Uint32Array(tlas.instanceIndices.cpuData),
+    tlasBlasRoots: new Uint32Array(tlas.blasRoots.cpuData),
+    tlasInstanceWorldToLocal: new Float32Array(tlas.worldToLocal.cpuData),
+  };
+}
+
+/** Write a successful TLAS-transform refit back into `bvh.tlas.*` and push the
+ *  three refreshed buffers to the pipeline. Mutates `bvh.tlas` in place
+ *  (matching the pre-extraction call sites). */
+function applyTlasRefitResult(
+  tlas: NonNullable<SceneBVHBuffers['tlas']>,
+  refit: { tlasNodes: Uint32Array; tlasInstanceWorldToLocal: Float32Array; tlasInstanceLocalToWorld: Float32Array },
+  pipeline: WalkaroundGPUPipeline | null | undefined,
+): void {
+  tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
+  tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
+  tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
+  pipeline?.refreshTlasRefit(tlas.nodes.cpuData, tlas.worldToLocal.cpuData, tlas.localToWorld.cpuData);
+}
+
+/** Refit BVH node bounds against the updated stride-4 world positions, then
+ *  upload the full (small) node buffer + just the affected vertex slice to the
+ *  pipeline. Used by the non-TLAS transform + positions fast paths. */
+function refitBvhNodesAndUploadSlice(
+  bvh: SceneBVHBuffers,
+  positionsF32: Float32Array,
+  baseVertex: number,
+  sliceVerts: number,
+  pipeline: WalkaroundGPUPipeline | null | undefined,
+): void {
+  const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
+  refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
+  const positionsByteOffset = baseVertex * REFIT_STRIDE * 4; // f32 = 4 bytes
+  const positionsByteLength = sliceVerts * REFIT_STRIDE * 4;
+  const positionsSlice = bvh.bvhPositions.cpuData.slice(
+    positionsByteOffset,
+    positionsByteOffset + positionsByteLength,
+  );
+  pipeline?.refreshBvhRefit(
+    bvh.bvhNodes.cpuData.slice(0),
+    { byteOffset: positionsByteOffset, data: positionsSlice },
+  );
+}
+
 /** Aggregated resources the primitive-update paths need from the engine. */
 export interface PrimitiveUpdateContext {
   /** The engine's currently-owned BVH GPU buffers. May be null if the
@@ -197,22 +257,10 @@ export function transformRefit(
       const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, {
         transform: meshPatch.transform,
       });
-      const prev: TlasGpuSnapshot = {
-        tlasNodes: new Uint32Array(bvh.tlas.nodes.cpuData),
-        tlasInstanceIndices: new Uint32Array(bvh.tlas.instanceIndices.cpuData),
-        tlasBlasRoots: new Uint32Array(bvh.tlas.blasRoots.cpuData),
-        tlasInstanceWorldToLocal: new Float32Array(bvh.tlas.worldToLocal.cpuData),
-      };
+      const prev = captureTlasSnapshot(bvh.tlas);
       const refit = refitTlasTransforms(updatedScene, bvh.primitiveTlasBindings, prev);
       if (refit.ok) {
-        bvh.tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
-        bvh.tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
-        bvh.tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
-        ctx.pipeline?.refreshTlasRefit(
-          bvh.tlas.nodes.cpuData,
-          bvh.tlas.worldToLocal.cpuData,
-          bvh.tlas.localToWorld.cpuData,
-        );
+        applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
         const range = bvh.meshVertexRanges.find((r) => r.name === id);
         if (range != null && meshPatch.transform && meshPatch.transform.length >= 16) {
           range.matrixWorldAtBuild.set(new Float32Array(meshPatch.transform));
@@ -301,26 +349,10 @@ export function transformRefit(
   // original build-time matrix.
   range.matrixWorldAtBuild.set(newMat.elements);
 
-  // Refit BVH bounds in place against the freshly-updated positions.
-  // Use the cached stride-3 index buffer (refit reads 3 u32 per
-  // triangle, no padding).
-  const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
-  refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
-
-  // Upload the refit nodes + the affected position slice to GPU.
-  // bvhNodes is small (~32 KB / 1k tris) — upload whole.
-  // Positions: write only the affected byte range to honour the
-  // "fast path" goal.
-  const positionsByteOffset = baseVertex * STRIDE * 4; // f32 = 4 bytes
-  const positionsByteLength = sliceVerts * STRIDE * 4;
-  const positionsSlice = bvh.bvhPositions.cpuData.slice(
-    positionsByteOffset,
-    positionsByteOffset + positionsByteLength,
-  );
-  ctx.pipeline?.refreshBvhRefit(
-    bvh.bvhNodes.cpuData.slice(0),
-    { byteOffset: positionsByteOffset, data: positionsSlice },
-  );
+  // Refit BVH bounds in place against the freshly-updated positions (using
+  // the cached stride-3 index buffer), then upload the full node buffer +
+  // just the affected stride-4 vertex slice to honour the fast-path goal.
+  refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
 
   // Reset the accumulator — temporal history is invalid because the
   // primitive moved (history pixels reference the old world position).
@@ -426,19 +458,7 @@ export function positionsRefit(
         : b,
     );
 
-    const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
-    refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
-
-    const positionsByteOffset = baseVertex * STRIDE * 4;
-    const positionsByteLength = sliceVerts * STRIDE * 4;
-    const positionsSlice = bvh.bvhPositions.cpuData.slice(
-      positionsByteOffset,
-      positionsByteOffset + positionsByteLength,
-    );
-    ctx.pipeline?.refreshBvhRefit(
-      bvh.bvhNodes.cpuData.slice(0),
-      { byteOffset: positionsByteOffset, data: positionsSlice },
-    );
+    refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
 
     const meshPosPatch = patch as Partial<MeshPrimitive>;
     const posPatch: Partial<MeshPrimitive> = meshPosPatch.normals !== undefined
@@ -449,22 +469,10 @@ export function positionsRefit(
       : { positions: new Float32Array(Array.from(newLocalPositions)) };
     const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, posPatch);
 
-    const prev: TlasGpuSnapshot = {
-      tlasNodes: new Uint32Array(bvh.tlas.nodes.cpuData),
-      tlasInstanceIndices: new Uint32Array(bvh.tlas.instanceIndices.cpuData),
-      tlasBlasRoots: new Uint32Array(bvh.tlas.blasRoots.cpuData),
-      tlasInstanceWorldToLocal: new Float32Array(bvh.tlas.worldToLocal.cpuData),
-    };
+    const prev = captureTlasSnapshot(bvh.tlas);
     const refit = refitTlasTransforms(updatedScene, bindings, prev);
     if (refit.ok) {
-      bvh.tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
-      bvh.tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
-      bvh.tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
-      ctx.pipeline?.refreshTlasRefit(
-        bvh.tlas.nodes.cpuData,
-        bvh.tlas.worldToLocal.cpuData,
-        bvh.tlas.localToWorld.cpuData,
-      );
+      applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
     } else {
       return topologyRebuild(id, patch, ctx);
     }
@@ -534,21 +542,9 @@ export function positionsRefit(
     // .w (UV pack) preserved.
   }
 
-  // Refit BVH bounds in place against the freshly-updated positions.
-  const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
-  refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
-
-  // Upload the refit nodes + the affected position slice to GPU.
-  const positionsByteOffset = baseVertex * STRIDE * 4; // f32 = 4 bytes
-  const positionsByteLength = sliceVerts * STRIDE * 4;
-  const positionsSlice = bvh.bvhPositions.cpuData.slice(
-    positionsByteOffset,
-    positionsByteOffset + positionsByteLength,
-  );
-  ctx.pipeline?.refreshBvhRefit(
-    bvh.bvhNodes.cpuData.slice(0),
-    { byteOffset: positionsByteOffset, data: positionsSlice },
-  );
+  // Refit BVH bounds in place against the freshly-updated positions, then
+  // upload the full node buffer + just the affected vertex slice to GPU.
+  refitBvhNodesAndUploadSlice(bvh, positionsF32, baseVertex, sliceVerts, ctx.pipeline);
 
   // Reset the accumulator + invalidate DDGI — vertex positions changed,
   // history pixels reference the old geometry. Same invalidation cost as
@@ -645,24 +641,12 @@ export function refitSkinnedMeshAfterGpuWrite(
     refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
     ctx.pipeline?.refreshBvhNodesOnly(bvh.bvhNodes.cpuData.slice(0));
 
-    const prev: TlasGpuSnapshot = {
-      tlasNodes: new Uint32Array(bvh.tlas.nodes.cpuData),
-      tlasInstanceIndices: new Uint32Array(bvh.tlas.instanceIndices.cpuData),
-      tlasBlasRoots: new Uint32Array(bvh.tlas.blasRoots.cpuData),
-      tlasInstanceWorldToLocal: new Float32Array(bvh.tlas.worldToLocal.cpuData),
-    };
+    const prev = captureTlasSnapshot(bvh.tlas);
     const refit = refitTlasTransforms(updatedScene, bindings, prev);
     if (!refit.ok) {
       throw new Error(`refitSkinnedMeshAfterGpuWrite("${id}"): TLAS transform refit failed.`);
     }
-    bvh.tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
-    bvh.tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
-    bvh.tlas.localToWorld.cpuData = refit.tlasInstanceLocalToWorld.buffer.slice(0) as ArrayBuffer;
-    ctx.pipeline?.refreshTlasRefit(
-      bvh.tlas.nodes.cpuData,
-      bvh.tlas.worldToLocal.cpuData,
-      bvh.tlas.localToWorld.cpuData,
-    );
+    applyTlasRefitResult(bvh.tlas, refit, ctx.pipeline);
 
     ctx.pipeline?.requestAccumReset();
     ctx.ddgi.markInstancesDirty();

@@ -94,7 +94,7 @@ import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
-import { coreEmittersToDDGILights } from './coreEmittersToDDGILights.js';
+import { coreEmittersToDDGILights, directionalSunMultiplier } from './coreEmittersToDDGILights.js';
 import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 
 // Re-export the option / lighting interfaces from their dedicated module so
@@ -128,6 +128,137 @@ function defaultIsSceneReady(scene: THREE.Scene): boolean {
   // blocked them. Hosts with stricter readiness signals supply their own
   // `isSceneReady` callback.
   return total > 0;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Option parsing + validation
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The construction-time-immutable config the engine derives PURELY from its
+ * options — no `this` dependency, no GPU side effects. Extracting the ~80 LOC
+ * of defaulting + validation that produced these out of the constructor (WD
+ * decomposition sweep) keeps the constructor focused on object wiring (DDGI /
+ * RC subsystem creation, capabilities, init coordinator, debug surface) that
+ * genuinely needs `this`.
+ *
+ * Behaviour-preserving: `parseHybridEngineOptions` throws the same three
+ * `TypeError`s in the same order as the inline constructor did, and applies
+ * the same defaults. The constructor assigns each field verbatim from the
+ * returned record.
+ */
+interface ParsedHybridEngineConfig {
+  readonly denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
+  readonly neuralWeights: ModelWeights | undefined;
+  readonly oidnModelUrl: string | undefined;
+  readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
+  readonly restirBvhModeOverride: ReSTIRBvhMode | undefined;
+  readonly targetFrameIntervalMs: number | null;
+  readonly tunables: Tunables;
+  readonly initTunables: InitTunables;
+  readonly indirectFireflyClamp: readonly [number, number, number];
+  readonly atrousDirectSigmas: readonly [number, number, number];
+  readonly atrousIndirectSigmas: readonly [number, number, number];
+  readonly stainedGlassFlags: number;
+  readonly staticPipelineRebuildKey: string | number | null;
+  readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
+  readonly rebuildKeyFingerprintSeen: string;
+  readonly maxBounces: number;
+  readonly verbose: boolean;
+  readonly debug: boolean;
+}
+
+/** Parse + validate `HybridEngineOptions` into the immutable derived config.
+ *  Pure (no `this`, no GPU); throws on unsupported/incomplete denoiser config.
+ *  See {@link ParsedHybridEngineConfig}. */
+function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngineConfig {
+  // Audit B7: validate the denoiser option at construction so an unsupported
+  // value (e.g. `'none'`, `'bmfr'` from the @vitrum/core EngineOptions
+  // contract) does not silently coerce to atrous-variance and produce
+  // wrong output. Supported values are explicitly enumerated here.
+  if (
+    opts.denoiser !== undefined &&
+    opts.denoiser !== 'atrous' &&
+    opts.denoiser !== 'atrous-variance' &&
+    opts.denoiser !== 'svgf-real' &&
+    opts.denoiser !== 'neural' &&
+    opts.denoiser !== 'oidn-final'
+  ) {
+    throw new TypeError(
+      `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
+      `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final'. ` +
+      `If you need 'none' / 'bmfr' from @vitrum/core, pick a backend that implements those modes.`,
+    );
+  }
+  // T2.H2 — 'neural' requires neuralWeights to be provided.
+  if (opts.denoiser === 'neural' && !opts.neuralWeights) {
+    throw new TypeError(
+      `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
+      `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
+      `or train one with tools/neural-denoiser-training/train.py. ` +
+      `See tools/neural-denoiser-training/README.md for instructions.`,
+    );
+  }
+  // W11 — 'oidn-final' requires extensions['walkaround-hybrid'].oidnModelUrl.
+  const whExt = (opts.extensions as undefined | {
+    'walkaround-hybrid'?: {
+      oidnModelUrl?: string;
+      oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+      bvhMode?: 'merged' | 'tlas';
+    };
+  })?.['walkaround-hybrid'];
+  const oidnModelUrl = whExt?.oidnModelUrl;
+  if (opts.denoiser === 'oidn-final' &&
+      (typeof oidnModelUrl !== 'string' || oidnModelUrl.length === 0)) {
+    throw new TypeError(
+      `[HybridEngine] denoiser: 'oidn-final' requires ` +
+      `extensions['walkaround-hybrid'].oidnModelUrl (non-empty string) ` +
+      `pointing at the bundled OIDN ONNX model file ` +
+      `(e.g. '/models/oidn_rt_hdr_alb_nrm.onnx'). ` +
+      `See plan/premium-grade-refactor-20260517.md §W11 + ` +
+      `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
+    );
+  }
+
+  return {
+    denoiser: opts.denoiser ?? 'atrous-variance',
+    neuralWeights: opts.neuralWeights,
+    oidnModelUrl,
+    oidnExecutionProviders: whExt?.oidnExecutionProviders,
+    restirBvhModeOverride: whExt?.bvhMode,
+    targetFrameIntervalMs: opts.targetFrameIntervalMs !== undefined
+      ? opts.targetFrameIntervalMs
+      : DEFAULT_TARGET_FRAME_INTERVAL_MS,
+    // Library-generality tunables — table-driven; defaults preserve Cornell
+    // behaviour, hosts override via HybridEngineOptions.
+    tunables: readTunables(opts),
+    initTunables: readInitTunables(opts),
+    // 2026-05-18 sweep — `indirectFireflyClamp` is tuple-typed so it lives
+    // outside the number-typed Tunables table; default preserves Cornell.
+    indirectFireflyClamp: opts.indirectFireflyClamp ?? [1.0, 1.0, 1.0],
+    // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas; tuple-typed same as
+    // indirectFireflyClamp. Defaults sourced from the single-source-of-truth
+    // constants in bindGroupBuilders.ts (no duplicated literals).
+    atrousDirectSigmas: opts.atrousDirectSigmas
+      ?? [ATROUS_DIRECT_SIGMAS.sigmaN, ATROUS_DIRECT_SIGMAS.sigmaZ, ATROUS_DIRECT_SIGMAS.sigmaC],
+    atrousIndirectSigmas: opts.atrousIndirectSigmas
+      ?? [ATROUS_INDIRECT_SIGMAS.sigmaN, ATROUS_INDIRECT_SIGMAS.sigmaZ, ATROUS_INDIRECT_SIGMAS.sigmaC],
+    // T5 — stained-glass opt-in flag bits. Default 0 (both terms OFF); hosts
+    // opt in via opts.stainedGlass. Packed once here (construction-time
+    // config); threaded into pipeline.renderFrame via _denoiserFilterDeps.
+    stainedGlassFlags: packStainedGlassFlags({
+      sunCaustic: opts.stainedGlass?.sunCaustic,
+      skyAperture: opts.stainedGlass?.skyAperture,
+    }),
+    staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
+    getPipelineRebuildKey: opts.getPipelineRebuildKey,
+    rebuildKeyFingerprintSeen: fingerprintHybridPipelineRebuildKey(
+      opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
+    ),
+    maxBounces: opts.maxBounces ?? 4,
+    verbose: opts.verbose ?? false,
+    debug: opts.debug ?? false,
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -318,6 +449,13 @@ export class HybridEngine implements Engine {
   readonly debug: EngineDebugSurface;
 
   constructor(opts: HybridEngineOptions) {
+    // Pure option parsing + validation (defaults, denoiser/neural/OIDN
+    // validation throws) lives in `parseHybridEngineOptions` so the
+    // constructor body stays focused on `this`-dependent wiring (subsystems,
+    // capabilities, init coordinator, debug surface). Behaviour-preserving:
+    // same throws in the same order, same defaults. (WD decomposition sweep.)
+    const cfg = parseHybridEngineOptions(opts);
+
     this._device                = opts.device;
     this._width                 = opts.width;
     this._height                = opts.height;
@@ -329,99 +467,34 @@ export class HybridEngine implements Engine {
     this._primaryLightIntensity = opts.primaryLightIntensity;
     this._skyTint               = opts.skyTint;
     this._skyIrradiance         = opts.skyIrradiance;
-    this._debug                 = opts.debug ?? false;
-    this._verbose               = opts.verbose ?? false;
-    this._maxBounces            = opts.maxBounces ?? 4;
-    // Audit B7: validate the denoiser option at construction so an unsupported
-    // value (e.g. `'none'`, `'bmfr'` from the @vitrum/core EngineOptions
-    // contract) does not silently coerce to atrous-variance and produce
-    // wrong output. Supported values are explicitly enumerated here.
-    if (
-      opts.denoiser !== undefined &&
-      opts.denoiser !== 'atrous' &&
-      opts.denoiser !== 'atrous-variance' &&
-      opts.denoiser !== 'svgf-real' &&
-      opts.denoiser !== 'neural' &&
-      opts.denoiser !== 'oidn-final'
-    ) {
-      throw new TypeError(
-        `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
-        `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final'. ` +
-        `If you need 'none' / 'bmfr' from @vitrum/core, pick a backend that implements those modes.`,
-      );
-    }
-    // T2.H2 — 'neural' requires neuralWeights to be provided.
-    if (opts.denoiser === 'neural' && !opts.neuralWeights) {
-      throw new TypeError(
-        `[HybridEngine] denoiser: 'neural' requires neuralWeights to be provided. ` +
-        `Load weights via loadWeightsFromArrayBuffer() from a .vitrum-model file, ` +
-        `or train one with tools/neural-denoiser-training/train.py. ` +
-        `See tools/neural-denoiser-training/README.md for instructions.`,
-      );
-    }
-    // W11 — 'oidn-final' requires extensions['walkaround-hybrid'].oidnModelUrl.
-    const _whExt = (opts.extensions as undefined | {
-      'walkaround-hybrid'?: {
-        oidnModelUrl?: string;
-        oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-        bvhMode?: 'merged' | 'tlas';
-      };
-    })?.['walkaround-hybrid'];
-    const _oidnModelUrl = _whExt?.oidnModelUrl;
-    if (opts.denoiser === 'oidn-final' &&
-        (typeof _oidnModelUrl !== 'string' || _oidnModelUrl.length === 0)) {
-      throw new TypeError(
-        `[HybridEngine] denoiser: 'oidn-final' requires ` +
-        `extensions['walkaround-hybrid'].oidnModelUrl (non-empty string) ` +
-        `pointing at the bundled OIDN ONNX model file ` +
-        `(e.g. '/models/oidn_rt_hdr_alb_nrm.onnx'). ` +
-        `See plan/premium-grade-refactor-20260517.md §W11 + ` +
-        `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
-      );
-    }
-    this._denoiser = opts.denoiser ?? 'atrous-variance';
-    this._neuralWeights = opts.neuralWeights;
-    this._oidnModelUrl = _oidnModelUrl;
-    this._oidnExecutionProviders = _whExt?.oidnExecutionProviders;
-    this._restirBvhModeOverride = _whExt?.bvhMode;
-    this._targetFrameIntervalMs = opts.targetFrameIntervalMs !== undefined
-      ? opts.targetFrameIntervalMs
-      : DEFAULT_TARGET_FRAME_INTERVAL_MS;
-    // Library-generality tunables — table-driven; defaults preserve Cornell
-    // behaviour, hosts override via HybridEngineOptions.
-    this._tunables     = readTunables(opts);
-    this._initTunables = readInitTunables(opts);
-    // 2026-05-18 sweep — `indirectFireflyClamp` is tuple-typed so it lives
-    // outside the number-typed Tunables table; default preserves Cornell.
-    this._indirectFireflyClamp = opts.indirectFireflyClamp ?? [1.0, 1.0, 1.0];
-    // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas; tuple-typed same as
-    // indirectFireflyClamp. Defaults sourced from the single-source-of-truth
-    // constants in bindGroupBuilders.ts (no duplicated literals).
-    this._atrousDirectSigmas   = opts.atrousDirectSigmas
-      ?? [ATROUS_DIRECT_SIGMAS.sigmaN, ATROUS_DIRECT_SIGMAS.sigmaZ, ATROUS_DIRECT_SIGMAS.sigmaC];
-    this._atrousIndirectSigmas = opts.atrousIndirectSigmas
-      ?? [ATROUS_INDIRECT_SIGMAS.sigmaN, ATROUS_INDIRECT_SIGMAS.sigmaZ, ATROUS_INDIRECT_SIGMAS.sigmaC];
-    // T5 — stained-glass opt-in flag bits. Default 0 (both terms OFF); hosts
-    // opt in via opts.stainedGlass. Packed once here (construction-time
-    // config); threaded into pipeline.renderFrame via _denoiserFilterDeps.
-    this._stainedGlassFlags = packStainedGlassFlags({
-      sunCaustic: opts.stainedGlass?.sunCaustic,
-      skyAperture: opts.stainedGlass?.skyAperture,
-    });
+    this._debug                 = cfg.debug;
+    this._verbose               = cfg.verbose;
+    this._maxBounces            = cfg.maxBounces;
+    this._denoiser              = cfg.denoiser;
+    this._neuralWeights         = cfg.neuralWeights;
+    this._oidnModelUrl          = cfg.oidnModelUrl;
+    this._oidnExecutionProviders = cfg.oidnExecutionProviders;
+    this._restirBvhModeOverride = cfg.restirBvhModeOverride;
+    this._targetFrameIntervalMs = cfg.targetFrameIntervalMs;
+    this._tunables              = cfg.tunables;
+    this._initTunables          = cfg.initTunables;
+    this._indirectFireflyClamp  = cfg.indirectFireflyClamp;
+    this._atrousDirectSigmas    = cfg.atrousDirectSigmas;
+    this._atrousIndirectSigmas  = cfg.atrousIndirectSigmas;
+    this._stainedGlassFlags     = cfg.stainedGlassFlags;
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
-    // signal (e.g. wait for an async asset).
+    // signal (e.g. wait for an async asset). Stays inline because it closes
+    // over `this` (`_coreSceneSuppliesMeshes` / `_threeScene`).
     this._isSceneReady          = opts.isSceneReady ?? (() => {
       if (this._coreSceneSuppliesMeshes()) return true;
       return this._threeScene != null && defaultIsSceneReady(this._threeScene);
     });
 
-    this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
-    this._getPipelineRebuildKey     = opts.getPipelineRebuildKey;
-    this._rebuildKeyFingerprintSeen = fingerprintHybridPipelineRebuildKey(
-      opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
-    );
+    this._staticPipelineRebuildKey  = cfg.staticPipelineRebuildKey;
+    this._getPipelineRebuildKey     = cfg.getPipelineRebuildKey;
+    this._rebuildKeyFingerprintSeen = cfg.rebuildKeyFingerprintSeen;
 
     this._ddgi = new DDGI({ debug: this._debug });
     this._ctorLights = opts.lights ?? [];
@@ -479,16 +552,18 @@ export class HybridEngine implements Engine {
       //   - point / spot → projected to DDGI fixture lights by
       //     coreEmittersToDDGILights (spot is a point-like approximation — the
       //     probe shader has no cone handling).
-      //
-      // `directional` is NOT supported: the DDGI sun is config-driven via the
-      // constructor opts (primaryLightDir/Intensity) and updateLighting(), NOT
-      // by a scene emitter — coreEmittersToDDGILights returns null for
-      // directional and ReSTIR-DI builds no directional emitter, so a
-      // scene-supplied directional emitter produces no light. Declaring it
-      // would make partitionSceneBySupport flow it through to a silent no-op,
-      // so it is warn-skipped instead. Revisit when scene-directional → DDGI
-      // sun wiring is added.
+      //   - directional → projected to a DDGI `sun` light by
+      //     coreEmittersToDDGILights, carrying the emitter's REAL direction
+      //     (negated to a travel direction), intensity, and colour into the
+      //     probe pass's sun path (replacing the packer's former hardcoded
+      //     straight-down warm-white sun). Single-counted: the host sets the
+      //     sun-intensity multiplier to 1 when a scene directional is present,
+      //     so the emitter intensity is not double-applied. The directional
+      //     still drives the shade-side Lo_emit via the WalkaroundUBO config
+      //     path (primaryLightDir/Intensity) — those remain host config, not
+      //     derived from the emitter, so there is no shade-side double-count.
       supportedEmitterKinds:     new Set<SceneEmitter['kind']>([
+        'directional',
         'rect-area',
         'disc-area',
         'point',
@@ -849,10 +924,22 @@ export class HybridEngine implements Engine {
     // `refreshDdgiLightsFromThreeScene` re-derived lights via the lossy walk
     // and silently dropped chroma / used the wrong area, drifting from the
     // freshly-built init state.
-    const sceneLights =
+    const sceneForSun =
       this._coreSceneSuppliesMeshes() && this._lastScene != null
-        ? coreEmittersToDDGILights(this._lastScene)
+        ? this._lastScene
+        : null;
+    const sceneLights =
+      sceneForSun != null
+        ? coreEmittersToDDGILights(sceneForSun)
         : collectDDGILightsFromThreeRoot(root);
+    // Single-count the sun: a scene directional emits a `sun` DDGILight that
+    // already carries its own intensity, so the multiplier must be 1; absent a
+    // scene directional, keep the legacy config multiplier. Mirrors the init
+    // coordinator's resolution so an incremental emitter edit can't drift the
+    // sun magnitude away from the freshly-built init state.
+    this._ddgi.pass.setSunIntensityMultiplier(
+      directionalSunMultiplier(sceneForSun, this._primaryLightIntensity),
+    );
     this._ddgi.setLights([...this._ctorLights, ...sceneLights]);
     this._ddgi.invalidateProbeCache();
   }
@@ -902,8 +989,19 @@ export class HybridEngine implements Engine {
       this._primaryLightIntensity = opts.primaryLightIntensity;
       changed = true;
       // Keep the DDGI ProbeUpdatePass sun-intensity multiplier in sync so the
-      // irradiance atlas re-converges at the correct brightness.
-      this._ddgi.pass.setSunIntensityMultiplier(opts.primaryLightIntensity);
+      // irradiance atlas re-converges at the correct brightness. Single-count:
+      // when a scene `directional` drives the sun, its `sun` DDGILight already
+      // carries the emitter intensity, so the multiplier stays 1 and config
+      // primaryLightIntensity does NOT additionally scale the DDGI sun (it
+      // still drives the shade-side Lo_emit via the WalkaroundUBO). Absent a
+      // scene directional, the config intensity is the multiplier as before.
+      const sceneForSun =
+        this._coreSceneSuppliesMeshes() && this._lastScene != null
+          ? this._lastScene
+          : null;
+      this._ddgi.pass.setSunIntensityMultiplier(
+        directionalSunMultiplier(sceneForSun, opts.primaryLightIntensity),
+      );
     }
     if (opts.skyTint !== undefined) {
       this._skyTint = opts.skyTint;

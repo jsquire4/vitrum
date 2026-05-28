@@ -28,7 +28,10 @@ import { luminance } from '@vitrum/shared-samplers';
 import {
   coreEmittersToDDGILights,
   coreEmitterToDDGILight,
+  directionalSunMultiplier,
+  sceneHasDirectionalEmitter,
 } from '../src/coreEmittersToDDGILights.js';
+import { packDDGIProbeLights } from '../src/ddgi/probeUpdateLights.js';
 // The OLD lossy path — exercised here purely to demonstrate the corrected
 // radiometry differs from what the THREE round-trip produced.
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
@@ -80,7 +83,17 @@ const SUN: DirectionalEmitter = {
   kind: 'directional',
   color: [1, 0.95, 0.85],
   intensity: 4,
-  direction: [0, -1, 0],
+  direction: [0, -1, 0], // points AT the light → light is straight below
+};
+
+/** A tilted, coloured sun — `direction` points AT the light (up-and-to-the-east),
+ *  NOT a unit vector, so it exercises the mapper's normalize + negate. */
+const SUN_TILTED: DirectionalEmitter = {
+  id: 'sun-tilted',
+  kind: 'directional',
+  color: [0.9, 0.4, 0.2],
+  intensity: 6,
+  direction: [3, 4, 0], // |dir| = 5 → toward-light = (0.6, 0.8, 0)
 };
 
 // ── Helper: what the OLD THREE round-trip produced for one emitter ──────────────
@@ -98,17 +111,19 @@ describe('coreEmittersToDDGILights — directional + rect + point mix', () => {
   const scene = sceneOf(SUN, RED_RECT_ORTHO, BLUE_POINT);
   const lights = coreEmittersToDDGILights(scene);
 
-  it('emits exactly the rect + point as fixtures (directional excluded)', () => {
-    // Directional is routed via setSunIntensityMultiplier + the BVH emitter
-    // buffers, not as a DDGILight, so it must NOT appear here.
-    expect(lights).toHaveLength(2);
-    expect(lights.every((l) => l.kind === 'fixture')).toBe(true);
-    expect(lights.map((l) => l.id)).toEqual(['rect-red', 'point-blue']);
-    expect(lights.some((l) => l.id === 'sun')).toBe(false);
+  it('emits the directional as a sun + the rect/point as fixtures', () => {
+    // Directional now maps to a `sun` DDGILight (the real direction/intensity/
+    // colour drive the DDGI probe-pass sun); rect/point map to fixtures.
+    expect(lights).toHaveLength(3);
+    const sun = lights.find((l) => l.id === 'sun');
+    expect(sun?.kind).toBe('sun');
+    const fixtures = lights.filter((l) => l.kind === 'fixture');
+    expect(fixtures.map((l) => l.id)).toEqual(['rect-red', 'point-blue']);
   });
 
   it('preserves each emitter id onto DDGILight.id', () => {
     const byId = new Map(lights.map((l) => [l.id, l]));
+    expect(byId.has('sun')).toBe(true);
     expect(byId.has('rect-red')).toBe(true);
     expect(byId.has('point-blue')).toBe(true);
   });
@@ -255,8 +270,7 @@ describe('coreEmittersToDDGILights — disc-area + spot', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('coreEmittersToDDGILights — exclusions & degenerate guards', () => {
-  it('returns null for directional and mesh-area emitters', () => {
-    expect(coreEmitterToDDGILight(SUN)).toBeNull();
+  it('returns null for mesh-area emitters (folded into mesh emissive)', () => {
     const meshArea: MeshAreaEmitter = {
       id: 'mesh-emit',
       kind: 'mesh-area',
@@ -265,6 +279,18 @@ describe('coreEmittersToDDGILights — exclusions & degenerate guards', () => {
       meshId: 'panel-0',
     };
     expect(coreEmitterToDDGILight(meshArea)).toBeNull();
+  });
+
+  it('returns null for a degenerate (zero-direction) directional emitter', () => {
+    const zeroDir: DirectionalEmitter = {
+      id: 'sun-degenerate',
+      kind: 'directional',
+      color: [1, 1, 1],
+      intensity: 5,
+      direction: [0, 0, 0],
+    };
+    expect(coreEmitterToDDGILight(zeroDir)).toBeNull();
+    expect(coreEmittersToDDGILights(sceneOf(zeroDir))).toHaveLength(0);
   });
 
   it('skips a degenerate rect-area emitter (parallel half-axes → zero area)', () => {
@@ -281,8 +307,15 @@ describe('coreEmittersToDDGILights — exclusions & degenerate guards', () => {
     expect(coreEmittersToDDGILights(sceneOf(degenerate))).toHaveLength(0);
   });
 
-  it('a scene of only excluded emitters yields an empty light list', () => {
-    expect(coreEmittersToDDGILights(sceneOf(SUN))).toHaveLength(0);
+  it('a scene of only a mesh-area emitter yields an empty light list', () => {
+    const meshArea: MeshAreaEmitter = {
+      id: 'mesh-only',
+      kind: 'mesh-area',
+      color: [1, 1, 1],
+      intensity: 1,
+      meshId: 'panel-0',
+    };
+    expect(coreEmittersToDDGILights(sceneOf(meshArea))).toHaveLength(0);
   });
 });
 
@@ -314,5 +347,143 @@ describe('coreEmittersToDDGILights — emitted-radiance product survives', () =>
     const oldLum = luminance(old!.color?.r ?? 1, old!.color?.g ?? 1, old!.color?.b ?? 1) * old!.intensity;
     const newLum = luminance(light!.color!.r, light!.color!.g, light!.color!.b) * light!.intensity;
     expect(oldLum).not.toBeCloseTo(newLum, 2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8 — Directional → DDGI sun: real direction + single-count
+//
+// The DDGI probe pass evaluates a `sun` light via evalSunLight, which negates
+// the packed `direction` (`lightDir = normalize(-light.direction)`). The core
+// `DirectionalEmitter.direction` points AT the light (toward-light), so the
+// mapper must negate it to a TRAVEL direction; the shader then negates again,
+// recovering the original toward-light direction for dot(N, L).
+//
+// Single-count: a `sun` DDGILight carries `intensity = emitter.intensity`, and
+// the host sets the probe-pass sun-intensity multiplier to 1 when a scene
+// directional is present — so the emitter intensity is applied exactly once,
+// never multiplied by the config primaryLightIntensity.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Float layout of packDDGIProbeLights (see probeUpdateLights.ts + the WGSL
+// DDGILight struct in probeUpdateRays.wgsl.ts): 4-float header, then 16 floats
+// per light. For light 0: base = 4. kind(u32)@0, intensity@7, direction@8..10,
+// color@12..14.
+const HEADER_FLOATS = 4;
+const LIGHT_STRIDE_FLOATS = 16;
+
+function unpackSunLight(buf: ArrayBuffer, lightIdx = 0) {
+  const f = new Float32Array(buf);
+  const u = new Uint32Array(buf);
+  const count = u[0]!;
+  const base = HEADER_FLOATS + lightIdx * LIGHT_STRIDE_FLOATS;
+  return {
+    count,
+    kind: u[base + 0]!, // 0 = LIGHT_SUN
+    intensity: f[base + 7]!,
+    direction: { x: f[base + 8]!, y: f[base + 9]!, z: f[base + 10]! },
+    color: { r: f[base + 12]!, g: f[base + 13]!, b: f[base + 14]! },
+  };
+}
+
+describe('coreEmittersToDDGILights — directional → DDGI sun, real direction', () => {
+  it('maps a downward sun to a sun light whose packed dir reproduces prior (0,-1,0)', () => {
+    // SUN.direction = (0,-1,0) points AT the light (straight down). The mapper
+    // negates → travel direction (0,1,0); but with multiplier=1 the packed sun
+    // matches the prior hardcoded straight-down convention as the shader
+    // negates the travel dir back to (0,-1,0)... so the IMPORTANT pin is that
+    // a (0,-1,0) toward-light emitter reproduces the legacy behaviour exactly.
+    const light = coreEmitterToDDGILight(SUN)!;
+    expect(light.kind).toBe('sun');
+    expect(light.id).toBe('sun');
+    expect(light.intensity).toBe(4);
+    // toward-light = (0,-1,0) → travel = (0,1,0). (Use closeTo to avoid the
+    // -0 vs 0 distinction toEqual would otherwise flag on the negated zeros.)
+    expect(light.direction!.x).toBeCloseTo(0, 6);
+    expect(light.direction!.y).toBeCloseTo(1, 6);
+    expect(light.direction!.z).toBeCloseTo(0, 6);
+    expect(light.color).toEqual({ r: 1, g: 0.95, b: 0.85 });
+  });
+
+  it('carries a tilted, non-unit direction (normalized + negated) and chroma', () => {
+    const light = coreEmitterToDDGILight(SUN_TILTED)!;
+    expect(light.kind).toBe('sun');
+    // direction (3,4,0) → |dir|=5 → toward-light (0.6,0.8,0) → travel (-0.6,-0.8,0).
+    expect(light.direction!.x).toBeCloseTo(-0.6, 6);
+    expect(light.direction!.y).toBeCloseTo(-0.8, 6);
+    expect(light.direction!.z).toBeCloseTo(0, 6);
+    expect(light.intensity).toBe(6);
+    expect(light.color).toEqual({ r: 0.9, g: 0.4, b: 0.2 });
+  });
+
+  it('packs the real direction into the sun UBO (NOT the hardcoded 0,-1,0)', () => {
+    const sun = coreEmitterToDDGILight(SUN_TILTED)!;
+    // Single-count: multiplier = 1 when a scene directional drives the sun.
+    const buf = packDDGIProbeLights([sun], 1);
+    const unpacked = unpackSunLight(buf);
+    expect(unpacked.count).toBe(1);
+    expect(unpacked.kind).toBe(0); // LIGHT_SUN
+    // Packed travel direction equals the mapper's negated/normalized dir.
+    expect(unpacked.direction.x).toBeCloseTo(-0.6, 5);
+    expect(unpacked.direction.y).toBeCloseTo(-0.8, 5);
+    expect(unpacked.direction.z).toBeCloseTo(0, 5);
+    // Real chroma, NOT the legacy hardcoded (1,0.95,0.85).
+    expect(unpacked.color.r).toBeCloseTo(0.9, 5);
+    expect(unpacked.color.g).toBeCloseTo(0.4, 5);
+    expect(unpacked.color.b).toBeCloseTo(0.2, 5);
+  });
+
+  it('SINGLE-COUNTS intensity: packed sun = emitter.intensity at multiplier=1', () => {
+    const sun = coreEmitterToDDGILight(SUN_TILTED)!; // intensity 6
+    const buf = packDDGIProbeLights([sun], 1);
+    expect(unpackSunLight(buf).intensity).toBeCloseTo(6, 5);
+
+    // Demonstrate the double-count this avoids: had the host kept the legacy
+    // config multiplier (e.g. primaryLightIntensity = 3) alongside the emitter
+    // intensity, the packed sun would be 6·3 = 18 — 3× too bright.
+    const doubled = packDDGIProbeLights([sun], 3);
+    expect(unpackSunLight(doubled).intensity).toBeCloseTo(18, 5);
+    expect(unpackSunLight(doubled).intensity).not.toBeCloseTo(6, 1);
+  });
+
+  it('a (0,-1,0) directional + multiplier=1 packs the prior straight-down sun', () => {
+    // Backwards-compat pin: the legacy packer hardcoded direction (0,-1,0) and
+    // intensity·sunIntensityMul. A scene-directional that points AT a sun
+    // directly below (toward-light (0,-1,0)) → travel (0,1,0); the WGSL shader
+    // negates → (0,-1,0), identical to the old hardcoded straight-down sun.
+    const sun = coreEmitterToDDGILight(SUN)!; // intensity 4, dir toward-light (0,-1,0)
+    const buf = packDDGIProbeLights([sun], 1);
+    const unpacked = unpackSunLight(buf);
+    expect(unpacked.intensity).toBeCloseTo(4, 5);
+    // Packed travel dir (0,1,0); shader negates → (0,-1,0) = legacy straight-down.
+    expect(unpacked.direction.x).toBeCloseTo(0, 5);
+    expect(unpacked.direction.y).toBeCloseTo(1, 5);
+    expect(unpacked.direction.z).toBeCloseTo(0, 5);
+  });
+
+  it('a sun light with NO direction/color falls back to the legacy hardcoded sun', () => {
+    // Host-supplied sun light (not from a scene emitter) without direction/color
+    // → packer uses legacy (0,-1,0) + (1,0.95,0.85) and applies the multiplier.
+    const buf = packDDGIProbeLights([{ kind: 'sun', on: true, intensity: 2 }], 3);
+    const unpacked = unpackSunLight(buf);
+    expect(unpacked.direction).toEqual({ x: 0, y: -1, z: 0 });
+    expect(unpacked.color.r).toBeCloseTo(1, 5);
+    expect(unpacked.color.g).toBeCloseTo(0.95, 5);
+    expect(unpacked.color.b).toBeCloseTo(0.85, 5);
+    expect(unpacked.intensity).toBeCloseTo(6, 5); // 2 · 3 (legacy multiplier path)
+  });
+});
+
+describe('directionalSunMultiplier — single-count resolution', () => {
+  it('returns 1 when a scene directional is present (sun carries its own intensity)', () => {
+    expect(sceneHasDirectionalEmitter(sceneOf(SUN, RED_RECT_ORTHO))).toBe(true);
+    expect(directionalSunMultiplier(sceneOf(SUN, RED_RECT_ORTHO), 5)).toBe(1);
+  });
+
+  it('returns primaryLightIntensity (legacy config path) when no scene directional', () => {
+    expect(sceneHasDirectionalEmitter(sceneOf(RED_RECT_ORTHO, BLUE_POINT))).toBe(false);
+    expect(directionalSunMultiplier(sceneOf(RED_RECT_ORTHO, BLUE_POINT), 5)).toBe(5);
+    // Null scene (no core scene supplied) → legacy config path too.
+    expect(directionalSunMultiplier(null, 7)).toBe(7);
   });
 });

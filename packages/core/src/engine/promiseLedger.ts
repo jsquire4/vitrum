@@ -62,11 +62,14 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // rect-area/disc-area → ReSTIR-DI emitter tris + DDGI fixtures; mesh-area →
     // mesh emissive material; point/spot → DDGI fixture lights (spot
     // point-approximated). See coreEmittersToDDGILights.
-    // `directional` is NOT supported: the DDGI sun is config-driven via the
-    // constructor/updateLighting (host.primaryLightDir/Intensity), not a scene
-    // emitter — coreEmittersToDDGILights returns null for directional, so a
-    // scene directional is warn-skipped. Revisit when directional→DDGI is wired.
-    supportedEmitterKinds: ['rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
+    // `directional` → DDGI `sun` light: coreEmittersToDDGILights maps a scene
+    // directional to a `sun` DDGILight carrying its real direction (negated to
+    // a travel direction), intensity, and colour, and the host single-counts it
+    // by setting the DDGI sun-intensity multiplier to 1 (so the config
+    // primaryLightIntensity does not additionally scale the DDGI sun; it still
+    // drives the shade-side Lo_emit). ReSTIR-DI harvests no directional emitter,
+    // so there is no DI double-count.
+    supportedEmitterKinds: ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'],
     supportedEnvironmentKinds: ['none', 'hdri'],
     supportedAnalyticShapes: [],
     presentationMode: 'swapchain-required',

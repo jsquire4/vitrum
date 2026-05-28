@@ -52,7 +52,7 @@ import { InferenceGraph } from './neural/InferenceGraph.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
-import { coreEmittersToDDGILights } from './coreEmittersToDDGILights.js';
+import { coreEmittersToDDGILights, directionalSunMultiplier } from './coreEmittersToDDGILights.js';
 import type { Scene } from '@vitrum/core';
 
 /**
@@ -426,14 +426,24 @@ export class PipelineInitCoordinator {
         return;
       }
 
-      // Wire the sun intensity multiplier into DDGI so its Le bake
-      // matches shade.wgsl's Lo_emit. `setSunIntensityMultiplier` is a
-      // public method on ProbeUpdatePass — no cast needed.
-      host.ddgi.pass.setSunIntensityMultiplier(host.primaryLightIntensity);
+      // Wire the sun intensity multiplier into DDGI. Single-count: when the
+      // core scene supplies a `directional` emitter, `coreEmittersToDDGILights`
+      // emits a `sun` DDGILight carrying `intensity = emitter.intensity`, so
+      // the multiplier must be 1 (a multiplier of primaryLightIntensity would
+      // double-apply). When NO scene directional is present, the legacy config
+      // multiplier (primaryLightIntensity) is preserved — see
+      // `directionalSunMultiplier`. `setSunIntensityMultiplier` is a public
+      // method on ProbeUpdatePass — no cast needed.
+      const sceneForSun =
+        host.coreSceneSuppliesMeshes() && host.lastScene != null
+          ? host.lastScene
+          : null;
+      host.ddgi.pass.setSunIntensityMultiplier(
+        directionalSunMultiplier(sceneForSun, host.primaryLightIntensity),
+      );
 
-      // Collect the scene's analytic lights as DDGI fixture lights
-      // (centroid + flux-equivalent intensity). DDGI's per-probe ray-cast
-      // pass uses only 'sun' + 'fixture'/'teaLight' kinds — without this
+      // Collect the scene's analytic lights as DDGI lights. DDGI's per-probe
+      // ray-cast pass uses 'sun' + 'fixture'/'teaLight' kinds — without this
       // bridge, area/point lights never reach DDGI's `evalDirectLighting`,
       // so probe rays hitting walls return zero radiance and the irradiance
       // atlas stays black → no colour bleed onto boxes, surfaces render
@@ -443,8 +453,9 @@ export class PipelineInitCoordinator {
       // scene is available. `coreEmittersToDDGILights` consumes the
       // `@vitrum/core` `SceneEmitter` union directly, preserving chroma,
       // using the true emissive area `4·|uAxis × vAxis|` for rect emitters,
-      // and carrying the source emitter id — fixing the chroma-drop +
-      // wrong-area (`width·height`) errors of the THREE round-trip.
+      // carrying the source emitter id, and — for `directional` emitters —
+      // emitting a `sun` DDGILight with the emitter's REAL direction/colour
+      // (replacing the packer's old hardcoded straight-down warm-white sun).
       //
       // The THREE-walk `collectDDGILightsFromThreeRoot(bvhRoot)` remains the
       // escape hatch ONLY when the host supplied a raw `threeScene` (no core
@@ -453,8 +464,8 @@ export class PipelineInitCoordinator {
       // THREE light objects. The gate matches the BVH-source branch above
       // (`coreSceneSuppliesMeshes()` ⇒ `bvhRoot` came from `vitrumSceneToThree`).
       const ddgiSceneLights =
-        host.coreSceneSuppliesMeshes() && host.lastScene != null
-          ? coreEmittersToDDGILights(host.lastScene)
+        sceneForSun != null
+          ? coreEmittersToDDGILights(sceneForSun)
           : collectDDGILightsFromThreeRoot(bvhRoot);
       if (ddgiSceneLights.length > 0) {
         host.ddgi.setLights([...host.ctorLights, ...ddgiSceneLights]);

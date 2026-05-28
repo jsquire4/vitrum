@@ -9,18 +9,18 @@
  *          vitrumSceneToThree BVH+DDGI path; instanced-mesh is genuine here
  *          via the TLAS per-instance traversal); NOT analytic (no THREE
  *          conversion path — the converter throws on it).
- *        - emitters: rect-area / disc-area / point / spot / mesh-area
- *          (rect/disc → ReSTIR-DI tris + DDGI fixtures; mesh-area → mesh
- *          emissive; point/spot → DDGI fixture lights). `directional` is NOT
- *          supported: the DDGI sun is config-driven via the constructor /
- *          updateLighting, not a scene emitter — coreEmittersToDDGILights
- *          returns null for directional, so a scene directional produces no
- *          light and must be warn-skipped rather than silently dropped.
+ *        - emitters: directional / rect-area / disc-area / point / spot /
+ *          mesh-area (rect/disc → ReSTIR-DI tris + DDGI fixtures; mesh-area →
+ *          mesh emissive; point/spot → DDGI fixture lights; directional →
+ *          DDGI `sun` light via coreEmittersToDDGILights, carrying the
+ *          emitter's real direction/intensity/colour, single-counted by the
+ *          host's sun-intensity multiplier=1). A scene directional is KEPT
+ *          (not warn-skipped) and reaches the DDGI sun path.
  *   2. `setScene` filters the scene through `partitionSceneBySupport(scene,
  *      this.capabilities)` BEFORE any vitrumSceneToThree conversion, so an
- *      unsupported node (`analytic` primitive / `directional` emitter) is
- *      warn-skipped (NOT thrown / NOT silently flowed through) and
- *      `_lastScene` holds only the supported subset.
+ *      unsupported node (`analytic` primitive) is warn-skipped (NOT thrown /
+ *      NOT silently flowed through) and `_lastScene` holds only the supported
+ *      subset, while a supported `directional` emitter is retained.
  *
  * The engine is constructed directly (not via the factory, which bootstraps
  * with an empty scene) against a minimal duck-typed GPUDevice stub. Only the
@@ -164,16 +164,16 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
-  it('declares rect-area / disc-area / point / spot / mesh-area emitters and NOT directional', () => {
+  it('declares directional / rect-area / disc-area / point / spot / mesh-area emitters', () => {
     const engine = new HybridEngine(makeOpts());
     try {
       const kinds = engine.capabilities.supportedEmitterKinds;
-      for (const k of ['rect-area', 'disc-area', 'point', 'spot', 'mesh-area'] as const) {
+      for (const k of ['directional', 'rect-area', 'disc-area', 'point', 'spot', 'mesh-area'] as const) {
         expect(kinds.has(k)).toBe(true);
       }
-      // directional is config-driven (constructor/updateLighting), not a scene
-      // emitter — coreEmittersToDDGILights returns null for it.
-      expect(kinds.has('directional')).toBe(false);
+      // directional now drives the DDGI sun via coreEmittersToDDGILights
+      // (single-counted), so it is a genuinely-rendered emitter kind.
+      expect(kinds.has('directional')).toBe(true);
     } finally {
       engine.dispose();
     }
@@ -197,7 +197,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
-  it('warn-skips a directional emitter instead of silently dropping it, keeping supported emitters', () => {
+  it('keeps a directional emitter (it drives the DDGI sun via coreEmittersToDDGILights)', () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = new HybridEngine(makeOpts());
     try {
@@ -205,16 +205,16 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
         sceneWith([meshPrimitive('mesh-a')], [rectEmitter('rect-a'), directionalEmitter('sun-a')]),
       );
 
-      // A warning was emitted naming the directional emitter — the DDGI sun is
-      // config-driven (constructor/updateLighting), so a scene directional
-      // produces no light and is dropped rather than flowed through to a no-op.
+      // No skip-warning for the directional emitter — it is now a supported
+      // emitter kind (mapped to a DDGI `sun` light), so partitionSceneBySupport
+      // retains it rather than warn-skipping.
       const warned = warnSpy.mock.calls.flat().map(String);
-      expect(warned.some((m) => m.includes('sun-a') && m.includes('not supported'))).toBe(true);
+      expect(warned.some((m) => m.includes('sun-a') && m.includes('not supported'))).toBe(false);
 
-      // The stored scene keeps the supported rect-area emitter, drops directional.
+      // The stored scene keeps BOTH the rect-area emitter and the directional.
       const stored = (engine as unknown as { _lastScene: Scene })._lastScene;
-      expect(stored.emitters.map((e) => String(e.id))).toEqual(['rect-a']);
-      expect(stored.emitters.some((e) => e.kind === 'directional')).toBe(false);
+      expect(stored.emitters.map((e) => String(e.id)).sort()).toEqual(['rect-a', 'sun-a']);
+      expect(stored.emitters.some((e) => e.kind === 'directional')).toBe(true);
     } finally {
       engine.dispose();
     }

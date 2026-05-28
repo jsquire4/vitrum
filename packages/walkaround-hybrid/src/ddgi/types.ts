@@ -16,6 +16,7 @@
  *   - kind      — switched on: 'sun' | 'fixture' | 'teaLight'
  *   - intensity — multiplied by _sunIntensityMul for sun lights
  *   - position  — accessed via unsafe cast on fixture/teaLight lights
+ *   - direction — sun travel-direction; packed for 'sun' lights (see below)
  *   - on        — filter: only lights where on===true are uploaded
  */
 export interface DDGILight {
@@ -46,7 +47,21 @@ export interface DDGILight {
    *  and optional (sun lights have no meaningful position). */
   readonly position?: { readonly x: number; readonly y: number; readonly z: number };
 
-  /** RGB radiance multiplier for point-like lights (`fixture` / `teaLight`). */
+  /** Sun TRAVEL direction (the direction light propagates — points away from
+   *  the sun, downward for an overhead sun). Only consumed by the GPU packer
+   *  for `kind: 'sun'` lights; the WGSL probe shader negates it (`lightDir =
+   *  normalize(-light.direction)`) to recover the toward-light direction for
+   *  `dot(N, L)`. Carried directly from a `@vitrum/core` `directional` emitter
+   *  via `coreEmitterToDDGILight` (whose `direction` points AT the light, so
+   *  the mapper negates it to a travel direction). When absent, the packer
+   *  falls back to the legacy hardcoded `(0,-1,0)` straight-down sun so any
+   *  host-supplied sun light without an explicit direction is unchanged. */
+  readonly direction?: { readonly x: number; readonly y: number; readonly z: number };
+
+  /** RGB radiance multiplier for point-like lights (`fixture` / `teaLight`)
+   *  AND for `sun` lights (the latter previously hardcoded `(1,0.95,0.85)` in
+   *  the packer; now read from this field when present, falling back to that
+   *  warm-white default otherwise). */
   readonly color?: { readonly r: number; readonly g: number; readonly b: number };
 }
 
