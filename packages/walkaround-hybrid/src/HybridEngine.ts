@@ -44,15 +44,20 @@ import type {
   EngineState,
   FrameStats,
 } from '@vitrum/core';
-import { asBackendTexture } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
-import { packDDGIGridParams, type FrameResources } from './pipeline/resourceManager.js';
+import type { FrameResources } from './pipeline/resourceManager.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
 import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
+import {
+  fingerprintHybridPipelineRebuildKey,
+  getPreferredSwapChainFormat,
+  runHybridEngineFrame,
+  type HybridEngineFrameDeps,
+} from './HybridEngineFrameOrchestrator.js';
 import { disposeSceneBVH } from './restir/bvhCompute.js';
 import {
   rebuildEmitterBuffersFromSceneRoots,
@@ -116,14 +121,6 @@ function defaultIsSceneReady(scene: THREE.Scene): boolean {
   // blocked them. Hosts with stricter readiness signals supply their own
   // `isSceneReady` callback.
   return total > 0;
-}
-
-/** Get the preferred swap-chain format from the browser GPU. */
-function getPreferredSwapChainFormat(): GPUTextureFormat {
-  return (typeof navigator !== 'undefined' && 'gpu' in navigator
-    ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
-        .getPreferredCanvasFormat?.() ?? 'bgra8unorm'
-    : 'bgra8unorm');
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -412,7 +409,7 @@ export class HybridEngine implements Engine {
 
     this._staticPipelineRebuildKey = opts.pipelineRebuildKey ?? null;
     this._getPipelineRebuildKey     = opts.getPipelineRebuildKey;
-    this._rebuildKeyFingerprintSeen = HybridEngine._fingerprintRebuildKey(
+    this._rebuildKeyFingerprintSeen = fingerprintHybridPipelineRebuildKey(
       opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
     );
 
@@ -957,275 +954,67 @@ export class HybridEngine implements Engine {
    * `@vitrum/core` FrameInput.viewport JSDoc for the cross-backend contract.
    */
   renderFrame(input: FrameInput): FrameOutput {
-    const skipOutput: FrameOutput = {
-      kind: 'skipped',
-      samplesAccumulated: 0,
-      isConverged: false,
-    };
+    return runHybridEngineFrame(this._buildFrameDeps(), input);
+  }
 
-    if (this._state === 'paused' || this._state === 'disposed' || this._state === 'error') {
-      return skipOutput;
-    }
-
-    const fp = HybridEngine._fingerprintRebuildKey(
-      this._getPipelineRebuildKey?.() ?? this._staticPipelineRebuildKey,
-    );
-    if (fp !== this._rebuildKeyFingerprintSeen) {
-      this._rebuildKeyFingerprintSeen = fp;
-      this.reset();
-      return skipOutput;
-    }
-
-    const dbg = this._debug ? this._dbg : null;
-
-    const pipeline = this._pipeline;
-    const bvh = this._bvhBuffers;
-    if (!pipeline) { if (dbg) dbg.skipNoPipeline++; return skipOutput; }
-    if (!bvh)      { if (dbg) dbg.skipNoBvh++;      return skipOutput; }
-
-    const now = performance.now();
-    // Audit M4: configurable FPS cap. `null` disables the throttle so VR /
-    // 90+ Hz displays get every frame. Default preserves Cornell's 60-FPS
-    // soft-cap.
-    if (this._targetFrameIntervalMs !== null &&
-        this._lastFrameTs !== 0 &&
-        now - this._lastFrameTs < this._targetFrameIntervalMs) {
-      if (dbg) dbg.skipFrameInterval++;
-      // CRITICAL on >60Hz displays: even though the heavy pipeline is
-      // throttled to 60 FPS, the host's rAF still acquires a fresh swap-
-      // chain texture each tick. Without writing to it, the texture is
-      // presented as cleared black → visible dark-flash on every other
-      // frame at 120Hz. Blit the most recent resolvedTexture so the
-      // canvas keeps showing the previous frame.
-      const skipSwapView = input.swapChainView as GPUTextureView | undefined;
-      if (skipSwapView && this._pipeline) {
-        this._pipeline.presentLastFrame(skipSwapView);
-      }
-      return skipOutput;
-    }
-    this._lastFrameTs = now;
-
-    const t0 = now;
-
-    // Core's FrameInput types swap-chain fields opaquely (BackendTexture /
-    // BackendTextureFormat). The walkaround backend requires WebGPU; cast at
-    // this boundary so the rest of HybridEngine works with concrete types.
-    const swapView   = input.swapChainView as GPUTextureView | undefined;
-    const swapFmt    = (input.swapChainFormat as GPUTextureFormat | undefined) ?? getPreferredSwapChainFormat();
-
-    if (!swapView) {
-      if (dbg) dbg.skipNoSwapView++;
-      return skipOutput;
-    }
-
-    // Periodic 5s rate report.
-    if (dbg) {
-      dbg.framesDispatched++;
-      if (dbg.lastReportTs === 0) dbg.lastReportTs = now;
-      if (now - dbg.lastReportTs > 5_000) {
-        const elapsed = (now - dbg.lastReportTs) / 1_000;
-        const gpu = (pipeline as unknown as { lastGpuTimings?: Record<string, number> })
-          .lastGpuTimings ?? {};
-        const gpuTotal = gpu['total'];
-        console.log('[hybrid:debug] rate (5s window)', {
-          framesDispatched: dbg.framesDispatched,
-          fps: (dbg.framesDispatched / elapsed).toFixed(2),
-          skipReasons: {
-            noPipeline: dbg.skipNoPipeline, noBvh: dbg.skipNoBvh,
-            noSwapView: dbg.skipNoSwapView, frameInterval: dbg.skipFrameInterval,
-          },
-          gpuTotalMs: gpuTotal !== undefined ? +gpuTotal.toFixed(2) : 'n/a',
-          gpuPerPassMs: gpu,
-        });
-        dbg.framesDispatched = 0;
-        dbg.skipNoPipeline = 0;
-        dbg.skipNoBvh = 0;
-        dbg.skipNoSwapView = 0;
-        dbg.skipFrameInterval = 0;
-        dbg.lastReportTs = now;
-      }
-    }
-
-    if (this._skinning != null && this._lastScene != null) {
-      this._skinning.run(this, this._lastScene);
-    }
-
-    // ── DDGI per-frame compute ──────────────────────────────────────────
-    // Drive DDGI probe updates as part of this frame tick (fire-and-forget).
-    // GPU command queueing (writeBuffer / dispatchWorkgroups / queue.submit) is
-    // synchronous from JS — the GPU executes the work asynchronously after the
-    // JS tick returns. The atlas is double-buffered, so this frame reads the
-    // previous tick's write target while the GPU processes this tick's update.
-    // The host MUST NOT call ddgi.updateFrame() separately.
-    const ddgiLayerOn = this._ddgiOn && (this._layerEnabled.get('ddgi') ?? true);
-    if (ddgiLayerOn) {
-      // DDGIFrameInputs now accepts a DDGIDeviceHandle (`device` or a
-      // Three.js renderer adapter). HybridEngine owns the device directly.
-      // Source order: traversal scene set during BVH init (vitrum-derived),
-      // host-provided threeScene escape hatch, lazily-synthesized fallback.
-      const ddgiScene = this._ddgiTraversalScene ?? this._ensureThreeSceneRoot();
-      if (ddgiScene != null) {
-        if (this._bvhBuffers != null) {
-          this._ddgi.syncRestirBvhBuffers(this._bvhBuffers, this._lastScene ?? undefined);
-        }
-        void this._ddgi.updateFrame({
-          scene:   ddgiScene,
-          device:  this._device,
-          enabled: true,
-        });
-        // 2026-05-18 sweep — forward `glassMixScale` so probeUpdateRays.wgsl
-        // reads the host-overridable value instead of a hardcoded const.
-        if (this._ddgi.ready) {
-          this._ddgi.pass.setGlassMixScale(this._tunables.glassMixScale);
-        }
-      }
-    }
-
-    // ── RC per-frame dispatch (W8 Phase 2) ──────────────────────────────
-    // RCSubsystem owns its own BVH + cascade buffers. Dispatch each frame
-    // when rcEnabled. Cascade-0 buffer is the indirect-diffuse source for
-    // Phase 3's shade.wgsl wiring; Phase 2 just exercises the dispatch path.
-    if (this._rc) {
-      if (this._bvhBuffers?.bvhMode === 'tlas') {
-        this._rc.syncRestirBvhBuffers(this._bvhBuffers);
-      }
-      this._rc.dispatchFrame({
-        sunDirection:        this._primaryLightDir,
-        // Multiply sun direction by intensity into a Color-ish [r,g,b].
-        // Cornell-default Le for the directional sun is the radiance after
-        // primaryLightIntensity scaling; reproduce that here.
-        sunColor:            [
-          this._primaryLightIntensity,
-          this._primaryLightIntensity,
-          this._primaryLightIntensity,
-        ],
-        frameSeed:           input.frameSeed,
-        triIntersectEpsilon: this._tunables.triIntersectEpsilon,
-      });
-      // W8 Phase 3 — surface cascade-0 + rcParams to the shade pass so
-      // sampleCascadeC0(...) integrates them into Lo_indirect. The
-      // shader's `rcParams.enabled = 1u` activates the MIS mix with
-      // weight `_rcWeight`.
-      const rcInputs = this._rc.buildRCInputs(this._rcWeight);
-      pipeline.setRCInputs(rcInputs);
-    } else {
-      pipeline.setRCInputs(null);
-    }
-
-    // ── DDGI atlas wire ─────────────────────────────────────────────────
-    if (!ddgiLayerOn) {
-      pipeline.setDDGIInputs(null);
-    } else if (this._ddgi.ready) {
-      const atlas = this._ddgi.pass.getReadAtlasGPUTextures?.();
-      if (atlas) {
-        const gridParams = packDDGIGridParams(this._ddgi.probeGrid.params);
-        pipeline.setDDGIInputs({
-          irradianceTex: atlas.irradiance,
-          visibilityTex: atlas.visibility,
-          gridParams,
-        });
-      }
-    }
-
-    // ── ReSTIR pipeline renderFrame ─────────────────────────────────────
-    const W = this._width;
-    const H = this._height;
-
-    const viewMatrix  = input.viewMatrix;
-    const projMatrix  = input.projMatrix;
-    const prevView    = (input.prevViewMatrix ?? input.viewMatrix);
-    const prevProj    = (input.prevProjMatrix ?? input.projMatrix);
-    const camPos      = input.cameraPosition as [number, number, number];
-
-    // `FrameInput.quality.bounces` is ignored: ReSTIR + shade WGSL use a fixed
-    // path depth baked at shader compile time (see `capabilities.maxBounces`).
-
-    pipeline.renderFrame({
-      viewMatrix:            new Float32Array(viewMatrix),
-      projMatrix:            new Float32Array(projMatrix),
-      prevViewMatrix:        new Float32Array(prevView),
-      prevProjMatrix:        new Float32Array(prevProj),
-      cameraPos:             camPos,
-      screenWidth:           W,
-      screenHeight:          H,
-      frameSeed:             input.frameSeed,
-      totalEmissivePower:    bvh.totalEmissivePower ?? 1.0,
-      emitterCount:          bvh.emitters?.count ?? 0,
-      primaryLightDir:       this._primaryLightDir,
-      primaryLightIntensity: this._primaryLightIntensity,
-      skyTint:               this._skyTint,
-      skyIrradiance:         this._skyIrradiance,
-      // Library-generality audit tunables (HybridEngineTuning.ts). Defaults
-      // preserve Cornell behaviour; hosts override via HybridEngineOptions.
-      ...this._tunables,
-      // 2026-05-18 sweep — tuple-typed clamp lives outside the number-only
-      // Tunables table; same library-generality intent.
-      indirectFireflyClamp:  this._indirectFireflyClamp,
-      bvhMode:               bvh.bvhMode === 'tlas' ? 1 : 0,
-      tlasNodeCount:         bvh.tlas?.nodeCount ?? 0,
-      // 2026-05-19 B3a — atrous DIRECT/INDIRECT sigmas. Per-frame splat so
-      // the atrous denoisers (direct + indirect chains) read overrides
-      // without round-tripping through WalkaroundUBO.
-      atrousDirectSigmas:    this._atrousDirectSigmas,
-      atrousIndirectSigmas:  this._atrousIndirectSigmas,
-      swapChainView:         swapView,
-      swapChainFormat:       swapFmt,
-    });
-
-    const dt = performance.now() - t0;
-
-    // T3.E telemetry. Fired before the legacy debug mirror so subscribers
-    // see every frame, not just debug-mode ones. We pull GPU timings from
-    // the pipeline's lastGpuTimings if it exposed any (they're populated
-    // by the same timestamp-query infrastructure the debug log uses).
-    if (this._frameSubs.length > 0) {
-      const gpu = (pipeline as unknown as { lastGpuTimings?: Record<string, number> })
-        .lastGpuTimings;
-      const passTimings = gpu;
-      const gpuTotal = gpu?.['total'];
-      // GPU memory breakdown — call through the same debug-surface helper
-      // so a single source of truth governs the numbers a dev overlay sees
-      // via `engine.debug.estimatedGpuMemoryBytes()` vs the streaming
-      // FrameStats hook. Cheap (O(field count)), pure host-side arithmetic.
-      const memBreakdown = this.debug.estimatedGpuMemoryBytes?.() ?? undefined;
-      const stats: FrameStats = {
-        frameTimeMs: dt,
-        ...(gpuTotal !== undefined ? { gpuTimeMs: gpuTotal } : {}),
-        ...(passTimings ? { passTimings } : {}),
-        spp: 1,
-        ...(memBreakdown ? {
-          gpuMemoryBytes: memBreakdown,
-          estimatedGpuMemoryBytes: memBreakdown.total,
-        } : {}),
-      };
-      for (const sub of this._frameSubs) {
-        try { sub(stats); } catch (err) {
-          if (this._verbose) console.warn('[HybridEngine] onFrame subscriber threw', err);
-        }
-      }
-    }
-
-    if (this._debug) {
-      this._debugTimings.push({ t: now, ms: dt });
-      if (this._debugTimings.length > 240) this._debugTimings.shift();
-
-      if (typeof window !== 'undefined') {
-        const w = window as unknown as { __WGPU__?: { walkaround?: { frameTimings: unknown } } };
-        if (w.__WGPU__?.walkaround) {
-          const ft = w.__WGPU__.walkaround.frameTimings as Array<{ t: number; ms: number }>;
-          if (Array.isArray(ft)) {
-            ft.push({ t: now, ms: dt });
-            if (ft.length > 240) ft.shift();
-          }
-        }
-      }
-    }
-
+  private _buildFrameDeps(): HybridEngineFrameDeps {
+    const self = this;
     return {
-      kind:               'rendered',
-      primaryRadiance:    asBackendTexture<'webgpu', GPUTextureView>(swapView), // swap chain is the output surface
-      samplesAccumulated: 1,
-      isConverged:        false,      // walkaround never converges; resamples every frame
+      get state() {
+        return self._state;
+      },
+      debug: self._debug,
+      dbg: self._debug ? self._dbg : null,
+      pipeline: self._pipeline,
+      bvhBuffers: self._bvhBuffers,
+      consumeRebuildKeyChange: () => {
+        const fp = fingerprintHybridPipelineRebuildKey(
+          self._getPipelineRebuildKey?.() ?? self._staticPipelineRebuildKey,
+        );
+        if (fp !== self._rebuildKeyFingerprintSeen) {
+          self._rebuildKeyFingerprintSeen = fp;
+          self.reset();
+          return true;
+        }
+        return false;
+      },
+      targetFrameIntervalMs: self._targetFrameIntervalMs,
+      getLastFrameTs: () => self._lastFrameTs,
+      setLastFrameTs: (ts) => {
+        self._lastFrameTs = ts;
+      },
+      width: self._width,
+      height: self._height,
+      skinning: self._skinning,
+      lastScene: self._lastScene,
+      runSkinning: () => {
+        if (self._skinning != null && self._lastScene != null) {
+          self._skinning.run(self, self._lastScene);
+        }
+      },
+      ddgiOn: self._ddgiOn,
+      isLayerEnabled: (layer) => self._layerEnabled.get(layer) ?? true,
+      ddgi: self._ddgi,
+      ddgiTraversalScene: self._ddgiTraversalScene,
+      ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),
+      device: self._device,
+      tunables: self._tunables,
+      rc: self._rc,
+      primaryLightDir: self._primaryLightDir,
+      primaryLightIntensity: self._primaryLightIntensity,
+      skyTint: self._skyTint,
+      skyIrradiance: self._skyIrradiance,
+      rcWeight: self._rcWeight,
+      indirectFireflyClamp: self._indirectFireflyClamp,
+      atrousDirectSigmas: self._atrousDirectSigmas,
+      atrousIndirectSigmas: self._atrousIndirectSigmas,
+      frameSubs: self._frameSubs,
+      verbose: self._verbose,
+      debugTimings: self._debugTimings,
+      debugSurface: self.debug,
+      presentLastFrame: (view) => {
+        self._pipeline?.presentLastFrame(view);
+      },
     };
   }
 
@@ -1485,13 +1274,6 @@ export class HybridEngine implements Engine {
     };
   }
 
-  // ── Private static helpers ─────────────────────────────────────────────
-
-  private static _fingerprintRebuildKey(key: string | number | null | undefined): string {
-    if (key === null || key === undefined) return '__null';
-    if (typeof key === 'number') return Number.isNaN(key) ? '__n:NaN' : `__n:${key}`;
-    return `__s:${key}`;
-  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────
