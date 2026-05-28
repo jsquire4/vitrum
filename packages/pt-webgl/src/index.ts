@@ -60,6 +60,7 @@ export { driveForkMaterialUniforms } from './forkUniformBridge.js';
 // helper's texture and forwards it to the fork's uniforms per frame.
 export { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
 export type { BdptLightPathBufferOptions } from './bdptLightPathBuffer.js';
+export { bdptLightPathTextureType } from './bdpt/lightPathTextureType.js';
 export { fillBdptLightPathWebGL } from './bdpt/fillBdptLightPathWebGL.js';
 export { runBdptLightSubpathPass } from './bdpt/runBdptLightSubpathPass.js';
 export type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';

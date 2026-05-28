@@ -23,7 +23,10 @@
  */
 
 import { defineUbo } from '@vitrum/shared-samplers';
+import { createCommonFrameResources } from './frameResources/createCommonFrameResources.js';
 import { createRestirDIFrameResources } from './frameResources/createRestirDIFrameResources.js';
+import { createRestirGIFrameResources } from './frameResources/createRestirGIFrameResources.js';
+import { createGtaoFrameResources } from './frameResources/createGtaoFrameResources.js';
 
 // W2-C13 follow-up — DDGI grid UBO (64 B). Mirrors shade.wgsl's DDGIGridUBO
 // struct (10 active fields ending at offset 48) plus an explicit 16-byte
@@ -487,135 +490,10 @@ export function createFrameResources(
   H: number,
   _options?: FrameResourceOptions,
 ): FrameResources {
+  const common = createCommonFrameResources(device, W, H);
   const restirDI = createRestirDIFrameResources(device, W, H);
-
-  // HDR color output (rgba16float — written by shade, read by atrous).
-  // COPY_SRC enables GPU pixel readback for the caustic validation harness.
-  const hdrColorTexture = device.createTexture({
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
-  // Sprint 18 — separate indirect-channel HDR target.
-  const hdrIndirectTexture = device.createTexture({
-    label: 'hdrIndirect',
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
-  // Sprint 18 — combined output of indirect-combine pass; fed to temporalAccum.
-  const combinedDenoisedTexture = device.createTexture({
-    label: 'combinedDenoised',
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
-  // Sprint 18 follow-up — total radiance fed to welford so the tier
-  // classification sees the full signal (direct + indirect).
-  const hdrTotalTexture = device.createTexture({
-    label: 'hdrTotal',
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  // Sprint 18 — indirect-channel à-trous ping-pong pair.
-  const indirectDenoisedPingTexture = device.createTexture({
-    label: 'indirectDenoisedPing',
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  const indirectDenoisedPongTexture = device.createTexture({
-    label: 'indirectDenoisedPong',
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  // Sprint 18 follow-up — indirect temporal-accumulator ping-pong.
-  const indirectAccumPingTexture = device.createTexture({
-    label: 'indirectAccumPing',
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  const indirectAccumPongTexture = device.createTexture({
-    label: 'indirectAccumPong',
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-
-  // G-buffer (normal + depth) — written by shade, read by atrous denoiser.
-  const gNormalDepthTexture = device.createTexture({
-    size: [W, H],
-    format: 'rgba16float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
-  });
-
-  // Ping-pong denoised textures.
-  // COPY_SRC enables GPU pixel readback for the caustic validation harness.
-  const denoisedPingTexture = device.createTexture({
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
-  const denoisedPongTexture = device.createTexture({
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
-
-  // Temporal accumulator ping-pong (rgba16float). Read prev / write
-  // current within a single dispatch — must be separate textures.
-  const accumTextureA = device.createTexture({
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
-  const accumTextureB = device.createTexture({
-    size: [W, H],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
-  });
-
-  // 1×1 placeholder texture for G-buffer bind group slots.
-  const placeholderTexture = device.createTexture({
-    size: [1, 1],
-    format: 'rgba32float',
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  // Fill placeholder with a valid forward-facing normal so the atrous denoiser
-  // does not produce NaN. The atrous shader decodes normal as: n = raw * 2 - 1.
-  // For a forward-facing normal (0,0,1): raw = (0.5, 0.5, 1.0, 0.0).
-  // Using (0,0,0) for the zero-depth (sky) placeholder causes dot(n,n) = 3 →
-  // pow(3, sigmaN=128) → Inf, and Inf/Inf = NaN propagation through the denoiser.
-  const placeholderData = new Float32Array([0.5, 0.5, 1.0, 0.0]); // encodes normal=(0,0,1), depth=0
-  device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
-
-  // UBO: camera matrices + per-frame params + library-generality tunables.
-  // Size must match WALKAROUND_UBO_SIZE_BYTES in uboUpdater.ts and the
-  // WalkaroundUBO struct in common.wgsl. Kept as a literal here (rather than
-  // imported from uboUpdater.ts) to avoid a circular import: uboUpdater.ts
-  // type-imports PipelineFrameInputs from WalkaroundGPUPipeline.ts, which
-  // already imports this file.
-  const uboBuffer = device.createBuffer({
-    size: 352,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-
-  const nearestSampler = device.createSampler({
-    magFilter: 'nearest',
-    minFilter: 'nearest',
-  });
-  const compositeSampler = device.createSampler({
-    magFilter: 'nearest',
-    minFilter: 'nearest',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-  });
+  const restirGI = createRestirGIFrameResources(device, W, H);
+  const gtao = createGtaoFrameResources(device, W, H);
 
   // DDGI placeholder textures + UBO. The shade pipeline's 4th bind group
   // always binds these, so the pipeline validates even when no real DDGI
@@ -646,155 +524,6 @@ export function createFrameResources(
   // returns false and Lo_ddgi=0 until setDDGIInputs() supplies real
   // grid params from HybridLayeredStage.
   device.queue.writeBuffer(ddgiUboBuffer, 0, buildDDGIPlaceholderUBO().buffer);
-
-  // Sprint 9 / 10a — Welford ping-pong + atrous-variance estimate map + motion placeholder.
-  const varianceBuffer = createVarianceBuffer(device, W, H);
-  const varianceBufferAux = createVarianceBuffer(device, W, H);
-  const atrousVarianceEstimateTexture = device.createTexture({
-    label: 'atrous-variance-estimate',
-    size: [W, H],
-    format: 'rg32float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  const motionVectorTexture = device.createTexture({
-    label: 'motion-vectors-zero',
-    size: [W, H],
-    format: 'rg32float',
-    usage:
-      GPUTextureUsage.COPY_DST |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.STORAGE_BINDING,
-  });
-  const rowBytes = 8 * W;
-  const bytesPerRow = Math.max(256, Math.ceil(rowBytes / 256) * 256);
-  const motionZero = new Uint8Array(bytesPerRow * H);
-  device.queue.writeTexture(
-    { texture: motionVectorTexture },
-    motionZero,
-    { offset: 0, bytesPerRow },
-    { width: W, height: H, depthOrArrayLayers: 1 },
-  );
-
-  // Sprint 9 — Adaptive sampling textures (tier + resolved). Both are
-  // unconditional now: sample-budget + resolve are standard pipeline passes.
-  const tierTexture = device.createTexture({
-    label: 'sample-tier',
-    size: [W, H],
-    format: 'r32uint',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  const resolvedTexture = device.createTexture({
-    label: 'resolved-radiance',
-    size: [W, H],
-    format: 'rgba16float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
-  });
-
-  // Sprint 15 — GTAO textures (half-res input, full-res upsampled output).
-  // `aoFullTexture` is initialised to 1.0 by uploading a buffer of f16 ones
-  // so the first frame (before gtao has executed) doesn't darken shade to
-  // black via an uninitialised AO read.
-  const halfW = Math.max(1, Math.floor(W / 2));
-  const halfH = Math.max(1, Math.floor(H / 2));
-  // E1: rgba16float (was r16float) to carry per-channel multi-bounce AO.
-  const aoHalfTexture = device.createTexture({
-    label: 'gtao-half',
-    size: [halfW, halfH],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  // rgba16float is base-spec storage-capable (r16float would require the
-  // optional `texture-formats-tier1` feature, which three.js's WebGPURenderer
-  // does not request). Tier-G fix: `.rgb` now carries per-channel Jiménez
-  // 2016 §5.2 multi-bounce AO; previously only `.r` was written and shade
-  // collapsed the per-channel AO to a single scalar.
-  const aoFullTexture = device.createTexture({
-    label: 'gtao-full',
-    size: [W, H],
-    format: 'rgba16float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_DST,
-  });
-  // Seed aoFullTexture with vec3(1.0) on `.rgb` (f16 1.0 = 0x3C00) so the
-  // first-frame shade read returns "unoccluded" on every channel before
-  // gtao + upsample have written real per-channel values. rgba16float =
-  // 8 bytes/texel; pack 1.0 in R/G/B and 0 in A.
-  {
-    const bytesPerTexel = 8;
-    const rowBytes = Math.max(256, Math.ceil(W * bytesPerTexel / 256) * 256);
-    const buf = new Uint8Array(rowBytes * H);
-    for (let y = 0; y < H; y++) {
-      const rowOff = y * rowBytes;
-      for (let x = 0; x < W; x++) {
-        const o = rowOff + x * bytesPerTexel;
-        // .r = 1.0 (0x3C00)
-        buf[o]     = 0x00;
-        buf[o + 1] = 0x3C;
-        // .g = 1.0 (0x3C00)
-        buf[o + 2] = 0x00;
-        buf[o + 3] = 0x3C;
-        // .b = 1.0 (0x3C00)
-        buf[o + 4] = 0x00;
-        buf[o + 5] = 0x3C;
-        // .a = 0 (unused; stays 0 from Uint8Array init)
-      }
-    }
-    device.queue.writeTexture(
-      { texture: aoFullTexture },
-      buf,
-      { offset: 0, bytesPerRow: rowBytes },
-      { width: W, height: H, depthOrArrayLayers: 1 },
-    );
-  }
-  // 32 bytes: GTAOUniforms struct {tanFovHalf, radiusPx, intensity,
-  // depthThresh, bilateralDepthSigma, _pad0, _pad1, _pad2}. The bilateral
-  // sigma + pads were added per audit B3 so gtaoUpsample can read the
-  // host-configurable depth-edge falloff from the same UBO.
-  const gtaoUboBuffer = device.createBuffer({
-    label: 'gtao-ubo',
-    size: 32,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-
-  // Sprint 16 — GI reservoir buffer (half-res). RESERVOIR_GI_STRIDE = 20 u32
-  // (80 bytes) per pixel. Aligned to 256 to match WebGPU storage binding rules.
-  const reservoirGiSize = halfW * halfH * 80;
-  const reservoirGiCurrentBuffer = device.createBuffer({
-    label: 'reservoir-gi-current',
-    size: Math.max(256, reservoirGiSize),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-  });
-  // Sprint 17 — temporal + spatial reservoir buffers. Both same size as
-  // current; previous is read-only during temporal reuse, copied at end of
-  // frame; spatial is scratch for the two ping-ponged spatial passes.
-  const reservoirGiPreviousBuffer = device.createBuffer({
-    label: 'reservoir-gi-previous',
-    size: Math.max(256, reservoirGiSize),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-  });
-  const reservoirGiSpatialBuffer = device.createBuffer({
-    label: 'reservoir-gi-spatial',
-    size: Math.max(256, reservoirGiSize),
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-  });
-
-  // Item 24 — albedo demodulation (Schied 2017 §4.1). Full-res rgba16float
-  // texture that carries the visible-point diffuse albedo written by shade.
-  // indirectCombine reads it to re-multiply the denoised lighting signal.
-  const albedoTexture = device.createTexture({
-    label: 'albedo-demodulation',
-    size: [W, H],
-    format: 'rgba16float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
-  });
 
   // ── T2.H1 — 1×1 r32uint placeholders for object IDs (svgf-real).
   // Object IDs are not available in this pipeline yet. We bind curr=0 and
@@ -905,49 +634,10 @@ export function createFrameResources(
   // sibling fields to exactly one sub-struct — see plan/premium-grade-refactor
   // -20260517.md §W1-R2 for the canonical mapping table.
 
-  const common: CommonFrameResources = {
-    hdrColorTexture,
-    gNormalDepthTexture,
-    denoisedPingTexture,
-    denoisedPongTexture,
-    accumTextureA,
-    accumTextureB,
-    placeholderTexture,
-    uboBuffer,
-    nearestSampler,
-    compositeSampler,
-    motionVectorTexture,
-    tierTexture,
-    resolvedTexture,
-    hdrTotalTexture,
-    albedoTexture,
-    hdrIndirectTexture,
-    combinedDenoisedTexture,
-    indirectDenoisedPingTexture,
-    indirectDenoisedPongTexture,
-    indirectAccumPingTexture,
-    indirectAccumPongTexture,
-    varianceBuffer,
-    varianceBufferAux,
-    atrousVarianceEstimateTexture,
-  };
-
-  const restirGI: RestirGIFrameResources = {
-    reservoirGiCurrentBuffer,
-    reservoirGiPreviousBuffer,
-    reservoirGiSpatialBuffer,
-  };
-
   const ddgi: DDGIFrameResources = {
     ddgiPlaceholderRgba16f,
     ddgiPlaceholderRg16f,
     ddgiUboBuffer,
-  };
-
-  const gtao: GTAOFrameResources = {
-    aoHalfTexture,
-    aoFullTexture,
-    gtaoUboBuffer,
   };
 
   const svgf: SVGFFrameResources = {

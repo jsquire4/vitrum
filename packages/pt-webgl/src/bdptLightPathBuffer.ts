@@ -59,7 +59,7 @@
 
 import type { Scene } from '@vitrum/core';
 import * as THREE from 'three';
-import type { WebGLRenderer } from 'three';
+import type { TextureDataType, WebGLRenderer } from 'three';
 import { fillBdptLightPathWebGL } from './bdpt/fillBdptLightPathWebGL.js';
 import {
   runBdptLightSubpathPass,
@@ -75,6 +75,8 @@ export interface BdptLightPathBufferOptions {
    * @default 3
    */
   readonly maxLightBounces?: number;
+  /** @default FloatType — use {@link bdptLightPathTextureType} for ANGLE hosts. */
+  readonly textureType?: TextureDataType;
 }
 
 const LIGHT_PATH_BUFFER_HEIGHT = 3 as const;
@@ -102,8 +104,9 @@ export class BdptLightPathBuffer {
       );
     }
     this.maxLightBounces = max;
+    const textureType = options.textureType ?? THREE.FloatType;
     this.renderTarget = new THREE.WebGLRenderTarget(max, LIGHT_PATH_BUFFER_HEIGHT, {
-      type: THREE.FloatType,
+      type: textureType,
       format: THREE.RGBAFormat,
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,

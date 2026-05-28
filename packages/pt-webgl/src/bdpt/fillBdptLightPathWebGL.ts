@@ -8,6 +8,7 @@ import type { Scene } from '@vitrum/core';
 import {
   DataTexture,
   FloatType,
+  HalfFloatType,
   NearestFilter,
   RGBAFormat,
   type Texture,
@@ -69,7 +70,8 @@ function uploadLightPathTexture(
   data: Float32Array,
 ): void {
   const prevRt = renderer.getRenderTarget();
-  const src = new DataTexture(data, width, 3, RGBAFormat, FloatType);
+  const texType = texture.type === FloatType ? FloatType : HalfFloatType;
+  const src = new DataTexture(data, width, 3, RGBAFormat, texType);
   src.minFilter = NearestFilter;
   src.magFilter = NearestFilter;
   src.needsUpdate = true;
@@ -90,7 +92,8 @@ function uploadLightPathTexture(
     renderer.state.activeTexture(gl.TEXTURE0);
     renderer.state.bindTexture(gl.TEXTURE_2D, webglTexture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 3, gl.RGBA, gl.FLOAT, data);
+    const glType = texType === HalfFloatType ? gl.HALF_FLOAT : gl.FLOAT;
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, 3, gl.RGBA, glType, data);
   } finally {
     renderer.setRenderTarget(prevRt);
     src.dispose();

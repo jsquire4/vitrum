@@ -1,6 +1,7 @@
 import { RGBAFormat, FloatType, Color, Vector2, Vector4, WebGLRenderTarget, NoBlending, NormalBlending, CustomBlending, AddEquation, OneFactor, NearestFilter } from 'three';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 import { BlendMaterial } from '../materials/fullscreen/BlendMaterial.js';
+import { BdptColumnCopyMaterial } from '../materials/fullscreen/BdptColumnCopyMaterial.js';
 import { SobolNumberMapGenerator } from '../utils/SobolNumberMapGenerator.js';
 import { PhysicalPathTracingMaterial } from '../materials/pathtracing/PhysicalPathTracingMaterial.js';
 
@@ -290,6 +291,8 @@ export class PathTracingRenderer {
 
 		/** Scratch RT for BDPT light-subpath columns (write ≠ read; bdpt_light_subpath.glsl). */
 		this._bdptSubpathScratch = null;
+		/** GPU column upload (ANGLE cannot read float FBO pixels reliably). */
+		this._bdptColumnCopyQuad = null;
 
 		// function for listening to for triggered compilation so we can wait for compilation to finish
 		// before starting to render
@@ -384,6 +387,8 @@ export class PathTracingRenderer {
 		this._blendTargets[ 1 ].dispose();
 		this._bdptSubpathScratch?.dispose();
 		this._bdptSubpathScratch = null;
+		this._bdptColumnCopyQuad?.dispose();
+		this._bdptColumnCopyQuad = null;
 		this._sobolTarget.dispose();
 
 		this._fsQuad.dispose();
@@ -427,13 +432,14 @@ export class PathTracingRenderer {
 
 	}
 
-	_ensureBdptSubpathScratch( width, height ) {
+	_ensureBdptSubpathScratch( width, height, textureType ) {
 
 		const scratch = this._bdptSubpathScratch;
 		if (
 			scratch != null &&
 			scratch.width === width &&
-			scratch.height === height
+			scratch.height === height &&
+			scratch.texture.type === textureType
 		) {
 
 			return scratch;
@@ -443,7 +449,7 @@ export class PathTracingRenderer {
 		scratch?.dispose();
 		this._bdptSubpathScratch = new WebGLRenderTarget( width, height, {
 			format: RGBAFormat,
-			type: FloatType,
+			type: textureType ?? FloatType,
 			magFilter: NearestFilter,
 			minFilter: NearestFilter,
 		} );
@@ -451,26 +457,30 @@ export class PathTracingRenderer {
 
 	}
 
-	_copyBdptSubpathColumn( renderer, scratch, lightPathTarget, col, width, height ) {
+	_ensureBdptColumnCopyQuad() {
 
-		const pixelCount = width * height;
-		const scratchPixels = new Float32Array( pixelCount * 4 );
-		renderer.readRenderTargetPixels( scratch, 0, 0, width, height, scratchPixels );
+		if ( this._bdptColumnCopyQuad == null ) {
 
-		const columnPixels = new Float32Array( height * 4 );
-		for ( let row = 0; row < height; row ++ ) {
-
-			const src = ( row * width + col ) * 4;
-			columnPixels.set( scratchPixels.subarray( src, src + 4 ), row * 4 );
+			this._bdptColumnCopyQuad = new FullScreenQuad( new BdptColumnCopyMaterial() );
 
 		}
 
-		renderer.writeTexture(
-			{ texture: lightPathTarget.texture },
-			columnPixels,
-			{ bytesPerRow: 16, rows: height },
-			{ x: col, y: 0, z: 0 },
-		);
+		return this._bdptColumnCopyQuad;
+
+	}
+
+	_copyBdptSubpathColumn( renderer, scratch, lightPathTarget, col, width, height ) {
+
+		const quad = this._ensureBdptColumnCopyQuad();
+		const mat = quad.material;
+		mat.uniforms.uSrc.value = scratch.texture;
+		mat.uniforms.uCol.value = col;
+		const prevAutoClear = renderer.autoClear;
+		renderer.autoClear = col === 0;
+		renderer.setRenderTarget( lightPathTarget );
+		renderer.setViewport( 0, 0, width, height );
+		quad.render( renderer );
+		renderer.autoClear = prevAutoClear;
 
 	}
 
@@ -505,7 +515,7 @@ export class PathTracingRenderer {
 		material.uniforms.resolution.value.set( w, h );
 		material.uniforms.uBdptMaxLightBounces.value = maxLightBounces;
 
-		const scratch = this._ensureBdptSubpathScratch( w, h );
+		const scratch = this._ensureBdptSubpathScratch( w, h, lightPathTarget.texture.type );
 
 		const prevRT = renderer.getRenderTarget();
 		const prevAutoClear = renderer.autoClear;

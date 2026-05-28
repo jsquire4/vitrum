@@ -503,6 +503,8 @@ export class PTEngineWebGL2 implements Engine {
   readonly #bdptMaxLightBounces: number;
   /** When true, skip the fork GPU light-subpath pass (CPU bounce-0 fill only). */
   readonly #bdptCpuFill: boolean;
+  /** ANGLE stacks: RGBA32F light-path bind breaks unidirectional PT until fork decode path lands. */
+  readonly #bdptCompileShader: boolean;
   /** Sprint 10c — most-recently-supplied BDPT light-path texture. Set via
    *  {@link bdptAdvanceFrame}; null until the host calls that method.
    *  When non-null + `#bdpt === true`, every renderFrame's connect pass
@@ -579,13 +581,20 @@ export class PTEngineWebGL2 implements Engine {
       ? Math.min(3, Math.floor(requestedBdptBounces))
       : 3;
     this.#bdptCpuFill = opts.extensions?.['vitrum.ptWebgl.bdptCpuFill'] === true;
+    this.#renderer = gpu.renderer;
+    this.#limits = this.#detectDeviceLimits();
+    this.#bdptCompileShader = !/angle/i.test(this.#limits.renderer);
+    if (this.#bdpt && !this.#bdptCompileShader) {
+      console.warn(
+        '[vitrum/pt-webgl] BDPT shader connections disabled on ANGLE (float light-path breaks PT). ' +
+          'Use WSL capture (benchmark:bdpt-layered-refs-gpu-wsl-full) for mechanical promotion.',
+      );
+    }
     this.#schedulerOptions = defaultSchedulerOptions(opts.extensions);
     this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
     this.#tileSize = this.#schedulerOptions.initialTileSize;
-    this.#renderer = gpu.renderer;
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
-    this.#limits = this.#detectDeviceLimits();
     const adaptiveRequested = opts.extensions?.['vitrum.ptWebgl.pixelAdaptiveSampling'] === true;
     this.#additiveAccumulation =
       opts.extensions?.['vitrum.ptWebgl.additiveAccumulation'] === true || adaptiveRequested;
@@ -734,9 +743,10 @@ export class PTEngineWebGL2 implements Engine {
         radianceClamp: this.#radianceClamp,
       },
       {
-        enabled: this.#bdpt && !softwareGl,
+        enabled: this.#bdpt && !softwareGl && this.#bdptCompileShader,
+        compileShader: this.#bdptCompileShader,
         maxLightBounces: this.#bdptMaxLightBounces,
-        lightPathTex: softwareGl ? null : lightPathTex,
+        lightPathTex: softwareGl || !this.#bdptCompileShader ? null : lightPathTex,
       },
     );
   }

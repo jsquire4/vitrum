@@ -5,7 +5,7 @@
  * set vitrumBdptCpuFill — uses GPU light-subpath + eye path on ANGLE.
  */
 
-import { spawnSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchDevServer, stopDevServer, waitForServerReady } from './devServer.mjs';
@@ -14,7 +14,24 @@ import { getRepoRoot } from './repoRoot.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = getRepoRoot(import.meta.url);
 const cornellPort = process.env.VITRUM_CORNELL_DEV_PORT ?? '5173';
-const captureBase = `http://127.0.0.1:${cornellPort}/`;
+
+/** Windows Playwright → WSL Vite: prefer WSL eth IP when localhost forwarding fails. */
+function wslCaptureBase(port) {
+  if (process.env.VITRUM_CAPTURE_URL) return process.env.VITRUM_CAPTURE_URL;
+  try {
+    const ip = execSync("hostname -I 2>/dev/null | awk '{print $1}'", {
+      encoding: 'utf8',
+      shell: '/bin/bash',
+    }).trim();
+    if (ip.length > 0) return `http://${ip}:${port}/`;
+  } catch {
+    // fall through
+  }
+  return `http://127.0.0.1:${port}/`;
+}
+
+const captureBase = wslCaptureBase(cornellPort);
+console.info(`[bdpt-win] capture base URL: ${captureBase}`);
 
 const devServer = launchDevServer(
   `npm run dev --workspace @vitrum-examples/cornell-box -- --host 0.0.0.0 --port ${cornellPort} --strictPort`,
@@ -39,6 +56,7 @@ try {
       'VITRUM_WEBGPU_ADAPTER=hardware',
       'VITRUM_BENCH_HEADLESS=0',
       'VITRUM_BDPT_REQUIRE_GPU=1',
+      'VITRUM_CAPTURE_TIMEOUT_MS=600000',
       'VITRUM_BDPT_MIN_PNG_BYTES=400000',
       `VITRUM_BDPT_QUICK=${process.env.VITRUM_BDPT_QUICK ?? '1'}`,
       `VITRUM_BDPT_OUT_LABEL=${label}`,

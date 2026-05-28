@@ -29,7 +29,9 @@ function bdptCaptureBaseUrl() {
   const raw = process.env.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5173/';
   const u = new URL(raw);
   u.searchParams.set('vitrumBdpt', '1');
-  if (!u.searchParams.has('vitrumSpf')) u.searchParams.set('vitrumSpf', '16');
+  if (!u.searchParams.has('vitrumSpf')) {
+    u.searchParams.set('vitrumSpf', process.env.VITRUM_BDPT_QUICK === '1' ? '64' : '16');
+  }
   if (process.env.VITRUM_BDPT_CPU_FILL === '1') {
     u.searchParams.set('vitrumBdptCpuFill', '1');
   } else {
@@ -45,6 +47,12 @@ async function runCapture(extraArgs, envExtra = {}) {
     ...envExtra,
     VITRUM_BDPT_MIN_PNG_BYTES: envExtra.VITRUM_BDPT_MIN_PNG_BYTES ?? process.env.VITRUM_BDPT_MIN_PNG_BYTES ?? '50000',
   };
+  if (process.env.VITRUM_BDPT_QUICK === '1') {
+    const raw = captureEnv.VITRUM_CAPTURE_URL ?? 'http://127.0.0.1:5173/';
+    const u = new URL(raw);
+    if (!u.searchParams.has('vitrumSpf')) u.searchParams.set('vitrumSpf', '64');
+    captureEnv.VITRUM_CAPTURE_URL = u.toString();
+  }
   if (process.env.VITRUM_BDPT_NODE_CAPTURE === '1') {
     const args = [
       'node',

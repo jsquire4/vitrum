@@ -45,6 +45,8 @@ export interface ForkBridgeCausticOptions {
 export interface ForkBridgeBdptOptions {
   /** Enable BDPT integrator path (default false). */
   readonly enabled: boolean;
+  /** When false, FEATURE_BDPT GLSL stays off (ANGLE float light-path bind workaround). */
+  readonly compileShader?: boolean;
   /**
    * Number of light-subpath bounces to store and connect (1–3; default 3).
    * Must match the light-subpath draw pass loop count in the host renderer.
@@ -152,7 +154,7 @@ export function driveForkMaterialUniforms(
   // unbound slot). FEATURE_BDPT still compiles when enabled=true and tex is null (GPU fill pass).
   if (bdptOptions != null) {
     const lightPathTex = bdptOptions.lightPathTex ?? null;
-    const bdptCompiled = bdptOptions.enabled;
+    const bdptCompiled = bdptOptions.enabled && bdptOptions.compileShader !== false;
     const effectivelyEnabled = bdptCompiled && lightPathTex != null;
     setUniform(material, 'uBdptEnabled', effectivelyEnabled);
     // Only bind when active — leaving a float RGBA32F on the slot breaks SwiftShader PT.

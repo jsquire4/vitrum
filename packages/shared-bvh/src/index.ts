@@ -24,6 +24,7 @@ export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';
 export * from './wgsl/tlasTraversal.wgsl.js';
+export * from './wgsl/tlasSceneHitTraversal.wgsl.js';
 export {
   fingerprintBuffer,
   fingerprintBuffers,

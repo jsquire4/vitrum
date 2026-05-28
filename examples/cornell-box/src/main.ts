@@ -9,7 +9,12 @@ import type {
   PTEngineWebGL2QualityMode,
 } from '@vitrum/pt-webgl';
 import * as THREE from 'three';
-import { createPTEngine_WebGL2, readAccumulationRgbFloat, BdptLightPathBuffer } from '@vitrum/pt-webgl';
+import {
+  createPTEngine_WebGL2,
+  readAccumulationRgbFloat,
+  BdptLightPathBuffer,
+  bdptLightPathTextureType,
+} from '@vitrum/pt-webgl';
 import { sceneFromThreeJS, VITRUM_USER_DATA_KEYS as K } from '@vitrum/three-bindings';
 import {
   HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE,
@@ -528,7 +533,10 @@ async function main(): Promise<void> {
   // (`BdptLightPathBuffer.fillFromScene`) until the fork's dedicated light-subpath
   // draw pass lands; extension bounces remain stubbed (cols 1..N invalid).
   const bdptBuffer: BdptLightPathBuffer | null = config.bdpt
-    ? new BdptLightPathBuffer({ maxLightBounces: config.bdptMaxLightBounces })
+    ? new BdptLightPathBuffer({
+        maxLightBounces: config.bdptMaxLightBounces,
+        textureType: bdptLightPathTextureType(rendererLabel),
+      })
     : null;
   let disposed = false;
   const disposeAll = (): void => {
