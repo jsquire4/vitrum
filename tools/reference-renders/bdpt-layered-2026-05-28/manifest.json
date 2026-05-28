@@ -1,0 +1,24 @@
+{
+  "capturedAt": "2026-05-28T00:45:28.959Z",
+  "outDir": "tools/reference-renders/bdpt-layered-2026-05-28",
+  "steps": [
+    {
+      "scenario": "cornell-layered",
+      "ok": true,
+      "stdout": "red-2026-05-28\n  ✓ cornell-layered  (125s, 1254197 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2754412)..."
+    },
+    {
+      "scenario": "cornell-layered-bdpt",
+      "ok": true,
+      "stdout": "026-05-28\n  ✓ cornell-layered  (126s, 1197368 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered-bdpt.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2756253)...",
+      "png": "tools/reference-renders/bdpt-layered-2026-05-28/cornell-layered-bdpt.png"
+    },
+    {
+      "scenario": "cornell-parity-bdpt",
+      "ok": true,
+      "stdout": "-2026-05-28\n  ✓ cornell-parity  (127s, 1441037 bytes)  → /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/cornell-parity-bdpt.png\n\n[capture-suite] Eyeball the PNGs. If they look physically plausible:\n  cp /home/jsquire4/projects/vitrum/tools/reference-renders/bdpt-layered-2026-05-28/*.png tools/reference-renders/baseline/\n\n[capture-suite] If anything looks wrong, check telemetry above + vite log:\n  /tmp/cornell-vite.log\n[capture-suite] Stopping vite (pid 2756969)...",
+      "png": "tools/reference-renders/bdpt-layered-2026-05-28/cornell-parity-bdpt.png"
+    }
+  ],
+  "note": "Layered BSDF fork patch (Sprint 14) + BDPT dispatch (Sprint 10c). Compare cornell-layered.png vs BDPT variant visually; pt-webgpu parity in gap-closure rfe03."
+}
