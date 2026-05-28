@@ -42,7 +42,7 @@ export {
   DDGI_MATERIAL_STRIDE_BYTES,
   packDDGIMaterials,
 } from './probeUpdateMaterials.js';
-import type { ProbeGrid, AtlasTextureSlot } from './probeGrid.js';
+import type { ProbeGrid } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
@@ -56,65 +56,21 @@ import {
   packProbeUpdateBlendParams,
   packProbeUpdateFrameParams,
 } from './probeUpdateFrameParams.js';
+import { ProbeUpdateAtlasTextureCache } from './probeUpdateAtlasCache.js';
 import {
-  DDGI_BORDER_UBO,
+  dispatchProbeUpdateBlendIrrPass,
+  dispatchProbeUpdateBlendVisPass,
+  dispatchProbeUpdateBorderIrrPass,
+  dispatchProbeUpdateBorderVisPass,
+  dispatchProbeUpdateRaysPass,
+  uploadProbeUpdateBorderUbo,
+} from './probeUpdateDispatcher.js';
+import type { ProbeUpdateGpuState } from './probeUpdateGpuState.js';
+import {
   DDGI_BORDER_UBO_BYTES,
   DDGI_FRAME_PARAMS_UBO,
   PROBE_RAY_STRIDE_BYTES,
 } from './probeUpdateUbos.js';
-
-interface GPUResources {
-  device: GPUDevice;
-  raysPipeline:       GPUComputePipeline;
-  blendIrrPipeline:   GPUComputePipeline;
-  blendVisPipeline:   GPUComputePipeline;
-  /** Border-fill pipeline for the irradiance atlas. */
-  borderIrrPipeline:  GPUComputePipeline;
-  /** Border-fill pipeline for the visibility atlas. */
-  borderVisPipeline:  GPUComputePipeline;
-  /**
-   * Scratch atlas textures for the border fill pass ping-pong.
-   *
-   * WebGPU forbids binding the same texture as both `texture_2d` (read) and
-   * `texture_storage_2d` (write) in a single pipeline. The border pass reads
-   * from a scratch copy of the blend output and writes the border pixels back
-   * into the blend-output atlas. The host copies write→scratch with
-   * `copyTextureToTexture` between the blend and border dispatches.
-   *
-   * The scratch textures are reallocated lazily when the atlas size changes
-   * (keyed on a `width×height` size tag stored in `_irrScratchSize` and
-   * `_visScratchSize`). They are destroyed in `dispose()`.
-   */
-  irrScratchTex: GPUTexture | null;
-  visScratchTex: GPUTexture | null;
-  // BVH buffers (replaced on scene rebuild)
-  bvhBuf:        GPUBuffer;
-  posBuf:        GPUBuffer;
-  idxBuf:        GPUBuffer;
-  normBuf:       GPUBuffer;
-  matIdBuf:      GPUBuffer;
-  tlasNodesBuf:  GPUBuffer;
-  tlasInstIdxBuf: GPUBuffer;
-  tlasBlasRootsBuf: GPUBuffer;
-  tlasW2lBuf:    GPUBuffer;
-  tlasL2wBuf:    GPUBuffer;
-  traceParamsBuf: GPUBuffer;
-  // Uniform buffers
-  materialsBuf:    GPUBuffer;
-  lightsBuf:       GPUBuffer;
-  gridParamsBuf:   GPUBuffer;
-  frameParamsBuf:  GPUBuffer;
-  blendParamsBuf:  GPUBuffer;
-  /** BorderUBO for the irradiance border pass (8 u32 fields = 32 bytes). */
-  borderIrrUboBuf: GPUBuffer;
-  /** BorderUBO for the visibility border pass (8 u32 fields = 32 bytes). */
-  borderVisUboBuf: GPUBuffer;
-  // Dynamic per-frame buffers
-  rayResultsBuf: GPUBuffer;
-  activeProbesBuf: GPUBuffer;
-  // Samplers
-  linearSampler: GPUSampler;
-}
 
 /** Options accepted by ProbeUpdatePass constructor. */
 export interface ProbeUpdatePassOptions {
@@ -145,7 +101,8 @@ export interface ProbeUpdatePassOptions {
 export class ProbeUpdatePass {
   private _bvh:  SceneBvh;
   private _grid: ProbeGrid;
-  private _gpu:  GPUResources | null = null;
+  private _gpu:  ProbeUpdateGpuState | null = null;
+  private _atlasCache = new ProbeUpdateAtlasTextureCache();
   /** When set, probe rays use ReSTIR buffers (PR-5.1) instead of SceneBvh rebuild. */
   private _restirSnapshot: DdgiRestirBvhSnapshot | null = null;
   private _lastBvhVersion = -1;
@@ -154,10 +111,6 @@ export class ProbeUpdatePass {
   private _frameIndex = 0;
   private _maxProbes = 0;
   private _lights: DDGILight[] = [];
-  /** Cached size tag for the irradiance scratch texture (`width|height` string). */
-  private _irrScratchSize = '';
-  /** Cached size tag for the visibility scratch texture (`width|height` string). */
-  private _visScratchSize = '';
   private _debug: boolean;
   // Multiplier applied to every light's intensity when packing the
   // probe-update light UBO. Defaults to 1 so unrelated callers keep the
@@ -459,16 +412,17 @@ export class ProbeUpdatePass {
     if (!this._grid.irradianceA) this._grid.allocateAtlases();
 
     // Get/create GPU textures for the atlases.
-    const irrReadTex  = this._getOrCreateAtlasTexture(device, this._grid.irradianceReadTex, 'rgba16float');
-    const irrWriteTex = this._getOrCreateAtlasTexture(device, this._grid.irradianceWriteTex, 'rgba16float');
+    const irrReadTex  = this._atlasCache.getOrCreateAtlasTexture(device, this._grid.irradianceReadTex, 'rgba16float');
+    const irrWriteTex = this._atlasCache.getOrCreateAtlasTexture(device, this._grid.irradianceWriteTex, 'rgba16float');
     // Visibility atlas: allocated as RGBAFormat (rgba16float) because WebGPU does not
     // support rg16float as a storage texture. The WGSL shader declares rgba16float too.
-    const visReadTex  = this._getOrCreateAtlasTexture(device, this._grid.visibilityReadTex, 'rgba16float');
-    const visWriteTex = this._getOrCreateAtlasTexture(device, this._grid.visibilityWriteTex, 'rgba16float');
+    const visReadTex  = this._atlasCache.getOrCreateAtlasTexture(device, this._grid.visibilityReadTex, 'rgba16float');
+    const visWriteTex = this._atlasCache.getOrCreateAtlasTexture(device, this._grid.visibilityWriteTex, 'rgba16float');
 
     // Run compute passes.
     const encoder = device.createCommandEncoder();
-    this._runRaysPass(encoder, activeProbes.length, irrReadTex);
+    const gpu = this._gpu;
+    dispatchProbeUpdateRaysPass(encoder, gpu, activeProbes.length, irrReadTex);
 
     // CRITICAL: copy read→write so inactive probes' cells stay in sync.
     // Without this, the per-frame ping-pong (`swap()` below) combined with
@@ -492,8 +446,8 @@ export class ProbeUpdatePass {
       { width: visReadTex.width, height: visReadTex.height, depthOrArrayLayers: 1 },
     );
 
-    this._runBlendIrrPass(encoder, activeProbes.length, irrReadTex, irrWriteTex);
-    this._runBlendVisPass(encoder, activeProbes.length, visReadTex, visWriteTex);
+    dispatchProbeUpdateBlendIrrPass(encoder, gpu, activeProbes.length, irrReadTex, irrWriteTex);
+    dispatchProbeUpdateBlendVisPass(encoder, gpu, activeProbes.length, visReadTex, visWriteTex);
 
     // Border fill pass (Item 3 — Majercik 2019 §3.2).
     //
@@ -506,8 +460,8 @@ export class ProbeUpdatePass {
     //
     // The scratch textures are allocated lazily and cached in `_gpu.irrScratchTex`
     // / `_gpu.visScratchTex`, reused every frame as long as atlas size is stable.
-    const irrScratch = this._getOrCreateScratchTexture(device, irrWriteTex, 'irr');
-    const visScratch = this._getOrCreateScratchTexture(device, visWriteTex, 'vis');
+    const irrScratch = this._atlasCache.getOrCreateScratchTexture(device, gpu, irrWriteTex, 'irr');
+    const visScratch = this._atlasCache.getOrCreateScratchTexture(device, gpu, visWriteTex, 'vis');
     encoder.copyTextureToTexture(
       { texture: irrWriteTex },
       { texture: irrScratch },
@@ -518,10 +472,10 @@ export class ProbeUpdatePass {
       { texture: visScratch },
       { width: visWriteTex.width, height: visWriteTex.height, depthOrArrayLayers: 1 },
     );
-    this._uploadBorderUbo(device, irrWriteTex, 'irr');
-    this._uploadBorderUbo(device, visWriteTex, 'vis');
-    this._runBorderIrrPass(encoder, probeCount, irrScratch, irrWriteTex);
-    this._runBorderVisPass(encoder, probeCount, visScratch, visWriteTex);
+    uploadProbeUpdateBorderUbo(device, gpu, this._grid, irrWriteTex, 'irr');
+    uploadProbeUpdateBorderUbo(device, gpu, this._grid, visWriteTex, 'vis');
+    dispatchProbeUpdateBorderIrrPass(encoder, gpu, probeCount, irrScratch, irrWriteTex);
+    dispatchProbeUpdateBorderVisPass(encoder, gpu, probeCount, visScratch, visWriteTex);
 
     device.queue.submit([encoder.finish()]);
 
@@ -592,288 +546,6 @@ export class ProbeUpdatePass {
     device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data);
   }
 
-  // Cache: AtlasTextureSlot identity → GPUTexture. The slot is a plain
-  // record (just width/height); we use it as a WeakMap key so the
-  // GPUTexture is released when ProbeGrid drops the slot.
-  private _textureCache = new WeakMap<AtlasTextureSlot, GPUTexture>();
-  // Parallel Set of cached GPUTextures so `dispose()` can call `.destroy()`
-  // on each one — replacing the WeakMap alone does NOT free the captured
-  // GPU resources (those textures stay alive on the device until the
-  // AtlasTextureSlot itself is GC'd, which for ProbeGrid-owned slots is
-  // tied to the engine's lifetime).
-  private _trackedCacheTextures = new Set<GPUTexture>();
-
-  private _getOrCreateAtlasTexture(
-    device: GPUDevice,
-    slot: AtlasTextureSlot,
-    format: GPUTextureFormat,
-  ): GPUTexture {
-    const cached = this._textureCache.get(slot);
-    if (cached) return cached;
-
-    const gpuTex = device.createTexture({
-      size: [slot.width, slot.height, 1],
-      format,
-      // COPY_SRC | COPY_DST so the host can keep the two ping-pong atlases
-      // synchronised via `copyTextureToTexture` at the start of each blend
-      // dispatch (inactive probes' cells must mirror the read texture or
-      // the round-robin EMA collapses to 3% of newColor per cycle).
-      usage:
-        GPUTextureUsage.STORAGE_BINDING |
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_SRC |
-        GPUTextureUsage.COPY_DST,
-    });
-
-    this._textureCache.set(slot, gpuTex);
-    this._trackedCacheTextures.add(gpuTex);
-    return gpuTex;
-  }
-
-  private _runRaysPass(
-    encoder: GPUCommandEncoder,
-    activeCount: number,
-    irrReadTex: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-
-    const bg0 = g.device.createBindGroup({
-      layout: g.raysPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: g.bvhBuf } },
-        { binding: 1, resource: { buffer: g.posBuf } },
-        { binding: 2, resource: { buffer: g.idxBuf } },
-        { binding: 3, resource: { buffer: g.normBuf } },
-        { binding: 4, resource: { buffer: g.matIdBuf } },
-        { binding: 5, resource: { buffer: g.tlasNodesBuf } },
-        { binding: 6, resource: { buffer: g.tlasInstIdxBuf } },
-        { binding: 7, resource: { buffer: g.tlasBlasRootsBuf } },
-        { binding: 8, resource: { buffer: g.tlasW2lBuf } },
-        { binding: 9, resource: { buffer: g.tlasL2wBuf } },
-        { binding: 10, resource: { buffer: g.traceParamsBuf } },
-      ],
-    });
-    const bg1 = g.device.createBindGroup({
-      layout: g.raysPipeline.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: { buffer: g.materialsBuf } },
-        { binding: 1, resource: { buffer: g.lightsBuf } },
-      ],
-    });
-    const bg2 = g.device.createBindGroup({
-      layout: g.raysPipeline.getBindGroupLayout(2),
-      entries: [
-        { binding: 0, resource: { buffer: g.rayResultsBuf } },
-        { binding: 1, resource: { buffer: g.activeProbesBuf } },
-        { binding: 2, resource: irrReadTex.createView() },
-        { binding: 3, resource: g.linearSampler },
-        { binding: 4, resource: { buffer: g.gridParamsBuf } },
-        { binding: 5, resource: { buffer: g.frameParamsBuf } },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ddgi-probe-rays' });
-    pass.setPipeline(g.raysPipeline);
-    pass.setBindGroup(0, bg0);
-    pass.setBindGroup(1, bg1);
-    pass.setBindGroup(2, bg2);
-    // Dispatch one workgroup per active probe.
-    pass.dispatchWorkgroups(activeCount);
-    pass.end();
-  }
-
-  private _runBlendIrrPass(
-    encoder: GPUCommandEncoder,
-    activeCount: number,
-    irrReadTex: GPUTexture,
-    irrWriteTex: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg0 = g.device.createBindGroup({
-      layout: g.blendIrrPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: g.rayResultsBuf } },
-        { binding: 1, resource: { buffer: g.activeProbesBuf } },
-        { binding: 2, resource: { buffer: g.gridParamsBuf } },
-        { binding: 3, resource: { buffer: g.blendParamsBuf } },
-      ],
-    });
-    const bg1 = g.device.createBindGroup({
-      layout: g.blendIrrPipeline.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: irrReadTex.createView() },
-        { binding: 1, resource: g.linearSampler },
-        { binding: 2, resource: irrWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-      ],
-    });
-
-    // Dispatch: global x = activeCount * IRR_CELL, global y = IRR_CELL.
-    // workgroup (8,8,1) so dispatchWorkgroups(activeCount, 1, 1) covers one probe.
-    const pass = encoder.beginComputePass({ label: 'ddgi-blend-irr' });
-    pass.setPipeline(g.blendIrrPipeline);
-    pass.setBindGroup(0, bg0);
-    pass.setBindGroup(1, bg1);
-    pass.dispatchWorkgroups(activeCount, 1, 1);
-    pass.end();
-  }
-
-  private _runBlendVisPass(
-    encoder: GPUCommandEncoder,
-    activeCount: number,
-    visReadTex: GPUTexture,
-    visWriteTex: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg0 = g.device.createBindGroup({
-      layout: g.blendVisPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: g.rayResultsBuf } },
-        { binding: 1, resource: { buffer: g.activeProbesBuf } },
-        { binding: 2, resource: { buffer: g.gridParamsBuf } },
-        { binding: 3, resource: { buffer: g.blendParamsBuf } },
-      ],
-    });
-    const bg1 = g.device.createBindGroup({
-      layout: g.blendVisPipeline.getBindGroupLayout(1),
-      entries: [
-        { binding: 0, resource: visReadTex.createView() },
-        { binding: 1, resource: g.linearSampler },
-        { binding: 2, resource: visWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-      ],
-    });
-
-    const pass = encoder.beginComputePass({ label: 'ddgi-blend-vis' });
-    pass.setPipeline(g.blendVisPipeline);
-    pass.setBindGroup(0, bg0);
-    pass.setBindGroup(1, bg1);
-    pass.dispatchWorkgroups(activeCount, 1, 1);
-    pass.end();
-  }
-
-  /**
-   * Return (or lazily create) the scratch texture used by the border fill
-   * pass for the given atlas. The scratch texture is an atlas-sized
-   * rgba16float texture that serves as a read-only source for the border
-   * pass so we don't need to bind the same texture for both read and write.
-   *
-   * @param device - WebGPU device.
-   * @param atlas  - The write-side atlas texture whose dimensions to match.
-   * @param which  - 'irr' for irradiance, 'vis' for visibility.
-   */
-  private _getOrCreateScratchTexture(
-    device: GPUDevice,
-    atlas: GPUTexture,
-    which: 'irr' | 'vis',
-  ): GPUTexture {
-    const g = this._gpu!;
-    const sizeTag = `${atlas.width}|${atlas.height}`;
-    if (which === 'irr') {
-      if (g.irrScratchTex && this._irrScratchSize === sizeTag) return g.irrScratchTex;
-      g.irrScratchTex?.destroy();
-      g.irrScratchTex = device.createTexture({
-        size: [atlas.width, atlas.height, 1],
-        format: 'rgba16float',
-        usage:
-          GPUTextureUsage.TEXTURE_BINDING |
-          GPUTextureUsage.COPY_SRC |
-          GPUTextureUsage.COPY_DST,
-      });
-      this._irrScratchSize = sizeTag;
-      return g.irrScratchTex;
-    } else {
-      if (g.visScratchTex && this._visScratchSize === sizeTag) return g.visScratchTex;
-      g.visScratchTex?.destroy();
-      g.visScratchTex = device.createTexture({
-        size: [atlas.width, atlas.height, 1],
-        format: 'rgba16float',
-        usage:
-          GPUTextureUsage.TEXTURE_BINDING |
-          GPUTextureUsage.COPY_SRC |
-          GPUTextureUsage.COPY_DST,
-      });
-      this._visScratchSize = sizeTag;
-      return g.visScratchTex;
-    }
-  }
-
-  /**
-   * Upload the BorderUBO for the irradiance or visibility border pass.
-   * The UBO layout (8 × u32 = 32 bytes):
-   *   [0] numProbes   [1] atlasWidth  [2] atlasHeight  [3] _pad0
-   *   [4] gridDimX    [5] gridDimY    [6] gridDimZ      [7] _pad1
-   *
-   * W2-C13 follow-up: defineUbo packs the eight u32 fields contiguously
-   * at offsets 0/4/.../28, matching the prior Uint32Array(8) write
-   * byte-for-byte.
-   */
-  private _uploadBorderUbo(
-    device: GPUDevice,
-    atlas: GPUTexture,
-    which: 'irr' | 'vis',
-  ): void {
-    const g = this._gpu!;
-    const data = new ArrayBuffer(DDGI_BORDER_UBO.sizeBytes);
-    DDGI_BORDER_UBO.pack(new DataView(data), 0, {
-      numProbes:   this._grid.probeCount,
-      atlasWidth:  atlas.width,
-      atlasHeight: atlas.height,
-      _pad0:       0,
-      gridDimX:    this._grid.params.dims.x,
-      gridDimY:    this._grid.params.dims.y,
-      gridDimZ:    this._grid.params.dims.z,
-      _pad1:       0,
-    });
-    const buf = which === 'irr' ? g.borderIrrUboBuf : g.borderVisUboBuf;
-    device.queue.writeBuffer(buf, 0, data);
-  }
-
-  private _runBorderIrrPass(
-    encoder: GPUCommandEncoder,
-    probeCount: number,
-    scratchTex: GPUTexture,
-    writeAtlas: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg = g.device.createBindGroup({
-      layout: g.borderIrrPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: scratchTex.createView() },
-        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-        { binding: 2, resource: { buffer: g.borderIrrUboBuf } },
-      ],
-    });
-    const pass = encoder.beginComputePass({ label: 'ddgi-border-irr' });
-    pass.setPipeline(g.borderIrrPipeline);
-    pass.setBindGroup(0, bg);
-    // One workgroup per probe. Each workgroup has 48 threads covering the
-    // (IRR_STRIDE)² = 100 positions of one cell's border ring.
-    pass.dispatchWorkgroups(probeCount, 1, 1);
-    pass.end();
-  }
-
-  private _runBorderVisPass(
-    encoder: GPUCommandEncoder,
-    probeCount: number,
-    scratchTex: GPUTexture,
-    writeAtlas: GPUTexture,
-  ): void {
-    const g = this._gpu!;
-    const bg = g.device.createBindGroup({
-      layout: g.borderVisPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: scratchTex.createView() },
-        { binding: 1, resource: writeAtlas.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
-        { binding: 2, resource: { buffer: g.borderVisUboBuf } },
-      ],
-    });
-    const pass = encoder.beginComputePass({ label: 'ddgi-border-vis' });
-    pass.setPipeline(g.borderVisPipeline);
-    pass.setBindGroup(0, bg);
-    // One workgroup per probe. 256 threads × 2 passes covers all 324 positions.
-    pass.dispatchWorkgroups(probeCount, 1, 1);
-    pass.end();
-  }
-
   /**
    * Expose the cached read-side GPUTextures so external consumers
    * (e.g. the hybrid pipeline) can bind them into the ReSTIR shade pass
@@ -888,8 +560,8 @@ export class ProbeUpdatePass {
     const irrTex = this._grid.irradianceReadTex;
     const visTex = this._grid.visibilityReadTex;
     if (!irrTex || !visTex) return null;
-    const irrGpu = this._textureCache.get(irrTex);
-    const visGpu = this._textureCache.get(visTex);
+    const irrGpu = this._atlasCache.getCachedAtlas(irrTex);
+    const visGpu = this._atlasCache.getCachedAtlas(visTex);
     if (!irrGpu || !visGpu) return null;
     return { irradiance: irrGpu, visibility: visGpu };
   }
@@ -914,15 +586,6 @@ export class ProbeUpdatePass {
     g.rayResultsBuf.destroy();
     g.activeProbesBuf.destroy();
     this._gpu = null;
-    // Destroy cached atlas GPUTextures BEFORE clearing the WeakMap. The
-    // WeakMap key is the AtlasTextureSlot (owned by ProbeGrid, lifetime
-    // tied to the engine), so `new WeakMap()` alone does not free the
-    // captured textures — the slots are still strongly reachable and the
-    // GPU memory stays allocated until the engine itself is collected.
-    for (const tex of this._trackedCacheTextures) tex.destroy();
-    this._trackedCacheTextures.clear();
-    this._textureCache = new WeakMap();
-    this._irrScratchSize = '';
-    this._visScratchSize = '';
+    this._atlasCache.dispose();
   }
 }
