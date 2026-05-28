@@ -38,9 +38,8 @@ import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 import type { InferenceGraph } from '../neural/InferenceGraph.js';
 import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
+import { BvhBufferHost } from './BvhBufferHost.js';
 import {
-  uploadBuffer,
-  createDummyStorageBuffer,
   createFrameResources,
   destroyFrameResources,
   type FrameResources,
@@ -304,18 +303,10 @@ export class WalkaroundGPUPipeline {
   private _width: number;
   private _height: number;
 
-  // Static BVH + emitter buffers (uploaded once at initialize time)
-  private _bvhNodesBuffer!: GPUBuffer;
-  private _bvhIndexBuffer!: GPUBuffer;
-  private _bvhBeerBuffer!: GPUBuffer;
-  private _bvhPositionBuffer!: GPUBuffer;
-  private _tlasNodesBuffer!: GPUBuffer;
-  private _tlasInstanceIndicesBuffer!: GPUBuffer;
-  private _tlasBlasRootsBuffer!: GPUBuffer;
-  private _tlasInstanceWorldToLocalBuffer!: GPUBuffer;
-  private _tlasInstanceLocalToWorldBuffer!: GPUBuffer;
-  private _emitterBuffer!: GPUBuffer;
-  private _emitterCdfBuffer!: GPUBuffer;
+  /** Static BVH + TLAS + emitter GPU buffers (W4b — BvhBufferHost). */
+  private readonly _bvhHost = new BvhBufferHost();
+  /** Cached composite pass — avoids registry lookup in presentLastFrame. */
+  private _compositePass: CompositePass | null = null;
 
   // Per-frame GPU resources (created by resourceManager.createFrameResources)
   private _res!: FrameResources;
@@ -464,18 +455,7 @@ export class WalkaroundGPUPipeline {
     const { _width: W, _height: H } = this;
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
-    this._bvhNodesBuffer    = uploadBuffer(d, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
-    this._bvhIndexBuffer    = uploadBuffer(d, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
-    this._bvhBeerBuffer     = uploadBuffer(d, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
-    this._bvhPositionBuffer = uploadBuffer(d, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
-    // bvhNormals + bvhUvs are CPU-only on the walkaround path: UVs are packed
-    // into bvhPosition[*].w (see restir/packingHelpers.packUVIntoPositionW)
-    // and face normals are reconstructed in shader from the BVH-resolved
-    // primary hit. No need to upload them.
-    this._emitterBuffer     = uploadBuffer(d, bvhBuffers.emitters.cpuData,     GPUBufferUsage.STORAGE);
-    this._emitterCdfBuffer  = uploadBuffer(d, bvhBuffers.emitterCdf.cpuData,   GPUBufferUsage.STORAGE);
-    this._uploadTlasBuffers(d, bvhBuffers);
-    // triangleMatIds are packed into bvhIndex[*].w — no separate GPU buffer.
+    this._bvhHost.uploadInitial(d, bvhBuffers);
 
     // ── Per-frame GPU resources ───────────────────────────────────────────
     this._res = createFrameResources(d, W, H);
@@ -587,7 +567,9 @@ export class WalkaroundGPUPipeline {
     registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
     registry.register(new TemporalAccumPass(compiled.accumPipeline, this._accumUboRef));
     registry.register(new ResolvePass(compiled.resolvePipeline, this._resolveUboRef));
-    registry.register(new CompositePass(compiled.compositePipeline));
+    const compositePass = new CompositePass(compiled.compositePipeline);
+    registry.register(compositePass);
+    this._compositePass = compositePass;
     // PPG passes — only register when the pipelines compiled successfully.
     // The `gates()` predicate gates dispatch on `opts.ppgEnabled` so they
     // can be registered unconditionally here, but skipping registration
@@ -626,10 +608,7 @@ export class WalkaroundGPUPipeline {
    * via {@link HybridEngine.setScene} / `reset()` when the scene changes.
    */
   updateEmitters(bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf'>): void {
-    this._emitterBuffer.destroy();
-    this._emitterCdfBuffer.destroy();
-    this._emitterBuffer    = uploadBuffer(this._device, bvhBuffers.emitters.cpuData,    GPUBufferUsage.STORAGE);
-    this._emitterCdfBuffer = uploadBuffer(this._device, bvhBuffers.emitterCdf.cpuData,  GPUBufferUsage.STORAGE);
+    this._bvhHost.updateEmitters(this._device, bvhBuffers);
   }
 
   /**
@@ -653,23 +632,18 @@ export class WalkaroundGPUPipeline {
     positionsSlice: { byteOffset: number; data: ArrayBuffer },
   ): void {
     if (!this._initialized) return;
-    this._device.queue.writeBuffer(this._bvhNodesBuffer, 0, bvhNodesBytes);
-    this._device.queue.writeBuffer(
-      this._bvhPositionBuffer,
-      positionsSlice.byteOffset,
-      positionsSlice.data,
-    );
+    this._bvhHost.refreshBvhRefit(this._device, bvhNodesBytes, positionsSlice);
   }
 
   /** PR-7 — upload refit BVH nodes only (positions already on GPU). */
   refreshBvhNodesOnly(bvhNodesBytes: ArrayBuffer): void {
     if (!this._initialized) return;
-    this._device.queue.writeBuffer(this._bvhNodesBuffer, 0, bvhNodesBytes);
+    this._bvhHost.refreshBvhNodesOnly(this._device, bvhNodesBytes);
   }
 
   /** Live merged vertex buffer for GPU skinning writes. */
   getBvhPositionBuffer(): GPUBuffer | null {
-    return this._initialized ? this._bvhPositionBuffer : null;
+    return this._initialized ? this._bvhHost.getBvhPositionBuffer() : null;
   }
 
   /** PR-4 — upload refit TLAS nodes + instance transforms (topology unchanged). */
@@ -679,9 +653,7 @@ export class WalkaroundGPUPipeline {
     localToWorld: ArrayBuffer,
   ): void {
     if (!this._initialized) return;
-    this._device.queue.writeBuffer(this._tlasNodesBuffer, 0, tlasNodes);
-    this._device.queue.writeBuffer(this._tlasInstanceWorldToLocalBuffer, 0, worldToLocal);
-    this._device.queue.writeBuffer(this._tlasInstanceLocalToWorldBuffer, 0, localToWorld);
+    this._bvhHost.refreshTlasRefit(this._device, tlasNodes, worldToLocal, localToWorld);
   }
 
   /**
@@ -693,8 +665,7 @@ export class WalkaroundGPUPipeline {
     beerSlice: { byteOffset: number; data: ArrayBuffer },
   ): void {
     if (!this._initialized) return;
-    this._device.queue.writeBuffer(this._bvhIndexBuffer, indexSlice.byteOffset, indexSlice.data);
-    this._device.queue.writeBuffer(this._bvhBeerBuffer, beerSlice.byteOffset, beerSlice.data);
+    this._bvhHost.refreshBvhMaterialSlice(this._device, indexSlice, beerSlice);
   }
 
   /**
@@ -717,43 +688,7 @@ export class WalkaroundGPUPipeline {
     >,
   ): void {
     if (!this._initialized) return;
-    this._bvhNodesBuffer.destroy();
-    this._bvhIndexBuffer.destroy();
-    this._bvhBeerBuffer.destroy();
-    this._bvhPositionBuffer.destroy();
-    this._destroyTlasBuffers();
-    this._bvhNodesBuffer    = uploadBuffer(this._device, bvhBuffers.bvhNodes.cpuData,     GPUBufferUsage.STORAGE);
-    this._bvhIndexBuffer    = uploadBuffer(this._device, bvhBuffers.bvhIndex.cpuData,     GPUBufferUsage.STORAGE);
-    this._bvhBeerBuffer     = uploadBuffer(this._device, bvhBuffers.bvhBeerColors.cpuData, GPUBufferUsage.STORAGE);
-    this._bvhPositionBuffer = uploadBuffer(this._device, bvhBuffers.bvhPositions.cpuData, GPUBufferUsage.STORAGE);
-    this._uploadTlasBuffers(this._device, bvhBuffers as SceneBVHBuffers);
-  }
-
-  private _destroyTlasBuffers(): void {
-    this._tlasNodesBuffer?.destroy();
-    this._tlasInstanceIndicesBuffer?.destroy();
-    this._tlasBlasRootsBuffer?.destroy();
-    this._tlasInstanceWorldToLocalBuffer?.destroy();
-    this._tlasInstanceLocalToWorldBuffer?.destroy();
-  }
-
-  private _uploadTlasBuffers(device: GPUDevice, bvh: SceneBVHBuffers): void {
-    const usage = GPUBufferUsage.STORAGE;
-    const dummy = () => createDummyStorageBuffer(device, 'tlas-dummy');
-    if (bvh.bvhMode === 'tlas' && bvh.tlas != null) {
-      const t = bvh.tlas;
-      this._tlasNodesBuffer = uploadBuffer(device, t.nodes.cpuData, usage);
-      this._tlasInstanceIndicesBuffer = uploadBuffer(device, t.instanceIndices.cpuData, usage);
-      this._tlasBlasRootsBuffer = uploadBuffer(device, t.blasRoots.cpuData, usage);
-      this._tlasInstanceWorldToLocalBuffer = uploadBuffer(device, t.worldToLocal.cpuData, usage);
-      this._tlasInstanceLocalToWorldBuffer = uploadBuffer(device, t.localToWorld.cpuData, usage);
-    } else {
-      this._tlasNodesBuffer = dummy();
-      this._tlasInstanceIndicesBuffer = dummy();
-      this._tlasBlasRootsBuffer = dummy();
-      this._tlasInstanceWorldToLocalBuffer = dummy();
-      this._tlasInstanceLocalToWorldBuffer = dummy();
-    }
+    this._bvhHost.refreshBvhFullRebuild(this._device, bvhBuffers);
   }
 
   /**
@@ -829,11 +764,8 @@ export class WalkaroundGPUPipeline {
     const bgComposite = buildCompositeBindGroup(
       d, this._bglCache, finalTex.createView(), this._res.common.compositeSampler,
     );
-    // The CompositePass instance owns the compiled render pipeline; reuse
-    // it here so a single source of truth for the composite shader stays
-    // intact. Located via registry lookup — the orchestrator does not
-    // hold a separate compiled-pipeline handle for composite.
-    const compositePass = this._passRegistry!.get('composite') as CompositePass;
+    const compositePass = this._compositePass;
+    if (compositePass == null) return;
     const encoder = d.createCommandEncoder({ label: 'composite-only' });
     const pass = encoder.beginRenderPass({
       label: 'composite-only',
@@ -902,19 +834,7 @@ export class WalkaroundGPUPipeline {
       // Item 24 — albedo demodulation (Schied 2017 §4.1).
       albedoTexture:           this._res.common.albedoTexture,
     });
-    const bgScene = buildSceneBindGroup(d, this._bglCache, {
-      bvhNodesBuffer:    this._bvhNodesBuffer,
-      bvhIndexBuffer:    this._bvhIndexBuffer,
-      bvhPositionBuffer: this._bvhPositionBuffer,
-      emitterBuffer:     this._emitterBuffer,
-      emitterCdfBuffer:  this._emitterCdfBuffer,
-      bvhBeerBuffer:     this._bvhBeerBuffer,
-      tlasNodesBuffer: this._tlasNodesBuffer,
-      tlasInstanceIndicesBuffer: this._tlasInstanceIndicesBuffer,
-      tlasBlasRootsBuffer: this._tlasBlasRootsBuffer,
-      tlasInstanceWorldToLocalBuffer: this._tlasInstanceWorldToLocalBuffer,
-      tlasInstanceLocalToWorldBuffer: this._tlasInstanceLocalToWorldBuffer,
-    });
+    const bgScene = buildSceneBindGroup(d, this._bglCache, this._bvhHost.sceneBindGroupResources());
     const bgUbo   = buildUboBindGroup(
       d, this._bglCache, this._res.common.uboBuffer,
       this._res.gtao.aoFullTexture.createView(),
@@ -1092,13 +1012,8 @@ export class WalkaroundGPUPipeline {
   }
 
   dispose(): void {
-    this._bvhNodesBuffer?.destroy();
-    this._bvhIndexBuffer?.destroy();
-    this._bvhBeerBuffer?.destroy();
-    this._bvhPositionBuffer?.destroy();
-    this._destroyTlasBuffers();
-    this._emitterBuffer?.destroy();
-    this._emitterCdfBuffer?.destroy();
+    this._bvhHost.dispose();
+    this._compositePass = null;
     if (this._res) destroyFrameResources(this._res);
     for (const ref of this._perPassUboRefs) ref.buf?.destroy();
     disposeTimestampState(this._tsState);
