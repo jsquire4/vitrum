@@ -48,67 +48,20 @@ import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRes
 import { makeProbeUpdateRaysWGSL } from './wgsl/probeUpdateRays.wgsl.js';
 import { PROBE_UPDATE_BLEND_IRR_WGSL, PROBE_UPDATE_BLEND_VIS_WGSL } from './wgsl/probeUpdateBlend.wgsl.js';
 import { PROBE_UPDATE_BORDER_IRR_WGSL, PROBE_UPDATE_BORDER_VIS_WGSL } from './wgsl/probeUpdateBorder.wgsl.js';
-import { packDDGIGridParams } from '../pipeline/resourceManager.js';
+import { packDDGIGridParams } from './ddgiGridUbo.js';
 import { detectGpu } from '@vitrum/core';
-import { defineUbo } from '@vitrum/shared-samplers';
 import { RAYS_PER_PROBE } from './ddgiConstants.js';
-
-// W2-C13 follow-up — BorderUBO / BorderUBOV (DDGI atlas border pass).
-// 8×u32 = 32 B. probeUpdateBorder.wgsl declares two distinct WGSL structs
-// (BorderUBO for irradiance, BorderUBOV for visibility) but they share the
-// same field set and layout. Defined once here and reused for both buffers.
-const DDGI_BORDER_UBO = defineUbo([
-  { name: 'numProbes',   type: 'u32' },
-  { name: 'atlasWidth',  type: 'u32' },
-  { name: 'atlasHeight', type: 'u32' },
-  { name: '_pad0',       type: 'u32' },
-  { name: 'gridDimX',    type: 'u32' },
-  { name: 'gridDimY',    type: 'u32' },
-  { name: 'gridDimZ',    type: 'u32' },
-  { name: '_pad1',       type: 'u32' },
-] as const);
-
-// W2-C13 follow-up — FrameParams (probeUpdateRays.wgsl). 48 B.
-// vec3f randomRotation @0, u32 frameIndex @12, u32 totalProbes @16,
-// u32 probesPerFrame @20, u32 _pad0 @24, u32 _pad1 @28, vec3f skyTint @32,
-// f32 skyIrradiance @44. The std140 vec4-alignment ensures skyTint starts
-// at offset 32; the two explicit pad slots fill the 24..32 gap.
-const DDGI_FRAME_PARAMS_UBO = defineUbo([
-  { name: 'randomRotation', type: 'vec3f' },
-  { name: 'frameIndex',     type: 'u32'   },
-  { name: 'totalProbes',    type: 'u32'   },
-  { name: 'probesPerFrame', type: 'u32'   },
-  { name: '_pad0',          type: 'u32'   },
-  { name: '_pad1',          type: 'u32'   },
-  { name: 'skyTint',        type: 'vec3f' },
-  { name: 'skyIrradiance',  type: 'f32'   },
-  // 2026-05-18 sweep — glass-transmission perceptual mix scale (Cornell-tuned
-  // default 0.7). Mirrors WalkaroundUBO.glassMixScale so probeUpdateRays.wgsl
-  // reads a host-overridable value instead of a hardcoded const. Followed by
-  // three u32 pad slots to round the struct out to the next vec4 boundary.
-  { name: 'glassMixScale',  type: 'f32'   },
-  { name: '_pad2',          type: 'u32'   },
-  { name: '_pad3',          type: 'u32'   },
-  { name: '_pad4',          type: 'u32'   },
-] as const);
-
-// W2-C13 follow-up — BlendParams (probeUpdateBlend.wgsl). Two-field UBO,
-// padded by the 16-byte WebGPU minimum-binding floor.
-//   u32 probesPerFrame @0, f32 hysteresis @4, (8..15 zero pad).
-const DDGI_BLEND_PARAMS_UBO = defineUbo([
-  { name: 'probesPerFrame', type: 'u32' },
-  { name: 'hysteresis',     type: 'f32' },
-] as const);
-
-// `RAYS_PER_PROBE` lives in `./ddgiConstants.ts` to break the ESM import
-// cycle between this module and its WGSL template files (host imports
-// WGSL, WGSL imports the constant; before extraction the WGSL would read
-// TDZ for `RAYS_PER_PROBE` and throw at evaluation time). The previous
-// back-compat re-export was dropped 2026-05-18 after grep confirmed every
-// consumer imports directly from `ddgiConstants.js`.
-
-// ProbeRay struct: 12 floats / 2 u32 → 16 × 4 bytes = 64 bytes each
-const PROBE_RAY_STRIDE_BYTES = 64;
+import { packDDGIProbeLights } from './probeUpdateLights.js';
+import {
+  packProbeUpdateBlendParams,
+  packProbeUpdateFrameParams,
+} from './probeUpdateFrameParams.js';
+import {
+  DDGI_BORDER_UBO,
+  DDGI_BORDER_UBO_BYTES,
+  DDGI_FRAME_PARAMS_UBO,
+  PROBE_RAY_STRIDE_BYTES,
+} from './probeUpdateUbos.js';
 
 interface GPUResources {
   device: GPUDevice;
@@ -383,11 +336,6 @@ export class ProbeUpdatePass {
     const RW = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     const UB = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
 
-    // BorderUBO layout: 8 u32 fields = 32 bytes (std140, vec4-aligned pairs).
-    // Fields: numProbes, atlasWidth, atlasHeight, _pad0, gridDimX, gridDimY,
-    //         gridDimZ, _pad1. Matches struct in probeUpdateBorder.wgsl.ts.
-    const BORDER_UBO_BYTES = 32;
-
     this._gpu = {
       device,
       raysPipeline,
@@ -413,8 +361,8 @@ export class ProbeUpdatePass {
       gridParamsBuf:   makeBuffer(64, UB),
       frameParamsBuf:  makeBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes, UB),
       blendParamsBuf:  makeBuffer(16, UB),
-      borderIrrUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
-      borderVisUboBuf: makeBuffer(BORDER_UBO_BYTES, UB),
+      borderIrrUboBuf: makeBuffer(DDGI_BORDER_UBO_BYTES, UB),
+      borderVisUboBuf: makeBuffer(DDGI_BORDER_UBO_BYTES, UB),
       rayResultsBuf:   makeBuffer(PROBE_RAY_STRIDE_BYTES, RW),
       activeProbesBuf: makeBuffer(4, RO),
       linearSampler,
@@ -617,60 +565,8 @@ export class ProbeUpdatePass {
   }
 
   private _uploadLights(device: GPUDevice): void {
-    // DDGILightUniforms:
-    // u32 count, 3 pad, then up to 16 × DDGILight (80 bytes each)
-    // DDGILight: kind(u32), pad0,pad1,pad2(3×f32), pos(vec3f), intensity(f32),
-    //            dir(vec3f), innerCone(f32), color(vec3f), outerCone(f32)
-    // = 4 + 12 + 12 + 4 + 12 + 4 + 12 + 4 = 64 bytes per light
-    const MAX = 16;
-    const LIGHT_STRIDE = 16; // floats per light (64 bytes)
-    const headerSize = 4; // floats for count + 3 pad
-    const data = new Float32Array(headerSize + MAX * LIGHT_STRIDE);
-    const udata = new Uint32Array(data.buffer);
-
-    const lights = this._lights.filter(l => l.on);
-    udata[0] = Math.min(lights.length, MAX);
-
-    lights.slice(0, MAX).forEach((l, i) => {
-      const base = (headerSize + i * LIGHT_STRIDE);
-      const ubase = base;
-      if (l.kind === 'sun') {
-        udata[ubase] = 0; // LIGHT_SUN
-        // Apply the hybrid pipeline's primaryLightIntensity multiplier
-        // so DDGI's per-probe Le bake matches shade.wgsl's Lo_emit.
-        // Without this, the stored l.intensity (typically 1.0) makes
-        // DDGI 1/5 the magnitude of the rest of the renderer.
-        data[base + 4] = 0;    // pos.x
-        data[base + 5] = 0;    // pos.y
-        data[base + 6] = 0;    // pos.z
-        data[base + 7] = l.intensity * this._sunIntensityMul; // intensity
-        data[base + 8] = 0;    // dir.x
-        data[base + 9] = -1;   // dir.y (sun is from above)
-        data[base + 10] = 0;   // dir.z
-        data[base + 11] = 0;   // innerCone (unused for sun)
-        data[base + 12] = 1;   // color.r
-        data[base + 13] = 0.95;// color.g
-        data[base + 14] = 0.85;// color.b
-        data[base + 15] = 0;   // outerCone (unused for sun)
-      } else if (l.kind === 'fixture' || l.kind === 'teaLight') {
-        udata[ubase] = 1; // LIGHT_POINT
-        const pos = l.position;
-        const col = l.color;
-        data[base + 4]  = pos?.x ?? 0;
-        data[base + 5]  = pos?.y ?? 0;
-        data[base + 6]  = pos?.z ?? 0;
-        data[base + 7]  = l.intensity;
-        data[base + 8]  = 0;
-        data[base + 9]  = 0;
-        data[base + 10] = 0;
-        data[base + 11] = 0;
-        data[base + 12] = col?.r ?? 1;
-        data[base + 13] = col?.g ?? 1;
-        data[base + 14] = col?.b ?? 1;
-        data[base + 15] = 0;
-      }
-    });
-    device.queue.writeBuffer(this._gpu!.lightsBuf, 0, data.buffer);
+    const buf = packDDGIProbeLights(this._lights, this._sunIntensityMul);
+    device.queue.writeBuffer(this._gpu!.lightsBuf, 0, buf);
   }
 
   private _uploadGridParams(device: GPUDevice): void {
@@ -681,93 +577,18 @@ export class ProbeUpdatePass {
   }
 
   private _uploadFrameParams(device: GPUDevice): void {
-    // 12 floats / 48 bytes; aliased u32 view shares the storage:
-    //   data[0..2]  → randomRotation: vec3f  (per-frame ray-direction jitter)
-    //   u32[3]      → frameIndex: u32
-    //   u32[4]      → probeCount: u32
-    //   u32[5]      → probesPerFrame: u32 (ceil(probeCount / 4))
-    //   data[6..7]  → _pad0, _pad1 (std140 vec4 alignment)
-    //   data[8..10] → skyTint: vec3f  (B2 audit: was hardcoded in WGSL)
-    //   data[11]    → skyIrradiance: f32
-    //
-    // Per-frame deterministic SO(3) rotation (Shoemake 1992 "Uniform Random
-    // Rotations"). Uses three Halton-base-{2,3,5} quasi-random values seeded
-    // by the frame index to produce a uniform-on-SO(3) quaternion, then
-    // converts to an axis-angle vec3 consumed by the WGSL probeUpdateRays
-    // shader. Replacing the previous all-zeros fixed rotation:
-    //   - Decorrelates probe ray samples across frames so the EMA hysteresis
-    //     accumulates an effectively larger ray budget over time.
-    //   - Eliminates the 192-fixed-direction aliasing that the EMA could not
-    //     suppress at 0.97 hysteresis.
-    //   - Halton rather than Math.random() avoids correlation clumps.
-    // Reference: Majercik et al. 2019 §3.1; Shoemake 1992.
-    //
-    // (Previous comment noted that the (0,0,0) freeze was a band-aid for
-    // EMA instability — that root cause is fixed by the M7 energy-model
-    // correction; per-frame rotation is now safe to restore.)
-    const haltonBase = (i: number, base: number): number => {
-      let result = 0;
-      let f = 1;
-      let n = i;
-      while (n > 0) {
-        f /= base;
-        result += f * (n % base);
-        n = Math.floor(n / base);
-      }
-      return result;
-    };
-    const fi = this._frameIndex + 1;
-    const u1 = haltonBase(fi, 2);
-    const u2 = haltonBase(fi, 3);
-    const u3 = haltonBase(fi, 5);
-    // Shoemake quaternion form (uniform distribution on SO(3)).
-    const sigma1 = Math.sqrt(1 - u1);
-    const sigma2 = Math.sqrt(u1);
-    const theta1 = 2 * Math.PI * u2;
-    const theta2 = 2 * Math.PI * u3;
-    const qw = sigma2 * Math.cos(theta2);
-    const qx = sigma1 * Math.sin(theta1);
-    const qy = sigma1 * Math.cos(theta1);
-    const qz = sigma2 * Math.sin(theta2);
-    // Convert quaternion → axis-angle vec3 (WGSL consumer applies this as
-    // a Rodrigues rotation to each probe ray direction).
-    const angle = 2 * Math.acos(Math.min(1, Math.abs(qw)));
-    const sinHalf = Math.sqrt(Math.max(0, 1 - qw * qw));
-    let ax: number, ay: number, az: number;
-    if (sinHalf < 1e-6) {
-      ax = 1; ay = 0; az = 0; // identity — no rotation
-    } else {
-      ax = qx / sinHalf;
-      ay = qy / sinHalf;
-      az = qz / sinHalf;
-    }
-    // W2-C13 follow-up: defineUbo writes vec3f + 3×u32 + 2×u32 pad + vec3f + f32
-    // at the same offsets as the prior Float32Array/Uint32Array-aliased writes
-    // (0/12/16/20/24/28/32/44).
-    const data = new ArrayBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes);
-    DDGI_FRAME_PARAMS_UBO.pack(new DataView(data), 0, {
-      randomRotation: [ax * angle, ay * angle, az * angle] as const,
-      frameIndex:     this._frameIndex,
-      totalProbes:    this._grid.probeCount,
-      probesPerFrame: Math.ceil(this._grid.probeCount / 4),
-      _pad0: 0, _pad1: 0,
-      skyTint:       [this._skyTint[0], this._skyTint[1], this._skyTint[2]] as const,
+    const data = packProbeUpdateFrameParams({
+      frameIndex: this._frameIndex,
+      totalProbes: this._grid.probeCount,
+      skyTint: this._skyTint,
       skyIrradiance: this._skyIrradiance,
       glassMixScale: this._glassMixScale,
-      _pad2: 0, _pad3: 0, _pad4: 0,
     });
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data);
   }
 
   private _uploadBlendParams(device: GPUDevice): void {
-    // W2-C13 follow-up: byte-identical to the prior Float32Array(4)-aliased
-    // write — defineUbo pads the two active fields out to the WebGPU 16-byte
-    // minimum-binding floor with zero-fill.
-    const data = new ArrayBuffer(DDGI_BLEND_PARAMS_UBO.sizeBytes);
-    DDGI_BLEND_PARAMS_UBO.pack(new DataView(data), 0, {
-      probesPerFrame: Math.ceil(this._grid.probeCount / 4),
-      hysteresis:     0.97, // HYSTERESIS
-    });
+    const data = packProbeUpdateBlendParams(this._grid.probeCount);
     device.queue.writeBuffer(this._gpu!.blendParamsBuf, 0, data);
   }
 
