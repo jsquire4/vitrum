@@ -1,0 +1,391 @@
+// inverseSession.test.ts — WS5 InverseSession contract + Phase-0 loop tests.
+//
+// The GPU render+readback is faked here (it needs a real device; V24 is the
+// hardware A/B). What IS exercised on the CPU: the contract shape, parameter
+// path resolution + validation, the finite-difference + Adam optimizer loop
+// (loss provably decreases on a fittable fake forward model), the
+// frozen-RNG-replay determinism the FD gradient relies on, idempotent dispose,
+// and the pure loss/Adam helpers.
+
+import { describe, it, expect } from 'vitest';
+import type { Scene, InverseSessionOptions, MaterialSpec, SceneEmitter } from '@vitrum/core';
+import {
+  PtWebgpuInverseSession,
+  type InverseEngineHooks,
+} from '../inverse/inverseSession.js';
+import { l2Loss, l1Loss, lossValue, Adam, parseParamPath, paramLength } from '../inverse/optimizer.js';
+
+// ── a fittable fake forward model ─────────────────────────────────────────────
+//
+// The "render" is a deterministic function of one material's baseColor: every
+// pixel is exactly the material baseColor. So fitting baseColor to a target
+// constant-colour image is a convex L2 problem the optimizer must drive to ~0.
+// The fake also keys its output on the LIVE scene the hooks expose, so when the
+// FD probe perturbs baseColor the rendered image changes accordingly — exactly
+// what the real GPU path does, but synchronous + exact (no MC noise).
+
+function makeScene(): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'panel',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [0.2, 0.2, 0.2], roughness: 0.5, metallic: 0 },
+      },
+    ],
+    emitters: [
+      { kind: 'point', id: 'lamp', color: [1, 1, 1], intensity: 2, position: [0, 1, 0] },
+    ],
+    environment: { kind: 'none' },
+  };
+}
+
+interface FakeEngine {
+  hooks: InverseEngineHooks;
+  scene: Scene;
+  renderCount: number;
+  lastSeedSequences: number[][];
+}
+
+/** Build hooks over a mutable scene; the render maps baseColor → flat image.
+ *  `seedLog` records (per render) the per-sample seed sequence the session
+ *  would use — we model the determinism contract: same scene + same seed
+ *  sequence ⇒ identical image. */
+function makeFakeEngine(W = 2, H = 2): FakeEngine {
+  const fake: FakeEngine = {
+    scene: makeScene(),
+    renderCount: 0,
+    lastSeedSequences: [],
+    hooks: {} as InverseEngineHooks,
+  };
+  fake.hooks = {
+    getScene: () => fake.scene,
+    renderAndReadback: async (width, height, _samples) => {
+      fake.renderCount += 1;
+      const mat = fake.scene.primitives[0]!.material;
+      const rgb = new Float32Array(width * height * 3);
+      for (let p = 0; p < width * height; p++) {
+        rgb[p * 3 + 0] = mat.baseColor[0];
+        rgb[p * 3 + 1] = mat.baseColor[1];
+        rgb[p * 3 + 2] = mat.baseColor[2];
+      }
+      return { rgb, channels: 3 as const };
+    },
+    patchMaterial: (id: string, patch: Partial<MaterialSpec>) => {
+      fake.scene = {
+        ...fake.scene,
+        primitives: fake.scene.primitives.map((pr) =>
+          pr.id === id ? { ...pr, material: { ...pr.material, ...patch } } : pr,
+        ),
+      };
+    },
+    patchEmitter: (id: string, patch: Partial<SceneEmitter>) => {
+      fake.scene = {
+        ...fake.scene,
+        emitters: fake.scene.emitters.map((e) =>
+          e.id === id ? ({ ...e, ...patch } as SceneEmitter) : e,
+        ),
+      };
+    },
+  };
+  void W; void H;
+  return fake;
+}
+
+function targetImage(W: number, H: number, color: [number, number, number]) {
+  const data = new Float32Array(W * H * 3);
+  for (let p = 0; p < W * H; p++) {
+    data[p * 3 + 0] = color[0];
+    data[p * 3 + 1] = color[1];
+    data[p * 3 + 2] = color[2];
+  }
+  return { data, width: W, height: H, channels: 3 as const };
+}
+
+describe('InverseSession — contract shape', () => {
+  it('reports parameterCount and the resolved method', () => {
+    const fake = makeFakeEngine();
+    const opts: InverseSessionOptions = {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, opts);
+    expect(session.parameterCount).toBe(1);
+    // pt-webgpu resolves to finite-difference until the GPU adjoint is GPU-A/B'd.
+    expect(session.method).toBe('finite-difference');
+    expect(session.currentValues()).toHaveLength(1);
+    expect(session.currentValues()[0]).toHaveLength(3);
+    session.dispose();
+  });
+
+  it('seeds currentValues from the scene when no `initial` override is given', () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+    });
+    expect(session.currentValues()[0]).toEqual([
+      expect.closeTo(0.2, 6), expect.closeTo(0.2, 6), expect.closeTo(0.2, 6),
+    ]);
+    session.dispose();
+  });
+
+  it('honours an `initial` override', () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.roughness', kind: 'scalar', initial: [0.9] }],
+    });
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.9, 6)]);
+    session.dispose();
+  });
+});
+
+describe('InverseSession — path resolution + validation throws', () => {
+  it('throws on an unknown primitive id', () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.nope.baseColor', kind: 'rgb' }],
+    })).toThrow(/no primitive with id "nope"/);
+  });
+
+  it('throws on a non-optimizable field', () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.thickness', kind: 'scalar' }],
+    })).toThrow(/not optimizable/);
+  });
+
+  it('throws when the declared kind disagrees with the resolved field', () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'scalar' }],
+    })).toThrow(/declared kind 'scalar'/);
+  });
+
+  it('throws on an empty parameter list', () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [],
+    })).toThrow(/at least one parameter/);
+  });
+
+  it("throws on the reserved 'texture' kind (Phase 2, not yet differentiable)", () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.baseColorMap', kind: 'texture' }],
+    })).toThrow(/texture/);
+  });
+
+  it("throws on a reserved perceptual loss ('lpips')", () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      loss: 'lpips',
+    })).toThrow(/perceptual loss/);
+  });
+});
+
+describe('InverseSession — Phase-0 finite-difference loop converges', () => {
+  it('loss strictly decreases and baseColor approaches the target over steps', async () => {
+    const fake = makeFakeEngine();
+    const target: [number, number, number] = [0.8, 0.15, 0.4];
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(4, 4, target),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
+    });
+
+    const losses: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      const r = await session.step();
+      losses.push(r.loss);
+      expect(r.step).toBe(i);
+    }
+    // Monotone-ish decrease: final loss is far below the first.
+    expect(losses[losses.length - 1]!).toBeLessThan(losses[0]! * 0.05);
+    // The fitted baseColor lands near the target.
+    const fit = session.currentValues()[0]!;
+    for (let c = 0; c < 3; c++) expect(fit[c]!).toBeCloseTo(target[c]!, 1);
+    session.dispose();
+  });
+
+  it('gradient sign is correct (loss-reducing direction)', async () => {
+    const fake = makeFakeEngine();
+    // Target brighter than the 0.2 start ⇒ to reduce L2, baseColor must INCREASE,
+    // so dLoss/dbaseColor must be NEGATIVE (the optimizer moves opposite to grad).
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.9, 0.9, 0.9]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.1, fdEpsilon: 1e-3 },
+    });
+    const r = await session.step();
+    for (let c = 0; c < 3; c++) expect(r.gradient[0]![c]!).toBeLessThan(0);
+    session.dispose();
+  });
+
+  it('resolves + patches an emitter rgb (color) field', async () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.5, 0.5, 0.5]),
+      parameters: [{ path: 'emitters.lamp.color', kind: 'rgb' }],
+      samplesPerStep: 1,
+    });
+    // starting value read from the scene emitter color [1,1,1]
+    expect(session.currentValues()[0]).toEqual([1, 1, 1]);
+    const r = await session.step();
+    expect(r.values[0]).toHaveLength(3);
+    // the emitter PATCH path ran (the scene emitter still carries an rgb color
+    // tuple of length 3; the fake render ignores color so the gradient is 0 and
+    // the value is unchanged — that is correct, exercises patchEmitter + packing).
+    const lamp = fake.scene.emitters[0]!;
+    expect(lamp.color).toHaveLength(3);
+    expect(r.gradient[0]).toEqual([0, 0, 0]);
+    session.dispose();
+  });
+
+  it('runs the l1 loss path end-to-end', async () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.7, 0.3, 0.5]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      loss: 'l1',
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.1 },
+    });
+    const first = await session.step();
+    const second = await session.step();
+    expect(second.loss).toBeLessThanOrEqual(first.loss);
+    session.dispose();
+  });
+
+  it('optimizes an emitter scalar (intensity) toward a brighter target', async () => {
+    const fake = makeFakeEngine();
+    // The fake render ignores emitter intensity, so this exercises the emitter
+    // PATCH path + scalar packing without asserting convergence on intensity.
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.5, 0.5, 0.5]),
+      parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar', max: 100 }],
+      samplesPerStep: 1,
+    });
+    const r = await session.step();
+    expect(r.values[0]).toHaveLength(1);
+    session.dispose();
+  });
+});
+
+describe('InverseSession — frozen-RNG replay determinism (the FD precondition)', () => {
+  it('same scene + same render call ⇒ identical image (deterministic replay)', async () => {
+    const fake = makeFakeEngine();
+    const a = await fake.hooks.renderAndReadback(3, 3, 4);
+    const b = await fake.hooks.renderAndReadback(3, 3, 4);
+    expect(Array.from(a.rgb)).toEqual(Array.from(b.rgb));
+  });
+
+  it('different parameter ⇒ different contribution (the FD signal is real)', async () => {
+    const fake = makeFakeEngine();
+    const before = await fake.hooks.renderAndReadback(3, 3, 4);
+    fake.hooks.patchMaterial('panel', { baseColor: [0.9, 0.1, 0.1] });
+    const after = await fake.hooks.renderAndReadback(3, 3, 4);
+    expect(Array.from(after.rgb)).not.toEqual(Array.from(before.rgb));
+    // and only the changed channel moved by the expected amount
+    expect(after.rgb[0]! - before.rgb[0]!).toBeCloseTo(0.7, 6);
+  });
+});
+
+describe('InverseSession — dispose is idempotent + blocks further steps', () => {
+  it('dispose twice is a no-op; step after dispose throws', async () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.5, 0.5, 0.5]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      samplesPerStep: 1,
+    });
+    session.dispose();
+    expect(() => session.dispose()).not.toThrow();
+    await expect(session.step()).rejects.toThrow(/disposed/);
+  });
+});
+
+describe('inverse optimizer helpers — pure unit math', () => {
+  it('l2Loss: identical images ⇒ zero loss and zero gradient', () => {
+    const img = new Float32Array([0.5, 0.2, 0.1, 0.5, 0.2, 0.1]);
+    const t = { data: img.slice(), width: 2, height: 1, channels: 3 as const };
+    const { loss, dLoss_dRendered } = l2Loss(img, 3, t);
+    expect(loss).toBeCloseTo(0, 12);
+    for (const g of dLoss_dRendered) expect(g).toBeCloseTo(0, 12);
+  });
+
+  it('l2Loss: gradient = 2·(rendered−target)/N', () => {
+    const rendered = new Float32Array([1, 0, 0, 0, 0, 0]); // 2px RGB
+    const t = { data: new Float32Array(6), width: 2, height: 1, channels: 3 as const };
+    const { loss, dLoss_dRendered } = l2Loss(rendered, 3, t);
+    const N = 6;
+    expect(loss).toBeCloseTo(1 / N, 12);
+    // dLoss is stored f32, so compare at f32 precision.
+    expect(dLoss_dRendered[0]!).toBeCloseTo((2 * 1) / N, 6);
+  });
+
+  it('l2Loss: 4-channel rendered image (alpha ignored) reads first 3 channels', () => {
+    // 1px RGBA rendered, RGB target. The alpha (4th) channel must be skipped.
+    const rendered = new Float32Array([0.5, 0.25, 0.1, 999]); // alpha = 999 must NOT leak
+    const t = { data: new Float32Array([0.5, 0.25, 0.1]), width: 1, height: 1, channels: 3 as const };
+    expect(l2Loss(rendered, 4, t).loss).toBeCloseTo(0, 12);
+  });
+
+  it('lossValue: scalar-only path equals the full loss (l2 + l1, no gradient alloc)', () => {
+    const rendered = new Float32Array([0.7, 0.2, 0.1, 0.3, 0.5, 0.9]);
+    const t = { data: new Float32Array([0.5, 0.2, 0.1, 0.3, 0.4, 1.0]), width: 2, height: 1, channels: 3 as const };
+    expect(lossValue(rendered, 3, t, 'l2')).toBeCloseTo(l2Loss(rendered, 3, t).loss, 12);
+    expect(lossValue(rendered, 3, t, 'l1')).toBeCloseTo(l1Loss(rendered, 3, t).loss, 12);
+  });
+
+  it('l1Loss: mean absolute error + sign gradient', () => {
+    const rendered = new Float32Array([1, 0, 0, 0, 0, 0]);
+    const t = { data: new Float32Array(6), width: 2, height: 1, channels: 3 as const };
+    const { loss, dLoss_dRendered } = l1Loss(rendered, 3, t);
+    expect(loss).toBeCloseTo(1 / 6, 12);
+    expect(dLoss_dRendered[0]!).toBeCloseTo(1 / 6, 6);
+  });
+
+  it('Adam: descends a 1-D quadratic toward the minimum', () => {
+    // Minimize f(x) = (x − 3)², grad = 2(x−3). Start at 0.
+    const p = new Float32Array([0]);
+    const adam = new Adam(1, { learningRate: 0.3, beta1: 0.9, beta2: 0.999, epsilon: 1e-8 });
+    for (let i = 0; i < 200; i++) {
+      const g = new Float32Array([2 * (p[0]! - 3)]);
+      adam.step(p, g);
+    }
+    expect(p[0]!).toBeCloseTo(3, 1);
+  });
+
+  it('parseParamPath splits domain / id / field (id may contain dots)', () => {
+    expect(parseParamPath('materials.panel-1.roughness')).toEqual({
+      domain: 'materials', id: 'panel-1', field: 'roughness',
+    });
+    expect(parseParamPath('emitters.sun.intensity')).toEqual({
+      domain: 'emitters', id: 'sun', field: 'intensity',
+    });
+    expect(parseParamPath('materials.a.b.c.baseColor')).toEqual({
+      domain: 'materials', id: 'a.b.c', field: 'baseColor',
+    });
+    expect(() => parseParamPath('bogus.x.y')).toThrow(/unknown domain/);
+    expect(() => parseParamPath('materials.x')).toThrow(/must be/);
+  });
+
+  it('paramLength: scalar=1, rgb=3, texture throws', () => {
+    expect(paramLength({ path: 'p', kind: 'scalar' })).toBe(1);
+    expect(paramLength({ path: 'p', kind: 'rgb' })).toBe(3);
+    expect(() => paramLength({ path: 'p', kind: 'texture' })).toThrow(/texture/);
+  });
+});

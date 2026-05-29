@@ -23,6 +23,7 @@
 
 import type { Scene, ScenePrimitive, SceneEmitter } from '../scene/index.js';
 import type { FrameInput, FrameOutput } from '../frame.js';
+import type { InverseSession, InverseSessionOptions } from '../inverse.js';
 import type { EngineState } from './state.js';
 import type { EngineCapabilities } from './capabilities.js';
 import type { EngineDebugSurface } from './debug.js';
@@ -184,4 +185,19 @@ export interface Engine {
    *  consumers MUST typeof-check before calling any method. See
    *  {@link EngineDebugSurface}. */
   debug?: EngineDebugSurface;
+
+  // ── Inverse rendering (differentiable RT) ────────────────────────────────
+
+  /** Open an inverse-rendering (differentiable ray tracing) session that
+   *  optimizes a tiny scene-parameter vector toward a target image. Returns an
+   *  {@link InverseSession} the host drives one `step()` at a time (the engine
+   *  owns the optimization loop; the host owns the cadence — same lifecycle
+   *  contract as `renderFrame`).
+   *
+   *  Throws if a requested parameter `path` can't be resolved against the live
+   *  scene, or if a requested loss / parameter kind / gradient method isn't
+   *  supported by this backend (never a silent no-op). Backends that have no
+   *  inverse-rendering path omit this method entirely; hosts MUST typeof-check
+   *  before calling. See {@link InverseSessionOptions}. */
+  createInverseSession?(opts: InverseSessionOptions): InverseSession;
 }

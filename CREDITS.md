@@ -88,6 +88,12 @@ Each technique is cited at its implementation site in the source code. This list
 
 - **Bidirectional path tracing (BDPT)** — Eric P. Lafortune, Yves D. Willems, "Bi-directional Path Tracing," CompuGraphics 1993 (partial: vertex tables + connection-strategy MIS math under `shared-samplers/src/bdpt*` — (Sprint 10c applied 2026-05-12; GPU visual A/B remains follow-up))
 
+### Differentiable rendering (inverse rendering)
+
+- **Path Replay Backpropagation** — Delio Vicini, Sébastien Speierer, Wenzel Jakob, "Path Replay Backpropagation: Differentiating Light Paths using Constant Memory and Linear Time," ACM TOG 40(4) (SIGGRAPH 2021) — the frozen-RNG path-replay discipline (re-trace the forward path with the same random choices inside the backward pass; differentiate only the continuous shading) used by the WS5 inverse-rendering Phase-1 BSDF adjoint (`pt-webgpu/src/wgsl/pathTrace/pathTraceAdjoint.wgsl.ts`, CPU oracle `pt-webgpu/src/inverse/brdfAdjoint.ts`). Chosen because per-pixel path-state replay trades compute for memory, the only tractable in-browser option under the GPU memory wall.
+- **Radiative Backpropagation** — Merlin Nimier-David, Delio Vicini, Tizian Zeltner, Wenzel Jakob, "Radiative Backpropagation: An Adjoint Method for Lightweight Differentiable Rendering," ACM TOG 39(4) (SIGGRAPH 2020) — the adjoint-radiance framing of the inverse-rendering loss gradient (dL/dθ = Σ adjoint-radiance · dBSDF/dθ) underpinning the WS5 `createInverseSession` contract (`core/src/inverse.ts`).
+- **Adam optimizer** — Diederik P. Kingma, Jimmy Ba, "Adam: A Method for Stochastic Optimization," ICLR 2015 — the per-parameter adaptive-moment optimizer driving the inverse-session parameter vector (`pt-webgpu/src/inverse/optimizer.ts`).
+
 ### Textbook references
 
 Foundational textbooks cited from JSDoc comments across the codebase:
