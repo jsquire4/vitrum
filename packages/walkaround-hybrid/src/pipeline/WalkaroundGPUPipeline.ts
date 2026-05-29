@@ -54,6 +54,7 @@ import {
   buildPerFrameBindGroups,
 } from './pipelineBindGroupFactory.js';
 import { PPGCoordinator } from './PPGCoordinator.js';
+import { NrcSubsystem } from '../neural/nrc/nrcSubsystem.js';
 import { ReGIRCoordinator, resolveReGIRConfig, type ReGIRConfig } from './ReGIRCoordinator.js';
 import { DDGIBindingState } from './DDGIBindingState.js';
 import {
@@ -452,6 +453,12 @@ export class WalkaroundGPUPipeline {
    *  single-group pipeline (the known-good default). Resolved once in
    *  initialize() from the host flag — NOT a per-frame UBO decision. */
   private _restirPtReuseStructural = false;
+  /** NRC (Müller et al. 2021) live cache subsystem. Non-null ONLY when the
+   *  engine was created with `nrcEnabled` (full-tier). When null (default) the
+   *  gi-ris pipeline is the verbatim 4-group DDGI pass and no NRC GPU resources
+   *  are allocated — the default pipeline is provably untouched. Owns the MLP
+   *  trainer + the @group(4) NRC resources; host-owns-cadence train per frame. */
+  private _nrc: NrcSubsystem | null = null;
   /** Bundled layout config passed to every `buildPassLayout` call so the four
    *  call sites can't drift. */
   private get _passLayoutConfig(): {
@@ -619,6 +626,16 @@ export class WalkaroundGPUPipeline {
        *  all-black frame (f8df9a4). Host opt-in via
        *  `HybridEngineOptions.restirPtReuse`. */
       restirPtReuse?: boolean;
+      /** NRC (Müller et al. 2021) live cache — COMPILE-TIME structural gate.
+       *  When true, the gi-ris pipeline is built with a 5th `@group(4)` NRC bind
+       *  group + the inline-MLP-forward shader variant, and a per-engine
+       *  {@link NrcSubsystem} owns the MLP trainer + query resources; when false
+       *  (default) the gi-ris pipeline is the verbatim 4-group DDGI-estimate pass
+       *  and no NRC resources are allocated. MUST be a compile-time decision — a
+       *  runtime UBO flag binding a fifth group on the default path is the
+       *  GRIS-class regression (f8df9a4). Full-tier-only (the ctor forbids
+       *  `tier:'lite' + nrcEnabled`). */
+      nrcEnabled?: boolean;
       /** Phase-0 — PPG train-pass (guide + update) dispatch cadence. The two
        *  passes dispatch only on frames where `frameCount % N === 0`. `1`
        *  (default) trains every frame; `N > 1` skips off-interval frames. The
@@ -669,12 +686,32 @@ export class WalkaroundGPUPipeline {
     // iff the GRIS pipeline variant was built.
     this._restirPtReuseStructural = options?.restirPtReuse ?? false;
 
+    // ── Resolve the NRC structural gate BEFORE compiling pipelines ─────────
+    // nrcEnabled is a COMPILE-TIME decision (mirrors restirPtReuse): it selects
+    // the gi-ris pipeline layout (4-group DDGI default vs 5-group inline-MLP
+    // variant) + shader variant. When ON we construct + initialize the
+    // per-engine NrcSubsystem (which owns the MLP trainer + the @group(4) query
+    // resources) and pass its WGSL config to compilePipelines so the shader's
+    // baked encoding sizes match the host buffers; the gi-ris pass then binds
+    // the subsystem's bind group at slot 4. When OFF (default) `_nrc` stays null
+    // and gi-ris compiles + dispatches the verbatim 4-group DDGI pass — the
+    // default pipeline structure is provably untouched (the GRIS-class
+    // regression discipline, f8df9a4).
+    if (options?.nrcEnabled === true) {
+      this._nrc = new NrcSubsystem(d, this._bglCache);
+      const aabb = derivePipelineSceneAABB(bvhBuffers);
+      await this._nrc.initialize(aabb.min, aabb.max);
+    }
+
     // ── Compile shaders (denoiser-agnostic) ───────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
       ppgEnabled: options?.ppgEnabled ?? false,
       regirEnabled: this._regir.config.enabled,
       restirPtReuse: this._restirPtReuseStructural,
+      // NRC ON ⇒ pass the subsystem's WGSL config so the gi-ris pipeline builds
+      // the 5-group inline-MLP variant with byte-matching encoding sizes.
+      ...(this._nrc !== null ? { nrcConfig: this._nrc.wgslConfig() } : {}),
     });
     // Shared à-trous pipeline — fed into the AtrousDenoiser context AND
     // the always-on AtrousIndirectPass.
@@ -757,7 +794,13 @@ export class WalkaroundGPUPipeline {
     registry.register(new TemporalReservoirPass(compiled.temporalPipeline));
     // Phase-0 — spatial pass count is preset-driven (1 or 2 ping-pong passes).
     registry.register(new SpatialReservoirPass(compiled.spatialPipeline, this._diSpatialPasses));
-    registry.register(new RISGIPass(compiled.risGiPipeline));
+    // NRC ON ⇒ supply the @group(4) bind group getter so the gi-ris pass binds
+    // slot 4 (the inline-MLP variant was compiled). OFF ⇒ no getter, verbatim
+    // 4-group dispatch (the default-path structure is unchanged).
+    registry.register(new RISGIPass(
+      compiled.risGiPipeline,
+      this._nrc !== null ? () => this._nrc!.bindGroup() : undefined,
+    ));
     registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline, this._restirPtReuseStructural));
     registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, this._giSpatialPasses, this._restirPtReuseStructural));
     registry.register(new ShadePass(compiled.shadePipeline));
@@ -1252,6 +1295,11 @@ export class WalkaroundGPUPipeline {
       this._res.restirGI.reservoirGiCurrentBuffer.size,
     );
 
+    // NRC ON ⇒ fold the self-training-record copy into THIS encoder (after the
+    // gi-ris pass wrote the records, before submit) so the host gather sees the
+    // current frame's records. No-op buffer when NRC is off (`_nrc` null).
+    this._nrc?.recordCopyForReadback(encoder);
+
     // Resolve timestamps + copy into the inactive readback buffer.
     resolveTimestamps(encoder, this._tsState, this._frameCount, passLayout.slotCount);
 
@@ -1260,6 +1308,17 @@ export class WalkaroundGPUPipeline {
     // W9 follow-up — periodic training/refine cycle:
     // fluxAtomics GPU readback -> CPU dTree/sTree refinement -> re-upload.
     this._ppg.maybeRunTrainingRefine(this._res, this._frameCount);
+
+    // NRC ON ⇒ read back this frame's self-training records and run ONE train
+    // step (Müller §5 self-training; HOST-OWNS-CADENCE — one step per frame).
+    // Fire-and-forget: the readback maps async; a still-pending readback skips
+    // this frame and picks up fresh records next frame (re-entrancy guarded in
+    // the subsystem). No-op when NRC is off. The promise rejection is swallowed
+    // so a transient device-lost during teardown never surfaces on the render
+    // hot path.
+    if (this._nrc !== null) {
+      void this._nrc.trainFromRecords().catch(() => { /* device lost / disposed */ });
+    }
 
     // Per-frame denoiser cleanup. Runs after `queue.submit()` — the GPU
     // queue holds its own reference to the encoded command buffer, so
@@ -1305,6 +1364,10 @@ export class WalkaroundGPUPipeline {
     // These calls simply drop held references.
     this._ppg.dispose();
     this._ddgi.dispose();
+    // NRC subsystem (only allocated when nrcEnabled). Releases the @group(4)
+    // query buffers; the MLP trainer's buffers go with the device.
+    this._nrc?.dispose();
+    this._nrc = null;
   }
 
   /**
@@ -1341,4 +1404,32 @@ export class WalkaroundGPUPipeline {
   } | null): void {
     this._ddgi.setRCInputs(inputs);
   }
+}
+
+/** Derive a padded world-space AABB from the uploaded BVH vertex positions —
+ *  the bounds the NRC hash grid normalises query vertices into. Mirrors the
+ *  PPGCoordinator derivation (vec4f stride-4 position layout). Used only on the
+ *  NRC-enabled path (one pass at init). */
+function derivePipelineSceneAABB(
+  bvh: { bvhPositions: { cpuData: ArrayBuffer } },
+): { min: [number, number, number]; max: [number, number, number] } {
+  const view = new Float32Array(bvh.bvhPositions.cpuData);
+  if (view.length < 4) return { min: [-10, -10, -10], max: [10, 10, 10] };
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i + 3 <= view.length; i += 4) {
+    const x = view[i]!, y = view[i + 1]!, z = view[i + 2]!;
+    if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
+    if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
+    return { min: [-10, -10, -10], max: [10, 10, 10] };
+  }
+  const padX = (maxX - minX) * 0.01 + 1e-3;
+  const padY = (maxY - minY) * 0.01 + 1e-3;
+  const padZ = (maxZ - minZ) * 0.01 + 1e-3;
+  return {
+    min: [minX - padX, minY - padY, minZ - padZ],
+    max: [maxX + padX, maxY + padY, maxZ + padZ],
+  };
 }

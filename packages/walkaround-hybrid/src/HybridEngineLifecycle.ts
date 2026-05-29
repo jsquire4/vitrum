@@ -97,6 +97,13 @@ export interface PipelineInitHost {
    *  (scene-BVH) layout + GRIS shader; when false (default) they are the
    *  verbatim Sprint-17 single-group pipeline. */
   readonly restirPtReuse: boolean;
+  /** NRC (Müller et al. 2021) live cache opt-in (full-tier only). COMPILE-TIME
+   *  structural gate threaded into `pipeline.initialize`: when true the gi-ris
+   *  pipeline is built with the 5th `@group(4)` NRC group + the inline-MLP
+   *  shader variant; when false (default) it is the verbatim 4-group DDGI pass.
+   *  Same compile-time discipline as `restirPtReuse` (a runtime flag binding an
+   *  extra group on the default path is the GRIS-class regression). */
+  readonly nrcEnabled: boolean;
   /** PPG train-pass dispatch cadence (≥ 1). The ppg-guide + ppg-update passes
    *  dispatch on `frameCount % ppgDispatchInterval === 0`. */
   readonly ppgDispatchInterval: number;
@@ -167,6 +174,7 @@ export type HybridInitStaticConfig = Pick<
   | 'diSpatialPasses'
   | 'giSpatialPasses'
   | 'restirPtReuse'
+  | 'nrcEnabled'
   | 'ppgDispatchInterval'
   | 'regirConfig'
 >;
@@ -413,6 +421,10 @@ export class PipelineInitCoordinator {
           // gate (selects the GI pipeline layout + shader variant). Default
           // OFF = the verbatim Sprint-17 GI pipeline (known-good default).
           restirPtReuse: host.restirPtReuse,
+          // NRC (Müller et al. 2021) — COMPILE-TIME structural gate (selects the
+          // gi-ris pipeline layout: 4-group DDGI default vs 5-group inline-MLP
+          // variant). Default OFF = the verbatim DDGI-estimate gi-ris pass.
+          nrcEnabled: host.nrcEnabled,
           // Phase-0 — PPG train-pass cadence (ppg-guide + ppg-update gate on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.

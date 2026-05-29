@@ -27,6 +27,7 @@
     "__tests__"
   ],
   "exclude": [
-    "src/neural/nrc/fusedMlpHarness.ts"
+    "src/neural/nrc/fusedMlpHarness.ts",
+    "src/neural/nrc/nrcQueryHarness.ts"
   ]
 }

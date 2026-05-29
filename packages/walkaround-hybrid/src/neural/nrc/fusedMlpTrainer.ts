@@ -14,7 +14,7 @@
 import {
   fusedForwardWgsl, fusedBackwardWgsl, gradFinalizeWgsl, downcastF16Wgsl,
   type FusedMlpWgslOptions,
-} from "./wgsl/fusedMlp.wgsl.ts";
+} from "./wgsl/fusedMlp.wgsl.js";
 
 // Adam optimizer kernel (same math as the spike; operates on the finalized f32
 // grad buffers). Kept inline so the module is self-contained.

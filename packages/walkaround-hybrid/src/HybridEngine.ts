@@ -1828,6 +1828,11 @@ export class HybridEngine implements Engine {
       // number (0/1) also drives the UBO flag; here we forward the boolean so the
       // pipeline builds the matching layout.
       restirPtReuse: this._restirPtReuse === 1,
+      // NRC live cache — same COMPILE-TIME structural gate discipline as
+      // restirPtReuse. `_nrcEnabled` (0/1) also drives the UBO flag; here we
+      // forward the boolean so the pipeline builds the matching gi-ris layout
+      // (4-group DDGI default vs 5-group inline-MLP variant).
+      nrcEnabled: this._nrcEnabled === 1,
       ppgDispatchInterval: this._ppgDispatchInterval,
       regirConfig: this._regirConfig,
     };

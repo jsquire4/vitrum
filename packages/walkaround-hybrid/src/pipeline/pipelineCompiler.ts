@@ -73,8 +73,10 @@ import {
   getIndirectTemporalAccumBindGroupLayout,
   getLightTreeBindGroupLayout,
   getRegirBuildBindGroupLayout,
+  getNrcBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
+import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
 
 interface CompiledPipelines {
   risPipeline: GPUComputePipeline;
@@ -118,7 +120,20 @@ export async function compilePipelines(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
-  opts?: { verbose?: boolean; ppgEnabled?: boolean; regirEnabled?: boolean; restirPtReuse?: boolean },
+  opts?: {
+    verbose?: boolean;
+    ppgEnabled?: boolean;
+    regirEnabled?: boolean;
+    restirPtReuse?: boolean;
+    /** NRC (Müller et al. 2021) — COMPILE-TIME structural gate. When set, the
+     *  gi-ris pipeline is built with a 5th `@group(4)` NRC bind group + the
+     *  inline-MLP-forward shader variant; when absent (default) gi-ris is the
+     *  verbatim 4-group DDGI-estimate pass. MUST be a compile-time decision —
+     *  a runtime UBO flag that bound an extra group on the default path is the
+     *  GRIS-class regression (f8df9a4). The value carries the encoding/MLP
+     *  config the WGSL sizes are baked from (must match the host NrcSubsystem). */
+    nrcConfig?: RisGiNrcConfig;
+  },
 ): Promise<CompiledPipelines> {
   // GRIS / ReSTIR-PT reconnection-shift reuse is opt-in via the host flag
   // `HybridEngineOptions.restirPtReuse`. The gate is COMPILE-TIME (the flag is
@@ -131,6 +146,13 @@ export async function compilePipelines(
   // the GRIS variants and the two-group layout. See spatialGi.wgsl.ts /
   // temporalGi.wgsl.ts headers.
   const grisOn = opts?.restirPtReuse === true;
+  // NRC (Müller et al. 2021) — COMPILE-TIME structural gate, same discipline as
+  // GRIS above. When ON the gi-ris pass gains a `@group(4)` NRC group + the
+  // inline-MLP-forward variant; when OFF (default) gi-ris is the verbatim
+  // 4-group DDGI-estimate pass. Binding a 5th group on the default path would
+  // alter the default pipeline structure (the GRIS-class regression), so the
+  // structure is gated at compile time, not by a runtime UBO flag.
+  const nrcOn = opts?.nrcConfig !== undefined;
   // Compile all shader modules. The include-graph (composeWgsl + WGSL_MODULES)
   // resolves each module's dependency closure exactly once — no hand-rolled
   // `COMMON_WGSL + X_WGSL` concat patterns remain.
@@ -310,12 +332,28 @@ export async function compilePipelines(
   // (gNormalDepth on group 0), traverse the BVH (group 1), read UBO + AO
   // (group 2), and sample the DDGI atlas (group 3). The reservoir-gi-current
   // storage buffer rides on the frame BGL at binding 11.
+  // NRC ON: compose the 5-group inline-MLP-forward variant + build a 5-group
+  // layout (shade layout + the NRC @group(4)). NRC OFF (default): the verbatim
+  // 4-group DDGI-estimate pass on the shade layout — byte-for-byte pre-NRC.
   const risGiSM = device.createShaderModule({
     label: 'risGi',
-    code: composeWgsl(RIS_GI_MODULE, WGSL_MODULES),
+    code: nrcOn
+      ? composeWgsl(buildRisGiNrcModule(opts!.nrcConfig!), WGSL_MODULES)
+      : composeWgsl(RIS_GI_MODULE, WGSL_MODULES),
   });
+  const risGiLayout = nrcOn
+    ? device.createPipelineLayout({
+        bindGroupLayouts: [
+          getFrameBindGroupLayout(device, bglCache),
+          getSceneBindGroupLayout(device, bglCache),
+          getUboBindGroupLayout(device, bglCache),
+          getHybridLayersBindGroupLayout(device, bglCache),
+          getNrcBindGroupLayout(device, bglCache),
+        ],
+      })
+    : shadeLayout;
   const risGiPipeline = await device.createComputePipelineAsync({
-    label: 'risGi', layout: shadeLayout,
+    label: 'risGi', layout: risGiLayout,
     compute: { module: risGiSM, entryPoint: 'risGiMain' },
   });
 
