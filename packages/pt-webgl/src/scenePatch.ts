@@ -15,7 +15,7 @@
 //      a THREE scene root + the fork's merged BVH but hold no engine state.
 
 import { BufferAttribute } from 'three';
-import type { Mesh as TMesh, Scene as ThreeScene } from 'three';
+import type { Mesh as TMesh, Scene as ThreeScene, BufferGeometry } from 'three';
 import type { WebGLPathTracer } from 'three-gpu-pathtracer';
 import type { ScenePrimitive, SceneEmitter, MeshPrimitive } from '@vitrum/core';
 import { ForkAccess } from './forkAccess.js';
@@ -86,6 +86,50 @@ export function isPositionsOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): b
   return true;
 }
 
+/** Mesh-geometry fields a topology patch may touch (per `MeshPrimitive`). A
+ *  patch limited to these can rebuild ONE mesh's THREE BufferGeometry and take
+ *  the fork's targeted geometry/BVH regen instead of a full `setScene`. */
+const GEOMETRY_PATCH_FIELDS: ReadonlySet<string> = new Set([
+  'positions',
+  'normals',
+  'uvs',
+  'tangents',
+  'indices',
+]);
+
+/**
+ * True when a primitive patch touches ONLY mesh-geometry buffers
+ * (positions / normals / uvs / tangents / indices) and at least one of them —
+ * crucially WITHOUT touching `material`, `transform`, `kind`, or any other
+ * field. Such a patch (including an arbitrary vertex-/index-COUNT change) can
+ * rebuild that one mesh's geometry and take the fork's targeted geometry+BVH
+ * regen (`refreshPathTracerSceneGeometry`) rather than a full `setScene`
+ * teardown.
+ *
+ * Why `material` blocks this path: the fork's geometry-only regen skips
+ * `updateMaterials()`/`updateLights()`/`updateEnvironment()` (it only rebuilds
+ * geometry/BVH/attributes + the material-INDEX attribute). A patch that also
+ * changes the material must therefore fall back to a full `setScene` so the
+ * MaterialsTexture is re-packed — otherwise the new geometry would render with
+ * the stale material. The same-material constraint is what keeps this safe.
+ *
+ * The simpler {@link isPositionsOnlyPrimitivePatch} path stays its own branch
+ * (same-vertex-count refit via an in-place attribute swap); this predicate is
+ * the superset that also admits count changes and index/uv/tangent surgery via
+ * a full per-mesh geometry rebuild.
+ */
+export function isGeometryOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
+  const rec = patch as Record<string, unknown>;
+  let touchesGeometry = false;
+  for (const key of Object.keys(rec)) {
+    if (key === 'id') continue;
+    if (rec[key] === undefined) continue;
+    if (!GEOMETRY_PATCH_FIELDS.has(key)) return false;
+    touchesGeometry = true;
+  }
+  return touchesGeometry;
+}
+
 /**
  * Apply a positions(+normals) patch to a THREE mesh in place. Returns false
  * when the vertex count changed (topology change — caller must full-rebuild).
@@ -103,6 +147,54 @@ export function applyPositionsPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimit
     mesh.geometry.setAttribute('normal', new BufferAttribute(new Float32Array(patch.normals), 3));
   }
   return true;
+}
+
+/**
+ * Apply an arbitrary geometry patch (any subset of positions / normals / uvs /
+ * tangents / indices, INCLUDING a vertex- or index-COUNT change) to a THREE
+ * mesh in place by replacing each present attribute / index buffer on the
+ * mesh's existing BufferGeometry. Unlike {@link applyPositionsPatchToMesh},
+ * this never bails on a count change — the fork's `StaticGeometryGenerator`
+ * detects the changed attribute lengths (its `BakedGeometry.isCompatible`
+ * returns false on a count mismatch), discards the stale baked geometry, and
+ * force-rebuilds the merged geometry + BVH on the next `regenerateSceneGeometry`
+ * call. Buffers are copied (fresh typed arrays) so the engine's THREE scene
+ * owns its own geometry storage independent of the caller's patch buffers.
+ *
+ * Returns false when the patch carried no recognised geometry buffer (caller
+ * must full-rebuild — should not happen behind `isGeometryOnlyPrimitivePatch`).
+ */
+export function applyGeometryPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimitive>): boolean {
+  const geom = mesh.geometry as BufferGeometry;
+  let applied = false;
+  if (patch.positions != null) {
+    geom.setAttribute('position', new BufferAttribute(new Float32Array(patch.positions), 3));
+    applied = true;
+  }
+  if (patch.normals != null) {
+    geom.setAttribute('normal', new BufferAttribute(new Float32Array(patch.normals), 3));
+    applied = true;
+  }
+  if (patch.uvs != null) {
+    geom.setAttribute('uv', new BufferAttribute(new Float32Array(patch.uvs), 2));
+    applied = true;
+  }
+  if (patch.tangents != null) {
+    geom.setAttribute('tangent', new BufferAttribute(new Float32Array(patch.tangents), 4));
+    applied = true;
+  }
+  if (patch.indices != null) {
+    // Preserve the patch's index width (Uint16Array vs Uint32Array). A
+    // BakedGeometry index-array constructor mismatch also trips
+    // `validateAttributes`, so width changes are handled correctly downstream.
+    const indexCopy =
+      patch.indices instanceof Uint16Array
+        ? new Uint16Array(patch.indices)
+        : new Uint32Array(patch.indices);
+    geom.setIndex(new BufferAttribute(indexCopy, 1));
+    applied = true;
+  }
+  return applied;
 }
 
 /**

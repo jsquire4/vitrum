@@ -43,7 +43,9 @@ import {
   isMaterialOnlyPrimitivePatch,
   isTransformOnlyPrimitivePatch,
   isPositionsOnlyPrimitivePatch,
+  isGeometryOnlyPrimitivePatch,
   applyPositionsPatchToMesh,
+  applyGeometryPatchToMesh,
   refreshPathTracerSceneGeometry,
 } from './scenePatch.js';
 import {
@@ -1036,6 +1038,36 @@ export class PTEngineWebGL2 implements Engine {
       }
       const meshPatch = _patch as Partial<MeshPrimitive>;
       if (!applyPositionsPatchToMesh(mesh, meshPatch)) {
+        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+        this.setScene(next);
+        return;
+      }
+      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
+        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+        this.setScene(next);
+        return;
+      }
+      this.#oidnDispatcher?.invalidate();
+      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+      return;
+    }
+    if (isGeometryOnlyPrimitivePatch(_patch)) {
+      // Arbitrary same-material geometry surgery — including a vertex- or
+      // index-COUNT change — on ONE existing mesh. Rebuild that mesh's THREE
+      // BufferGeometry (positions/normals/uvs/tangents/indices) in place, then
+      // run the fork's targeted geometry+BVH regen. Because the patch carries no
+      // `material`, the regen's skipped `updateMaterials()` is harmless (the
+      // material slot is unchanged) — a material change would route through the
+      // material-only path or the full-rebuild fallthrough instead. The fork's
+      // StaticGeometryGenerator detects the changed attribute lengths and
+      // force-rebuilds the merged geometry + BVH (GEOMETRY_REBUILT), so no full
+      // `setScene` teardown / material+light re-pack is needed.
+      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
+      if (mesh == null) {
+        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
+      }
+      const meshPatch = _patch as Partial<MeshPrimitive>;
+      if (!applyGeometryPatchToMesh(mesh, meshPatch)) {
         const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
         this.setScene(next);
         return;
