@@ -62,9 +62,31 @@ describe('HybridEngine tier:lite — constructor validation', () => {
       .toThrow(/tier:'lite' forbids denoiser:'neural'/);
   });
 
+  it('throws on tier:lite + nrcEnabled', () => {
+    expect(() => new HybridEngine(baseOpts({ tier: 'lite', nrcEnabled: true })))
+      .toThrow(/tier:'lite' forbids nrcEnabled/);
+  });
+
   it('tier:lite + rcEnabled:false is allowed (the default for rc)', () => {
     expect(() => new HybridEngine(baseOpts({ tier: 'lite', rcEnabled: false })))
       .not.toThrow();
+  });
+
+  it('tier:lite + nrcEnabled:false is allowed (the default for nrc)', () => {
+    expect(() => new HybridEngine(baseOpts({ tier: 'lite', nrcEnabled: false })))
+      .not.toThrow();
+  });
+});
+
+describe('HybridEngine nrcEnabled — gate storage (full tier)', () => {
+  it('default (no nrcEnabled) stores the gate as 0 (OFF)', () => {
+    const engine = new HybridEngine(baseOpts({}));
+    expect((engine as unknown as { _nrcEnabled: number })._nrcEnabled).toBe(0);
+  });
+
+  it('nrcEnabled:true on the full tier stores the gate as 1', () => {
+    const engine = new HybridEngine(baseOpts({ tier: 'full', nrcEnabled: true }));
+    expect((engine as unknown as { _nrcEnabled: number })._nrcEnabled).toBe(1);
   });
 });
 

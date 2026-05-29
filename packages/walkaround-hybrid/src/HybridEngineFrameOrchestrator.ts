@@ -68,6 +68,12 @@ export interface HybridDenoiserFilterDeps {
    *  pipeline.renderFrame as `restirPtReuse`. Lives in this cluster for the
    *  same derived-gate (not scalar tunable) reason as `stainedGlassFlags`. */
   restirPtReuse: number;
+  /** NRC (Müller et al. 2021) cache gate (0 = off / verbatim DDGI suffix, 1 =
+   *  neural radiance cache eligible). Splatted into pipeline.renderFrame as
+   *  `nrcEnabled`. Same derived-gate cluster rationale as `restirPtReuse`.
+   *  STAGED: gate plumbed + OFF bit-identity pinned; the query/record passes
+   *  are the next phase. */
+  nrcEnabled: number;
 }
 
 export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoiserFilterDeps {
@@ -532,6 +538,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     atrousIndirectSigmas: deps.atrousIndirectSigmas,
     stainedGlassFlags: deps.stainedGlassFlags,
     restirPtReuse: deps.restirPtReuse,
+    nrcEnabled: deps.nrcEnabled,
     swapChainView: swapView,
     swapChainFormat: swapFmt,
   });

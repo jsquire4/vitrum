@@ -77,6 +77,13 @@ Each technique is cited at its implementation site in the source code. This list
 
 - **PPG (Practical Path Guiding)** — Thomas Müller, Markus Gross, Jan Novák, "Practical Path Guiding for Efficient Light-Transport Simulation," EGSR 2017
 
+### Neural radiance caching
+
+- **NRC (Neural Radiance Caching)** — Thomas Müller, Fabrice Rousselle, Jan Novák, Alexander Keller, "Real-time Neural Radiance Caching for Path Tracing," ACM TOG 40(4) (SIGGRAPH 2021) — §4 (input encoding + the small MLP), §5 (self-training scheme + the path-spread cache-termination heuristic `a(x) > c·a₀`). Drives the opt-in `HybridEngineOptions.nrcEnabled` subsystem: the fused/tiled MLP kernel (`walkaround-hybrid/src/neural/nrc/wgsl/fusedMlp.wgsl.ts` + `fusedMlpTrainer.ts`), the input-encoding CPU oracle + WGSL forward/backward (`walkaround-hybrid/src/neural/nrc/nrcEncoding.ts` + `wgsl/nrcEncoding.wgsl.ts`), and the spread-termination predicate (`spreadTermination.ts` + `wgsl/spreadTermination.wgsl.ts`). **NRC is a BIASED cache** (a learned approximation of the path suffix, not an unbiased estimator) — acceptance is perceptual closeness + faster convergence, not equal converged mean. See `HARDWARE-VALIDATION-NEEDS.md` V20.
+- **Multiresolution hash-grid encoding (Instant-NGP)** — Thomas Müller, Alex Evans, Christoph Schied, Alexander Keller, "Instant Neural Graphics Primitives with a Multiresolution Hash Encoding," ACM TOG 41(4) (SIGGRAPH 2022) — §3 (L hashed feature grids, trilinear interpolation, concat; Eq. 4 spatial hash with primes 1 / 0x9E3779B1 / 0x30034BB7), §4 (the trainable backward: collisions onto a table row accumulate gradients). The trainable positional encoding of the NRC cache-query vertex (`walkaround-hybrid/src/neural/nrc/nrcEncoding.ts` `hashGridForward`/`hashGridBackward` + the WGSL mirror).
+- **One-blob encoding** — Thomas Müller, Brian McWilliams, Fabrice Rousselle, Markus Gross, Jan Novák, "Neural Importance Sampling," ACM TOG 38(5) (2019) — §4.3 / Eq. 12 (k Gaussian-kernel activations on a uniform grid; a soft one-hot). The fixed (non-trainable) direction encoding for the NRC input (`oneBlobEncodeScalar` in `nrcEncoding.ts`).
+- **Fully-fused MLP** — Thomas Müller, "tiny-cuda-nn" (2021) — the layer-fusion principle (activations resident in workgroup shared memory across all layers; no inter-layer global round-trips) ported to core WGSL in the NRC training kernel (`walkaround-hybrid/src/neural/nrc/wgsl/fusedMlp.wgsl.ts`).
+
 ### Caustic methods
 
 - **Bidirectional path tracing (BDPT)** — Eric P. Lafortune, Yves D. Willems, "Bi-directional Path Tracing," CompuGraphics 1993 (partial: vertex tables + connection-strategy MIS math under `shared-samplers/src/bdpt*` — (Sprint 10c applied 2026-05-12; GPU visual A/B remains follow-up))

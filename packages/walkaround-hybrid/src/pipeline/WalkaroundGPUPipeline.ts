@@ -328,6 +328,17 @@ export interface PipelineFrameInputs {
    *  Host opt-in via HybridEngineOptions.restirPtReuse — the same
    *  OFF-is-bit-identical pattern as RC/PPG/ReGIR. */
   restirPtReuse?: number;
+  /** NRC (Müller et al. 2021) cache gate (UBO offset 364 — the former
+   *  `_ppgPad2` slot). `1` ⇒ the GI suffix may TERMINATE into the learned
+   *  neural radiance cache (spread heuristic + MLP query) and radiance records
+   *  self-train it. `0`/omitted ⇒ the gi-ris suffix runs the verbatim
+   *  DDGI-atlas estimate and the UBO bytes are unchanged — **OFF is
+   *  bit-identical**. Host opt-in via HybridEngineOptions.nrcEnabled; FORBIDDEN
+   *  on tier:'lite'. NRC is a BIASED cache (not a converged-mean-preserving
+   *  reuse) — see HARDWARE-VALIDATION-NEEDS.md V20. STAGED: the gate + encoding
+   *  + spread predicate + oracles are landed; the query/record passes are the
+   *  next phase, so even with the gate at 1 today the suffix still uses DDGI. */
+  nrcEnabled?: number;
   /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
    *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
    *  direct-path chain. */

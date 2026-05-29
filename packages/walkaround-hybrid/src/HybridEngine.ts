@@ -168,6 +168,11 @@ interface ParsedHybridEngineConfig {
    *  1 = unbiased GRIS shift + visibility + pairwise MIS). Per-frame UBO gate,
    *  no pipeline rebuild — same lifecycle as `stainedGlassFlags`. */
   readonly restirPtReuse: number;
+  /** NRC (Müller et al. 2021) cache gate (0 = off / verbatim DDGI suffix,
+   *  1 = neural radiance cache eligible). Per-frame UBO gate, no pipeline
+   *  rebuild. STAGED: gate plumbed end-to-end + bit-identity-pinned OFF; the
+   *  query/record passes are the next phase. FORBIDDEN on tier:'lite'. */
+  readonly nrcEnabled: number;
   readonly staticPipelineRebuildKey: string | number | null;
   readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
   readonly rebuildKeyFingerprintSeen: string;
@@ -227,6 +232,14 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
         `[HybridEngine] tier:'lite' forbids denoiser:'neural' — the U-Net ` +
         `InferenceGraph + weight buffers exceed the lite budget. Use ` +
         `'atrous-variance' / 'atrous' on lite, or tier:'full' for neural.`,
+      );
+    }
+    if (opts.nrcEnabled === true) {
+      throw new TypeError(
+        `[HybridEngine] tier:'lite' forbids nrcEnabled — Neural Radiance ` +
+        `Caching allocates a multiresolution hash-grid feature-table set + the ` +
+        `fused-MLP weight/Adam buffers the lite budget cannot fit. Use ` +
+        `tier:'full' for NRC.`,
       );
     }
   }
@@ -353,6 +366,11 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     // GI spatial/temporal reuse is bit-identical to the legacy clamped-Jacobian
     // path unless a host opts in via opts.restirPtReuse.
     restirPtReuse: opts.restirPtReuse === true ? 1 : 0,
+    // NRC cache gate. Default 0 (OFF) so the gi-ris suffix is bit-identical to
+    // the verbatim DDGI-atlas estimate unless a host opts in via opts.nrcEnabled
+    // (which tier:'lite' forbids — validated above). STAGED: this gate is
+    // plumbed to the UBO but the query/record passes are the next phase.
+    nrcEnabled: opts.nrcEnabled === true ? 1 : 0,
     staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
     getPipelineRebuildKey: opts.getPipelineRebuildKey,
     rebuildKeyFingerprintSeen: fingerprintHybridPipelineRebuildKey(
@@ -526,6 +544,11 @@ export class HybridEngine implements Engine {
    *  hosts opt in via `opts.restirPtReuse`. Per-frame UBO gate (no pipeline
    *  rebuild), threaded into pipeline.renderFrame each frame. */
   private readonly _restirPtReuse: number;
+  /** NRC (Müller et al. 2021) cache gate (0 = off, 1 = neural radiance cache
+   *  eligible). Default 0; hosts opt in via `opts.nrcEnabled` (forbidden on
+   *  tier:'lite'). Per-frame UBO gate, threaded into pipeline.renderFrame each
+   *  frame. STAGED: the query/record passes are the next phase. */
+  private readonly _nrcEnabled: number;
   /** Phase-0 productization — quality-preset-resolved GTAO dispatch mode.
    *  `'on'` (half-res) / `'quarter'` / `'off'`. Threaded into the pipeline at
    *  init so the GTAO + upsample passes gate + dispatch-scale accordingly. */
@@ -660,6 +683,7 @@ export class HybridEngine implements Engine {
     this._atrousIndirectSigmas  = cfg.atrousIndirectSigmas;
     this._stainedGlassFlags     = cfg.stainedGlassFlags;
     this._restirPtReuse         = cfg.restirPtReuse;
+    this._nrcEnabled            = cfg.nrcEnabled;
     this._gtaoMode              = cfg.gtaoMode;
     this._diSpatialPasses       = cfg.diSpatialPasses;
     this._giSpatialPasses       = cfg.giSpatialPasses;
@@ -1487,6 +1511,7 @@ export class HybridEngine implements Engine {
       atrousIndirectSigmas: this._atrousIndirectSigmas,
       stainedGlassFlags: this._stainedGlassFlags,
       restirPtReuse: this._restirPtReuse,
+      nrcEnabled: this._nrcEnabled,
     };
   }
 

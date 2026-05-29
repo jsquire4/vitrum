@@ -142,7 +142,16 @@ struct WalkaroundUBO {
   // the GPU descent loop.
   lightTreeEnabled:           u32,     //  offset 356 — DI light-tree selection gate (was _ppgPad0)
   lightTreeNodeCount:         u32,     //  offset 360 — packed light-tree node count (was _ppgPad1)
-  _ppgPad2:                   u32,     //  offset 364 — pad to 16-byte boundary at 368
+  // NRC (Müller et al. 2021) cache gate (repurposed _ppgPad2 — byte-size
+  // unchanged). 0 ⇒ the gi-ris suffix runs the verbatim DDGI-atlas estimate
+  // (NRC-OFF bit-identity); 1 ⇒ the suffix may TERMINATE into the learned
+  // neural radiance cache (spread heuristic + fused-MLP query) and gathered
+  // radiance records self-train it. STAGED: the gate flips here today but the
+  // query/record passes are the documented next phase, so a gate of 1 is
+  // currently inert at the shader level (no pass reads it yet). Host opt-in via
+  // HybridEngineOptions.nrcEnabled; FORBIDDEN on tier:'lite'. NRC is a BIASED
+  // cache — see HARDWARE-VALIDATION-NEEDS.md V20.
+  nrcEnabled:                 u32,     //  offset 364 — NRC cache gate (was _ppgPad2)
   // ── ReGIR (Boksansky 2021 grid-based reservoirs) — DI light-SELECTION
   // grid that decouples per-pixel cost from light count. The grid is co-located
   // in the SAME @group(3) light-tree storage buffer (RIS stays at 16 storage

@@ -247,6 +247,7 @@ function makeFrameDeps(opts: {
     atrousIndirectSigmas: [32, 20, 0.5],
     stainedGlassFlags: 0,
     restirPtReuse: 0,
+    nrcEnabled: 0,
     frameSubs: [],
     progressSubs: opts.progressSubs,
     verbose: false,

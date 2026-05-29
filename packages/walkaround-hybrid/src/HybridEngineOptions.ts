@@ -822,4 +822,44 @@ export interface HybridEngineOptions extends EngineOptions {
    * @default CASCADE_DIMS from @vitrum/walkaround-rc
    */
   readonly cascadeDims?: readonly CascadeDim[];
+
+  // ── NRC (Müller, Rousselle, Novák, Keller 2021 — Real-time Neural
+  //    Radiance Caching for Path Tracing) ───────────────────────────────────
+
+  /**
+   * Enable the Müller et al. 2021 Neural Radiance Caching subsystem.
+   *
+   * The "full" version: a small fused MLP whose input is a multiresolution
+   * **hash-grid positional encoding** of the cache-query vertex (Instant-NGP,
+   * Müller et al. 2022) + a **one-blob** direction encoding (Müller et al. 2019)
+   * + raw surface features (normal/roughness/albedo). When live, the GI suffix
+   * is TERMINATED into the cache once Müller's **path-spread heuristic** fires
+   * (a(x) > c·a₀), and the MLP's predicted outgoing radiance becomes the suffix
+   * contribution; radiance records gathered along paths self-train the cache
+   * (hash-grid feature tables + MLP weights are trained JOINTLY) once per frame.
+   *
+   * **NRC is a BIASED estimator** — the cache is a learned approximation of the
+   * path suffix, not an unbiased Monte-Carlo estimate. Unlike RC/PPG/GRIS (which
+   * preserve the converged mean), the acceptance criterion for NRC is
+   * *perceptual closeness to the no-NRC reference within tolerance, with faster
+   * convergence / lower noise*. See `HARDWARE-VALIDATION-NEEDS.md` V20.
+   *
+   * Default: `false` — NRC is opt-in. **OFF is BIT-IDENTICAL** to the current GI
+   * (the gate is a UBO flag in the former `_ppgPad2` slot; when 0 the gi-ris
+   * suffix path runs the verbatim DDGI-atlas estimate and the UBO bytes are
+   * unchanged). FORBIDDEN on `tier:'lite'` (the hash-grid feature tables + MLP
+   * weight/Adam buffers exceed the lite resource budget) — the constructor
+   * throws if `nrcEnabled` is set with `tier:'lite'`, mirroring rcEnabled /
+   * ppgEnabled / denoiser:'neural'.
+   *
+   * NOTE — STAGED LANDING: the encoding (hash-grid joint-train forward+backward),
+   * the spread-termination predicate, the gate, and the CPU/WGSL oracles are
+   * landed + unit-pinned this session; the actual cache-query / record-gather
+   * compute passes are the documented next phase. Until they register, setting
+   * `nrcEnabled: true` only flips the UBO gate (still bit-identical output) — the
+   * suffix continues to use the DDGI estimate. See V20.
+   *
+   * @default false
+   */
+  readonly nrcEnabled?: boolean;
 }

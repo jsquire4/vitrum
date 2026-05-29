@@ -1,6 +1,6 @@
 /**
  * UBO updater — writes per-frame camera + lighting + tunables into the
- * 368-byte WalkaroundUBO uniform buffer.
+ * 416-byte WalkaroundUBO uniform buffer (see WALKAROUND_UBO_SIZE_BYTES).
  *
  * UBO layout (mixed f32 / u32 — see WalkaroundUBO struct in common.wgsl):
  *   offset   0: viewMatrix                  (mat4×4f = 64 bytes)
@@ -40,7 +40,7 @@
  *   offset 352: ppgMixAlpha                 (f32 = 4 bytes) — PPG MIS mixing weight α
  *   offset 356: lightTreeEnabled            (u32 = 4 bytes) — DI light-tree selection gate (was _ppgPad0)
  *   offset 360: lightTreeNodeCount          (u32 = 4 bytes) — packed light-tree node count (was _ppgPad1)
- *   offset 364: _ppgPad2                    (u32 = 4 bytes — pad to 368)
+ *   offset 364: nrcEnabled                  (u32 = 4 bytes) — NRC cache gate (was _ppgPad2)
  *   offset 368: regirOrigin                 (vec3f = 12 bytes) — ReGIR grid AABB min
  *   offset 380: regirInvCellSize            (f32 = 4 bytes) — 1 / cellSize
  *   offset 384: regirDims                   (vec3u = 12 bytes) — grid cell counts
@@ -214,7 +214,13 @@ export function updateUBO(
   // When disabled both stay 0 → RIS uses the flat power-CDF path exactly.
   u32[89] = (inputs.lightTreeEnabled ?? 0) >>> 0; // offset 356 — lightTreeEnabled
   u32[90] = (inputs.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
-  // u32[91] = _ppgPad2 (zero).
+  // NRC cache gate (offset 364 — the former _ppgPad2 slot). 0 keeps the gi-ris
+  // suffix on the verbatim DDGI-atlas estimate (NRC-OFF bit-identity); 1 turns
+  // on the neural radiance cache. Absent ⇒ 0 (OFF), so callers and existing
+  // tests that never set it are byte-identical to before. STAGED: the gate
+  // flips here but the query/record compute passes are the next phase — a gate
+  // of 1 is currently inert (no pass reads u32[91] yet). See V20.
+  u32[91] = (inputs.nrcEnabled ?? 0) >>> 0; // offset 364 — nrcEnabled (was _ppgPad2)
   // ReGIR grid state (offsets 368..412). When ReGIR is off every field is 0,
   // so the kernel's `regirEnabled == 0` gate keeps RIS on the light-tree path
   // bit-for-bit (and the grid-build pass early-returns).
