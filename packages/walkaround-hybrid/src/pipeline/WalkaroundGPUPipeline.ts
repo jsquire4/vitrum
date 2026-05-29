@@ -168,6 +168,44 @@ export const HYBRID_LITE_LIMITS: Record<string, number> = {
 };
 
 /**
+ * Extra device limits required ONLY when `nrcEnabled` (opt-in NRC). These exceed
+ * the WebGPU defaults (maxBindGroups 4, maxComputeWorkgroupStorageSize 16384), so
+ * a host that opts into NRC must create the device with these in `requiredLimits`.
+ * GPU validation (2026-05-29, V20) confirmed dzn/RTX-4090 exposes 8 / 32768 and
+ * renders NRC-ON. The pipeline throws a clear error at init if the device is
+ * under-spec (host-owns-lifecycle), rather than failing cryptically in
+ * createComputePipeline. NRC is full-tier only — these are additive to
+ * {@link HYBRID_WEBGPU_REQUIRED_LIMITS}, never applicable on the lite tier.
+ */
+export const NRC_REQUIRED_MAX_BIND_GROUPS = 5; // the @group(4) NRC bind group
+export const NRC_REQUIRED_WORKGROUP_STORAGE_BYTES = 24576; // fused-MLP workgroup tiles
+
+/**
+ * Throw a clear, host-actionable error if a device cannot satisfy NRC's extra
+ * limits. Called at pipeline init when `nrcEnabled` (host-owns-lifecycle): the
+ * host owns device creation, so the remedy is to add these to `requiredLimits`.
+ * Mirrors the lite-tier forbid — fail early + legibly, not cryptically inside
+ * createComputePipeline.
+ */
+export function assertNrcDeviceCapable(limits: GPUSupportedLimits): void {
+  const maxBindGroups = limits.maxBindGroups ?? 4;
+  const maxWgStorage = limits.maxComputeWorkgroupStorageSize ?? 16384;
+  if (maxBindGroups < NRC_REQUIRED_MAX_BIND_GROUPS
+    || maxWgStorage < NRC_REQUIRED_WORKGROUP_STORAGE_BYTES) {
+    throw new TypeError(
+      `[HybridEngine] nrcEnabled requires a device created with `
+      + `maxBindGroups >= ${NRC_REQUIRED_MAX_BIND_GROUPS} (the @group(4) NRC group; `
+      + `default is 4) and maxComputeWorkgroupStorageSize >= `
+      + `${NRC_REQUIRED_WORKGROUP_STORAGE_BYTES} (the fused-MLP workgroup tiles; `
+      + `default is 16384), but this device reports maxBindGroups=${maxBindGroups}, `
+      + `maxComputeWorkgroupStorageSize=${maxWgStorage}. The host owns device `
+      + `creation — request these in requiredLimits (real full-tier GPUs expose `
+      + `them, e.g. 8 / 32768), or omit nrcEnabled.`,
+    );
+  }
+}
+
+/**
  * WebGPU features the hybrid pipeline requires.  Currently none — the
  * pipeline allocates every storage texture using base-spec-storage-capable
  * formats (rgba16float, rgba32float, rg32float, r32uint, rgba32uint). The
@@ -698,6 +736,10 @@ export class WalkaroundGPUPipeline {
     // default pipeline structure is provably untouched (the GRIS-class
     // regression discipline, f8df9a4).
     if (options?.nrcEnabled === true) {
+      // NRC-ON capability gate (host-owns-lifecycle) — fail early + legibly if
+      // the device lacks the @group(4) 5th bind group / the fused-MLP workgroup
+      // storage, rather than cryptically in createComputePipeline.
+      assertNrcDeviceCapable(d.limits);
       this._nrc = new NrcSubsystem(d, this._bglCache);
       const aabb = derivePipelineSceneAABB(bvhBuffers);
       await this._nrc.initialize(aabb.min, aabb.max);

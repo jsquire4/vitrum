@@ -38,6 +38,11 @@ import { buildRisGiNrcModule, type RisGiNrcConfig } from '../src/shaders/risGiNr
 import { WGSL_MODULES } from '../src/pipeline/wgslModules.js';
 import { compilePipelines } from '../src/pipeline/pipelineCompiler.js';
 import type { BGLCache } from '../src/pipeline/bindGroupLayouts.js';
+import {
+  assertNrcDeviceCapable,
+  NRC_REQUIRED_MAX_BIND_GROUPS,
+  NRC_REQUIRED_WORKGROUP_STORAGE_BYTES,
+} from '../src/pipeline/WalkaroundGPUPipeline.js';
 
 installWebGPUPolyfills();
 
@@ -166,5 +171,35 @@ describe('gi-ris PIPELINE LAYOUT + registered-pass set — gated at compile time
       expect(r.bglCount, `pipeline '${r.label}' bind-group count must be unchanged by NRC`)
         .toBe(offByLabel[r.label]);
     }
+  });
+});
+
+// NRC-ON capability gate — NRC's @group(4) 5th bind group + the fused-MLP
+// workgroup tiles exceed the WebGPU defaults; the host (which owns device
+// creation) must request the higher limits, else init fails fast + legibly
+// (GPU-validation V20 surfaced this: dzn/RTX-4090 = 8 / 32768 renders NRC-ON).
+describe('NRC-ON device capability gate', () => {
+  it('passes when the device meets both NRC limits', () => {
+    expect(() => assertNrcDeviceCapable(
+      {
+        maxBindGroups: NRC_REQUIRED_MAX_BIND_GROUPS,
+        maxComputeWorkgroupStorageSize: NRC_REQUIRED_WORKGROUP_STORAGE_BYTES,
+      } as unknown as GPUSupportedLimits,
+    )).not.toThrow();
+    expect(() => assertNrcDeviceCapable(
+      { maxBindGroups: 8, maxComputeWorkgroupStorageSize: 32768 } as unknown as GPUSupportedLimits,
+    )).not.toThrow();
+  });
+
+  it('throws on a default-limits device (maxBindGroups 4 — the @group(4) group)', () => {
+    expect(() => assertNrcDeviceCapable(
+      { maxBindGroups: 4, maxComputeWorkgroupStorageSize: 32768 } as unknown as GPUSupportedLimits,
+    )).toThrow(/maxBindGroups/);
+  });
+
+  it('throws when workgroup storage is below the fused-MLP requirement (16384 < 24576)', () => {
+    expect(() => assertNrcDeviceCapable(
+      { maxBindGroups: 8, maxComputeWorkgroupStorageSize: 16384 } as unknown as GPUSupportedLimits,
+    )).toThrow(/maxComputeWorkgroupStorageSize/);
   });
 });
