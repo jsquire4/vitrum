@@ -177,11 +177,16 @@ export interface DDGIFrameResources {
   ddgiUboBuffer: GPUBuffer;
 }
 
-/** GTAO half- and full-resolution AO textures + GTAO uniform buffer. */
+/** GTAO low- and full-resolution AO textures + GTAO uniform buffer. */
 export interface GTAOFrameResources {
   /**
-   * Sprint 15 — Half-resolution GTAO occlusion factor (rgba16float). Written by
+   * Sprint 15 — Low-resolution GTAO occlusion factor (rgba16float). Written by
    * `gtaoMain`; consumed by `gtaoUpsampleMain` to reconstruct full-res AO.
+   * Allocated at `W/downscale × H/downscale` where `downscale` is 2 for
+   * `gtaoMode:'on'` (half-res, the Sprint-15 default) or 4 for
+   * `gtaoMode:'quarter'` (quarter-res — 1/16 the AO compute footprint). The
+   * field name retains the historical `aoHalf` spelling; "half" is no longer
+   * literal once `quarter` mode is selected.
    * E1: bumped from r16float to rgba16float to carry per-channel multi-bounce
    * AO (Jiménez 2016 §5.2 / Eq. 16). The upsample reduces to scalar luminance.
    */
@@ -386,7 +391,10 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
  * Options for `createFrameResources`.
  */
 export interface FrameResourceOptions {
-  // Reserved for future options.
+  /** GTAO compute downscale factor. `2` ⇒ half-res AO target (`gtaoMode:'on'`,
+   *  default); `4` ⇒ quarter-res AO target (`gtaoMode:'quarter'`). Sizes the
+   *  `gtao.aoHalfTexture` at `W/factor × H/factor`. Defaults to `2`. */
+  readonly gtaoDownscale?: number;
 }
 
 /**
@@ -403,12 +411,12 @@ export function createFrameResources(
   device: GPUDevice,
   W: number,
   H: number,
-  _options?: FrameResourceOptions,
+  options?: FrameResourceOptions,
 ): FrameResources {
   const common = createCommonFrameResources(device, W, H);
   const restirDI = createRestirDIFrameResources(device, W, H);
   const restirGI = createRestirGIFrameResources(device, W, H);
-  const gtao = createGtaoFrameResources(device, W, H);
+  const gtao = createGtaoFrameResources(device, W, H, options?.gtaoDownscale ?? 2);
   const ddgi = createDdgiFrameResources(device);
   const svgf = createSvgfFrameResources(device, W, H);
 

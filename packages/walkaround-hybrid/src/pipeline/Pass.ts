@@ -140,6 +140,11 @@ export interface PassDispatchContext {
   readonly wgY16: number;
   readonly halfWgX: number;
   readonly halfWgY: number;
+  /** GTAO AO-compute downscale factor: 2 (`gtaoMode:'on'`, half-res) or 4
+   *  (`gtaoMode:'quarter'`, quarter-res). The GTAOPass dispatches at
+   *  W/ds × H/ds and packs this into the GTAO UBO so both gtao + gtaoUpsample
+   *  shaders map between the AO grid and full-res coords. */
+  readonly gtaoDownscale: number;
   /** Pre-resolved gNormalDepth view used as edge-stop input by GTAO + atrous chains. */
   readonly gNormalDepthView: GPUTextureView;
   /** Build a `GPUComputePassDescriptor` with optional timestampWrites. */

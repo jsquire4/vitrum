@@ -19,9 +19,10 @@
  *     1 = fully lit, 0 = fully occluded.  The multi-bounce term brightens
  *     intermediate albedo surfaces; at ρ = 1 each channel equals the scalar AO.
  *
- * Half-res: dispatches over W/2 × H/2 invocations; each samples the *full-res*
- * gNormalDepth at the 2×2 quad center. Bilateral upsample (see
- * `gtaoUpsample.wgsl.ts`) reconstructs full-res AO from this half-res map.
+ * Low-res: dispatches over W/ds × H/ds invocations (ds = gtaoDownscale, 2 for
+ * `gtaoMode:'on'` / 4 for `gtaoMode:'quarter'`); each samples the *full-res*
+ * gNormalDepth at the ds×ds cell center. Bilateral upsample (see
+ * `gtaoUpsample.wgsl.ts`) reconstructs full-res AO from this low-res map.
  *
  * Algorithm summary:
  *   Decode world-space surface normal from G-buffer.
@@ -75,8 +76,12 @@ struct GTAOUniforms {
   // Hosts should set ~(sceneDiagonal * 0.01) so the half-life of the depth
   // weight is ~1% of the scene's longest axis.
   bilateralDepthSigma: f32,
+  // AO compute downscale factor (integer, stored as f32). 2 = half-res
+  // (gtaoMode 'on'); 4 = quarter-res (gtaoMode 'quarter'). Both gtao.wgsl
+  // and gtaoUpsample.wgsl read this to map between AO-grid and full-res coords,
+  // replacing the prior hardcoded div-by-2 / mul-by-2. Was the inert _pad0 slot.
+  gtaoDownscale: f32,
   // Pad to 32 bytes (8-element struct) for WebGPU 16-byte UBO alignment.
-  _pad0: f32,
   _pad1: f32,
   _pad2: f32,
 };
@@ -122,11 +127,14 @@ fn gtaoSliceIntegral(h: f32, n: f32, cosN: f32) -> f32 {
 @compute @workgroup_size(8, 8, 1)
 fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   let fullDims = vec2u(textureDimensions(gtao_normalDepth));
-  let halfDims = fullDims / 2u;
-  if (any(gid.xy >= halfDims)) { return; }
+  // AO compute downscale: 2 ⇒ half-res, 4 ⇒ quarter-res. Clamp ≥ 1 so a
+  // bad UBO upload can never collapse the AO grid to zero / divide-by-zero.
+  let ds = max(1u, u32(gtao_ubo.gtaoDownscale));
+  let lowDims = fullDims / ds;
+  if (any(gid.xy >= lowDims)) { return; }
 
-  // Half-res sample point: centre of the 2x2 quad in full-res coords.
-  let fullPx = gid.xy * 2u + 1u;
+  // Low-res sample point: centre of the ds×ds cell in full-res coords.
+  let fullPx = gid.xy * ds + ds / 2u;
   let center = textureLoad(gtao_normalDepth, vec2i(fullPx), 0);
   let centerDepth = abs(center.w);
 
@@ -258,8 +266,8 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   // With ρ → 0 (black surface), a_mb → 0 (no AO leakage on dark surfaces).
   //
   // Albedo is sampled from the shade pass's hdrAlbedoOut (written by M9.C).
-  // hdrAlbedoOut is full-resolution; GTAO is half-resolution, so we sample at
-  // the 2×2 quad centre (fullPx = gid.xy * 2 + 1), same as gNormalDepth.
+  // hdrAlbedoOut is full-resolution; GTAO is low-resolution, so we sample at
+  // the ds×ds cell centre (fullPx = gid.xy * ds + ds/2), same as gNormalDepth.
   //
   // Coefficients from Jiménez 2016 Eq. 16 (table in §5.2):
   //   a_mb = ((2.0404·ρ − 0.3324)·v + (−4.7951·ρ + 0.6417))·v + (2.7552·ρ + 0.6903))·v

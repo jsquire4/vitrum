@@ -409,6 +409,13 @@ export class WalkaroundGPUPipeline {
    *  layout matches the dispatched labels (Risk R2). Defaults preserve the
    *  pre-Phase-0 full layout (GTAO on, 2 spatial passes each). */
   private _gtaoEnabled = true;
+  /** GTAO AO-compute downscale factor, fixed per engine instance at
+   *  `initialize()`. `2` ⇒ half-res (`gtaoMode:'on'`, default); `4` ⇒
+   *  quarter-res (`gtaoMode:'quarter'`). Sizes `gtao.aoHalfTexture`
+   *  (`createFrameResources`) AND drives the per-frame GTAO dispatch +
+   *  UBO field; the upsample reconstructs full-res AO at any factor. `'off'`
+   *  leaves `_gtaoEnabled=false` so the downscale is moot (no AO dispatch). */
+  private _gtaoDownscale: 2 | 4 = 2;
   private _diSpatialPasses: 1 | 2 = 2;
   private _giSpatialPasses: 1 | 2 = 2;
   /** Bundled layout config passed to every `buildPassLayout` call so the four
@@ -558,8 +565,11 @@ export class WalkaroundGPUPipeline {
       };
       /** Phase-0 productization — GTAO dispatch mode. `'off'` gates GTAO +
        *  its upsample out (the AO target keeps its 1.0 init = no occlusion).
-       *  `'quarter'` is reserved (currently behaves like `'on'` half-res —
-       *  true quarter-res needs a quarter-res AO target, a follow-up). */
+       *  `'on'` runs AO at half-res (W/2 × H/2 target + bilateral upsample).
+       *  `'quarter'` runs AO at a true quarter-res (W/4 × H/4 target — 1/16
+       *  the AO compute footprint), upsampled to full-res through the same
+       *  depth/normal-aware bilateral machinery (the downscale factor is a
+       *  UBO field consumed by both gtao + gtaoUpsample shaders). */
       gtaoMode?: 'on' | 'quarter' | 'off';
       /** Phase-0 — ReSTIR-DI spatial ping-pong pass count (1 or 2). Default 2. */
       diSpatialPasses?: 1 | 2;
@@ -579,8 +589,18 @@ export class WalkaroundGPUPipeline {
     // ── Upload BVH buffers ────────────────────────────────────────────────
     this._bvhHost.uploadInitial(d, bvhBuffers);
 
+    // Phase-0 productization — resolve the GTAO mode BEFORE allocating frame
+    // resources, since `'quarter'` sizes the AO target at a smaller resolution.
+    //   'off'     → AO gated out (aoFullTexture keeps its 1.0 init).
+    //   'on'      → half-res AO target (downscale 2) — Sprint-15 default.
+    //   'quarter' → quarter-res AO target (downscale 4) — a real step below
+    //               'on': 1/4 each axis, 1/16 the AO compute footprint.
+    const gtaoMode = options?.gtaoMode ?? 'on';
+    this._gtaoEnabled = gtaoMode !== 'off';
+    this._gtaoDownscale = gtaoMode === 'quarter' ? 4 : 2;
+
     // ── Per-frame GPU resources ───────────────────────────────────────────
-    this._res = createFrameResources(d, W, H);
+    this._res = createFrameResources(d, W, H, { gtaoDownscale: this._gtaoDownscale });
 
     // ── Compile shaders (denoiser-agnostic) ───────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
@@ -591,10 +611,6 @@ export class WalkaroundGPUPipeline {
     // the always-on AtrousIndirectPass.
     this._atrousPipeline = compiled.atrousPipeline;
     this._denoiserMode = options?.denoiser ?? 'atrous-variance';
-    // Phase-0 productization — quality-preset structural gating. `'quarter'`
-    // is treated as `'on'` for now (true quarter-res AO is a follow-up needing
-    // a quarter-res AO target); only `'off'` gates GTAO out.
-    this._gtaoEnabled = (options?.gtaoMode ?? 'on') !== 'off';
     this._diSpatialPasses = options?.diSpatialPasses ?? 2;
     this._giSpatialPasses = options?.giSpatialPasses ?? 2;
     // PPG train-pass cadence. Clamp to ≥ 1 (a 0/negative interval would make
@@ -857,9 +873,13 @@ export class WalkaroundGPUPipeline {
     if (width === this._width && height === this._height) return;
     this._width = width;
     this._height = height;
-    // Destroy + reallocate per-frame resources at the new size.
+    // Destroy + reallocate per-frame resources at the new size. Preserve the
+    // GTAO downscale resolved at initialize() so a resize keeps the AO target
+    // at the same quarter/half-res tier the host selected.
     destroyFrameResources(this._res);
-    this._res = createFrameResources(this._device, width, height);
+    this._res = createFrameResources(this._device, width, height, {
+      gtaoDownscale: this._gtaoDownscale,
+    });
     // W9 — re-allocate PPG resolution-dependent buffers + re-upload the
     // (unchanged) sTree topology so the new bind groups have valid GPU
     // buffers to bind. The CPU sTree itself isn't size-dependent and
@@ -1070,6 +1090,7 @@ export class WalkaroundGPUPipeline {
       hybridLayersBindGroup: bgHybrid,
       lightTreeBindGroup: bgLightTree,
       wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
+      gtaoDownscale: this._gtaoDownscale,
       gNormalDepthView,
       computeDesc,
       renderTimestampWrites,

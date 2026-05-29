@@ -1,12 +1,15 @@
 /**
- * GTAO bilateral upsample — half-res per-channel AO → full-res per-channel AO.
+ * GTAO bilateral upsample — low-res per-channel AO → full-res per-channel AO.
  *
- * Reads the half-res per-channel multi-bounce AO map (rgba16float) produced by
+ * Reads the low-res per-channel multi-bounce AO map (rgba16float) produced by
  * `gtao.wgsl.ts` and a full-res gNormalDepth map. For each full-res pixel,
- * samples the four nearest half-res taps and weights them by depth+normal
+ * samples the four nearest AO-grid taps and weights them by depth+normal
  * similarity to the full-res pixel's surface. Standard "joint bilateral
  * upsample" pattern (Kopf et al. 2007) — preserves AO discontinuities at
- * geometric edges that the simple trilinear upsample would smear.
+ * geometric edges that the simple trilinear upsample would smear. The AO grid
+ * is W/ds × H/ds (ds = gtaoDownscale: 2 for `gtaoMode:'on'`, 4 for
+ * `gtaoMode:'quarter'`); the upsample ratio follows ds via the UBO so the same
+ * machinery handles both half- and quarter-res inputs.
  *
  * Tier-G fix (Jiménez 2016 §5.2 per-channel multi-bounce): previously the
  * upsample collapsed the per-channel AO vec3 to a single luminance scalar
@@ -32,7 +35,10 @@ struct GTAOUniforms {
   intensity:  f32,
   depthThresh: f32,
   bilateralDepthSigma: f32,
-  _pad0: f32,
+  // AO compute downscale factor (integer, stored as f32). 2 = half-res input,
+  // 4 = quarter-res input. Maps full-res pixel to low-res tap (gid/ds) and
+  // low-res tap to full-res sample centre (tap*ds + ds/2). Was the _pad0 slot.
+  gtaoDownscale: f32,
   _pad1: f32,
   _pad2: f32,
 };
@@ -75,7 +81,9 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   let fullDims = vec2u(textureDimensions(up_normalDepth));
   if (any(gid.xy >= fullDims)) { return; }
 
-  let halfDims = fullDims / 2u;
+  // AO downscale factor (2 = half-res input, 4 = quarter-res). Clamp ≥ 1.
+  let ds = max(1u, u32(up_gtao.gtaoDownscale));
+  let halfDims = fullDims / ds;
 
   // Read center pixel's normal + depth.
   let center = textureLoad(up_normalDepth, gid.xy, 0);
@@ -88,10 +96,10 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
-  // Half-res tap position: gid.xy / 2 gives the integer cell index.
-  let halfPx = gid.xy / 2u;
+  // Low-res tap position: gid.xy / ds gives the integer AO-grid cell index.
+  let halfPx = gid.xy / ds;
 
-  // Sample 2×2 neighborhood in half-res. Use clamped coords for the edges.
+  // Sample 2×2 neighborhood of AO-grid taps. Use clamped coords for the edges.
   //
   // Tier-G fix: keep the per-channel multi-bounce vec3 AO through the
   // bilateral filter rather than collapsing it to a luminance scalar.
@@ -112,8 +120,8 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
       );
       // Read per-channel multi-bounce AO as-is.
       let aoMb = textureLoad(up_aoHalf, sampleHalf, 0).rgb;
-      // Corresponding full-res sample point (center of the half-res cell).
-      let sampleFull = sampleHalf * 2u + 1u;
+      // Corresponding full-res sample point (center of the ds×ds AO cell).
+      let sampleFull = sampleHalf * ds + ds / 2u;
       let nd = textureLoad(
         up_normalDepth,
         vec2u(min(sampleFull.x, fullDims.x - 1u),
