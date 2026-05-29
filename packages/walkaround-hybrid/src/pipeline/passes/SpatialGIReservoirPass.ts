@@ -20,6 +20,14 @@
  * `gi-spatial-2` is kept for BOTH counts so the `shade` dependency + `id` stay
  * stable; a 1-pass config emits only `['gi-spatial-2']`.
  *
+ * GRIS gate (`grisEnabled`) — opt-in via `HybridEngineOptions.restirPtReuse`.
+ * The pipeline + shader are gated at COMPILE time (pipelineCompiler builds the
+ * single-group layout + verbatim Sprint-17 shader when OFF, the two-group layout
+ * + GRIS shader when ON). This pass mirrors that: it binds the scene group at
+ * `@group(1)` for the reconnection-visibility ray ONLY when ON. Binding a group
+ * the pipeline layout does not declare is what regressed the default render to
+ * all-black (f8df9a4), so the default path must NOT call `setBindGroup(1, …)`.
+ *
  * R2 — `buildPassLayout` MUST be built with the same `giSpatialPasses` so the
  * timestamp slot layout matches the labels emitted here.
  */
@@ -40,10 +48,14 @@ export class SpatialGIReservoirPass implements Pass {
 
   private readonly _pipeline: GPUComputePipeline;
   private readonly _passCount: 1 | 2;
+  /** GRIS (restirPtReuse) ON ⇒ bind the scene group at @group(1). Must match
+   *  the compile-time pipeline layout (see pipelineCompiler `grisOn`). */
+  private readonly _grisEnabled: boolean;
 
-  constructor(pipeline: GPUComputePipeline, passCount: 1 | 2 = 2) {
+  constructor(pipeline: GPUComputePipeline, passCount: 1 | 2 = 2, grisEnabled = false) {
     this._pipeline = pipeline;
     this._passCount = passCount;
+    this._grisEnabled = grisEnabled;
     this.passLabels = giSpatialPassLabels(passCount);
   }
 
@@ -68,7 +80,8 @@ export class SpatialGIReservoirPass implements Pass {
         pass.setPipeline(this._pipeline);
         pass.setBindGroup(0, bg);
         // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
-        pass.setBindGroup(1, sceneBindGroup);
+        // ONLY when the GRIS pipeline variant is active.
+        if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
         pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
         pass.end();
       }
@@ -80,7 +93,7 @@ export class SpatialGIReservoirPass implements Pass {
         const pass = encoder.beginComputePass(computeDesc('gi-spatial-2'));
         pass.setPipeline(this._pipeline);
         pass.setBindGroup(0, bg);
-        pass.setBindGroup(1, sceneBindGroup);
+        if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
         pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
         pass.end();
       }
@@ -98,7 +111,7 @@ export class SpatialGIReservoirPass implements Pass {
     const pass = encoder.beginComputePass(computeDesc('gi-spatial-2'));
     pass.setPipeline(this._pipeline);
     pass.setBindGroup(0, bg);
-    pass.setBindGroup(1, sceneBindGroup);
+    if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
     pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
     pass.end();
     encoder.copyBufferToBuffer(spatial, 0, current, 0, current.size);

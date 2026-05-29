@@ -673,10 +673,15 @@ export interface HybridEngineOptions extends EngineOptions {
    * The reuse passes traverse the scene BVH for the visibility ray, so this
    * costs one extra shadow ray per accepted neighbour.
    *
-   * Default: `false` — OFF is BIT-IDENTICAL to the prior reuse (the GRIS path
-   * is gated behind a UBO flag; the legacy clamped-Jacobian reuse runs
-   * verbatim), the same opt-in / OFF-bit-identical pattern as `rcEnabled`,
-   * `ppgEnabled`, and `regir`.
+   * Default: `false` — OFF is the verbatim Sprint-17 clamped-Jacobian reuse.
+   * The gate is resolved at PIPELINE-COMPILE time (it is fixed at engine
+   * creation): when OFF the GI spatial + temporal passes are the single-group
+   * pre-GRIS pipeline; when ON they are built with a `@group(1)` scene BVH/TLAS
+   * group + the GRIS shader variant. This MUST be a compile-time structural
+   * decision — an opt-in feature must not change the default pipeline structure,
+   * and a previous runtime-UBO gate that bound an extra group on the default
+   * path regressed the default render to an all-black frame. Same opt-in pattern
+   * as `rcEnabled`, `ppgEnabled`, and `regir`.
    *
    * @see plan / `HARDWARE-VALIDATION-NEEDS.md` V19 for the GPU A/B
    *      converged-unbiasedness validation this still needs.

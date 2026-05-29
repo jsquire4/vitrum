@@ -70,8 +70,8 @@ import { STAINED_GLASS_SHADE_MODULE } from '../shaders/stainedGlassShade.wgsl.js
 import { MOTION_VECTORS_MODULE } from '../shaders/motionVectors.wgsl.js';
 import { SAMPLE_CASCADE_C0_MODULE } from '../shaders/sampleCascadeC0.wgsl.js';
 import { RIS_GI_MODULE } from '../shaders/risGi.wgsl.js';
-import { TEMPORAL_GI_MODULE } from '../shaders/temporalGi.wgsl.js';
-import { SPATIAL_GI_MODULE } from '../shaders/spatialGi.wgsl.js';
+import { TEMPORAL_GI_MODULE, TEMPORAL_GI_GRIS_MODULE } from '../shaders/temporalGi.wgsl.js';
+import { SPATIAL_GI_MODULE, SPATIAL_GI_GRIS_MODULE } from '../shaders/spatialGi.wgsl.js';
 import { WELFORD_TEMPORAL_MODULE } from '../shaders/welfordTemporal.wgsl.js';
 import { SAMPLE_BUDGET_MODULE } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_MODULE } from '../shaders/resolve.wgsl.js';
@@ -102,7 +102,9 @@ export {
   MOTION_VECTORS_MODULE,
   RIS_GI_MODULE,
   TEMPORAL_GI_MODULE,
+  TEMPORAL_GI_GRIS_MODULE,
   SPATIAL_GI_MODULE,
+  SPATIAL_GI_GRIS_MODULE,
   WELFORD_TEMPORAL_MODULE,
   SAMPLE_BUDGET_MODULE,
   RESOLVE_MODULE,
@@ -262,10 +264,14 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [MOTION_VECTORS_MODULE.name, MOTION_VECTORS_MODULE],
   [SAMPLE_CASCADE_C0_MODULE.name, SAMPLE_CASCADE_C0_MODULE],
 
-  // ReSTIR-GI passes
+  // ReSTIR-GI passes. The GRIS (restirPtReuse ON) variants are separate
+  // compile-roots, composed only when the host opts in — see
+  // spatialGi.wgsl.ts / temporalGi.wgsl.ts headers + pipelineCompiler.ts.
   [RIS_GI_MODULE.name, RIS_GI_MODULE],
   [TEMPORAL_GI_MODULE.name, TEMPORAL_GI_MODULE],
+  [TEMPORAL_GI_GRIS_MODULE.name, TEMPORAL_GI_GRIS_MODULE],
   [SPATIAL_GI_MODULE.name, SPATIAL_GI_MODULE],
+  [SPATIAL_GI_GRIS_MODULE.name, SPATIAL_GI_GRIS_MODULE],
 
   // Sprint 9 — adaptive sampling
   [WELFORD_TEMPORAL_MODULE.name, WELFORD_TEMPORAL_MODULE],

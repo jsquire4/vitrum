@@ -42,12 +42,14 @@ import {
   SAMPLE_BUDGET_MODULE,
   SHADE_MODULE,
   SPATIAL_GI_MODULE,
+  SPATIAL_GI_GRIS_MODULE,
   SPATIAL_MODULE,
   SVGF_7X7_SPATIAL_FALLBACK_MODULE,
   SVGF_REPROJECTION_MODULE,
   SVGF_VARIANCE_FROM_MOMENTS_MODULE,
   TEMPORAL_ACCUM_MODULE,
   TEMPORAL_GI_MODULE,
+  TEMPORAL_GI_GRIS_MODULE,
   TEMPORAL_MODULE,
   WELFORD_TEMPORAL_MODULE,
   WGSL_MODULES,
@@ -83,10 +85,10 @@ import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { SAMPLE_CASCADE_C0_WGSL } from '../src/shaders/sampleCascadeC0.wgsl.js';
 import { STAINED_GLASS_SHADE_WGSL } from '../src/shaders/stainedGlassShade.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
-import { SPATIAL_GI_WGSL } from '../src/shaders/spatialGi.wgsl.js';
+import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../src/shaders/spatialGi.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../src/shaders/surfaceTextures.wgsl.js';
 import { TEMPORAL_WGSL } from '../src/shaders/temporal.wgsl.js';
-import { TEMPORAL_GI_WGSL } from '../src/shaders/temporalGi.wgsl.js';
+import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../src/shaders/temporalGi.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
 import { PPG_GUIDE_WGSL } from '../src/ppg/ppgGuide.wgsl.js';
@@ -315,10 +317,13 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('temporalGi (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + cameraRays + grisReuse + TEMPORAL_GI', () => {
-    // GRIS Phases 1+2 added `grisReuse` (its `requires` [walkaroundUbo,
-    // sharedPrimitives] are already emitted, so it lands right before the root
-    // source). `sceneTraversal`/`cameraRays` were already in the closure.
+  // ── GI reuse passes: the DEFAULT (restirPtReuse OFF) module is the verbatim
+  // Sprint-17 pass — no sceneTraversal/grisReuse, NO @group(1). The GRIS (ON)
+  // variant is a SEPARATE compile-root composed only when the host opts in.
+  // This split is the f8df9a4 black-frame fix: an opt-in feature must not change
+  // the default pipeline structure. (The structural-no-group(1) assertion lives
+  // in giStructuralGate.test.ts.) ──
+  it('temporalGi OFF (default, narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + cameraRays + TEMPORAL_GI', () => {
     expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
@@ -326,22 +331,48 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       JACOBIAN_SHIFT_WGSL +
       CAMERA_RAYS_WGSL +
-      GRIS_REUSE_WGSL +
       TEMPORAL_GI_WGSL,
     );
   });
 
-  it('spatialGi (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + grisReuse + SPATIAL_GI', () => {
-    // GRIS Phases 1+2 added `sceneTraversal` (the reconnection-visibility ray's
-    // traceSceneAny + BVHNode) and `grisReuse` (the shift + pairwise-MIS math).
-    expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(
+  it('temporalGi ON (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + cameraRays + grisReuse + TEMPORAL_GI_GRIS', () => {
+    // GRIS variant adds `grisReuse` (shift + pairwise-MIS math) and uses
+    // `sceneTraversal` (the reconnection-visibility ray's traceSceneAny);
+    // `sceneTraversal`/`cameraRays` were already in the closure. It DROPS
+    // `jacobianShift` — the GRIS path uses grisShiftJacobian, not the legacy
+    // clamped Jacobian.
+    expect(composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
-      JACOBIAN_SHIFT_WGSL +
+      CAMERA_RAYS_WGSL +
       GRIS_REUSE_WGSL +
+      TEMPORAL_GI_GRIS_WGSL,
+    );
+  });
+
+  it('spatialGi OFF (default, narrowed): walkaroundUbo + reservoirGi + sharedPrimitives + jacobianShift + SPATIAL_GI', () => {
+    expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(
+      WALKAROUND_UBO_WGSL +
+      RESERVOIR_GI_WGSL +
+      SHARED_PRIMITIVES_WGSL +
+      JACOBIAN_SHIFT_WGSL +
       SPATIAL_GI_WGSL,
+    );
+  });
+
+  it('spatialGi ON (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + SPATIAL_GI_GRIS', () => {
+    // GRIS variant adds `sceneTraversal` (the reconnection-visibility ray's
+    // traceSceneAny + BVHNode) and `grisReuse` (the shift + pairwise-MIS math),
+    // and DROPS `jacobianShift` (grisShiftJacobian replaces the legacy reuse).
+    expect(composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
+      WALKAROUND_UBO_WGSL +
+      SCENE_TRAVERSAL_WGSL +
+      RESERVOIR_GI_WGSL +
+      SHARED_PRIMITIVES_WGSL +
+      GRIS_REUSE_WGSL +
+      SPATIAL_GI_GRIS_WGSL,
     );
   });
 
@@ -452,6 +483,9 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
   const ROOT_PASSES = [
     'ris', 'temporal', 'spatial', 'shade',
     'risGi', 'temporalGi', 'spatialGi',
+    // GRIS (restirPtReuse ON) compile-roots — composed only when the host opts
+    // in, but the ident-resolution gate must still cover their closures.
+    'temporalGiGris', 'spatialGiGris',
     'welfordTemporal', 'motionVectors',
     'sampleBudget', 'resolve', 'gtao', 'gtaoUpsample',
     'indirectCombine', 'indirectTemporalAccum', 'atrous',
@@ -490,17 +524,34 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
         'evalGGX', 'sampleEmitterPoint', 'loadReservoirDI_rw',
         'jacobianReconnectionShift', 'WelfordVariance',
       ],
-      // spatialGi: no primary cast, no BRDF, no emitters. GRIS Phases 1+2 added
-      // `sceneTraversal` for the reconnection-visibility ray (traceSceneAny),
-      // which legitimately brings BVHNode + traceSceneFirstHit into the closure
-      // — so those are NO LONGER in the dropped set. It still never casts a
-      // PRIMARY ray (generatePrimaryRay_common) or evaluates a BRDF / emitter.
+      // spatialGi (OFF, default): no primary cast, no BRDF, no emitters, NO
+      // scene traversal, NO GRIS. This is the verbatim Sprint-17 pass — the
+      // f8df9a4 black-frame fix moved the @group(1) scene BVH + grisReuse into
+      // the SEPARATE `spatialGiGris` root, so the default closure must NOT pull
+      // them (this is exactly the structural guarantee that was missing).
       spatialGi: [
-        'evalGGX', 'sampleEmitterPoint',
-        'generatePrimaryRay_common',
+        'evalGGX', 'sampleEmitterPoint', 'BVHNode', 'traceSceneFirstHit',
+        'generatePrimaryRay_common', 'grisShiftJacobian', 'grisTargetAt',
       ],
-      // temporalGi: reprojects (needs cameraRays) but no BRDF / emitters.
-      temporalGi: ['evalGGX', 'sampleEmitterPoint', 'WelfordVariance'],
+      // spatialGiGris (ON): adds sceneTraversal (reconnection-visibility ray) +
+      // grisReuse, but still no primary cast / BRDF / emitter, and DROPS the
+      // legacy jacobianReconnectionShift (grisShiftJacobian replaces it).
+      spatialGiGris: [
+        'evalGGX', 'sampleEmitterPoint', 'generatePrimaryRay_common',
+        'jacobianReconnectionShift',
+      ],
+      // temporalGi (OFF, default): reprojects (needs cameraRays) but no BRDF /
+      // emitters, NO GRIS. The default closure must NOT pull grisReuse.
+      temporalGi: [
+        'evalGGX', 'sampleEmitterPoint', 'WelfordVariance',
+        'grisShiftJacobian', 'grisTargetAt',
+      ],
+      // temporalGiGris (ON): adds grisReuse + uses sceneTraversal, drops the
+      // legacy jacobianReconnectionShift.
+      temporalGiGris: [
+        'evalGGX', 'sampleEmitterPoint', 'WelfordVariance',
+        'jacobianReconnectionShift',
+      ],
       // risGi: casts primary + DDGI, but no emitter sampling / GGX / welford.
       risGi: ['evalGGX', 'sampleEmitterPoint', 'WelfordVariance', 'jacobianReconnectionShift'],
     };

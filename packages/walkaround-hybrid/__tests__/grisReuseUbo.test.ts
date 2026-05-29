@@ -9,16 +9,23 @@
  *   3. OFF-is-BIT-IDENTICAL — with `restirPtReuse` absent / 0, EVERY UBO byte is
  *      identical to the pre-GRIS packing (the gate byte stays 0), so the GI
  *      spatial/temporal reuse the shader runs is byte-for-byte the legacy path.
- *   4. The spatial/temporal GI shaders gate the GRIS branch behind
- *      `ubo.restirPtReuse == 1u` and keep the legacy clamped-Jacobian reuse for
- *      the gate-off path.
+ *   4. COMPILE-TIME GRIS gating — the GRIS reconnection shift + @group(1) scene
+ *      BVH live in SEPARATE shader variants (SPATIAL_GI_GRIS_WGSL /
+ *      TEMPORAL_GI_GRIS_WGSL), composed only when the host opts into
+ *      restirPtReuse. The DEFAULT (OFF) variants are the verbatim Sprint-17
+ *      legacy reuse with NO @group(1) / no GRIS symbols. (This split is the
+ *      f8df9a4 black-frame fix; the structural pipeline-layout guarantee is
+ *      pinned by giStructuralGate.test.ts.)
+ *
+ * The UBO `restirPtReuse` field is kept (harmless telemetry/consistency) so the
+ * offset / packing / OFF-bit-identity contracts below still hold.
  */
 
 import { describe, expect, it } from 'vitest';
 import { updateUBO } from '../src/pipeline/uboUpdater.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
-import { SPATIAL_GI_WGSL } from '../src/shaders/spatialGi.wgsl.js';
-import { TEMPORAL_GI_WGSL } from '../src/shaders/temporalGi.wgsl.js';
+import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../src/shaders/spatialGi.wgsl.js';
+import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../src/shaders/temporalGi.wgsl.js';
 import { GRIS_REUSE_WGSL } from '../src/shaders/grisReuse.wgsl.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
@@ -113,23 +120,46 @@ describe('GRIS-OFF bit-identity', () => {
   });
 });
 
-describe('GI reuse shaders — GRIS gated behind ubo.restirPtReuse', () => {
-  it('spatialGi branches on the gate and keeps the legacy reuse for the off path', () => {
-    expect(SPATIAL_GI_WGSL).toContain('ubo.restirPtReuse == 1u');
-    // Legacy clamped-Jacobian helper still present for the gate-off branch.
+describe('GI reuse shaders — GRIS gated at COMPILE time (separate variants)', () => {
+  it('spatialGi OFF (default) is the legacy reuse with NO GRIS branch / no scene group', () => {
+    // Legacy clamped-Jacobian reuse only.
     expect(SPATIAL_GI_WGSL).toContain('jacobianReconnectionShift(');
-    // GRIS branch: shift Jacobian + reconnection visibility + pairwise MIS.
-    expect(SPATIAL_GI_WGSL).toContain('grisShiftJacobian(');
-    expect(SPATIAL_GI_WGSL).toContain('grisReconnectionVisible(');
-    expect(SPATIAL_GI_WGSL).toContain('grisPairwiseDenomNeighbor(');
+    // The runtime gate is GONE — gating is compile-time-shader-variant now.
+    expect(SPATIAL_GI_WGSL).not.toContain('ubo.restirPtReuse == 1u');
+    // No GRIS symbols, no @group(1), no reconnection-visibility ray.
+    expect(SPATIAL_GI_WGSL).not.toContain('grisShiftJacobian(');
+    expect(SPATIAL_GI_WGSL).not.toContain('grisReconnectionVisible(');
+    expect(SPATIAL_GI_WGSL).not.toContain('grisPairwiseDenomNeighbor(');
+    expect(SPATIAL_GI_WGSL).not.toContain('@group(1)');
   });
 
-  it('temporalGi branches on the gate and keeps the legacy reuse for the off path', () => {
-    expect(TEMPORAL_GI_WGSL).toContain('ubo.restirPtReuse == 1u');
+  it('spatialGi ON (GRIS) carries the shift + reconnection-visibility + pairwise MIS', () => {
+    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisShiftJacobian(');
+    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisReconnectionVisible(');
+    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisPairwiseDenomNeighbor(');
+    // The GRIS variant declares the @group(1) scene BVH/TLAS group.
+    expect(SPATIAL_GI_GRIS_WGSL).toContain('@group(1)');
+    // It is GRIS-only: no legacy clamped-Jacobian helper, no runtime gate.
+    expect(SPATIAL_GI_GRIS_WGSL).not.toContain('jacobianReconnectionShift(');
+    expect(SPATIAL_GI_GRIS_WGSL).not.toContain('ubo.restirPtReuse == 1u');
+  });
+
+  it('temporalGi OFF (default) is the legacy reuse with NO GRIS branch / no scene group', () => {
     expect(TEMPORAL_GI_WGSL).toContain('jacobianReconnectionShift(');
-    expect(TEMPORAL_GI_WGSL).toContain('grisShiftJacobian(');
-    expect(TEMPORAL_GI_WGSL).toContain('tgiReconnectionVisible(');
-    expect(TEMPORAL_GI_WGSL).toContain('grisPairwiseDenomNeighbor(');
+    expect(TEMPORAL_GI_WGSL).not.toContain('ubo.restirPtReuse == 1u');
+    expect(TEMPORAL_GI_WGSL).not.toContain('grisShiftJacobian(');
+    expect(TEMPORAL_GI_WGSL).not.toContain('tgiReconnectionVisible(');
+    expect(TEMPORAL_GI_WGSL).not.toContain('grisPairwiseDenomNeighbor(');
+    expect(TEMPORAL_GI_WGSL).not.toContain('@group(1)');
+  });
+
+  it('temporalGi ON (GRIS) carries the shift + reconnection-visibility + pairwise MIS', () => {
+    expect(TEMPORAL_GI_GRIS_WGSL).toContain('grisShiftJacobian(');
+    expect(TEMPORAL_GI_GRIS_WGSL).toContain('tgiReconnectionVisible(');
+    expect(TEMPORAL_GI_GRIS_WGSL).toContain('grisPairwiseDenomNeighbor(');
+    expect(TEMPORAL_GI_GRIS_WGSL).toContain('@group(1)');
+    expect(TEMPORAL_GI_GRIS_WGSL).not.toContain('jacobianReconnectionShift(');
+    expect(TEMPORAL_GI_GRIS_WGSL).not.toContain('ubo.restirPtReuse == 1u');
   });
 
   it('grisReuse module mirrors the oracle geometry-term + Jacobian-from-cached-half-G', () => {

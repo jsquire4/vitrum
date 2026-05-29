@@ -2,10 +2,15 @@
  * TemporalGIReservoirPass — Sprint 17 GI temporal-reuse pass.
  *
  * Half-resolution (W/2 × H/2) dispatch. group(0) is the dedicated GI reservoir
- * group (current GI reservoir, previous GI reservoir, ubo); group(1) is the
- * SHARED scene BVH/TLAS group, bound (GRIS Phases 1+2) so the reconnection-
- * visibility ray can traverse the scene when `ubo.restirPtReuse == 1`. The
- * scene group is inert on the legacy (gate-off) path.
+ * group (current GI reservoir, previous GI reservoir, ubo).
+ *
+ * GRIS gate (`grisEnabled`) — opt-in via `HybridEngineOptions.restirPtReuse`.
+ * When ON, the compile-time pipeline variant (pipelineCompiler `grisOn`) adds a
+ * `@group(1)` SHARED scene BVH/TLAS group so the reconnection-visibility ray can
+ * traverse the scene; this pass binds it at slot 1 only in that case. When OFF
+ * (default) the pipeline is the verbatim Sprint-17 single-group pass and this
+ * pass must NOT call `setBindGroup(1, …)` — binding a group the layout does not
+ * declare regressed the default render to all-black (f8df9a4).
  */
 
 import { buildTemporalGiBindGroup } from '../bindGroupBuilders.js';
@@ -22,9 +27,13 @@ export class TemporalGIReservoirPass implements Pass {
   readonly passLabels: readonly PassLabel[] = ['gi-temporal'];
 
   private readonly _pipeline: GPUComputePipeline;
+  /** GRIS (restirPtReuse) ON ⇒ bind the scene group at @group(1). Must match
+   *  the compile-time pipeline layout (see pipelineCompiler `grisOn`). */
+  private readonly _grisEnabled: boolean;
 
-  constructor(pipeline: GPUComputePipeline) {
+  constructor(pipeline: GPUComputePipeline, grisEnabled = false) {
     this._pipeline = pipeline;
+    this._grisEnabled = grisEnabled;
   }
 
   gates(): boolean {
@@ -45,7 +54,8 @@ export class TemporalGIReservoirPass implements Pass {
     pass.setPipeline(this._pipeline);
     pass.setBindGroup(0, bg);
     // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
-    pass.setBindGroup(1, sceneBindGroup);
+    // ONLY when the GRIS pipeline variant is active.
+    if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
     pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
     pass.end();
   }

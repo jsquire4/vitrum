@@ -65,8 +65,11 @@ export interface HybridDenoiserFilterDeps {
   stainedGlassFlags: number;
   /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = legacy reuse, 1 =
    *  unbiased GRIS shift + visibility + pairwise MIS). Splatted into
-   *  pipeline.renderFrame as `restirPtReuse`. Lives in this cluster for the
-   *  same derived-gate (not scalar tunable) reason as `stainedGlassFlags`. */
+   *  pipeline.renderFrame as `restirPtReuse` for the UBO. NOTE: the GI pipeline
+   *  STRUCTURE (the @group(1) scene group + GRIS shader) is gated at COMPILE
+   *  time in `pipeline.initialize` — this per-frame number only drives the UBO
+   *  field (telemetry/consistency). Lives in this cluster for the same
+   *  derived-gate (not scalar tunable) reason as `stainedGlassFlags`. */
   restirPtReuse: number;
   /** NRC (Müller et al. 2021) cache gate (0 = off / verbatim DDGI suffix, 1 =
    *  neural radiance cache eligible). Splatted into pipeline.renderFrame as

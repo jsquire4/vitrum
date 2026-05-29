@@ -165,8 +165,9 @@ interface ParsedHybridEngineConfig {
   readonly atrousIndirectSigmas: readonly [number, number, number];
   readonly stainedGlassFlags: number;
   /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = off / legacy reuse,
-   *  1 = unbiased GRIS shift + visibility + pairwise MIS). Per-frame UBO gate,
-   *  no pipeline rebuild — same lifecycle as `stainedGlassFlags`. */
+   *  1 = unbiased GRIS shift + visibility + pairwise MIS). The STRUCTURE is
+   *  COMPILE-TIME (the boolean selects the GI pipeline layout + shader variant
+   *  at init); this number is also threaded into the per-frame UBO. */
   readonly restirPtReuse: number;
   /** NRC (Müller et al. 2021) cache gate (0 = off / verbatim DDGI suffix,
    *  1 = neural radiance cache eligible). Per-frame UBO gate, no pipeline
@@ -541,8 +542,13 @@ export class HybridEngine implements Engine {
   private readonly _stainedGlassFlags: number;
   /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = legacy reuse, 1 =
    *  unbiased GRIS shift + reconnection visibility + pairwise MIS). Default 0;
-   *  hosts opt in via `opts.restirPtReuse`. Per-frame UBO gate (no pipeline
-   *  rebuild), threaded into pipeline.renderFrame each frame. */
+   *  hosts opt in via `opts.restirPtReuse`. The STRUCTURE is gated at
+   *  COMPILE time — the boolean (== 1) is forwarded into `pipeline.initialize`
+   *  so the GI spatial + temporal pipelines are built with the GRIS layout +
+   *  shader variant (an opt-in feature must not change the default pipeline
+   *  structure; binding an extra group on the default path regressed the render
+   *  to all-black, f8df9a4). The UBO number is still threaded each frame for
+   *  telemetry / consistency. */
   private readonly _restirPtReuse: number;
   /** NRC (Müller et al. 2021) cache gate (0 = off, 1 = neural radiance cache
    *  eligible). Default 0; hosts opt in via `opts.nrcEnabled` (forbidden on
@@ -1817,6 +1823,11 @@ export class HybridEngine implements Engine {
       gtaoMode: this._gtaoMode,
       diSpatialPasses: this._diSpatialPasses,
       giSpatialPasses: this._giSpatialPasses,
+      // GRIS / ReSTIR-PT reuse is a COMPILE-TIME structural gate at the pipeline
+      // level (selects the GI pipeline layout + shader variant). The `_restirPtReuse`
+      // number (0/1) also drives the UBO flag; here we forward the boolean so the
+      // pipeline builds the matching layout.
+      restirPtReuse: this._restirPtReuse === 1,
       ppgDispatchInterval: this._ppgDispatchInterval,
       regirConfig: this._regirConfig,
     };

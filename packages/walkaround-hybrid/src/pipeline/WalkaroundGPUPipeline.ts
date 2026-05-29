@@ -445,6 +445,13 @@ export class WalkaroundGPUPipeline {
   private _gtaoDownscale: 2 | 4 = 2;
   private _diSpatialPasses: 1 | 2 = 2;
   private _giSpatialPasses: 1 | 2 = 2;
+  /** GRIS / ReSTIR-PT reconnection-shift reuse (restirPtReuse). COMPILE-TIME
+   *  gate: when true, the GI spatial + temporal pipelines are built with the
+   *  two-group layout + GRIS shader and the passes bind the scene group at
+   *  @group(1). When false (default) the GI passes are the verbatim Sprint-17
+   *  single-group pipeline (the known-good default). Resolved once in
+   *  initialize() from the host flag — NOT a per-frame UBO decision. */
+  private _restirPtReuseStructural = false;
   /** Bundled layout config passed to every `buildPassLayout` call so the four
    *  call sites can't drift. */
   private get _passLayoutConfig(): {
@@ -602,6 +609,16 @@ export class WalkaroundGPUPipeline {
       diSpatialPasses?: 1 | 2;
       /** Phase-0 — ReSTIR-GI spatial ping-pong pass count (1 or 2). Default 2. */
       giSpatialPasses?: 1 | 2;
+      /** GRIS / ReSTIR-PT reconnection-shift reuse (Lin et al. 2022) — opt-in.
+       *  COMPILE-TIME structural gate: when true, the GI spatial + temporal
+       *  pipelines are built with a `@group(1)` scene BVH/TLAS group (for the
+       *  reconnection-visibility ray) + the GRIS combine shader; when false
+       *  (default) they are the verbatim Sprint-17 single-group pipeline. This
+       *  MUST be a compile-time decision — a runtime UBO flag that bound an
+       *  extra group on the default path regressed the default render to an
+       *  all-black frame (f8df9a4). Host opt-in via
+       *  `HybridEngineOptions.restirPtReuse`. */
+      restirPtReuse?: boolean;
       /** Phase-0 — PPG train-pass (guide + update) dispatch cadence. The two
        *  passes dispatch only on frames where `frameCount % N === 0`. `1`
        *  (default) trains every frame; `N > 1` skips off-interval frames. The
@@ -645,11 +662,19 @@ export class WalkaroundGPUPipeline {
     // ── Per-frame GPU resources ───────────────────────────────────────────
     this._res = createFrameResources(d, W, H, { gtaoDownscale: this._gtaoDownscale });
 
+    // ── Resolve the GRIS structural gate BEFORE compiling pipelines ────────
+    // restirPtReuse is a COMPILE-TIME decision: it selects the GI spatial +
+    // temporal pipeline layouts (single-group vs two-group) + shader variants.
+    // Stored so the pass constructors below bind the scene group at @group(1)
+    // iff the GRIS pipeline variant was built.
+    this._restirPtReuseStructural = options?.restirPtReuse ?? false;
+
     // ── Compile shaders (denoiser-agnostic) ───────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
       ppgEnabled: options?.ppgEnabled ?? false,
       regirEnabled: this._regir.config.enabled,
+      restirPtReuse: this._restirPtReuseStructural,
     });
     // Shared à-trous pipeline — fed into the AtrousDenoiser context AND
     // the always-on AtrousIndirectPass.
@@ -733,8 +758,8 @@ export class WalkaroundGPUPipeline {
     // Phase-0 — spatial pass count is preset-driven (1 or 2 ping-pong passes).
     registry.register(new SpatialReservoirPass(compiled.spatialPipeline, this._diSpatialPasses));
     registry.register(new RISGIPass(compiled.risGiPipeline));
-    registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline));
-    registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, this._giSpatialPasses));
+    registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline, this._restirPtReuseStructural));
+    registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, this._giSpatialPasses, this._restirPtReuseStructural));
     registry.register(new ShadePass(compiled.shadePipeline));
     registry.register(new MotionVectorsPass(compiled.motionVectorsPipeline));
     registry.register(new GTAOPass(compiled.gtaoPipeline));

@@ -91,6 +91,12 @@ export interface PipelineInitHost {
   readonly diSpatialPasses: 1 | 2;
   /** ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). */
   readonly giSpatialPasses: 1 | 2;
+  /** GRIS / ReSTIR-PT reconnection-shift reuse (Lin et al. 2022) opt-in.
+   *  COMPILE-TIME structural gate threaded into `pipeline.initialize`: when
+   *  true the GI spatial + temporal pipelines are built with the two-group
+   *  (scene-BVH) layout + GRIS shader; when false (default) they are the
+   *  verbatim Sprint-17 single-group pipeline. */
+  readonly restirPtReuse: boolean;
   /** PPG train-pass dispatch cadence (≥ 1). The ppg-guide + ppg-update passes
    *  dispatch on `frameCount % ppgDispatchInterval === 0`. */
   readonly ppgDispatchInterval: number;
@@ -160,6 +166,7 @@ export type HybridInitStaticConfig = Pick<
   | 'gtaoMode'
   | 'diSpatialPasses'
   | 'giSpatialPasses'
+  | 'restirPtReuse'
   | 'ppgDispatchInterval'
   | 'regirConfig'
 >;
@@ -402,6 +409,10 @@ export class PipelineInitCoordinator {
           gtaoMode: host.gtaoMode,
           diSpatialPasses: host.diSpatialPasses,
           giSpatialPasses: host.giSpatialPasses,
+          // GRIS / ReSTIR-PT reconnection-shift reuse — COMPILE-TIME structural
+          // gate (selects the GI pipeline layout + shader variant). Default
+          // OFF = the verbatim Sprint-17 GI pipeline (known-good default).
+          restirPtReuse: host.restirPtReuse,
           // Phase-0 — PPG train-pass cadence (ppg-guide + ppg-update gate on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.
