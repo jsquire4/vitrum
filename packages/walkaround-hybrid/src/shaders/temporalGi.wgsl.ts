@@ -436,8 +436,19 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   if (prevValid) {
     let denomPrev = grisPairwiseDenomNeighbor(cCur, pHatPrev_atCur, cPrev, pHatPrev_native);
     let m_prev = select(0.0, (cPrev * pHatPrev_native) / denomPrev, denomPrev > 1e-12);
-    let pSrc = max(rPrev.pdfReconBsdf, 1e-12);
-    let w_prev = m_prev * pHatPrev_atCur * rPrev.W * J / pSrc;
+    // GRIS resampling weight for a REUSED reservoir sample (Lin 2022, Alg. 3 /
+    // Eq. 9):  w_prev = m_prev · p̂_cur(T z_prev) · W_prev · |∂T/∂·|.
+    //
+    // NO /p_src.  rPrev is a *reservoir*: its W_prev already bakes in the source
+    // pdf (the producer finalised W = w_sum/(M·p̂)). Reservoir reuse re-weights
+    // by m·p̂_canonical·W·J only — the SAME shape as the canonical fold above
+    // (m_cur·p̂_cur·W). This pass is the temporal FEEDBACK loop: rGris becomes
+    // next frame's rPrev. An extra /p_src (p_src = cosine-hemisphere pdf ∈ (0,
+    // 1/π]) would multiply the carried weight by 1/p_src ≈ π…∞ every frame,
+    // driving the recursion's gain above 1 → W pins at restirGiWCap and the GI
+    // mean climbs without bound (the V19 grison / grison-r0 divergence). The
+    // shift Jacobian J alone carries the reconnection-edge measure conversion.
+    let w_prev = m_prev * pHatPrev_atCur * rPrev.W * J;
     let oldM = rGris.M;
     updateReservoirGI(&rGris, rPrev.xs, rPrev.ns, rPrev.Lo, w_prev, &rng);
     rGris.M = oldM + prevM;

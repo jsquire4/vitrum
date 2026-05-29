@@ -315,7 +315,9 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // (GPU reconnection shift) and Phase 2 (GRIS pairwise MIS) will consume them:
   //   • wi_recon / distRecon / cosReconOut → the base reconnection-edge half-G
   //     (cosθ_out / dist²) numerator+denominator of the shift Jacobian.
-  //   • pdfReconBsdf → the base-sample source pdf p̂ for the pairwise-MIS denom.
+  //   • pdfReconBsdf → cached headroom (NOT read by the single-bounce reuse
+  //     weight: reservoir reuse is m·p̂·W·J, no /p_src — the W already bakes in
+  //     this pdf; see the spatialGi/temporalGi GRIS branches).
   //   • prefixVertexCount → shift-compatibility gate (only paths with matching
   //     prefix length take the reconnection shift; others fall back).
   {

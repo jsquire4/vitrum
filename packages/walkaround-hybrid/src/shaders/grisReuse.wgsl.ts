@@ -55,9 +55,20 @@
  * where p̂ is the unnormalised target (here the GI target luminance(Lo)·cosθ·INV_PI
  * in the SAME domain the sample lives), c are the per-domain confidence weights
  * (the reservoir M counts), and the shift Jacobian enters every cross term that
- * maps domain i's sample into domain j. With the source pdf (q.pdfReconBsdf) in
- * the denominator the combined reservoir is an unbiased RIS estimator of r's GI
- * integral.
+ * maps domain i's sample into domain j.
+ *
+ * The per-neighbour resampling weight the reuse loop accumulates is
+ *
+ *   w_i = m_i · p̂_r(T_{i→r} z_i) · W_i · |∂T_{i→r}/∂·|
+ *
+ * where W_i is the NEIGHBOUR's unbiased contribution weight (its reservoir UCW).
+ * There is NO division by the source pdf here: the inputs are RESERVOIRS, not
+ * fresh BSDF draws — q's source pdf was already consumed when its W_i was
+ * finalised (W_i = w_sum/(M·p̂_i)), so W_i·p̂ is already the unbiased
+ * contribution and the Jacobian alone carries the reconnection-edge measure
+ * conversion (Lin 2022, Alg. 3 / Eq. 9). Re-dividing by p_src double-discounts
+ * the pdf and diverges the temporal feedback loop; see the spatialGi/temporalGi
+ * GRIS branches for the load-bearing note.
  *
  * `grisPairwiseMisCanonical` / `grisPairwiseMisNeighbor` below build the two
  * pairwise denominators the per-neighbour reuse loop needs (the spatial/temporal

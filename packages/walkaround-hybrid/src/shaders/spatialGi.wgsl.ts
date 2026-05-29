@@ -295,22 +295,45 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   );
 
   // GRIS reuse builds a FRESH reservoir so the canonical sample can be folded
-  // in with its OWN pairwise-MIS weight (Lin 2022 §pairwise MIS — the canonical
-  // technique is one of the resampling techniques, not an un-weighted base).
+  // in with its OWN MIS weight (the canonical technique is one of the resampling
+  // techniques, not an un-weighted base).
   var rOut = emptyReservoirGI();
   rOut.xv = rCenter.xv; rOut.nv = rCenter.nv;
   rOut.prefixVertexCount = rCenter.prefixVertexCount;
 
-  // Canonical (this-pixel) target p̂_r(z_r) for its OWN reservoir sample — the
-  // numerator of the canonical pairwise-MIS weight. cR is the canonical
-  // confidence (its M count).
   let pHatCanonNative = grisTargetAt(rCenter.xv, rCenter.nv, rCenter.xs, rCenter.Lo);
   let cR = f32(rCenter.M);
-  // Canonical-sample MIS weight accumulator + neighbour count for the
-  // defensive 1/(K+1) pairwise-MIS normalisation (Bitterli 2020 / Lin 2022
-  // §pairwise MIS): m_canon = (1/(K+1))·(1 + Σ_i pairwise-canonical-term_i).
-  var canonMisAccum: f32 = 0.0;
-  var acceptedNeighbors: u32 = 0u;
+
+  // ── GRIS combine via the EXACT generalized balance heuristic (Lin 2022;
+  // mirrors @vitrum/shared-samplers grisGeneralizedBalanceWeights, the unit-
+  // pinned Σ m_i = 1 oracle) ───────────────────────────────────────────────
+  //
+  // The streaming-pairwise approximation used previously does NOT partition
+  // unity in general (its Σ m_i drifts well above 1 → over-energised reservoir
+  // → divergence in the temporal feedback loop). The full GBH IS exact: for a
+  // sample z held by domain i,
+  //   m_i(z) = c_i·p̂_i(z) / Σ_j c_j·p̂_j(T_{·→j} z)
+  // where the sum runs over the canonical AND every accepted neighbour, and the
+  // shift T_{·→j} re-roots z's reconnection vertex onto domain j's primary
+  // vertex (xs/Lo fixed; the per-domain target is grisTargetAt(xv_j, nv_j, z.xs,
+  // z.Lo)). This requires the full domain set up front, so we GATHER accepted
+  // neighbours into a small fixed array (≤ K_SPATIAL_GI) in pass 1, then fold
+  // each sample with its full-GBH weight in pass 2. The reused-reservoir
+  // resampling weight is  w_i = m_i · p̂_r(T_{i→r} z_i) · W_i · |∂T_{i→r}/∂·|
+  // (no /p_src — W_i already bakes in the source pdf; the Jacobian alone carries
+  // the reconnection-edge measure conversion).
+
+  // Pass-1 gather: store each accepted neighbour's domain (xv/nv), its sample
+  // (xs/ns/Lo), confidence c, UCW W, and shift Jacobian J at the canonical.
+  var nQ: u32 = 0u;
+  var qXv:  array<vec3f, 5>;
+  var qNv:  array<vec3f, 5>;
+  var qXs:  array<vec3f, 5>;
+  var qNs:  array<vec3f, 5>;
+  var qLo:  array<vec3f, 5>;
+  var qC:   array<f32, 5>;
+  var qW:   array<f32, 5>;
+  var qJ:   array<f32, 5>;
 
   for (var i: u32 = 0u; i < K_SPATIAL_GI; i = i + 1u) {
     let off = sampleDiscPx(&rng);
@@ -329,32 +352,11 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let planeDist = abs(dot(rQ.xv - rCenter.xv, rCenter.nv));
     if (planeDist > ubo.restirGiSpatialCoplanarTol) { continue; }
 
-    // ── GRIS reconnection-shift reuse (Lin 2022 §5 + Eq. 12 + pairwise MIS) ──
-    // Shift-compatibility gate: only reconnection samples with a matching
-    // path prefix take the reconnection shift (single-bounce prefix = 1u).
-    // A 0 prefix is an unpopulated Phase-0 cache → skip.
+    // Shift-compatibility gate: only reconnection samples with a matching path
+    // prefix take the reconnection shift (single-bounce prefix = 1u). A 0 prefix
+    // is an unpopulated Phase-0 cache → skip.
     if (rQ.prefixVertexCount != rCenter.prefixVertexCount
      || rQ.prefixVertexCount == 0u) { continue; }
-
-    let Mq = min(rQ.M, M_CLAMP_SPATIAL);
-    let cQ = f32(Mq);
-
-    // ── Pairwise-canonical term: re-root the CANONICAL sample onto q (the
-    // INVERSE shift T⁻¹) and balance it against q's own domain. This is the
-    // m_canon partner of the m_q below; accumulated for the defensive
-    // canonical MIS weight. The candidate-technique SET is every geometry- +
-    // prefix-compatible neighbour (counted here, before the visibility /
-    // Jacobian rejections): a neighbour that later fails visibility is a
-    // technique that produced a ZERO-weight sample — it still counts in the
-    // (K+1) defensive denominator, which keeps the estimator unbiased (the
-    // defensive MIS never over-counts; empty techniques just shift weight to
-    // the canonical). ──
-    if (rCenter.M > 0u && pHatCanonNative > 1e-9) {
-      let pHatCanon_atQ = grisTargetAt(rQ.xv, rQ.nv, rCenter.xs, rCenter.Lo);
-      let denomC = grisPairwiseDenomCanonical(cR, pHatCanonNative, cQ, pHatCanon_atQ);
-      canonMisAccum += select(0.0, (cR * pHatCanonNative) / denomC, denomC > 1e-12);
-    }
-    acceptedNeighbors += 1u;
 
     // Base half-G recovered from q's Phase-0 cache (cosReconOut/distRecon²) —
     // identical to reconnectionGeometryTerm(rQ.xv, rQ.xs, rQ.ns).
@@ -366,49 +368,54 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let J = grisShiftJacobian(gBase, rCenter.xv, rQ.xs, rQ.ns);
     if (J <= 0.0) { continue; }
 
-    // q's reconnection sample evaluated at the canonical pixel r (the shift
-    // target p̂_r(T z_q)) and in q's own domain (p̂_q(z_q)).
+    // Non-degenerate shifted + native targets, else q contributes nothing.
     let pHatQ_atR = grisTargetAt(rCenter.xv, rCenter.nv, rQ.xs, rQ.Lo);
     if (pHatQ_atR < 1e-9) { continue; }
     let pHatQ_native = grisTargetAt(rQ.xv, rQ.nv, rQ.xs, rQ.Lo);
     if (pHatQ_native < 1e-9) { continue; }
 
-    // Reconnection VISIBILITY — required for unbiasedness. If the shifted
-    // edge rCenter.xv → q.xs is occluded the shift maps to zero contribution.
+    // Reconnection VISIBILITY — required for unbiasedness. If the shifted edge
+    // rCenter.xv → q.xs is occluded the shift maps to zero contribution.
     if (!grisReconnectionVisible(rCenter.xv, rCenter.nv, rQ.xs)) { continue; }
 
-    // Pairwise generalized-balance MIS weight for q's sample:
-    //   m_q = (c_q·p̂_q_native) / (c_r·p̂_r(T z_q) + c_q·p̂_q_native)
-    let denomQ = grisPairwiseDenomNeighbor(cR, pHatQ_atR, cQ, pHatQ_native);
-    let m_q = select(0.0, (cQ * pHatQ_native) / denomQ, denomQ > 1e-12);
-
-    // GRIS resampling weight: w_q = m_q · p̂_r(T z_q) · W_q · |∂T/∂·| / p_src.
-    // p_src is q's source pdf (Phase-0 cache pdfReconBsdf, the SA pdf that
-    // generated the base reconnection direction). The Jacobian carries the
-    // reconnection-edge measure conversion (Lin 2022 Eq. 12).
-    let pSrc = max(rQ.pdfReconBsdf, 1e-12);
-    let w_q = m_q * pHatQ_atR * rQ.W * J / pSrc;
-    let oldM = rOut.M;
-    updateReservoirGI(&rOut, rQ.xs, rQ.ns, rQ.Lo, w_q, &rng);
-    rOut.M = oldM + Mq;
+    let Mq = min(rQ.M, M_CLAMP_SPATIAL);
+    qXv[nQ] = rQ.xv; qNv[nQ] = rQ.nv;
+    qXs[nQ] = rQ.xs; qNs[nQ] = rQ.ns; qLo[nQ] = rQ.Lo;
+    qC[nQ] = f32(Mq); qW[nQ] = rQ.W; qJ[nQ] = J;
+    nQ = nQ + 1u;
   }
 
-  // GRIS — fold the CANONICAL sample into rOut with its defensive pairwise-MIS
-  // weight (Lin 2022 §pairwise MIS / Bitterli 2020): the canonical technique is
-  // one resampling technique among the K neighbours, so its sample carries
-  //   m_canon = (1/(K+1)) · (1 + Σ_i pairwise-canonical-term_i)
-  // (the leading 1 is the defensive self-term; the accumulated sum is the
-  // canonical's balance against each accepted neighbour). With NO accepted
-  // neighbours m_canon = 1 (the canonical sample stands alone, unchanged).
-  if (rCenter.M > 0u) {
-    let denomCount = f32(acceptedNeighbors + 1u);
-    let m_canon = (1.0 + canonMisAccum) / denomCount;
-    // Canonical resampling weight: w_canon = m_canon · p̂_r(z_r) · W_r (no shift,
-    // J = 1; the sample already lives at this pixel so no visibility re-test).
+  // Pass-2 fold: each domain's sample carries its full-GBH weight m_i. The GBH
+  // denominator for a fixed sample z = Σ_j c_j·p̂_j(T_{·→j} z) over canonical +
+  // all gathered neighbours. fold(z, m_i·p̂_r(T z)·W_i·J_i) into rOut.
+
+  // Canonical sample z_r — domain set evaluates p̂ at each xv for z_r's (xs,Lo).
+  if (rCenter.M > 0u && pHatCanonNative > 1e-9) {
+    var denomR = cR * pHatCanonNative;            // canonical's own term (J·target native)
+    for (var j: u32 = 0u; j < nQ; j = j + 1u) {
+      denomR += qC[j] * grisTargetAt(qXv[j], qNv[j], rCenter.xs, rCenter.Lo);
+    }
+    let m_canon = select(0.0, (cR * pHatCanonNative) / denomR, denomR > 1e-12);
+    // No shift for the canonical's own sample (already at this pixel; J = 1).
     let w_canon = m_canon * pHatCanonNative * rCenter.W;
-    let oldM = rOut.M;
     updateReservoirGI(&rOut, rCenter.xs, rCenter.ns, rCenter.Lo, w_canon, &rng);
-    rOut.M = oldM + rCenter.M;
+    rOut.M = rOut.M + rCenter.M;
+  }
+
+  // Each neighbour's sample z_q — same full-GBH denominator over all domains.
+  for (var i: u32 = 0u; i < nQ; i = i + 1u) {
+    let pHatQ_native = grisTargetAt(qXv[i], qNv[i], qXs[i], qLo[i]);
+    // GBH denominator: canonical's target for z_q + every neighbour's target.
+    var denomQ = cR * grisTargetAt(rCenter.xv, rCenter.nv, qXs[i], qLo[i]);
+    for (var j: u32 = 0u; j < nQ; j = j + 1u) {
+      denomQ += qC[j] * grisTargetAt(qXv[j], qNv[j], qXs[i], qLo[i]);
+    }
+    let m_q = select(0.0, (qC[i] * pHatQ_native) / denomQ, denomQ > 1e-12);
+    // p̂_r(T z_q): q's sample re-rooted onto the canonical primary vertex.
+    let pHatQ_atR = grisTargetAt(rCenter.xv, rCenter.nv, qXs[i], qLo[i]);
+    let w_q = m_q * pHatQ_atR * qW[i] * qJ[i];
+    updateReservoirGI(&rOut, qXs[i], qNs[i], qLo[i], w_q, &rng);
+    rOut.M = rOut.M + u32(qC[i]);
   }
 
   // Finalise W from the chosen sample's p̂ at this pixel.

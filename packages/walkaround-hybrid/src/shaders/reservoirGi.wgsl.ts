@@ -47,9 +47,11 @@
  *       re-trace.
  *   • pdfReconBsdf (f32, idx 23) — the BSDF-sample solid-angle pdf at the
  *       visible vertex that GENERATED wi_recon (cosine-hemisphere pdf in the
- *       Phase-0 producer; the learned dTree mixture pdf when PPG is live). The
- *       GRIS source pdf p̂ of the base sample; needed in the pairwise-MIS
- *       denominator so the shifted weight is unbiased.
+ *       Phase-0 producer; the learned dTree mixture pdf when PPG is live).
+ *       Cached headroom: the single-bounce reconnection-shift reuse weight does
+ *       NOT read it (a reservoir's W already bakes in its source pdf, so reuse
+ *       is m·p̂·W·J with no /p_src — see the spatialGi/temporalGi GRIS notes).
+ *       Retained for a future multi-bounce shift's reverse-pdf evaluation.
  *   • distRecon (f32, idx 24) — ‖xv − xs‖ along the base path. The dist² term
  *       of the base reconnection-edge geometry G = cosθ_out / dist²; one of the
  *       two halves of the Jacobian ratio. Cached so the GPU need not recompute

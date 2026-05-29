@@ -133,10 +133,17 @@ describe('GI reuse shaders — GRIS gated at COMPILE time (separate variants)', 
     expect(SPATIAL_GI_WGSL).not.toContain('@group(1)');
   });
 
-  it('spatialGi ON (GRIS) carries the shift + reconnection-visibility + pairwise MIS', () => {
+  it('spatialGi ON (GRIS) carries the shift + reconnection-visibility + full-GBH MIS', () => {
     expect(SPATIAL_GI_GRIS_WGSL).toContain('grisShiftJacobian(');
     expect(SPATIAL_GI_GRIS_WGSL).toContain('grisReconnectionVisible(');
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisPairwiseDenomNeighbor(');
+    // The spatial pass combines with the EXACT generalized balance heuristic
+    // (Σ m_i = 1) rather than the streaming pairwise approximation: it gathers
+    // the accepted neighbours and builds the full GBH denominator inline from
+    // the per-domain target grisTargetAt(...), so the streaming pairwise helper
+    // is no longer called here (the pairwise denom drifts off unity for K>1 and
+    // over-energised the reservoir — the V19 spatial divergence).
+    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisTargetAt(');
+    expect(SPATIAL_GI_GRIS_WGSL).not.toContain('grisPairwiseDenomNeighbor(');
     // The GRIS variant declares the @group(1) scene BVH/TLAS group.
     expect(SPATIAL_GI_GRIS_WGSL).toContain('@group(1)');
     // It is GRIS-only: no legacy clamped-Jacobian helper, no runtime gate.
