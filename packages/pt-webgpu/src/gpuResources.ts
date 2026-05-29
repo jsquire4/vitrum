@@ -7,8 +7,9 @@
  *   - the accumulation + aux textures (accum / normalDepth / albedo / variance /
  *     motionVectors) and their cached views,
  *   - the accum / varianceMoments storage buffers + the params uniform buffer,
- *   - the compute pipeline(s) (path-trace + optional BDPT light-subpath) and the
- *     auto-derived group-0 bind-group layout,
+ *   - the compute pipeline(s) (path-trace + optional BDPT light-subpath) sharing
+ *     ONE explicit GPUPipelineLayout, and the explicit per-group bind-group
+ *     layouts that pipeline layout is built from,
  *   - the cached per-frame bind groups (group 0/1/2), and
  *   - the current accum dims (width / height / byte size).
  *
@@ -55,13 +56,28 @@ export class GpuResources {
   paramsBuffer: GPUBuffer | null = null;
   computePipeline: GPUComputePipeline | null = null;
   bdptSubpathPipeline: GPUComputePipeline | null = null;
+  /**
+   * Explicit group-0 bind-group layout. Used to build `pathTraceBindGroup`.
+   *
+   * Both compute pipelines (path-trace `main` + BDPT `bdptExtendLightSubpath`)
+   * share ONE explicit `GPUPipelineLayout` built from these layouts. A bind
+   * group built against an explicit layout is NOT pipeline-exclusive, so the
+   * SAME bind groups can be set on both pipelines — which is exactly what the
+   * BDPT light-subpath pass needs (it reuses the path-trace scene/params/light
+   * bindings). Auto-generated layouts (`layout:'auto'`) are pipeline-exclusive
+   * per the WebGPU spec, so they would reject a cross-pipeline `setBindGroup`.
+   */
   bindGroupLayout: GPUBindGroupLayout | null = null;
+  /** Explicit group-1 layout (full tier only): analytics + env + area lights. */
+  bindGroupLayout1: GPUBindGroupLayout | null = null;
+  /** Explicit group-2 layout (full tier only): TLAS table + BDPT scratch buffers. */
+  bindGroupLayout2: GPUBindGroupLayout | null = null;
 
   /**
    * BDPT eye-subpath scratch stack (D2): a per-pixel × maxEyeDepth read_write
    * storage buffer (2× vec4 / eye vertex = 32 B). Bound at group(2) binding(6) on
-   * the full tier. A 32-byte placeholder is kept when BDPT is off so the auto
-   * layout (which always includes the statically-used binding) stays satisfied.
+   * the full tier. A 32-byte placeholder is kept when BDPT is off so the explicit
+   * group-2 layout (which always declares binding 6) stays satisfied.
    */
   bdptEyeStackBuffer: GPUBuffer | null = null;
   bdptEyeStackByteSize = 0;
@@ -192,6 +208,103 @@ export class GpuResources {
     return true;
   }
 
+  /**
+   * Build the explicit `GPUBindGroupLayout`s for the current tier and wrap them
+   * in a single `GPUPipelineLayout` shared by both compute pipelines. The
+   * binding indices / resource types / visibility MUST match what the prior
+   * `layout:'auto'` derived from the WGSL `@group/@binding` decls (see
+   * `wgsl/pathTrace/material.wgsl.ts`) so the existing bind-group construction
+   * in `buildBindGroups` stays valid unchanged.
+   *
+   * All bindings are COMPUTE-visible (the entire kernel is one compute stage).
+   * The explicit layout is a SUPERSET that satisfies both `main` (uses every
+   * binding) and `bdptExtendLightSubpath` (uses a subset) — an explicit layout
+   * may declare bindings an entry point doesn't statically use, so one layout
+   * serves both pipelines.
+   */
+  #buildSharedPipelineLayout(): GPUPipelineLayout {
+    const VIS = GPUShaderStage.COMPUTE;
+    // WGSL `var<storage, read>`  → 'read-only-storage'.
+    const ro: GPUBufferBindingLayout = { type: 'read-only-storage' };
+    // WGSL `var<storage, read_write>` → 'storage'.
+    const rw: GPUBufferBindingLayout = { type: 'storage' };
+    // WGSL `var<uniform>` → 'uniform'.
+    const uniform: GPUBufferBindingLayout = { type: 'uniform' };
+    // WGSL `texture_storage_2d<rgba16float, write>`.
+    const storageTex: GPUStorageTextureBindingLayout = {
+      access: 'write-only',
+      format: 'rgba16float',
+      viewDimension: '2d',
+    };
+    const buf = (binding: number, layout: GPUBufferBindingLayout): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: VIS,
+      buffer: layout,
+    });
+    const tex = (binding: number): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: VIS,
+      storageTexture: storageTex,
+    });
+
+    // Group 0 — bindings 0..11 (lite) / 0..13 (full). Mirrors material.wgsl.ts.
+    const group0Entries: GPUBindGroupLayoutEntry[] = [
+      tex(0), // outputTexture (storage texture, write)
+      buf(1, uniform), // params (uniform)
+      buf(2, rw), // accumBuffer (read_write)
+      buf(3, ro), // positions
+      buf(4, ro), // indices
+      buf(5, ro), // triMaterialIds
+      buf(6, ro), // materials
+      buf(7, ro), // bvhNodes
+      buf(8, ro), // normals
+      tex(9), // normalDepthTexture
+      tex(10), // albedoTexture
+      tex(11), // varianceTexture
+    ];
+    if (this.#traceTier === 'full') {
+      group0Entries.push(
+        tex(12), // motionVectorsTexture
+        buf(13, rw), // varianceMomentsBuffer (read_write)
+      );
+    }
+    this.bindGroupLayout = this.#device.createBindGroupLayout({
+      label: `vitrum.pt-webgpu.layout.group0.${this.#traceTier}`,
+      entries: group0Entries,
+    });
+    const bindGroupLayouts: GPUBindGroupLayout[] = [this.bindGroupLayout];
+
+    if (this.#traceTier === 'full') {
+      // Group 1 — 10 read-only storage buffers (analytics + env + area lights).
+      this.bindGroupLayout1 = this.#device.createBindGroupLayout({
+        label: 'vitrum.pt-webgpu.layout.group1.full',
+        entries: Array.from({ length: 10 }, (_unused, binding) => buf(binding, ro)),
+      });
+      // Group 2 — TLAS table (5 read-only) + BDPT light-path + eye-stack (read_write).
+      this.bindGroupLayout2 = this.#device.createBindGroupLayout({
+        label: 'vitrum.pt-webgpu.layout.group2.full',
+        entries: [
+          buf(0, ro), // tlasNodes
+          buf(1, ro), // tlasInstanceIndices
+          buf(2, ro), // tlasBlasRoots
+          buf(3, ro), // tlasInstanceWorldToLocal
+          buf(4, ro), // tlasInstanceLocalToWorld
+          buf(5, rw), // bdptLightPath (read_write)
+          buf(6, rw), // bdptEyeStack (read_write)
+        ],
+      });
+      bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2);
+    } else {
+      this.bindGroupLayout1 = null;
+      this.bindGroupLayout2 = null;
+    }
+
+    return this.#device.createPipelineLayout({
+      label: `vitrum.pt-webgpu.pipelineLayout.${this.#traceTier}`,
+      bindGroupLayouts,
+    });
+  }
+
   ensurePipeline(): void {
     if (this.computePipeline != null && this.bindGroupLayout != null && this.paramsBuffer != null) {
       return;
@@ -207,19 +320,24 @@ export class GpuResources {
       label: `vitrum.pt-webgpu.pathTrace.${this.#traceTier}`,
       code: traceWgsl,
     });
+    // ONE explicit pipeline layout shared by BOTH pipelines. Auto layouts are
+    // pipeline-exclusive (WebGPU spec), so a bind group built against the
+    // path-trace pipeline's auto layout cannot be set on the BDPT pipeline (and
+    // vice versa). The BDPT light-subpath pass reuses the path-trace bind groups,
+    // so it requires a shared explicit layout to dispatch on real hardware.
+    const pipelineLayout = this.#buildSharedPipelineLayout();
     this.computePipeline = this.#device.createComputePipeline({
       label: 'vitrum.pt-webgpu.pathTrace.pipeline',
-      layout: 'auto',
+      layout: pipelineLayout,
       compute: {
         module,
         entryPoint: 'main',
       },
     });
-    this.bindGroupLayout = this.computePipeline.getBindGroupLayout(0);
     if (this.#traceTier === 'full' && this.#bdpt) {
       this.bdptSubpathPipeline = this.#device.createComputePipeline({
         label: 'vitrum.pt-webgpu.bdptLightSubpath.pipeline',
-        layout: 'auto',
+        layout: pipelineLayout,
         compute: {
           module,
           entryPoint: 'bdptExtendLightSubpath',
@@ -238,8 +356,8 @@ export class GpuResources {
    * still validates). Sizes the buffer to `width·height·maxDepth·32 B`. When
    * BDPT is off, keeps only a 32-byte placeholder.
    *
-   * The full-tier auto layout always includes the statically-used `bdptEyeStack`
-   * binding, so a non-null buffer must always exist on the full tier.
+   * The full-tier explicit group-2 layout always declares the `bdptEyeStack`
+   * binding (6), so a non-null buffer must always exist on the full tier.
    */
   ensureBdptEyeStack(width: number, height: number, maxDepth: number, bdptActive: boolean): boolean {
     if (this.#traceTier !== 'full') {
@@ -353,14 +471,16 @@ export class GpuResources {
     });
     this.pathTraceBindGroup = bindGroup;
     if (this.#traceTier === 'full') {
+      // Built against the SAME explicit layouts the shared pipeline layout uses,
+      // so these groups set cleanly on BOTH the path-trace and BDPT pipelines.
       this.pathTraceBindGroup1 = this.#device.createBindGroup({
         label: 'vitrum.pt-webgpu.pathTrace.bindgroup1.full',
-        layout: this.computePipeline!.getBindGroupLayout(1),
+        layout: this.bindGroupLayout1!,
         entries: fullGroup1Entries,
       });
       this.pathTraceBindGroup2 = this.#device.createBindGroup({
         label: 'vitrum.pt-webgpu.pathTrace.bindgroup2.full',
-        layout: this.computePipeline!.getBindGroupLayout(2),
+        layout: this.bindGroupLayout2!,
         entries: fullGroup2Entries,
       });
     }
@@ -392,5 +512,7 @@ export class GpuResources {
     this.computePipeline = null;
     this.bdptSubpathPipeline = null;
     this.bindGroupLayout = null;
+    this.bindGroupLayout1 = null;
+    this.bindGroupLayout2 = null;
   }
 }
