@@ -131,6 +131,32 @@ export function isGeometryOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): bo
 }
 
 /**
+ * True when a primitive patch touches ONLY the `instances` array (the
+ * per-instance transform list of an `instanced-mesh`) and nothing else. Such a
+ * patch — including one that GROWS or SHRINKS the instance COUNT — can be
+ * serviced by re-expanding just that one instanced-mesh's baked children in the
+ * live THREE scene root + the fork's targeted geometry+BVH regen, rather than a
+ * full `setScene`.
+ *
+ * Like {@link isGeometryOnlyPrimitivePatch}, this deliberately blocks on a
+ * co-present `material` (which would need the MaterialsTexture re-packed via a
+ * full rebuild) or any other field: an instances-only patch keeps the same
+ * shared geometry + material, so the geometry-only regen that skips
+ * `updateMaterials()` is safe. The caller still checks the primitive's `kind`
+ * is `instanced-mesh` before re-expanding — a stray `instances` field on a
+ * non-instanced primitive falls through to the full-rebuild path.
+ */
+export function isInstanceCountOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
+  const rec = patch as Record<string, unknown>;
+  if (rec['instances'] === undefined) return false;
+  for (const key of Object.keys(rec)) {
+    if (key === 'id' || key === 'instances') continue;
+    if (rec[key] !== undefined) return false;
+  }
+  return true;
+}
+
+/**
  * Apply a positions(+normals) patch to a THREE mesh in place. Returns false
  * when the vertex count changed (topology change — caller must full-rebuild).
  */

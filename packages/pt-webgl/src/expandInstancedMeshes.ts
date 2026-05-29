@@ -23,8 +23,9 @@
 // geometry + material (so material edits via `updatePrimitive` still resolve
 // through `findMeshByPrimitiveId`, which matches on `name`/`uuid`).
 
-import { Matrix4, Mesh } from 'three';
+import { InstancedMesh as TInstancedMesh, Matrix4, Mesh } from 'three';
 import type { InstancedMesh, Mesh as TMesh, Object3D, Scene as ThreeScene } from 'three';
+import type { Mat4 } from '@vitrum/core';
 
 /** Per-instance scratch matrix — reused across the whole expansion pass. */
 const _instanceMatrix = new Matrix4();
@@ -139,4 +140,90 @@ export function findAllMeshesByPrimitiveId(root: Object3D, id: string): TMesh[] 
     if (obj.uuid === id || obj.name === id) out.push(obj as TMesh);
   });
   return out;
+}
+
+/**
+ * Re-expand a single `instanced-mesh` primitive after an `instances`-only patch
+ * (an instance-COUNT change, or a per-instance transform change) WITHOUT a full
+ * `setScene` teardown.
+ *
+ * At `setScene` time, `expandInstancedMeshesInScene` already replaced the source
+ * `THREE.InstancedMesh` with N standalone `THREE.Mesh` children (all sharing the
+ * single geometry + material, all carrying `name === primitiveId`). This helper:
+ *   1. locates those existing children by primitive id;
+ *   2. reuses their SHARED geometry + material (so the MaterialsTexture slot is
+ *      untouched — instances never change material, which is why the caller can
+ *      take the fork's geometry-only regen that skips `updateMaterials()`);
+ *   3. removes the old children from their common parent;
+ *   4. bakes a fresh set of N' standalone meshes from the new `instances`
+ *      matrices (via {@link expandInstancedMesh} on a throwaway InstancedMesh
+ *      that is never added to the scene graph) and adds them to that parent.
+ *
+ * The new children re-use the SAME `vitrumExpandedInstanceOf` uuid tag as the
+ * old ones, so `disposeObject3DTree`'s identity-dedup (which collapses the N
+ * shared-geometry/material disposes into one) keeps working unchanged: every
+ * child still points at the one shared geometry + material object, and the tag
+ * documents that they are expanded instances of one source.
+ *
+ * Returns `false` when the primitive has no existing expanded children in the
+ * root (nothing to re-expand — caller must fall back to a full `setScene`);
+ * `true` when the swap completed. Does NOT trigger the fork geometry regen — the
+ * caller does that after the swap (it owns the path-tracer handle).
+ */
+export function reexpandInstancedMeshInScene(
+  root: Object3D,
+  primitiveId: string,
+  instances: ReadonlyArray<Mat4>,
+): boolean {
+  const existing = findAllMeshesByPrimitiveId(root, primitiveId);
+  if (existing.length === 0) return false;
+
+  // The expanded children all share ONE geometry + ONE material (built once by
+  // the shared converter, never cloned in expansion). Read them off the first
+  // child; reusing them keeps the material slot single-sourced.
+  const first = existing[0]!;
+  const sharedGeometry = first.geometry;
+  const sharedMaterial = first.material;
+  const parent = first.parent;
+  if (parent == null) return false;
+
+  // Preserve render flags + the source-InstancedMesh uuid tag so the new
+  // children look identical (modulo count) to a fresh setScene expansion.
+  const castShadow = first.castShadow;
+  const receiveShadow = first.receiveShadow;
+  const visible = first.visible;
+  const sourceUuidTag = first.userData['vitrumExpandedInstanceOf'] as string | undefined;
+
+  // Build a throwaway InstancedMesh purely to drive expandInstancedMesh — it is
+  // never added to the scene. It reuses the shared geometry/material so the
+  // expanded children point at the SAME objects the (removed) children did.
+  const temp = new TInstancedMesh(sharedGeometry, sharedMaterial, instances.length);
+  temp.name = primitiveId;
+  temp.castShadow = castShadow;
+  temp.receiveShadow = receiveShadow;
+  temp.visible = visible;
+  // The source InstancedMesh node carried identity matrixWorld in setScene
+  // (instancedMeshPrimitiveToThree leaves it identity); keep that so each
+  // child's baked transform is exactly the per-instance matrix.
+  temp.matrixAutoUpdate = false;
+  const m = new Matrix4();
+  for (let i = 0; i < instances.length; i += 1) {
+    m.fromArray(instances[i]! as unknown as ArrayLike<number>);
+    temp.setMatrixAt(i, m);
+  }
+  temp.instanceMatrix.needsUpdate = true;
+
+  const children = expandInstancedMesh(temp);
+  // expandInstancedMesh tags children with the THROWAWAY temp.uuid; rewrite the
+  // tag to the value the old children carried (when present) so the dispose
+  // dedup + any tag-based introspection stays stable across re-expansions.
+  if (sourceUuidTag != null) {
+    for (const child of children) {
+      child.userData['vitrumExpandedInstanceOf'] = sourceUuidTag;
+    }
+  }
+
+  for (const child of existing) parent.remove(child);
+  for (const child of children) parent.add(child);
+  return true;
 }

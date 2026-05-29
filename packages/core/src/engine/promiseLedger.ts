@@ -91,12 +91,30 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
   },
   'pt-webgl': {
     supportsIncrementalScene: true,
+    // `topology: true` — pt-webgl absorbs BOTH topology-changing patch kinds
+    // `updatePrimitive` can legally receive on an existing primitive, without a
+    // full `setScene`:
+    //   • mesh/skinned-mesh vertex/index-COUNT change → rebuild that one mesh's
+    //     THREE BufferGeometry in place (`applyGeometryPatchToMesh`) + the fork's
+    //     targeted geometry+BVH regen; the fork's StaticGeometryGenerator detects
+    //     the changed attribute lengths and force-rebuilds (GEOMETRY_REBUILT);
+    //   • instanced-mesh instance-COUNT change → re-expand ONLY that primitive's
+    //     baked THREE.Mesh children in the live scene root (swap N → N', reusing
+    //     the shared geometry + material) + the same targeted regen; the changed
+    //     child set (count delta forces GEOMETRY_REBUILT) is picked up on the
+    //     next generate().
+    // Both stay same-material (a co-present `material` is blocked by the
+    // geometry-only / instances-only classifiers and routes to a full `setScene`
+    // so the MaterialsTexture is re-packed). `id`/`kind` morphs throw in
+    // patchPrimitiveInScene, and whole-primitive ADD/REMOVE is `setScene`, not a
+    // patch — so `topology` here means exactly "count-change patches on an
+    // existing primitive are absorbed".
     incrementalPatchSupport: {
       transform: true,
       positions: true,
       material: true,
       emitter: true,
-      topology: false,
+      topology: true,
     },
     supportsAuxBuffers: false,
     accumulates: true,

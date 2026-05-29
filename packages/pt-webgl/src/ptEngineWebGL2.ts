@@ -24,7 +24,14 @@ import type {
 } from '@vitrum/core';
 import { asBackendTexture, patchPrimitiveInScene, patchEmitterInScene, partitionSceneBySupport } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
-import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment, MeshPrimitive } from '@vitrum/core';
+import type {
+  Scene,
+  ScenePrimitive,
+  SceneEmitter,
+  SceneEnvironment,
+  MeshPrimitive,
+  InstancedMeshPrimitive,
+} from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import {
   vitrumSceneToThree,
@@ -32,7 +39,11 @@ import {
   applyVitrumMaterialToMesh,
   findMeshByPrimitiveId,
 } from '@vitrum/three-bindings';
-import { expandInstancedMeshesInScene, findAllMeshesByPrimitiveId } from './expandInstancedMeshes.js';
+import {
+  expandInstancedMeshesInScene,
+  findAllMeshesByPrimitiveId,
+  reexpandInstancedMeshInScene,
+} from './expandInstancedMeshes.js';
 import type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
 import { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
 import { bdptForceGpuBind, isSoftwareGlRenderer } from './bdpt/isSoftwareGlRenderer.js';
@@ -44,6 +55,7 @@ import {
   isTransformOnlyPrimitivePatch,
   isPositionsOnlyPrimitivePatch,
   isGeometryOnlyPrimitivePatch,
+  isInstanceCountOnlyPrimitivePatch,
   applyPositionsPatchToMesh,
   applyGeometryPatchToMesh,
   refreshPathTracerSceneGeometry,
@@ -681,12 +693,19 @@ export class PTEngineWebGL2 implements Engine {
     if (this.#lastTlasAudit?.needsTlas) experimental.add('merged-bvh-only');
     return {
       supportsIncrementalScene: true,
+      // topology: true — both topology-patch kinds are absorbed without a full
+      // setScene: mesh/skinned-mesh vertex/index-COUNT changes (geometry-only
+      // path: applyGeometryPatchToMesh + fork regen) AND instanced-mesh
+      // instance-COUNT changes (re-expand this primitive's baked children +
+      // fork regen). Both require same-material patches — a co-present material
+      // routes to a full rebuild so the MaterialsTexture is re-packed. Mirrors
+      // the pt-webgl row in @vitrum/core's BACKEND_PROMISE_LEDGER.
       incrementalPatchSupport: {
         transform: true,
         positions: true,
         material: true,
         emitter: true,
-        topology: false,
+        topology: true,
       },
       supportsAuxBuffers: false,
       accumulates: true,
@@ -1080,6 +1099,47 @@ export class PTEngineWebGL2 implements Engine {
       this.#oidnDispatcher?.invalidate();
       this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
       return;
+    }
+    if (isInstanceCountOnlyPrimitivePatch(_patch)) {
+      // `instances`-only patch on an `instanced-mesh`: a per-instance transform
+      // list change, INCLUDING an instance-COUNT grow/shrink. At setScene the
+      // single THREE.InstancedMesh was expanded into N baked THREE.Mesh children
+      // (the fork bakes only `mesh.matrixWorld`, ignoring `instanceMatrix`), so
+      // an instances change is a topology change on the baked children, not a
+      // field the fork reads off a live InstancedMesh. Re-expand ONLY this
+      // primitive's children (swap the live root's N children for N' fresh ones,
+      // reusing the shared geometry + material), then take the fork's targeted
+      // geometry+BVH regen — the StaticGeometryGenerator detects the changed
+      // child set (added uuids built fresh, removed uuids evicted; a count delta
+      // forces GEOMETRY_REBUILT), exactly like the vertex-count path. Because
+      // `instances` carries no material, the regen's skipped `updateMaterials()`
+      // is harmless; a co-present material would have been blocked by the
+      // classifier and routed to the full-rebuild fallthrough.
+      //
+      // Guard on the CURRENT primitive's kind: a stray `instances` field on a
+      // non-instanced primitive is not a valid instanced re-expansion, so it
+      // falls through to the full-rebuild path below.
+      const current = this.#vitrumScene.primitives.find((p) => String(p.id) === _id);
+      if (current != null && current.kind === 'instanced-mesh') {
+        const instances = (_patch as Partial<InstancedMeshPrimitive>).instances;
+        if (instances != null) {
+          if (!reexpandInstancedMeshInScene(this.#threeSceneRoot, _id, instances)) {
+            // No existing expanded children to swap (generator state we can't
+            // incrementally patch) — full rebuild.
+            const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+            this.setScene(next);
+            return;
+          }
+          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
+            const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+            this.setScene(next);
+            return;
+          }
+          this.#oidnDispatcher?.invalidate();
+          this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+          return;
+        }
+      }
     }
     const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
     this.setScene(next);
