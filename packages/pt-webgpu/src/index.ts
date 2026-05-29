@@ -9,12 +9,20 @@ import type {
   FrameOutput,
   FrameStats,
   GpuMemoryBreakdown,
+  InverseSession,
+  InverseSessionOptions,
+  MaterialSpec,
   ProgressStats,
   Scene,
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
 import { asBackendTexture, asMat4 } from '@vitrum/core';
+import {
+  PtWebgpuInverseSession,
+  type InverseEngineHooks,
+} from './inverse/inverseSession.js';
+import { readOidnInputsFromTextures } from './denoise/rgba16fReadback.js';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import {
   applyEmitterCountMutation,
@@ -161,6 +169,13 @@ class PTEngineWebGPU implements Engine {
   #geoPack: ScenePackResult | null = null;
   #samplesAccumulated = 0;
   #activeBounces = 1;
+  /** WS5 — the most-recent host FrameInput, captured so an inverse-rendering
+   *  session can re-render the SAME view with a frozen seed between optimizer
+   *  steps. NOT overwritten by the session's own synthetic inverse renders. */
+  #lastFrameInput: FrameInput | null = null;
+  /** WS5 — true while an inverse session is driving synthetic renders, so the
+   *  cached host camera (`#lastFrameInput`) isn't clobbered by them. */
+  #inInverseRender = false;
 
   /**
    * The cohesive GPU-resource-lifecycle cluster (T14-followup extraction): accum
@@ -966,6 +981,9 @@ class PTEngineWebGPU implements Engine {
 
   renderFrame(input: FrameInput): FrameOutput {
     this.#assertLive('renderFrame');
+    if (!this.#inInverseRender) {
+      this.#lastFrameInput = input;
+    }
     const frameStartMs = globalThis.performance?.now?.() ?? Date.now();
 
     const gpu = this.#gpu;
@@ -1125,6 +1143,97 @@ class PTEngineWebGPU implements Engine {
    */
   getDenoisedFrame(): DenoisedFrame | null {
     return this.#postDenoiser?.getLatestDenoised() ?? null;
+  }
+
+  // ── Inverse rendering (differentiable RT) — WS5 ──────────────────────────
+  //
+  // Phase 0 (finite-difference) + the validated Phase-1 BSDF adjoint oracle.
+  // The session owns the optimization loop; the host owns the cadence (it calls
+  // session.step() at its own pace). The session re-renders the SAME view as
+  // the most-recent renderFrame with a FROZEN RNG seed so perturbations differ
+  // only in the perturbed parameter (path replay's frozen-RNG discipline).
+  //
+  // Ref: Vicini 2021 (Path Replay Backpropagation); Nimier-David 2020
+  //      (Radiative Backpropagation).
+  createInverseSession(opts: InverseSessionOptions): InverseSession {
+    this.#assertLive('createInverseSession');
+    if (this.#lastFrameInput == null) {
+      throw new Error(
+        'createInverseSession: call renderFrame() at least once before opening an ' +
+          'inverse session — the session re-renders the most-recent camera view.',
+      );
+    }
+    const hooks: InverseEngineHooks = {
+      getScene: () => this.#scene!,
+      renderAndReadback: (width, height, samples) =>
+        this.#renderAndReadbackForInverse(width, height, samples),
+      patchMaterial: (primitiveId: string, patch: Partial<MaterialSpec>) => {
+        this.updatePrimitive(primitiveId, { material: patch } as Partial<ScenePrimitive>);
+      },
+      patchEmitter: (emitterId: string, patch: Partial<SceneEmitter>) => {
+        this.updateEmitter(emitterId, patch);
+      },
+    };
+    return new PtWebgpuInverseSession(hooks, opts);
+  }
+
+  /**
+   * Render `samples` accumulated SPP at exactly `width × height` with a FROZEN
+   * RNG seed (so two renders that differ only in a perturbed material/emitter
+   * parameter share their random choices — the finite-difference + path-replay
+   * requirement), then read the accum texture back as interleaved RGB float.
+   *
+   * Resets accumulation first, builds a synthetic FrameInput from the cached
+   * camera (viewport forced to the target dims, resolutionFactor 1, a fixed
+   * seed/index), and submits `samples` single-SPP dispatches via the normal
+   * renderFrame path. Reuses `readOidnInputsFromTextures` for the GPU→CPU copy.
+   */
+  async #renderAndReadbackForInverse(
+    width: number,
+    height: number,
+    samples: number,
+  ): Promise<{ rgb: Float32Array; channels: 3 | 4 }> {
+    const last = this.#lastFrameInput!;
+    // FROZEN seed SEQUENCE — the per-sample seed sequence is identical every
+    // inverse render (baseline and every ±ε probe), so the ONLY thing that
+    // changes between two renders is the perturbed scene parameter (path
+    // replay's frozen-RNG discipline). We still vary the seed PER SAMPLE
+    // (FROZEN_SEED_BASE + s) so the `samples` average reduces Monte-Carlo
+    // variance rather than re-tracing one identical path; the sequence itself
+    // is deterministic and reproduced bit-for-bit on the probe render.
+    const FROZEN_SEED_BASE = 0x5eed5eed;
+    const FROZEN_INDEX = 0;
+    this.#inInverseRender = true;
+    try {
+      this.reset();
+      for (let s = 0; s < samples; s++) {
+        const frame: FrameInput = {
+          ...last,
+          frameIndex: FROZEN_INDEX,
+          frameSeed: (FROZEN_SEED_BASE + s) >>> 0,
+          viewport: { width, height, devicePixelRatio: 1 },
+          quality: {
+            ...(last.quality ?? {}),
+            samplesTarget: samples,
+            resolutionFactor: 1,
+          },
+        };
+        this.renderFrame(frame);
+      }
+    } finally {
+      this.#inInverseRender = false;
+    }
+    const accum = this.#gpu.accumTexture;
+    if (accum == null) {
+      return { rgb: new Float32Array(width * height * 3), channels: 3 };
+    }
+    const result = await readOidnInputsFromTextures(
+      this.#device,
+      { color: accum },
+      width,
+      height,
+    );
+    return { rgb: result.color, channels: 3 };
   }
 
   /** WG-7 — supply host-owned light-path buffer (or null to use internal CPU fill). */

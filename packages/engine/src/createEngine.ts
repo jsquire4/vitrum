@@ -482,6 +482,23 @@ export function wrapWithIdempotentDispose(
     // surface still exists but most methods will return null / empty
     // because the underlying _ddgi / _pipeline / _bvhBuffers are torn down.
     ...(engine.debug ? { debug: engine.debug } : {}),
+    // WS5 — forward inverse-rendering (differentiable RT) sessions only when
+    // the backend implements them (mirrors the optional-method pattern above).
+    // After dispose the proxy refuses to open a new session (the engine is
+    // torn down); an already-open session the host holds keeps working until
+    // the host disposes it. Sessions outlive a single frame but not the engine.
+    ...(engine.createInverseSession
+      ? {
+          createInverseSession: (
+            inverseOpts: Parameters<NonNullable<Engine['createInverseSession']>>[0],
+          ) => {
+            if (disposed) {
+              throw new Error('createInverseSession: engine is disposed');
+            }
+            return engine.createInverseSession!(inverseOpts);
+          },
+        }
+      : {}),
   };
   return proxy;
 }
