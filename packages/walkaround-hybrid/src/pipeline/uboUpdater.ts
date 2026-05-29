@@ -38,8 +38,8 @@
  *   offset 344: stainedGlassFlags           (u32 = 4 bytes) — T5 (was _tracePad0)
  *   offset 348: ppgEnabled                  (u32 = 4 bytes) — PPG guided-sampling gate (was _tracePad1)
  *   offset 352: ppgMixAlpha                 (f32 = 4 bytes) — PPG MIS mixing weight α
- *   offset 356: _ppgPad0                    (u32 = 4 bytes)
- *   offset 360: _ppgPad1                    (u32 = 4 bytes)
+ *   offset 356: lightTreeEnabled            (u32 = 4 bytes) — DI light-tree selection gate (was _ppgPad0)
+ *   offset 360: lightTreeNodeCount          (u32 = 4 bytes) — packed light-tree node count (was _ppgPad1)
  *   offset 364: _ppgPad2                    (u32 = 4 bytes)
  * Total: 368 bytes (368 % 16 == 0).
  */
@@ -158,7 +158,11 @@ export function updateUBO(
   // α stays 0 → gi-ris RIS source pdf = cosθ/π exactly (ppg-OFF bit-identity).
   u32[87] = ppg.enabled ? 1 : 0; //  offset 348 — ppgEnabled
   f32[88] = ppg.enabled ? ppg.mixAlpha : 0; // offset 352 — ppgMixAlpha
-  // f32[89..91] = _ppgPad0/1/2 (zero).
+  // Light-tree DI light-SELECTION gate (offset 356) + node count (offset 360).
+  // When disabled both stay 0 → RIS uses the flat power-CDF path exactly.
+  u32[89] = (inputs.lightTreeEnabled ?? 0) >>> 0; // offset 356 — lightTreeEnabled
+  u32[90] = (inputs.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
+  // u32[91] = _ppgPad2 (zero).
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

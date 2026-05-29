@@ -17,7 +17,7 @@ export {
   BSDF_PRIMITIVES_MODULE_NAME,
 } from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
-export { buildLightTree, packLightTreeForGPU } from './lightTree.js';
+export { buildLightTree, packLightTreeForGPU, LIGHT_TREE_FLOATS_PER_NODE } from './lightTree.js';
 export type { LightTreeNode, LightTreeBuildInput } from './lightTree.js';
 export { balanceHeuristic, powerHeuristic, mixturePdf } from './mixturePdf.js';
 export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';

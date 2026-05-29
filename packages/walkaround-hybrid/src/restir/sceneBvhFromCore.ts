@@ -15,7 +15,7 @@ import {
   packBVHIndexW,
   packBVHBeerColors,
 } from './packingHelpers.js';
-import { buildEmitterList } from './emitterList.js';
+import { buildEmitterList, buildLightTreeBuffer } from './emitterList.js';
 import type { SceneBVHBuffers } from './bvhCompute.js';
 import {
   collectRectAreaLightEmitterTris,
@@ -110,7 +110,7 @@ function buffersFromScenePack(
       obj instanceof THREE.Mesh && (obj as THREE.InstancedMesh).isInstancedMesh !== true,
   });
   const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots as THREE.Object3D[]);
-  const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(
+  const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterList(
     sharedWorld.indices,
     sharedWorld.positions,
     sharedWorld.normals,
@@ -119,6 +119,7 @@ function buffersFromScenePack(
     { ...options, extraEmitters },
   );
   const emitterCount = cdfArray.length;
+  const lightTreeBuf = buildLightTreeBuffer(treeInput);
 
   const meshVertexRanges = enrichMeshVertexRangesWithMatrix(
     sceneRoots as THREE.Object3D[],
@@ -157,6 +158,13 @@ function buffersFromScenePack(
     },
     emitterCount,
     totalEmissivePower,
+    lightTree: {
+      cpuData: lightTreeBuf.nodes.buffer as ArrayBuffer,
+      byteLength: lightTreeBuf.nodes.byteLength,
+      count: Math.max(1, lightTreeBuf.nodeCount),
+    },
+    lightTreeNodeCount: lightTreeBuf.nodeCount,
+    lightTreeEnabled: lightTreeBuf.enabled,
     mergedGeometry: sharedWorld.bvh.geometry,
     meshVertexRanges,
     bvhIndicesStride3,

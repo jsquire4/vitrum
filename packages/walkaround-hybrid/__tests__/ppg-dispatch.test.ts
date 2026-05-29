@@ -12,7 +12,7 @@ import { describe, it, expect } from 'vitest';
 import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 import { PPGGuidePass } from '../src/pipeline/passes/PPGGuidePass.js';
 import { PPGUpdatePass } from '../src/pipeline/passes/PPGUpdatePass.js';
-import type { PassDispatchContext } from '../src/pipeline/Pass.js';
+import type { PassDispatchContext, PassGateOptions } from '../src/pipeline/Pass.js';
 
 installWebGPUPolyfills();
 
@@ -123,6 +123,7 @@ function makeMinimalCtx(
     sceneBindGroup: {} as unknown as GPUBindGroup,
     uboBindGroup: {} as unknown as GPUBindGroup,
     hybridLayersBindGroup: {} as unknown as GPUBindGroup,
+    lightTreeBindGroup: {} as unknown as GPUBindGroup,
     wgX: 0, wgY: 0, wgX16: 0, wgY16: 0, halfWgX: 0, halfWgY: 0,
     gNormalDepthView: {} as unknown as GPUTextureView,
     computeDesc: (label) => ({ label }),
@@ -192,5 +193,113 @@ describe('PPG dispatch — W9 acceptance: no more (0,0,0) stubs', () => {
       const expected = Math.max(1, Math.ceil((W * H) / 64));
       expect(captured[0]!.wgX).toBe(expected);
     }
+  });
+});
+
+// ── Item B — PPG train-pass dispatch-interval skip gate ─────────────────────
+//
+// The ppg-guide + ppg-update TRAIN passes gate on
+// `opts.ppgEnabled && (opts.ppgTrainThisFrame ?? true)`. The orchestrator
+// computes `ppgTrainThisFrame = frameCount % ppgDispatchInterval === 0`, so a
+// higher interval amortises the path-guiding training cost across frames. The
+// learned sTree/dTree GPU buffers persist between train cycles and gi-ris
+// guided SAMPLING reads them every frame, so this gate ONLY governs the two
+// train passes — never the guided sampling. We assert the gate predicate
+// directly (its load-bearing logic) AND drive a frame loop through the exact
+// modulo the pipeline uses to confirm the skip/run pattern.
+
+/** Mirror of `WalkaroundGPUPipeline`'s per-frame gate computation. */
+function gateOptsForFrame(
+  frameCount: number,
+  ppgDispatchInterval: number,
+  ppgEnabled = true,
+): PassGateOptions {
+  return {
+    denoiserMode: 'atrous-variance',
+    ppgEnabled,
+    ppgTrainThisFrame: frameCount % ppgDispatchInterval === 0,
+    gtaoEnabled: true,
+  };
+}
+
+describe('PPG train-pass dispatch interval (Item B skip gate)', () => {
+  const passes = [
+    { name: 'PPGGuidePass', make: () => new PPGGuidePass(makeMockPipeline() as unknown as GPUComputePipeline) },
+    { name: 'PPGUpdatePass', make: () => new PPGUpdatePass(makeMockPipeline() as unknown as GPUComputePipeline) },
+  ] as const;
+
+  for (const { name, make } of passes) {
+    it(`${name}: interval=1 ⇒ trains EVERY frame (unchanged behaviour)`, () => {
+      const pass = make();
+      for (let f = 0; f < 8; f++) {
+        expect(pass.gates(gateOptsForFrame(f, 1))).toBe(true);
+      }
+    });
+
+    it(`${name}: interval=N ⇒ trains only on frame multiples of N, skips otherwise`, () => {
+      const pass = make();
+      for (const interval of [2, 3, 4]) {
+        for (let f = 0; f < interval * 4; f++) {
+          const shouldTrain = f % interval === 0;
+          expect(pass.gates(gateOptsForFrame(f, interval))).toBe(shouldTrain);
+        }
+      }
+    });
+
+    it(`${name}: never trains when PPG is disabled, regardless of interval`, () => {
+      const pass = make();
+      for (let f = 0; f < 8; f++) {
+        expect(pass.gates(gateOptsForFrame(f, 1, /* ppgEnabled */ false))).toBe(false);
+      }
+    });
+
+    it(`${name}: absent ppgTrainThisFrame defaults to "train" (forward-compat)`, () => {
+      const pass = make();
+      // A gate-options object WITHOUT the field (an older caller) must keep the
+      // historical every-frame behaviour.
+      const opts: PassGateOptions = { denoiserMode: 'atrous-variance', ppgEnabled: true };
+      expect(pass.gates(opts)).toBe(true);
+    });
+  }
+
+  it('interval=N actually SKIPS the dispatch on off-interval frames and RUNS it on multiples', () => {
+    // Wire gate → dispatch exactly as the orchestrator does: gate first, then
+    // dispatch only if the gate passes. Count dispatches across a frame loop.
+    const guide = new PPGGuidePass(makeMockPipeline() as unknown as GPUComputePipeline);
+    const interval = 4;
+    const W = 128, H = 128;
+    let dispatched = 0;
+    let skipped = 0;
+    for (let f = 0; f < 16; f++) {
+      const captured: CapturedDispatch[] = [];
+      const ctx = makeMinimalCtx(W, H, captured, true);
+      if (guide.gates(gateOptsForFrame(f, interval))) {
+        guide.dispatch(ctx);
+        dispatched++;
+        expect(captured.length).toBe(1); // ran ⇒ exactly one ppg-guide dispatch
+      } else {
+        skipped++;
+        expect(captured.length).toBe(0); // skipped ⇒ NO dispatch captured
+      }
+    }
+    // 16 frames / interval 4 ⇒ frames {0,4,8,12} train (4), the other 12 skip.
+    expect(dispatched).toBe(4);
+    expect(skipped).toBe(12);
+  });
+
+  it('guided sampling is independent of the train gate (gate governs only ppg-guide/ppg-update)', () => {
+    // The skip gate is scoped to the two PPG TRAIN pass classes. No other pass
+    // reads `ppgTrainThisFrame`; gi-ris (the guided-sampling consumer) is a
+    // SharedBindGroupPass whose gates() ignores options entirely and always
+    // returns true. We assert that contract here so a future refactor that
+    // accidentally couples guided sampling to the train cadence is caught.
+    const interval = 4;
+    // On an OFF-interval frame the train passes skip…
+    const offFrameOpts = gateOptsForFrame(1, interval);
+    expect(offFrameOpts.ppgTrainThisFrame).toBe(false);
+    // …but the gate object still reports PPG itself as enabled, which is what
+    // gi-ris/shade read (via ubo.ppgEnabled) to keep consuming the persisted
+    // tree every frame.
+    expect(offFrameOpts.ppgEnabled).toBe(true);
   });
 });

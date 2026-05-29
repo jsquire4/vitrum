@@ -666,6 +666,23 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly ppgMaxSpatialCells?: number;
 
+  /**
+   * PPG train-pass dispatch cadence (Müller 2017 §3.3). The path-guiding
+   * `guide` + `update` compute passes run only on frames where
+   * `frameCount % ppgDispatchInterval === 0`. The learned sTree/dTree GPU
+   * buffers PERSIST between train cycles and the gi-ris guided SAMPLING reads
+   * them EVERY frame, so a higher interval is a pure training-cost lever — it
+   * never changes whether guided sampling is active, only how often the tree
+   * is retrained. `1` trains every frame (no behaviour change); `N > 1` trains
+   * every Nth frame. Clamped to ≥ 1 internally. Only meaningful when
+   * `ppgEnabled: true`.
+   *
+   * Default: resolved from `qualityTier` (`resolveQualityPreset`) —
+   * ultra/high = 1, medium = 2, low = 4. An explicit value here OVERRIDES the
+   * preset.
+   */
+  readonly ppgDispatchInterval?: number;
+
   // ── RC (Sannikov 2023 Radiance Cascades — W8 sprint, 2026-05-18) ──────────
 
   /**

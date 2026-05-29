@@ -36,6 +36,8 @@ describe('resolveQualityPreset — preset → knob table', () => {
     expect(ultra.giSpatialPasses).toBe(2);
     expect(ultra.gtaoMode).toBe('on');
     expect(ultra.ddgiUpdateDivisor).toBe(2);
+    // PPG trains every frame on ultra — no cadence departure (interval 1).
+    expect(ultra.ppgDispatchInterval).toBe(1);
   });
 
   it('each preset maps to the exact §4.3 table values', () => {
@@ -46,6 +48,7 @@ describe('resolveQualityPreset — preset → knob table', () => {
       diSpatialPasses: 2,
       giSpatialPasses: 2,
       ddgiUpdateDivisor: 4,
+      ppgDispatchInterval: 1,
       targetFrameIntervalMs: undefined,
     });
     expect(resolveQualityPreset('medium')).toMatchObject({
@@ -55,6 +58,7 @@ describe('resolveQualityPreset — preset → knob table', () => {
       diSpatialPasses: 1,
       giSpatialPasses: 1,
       ddgiUpdateDivisor: 8,
+      ppgDispatchInterval: 2,
       targetFrameIntervalMs: 20,
     });
     expect(resolveQualityPreset('low')).toMatchObject({
@@ -65,8 +69,19 @@ describe('resolveQualityPreset — preset → knob table', () => {
       diSpatialPasses: 1,
       giSpatialPasses: 1,
       ddgiUpdateDivisor: 32,
+      ppgDispatchInterval: 4,
       targetFrameIntervalMs: 33,
     });
+  });
+
+  it('PPG train cadence is non-decreasing ultra → low and always ≥ 1 (never skips forever)', () => {
+    const intervals = TIERS.map((t) => resolveQualityPreset(t).ppgDispatchInterval);
+    // ultra/high = 1, medium = 2, low = 4 — cheaper tiers retrain less often.
+    expect(intervals).toEqual([1, 1, 2, 4]);
+    for (const n of intervals) expect(n).toBeGreaterThanOrEqual(1);
+    for (let i = 1; i < intervals.length; i++) {
+      expect(intervals[i]!).toBeGreaterThanOrEqual(intervals[i - 1]!);
+    }
   });
 
   it('presets never carry null targetFrameIntervalMs (null would DISABLE the cap)', () => {

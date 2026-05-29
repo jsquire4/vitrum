@@ -28,6 +28,7 @@ import {
   getSpatialGiBindGroupLayout,
   getIndirectCombineBindGroupLayout,
   getIndirectTemporalAccumBindGroupLayout,
+  getLightTreeBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 import { buildBindGroupFromTable } from './bindGroupDescriptors.js';
@@ -128,6 +129,25 @@ export function buildSceneBindGroup(
     { buffer: r.tlasInstanceWorldToLocalBuffer },   // 9
     { buffer: r.tlasInstanceLocalToWorldBuffer },   // 10
   ]);
+}
+
+// ── Light-tree bind group (RIS-only group 3) ─────────────────────────────────
+
+/**
+ * Build the RIS-only light-tree bind group (group 3, binding 0 = node buffer).
+ * Bound only by the RIS pipeline so the extra storage buffer stays off the
+ * shade/temporal/spatial layouts (see getLightTreeBindGroupLayout).
+ */
+export function buildLightTreeBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  lightTreeBuffer: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'light-tree-bg',
+    layout: getLightTreeBindGroupLayout(device, cache),
+    entries: [{ binding: 0, resource: { buffer: lightTreeBuffer } }],
+  });
 }
 
 // ── UBO bind group ───────────────────────────────────────────────────────────

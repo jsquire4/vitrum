@@ -45,7 +45,7 @@ import {
   packBVHIndexW,
   packBVHBeerColors,
 } from './packingHelpers.js';
-import { buildEmitterList } from './emitterList.js';
+import { buildEmitterList, buildLightTreeBuffer } from './emitterList.js';
 import {
   collectRectAreaLightEmitterTris,
   enrichMeshVertexRangesWithMatrix,
@@ -111,6 +111,20 @@ export interface SceneBVHBuffers {
   /** Number of entries in the emitters / cdf arrays. */
   emitterCount: number;
   totalEmissivePower: number;
+  /**
+   * f32[] — packed light tree for ReSTIR-DI light SELECTION (Shirley 1996
+   * power split + Estévez-Kulla 2018 distance-weighted descent). 12 floats per
+   * node; leaf `emitterIndex` indexes the same `emitters` array. RIS uploads it
+   * to a RIS-only `@group(3)` storage buffer and importance-samples lights from
+   * it when `lightTreeEnabled` is true, dividing the WRS weight by the exact
+   * tree selection pdf (unbiased). A single zeroed placeholder node backs the
+   * buffer when disabled (`lightTreeEnabled === false`).
+   */
+  lightTree: StorageBufferHandle;
+  /** Number of nodes in the packed light tree (0 when disabled). */
+  lightTreeNodeCount: number;
+  /** Whether RIS should select lights via the tree (≥ 2 emitters). */
+  lightTreeEnabled: boolean;
   /** Merged geometry (CPU side, for debug / re-upload). */
   mergedGeometry: THREE.BufferGeometry;
   /**
@@ -272,7 +286,7 @@ export function buildReSTIRSceneBVH(
   // them.
   const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots);
 
-  const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(
+  const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterList(
     shared.indices,
     shared.positions, // stride-4; emitter math reads .xyz only
     shared.normals,
@@ -281,6 +295,7 @@ export function buildReSTIRSceneBVH(
     { ...options, extraEmitters },
   );
   const emitterCount = cdfArray.length;
+  const lightTreeBuf = buildLightTreeBuffer(treeInput);
 
   // triangleMaterialIds — pass through the shared per-tri matId LUT.
   const triMatIds = new Uint32Array(shared.triMaterialId);
@@ -326,6 +341,13 @@ export function buildReSTIRSceneBVH(
     },
     emitterCount,
     totalEmissivePower,
+    lightTree: {
+      cpuData: lightTreeBuf.nodes.buffer as ArrayBuffer,
+      byteLength: lightTreeBuf.nodes.byteLength,
+      count: Math.max(1, lightTreeBuf.nodeCount),
+    },
+    lightTreeNodeCount: lightTreeBuf.nodeCount,
+    lightTreeEnabled: lightTreeBuf.enabled,
     mergedGeometry: shared.bvh.geometry,
     meshVertexRanges: enrichMeshVertexRangesWithMatrix(sceneRoots, shared.meshVertexRanges),
     bvhIndicesStride3: shared.indices,
@@ -354,9 +376,18 @@ export function rebuildEmitterBuffersFromSceneRoots(
     primaryLightDir?: THREE.Vector3;
     primaryLightIntensity?: number;
   } = {},
-): Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf' | 'emitterCount' | 'totalEmissivePower'> {
+): Pick<
+  SceneBVHBuffers,
+  | 'emitters'
+  | 'emitterCdf'
+  | 'emitterCount'
+  | 'totalEmissivePower'
+  | 'lightTree'
+  | 'lightTreeNodeCount'
+  | 'lightTreeEnabled'
+> {
   const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots);
-  const { emitterFloats, cdfArray, totalEmissivePower } = buildEmitterList(
+  const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterList(
     bvh.bvhIndicesStride3,
     new Float32Array(bvh.bvhPositions.cpuData),
     bvh.emitterNormals,
@@ -365,6 +396,10 @@ export function rebuildEmitterBuffersFromSceneRoots(
     { ...options, extraEmitters },
   );
   const emitterCount = cdfArray.length;
+  // Emitters changed → rebuild the selection tree from the same inputs so the
+  // tree pmf and emitter array stay aligned (leaf emitterIndex must index the
+  // freshly-built emitter list).
+  const lightTreeBuf = buildLightTreeBuffer(treeInput);
   return {
     emitters: {
       cpuData: emitterFloats.buffer as ArrayBuffer,
@@ -378,6 +413,13 @@ export function rebuildEmitterBuffersFromSceneRoots(
     },
     emitterCount,
     totalEmissivePower,
+    lightTree: {
+      cpuData: lightTreeBuf.nodes.buffer as ArrayBuffer,
+      byteLength: lightTreeBuf.nodes.byteLength,
+      count: Math.max(1, lightTreeBuf.nodeCount),
+    },
+    lightTreeNodeCount: lightTreeBuf.nodeCount,
+    lightTreeEnabled: lightTreeBuf.enabled,
   };
 }
 

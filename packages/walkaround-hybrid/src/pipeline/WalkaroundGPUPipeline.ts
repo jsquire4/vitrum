@@ -48,6 +48,7 @@ import {
   type BGLCache,
 } from './bindGroupLayouts.js';
 import type { UboRef } from './bindGroupBuilders.js';
+import { buildLightTreeBindGroup } from './bindGroupBuilders.js';
 import {
   buildCompositePresentBindGroup,
   buildPerFrameBindGroups,
@@ -296,6 +297,19 @@ export interface PipelineFrameInputs {
   bvhMode: number;
   /** PR-3 — TLAS node count from CPU pack (0 forces merged path in WGSL). */
   tlasNodeCount: number;
+  /** Light-tree gate for ReSTIR-DI initial-candidate light SELECTION (UBO
+   *  offset 356). `1` ⇒ the RIS candidate loop draws lights via the
+   *  spatially-aware light tree (`sampleLightTree`) and divides the WRS weight
+   *  by the tree selection pdf; `0` ⇒ RIS uses the flat power-CDF path
+   *  (`sampleEmitterIdx` + the `emitterPmf` weight) verbatim. Built `1` only
+   *  when the tree has ≥ 2 emitters AND the host left light-tree selection on;
+   *  see `SceneBVHBuffers.lightTreeEnabled`. The estimator is unbiased in BOTH
+   *  states because the WRS weight always divides p̂ by the EXACT pdf the
+   *  selection used. */
+  lightTreeEnabled: number;
+  /** Number of nodes in the packed light tree (UBO offset 360). Bounds the
+   *  `sampleLightTree` descent loop. `0` when the tree is disabled. */
+  lightTreeNodeCount: number;
   /** T5 — stained-glass opt-in flag bitfield (lands at UBO offset 344).
    *  Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0
    *  (both OFF) → lo_sg_caustic / lo_sg_aperture early-return vec3f(0), so a
@@ -367,6 +381,17 @@ export class WalkaroundGPUPipeline {
   // scheduling. T2.H3 — `PPGCoordinator.enabled` mirrors the gate forwarded
   // into `PassGateOptions.ppgEnabled`.
   private readonly _ppg: PPGCoordinator;
+
+  /** Phase-0 productization — PPG train-pass dispatch cadence (roadmap §5.3).
+   *  The ppg-guide + ppg-update passes dispatch only on frames where
+   *  `_frameCount % _ppgDispatchInterval === 0`; the learned sTree/dTree GPU
+   *  buffers persist between cycles and gi-ris guided sampling reads them every
+   *  frame, so a higher interval trades training freshness for a lower per-frame
+   *  cost. `1` = train every frame (no behaviour change — ultra/high). Always
+   *  clamped to ≥ 1 at `initialize()` so a `0`/negative never skips forever.
+   *  Set once per engine instance; mirrors the quality preset's
+   *  `ppgDispatchInterval`. */
+  private _ppgDispatchInterval = 1;
 
   /** Shared à-trous pipeline. Used by the legacy `AtrousDenoiser` (passed
    *  in via the dispatch context) AND by the always-on
@@ -540,6 +565,12 @@ export class WalkaroundGPUPipeline {
       diSpatialPasses?: 1 | 2;
       /** Phase-0 — ReSTIR-GI spatial ping-pong pass count (1 or 2). Default 2. */
       giSpatialPasses?: 1 | 2;
+      /** Phase-0 — PPG train-pass (guide + update) dispatch cadence. The two
+       *  passes dispatch only on frames where `frameCount % N === 0`. `1`
+       *  (default) trains every frame; `N > 1` skips off-interval frames. The
+       *  learned tree persists between cycles, so gi-ris guided sampling is
+       *  unaffected. Clamped to ≥ 1. Only meaningful when `ppgEnabled` is true. */
+      ppgDispatchInterval?: number;
     },
   ): Promise<void> {
     const d = this._device;
@@ -566,6 +597,10 @@ export class WalkaroundGPUPipeline {
     this._gtaoEnabled = (options?.gtaoMode ?? 'on') !== 'off';
     this._diSpatialPasses = options?.diSpatialPasses ?? 2;
     this._giSpatialPasses = options?.giSpatialPasses ?? 2;
+    // PPG train-pass cadence. Clamp to ≥ 1 (a 0/negative interval would make
+    // `frameCount % N` undefined / skip the train passes forever). Floor any
+    // fractional host value so the modulo is integer-clean.
+    this._ppgDispatchInterval = Math.max(1, Math.floor(options?.ppgDispatchInterval ?? 1));
     this._cameraMoveResetThresholdSq = options?.cameraMoveResetThresholdSq
       ?? DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ;
     this._temporalAccumAlpha = options?.temporalAccumAlpha
@@ -702,10 +737,14 @@ export class WalkaroundGPUPipeline {
 
   /** Re-upload emitter data (called on light/panel change).
    *
-   * Re-uploads emitter triangles + power CDF only. The scene BVH is rebuilt
-   * via {@link HybridEngine.setScene} / `reset()` when the scene changes.
+   * Re-uploads emitter triangles + power CDF + the light-selection tree (the
+   * tree's leaf→emitter mapping and powers move with the emitters). The scene
+   * BVH is rebuilt via {@link HybridEngine.setScene} / `reset()` when the scene
+   * changes.
    */
-  updateEmitters(bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf'>): void {
+  updateEmitters(
+    bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf' | 'lightTree'>,
+  ): void {
     this._bvhHost.updateEmitters(this._device, bvhBuffers);
   }
 
@@ -941,6 +980,15 @@ export class WalkaroundGPUPipeline {
       placeholderView,
     );
 
+    // RIS-only light-tree bind group (group 3). Always built (a 1-node
+    // placeholder backs the buffer when the tree is disabled); the RIS kernel
+    // dereferences it only when ubo.lightTreeEnabled == 1.
+    const bgLightTree = buildLightTreeBindGroup(
+      d,
+      this._bglCache,
+      this._bvhHost.lightTreeBuffer(),
+    );
+
     // ── Per-frame pre-computed scalars ───────────────────────────────────
     const passLayout = buildPassLayout({ denoiserMode: this._denoiserMode, ...this._passLayoutConfig });
 
@@ -1020,6 +1068,7 @@ export class WalkaroundGPUPipeline {
       sceneBindGroup: bgScene,
       uboBindGroup: bgUbo,
       hybridLayersBindGroup: bgHybrid,
+      lightTreeBindGroup: bgLightTree,
       wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
       gNormalDepthView,
       computeDesc,
@@ -1030,6 +1079,12 @@ export class WalkaroundGPUPipeline {
     const gateOpts: PassGateOptions = {
       denoiserMode: this._denoiserMode,
       ppgEnabled: this._ppg.enabled,
+      // Phase-0 — PPG train-pass modulo gate. The ppg-guide + ppg-update passes
+      // dispatch only on multiples of `_ppgDispatchInterval`. interval=1 ⇒
+      // always true (every frame). The persisted tree + gi-ris guided sampling
+      // are unaffected — this only skips the two TRAIN passes on off-interval
+      // frames. (`_ppgDispatchInterval` is clamped ≥ 1 in initialize().)
+      ppgTrainThisFrame: this._frameCount % this._ppgDispatchInterval === 0,
       // Phase-0 — gate GTAO + its upsample when the preset disabled it.
       gtaoEnabled: this._gtaoEnabled,
     };

@@ -59,6 +59,7 @@ import { WELFORD_TAIL_MODULE } from '../shaders/welfordTail.wgsl.js';
 import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
 import { RESTIR_PHAT_MODULE } from '../shaders/restirPHat.wgsl.js';
 import { RESTIR_CAST_PRIMARY_MODULE } from '../shaders/restirCastPrimary.wgsl.js';
+import { LIGHT_TREE_MODULE } from '../shaders/lightTree.wgsl.js';
 import { RIS_MODULE } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_MODULE } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../shaders/spatial.wgsl.js';
@@ -238,6 +239,8 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // W2-C7+C9 — canonical ReSTIR-DI primitives
   [RESTIR_PHAT_MODULE.name, RESTIR_PHAT_MODULE],
   [RESTIR_CAST_PRIMARY_MODULE.name, RESTIR_CAST_PRIMARY_MODULE],
+  // Light-tree DI light-selection traversal (RIS-only @group(3) buffer).
+  [LIGHT_TREE_MODULE.name, LIGHT_TREE_MODULE],
 
   // ReSTIR-DI passes
   [RIS_MODULE.name, RIS_MODULE],

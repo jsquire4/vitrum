@@ -179,6 +179,10 @@ interface ParsedHybridEngineConfig {
   readonly giSpatialPasses: 1 | 2;
   /** Resolved DDGI round-robin probe-update divisor (preset, overridden by opts). */
   readonly ddgiUpdateDivisor: number;
+  /** Resolved PPG train-pass dispatch cadence (preset, overridden by opts).
+   *  Threaded into `pipeline.initialize` so the ppg-guide + ppg-update passes
+   *  gate on `frameCount % ppgDispatchInterval`. Always ≥ 1. */
+  readonly ppgDispatchInterval: number;
   /** Resolved initial internal-resolution factor (preset; per-frame
    *  `quality.resolutionFactor` still overrides at runtime). */
   readonly resolutionFactor: number;
@@ -352,6 +356,13 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     diSpatialPasses: opts.diSpatialPasses ?? preset.diSpatialPasses,
     giSpatialPasses: opts.giSpatialPasses ?? preset.giSpatialPasses,
     ddgiUpdateDivisor: opts.ddgiUpdateDivisor ?? preset.ddgiUpdateDivisor,
+    // PPG train-pass cadence: explicit opt wins, else the preset value. Clamp
+    // to ≥ 1 here too (the pipeline re-clamps, but keep the resolved config
+    // honest so a debug surface reading it sees the effective value).
+    ppgDispatchInterval: Math.max(
+      1,
+      Math.floor(opts.ppgDispatchInterval ?? preset.ppgDispatchInterval),
+    ),
     resolutionFactor: preset.resolutionFactor,
   };
 }
@@ -506,6 +517,10 @@ export class HybridEngine implements Engine {
   private readonly _giSpatialPasses: 1 | 2;
   /** Phase-0 — DDGI round-robin probe-update divisor (default 4). */
   private readonly _ddgiUpdateDivisor: number;
+  /** Phase-0 — PPG train-pass dispatch cadence (default 1 = every frame).
+   *  Threaded into the pipeline at init; gates the ppg-guide + ppg-update
+   *  passes on `frameCount % ppgDispatchInterval`. */
+  private readonly _ppgDispatchInterval: number;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -624,6 +639,7 @@ export class HybridEngine implements Engine {
     this._diSpatialPasses       = cfg.diSpatialPasses;
     this._giSpatialPasses       = cfg.giSpatialPasses;
     this._ddgiUpdateDivisor     = cfg.ddgiUpdateDivisor;
+    this._ppgDispatchInterval   = cfg.ppgDispatchInterval;
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -1043,6 +1059,9 @@ export class HybridEngine implements Engine {
       emitterCdf: emitterSlice.emitterCdf,
       emitterCount: emitterSlice.emitterCount,
       totalEmissivePower: emitterSlice.totalEmissivePower,
+      lightTree: emitterSlice.lightTree,
+      lightTreeNodeCount: emitterSlice.lightTreeNodeCount,
+      lightTreeEnabled: emitterSlice.lightTreeEnabled,
     };
 
     this._pipeline?.updateEmitters(this._bvhBuffers);
@@ -1632,6 +1651,7 @@ export class HybridEngine implements Engine {
       gtaoMode: this._gtaoMode,
       diSpatialPasses: this._diSpatialPasses,
       giSpatialPasses: this._giSpatialPasses,
+      ppgDispatchInterval: this._ppgDispatchInterval,
     };
   }
 

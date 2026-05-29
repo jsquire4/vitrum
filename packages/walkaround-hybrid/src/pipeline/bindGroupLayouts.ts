@@ -50,6 +50,8 @@ export interface BGLCache {
   indirectCombine?: GPUBindGroupLayout;
   /** Sprint 18 follow-up — indirect-channel pre-atrous temporal accumulator. */
   indirectTemporalAccum?: GPUBindGroupLayout;
+  /** Light-tree DI light-selection BGL (RIS-only group 3). */
+  lightTree?: GPUBindGroupLayout;
 }
 
 // frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14)
@@ -70,6 +72,30 @@ export function getSceneBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
     entries: bglEntriesFor('scene'),
   });
   return cache.scene;
+}
+
+/**
+ * Light-tree DI light-SELECTION bind group layout — a RIS-ONLY 4th bind group
+ * (group 3). Deliberately NOT folded into the shared `scene` group: the shade
+ * pass already references 16 storage buffers (4 frame + 11 scene + 1 RC
+ * cascade0), exactly at the `maxStorageBuffersPerShaderStage = 16` full-tier
+ * floor, so adding a 12th scene-group storage buffer would push shade to 17 and
+ * fail pipeline creation. As a separate RIS-only group, the tree adds its 1
+ * storage buffer only to the RIS pipeline layout (frame 4 + scene 11 + tree 1 =
+ * 16, at the floor), leaving temporal/spatial/shade untouched. RIS uses
+ * `maxBindGroups = 4` (frame/scene/ubo/lightTree), within the Lovelace cap.
+ *
+ *   0 — light-tree node buffer (read-only-storage, flat array<f32>)
+ */
+export function getLightTreeBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.lightTree) return cache.lightTree;
+  cache.lightTree = device.createBindGroupLayout({
+    label: 'light-tree-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+    ],
+  });
+  return cache.lightTree;
 }
 
 // ubo BGL entries (incl. inert slot 2 — adaptive-sampling tier, read only by

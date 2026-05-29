@@ -49,7 +49,13 @@ export class PPGGuidePass implements Pass {
   }
 
   gates(opts: PassGateOptions): boolean {
-    return opts.ppgEnabled;
+    // PPG must be on AND this frame must be a train frame. `ppgTrainThisFrame`
+    // is `frameCount % ppgDispatchInterval === 0` (absent ⇒ every frame). The
+    // learned tree persists between train cycles and gi-ris guided sampling
+    // reads it every frame, so skipping the guide pass on off-interval frames
+    // is a pure training-cost lever — the per-pixel `sampleOut` buffer it
+    // writes has no consumer outside this pass.
+    return opts.ppgEnabled && (opts.ppgTrainThisFrame ?? true);
   }
 
   async initialize(_ctx: PassInitContext): Promise<void> {}

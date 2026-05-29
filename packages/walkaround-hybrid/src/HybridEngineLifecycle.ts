@@ -91,6 +91,9 @@ export interface PipelineInitHost {
   readonly diSpatialPasses: 1 | 2;
   /** ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). */
   readonly giSpatialPasses: 1 | 2;
+  /** PPG train-pass dispatch cadence (≥ 1). The ppg-guide + ppg-update passes
+   *  dispatch on `frameCount % ppgDispatchInterval === 0`. */
+  readonly ppgDispatchInterval: number;
 
   /** Scene-readiness predicate (engine combines the core-scene mesh
    *  count + optional ctor `isSceneReady` heuristic). */
@@ -153,6 +156,7 @@ export type HybridInitStaticConfig = Pick<
   | 'gtaoMode'
   | 'diSpatialPasses'
   | 'giSpatialPasses'
+  | 'ppgDispatchInterval'
 >;
 
 export class PipelineInitCoordinator {
@@ -393,6 +397,10 @@ export class PipelineInitCoordinator {
           gtaoMode: host.gtaoMode,
           diSpatialPasses: host.diSpatialPasses,
           giSpatialPasses: host.giSpatialPasses,
+          // Phase-0 — PPG train-pass cadence (ppg-guide + ppg-update gate on
+          // `frameCount % N`). Only takes effect when PPG is enabled at the
+          // pipeline level; harmless (= every frame) otherwise.
+          ppgDispatchInterval: host.ppgDispatchInterval,
           // exactOptionalPropertyTypes: omit the key entirely when undefined.
           ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
           // W11 — forward OIDN config when denoiser === 'oidn-final'.

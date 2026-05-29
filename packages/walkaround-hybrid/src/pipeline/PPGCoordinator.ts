@@ -328,10 +328,39 @@ export class PPGCoordinator {
     if (!this._enabled || !this._sTree) return;
     const ppg = frameResources.ppg;
     if (!ppg.sTreeBuf || !ppg.dTreeBuf || !ppg.dTreeOffsetsBuf) return;
-    const { sTreeBuf, dTreeBuf, dTreeOffsets } = serialiseSTree(this._sTree);
+    // Item A — overflow guard. `serialiseSTree` with NO clamp sums every CPU
+    // dTree's full node count; a host that allocated with
+    // `maxDTreeNodesPerCell < 341` (while `refineDTree` still grows dTrees up to
+    // the 341-node depth-4 cap) would produce a `dTreeBuf` LARGER than the GPU
+    // allocation, so the `writeBuffer` below would throw / truncate. Derive the
+    // per-cell node cap from the live GPU buffers (one flux slot per dTree node,
+    // exactly as `_mergeFluxAndRefine` does) and clamp the serialised tree to
+    // it. The DEFAULT 341-per-cell config is unaffected (cap ≥ tree size ⇒
+    // no-op clamp), so this only changes behaviour for sub-341 hosts — for which
+    // it keeps the upload valid instead of crashing.
+    const cap = this._deriveMaxDTreeNodesPerCell(frameResources);
+    const { sTreeBuf, dTreeBuf, dTreeOffsets } = serialiseSTree(this._sTree, cap);
     this._device.queue.writeBuffer(ppg.sTreeBuf, 0, sTreeBuf.buffer, sTreeBuf.byteOffset, sTreeBuf.byteLength);
     this._device.queue.writeBuffer(ppg.dTreeBuf, 0, dTreeBuf.buffer, dTreeBuf.byteOffset, dTreeBuf.byteLength);
     this._device.queue.writeBuffer(ppg.dTreeOffsetsBuf, 0, dTreeOffsets.buffer, dTreeOffsets.byteOffset, dTreeOffsets.byteLength);
+  }
+
+  /**
+   * Derive the per-cell dTree node cap (`maxDTreeNodesPerCell`) baked into the
+   * allocated GPU buffers, identically to {@link maybeRunTrainingRefine}'s
+   * active-prefix bound: `fluxAtomicsBuf` holds one u32 slot per dTree node, so
+   * `slots / maxSpatialCells` is the per-cell stride, where
+   * `maxSpatialCells = dTreeOffsetsBuf.size / 4`. Returns `undefined` (= "no
+   * clamp") when the buffers are missing — the caller then serialises the full
+   * tree, matching the historical path.
+   */
+  private _deriveMaxDTreeNodesPerCell(frameResources: FrameResources): number | undefined {
+    const ppg = frameResources.ppg;
+    const fluxAtomicsBuf = ppg.fluxAtomicsBuf;
+    const offsetsBuf = ppg.dTreeOffsetsBuf;
+    if (!fluxAtomicsBuf || !offsetsBuf) return undefined;
+    const maxSpatialCells = Math.max(1, Math.floor(offsetsBuf.size / 4));
+    return Math.max(1, Math.floor((fluxAtomicsBuf.size / 4) / maxSpatialCells));
   }
 
   /**

@@ -517,6 +517,12 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     indirectFireflyClamp: deps.indirectFireflyClamp,
     bvhMode: bvh.bvhMode === 'tlas' ? 1 : 0,
     tlasNodeCount: bvh.tlas?.nodeCount ?? 0,
+    // Light-tree DI light SELECTION gate. Default ON whenever the scene has
+    // ≥ 2 emitters (set at BVH build); RIS falls back to the flat power-CDF
+    // path otherwise. Unbiased in both states (the WRS weight divides p̂ by
+    // the exact selection pdf).
+    lightTreeEnabled: bvh.lightTreeEnabled ? 1 : 0,
+    lightTreeNodeCount: bvh.lightTreeNodeCount ?? 0,
     atrousDirectSigmas: deps.atrousDirectSigmas,
     atrousIndirectSigmas: deps.atrousIndirectSigmas,
     stainedGlassFlags: deps.stainedGlassFlags,

@@ -68,6 +68,7 @@ import {
   getSpatialGiBindGroupLayout,
   getIndirectCombineBindGroupLayout,
   getIndirectTemporalAccumBindGroupLayout,
+  getLightTreeBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -162,6 +163,20 @@ export async function compilePipelines(
       getUboBindGroupLayout(device, bglCache),
     ],
   });
+  // risLayout: computeLayout + a RIS-ONLY 4th group (light-tree storage buffer)
+  // for spatially-aware DI light selection. Kept separate from computeLayout so
+  // the extra storage buffer lands on the RIS pipeline only (16 storage buffers,
+  // at the full-tier floor) — temporal/spatial/shade are unaffected. RIS uses 4
+  // bind groups (frame/scene/ubo/lightTree), within the Lovelace maxBindGroups
+  // cap of 4.
+  const risLayout = device.createPipelineLayout({
+    bindGroupLayouts: [
+      getFrameBindGroupLayout(device, bglCache),
+      getSceneBindGroupLayout(device, bglCache),
+      getUboBindGroupLayout(device, bglCache),
+      getLightTreeBindGroupLayout(device, bglCache),
+    ],
+  });
   const shadeLayout = device.createPipelineLayout({
     bindGroupLayouts: [
       getFrameBindGroupLayout(device, bglCache),
@@ -214,7 +229,7 @@ export async function compilePipelines(
   // Compile compute pipelines in parallel.
   const [risPipeline, temporalPipeline, spatialPipeline, shadePipeline] =
     await Promise.all([
-      device.createComputePipelineAsync({ label: 'ris',      layout: computeLayout, compute: { module: risSM,      entryPoint: 'risMain'      } }),
+      device.createComputePipelineAsync({ label: 'ris',      layout: risLayout,     compute: { module: risSM,      entryPoint: 'risMain'      } }),
       device.createComputePipelineAsync({ label: 'temporal', layout: computeLayout, compute: { module: temporalSM, entryPoint: 'temporalMain' } }),
       device.createComputePipelineAsync({ label: 'spatial',  layout: computeLayout, compute: { module: spatialSM,  entryPoint: 'spatialMain'  } }),
       device.createComputePipelineAsync({ label: 'shade',    layout: shadeLayout,   compute: { module: shadeSM,    entryPoint: 'shadeMain'    } }),

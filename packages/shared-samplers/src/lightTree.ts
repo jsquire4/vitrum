@@ -19,14 +19,26 @@
  * (4 components per texel × 3 texels, padded to 12 floats for alignment).
  * See `packLightTreeForGPU` for the exact layout.
  *
- * NOTE: This is Shirley 1996 median-split with power-as-cost. Future SOTA
- * upgrade to Estévez-Kulla 2018 would require: (1) per-node orientation cones;
- * (2) SAH-like split with receiver-aware importance; (3) adaptive (non-median)
- * split. Tracked separately.
+ * NOTE: The split policy is Shirley 1996 median-split with power-as-cost.
+ * The *traversal* (`sampleLightTreeCPU` / `lightTreePdfCPU` below, mirrored by
+ * the WGSL `sampleLightTree` in walkaround-hybrid) is the spatially-aware
+ * descent: at each internal node a child is chosen with probability
+ * proportional to its **importance** `power / max(dist²(x, childAABB), floor)`
+ * for the shading point `x`. This is the distance-weighted importance metric of
+ * Estévez & Kulla 2018 (without the orientation-cone term, which `buildLightTree`
+ * does not yet store). The selection pmf of a leaf is the product of the branch
+ * probabilities along the root→leaf path; it sums to 1 over the leaves (a proper
+ * probability tree) so it is an unbiased light-selection pdf for RIS/MIS.
+ *
+ * Future SOTA upgrade to full Estévez-Kulla 2018 would add: (1) per-node
+ * orientation cones; (2) SAH-like split with receiver-aware importance; (3)
+ * adaptive (non-median) split. Tracked separately.
  *
  * References:
  *   - Shirley, Smits, Wang, Zimmerman 1996, "Monte Carlo Techniques for
- *     Direct Lighting Calculations", ACM TOG.
+ *     Direct Lighting Calculations", ACM TOG (median split, power-as-cost).
+ *   - Estévez & Kulla 2018, "Importance Sampling of Many Lights with Adaptive
+ *     Tree Splitting", Proc. ACM CGIT (distance-weighted importance descent).
  */
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -309,7 +321,7 @@ export function buildLightTree(input: LightTreeBuildInput): {
  *   texelFetch(lightTree, ivec2(i, 2), 0)  → [aabbMax.yz, pad, pad]
  */
 export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float32Array {
-  const FLOATS_PER_NODE = 12; // 3 RGBA texels
+  const FLOATS_PER_NODE = LIGHT_TREE_FLOATS_PER_NODE;
   const out = new Float32Array(nodes.length * FLOATS_PER_NODE);
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]!;
@@ -328,4 +340,165 @@ export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float3
     out[base + 11] = 0; // padding
   }
   return out;
+}
+
+/**
+ * 12 floats per node in the packed flat layout consumed by `packLightTreeForGPU`
+ * and the WGSL `sampleLightTree` traversal. The WGSL side reads the same stride
+ * from a flat `array<f32>` storage buffer (NOT a texture — the walkaround ReSTIR
+ * path is compute-only and consumes the tree as a storage buffer); see
+ * `walkaround-hybrid/src/shaders/lightTree.wgsl.ts`.
+ */
+export const LIGHT_TREE_FLOATS_PER_NODE = 12;
+
+// ────────────────────────────────────────────────────────────────────────────
+// Spatially-aware traversal (CPU reference; mirrored 1:1 by the WGSL kernel)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Squared distance from a point to an axis-aligned bounding box. Zero when the
+ * point is inside the box. Matches the WGSL `lt_dist2ToAabb` exactly.
+ */
+function dist2ToAabb(
+  px: number, py: number, pz: number,
+  min: readonly [number, number, number],
+  max: readonly [number, number, number],
+): number {
+  const dx = Math.max(min[0] - px, 0, px - max[0]);
+  const dy = Math.max(min[1] - py, 0, py - max[1]);
+  const dz = Math.max(min[2] - pz, 0, pz - max[2]);
+  return dx * dx + dy * dy + dz * dz;
+}
+
+/**
+ * Importance of a node for a shading point `x`: `power / max(dist², floor)`.
+ * The `dist2Floor` clamp prevents a divide-by-zero / unbounded importance when
+ * the shading point lies inside (or on) the node AABB. It is the SAME floor the
+ * RIS geometry term uses (`ubo.emitterDist2Floor`) so near-light behaviour stays
+ * consistent between selection and evaluation. Matches WGSL `lt_importance`.
+ */
+function nodeImportance(
+  node: LightTreeNode,
+  px: number, py: number, pz: number,
+  dist2Floor: number,
+): number {
+  if (node.totalPower <= 0) return 0;
+  const d2 = Math.max(dist2ToAabb(px, py, pz, node.aabbMin, node.aabbMax), dist2Floor);
+  return node.totalPower / d2;
+}
+
+/**
+ * Importance-sample a single emitter (leaf) from the light tree for a shading
+ * point `x`, returning the chosen `emitterIndex` and the **selection pdf** — the
+ * probability that this descent reaches that leaf. The pdf is the product of the
+ * per-internal-node branch probabilities along the root→leaf path; it forms a
+ * proper pmf over leaves (sums to 1), which is exactly what the RIS source-pdf
+ * `w = p̂ / p_source` requires for an unbiased estimator.
+ *
+ * `rand01` is a 0-arg sampler returning a fresh uniform in [0, 1) per call (one
+ * draw per internal node descended). The WGSL kernel draws from the PCG RNG.
+ *
+ * Degenerate cases (both children zero-importance) fall back to a 50/50 split so
+ * the descent always terminates at a leaf with a well-defined, strictly-positive
+ * pdf — never returning pdf 0 for a reachable leaf (which would create an
+ * infinite RIS weight).
+ *
+ * Mirrors the WGSL `sampleLightTree` byte-for-byte in branch logic.
+ */
+export function sampleLightTreeCPU(
+  nodes: ReadonlyArray<LightTreeNode>,
+  x: readonly [number, number, number],
+  dist2Floor: number,
+  rand01: () => number,
+): { emitterIndex: number; pdf: number } {
+  if (nodes.length === 0) return { emitterIndex: -1, pdf: 0 };
+  const [px, py, pz] = x;
+  let nodeIdx = 0;
+  let pdf = 1.0;
+  // Bounded descent: a binary tree over N leaves has depth ≤ N; the explicit
+  // cap mirrors the WGSL loop bound (a while-true is illegal there).
+  for (let guard = 0; guard < nodes.length + 1; guard++) {
+    const node = nodes[nodeIdx]!;
+    if (node.leftChild < 0 || node.rightChild < 0) {
+      // Leaf.
+      return { emitterIndex: node.emitterIndex, pdf };
+    }
+    const left = nodes[node.leftChild]!;
+    const right = nodes[node.rightChild]!;
+    const impL = nodeImportance(left, px, py, pz, dist2Floor);
+    const impR = nodeImportance(right, px, py, pz, dist2Floor);
+    const sum = impL + impR;
+    // Degenerate: both subtrees contribute zero importance (e.g. all-zero
+    // power under this node). Fall back to a uniform 50/50 split so the
+    // descent terminates with a positive pdf.
+    const pL = sum > 0 ? impL / sum : 0.5;
+    if (rand01() < pL) {
+      pdf *= pL;
+      nodeIdx = node.leftChild;
+    } else {
+      pdf *= 1.0 - pL;
+      nodeIdx = node.rightChild;
+    }
+  }
+  // Unreachable for a well-formed tree; return the current node as a leaf guard.
+  const node = nodes[nodeIdx]!;
+  return { emitterIndex: node.emitterIndex, pdf };
+}
+
+/**
+ * Recompute the selection pdf the tree assigns to a given `emitterIndex` for a
+ * shading point `x`, WITHOUT drawing random numbers — it walks the unique
+ * root→leaf path to that emitter, multiplying the branch probabilities. This is
+ * the deterministic inverse of `sampleLightTreeCPU`'s pdf and is used (a) in
+ * tests to assert the pmf integrates to 1 over the emitter set, and (b) anywhere
+ * a light's selection probability is needed independently of the sampling draw
+ * (e.g. MIS with a BRDF strategy).
+ *
+ * Returns 0 if the emitter is not present in the tree.
+ */
+export function lightTreePdfCPU(
+  nodes: ReadonlyArray<LightTreeNode>,
+  x: readonly [number, number, number],
+  dist2Floor: number,
+  emitterIndex: number,
+): number {
+  if (nodes.length === 0) return 0;
+  const [px, py, pz] = x;
+  // Precompute, per node, whether the target emitter lies in its subtree.
+  // (Leaf emitterIndex match, or one of its children's subtrees contains it.)
+  const contains = new Array<boolean>(nodes.length).fill(false);
+  // Pre-order array ⇒ a child always has a higher index than its parent, so a
+  // reverse pass propagates "contains target" up to the root in one sweep.
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i]!;
+    if (n.emitterIndex === emitterIndex) {
+      contains[i] = true;
+    } else if (n.leftChild >= 0 && n.rightChild >= 0) {
+      contains[i] = contains[n.leftChild]! || contains[n.rightChild]!;
+    }
+  }
+  if (!contains[0]) return 0;
+
+  let nodeIdx = 0;
+  let pdf = 1.0;
+  for (let guard = 0; guard < nodes.length + 1; guard++) {
+    const node = nodes[nodeIdx]!;
+    if (node.leftChild < 0 || node.rightChild < 0) {
+      return node.emitterIndex === emitterIndex ? pdf : 0;
+    }
+    const left = nodes[node.leftChild]!;
+    const right = nodes[node.rightChild]!;
+    const impL = nodeImportance(left, px, py, pz, dist2Floor);
+    const impR = nodeImportance(right, px, py, pz, dist2Floor);
+    const sum = impL + impR;
+    const pL = sum > 0 ? impL / sum : 0.5;
+    if (contains[node.leftChild]) {
+      pdf *= pL;
+      nodeIdx = node.leftChild;
+    } else {
+      pdf *= 1.0 - pL;
+      nodeIdx = node.rightChild;
+    }
+  }
+  return 0;
 }

@@ -73,6 +73,7 @@ import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
 import { RESTIR_PHAT_WGSL } from '../src/shaders/restirPHat.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../src/shaders/restirCastPrimary.wgsl.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
+import { LIGHT_TREE_WGSL } from '../src/shaders/lightTree.wgsl.js';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
 import { PPG_PDF_WGSL } from '../src/ppg/ppgPdf.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
@@ -212,9 +213,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(COMMON_WGSL).toContain('tlasNodeCount:');
   });
 
-  it('ris: COMMON_WGSL + RESTIR_PHAT_WGSL + RIS_WGSL', () => {
+  it('ris: COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + RIS_WGSL', () => {
+    // RIS_MODULE.requires === ['restirPHat', 'lightTree']; both transitively
+    // require `common`, emitted once. The light-tree DI light-selection
+    // traversal lands between the canonical p̂ helper and the RIS kernel.
     expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + RESTIR_PHAT_WGSL + RIS_WGSL,
+      COMMON_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + RIS_WGSL,
     );
   });
 
@@ -420,7 +424,7 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
     'jacobianShift', 'cameraRays', 'welfordTail',
     'luminance', 'octahedralCore',
     'surfaceTextures', 'ddgiSample', 'sampleCascadeC0', 'stainedGlassShade',
-    'restirPHat', 'restirCastPrimary',
+    'restirPHat', 'restirCastPrimary', 'lightTree',
   ];
   const symbolUniverse = buildSymbolUniverse(
     LIBRARY_MODULE_NAMES.map((n) => {

@@ -69,6 +69,16 @@ export interface QualityPreset {
    *  Higher ⇒ fewer probes updated per frame ⇒ cheaper, slower GI response.
    *  Engine default is 4 (the historical hardcoded `/4`). */
   readonly ddgiUpdateDivisor: number;
+  /** PPG (Müller 2017 path-guiding) train-pass dispatch cadence (roadmap §5.3).
+   *  The guide + update compute passes run only on frames where
+   *  `frameCount % ppgDispatchInterval === 0`; the learned sTree/dTree persists
+   *  between updates, so a lower cadence is a pure cost lever — the gi-ris
+   *  guided SAMPLING still consumes the most-recent tree EVERY frame (only the
+   *  train passes skip). `1` = every frame (no behaviour change — ultra/high);
+   *  `N > 1` runs the train passes every Nth frame (medium/low). Always ≥ 1
+   *  (`0`/negative would skip forever); a host may override per-engine via
+   *  `HybridEngineOptions.ppgDispatchInterval`. */
+  readonly ppgDispatchInterval: number;
   /** Documentary only — whether the host UI should default-offer RC/PPG/neural
    *  for this tier. The engine NEVER forces these on from a preset. */
   readonly enableRcPpgNeuralByDefault: boolean;
@@ -89,6 +99,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     diSpatialPasses: 2,
     giSpatialPasses: 2,
     ddgiUpdateDivisor: 2,                   // flagship: fastest GI cadence — stride 2 (4× the default-8 probe rate). H1 made the divisor load-bearing, so ultra is NO LONGER byte-identical to the old hardcoded stride-8 (intentional, per the 2→32 cadence decision).
+    ppgDispatchInterval: 1,                  // every frame — no behaviour change when PPG is on.
     enableRcPpgNeuralByDefault: false,
   },
   high: {
@@ -100,6 +111,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     diSpatialPasses: 2,
     giSpatialPasses: 2,
     ddgiUpdateDivisor: 4,                   // 2× the default-8 probe rate (stride 4)
+    ppgDispatchInterval: 1,                  // every frame (high keeps full PPG cadence)
     enableRcPpgNeuralByDefault: false,
   },
   medium: {
@@ -113,6 +125,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     diSpatialPasses: 1,
     giSpatialPasses: 1,
     ddgiUpdateDivisor: 8,                   // = the default probe cadence (stride 8)
+    ppgDispatchInterval: 2,                  // train every 2nd frame — ~½ the PPG train cost; tree persists between updates so quality drift is negligible.
     enableRcPpgNeuralByDefault: false,
   },
   low: {
@@ -125,6 +138,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     diSpatialPasses: 1,
     giSpatialPasses: 1,
     ddgiUpdateDivisor: 32,                  // budget: slowest GI cadence — stride 32 (1/4 the default-8 probe rate)
+    ppgDispatchInterval: 4,                  // budget: train every 4th frame — ~¼ the PPG train cost.
     enableRcPpgNeuralByDefault: false,
   },
 });

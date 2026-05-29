@@ -43,7 +43,13 @@ export class PPGUpdatePass implements Pass {
   }
 
   gates(opts: PassGateOptions): boolean {
-    return opts.ppgEnabled;
+    // PPG on AND a train frame (`frameCount % ppgDispatchInterval === 0`;
+    // absent ⇒ every frame). Skipping the update pass on off-interval frames
+    // skips one window of flux accumulation into `fluxAtomicsBuf`; the CPU
+    // refine/readback (`PPGCoordinator.maybeRunTrainingRefine`) runs on its own
+    // cadence and merely sees fewer accumulated samples — the tree topology and
+    // gi-ris guided sampling are unaffected.
+    return opts.ppgEnabled && (opts.ppgTrainThisFrame ?? true);
   }
 
   async initialize(_ctx: PassInitContext): Promise<void> {}

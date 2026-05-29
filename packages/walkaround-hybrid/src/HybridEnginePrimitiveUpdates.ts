@@ -967,6 +967,9 @@ export function materialPatch(
       emitterCdf: emitterSlice.emitterCdf,
       emitterCount: emitterSlice.emitterCount,
       totalEmissivePower: emitterSlice.totalEmissivePower,
+      lightTree: emitterSlice.lightTree,
+      lightTreeNodeCount: emitterSlice.lightTreeNodeCount,
+      lightTreeEnabled: emitterSlice.lightTreeEnabled,
     };
     ctx.pipeline.updateEmitters(outBvh);
   }

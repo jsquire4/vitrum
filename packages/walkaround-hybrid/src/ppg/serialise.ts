@@ -125,17 +125,62 @@ export const STREE_HEADER_F32 = 4;
  * for every UV strictly inside the leaf's (u0,u1)·(v0,v1) rectangle.
  * See `__tests__/ppg-serialise.test.ts` Test 2.
  *
- * @param dTree  CPU-side adaptive quadtree (Müller §3.2).
- * @returns      A new `Float32Array` of length `DTREE_HEADER_F32 + N·DTREE_NODE_F32`.
+ * Overflow clamp (Item A — host-config safety): when `maxNodes` is supplied
+ * and the dTree has MORE nodes than the GPU buffer can hold per cell
+ * (`allocatePPGResources({ maxDTreeNodesPerCell: < 341 })`), only the first
+ * `maxNodes` nodes are serialised. Crucially, this must NOT leave a dangling
+ * `firstChild` pointer inside the served region — the WGSL traversal
+ * (`ppgGuide.wgsl.ts`) descends via `firstChild` with no `>= nodeCount` bound
+ * and the per-cell dTree blocks are concatenated contiguously, so a child
+ * index past the served prefix would read into the NEXT cell's data. We
+ * therefore PROMOTE any served interior node whose four children fall outside
+ * `[0, maxNodes)` to a leaf (clear its `firstChild` to −1 and set the leaf
+ * flag), so the served tree terminates safely within its own block. This
+ * matches the GPU UPDATE path, which already clamps the per-cell node range to
+ * `maxDTreeNodesPerCell` (PPGCoordinator `_mergeFluxAndRefine`). The DEFAULT
+ * config (`maxDTreeNodesPerCell = 341 = full depth-4 quadtree`) never triggers
+ * the clamp because `refineDTree`'s `PPG_DTREE_MAX_DEPTH = 4` bounds every
+ * dTree to ≤ 341 nodes — so `maxNodes` omitted (or ≥ node count) is exactly
+ * the historical behaviour.
+ *
+ * @param dTree     CPU-side adaptive quadtree (Müller §3.2).
+ * @param maxNodes  Optional hard cap on the number of nodes serialised
+ *                  (= GPU `maxDTreeNodesPerCell`). Omitted ⇒ no clamp.
+ * @returns         A new `Float32Array` of length
+ *                  `DTREE_HEADER_F32 + min(N, maxNodes)·DTREE_NODE_F32`.
  */
-export function serialiseDTree(dTree: DTree): Float32Array {
-  const N = dTree.nodes.length;
+export function serialiseDTree(dTree: DTree, maxNodes?: number): Float32Array {
+  const N = maxNodes !== undefined
+    ? Math.min(dTree.nodes.length, Math.max(0, Math.floor(maxNodes)))
+    : dTree.nodes.length;
   const out = new Float32Array(DTREE_HEADER_F32 + N * DTREE_NODE_F32);
 
-  // Count leaves (informational; kernel does not need this).
+  // Count leaves AMONG THE SERVED PREFIX (informational; kernel does not need
+  // this). A node promoted to a leaf by the clamp (see below) counts as a leaf.
   let leafCount = 0;
-  for (const n of dTree.nodes) {
-    if (n.isLeaf) leafCount++;
+
+  // Per-node packing (clamped to the served prefix).
+  for (let i = 0; i < N; i++) {
+    const n = dTree.nodes[i]!;
+    const base = DTREE_HEADER_F32 + i * DTREE_NODE_F32;
+    // Overflow-safe child handling: if any of this node's four consecutive
+    // children would land outside the served `[0, N)` region, the truncated
+    // buffer cannot represent the subtree — serve this node AS A LEAF so the
+    // contiguous-block GPU traversal terminates inside its own dTree.
+    const childrenOutOfRange =
+      !n.isLeaf && (n.firstChild < 0 || n.firstChild + 3 >= N);
+    const servedAsLeaf = n.isLeaf || childrenOutOfRange;
+    if (servedAsLeaf) leafCount++;
+    out[base + 0] = n.u0;
+    out[base + 1] = n.v0;
+    out[base + 2] = n.u1;
+    out[base + 3] = n.v1;
+    out[base + 4] = n.flux;
+    out[base + 5] = n.solidAngle;
+    // firstChild: −1 when served as a leaf (clamped or genuine), else the
+    // (in-range) child index. f32 representation; integer up to 2^24.
+    out[base + 6] = servedAsLeaf ? -1 : n.firstChild;
+    out[base + 7] = servedAsLeaf ? 1.0 : 0.0;
   }
 
   // Header
@@ -143,20 +188,6 @@ export function serialiseDTree(dTree: DTree): Float32Array {
   out[1] = leafCount;
   out[2] = dTree.totalFlux;
   out[3] = 0;
-
-  // Per-node packing
-  for (let i = 0; i < N; i++) {
-    const n = dTree.nodes[i]!;
-    const base = DTREE_HEADER_F32 + i * DTREE_NODE_F32;
-    out[base + 0] = n.u0;
-    out[base + 1] = n.v0;
-    out[base + 2] = n.u1;
-    out[base + 3] = n.v1;
-    out[base + 4] = n.flux;
-    out[base + 5] = n.solidAngle;
-    out[base + 6] = n.firstChild; // f32 representation; integer up to 2^24
-    out[base + 7] = n.isLeaf ? 1.0 : 0.0;
-  }
 
   return out;
 }
@@ -228,9 +259,18 @@ export interface SerialisedSTree {
  * indexing into the middle of an interleaved layout) and WebGPU's storage
  * binding cap (8) is comfortably under-used.
  *
- * @param sTree  CPU-side adaptive kd-tree (Müller §3.1) with per-leaf dTrees.
+ * Overflow clamp (Item A): pass `maxDTreeNodesPerCell` (the GPU
+ * `allocatePPGResources` cap) so each per-cell dTree is clamped to at most that
+ * many nodes — keeping the concatenated `dTreeBuf` within the GPU buffer
+ * allocation even when a host sets a sub-341 cap. Omitted ⇒ no clamp (default
+ * 341-node-per-cell config never overflows; see {@link serialiseDTree}).
+ *
+ * @param sTree                 CPU-side adaptive kd-tree (Müller §3.1) with
+ *                              per-leaf dTrees.
+ * @param maxDTreeNodesPerCell  Optional per-cell node cap (= GPU buffer slot
+ *                              stride). Omitted ⇒ no clamp.
  */
-export function serialiseSTree(sTree: STree): SerialisedSTree {
+export function serialiseSTree(sTree: STree, maxDTreeNodesPerCell?: number): SerialisedSTree {
   const NS = sTree.nodes.length;
   const NDT = sTree.dTrees.length;
 
@@ -239,7 +279,7 @@ export function serialiseSTree(sTree: STree): SerialisedSTree {
   const offsets = new Uint32Array(NDT);
   let totalF32 = 0;
   for (let k = 0; k < NDT; k++) {
-    const buf = serialiseDTree(sTree.dTrees[k]!);
+    const buf = serialiseDTree(sTree.dTrees[k]!, maxDTreeNodesPerCell);
     perDTreeBufs.push(buf);
     offsets[k] = totalF32;
     totalF32 += buf.length;

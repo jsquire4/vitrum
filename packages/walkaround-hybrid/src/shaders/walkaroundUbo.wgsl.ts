@@ -133,8 +133,15 @@ struct WalkaroundUBO {
   // p_src = α·p_guide + (1−α)·p_cos for an unbiased estimator (§3.4).
   ppgEnabled:                 u32,     //  offset 348 — PPG guided-sampling gate (was _tracePad1)
   ppgMixAlpha:                f32,     //  offset 352 — MIS mixing weight α ∈ [0,1] (Müller §3.4)
-  _ppgPad0:                   u32,     //  offset 356 — pad to 16-byte struct multiple
-  _ppgPad1:                   u32,     //  offset 360
+  // Light-tree DI light-SELECTION gate (was _ppgPad0/_ppgPad1). When
+  // lightTreeEnabled == 1 the RIS candidate loop draws emitters via the
+  // spatially-aware light tree (sampleLightTree) and uses the tree selection
+  // pdf as the WRS source pmf; when 0 it falls back to the flat power-CDF path
+  // (sampleEmitterIdx). Either way the estimator is unbiased — the WRS weight
+  // divides p̂ by the EXACT pdf the selection used. lightTreeNodeCount bounds
+  // the GPU descent loop.
+  lightTreeEnabled:           u32,     //  offset 356 — DI light-tree selection gate (was _ppgPad0)
+  lightTreeNodeCount:         u32,     //  offset 360 — packed light-tree node count (was _ppgPad1)
   _ppgPad2:                   u32,     //  offset 364 — struct size 368 bytes
 };
 

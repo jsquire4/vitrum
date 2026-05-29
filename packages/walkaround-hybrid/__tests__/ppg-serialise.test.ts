@@ -36,6 +36,7 @@ import {
   PPG_CELL_SPLIT_THRESHOLD,
   PPG_DTREE_INITIAL_DEPTH,
 } from '../src/ppg/ppgConstants.js';
+import type { DTree } from '../src/ppg/types.js';
 
 const SCENE_AABB: import('../src/ppg/types.js').AABB = {
   min: [-10, -10, -10],
@@ -245,5 +246,156 @@ describe('serialise — integer round-trip through f32', () => {
       const eps = Math.max(1e-6, Math.abs(v) * 1e-5);
       expect(Math.abs(buf[base + 4]! - v)).toBeLessThan(eps);
     }
+  });
+});
+
+// ── Test 6: Item A — host-config overflow clamp (maxNodes / maxDTreeNodesPerCell)
+//
+// A host that allocates the PPG GPU buffers with `maxDTreeNodesPerCell < 341`
+// (below the depth-4 quadtree's 341-node cap) would, WITHOUT the clamp, have
+// `serialiseSTree` emit a `dTreeBuf` LARGER than the GPU allocation — the
+// `writeBuffer` upload throws / truncates. The clamp serialises only the first
+// `maxNodes` nodes AND promotes any served interior node whose four children
+// fall outside `[0, maxNodes)` to a leaf, so the truncated buffer (a) fits the
+// allocation and (b) leaves NO dangling firstChild pointer that the WGSL
+// block-contiguous traversal could follow into the next cell's data.
+//
+// The clamp must match the GPU UPDATE path, which bounds the per-cell node
+// range identically via `nodeLimit = min(dTree.nodes.length, maxDTreeNodesPerCell)`
+// (`PPGCoordinator._mergeFluxAndRefine`).
+
+/** Grow a dTree to its full depth-4 cap (341 nodes) by spiking every leaf and
+ *  refining until it stops growing. Mirrors the probe used to verify the
+ *  341-node ceiling. */
+function buildFullDepthDTree(): DTree {
+  const d = buildEmptyDTree(PPG_DTREE_INITIAL_DEPTH);
+  for (let pass = 0; pass < 6; pass++) {
+    const before = d.nodes.length;
+    for (const n of d.nodes) if (n.isLeaf) n.flux = 1.0;
+    d.totalFlux = d.nodes.filter((n) => n.isLeaf).length;
+    refineDTree(d);
+    if (d.nodes.length === before) break; // converged at the depth cap
+  }
+  return d;
+}
+
+describe('serialiseDTree — Item A overflow clamp (maxNodes)', () => {
+  it('a full depth-4 dTree has exactly 341 nodes (the default cap — never clamps)', () => {
+    const d = buildFullDepthDTree();
+    expect(d.nodes.length).toBe(341);
+    // Default config: omitting maxNodes (or cap ≥ 341) is the historical path.
+    expect(serialiseDTree(d).length).toBe(DTREE_HEADER_F32 + 341 * DTREE_NODE_F32);
+    expect(serialiseDTree(d, 341).length).toBe(DTREE_HEADER_F32 + 341 * DTREE_NODE_F32);
+    // cap ≥ node count is a no-op clamp — identical bytes to the unclamped buffer.
+    expect(Array.from(serialiseDTree(d, 1000))).toEqual(Array.from(serialiseDTree(d)));
+  });
+
+  it('cap < node count: buffer fits a GPU allocation sized for exactly `cap` nodes', () => {
+    const d = buildFullDepthDTree(); // 341 nodes
+    for (const cap of [1, 5, 21, 85, 200, 340]) {
+      const buf = serialiseDTree(d, cap);
+      // The GPU dTree slot for a cell is `header + cap × stride` f32. The
+      // serialised buffer must be EXACTLY that — never larger (no overflow).
+      const expectedF32 = DTREE_HEADER_F32 + cap * DTREE_NODE_F32;
+      expect(buf.length).toBe(expectedF32);
+      // Header nodeCount reflects the served (clamped) count, matching the GPU
+      // update-path bound `min(nodes.length, cap)`.
+      expect(buf[0]).toBe(Math.min(d.nodes.length, cap));
+    }
+  });
+
+  it('clamp matches the GPU update-path node bound exactly', () => {
+    const d = buildFullDepthDTree();
+    // The PPGCoordinator update path clamps per-cell to
+    // `nodeLimit = min(dTree.nodes.length, maxDTreeNodesPerCell)`. The served
+    // node count MUST equal that bound for every cap.
+    for (const cap of [1, 7, 50, 85, 341, 9999]) {
+      const buf = serialiseDTree(d, cap);
+      const gpuNodeLimit = Math.min(d.nodes.length, cap);
+      expect(buf[0]).toBe(gpuNodeLimit);
+    }
+  });
+
+  it('NO served interior node points to a child outside the served prefix (no cross-cell read)', () => {
+    const d = buildFullDepthDTree();
+    for (const cap of [1, 5, 21, 85, 200]) {
+      const buf = serialiseDTree(d, cap);
+      const N = buf[0]!;
+      for (let i = 0; i < N; i++) {
+        const base = DTREE_HEADER_F32 + i * DTREE_NODE_F32;
+        const isLeaf = buf[base + 7]! > 0.5;
+        const firstChild = buf[base + 6]!;
+        if (isLeaf) {
+          // Promoted-or-genuine leaf: firstChild cleared to −1.
+          expect(firstChild).toBe(-1);
+        } else {
+          // Interior: all four children MUST fall inside [0, N) — otherwise the
+          // WGSL `firstChild + ci` jump would read past this cell's block.
+          expect(firstChild).toBeGreaterThanOrEqual(0);
+          expect(firstChild + 3).toBeLessThan(N);
+        }
+      }
+    }
+  });
+
+  it('GPU traversal on a clamped buffer still terminates at a valid leaf for any UV', () => {
+    const d = buildFullDepthDTree();
+    const buf = serialiseDTree(d, 21); // aggressively clamped
+    for (const uv of [[0, 0], [0.99, 0.99], [0.5, 0.5], [0.25, 0.75], [0.1, 0.9]] as const) {
+      const base = gpuTraverseDTreeLeaf(buf, uv);
+      // Must land on a leaf flag (1.0) inside the served region — proves the
+      // descent never followed a dangling pointer.
+      expect(buf[base + 7]).toBe(1.0);
+      expect(base).toBeGreaterThanOrEqual(DTREE_HEADER_F32);
+      expect(base).toBeLessThan(buf.length);
+    }
+  });
+});
+
+describe('serialiseSTree — Item A overflow clamp (maxDTreeNodesPerCell)', () => {
+  it('concatenated dTreeBuf stays within the GPU allocation when cells exceed the cap', () => {
+    // Build a multi-cell sTree, then grow every per-cell dTree to the full
+    // 341-node cap so the clamp is exercised on each cell.
+    const sTree = buildSTree(SCENE_AABB);
+    for (let i = 0; i < PPG_CELL_SPLIT_THRESHOLD + 1; i++) {
+      sTreeAccumulate(sTree, [0, 0, 0], [0.5, 0.5], 1.0);
+    }
+    splitOverflowLeaves(sTree);
+    expect(sTree.dTrees.length).toBeGreaterThan(1);
+    // Force every dTree to full depth.
+    for (const d of sTree.dTrees) {
+      for (let pass = 0; pass < 6; pass++) {
+        const before = d.nodes.length;
+        for (const n of d.nodes) if (n.isLeaf) n.flux = 1.0;
+        d.totalFlux = d.nodes.filter((n) => n.isLeaf).length;
+        refineDTree(d);
+        if (d.nodes.length === before) break;
+      }
+    }
+
+    const cap = 85; // sub-341 host config
+    const { dTreeBuf, dTreeOffsets } = serialiseSTree(sTree, cap);
+
+    // Simulate the GPU allocation: `maxSpatialCells × (header + cap × stride)`.
+    // The concatenated buffer must fit it exactly (each cell clamped to `cap`).
+    const perCellF32 = DTREE_HEADER_F32 + cap * DTREE_NODE_F32;
+    expect(dTreeBuf.length).toBe(sTree.dTrees.length * perCellF32);
+    // Every cell's header reports the clamped node count, and successive
+    // offsets are spaced by exactly the clamped per-cell stride.
+    for (let k = 0; k < sTree.dTrees.length; k++) {
+      const off = dTreeOffsets[k]!;
+      expect(off).toBe(k * perCellF32);
+      expect(dTreeBuf[off]).toBe(Math.min(sTree.dTrees[k]!.nodes.length, cap));
+    }
+  });
+
+  it('omitting the cap reproduces the historical (unclamped) buffer for default-sized trees', () => {
+    const sTree = buildSTree(SCENE_AABB);
+    const unclamped = serialiseSTree(sTree);
+    // A fresh single-cell sTree's dTree is well under 341 nodes, so a generous
+    // cap is a no-op — byte-identical to the unclamped path.
+    const clampedGenerous = serialiseSTree(sTree, 341);
+    expect(Array.from(clampedGenerous.dTreeBuf)).toEqual(Array.from(unclamped.dTreeBuf));
+    expect(Array.from(clampedGenerous.dTreeOffsets)).toEqual(Array.from(unclamped.dTreeOffsets));
   });
 });

@@ -17,7 +17,12 @@
  */
 
 import * as THREE from 'three';
-import { luminance } from '@vitrum/shared-samplers';
+import {
+  luminance,
+  buildLightTree,
+  packLightTreeForGPU,
+  LIGHT_TREE_FLOATS_PER_NODE,
+} from '@vitrum/shared-samplers';
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
@@ -114,6 +119,71 @@ interface EmitterListOptions {
   }>;
 }
 
+/**
+ * Per-emitter light-tree build inputs, aligned 1:1 with the emitter list (same
+ * order/indices as `emitterFloats` / `cdfArray`). Consumed by
+ * `@vitrum/shared-samplers buildLightTree` so leaf `emitterIndex` values index
+ * the same GPU emitter array RIS samples a point on. Power is the SAME
+ * `luminance(color)·area` quantity the flat power CDF is built from, so the
+ * tree's power weighting and the CDF agree exactly.
+ */
+export interface EmitterTreeInput {
+  /** luminance(color)·area per emitter (matches CDF power). */
+  powers: number[];
+  /** Triangle centroid (vA+vB+vC)/3 per emitter (spatial-split heuristic). */
+  centroids: [number, number, number][];
+  /** Per-emitter triangle AABB (min/max over the 3 vertices). */
+  aabbs: { min: [number, number, number]; max: [number, number, number] }[];
+}
+
+/**
+ * Built light-tree GPU artifact: the packed flat-f32 node buffer + node count +
+ * a gate. `enabled` is `true` only when there are ≥ 2 emitters (a 1-emitter
+ * scene gains nothing from a tree — selection is deterministic). When disabled,
+ * `nodes` is a single zeroed placeholder node so the GPU storage buffer is
+ * non-empty (WGSL bind groups cannot be size 0) but is never dereferenced (RIS
+ * branches on the `lightTreeEnabled` UBO gate before touching the buffer).
+ */
+export interface LightTreeBuffer {
+  /** Packed flat-f32 nodes (LIGHT_TREE_FLOATS_PER_NODE per node). */
+  nodes: Float32Array;
+  /** Number of nodes (0 when disabled). */
+  nodeCount: number;
+  /** Whether RIS should select via the tree (≥ 2 emitters). */
+  enabled: boolean;
+}
+
+/**
+ * Build + serialise the ReSTIR-DI light-selection tree from the emitter-list
+ * tree inputs. Returns a zeroed 1-node placeholder + `enabled:false` when there
+ * are fewer than 2 emitters (or no positive-power emitters), so RIS falls back
+ * to the flat power-CDF path. Leaf `emitterIndex` values index the SAME GPU
+ * emitter array RIS samples a point on (built 1:1 with `buildEmitterList`).
+ */
+export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuffer {
+  const n = treeInput.powers.length;
+  const totalPower = treeInput.powers.reduce((a, b) => a + b, 0);
+  // < 2 emitters → deterministic selection; > 0 power required for a meaningful
+  // power-weighted tree. Either way fall back to the flat CDF path.
+  if (n < 2 || totalPower <= 0) {
+    return {
+      nodes: new Float32Array(LIGHT_TREE_FLOATS_PER_NODE), // 1 zeroed placeholder node
+      nodeCount: 0,
+      enabled: false,
+    };
+  }
+  const { nodes } = buildLightTree({
+    powers: treeInput.powers,
+    centroids: treeInput.centroids,
+    aabbs: treeInput.aabbs,
+  });
+  return {
+    nodes: packLightTreeForGPU(nodes),
+    nodeCount: nodes.length,
+    enabled: true,
+  };
+}
+
 export function buildEmitterList(
   indices: Uint32Array,
   positions: Float32Array,    // stride-4: read .xyz only
@@ -125,6 +195,8 @@ export function buildEmitterList(
   emitterFloats: Float32Array;
   cdfArray: Float32Array;
   totalEmissivePower: number;
+  /** Light-tree build inputs aligned 1:1 with the emitter list. */
+  treeInput: EmitterTreeInput;
 } {
   const triCount = indices.length / 3;
 
@@ -243,6 +315,12 @@ export function buildEmitterList(
   const emitterFloats = new Float32Array(emitterCount * EMITTER_FLOATS);
   let totalEmissivePower = 0;
 
+  // Light-tree build inputs, aligned 1:1 with the emitter list (leaf
+  // emitterIndex == emitter array index). Power is the SAME luminance·area
+  // quantity the flat power CDF accumulates, so the two selection
+  // distributions share their power weighting exactly.
+  const treeInput: EmitterTreeInput = { powers: [], centroids: [], aabbs: [] };
+
   for (let i = 0; i < emitterCount; i++) {
     const e = emitterData[i]!;
     const base = i * EMITTER_FLOATS;
@@ -252,6 +330,25 @@ export function buildEmitterList(
     emitterFloats[base + 12] = e.normal[0]; emitterFloats[base + 13] = e.normal[1]; emitterFloats[base + 14] = e.normal[2]; emitterFloats[base + 15] = e.area;
     emitterFloats[base + 16] = e.color[0]; emitterFloats[base + 17] = e.color[1]; emitterFloats[base + 18] = e.color[2]; emitterFloats[base + 19] = e.intensity;
     totalEmissivePower += e.power;
+
+    treeInput.powers.push(e.power);
+    treeInput.centroids.push([
+      (e.vA[0] + e.vB[0] + e.vC[0]) / 3,
+      (e.vA[1] + e.vB[1] + e.vC[1]) / 3,
+      (e.vA[2] + e.vB[2] + e.vC[2]) / 3,
+    ]);
+    treeInput.aabbs.push({
+      min: [
+        Math.min(e.vA[0], e.vB[0], e.vC[0]),
+        Math.min(e.vA[1], e.vB[1], e.vC[1]),
+        Math.min(e.vA[2], e.vB[2], e.vC[2]),
+      ],
+      max: [
+        Math.max(e.vA[0], e.vB[0], e.vC[0]),
+        Math.max(e.vA[1], e.vB[1], e.vC[1]),
+        Math.max(e.vA[2], e.vB[2], e.vC[2]),
+      ],
+    });
   }
 
   const cdfArray = new Float32Array(emitterCount);
@@ -261,5 +358,5 @@ export function buildEmitterList(
     cdfArray[i] = runningSum / totalEmissivePower;
   }
 
-  return { emitterFloats, cdfArray, totalEmissivePower };
+  return { emitterFloats, cdfArray, totalEmissivePower, treeInput };
 }

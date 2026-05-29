@@ -29,11 +29,15 @@ describe('BvhBufferHost', () => {
       emitterCdf: buf,
       emitterCount: 0,
       totalEmissivePower: 0,
+      lightTree: buf,
+      lightTreeNodeCount: 0,
+      lightTreeEnabled: false,
       bvhMode: 'merged',
     } as SceneBVHBuffers);
     const r = host.sceneBindGroupResources();
     expect(r.bvhNodesBuffer).toBeDefined();
     expect(r.tlasNodesBuffer).toBeDefined();
+    expect(host.lightTreeBuffer()).toBeDefined();
     host.dispose();
   });
 

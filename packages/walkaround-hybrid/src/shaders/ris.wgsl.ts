@@ -123,9 +123,30 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let emCount = max(ubo.emitterCount, 1u);
 
   // --- M_LIGHT candidates from emitter distribution ---
+  // Light selection mode is data-driven via ubo.lightTreeEnabled:
+  //   1 ⇒ spatially-aware light tree (sampleLightTree) — importance-samples
+  //       emitters by power/dist², returning the exact selection pmf;
+  //   0 ⇒ flat power CDF (sampleEmitterIdx) — the historical path.
+  // In BOTH modes the WRS source pmf used in the weight w = p̂ / p_source is
+  // the EXACT pmf the selection drew from, so the estimator is unbiased either way.
+  let useLightTree = ubo.lightTreeEnabled == 1u;
   for (var i = 0u; i < M_LIGHT; i++) {
-    let xiEm = rand_f32(&rng);
-    let lid = sampleEmitterIdx(&emitterCdf, emCount, xiEm);
+    // Select an emitter + record the EXACT selection pmf that produced it.
+    var lid: u32;
+    var emitterSelPmf: f32;
+    if (useLightTree) {
+      let lt = sampleLightTree(pos, ubo.emitterDist2Floor, ubo.lightTreeNodeCount, &rng);
+      // Degenerate guard: a malformed leaf (emitterIndex < 0) or non-positive
+      // pdf cannot contribute — skip rather than emit an infinite weight.
+      if (lt.emitterIndex < 0 || lt.pdf <= 0.0) { continue; }
+      lid = u32(lt.emitterIndex);
+      emitterSelPmf = lt.pdf;
+    } else {
+      let xiEm = rand_f32(&rng);
+      lid = sampleEmitterIdx(&emitterCdf, emCount, xiEm);
+      // Flat power CDF pmf: p(emitter) = luminance(Le)·area / totalPower.
+      emitterSelPmf = (luminance(emitters[lid].Le) * emitters[lid].area) / totalPower;
+    }
     let e   = emitters[lid];
     let xiTri = rand2(&rng);
     let ls  = sampleEmitterPoint(e, xiTri);
@@ -147,9 +168,12 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi);
     let pHat = luminance(ls.Le * brdf * G);
 
-    // p(x): emitter pmf x per-triangle area pdf.
-    let emitterPmf = max(1e-15, (luminance(e.Le) * e.area) / totalPower);
-    let pX = max(1e-15, emitterPmf * ls.pdfArea);
+    // p(x) = emitter-selection pmf × per-triangle uniform-area pdf. The first
+    // factor is the EXACT pmf the chosen sampler drew from (tree or flat CDF);
+    // the area pdf factor is identical for both modes. This is the source pdf
+    // the WRS weight divides p̂ by — getting it exactly right is what keeps
+    // ReSTIR unbiased.
+    let pX = max(1e-15, emitterSelPmf * ls.pdfArea);
     let w = select(0.0, pHat / pX, pHat > 0.0);
     updateReservoirDI(&r, lid, xiTri, w, &rng);
   }
@@ -212,5 +236,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
 export const RIS_MODULE: WgslModule = {
   name: 'ris',
   source: RIS_WGSL,
-  requires: ['restirPHat'],
+  // restirPHat → common (p̂ helper + UBO/RNG). lightTree adds the @group(3)
+  // light-tree storage buffer + `sampleLightTree` traversal used by the
+  // M_LIGHT candidate loop when ubo.lightTreeEnabled == 1.
+  requires: ['restirPHat', 'lightTree'],
 };

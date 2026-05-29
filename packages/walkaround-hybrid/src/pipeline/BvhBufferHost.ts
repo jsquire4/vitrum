@@ -36,6 +36,7 @@ export class BvhBufferHost {
   private _tlasInstanceLocalToWorldBuffer: GPUBuffer | null = null;
   private _emitterBuffer: GPUBuffer | null = null;
   private _emitterCdfBuffer: GPUBuffer | null = null;
+  private _lightTreeBuffer: GPUBuffer | null = null;
 
   get initialized(): boolean {
     return this._bvhNodesBuffer != null;
@@ -48,7 +49,18 @@ export class BvhBufferHost {
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
+    this._lightTreeBuffer = uploadBuffer(device, bvhBuffers.lightTree.cpuData, STORAGE);
     this._uploadTlasBuffers(device, bvhBuffers);
+  }
+
+  /** RIS-only light-tree storage buffer (group 3 binding 0). Always non-null
+   *  after `uploadInitial` (a 1-node placeholder backs it when the tree is
+   *  disabled). */
+  lightTreeBuffer(): GPUBuffer {
+    if (this._lightTreeBuffer == null) {
+      throw new Error('[BvhBufferHost] uploadInitial must run before lightTreeBuffer');
+    }
+    return this._lightTreeBuffer;
   }
 
   sceneBindGroupResources(): SceneBindGroupResources {
@@ -70,11 +82,18 @@ export class BvhBufferHost {
     };
   }
 
-  updateEmitters(device: GPUDevice, bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf'>): void {
+  updateEmitters(
+    device: GPUDevice,
+    bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf' | 'lightTree'>,
+  ): void {
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
+    this._lightTreeBuffer?.destroy();
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
+    // Re-upload the selection tree: emitters changed, so the tree's leaf
+    // emitterIndex → emitter array mapping (and powers) changed with them.
+    this._lightTreeBuffer = uploadBuffer(device, bvhBuffers.lightTree.cpuData, STORAGE);
   }
 
   refreshBvhRefit(
@@ -146,12 +165,14 @@ export class BvhBufferHost {
     this._destroyTlasBuffers();
     this._emitterBuffer?.destroy();
     this._emitterCdfBuffer?.destroy();
+    this._lightTreeBuffer?.destroy();
     this._bvhNodesBuffer = null;
     this._bvhIndexBuffer = null;
     this._bvhBeerBuffer = null;
     this._bvhPositionBuffer = null;
     this._emitterBuffer = null;
     this._emitterCdfBuffer = null;
+    this._lightTreeBuffer = null;
   }
 
   private _destroyTlasBuffers(): void {

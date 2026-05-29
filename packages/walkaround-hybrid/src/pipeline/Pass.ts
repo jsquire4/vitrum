@@ -41,6 +41,16 @@ export interface PassGateOptions {
   readonly denoiserMode: string;
   /** Whether PPG (path-guiding) is enabled. */
   readonly ppgEnabled: boolean;
+  /** Phase-0 productization — whether the PPG TRAIN passes (guide + update)
+   *  dispatch THIS frame. The orchestrator sets this to
+   *  `frameCount % ppgDispatchInterval === 0` so a low quality preset can
+   *  amortise the path-guiding training cost across frames. The learned
+   *  sTree/dTree GPU buffers PERSIST between train cycles and the gi-ris guided
+   *  SAMPLING reads them every frame regardless, so this only gates the two
+   *  train passes — never the guided sampling. Absent ⇒ treated as `true`
+   *  (every frame, no behaviour change). Only `PPGGuidePass`/`PPGUpdatePass`
+   *  read it; it has no effect when `ppgEnabled` is false. */
+  readonly ppgTrainThisFrame?: boolean;
   /** Phase-0 productization — whether GTAO runs this config. `false` (low
    *  quality preset / `gtaoMode:'off'`) gates off BOTH the GTAO compute pass
    *  and its bilateral upsample. Absent ⇒ treated as `true` (on). */
@@ -120,6 +130,8 @@ export interface PassDispatchContext {
   readonly uboBindGroup: GPUBindGroup;
   /** Pre-built DDGI hybrid-layers bind group (slot 3) — used by gi-ris + shade. */
   readonly hybridLayersBindGroup: GPUBindGroup;
+  /** Pre-built light-tree bind group (slot 3) — RIS-only DI light selection. */
+  readonly lightTreeBindGroup: GPUBindGroup;
   /** Workgroup counts — 8×8 (wgX/wgY), 16×16 (wgX16/wgY16),
    *  half-res 8×8 (halfWgX/halfWgY). */
   readonly wgX: number;
