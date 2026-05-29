@@ -112,9 +112,9 @@ fn bdptPickEmitterFlat(rng: ptr<function, u32>, totalPower: f32, emitterCount: u
 }
 
 fn bdptWriteInvalid(col: i32) {
-  textureStore(bdptLightPath, vec2i(col, 0), vec4f(0.0, 0.0, 0.0, BDPT_KIND_INVALID));
-  textureStore(bdptLightPath, vec2i(col, 1), vec4f(0.0));
-  textureStore(bdptLightPath, vec2i(col, 2), vec4f(0.0));
+  bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(0.0, 0.0, 0.0, BDPT_KIND_INVALID);
+  bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(0.0);
+  bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(0.0);
 }
 
 fn bdptFinishBounce0(
@@ -130,9 +130,9 @@ fn bdptFinishBounce0(
   let pdfHemi = hemi.pdf;
   let pdfJoint = max(pdfLight * pdfHemi, 1e-8);
   let emitThroughput = emitRad * cosEmit / pdfJoint;
-  textureStore(bdptLightPath, vec2i(col, 0), vec4f(emitPos, 0.0));
-  textureStore(bdptLightPath, vec2i(col, 1), vec4f(emitNormal, pdfJoint));
-  textureStore(bdptLightPath, vec2i(col, 2), vec4f(emitThroughput, pdfHemi));
+  bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(emitPos, 0.0);
+  bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(emitNormal, pdfJoint);
+  bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfHemi);
 }
 
 fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
@@ -263,9 +263,9 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let prevCol = col - 1;
-  let v0prev = textureLoad(bdptLightPath, vec2i(prevCol, 0), 0);
-  let v1prev = textureLoad(bdptLightPath, vec2i(prevCol, 1), 0);
-  let v2prev = textureLoad(bdptLightPath, vec2i(prevCol, 2), 0);
+  let v0prev = bdptLightPath[bdptLightPathIndex(prevCol, 0u)];
+  let v1prev = bdptLightPath[bdptLightPathIndex(prevCol, 1u)];
+  let v2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
   if (v0prev.w == BDPT_KIND_INVALID) {
     bdptWriteInvalid(col);
     return;
@@ -305,8 +305,8 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   let toPrev = safe_normalize(prevPos - newPos);
   let cosRev = max(dot(newNormal, toPrev), 0.0);
   let pdfRev = cosRev * INV_PI;                  // SA reverse (Lambertian cosθ/π)
-  textureStore(bdptLightPath, vec2i(col, 0), vec4f(newPos, 0.0));
-  textureStore(bdptLightPath, vec2i(col, 1), vec4f(newNormal, pdfFwd));
-  textureStore(bdptLightPath, vec2i(col, 2), vec4f(newThroughput, pdfRev));
+  bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(newPos, 0.0);
+  bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(newNormal, pdfFwd);
+  bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(newThroughput, pdfRev);
 }
 `;

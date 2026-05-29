@@ -176,9 +176,8 @@ class PTEngineWebGPU implements Engine {
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
   #bdptLightPath: BdptLightPathBufferWebGPU | null = null;
-  #bdptExternalView: GPUTextureView | null = null;
-  #bdptPlaceholder: GPUTexture | null = null;
-  #bdptPlaceholderView: GPUTextureView | null = null;
+  #bdptExternalBuffer: GPUBuffer | null = null;
+  #bdptPlaceholderBuffer: GPUBuffer | null = null;
 
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
@@ -1045,14 +1044,14 @@ class PTEngineWebGPU implements Engine {
     }
     this.#device.queue.writeBuffer(gpu.paramsBuffer, 0, paramsArrayBuffer);
 
-    const bindGroup = gpu.buildBindGroups(this.#sceneBuffers, () => this.#bdptLightPathView());
+    const bindGroup = gpu.buildBindGroups(this.#sceneBuffers, () => this.#bdptLightPathBuffer());
 
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
     if (
       gpu.bdptSubpathPipeline != null &&
       this.#bdpt &&
       bdptStackReady &&
-      this.#bdptExternalView == null &&
+      this.#bdptExternalBuffer == null &&
       this.#bdptLightPath != null &&
       this.#traceTier === 'full' &&
       gpu.pathTraceBindGroup1 != null &&
@@ -1128,24 +1127,23 @@ class PTEngineWebGPU implements Engine {
     return this.#postDenoiser?.getLatestDenoised() ?? null;
   }
 
-  /** WG-7 — supply host-owned light-path texture (or null to use internal CPU fill). */
-  bdptAdvanceFrame(lightPathView: GPUTextureView | null): void {
+  /** WG-7 — supply host-owned light-path buffer (or null to use internal CPU fill). */
+  bdptAdvanceFrame(lightPathBuffer: GPUBuffer | null): void {
     if (!this.#bdpt) return;
-    this.#bdptExternalView = lightPathView;
+    this.#bdptExternalBuffer = lightPathBuffer;
     // Drop only group 2 (the BDPT light-path group), matching the prior inline
     // behavior: group 0 stays cached, so the build branch in renderFrame won't
     // fire and group 2 remains null until a full scene/accum invalidation.
     this.#gpu.pathTraceBindGroup2 = null;
   }
 
-  #bdptLightPathView(): GPUTextureView {
-    if (this.#bdptExternalView) return this.#bdptExternalView;
-    if (this.#bdptLightPath) return this.#bdptLightPath.view;
-    if (!this.#bdptPlaceholderView && typeof this.#device.createTexture === 'function') {
-      this.#bdptPlaceholder = createBdptLightPathPlaceholder(this.#device);
-      this.#bdptPlaceholderView = this.#bdptPlaceholder.createView();
+  #bdptLightPathBuffer(): GPUBuffer {
+    if (this.#bdptExternalBuffer) return this.#bdptExternalBuffer;
+    if (this.#bdptLightPath) return this.#bdptLightPath.buffer;
+    if (!this.#bdptPlaceholderBuffer && typeof this.#device.createBuffer === 'function') {
+      this.#bdptPlaceholderBuffer = createBdptLightPathPlaceholder(this.#device);
     }
-    return this.#bdptPlaceholderView as GPUTextureView;
+    return this.#bdptPlaceholderBuffer as GPUBuffer;
   }
 
   pause(): void {
@@ -1167,9 +1165,8 @@ class PTEngineWebGPU implements Engine {
     this.#postDenoiser?.dispose();
     this.#bdptLightPath?.dispose();
     this.#bdptLightPath = null;
-    this.#bdptPlaceholder?.destroy();
-    this.#bdptPlaceholder = null;
-    this.#bdptPlaceholderView = null;
+    this.#bdptPlaceholderBuffer?.destroy();
+    this.#bdptPlaceholderBuffer = null;
     // Tears down accum textures + buffers, the cached bind groups, and destroys
     // + nulls the params buffer / pipeline / layout (same order as the prior
     // inline dispose body). Scene buffers stay engine-owned, destroyed below.

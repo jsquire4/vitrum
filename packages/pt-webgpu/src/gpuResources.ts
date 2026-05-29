@@ -292,19 +292,19 @@ export class GpuResources {
   /**
    * Build (and cache) the path-trace bind group(s) from the current accum views,
    * params buffer, pipeline layout, the supplied scene buffers, and the BDPT
-   * light-path view. Returns group 0 (the always-present group). Groups 1/2 are
+   * light-path buffer. Returns group 0 (the always-present group). Groups 1/2 are
    * only created on the `full` tier and are read back off this struct by the
    * caller. Idempotent: if group 0 is already cached, returns it unchanged.
    *
-   * `bdptLightPathView` is a thunk so the engine's lazy placeholder-texture
+   * `bdptLightPathBuffer` is a thunk so the engine's lazy placeholder-buffer
    * creation only fires on the construction branch (matching the prior inline
-   * code, which only called `#bdptLightPathView()` when the group was rebuilt).
+   * code, which only called `#bdptLightPathBuffer()` when the group was rebuilt).
    *
    * Callers must have already run `ensureAccumResources` + `ensurePipeline` and
    * validated that the views / pipeline / layout / params / scene buffers are
    * non-null (renderFrame's preconditions handle this).
    */
-  buildBindGroups(sb: UploadedSceneBuffers, bdptLightPathView: () => GPUTextureView): GPUBindGroup {
+  buildBindGroups(sb: UploadedSceneBuffers, bdptLightPathBuffer: () => GPUBuffer): GPUBindGroup {
     if (this.pathTraceBindGroup != null) return this.pathTraceBindGroup;
     const liteEntries: GPUBindGroupEntry[] = [
       { binding: 0, resource: this.accumView! },
@@ -343,7 +343,7 @@ export class GpuResources {
       { binding: 2, resource: { buffer: sb.tlasBlasRootsBuffer } },
       { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
       { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
-      { binding: 5, resource: bdptLightPathView() },
+      { binding: 5, resource: { buffer: bdptLightPathBuffer() } },
       { binding: 6, resource: { buffer: this.bdptEyeStackBuffer! } },
     ];
     const bindGroup = this.#device.createBindGroup({

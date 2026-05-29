@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import { sampleBdptBounce0Cpu } from '../bdpt/bdptEmitterPickCpu.js';
-import { packBdptLightPathColumns } from '../bdpt/fillBdptLightPathCpu.js';
+import {
+  bdptLightPathColumnIndex,
+  packBdptLightPathColumns,
+} from '../bdpt/fillBdptLightPathCpu.js';
 
 function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers {
   const base = {
@@ -68,9 +71,10 @@ describe('bdptLightSubpathOracle', () => {
   it('packBdptLightPathColumns marks unused columns invalid', () => {
     const width = 3;
     const data = packBdptLightPathColumns(width, null);
-    expect(data[3]).toBe(3);
-    expect(data[7]).toBe(3);
-    expect(data[11]).toBe(3);
+    // Flat buffer layout: col*3+row vec4f. Each column's row-0 .w holds the kind.
+    expect(data[bdptLightPathColumnIndex(0, 0) + 3]).toBe(3);
+    expect(data[bdptLightPathColumnIndex(1, 0) + 3]).toBe(3);
+    expect(data[bdptLightPathColumnIndex(2, 0) + 3]).toBe(3);
   });
 
   it('packBdptLightPathColumns matches sampleBdptBounce0Cpu for point emitter', () => {
@@ -82,10 +86,10 @@ describe('bdptLightSubpathOracle', () => {
     expect(sample).not.toBeNull();
     const width = 3;
     const data = packBdptLightPathColumns(width, sample);
-    expect(data[3]).toBe(0);
-    expect(data[0]).toBeCloseTo(sample!.emitPos[0], 4);
-    expect(data[width * 4 + 3]).toBeCloseTo(sample!.pdfJoint, 4);
-    expect(data[width * 8 + 0]).toBeGreaterThan(0);
+    expect(data[bdptLightPathColumnIndex(0, 0) + 3]).toBe(0);
+    expect(data[bdptLightPathColumnIndex(0, 0) + 0]).toBeCloseTo(sample!.emitPos[0], 4);
+    expect(data[bdptLightPathColumnIndex(0, 1) + 3]).toBeCloseTo(sample!.pdfJoint, 4);
+    expect(data[bdptLightPathColumnIndex(0, 2) + 0]).toBeGreaterThan(0);
   });
 
   // Regression for the bounce-0 tangent-frame bug. The cosine hemisphere
@@ -108,10 +112,10 @@ describe('bdptLightSubpathOracle', () => {
     expect(sample!.pdfHemi).toBeCloseTo(0.2424175870529115, 9);
     expect(sample!.pdfJoint).not.toBeCloseTo(0.30494558820375234, 9);
 
-    // The packed texture stores pdf in 32-bit float, so loosen to f32 precision.
+    // The packed buffer stores pdf in 32-bit float, so loosen to f32 precision.
     const width = 3;
     const data = packBdptLightPathColumns(width, sample);
-    expect(data[width * 4 + 3]).toBeCloseTo(0.2424175870529115, 6);
-    expect(data[width * 8 + 3]).toBeCloseTo(0.2424175870529115, 6);
+    expect(data[bdptLightPathColumnIndex(0, 1) + 3]).toBeCloseTo(0.2424175870529115, 6);
+    expect(data[bdptLightPathColumnIndex(0, 2) + 3]).toBeCloseTo(0.2424175870529115, 6);
   });
 });

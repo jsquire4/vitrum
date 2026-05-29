@@ -153,10 +153,10 @@ fn bdptMergedVertex(
 ) -> BdptMergedVtx {
   var v: BdptMergedVtx;
   if (i <= c) {
-    // Light side: texelFetch column i, rows 0/1/2.
-    let l0 = textureLoad(bdptLightPath, vec2i(i32(i), 0), 0);
-    let l1 = textureLoad(bdptLightPath, vec2i(i32(i), 1), 0);
-    let l2 = textureLoad(bdptLightPath, vec2i(i32(i), 2), 0);
+    // Light side: read scratch-buffer column i, rows 0/1/2.
+    let l0 = bdptLightPath[bdptLightPathIndex(i32(i), 0u)];
+    let l1 = bdptLightPath[bdptLightPathIndex(i32(i), 1u)];
+    let l2 = bdptLightPath[bdptLightPathIndex(i32(i), 2u)];
     v.pos = l0.xyz;
     v.nrm = l1.xyz;
     v.pdfFwd = l1.w;          // stored SA pdfFwd (NO baked-in G; emitter = area endpoint)
@@ -285,9 +285,9 @@ fn evaluateBdptConnection(
   eyeDepth: u32,
   lightVtxIdx: i32,
 ) -> vec3f {
-  let lv0 = textureLoad(bdptLightPath, vec2i(lightVtxIdx, 0), 0);
-  let lv1 = textureLoad(bdptLightPath, vec2i(lightVtxIdx, 1), 0);
-  let lv2 = textureLoad(bdptLightPath, vec2i(lightVtxIdx, 2), 0);
+  let lv0 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 0u)];
+  let lv1 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 1u)];
+  let lv2 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 2u)];
   if (lv0.w == BDPT_KIND_INVALID) {
     return vec3f(0.0);
   }
@@ -351,7 +351,7 @@ fn evaluateBdptConnection(
   // L_{c-1} override (Lambertian at L_c toward L_{c-1}).
   var revLcMinus = 0.0;
   if (c >= 1u) {
-    let lcm0 = textureLoad(bdptLightPath, vec2i(i32(c - 1u), 0), 0);
+    let lcm0 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 0u)];
     let lcToLcMinus = normalize(lcm0.xyz - lightPos);
     revLcMinus = bdptLambertDirPdf(lightNormal, lcToLcMinus);
   }

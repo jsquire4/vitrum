@@ -149,19 +149,37 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl *
 @group(1) @binding(9) var<storage, read> meshAreaLights: array<vec4f>;
 `;
 
-/** Group 2 — TLAS instance table (5 storage buffers) + BDPT light-path texture
- *  + BDPT eye-subpath scratch stack. `bdptEyeStack` is a per-pixel ×
- *  bdptMaxEyeDepth read_write storage stack of eye-vertex pdf/pos/normal data
- *  (2× vec4 / vertex; specular packed as a negative-pdfFwd sentinel) consumed by
- *  the full Veach §10.3 connection sweep. */
+/** Group 2 — TLAS instance table (5 storage buffers) + BDPT light-path scratch
+ *  buffer + BDPT eye-subpath scratch stack.
+ *
+ *  `bdptLightPath` is a read_write storage BUFFER of vec4f (NOT a storage
+ *  texture). Core WebGPU only permits `read_write` storage-texture access for
+ *  `r32float/uint/sint` (gpuweb #4651); `rgba32float` read_write storage
+ *  textures are rejected at bind-group creation on every conformant impl
+ *  (Dawn + wgpu-native), so the light-path cache is a storage buffer instead.
+ *  Layout: `maxLightBounces` columns × 3 rows of vec4f, flattened row-minor as
+ *  `idx = col * BDPT_LIGHT_PATH_ROWS + row` (see `bdptLightPathIndex`). Per
+ *  light-vertex: row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd,
+ *  row 2 = throughput + pdfRev.
+ *
+ *  `bdptEyeStack` is a per-pixel × bdptMaxEyeDepth read_write storage stack of
+ *  eye-vertex pdf/pos/normal data (2× vec4 / vertex; specular packed as a
+ *  negative-pdfFwd sentinel) consumed by the full Veach §10.3 connection
+ *  sweep. */
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
 @group(2) @binding(0) var<storage, read> tlasNodes: array<BVHNode>;
 @group(2) @binding(1) var<storage, read> tlasInstanceIndices: array<u32>;
 @group(2) @binding(2) var<storage, read> tlasBlasRoots: array<u32>;
 @group(2) @binding(3) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
-@group(2) @binding(5) var bdptLightPath: texture_storage_2d<rgba32float, read_write>;
+@group(2) @binding(5) var<storage, read_write> bdptLightPath: array<vec4f>;
 @group(2) @binding(6) var<storage, read_write> bdptEyeStack: array<vec4f>;
+
+// Light-path flat index: 3 vec4f rows per light-vertex column.
+const BDPT_LIGHT_PATH_ROWS = 3u;
+fn bdptLightPathIndex(col: i32, row: u32) -> u32 {
+  return u32(col) * BDPT_LIGHT_PATH_ROWS + row;
+}
 `;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
