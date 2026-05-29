@@ -87,6 +87,7 @@ import {
 import {
   PipelineInitCoordinator,
   collectDDGILightsFromThreeRoot,
+  mergeDDGILightsDedupSun,
   type PipelineInitHost,
   type HybridInitStaticConfig,
 } from './HybridEngineLifecycle.js';
@@ -1076,7 +1077,7 @@ export class HybridEngine implements Engine {
     this._ddgi.pass.setSunIntensityMultiplier(
       directionalSunMultiplier(sceneForSun, this._primaryLightIntensity),
     );
-    this._ddgi.setLights([...this._ctorLights, ...sceneLights]);
+    this._ddgi.setLights(mergeDDGILightsDedupSun(this._ctorLights, sceneLights));
     this._ddgi.invalidateProbeCache();
   }
 

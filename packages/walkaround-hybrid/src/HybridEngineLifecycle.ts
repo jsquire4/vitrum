@@ -484,7 +484,10 @@ export class PipelineInitCoordinator {
           ? coreEmittersToDDGILights(sceneForSun)
           : collectDDGILightsFromThreeRoot(bvhRoot);
       if (ddgiSceneLights.length > 0) {
-        host.ddgi.setLights([...host.ctorLights, ...ddgiSceneLights]);
+        // De-dup the sun: if the scene contributes a directional→sun AND the
+        // host passed an `opts.lights` sun, drop the host sun (scene wins) so
+        // DDGI doesn't double-count the sun. See `mergeDDGILightsDedupSun`.
+        host.ddgi.setLights(mergeDDGILightsDedupSun(host.ctorLights, ddgiSceneLights));
       }
 
       host.publishPipeline(pipeline);
@@ -543,6 +546,67 @@ export class PipelineInitCoordinator {
       }
     }
   }
+}
+
+/**
+ * Merge the host-supplied (constructor `opts.lights`) DDGI lights with the
+ * scene-derived ones, de-duplicating the SUN so DDGI only ever sees ONE.
+ *
+ * The double-sun bug: when a host passes `opts.lights` containing a `sun`
+ * (manual override) AND the core scene also carries a `directional` emitter
+ * (which `coreEmittersToDDGILights` converts into a `sun` DDGILight), BOTH
+ * suns get spread into DDGI's `setLights`, and the probe-update pass evaluates
+ * both — double-counting the sun's contribution to every probe's irradiance.
+ *
+ * Precedence: the SCENE-derived directional is the physical source of truth,
+ * so it wins; a host-supplied `opts.lights` sun is treated as a manual default
+ * that the scene overrides. When the scene contributes a `sun`, every
+ * host-supplied `sun` is dropped (with a one-time `console.warn` naming the
+ * conflict). When the scene contributes NO sun, host-supplied suns pass
+ * through unchanged (the legacy host-only-sun configuration still works).
+ *
+ * Non-sun lights (fixtures / teaLights) from both sources are always kept —
+ * the dedup is sun-specific, since the sun is the only single-instance
+ * directional whose contribution would visibly double.
+ */
+export function mergeDDGILightsDedupSun(
+  ctorLights: readonly DDGILight[],
+  sceneLights: readonly DDGILight[],
+): DDGILight[] {
+  const sceneHasSun = sceneLights.some((l) => l.kind === 'sun');
+  if (!sceneHasSun) {
+    return [...ctorLights, ...sceneLights];
+  }
+  const keptCtor: DDGILight[] = [];
+  let droppedHostSun = false;
+  for (const l of ctorLights) {
+    if (l.kind === 'sun') {
+      droppedHostSun = true;
+      continue;
+    }
+    keptCtor.push(l);
+  }
+  if (droppedHostSun) {
+    warnHostSunOverriddenOnce();
+  }
+  return [...keptCtor, ...sceneLights];
+}
+
+/** One-time warning when a host-supplied `opts.lights` sun is dropped in favour
+ *  of the scene-derived directional. Module-level latch so a per-frame
+ *  re-sync can't spam the console. */
+let _warnedHostSunOverridden = false;
+function warnHostSunOverriddenOnce(): void {
+  if (_warnedHostSunOverridden) return;
+  _warnedHostSunOverridden = true;
+  console.warn(
+    '[HybridEngine] Both a host-supplied `opts.lights` sun and a scene ' +
+      '`directional` emitter were present. The scene directional is the ' +
+      'physical source of truth and takes precedence; the host-supplied sun ' +
+      'was dropped to avoid double-counting it in DDGI. Remove the `sun` from ' +
+      '`opts.lights` (or the `directional` emitter from the scene) to silence ' +
+      'this warning.',
+  );
 }
 
 /** Project `THREE.PointLight` instances to DDGI point-light fixtures. */

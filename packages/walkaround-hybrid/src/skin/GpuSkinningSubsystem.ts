@@ -39,6 +39,45 @@ const UNIFORM = 0x40;
 const STORAGE = 0x80;
 const COPY_DST = 0x02;
 
+/** Epsilon for the bindMatrix identity comparison. The GPU skin kernel only
+ *  applies the blended bone matrices (`combineSkinMatrices`), NOT the
+ *  bindMatrix / bindMatrixInverse wrapping that the CPU `solveSkin` honours,
+ *  so a primitive with a non-identity bindMatrix would skin WRONG on the GPU
+ *  path. We route those to the CPU solver (same fallback shape as `hasMorph`).
+ *  glTF-typical bind is identity, so the GPU fast path is preserved for the
+ *  common case. */
+const BIND_IDENTITY_EPS = 1e-6;
+
+/** Column-major identity (== `THREE.Matrix4` default). */
+const IDENTITY_MAT4 = new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]);
+
+/**
+ * True when the primitive carries a `bindMatrix` that is NOT (within
+ * {@link BIND_IDENTITY_EPS}) the identity. An absent or identity bindMatrix
+ * returns false — the GPU fast path is safe because the kernel's
+ * `combineSkinMatrices(bones, boneInverses)` collapses to the same transform
+ * the CPU solver computes when `hasBind` is false. A non-identity bind makes
+ * the two diverge (the CPU solver pre/post-multiplies by `bindMatrix` /
+ * `bindMatrixInverse`), so this gate sends those meshes to the CPU solver.
+ */
+function hasNonIdentityBind(prim: SkinnedMeshPrimitive): boolean {
+  const bm = prim.bindMatrix;
+  // `solveSkin` only applies bind when BOTH bindMatrix and bindMatrixInverse
+  // are present; mirror that so a half-specified bind doesn't force a fallback
+  // the CPU solver would itself ignore.
+  if (bm == null || prim.bindMatrixInverse == null) return false;
+  if (bm.length !== 16) return true; // malformed → don't trust the fast path
+  for (let i = 0; i < 16; i += 1) {
+    if (Math.abs(bm[i]! - IDENTITY_MAT4[i]!) > BIND_IDENTITY_EPS) return true;
+  }
+  return false;
+}
+
 interface MeshGpuState {
   readonly vertexCount: number;
   readonly boneCount: number;
@@ -129,7 +168,16 @@ export class GpuSkinningSubsystem {
         (prim.morphTargets?.length ?? 0) > 0 &&
         prim.morphWeights != null &&
         prim.morphWeights.some((w) => w !== 0);
-      if (!this.#preferGpu || hasMorph || typeof this.#device.createComputePipeline !== 'function') {
+      // A non-identity bindMatrix must take the CPU `solveSkin` path: the GPU
+      // kernel applies only `combineSkinMatrices(bones, boneInverses)` and does
+      // NOT wrap by bindMatrix / bindMatrixInverse, so it would skin positions
+      // AND normals incorrectly for a bound mesh. Same fallback shape as morphs.
+      if (
+        !this.#preferGpu ||
+        hasMorph ||
+        hasNonIdentityBind(prim) ||
+        typeof this.#device.createComputePipeline !== 'function'
+      ) {
         const { positions, normals } = solveSkin(prim);
         host.updatePrimitive(id, { positions, normals });
         continue;
