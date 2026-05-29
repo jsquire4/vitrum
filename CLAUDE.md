@@ -138,10 +138,10 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 2. **Host animation workflows** — walkaround + pt-webgl + pt-webgpu all expose transform/positions incremental patches via `incrementalPatchSupport`; topology and vertex-count changes still require full scene rebuild on pt-webgl/pt-webgpu.
 3. **GI subsystem BVH alignment** — RC moving-instance merged refit without teardown is now WIRED into GI propagation (+ filter parity with ReSTIR); optional merged-BVH fallback cleanup remains. GPU A/B = V13.
 4. **GPU skinning compute** — fully shipped: `GpuSkinningSubsystem` skins positions AND normals (inverse-transpose via `GPU_SKIN_BVH_WITH_NORMALS_WGSL`/`mat3InverseTranspose`), with a CPU-`solveSkin` fallback for non-identity-bind meshes. GPU A/B = V11.
-5. **PPG** — now actually GUIDES: gi-ris draws from the learned dTree with a defensive `α·p_guide+(1−α)·p_cos` MIS (was train-only). Tuning / large-scene perf per `plan/d2-e6-pt-webgpu-ppg-performance.md`; GPU A/B = V17.
+5. **PPG** — now actually GUIDES: gi-ris draws from the learned dTree with a defensive `α·p_guide+(1−α)·p_cos` MIS (was train-only). Perf pass landed (bounded flux readback + a latent unbounded-sTree-growth bug fixed); remaining tuning + adaptive dispatch cadence tracked in `plan/archive/d2-e6-pt-webgpu-ppg-performance-archived-2026-05-28.md` (the live d2-e6 doc was archived — its original items shipped). GPU A/B = V17.
 6. **Denoisers** — BMFR is implemented (real Householder-QR feature regression). The type union's only contract-without-impl entry now is whatever future modes get added; BMFR is no longer a gap.
 
-Older active docs: `plan/renderer-fidelity-matrix.md`, `plan/primary-release-and-webgpu-pt-parity-2026-05-26.md`, `plan/d2-e6-pt-webgpu-ppg-performance.md`.
+Older active docs: `plan/renderer-fidelity-matrix.md`, `plan/primary-release-and-webgpu-pt-parity-2026-05-26.md`. (The `d2-e6-pt-webgpu-ppg-performance` doc is archived under `plan/archive/` — its items shipped.)
 
 ## Absorbed path-tracer package
 
