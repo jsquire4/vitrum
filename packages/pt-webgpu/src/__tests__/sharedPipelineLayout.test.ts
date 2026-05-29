@@ -102,9 +102,10 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     const gpu = new GpuResources(stub.device, 'full', true);
     gpu.ensurePipeline();
 
-    // Exactly one pipeline layout, built from 3 explicit bind-group layouts.
+    // Exactly one pipeline layout, built from 4 explicit bind-group layouts
+    // (WS2 added group 3: the many-light importance-sampling tree buffer).
     expect(stub.createdPipelineLayouts).toHaveLength(1);
-    expect(stub.createdPipelineLayouts[0]!.bindGroupLayouts).toHaveLength(3);
+    expect(stub.createdPipelineLayouts[0]!.bindGroupLayouts).toHaveLength(4);
 
     // Two compute pipelines: path-trace `main` + BDPT `bdptExtendLightSubpath`.
     const entryPoints = stub.createdPipelines.map((p) => p.entryPoint).sort();
@@ -120,7 +121,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     }
   });
 
-  it('full: bindGroupLayout/1/2 are the explicit layouts the shared pipeline layout uses', () => {
+  it('full: bindGroupLayout/1/2/3 are the explicit layouts the shared pipeline layout uses', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'full', true);
     gpu.ensurePipeline();
@@ -128,11 +129,13 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(gpu.bindGroupLayout).not.toBeNull();
     expect(gpu.bindGroupLayout1).not.toBeNull();
     expect(gpu.bindGroupLayout2).not.toBeNull();
+    expect(gpu.bindGroupLayout3).not.toBeNull(); // WS2 light tree
 
     const pl = stub.createdPipelineLayouts[0]!.bindGroupLayouts;
     expect(pl[0]).toBe(gpu.bindGroupLayout);
     expect(pl[1]).toBe(gpu.bindGroupLayout1);
     expect(pl[2]).toBe(gpu.bindGroupLayout2);
+    expect(pl[3]).toBe(gpu.bindGroupLayout3);
   });
 
   it('full: explicit group layouts match the WGSL binding indices/types the auto layout produced', () => {
@@ -140,8 +143,8 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     const gpu = new GpuResources(stub.device, 'full', true);
     gpu.ensurePipeline();
 
-    // Group order is [group0, group1, group2] as pushed into the pipeline layout.
-    const [g0, g1, g2] = stub.createdLayouts;
+    // Group order is [group0, group1, group2, group3] as pushed into the layout.
+    const [g0, g1, g2, g3] = stub.createdLayouts;
     const COMPUTE = (globalThis as unknown as { GPUShaderStage: { COMPUTE: number } }).GPUShaderStage.COMPUTE;
 
     // Group 0 — bindings 0..13 (full). Types must match material.wgsl.ts.
@@ -172,6 +175,11 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     for (const b of [0, 1, 2, 3, 4]) expect(g2m.get(b)!.buffer?.type).toBe('read-only-storage');
     expect(g2m.get(5)!.buffer?.type).toBe('storage'); // bdptLightPath
     expect(g2m.get(6)!.buffer?.type).toBe('storage'); // bdptEyeStack
+
+    // Group 3 — WS2 light-tree node buffer (one read-only storage buffer).
+    expect(g3!.entries.map((e) => e.binding)).toEqual([0]);
+    expect(g3!.entries[0]!.buffer?.type).toBe('read-only-storage');
+    expect(g3!.entries[0]!.visibility).toBe(COMPUTE);
   });
 
   it('full WITHOUT bdpt: still builds the explicit layout + path-trace pipeline (no bdpt pipeline)', () => {
@@ -185,7 +193,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(gpu.bindGroupLayout).not.toBeNull();
   });
 
-  it('lite tier: single-group explicit layout (bindings 0..11), no group 1/2, no bdpt pipeline', () => {
+  it('lite tier: single-group explicit layout (bindings 0..11), no group 1/2/3, no bdpt pipeline', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'lite', false);
     gpu.ensurePipeline();
@@ -194,6 +202,9 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(stub.createdPipelineLayouts[0]!.bindGroupLayouts).toHaveLength(1);
     expect(gpu.bindGroupLayout1).toBeNull();
     expect(gpu.bindGroupLayout2).toBeNull();
+    // WS2 — the lite tier keeps the uniform light pick and MUST NOT carry the
+    // group-3 light-tree layout/binding.
+    expect(gpu.bindGroupLayout3).toBeNull();
     expect(gpu.bdptSubpathPipeline).toBeNull();
 
     const [g0] = stub.createdLayouts;

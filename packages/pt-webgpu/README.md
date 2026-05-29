@@ -43,6 +43,7 @@ not baseline correctness. What's implemented:
   - spot emitters (up to 8)
   - rect-area emitters (up to 8)
   - mesh-area emitters (up to 8; first-triangle representative sampling per emitter)
+- **Many-light importance sampling (full tier, WS2):** the per-event light pick is power-weighted via a `@vitrum/shared-samplers` light tree (group(3) storage buffer) instead of a uniform random pick — power × spatial-proximity descent (Conty Estévez & Kulla 2018) over a power-as-cost median-split tree (Shirley et al. 1996). The NEE divides by the tree's branch-product selection pdf (unbiased); the lite tier keeps the uniform pick. Built with ≥ 2 selectable lights; falls back to uniform below that or when degenerate.
 - Analytic primitive intersection for `sphere`, `box`, `capsule`, `cylinder`, and `h-channel-came`
 - Scene patch API methods (`updatePrimitive`, `updateEmitter`) with fast paths for transform/material/emitter changes and safe rebuild fallback for unsupported topology edits
 - Auxiliary output textures:

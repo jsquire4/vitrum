@@ -29,8 +29,15 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('isTranslucent');
   });
 
-  it('accounts for uniform light selection probability in direct lighting', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('radiance = radiance + directLi * f32(lightCount);');
+  it('accounts for the light selection probability in direct lighting (WS2)', () => {
+    // WS2 replaced the unconditional uniform compensation (`· f32(lightCount)`):
+    // each NEE branch now self-normalizes — delta lights by `· lightSelectInvPdf`
+    // (1/p_select), area/env lights by folding p_select into the MIS combined
+    // pdf — so the accumulation is a bare add. p_select is `1/lightCount` on the
+    // uniform fallback path and `lt.pdf` on the power-weighted light-tree path.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('radiance = radiance + directLi;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = f32(lightCount);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = 1.0 / lt.pdf;');
   });
 
   it('contains active strategy-specific caustic paths', () => {

@@ -422,7 +422,45 @@ ${transmissiveBlock}
       lightCount = lightCount + 1u;
     }
     if (lightCount > 0u) {
-      let picked = u32(min(floor(rand_f32(&rng) * f32(lightCount)), f32(lightCount - 1u)));
+      // WS2 — power-weighted light selection (Conty Estévez & Kulla 2018,
+      // Shirley 1996). When the full-tier light tree is built (≥2 lights), pick
+      // the emitter by a power × spatial-proximity descent and divide the
+      // contribution by the tree's branch-product selection pdf lt.pdf. When
+      // disabled (lite tier never composes this, or <2 lights) fall back to the
+      // uniform pick whose pdf is 1/lightCount (compensated by ·lightCount).
+      //
+      // The light tree's leaf emitterIndex is built in the SAME order this walk
+      // visits lights (directional, point, spot, rect, mesh, env), so picked
+      // indexes the same linear slot whichever path produced it.
+      //
+      // LT_DIST2_FLOOR is the selection-only proximity floor: it caps the
+      // distance importance near a light and is NOT the NEE geometry-term clamp
+      // (those keep their own per-branch 1e-5/1e-6 floors below).
+      var picked: u32 = 0u;
+      // 1 / p_select for the chosen light. Every NEE branch divides its
+      // contribution by p_select (== multiplies by this reciprocal) to compensate
+      // the one-of-N pick. Because the engine's emissive-BRDF hit is added
+      // unweighted (line 183), the per-branch MIS uses the per-light area pdf
+      // ALONE and the selection compensation stays OUTSIDE the power heuristic —
+      // so it CANCELS in expectation and the converged mean is INDEPENDENT of the
+      // selection pdf (uniform-vs-tree means match; only variance changes). This
+      // is the property V22's unbiasedness A/B checks.
+      var lightSelectInvPdf: f32 = f32(lightCount); // 1 / (1/lightCount)
+      let lightTreeActive = params.lightTreeEnabled != 0u && params.lightTreeNodeCount > 0u;
+      if (lightTreeActive) {
+        let lt = sampleLightTree(hitPos, LT_DIST2_FLOOR, params.lightTreeNodeCount, &rng);
+        if (lt.emitterIndex >= 0 && lt.pdf > 0.0 && u32(lt.emitterIndex) < lightCount) {
+          picked = u32(lt.emitterIndex);
+          lightSelectInvPdf = 1.0 / lt.pdf;
+        } else {
+          // Degenerate tree draw — fall back to the uniform pick this iteration.
+          picked = u32(min(floor(rand_f32(&rng) * f32(lightCount)), f32(lightCount - 1u)));
+          lightSelectInvPdf = f32(lightCount);
+        }
+      } else {
+        picked = u32(min(floor(rand_f32(&rng) * f32(lightCount)), f32(lightCount - 1u)));
+        lightSelectInvPdf = f32(lightCount);
+      }
       var current = 0u;
       var directLi = vec3f(0.0);
       if (params.lightDir.w > 1e-6) {
@@ -432,7 +470,8 @@ ${transmissiveBlock}
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let nDotL = max(0.0, dot(normal, lightDir));
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, lightDir);
-            directLi = throughput * brdf * nDotL * params.lightDir.w;
+            // Delta light (no MIS): compensate the one-of-N selection by /p_select.
+            directLi = throughput * brdf * nDotL * params.lightDir.w * lightSelectInvPdf;
           }
         }
         current = current + 1u;
@@ -450,7 +489,8 @@ ${transmissiveBlock}
           if (!traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
             let nDotL = max(0.0, dot(normal, wi));
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-            directLi = throughput * brdf * nDotL * (rad / dist2);
+            // Delta light (no MIS): compensate the one-of-N selection by /p_select.
+            directLi = throughput * brdf * nDotL * (rad / dist2) * lightSelectInvPdf;
           }
         }
         current = current + 1u;
@@ -474,7 +514,8 @@ ${transmissiveBlock}
               let nDotL = max(0.0, dot(normal, wi));
               let softness = smoothstep(cosOuter, 1.0, coneCos);
               let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
-              directLi = throughput * brdf * nDotL * softness * (srad / dist2);
+              // Delta light (no MIS): compensate the one-of-N selection by /p_select.
+              directLi = throughput * brdf * nDotL * softness * (srad / dist2) * lightSelectInvPdf;
             }
           }
         }
@@ -503,10 +544,19 @@ ${transmissiveBlock}
               let area = max(4.0 * length(cross(ru, rv)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
               let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+              // MIS balances the per-light AREA-sampling pdf against the BRDF pdf
+              // (the engine's emissive-BRDF hit is added unweighted at line 183,
+              // so the NEE MIS uses p_area ALONE — NOT p_select·p_area). The light
+              // SELECTION is compensated OUTSIDE the heuristic by ·lightSelectInvPdf,
+              // which cancels in expectation and so leaves the converged mean
+              // INDEPENDENT of the selection pdf (uniform-vs-tree means match);
+              // only the variance changes. (Folding p_select into the heuristic
+              // would make the NEE total depend on the selection pdf, since the
+              // BRDF side is unweighted — that would bias tree-vs-uniform.)
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
               if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-                directLi = throughput * brdf * nDotL * rr * misWeight / max(lightPdf, 1e-6);
+                directLi = throughput * brdf * nDotL * rr * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
               }
             }
           }
@@ -540,10 +590,13 @@ ${transmissiveBlock}
               let area = max(0.5 * length(cross(b - a, c - a)), 1e-6);
               let lightPdf = dist2 / max(cosLight * area, 1e-6);
               let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, wi);
+              // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see
+              // the rect-area branch. Keeps the converged mean independent of the
+              // selection pdf (tree-vs-uniform means match), variance differs.
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let shadowRay = Ray(hitPos + normal * 1e-3, wi);
               if (!traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
-                directLi = throughput * brdf * nDotL * mr * misWeight / max(lightPdf, 1e-6);
+                directLi = throughput * brdf * nDotL * mr * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
               }
             }
           }
@@ -571,12 +624,21 @@ ${transmissiveBlock}
           if (!traceAny(shadowRay, 1e-4, INFINITY)) {
             let brdf = evaluateBrdf(baseColor, roughness, metallic, normal, wo, envDir);
             let brdfPdf = brdfDirectionalPdf(baseColor, roughness, metallic, transmission, ior, normal, wo, envDir);
+            // Selection compensated OUTSIDE the MIS (·lightSelectInvPdf) — see the
+            // rect-area branch. Mean stays independent of the selection pdf.
             let misWeight = powerHeuristic(envPdf, brdfPdf);
-            directLi = throughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8);
+            directLi = throughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8) * lightSelectInvPdf;
           }
         }
       }
-      radiance = radiance + directLi * f32(lightCount);
+      // Every branch already multiplied its contribution by lightSelectInvPdf
+      // (= 1/p_select) to compensate the one-of-N pick — OUTSIDE the per-light
+      // MIS power heuristic (which uses the per-light area / env pdf alone). So
+      // the accumulation is a bare add; the single-sample NEE is unbiased and,
+      // crucially, its expectation is INDEPENDENT of the selection pdf (the
+      // p_select cancels), so the power-weighted tree and the uniform pick share
+      // the same converged mean and differ only in variance.
+      radiance = radiance + directLi;
     }
 
     if (params.bdptEnabled != 0u) {

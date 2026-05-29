@@ -27,6 +27,7 @@ import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import {
   applyEmitterCountMutation,
   applyEnvironmentMutation,
+  rebuildLightTreeForScene,
   buildPackedScene,
   rebuildTlasForSceneTransforms,
   scenePackResultFromPacked,
@@ -518,6 +519,11 @@ class PTEngineWebGPU implements Engine {
     paramsU32[FrameParamsSlot.bdptMaxLightBounces] = this.#bdptMaxLightBounces >>> 0;
     // Eye-subpath scratch depth = the active per-pixel bounce limit (<= 8).
     paramsU32[FrameParamsSlot.bdptMaxEyeDepth] = this.#activeBounces >>> 0;
+    // WS2 — power-weighted light selection. FULL tier only: the lite kernel keeps
+    // the uniform pick and never composes the light-tree WGSL / group(3) binding.
+    const lightTreeOn = this.#traceTier === 'full' && sb.lightTreeEnabled;
+    paramsU32[FrameParamsSlot.lightTreeEnabled] = lightTreeOn ? 1 : 0;
+    paramsU32[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
     paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
     paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
     paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
@@ -918,6 +924,13 @@ class PTEngineWebGPU implements Engine {
         directionalLight: defaultDirectionalLight(nextScene),
         directionalIrradiance: defaultDirectionalIrradiance(nextScene),
       });
+      // WS2 — the light tree's powers/positions depend on the emitters, so
+      // rebuild + re-upload it (reallocating + invalidating bind groups if the
+      // node count changed). Without this the GPU selection would importance-
+      // sample the OLD light set after an incremental emitter patch.
+      if (rebuildLightTreeForScene(this.#device, this.#sceneBuffers, nextScene)) {
+        this.#gpu.invalidateBindGroups();
+      }
       this.#scene = nextScene;
       for (const warning of packed.warnings) {
         console.warn(`[vitrum/pt-webgpu] ${warning}`);
@@ -968,6 +981,12 @@ class PTEngineWebGPU implements Engine {
         });
         this.#sceneBuffers.environmentMapTexels.set(packed.hdriTexels);
         this.#sceneBuffers.environmentMapCdf.set(packed.hdriCdf);
+        // WS2 — the env counts as a selectable light in the NEE walk, so an env
+        // change can flip the light-tree gate / leaf count. Rebuild + re-upload
+        // (reallocating + invalidating bind groups if the node count changed).
+        if (rebuildLightTreeForScene(this.#device, this.#sceneBuffers, nextScene)) {
+          this.#gpu.invalidateBindGroups();
+        }
         this.#scene = nextScene;
         for (const warning of packed.warnings) {
           console.warn(`[vitrum/pt-webgpu] ${warning}`);
@@ -1080,6 +1099,12 @@ class PTEngineWebGPU implements Engine {
       bdptPass.setBindGroup(0, bindGroup);
       bdptPass.setBindGroup(1, gpu.pathTraceBindGroup1);
       bdptPass.setBindGroup(2, gpu.pathTraceBindGroup2);
+      // Group 3 (WS2 light tree) is part of the SHARED pipeline layout, so it
+      // must be bound on the BDPT pipeline too even though the light-subpath pass
+      // does not sample the tree (an unbound group fails layout validation).
+      if (gpu.pathTraceBindGroup3 != null) {
+        bdptPass.setBindGroup(3, gpu.pathTraceBindGroup3);
+      }
       bdptPass.dispatchWorkgroups(this.#bdptMaxLightBounces, 1, 1);
       bdptPass.end();
     }
@@ -1090,6 +1115,9 @@ class PTEngineWebGPU implements Engine {
     if (this.#traceTier === 'full' && gpu.pathTraceBindGroup1 != null && gpu.pathTraceBindGroup2 != null) {
       pass.setBindGroup(1, gpu.pathTraceBindGroup1);
       pass.setBindGroup(2, gpu.pathTraceBindGroup2);
+      if (gpu.pathTraceBindGroup3 != null) {
+        pass.setBindGroup(3, gpu.pathTraceBindGroup3);
+      }
     }
     pass.dispatchWorkgroups(
       Math.ceil(width / WORKGROUP_SIZE),

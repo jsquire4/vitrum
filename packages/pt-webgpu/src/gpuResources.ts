@@ -52,6 +52,8 @@ export class GpuResources {
   pathTraceBindGroup: GPUBindGroup | null = null;
   pathTraceBindGroup1: GPUBindGroup | null = null;
   pathTraceBindGroup2: GPUBindGroup | null = null;
+  /** WS2 — light-tree node buffer bind group (full tier only). */
+  pathTraceBindGroup3: GPUBindGroup | null = null;
 
   paramsBuffer: GPUBuffer | null = null;
   computePipeline: GPUComputePipeline | null = null;
@@ -72,6 +74,8 @@ export class GpuResources {
   bindGroupLayout1: GPUBindGroupLayout | null = null;
   /** Explicit group-2 layout (full tier only): TLAS table + BDPT scratch buffers. */
   bindGroupLayout2: GPUBindGroupLayout | null = null;
+  /** Explicit group-3 layout (full tier only): WS2 light-tree node buffer. */
+  bindGroupLayout3: GPUBindGroupLayout | null = null;
 
   /**
    * BDPT eye-subpath scratch stack (D2): a per-pixel × maxEyeDepth read_write
@@ -204,6 +208,7 @@ export class GpuResources {
     this.pathTraceBindGroup = null;
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
+    this.pathTraceBindGroup3 = null;
     this.clearAccumBuffer();
     return true;
   }
@@ -293,10 +298,18 @@ export class GpuResources {
           buf(6, rw), // bdptEyeStack (read_write)
         ],
       });
-      bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2);
+      // Group 3 — WS2 light-tree node buffer (one read-only storage buffer). A
+      // DEDICATED group so the lite tier (which never reaches this branch) carries
+      // no group-3 layout, and so adding it leaves groups 0/1/2 byte-identical.
+      this.bindGroupLayout3 = this.#device.createBindGroupLayout({
+        label: 'vitrum.pt-webgpu.layout.group3.full',
+        entries: [buf(0, ro)], // lightTree (read-only storage)
+      });
+      bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
     } else {
       this.bindGroupLayout1 = null;
       this.bindGroupLayout2 = null;
+      this.bindGroupLayout3 = null;
     }
 
     return this.#device.createPipelineLayout({
@@ -488,6 +501,11 @@ export class GpuResources {
         layout: this.bindGroupLayout2!,
         entries: fullGroup2Entries,
       });
+      this.pathTraceBindGroup3 = this.#device.createBindGroup({
+        label: 'vitrum.pt-webgpu.pathTrace.bindgroup3.full',
+        layout: this.bindGroupLayout3!,
+        entries: [{ binding: 0, resource: { buffer: sb.lightTreeBuffer } }],
+      });
     }
     return bindGroup;
   }
@@ -497,6 +515,7 @@ export class GpuResources {
     this.pathTraceBindGroup = null;
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
+    this.pathTraceBindGroup3 = null;
   }
 
   /**
@@ -509,6 +528,7 @@ export class GpuResources {
     this.pathTraceBindGroup = null;
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
+    this.pathTraceBindGroup3 = null;
     this.bdptEyeStackBuffer?.destroy();
     this.bdptEyeStackBuffer = null;
     this.bdptEyeStackByteSize = 0;
@@ -519,5 +539,6 @@ export class GpuResources {
     this.bindGroupLayout = null;
     this.bindGroupLayout1 = null;
     this.bindGroupLayout2 = null;
+    this.bindGroupLayout3 = null;
   }
 }

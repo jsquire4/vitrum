@@ -35,82 +35,16 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { lightTreeWgsl } from '@vitrum/shared-samplers';
 
+// RIS-only @group(3) binding(0) (separate from the shared `scene` group at the
+// 16-storage-buffer full-tier floor). Body is the canonical traversal hoisted to
+// `@vitrum/shared-samplers/wgsl/lightTree.wgsl.ts` — single source of truth across
+// walkaround-hybrid + pt-webgpu (no per-package copies).
 export const LIGHT_TREE_WGSL = /* wgsl */ `// ============================================================
 // Light-tree storage buffer (RIS-only @group(3)) + importance traversal
 // ============================================================
-
-// Flat f32 node array, 12 floats per node (see packLightTreeForGPU).
-@group(3) @binding(0) var<storage, read> lightTree: array<f32>;
-
-const LIGHT_TREE_STRIDE: u32 = 12u;
-
-struct LightTreeSample {
-  emitterIndex: i32,
-  pdf:          f32,   // selection pmf of the chosen emitter (root→leaf product)
-};
-
-// Squared distance from point p to the AABB [bmin, bmax]; 0 inside.
-fn lt_dist2ToAabb(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
-  let d = max(max(bmin - p, vec3f(0.0)), p - bmax);
-  return dot(d, d);
-}
-
-// Node importance for shading point p: power / max(dist², floor).
-// dist2Floor is the SAME UBO floor the RIS geometry term uses so near-light
-// selection and evaluation stay consistent (no divide-by-zero inside an AABB).
-fn lt_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
-  let power = lightTree[base + 1u];
-  if (power <= 0.0) { return 0.0; }
-  let bmin = vec3f(lightTree[base + 4u], lightTree[base + 5u], lightTree[base + 6u]);
-  let bmax = vec3f(lightTree[base + 7u], lightTree[base + 8u], lightTree[base + 9u]);
-  let d2 = max(lt_dist2ToAabb(p, bmin, bmax), dist2Floor);
-  return power / d2;
-}
-
-// Importance-sample one emitter (leaf) from the tree for shading point p.
-// Returns the chosen emitterIndex + the selection pdf (root→leaf branch-product).
-// Mirrors sampleLightTreeCPU in shared-samplers byte-for-byte.
-fn sampleLightTree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function, u32>) -> LightTreeSample {
-  var nodeIdx: u32 = 0u;
-  var pdf: f32 = 1.0;
-  // Bounded descent: a binary tree over N leaves has depth ≤ N. The +1 guard
-  // matches the CPU reference loop bound (WGSL forbids unbounded while).
-  for (var guard: u32 = 0u; guard < nodeCount + 1u; guard = guard + 1u) {
-    let base = nodeIdx * LIGHT_TREE_STRIDE;
-    let leftChild  = i32(lightTree[base + 2u]);
-    let rightChild = i32(lightTree[base + 3u]);
-    if (leftChild < 0 || rightChild < 0) {
-      // Leaf.
-      var s: LightTreeSample;
-      s.emitterIndex = i32(lightTree[base + 0u]);
-      s.pdf = pdf;
-      return s;
-    }
-    let lBase = u32(leftChild) * LIGHT_TREE_STRIDE;
-    let rBase = u32(rightChild) * LIGHT_TREE_STRIDE;
-    let impL = lt_importance(lBase, p, dist2Floor);
-    let impR = lt_importance(rBase, p, dist2Floor);
-    let sum = impL + impR;
-    // Degenerate (both children zero importance): uniform 50/50 so the descent
-    // terminates with a strictly-positive pdf (never an infinite RIS weight).
-    let pL = select(0.5, impL / sum, sum > 0.0);
-    if (rand_f32(rng) < pL) {
-      pdf = pdf * pL;
-      nodeIdx = u32(leftChild);
-    } else {
-      pdf = pdf * (1.0 - pL);
-      nodeIdx = u32(rightChild);
-    }
-  }
-  // Unreachable for a well-formed tree.
-  let base = nodeIdx * LIGHT_TREE_STRIDE;
-  var s: LightTreeSample;
-  s.emitterIndex = i32(lightTree[base + 0u]);
-  s.pdf = pdf;
-  return s;
-}
-
+${lightTreeWgsl({ group: 3, binding: 0 })}
 `;
 
 /**

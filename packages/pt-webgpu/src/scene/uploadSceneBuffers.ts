@@ -13,10 +13,12 @@ import {
   type PrimitiveTlasBinding,
   type ScenePackResult,
 } from '@vitrum/shared-bvh';
+import { buildLightTree, packLightTreeForGPU } from '@vitrum/shared-samplers';
 import { invertMat4 } from '../math/mat4.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
 import { environmentParams } from './environmentPacking.js';
 import {
+  buildLightTreeInputForScene,
   defaultDirectionalIrradiance,
   defaultDirectionalLight,
   packEmitterArrays,
@@ -76,6 +78,14 @@ interface PackedSceneData {
   readonly hasEnvironmentMap: boolean;
   readonly environmentMapTexels: Float32Array; // rgba = radiance.rgb + pdfOmega
   readonly environmentMapCdf: Float32Array; // length N + 1
+  /**
+   * WS2 — packed power-weighted light-tree nodes (12 f32 / node, see
+   * `packLightTreeForGPU`). Empty when < 2 selectable lights (the NEE falls back
+   * to the uniform pick). `lightTreeNodeCount` is the descent loop bound.
+   */
+  readonly lightTreeNodes: Float32Array;
+  readonly lightTreeNodeCount: number;
+  readonly lightTreeEnabled: boolean;
 }
 
 /**
@@ -109,6 +119,8 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly tlasBlasRootsBuffer: GPUBuffer;
   readonly tlasInstanceWorldToLocalBuffer: GPUBuffer;
   readonly tlasInstanceLocalToWorldBuffer: GPUBuffer;
+  /** WS2 — light-tree node storage buffer (group 3, full tier only). */
+  readonly lightTreeBuffer: GPUBuffer;
   readonly destroy: () => void;
 }
 
@@ -261,6 +273,23 @@ export function buildPackedScene(inputScene: Scene): PackedSceneData {
   warnings.push(...environment.warnings);
   warnings.push(...emitArrays.warnings);
 
+  // WS2 — build the power-weighted light tree over the selectable lights, in the
+  // SAME order the kernel NEE walk visits them (directional · point · spot ·
+  // rect · mesh · env). Only worthwhile with ≥ 2 lights: a 0/1-light tree adds
+  // no variance reduction over the uniform pick (and `buildLightTree` requires a
+  // non-empty input), so below 2 lights we ship an empty buffer + the uniform
+  // fallback gate (`lightTreeEnabled = false`).
+  const lightTreeInput = buildLightTreeInputForScene(scene);
+  let lightTreeNodes = new Float32Array(0);
+  let lightTreeNodeCount = 0;
+  let lightTreeEnabled = false;
+  if (lightTreeInput.powers.length >= 2) {
+    const { nodes } = buildLightTree(lightTreeInput);
+    lightTreeNodes = new Float32Array(packLightTreeForGPU(nodes));
+    lightTreeNodeCount = nodes.length;
+    lightTreeEnabled = true;
+  }
+
   return {
     positions: geo.positions,
     normals: geo.normals,
@@ -299,6 +328,9 @@ export function buildPackedScene(inputScene: Scene): PackedSceneData {
     hasEnvironmentMap: environment.hasHdri,
     environmentMapTexels: environment.hdriTexels,
     environmentMapCdf: environment.hdriCdf,
+    lightTreeNodes,
+    lightTreeNodeCount,
+    lightTreeEnabled,
   };
 }
 
@@ -622,6 +654,13 @@ interface MutableSceneBufferFields {
   environmentMapWidth: number;
   environmentMapHeight: number;
   hasEnvironmentMap: boolean;
+  // WS2 — light-tree state + buffer handle / CPU mirror (rebuilt on emitter /
+  // environment incremental patches; the buffer reallocates if the node count
+  // — hence its byte length — changes).
+  lightTreeNodeCount: number;
+  lightTreeEnabled: boolean;
+  lightTreeNodes: Float32Array;
+  lightTreeBuffer: GPUBuffer;
 }
 
 /** Single typed view onto the mutable subset of an UploadedSceneBuffers. */
@@ -697,6 +736,67 @@ export function applyEmitterCountMutation(
   mutable.directionalIrradiance = next.directionalIrradiance;
 }
 
+/**
+ * WS2 — rebuild the power-weighted light tree from `scene` and re-upload it after
+ * an incremental emitter / environment patch (which change light powers /
+ * positions / the env gate but do NOT trigger a full repack).
+ *
+ * Returns `true` if the light-tree GPU BUFFER was REALLOCATED (node count — hence
+ * byte length — changed), which means the caller MUST invalidate cached bind
+ * groups so the fresh buffer is rebound. An in-place `writeBuffer` (same size)
+ * returns `false`. The `lightTreeEnabled` / `lightTreeNodeCount` mirror fields are
+ * always updated so the next `#buildParamsBuffer` reflects the new tree.
+ *
+ * Mirrors the `uploadScenePack*Realloc` pattern: the `lightTreeBuffer` handle is
+ * read off the struct at destroy-time, so swapping a fresh handle here needs no
+ * `destroy`-closure rewire.
+ */
+export function rebuildLightTreeForScene(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  scene: Scene,
+): boolean {
+  const input = buildLightTreeInputForScene(scene);
+  let nodes = new Float32Array(0);
+  let nodeCount = 0;
+  let enabled = false;
+  if (input.powers.length >= 2) {
+    const built = buildLightTree(input);
+    nodes = new Float32Array(packLightTreeForGPU(built.nodes));
+    nodeCount = built.nodes.length;
+    enabled = true;
+  }
+  const mutable = asMutableSceneBuffers(sb);
+  mutable.lightTreeNodeCount = nodeCount;
+  mutable.lightTreeEnabled = enabled;
+
+  const prevByteLen = sb.lightTreeNodes.byteLength;
+  // `createStorageBuffer` rounds empty arrays up to a 16-byte placeholder, so the
+  // live buffer's minimum size is 16; compare against the same flooring.
+  const nextMinBytes = nodes.byteLength === 0 ? 16 : Math.ceil(nodes.byteLength / 4) * 4;
+  const liveMinBytes = prevByteLen === 0 ? 16 : Math.ceil(prevByteLen / 4) * 4;
+  mutable.lightTreeNodes = nodes;
+  if (nextMinBytes !== liveMinBytes) {
+    // Size changed — reallocate.
+    sb.lightTreeBuffer.destroy();
+    mutable.lightTreeBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.lightTree', nodes);
+    return true;
+  }
+  // Same size — in-place write when there is node data. When the tree is (and
+  // was already) disabled the live buffer is an untouched zeroed placeholder, so
+  // skip a redundant write; the gate (`lightTreeEnabled = false`) keeps the
+  // shader off it regardless.
+  if (nodes.byteLength > 0) {
+    device.queue.writeBuffer(sb.lightTreeBuffer, 0, nodes.buffer, nodes.byteOffset, nodes.byteLength);
+  } else if (prevByteLen > 0) {
+    // enabled → disabled at the same (16-byte placeholder) size is impossible
+    // here (prevByteLen>0 ⇒ liveMinBytes>16 ⇒ size changed ⇒ realloc above), so
+    // this branch is unreachable; left as a defensive zero.
+    device.queue.writeBuffer(sb.lightTreeBuffer, 0, new Uint32Array([0, 0, 0, 0]));
+  }
+  return false;
+}
+
 /** Rewrite environment fields after an in-place HDRI/sky upload. */
 export function applyEnvironmentMutation(
   sb: UploadedSceneBuffers,
@@ -757,6 +857,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const spotLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData);
   const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
   const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
+  const lightTreeBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.lightTree', packed.lightTreeNodes);
   const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
   const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
   const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);
@@ -792,6 +893,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     spotLightsBuffer,
     rectAreaLightsBuffer,
     meshAreaLightsBuffer,
+    lightTreeBuffer,
     tlasNodesBuffer,
     tlasInstanceIndicesBuffer,
     tlasBlasRootsBuffer,
@@ -822,6 +924,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       spotLightsBuffer.destroy();
       rectAreaLightsBuffer.destroy();
       meshAreaLightsBuffer.destroy();
+      lightTreeBuffer.destroy();
       uploaded.tlasNodesBuffer.destroy();
       uploaded.tlasInstanceIndicesBuffer.destroy();
       uploaded.tlasBlasRootsBuffer.destroy();
