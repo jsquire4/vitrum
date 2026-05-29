@@ -7,18 +7,21 @@
 // (f32) by `__tests__/nrcEncoding.test.ts`.
 //
 // This file emits the FORWARD encode (cache query + the forward half of
-// training) AND the trainable hash-grid BACKWARD (`nrcEncodeBackwardWgsl`,
+// training) AND a reference hash-grid BACKWARD helper (`nrcHashGridBackwardWgsl`,
 // gradient scatter into hashed table rows). STATUS (verified 2026-05-29):
 //   • FORWARD — WIRED. `nrcEncodeHelpersWgsl` is composed into the dispatched
 //     gi-ris NRC variant (`buildRisGiNrcModule`); the query runs + gathers
 //     self-training records, and `NrcSubsystem.trainFromRecords` runs one MLP
 //     `trainStep` per frame (host-owns-cadence) when `nrcEnabled`.
-//   • hash-grid BACKWARD — NOT wired. `nrcEncodeBackwardWgsl` is emitted +
-//     unit-pinned but never dispatched, so the hash-grid feature tables stay
-//     frozen at their random init (`NrcSubsystem._tablesBuf` is write-once).
-//     The MLP learns over a fixed positional embedding; the multiresolution
-//     encoding itself does not yet learn. Wiring this scatter into the train
-//     step is the remaining NRC work.
+//   • hash-grid BACKWARD — WIRED. The DISPATCHED scatter is the standalone
+//     `nrcEncodeBackward.wgsl.ts` compute kernel (one invocation per training
+//     sample), which inlines the trilinear scatter and binds `gradTablesFx` at
+//     MODULE scope (WGSL forbids passing a storage buffer to a function pointer
+//     param). `NrcSubsystem.trainFromRecords` runs encode-backward + a TABLE Adam
+//     step after the MLP `trainStep`, so the multiresolution feature tables now
+//     LEARN (they are no longer frozen at random init). The `nrcHashGridBackwardWgsl`
+//     emitter below is the ptr-arg REFERENCE form kept for the oracle test only;
+//     it is NOT dispatched (the storage-ptr param makes it undispatchable).
 //
 // Hash + interpolation conventions MUST match nrcEncoding.ts exactly:
 //   * spatialHash3D: (ix·1 ^ iy·0x9E3779B1 ^ iz·0x30034BB7) mod tableSize, u32 wrap.

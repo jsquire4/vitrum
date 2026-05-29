@@ -201,6 +201,13 @@ fn fusedForward(@builtin(workgroup_id) wg : vec3<u32>,
 //   noted as the real-throughput path.
 //
 // Delta tile stays resident & ping-pongs across layers, mirroring forward.
+//
+// It ALSO emits dL/dX — the gradient w.r.t. the raw (padded) network input — into
+// a dedicated `gradInputFx` fixed-point atomic buffer at the l==0 step (the input
+// is linear, so no relu' factor). The first L·F entries of dL/dX are dL/dfeature
+// for the multiresolution hash-grid encode; the encode-backward kernel scatters
+// them into the trainable feature tables (Müller 2022 Instant-NGP §4). Without
+// this the hash tables stay frozen at random init and only the MLP learns.
 export function fusedBackwardWgsl(o: FusedMlpWgslOptions): string {
   const f16 = o.useF16;
   const SC = f16 ? "f16" : "f32";
@@ -232,6 +239,13 @@ struct BwdParams {
 @group(0) @binding(4) var<storage, read_write>  gradWfx  : array<atomic<i32>>; // fixed-point
 @group(0) @binding(5) var<storage, read_write>  gradBfx  : array<atomic<i32>>;
 @group(0) @binding(6) var<uniform>              p        : BwdParams;
+// dL/dX — gradient w.r.t. the RAW (padded) network INPUT, fixed-point i32 atomic.
+// Layout [numSamples × inW]; only the first inW (= layer-0 inW) columns are
+// written (the rest of the W-padded input is constant zero → zero gradient).
+// This is the upstream signal the hash-grid encode-backward scatters into the
+// trainable feature tables (Müller 2022 Instant-NGP §4): the first L·F entries
+// of dL/dX are exactly dL/dfeature for the multiresolution hash encoding.
+@group(0) @binding(7) var<storage, read_write>  gradInputFx : array<atomic<i32>>;
 fn wOff(l : u32) -> u32 { return p.lay[l].x; }
 fn bOff(l : u32) -> u32 { return p.lay[l].y; }
 fn layInW(l : u32) -> u32 { return p.lay[l].z; }
@@ -329,7 +343,15 @@ fn fusedBackward(@builtin(workgroup_id) wg : vec3<u32>,
     }
     workgroupBarrier();
 
-    // (2) propagate delta to the earlier node-layer (l), unless l==0 (raw input).
+    // (2) propagate delta to the earlier node-layer (l).
+    //   * l>0 : delta_prev[s,i] = (Σ_o W[l][o,i]·delta_in[s,o]) · relu'(z[node l][s,i]),
+    //           written to the OTHER resident delta tile (stays on-chip).
+    //   * l==0: the earlier node-layer IS the raw network input, which is LINEAR
+    //           (no ReLU) — so dL/dX[s,i] = Σ_o W[0][o,i]·delta_in[s,o] with NO
+    //           relu' factor. We emit this into gradInputFx (the encode-backward
+    //           upstream signal) instead of a resident tile, since there is no
+    //           earlier layer to back-prop into. Müller 2022 Instant-NGP §4: the
+    //           first L·F of dL/dX is dL/dfeature for the hash-grid encode.
     if (l > 0u) {
       // delta_prev[s,i] = (sum_o W[l][o,i] * delta_in[s,o]) * relu'(z[node-layer l][s,i])
       // invocation owns column i = col (must be < inW).
@@ -358,6 +380,28 @@ fn fusedBackward(@builtin(workgroup_id) wg : vec3<u32>,
       }
       workgroupBarrier();
       curIsA = !curIsA;
+    } else {
+      // l == 0: emit dL/dX into gradInputFx (LINEAR input — no relu'). We emit
+      // only the RAW input columns [0, p.inW): the gradInputFx buffer has row
+      // stride p.inW (the RAW encoded width), NOT the layer-0 padded inW (= W).
+      // The padded tail columns [p.inW, W) feed a constant-zero input → their
+      // gradient is unused and not stored. dL/dX[S,i] = Σ_o W[0][o,i]·δ₁[o].
+      // NOTE: the weight matrix is still indexed with the layer's padded inW
+      // stride (wo + o*inW + col) — only the OUTPUT buffer uses p.inW.
+      if (col < p.inW) {
+        for (var s : u32 = 0u; s < TILE_B; s = s + 1u) {
+          let S = sampleBase + s;
+          if (S < p.numSamples) {
+            var acc : f32 = 0.0;
+            for (var o : u32 = 0u; o < outW; o = o + 1u) {
+              let dd = f32(select(deltaB[s * W + o], deltaA[s * W + o], curIsA));
+              acc = acc + f32(weights[wo + o * inW + col]) * dd;
+            }
+            atomicAdd(&gradInputFx[S * p.inW + col], i32(acc * GRAD_FP));
+          }
+        }
+      }
+      // no curIsA flip / barrier: this is the last weight layer processed.
     }
   }
 }
