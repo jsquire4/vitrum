@@ -180,6 +180,15 @@ export interface HybridEngineOptions extends EngineOptions {
    *   (§4.3). Requires historyLength (r16uint) + momentsHistory (rg32float) +
    *   prevRadiance (rgba16float) persistent textures: ~52 MB at 1080p.
    *
+   *   `'bmfr'` — Koskela et al. 2019, "Blockwise Multi-Order Feature
+   *   Regression for Real-Time Path-Tracing Reconstruction" (ACM TOG 38(5)).
+   *   Per 32×32 screen block, least-squares-fits the noisy 1-spp color to a
+   *   10-feature matrix [1, p.xyz, n.xyz, p².xyz] via Householder QR on the
+   *   normal equations and reconstructs `color = T·α`, then temporally
+   *   accumulates (EMA, reset on camera motion). Uses a screen-space position
+   *   proxy from the gNormalDepth depth channel — no dedicated world-position
+   *   G-buffer required. Owns a private rgba16float history ping-pong.
+   *
    *   `'neural'` — T2.H2 — GPU U-Net denoiser (Chaitanya et al. 2017 / Ronneberger
    *   et al. 2015). Requires `neuralWeights` to be provided. Default still
    *   `'atrous-variance'`; neural is opt-in. See tools/neural-denoiser-training/README.md.
@@ -193,7 +202,7 @@ export interface HybridEngineOptions extends EngineOptions {
    *   (URL or path to the bundled .onnx model file). Optional peer dep
    *   `onnxruntime-web` must be installed at runtime.
    */
-  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
+  readonly denoiser?: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
 
   /**
    * Pre-loaded model weights for the neural denoiser (T2.H2).

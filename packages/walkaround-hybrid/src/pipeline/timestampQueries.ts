@@ -63,6 +63,8 @@ export type PassLabel =
   | 'svgf-real-atrous-2'
   | 'svgf-real-atrous-3'
   | 'svgf-real-atrous-4'
+  // BMFR — single per-block feature-regression compute pass (Koskela 2019)
+  | 'bmfr'
   | 'indirect-temporal-accum'
   | 'atrous-indirect-0'
   | 'atrous-indirect-1'

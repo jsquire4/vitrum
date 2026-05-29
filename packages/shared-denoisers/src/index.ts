@@ -1,5 +1,5 @@
-// @vitrum/shared-denoisers — denoiser building blocks (à-trous, atrous-variance, OIDN bridge).
-// BMFR remains a roadmap candidate; no BMFR module is exported from this package.
+// @vitrum/shared-denoisers — denoiser building blocks (à-trous, atrous-variance,
+// SVGF-real, OIDN bridge, BMFR).
 //
 // Phase 5 deliverable: atrous + temporalAccum WGSL fragments.
 // Sprint 6 (Phase 6): 37-tap hexagonal-kernel edge-stopping spatial filter.
@@ -124,6 +124,33 @@ export type {
   SVGFReprojCPUInput,
   SVGFReprojCPUOutput,
 } from './svgfRealCpu.js';
+
+// ── BMFR — Koskela et al. 2019 blockwise multi-order feature regression ──────
+// Per-32×32-block least-squares fit of noisy color against [1, p, n, p²] via
+// Householder QR, + temporal EMA. WGSL kernel + one-shot host pipeline + the
+// CPU-unit-testable regression core.
+export { BMFR_WGSL, BMFR_WORKGROUP_SIZE, BMFR_WGSL_FEATURE_COUNT } from './wgsl/bmfr.wgsl.js';
+export {
+  BMFR_FEATURE_COUNT,
+  BMFR_BLOCK_SIZE,
+  BMFR_QR_REGULARISATION,
+  bmfrFeatureRow,
+  bmfrSolveChannel,
+  householderSolve,
+  bmfrFitBlock,
+} from './bmfrRegression.js';
+export {
+  BMFR_DEFAULT_TEMPORAL_ALPHA,
+  BMFR_DEFAULT_POSITION_SCALE,
+} from './bmfrConstants.js';
+export {
+  BMFR_UNIFORMS_SIZE_BYTES,
+  BMFR_DEFAULT_UNIFORMS,
+  packBmfrUniforms,
+} from './bmfrBindings.js';
+export type { BmfrUniforms } from './bmfrBindings.js';
+export { runBmfrWebGPU } from './bmfrWebGPU.js';
+export type { BmfrWebGPUOptions } from './bmfrWebGPU.js';
 
 // ── Cross-package primitives (consumed by walkaround-hybrid OIDN denoiser) ───
 // These helpers existed inside the package but were not re-exported from the

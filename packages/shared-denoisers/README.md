@@ -6,6 +6,7 @@ Denoiser building blocks consumed by the walkaround-hybrid pipeline (and, via th
 
 - **À-trous + variance** — `ATROUS_WGSL`, `ATROUS_VARIANCE_WGSL`. The default denoiser baseline for walkaround-hybrid.
 - **SVGF (real)** — `SVGF_REPROJECTION_WGSL`, `SVGF_VARIANCE_FROM_MOMENTS_WGSL`, `SVGF_7X7_SPATIAL_FALLBACK_WGSL` (Schied 2017). Selected via `EngineOptions.denoiser: 'svgf-real'`.
+- **BMFR** — `BMFR_WGSL` + `runBmfrWebGPU()` + `bmfrRegression.ts` (Koskela et al. 2019, "Blockwise Multi-Order Feature Regression for Real-Time Path-Tracing Reconstruction," ACM TOG 38(5)). Per-32×32-block least-squares fit of noisy 1-spp color to a `[1, p.xyz, n.xyz, p².xyz]` feature matrix via Householder QR on the normal equations, reconstruct `color = T·α`, + temporal EMA. `bmfrRegression.ts` is the CPU-unit-testable solver oracle; `wgsl/bmfr.wgsl.ts` is the GPU kernel. Selected via `EngineOptions.denoiser: 'bmfr'`.
 - **Welford temporal variance** — `WELFORD_VARIANCE_WGSL`. Foundational primitive shared by atrous-variance and SVGF.
 - **Temporal accumulator** — `TEMPORAL_ACCUM_WGSL`. EMA blend with optional TCBB clip.
 - **HDR luminance bilateral** — `HDR_LUMINANCE_BILATERAL_WGSL`. Edge-stop bilateral preview filter.

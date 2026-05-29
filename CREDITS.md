@@ -65,6 +65,7 @@ Each technique is cited at its implementation site in the source code. This list
 - **À-trous wavelet GI denoiser** — Holger Dammertz, Daniel Sewtz, Johannes Hanika, Hendrik P. A. Lensch, "Edge-Avoiding À-Trous Wavelet Transform for fast Global Illumination Filtering," HPG 2010
 - **SVGF (Spatiotemporal Variance-Guided Filtering)** — Christoph Schied et al., "Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced Global Illumination," HPG 2017
 - **Variance-clamped temporal accumulation** — Schied et al. SVGF (above)
+- **BMFR (Blockwise Multi-Order Feature Regression)** — Matias Koskela, Kalle Immonen, Markku Mäkitalo, Alessandro Foi, Timo Viitanen, Pekka Jääskeläinen, Heikki Kultala, Jarmo Takala, "Blockwise Multi-Order Feature Regression for Real-Time Path-Tracing Reconstruction," ACM TOG 38(5), 2019. Per-32×32-block least-squares fit of noisy 1-spp color to a `[1, p, n, p²]` feature matrix via Householder QR on the normal equations, + temporal EMA. Implemented in `shared-denoisers/src/bmfrRegression.ts` + `wgsl/bmfr.wgsl.ts` + `bmfrWebGPU.ts`; wired in `walkaround-hybrid/src/pipeline/denoisers/bmfr.ts` (`denoiser: 'bmfr'`).
 - **Intel Open Image Denoise (OIDN)** — Intel Corporation, Apache-2.0 (model weights), executed in-browser via ONNX Runtime Web
 
 ### Tone mapping & post-processing
@@ -90,7 +91,6 @@ Foundational textbooks cited from JSDoc comments across the codebase:
 
 The following techniques are tracked as roadmap candidates. They are documented here for transparency about what vitrum is *not* yet shipping, and to credit the prior art that future implementations would build on. See `plan/` for current status.
 
-- **BMFR (Blockwise Multi-Order Feature Regression)** — Matias Koskela, Kalle Immonen, Markku Mäkitalo, Alessandro Foi, Timo Viitanen, Pekka Jääskeläinen, "Blockwise Multi-Order Feature Regression for Real-Time Path-Tracing Reconstruction," ACM TOG 2019. `shared-denoisers/src/index.ts`: "BMFR remains a roadmap candidate; no BMFR module is exported."
 - **ReSTIR BDPT** — Hedstrom et al., "Bidirectional ReSTIR Path Tracing with Caustics," ACM TOG 2025. Not implemented as of 2026-05-17.
 - **Vertex Connection and Merging (VCM)** — Iliyan Georgiev, Jaroslav Křivánek, Tomáš Davidovič, Philipp Slusallek, "Light Transport Simulation with Vertex Connection and Merging," ACM TOG 2012. Not implemented as of 2026-05-17.
 

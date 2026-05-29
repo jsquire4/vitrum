@@ -9,12 +9,13 @@
  *
  * Registration order is observable only via {@link DenoiserRegistry.ids}
  * — preserved here in alphabetical-ish "from cheapest to richest" order
- * (none → atrous → atrous-variance → svgf-real → neural → oidn-final) so
- * diagnostic output is stable.
+ * (none → atrous → atrous-variance → svgf-real → bmfr → neural → oidn-final)
+ * so diagnostic output is stable.
  */
 
 import { AtrousDenoiser } from './atrous.js';
 import { AtrousVarianceDenoiser } from './atrousVariance.js';
+import { BmfrDenoiser } from './bmfr.js';
 import { DenoiserRegistry } from './index.js';
 import { NeuralDenoiser } from './neural.js';
 import { NoneDenoiser } from './none.js';
@@ -54,6 +55,7 @@ export function registerBuiltinDenoisers(
   registry.register(new AtrousDenoiser());
   registry.register(new AtrousVarianceDenoiser());
   registry.register(new SVGFRealDenoiser());
+  registry.register(new BmfrDenoiser());
   // Enabled when a graph is supplied; registered-but-disabled otherwise.
   registry.register(
     options?.neuralInferenceGraph !== undefined

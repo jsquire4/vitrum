@@ -150,7 +150,7 @@ function defaultIsSceneReady(scene: THREE.Scene): boolean {
  * returned record.
  */
 interface ParsedHybridEngineConfig {
-  readonly denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
+  readonly denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
   readonly neuralWeights: ModelWeights | undefined;
   readonly oidnModelUrl: string | undefined;
   readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
@@ -238,21 +238,23 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
   };
 
   // Audit B7: validate the denoiser option at construction so an unsupported
-  // value (e.g. `'none'`, `'bmfr'` from the @vitrum/core EngineOptions
-  // contract) does not silently coerce to atrous-variance and produce
-  // wrong output. Supported values are explicitly enumerated here.
+  // value (e.g. `'none'` from the @vitrum/core EngineOptions contract) does
+  // not silently coerce to atrous-variance and produce wrong output. Supported
+  // values are explicitly enumerated here. `'bmfr'` is now a real denoiser
+  // (Koskela 2019 — see denoisers/bmfr.ts), so it is accepted.
   if (
     opts.denoiser !== undefined &&
     opts.denoiser !== 'atrous' &&
     opts.denoiser !== 'atrous-variance' &&
     opts.denoiser !== 'svgf-real' &&
+    opts.denoiser !== 'bmfr' &&
     opts.denoiser !== 'neural' &&
     opts.denoiser !== 'oidn-final'
   ) {
     throw new TypeError(
       `[HybridEngine] unsupported denoiser '${opts.denoiser}'. ` +
-      `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final'. ` +
-      `If you need 'none' / 'bmfr' from @vitrum/core, pick a backend that implements those modes.`,
+      `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final'. ` +
+      `If you need 'none' from @vitrum/core, pick a backend that implements that mode.`,
     );
   }
   // T2.H2 — 'neural' requires neuralWeights to be provided.
@@ -453,7 +455,7 @@ export class HybridEngine implements Engine {
     return this._pipeline.readGpuTimingsOnce();
   }
 
-  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'neural' | 'oidn-final';
+  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
   /** Dev A/B — mirrors `engine.debug.setDenoiserEnabled` (default on). */
   private _denoiserPassEnabled = true;
   /** T2.H2 — neural denoiser weights (populated when _denoiser === 'neural'). */

@@ -14,6 +14,7 @@
  *   denoisers/atrous.ts          (W1-R3 — legacy 3-iter à-trous)
  *   denoisers/atrousVariance.ts  (W1-R3 — Welford + variance + 3 × atrous, default)
  *   denoisers/svgfReal.ts        (W1-R3 — real Schied 2017 SVGF)
+ *   denoisers/bmfr.ts            (Koskela 2019 — blockwise multi-order feature regression)
  *   denoisers/neural.ts          (W1-R3, enabled when InferenceGraph supplied; disabled placeholder otherwise)
  *   denoisers/oidnFinal.ts       (W1-R3, enabled when modelUrl supplied; disabled placeholder otherwise)
  *
@@ -33,6 +34,7 @@ export type DenoiserId =
   | 'atrous'
   | 'atrous-variance'
   | 'svgf-real'
+  | 'bmfr'
   | 'neural'
   | 'oidn-final';
 
@@ -72,6 +74,7 @@ export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabe
     'svgf-real-atrous-3',
     'svgf-real-atrous-4',
   ]),
+  'bmfr': Object.freeze(['bmfr']),
   'neural': Object.freeze([
     'welford-temporal',
     'atrous-variance-variance',

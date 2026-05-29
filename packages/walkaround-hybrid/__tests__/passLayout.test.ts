@@ -104,7 +104,7 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
 
   describe('MAX_PASS_COUNT invariant', () => {
     it('every layout fits within MAX_PASS_COUNT', () => {
-      for (const denoiserMode of ['atrous-variance', 'atrous', 'svgf-real'] as const) {
+      for (const denoiserMode of ['atrous-variance', 'atrous', 'svgf-real', 'bmfr'] as const) {
         const layout = buildPassLayout({ denoiserMode });
         expect(layout.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
       }

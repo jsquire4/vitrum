@@ -8,6 +8,7 @@ import {
 } from '../src/pipeline/denoisers/index.js';
 import { AtrousDenoiser } from '../src/pipeline/denoisers/atrous.js';
 import { AtrousVarianceDenoiser } from '../src/pipeline/denoisers/atrousVariance.js';
+import { BmfrDenoiser } from '../src/pipeline/denoisers/bmfr.js';
 import { NeuralDenoiser } from '../src/pipeline/denoisers/neural.js';
 import { NoneDenoiser } from '../src/pipeline/denoisers/none.js';
 import { OIDNFinalDenoiser } from '../src/pipeline/denoisers/oidnFinal.js';
@@ -116,6 +117,13 @@ describe('Builtin Denoiser entries', () => {
     expect((d as { disabled?: boolean }).disabled).toBeUndefined();
   });
 
+  it('BmfrDenoiser carries id "bmfr", is enabled by default, declares a single pass label', () => {
+    const d = new BmfrDenoiser();
+    expect(d.id).toBe('bmfr');
+    expect((d as { disabled?: boolean }).disabled).toBeUndefined();
+    expect(d.passLabels).toEqual(['bmfr']);
+  });
+
   it('NeuralDenoiser carries id "neural" and is disabled by default (no InferenceGraph supplied)', () => {
     const d = new NeuralDenoiser();
     expect(d.id).toBe('neural');
@@ -141,12 +149,12 @@ describe('Builtin Denoiser entries', () => {
 });
 
 describe('registerBuiltinDenoisers', () => {
-  it('populates a fresh registry with all 6 built-in denoiser ids', () => {
+  it('populates a fresh registry with all 7 built-in denoiser ids', () => {
     const reg = new DenoiserRegistry();
     registerBuiltinDenoisers(reg);
-    expect(reg.size()).toBe(6);
+    expect(reg.size()).toBe(7);
     expect(reg.ids()).toEqual([
-      'none', 'atrous', 'atrous-variance', 'svgf-real', 'neural', 'oidn-final',
+      'none', 'atrous', 'atrous-variance', 'svgf-real', 'bmfr', 'neural', 'oidn-final',
     ]);
   });
 
@@ -157,6 +165,7 @@ describe('registerBuiltinDenoisers', () => {
     expect(reg.lookup('atrous').id).toBe('atrous');
     expect(reg.lookup('atrous-variance').id).toBe('atrous-variance');
     expect(reg.lookup('svgf-real').id).toBe('svgf-real');
+    expect(reg.lookup('bmfr').id).toBe('bmfr');
   });
 
   it('rejects the disabled placeholders with a clear error', () => {

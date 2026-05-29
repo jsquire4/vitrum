@@ -37,6 +37,7 @@ import {
   SVGF_REPROJECTION_WGSL,
   SVGF_VARIANCE_FROM_MOMENTS_WGSL,
   SVGF_7X7_SPATIAL_FALLBACK_WGSL,
+  BMFR_WGSL,
 } from '@vitrum/shared-denoisers';
 import { LUMINANCE_WGSL, OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
 
@@ -187,6 +188,15 @@ export const SVGF_7X7_SPATIAL_FALLBACK_MODULE: WgslModule = {
   requires: [],
 };
 
+/** BMFR (Koskela 2019) per-block feature-regression kernel. Self-contained:
+ *  declares its own UBO struct, feature-row + Householder-QR helpers, and the
+ *  bmfrMain entry point. `requires: []`. */
+export const BMFR_MODULE: WgslModule = {
+  name: 'bmfr',
+  source: BMFR_WGSL,
+  requires: [],
+};
+
 /** Fragment-only — registered for completeness; never resolved via `requires`
  *  because the modules that need WelfordVariance template-interpolate the
  *  raw string into their own source. */
@@ -271,4 +281,5 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [SVGF_REPROJECTION_MODULE.name, SVGF_REPROJECTION_MODULE],
   [SVGF_VARIANCE_FROM_MOMENTS_MODULE.name, SVGF_VARIANCE_FROM_MOMENTS_MODULE],
   [SVGF_7X7_SPATIAL_FALLBACK_MODULE.name, SVGF_7X7_SPATIAL_FALLBACK_MODULE],
+  [BMFR_MODULE.name, BMFR_MODULE],
 ]);
