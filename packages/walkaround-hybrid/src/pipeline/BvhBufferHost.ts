@@ -4,7 +4,7 @@
  */
 
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
-import { createDummyStorageBuffer, uploadBuffer } from './resourceManager.js';
+import { createDummyStorageBuffer, uploadBuffer, uploadBufferPadded } from './resourceManager.js';
 
 /** Mirrors `buildSceneBindGroup` resource bundle in bindGroupBuilders.ts. */
 export interface SceneBindGroupResources {
@@ -38,6 +38,22 @@ export class BvhBufferHost {
   private _emitterCdfBuffer: GPUBuffer | null = null;
   private _lightTreeBuffer: GPUBuffer | null = null;
 
+  /**
+   * Extra bytes appended to the light-tree storage buffer to hold the ReGIR
+   * grid region (the grid-build pass writes it; RIS reads it from the SAME
+   * @group(3) buffer so RIS stays at 16 storage buffers). `0` ⇒ ReGIR off, the
+   * light-tree buffer is sized exactly as before (byte-identical). Stable for
+   * the buffer's lifetime — set once by the pipeline before `uploadInitial`.
+   */
+  private _regirGridBytes = 0;
+
+  /** Set the ReGIR grid byte count appended to the light-tree buffer. Must be
+   *  called BEFORE `uploadInitial` (and before any `updateEmitters`). `0`
+   *  disables ReGIR co-location (default — byte-identical to pre-ReGIR). */
+  setRegirGridBytes(bytes: number): void {
+    this._regirGridBytes = Math.max(0, bytes | 0);
+  }
+
   get initialized(): boolean {
     return this._bvhNodesBuffer != null;
   }
@@ -49,7 +65,10 @@ export class BvhBufferHost {
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
-    this._lightTreeBuffer = uploadBuffer(device, bvhBuffers.lightTree.cpuData, STORAGE);
+    // Combined light-tree + ReGIR-grid buffer (tree nodes in front, grid region
+    // zeroed at the tail). `_regirGridBytes == 0` ⇒ exactly `uploadBuffer`.
+    this._lightTreeBuffer = uploadBufferPadded(
+      device, bvhBuffers.lightTree.cpuData, this._regirGridBytes, STORAGE);
     this._uploadTlasBuffers(device, bvhBuffers);
   }
 
@@ -93,7 +112,11 @@ export class BvhBufferHost {
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
     // Re-upload the selection tree: emitters changed, so the tree's leaf
     // emitterIndex → emitter array mapping (and powers) changed with them.
-    this._lightTreeBuffer = uploadBuffer(device, bvhBuffers.lightTree.cpuData, STORAGE);
+    // Re-pad for the ReGIR grid region (zeroed; the grid-build pass refills it
+    // next frame). The tree node count may have changed, so the grid region's
+    // float offset (lightTreeNodeCount × 12) is recomputed by the pipeline.
+    this._lightTreeBuffer = uploadBufferPadded(
+      device, bvhBuffers.lightTree.cpuData, this._regirGridBytes, STORAGE);
   }
 
   refreshBvhRefit(

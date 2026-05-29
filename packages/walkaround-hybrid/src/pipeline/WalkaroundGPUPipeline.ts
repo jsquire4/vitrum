@@ -54,6 +54,7 @@ import {
   buildPerFrameBindGroups,
 } from './pipelineBindGroupFactory.js';
 import { PPGCoordinator } from './PPGCoordinator.js';
+import { ReGIRCoordinator, resolveReGIRConfig, type ReGIRConfig } from './ReGIRCoordinator.js';
 import { DDGIBindingState } from './DDGIBindingState.js';
 import {
   DenoiserRegistry,
@@ -79,6 +80,7 @@ import {
   MotionVectorsPass,
   PPGGuidePass,
   PPGUpdatePass,
+  ReGIRBuildPass,
   ResolvePass,
   RISGIPass,
   RISPass,
@@ -382,6 +384,11 @@ export class WalkaroundGPUPipeline {
   // into `PassGateOptions.ppgEnabled`.
   private readonly _ppg: PPGCoordinator;
 
+  /** ReGIR (Boksansky 2021) grid coordinator. Constructed at `initialize`
+   *  (config arrives in the init options). Off by default ⇒ a no-op coordinator
+   *  whose `live` is false, so RIS uses the light-tree path. */
+  private _regir: ReGIRCoordinator = new ReGIRCoordinator(resolveReGIRConfig());
+
   /** Phase-0 productization — PPG train-pass dispatch cadence (roadmap §5.3).
    *  The ppg-guide + ppg-update passes dispatch only on frames where
    *  `_frameCount % _ppgDispatchInterval === 0`; the learned sTree/dTree GPU
@@ -581,10 +588,26 @@ export class WalkaroundGPUPipeline {
        *  learned tree persists between cycles, so gi-ris guided sampling is
        *  unaffected. Clamped to ≥ 1. Only meaningful when `ppgEnabled` is true. */
       ppgDispatchInterval?: number;
+      /** ReGIR (Boksansky 2021) grid-based DI light selection. When
+       *  `enabled`, a per-frame grid-build pass pre-resamples lights into a
+       *  world-space grid of reservoirs and RIS samples the containing cell
+       *  instead of traversing the light tree per pixel (O(1) per pixel
+       *  regardless of light count). The grid is seeded by the light tree, so
+       *  it only goes live when the tree is live (≥ 2 emitters). When off, RIS
+       *  uses the light-tree path bit-identically. */
+      regirConfig?: Partial<ReGIRConfig>;
     },
   ): Promise<void> {
     const d = this._device;
     const { _width: W, _height: H } = this;
+
+    // ── ReGIR coordinator (Boksansky 2021) ────────────────────────────────
+    // Construct from the resolved config so the grid byte count is known
+    // BEFORE the light-tree buffer is uploaded (the grid is co-located in the
+    // SAME buffer — see ReGIRCoordinator / regir.wgsl). `gridRegionBytes()` is
+    // 0 when ReGIR is off ⇒ the light-tree buffer is byte-identical to before.
+    this._regir = new ReGIRCoordinator(resolveReGIRConfig(options?.regirConfig));
+    this._bvhHost.setRegirGridBytes(this._regir.gridRegionBytes());
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
     this._bvhHost.uploadInitial(d, bvhBuffers);
@@ -606,6 +629,7 @@ export class WalkaroundGPUPipeline {
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
       ppgEnabled: options?.ppgEnabled ?? false,
+      regirEnabled: this._regir.config.enabled,
     });
     // Shared à-trous pipeline — fed into the AtrousDenoiser context AND
     // the always-on AtrousIndirectPass.
@@ -729,6 +753,24 @@ export class WalkaroundGPUPipeline {
     if (compiled.ppgUpdatePipeline) {
       registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));
     }
+    // ReGIR grid-build (Boksansky 2021) — register only when the pipeline
+    // compiled (opt-in). Topo-sort runs it FIRST (no deps; `regir-build` <
+    // `sample-budget` lexically) so the grid is filled before RIS reads it.
+    // `gates()` further requires the coordinator be live (light tree live).
+    // Initialise the coordinator's grid geometry first so `live` is correct.
+    this._regir.initialize(bvhBuffers, compiled.regirBuildPipeline !== undefined);
+    if (compiled.regirBuildPipeline) {
+      registry.register(new ReGIRBuildPass(
+        compiled.regirBuildPipeline,
+        this._regir,
+        this._bglCache,
+        () => ({
+          combinedLightTreeBuffer: this._bvhHost.lightTreeBuffer(),
+          emitterBuffer: this._bvhHost.sceneBindGroupResources().emitterBuffer,
+          uboBuffer: this._res.common.uboBuffer,
+        }),
+      ));
+    }
 
     // ── Initialize all passes in parallel ────────────────────────────────
     this._passRegistry = registry;
@@ -759,9 +801,17 @@ export class WalkaroundGPUPipeline {
    * changes.
    */
   updateEmitters(
-    bvhBuffers: Pick<SceneBVHBuffers, 'emitters' | 'emitterCdf' | 'lightTree'>,
+    bvhBuffers: Pick<
+      SceneBVHBuffers,
+      'emitters' | 'emitterCdf' | 'lightTree' | 'lightTreeNodeCount' | 'lightTreeEnabled'
+    >,
   ): void {
     this._bvhHost.updateEmitters(this._device, bvhBuffers);
+    // ReGIR: the light-tree node count may have changed (emitters moved), which
+    // shifts the grid region's float offset within the combined buffer. Refresh
+    // the coordinator so the next frame's UBO carries the right offset (and drop
+    // ReGIR if the tree went degenerate). No-op when ReGIR is off.
+    this._regir.refreshAfterEmitterRebuild(bvhBuffers);
   }
 
   /**
@@ -976,7 +1026,7 @@ export class WalkaroundGPUPipeline {
     updateUBO(d, this._res.common.uboBuffer, inputs, {
       enabled: this._ppg.enabled,
       mixAlpha: this._ppg.mixAlpha,
-    });
+    }, this._regir.uboState());
 
     // W9 — refresh the PPG guide UBO so the kernel's per-frame RNG salt
     // (and any future per-frame inputs) stay current. The update UBO is

@@ -34,6 +34,8 @@ import { composePassLabels } from './passes/passOrder.js';
 
 export type PassLabel =
   | 'sample-budget'
+  // ReGIR (Boksansky 2021) grid-build — opt-in; dispatched before RIS when live.
+  | 'regir-build'
   | 'ris'
   | 'temporal'
   | 'spatial-1'
@@ -86,7 +88,7 @@ export type PassLabel =
  * allocation survives every runtime layout. Verify against `buildPassLayout`
  * if you add a pass.
  */
-export const MAX_PASS_COUNT = 34;
+export const MAX_PASS_COUNT = 35;
 
 interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is

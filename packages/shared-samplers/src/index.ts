@@ -19,6 +19,15 @@ export {
 export { luminance, luminanceAt } from './luminance.js';
 export { buildLightTree, packLightTreeForGPU, LIGHT_TREE_FLOATS_PER_NODE } from './lightTree.js';
 export type { LightTreeNode, LightTreeBuildInput } from './lightTree.js';
+// ReGIR (Boksansky 2021 grid-based reservoirs) CPU reference core + the packed
+// per-cell survivor stride shared with the WGSL grid-build kernel.
+export {
+  REGIR_FLOATS_PER_SURVIVOR,
+  regirBuildSurvivorCPU,
+  regirCellTargetFromTree,
+  regirCellPmfExact,
+} from './lightTree.js';
+export type { ReGIRSurvivor } from './lightTree.js';
 export { balanceHeuristic, powerHeuristic, mixturePdf } from './mixturePdf.js';
 export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';
 export { sampleEquiAngular } from './equiAngular.js';

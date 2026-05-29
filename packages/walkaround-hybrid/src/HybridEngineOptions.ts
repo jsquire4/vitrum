@@ -683,6 +683,45 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly ppgDispatchInterval?: number;
 
+  // ── ReGIR (Boksansky, Wyman, Benty 2021 — grid-based reservoirs) ──────────
+
+  /**
+   * Enable ReGIR (Reservoir-based Grid Importance Resampling) for ReSTIR-DI
+   * initial-candidate light SELECTION.
+   *
+   * ReGIR scales ReSTIR-DI to MANY lights by decoupling the per-pixel light-
+   * selection cost from the light count. Each frame a grid-build compute pass
+   * fills a world-space grid of light reservoirs — each cell pre-resamples
+   * lights by power × proximity via WRS, SEEDED BY THE LIGHT TREE at the cell
+   * centroid. RIS then draws its initial candidates from the cell containing
+   * the shading point (O(1) per pixel) instead of traversing the light tree
+   * per pixel × M candidates.
+   *
+   * Unbiased: RIS divides the target p̂ by the EXACT per-cell selection pmf the
+   * grid stored (`q̂_c(e)/Ŝ`), the same discipline as the light-tree path. When
+   * `enabled: false` (or omitted), RIS uses the light-tree path bit-identically.
+   *
+   * The grid is co-located in the SAME storage buffer as the light tree (so RIS
+   * stays within its storage-buffer budget) and only goes live when the light
+   * tree is live (≥ 2 emitters). Lower-light scenes gain nothing and stay on the
+   * tree path automatically.
+   *
+   * Default: `undefined` ⇒ ReGIR off.
+   *
+   * @see Boksansky, Wyman, Benty 2021, "Rendering Many Lights with Grid-Based
+   *      Reservoirs", Ray Tracing Gems II ch. 23.
+   */
+  readonly regir?: {
+    /** Master gate. `false`/omitted ⇒ ReGIR off (light-tree fallback). */
+    readonly enabled?: boolean;
+    /** Cells per axis (cubic grid). Default 16 ⇒ up to 4096 cells. */
+    readonly cellsPerAxis?: number;
+    /** M — WRS candidates drawn per cell sub-reservoir at grid build. Default 32. */
+    readonly candidatesPerCell?: number;
+    /** K — survivors stored per cell (per-pixel candidate diversity). Default 8. */
+    readonly survivorsPerCell?: number;
+  };
+
   // ── RC (Sannikov 2023 Radiance Cascades — W8 sprint, 2026-05-18) ──────────
 
   /**

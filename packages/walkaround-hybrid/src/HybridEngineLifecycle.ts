@@ -94,6 +94,10 @@ export interface PipelineInitHost {
   /** PPG train-pass dispatch cadence (≥ 1). The ppg-guide + ppg-update passes
    *  dispatch on `frameCount % ppgDispatchInterval === 0`. */
   readonly ppgDispatchInterval: number;
+  /** ReGIR (Boksansky 2021) grid-based DI light-selection config. `undefined`
+   *  ⇒ ReGIR off (RIS uses the light-tree path). Threaded into
+   *  `pipeline.initialize({ regirConfig })`. */
+  readonly regirConfig: Partial<import('./pipeline/ReGIRCoordinator.js').ReGIRConfig> | undefined;
 
   /** Scene-readiness predicate (engine combines the core-scene mesh
    *  count + optional ctor `isSceneReady` heuristic). */
@@ -157,6 +161,7 @@ export type HybridInitStaticConfig = Pick<
   | 'diSpatialPasses'
   | 'giSpatialPasses'
   | 'ppgDispatchInterval'
+  | 'regirConfig'
 >;
 
 export class PipelineInitCoordinator {
@@ -401,6 +406,10 @@ export class PipelineInitCoordinator {
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.
           ppgDispatchInterval: host.ppgDispatchInterval,
+          // ReGIR (Boksansky 2021) grid-based DI light selection. Omit the key
+          // entirely when undefined (exactOptionalPropertyTypes) so the
+          // pipeline's resolveReGIRConfig default (off) applies.
+          ...(host.regirConfig !== undefined ? { regirConfig: host.regirConfig } : {}),
           // exactOptionalPropertyTypes: omit the key entirely when undefined.
           ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
           // W11 — forward OIDN config when denoiser === 'oidn-final'.

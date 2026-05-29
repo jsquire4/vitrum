@@ -77,8 +77,10 @@ describe('T5 — UBO byte layout (offset-344 flags slot + W9 PPG tail)', () => {
     expect(WALKAROUND_UBO_WGSL).toContain('offset 348 — PPG guided-sampling gate');
   });
 
-  it('struct now ends at 368 bytes (ppgMixAlpha + 3×u32 pad appended after ppgEnabled)', () => {
+  it('struct now ends at 416 bytes (ReGIR grid block appended after the light-tree fields)', () => {
     expect(WALKAROUND_UBO_WGSL).toContain('ppgMixAlpha:                f32,');
-    expect(WALKAROUND_UBO_WGSL).toContain('struct size 368 bytes');
+    // The PPG tail ends at 368; the ReGIR grid block (offsets 368..412) grows
+    // the struct to 416 bytes (416 % 16 == 0).
+    expect(WALKAROUND_UBO_WGSL).toContain('struct size 416 bytes');
   });
 });

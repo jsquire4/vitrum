@@ -351,6 +351,34 @@ export function uploadBuffer(device: GPUDevice, data: ArrayBuffer, usage: number
   return buf;
 }
 
+/**
+ * Like {@link uploadBuffer} but allocates `data.byteLength + extraBytes`,
+ * copies `data` into the front, and leaves the trailing `extraBytes` zeroed.
+ *
+ * Used for the COMBINED light-tree + ReGIR-grid storage buffer: the light-tree
+ * nodes occupy the front (uploaded once), the trailing region is the ReGIR grid
+ * the grid-build pass writes each frame. Co-locating them in ONE buffer keeps
+ * the RIS pipeline at the 16 storage-buffer floor (a second @group(3) buffer
+ * would push it to 17 and fail pipeline creation). `extraBytes == 0` is exactly
+ * `uploadBuffer`.
+ */
+export function uploadBufferPadded(
+  device: GPUDevice,
+  data: ArrayBuffer,
+  extraBytes: number,
+  usage: number,
+): GPUBuffer {
+  const size = Math.max(data.byteLength + Math.max(0, extraBytes), 16);
+  const buf = device.createBuffer({
+    size,
+    usage: usage | GPUBufferUsage.COPY_DST,
+    mappedAtCreation: true,
+  });
+  new Uint8Array(buf.getMappedRange()).set(new Uint8Array(data));
+  buf.unmap();
+  return buf;
+}
+
 /** 16-byte zeroed storage buffer for unused scene-BGL slots (merged BVH mode). */
 export function createDummyStorageBuffer(device: GPUDevice, _label: string): GPUBuffer {
   return uploadBuffer(device, new ArrayBuffer(16), GPUBufferUsage.STORAGE);

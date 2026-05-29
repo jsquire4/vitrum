@@ -123,18 +123,36 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let emCount = max(ubo.emitterCount, 1u);
 
   // --- M_LIGHT candidates from emitter distribution ---
-  // Light selection mode is data-driven via ubo.lightTreeEnabled:
-  //   1 ⇒ spatially-aware light tree (sampleLightTree) — importance-samples
-  //       emitters by power/dist², returning the exact selection pmf;
-  //   0 ⇒ flat power CDF (sampleEmitterIdx) — the historical path.
-  // In BOTH modes the WRS source pmf used in the weight w = p̂ / p_source is
-  // the EXACT pmf the selection drew from, so the estimator is unbiased either way.
+  // Light selection mode is data-driven via two UBO gates (priority order):
+  //   regirEnabled == 1 ⇒ ReGIR grid (regir_sample_cell) — draws a survivor
+  //       from the containing cell's pre-resampled reservoir; the survivor's
+  //       stored per-cell pmf (q̂_c(e)/Ŝ) is the EXACT source pmf. O(1) per
+  //       pixel regardless of light count. The grid itself was seeded by the
+  //       light tree at grid-build time (see regir.wgsl).
+  //   else lightTreeEnabled == 1 ⇒ spatially-aware light tree (sampleLightTree)
+  //       — importance-samples emitters by power/dist², returning the exact
+  //       per-pixel selection pmf;
+  //   else ⇒ flat power CDF (sampleEmitterIdx) — the historical path.
+  // In ALL modes the WRS source pmf used in the weight w = p̂ / p_source is
+  // the EXACT pmf the selection drew from, so the estimator is unbiased in
+  // every mode. When regirEnabled == 0 this reduces to the light-tree path
+  // bit-identically (the regir branch is never taken).
+  let useRegir = ubo.regirEnabled == 1u;
   let useLightTree = ubo.lightTreeEnabled == 1u;
   for (var i = 0u; i < M_LIGHT; i++) {
     // Select an emitter + record the EXACT selection pmf that produced it.
     var lid: u32;
     var emitterSelPmf: f32;
-    if (useLightTree) {
+    if (useRegir) {
+      let rs = regir_sample_cell(pos, &rng);
+      // Empty survivor (cell had no positive-target emitter) or non-positive
+      // pmf cannot contribute — skip rather than emit an infinite weight.
+      if (rs.emitterIndex < 0 || rs.pSel <= 0.0) { continue; }
+      lid = u32(rs.emitterIndex);
+      // pSel = q̂_c(lid)/Ŝ is the EXACT per-cell selection pmf the grid stored;
+      // dividing p̂ by it (× pdfArea below) keeps RIS unbiased.
+      emitterSelPmf = rs.pSel;
+    } else if (useLightTree) {
       let lt = sampleLightTree(pos, ubo.emitterDist2Floor, ubo.lightTreeNodeCount, &rng);
       // Degenerate guard: a malformed leaf (emitterIndex < 0) or non-positive
       // pdf cannot contribute — skip rather than emit an infinite weight.
@@ -236,8 +254,10 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
 export const RIS_MODULE: WgslModule = {
   name: 'ris',
   source: RIS_WGSL,
-  // restirPHat → common (p̂ helper + UBO/RNG). lightTree adds the @group(3)
-  // light-tree storage buffer + `sampleLightTree` traversal used by the
-  // M_LIGHT candidate loop when ubo.lightTreeEnabled == 1.
-  requires: ['restirPHat', 'lightTree'],
+  // restirPHat → common (p̂ helper + UBO/RNG). regir → lightTree adds the
+  // @group(3) combined light-tree + ReGIR-grid storage buffer (one binding):
+  // `sampleLightTree` (lightTreeEnabled path) + `regir_sample_cell`
+  // (regirEnabled path) both read it. The composer emits
+  // `common, restirPHat, lightTree, regir, ris`.
+  requires: ['restirPHat', 'regir'],
 };

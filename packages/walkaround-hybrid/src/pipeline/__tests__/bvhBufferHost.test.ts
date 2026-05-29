@@ -3,6 +3,7 @@ import type { SceneBVHBuffers } from '../../restir/bvhCompute.js';
 
 vi.mock('../resourceManager.js', () => ({
   uploadBuffer: vi.fn(() => ({ destroy: vi.fn() })),
+  uploadBufferPadded: vi.fn(() => ({ destroy: vi.fn() })),
   createDummyStorageBuffer: vi.fn(() => ({ destroy: vi.fn() })),
 }));
 

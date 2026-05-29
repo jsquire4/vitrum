@@ -371,9 +371,9 @@ describe('W9 gi-ris — UBO byte layout (ppg-OFF bit-identity + ppg-ON gate)', (
     return captured;
   }
 
-  it('the UBO is 368 bytes (16-byte aligned)', () => {
-    expect(captureUBO().byteLength).toBe(368);
-    expect(368 % 16).toBe(0);
+  it('the UBO is 416 bytes (16-byte aligned — ReGIR grid block appended)', () => {
+    expect(captureUBO().byteLength).toBe(416);
+    expect(416 % 16).toBe(0);
   });
 
   it('ppg-OFF writes ppgEnabled=0 @348 and ppgMixAlpha=0 @352', () => {

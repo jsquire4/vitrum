@@ -57,9 +57,9 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(() => layout.index('atrous-0')).toThrow(/not active/);
     });
 
-    it('reports 31 slots', () => {
-      expect(layout.slotCount).toBe(31);
-      expect(layout.labels).toHaveLength(31);
+    it('reports 32 slots (31 + the trailing opt-in regir-build slot)', () => {
+      expect(layout.slotCount).toBe(32);
+      expect(layout.labels).toHaveLength(32);
     });
   });
 
@@ -97,8 +97,8 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       expect(() => layout.index('welford-temporal')).toThrow(/not active/);
     });
 
-    it('reports 29 slots', () => {
-      expect(layout.slotCount).toBe(29);
+    it('reports 30 slots (29 + the trailing opt-in regir-build slot)', () => {
+      expect(layout.slotCount).toBe(30);
     });
   });
 
@@ -110,8 +110,8 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       }
     });
 
-    it('MAX_PASS_COUNT is 34 (includes motion-vectors pass)', () => {
-      expect(MAX_PASS_COUNT).toBe(34);
+    it('MAX_PASS_COUNT is 35 (includes the trailing opt-in regir-build slot)', () => {
+      expect(MAX_PASS_COUNT).toBe(35);
     });
   });
 
@@ -125,10 +125,15 @@ describe('buildPassLayout — Sprint 9..18 + indirect atrous chain', () => {
       }
     });
 
-    it('first label is sample-budget; last is composite', () => {
+    it('first label is sample-budget; last is regir-build (trailing opt-in slot)', () => {
       const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
       expect(layout.labels[0]).toBe('sample-budget');
-      expect(layout.labels[layout.slotCount - 1]).toBe('composite');
+      // `regir-build` is placed LAST in the static order so its timestamp slot
+      // is a trailing addition that doesn't shift any existing index; composite
+      // keeps its slot just before it. (Dispatch order is independent: the
+      // registry runs regir-build FIRST via topo-sort.)
+      expect(layout.labels[layout.slotCount - 1]).toBe('regir-build');
+      expect(layout.labels[layout.slotCount - 2]).toBe('composite');
     });
   });
 });

@@ -142,7 +142,23 @@ struct WalkaroundUBO {
   // the GPU descent loop.
   lightTreeEnabled:           u32,     //  offset 356 — DI light-tree selection gate (was _ppgPad0)
   lightTreeNodeCount:         u32,     //  offset 360 — packed light-tree node count (was _ppgPad1)
-  _ppgPad2:                   u32,     //  offset 364 — struct size 368 bytes
+  _ppgPad2:                   u32,     //  offset 364 — pad to 16-byte boundary at 368
+  // ── ReGIR (Boksansky 2021 grid-based reservoirs) — DI light-SELECTION
+  // grid that decouples per-pixel cost from light count. The grid is co-located
+  // in the SAME @group(3) light-tree storage buffer (RIS stays at 16 storage
+  // buffers); the grid-build pass writes it, RIS samples from the containing
+  // cell instead of traversing the tree per pixel. regirEnabled gates the path:
+  // 0 ⇒ RIS uses the light-tree path bit-identically (the grid-build pass also
+  // early-returns). Unbiased: RIS divides p̂ by the EXACT per-cell selection pmf
+  // (q̂_c(e)/Ŝ) the grid stored — same discipline as the tree pmf. See regir.wgsl.
+  regirOrigin:                vec3f,   //  offset 368 — world-space grid AABB min (vec3f 16-aligned)
+  regirInvCellSize:           f32,     //  offset 380 — 1 / cellSize (uniform cubic cells)
+  regirDims:                  vec3u,   //  offset 384 — grid cell counts (x, y, z)
+  regirEnabled:               u32,     //  offset 396 — ReGIR DI-selection gate (0 ⇒ light-tree fallback)
+  regirCandidatesPerCell:     u32,     //  offset 400 — M: WRS candidates per sub-reservoir
+  regirSurvivorsPerCell:      u32,     //  offset 404 — K: survivors stored per cell
+  regirGridFloatOffset:       u32,     //  offset 408 — float offset of the grid region in the combined buffer
+  _regirPad:                  u32,     //  offset 412 — struct size 416 bytes (416 % 16 == 0)
 };
 
 // T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,

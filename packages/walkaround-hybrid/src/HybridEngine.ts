@@ -183,6 +183,9 @@ interface ParsedHybridEngineConfig {
    *  Threaded into `pipeline.initialize` so the ppg-guide + ppg-update passes
    *  gate on `frameCount % ppgDispatchInterval`. Always ≥ 1. */
   readonly ppgDispatchInterval: number;
+  /** ReGIR (Boksansky 2021) grid-based DI light-selection config (pass-through
+   *  from opts; `undefined` ⇒ off). Threaded into `pipeline.initialize`. */
+  readonly regirConfig: Partial<import('./pipeline/ReGIRCoordinator.js').ReGIRConfig> | undefined;
   /** Resolved initial internal-resolution factor (preset; per-frame
    *  `quality.resolutionFactor` still overrides at runtime). */
   readonly resolutionFactor: number;
@@ -363,6 +366,9 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
       1,
       Math.floor(opts.ppgDispatchInterval ?? preset.ppgDispatchInterval),
     ),
+    // ReGIR (Boksansky 2021) grid-based DI light selection. Pass-through from
+    // opts; `undefined` ⇒ off (the pipeline's resolveReGIRConfig default).
+    regirConfig: opts.regir,
     resolutionFactor: preset.resolutionFactor,
   };
 }
@@ -521,6 +527,11 @@ export class HybridEngine implements Engine {
    *  Threaded into the pipeline at init; gates the ppg-guide + ppg-update
    *  passes on `frameCount % ppgDispatchInterval`. */
   private readonly _ppgDispatchInterval: number;
+  /** ReGIR (Boksansky 2021) grid-based DI light-selection config (pass-through
+   *  from opts; `undefined` ⇒ off). Threaded into `pipeline.initialize`. */
+  private readonly _regirConfig:
+    | Partial<import('./pipeline/ReGIRCoordinator.js').ReGIRConfig>
+    | undefined;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -640,6 +651,7 @@ export class HybridEngine implements Engine {
     this._giSpatialPasses       = cfg.giSpatialPasses;
     this._ddgiUpdateDivisor     = cfg.ddgiUpdateDivisor;
     this._ppgDispatchInterval   = cfg.ppgDispatchInterval;
+    this._regirConfig           = cfg.regirConfig;
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -1766,6 +1778,7 @@ export class HybridEngine implements Engine {
       diSpatialPasses: this._diSpatialPasses,
       giSpatialPasses: this._giSpatialPasses,
       ppgDispatchInterval: this._ppgDispatchInterval,
+      regirConfig: this._regirConfig,
     };
   }
 

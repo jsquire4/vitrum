@@ -87,6 +87,14 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
   { id: 'temporalAccum', labels: ['temporalAccum'] },
   { id: 'resolve', labels: ['resolve'] },
   { id: 'composite', labels: ['composite'] },
+  // ReGIR grid-build (Boksansky 2021) — opt-in. Placed LAST in the static
+  // timestamp order so its slot is a TRAILING addition that does not shift any
+  // existing slot index (the slot layout is decoupled from dispatch order —
+  // the registry runs `regir-build` FIRST via topo-sort, since it has no deps
+  // and `regir-build` < `sample-budget` lexicographically, so the grid is
+  // filled before RIS reads it). Reserved like the PPG passes: always in the
+  // order; the runtime registry only registers the pass when ReGIR is live.
+  { id: 'regir-build', labels: ['regir-build'] },
 ] satisfies NonDenoiserPassEntry[]);
 
 /** Position in {@link NON_DENOISER_PASS_ORDER} at which the active

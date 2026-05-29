@@ -40,8 +40,16 @@
  *   offset 352: ppgMixAlpha                 (f32 = 4 bytes) — PPG MIS mixing weight α
  *   offset 356: lightTreeEnabled            (u32 = 4 bytes) — DI light-tree selection gate (was _ppgPad0)
  *   offset 360: lightTreeNodeCount          (u32 = 4 bytes) — packed light-tree node count (was _ppgPad1)
- *   offset 364: _ppgPad2                    (u32 = 4 bytes)
- * Total: 368 bytes (368 % 16 == 0).
+ *   offset 364: _ppgPad2                    (u32 = 4 bytes — pad to 368)
+ *   offset 368: regirOrigin                 (vec3f = 12 bytes) — ReGIR grid AABB min
+ *   offset 380: regirInvCellSize            (f32 = 4 bytes) — 1 / cellSize
+ *   offset 384: regirDims                   (vec3u = 12 bytes) — grid cell counts
+ *   offset 396: regirEnabled                (u32 = 4 bytes) — ReGIR DI-selection gate
+ *   offset 400: regirCandidatesPerCell      (u32 = 4 bytes) — M per sub-reservoir
+ *   offset 404: regirSurvivorsPerCell       (u32 = 4 bytes) — K survivors per cell
+ *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
+ *   offset 412: _regirPad                   (u32 = 4 bytes)
+ * Total: 416 bytes (416 % 16 == 0).
  */
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
@@ -73,9 +81,9 @@ export function packStainedGlassFlags(opts: {
 }
 
 /** Size of the WalkaroundUBO in bytes. File-local — `resourceManager.ts`
- *  intentionally duplicates the literal `368` rather than import this name
+ *  intentionally duplicates the literal `416` rather than import this name
  *  to avoid a circular import (see resourceManager.ts). */
-const WALKAROUND_UBO_SIZE_BYTES = 368;
+const WALKAROUND_UBO_SIZE_BYTES = 416;
 
 /**
  * Live PPG guided-sampling state injected by the pipeline (NOT part of the
@@ -92,6 +100,46 @@ export interface PpgUboState {
   readonly mixAlpha: number;
 }
 
+/**
+ * Live ReGIR grid state injected by the pipeline (NOT part of the host
+ * {@link PipelineFrameInputs} contract — derived from the scene bounds +
+ * resolved options by the ReGIR coordinator).
+ *
+ * `enabled` is `true` only when the host opted in AND the grid-build pipeline
+ * compiled AND the light tree is live (ReGIR seeds cells via the tree). When
+ * `enabled` is false every field is written as a zero/placeholder and the
+ * kernel-side `regirEnabled == 0` gate makes RIS fall back to the light-tree
+ * path bit-identically (and the grid-build pass early-returns).
+ */
+export interface RegirUboState {
+  readonly enabled: boolean;
+  /** World-space grid AABB min. */
+  readonly origin: readonly [number, number, number];
+  /** 1 / cellSize (uniform cubic cells). */
+  readonly invCellSize: number;
+  /** Grid cell counts (x, y, z). */
+  readonly dims: readonly [number, number, number];
+  /** M — WRS candidates per sub-reservoir. */
+  readonly candidatesPerCell: number;
+  /** K — survivors stored per cell. */
+  readonly survivorsPerCell: number;
+  /** Float offset of the grid region in the combined light-tree buffer
+   *  (= lightTreeNodeCount × LIGHT_TREE_FLOATS_PER_NODE). */
+  readonly gridFloatOffset: number;
+}
+
+/** ReGIR-OFF default — every field zero ⇒ the kernel's `regirEnabled == 0`
+ *  gate keeps RIS on the light-tree path bit-for-bit. */
+const REGIR_OFF: RegirUboState = {
+  enabled: false,
+  origin: [0, 0, 0],
+  invCellSize: 0,
+  dims: [0, 0, 0],
+  candidatesPerCell: 0,
+  survivorsPerCell: 0,
+  gridFloatOffset: 0,
+};
+
 export function updateUBO(
   device: GPUDevice,
   uboBuffer: GPUBuffer,
@@ -101,6 +149,10 @@ export function updateUBO(
    *  — ppgEnabled=0 and α=0 make the gi-ris RIS source pdf reduce exactly to
    *  cosθ/π, preserving ppg-OFF bit-identity. */
   ppg: PpgUboState = { enabled: false, mixAlpha: 0 },
+  /** Live ReGIR grid state from the pipeline. Defaults to OFF so callers that
+   *  don't run ReGIR (and the existing tests) keep the light-tree DI path
+   *  bit-identically (regirEnabled=0). */
+  regir: RegirUboState = REGIR_OFF,
 ): void {
   const data = new ArrayBuffer(WALKAROUND_UBO_SIZE_BYTES);
   const f32  = new Float32Array(data);
@@ -163,6 +215,22 @@ export function updateUBO(
   u32[89] = (inputs.lightTreeEnabled ?? 0) >>> 0; // offset 356 — lightTreeEnabled
   u32[90] = (inputs.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
   // u32[91] = _ppgPad2 (zero).
+  // ReGIR grid state (offsets 368..412). When ReGIR is off every field is 0,
+  // so the kernel's `regirEnabled == 0` gate keeps RIS on the light-tree path
+  // bit-for-bit (and the grid-build pass early-returns).
+  const r = regir.enabled ? regir : REGIR_OFF;
+  f32[92] = r.origin[0];       // offset 368 — regirOrigin.x
+  f32[93] = r.origin[1];       // offset 372 — regirOrigin.y
+  f32[94] = r.origin[2];       // offset 376 — regirOrigin.z
+  f32[95] = r.invCellSize;     // offset 380 — regirInvCellSize
+  u32[96] = r.dims[0] >>> 0;   // offset 384 — regirDims.x
+  u32[97] = r.dims[1] >>> 0;   // offset 388 — regirDims.y
+  u32[98] = r.dims[2] >>> 0;   // offset 392 — regirDims.z
+  u32[99] = r.enabled ? 1 : 0; // offset 396 — regirEnabled
+  u32[100] = r.candidatesPerCell >>> 0; // offset 400 — regirCandidatesPerCell (M)
+  u32[101] = r.survivorsPerCell >>> 0;  // offset 404 — regirSurvivorsPerCell (K)
+  u32[102] = r.gridFloatOffset >>> 0;   // offset 408 — regirGridFloatOffset
+  // u32[103] = _regirPad (zero).
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

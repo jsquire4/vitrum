@@ -40,6 +40,7 @@ import {
   PPG_GUIDE_MODULE,
   PPG_UPDATE_MODULE,
   RESOLVE_MODULE,
+  REGIR_BUILD_MODULE,
   RIS_GI_MODULE,
   RIS_MODULE,
   SAMPLE_BUDGET_MODULE,
@@ -69,6 +70,7 @@ import {
   getIndirectCombineBindGroupLayout,
   getIndirectTemporalAccumBindGroupLayout,
   getLightTreeBindGroupLayout,
+  getRegirBuildBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 
@@ -105,13 +107,16 @@ interface CompiledPipelines {
   indirectCombinePipeline: GPUComputePipeline;
   /** Sprint 18 follow-up — pre-atrous temporal accumulator on indirect. */
   indirectTemporalAccumPipeline: GPUComputePipeline;
+  /** ReGIR grid-build kernel (Boksansky 2021). Opt-in via `opts.regirEnabled`;
+   *  undefined when ReGIR is off (RIS then uses the light-tree path). */
+  regirBuildPipeline?: GPUComputePipeline;
 }
 
 export async function compilePipelines(
   device: GPUDevice,
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
-  opts?: { verbose?: boolean; ppgEnabled?: boolean },
+  opts?: { verbose?: boolean; ppgEnabled?: boolean; regirEnabled?: boolean },
 ): Promise<CompiledPipelines> {
   // Compile all shader modules. The include-graph (composeWgsl + WGSL_MODULES)
   // resolves each module's dependency closure exactly once — no hand-rolled
@@ -379,6 +384,35 @@ export async function compilePipelines(
     }
   }
 
+  // ReGIR grid-build pipeline (Boksansky 2021) — opt-in via opts.regirEnabled.
+  // Its own single bind group (combined light-tree + grid buffer read_write,
+  // emitters, ubo). Compiled only when requested so non-ReGIR engines pay no
+  // boot cost and the buffer stays read-only on every other layout.
+  let regirBuildPipeline: GPUComputePipeline | undefined;
+  if (opts?.regirEnabled) {
+    const regirBuildSM = device.createShaderModule({
+      label: 'regir-build',
+      code: composeWgsl(REGIR_BUILD_MODULE, WGSL_MODULES),
+    });
+    const info = await regirBuildSM.getCompilationInfo();
+    const errs = info.messages.filter((m) => m.type === 'error');
+    if (errs.length > 0) {
+      console.error('[ReSTIR] ReGIR shader compile errors in \'regir-build\':',
+        errs.map((e) => `line ${e.lineNum}: ${e.message}`));
+      throw new Error(`[ReSTIR] ReGIR shader compile error in 'regir-build': ${errs[0]!.message}`);
+    }
+    const regirBuildLayout = device.createPipelineLayout({
+      bindGroupLayouts: [getRegirBuildBindGroupLayout(device, bglCache)],
+    });
+    regirBuildPipeline = await device.createComputePipelineAsync({
+      label: 'regir-build', layout: regirBuildLayout,
+      compute: { module: regirBuildSM, entryPoint: 'regirBuildMain' },
+    });
+    if (opts?.verbose) {
+      console.log('[ReSTIR] ReGIR grid-build pipeline compiled (Boksansky 2021)');
+    }
+  }
+
   if (opts?.verbose) {
     console.log('[ReSTIR] All pipelines compiled successfully');
   }
@@ -405,5 +439,7 @@ export async function compilePipelines(
     ...(ppgUpdatePipeline !== undefined && ppgGuidePipeline !== undefined
       ? { ppgUpdatePipeline, ppgGuidePipeline }
       : {}),
+    // ReGIR grid-build (Boksansky 2021): only present when regirEnabled.
+    ...(regirBuildPipeline !== undefined ? { regirBuildPipeline } : {}),
   };
 }

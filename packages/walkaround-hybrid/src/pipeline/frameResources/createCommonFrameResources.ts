@@ -98,10 +98,11 @@ export function createCommonFrameResources(
   device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
 
   const uboBuffer = device.createBuffer({
-    // 368 = WalkaroundUBO size after the PPG guided-sampling fields landed
-    // (ppgEnabled u32 @348 + ppgMixAlpha f32 @352 + 3×u32 pad). The literal is
+    // 416 = WalkaroundUBO size after the ReGIR grid fields landed (regirOrigin
+    // vec3f @368 + regirInvCellSize f32 @380 + regirDims vec3u @384 +
+    // regirEnabled/M/K/gridFloatOffset 4×u32 @396 + 1×u32 pad). The literal is
     // intentionally duplicated from uboUpdater.ts to avoid a circular import.
-    size: 368,
+    size: 416,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 

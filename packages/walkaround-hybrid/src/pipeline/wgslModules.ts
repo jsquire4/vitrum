@@ -60,6 +60,7 @@ import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
 import { RESTIR_PHAT_MODULE } from '../shaders/restirPHat.wgsl.js';
 import { RESTIR_CAST_PRIMARY_MODULE } from '../shaders/restirCastPrimary.wgsl.js';
 import { LIGHT_TREE_MODULE } from '../shaders/lightTree.wgsl.js';
+import { REGIR_MODULE, REGIR_BUILD_MODULE } from '../shaders/regir.wgsl.js';
 import { RIS_MODULE } from '../shaders/ris.wgsl.js';
 import { TEMPORAL_MODULE } from '../shaders/temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../shaders/spatial.wgsl.js';
@@ -93,6 +94,7 @@ import type { WgslModule } from './wgslComposer.js';
 // so the named re-export was unused weight on the public surface.
 export {
   RIS_MODULE,
+  REGIR_BUILD_MODULE,
   TEMPORAL_MODULE,
   SPATIAL_MODULE,
   SHADE_MODULE,
@@ -241,6 +243,10 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [RESTIR_CAST_PRIMARY_MODULE.name, RESTIR_CAST_PRIMARY_MODULE],
   // Light-tree DI light-selection traversal (RIS-only @group(3) buffer).
   [LIGHT_TREE_MODULE.name, LIGHT_TREE_MODULE],
+  // ReGIR grid sampling (RIS read path, reuses the combined @group(3) buffer)
+  // + the grid-build kernel (its own @group(0) read_write binding).
+  [REGIR_MODULE.name, REGIR_MODULE],
+  [REGIR_BUILD_MODULE.name, REGIR_BUILD_MODULE],
 
   // ReSTIR-DI passes
   [RIS_MODULE.name, RIS_MODULE],

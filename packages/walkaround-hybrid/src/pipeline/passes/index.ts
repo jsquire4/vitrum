@@ -20,6 +20,7 @@
  */
 
 export { SampleBudgetPass } from './SampleBudgetPass.js';
+export { ReGIRBuildPass } from './ReGIRBuildPass.js';
 export { RISPass } from './RISPass.js';
 export { TemporalReservoirPass } from './TemporalReservoirPass.js';
 export { SpatialReservoirPass } from './SpatialReservoirPass.js';

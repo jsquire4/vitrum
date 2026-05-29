@@ -29,6 +29,7 @@ import {
   getIndirectCombineBindGroupLayout,
   getIndirectTemporalAccumBindGroupLayout,
   getLightTreeBindGroupLayout,
+  getRegirBuildBindGroupLayout,
   type BGLCache,
 } from './bindGroupLayouts.js';
 import { buildBindGroupFromTable } from './bindGroupDescriptors.js';
@@ -147,6 +148,33 @@ export function buildLightTreeBindGroup(
     label: 'light-tree-bg',
     layout: getLightTreeBindGroupLayout(device, cache),
     entries: [{ binding: 0, resource: { buffer: lightTreeBuffer } }],
+  });
+}
+
+// ── ReGIR grid-build bind group (its own group 0) ────────────────────────────
+
+/**
+ * Build the ReGIR grid-build bind group: the COMBINED light-tree + grid buffer
+ * bound READ_WRITE (binding 0 — same GPUBuffer RIS reads read-only at its
+ * group(3)), the emitter list (binding 1), and the WalkaroundUBO (binding 2).
+ * Bound only by the grid-build pipeline so the read_write access never touches
+ * the RIS / shade layouts.
+ */
+export function buildRegirBuildBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  combinedLightTreeBuffer: GPUBuffer,
+  emitterBuffer: GPUBuffer,
+  uboBuffer: GPUBuffer,
+): GPUBindGroup {
+  return device.createBindGroup({
+    label: 'regir-build-bg',
+    layout: getRegirBuildBindGroupLayout(device, cache),
+    entries: [
+      { binding: 0, resource: { buffer: combinedLightTreeBuffer } },
+      { binding: 1, resource: { buffer: emitterBuffer } },
+      { binding: 2, resource: { buffer: uboBuffer } },
+    ],
   });
 }
 

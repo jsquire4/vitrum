@@ -52,6 +52,8 @@ export interface BGLCache {
   indirectTemporalAccum?: GPUBindGroupLayout;
   /** Light-tree DI light-selection BGL (RIS-only group 3). */
   lightTree?: GPUBindGroupLayout;
+  /** ReGIR grid-build pass BGL (own group 0: combined buffer rw + emitters + ubo). */
+  regirBuild?: GPUBindGroupLayout;
 }
 
 // frame BGL entries (incl. inert/placeholder slots 0-4 + shade-only 10/12/13/14)
@@ -96,6 +98,34 @@ export function getLightTreeBindGroupLayout(device: GPUDevice, cache: BGLCache):
     ],
   });
   return cache.lightTree;
+}
+
+/**
+ * ReGIR grid-build pass BGL — a DEDICATED group(0) bound only by the grid-build
+ * compute pipeline. It writes the ReGIR grid region of the COMBINED light-tree
+ * buffer and reads the tree region + the emitter list.
+ *
+ *   0 — combined light-tree + ReGIR-grid buffer (READ_WRITE storage). The SAME
+ *       GPUBuffer RIS binds read-only at its group(3) binding 0; binding it
+ *       read_write here (different bind group, different access) keeps RIS at
+ *       16 storage buffers while letting the build pass write the grid region.
+ *   1 — emitters (read-only storage) — for the per-cell target q̂_c eval.
+ *   2 — WalkaroundUBO (uniform) — grid geometry + M/K + frameSeed + gate.
+ *
+ * The grid-build pipeline uses a SINGLE bind group (group 0), so it consumes
+ * only 2 storage buffers — far under any tier floor.
+ */
+export function getRegirBuildBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
+  if (cache.regirBuild) return cache.regirBuild;
+  cache.regirBuild = device.createBindGroupLayout({
+    label: 'regir-build-bgl',
+    entries: [
+      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } },
+      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+    ],
+  });
+  return cache.regirBuild;
 }
 
 // ubo BGL entries (incl. inert slot 2 — adaptive-sampling tier, read only by
