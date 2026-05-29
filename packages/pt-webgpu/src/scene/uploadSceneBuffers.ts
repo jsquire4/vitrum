@@ -475,6 +475,88 @@ export function uploadScenePackTlasRealloc(
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
 
+/**
+ * Slice-2 — reallocate the BLAS concat buffers AND the TLAS buffers after a mesh
+ * vertex/index-COUNT change spliced one primitive's BLAS to a new size (growing
+ * or shrinking the concat arrays + rebasing downstream offsets, see
+ * `rebuildPrimitiveBlas` → `spliceResizedPrimitiveBlasIntoPack`). Unlike
+ * {@link uploadScenePackGeometry} (in-place `writeBuffer`, same byte lengths),
+ * the resized concat arrays no longer fit the live buffers, so the five BLAS
+ * buffers + the five TLAS buffers are destroyed and recreated at the new size.
+ *
+ * As with {@link uploadScenePackTlasRealloc}, the swapped handles are resolved
+ * off the struct at teardown-time by the `destroy` closure built in
+ * {@link uploadPackedScene}, so no closure rewire is needed. The caller MUST
+ * invalidate any cached bind groups so the next frame rebinds the fresh buffers.
+ */
+export function uploadScenePackGeometryRealloc(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  pack: ScenePackResult,
+): void {
+  // Destroy the stale BLAS + TLAS buffers (everything geometry-sized).
+  sb.positionsBuffer.destroy();
+  sb.normalsBuffer.destroy();
+  sb.indicesBuffer.destroy();
+  sb.triMaterialIdsBuffer.destroy();
+  sb.bvhNodesBuffer.destroy();
+  sb.tlasNodesBuffer.destroy();
+  sb.tlasInstanceIndicesBuffer.destroy();
+  sb.tlasBlasRootsBuffer.destroy();
+  sb.tlasInstanceWorldToLocalBuffer.destroy();
+  sb.tlasInstanceLocalToWorldBuffer.destroy();
+
+  const blas = asMutableSceneBufferBlasHandles(sb);
+  blas.positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', pack.positions);
+  blas.normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', pack.normals);
+  blas.indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', pack.indices);
+  blas.triMaterialIdsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.triMaterialIds',
+    pack.triMaterialIds,
+  );
+  blas.bvhNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.bvhNodes', pack.bvhNodes);
+  blas.positions = new Float32Array(pack.positions);
+  blas.normals = new Float32Array(pack.normals);
+  blas.indices = new Uint32Array(pack.indices);
+  blas.triMaterialIds = new Uint32Array(pack.triMaterialIds);
+  blas.bvhNodes = new Float32Array(pack.bvhNodes);
+
+  const tlas = asMutableSceneBufferBuffers(sb);
+  tlas.tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', pack.tlasNodes);
+  tlas.tlasInstanceIndicesBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasInstanceIndices',
+    pack.tlasInstanceIndices,
+  );
+  tlas.tlasBlasRootsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasBlasRoots',
+    pack.tlasBlasRoots,
+  );
+  tlas.tlasInstanceWorldToLocalBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal',
+    pack.tlasInstanceWorldToLocal,
+  );
+  tlas.tlasInstanceLocalToWorldBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld',
+    pack.tlasInstanceLocalToWorld,
+  );
+  tlas.tlasNodes = new Uint32Array(pack.tlasNodes);
+  tlas.tlasInstanceIndices = new Uint32Array(pack.tlasInstanceIndices);
+  tlas.tlasBlasRoots = new Uint32Array(pack.tlasBlasRoots);
+  tlas.tlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
+  tlas.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
+
+  const mutable = asMutableSceneBuffers(sb);
+  mutable.bvhNodeCount = Math.floor(pack.bvhNodes.length / 8);
+  mutable.triangleCount = pack.triangleCount;
+  mutable.tlasNodeCount = pack.tlasNodeCount;
+  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+}
+
 /** C2 — upload TLAS SSBOs only (transform-only refit; BLAS buffers unchanged). */
 export function uploadScenePackTlasOnly(
   device: GPUDevice,
@@ -568,6 +650,30 @@ interface MutableTlasBufferHandles {
 
 function asMutableSceneBufferBuffers(sb: UploadedSceneBuffers): MutableTlasBufferHandles {
   return sb as unknown as MutableTlasBufferHandles;
+}
+
+/**
+ * The five BLAS GPU buffer handles + their CPU-mirror typed arrays, normally
+ * `readonly`, are reassigned in place by {@link uploadScenePackGeometryRealloc}
+ * when a mesh vertex/index count changes (the concat buffers grow/shrink, so the
+ * buffers must be reallocated at the new size). This single typed view localizes
+ * that one unsafe write site, mirroring {@link MutableTlasBufferHandles}.
+ */
+interface MutableBlasBufferHandles {
+  positionsBuffer: GPUBuffer;
+  normalsBuffer: GPUBuffer;
+  indicesBuffer: GPUBuffer;
+  triMaterialIdsBuffer: GPUBuffer;
+  bvhNodesBuffer: GPUBuffer;
+  positions: Float32Array;
+  normals: Float32Array;
+  indices: Uint32Array;
+  triMaterialIds: Uint32Array;
+  bvhNodes: Float32Array;
+}
+
+function asMutableSceneBufferBlasHandles(sb: UploadedSceneBuffers): MutableBlasBufferHandles {
+  return sb as unknown as MutableBlasBufferHandles;
 }
 
 /** Rewrite emitter counts + directional aggregate after an in-place light upload. */
@@ -691,18 +797,21 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     tlasBlasRootsBuffer,
     tlasInstanceWorldToLocalBuffer,
     tlasInstanceLocalToWorldBuffer,
-    // TLAS buffers are resolved off `uploaded` at destroy-time (not captured),
-    // because the instance-count realloc fast path
-    // ({@link uploadScenePackTlasRealloc}) swaps fresh handles onto the struct.
-    // Reading them late keeps `destroy` free of stale handles without a closure
-    // rewire on every realloc.
+    // BLAS + TLAS buffers are resolved off `uploaded` at destroy-time (not the
+    // captured locals), because the realloc fast paths swap fresh handles onto
+    // the struct: {@link uploadScenePackTlasRealloc} (instance-count change) and
+    // {@link uploadScenePackGeometryRealloc} (mesh vertex/index-count change).
+    // Reading them late keeps `destroy` free of stale handles (no double-free /
+    // leak) without a closure rewire on every realloc. The non-resized buffers
+    // (materials / analytic / environment / lights) never reallocate, so they
+    // stay captured.
     destroy: () => {
-      positionsBuffer.destroy();
-      normalsBuffer.destroy();
-      indicesBuffer.destroy();
-      triMaterialIdsBuffer.destroy();
+      uploaded.positionsBuffer.destroy();
+      uploaded.normalsBuffer.destroy();
+      uploaded.indicesBuffer.destroy();
+      uploaded.triMaterialIdsBuffer.destroy();
       materialsBuffer.destroy();
-      bvhNodesBuffer.destroy();
+      uploaded.bvhNodesBuffer.destroy();
       analyticHeadersBuffer.destroy();
       analyticParamsBuffer.destroy();
       analyticLocalToWorldBuffer.destroy();

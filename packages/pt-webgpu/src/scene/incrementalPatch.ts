@@ -109,6 +109,51 @@ export function canFastPathGeometryPatch(
 }
 
 /**
+ * Topology-RESIZE patch on a (skinned-)mesh: positions/normals/indices are the
+ * only facets touched AND at least one of them changes the vertex or triangle
+ * count (slice-2 BLAS-resize splice). Distinct from
+ * {@link canFastPathGeometryPatch}, which is the SAME-count in-place refit. The
+ * splice in `rebuildPrimitiveBlas` grows/shrinks the concat buffers around the
+ * changed primitive and rebases every downstream offset, so this kind no longer
+ * forces a full `setScene`. Returns false for instanced-mesh / analytic (their
+ * count changes are handled elsewhere or unsupported) and when nothing resized.
+ */
+export function canFastPathTopologyResizePatch(
+  primitive: ScenePrimitive,
+  patch: Partial<ScenePrimitive>,
+): boolean {
+  if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') {
+    return false;
+  }
+  const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
+  if (keys.length === 0) return false;
+  if (!keys.every((k) => k === 'positions' || k === 'normals' || k === 'indices')) {
+    return false;
+  }
+  // The vertex count is derived from positions; the triangle count from indices
+  // (or the implicit 0,1,2,… index when indices is absent → vertexCount/3 tris).
+  const curVertexCount = Math.floor(primitive.positions.length / 3);
+  const nextPositions =
+    'positions' in patch && patch.positions != null
+      ? (patch.positions as Float32Array)
+      : primitive.positions;
+  const nextVertexCount = Math.floor(nextPositions.length / 3);
+
+  const curIndices = primitive.indices;
+  const curTriCount = Math.floor((curIndices?.length ?? primitive.positions.length / 3) / 3);
+  let nextTriCount = curTriCount;
+  if ('indices' in patch) {
+    const nextIndices = patch.indices as Uint32Array | Uint16Array | undefined;
+    nextTriCount = Math.floor((nextIndices?.length ?? nextPositions.length / 3) / 3);
+  } else if ('positions' in patch && curIndices == null) {
+    // No explicit indices: triangle count tracks vertex count.
+    nextTriCount = Math.floor(nextVertexCount / 3);
+  }
+
+  return nextVertexCount !== curVertexCount || nextTriCount !== curTriCount;
+}
+
+/**
  * Transform-only patch eligible for TLAS-only refit: `transform` (or
  * `instances` for instanced meshes) is the only facet touched.
  */

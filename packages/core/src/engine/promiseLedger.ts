@@ -133,18 +133,23 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
   },
   'pt-webgpu': {
     supportsIncrementalScene: true,
-    // `topology: false` stands even though pt-webgpu takes a transparent
-    // TLAS-only fast path for instanced-mesh instance-COUNT changes (BLAS reused
-    // verbatim; only the 5 TLAS buffers reallocate). That fast path is an
-    // internal perf optimization — mesh vertex/index-count changes and
-    // whole-primitive add/remove still rebuild through setScene — so the broad
-    // "all topology patches absorbed" promise remains unmet.
+    // `topology: true` — pt-webgpu absorbs EVERY topology-changing patch that
+    // `updatePrimitive` can legally receive, without a full `setScene`:
+    //   • instanced-mesh instance-COUNT change → TLAS-only rebuild, BLAS reused
+    //     verbatim (slice-1: rebuildTlasReuseBlas + uploadScenePackTlasRealloc);
+    //   • mesh/skinned-mesh vertex/index-COUNT change → rebuild ONLY the changed
+    //     primitive's BLAS, splice it into the concat buffers, rebase downstream
+    //     offsets + TLAS roots (slice-2: rebuildPrimitiveBlas resize splice +
+    //     uploadScenePackGeometryRealloc).
+    // `id`/`kind` morphs throw in patchPrimitiveInScene (contract violation), and
+    // whole-primitive ADD/REMOVE is `setScene`, not a patch — so `topology` here
+    // means exactly "count-change patches on an existing primitive are absorbed".
     incrementalPatchSupport: {
       transform: true,
       positions: true,
       material: true,
       emitter: true,
-      topology: false,
+      topology: true,
     },
     supportsAuxBuffers: true,
     accumulates: true,

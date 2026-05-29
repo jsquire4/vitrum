@@ -147,6 +147,15 @@ function lastWriteForLabel(
   return null;
 }
 
+const TLAS_LABELS = [
+  'tlasNodes',
+  'tlasInstanceIndices',
+  'tlasBlasRoots',
+  'tlasInstanceWorldToLocal',
+  'tlasInstanceLocalToWorld',
+];
+const BLAS_LABELS = ['scene.positions', 'scene.normals', 'scene.indices', 'scene.triMaterialIds', 'scene.bvhNodes'];
+
 describe('pt-webgpu incremental primitive updates', () => {
   it('advertises material-only incremental patch support', async () => {
     const { device } = makeStubDevice();
@@ -196,7 +205,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
-  it('falls back to full scene rebuild when vertex count changes', async () => {
+  it('splices a vertex-count change, reallocating only the 10 geometry buffers', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();
     const engine = await createPTEngine_WebGPU({ device });
@@ -205,13 +214,30 @@ describe('pt-webgpu incremental primitive updates', () => {
 
     const writesBefore = writeBuffer.mock.calls.length;
     const buffersBefore = createBuffer.mock.calls.length;
+    const destroysBefore = totalDestroyCalls(createBuffer);
 
+    // Grow mesh-b from 3 verts / 1 tri to 4 verts / 2 tris (a quad). Slice-2
+    // rebuilds ONLY mesh-b's BLAS, splices it into the concat buffers, and
+    // reallocates exactly the 5 BLAS + 5 TLAS geometry buffers — NOT the
+    // material / analytic / light buffers (those would prove a full setScene).
     engine.updatePrimitive?.('mesh-b', {
       positions: new Float32Array([0, 0, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2]),
+      indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
     });
 
-    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
-    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 1);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 10);
+    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(10);
+    const created = labelsCreatedSince(createBuffer, buffersBefore);
+    expect(
+      created.every(
+        (l) => BLAS_LABELS.some((b) => l.includes(b)) || TLAS_LABELS.some((t) => l.includes(t)),
+      ),
+    ).toBe(true);
+    // No non-geometry buffer was recreated (materials/analytic/lights stay put).
+    expect(created.some((l) => l.includes('materials'))).toBe(false);
+    expect(created.some((l) => l.includes('analytic'))).toBe(false);
+    expect(created.some((l) => l.includes('Lights'))).toBe(false);
+    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore);
   });
 
   it('updates TLAS buffers in-place for transform-only mesh patches', async () => {
@@ -265,15 +291,6 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(createBuffer.mock.calls.length).toBe(buffersBefore);
     expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
   });
-
-  const TLAS_LABELS = [
-    'tlasNodes',
-    'tlasInstanceIndices',
-    'tlasBlasRoots',
-    'tlasInstanceWorldToLocal',
-    'tlasInstanceLocalToWorld',
-  ];
-  const BLAS_LABELS = ['scene.positions', 'scene.normals', 'scene.indices', 'scene.triMaterialIds', 'scene.bvhNodes'];
 
   it('reallocates ONLY the 5 TLAS buffers when instanced count shrinks (BLAS untouched)', async () => {
     installWebGpuConstStubs();
@@ -342,7 +359,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect((l2w as Float32Array)[2 * 16 + 12]).toBe(4);
   });
 
-  it('still falls back to full rebuild when a mesh vertex count changes', async () => {
+  it('splices an UPSTREAM mesh resize without a full setScene (downstream rebased)', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();
     const engine = await createPTEngine_WebGPU({ device });
@@ -350,17 +367,22 @@ describe('pt-webgpu incremental primitive updates', () => {
 
     const writesBefore = writeBuffer.mock.calls.length;
     const buffersBefore = createBuffer.mock.calls.length;
+    const destroysBefore = totalDestroyCalls(createBuffer);
 
-    // Vertex-count change is NOT instanced-topology — full setScene rebuild
-    // recreates the whole buffer set (far more than 5, including BLAS buffers).
-    engine.updatePrimitive?.('mesh-b', {
-      positions: new Float32Array([0, 0, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2]),
+    // Resize mesh-a (the FIRST primitive) — mesh-b is downstream, so its concat
+    // offsets must rebase. The engine still takes the splice path: exactly the 10
+    // geometry buffers reallocate (not the full ~21-buffer setScene set).
+    engine.updatePrimitive?.('mesh-a', {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]),
+      indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
     });
 
-    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore + 5);
-    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 5);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 10);
+    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(10);
     const created = labelsCreatedSince(createBuffer, buffersBefore);
-    expect(created.some((l) => BLAS_LABELS.some((b) => l.includes(b)))).toBe(true);
+    expect(created.some((l) => l.includes('materials'))).toBe(false);
+    expect(created.some((l) => l.includes('analytic'))).toBe(false);
+    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore);
   });
 
   it('updates analytic transform buffers in-place', async () => {

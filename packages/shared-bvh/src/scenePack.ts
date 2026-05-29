@@ -397,6 +397,203 @@ function collectTlasInstancesFromBindings(
   return { ok: true, instances };
 }
 
+/**
+ * Size-changing BLAS splice (slice-2). The changed primitive at `bindingIndex`
+ * has a NEW vertex/tri/BVH-node count, so its concat slices grow or shrink and
+ * every DOWNSTREAM primitive must shift forward/back by the deltas. This rebuilds
+ * ONLY the changed primitive's BLAS (the `slice` was already built by the caller)
+ * and copies every other primitive's BLAS bytes verbatim — re-rebasing the global
+ * vertex refs in their index words and the global triangle offsets in their leaf
+ * nodes by the new deltas. The TLAS is rebuilt from the updated bindings (BLAS
+ * roots moved, and the changed primitive's local AABB changed).
+ *
+ * Layout recap (see packSceneFromCore):
+ *   positions/normals — stride 4 (vec4f/vertex); primitive p owns
+ *     [vertexStart*4, (vertexStart+vertexCount)*4).
+ *   indices — stride 4 (vec4u/triangle); .x.y.z are GLOBAL vertex indices
+ *     (local + vertexStart), .w = 0. Primitive p owns [triStart*4, …).
+ *   triMaterialIds — 1 u32/triangle at triStart.
+ *   bvhNodes — 8 words/node at blasRoot*8. Leaf word[6] = GLOBAL tri offset
+ *     (local + triStart); interior word[6] = RELATIVE child offset (unchanged).
+ */
+function spliceResizedPrimitiveBlasIntoPack(
+  prev: ScenePackResult,
+  bindingIndex: number,
+  slice: PackedPrimitiveSlice,
+  oldNodeCount: number,
+  scene: Scene,
+  opts: ScenePackOptions,
+): RebuildPrimitiveBlasResult {
+  const binding = prev.primitiveTlasBindings[bindingIndex]!;
+
+  // Pre-edit offsets of the changed primitive stay fixed (they are determined by
+  // the verbatim prefix). The deltas shift everything after it.
+  const deltaVert = slice.vertexCount - binding.vertexCount;
+  const deltaTri = slice.triCount - binding.triCount;
+  const deltaNode = slice.bvhNodeCount - oldNodeCount;
+
+  const prevTotalVerts = Math.floor(prev.positions.length / 4);
+  const prevTotalTris = prev.triangleCount;
+  const prevTotalNodes = Math.floor(prev.bvhNodes.length / 8);
+
+  // The changed primitive's verbatim node span in the OLD pack.
+  const oldNodeStart = binding.blasRoot;
+  const oldNodeEnd = oldNodeStart + oldNodeCount;
+  // Its tri span and vert span in the OLD pack.
+  const oldTriStart = binding.triStart;
+  const oldTriEnd = oldTriStart + binding.triCount;
+  const oldVertStart = binding.vertexStart;
+  const oldVertEnd = oldVertStart + binding.vertexCount;
+
+  const newTotalVerts = prevTotalVerts + deltaVert;
+  const newTotalTris = prevTotalTris + deltaTri;
+  const newTotalNodes = prevTotalNodes + deltaNode;
+
+  const positions = new Float32Array(newTotalVerts * 4);
+  const normals = new Float32Array(newTotalVerts * 4);
+  const indices = new Uint32Array(newTotalTris * 4);
+  const triMaterialIds = new Uint32Array(newTotalTris);
+  const newNodeView = new Uint32Array(newTotalNodes * 8);
+  const prevNodeView = new Uint32Array(
+    prev.bvhNodes.buffer,
+    prev.bvhNodes.byteOffset,
+    prev.bvhNodes.length,
+  );
+
+  // ── Positions / normals (vec4f-strided) ──────────────────────────────────
+  // Prefix [0, oldVertStart) verbatim.
+  positions.set(prev.positions.subarray(0, oldVertStart * 4), 0);
+  normals.set(prev.normals.subarray(0, oldVertStart * 4), 0);
+  // Changed primitive's new local slice at the SAME vertexStart.
+  positions.set(slice.localPositions, oldVertStart * 4);
+  normals.set(slice.localNormals, oldVertStart * 4);
+  // Suffix (downstream primitives) shifted by deltaVert*4 floats.
+  if (oldVertEnd < prevTotalVerts) {
+    positions.set(prev.positions.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
+    normals.set(prev.normals.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
+  }
+
+  // ── Indices (vec4u-strided; .x.y.z global vertex refs, .w = 0) ────────────
+  const prevIndices = prev.indices;
+  // Prefix triangles [0, oldTriStart) verbatim (their vertex refs are unaffected
+  // — they reference vertices before oldVertStart).
+  indices.set(prevIndices.subarray(0, oldTriStart * 4), 0);
+  triMaterialIds.set(prev.triMaterialIds.subarray(0, oldTriStart), 0);
+  // Changed primitive's new index words rebased to its (unchanged) vertexStart.
+  const newTriStart = oldTriStart; // unchanged for the spliced primitive
+  for (let i = 0; i < slice.indexWords.length; i += 1) {
+    const localIdx = slice.indexWords[i] ?? 0;
+    indices[newTriStart * 4 + i] = i % 4 === 3 ? localIdx : localIdx + binding.vertexStart;
+  }
+  for (let t = 0; t < slice.triMaterialIds.length; t += 1) {
+    triMaterialIds[newTriStart + t] = slice.triMaterialIds[t] ?? 0;
+  }
+  // Downstream triangles: copy with vertex refs shifted by deltaVert.
+  for (let t = oldTriEnd; t < prevTotalTris; t += 1) {
+    const dstTri = t + deltaTri;
+    for (let k = 0; k < 3; k += 1) {
+      indices[dstTri * 4 + k] = (prevIndices[t * 4 + k] ?? 0) + deltaVert;
+    }
+    indices[dstTri * 4 + 3] = 0;
+    triMaterialIds[dstTri] = prev.triMaterialIds[t] ?? 0;
+  }
+
+  // ── BVH nodes (8 words/node) ──────────────────────────────────────────────
+  // Prefix nodes [0, oldNodeStart) verbatim. Leaf word[6] is a GLOBAL tri offset
+  // into a region BEFORE the changed primitive, so it is unaffected; interior
+  // word[6] is relative and self-contained within the prefix subtrees.
+  newNodeView.set(prevNodeView.subarray(0, oldNodeStart * 8), 0);
+  // Changed primitive's new nodes at the SAME blasRoot, leaf offsets rebased to
+  // its (unchanged) triStart.
+  const newBlasRoot = oldNodeStart; // unchanged for the spliced primitive
+  for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
+    const splitOrCount = slice.bvhNodeWords[n + 7] ?? 0;
+    const isLeaf = isLeafSplit(splitOrCount);
+    const w = newBlasRoot * 8 + n;
+    newNodeView[w] = slice.bvhNodeWords[n] ?? 0;
+    newNodeView[w + 1] = slice.bvhNodeWords[n + 1] ?? 0;
+    newNodeView[w + 2] = slice.bvhNodeWords[n + 2] ?? 0;
+    newNodeView[w + 3] = slice.bvhNodeWords[n + 3] ?? 0;
+    newNodeView[w + 4] = slice.bvhNodeWords[n + 4] ?? 0;
+    newNodeView[w + 5] = slice.bvhNodeWords[n + 5] ?? 0;
+    newNodeView[w + 6] = isLeaf
+      ? (slice.bvhNodeWords[n + 6] ?? 0) + binding.triStart
+      : (slice.bvhNodeWords[n + 6] ?? 0);
+    newNodeView[w + 7] = splitOrCount;
+  }
+  // Downstream nodes shifted by deltaNode. Leaf global tri offsets shift by
+  // deltaTri; interior relative child offsets are unchanged (the subtree shape
+  // moves rigidly).
+  for (let n = oldNodeEnd; n < prevTotalNodes; n += 1) {
+    const src = n * 8;
+    const dst = (n + deltaNode) * 8;
+    const splitOrCount = prevNodeView[src + 7] ?? 0;
+    const isLeaf = isLeafSplit(splitOrCount);
+    newNodeView[dst] = prevNodeView[src] ?? 0;
+    newNodeView[dst + 1] = prevNodeView[src + 1] ?? 0;
+    newNodeView[dst + 2] = prevNodeView[src + 2] ?? 0;
+    newNodeView[dst + 3] = prevNodeView[src + 3] ?? 0;
+    newNodeView[dst + 4] = prevNodeView[src + 4] ?? 0;
+    newNodeView[dst + 5] = prevNodeView[src + 5] ?? 0;
+    newNodeView[dst + 6] = isLeaf
+      ? (prevNodeView[src + 6] ?? 0) + deltaTri
+      : (prevNodeView[src + 6] ?? 0);
+    newNodeView[dst + 7] = splitOrCount;
+  }
+
+  const bvhNodes = new Float32Array(newNodeView.buffer);
+
+  // ── Rebase bindings: changed primitive gets the new counts + AABB; downstream
+  // bindings shift by the deltas. ──────────────────────────────────────────────
+  const primitiveTlasBindings = prev.primitiveTlasBindings.map((b, i) => {
+    if (i < bindingIndex) return b;
+    if (i === bindingIndex) {
+      return {
+        ...b,
+        vertexCount: slice.vertexCount,
+        triCount: slice.triCount,
+        localAabbMin: slice.localAabbMin,
+        localAabbMax: slice.localAabbMax,
+      };
+    }
+    return {
+      ...b,
+      blasRoot: b.blasRoot + deltaNode,
+      vertexStart: b.vertexStart + deltaVert,
+      triStart: b.triStart + deltaTri,
+    };
+  });
+
+  // BLAS roots moved (and the changed primitive's local AABB changed), so the
+  // TLAS must be fully rebuilt from the updated bindings.
+  const collected = collectTlasInstancesFromBindings(scene, primitiveTlasBindings);
+  if (!collected.ok) {
+    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
+  }
+  const tlasBuild = buildTlasFromInstances(collected.instances);
+
+  return {
+    ok: true,
+    strategy: 'splice',
+    pack: {
+      positions,
+      normals,
+      indices,
+      triMaterialIds,
+      bvhNodes,
+      triangleCount: newTotalTris,
+      tlasNodes: tlasBuild.tlasNodes,
+      tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
+      tlasBlasRoots: tlasBuild.tlasBlasRoots,
+      tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
+      tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+      tlasNodeCount: tlasBuild.tlasNodeCount,
+      primitiveTlasBindings,
+      warnings: [...prev.warnings, ...slice.warnings],
+    },
+  };
+}
+
 function splicePrimitiveBlasIntoPack(
   prev: ScenePackResult,
   bindingIndex: number,
@@ -415,7 +612,17 @@ function splicePrimitiveBlasIntoPack(
     || slice.triCount !== binding.triCount
     || slice.bvhNodeCount !== oldNodeCount
   ) {
-    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
+    // PR-4.3 deepening (slice-2): the changed primitive's BLAS genuinely changed
+    // SIZE. Grow/shrink the concat buffers around it and rebase every downstream
+    // primitive's offsets + the TLAS BLAS roots — no full per-primitive rebuild.
+    return spliceResizedPrimitiveBlasIntoPack(
+      prev,
+      bindingIndex,
+      slice,
+      oldNodeCount,
+      scene,
+      opts,
+    );
   }
 
   const positions = new Float32Array(prev.positions);

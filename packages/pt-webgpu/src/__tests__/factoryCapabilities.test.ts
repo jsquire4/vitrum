@@ -35,7 +35,7 @@ describe('createPTEngine_WebGPU', () => {
       positions: true,
       material: true,
       emitter: true,
-      topology: false,
+      topology: true,
     });
     expect(engine.capabilities.experimentalFeatures?.has('experimental-backend')).toBe(true);
   });

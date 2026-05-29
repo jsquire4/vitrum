@@ -24,6 +24,7 @@ import {
   scenePackResultFromPacked,
   uploadPackedScene,
   uploadScenePackGeometry,
+  uploadScenePackGeometryRealloc,
   uploadScenePackBlasOnly,
   uploadScenePackTlasOnly,
   uploadScenePackTlasRealloc,
@@ -36,6 +37,7 @@ import {
   canFastPathGeometryPatch,
   canFastPathInstancedTopologyPatch,
   canFastPathMaterialPatch,
+  canFastPathTopologyResizePatch,
   canFastPathTransformPatch,
   canReuseTlasBufferLengths,
   materialIndexForPrimitive,
@@ -237,21 +239,24 @@ class PTEngineWebGPU implements Engine {
 
   get capabilities(): EngineCapabilities {
     return {
-      // Material / transform / positions primitive patches are uploaded in
-      // place; instanced-mesh instance-COUNT changes take a transparent
-      // TLAS-only fast path (BLAS reused verbatim, only the 5 TLAS buffers
-      // reallocate) — this is an internal perf optimization, NOT a contract
-      // promise, so `topology` stays false: mesh vertex/index-count changes (and
-      // whole-primitive add/remove) still rebuild through setScene. Hosts get
-      // correct results either way; the flag advertises only the broad
-      // "topology patches are absorbed" promise, which is not yet true.
+      // Material / transform / positions primitive patches upload in place.
+      // `topology: true` — every COUNT-changing patch updatePrimitive can legally
+      // receive is absorbed without a full setScene:
+      //   • instanced-mesh instance-count change → TLAS-only rebuild, BLAS reused
+      //     verbatim (slice-1);
+      //   • mesh/skinned-mesh vertex/index-count change → rebuild ONLY the
+      //     changed primitive's BLAS, splice into the concat buffers, rebase
+      //     downstream offsets + TLAS roots, realloc the 10 geometry buffers
+      //     (slice-2).
+      // `id`/`kind` morphs throw (contract violation); whole-primitive add/remove
+      // is `setScene`, not a patch — both correctly outside the `topology` flag.
       supportsIncrementalScene: true,
       incrementalPatchSupport: {
         transform: true,
         positions: true,
         material: true,
         emitter: true,
-        topology: false,
+        topology: true,
       },
       supportsAuxBuffers: true,
       accumulates: true,
@@ -599,6 +604,36 @@ class PTEngineWebGPU implements Engine {
         this.reset();
         return;
       }
+    }
+    if (
+      currentPrimitive != null &&
+      this.#geoPack != null &&
+      this.#sceneBuffers != null &&
+      canFastPathTopologyResizePatch(currentPrimitive, patch)
+    ) {
+      // Slice-2: a (skinned-)mesh's vertex/index COUNT changed. Rebuild ONLY this
+      // primitive's BLAS and splice it into the packed scene — growing/shrinking
+      // the concat buffers and rebasing every downstream primitive's offsets +
+      // the TLAS BLAS roots. The concat buffers change SIZE, so the (5) BLAS +
+      // (5) TLAS GPU buffers must be reallocated (no in-place writeBuffer).
+      const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
+        tlas: true,
+        resolveMaterialId: (pid) =>
+          materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
+      });
+      if (rebuilt.ok) {
+        uploadScenePackGeometryRealloc(this.#device, this.#sceneBuffers, rebuilt.pack);
+        this.#geoPack = rebuilt.pack;
+        this.#gpu.invalidateBindGroups();
+        this.#scene = nextScene;
+        for (const warning of rebuilt.pack.warnings) {
+          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        }
+        this.reset();
+        return;
+      }
+      // rebuildPrimitiveBlas rejected (primitive missing / not mesh-like) — fall
+      // through to the full setScene rebuild below.
     }
     if (
       currentPrimitive != null &&

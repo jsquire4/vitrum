@@ -304,7 +304,9 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(spliceMs).toBeLessThan(Math.max(fullMs * 3, fullMs + 0.25));
   });
 
-  it('rebuildPrimitiveBlas full-repacks when triangle count changes', () => {
+  it('rebuildPrimitiveBlas splices a growing triangle count (slice-2 resize)', () => {
+    // Single primitive grows from 1 tri (unitTriMesh) to 12 tris (box). Slice-2
+    // grows the concat buffers and rebuilds only this BLAS.
     const packed = packSceneFromCore(
       { primitives: [unitTriMesh('shape')], emitters: [], environment: { kind: 'none' } },
       { tlas: true, resolveMaterialId: () => 0 },
@@ -321,8 +323,157 @@ describe('packSceneFromCore (SP-*)', () => {
     );
     expect(rebuilt.ok).toBe(true);
     if (!rebuilt.ok) return;
-    expect(rebuilt.pack.triangleCount).toBeGreaterThan(packed.triangleCount);
-    if (rebuilt.ok) expect(rebuilt.strategy).toBe('full');
+    expect(rebuilt.strategy).toBe('splice');
+    expect(rebuilt.pack.triangleCount).toBe(12);
+    expect(rebuilt.pack.positions.length).toBe(8 * 4);
+    expect(rebuilt.pack.triMaterialIds.length).toBe(12);
+    // The rebuilt scene renders: a ray dropped onto the box must hit instance 0.
+    const hits = tlasIntersect(
+      {
+        nodes: rebuilt.pack.tlasNodes,
+        nodeCount: rebuilt.pack.tlasNodeCount,
+        instanceIndices: rebuilt.pack.tlasInstanceIndices,
+        blasRoots: rebuilt.pack.tlasBlasRoots,
+        instanceTransforms: rebuilt.pack.tlasInstanceWorldToLocal,
+      },
+      [0.5, 0.5, 5],
+      [0, 0, -1],
+      10,
+    );
+    expect(hits).toContain(0);
+  });
+
+  it('slice-2 resize rebases DOWNSTREAM offsets + leaf tri-offsets correctly', () => {
+    // box-a (12 tris) then box-b (12 tris) downstream. Grow box-a from a unit
+    // tri (1 tri) so every downstream offset shifts. The rebuilt pack must keep
+    // box-b's geometry intact and its global vertex/tri references re-rebased so
+    // tlasIntersect still routes a ray to box-b (instance 1).
+    const scene: Scene = {
+      primitives: [
+        unitTriMesh('shape-a'),
+        boxMesh('box-b', [5, 0, 0], [6, 1, 1]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const bindingBefore = packed.primitiveTlasBindings.find((b) => b.primitiveId === 'box-b')!;
+
+    // Grow shape-a to a box (1 tri → 12 tris), shifting box-b's vert/tri/node
+    // starts forward.
+    const next: Scene = {
+      primitives: [
+        boxMesh('shape-a', [0, 0, 0], [1, 1, 1]),
+        scene.primitives[1]!,
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rebuilt = rebuildPrimitiveBlas(next, 'shape-a', packed, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.strategy).toBe('splice');
+
+    const bindingAfter = rebuilt.pack.primitiveTlasBindings.find((b) => b.primitiveId === 'box-b')!;
+    // box-b's local geometry is unchanged (still 12 tris / 8 verts), but its
+    // start offsets rebased forward by shape-a's growth (1 tri → 12 tris = +11
+    // tris, 3 verts → 8 verts = +5 verts).
+    expect(bindingAfter.triCount).toBe(bindingBefore.triCount);
+    expect(bindingAfter.vertexCount).toBe(bindingBefore.vertexCount);
+    expect(bindingAfter.triStart).toBe(bindingBefore.triStart + 11);
+    expect(bindingAfter.vertexStart).toBe(bindingBefore.vertexStart + 5);
+
+    // box-b still renders at world x∈[5,6]: a ray dropped down onto it hits
+    // instance 1 (and the BVH leaf tri-offsets + index vertex refs are
+    // correctly rebased, else the box would be missing or corrupt).
+    const hits = tlasIntersect(
+      {
+        nodes: rebuilt.pack.tlasNodes,
+        nodeCount: rebuilt.pack.tlasNodeCount,
+        instanceIndices: rebuilt.pack.tlasInstanceIndices,
+        blasRoots: rebuilt.pack.tlasBlasRoots,
+        instanceTransforms: rebuilt.pack.tlasInstanceWorldToLocal,
+      },
+      [5.5, 0.5, 5],
+      [0, 0, -1],
+      10,
+    );
+    expect(hits).toContain(1);
+
+    // And shape-a (now a box at x∈[0,1]) renders at instance 0.
+    const hitsA = tlasIntersect(
+      {
+        nodes: rebuilt.pack.tlasNodes,
+        nodeCount: rebuilt.pack.tlasNodeCount,
+        instanceIndices: rebuilt.pack.tlasInstanceIndices,
+        blasRoots: rebuilt.pack.tlasBlasRoots,
+        instanceTransforms: rebuilt.pack.tlasInstanceWorldToLocal,
+      },
+      [0.5, 0.5, 5],
+      [0, 0, -1],
+      10,
+    );
+    expect(hitsA).toContain(0);
+
+    // The downstream BVH must match a full repack byte-for-byte (the rebase is
+    // exact, not approximate).
+    const full = packSceneFromCore(next, { tlas: true, resolveMaterialId: () => 0 });
+    expect(rebuilt.pack.bvhNodes.length).toBe(full.bvhNodes.length);
+    expect(rebuilt.pack.positions.length).toBe(full.positions.length);
+    expect(rebuilt.pack.indices.length).toBe(full.indices.length);
+    expect(Array.from(rebuilt.pack.indices)).toEqual(Array.from(full.indices));
+    expect(Array.from(rebuilt.pack.triMaterialIds)).toEqual(Array.from(full.triMaterialIds));
+  });
+
+  it('slice-2 resize that SHRINKS a primitive rebases downstream back', () => {
+    const scene: Scene = {
+      primitives: [
+        boxMesh('shrink-a', [0, 0, 0], [1, 1, 1]),
+        boxMesh('box-b', [5, 0, 0], [6, 1, 1]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const bindingBefore = packed.primitiveTlasBindings.find((b) => b.primitiveId === 'box-b')!;
+
+    // Shrink shape-a from a 12-tri box to a single triangle.
+    const next: Scene = {
+      primitives: [unitTriMesh('shrink-a'), scene.primitives[1]!],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rebuilt = rebuildPrimitiveBlas(next, 'shrink-a', packed, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.strategy).toBe('splice');
+
+    const bindingAfter = rebuilt.pack.primitiveTlasBindings.find((b) => b.primitiveId === 'box-b')!;
+    expect(bindingAfter.triStart).toBe(bindingBefore.triStart - 11);
+    expect(bindingAfter.vertexStart).toBe(bindingBefore.vertexStart - 5);
+
+    const full = packSceneFromCore(next, { tlas: true, resolveMaterialId: () => 0 });
+    expect(Array.from(rebuilt.pack.indices)).toEqual(Array.from(full.indices));
+    expect(rebuilt.pack.bvhNodes.length).toBe(full.bvhNodes.length);
+    const hits = tlasIntersect(
+      {
+        nodes: rebuilt.pack.tlasNodes,
+        nodeCount: rebuilt.pack.tlasNodeCount,
+        instanceIndices: rebuilt.pack.tlasInstanceIndices,
+        blasRoots: rebuilt.pack.tlasBlasRoots,
+        instanceTransforms: rebuilt.pack.tlasInstanceWorldToLocal,
+      },
+      [5.5, 0.5, 5],
+      [0, 0, -1],
+      10,
+    );
+    expect(hits).toContain(1);
   });
 
   it('rebuildPrimitiveBlas fails when primitive was not in previous pack', () => {
