@@ -133,6 +133,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
   },
   'pt-webgpu': {
     supportsIncrementalScene: true,
+    // `topology: false` stands even though pt-webgpu takes a transparent
+    // TLAS-only fast path for instanced-mesh instance-COUNT changes (BLAS reused
+    // verbatim; only the 5 TLAS buffers reallocate). That fast path is an
+    // internal perf optimization — mesh vertex/index-count changes and
+    // whole-primitive add/remove still rebuild through setScene — so the broad
+    // "all topology patches absorbed" promise remains unmet.
     incrementalPatchSupport: {
       transform: true,
       positions: true,

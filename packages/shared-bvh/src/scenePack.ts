@@ -830,6 +830,156 @@ export function computeWorldAabbForBindings(
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
 
+/**
+ * Collect TLAS instances from the CURRENT scene, taking each primitive's live
+ * instance list (whose length may differ from the binding's stored
+ * `instanceCount`). Unlike {@link collectTlasInstancesFromBindings}, this does
+ * NOT bail on an instance-count change — it is the basis for a TLAS-only rebuild
+ * that reuses verbatim BLAS buffers when only the instance count changed. BLAS
+ * geometry (positions/normals/indices/nodes) is shared across instances, so an
+ * instance-count change leaves every BLAS byte identical; only the TLAS and the
+ * per-primitive `instanceCount` move.
+ */
+function collectLiveTlasInstancesFromBindings(
+  scene: Scene,
+  bindings: readonly PrimitiveTlasBinding[],
+):
+  | { readonly ok: true; readonly instances: readonly PendingTlasInstance[]; readonly liveCounts: readonly number[]; readonly warnings: readonly string[] }
+  | { readonly ok: false; readonly reason: string } {
+  const primitiveById = new Map<string, ScenePrimitive>();
+  for (const primitive of scene.primitives) {
+    primitiveById.set(primitive.id, primitive);
+  }
+  const instances: PendingTlasInstance[] = [];
+  const liveCounts: number[] = [];
+  const warnings: string[] = [];
+  for (const binding of bindings) {
+    const primitive = primitiveById.get(binding.primitiveId);
+    if (primitive == null) {
+      return { ok: false, reason: `primitive "${binding.primitiveId}" no longer exists` };
+    }
+    if (!isMeshLike(primitive) || primitive.kind !== binding.primitiveKind) {
+      return {
+        ok: false,
+        reason: `primitive "${binding.primitiveId}" kind mismatch or not mesh-like`,
+      };
+    }
+    const transforms =
+      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
+    if (transforms.length === 0) {
+      return {
+        ok: false,
+        reason: `primitive "${binding.primitiveId}" has zero instances (TLAS-only rebuild needs at least one)`,
+      };
+    }
+    liveCounts.push(transforms.length);
+    for (const transform of transforms) {
+      const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
+      const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
+      if (maybeWorldToLocal == null) {
+        warnings.push(
+          `Primitive "${binding.primitiveId}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
+        );
+      }
+      const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
+      const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
+      const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
+      instances.push({
+        blasRoot: binding.blasRoot,
+        worldToLocal,
+        localToWorld,
+        aabbMin: worldAabb.min,
+        aabbMax: worldAabb.max,
+      });
+    }
+  }
+  return { ok: true, instances, liveCounts, warnings };
+}
+
+export type RebuildTlasReuseBlasResult =
+  | { readonly ok: true; readonly pack: ScenePackResult }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Rebuild ONLY the TLAS after an instanced-mesh's instance COUNT changed,
+ * reusing the previous pack's BLAS node/index/position/normal arrays VERBATIM
+ * (no per-triangle `buildArrayBvh` SAH rebuild). This is the clean slice-1 win
+ * for incremental instanced-mesh add/remove: shared BLAS geometry is byte-
+ * identical across instances, so only the TLAS tree + per-primitive
+ * `instanceCount` need to change.
+ *
+ * Rejects (returns `ok:false`) when the patch is NOT a pure instance-count
+ * change — e.g. a primitive's vertex/tri/BVH-node geometry changed, a primitive
+ * disappeared, or no instance count actually moved — so the caller can fall back
+ * to a full {@link packSceneFromCore} rebuild. The caller is responsible for
+ * having already verified that the changed primitive is an `instanced-mesh`
+ * whose only mutated facet is `instances`.
+ */
+export function rebuildTlasReuseBlas(
+  scene: Scene,
+  prev: ScenePackResult,
+): RebuildTlasReuseBlasResult {
+  if (prev.primitiveTlasBindings.length === 0) {
+    return { ok: false, reason: 'previous pack has no TLAS bindings; full rebuild required' };
+  }
+  const collected = collectLiveTlasInstancesFromBindings(scene, prev.primitiveTlasBindings);
+  if (!collected.ok) {
+    return { ok: false, reason: collected.reason };
+  }
+
+  // Verify the ONLY thing that changed is one-or-more instanced-mesh instance
+  // counts. If every live count equals its binding's stored count, there is no
+  // count change and the caller should have taken the transform-only refit path
+  // instead — reject so we don't silently shadow that path. (A non-instanced
+  // binding can never legitimately change count here; `liveCounts` for a mesh /
+  // skinned-mesh binding is always 1, matching its stored `instanceCount` of 1.)
+  let anyCountChanged = false;
+  for (let i = 0; i < prev.primitiveTlasBindings.length; i += 1) {
+    const binding = prev.primitiveTlasBindings[i]!;
+    const liveCount = collected.liveCounts[i]!;
+    if (liveCount !== binding.instanceCount) {
+      if (binding.primitiveKind !== 'instanced-mesh') {
+        return {
+          ok: false,
+          reason: `primitive "${binding.primitiveId}" (${binding.primitiveKind}) changed instance count; only instanced-mesh count changes are TLAS-only`,
+        };
+      }
+      anyCountChanged = true;
+    }
+  }
+  if (!anyCountChanged) {
+    return { ok: false, reason: 'no instance count changed; use the transform-only refit path' };
+  }
+
+  const tlasBuild = buildTlasFromInstances(collected.instances);
+  const primitiveTlasBindings = prev.primitiveTlasBindings.map((binding, i) => {
+    const liveCount = collected.liveCounts[i]!;
+    return liveCount === binding.instanceCount ? binding : { ...binding, instanceCount: liveCount };
+  });
+
+  return {
+    ok: true,
+    pack: {
+      // BLAS buffers reused verbatim — no per-triangle rebuild.
+      positions: prev.positions,
+      normals: prev.normals,
+      indices: prev.indices,
+      triMaterialIds: prev.triMaterialIds,
+      bvhNodes: prev.bvhNodes,
+      triangleCount: prev.triangleCount,
+      // TLAS rebuilt from the new instance list.
+      tlasNodes: tlasBuild.tlasNodes,
+      tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
+      tlasBlasRoots: tlasBuild.tlasBlasRoots,
+      tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
+      tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+      tlasNodeCount: tlasBuild.tlasNodeCount,
+      primitiveTlasBindings,
+      warnings: [...prev.warnings, ...collected.warnings],
+    },
+  };
+}
+
 export type RebuildPrimitiveBlasResult =
   | { readonly ok: true; readonly pack: ScenePackResult; readonly strategy: 'splice' | 'full' }
   | { readonly ok: false; readonly reason: string };

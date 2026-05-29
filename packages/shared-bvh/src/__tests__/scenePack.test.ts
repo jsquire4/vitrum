@@ -5,9 +5,25 @@ import {
   computeWorldAabbForBindings,
   packSceneFromCore,
   rebuildPrimitiveBlas,
+  rebuildTlasReuseBlas,
   refitTlasTransforms,
 } from '../scenePack.js';
 import { tlasIntersect } from '../tlas.js';
+
+function instancedMesh(id: string, instances: Mat4[]): Scene['primitives'][number] {
+  return {
+    kind: 'instanced-mesh',
+    id,
+    positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+    normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    instances,
+  };
+}
+
+function translate(x: number): Mat4 {
+  return asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1]));
+}
 
 function unitTriMesh(id: string, transform?: Mat4): Scene['primitives'][number] {
   return {
@@ -382,5 +398,112 @@ describe('packSceneFromCore (SP-*)', () => {
     }
     expect(packed.triangleCount).toBe(triCount);
     expect(ms).toBeLessThan(2000);
+  });
+});
+
+describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
+  it('reuses BLAS arrays verbatim and rebuilds the TLAS when count grows', () => {
+    const scene: Scene = {
+      primitives: [instancedMesh('inst', [translate(0), translate(2)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    expect(packed.primitiveTlasBindings[0]?.instanceCount).toBe(2);
+
+    const next: Scene = {
+      primitives: [instancedMesh('inst', [translate(0), translate(2), translate(4)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rebuilt = rebuildTlasReuseBlas(next, packed);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+
+    // BLAS arrays are the SAME object references (reused verbatim, no rebuild).
+    expect(rebuilt.pack.positions).toBe(packed.positions);
+    expect(rebuilt.pack.normals).toBe(packed.normals);
+    expect(rebuilt.pack.indices).toBe(packed.indices);
+    expect(rebuilt.pack.triMaterialIds).toBe(packed.triMaterialIds);
+    expect(rebuilt.pack.bvhNodes).toBe(packed.bvhNodes);
+    expect(rebuilt.pack.triangleCount).toBe(packed.triangleCount);
+
+    // TLAS grew to 3 instances with correct per-instance transforms.
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceCount).toBe(3);
+    expect(rebuilt.pack.tlasBlasRoots.length).toBe(3);
+    expect(rebuilt.pack.tlasInstanceLocalToWorld.length).toBe(3 * 16);
+    expect(rebuilt.pack.tlasInstanceLocalToWorld[0 * 16 + 12]).toBe(0);
+    expect(rebuilt.pack.tlasInstanceLocalToWorld[1 * 16 + 12]).toBe(2);
+    expect(rebuilt.pack.tlasInstanceLocalToWorld[2 * 16 + 12]).toBe(4);
+
+    // The rebuilt TLAS routes a ray to the new instance: the triangle lives in
+    // the z=0 plane and the third instance translates it to x∈[4,5], so a ray
+    // dropped down (-z) through (4.2, 0.2, 0) must hit instance index 2.
+    const hits = tlasIntersect(
+      {
+        nodes: rebuilt.pack.tlasNodes,
+        nodeCount: rebuilt.pack.tlasNodeCount,
+        instanceIndices: rebuilt.pack.tlasInstanceIndices,
+        blasRoots: rebuilt.pack.tlasBlasRoots,
+        instanceTransforms: rebuilt.pack.tlasInstanceWorldToLocal,
+      },
+      [4.2, 0.2, 1],
+      [0, 0, -1],
+      3,
+    );
+    expect(hits).toContain(2);
+  });
+
+  it('reuses BLAS and rebuilds the TLAS when count shrinks', () => {
+    const scene: Scene = {
+      primitives: [instancedMesh('inst', [translate(0), translate(2), translate(4)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const next: Scene = {
+      primitives: [instancedMesh('inst', [translate(0)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rebuilt = rebuildTlasReuseBlas(next, packed);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.pack.bvhNodes).toBe(packed.bvhNodes);
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceCount).toBe(1);
+    expect(rebuilt.pack.tlasBlasRoots.length).toBe(1);
+  });
+
+  it('rejects when no instance count changed (caller should use refit path)', () => {
+    const scene: Scene = {
+      primitives: [instancedMesh('inst', [translate(0), translate(2)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    // Same count, just moved instances → not a count change.
+    const next: Scene = {
+      primitives: [instancedMesh('inst', [translate(1), translate(3)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rebuilt = rebuildTlasReuseBlas(next, packed);
+    expect(rebuilt.ok).toBe(false);
+    if (rebuilt.ok) return;
+    expect(rebuilt.reason).toMatch(/no instance count changed/i);
+  });
+
+  it('rejects when a non-instanced primitive disappeared', () => {
+    const scene: Scene = {
+      primitives: [instancedMesh('inst', [translate(0), translate(2)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    const rebuilt = rebuildTlasReuseBlas(
+      { primitives: [], emitters: [], environment: { kind: 'none' } },
+      packed,
+    );
+    expect(rebuilt.ok).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ export {
   packSceneFromCore,
   refitTlasTransforms,
   rebuildPrimitiveBlas,
+  rebuildTlasReuseBlas,
   computeLocalAabb,
   computeWorldAabbForBindings,
   type PrimitiveTlasBinding,
@@ -19,6 +20,7 @@ export {
   type TlasGpuSnapshot,
   type RefitTlasResult,
   type RebuildPrimitiveBlasResult,
+  type RebuildTlasReuseBlasResult,
 } from './scenePack.js';
 export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';

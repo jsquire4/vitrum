@@ -133,6 +133,25 @@ export function canFastPathTransformPatch(
 }
 
 /**
+ * Instances-only patch on an `instanced-mesh` whose instance COUNT changed
+ * (slice-1 TLAS-only rebuild). Distinct from {@link canFastPathTransformPatch},
+ * which handles the SAME-count case (in-place TLAS write). Returns false unless
+ * the only mutated facet is `instances`, the primitive is an instanced-mesh, and
+ * the patch's instance count differs from the current primitive's.
+ */
+export function canFastPathInstancedTopologyPatch(
+  primitive: ScenePrimitive,
+  patch: Partial<ScenePrimitive>,
+): boolean {
+  if (primitive.kind !== 'instanced-mesh') return false;
+  const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
+  if (!keys.every((k) => k === 'instances')) return false;
+  const nextInstances = (patch as { instances?: readonly unknown[] }).instances;
+  if (nextInstances == null) return false;
+  return nextInstances.length !== primitive.instances.length;
+}
+
+/**
  * True when a freshly refit TLAS has byte-for-byte identical buffer lengths to
  * the currently-uploaded buffers, so an in-place `writeBuffer` is safe without
  * reallocating GPU storage.

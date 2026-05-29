@@ -26,6 +26,7 @@ import {
   uploadScenePackGeometry,
   uploadScenePackBlasOnly,
   uploadScenePackTlasOnly,
+  uploadScenePackTlasRealloc,
   PT_WEBGPU_ANALYTIC_SHAPES,
   PT_WEBGPU_SUPPORT,
   type UploadedSceneBuffers,
@@ -33,6 +34,7 @@ import {
 import {
   analyticIndexForPrimitive,
   canFastPathGeometryPatch,
+  canFastPathInstancedTopologyPatch,
   canFastPathMaterialPatch,
   canFastPathTransformPatch,
   canReuseTlasBufferLengths,
@@ -41,6 +43,7 @@ import {
 import {
   fingerprintTlasBuffers,
   rebuildPrimitiveBlas,
+  rebuildTlasReuseBlas,
   type ScenePackResult,
 } from '@vitrum/shared-bvh';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
@@ -234,8 +237,14 @@ class PTEngineWebGPU implements Engine {
 
   get capabilities(): EngineCapabilities {
     return {
-      // Material-only primitive patches are uploaded in-place; all other facets
-      // currently rebuild through setScene until broader partial uploads land.
+      // Material / transform / positions primitive patches are uploaded in
+      // place; instanced-mesh instance-COUNT changes take a transparent
+      // TLAS-only fast path (BLAS reused verbatim, only the 5 TLAS buffers
+      // reallocate) — this is an internal perf optimization, NOT a contract
+      // promise, so `topology` stays false: mesh vertex/index-count changes (and
+      // whole-primitive add/remove) still rebuild through setScene. Hosts get
+      // correct results either way; the flag advertises only the broad
+      // "topology patches are absorbed" promise, which is not yet true.
       supportsIncrementalScene: true,
       incrementalPatchSupport: {
         transform: true,
@@ -635,6 +644,39 @@ class PTEngineWebGPU implements Engine {
           return;
         }
       }
+    }
+    if (
+      currentPrimitive != null &&
+      this.#geoPack != null &&
+      this.#sceneBuffers != null &&
+      canFastPathInstancedTopologyPatch(currentPrimitive, patch)
+    ) {
+      // Slice-1: instanced-mesh instance COUNT changed. BLAS geometry is shared
+      // across instances and byte-identical, so we rebuild only the TLAS
+      // (reusing the previous pack's BLAS arrays verbatim — no per-triangle
+      // buildArrayBvh) and reallocate only the 5 TLAS GPU buffers.
+      const rebuilt = rebuildTlasReuseBlas(nextScene, this.#geoPack);
+      if (rebuilt.ok) {
+        uploadScenePackTlasRealloc(this.#device, this.#sceneBuffers, {
+          tlasNodes: rebuilt.pack.tlasNodes,
+          tlasInstanceIndices: rebuilt.pack.tlasInstanceIndices,
+          tlasBlasRoots: rebuilt.pack.tlasBlasRoots,
+          tlasInstanceWorldToLocal: rebuilt.pack.tlasInstanceWorldToLocal,
+          tlasInstanceLocalToWorld: rebuilt.pack.tlasInstanceLocalToWorld,
+          tlasNodeCount: rebuilt.pack.tlasNodeCount,
+          primitiveTlasBindings: rebuilt.pack.primitiveTlasBindings,
+        });
+        this.#geoPack = rebuilt.pack;
+        this.#gpu.invalidateBindGroups();
+        this.#scene = nextScene;
+        for (const warning of rebuilt.pack.warnings) {
+          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        }
+        this.reset();
+        return;
+      }
+      // rebuildTlasReuseBlas rejected (e.g. concurrent geometry change) — fall
+      // through to the full setScene rebuild below.
     }
     if (
       currentPrimitive != null &&

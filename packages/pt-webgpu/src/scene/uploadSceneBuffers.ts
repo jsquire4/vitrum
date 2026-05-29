@@ -396,6 +396,85 @@ export function uploadScenePackBlasOnly(
   mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
 }
 
+/**
+ * Slice-1 — reallocate ONLY the (5) TLAS GPU buffers after an instanced-mesh
+ * instance-COUNT change, leaving every BLAS buffer untouched.
+ *
+ * The transform-only fast path ({@link uploadScenePackTlasOnly}) requires the
+ * new TLAS arrays to be byte-length-identical to the live buffers (in-place
+ * `writeBuffer`). An instance-count change grows/shrinks those arrays, so the
+ * five TLAS buffers must be destroyed and recreated at the new size. The BLAS
+ * buffers (positions/normals/indices/triMaterialIds/bvhNodes) are byte-identical
+ * across an instance-count change (shared geometry) and are NOT touched here.
+ *
+ * After swapping the new buffer handles onto {@link UploadedSceneBuffers}, the
+ * caller MUST invalidate any cached bind groups so the next frame rebinds the
+ * fresh TLAS buffers (`gpuResources.ts` reads `sb.tlas*Buffer` at bind-group
+ * build time).
+ */
+export function uploadScenePackTlasRealloc(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  pack: Pick<
+    ScenePackResult,
+    | 'tlasNodes'
+    | 'tlasInstanceIndices'
+    | 'tlasBlasRoots'
+    | 'tlasInstanceWorldToLocal'
+    | 'tlasInstanceLocalToWorld'
+    | 'tlasNodeCount'
+    | 'primitiveTlasBindings'
+  >,
+): void {
+  // Destroy the stale TLAS buffers (BLAS buffers untouched).
+  sb.tlasNodesBuffer.destroy();
+  sb.tlasInstanceIndicesBuffer.destroy();
+  sb.tlasBlasRootsBuffer.destroy();
+  sb.tlasInstanceWorldToLocalBuffer.destroy();
+  sb.tlasInstanceLocalToWorldBuffer.destroy();
+
+  const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', pack.tlasNodes);
+  const tlasInstanceIndicesBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasInstanceIndices',
+    pack.tlasInstanceIndices,
+  );
+  const tlasBlasRootsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasBlasRoots',
+    pack.tlasBlasRoots,
+  );
+  const tlasInstanceWorldToLocalBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal',
+    pack.tlasInstanceWorldToLocal,
+  );
+  const tlasInstanceLocalToWorldBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld',
+    pack.tlasInstanceLocalToWorld,
+  );
+
+  // Swap the new handles + CPU mirrors onto the (otherwise readonly) struct. The
+  // `destroy` closure built in `uploadPackedScene` resolves these TLAS handles
+  // off the struct at teardown-time, so no closure rewire is needed here.
+  const buffers = asMutableSceneBufferBuffers(sb);
+  buffers.tlasNodesBuffer = tlasNodesBuffer;
+  buffers.tlasInstanceIndicesBuffer = tlasInstanceIndicesBuffer;
+  buffers.tlasBlasRootsBuffer = tlasBlasRootsBuffer;
+  buffers.tlasInstanceWorldToLocalBuffer = tlasInstanceWorldToLocalBuffer;
+  buffers.tlasInstanceLocalToWorldBuffer = tlasInstanceLocalToWorldBuffer;
+  buffers.tlasNodes = new Uint32Array(pack.tlasNodes);
+  buffers.tlasInstanceIndices = new Uint32Array(pack.tlasInstanceIndices);
+  buffers.tlasBlasRoots = new Uint32Array(pack.tlasBlasRoots);
+  buffers.tlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
+  buffers.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
+
+  const mutable = asMutableSceneBuffers(sb);
+  mutable.tlasNodeCount = pack.tlasNodeCount;
+  mutable.primitiveTlasBindings = pack.primitiveTlasBindings;
+}
+
 /** C2 — upload TLAS SSBOs only (transform-only refit; BLAS buffers unchanged). */
 export function uploadScenePackTlasOnly(
   device: GPUDevice,
@@ -466,6 +545,29 @@ interface MutableSceneBufferFields {
 /** Single typed view onto the mutable subset of an UploadedSceneBuffers. */
 function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBufferFields {
   return sb as unknown as MutableSceneBufferFields;
+}
+
+/**
+ * The five TLAS GPU buffer handles + their CPU-mirror typed arrays, normally
+ * `readonly`, are reassigned in place by {@link uploadScenePackTlasRealloc} when
+ * an instanced-mesh instance count changes (the buffers must be reallocated at
+ * the new size). This single typed view localizes that one unsafe write site.
+ */
+interface MutableTlasBufferHandles {
+  tlasNodesBuffer: GPUBuffer;
+  tlasInstanceIndicesBuffer: GPUBuffer;
+  tlasBlasRootsBuffer: GPUBuffer;
+  tlasInstanceWorldToLocalBuffer: GPUBuffer;
+  tlasInstanceLocalToWorldBuffer: GPUBuffer;
+  tlasNodes: Uint32Array;
+  tlasInstanceIndices: Uint32Array;
+  tlasBlasRoots: Uint32Array;
+  tlasInstanceWorldToLocal: Float32Array;
+  tlasInstanceLocalToWorld: Float32Array;
+}
+
+function asMutableSceneBufferBuffers(sb: UploadedSceneBuffers): MutableTlasBufferHandles {
+  return sb as unknown as MutableTlasBufferHandles;
 }
 
 /** Rewrite emitter counts + directional aggregate after an in-place light upload. */
@@ -563,7 +665,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     packed.tlasInstanceLocalToWorld,
   );
 
-  return {
+  const uploaded: UploadedSceneBuffers = {
     ...packed,
     bvhNodeCount: Math.floor(packed.bvhNodes.length / 8),
     tlasNodeCount: Math.floor(packed.tlasNodes.length / 8),
@@ -589,6 +691,11 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     tlasBlasRootsBuffer,
     tlasInstanceWorldToLocalBuffer,
     tlasInstanceLocalToWorldBuffer,
+    // TLAS buffers are resolved off `uploaded` at destroy-time (not captured),
+    // because the instance-count realloc fast path
+    // ({@link uploadScenePackTlasRealloc}) swaps fresh handles onto the struct.
+    // Reading them late keeps `destroy` free of stale handles without a closure
+    // rewire on every realloc.
     destroy: () => {
       positionsBuffer.destroy();
       normalsBuffer.destroy();
@@ -606,11 +713,12 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       spotLightsBuffer.destroy();
       rectAreaLightsBuffer.destroy();
       meshAreaLightsBuffer.destroy();
-      tlasNodesBuffer.destroy();
-      tlasInstanceIndicesBuffer.destroy();
-      tlasBlasRootsBuffer.destroy();
-      tlasInstanceWorldToLocalBuffer.destroy();
-      tlasInstanceLocalToWorldBuffer.destroy();
+      uploaded.tlasNodesBuffer.destroy();
+      uploaded.tlasInstanceIndicesBuffer.destroy();
+      uploaded.tlasBlasRootsBuffer.destroy();
+      uploaded.tlasInstanceWorldToLocalBuffer.destroy();
+      uploaded.tlasInstanceLocalToWorldBuffer.destroy();
     },
   };
+  return uploaded;
 }
