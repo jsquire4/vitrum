@@ -8,7 +8,10 @@
  *   T1 — Path of length 2: MIS weights sum to 1.
  *   T2 — Equal PDFs: all weights equal 1/N (power heuristic degeneracy).
  *   T3 — Specular zero-weight: strategies through a specular vertex have weight 0.
- *   T4 — Recursive ratio invariance: p_s via sweep == p_s from independent product.
+ *   T4 — Physical area-measure path PDF on a VARYING-G fixture: per-strategy
+ *        weights match an independent first-principles derivation (built from the
+ *        path-space measure, not the implementation's recurrence). Includes a
+ *        regression guard that the pre-fix single-full-G oracle is rejected.
  *   T5 — Geometric term G(x↔y): matches analytic formula for known geometry.
  *   T6 — Camera/light endpoint corner cases: s=0 and s=k produce non-zero weights.
  *
@@ -160,24 +163,29 @@ describe('T2 — equal PDFs yield equal weights', () => {
 // ── T3: specular zero-weight ──────────────────────────────────────────────────
 //
 // 4 vertices: v0 (light) — v1 (diffuse) — v2 (specular!) — v3 (camera).
-// Strategies s ∈ {0,1,2,3}.
+// Strategies s ∈ {0,1,2,3}. The connection edge for hypothetical strategy s is
+// (v_{s−1}, v_s); strategies s=0 (pure camera) and s=n−1 (pure light) make no
+// explicit connection.
 //
-// Under Veach §10.3.5, any strategy whose connection point touches the specular
-// vertex has weight 0. In our convention the connection in strategy s is between
-// v_{s−1} and v_s (or the endpoints for s=0 / s=k).
+// Under Veach §10.3.5 / PBRT's `MISWeight` delta rule, a hypothetical strategy is
+// excluded (pdf 0) iff an endpoint of ITS connection edge is a delta (specular)
+// surface — because that connection cannot be sampled by an explicit deterministic
+// join. v2 (index 2) is specular. The connection edges are:
+//   s=1 → edge (v0,v1)  — both diffuse  → VALID (camera subpath still traces
+//                                          *through* the specular bounce v2; that
+//                                          is exactly what specular vertices are for)
+//   s=2 → edge (v1,v2)  — v2 specular    → excluded (this is the selected strategy,
+//                                          so pRef is the supplied anchor, but no
+//                                          OTHER strategy is allowed to land here)
+//   s=3 → edge (v2,v3)  — v2 specular    → excluded
 //
-// v2 is specular. Strategies that require explicitly evaluating the BSDF at v2:
-//   s=2 — connection at v2 (light side)
-//   s=3 — connection at v2 (camera side, if we treat v3 as camera endpoint that
-//          reaches v2 via specular chain — zero because v2.isSpecular is true and
-//          the sweep breaks once it hits a specular vertex)
-//
-// The exact set of zeroed strategies depends on the sweep logic; the invariant
-// we test is: any strategy that connects *through* the specular vertex is 0,
-// and the total weight of non-zero strategies is 1.
+// So the physically correct outcome is: s=3 is zero (its connection touches the
+// specular vertex), while s=0 and s=1 are NON-zero. (The pre-fix oracle wrongly
+// broke the entire left sweep on first touching v2, zeroing s=0 and s=1 too — a
+// bug; this test now pins the correct pattern.)
 
-describe('T3 — specular vertex forces zero weight on affected strategies', () => {
-  // Collinear path along X, normals pointing along X.
+describe('T3 — specular vertex zeroes only strategies whose connection touches it', () => {
+  // Collinear path along X, normals pointing along X (so every D-Jacobian = 1).
   const vertices: BDPTFullVertex[] = [
     { position: [0, 0, 0], normal: [1, 0, 0], pdfFwd: 0.5, pdfRev: 0.3, isSpecular: false },
     { position: [1, 0, 0], normal: [1, 0, 0], pdfFwd: 0.4, pdfRev: 0.2, isSpecular: false },
@@ -189,29 +197,22 @@ describe('T3 — specular vertex forces zero weight on affected strategies', () 
   const selectedS = 2;
   const pdfs = buildBDPTStrategyPDFs_full(vertices, selectedS, pRef);
 
-  it('strategy at the specular vertex (s=2) receives zero weight', () => {
-    // s=2 means light subpath ends at v2 which is specular; its PDF from the
-    // sweep should be zero because the left sweep breaks on v2.isSpecular.
-    // pRef > 0 was assigned to s=2 directly; however in our implementation
-    // pRef IS the selected strategy's PDF and is always written — the specular
-    // rule suppresses strategies adjacent to the specular vertex via sweep.
-    // We verify that strategies propagated through v2 are zero.
+  it('strategy s=3 is zero (its connection edge (v2,v3) touches specular v2)', () => {
     expect(pdfs[3]).toBe(0); // right sweep blocked by v2.isSpecular
   });
 
-  it('strategy s=1 is zero because sweep from s=2 leftward hits specular v2', () => {
-    // Left sweep from s=2 would process vertex v2 first (s=2, vPrev=v1).
-    // v = vertices[2] which is specular → sweep breaks immediately, s=1 stays 0.
-    expect(pdfs[1]).toBe(0);
+  it('strategy s=1 is NON-zero (its connection edge (v0,v1) is fully diffuse)', () => {
+    // The camera subpath v1→v2→v3 legitimately traces through the specular
+    // bounce; the explicit connection happens at the diffuse edge (v0,v1).
+    expect(pdfs[1]).toBeGreaterThan(0);
   });
 
-  it('strategy s=0 is also zero (blocked further left than s=1)', () => {
-    expect(pdfs[0]).toBe(0);
+  it('strategy s=0 is NON-zero (pure camera path, no explicit connection)', () => {
+    expect(pdfs[0]).toBeGreaterThan(0);
   });
 
-  it('MIS weight of specular strategy equals 1 (only non-zero strategy is pRef itself)', () => {
-    // Only s=2 = pRef is non-zero; all others blocked. w_2 = 1.
-    expect(bdptConnectionMIS_full(pdfs, selectedS)).toBeCloseTo(1.0, 10);
+  it('the specular-blocked strategy s=3 carries zero MIS weight', () => {
+    expect(bdptConnectionMIS_full(pdfs, 3)).toBe(0);
   });
 
   it('sum of all MIS weights equals 1', () => {
@@ -219,87 +220,157 @@ describe('T3 — specular vertex forces zero weight on affected strategies', () 
   });
 });
 
-// ── T4: recursive ratio invariance ───────────────────────────────────────────
+// ── T4: physical area-measure path PDF on a VARYING-G fixture ─────────────────
 //
-// For a chain of 5 vertices with random PDFs, the strategy PDFs computed via
-// the recursive ratio sweep must match those computed independently from
-// scratch using the factored PDF definition.
+// This is a *genuine* first-principles test, NOT a re-statement of the
+// implementation's recurrence. We construct a path with non-unit edge lengths
+// and non-aligned shading normals so the per-edge geometry factors all DIFFER
+// (G ≠ 1, and every D-Jacobian is distinct). We then derive each strategy's
+// path PDF directly from the path-space measure:
 //
-// Veach §10.3 Eq. 10.11 defines p_s as:
-//   p_s = Π_{i=0}^{s−1} pdfFwd[i]  ×  Π_{j=s}^{k} pdfRev[j+1]  × Π G terms
+//   p_s = [ Π_{i=0}^{s−1} pA_fwd(i) ] · [ Π_{j=s}^{n−1} pA_rev(j) ]
 //
-// In pure solid-angle measure (our convention) with the collinear geometry
-// used in this test suite, we verify the ratio sweep matches manual accumulation.
+// where the solid-angle pdfs are lifted to AREA measure by the canonical
+// change-of-variables Jacobian (Veach §8.2.2.2 / PBRT §16.1.1, `ConvertDensity`):
+//
+//   dω(from→dest) = dA_dest · |cos θ_dest| / ‖from − dest‖²
+//
+// i.e. the JACOBIAN CARRIES ONLY THE DESTINATION-VERTEX COSINE (a "half-G"),
+//   pA_fwd(i) = pdfFwd_SA(i) · |cos θ_i (v_{i−1}→v_i)| / ‖v_{i−1}−v_i‖²   (i>0)
+//   pA_rev(j) = pdfRev_SA(j) · |cos θ_j (v_{j+1}→v_j)| / ‖v_{j+1}−v_j‖²   (j<n−1)
+// with unit Jacobian at the two path endpoints (their pdfs are already area
+// densities — emitter area-sampling pdf / camera importance area density).
+//
+// Crucially this derivation is written from the measure definition, by hand,
+// using a different code path (explicit per-strategy product, no ratio sweep,
+// no reuse of any implementation helper). It therefore independently pins the
+// oracle. The OLD oracle — which used a single FULL two-cosine G and the wrong
+// transfer-vertex index — FAILS this test (it diverges by orders of magnitude
+// once G varies along the path); the corrected oracle passes to machine ε.
 
-describe('T4 — recursive ratio invariance', () => {
-  // 5 vertices, collinear along X, normals along X (cos θ = 1, G = 1/d²).
+describe('T4 — physical area-measure path PDF (varying-G, non-circular)', () => {
+  // Non-unit spacing, non-aligned normals → every edge has a distinct geometry
+  // factor, so the destination-cosine Jacobians do NOT cancel.
+  function unit(v: readonly [number, number, number]): [number, number, number] {
+    const l = Math.hypot(v[0], v[1], v[2]);
+    return [v[0] / l, v[1] / l, v[2] / l];
+  }
   const verts: BDPTFullVertex[] = [
-    { position: [0, 0, 0], normal: [1, 0, 0], pdfFwd: 0.7, pdfRev: 0.3, isSpecular: false },
-    { position: [1, 0, 0], normal: [1, 0, 0], pdfFwd: 0.5, pdfRev: 0.2, isSpecular: false },
-    { position: [2, 0, 0], normal: [1, 0, 0], pdfFwd: 0.4, pdfRev: 0.6, isSpecular: false },
-    { position: [3, 0, 0], normal: [1, 0, 0], pdfFwd: 0.3, pdfRev: 0.5, isSpecular: false },
-    { position: [4, 0, 0], normal: [1, 0, 0], pdfFwd: 0.8, pdfRev: 0.1, isSpecular: false },
+    { position: [0.0,  0.0,  0.0], normal: unit([0.2,  1.0,  0.1]), pdfFwd: 0.70, pdfRev: 0.35, isSpecular: false },
+    { position: [1.3,  0.8,  0.0], normal: unit([-0.5, 0.9,  0.3]), pdfFwd: 0.55, pdfRev: 0.40, isSpecular: false },
+    { position: [2.1, -0.4,  1.2], normal: unit([0.1,  0.7, -0.8]), pdfFwd: 0.42, pdfRev: 0.61, isSpecular: false },
+    { position: [3.9,  0.6,  0.5], normal: unit([0.6,  0.5,  0.4]), pdfFwd: 0.33, pdfRev: 0.52, isSpecular: false },
+    { position: [5.0,  1.7, -0.7], normal: unit([-0.3, 0.4,  0.85]), pdfFwd: 0.81, pdfRev: 0.12, isSpecular: false },
   ];
+  const n = verts.length;
 
-  // Choose s=2 as the reference strategy (interior, both subpaths non-empty).
-  const selectedS = 2;
-  const pRef = verts[0]!.pdfFwd * verts[1]!.pdfFwd * verts[2]!.pdfFwd;
-  const pdfs = buildBDPTStrategyPDFs_full(verts, selectedS, pRef);
-
-  // Independent computation of each strategy PDF by manual ratio accumulation.
-  // The ratio going left from selectedS to s (s < selectedS):
-  //   p_s = p_ref × Π_{i=s+1}^{selectedS} (pdfRev[i] / (pdfFwd[i] · G(i−1, i)))
-  // Going right from selectedS to s (s > selectedS):
-  //   p_s = p_ref × Π_{i=selectedS+1}^{s} (pdfFwd[i] · G(i−1, i) / pdfRev[i])
-
-  function gAdj(i: number): number {
-    return geometricTermG(
-      verts[i - 1]!.position, verts[i - 1]!.normal,
-      verts[i]!.position,     verts[i]!.normal,
-    );
+  // Destination-cosine-only Jacobian: |cos θ_dest| / dist², derived inline from
+  // the change-of-variables definition (NOT calling the implementation).
+  function destJacobian(fromIdx: number, destIdx: number): number {
+    const a = verts[fromIdx]!.position;
+    const b = verts[destIdx]!.position;
+    const nB = verts[destIdx]!.normal;
+    const d: [number, number, number] = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const dist2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    const invDist = 1 / Math.sqrt(dist2);
+    const cosDest = Math.abs(nB[0] * d[0] * invDist + nB[1] * d[1] * invDist + nB[2] * d[2] * invDist);
+    return cosDest / dist2;
   }
 
-  function independentPdf(targetS: number): number {
-    if (targetS === selectedS) return pRef;
-    let p = pRef;
-    if (targetS < selectedS) {
-      for (let i = selectedS; i > targetS; i--) {
-        const g = gAdj(i);
-        if (g <= 0 || verts[i]!.pdfFwd <= 0) return 0;
-        p *= verts[i]!.pdfRev / (verts[i]!.pdfFwd * g);
-      }
-    } else {
-      for (let i = selectedS + 1; i <= targetS; i++) {
-        const g = gAdj(i);
-        if (g <= 0 || verts[i]!.pdfRev <= 0) return 0;
-        p *= (verts[i]!.pdfFwd * g) / verts[i]!.pdfRev;
-      }
+  // Independent area-measure path PDF for strategy s, built straight from the
+  // path-space measure (forward product up to s−1, reverse product from s).
+  function independentAreaPdf(s: number): number {
+    let p = 1;
+    for (let i = 0; i < s; i++) {
+      const jac = i === 0 ? 1 : destJacobian(i - 1, i);
+      p *= verts[i]!.pdfFwd * jac;
+    }
+    for (let j = s; j < n; j++) {
+      const jac = j === n - 1 ? 1 : destJacobian(j + 1, j);
+      p *= verts[j]!.pdfRev * jac;
     }
     return p;
   }
 
-  it('p_0 matches independent computation', () => {
-    expect(pdfs[0]).toBeCloseTo(independentPdf(0), 10);
+  // Anchor the oracle at the same physical reference pdf for strategy selectedS,
+  // so all strategies are compared on a shared scale.
+  const selectedS = 2;
+  const pRef = independentAreaPdf(selectedS);
+  const pdfs = buildBDPTStrategyPDFs_full(verts, selectedS, pRef);
+
+  it('reference strategy p_2 equals pRef', () => {
+    expect(pdfs[2]).toBeCloseTo(pRef, 14);
   });
 
-  it('p_1 matches independent computation', () => {
-    expect(pdfs[1]).toBeCloseTo(independentPdf(1), 10);
+  it('every strategy PDF matches the independent physical derivation', () => {
+    for (let s = 0; s < n; s++) {
+      expect(pdfs[s]).toBeCloseTo(independentAreaPdf(s), 12);
+    }
   });
 
-  it('p_2 (reference strategy) matches pRef', () => {
-    expect(pdfs[2]).toBeCloseTo(pRef, 12);
-  });
-
-  it('p_3 matches independent computation', () => {
-    expect(pdfs[3]).toBeCloseTo(independentPdf(3), 10);
-  });
-
-  it('p_4 matches independent computation', () => {
-    expect(pdfs[4]).toBeCloseTo(independentPdf(4), 10);
-  });
-
-  it('MIS weights sum to 1 for the 5-vertex chain', () => {
+  it('MIS weights match the physical weights and sum to 1', () => {
+    // Build the physical MIS weights from the independent pdfs and compare to
+    // the oracle's weights strategy-by-strategy.
+    const indep = Float64Array.from({ length: n }, (_, s) => independentAreaPdf(s));
+    let denom = 0;
+    for (const p of indep) denom += p * p; // β=2
+    for (let s = 0; s < n; s++) {
+      const physW = (indep[s]! * indep[s]!) / denom;
+      expect(bdptConnectionMIS_full(pdfs, s, 2)).toBeCloseTo(physW, 10);
+    }
     expect(sumWeights(pdfs)).toBeCloseTo(1.0, 10);
+  });
+
+  it('weight distribution is interior-peaked and smooth (not a degenerate spike)', () => {
+    // The corrected oracle yields a smooth distribution that peaks at an
+    // INTERIOR strategy. The OLD (biased) oracle collapsed ~99.97% of the weight
+    // onto strategy 0 — a degenerate spike — on this exact fixture.
+    const weights = Array.from({ length: n }, (_, s) => bdptConnectionMIS_full(pdfs, s, 2));
+    let peak = 0;
+    for (let s = 1; s < n; s++) if (weights[s]! > weights[peak]!) peak = s;
+    expect(peak).toBeGreaterThan(0);     // not the leftmost endpoint
+    expect(peak).toBeLessThan(n - 1);    // not the rightmost endpoint
+    expect(weights[peak]!).toBeLessThan(0.95); // not collapsed to a single spike
+    for (const w of weights) expect(w).toBeGreaterThan(0); // every strategy viable
+  });
+
+  it('REGRESSION GUARD: the old single-full-G / wrong-index recurrence is rejected', () => {
+    // Reproduce the pre-fix oracle verbatim and assert it does NOT reproduce the
+    // physical pdfs on this varying-G fixture — proving the test is sensitive to
+    // the bug (it would pass trivially on the old all-G=1 collinear fixtures).
+    function oldBiasedOracle(vs: BDPTFullVertex[], sel: number, pref: number): Float64Array {
+      const out = new Float64Array(vs.length);
+      out[sel] = pref;
+      { let p = pref;
+        for (let s = sel; s > 0; s--) {
+          const v = vs[s]!, vPrev = vs[s - 1]!;
+          if (v.isSpecular || vPrev.isSpecular) break;
+          const g = geometricTermG(vPrev.position, vPrev.normal, v.position, v.normal);
+          if (g <= 0 || v.pdfFwd <= 0) break;
+          p = p * (v.pdfRev / (v.pdfFwd * g));
+          out[s - 1] = p;
+        } }
+      { let p = pref;
+        for (let s = sel; s < vs.length - 1; s++) {
+          const v = vs[s]!, vNext = vs[s + 1]!;
+          if (vNext.isSpecular || v.isSpecular) break;
+          const g = geometricTermG(v.position, v.normal, vNext.position, vNext.normal);
+          if (g <= 0 || vNext.pdfRev <= 0) break;
+          p = p * ((vNext.pdfFwd * g) / vNext.pdfRev);
+          out[s + 1] = p;
+        } }
+      return out;
+    }
+    const old = oldBiasedOracle(verts, selectedS, pRef);
+    // At least one non-reference strategy must diverge grossly from the physical
+    // value (the old oracle was ~685× off at s=0 on this fixture).
+    let maxRel = 0;
+    for (let s = 0; s < n; s++) {
+      if (s === selectedS) continue;
+      const phys = independentAreaPdf(s);
+      maxRel = Math.max(maxRel, Math.abs(old[s]! - phys) / phys);
+    }
+    expect(maxRel).toBeGreaterThan(1.0); // grossly biased — confirms the bug was real
   });
 });
 

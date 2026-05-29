@@ -2,9 +2,13 @@
  * bdptMIS.ts — BDPT MIS helpers: full Veach §10.3 (T2.H4).
  *
  * Complete strategy-PDF enumeration for a BDPT path of arbitrary length.
- * Uses the recursive ratio sweep from PBR4e Eq. 16.16 to compute all k+1
- * strategy PDFs in O(k) time. Handles specular vertices (zero-weight),
- * geometric term G(x↔y), and the camera/light endpoint corner cases.
+ * Reproduces the canonical PBRT-v4 `MISWeight` recurrence (`integrators.cpp`):
+ * a pure ratio of AREA-measure forward/reverse densities, walking the actual
+ * path vertices, to compute all k+1 strategy PDFs in O(k) time. The vertices
+ * here carry SOLID-ANGLE pdfs, so each is converted to area measure on the fly
+ * via `convertDensitySAtoArea` (PBRT's `Vertex::ConvertDensity`, a
+ * destination-cosine-only "half-G"). Handles specular vertices (zero-weight)
+ * and the camera/light endpoint corner cases.
  *
  * Removed 2026-05-18: the Sprint-10c `_partial` helpers were a single-
  * strategy MIS aid retained for fork-side dispatch (2-strategy case only).
@@ -71,6 +75,60 @@ export function geometricTermG(
   return (cosI * cosJ) / dist2;
 }
 
+// ── convertDensitySAtoArea (PBRT Vertex::ConvertDensity) ──────────────────────
+
+/**
+ * Convert a solid-angle PDF for sampling vertex `dest` (as seen from `from`)
+ * into the equivalent **area-measure** PDF.
+ *
+ * This is exactly PBRT-v4's `Vertex::ConvertDensity` (`integrators.cpp`):
+ *
+ * ```cpp
+ * Float Vertex::ConvertDensity(Float pdf, const Vertex &next) const {
+ *     Vector3f w = next.p() - p();
+ *     Float invDist2 = 1 / LengthSquared(w);
+ *     if (next.IsOnSurface())
+ *         pdf *= AbsDot(next.ng(), w * std::sqrt(invDist2));
+ *     return pdf * invDist2;
+ * }
+ * ```
+ *
+ * The Jacobian for the solid-angle → area change of variables subtends only the
+ * **destination** vertex's cosine: dω = dA_dest · |cos θ_dest| / ‖from−dest‖².
+ * The source-vertex cosine is NOT part of this Jacobian — it is already carried
+ * inside the directional sampling density `pdfSA`. (See Veach §8.2.2.2 / PBRT
+ * §16.1.1.) Using the FULL geometry term G here — which also multiplies the
+ * source cosine — would over-count and produce a geometry-dependent BIAS in the
+ * MIS weights. This destination-only "half-G" is the physically correct factor.
+ *
+ * Returns `pdfSA` unchanged when the positions coincide (degenerate; treated as
+ * a unit Jacobian so endpoint/coincident cases don't blow up).
+ *
+ * @param pdfSA    - solid-angle PDF of sampling `dest` from `from`
+ * @param fromPos  - position of the vertex the direction was sampled at
+ * @param destPos  - position of the vertex being sampled (carries the cosine)
+ * @param destNorm - unit shading normal at `dest`
+ * @returns area-measure PDF (≥ 0)
+ */
+function convertDensitySAtoArea(
+  pdfSA: number,
+  fromPos: readonly [number, number, number],
+  destPos: readonly [number, number, number],
+  destNorm: readonly [number, number, number],
+): number {
+  const dx = destPos[0] - fromPos[0];
+  const dy = destPos[1] - fromPos[1];
+  const dz = destPos[2] - fromPos[2];
+  const dist2 = dx * dx + dy * dy + dz * dz;
+  if (dist2 <= 0) return pdfSA; // coincident → unit Jacobian (endpoint guard)
+
+  const invDist = 1 / Math.sqrt(dist2);
+  const cosDest = Math.abs(
+    destNorm[0] * dx * invDist + destNorm[1] * dy * invDist + destNorm[2] * dz * invDist,
+  );
+  return (pdfSA * cosDest) / dist2;
+}
+
 // ── BDPTFullVertex ────────────────────────────────────────────────────────────
 
 /**
@@ -121,27 +179,47 @@ export interface BDPTFullVertex {
  *
  * For a path with `n = vertices.length` vertices (k = n−1 segments), there are
  * `n` strategies indexed by `s ∈ {0, …, n−1}` where `s` is the number of light
- * subpath vertices (s=0 = pure camera path, s=n−1 = pure light path).
+ * subpath vertices (s=0 = pure camera path, s=n−1 = pure light path). Light
+ * subpath = v_0…v_{s−1}; camera subpath (traced in reverse) = v_s…v_{n−1}.
  *
  * The reference strategy `selectedS` is the one actually used to construct the
  * path. Its probability is `pRef`. All other strategy probabilities are obtained
- * by the recursive ratio sweep (PBR4e Eq. 16.16 / Veach Algorithm 10.4):
+ * by the canonical PBRT-v4 `MISWeight` recurrence (`integrators.cpp`), which is
+ * a pure ratio of **area-measure** densities:
  *
- * Left sweep (decrementing s): at each step, vertex v_s is "claimed" by the
- * camera subpath. Ratio:
+ *   - Light loop:  `ri *= pdfRev_area[i] / pdfFwd_area[i]`  for i = s−1, s−2, …, 0
+ *   - Camera loop: `ri *= pdfRev_area[i] / pdfFwd_area[i]`  for i = t−1, t−2, …, 1
+ *
+ * PBRT stores AREA-measure pdfs (G is baked in at `Vertex::ConvertDensity`), so
+ * its sweep carries NO explicit G inside the loop. This repo's
+ * {@link BDPTFullVertex} stores **solid-angle** pdfs (see the type doc), so we
+ * convert each pdf to area measure on the fly with {@link convertDensitySAtoArea}
+ * (PBRT's `ConvertDensity` — a destination-cosine-only "half-G", NOT the full
+ * geometry term) and then take the same pure ratio. The two formulations are
+ * identical; expressing the loop with the full two-cosine G would inject a
+ * geometry-dependent bias and is wrong.
+ *
+ * **Transfer-vertex index.** Decrementing the strategy (`s → s−1`) flips
+ * ownership of vertex `v_{s−1}` from the forward (light) chain to the reverse
+ * (camera) chain, so the ratio uses `vertices[s−1]`'s densities — NOT
+ * `vertices[s]`'s. Incrementing (`s → s+1`) flips `v_s`, so the ratio uses
+ * `vertices[s]`'s densities. The area pdfs are:
+ *
  * ```
- *   p_{s−1} / p_s = pdfRev[s] / (pdfFwd[s] · G(v_{s−1} ↔ v_s))
+ *   pFwd_area(i) = ConvertDensity(pdfFwd_SA(i), from = v_{i−1}, dest = v_i)
+ *   pRev_area(i) = ConvertDensity(pdfRev_SA(i), from = v_{i+1}, dest = v_i)
  * ```
  *
- * Right sweep (incrementing s): vertex v_{s+1} is claimed by the light subpath.
- * Ratio:
- * ```
- *   p_{s+1} / p_s = pdfFwd[s+1] · G(v_s ↔ v_{s+1}) / pdfRev[s+1]
- * ```
+ * (`pdfFwd` describes arriving at v_i from the forward neighbour v_{i−1};
+ * `pdfRev` describes arriving at v_i from the reverse neighbour v_{i+1}.) At the
+ * light endpoint (v_0) there is no v_{−1}, and at the camera endpoint (v_{n−1})
+ * there is no v_n, so the missing-neighbour Jacobian is treated as 1 — matching
+ * PBRT, where the endpoint pdfs are already stored in area measure.
  *
- * **Specular zero-weight rule (Veach §10.3.5):** if the vertex at the sweep
- * boundary is specular, the sweep breaks and all further strategies in that
- * direction remain zero.
+ * **Specular zero-weight rule (Veach §10.3.5):** a hypothetical strategy whose
+ * connection edge touches a specular (delta-BSDF) vertex cannot be sampled by an
+ * explicit connection, so its pdf is left at 0 and the sweep breaks (all further
+ * strategies in that direction stay 0).
  *
  * @param vertices    - merged path [v_0=light endpoint, …, v_{n-1}=camera endpoint]
  * @param selectedS   - index of the chosen strategy (0-based light vertex count)
@@ -159,39 +237,64 @@ export function buildBDPTStrategyPDFs_full(
   const pdfs = new Float64Array(n);
   pdfs[selectedS] = pRef;
 
-  // ── Left sweep: p_{s−1} = p_s · pdfRev[s] / (pdfFwd[s] · G(v_{s−1}, v_s)) ──
+  // Area-measure forward density of vertex i: pdfFwd_SA(i) converted through the
+  // edge (v_{i−1} → v_i). At the light endpoint (i=0) there is no incoming edge,
+  // so the pdf is already area measure (unit Jacobian).
+  const fwdArea = (i: number): number => {
+    const v = vertices[i]!;
+    if (i === 0) return v.pdfFwd;
+    const prev = vertices[i - 1]!;
+    return convertDensitySAtoArea(v.pdfFwd, prev.position, v.position, v.normal);
+  };
+
+  // Area-measure reverse density of vertex i: pdfRev_SA(i) converted through the
+  // edge (v_{i+1} → v_i). At the camera endpoint (i=n−1) there is no incoming
+  // reverse edge, so the pdf is already area measure (unit Jacobian).
+  const revArea = (i: number): number => {
+    const v = vertices[i]!;
+    if (i === n - 1) return v.pdfRev;
+    const next = vertices[i + 1]!;
+    return convertDensitySAtoArea(v.pdfRev, next.position, v.position, v.normal);
+  };
+
+  // ── Left sweep (decrement s): flip v_{s−1}; p_{s−1} = p_s · pRev(s−1)/pFwd(s−1) ──
   {
     let p = pRef;
     for (let s = selectedS; s > 0; s--) {
-      const v     = vertices[s]!;
-      const vPrev = vertices[s - 1]!;
+      const flip = vertices[s - 1]!; // vertex transferred light → camera
 
-      // Specular rule: the connection point between the two subpaths for
-      // strategy s−1 is the edge (v_{s−1}, v_s). If either endpoint of that
-      // edge is specular the strategy has zero probability — break the sweep.
-      if (v.isSpecular || vPrev.isSpecular) break;
+      // Strategy s−1 connects light subpath v_0…v_{s−2} to camera subpath
+      // v_{s−1}…. Its connection edge is (v_{s−2}, v_{s−1}). If either endpoint
+      // of that edge is specular the strategy cannot be sampled — stop here.
+      const connNeighbor = s - 2 >= 0 ? vertices[s - 2]! : undefined;
+      if (flip.isSpecular || (connNeighbor?.isSpecular ?? false)) break;
 
-      const g = geometricTermG(vPrev.position, vPrev.normal, v.position, v.normal);
-      if (g <= 0 || v.pdfFwd <= 0) break;
+      const pFwd = fwdArea(s - 1);
+      const pRev = revArea(s - 1);
+      if (pFwd <= 0 || pRev <= 0) break;
 
-      p = p * (v.pdfRev / (v.pdfFwd * g));
+      p = p * (pRev / pFwd);
       pdfs[s - 1] = p;
     }
   }
 
-  // ── Right sweep: p_{s+1} = p_s · pdfFwd[s+1] · G(v_s, v_{s+1}) / pdfRev[s+1] ──
+  // ── Right sweep (increment s): flip v_s; p_{s+1} = p_s · pFwd(s)/pRev(s) ──
   {
     let p = pRef;
     for (let s = selectedS; s < n - 1; s++) {
-      const v     = vertices[s]!;
-      const vNext = vertices[s + 1]!;
+      const flip = vertices[s]!; // vertex transferred camera → light
 
-      if (vNext.isSpecular || v.isSpecular) break;
+      // Strategy s+1 connects light subpath v_0…v_s to camera subpath v_{s+1}….
+      // Its connection edge is (v_s, v_{s+1}). If either endpoint is specular the
+      // strategy cannot be sampled — stop here.
+      const connNeighbor = vertices[s + 1]!;
+      if (flip.isSpecular || connNeighbor.isSpecular) break;
 
-      const g = geometricTermG(v.position, v.normal, vNext.position, vNext.normal);
-      if (g <= 0 || vNext.pdfRev <= 0) break;
+      const pFwd = fwdArea(s);
+      const pRev = revArea(s);
+      if (pFwd <= 0 || pRev <= 0) break;
 
-      p = p * ((vNext.pdfFwd * g) / vNext.pdfRev);
+      p = p * (pFwd / pRev);
       pdfs[s + 1] = p;
     }
   }
