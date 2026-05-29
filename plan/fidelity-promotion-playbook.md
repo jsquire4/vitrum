@@ -158,13 +158,13 @@ Source rows: `plan/renderer-fidelity-matrix.md:19-31`. "Implemented?" was
 | 7 | Multi-emitter direct lighting | pt-webgpu | ✅ bounded emitter arrays (mech: `scenePack.test.ts`, `wgslContract.test.ts`) | ✅ (≈2× floor irradiance is a pixel claim; cf. `m5-multi-light-cornell`) | No | `rfe09-bridge-global-cmf` (31415 / 1024×1024 / 256) or `m5-multi-light-cornell` (6121) | Capture adapter (§1.0); no emitter-count-only baseline committed yet |
 | 8 | Material-fields parity (cornell) | pt-webgpu | ✅ (pt-webgl already `supported`); pt-webgpu side WG-0 baseline committed | ✅ | No | `ptwgpu-parity-material-fields` (777 / 1280×720 / 512) | **Closest to done** — baseline `baseline/ptwgpu-parity-material-fields.png` committed; strict-hash re-capture on full-tier adapter is the only step |
 | 9 | Caustic strategies | pt-webgpu | ✅ strategy plumbing (mech: `factoryCapabilities.test.ts`); full tier only | ✅ correctness; ⚠️ **also a perf/quality claim** | **YES** (quality **and perf** per `gap-closure-acceptance-matrix.md:24`) | `rfe05-caustic-strategy` (27182 / 1280×720 / 1024), 3 variants `none / manifold-nee / photon-map` | Real-GPU perf number required; PSNR relaxed to 26 |
-| 10 | SVGF-real denoiser | pt-webgpu | ✅ `experimental` (mech: `svgfRealIntegration.test.ts`) | ✅ on pt-webgpu full tier | No (denoiser quality, not throughput claim) | `denoiser: 'svgf-real'` on pt-webgpu full tier | Capture adapter (§1.0) |
-| 10b | SVGF-real denoiser | **pt-webgl** | ❌ **`unsupported` — real CODE gap, not a capture gap** (no SVGF wiring in `ptEngineWebGL2.ts`; only `oidn-final`) | n/a | n/a | n/a | **Implement first** (or leave `unsupported` honestly). Cannot be "promoted" — nothing to capture. See §3. |
+| 10 | SVGF-real denoiser | pt-webgpu | ❌ **`unsupported` — intentional regime mismatch, NOT promotable** (wiring removed; mech: `unsupportedDenoiserDegrade.test.ts` asserts warn + degrade-to-no-denoise) | n/a | n/a | n/a | pt-webgpu is a CONVERGED progressive tracer; SVGF is a real-time 1-spp spatiotemporal filter. The converged denoiser is **`oidn-final`**. SVGF stays in `shared-denoisers` for the realtime walkaround stack only. Do not "promote" — nothing to capture. |
+| 10b | SVGF-real denoiser | **pt-webgl** | ❌ **`unsupported` — same regime mismatch** (converged tracer; only `oidn-final` is wired in `ptEngineWebGL2.ts`) | n/a | n/a | n/a | Same as #10: SVGF-real is real-time-only and intentionally unsupported on this converged backend. Use `oidn-final`. Not a code gap to fill. |
 | 11 | BDPT (eye↔light) | pt-webgpu | ✅ GPU light-subpath shipped per roadmap §0.5 (`bdptExtendLightSubpath` @compute); CPU fill + kernel eval (mech: `bdptPlumbing.test.ts`) | ✅ converged A/B is a pixel claim | No (correctness); perf is a separate throughput win (roadmap §6.2) | Cornell-box BDPT-on scene at fixed seed (cf. `HARDWARE-VALIDATION-NEEDS.md V1`) | Capture adapter (§1.0); no dedicated BDPT gap-closure scenario in presets — author one |
 | 11b | BDPT (eye↔light) | pt-webgl | ✅ fork path (mech: `forkUniformBridge.test.ts`) | ⚠️ pt-webgl is **WebGL2** — runs on lavapipe's GL surface poorly; native lavapipe is a **WebGPU** device. Use Windows Chrome (transport C). | No | same Cornell BDPT scene, `backend: pt-webgl` | pt-webgl needs a **GL** capture path; lavapipe-WebGPU does not help WebGL2 rows |
 
 **Lavapipe-NOW rows (correctness, no perf gate):** #1, #2, #3, #4, #5, #6, #7,
-#8, #10, #11(pt-webgpu) — i.e. **every pt-webgpu hero-material/spectral/layered/
+#8, #11(pt-webgpu) — i.e. **every pt-webgpu hero-material/spectral/layered/
 SSS/emitter/BDPT row**. These are the bulk of the matrix and the WSL env's whole
 point: their claims are *"are the pixels physically right"*, which a CPU
 rasteriser answers correctly.
@@ -175,8 +175,11 @@ rasteriser answers correctly.
   fidelity via `benchmark:pt-webgl-fidelity`) — pt-webgl is **WebGL2**, and the
   native lavapipe device is **WebGPU**; WebGL2 capture still needs a real browser.
 
-**Not promotable at all (code gap):** #10b SVGF-real on pt-webgl is
-`unsupported` because it is **not implemented**, not because evidence is missing.
+**Not promotable at all (intentional regime mismatch):** #10 and #10b SVGF-real
+are `unsupported` on **both** converged backends (pt-webgpu and pt-webgl) by
+design — SVGF is a real-time 1-spp spatiotemporal filter, and a converged
+progressive tracer's denoiser is **`oidn-final`**. This is not a code gap to fill;
+the real SVGF impl stays in `shared-denoisers` for the realtime walkaround stack.
 
 ---
 
@@ -215,8 +218,10 @@ rasteriser answers correctly.
    gap-closure scenario exists. Author a Cornell-BDPT-on preset (cf.
    `HARDWARE-VALIDATION-NEEDS.md V1`, seeded), then lavapipe-capture the
    converged A/B.
-7. **#10 SVGF-real (pt-webgpu)** — capture with `denoiser: 'svgf-real'` on full
-   tier; correctness-only.
+
+(SVGF-real, formerly Tier-3 #10, is no longer in the promotion queue — it is
+`unsupported` on both converged backends by design; see "Not in the promotion
+queue" below.)
 
 ### Tier 4 — requires real GPU (transport C), schedule on a Windows-Chrome session
 
@@ -228,10 +233,11 @@ rasteriser answers correctly.
 
 ### Not in the promotion queue — real code work (roadmap §0.5, north-star fidelity)
 
-- **#10b SVGF-real on pt-webgl** — `unsupported` is **honest**: it is not
-  implemented. This is a **real gap, not a capture gap**. Either implement SVGF on
-  the WebGL2 path (and then it enters the queue) or leave the row `unsupported`.
-  Do **not** flip it to `supported` — there is nothing to capture.
+- **#10 / #10b SVGF-real (pt-webgpu AND pt-webgl)** — `unsupported` by **design**,
+  not a missing-feature gap. Both are converged progressive tracers; SVGF is a
+  real-time 1-spp spatiotemporal filter and the wrong regime. The converged
+  denoiser is **`oidn-final`**. Do **not** implement or "promote" — the real SVGF
+  impl stays in `shared-denoisers` for the realtime walkaround stack only.
 - **pt-webgl Jakob-Hanika placeholder → real** (roadmap §0.5 item 2) — concurrent
   work; gates the *pt-webgl* spectral fidelity numbers (not the pt-webgpu rows).
 - **BMFR denoiser** — in the `denoiser` union (`core/src/engine/factory.ts:70`)
@@ -243,11 +249,11 @@ rasteriser answers correctly.
 ```
 lavapipe env (tools/gpu-env, DONE) ─┬─► Tier 1 (#8, #5, #6, #3)         [promote now]
                                     ├─► Tier 2 (#1, #2, #4)             [pt-webgpu independent of pt-webgl spectral]
-                                    └─► Tier 3 (#7, #11-ptwgpu, #10)    [author scenario, then capture]
+                                    └─► Tier 3 (#7, #11-ptwgpu)         [author scenario, then capture]
 
 native lavapipe PNG adapter (NOT WIRED, FINDINGS.md:138) ──► unblocks all of the above for hands-free WSL capture
 real GPU / Win-Chrome (transport C) ──► Tier 4 (#9 perf, all pt-webgl rows)
-pt-webgl SVGF impl (CODE) ──► #10b enters queue
+SVGF-real (#10 / #10b) ──► NOT in queue: unsupported by design on both converged backends (oidn-final is the converged denoiser)
 pt-webgl Jakob-Hanika real (CODE, concurrent) ──► pt-webgl spectral fidelity numbers
 ```
 

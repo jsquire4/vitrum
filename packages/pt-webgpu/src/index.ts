@@ -56,7 +56,6 @@ import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
 } from './denoise/oidnFinalDispatcher.js';
-import { SVGFRealDispatcher } from './denoise/svgfRealDispatcher.js';
 import {
   BdptLightPathBufferWebGPU,
   createBdptLightPathPlaceholder,
@@ -167,7 +166,7 @@ class PTEngineWebGPU implements Engine {
   readonly #gpu: GpuResources;
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
-  readonly #postDenoiser: OIDNFinalDispatcher | SVGFRealDispatcher | null;
+  readonly #postDenoiser: OIDNFinalDispatcher | null;
   readonly #extensions: EngineOptions['extensions'];
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
@@ -200,19 +199,7 @@ class PTEngineWebGPU implements Engine {
         ? Math.min(3, Math.floor(requestedBdptBounces))
         : 3;
     this.#gpu = new GpuResources(opts.device, traceTier, this.#bdpt);
-    if (opts.denoiser === 'svgf-real') {
-      if (traceTier === 'lite') {
-        throw new Error(
-          "createPTEngine_WebGPU: denoiser: 'svgf-real' requires full trace tier (albedo + normal-depth aux).",
-        );
-      }
-      const atrousRaw = opts.extensions?.['vitrum.ptWebgpu.svgfAtrousIterations'];
-      const atrousIterations =
-        typeof atrousRaw === 'number' && Number.isFinite(atrousRaw)
-          ? Math.max(1, Math.min(5, Math.floor(atrousRaw)))
-          : 5;
-      this.#postDenoiser = new SVGFRealDispatcher({ atrousIterations });
-    } else if (opts.denoiser === 'oidn-final') {
+    if (opts.denoiser === 'oidn-final') {
       const modelUrl = opts.extensions?.['vitrum.ptWebgpu.oidnModelUrl'];
       const epsRaw = opts.extensions?.['vitrum.ptWebgpu.oidnExecutionProviders'];
       const eps = Array.isArray(epsRaw)
@@ -276,9 +263,6 @@ class PTEngineWebGPU implements Engine {
         ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
         ...(this.#postDenoiser instanceof OIDNFinalDispatcher
           ? (['pt-webgpu-oidn-final'] as const)
-          : []),
-        ...(this.#postDenoiser instanceof SVGFRealDispatcher
-          ? (['pt-webgpu-svgf-real'] as const)
           : []),
         ...(this.#bdpt ? (['pt-webgpu-bdpt'] as const) : []),
       ]),
@@ -1064,11 +1048,12 @@ export const createPTEngine_WebGPU: EngineFactory<PTEngineWebGPUOptions> = async
   if (
     opts.denoiser != null &&
     opts.denoiser !== 'none' &&
-    opts.denoiser !== 'oidn-final' &&
-    opts.denoiser !== 'svgf-real'
+    opts.denoiser !== 'oidn-final'
   ) {
     console.warn(
-      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none', 'oidn-final', and 'svgf-real' are wired.`,
+      `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none' and 'oidn-final' are wired. ` +
+        "pt-webgpu is a converged progressive path tracer; 'svgf-real' is a real-time 1-spp filter and is unsupported here — " +
+        "use 'oidn-final' for converged denoising. Degrading to no-denoise.",
     );
   }
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
