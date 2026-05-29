@@ -106,10 +106,16 @@ This is the design choice that makes the library survive Canvas remount, route c
 
 ## Examples
 
-- [`examples/cornell-box`](./examples/cornell-box) — minimal `@vitrum/pt-webgl` + `@vitrum/three-bindings` consumer (the regression-test scenes live here)
-- [`examples/hero-viewer`](./examples/hero-viewer) — drag-drop glTF viewer
+**Start here** — the facade examples use the one-call `createEngine` / `attachVitrum` path from the Quick start above:
+
+- [`examples/hero-viewer`](./examples/hero-viewer) — drag-drop glTF viewer (`createEngine` facade) — **the minimal path; start here**
 - [`examples/hero-lighting-designer`](./examples/hero-lighting-designer) — interactive lights + frame-time HUD
 - [`examples/hero-product-viz`](./examples/hero-product-viz) — progressive PT product render with material editor
+
+Lower-level (direct backend construction — for reference and regression testing, **not** the minimal path):
+
+- [`examples/cornell-box`](./examples/cornell-box) — `@vitrum/pt-webgl` direct-construction benchmark + regression-test harness (the gap-closure capture scenes live here)
+- [`examples/two-engines-one-scene`](./examples/two-engines-one-scene) — both backends driving one scene; parity / benchmark harness
 
 ## Architecture
 

@@ -430,6 +430,9 @@ export class HybridEngine implements Engine {
   // `HybridEngineFrameOrchestrator` (debounced internal resize).
   private _width:                number;
   private _height:               number;
+  /** Fires the one-time `FrameInput.viewport`-ignored dev warning at most once
+   *  per engine instance (see {@link renderFrame}). */
+  private _viewportMismatchWarned = false;
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -1496,6 +1499,25 @@ export class HybridEngine implements Engine {
    * FrameInput.viewport JSDoc for the cross-backend contract.
    */
   renderFrame(input: FrameInput): FrameOutput {
+    // Ergonomics guard: HybridEngine sizes its render targets at construction /
+    // `setSize()` and does NOT honour `FrameInput.viewport` per-frame (unlike the
+    // converged PT backends — see the FrameInput.viewport contract note). A host
+    // that resizes its canvas and pushes a new viewport, expecting the engine to
+    // follow, would silently render at the stale size. Warn once so the misuse is
+    // visible instead of mysterious. (attachVitrum wires setSize for you.)
+    if (
+      !this._viewportMismatchWarned &&
+      (input.viewport.width !== this._width || input.viewport.height !== this._height)
+    ) {
+      this._viewportMismatchWarned = true;
+      console.warn(
+        `[HybridEngine] FrameInput.viewport (${input.viewport.width}×${input.viewport.height}) ` +
+          `differs from the engine canvas size (${this._width}×${this._height}) and is IGNORED. ` +
+          'HybridEngine sizes render targets at construction; call engine.setSize(width, height) ' +
+          'on canvas resize (attachVitrum does this automatically). For per-frame internal-' +
+          'resolution scaling use FrameInput.quality.resolutionFactor instead.',
+      );
+    }
     return runHybridEngineFrame(this._buildFrameDeps(), input);
   }
 

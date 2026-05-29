@@ -76,6 +76,13 @@ import type { SkyParams } from '@vitrum/scene-lighting';
 import type { DataTexture, Texture } from 'three';
 
 export interface PTEngineWebGL2Options extends EngineOptions {
+  /**
+   * The host's `THREE.WebGLRenderer` (NOT a raw `WebGL2RenderingContext`). The
+   * engine borrows it to drive the fork path tracer and does NOT own its
+   * lifecycle — the host creates and disposes it (host-owns-lifecycle). Named
+   * `device` for cross-backend symmetry with the WebGPU backend's `GPUDevice`
+   * (`@vitrum/pt-webgpu` takes `device: GPUDevice`).
+   */
   readonly device: WebGLRenderer;
   /**
    * Render quality preset (scheduler defaults: batch budget, tile size, adaptive
@@ -443,10 +450,10 @@ export class PTEngineWebGL2 implements Engine {
   readonly #spectralRendering: boolean;
   readonly #radianceClamp: number;
   // Representative linear-sRGB medium albedo for the real Jakob & Hanika RGB→
-  // spectrum upsampling (extensions['vitrum.ptWebgl.spectralAlbedo']). Forwarded
+  // spectrum upsampling (the typed `spectralAlbedo` option). Forwarded
   // to the fork's u_jakobCoeffs uniform via the bridge.
   readonly #spectralAlbedo: readonly [number, number, number] | undefined;
-  // Sprint 10c — BDPT option. Stored from extensions['vitrum.ptWebgl.bdpt'].
+  // Sprint 10c — BDPT option. Stored from the typed `bdpt` / `bdptOptions` options.
   // Forwarded to fork uBdptEnabled / uBdptMaxLightBounces / uBdptLightPathTex uniforms.
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
@@ -489,7 +496,7 @@ export class PTEngineWebGL2 implements Engine {
 
   /** W11 follow-up — OIDN final-pass dispatcher. Non-null iff the host
    *  selected `denoiser: 'oidn-final'` AND supplied
-   *  `extensions['vitrum.ptWebgl.oidnModelUrl']`. The dispatcher is
+   *  the typed `oidn: { modelUrl }` option. The dispatcher is
    *  invalidated on setScene / reset / updateEnvironment (any state
    *  change that resets the accumulator). See
    *  {@link OIDNFinalDispatcher} for the kick-and-return state machine. */

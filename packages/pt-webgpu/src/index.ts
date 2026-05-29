@@ -107,6 +107,12 @@ export {
 } from './bdpt/bdptLightPathBufferWebGPU.js';
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
+  /**
+   * The host-owned `GPUDevice`. The engine allocates GPU resources against it
+   * but does NOT own its lifecycle (host-owns-lifecycle): the host creates the
+   * device and disposes it. The cross-backend analogue is pt-webgl's
+   * `device: THREE.WebGLRenderer`.
+   */
   readonly device: GPUDevice;
   /**
    * Override adapter-based tier selection. Omit to auto-pick: `full` when the device
