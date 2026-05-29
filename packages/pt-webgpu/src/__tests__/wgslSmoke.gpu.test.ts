@@ -12,7 +12,10 @@
  * 16+ and run the full pipeline. Both code paths are covered here.
  */
 import { describe, expect, it, beforeAll } from 'vitest';
-import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import {
+  PT_WEBGPU_TRACE_WGSL,
+  composePtWebgpuTraceWgsl,
+} from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 import {
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -78,11 +81,23 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
     });
 
     if (supported >= PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE) {
-      await device!.createComputePipelineAsync({
-        label: 'pt-webgpu-smoke-pipeline-full',
-        layout: 'auto',
-        compute: { module, entryPoint: 'main' },
-      });
+      // Enough storage BUFFERS — but the full tier also binds 5 storage
+      // TEXTURES (output/normalDepth/albedo/variance/motion). SwiftShader caps
+      // storage textures at 4, so pipeline creation may still be rejected for
+      // that reason; treat that as an acceptable adapter-capability rejection.
+      let textureLimitMessage: string | null = null;
+      try {
+        await device!.createComputePipelineAsync({
+          label: 'pt-webgpu-smoke-pipeline-full',
+          layout: 'auto',
+          compute: { module, entryPoint: 'main' },
+        });
+      } catch (err) {
+        textureLimitMessage = String((err as Error)?.message ?? err);
+      }
+      if (textureLimitMessage != null) {
+        expect(textureLimitMessage).toMatch(/storage textures .* exceeds the maximum/i);
+      }
       expect(supported).toBeGreaterThanOrEqual(PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
     } else {
       let caughtMessage: string | null = null;
@@ -96,8 +111,12 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
         caughtMessage = String((err as Error)?.message ?? err);
       }
       expect(caughtMessage).not.toBeNull();
-      expect(caughtMessage).toMatch(/storage buffers .* exceeds the maximum/i);
-      expect(supported).toBeLessThan(PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
+      // The full tier may exceed EITHER the per-stage storage-buffer limit OR
+      // the storage-texture limit (SwiftShader caps storage textures at 4; the
+      // full tier binds 5). Both are legitimate adapter-capability rejections.
+      expect(caughtMessage).toMatch(
+        /(storage buffers .* exceeds the maximum|storage textures .* exceeds the maximum)/i,
+      );
     }
   });
 
@@ -146,5 +165,25 @@ describe('PT_WEBGPU_TRACE_WGSL GPU smoke', () => {
       expect(caughtMessage).not.toBeNull();
       expect(caughtMessage).toMatch(/storage buffers .* exceeds the maximum/i);
     }
+  });
+
+  it('BDPT-on (volumetric-SSS-gated-off) WGSL parses without compile errors', async () => {
+    // WS4 — the BDPT-enabled composition omits the volumetric random walk
+    // (compile-time structural gate). Confirm the gated variant is still valid
+    // WGSL on a real device (the SSS-on variant is covered above).
+    const module = device!.createShaderModule({
+      label: 'pt-webgpu-smoke-bdpt-on',
+      code: composePtWebgpuTraceWgsl(true),
+    });
+    const info = await module.getCompilationInfo();
+    const errors = info.messages.filter((m) => m.type === 'error');
+    if (errors.length > 0) {
+      throw new Error(
+        `BDPT-on WGSL compile error(s):\n${errors
+          .map((e) => `  line ${e.lineNum}: ${e.message}`)
+          .join('\n')}`,
+      );
+    }
+    expect(errors.length).toBe(0);
   });
 });

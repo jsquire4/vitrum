@@ -40,6 +40,14 @@ fn traceSpecularTransmissiveChain(
 ) -> bool {
   var ray = Ray(startPos + startNormal * 1e-3, safe_normalize(startDir));
   var att = vec3f(1.0);
+  // WS4 — Beer-Lambert medium extinction along the specular chain. When a
+  // front-face refraction enters a translucent medium, the NEXT segment is
+  // travelled inside it; attenuate that segment by exp(-σ_t · segmentLength).
+  // (Single-scatter only: the manifold/photon chain stays a specular path, so
+  // we model the volume as pure extinction, not in-medium scatter.)
+  // Ref: PBR4e §11.1 homogeneous transmittance.
+  var chainInMedium = false;
+  var chainSigmaT = vec3f(0.0);
   for (var step = 0u; step < 8u; step = step + 1u) {
     if (step >= maxChain) {
       *exitPos = ray.origin;
@@ -54,11 +62,19 @@ fn traceSpecularTransmissiveChain(
       *chainAttenuation = att;
       return true;
     }
+    // Attenuate the segment just travelled if it was inside a medium.
+    if (chainInMedium && max(chainSigmaT.x, max(chainSigmaT.y, chainSigmaT.z)) > 1e-6) {
+      att = att * exp(-chainSigmaT * hit.dist);
+    }
     let matId = hitMaterialId(hit);
     let m0Index = matId * MATERIAL_VEC4_STRIDE;
     let m2Index = m0Index + 2u;
+    let m3Index = m0Index + 3u;
+    let m22Index = m0Index + 22u;
     let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));
     let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
+    let m3 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m3Index], m3Index < arrayLength(&materials));
+    let m22 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m22Index], m22Index < arrayLength(&materials));
     let transmission = clamp(m2.x, 0.0, 1.0);
     if (transmission <= 1e-4) {
       return false;
@@ -74,6 +90,16 @@ fn traceSpecularTransmissiveChain(
     att = att * mix(vec3f(1.0), clamp(m0.rgb, vec3f(0.0), vec3f(1.0)), 0.2) * max(transmission, 0.05);
     if (max(att.r, max(att.g, att.b)) < 1e-4) {
       return false;
+    }
+    // Update medium state for the NEXT segment from this refraction event.
+    if (hasRefr && frontFace) {
+      let segSigmaA = select(vec3f(0.0), vec3f(max(m22.x, 0.0), max(m22.y, 0.0), max(m22.z, 0.0)), m22.w > 0.5);
+      let segSigmaS = max(vec3f(max(m3.x, 0.0), max(m3.y, 0.0), max(m3.z, 0.0)), vec3f(max(m2.z, 0.0)));
+      chainSigmaT = max(segSigmaA + segSigmaS, vec3f(0.0));
+      chainInMedium = max(chainSigmaT.x, max(chainSigmaT.y, chainSigmaT.z)) > 1e-6;
+    } else if (hasRefr && !frontFace) {
+      chainInMedium = false;
+      chainSigmaT = vec3f(0.0);
     }
     ray.origin = hitPos + nextDir * 1e-3;
     ray.direction = nextDir;

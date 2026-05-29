@@ -3,7 +3,7 @@ import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.
 
 describe('pt-webgpu lite WGSL contract', () => {
   it('uses the reduced binding layout (no motion / TLAS / light buffers)', () => {
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 22u;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 23u;'); // WS4: 22 → 23
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('motionVectorsTexture');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('varianceMomentsBuffer');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('tlasNodes');

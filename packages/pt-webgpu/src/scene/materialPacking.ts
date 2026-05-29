@@ -3,8 +3,31 @@ import { CIE_LAMBDA_MIN, CIE_LAMBDA_MAX } from '@vitrum/shared-samplers';
 
 const THIN_FILM_LAYER_LIMIT = 8;
 const SPECTRAL_SAMPLE_COUNT = 32;
-/** Matches WGSL `MATERIAL_VEC4_STRIDE` (base layers + 8×(ior,thicknessNm,k) + spectral grid + tail). */
-const MATERIAL_VEC4_STRIDE = 22;
+/**
+ * Matches WGSL `MATERIAL_VEC4_STRIDE`. MUST stay in lockstep with the constant
+ * in `wgsl/pathTrace/material.wgsl.ts` and the `matId * MATERIAL_VEC4_STRIDE`
+ * indexing in `caustic.wgsl.ts`; changing it here without the WGSL constant
+ * silently misaligns every material read.
+ *
+ * Layout (vec4 index):
+ *   0  baseColor.rgb, roughness
+ *   1  emissive.rgb, metallic
+ *   2  transmission, ior, scatteringCoeff, scatteringAnisotropy
+ *   3  scatteringRgb.xyz, hasSpectralAttenuation
+ *   4  frontLayerTx.xyz, frontLayerRoughness
+ *   5  backLayerTx.xyz, backLayerRoughness
+ *   6  thinFilmEnabled, thinFilmLayerCount, incidentIor, angleDependent
+ *   7..12  thin-film layers (8 × {ior, thicknessNm, k}) = 24 floats
+ *   13..20 spectral attenuation samples (32 floats)
+ *   21 spectralAvgMu, m19Y, spectralMaxMu, spectralSampleCount
+ *   22 σ_a.rgb (Beer-Lambert absorption coefficient), hasSigmaA flag  ← WS4
+ *
+ * WS4: vec4 #22 (`MATERIAL_VEC4_STRIDE` bumped 22 → 23) carries the RGB
+ * absorption coefficient σ_a derived from `attenuationColor`/`attenuationDistance`
+ * so the volumetric random walk has a real per-channel extinction term that does
+ * not depend on the (optional) spectral-attenuation curve.
+ */
+const MATERIAL_VEC4_STRIDE = 23;
 export const MATERIAL_FLOAT_STRIDE = MATERIAL_VEC4_STRIDE * 4;
 
 // Visible-light wavelength range, canonical from shared-samplers/cieCmf.
@@ -135,5 +158,36 @@ export function materialToPackedVec4s(material: MaterialSpec): number[] {
   }
   packed.push(...spectralSamples);
   packed.push(spectralAvgMu, m19Y, spectralMaxMu, spectralSampleCount);
+
+  // WS4 — volumetric absorption coefficient σ_a (vec4 #22).
+  // attenuationColor is the transmittance reached after travelling
+  // attenuationDistance through the medium (glTF KHR_materials_volume):
+  //   T(d) = attenuationColor = exp(-σ_a · attenuationDistance)
+  //   ⇒ σ_a = -ln(attenuationColor) / attenuationDistance   (clamped ≥ 0).
+  // The hasSigmaA flag (.w) lets the kernel distinguish "no absorption set"
+  // from a deliberate σ_a = 0 (a clear medium). Total extinction in the walk
+  // is σ_t = σ_a + σ_s, with σ_s from scatteringCoefficient(RGB).
+  // Ref: PBR4e §11.1 "Volume Scattering Processes"; glTF KHR_materials_volume.
+  const attColor = material.attenuationColor;
+  const attDistance = material.attenuationDistance;
+  if (
+    attColor != null &&
+    attDistance != null &&
+    Number.isFinite(attDistance) &&
+    attDistance > 0
+  ) {
+    const sigmaAChannel = (c: number): number => {
+      const t = Math.min(Math.max(finite(c, 1), 1e-4), 1);
+      return Math.max(-Math.log(t) / attDistance, 0);
+    };
+    packed.push(
+      sigmaAChannel(attColor[0]),
+      sigmaAChannel(attColor[1]),
+      sigmaAChannel(attColor[2]),
+      1, // hasSigmaA
+    );
+  } else {
+    packed.push(0, 0, 0, 0);
+  }
   return packed;
 }

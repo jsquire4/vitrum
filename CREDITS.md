@@ -53,7 +53,8 @@ Each technique is cited at its implementation site in the source code. This list
 
 ### Volumetric & participating media
 
-- **Henyey-Greenstein phase function** — Louis Henyey, Jesse Greenstein, "Diffuse radiation in the Galaxy," Astrophysical Journal 1941
+- **Henyey-Greenstein phase function** — Louis Henyey, Jesse Greenstein, "Diffuse radiation in the Galaxy," Astrophysical Journal 1941. Consumed by the `@vitrum/pt-webgpu` homogeneous participating-media random walk (WS4): `wgsl/pathTrace/bsdf.wgsl.ts` (`hgPhase` / `sampleHenyeyGreenstein`) + `wgsl/pathTrace/kernel.wgsl.ts` (free-flight distance sampling, single-scatter albedo σ_s/σ_t, in-medium NEE with phase↔light MIS).
+- **Homogeneous volume transport** — Pharr, Jakob, Humphreys, PBR 4th ed. §11 "Volume Scattering" (free-flight transmittance CDF inversion `t = -ln(1-ξ)/σ_t`, single-scattering albedo). Implemented in `@vitrum/pt-webgpu` `wgsl/pathTrace/kernel.wgsl.ts` + `caustic.wgsl.ts` (specular-chain extinction); σ_a derived from `attenuationColor`/`attenuationDistance` in `scene/materialPacking.ts`.
 - **Equi-angular volume scatter PDF** — Christopher Kulla, Marcos Fajardo, "Importance Sampling Techniques for Path Tracing in Participating Media," Eurographics 2012
 
 ### Spectral rendering

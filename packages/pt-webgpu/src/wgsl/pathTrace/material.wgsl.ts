@@ -189,7 +189,9 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL = /* wgsl */ `
 const LEAFNODE_FLAG = 0xffff0000u;
-const MATERIAL_VEC4_STRIDE = 22u;
+// MUST stay in lockstep with TS \`MATERIAL_VEC4_STRIDE\` in scene/materialPacking.ts.
+// WS4 bumped 22 → 23: vec4 #22 carries volumetric σ_a.rgb + hasSigmaA flag.
+const MATERIAL_VEC4_STRIDE = 23u;
 const MATERIAL_SCALAR_STRIDE = MATERIAL_VEC4_STRIDE * 4u;
 const THIN_FILM_LAYER_LIMIT = 8u;
 const THIN_FILM_SCALAR_BASE = 28u;
@@ -396,6 +398,11 @@ struct DecodedMaterial {
   spectralSampleCount: u32,
   dispersionAbbe: f32,
   isTranslucent: bool,
+  // WS4 — Beer-Lambert absorption coefficient σ_a (per channel), derived host-side
+  // from attenuationColor/attenuationDistance. hasSigmaA distinguishes a clear
+  // medium (σ_a = 0) from "no absorption authored".
+  sigmaA: vec3f,
+  hasSigmaA: bool,
 }
 
 // RFE-03 / fork activeLayerWeight: scalar throughput through face layer at hero λ.
@@ -416,6 +423,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   let m5Index = m0Index + 5u;
   let m6Index = m0Index + 6u;
   let m19Index = m0Index + 21u;
+  let m22Index = m0Index + 22u; // WS4 σ_a vec4
   let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
   let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
   let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
@@ -424,6 +432,7 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   let m5 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m5Index], m5Index < arrayLength(&materials));
   let m6 = select(vec4f(0.0, 0.0, 1.0, 0.0), materials[m6Index], m6Index < arrayLength(&materials));
   let m19 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m19Index], m19Index < arrayLength(&materials));
+  let m22 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m22Index], m22Index < arrayLength(&materials));
   var mat: DecodedMaterial;
   mat.baseColor = m0.rgb;
   mat.roughness = clamp(m0.w, 0.02, 1.0);
@@ -447,6 +456,8 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.spectralSampleCount = u32(max(m19.w, 0.0));
   mat.dispersionAbbe = max(m19.y, 0.0);
   mat.isTranslucent = mat.transmission > 0.0 && mat.scatteringCoeff > 0.0;
+  mat.sigmaA = vec3f(max(m22.x, 0.0), max(m22.y, 0.0), max(m22.z, 0.0));
+  mat.hasSigmaA = m22.w > 0.5;
   return mat;
 }
 `;

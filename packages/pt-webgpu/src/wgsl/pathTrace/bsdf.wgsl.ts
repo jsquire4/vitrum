@@ -209,6 +209,13 @@ struct BounceSample {
   throughputMul: vec3f,
   sampledDir: vec3f,
   sampleAllowsAreaMis: bool,
+  // WS4 — medium-crossing events for the volumetric random walk. Set true on
+  // the dielectric REFRACTION branch (the only branch that crosses the
+  // surface): entered when refracting into a translucent front face, exited
+  // when refracting out through a back face. Reflection / diffuse / specular
+  // branches stay on the same side, so both remain false there.
+  enteredMedium: bool,
+  exitedMedium: bool,
 }
 
 fn sampleNextBounceDirection(
@@ -224,6 +231,7 @@ fn sampleNextBounceDirection(
   ior: f32,
   fresnel: vec3f,
   thinFilmTransmitTint: vec3f,
+  isTranslucent: bool,
 ) -> BounceSample {
   // Build surface-tangent ONB once; shared by both glossy-reflect call sites.
   var tanT: vec3f;
@@ -233,6 +241,8 @@ fn sampleNextBounceDirection(
   var result: BounceSample;
   result.sampledDir = vec3f(0.0);
   result.sampleAllowsAreaMis = false;
+  result.enteredMedium = false;
+  result.exitedMedium = false;
 
   // -----------------------------------------------------------------------
   // Transmissive (dielectric) surface: Fresnel-weighted reflect/refract
@@ -266,7 +276,10 @@ fn sampleNextBounceDirection(
       let g1Wi = smithG1(nDotL, roughness);
       result.throughputMul = fresnel * g1Wi / max(R, 1e-4);
     } else {
-      // Fresnel-weighted refraction branch.
+      // Fresnel-weighted refraction branch — the only branch that crosses the
+      // surface, so it is where the volumetric random walk enters / exits the
+      // medium (WS4). A front-face refraction of a translucent dielectric
+      // enters the medium; a back-face refraction exits it.
       let eta = select(ior, 1.0 / ior, frontFace);
       let refr = refract(incomingDir, normal, eta);
       let outDir = safe_normalize(refr);
@@ -276,6 +289,8 @@ fn sampleNextBounceDirection(
       result.newRayDir = outDir;
       // Divide by branch probability (1 - R); apply thin-film transmittance tint.
       result.throughputMul = mix(vec3f(1.0), baseColor, 0.15) * thinFilmTransmitTint / max(1.0 - R, 1e-4);
+      result.enteredMedium = isTranslucent && frontFace;
+      result.exitedMedium = isTranslucent && !frontFace;
     }
     return result;
   }
@@ -314,5 +329,59 @@ fn sampleNextBounceDirection(
     result.throughputMul = (kd * baseColor) / max(diffProb, 1e-4);
   }
   return result;
+}
+`;
+
+/**
+ * Henyey-Greenstein phase function + importance sampler (WS4 volumetric SSS).
+ *
+ * Emitted as a SEPARATE WGSL chunk so the kernel composer can include it ONLY
+ * when the volumetric walk is compiled in (BDPT off). Keeping it out of the
+ * always-included BSDF module is what makes the BDPT-on shader free of any SSS
+ * symbols (the structural compile-time gate) — no dead phase-function code.
+ *
+ * p(cosθ; g) = 1/(4π) · (1 - g²) / (1 + g² - 2·g·cosθ)^{3/2}
+ * integrates to 1 over the sphere; g ∈ (-1,1) is the mean cosine (forward
+ * scatter for g>0, back-scatter for g<0). The sampler draws cosθ ∝ p with the
+ * closed-form inversion, azimuth uniform, so f/pdf = 1 and the phase-sampled
+ * estimator is unbiased without an explicit weight.
+ *
+ * Ref: Henyey, L. G., & Greenstein, J. L. "Diffuse radiation in the galaxy."
+ *      Astrophys. J. 93:70-83 (1941).
+ *      Pharr, Jakob, Humphreys. PBR 4th ed. §11.3 "Phase Functions" — the HG
+ *      phase function and its sampling routine (eq. 11.7).
+ */
+export const PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL = /* wgsl */ `
+const INV_4PI = 0.07957747154594767;
+
+fn hgPhase(cosTheta: f32, g: f32) -> f32 {
+  let denom = 1.0 + g * g - 2.0 * g * cosTheta;
+  return INV_4PI * (1.0 - g * g) / max(pow(denom, 1.5), 1e-9);
+}
+
+// Sample a world-space direction from the HG phase function around the
+// incoming-photon travel direction wIn (the direction the ray is travelling).
+// Returns the scattered direction; the implied pdf equals hgPhase(cosθ, g).
+fn sampleHenyeyGreenstein(rng: ptr<function, u32>, wIn: vec3f, g: f32) -> vec3f {
+  let u1 = rand_f32(rng);
+  let u2 = rand_f32(rng);
+  var cosTheta: f32;
+  if (abs(g) < 1e-3) {
+    cosTheta = 1.0 - 2.0 * u1; // isotropic
+  } else {
+    let sq = (1.0 - g * g) / (1.0 + g - 2.0 * g * u1);
+    // PBRT closed form returns cosθ vs wo = -travel (mean -g); negate so it is
+    // measured against the travel direction wIn (mean +g, forward scatter for
+    // g>0) — consistent with hgPhase(dot(travel, ·), g) used in the kernel NEE.
+    cosTheta = (1.0 + g * g - sq * sq) / (2.0 * g);
+  }
+  cosTheta = clamp(cosTheta, -1.0, 1.0);
+  let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+  let phi = 2.0 * PI * u2;
+  // Build an ONB around wIn and place the sampled (θ measured FROM wIn).
+  var t: vec3f;
+  var b: vec3f;
+  buildOnb(wIn, &t, &b);
+  return safe_normalize(sinTheta * cos(phi) * t + sinTheta * sin(phi) * b + cosTheta * wIn);
 }
 `;

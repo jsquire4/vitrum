@@ -221,7 +221,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           spectralMu = vec3f(sampledMuR, sampledMuG, sampledMuB);
         }
       }
-      let sigmaA = select(vec3f(0.0), max(spectralMu, vec3f(0.0)), hasSpectralAttenuation);
+      // Lite tier keeps the legacy Beer-Lambert absorption (no volumetric
+      // random walk — WS4 §4 degradation policy). Prefer the spectral
+      // attenuation curve; otherwise fall back to the host-derived σ_a
+      // (from attenuationColor/attenuationDistance) so that material data is
+      // not silently dead on the compatibility tier.
+      var sigmaA = select(vec3f(0.0), max(spectralMu, vec3f(0.0)), hasSpectralAttenuation);
+      if (!hasSpectralAttenuation && mat.hasSigmaA) {
+        sigmaA = max(mat.sigmaA, vec3f(0.0));
+      }
       let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
       let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
       if (max(sigmaT.x, max(sigmaT.y, sigmaT.z)) > 0.0) {
@@ -329,6 +337,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       ior,
       fresnel,
       thinFilmTransmitTint,
+      isTranslucent,
     );
     ray.origin = bs.newRayOrigin;
     ray.direction = bs.newRayDir;

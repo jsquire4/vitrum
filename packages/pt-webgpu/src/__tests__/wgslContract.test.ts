@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 describe('pt-webgpu WGSL material contract', () => {
   it('uses the bounded rich material payload layout', () => {
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 22u;');
+    // WS4 bumped the stride 22 → 23 (new vec4 #22 carries volumetric σ_a.rgb +
+    // hasSigmaA flag). Kept in lockstep with TS MATERIAL_VEC4_STRIDE.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const MATERIAL_VEC4_STRIDE = 23u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const THIN_FILM_LAYER_LIMIT = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const SPECTRAL_SAMPLE_COUNT = 32u;');
   });
