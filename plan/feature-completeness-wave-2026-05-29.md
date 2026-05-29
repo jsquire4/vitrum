@@ -87,6 +87,20 @@ plan was produced from a deep, code-verified audit (docs were found stale and co
 
 ---
 
+### WS6 — API ergonomics pass (full) [added 2026-05-29, post-audit]
+
+**Why.** A cold importer gets pixels via `attachVitrum({canvas, scene, camera})` / `createEngine({canvas, scene})` (genuinely good), but advanced features fail the "self-evident without docs" bar. Approach (all back-compat, additive):
+
+1. **Typed feature options** — promote first-class features (spectral, BDPT, caustics, quality mode, OIDN model URL, adaptive sampling) out of the stringly-typed `extensions: {'vitrum.ptWebgl.X': v}` bag into typed/discoverable options. Keep the extensions bag working (deprecate, don't remove); ship a typed per-backend extensions interface + exported key constants so call sites get autocomplete.
+2. **Hello-world example** — a ~30-line facade-based example (`attachVitrum`); point the root README at it instead of the cornell-box benchmark harness.
+3. **Viewport divergence** — HybridEngine ignores `FrameInput.viewport` (needs `setSize`); either honor it or emit a dev-mode warning when passed-and-ignored.
+4. **`device` naming** — clarify the polymorphic `device` field (THREE.WebGLRenderer for pt-webgl vs GPUDevice for WebGPU backends).
+5. **Optional-method surface** — compile-time capability narrowing / clearer guidance so `engine.updatePrimitive?.()` etc. don't surprise with `undefined is not a function`.
+
+**Files.** `core/src/engine/index.ts`, `core/src/frame.ts`, `core/src/scene/*` (option types), `engine/src/createEngine.ts`, pt-webgl + pt-webgpu + walkaround-hybrid option/extension types, `examples/` (new hello-world), `README.md`. **Sequenced AFTER Wave B** (shares the contract files WS5 edits + the pt-webgpu option files WS2/WS4 edit) so it reflects the final surface including `createInverseSession`.
+
+**Tests.** Typed-option ↔ extensions-bag equivalence (both paths produce the same engine config); deprecation path still compiles; hello-world example typechecks; viewport-warning fires in dev when ignored.
+
 ## 3. Execution order, waves & audit checkpoints
 
 ```
@@ -94,6 +108,8 @@ Wave A (parallel, walkaround-hybrid, no contention):  WS1 ‖ WS3
    └─ AUDIT CHECKPOINT A
 Wave B (sequential within pt-webgpu — all touch kernel.wgsl):  WS2 → WS4 → WS5
    └─ AUDIT CHECKPOINT B
+Wave B′ (after Wave B merges — shares contract + pt-webgpu option files):  WS6 ergonomics pass
+   └─ AUDIT CHECKPOINT B′
 Wave C (validation):  capture V21–V24 reference renders; record V-items
 ```
 
