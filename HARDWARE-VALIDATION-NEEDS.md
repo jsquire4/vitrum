@@ -107,7 +107,7 @@ Acceptance (per `tools/benchmark-runner/README.md` §"Sweep verification capture
 - **Acceptance:** full hybrid pipeline initializes + renders a frame on hardware WebGPU with zero shader-compile errors across all passes.
 
 ### V9 — real Jakob-Hanika RGB→spectrum upsampling (pt-webgl spectral)  [implemented — needs render]
-- **What changed:** `shared-samplers/src/jakobHanika.ts` replaced the placeholder with the genuine Gauss-Newton sigmoid-coefficient solve (round-trip CPU-pinned to ~1e-7 interior / <5e-3 saturated); pt-webgl's `forkUniformBridge` now uploads real `u_jakobCoeffs` from `vitrum.ptWebgl.spectralAlbedo` when spectral rendering is on. Capability tag `spectral-jakob-hanika-placeholder` → `spectral-jakob-hanika`.
+- **What changed:** `shared-samplers/src/jakobHanika.ts` replaced the placeholder with the genuine Gauss-Newton sigmoid-coefficient solve (round-trip CPU-pinned to ~1e-7 interior / <5e-3 saturated); pt-webgl's `forkUniformBridge` uploads real `u_jakobCoeffs` from `vitrum.ptWebgl.spectralAlbedo` when spectral rendering is on. Capability tag `spectral-jakob-hanika-placeholder` → `spectral-jakob-hanika`. **UPDATE (this session): the fork integrator now actually CONSUMES the coefficients** — before, `evalSpectrum(u_jakobCoeffs,λ)` had ZERO call sites (uploaded-but-dead). A gated `mediumAlbedoHero()` now drives the volume single-scatter (`u_scatterAlbedo`) + SSS single-scatter (`u_sssAlbedo`) albedo through `evalSpectrumAtHero` when spectral upsampling is active (`uSpectralRendering && u_jakobCoeffs != 0`); off-gate it returns the legacy `heroScalarFromRgb` smoothstep, bit-identical. So the A/B below is now actually meaningful (previously the coeffs had no render effect).
 - **Why GPU:** the fork's `evalSpectrum(u_jakobCoeffs, λ)` reflectance weighting only manifests in a live spectral render (hero-wavelength accumulation), not exercisable under SwiftShader.
 - **Test scene:** a dispersive/transmissive glass scene, `spectralRendering: true` + a saturated `spectralAlbedo` (e.g. `[0.5,0.1,0.7]`), fixed seed, pt-webgl. A/B `bbd32c8` vs `main`.
 - **Expected delta:** the medium picks up the correct chromatic reflectance per hero wavelength (vs the prior flat S≡½); no fireflies; converged image consistent with the CPU round-trip (<5e-3).
@@ -122,7 +122,49 @@ Acceptance (per `tools/benchmark-runner/README.md` §"Sweep verification capture
 - **Expected delta:** vs the raw (`'none'`) signal — substantial noise reduction with **preserved geometric gradients** (BMFR fits the spatial features, so it is gradient-preserving, not a box blur) and **crisp material edges** (block-local fit + screen-space position discontinuities at depth edges). vs `svgf-real` — comparable-or-better spatial smoothness on smooth surfaces; watch for block-boundary seams (32×32 grid) and temporal ghosting on motion (mitigated by the camera-move history reset).
 - **Acceptance:** (a) clear noise reduction vs `'none'` with no new fireflies; (b) no hard 32×32 block seams in the final composite; (c) gradients + material edges preserved (not over-blurred); (d) under camera motion, no persistent ghost trails (history resets on `isMoving`); (e) a static converged frame is artifact-free. If block seams ARE visible, enable the half-block-offset overlap (blockStride < blockSize, the `blockStride` UBO field) and/or widen the temporal window.
 
+### V11 — GPU-skin bindMatrix fallback  [implemented this session — needs functional GPU check]
+- **What changed:** the GPU skinning path (`GpuSkinningSubsystem`) now falls back to the CPU `solveSkin` for a skinned mesh with a **non-identity `bindMatrix`** and no morphs (it was taking the GPU path, whose kernel uses `combineSkinMatrices(bones, boneInverses)` WITHOUT the bind wrapping the CPU solver applies → wrong positions + normals). Identity/absent bind still uses the GPU fast path.
+- **Why GPU:** skinning runs in walkaround GPU compute.
+- **Test scene / plan:** an animated `SkinnedMesh` authored with a non-identity `bindMatrix` (no morphs), hybrid backend; compare against the CPU `solveSkin` result.
+- **Expected delta:** the mesh deforms correctly (matches CPU reference) — previously distorted under non-identity bind.
+- **Acceptance:** non-identity-bind skinned mesh matches the CPU reference; an identity-bind mesh is unchanged (still GPU path).
+
+### V12 — duplicate DDGI sun dedup  [implemented this session — needs-render]
+- **What changed:** when a scene `directional` (→ DDGI sun) AND a host `opts.lights` `sun` are both present, only ONE sun now reaches DDGI (scene directional wins, host sun dropped + one-time warn). Applied on BOTH the init path (`HybridEngineLifecycle`) and the incremental re-sync path (`HybridEngine._syncDdgiLightsFromThreeRoot`).
+- **Why GPU:** DDGI direct lighting, walkaround.
+- **Test scene / plan:** a scene with a `directional` emitter AND a host `opts.lights` sun, hybrid backend. A/B `main` vs `bbd32c8`.
+- **Expected delta:** sun lighting at the correct SINGLE intensity (was ~2× from double-injection).
+- **Acceptance:** brightness matches a single sun; no doubling; scene-directional precedence honored.
+
+### V13 — RC merged-instance refit + filter parity  [implemented this session — needs-render]
+- **What changed:** RC merged-mode moving-instance refit is now wired into `propagateBvhToGiSubsystems` (`refitMergedInstance` — in-place positions + node-AABB refit, no teardown). Also `RCSubsystem.setScene` now builds with a permissive all-meshes filter (was PBR-only `DEFAULT_FILTER`) so RC's merged vertex layout matches ReSTIR's by construction (non-PBR meshes were diverging — caught the moment the refit was wired).
+- **Why GPU:** RC merged-mode GI, walkaround (`rcEnabled`).
+- **Test scene / plan:** RC merged mode (`rcEnabled`, merged BVH) with a moving instance + at least one non-PBR mesh (e.g. MeshBasic), hybrid backend. Move the instance; observe RC GI.
+- **Expected delta:** after the instance moves, RC GI tracks the new geometry without a full rebuild; non-PBR meshes are included in RC's BVH (matching ReSTIR).
+- **Acceptance:** GI stays correct after instance moves; no RC/ReSTIR geometry divergence; no teardown stutter.
+
+### V14 — resolutionFactor composite upscale (C1)  [implemented this session — needs-render]
+- **What changed:** the composite blit is now resolution-independent — the vertex shader emits a `[0,1]²` screen UV and the frag indexes `denoisedTex` via `uv × textureDimensions` (nearest). Previously it indexed the internal-res texture with raw swap-chain `fragCoord`, so `resolutionFactor < 1` rendered into the top-left and left the rest of the canvas BLACK.
+- **Why GPU:** composite pass, walkaround.
+- **Test scene / plan:** any hybrid scene at `resolutionFactor` 0.5 and 0.75 on a real GPU.
+- **Expected delta:** the ENTIRE canvas is covered (no black border/region); nearest-neighbour upscale; `factor == 1` is bit-identical to before.
+- **Acceptance:** corner-pixel telemetry confirms full coverage; upscale quality acceptable vs a `factor = 1.0` reference. Worked pixel: 1920×1080@0.5 → bottom-right maps to internal (959,539).
+
+### V15 — DDGI cadence load-bearing + 2→32 preset spread (H1)  [implemented this session — needs-render]
+- **What changed:** `ddgiUpdateDivisor` now drives the REAL probe-update round-robin stride (was a dead UBO field; real cadence was a hardcoded stride 8). Preset spread is now ultra=2 / high=4 / medium=8 / low=32. **IMPORTANT: omitting `qualityTier` applies the ultra preset, so the no-preset DEFAULT cadence is now stride 2 — 4× the old hardcoded stride-8.** Deliberate fidelity-forward change.
+- **Why GPU:** DDGI probe update, walkaround.
+- **Test scene / plan:** a step lighting change (`updateLighting` toggling the sun); capture DDGI convergence over N frames at `ddgiUpdateDivisor` = 2, 8, 32. Telemetry: `window.__DDGI__.activeCount` per frame + atlas-mean.
+- **Expected delta:** GI converges proportionally faster at lower divisors (divisor 2 ≈ 4× the per-frame active-probe count of divisor 8 ≈ 8× of divisor 32); the new default (stride 2) shows visibly faster GI response than the old stride-8.
+- **Acceptance:** GI response rate scales inversely with divisor; per-frame `activeCount` matches the stride; no probe artifacts/instability at stride 2; the default 8→2 change is faster without temporal-blend breakdown.
+
+### V16 — RC ⊕ ReSTIR-GI per-pixel confidence MIS  [implemented this session — needs-render]
+- **What changed:** the indirect RC/ReSTIR-GI blend (`shade.wgsl`) is now a per-pixel confidence-ratio balance heuristic — `c_restir = clamp(Meff/restirGiMClamp)`, `c_rc = rcWeight·(1−m)`, `w_rc = c_rc/(c_rc+c_restir)` — replacing the old fixed host scalar. Unbiased (convex blend of two estimators of the same integral).
+- **Why GPU:** shade pass, walkaround (`rcEnabled`).
+- **Test scene / plan:** `rcEnabled: true`, moderate `rcWeight` (≈0.5), a disocclusion-heavy scene; capture the first ~10 frames after a fast camera pan. A/B vs the pre-change fixed-scalar build.
+- **Expected delta:** less indirect noise in freshly-disoccluded (low-M) regions (RC fills in); converged (high-M) regions match the old result closely (RC fades out).
+- **Acceptance:** disoccluded regions visibly cleaner than the fixed-scalar blend; converged regions ≈ unchanged; `rcEnabled: false` is bit-identical to a pre-change build.
+
 ---
 
 ## 3. Suggested session order
-Run the **probe** (confirm full tier + hybrid). Then V8 (cheap: does everything still compile?), then the render A/Bs V1–V7 and V10 (BMFR). Adopt the post-sweep PNGs as new baselines per the benchmark-runner README §5 once each passes visual sign-off.
+Run the **probe** (confirm full tier + hybrid). Then V8 (cheap: does everything still compile?), then the render A/Bs V1–V7, V9, V10 (BMFR), and the later-wave items V11–V16 (skin bind, sun dedup, RC merged-refit, resolutionFactor coverage, DDGI cadence/2→32 default, RC⊕ReSTIR-GI MIS). The cheapest functional checks (V8 compile, V11 skin-routing, V14 canvas-coverage) gate the rest. Adopt the post-sweep PNGs as new baselines per the benchmark-runner README §5 once each passes visual sign-off. **Note:** several V11–V16 items default-ON now (e.g. V15's stride-2 default cadence, V16's confidence MIS), so a plain `main` capture already exercises them.
