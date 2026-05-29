@@ -1,7 +1,15 @@
 /**
  * Per-frame render orchestration for {@link HybridEngine} (W4e).
  */
-import type { FrameInput, FrameOutput, FrameStats, EngineDebugSurface, EngineState, Scene } from '@vitrum/core';
+import type {
+  FrameInput,
+  FrameOutput,
+  FrameStats,
+  ProgressStats,
+  EngineDebugSurface,
+  EngineState,
+  Scene,
+} from '@vitrum/core';
 import { asBackendTexture } from '@vitrum/core';
 import type * as THREE from 'three';
 import type { DDGI } from './ddgi/DDGI.js';
@@ -97,6 +105,10 @@ export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoise
   rc: RCSubsystem | null;
   rcWeight: number;
   frameSubs: ReadonlyArray<(stats: FrameStats) => void>;
+  /** T3.E — long-running progress subscribers (`'ddgi-warmup'` +
+   *  `'denoiser-converge'`). Fired at the end of each dispatched frame,
+   *  once per still-converging kind. Empty array ⇒ zero progress work. */
+  progressSubs: ReadonlyArray<(progress: ProgressStats) => void>;
   verbose: boolean;
   debugTimings: Array<{ t: number; ms: number }>;
   debugSurface: EngineDebugSurface;
@@ -157,6 +169,76 @@ export function resolveInternalRenderSize(args: {
   // (lastResizeTs === 0) is always allowed.
   const debounced = args.lastResizeTs !== 0 && args.nowMs - args.lastResizeTs < RESOLUTION_FACTOR_DEBOUNCE_MS;
   return { targetW, targetH, shouldResize: !debounced };
+}
+
+/**
+ * DDGI warm-up progress (`'ddgi-warmup'`).
+ *
+ * The probe round-robin updates one stratum of `1/stride` probes per enabled
+ * `updateFrame` tick (see {@link DDGI.updateFrame}). A freshly-built /
+ * invalidated grid therefore needs `stride` ticks for *every* probe to receive
+ * its first update — which is exactly when {@link DDGI.ready} flips true. So
+ * the honest metric is `frame / stride`, clamped to [0,1]:
+ *
+ *   - `frame` (= {@link DDGI.warmupFrame}) is reset to 0 by
+ *     `invalidateProbeCache()`, which `setScene()` (→ teardown → fresh DDGI is
+ *     constructed at `frame=0`) and `updateLighting()` both trigger.
+ *   - `stride` (= {@link DDGI.warmupStride}) is the round-robin divisor.
+ *   - `ready` short-circuits emission: once the grid is warm we return `null`
+ *     so `onProgress` stops spamming a steady `fraction:1`.
+ *
+ * Returns `null` when there is nothing to report (already warm, or stride is
+ * not yet meaningful), so the caller emits ONLY while ramping 0→1.
+ */
+export function computeDdgiWarmupProgress(args: {
+  frame: number;
+  stride: number;
+  ready: boolean;
+}): ProgressStats | null {
+  // Stop emitting once warm — `ready` flips true at `frame >= stride`.
+  if (args.ready) return null;
+  // A stride of <1 (or a not-yet-sized grid) has no meaningful warm-up window.
+  const target = Math.max(1, Math.floor(args.stride));
+  const current = Math.max(0, args.frame);
+  const fraction = Math.min(1, Math.max(0, current / target));
+  return { kind: 'ddgi-warmup', current, target, fraction };
+}
+
+/**
+ * Denoiser temporal-convergence progress (`'denoiser-converge'`).
+ *
+ * Every realtime denoiser here feeds the final temporal accumulator, which
+ * blends `alpha` of the new frame with `1-alpha` of history each frame
+ * (α=0.01 ⇒ ~99% history retained ⇒ a ~`1/α`-frame effective averaging
+ * window). The accumulator's history depth is {@link WalkaroundGPUPipeline.accumFrameIndex},
+ * which:
+ *   - increments once per rendered frame,
+ *   - is reset to 0 on camera motion (`isMoving`), `requestAccumReset()`
+ *     (lighting change / emitter edit), and `resize()`.
+ *
+ * So the honest convergence fraction is `accumFrameIndex / window` where
+ * `window = round(1/alpha)`. The reset on motion is inherited for free:
+ * `accumFrameIndex` drops to 0, so `fraction` snaps back to 0 and ramps again.
+ *
+ * Returns `null` once converged (`accumFrameIndex >= window`) so emission
+ * stops at steady state instead of pinning `fraction:1` every frame.
+ */
+export function computeDenoiserConvergeProgress(args: {
+  accumFrameIndex: number;
+  alpha: number;
+}): ProgressStats | null {
+  // alpha ≤ 0 (or non-finite) ⇒ pure history hold, no finite convergence
+  // window to report. alpha ≥ 1 ⇒ no temporal accumulation (each frame is
+  // fully fresh) ⇒ "converged" every frame ⇒ nothing to report.
+  if (!Number.isFinite(args.alpha) || args.alpha <= 0 || args.alpha >= 1) {
+    return null;
+  }
+  const target = Math.max(1, Math.round(1 / args.alpha));
+  const current = Math.max(0, args.accumFrameIndex);
+  // Stop emitting once the effective window is full (steady state reached).
+  if (current >= target) return null;
+  const fraction = Math.min(1, Math.max(0, current / target));
+  return { kind: 'denoiser-converge', current, target, fraction };
 }
 
 export function fingerprintHybridPipelineRebuildKey(
@@ -236,6 +318,55 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   }
 }
 
+/**
+ * T3.E — emit long-running progress events for the two walkaround warm-up
+ * signals: DDGI probe convergence (`'ddgi-warmup'`) and temporal-accumulator
+ * denoiser convergence (`'denoiser-converge'`). Both metrics are derived
+ * PURELY from live subsystem state (the DDGI round-robin counter + the
+ * pipeline's accumulator history depth) via the pure
+ * {@link computeDdgiWarmupProgress} / {@link computeDenoiserConvergeProgress}
+ * functions, each of which returns `null` once its signal is converged so we
+ * stop spamming a steady `fraction:1`.
+ *
+ * No-op when no `onProgress` subscriber is registered — zero work, zero state
+ * reads — so an unobserved engine pays nothing.
+ */
+function emitProgressTelemetry(
+  deps: HybridEngineFrameDeps,
+  pipeline: WalkaroundGPUPipeline,
+): void {
+  if (deps.progressSubs.length === 0) return;
+
+  const events: ProgressStats[] = [];
+
+  // DDGI warm-up — only meaningful while the ddgi layer is active.
+  if (deps.ddgiOn && deps.isLayerEnabled('ddgi')) {
+    const warm = computeDdgiWarmupProgress({
+      frame: deps.ddgi.warmupFrame,
+      stride: deps.ddgi.warmupStride,
+      ready: deps.ddgi.ready,
+    });
+    if (warm) events.push(warm);
+  }
+
+  // Denoiser temporal convergence — anchored to the real accumulator depth.
+  const converge = computeDenoiserConvergeProgress({
+    accumFrameIndex: pipeline.accumFrameIndex,
+    alpha: pipeline.temporalAccumAlpha,
+  });
+  if (converge) events.push(converge);
+
+  for (const event of events) {
+    for (const sub of deps.progressSubs) {
+      try {
+        sub(event);
+      } catch (err) {
+        if (deps.verbose) console.warn('[HybridEngine] onProgress subscriber threw', err);
+      }
+    }
+  }
+}
+
 function emitFrameTelemetry(
   deps: HybridEngineFrameDeps,
   pipeline: WalkaroundGPUPipeline,
@@ -263,6 +394,8 @@ function emitFrameTelemetry(
       }
     }
   }
+
+  emitProgressTelemetry(deps, pipeline);
 
   if (deps.debug) {
     deps.debugTimings.push({ t: now, ms: dt });

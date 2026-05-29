@@ -470,6 +470,21 @@ export class WalkaroundGPUPipeline {
     return this._initialized ? this._res : null;
   }
 
+  /** Temporal-accumulator history depth: frames accumulated since the last
+   *  α=1 reset (camera motion, `requestAccumReset`, or `resize`). Increments
+   *  once per rendered frame; reset to 0 on each of those events. Read by
+   *  `HybridEngine.onProgress` for the `'denoiser-converge'` fraction. */
+  get accumFrameIndex(): number {
+    return this._accumFrameIndex;
+  }
+
+  /** Temporal-accumulator EMA weight α (history blend `1-α` per frame).
+   *  The effective convergence window is ≈ `1/α` frames (α=0.01 ⇒ ~100).
+   *  Target denominator for the `'denoiser-converge'` progress metric. */
+  get temporalAccumAlpha(): number {
+    return this._temporalAccumAlpha;
+  }
+
   constructor(device: GPUDevice, width: number, height: number) {
     this._device = device;
     this._width  = width;

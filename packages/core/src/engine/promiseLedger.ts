@@ -80,7 +80,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       setSize: true,
       updateLighting: true,
       onFrame: true,
-      onProgress: false,
+      onProgress: true,
       debug: true,
     },
     frameInputPromises: {

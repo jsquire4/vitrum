@@ -43,6 +43,7 @@ import type {
   EngineFactory,
   EngineState,
   FrameStats,
+  ProgressStats,
 } from '@vitrum/core';
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
@@ -421,6 +422,12 @@ export class HybridEngine implements Engine {
 
   /** T3.E — telemetry subscribers fired at end of each successful renderFrame. */
   private readonly _frameSubs: Array<(s: FrameStats) => void> = [];
+
+  /** T3.E — long-running progress subscribers fired at the end of each
+   *  dispatched frame, once per still-converging signal (`'ddgi-warmup'`
+   *  while the probe grid warms, `'denoiser-converge'` while the temporal
+   *  accumulator fills). Empty until a host calls {@link onProgress}. */
+  private readonly _progressSubs: Array<(p: ProgressStats) => void> = [];
 
   /** Read-only snapshot of recent frame timings collected when the engine
    *  was constructed with `debug: true`. Returns an empty array when debug
@@ -1373,6 +1380,7 @@ export class HybridEngine implements Engine {
       rcWeight: self._rcWeight,
       ...self._denoiserFilterDeps(),
       frameSubs: self._frameSubs,
+      progressSubs: self._progressSubs,
       verbose: self._verbose,
       debugTimings: self._debugTimings,
       debugSurface: self.debug,
@@ -1458,10 +1466,39 @@ export class HybridEngine implements Engine {
     };
   }
 
-  // Walkaround engines don't accumulate, so onProgress doesn't have a
-  // meaningful 'pt-spp' to report. DDGI warm-up could surface here once
-  // we expose probe-update progress; for now the optional method is
-  // intentionally absent (consumers must typeof-check per the contract).
+  /**
+   * Subscribe to long-running progress events. Returns an unsubscribe
+   * function. Subscribers that throw are swallowed so the render loop stays
+   * alive (mirrors {@link onFrame}).
+   *
+   * Walkaround engines don't accumulate samples, so there is no `'pt-spp'`
+   * signal — but the two REAL warm-up signals this engine has ARE surfaced
+   * (closing the contract's `'ddgi-warmup'` / `'denoiser-converge'`
+   * zero-producer gap):
+   *
+   *   - `'ddgi-warmup'` — the DDGI probe round-robin updates `1/stride` of the
+   *     grid per frame, so a freshly built / invalidated grid takes `stride`
+   *     frames for every probe to receive its first update. `fraction` ramps
+   *     `frame / stride` from 0→1 and emission STOPS once the grid is warm
+   *     (`DDGI.ready`). Reset to 0 on `setScene()` (fresh DDGI) and
+   *     `updateLighting()` (`invalidateProbeCache()`).
+   *
+   *   - `'denoiser-converge'` — the temporal accumulator blends `α` of the new
+   *     frame with `1-α` of history (α≈0.01 ⇒ ~100-frame window). `fraction`
+   *     ramps `accumFrameIndex / round(1/α)` and emission STOPS once the
+   *     window is full. Reset to 0 on camera motion, `updateLighting()` /
+   *     `updateEmitter()` (`requestAccumReset()`), and `setSize()` / resize.
+   *
+   * Both events fire at most once per dispatched frame, only while their
+   * signal is still converging. A no-op when the host registered no callback.
+   */
+  onProgress(cb: (progress: ProgressStats) => void): () => void {
+    this._progressSubs.push(cb);
+    return () => {
+      const i = this._progressSubs.indexOf(cb);
+      if (i >= 0) this._progressSubs.splice(i, 1);
+    };
+  }
 
   // ── Dispose ────────────────────────────────────────────────────────────
 

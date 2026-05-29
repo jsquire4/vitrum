@@ -141,6 +141,19 @@ export class DDGI {
   get lastFrameMs(): number     { return this._lastFrameMs; }
   get probeCount(): number      { return this._grid.probeCount; }
 
+  /** Number of probe-update passes dispatched since the last
+   *  `invalidateProbeCache()` (or construction). Increments once per enabled
+   *  `updateFrame` tick; reset to 0 by `invalidateProbeCache()`. Read by
+   *  `HybridEngine.onProgress` to compute the `'ddgi-warmup'` fraction —
+   *  after `warmupStride` passes the round-robin has touched every probe at
+   *  least once (one stratum of `1/stride` probes per pass). */
+  get warmupFrame(): number     { return this._frame; }
+
+  /** Round-robin probe-update stride (= the divisor). After `warmupStride`
+   *  enabled passes every probe has received ≥1 update, which is exactly when
+   *  `ready` flips true. Target for the `'ddgi-warmup'` progress metric. */
+  get warmupStride(): number    { return this._stride; }
+
   // ── Light configuration ───────────────────────────────────────────────────
 
   /** Replace the current light list. Forwarded to ProbeUpdatePass. */
