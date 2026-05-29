@@ -74,19 +74,23 @@ export function composePathTraceKernelWgsl(opts: { readonly volumetricSss: boole
           throughput = throughput * singleScatterAlbedo * channelW;
           let throughputInMedium = throughput;
 
-          // In-medium NEE: connect to the directional light through the medium
-          // with HG↔light power-heuristic MIS (the phase function plays the
-          // role of the BSDF inside the medium).
+          // In-medium NEE: connect to the directional light through the medium.
+          // The directional light is a DELTA — phase sampling (the medium's
+          // analogue of BSDF sampling) has zero probability of ever hitting it,
+          // so light sampling is the only strategy that can reach it and takes
+          // FULL weight 1.0 (no MIS down-weighting). This mirrors the surface
+          // NEE, which also adds the directional contribution at weight 1. The
+          // earlier powerHeuristic(1, phaseVal) was area-light-style MIS wrongly
+          // applied to a delta light and dimmed in-medium single-scatter from the
+          // sun. The estimator is throughput · L_i · phase(ω_scatter→ω_light); the
+          // single-scatter albedo σ_s/σ_t is already folded into throughputInMedium.
           if (params.lightDir.w > 1e-6) {
             let lightDir = safe_normalize(params.lightDir.xyz);
             let shadowRay = Ray(scatterPos, lightDir);
             if (!traceAny(shadowRay, 1e-4, INFINITY)) {
               let cosScatter = dot(ray.direction, lightDir);
               let phaseVal = hgPhase(cosScatter, mediumG);
-              // Light "pdf" for a directional emitter is a delta we approximate
-              // as 1 for the heuristic; phase pdf is hgPhase itself.
-              let misWeight = powerHeuristic(1.0, phaseVal);
-              radiance = radiance + throughputInMedium * vec3f(params.lightDir.w) * phaseVal * misWeight;
+              radiance = radiance + throughputInMedium * vec3f(params.lightDir.w) * phaseVal;
             }
           }
 
