@@ -500,20 +500,25 @@ async function main(): Promise<void> {
     maxBounces: config.bounces,
     maxSamplesPerPixel: config.samplesTarget,
     causticStrategy: config.causticStrategy,
+    // First-class features — typed options (graduated from the extensions bag).
+    qualityMode: config.qualityMode,
+    spectral: spectralRendering,
+    ...(config.bdpt
+      ? {
+          bdpt: true,
+          bdptOptions: {
+            maxLightBounces: config.bdptMaxLightBounces,
+            ...(config.bdptCpuFill ? { cpuFill: true } : {}),
+          },
+        }
+      : {}),
+    // Advanced/experimental tuning knobs stay in the extensions bag (the
+    // deliberate extension seam).
     extensions: {
-      'vitrum.ptWebgl.spectralRendering': spectralRendering,
-      'vitrum.ptWebgl.qualityMode': config.qualityMode,
       'vitrum.ptWebgl.radianceClamp': 0,
       'vitrum.ptWebgl.pixelAdaptiveSampling': config.pixelAdaptiveSampling,
       'vitrum.ptWebgl.pixelAdaptiveCadence': config.pixelAdaptiveCadence,
       'vitrum.ptWebgl.additiveAccumulation': config.pixelAdaptiveSampling,
-      ...(config.bdpt
-        ? {
-            'vitrum.ptWebgl.bdpt': true,
-            'vitrum.ptWebgl.bdptMaxLightBounces': config.bdptMaxLightBounces,
-            ...(config.bdptCpuFill ? { 'vitrum.ptWebgl.bdptCpuFill': true } : {}),
-          }
-        : {}),
       // Capture-mode default is 1 sample/frame for telemetry granularity. That
       // ties wall-clock convergence to rAF cadence, which collapses under
       // background-tab throttling. Allow URL override via vitrumSpf so capture

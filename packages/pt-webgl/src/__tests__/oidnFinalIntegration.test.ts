@@ -170,7 +170,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
         device: makeRendererForOIDN() as never,
         denoiser: 'oidn-final',
       }),
-    ).rejects.toThrow(/oidnModelUrl/);
+    ).rejects.toThrow(/oidn: \{ modelUrl \}/);
   });
 
   it("createPTEngine_WebGL2 throws when 'oidn-final' is requested with an empty model URL", async () => {
@@ -178,9 +178,9 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
       createPTEngine_WebGL2({
         device: makeRendererForOIDN() as never,
         denoiser: 'oidn-final',
-        extensions: { 'vitrum.ptWebgl.oidnModelUrl': '' },
+        oidn: { modelUrl: '' },
       }),
-    ).rejects.toThrow(/oidnModelUrl/);
+    ).rejects.toThrow(/oidn: \{ modelUrl \}/);
   });
 
   it("succeeds with denoiser 'oidn-final' + a model URL + a synthetic bridge loader", async () => {
@@ -192,7 +192,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
     });
     expect(engine.state).toBe('ready');
@@ -215,7 +215,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
       maxSamplesPerPixel: 8,
     });
@@ -277,7 +277,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
       maxSamplesPerPixel: 8,
     });
@@ -306,7 +306,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
       maxSamplesPerPixel: 8,
     });
@@ -339,7 +339,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
       maxSamplesPerPixel: 8,
     });
@@ -373,7 +373,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
       maxSamplesPerPixel: 8,
     });
@@ -401,7 +401,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
       maxSamplesPerPixel: 8,
     });
@@ -431,7 +431,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererForOIDN() as never,
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => bridge,
       maxSamplesPerPixel: 8,
     });
@@ -506,7 +506,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
                   ...base,
                   denoiser: 'oidn-final' as const,
                   // 'oidn-final' requires a model URL so it constructs.
-                  extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+                  oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
                   oidnBridgeLoader: async () => ({
                     denoiseFinal: vi.fn(async () => new Float32Array(0)),
                     preloadOIDNModel: vi.fn(async () => undefined),
@@ -544,7 +544,7 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
       const engine = await createPTEngine_WebGL2({
         device: makeRendererForOIDN() as never,
         denoiser: 'oidn-final',
-        extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+        oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
         oidnBridgeLoader: async () => bridge,
         maxSamplesPerPixel: 8,
       });

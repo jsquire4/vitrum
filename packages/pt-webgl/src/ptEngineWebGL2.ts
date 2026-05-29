@@ -78,6 +78,44 @@ import type { DataTexture, Texture } from 'three';
 export interface PTEngineWebGL2Options extends EngineOptions {
   readonly device: WebGLRenderer;
   /**
+   * Render quality preset (scheduler defaults: batch budget, tile size, adaptive
+   * cadence). Default `'capture'`. (Graduated from the former
+   * `extensions['vitrum.ptWebgl.qualityMode']`.)
+   */
+  readonly qualityMode?: PTEngineWebGL2QualityMode;
+  /**
+   * Enable Jakob-Hanika spectral rendering (dispersion / thin-film / spectral
+   * SSS). Off by default. (Graduated from `extensions['vitrum.ptWebgl.spectralRendering']`.)
+   */
+  readonly spectral?: boolean;
+  /** Optional spectral base-albedo `[r,g,b]` for the Jakob-Hanika upsample. Read
+   *  only when {@link spectral} is `true`. (Graduated from
+   *  `extensions['vitrum.ptWebgl.spectralAlbedo']`.) */
+  readonly spectralAlbedo?: readonly [number, number, number];
+  /**
+   * Enable the bidirectional path tracer (Sprint-10c caustic integrator). Off by
+   * default. (Graduated from `extensions['vitrum.ptWebgl.bdpt']`.)
+   */
+  readonly bdpt?: boolean;
+  /** BDPT tuning — read only when {@link bdpt} is `true`. */
+  readonly bdptOptions?: {
+    /** Light-subpath bounces, clamped 1–3. Default 3. */
+    readonly maxLightBounces?: number;
+    /** Force CPU bounce-0 light-path fill (reference captures). */
+    readonly cpuFill?: boolean;
+  };
+  /**
+   * Intel Open Image Denoise final-pass config. REQUIRED when
+   * `denoiser: 'oidn-final'`. (Graduated from the former
+   * `extensions['vitrum.ptWebgl.oidnModelUrl' | 'oidnExecutionProviders']`.)
+   */
+  readonly oidn?: {
+    /** URL/path of the ONNX OIDN model. */
+    readonly modelUrl: string;
+    /** ONNX Runtime execution-provider preference order. */
+    readonly executionProviders?: readonly ('webnn' | 'webgpu' | 'wasm')[];
+  };
+  /**
    * Test-only OIDN bridge loader override. When the host selects
    * `denoiser: 'oidn-final'`, the engine constructs an
    * {@link OIDNFinalDispatcher}; production code lets the dispatcher
@@ -189,15 +227,6 @@ function extensionBoolean(
   return typeof value === 'boolean' ? value : fallback;
 }
 
-function extensionQualityMode(
-  extensions: Readonly<Record<string, unknown>> | undefined,
-): PTEngineWebGL2QualityMode {
-  const value = extensions?.['vitrum.ptWebgl.qualityMode'];
-  return value === 'interactive' || value === 'final' || value === 'capture' || value === 'safe'
-    ? value
-    : 'capture';
-}
-
 function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(value)));
 }
@@ -210,8 +239,8 @@ function nowMs(): number {
 
 function defaultSchedulerOptions(
   extensions: Readonly<Record<string, unknown>> | undefined,
+  qualityMode: PTEngineWebGL2QualityMode,
 ): SchedulerOptions {
-  const qualityMode = extensionQualityMode(extensions);
   const modeDefaults: Record<PTEngineWebGL2QualityMode, Omit<SchedulerOptions, 'qualityMode'>> = {
     interactive: {
       adaptive: true,
@@ -299,22 +328,6 @@ interface CausticConfig {
   readonly spectralAlbedo: readonly [number, number, number] | undefined;
 }
 
-/** Validate a `vitrum.ptWebgl.spectralAlbedo` extension into a finite RGB triple. */
-function parseSpectralAlbedo(
-  value: unknown,
-): readonly [number, number, number] | undefined {
-  if (!Array.isArray(value) || value.length < 3) return undefined;
-  const [r, g, b] = value;
-  if (
-    typeof r !== 'number' || !Number.isFinite(r) ||
-    typeof g !== 'number' || !Number.isFinite(g) ||
-    typeof b !== 'number' || !Number.isFinite(b)
-  ) {
-    return undefined;
-  }
-  return [r, g, b];
-}
-
 function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
   // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
   const causticOpts = opts.causticOptions ?? {};
@@ -325,12 +338,12 @@ function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
     strategy: opts.causticStrategy ?? 'none',
     mneeMaxIterations: Math.max(1, mneeIter),
     mneeMaxChainLength: Math.max(1, mneeChain),
-    spectralRendering: opts.extensions?.['vitrum.ptWebgl.spectralRendering'] === true,
+    spectralRendering: opts.spectral === true,
     radianceClamp:
       typeof requestedRadianceClamp === 'number' && Number.isFinite(requestedRadianceClamp)
         ? Math.max(0, requestedRadianceClamp)
         : 0,
-    spectralAlbedo: parseSpectralAlbedo(opts.extensions?.['vitrum.ptWebgl.spectralAlbedo']),
+    spectralAlbedo: opts.spectralAlbedo,
   });
 }
 
@@ -347,17 +360,15 @@ interface BdptConfig {
   readonly cpuFill: boolean;
 }
 
-function parseBdptConfig(
-  extensions: Readonly<Record<string, unknown>> | undefined,
-): BdptConfig {
-  const requestedBdptBounces = extensions?.['vitrum.ptWebgl.bdptMaxLightBounces'];
+function parseBdptConfig(opts: PTEngineWebGL2Options): BdptConfig {
+  const requestedBdptBounces = opts.bdptOptions?.maxLightBounces;
   return Object.freeze({
-    enabled: extensions?.['vitrum.ptWebgl.bdpt'] === true,
+    enabled: opts.bdpt === true,
     maxLightBounces:
       typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
         ? Math.min(3, Math.floor(requestedBdptBounces))
         : 3,
-    cpuFill: extensions?.['vitrum.ptWebgl.bdptCpuFill'] === true,
+    cpuFill: opts.bdptOptions?.cpuFill === true,
   });
 }
 
@@ -502,7 +513,7 @@ export class PTEngineWebGL2 implements Engine {
     this.#spectralRendering = caustic.spectralRendering;
     this.#radianceClamp = caustic.radianceClamp;
     this.#spectralAlbedo = caustic.spectralAlbedo;
-    const bdpt = parseBdptConfig(opts.extensions);
+    const bdpt = parseBdptConfig(opts);
     this.#bdpt = bdpt.enabled;
     this.#bdptMaxLightBounces = bdpt.maxLightBounces;
     this.#bdptCpuFill = bdpt.cpuFill;
@@ -515,7 +526,7 @@ export class PTEngineWebGL2 implements Engine {
           'Use WSL capture (benchmark:bdpt-layered-refs-gpu-wsl-full) for mechanical promotion.',
       );
     }
-    this.#schedulerOptions = defaultSchedulerOptions(opts.extensions);
+    this.#schedulerOptions = defaultSchedulerOptions(opts.extensions, opts.qualityMode ?? 'capture');
     this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
     this.#tileSize = this.#schedulerOptions.initialTileSize;
     this.#pathTracer = gpu.pathTracer;
@@ -556,11 +567,10 @@ export class PTEngineWebGL2 implements Engine {
     // so the shader's `gAlbedo` / `gNormalDepth` outputs aren't captured
     // host-side. See {@link OIDNFinalDispatcher} doc for context.
     if (opts.denoiser === 'oidn-final') {
-      const modelUrl = opts.extensions?.['vitrum.ptWebgl.oidnModelUrl'];
-      const epsRaw = opts.extensions?.['vitrum.ptWebgl.oidnExecutionProviders'];
-      const eps = Array.isArray(epsRaw)
-        ? (epsRaw.filter((p) => p === 'webnn' || p === 'webgpu' || p === 'wasm') as Array<'webnn' | 'webgpu' | 'wasm'>)
-        : undefined;
+      const modelUrl = opts.oidn?.modelUrl;
+      const eps = opts.oidn?.executionProviders?.filter(
+        (p) => p === 'webnn' || p === 'webgpu' || p === 'wasm',
+      );
       const dispatcherOpts =
         eps !== undefined && eps.length > 0
           ? { modelUrl: modelUrl as string, executionProviders: eps }
@@ -1611,11 +1621,11 @@ export const createPTEngine_WebGL2: EngineFactory<PTEngineWebGL2Options> = async
   // exact extensions key) gives hosts a clearer integration error than a
   // late-bound throw from the dispatcher.
   if (opts.denoiser === 'oidn-final') {
-    const modelUrl = opts.extensions?.['vitrum.ptWebgl.oidnModelUrl'];
+    const modelUrl = opts.oidn?.modelUrl;
     if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
       throw new Error(
         "createPTEngine_WebGL2: denoiser: 'oidn-final' requires " +
-          "extensions['vitrum.ptWebgl.oidnModelUrl'] (a URL or path to the OIDN ONNX model file). " +
+          'oidn: { modelUrl } (a URL or path to the OIDN ONNX model file). ' +
           'See packages/shared-denoisers/src/oidnBridge.ts for model variants ' +
           '(oidn_rt_hdr.onnx for color-only, oidn_rt_hdr_alb_nrm.onnx for the aux-input variant).',
       );

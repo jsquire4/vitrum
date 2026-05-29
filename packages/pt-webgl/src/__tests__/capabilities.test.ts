@@ -109,8 +109,8 @@ describe('pt-webgl capabilities', () => {
     const renderer = makeRendererStub();
     const engine = await createPTEngine_WebGL2({
       device: renderer as never,
+      qualityMode: 'interactive',
       extensions: {
-        'vitrum.ptWebgl.qualityMode': 'interactive',
         'vitrum.ptWebgl.renderTargetBudgetBytes': 128 * 1024 * 1024,
       },
     });
@@ -128,8 +128,8 @@ describe('pt-webgl capabilities', () => {
   it('adapts sample batches upward when the GPU budget has headroom', async () => {
     const engine = await createPTEngine_WebGL2({
       device: makeRendererStub() as never,
+      qualityMode: 'interactive',
       extensions: {
-        'vitrum.ptWebgl.qualityMode': 'interactive',
         'vitrum.ptWebgl.samplesPerFrame': 1,
         'vitrum.ptWebgl.maxSamplesPerFrame': 4,
         'vitrum.ptWebgl.targetBatchMs': 1000,
