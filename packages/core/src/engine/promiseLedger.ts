@@ -130,10 +130,17 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       emitter: true,
       topology: true,
     },
-    // Whole-primitive add/remove is a deliberate follow-up on pt-webgl: the
-    // three-gpu-pathtracer fork's StaticGeometryGenerator + MaterialsTexture
-    // would need a targeted append/evict path. Hosts use `setScene` for now.
-    supportsAddRemovePrimitive: false,
+    // Explicit whole-primitive add/remove IS implemented: addPrimitive appends a
+    // new primitive and removePrimitive evicts one, each via a full
+    // `setScene`-equivalent rebuild of the mutated scene. A new primitive almost
+    // always brings a NEW material, and the fork's targeted geometry-only regen
+    // SKIPS updateMaterials(); routing add/remove through the shared setScene
+    // packing path (convert→expand→tracer.setScene) re-packs the
+    // MaterialsTexture + light arrays correctly by construction — no fragile
+    // per-array index remap. Mirrors pt-webgpu's full-repack choice. Distinct
+    // from incrementalPatchSupport.topology (count-change patches on an EXISTING
+    // primitive).
+    supportsAddRemovePrimitive: true,
     supportsAuxBuffers: false,
     accumulates: true,
     // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh;
@@ -155,9 +162,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       updatePrimitive: true,
       updateEmitter: true,
       updateEnvironment: true,
-      // Follow-up — see supportsAddRemovePrimitive above.
-      addPrimitive: false,
-      removePrimitive: false,
+      addPrimitive: true,
+      removePrimitive: true,
       setSize: false,
       updateLighting: false,
       onFrame: true,

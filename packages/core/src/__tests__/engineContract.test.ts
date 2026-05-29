@@ -42,7 +42,7 @@ describe('backend promise ledger', () => {
 
   it('pins the per-backend add/remove-primitive truth table', () => {
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportsAddRemovePrimitive).toBe(true);
-    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportsAddRemovePrimitive).toBe(false);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportsAddRemovePrimitive).toBe(true);
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportsAddRemovePrimitive).toBe(false);
   });
 });

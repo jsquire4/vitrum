@@ -66,6 +66,7 @@ describe('pt-webgl promise ledger compliance', () => {
     const caps = engine.capabilities;
 
     expect(caps.supportsIncrementalScene).toBe(expected.supportsIncrementalScene);
+    expect(caps.supportsAddRemovePrimitive).toBe(expected.supportsAddRemovePrimitive);
     expect(caps.supportsAuxBuffers).toBe(expected.supportsAuxBuffers);
     expect(caps.accumulates).toBe(expected.accumulates);
     expect(caps.presentationMode).toBe(expected.presentationMode);
@@ -79,6 +80,8 @@ describe('pt-webgl promise ledger compliance', () => {
     expect(typeof engine.updatePrimitive === 'function').toBe(expected.methodPromises.updatePrimitive);
     expect(typeof engine.updateEmitter === 'function').toBe(expected.methodPromises.updateEmitter);
     expect(typeof engine.updateEnvironment === 'function').toBe(expected.methodPromises.updateEnvironment);
+    expect(typeof engine.addPrimitive === 'function').toBe(expected.methodPromises.addPrimitive);
+    expect(typeof engine.removePrimitive === 'function').toBe(expected.methodPromises.removePrimitive);
     expect(typeof engine.setSize === 'function').toBe(expected.methodPromises.setSize);
     expect(typeof engine.updateLighting === 'function').toBe(expected.methodPromises.updateLighting);
     expect(typeof engine.onFrame === 'function').toBe(expected.methodPromises.onFrame);

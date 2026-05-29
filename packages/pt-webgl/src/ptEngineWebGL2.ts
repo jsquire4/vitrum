@@ -707,6 +707,16 @@ export class PTEngineWebGL2 implements Engine {
         emitter: true,
         topology: true,
       },
+      // Explicit whole-primitive add/remove IS implemented: addPrimitive appends
+      // a new primitive and removePrimitive evicts one, each via a full
+      // `setScene`-equivalent rebuild of the mutated scene (the fork's
+      // StaticGeometryGenerator re-bakes geometry + BVH and the MaterialsTexture
+      // / light arrays are re-packed by the shared setScene path — no fragile
+      // per-array index remap). Mirrors pt-webgpu's full-repack choice. Distinct
+      // from incrementalPatchSupport.topology (COUNT-change patches on an
+      // existing primitive). Kept in sync with the pt-webgl row in
+      // @vitrum/core's BACKEND_PROMISE_LEDGER.
+      supportsAddRemovePrimitive: true,
       supportsAuxBuffers: false,
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
@@ -998,6 +1008,87 @@ export class PTEngineWebGL2 implements Engine {
     // environment field is non-nullable; collapse a null env to `{ kind: 'none' }`.
     const nextEnv: SceneEnvironment = env ?? { kind: 'none' };
     this.#vitrumScene = { ...this.#vitrumScene, environment: nextEnv };
+  }
+
+  /**
+   * Add one whole primitive to the live scene (contract:
+   * {@link Engine.addPrimitive}).
+   *
+   * Design choice — APPROACH (a): full `setScene`-equivalent rebuild.
+   * A whole-primitive add almost always introduces a NEW material (and, for a
+   * `mesh-area` emitter target, new emissive geometry). The fork's targeted
+   * geometry-only regen (`refreshPathTracerSceneGeometry`) deliberately SKIPS
+   * `updateMaterials()`, so a new material would never reach the
+   * MaterialsTexture on that path. Rather than bolt a brittle "regen + targeted
+   * material re-pack" onto the add path (approach b), we append the primitive to
+   * a fresh `Scene` copy and route it through `setScene` — the same
+   * already-correct convert→expand→`tracer.setScene` (full BVH + materials +
+   * lights + env re-pack) spine `setScene` runs. This mirrors pt-webgpu's
+   * `#repackScene` choice: correct-by-construction, no fragile per-array index
+   * remap. On a CONVERGED progressive tracer the work is essentially a repack
+   * either way (the accumulator must reset regardless of how much of the BVH is
+   * reused), so the simpler full path costs nothing extra in practice — the
+   * value here is API consistency with pt-webgpu, not a perf win.
+   *
+   * Contract semantics honored:
+   *   • Duplicate `id` throws BEFORE any mutation — the dup check runs against
+   *     the live `#vitrumScene`, and `nextScene` is only built (and `setScene`
+   *     only called) once it passes, so the scene is unchanged on throw.
+   *   • Unsupported primitive kinds / analytic shapes are warn-skipped by the
+   *     `partitionSceneBySupport` filter inside `setScene` (they do not throw).
+   *   • Accumulation resets — `setScene`'s `tracer.setScene` clears the fork
+   *     accumulator and `#oidnDispatcher.invalidate()` drops the stale denoise.
+   */
+  addPrimitive(primitive: ScenePrimitive): void {
+    this.#assertLive('addPrimitive');
+    // #assertLive throws when #vitrumScene is null; the assertion captures that
+    // invariant for the type checker.
+    const currentScene = this.#vitrumScene!;
+    if (currentScene.primitives.some((p) => String(p.id) === String(primitive.id))) {
+      throw new Error(
+        `addPrimitive: a primitive with id "${String(primitive.id)}" already exists; ` +
+          'use updatePrimitive to mutate an existing primitive.',
+      );
+    }
+    const nextScene: Scene = {
+      ...currentScene,
+      primitives: [...currentScene.primitives, primitive],
+    };
+    this.setScene(nextScene);
+  }
+
+  /**
+   * Remove one whole primitive from the live scene by `id` (contract:
+   * {@link Engine.removePrimitive}). The inverse of {@link addPrimitive}.
+   *
+   * Implementation: drop the primitive from a fresh `Scene` copy and route
+   * through `setScene` (approach a — see {@link addPrimitive}). A remove is the
+   * case that genuinely needs the dense material / emitter / light-tree arrays
+   * compacted; reusing the `setScene` packing path reproduces that correctly by
+   * construction rather than hand-rolling a multi-array compaction. Removing the
+   * last primitive is legal and yields a renderable sky-only scene (the empty
+   * scene `setScene` already supports).
+   *
+   * Contract semantics honored:
+   *   • A missing `id` throws BEFORE any mutation — the membership check runs
+   *     against the live `#vitrumScene`; `setScene` is only called once it
+   *     passes, so the scene is unchanged on throw.
+   *   • Accumulation resets exactly as for {@link addPrimitive}.
+   */
+  removePrimitive(id: ScenePrimitive['id']): void {
+    this.#assertLive('removePrimitive');
+    const currentScene = this.#vitrumScene!;
+    const nextPrimitives = currentScene.primitives.filter((p) => String(p.id) !== String(id));
+    if (nextPrimitives.length === currentScene.primitives.length) {
+      throw new Error(
+        `removePrimitive: no primitive with id "${String(id)}" in the live scene.`,
+      );
+    }
+    const nextScene: Scene = {
+      ...currentScene,
+      primitives: nextPrimitives,
+    };
+    this.setScene(nextScene);
   }
 
   updatePrimitive(_id: string, _patch: Partial<ScenePrimitive>): void {
