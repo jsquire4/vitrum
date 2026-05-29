@@ -76,6 +76,49 @@ function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
   if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
 }
 
+/**
+ * Apply the optional Disney-BSDF lobe fields from a vitrum Material directly
+ * onto a THREE.MeshPhysicalMaterial. These are NOT userData stamps — they are
+ * first-class `MeshPhysicalMaterial` properties that the pt-webgl fork reads
+ * verbatim in `MaterialsTexture.js` (e.g. `getField(m, 'clearcoat', 0)`,
+ * `m.sheenColor.r`, `getField(m, 'iridescenceIOR', 1.3)`). Without this, a
+ * core-authored MaterialSpec carrying sheen/clearcoat/iridescence lobes was
+ * silently dropped before reaching the renderer, even though the reverse
+ * direction (`convertMaterial`, THREE → core) already reads them.
+ *
+ * Property-name mapping (core MaterialSpec → THREE property):
+ *   sheen                     → material.sheen            (float)
+ *   sheenColor (Vec3)         → material.sheenColor       (THREE.Color)
+ *   sheenRoughness            → material.sheenRoughness   (float)
+ *   clearcoat                 → material.clearcoat        (float)
+ *   clearcoatRoughness        → material.clearcoatRoughness (float)
+ *   iridescence               → material.iridescence      (float)
+ *   iridescenceIor            → material.iridescenceIOR   (float; THREE caps "IOR")
+ *   iridescenceThicknessRange → material.iridescenceThicknessRange ([min,max])
+ *
+ * Each field is written only when defined on the spec (including explicit 0,
+ * which is meaningful and should round-trip) so callers omitting a lobe keep
+ * THREE's own defaults rather than being clobbered with undefined.
+ */
+function applyDisneyLobes(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
+  if (m.sheen !== undefined) mat.sheen = m.sheen;
+  if (m.sheenColor !== undefined) {
+    mat.sheenColor.setRGB(m.sheenColor[0], m.sheenColor[1], m.sheenColor[2]);
+  }
+  if (m.sheenRoughness !== undefined) mat.sheenRoughness = m.sheenRoughness;
+  if (m.clearcoat !== undefined) mat.clearcoat = m.clearcoat;
+  if (m.clearcoatRoughness !== undefined) mat.clearcoatRoughness = m.clearcoatRoughness;
+  if (m.iridescence !== undefined) mat.iridescence = m.iridescence;
+  // THREE spells it iridescenceIOR (caps); core's contract field is iridescenceIor.
+  if (m.iridescenceIor !== undefined) mat.iridescenceIOR = m.iridescenceIor;
+  if (m.iridescenceThicknessRange !== undefined) {
+    mat.iridescenceThicknessRange = [
+      m.iridescenceThicknessRange[0],
+      m.iridescenceThicknessRange[1],
+    ];
+  }
+}
+
 /** Stamp vitrum-specific extension fields into `mat.userData` using the
  *  canonical keys from `userDataKeys.ts`. Each field is set only when the
  *  source field is defined, so callers without the new RFEs get a clean
@@ -157,6 +200,7 @@ function vitrumMaterialToThree(m: VitrumMaterial, meshAreaRgb?: Vec3): MeshPhysi
     mat.anisotropy = m.anisotropy;
     mat.anisotropyRotation = m.anisotropyRotation ?? 0;
   }
+  applyDisneyLobes(mat, m);
   applyTextureMaps(mat, m);
   stampVitrumUserData(mat, m);
   return mat;

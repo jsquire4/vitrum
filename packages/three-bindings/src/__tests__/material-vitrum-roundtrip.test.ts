@@ -274,6 +274,117 @@ describe('vitrumSceneToThree: anisotropy + anisotropyRotation written to THREE m
   });
 });
 
+// ────────────────────────────────────────────────────────────────────────────
+// Disney-BSDF lobes — sheen / clearcoat / iridescence (vitrum → THREE)
+//
+// These are first-class THREE.MeshPhysicalMaterial properties the pt-webgl fork
+// reads verbatim in MaterialsTexture.js. The reverse direction (convertMaterial)
+// already extracted them; this pins that vitrumMaterialToThree re-applies them
+// so a core-authored MaterialSpec carrying these lobes reaches the renderer.
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('vitrumSceneToThree: Disney-BSDF lobes written onto THREE material', () => {
+  it('applies all 8 lobe fields with the correct THREE property names + shapes', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1],
+      roughness: 0.4,
+      metallic: 0,
+      sheen: 0.8,
+      sheenColor: [0.2, 0.5, 0.9],
+      sheenRoughness: 0.6,
+      clearcoat: 0.7,
+      clearcoatRoughness: 0.25,
+      iridescence: 0.9,
+      iridescenceIor: 1.8,
+      iridescenceThicknessRange: [120, 480],
+    });
+
+    // sheen (float), sheenColor (THREE.Color), sheenRoughness (float)
+    expect(threeMat.sheen).toBeCloseTo(0.8);
+    expect(threeMat.sheenColor).toBeInstanceOf(THREE.Color);
+    expect(threeMat.sheenColor.r).toBeCloseTo(0.2);
+    expect(threeMat.sheenColor.g).toBeCloseTo(0.5);
+    expect(threeMat.sheenColor.b).toBeCloseTo(0.9);
+    expect(threeMat.sheenRoughness).toBeCloseTo(0.6);
+
+    // clearcoat (float), clearcoatRoughness (float)
+    expect(threeMat.clearcoat).toBeCloseTo(0.7);
+    expect(threeMat.clearcoatRoughness).toBeCloseTo(0.25);
+
+    // iridescence (float); core iridescenceIor → THREE iridescenceIOR (caps);
+    // iridescenceThicknessRange is a [min,max] array.
+    expect(threeMat.iridescence).toBeCloseTo(0.9);
+    expect(threeMat.iridescenceIOR).toBeCloseTo(1.8);
+    expect(Array.isArray(threeMat.iridescenceThicknessRange)).toBe(true);
+    expect(threeMat.iridescenceThicknessRange[0]).toBeCloseTo(120);
+    expect(threeMat.iridescenceThicknessRange[1]).toBeCloseTo(480);
+  });
+
+  it('preserves explicit 0 lobe values (round-trip clean), not clobbered to THREE defaults', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
+      sheen: 0,
+      clearcoat: 0,
+      iridescence: 0,
+    });
+    expect(threeMat.sheen).toBe(0);
+    expect(threeMat.clearcoat).toBe(0);
+    expect(threeMat.iridescence).toBe(0);
+  });
+
+  it('does NOT clobber THREE defaults when lobes are absent from the spec', () => {
+    const threeMat = vitrumMatToThreeMat({
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+    });
+    // THREE.MeshPhysicalMaterial defaults: sheen=0, clearcoat=0, iridescence=0,
+    // iridescenceIOR=1.3, iridescenceThicknessRange=[100,400], sheenColor=black.
+    expect(threeMat.sheen).toBe(0);
+    expect(threeMat.clearcoat).toBe(0);
+    expect(threeMat.iridescence).toBe(0);
+    expect(threeMat.iridescenceIOR).toBeCloseTo(1.3);
+    expect(threeMat.iridescenceThicknessRange).toEqual([100, 400]);
+  });
+});
+
+describe('Full round-trip: Disney lobes core → THREE → convertMaterial → core', () => {
+  it('preserves all 8 lobes (incl. the iridescenceIor↔iridescenceIOR rename)', () => {
+    const original: VitrumMaterial = {
+      baseColor: [1, 1, 1],
+      roughness: 0.4,
+      metallic: 0,
+      sheen: 0.8,
+      sheenColor: [0.2, 0.5, 0.9],
+      sheenRoughness: 0.6,
+      clearcoat: 0.7,
+      clearcoatRoughness: 0.25,
+      iridescence: 0.9,
+      iridescenceIor: 1.8,
+      iridescenceThicknessRange: [120, 480],
+    };
+
+    // core → THREE
+    const threeMat = vitrumMatToThreeMat(original);
+    // THREE → core
+    const back = convertMaterial(threeMat);
+
+    expect(back.sheen).toBeCloseTo(0.8);
+    expect(back.sheenColor?.[0]).toBeCloseTo(0.2);
+    expect(back.sheenColor?.[1]).toBeCloseTo(0.5);
+    expect(back.sheenColor?.[2]).toBeCloseTo(0.9);
+    expect(back.sheenRoughness).toBeCloseTo(0.6);
+    expect(back.clearcoat).toBeCloseTo(0.7);
+    expect(back.clearcoatRoughness).toBeCloseTo(0.25);
+    expect(back.iridescence).toBeCloseTo(0.9);
+    expect(back.iridescenceIor).toBeCloseTo(1.8);
+    expect(back.iridescenceThicknessRange?.[0]).toBeCloseTo(120);
+    expect(back.iridescenceThicknessRange?.[1]).toBeCloseTo(480);
+  });
+});
+
 describe('vitrumSceneToThree: emissive / alphaMap mapping', () => {
   it('treats vitrum emissive as final radiance color (no double intensity scaling)', () => {
     const threeMat = vitrumMatToThreeMat({
