@@ -87,6 +87,23 @@ export class PPGCoordinator {
   private _fluxReadbackBuffer: GPUBuffer | null = null;
   private _fluxReadbackInFlight = false;
   private _lastFluxReadbackFrame = -1;
+  /**
+   * Reusable zero-fill scratch for clearing the GPU flux accumulators after a
+   * refine cycle. Grown on demand to the active-prefix byte count we actually
+   * clear (see {@link _mergeFluxAndRefine}); a fresh `Uint32Array` per cycle
+   * would churn the GC with a multi-MB allocation every readback window.
+   */
+  private _fluxZeroScratch: Uint32Array | null = null;
+  /**
+   * Reusable staging buffer for the 48-byte guide UBO. {@link refreshGuideUBO}
+   * runs every frame but only the per-frame RNG seed (u32 slot 3) changes; the
+   * rest (dims, alpha, scene AABB) is static between resizes. Keeping the
+   * staging buffer resident avoids a fresh `ArrayBuffer(48)` allocation on
+   * every single frame (GC pressure on the hot render path).
+   */
+  private readonly _guideUboData = new ArrayBuffer(48);
+  private readonly _guideUboU32 = new Uint32Array(this._guideUboData);
+  private readonly _guideUboF32 = new Float32Array(this._guideUboData);
 
   constructor(device: GPUDevice) {
     this._device = device;
@@ -180,7 +197,23 @@ export class PPGCoordinator {
     frameCount: number,
   ): void {
     if (!this._enabled) return;
-    this._writeGuideUBO(frameResources, width, height, frameCount);
+    const buf = frameResources.ppg.guideUboBuffer;
+    if (!buf) return;
+    // Per-frame fast path: only the RNG seed (u32 slot 3) changes frame to
+    // frame. The static fields (dims/alpha/scene AABB) were packed at
+    // initialize()/onResize() into the resident `_guideUboData`. We rewrite
+    // just that slot and re-upload — no per-frame ArrayBuffer allocation.
+    //
+    // Defensive: if a caller ever changes resolution WITHOUT an onResize()
+    // (the current pipeline always routes resize through onResize, so this is
+    // belt-and-braces), the resident dims would be stale. Detect that and
+    // fall back to the full pack so behaviour is identical for every caller.
+    if (this._guideUboU32[0] !== (width * height) || this._guideUboU32[1] !== width) {
+      this._writeGuideUBO(frameResources, width, height, frameCount);
+      return;
+    }
+    this._guideUboU32[3] = frameCount >>> 0;
+    this._device.queue.writeBuffer(buf, 0, this._guideUboData);
   }
 
   /**
@@ -201,37 +234,61 @@ export class PPGCoordinator {
   ): void {
     if (!this._enabled || this._sTree == null) return;
     const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
-    if (!fluxAtomicsBuf) return;
+    const offsetsBuf = frameResources.ppg.dTreeOffsetsBuf;
+    if (!fluxAtomicsBuf || !offsetsBuf) return;
     if (this._fluxReadbackInFlight) return;
     if (this._lastFluxReadbackFrame >= 0
       && frameCount - this._lastFluxReadbackFrame < intervalFrames) {
       return;
     }
 
+    // Active-prefix bound (perf): the update kernel only ever writes to slots
+    // `dTreeIndex * MAX_DTREE_NODES_PER_CELL + nodeIdx` for dTreeIndex in
+    // [0, activeCells). Every slot past `activeCells * maxDTreeNodesPerCell`
+    // is guaranteed zero (no sTree leaf maps to it). Copy / map / zero only
+    // that prefix instead of the whole (up to ~22 MB) buffer — bit-identical
+    // to reading the full buffer, since the tail is always zero.
+    const fluxByteSize = fluxAtomicsBuf.size;
+    const maxSpatialCells = Math.max(1, Math.floor(offsetsBuf.size / 4));
+    const maxDTreeNodesPerCell = Math.max(1, Math.floor((fluxByteSize / 4) / maxSpatialCells));
+    const activeCells = Math.min(this._sTree.dTrees.length, maxSpatialCells);
+    // Round up to a 4-byte (u32) multiple — copyBufferToBuffer requires a
+    // multiple-of-4 size, which `activeCells * maxDTreeNodesPerCell * 4`
+    // already is.
+    const activeBytes = Math.min(
+      fluxByteSize,
+      Math.max(4, activeCells * maxDTreeNodesPerCell * 4),
+    );
+
     this._lastFluxReadbackFrame = frameCount;
     this._fluxReadbackInFlight = true;
 
-    if (this._fluxReadbackBuffer == null || this._fluxReadbackBuffer.size !== fluxAtomicsBuf.size) {
+    // The readback staging buffer only needs to hold the active prefix. Grow
+    // it on demand (it never shrinks within a session, which keeps it stable
+    // as the sTree subdivides across training windows).
+    if (this._fluxReadbackBuffer == null || this._fluxReadbackBuffer.size < activeBytes) {
       this._fluxReadbackBuffer?.destroy();
       this._fluxReadbackBuffer = this._device.createBuffer({
         label: 'ppg-flux-readback',
-        size: fluxAtomicsBuf.size,
+        size: activeBytes,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       });
     }
 
     const enc = this._device.createCommandEncoder({ label: 'ppg-flux-readback-copy' });
-    enc.copyBufferToBuffer(fluxAtomicsBuf, 0, this._fluxReadbackBuffer, 0, fluxAtomicsBuf.size);
+    enc.copyBufferToBuffer(fluxAtomicsBuf, 0, this._fluxReadbackBuffer, 0, activeBytes);
     this._device.queue.submit([enc.finish()]);
 
     void this._device.queue.onSubmittedWorkDone()
       .then(async () => {
         if (this._fluxReadbackBuffer == null || this._sTree == null) return;
-        await this._fluxReadbackBuffer.mapAsync(GPUMapMode.READ);
-        const mapped = this._fluxReadbackBuffer.getMappedRange();
+        await this._fluxReadbackBuffer.mapAsync(GPUMapMode.READ, 0, activeBytes);
+        const mapped = this._fluxReadbackBuffer.getMappedRange(0, activeBytes);
         const raw = new Uint32Array(mapped.slice(0));
         this._fluxReadbackBuffer.unmap();
-        this._mergeFluxAndRefine(raw, frameResources);
+        this._mergeFluxAndRefine(
+          raw, frameResources, maxSpatialCells, maxDTreeNodesPerCell,
+        );
       })
       .catch((err) => {
         console.warn('[PPGCoordinator] training refine readback failed:', err);
@@ -259,6 +316,7 @@ export class PPGCoordinator {
     this._lastFluxReadbackFrame = -1;
     this._fluxReadbackBuffer?.destroy();
     this._fluxReadbackBuffer = null;
+    this._fluxZeroScratch = null;
   }
 
   /**
@@ -296,9 +354,10 @@ export class PPGCoordinator {
     if (!this._enabled) return;
     const buf = frameResources.ppg.guideUboBuffer;
     if (!buf) return;
-    const data = new ArrayBuffer(48);
-    const u32 = new Uint32Array(data);
-    const f32 = new Float32Array(data);
+    // Full pack into the resident staging buffer (init / resize path). The
+    // per-frame `refreshGuideUBO` rewrites only the seed slot afterward.
+    const u32 = this._guideUboU32;
+    const f32 = this._guideUboF32;
     const pixelCount = width * height;
     u32[0] = pixelCount;
     u32[1] = width;
@@ -312,7 +371,7 @@ export class PPGCoordinator {
     f32[9] = this._sceneAABB.max[2];
     u32[10] = 0;
     u32[11] = 0;
-    this._device.queue.writeBuffer(buf, 0, data);
+    this._device.queue.writeBuffer(buf, 0, this._guideUboData);
   }
 
   /**
@@ -340,15 +399,28 @@ export class PPGCoordinator {
     this._device.queue.writeBuffer(buf, 0, data);
   }
 
-  private _mergeFluxAndRefine(rawFlux: Uint32Array, frameResources: FrameResources): void {
+  /**
+   * Merge the read-back flux atomics into the CPU dTrees, refine, re-upload,
+   * and zero the GPU accumulators for the next window.
+   *
+   * @param rawFlux              The active-prefix slice copied back from the
+   *                             GPU (length = activeCells × maxDTreeNodesPerCell,
+   *                             possibly shorter than the full GPU buffer).
+   * @param maxSpatialCells      Cell capacity of the GPU buffers (= offsets /4).
+   * @param maxDTreeNodesPerCell Per-cell slot stride baked into the buffers and
+   *                             the update kernel (MAX_DTREE_NODES_PER_CELL).
+   */
+  private _mergeFluxAndRefine(
+    rawFlux: Uint32Array,
+    frameResources: FrameResources,
+    maxSpatialCells: number,
+    maxDTreeNodesPerCell: number,
+  ): void {
     const sTree = this._sTree;
     if (!sTree) return;
-    const offsetsBuf = frameResources.ppg.dTreeOffsetsBuf;
     const fluxAtomicsBuf = frameResources.ppg.fluxAtomicsBuf;
-    if (!offsetsBuf || !fluxAtomicsBuf) return;
+    if (!fluxAtomicsBuf) return;
 
-    const maxSpatialCells = Math.max(1, Math.floor(offsetsBuf.size / 4));
-    const maxDTreeNodesPerCell = Math.max(1, Math.floor(rawFlux.length / maxSpatialCells));
     const activeCells = Math.min(sTree.dTrees.length, maxSpatialCells);
 
     for (let dTreeIdx = 0; dTreeIdx < activeCells; dTreeIdx++) {
@@ -358,7 +430,8 @@ export class PPGCoordinator {
       for (let nodeIdx = 0; nodeIdx < nodeLimit; nodeIdx++) {
         const slot = dTreeIdx * maxDTreeNodesPerCell + nodeIdx;
         const node = dTree.nodes[nodeIdx]!;
-        const flux = rawFlux[slot]! / PPGCoordinator._FLUX_SCALE;
+        // `rawFlux` only spans the active prefix; slots within it are dense.
+        const flux = (rawFlux[slot] ?? 0) / PPGCoordinator._FLUX_SCALE;
         node.flux = flux;
         if (node.isLeaf) totalFlux += flux;
       }
@@ -368,19 +441,40 @@ export class PPGCoordinator {
 
     // Spatial refinement after directional refinement.
     // Deliberately run once per readback window, not per frame.
-    splitOverflowLeaves(sTree);
+    //
+    // Bound tree growth to the GPU buffer capacity (`maxSpatialCells`), NOT
+    // the library default of 16 384. The flux/sTree/dTree buffers are sized
+    // for `maxSpatialCells` cells (see allocatePPGResources); letting the CPU
+    // tree grow past that would make serialiseSTree emit a buffer larger than
+    // the allocation — `_uploadTree`'s writeBuffer would throw or silently
+    // truncate the live tree. Passing the real cap keeps the CPU model and
+    // the GPU buffers in lockstep.
+    splitOverflowLeaves(sTree, undefined, maxSpatialCells);
 
     this._uploadTree(frameResources);
     resetAccumulators(sTree);
 
-    // Reset GPU flux accumulators for the next training window.
-    const zeros = new Uint32Array(rawFlux.length);
+    // Reset GPU flux accumulators for the next training window. Only the
+    // active prefix was ever written (every other slot is still zero), so we
+    // only need to clear that prefix — and we reuse a growable scratch buffer
+    // instead of allocating a fresh multi-MB zero array each window.
+    const clearU32 = Math.min(
+      Math.floor(fluxAtomicsBuf.size / 4),
+      Math.max(1, activeCells * maxDTreeNodesPerCell),
+    );
+    if (this._fluxZeroScratch == null || this._fluxZeroScratch.length < clearU32) {
+      this._fluxZeroScratch = new Uint32Array(clearU32);
+    } else {
+      // Grown-but-reused scratch may carry stale zeros only (we never write
+      // non-zero into it), so no fill is needed; it is allocated zeroed and
+      // we never mutate its contents.
+    }
     this._device.queue.writeBuffer(
       fluxAtomicsBuf,
       0,
-      zeros.buffer,
-      zeros.byteOffset,
-      zeros.byteLength,
+      this._fluxZeroScratch.buffer,
+      this._fluxZeroScratch.byteOffset,
+      clearU32 * 4,
     );
   }
 }

@@ -1,5 +1,81 @@
 > ARCHIVED 2026-05-28 — D2 shipped (traceMeshBvh unified core, intersection.wgsl.ts); E6 shipped (W9 PPG kd-tree sTree descent, ppgGuide.wgsl.ts).
 
+> ### CURRENT-STATE NOTE (2026-05-28, post-archive) — where PPG perf actually lives
+>
+> This doc's title says "pt-webgpu PPG performance," but **there is no PPG
+> subsystem in `@vitrum/pt-webgpu`** — the live PPG implementation is the
+> Müller-2017 sTree/dTree in **`packages/walkaround-hybrid/src/ppg/*`** plus its
+> orchestration in `packages/walkaround-hybrid/src/pipeline/PPGCoordinator.ts`
+> and the `PPGGuidePass` / `PPGUpdatePass` passes. (pt-webgpu's own path-guiding
+> remains a fidelity-matrix row, not a separate codebase.)
+>
+> The **E6 spatial-acceleration problem this doc describes is already solved and
+> obsolete**: the old `ppgSample.wgsl.ts` O(N) linear cell scan no longer exists.
+> It was replaced by the W9 adaptive kd-tree sTree descent (`findSTreeLeaf` /
+> `sTreeFindLeafBase`) + per-cell adaptive dTree quadtree — O(log N) lookup with
+> a flat-buffer serialise (`ppg/serialise.ts`). So Options A/B below are moot.
+>
+> **PPG was also "finished" on 2026-05-28** — gi-ris now actually *guides*
+> candidate sampling via defensive MIS (it was train-only before), so the
+> per-frame cost path changed.
+>
+> #### Algorithmic perf/tuning landed on `main` (2026-05-28, this session)
+>
+> Hotspots found in `ppg/*` + `PPGCoordinator.ts` and the behaviour-preserving
+> fixes applied (cost-model / allocation / dispatch reductions — **not** wall-clock,
+> which still needs the real-GPU env; this box is SwiftShader):
+>
+> 1. **Per-cycle full flux readback → active-prefix readback**
+>    (`PPGCoordinator.maybeRunTrainingRefine` / `_mergeFluxAndRefine`). The
+>    refine cycle used to `copyBufferToBuffer` + `mapAsync` + zero the **entire**
+>    flux-atomics buffer (default ~1.4 MB at 1024 cells × 341 slots; up to ~22 MB
+>    at the 16 384-cell cap) every readback window. The update kernel
+>    (`ppgUpdate.wgsl.ts:197`) only ever writes
+>    `dTreeIndex * MAX_DTREE_NODES_PER_CELL + nodeIdx` for
+>    `dTreeIndex ∈ [0, activeCells)` — every slot past
+>    `activeCells × MAX_DTREE_NODES_PER_CELL` is provably zero. We now copy / map /
+>    clear only that prefix. **Bit-identical** to reading the full buffer (the
+>    tail is always zero). Early in training (1 active cell) this is a 341-slot
+>    copy instead of a 349 184-slot copy.
+> 2. **Fresh `Uint32Array(fullBuffer)` zero-array per cycle → reused growable
+>    scratch** (`_fluxZeroScratch`), and the zero-clear `writeBuffer` is bounded
+>    to the active prefix (matching #1). Kills a multi-MB GC allocation every
+>    training window.
+> 3. **Per-frame `ArrayBuffer(48)` guide-UBO alloc → resident staging buffer**
+>    (`refreshGuideUBO`). The guide UBO is repacked **every frame**, but only the
+>    RNG seed (u32 slot 3) changes; dims/alpha/scene-AABB are static between
+>    resizes. The fast path rewrites just the seed slot into a resident buffer
+>    (with a dims-mismatch fallback to the full pack for safety). No per-frame
+>    allocation on the hot render path.
+> 4. **Unbounded sTree `dTrees` growth + GPU-buffer overflow (latent bug) →
+>    slot-reuse + capacity-bound** (`sTree.ts splitOverflowLeaves`). Splitting a
+>    leaf used to push **two** new dTrees and orphan the parent's slot, so
+>    `dTrees.length` grew ~2× faster than the live leaf count and accumulated
+>    orphans unbounded — and `splitOverflowLeaves`'s cap (`16 384`) exceeded the
+>    actual GPU buffer capacity (default `maxSpatialCells = 1024`), so
+>    `serialiseSTree` could emit a buffer larger than the allocation and make
+>    `_uploadTree`'s `writeBuffer` throw / truncate the live tree. Fix: the split
+>    now **reuses the parent's dTree slot for the left child** and pushes only one
+>    new dTree for the right child → `dTrees.length === leafCount` invariant, no
+>    orphans, no leak; and `PPGCoordinator` passes the real `maxSpatialCells`
+>    capacity as the split cap so CPU tree growth is bounded to what the GPU
+>    buffers hold. Sampling math is unchanged (both children still descend a clone
+>    of the parent distribution; only the internal array index differs).
+>
+> Tests: `__tests__/ppg.test.ts` (+3 — dTrees==leafCount invariant across split
+> cycles, single-split slot reuse, parent-distribution-preserved clones);
+> `__tests__/ppgCoordinatorReadback.test.ts` (+2 — bounded copy/clear size,
+> prefix-vs-full merge equivalence with a poisoned tail). Full walkaround-hybrid
+> suite green (726 pass / 3 pre-existing GPU-only skips); `tsc --noEmit` clean.
+>
+> **Still needs real-GPU measurement** (flag in `HARDWARE-VALIDATION-NEEDS.md`):
+> wall-clock readback-stall reduction, end-to-end variance-vs-frame after the
+> gi-ris guiding wire, and adaptive dispatch cadence (run the guide/update passes
+> every N frames on medium/low tiers — `plan/roadmap.md:269`). Also latent but
+> out of clean-perf scope: the readback async path (`onSubmittedWorkDone` →
+> `mapAsync`) can race a `dispose()` mid-flight; the in-flight guard mitigates but
+> a full cancel token would be cleaner.
+
 # Plan: D2 (pt-webgpu trace dedup) + E6 (PPG spatial acceleration)
 
 **Goal:** Reduce maintenance risk and shader cost for two deferred remediation items from `plan/remediation-checklist.md`.

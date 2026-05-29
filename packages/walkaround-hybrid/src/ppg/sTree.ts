@@ -219,11 +219,26 @@ export function splitOverflowLeaves(
     const axis = longestAxis(node.aabb);
     const splitVal = (node.aabb.min[axis] + node.aabb.max[axis]) * 0.5;
 
-    // Clone parent dTree for each child.
-    const parentDTree = sTree.dTrees[node.dTreeIndex]!;
-    const leftDTreeIdx  = sTree.dTrees.length;
-    const rightDTreeIdx = leftDTreeIdx + 1;
-    sTree.dTrees.push(cloneDTree(parentDTree));
+    // Both children inherit a COPY of the parent's directional distribution
+    // (Müller §3.1). REUSE the parent's dTree slot for the left child instead
+    // of orphaning it: the parent leaf is being promoted to an interior node
+    // and no longer needs its own dTree, so we hand that slot to the left
+    // child and push exactly ONE new dTree for the right child. This keeps
+    // `dTrees.length === leafCount` (each split is net +1 leaf and +1 dTree),
+    // which is what the serialise + GPU-buffer-capacity bound assumes.
+    //
+    // The previous scheme pushed TWO new dTrees and left the parent's slot
+    // dangling, so `dTrees.length` grew ~2× faster than the live leaf count —
+    // overflowing the GPU dTree buffer (sized for `maxCells` cells) and
+    // leaking orphan dTrees into the array unbounded. Sampling is unchanged:
+    // both children still descend a clone of the parent distribution; only
+    // the internal array index of the left child's dTree differs (traversal
+    // reaches it via the node's `dTreeIndex`, never by raw position).
+    const parentDTreeIdx = node.dTreeIndex;
+    const parentDTree = sTree.dTrees[parentDTreeIdx]!;
+    const leftDTreeIdx  = parentDTreeIdx;
+    const rightDTreeIdx = sTree.dTrees.length;
+    sTree.dTrees[leftDTreeIdx] = cloneDTree(parentDTree);
     sTree.dTrees.push(cloneDTree(parentDTree));
 
     // Build child AABBs.

@@ -103,6 +103,81 @@ describe('PPG sTree — adaptive split (Müller §3.1)', () => {
     expect(findSTreeLeaf(tree, [-9, -9, -9])).toBe(0);
     expect(findSTreeLeaf(tree, [9, 9, 9])).toBe(0);
   });
+
+  // ── Tree-growth bound: dTrees array stays in lockstep with leaf count ──────
+  // Splitting reuses the parent's dTree slot for the left child and pushes
+  // exactly ONE new dTree for the right child, so `dTrees.length === leafCount`
+  // is invariant across any number of split cycles. The earlier scheme pushed
+  // two dTrees per split and orphaned the parent's slot, making `dTrees.length`
+  // grow ~2× faster than the live leaf count — which overflows the GPU dTree
+  // buffer (sized for the cell cap) and leaks orphan dTrees unbounded.
+  function countSTreeLeaves(t: import('../src/ppg/types.js').STree): number {
+    return t.nodes.reduce((n, node) => n + (node.splitAxis === -1 ? 1 : 0), 0);
+  }
+
+  it('dTrees.length stays == leaf count after a single split (slot reuse, no orphans)', () => {
+    const tree = buildSTree(SCENE_AABB);
+    expect(tree.dTrees.length).toBe(countSTreeLeaves(tree)); // 1 == 1
+    for (let i = 0; i < PPG_CELL_SPLIT_THRESHOLD + 1; i++) {
+      sTreeAccumulate(tree, [0, 0, 0], [0.5, 0.5], 1.0);
+    }
+    splitOverflowLeaves(tree);
+    // Root → interior + 2 leaves. dTrees must be exactly 2 (reused parent slot
+    // + 1 new), NOT 3 (which the orphan-the-parent scheme produced).
+    expect(countSTreeLeaves(tree)).toBe(2);
+    expect(tree.dTrees.length).toBe(2);
+  });
+
+  it('dTrees.length tracks leaf count across many split cycles and never exceeds the cap', () => {
+    const tree = buildSTree(SCENE_AABB);
+    const CAP = 32;
+    // Drive repeated split cycles. Each cycle: dump > threshold samples into
+    // every current leaf, split, then assert the invariant still holds.
+    for (let cycle = 0; cycle < 12; cycle++) {
+      for (let li = 0; li < tree.nodes.length; li++) {
+        const node = tree.nodes[li]!;
+        if (node.splitAxis !== -1) continue;
+        // Aim a sample at a point inside this leaf's cell.
+        const cx = (node.aabb.min[0] + node.aabb.max[0]) * 0.5;
+        const cy = (node.aabb.min[1] + node.aabb.max[1]) * 0.5;
+        const cz = (node.aabb.min[2] + node.aabb.max[2]) * 0.5;
+        for (let s = 0; s < PPG_CELL_SPLIT_THRESHOLD + 1; s++) {
+          sTreeAccumulate(tree, [cx, cy, cz], [0.5, 0.5], 1.0);
+        }
+      }
+      splitOverflowLeaves(tree, undefined, CAP);
+      // Invariant after every cycle: one dTree per leaf, exactly.
+      expect(tree.dTrees.length).toBe(countSTreeLeaves(tree));
+      // The cap bounds the leaf count (and therefore dTrees.length too).
+      expect(countSTreeLeaves(tree)).toBeLessThanOrEqual(CAP);
+      expect(tree.dTrees.length).toBeLessThanOrEqual(CAP);
+    }
+  });
+
+  it('split preserves the parent directional distribution for both children', () => {
+    const tree = buildSTree(SCENE_AABB);
+    // Spike the root dTree's first leaf so the distribution is non-uniform,
+    // then split and confirm both children carry a faithful copy.
+    const rootDTree = tree.dTrees[0]!;
+    rootDTree.nodes[0]!.flux = 7.5;
+    rootDTree.totalFlux = 7.5;
+    const snapshotFlux = rootDTree.nodes.map((n) => n.flux);
+
+    for (let i = 0; i < PPG_CELL_SPLIT_THRESHOLD + 1; i++) {
+      sTreeAccumulate(tree, [0, 0, 0], [0.5, 0.5], 0); // 0 flux: only bump sampleCount
+    }
+    splitOverflowLeaves(tree);
+
+    const left = tree.nodes[1]!;
+    const right = tree.nodes[2]!;
+    const leftDTree = tree.dTrees[left.dTreeIndex]!;
+    const rightDTree = tree.dTrees[right.dTreeIndex]!;
+    expect(leftDTree.nodes.map((n) => n.flux)).toEqual(snapshotFlux);
+    expect(rightDTree.nodes.map((n) => n.flux)).toEqual(snapshotFlux);
+    // Children must be independent clones (mutating one must not touch the other).
+    leftDTree.nodes[0]!.flux = 999;
+    expect(rightDTree.nodes[0]!.flux).not.toBe(999);
+  });
 });
 
 // ── Test 2: dTree adaptive refinement (deviation 2) ──────────────────────────
