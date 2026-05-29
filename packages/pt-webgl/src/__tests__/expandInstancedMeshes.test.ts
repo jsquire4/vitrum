@@ -15,8 +15,23 @@
  *      core promiseLedger pt-webgl row.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { InstancedMesh as TInstancedMesh, Matrix4, Mesh, Scene } from 'three';
+import { BufferGeometry, InstancedMesh as TInstancedMesh, Matrix4, Mesh, MeshPhysicalMaterial, Scene } from 'three';
 import type { Mesh as TMesh } from 'three';
+// Deep import of the absorbed fork's pure-CPU geometry baker. This is the exact
+// function pt-webgl's BVH path runs per mesh; using it here lets the
+// non-uniform-scale normal-transform assertion below be a real end-to-end CPU
+// test (no GPU) of what the renderer actually computes for an expanded instance.
+// Imported via a workspace-relative path because vitest's resolver does not
+// honour the fork's `./src/*` subpath export (node itself resolves it fine).
+// The fork is plain JS with no declaration file for this util, so the module
+// shape is declared locally.
+// @ts-expect-error — untyped fork util (no .d.ts); shape pinned via local cast.
+import { convertToStaticGeometry as _convertToStaticGeometryUntyped } from '../../../three-gpu-pathtracer/src/core/utils/convertToStaticGeometry.js';
+const convertToStaticGeometry = _convertToStaticGeometryUntyped as (
+  mesh: TMesh,
+  options: { applyWorldTransforms?: boolean; attributes?: string[] },
+  target?: BufferGeometry,
+) => BufferGeometry;
 import { asMat4, BACKEND_PROMISE_LEDGER } from '@vitrum/core';
 import type { InstancedMeshPrimitive, Scene as VitrumScene } from '@vitrum/core';
 import { vitrumSceneToThree } from '@vitrum/three-bindings';
@@ -80,6 +95,17 @@ function scale(s: number): Float32Array {
     s, 0, 0, 0,
     0, s, 0, 0,
     0, 0, s, 0,
+    0, 0, 0, 1,
+  ]);
+}
+
+/** Column-major NON-uniform scale `diag(sx, sy, sz)`. */
+function nonUniformScale(sx: number, sy: number, sz: number): Float32Array {
+  // prettier-ignore
+  return new Float32Array([
+    sx, 0, 0, 0,
+    0, sy, 0, 0,
+    0, 0, sz, 0,
     0, 0, 0, 1,
   ]);
 }
@@ -163,6 +189,79 @@ describe('expandInstancedMesh (unit, no GPU)', () => {
     expect(children).toHaveLength(1);
     const d = decompose(children[0]!);
     expect(d.sx).toBeCloseTo(2.5, 5);
+  });
+
+  it('transforms instance normals by the INVERSE-TRANSPOSE under non-uniform scale (not a plain matrix multiply)', () => {
+    // The headline correctness concern: under a non-uniform per-instance scale,
+    // normals must be transformed by the inverse-transpose of the linear part,
+    // NOT by the matrix itself. This is an END-TO-END CPU check: expand a real
+    // vitrum instanced-mesh, then run the fork's actual geometry baker
+    // (`convertToStaticGeometry`, the same code pt-webgl's BVH path runs per
+    // mesh) and assert the baked world-space normal.
+    //
+    // Geometry: a single vertex whose normal points along (1,1,0)/√2 — a 45°
+    // normal in the XY plane, chosen so a wrong (plain) transform diverges
+    // sharply from the right (inverse-transpose) transform under an x-stretch.
+    const n0 = 1 / Math.SQRT2;
+    const positions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+    const normals = new Float32Array([n0, n0, 0, n0, n0, 0, n0, n0, 0]);
+    const vscene: VitrumScene = {
+      primitives: [
+        {
+          kind: 'instanced-mesh',
+          id: 'inst-nus',
+          positions,
+          normals,
+          material: { baseColor: [0.4, 0.5, 0.6], roughness: 0.5, metallic: 0 },
+          // diag(2, 1, 1): stretch x by 2 (non-uniform).
+          instances: [asMat4(nonUniformScale(2, 1, 1))],
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const threeScene = vitrumSceneToThree(vscene);
+    expandInstancedMeshesInScene(threeScene);
+    // The fork's setScene refreshes world matrices before baking; mirror that so
+    // the child's matrixWorld is what the renderer would actually bake from.
+    threeScene.updateMatrixWorld(true);
+
+    const meshes = collectMeshes(threeScene);
+    expect(meshes).toHaveLength(1);
+    const child = meshes[0]!;
+
+    const baked = convertToStaticGeometry(child, {
+      applyWorldTransforms: true,
+      attributes: ['position', 'normal'],
+    }, new BufferGeometry());
+    const bn = baked.attributes.normal!;
+    const bx = bn.getX(0);
+    const by = bn.getY(0);
+    const bz = bn.getZ(0);
+
+    // Correct (inverse-transpose of diag(2,1,1) = diag(0.5,1,1)):
+    //   diag(0.5,1,1)·(1,1,0) = (0.5, 1, 0) → normalize → (0.4472, 0.8944, 0).
+    const correct = (() => {
+      const v = [0.5 * n0, 1 * n0, 0];
+      const len = Math.hypot(v[0]!, v[1]!, v[2]!);
+      return [v[0]! / len, v[1]! / len, v[2]! / len];
+    })();
+    // Wrong (plain matrix multiply diag(2,1,1)·(1,1,0) = (2,1,0) → normalize →
+    //   (0.8944, 0.4472, 0)) — assert we are NOT this.
+    const wrong = (() => {
+      const v = [2 * n0, 1 * n0, 0];
+      const len = Math.hypot(v[0]!, v[1]!, v[2]!);
+      return [v[0]! / len, v[1]! / len, v[2]! / len];
+    })();
+
+    expect(bx).toBeCloseTo(correct[0]!, 4);
+    expect(by).toBeCloseTo(correct[1]!, 4);
+    expect(bz).toBeCloseTo(correct[2]!, 4);
+    // Guard the test itself: correct and wrong are genuinely different, and the
+    // baked normal is NOT the wrong (plain-multiply) result.
+    expect(Math.abs(correct[0]! - wrong[0]!)).toBeGreaterThan(0.2);
+    expect(Math.abs(bx - wrong[0]!)).toBeGreaterThan(0.2);
   });
 
   it('composes the InstancedMesh node transform with each instance matrix', () => {
@@ -251,5 +350,38 @@ describe('pt-webgl instanced-mesh capability + ledger', () => {
     const ledger = [...BACKEND_PROMISE_LEDGER['pt-webgl'].supportedPrimitiveKinds].sort();
     expect(declared).toEqual(ledger);
     expect(ledger).toContain('instanced-mesh');
+  });
+
+  it("disposes an expanded instanced-mesh's SHARED geometry/material exactly once on scene swap (no N-fold dispose)", async () => {
+    // The 3 expanded children all hold the SAME geometry + material object.
+    // disposeObject3DTree must dispose each shared resource ONCE, not 3×.
+    // Spy on the THREE prototypes so we count dispatch on whichever instances
+    // the engine's converter produced, then drive a scene swap to trigger the
+    // teardown of the first scene.
+    const geomDispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const matDispose = vi.spyOn(MeshPhysicalMaterial.prototype, 'dispose');
+    try {
+      const engine = await createPTEngine_WebGL2({ device: makeRendererStub() as never });
+      const instances = [translation(0, 0, 0), translation(1, 0, 0), translation(2, 0, 0)];
+      engine.setScene({
+        primitives: [instancedPrim('inst-dispose', instances)],
+        emitters: [],
+        environment: { kind: 'none' },
+      });
+      // No dispose yet (first setScene has no prior scene to tear down).
+      geomDispose.mockClear();
+      matDispose.mockClear();
+
+      // Swap to an empty scene → disposeObject3DTree runs on the expanded
+      // instanced-mesh scene. 3 children share 1 geometry + 1 material.
+      engine.setScene({ primitives: [], emitters: [], environment: { kind: 'none' } });
+
+      // Exactly one dispose per unique shared resource, NOT one per child.
+      expect(geomDispose).toHaveBeenCalledTimes(1);
+      expect(matDispose).toHaveBeenCalledTimes(1);
+    } finally {
+      geomDispose.mockRestore();
+      matDispose.mockRestore();
+    }
   });
 });

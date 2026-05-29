@@ -371,17 +371,28 @@ function makeStateSlot(initial: EngineState = 'initializing'): StateSlot {
  * Walk a Three.js subtree and dispose every Mesh's geometry + material(s).
  * Module-private — only `PTEngineWebGL2` uses this on the converted scene
  * root it owns (no external consumer should depend on it).
+ *
+ * Dedupes by object identity: the N children produced by
+ * `expandInstancedMeshesInScene` all SHARE one geometry + one material (the
+ * single instances built by `instancedMeshPrimitiveToThree`). Disposing the
+ * shared resources once per child would re-dispatch THREE's `dispose` event N
+ * times; tracking already-disposed objects keeps disposal single-sourced (the
+ * intent the `vitrumExpandedInstanceOf` tag documents in expandInstancedMeshes).
  */
 function disposeObject3DTree(obj: Object3D): void {
+  const disposed = new Set<{ dispose?: () => void } | undefined>();
+  const disposeOnce = (resource: { dispose?: () => void } | undefined): void => {
+    if (resource == null || disposed.has(resource)) return;
+    disposed.add(resource);
+    resource.dispose?.();
+  };
   obj.traverse((o) => {
     const mesh = o as TMesh;
     if (mesh.isMesh === true) {
-      mesh.geometry?.dispose();
+      disposeOnce(mesh.geometry);
       const m = mesh.material as TMaterial | TMaterial[] | undefined;
-      if (Array.isArray(m)) m.forEach((x) => {
-        x.dispose?.();
-      });
-      else m?.dispose?.();
+      if (Array.isArray(m)) m.forEach((x) => disposeOnce(x));
+      else disposeOnce(m);
     }
   });
 }
