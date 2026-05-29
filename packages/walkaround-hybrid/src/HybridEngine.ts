@@ -692,6 +692,21 @@ export class HybridEngine implements Engine {
         emitter: true,
         topology: true,
       },
+      // Explicit whole-primitive add/remove IS implemented: addPrimitive appends
+      // a new primitive and removePrimitive evicts one, each by routing a fresh
+      // mutated `Scene` copy through this engine's existing `setScene` spine —
+      // the same `partitionSceneBySupport` → `_teardownPipeline` → init-chain
+      // (full BVH / DDGI / ReSTIR rebuild + temporal-accumulator reset) the
+      // initial scene build runs. A geometry change invalidates every cached GI
+      // signal, so on this realtime stack the work is a rebuild either way; the
+      // value is API consistency with pt-webgl / pt-webgpu, not a perf win. The
+      // DDGI / ReSTIR / RC subsystems index off the packed scene, so reusing the
+      // setScene packing path re-syncs them all correct-by-construction — no
+      // fragile per-array index remap. Distinct from
+      // incrementalPatchSupport.topology (COUNT-change patches on an EXISTING
+      // primitive). Kept in sync with the walkaround-hybrid row in
+      // @vitrum/core's BACKEND_PROMISE_LEDGER.
+      supportsAddRemovePrimitive: true,
       supportsAuxBuffers:        false,
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
@@ -1015,6 +1030,105 @@ export class HybridEngine implements Engine {
       return { ...ctx, restirBvhModeOverride: this._restirBvhModeOverride };
     }
     return ctx;
+  }
+
+  /**
+   * Add one whole primitive to the live scene (contract:
+   * {@link Engine.addPrimitive}).
+   *
+   * Design choice — full `setScene`-equivalent rebuild. A whole-primitive add
+   * almost always introduces NEW geometry + a NEW material, and on this realtime
+   * stack the geometry change invalidates EVERY cached GI signal — the DDGI
+   * irradiance/visibility atlases, the ReSTIR-DI/GI reservoir history, the RC
+   * cascade buffers, and the temporal accumulator all index off the packed
+   * scene and must be rebuilt/reset. Rather than bolt a brittle "incremental BVH
+   * splice + per-subsystem re-sync" onto the add path, we append the primitive
+   * to a fresh `Scene` copy and route it through `setScene` — the same
+   * already-correct `partitionSceneBySupport` → `_teardownPipeline` →
+   * `_initCoordinator.startInit()` spine the initial scene build runs. That
+   * spine rebuilds the BVH, re-synthesises the DDGI traversal scene, re-derives
+   * DDGI lights, rebuilds the RC BVH (via `publishBvh` →
+   * `propagateBvhToGiSubsystems`), and — because the pipeline (and its temporal
+   * accumulator + reservoirs + history textures) is torn down and rebuilt blank
+   * — resets all temporal/accumulation state. Mirrors pt-webgl / pt-webgpu's
+   * full-repack choice: correct-by-construction, no fragile per-array index
+   * remap. On a realtime engine the work is a rebuild either way; the value is
+   * API consistency, not a perf win.
+   *
+   * Contract semantics honored:
+   *   • Duplicate `id` throws BEFORE any mutation — the dup check runs against
+   *     the live `_lastScene`, and `nextScene` is only built (and `setScene`
+   *     only called) once it passes, so the scene is unchanged on throw.
+   *   • Unsupported primitive kinds / analytic shapes are warn-skipped by the
+   *     `partitionSceneBySupport` filter inside `setScene` (they do not throw).
+   *   • Accumulation / temporal history resets — `setScene` tears down the
+   *     pipeline (blank accumulator + reservoirs + DDGI/ReSTIR/RC rebuild) and
+   *     reinitialises.
+   */
+  addPrimitive(primitive: ScenePrimitive): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.addPrimitive: engine is disposed.');
+    }
+    if (this._lastScene == null) {
+      throw new Error(
+        `HybridEngine.addPrimitive("${String(primitive.id)}"): no scene set. ` +
+        `Call setScene(scene) before addPrimitive.`,
+      );
+    }
+    if (this._lastScene.primitives.some((p) => String(p.id) === String(primitive.id))) {
+      throw new Error(
+        `HybridEngine.addPrimitive: a primitive with id "${String(primitive.id)}" ` +
+        `already exists; use updatePrimitive to mutate an existing primitive.`,
+      );
+    }
+    const nextScene: Scene = {
+      ...this._lastScene,
+      primitives: [...this._lastScene.primitives, primitive],
+    };
+    this.setScene(nextScene);
+  }
+
+  /**
+   * Remove one whole primitive from the live scene by `id` (contract:
+   * {@link Engine.removePrimitive}). The inverse of {@link addPrimitive}.
+   *
+   * Implementation: drop the primitive from a fresh `Scene` copy and route
+   * through `setScene` (same full-rebuild approach as {@link addPrimitive}).
+   * Reusing the `setScene` packing path re-packs the dense BVH / DDGI-light /
+   * ReSTIR-emitter arrays correctly by construction rather than hand-rolling a
+   * multi-array compaction. Removing the last primitive is legal and yields a
+   * renderable sky-only scene (the empty scene `setScene` already supports — the
+   * factory bootstraps with exactly that).
+   *
+   * Contract semantics honored:
+   *   • A missing `id` throws BEFORE any mutation — the membership check runs
+   *     against the live `_lastScene`; `setScene` is only called once it passes,
+   *     so the scene is unchanged on throw.
+   *   • Accumulation / temporal history resets exactly as for
+   *     {@link addPrimitive}.
+   */
+  removePrimitive(id: ScenePrimitive['id']): void {
+    if (this._state === 'disposed') {
+      throw new Error('HybridEngine.removePrimitive: engine is disposed.');
+    }
+    if (this._lastScene == null) {
+      throw new Error(
+        `HybridEngine.removePrimitive("${String(id)}"): no scene set. ` +
+        `Call setScene(scene) before removePrimitive.`,
+      );
+    }
+    const nextPrimitives = this._lastScene.primitives.filter((p) => String(p.id) !== String(id));
+    if (nextPrimitives.length === this._lastScene.primitives.length) {
+      throw new Error(
+        `HybridEngine.removePrimitive: no primitive with id "${String(id)}" ` +
+        `in the live scene.`,
+      );
+    }
+    const nextScene: Scene = {
+      ...this._lastScene,
+      primitives: nextPrimitives,
+    };
+    this.setScene(nextScene);
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
