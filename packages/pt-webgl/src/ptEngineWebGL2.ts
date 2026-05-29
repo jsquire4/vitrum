@@ -554,6 +554,23 @@ export class PTEngineWebGL2 implements Engine {
       this.#oidnDispatcher = new OIDNFinalDispatcher(dispatcherOpts, opts.oidnBridgeLoader);
     } else {
       this.#oidnDispatcher = null;
+      // The shared `@vitrum/core` denoiser union also lists the real-time
+      // 1-spp denoisers ('atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' |
+      // 'neural'). Those reconstruct a converged image from a SINGLE noisy
+      // sample per pixel and are meaningless on pt-webgl, which is a CONVERGED
+      // progressive path tracer that accumulates samples until the image is
+      // already clean. The correct (and only) final-frame denoiser here is
+      // 'oidn-final'. Rather than throw (host-unfriendly), we warn once at
+      // construction and degrade to no-denoise so the host gets a clear signal
+      // instead of a silent no-op.
+      if (opts.denoiser !== undefined && opts.denoiser !== 'none') {
+        console.warn(
+          `[vitrum/pt-webgl] Unsupported denoiser '${opts.denoiser}' on pt-webgl ` +
+            '(a converged progressive path tracer). Real-time 1-spp denoisers do not ' +
+            "apply here; use 'oidn-final' for final-frame denoising. " +
+            'Proceeding with no denoise.',
+        );
+      }
     }
 
     // Per-engine IBL bake cache. Construct with default LRU capacity (matches

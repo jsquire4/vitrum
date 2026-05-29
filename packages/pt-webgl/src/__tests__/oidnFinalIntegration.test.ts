@@ -457,6 +457,79 @@ describe('PTEngineWebGL2 oidn-final wire', () => {
     engine.dispose();
   });
 
+  // Honesty fix — pt-webgl is a CONVERGED progressive path tracer, so the
+  // real-time 1-spp denoisers in the shared core union ('atrous' |
+  // 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural') are unsupported here;
+  // 'oidn-final' is the correct final-frame denoiser. Previously an unsupported
+  // value SILENTLY rendered undenoised with no host signal. Now the engine
+  // warns once at construction and degrades to no-denoise.
+  describe('unsupported real-time denoiser → one-time warn + no-denoise degrade', () => {
+    for (const unsupported of ['atrous', 'atrous-variance', 'svgf-real', 'bmfr', 'neural'] as const) {
+      it(`warns once for denoiser '${unsupported}' and still constructs (no throw)`, async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const engine = await createPTEngine_WebGL2({
+            device: makeRendererForOIDN() as never,
+            denoiser: unsupported,
+          });
+          expect(engine.state).toBe('ready');
+          // The warn fired exactly once, names the requested denoiser, says
+          // it's unsupported on pt-webgl, and points the host at 'oidn-final'.
+          const matching = warn.mock.calls.filter(
+            (c) =>
+              typeof c[0] === 'string' &&
+              c[0].includes(`Unsupported denoiser '${unsupported}'`),
+          );
+          expect(matching).toHaveLength(1);
+          const msg = matching[0]![0] as string;
+          expect(msg).toContain('pt-webgl');
+          expect(msg).toContain('oidn-final');
+          // Degrades to no-denoise: getDenoisedFrame returns null (no dispatcher).
+          expect(
+            (engine as unknown as { getDenoisedFrame: () => unknown }).getDenoisedFrame(),
+          ).toBeNull();
+          engine.dispose();
+        } finally {
+          warn.mockRestore();
+        }
+      });
+    }
+
+    for (const supported of [undefined, 'none', 'oidn-final'] as const) {
+      it(`does NOT warn for denoiser ${JSON.stringify(supported)}`, async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const base = { device: makeRendererForOIDN() as never };
+          const opts =
+            supported === 'oidn-final'
+              ? {
+                  ...base,
+                  denoiser: 'oidn-final' as const,
+                  // 'oidn-final' requires a model URL so it constructs.
+                  extensions: { 'vitrum.ptWebgl.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+                  oidnBridgeLoader: async () => ({
+                    denoiseFinal: vi.fn(async () => new Float32Array(0)),
+                    preloadOIDNModel: vi.fn(async () => undefined),
+                    clearOIDNCache: vi.fn(),
+                  }),
+                }
+              : supported === 'none'
+                ? { ...base, denoiser: 'none' as const }
+                : base; // undefined → omit the denoiser key entirely
+          const engine = await createPTEngine_WebGL2(opts);
+          expect(engine.state).toBe('ready');
+          const unsupportedWarns = warn.mock.calls.filter(
+            (c) => typeof c[0] === 'string' && c[0].includes('Unsupported denoiser'),
+          );
+          expect(unsupportedWarns).toHaveLength(0);
+          engine.dispose();
+        } finally {
+          warn.mockRestore();
+        }
+      });
+    }
+  });
+
   it('swallows denoiseFinal errors so the engine keeps running', async () => {
     const denoiseFinal = vi.fn(async () => {
       throw new Error('mock ORT load failure');
