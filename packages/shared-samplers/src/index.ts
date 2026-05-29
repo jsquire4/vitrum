@@ -68,6 +68,19 @@ export {
 } from './bdptMIS.js';
 export type { BDPTFullVertex } from './bdptMIS.js';
 
+// GRIS / ReSTIR-PT reconnection-shift CPU oracle (Lin et al. 2022).
+// Phase-0 foundation for evolving ReSTIR-GI toward path reuse: the reconnection
+// shift mapping T, its inverse, the reconnection-edge geometry term, and the
+// change-of-variables Jacobian |∂T/∂·|. Verified against the Phase-1/2 WGSL,
+// the same way bdptConnectionMisFull mirrors bdptMIS.
+export {
+  reconnectionGeometryTerm,
+  reconnectionShift,
+  reconnectionShiftInverse,
+  reconnectionJacobian,
+} from './reconnectionShift.js';
+export type { ReconnectionPath } from './reconnectionShift.js';
+
 // Sprint 12 — hero-wavelength spectral path tracing utilities
 export {
   CIE_X_TABLE,

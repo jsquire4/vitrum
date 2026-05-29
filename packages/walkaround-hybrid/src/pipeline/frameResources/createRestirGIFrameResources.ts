@@ -4,7 +4,12 @@
 
 import type { RestirGIFrameResources } from '../resourceManager.js';
 
-const RESERVOIR_GI_STRIDE_BYTES = 80;
+// GRIS Phase-0: widened ReservoirGI → ReservoirPT (30 × u32 = 120 bytes).
+// The [0..19] / 80-byte prefix is byte-identical to the Sprint-16/17 layout;
+// indices [20..29] cache the reconnection-shift data the Phase-1/2 GRIS reuse
+// will read (Lin 2022). Must stay in lockstep with RESERVOIR_GI_STRIDE in
+// shaders/reservoirGi.wgsl.ts.
+const RESERVOIR_GI_STRIDE_BYTES = 120;
 
 export function createRestirGIFrameResources(
   device: GPUDevice,

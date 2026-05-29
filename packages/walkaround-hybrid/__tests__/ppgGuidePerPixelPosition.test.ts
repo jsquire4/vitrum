@@ -32,8 +32,11 @@ describe('PPG guide — per-pixel position binding (W9 Phase 2 / sweep #5)', () 
     expect(PPG_GUIDE_WGSL).toContain('ppgReservoirGiBuf[b + 15u]');
   });
 
-  it('uses local RESERVOIR_GI_STRIDE = 20u (must match common.wgsl)', () => {
-    expect(PPG_GUIDE_WGSL).toContain('RESERVOIR_GI_STRIDE_LOCAL : u32 = 20u');
+  it('uses local RESERVOIR_GI_STRIDE = 30u (must match common.wgsl; GRIS Phase-0 widened 20 → 30)', () => {
+    // The per-reservoir stride grew from 20 → 30 u32 when GRIS Phase-0 appended
+    // the reconnection-shift cache. xv (0..2) and M (15) are unchanged WITHIN
+    // each reservoir; only the per-pixel base multiplier moved to 30u.
+    expect(PPG_GUIDE_WGSL).toContain('RESERVOIR_GI_STRIDE_LOCAL : u32 = 30u');
   });
 
   it('maps full-res pixel to half-res reservoir index (W/2-stride, x>>1, y>>1)', () => {

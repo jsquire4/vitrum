@@ -3,10 +3,74 @@
  *
  * Split out of common.wgsl.ts (T9-stepA): the `PrimarySurface` struct
  * (re-cast primary-ray receiver, shared by temporal/spatial and read inline
- * by shade), the `ReservoirGI` struct (80-byte / 20×u32), its
- * `emptyReservoirGI`, strided load/store helpers, and `updateReservoirGI`
- * (Sprint 16 ReSTIR-GI). `updateReservoirGI` forward-references `rand_f32`
- * (shared primitives) — see reservoirDi.wgsl.ts header note on ordering.
+ * by shade), the GI reservoir struct, its empty constructor, strided
+ * load/store helpers, and `updateReservoirGI` (Sprint 16 ReSTIR-GI).
+ * `updateReservoirGI` forward-references `rand_f32` (shared primitives) —
+ * see reservoirDi.wgsl.ts header note on ordering.
+ *
+ * ════════════════════════════════════════════════════════════════════════════
+ * GRIS / ReSTIR-PT EVOLUTION — PHASE 0 (foundation; NO render-output change)
+ * ════════════════════════════════════════════════════════════════════════════
+ * Lin, Kettunen, Bitterli, Pantaleoni, Jakob, Nowrouzezahrai — "Generalized
+ * Resampled Importance Sampling: Foundations of ReSTIR", SIGGRAPH 2022.
+ *
+ * The Sprint-16/17 reservoir stored a single-bounce *reconnection* sample
+ * (xv/nv visible vertex, xs/ns reconnection vertex, Lo, plus W/w_sum/M/lightId)
+ * occupying u32 indices [0..19] / 80 bytes. GRIS reuse across pixels requires a
+ * *shift map* T that re-maps the base path's reconnection vertex onto an offset
+ * path rooted at the neighbour pixel, together with the change-of-variables
+ * Jacobian |∂T/∂·| that re-weights the contribution under the integral.
+ *
+ * Phase 0 (this struct widening + the CPU `reconnectionShift.ts` oracle in
+ * @vitrum/shared-samplers) APPENDS — never reorders — the per-reservoir data
+ * the future GPU shift + Jacobian will read. The existing [0..19] layout is
+ * byte-identical, so every current load/store/read in temporalGi, spatialGi,
+ * risGi and shade is provably unaffected. The appended fields [20..29] are
+ * WRITTEN by risGi (Phase 0 zero-initialises them via `emptyReservoirGI`) but
+ * READ by NO pass in Phase 0.
+ *
+ * Phases 1-2 (dispatched separately) will:
+ *   • Phase 1 — implement the GPU reconnection-shift application in spatialGi
+ *     (and temporalGi): given a neighbour reservoir, re-root its reconnection
+ *     vertex onto THIS pixel's visible vertex (xv/nv) and recompute the
+ *     reconnection-edge geometry, mirroring `reconnectionShift` in the oracle.
+ *   • Phase 2 — replace the current scalar RIS reuse with the GRIS pairwise /
+ *     generalized-balance-heuristic MIS, weighting each shifted contribution by
+ *     |∂T/∂·| (mirroring `reconnectionJacobian`).
+ *
+ * Appended fields and the shift-Jacobian role of each (see oracle for the
+ * exact measure conversion, Lin 2022 §5 "reconnection shift"):
+ *   • wi_recon  (vec3f, idx 20..22) — unit INCIDENT direction into the
+ *       reconnection vertex along the BASE path (xv → xs). The shift discards
+ *       this and re-derives the offset direction xv' → xs; caching it lets the
+ *       reverse shift T⁻¹ and the BSDF-at-xv ratio be evaluated without a
+ *       re-trace.
+ *   • pdfReconBsdf (f32, idx 23) — the BSDF-sample solid-angle pdf at the
+ *       visible vertex that GENERATED wi_recon (cosine-hemisphere pdf in the
+ *       Phase-0 producer; the learned dTree mixture pdf when PPG is live). The
+ *       GRIS source pdf p̂ of the base sample; needed in the pairwise-MIS
+ *       denominator so the shifted weight is unbiased.
+ *   • distRecon (f32, idx 24) — ‖xv − xs‖ along the base path. The dist² term
+ *       of the base reconnection-edge geometry G = cosθ_out / dist²; one of the
+ *       two halves of the Jacobian ratio. Cached so the GPU need not recompute
+ *       length(xs − xv) (and to validate the offset re-trace landed on the same
+ *       reconnection vertex within tolerance).
+ *   • cosReconOut (f32, idx 25) — |cos θ_out| at the reconnection vertex xs
+ *       between its normal ns and the BASE incident direction (−wi_recon). The
+ *       numerator of the base geometry term G. distRecon + cosReconOut together
+ *       give the base half-G the Jacobian divides by.
+ *   • prefixVertexCount (u32, idx 26) — number of path-prefix vertices before
+ *       the reconnection vertex (1 for the single-bounce reconnection sample
+ *       today; >1 once multi-bounce prefixes are reconnected). GRIS only shifts
+ *       paths whose prefix length matches; a mismatch forces the random-replay
+ *       fallback shift instead of the reconnection shift.
+ *   • _padPT (u32×3, idx 27..29) — pad to a 16-byte (4-u32) multiple so the
+ *       30-u32 / 120-byte stride keeps vec4-aligned strided indexing simple and
+ *       leaves headroom for the Phase-1 reverse-shift cache without another
+ *       stride bump. Zeroed; never read.
+ *
+ * References: Lin et al. 2022 (GRIS), Eq. 12 (shift Jacobian) and §5
+ * (reconnection shift); Bitterli et al. 2020 (ReSTIR DI/GI base reservoir).
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -29,42 +93,76 @@ struct PrimarySurface {
 };
 
 // ============================================================
-// ReSTIR GI Reservoir (80 bytes, co-located at pixel offset after DI)
+// ReSTIR-GI / GRIS reservoir (ReservoirPT, 120 bytes, co-located at pixel
+// offset after DI). The Sprint-16/17 fields occupy u32 [0..19] (UNCHANGED —
+// byte-identical to the old ReservoirGI). GRIS Phase-0 fields are appended at
+// u32 [20..29]; see the file header for the Lin 2022 shift-Jacobian role of
+// each. ReservoirGI is kept as a type alias so the existing pass call sites
+// (risGi/temporalGi/spatialGi/shade) compile unchanged.
 // ============================================================
-struct ReservoirGI {
-  xv:      vec3f,   // visible point (primary hit)
-  _pad0:   f32,
-  nv:      vec3f,   // normal at xv
-  W:       f32,
-  xs:      vec3f,   // sample point (secondary bounce hit)
-  w_sum:   f32,
-  ns:      vec3f,   // normal at xs
-  M:       u32,
-  Lo:      vec3f,   // outgoing radiance at xs
-  lightId: u32,
+struct ReservoirPT {
+  // ── Sprint-16/17 reconnection sample (u32 [0..19], byte-identical) ──
+  xv:      vec3f,   // visible point (primary hit)        idx 0..2
+  _pad0:   f32,     //                                    idx 3
+  nv:      vec3f,   // normal at xv                       idx 4..6
+  W:       f32,     // RIS unbiased contribution weight    idx 7
+  xs:      vec3f,   // sample point (reconnection vertex)  idx 8..10
+  w_sum:   f32,     // running RIS weight sum              idx 11
+  ns:      vec3f,   // normal at xs                       idx 12..14
+  M:       u32,     // confidence (candidate count)        idx 15
+  Lo:      vec3f,   // outgoing radiance at xs             idx 16..18
+  lightId: u32,     //                                    idx 19
+  // ── GRIS Phase-0 reconnection-shift cache (u32 [20..29], appended) ──
+  wi_recon:          vec3f, // unit incident dir xv→xs    idx 20..22
+  pdfReconBsdf:      f32,   // BSDF-sample SA pdf at xv    idx 23
+  distRecon:         f32,   // ‖xv − xs‖                   idx 24
+  cosReconOut:       f32,   // |cos θ_out| at xs           idx 25
+  prefixVertexCount: u32,   // path-prefix vertex count    idx 26
+  _padPT0:           u32,   //                             idx 27
+  _padPT1:           u32,   //                             idx 28
+  _padPT2:           u32,   //                             idx 29
 };
 
-fn emptyReservoirGI() -> ReservoirGI {
-  var r: ReservoirGI;
+// ReservoirGI — back-compat alias. The Sprint-16/17 passes (risGi,
+// temporalGi, spatialGi, shade) refer to the type by this name and only touch
+// the [0..19] fields; the appended GRIS fields ride along untouched.
+alias ReservoirGI = ReservoirPT;
+
+fn emptyReservoirGI() -> ReservoirPT {
+  var r: ReservoirPT;
   r.xv = vec3f(0.0); r.nv = vec3f(0,1,0);
   r.xs = vec3f(0.0); r.ns = vec3f(0,1,0);
   r.Lo = vec3f(0.0); r.W = 0.0; r.w_sum = 0.0; r.M = 0u;
   r.lightId = 0u; r._pad0 = 0.0;
+  // GRIS Phase-0 fields — zero-initialised, READ BY NO PASS in Phase 0.
+  r.wi_recon = vec3f(0.0);
+  r.pdfReconBsdf = 0.0;
+  r.distRecon = 0.0;
+  r.cosReconOut = 0.0;
+  r.prefixVertexCount = 0u;
+  r._padPT0 = 0u; r._padPT1 = 0u; r._padPT2 = 0u;
   return r;
 }
 
-// Sprint 16 — ReservoirGI byte layout (80 bytes = 20 × u32):
-//   [0..2]  xv.xyz       [3]    _pad0
-//   [4..6]  nv.xyz       [7]    W
-//   [8..10] xs.xyz       [11]   w_sum
-//   [12..14] ns.xyz      [15]   M
-//   [16..18] Lo.xyz      [19]   lightId
-// Strided storage in array<u32> (4-byte elements) — stride = 20 u32.
-const RESERVOIR_GI_STRIDE: u32 = 20u;
+// Sprint 16 / GRIS-Phase-0 — ReservoirPT byte layout (120 bytes = 30 × u32):
+//   [0..2]   xv.xyz       [3]    _pad0
+//   [4..6]   nv.xyz       [7]    W
+//   [8..10]  xs.xyz       [11]   w_sum
+//   [12..14] ns.xyz       [15]   M
+//   [16..18] Lo.xyz       [19]   lightId
+//   ── appended GRIS reconnection-shift cache (zeroed in Phase 0) ──
+//   [20..22] wi_recon.xyz [23]   pdfReconBsdf
+//   [24]     distRecon    [25]   cosReconOut
+//   [26]     prefixVertexCount
+//   [27..29] _padPT0..2
+// Strided storage in array<u32> (4-byte elements) — stride = 30 u32.
+// NOTE: indices [0..19] are byte-identical to the pre-GRIS ReservoirGI layout,
+// so all existing temporal/spatial/shade reads are provably unaffected.
+const RESERVOIR_GI_STRIDE: u32 = 30u;
 
-fn loadReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) -> ReservoirGI {
+fn loadReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) -> ReservoirPT {
   let b = pixelIdx * RESERVOIR_GI_STRIDE;
-  var r: ReservoirGI;
+  var r: ReservoirPT;
   r.xv      = vec3f(bitcast<f32>(buf[b + 0u]), bitcast<f32>(buf[b + 1u]), bitcast<f32>(buf[b + 2u]));
   r._pad0   = bitcast<f32>(buf[b + 3u]);
   r.nv      = vec3f(bitcast<f32>(buf[b + 4u]), bitcast<f32>(buf[b + 5u]), bitcast<f32>(buf[b + 6u]));
@@ -75,12 +173,21 @@ fn loadReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32) 
   r.M       = buf[b + 15u];
   r.Lo      = vec3f(bitcast<f32>(buf[b + 16u]), bitcast<f32>(buf[b + 17u]), bitcast<f32>(buf[b + 18u]));
   r.lightId = buf[b + 19u];
+  // GRIS Phase-0 cache.
+  r.wi_recon          = vec3f(bitcast<f32>(buf[b + 20u]), bitcast<f32>(buf[b + 21u]), bitcast<f32>(buf[b + 22u]));
+  r.pdfReconBsdf      = bitcast<f32>(buf[b + 23u]);
+  r.distRecon         = bitcast<f32>(buf[b + 24u]);
+  r.cosReconOut       = bitcast<f32>(buf[b + 25u]);
+  r.prefixVertexCount = buf[b + 26u];
+  r._padPT0           = buf[b + 27u];
+  r._padPT1           = buf[b + 28u];
+  r._padPT2           = buf[b + 29u];
   return r;
 }
 
-fn loadReservoirGI_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> ReservoirGI {
+fn loadReservoirGI_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> ReservoirPT {
   let b = pixelIdx * RESERVOIR_GI_STRIDE;
-  var r: ReservoirGI;
+  var r: ReservoirPT;
   r.xv      = vec3f(bitcast<f32>(buf[b + 0u]), bitcast<f32>(buf[b + 1u]), bitcast<f32>(buf[b + 2u]));
   r._pad0   = bitcast<f32>(buf[b + 3u]);
   r.nv      = vec3f(bitcast<f32>(buf[b + 4u]), bitcast<f32>(buf[b + 5u]), bitcast<f32>(buf[b + 6u]));
@@ -91,10 +198,19 @@ fn loadReservoirGI_ro(buf: ptr<storage, array<u32>, read>, pixelIdx: u32) -> Res
   r.M       = buf[b + 15u];
   r.Lo      = vec3f(bitcast<f32>(buf[b + 16u]), bitcast<f32>(buf[b + 17u]), bitcast<f32>(buf[b + 18u]));
   r.lightId = buf[b + 19u];
+  // GRIS Phase-0 cache.
+  r.wi_recon          = vec3f(bitcast<f32>(buf[b + 20u]), bitcast<f32>(buf[b + 21u]), bitcast<f32>(buf[b + 22u]));
+  r.pdfReconBsdf      = bitcast<f32>(buf[b + 23u]);
+  r.distRecon         = bitcast<f32>(buf[b + 24u]);
+  r.cosReconOut       = bitcast<f32>(buf[b + 25u]);
+  r.prefixVertexCount = buf[b + 26u];
+  r._padPT0           = buf[b + 27u];
+  r._padPT1           = buf[b + 28u];
+  r._padPT2           = buf[b + 29u];
   return r;
 }
 
-fn storeReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32, r: ReservoirGI) {
+fn storeReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32, r: ReservoirPT) {
   let b = pixelIdx * RESERVOIR_GI_STRIDE;
   buf[b + 0u]  = bitcast<u32>(r.xv.x);
   buf[b + 1u]  = bitcast<u32>(r.xv.y);
@@ -116,10 +232,21 @@ fn storeReservoirGI_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: u32,
   buf[b + 17u] = bitcast<u32>(r.Lo.y);
   buf[b + 18u] = bitcast<u32>(r.Lo.z);
   buf[b + 19u] = r.lightId;
+  // GRIS Phase-0 cache (written-but-unread in Phase 0).
+  buf[b + 20u] = bitcast<u32>(r.wi_recon.x);
+  buf[b + 21u] = bitcast<u32>(r.wi_recon.y);
+  buf[b + 22u] = bitcast<u32>(r.wi_recon.z);
+  buf[b + 23u] = bitcast<u32>(r.pdfReconBsdf);
+  buf[b + 24u] = bitcast<u32>(r.distRecon);
+  buf[b + 25u] = bitcast<u32>(r.cosReconOut);
+  buf[b + 26u] = r.prefixVertexCount;
+  buf[b + 27u] = r._padPT0;
+  buf[b + 28u] = r._padPT1;
+  buf[b + 29u] = r._padPT2;
 }
 
 fn updateReservoirGI(
-  r: ptr<function, ReservoirGI>,
+  r: ptr<function, ReservoirPT>,
   xs: vec3f, ns: vec3f, Lo: vec3f,
   w: f32,
   rng: ptr<function, u32>,

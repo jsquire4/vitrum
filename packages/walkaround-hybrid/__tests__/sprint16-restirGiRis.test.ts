@@ -80,8 +80,12 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
 });
 
 describe('Sprint 16 — ReservoirGI byte-pack helpers (common.wgsl)', () => {
-  it('declares the 20 × u32 stride constant', () => {
-    expect(COMMON_WGSL).toContain('RESERVOIR_GI_STRIDE: u32 = 20u');
+  it('declares the 30 × u32 stride constant (GRIS Phase-0 widened 20 → 30)', () => {
+    // GRIS Phase-0 appended the reconnection-shift cache at indices [20..29],
+    // widening the per-pixel reservoir from 20 u32 (80 bytes) to 30 u32
+    // (120 bytes). The [0..19] prefix stays byte-identical — see
+    // reservoirPtLayout.test.ts for the bit-identity guard.
+    expect(COMMON_WGSL).toContain('RESERVOIR_GI_STRIDE: u32 = 30u');
   });
 
   it('exposes _rw + _ro load helpers and a _rw store helper', () => {

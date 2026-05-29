@@ -75,11 +75,14 @@ struct PPGGuideUBO {
 //   ppgDTreeBuf: per-cell dTree blocks concatenated; each is [N, leafN, total, _]
 //                followed by N × 8 f32 dNode records.
 //   ppgDTreeOffsets: ppgDTreeOffsets[k] = f32 base offset of cell k's dTree.
-//   ppgReservoirGiBuf: half-res ReservoirGI storage (see common.wgsl
-//                RESERVOIR_GI_STRIDE = 20 u32 / 80 bytes per reservoir).
-//                xv (primary-hit world position) lives at u32 offsets 0..2;
-//                M (sample count) at offset 15. We read these to compute the
-//                per-pixel sTree lookup position — Phase 2 of W9 sweep #5 fix.
+//   ppgReservoirGiBuf: half-res ReservoirPT storage (see common.wgsl /
+//                reservoirGi.wgsl; GRIS Phase-0 widened the stride to
+//                RESERVOIR_GI_STRIDE = 30 u32 / 120 bytes per reservoir).
+//                xv (primary-hit world position) still lives at u32 offsets
+//                0..2 and M (sample count) at offset 15 WITHIN each reservoir —
+//                only the per-pixel base stride changed. We read these to
+//                compute the per-pixel sTree lookup position — Phase 2 of W9
+//                sweep #5 fix.
 @group(0) @binding(0) var<storage, read>       ppgSTreeBuf     : array<f32>;
 @group(0) @binding(1) var<storage, read>       ppgDTreeBuf     : array<f32>;
 @group(0) @binding(2) var<storage, read>       ppgDTreeOffsets : array<u32>;
@@ -193,11 +196,16 @@ fn dTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
 
 // W9 Phase 2 — read this-pixel's primary-hit world position from the half-res
 // ReSTIR-GI reservoir written by the spatial-2 pass. Mirrors the layout
-// documented in common.wgsl: xv at u32 offsets 0..2, M at offset 15. Returns
-// scene-centre when the reservoir is degenerate (M==0) so sTree lookup
-// stays well-defined for pixels without a valid ReSTIR-GI sample (sky
-// misses, first frame, etc.).
-const RESERVOIR_GI_STRIDE_LOCAL : u32 = 20u;
+// documented in common.wgsl / reservoirGi.wgsl: xv at u32 offsets 0..2, M at
+// offset 15. Returns scene-centre when the reservoir is degenerate (M==0) so
+// sTree lookup stays well-defined for pixels without a valid ReSTIR-GI sample
+// (sky misses, first frame, etc.).
+//
+// GRIS Phase-0 widened the per-reservoir stride from 20 → 30 u32 (the appended
+// reconnection-shift cache, indices 20..29). xv (0..2) and M (15) are unchanged
+// WITHIN each reservoir; only the per-pixel base offset multiplier changes.
+// Must stay in lockstep with RESERVOIR_GI_STRIDE in reservoirGi.wgsl.ts.
+const RESERVOIR_GI_STRIDE_LOCAL : u32 = 30u;
 
 fn fetchPrimaryHitPos(fullResX: u32, fullResY: u32) -> vec3<f32> {
   // Half-res reservoirs cover 2×2 full-res tiles; map full-res → half-res.

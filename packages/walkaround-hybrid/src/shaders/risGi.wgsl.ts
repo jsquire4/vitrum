@@ -307,6 +307,41 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
+  // ── GRIS Phase-0 reconnection-shift cache (Lin et al. 2022, §5) ────────────
+  // Populate the appended ReservoirPT fields from the FINAL selected
+  // reconnection sample (xv → xs). These are WRITTEN here but READ BY NO PASS
+  // in Phase 0 — they do not touch the [0..19] fields, so the shade/temporal/
+  // spatial reads and therefore the rendered output stay BIT-IDENTICAL. Phase 1
+  // (GPU reconnection shift) and Phase 2 (GRIS pairwise MIS) will consume them:
+  //   • wi_recon / distRecon / cosReconOut → the base reconnection-edge half-G
+  //     (cosθ_out / dist²) numerator+denominator of the shift Jacobian.
+  //   • pdfReconBsdf → the base-sample source pdf p̂ for the pairwise-MIS denom.
+  //   • prefixVertexCount → shift-compatibility gate (only paths with matching
+  //     prefix length take the reconnection shift; others fall back).
+  {
+    let toRecon = r.xs - r.xv;
+    let dRecon = length(toRecon);
+    if (dRecon > 1e-6 && r.M > 0u) {
+      let wiR = toRecon / dRecon;
+      r.wi_recon    = wiR;
+      r.distRecon   = dRecon;
+      r.cosReconOut = abs(dot(r.ns, -wiR));
+      // Base producer draws wi from the cosine hemisphere about nv (PPG mixes a
+      // dTree term, but the cosine pdf is the always-present component and the
+      // exact value the Phase-1 forward shift re-derives); cache the
+      // solid-angle cosine-hemisphere pdf cosθ_in / π at the visible vertex.
+      r.pdfReconBsdf = max(0.0, dot(r.nv, wiR)) * INV_PI;
+    } else {
+      r.wi_recon    = vec3f(0.0);
+      r.distRecon   = 0.0;
+      r.cosReconOut = 0.0;
+      r.pdfReconBsdf = 0.0;
+    }
+    // Single-bounce reconnection sample: the path prefix before the
+    // reconnection vertex is just the visible vertex → 1 prefix vertex.
+    r.prefixVertexCount = select(0u, 1u, r.M > 0u);
+  }
+
   storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, r);
 }
 `;
