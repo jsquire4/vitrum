@@ -26,6 +26,25 @@ describe('backend promise ledger', () => {
       expect(typeof rec.incrementalPatchSupport.topology).toBe('boolean');
     }
   });
+
+  it('declares add/remove-primitive support exhaustively and consistently', () => {
+    for (const rec of Object.values(BACKEND_PROMISE_LEDGER)) {
+      expect(typeof rec.supportsAddRemovePrimitive).toBe('boolean');
+      expect(typeof rec.methodPromises.addPrimitive).toBe('boolean');
+      expect(typeof rec.methodPromises.removePrimitive).toBe('boolean');
+      // The capability flag and the two method promises must agree — a backend
+      // that advertises add/remove support must expose both methods, and vice
+      // versa (no half-implemented surface).
+      expect(rec.methodPromises.addPrimitive).toBe(rec.supportsAddRemovePrimitive);
+      expect(rec.methodPromises.removePrimitive).toBe(rec.supportsAddRemovePrimitive);
+    }
+  });
+
+  it('pins the per-backend add/remove-primitive truth table', () => {
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportsAddRemovePrimitive).toBe(true);
+    expect(BACKEND_PROMISE_LEDGER['pt-webgl'].supportsAddRemovePrimitive).toBe(false);
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportsAddRemovePrimitive).toBe(false);
+  });
 });
 
 describe('mat4 branding', () => {

@@ -258,6 +258,9 @@ class PTEngineWebGPU implements Engine {
         emitter: true,
         topology: true,
       },
+      // Explicit whole-primitive add/remove API (addPrimitive / removePrimitive)
+      // is implemented via a full buildPackedScene repack of the mutated scene.
+      supportsAddRemovePrimitive: true,
       supportsAuxBuffers: true,
       accumulates: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
@@ -533,6 +536,20 @@ class PTEngineWebGPU implements Engine {
     if (this.#slot.get() === 'disposed') {
       throw new Error('setScene: engine is disposed');
     }
+    this.#repackScene(scene, { warnOnEmpty: true });
+  }
+
+  /**
+   * Full scene repack: rebuild the packed BLAS/TLAS/material/analytic/light
+   * arrays from `scene`, destroy the stale scene buffers, upload the fresh set,
+   * re-init the BDPT light path, invalidate cached bind groups, and reset
+   * accumulation. This is the shared spine of `setScene` and the
+   * `addPrimitive` / `removePrimitive` whole-primitive mutators — the latter two
+   * hand a mutated copy of the live scene so the dense material / analytic /
+   * triMaterialId packing is reproduced by the SAME packing logic (no fragile
+   * per-array index remap; see class header on the add/remove design choice).
+   */
+  #repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void {
     const packed = buildPackedScene(scene);
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
@@ -546,14 +563,77 @@ class PTEngineWebGPU implements Engine {
     }
     this.#gpu.invalidateBindGroups();
     this.#scene = scene;
-    const sceneSummary = summarizeScene(scene);
-    if (sceneSummary.primitiveCount === 0) {
-      console.warn('[vitrum/pt-webgpu] Empty scene provided; rendering sky-only fallback.');
+    if (opts.warnOnEmpty) {
+      const sceneSummary = summarizeScene(scene);
+      if (sceneSummary.primitiveCount === 0) {
+        console.warn('[vitrum/pt-webgpu] Empty scene provided; rendering sky-only fallback.');
+      }
     }
     for (const warning of packed.warnings) {
       console.warn(`[vitrum/pt-webgpu] ${warning}`);
     }
     this.reset();
+  }
+
+  /**
+   * Add one whole primitive to the live scene (contract: {@link Engine.addPrimitive}).
+   *
+   * Implementation: this is a TAIL-INSERTION — the new primitive is appended to
+   * the scene's primitive list and the whole scene is re-packed via
+   * {@link #repackScene}. We deliberately do NOT take the slice-2 incremental
+   * BLAS-splice path here: a whole-primitive add also appends a NEW dense
+   * material slot (and, for analytic primitives, header / param entries), and a
+   * tail insertion needs no downstream offset remap — but the clean way to keep
+   * the materials / analytic / per-triangle `triMaterialId` arrays in their
+   * exact dense order is to reuse `buildPackedScene`, which is the same
+   * already-correct path `setScene` runs. A bespoke incremental append would
+   * have to duplicate that material/analytic packing for marginal buffer-reuse
+   * gains; the full repack is correct-by-construction and reuses the
+   * destroy-closure-off-the-struct realloc machinery in `uploadPackedScene`.
+   */
+  addPrimitive(primitive: ScenePrimitive): void {
+    this.#assertLive('addPrimitive');
+    const currentScene = this.#scene!;
+    if (currentScene.primitives.some((p) => p.id === primitive.id)) {
+      throw new Error(
+        `addPrimitive: a primitive with id "${primitive.id}" already exists; ` +
+          'use updatePrimitive to mutate an existing primitive.',
+      );
+    }
+    const nextScene: Scene = {
+      ...currentScene,
+      primitives: [...currentScene.primitives, primitive],
+    };
+    this.#repackScene(nextScene, { warnOnEmpty: false });
+  }
+
+  /**
+   * Remove one whole primitive from the live scene by id (contract:
+   * {@link Engine.removePrimitive}).
+   *
+   * Implementation: drop the primitive from the scene's primitive list and
+   * re-pack via {@link #repackScene}. A remove is the case that genuinely needs
+   * the dense index remap the slice-2 splice does NOT cover — every downstream
+   * primitive's material slot shifts by one, the per-triangle `triMaterialId`
+   * baked into each downstream BLAS leaf would have to be re-resolved, and any
+   * analytic header `materialId` / `paramsOffset` would have to be compacted. A
+   * full `buildPackedScene` reproduces all of that correctly by construction,
+   * so we repack rather than hand-roll a multi-array compaction.
+   */
+  removePrimitive(id: ScenePrimitive['id']): void {
+    this.#assertLive('removePrimitive');
+    const currentScene = this.#scene!;
+    const nextPrimitives = currentScene.primitives.filter((p) => p.id !== id);
+    if (nextPrimitives.length === currentScene.primitives.length) {
+      throw new Error(
+        `removePrimitive: no primitive with id "${id}" in the live scene.`,
+      );
+    }
+    const nextScene: Scene = {
+      ...currentScene,
+      primitives: nextPrimitives,
+    };
+    this.#repackScene(nextScene, { warnOnEmpty: false });
   }
 
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {

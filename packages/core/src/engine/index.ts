@@ -63,6 +63,47 @@ export interface Engine {
    *  `capabilities.supportsIncrementalScene = true`. */
   updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
 
+  /** Add one whole primitive to the live scene without the host re-authoring
+   *  the full {@link Scene} and calling {@link setScene}. Unlike
+   *  `updatePrimitive` (which mutates an EXISTING primitive), this introduces a
+   *  NEW primitive — appended to the scene's primitive list — building its
+   *  acceleration structure and uploading its geometry / material / emitter
+   *  entries. The added primitive is renderable on the next `renderFrame`.
+   *
+   *  Semantics (a backend that implements this MUST honor them):
+   *   • The primitive's `id` MUST be unique among the live scene's primitives.
+   *     Adding a primitive whose `id` already exists throws — it is a contract
+   *     violation, not a silent update (use `updatePrimitive` to mutate an
+   *     existing primitive). The scene is left unchanged on throw.
+   *   • Because the scene's geometry changed, accumulation history is invalid:
+   *     PT-style engines reset their sample accumulator (frame restarts from
+   *     sample 0); real-time engines reinitialise temporal history as on
+   *     `setScene`.
+   *   • Unsupported primitive kinds / analytic shapes are warn-skipped with the
+   *     same capability filter `setScene` applies — they do not throw.
+   *
+   *  Available only when `capabilities.supportsAddRemovePrimitive = true`;
+   *  hosts MUST typeof-check before calling. Backends that report `false` leave
+   *  whole-primitive add/remove to a full `setScene`. */
+  addPrimitive?(primitive: ScenePrimitive): void;
+
+  /** Remove one whole primitive from the live scene by `id`, the inverse of
+   *  {@link addPrimitive}. The evicted primitive's geometry, material, and
+   *  emitter entries are dropped, downstream primitives are re-packed densely,
+   *  and the primitive is no longer hit by any ray on the next `renderFrame`.
+   *
+   *  Semantics (a backend that implements this MUST honor them):
+   *   • Removing an `id` that is not present in the live scene throws — it is a
+   *     contract violation, not a no-op (a host that wants idempotent removal
+   *     should query the scene first). The scene is left unchanged on throw.
+   *   • Accumulation history is invalidated exactly as for {@link addPrimitive}.
+   *   • Removing the last primitive is legal and yields a renderable empty /
+   *     sky-only scene (same as `setScene` with no primitives).
+   *
+   *  Available only when `capabilities.supportsAddRemovePrimitive = true`;
+   *  hosts MUST typeof-check before calling. */
+  removePrimitive?(id: ScenePrimitive['id']): void;
+
   /** Patch a single emitter. Same incremental-fallback semantics as above. */
   updateEmitter?(id: string, patch: Partial<SceneEmitter>): void;
 

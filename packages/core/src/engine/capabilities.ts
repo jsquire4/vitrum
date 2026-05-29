@@ -39,6 +39,18 @@ export interface EngineCapabilities {
    *  conservative behavior implied by `supportsIncrementalScene`. */
   readonly incrementalPatchSupport?: IncrementalPatchSupport;
 
+  /** Engine implements the explicit whole-primitive {@link Engine.addPrimitive}
+   *  / {@link Engine.removePrimitive} API — adding or removing a complete
+   *  primitive from the live scene without the host re-authoring the full
+   *  {@link Scene} and calling `setScene`. This is orthogonal to
+   *  {@link incrementalPatchSupport}, whose `topology` flag covers COUNT-change
+   *  PATCHES on an existing primitive (e.g. growing an instanced-mesh's instance
+   *  list) — NOT introducing or evicting a whole primitive. When false or
+   *  omitted, hosts must call `setScene` for whole-primitive add/remove. Hosts
+   *  MUST typeof-check `engine.addPrimitive` / `engine.removePrimitive` before
+   *  calling regardless, since this is an optional method pair. */
+  readonly supportsAddRemovePrimitive?: boolean;
+
   /** Engine reports `FrameOutput.variance` and `FrameOutput.motionVectors`,
    *  enabling external denoisers + adaptive sampling. */
   readonly supportsAuxBuffers: boolean;

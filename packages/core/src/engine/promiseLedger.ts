@@ -9,6 +9,8 @@ export interface BackendMethodPromises {
   readonly updatePrimitive: boolean;
   readonly updateEmitter: boolean;
   readonly updateEnvironment: boolean;
+  readonly addPrimitive: boolean;
+  readonly removePrimitive: boolean;
   readonly setSize: boolean;
   readonly updateLighting: boolean;
   readonly onFrame: boolean;
@@ -25,6 +27,11 @@ export interface FrameInputPromises {
 export interface BackendPromiseRecord {
   readonly supportsIncrementalScene: boolean;
   readonly incrementalPatchSupport: IncrementalPatchSupport;
+  /** Whether the backend implements the explicit whole-primitive add/remove API
+   *  ({@link Engine.addPrimitive} / {@link Engine.removePrimitive}). Distinct
+   *  from `incrementalPatchSupport.topology` (count-change patches on an
+   *  EXISTING primitive). */
+  readonly supportsAddRemovePrimitive: boolean;
   readonly supportsAuxBuffers: boolean;
   readonly accumulates: boolean;
   readonly supportedPrimitiveKinds: readonly ScenePrimitive['kind'][];
@@ -52,6 +59,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       emitter: true,
       topology: true,
     },
+    // Whole-primitive add/remove is a deliberate follow-up on walkaround-hybrid
+    // (the DDGI / ReSTIR / RC subsystems all index off a packed scene that would
+    // need re-syncing). Hosts use `setScene` for now.
+    supportsAddRemovePrimitive: false,
     supportsAuxBuffers: false,
     accumulates: false,
     // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh; analytic
@@ -77,6 +88,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       updatePrimitive: true,
       updateEmitter: true,
       updateEnvironment: false,
+      // Follow-up — see supportsAddRemovePrimitive above.
+      addPrimitive: false,
+      removePrimitive: false,
       setSize: true,
       updateLighting: true,
       onFrame: true,
@@ -116,6 +130,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       emitter: true,
       topology: true,
     },
+    // Whole-primitive add/remove is a deliberate follow-up on pt-webgl: the
+    // three-gpu-pathtracer fork's StaticGeometryGenerator + MaterialsTexture
+    // would need a targeted append/evict path. Hosts use `setScene` for now.
+    supportsAddRemovePrimitive: false,
     supportsAuxBuffers: false,
     accumulates: true,
     // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh;
@@ -137,6 +155,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       updatePrimitive: true,
       updateEmitter: true,
       updateEnvironment: true,
+      // Follow-up — see supportsAddRemovePrimitive above.
+      addPrimitive: false,
+      removePrimitive: false,
       setSize: false,
       updateLighting: false,
       onFrame: true,
@@ -169,6 +190,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       emitter: true,
       topology: true,
     },
+    // Explicit whole-primitive add/remove IS implemented: addPrimitive appends a
+    // new primitive and removePrimitive evicts one, each via a full
+    // buildPackedScene repack of the mutated scene (the dense material /
+    // analytic / triMaterialId packing is reproduced correctly by reusing the
+    // exact setScene packing path — no fragile per-array index remap).
+    supportsAddRemovePrimitive: true,
     supportsAuxBuffers: true,
     accumulates: true,
     supportedPrimitiveKinds: ['mesh', 'instanced-mesh', 'analytic', 'skinned-mesh'],
@@ -180,6 +207,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       updatePrimitive: true,
       updateEmitter: true,
       updateEnvironment: true,
+      addPrimitive: true,
+      removePrimitive: true,
       setSize: false,
       updateLighting: false,
       onFrame: true,
