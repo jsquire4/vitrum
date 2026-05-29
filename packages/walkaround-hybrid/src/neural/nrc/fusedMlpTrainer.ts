@@ -144,6 +144,11 @@ export class FusedMlpTrainer {
   actsGlob!: GPUBuffer; zGlob!: GPUBuffer;
   gradWfx!: GPUBuffer; gradBfx!: GPUBuffer;        // i32 fixed-point
   gradWf!: GPUBuffer; gradBf!: GPUBuffer;          // f32 finalized
+  // dL/dX — gradient w.r.t. the raw (padded) network INPUT, [numSamples × inW].
+  // Fixed-point i32 atomic accumulator + finalized f32. The first L·F columns of
+  // each sample's row are dL/dfeature for the hash-grid encode (Müller 2022 §4);
+  // the NRC encode-backward scatters them into the trainable feature tables.
+  gradInputFx!: GPUBuffer; gradInputF!: GPUBuffer;
   mW!: GPUBuffer; vW!: GPUBuffer; mB!: GPUBuffer; vB!: GPUBuffer; // Adam state (f32)
 
   pFwd!: GPUComputePipeline; pBwd!: GPUComputePipeline;
@@ -203,6 +208,10 @@ export class FusedMlpTrainer {
     this.gradBfx = mk(this.plan.totalB * 4);
     this.gradWf = mk(this.plan.totalW * 4);
     this.gradBf = mk(this.plan.totalB * 4);
+    // dL/dX accumulators, [numSamples × inW] (raw encoded input width). i32 fixed
+    // point (matches the grad-atomic discipline) + f32 finalized for the scatter.
+    this.gradInputFx = mk(numSamples * this.spec.inW * 4);
+    this.gradInputF = mk(numSamples * this.spec.inW * 4);
     this.mW = mk(this.plan.totalW * 4); this.vW = mk(this.plan.totalW * 4);
     this.mB = mk(this.plan.totalB * 4); this.vB = mk(this.plan.totalB * 4);
 
@@ -311,6 +320,7 @@ export class FusedMlpTrainer {
         { binding: 4, resource: { buffer: this.gradWfx } },
         { binding: 5, resource: { buffer: this.gradBfx } },
         { binding: 6, resource: { buffer: ub } },
+        { binding: 7, resource: { buffer: this.gradInputFx } },
       ],
     });
     const pass = enc.beginComputePass();
@@ -338,26 +348,33 @@ export class FusedMlpTrainer {
     pass.end();
   }
 
-  /** Compute grads only (forward+backward+finalize), no Adam — for FD check. */
+  /** Compute grads only (forward+backward+finalize), no Adam — for FD check.
+   *  Finalizes weight, bias AND dL/dX (input) grads. */
   computeGradsStep() {
     const d = this.device;
-    // clear fixed-point grad buffers
+    // clear fixed-point grad buffers (incl. dL/dX)
     const enc0 = d.createCommandEncoder();
     enc0.clearBuffer(this.gradWfx); enc0.clearBuffer(this.gradBfx);
+    enc0.clearBuffer(this.gradInputFx);
     d.queue.submit([enc0.finish()]);
     const enc = d.createCommandEncoder();
     this.recordForward(enc);
     this.recordBackward(enc);
     this.recordGradFinalize(enc, this.gradWfx, this.gradWf, this.plan.totalW);
     this.recordGradFinalize(enc, this.gradBfx, this.gradBf, this.plan.totalB);
+    this.recordGradFinalize(enc, this.gradInputFx, this.gradInputF, this.numSamples * this.spec.inW);
     d.queue.submit([enc.finish()]);
   }
 
-  /** Full fused train step: forward, backward, finalize grads, Adam, push back. */
+  /** Full fused train step: forward, backward, finalize grads, Adam, push back.
+   *  Also finalizes dL/dX into {@link gradInputF} so the NRC encode-backward can
+   *  scatter it into the trainable hash-grid tables. The MLP-weight Adam runs
+   *  here; the host runs the TABLE Adam separately after the encode-backward. */
   trainStep(lr: number) {
     const d = this.device;
     const enc0 = d.createCommandEncoder();
     enc0.clearBuffer(this.gradWfx); enc0.clearBuffer(this.gradBfx);
+    enc0.clearBuffer(this.gradInputFx);
     d.queue.submit([enc0.finish()]);
 
     const enc = d.createCommandEncoder();
@@ -365,6 +382,7 @@ export class FusedMlpTrainer {
     this.recordBackward(enc);
     this.recordGradFinalize(enc, this.gradWfx, this.gradWf, this.plan.totalW);
     this.recordGradFinalize(enc, this.gradBfx, this.gradBf, this.plan.totalB);
+    this.recordGradFinalize(enc, this.gradInputFx, this.gradInputF, this.numSamples * this.spec.inW);
     d.queue.submit([enc.finish()]);
 
     // Adam ALWAYS runs on the f32 MASTER weight/bias buffers (mixed precision);
@@ -441,6 +459,12 @@ export class FusedMlpTrainer {
     };
   }
 
+  /** Read back the finalized dL/dX (input gradient), [numSamples × inW]. Used by
+   *  the FD gradient check and (debug) inspection of the hash-grid upstream grad. */
+  async readInputGrads(): Promise<Float32Array> {
+    return this.readF32(this.gradInputF, this.numSamples * this.spec.inW);
+  }
+
   /** Forward-only + CPU MSE from prediction readback (for FD loss probe). */
   async computeLoss(): Promise<number> {
     const d = this.device;
@@ -513,5 +537,8 @@ function f16BitsToF32(bits: Uint16Array): Float32Array {
   return out;
 }
 
-export { planLayers, f32ToF16Bits, f16BitsToF32 };
+// The Adam optimizer WGSL is exported so the NRC subsystem can run a SEPARATE
+// Adam on the hash-grid feature tables with its own (higher) learning rate +
+// moment buffers (Instant-NGP §4: lr_embed ≈ 0.1 vs lr_mlp ≈ 0.01).
+export { planLayers, f32ToF16Bits, f16BitsToF32, ADAM_WGSL };
 export type { LayerPlan };

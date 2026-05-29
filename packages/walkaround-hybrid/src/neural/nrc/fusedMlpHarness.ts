@@ -105,6 +105,54 @@ function cpuGrads(
   return { gw, gb };
 }
 
+// CPU reference for dL/dX (the gradient w.r.t. the RAW network input). The input
+// layer is LINEAR, so dL/dX[S,i] = Σ_o W[0][o,i]·δ₁[S,o] with NO relu' factor —
+// this is the upstream signal the NRC hash-grid encode-backward scatters into the
+// trainable feature tables (Müller 2022 Instant-NGP §4). Returns [B × rawInW].
+function cpuInputGrads(
+  w: Float32Array, b: Float32Array, x: Float32Array, y: Float32Array,
+  spec: FusedNetSpec, plan: { wOff: number[]; bOff: number[]; inW: number[]; outW: number[]; wlayers: number; totalW: number; totalB: number },
+  B: number,
+): Float32Array {
+  const { W, outW, inW: rawInW } = spec;
+  const wl = plan.wlayers;
+  const node = spec.hidden + 2;
+  const dXall = new Float32Array(B * rawInW);
+  for (let S = 0; S < B; S++) {
+    const a: number[][] = [], z: number[][] = [];
+    for (let nl = 0; nl < node; nl++) { a.push(new Array(W).fill(0)); z.push(new Array(W).fill(0)); }
+    for (let i = 0; i < W; i++) a[0][i] = (i < rawInW) ? x[S * rawInW + i] : 0;
+    for (let l = 0; l < wl; l++) {
+      const iN = plan.inW[l], oN = plan.outW[l], isOut = l === wl - 1;
+      for (let o = 0; o < oN; o++) {
+        let acc = b[plan.bOff[l] + o];
+        for (let i = 0; i < iN; i++) acc += w[plan.wOff[l] + o * iN + i] * a[l][i];
+        z[l + 1][o] = acc;
+        a[l + 1][o] = isOut ? acc : Math.max(0, acc);
+      }
+    }
+    const delta: number[][] = [];
+    for (let nl = 0; nl < node; nl++) delta.push(new Array(W).fill(0));
+    for (let o = 0; o < outW; o++) delta[node - 1][o] = (a[node - 1][o] - y[S * outW + o]) / B;
+    for (let l = wl - 1; l >= 1; l--) {
+      const iN = plan.inW[l], oN = plan.outW[l];
+      for (let i = 0; i < iN; i++) {
+        let acc = 0;
+        for (let o = 0; o < oN; o++) acc += w[plan.wOff[l] + o * iN + i] * delta[l + 1][o];
+        delta[l][i] = acc * (z[l][i] > 0 ? 1 : 0);
+      }
+    }
+    // l==0: LINEAR input → dL/dX[S,i] = Σ_o W[0][o,i]·δ₁[o].
+    const iN = plan.inW[0], oN = plan.outW[0];
+    for (let i = 0; i < Math.min(iN, rawInW); i++) {
+      let acc = 0;
+      for (let o = 0; o < oN; o++) acc += w[plan.wOff[0] + o * iN + i] * delta[1][o];
+      dXall[S * rawInW + i] = acc;
+    }
+  }
+  return dXall;
+}
+
 function relErr(a: Float32Array, b: Float32Array) {
   let maxRel = 0, maxAbs = 0;
   let worstRelIdx = -1, worstAbsIdx = -1;
@@ -193,6 +241,18 @@ async function main() {
   const cpuTol = useF16 ? 2e-2 : 1e-4;
   const cpuMatch = ecw.maxAbs < cpuTol * (ecw.maxMag + 1) && ecb.maxAbs < cpuTol * (ecb.maxMag + 1);
   console.log("GPU==CPU-ANALYTIC:", cpuMatch ? "PASS (kernel matches exact backprop)" : "FAIL");
+
+  // ── PART 1b: dL/dX (INPUT gradient) GPU == CPU analytic (the NRC encode-
+  // backward upstream signal). The input layer is linear (no ReLU kink), so this
+  // is a CLEAN check — GPU must match the CPU input-grad oracle tightly. ──
+  const gdx = await tiny.readInputGrads(); // [B_fd × inW]
+  const cpuDX = cpuInputGrads(init.w, init.b, batch.x, batch.y, tinySpec, plan, B_fd);
+  const edx = relErr(gdx, cpuDX);
+  console.log("GPU-vs-CPU dL/dX: maxAbsErr=", edx.maxAbs.toExponential(3),
+    " maxRelErr(meaningful)=", edx.maxRelMeaningful.toExponential(3));
+  const dxTol = useF16 ? 2e-2 : 1e-4;
+  const dxMatch = edx.maxAbs < dxTol * (edx.maxMag + 1);
+  console.log("dL/dX GPU==CPU-ANALYTIC:", dxMatch ? "PASS (encode-backward upstream signal correct)" : "FAIL");
   // Match the spike's FD step (1e-3): large enough to beat f32 round-off, small
   // enough that few cells straddle a ReLU kink. (f16 uses a slightly larger h.)
   const h = useF16 ? 5e-3 : 1e-3;
@@ -237,8 +297,8 @@ async function main() {
   // verdict on it — the GPU==CPU-analytic match is the real correctness proof.
   console.log(`FD secondary check: weight maxRelErr(meaningful)=${ew.maxRelMeaningful.toExponential(3)} ` +
     `(FD carries ReLU-kink error on boundary cells; CPU-analytic match above is the oracle)`);
-  const gradOK = cpuMatch;
-  console.log("GRADIENT CHECK:", gradOK ? "PASS (GPU kernel == exact backprop)" : "FAIL");
+  const gradOK = cpuMatch && dxMatch;
+  console.log("GRADIENT CHECK:", gradOK ? "PASS (GPU kernel == exact backprop, incl. dL/dX)" : "FAIL");
 
   // ── PART 2: actually LEARN the target function (full fused train loop) ──
   console.log("\n--- PART 2: fit a known function (FUSED train loop) ---");

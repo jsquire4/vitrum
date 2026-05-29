@@ -142,12 +142,11 @@ struct NrcCfgUBO {
 @group(4) @binding(1) var<storage, read>       nrcBiases  : array<f32>;
 @group(4) @binding(2) var<storage, read>       nrcTables  : array<f32>;
 @group(4) @binding(3) var<storage, read>       nrcLevels  : array<NrcLevelDesc>;
-// Record-gather buffer. Layout per record: [0]=count-claim header is at index 0
-// of the buffer (atomic via the dedicated counter buffer is overkill at half-res
-// scale; we instead use a deterministic per-pixel slot = pixelIdxGi % recordCap,
-// which is race-free because each invocation owns one pixel). Records are
-// [NRC_IN_W encoded input | OUT_W radiance target]. A record with target == 0
-// across all channels is treated as empty by the host gather.
+// Record-gather buffer. We use a deterministic per-pixel slot = pixelIdxGi %
+// recordCap, which is race-free because each invocation owns one pixel. Records
+// are [NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos]
+// (recordStride = NRC_IN_W + OUT_W + 3). A record with target == 0 across all
+// channels is treated as empty by the host gather.
 @group(4) @binding(4) var<storage, read_write> nrcRecords : array<f32>;
 @group(4) @binding(5) var<uniform>             nrcCfg     : NrcCfgUBO;
 
@@ -302,6 +301,14 @@ fn nrcQueryRadiance(pos: vec3f, normal: vec3f, viewDir: vec3f, roughness: f32, a
 // atomics / data race. target is the radiance the path actually accumulated at
 // this suffix vertex (Müller §5 self-training target). The input is re-assembled
 // identically to the query so the trainer fits the SAME encoding it queried.
+//
+// Record layout (recordStride = NRC_IN_W + OUT_W + 3 f32s):
+//   [ NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos ]
+// The raw query world position is appended so the host can drive the hash-grid
+// encode-backward (nrcEncodeBackward.wgsl.ts): the scatter recomputes the
+// trilinear corners from this pos + the scene AABB. It cannot recover the pos
+// from the encoded input (the hash-grid forward is many-to-one / collides), so
+// the pos must be carried explicitly. (Müller 2022 Instant-NGP §4.)
 fn nrcWriteRecord(
   slot: u32, pos: vec3f, normal: vec3f, viewDir: vec3f, roughness: f32, albedo: vec3f,
   tgt: vec3f,
@@ -314,6 +321,10 @@ fn nrcWriteRecord(
   nrcRecords[base + NRC_IN_W + 0u] = tgt.x;
   nrcRecords[base + NRC_IN_W + 1u] = tgt.y;
   nrcRecords[base + NRC_IN_W + 2u] = tgt.z;
+  // raw query world position (drives the encode-backward trilinear scatter).
+  nrcRecords[base + NRC_IN_W + 3u] = pos.x;
+  nrcRecords[base + NRC_IN_W + 4u] = pos.y;
+  nrcRecords[base + NRC_IN_W + 5u] = pos.z;
 }
 `;
 }

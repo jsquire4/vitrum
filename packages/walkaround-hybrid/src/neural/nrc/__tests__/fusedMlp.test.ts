@@ -100,8 +100,8 @@ describe('fused NRC MLP — WGSL codegen', () => {
     expect(countStorage(fusedBackwardWgsl(MULLER))).toBeLessThanOrEqual(8);
     // forward has exactly 5 storage buffers (weights, biases, inputs, acts, z).
     expect(countStorage(fusedForwardWgsl(MULLER))).toBe(5);
-    // backward has 6 (weights, targets, acts, z, gradWfx, gradBfx).
-    expect(countStorage(fusedBackwardWgsl(MULLER))).toBe(6);
+    // backward has 7 (weights, targets, acts, z, gradWfx, gradBfx, gradInputFx).
+    expect(countStorage(fusedBackwardWgsl(MULLER))).toBe(7);
   });
 
   it('packs per-layer offsets as a fixed-size uniform vec4 array sized to WLAYERS', () => {
