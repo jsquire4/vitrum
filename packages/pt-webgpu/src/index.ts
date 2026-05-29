@@ -115,6 +115,33 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    */
   readonly traceTier?: PtWebgpuTraceTier;
   /**
+   * Enable Jakob-Hanika spectral hero-wavelength rendering (dispersion, thin-film,
+   * spectral SSS). Off by default. (Graduated from the former
+   * `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.)
+   */
+  readonly spectral?: boolean;
+  /**
+   * Enable the bidirectional path tracer (full Veach §10.3 connection MIS). Full
+   * tier only. Off by default. (Graduated from `extensions['vitrum.ptWebgpu.bdpt']`.)
+   */
+  readonly bdpt?: boolean;
+  /** BDPT tuning — read only when {@link bdpt} is `true`. */
+  readonly bdptOptions?: {
+    /** Max light-subpath bounces, clamped 1–3. Default 3. */
+    readonly maxLightBounces?: number;
+  };
+  /**
+   * Intel Open Image Denoise final-pass config. REQUIRED when
+   * `denoiser: 'oidn-final'`. (Graduated from the former
+   * `extensions['vitrum.ptWebgpu.oidnModelUrl' | 'oidnExecutionProviders']`.)
+   */
+  readonly oidn?: {
+    /** URL of the ONNX OIDN model (e.g. `oidn_rt_hdr_alb_nrm.onnx`). */
+    readonly modelUrl: string;
+    /** ONNX Runtime execution-provider preference order. */
+    readonly executionProviders?: readonly ('webnn' | 'webgpu' | 'wasm')[];
+  };
+  /**
    * Test-only: inject a mock OIDN bridge (mirrors pt-webgl `oidnBridgeLoader`).
    */
   readonly oidnBridgeLoader?: import('./denoise/oidnFinalDispatcher.js').OIDNBridgeLoader;
@@ -188,7 +215,7 @@ class PTEngineWebGPU implements Engine {
   #onFrameSubs = new Set<(stats: FrameStats) => void>();
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
   readonly #postDenoiser: OIDNFinalDispatcher | null;
-  readonly #extensions: EngineOptions['extensions'];
+  readonly #spectralEnabled: boolean;
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
   #bdptLightPath: BdptLightPathBufferWebGPU | null = null;
@@ -202,7 +229,7 @@ class PTEngineWebGPU implements Engine {
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot, traceTier: PtWebgpuTraceTier) {
     this.#slot = slot;
     this.#device = opts.device;
-    this.#extensions = opts.extensions;
+    this.#spectralEnabled = opts.spectral === true;
     this.#traceTier = traceTier;
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
@@ -212,25 +239,22 @@ class PTEngineWebGPU implements Engine {
     const mneeChain = typeof causticOpts.mneeMaxChainLength === 'number' ? causticOpts.mneeMaxChainLength : 3;
     this.#mneeMaxIterations = Math.max(1, mneeIter);
     this.#mneeMaxChainLength = Math.max(1, mneeChain);
-    this.#bdpt = opts.extensions?.['vitrum.ptWebgpu.bdpt'] === true;
-    const requestedBdptBounces = opts.extensions?.['vitrum.ptWebgpu.bdptMaxLightBounces'];
+    this.#bdpt = opts.bdpt === true;
+    const requestedBdptBounces = opts.bdptOptions?.maxLightBounces;
     this.#bdptMaxLightBounces =
       typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
         ? Math.min(3, Math.floor(requestedBdptBounces))
         : 3;
     this.#gpu = new GpuResources(opts.device, traceTier, this.#bdpt);
     if (opts.denoiser === 'oidn-final') {
-      const modelUrl = opts.extensions?.['vitrum.ptWebgpu.oidnModelUrl'];
-      const epsRaw = opts.extensions?.['vitrum.ptWebgpu.oidnExecutionProviders'];
-      const eps = Array.isArray(epsRaw)
-        ? (epsRaw.filter((p) => p === 'webnn' || p === 'webgpu' || p === 'wasm') as Array<
-            'webnn' | 'webgpu' | 'wasm'
-          >)
-        : undefined;
+      const modelUrl = opts.oidn?.modelUrl;
+      const eps = opts.oidn?.executionProviders?.filter(
+        (p) => p === 'webnn' || p === 'webgpu' || p === 'wasm',
+      );
       if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
         throw new Error(
           "createPTEngine_WebGPU: denoiser: 'oidn-final' requires " +
-            "extensions['vitrum.ptWebgpu.oidnModelUrl'] (non-empty string). " +
+            'oidn: { modelUrl } (a non-empty string). ' +
             'Use oidn_rt_hdr_alb_nrm.onnx when supplying albedo + normal aux.',
         );
       }
@@ -504,10 +528,7 @@ class PTEngineWebGPU implements Engine {
     paramsU32[FrameParamsSlot.environmentMapHeight] = sb.environmentMapHeight >>> 0;
     paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
     paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
-    const spectralExt = this.#extensions?.['vitrum.ptWebgpu.spectralHeroWavelength'];
-    const spectralEnabled =
-      spectralExt === true || spectralExt === 1 || spectralExt === '1' || spectralExt === 'true';
-    paramsU32[FrameParamsSlot.spectralEnabled] = spectralEnabled ? 1 : 0;
+    paramsU32[FrameParamsSlot.spectralEnabled] = this.#spectralEnabled ? 1 : 0;
     paramsU32[FrameParamsSlot.heroStrategy] = 0;
     paramsF32[FrameParamsSlot.heroLambdaNm] = 550.0;
     paramsF32[FrameParamsSlot.heroPdf] = 1.0;

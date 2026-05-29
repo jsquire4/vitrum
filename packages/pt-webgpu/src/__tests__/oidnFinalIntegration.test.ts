@@ -37,7 +37,7 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
         device: makeStubDevice(),
         denoiser: 'oidn-final',
       }),
-    ).rejects.toThrow(/oidnModelUrl/);
+    ).rejects.toThrow(/oidn: \{ modelUrl \}/);
   });
 
   it('does not warn when denoiser is oidn-final', async () => {
@@ -45,7 +45,7 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
       denoiser: 'oidn-final',
-      extensions: { 'vitrum.ptWebgpu.oidnModelUrl': '/models/oidn_rt_hdr.onnx' },
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
       oidnBridgeLoader: async () => ({
         denoiseFinal: vi.fn(async () => new Float32Array(0)),
       }),

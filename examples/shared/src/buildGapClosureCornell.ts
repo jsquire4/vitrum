@@ -118,13 +118,10 @@ export function buildGapClosureCornellThreeScene(
   return scene;
 }
 
-export function ptWebgpuExtensionsForGapScenario(
-  scenarioId: string,
-): Record<string, boolean> | undefined {
-  if (scenarioId.includes('spectral') || scenarioId === 'rfe08-13-spectral-payload') {
-    return { 'vitrum.ptWebgpu.spectralHeroWavelength': true };
-  }
-  return undefined;
+/** True when the gap-closure scenario needs spectral hero-wavelength rendering
+ *  (drives the typed `spectral` option on `createPTEngine_WebGPU`). */
+export function spectralForGapScenario(scenarioId: string): boolean {
+  return scenarioId.includes('spectral') || scenarioId === 'rfe08-13-spectral-payload';
 }
 
 export function defaultCausticForGapScenario(

@@ -17,7 +17,7 @@ import {
   buildTlas10InstThreeScene,
   defaultCausticForGapScenario,
   mat4FromThree,
-  ptWebgpuExtensionsForGapScenario,
+  spectralForGapScenario,
   resizeCanvasToDisplaySize,
 } from '@vitrum-examples/shared';
 import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl';
@@ -535,15 +535,12 @@ async function main(): Promise<void> {
         FLAGS.vitrumCaustic !== ''
           ? FLAGS.vitrumCaustic
           : defaultCausticForGapScenario(gapId, null);
-      const spectralExt =
-        FLAGS.vitrumPtWebgpuSpectral || gapId.includes('spectral')
-          ? { 'vitrum.ptWebgpu.spectralHeroWavelength': true as const }
-          : undefined;
-      const gapExt = gapId.length > 0 ? ptWebgpuExtensionsForGapScenario(gapId) : undefined;
+      const spectral =
+        FLAGS.vitrumPtWebgpuSpectral || gapId.includes('spectral') || spectralForGapScenario(gapId);
       const ptGpuEngine = await createPTEngine_WebGPU({
         device,
         causticStrategy,
-        extensions: { ...(gapExt ?? {}), ...(spectralExt ?? {}) },
+        spectral,
       });
       ptGpuEngine.setScene(vitrumScene);
       (globalThis as unknown as { __vitrumPtWebgpu: typeof ptGpuEngine }).__vitrumPtWebgpu = ptGpuEngine;

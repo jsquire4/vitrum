@@ -1,7 +1,7 @@
 export { buildCornellBoxThreeScene } from './buildCornellBoxThree.js';
 export {
   buildGapClosureCornellThreeScene,
-  ptWebgpuExtensionsForGapScenario,
+  spectralForGapScenario,
   defaultCausticForGapScenario,
   type GapClosureCornellScenarioId,
 } from './buildGapClosureCornell.js';
