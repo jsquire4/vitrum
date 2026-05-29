@@ -49,6 +49,8 @@ Acceptance (per `tools/benchmark-runner/README.md` §"Sweep verification capture
 
 > Status legend: **[done-needs-render]** = code shipped + unit-pinned, only visual confirm outstanding.
 
+> **2026-05-29 GPU validation wave (wsl-gpu harness, dzn/RTX-4090 + lavapipe oracle) — authoritative record: `wsl-gpu/WAVE8-RESULTS.md`.** Cleared the hybrid radiometric backlog: **V2** (chroma: near-light red R/G=2.34 vs white; area: sheared monotone with `4·|u×v|`), **V4** (directional→sun cos45°=0.759; azimuth diffuse-washed by DDGI hemisphere probes — measurement limit, dir verified packed), **V5**, **V12**, **V13** (30-frame moving `updatePrimitive`: 0 errors/teardowns, parity holds), **V14**, **V15**, **V16** (within-HEAD: 5–25× lower disocclusion variance — strict vs-fixed-scalar A/B blocked, baseline lacks the V2 fix), and **V20 NRC** (best-effort, BIASED: 3–5× lower converged variance, stable self-training, gate-OFF byte-identical) — all **PASS**, dual-backend cross-checked. Methodology isolated each fix from the `ddgiUpdateDivisor` cadence confound via linear-HDR debug-texture readback + byte-identity controls. **Still blocked on a conformant-Dawn / real-browser-GL path (the wgpu-native harness cannot run them):** V18 (BDPT — needs scene + Dawn), V19 GRIS-ON (`ptr<storage>` naga gap), V6/V9 (WebGL2 device).
+
 ### V1 — A3: BDPT bounce-0 tangent fix  [done-needs-render]
 - **What changed:** `wi = t*x + b*y + n*z` (was `b*x`; `y` was dead) in `pt-webgl/src/bdpt/bdptSceneEmittersCpu.ts` + `pt-webgpu/src/bdpt/bdptEmitterPickCpu.ts`. The CPU oracle now matches the GPU `cosineHemisphereSample` shader.
 - **Why GPU:** the BDPT light-subpath integrator is full-tier pt-webgpu / pt-webgl; lite tier omits it.
