@@ -99,6 +99,50 @@ expectMatch(
 );
 expectNoMatch(bsdf, /incorrect PDF/, 'transmissionEval must not retain incorrect-PDF TODO');
 expectMatch(util, /float heroWeightFromRgb\(/, 'heroWeightFromRgb helper missing');
+
+// ── Jakob & Hanika 2019 RGB→spectrum upsampling is actually consumed ─────────
+// The host upsamples a representative medium albedo into u_jakobCoeffs; without
+// these assertions the coefficients would die at the uniform (their previous
+// state). The integrator must (a) define a gated mediumAlbedoHero helper that
+// routes through evalSpectrumAtHero only when upsampling is active, and (b) call
+// it at the volume-scatter and SSS single-scatter albedo sites.
+expectMatch(
+	bsdf,
+	/float mediumAlbedoHero\(\s*vec3 rgb,\s*float heroWavelength\s*\)\s*\{[\s\S]*?if\s*\(\s*spectralUpsamplingActive\(\)\s*\)\s*\{[\s\S]*?return evalSpectrumAtHero\(\s*heroWavelength\s*\)/,
+	'mediumAlbedoHero must route the hero albedo through evalSpectrumAtHero under the spectral gate',
+);
+expectMatch(
+	bsdf,
+	/float mediumAlbedoHero\(\s*vec3 rgb,\s*float heroWavelength\s*\)\s*\{[\s\S]*?return heroScalarFromRgb\(\s*rgb,\s*heroWavelength\s*\)/,
+	'mediumAlbedoHero must fall back to the legacy heroScalarFromRgb projection when the gate is off',
+);
+// The gate must require BOTH spectral rendering on AND a non-flat coefficient set.
+// The flat (0,0,0) default evaluates to S ≡ ½ and would wash colour, so it must
+// NOT route through evalSpectrum — the default RGB path stays bit-identical.
+expectMatch(
+	bsdf,
+	/bool spectralUpsamplingActive\(\)\s*\{\s*return uSpectralRendering == 1 &&\s*\(\s*u_jakobCoeffs\.x != 0\.0 \|\| u_jakobCoeffs\.y != 0\.0 \|\| u_jakobCoeffs\.z != 0\.0\s*\)/,
+	'spectralUpsamplingActive must gate on spectral rendering AND a non-default u_jakobCoeffs so the flat default never routes through evalSpectrum',
+);
+// evalSpectrumAtHero must be declared before mediumAlbedoHero (GLSL compile order),
+// and mediumAlbedoHero before its call sites further down bsdf_functions.
+const evalSpectrumAtHeroIdx = bsdf.indexOf('float evalSpectrumAtHero( float lambdaNm )');
+const mediumAlbedoHeroIdx = bsdf.indexOf('float mediumAlbedoHero( vec3 rgb, float heroWavelength )');
+if (evalSpectrumAtHeroIdx === -1 || mediumAlbedoHeroIdx === -1 || evalSpectrumAtHeroIdx > mediumAlbedoHeroIdx) {
+	throw new Error('mediumAlbedoHero must be declared after evalSpectrumAtHero for GLSL compile order');
+}
+expectMatch(
+	bsdf,
+	/sssRec\.throughput = mediumAlbedoHero\(\s*u_sssAlbedo,\s*heroWavelength\s*\)\s*\*\s*beerLambert/,
+	'SSS single-scatter albedo must flow through mediumAlbedoHero (gated Jakob–Hanika reflectance)',
+);
+expectMatch(
+	materialMain,
+	/state\.throughput \*= mediumAlbedoHero\(\s*u_scatterAlbedo,\s*state\.wavelength\s*\)\s*\*\s*transmittance/,
+	'volume single-scatter albedo must flow through mediumAlbedoHero (gated Jakob–Hanika reflectance)',
+);
+// The legacy preview-stable RGB projection must still exist as the default branch.
+expectMatch(util, /dot\(\s*rgb,\s*vec3\(\s*tR,\s*tG,\s*tB\s*\)\s*\)/, 'heroScalarFromRgb smoothstep projection must remain as the default-path fallback');
 expectMatch(
 	util,
 	/readSpectralAttenuationMu\s*\(\s*sampler2D materialsTex/,

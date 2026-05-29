@@ -595,7 +595,12 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 								// For single-scatter: throughput *= σ_s × phase(cosθ) / (σ_t × phase(cosθ))
 								//                               = σ_s / σ_t = scatterAlbedo
 								// The phase function cancels since we importance-sample from HG (pdf = phase).
-								state.throughput *= heroWeightFromRgb( u_scatterAlbedo, state.wavelength ) * transmittance;
+								// Medium single-scatter albedo (σ_s/σ_t) at the hero wavelength.
+								// Under the Jakob & Hanika 2019 gate (spectralUpsamplingActive) this is
+								// the paper-accurate sigmoid reflectance of the representative medium
+								// albedo; otherwise the legacy RGB→hero smoothstep projection. Both
+								// return a unit-less albedo in [0,1], so energy is preserved.
+								state.throughput *= mediumAlbedoHero( u_scatterAlbedo, state.wavelength ) * transmittance;
 
 								// Advance ray from scatter position with new direction.
 								ray.origin = scatterPos;

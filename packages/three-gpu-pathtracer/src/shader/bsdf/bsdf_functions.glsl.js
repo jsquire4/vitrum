@@ -301,11 +301,46 @@ export const bsdf_functions = /* glsl */`
 		return 0.5 + x * inversesqrt( 1.0 + x * x ) * 0.5;
 	}
 
-	// Sprint 12: Jakob+Hanika spectral helper (see evalSpectrum). Host may upload u_jakobCoeffs;
-	// primary hero-Wavelength shading uses Cauchy IOR + packed spectral attenuation + CMF accumulation.
-	// evalSpectrumAtHero is retained for optional RGB→spectrum weighting experiments, not core NEE/Beer-Lambert.
+	// Jakob & Hanika 2019 spectral upsampling (see evalSpectrum). The host solves the
+	// genuine sigmoid-polynomial coefficients for a representative medium albedo and
+	// uploads them into u_jakobCoeffs (default flat (0,0,0) ⇒ S ≡ ½, the no-op case).
+	// evalSpectrumAtHero returns the paper-accurate reflectance S(λ) of that albedo at
+	// the sampled hero wavelength — used by mediumAlbedoHero below to drive the volume
+	// scatter / SSS single-scatter albedo through chroma-accurate spectral reflectance.
+	// Ref: Jakob, W. & Hanika, J. 2019, "A Low-Dimensional Function Space for Efficient
+	//      Spectral Upsampling", Computer Graphics Forum 38(2) (Eurographics 2019).
 	float evalSpectrumAtHero( float lambdaNm ) {
 		return evalSpectrum( u_jakobCoeffs, lambdaNm );
+	}
+
+	// True when the host has actually uploaded a non-trivial Jakob & Hanika coefficient
+	// set: spectral rendering enabled AND u_jakobCoeffs not at the flat (0,0,0) default.
+	// The flat default evaluates to sigmoid(0) = ½ for every wavelength, which would
+	// wash out colour — so when the gate is false we MUST stay on the legacy RGB→hero
+	// smoothstep projection, keeping the default path bit-identical to pre-wiring behaviour.
+	bool spectralUpsamplingActive() {
+		return uSpectralRendering == 1 &&
+			( u_jakobCoeffs.x != 0.0 || u_jakobCoeffs.y != 0.0 || u_jakobCoeffs.z != 0.0 );
+	}
+
+	// Hero-wavelength scalar for the representative MEDIUM albedo (volume single-scatter
+	// σ_s/σ_t and SSS single-scatter albedo). Both quantities are the dispersive medium's
+	// dimensionless albedo in [0,1] — exactly the colour the host upsamples into
+	// u_jakobCoeffs via @vitrum/shared-samplers::rgbToSpectralCoefficients.
+	//
+	//   gate ON  : S(λ) = evalSpectrumAtHero(λ)         (Jakob & Hanika 2019 sigmoid reflectance)
+	//   gate OFF : heroScalarFromRgb( rgb, λ )          (legacy smoothstep tent projection)
+	//
+	// Both branches return a unit-less reflectance scalar in [0,1], so energy/units are
+	// preserved across the switch. The rgb argument is the medium albedo the host
+	// represented via spectralAlbedo; when the gate is active the global sigmoid spectrum
+	// supersedes the per-channel tent projection of that same albedo.
+	// Ref: Jakob & Hanika 2019 (see evalSpectrumAtHero).
+	float mediumAlbedoHero( vec3 rgb, float heroWavelength ) {
+		if ( spectralUpsamplingActive() ) {
+			return evalSpectrumAtHero( heroWavelength );
+		}
+		return heroScalarFromRgb( rgb, heroWavelength );
 	}
 
 	// Sprint 12: dielectric transmission with hero-wavelength Cauchy IOR.
@@ -545,7 +580,11 @@ export const bsdf_functions = /* glsl */`
 		sssRec.pdf = hg_phase( dot( rd, scatterDir ), u_sssAnisotropyG );
 		sssRec.specularPdf = 0.0;
 		sssRec.direction = scatterDir;
-		sssRec.throughput = heroScalarFromRgb( u_sssAlbedo * beerLambert, heroWavelength );
+		// Medium single-scatter albedo at the hero wavelength. Under the Jakob & Hanika
+		// gate this is the paper-accurate sigmoid reflectance of the representative medium
+		// albedo; otherwise the legacy smoothstep tent projection. Beer-Lambert attenuation
+		// stays an explicit scalar factor so units (reflectance × transmittance) are preserved.
+		sssRec.throughput = mediumAlbedoHero( u_sssAlbedo, heroWavelength ) * beerLambert;
 		return sssRec;
 
 	}

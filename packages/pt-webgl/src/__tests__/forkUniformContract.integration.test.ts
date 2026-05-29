@@ -19,4 +19,62 @@ describe('three-gpu-pathtracer uniform contract (integration)', () => {
     expect(Object.hasOwn(uniforms, 'uXCmfIntegral')).toBe(true);
     expect(Object.hasOwn(uniforms, 'uZCmfIntegral')).toBe(true);
   });
+
+  // -- Jakob & Hanika 2019 RGB->spectrum upsampling is actually consumed -------
+  // Previously the host-side u_jakobCoeffs upload had ZERO call sites in the
+  // integrator: evalSpectrumAtHero existed but was never referenced, so spectral
+  // upsampling died at the uniform. These assertions pin the wiring into the
+  // assembled fragment shader so the feature cannot silently regress.
+  it("consumes evalSpectrumAtHero in the integrator under a gate, not on the default path", () => {
+    const PhysicalPathTracingMaterial = (
+      PathTracerPkg as unknown as { PhysicalPathTracingMaterial?: new () => unknown }
+    ).PhysicalPathTracingMaterial;
+    expect(typeof PhysicalPathTracingMaterial).toBe('function');
+    if (PhysicalPathTracingMaterial == null) return;
+
+    const material = new PhysicalPathTracingMaterial();
+    const fragmentRaw = (material as unknown as { fragmentShader?: string }).fragmentShader ?? '';
+    expect(fragmentRaw.length).toBeGreaterThan(0);
+    // Collapse runs of whitespace so the structural assertions below are robust
+    // to formatting (tabs / newlines) in the assembled GLSL.
+    const fragment = fragmentRaw.replace(/\s+/g, ' ');
+
+    // (1) The integrator must define the gated medium-albedo helper.
+    expect(fragment).toContain('float mediumAlbedoHero( vec3 rgb, float heroWavelength )');
+
+    // (2) Under the spectral gate it routes through the paper-accurate sigmoid
+    //     reflectance evalSpectrumAtHero -- the previously-dead consumer.
+    const helperBody = fragment.slice(
+      fragment.indexOf('float mediumAlbedoHero( vec3 rgb, float heroWavelength )'),
+    );
+    expect(helperBody).toContain('if ( spectralUpsamplingActive() )');
+    expect(helperBody).toContain('return evalSpectrumAtHero( heroWavelength )');
+
+    // (3) The gate requires BOTH spectral rendering on AND a non-flat coefficient
+    //     set. The flat (0,0,0) default gives sigmoid(0) = 1/2 which would wash
+    //     colour, so it must NOT route through evalSpectrum -- the default RGB
+    //     path stays bit-identical to pre-wiring behaviour.
+    expect(fragment).toContain(
+      'bool spectralUpsamplingActive() { return uSpectralRendering == 1 && ' +
+        '( u_jakobCoeffs.x != 0.0 || u_jakobCoeffs.y != 0.0 || u_jakobCoeffs.z != 0.0 )',
+    );
+
+    // (4) Off-gate fallback is the legacy smoothstep projection (heroScalarFromRgb).
+    expect(helperBody).toContain('return heroScalarFromRgb( rgb, heroWavelength )');
+
+    // (5) The helper is actually called at the medium single-scatter albedo sites
+    //     (volume scatter + SSS), so the gated reflectance reaches the shaded result.
+    expect(fragment).toContain(
+      'state.throughput *= mediumAlbedoHero( u_scatterAlbedo, state.wavelength ) * transmittance',
+    );
+    expect(fragment).toContain(
+      'sssRec.throughput = mediumAlbedoHero( u_sssAlbedo, heroWavelength ) * beerLambert',
+    );
+
+    // (6) GLSL compile order: evalSpectrumAtHero declared before mediumAlbedoHero.
+    const evalIdx = fragment.indexOf('float evalSpectrumAtHero( float lambdaNm )');
+    const helperIdx = fragment.indexOf('float mediumAlbedoHero( vec3 rgb, float heroWavelength )');
+    expect(evalIdx).toBeGreaterThanOrEqual(0);
+    expect(helperIdx).toBeGreaterThan(evalIdx);
+  });
 });
