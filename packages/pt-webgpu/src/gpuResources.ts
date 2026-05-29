@@ -57,6 +57,24 @@ export class GpuResources {
   bdptSubpathPipeline: GPUComputePipeline | null = null;
   bindGroupLayout: GPUBindGroupLayout | null = null;
 
+  /**
+   * BDPT eye-subpath scratch stack (D2): a per-pixel × maxEyeDepth read_write
+   * storage buffer (2× vec4 / eye vertex = 32 B). Bound at group(2) binding(6) on
+   * the full tier. A 32-byte placeholder is kept when BDPT is off so the auto
+   * layout (which always includes the statically-used binding) stays satisfied.
+   */
+  bdptEyeStackBuffer: GPUBuffer | null = null;
+  bdptEyeStackByteSize = 0;
+
+  /** Bytes per eye vertex in the scratch stack: 2× vec4f = 32. */
+  static readonly BDPT_EYE_VERTEX_BYTES = 32;
+  /**
+   * Safety ceiling for the eye-stack allocation. The full-depth (8) per-pixel
+   * stack is ~530 MB at 1920×1080; above this ceiling we refuse to grow the
+   * buffer and warn rather than silently allocating a multi-hundred-MB region.
+   */
+  static readonly BDPT_EYE_STACK_MAX_BYTES = 384 * 1024 * 1024; // 384 MiB
+
   constructor(device: GPUDevice, traceTier: PtWebgpuTraceTier, bdpt: boolean) {
     this.#device = device;
     this.#traceTier = traceTier;
@@ -213,6 +231,65 @@ export class GpuResources {
   }
 
   /**
+   * (Re)allocate the BDPT eye-subpath scratch stack for the given render dims and
+   * per-pixel eye depth. Returns `true` if BDPT connections may proceed this
+   * frame, `false` if the allocation would exceed the safety ceiling (caller must
+   * skip the BDPT pass; a stale/placeholder buffer remains bound so the pipeline
+   * still validates). Sizes the buffer to `width·height·maxDepth·32 B`. When
+   * BDPT is off, keeps only a 32-byte placeholder.
+   *
+   * The full-tier auto layout always includes the statically-used `bdptEyeStack`
+   * binding, so a non-null buffer must always exist on the full tier.
+   */
+  ensureBdptEyeStack(width: number, height: number, maxDepth: number, bdptActive: boolean): boolean {
+    if (this.#traceTier !== 'full') {
+      return false;
+    }
+    const targetBytes = bdptActive
+      ? Math.max(
+          GpuResources.BDPT_EYE_VERTEX_BYTES,
+          width * height * Math.max(1, maxDepth) * GpuResources.BDPT_EYE_VERTEX_BYTES,
+        )
+      : GpuResources.BDPT_EYE_VERTEX_BYTES;
+
+    if (bdptActive && targetBytes > GpuResources.BDPT_EYE_STACK_MAX_BYTES) {
+      // Non-silent refusal: report the size and skip BDPT this frame rather than
+      // allocating a multi-hundred-MB scratch region. The caller falls back to
+      // the unidirectional path; a placeholder buffer keeps the layout valid.
+      const mib = (targetBytes / (1024 * 1024)).toFixed(1);
+      console.warn(
+        `[vitrum/pt-webgpu] BDPT eye-stack scratch would be ${mib} MiB ` +
+          `(${width}×${height} × depth ${maxDepth} × 32 B), exceeding the ` +
+          `${(GpuResources.BDPT_EYE_STACK_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+          'Skipping BDPT connections this frame — lower resolutionFactor, cap bounces, or tile.',
+      );
+      if (this.bdptEyeStackBuffer == null) {
+        this.bdptEyeStackBuffer = this.#device.createBuffer({
+          label: 'vitrum.pt-webgpu.bdpt.eyeStack.placeholder',
+          size: GpuResources.BDPT_EYE_VERTEX_BYTES,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        this.bdptEyeStackByteSize = GpuResources.BDPT_EYE_VERTEX_BYTES;
+        this.invalidateBindGroups();
+      }
+      return false;
+    }
+
+    if (this.bdptEyeStackBuffer != null && this.bdptEyeStackByteSize === targetBytes) {
+      return bdptActive;
+    }
+    this.bdptEyeStackBuffer?.destroy();
+    this.bdptEyeStackBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.bdpt.eyeStack',
+      size: targetBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this.bdptEyeStackByteSize = targetBytes;
+    this.invalidateBindGroups();
+    return bdptActive;
+  }
+
+  /**
    * Build (and cache) the path-trace bind group(s) from the current accum views,
    * params buffer, pipeline layout, the supplied scene buffers, and the BDPT
    * light-path view. Returns group 0 (the always-present group). Groups 1/2 are
@@ -267,6 +344,7 @@ export class GpuResources {
       { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
       { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
       { binding: 5, resource: bdptLightPathView() },
+      { binding: 6, resource: { buffer: this.bdptEyeStackBuffer! } },
     ];
     const bindGroup = this.#device.createBindGroup({
       label: `vitrum.pt-webgpu.pathTrace.bindgroup0.${this.#traceTier}`,
@@ -306,6 +384,9 @@ export class GpuResources {
     this.pathTraceBindGroup = null;
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
+    this.bdptEyeStackBuffer?.destroy();
+    this.bdptEyeStackBuffer = null;
+    this.bdptEyeStackByteSize = 0;
     this.paramsBuffer?.destroy();
     this.paramsBuffer = null;
     this.computePipeline = null;

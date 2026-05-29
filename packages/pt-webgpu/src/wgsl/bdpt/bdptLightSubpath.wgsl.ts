@@ -298,11 +298,13 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   let newPos = ray.origin + ray.direction * hit.dist;
   let newNormal = safe_normalize(hit.normal);
   let newThroughput = prevThroughput * mat.baseColor * cosScatter / pdfScatter;
-  let gTerm = bdptGeometricTerm(prevPos, prevNormal, newPos, newNormal);
-  let pdfFwd = pdfScatter * max(gTerm, 0.0);
+  // Store SOLID-ANGLE pdfs (NO baked-in geometry term). The full Veach §10.3
+  // connection sweep converts SA→area on the fly via ConvertDensity (PBRT
+  // Vertex::ConvertDensity), so baking G here would double-apply the Jacobian.
+  let pdfFwd = pdfScatter;                       // SA forward (Lambertian cosθ/π)
   let toPrev = safe_normalize(prevPos - newPos);
   let cosRev = max(dot(newNormal, toPrev), 0.0);
-  let pdfRev = (cosRev * INV_PI) * max(gTerm, 0.0);
+  let pdfRev = cosRev * INV_PI;                  // SA reverse (Lambertian cosθ/π)
   textureStore(bdptLightPath, vec2i(col, 0), vec4f(newPos, 0.0));
   textureStore(bdptLightPath, vec2i(col, 1), vec4f(newNormal, pdfFwd));
   textureStore(bdptLightPath, vec2i(col, 2), vec4f(newThroughput, pdfRev));

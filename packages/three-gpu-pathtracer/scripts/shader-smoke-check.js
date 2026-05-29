@@ -24,6 +24,8 @@ const spectral = read('./src/shader/bsdf/spectral_accumulator.glsl.js');
 const util = read('./src/shader/common/util_functions.glsl.js');
 const materialMain = read('./src/materials/pathtracing/PhysicalPathTracingMaterial.js');
 const lightSampling = read('./src/shader/sampling/light_sampling_functions.glsl.js');
+const bdptConnection = read('./src/materials/pathtracing/glsl/bdpt_connection.glsl.js');
+const bdptLightSubpath = read('./src/materials/pathtracing/glsl/bdpt_light_subpath.glsl.js');
 
 expectMatch(renderStructs, /float wavelength;/, 'RenderState missing wavelength field');
 expectMatch(renderStructs, /float wavelengthPdf;/, 'RenderState missing wavelengthPdf field');
@@ -178,6 +180,78 @@ expectMatch(
 	materialMain,
 	/sssSample\s*\(\s*-\s*ray\.direction,\s*surf,\s*state\.wavelength\s*\)/,
 	'PhysicalPathTracingMaterial must call sssSample with hero wavelength',
+);
+
+// ── BDPT full Veach §10.3 connection MIS (GPU port of bdptConnectionMIS_full) ──
+// The 2-strategy approximation (bdptMISWeight2) must be GONE, replaced by the
+// full multi-strategy recurrence: a ConvertDensity (PBRT destination-cosine
+// half-G) area-measure ratio sweep over the merged path, β=2 power heuristic.
+expectNoMatch(
+	bdptConnection,
+	/bdptMISWeight2/,
+	'bdpt_connection must drop the 2-strategy bdptMISWeight2 for the full §10.3 sweep',
+);
+expectMatch(
+	bdptConnection,
+	/float bdptMISWeightFull\(/,
+	'bdpt_connection must define the full Veach §10.3 multi-strategy MIS weight',
+);
+expectMatch(
+	bdptConnection,
+	/float bdptConvertDensitySAtoArea\(\s*float pdfSA,\s*vec3 fromPos,\s*vec3 destPos,\s*vec3 destNorm\s*\)/,
+	'bdpt_connection must use PBRT Vertex::ConvertDensity (destination-cosine half-G)',
+);
+// The reverse density at the eye vertex must be the PBRT-correct (non-symmetric)
+// bsdfResult with wo/wi as the connection geometry dictates — NOT a symmetric
+// cos/π. revLc swaps (eeToPrev, connDir); fwdEeMinus swaps (connDir, eeToPrev).
+expectMatch(
+	bdptConnection,
+	/float revLc = bsdfResult\(\s*eeToPrev,\s*connDir,/,
+	'eye reverse density (revLc) must re-invoke bsdfResult with wo→E_{e-1}, wi=connDir (D1)',
+);
+expectMatch(
+	bdptConnection,
+	/fwdEeMinus = bsdfResult\(\s*connDir,\s*eeToPrev,/,
+	'eye fwdEeMinus override must re-invoke bsdfResult with wo=connDir, wi→E_{e-1} (D1)',
+);
+// The MIS denominator must be the β=2 power heuristic (sum of squared pdfs).
+expectMatch(
+	bdptConnection,
+	/return \(\s*ps \* ps\s*\)\s*\/\s*denom/,
+	'bdpt_connection MIS weight must be the β=2 power heuristic ps²/Σpᵢ²',
+);
+// The light subpath must store SOLID-ANGLE pdfs — the baked-in geometry term is
+// gone (ConvertDensity applies the Jacobian at connection time instead).
+expectNoMatch(
+	bdptLightSubpath,
+	/pdfFwd = pdfScatter \* max\( gTerm/,
+	'light subpath must NOT bake the geometry term into pdfFwd (store SA pdf)',
+);
+expectNoMatch(
+	bdptLightSubpath,
+	/pdfRev = pdfRevScatter \* max\( gTerm/,
+	'light subpath must NOT bake the geometry term into pdfRev (store SA pdf)',
+);
+expectMatch(
+	bdptLightSubpath,
+	/float pdfFwd = pdfScatter;/,
+	'light subpath pdfFwd must be the bare solid-angle scatter pdf (no G)',
+);
+// The eye loop must thread the eye-subpath scratch stack into the connection.
+expectMatch(
+	materialMain,
+	/float bdptPrevScatterPdf = 1\.0;/,
+	'eye loop must track the real forward scatter pdf (replaces hardcoded eyePdfFwd=1.0)',
+);
+expectMatch(
+	materialMain,
+	/bdptEyePos, bdptEyeNrm, bdptEyePdfFwd, bdptEyePdfRev, bdptEyeSpec/,
+	'evaluateBdptConnection must receive the threaded eye-subpath scratch stack',
+);
+expectNoMatch(
+	materialMain,
+	/scatterRec\.pdf,\s*\/\/ eyePdfFwd/,
+	'eye loop must not pass the old scalar eyePdfFwd=scatterRec.pdf hack to the connection',
 );
 
 console.log('Shader smoke checks passed.');

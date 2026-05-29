@@ -545,6 +545,27 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 					SurfaceHit surfaceHit;
 					ScatterRecord scatterRec;
 
+					#if FEATURE_BDPT
+					// BDPT eye-subpath scratch stack (per-invocation local arrays — the
+					// WebGL2 analogue of @vitrum/pt-webgpu's read_write storage stack).
+					//   pos/nrm    — eye vertex geometry
+					//   pdfFwd     — merged forward (swapped-BSDF reverse density), filled
+					//                one bounce later (and overridden by connection straddle)
+					//   pdfRev     — merged reverse (scatter pdf that produced this vertex)
+					//   spec       — delta-BSDF flag (Veach §10.3.5)
+					vec3  bdptEyePos[ BDPT_MAX_EYE_DEPTH ];
+					vec3  bdptEyeNrm[ BDPT_MAX_EYE_DEPTH ];
+					float bdptEyePdfFwd[ BDPT_MAX_EYE_DEPTH ];
+					float bdptEyePdfRev[ BDPT_MAX_EYE_DEPTH ];
+					bool  bdptEyeSpec[ BDPT_MAX_EYE_DEPTH ];
+					int   bdptEyeDepth = 0;                 // depth of the current eye vertex
+					// Forward scatter pdf at the previous eye vertex (camera importance
+					// 1.0 at the pinhole — the one vertex without an aperture model; this
+					// replaces the old hardcoded eyePdfFwd=1.0 for scene-surface vertices).
+					float bdptPrevScatterPdf = 1.0;
+					vec3  bdptPrevPos = ( cameraWorldMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+					#endif
+
 					// path tracing state
 					RenderState state = initRenderState();
 					// One-sample MIS across X/Y/Z CMFs (Wilkie 2015 §3.3) — uses
@@ -808,7 +829,23 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 						// uBdptLightPathTex validity is enforced by the host bridge:
 						// driveForkMaterialUniforms() forces uBdptEnabled=false when the
 						// texture is null, so FEATURE_BDPT=1 implies the texture is bound.
-						if ( ! state.firstRay ) {
+						//
+						// Push this eye vertex (E_bdptEyeDepth) onto the local scratch stack
+						// BEFORE connecting: pdfRev = forward scatter pdf at the previous
+						// vertex that produced it (camera importance 1.0 at the primary hit).
+						// pdfFwd is filled one bounce later by the swapped reverse density
+						// (and overridden by the connection straddle when this is E_e/E_{e-1}).
+						bool bdptEyeIsSpec = ( surf.transmission > 0.5 && surf.filteredRoughness < 0.05 );
+						if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
+							bdptEyePos[ bdptEyeDepth ] = hitPoint;
+							bdptEyeNrm[ bdptEyeDepth ] = surf.normal;
+							bdptEyePdfFwd[ bdptEyeDepth ] = 0.0; // filled next bounce / overridden
+							bdptEyePdfRev[ bdptEyeDepth ] = bdptPrevScatterPdf;
+							bdptEyeSpec[ bdptEyeDepth ] = bdptEyeIsSpec;
+						}
+						// Skip the primary hit: an explicit connection there double-counts
+						// with the unidirectional NEE above (fork !state.firstRay).
+						if ( ! state.firstRay && bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
 							vec3 throughputRgbBdpt = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
 							for ( int bdptLvi = 0; bdptLvi < uBdptMaxLightBounces; bdptLvi ++ ) {
 								pc_fragColor.rgb += evaluateBdptConnection(
@@ -816,9 +853,10 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 									surf.normal,
 									- ray.direction,    // worldWo at eye vertex
 									throughputRgbBdpt,
-									scatterRec.pdf,     // eyePdfFwd (forward scatter PDF)
 									surf,
 									state,
+									bdptEyeDepth,
+									bdptEyePos, bdptEyeNrm, bdptEyePdfFwd, bdptEyePdfRev, bdptEyeSpec,
 									bdptLvi
 								);
 							}
@@ -1002,6 +1040,26 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 						}
 
 						//
+
+						#if FEATURE_BDPT
+						// BDPT eye-stack bookkeeping (mirrors @vitrum/pt-webgpu kernel).
+						// scatterRec.pdf is the real forward scatter pdf at this eye vertex —
+						// fed to the next vertex as its reverse density (the old hardcoded
+						// eyePdfFwd=1.0 is gone). The swapped-direction reverse density at this
+						// vertex toward the previous one is merged pdfFwd(E_{depth-1}); write it
+						// into the previous slot (PBRT camera[d-1].pdfRev set while at camera[d]).
+						if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
+							if ( bdptEyeDepth >= 1 ) {
+								vec3 bdptToPrev = normalize( bdptPrevPos - hitPoint );
+								vec3 bdptSwapColor;
+								float bdptSwappedRev = bsdfResult( scatterRec.direction, bdptToPrev, surf, state.wavelength, bdptSwapColor );
+								bdptEyePdfFwd[ bdptEyeDepth - 1 ] = bdptSwappedRev;
+							}
+							bdptPrevScatterPdf = max( scatterRec.pdf, 0.0 );
+							bdptPrevPos = hitPoint;
+							bdptEyeDepth ++;
+						}
+						#endif
 
 						// prepare for next ray
 						ray.direction = scatterRec.direction;

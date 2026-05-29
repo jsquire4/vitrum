@@ -1,197 +1,286 @@
 /**
- * bdpt_connection.glsl.js — BDPT eye↔light connection evaluation (Sprint 10c).
+ * bdpt_connection.glsl.js — BDPT eye↔light connection, full Veach §10.3 MIS.
  *
- * Implements the connection phase of bidirectional path tracing:
- *   1. Visibility test (shadow ray from eye vertex toward light vertex).
- *   2. BSDF evaluation at the eye vertex (toward the light vertex).
- *   3. BSDF evaluation at the light vertex (toward the eye vertex).
- *   4. Geometric term G(x↔y) = |cosθ_x · cosθ_y| / ‖x−y‖².
- *   5. Full Veach §10.3 power-heuristic MIS weight (β=2).
- *   6. Returns RGB contribution = lightThroughput × BSDF_l × G × BSDF_e × MIS × eyeThroughput.
+ * Computes the power-heuristic (β=2) MIS weight for ONE explicit connection
+ * (current eye-subpath bounce `E_e` → one stored light-subpath vertex `L_c`) by
+ * enumerating ALL Veach §10.3 strategy path-pdfs over the merged path
  *
- * MIS weight (inline GLSL port of `bdptConnectionMIS_full` from @vitrum/shared-samplers):
- *   w_s = p_s² / Σ_i p_i²   (power heuristic, β=2, one sample per strategy)
+ *   v[0]=L_0(emitter) … v[c]=L_c | v[c+1]=E_e … v[c+1+e]=E_0 | v[n-1]=camera
  *
- * The denominator is built from three strategy PDFs in the 2-strategy approximation
- * used here (light-subpath vertex s + eye-subpath vertex t = full path):
- *   p_s  = pdfFwd_light × G × pdfFwd_eye   (chosen strategy — joint forward PDF)
- *   p_{s-1} = pdfRev_light × ...            (light vertex "shifted" to eye subpath)
- *   p_{s+1} = pdfRev_eye   × ...            (eye vertex "shifted" to light subpath)
+ * with `n = c+e+3` and `selectedS = c+1`. This is the canonical PBRT-v4
+ * `MISWeight` recurrence — a pure ratio of AREA-measure forward/reverse densities
+ * walked over the actual vertices, with each stored solid-angle pdf converted to
+ * area on the fly via ConvertDensity (PBRT `Vertex::ConvertDensity`, a
+ * DESTINATION-cosine-only "half-G"). The four pdfs straddling the connection edge
+ * are recomputed here from the connection geometry (PBRT pt/ptMinus/qs/qsMinus
+ * pdfRev overrides); the eye-side overrides use `bsdfResult` with wo/wi as
+ * required (PBRT-correct, non-symmetric reverse density). The eye prefix
+ * (E_0…E_e construction-time SA pdfs + pos/normal/specular) is supplied by the
+ * caller in local per-invocation arrays threaded through the eye loop. The light
+ * chain is Lambertian (cosθ/π) throughout, matching the light-subpath kernel.
  *
- * For the practical BDPT implementation here (one explicit connection per stored
- * light vertex), the simplified 2-strategy form is used as specified in the spec:
- *   pdfSum2 = p_s² + p_otherStrategies²
- * where p_otherStrategies² = (pdfFwd_light × G × pdfFwd_eye)^2 / 4 (balanced approx).
- * The full recursive Veach sweep is deferred to a future patch when full
- * per-strategy PDF storage is available.
+ * This mirrors the WebGPU port (`@vitrum/pt-webgpu` bdptConnection.wgsl.ts),
+ * which is pinned 1:1 to `@vitrum/shared-samplers`'s `bdptConnectionMIS_full` /
+ * `buildBDPTStrategyPDFs_full` oracle to ~1e-12. Compiled only under
+ * FEATURE_BDPT; the main loop calls evaluateBdptConnection only for indirect
+ * bounces (`!state.firstRay`), so the BDPT-off path is bit-identical.
  *
- * Specular-vertex guard (Veach §10.3.5): if the light vertex or eye vertex is
- * specular (delta BSDF), return vec3(0.0) — the MIS weight is zero by definition
- * because explicit connections through delta surfaces have zero probability density
- * when sampled from the other subpath.
- *
- * NaN/Inf guards:
- *   - Denominator guard: return 0 when pdfSum2 ≤ 0.
- *   - Geometric term guard: return 0 when G ≤ 0 (degenerate connection).
- *   - Contribution clamp: final RGB is clamped to [0, BDPT_CONTRIBUTION_CLAMP]
- *     per-component to suppress fireflies from caustic spikes during early
- *     convergence. Default clamp = 100 (generous; not a bias for converged renders).
+ * Specular-vertex guard (Veach §10.3.5): a hypothetical strategy whose
+ * connection edge touches a delta-BSDF vertex has zero weight; the sweep breaks.
  *
  * References:
- *   Veach 1997, §9.2 (power heuristic), §10.3 (BDPT MIS weights),
- *     §10.3.5 (specular-vertex zero-weight rule).
- *   Pharr et al. 2023, PBR 4e §16.3.5 (recursive ratio, Eq. 16.16).
+ *   Veach 1997 §10.3 (BDPT MIS), §9.2 (power heuristic β=2), §10.3.5, §8.3.2.
+ *   Pharr et al. 2023, PBR 4e §16.3.5 Eq. 16.16; integrators.cpp MISWeight.
  *   @vitrum/shared-samplers: bdptConnectionMIS_full, buildBDPTStrategyPDFs_full.
  */
 export const bdpt_connection = /* glsl */`
 
 	#define BDPT_CONTRIBUTION_CLAMP 100.0
+	#define BDPT_MAX_EYE_DEPTH 8
+	#define BDPT_MAX_MERGED 19
 
 	// Note: bdptGeometricTerm() (Veach §8.3.2 G term) is defined in
 	// bdpt_light_subpath.glsl.js, which is included before this block.
-	// Both blocks compile under #if FEATURE_BDPT so the function is always
-	// available when evaluateBdptConnection() is reachable.
 
-	// ── Power-heuristic MIS weight (β=2, GLSL port of bdptConnectionMIS_full) ──
-	// Simplified 2-strategy form: w = p_s² / (p_s² + p_alt²).
-	// Used when only two competing strategies have non-zero PDFs.
-	// Guard: returns 0 when denominator ≤ 0 or p_s ≤ 0.
-	float bdptMISWeight2( float p_s, float p_alt ) {
-		if ( p_s <= 0.0 ) return 0.0;
-		float p2s   = p_s   * p_s;
-		float p2alt = p_alt * p_alt;
-		float denom = p2s + p2alt;
-		return ( denom > 0.0 ) ? ( p2s / denom ) : 0.0;
+	// ── PBRT Vertex::ConvertDensity — SA pdf → area pdf, destination-cosine only ──
+	float bdptConvertDensitySAtoArea( float pdfSA, vec3 fromPos, vec3 destPos, vec3 destNorm ) {
+		vec3 d = destPos - fromPos;
+		float dist2 = dot( d, d );
+		if ( dist2 <= 0.0 ) return pdfSA; // coincident → unit Jacobian (endpoint)
+		float invDist = inversesqrt( dist2 );
+		float cosDest = abs( dot( destNorm, d * invDist ) );
+		return ( pdfSA * cosDest ) / dist2;
 	}
 
-	// ── Visibility test ──────────────────────────────────────────────────────
-	// Returns true when the segment (eyePos, lightPos) is unoccluded.
-	// Uses the existing attenuateHit() infrastructure with a temporary RenderState.
-	// A hit is occluded if any opaque surface lies between the two endpoints.
-	// Note: attenuateHit returns true when a solid (opaque) surface blocks the ray.
+	// Lambertian outgoing SA density at a light-subpath vertex along dir: |cosθ|/π.
+	float bdptLambertDirPdf( vec3 n, vec3 dir ) {
+		return abs( dot( n, normalize( dir ) ) ) * ( 1.0 / PI );
+	}
+
+	// ── Visibility test (unchanged) ──────────────────────────────────────────
 	bool bdptIsVisible( vec3 eyePos, vec3 lightPos, RenderState state ) {
 		vec3 dir  = lightPos - eyePos;
 		float len = length( dir );
-		if ( len < RAY_OFFSET ) return false; // degenerate — same point
+		if ( len < RAY_OFFSET ) return false;
 		Ray shadowRay;
 		shadowRay.origin    = eyePos;
 		shadowRay.direction = dir / len;
 		vec3 attenColor;
-		// attenuateHit returns true when occluded by a solid surface.
 		bool occluded = attenuateHit( state, shadowRay, len - RAY_OFFSET, attenColor );
 		return ! occluded;
 	}
 
+	// ── Full §10.3 power-heuristic MIS weight ─────────────────────────────────
+	// Assembles the merged path from: the light texture (v[0..c]); the eye-stack
+	// arrays (v[c+1..c+1+e], reverse order); the camera endpoint (v[n-1]); and the
+	// four connection-induced straddle overrides. Mirrors buildBDPTStrategyPDFs_full
+	// + bdptConnectionMIS_full exactly.
+	//
+	// Eye-stack arrays are indexed by eye depth d (0 = primary hit … e = current
+	// bounce). Merged index i in [c+1, c+1+e] maps to eye depth d = e - (i-(c+1)).
+	float bdptMISWeightFull(
+		int c, int e, int n, int selectedS, float pRef,
+		// connection-induced straddle overrides (PBRT pt/ptMinus/qs/qsMinus pdfRev)
+		float fwdEe, float fwdEeMinus, float revLc, float revLcMinus,
+		// eye stack (light chain + camera read inside)
+		vec3 eyePos[ BDPT_MAX_EYE_DEPTH ], vec3 eyeNrm[ BDPT_MAX_EYE_DEPTH ],
+		float eyePdfFwd[ BDPT_MAX_EYE_DEPTH ], float eyePdfRev[ BDPT_MAX_EYE_DEPTH ],
+		bool eyeSpec[ BDPT_MAX_EYE_DEPTH ],
+		vec3 camPos, vec3 camNrm
+	) {
+		if ( pRef <= 0.0 || n <= 0 || selectedS >= n ) return 0.0;
+
+		// Materialise the merged path into fixed-size local arrays — far simpler
+		// (and branch-light) than re-deriving each vertex inside the sweep.
+		vec3  mPos[ BDPT_MAX_MERGED ];
+		vec3  mNrm[ BDPT_MAX_MERGED ];
+		float mFwd[ BDPT_MAX_MERGED ];
+		float mRev[ BDPT_MAX_MERGED ];
+		bool  mSpec[ BDPT_MAX_MERGED ];
+
+		for ( int i = 0; i < BDPT_MAX_MERGED; i ++ ) {
+			if ( i >= n ) break;
+			if ( i <= c ) {
+				// Light side — texelFetch column i.
+				vec4 l0 = texelFetch( uBdptLightPathTex, ivec2( i, 0 ), 0 );
+				vec4 l1 = texelFetch( uBdptLightPathTex, ivec2( i, 1 ), 0 );
+				vec4 l2 = texelFetch( uBdptLightPathTex, ivec2( i, 2 ), 0 );
+				mPos[ i ] = l0.xyz;
+				mNrm[ i ] = l1.xyz;
+				mFwd[ i ] = l1.w;       // stored SA pdfFwd (no baked-in G)
+				mRev[ i ] = l2.w;       // stored SA pdfRev (Lambertian)
+				mSpec[ i ] = false;     // light subpath terminates specular (D4)
+				if ( i == c ) mRev[ i ] = revLc;
+				else if ( c >= 1 && i == c - 1 ) mRev[ i ] = revLcMinus;
+			} else if ( i == n - 1 ) {
+				mPos[ i ] = camPos;
+				mNrm[ i ] = camNrm;
+				mFwd[ i ] = 1.0;
+				mRev[ i ] = 1.0;
+				mSpec[ i ] = false;
+			} else {
+				int off = i - ( c + 1 );
+				int d = e - off;        // eye depth
+				mPos[ i ] = eyePos[ d ];
+				mNrm[ i ] = eyeNrm[ d ];
+				mFwd[ i ] = eyePdfFwd[ d ];
+				mRev[ i ] = eyePdfRev[ d ];
+				mSpec[ i ] = eyeSpec[ d ];
+				if ( off == 0 ) mFwd[ i ] = fwdEe;          // E_e   override
+				else if ( off == 1 ) mFwd[ i ] = fwdEeMinus; // E_{e-1} override
+			}
+		}
+
+		float pdfs[ BDPT_MAX_MERGED ];
+		for ( int k = 0; k < BDPT_MAX_MERGED; k ++ ) pdfs[ k ] = 0.0;
+		pdfs[ selectedS ] = pRef;
+
+		// Left sweep (decrement s): flip v[s-1]; p_{s-1} = p_s · pRev(s-1)/pFwd(s-1).
+		{
+			float p = pRef;
+			for ( int s = selectedS; s > 0; s -- ) {
+				bool flipSpec = mSpec[ s - 1 ];
+				bool nbSpec = ( s >= 2 ) ? mSpec[ s - 2 ] : false;
+				if ( flipSpec || nbSpec ) break;
+				float pFwd = ( s - 1 == 0 )
+					? mFwd[ 0 ]
+					: bdptConvertDensitySAtoArea( mFwd[ s - 1 ], mPos[ s - 2 ], mPos[ s - 1 ], mNrm[ s - 1 ] );
+				float pRev = ( s - 1 == n - 1 )
+					? mRev[ s - 1 ]
+					: bdptConvertDensitySAtoArea( mRev[ s - 1 ], mPos[ s ], mPos[ s - 1 ], mNrm[ s - 1 ] );
+				if ( pFwd <= 0.0 || pRev <= 0.0 ) break;
+				p = p * ( pRev / pFwd );
+				pdfs[ s - 1 ] = p;
+			}
+		}
+		// Right sweep (increment s): flip v[s]; p_{s+1} = p_s · pFwd(s)/pRev(s).
+		{
+			float p = pRef;
+			for ( int s = selectedS; s < n - 1; s ++ ) {
+				bool flipSpec = mSpec[ s ];
+				bool nbSpec = mSpec[ s + 1 ];
+				if ( flipSpec || nbSpec ) break;
+				float pFwd = ( s == 0 )
+					? mFwd[ 0 ]
+					: bdptConvertDensitySAtoArea( mFwd[ s ], mPos[ s - 1 ], mPos[ s ], mNrm[ s ] );
+				float pRev = ( s == n - 1 )
+					? mRev[ s ]
+					: bdptConvertDensitySAtoArea( mRev[ s ], mPos[ s + 1 ], mPos[ s ], mNrm[ s ] );
+				if ( pFwd <= 0.0 || pRev <= 0.0 ) break;
+				p = p * ( pFwd / pRev );
+				pdfs[ s + 1 ] = p;
+			}
+		}
+
+		// Power heuristic (β=2).
+		float denom = 0.0;
+		for ( int k = 0; k < BDPT_MAX_MERGED; k ++ ) {
+			if ( k >= n ) break;
+			float pk = pdfs[ k ];
+			if ( pk > 0.0 ) denom += pk * pk;
+		}
+		if ( denom <= 0.0 ) return 0.0;
+		float ps = pdfs[ selectedS ];
+		if ( ps <= 0.0 ) return 0.0;
+		return ( ps * ps ) / denom;
+	}
+
 	// ── BDPT connection contribution ─────────────────────────────────────────
-	// Evaluates one eye↔light vertex connection and returns the RGB radiance
-	// contribution to add to gColor.rgb.
-	//
-	// Parameters:
-	//   eyePos          — world-space position of the eye-subpath vertex
-	//   eyeNormal       — shading normal at the eye vertex (unit-length)
-	//   eyeWo           — outgoing direction at the eye vertex (toward camera)
-	//   eyeThroughput   — accumulated RGB path weight at the eye vertex
-	//   eyePdfFwd       — forward PDF at the eye vertex (for MIS)
-	//   eyeSurf         — full SurfaceRecord at the eye vertex (for BSDF eval)
-	//   eyeState        — RenderState at the eye vertex (wavelength, traversals, etc.)
-	//   lightVtxIdx     — column index into uBdptLightPathTex (0..BDPT_MAX_LIGHT_BOUNCES-1)
-	//
-	// Returns vec3(0) when:
-	//   - The light vertex is invalid (kind = 3)
-	//   - The eye or light vertex is specular (delta BSDF)
-	//   - The connection is occluded
-	//   - The geometric term is degenerate (G ≤ 0)
-	//   - Any PDF is non-positive
+	// eyeDepth = current bounce's eye depth e (0 = primary hit — never connected).
+	// The eye-stack arrays carry E_0…E_e construction-time data (see main loop).
 	vec3 evaluateBdptConnection(
 		vec3 eyePos,
 		vec3 eyeNormal,
 		vec3 eyeWo,
 		vec3 eyeThroughput,
-		float eyePdfFwd,
 		SurfaceRecord eyeSurf,
 		RenderState eyeState,
+		int eyeDepth,
+		vec3 bdptEyePos[ BDPT_MAX_EYE_DEPTH ],
+		vec3 bdptEyeNrm[ BDPT_MAX_EYE_DEPTH ],
+		float bdptEyePdfFwd[ BDPT_MAX_EYE_DEPTH ],
+		float bdptEyePdfRev[ BDPT_MAX_EYE_DEPTH ],
+		bool bdptEyeSpec[ BDPT_MAX_EYE_DEPTH ],
 		int lightVtxIdx
 	) {
 
-		// ── Fetch light vertex from ping-pong texture ─────────────────────────
 		vec4 lv0 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 0 ), 0 );
 		vec4 lv1 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 1 ), 0 );
 		vec4 lv2 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 2 ), 0 );
-
-		// Check kind — skip invalid vertices (kind = 3.0 = BDPT_KIND_INVALID).
-		if ( lv0.w == 3.0 ) return vec3( 0.0 );
+		if ( lv0.w == 3.0 ) return vec3( 0.0 ); // BDPT_KIND_INVALID
 
 		vec3  lightPos        = lv0.xyz;
 		vec3  lightNormal     = lv1.xyz;
 		float lightPdfFwd     = lv1.w;
 		vec3  lightThroughput = lv2.xyz;
-		// lv2.w = lightPdfRev — not used in the 2-strategy MIS approximation.
-		// The full Veach recursive ratio sweep (future patch) will consume this.
 
-		// ── Specular-vertex guard (Veach §10.3.5) ────────────────────────────
-		// If the eye surface is specular (delta BSDF), explicit connection has
-		// zero probability density when sampled by the light subpath — skip it.
-		// We approximate specular as: transmission > 0.5 AND roughness < 0.05.
+		// Connection-edge specular guard at the eye vertex (Veach §10.3.5).
 		bool eyeIsSpecular = ( eyeSurf.transmission > 0.5 && eyeSurf.filteredRoughness < 0.05 );
 		if ( eyeIsSpecular ) return vec3( 0.0 );
 
-		// ── Connection direction ──────────────────────────────────────────────
 		vec3 toLight = lightPos - eyePos;
 		float dist   = length( toLight );
-		if ( dist < RAY_OFFSET ) return vec3( 0.0 ); // degenerate
+		if ( dist < RAY_OFFSET ) return vec3( 0.0 );
+		vec3 connDir = toLight / dist; // E_e → L_c
 
-		vec3 connDir = toLight / dist; // unit direction eye → light
-
-		// ── Geometric term G(eye ↔ light) ────────────────────────────────────
-		// Uses bdptGeometricTerm() from bdpt_light_subpath.glsl.js (included first).
 		float gTerm = bdptGeometricTerm( eyePos, eyeNormal, lightPos, lightNormal );
 		if ( gTerm <= 0.0 ) return vec3( 0.0 );
-
-		// ── Visibility test ───────────────────────────────────────────────────
 		if ( ! bdptIsVisible( eyePos, lightPos, eyeState ) ) return vec3( 0.0 );
 
-		// ── BSDF evaluation at eye vertex (toward light) ──────────────────────
-		// bsdfResult returns the PDF and sets color (the BSDF value × cosθ / PDF).
-		// We need the BSDF × cosθ value, which bsdfResult provides normalized by PDF.
-		// Reconstruct: bsdf_eye × cosθ = bsdfResult color × bsdfResult pdf.
+		// eye BSDF × cosθ toward the light (bsdfResult returns BSDF×cosθ/pdf).
 		vec3 eyeBsdfColor;
 		float eyeBsdfPdf = bsdfResult( eyeWo, connDir, eyeSurf, eyeState.wavelength, eyeBsdfColor );
 		if ( eyeBsdfPdf <= 0.0 ) return vec3( 0.0 );
-		// eyeBsdfColor is BSDF × cosθ / pdf → multiply by pdf to get BSDF × cosθ.
 		vec3 eyeBsdfCosTheta = eyeBsdfColor * eyeBsdfPdf;
 
-		// ── BSDF evaluation at light vertex (toward eye) ──────────────────────
-		// We don't have a full SurfaceRecord for the light vertex (the light kernel
-		// uses a Lambertian approximation). Use a Lambertian BSDF approximation:
-		//   f(ωi, ωo) × cosθ = albedo / π × cosθ_light
-		// where cosθ_light = |dot(lightNormal, -connDir)|.
+		// light vertex Lambertian BSDF × cosθ toward the eye.
 		float cosLight = max( dot( lightNormal, -connDir ), 0.0 );
-		// Approximate albedo as vec3(1.0) — the light throughput already encodes
-		// the material color from the emitter bounce. This is consistent with the
-		// Lambertian approximation in the light subpath kernel.
 		vec3 lightBsdfCosTheta = vec3( cosLight / PI );
 
-		// ── MIS weight ───────────────────────────────────────────────────────
-		// Full Veach §10.3 weight uses all strategy PDFs. For the 2-strategy
-		// approximation (explicit connection + unidirectional PT):
-		//   p_s  = pdfFwd_light × G × pdfFwd_eye  (joint forward PDF of this strategy)
-		//   p_alt = unidirectional PT forward PDF (approximated as eyePdfFwd × G)
-		//
-		// The approximation is conservative (underweights BDPT slightly) and
-		// prevents MIS denominator collapse without requiring full strategy enumeration.
-		float p_s   = lightPdfFwd * gTerm * eyePdfFwd;
-		float p_alt = eyePdfFwd   * gTerm; // unidirectional: no light subpath
-		float misW  = bdptMISWeight2( p_s, p_alt );
+		// ── Full §10.3 MIS weight ────────────────────────────────────────────
+		int c = lightVtxIdx;
+		int e = eyeDepth;
+		int n = c + e + 3;
+		int selectedS = c + 1;
+		if ( n > BDPT_MAX_MERGED ) return vec3( 0.0 );
+
+		vec3 camPos = ( cameraWorldMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
+		vec3 camNrm = normalize( camPos - eyePos );
+
+		// Connection-induced straddle overrides (PBRT MISWeight remapping).
+		vec3 lcToE = -connDir;                       // L_c → E_e
+		float fwdEe = bdptLambertDirPdf( lightNormal, lcToE );
+
+		vec3 eeMinusPos = camPos;
+		if ( e >= 1 ) eeMinusPos = bdptEyePos[ e - 1 ];
+		vec3 eeToPrev = normalize( eeMinusPos - eyePos ); // E_e → E_{e-1} (or camera)
+
+		vec3 dummyColor;
+		float revLc = bsdfResult( eeToPrev, connDir, eyeSurf, eyeState.wavelength, dummyColor );
+		float fwdEeMinus = 0.0;
+		if ( e >= 1 ) {
+			fwdEeMinus = bsdfResult( connDir, eeToPrev, eyeSurf, eyeState.wavelength, dummyColor );
+		}
+		float revLcMinus = 0.0;
+		if ( c >= 1 ) {
+			vec4 lcm0 = texelFetch( uBdptLightPathTex, ivec2( c - 1, 0 ), 0 );
+			vec3 lcToLcMinus = normalize( lcm0.xyz - lightPos );
+			revLcMinus = bdptLambertDirPdf( lightNormal, lcToLcMinus );
+		}
+
+		// pRef cancels in the power-heuristic ratio (scale-invariant); use the
+		// area-forward of the selected strategy's connection edge for conditioning.
+		float pRef = max( lightPdfFwd, 1e-12 ) * max( fwdEe, 1e-12 ) + 1e-30;
+		float misW = bdptMISWeightFull(
+			c, e, n, selectedS, pRef,
+			fwdEe, fwdEeMinus, revLc, revLcMinus,
+			bdptEyePos, bdptEyeNrm, bdptEyePdfFwd, bdptEyePdfRev, bdptEyeSpec,
+			camPos, camNrm
+		);
 		if ( misW <= 0.0 ) return vec3( 0.0 );
 
-		// ── Assemble contribution ────────────────────────────────────────────
-		// contribution = lightThroughput × lightBsdf×cosθ × G × eyeBsdf×cosθ × MIS × eyeThroughput
-		// Note: eyeThroughput is already converted to RGB via wavelengthToRGB() at the call site.
 		vec3 contribution = lightThroughput * lightBsdfCosTheta * gTerm * eyeBsdfCosTheta * misW;
-		// Multiply by eye throughput (caller provides RGB-converted throughput).
 		contribution *= eyeThroughput;
-
-		// ── NaN / Inf guard and firefly clamp ────────────────────────────────
 		if ( any( isnan( contribution ) ) || any( isinf( contribution ) ) ) {
 			return vec3( 0.0 );
 		}

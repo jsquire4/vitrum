@@ -32,6 +32,7 @@ const FRAME_FIELDS = [
   ['cmfIntegralZ', 'f32'],
   ['bdptEnabled', 'u32'],
   ['bdptMaxLightBounces', 'u32'],
+  ['bdptMaxEyeDepth', 'u32'],
   ['cameraPos', 'vec4f'],
   ['lightDir', 'vec4f'],
   ['environmentTint', 'vec4f'],

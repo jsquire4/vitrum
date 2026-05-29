@@ -7,26 +7,29 @@
  *
  * Ping-pong vertex texture layout (RGBA32F, width=BDPT_MAX_LIGHT_BOUNCES=3, height=3):
  *   Texel(col, 0):  position.xyz | kind    (0=light vertex, 3=invalid/empty)
- *   Texel(col, 1):  normal.xyz   | pdfFwd  (forward PDF in area measure × cosθ)
- *   Texel(col, 2):  throughput.rgb | pdfRev (accumulated radiance weight; reverse PDF)
+ *   Texel(col, 1):  normal.xyz   | pdfFwd  (forward PDF, SOLID-ANGLE measure)
+ *   Texel(col, 2):  throughput.rgb | pdfRev (radiance weight; reverse SA PDF)
  *
  * Each draw call renders into a 3-attachment MRT target at column uBdptVertexCol
  * (0…BDPT_MAX_LIGHT_BOUNCES-1). The host ping-pongs: "write" target = current
  * frame's texture; "read" target (uBdptLightPathTex) = previous frame's texture.
  * For bounce k=0 the read texture is irrelevant (emitter vertex; no prior bounce).
  *
- * Geometry term: G(x↔y) = |cosθ_x · cosθ_y| / ‖x−y‖²  (Veach §8.3.2, Eq. 8.10).
+ * pdfFwd / pdfRev are stored in SOLID-ANGLE measure with NO baked-in geometry
+ * term: the full Veach §10.3 connection sweep (bdpt_connection.glsl.js) converts
+ * SA→area on the fly via ConvertDensity (PBRT Vertex::ConvertDensity), so baking
+ * G here would double-apply the Jacobian. Both densities use the light subpath's
+ * Lambertian cosine-hemisphere model (cosθ/π) — the construction-time density;
+ * the connection-straddle reverse densities are recomputed at connection time.
  *
- * Throughput model (approximation — see Risk §4 in sprint-10c-pt-fork-patch.md):
+ * Geometry term: G(x↔y) = |cosθ_x · cosθ_y| / ‖x−y‖²  (Veach §8.3.2, Eq. 8.10),
+ * still used for visibility/throughput bookkeeping in the connection pass.
+ *
+ * Throughput model:
  *   T_0 = Le × cosθ_emit / (p_light × p_hemisphere)
  *   T_k = T_{k-1} × albedo_k × cosθ_k / p_hemisphere_k
- * Full BSDF evaluation is deferred to the connection pass; the light subpath uses
- * Lambertian approximation (cosine hemisphere) to keep per-bounce cost bounded.
- *
- * pdfRev approximation: symmetric Lambertian model — pdfRev = cosθ_rev / π.
- * This is an intentional approximation documented in the sprint spec (Risk §4).
- * It will bias the MIS weight slightly but is visually acceptable for caustic
- * convergence verification. Track as known gap in IMPLEMENTATION-STATUS.md.
+ * Full BSDF evaluation happens in the connection pass; the light subpath uses the
+ * Lambertian (cosine hemisphere) model to keep per-bounce cost bounded (D4).
  *
  * Seed isolation: eye-path rand() uses seeds 0–30 (established by prior sprints).
  *   Light subpath bounce 0 uses seeds 50–52.
@@ -205,15 +208,13 @@ export const bdpt_light_subpath = /* glsl */`
 			// Albedo = mat.color (Lambertian approximation; full BSDF in connection pass).
 			vec3 newThroughput = prevThroughput * mat.color * cosScatter / pdfScatter;
 
-			// Geometric term for PDF conversion (area→solid-angle).
-			float gTerm = bdptGeometricTerm( prevPos, prevNormal, newPos, newNormal );
-
-			// pdfFwd = pdfScatter (solid-angle) × G(prev↔new).
-			float pdfFwd = pdfScatter * max( gTerm, 0.0 );
-			// pdfRev: cosine-hemisphere from the new vertex toward the prior vertex.
+			// Store SOLID-ANGLE pdfs (NO baked-in geometry term). The full Veach
+			// §10.3 connection sweep converts SA→area on the fly via ConvertDensity
+			// (PBRT Vertex::ConvertDensity, destination-cosine only), so baking the
+			// full G here would double-apply the Jacobian and bias the MIS weights.
+			float pdfFwd = pdfScatter;                                  // SA forward (cosθ/π)
 			float cosRev = max( dot( newNormal, normalize( prevPos - newPos ) ), 0.0 );
-			float pdfRevScatter = cosRev / PI;
-			float pdfRev = pdfRevScatter * max( gTerm, 0.0 );
+			float pdfRev = cosRev / PI;                                 // SA reverse (cosθ/π)
 
 			gBdptVertex0 = vec4( newPos,        0.0 );   // kind = BDPT_KIND_LIGHT
 			gBdptVertex1 = vec4( newNormal,     pdfFwd );

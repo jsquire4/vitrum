@@ -502,6 +502,8 @@ class PTEngineWebGPU implements Engine {
     const bdptActive = this.#bdpt && this.#traceTier === 'full';
     paramsU32[FrameParamsSlot.bdptEnabled] = bdptActive ? 1 : 0;
     paramsU32[FrameParamsSlot.bdptMaxLightBounces] = this.#bdptMaxLightBounces >>> 0;
+    // Eye-subpath scratch depth = the active per-pixel bounce limit (<= 8).
+    paramsU32[FrameParamsSlot.bdptMaxEyeDepth] = this.#activeBounces >>> 0;
     paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
     paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
     paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
@@ -1022,7 +1024,25 @@ class PTEngineWebGPU implements Engine {
       return output;
     }
 
+    // BDPT eye-subpath scratch stack (D2). Sized per-pixel × the active bounce
+    // depth; refuses to grow beyond the safety ceiling (returns false → BDPT
+    // connections skipped this frame, unidirectional path unaffected). A 32-byte
+    // placeholder is allocated when BDPT is off so the auto layout stays valid.
+    const bdptActive = this.#bdpt && this.#traceTier === 'full';
+    const bdptStackReady = gpu.ensureBdptEyeStack(
+      width,
+      height,
+      this.#activeBounces,
+      bdptActive,
+    );
+
     const paramsArrayBuffer = this.#buildParamsBuffer(input, width, height);
+    if (bdptActive && !bdptStackReady) {
+      // Over-budget: disable BDPT in the UBO so the shader takes the
+      // unidirectional path (and never touches the placeholder eye stack).
+      const u32 = new Uint32Array(paramsArrayBuffer);
+      u32[FrameParamsSlot.bdptEnabled] = 0;
+    }
     this.#device.queue.writeBuffer(gpu.paramsBuffer, 0, paramsArrayBuffer);
 
     const bindGroup = gpu.buildBindGroups(this.#sceneBuffers, () => this.#bdptLightPathView());
@@ -1031,6 +1051,7 @@ class PTEngineWebGPU implements Engine {
     if (
       gpu.bdptSubpathPipeline != null &&
       this.#bdpt &&
+      bdptStackReady &&
       this.#bdptExternalView == null &&
       this.#bdptLightPath != null &&
       this.#traceTier === 'full' &&

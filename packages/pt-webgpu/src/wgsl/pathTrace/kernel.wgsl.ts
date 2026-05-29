@@ -115,6 +115,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
   var ray = generatePrimaryRay(gid.x, gid.y, jitter);
 
+  // BDPT eye-subpath scratch stack — bind this pixel for the deeply-nested
+  // stack helpers (bdptEyeStackStore/Load) used by the full §10.3 connection.
+  if (params.bdptEnabled != 0u) {
+    bdptSetCurrentPixel(gid.y * params.width + gid.x);
+  }
+  // Forward scatter pdf at the previous eye vertex (the density that produced
+  // the current vertex). For the primary hit E_0 the "previous vertex" is the
+  // pinhole camera; its importance directional pdf is modelled as 1.0 (We for
+  // an aperture-less pinhole — the one vertex without an aperture model). This
+  // replaces the old hardcoded eyePdfFwd=1.0 for all SCENE-surface vertices,
+  // where the real BSDF scatter pdf now flows in.
+  var bdptPrevScatterPdf = 1.0;
+  var bdptPrevPos = params.cameraPos.xyz;
+
   var heroLambda = params.heroLambdaNm;
   var heroPdf = params.heroPdf;
   if (params.spectralEnabled != 0u) {
@@ -416,20 +430,32 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     if (params.bdptEnabled != 0u) {
-      let maxLv = min(params.bdptMaxLightBounces, 3u);
-      for (var lvi = 0u; lvi < maxLv; lvi++) {
-        radiance = radiance + evaluateBdptConnection(
-          hitPos,
-          normal,
-          wo,
-          throughputAtVertex,
-          1.0,
-          baseColor,
-          roughness,
-          metallic,
-          transmission,
-          i32(lvi),
-        );
+      // Push this eye vertex (E_bounce) onto the scratch stack BEFORE connecting:
+      // pdfRev = forward scatter pdf at the previous vertex that produced E_bounce
+      // (camera importance 1.0 for the primary hit). pdfFwd is filled one
+      // iteration later by the swapped-direction reverse density (and overridden
+      // by the connection straddle terms when this vertex is E_e / E_{e-1}).
+      let eyeIsSpecular = transmission > 0.5 && roughness < 0.05;
+      bdptEyeStackStore(bounce, hitPos, normal, 0.0, bdptPrevScatterPdf, eyeIsSpecular);
+      // Skip the primary hit (bounce 0): an explicit connection there would
+      // double-count with the unidirectional NEE above (fork !state.firstRay).
+      if (bounce > 0u) {
+        let maxLv = min(params.bdptMaxLightBounces, 3u);
+        for (var lvi = 0u; lvi < maxLv; lvi++) {
+          radiance = radiance + evaluateBdptConnection(
+            hitPos,
+            normal,
+            wo,
+            throughputAtVertex,
+            baseColor,
+            roughness,
+            metallic,
+            transmission,
+            ior,
+            bounce,
+            i32(lvi),
+          );
+        }
       }
     }
 
@@ -480,6 +506,26 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     throughput = throughput * bs.throughputMul;
     let sampledDir = bs.sampledDir;
     let sampleAllowsAreaMis = bs.sampleAllowsAreaMis;
+
+    if (params.bdptEnabled != 0u) {
+      // The forward scatter pdf of the chosen next direction at E_bounce — fed
+      // to the next iteration as E_{bounce+1}'s reverse density. (eyePdfFwd is
+      // now this real value, not the old hardcoded 1.0.)
+      let scatterPdfFwd = brdfDirectionalPdf(
+        baseColor, roughness, metallic, transmission, ior, normal, wo, sampledDir);
+      // Merged pdfFwd(E_{bounce-1}): swapped-direction reverse density at the
+      // PREVIOUS eye vertex toward E_bounce, using the natural next eye direction
+      // as wo (PBRT camera[d-1].pdfRev set while at camera[d]). Write into the
+      // previous scratch slot (D1 — non-symmetric reverse density).
+      if (bounce >= 1u) {
+        let toPrev = safe_normalize(bdptPrevPos - hitPos);
+        let swappedRev = brdfDirectionalPdf(
+          baseColor, roughness, metallic, transmission, ior, normal, sampledDir, toPrev);
+        bdptEyeStackSetFwd(bounce - 1u, swappedRev);
+      }
+      bdptPrevScatterPdf = scatterPdfFwd;
+      bdptPrevPos = hitPos;
+    }
 
     if (sampleAllowsAreaMis) {
       radiance = radiance + bsdfAreaLightConnectionContribution(

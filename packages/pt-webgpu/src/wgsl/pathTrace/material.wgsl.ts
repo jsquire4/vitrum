@@ -50,9 +50,9 @@ struct FrameParams {
   cmfIntegralZ: f32,
   bdptEnabled: u32,
   bdptMaxLightBounces: u32,
+  bdptMaxEyeDepth: u32,
   _padAuto0: u32,
   _padAuto1: u32,
-  _padAuto2: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -107,9 +107,9 @@ struct FrameParams {
   cmfIntegralZ: f32,
   bdptEnabled: u32,
   bdptMaxLightBounces: u32,
+  bdptMaxEyeDepth: u32,
   _padAuto0: u32,
   _padAuto1: u32,
-  _padAuto2: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -149,7 +149,11 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl *
 @group(1) @binding(9) var<storage, read> meshAreaLights: array<vec4f>;
 `;
 
-/** Group 2 — TLAS instance table (5 storage buffers). */
+/** Group 2 — TLAS instance table (5 storage buffers) + BDPT light-path texture
+ *  + BDPT eye-subpath scratch stack. `bdptEyeStack` is a per-pixel ×
+ *  bdptMaxEyeDepth read_write storage stack of eye-vertex pdf/pos/normal data
+ *  (2× vec4 / vertex; specular packed as a negative-pdfFwd sentinel) consumed by
+ *  the full Veach §10.3 connection sweep. */
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
 @group(2) @binding(0) var<storage, read> tlasNodes: array<BVHNode>;
 @group(2) @binding(1) var<storage, read> tlasInstanceIndices: array<u32>;
@@ -157,6 +161,7 @@ export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl *
 @group(2) @binding(3) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 @group(2) @binding(5) var bdptLightPath: texture_storage_2d<rgba32float, read_write>;
+@group(2) @binding(6) var<storage, read_write> bdptEyeStack: array<vec4f>;
 `;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
