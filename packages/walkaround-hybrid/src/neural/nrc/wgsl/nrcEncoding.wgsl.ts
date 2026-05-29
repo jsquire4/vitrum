@@ -6,26 +6,33 @@
 // exact arithmetic the host-side oracle computes, so the two are pinned to ~1e-6
 // (f32) by `__tests__/nrcEncoding.test.ts`.
 //
-// This is the FORWARD only (cache query + the forward half of training). The
-// trainable hash-grid BACKWARD (gradient scatter into hashed table rows) lives
-// in `nrcEncodeBackwardWgsl` below. Both are gated-OFF-inert today: they are
-// emitted + unit-pinned but NOT yet registered as pipeline passes (see the
-// HybridEngine `nrcEnabled` gate + the V-item — the pass registration is the
-// documented next phase).
+// This file emits the FORWARD encode (cache query + the forward half of
+// training) AND the trainable hash-grid BACKWARD (`nrcEncodeBackwardWgsl`,
+// gradient scatter into hashed table rows). STATUS (verified 2026-05-29):
+//   • FORWARD — WIRED. `nrcEncodeHelpersWgsl` is composed into the dispatched
+//     gi-ris NRC variant (`buildRisGiNrcModule`); the query runs + gathers
+//     self-training records, and `NrcSubsystem.trainFromRecords` runs one MLP
+//     `trainStep` per frame (host-owns-cadence) when `nrcEnabled`.
+//   • hash-grid BACKWARD — NOT wired. `nrcEncodeBackwardWgsl` is emitted +
+//     unit-pinned but never dispatched, so the hash-grid feature tables stay
+//     frozen at their random init (`NrcSubsystem._tablesBuf` is write-once).
+//     The MLP learns over a fixed positional embedding; the multiresolution
+//     encoding itself does not yet learn. Wiring this scatter into the train
+//     step is the remaining NRC work.
 //
 // Hash + interpolation conventions MUST match nrcEncoding.ts exactly:
 //   * spatialHash3D: (ix·1 ^ iy·0x9E3779B1 ^ iz·0x30034BB7) mod tableSize, u32 wrap.
 //   * trilinear: 8 corners, weight = ∏ axis(frac | 1-frac), Σ weights = 1.
 //   * one-blob: k Gaussian bins centred at (i+0.5)/k, L1-normalised.
 //
-// NEXT-PHASE INTEGRATION NOTE: the helper signatures take `array<f32, NRC_MAX_LF>`
-// / `array<f32, NRC_MAX_BLOB>` scratch by pointer. The pass that composes these
-// modules must emit the matching `const NRC_MAX_LF : u32 = <L·F>;` and
+// COMPOSITION NOTE: the helper signatures take `array<f32, NRC_MAX_LF>`
+// / `array<f32, NRC_MAX_BLOB>` scratch by pointer. The pass composing these
+// modules emits the matching `const NRC_MAX_LF : u32 = <L·F>;` and
 // `const NRC_MAX_BLOB : u32 = <k>;` (and `let F : u32` from the config) ahead of
 // the helpers — these emitters are deliberately config-agnostic on those sizes
-// so one pass can pick them from the live encoding config. The modules are
-// EMITTED + unit-pinned today but NOT yet composed into a pipeline (gated-OFF-
-// inert): the query/record pass registration is the documented next phase (V20).
+// so the pass picks them from the live encoding config. The FORWARD helpers are
+// composed into the dispatched gi-ris NRC variant today; only the hash-grid
+// BACKWARD scatter (above) remains undispatched.
 
 export interface NrcEncodeWgslOptions {
   /** Hash-grid resolution levels L. */

@@ -90,8 +90,18 @@ structural fix (see §4).
   spectral-hero estimator doesn't converge at software-GL SPP. Needs a real-GPU high-SPP capture.
 - **BDPT §10.3 variance A/B** — BDPT-ON renders correctly; the full vs 2-strategy variance win
   needs a small/hidden-emitter *caustic* scene (large-area-light Cornell under-exercises it).
-- **GPU skinning normals** (task #24) — skin compute transforms positions but not normals;
-  inverse-transpose needed for non-uniform bone scale.
+- **GPU skinning normals** (task #24) — CORRECTED 2026-05-29: the skin compute DOES transform
+  normals via inverse-transpose (`GPU_SKIN_BVH_WITH_NORMALS_WGSL`, dispatched by
+  `GpuSkinningSubsystem`). The real remaining seam is that the skinned per-vertex normals are
+  **computed but unconsumed** — `applyGpuSkinnedRefit` drops them and the merged BVH uses
+  geometric (faceted) normals. Remaining work: consume the skinned smooth shading normals.
+- **NRC hash-grid encoding is frozen** (discovered 2026-05-29) — the live NRC forward query +
+  record gather + per-frame MLP `trainStep` ARE wired and dispatched when `nrcEnabled` (the
+  earlier "query/record pass is the next phase" comments were stale). But the trainable
+  multiresolution hash-grid BACKWARD (`nrcEncodeBackwardWgsl`, gradient scatter into table rows)
+  is emitted yet never dispatched, so `NrcSubsystem._tablesBuf` stays at random init. The MLP
+  learns over a fixed positional embedding; the encoding itself does not learn. Remaining work:
+  dispatch the encode-backward and fold its gradients into the train step.
 
 ### Performance (the biggest unvalidated dimension)
 - **Nothing has been perf-validated on target hardware.** lavapipe is a CPU rasterizer (correctness
