@@ -12,11 +12,18 @@
  *   1. `new RCSubsystem(device)` once per engine.
  *   2. `setScene(threeScene)` for merged single-root BVH, or
  *      `syncRestirBvhBuffers(sceneBVH)` when ReSTIR uses TLAS (C2).
- *   3. `dispatchFrame({ sunDirection, sunColor, frameSeed, triIntersectEpsilon })`
+ *   3. On a moving-instance / scene edit (driven by `propagateBvhToGiSubsystems`):
+ *        - TLAS mode → `syncRestirBvhBuffers` re-shares ReSTIR's buffers (with
+ *          a TLAS-only GPU refit when only transforms changed).
+ *        - merged mode → `refitMergedInstance` re-uploads world positions + node
+ *          AABBs in place WITHOUT a rebuild/teardown; it declines (→ caller
+ *          rebuilds via `setScene`) only on a vertex-count / topology change.
+ *      `refitCascadeBounds` cheaply re-aims the cascade probe grid either way.
+ *   4. `dispatchFrame({ sunDirection, sunColor, frameSeed, triIntersectEpsilon })`
  *      per frame.
- *   4. `getCascadeC0Buffer()` returns the cascade-0 `GPUBuffer` for the
+ *   5. `getCascadeC0Buffer()` returns the cascade-0 `GPUBuffer` for the
  *      shade pass to sample (W8 Phase 3 wiring).
- *   5. `dispose()` releases all GPU resources.
+ *   6. `dispose()` releases all GPU resources.
  *
  * Plan: `plan/w8-rc-mis-composition.md` (Phase 2 section).
  */

@@ -16,9 +16,18 @@
  * binding; ReSTIR packs per-tri colour into bvhIndex.w) and stays in this
  * file rather than in `@vitrum/shared-bvh`.
  *
- * Re-build policy:
- * - Geometry topology changes (scene mount swap, room swap) → full rebuild.
- * - Material parameter edits currently trigger a full BVH rebuild (no fast SSBO-only patch path implemented).
+ * Re-build policy (the merged-mode entry — `buildRCSceneBVH` is the full SAH
+ * rebuild; the host owns when to call it vs. the cheaper in-place paths):
+ * - Moving-instance transforms (same vertex count / topology) → NO full rebuild.
+ *   `RCSubsystem.refitMergedInstance` re-uploads the re-derived world positions
+ *   and refits node AABBs in place (`refitBvhBounds`), preserving tree topology
+ *   and the dispatcher. This is the common walkaround case and is wired through
+ *   `propagateBvhToGiSubsystems`' merged branch.
+ * - Geometry topology / vertex-count changes (scene mount swap, room swap) →
+ *   full rebuild via this function (the in-place refit declines on a vertex-
+ *   count mismatch, and the caller falls back to `RCSubsystem.setScene`).
+ * - Material parameter edits → full BVH rebuild (RC has no fast SSBO-only
+ *   material-patch path; the material SSBO is only repacked inside a rebuild).
  *
  * Caller debounces the rebuild call to avoid thrashing on rapid edits.
  *
