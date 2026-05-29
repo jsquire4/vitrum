@@ -43,6 +43,11 @@ export const RIS_WGSL = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+// WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
+// normal. ris uses it for the BRDF / candidate p̂; the geometric normal is
+// kept for the shadow-ray offset. (Beer texture binding 5 is shade-only — ris
+// declares a subset of the scene BGL; WGSL permits that.)
+@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 // Group 2: uniform buffer (WalkaroundUBO struct defined in COMMON_WGSL)
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -107,7 +112,14 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Surface hit -- extract position, normal, material color from packed bvh_index.
   let pos    = primaryRay.origin + primaryRay.direction * hit.dist;
-  let normal = hit.normal;
+  // WS1 — smooth shading normal for the BRDF / p̂; geometric normal for the
+  // shadow-ray offset. TLAS keeps geometric (local-space bvh_normal; deferred).
+  let geoNormal = hit.normal;
+  let normal = select(
+    smoothShadingNormal(hit, geoNormal, &bvh_normal),
+    geoNormal,
+    ubo.bvhMode == 1u,
+  );
   let wo     = -primaryRay.direction;
 
   // Decode per-triangle material color from bvhIndex[triIdx].w (RGBA8 packed).
@@ -209,7 +221,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let toL = ls.pos - pos;
     let dist = length(toL);
     let wi  = toL / dist;
-    let shadowOrig = pos + normal * 1e-3;
+    // WS1 — offset along the GEOMETRIC normal (smooth normal can self-hit).
+    let shadowOrig = pos + geoNormal * 1e-3;
     // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
     // (light passes through glass; per-channel tinted-visibility handles tint).
     let occluded = traceSceneAny(

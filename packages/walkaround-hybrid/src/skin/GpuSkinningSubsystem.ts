@@ -21,6 +21,10 @@ import type { ReSTIRBvhMode, SceneBVHBuffers } from '../restir/bvhCompute.js';
 export interface GpuSkinningHost {
   /** Merged-BVH world-position SSBO target for the LBS compute write. */
   getGpuSkinningBvhBuffer(): GPUBuffer | null;
+  /** WS1 — merged-BVH per-vertex normal SSBO target. The LBS compute writes
+   *  inverse-transpose skinned normals here at `baseVertex+vi` so the smooth-
+   *  shading-normal blend reads the deformed normal. Null before pipeline init. */
+  getGpuSkinningNormalBuffer(): GPUBuffer | null;
   /** Per-mesh vertex ranges in the merged BVH. */
   getMeshVertexRanges(): SceneBVHBuffers['meshVertexRanges'] | null;
   /** Active ReSTIR BVH layout (`merged` world positions vs `tlas` local BLAS). */
@@ -87,13 +91,13 @@ interface MeshGpuState {
   readonly restNormBuffer: GPUBuffer;
   readonly skinIdxBuffer: GPUBuffer;
   readonly skinWeightBuffer: GPUBuffer;
-  /** Per-mesh skinned-normal output (stride-4, mesh-local index). Written by
-   *  the inverse-transpose normal LBS in the compute kernel. Not consumed by
-   *  the merged-BVH ray normal (which is geometric) — present for parity with
-   *  the CPU solveSkin reference and future smooth-normal consumers. */
-  readonly skinnedNormalBuffer: GPUBuffer;
   readonly bindGroup: GPUBindGroup;
   readonly pipeline: GPUComputePipeline;
+  /** WS1 — identities of the SHARED merged buffers the cached bind group was
+   *  built against. A full BVH rebuild swaps these buffers (same vert/bone
+   *  count), so we rebuild the bind group when either identity changes. */
+  readonly boundPositionBuffer: GPUBuffer;
+  readonly boundNormalBuffer: GPUBuffer;
 }
 
 function packVec4Positions(positions: Float32Array, count: number): Float32Array {
@@ -129,7 +133,8 @@ function destroyMeshState(state: MeshGpuState): void {
   state.restNormBuffer.destroy();
   state.skinIdxBuffer.destroy();
   state.skinWeightBuffer.destroy();
-  state.skinnedNormalBuffer.destroy();
+  // boundPositionBuffer / boundNormalBuffer are SHARED merged buffers owned by
+  // BvhBufferHost — do NOT destroy them here.
 }
 
 export class GpuSkinningSubsystem {
@@ -153,8 +158,9 @@ export class GpuSkinningSubsystem {
 
   run(host: GpuSkinningHost, scene: Scene): void {
     const bvhPositions = host.getGpuSkinningBvhBuffer();
+    const bvhNormals = host.getGpuSkinningNormalBuffer();
     const meshVertexRanges = host.getMeshVertexRanges();
-    if (bvhPositions == null || meshVertexRanges == null) {
+    if (bvhPositions == null || bvhNormals == null || meshVertexRanges == null) {
       return;
     }
 
@@ -202,7 +208,7 @@ export class GpuSkinningSubsystem {
         baseVertex = binding.vertexStart;
       }
 
-      const state = this.#ensureMesh(prim, bvhPositions);
+      const state = this.#ensureMesh(prim, bvhPositions, bvhNormals);
       const combined = combineSkinMatrices(prim.bones, prim.boneInverses, state.boneCount);
       this.#device.queue.writeBuffer(state.boneBuffer, 0, new Float32Array(combined));
 
@@ -232,12 +238,25 @@ export class GpuSkinningSubsystem {
     }
   }
 
-  #ensureMesh(prim: SkinnedMeshPrimitive, bvhPositions: GPUBuffer): MeshGpuState {
+  #ensureMesh(
+    prim: SkinnedMeshPrimitive,
+    bvhPositions: GPUBuffer,
+    bvhNormals: GPUBuffer,
+  ): MeshGpuState {
     const id = String(prim.id);
     const existing = this.#meshes.get(id);
     const vertCount = prim.positions.length / 3;
     const boneCount = prim.bones.length / 16;
-    if (existing != null && existing.vertexCount === vertCount && existing.boneCount === boneCount) {
+    // WS1 — reuse only if the cached bind group still points at the LIVE shared
+    // position + normal buffers (a full BVH rebuild swaps both, even at the same
+    // vert/bone count). A stale bind group would skin into the destroyed buffer.
+    if (
+      existing != null &&
+      existing.vertexCount === vertCount &&
+      existing.boneCount === boneCount &&
+      existing.boundPositionBuffer === bvhPositions &&
+      existing.boundNormalBuffer === bvhNormals
+    ) {
       return existing;
     }
     if (existing != null) {
@@ -264,9 +283,6 @@ export class GpuSkinningSubsystem {
     const skinIdxBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinIdx`, skinIdx.byteLength);
     const skinWeightBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinW`, skinW.byteLength);
     const boneBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.bones`, boneBytes);
-    // Per-mesh skinned-normal output (stride-4, mesh-local index). Same vertex
-    // count as the rest normals; written by the inverse-transpose normal LBS.
-    const skinnedNormalBuffer = mkStorage(`vitrum.gpuSkinBvh.${id}.skinnedNorm`, vertBytes);
     const uniformBuffer = device.createBuffer({
       label: `vitrum.gpuSkinBvh.${id}.uniform`,
       size: 80,
@@ -302,7 +318,9 @@ export class GpuSkinningSubsystem {
         { binding: 4, resource: { buffer: skinWeightBuffer } },
         { binding: 5, resource: { buffer: boneBuffer } },
         { binding: 6, resource: { buffer: bvhPositions } },
-        { binding: 7, resource: { buffer: skinnedNormalBuffer } },
+        // WS1 — binding 7 is the SHARED merged bvh_normal buffer; the kernel
+        // writes skinned normals at `baseVertex+vi` (NOT a per-mesh buffer).
+        { binding: 7, resource: { buffer: bvhNormals } },
       ],
     });
 
@@ -315,9 +333,10 @@ export class GpuSkinningSubsystem {
       restNormBuffer,
       skinIdxBuffer,
       skinWeightBuffer,
-      skinnedNormalBuffer,
       bindGroup,
       pipeline,
+      boundPositionBuffer: bvhPositions,
+      boundNormalBuffer: bvhNormals,
     };
     this.#meshes.set(id, state);
     return state;

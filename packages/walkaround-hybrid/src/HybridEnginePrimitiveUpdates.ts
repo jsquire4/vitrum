@@ -938,16 +938,14 @@ export function materialPatch(
   );
 
   const indexByteOffset = range.triStart * 16;
-  const beerByteOffset = range.triStart * 4;
   ctx.pipeline.refreshBvhMaterialSlice(
     {
       byteOffset: indexByteOffset,
       data: bvh.bvhIndex.cpuData.slice(indexByteOffset, indexByteOffset + range.triCount * 16),
     },
-    {
-      byteOffset: beerByteOffset,
-      data: bvh.bvhBeerColors.cpuData.slice(beerByteOffset, beerByteOffset + range.triCount * 4),
-    },
+    // WS1 — beer is a texture: re-upload the full beer data (a contiguous tri
+    // slice is not a rectangular texture region unless it spans full rows).
+    { data: bvh.bvhBeerColors.cpuData, triCount: bvh.bvhBeerColors.count },
   );
 
   const crossedGlassThreshold =

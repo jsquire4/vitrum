@@ -1035,6 +1035,13 @@ export class HybridEngine implements Engine {
     return this._pipeline?.getBvhPositionBuffer() ?? null;
   }
 
+  /** WS1 — merged BVH normal SSBO for GPU skinning (null before pipeline init).
+   *  The skin kernel writes inverse-transpose skinned normals here at
+   *  `baseVertex+vi` so the smooth shading-normal blend reads deformed normals. */
+  getGpuSkinningNormalBuffer(): GPUBuffer | null {
+    return this._pipeline?.getBvhNormalBuffer() ?? null;
+  }
+
   /** Per-mesh vertex ranges in the merged BVH (for GPU skinning). */
   getMeshVertexRanges(): SceneBVHBuffers['meshVertexRanges'] | null {
     return this._bvhBuffers?.meshVertexRanges ?? null;

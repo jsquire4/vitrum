@@ -146,12 +146,27 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 2, kind: 'storage-ro', note: 'bvhPositions' },
       { binding: 3, kind: 'storage-ro', note: 'emitters' },
       { binding: 4, kind: 'storage-ro', note: 'emitterCdf' },
-      { binding: 5, kind: 'storage-ro', note: 'bvh_beer (Beer-Lambert visible color)' },
+      // WS1 (2026-05-29) — bvh_beer (per-tri Beer-Lambert visible color, RGBA8
+      // packed u32) moved from a storage buffer to a `texture_2d<u32>` (r32uint).
+      // Textures do NOT count against maxStorageBuffersPerShaderStage, so this
+      // swap frees a storage slot for `bvh_normal` (binding 11) while the scene
+      // group's storage count stays at the 16-storage shade-pass floor. Only the
+      // shade pass references binding 5 (lo_emit); the other primary passes
+      // declare a subset of the layout, so the texture is shade-only.
+      { binding: 5, kind: 'tex:uint', note: 'bvh_beer (Beer-Lambert visible color, r32uint texture; shade-only)' },
       { binding: 6, kind: 'storage-ro', note: 'tlasNodes' },
       { binding: 7, kind: 'storage-ro', note: 'tlasInstanceIndices' },
       { binding: 8, kind: 'storage-ro', note: 'tlasBlasRoots' },
       { binding: 9, kind: 'storage-ro', note: 'tlasInstanceWorldToLocal (mat4 cols)' },
       { binding: 10, kind: 'storage-ro', note: 'tlasInstanceLocalToWorld' },
+      // WS1 (2026-05-29) — per-vertex world-space normals (stride-4 vec4f, .w
+      // unused). Barycentric-blended in shade/ris/risGi/risGiNrc to produce a
+      // SMOOTH shading normal (was faceted geometric). Data is the same
+      // `shared.normals` already exposed as SceneBVHBuffers.emitterNormals. The
+      // GPU-skin kernel writes its inverse-transpose normals here at
+      // `baseVertex+vi` (the merged-BVH world-space slot). 1 storage buffer; the
+      // bvh_beer→texture swap above keeps the net storage count unchanged.
+      { binding: 11, kind: 'storage-ro', note: 'bvh_normal (per-vertex world-space smooth normals)' },
     ],
   },
   {

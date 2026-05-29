@@ -62,7 +62,7 @@ export interface RisGiNrcConfig extends NrcQueryWgslOptions {}
 //   • it writes a self-training record per pixel.
 // The @group(0..3) bindings are byte-identical to risGi.wgsl; @group(4) is the
 // NRC group declared by the nrcQueryWgsl helpers prepended to this body.
-const RIS_GI_NRC_BODY = /* wgsl */ `
+export const RIS_GI_NRC_BODY = /* wgsl */ `
 
 @group(0) @binding(10) var gi_gNormalDepth: texture_2d<f32>;
 @group(0) @binding(11) var<storage, read_write> reservoirGiCurrent: array<u32>;
@@ -75,6 +75,9 @@ const RIS_GI_NRC_BODY = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+// WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
+// normal. Byte-identical scene-group addition to risGi.wgsl (binding 11).
+@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 @group(2) @binding(2) var gi_tier: texture_2d<u32>;
@@ -143,7 +146,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let pos = primaryRay.origin + primaryRay.direction * hit.dist;
-  let normal = hit.normal;
+  // WS1 — smooth shading normal; geometric normal kept for the bounce offset.
+  let geoNormal = hit.normal;
+  let normal = select(
+    smoothShadingNormal(hit, geoNormal, &bvh_normal),
+    geoNormal,
+    ubo.bvhMode == 1u,
+  );
   let matColor = decodeMaterialColor(hit.matColorPacked);
   let isGlass = matColor.a > 0.3;
   let isMetal = decodeIsMetal(hit.matColorPacked);
@@ -186,7 +195,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let cosTheta = max(0.0, dot(normal, wi));
     if (cosTheta < 1e-4) { continue; }
 
-    let bounceRay = Ray(pos + normal * NORMAL_BIAS_GI, wi);
+    // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
+    let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
     let bounceHit = traceSceneFirstHit(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,

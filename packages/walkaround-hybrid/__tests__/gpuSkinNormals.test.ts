@@ -53,11 +53,15 @@ describe('GPU normal-skinning WGSL', () => {
     expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('nlen > 1e-12');
   });
 
-  it('with-normals kernel skins normals mesh-local (vi), positions merged (outIdx)', () => {
+  it('WS1 — skins BOTH positions AND normals into the shared merged buffers at outIdx', () => {
     // Positions go to the shared merged buffer at baseVertex + vi.
     expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('bvhPositions[outIdx] = vec4f(outPos, uvPack)');
-    // Normals go to the per-mesh buffer at the mesh-local index.
-    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('skinnedNormals[vi] = vec4f(safeN, 0.0)');
+    // WS1 (2026-05-29) — normals now write into the SHARED merged bvh_normal
+    // buffer at the SAME world-space slot (outIdx), so the smooth-shading-
+    // normal blend consumes the skinned normal. The old mesh-local `vi` write
+    // (dropped by applyGpuSkinnedRefit) is gone.
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('skinnedNormals[outIdx] = vec4f(safeN, 0.0)');
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).not.toContain('skinnedNormals[vi] = vec4f(safeN, 0.0)');
   });
 
   it('position math is preserved between the two kernels', () => {

@@ -11,15 +11,17 @@
  * `mat3InverseTranspose` on the same blended linear part.
  *
  * Architectural note (merged-BVH normal consumption): the merged ReSTIR BVH
- * derives the surface normal of a ray hit GEOMETRICALLY — `cross(e1, e2)` of
- * the (already skinned) triangle vertex positions (see
- * shared-bvh/bvhIntersect.wgsl `result.normal = side * normalize(n)`). It does
- * NOT read a per-vertex normal buffer during traversal. So the skinned per-
- * vertex normals this kernel writes are NOT consumed by the merged-BVH ray
- * normal today; they exist for parity with the CPU path and for future smooth-
- * normal / emitter-normal consumers. The kernel writes them only when a
- * `skinnedNormals` output buffer is bound (binding 7); when absent the host
- * compiles the position-only variant.
+ * still derives the GEOMETRIC face normal of a ray hit via `cross(e1, e2)` of
+ * the (already skinned) triangle vertex positions (shared-bvh/bvhIntersect.wgsl
+ * `result.normal = side * normalize(n)`). WS1 (2026-05-29) added a per-vertex
+ * SMOOTH shading normal on top: the primary passes barycentric-blend a
+ * per-vertex `bvh_normal` buffer. THIS kernel's skinned normals ARE that
+ * buffer's live skinned values — `skinnedNormals` (binding 7) is the SHARED
+ * merged `bvh_normal` SSBO, written at the same `baseVertex + vi` slot as the
+ * position, so the smooth-normal blend sees the deformed normal each frame.
+ * (Pre-WS1 this wrote a per-mesh `skinnedNormals[vi]` buffer that the refit
+ * dropped — computed-but-unconsumed; now consumed.) The kernel writes normals
+ * only in this WITH_NORMALS variant; the position-only variant skips them.
  */
 
 /** Position-only LBS variant (no skinned-normal output). */
@@ -91,10 +93,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
  * left 0). When `applyWorld != 0`, the world matrix's upper-3×3 inverse-
  * transpose is composed in (matching how positions are world-transformed).
  *
- * Indexing: positions write at `baseVertex + vi` into the SHARED merged
- * `bvhPositions` buffer; skinned normals write at `vi` (mesh-local) into a
- * PER-MESH `skinnedNormals` buffer the subsystem owns — so the normal output
- * needs no knowledge of the merged-buffer layout.
+ * Indexing (WS1): positions write at `baseVertex + vi` into the SHARED merged
+ * `bvhPositions` buffer; skinned normals write at the SAME `baseVertex + vi`
+ * slot into the SHARED merged `bvh_normal` buffer (bound at binding 7), so the
+ * smooth-shading-normal blend reads the deformed normal directly.
  */
 export const GPU_SKIN_BVH_WITH_NORMALS_WGSL = /* wgsl */ `
 struct SkinBvhUniforms {
@@ -193,7 +195,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let safeN = select(vec3f(0.0, 1.0, 0.0), outN / nlen, nlen > 1e-12);
 
   bvhPositions[outIdx] = vec4f(outPos, uvPack);
-  // Normals are mesh-local (per-mesh buffer), indexed by vi, not outIdx.
-  skinnedNormals[vi] = vec4f(safeN, 0.0);
+  // WS1 (2026-05-29) — write the skinned normal into the SHARED merged
+  // bvh_normal buffer at the SAME world-space slot as the position
+  // (baseVertex + vi), so the smooth-shading-normal blend in shade/ris/
+  // risGi/risGiNrc reads the up-to-date skinned normal. (Previously this wrote
+  // a mesh-local skinnedNormals[vi] into a per-mesh buffer that
+  // applyGpuSkinnedRefit dropped — the skinned normals were computed but never
+  // consumed.)
+  skinnedNormals[outIdx] = vec4f(safeN, 0.0);
 }
 `;

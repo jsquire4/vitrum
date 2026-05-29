@@ -106,6 +106,44 @@ fn traceSceneAny(
   return bvhIntersectAny(bvh_index, bvh_position, bvh, origin, dir, tMax, triEps, skipGlass);
 }
 
+// ─── WS1 (2026-05-29) — smooth shading normal via barycentric per-vertex blend ─
+//
+// Mirrors the DDGI precedent (probeUpdateRays.wgsl.ts:443-454): interpolate the
+// per-vertex normals at the hit's barycentric coordinate, normalize, and apply
+// the hit side so back-face hits get a consistently-oriented normal —
+//   n = normalize(w·n0 + u·n1 + v·n2) · side.
+//
+// This replaces the faceted geometric face normal (hit.normal, cross(e1,e2))
+// for SHADING. The geometric normal must still be used for ray-origin offsets /
+// backface bias by the caller (a smooth normal can point into the surface near
+// a silhouette edge, which would self-intersect the offset ray).
+//
+// TLAS mode: bvh_normal holds LOCAL-space BLAS normals there, and the per-
+// instance world transform is not carried out of traceTlasFirstHit, so a
+// local-space smooth normal would be wrong for any transformed instance. The
+// caller gates on ubo.bvhMode and keeps the geometric normal in TLAS mode; this
+// helper is only called on the merged-world-BVH path.
+//
+// Degenerate guard: if the blended vector collapses (antipodal vertex normals
+// across a thin/folded triangle) we fall back to the geometric face normal so
+// the result stays finite + unit-length.
+fn smoothShadingNormal(
+  hit: IntersectionResult,
+  geoNormal: vec3f,
+  bvh_normal: ptr<storage, array<vec4f>, read>,
+) -> vec3f {
+  let n0 = (*bvh_normal)[hit.indices.x].xyz;
+  let n1 = (*bvh_normal)[hit.indices.y].xyz;
+  let n2 = (*bvh_normal)[hit.indices.z].xyz;
+  let blended =
+    hit.barycoord.x * n0 +
+    hit.barycoord.y * n1 +
+    hit.barycoord.z * n2;
+  let len = length(blended);
+  if (len < 1e-6) { return geoNormal; }
+  return (blended / len) * hit.side;
+}
+
 `;
 
 /** T9-stepA — focused WGSL_MODULES entry split out of `common`. */

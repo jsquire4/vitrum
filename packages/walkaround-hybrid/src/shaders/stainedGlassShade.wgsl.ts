@@ -29,8 +29,10 @@
  *
  * Bindings: this module declares no bindings of its own. It consumes the
  * group(1) BVH storage buffers + the group(1) `bvh_beer` Beer-Lambert
- * visible-colour buffer + the group(2) `ubo` uniform, all of which are
- * declared by SHADE_WGSL (the only consumer). The shared traversal helper
+ * visible-colour TEXTURE (WS1 2026-05-29 — moved off the storage group to free
+ * a slot for `bvh_normal`; passed to bvhTraceTintedVisibility by handle, not
+ * ptr) + the group(2) `ubo` uniform, all declared by SHADE_WGSL (the only
+ * consumer). The shared traversal helper
  * `bvhTraceTintedVisibility`, the `luminance`/`safe_normalize` helpers, and
  * the `INV_PI` constant all come from `common`.
  */
@@ -87,7 +89,7 @@ fn lo_sg_caustic(
   let nDotSun = max(0.0, dot(normal, toSun));
   if (nDotSun <= 1e-6) { return vec3f(0.0); }
   let vis = bvhTraceTintedVisibility(
-    &bvh_index, &bvh_position, &bvh, &bvh_beer,
+    &bvh_index, &bvh_position, &bvh, bvh_beer,
     pos + normal * 1e-3, toSun, 1e6,
   );
   // Sun irradiance × tinted visibility × Lambert(receiver) × CAUSTIC_BOOST.
@@ -142,7 +144,7 @@ fn lo_sg_aperture(
   // Centre tap (along normal, weight 1.0). luminance(c) is the canonical
   // Rec.709 helper from COMMON_WGSL (shade requires common).
   {
-    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, normal, 1e6);
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, bvh_beer, originSky, normal, 1e6);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * 1.0;
     weightAccum = weightAccum + 1.0;
@@ -153,25 +155,25 @@ fn lo_sg_aperture(
   let diag2 = safe_normalize(normal * cos45 + bitangent * sin45);
   let diag3 = safe_normalize(normal * cos45 - bitangent * sin45);
   {
-    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag0, 1e6);
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, bvh_beer, originSky, diag0, 1e6);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
-    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag1, 1e6);
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, bvh_beer, originSky, diag1, 1e6);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
-    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag2, 1e6);
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, bvh_beer, originSky, diag2, 1e6);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
-    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, &bvh_beer, originSky, diag3, 1e6);
+    let v = bvhTraceTintedVisibility(&bvh_index, &bvh_position, &bvh, bvh_beer, originSky, diag3, 1e6);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
