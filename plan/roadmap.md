@@ -415,7 +415,7 @@ These are **algorithm evolution** stages—not graceful degradation. Sourced pri
 | **Sky / sun split sampling** | tier 4 | HDRI IS exists | Split-importance sun + clouds; 1–2 weeks |
 | **BDPT GPU light subpath** | WG signoff | CPU fill on pt-webgpu | GPU pass — throughput, not new math |
 | **Deferred GI + material swap** | tier 4 | DDGI ≈ irradiance cache | True deferred: re-shade without recomputing GI |
-| **Differentiable rendering** | tier 4 | — | Autograd in WGSL; 8–12 weeks; niche |
+| **Differentiable rendering** (inverse rendering: reference image → matching scene) | tier 4 | — | Adjoint integrator in WGSL; optimizer/grad half already built (NRC); first win = Tier-B stained-glass template fit, not arbitrary photo→scene. Phased plan: [`plan/differentiable-rt.md`](./differentiable-rt.md) |
 | **WebXR + foveated** | tier 4 | — | VR-only bet |
 
 ### 8.4 Real-time-focused frontier
@@ -554,6 +554,7 @@ Phase 4 — Frontier (gated on host integration feedback)
 | `plan/backend-maturity-matrix-2026-05-26.md` | Technical maturity by package |
 | `plan/renderer-fidelity-matrix.md` | Hero feature truth table |
 | `plan/tier4-vision-not-yet.md` | Moonshots (gated) |
+| `plan/differentiable-rt.md` | Inverse rendering (reference image → matching scene); phased, gated frontier |
 | `HARDWARE-VALIDATION-NEEDS.md` | GPU-only validation backlog |
 | `plan/gpu-validation-followup-20260528.md` | Post-sweep GPU deferrals |
 | `packages/walkaround-hybrid/README.md` | Real-time stack features |
