@@ -5,12 +5,16 @@
  * `HYBRID_WEBGPU_REQUIRED_LIMITS` from `@vitrum/walkaround-hybrid` instead.
  */
 /**
- * Full tier uses 3 bind groups; peak storage buffers in any one group is 10
- * (group 1: analytics + env + area lights). Group 2 carries 7 storage buffers
- * (5 TLAS + the BDPT light-path scratch buffer + the BDPT eye-stack scratch
- * buffer); the light-path was an `rgba32float` read_write storage TEXTURE but
- * core WebGPU rejects that format for read_write storage (gpuweb #4651), so it
- * is a storage buffer — one fewer storage texture, one more storage buffer.
+ * Full tier uses 4 bind groups (WS2 added group 3); peak storage buffers in any
+ * one group is 10 (group 1: analytics + env + area lights). Group 2 carries 7
+ * storage buffers (5 TLAS + the BDPT light-path scratch buffer + the BDPT
+ * eye-stack scratch buffer); the light-path was an `rgba32float` read_write
+ * storage TEXTURE but core WebGPU rejects that format for read_write storage
+ * (gpuweb #4651), so it is a storage buffer — one fewer storage texture, one more
+ * storage buffer. Group 3 carries ONE read-only storage buffer (the WS2
+ * many-light importance-sampling tree). This per-GROUP peak is the tier gate; the
+ * actual per-STAGE storage-buffer count (~26) is far below any full-tier-capable
+ * adapter's `maxStorageBuffersPerShaderStage` (desktop GPUs report ≥ 64).
  */
 export const PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP = 10;
 

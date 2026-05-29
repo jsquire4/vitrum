@@ -1,3 +1,5 @@
+import { lightTreeWgsl } from '@vitrum/shared-samplers';
+
 /**
  * Material module — `FrameParams` UBO + group(0) bindings + material payload
  * accessors, Fresnel / microfacet / MIS primitives, thin-film TMM solver,
@@ -51,8 +53,8 @@ struct FrameParams {
   bdptEnabled: u32,
   bdptMaxLightBounces: u32,
   bdptMaxEyeDepth: u32,
-  _padAuto0: u32,
-  _padAuto1: u32,
+  lightTreeEnabled: u32,
+  lightTreeNodeCount: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -108,8 +110,8 @@ struct FrameParams {
   bdptEnabled: u32,
   bdptMaxLightBounces: u32,
   bdptMaxEyeDepth: u32,
-  _padAuto0: u32,
-  _padAuto1: u32,
+  lightTreeEnabled: u32,
+  lightTreeNodeCount: u32,
   cameraPos: vec4f,
   lightDir: vec4f,
   environmentTint: vec4f,
@@ -182,10 +184,36 @@ fn bdptLightPathIndex(col: i32, row: u32) -> u32 {
 }
 `;
 
+/**
+ * Group 3 — WS2 many-light importance sampling: the power-weighted light-tree
+ * node buffer (FULL TIER ONLY). A DEDICATED bind group so the lite tier — which
+ * keeps the uniform light pick and never composes this WGSL — is unaffected, and
+ * so adding it does not perturb the existing group 0/1/2 layouts.
+ *
+ * The binding declaration + the `sampleLightTree` traversal come from the
+ * canonical `@vitrum/shared-samplers` source (same descent as the CPU
+ * `sampleLightTreeCPU` and walkaround-hybrid's ReSTIR-DI selection). `rand_f32`
+ * (PCG) is already in scope from `PT_WEBGPU_COMMON_WGSL`.
+ *
+ * References: Conty Estévez & Kulla 2018 (power × proximity descent);
+ * Shirley et al. 1996 (power-weighted light-list partition).
+ */
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL =
+  /* wgsl */ `
+// ============================================================
+// WS2 — light-tree storage buffer (full-tier @group(3)) + importance traversal
+// ============================================================
+${lightTreeWgsl({ group: 3, binding: 0 })}
+// Selection-only proximity floor for the light-tree descent (caps distance
+// importance near a light; NOT the NEE geometry-term clamp). Metre-scale.
+const LT_DIST2_FLOOR: f32 = 1e-3;
+`;
+
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =
   PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL +
   PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL +
-  PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL;
+  PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL +
+  PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL = /* wgsl */ `
 const LEAFNODE_FLAG = 0xffff0000u;

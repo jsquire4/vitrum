@@ -33,6 +33,11 @@ const FRAME_FIELDS = [
   ['bdptEnabled', 'u32'],
   ['bdptMaxLightBounces', 'u32'],
   ['bdptMaxEyeDepth', 'u32'],
+  // WS2 — many-light importance sampling (full tier only). `lightTreeEnabled`
+  // gates the power-weighted light-tree NEE pick; `lightTreeNodeCount` bounds the
+  // GPU descent loop. Lite tier never sets these (keeps the uniform pick).
+  ['lightTreeEnabled', 'u32'],
+  ['lightTreeNodeCount', 'u32'],
   ['cameraPos', 'vec4f'],
   ['lightDir', 'vec4f'],
   ['environmentTint', 'vec4f'],

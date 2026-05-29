@@ -17,8 +17,26 @@ export {
   BSDF_PRIMITIVES_MODULE_NAME,
 } from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
-export { buildLightTree, packLightTreeForGPU, LIGHT_TREE_FLOATS_PER_NODE } from './lightTree.js';
+export {
+  buildLightTree,
+  packLightTreeForGPU,
+  LIGHT_TREE_FLOATS_PER_NODE,
+  // CPU reference traversal — the byte-for-byte oracle the WGSL `sampleLightTree`
+  // mirrors. Used by pt-webgpu's WS2 unbiasedness / variance-reduction tests and
+  // any host that needs a light's selection pdf independently of the GPU draw.
+  sampleLightTreeCPU,
+  lightTreePdfCPU,
+} from './lightTree.js';
 export type { LightTreeNode, LightTreeBuildInput } from './lightTree.js';
+// Canonical GPU light-tree traversal WGSL (binding-agnostic). Both
+// walkaround-hybrid (ReSTIR-DI candidate selection) and pt-webgpu (NEE
+// importance sampling) build their light-tree shader from this one source.
+export {
+  LIGHT_TREE_TRAVERSAL_WGSL,
+  LIGHT_TREE_MODULE_NAME,
+  lightTreeBindingWgsl,
+  lightTreeWgsl,
+} from './wgsl/lightTree.wgsl.js';
 // ReGIR (Boksansky 2021 grid-based reservoirs) CPU reference core + the packed
 // per-cell survivor stride shared with the WGSL grid-build kernel.
 export {

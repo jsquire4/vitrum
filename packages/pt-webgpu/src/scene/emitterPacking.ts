@@ -1,5 +1,7 @@
 import type { DiscAreaEmitter, MeshAreaEmitter, Scene } from '@vitrum/core';
+import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
+import { environmentParams } from './environmentPacking.js';
 
 // Per-emitter capacity caps + float strides — file-local. No external
 // consumers (2026-05-18 dead-code sweep verified workspace-wide). Re-exports
@@ -330,4 +332,204 @@ export function packEmitterArrays(scene: Scene): {
     rectAreaLightsData,
     meshAreaLightsData,
   };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// WS2 — Many-light importance sampling: per-emitter power + light-tree input.
+//
+// pt-webgpu's NEE picks ONE selectable light per shading event. The uniform pick
+// (`floor(rand·lightCount)`, compensated by `·lightCount`) has variance that grows
+// with the number of lights and ignores their relative brightness. Replacing the
+// pick with a power-weighted light-tree descent concentrates samples on the bright
+// / nearby lights, cutting NEE variance at equal cost. The tree is the CPU-built
+// `@vitrum/shared-samplers` binary tree (Shirley 1996 median split, power-as-cost)
+// with the Estévez & Kulla 2018 distance-weighted importance descent on the GPU.
+//
+// References:
+//   - Conty Estévez, A. & Kulla, C. 2018, "Importance Sampling of Many Lights
+//     with Adaptive Tree Splitting", Proc. ACM CGIT (power × proximity descent).
+//   - Shirley, Smits, Wang, Zimmerman 1996, "Monte Carlo Techniques for Direct
+//     Lighting Calculations", ACM TOG (power-weighted light-list partition).
+// ────────────────────────────────────────────────────────────────────────────
+
+/** The positional area-emitter kinds (carry a finite area for the power term). */
+export const AREA_LIGHT_KINDS: ReadonlySet<string> = new Set([
+  'rect-area',
+  'disc-area',
+  'mesh-area',
+]);
+
+type EmitterPowerKind = { readonly kind: 'delta' } | { readonly kind: 'area'; readonly area: number };
+
+/**
+ * Per-emitter luminous power used as the light-tree split cost + leaf weight.
+ *
+ * Delta lights (point / spot / directional) have no finite area, so their power
+ * is the Rec.709 luminance of their radiance directly. Area lights (rect / disc /
+ * mesh) integrate that luminance over their surface, so power is `luminance·area`
+ * (the relative-brightness ordering is what the tree needs — an exact radiometric
+ * watt value is unnecessary for *selection*, only the *relative* weights matter).
+ *
+ * Always ≥ 0 (a black emitter contributes zero power and is never preferentially
+ * selected).
+ */
+export function emitterPower(
+  radiance: readonly [number, number, number],
+  kind: EmitterPowerKind,
+): number {
+  const lum = Math.max(0, luminance(radiance[0], radiance[1], radiance[2]));
+  return kind.kind === 'area' ? lum * Math.max(0, kind.area) : lum;
+}
+
+type Vec3 = [number, number, number];
+
+function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
+  return { min: [p[0], p[1], p[2]], max: [p[0], p[1], p[2]] };
+}
+
+/**
+ * Build the `@vitrum/shared-samplers` light-tree input over the SELECTABLE lights
+ * of `scene`, in the EXACT order pt-webgpu's NEE walk iterates them so the tree's
+ * `emitterIndex` aligns 1:1 with the kernel's linear `current` index:
+ *
+ *   directional? · point[] · spot[] · (rect|disc)-area[] · mesh-area[] · env?
+ *
+ * The `directional` / `env` slots are non-positional, so they are given the union
+ * AABB of all positional lights (the "lit region"). Inside that AABB the descent's
+ * distance term floors out, so those slots compete by POWER alone — exactly the
+ * desired behaviour for an infinitely-distant directional light or a hemispherical
+ * environment (no meaningful spatial proximity). When there are no positional
+ * lights the AABB collapses to the origin and the floor dominates ⇒ pure
+ * power-weighted selection, which is still a valid pmf.
+ *
+ * The leaf count MUST equal `lightCount` as computed in the kernel:
+ *   `directional + pointCount + spotCount + rectAreaCount + meshAreaCount + env`.
+ * The caller (`buildPackedScene`) passes the SAME packed counts/radiances the
+ * GPU loops consume, so index alignment cannot drift from the capability-capped
+ * packed arrays.
+ */
+export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
+  const packed = packEmitterArrays(scene);
+  const dirIrr = defaultDirectionalIrradiance(scene);
+  const hasDirectional =
+    scene.emitters.some((e) => e.kind === 'directional') &&
+    (dirIrr[0] + dirIrr[1] + dirIrr[2]) / 3 > 1e-6;
+
+  // Mirror the kernel's env NEE gate EXACTLY: `hasEnvironmentMap || sunStrength
+  // > 1e-6`, both derived from the SAME `environmentParams` the GPU uploads.
+  const envParams = environmentParams(scene);
+  const hasEnv = envParams.hasHdri || envParams.sunStrength > 1e-6;
+
+  const powers: number[] = [];
+  const centroids: Vec3[] = [];
+  const aabbs: { min: Vec3; max: Vec3 }[] = [];
+
+  // Track the union AABB of positional lights for the non-positional slots.
+  let uMinX = Infinity, uMinY = Infinity, uMinZ = Infinity;
+  let uMaxX = -Infinity, uMaxY = -Infinity, uMaxZ = -Infinity;
+  const extend = (p: Vec3): void => {
+    uMinX = Math.min(uMinX, p[0]); uMinY = Math.min(uMinY, p[1]); uMinZ = Math.min(uMinZ, p[2]);
+    uMaxX = Math.max(uMaxX, p[0]); uMaxY = Math.max(uMaxY, p[1]); uMaxZ = Math.max(uMaxZ, p[2]);
+  };
+
+  // Deferred non-positional pushes (need the union AABB computed first). We record
+  // their target index so the leaf order matches the kernel walk exactly.
+  let directionalPower = 0;
+  if (hasDirectional) {
+    directionalPower = emitterPower(dirIrr, { kind: 'delta' });
+  }
+
+  // 1. point lights — stride 8 (vec2: position, radiance).
+  for (let i = 0; i < packed.pointLightCount; i++) {
+    const o = i * 8;
+    const p: Vec3 = [packed.pointLightsData[o]!, packed.pointLightsData[o + 1]!, packed.pointLightsData[o + 2]!];
+    const rad: Vec3 = [packed.pointLightsData[o + 4]!, packed.pointLightsData[o + 5]!, packed.pointLightsData[o + 6]!];
+    extend(p);
+    powers.push(emitterPower(rad, { kind: 'delta' }));
+    centroids.push(p);
+    aabbs.push(pointAabb(p));
+  }
+  // 2. spot lights — stride 12 (position, dir+cos, radiance).
+  for (let i = 0; i < packed.spotLightCount; i++) {
+    const o = i * 12;
+    const p: Vec3 = [packed.spotLightsData[o]!, packed.spotLightsData[o + 1]!, packed.spotLightsData[o + 2]!];
+    const rad: Vec3 = [packed.spotLightsData[o + 8]!, packed.spotLightsData[o + 9]!, packed.spotLightsData[o + 10]!];
+    extend(p);
+    powers.push(emitterPower(rad, { kind: 'delta' }));
+    centroids.push(p);
+    aabbs.push(pointAabb(p));
+  }
+  // 3. rect/disc-area lights — stride 16 (position, uAxis, vAxis, radiance).
+  //    Quad area = 4·|u×v| (matches the WGSL area-light NEE term).
+  for (let i = 0; i < packed.rectAreaLightCount; i++) {
+    const o = i * 16;
+    const p: Vec3 = [packed.rectAreaLightsData[o]!, packed.rectAreaLightsData[o + 1]!, packed.rectAreaLightsData[o + 2]!];
+    const u: Vec3 = [packed.rectAreaLightsData[o + 4]!, packed.rectAreaLightsData[o + 5]!, packed.rectAreaLightsData[o + 6]!];
+    const v: Vec3 = [packed.rectAreaLightsData[o + 8]!, packed.rectAreaLightsData[o + 9]!, packed.rectAreaLightsData[o + 10]!];
+    const rad: Vec3 = [packed.rectAreaLightsData[o + 12]!, packed.rectAreaLightsData[o + 13]!, packed.rectAreaLightsData[o + 14]!];
+    const cross: Vec3 = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const area = 4 * Math.hypot(cross[0], cross[1], cross[2]);
+    // AABB = the four corners p ± u ± v.
+    const cx = [Math.abs(u[0]) + Math.abs(v[0]), Math.abs(u[1]) + Math.abs(v[1]), Math.abs(u[2]) + Math.abs(v[2])] as const;
+    const min: Vec3 = [p[0] - cx[0], p[1] - cx[1], p[2] - cx[2]];
+    const max: Vec3 = [p[0] + cx[0], p[1] + cx[1], p[2] + cx[2]];
+    extend(min); extend(max);
+    powers.push(emitterPower(rad, { kind: 'area', area }));
+    centroids.push(p);
+    aabbs.push({ min, max });
+  }
+  // 4. mesh-area lights — stride 16 (triA, triB, triC, radiance).
+  //    Triangle area = 0.5·|（B−A)×(C−A)| (matches the WGSL mesh-area NEE term).
+  for (let i = 0; i < packed.meshAreaLightCount; i++) {
+    const o = i * 16;
+    const a: Vec3 = [packed.meshAreaLightsData[o]!, packed.meshAreaLightsData[o + 1]!, packed.meshAreaLightsData[o + 2]!];
+    const b: Vec3 = [packed.meshAreaLightsData[o + 4]!, packed.meshAreaLightsData[o + 5]!, packed.meshAreaLightsData[o + 6]!];
+    const c: Vec3 = [packed.meshAreaLightsData[o + 8]!, packed.meshAreaLightsData[o + 9]!, packed.meshAreaLightsData[o + 10]!];
+    const rad: Vec3 = [packed.meshAreaLightsData[o + 12]!, packed.meshAreaLightsData[o + 13]!, packed.meshAreaLightsData[o + 14]!];
+    const ab: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const ac: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    const cross: Vec3 = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];
+    const area = 0.5 * Math.hypot(cross[0], cross[1], cross[2]);
+    const centroid: Vec3 = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
+    const min: Vec3 = [Math.min(a[0], b[0], c[0]), Math.min(a[1], b[1], c[1]), Math.min(a[2], b[2], c[2])];
+    const max: Vec3 = [Math.max(a[0], b[0], c[0]), Math.max(a[1], b[1], c[1]), Math.max(a[2], b[2], c[2])];
+    extend(min); extend(max);
+    powers.push(emitterPower(rad, { kind: 'area', area }));
+    centroids.push(centroid);
+    aabbs.push({ min, max });
+  }
+
+  // Union AABB of positional lights (origin if there were none).
+  const unionMin: Vec3 = Number.isFinite(uMinX) ? [uMinX, uMinY, uMinZ] : [0, 0, 0];
+  const unionMax: Vec3 = Number.isFinite(uMaxX) ? [uMaxX, uMaxY, uMaxZ] : [0, 0, 0];
+  const unionCentroid: Vec3 = [
+    (unionMin[0] + unionMax[0]) / 2,
+    (unionMin[1] + unionMax[1]) / 2,
+    (unionMin[2] + unionMax[2]) / 2,
+  ];
+
+  // The directional + env leaves must occupy the SAME positions the kernel walk
+  // assigns them: directional is index 0 (before point lights), env is LAST. We
+  // built the positional leaves in [point, spot, rect, mesh] order above; now
+  // splice the non-positional slots into the correct ends.
+  if (hasDirectional) {
+    powers.unshift(directionalPower);
+    centroids.unshift(unionCentroid);
+    aabbs.unshift({ min: unionMin, max: unionMax });
+  }
+  if (hasEnv) {
+    // Env radiance proxy: the dome tint scaled by the dome brightness (sun
+    // strength), no per-pixel HDRI integral on the CPU. The luminance of that
+    // proxy gives a stable RELATIVE weight against the local lights. A floor of
+    // 1 on the strength keeps the env slot selectable (its leaf pdf must be > 0)
+    // even for a faint sky.
+    const strength = Math.max(envParams.sunStrength, 1);
+    const t = envParams.tint;
+    const envRad: Vec3 = [t[0] * strength, t[1] * strength, t[2] * strength];
+    powers.push(emitterPower(envRad, { kind: 'delta' }));
+    centroids.push(unionCentroid);
+    aabbs.push({ min: unionMin, max: unionMax });
+  }
+
+  return { powers, centroids, aabbs };
 }
