@@ -111,6 +111,66 @@ describe('RCSubsystem merged-mode moving-instance refit (PR-5.3)', () => {
     expect(rootMaxXAfter).toBeCloseTo(rootMaxXBefore + 10, 3);
   });
 
+  it('merged BVH includes non-PBR meshes (filter parity with ReSTIR merged build)', async () => {
+    // refitMergedInstance adopts ReSTIR's `bvhPositions.cpuData` directly into
+    // RC's position mirror, then refits RC's own nodes/indices against it. That
+    // is correct ONLY when both built the SAME vertex layout. ReSTIR's merged
+    // build (`buildReSTIRSceneBVH`) filters `obj instanceof THREE.Mesh` — ALL
+    // meshes regardless of material. `buildRCSceneBVH`'s DEFAULT filter accepts
+    // only MeshStandard/MeshPhysical, so a non-PBR mesh would be dropped from RC
+    // but kept by ReSTIR → divergent vertex sets. RCSubsystem.setScene must pass
+    // the permissive `isMesh` filter so both vertex layouts match by construction.
+    const { RCSubsystem } = await import('../src/HybridEngineRC.js');
+    const { device } = makeMockDevice();
+
+    // PBR-only scene: one MeshStandard box.
+    const pbrOnly = new THREE.Scene();
+    const pbrBox = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x808080 }),
+    );
+    pbrBox.name = 'pbr-box';
+    pbrOnly.add(pbrBox);
+    pbrOnly.updateMatrixWorld(true);
+
+    const rcPbr = new RCSubsystem(device);
+    rcPbr.setScene(pbrOnly);
+    const pbrVerts =
+      ((rcPbr as unknown as { _mergedPositionsStride4: Float32Array | null })
+        ._mergedPositionsStride4?.length ?? 0) / 4;
+    expect(pbrVerts).toBeGreaterThan(0);
+
+    // Mixed scene: same MeshStandard box PLUS a MeshBasicMaterial box. With the
+    // DEFAULT filter the basic box would be dropped and the vertex count would
+    // EQUAL the PBR-only count; with the permissive filter it is included so the
+    // count is strictly larger.
+    const mixed = new THREE.Scene();
+    const pbrBox2 = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshStandardMaterial({ color: 0x808080 }),
+    );
+    pbrBox2.name = 'pbr-box';
+    const basicBox = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0x222222 }),
+    );
+    basicBox.name = 'basic-box';
+    mixed.add(pbrBox2);
+    mixed.add(basicBox);
+    mixed.updateMatrixWorld(true);
+
+    const rcMixed = new RCSubsystem(device);
+    rcMixed.setScene(mixed);
+    const mixedVerts =
+      ((rcMixed as unknown as { _mergedPositionsStride4: Float32Array | null })
+        ._mergedPositionsStride4?.length ?? 0) / 4;
+
+    // The MeshBasic box must have contributed its vertices — proving the
+    // permissive filter is in effect (the default filter would have dropped it,
+    // leaving mixedVerts === pbrVerts).
+    expect(mixedVerts).toBe(pbrVerts * 2);
+  });
+
   it('returns false (caller falls back to setScene) when in TLAS mode', async () => {
     const { RCSubsystem } = await import('../src/HybridEngineRC.js');
     const { device } = makeMockDevice();

@@ -16,8 +16,17 @@
  *   1. DDGI — when `syncDdgi` is requested and BVH buffers exist, point the
  *      DDGI probe rays at the same BLAS/TLAS as ReSTIR.
  *   2. RC — when an RC subsystem is active:
- *        a. if `rcRefitBounds` is supplied → cheap cascade-bounds refit, then
- *           (tlas only) sync the shared ReSTIR BVH buffers;
+ *        a. if `rcRefitBounds` is supplied:
+ *             - tlas mode → cheap cascade-bounds refit, then sync the shared
+ *               ReSTIR BVH buffers;
+ *             - merged mode → in-place merged refit (`refitMergedInstance`) from
+ *               the moved instance's re-derived world positions (the stride-4
+ *               `bvhPositions` the post-update refit already updated), falling
+ *               back to a full `setScene` rebuild (when `allowRcSceneRebuild`)
+ *               only if the fast path declines (no retained CPU mirrors / a
+ *               vertex-count change). A plain cascade-bounds refit is kept as
+ *               the floor so the probe grid still tracks the new AABB even when
+ *               neither the in-place refit nor the rebuild can run.
  *        b. else if BVH is in `tlas` mode → sync the shared ReSTIR BVH buffers;
  *        c. else (merged mode) and `allowRcSceneRebuild` → rebuild the RC scene
  *           BVH from the THREE root.
@@ -73,10 +82,47 @@ export function propagateBvhToGiSubsystems(deps: GiPropagationDeps): void {
   const isTlas = deps.bvhBuffers?.bvhMode === 'tlas';
 
   if (deps.rcRefitBounds != null) {
-    rc.refitCascadeBounds(deps.rcRefitBounds.min, deps.rcRefitBounds.max);
     if (isTlas && deps.bvhBuffers != null) {
+      // TLAS mode: cheap cascade-bounds refit + share the live ReSTIR buffers
+      // (the instance transforms live in the TLAS payload, not baked vertices).
+      rc.refitCascadeBounds(deps.rcRefitBounds.min, deps.rcRefitBounds.max);
       rc.syncRestirBvhBuffers(deps.bvhBuffers);
+      return;
     }
+
+    // Merged mode: the moved instance's world transform is baked into the merged
+    // vertex positions, so the RC merged BVH geometry is now stale. The
+    // post-update refit (transformRefit / positionsRefit / topologyRebuild) has
+    // already written the FULL re-derived stride-4 world positions into
+    // `bvhBuffers.bvhPositions.cpuData` (old-world → local via
+    // inverse(matrixWorldAtBuild) → new-world). Hand that buffer to the in-place
+    // merged refit so RC re-uploads positions + node AABBs WITHOUT a teardown.
+    const mergedPositions =
+      deps.bvhBuffers != null
+        ? new Float32Array(deps.bvhBuffers.bvhPositions.cpuData)
+        : null;
+    const refit =
+      mergedPositions != null
+        ? rc.refitMergedInstance(
+            mergedPositions,
+            deps.rcRefitBounds.min,
+            deps.rcRefitBounds.max,
+          )
+        : false;
+    if (refit) return;
+
+    // Fast path declined (no retained merged CPU mirrors / vertex-count change).
+    // Prefer a full RC scene rebuild from the THREE root when allowed; that path
+    // refreshes the cascade bounds itself. Otherwise keep at least the cascade
+    // probe grid in sync with the new AABB.
+    if (deps.allowRcSceneRebuild) {
+      const rcRoot = deps.ensureThreeSceneRoot();
+      if (rcRoot != null) {
+        rc.setScene(rcRoot);
+        return;
+      }
+    }
+    rc.refitCascadeBounds(deps.rcRefitBounds.min, deps.rcRefitBounds.max);
     return;
   }
 

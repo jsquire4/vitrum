@@ -221,7 +221,23 @@ export class RCSubsystem {
       this._dispatcher = null;
     }
 
-    const bvh = buildRCSceneBVH(threeScene);
+    // Filter parity with ReSTIR's merged build (`buildReSTIRSceneBVH`, which
+    // passes `filter: obj instanceof THREE.Mesh`). `buildRCSceneBVH`'s default
+    // filter accepts ONLY MeshStandard/MeshPhysical materials, so absent this
+    // override RC's merged vertex set would diverge from ReSTIR's whenever the
+    // scene carries a non-PBR mesh (came/solder beads, MeshBasic backdrops,
+    // …). That matters because `refitMergedInstance` adopts ReSTIR's
+    // `bvhPositions.cpuData` directly into RC's position mirror and refits
+    // RC's own nodes/indices against it — correct ONLY when both built the
+    // same vertex layout (same meshes, same traverseVisible order). The
+    // build-time length guard in `refitMergedInstance` would *catch* a count
+    // mismatch and decline, but matching the filter makes the layout parity
+    // hold by construction rather than relying on a coincidence-of-counts
+    // never occurring. `isMesh` is THREE's official duck-type marker (used
+    // by `buildSceneBVH`'s own sky-hide walk) — avoids a THREE value import.
+    const allMeshesFilter = (obj: THREE.Object3D): boolean =>
+      (obj as THREE.Mesh).isMesh === true;
+    const bvh = buildRCSceneBVH(threeScene, { filter: allMeshesFilter });
     this._bvhBuffers = this._uploadBVH(bvh);
 
     // Retain CPU mirrors for the merged-mode moving-instance refit fast path.
