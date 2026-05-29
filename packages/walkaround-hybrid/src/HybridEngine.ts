@@ -164,6 +164,10 @@ interface ParsedHybridEngineConfig {
   readonly atrousDirectSigmas: readonly [number, number, number];
   readonly atrousIndirectSigmas: readonly [number, number, number];
   readonly stainedGlassFlags: number;
+  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = off / legacy reuse,
+   *  1 = unbiased GRIS shift + visibility + pairwise MIS). Per-frame UBO gate,
+   *  no pipeline rebuild — same lifecycle as `stainedGlassFlags`. */
+  readonly restirPtReuse: number;
   readonly staticPipelineRebuildKey: string | number | null;
   readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
   readonly rebuildKeyFingerprintSeen: string;
@@ -345,6 +349,10 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
       sunCaustic: opts.stainedGlass?.sunCaustic,
       skyAperture: opts.stainedGlass?.skyAperture,
     }),
+    // GRIS / ReSTIR-PT reconnection-shift reuse gate. Default 0 (OFF) so the
+    // GI spatial/temporal reuse is bit-identical to the legacy clamped-Jacobian
+    // path unless a host opts in via opts.restirPtReuse.
+    restirPtReuse: opts.restirPtReuse === true ? 1 : 0,
     staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
     getPipelineRebuildKey: opts.getPipelineRebuildKey,
     rebuildKeyFingerprintSeen: fingerprintHybridPipelineRebuildKey(
@@ -513,6 +521,11 @@ export class HybridEngine implements Engine {
    *  stained-glass physics. Hosts opt in via `opts.stainedGlass`. Packed
    *  once at ctor; threaded into pipeline.renderFrame each frame. */
   private readonly _stainedGlassFlags: number;
+  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = legacy reuse, 1 =
+   *  unbiased GRIS shift + reconnection visibility + pairwise MIS). Default 0;
+   *  hosts opt in via `opts.restirPtReuse`. Per-frame UBO gate (no pipeline
+   *  rebuild), threaded into pipeline.renderFrame each frame. */
+  private readonly _restirPtReuse: number;
   /** Phase-0 productization — quality-preset-resolved GTAO dispatch mode.
    *  `'on'` (half-res) / `'quarter'` / `'off'`. Threaded into the pipeline at
    *  init so the GTAO + upsample passes gate + dispatch-scale accordingly. */
@@ -646,6 +659,7 @@ export class HybridEngine implements Engine {
     this._atrousDirectSigmas    = cfg.atrousDirectSigmas;
     this._atrousIndirectSigmas  = cfg.atrousIndirectSigmas;
     this._stainedGlassFlags     = cfg.stainedGlassFlags;
+    this._restirPtReuse         = cfg.restirPtReuse;
     this._gtaoMode              = cfg.gtaoMode;
     this._diSpatialPasses       = cfg.diSpatialPasses;
     this._giSpatialPasses       = cfg.giSpatialPasses;
@@ -1472,6 +1486,7 @@ export class HybridEngine implements Engine {
       atrousDirectSigmas: this._atrousDirectSigmas,
       atrousIndirectSigmas: this._atrousIndirectSigmas,
       stainedGlassFlags: this._stainedGlassFlags,
+      restirPtReuse: this._restirPtReuse,
     };
   }
 

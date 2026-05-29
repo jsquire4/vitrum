@@ -20,10 +20,20 @@
  *
  * Half-resolution: dispatches W/2 × H/2 invocations, like the RIS pass.
  *
- * Bindings (dedicated bind group, not shared with the frame BGL):
+ * Bindings:
  *   @group(0) @binding(0) reservoirGiCurrent  (storage, read_write)
  *   @group(0) @binding(1) reservoirGiPrevious (storage, read)
  *   @group(0) @binding(2) WalkaroundUBO       (uniform)
+ *   @group(1)             scene BVH/TLAS      (read-only storage) — used by the
+ *                         GRIS reconnection-visibility ray when
+ *                         ubo.restirPtReuse == 1; inert when the gate is 0.
+ *
+ * GRIS / ReSTIR-PT reconnection-shift reuse (Phases 1+2; Lin et al. 2022):
+ * when ubo.restirPtReuse == 1 the previous-frame reservoir is combined via the
+ * unbiased reconnection shift (re-root rPrev's xs onto rCur.xv), its Jacobian
+ * (recovered from rPrev's Phase-0 cache), a reconnection-visibility ray, and a
+ * pairwise generalized-balance MIS weight (§pairwise MIS). The gate-OFF (== 0)
+ * branch is the verbatim Sprint-17 temporal reuse → BIT-IDENTICAL by default.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -33,6 +43,36 @@ export const TEMPORAL_GI_WGSL = /* wgsl */ `
 @group(0) @binding(0) var<storage, read_write> tgi_resCurrent: array<u32>;
 @group(0) @binding(1) var<storage, read>       tgi_resPrev:    array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
+
+// Scene group (group 1) — BVH + TLAS for the GRIS reconnection-visibility ray.
+// Same layout as the shared scene bind group; read only inside the
+// ubo.restirPtReuse == 1 branch (the legacy path never traverses the BVH).
+@group(1) @binding(0) var<storage, read> tgi_bvh:          array<BVHNode>;
+@group(1) @binding(1) var<storage, read> tgi_bvh_index:    array<vec4u>;
+@group(1) @binding(2) var<storage, read> tgi_bvh_position: array<vec4f>;
+@group(1) @binding(6) var<storage, read> tgi_tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tgi_tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tgi_tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tgi_tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tgi_tlasInstanceLocalToWorld: array<vec4f>;
+
+const TGI_GRIS_NORMAL_BIAS: f32 = 1e-3;
+
+// GRIS reconnection visibility — clear edge xv → xs through the scene BVH/TLAS.
+fn tgiReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
+  let toS = xs - xv;
+  let dist = length(toS);
+  if (dist < 1e-4) { return false; }
+  let wi = toS / dist;
+  let orig = xv + nv * TGI_GRIS_NORMAL_BIAS;
+  let occ = traceSceneAny(
+    ubo.bvhMode, ubo.tlasNodeCount,
+    &tgi_bvh_index, &tgi_bvh_position, &tgi_bvh,
+    &tgi_tlasNodes, &tgi_tlasInstanceIndices, &tgi_tlasBlasRoots,
+    &tgi_tlasInstanceWorldToLocal, &tgi_tlasInstanceLocalToWorld,
+    orig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+  return !occ;
+}
 
 // The temporal-GI M clamp (ubo.restirGiMClamp, Cornell default 50)
 // controls how strongly the previous-frame reservoir dominates temporal
@@ -131,6 +171,113 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // M-clamp: bound prev history before contributing.
   let prevM = min(rPrev.M, ubo.restirGiMClamp);
 
+  // GRIS gate. 1 ⇒ unbiased reconnection-shift + visibility + pairwise MIS;
+  // 0 ⇒ verbatim Sprint-17 temporal reuse (bit-identical default).
+  let grisOn = (ubo.restirPtReuse == 1u);
+
+  var rng = pcgInit(
+    gid.x ^ (ubo.frameSeed * 0x71E5u),
+    gid.y ^ (ubo.frameSeed * 0xE571u),
+    ubo.frameSeed ^ 0x9B7Fu,
+  );
+
+  if (grisOn) {
+    // ── GRIS reconnection-shift temporal reuse (Lin 2022 §5 + Eq. 12 + MIS) ──
+    // Two-domain pairwise MIS: the CURRENT (canonical) sample and the
+    // reprojected PREVIOUS sample. Build a FRESH reservoir so BOTH are folded
+    // in with their own pairwise-MIS weights (the canonical is a resampling
+    // technique, not an un-weighted base).
+    let cCur = f32(rCur.M);
+    let cPrev = f32(prevM);
+    let pHatCur_native = grisTargetAt(rCur.xv, rCur.nv, rCur.xs, rCur.Lo);
+
+    // Decide whether the prev sample is a VALID reconnection-shift candidate.
+    // (prefix match, non-degenerate base half-G, positive Jacobian, non-zero
+    // shifted+native targets, AND reconnection-visible). If any fails the prev
+    // contributes nothing and the canonical stands alone (m_cur = 1).
+    var prevValid = (rPrev.prefixVertexCount == rCur.prefixVertexCount)
+                 && (rPrev.prefixVertexCount != 0u);
+    var J: f32 = 0.0;
+    var pHatPrev_atCur: f32 = 0.0;
+    var pHatPrev_native: f32 = 0.0;
+    if (prevValid) {
+      let gBase = select(0.0, rPrev.cosReconOut / (rPrev.distRecon * rPrev.distRecon),
+                         rPrev.distRecon > 1e-6);
+      J = grisShiftJacobian(gBase, rCur.xv, rPrev.xs, rPrev.ns);
+      pHatPrev_atCur  = grisTargetAt(rCur.xv, rCur.nv, rPrev.xs, rPrev.Lo);
+      pHatPrev_native = grisTargetAt(rPrev.xv, rPrev.nv, rPrev.xs, rPrev.Lo);
+      prevValid = (gBase > 0.0) && (J > 0.0)
+               && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
+               && tgiReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs);
+    }
+
+    // Pairwise MIS weights (2-domain generalized balance):
+    //   m_prev = c_prev·p̂_prev_native / (c_cur·p̂_cur(T z_prev) + c_prev·p̂_prev_native)
+    //   m_cur  = c_cur·p̂_cur_native  / (c_cur·p̂_cur_native + c_prev·p̂_prev(T z_cur))
+    // When prev is invalid m_cur collapses to 1 (canonical alone).
+    var rGris = emptyReservoirGI();
+    rGris.xv = rCur.xv; rGris.nv = rCur.nv;
+    rGris.prefixVertexCount = rCur.prefixVertexCount;
+
+    // Canonical (current) sample, MIS-weighted against the prev pair.
+    if (rCur.M > 0u && pHatCur_native > 1e-9) {
+      var m_cur: f32 = 1.0;
+      if (prevValid) {
+        // prev's sample re-rooted onto the CURRENT domain is just p̂_cur(T z_prev);
+        // the canonical's own sample re-rooted onto prev is p̂_prev(T⁻¹ z_cur).
+        let pHatPrev_atCurSample = grisTargetAt(rPrev.xv, rPrev.nv, rCur.xs, rCur.Lo);
+        let denomCur = grisPairwiseDenomCanonical(cCur, pHatCur_native, cPrev, pHatPrev_atCurSample);
+        m_cur = select(1.0, (cCur * pHatCur_native) / denomCur, denomCur > 1e-12);
+      }
+      // Canonical: no shift (J = 1), already at this pixel (no visibility re-test).
+      let w_cur = m_cur * pHatCur_native * rCur.W;
+      let oldM = rGris.M;
+      updateReservoirGI(&rGris, rCur.xs, rCur.ns, rCur.Lo, w_cur, &rng);
+      rGris.M = oldM + rCur.M;
+    }
+
+    // Previous (reprojected) sample, reconnection-shifted + MIS-weighted.
+    if (prevValid) {
+      let denomPrev = grisPairwiseDenomNeighbor(cCur, pHatPrev_atCur, cPrev, pHatPrev_native);
+      let m_prev = select(0.0, (cPrev * pHatPrev_native) / denomPrev, denomPrev > 1e-12);
+      let pSrc = max(rPrev.pdfReconBsdf, 1e-12);
+      let w_prev = m_prev * pHatPrev_atCur * rPrev.W * J / pSrc;
+      let oldM = rGris.M;
+      updateReservoirGI(&rGris, rPrev.xs, rPrev.ns, rPrev.Lo, w_prev, &rng);
+      rGris.M = oldM + prevM;
+    }
+
+    // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
+    if (rGris.M > 0u) {
+      let toSf = rGris.xs - rGris.xv;
+      let distSf = length(toSf);
+      if (distSf > 1e-4) {
+        let wiF = toSf / distSf;
+        let cosThetaF = max(0.0, dot(rGris.nv, wiF));
+        let pHatF = luminance(rGris.Lo) * cosThetaF * INV_PI;
+        let W_raw = select(0.0, rGris.w_sum / pHatF, pHatF > 1e-9);
+        rGris.W = min(W_raw, ubo.restirGiWCap);
+      } else {
+        rGris.W = 0.0;
+      }
+      // Refresh the Phase-0 cache so downstream spatial reuse sees a base edge
+      // rooted at THIS pixel's visible vertex.
+      let toRecon = rGris.xs - rGris.xv;
+      let dRecon = length(toRecon);
+      if (dRecon > 1e-6) {
+        let wiR = toRecon / dRecon;
+        rGris.wi_recon = wiR;
+        rGris.distRecon = dRecon;
+        rGris.cosReconOut = abs(dot(rGris.ns, -wiR));
+        rGris.pdfReconBsdf = max(0.0, dot(rGris.nv, wiR)) * INV_PI;
+        rGris.prefixVertexCount = 1u;
+      }
+    }
+    storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rGris);
+    return;
+  }
+
+  // ── Legacy Sprint-17 temporal reuse (bit-identical when gate == 0) ──
   // Reconnection-shift jacobian: prev's reservoir holds the (xs, ns, Lo)
   // visible *from* rPrev.xv. We want to weight it as if observed from rCur.xv.
   let J = jacobianReconnectionShift(rCur.xv, rCur.nv, rPrev.xv, rPrev.xs, rPrev.ns);
@@ -156,12 +303,8 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Combined-RIS weight: prev contributes w = p̂_at_cur × W × M × J.
   let w_prev = pHatZ_prev * rPrev.W * f32(prevM) * J;
+
   // Combine. Mirror the standard ReSTIR temporal-reuse formula.
-  var rng = pcgInit(
-    gid.x ^ (ubo.frameSeed * 0x71E5u),
-    gid.y ^ (ubo.frameSeed * 0xE571u),
-    ubo.frameSeed ^ 0x9B7Fu,
-  );
   let M_total = rCur.M + prevM;
   updateReservoirGI(&rCur, rPrev.xs, rPrev.ns, rPrev.Lo, w_prev, &rng);
   rCur.M = M_total;
@@ -181,6 +324,8 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
+  // (The GRIS path returns above with its own finalise + Phase-0 cache refresh;
+  // this tail is the legacy reuse only.)
   storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
 }
 `;
@@ -191,12 +336,17 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
  *    - `loadReservoirGI_*` / `storeReservoirGI_rw` / `updateReservoirGI`
  *                                            → reservoirGi
  *    - `pcgInit` / `luminance` / `safe_normalize` → sharedPrimitives
- *    - `jacobianReconnectionShift`           → jacobianShift
+ *    - `jacobianReconnectionShift`           → jacobianShift (legacy reuse)
  *    - `invertMat4_common` (reprojection)    → cameraRays (uses `Ray` →
  *                                              sceneTraversal)
- *  Verified complete by the static ident-resolution gate. */
+ *    - `traceSceneAny` / `BVHNode`           → sceneTraversal (GRIS
+ *                                              reconnection-visibility ray)
+ *    - `grisReconnectionGeometryTerm` / `grisShiftJacobian` / `grisTargetAt` /
+ *      `grisPairwiseDenom*`                  → grisReuse (GRIS Phase 1+2)
+ *  The GRIS path is gated at runtime behind `ubo.restirPtReuse == 1`; the
+ *  legacy temporal reuse stays bit-identical. */
 export const TEMPORAL_GI_MODULE: WgslModule = {
   name: 'temporalGi',
   source: TEMPORAL_GI_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'jacobianShift', 'cameraRays'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'jacobianShift', 'cameraRays', 'grisReuse'],
 };

@@ -214,14 +214,26 @@ export async function compilePipelines(
   const gtaoUpsampleLayout = device.createPipelineLayout({
     bindGroupLayouts: [getGTAOUpsampleBindGroupLayout(device, bglCache)],
   });
-  // Sprint 17 — GI temporal + spatial passes each use a single dedicated
-  // bind group at group(0). No frame/scene/ubo groups — these passes are
-  // pure reservoir-buffer ops + a small uniform read.
+  // Sprint 17 — GI temporal + spatial passes. group(0) is their dedicated
+  // reservoir-buffer + uniform group; group(1) is the SHARED scene BVH/TLAS
+  // group, added (GRIS Phases 1+2) so the reconnection-visibility ray can
+  // traverse the scene when `ubo.restirPtReuse == 1`. The BVH group is inert
+  // (declared but never traversed) on the legacy path. Storage-buffer budget:
+  // group(0) carries 2 reservoir storage buffers, group(1) carries 11 scene
+  // storage buffers → 13 total, well under the
+  // `HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage = 16` floor
+  // (and under the lite-tier 10 floor only in merged mode — see note below).
   const temporalGiLayout = device.createPipelineLayout({
-    bindGroupLayouts: [getTemporalGiBindGroupLayout(device, bglCache)],
+    bindGroupLayouts: [
+      getTemporalGiBindGroupLayout(device, bglCache),
+      getSceneBindGroupLayout(device, bglCache),
+    ],
   });
   const spatialGiLayout = device.createPipelineLayout({
-    bindGroupLayouts: [getSpatialGiBindGroupLayout(device, bglCache)],
+    bindGroupLayouts: [
+      getSpatialGiBindGroupLayout(device, bglCache),
+      getSceneBindGroupLayout(device, bglCache),
+    ],
   });
   // Sprint 18 — indirect-combine pass uses a single dedicated bind group.
   const indirectCombineLayout = device.createPipelineLayout({

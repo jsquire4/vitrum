@@ -45,6 +45,7 @@ Each technique is cited at its implementation site in the source code. This list
 - **Radiance Cascades** — Alexander Sannikov, "Radiance Cascades: A Novel Approach to Calculating Global Illumination," 2023
 - **ReSTIR DI (Reservoir-based Spatiotemporal Importance Resampling)** — Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron Lefohn, Wojciech Jarosz, "Spatiotemporal reservoir resampling for real-time ray tracing with dynamic direct lighting," SIGGRAPH 2020
 - **ReSTIR GI (diffuse-indirect resampling)** — Zander Majercik, Adam Marrs, Josef Spjut, Morgan McGuire, "Dynamic Diffuse Global Illumination Resampling," SIGGRAPH 2021 (§4.2 initial-sample RIS, §4.5 temporal/spatial reuse)
+- **GRIS / ReSTIR-PT (reconnection-shift reuse)** — Daqi Lin, Markus Kettunen, Benedikt Bitterli, Jacopo Pantaleoni, Wenzel Jakob, Derek Nowrouzezahrai, "Generalized Resampled Importance Sampling: Foundations of ReSTIR," ACM TOG 41(4) (SIGGRAPH 2022) — §5 (reconnection shift), Eq. 12 (shift Jacobian as the destination-cosine half-G ratio), §pairwise MIS (generalized balance heuristic). Drives the opt-in unbiased ReSTIR-GI spatial + temporal reuse (`HybridEngineOptions.restirPtReuse`): the CPU oracle `@vitrum/shared-samplers/reconnectionShift.ts`, the WGSL `walkaround-hybrid/shaders/grisReuse.wgsl.ts`, and its TS mirror `walkaround-hybrid/pipeline/grisReuseMis.ts`.
 
 ### Ambient occlusion
 

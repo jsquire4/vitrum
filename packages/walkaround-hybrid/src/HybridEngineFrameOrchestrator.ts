@@ -63,6 +63,11 @@ export interface HybridDenoiserFilterDeps {
    *  {@link Tunables} table) because it is a derived bitfield, not a
    *  host-overridable scalar tunable. */
   stainedGlassFlags: number;
+  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = legacy reuse, 1 =
+   *  unbiased GRIS shift + visibility + pairwise MIS). Splatted into
+   *  pipeline.renderFrame as `restirPtReuse`. Lives in this cluster for the
+   *  same derived-gate (not scalar tunable) reason as `stainedGlassFlags`. */
+  restirPtReuse: number;
 }
 
 export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoiserFilterDeps {
@@ -526,6 +531,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     atrousDirectSigmas: deps.atrousDirectSigmas,
     atrousIndirectSigmas: deps.atrousIndirectSigmas,
     stainedGlassFlags: deps.stainedGlassFlags,
+    restirPtReuse: deps.restirPtReuse,
     swapChainView: swapView,
     swapChainFormat: swapFmt,
   });

@@ -54,6 +54,7 @@ import { GGX_BRDF_MODULE } from '../shaders/ggxBrdf.wgsl.js';
 import { MATERIAL_DECODE_MODULE } from '../shaders/materialDecode.wgsl.js';
 import { EMITTER_SAMPLING_MODULE } from '../shaders/emitterSampling.wgsl.js';
 import { JACOBIAN_SHIFT_MODULE } from '../shaders/jacobianShift.wgsl.js';
+import { GRIS_REUSE_MODULE } from '../shaders/grisReuse.wgsl.js';
 import { CAMERA_RAYS_MODULE } from '../shaders/cameraRays.wgsl.js';
 import { WELFORD_TAIL_MODULE } from '../shaders/welfordTail.wgsl.js';
 import { SURFACE_TEXTURES_MODULE } from '../shaders/surfaceTextures.wgsl.js';
@@ -228,6 +229,9 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [MATERIAL_DECODE_MODULE.name, MATERIAL_DECODE_MODULE],
   [EMITTER_SAMPLING_MODULE.name, EMITTER_SAMPLING_MODULE],
   [JACOBIAN_SHIFT_MODULE.name, JACOBIAN_SHIFT_MODULE],
+  // GRIS / ReSTIR-PT reconnection-shift + pairwise MIS (Lin et al. 2022).
+  // Consumed by spatialGi / temporalGi when ubo.restirPtReuse == 1.
+  [GRIS_REUSE_MODULE.name, GRIS_REUSE_MODULE],
   [CAMERA_RAYS_MODULE.name, CAMERA_RAYS_MODULE],
   [WELFORD_TAIL_MODULE.name, WELFORD_TAIL_MODULE],
   [LUMINANCE_MODULE.name, LUMINANCE_MODULE],

@@ -48,7 +48,7 @@
  *   offset 400: regirCandidatesPerCell      (u32 = 4 bytes) — M per sub-reservoir
  *   offset 404: regirSurvivorsPerCell       (u32 = 4 bytes) — K survivors per cell
  *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
- *   offset 412: _regirPad                   (u32 = 4 bytes)
+ *   offset 412: restirPtReuse               (u32 = 4 bytes) — GRIS reconnection-shift reuse gate (was _regirPad)
  * Total: 416 bytes (416 % 16 == 0).
  */
 
@@ -230,7 +230,12 @@ export function updateUBO(
   u32[100] = r.candidatesPerCell >>> 0; // offset 400 — regirCandidatesPerCell (M)
   u32[101] = r.survivorsPerCell >>> 0;  // offset 404 — regirSurvivorsPerCell (K)
   u32[102] = r.gridFloatOffset >>> 0;   // offset 408 — regirGridFloatOffset
-  // u32[103] = _regirPad (zero).
+  // GRIS / ReSTIR-PT reconnection-shift reuse gate (offset 412 — the former
+  // _regirPad slot). 0 keeps the GI spatial/temporal reuse on the legacy
+  // clamped-Jacobian path bit-for-bit; 1 turns on the unbiased GRIS shift +
+  // reconnection visibility + pairwise MIS. Absent ⇒ 0 (OFF), so callers and
+  // existing tests that never set it are byte-identical to before.
+  u32[103] = (inputs.restirPtReuse ?? 0) >>> 0; // offset 412 — restirPtReuse
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

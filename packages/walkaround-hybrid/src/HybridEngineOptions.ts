@@ -644,6 +644,45 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly atrousIndirectSigmas?: readonly [number, number, number];
 
+  // ── GRIS / ReSTIR-PT reconnection-shift reuse (Lin et al. 2022) ───────────
+
+  /**
+   * Enable the GRIS (Generalized Resampled Importance Sampling) reconnection-
+   * shift reuse in the ReSTIR-GI spatial + temporal passes.
+   *
+   * The ReSTIR-GI reuse historically combined a neighbour pixel's reservoir
+   * by ASSUMING its reconnection sample is valid at this pixel, re-weighting it
+   * with a clamped cosine/distance Jacobian and NO reconnection-visibility
+   * test — a biased shortcut that disocclusion artifacts and over-/under-
+   * weighting leak through. When `true`, the reuse instead applies the
+   * UNBIASED GRIS *reconnection shift* (Lin, Kettunen, Bitterli, Pantaleoni,
+   * Jakob, Nowrouzezahrai — "Generalized Resampled Importance Sampling:
+   * Foundations of ReSTIR", SIGGRAPH 2022):
+   *   - re-roots the neighbour's reconnection vertex onto THIS pixel's primary
+   *     vertex via a fresh edge,
+   *   - re-weights by the exact change-of-variables Jacobian
+   *     `G(shifted)/G(base)` (Eq. 12; the destination-cosine "half-G" ratio,
+   *     mirroring `@vitrum/shared-samplers/reconnectionShift.ts`),
+   *   - traces a reconnection-VISIBILITY ray (required for unbiasedness — the
+   *     shift maps to zero contribution if the connecting edge is occluded,
+   *     degenerate, backfacing, or the path prefixes are incompatible), and
+   *   - combines samples with the GRIS generalized-balance (pairwise) MIS so
+   *     the fused reservoir is an unbiased RIS estimator of this pixel's GI
+   *     integral.
+   *
+   * The reuse passes traverse the scene BVH for the visibility ray, so this
+   * costs one extra shadow ray per accepted neighbour.
+   *
+   * Default: `false` — OFF is BIT-IDENTICAL to the prior reuse (the GRIS path
+   * is gated behind a UBO flag; the legacy clamped-Jacobian reuse runs
+   * verbatim), the same opt-in / OFF-bit-identical pattern as `rcEnabled`,
+   * `ppgEnabled`, and `regir`.
+   *
+   * @see plan / `HARDWARE-VALIDATION-NEEDS.md` V19 for the GPU A/B
+   *      converged-unbiasedness validation this still needs.
+   */
+  readonly restirPtReuse?: boolean;
+
   // ── PPG (T2.H3 — Practical Path Guiding, Müller et al. 2017) ──────────────
 
   /**

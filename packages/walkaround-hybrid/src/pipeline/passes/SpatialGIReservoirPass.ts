@@ -54,7 +54,7 @@ export class SpatialGIReservoirPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, halfWgX, halfWgY } = ctx;
+    const { device, encoder, computeDesc, bglCache, resources, sceneBindGroup, halfWgX, halfWgY } = ctx;
     const current = resources.restirGI.reservoirGiCurrentBuffer;
     const spatial = resources.restirGI.reservoirGiSpatialBuffer;
 
@@ -67,6 +67,8 @@ export class SpatialGIReservoirPass implements Pass {
         const pass = encoder.beginComputePass(computeDesc('gi-spatial-1'));
         pass.setPipeline(this._pipeline);
         pass.setBindGroup(0, bg);
+        // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
+        pass.setBindGroup(1, sceneBindGroup);
         pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
         pass.end();
       }
@@ -78,6 +80,7 @@ export class SpatialGIReservoirPass implements Pass {
         const pass = encoder.beginComputePass(computeDesc('gi-spatial-2'));
         pass.setPipeline(this._pipeline);
         pass.setBindGroup(0, bg);
+        pass.setBindGroup(1, sceneBindGroup);
         pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
         pass.end();
       }
@@ -95,6 +98,7 @@ export class SpatialGIReservoirPass implements Pass {
     const pass = encoder.beginComputePass(computeDesc('gi-spatial-2'));
     pass.setPipeline(this._pipeline);
     pass.setBindGroup(0, bg);
+    pass.setBindGroup(1, sceneBindGroup);
     pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
     pass.end();
     encoder.copyBufferToBuffer(spatial, 0, current, 0, current.size);

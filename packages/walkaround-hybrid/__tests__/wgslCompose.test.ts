@@ -62,6 +62,7 @@ import { SHARED_PRIMITIVES_WGSL } from '../src/shaders/sharedPrimitives.wgsl.js'
 import { MATERIAL_DECODE_WGSL } from '../src/shaders/materialDecode.wgsl.js';
 import { CAMERA_RAYS_WGSL } from '../src/shaders/cameraRays.wgsl.js';
 import { JACOBIAN_SHIFT_WGSL } from '../src/shaders/jacobianShift.wgsl.js';
+import { GRIS_REUSE_WGSL } from '../src/shaders/grisReuse.wgsl.js';
 import { WELFORD_TAIL_WGSL } from '../src/shaders/welfordTail.wgsl.js';
 import { MOTION_VECTORS_WGSL } from '../src/shaders/motionVectors.wgsl.js';
 import { COMPOSITE_FRAG_WGSL, COMPOSITE_VERT_WGSL } from '../src/shaders/composite.wgsl.js';
@@ -314,7 +315,10 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('temporalGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + cameraRays + TEMPORAL_GI', () => {
+  it('temporalGi (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + cameraRays + grisReuse + TEMPORAL_GI', () => {
+    // GRIS Phases 1+2 added `grisReuse` (its `requires` [walkaroundUbo,
+    // sharedPrimitives] are already emitted, so it lands right before the root
+    // source). `sceneTraversal`/`cameraRays` were already in the closure.
     expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
@@ -322,16 +326,21 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       JACOBIAN_SHIFT_WGSL +
       CAMERA_RAYS_WGSL +
+      GRIS_REUSE_WGSL +
       TEMPORAL_GI_WGSL,
     );
   });
 
-  it('spatialGi (narrowed): walkaroundUbo + reservoirGi + sharedPrimitives + jacobianShift + SPATIAL_GI', () => {
+  it('spatialGi (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + jacobianShift + grisReuse + SPATIAL_GI', () => {
+    // GRIS Phases 1+2 added `sceneTraversal` (the reconnection-visibility ray's
+    // traceSceneAny + BVHNode) and `grisReuse` (the shift + pairwise-MIS math).
     expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
+      SCENE_TRAVERSAL_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
       JACOBIAN_SHIFT_WGSL +
+      GRIS_REUSE_WGSL +
       SPATIAL_GI_WGSL,
     );
   });
@@ -481,9 +490,13 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
         'evalGGX', 'sampleEmitterPoint', 'loadReservoirDI_rw',
         'jacobianReconnectionShift', 'WelfordVariance',
       ],
-      // spatialGi: no primary cast, no BRDF, no emitters.
+      // spatialGi: no primary cast, no BRDF, no emitters. GRIS Phases 1+2 added
+      // `sceneTraversal` for the reconnection-visibility ray (traceSceneAny),
+      // which legitimately brings BVHNode + traceSceneFirstHit into the closure
+      // — so those are NO LONGER in the dropped set. It still never casts a
+      // PRIMARY ray (generatePrimaryRay_common) or evaluates a BRDF / emitter.
       spatialGi: [
-        'traceSceneFirstHit', 'evalGGX', 'sampleEmitterPoint', 'BVHNode',
+        'evalGGX', 'sampleEmitterPoint',
         'generatePrimaryRay_common',
       ],
       // temporalGi: reprojects (needs cameraRays) but no BRDF / emitters.

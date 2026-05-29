@@ -319,6 +319,15 @@ export interface PipelineFrameInputs {
    *  HybridEngineOptions.stainedGlass. See pipeline/uboUpdater.ts
    *  `packStainedGlassFlags`. */
   stainedGlassFlags: number;
+  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (UBO offset 412). `1` ⇒
+   *  the GI spatial + temporal reuse passes apply the unbiased GRIS
+   *  reconnection shift, its change-of-variables Jacobian, a reconnection-
+   *  visibility ray, and the pairwise generalized-balance MIS (Lin et al.
+   *  2022). `0`/omitted ⇒ the reuse runs the legacy clamped-Jacobian path
+   *  BIT-FOR-BIT (the GRIS branch is gated behind `ubo.restirPtReuse == 1`).
+   *  Host opt-in via HybridEngineOptions.restirPtReuse — the same
+   *  OFF-is-bit-identical pattern as RC/PPG/ReGIR. */
+  restirPtReuse?: number;
   /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
    *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
    *  direct-path chain. */

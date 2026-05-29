@@ -158,7 +158,13 @@ struct WalkaroundUBO {
   regirCandidatesPerCell:     u32,     //  offset 400 — M: WRS candidates per sub-reservoir
   regirSurvivorsPerCell:      u32,     //  offset 404 — K: survivors stored per cell
   regirGridFloatOffset:       u32,     //  offset 408 — float offset of the grid region in the combined buffer
-  _regirPad:                  u32,     //  offset 412 — struct size 416 bytes (416 % 16 == 0)
+  // GRIS / ReSTIR-PT reconnection-shift reuse gate (Lin et al. 2022). Was
+  // _regirPad. 0 ⇒ the GI spatial/temporal reuse runs the legacy clamped-
+  // Jacobian path bit-for-bit; 1 ⇒ the reuse applies the unbiased GRIS
+  // reconnection shift + reconnection visibility + pairwise generalized-
+  // balance MIS (grisReuse.wgsl). Host opt-in via HybridEngineOptions
+  // .restirPtReuse — the same OFF-is-bit-identical pattern as RC/PPG/ReGIR.
+  restirPtReuse:              u32,     //  offset 412 — GRIS reuse gate (was _regirPad); struct size 416 bytes (416 % 16 == 0)
 };
 
 // T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,
