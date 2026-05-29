@@ -9,6 +9,34 @@ plan was produced from a deep, code-verified audit (docs were found stale and co
 
 ---
 
+## STATUS — LANDED (2026-05-29, branch `feat/feature-completeness-wave`, NOT pushed)
+
+All seven workstreams merged + verified; full-workspace `tsc --noEmit` clean; every
+package's vitest suite green (pt-webgpu 236, walkaround-hybrid 960, shared-samplers 273,
+pt-webgl 151, + core/engine/three-bindings/etc.; GPU-only paths skip).
+
+| WS | Outcome | Commits |
+|----|---------|---------|
+| #1 cleanup | stale NRC/skinning context corrected | `3a2e12e` |
+| WS3 smooth normals | smooth barycentric shading normals in the real-time path; skinned normals consumed; `bvh_beer`→texture | `b3b911e` (merge) |
+| WS2 many-light | power-weighted light-tree IS in pt-webgpu; selection pdf outside MIS (unbiased) | `9ee4778` (merge) |
+| WS4 volumetric SSS | homogeneous random walk (free-flight + HG + MIS), BDPT-gated; **+ integration fix**: delta-light in-medium NEE weight | `019cfd5` (merge) + `1afd47c` |
+| WS5 diff-RT | `createInverseSession` + Phase 0 + validated CPU / gated-WGSL Phase-1 adjoint | `fa27f93` (merge) |
+| #6 NRC encode-backward | hash-grid feature tables now learn | `437bbae` (merge) |
+| WS6 ergonomics | typed feature options graduated (pt-webgpu `30fff9d`, pt-webgl `8f8d138`); facade-first README + viewport warning + device docs `4c5cecf` | — |
+
+Each merge was verified by reading the correctness-critical math (not trusting agent
+reports) + running the package suite. The WS4 delta-light MIS bug and a WGSL template-literal
+backtick break were caught at the integration gate. **Remaining: real-GPU A/B (V21–V24,
+HARDWARE-VALIDATION-NEEDS.md) — pending hardware, not implementation.**
+
+WS6 note: walkaround was already fully typed (no graduation needed). Compile-time capability
+narrowing left as a deliberate non-goal — the optional-method + capability-flag + `typeof`
+pattern is the intended contract; branding `Engine` for type-level narrowing isn't worth the
+fixed-contract bloat.
+
+---
+
 ## 0. Decisions locked (user sign-off)
 
 | # | Decision | Choice |
