@@ -104,7 +104,10 @@ interface SceneBindGroupResources {
   bvhPositionBuffer: GPUBuffer;
   emitterBuffer: GPUBuffer;
   emitterCdfBuffer: GPUBuffer;
-  bvhBeerBuffer: GPUBuffer;
+  /** WS1 — beer is now a uint texture (binding 5), not a storage buffer. */
+  bvhBeerTextureView: GPUTextureView;
+  /** WS1 — per-vertex world-space normals storage buffer (binding 11). */
+  bvhNormalBuffer: GPUBuffer;
   tlasNodesBuffer: GPUBuffer;
   tlasInstanceIndicesBuffer: GPUBuffer;
   tlasBlasRootsBuffer: GPUBuffer;
@@ -123,12 +126,13 @@ export function buildSceneBindGroup(
     { buffer: r.bvhPositionBuffer },                // 2
     { buffer: r.emitterBuffer },                    // 3
     { buffer: r.emitterCdfBuffer },                 // 4
-    { buffer: r.bvhBeerBuffer },                    // 5 u32: per-tri Beer-Lambert visible color
+    r.bvhBeerTextureView,                           // 5 WS1 r32uint texture: per-tri Beer-Lambert color
     { buffer: r.tlasNodesBuffer },                  // 6
     { buffer: r.tlasInstanceIndicesBuffer },        // 7
     { buffer: r.tlasBlasRootsBuffer },              // 8
     { buffer: r.tlasInstanceWorldToLocalBuffer },   // 9
     { buffer: r.tlasInstanceLocalToWorldBuffer },   // 10
+    { buffer: r.bvhNormalBuffer },                  // 11 WS1 per-vertex world-space smooth normals
   ]);
 }
 

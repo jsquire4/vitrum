@@ -93,6 +93,7 @@ function makeHost(meshIds: string[]): {
   const applyGpuSkinnedRefit = vi.fn();
   const host: GpuSkinningHost = {
     getGpuSkinningBvhBuffer: () => ({ destroy: vi.fn() }) as unknown as GPUBuffer,
+    getGpuSkinningNormalBuffer: () => ({ destroy: vi.fn() }) as unknown as GPUBuffer,
     getMeshVertexRanges: () =>
       meshIds.map((name) => ({
         name,

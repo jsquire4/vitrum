@@ -71,15 +71,23 @@ export const SHADE_WGSL = /* wgsl */ `
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
 @group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
 @group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
-// Per-tri Beer-Lambert visible color (RGBA8 packed, alpha=0). Read on
-// primary glass hits to make Lo_emit reproduce PT's transmitted-radiance
-// saturation. bvh_index.w stays raw attCol for receiver paths.
-@group(1) @binding(5) var<storage, read> bvh_beer:     array<u32>;
+// WS1 (2026-05-29) — per-tri Beer-Lambert visible color (RGBA8 packed,
+// alpha=0), now an r32uint TEXTURE rather than a storage buffer so it no longer
+// counts against maxStorageBuffersPerShaderStage (freeing a slot for
+// bvh_normal). Read on primary glass hits to make Lo_emit reproduce PT's
+// transmitted-radiance saturation. bvh_index.w stays raw attCol for receiver
+// paths. Texel addressing: triIndex → vec2u(tri % BVH_BEER_TEX_WIDTH,
+// tri / BVH_BEER_TEX_WIDTH); the width constant matches host bvhBeerTexture.ts.
+@group(1) @binding(5) var bvh_beer: texture_2d<u32>;
 @group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
 @group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+// WS1 — per-vertex world-space normals for the smooth shading-normal blend.
+@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
+// (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
+// the shade compose chain, and reused here.)
 
 // WalkaroundUBO struct defined in COMMON_WGSL.
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
@@ -152,7 +160,9 @@ fn lo_emit(
   let trans = matColor.a;
   let texId = decodeSurfaceTextureId(matColorPacked);
   let texMod = surfaceTextureMod(uv, texId);
-  let beerPacked = bvh_beer[triIndex];
+  // WS1 — beer is a texture now: map the triangle index to a texel.
+  let beerCoord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
+  let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
   let beerAlbedo = vec3f(
     f32((beerPacked >> 24u) & 0xFFu) / 255.0,
     f32((beerPacked >> 16u) & 0xFFu) / 255.0,
@@ -174,6 +184,7 @@ fn lo_direct(
   pixelIdx: u32,
   pos:      vec3f,
   normal:   vec3f,
+  geoNormal: vec3f,
   wo:       vec3f,
   albedo:   vec3f,
   rough:    f32,
@@ -205,12 +216,14 @@ fn lo_direct(
   if (nDotL <= 1e-6 || nlDotL <= 1e-6) { return vec3f(0.0); }
   // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
   // (light passes through glass; per-channel tinted-visibility handles tint).
+  // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
+  // shading normal can dip below the surface near silhouettes → self-hit).
   let occ = traceSceneAny(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
     &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-    pos + normal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
+    pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true);
   if (occ) { return vec3f(0.0); }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
   let brdf = evalGGX(albedo, rough, metal, normal, wo, wi);
@@ -397,7 +410,17 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // ── Primary-hit surface derivation ───────────────────────────────────────
   let pos    = primaryRay.origin + primaryRay.direction * primaryHit.dist;
-  let normal = primaryHit.normal;
+  // WS1 — geometric face normal (kept for ray offsets / backface bias) vs the
+  // SMOOTH barycentric shading normal (used for lighting + the G-buffer the
+  // denoiser edge-stops on). TLAS mode keeps geometric (bvh_normal is local-
+  // space there; the per-instance transform isn't carried out of the TLAS
+  // traversal). shade is merged-world-BVH-dominant; the gate keeps it correct.
+  let geoNormal = primaryHit.normal;
+  let normal = select(
+    smoothShadingNormal(primaryHit, geoNormal, &bvh_normal),
+    geoNormal,
+    ubo.bvhMode == 1u,
+  );
   let wo     = -primaryRay.direction;
 
   // Decode per-triangle material color from bvhIndex[triIdx].w (RGBA8 packed).
@@ -424,7 +447,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Lo_sunCaustic, Lo_skyAperture, Lo_indirect) so the structural-contract
   // tests in sprint18-indirectCombine.test.ts continue to match.
   let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, primaryHit.matColorPacked, primaryHit.indices.w);
-  let Lo_direct     = lo_direct(pixelIdx, pos, normal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
+  let Lo_direct     = lo_direct(pixelIdx, pos, normal, geoNormal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
   // T5 — stained-glass-specific terms now live in stainedGlassShade.wgsl.ts
   // (lo_sg_caustic / lo_sg_aperture); each early-returns vec3f(0) unless its
   // ubo.stainedGlassFlags bit is set (default OFF — generic scenes get zero

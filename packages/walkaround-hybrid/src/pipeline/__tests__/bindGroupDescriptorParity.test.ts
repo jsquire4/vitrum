@@ -115,7 +115,9 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
   }),
   scene: (d, c) => buildSceneBindGroup(d, c, {
     bvhNodesBuffer: buf, bvhIndexBuffer: buf, bvhPositionBuffer: buf,
-    emitterBuffer: buf, emitterCdfBuffer: buf, bvhBeerBuffer: buf,
+    emitterBuffer: buf, emitterCdfBuffer: buf,
+    // WS1 — beer is a uint texture (binding 5); bvh_normal is storage (binding 11).
+    bvhBeerTextureView: view, bvhNormalBuffer: buf,
     tlasNodesBuffer: buf, tlasInstanceIndicesBuffer: buf, tlasBlasRootsBuffer: buf,
     tlasInstanceWorldToLocalBuffer: buf, tlasInstanceLocalToWorldBuffer: buf,
   }),

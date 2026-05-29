@@ -104,6 +104,18 @@ export interface SceneBVHBuffers {
    * as primary color for ALL primary hits.
    */
   bvhBeerColors: StorageBufferHandle;
+  /**
+   * WS1 (2026-05-29) — per-vertex world-space normals (stride-4 vec4f, `.w`
+   * unused). Same `shared.normals` already surfaced as {@link emitterNormals};
+   * exposed as a GPU storage handle so the scene bind group can carry a
+   * `bvh_normal` buffer. The primary passes (shade/ris/risGi/risGiNrc)
+   * barycentric-blend it (`normalize(w·n0+u·n1+v·n2)·side`, mirroring the DDGI
+   * precedent at probeUpdateRays.wgsl.ts:443-454) for a SMOOTH shading normal
+   * instead of the faceted geometric face normal. The GPU-skin compute kernel
+   * writes its inverse-transpose skinned normals into this buffer's GPU copy at
+   * `baseVertex+vi`.
+   */
+  bvhNormals: StorageBufferHandle;
   /** EmitterTri[] — 64-byte emitter struct per emissive triangle. */
   emitters: StorageBufferHandle;
   /** f32[] — CDF over emitter power (same length as emitters). */
@@ -328,6 +340,13 @@ export function buildReSTIRSceneBVH(
       cpuData: beerBuf.buffer,
       byteLength: beerBuf.byteLength,
       count: triCount,
+    },
+    // WS1 — per-vertex world-space normals (stride-4 vec4f). `shared.normals`
+    // is already a Float32Array of vertCount×4; reuse it verbatim (no re-pack).
+    bvhNormals: {
+      cpuData: shared.normals.buffer.slice(0) as ArrayBuffer,
+      byteLength: shared.normals.byteLength,
+      count: vertCount,
     },
     emitters: {
       cpuData: emitterFloats.buffer as ArrayBuffer,

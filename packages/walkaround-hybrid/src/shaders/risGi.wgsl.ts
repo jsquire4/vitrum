@@ -57,6 +57,10 @@ export const RIS_GI_WGSL = /* wgsl */ `
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
 @group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+// WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
+// normal stored as the visible-point reservoir normal (r.nv) + hemisphere
+// frame; the geometric normal is kept for the bounce-ray origin offset.
+@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 @group(2) @binding(0) var<uniform> ubo: WalkaroundUBO;
 // Sprint 9 — adaptive sampling tier (r32uint, full-res). 1 = low variance,
@@ -138,7 +142,14 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   let pos = primaryRay.origin + primaryRay.direction * hit.dist;
-  let normal = hit.normal;
+  // WS1 — smooth shading normal (visible-point normal + hemisphere frame);
+  // geometric normal kept for the bounce-ray offset. TLAS keeps geometric.
+  let geoNormal = hit.normal;
+  let normal = select(
+    smoothShadingNormal(hit, geoNormal, &bvh_normal),
+    geoNormal,
+    ubo.bvhMode == 1u,
+  );
   // Skip glass / metal — indirect for those goes through the
   // path-traced fork, not DDGI atlas sampling. ReSTIR-DI Lo_direct stays.
   let matColor = decodeMaterialColor(hit.matColorPacked);
@@ -197,7 +208,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
     // Trace from the visible point along wi. Reconnection vertex is the
     // first BVH hit (or sky-miss at RECONNECT_MAX_DIST).
-    let bounceRay = Ray(pos + normal * NORMAL_BIAS_GI, wi);
+    // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
+    let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
     let bounceHit = traceSceneFirstHit(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,

@@ -149,11 +149,18 @@ fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
 // tMax lets the caller cap the ray at e.g. the distance to a sampled
 // emitter point. For directional-light queries pass a large value (INFINITY).
 // ============================================================
+// WS1 (2026-05-29) — bvh_beer is an r32uint TEXTURE (not a storage buffer):
+// width matches host pipeline/bvhBeerTexture.ts. Declared here (the earliest
+// scene-consuming module in the shade compose chain) so both shade and
+// stainedGlassShade see it. Textures are passed to WGSL functions by handle
+// (no ptr), so bvhTraceTintedVisibility takes the texture directly.
+const BVH_BEER_TEX_WIDTH: u32 = 4096u;
+
 fn bvhTraceTintedVisibility(
   bvh_index:    ptr<storage, array<vec4u>,    read>,
   bvh_position: ptr<storage, array<vec4f>,    read>,
   bvh:          ptr<storage, array<BVHNode>,  read>,
-  bvh_beer:     ptr<storage, array<u32>,      read>,
+  bvh_beer:     texture_2d<u32>,
   origin: vec3f,
   dir:    vec3f,
   tMax:   f32,
@@ -206,7 +213,9 @@ fn bvhTraceTintedVisibility(
             // Glass hit — multiply visibility by sqrt(Beer-Lambert × trans × texMod).
             // Two hits per cell crossing → sqrt²= the full one-cell Beer-Lambert factor.
             let matCol = decodeMaterialColor(idxEntry.w);
-            let beerPacked = (*bvh_beer)[triIdx];
+            // WS1 — beer texel: triangle index → vec2u(tri % W, tri / W).
+            let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
+            let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
             let beerColor = vec3f(
               f32((beerPacked >> 24u) & 0xFFu) / 255.0,
               f32((beerPacked >> 16u) & 0xFFu) / 255.0,

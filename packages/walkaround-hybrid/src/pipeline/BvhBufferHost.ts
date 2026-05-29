@@ -5,6 +5,11 @@
 
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 import { createDummyStorageBuffer, uploadBuffer, uploadBufferPadded } from './resourceManager.js';
+import {
+  uploadBeerTexture,
+  refreshBeerTexture,
+  type BeerTexture,
+} from './bvhBeerTexture.js';
 
 /** Mirrors `buildSceneBindGroup` resource bundle in bindGroupBuilders.ts. */
 export interface SceneBindGroupResources {
@@ -13,7 +18,13 @@ export interface SceneBindGroupResources {
   bvhPositionBuffer: GPUBuffer;
   emitterBuffer: GPUBuffer;
   emitterCdfBuffer: GPUBuffer;
-  bvhBeerBuffer: GPUBuffer;
+  /** WS1 — per-tri Beer-Lambert visible color, r32uint texture (was a storage
+   *  buffer). Shade reads it via `textureLoad`; the swap freed a storage slot
+   *  for `bvhNormalBuffer`. */
+  bvhBeerTextureView: GPUTextureView;
+  /** WS1 — per-vertex world-space normals (stride-4 vec4f). Barycentric-blended
+   *  in the primary passes for a smooth shading normal. */
+  bvhNormalBuffer: GPUBuffer;
   tlasNodesBuffer: GPUBuffer;
   tlasInstanceIndicesBuffer: GPUBuffer;
   tlasBlasRootsBuffer: GPUBuffer;
@@ -27,7 +38,11 @@ const STORAGE = 0x80;
 export class BvhBufferHost {
   private _bvhNodesBuffer: GPUBuffer | null = null;
   private _bvhIndexBuffer: GPUBuffer | null = null;
-  private _bvhBeerBuffer: GPUBuffer | null = null;
+  /** WS1 — beer is now a texture; track triCount so refit can re-upload it. */
+  private _bvhBeerTexture: BeerTexture | null = null;
+  private _bvhBeerTriCount = 0;
+  /** WS1 — per-vertex world-space normals for the smooth shading-normal blend. */
+  private _bvhNormalBuffer: GPUBuffer | null = null;
   private _bvhPositionBuffer: GPUBuffer | null = null;
   private _tlasNodesBuffer: GPUBuffer | null = null;
   private _tlasInstanceIndicesBuffer: GPUBuffer | null = null;
@@ -61,7 +76,12 @@ export class BvhBufferHost {
   uploadInitial(device: GPUDevice, bvhBuffers: SceneBVHBuffers): void {
     this._bvhNodesBuffer = uploadBuffer(device, bvhBuffers.bvhNodes.cpuData, STORAGE);
     this._bvhIndexBuffer = uploadBuffer(device, bvhBuffers.bvhIndex.cpuData, STORAGE);
-    this._bvhBeerBuffer = uploadBuffer(device, bvhBuffers.bvhBeerColors.cpuData, STORAGE);
+    this._bvhBeerTriCount = bvhBuffers.bvhBeerColors.count;
+    this._bvhBeerTexture = uploadBeerTexture(
+      device, bvhBuffers.bvhBeerColors.cpuData, this._bvhBeerTriCount);
+    // WS1 — per-vertex world-space normals (stride-4 vec4f, .w unused). Same
+    // data the DDGI / emitter paths already use (shared.normals).
+    this._bvhNormalBuffer = uploadBuffer(device, bvhBuffers.bvhNormals.cpuData, STORAGE);
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     this._emitterBuffer = uploadBuffer(device, bvhBuffers.emitters.cpuData, STORAGE);
     this._emitterCdfBuffer = uploadBuffer(device, bvhBuffers.emitterCdf.cpuData, STORAGE);
@@ -92,7 +112,8 @@ export class BvhBufferHost {
       bvhPositionBuffer: this._bvhPositionBuffer!,
       emitterBuffer: this._emitterBuffer!,
       emitterCdfBuffer: this._emitterCdfBuffer!,
-      bvhBeerBuffer: this._bvhBeerBuffer!,
+      bvhBeerTextureView: this._bvhBeerTexture!.texture.createView(),
+      bvhNormalBuffer: this._bvhNormalBuffer!,
       tlasNodesBuffer: this._tlasNodesBuffer!,
       tlasInstanceIndicesBuffer: this._tlasInstanceIndicesBuffer!,
       tlasBlasRootsBuffer: this._tlasBlasRootsBuffer!,
@@ -138,6 +159,12 @@ export class BvhBufferHost {
     return this._bvhPositionBuffer;
   }
 
+  /** WS1 — live merged per-vertex normal buffer. The GPU-skin kernel writes
+   *  inverse-transpose skinned normals directly into it at `baseVertex+vi`. */
+  getBvhNormalBuffer(): GPUBuffer | null {
+    return this._bvhNormalBuffer;
+  }
+
   refreshTlasRefit(
     device: GPUDevice,
     tlasNodes: ArrayBuffer,
@@ -153,29 +180,36 @@ export class BvhBufferHost {
   refreshBvhMaterialSlice(
     device: GPUDevice,
     indexSlice: { byteOffset: number; data: ArrayBuffer },
-    beerSlice: { byteOffset: number; data: ArrayBuffer },
+    /** WS1 — beer is a texture now: pass the FULL beer data + triCount so the
+     *  texture is re-uploaded wholesale (a contiguous triangle slice is not a
+     *  rectangular texture region unless it spans full rows). Cheap: 4 B/tri. */
+    beerFull: { data: ArrayBuffer; triCount: number },
   ): void {
     if (!this.initialized) return;
     device.queue.writeBuffer(this._bvhIndexBuffer!, indexSlice.byteOffset, indexSlice.data);
-    device.queue.writeBuffer(this._bvhBeerBuffer!, beerSlice.byteOffset, beerSlice.data);
+    refreshBeerTexture(device, this._bvhBeerTexture!, beerFull.data, beerFull.triCount);
   }
 
   refreshBvhFullRebuild(
     device: GPUDevice,
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this.initialized) return;
     this._bvhNodesBuffer!.destroy();
     this._bvhIndexBuffer!.destroy();
-    this._bvhBeerBuffer!.destroy();
+    this._bvhBeerTexture!.texture.destroy();
+    this._bvhNormalBuffer!.destroy();
     this._bvhPositionBuffer!.destroy();
     this._destroyTlasBuffers();
     this._bvhNodesBuffer = uploadBuffer(device, bvhBuffers.bvhNodes.cpuData, STORAGE);
     this._bvhIndexBuffer = uploadBuffer(device, bvhBuffers.bvhIndex.cpuData, STORAGE);
-    this._bvhBeerBuffer = uploadBuffer(device, bvhBuffers.bvhBeerColors.cpuData, STORAGE);
+    this._bvhBeerTriCount = bvhBuffers.bvhBeerColors.count;
+    this._bvhBeerTexture = uploadBeerTexture(
+      device, bvhBuffers.bvhBeerColors.cpuData, this._bvhBeerTriCount);
+    this._bvhNormalBuffer = uploadBuffer(device, bvhBuffers.bvhNormals.cpuData, STORAGE);
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     this._uploadTlasBuffers(device, bvhBuffers as SceneBVHBuffers);
   }
@@ -183,7 +217,8 @@ export class BvhBufferHost {
   dispose(): void {
     this._bvhNodesBuffer?.destroy();
     this._bvhIndexBuffer?.destroy();
-    this._bvhBeerBuffer?.destroy();
+    this._bvhBeerTexture?.texture.destroy();
+    this._bvhNormalBuffer?.destroy();
     this._bvhPositionBuffer?.destroy();
     this._destroyTlasBuffers();
     this._emitterBuffer?.destroy();
@@ -191,7 +226,8 @@ export class BvhBufferHost {
     this._lightTreeBuffer?.destroy();
     this._bvhNodesBuffer = null;
     this._bvhIndexBuffer = null;
-    this._bvhBeerBuffer = null;
+    this._bvhBeerTexture = null;
+    this._bvhNormalBuffer = null;
     this._bvhPositionBuffer = null;
     this._emitterBuffer = null;
     this._emitterCdfBuffer = null;

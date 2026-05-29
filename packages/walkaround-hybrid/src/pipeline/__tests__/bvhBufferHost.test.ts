@@ -7,6 +7,17 @@ vi.mock('../resourceManager.js', () => ({
   createDummyStorageBuffer: vi.fn(() => ({ destroy: vi.fn() })),
 }));
 
+// WS1 — beer is a texture now; mock its host helper so the test stays
+// device-free (createTexture/writeTexture aren't on the mock device).
+vi.mock('../bvhBeerTexture.js', () => ({
+  uploadBeerTexture: vi.fn(() => ({
+    texture: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+    width: 4096,
+    height: 1,
+  })),
+  refreshBeerTexture: vi.fn(),
+}));
+
 import { BvhBufferHost } from '../BvhBufferHost.js';
 
 function mockDevice(): GPUDevice {
@@ -25,6 +36,7 @@ describe('BvhBufferHost', () => {
       bvhNodes: buf,
       bvhIndex: buf,
       bvhBeerColors: buf,
+      bvhNormals: buf,
       bvhPositions: buf,
       emitters: buf,
       emitterCdf: buf,

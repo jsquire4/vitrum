@@ -160,6 +160,14 @@ function buffersFromScenePack(
     bvhPositions: makeStorageHandle(positionsWithUV, 16),
     triangleMaterialIds: makeStorageHandle(geo.triMaterialIds, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
+    // WS1 — per-vertex normals (stride-4). In TLAS mode these are the LOCAL-
+    // space BLAS normals (geo.normals), indexed by the BLAS-local hit.indices.
+    // The smooth-normal blend is DEFERRED for TLAS (the shaders gate on
+    // ubo.bvhMode and keep the geometric normal) because the per-instance
+    // world transform is not carried out of traceTlasFirstHit — a local-space
+    // smooth normal would be wrong for any transformed instance. The buffer is
+    // still bound (the layout requires it); it is simply not consumed in TLAS.
+    bvhNormals: makeStorageHandle(geo.normals, 16),
     emitters: {
       cpuData: emitterFloats.buffer as ArrayBuffer,
       byteLength: emitterFloats.byteLength,

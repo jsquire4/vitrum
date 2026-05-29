@@ -979,6 +979,11 @@ export class WalkaroundGPUPipeline {
     return this._initialized ? this._bvhHost.getBvhPositionBuffer() : null;
   }
 
+  /** WS1 — live merged per-vertex normal buffer for GPU skinning writes. */
+  getBvhNormalBuffer(): GPUBuffer | null {
+    return this._initialized ? this._bvhHost.getBvhNormalBuffer() : null;
+  }
+
   /** PR-4 — upload refit TLAS nodes + instance transforms (topology unchanged). */
   refreshTlasRefit(
     tlasNodes: ArrayBuffer,
@@ -990,15 +995,16 @@ export class WalkaroundGPUPipeline {
   }
 
   /**
-   * Material-only fast path — partial upload of packed `bvhIndex` and
-   * `bvh_beer` slices after CPU re-pack (PR-1).
+   * Material-only fast path — partial upload of the packed `bvhIndex` slice
+   * after CPU re-pack (PR-1). WS1: `bvh_beer` is a texture now, so the whole
+   * (small) beer texture is re-uploaded from the full beer data + triCount.
    */
   refreshBvhMaterialSlice(
     indexSlice: { byteOffset: number; data: ArrayBuffer },
-    beerSlice: { byteOffset: number; data: ArrayBuffer },
+    beerFull: { data: ArrayBuffer; triCount: number },
   ): void {
     if (!this._initialized) return;
-    this._bvhHost.refreshBvhMaterialSlice(this._device, indexSlice, beerSlice);
+    this._bvhHost.refreshBvhMaterialSlice(this._device, indexSlice, beerFull);
   }
 
   /**
@@ -1017,7 +1023,7 @@ export class WalkaroundGPUPipeline {
   refreshBvhFullRebuild(
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this._initialized) return;
