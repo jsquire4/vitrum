@@ -102,10 +102,24 @@ function buffersFromScenePack(
   const indexBuf = packBVHIndexW(geo.indices, geo.triMaterialIds, materials, triCount);
   const beerBuf = packBVHBeerColors(geo.triMaterialIds, materials, triCount);
 
+  // This SECOND build is load-bearing, NOT a redundant duplicate of `geo`.
+  // `buildEmitterList` needs WORLD-space geometry: it derives triangle area,
+  // face normal (world-space sun-dot in classifyTriangleEmitter), centroids and
+  // AABBs, and appends world-space RectAreaLight tris. `geo` (packSceneFromCore)
+  // stores per-primitive BLAS positions in LOCAL/object space — world transforms
+  // live separately in the TLAS instance matrices — so feeding `geo` would place
+  // every emitter at the wrong world location (changing the CDF, light tree, RNG
+  // stratification, and image) for any transformed mesh. `buildSceneBVH` bakes
+  // each mesh's matrixWorld into the vertices via StaticGeometryGenerator's
+  // applyWorldTransforms. The two builds also produce different triangle
+  // orderings (per-primitive BLAS-concat SAH vs one unified merged SAH). See
+  // __tests__/emitterListWorldSpace.test.ts for the pinning test.
+  // InstancedMesh extends Mesh; exclude it — its geometry lives in
+  // packSceneFromCore's TLAS (one local BLAS + N instance matrices), which the
+  // emitter list does not consume per-instance.
   const sharedWorld = buildSharedBVH(sceneRoots as THREE.Object3D[], {
     positionStride: 4,
     proxyMeshNames: options.proxyMeshNames ?? new Set<string>(),
-    // InstancedMesh extends Mesh; exclude it — geometry lives in packSceneFromCore TLAS.
     filter: (obj: THREE.Object3D) =>
       obj instanceof THREE.Mesh && (obj as THREE.InstancedMesh).isInstancedMesh !== true,
   });
