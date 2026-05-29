@@ -370,7 +370,13 @@ fn evaluateBdptConnection(
 
   var contribution = lightThroughput * lightBsdfCosTheta * gTerm * eyeBsdfCosTheta * misW;
   contribution = contribution * eyeThroughput;
-  if (any(isNan(contribution)) || any(isInf(contribution))) {
+  // WGSL has no isNan/isInf builtins (those calls fail to resolve on Dawn).
+  // NaN is detected by the self-inequality x != x; non-finite magnitudes are
+  // caught by comparing against the largest finite f32 (≈3.4e38).
+  let isNonFinite =
+    any(contribution != contribution) ||
+    any(abs(contribution) > vec3f(3.4e38));
+  if (isNonFinite) {
     return vec3f(0.0);
   }
   return clamp(contribution, vec3f(0.0), vec3f(BDPT_CONTRIBUTION_CLAMP));

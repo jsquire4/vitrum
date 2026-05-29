@@ -1,3 +1,5 @@
+import { PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL } from './bsdf.wgsl.js';
+
 /**
  * Kernel module — primary-ray generation, motion-vector projection, Russian
  * roulette helpers, per-pixel accumulation, and the `@compute` entry point
@@ -19,8 +21,174 @@
  * environmentPdf / bsdfAreaLightConnectionContribution /
  * bsdfEnvironmentConnectionContribution (connect), and manifoldNeeContribution /
  * photonMapContribution (caustic).
+ *
+ * WS4 — volumetric subsurface scattering. The medium random walk (free-flight
+ * distance sampling + Henyey-Greenstein phase scatter + in-medium NEE with
+ * phase↔light MIS) is emitted ONLY when \`volumetricSss\` is true. It is gated
+ * OFF (compile-time, not a runtime UBO branch) whenever the BDPT integrator is
+ * enabled: the BDPT light subpath has no medium logic, so attenuating only the
+ * eye path inside a medium would break energy conservation. With the gate off
+ * the kernel falls back to the legacy per-channel Beer-Lambert absorption.
  */
-export const PT_WEBGPU_PATH_TRACE_KERNEL_WGSL = /* wgsl */ `
+export function composePathTraceKernelWgsl(opts: { readonly volumetricSss: boolean }): string {
+  const sss = opts.volumetricSss;
+  // Henyey-Greenstein phase helpers are top-level WGSL functions used only by
+  // the volumetric walk; include them only when the walk is compiled in so the
+  // BDPT-on shader carries no SSS symbols (structural gate, no dead code).
+  const hgHelpers = sss ? PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL : '';
+  // The transmissive-material block: full volumetric walk when SSS is on, the
+  // legacy Beer-Lambert + forward-scatter-radiance fallback when it is off
+  // (BDPT-on path — kept byte-for-byte from the pre-WS4 kernel).
+  const transmissiveBlock = sss
+    ? /* wgsl */ `
+    // WS4 volumetric random walk. inMedium is set when the previous bounce
+    // refracted INTO this medium (see medium-state update after the bounce
+    // sample). σ_t = σ_a + σ_s; σ_a is the host-derived Beer-Lambert
+    // absorption (decodeMaterial.sigmaA), σ_s the scattering coefficient.
+    // Ref: PBR4e §11 "Volume Scattering"; Henyey-Greenstein 1941.
+    if (inMedium) {
+      let walkSigmaT = max(mediumSigmaT, vec3f(0.0));
+      // Hero-channel σ_t drives the free-flight distance in spectral mode so a
+      // single wavelength is tracked per path; otherwise use the max channel
+      // (conservative — the densest channel sets the collision rate, the rest
+      // ride along via the per-channel transmittance below).
+      let heroSigmaT = select(
+        max(walkSigmaT.x, max(walkSigmaT.y, walkSigmaT.z)),
+        walkSigmaT.x,
+        params.spectralEnabled != 0u,
+      );
+      if (heroSigmaT > 1e-6) {
+        let xiFlight = rand_f32(&rng);
+        let freeFlightDist = -log(max(1.0 - xiFlight, 1e-9)) / heroSigmaT;
+        if (freeFlightDist < hit.dist) {
+          // Real collision inside the medium BEFORE the surface: scatter.
+          let scatterPos = ray.origin + ray.direction * freeFlightDist;
+          // Per-channel single-scattering albedo σ_s/σ_t at the chosen flight
+          // distance, re-weighted by the ratio of the per-channel pdf to the
+          // hero-channel pdf so non-hero channels stay unbiased (spectral MIS).
+          let pdfHero = heroSigmaT * exp(-heroSigmaT * freeFlightDist);
+          let transmittance = exp(-walkSigmaT * freeFlightDist);
+          let pdfChannel = walkSigmaT * transmittance;
+          let channelW = select(vec3f(1.0), pdfChannel / max(pdfHero, 1e-9), params.spectralEnabled == 0u);
+          let singleScatterAlbedo = mediumSigmaS / max(walkSigmaT, vec3f(1e-6));
+          throughput = throughput * singleScatterAlbedo * channelW;
+          let throughputInMedium = throughput;
+
+          // In-medium NEE: connect to the directional light through the medium
+          // with HG↔light power-heuristic MIS (the phase function plays the
+          // role of the BSDF inside the medium).
+          if (params.lightDir.w > 1e-6) {
+            let lightDir = safe_normalize(params.lightDir.xyz);
+            let shadowRay = Ray(scatterPos, lightDir);
+            if (!traceAny(shadowRay, 1e-4, INFINITY)) {
+              let cosScatter = dot(ray.direction, lightDir);
+              let phaseVal = hgPhase(cosScatter, mediumG);
+              // Light "pdf" for a directional emitter is a delta we approximate
+              // as 1 for the heuristic; phase pdf is hgPhase itself.
+              let misWeight = powerHeuristic(1.0, phaseVal);
+              radiance = radiance + throughputInMedium * vec3f(params.lightDir.w) * phaseVal * misWeight;
+            }
+          }
+
+          // Sample the next direction from the HG phase function and continue
+          // the walk. The phase-sampled estimator is unbiased (f/pdf = 1); the
+          // light it later hits is weighted by the complementary MIS term
+          // powerHeuristic(phasePdf, lightPdf) inside the next-bounce emission
+          // path, so it balances the NEE term added above (partition of unity).
+          ray.origin = scatterPos;
+          ray.direction = sampleHenyeyGreenstein(&rng, ray.direction, mediumG);
+
+          if (bounce > 2u) {
+            let rrMedium = russianRoulette(&rng, throughput);
+            if (!rrMedium.survives) { break; }
+            throughput = throughput * rrMedium.throughputMul;
+          }
+          continue; // skip the surface BSDF this bounce — we scattered in the medium.
+        } else {
+          // No collision before the surface: attenuate by the full-path
+          // transmittance and fall through to the surface interaction.
+          throughput = throughput * exp(-walkSigmaT * hit.dist);
+        }
+      }
+    }`
+    : /* wgsl */ `
+    // BDPT-on fallback (volumetric walk gated off): legacy per-channel
+    // Beer-Lambert absorption + a small forward-scatter radiance term.
+    if (transmission > 0.0 && isTranslucent) {
+      var spectralMu = vec3f(spectralAvgMu);
+      if (spectralSampleCount > 0u) {
+        if (params.spectralEnabled != 0u) {
+          let mu = sampleMaterialSpectralMu(matId, heroLambdaTo01(heroLambda));
+          spectralMu = vec3f(mu);
+        } else {
+          let sampledMuR = sampleMaterialSpectralMu(matId, 0.15);
+          let sampledMuG = sampleMaterialSpectralMu(matId, 0.50);
+          let sampledMuB = sampleMaterialSpectralMu(matId, 0.85);
+          spectralMu = vec3f(sampledMuR, sampledMuG, sampledMuB);
+        }
+      }
+      let sigmaA = select(vec3f(0.0), max(spectralMu, vec3f(0.0)), hasSpectralAttenuation);
+      let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
+      let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
+      if (max(sigmaT.x, max(sigmaT.y, sigmaT.z)) > 0.0) {
+        throughput = throughput * exp(-sigmaT * hit.dist);
+      }
+      if (scatteringCoeff > 0.0) {
+        let anisotropyBoost = 1.0 + 0.5 * scatteringAnisotropy;
+        radiance = radiance + throughputAtVertex * sigmaS * (0.02 * scatteringCoeff * anisotropyBoost);
+      }
+    }`;
+
+  // Medium-state declarations (only present when the walk is compiled in).
+  const mediumStateDecls = sss
+    ? /* wgsl */ `
+  // WS4 volumetric path state. inMedium toggles when a refraction bounce
+  // crosses the surface; the σ_t/σ_s/g triple is the medium the eye path is
+  // currently traversing.
+  var inMedium = false;
+  var mediumSigmaT = vec3f(0.0);
+  var mediumSigmaS = vec3f(0.0);
+  var mediumG = 0.0;`
+    : '';
+
+  // Medium-state update after the bounce sample (only when the walk is in).
+  const mediumStateUpdate = sss
+    ? /* wgsl */ `
+    // WS4 — update the medium the eye path is in based on this bounce's
+    // surface-crossing event. Derive σ_a from decodeMaterial.sigmaA (host
+    // Beer-Lambert) and σ_s from the scattering coefficient(s); the phase
+    // anisotropy g is the material's scatteringAnisotropy.
+    if (bs.enteredMedium) {
+      // σ_a: prefer the spectral-attenuation curve when authored (hero λ in
+      // spectral mode, RGB triple otherwise), else the host Beer-Lambert
+      // σ_a derived from attenuationColor/attenuationDistance.
+      var sigmaAWalk = select(vec3f(0.0), mat.sigmaA, mat.hasSigmaA);
+      if (hasSpectralAttenuation && spectralSampleCount > 0u) {
+        if (params.spectralEnabled != 0u) {
+          let mu = sampleMaterialSpectralMu(matId, heroLambdaTo01(heroLambda));
+          sigmaAWalk = vec3f(max(mu, 0.0));
+        } else {
+          let muR = sampleMaterialSpectralMu(matId, 0.15);
+          let muG = sampleMaterialSpectralMu(matId, 0.50);
+          let muB = sampleMaterialSpectralMu(matId, 0.85);
+          sigmaAWalk = max(vec3f(muR, muG, muB), vec3f(0.0));
+        }
+      }
+      let sigmaSWalk = max(scatteringRgb, vec3f(scatteringCoeff));
+      mediumSigmaS = sigmaSWalk;
+      mediumSigmaT = max(sigmaAWalk + sigmaSWalk, vec3f(0.0));
+      mediumG = clamp(scatteringAnisotropy, -0.95, 0.95);
+      inMedium = max(mediumSigmaT.x, max(mediumSigmaT.y, mediumSigmaT.z)) > 1e-6;
+    } else if (bs.exitedMedium) {
+      inMedium = false;
+      mediumSigmaT = vec3f(0.0);
+      mediumSigmaS = vec3f(0.0);
+      mediumG = 0.0;
+    }`
+    : '';
+
+  return /* wgsl */ `
+${hgHelpers}
 fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
   let uv = (vec2f(f32(px), f32(py)) + jitter) / vec2f(f32(params.width), f32(params.height));
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
@@ -145,6 +313,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var firstHitNormal = vec3f(0.0, 1.0, 0.0);
   var firstHitAlbedo = vec3f(0.0);
   var firstHitDepth = 0.0;
+${mediumStateDecls}
 
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
     let hit = traceClosest(ray, 1e-4, INFINITY);
@@ -232,30 +401,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       baseColor = mix(baseColor, baseColor * thinFilmReflectTint, filmStrength);
     }
     let throughputAtVertex = throughput;
-    if (transmission > 0.0 && isTranslucent) {
-      var spectralMu = vec3f(spectralAvgMu);
-      if (spectralSampleCount > 0u) {
-        if (params.spectralEnabled != 0u) {
-          let mu = sampleMaterialSpectralMu(matId, heroLambdaTo01(heroLambda));
-          spectralMu = vec3f(mu);
-        } else {
-          let sampledMuR = sampleMaterialSpectralMu(matId, 0.15);
-          let sampledMuG = sampleMaterialSpectralMu(matId, 0.50);
-          let sampledMuB = sampleMaterialSpectralMu(matId, 0.85);
-          spectralMu = vec3f(sampledMuR, sampledMuG, sampledMuB);
-        }
-      }
-      let sigmaA = select(vec3f(0.0), max(spectralMu, vec3f(0.0)), hasSpectralAttenuation);
-      let sigmaS = max(scatteringRgb, vec3f(scatteringCoeff));
-      let sigmaT = max(sigmaA + sigmaS, vec3f(0.0));
-      if (max(sigmaT.x, max(sigmaT.y, sigmaT.z)) > 0.0) {
-        throughput = throughput * exp(-sigmaT * hit.dist);
-      }
-      if (scatteringCoeff > 0.0) {
-        let anisotropyBoost = 1.0 + 0.5 * scatteringAnisotropy;
-        radiance = radiance + throughputAtVertex * sigmaS * (0.02 * scatteringCoeff * anisotropyBoost);
-      }
-    }
+${transmissiveBlock}
     let cosThetaO = max(0.0, dot(normal, wo));
     let f0 = mix(vec3f(0.04), baseColor, metallic);
     let fresnel = fresnelSchlick(cosThetaO, f0);
@@ -500,12 +646,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       ior,
       fresnel,
       thinFilmTransmitTint,
+      isTranslucent,
     );
     ray.origin = bs.newRayOrigin;
     ray.direction = bs.newRayDir;
     throughput = throughput * bs.throughputMul;
     let sampledDir = bs.sampledDir;
     let sampleAllowsAreaMis = bs.sampleAllowsAreaMis;
+${mediumStateUpdate}
 
     if (params.bdptEnabled != 0u) {
       // The forward scatter pdf of the chosen next direction at E_bounce — fed
@@ -577,3 +725,13 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   );
 }
 `;
+}
+
+/**
+ * Default full-tier kernel composition — BDPT off ⇒ volumetric SSS walk
+ * compiled in. The pipeline picks the BDPT-on (SSS-off) variant explicitly via
+ * \`composePathTraceKernelWgsl({ volumetricSss: false })\` when BDPT is enabled.
+ */
+export const PT_WEBGPU_PATH_TRACE_KERNEL_WGSL = composePathTraceKernelWgsl({
+  volumetricSss: true,
+});

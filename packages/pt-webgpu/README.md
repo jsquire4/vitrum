@@ -34,7 +34,7 @@ not baseline correctness. What's implemented:
 - CPU-built BVH with GPU BVH traversal; CPU TLAS build via `buildSceneTlas()` (`scene/tlasBridge.ts`) for multi-instance follow-up
 - Multi-bounce sampling (clamped by `maxBounces`)
 - Material-driven diffuse/specular/emissive shading with an experimental transmission/refraction branch
-- Extended packed-material payload path with bounded rich scattering/layered/thin-film/spectral fields (**22 vec4s / material**: 8 thin-film layers × `(ior, thicknessNm, extinctionCoefficient)` plus stack `incidentIor` / `angleDependent`, and 32 spectral samples)
+- Extended packed-material payload path with bounded rich scattering/layered/thin-film/spectral fields (**23 vec4s / material**: 8 thin-film layers × `(ior, thicknessNm, extinctionCoefficient)` plus stack `incidentIor` / `angleDependent`, 32 spectral samples, and the WS4 volumetric absorption coefficient σ_a derived from `attenuationColor`/`attenuationDistance`)
 - Procedural-sky environment lighting controls (scene-driven tint/sun direction)
 - HDRI environment importance sampling when CPU-side HDRI payload provides `width`, `height`, and float RGB texel data
 - Direct lighting for bounded **arrays** of emitters (counts in uniform `FrameParams`, payloads in storage buffers):
@@ -93,7 +93,8 @@ Mechanical parity for the fork-backed WebGL2 path tracer is **implemented** for:
 - Bounded multi-emitter direct lighting (full tier)
 - Analytic shapes, procedural sky + HDRI (full tier)
 - `updatePrimitive` / `updateEmitter` incremental APIs (see ledger)
-- Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS, translucent SSS gate
+- Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS
+- Volumetric subsurface scattering (WS4): homogeneous participating-media random walk — free-flight distance sampling (`t = -ln(1-ξ)/σ_t`), Henyey-Greenstein phase scatter, single-scatter albedo σ_s/σ_t, in-medium next-event estimation with phase↔light power-heuristic MIS, and specular-chain Beer-Lambert extinction in the caustic path. σ_t = σ_a (from `attenuationColor`/`attenuationDistance`, or the spectral curve when authored) + σ_s (`scatteringCoefficient(RGB)`); g = `scatteringAnisotropy`. The walk is **compiled out when BDPT is enabled** (the BDPT light subpath has no medium logic — energy-conservation gate), falling back to per-channel Beer-Lambert absorption. The compatibility (lite) tier keeps Beer-Lambert absorption only (no walk).
 - `denoiser: 'oidn-final'` with aux readback
 
 **Denoisers on pt-webgpu:** `'none'`, `'oidn-final'`, `'svgf-real'` (full tier).

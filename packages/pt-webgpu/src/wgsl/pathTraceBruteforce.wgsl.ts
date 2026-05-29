@@ -10,7 +10,10 @@ import { PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL } from './pathTrace/intersection
 import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from './pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_WGSL } from './pathTrace/connect.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from './pathTrace/caustic.wgsl.js';
-import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from './pathTrace/kernel.wgsl.js';
+import {
+  PT_WEBGPU_PATH_TRACE_KERNEL_WGSL,
+  composePathTraceKernelWgsl,
+} from './pathTrace/kernel.wgsl.js';
 import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from './bdpt/bdptConnection.wgsl.js';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.js';
 
@@ -49,6 +52,42 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  * export name are preserved so the consumer in `src/index.ts` and the
  * existing `wgslContract.test.ts` / `wgslSmoke.gpu.test.ts` tests keep
  * working unchanged.
+ */
+/**
+ * Compose the full-tier brute-force path-trace WGSL for a given integrator
+ * configuration.
+ *
+ * WS4 — the volumetric subsurface-scattering random walk is compiled in ONLY
+ * when BDPT is disabled. The BDPT light subpath has no participating-media
+ * logic, so a medium that attenuates / scatters only the eye path would break
+ * energy conservation; the gate is therefore structural (the SSS WGSL symbols
+ * are simply absent from the BDPT-on shader) rather than a runtime UBO branch.
+ * When `bdptEnabled` is true the kernel emits the legacy per-channel
+ * Beer-Lambert absorption fallback instead.
+ */
+export function composePtWebgpuTraceWgsl(bdptEnabled: boolean): string {
+  const kernel = composePathTraceKernelWgsl({ volumetricSss: !bdptEnabled });
+  return /* wgsl */ `
+${PT_WEBGPU_COMMON_WGSL}
+${HAMMERSLEY_WGSL}
+${OCTAHEDRAL_CORE_WGSL}
+${LUMINANCE_WGSL}
+${HERO_WAVELENGTH_WGSL}
+${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
+${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
+${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
+${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
+${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
+${PT_WEBGPU_BDPT_CONNECTION_WGSL}
+${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
+${kernel}
+`;
+}
+
+/**
+ * Default full-tier composition — BDPT off ⇒ volumetric SSS walk present.
+ * Preserved as a const for the many WGSL-contract tests + the non-BDPT
+ * pipeline path. \`composePtWebgpuTraceWgsl(true)\` yields the BDPT-on variant.
  */
 export const PT_WEBGPU_TRACE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_COMMON_WGSL}

@@ -24,7 +24,7 @@
 
 import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
-import { PT_WEBGPU_TRACE_WGSL } from './wgsl/pathTraceBruteforce.wgsl.js';
+import { composePtWebgpuTraceWgsl } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 
 export class GpuResources {
@@ -314,8 +314,13 @@ export class GpuResources {
       size: 512,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // WS4 — the full-tier kernel is composed for this engine's integrator
+    // config: the volumetric SSS random walk is compiled in only when BDPT is
+    // OFF (structural gate — energy conservation; BDPT has no medium logic).
     const traceWgsl =
-      this.#traceTier === 'lite' ? PT_WEBGPU_TRACE_LITE_WGSL : PT_WEBGPU_TRACE_WGSL;
+      this.#traceTier === 'lite'
+        ? PT_WEBGPU_TRACE_LITE_WGSL
+        : composePtWebgpuTraceWgsl(this.#bdpt);
     const module = this.#device.createShaderModule({
       label: `vitrum.pt-webgpu.pathTrace.${this.#traceTier}`,
       code: traceWgsl,

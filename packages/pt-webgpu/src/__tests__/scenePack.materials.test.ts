@@ -25,7 +25,7 @@ describe('buildPackedScene material payload packing', () => {
       environment: { kind: 'none' },
     };
     const packed = buildPackedScene(scene);
-    expect(packed.materials.length).toBe(88);
+    expect(packed.materials.length).toBe(92); // WS4: MATERIAL_FLOAT_STRIDE 88 → 92 (σ_a vec4)
     expect(packed.materials[10]).toBeCloseTo(0.8);
     expect(packed.materials[24]).toBeCloseTo(1);
     expect(packed.materials[28]).toBeCloseTo(2.1);
