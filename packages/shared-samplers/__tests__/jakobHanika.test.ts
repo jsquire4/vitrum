@@ -29,6 +29,14 @@ import {
   VISIBLE_LAMBDA_MIN,
   VISIBLE_LAMBDA_MAX,
 } from '../src/jakobHanika.js';
+import {
+  CIE_X_TABLE,
+  CIE_Y_TABLE,
+  CIE_Z_TABLE,
+  CIE_D65_TABLE,
+  CIE_LAMBDA_STEP,
+  CIE_TABLE_LENGTH,
+} from '../src/cieCmf.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -233,6 +241,71 @@ describe('rgbToSpectralCoefficients — determinism', () => {
     expect(c1[0]).toBe(c2[0]);
     expect(c1[1]).toBe(c2[1]);
     expect(c1[2]).toBe(c2[2]);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Absolute colorimetry guards
+// ────────────────────────────────────────────────────────────────────────────
+// The RGB→spectrum→RGB round-trip above is SELF-CONSISTENT: the solver and the
+// inverse `spectralCoefficientsToRGB` share the exact same discretised D65 SPD,
+// CMF tables, white point, and luminance normaliser. A round-trip therefore
+// stays tight even if the illuminant, white point, or RGB↔XYZ matrices were all
+// silently wrong-but-mutually-consistent. These tests pin the ABSOLUTE values so
+// such a regression can't hide behind the round-trip.
+// ════════════════════════════════════════════════════════════════════════════
+
+describe('Jakob–Hanika — absolute colorimetry (round-trip cannot catch these)', () => {
+  it('the discretised D65 white point matches the standard CIE D65 (Y-normalised)', () => {
+    // The module folds Δλ·D65(λ)·CMF(λ)/N into per-sample weights with the
+    // luminance normaliser N chosen so a unit reflector has Y = 1. Summing those
+    // weights (S ≡ 1) must reproduce the CIE D65 white point (0.95047, 1, 1.08883)
+    // up to 5 nm discretisation. A missing illuminant term or wrong normaliser
+    // would shift this materially.
+    let normY = 0;
+    for (let i = 0; i < CIE_TABLE_LENGTH; i++) {
+      normY += (CIE_D65_TABLE[i] ?? 0) * (CIE_Y_TABLE[i] ?? 0) * CIE_LAMBDA_STEP;
+    }
+    let wX = 0;
+    let wY = 0;
+    let wZ = 0;
+    for (let i = 0; i < CIE_TABLE_LENGTH; i++) {
+      const d = CIE_D65_TABLE[i] ?? 0;
+      wX += (d * (CIE_X_TABLE[i] ?? 0) * CIE_LAMBDA_STEP) / normY;
+      wY += (d * (CIE_Y_TABLE[i] ?? 0) * CIE_LAMBDA_STEP) / normY;
+      wZ += (d * (CIE_Z_TABLE[i] ?? 0) * CIE_LAMBDA_STEP) / normY;
+    }
+    expect(wX).toBeCloseTo(0.95047, 2);
+    expect(wY).toBeCloseTo(1.0, 5);
+    expect(wZ).toBeCloseTo(1.08883, 2);
+  });
+
+  it('a flat S ≡ ½ reflectance (coeffs [0,0,0]) integrates to neutral grey (0.5, 0.5, 0.5)', () => {
+    // sigmoid(0) = ½ everywhere. Under correct D65 + CMF + sRGB-inverse this must
+    // land on neutral grey. A white-point/matrix mismatch tints this grey.
+    const [r, g, b] = spectralCoefficientsToRGB([0, 0, 0]);
+    expect(r).toBeCloseTo(0.5, 3);
+    expect(g).toBeCloseTo(0.5, 3);
+    expect(b).toBeCloseTo(0.5, 3);
+  });
+
+  it('a flat S ≡ 1 reflectance (saturated sigmoid) integrates to white (1, 1, 1)', () => {
+    // A huge positive constant pins sigmoid(x) ≈ 1 across the band. By the
+    // Y-normalisation this is the white point and must map to linear-sRGB white.
+    const [r, g, b] = spectralCoefficientsToRGB([1e6, 0, 0]);
+    expect(r).toBeCloseTo(1.0, 3);
+    expect(g).toBeCloseTo(1.0, 3);
+    expect(b).toBeCloseTo(1.0, 3);
+  });
+
+  it('solved white (1,1,1) produces a near-flat spectrum saturated toward 1', () => {
+    // Guards the saturated-tail seed/convergence behaviour: white must drive the
+    // sigmoid into its upper flat region across the whole band, not just on average.
+    const coeffs = rgbToSpectralCoefficients(1, 1, 1);
+    for (const s of sampleSpectrum(coeffs)) {
+      expect(s).toBeGreaterThan(0.99);
+      expect(s).toBeLessThanOrEqual(1);
+    }
   });
 });
 

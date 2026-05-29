@@ -363,6 +363,73 @@ describe('solveSkin', () => {
     }
   });
 
+  // ── GPU WGSL parity — the with-normals skin kernel
+  // (walkaround-hybrid/src/skin/gpuSkinBvh.wgsl.ts) reimplements the
+  // inverse-transpose with a DIFFERENT algebra than this CPU function: it works
+  // on column-major inputs and returns the cofactor columns directly as
+  // (c1×c2)/det, (c2×c0)/det, (c0×c1)/det. The CPU function uses the row-major
+  // adjugate-over-determinant form. Both are mathematically (M⁻¹)ᵀ, but the WGSL
+  // is GPU-only (no device in CI) and its tests only string-match. This pins the
+  // ALGEBRA: a faithful TS port of the WGSL formula must produce the SAME matrix
+  // as the trusted CPU function on the same matrix — catching a swapped column or
+  // a flipped cross-product order in the shader. ───────────────────────────────
+  it('mat3InverseTranspose: WGSL column-cross formula agrees with the CPU adjugate form', () => {
+    const cross = (a: number[], b: number[]): number[] => [
+      a[1]! * b[2]! - a[2]! * b[1]!,
+      a[2]! * b[0]! - a[0]! * b[2]!,
+      a[0]! * b[1]! - a[1]! * b[0]!,
+    ];
+    const dot = (a: number[], b: number[]): number =>
+      a[0]! * b[0]! + a[1]! * b[1]! + a[2]! * b[2]!;
+
+    // Faithful port of GPU mat3InverseTranspose(c0,c1,c2) → returns the result
+    // as a ROW-major 3×3 so we can compare it slot-for-slot to the CPU output.
+    // GPU returns COLUMNS (c1×c2)/det, (c2×c0)/det, (c0×c1)/det; row-major[r][c]
+    // = column[c][r].
+    const gpuInverseTransposeRowMajor = (
+      c0: number[], c1: number[], c2: number[],
+    ): number[] => {
+      const det = dot(c0, cross(c1, c2));
+      const col0 = cross(c1, c2);
+      const col1 = cross(c2, c0);
+      const col2 = cross(c0, c1);
+      const inv = 1 / det;
+      // row-major [r0c0,r0c1,r0c2, r1c0,...]: out[r*3+c] = col_c[r]/det
+      return [
+        col0[0]! * inv, col1[0]! * inv, col2[0]! * inv,
+        col0[1]! * inv, col1[1]! * inv, col2[1]! * inv,
+        col0[2]! * inv, col1[2]! * inv, col2[2]! * inv,
+      ];
+    };
+
+    // Test matrices: a non-uniform diagonal, a shear, and a rotation+scale.
+    // Each given as column-major columns c0,c1,c2 (matching the WGSL input) and
+    // the equivalent row-major buffer (matching the CPU input).
+    const cases: { c0: number[]; c1: number[]; c2: number[] }[] = [
+      // diag(2,3,5)
+      { c0: [2, 0, 0], c1: [0, 3, 0], c2: [0, 0, 5] },
+      // shear: x += 0.5y, with a y-stretch
+      { c0: [1, 0, 0], c1: [0.5, 2, 0], c2: [0, 0, 1] },
+      // arbitrary non-symmetric, full-rank
+      { c0: [1, 2, 0], c1: [0, 1, 3], c2: [4, 0, 1] },
+    ];
+
+    for (const { c0, c1, c2 } of cases) {
+      // Column-major M columns → row-major buffer [m00,m01,m02, m10,...].
+      // m[r][c] = column_c[r].
+      const rowMajor = [
+        c0[0]!, c1[0]!, c2[0]!,
+        c0[1]!, c1[1]!, c2[1]!,
+        c0[2]!, c1[2]!, c2[2]!,
+      ];
+      const cpu = mat3InverseTranspose(rowMajor);
+      const gpu = gpuInverseTransposeRowMajor(c0, c1, c2);
+      for (let i = 0; i < 9; i++) {
+        expect(gpu[i]!).toBeCloseTo(cpu[i]!, 6);
+      }
+    }
+  });
+
   it('throws when input buffer lengths are inconsistent', () => {
     const bad: SkinnedMeshPrimitive = {
       kind: 'skinned-mesh',
