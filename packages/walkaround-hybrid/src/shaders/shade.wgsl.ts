@@ -272,6 +272,14 @@ fn lo_indirect(
   let bw01 = (1.0 - fx) *        fy;
   let bw11 =        fx  *        fy;
   var totalW: f32 = 0.0;
+  // Confidence accumulator — bilinear-weighted ReSTIR-GI sample count over the
+  // same 4 half-res reservoirs that build Lo_indirect. The reservoir M is the
+  // effective number of resampled candidates the temporal+spatial passes have
+  // integrated into this pixel (Bitterli 2020 / Ouyang 2021 ReSTIR-GI). A
+  // higher M ⇒ lower-variance, more-trustworthy estimate. We weight each
+  // reservoir's M by its bilinear contribution so the per-pixel confidence
+  // matches the radiance blend exactly.
+  var Maccum: f32 = 0.0;
   for (var k: u32 = 0u; k < 4u; k = k + 1u) {
     var hx = hx0;
     var hy = hy0;
@@ -293,21 +301,60 @@ fn lo_indirect(
     let cosTheta = max(0.0, dot(normal, wi));
     // Item 24: omit albedo here; indirectCombine applies it post-denoising.
     Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * bw;
+    Maccum = Maccum + f32(g.M) * bw;
     totalW = totalW + bw;
   }
+  // Effective per-pixel ReSTIR-GI sample count (bilinear-averaged M). 0 when no
+  // valid reservoir contributed — that pixel has *no* ReSTIR estimate, so the
+  // confidence-ratio below hands full weight to RC (or, if RC is also off,
+  // returns 0).
+  var Meff: f32 = 0.0;
   if (totalW > 1e-3) {
     Lo_indirect = Lo_indirect / totalW;
+    Meff = Maccum / totalW;
   }
-  // W8 Phase 3 — Track-A MIS composition with Sannikov 2023 Radiance
-  // Cascades. When rcEnabled the cascade-0 sample is mixed with the
-  // ReSTIR-GI estimate using a host-supplied weight w_rc; the two are
-  // forced to sum to 1 (balance heuristic over two unbiased-modulo-bias
-  // estimators of the same diffuse-indirect integral). When rcEnabled
-  // is false the rcParams.enabled bit is 0 and sampleCascadeC0 returns
-  // 0, leaving Lo_restirGi unchanged — bit-identical to the pre-Phase-3
-  // path.
+  // W8 Phase 3 — confidence-ratio (balance-heuristic) composition with the
+  // Sannikov 2023 Radiance Cascades cascade-0 estimate. Both estimators
+  // integrate the SAME diffuse-indirect radiance, so any convex blend
+  // (w_restir + w_rc == 1) is unbiased; we choose the blend per-pixel by each
+  // estimator's reliability instead of a single host scalar.
+  //
+  // Confidence proxies (both ∈ [0,1]):
+  //   c_restir = m            — ReSTIR-GI's normalised effective sample count
+  //                             m = clamp(Meff / restirGiMClamp, 0, 1). The
+  //                             temporal M-clamp is the host's "fully
+  //                             converged" reference; ReSTIR variance falls
+  //                             ~1/M, so m is a monotone reliability proxy
+  //                             (NOT W — a high W usually means a low p̂ /
+  //                             rare-sample spike, i.e. *less* reliable).
+  //   c_rc = rcWeight·(1 - m) — RC is a low-variance but biased deterministic
+  //                             probe integrator with no per-pixel sample
+  //                             count, so its reliability is a fixed host
+  //                             PRIOR (rcWeight) gated by how *unreliable*
+  //                             ReSTIR is here (1 - m). When ReSTIR is well
+  //                             converged (m→1) RC's weight fades out; on a
+  //                             fresh disocclusion (m→0) RC's stable estimate
+  //                             fills in. rcWeight stays the global RC trust
+  //                             knob and the disabled-path off-switch.
+  //
+  // Balance heuristic: w_rc = c_rc / (c_rc + c_restir), w_restir = 1 - w_rc.
+  // Degenerate guard: when neither estimator is confident (c_rc + c_restir ≈ 0,
+  // i.e. no valid reservoir AND rcWeight 0) we force w_restir = 1 — Lo_indirect
+  // is 0 there anyway, so the pixel stays 0.
+  //
+  // rc-disabled bit-identity: the host binds an all-zero rcParams placeholder
+  // when RC is off (DDGIBindingState.setRCInputs(null)), so rcParams.enabled==0
+  // ⇒ sampleCascadeC0 returns exactly vec3f(0), AND rcWeight==0.0 ⇒ c_rc==0 ⇒
+  // w_rc==0, w_restir==1.0 exactly ⇒ result == Lo_indirect, byte-for-byte
+  // identical to the pre-Phase-3 path.
   let Lo_rc = sampleCascadeC0(pos, normal);
-  let wRc = clamp(rcParams.rcWeight, 0.0, 1.0);
+  let m = clamp(Meff / f32(max(ubo.restirGiMClamp, 1u)), 0.0, 1.0);
+  let cRestir = m;
+  let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m);
+  let cSum = cRestir + cRc;
+  // max() in the denominator keeps the (always-evaluated) select arm finite —
+  // no inf/NaN to leak even though select discards it when cSum ≈ 0.
+  let wRc = select(0.0, cRc / max(cSum, 1e-6), cSum > 1e-6);
   let wRestirGi = 1.0 - wRc;
   return wRestirGi * Lo_indirect + wRc * Lo_rc;
 }
