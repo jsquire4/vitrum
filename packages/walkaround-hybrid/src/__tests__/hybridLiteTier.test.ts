@@ -140,7 +140,10 @@ describe('HybridEngine qualityTier — explicit per-knob override beats preset',
     expect(self._diSpatialPasses).toBe(2);
     expect(self._giSpatialPasses).toBe(2);
     expect(self._gtaoMode).toBe('on');
-    expect(self._ddgiUpdateDivisor).toBe(4);
+    // No qualityTier ⇒ ultra preset. After the 2→32 cadence decision, ultra's
+    // DDGI divisor is 2 (the fast end), so the no-preset default cadence is now
+    // stride 2 — 4× the old hardcoded stride-8. Deliberate; pending GPU A/B.
+    expect(self._ddgiUpdateDivisor).toBe(2);
     expect(self._resolutionFactor).toBe(1.0);
     expect(self._denoiser).toBe('atrous-variance');
   });

@@ -22,10 +22,12 @@ describe('resolveQualityPreset — preset → knob table', () => {
     expect(resolveQualityPreset(undefined)).toBe(QUALITY_PRESETS.ultra);
   });
 
-  it('ultra is byte-identical to the Cornell baseline (regression guard, R6)', () => {
+  it('ultra pins the Cornell baseline values (divisor=2 is the one deliberate cadence departure)', () => {
     const ultra = resolveQualityPreset('ultra');
     // resolutionFactor full; GI budget + denoiser + frame-cap LEFT at engine
-    // defaults (undefined ⇒ "do not override"); 2 spatial passes; /4 DDGI.
+    // defaults (undefined ⇒ "do not override"); 2 spatial passes. DDGI cadence
+    // is the ONE intentional non-default: stride 2 (the fast end of the 2→32
+    // spread), faster than the old hardcoded stride-8 — see the preset doc.
     expect(ultra.resolutionFactor).toBe(1.0);
     expect(ultra.adaptiveSamplingThresholds).toBeUndefined();
     expect(ultra.denoiser).toBeUndefined();
@@ -33,7 +35,7 @@ describe('resolveQualityPreset — preset → knob table', () => {
     expect(ultra.diSpatialPasses).toBe(2);
     expect(ultra.giSpatialPasses).toBe(2);
     expect(ultra.gtaoMode).toBe('on');
-    expect(ultra.ddgiUpdateDivisor).toBe(4);
+    expect(ultra.ddgiUpdateDivisor).toBe(2);
   });
 
   it('each preset maps to the exact §4.3 table values', () => {
@@ -62,7 +64,7 @@ describe('resolveQualityPreset — preset → knob table', () => {
       denoiser: 'atrous',
       diSpatialPasses: 1,
       giSpatialPasses: 1,
-      ddgiUpdateDivisor: 16,
+      ddgiUpdateDivisor: 32,
       targetFrameIntervalMs: 33,
     });
   });

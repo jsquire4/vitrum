@@ -334,9 +334,15 @@ export class ProbeUpdatePass {
 
   /**
    * Run one frame of probe updates.
+   *
+   * The active-probe set for this frame is `{ i : i ≡ offset (mod stride) }`,
+   * i.e. one round-robin stratum of the grid. `stride` is the probe-update
+   * divisor chosen by DDGI (default 8; overridden by setProbeUpdateDivisor /
+   * the quality preset). `offset` cycles 0…stride-1 across consecutive frames
+   * so the whole grid refreshes every `stride` frames.
    * @param renderer  The WebGPU renderer
-   * @param offset    Which 1/4 of probes to update (0-3)
-   * @param stride    Number of update strata (usually 4)
+   * @param offset    Which stratum to update this frame (0 … stride-1)
+   * @param stride    Number of update strata (the probe-update divisor)
    */
   async runFrame(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }, offset: number, stride: number): Promise<void> {
     if (!this._gpu) {

@@ -7,11 +7,17 @@
  *
  * Design contract (matches the maintainer "fidelity + flexibility, no
  * hardcoded single-path" preference):
- *   - **`ultra` is byte-identical to today's Cornell-baseline defaults.** Every
- *     ultra value is either the existing default or `undefined` (= "leave the
- *     engine default untouched"). The `resolveQualityPreset('ultra')` regression
- *     test pins this. Presets are ADDITIVE — an existing host that never sets
- *     `qualityTier` gets ultra and therefore byte-identical behaviour.
+ *   - **`ultra` matches today's Cornell-baseline defaults EXCEPT for the DDGI
+ *     probe-update cadence.** Every ultra value is the existing default or
+ *     `undefined` (= "leave the engine default untouched"), with ONE deliberate
+ *     exception: `ddgiUpdateDivisor: 2`. Before the H1 fix this knob was DEAD (it
+ *     wrote an unread UBO field while the real cadence was a hardcoded stride 8);
+ *     now that it is load-bearing, the maintainer chose a faster 2→32 cadence
+ *     spread, so ultra updates probes at stride 2 (4× the old stride-8 rate) for
+ *     a snappier GI response. This departs from the pre-H1 shipped cadence and is
+ *     pending GPU A/B validation. The `resolveQualityPreset('ultra')` regression
+ *     test pins the full value set (including the divisor=2). Presets are
+ *     otherwise ADDITIVE — a host that never sets `qualityTier` gets ultra.
  *   - **Explicit per-knob options OVERRIDE the preset.** The engine applies the
  *     preset FIRST as a baseline, then `opts.X ?? preset.X` lets any explicit
  *     option win (`qualityTier:'low'` + `gtao:{radiusPx:99}` keeps radius 99).
@@ -82,7 +88,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     targetFrameIntervalMs: undefined,       // ⇒ engine default (~60 FPS cap)
     diSpatialPasses: 2,
     giSpatialPasses: 2,
-    ddgiUpdateDivisor: 4,                   // historical hardcoded /4
+    ddgiUpdateDivisor: 2,                   // flagship: fastest GI cadence — stride 2 (4× the default-8 probe rate). H1 made the divisor load-bearing, so ultra is NO LONGER byte-identical to the old hardcoded stride-8 (intentional, per the 2→32 cadence decision).
     enableRcPpgNeuralByDefault: false,
   },
   high: {
@@ -93,7 +99,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     targetFrameIntervalMs: undefined,
     diSpatialPasses: 2,
     giSpatialPasses: 2,
-    ddgiUpdateDivisor: 4,
+    ddgiUpdateDivisor: 4,                   // 2× the default-8 probe rate (stride 4)
     enableRcPpgNeuralByDefault: false,
   },
   medium: {
@@ -106,7 +112,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     targetFrameIntervalMs: 20,
     diSpatialPasses: 1,
     giSpatialPasses: 1,
-    ddgiUpdateDivisor: 8,                   // 2× stride vs default
+    ddgiUpdateDivisor: 8,                   // = the default probe cadence (stride 8)
     enableRcPpgNeuralByDefault: false,
   },
   low: {
@@ -118,7 +124,7 @@ export const QUALITY_PRESETS: Readonly<Record<QualityTier, QualityPreset>> = Obj
     targetFrameIntervalMs: 33,
     diSpatialPasses: 1,
     giSpatialPasses: 1,
-    ddgiUpdateDivisor: 16,                  // 4× stride vs default
+    ddgiUpdateDivisor: 32,                  // budget: slowest GI cadence — stride 32 (1/4 the default-8 probe rate)
     enableRcPpgNeuralByDefault: false,
   },
 });

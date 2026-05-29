@@ -35,9 +35,12 @@ import type { DDGILight } from './types.js';
 import { makeDdgiRestirBvhSnapshot, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 
-// Probe round-robin stride. STRIDE=8 means each probe updates every
-// 8th frame (~133ms at 60fps).
-const STRIDE = 8;
+// Default probe round-robin stride. STRIDE=8 means each probe updates every
+// 8th frame (~133ms at 60fps). This is the cadence the engine has always
+// actually run — it is the divisor used to build the per-frame `activeProbes`
+// set (see updateFrame). `setProbeUpdateDivisor` overrides it at runtime; when
+// no divisor is set the round-robin falls back to this value.
+const DEFAULT_STRIDE = 8;
 
 // Target frame interval for the 60 FPS cap.
 const TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -108,6 +111,14 @@ export class DDGI {
   // M11: probe grid parameters forwarded to computeFromBounds each frame.
   private _probeSpacing:      number | undefined;
   private _maxProbesPerAxis:  number;
+  // Phase-0 productization (H1) — round-robin probe-update stride. THIS is the
+  // load-bearing cadence knob: `updateFrame` builds the per-frame active-probe
+  // set from `offset = _frame % _stride; stride = _stride`, and ProbeUpdatePass
+  // constructs `activeProbes` from that stride. Defaults to DEFAULT_STRIDE (8);
+  // `setProbeUpdateDivisor` overrides it so the quality preset's divisor
+  // actually changes how many probes update per frame (previously the divisor
+  // only fed a UBO field that no shader reads).
+  private _stride:            number = DEFAULT_STRIDE;
 
   constructor(opts: DDGIOptions = {}) {
     this._debug = opts.debug ?? false;
@@ -137,11 +148,26 @@ export class DDGI {
     this._pass.setLights(lights);
   }
 
-  /** Phase-0 productization — set the round-robin probe-update divisor
-   *  (`probesPerFrame = ceil(totalProbes / divisor)`). Forwarded to
-   *  ProbeUpdatePass, which applies it to BOTH the ray pass and the blend
-   *  pass so their coverage stays in lockstep. Default 4. */
+  /** Phase-0 productization (H1) — set the round-robin probe-update divisor.
+   *  This is now the LOAD-BEARING cadence knob: it sets the round-robin
+   *  `_stride`, which directly determines how many probes update each frame
+   *  (`ceil(totalProbes / stride)` probes, one stratum of the grid). A higher
+   *  divisor ⇒ more strata ⇒ fewer probes per frame ⇒ cheaper but slower GI
+   *  response.
+   *
+   *  Also forwarded to ProbeUpdatePass so its blend/ray UBO `probesPerFrame`
+   *  coverage field stays consistent with the actual active set (kept in
+   *  lockstep even though no shader currently branches on it).
+   *
+   *  Clamped to ≥ 1. The default (no call) is DEFAULT_STRIDE = 8, which
+   *  reproduces the cadence the engine has always actually run. NOTE: the
+   *  `ultra`/`high` quality preset currently passes divisor=4 (its comment
+   *  claims a "historical /4" that the real round-robin never used — it ran
+   *  /8); threading the divisor here makes that preset value finally take
+   *  effect, so ultra/high update probes 2× as often unless the preset is
+   *  corrected to 8. See HybridEngineQualityPreset.ts. */
   setProbeUpdateDivisor(divisor: number): void {
+    this._stride = Math.max(1, Math.floor(divisor));
     this._pass.setProbeUpdateDivisor(divisor);
   }
 
@@ -153,8 +179,8 @@ export class DDGI {
    * Resets `_frame` to 0 and `_ready` to false. On the next `updateFrame`
    * call the blend kernel will fire with `alpha=1` for every texel (history
    * weight = 0), effectively clearing the irradiance + visibility atlases
-   * and letting the DDGI update kernel re-converge over the default ~STRIDE
-   * frame window.
+   * and letting the DDGI update kernel re-converge over the next `_stride`
+   * frame window (the probe-update divisor; default 8).
    *
    * Does NOT deallocate GPU textures or touch the BVH — cost is two JS
    * field writes only. Called by `HybridEngine.updateLighting()` when
@@ -170,7 +196,7 @@ export class DDGI {
    * full atlas wipe (geometry unchanged; instance matrices moved).
    */
   markInstancesDirty(): void {
-    this._frame = Math.max(0, this._frame - Math.floor(STRIDE / 2));
+    this._frame = Math.max(0, this._frame - Math.floor(this._stride / 2));
   }
 
   /**
@@ -254,12 +280,14 @@ export class DDGI {
       }
     }
 
-    // Round-robin: update 1/STRIDE of probes this frame.
+    // Round-robin: update 1/_stride of probes this frame. `_stride` is the
+    // probe-update divisor set via setProbeUpdateDivisor (default 8).
+    const stride = this._stride;
     if (this._gpuOk) {
-      const offset = this._frame % STRIDE;
+      const offset = this._frame % stride;
       this._frame++;
       try {
-        await this._pass.runFrame(rendererAdapter, offset, STRIDE);
+        await this._pass.runFrame(rendererAdapter, offset, stride);
       } catch (e) {
         console.error('[DDGI] runFrame error:', e);
       }
@@ -267,8 +295,8 @@ export class DDGI {
       this._frame++;
     }
 
-    // Mark ready after the first full cycle (STRIDE frames).
-    if (this._frame >= STRIDE) {
+    // Mark ready after the first full cycle (`_stride` frames).
+    if (this._frame >= stride) {
       this._ready = true;
     }
 
