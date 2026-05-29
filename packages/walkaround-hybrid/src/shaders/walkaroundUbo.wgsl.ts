@@ -123,7 +123,19 @@ struct WalkaroundUBO {
   // Hosts opt in via HybridEngineOptions.stainedGlass; the bits gate the
   // early-return in lo_sg_caustic / lo_sg_aperture (stainedGlassShade.wgsl.ts).
   stainedGlassFlags:          u32,     //  offset 344 — T5 (was _tracePad0)
-  _tracePad1:                 u32,     //  offset 348 — struct size 352 bytes
+  // PPG (Müller 2017) guided-sampling controls (W9 guided-sampling landing).
+  // ppgEnabled is the runtime gate the gi-ris RIS source-pdf mixture reads:
+  // when 0, the Bernoulli mixing weight α collapses to 0 so the gi-ris
+  // candidate loop samples a pure cosine hemisphere and the explicit RIS
+  // weight reduces EXACTLY to today's luminance(Lo) cosine shortcut
+  // (ppg-OFF bit-identity). When 1, gi-ris draws α-fraction of candidates
+  // from the learned dTree and evaluates the defensive mixture pdf
+  // p_src = α·p_guide + (1−α)·p_cos for an unbiased estimator (§3.4).
+  ppgEnabled:                 u32,     //  offset 348 — PPG guided-sampling gate (was _tracePad1)
+  ppgMixAlpha:                f32,     //  offset 352 — MIS mixing weight α ∈ [0,1] (Müller §3.4)
+  _ppgPad0:                   u32,     //  offset 356 — pad to 16-byte struct multiple
+  _ppgPad1:                   u32,     //  offset 360
+  _ppgPad2:                   u32,     //  offset 364 — struct size 368 bytes
 };
 
 // T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,

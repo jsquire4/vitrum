@@ -80,6 +80,7 @@ import { COMPOSITE_VERT_MODULE, COMPOSITE_FRAG_MODULE } from '../shaders/composi
 import { DDGI_SAMPLE_MODULE } from '../ddgi/ddgiSampleWgsl.js';
 import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
 import { PPG_GUIDE_MODULE } from '../ppg/ppgGuide.wgsl.js';
+import { PPG_PDF_MODULE } from '../ppg/ppgPdf.wgsl.js';
 import type { WgslModule } from './wgslComposer.js';
 
 // Re-exports for consumers that pull individual modules by name (e.g.,
@@ -273,6 +274,10 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // PPG (Müller 2017 — opt-in, compiled only when ppgEnabled)
   [PPG_UPDATE_MODULE.name, PPG_UPDATE_MODULE],
   [PPG_GUIDE_MODULE.name, PPG_GUIDE_MODULE],
+  // PPG guided-sampling pdf-eval + sampler for gi-ris (always available so
+  // risGi's include-graph resolves; the bindings it declares are gated by
+  // ubo.ppgEnabled at runtime).
+  [PPG_PDF_MODULE.name, PPG_PDF_MODULE],
 
   // Shared-denoisers wrappers
   [ATROUS_MODULE.name, ATROUS_MODULE],

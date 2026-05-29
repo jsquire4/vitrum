@@ -1,6 +1,6 @@
 /**
  * UBO updater — writes per-frame camera + lighting + tunables into the
- * 352-byte WalkaroundUBO uniform buffer.
+ * 368-byte WalkaroundUBO uniform buffer.
  *
  * UBO layout (mixed f32 / u32 — see WalkaroundUBO struct in common.wgsl):
  *   offset   0: viewMatrix                  (mat4×4f = 64 bytes)
@@ -36,8 +36,12 @@
  *   offset 336: bvhMode                     (u32 = 4 bytes) — PR-3
  *   offset 340: tlasNodeCount               (u32 = 4 bytes)
  *   offset 344: stainedGlassFlags           (u32 = 4 bytes) — T5 (was _tracePad0)
- *   offset 348: _tracePad1                  (u32 = 4 bytes)
- * Total: 352 bytes (352 % 16 == 0).
+ *   offset 348: ppgEnabled                  (u32 = 4 bytes) — PPG guided-sampling gate (was _tracePad1)
+ *   offset 352: ppgMixAlpha                 (f32 = 4 bytes) — PPG MIS mixing weight α
+ *   offset 356: _ppgPad0                    (u32 = 4 bytes)
+ *   offset 360: _ppgPad1                    (u32 = 4 bytes)
+ *   offset 364: _ppgPad2                    (u32 = 4 bytes)
+ * Total: 368 bytes (368 % 16 == 0).
  */
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
@@ -69,14 +73,34 @@ export function packStainedGlassFlags(opts: {
 }
 
 /** Size of the WalkaroundUBO in bytes. File-local — `resourceManager.ts`
- *  intentionally duplicates the literal `352` rather than import this name
+ *  intentionally duplicates the literal `368` rather than import this name
  *  to avoid a circular import (see resourceManager.ts). */
-const WALKAROUND_UBO_SIZE_BYTES = 352;
+const WALKAROUND_UBO_SIZE_BYTES = 368;
+
+/**
+ * Live PPG guided-sampling state injected by the pipeline (NOT part of the
+ * host {@link PipelineFrameInputs} contract).
+ *
+ * The pipeline is the source of truth for whether PPG guided sampling is
+ * live this frame: `enabled` mirrors `PPGCoordinator.enabled`, which is only
+ * `true` when the host opted in AND both PPG compute pipelines compiled. When
+ * `enabled` is false the kernel-side α collapses to 0, so gi-ris stays on the
+ * pure-cosine path bit-for-bit. `mixAlpha` is the Müller §3.4 mixing weight.
+ */
+export interface PpgUboState {
+  readonly enabled: boolean;
+  readonly mixAlpha: number;
+}
 
 export function updateUBO(
   device: GPUDevice,
   uboBuffer: GPUBuffer,
   inputs: PipelineFrameInputs,
+  /** Live PPG gate + α from the pipeline. Defaults to OFF so callers that
+   *  don't run PPG (and the existing tests) keep the pure-cosine gi-ris path
+   *  — ppgEnabled=0 and α=0 make the gi-ris RIS source pdf reduce exactly to
+   *  cosθ/π, preserving ppg-OFF bit-identity. */
+  ppg: PpgUboState = { enabled: false, mixAlpha: 0 },
 ): void {
   const data = new ArrayBuffer(WALKAROUND_UBO_SIZE_BYTES);
   const f32  = new Float32Array(data);
@@ -127,8 +151,14 @@ export function updateUBO(
   u32[84] = inputs.bvhMode >>> 0;
   u32[85] = inputs.tlasNodeCount >>> 0;
   // T5 — stained-glass opt-in flag bits (repurposed _tracePad0 at offset 344).
-  // 0 → both terms OFF (generic-scene default). u32[87] stays 0 (_tracePad1).
+  // 0 → both terms OFF (generic-scene default).
   u32[86] = inputs.stainedGlassFlags >>> 0;
+  // PPG guided sampling (W9 guided-sampling landing). offset 348 = ppgEnabled
+  // (gate), offset 352 = ppgMixAlpha. When PPG is off, ppgEnabled stays 0 and
+  // α stays 0 → gi-ris RIS source pdf = cosθ/π exactly (ppg-OFF bit-identity).
+  u32[87] = ppg.enabled ? 1 : 0; //  offset 348 — ppgEnabled
+  f32[88] = ppg.enabled ? ppg.mixAlpha : 0; // offset 352 — ppgMixAlpha
+  // f32[89..91] = _ppgPad0/1/2 (zero).
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

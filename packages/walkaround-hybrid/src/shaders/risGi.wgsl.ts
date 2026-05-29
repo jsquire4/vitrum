@@ -13,8 +13,15 @@
  *      sampling the DDGI irradiance atlas, multiplied by the hit
  *      surface's albedo / π (Lambertian re-radiation).
  *   3. p̂ = luminance(Lo) × cos(N_visible, wi) × INV_PI
- *      pdf_source = cos(N_visible, wi) / π (cosine hemisphere)
- *      w_i = p̂ / pdf_source = luminance(Lo) × INV_PI² (cancels cos)
+ *      pdf_source = the candidate's source pdf. Without path guiding this is
+ *        the pure cosine-hemisphere pdf cos/π, so w_i = p̂/pdf = luminance(Lo)
+ *        (the cosθ cancels). With PPG guided sampling (ubo.ppgEnabled == 1) a
+ *        Bernoulli(α) chooses guided-dTree vs cosine sampling, and the source
+ *        pdf becomes the DEFENSIVE MIXTURE
+ *          p_src = α·p_guide(wi) + (1−α)·cos/π        (Müller 2017 §3.4)
+ *        evaluated for whichever wi was drawn; the explicit weight is then
+ *        w_i = p̂ / p_src. α = 0 (PPG off) reduces this to luminance(Lo) exactly
+ *        — the PPG-off path is bit-identical to the pre-PPG cosine kernel.
  *   4. Visibility test on the chosen sample (one extra BVH ray).
  *   5. W = w_sum / (M · p̂(z)) per the standard RIS estimator
  *      (Talbot 2005 + ReSTIR DI 2020).
@@ -27,7 +34,10 @@
  *   group(0) — frame (same as shade; uses gNormalDepth + reservoir)
  *   group(1) — scene (BVH + emitters; reuse existing layout)
  *   group(2) — ubo (camera matrices, frameSeed, aoFullTexture)
- *   group(3) — hybrid (DDGI atlas + sampler + grid params)
+ *   group(3) — hybrid (DDGI atlas + sampler + grid params at bindings 0-3;
+ *              RC cascade-0 + params at 4-5; W9 PPG sTree/dTree/dTreeOffsets
+ *              storage buffers at 6-8, declared by the `ppgPdf` module and
+ *              read only when ubo.ppgEnabled == 1)
  *   The GI reservoir buffer is bound as @group(0) @binding(11), added
  *   to the frame BGL by the Sprint 16 pipeline machinery.
  */
@@ -150,9 +160,38 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let tier = clamp(tier_raw, 1u, 4u);
   let M_GI = M_GI_BASE * tier / 2u;
 
+  // ── PPG guided-sampling mixing weight (Müller 2017 §3.4) ──────────────────
+  // α is the fraction of RIS candidates drawn from the learned dTree. It is
+  // ubo.ppgMixAlpha when PPG guided sampling is live (ubo.ppgEnabled == 1) and
+  // EXACTLY 0 otherwise. The host writes ppgEnabled=0 / ppgMixAlpha=0 whenever
+  // PPG is off (see uboUpdater.ts), so on the PPG-off path:
+  //   - the Bernoulli branch below is gated on alpha > 0.0, so NO extra RNG
+  //     draw is consumed → the rng stream is byte-identical to the pre-PPG
+  //     pure-cosine path, and
+  //   - p_src = (1−0)·p_cos = cosθ/π, so the explicit RIS weight
+  //     w = pHat / p_src reduces to EXACTLY luminance(Lo) (the cosine
+  //     shortcut). ppg-OFF is bit-identical.
+  let ppgGuidedOn = (ubo.ppgEnabled == 1u);
+  let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
+
   for (var i: u32 = 0u; i < M_GI; i = i + 1u) {
-    // Cosine-weighted hemisphere candidate.
-    let wi = sampleCosineHemisphere(normal, &rng);
+    // Draw a candidate direction wi. When alpha > 0, flip a Bernoulli(alpha):
+    // heads → sample the learned dTree (guided), tails → cosine hemisphere.
+    // When alpha == 0 we take the cosine branch WITHOUT consuming a Bernoulli
+    // draw, preserving the exact pre-PPG rng sequence (bit-identity).
+    var wi: vec3f;
+    if (alpha > 0.0) {
+      let bern = rand_f32(&rng);
+      if (bern < alpha) {
+        // Guided: sample ∝ leaf flux from the dTree for this shading cell.
+        wi = ppgSampleGuidedDir(pos, &rng);
+      } else {
+        wi = sampleCosineHemisphere(normal, &rng);
+      }
+    } else {
+      // Cosine-weighted hemisphere candidate (pre-PPG path, bit-identical).
+      wi = sampleCosineHemisphere(normal, &rng);
+    }
     let cosTheta = max(0.0, dot(normal, wi));
     if (cosTheta < 1e-4) { continue; }
 
@@ -199,13 +238,38 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       Lo = ubo.skyTint * ubo.skyIrradiance;
     }
 
-    // p̂ at the visible point for this candidate.
+    // p̂ at the visible point for this candidate (the RIS target function —
+    // cosine-weighted reconnection radiance luminance). Unchanged by PPG.
     let pHat = luminance(Lo) * cosTheta * INV_PI;
     if (pHat < 1e-9) { continue; }
-    // pdf_source = cosTheta / π (cosine hemisphere). w = p̂ / pdf:
-    // = luminance(Lo) × cosTheta × INV_PI / (cosTheta × INV_PI)
-    // = luminance(Lo)
-    let w = luminance(Lo);
+
+    // RIS candidate weight w = p̂ / p_src.
+    //
+    // ppg-OFF (alpha == 0): the RIS source pdf is the pure cosine pdf
+    //   p_src = cosθ/π, and the weight algebraically cancels the cosθ in p̂:
+    //     w = (luminance(Lo)·cosθ·INV_PI) / (cosθ·INV_PI) = luminance(Lo)
+    //   We take the literal shortcut here (NOT the division) so the PPG-off
+    //   path is BIT-IDENTICAL to the pre-PPG kernel — no ULP drift from a
+    //   round-trip multiply/divide.
+    //
+    // ppg-ON (alpha > 0): the RIS source pdf is the DEFENSIVE MIXTURE
+    //   (Müller §3.4)   p_src = α·p_guide(wi) + (1−α)·p_cos(wi)
+    //   evaluated for WHICHEVER wi was chosen (guided OR cosine). Evaluating
+    //   BOTH pdfs for the chosen direction is what keeps the mixture estimator
+    //   unbiased — we cannot reuse the cosine shortcut because the cosθ no
+    //   longer cancels against a pure-cosine denominator.
+    //     p_cos   = cosθ/π                    (cosine-hemisphere solid-angle pdf)
+    //     p_guide = ppgEvalPdf(pos, wi)       (dTree solid-angle pdf; mirrors
+    //               the CPU dTreePdf in dTree.ts exactly)
+    var w: f32;
+    if (alpha > 0.0) {
+      let pCos = cosTheta * INV_PI;
+      let pGuide = ppgEvalPdf(pos, wi);
+      let pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
+      w = select(0.0, pHat / pSrc, pSrc > 1e-12);
+    } else {
+      w = luminance(Lo);
+    }
     updateReservoirGI(&r, xs, ns, Lo, w, &rng);
   }
 
@@ -259,9 +323,13 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
  *    - `invertMat4_common` / `generatePrimaryRay_common` → cameraRays
  *    - `ddgiSample`                          → ddgiSample
  *  Drops emitterSampling / ggxBrdf / jacobianShift / welfordTail (unused).
+ *  W9 guided sampling — adds `ppgPdf` (declares the group(3) PPG tree buffers
+ *  + provides ppgEvalPdf / ppgSampleGuidedDir). Listed AFTER sharedPrimitives
+ *  so `rand_f32` is defined before ppgPdf's source, and after ddgiSample so
+ *  the group(3) DDGI bindings (0-3) precede the PPG ones (6-8).
  *  Verified complete by the static ident-resolution gate. */
 export const RIS_GI_MODULE: WgslModule = {
   name: 'risGi',
   source: RIS_GI_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'cameraRays', 'ddgiSample', 'ppgPdf'],
 };

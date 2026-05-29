@@ -6,8 +6,9 @@
  * `_tracePad0` slot). The WGSL side (`walkaroundUbo.wgsl.ts`) reads that field
  * with `SG_FLAG_SUN_CAUSTIC` (bit 0) and `SG_FLAG_SKY_APERTURE` (bit 1); these
  * tests pin (a) the packer's bit semantics, (b) that the TS + WGSL constants
- * agree, and (c) that the UBO byte layout did NOT grow (still 352 bytes, flags
- * at offset 344, _tracePad1 untouched at 348).
+ * agree, and (c) the UBO byte layout: flags at offset 344, and (since the W9
+ * PPG guided-sampling landing) ppgEnabled at the former _tracePad1 slot (348)
+ * with the struct grown to 368 bytes by the appended ppgMixAlpha + pad block.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -61,20 +62,23 @@ describe('T5 — WGSL / TS flag-mask agreement', () => {
   });
 });
 
-describe('T5 — UBO byte-layout stability (repurposed pad slot, no growth)', () => {
+describe('T5 — UBO byte layout (offset-344 flags slot + W9 PPG tail)', () => {
   it('stainedGlassFlags occupies the offset-344 slot (was _tracePad0)', () => {
     expect(WALKAROUND_UBO_WGSL).toContain('stainedGlassFlags:          u32,');
-    // _tracePad0 must be gone (renamed); _tracePad1 must remain to keep the
-    // struct end at 352 bytes (352 % 16 == 0).
+    // _tracePad0 was renamed to stainedGlassFlags (T5); _tracePad1 was
+    // repurposed to ppgEnabled (W9 guided sampling) — neither pad name
+    // survives.
     expect(WALKAROUND_UBO_WGSL).not.toContain('_tracePad0:');
-    expect(WALKAROUND_UBO_WGSL).toContain('_tracePad1:');
+    expect(WALKAROUND_UBO_WGSL).not.toContain('_tracePad1:');
   });
 
-  it('struct still ends at 352 bytes (no field added; pad slot repurposed in place)', () => {
-    // The struct comment pins the size; the byte-stability guarantee is that
-    // bvhMode(336) + tlasNodeCount(340) + stainedGlassFlags(344) + _tracePad1(348)
-    // = 4 u32 trailing slots = the same 16 bytes the two pads + two u32s held
-    // before T5.
-    expect(WALKAROUND_UBO_WGSL).toContain('offset 348 — struct size 352 bytes');
+  it('ppgEnabled occupies offset 348 (the former _tracePad1 slot)', () => {
+    expect(WALKAROUND_UBO_WGSL).toContain('ppgEnabled:                 u32,');
+    expect(WALKAROUND_UBO_WGSL).toContain('offset 348 — PPG guided-sampling gate');
+  });
+
+  it('struct now ends at 368 bytes (ppgMixAlpha + 3×u32 pad appended after ppgEnabled)', () => {
+    expect(WALKAROUND_UBO_WGSL).toContain('ppgMixAlpha:                f32,');
+    expect(WALKAROUND_UBO_WGSL).toContain('struct size 368 bytes');
   });
 });

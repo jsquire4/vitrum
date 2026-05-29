@@ -288,6 +288,14 @@ interface HybridLayersResources {
   // sample is actually integrated into Lo_indirect.
   rcCascade0Buffer: GPUBuffer;
   rcParamsBuffer:   GPUBuffer;
+  // W9 guided sampling — PPG tree buffers (sTree / dTree / dTreeOffsets).
+  // Always present GPUBuffers: the real STORAGE-flagged PPG buffers when PPG
+  // is enabled, or a shared 16-byte zeroed placeholder when disabled. gi-ris
+  // descends them only when ubo.ppgEnabled == 1, so the placeholders are
+  // never dereferenced in the PPG-off path.
+  ppgSTreeBuffer:        GPUBuffer;
+  ppgDTreeBuffer:        GPUBuffer;
+  ppgDTreeOffsetsBuffer: GPUBuffer;
 }
 
 export function buildHybridLayersBindGroup(
@@ -307,6 +315,10 @@ export function buildHybridLayersBindGroup(
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
       { binding: 4, resource: { buffer: r.rcCascade0Buffer } },
       { binding: 5, resource: { buffer: r.rcParamsBuffer } },
+      // W9 — PPG guided-sampling tree buffers.
+      { binding: 6, resource: { buffer: r.ppgSTreeBuffer } },
+      { binding: 7, resource: { buffer: r.ppgDTreeBuffer } },
+      { binding: 8, resource: { buffer: r.ppgDTreeOffsetsBuffer } },
     ],
   });
 }

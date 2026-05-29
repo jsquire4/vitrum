@@ -145,11 +145,30 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  *         `enabled == 0u` short-circuits sampleCascadeC0 to vec3f(0),
  *         so the same bind group works for rcEnabled=true and false
  *         without a pipeline recompile.
+ *   PPG section (W9 guided-sampling landing)
+ *     6 — PPG sTree storage buffer (read-only) — serialised spatial kd-tree.
+ *     7 — PPG dTree storage buffer (read-only) — concatenated per-cell
+ *         directional quadtrees (the learned guiding distribution).
+ *     8 — PPG dTreeOffsets storage buffer (read-only) — sTree-cell →
+ *         dTreeBuf base-offset table.
+ *         All three are ALWAYS bound; a 16-byte zeroed placeholder backs
+ *         each slot when PPG is disabled. gi-ris reads them only when
+ *         `ubo.ppgEnabled == 1` (the kernel guards on the gate before any
+ *         dTree descent), so the placeholders are never dereferenced when
+ *         PPG is off.
  *
- * shade.wgsl reads bindings 0-5; risGi.wgsl reads only 0-3. WebGPU
- * spec allows pipelines to reference a subset of layout entries, so
- * the unified BGL works for both. Bind groups must still provide
- * resources for all 6 entries (placeholders for unused).
+ * shade.wgsl reads bindings 0-5; risGi.wgsl reads 0-3 (DDGI) + 6-8 (PPG).
+ * WebGPU spec allows pipelines to reference a subset of layout entries, so
+ * the unified BGL works for both. Bind groups must still provide resources
+ * for all 9 entries (placeholders for unused). The PPG storage buffers are
+ * read-only-storage, so they bind against the STORAGE-flagged PPG buffers
+ * (or placeholders) without any usage-flag change.
+ *
+ * Storage-buffer budget: in TLAS mode gi-ris references 9 storage buffers
+ * (1 frame reservoir + 8 scene BVH/TLAS) + these 3 PPG buffers = 12, under
+ * the `HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage = 16`
+ * full-tier floor. PPG is forbidden on the lite tier, so its lower (10)
+ * floor is never asked to host the PPG buffers.
  */
 export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCache): GPUBindGroupLayout {
   if (cache.hybridLayers) return cache.hybridLayers;
@@ -162,6 +181,11 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+      // PPG guided-sampling tree buffers (W9). Read-only-storage; gi-ris
+      // descends them when ubo.ppgEnabled == 1.
+      { binding: 6, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 7, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+      { binding: 8, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
     ],
   });
   return cache.hybridLayers;

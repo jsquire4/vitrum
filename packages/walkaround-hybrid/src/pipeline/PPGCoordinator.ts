@@ -98,6 +98,15 @@ export class PPGCoordinator {
     return this._enabled;
   }
 
+  /** MIS mixing weight α (Müller §3.4) the gi-ris RIS source pdf uses for the
+   *  guided/cosine mixture `p_src = α·p_guide + (1−α)·p_cos`. Currently the
+   *  paper default {@link PPG_MIS_ALPHA}; matches the value baked into the
+   *  guide-kernel UBO so the host-side training and gi-ris guided sampling
+   *  agree on α. */
+  get mixAlpha(): number {
+    return PPG_MIS_ALPHA;
+  }
+
   /**
    * W9 — initialize PPG resources at engine boot.
    *

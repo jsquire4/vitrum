@@ -894,7 +894,15 @@ export class WalkaroundGPUPipeline {
     const { _width: W, _height: H } = this;
 
     // ── Update UBO ────────────────────────────────────────────────────────
-    updateUBO(d, this._res.common.uboBuffer, inputs);
+    // Inject the LIVE PPG gate (PPGCoordinator.enabled is true only when the
+    // host opted in AND both PPG compute pipelines compiled) + the MIS mixing
+    // weight α. gi-ris reads ppgEnabled/ppgMixAlpha from the UBO to decide
+    // whether to guide candidate sampling; when off, α collapses to 0 and the
+    // gi-ris RIS source pdf reduces to cosθ/π exactly (ppg-OFF bit-identity).
+    updateUBO(d, this._res.common.uboBuffer, inputs, {
+      enabled: this._ppg.enabled,
+      mixAlpha: this._ppg.mixAlpha,
+    });
 
     // W9 — refresh the PPG guide UBO so the kernel's per-frame RNG salt
     // (and any future per-frame inputs) stay current. The update UBO is

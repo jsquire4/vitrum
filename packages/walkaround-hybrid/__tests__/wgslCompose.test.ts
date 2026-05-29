@@ -74,6 +74,7 @@ import { RESTIR_PHAT_WGSL } from '../src/shaders/restirPHat.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../src/shaders/restirCastPrimary.wgsl.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { RIS_GI_WGSL } from '../src/shaders/risGi.wgsl.js';
+import { PPG_PDF_WGSL } from '../src/ppg/ppgPdf.wgsl.js';
 import { SAMPLE_BUDGET_WGSL } from '../src/shaders/sampleBudget.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { SAMPLE_CASCADE_C0_WGSL } from '../src/shaders/sampleCascadeC0.wgsl.js';
@@ -287,7 +288,11 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // now strictly smaller than `COMMON_WGSL + …`; the exact narrowed
   // composition is pinned below (focused-module sources concatenated in the
   // pass's declared `requires` order, deps-first, deduped).
-  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + RIS_GI', () => {
+  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+octahedralCore) + RIS_GI', () => {
+    // W9 guided sampling — risGi now requires `ppgPdf` (the gi-ris dTree
+    // pdf-eval + guided sampler). ppgPdf requires `octahedralCore`, so the
+    // composer emits OCTAHEDRAL_CORE_WGSL then PPG_PDF_WGSL after DDGI_SAMPLE,
+    // before the RIS_GI root source.
     expect(composeWgsl(RIS_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
@@ -296,6 +301,8 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       MATERIAL_DECODE_WGSL +
       CAMERA_RAYS_WGSL +
       DDGI_SAMPLE_WGSL +
+      OCTAHEDRAL_CORE_WGSL +
+      PPG_PDF_WGSL +
       RIS_GI_WGSL,
     );
   });

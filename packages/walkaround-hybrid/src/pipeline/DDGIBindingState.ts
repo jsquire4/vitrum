@@ -63,6 +63,14 @@ export class DDGIBindingState {
    *  contents rewritten by setRCInputs each frame). Null when RC disabled. */
   private _rcParamsBuffer: GPUBuffer | null = null;
 
+  /** W9 guided sampling — shared 16-byte zeroed placeholder for the three PPG
+   *  tree storage-buffer slots (sTree / dTree / dTreeOffsets) when PPG is
+   *  disabled (or before the PPG buffers are allocated). WebGPU forbids null
+   *  bindings, so a single read-only-storage placeholder backs all three. It
+   *  is never dereferenced when PPG is off because gi-ris guards every dTree
+   *  descent on `ubo.ppgEnabled == 1`. Owned here; dispose() releases it. */
+  private _ppgPlaceholder: GPUBuffer | null = null;
+
   constructor(device: GPUDevice) {
     this._device = device;
   }
@@ -159,6 +167,23 @@ export class DDGIBindingState {
     return { cascade0: this._rcCascade0Placeholder, params: this._rcParamsPlaceholder };
   }
 
+  /** Lazily create the shared PPG read-only-storage placeholder (16 bytes,
+   *  zeroed). Returned for any of the three PPG slots whose real buffer is
+   *  absent (PPG disabled). */
+  private _ensurePpgPlaceholder(): GPUBuffer {
+    if (this._ppgPlaceholder === null) {
+      this._ppgPlaceholder = this._device.createBuffer({
+        label: 'ppg-tree-placeholder',
+        size: 16,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        mappedAtCreation: true,
+      });
+      new Uint8Array(this._ppgPlaceholder.getMappedRange()).fill(0);
+      this._ppgPlaceholder.unmap();
+    }
+    return this._ppgPlaceholder;
+  }
+
   /**
    * Build the hybrid-layers bind group for the current frame, falling back
    * to the placeholder textures when no host-supplied DDGI atlases have
@@ -171,6 +196,10 @@ export class DDGIBindingState {
     frameResources: FrameResources,
   ): GPUBindGroup {
     const rcPh = this._ensureRCPlaceholders();
+    // W9 — bind the real PPG tree buffers when PPG is enabled (FrameResources.ppg
+    // is populated by allocatePPGResources), else the shared 16-byte placeholder.
+    const ppgPh = this._ensurePpgPlaceholder();
+    const ppg = frameResources.ppg;
     return buildHybridLayersBindGroup(device, bglCache, {
       ddgiIrrTex:             this._irrTex,
       ddgiVisTex:             this._visTex,
@@ -180,6 +209,9 @@ export class DDGIBindingState {
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer:       this._rcCascade0 ?? rcPh.cascade0,
       rcParamsBuffer:         this._rcParamsBuffer ?? rcPh.params,
+      ppgSTreeBuffer:         ppg.sTreeBuf ?? ppgPh,
+      ppgDTreeBuffer:         ppg.dTreeBuf ?? ppgPh,
+      ppgDTreeOffsetsBuffer:  ppg.dTreeOffsetsBuf ?? ppgPh,
     });
   }
 
@@ -195,5 +227,6 @@ export class DDGIBindingState {
     if (this._rcParamsBuffer) { this._rcParamsBuffer.destroy(); this._rcParamsBuffer = null; }
     if (this._rcCascade0Placeholder) { this._rcCascade0Placeholder.destroy(); this._rcCascade0Placeholder = null; }
     if (this._rcParamsPlaceholder) { this._rcParamsPlaceholder.destroy(); this._rcParamsPlaceholder = null; }
+    if (this._ppgPlaceholder) { this._ppgPlaceholder.destroy(); this._ppgPlaceholder = null; }
   }
 }
