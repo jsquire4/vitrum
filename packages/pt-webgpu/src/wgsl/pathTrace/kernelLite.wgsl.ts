@@ -1,3 +1,8 @@
+import {
+  composeShadePrologueWgsl,
+  SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE,
+} from './shadePrologue.wgsl.js';
+
 /**
  * Kernel module — primary-ray generation, motion-vector projection, Russian
  * roulette helpers, per-pixel accumulation, and the `@compute` entry point
@@ -133,87 +138,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       break;
     }
 
-    let matId = hitMaterialId(hit);
-    let mat = decodeMaterial(matId);
-    var baseColor = mat.baseColor;
-    var roughness = mat.roughness;
-    let emissive = mat.emissive;
-    let metallic = mat.metallic;
-    let transmission = mat.transmission;
-    var ior = mat.ior;
-    if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
-      ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
-    }
-    let scatteringCoeff = mat.scatteringCoeff;
-    let scatteringAnisotropy = mat.scatteringAnisotropy;
-    let scatteringRgb = mat.scatteringRgb;
-    let hasSpectralAttenuation = mat.hasSpectralAttenuation;
-    let frontLayerTx = mat.frontLayerTx;
-    let frontLayerRoughness = mat.frontLayerRoughness;
-    let backLayerTx = mat.backLayerTx;
-    let backLayerRoughness = mat.backLayerRoughness;
-    let thinFilmEnabled = mat.thinFilmEnabled;
-    let thinFilmLayerCountU = mat.thinFilmLayerCountU;
-    let thinFilmIncidentIor = mat.thinFilmIncidentIor;
-    let thinFilmAngleDependent = mat.thinFilmAngleDependent;
-    let spectralAvgMu = mat.spectralAvgMu;
-    let spectralSampleCount = mat.spectralSampleCount;
-    let isTranslucent = mat.isTranslucent;
-
-    // Gated emissive-on-hit (camera + refraction paths only — see kernel.wgsl.ts).
-    if (!prevSampleAllowsAreaMis) {
-      radiance = radiance + throughput * emissive;
-    }
-
-    let hitPos = ray.origin + ray.direction * hit.dist;
-    let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
-    let normal = select(-hit.normal, hit.normal, isFrontFace);
-    let layerTx = clamp(select(backLayerTx, frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
-    let layerRoughness = select(backLayerRoughness, frontLayerRoughness, isFrontFace);
-    if (layerRoughness >= 0.0) {
-      roughness = clamp(layerRoughness, 0.02, 1.0);
-    }
-    let layerW = select(
-      layerTx,
-      activeLayerWeightRgb(layerTx, heroLambda, true),
-      params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
-    );
-    baseColor = baseColor * layerW;
-    if (!firstHitValid) {
-      firstHitValid = true;
-      firstHitPos = hitPos;
-      firstHitNormal = normal;
-      firstHitAlbedo = baseColor;
-      firstHitDepth = hit.dist;
-    }
-    let wo = -ray.direction;
-    var thinFilmReflectTint = vec3f(1.0);
-    var thinFilmTransmitTint = vec3f(1.0);
-    if (thinFilmEnabled) {
-      let viewCos = clamp(dot(normal, wo), 0.0, 1.0);
-      if (params.spectralEnabled != 0u) {
-        let rt = thinFilmTmmRt(
-          matId,
-          thinFilmLayerCountU,
-          heroLambda,
-          ior,
-          thinFilmIncidentIor,
-          thinFilmAngleDependent,
-          viewCos,
-        );
-        thinFilmReflectTint = vec3f(clamp(rt.x, 0.0, 1.0));
-        thinFilmTransmitTint = vec3f(clamp(rt.y, 0.0, 1.0));
-      } else {
-        let rtR = thinFilmTmmRt(matId, thinFilmLayerCountU, 630.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
-        let rtG = thinFilmTmmRt(matId, thinFilmLayerCountU, 540.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
-        let rtB = thinFilmTmmRt(matId, thinFilmLayerCountU, 460.0, ior, thinFilmIncidentIor, thinFilmAngleDependent, viewCos);
-        thinFilmReflectTint = clamp(vec3f(rtR.x, rtG.x, rtB.x), vec3f(0.0), vec3f(1.0));
-        thinFilmTransmitTint = clamp(vec3f(rtR.y, rtG.y, rtB.y), vec3f(0.0), vec3f(1.0));
-      }
-      let layerStrength = clamp(0.12 + 0.06 * f32(thinFilmLayerCountU), 0.0, 0.55);
-      let filmStrength = clamp(layerStrength * (1.0 - roughness), 0.0, 0.6);
-      baseColor = mix(baseColor, baseColor * thinFilmReflectTint, filmStrength);
-    }
+${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
     let throughputAtVertex = throughput;
     if (transmission > 0.0 && isTranslucent) {
       var spectralMu = vec3f(spectralAvgMu);

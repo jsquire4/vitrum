@@ -2,6 +2,11 @@ import type { DiscAreaEmitter, MeshAreaEmitter, Scene } from '@vitrum/core';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
 import { environmentParams } from './environmentPacking.js';
+import {
+  meshTriangleArea,
+  rectQuadArea,
+  walkPositionalEmitters,
+} from '../bdpt/flatEmitterWalk.js';
 
 // Per-emitter capacity caps + float strides — file-local. No external
 // consumers (2026-05-18 dead-code sweep verified workspace-wide). Re-exports
@@ -455,64 +460,54 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
     directionalPower = emitterPower(dirIrr, { kind: 'delta' });
   }
 
-  // 1. point lights — stride 8 (vec2: position, radiance).
-  for (let i = 0; i < packed.pointLightCount; i++) {
-    const o = i * 8;
-    const p: Vec3 = [packed.pointLightsData[o]!, packed.pointLightsData[o + 1]!, packed.pointLightsData[o + 2]!];
-    const rad: Vec3 = [packed.pointLightsData[o + 4]!, packed.pointLightsData[o + 5]!, packed.pointLightsData[o + 6]!];
-    extend(p);
-    powers.push(emitterPower(rad, { kind: 'delta' }));
-    centroids.push(p);
-    aabbs.push(pointAabb(p));
-  }
-  // 2. spot lights — stride 12 (position, dir+cos, radiance).
-  for (let i = 0; i < packed.spotLightCount; i++) {
-    const o = i * 12;
-    const p: Vec3 = [packed.spotLightsData[o]!, packed.spotLightsData[o + 1]!, packed.spotLightsData[o + 2]!];
-    const rad: Vec3 = [packed.spotLightsData[o + 8]!, packed.spotLightsData[o + 9]!, packed.spotLightsData[o + 10]!];
-    extend(p);
-    powers.push(emitterPower(rad, { kind: 'delta' }));
-    centroids.push(p);
-    aabbs.push(pointAabb(p));
-  }
-  // 3. rect/disc-area lights — stride 16 (position, uAxis, vAxis, radiance).
-  //    Quad area = 4·|u×v| (matches the WGSL area-light NEE term).
-  for (let i = 0; i < packed.rectAreaLightCount; i++) {
-    const o = i * 16;
-    const p: Vec3 = [packed.rectAreaLightsData[o]!, packed.rectAreaLightsData[o + 1]!, packed.rectAreaLightsData[o + 2]!];
-    const u: Vec3 = [packed.rectAreaLightsData[o + 4]!, packed.rectAreaLightsData[o + 5]!, packed.rectAreaLightsData[o + 6]!];
-    const v: Vec3 = [packed.rectAreaLightsData[o + 8]!, packed.rectAreaLightsData[o + 9]!, packed.rectAreaLightsData[o + 10]!];
-    const rad: Vec3 = [packed.rectAreaLightsData[o + 12]!, packed.rectAreaLightsData[o + 13]!, packed.rectAreaLightsData[o + 14]!];
-    const cross: Vec3 = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-    const area = 4 * Math.hypot(cross[0], cross[1], cross[2]);
-    // AABB = the four corners p ± u ± v.
-    const cx = [Math.abs(u[0]) + Math.abs(v[0]), Math.abs(u[1]) + Math.abs(v[1]), Math.abs(u[2]) + Math.abs(v[2])] as const;
-    const min: Vec3 = [p[0] - cx[0], p[1] - cx[1], p[2] - cx[2]];
-    const max: Vec3 = [p[0] + cx[0], p[1] + cx[1], p[2] + cx[2]];
-    extend(min); extend(max);
-    powers.push(emitterPower(rad, { kind: 'area', area }));
-    centroids.push(p);
-    aabbs.push({ min, max });
-  }
-  // 4. mesh-area lights — stride 16 (triA, triB, triC, radiance).
-  //    Triangle area = 0.5·|（B−A)×(C−A)| (matches the WGSL mesh-area NEE term).
-  for (let i = 0; i < packed.meshAreaLightCount; i++) {
-    const o = i * 16;
-    const a: Vec3 = [packed.meshAreaLightsData[o]!, packed.meshAreaLightsData[o + 1]!, packed.meshAreaLightsData[o + 2]!];
-    const b: Vec3 = [packed.meshAreaLightsData[o + 4]!, packed.meshAreaLightsData[o + 5]!, packed.meshAreaLightsData[o + 6]!];
-    const c: Vec3 = [packed.meshAreaLightsData[o + 8]!, packed.meshAreaLightsData[o + 9]!, packed.meshAreaLightsData[o + 10]!];
-    const rad: Vec3 = [packed.meshAreaLightsData[o + 12]!, packed.meshAreaLightsData[o + 13]!, packed.meshAreaLightsData[o + 14]!];
-    const ab: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-    const ac: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-    const cross: Vec3 = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];
-    const area = 0.5 * Math.hypot(cross[0], cross[1], cross[2]);
-    const centroid: Vec3 = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
-    const min: Vec3 = [Math.min(a[0], b[0], c[0]), Math.min(a[1], b[1], c[1]), Math.min(a[2], b[2], c[2])];
-    const max: Vec3 = [Math.max(a[0], b[0], c[0]), Math.max(a[1], b[1], c[1]), Math.max(a[2], b[2], c[2])];
-    extend(min); extend(max);
-    powers.push(emitterPower(rad, { kind: 'area', area }));
-    centroids.push(centroid);
-    aabbs.push({ min, max });
+  // Positional selectable lights, in the EXACT walk order shared with the BDPT
+  // emitter-pick oracle (point[8] → spot[12] → rect[16] → mesh[16]). The stride
+  // arithmetic is single-sourced in `walkPositionalEmitters`; the per-kind power /
+  // centroid / AABB derivation stays here because it is light-tree-specific.
+  for (const e of walkPositionalEmitters(packed)) {
+    switch (e.kind) {
+      case 'point':
+      case 'spot': {
+        // Point + spot: delta lights at `position`, AABB collapses to the point.
+        const p = e.position;
+        extend(p);
+        powers.push(emitterPower(e.radiance, { kind: 'delta' }));
+        centroids.push(p);
+        aabbs.push(pointAabb(p));
+        break;
+      }
+      case 'rect': {
+        // rect/disc-area — quad area = 4·|u×v| (matches the WGSL area-light NEE
+        // term). AABB = the four corners p ± u ± v.
+        const p = e.position;
+        const u = e.uAxis;
+        const v = e.vAxis;
+        const area = rectQuadArea(u, v);
+        const cx = [Math.abs(u[0]) + Math.abs(v[0]), Math.abs(u[1]) + Math.abs(v[1]), Math.abs(u[2]) + Math.abs(v[2])] as const;
+        const min: Vec3 = [p[0] - cx[0], p[1] - cx[1], p[2] - cx[2]];
+        const max: Vec3 = [p[0] + cx[0], p[1] + cx[1], p[2] + cx[2]];
+        extend(min); extend(max);
+        powers.push(emitterPower(e.radiance, { kind: 'area', area }));
+        centroids.push(p);
+        aabbs.push({ min, max });
+        break;
+      }
+      case 'mesh': {
+        // mesh-area — triangle area = 0.5·|(B−A)×(C−A)| (matches the WGSL term).
+        const a = e.triA;
+        const b = e.triB;
+        const c = e.triC;
+        const area = meshTriangleArea(a, b, c);
+        const centroid: Vec3 = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
+        const min: Vec3 = [Math.min(a[0], b[0], c[0]), Math.min(a[1], b[1], c[1]), Math.min(a[2], b[2], c[2])];
+        const max: Vec3 = [Math.max(a[0], b[0], c[0]), Math.max(a[1], b[1], c[1]), Math.max(a[2], b[2], c[2])];
+        extend(min); extend(max);
+        powers.push(emitterPower(e.radiance, { kind: 'area', area }));
+        centroids.push(centroid);
+        aabbs.push({ min, max });
+        break;
+      }
+    }
   }
 
   // Union AABB of positional lights (origin if there were none).

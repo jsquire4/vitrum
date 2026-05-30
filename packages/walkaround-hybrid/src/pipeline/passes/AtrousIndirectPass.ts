@@ -34,6 +34,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { runAtrousChain } from './dispatchHelpers.js';
 
 const ATROUS_INDIRECT_ITERATIONS = 4;
 
@@ -77,27 +78,23 @@ export class AtrousIndirectPass implements Pass {
       sigmaZ: inputs.atrousIndirectSigmas[1],
       sigmaC: inputs.atrousIndirectSigmas[2],
     };
-    let inputTex: GPUTexture = frameState.indirectAccumOut;
-    for (let iter = 0; iter < ATROUS_INDIRECT_ITERATIONS; iter++) {
-      const stepWidth = 1 << iter;
-      const outputTex = iter % 2 === 0
-        ? common.indirectDenoisedPingTexture
-        : common.indirectDenoisedPongTexture;
-      const bg = buildAtrousBindGroup(
-        device, bglCache, this._uboRef,
-        inputTex.createView(), outputTex.createView(),
-        gNormalDepthView, gNormalDepthView, stepWidth,
-        sigmas,
-      );
-      const label = `atrous-indirect-${iter}` as PassLabel;
-      const pass = encoder.beginComputePass(computeDesc(label));
-      pass.setPipeline(this._sharedAtrousPipeline);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outputTex;
-    }
-    frameState.denoisedIndirect = inputTex;
+    frameState.denoisedIndirect = runAtrousChain(encoder, this._sharedAtrousPipeline, {
+      iterations: ATROUS_INDIRECT_ITERATIONS,
+      startTex: frameState.indirectAccumOut,
+      pingTex: common.indirectDenoisedPingTexture,
+      pongTex: common.indirectDenoisedPongTexture,
+      wgX: wgX16,
+      wgY: wgY16,
+      computeDesc,
+      bindGroupFor: (iter, inputView, outputView) =>
+        buildAtrousBindGroup(
+          device, bglCache, this._uboRef,
+          inputView, outputView,
+          gNormalDepthView, gNormalDepthView, 1 << iter,
+          sigmas,
+        ),
+      labelFor: (iter) => `atrous-indirect-${iter}` as PassLabel,
+    });
   }
 
   dispose(): void {

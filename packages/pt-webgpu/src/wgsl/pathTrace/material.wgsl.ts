@@ -20,122 +20,89 @@ import { lightTreeWgsl } from '@vitrum/shared-samplers';
  *  - `ggxD`, `smithG1`, `powerHeuristic` — microfacet + MIS helpers
  *  - `DecodedMaterial` struct + `decodeMaterial` reader
  */
+/**
+ * Shared `FrameParams` UBO struct + `@group(0)` bindings 0–11 — written ONCE
+ * and reused by both the lite-tier bindings and the full-tier group-0 bindings.
+ *
+ * The two tiers differ only in (a) a trailing comment on `triIntersectEpsilon`
+ * (full-tier annotates the UBO-plumbing) and (b) the full tier's extra
+ * bindings 12–13 (motion vectors + variance-moments aux). Both differences are
+ * supplied as parameters so the composed strings stay byte-identical to the
+ * pre-dedup monolithic consts.
+ *
+ * @param epsilonSuffix  appended after `triIntersectEpsilon: f32,` (empty for
+ *   lite; the UBO-plumbing comment for full).
+ * @param extraBindings  appended after binding 11 (empty for lite; bindings
+ *   12–13 for full). Includes its own leading newline when non-empty.
+ */
+function frameParamsGroup0Bindings(epsilonSuffix: string, extraBindings: string): string {
+  return /* wgsl */ `
+struct FrameParams {
+  width: u32,
+  height: u32,
+  frameIndex: u32,
+  frameSeed: u32,
+  triangleCount: u32,
+  maxBounces: u32,
+  bvhNodeCount: u32,
+  analyticCount: u32,
+  pointLightCount: u32,
+  spotLightCount: u32,
+  rectAreaLightCount: u32,
+  meshAreaLightCount: u32,
+  mneeMaxIterations: u32,
+  mneeMaxChainLength: u32,
+  hasEnvironmentMap: u32,
+  causticStrategy: u32,
+  environmentMapWidth: u32,
+  environmentMapHeight: u32,
+  triIntersectEpsilon: f32,${epsilonSuffix}
+  tlasNodeCount: u32,
+  spectralEnabled: u32,
+  heroStrategy: u32,
+  heroLambdaNm: f32,
+  heroPdf: f32,
+  cmfIntegralX: f32,
+  cmfIntegralY: f32,
+  cmfIntegralZ: f32,
+  bdptEnabled: u32,
+  bdptMaxLightBounces: u32,
+  bdptMaxEyeDepth: u32,
+  lightTreeEnabled: u32,
+  lightTreeNodeCount: u32,
+  cameraPos: vec4f,
+  lightDir: vec4f,
+  environmentTint: vec4f,
+  environmentSun: vec4f,
+  invViewProj: mat4x4f,
+  viewProj: mat4x4f,
+  prevViewProj: mat4x4f,
+};
+
+@group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(1) var<uniform> params: FrameParams;
+@group(0) @binding(2) var<storage, read_write> accumBuffer: array<vec4f>;
+@group(0) @binding(3) var<storage, read> positions: array<vec4f>;
+@group(0) @binding(4) var<storage, read> indices: array<vec4u>;
+@group(0) @binding(5) var<storage, read> triMaterialIds: array<u32>;
+@group(0) @binding(6) var<storage, read> materials: array<vec4f>;
+@group(0) @binding(7) var<storage, read> bvhNodes: array<BVHNode>;
+@group(0) @binding(8) var<storage, read> normals: array<vec4f>;
+@group(0) @binding(9) var normalDepthTexture: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(10) var albedoTexture: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;${extraBindings}
+`;
+}
+
 /** Bindings 0–11: core mesh path trace + G-buffer aux (≤8 storage buffers, ≤4 storage textures). */
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_WGSL = /* wgsl */ `
-struct FrameParams {
-  width: u32,
-  height: u32,
-  frameIndex: u32,
-  frameSeed: u32,
-  triangleCount: u32,
-  maxBounces: u32,
-  bvhNodeCount: u32,
-  analyticCount: u32,
-  pointLightCount: u32,
-  spotLightCount: u32,
-  rectAreaLightCount: u32,
-  meshAreaLightCount: u32,
-  mneeMaxIterations: u32,
-  mneeMaxChainLength: u32,
-  hasEnvironmentMap: u32,
-  causticStrategy: u32,
-  environmentMapWidth: u32,
-  environmentMapHeight: u32,
-  triIntersectEpsilon: f32,
-  tlasNodeCount: u32,
-  spectralEnabled: u32,
-  heroStrategy: u32,
-  heroLambdaNm: f32,
-  heroPdf: f32,
-  cmfIntegralX: f32,
-  cmfIntegralY: f32,
-  cmfIntegralZ: f32,
-  bdptEnabled: u32,
-  bdptMaxLightBounces: u32,
-  bdptMaxEyeDepth: u32,
-  lightTreeEnabled: u32,
-  lightTreeNodeCount: u32,
-  cameraPos: vec4f,
-  lightDir: vec4f,
-  environmentTint: vec4f,
-  environmentSun: vec4f,
-  invViewProj: mat4x4f,
-  viewProj: mat4x4f,
-  prevViewProj: mat4x4f,
-};
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_WGSL = frameParamsGroup0Bindings('', '');
 
-@group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(1) var<uniform> params: FrameParams;
-@group(0) @binding(2) var<storage, read_write> accumBuffer: array<vec4f>;
-@group(0) @binding(3) var<storage, read> positions: array<vec4f>;
-@group(0) @binding(4) var<storage, read> indices: array<vec4u>;
-@group(0) @binding(5) var<storage, read> triMaterialIds: array<u32>;
-@group(0) @binding(6) var<storage, read> materials: array<vec4f>;
-@group(0) @binding(7) var<storage, read> bvhNodes: array<BVHNode>;
-@group(0) @binding(8) var<storage, read> normals: array<vec4f>;
-@group(0) @binding(9) var normalDepthTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(10) var albedoTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;
-`;
-
-export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = /* wgsl */ `
-struct FrameParams {
-  width: u32,
-  height: u32,
-  frameIndex: u32,
-  frameSeed: u32,
-  triangleCount: u32,
-  maxBounces: u32,
-  bvhNodeCount: u32,
-  analyticCount: u32,
-  pointLightCount: u32,
-  spotLightCount: u32,
-  rectAreaLightCount: u32,
-  meshAreaLightCount: u32,
-  mneeMaxIterations: u32,
-  mneeMaxChainLength: u32,
-  hasEnvironmentMap: u32,
-  causticStrategy: u32,
-  environmentMapWidth: u32,
-  environmentMapHeight: u32,
-  triIntersectEpsilon: f32, // UBO-plumbed (D12); default metre-scale
-  tlasNodeCount: u32,
-  spectralEnabled: u32,
-  heroStrategy: u32,
-  heroLambdaNm: f32,
-  heroPdf: f32,
-  cmfIntegralX: f32,
-  cmfIntegralY: f32,
-  cmfIntegralZ: f32,
-  bdptEnabled: u32,
-  bdptMaxLightBounces: u32,
-  bdptMaxEyeDepth: u32,
-  lightTreeEnabled: u32,
-  lightTreeNodeCount: u32,
-  cameraPos: vec4f,
-  lightDir: vec4f,
-  environmentTint: vec4f,
-  environmentSun: vec4f,
-  invViewProj: mat4x4f,
-  viewProj: mat4x4f,
-  prevViewProj: mat4x4f,
-};
-
-@group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(1) var<uniform> params: FrameParams;
-@group(0) @binding(2) var<storage, read_write> accumBuffer: array<vec4f>;
-@group(0) @binding(3) var<storage, read> positions: array<vec4f>;
-@group(0) @binding(4) var<storage, read> indices: array<vec4u>;
-@group(0) @binding(5) var<storage, read> triMaterialIds: array<u32>;
-@group(0) @binding(6) var<storage, read> materials: array<vec4f>;
-@group(0) @binding(7) var<storage, read> bvhNodes: array<BVHNode>;
-@group(0) @binding(8) var<storage, read> normals: array<vec4f>;
-@group(0) @binding(9) var normalDepthTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(10) var albedoTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(11) var varianceTexture: texture_storage_2d<rgba16float, write>;
+export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP0_WGSL = frameParamsGroup0Bindings(
+  ' // UBO-plumbed (D12); default metre-scale',
+  `
 @group(0) @binding(12) var motionVectorsTexture: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(13) var<storage, read_write> varianceMomentsBuffer: array<vec4f>;
-`;
+@group(0) @binding(13) var<storage, read_write> varianceMomentsBuffer: array<vec4f>;`,
+);
 
 /** Group 1 — analytics + env + area lights (10 storage buffers; adapters ≥10/stage). */
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `

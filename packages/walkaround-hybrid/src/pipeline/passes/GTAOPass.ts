@@ -11,7 +11,6 @@
  * E1 — also reads hdrAlbedoOut (Item 24) for Jiménez 2016 §5.2 multi-bounce.
  */
 
-import { defineUbo } from '@vitrum/shared-samplers';
 import { buildGTAOBindGroup } from '../bindGroupBuilders.js';
 import type {
   Pass,
@@ -20,23 +19,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
-
-// W2-C13 follow-up — GTAOUniforms: 6 active f32 followed by 2 explicit f32
-// pad slots to reach the 32-byte buffer size that `gtao.wgsl` declares and
-// that `gtaoUpsample.wgsl` re-binds (`resourceManager` allocates 32 B). The
-// 6th active field `gtaoDownscale` (2 = half-res, 4 = quarter-res) was the
-// former inert `_pad0` slot; both gtao.wgsl + gtaoUpsample.wgsl read it to map
-// between the AO grid and full-res coords (replacing the prior hardcoded ÷2).
-const GTAO_UBO = defineUbo([
-  { name: 'tanFovHalf',          type: 'f32' },
-  { name: 'radiusPx',            type: 'f32' },
-  { name: 'intensity',           type: 'f32' },
-  { name: 'depthThresh',         type: 'f32' },
-  { name: 'bilateralDepthSigma', type: 'f32' },
-  { name: 'gtaoDownscale',       type: 'f32' },
-  { name: '_pad1',               type: 'f32' },
-  { name: '_pad2',               type: 'f32' },
-] as const);
+import { GTAO_UBO } from './uboLayouts.js';
 
 export class GTAOPass implements Pass {
   readonly id = 'gtao' as const;

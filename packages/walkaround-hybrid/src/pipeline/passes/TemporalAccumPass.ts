@@ -22,6 +22,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class TemporalAccumPass implements Pass {
   readonly id = 'temporalAccum' as const;
@@ -46,7 +47,7 @@ export class TemporalAccumPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, wgX16, wgY16, frameState } = ctx;
+    const { device, bglCache, frameState } = ctx;
     const bg = buildAccumBindGroup(
       device, bglCache, this._uboRef,
       frameState.combinedDenoised.createView(),
@@ -54,11 +55,7 @@ export class TemporalAccumPass implements Pass {
       frameState.writeAccum.createView(),
       frameState.alpha,
     );
-    const pass = encoder.beginComputePass(computeDesc('temporalAccum'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgX16, wgY16, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'temporalAccum', { wg16: true });
   }
 
   dispose(): void {}

@@ -53,6 +53,7 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { TEMPORAL_GI_COMMON_WGSL } from './temporalGiCommon.wgsl.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // OFF (default) — verbatim Sprint-17 temporal reuse. Single @group(0) bindings,
@@ -76,43 +77,7 @@ export const TEMPORAL_GI_WGSL = /* wgsl */ `
 // without introducing motion lag (the camera-move reset path forces α=1
 // and discards prev independently). Library consumers override via
 // HybridEngineOptions.restirGiMClamp.
-// Geometric-rejection thresholds for "is this the same world surface".
-// 0.1 × current depth = 10 % depth tolerance — generous enough for sub-pixel
-// jitter and 1-frame camera motion, tight enough to reject occlusion changes.
-const DEPTH_REL_TOL: f32 = 0.1;
-const NORMAL_DOT_MIN: f32 = 0.906; // cos(25°)
-
-fn worldFromHalfPx_temporal(halfPx: vec2u, depth: f32, fullDims: vec2u) -> vec3f {
-  // Full-res sample centre for this half-res pixel.
-  let fullPx = halfPx * 2u + 1u;
-  let uv = (vec2f(f32(fullPx.x), f32(fullPx.y)) + 0.5) / vec2f(f32(fullDims.x), f32(fullDims.y));
-  let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-  let invVP = invertMat4_common(ubo.projMatrix * ubo.viewMatrix);
-  let far4 = invVP * vec4f(ndc, 1.0, 1.0);
-  let near4 = invVP * vec4f(ndc, -1.0, 1.0);
-  // Guard: invertMat4_common returns zero matrix for near-singular det; the
-  // raw /w would then NaN-poison the ray. See generatePrimaryRay_common for
-  // the canonical handling.
-  let farW  = far4.xyz  / select(1.0, far4.w,  abs(far4.w)  > 1e-30);
-  let nearW = near4.xyz / select(1.0, near4.w, abs(near4.w) > 1e-30);
-  let dir = safe_normalize(farW - nearW);
-  // Reconstruct world from linear depth = distance along ray from camera.
-  return ubo.cameraPos + dir * depth;
-}
-
-fn projectToPrevHalfPx(worldPos: vec3f, halfDims: vec2u, fullDims: vec2u) -> vec2i {
-  // Use previous-frame view matrix; projection assumed constant (typical
-  // case for a non-zooming camera; even with FOV changes the reprojected
-  // pixel is still a reasonable starting candidate).
-  let prevClip = ubo.projMatrix * ubo.prevViewMatrix * vec4f(worldPos, 1.0);
-  if (prevClip.w <= 1e-6) { return vec2i(-1, -1); }
-  let ndc = prevClip.xyz / prevClip.w;
-  if (any(abs(ndc.xy) > vec2f(1.0))) { return vec2i(-1, -1); }
-  let uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-  let fullPxF = uv * vec2f(f32(fullDims.x), f32(fullDims.y));
-  let halfPxF = fullPxF * 0.5;
-  return vec2i(floor(halfPxF));
-}
+${TEMPORAL_GI_COMMON_WGSL}
 
 @compute @workgroup_size(8, 8, 1)
 fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -286,43 +251,7 @@ fn tgiReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
 // without introducing motion lag (the camera-move reset path forces α=1
 // and discards prev independently). Library consumers override via
 // HybridEngineOptions.restirGiMClamp.
-// Geometric-rejection thresholds for "is this the same world surface".
-// 0.1 × current depth = 10 % depth tolerance — generous enough for sub-pixel
-// jitter and 1-frame camera motion, tight enough to reject occlusion changes.
-const DEPTH_REL_TOL: f32 = 0.1;
-const NORMAL_DOT_MIN: f32 = 0.906; // cos(25°)
-
-fn worldFromHalfPx_temporal(halfPx: vec2u, depth: f32, fullDims: vec2u) -> vec3f {
-  // Full-res sample centre for this half-res pixel.
-  let fullPx = halfPx * 2u + 1u;
-  let uv = (vec2f(f32(fullPx.x), f32(fullPx.y)) + 0.5) / vec2f(f32(fullDims.x), f32(fullDims.y));
-  let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-  let invVP = invertMat4_common(ubo.projMatrix * ubo.viewMatrix);
-  let far4 = invVP * vec4f(ndc, 1.0, 1.0);
-  let near4 = invVP * vec4f(ndc, -1.0, 1.0);
-  // Guard: invertMat4_common returns zero matrix for near-singular det; the
-  // raw /w would then NaN-poison the ray. See generatePrimaryRay_common for
-  // the canonical handling.
-  let farW  = far4.xyz  / select(1.0, far4.w,  abs(far4.w)  > 1e-30);
-  let nearW = near4.xyz / select(1.0, near4.w, abs(near4.w) > 1e-30);
-  let dir = safe_normalize(farW - nearW);
-  // Reconstruct world from linear depth = distance along ray from camera.
-  return ubo.cameraPos + dir * depth;
-}
-
-fn projectToPrevHalfPx(worldPos: vec3f, halfDims: vec2u, fullDims: vec2u) -> vec2i {
-  // Use previous-frame view matrix; projection assumed constant (typical
-  // case for a non-zooming camera; even with FOV changes the reprojected
-  // pixel is still a reasonable starting candidate).
-  let prevClip = ubo.projMatrix * ubo.prevViewMatrix * vec4f(worldPos, 1.0);
-  if (prevClip.w <= 1e-6) { return vec2i(-1, -1); }
-  let ndc = prevClip.xyz / prevClip.w;
-  if (any(abs(ndc.xy) > vec2f(1.0))) { return vec2i(-1, -1); }
-  let uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-  let fullPxF = uv * vec2f(f32(fullDims.x), f32(fullDims.y));
-  let halfPxF = fullPxF * 0.5;
-  return vec2i(floor(halfPxF));
-}
+${TEMPORAL_GI_COMMON_WGSL}
 
 @compute @workgroup_size(8, 8, 1)
 fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {

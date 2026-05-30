@@ -7,11 +7,12 @@
 
 import {
   readOidnInputsFromTextures,
+  type OidnReadbackFn,
   type OidnReadbackResult,
   type OidnTextureSources,
 } from './rgba16fReadback.js';
 
-export type { OidnReadbackResult, OidnTextureSources } from './rgba16fReadback.js';
+export type { OidnReadbackFn, OidnReadbackResult, OidnTextureSources } from './rgba16fReadback.js';
 
 export interface OIDNFinalDispatcherOptions {
   readonly modelUrl: string;
@@ -50,13 +51,6 @@ export interface OIDNBridgeLike {
 }
 
 export type OIDNBridgeLoader = () => Promise<OIDNBridgeLike>;
-
-export type OidnReadbackFn = (
-  device: GPUDevice,
-  sources: OidnTextureSources,
-  width: number,
-  height: number,
-) => Promise<OidnReadbackResult>;
 
 const _defaultLoader: OIDNBridgeLoader = async () => {
   const mod = await import('@vitrum/shared-denoisers');

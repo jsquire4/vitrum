@@ -183,6 +183,12 @@ export function dispatchSharedBindGroupPass(
     /** Dispatch at half resolution (`halfWgX/halfWgY`) instead of full
      *  (`wgX/wgY`). Used by the Sprint-16 gi-ris pass. */
     readonly halfRes?: boolean;
+    /** Additional bind groups bound at explicit slots AFTER the shared
+     *  0/1/2 (+ optional 3) groups — e.g. the NRC `@group(4)` group for the
+     *  gi-ris compile-time NRC variant. Bound in array order; each entry's
+     *  `slot` must match the compiled pipeline layout. Empty/absent ⇒ the
+     *  byte-identical pre-extraGroups dispatch. */
+    readonly extraGroups?: ReadonlyArray<{ readonly slot: number; readonly group: GPUBindGroup }>;
   },
 ): void {
   const {
@@ -196,6 +202,9 @@ export function dispatchSharedBindGroupPass(
   pass.setBindGroup(1, sceneBindGroup);
   pass.setBindGroup(2, uboBindGroup);
   if (opts.useHybridLayers) pass.setBindGroup(3, hybridLayersBindGroup);
+  if (opts.extraGroups) {
+    for (const { slot, group } of opts.extraGroups) pass.setBindGroup(slot, group);
+  }
   const dx = opts.halfRes ? halfWgX : wgX;
   const dy = opts.halfRes ? halfWgY : wgY;
   pass.dispatchWorkgroups(dx, dy, 1);

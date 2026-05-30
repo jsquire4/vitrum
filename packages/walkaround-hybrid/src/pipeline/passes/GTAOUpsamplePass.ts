@@ -14,6 +14,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class GTAOUpsamplePass implements Pass {
   readonly id = 'gtao-upsample' as const;
@@ -36,7 +37,7 @@ export class GTAOUpsamplePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX, wgY } = ctx;
+    const { device, bglCache, resources } = ctx;
     const bg = buildGTAOUpsampleBindGroup(
       device, bglCache,
       resources.gtao.aoHalfTexture.createView(),
@@ -44,11 +45,7 @@ export class GTAOUpsamplePass implements Pass {
       resources.gtao.aoFullTexture.createView(),
       resources.gtao.gtaoUboBuffer,
     );
-    const pass = encoder.beginComputePass(computeDesc('gtao-upsample'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gtao-upsample');
   }
 
   dispose(): void {}

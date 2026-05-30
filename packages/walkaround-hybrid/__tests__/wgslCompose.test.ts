@@ -569,6 +569,40 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// 4b. Theme-C temporalGiCommon dedup — byte-identity pin.
+//
+// Task 2.2 Item 5 hoisted the geometric-rejection consts + projectToPrevHalfPx
+// (shared verbatim between the OFF and GRIS temporal-GI bodies) into the
+// `temporalGiCommon` fragment, and DELETED the dead `worldFromHalfPx_temporal`
+// helper (defined in both copies, called by neither — the pass reprojects via
+// rCur.xv). The composed strings must therefore be byte-identical EXCEPT for the
+// absence of that one dead function. These pins enforce exactly that.
+// ──────────────────────────────────────────────────────────────────────────
+describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted dead fn)', () => {
+  // The dead helper that Item 5 deleted (one of two sanctioned deletions). It
+  // must be absent from BOTH temporal-GI bodies and from their composed roots.
+  const deadFnSig = 'fn worldFromHalfPx_temporal';
+
+  it('the dead worldFromHalfPx_temporal helper is gone from both temporal-GI bodies', () => {
+    expect(TEMPORAL_GI_WGSL).not.toContain(deadFnSig);
+    expect(TEMPORAL_GI_GRIS_WGSL).not.toContain(deadFnSig);
+  });
+
+  it('the shared helpers (consts + projectToPrevHalfPx) appear exactly once per body', () => {
+    for (const body of [TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL]) {
+      expect(body.split('const DEPTH_REL_TOL: f32 = 0.1;').length - 1).toBe(1);
+      expect(body.split('const NORMAL_DOT_MIN: f32 = 0.906;').length - 1).toBe(1);
+      expect(body.split('fn projectToPrevHalfPx(').length - 1).toBe(1);
+    }
+  });
+
+  it('both temporal-GI compose-roots are free of the dead fn (composer adds nothing that resurrects it)', () => {
+    expect(composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES)).not.toContain(deadFnSig);
+    expect(composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES)).not.toContain(deadFnSig);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // 5. Theme-D guard — the @group(1) scene BVH binding block is NOT hoistable
 //    into a shared `sceneBindings` fragment without changing the composed
 //    bytes, so it stays inlined per consumer.

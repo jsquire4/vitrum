@@ -1,10 +1,28 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// ── Theme-C byte-identity pin ───────────────────────────────────────────────
+// Task 2.2 collapsed the compile-time-variant whole-body WGSL duplication
+// (intersectionCore, FrameParams group-0 bindings, shadePrologue) into shared
+// fragments. The CORE RULE is that the FINAL composed shader string for every
+// variant must be BYTE-IDENTICAL before vs after. This SHA256 pins the composed
+// full-tier trace string to the value captured from the pre-refactor code; a
+// single differing byte flips the hash and fails. If a future intentional WGSL
+// change lands, recompute the digest (sha256 of PT_WEBGPU_TRACE_WGSL) and update
+// it here in the same commit.
+describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
+  it('composed full-tier trace string matches the golden SHA256', () => {
+    const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
+    expect(digest).toBe('3fb63b3d012b8d80dcd0e1abdba3c19e34cf0724df10f976dd11df532d7055e8');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(149547);
+  });
+});
 
 describe('pt-webgpu WGSL material contract', () => {
   it('uses the bounded rich material payload layout', () => {

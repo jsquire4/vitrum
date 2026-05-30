@@ -7,6 +7,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class MotionVectorsPass implements Pass {
   readonly id = 'motion-vectors' as const;
@@ -26,15 +27,7 @@ export class MotionVectorsPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const {
-      device,
-      encoder,
-      bglCache,
-      resources,
-      computeDesc,
-      wgX,
-      wgY,
-    } = ctx;
+    const { device, bglCache, resources } = ctx;
     const bg = buildMotionVectorsBindGroup(
       device,
       bglCache,
@@ -42,11 +35,7 @@ export class MotionVectorsPass implements Pass {
       resources.common.motionVectorTexture.createView(),
       resources.common.uboBuffer,
     );
-    const pass = encoder.beginComputePass(computeDesc('motion-vectors'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'motion-vectors');
   }
 
   dispose(): void {}

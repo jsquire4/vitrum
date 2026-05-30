@@ -58,20 +58,14 @@ export class RISGIPass implements Pass {
       return;
     }
     // NRC ON — bind frame/scene/ubo/hybrid + the NRC @group(4), half-res.
-    const {
-      encoder, computeDesc,
-      frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup,
-      halfWgX, halfWgY,
-    } = ctx;
-    const pass = encoder.beginComputePass(computeDesc('gi-ris'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, frameBindGroup);
-    pass.setBindGroup(1, sceneBindGroup);
-    pass.setBindGroup(2, uboBindGroup);
-    pass.setBindGroup(3, hybridLayersBindGroup);
-    pass.setBindGroup(4, this._nrcBindGroup());
-    pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
-    pass.end();
+    // Byte-identical to the prior bespoke setBindGroup sequence: slots 0/1/2
+    // (+ hybrid @3 via useHybridLayers) then the NRC group at @4.
+    dispatchSharedBindGroupPass(ctx, this._pipeline, {
+      label: 'gi-ris',
+      useHybridLayers: true,
+      halfRes: true,
+      extraGroups: [{ slot: 4, group: this._nrcBindGroup() }],
+    });
   }
 
   dispose(): void {}
