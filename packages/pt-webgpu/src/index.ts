@@ -720,18 +720,42 @@ class PTEngineWebGPU implements Engine {
     const currentScene = this.#scene!;
     const currentPrimitive = currentScene.primitives.find((p) => p.id === id) ?? null;
     const nextScene = patchPrimitiveInScene(currentScene, id, patch);
-    if (
-      currentPrimitive != null &&
-      this.#geoPack != null &&
-      this.#sceneBuffers != null &&
-      canFastPathGeometryPatch(currentPrimitive, patch)
-    ) {
-      const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
-        tlas: true,
-        resolveMaterialId: (pid) =>
-          materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
-      });
-      if (rebuilt.ok) {
+
+    // The incremental fast paths, in FIRST-ELIGIBLE-WINS order (geometry →
+    // topology-resize → analytic-transform → instanced-topology → transform →
+    // material). Each handler does its own re-upload work and returns a
+    // {@link FastPathCommit} on success, or `null` to fall through to the next
+    // handler (and, if none succeed, to the full `setScene` rebuild at the
+    // tail). The common commit — set `#geoPack`/invalidate-bind-groups when the
+    // handler asks, set `#scene`, drain the handler's warnings, then `reset()`
+    // — is hoisted out of the per-branch bodies below.
+    interface FastPathCommit {
+      /** When set, becomes the new `#geoPack` before bind-group invalidation. */
+      readonly geoPack?: ScenePackResult;
+      /** Geometry/topology handlers invalidate cached bind groups; the cheap
+       *  in-place writeBuffer handlers (analytic / transform / material) do not. */
+      readonly invalidateBindGroups: boolean;
+      /** Warnings to drain after committing (empty for the no-warning handlers). */
+      readonly warnings: readonly string[];
+    }
+
+    const fastPaths: ReadonlyArray<() => FastPathCommit | null> = [
+      // 1) geometry-refit: in-place BLAS rewrite (same vertex/index counts).
+      () => {
+        if (
+          currentPrimitive == null ||
+          this.#geoPack == null ||
+          this.#sceneBuffers == null ||
+          !canFastPathGeometryPatch(currentPrimitive, patch)
+        ) {
+          return null;
+        }
+        const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
+          tlas: true,
+          resolveMaterialId: (pid) =>
+            materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
+        });
+        if (!rebuilt.ok) return null;
         const sb = this.#sceneBuffers;
         const prevTlasFp = fingerprintTlasBuffers({
           tlasNodes: sb.tlasNodes,
@@ -752,103 +776,104 @@ class PTEngineWebGPU implements Engine {
         } else {
           uploadScenePackGeometry(this.#device, sb, rebuilt.pack);
         }
-        this.#geoPack = rebuilt.pack;
-        this.#gpu.invalidateBindGroups();
-        this.#scene = nextScene;
-        for (const warning of rebuilt.pack.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        return {
+          geoPack: rebuilt.pack,
+          invalidateBindGroups: true,
+          warnings: rebuilt.pack.warnings,
+        };
+      },
+      // 2) topology-resize: a (skinned-)mesh's vertex/index COUNT changed. Rebuild
+      // ONLY this primitive's BLAS and splice it into the packed scene — growing/
+      // shrinking the concat buffers and rebasing every downstream primitive's
+      // offsets + the TLAS BLAS roots. The concat buffers change SIZE, so the (5)
+      // BLAS + (5) TLAS GPU buffers must be reallocated (no in-place writeBuffer).
+      () => {
+        if (
+          currentPrimitive == null ||
+          this.#geoPack == null ||
+          this.#sceneBuffers == null ||
+          !canFastPathTopologyResizePatch(currentPrimitive, patch)
+        ) {
+          return null;
         }
-        this.reset();
-        return;
-      }
-    }
-    if (
-      currentPrimitive != null &&
-      this.#geoPack != null &&
-      this.#sceneBuffers != null &&
-      canFastPathTopologyResizePatch(currentPrimitive, patch)
-    ) {
-      // Slice-2: a (skinned-)mesh's vertex/index COUNT changed. Rebuild ONLY this
-      // primitive's BLAS and splice it into the packed scene — growing/shrinking
-      // the concat buffers and rebasing every downstream primitive's offsets +
-      // the TLAS BLAS roots. The concat buffers change SIZE, so the (5) BLAS +
-      // (5) TLAS GPU buffers must be reallocated (no in-place writeBuffer).
-      const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
-        tlas: true,
-        resolveMaterialId: (pid) =>
-          materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
-      });
-      if (rebuilt.ok) {
+        const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
+          tlas: true,
+          resolveMaterialId: (pid) =>
+            materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
+        });
+        // rebuildPrimitiveBlas rejected (primitive missing / not mesh-like) — fall
+        // through to the full setScene rebuild below.
+        if (!rebuilt.ok) return null;
         uploadScenePackGeometryRealloc(this.#device, this.#sceneBuffers, rebuilt.pack);
-        this.#geoPack = rebuilt.pack;
-        this.#gpu.invalidateBindGroups();
-        this.#scene = nextScene;
-        for (const warning of rebuilt.pack.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        return {
+          geoPack: rebuilt.pack,
+          invalidateBindGroups: true,
+          warnings: rebuilt.pack.warnings,
+        };
+      },
+      // 3) analytic-transform: in-place rewrite of one analytic primitive's
+      // local↔world matrices (no BVH touch).
+      () => {
+        if (
+          currentPrimitive == null ||
+          currentPrimitive.kind !== 'analytic' ||
+          this.#sceneBuffers == null ||
+          !canFastPathTransformPatch(currentPrimitive, patch)
+        ) {
+          return null;
         }
-        this.reset();
-        return;
-      }
-      // rebuildPrimitiveBlas rejected (primitive missing / not mesh-like) — fall
-      // through to the full setScene rebuild below.
-    }
-    if (
-      currentPrimitive != null &&
-      currentPrimitive.kind === 'analytic' &&
-      this.#sceneBuffers != null &&
-      canFastPathTransformPatch(currentPrimitive, patch)
-    ) {
-      const analyticIndex = analyticIndexForPrimitive(
-        nextScene,
-        id,
-        this.#supportedAnalyticShapes(),
-      );
-      if (analyticIndex != null) {
+        const analyticIndex = analyticIndexForPrimitive(
+          nextScene,
+          id,
+          this.#supportedAnalyticShapes(),
+        );
+        if (analyticIndex == null) return null;
         const nextPrimitive = nextScene.primitives.find((p) => p.id === id);
-        if (nextPrimitive != null && nextPrimitive.kind === 'analytic') {
-          const localToWorld = asMat4(nextPrimitive.transform ?? IDENTITY_MAT4);
-          const maybeWorldToLocal = invertMat4(localToWorld);
-          const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-          if (maybeWorldToLocal == null) {
-            console.warn(
-              `[vitrum/pt-webgpu] Primitive "${nextPrimitive.id}" has non-invertible analytic transform; using identity fallback.`,
-            );
-          }
-          const byteOffset = analyticIndex * 16 * Float32Array.BYTES_PER_ELEMENT;
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.analyticLocalToWorldBuffer,
-            byteOffset,
-            localToWorld.buffer,
-            localToWorld.byteOffset,
-            localToWorld.byteLength,
+        if (nextPrimitive == null || nextPrimitive.kind !== 'analytic') return null;
+        const localToWorld = asMat4(nextPrimitive.transform ?? IDENTITY_MAT4);
+        const maybeWorldToLocal = invertMat4(localToWorld);
+        const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
+        if (maybeWorldToLocal == null) {
+          console.warn(
+            `[vitrum/pt-webgpu] Primitive "${nextPrimitive.id}" has non-invertible analytic transform; using identity fallback.`,
           );
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.analyticWorldToLocalBuffer,
-            byteOffset,
-            worldToLocal.buffer,
-            worldToLocal.byteOffset,
-            worldToLocal.byteLength,
-          );
-          this.#sceneBuffers.analyticLocalToWorld.set(localToWorld, analyticIndex * 16);
-          this.#sceneBuffers.analyticWorldToLocal.set(worldToLocal, analyticIndex * 16);
-          this.#scene = nextScene;
-          this.reset();
-          return;
         }
-      }
-    }
-    if (
-      currentPrimitive != null &&
-      this.#geoPack != null &&
-      this.#sceneBuffers != null &&
-      canFastPathInstancedTopologyPatch(currentPrimitive, patch)
-    ) {
-      // Slice-1: instanced-mesh instance COUNT changed. BLAS geometry is shared
-      // across instances and byte-identical, so we rebuild only the TLAS
-      // (reusing the previous pack's BLAS arrays verbatim — no per-triangle
-      // buildArrayBvh) and reallocate only the 5 TLAS GPU buffers.
-      const rebuilt = rebuildTlasReuseBlas(nextScene, this.#geoPack);
-      if (rebuilt.ok) {
+        const byteOffset = analyticIndex * 16 * Float32Array.BYTES_PER_ELEMENT;
+        this.#device.queue.writeBuffer(
+          this.#sceneBuffers.analyticLocalToWorldBuffer,
+          byteOffset,
+          localToWorld.buffer,
+          localToWorld.byteOffset,
+          localToWorld.byteLength,
+        );
+        this.#device.queue.writeBuffer(
+          this.#sceneBuffers.analyticWorldToLocalBuffer,
+          byteOffset,
+          worldToLocal.buffer,
+          worldToLocal.byteOffset,
+          worldToLocal.byteLength,
+        );
+        this.#sceneBuffers.analyticLocalToWorld.set(localToWorld, analyticIndex * 16);
+        this.#sceneBuffers.analyticWorldToLocal.set(worldToLocal, analyticIndex * 16);
+        return { invalidateBindGroups: false, warnings: [] };
+      },
+      // 4) instanced-topology: instanced-mesh instance COUNT changed. BLAS
+      // geometry is shared across instances and byte-identical, so we rebuild
+      // only the TLAS (reusing the previous pack's BLAS arrays verbatim — no
+      // per-triangle buildArrayBvh) and reallocate only the 5 TLAS GPU buffers.
+      () => {
+        if (
+          currentPrimitive == null ||
+          this.#geoPack == null ||
+          this.#sceneBuffers == null ||
+          !canFastPathInstancedTopologyPatch(currentPrimitive, patch)
+        ) {
+          return null;
+        }
+        const rebuilt = rebuildTlasReuseBlas(nextScene, this.#geoPack);
+        // rebuildTlasReuseBlas rejected (e.g. concurrent geometry change) — fall
+        // through to the full setScene rebuild below.
+        if (!rebuilt.ok) return null;
         uploadScenePackTlasRealloc(this.#device, this.#sceneBuffers, {
           tlasNodes: rebuilt.pack.tlasNodes,
           tlasInstanceIndices: rebuilt.pack.tlasInstanceIndices,
@@ -858,77 +883,79 @@ class PTEngineWebGPU implements Engine {
           tlasNodeCount: rebuilt.pack.tlasNodeCount,
           primitiveTlasBindings: rebuilt.pack.primitiveTlasBindings,
         });
-        this.#geoPack = rebuilt.pack;
-        this.#gpu.invalidateBindGroups();
-        this.#scene = nextScene;
-        for (const warning of rebuilt.pack.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
+        return {
+          geoPack: rebuilt.pack,
+          invalidateBindGroups: true,
+          warnings: rebuilt.pack.warnings,
+        };
+      },
+      // 5) transform-only: rebuild the TLAS from the patched world transforms and
+      // upload in place (only when the TLAS buffer lengths are reusable).
+      () => {
+        if (
+          currentPrimitive == null ||
+          this.#sceneBuffers == null ||
+          !canFastPathTransformPatch(currentPrimitive, patch)
+        ) {
+          return null;
         }
-        this.reset();
-        return;
-      }
-      // rebuildTlasReuseBlas rejected (e.g. concurrent geometry change) — fall
-      // through to the full setScene rebuild below.
-    }
-    if (
-      currentPrimitive != null &&
-      this.#sceneBuffers != null &&
-      canFastPathTransformPatch(currentPrimitive, patch)
-    ) {
-      const tlas = rebuildTlasForSceneTransforms(
-        nextScene,
-        this.#sceneBuffers.primitiveTlasBindings,
-        {
-          tlasNodes: this.#sceneBuffers.tlasNodes,
-          tlasInstanceIndices: this.#sceneBuffers.tlasInstanceIndices,
-          tlasBlasRoots: this.#sceneBuffers.tlasBlasRoots,
-          tlasInstanceWorldToLocal: this.#sceneBuffers.tlasInstanceWorldToLocal,
-        },
-      );
-      if (tlas.ok && canReuseTlasBufferLengths(this.#sceneBuffers, tlas)) {
-        uploadScenePackTlasOnly(this.#device, this.#sceneBuffers, {
+        const sb = this.#sceneBuffers;
+        const tlas = rebuildTlasForSceneTransforms(nextScene, sb.primitiveTlasBindings, {
+          tlasNodes: sb.tlasNodes,
+          tlasInstanceIndices: sb.tlasInstanceIndices,
+          tlasBlasRoots: sb.tlasBlasRoots,
+          tlasInstanceWorldToLocal: sb.tlasInstanceWorldToLocal,
+        });
+        if (!tlas.ok || !canReuseTlasBufferLengths(sb, tlas)) return null;
+        uploadScenePackTlasOnly(this.#device, sb, {
           tlasNodes: tlas.tlasNodes,
           tlasInstanceIndices: tlas.tlasInstanceIndices,
           tlasBlasRoots: tlas.tlasBlasRoots,
           tlasInstanceWorldToLocal: tlas.tlasInstanceWorldToLocal,
           tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
           tlasNodeCount: Math.floor(tlas.tlasNodes.length / 8),
-          primitiveTlasBindings: this.#sceneBuffers.primitiveTlasBindings,
+          primitiveTlasBindings: sb.primitiveTlasBindings,
         });
-        this.#scene = nextScene;
-        for (const warning of tlas.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
-        }
-        this.reset();
-        return;
-      }
-    }
-    if (canFastPathMaterialPatch(patch) && this.#sceneBuffers != null) {
-      const materialIndex = materialIndexForPrimitive(
-        nextScene,
-        id,
-        this.#supportedAnalyticShapes(),
-      );
-      const primitive = nextScene.primitives.find((p) => p.id === id);
-      if (materialIndex != null && primitive != null) {
+        return { invalidateBindGroups: false, warnings: tlas.warnings };
+      },
+      // 6) material-only: in-place rewrite of one material slot.
+      () => {
+        if (!canFastPathMaterialPatch(patch) || this.#sceneBuffers == null) return null;
+        const materialIndex = materialIndexForPrimitive(
+          nextScene,
+          id,
+          this.#supportedAnalyticShapes(),
+        );
+        const primitive = nextScene.primitives.find((p) => p.id === id);
+        if (materialIndex == null || primitive == null) return null;
         const packed = materialToPackedVec4s(primitive.material);
-        if (packed.length === MATERIAL_FLOAT_STRIDE) {
-          const materialData = new Float32Array(packed);
-          const floatOffset = materialIndex * MATERIAL_FLOAT_STRIDE;
-          const byteOffset = floatOffset * Float32Array.BYTES_PER_ELEMENT;
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.materialsBuffer,
-            byteOffset,
-            materialData.buffer,
-            materialData.byteOffset,
-            materialData.byteLength,
-          );
-          this.#sceneBuffers.materials.set(materialData, floatOffset);
-          this.#scene = nextScene;
-          this.reset();
-          return;
-        }
+        if (packed.length !== MATERIAL_FLOAT_STRIDE) return null;
+        const materialData = new Float32Array(packed);
+        const floatOffset = materialIndex * MATERIAL_FLOAT_STRIDE;
+        const byteOffset = floatOffset * Float32Array.BYTES_PER_ELEMENT;
+        this.#device.queue.writeBuffer(
+          this.#sceneBuffers.materialsBuffer,
+          byteOffset,
+          materialData.buffer,
+          materialData.byteOffset,
+          materialData.byteLength,
+        );
+        this.#sceneBuffers.materials.set(materialData, floatOffset);
+        return { invalidateBindGroups: false, warnings: [] };
+      },
+    ];
+
+    for (const tryFastPath of fastPaths) {
+      const commit = tryFastPath();
+      if (commit == null) continue;
+      if (commit.geoPack != null) this.#geoPack = commit.geoPack;
+      if (commit.invalidateBindGroups) this.#gpu.invalidateBindGroups();
+      this.#scene = nextScene;
+      for (const warning of commit.warnings) {
+        console.warn(`[vitrum/pt-webgpu] ${warning}`);
       }
+      this.reset();
+      return;
     }
     this.setScene(nextScene);
   }

@@ -190,6 +190,30 @@ interface RenderSizePlan {
 // imported above. They are a separate concern from the shared snapshot-patch +
 // invariant layer.
 
+/**
+ * Outcome of a {@link PrimitivePatchHandler}'s `apply`, driving the single
+ * shared `updatePrimitive` epilogue:
+ *   • `'commit'`      — incremental fast path landed; run the shared commit
+ *                       (oidn invalidate + patchPrimitiveInScene);
+ *   • `'fallback'`    — incremental path declined; full-`setScene` rebuild;
+ *   • `'passthrough'` — classifier matched but the handler's own guard rejected
+ *                       it; continue to the next handler / tail full-rebuild.
+ */
+type PatchApplyOutcome = 'commit' | 'fallback' | 'passthrough';
+
+/**
+ * One entry in `updatePrimitive`'s ordered, first-match-wins dispatch table.
+ * `classify` is the `isXOnlyPatch` predicate; `apply` performs the THREE-side
+ * mutation (and, for geometry handlers, the fork's targeted geometry+BVH regen)
+ * and reports a {@link PatchApplyOutcome}. `apply` may throw on a missing-id
+ * mesh lookup — the throw propagates BEFORE any scene commit, exactly as the
+ * original per-branch `throw` did.
+ */
+interface PrimitivePatchHandler {
+  classify(patch: Partial<ScenePrimitive>): boolean;
+  apply(id: string, patch: Partial<ScenePrimitive>): PatchApplyOutcome;
+}
+
 interface SchedulerOptions {
   readonly qualityMode: PTEngineWebGL2QualityMode;
   readonly adaptive: boolean;
@@ -1109,144 +1133,193 @@ export class PTEngineWebGL2 implements Engine {
     if (this.#vitrumScene == null || this.#threeSceneRoot == null) {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
-    if (isMaterialOnlyPrimitivePatch(_patch)) {
-      // An expanded instanced-mesh has N THREE.Mesh children sharing the
-      // primitive id (and, at setScene time, one shared material). Re-point
-      // the material on ALL of them — `applyVitrumMaterialToMesh` REPLACES
-      // `mesh.material`, so applying to only the first child (what
-      // findMeshByPrimitiveId returns) would leave the other N-1 instances
-      // on the stale material. For a plain mesh this is the single match.
-      const meshes = findAllMeshesByPrimitiveId(this.#threeSceneRoot, _id);
-      if (meshes.length === 0) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
+
+    // Drive the incremental fast paths off an ordered, first-match-wins table of
+    // handlers — one per `isXOnlyPatch` classifier — rather than a linear chain
+    // of six near-identical `if … return` branches. Each handler `apply()`s its
+    // THREE-side mutation + (for the geometry handlers) the fork's targeted
+    // geometry+BVH regen, and reports a {@link PatchApplyOutcome}:
+    //   • `'commit'`      — fast path landed; run the shared commit epilogue
+    //                       (oidn invalidate + patchPrimitiveInScene) ONCE below;
+    //   • `'fallback'`    — incremental path declined (mutator or fork regen said
+    //                       no); take the shared full-`setScene` fallback below;
+    //   • `'passthrough'` — classifier matched but the handler's own guard
+    //                       rejected it (e.g. `instances` on a non-instanced
+    //                       primitive); continue to the next handler / tail.
+    // A missing-id mesh lookup throws inside `apply()` BEFORE any commit, exactly
+    // as the old per-branch `throw` did. ORDER is load-bearing (first match wins)
+    // and each handler's geometry-regen decision is preserved verbatim.
+    for (const handler of this.#primitivePatchHandlers) {
+      if (!handler.classify(_patch)) continue;
+      const outcome = handler.apply(_id, _patch);
+      if (outcome === 'passthrough') continue;
+      if (outcome === 'commit') {
+        this.#oidnDispatcher?.invalidate();
+        this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene!, _id, _patch);
+        return;
       }
-      for (const mesh of meshes) {
-        applyVitrumMaterialToMesh(mesh, _patch.material!);
-      }
-      const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
-      if (typeof tracerCompat.updateMaterials === 'function') {
-        tracerCompat.updateMaterials();
-      } else {
-        tracerCompat.reset();
-      }
-      this.#oidnDispatcher?.invalidate();
-      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
+      // 'fallback' — full rebuild from the patched scene.
+      const next = patchPrimitiveInScene(this.#vitrumScene!, _id, _patch);
+      this.setScene(next);
       return;
     }
-    if (isTransformOnlyPrimitivePatch(_patch)) {
-      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
-      if (mesh == null) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
-      }
-      const transform = (_patch as Partial<MeshPrimitive>).transform;
-      if (transform != null && transform.length >= 16) {
-        const m = new Matrix4().fromArray(Array.from(transform));
-        mesh.matrix.copy(m);
-        mesh.matrixWorld.copy(m);
-        mesh.matrixAutoUpdate = false;
-      }
-      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      this.#oidnDispatcher?.invalidate();
-      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-      return;
-    }
-    if (isPositionsOnlyPrimitivePatch(_patch)) {
-      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
-      if (mesh == null) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
-      }
-      const meshPatch = _patch as Partial<MeshPrimitive>;
-      if (!applyPositionsPatchToMesh(mesh, meshPatch)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      this.#oidnDispatcher?.invalidate();
-      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-      return;
-    }
-    if (isGeometryOnlyPrimitivePatch(_patch)) {
-      // Arbitrary same-material geometry surgery — including a vertex- or
-      // index-COUNT change — on ONE existing mesh. Rebuild that mesh's THREE
-      // BufferGeometry (positions/normals/uvs/tangents/indices) in place, then
-      // run the fork's targeted geometry+BVH regen. Because the patch carries no
-      // `material`, the regen's skipped `updateMaterials()` is harmless (the
-      // material slot is unchanged) — a material change would route through the
-      // material-only path or the full-rebuild fallthrough instead. The fork's
-      // StaticGeometryGenerator detects the changed attribute lengths and
-      // force-rebuilds the merged geometry + BVH (GEOMETRY_REBUILT), so no full
-      // `setScene` teardown / material+light re-pack is needed.
-      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
-      if (mesh == null) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
-      }
-      const meshPatch = _patch as Partial<MeshPrimitive>;
-      if (!applyGeometryPatchToMesh(mesh, meshPatch)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      this.#oidnDispatcher?.invalidate();
-      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-      return;
-    }
-    if (isInstanceCountOnlyPrimitivePatch(_patch)) {
-      // `instances`-only patch on an `instanced-mesh`: a per-instance transform
-      // list change, INCLUDING an instance-COUNT grow/shrink. At setScene the
-      // single THREE.InstancedMesh was expanded into N baked THREE.Mesh children
-      // (the fork bakes only `mesh.matrixWorld`, ignoring `instanceMatrix`), so
-      // an instances change is a topology change on the baked children, not a
-      // field the fork reads off a live InstancedMesh. Re-expand ONLY this
-      // primitive's children (swap the live root's N children for N' fresh ones,
-      // reusing the shared geometry + material), then take the fork's targeted
-      // geometry+BVH regen — the StaticGeometryGenerator detects the changed
-      // child set (added uuids built fresh, removed uuids evicted; a count delta
-      // forces GEOMETRY_REBUILT), exactly like the vertex-count path. Because
-      // `instances` carries no material, the regen's skipped `updateMaterials()`
-      // is harmless; a co-present material would have been blocked by the
-      // classifier and routed to the full-rebuild fallthrough.
-      //
-      // Guard on the CURRENT primitive's kind: a stray `instances` field on a
-      // non-instanced primitive is not a valid instanced re-expansion, so it
-      // falls through to the full-rebuild path below.
-      const current = this.#vitrumScene.primitives.find((p) => String(p.id) === _id);
-      if (current != null && current.kind === 'instanced-mesh') {
-        const instances = (_patch as Partial<InstancedMeshPrimitive>).instances;
-        if (instances != null) {
-          if (!reexpandInstancedMeshInScene(this.#threeSceneRoot, _id, instances)) {
-            // No existing expanded children to swap (generator state we can't
-            // incrementally patch) — full rebuild.
-            const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-            this.setScene(next);
-            return;
-          }
-          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-            const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-            this.setScene(next);
-            return;
-          }
-          this.#oidnDispatcher?.invalidate();
-          this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-          return;
-        }
-      }
-    }
+
+    // No fast path matched (or every matching handler passed through) — full
+    // rebuild.
     const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
     this.setScene(next);
+  }
+
+  /**
+   * Ordered, first-match-wins dispatch table backing {@link updatePrimitive}.
+   * The order MUST stay material -> transform -> positions -> geometry ->
+   * instance-count to preserve the original cascade's branch precedence; each
+   * `apply` reproduces exactly one of the original per-branch bodies (sans the
+   * shared commit epilogue, which `updatePrimitive` runs once). Lazily built so
+   * `this` is bound; cached because the table is `this`-stable.
+   */
+  #primitivePatchHandlersCache: readonly PrimitivePatchHandler[] | null = null;
+  get #primitivePatchHandlers(): readonly PrimitivePatchHandler[] {
+    if (this.#primitivePatchHandlersCache != null) return this.#primitivePatchHandlersCache;
+    const handlers: readonly PrimitivePatchHandler[] = [
+      {
+        // Material-only. NOTE: no geometry regen + no `setScene` fallback — this
+        // handler always 'commit's (or throws on a missing mesh).
+        classify: (patch) => isMaterialOnlyPrimitivePatch(patch),
+        apply: (id, patch) => {
+          // An expanded instanced-mesh has N THREE.Mesh children sharing the
+          // primitive id (and, at setScene time, one shared material). Re-point
+          // the material on ALL of them — `applyVitrumMaterialToMesh` REPLACES
+          // `mesh.material`, so applying to only the first child (what
+          // findMeshByPrimitiveId returns) would leave the other N-1 instances
+          // on the stale material. For a plain mesh this is the single match.
+          const meshes = findAllMeshesByPrimitiveId(this.#threeSceneRoot!, id);
+          if (meshes.length === 0) {
+            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
+          }
+          for (const mesh of meshes) {
+            applyVitrumMaterialToMesh(mesh, (patch as Partial<MeshPrimitive>).material!);
+          }
+          const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
+          if (typeof tracerCompat.updateMaterials === 'function') {
+            tracerCompat.updateMaterials();
+          } else {
+            tracerCompat.reset();
+          }
+          return 'commit';
+        },
+      },
+      {
+        // Transform-only.
+        classify: (patch) => isTransformOnlyPrimitivePatch(patch),
+        apply: (id, patch) => {
+          const mesh = findMeshByPrimitiveId(this.#threeSceneRoot!, id);
+          if (mesh == null) {
+            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
+          }
+          const transform = (patch as Partial<MeshPrimitive>).transform;
+          if (transform != null && transform.length >= 16) {
+            const m = new Matrix4().fromArray(Array.from(transform));
+            mesh.matrix.copy(m);
+            mesh.matrixWorld.copy(m);
+            mesh.matrixAutoUpdate = false;
+          }
+          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
+            return 'fallback';
+          }
+          return 'commit';
+        },
+      },
+      {
+        // Positions-only (same vertex count).
+        classify: (patch) => isPositionsOnlyPrimitivePatch(patch),
+        apply: (id, patch) => {
+          const mesh = findMeshByPrimitiveId(this.#threeSceneRoot!, id);
+          if (mesh == null) {
+            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
+          }
+          const meshPatch = patch as Partial<MeshPrimitive>;
+          if (!applyPositionsPatchToMesh(mesh, meshPatch)) {
+            return 'fallback';
+          }
+          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
+            return 'fallback';
+          }
+          return 'commit';
+        },
+      },
+      {
+        // Geometry-only — arbitrary same-material geometry surgery, INCLUDING a
+        // vertex- or index-COUNT change, on ONE existing mesh. Rebuild that
+        // mesh's THREE BufferGeometry (positions/normals/uvs/tangents/indices)
+        // in place, then run the fork's targeted geometry+BVH regen. Because the
+        // patch carries no `material`, the regen's skipped `updateMaterials()` is
+        // harmless (the material slot is unchanged) — a material change would
+        // route through the material-only handler or the full-rebuild
+        // fallthrough instead. The fork's StaticGeometryGenerator detects the
+        // changed attribute lengths and force-rebuilds the merged geometry + BVH
+        // (GEOMETRY_REBUILT), so no full `setScene` teardown / material+light
+        // re-pack is needed.
+        classify: (patch) => isGeometryOnlyPrimitivePatch(patch),
+        apply: (id, patch) => {
+          const mesh = findMeshByPrimitiveId(this.#threeSceneRoot!, id);
+          if (mesh == null) {
+            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
+          }
+          const meshPatch = patch as Partial<MeshPrimitive>;
+          if (!applyGeometryPatchToMesh(mesh, meshPatch)) {
+            return 'fallback';
+          }
+          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
+            return 'fallback';
+          }
+          return 'commit';
+        },
+      },
+      {
+        // Instance-count-only — an `instances`-only patch on an `instanced-mesh`:
+        // a per-instance transform list change, INCLUDING an instance-COUNT
+        // grow/shrink. At setScene the single THREE.InstancedMesh was expanded
+        // into N baked THREE.Mesh children (the fork bakes only
+        // `mesh.matrixWorld`, ignoring `instanceMatrix`), so an instances change
+        // is a topology change on the baked children, not a field the fork reads
+        // off a live InstancedMesh. Re-expand ONLY this primitive's children
+        // (swap the live root's N children for N' fresh ones, reusing the shared
+        // geometry + material), then take the fork's targeted geometry+BVH regen
+        // — the StaticGeometryGenerator detects the changed child set (added
+        // uuids built fresh, removed uuids evicted; a count delta forces
+        // GEOMETRY_REBUILT), exactly like the vertex-count path. Because
+        // `instances` carries no material, the regen's skipped `updateMaterials()`
+        // is harmless; a co-present material would have been blocked by the
+        // classifier and routed to the full-rebuild fallthrough.
+        //
+        // Guard on the CURRENT primitive's kind: a stray `instances` field on a
+        // non-instanced primitive is not a valid instanced re-expansion, so it
+        // 'passthrough's to the tail full-rebuild path.
+        classify: (patch) => isInstanceCountOnlyPrimitivePatch(patch),
+        apply: (id, patch) => {
+          const current = this.#vitrumScene!.primitives.find((p) => String(p.id) === id);
+          if (current == null || current.kind !== 'instanced-mesh') {
+            return 'passthrough';
+          }
+          const instances = (patch as Partial<InstancedMeshPrimitive>).instances;
+          if (instances == null) {
+            return 'passthrough';
+          }
+          if (!reexpandInstancedMeshInScene(this.#threeSceneRoot!, id, instances)) {
+            // No existing expanded children to swap (generator state we can't
+            // incrementally patch) — full rebuild.
+            return 'fallback';
+          }
+          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
+            return 'fallback';
+          }
+          return 'commit';
+        },
+      },
+    ];
+    this.#primitivePatchHandlersCache = handlers;
+    return handlers;
   }
 
   updateEmitter(_id: string, _patch: Partial<SceneEmitter>): void {

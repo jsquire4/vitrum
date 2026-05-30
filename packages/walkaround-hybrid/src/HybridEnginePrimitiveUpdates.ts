@@ -95,6 +95,21 @@ import type { DDGI } from './ddgi/DDGI.js';
 
 const REFIT_STRIDE = 4; // bvhPositions packs world xyz into [0..2] + uv-as-u32 in [3]
 
+/**
+ * Patch fields whose presence forces the full SAH `topologyRebuild` path
+ * (Option (a)) rather than a transform/positions fast path. `positions` is
+ * deliberately excluded — it has its own count-preserving refit fast path
+ * (which falls through to a rebuild internally on a vertex-count mismatch).
+ *
+ * Single source of truth: the `updatePrimitive` dispatcher in
+ * `HybridEngine.ts` imports this to decide routing; the routing-rules comments
+ * in both files reference the same list.
+ */
+export const TOPOLOGY_PATCH_FIELDS = [
+  'normals', 'uvs', 'tangents', 'indices',
+  'instances', 'params', 'shape', 'fallbackMesh', 'kind',
+] as const;
+
 /** Snapshot the live TLAS GPU buffers as the `prev` input to `refitTlasTransforms`. */
 function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGpuSnapshot {
   return {
@@ -187,6 +202,17 @@ export interface PrimitiveUpdateResult {
     readonly min: readonly [number, number, number];
     readonly max: readonly [number, number, number];
   };
+  /**
+   * Whether the engine should apply the GI-subsystem propagation epilogue
+   * (`_applyPrimitiveUpdateSubsystems`) after swapping in this result.
+   *
+   * Geometry paths (transform / positions / topology / skinned refit) DO —
+   * they changed the BVH that DDGI + RC index off. The material-only fast path
+   * sets this `false`: it re-packs material/emissive slices in place without
+   * moving geometry, so the cached GI signals stay valid. Absent ⇒ apply
+   * (the geometry-path default).
+   */
+  readonly applySubsystems?: boolean;
 }
 
 /**
@@ -981,5 +1007,9 @@ export function materialPatch(
   ctx.pipeline.requestAccumReset();
 
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
-  return { bvhBuffers: outBvh, updatedScene };
+  // Material-only edits re-pack material/emissive slices in place — the BVH
+  // geometry that DDGI + RC index off is unchanged, so the GI-subsystem
+  // propagation epilogue is intentionally skipped (matches the pre-collapse
+  // dispatcher, where the materialPatch branch omitted that call).
+  return { bvhBuffers: outBvh, updatedScene, applySubsystems: false };
 }

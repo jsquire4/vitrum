@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { Scene, ScenePrimitive } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
@@ -405,5 +405,94 @@ describe('pt-webgpu incremental primitive updates', () => {
 
     expect(createBuffer.mock.calls.length).toBe(buffersBefore);
     expect(writeBuffer.mock.calls.length).toBe(writesBefore + 2);
+  });
+
+  // ── Fall-through / throw characterization (Theme-B cascade-collapse pin) ──
+  // These pin the control-flow scaffolding that the handler-array refactor must
+  // preserve EXACTLY: when no fast path is eligible the call must fall through to
+  // a full `setScene` (whole-scene buffer realloc), and the up-front
+  // `patchPrimitiveInScene` validation must still THROW before any fast path runs.
+
+  it('falls through to a full setScene rebuild for an empty patch (no fast path eligible)', async () => {
+    installWebGpuConstStubs();
+    const { device, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeScene());
+
+    const buffersBefore = createBuffer.mock.calls.length;
+    const destroysBefore = totalDestroyCalls(createBuffer);
+
+    // An empty patch matches NONE of material/transform/geometry/topology fast
+    // paths, so it must take the full setScene path: the entire scene-buffer set
+    // is destroyed and recreated (NOT just the geometry / TLAS subset). We assert
+    // the materials buffer — which no fast path recreates — is recreated here.
+    engine.updatePrimitive?.('mesh-a', {});
+
+    const created = labelsCreatedSince(createBuffer, buffersBefore);
+    expect(created.some((l) => l.includes('materials'))).toBe(true);
+    // A full repack destroys the prior buffer set and recreates a fresh one.
+    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+    expect(totalDestroyCalls(createBuffer)).toBeGreaterThan(destroysBefore);
+  });
+
+  it('throws (does NOT silently setScene) on an illegal kind-change patch', async () => {
+    installWebGpuConstStubs();
+    const { device, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeScene());
+
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    expect(() =>
+      engine.updatePrimitive?.('mesh-a', { kind: 'analytic' } as Partial<ScenePrimitive>),
+    ).toThrow(/kind cannot change/);
+    // The throw happens in the shared preamble BEFORE any fast path or setScene,
+    // so no buffer is recreated.
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+  });
+
+  it('throws when the primitive id is not present in the live scene', async () => {
+    installWebGpuConstStubs();
+    const { device, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeScene());
+
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    expect(() =>
+      engine.updatePrimitive?.('no-such-id', {
+        material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+      }),
+    ).toThrow(/not found in current scene/);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+  });
+
+  it('drains the non-invertible-analytic-transform warning on the analytic fast path', async () => {
+    installWebGpuConstStubs();
+    const { device } = makeStubDevice();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const engine = await createPTEngine_WebGPU({ device });
+      engine.setScene(makeAnalyticScene());
+      warnSpy.mockClear();
+
+      // A zero-scale (singular) transform is non-invertible → the analytic fast
+      // path must still take effect AND emit the identity-fallback warning.
+      engine.updatePrimitive?.('analytic-a', {
+        transform: asMat4(new Float32Array([
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 0,
+          0, 0, 0, 1,
+        ])),
+      });
+
+      const warned = warnSpy.mock.calls.some((c) =>
+        String(c[0]).includes('non-invertible analytic transform'),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

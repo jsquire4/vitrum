@@ -220,8 +220,31 @@ vi.mock('@vitrum/three-bindings', async () => {
   };
 });
 
+// Theme-B characterization spy — count `propagateBvhToGiSubsystems` calls so a
+// test can pin WHICH updatePrimitive branches apply the GI subsystems
+// (transform / positions / topology / skinned) vs which deliberately do NOT
+// (material-only). The real implementation is otherwise a no-op against the
+// mocked subsystems, so swapping in a spy preserves observable behaviour.
+interface GiPropagationState {
+  calls: Array<{ rcRefitBounds: unknown }>;
+}
+vi.mock('../src/HybridEngineGiPropagation.js', async () => {
+  const g = globalThis as unknown as { __HYBRID_GIPROP_STATE__?: GiPropagationState };
+  if (!g.__HYBRID_GIPROP_STATE__) g.__HYBRID_GIPROP_STATE__ = { calls: [] };
+  const state = g.__HYBRID_GIPROP_STATE__;
+  return {
+    propagateBvhToGiSubsystems: vi.fn((deps: { rcRefitBounds?: unknown }) => {
+      state.calls.push({ rcRefitBounds: deps.rcRefitBounds });
+    }),
+  };
+});
+
 import { HybridEngine } from '../src/HybridEngine.js';
 import { asMat4, type Scene } from '@vitrum/core';
+
+function getGiPropState(): GiPropagationState {
+  return (globalThis as unknown as { __HYBRID_GIPROP_STATE__: GiPropagationState }).__HYBRID_GIPROP_STATE__;
+}
 
 function getState(): GeoUpdateState {
   return (globalThis as unknown as { __HYBRID_GEO_STATE__: GeoUpdateState }).__HYBRID_GEO_STATE__;
@@ -286,6 +309,7 @@ beforeEach(() => {
   s.pipelineInitDeferreds.length = 0;
   s.pipelineConstructed.length = 0;
   s.buildBVHCalls.length = 0;
+  getGiPropState().calls.length = 0;
 });
 
 async function waitForPipelineCount(n: number, timeoutMs = 1000): Promise<void> {
@@ -549,5 +573,103 @@ describe('HybridEngine.updateEmitter', () => {
   it('throws when called before setScene', () => {
     const engine = makeEngine();
     expect(() => engine.updateEmitter!('point-a', { intensity: 2 })).toThrow(/no scene set/);
+  });
+});
+
+// ── Theme-B characterization — updatePrimitive routing epilogue ───────────────
+//
+// Pins the observable epilogue of each updatePrimitive branch so the routing
+// collapse (uniform result shape + one `_applyUpdateResult`) is verified to be
+// behaviour-preserving:
+//   - WHICH branch ran (refit vs full rebuild vs material slice),
+//   - whether `_bvhBuffers` / `_lastScene` were re-assigned (observed via the
+//     downstream re-upload calls + getBvhMode staying live),
+//   - whether the GI subsystems were applied (transform / positions / topology /
+//     skinned DO; material-only deliberately does NOT),
+//   - that the topology-`shape` field throws explicitly (contract: geometry
+//     edits that need a primitive replacement are not a fast path).
+describe('HybridEngine.updatePrimitive — routing epilogue characterization (Theme B)', () => {
+  async function bootEngine(): Promise<{ engine: HybridEngine; s: GeoUpdateState }> {
+    const engine = makeEngine();
+    const s = getState();
+    engine.setScene(SCENE_WITH_MESH);
+    await waitForPipelineCount(1);
+    s.pipelineInitDeferreds[0]!.resolve();
+    await drainMicrotasks();
+    // setScene's own publishBvh propagation runs during init; clear so the
+    // assertions below count only the updatePrimitive-triggered call.
+    getGiPropState().calls.length = 0;
+    return { engine, s };
+  }
+
+  it('transform-only patch APPLIES GI subsystems exactly once', async () => {
+    const { engine } = await bootEngine();
+    engine.updatePrimitive!('mesh-a', {
+      transform: asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1]),
+    });
+    expect(getGiPropState().calls.length).toBe(1);
+  });
+
+  it('positions-only patch APPLIES GI subsystems exactly once', async () => {
+    const { engine } = await bootEngine();
+    engine.updatePrimitive!('mesh-a', {
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 0]),
+    });
+    expect(getGiPropState().calls.length).toBe(1);
+  });
+
+  it('topology patch (indices) APPLIES GI subsystems exactly once', async () => {
+    const { engine } = await bootEngine();
+    engine.updatePrimitive!('mesh-a', { indices: new Uint32Array([0, 2, 1]) });
+    expect(getGiPropState().calls.length).toBe(1);
+  });
+
+  it('material-only patch does NOT apply GI subsystems (epilogue distinction)', async () => {
+    const { engine, s } = await bootEngine();
+    const pipeline = s.pipelineConstructed[0]!;
+    engine.updatePrimitive!('mesh-a', {
+      material: { baseColor: [0.5, 0.2, 0.7], roughness: 0.5, metallic: 0 },
+    });
+    // Material fast path ran (slice upload + accum reset) ...
+    expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalled();
+    expect(pipeline.requestAccumReset).toHaveBeenCalled();
+    // ... but deliberately skips the GI-subsystem propagation.
+    expect(getGiPropState().calls.length).toBe(0);
+  });
+
+  it('skinned-mesh refit APPLIES GI subsystems exactly once', async () => {
+    const { engine } = await bootEngine();
+    engine.applyGpuSkinnedRefit(
+      'mesh-a',
+      new Float32Array([0, 0, 0, 1, 0, 0, 0, 2, 0]),
+      new Float32Array([0, 1, 0, 0, 1, 0, 0, 0, 1]),
+    );
+    expect(getGiPropState().calls.length).toBe(1);
+  });
+
+  it('patching `shape` throws explicitly (geometry replacement is not a fast path)', async () => {
+    const { engine } = await bootEngine();
+    expect(() => engine.updatePrimitive!('mesh-a', {
+      shape: { kind: 'sphere', radius: 1 },
+    } as unknown as Partial<Scene['primitives'][number]>)).toThrow(/primitive replacement/);
+  });
+
+  it('keeps `_bvhBuffers` live after a transform refit (getBvhMode still resolves)', async () => {
+    const { engine } = await bootEngine();
+    expect(engine.getBvhMode()).toBe('merged');
+    engine.updatePrimitive!('mesh-a', {
+      transform: asMat4([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 2, 0, 1]),
+    });
+    // The epilogue re-assigned `_bvhBuffers` to the refit result; the mode
+    // is preserved (refit keeps the same buffer in 'merged' mode).
+    expect(engine.getBvhMode()).toBe('merged');
+  });
+
+  it('no-recognised-field patch is a no-op (no branch, no subsystems, no throw)', async () => {
+    const { engine, s } = await bootEngine();
+    const buildBefore = s.buildBVHCalls.length;
+    expect(() => engine.updatePrimitive!('mesh-a', {})).not.toThrow();
+    expect(s.buildBVHCalls.length).toBe(buildBefore);
+    expect(getGiPropState().calls.length).toBe(0);
   });
 });

@@ -82,6 +82,7 @@ import {
   topologyRebuild,
   materialPatch,
   refitSkinnedMeshAfterGpuWrite,
+  TOPOLOGY_PATCH_FIELDS,
   type PrimitiveUpdateContext,
   type PrimitiveUpdateResult,
 } from './HybridEnginePrimitiveUpdates.js';
@@ -952,52 +953,53 @@ export class HybridEngine implements Engine {
     // "Positions only" means new vertex data on the SAME index buffer +
     // SAME vertex count. The positionsRefit path falls through to
     // topologyRebuild internally if the count doesn't match.
-    const topologyFields = [
-      'normals', 'uvs', 'tangents', 'indices',
-      'instances', 'params', 'shape', 'fallbackMesh', 'kind',
-    ] as const;
-    const hasTopologyChange = topologyFields.some(
-      (f) => (patch as Record<string, unknown>)[f] !== undefined,
-    );
-    const hasPositionsChange = (patch as Record<string, unknown>)['positions'] !== undefined;
-    const hasTransformChange = (patch as Record<string, unknown>)['transform'] !== undefined;
-    const hasMaterialChange  = (patch as Record<string, unknown>)['material']  !== undefined;
+    const result = this._routePrimitiveUpdate(id, patch);
+    if (result == null) {
+      // No recognised patch field — treat as a no-op rather than throw so
+      // hosts can pass through optional patches without checking each
+      // field's presence.
+      return;
+    }
+    this._applyUpdateResult(result);
+  }
 
-    if (hasTopologyChange) {
-      // True topology change — even if `positions` is also in the patch
-      // it has to round-trip through the full SAH rebuild because the
-      // index buffer / vertex layout changed.
-      const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateSubsystems(result);
-      return;
-    }
-    if (hasPositionsChange) {
-      // A3 fast path — same topology, new vertex positions.
-      const result = positionsRefit(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateSubsystems(result);
-      return;
-    }
-    if (hasTransformChange) {
-      const result = transformRefit(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateSubsystems(result);
-      return;
-    }
-    if (hasMaterialChange) {
-      const result = materialPatch(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      return;
-    }
+  /**
+   * Select the fast/full path for an `updatePrimitive` patch and run it.
+   * Returns `null` for an unrecognised patch (no-op). Branch order is
+   * load-bearing — topology beats positions beats transform beats material:
+   *  - any topology field present → full SAH `topologyRebuild` (Option (a)),
+   *    even if `positions` is also in the patch (the index buffer / vertex
+   *    layout changed, so the count-preserving refit can't apply).
+   *  - `positions` only → A3 `positionsRefit` (same topology, new verts).
+   *  - `transform` only → `transformRefit` (refit AABB bounds in place).
+   *  - `material` only → `materialPatch` (re-pack slices, NO GI propagation;
+   *    the result carries `applySubsystems: false`).
+   */
+  private _routePrimitiveUpdate(
+    id: string,
+    patch: Partial<ScenePrimitive>,
+  ): PrimitiveUpdateResult | null {
+    const has = (f: string): boolean => (patch as Record<string, unknown>)[f] !== undefined;
+    const ctx = this._buildPrimitiveUpdateContext();
+    if (TOPOLOGY_PATCH_FIELDS.some((f) => has(f))) return topologyRebuild(id, patch, ctx);
+    if (has('positions')) return positionsRefit(id, patch, ctx);
+    if (has('transform')) return transformRefit(id, patch, ctx);
+    if (has('material')) return materialPatch(id, patch, ctx);
+    return null;
+  }
 
-    // No recognised patch field — treat as a no-op rather than throw so
-    // hosts can pass through optional patches without checking each
-    // field's presence.
+  /**
+   * Uniform epilogue for every primitive-update path: swap the freshly-built
+   * BVH buffers + patched scene into engine state, then — unless the path
+   * opted out (`applySubsystems === false`, the material-only fast path) —
+   * re-sync the GI subsystems against the new BVH.
+   */
+  private _applyUpdateResult(result: PrimitiveUpdateResult): void {
+    this._bvhBuffers = result.bvhBuffers;
+    this._lastScene = result.updatedScene;
+    if (result.applySubsystems !== false) {
+      this._applyPrimitiveUpdateSubsystems(result);
+    }
   }
 
   /**
@@ -1028,9 +1030,7 @@ export class HybridEngine implements Engine {
       normals,
       this._buildPrimitiveUpdateContext(),
     );
-    this._bvhBuffers = result.bvhBuffers;
-    this._lastScene = result.updatedScene;
-    this._applyPrimitiveUpdateSubsystems(result);
+    this._applyUpdateResult(result);
   }
 
   /** Merged BVH position SSBO for GPU skinning (null before pipeline init). */
