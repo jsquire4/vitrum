@@ -37,6 +37,24 @@ function baseOpts(overrides: Partial<HybridEngineOptions>): HybridEngineOptions 
   } as HybridEngineOptions;
 }
 
+// These tests pin the constructor-resolved preset/tier knobs. The resolved
+// construction-immutable config lives on the engine's `_cfg` record
+// (`deriveHybridEngineConfig` output); `_resolutionFactor` is a separate mutable
+// runtime field. Read both through narrow test seams rather than per-field
+// forwarder getters on the production class.
+interface CfgPeek {
+  nrcEnabled: number;
+  restirBvhModeOverride: string;
+  diSpatialPasses: number;
+  giSpatialPasses: number;
+  gtaoMode: string;
+  ddgiUpdateDivisor: number;
+  denoiser: string;
+}
+const cfg = (e: HybridEngine): CfgPeek => (e as unknown as { _cfg: CfgPeek })._cfg;
+const resolutionFactor = (e: HybridEngine): number =>
+  (e as unknown as { _resolutionFactor: number })._resolutionFactor;
+
 describe('HYBRID_LITE_LIMITS', () => {
   it('is strictly below HYBRID_WEBGPU_REQUIRED_LIMITS on both axes', () => {
     expect(HYBRID_LITE_LIMITS['maxStorageBuffersPerShaderStage']!)
@@ -81,12 +99,12 @@ describe('HybridEngine tier:lite — constructor validation', () => {
 describe('HybridEngine nrcEnabled — gate storage (full tier)', () => {
   it('default (no nrcEnabled) stores the gate as 0 (OFF)', () => {
     const engine = new HybridEngine(baseOpts({}));
-    expect((engine as unknown as { _nrcEnabled: number })._nrcEnabled).toBe(0);
+    expect(cfg(engine).nrcEnabled).toBe(0);
   });
 
   it('nrcEnabled:true on the full tier stores the gate as 1', () => {
     const engine = new HybridEngine(baseOpts({ tier: 'full', nrcEnabled: true }));
-    expect((engine as unknown as { _nrcEnabled: number })._nrcEnabled).toBe(1);
+    expect(cfg(engine).nrcEnabled).toBe(1);
   });
 });
 
@@ -97,14 +115,12 @@ describe('HybridEngine tier:lite — forces merged BVH', () => {
       extensions: { 'walkaround-hybrid': { bvhMode: 'tlas' } },
     }));
     // The lite path overrides any host bvhMode to 'merged' (drops TLAS buffers).
-    expect((engine as unknown as { _restirBvhModeOverride: string })._restirBvhModeOverride)
-      .toBe('merged');
+    expect(cfg(engine).restirBvhModeOverride).toBe('merged');
   });
 
   it('forces bvhMode merged when no host bvhMode was set', () => {
     const engine = new HybridEngine(baseOpts({ tier: 'lite' }));
-    expect((engine as unknown as { _restirBvhModeOverride: string })._restirBvhModeOverride)
-      .toBe('merged');
+    expect(cfg(engine).restirBvhModeOverride).toBe('merged');
   });
 
   it('full tier preserves a host tlas override (no lite forcing)', () => {
@@ -112,61 +128,47 @@ describe('HybridEngine tier:lite — forces merged BVH', () => {
       tier: 'full',
       extensions: { 'walkaround-hybrid': { bvhMode: 'tlas' } },
     }));
-    expect((engine as unknown as { _restirBvhModeOverride: string })._restirBvhModeOverride)
-      .toBe('tlas');
+    expect(cfg(engine).restirBvhModeOverride).toBe('tlas');
   });
 });
 
 describe('HybridEngine tier:lite — biases default qualityTier to medium', () => {
   it('lite without explicit qualityTier resolves the medium preset knobs', () => {
     const engine = new HybridEngine(baseOpts({ tier: 'lite' }));
-    const self = engine as unknown as {
-      _diSpatialPasses: number;
-      _gtaoMode: string;
-      _ddgiUpdateDivisor: number;
-      _resolutionFactor: number;
-    };
+    const c = cfg(engine);
     // medium preset: 1 spatial pass, gtao on, /8 ddgi, 0.67 resolution.
-    expect(self._diSpatialPasses).toBe(1);
-    expect(self._gtaoMode).toBe('on');
-    expect(self._ddgiUpdateDivisor).toBe(8);
-    expect(self._resolutionFactor).toBeCloseTo(0.67);
+    expect(c.diSpatialPasses).toBe(1);
+    expect(c.gtaoMode).toBe('on');
+    expect(c.ddgiUpdateDivisor).toBe(8);
+    expect(resolutionFactor(engine)).toBeCloseTo(0.67);
   });
 
   it('explicit qualityTier overrides the lite medium bias', () => {
     const engine = new HybridEngine(baseOpts({ tier: 'lite', qualityTier: 'ultra' }));
-    const self = engine as unknown as { _diSpatialPasses: number; _resolutionFactor: number };
-    expect(self._diSpatialPasses).toBe(2);
-    expect(self._resolutionFactor).toBe(1.0);
+    expect(cfg(engine).diSpatialPasses).toBe(2);
+    expect(resolutionFactor(engine)).toBe(1.0);
   });
 });
 
 describe('HybridEngine qualityTier — explicit per-knob override beats preset', () => {
   it('qualityTier:low + explicit gtaoMode:on keeps gtao on (overriding low off)', () => {
     const engine = new HybridEngine(baseOpts({ qualityTier: 'low', gtaoMode: 'on' }));
-    const self = engine as unknown as { _gtaoMode: string; _diSpatialPasses: number };
-    expect(self._gtaoMode).toBe('on');         // explicit override
-    expect(self._diSpatialPasses).toBe(1);     // other low-tier values applied
+    const c = cfg(engine);
+    expect(c.gtaoMode).toBe('on');         // explicit override
+    expect(c.diSpatialPasses).toBe(1);     // other low-tier values applied
   });
 
   it('default (no qualityTier, full tier) is the ultra baseline', () => {
     const engine = new HybridEngine(baseOpts({}));
-    const self = engine as unknown as {
-      _diSpatialPasses: number;
-      _giSpatialPasses: number;
-      _gtaoMode: string;
-      _ddgiUpdateDivisor: number;
-      _resolutionFactor: number;
-      _denoiser: string;
-    };
-    expect(self._diSpatialPasses).toBe(2);
-    expect(self._giSpatialPasses).toBe(2);
-    expect(self._gtaoMode).toBe('on');
+    const c = cfg(engine);
+    expect(c.diSpatialPasses).toBe(2);
+    expect(c.giSpatialPasses).toBe(2);
+    expect(c.gtaoMode).toBe('on');
     // No qualityTier ⇒ ultra preset. After the 2→32 cadence decision, ultra's
     // DDGI divisor is 2 (the fast end), so the no-preset default cadence is now
     // stride 2 — 4× the old hardcoded stride-8. Deliberate; pending GPU A/B.
-    expect(self._ddgiUpdateDivisor).toBe(2);
-    expect(self._resolutionFactor).toBe(1.0);
-    expect(self._denoiser).toBe('atrous-variance');
+    expect(c.ddgiUpdateDivisor).toBe(2);
+    expect(resolutionFactor(engine)).toBe(1.0);
+    expect(c.denoiser).toBe('atrous-variance');
   });
 });

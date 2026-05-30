@@ -646,19 +646,9 @@ export class HybridEngine implements Engine {
   private get _pendingTeardown(): boolean { return this._initCoordinator.pendingTeardown; }
   private get _disposed(): boolean { return this._initCoordinator.disposed; }
 
-  // Task 4.2 / Theme A — the construction-immutable tunable-cluster values now
-  // live on `_cfg` (one parsed record instead of ~25 splatted `_x` fields).
-  // These read-only forwarders preserve the old `engine['_x']` private-field
-  // test seam (e.g. `hybridLiteTier.test.ts` pins the resolved preset knobs by
-  // reaching in) without re-introducing the splat. Same forwarder pattern as
-  // the init-coordinator race-state seams above; not a documented surface.
-  private get _denoiser() { return this._cfg.denoiser; }
-  private get _nrcEnabled() { return this._cfg.nrcEnabled; }
-  private get _restirBvhModeOverride() { return this._cfg.restirBvhModeOverride; }
-  private get _gtaoMode() { return this._cfg.gtaoMode; }
-  private get _diSpatialPasses() { return this._cfg.diSpatialPasses; }
-  private get _giSpatialPasses() { return this._cfg.giSpatialPasses; }
-  private get _ddgiUpdateDivisor() { return this._cfg.ddgiUpdateDivisor; }
+  // Task 4.2 / Theme A — the construction-immutable tunable-cluster values live
+  // on `_cfg` (one parsed record instead of ~25 splatted `_x` fields). Consumers
+  // read `this._cfg.x` directly; tests pin resolved knobs via the `_cfg` seam.
 
   /** Monotonic fingerprint of {@link HybridEngineOptions.pipelineRebuildKey} /
    *  {@link HybridEngineOptions.getPipelineRebuildKey} — changes trigger `reset()`. */
