@@ -333,19 +333,18 @@ describe('Test 3 — Uniform buffer write check (Bug 4 fix)', () => {
     expect(typeof graph._uniformWriteCount).toBe('number');
   });
 
-  it('_packUniform returns 32-byte ArrayBuffer for conv2d layers', async () => {
-    const { InferenceGraph } = await import('../src/neural/InferenceGraph.js');
+  it('packLayerUniform returns 32-byte ArrayBuffer for conv2d layers', async () => {
+    // Task 4.5 (Theme I): _computeTensorDims / _packUniform were extracted from
+    // InferenceGraph into the pure tensorDimSolver module. The math is identical;
+    // these tests now exercise the extracted pure functions directly.
+    const { computeTensorDims, packLayerUniform } = await import('../src/neural/tensorDimSolver.js');
     const spec = buildUNetSpec();
-    const graph = new InferenceGraph(spec) as unknown as {
-      _packUniform: (layer: LayerSpec, dims: Map<string, { H: number; W: number; C: number }>) => ArrayBuffer;
-      _computeTensorDims: (W: number, H: number) => Map<string, { H: number; W: number; C: number }>;
-    };
 
-    const dims = graph._computeTensorDims(64, 64);
+    const dims = computeTensorDims(spec, 64, 64);
     const enc1Layer = spec.layers.find(l => l.name === 'enc1_conv');
     expect(enc1Layer).toBeDefined();
 
-    const buf = graph._packUniform(enc1Layer!, dims);
+    const buf = packLayerUniform(enc1Layer!, dims, 64, 64);
     expect(buf.byteLength).toBe(32);  // 8 u32 × 4 bytes = 32
 
     // Verify the u32 values encode correct shape params.
@@ -358,19 +357,15 @@ describe('Test 3 — Uniform buffer write check (Bug 4 fix)', () => {
     expect(u32[7]).toBe(1);   // padding = 1
   });
 
-  it('_packUniform for transposedConv2d encodes stride=2 and padding=0', async () => {
-    const { InferenceGraph } = await import('../src/neural/InferenceGraph.js');
+  it('packLayerUniform for transposedConv2d encodes stride=2 and padding=0', async () => {
+    const { computeTensorDims, packLayerUniform } = await import('../src/neural/tensorDimSolver.js');
     const spec = buildUNetSpec();
-    const graph = new InferenceGraph(spec) as unknown as {
-      _packUniform: (layer: LayerSpec, dims: Map<string, { H: number; W: number; C: number }>) => ArrayBuffer;
-      _computeTensorDims: (W: number, H: number) => Map<string, { H: number; W: number; C: number }>;
-    };
 
-    const dims = graph._computeTensorDims(64, 64);
+    const dims = computeTensorDims(spec, 64, 64);
     const dec3Layer = spec.layers.find(l => l.name === 'dec3_up');
     expect(dec3Layer).toBeDefined();
 
-    const buf = graph._packUniform(dec3Layer!, dims);
+    const buf = packLayerUniform(dec3Layer!, dims, 64, 64);
     const u32 = new Uint32Array(buf);
 
     // kH=2, kW=2, stride=2, padding=0 (PyTorch ConvTranspose2d bug fix)

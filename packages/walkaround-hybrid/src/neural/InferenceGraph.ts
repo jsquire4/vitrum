@@ -3,6 +3,14 @@
  *
  * Implements the U-Net inference pass specified by `unetArchitecture.ts`.
  *
+ * Task 4.5 (Theme I) decomposition: this class is now the DISPATCH ORCHESTRATOR.
+ * Two collaborators carry the heavy lifting:
+ *   - `tensorDimSolver.ts` — PURE per-layer (H,W,C) solver + uniform/dispatch
+ *     packing. The dim map is computed ONCE in initialize() and stored (the perf
+ *     fix: the old code recomputed it per-layer per-frame inside run()'s loop).
+ *   - `layerResourceAllocator.ts` — all GPU buffer / pipeline / bind-group
+ *     allocation.
+ *
  * Invariants this executor maintains:
  *
  *   - Skip-connection spatial shapes are verified at initialize() time.
@@ -10,7 +18,8 @@
  *   - Binding order in dispatch matches WGSL declarations
  *     (input=0, weights=1, bias=2, output=3, params=4).
  *   - Uniform buffers are written with actual shape params in initialize() AND
- *     re-written per layer in run() to handle resize.
+ *     re-written per layer in run() to handle resize. (run() now re-uses the
+ *     stored dim map; resize is handled by re-initialize(), which recomputes it.)
  *   - Bind-group cache is keyed by buffer identity (label) and invalidated on any
  *     buffer swap (device resize).
  *   - dispose() clears cached bind groups slot-by-slot before destroying buffers,
@@ -31,74 +40,21 @@
  * For a hosted GPU test this is large; the smoke test uses 32×32 which is ~4 MB total.
  */
 
-import type { UNetSpec, LayerSpec, LayerKind } from './unetArchitecture.js';
+import type { UNetSpec } from './unetArchitecture.js';
 import type { ModelWeights, LayerWeights } from './weights.js';
 import {
-  CONV2D_WGSL,
-} from './wgsl/conv2d.wgsl.js';
+  type TensorDims,
+  computeTensorDims,
+  packLayerUniform,
+  dispatchWorkgroupsFor,
+} from './tensorDimSolver.js';
 import {
-  TRANSPOSED_CONV2D_WGSL,
-} from './wgsl/transposedConv2d.wgsl.js';
-import {
-  RELU_WGSL,
-} from './wgsl/relu.wgsl.js';
-import {
-  SKIP_CONNECTION_WGSL,
-} from './wgsl/skipConnection.wgsl.js';
-import {
-  BILINEAR_UPSAMPLE_WGSL,
-} from './wgsl/bilinearUpsample.wgsl.js';
-import { INPUT_PACKER_WGSL, INPUT_PACKER_ENTRY } from './inputPacker.js';
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-interface TensorDims {
-  H: number;
-  W: number;
-  C: number;
-}
-
-interface TensorBuffer {
-  buf:    GPUBuffer;
-  dims:   TensorDims;
-  label:  string;
-}
-
-/** Per-layer GPU state: pipeline + buffers + cached bind group. */
-interface LayerGPUState {
-  readonly layerName: string;
-  readonly pipeline:  GPUComputePipeline;
-  readonly uniformBuf: GPUBuffer;
-  /** Cached bind group — invalidated (set to null) if any buffer identity changes. */
-  cachedBindGroup: GPUBindGroup | null;
-  /** Buffer identity keys used to check cache validity. */
-  cachedBufKeys: readonly string[];
-}
-
-// ── WGSL entry points per layer kind ─────────────────────────────────────────
-
-const WGSL_ENTRY: Record<LayerKind, string> = {
-  conv2d:          'conv2dMain',
-  transposedConv2d:'transposedConv2dMain',
-  relu:            'reluMain',
-  skipAdd:         'skipConnectionMain',
-  bilinearUpsample:'bilinearUpsampleMain',
-  inputPack:       '',  // handled CPU-side by packing pass
-};
-
-const WGSL_SOURCE: Partial<Record<LayerKind, string>> = {
-  conv2d:          CONV2D_WGSL,
-  transposedConv2d:TRANSPOSED_CONV2D_WGSL,
-  relu:            RELU_WGSL,
-  skipAdd:         SKIP_CONNECTION_WGSL,
-  bilinearUpsample:BILINEAR_UPSAMPLE_WGSL,
-};
-
-// Uniform buffer size: 5 u32 fields, padded to 32 bytes (8×u32).
-const UNIFORM_BUF_BYTES = 32;
-
-// Placeholder buffer size for unused bindings (weights/biases on relu/skip).
-const PLACEHOLDER_BYTES = 4;
+  type TensorBuffer,
+  type LayerGPUState,
+  allocateGraph,
+  buildBindGroup,
+  currentBufKeys,
+} from './layerResourceAllocator.js';
 
 // ── InferenceGraph ────────────────────────────────────────────────────────────
 
@@ -114,6 +70,14 @@ export class InferenceGraph {
 
   /** Per-layer GPU state: pipeline + uniform + bind group. */
   private _layerStates: (LayerGPUState | null)[] = [];
+
+  /**
+   * Per-layer tensor dimensions, computed ONCE at initialize() and re-used every
+   * frame. (Perf fix — the previous code recomputed this map per-layer per-frame
+   * inside run()'s dispatch loop, which is O(layers²) work per frame for an
+   * identical result. Resize re-runs initialize() which recomputes it.)
+   */
+  private _tensorDimsMap: Map<string, TensorDims> = new Map();
 
   /** Placeholder buffer for unused bindings (weights/biases on parameterless layers). */
   private _placeholderBuf: GPUBuffer | null = null;
@@ -163,124 +127,25 @@ export class InferenceGraph {
     this._H      = H;
     this._ready  = false;
 
-    // Clear any pre-existing tracked buffers from a previous init.
-    this._allocatedBuffers = [];
+    // Derive tensor dimensions ONCE by simulating the forward pass; store for
+    // re-use every frame in run().
+    this._tensorDimsMap = computeTensorDims(this._spec, W, H);
 
-    // Build the weight lookup by name (retained for bind-group rebuild in run()).
-    const weightsByName = new Map<string, LayerWeights>(
-      weights.layers.map(lw => [lw.name, lw]),
-    );
-    this._weightsByName = weightsByName;
+    // Allocate all GPU resources (buffers, pipelines, bind groups, uniforms).
+    this._tensors = new Map();
+    const alloc = await allocateGraph(device, this._spec, weights, W, H, this._tensorDimsMap);
 
-    // Placeholder buffer (for unused binding slots).
-    this._placeholderBuf = device.createBuffer({
-      label: 'neural/placeholder',
-      size: PLACEHOLDER_BYTES,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.UNIFORM,
-    });
-    this._allocatedBuffers.push(this._placeholderBuf);
-
-    // ── Compile the input-packer compute pipeline once.
-    // The actual bind group is built per-frame in _runInputPack because the
-    // three input buffers (noisyColor / albedo / normals) come from the host
-    // each frame and can change identity.
-    const packModule = device.createShaderModule({
-      label: 'neural/inputPacker',
-      code: INPUT_PACKER_WGSL,
-    });
-    this._inputPackPipeline = await device.createComputePipelineAsync({
-      label: 'neural-pipeline-inputPack',
-      layout: 'auto',
-      compute: { module: packModule, entryPoint: INPUT_PACKER_ENTRY },
-    });
-
-    // Uniform buffer for input packer: holds the per-frame pixelCount (H*W).
-    // 16 bytes — std140 minimum struct stride is 16; PackParams has 1 u32 + 3 pad u32.
-    this._inputPackUniformBuf = device.createBuffer({
-      label: 'neural-uniform-inputPack',
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    this._allocatedBuffers.push(this._inputPackUniformBuf);  // tracked for dispose()
-    {
-      const u32 = new Uint32Array(4);
-      u32[0] = H * W;
-      // u32[1..3] are padding — leave as 0.
-      device.queue.writeBuffer(this._inputPackUniformBuf, 0, u32.buffer);
-    }
-
-    // ── Allocate intermediate tensors ─────────────────────────────────────
-    this._tensors.clear();
-
-    // Derive tensor dimensions by simulating the forward pass.
-    const tensorDimsMap = this._computeTensorDims(W, H);
-
-    // Allocate GPU buffers for each named tensor.
-    for (const [name, dims] of tensorDimsMap) {
-      const floatCount = dims.H * dims.W * dims.C;
-      const buf = device.createBuffer({
-        label: `neural/${name}`,
-        size: floatCount * 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
-      });
-      this._tensors.set(name, { buf, dims, label: `neural/${name}` });
-    }
-
-    // Verify skip-connection shapes (both operands must match H×W×C).
-    this._validateSkipShapes(tensorDimsMap);
-
-    // ── Build pipelines + layer states ────────────────────────────────────
-    // Reset the per-layer cache slot-by-slot.
-    const N = this._spec.layers.length;
-    this._layerStates = new Array(N).fill(null) as (LayerGPUState | null)[];
-
-    for (let i = 0; i < N; i++) {
-      const layer = this._spec.layers[i]!;
-
-      if (layer.kind === 'inputPack') {
-        // inputPack is handled by the host packing pass; no GPU pipeline.
-        this._layerStates[i] = null;
-        continue;
-      }
-
-      const wgsl = WGSL_SOURCE[layer.kind];
-      if (!wgsl) {
-        this._layerStates[i] = null;
-        continue;
-      }
-
-      // Build pipeline.
-      const sm = device.createShaderModule({ label: `neural-${layer.name}`, code: wgsl });
-      const pipeline = await device.createComputePipelineAsync({
-        label: `neural-pipeline-${layer.name}`,
-        layout: 'auto',
-        compute: { module: sm, entryPoint: WGSL_ENTRY[layer.kind] },
-      });
-
-      // Uniform buffer (written immediately below).
-      const uniformBuf = device.createBuffer({
-        label: `neural-uniform-${layer.name}`,
-        size: UNIFORM_BUF_BYTES,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      this._allocatedBuffers.push(uniformBuf); // tracked for dispose()
-
-      // Write the uniform buffer now with actual shape params.
-      this._writeUniform(device, uniformBuf, layer, tensorDimsMap);
-
-      // Build bind group now; cache it with buffer identity keys.
-      const { bindGroup, bufKeys } = this._buildBindGroup(
-        pipeline, layer, weightsByName, uniformBuf,
-      );
-
-      this._layerStates[i] = {
-        layerName:      layer.name,
-        pipeline,
-        uniformBuf,
-        cachedBindGroup: bindGroup,
-        cachedBufKeys:   bufKeys,
-      };
-    }
+    this._tensors             = alloc.tensors;
+    this._layerStates         = alloc.layerStates;
+    this._placeholderBuf      = alloc.placeholderBuf;
+    this._inputPackPipeline   = alloc.inputPackPipeline;
+    this._inputPackUniformBuf = alloc.inputPackUniformBuf;
+    this._allocatedBuffers    = alloc.allocatedBuffers;
+    this._weightsByName       = alloc.weightsByName;
+    // One uniform write per compute layer (the input-pack uniform write at init
+    // is NOT counted — it goes direct to the queue, matching the pre-refactor
+    // `_writeUniform`-only counting).
+    this._uniformWriteCount   = alloc.uniformWriteCount;
 
     this._ready = true;
   }
@@ -312,6 +177,7 @@ export class InferenceGraph {
 
     const device = this._device;
     const enc = commandEncoder ?? device.createCommandEncoder({ label: 'neural-inference' });
+    const tensorDimsMap = this._tensorDimsMap;
 
     // Pack noisyColor (3ch) + albedo (3ch) + normals (3ch) into enc_input (9ch)
     // via the inputPacker compute pass. INTERLEAVED layout: for each pixel p,
@@ -329,19 +195,22 @@ export class InferenceGraph {
       if (!state) continue; // inputPack or unsupported kind
 
       // Re-validate bind group buffer identity.
-      const currentKeys = this._getCurrentBufKeys(layer);
-      if (!keysEqual(state.cachedBufKeys, currentKeys)) {
+      const curKeys = currentBufKeys(layer, this._tensors, this._placeholderBuf!);
+      if (!keysEqual(state.cachedBufKeys, curKeys)) {
         // Rebuild bind group with fresh buffer references (keep trained weights).
-        const { bindGroup, bufKeys } = this._buildBindGroup(
-          state.pipeline, layer, this._weightsByName, state.uniformBuf,
+        const { bindGroup, bufKeys } = buildBindGroup(
+          device, state.pipeline, layer, this._weightsByName, state.uniformBuf,
+          this._tensors, this._placeholderBuf!, this._allocatedBuffers,
         );
         state.cachedBindGroup = bindGroup;
         state.cachedBufKeys = bufKeys;
       }
 
-      // Re-write uniform with current dims (handles resize).
-      const tensorDimsMap = this._computeTensorDims(this._W, this._H);
-      device.queue.writeBuffer(state.uniformBuf, 0, this._packUniform(layer, tensorDimsMap));
+      // Re-write uniform with current (stored) dims (handles resize).
+      device.queue.writeBuffer(
+        state.uniformBuf, 0,
+        packLayerUniform(layer, tensorDimsMap, this._H, this._W),
+      );
       this._uniformWriteCount++;
 
       // Dispatch.
@@ -351,7 +220,7 @@ export class InferenceGraph {
 
       const outDims = tensorDimsMap.get(layer.output);
       if (outDims) {
-        const [gx, gy, gz] = this._dispatchWorkgroups(layer.kind, outDims);
+        const [gx, gy, gz] = dispatchWorkgroupsFor(layer.kind, outDims);
         pass.dispatchWorkgroups(gx, gy, gz);
       }
       pass.end();
@@ -397,6 +266,7 @@ export class InferenceGraph {
       tb.buf.destroy();
     }
     this._tensors.clear();
+    this._tensorDimsMap = new Map();
 
     // Destroy all tracked allocations (weights, biases, layer uniforms,
     // input-packer uniform, placeholder buffer). Each buffer.destroy() is
@@ -415,282 +285,7 @@ export class InferenceGraph {
     this._weightsByName.clear();
   }
 
-  /** Workgroup layout must match neural/wgsl/* @compute entry points. */
-  private _dispatchWorkgroups(
-    kind: LayerKind,
-    dims: TensorDims,
-  ): [number, number, number] {
-    switch (kind) {
-      case 'conv2d':
-      case 'transposedConv2d':
-      case 'bilinearUpsample':
-        return [
-          Math.ceil(dims.H / 8),
-          Math.ceil(dims.W / 8),
-          dims.C,
-        ];
-      case 'relu':
-      case 'skipAdd':
-        return [Math.ceil((dims.H * dims.W * dims.C) / 256), 1, 1];
-      default:
-        return [1, 1, 1];
-    }
-  }
-
   // ── Private helpers ────────────────────────────────────────────────────────
-
-  /**
-   * Compute tensor dimensions for every named tensor in the graph.
-   * This simulates the forward pass to determine (H, W, C) for each output.
-   */
-  private _computeTensorDims(W: number, H: number): Map<string, TensorDims> {
-    const dims = new Map<string, TensorDims>();
-
-    // Seed the three input tensors.
-    dims.set('noisyColor', { H, W, C: 3 });
-    dims.set('albedo',     { H, W, C: 3 });
-    dims.set('normals',    { H, W, C: 3 });
-
-    for (const layer of this._spec.layers) {
-      const inDims = layer.inputs.length > 0 ? dims.get(layer.inputs[0]!) : undefined;
-      if (!inDims && layer.kind !== 'inputPack') continue;
-
-      let outH = inDims?.H ?? H;
-      let outW = inDims?.W ?? W;
-      let outC = layer.params.outC;
-
-      switch (layer.kind) {
-        case 'inputPack':
-          // All three inputs are H×W×3; output is H×W×9.
-          dims.set(layer.output, { H, W, C: 9 });
-          continue;
-
-        case 'conv2d': {
-          const kH = layer.params.kH ?? 3;
-          const kW = layer.params.kW ?? 3;
-          const s  = layer.params.stride ?? 1;
-          const p  = layer.params.padding ?? 0;
-          outH = Math.floor((outH + 2 * p - kH) / s) + 1;
-          outW = Math.floor((outW + 2 * p - kW) / s) + 1;
-          break;
-        }
-
-        case 'transposedConv2d': {
-          const s = layer.params.stride ?? 2;
-          // For kH=2, stride=2, padding=0: outH = inH * stride.
-          outH = outH * s;
-          outW = outW * s;
-          break;
-        }
-
-        case 'relu':
-          // Same dims as input; in-place conceptually.
-          outC = inDims!.C;
-          break;
-
-        case 'skipAdd':
-          // Both inputs must have identical dims (validated by _validateSkipShapes).
-          outC = inDims!.C;
-          break;
-
-        case 'bilinearUpsample':
-          outH = outH * 2;
-          outW = outW * 2;
-          break;
-      }
-
-      dims.set(layer.output, { H: outH, W: outW, C: outC });
-    }
-
-    return dims;
-  }
-
-  /**
-   * Validate that every skipAdd layer's two operands have matching (H, W, C).
-   * Throws if any mismatch is detected.
-   */
-  private _validateSkipShapes(tensorDimsMap: Map<string, TensorDims>): void {
-    for (const layer of this._spec.layers) {
-      if (layer.kind !== 'skipAdd') continue;
-      if (layer.inputs.length !== 2) {
-        throw new Error(
-          `[InferenceGraph] skipAdd layer '${layer.name}' must have exactly 2 inputs, ` +
-          `got ${layer.inputs.length}`,
-        );
-      }
-      const a = tensorDimsMap.get(layer.inputs[0]!);
-      const b = tensorDimsMap.get(layer.inputs[1]!);
-      if (!a || !b) {
-        throw new Error(
-          `[InferenceGraph] skipAdd layer '${layer.name}' — ` +
-          `input tensor not found: '${!a ? layer.inputs[0] : layer.inputs[1]}'`,
-        );
-      }
-      if (a.H !== b.H || a.W !== b.W || a.C !== b.C) {
-        throw new Error(
-          `[InferenceGraph] skipAdd layer '${layer.name}' shape mismatch: ` +
-          `'${layer.inputs[0]}' = [${a.H}×${a.W}×${a.C}] vs ` +
-          `'${layer.inputs[1]}' = [${b.H}×${b.W}×${b.C}]`,
-        );
-      }
-    }
-  }
-
-  /**
-   * Pack the uniform buffer data for a layer.
-   * Returns a Uint32Array that can be written to the uniform buffer.
-   */
-  private _packUniform(layer: LayerSpec, tensorDimsMap: Map<string, TensorDims>): ArrayBuffer {
-    const u32 = new Uint32Array(8); // 32 bytes = 8 u32
-    const inDims = layer.inputs.length > 0 ? tensorDimsMap.get(layer.inputs[0]!) : undefined;
-
-    switch (layer.kind) {
-      case 'conv2d':
-        u32[0] = inDims?.H ?? this._H;
-        u32[1] = inDims?.W ?? this._W;
-        u32[2] = layer.params.inC;
-        u32[3] = layer.params.outC;
-        u32[4] = layer.params.kH ?? 3;
-        u32[5] = layer.params.kW ?? 3;
-        u32[6] = layer.params.stride ?? 1;
-        u32[7] = layer.params.padding ?? 1;
-        break;
-
-      case 'transposedConv2d':
-        u32[0] = inDims?.H ?? this._H;
-        u32[1] = inDims?.W ?? this._W;
-        u32[2] = layer.params.inC;
-        u32[3] = layer.params.outC;
-        u32[4] = layer.params.kH ?? 2;
-        u32[5] = layer.params.kW ?? 2;
-        u32[6] = layer.params.stride ?? 2;
-        u32[7] = layer.params.padding ?? 0;
-        break;
-
-      case 'relu':
-      case 'skipAdd':
-      case 'bilinearUpsample': {
-        const count = (inDims?.H ?? this._H) * (inDims?.W ?? this._W) * (inDims?.C ?? layer.params.inC);
-        u32[0] = count;
-        // remaining fields: 0 (padding)
-        break;
-      }
-
-      default:
-        break;
-    }
-
-    return u32.buffer;
-  }
-
-  private _writeUniform(
-    device: GPUDevice,
-    uniformBuf: GPUBuffer,
-    layer: LayerSpec,
-    tensorDimsMap: Map<string, TensorDims>,
-  ): void {
-    const data = this._packUniform(layer, tensorDimsMap);
-    device.queue.writeBuffer(uniformBuf, 0, data);
-    this._uniformWriteCount++;
-  }
-
-  /**
-   * Build a bind group for a layer.
-   * Binding layout matches WGSL declarations exactly:
-   *   0=input, 1=weights (or inputB for skip), 2=biases, 3=output, 4=params
-   */
-  private _buildBindGroup(
-    pipeline: GPUComputePipeline,
-    layer: LayerSpec,
-    weightsByName: Map<string, LayerWeights>,
-    uniformBuf: GPUBuffer,
-  ): { bindGroup: GPUBindGroup; bufKeys: readonly string[] } {
-    const device = this._device!;
-
-    // Input buffer — always binding 0.
-    const inputName = layer.inputs[0] ?? 'enc_input';
-    const inputTensor = this._tensors.get(inputName);
-    const inputBuf = inputTensor?.buf ?? this._placeholderBuf!;
-
-    // Weights buffer — binding 1 (or inputB for skipAdd).
-    let weightsBuf = this._placeholderBuf!;
-    if (layer.kind === 'skipAdd') {
-      // Binding 1 is the second input (skip source).
-      const skipName = layer.inputs[1] ?? 'enc_input';
-      weightsBuf = this._tensors.get(skipName)?.buf ?? this._placeholderBuf!;
-    } else if (layer.kind === 'conv2d' || layer.kind === 'transposedConv2d') {
-      const lw = weightsByName.get(layer.name);
-      if (lw && lw.weights.length > 0) {
-        // Upload weights to a GPU buffer.
-        weightsBuf = device.createBuffer({
-          label: `neural-weights-${layer.name}`,
-          size: Math.max(PLACEHOLDER_BYTES, lw.weights.byteLength),
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-          mappedAtCreation: true,
-        });
-        new Float32Array(weightsBuf.getMappedRange()).set(lw.weights);
-        weightsBuf.unmap();
-        this._allocatedBuffers.push(weightsBuf); // tracked for dispose()
-      }
-    }
-
-    // Biases buffer — binding 2.
-    let biasesBuf = this._placeholderBuf!;
-    if (layer.kind === 'conv2d' || layer.kind === 'transposedConv2d') {
-      const lw = weightsByName.get(layer.name);
-      if (lw && lw.biases.length > 0) {
-        biasesBuf = device.createBuffer({
-          label: `neural-biases-${layer.name}`,
-          size: Math.max(PLACEHOLDER_BYTES, lw.biases.byteLength),
-          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-          mappedAtCreation: true,
-        });
-        new Float32Array(biasesBuf.getMappedRange()).set(lw.biases);
-        biasesBuf.unmap();
-        this._allocatedBuffers.push(biasesBuf); // tracked for dispose()
-      }
-    }
-
-    // Output buffer — binding 3.
-    const outputName = layer.output;
-    const outputTensor = this._tensors.get(outputName);
-    const outputBuf = outputTensor?.buf ?? this._placeholderBuf!;
-
-    // Binding layout 0=input, 1=weights/inputB, 2=biases, 3=output, 4=params.
-    const bindGroup = device.createBindGroup({
-      label: `neural-bg-${layer.name}`,
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: { buffer: inputBuf  } },
-        { binding: 1, resource: { buffer: weightsBuf } },
-        { binding: 2, resource: { buffer: biasesBuf  } },
-        { binding: 3, resource: { buffer: outputBuf  } },
-        { binding: 4, resource: { buffer: uniformBuf } },
-      ],
-    });
-
-    // Record buffer identity for cache invalidation.
-    // Only the dynamic buffers (input + output) need cache-keying — the
-    // weights and biases are static after `initialize()` so they cannot
-    // change between frames. Earlier revisions also stored the
-    // weights/biases labels here, but the matching `_getCurrentBufKeys`
-    // returned empty strings for those slots, so the cache check at
-    // line 333 always failed and the bind group was rebuilt every frame.
-    const bufKeys = [
-      inputBuf.label ?? '',
-      outputBuf.label ?? '',
-    ] as const;
-
-    return { bindGroup, bufKeys };
-  }
-
-  private _getCurrentBufKeys(layer: LayerSpec): readonly string[] {
-    const inputName  = layer.inputs[0] ?? 'enc_input';
-    const outputName = layer.output;
-    const inputBuf   = this._tensors.get(inputName)?.buf ?? this._placeholderBuf!;
-    const outputBuf  = this._tensors.get(outputName)?.buf ?? this._placeholderBuf!;
-    return [inputBuf.label ?? '', outputBuf.label ?? ''];
-  }
 
   /**
    * GPU-side input packing pass.
@@ -703,14 +298,9 @@ export class InferenceGraph {
    *   enc_input[p*9+3..5] = albedo[p*3+0..2]
    *   enc_input[p*9+6..8] = normals[p*3+0..2]
    *
-   * The previous implementation issued three `copyBufferToBuffer` calls
-   * producing PLANAR layout [noisyColor | albedo | normals], which the
-   * U-Net could not consume. This dispatch invokes `INPUT_PACKER_WGSL`
-   * once per frame.
-   *
-   * The compute pipeline is compiled once at `initialize()`. The bind
-   * group is rebuilt each frame because the three input buffers are
-   * supplied per-call and their identities are not stable across frames.
+   * The compute pipeline is compiled once at `initialize()`. The bind group is
+   * rebuilt each frame because the three input buffers are supplied per-call and
+   * their identities are not stable across frames.
    */
   private _runInputPack(
     enc: GPUCommandEncoder,

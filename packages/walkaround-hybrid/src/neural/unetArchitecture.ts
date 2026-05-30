@@ -32,6 +32,12 @@ export type LayerKind =
   | 'transposedConv2d'
   | 'relu'
   | 'skipAdd'
+  // EXTENSION POINT (Task 4.5 D2): `bilinearUpsample` is fully plumbed end-to-end
+  // (WGSL kernel `bilinearUpsample.wgsl.ts`, entry point, dim solver, dispatch
+  // layout) but no canonical UNetSpec currently emits it — the decoder upsamples
+  // via `transposedConv2d`. It is the ALTERNATIVE decoder upsampler: a custom
+  // spec can emit a `bilinearUpsample` layer (2× nearest/bilinear, no learned
+  // weights) in place of a transposed conv. Kept deliberately; not dead code.
   | 'bilinearUpsample'
   | 'inputPack';
 

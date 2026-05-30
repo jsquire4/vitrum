@@ -1,5 +1,4 @@
 import {
-  Matrix4,
   PerspectiveCamera,
 } from 'three';
 import type {
@@ -29,20 +28,14 @@ import type {
   ScenePrimitive,
   SceneEmitter,
   SceneEnvironment,
-  MeshPrimitive,
-  InstancedMeshPrimitive,
 } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import {
   vitrumSceneToThree,
   applyEnvironment,
-  applyVitrumMaterialToMesh,
-  findMeshByPrimitiveId,
 } from '@vitrum/three-bindings';
 import {
   expandInstancedMeshesInScene,
-  findAllMeshesByPrimitiveId,
-  reexpandInstancedMeshInScene,
 } from './expandInstancedMeshes.js';
 import type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
 import { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
@@ -51,15 +44,15 @@ import { driveForkMaterialUniforms } from './forkUniformBridge.js';
 import { ForkAccess, type WebGLPathTracerCompat } from './forkAccess.js';
 import {
   isEmitterOnlyPatch,
-  isMaterialOnlyPrimitivePatch,
-  isTransformOnlyPrimitivePatch,
-  isPositionsOnlyPrimitivePatch,
-  isGeometryOnlyPrimitivePatch,
-  isInstanceCountOnlyPrimitivePatch,
-  applyPositionsPatchToMesh,
-  applyGeometryPatchToMesh,
-  refreshPathTracerSceneGeometry,
+  routePrimitivePatch,
 } from './scenePatch.js';
+import {
+  AdaptiveScheduler,
+  DEFAULT_TILE_SIZE,
+  type SchedulerOptions,
+  type RenderSizePlan,
+} from './adaptiveScheduler.js';
+import type { PTEngineWebGL2QualityMode } from './ptEngineWebGL2QualityMode.js';
 import {
   MAX_TILE_GRID,
   TileVariancePass,
@@ -136,9 +129,17 @@ export interface PTEngineWebGL2Options extends EngineOptions {
 
 const DEFAULT_MAX_BOUNCES = 12;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
-const DEFAULT_TILE_SIZE = 3;
 
-export type PTEngineWebGL2QualityMode = 'interactive' | 'final' | 'capture' | 'safe';
+// `DEFAULT_TILE_SIZE` + the `SchedulerOptions` / `RenderSizePlan` types + the
+// `AdaptiveScheduler` state machine (was the inline `#updateScheduler` /
+// `#planRenderSize` / context-lost-handler cluster) live in
+// `./adaptiveScheduler.ts` (Task 4.4 Theme A); imported above. The engine holds
+// one `AdaptiveScheduler` instance and delegates per-frame scheduling to it.
+
+// `PTEngineWebGL2QualityMode` moved to `./ptEngineWebGL2QualityMode.ts` so the
+// extracted scheduler can reference it without a cycle; re-exported here so the
+// public surface is unchanged.
+export type { PTEngineWebGL2QualityMode } from './ptEngineWebGL2QualityMode.js';
 
 export interface PTEngineWebGL2Telemetry {
   readonly qualityMode: PTEngineWebGL2QualityMode;
@@ -174,66 +175,14 @@ interface DeviceLimits {
 // in `forkAccess.ts` alongside the fork-private `ForkAccess` seam (theme T14).
 // Imported above.
 
-interface RenderSizePlan {
-  readonly width: number;
-  readonly height: number;
-  readonly estimatedBytes: number;
-  readonly guardrail: string | null;
-}
-
 // Canonical `patchPrimitiveInScene` / `patchEmitterInScene` live in
 // `@vitrum/core` (theme T2 dedup); imported above. The backend-specific
-// fast-path classifiers (`isEmitterOnlyPatch` / `isMaterialOnlyPrimitivePatch`
-// / `isTransformOnlyPrimitivePatch` / `isPositionsOnlyPrimitivePatch`), the
-// THREE-side `applyPositionsPatchToMesh` mutator, and the fork geometry-refresh
-// `refreshPathTracerSceneGeometry` live in `./scenePatch.ts` (theme T14); also
-// imported above. They are a separate concern from the shared snapshot-patch +
-// invariant layer.
-
-/**
- * Outcome of a {@link PrimitivePatchHandler}'s `apply`, driving the single
- * shared `updatePrimitive` epilogue:
- *   • `'commit'`      — incremental fast path landed; run the shared commit
- *                       (oidn invalidate + patchPrimitiveInScene);
- *   • `'fallback'`    — incremental path declined; full-`setScene` rebuild;
- *   • `'passthrough'` — classifier matched but the handler's own guard rejected
- *                       it; continue to the next handler / tail full-rebuild.
- */
-type PatchApplyOutcome = 'commit' | 'fallback' | 'passthrough';
-
-/**
- * One entry in `updatePrimitive`'s ordered, first-match-wins dispatch table.
- * `classify` is the `isXOnlyPatch` predicate; `apply` performs the THREE-side
- * mutation (and, for geometry handlers, the fork's targeted geometry+BVH regen)
- * and reports a {@link PatchApplyOutcome}. `apply` may throw on a missing-id
- * mesh lookup — the throw propagates BEFORE any scene commit, exactly as the
- * original per-branch `throw` did.
- */
-interface PrimitivePatchHandler {
-  classify(patch: Partial<ScenePrimitive>): boolean;
-  apply(id: string, patch: Partial<ScenePrimitive>): PatchApplyOutcome;
-}
-
-interface SchedulerOptions {
-  readonly qualityMode: PTEngineWebGL2QualityMode;
-  readonly adaptive: boolean;
-  readonly targetBatchMs: number;
-  readonly minSamplesPerFrame: number;
-  readonly maxSamplesPerFrame: number;
-  readonly initialSamplesPerFrame: number;
-  readonly initialTileSize: number;
-  readonly maxTileSize: number;
-  readonly renderTargetBudgetBytes: number;
-}
-
-/** RGBA16F texel size: 4 channels × 2 bytes per channel. */
-const BYTES_PER_RGBA16F_PIXEL = 8;
-/** Number of full-resolution render targets the WebGL path tracer allocates:
- *  primary accumulation, depth, normal, motion vector. */
-const ESTIMATED_RENDER_TARGET_COUNT = 4;
-/** Per-renderer overhead in driver metadata + mip alignment + GL state, used
- *  to budget memory when computing the host's adaptive render-size plan. */
-const DEFAULT_RENDER_TARGET_OVERHEAD_BYTES = 64 * 1024 * 1024;
+// fast-path classifiers + THREE-side mutators + the `updatePrimitive` dispatch
+// cascade (`routePrimitivePatch`) live in `./scenePatch.ts` (theme T14 + Task
+// 4.4 Theme A); imported above. They are a separate concern from the shared
+// snapshot-patch + invariant layer. The `SchedulerOptions` / `RenderSizePlan`
+// types + render-target byte constants are re-homed in `./adaptiveScheduler.ts`
+// alongside the `AdaptiveScheduler` state machine; imported above.
 
 /** Below 360p (≈230k pixels) the adaptive-tiling dispatch's per-tile overhead
  *  dominates the per-pixel cost, so we disable tiling entirely. The threshold
@@ -551,17 +500,17 @@ export class PTEngineWebGL2 implements Engine {
   /** ANGLE stacks: RGBA32F light-path bind breaks unidirectional PT until fork decode path lands. */
   readonly #bdptCompileShader: boolean;
   readonly #limits: DeviceLimits;
-  readonly #schedulerOptions: SchedulerOptions;
+  /** Adaptive sample/tile scheduler + render-size planner (Task 4.4 Theme A).
+   *  Owns `samplesPerFrame` / `tileSize` / `contextLost` + the immutable
+   *  `SchedulerOptions`. Replaces the engine's inline scheduler cluster. */
+  readonly #scheduler: AdaptiveScheduler;
 
   #vitrumScene: Scene | null = null;
   #lastTlasAudit: PtWebglTlasAudit | null = null;
   #threeSceneRoot: ThreeScene | null = null;
   #cameraSignature = '';
-  #samplesPerFrame: number;
-  #tileSize: number;
   #lastRenderWidth = 0;
   #lastRenderHeight = 0;
-  #contextLost = false;
   #contextLostHandler: ((ev: Event) => void) | null = null;
   #lastTargetSpp = 16;
   #lastTelemetry: PTEngineWebGL2Telemetry | undefined;
@@ -618,9 +567,10 @@ export class PTEngineWebGL2 implements Engine {
           'Use WSL capture (benchmark:bdpt-layered-refs-gpu-wsl-full) for mechanical promotion.',
       );
     }
-    this.#schedulerOptions = defaultSchedulerOptions(opts.extensions, opts.qualityMode ?? 'capture');
-    this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
-    this.#tileSize = this.#schedulerOptions.initialTileSize;
+    this.#scheduler = new AdaptiveScheduler(
+      defaultSchedulerOptions(opts.extensions, opts.qualityMode ?? 'capture'),
+      this.#limits,
+    );
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
     const accumulation = parseAccumulationConfig(opts);
@@ -637,9 +587,7 @@ export class PTEngineWebGL2 implements Engine {
       this.#additiveAccumulation,
     );
     this.#contextLostHandler = () => {
-      this.#contextLost = true;
-      this.#samplesPerFrame = 1;
-      this.#tileSize = Math.max(this.#tileSize, DEFAULT_TILE_SIZE);
+      this.#scheduler.noteContextLost();
     };
     this.#renderer.domElement?.addEventListener?.('webglcontextlost', this.#contextLostHandler);
     this.#pathTracer.renderDelay = 0;
@@ -875,50 +823,6 @@ export class PTEngineWebGL2 implements Engine {
     };
   }
 
-  #estimateRenderTargetBytes(width: number, height: number): number {
-    return (
-      width *
-      height *
-      BYTES_PER_RGBA16F_PIXEL *
-      ESTIMATED_RENDER_TARGET_COUNT +
-      DEFAULT_RENDER_TARGET_OVERHEAD_BYTES
-    );
-  }
-
-  #planRenderSize(width: number, height: number): RenderSizePlan {
-    const requestedWidth = Math.max(1, Math.floor(width));
-    const requestedHeight = Math.max(1, Math.floor(height));
-    const maxDimension = Math.max(1, Math.min(this.#limits.maxTextureSize, this.#limits.maxRenderbufferSize));
-    let scale = Math.min(1, maxDimension / requestedWidth, maxDimension / requestedHeight);
-    let guardrail: string | null = scale < 1
-      ? `capped to WebGL max render dimension ${maxDimension}`
-      : null;
-    let plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
-    let plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
-    let estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
-    if (estimatedBytes > this.#schedulerOptions.renderTargetBudgetBytes) {
-      const targetBytes = Math.max(
-        1,
-        this.#schedulerOptions.renderTargetBudgetBytes - DEFAULT_RENDER_TARGET_OVERHEAD_BYTES,
-      );
-      const pixelBytes = Math.max(1, plannedWidth * plannedHeight * BYTES_PER_RGBA16F_PIXEL * ESTIMATED_RENDER_TARGET_COUNT);
-      const memoryScale = Math.min(1, Math.sqrt(targetBytes / pixelBytes));
-      scale *= memoryScale;
-      plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
-      plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
-      estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
-      guardrail = guardrail == null
-        ? `downscaled to fit ${Math.round(this.#schedulerOptions.renderTargetBudgetBytes / 1024 / 1024)} MiB render-target budget`
-        : `${guardrail}; downscaled to fit render-target budget`;
-    }
-    return {
-      width: plannedWidth,
-      height: plannedHeight,
-      estimatedBytes,
-      guardrail,
-    };
-  }
-
   /**
    * Run a variance-aware adaptive tile-repeat pass at most once every
    * `#pixelAdaptiveCadence` samples. Writes the resulting per-tile repeat
@@ -950,35 +854,6 @@ export class PTEngineWebGL2 implements Engine {
       }
     } else if (!this.#pixelAdaptiveSampling) {
       tracerCompat.tileRepeatFactors = null;
-    }
-  }
-
-  #updateScheduler(batchMs: number): void {
-    if (!this.#schedulerOptions.adaptive || this.#schedulerOptions.targetBatchMs <= 0) return;
-    if (this.#contextLost) {
-      this.#samplesPerFrame = 1;
-      this.#tileSize = Math.min(this.#schedulerOptions.maxTileSize, Math.max(this.#tileSize, DEFAULT_TILE_SIZE));
-      return;
-    }
-    const target = this.#schedulerOptions.targetBatchMs;
-    if (batchMs > target * 1.35) {
-      this.#samplesPerFrame = Math.max(
-        this.#schedulerOptions.minSamplesPerFrame,
-        Math.floor(this.#samplesPerFrame * 0.5),
-      );
-      if (batchMs > target * 2 && this.#tileSize < this.#schedulerOptions.maxTileSize) {
-        this.#tileSize += 1;
-      }
-      return;
-    }
-    if (batchMs < target * 0.55 && this.#samplesPerFrame < this.#schedulerOptions.maxSamplesPerFrame) {
-      this.#samplesPerFrame = Math.min(
-        this.#schedulerOptions.maxSamplesPerFrame,
-        Math.max(this.#samplesPerFrame + 1, Math.ceil(this.#samplesPerFrame * 1.2)),
-      );
-      if (batchMs < target * 0.25 && this.#tileSize > this.#schedulerOptions.initialTileSize) {
-        this.#tileSize -= 1;
-      }
     }
   }
 
@@ -1190,192 +1065,33 @@ export class PTEngineWebGL2 implements Engine {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
 
-    // Drive the incremental fast paths off an ordered, first-match-wins table of
-    // handlers — one per `isXOnlyPatch` classifier — rather than a linear chain
-    // of six near-identical `if … return` branches. Each handler `apply()`s its
-    // THREE-side mutation + (for the geometry handlers) the fork's targeted
-    // geometry+BVH regen, and reports a {@link PatchApplyOutcome}:
-    //   • `'commit'`      — fast path landed; run the shared commit epilogue
-    //                       (oidn invalidate + patchPrimitiveInScene) ONCE below;
-    //   • `'fallback'`    — incremental path declined (mutator or fork regen said
-    //                       no); take the shared full-`setScene` fallback below;
-    //   • `'passthrough'` — classifier matched but the handler's own guard
-    //                       rejected it (e.g. `instances` on a non-instanced
-    //                       primitive); continue to the next handler / tail.
-    // A missing-id mesh lookup throws inside `apply()` BEFORE any commit, exactly
-    // as the old per-branch `throw` did. ORDER is load-bearing (first match wins)
-    // and each handler's geometry-regen decision is preserved verbatim.
-    for (const handler of this.#primitivePatchHandlers) {
-      if (!handler.classify(_patch)) continue;
-      const outcome = handler.apply(_id, _patch);
-      if (outcome === 'passthrough') continue;
-      if (outcome === 'commit') {
-        this.#oidnDispatcher?.invalidate();
-        this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene!, _id, _patch);
-        return;
-      }
-      // 'fallback' — full rebuild from the patched scene.
-      const next = patchPrimitiveInScene(this.#vitrumScene!, _id, _patch);
-      this.setScene(next);
+    // Drive the incremental fast paths through the ordered, first-match-wins
+    // dispatch cascade in `scenePatch.ts` (Task 4.4 Theme A). The engine owns
+    // its state — it passes the live `pathTracer` + THREE scene root + vitrum
+    // scene as a `PrimitivePatchContext`; `routePrimitivePatch` performs the
+    // THREE-side mutations (and, for geometry handlers, the fork's targeted
+    // geometry+BVH regen) and returns which epilogue to run. A missing-id mesh
+    // lookup THROWS inside the route BEFORE returning, exactly as the old
+    // per-branch `throw` did — before any scene commit.
+    const outcome = routePrimitivePatch(
+      {
+        pathTracer: this.#pathTracer,
+        threeSceneRoot: this.#threeSceneRoot,
+        vitrumScene: this.#vitrumScene,
+      },
+      _id,
+      _patch,
+    );
+    if (outcome === 'commit') {
+      // Fast path landed — shared commit epilogue (oidn invalidate +
+      // patchPrimitiveInScene), run ONCE.
+      this.#oidnDispatcher?.invalidate();
+      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
       return;
     }
-
-    // No fast path matched (or every matching handler passed through) — full
-    // rebuild.
+    // 'fallback' — full rebuild from the patched scene.
     const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
     this.setScene(next);
-  }
-
-  /**
-   * Ordered, first-match-wins dispatch table backing {@link updatePrimitive}.
-   * The order MUST stay material -> transform -> positions -> geometry ->
-   * instance-count to preserve the original cascade's branch precedence; each
-   * `apply` reproduces exactly one of the original per-branch bodies (sans the
-   * shared commit epilogue, which `updatePrimitive` runs once). Lazily built so
-   * `this` is bound; cached because the table is `this`-stable.
-   */
-  #primitivePatchHandlersCache: readonly PrimitivePatchHandler[] | null = null;
-  get #primitivePatchHandlers(): readonly PrimitivePatchHandler[] {
-    if (this.#primitivePatchHandlersCache != null) return this.#primitivePatchHandlersCache;
-    const handlers: readonly PrimitivePatchHandler[] = [
-      {
-        // Material-only. NOTE: no geometry regen + no `setScene` fallback — this
-        // handler always 'commit's (or throws on a missing mesh).
-        classify: (patch) => isMaterialOnlyPrimitivePatch(patch),
-        apply: (id, patch) => {
-          // An expanded instanced-mesh has N THREE.Mesh children sharing the
-          // primitive id (and, at setScene time, one shared material). Re-point
-          // the material on ALL of them — `applyVitrumMaterialToMesh` REPLACES
-          // `mesh.material`, so applying to only the first child (what
-          // findMeshByPrimitiveId returns) would leave the other N-1 instances
-          // on the stale material. For a plain mesh this is the single match.
-          const meshes = findAllMeshesByPrimitiveId(this.#threeSceneRoot!, id);
-          if (meshes.length === 0) {
-            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
-          }
-          for (const mesh of meshes) {
-            applyVitrumMaterialToMesh(mesh, (patch as Partial<MeshPrimitive>).material!);
-          }
-          const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
-          if (typeof tracerCompat.updateMaterials === 'function') {
-            tracerCompat.updateMaterials();
-          } else {
-            tracerCompat.reset();
-          }
-          return 'commit';
-        },
-      },
-      {
-        // Transform-only.
-        classify: (patch) => isTransformOnlyPrimitivePatch(patch),
-        apply: (id, patch) => {
-          const mesh = findMeshByPrimitiveId(this.#threeSceneRoot!, id);
-          if (mesh == null) {
-            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
-          }
-          const transform = (patch as Partial<MeshPrimitive>).transform;
-          if (transform != null && transform.length >= 16) {
-            const m = new Matrix4().fromArray(Array.from(transform));
-            mesh.matrix.copy(m);
-            mesh.matrixWorld.copy(m);
-            mesh.matrixAutoUpdate = false;
-          }
-          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
-            return 'fallback';
-          }
-          return 'commit';
-        },
-      },
-      {
-        // Positions-only (same vertex count).
-        classify: (patch) => isPositionsOnlyPrimitivePatch(patch),
-        apply: (id, patch) => {
-          const mesh = findMeshByPrimitiveId(this.#threeSceneRoot!, id);
-          if (mesh == null) {
-            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
-          }
-          const meshPatch = patch as Partial<MeshPrimitive>;
-          if (!applyPositionsPatchToMesh(mesh, meshPatch)) {
-            return 'fallback';
-          }
-          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
-            return 'fallback';
-          }
-          return 'commit';
-        },
-      },
-      {
-        // Geometry-only — arbitrary same-material geometry surgery, INCLUDING a
-        // vertex- or index-COUNT change, on ONE existing mesh. Rebuild that
-        // mesh's THREE BufferGeometry (positions/normals/uvs/tangents/indices)
-        // in place, then run the fork's targeted geometry+BVH regen. Because the
-        // patch carries no `material`, the regen's skipped `updateMaterials()` is
-        // harmless (the material slot is unchanged) — a material change would
-        // route through the material-only handler or the full-rebuild
-        // fallthrough instead. The fork's StaticGeometryGenerator detects the
-        // changed attribute lengths and force-rebuilds the merged geometry + BVH
-        // (GEOMETRY_REBUILT), so no full `setScene` teardown / material+light
-        // re-pack is needed.
-        classify: (patch) => isGeometryOnlyPrimitivePatch(patch),
-        apply: (id, patch) => {
-          const mesh = findMeshByPrimitiveId(this.#threeSceneRoot!, id);
-          if (mesh == null) {
-            throw new Error(`updatePrimitive: primitive "${id}" not found in internal THREE scene`);
-          }
-          const meshPatch = patch as Partial<MeshPrimitive>;
-          if (!applyGeometryPatchToMesh(mesh, meshPatch)) {
-            return 'fallback';
-          }
-          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
-            return 'fallback';
-          }
-          return 'commit';
-        },
-      },
-      {
-        // Instance-count-only — an `instances`-only patch on an `instanced-mesh`:
-        // a per-instance transform list change, INCLUDING an instance-COUNT
-        // grow/shrink. At setScene the single THREE.InstancedMesh was expanded
-        // into N baked THREE.Mesh children (the fork bakes only
-        // `mesh.matrixWorld`, ignoring `instanceMatrix`), so an instances change
-        // is a topology change on the baked children, not a field the fork reads
-        // off a live InstancedMesh. Re-expand ONLY this primitive's children
-        // (swap the live root's N children for N' fresh ones, reusing the shared
-        // geometry + material), then take the fork's targeted geometry+BVH regen
-        // — the StaticGeometryGenerator detects the changed child set (added
-        // uuids built fresh, removed uuids evicted; a count delta forces
-        // GEOMETRY_REBUILT), exactly like the vertex-count path. Because
-        // `instances` carries no material, the regen's skipped `updateMaterials()`
-        // is harmless; a co-present material would have been blocked by the
-        // classifier and routed to the full-rebuild fallthrough.
-        //
-        // Guard on the CURRENT primitive's kind: a stray `instances` field on a
-        // non-instanced primitive is not a valid instanced re-expansion, so it
-        // 'passthrough's to the tail full-rebuild path.
-        classify: (patch) => isInstanceCountOnlyPrimitivePatch(patch),
-        apply: (id, patch) => {
-          const current = this.#vitrumScene!.primitives.find((p) => String(p.id) === id);
-          if (current == null || current.kind !== 'instanced-mesh') {
-            return 'passthrough';
-          }
-          const instances = (patch as Partial<InstancedMeshPrimitive>).instances;
-          if (instances == null) {
-            return 'passthrough';
-          }
-          if (!reexpandInstancedMeshInScene(this.#threeSceneRoot!, id, instances)) {
-            // No existing expanded children to swap (generator state we can't
-            // incrementally patch) — full rebuild.
-            return 'fallback';
-          }
-          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot!)) {
-            return 'fallback';
-          }
-          return 'commit';
-        },
-      },
-    ];
-    this.#primitivePatchHandlersCache = handlers;
-    return handlers;
   }
 
   updateEmitter(_id: string, _patch: Partial<SceneEmitter>): void {
@@ -1427,21 +1143,21 @@ export class PTEngineWebGL2 implements Engine {
     const { requestedWidth, requestedHeight, w, h, samplesThisFrame, batchMs, sppDelta, sizePlan } = args;
     const msPerSample = sppDelta > 0 ? batchMs / sppDelta : null;
     return {
-      qualityMode: this.#schedulerOptions.qualityMode,
+      qualityMode: this.#scheduler.options.qualityMode,
       renderer: this.#limits.renderer,
       requestedWidth,
       requestedHeight,
       renderWidth: w,
       renderHeight: h,
       samplesPerFrame: samplesThisFrame,
-      tileSize: this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING ? 1 : this.#tileSize,
+      tileSize: this.#scheduler.tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING ? 1 : this.#scheduler.tileSize,
       batchMs,
       msPerSample,
       sppDelta,
       sppPerSecond: sppDelta > 0 && batchMs > 0 ? (sppDelta * 1000) / batchMs : null,
       estimatedRenderTargetBytes: sizePlan.estimatedBytes,
-      renderTargetBudgetBytes: this.#schedulerOptions.renderTargetBudgetBytes,
-      guardrail: this.#contextLost
+      renderTargetBudgetBytes: this.#scheduler.options.renderTargetBudgetBytes,
+      guardrail: this.#scheduler.contextLost
         ? 'webgl context loss observed; scheduler reduced workload'
         : sizePlan.guardrail,
       additiveAccumulation: this.#additiveAccumulation,
@@ -1535,13 +1251,13 @@ export class PTEngineWebGL2 implements Engine {
     const factor = q.resolutionFactor ?? 1;
     const requestedWidth = Math.max(1, Math.floor(input.viewport.width * factor));
     const requestedHeight = Math.max(1, Math.floor(input.viewport.height * factor));
-    const sizePlan = this.#planRenderSize(requestedWidth, requestedHeight);
+    const sizePlan = this.#scheduler.planRenderSize(requestedWidth, requestedHeight);
     const w = sizePlan.width;
     const h = sizePlan.height;
-    if (this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING) {
+    if (this.#scheduler.tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING) {
       this.#pathTracer.tiles.set(1, 1);
     } else {
-      this.#pathTracer.tiles.set(this.#tileSize, this.#tileSize);
+      this.#pathTracer.tiles.set(this.#scheduler.tileSize, this.#scheduler.tileSize);
     }
     if (w !== this.#lastRenderWidth || h !== this.#lastRenderHeight) {
       this.#renderer.setSize(w, h, false);
@@ -1552,7 +1268,7 @@ export class PTEngineWebGL2 implements Engine {
     let spp = this.#pathTracer.samples;
     const sppBefore = spp;
     const batchStart = nowMs();
-    const samplesThisFrame = Math.min(this.#samplesPerFrame, Math.max(0, Math.ceil(targetSpp - spp)));
+    const samplesThisFrame = Math.min(this.#scheduler.samplesPerFrame, Math.max(0, Math.ceil(targetSpp - spp)));
 
     const tilesX = Math.max(1, Math.floor(this.#pathTracer.tiles.x));
     const tilesY = Math.max(1, Math.floor(this.#pathTracer.tiles.y));
@@ -1566,7 +1282,7 @@ export class PTEngineWebGL2 implements Engine {
     }
     const batchMs = Math.max(0, nowMs() - batchStart);
     const sppDelta = Math.max(0, spp - sppBefore);
-    this.#updateScheduler(batchMs);
+    this.#scheduler.update(batchMs);
     this.#lastTelemetry = this.#buildTelemetry({
       requestedWidth,
       requestedHeight,

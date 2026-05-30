@@ -16,7 +16,10 @@
  *   • an empty / non-matching patch — straight to the tail full-`setScene`.
  *
  * Behavior must be byte-identical before and after the dispatch-cascade ->
- * handler-table refactor: this file is the regression net.
+ * handler-table refactor AND its later lift into `scenePatch.routePrimitivePatch`
+ * (Task 4.4 Theme A — `updatePrimitive` is now a thin delegate that calls
+ * `routePrimitivePatch` and runs the shared commit/fallback epilogue): this file
+ * is the regression net through both moves.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Matrix4 } from 'three';

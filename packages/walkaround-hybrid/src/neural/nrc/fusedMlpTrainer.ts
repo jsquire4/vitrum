@@ -325,7 +325,8 @@ export class FusedMlpTrainer {
     return b;
   }
 
-  /** Record the fused forward pass (one workgroup per tile). */
+  /** Record the fused forward pass (one workgroup per tile).
+   *  @internal — used by {@link FusedMlpTrainerProbe} (the FD/loss debug surface). */
   recordForward(enc: GPUCommandEncoder) {
     const d = this.device;
     const ub = this.paramsUniform();
@@ -346,7 +347,8 @@ export class FusedMlpTrainer {
     pass.end();
   }
 
-  /** Record the fused backward pass (accumulates fixed-point grads). */
+  /** Record the fused backward pass (accumulates fixed-point grads).
+   *  @internal — used by {@link FusedMlpTrainerProbe}. */
   recordBackward(enc: GPUCommandEncoder) {
     const d = this.device;
     const ub = this.paramsUniform();
@@ -369,7 +371,8 @@ export class FusedMlpTrainer {
     pass.end();
   }
 
-  private recordGradFinalize(enc: GPUCommandEncoder, fx: GPUBuffer, f: GPUBuffer, count: number) {
+  /** @internal — used by {@link FusedMlpTrainerProbe} + trainStep. */
+  recordGradFinalize(enc: GPUCommandEncoder, fx: GPUBuffer, f: GPUBuffer, count: number) {
     const d = this.device;
     const u = new Uint32Array(4); u[0] = count;
     const ub = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -386,24 +389,6 @@ export class FusedMlpTrainer {
     pass.setPipeline(this.pGradFin); pass.setBindGroup(0, bg);
     pass.dispatchWorkgroups(Math.ceil(count / 64));
     pass.end();
-  }
-
-  /** Compute grads only (forward+backward+finalize), no Adam — for FD check.
-   *  Finalizes weight, bias AND dL/dX (input) grads. */
-  computeGradsStep() {
-    const d = this.device;
-    // clear fixed-point grad buffers (incl. dL/dX)
-    const enc0 = d.createCommandEncoder();
-    enc0.clearBuffer(this.gradWfx); enc0.clearBuffer(this.gradBfx);
-    enc0.clearBuffer(this.gradInputFx);
-    d.queue.submit([enc0.finish()]);
-    const enc = d.createCommandEncoder();
-    this.recordForward(enc);
-    this.recordBackward(enc);
-    this.recordGradFinalize(enc, this.gradWfx, this.gradWf, this.plan.totalW);
-    this.recordGradFinalize(enc, this.gradBfx, this.gradBf, this.plan.totalB);
-    this.recordGradFinalize(enc, this.gradInputFx, this.gradInputF, this.numSamples * this.spec.inW);
-    d.queue.submit([enc.finish()]);
   }
 
   /** Full fused train step: forward, backward, finalize grads, Adam, push back.
@@ -491,67 +476,10 @@ export class FusedMlpTrainer {
     pass.end();
   }
 
-  // ── readback helpers ──
-  async readGrads(): Promise<{ gw: Float32Array; gb: Float32Array }> {
-    return {
-      gw: await this.readF32(this.gradWf, this.plan.totalW),
-      gb: await this.readF32(this.gradBf, this.plan.totalB),
-    };
-  }
-
-  /** Read back the finalized dL/dX (input gradient), [numSamples × inW]. Used by
-   *  the FD gradient check and (debug) inspection of the hash-grid upstream grad. */
-  async readInputGrads(): Promise<Float32Array> {
-    return this.readF32(this.gradInputF, this.numSamples * this.spec.inW);
-  }
-
-  /** Forward-only + CPU MSE from prediction readback (for FD loss probe). */
-  async computeLoss(): Promise<number> {
-    const d = this.device;
-    const enc = d.createCommandEncoder();
-    this.recordForward(enc);
-    d.queue.submit([enc.finish()]);
-    const W = this.spec.W, node = this.node, outW = this.spec.outW;
-    const acts = await this.readScalar(this.actsGlob, this.numSamples * node * W);
-    const tgt = await this.readF32(this.targets, this.numSamples * outW);
-    let loss = 0;
-    for (let S = 0; S < this.numSamples; S++) {
-      for (let o = 0; o < outW; o++) {
-        const pred = acts[S * node * W + (node - 1) * W + o]!;
-        const t = tgt[S * outW + o]!;
-        loss += 0.5 * (pred - t) * (pred - t);
-      }
-    }
-    return loss / this.numSamples;
-  }
-
-  private async readF32(buf: GPUBuffer, count: number): Promise<Float32Array> {
-    const bytes = Math.max(16, count * 4);
-    const rb = this.device.createBuffer({ size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const enc = this.device.createCommandEncoder();
-    enc.copyBufferToBuffer(buf, 0, rb, 0, bytes);
-    this.device.queue.submit([enc.finish()]);
-    await rb.mapAsync(GPUMapMode.READ);
-    const out = new Float32Array(rb.getMappedRange().slice(0)).subarray(0, count);
-    const copy = new Float32Array(out);
-    rb.unmap(); rb.destroy();
-    return copy;
-  }
-
-  // Read a scalar buffer (f16 or f32) back as f32.
-  private async readScalar(buf: GPUBuffer, count: number): Promise<Float32Array> {
-    if (!this.cfg.useF16) return this.readF32(buf, count);
-    const bytes = Math.max(16, (count * 2 + 3) & ~3); // 4-byte-aligned copy size
-    const rb = this.device.createBuffer({ size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-    const enc = this.device.createCommandEncoder();
-    enc.copyBufferToBuffer(buf, 0, rb, 0, bytes);
-    this.device.queue.submit([enc.finish()]);
-    await rb.mapAsync(GPUMapMode.READ);
-    const bits = new Uint16Array(rb.getMappedRange().slice(0)).subarray(0, count);
-    const out = f16BitsToF32(bits);
-    rb.unmap(); rb.destroy();
-    return out;
-  }
+  // The FD/loss/readback debug helpers (computeGradsStep / computeLoss /
+  // readGrads / readInputGrads / readScalar / readF32) moved to
+  // {@link FusedMlpTrainerProbe} (Task 4.5 Theme I) so the production trainer
+  // surface is just build / setWeights / setBatch / trainStep / dispose.
 
   get layerPlan(): LayerPlan { return this.plan; }
 }

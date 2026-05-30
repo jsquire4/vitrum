@@ -109,6 +109,127 @@ import {
 } from './timestampQueries.js';
 
 /**
+ * Dependencies the {@link registerPasses} free function needs to construct +
+ * register the non-denoiser Pass set. Bundled so the orchestrator's
+ * `initialize()` hands the registration step its inputs explicitly instead of
+ * inlining ~75 LOC of `new XxxPass(...)` calls. Thunks (`getActiveDenoiser`
+ * etc.) preserve the late-`this`-binding the original closures had — they are
+ * read at dispatch time, never captured eagerly.
+ */
+interface RegisterPassesDeps {
+  diSpatialPasses: 1 | 2;
+  giSpatialPasses: 1 | 2;
+  restirPtReuseStructural: boolean;
+  sampleBudgetUboRef: UboRef;
+  sampleCountUboRef: UboRef;
+  accumUboRef: UboRef;
+  resolveUboRef: UboRef;
+  atrousIndirectUboRef: UboRef;
+  indirectAccumPingPongRef: PingPongRef;
+  regir: ReGIRCoordinator;
+  bglCache: BGLCache;
+  bvhBuffers: SceneBVHBuffers;
+  /** @group(4) NRC bind-group getter, or `undefined` when NRC is off. */
+  nrcBindGroup: (() => GPUBindGroup) | undefined;
+  getActiveDenoiser: () => Denoiser;
+  getAtrousPipeline: () => GPUComputePipeline;
+  isDenoiserPassEnabled: () => boolean;
+  getRegirResources: () => {
+    combinedLightTreeBuffer: GPUBuffer;
+    emitterBuffer: GPUBuffer;
+    uboBuffer: GPUBuffer;
+  };
+}
+
+/**
+ * Instantiate + register every non-denoiser {@link Pass} into a fresh
+ * {@link PassRegistry}, in the canonical source order. Extracted verbatim from
+ * `WalkaroundGPUPipeline.initialize()` (Task 4.1 god-orchestrator reduction) —
+ * the registered set, registration order, and the resulting topologically-
+ * sorted PASS_ORDER are byte-identical to the inlined block. The
+ * `regir.initialize(...)` side-effect is preserved at its original position
+ * (before the conditional ReGIRBuildPass registration). Returns the populated
+ * registry plus the CompositePass instance the caller caches for
+ * `presentLastFrame`.
+ */
+function registerPasses(
+  compiled: Awaited<ReturnType<typeof compilePipelines>>,
+  deps: RegisterPassesDeps,
+): { registry: PassRegistry; compositePass: CompositePass } {
+  const registry = new PassRegistry();
+  registry.register(new SampleBudgetPass(
+    compiled.sampleBudgetPipeline,
+    deps.sampleBudgetUboRef,
+    deps.sampleCountUboRef,
+  ));
+  registry.register(new RISPass(compiled.risPipeline));
+  registry.register(new TemporalReservoirPass(compiled.temporalPipeline));
+  // Phase-0 — spatial pass count is preset-driven (1 or 2 ping-pong passes).
+  registry.register(new SpatialReservoirPass(compiled.spatialPipeline, deps.diSpatialPasses));
+  // NRC ON ⇒ supply the @group(4) bind group getter so the gi-ris pass binds
+  // slot 4 (the inline-MLP variant was compiled). OFF ⇒ no getter, verbatim
+  // 4-group dispatch (the default-path structure is unchanged).
+  registry.register(new RISGIPass(
+    compiled.risGiPipeline,
+    deps.nrcBindGroup,
+  ));
+  registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline, deps.restirPtReuseStructural));
+  registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, deps.giSpatialPasses, deps.restirPtReuseStructural));
+  registry.register(new ShadePass(compiled.shadePipeline));
+  registry.register(new MotionVectorsPass(compiled.motionVectorsPipeline));
+  registry.register(new GTAOPass(compiled.gtaoPipeline));
+  registry.register(new GTAOUpsamplePass(compiled.gtaoUpsamplePipeline));
+  // Virtual pass — promotes the polymorphic denoiser dispatch into the
+  // regular pass loop. Reads the active Denoiser through a getter so
+  // the adapter stays valid across `_activeDenoiser` reassignment in
+  // `dispose()` (where it is set to null AFTER the pass-list dispose
+  // walk, so the getter never sees the null transition).
+  registry.register(new DenoiserAdapterPass(
+    deps.getActiveDenoiser,
+    deps.getAtrousPipeline,
+    deps.isDenoiserPassEnabled,
+  ));
+  registry.register(new IndirectTemporalAccumPass(
+    compiled.indirectTemporalAccumPipeline,
+    deps.indirectAccumPingPongRef,
+  ));
+  registry.register(new AtrousIndirectPass(
+    compiled.atrousPipeline,
+    deps.atrousIndirectUboRef,
+  ));
+  registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
+  registry.register(new TemporalAccumPass(compiled.accumPipeline, deps.accumUboRef));
+  registry.register(new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef));
+  const compositePass = new CompositePass(compiled.compositePipeline);
+  registry.register(compositePass);
+  // PPG passes — only register when the pipelines compiled successfully.
+  // The `gates()` predicate gates dispatch on `opts.ppgEnabled` so they
+  // can be registered unconditionally here, but skipping registration
+  // when the pipeline is undefined avoids holding a stale field.
+  if (compiled.ppgGuidePipeline) {
+    registry.register(new PPGGuidePass(compiled.ppgGuidePipeline));
+  }
+  if (compiled.ppgUpdatePipeline) {
+    registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));
+  }
+  // ReGIR grid-build (Boksansky 2021) — register only when the pipeline
+  // compiled (opt-in). Topo-sort runs it FIRST (no deps; `regir-build` <
+  // `sample-budget` lexically) so the grid is filled before RIS reads it.
+  // `gates()` further requires the coordinator be live (light tree live).
+  // Initialise the coordinator's grid geometry first so `live` is correct.
+  deps.regir.initialize(deps.bvhBuffers, compiled.regirBuildPipeline !== undefined);
+  if (compiled.regirBuildPipeline) {
+    registry.register(new ReGIRBuildPass(
+      compiled.regirBuildPipeline,
+      deps.regir,
+      deps.bglCache,
+      deps.getRegirResources,
+    ));
+  }
+  return { registry, compositePass };
+}
+
+/**
  * WebGPU device limits required by the layered-hybrid shade pipeline.
  *
  * The ReSTIR shade pass binds 13 storage buffers in the live path:
@@ -829,81 +950,32 @@ export class WalkaroundGPUPipeline {
 
     // ── Pass registry: instantiate + register all non-denoiser passes ────
     // Order of registration is irrelevant; the registry topologically sorts.
-    const registry = new PassRegistry();
-    registry.register(new SampleBudgetPass(
-      compiled.sampleBudgetPipeline,
-      this._sampleBudgetUboRef,
-      this._sampleCountUboRef,
-    ));
-    registry.register(new RISPass(compiled.risPipeline));
-    registry.register(new TemporalReservoirPass(compiled.temporalPipeline));
-    // Phase-0 — spatial pass count is preset-driven (1 or 2 ping-pong passes).
-    registry.register(new SpatialReservoirPass(compiled.spatialPipeline, this._diSpatialPasses));
-    // NRC ON ⇒ supply the @group(4) bind group getter so the gi-ris pass binds
-    // slot 4 (the inline-MLP variant was compiled). OFF ⇒ no getter, verbatim
-    // 4-group dispatch (the default-path structure is unchanged).
-    registry.register(new RISGIPass(
-      compiled.risGiPipeline,
-      this._nrc !== null ? () => this._nrc!.bindGroup() : undefined,
-    ));
-    registry.register(new TemporalGIReservoirPass(compiled.temporalGiPipeline, this._restirPtReuseStructural));
-    registry.register(new SpatialGIReservoirPass(compiled.spatialGiPipeline, this._giSpatialPasses, this._restirPtReuseStructural));
-    registry.register(new ShadePass(compiled.shadePipeline));
-    registry.register(new MotionVectorsPass(compiled.motionVectorsPipeline));
-    registry.register(new GTAOPass(compiled.gtaoPipeline));
-    registry.register(new GTAOUpsamplePass(compiled.gtaoUpsamplePipeline));
-    // Virtual pass — promotes the polymorphic denoiser dispatch into the
-    // regular pass loop. Reads the active Denoiser through a getter so
-    // the adapter stays valid across `_activeDenoiser` reassignment in
-    // `dispose()` (where it is set to null AFTER the pass-list dispose
-    // walk, so the getter never sees the null transition).
-    registry.register(new DenoiserAdapterPass(
-      () => this._activeDenoiser!,
-      () => this._atrousPipeline,
-      () => this._denoiserPassEnabled,
-    ));
-    registry.register(new IndirectTemporalAccumPass(
-      compiled.indirectTemporalAccumPipeline,
-      this._indirectAccumPingPongRef,
-    ));
-    registry.register(new AtrousIndirectPass(
-      compiled.atrousPipeline,
-      this._atrousIndirectUboRef,
-    ));
-    registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
-    registry.register(new TemporalAccumPass(compiled.accumPipeline, this._accumUboRef));
-    registry.register(new ResolvePass(compiled.resolvePipeline, this._resolveUboRef));
-    const compositePass = new CompositePass(compiled.compositePipeline);
-    registry.register(compositePass);
+    // Extracted to the module-scope `registerPasses` free function (Task 4.1).
+    // The thunks below preserve the original closures' late-`this` binding.
+    const { registry, compositePass } = registerPasses(compiled, {
+      diSpatialPasses: this._diSpatialPasses,
+      giSpatialPasses: this._giSpatialPasses,
+      restirPtReuseStructural: this._restirPtReuseStructural,
+      sampleBudgetUboRef: this._sampleBudgetUboRef,
+      sampleCountUboRef: this._sampleCountUboRef,
+      accumUboRef: this._accumUboRef,
+      resolveUboRef: this._resolveUboRef,
+      atrousIndirectUboRef: this._atrousIndirectUboRef,
+      indirectAccumPingPongRef: this._indirectAccumPingPongRef,
+      regir: this._regir,
+      bglCache: this._bglCache,
+      bvhBuffers,
+      nrcBindGroup: this._nrc !== null ? () => this._nrc!.bindGroup() : undefined,
+      getActiveDenoiser: () => this._activeDenoiser!,
+      getAtrousPipeline: () => this._atrousPipeline,
+      isDenoiserPassEnabled: () => this._denoiserPassEnabled,
+      getRegirResources: () => ({
+        combinedLightTreeBuffer: this._bvhHost.lightTreeBuffer(),
+        emitterBuffer: this._bvhHost.sceneBindGroupResources().emitterBuffer,
+        uboBuffer: this._res.common.uboBuffer,
+      }),
+    });
     this._compositePass = compositePass;
-    // PPG passes — only register when the pipelines compiled successfully.
-    // The `gates()` predicate gates dispatch on `opts.ppgEnabled` so they
-    // can be registered unconditionally here, but skipping registration
-    // when the pipeline is undefined avoids holding a stale field.
-    if (compiled.ppgGuidePipeline) {
-      registry.register(new PPGGuidePass(compiled.ppgGuidePipeline));
-    }
-    if (compiled.ppgUpdatePipeline) {
-      registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));
-    }
-    // ReGIR grid-build (Boksansky 2021) — register only when the pipeline
-    // compiled (opt-in). Topo-sort runs it FIRST (no deps; `regir-build` <
-    // `sample-budget` lexically) so the grid is filled before RIS reads it.
-    // `gates()` further requires the coordinator be live (light tree live).
-    // Initialise the coordinator's grid geometry first so `live` is correct.
-    this._regir.initialize(bvhBuffers, compiled.regirBuildPipeline !== undefined);
-    if (compiled.regirBuildPipeline) {
-      registry.register(new ReGIRBuildPass(
-        compiled.regirBuildPipeline,
-        this._regir,
-        this._bglCache,
-        () => ({
-          combinedLightTreeBuffer: this._bvhHost.lightTreeBuffer(),
-          emitterBuffer: this._bvhHost.sceneBindGroupResources().emitterBuffer,
-          uboBuffer: this._res.common.uboBuffer,
-        }),
-      ));
-    }
 
     // ── Initialize all passes in parallel ────────────────────────────────
     this._passRegistry = registry;

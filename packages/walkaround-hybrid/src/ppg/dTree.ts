@@ -95,33 +95,12 @@ function buildSubtree(
 
   if (isLeaf) return idx;
 
-  // Two-phase build: (1) push 4 consecutive children, (2) recurse into each.
-  const uMid = (u0 + u1) * 0.5;
-  const vMid = (v0 + v1) * 0.5;
-  const childExtents: Array<[number, number, number, number]> = [
-    [u0,   uMid, v0,   vMid], // NW (offset 0)
-    [uMid, u1,   v0,   vMid], // NE (offset 1)
-    [u0,   uMid, vMid, v1  ], // SW (offset 2)
-    [uMid, u1,   vMid, v1  ], // SE (offset 3)
-  ];
-  const childIsLeaf = (depth + 1) >= maxDepth;
-
-  // Phase 1 — reserve all four child slots consecutively.
-  const firstChild = nodes.length;
+  // Two-phase build: (1) push 4 consecutive children (shared helper),
+  // (2) recurse into each non-leaf child to build its sub-tree.
+  const { firstChild, childExtents, childIsLeaf } =
+    pushFourChildren(nodes, u0, u1, v0, v1, depth, maxDepth);
   nodes[idx]!.firstChild = firstChild;
-  for (let ci = 0; ci < 4; ci++) {
-    const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
-    nodes.push({
-      isLeaf: childIsLeaf,
-      u0: cu0, u1: cu1, v0: cv0, v1: cv1,
-      solidAngle: childIsLeaf ? FOUR_PI * (cu1 - cu0) * (cv1 - cv0) : -1,
-      flux: 0,
-      firstChild: -1,
-      depth: depth + 1,
-    });
-  }
 
-  // Phase 2 — recurse into each non-leaf child to build its sub-tree.
   if (!childIsLeaf) {
     for (let ci = 0; ci < 4; ci++) {
       const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
@@ -129,8 +108,7 @@ function buildSubtree(
       // The recursive call must build the grandchildren at the current
       // tail (i.e. `nodes.length`). Patch this child's firstChild to point
       // there, then push its 4 grandchildren consecutively.
-      const grandFirst = nodes.length;
-      nodes[childIdx]!.firstChild = grandFirst;
+      nodes[childIdx]!.firstChild = nodes.length;
       buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
     }
   }
@@ -153,15 +131,45 @@ function buildSubtreeChildrenOnly(
   depth: number,
   maxDepth: number,
 ): void {
+  const { firstChild, childExtents, childIsLeaf } =
+    pushFourChildren(nodes, u0, u1, v0, v1, depth, maxDepth);
+  if (!childIsLeaf) {
+    for (let ci = 0; ci < 4; ci++) {
+      const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
+      const childIdx = firstChild + ci;
+      nodes[childIdx]!.firstChild = nodes.length;
+      buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
+    }
+  }
+}
+
+/**
+ * Push the four quadrant children of a node consecutively (NW, NE, SW, SE) and
+ * return their first index + extents + leaf-ness for the caller's Phase-2
+ * recursion. Shared by {@link buildSubtree} (Phase 1) and
+ * {@link buildSubtreeChildrenOnly} — both computed identical child extents +
+ * pushed four nodes of identical shape; this collapses that duplication.
+ *
+ * Does NOT recurse and does NOT patch the parent's `firstChild` (the caller
+ * does, since the two callers wire it differently). Output-identical to the two
+ * inlined push loops it replaces (pinned by `dTreePushFourChildren.test.ts`).
+ */
+function pushFourChildren(
+  nodes: DTreeNode[],
+  u0: number, u1: number,
+  v0: number, v1: number,
+  depth: number,
+  maxDepth: number,
+): { firstChild: number; childExtents: Array<[number, number, number, number]>; childIsLeaf: boolean } {
   const uMid = (u0 + u1) * 0.5;
   const vMid = (v0 + v1) * 0.5;
-  const childIsLeaf = (depth + 1) >= maxDepth;
   const childExtents: Array<[number, number, number, number]> = [
-    [u0,   uMid, v0,   vMid],
-    [uMid, u1,   v0,   vMid],
-    [u0,   uMid, vMid, v1  ],
-    [uMid, u1,   vMid, v1  ],
+    [u0,   uMid, v0,   vMid], // NW (offset 0)
+    [uMid, u1,   v0,   vMid], // NE (offset 1)
+    [u0,   uMid, vMid, v1  ], // SW (offset 2)
+    [uMid, u1,   vMid, v1  ], // SE (offset 3)
   ];
+  const childIsLeaf = (depth + 1) >= maxDepth;
   const firstChild = nodes.length;
   for (let ci = 0; ci < 4; ci++) {
     const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
@@ -174,14 +182,7 @@ function buildSubtreeChildrenOnly(
       depth: depth + 1,
     });
   }
-  if (!childIsLeaf) {
-    for (let ci = 0; ci < 4; ci++) {
-      const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
-      const childIdx = firstChild + ci;
-      nodes[childIdx]!.firstChild = nodes.length;
-      buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
-    }
-  }
+  return { firstChild, childExtents, childIsLeaf };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
