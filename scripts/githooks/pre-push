@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+# vitrum pre-push GPU validation gate (T1 smoke) — WARN-ONLY.
+#
+# Runs the local real-GPU smoke (shader-compile on both backends + default-render
+# non-regression) via the wsl-gpu harness and prints any regression LOUDLY, but
+# NEVER blocks the push (the chosen gate hardness — see
+# plan/gpu-validation-gate-2026-05-29.md §8). Skips silently when wsl-gpu / a GPU
+# isn't present, so non-WSL contributors and CI are unaffected.
+#
+# Activated by `core.hooksPath = scripts/githooks` (set by scripts/install-git-hooks.mjs
+# on npm install). To bypass entirely: `git push --no-verify`.
+node scripts/validate-gpu.mjs --smoke --warn-only
+exit 0

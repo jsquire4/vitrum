@@ -10,6 +10,9 @@
     "tools/*"
   ],
   "scripts": {
+    "prepare": "node scripts/install-git-hooks.mjs",
+    "validate:gpu:smoke": "node scripts/validate-gpu.mjs --smoke",
+    "validate:gpu": "node scripts/validate-gpu.mjs",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:gpu": "npm run test:gpu --workspaces --if-present",
