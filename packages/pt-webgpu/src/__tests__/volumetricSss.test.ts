@@ -182,6 +182,35 @@ describe("Single-scatter homogeneous slab (Beer's-law + albedo anchors)", () => 
     expect(transmitted / N).toBeCloseTo(Math.exp(-sigmaA * d), 2);
   });
 
+  it('no-collision branch estimator yields exp(-σ_a·d) per channel (NOT exp(-2σ_a·d)) — double-count fix', () => {
+    // V23 — the kernel's no-collision branch reaches the surface with probability
+    // P(t ≥ d) = exp(-heroSigmaT·d) (free-flight IS) and must then multiply the
+    // surviving throughput by exp(-(σ_t_c − heroSigmaT)·d), NOT the full
+    // exp(-σ_t_c·d). The prior code multiplied by the full transmittance, which
+    // DOUBLE-counted it (survival prob × explicit factor) → exp(-2σ_t·d),
+    // over-darkening every medium by the square of its transmittance. This oracle
+    // simulates the corrected estimator and pins the per-channel mean to the
+    // analytic Beer-Lambert transmittance.
+    const rng = makeRng(0x5151);
+    // Strongly CHROMATIC σ_a (σ_s = 0 ⇒ σ_t = σ_a). Hero = max channel.
+    const sigmaA = [0.6, 1.8, 3.4];
+    const hero = Math.max(...sigmaA);
+    const d = 0.5;
+    const N = 800000;
+    const acc = [0, 0, 0];
+    for (let i = 0; i < N; i += 1) {
+      const t = freeFlightDistance(hero, rng()); // hero-channel free flight
+      if (t > d) {
+        // Reached the surface — corrected per-channel multiplier.
+        for (let c = 0; c < 3; c += 1) acc[c]! += Math.exp(-(sigmaA[c]! - hero) * d);
+      }
+      // else: collision ⇒ absorbed (albedo σ_s/σ_t = 0), contributes 0.
+    }
+    for (let c = 0; c < 3; c += 1) {
+      expect(acc[c]! / N).toBeCloseTo(Math.exp(-sigmaA[c]! * d), 2);
+    }
+  });
+
   it('single-scatter albedo of an event equals σ_s/σ_t', () => {
     // At a real (non-null) collision the throughput is multiplied by the
     // single-scattering albedo σ_s/σ_t (PBR4e §11.2). Pin the identity.
@@ -278,5 +307,23 @@ describe('Structural compile-time gate: SSS off when BDPT enabled', () => {
     const extract = (w: string): string => w.match(/struct FrameParams\s*\{[\s\S]*?\};/)?.[0] ?? '';
     expect(extract(sssOn)).toBe(extract(sssOff));
     expect(FRAME_PARAMS_BYTE_SIZE).toBe(384);
+  });
+
+  it('no-collision branch divides out the hero-channel survival probability (V23 double-count fix)', () => {
+    // The surviving throughput must be scaled by exp(-(σ_t − heroSigmaT)·d), NOT
+    // the full exp(-σ_t·d) (which would double-count the transmittance already
+    // realized by the free-flight survival probability).
+    expect(sssOn).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * hit.dist)');
+    expect(sssOn).not.toContain('throughput = throughput * exp(-walkSigmaT * hit.dist)');
+  });
+
+  it('a participating medium is entered for pure ABSORPTION too (σ_a, no σ_s) — stained-glass fix (V23)', () => {
+    // isTranslucent must be true for a transmissive material that has Beer-Lambert
+    // absorption (hasSigmaA) or spectral attenuation, not only scattering — else
+    // chromatic stained glass (pure absorption) never enters the medium and its
+    // attenuationColor is silently dropped.
+    expect(sssOn).toContain('mat.hasSigmaA');
+    expect(sssOn).toContain('mat.hasSpectralAttenuation');
+    expect(sssOn).not.toContain('mat.isTranslucent = mat.transmission > 0.0 && mat.scatteringCoeff > 0.0;');
   });
 });

@@ -483,9 +483,19 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.spectralAvgMu = max(m19.x, 0.0);
   mat.spectralSampleCount = u32(max(m19.w, 0.0));
   mat.dispersionAbbe = max(m19.y, 0.0);
-  mat.isTranslucent = mat.transmission > 0.0 && mat.scatteringCoeff > 0.0;
   mat.sigmaA = vec3f(max(m22.x, 0.0), max(m22.y, 0.0), max(m22.z, 0.0));
   mat.hasSigmaA = m22.w > 0.5;
+  // A material has a PARTICIPATING MEDIUM the eye path must traverse when it is
+  // transmissive AND has either scattering (σ_s) OR Beer-Lambert absorption
+  // (σ_a from attenuationColor / a spectral-attenuation curve). The σ_a-only case
+  // is exactly chromatic stained glass — pure absorption, no scattering — whose
+  // attenuationColor was packed but UNCONSUMED while this gate required σ_s > 0
+  // (the medium walk + enteredMedium/exitedMedium never fired). V23, 2026-05-29.
+  let hasScattering =
+    mat.scatteringCoeff > 0.0 ||
+    max(mat.scatteringRgb.x, max(mat.scatteringRgb.y, mat.scatteringRgb.z)) > 0.0;
+  mat.isTranslucent =
+    mat.transmission > 0.0 && (hasScattering || mat.hasSigmaA || mat.hasSpectralAttenuation);
   return mat;
 }
 `;

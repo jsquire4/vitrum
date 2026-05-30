@@ -109,9 +109,18 @@ export function composePathTraceKernelWgsl(opts: { readonly volumetricSss: boole
           }
           continue; // skip the surface BSDF this bounce — we scattered in the medium.
         } else {
-          // No collision before the surface: attenuate by the full-path
-          // transmittance and fall through to the surface interaction.
-          throughput = throughput * exp(-walkSigmaT * hit.dist);
+          // No collision before the surface: reach it and fall through to the
+          // surface interaction. The HERO-channel transmittance is ALREADY
+          // realized by the free-flight importance sampling — a path only reaches
+          // here with probability P(t ≥ d) = exp(-heroSigmaT·hit.dist) — so the
+          // estimator must divide the true per-channel transmittance by that
+          // survival probability: exp(-σ_t·d)/exp(-heroSigmaT·d) =
+          // exp(-(σ_t - heroSigmaT)·d). The hero channel cancels to ×1 (its
+          // attenuation lives in the survival fraction); lower-σ_t channels get a
+          // >1 correction (they absorb less). Multiplying by the FULL exp(-σ_t·d)
+          // here (the prior code) DOUBLE-counted the transmittance → exp(-2σ_t·d),
+          // over-darkening every medium by the square of its transmittance. V23.
+          throughput = throughput * exp(-(walkSigmaT - vec3f(heroSigmaT)) * hit.dist);
         }
       }
     }`
