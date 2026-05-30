@@ -65,9 +65,11 @@ export interface InverseParam {
    *  current scene value as the starting point. Length must match the kind
    *  (`scalar` → 1, `rgb` → 3). */
   readonly initial?: readonly number[];
-  /** Optional per-component lower clamp applied after each step. */
+  /** Optional lower clamp (a single scalar applied to EVERY component) enforced
+   *  after each optimizer step. e.g. `min: 0` keeps an RGB albedo non-negative. */
   readonly min?: number;
-  /** Optional per-component upper clamp applied after each step. */
+  /** Optional upper clamp (a single scalar applied to EVERY component) enforced
+   *  after each optimizer step. e.g. `max: 1` keeps an RGB albedo ≤ 1. */
   readonly max?: number;
 }
 

@@ -350,6 +350,30 @@ describe('inverse optimizer helpers — pure unit math', () => {
     expect(lossValue(rendered, 3, t, 'l1')).toBeCloseTo(l1Loss(rendered, 3, t).loss, 12);
   });
 
+  it('loss is finite-safe: non-finite rendered pixels (firefly ±Inf / NaN) map to 0, never poison the loss', () => {
+    // A path tracer can produce ±Inf firefly pixels (representable in rgba16float)
+    // or NaN from a degenerate sample. Without the guard a SINGLE bad pixel makes
+    // the mean image loss Inf/NaN, which NaNs the finite-difference gradient and
+    // the Adam step — silently stalling the optimizer (surfaced by the V24 GPU run).
+    const t = { data: new Float32Array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]), width: 2, height: 1, channels: 3 as const };
+    const withInf = new Float32Array([Infinity, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    const withNaN = new Float32Array([NaN, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    const withNegInf = new Float32Array([-Infinity, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    // Each bad pixel is treated as 0 → only that channel contributes (0−0.5)²; all
+    // others match exactly. So the loss is finite and equals (0.25)/6 for l2.
+    for (const bad of [withInf, withNaN, withNegInf]) {
+      const l2 = l2Loss(bad, 3, t);
+      expect(Number.isFinite(l2.loss)).toBe(true);
+      expect(l2.loss).toBeCloseTo(0.25 / 6, 12);
+      expect(l2.dLoss_dRendered.every((x) => Number.isFinite(x))).toBe(true);
+      expect(Number.isFinite(lossValue(bad, 3, t, 'l2'))).toBe(true);
+      expect(Number.isFinite(lossValue(bad, 3, t, 'l1'))).toBe(true);
+      const l1 = l1Loss(bad, 3, t);
+      expect(Number.isFinite(l1.loss)).toBe(true);
+      expect(l1.dLoss_dRendered.every((x) => Number.isFinite(x))).toBe(true);
+    }
+  });
+
   it('l1Loss: mean absolute error + sign gradient', () => {
     const rendered = new Float32Array([1, 0, 0, 0, 0, 0]);
     const t = { data: new Float32Array(6), width: 2, height: 1, channels: 3 as const };

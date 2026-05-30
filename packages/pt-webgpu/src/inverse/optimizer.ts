@@ -15,6 +15,24 @@ import type { InverseParam, InverseTargetImage } from '@vitrum/core';
 // ── image-space loss ─────────────────────────────────────────────────────────
 
 /**
+ * Read an interleaved image sample, mapping any non-finite value (NaN / ±Inf) to
+ * 0. A path tracer legitimately produces firefly pixels that reach ±Inf once
+ * encoded into the rgba16float accumulation target, and `NaN` can appear from a
+ * degenerate sample; neither is valid radiance. Without this guard a SINGLE bad
+ * pixel poisons the whole mean image loss (`Inf - t = Inf`, `Inf*Inf = Inf`,
+ * `Inf/N = Inf`, and any NaN propagates), which in turn NaNs the
+ * finite-difference gradient and the Adam step — silently stalling the optimizer
+ * at its initial value. Mapping to 0 keeps the loss finite and comparable across
+ * probe renders (N is unchanged), so the gradient stays meaningful. Surfaced by
+ * the V24 real-GPU inverse-session run (the unit tests use a finite fake forward
+ * model and never hit a firefly).
+ */
+function finiteSample(buf: Float32Array, i: number): number {
+  const v = buf[i];
+  return v !== undefined && Number.isFinite(v) ? v : 0;
+}
+
+/**
  * Mean per-pixel per-channel L2 (squared) loss between a rendered RGB image
  * (interleaved float, `renderChannels` per pixel) and the target. Both are read
  * over their first 3 channels (RGB); alpha is ignored. The two images must
@@ -38,8 +56,8 @@ export function l2Loss(
   let loss = 0;
   for (let p = 0; p < n; p++) {
     for (let c = 0; c < 3; c++) {
-      const r = rendered[p * renderChannels + c] ?? 0;
-      const t = target.data[p * targetChannels + c] ?? 0;
+      const r = finiteSample(rendered, p * renderChannels + c);
+      const t = finiteSample(target.data, p * targetChannels + c);
       const diff = r - t;
       loss += diff * diff;
       dLoss[p * 3 + c] = (2 * diff) / N;
@@ -64,8 +82,8 @@ export function lossValue(
   let loss = 0;
   for (let p = 0; p < n; p++) {
     for (let c = 0; c < 3; c++) {
-      const r = rendered[p * renderChannels + c] ?? 0;
-      const t = target.data[p * targetChannels + c] ?? 0;
+      const r = finiteSample(rendered, p * renderChannels + c);
+      const t = finiteSample(target.data, p * targetChannels + c);
       const diff = r - t;
       loss += kind === 'l2' ? diff * diff : Math.abs(diff);
     }
@@ -88,8 +106,8 @@ export function l1Loss(
   let loss = 0;
   for (let p = 0; p < n; p++) {
     for (let c = 0; c < 3; c++) {
-      const r = rendered[p * renderChannels + c] ?? 0;
-      const t = target.data[p * targetChannels + c] ?? 0;
+      const r = finiteSample(rendered, p * renderChannels + c);
+      const t = finiteSample(target.data, p * targetChannels + c);
       const diff = r - t;
       loss += Math.abs(diff);
       dLoss[p * 3 + c] = Math.sign(diff) / N;
