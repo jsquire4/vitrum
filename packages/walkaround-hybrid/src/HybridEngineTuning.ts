@@ -18,8 +18,8 @@
  *   `audit` (the audit citation that originally introduced the knob, for
  *   provenance). {@link readTunables} consumes the table + the constructor
  *   options object and produces a frozen {@link Tunables} record. The
- *   engine stores that one record and passes `...this._tunables` into
- *   `pipeline.renderFrame`.
+ *   engine stores that record on `_cfg.tunables` and passes
+ *   `...this._cfg.tunables` into `pipeline.renderFrame`.
  *
  *   Adding a new tunable becomes (Theme-H, 2026-05-30):
  *     1. Append one row to {@link TUNABLE_DEFINITIONS}.
