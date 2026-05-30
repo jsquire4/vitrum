@@ -69,13 +69,12 @@ describe('Engine T3.E contract', () => {
     expect(stats.frameTimeMs).toBe(16.7);
   });
 
-  it('FrameStats accepts the optional gpu/passTimings/spp/bvhDepth/memory fields', () => {
+  it('FrameStats accepts the optional gpu/passTimings/spp/memory fields', () => {
     const stats: FrameStats = {
       frameTimeMs: 16.7,
       gpuTimeMs: 12.4,
       passTimings: { restir: 5.2, denoiser: 2.1 },
       spp: 1,
-      bvhDepth: 24,
       estimatedGpuMemoryBytes: 256 * 1024 * 1024,
     };
     expect(stats.passTimings?.['restir']).toBe(5.2);

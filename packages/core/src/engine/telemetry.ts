@@ -22,8 +22,6 @@ export interface FrameStats {
   /** Samples accumulated this frame (PT-style engines).  Walkaround engines
    *  emit `1`. */
   readonly spp?: number;
-  /** BVH max depth — diagnostic for traversal cost. */
-  readonly bvhDepth?: number;
   /**
    * Approximate engine-owned GPU memory in bytes (sum of texture + buffer
    * bytes). Scalar form, intended as the lowest common denominator: every
