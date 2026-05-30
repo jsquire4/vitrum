@@ -95,7 +95,16 @@ export function defaultDirectionalLight(scene: Scene): readonly [number, number,
 
 export function defaultDirectionalIrradiance(scene: Scene): readonly [number, number, number] {
   const directional = scene.emitters.find((e) => e.kind === 'directional');
-  if (directional == null) return [1, 1, 1];
+  // No directional emitter ⇒ NO directional light. The former [1,1,1] default
+  // fabricated a phantom directional in EVERY directional-less scene (the kernel
+  // gates directional NEE on `lightDir.w = mean(thisIrradiance) > 1e-6`), which
+  // is physically wrong AND skewed the power-weighted light tree: the phantom's
+  // leaf was assigned the union-AABB of all positional lights, so its dist²≈0
+  // inside the scene made its importance dominate the descent, starving the real
+  // lights of selection probability and inflating their 1/pdf NEE weights (V22
+  // showed the tree raising variance ~76% over a uniform pick). [0,0,0] removes
+  // the phantom from both the kernel NEE and the tree. (V22, 2026-05-29.)
+  if (directional == null) return [0, 0, 0];
   const scale = directional.intensity;
   return [
     directional.color[0] * scale,
@@ -411,9 +420,16 @@ function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
 export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
   const packed = packEmitterArrays(scene);
   const dirIrr = defaultDirectionalIrradiance(scene);
-  const hasDirectional =
-    scene.emitters.some((e) => e.kind === 'directional') &&
-    (dirIrr[0] + dirIrr[1] + dirIrr[2]) / 3 > 1e-6;
+  // Mirror the kernel's directional NEE gate EXACTLY: the kernel iterates the
+  // directional slot iff `params.lightDir.w > 1e-6`, where `lightDir.w` is the
+  // mean of `directionalIrradiance` = `defaultDirectionalIrradiance(scene)`. The
+  // tree leaf for the directional slot must therefore be present under the SAME
+  // condition — NOT additionally gated on an explicit `directional` emitter
+  // existing. (When no directional emitter exists, the default irradiance is
+  // [1,1,1] so the kernel STILL shades a directional slot; gating the tree on a
+  // real emitter omitted that leaf and shifted every subsequent leaf's
+  // emitterIndex one slot off the kernel walk → a biased light-tree pick. V22.)
+  const hasDirectional = (dirIrr[0] + dirIrr[1] + dirIrr[2]) / 3 > 1e-6;
 
   // Mirror the kernel's env NEE gate EXACTLY: `hasEnvironmentMap || sunStrength
   // > 1e-6`, both derived from the SAME `environmentParams` the GPU uploads.

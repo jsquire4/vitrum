@@ -36,6 +36,7 @@ import {
 import {
   emitterPower,
   buildLightTreeInputForScene,
+  defaultDirectionalIrradiance,
   AREA_LIGHT_KINDS,
 } from '../scene/emitterPacking.js';
 
@@ -171,6 +172,53 @@ describe('WS2 — light-tree build over a multi-light scene', () => {
       expect(packed[base + 2]).toBe(nodes[i]!.leftChild);
       expect(packed[base + 3]).toBe(nodes[i]!.rightChild);
     }
+  });
+});
+
+// ===========================================================================
+// V22 — kernel/tree directional-slot ALIGNMENT (GPU-surfaced bias fix, 2026-05-29)
+// ===========================================================================
+describe('V22 — light-tree directional slot mirrors the kernel NEE gate exactly', () => {
+  it('no directional emitter ⇒ defaultDirectionalIrradiance is [0,0,0] (no phantom light)', () => {
+    // The kernel gates directional NEE on lightDir.w = mean(directionalIrradiance)
+    // > 1e-6. The former [1,1,1] default fabricated a phantom directional in every
+    // directional-less scene; [0,0,0] removes it (and keeps the kernel + tree
+    // gates aligned — both exclude the directional slot).
+    expect(defaultDirectionalIrradiance(emptyScene())).toEqual([0, 0, 0]);
+  });
+
+  it('a directional-less multi-light scene builds NO directional leaf (leaf count = real lights only)', () => {
+    // 3 point lights, no directional, no env → exactly 3 leaves. Pre-fix, the tree
+    // omitted a directional leaf the kernel STILL shaded (phantom), shifting every
+    // point light's emitterIndex one slot off the kernel walk → a biased pick.
+    const scene: Scene = {
+      ...emptyScene(),
+      emitters: [
+        { id: 'p0', kind: 'point', position: [0, 5, 0], color: [1, 1, 1], intensity: 2 },
+        { id: 'p1', kind: 'point', position: [4, 5, 0], color: [1, 1, 1], intensity: 5 },
+        { id: 'p2', kind: 'point', position: [-4, 5, 0], color: [1, 1, 1], intensity: 1 },
+      ],
+    } as unknown as Scene;
+    const input = buildLightTreeInputForScene(scene);
+    expect(input.powers.length).toBe(3);
+    // Leaf 0 must be the FIRST point light (kernel slot 0 when no directional),
+    // not a phantom directional — its power tracks p0's luminance, not [1,1,1].
+    expect(input.powers[0]).toBeCloseTo(luminance(2, 2, 2), 5);
+  });
+
+  it('a REAL directional emitter ⇒ irradiance = color·intensity and a directional leaf at index 0', () => {
+    const scene: Scene = {
+      ...emptyScene(),
+      emitters: [
+        { id: 'd0', kind: 'directional', direction: [0, -1, 0], color: [1, 0.5, 0.25], intensity: 3 },
+        { id: 'p0', kind: 'point', position: [0, 5, 0], color: [1, 1, 1], intensity: 2 },
+      ],
+    } as unknown as Scene;
+    expect(defaultDirectionalIrradiance(scene)).toEqual([3, 1.5, 0.75]);
+    const input = buildLightTreeInputForScene(scene);
+    // directional (slot 0) + 1 point = 2 leaves; leaf 0 is the directional.
+    expect(input.powers.length).toBe(2);
+    expect(input.powers[0]).toBeCloseTo(luminance(3, 1.5, 0.75), 5);
   });
 });
 

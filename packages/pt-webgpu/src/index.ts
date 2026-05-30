@@ -137,6 +137,14 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
     readonly maxLightBounces?: number;
   };
   /**
+   * Power-weighted light-tree importance sampling for direct-light NEE (Conty
+   * Estévez & Kulla 2018). Full tier only, and only active when the scene has ≥2
+   * selectable lights. ON by default; set `false` to force the unbiased uniform
+   * emitter pick instead (same converged mean, higher variance) — used to A/B the
+   * variance-reduction win. The lite tier always uses the uniform pick.
+   */
+  readonly lightTreeImportanceSampling?: boolean;
+  /**
    * Intel Open Image Denoise final-pass config. REQUIRED when
    * `denoiser: 'oidn-final'`. (Graduated from the former
    * `extensions['vitrum.ptWebgpu.oidnModelUrl' | 'oidnExecutionProviders']`.)
@@ -222,6 +230,7 @@ class PTEngineWebGPU implements Engine {
   #onProgressSubs = new Set<(progress: ProgressStats) => void>();
   readonly #postDenoiser: OIDNFinalDispatcher | null;
   readonly #spectralEnabled: boolean;
+  readonly #lightTreeImportanceSampling: boolean;
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
   #bdptLightPath: BdptLightPathBufferWebGPU | null = null;
@@ -236,6 +245,7 @@ class PTEngineWebGPU implements Engine {
     this.#slot = slot;
     this.#device = opts.device;
     this.#spectralEnabled = opts.spectral === true;
+    this.#lightTreeImportanceSampling = opts.lightTreeImportanceSampling !== false;
     this.#traceTier = traceTier;
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
@@ -548,7 +558,7 @@ class PTEngineWebGPU implements Engine {
     paramsU32[FrameParamsSlot.bdptMaxEyeDepth] = this.#activeBounces >>> 0;
     // WS2 — power-weighted light selection. FULL tier only: the lite kernel keeps
     // the uniform pick and never composes the light-tree WGSL / group(3) binding.
-    const lightTreeOn = this.#traceTier === 'full' && sb.lightTreeEnabled;
+    const lightTreeOn = this.#traceTier === 'full' && sb.lightTreeEnabled && this.#lightTreeImportanceSampling;
     paramsU32[FrameParamsSlot.lightTreeEnabled] = lightTreeOn ? 1 : 0;
     paramsU32[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
     paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
