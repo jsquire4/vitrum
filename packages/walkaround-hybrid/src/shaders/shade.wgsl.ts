@@ -417,7 +417,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // traversal). shade is merged-world-BVH-dominant; the gate keeps it correct.
   let geoNormal = primaryHit.normal;
   let normal = select(
-    smoothShadingNormal(primaryHit, geoNormal, &bvh_normal),
+    smoothShadingNormal(primaryHit, geoNormal, bvh_normal[primaryHit.indices.x].xyz, bvh_normal[primaryHit.indices.y].xyz, bvh_normal[primaryHit.indices.z].xyz),
     geoNormal,
     ubo.bvhMode == 1u,
   );

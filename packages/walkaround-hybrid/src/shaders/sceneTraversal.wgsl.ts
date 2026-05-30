@@ -127,14 +127,20 @@ fn traceSceneAny(
 // Degenerate guard: if the blended vector collapses (antipodal vertex normals
 // across a thin/folded triangle) we fall back to the geometric face normal so
 // the result stays finite + unit-length.
+// Takes the three per-vertex normals BY VALUE (n0/n1/n2) rather than the
+// bvh_normal storage buffer by pointer: Naga (wgpu-native / Firefox) rejects
+// ptr<storage> function parameters, so a value-arg signature is naga-native
+// and needs no shader-rewrite shim. Callers load bvh_normal[hit.indices.xyz]
+// inline at the call site (indexing a module-scope storage global is fine; only
+// passing it AS a ptr<storage> param is the Naga gap). Caught by the wsl-gpu
+// T1 smoke gate (lavapipe/naga) — the prior ptr-param form failed to compile.
 fn smoothShadingNormal(
   hit: IntersectionResult,
   geoNormal: vec3f,
-  bvh_normal: ptr<storage, array<vec4f>, read>,
+  n0: vec3f,
+  n1: vec3f,
+  n2: vec3f,
 ) -> vec3f {
-  let n0 = (*bvh_normal)[hit.indices.x].xyz;
-  let n1 = (*bvh_normal)[hit.indices.y].xyz;
-  let n2 = (*bvh_normal)[hit.indices.z].xyz;
   let blended =
     hit.barycoord.x * n0 +
     hit.barycoord.y * n1 +

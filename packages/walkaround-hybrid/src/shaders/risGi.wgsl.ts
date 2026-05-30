@@ -146,7 +146,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // geometric normal kept for the bounce-ray offset. TLAS keeps geometric.
   let geoNormal = hit.normal;
   let normal = select(
-    smoothShadingNormal(hit, geoNormal, &bvh_normal),
+    smoothShadingNormal(hit, geoNormal, bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz),
     geoNormal,
     ubo.bvhMode == 1u,
   );

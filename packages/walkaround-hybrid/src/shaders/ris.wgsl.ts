@@ -116,7 +116,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // shadow-ray offset. TLAS keeps geometric (local-space bvh_normal; deferred).
   let geoNormal = hit.normal;
   let normal = select(
-    smoothShadingNormal(hit, geoNormal, &bvh_normal),
+    smoothShadingNormal(hit, geoNormal, bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz),
     geoNormal,
     ubo.bvhMode == 1u,
   );
