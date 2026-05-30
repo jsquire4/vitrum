@@ -1132,7 +1132,10 @@ class PTEngineWebGPU implements Engine {
       if (gpu.pathTraceBindGroup3 != null) {
         bdptPass.setBindGroup(3, gpu.pathTraceBindGroup3);
       }
-      bdptPass.dispatchWorkgroups(this.#bdptMaxLightBounces, 1, 1);
+      // ONE workgroup: bdptExtendLightSubpath now builds the whole light subpath
+      // sequentially in a single invocation (was one workgroup per column with a
+      // cross-workgroup read of column-1 — a spec-undefined-ordering data race).
+      bdptPass.dispatchWorkgroups(1, 1, 1);
       bdptPass.end();
     }
 

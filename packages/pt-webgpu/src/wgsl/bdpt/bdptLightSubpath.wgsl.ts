@@ -250,25 +250,33 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   if (params.bdptEnabled == 0u) {
     return;
   }
-  let col = i32(gid.x);
+  // SINGLE-WORKGROUP sequential build. This WAS one workgroup per column, each
+  // reading column-1 from the buffer — a cross-workgroup data race, since
+  // workgroup execution order within one dispatch is spec-undefined (it only
+  // "worked" because drivers serialize tiny dispatches; that's why V18 passed).
+  // Building the whole light subpath in ONE invocation makes each column read
+  // the previous vertex THIS thread just wrote → sequentially correct, no race.
+  // The host now issues dispatchWorkgroups(1,1,1). maxLightBounces ≤ 3 and the
+  // chain was effectively serial anyway, so there is no real perf loss.
+  // (Caught + designed via the wsl-gpu validation gate; V25.)
   let maxB = i32(params.bdptMaxLightBounces);
-  if (col < 0 || col >= maxB) {
-    return;
-  }
-  var rng = pcgInit(u32(col), 0u, params.frameSeed ^ params.frameIndex);
+  let seed = params.frameSeed ^ params.frameIndex;
 
-  if (col == 0) {
-    bdptWriteBounce0(col, &rng);
-    return;
-  }
+  // Column 0 — the emitter vertex.
+  var rng0 = pcgInit(0u, 0u, seed);
+  bdptWriteBounce0(0, &rng0);
 
-  let prevCol = col - 1;
+  // Columns 1..maxB-1 — extend from the previous column (written just above /
+  // last loop iteration, by THIS same invocation: no inter-workgroup hazard).
+  for (var col = 1; col < maxB; col = col + 1) {
+    var rng = pcgInit(u32(col), 0u, seed);
+    let prevCol = col - 1;
   let v0prev = bdptLightPath[bdptLightPathIndex(prevCol, 0u)];
   let v1prev = bdptLightPath[bdptLightPathIndex(prevCol, 1u)];
   let v2prev = bdptLightPath[bdptLightPathIndex(prevCol, 2u)];
   if (v0prev.w == BDPT_KIND_INVALID) {
     bdptWriteInvalid(col);
-    return;
+    continue;
   }
   let prevPos = v0prev.xyz;
   let prevNormal = v1prev.xyz;
@@ -279,7 +287,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   let pdfScatter = hemi.pdf;
   if (pdfScatter <= 0.0) {
     bdptWriteInvalid(col);
-    return;
+    continue;
   }
   var ray: Ray;
   ray.origin = prevPos + prevNormal * 1e-4;
@@ -287,13 +295,13 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   let hit = traceClosest(ray, 1e-4, 1e30);
   if (!hit.didHit) {
     bdptWriteInvalid(col);
-    return;
+    continue;
   }
   let matIdx = hitMaterialId(hit);
   let mat = decodeMaterial(matIdx);
   if (mat.transmission > 0.5 && mat.roughness < 0.05) {
     bdptWriteInvalid(col);
-    return;
+    continue;
   }
   let newPos = ray.origin + ray.direction * hit.dist;
   let newNormal = safe_normalize(hit.normal);
@@ -308,5 +316,6 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
   bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(newPos, 0.0);
   bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(newNormal, pdfFwd);
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(newThroughput, pdfRev);
+  }
 }
 `;
