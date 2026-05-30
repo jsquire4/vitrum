@@ -14,6 +14,7 @@ import type { EngineOptions } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
 import type { ModelWeights } from './neural/weights.js';
 import type { CascadeDim } from '@vitrum/walkaround-rc';
+import type { Tunables } from './HybridEngineTuning.js';
 
 /**
  * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
@@ -356,31 +357,30 @@ export interface HybridEngineOptions extends EngineOptions {
    */
   readonly temporalAccumAlpha?: number;
 
-  /**
-   * Emitter-geometry-term distance² floor (audit M12).  Clamps
-   * `G = (n_l · ω) / max(dist², emitterDist2Floor)` to prevent G blowup
-   * for receivers within sqrt(floor) of an emitter.
-   *
-   * **Scene-scale-sensitive**.  Default `0.01` (10 cm minimum effective
-   * distance) for Cornell-scale.  Hosts on different scales should pass
-   * `(sceneDiagonal × 1e-3)²` so the floor scales with scene extent.
-   *
-   * @default 0.01
-   */
-  readonly emitterDist2Floor?: number;
+  // ── Audit tuning knobs (nested `tuning` namespace) ───────────────────────
 
   /**
-   * Per-channel HDR clamp on the direct radiance channel before the
-   * atrous-variance denoiser (audit B4). Suppresses fireflies from ReSTIR-DI's
-   * stochastic light-point selection on glancing-angle BRDF evaluations.
+   * Audit-driven per-frame tuning knobs (Theme-H nested namespace, 2026-05-30).
    *
-   * **Light-intensity-sensitive**.  Default `4.0` is calibrated for
-   * Le=12 (`4 / π × 12 ≈ 15`, clamped at 4).  For brighter scenes
-   * compute `~4 × luminance(maxEmitterLe)`.
+   * Each field is a fine-grained, scene-scale / framerate / light-intensity-
+   * sensitive constant that was once a hardcoded magic number in the ReSTIR /
+   * GTAO / caustic / atrous WGSL and is now host-overridable. The canonical
+   * type + JSDoc + Cornell-baseline default for every knob lives on
+   * {@link Tunables} (`HybridEngineTuning.ts`), the single source of truth;
+   * this nested `Partial<Tunables>` is the host override path.
    *
-   * @default 4.0
+   * Resolution (`readTunables`): for the three knobs that ALSO have a
+   * dedicated subsystem sub-object — `caustic.{boost,visClamp}`,
+   * `gtao.{radiusPx,intensity,depthThresholdWorldUnits,bilateralDepthSigma}`,
+   * and the `adaptiveSamplingThresholds` tuple — the subsystem sub-object wins
+   * over `tuning`, which wins over the {@link Tunables} default. For every
+   * other knob, `tuning` wins over the default. Omitting the field (or the
+   * whole `tuning` object) preserves Cornell behaviour byte-for-byte.
+   *
+   * @example
+   *   tuning: { directFireflyClamp: 8, restirGiWCap: 32, triIntersectEpsilon: 1e-7 }
    */
-  readonly directFireflyClamp?: number;
+  readonly tuning?: Partial<Tunables>;
 
   /**
    * Stained-glass caustic boost (audit B1).  Multiplies the through-glass
@@ -435,44 +435,6 @@ export interface HybridEngineOptions extends EngineOptions {
   };
 
   /**
-   * ReSTIR-DI temporal M-clamp (audit M6).  Caps the previous-frame
-   * reservoir's `M` before combining into this frame's reservoir.
-   * Higher = stickier history (slower to respond to lighting changes
-   * but lower variance).
-   *
-   * **Framerate-sensitive**.  Default 20 frames ≈ 333 ms history at
-   * 60 FPS.  At 15 FPS this stretches to 1.3 s; at 120 FPS it compresses
-   * to 167 ms.  For FPS-independent feel: `round(0.3 / frameTimeSeconds)`.
-   *
-   * @default 20
-   */
-  readonly temporalMClampDI?: number;
-
-  /**
-   * ReSTIR-DI spatial-reuse radius in **pixels** (audit M7).  The Poisson
-   * disk for neighbour sampling extends this far from the centre pixel.
-   *
-   * **Resolution-sensitive**.  Default `30` is calibrated for ~1080p–4K.
-   * At 480p reuse stretches across geometry boundaries; at 8K it stays
-   * very local.  Suggested host derivation: `screenHeight × 0.025`.
-   *
-   * @default 30
-   */
-  readonly spatialReuseRadiusPx?: number;
-
-  /**
-   * ReSTIR-DI spatial-reuse depth-tolerance world-units floor (audit M8).
-   * Neighbours whose depth differs by less than this absolute value are
-   * accepted regardless of relative tolerance.
-   *
-   * **Scene-scale-sensitive**.  Default `0.05` (5 cm) for Cornell-scale.
-   * Hosts on cm-scale scenes should use ~`sceneDiagonal × 1e-3`.
-   *
-   * @default 0.05
-   */
-  readonly spatialDepthTolFloor?: number;
-
-  /**
    * Adaptive-sampling tier classifier thresholds (audit M2).  The
    * sample-budget pass reads previous-frame Welford variance and writes
    * a per-pixel tier (1 / 2 / 4) used downstream by RIS to scale M_GI.
@@ -506,98 +468,6 @@ export interface HybridEngineOptions extends EngineOptions {
     readonly depthThresholdWorldUnits?: number;
     readonly bilateralDepthSigma?: number;
   };
-
-  /**
-   * Möller-Trumbore coplanarity epsilon (D12 / audit M3 follow-up).
-   * Controls the `abs(det) < ε` near-zero determinant test in
-   * `intersectTriangle` in the ReSTIR WGSL.  A too-small value causes
-   * grazing-angle rays to incorrectly miss coplanar triangles; a too-large
-   * value rejects valid near-coplanar hits.
-   *
-   * **Scene-scale-sensitive.**  Default `1e-5` is correct for metre-scale.
-   * For millimetre-scale geometry, try `1e-7`; for kilometre-scale, `1e-3`.
-   *
-   * @default 1e-5
-   */
-  readonly triIntersectEpsilon?: number;
-
-  /**
-   * 2026-05-18 sweep — Probe-side glass-transmission perceptual mix scale.
-   * When a DDGI probe ray hits a transmissive surface, the probe's radiance
-   * is `mix(roomRadiance, transmitted, mat.transmission * glassMixScale)`.
-   * Cornell default 0.7 leaves 30 % of the room radiance on fully-transparent
-   * glass; raise toward 1 for sky-tint-dominated transmission, lower toward 0
-   * to keep room-bounce contribution dominant.
-   *
-   * @default 0.7
-   */
-  readonly glassMixScale?: number;
-
-  /**
-   * 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap.
-   * Bounds firefly contribution from tiny `p̂` denominators. Cornell default
-   * 16.0 admits legitimate variance the unbiased estimator needs while
-   * bounding pathological grazing-angle samples.
-   *
-   * @default 16.0
-   */
-  readonly restirGiWCap?: number;
-
-  /**
-   * 2026-05-18 sweep — DDGI irradiance clamp at the ReSTIR-GI reconnection
-   * vertex (`risGi`). Caps `sampleDDGIAtPoint(xs, ns)` per channel.
-   *
-   * **Light-intensity-sensitive.** Cornell default 5.0 is calibrated for
-   * Le=12 indirect-band peaks.  Brighter emitters need higher caps.
-   *
-   * @default 5.0
-   */
-  readonly restirGiIrrClamp?: number;
-
-  /**
-   * 2026-05-18 sweep — ReSTIR-GI temporal previous-frame M clamp. Higher
-   * makes the chosen sample change less often → less per-frame pattern
-   * jitter; lower lets new samples take over faster.
-   *
-   * **Framerate-sensitive.** Cornell default 50 ≈ 0.83 s at 60 FPS.
-   *
-   * @default 50
-   */
-  readonly restirGiMClamp?: number;
-
-  /**
-   * 2026-05-18 sweep — ReSTIR-GI spatial-reuse disc radius (half-res pixels).
-   * The spatial-reuse pass samples K=5 neighbours within this radius.
-   *
-   * **Resolution-sensitive.** Cornell default 12.0 px.  Hosts at very high
-   * resolution may scale by `screenHeight / 1080`.
-   *
-   * @default 12.0
-   */
-  readonly restirGiSpatialRadiusPx?: number;
-
-  /**
-   * 2026-05-18 sweep — ReSTIR-GI spatial-reuse normal-alignment minimum
-   * cosine.  Neighbour reservoirs whose normal makes an angle larger than
-   * `acos(restirGiSpatialNormalDotMin)` with the centre pixel are rejected.
-   *
-   * Cornell default 0.906 ≈ cos(25°).
-   *
-   * @default 0.906
-   */
-  readonly restirGiSpatialNormalDotMin?: number;
-
-  /**
-   * 2026-05-18 sweep — ReSTIR-GI spatial-reuse coplanarity tolerance in
-   * **world units**.  Neighbour reservoirs whose position deviates from the
-   * centre pixel's tangent plane by more than this amount are rejected.
-   *
-   * **Scene-scale-sensitive.** Cornell default 0.05 (5 cm).  Hosts on
-   * different scales should pass `sceneDiagonal × 1e-3` ish.
-   *
-   * @default 0.05
-   */
-  readonly restirGiSpatialCoplanarTol?: number;
 
   /**
    * 2026-05-18 sweep — per-channel HDR clamp on the indirect-radiance

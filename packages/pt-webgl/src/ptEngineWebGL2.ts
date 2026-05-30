@@ -268,7 +268,8 @@ function nowMs(): number {
     : Date.now();
 }
 
-function defaultSchedulerOptions(
+/** @internal Exported only for characterization tests (Theme H). */
+export function defaultSchedulerOptions(
   extensions: Readonly<Record<string, unknown>> | undefined,
   qualityMode: PTEngineWebGL2QualityMode,
 ): SchedulerOptions {
@@ -359,7 +360,8 @@ interface CausticConfig {
   readonly spectralAlbedo: readonly [number, number, number] | undefined;
 }
 
-function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
+/** @internal Exported only for characterization tests (Theme H). */
+export function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
   // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
   const causticOpts = opts.causticOptions ?? {};
   const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
@@ -400,6 +402,69 @@ function parseBdptConfig(opts: PTEngineWebGL2Options): BdptConfig {
         ? Math.min(3, Math.floor(requestedBdptBounces))
         : 3,
     cpuFill: opts.bdptOptions?.cpuFill === true,
+  });
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * extensions-bag ↔ typed-options boundary (Theme H, 2026-05-30)
+ *
+ * First-class, supported features (spectral / bdpt / oidn / qualityMode) were
+ * GRADUATED to flat typed options on {@link PTEngineWebGL2Options}. The knobs
+ * below are deliberately KEPT in the stringly-typed `opts.extensions` bag — they
+ * are the experimental-tuning seam (the bag stays the SOURCE of truth for them).
+ *
+ * The rule enforced here: every `opts.extensions?.['vitrum.ptWebgl.*']` read
+ * lives inside ONE of the frozen-config parser functions below
+ * ({@link defaultSchedulerOptions}, {@link parseCausticConfig},
+ * {@link parseAccumulationConfig}, {@link parseIblBakerConfig}). The constructor
+ * never reaches into the bag directly — it only wires already-parsed structs.
+ * Coercion goes through {@link extensionNumber} / {@link extensionBoolean} so
+ * the type-guarding stays single-sourced.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Pixel-adaptive-sampling + additive-accumulation scalar config, parsed once
+ *  at construction from the experimental-tuning extensions bag. Mirrors the
+ *  {@link defaultSchedulerOptions} frozen-struct pattern so the constructor
+ *  stays a wiring step, not a parse step. */
+interface AccumulationConfig {
+  /** `vitrum.ptWebgl.pixelAdaptiveSampling === true`. */
+  readonly pixelAdaptiveSampling: boolean;
+  /** `vitrum.ptWebgl.additiveAccumulation === true` OR pixel-adaptive (adaptive
+   *  sampling implies additive accumulation). */
+  readonly additiveAccumulation: boolean;
+  /** `vitrum.ptWebgl.pixelAdaptiveCadence` (default 4), floored to ≥1. */
+  readonly pixelAdaptiveCadence: number;
+}
+
+/** @internal Exported only for characterization tests (Theme H). */
+export function parseAccumulationConfig(opts: PTEngineWebGL2Options): AccumulationConfig {
+  const pixelAdaptiveSampling = opts.extensions?.['vitrum.ptWebgl.pixelAdaptiveSampling'] === true;
+  return Object.freeze({
+    pixelAdaptiveSampling,
+    additiveAccumulation:
+      opts.extensions?.['vitrum.ptWebgl.additiveAccumulation'] === true || pixelAdaptiveSampling,
+    pixelAdaptiveCadence: Math.max(
+      1,
+      extensionNumber(opts.extensions, 'vitrum.ptWebgl.pixelAdaptiveCadence', 4),
+    ),
+  });
+}
+
+/** IBL-bake LRU-cache capacity, parsed once at construction from the
+ *  experimental-tuning extensions bag. `undefined` ⇒ the {@link IblBakerCache}
+ *  default LRU sizing (matches the previous module-singleton behaviour). */
+interface IblBakerConfig {
+  readonly cacheOpts: { maxEntries: number } | undefined;
+}
+
+/** @internal Exported only for characterization tests (Theme H). */
+export function parseIblBakerConfig(opts: PTEngineWebGL2Options): IblBakerConfig {
+  const requestedCacheCapacity = opts.extensions?.['vitrum.ptWebgl.iblBakerMaxEntries'];
+  return Object.freeze({
+    cacheOpts:
+      typeof requestedCacheCapacity === 'number' && Number.isFinite(requestedCacheCapacity)
+        ? { maxEntries: Math.max(1, Math.floor(requestedCacheCapacity)) }
+        : undefined,
   });
 }
 
@@ -558,14 +623,10 @@ export class PTEngineWebGL2 implements Engine {
     this.#tileSize = this.#schedulerOptions.initialTileSize;
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
-    const adaptiveRequested = opts.extensions?.['vitrum.ptWebgl.pixelAdaptiveSampling'] === true;
-    this.#additiveAccumulation =
-      opts.extensions?.['vitrum.ptWebgl.additiveAccumulation'] === true || adaptiveRequested;
-    this.#pixelAdaptiveSampling = adaptiveRequested;
-    this.#pixelAdaptiveCadence = Math.max(
-      1,
-      extensionNumber(opts.extensions, 'vitrum.ptWebgl.pixelAdaptiveCadence', 4),
-    );
+    const accumulation = parseAccumulationConfig(opts);
+    this.#additiveAccumulation = accumulation.additiveAccumulation;
+    this.#pixelAdaptiveSampling = accumulation.pixelAdaptiveSampling;
+    this.#pixelAdaptiveCadence = accumulation.pixelAdaptiveCadence;
     this.#tileFactorsScratch.fill(1);
     if (this.#pixelAdaptiveSampling) {
       this.#tileVariancePass = new TileVariancePass(MAX_TILE_GRID);
@@ -628,12 +689,7 @@ export class PTEngineWebGL2 implements Engine {
     // the previous module-singleton sizing). Capacity is overridable from
     // extensions for hosts that scrub atmospheric params more aggressively
     // than the default day-cycle bucket count.
-    const requestedCacheCapacity = opts.extensions?.['vitrum.ptWebgl.iblBakerMaxEntries'];
-    const cacheOpts =
-      typeof requestedCacheCapacity === 'number' && Number.isFinite(requestedCacheCapacity)
-        ? { maxEntries: Math.max(1, Math.floor(requestedCacheCapacity)) }
-        : undefined;
-    this.#iblBakerCache = new IblBakerCache(cacheOpts);
+    this.#iblBakerCache = new IblBakerCache(parseIblBakerConfig(opts).cacheOpts);
   }
 
   /**

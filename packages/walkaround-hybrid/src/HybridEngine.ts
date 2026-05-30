@@ -202,18 +202,44 @@ interface ParsedHybridEngineConfig {
   readonly resolutionFactor: number;
 }
 
-/** Parse + validate `HybridEngineOptions` into the immutable derived config.
- *  Pure (no `this`, no GPU); throws on unsupported/incomplete denoiser config.
- *  See {@link ParsedHybridEngineConfig}. */
-function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngineConfig {
+/**
+ * The extracted `extensions['walkaround-hybrid']` sub-object shape — read by
+ * both {@link validateHybridEngineOptions} (oidnModelUrl presence) and
+ * {@link deriveHybridEngineConfig} (oidnModelUrl / providers / bvhMode).
+ */
+type WalkaroundHybridExt = {
+  oidnModelUrl?: string;
+  oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+  bvhMode?: 'merged' | 'tlas';
+};
+
+function readWalkaroundHybridExt(opts: HybridEngineOptions): WalkaroundHybridExt | undefined {
+  return (opts.extensions as undefined | {
+    'walkaround-hybrid'?: WalkaroundHybridExt;
+  })?.['walkaround-hybrid'];
+}
+
+/**
+ * Pure construction-time validation of `HybridEngineOptions` — throws the
+ * three (well, six) `TypeError`s the constructor relies on, in the exact same
+ * order as the pre-Theme-H inline path. No defaulting, no derived config, no
+ * `this`, no GPU side effects: this is the independently-testable "does this
+ * option object describe a buildable engine?" gate.
+ *
+ * Throw order (load-bearing — tests pin it):
+ *   1. tier:'lite' forbids rcEnabled / ppgEnabled / denoiser:'neural' /
+ *      nrcEnabled (lite validated FIRST so it is the host's first signal);
+ *   2. unsupported denoiser enum;
+ *   3. denoiser:'neural' without neuralWeights;
+ *   4. denoiser:'oidn-final' without extensions['walkaround-hybrid'].oidnModelUrl.
+ */
+export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
   // Phase-0 productization — hybrid LITE tier (Deliverable 3). Lite runs the
   // same pipeline but on a reduced resource budget: it forbids the
   // resource-heavy optional subsystems and forces the merged-BVH path (drops
   // the 5 TLAS scene-group buffers). Validated FIRST so the throws are the
-  // host's first signal, and so the merged-mode + qualityTier defaults below
-  // see the lite verdict.
-  const isLite = opts.tier === 'lite';
-  if (isLite) {
+  // host's first signal.
+  if (opts.tier === 'lite') {
     if (opts.rcEnabled === true) {
       throw new TypeError(
         `[HybridEngine] tier:'lite' forbids rcEnabled — Radiance Cascades ` +
@@ -246,25 +272,6 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     }
   }
 
-  // Phase-0 productization — resolve the coarse quality preset FIRST, then let
-  // explicit per-knob options OVERRIDE it (preset is a baseline, not a lock).
-  // `ultra` (the default) is byte-identical to the pre-Phase-0 defaults: its
-  // preset values are either the existing defaults or `undefined` (= leave the
-  // engine default), so every `opts.X ?? preset.X` below collapses to the
-  // historical value when neither is set. Lite biases the default tier to
-  // `'medium'` (still overridable by an explicit `qualityTier`).
-  const effectiveQualityTier = opts.qualityTier ?? (isLite ? 'medium' : 'ultra');
-  const preset = resolveQualityPreset(effectiveQualityTier);
-  // Effective options overlay: the preset supplies fallbacks for the knobs it
-  // governs, so the existing table-driven `readTunables` / denoiser /
-  // targetFrameInterval logic picks them up unchanged. Explicit opts win.
-  const effectiveOpts: HybridEngineOptions = {
-    ...opts,
-    ...(opts.adaptiveSamplingThresholds === undefined && preset.adaptiveSamplingThresholds !== undefined
-      ? { adaptiveSamplingThresholds: preset.adaptiveSamplingThresholds }
-      : {}),
-  };
-
   // Audit B7: validate the denoiser option at construction so an unsupported
   // value (e.g. `'none'` from the @vitrum/core EngineOptions contract) does
   // not silently coerce to atrous-variance and produce wrong output. Supported
@@ -295,14 +302,7 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     );
   }
   // W11 — 'oidn-final' requires extensions['walkaround-hybrid'].oidnModelUrl.
-  const whExt = (opts.extensions as undefined | {
-    'walkaround-hybrid'?: {
-      oidnModelUrl?: string;
-      oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-      bvhMode?: 'merged' | 'tlas';
-    };
-  })?.['walkaround-hybrid'];
-  const oidnModelUrl = whExt?.oidnModelUrl;
+  const oidnModelUrl = readWalkaroundHybridExt(opts)?.oidnModelUrl;
   if (opts.denoiser === 'oidn-final' &&
       (typeof oidnModelUrl !== 'string' || oidnModelUrl.length === 0)) {
     throw new TypeError(
@@ -314,6 +314,36 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
       `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
     );
   }
+}
+
+/**
+ * Pure defaulting of `HybridEngineOptions` into the immutable derived config,
+ * given an already-resolved quality `preset`. ASSUMES the options have already
+ * passed {@link validateHybridEngineOptions} (it does not re-throw the
+ * validation `TypeError`s). Behaviour-preserving: every field is defaulted
+ * exactly as the pre-Theme-H inline path produced it.
+ *
+ * @param preset resolved {@link resolveQualityPreset} output for the engine's
+ *   effective quality tier (the caller resolves the tier so the lite-biased
+ *   `'medium'` default + explicit `qualityTier` override live in one place).
+ */
+export function deriveHybridEngineConfig(
+  opts: HybridEngineOptions,
+  preset: ReturnType<typeof resolveQualityPreset>,
+): ParsedHybridEngineConfig {
+  const isLite = opts.tier === 'lite';
+  // Effective options overlay: the preset supplies fallbacks for the knobs it
+  // governs, so the existing table-driven `readTunables` / denoiser /
+  // targetFrameInterval logic picks them up unchanged. Explicit opts win.
+  const effectiveOpts: HybridEngineOptions = {
+    ...opts,
+    ...(opts.adaptiveSamplingThresholds === undefined && preset.adaptiveSamplingThresholds !== undefined
+      ? { adaptiveSamplingThresholds: preset.adaptiveSamplingThresholds }
+      : {}),
+  };
+
+  const whExt = readWalkaroundHybridExt(opts);
+  const oidnModelUrl = whExt?.oidnModelUrl;
 
   return {
     // Preset supplies the denoiser fallback (low ⇒ 'atrous'); explicit
@@ -399,6 +429,35 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     regirConfig: opts.regir,
     resolutionFactor: preset.resolutionFactor,
   };
+}
+
+/**
+ * Parse + validate `HybridEngineOptions` into the immutable derived config.
+ * Thin orchestrator over the two independently-testable halves:
+ *   1. {@link validateHybridEngineOptions} — the pure throws (lite-mode
+ *      violations, bad denoiser/neural/OIDN combos), in load-bearing order.
+ *   2. {@link deriveHybridEngineConfig} — the 45-field defaulting record, given
+ *      the already-resolved quality preset.
+ *
+ * The quality-tier resolution (`opts.qualityTier ?? (isLite ? 'medium' :
+ * 'ultra')`) lives HERE — between the throws and the derive — so the
+ * lite-biased default + explicit override exist in exactly one place. Pure
+ * (no `this`, no GPU). Behaviour-preserving over the pre-Theme-H inline path:
+ * same throws in the same order, same derived config. See
+ * {@link ParsedHybridEngineConfig}.
+ */
+function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngineConfig {
+  validateHybridEngineOptions(opts);
+
+  // Phase-0 productization — resolve the coarse quality preset, then let
+  // explicit per-knob options OVERRIDE it inside `deriveHybridEngineConfig`
+  // (preset is a baseline, not a lock). `ultra` (the default) is byte-identical
+  // to the pre-Phase-0 defaults. Lite biases the default tier to `'medium'`
+  // (still overridable by an explicit `qualityTier`).
+  const effectiveQualityTier = opts.qualityTier ?? (opts.tier === 'lite' ? 'medium' : 'ultra');
+  const preset = resolveQualityPreset(effectiveQualityTier);
+
+  return deriveHybridEngineConfig(opts, preset);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
