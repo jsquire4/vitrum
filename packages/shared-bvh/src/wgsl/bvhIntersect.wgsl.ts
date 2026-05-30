@@ -213,6 +213,9 @@ struct Ray {
 //   dist          : ray-parameter t at the hit
 //   matColorPacked: copy of bvh_index[triIdx].w (ReSTIR only; zero for DDGI/RC)
 //   uv            : interpolated 16:16 unorm UV (ReSTIR only; vec2f(0) elsewhere)
+//   instanceIndex : TLAS instance hit (→ its world-to-local cols for the smooth
+//                   shading-normal transform). 0 (default) in the merged-world
+//                   path, where it is unused — the caller gates on bvhMode.
 struct IntersectionResult {
   didHit:         bool,
   indices:        vec4u,
@@ -222,6 +225,7 @@ struct IntersectionResult {
   dist:           f32,
   matColorPacked: u32,
   uv:             vec2f,
+  instanceIndex:  u32,
 };
 
 // ─── Williams 2005 IEEE-safe inverse-direction helper ────────────────────────

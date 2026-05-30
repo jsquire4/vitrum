@@ -106,6 +106,10 @@ fn traceTlasFirstHit(
           best = localHit;
           best.dist = worldDist;
           best.normal = tlasTransformNormalFromLocalCols(w2l0, w2l1, w2l2, localHit.normal);
+          // Carry the hit instance so the caller can transform the SMOOTH
+          // (barycentric, local-space) shading normal to world by the SAME
+          // inverse-transpose used for the geometric normal above. V21 TLAS.
+          best.instanceIndex = instIdx;
         }
       }
     } else {

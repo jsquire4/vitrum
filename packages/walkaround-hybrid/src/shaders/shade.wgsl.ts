@@ -416,10 +416,20 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // space there; the per-instance transform isn't carried out of the TLAS
   // traversal). shade is merged-world-BVH-dominant; the gate keeps it correct.
   let geoNormal = primaryHit.normal;
-  let normal = select(
-    smoothShadingNormal(primaryHit, geoNormal, bvh_normal[primaryHit.indices.x].xyz, bvh_normal[primaryHit.indices.y].xyz, bvh_normal[primaryHit.indices.z].xyz),
-    geoNormal,
-    ubo.bvhMode == 1u,
+  // V21 — the smooth shading normal now applies in TLAS mode too: the blended
+  // barycentric normal is LOCAL-space there, so transform it to world by the hit
+  // instance's inverse-transpose (world-to-local cols). Merged mode (isTlas=false)
+  // leaves the blend world-space. Columns read here (binding in scope) + passed by
+  // value (Naga rejects ptr<storage> params).
+  let n_isTlas = ubo.bvhMode == 1u;
+  let n_base = primaryHit.instanceIndex * 4u;
+  let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  let n_i = select(0u, n_base, n_ok);
+  let normal = smoothShadingNormal(
+    primaryHit, geoNormal,
+    bvh_normal[primaryHit.indices.x].xyz, bvh_normal[primaryHit.indices.y].xyz, bvh_normal[primaryHit.indices.z].xyz,
+    n_ok,
+    tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
   let wo     = -primaryRay.direction;
 

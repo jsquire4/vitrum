@@ -143,6 +143,31 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     expect(src).toMatch(/let\s+geoNormal\s*=\s*hit\.normal|let\s+geoNormal\s*=\s*primaryHit\.normal/);
   });
 
+  it.each(passes)('%s applies the smooth normal in TLAS too (passes the instance transform; no bvhMode gate dropping it)', (_name, src) => {
+    // V21 — smooth shading normals are no longer gated OFF in TLAS mode. The call
+    // site reads the hit instance's world-to-local columns (instanceIndex*4) and
+    // passes them to smoothShadingNormal for the local→world transform. The OLD
+    // `select(smoothShadingNormal(...), geoNormal, ubo.bvhMode == 1u)` gate — which
+    // left smooth shading dormant on every multi-mesh / instanced (TLAS) scene —
+    // must be GONE.
+    expect(src).toMatch(/instanceIndex\s*\*\s*4u/);
+    expect(src).toMatch(/tlasInstanceWorldToLocal\[n_i\]/);
+    expect(src).not.toMatch(/geoNormal,\s*ubo\.bvhMode\s*==\s*1u/);
+  });
+
+  it('smoothShadingNormal takes isTlas + world-to-local columns and transforms the local blend', () => {
+    expect(SCENE_TRAVERSAL_WGSL).toMatch(/fn\s+smoothShadingNormal\s*\([\s\S]*isTlas\s*:\s*bool/);
+    expect(SCENE_TRAVERSAL_WGSL).toMatch(/w2l0\s*:\s*vec4f/);
+    // The TLAS branch reuses the SAME normal transform the geometric path uses.
+    expect(SCENE_TRAVERSAL_WGSL).toMatch(/tlasTransformNormalFromLocalCols\s*\(\s*w2l0/);
+  });
+
+  it('IntersectionResult carries instanceIndex + the TLAS traversal sets it', () => {
+    const composedShade = composeWgsl(SHADE_MODULE, WGSL_MODULES);
+    expect(composedShade).toMatch(/instanceIndex\s*:\s*u32/);
+    expect(composedShade).toMatch(/best\.instanceIndex\s*=\s*instIdx/);
+  });
+
   it('shade declares bvh_beer as a uint texture (moved off the storage group)', () => {
     expect(SHADE_WGSL).toMatch(/var\s+bvh_beer\s*:\s*texture_2d<u32>/);
     // The old storage declaration must be gone.

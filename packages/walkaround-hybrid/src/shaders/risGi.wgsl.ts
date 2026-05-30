@@ -143,12 +143,18 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
   let pos = primaryRay.origin + primaryRay.direction * hit.dist;
   // WS1 — smooth shading normal (visible-point normal + hemisphere frame);
-  // geometric normal kept for the bounce-ray offset. TLAS keeps geometric.
+  // geometric normal kept for the bounce-ray offset. V21 — applies in TLAS too
+  // (transform the LOCAL blend to world by the hit instance inverse-transpose).
   let geoNormal = hit.normal;
-  let normal = select(
-    smoothShadingNormal(hit, geoNormal, bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz),
-    geoNormal,
-    ubo.bvhMode == 1u,
+  let n_isTlas = ubo.bvhMode == 1u;
+  let n_base = hit.instanceIndex * 4u;
+  let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  let n_i = select(0u, n_base, n_ok);
+  let normal = smoothShadingNormal(
+    hit, geoNormal,
+    bvh_normal[hit.indices.x].xyz, bvh_normal[hit.indices.y].xyz, bvh_normal[hit.indices.z].xyz,
+    n_ok,
+    tlasInstanceWorldToLocal[n_i], tlasInstanceWorldToLocal[n_i + 1u], tlasInstanceWorldToLocal[n_i + 2u],
   );
   // Skip glass / metal — indirect for those goes through the
   // path-traced fork, not DDGI atlas sampling. ReSTIR-DI Lo_direct stays.

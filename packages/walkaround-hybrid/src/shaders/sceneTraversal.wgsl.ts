@@ -118,11 +118,15 @@ fn traceSceneAny(
 // backface bias by the caller (a smooth normal can point into the surface near
 // a silhouette edge, which would self-intersect the offset ray).
 //
-// TLAS mode: bvh_normal holds LOCAL-space BLAS normals there, and the per-
-// instance world transform is not carried out of traceTlasFirstHit, so a
-// local-space smooth normal would be wrong for any transformed instance. The
-// caller gates on ubo.bvhMode and keeps the geometric normal in TLAS mode; this
-// helper is only called on the merged-world-BVH path.
+// TLAS mode (V21): bvh_normal holds LOCAL-space BLAS normals, so the blended
+// shading normal is transformed to WORLD by the hit instance's inverse-transpose
+// (tlasTransformNormalFromLocalCols with the instance world-to-local columns —
+// the SAME transform traceTlasFirstHit applies to the geometric normal). The
+// caller passes isTlas + the three world-to-local columns (read from the
+// module-scope tlasInstanceWorldToLocal binding at instanceIndex*4); merged
+// mode passes isTlas=false and the blend is already world-space. (The earlier
+// wave kept the geometric normal in TLAS — that left smooth shading dormant on
+// every multi-mesh / instanced scene, which all auto-select TLAS.)
 //
 // Degenerate guard: if the blended vector collapses (antipodal vertex normals
 // across a thin/folded triangle) we fall back to the geometric face normal so
@@ -134,12 +138,23 @@ fn traceSceneAny(
 // inline at the call site (indexing a module-scope storage global is fine; only
 // passing it AS a ptr<storage> param is the Naga gap). Caught by the wsl-gpu
 // T1 smoke gate (lavapipe/naga) — the prior ptr-param form failed to compile.
+// In TLAS mode the per-vertex normals (n0/n1/n2) are LOCAL-space BLAS normals, so
+// the blended shading normal is transformed to world by the SAME inverse-transpose
+// the geometric normal uses (tlasTransformNormalFromLocalCols with the instance's
+// world-to-local columns). The caller reads those columns from the module-scope
+// tlasInstanceWorldToLocal binding (instanceIndex*4) and passes them BY VALUE —
+// Naga rejects ptr<storage> params, but value vec4f args + a bool are naga-native.
+// In merged-world mode isTlas is false and the blend is already world-space.
 fn smoothShadingNormal(
   hit: IntersectionResult,
   geoNormal: vec3f,
   n0: vec3f,
   n1: vec3f,
   n2: vec3f,
+  isTlas: bool,
+  w2l0: vec4f,
+  w2l1: vec4f,
+  w2l2: vec4f,
 ) -> vec3f {
   let blended =
     hit.barycoord.x * n0 +
@@ -147,7 +162,14 @@ fn smoothShadingNormal(
     hit.barycoord.z * n2;
   let len = length(blended);
   if (len < 1e-6) { return geoNormal; }
-  return (blended / len) * hit.side;
+  var n = blended / len;
+  if (isTlas) {
+    let worldN = tlasTransformNormalFromLocalCols(w2l0, w2l1, w2l2, n);
+    let wl = length(worldN);
+    if (wl < 1e-6) { return geoNormal; }
+    n = worldN / wl;
+  }
+  return n * hit.side;
 }
 
 `;
