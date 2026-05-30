@@ -567,3 +567,73 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
     }
   });
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// 5. Theme-D guard — the @group(1) scene BVH binding block is NOT hoistable
+//    into a shared `sceneBindings` fragment without changing the composed
+//    bytes, so it stays inlined per consumer.
+//
+// Two independent reasons (either alone blocks a byte-identical hoist):
+//
+//  (a) The composer is PREPEND-ONLY (deps emitted first, root source last —
+//      see wgslComposer.ts). The scene-binding block lives in the MIDDLE of
+//      each consumer's source (after the @group(0) frame bindings, before the
+//      @group(2) UBO). Hoisting it to a `requires` fragment would emit it at
+//      the TOP of the composed string, reordering bytes — the exact failure
+//      mode common.wgsl.ts documents for honest inter-sibling `requires`.
+//
+//  (b) The block is NOT identical across consumers: ris/shade/risGi carry
+//      `bvh_normal` (binding 11) but temporal/spatial do not; shade adds
+//      `bvh_beer` (binding 5) + `bvh_emissive` (binding 12); risGi omits
+//      `emitters`/`emitterCdf` (bindings 3/4). A single shared fragment can
+//      reproduce none of them verbatim.
+//
+// This guard pins the divergence so a future agent doesn't naively "dedup" the
+// block and silently change a composed shader. The DDGIGridUBO struct (byte-
+// identical between shade/risGi) is likewise NOT hoisted — same reason (a): it
+// sits mid-file after the @group(3) texture bindings.
+// ──────────────────────────────────────────────────────────────────────────
+describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable byte-identically)', () => {
+  it('bvh_normal (binding 11) is present in ris/shade/risGi but absent in temporal/spatial', () => {
+    const norm = '@group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;';
+    expect(RIS_WGSL).toContain(norm);
+    expect(SHADE_WGSL).toContain(norm);
+    expect(RIS_GI_WGSL).toContain(norm);
+    expect(TEMPORAL_WGSL).not.toContain(norm);
+    expect(SPATIAL_WGSL).not.toContain(norm);
+  });
+
+  it('shade carries bvh_beer (binding 5) + bvh_emissive (binding 12) that no other consumer has', () => {
+    expect(SHADE_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(SHADE_WGSL).toContain('@group(1) @binding(12) var bvh_emissive: texture_2d<f32>;');
+    expect(RIS_WGSL).not.toContain('bvh_beer');
+    expect(TEMPORAL_WGSL).not.toContain('bvh_beer');
+  });
+
+  it('risGi omits emitters/emitterCdf (bindings 3/4) that ris/temporal/spatial declare', () => {
+    const emit = '@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;';
+    expect(RIS_WGSL).toContain(emit);
+    expect(TEMPORAL_WGSL).toContain(emit);
+    expect(SPATIAL_WGSL).toContain(emit);
+    expect(RIS_GI_WGSL).not.toContain(emit);
+  });
+
+  it('the binding subsets are pairwise distinct — no shared fragment reproduces all', () => {
+    // Reduce each consumer to its @group(1) binding-name set; assert at least
+    // three distinct shapes exist (ris, shade, risGi all differ), which is what
+    // makes a single hoisted `sceneBindings` fragment impossible.
+    const group1Lines = (src: string): string =>
+      src
+        .split('\n')
+        .filter((l) => l.includes('@group(1) @binding'))
+        .join('\n');
+    const ris = group1Lines(RIS_WGSL);
+    const shade = group1Lines(SHADE_WGSL);
+    const temporal = group1Lines(TEMPORAL_WGSL);
+    const risGi = group1Lines(RIS_GI_WGSL);
+    expect(ris).not.toBe(shade);
+    expect(ris).not.toBe(temporal);
+    expect(ris).not.toBe(risGi);
+    expect(shade).not.toBe(temporal);
+  });
+});

@@ -23,4 +23,15 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (!prevSampleAllowsAreaMis) {');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('prevSampleAllowsAreaMis = sampleAllowsAreaMis;');
   });
+
+  // Theme-D — the shared material FUNCS block (activeLayerWeightRgb) is composed
+  // into the lite tier too; LUMINANCE_WGSL is composed ahead of it
+  // (pathTraceBruteforceLite.wgsl.ts:24), so the dedup applies in lite as well.
+  it('activeLayerWeightRgb uses canonical luminance() in the lite tier', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let lum = max(luminance(layerRgb), 0.0);');
+    const inlineDots = (
+      PT_WEBGPU_TRACE_LITE_WGSL.match(/dot\([^)]*vec3f\(0\.2126, 0\.7152, 0\.0722\)\)/g) ?? []
+    ).length;
+    expect(inlineDots).toBe(0);
+  });
 });

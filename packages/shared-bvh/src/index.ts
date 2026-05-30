@@ -33,6 +33,10 @@ export {
   fingerprintTlasBuffers,
   isTlasOnlyVersionBump,
 } from './bufferFingerprint.js';
+export {
+  deriveSceneAABBFromBvhPositions,
+  type SceneAabb,
+} from './sceneAabbFromBvh.js';
 
 /**
  * Index-buffer stride used by the BVH index array.
@@ -56,3 +60,31 @@ export {
  * ```
  */
 export type BvhIndexStride = 3 | 4;
+
+/**
+ * Expand a stride-3 index buffer (`array<vec3u>` form: three u32 per triangle)
+ * into a stride-4 buffer (`array<vec4u>` form: three u32 + one payload u32 per
+ * triangle), the post-processing step every stride-4 consumer must apply to
+ * `buildSceneBVH`'s stride-3 output (see {@link BvhIndexStride}).
+ *
+ * The `.w` lane defaults to `0` (the pt-webgpu zero-fill contract). A caller
+ * that packs its own payload into `.w` (e.g. ReSTIR packing RGBA material color
+ * + texType) passes `payloadFn(triIndex)` to supply it.
+ *
+ * @param indices   stride-3 index buffer (length must be a multiple of 3).
+ * @param payloadFn optional `.w` value per triangle; defaults to `0`.
+ */
+export function expandIndicesToStride4(
+  indices: Uint32Array,
+  payloadFn?: (triIndex: number) => number,
+): Uint32Array {
+  const triCount = Math.floor(indices.length / 3);
+  const out = new Uint32Array(triCount * 4);
+  for (let t = 0; t < triCount; t += 1) {
+    out[t * 4] = indices[t * 3] ?? 0;
+    out[t * 4 + 1] = indices[t * 3 + 1] ?? 0;
+    out[t * 4 + 2] = indices[t * 3 + 2] ?? 0;
+    out[t * 4 + 3] = payloadFn != null ? payloadFn(t) : 0;
+  }
+  return out;
+}

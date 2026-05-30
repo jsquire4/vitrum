@@ -24,6 +24,7 @@
  *   Sprint 10a spec: plan/archive/phase-6-roadmap.md §Sprint 10a.
  */
 
+import { defineUbo } from '@vitrum/shared-samplers';
 import { ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX } from './atrousVarianceConstants.js';
 
 // ============================================================
@@ -49,16 +50,27 @@ export interface AtrousVarianceVarianceUniforms {
 }
 
 /**
- * Byte size of the AtrousVarianceVarianceUBO std140 struct.
+ * AtrousVarianceVarianceUBO codegen — single source of truth for size, layout,
+ * and pack (W2-C13: `defineUbo` replaces the hand-rolled DataView packer).
  *
- * Layout:
+ * Layout (byte-identical to the pre-codegen hand-roll):
  *   offset 0  — frameCount : u32  (4 bytes)
- *   offset 4  — _pad0      : u32  (4 bytes, alignment padding)
- *   offset 8  — _pad1      : u32  (4 bytes, alignment padding)
- *   offset 12 — _pad2      : u32  (4 bytes, alignment padding)
- * Total: 16 bytes (meets 16-byte uniform buffer alignment requirement).
+ *   offset 4  — _pad0      : u32  (4 bytes, alignment padding — zero-filled by pack)
+ *   offset 8  — _pad1      : u32  (4 bytes, alignment padding — zero-filled by pack)
+ *   offset 12 — _pad2      : u32  (4 bytes, alignment padding — zero-filled by pack)
+ * Total: 16 bytes (the single u32 rounds up to the WebGPU 16-byte minimum
+ * uniform-binding size; `defineUbo.pack` zero-fills the destination region first
+ * so the three pad slots are deterministically zero).
  */
-export const ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES = 16 as const;
+const ATROUS_VARIANCE_VARIANCE_UBO = defineUbo([
+  { name: 'frameCount', type: 'u32' },
+] as const);
+
+/**
+ * Byte size of the AtrousVarianceVarianceUBO std140 struct (16 bytes — derived
+ * from the codegen layout).
+ */
+export const ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES = ATROUS_VARIANCE_VARIANCE_UBO.sizeBytes;
 
 /**
  * Pack AtrousVarianceVarianceUniforms into an ArrayBuffer at the given byte offset.
@@ -72,13 +84,12 @@ export function packAtrousVarianceVarianceUniforms(
   target: ArrayBuffer,
   offset = 0,
 ): void {
-  const view = new DataView(target, offset, ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES);
+  // Host guardrail: saturate frameCount to the input-guard ceiling BEFORE
+  // packing (the WGSL reads it as a plain u32; clamping here keeps the temporal
+  // branch threshold comparison well-defined). Floor + clamp negatives to 0.
   const packedCount = Math.min(Math.max(0, Math.floor(u.frameCount)), ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX);
-  view.setUint32(0, packedCount >>> 0, true);
-  // _pad0, _pad1, _pad2 — zero-filled for determinism
-  view.setUint32(4,  0, true);
-  view.setUint32(8,  0, true);
-  view.setUint32(12, 0, true);
+  const view = new DataView(target);
+  ATROUS_VARIANCE_VARIANCE_UBO.pack(view, offset, { frameCount: packedCount });
 }
 
 // ============================================================
@@ -137,16 +148,28 @@ export interface AtrousVarianceAtrousUniforms {
 }
 
 /**
- * Byte size of the AtrousVarianceAtrousUBO std140 struct.
+ * AtrousVarianceAtrousUBO codegen — single source of truth for size, layout,
+ * and pack (W2-C13: `defineUbo` replaces the hand-rolled DataView packer).
  *
- * Layout:
+ * Layout (byte-identical to the pre-codegen hand-roll):
  *   offset 0  — iteration   : u32  (4 bytes)
  *   offset 4  — sigmaColor  : f32  (4 bytes)
  *   offset 8  — sigmaNormal : f32  (4 bytes)
  *   offset 12 — sigmaDepth  : f32  (4 bytes)
  * Total: 16 bytes.
  */
-export const ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES = 16 as const;
+const ATROUS_VARIANCE_ATROUS_UBO = defineUbo([
+  { name: 'iteration',   type: 'u32' },
+  { name: 'sigmaColor',  type: 'f32' },
+  { name: 'sigmaNormal', type: 'f32' },
+  { name: 'sigmaDepth',  type: 'f32' },
+] as const);
+
+/**
+ * Byte size of the AtrousVarianceAtrousUBO std140 struct (16 bytes — derived
+ * from the codegen layout).
+ */
+export const ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES = ATROUS_VARIANCE_ATROUS_UBO.sizeBytes;
 
 /**
  * Pack AtrousVarianceAtrousUniforms into an ArrayBuffer at the given byte offset.
@@ -160,15 +183,13 @@ export function packAtrousVarianceAtrousUniforms(
   target: ArrayBuffer,
   offset = 0,
 ): void {
-  const view = new DataView(target, offset, ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-  // iteration at offset 0, little-endian u32
-  view.setUint32(0, u.iteration >>> 0, true);
-  // sigmaColor at offset 4, little-endian f32
-  view.setFloat32(4,  u.sigmaColor,  true);
-  // sigmaNormal at offset 8, little-endian f32
-  view.setFloat32(8,  u.sigmaNormal, true);
-  // sigmaDepth at offset 12, little-endian f32
-  view.setFloat32(12, u.sigmaDepth,  true);
+  const view = new DataView(target);
+  ATROUS_VARIANCE_ATROUS_UBO.pack(view, offset, {
+    iteration:   u.iteration >>> 0,
+    sigmaColor:  u.sigmaColor,
+    sigmaNormal: u.sigmaNormal,
+    sigmaDepth:  u.sigmaDepth,
+  });
 }
 
 // ============================================================

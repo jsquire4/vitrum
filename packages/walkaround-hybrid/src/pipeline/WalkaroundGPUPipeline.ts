@@ -34,6 +34,7 @@
  * visibility by casting rays through the BVH.
  */
 
+import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 import type { InferenceGraph } from '../neural/InferenceGraph.js';
 import { updateUBO } from './uboUpdater.js';
@@ -743,7 +744,7 @@ export class WalkaroundGPUPipeline {
       // storage, rather than cryptically in createComputePipeline.
       assertNrcDeviceCapable(d.limits);
       this._nrc = new NrcSubsystem(d, this._bglCache);
-      const aabb = derivePipelineSceneAABB(bvhBuffers);
+      const aabb = deriveSceneAABBFromBvhPositions(bvhBuffers);
       await this._nrc.initialize(aabb.min, aabb.max);
     }
 
@@ -1459,30 +1460,3 @@ export class WalkaroundGPUPipeline {
   }
 }
 
-/** Derive a padded world-space AABB from the uploaded BVH vertex positions —
- *  the bounds the NRC hash grid normalises query vertices into. Mirrors the
- *  PPGCoordinator derivation (vec4f stride-4 position layout). Used only on the
- *  NRC-enabled path (one pass at init). */
-function derivePipelineSceneAABB(
-  bvh: { bvhPositions: { cpuData: ArrayBuffer } },
-): { min: [number, number, number]; max: [number, number, number] } {
-  const view = new Float32Array(bvh.bvhPositions.cpuData);
-  if (view.length < 4) return { min: [-10, -10, -10], max: [10, 10, 10] };
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i + 3 <= view.length; i += 4) {
-    const x = view[i]!, y = view[i + 1]!, z = view[i + 2]!;
-    if (x < minX) minX = x; if (y < minY) minY = y; if (z < minZ) minZ = z;
-    if (x > maxX) maxX = x; if (y > maxY) maxY = y; if (z > maxZ) maxZ = z;
-  }
-  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
-    return { min: [-10, -10, -10], max: [10, 10, 10] };
-  }
-  const padX = (maxX - minX) * 0.01 + 1e-3;
-  const padY = (maxY - minY) * 0.01 + 1e-3;
-  const padZ = (maxZ - minZ) * 0.01 + 1e-3;
-  return {
-    min: [minX - padX, minY - padY, minZ - padZ],
-    max: [maxX + padX, maxY + padY, maxZ + padZ],
-  };
-}

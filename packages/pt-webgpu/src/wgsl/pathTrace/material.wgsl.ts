@@ -438,7 +438,7 @@ fn activeLayerWeightRgb(layerRgb: vec3f, heroLambda: f32, spectralEnabled: bool)
   if (!spectralEnabled) {
     return layerRgb;
   }
-  let lum = max(dot(layerRgb, vec3f(0.2126, 0.7152, 0.0722)), 0.0);
+  let lum = max(luminance(layerRgb), 0.0);
   return heroWavelengthToRgb(heroLambda, lum, 1.0);
 }
 

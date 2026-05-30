@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from '../wgsl/pathTrace/caustic.wgsl.js';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -200,5 +201,56 @@ describe('pt-webgpu WGSL material contract', () => {
   it('uses conservative any-hit stack-overflow handling to avoid light leaks', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('Conservative any-hit overflow policy: prefer occlusion over light leak.');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('return true;');
+  });
+
+  // ── Theme-D luminance dedup (behavior-preserving) ──────────────────────────
+  // material.wgsl.ts:441 and bdpt/bdptLightSubpath.wgsl.ts:8 previously inlined
+  // the Rec.709 `dot(c, vec3f(0.2126, 0.7152, 0.0722))` though the canonical
+  // `luminance()` (LUMINANCE_WGSL from @vitrum/shared-samplers) is composed into
+  // the trace shader ahead of both modules. These pins prove the dedup landed:
+  // the canonical call sites are present, and NO inline Rec.709 dot remains in
+  // the composed full-tier shader. `luminance()` is defined exactly as
+  // `dot(c, vec3f(0.2126,0.7152,0.0722))`, so the GPU result is unchanged.
+  describe('Theme-D — Rec.709 luminance routed through canonical luminance()', () => {
+    it('activeLayerWeightRgb uses luminance(layerRgb), not an inline Rec.709 dot', () => {
+      expect(PT_WEBGPU_TRACE_WGSL).toContain('let lum = max(luminance(layerRgb), 0.0);');
+    });
+
+    it('bdptLightLuminance routes through luminance() and keeps the 1e-20 floor', () => {
+      expect(PT_WEBGPU_TRACE_WGSL).toContain('return max(luminance(c), 1e-20);');
+    });
+
+    it('no inline Rec.709 dot(..., vec3f(0.2126, 0.7152, 0.0722)) remains in the composed shader', () => {
+      // The canonical LUM_W709 const + luminance() body live in LUMINANCE_WGSL;
+      // that vec3f literal is the ONLY remaining occurrence (inside the const
+      // declaration), never an inline dot at a call site.
+      const inlineDots = (
+        PT_WEBGPU_TRACE_WGSL.match(/dot\([^)]*vec3f\(0\.2126, 0\.7152, 0\.0722\)\)/g) ?? []
+      ).length;
+      expect(inlineDots).toBe(0);
+    });
+  });
+
+  // ── Theme-D caustic decode: NOT collapsed (flagged for GPU A/B) ─────────────
+  // caustic.wgsl.ts hand-decodes the packed material inline. It is NOT bit-
+  // identical to decodeMaterial() (different m0 OOB fallback; extra m0.rgb
+  // clamp), so it was deliberately left inline pending a real-GPU A/B. This
+  // pin guards against an accidental silent collapse that would change the
+  // caustic decode math.
+  it('caustic material decode stays inline (decodeMaterial collapse deferred to GPU A/B)', () => {
+    // The inline raw-slot fallback the audit flagged as divergent.
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
+      'let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));',
+    );
+    // It must NOT actually CALL the canonical decoder (would change the decode
+    // math). Strip comment lines first so the explanatory TODO references to
+    // decodeMaterial() don't trip the guard — we only forbid a real invocation.
+    const causticCode = PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//'))
+      .join('\n');
+    expect(causticCode).not.toContain('decodeMaterial(');
+    // The deferral is documented at both decode sites.
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('TODO(theme-D / V-caustic)');
   });
 });

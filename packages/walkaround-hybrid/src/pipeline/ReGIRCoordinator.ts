@@ -22,6 +22,7 @@
  */
 
 import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
+import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 import type { RegirUboState } from './uboUpdater.js';
 
@@ -50,44 +51,6 @@ export function resolveReGIRConfig(opts?: Partial<ReGIRConfig>): ReGIRConfig {
     cellsPerAxis: Math.max(1, Math.floor(opts?.cellsPerAxis ?? 16)),
     candidatesPerCell: Math.max(1, Math.floor(opts?.candidatesPerCell ?? 32)),
     survivorsPerCell: Math.max(1, Math.floor(opts?.survivorsPerCell ?? 8)),
-  };
-}
-
-/**
- * Derive a world-space AABB for the ReGIR grid from the uploaded BVH positions.
- * Same recovery strategy as `PPGCoordinator.derivePPGSceneAABB` (the pipeline
- * doesn't surface scene bounds as a first-class field). Padded 1% so points on
- * the scene boundary still map inside the grid.
- */
-function deriveSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer } }): {
-  min: [number, number, number];
-  max: [number, number, number];
-} {
-  const view = new Float32Array(bvh.bvhPositions.cpuData);
-  if (view.length < 4) {
-    return { min: [-10, -10, -10], max: [10, 10, 10] };
-  }
-  // BVH position layout: vec4f per vertex (xyz + packed UV in w). Stride 4.
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i + 3 <= view.length; i += 4) {
-    const x = view[i]!, y = view[i + 1]!, z = view[i + 2]!;
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (z < minZ) minZ = z;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-    if (z > maxZ) maxZ = z;
-  }
-  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
-    return { min: [-10, -10, -10], max: [10, 10, 10] };
-  }
-  const padX = (maxX - minX) * 0.01 + 1e-3;
-  const padY = (maxY - minY) * 0.01 + 1e-3;
-  const padZ = (maxZ - minZ) * 0.01 + 1e-3;
-  return {
-    min: [minX - padX, minY - padY, minZ - padZ],
-    max: [maxX + padX, maxY + padY, maxZ + padZ],
   };
 }
 
@@ -152,7 +115,7 @@ export class ReGIRCoordinator {
       this._gridFloatOffset = 0;
       return;
     }
-    const aabb = deriveSceneAABB(bvh);
+    const aabb = deriveSceneAABBFromBvhPositions(bvh);
     const spanX = aabb.max[0] - aabb.min[0];
     const spanY = aabb.max[1] - aabb.min[1];
     const spanZ = aabb.max[2] - aabb.min[2];

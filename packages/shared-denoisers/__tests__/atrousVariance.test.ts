@@ -235,6 +235,76 @@ describe('packAtrousVarianceAtrousUniforms', () => {
   });
 });
 
+// ── defineUbo migration byte-identity goldens (W2-C13) ────────────────────────
+//
+// The hand-rolled DataView packers were replaced with defineUbo. These goldens
+// pin the EXACT emitted bytes (offsets + zero-fill + saturation) so the
+// migration cannot silently corrupt the denoiser uniforms. Hex strings were
+// captured from the pre-migration hand-rolled packers.
+
+describe('defineUbo migration — byte-identity goldens', () => {
+  function hexOf(buf: ArrayBuffer): string {
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join(' ');
+  }
+
+  it('variance UBO emits the exact pre-migration bytes (incl. zero-fill + saturation)', () => {
+    const cases: Array<[number, string]> = [
+      [0, '00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'],
+      [1, '01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'],
+      [42, '2a 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00'],
+      // saturates at ATROUS_VARIANCE_FRAME_COUNT_INPUT_GUARD_MAX = 1_000_000.
+      [99999999, '40 42 0f 00 00 00 00 00 00 00 00 00 00 00 00 00'],
+    ];
+    for (const [fc, golden] of cases) {
+      const b = new ArrayBuffer(16);
+      new Uint8Array(b).fill(0xab); // dirty fill — pack must zero the pad slots
+      packAtrousVarianceVarianceUniforms({ frameCount: fc }, b);
+      expect(hexOf(b)).toBe(golden);
+    }
+  });
+
+  it('atrous UBO emits the exact pre-migration bytes (u32 + 3×f32)', () => {
+    const cases: Array<[AtrousVarianceAtrousUniformsLocal, string]> = [
+      [{ iteration: 0, sigmaColor: 4.0, sigmaNormal: 128.0, sigmaDepth: 1.0 },
+        '00 00 00 00 00 00 80 40 00 00 00 43 00 00 80 3f'],
+      [{ iteration: 3, sigmaColor: 10.0, sigmaNormal: 128.0, sigmaDepth: 1.5 },
+        '03 00 00 00 00 00 20 41 00 00 00 43 00 00 c0 3f'],
+      [{ iteration: 4, sigmaColor: 5.0, sigmaNormal: 64.0, sigmaDepth: 2.0 },
+        '04 00 00 00 00 00 a0 40 00 00 80 42 00 00 00 40'],
+    ];
+    for (const [u, golden] of cases) {
+      const b = new ArrayBuffer(16);
+      new Uint8Array(b).fill(0xab);
+      packAtrousVarianceAtrousUniforms(u, b);
+      expect(hexOf(b)).toBe(golden);
+    }
+  });
+
+  it('non-zero offset packs into the window only, leaving bytes before the offset untouched', () => {
+    const expectedAtrous =
+      'ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab 04 00 00 00 00 00 a0 40 00 00 80 42 00 00 00 40';
+    const ba = new ArrayBuffer(32);
+    new Uint8Array(ba).fill(0xab);
+    packAtrousVarianceAtrousUniforms({ iteration: 4, sigmaColor: 5.0, sigmaNormal: 64.0, sigmaDepth: 2.0 }, ba, 16);
+    expect(hexOf(ba)).toBe(expectedAtrous);
+
+    const expectedVar =
+      'ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab ab 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00';
+    const bv = new ArrayBuffer(32);
+    new Uint8Array(bv).fill(0xab);
+    packAtrousVarianceVarianceUniforms({ frameCount: 7 }, bv, 16);
+    expect(hexOf(bv)).toBe(expectedVar);
+  });
+});
+
+// Local alias so the golden-cases array stays typed without re-importing.
+type AtrousVarianceAtrousUniformsLocal = {
+  iteration: number;
+  sigmaColor: number;
+  sigmaNormal: number;
+  sigmaDepth: number;
+};
+
 // ── AtrousVarianceVarianceUniforms packer tests ───────────────────────────────
 
 describe('packAtrousVarianceVarianceUniforms', () => {
