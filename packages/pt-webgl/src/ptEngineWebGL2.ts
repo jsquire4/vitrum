@@ -461,10 +461,6 @@ export class PTEngineWebGL2 implements Engine {
   readonly #bdptCpuFill: boolean;
   /** ANGLE stacks: RGBA32F light-path bind breaks unidirectional PT until fork decode path lands. */
   readonly #bdptCompileShader: boolean;
-  /** Sprint 10c — most-recently-supplied BDPT light-path texture. Set via
-   *  {@link bdptAdvanceFrame}; null until the host calls that method.
-   *  When non-null + `#bdpt === true`, every renderFrame's connect pass
-   *  reads this texture for cached light vertices. */
   readonly #limits: DeviceLimits;
   readonly #schedulerOptions: SchedulerOptions;
 

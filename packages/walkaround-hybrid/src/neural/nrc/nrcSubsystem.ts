@@ -494,8 +494,9 @@ export class NrcSubsystem {
     this._vTables?.destroy();
     this._posBuf?.destroy();
     this._encBwdParamsUbo?.destroy();
-    // The trainer owns its own GPU buffers; it has no dispose() yet (it is a
-    // self-contained harness), so its buffers are released when the device is.
+    // The trainer owns its own ~18 GPU buffers; release them now (it was built
+    // in initialize()). dispose() is idempotent + safe if init never ran.
+    this._trainer?.dispose();
   }
 }
 

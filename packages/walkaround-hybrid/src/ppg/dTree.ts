@@ -249,10 +249,38 @@ export function dTreeSample(
   while (true) {
     const node = dTree.nodes[idx]!;
     if (node.isLeaf) {
-      // Sample uniformly within the leaf's octahedral patch.
+      // Leaf jitter must be UNIFORM within the leaf rectangle AND INDEPENDENT
+      // of the flux-proportional descent path. The GPU production sampler
+      // (ppgGuide.wgsl.ts `dTreeSampleLeafBase` → `ppgGuideMain`) draws TWO
+      // FRESH `lcg` randoms (`r0`, `r1`) for the leaf u,v jitter *after* the
+      // descent, so its jitter is fully decorrelated from which leaf was
+      // picked. The old CPU oracle instead reused the SAME `u0` that had
+      // already been consumed by the descent (`remaining = u0 * totalFlux`,
+      // decremented through the tree) for `vSample`, correlating the leaf
+      // v-position with the descent path — a divergence from the GPU.
+      //
+      // FIX (rescaled descent residual — standard hierarchical-sampling
+      // decorrelation, Müller §3.2 / pbrt §13.3 inverse-CDF residual reuse):
+      // after descent, `remaining` holds the leftover mass WITHIN the chosen
+      // leaf's flux interval, i.e. `remaining ∈ [0, leafFlux)`. Rescaling it
+      // to [0,1) yields a value that is uniform within the leaf and
+      // statistically independent of the coarse path selection (which
+      // consumed the high-order bits of `u0`). We use it for `vSample`, so a
+      // single (u0,u1) pair still maps to ONE deterministic sample (oracle
+      // determinism the tests rely on) while removing the correlation. This
+      // matches the GPU's fresh-random leaf jitter in distribution.
+      const leafFlux = node.flux;
+      const uLeaf = leafFlux > 0
+        ? Math.min(remaining / leafFlux, 1 - 1e-7)
+        : u0; // cold leaf (zero flux) reached via uniform fallback: keep u0.
+      // Sample uniformly within the leaf's octahedral patch. uSample uses the
+      // independent `u1` (already correct); vSample uses the decorrelated
+      // residual `uLeaf` instead of the descent-consumed `u0`.
       const uSample = node.u0 + u1 * (node.u1 - node.u0);
-      const vSample = node.v0 + u0 * (node.v1 - node.v0);
-      // PDF = (leafFlux / totalFlux) / solidAngle_leaf  (deviation 5 fix)
+      const vSample = node.v0 + uLeaf * (node.v1 - node.v0);
+      // PDF = (leafFlux / totalFlux) / solidAngle_leaf  (deviation 5 fix) —
+      // unchanged by this fix; the jitter decorrelation does not alter the
+      // per-leaf solid-angle PDF.
       const pdf = (node.flux > 0 && totalFlux > 0)
         ? (node.flux / totalFlux) / node.solidAngle
         : 1 / FOUR_PI;
@@ -270,7 +298,10 @@ export function dTreeSample(
         break;
       }
     }
-    // Adjust remaining for the next level.
+    // Adjust remaining for the next level: subtract the preceding siblings'
+    // cumulative flux so `remaining` becomes the residual within the chosen
+    // child's flux interval. At the leaf this residual ∈ [0, leafFlux) is the
+    // decorrelated jitter rescaled above.
     const chosenFlux = dTree.nodes[c0 + chosen]!.flux;
     remaining -= (cumFlux - chosenFlux);
     idx = c0 + chosen;

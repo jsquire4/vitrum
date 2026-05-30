@@ -172,13 +172,11 @@ export class DDGI {
    *  coverage field stays consistent with the actual active set (kept in
    *  lockstep even though no shader currently branches on it).
    *
-   *  Clamped to ≥ 1. The default (no call) is DEFAULT_STRIDE = 8, which
-   *  reproduces the cadence the engine has always actually run. NOTE: the
-   *  `ultra`/`high` quality preset currently passes divisor=4 (its comment
-   *  claims a "historical /4" that the real round-robin never used — it ran
-   *  /8); threading the divisor here makes that preset value finally take
-   *  effect, so ultra/high update probes 2× as often unless the preset is
-   *  corrected to 8. See HybridEngineQualityPreset.ts. */
+   *  Clamped to ≥ 1. The default (no call) is DEFAULT_STRIDE = 8. The quality
+   *  presets thread an explicit divisor across a 2→32 spread: ultra=2 (fastest
+   *  GI cadence), high=4, medium=8 (= the default), low=32 (cheapest). Because
+   *  this knob is load-bearing, those preset values directly set how many probes
+   *  update per frame. See HybridEngineQualityPreset.ts. */
   setProbeUpdateDivisor(divisor: number): void {
     this._stride = Math.max(1, Math.floor(divisor));
     this._pass.setProbeUpdateDivisor(divisor);

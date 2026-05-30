@@ -5,7 +5,7 @@
  * This is an alternative to transposed conv when no learned upsampling is needed.
  * In the vitrum U-Net it is used as a building block within the decoder.
  *
- * Canonical binding layout (Bug 3 fix):
+ * Canonical binding layout:
  *   @group(0) @binding(0)  input  : array<f32>       — input [H × W × C]
  *   @group(0) @binding(3)  output : array<f32>       — output [2H × 2W × C]
  *   @group(0) @binding(4)  params : UpsampleParams   — shape

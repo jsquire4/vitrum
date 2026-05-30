@@ -2,19 +2,19 @@
  * InferenceGraph.ts — WebGPU compute graph executor for the vitrum neural denoiser.
  *
  * Implements the U-Net inference pass specified by `unetArchitecture.ts`.
- * Fixes all 8 bugs from the Sprint 13 deleted scaffold:
  *
- *   Bug 1: Skip-connection spatial shapes verified at initialize() time.
- *   Bug 2: inputPacker layer assembles noisyColor+albedo+normals into enc_input.
- *   Bug 3: Binding order in dispatch matches WGSL declarations (input=0, weights=1,
- *           bias=2, output=3, params=4).
- *   Bug 4: Uniform buffer written with actual shape params in initialize() AND
- *           re-written per layer in run() to handle resize.
- *   Bug 5: train.py is a real Python file (not .md) — see tools/neural-denoiser-training/.
- *   Bug 6: Bind-group cache keyed by buffer identity; invalidated on any buffer swap
- *           (device resize). Cache uses buffer labels as keys.
- *   Bug 7: dispose() clears _cachedBindGroups slot-by-slot via new Array(N).fill(undefined).
- *   Bug 8: 'neural' mode wired into HybridEngine (see HybridEngine.ts).
+ * Invariants this executor maintains:
+ *
+ *   - Skip-connection spatial shapes are verified at initialize() time.
+ *   - The inputPacker layer assembles noisyColor+albedo+normals into enc_input.
+ *   - Binding order in dispatch matches WGSL declarations
+ *     (input=0, weights=1, bias=2, output=3, params=4).
+ *   - Uniform buffers are written with actual shape params in initialize() AND
+ *     re-written per layer in run() to handle resize.
+ *   - Bind-group cache is keyed by buffer identity (label) and invalidated on any
+ *     buffer swap (device resize).
+ *   - dispose() clears cached bind groups slot-by-slot before destroying buffers,
+ *     and 'neural' mode is wired into HybridEngine (see HybridEngine.ts).
  *
  * GPU resource lifecycle:
  *   - initialize(device, weights, W, H): allocate all intermediate tensors +
@@ -119,16 +119,16 @@ export class InferenceGraph {
   private _placeholderBuf: GPUBuffer | null = null;
 
   /**
-   * F4 fix: all GPU buffers allocated by initialize() — tracked so dispose()
-   * can destroy them. Includes weights/biases/uniforms/placeholder, plus the
+   * All GPU buffers allocated by initialize() — tracked so dispose() can
+   * destroy them. Includes weights/biases/uniforms/placeholder, plus the
    * input-packer uniform buffer. Tensor buffers live in `_tensors` and are
    * destroyed separately.
    */
   private _allocatedBuffers: GPUBuffer[] = [];
 
-  /** B3 fix: input-packer compute pipeline (compiled once at initialize). */
+  /** Input-packer compute pipeline (compiled once at initialize). */
   private _inputPackPipeline: GPUComputePipeline | null = null;
-  /** B3 fix: uniform buffer holding the pixelCount for the input packer. */
+  /** Uniform buffer holding the pixelCount for the input packer. */
   private _inputPackUniformBuf: GPUBuffer | null = null;
 
   /** Whether initialize() has completed successfully. */
@@ -137,7 +137,7 @@ export class InferenceGraph {
   /** Uploaded layer weights — retained for bind-group rebuild on buffer resize. */
   private _weightsByName: Map<string, LayerWeights> = new Map();
 
-  /** Uniform-write call count — exposed for test instrumentation (Bug 4 check). */
+  /** Uniform-write call count — exposed for test instrumentation. */
   _uniformWriteCount = 0;
 
   constructor(spec: UNetSpec) {
@@ -151,11 +151,11 @@ export class InferenceGraph {
   /**
    * Initialize GPU resources for the given resolution.
    *
-   * Bug 4 fix: uniform buffers are written HERE with actual shape params,
-   * not just allocated. Must be called before run().
+   * Uniform buffers are written HERE with actual shape params, not just
+   * allocated. Must be called before run().
    *
-   * Bug 6 fix: bind groups are built here with current buffer references.
-   * If initialize() is called again (resize), all bind groups are rebuilt.
+   * Bind groups are built here with current buffer references. If initialize()
+   * is called again (resize), all bind groups are rebuilt.
    */
   async initialize(device: GPUDevice, weights: ModelWeights, W: number, H: number): Promise<void> {
     this._device = device;
@@ -163,7 +163,7 @@ export class InferenceGraph {
     this._H      = H;
     this._ready  = false;
 
-    // F4 fix: clear any pre-existing tracked buffers from a previous init.
+    // Clear any pre-existing tracked buffers from a previous init.
     this._allocatedBuffers = [];
 
     // Build the weight lookup by name (retained for bind-group rebuild in run()).
@@ -180,7 +180,7 @@ export class InferenceGraph {
     });
     this._allocatedBuffers.push(this._placeholderBuf);
 
-    // ── B3 fix: compile the input-packer compute pipeline once.
+    // ── Compile the input-packer compute pipeline once.
     // The actual bind group is built per-frame in _runInputPack because the
     // three input buffers (noisyColor / albedo / normals) come from the host
     // each frame and can change identity.
@@ -201,7 +201,7 @@ export class InferenceGraph {
       size: 16,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    this._allocatedBuffers.push(this._inputPackUniformBuf);
+    this._allocatedBuffers.push(this._inputPackUniformBuf);  // tracked for dispose()
     {
       const u32 = new Uint32Array(4);
       u32[0] = H * W;
@@ -226,11 +226,11 @@ export class InferenceGraph {
       this._tensors.set(name, { buf, dims, label: `neural/${name}` });
     }
 
-    // Bug 1 validation: verify skip-connection shapes.
+    // Verify skip-connection shapes (both operands must match H×W×C).
     this._validateSkipShapes(tensorDimsMap);
 
     // ── Build pipelines + layer states ────────────────────────────────────
-    // Reset bug-7-safe cache: slot-by-slot nulling.
+    // Reset the per-layer cache slot-by-slot.
     const N = this._spec.layers.length;
     this._layerStates = new Array(N).fill(null) as (LayerGPUState | null)[];
 
@@ -257,18 +257,18 @@ export class InferenceGraph {
         compute: { module: sm, entryPoint: WGSL_ENTRY[layer.kind] },
       });
 
-      // Uniform buffer (Bug 4 fix: written immediately below).
+      // Uniform buffer (written immediately below).
       const uniformBuf = device.createBuffer({
         label: `neural-uniform-${layer.name}`,
         size: UNIFORM_BUF_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
-      this._allocatedBuffers.push(uniformBuf); // F4 fix
+      this._allocatedBuffers.push(uniformBuf); // tracked for dispose()
 
-      // Bug 4 fix: write the uniform buffer now with actual shape params.
+      // Write the uniform buffer now with actual shape params.
       this._writeUniform(device, uniformBuf, layer, tensorDimsMap);
 
-      // Bug 6 fix: build bind group now; cache it with buffer identity keys.
+      // Build bind group now; cache it with buffer identity keys.
       const { bindGroup, bufKeys } = this._buildBindGroup(
         pipeline, layer, weightsByName, uniformBuf,
       );
@@ -293,11 +293,11 @@ export class InferenceGraph {
    * @param normalsBuf     GPU buffer containing world normals (H×W×3, f32).
    * @param outputBuf      GPU buffer to receive denoised RGB (H×W×3, f32).
    *
-   * The three input buffers are packed into enc_input on GPU via a series of
-   * copy dispatches (Bug 2 fix). Then the graph is dispatched layer by layer.
+   * The three input buffers are packed into enc_input on GPU via the
+   * inputPacker dispatch. Then the graph is dispatched layer by layer.
    *
-   * Bug 6 fix: if buffer identities have changed (e.g. after a resize via
-   * re-initialize), bind groups are rebuilt before dispatch.
+   * If buffer identities have changed (e.g. after a resize via re-initialize),
+   * bind groups are rebuilt before dispatch.
    */
   run(
     noisyColorBuf: GPUBuffer,
@@ -313,15 +313,11 @@ export class InferenceGraph {
     const device = this._device;
     const enc = commandEncoder ?? device.createCommandEncoder({ label: 'neural-inference' });
 
-    // Bug 2 fix: Pack noisyColor (3ch) + albedo (3ch) + normals (3ch)
-    // into enc_input (9ch) via GPU-side buffer copies.
-    // Layout: for each pixel p, enc_input[p*9..p*9+3] = noisyColor[p*3..p*3+3],
-    //         enc_input[p*9+3..p*9+6] = albedo[p*3..p*3+3],
-    //         enc_input[p*9+6..p*9+9] = normals[p*3..p*3+3].
-    // The full interleave requires a shader; for this implementation we use
-    // a pre-allocated enc_input buffer and dispatch the inputPack kernel.
-    // The inputPack layer uses the inputPacker compute pass (inputPacker.ts).
-    // For now, we dispatch the pack pass inline here.
+    // Pack noisyColor (3ch) + albedo (3ch) + normals (3ch) into enc_input (9ch)
+    // via the inputPacker compute pass. INTERLEAVED layout: for each pixel p,
+    //   enc_input[p*9..p*9+3] = noisyColor[p*3..p*3+3],
+    //   enc_input[p*9+3..p*9+6] = albedo[p*3..p*3+3],
+    //   enc_input[p*9+6..p*9+9] = normals[p*3..p*3+3].
     this._runInputPack(enc, noisyColorBuf, albedoBuf, normalsBuf);
 
     // ── Dispatch each layer ───────────────────────────────────────────────
@@ -332,7 +328,7 @@ export class InferenceGraph {
 
       if (!state) continue; // inputPack or unsupported kind
 
-      // Bug 6 fix: re-validate bind group buffer identity.
+      // Re-validate bind group buffer identity.
       const currentKeys = this._getCurrentBufKeys(layer);
       if (!keysEqual(state.cachedBufKeys, currentKeys)) {
         // Rebuild bind group with fresh buffer references (keep trained weights).
@@ -343,7 +339,7 @@ export class InferenceGraph {
         state.cachedBufKeys = bufKeys;
       }
 
-      // Bug 4 fix: re-write uniform with current dims (handles resize).
+      // Re-write uniform with current dims (handles resize).
       const tensorDimsMap = this._computeTensorDims(this._W, this._H);
       device.queue.writeBuffer(state.uniformBuf, 0, this._packUniform(layer, tensorDimsMap));
       this._uniformWriteCount++;
@@ -379,17 +375,15 @@ export class InferenceGraph {
   /**
    * Dispose all GPU resources.
    *
-   * Bug 7 fix: _cachedBindGroups cleared slot-by-slot via new Array(N).fill(undefined)
-   * before destroying underlying buffers, ensuring GPUBindGroups release their
-   * buffer references before the buffers are destroyed.
+   * Cached bind groups are cleared slot-by-slot before destroying underlying
+   * buffers, ensuring GPUBindGroups release their buffer references before the
+   * buffers are destroyed.
    *
-   * F4 fix: destroy every buffer tracked in `_allocatedBuffers` (weights,
-   * biases, layer uniforms, input-packer uniform, placeholder). The prior
-   * implementation only destroyed the placeholder buffer and leaked the
-   * weight/bias/uniform buffers — see admitting comment in the prior body.
+   * Every buffer tracked in `_allocatedBuffers` (weights, biases, layer
+   * uniforms, input-packer uniform, placeholder) is destroyed here.
    */
   dispose(): void {
-    // Bug 7 fix: null out cached bind groups slot-by-slot BEFORE destroying buffers.
+    // Null out cached bind groups slot-by-slot BEFORE destroying buffers.
     for (let i = 0; i < this._layerStates.length; i++) {
       const s = this._layerStates[i];
       if (s) {
@@ -404,7 +398,7 @@ export class InferenceGraph {
     }
     this._tensors.clear();
 
-    // F4 fix: destroy all tracked allocations (weights, biases, layer uniforms,
+    // Destroy all tracked allocations (weights, biases, layer uniforms,
     // input-packer uniform, placeholder buffer). Each buffer.destroy() is
     // idempotent on a fresh handle, but guard with try/catch to tolerate
     // double-destroy in error paths.
@@ -495,7 +489,7 @@ export class InferenceGraph {
           break;
 
         case 'skipAdd':
-          // Both inputs must have identical dims (Bug 1 fix validates this).
+          // Both inputs must have identical dims (validated by _validateSkipShapes).
           outC = inDims!.C;
           break;
 
@@ -512,15 +506,15 @@ export class InferenceGraph {
   }
 
   /**
-   * Bug 1 validation: every skipAdd layer's two operands must have matching
-   * (H, W, C). Throws if any mismatch is detected.
+   * Validate that every skipAdd layer's two operands have matching (H, W, C).
+   * Throws if any mismatch is detected.
    */
   private _validateSkipShapes(tensorDimsMap: Map<string, TensorDims>): void {
     for (const layer of this._spec.layers) {
       if (layer.kind !== 'skipAdd') continue;
       if (layer.inputs.length !== 2) {
         throw new Error(
-          `[InferenceGraph] Bug 1: skipAdd layer '${layer.name}' must have exactly 2 inputs, ` +
+          `[InferenceGraph] skipAdd layer '${layer.name}' must have exactly 2 inputs, ` +
           `got ${layer.inputs.length}`,
         );
       }
@@ -528,13 +522,13 @@ export class InferenceGraph {
       const b = tensorDimsMap.get(layer.inputs[1]!);
       if (!a || !b) {
         throw new Error(
-          `[InferenceGraph] Bug 1: skipAdd layer '${layer.name}' — ` +
+          `[InferenceGraph] skipAdd layer '${layer.name}' — ` +
           `input tensor not found: '${!a ? layer.inputs[0] : layer.inputs[1]}'`,
         );
       }
       if (a.H !== b.H || a.W !== b.W || a.C !== b.C) {
         throw new Error(
-          `[InferenceGraph] Bug 1: skipAdd layer '${layer.name}' shape mismatch: ` +
+          `[InferenceGraph] skipAdd layer '${layer.name}' shape mismatch: ` +
           `'${layer.inputs[0]}' = [${a.H}×${a.W}×${a.C}] vs ` +
           `'${layer.inputs[1]}' = [${b.H}×${b.W}×${b.C}]`,
         );
@@ -543,7 +537,7 @@ export class InferenceGraph {
   }
 
   /**
-   * Pack the uniform buffer data for a layer (Bug 4 fix).
+   * Pack the uniform buffer data for a layer.
    * Returns a Uint32Array that can be written to the uniform buffer.
    */
   private _packUniform(layer: LayerSpec, tensorDimsMap: Map<string, TensorDims>): ArrayBuffer {
@@ -602,7 +596,7 @@ export class InferenceGraph {
 
   /**
    * Build a bind group for a layer.
-   * Bug 3 fix: binding layout matches WGSL declarations exactly:
+   * Binding layout matches WGSL declarations exactly:
    *   0=input, 1=weights (or inputB for skip), 2=biases, 3=output, 4=params
    */
   private _buildBindGroup(
@@ -636,7 +630,7 @@ export class InferenceGraph {
         });
         new Float32Array(weightsBuf.getMappedRange()).set(lw.weights);
         weightsBuf.unmap();
-        this._allocatedBuffers.push(weightsBuf); // F4 fix
+        this._allocatedBuffers.push(weightsBuf); // tracked for dispose()
       }
     }
 
@@ -653,7 +647,7 @@ export class InferenceGraph {
         });
         new Float32Array(biasesBuf.getMappedRange()).set(lw.biases);
         biasesBuf.unmap();
-        this._allocatedBuffers.push(biasesBuf); // F4 fix
+        this._allocatedBuffers.push(biasesBuf); // tracked for dispose()
       }
     }
 
@@ -662,7 +656,7 @@ export class InferenceGraph {
     const outputTensor = this._tensors.get(outputName);
     const outputBuf = outputTensor?.buf ?? this._placeholderBuf!;
 
-    // Bug 3 fix: binding layout 0=input, 1=weights/inputB, 2=biases, 3=output, 4=params.
+    // Binding layout 0=input, 1=weights/inputB, 2=biases, 3=output, 4=params.
     const bindGroup = device.createBindGroup({
       label: `neural-bg-${layer.name}`,
       layout: pipeline.getBindGroupLayout(0),
@@ -675,7 +669,7 @@ export class InferenceGraph {
       ],
     });
 
-    // Bug 6 fix: record buffer identity for cache invalidation.
+    // Record buffer identity for cache invalidation.
     // Only the dynamic buffers (input + output) need cache-keying — the
     // weights and biases are static after `initialize()` so they cannot
     // change between frames. Earlier revisions also stored the
@@ -699,7 +693,7 @@ export class InferenceGraph {
   }
 
   /**
-   * B3 fix: GPU-side input packing pass.
+   * GPU-side input packing pass.
    *
    * Packs noisyColor (H×W×3) + albedo (H×W×3) + normals (H×W×3) into
    * enc_input (H×W×9) with the per-pixel INTERLEAVED layout that

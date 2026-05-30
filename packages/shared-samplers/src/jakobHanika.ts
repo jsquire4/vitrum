@@ -32,9 +32,10 @@
  * Objective (faithful to the reference): minimise the residual between the
  * target colour and the colour reproduced by S(λ) under D65, measured in a
  * perceptually-uniform CIE L*a*b* space so the optimiser spends its accuracy
- * budget where the eye is sensitive. The Jacobian is computed by central
- * finite differences (the reference uses the same trick — the analytic
- * derivative through the CIE-Lab cube-root nonlinearity buys little).
+ * budget where the eye is sensitive. The Jacobian is computed ANALYTICALLY
+ * via the chain rule through the sigmoid reflectance, the CIE XYZ integral,
+ * and the CIE-Lab cube-root nonlinearity (see `coeffsToLabJacobian`), giving
+ * exact derivatives with no finite-difference step-size tuning.
  *
  * Numerical conditioning: λ spans [380, 780] nm, so λ² ≈ 6·10⁵. Fitting the
  * polynomial in raw nm gives a wildly ill-conditioned normal-equations matrix.
@@ -292,7 +293,7 @@ function coeffsToLabJacobian(a: number, b: number, c: number): LabAndJacobian {
 // ────────────────────────────────────────────────────────────────────────────
 //
 // Minimise ‖Lab(coeffs) − Lab_target‖² over the 3 coefficients via Newton's
-// method with a finite-difference Jacobian and a back-tracking line search.
+// method with an analytic Jacobian and a back-tracking line search.
 // The residual is the 3-vector (ΔL, Δa, Δb); the Jacobian is the 3×3 matrix
 // ∂Lab/∂coeff. We solve J·δ = −r each step.
 

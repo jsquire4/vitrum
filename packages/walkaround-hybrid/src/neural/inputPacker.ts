@@ -1,8 +1,7 @@
 /**
  * inputPacker.ts — GPU compute packer for the 9-channel U-Net input tensor.
  *
- * Bug 2 fix: the Sprint 13 scaffold left enc_input assembly to the host
- * with no implementation. This module provides the GPU packing pass.
+ * Provides the GPU packing pass that assembles enc_input on-device.
  *
  * Packs three H×W×3 buffers (noisyColor, albedo, normals) into a single
  * H×W×9 buffer (enc_input) with per-pixel interleaving:
@@ -23,7 +22,7 @@ struct PackParams {
   _pad2      : u32,
 }
 
-// Canonical binding layout (Bug 3): 0=input (noisy), 1=input2 (albedo), 2=input3 (normals), 3=output, 4=params
+// Canonical binding layout: 0=input (noisy), 1=input2 (albedo), 2=input3 (normals), 3=output, 4=params
 @group(0) @binding(0) var<storage, read>       noisyColor : array<f32>;  // H×W×3
 @group(0) @binding(1) var<storage, read>       albedo     : array<f32>;  // H×W×3
 @group(0) @binding(2) var<storage, read>       normals    : array<f32>;  // H×W×3

@@ -5,13 +5,12 @@
  *   outputH = inputH * stride   (when padding=0, kH=2, stride=2)
  *   outputW = inputW * stride
  *
- * Bug 5 fix (prior scaffold): The prior kernel used kH=3 with output_padding issues.
- * This implementation uses kH=2, padding=0, output = input × stride exactly.
+ * Uses kH=2, padding=0, so output = input × stride exactly.
  *
  * Weight layout: IOKW — inputC × outputC × kH × kW (standard PyTorch ConvTranspose2d).
  * Each weight at [i, o, kh, kw] → index: i*outC*kH*kW + o*kH*kW + kh*kW + kw
  *
- * Canonical binding layout (Bug 3 fix — same as conv2d):
+ * Canonical binding layout (same as conv2d):
  *   @group(0) @binding(0)  input   : array<f32>   — input tensor [H × W × inC]
  *   @group(0) @binding(1)  weights : array<f32>   — IOKW layout [inC × outC × kH × kW]
  *   @group(0) @binding(2)  biases  : array<f32>   — [outC]
@@ -33,7 +32,7 @@ struct TConv2DParams {
   padding : u32,   // must be 0 for vitrum U-Net
 }
 
-// Canonical binding layout (Bug 3):
+// Canonical binding layout:
 //   0 = input, 1 = weights, 2 = biases, 3 = output, 4 = params
 @group(0) @binding(0) var<storage, read>       input   : array<f32>;
 @group(0) @binding(1) var<storage, read>       weights : array<f32>;

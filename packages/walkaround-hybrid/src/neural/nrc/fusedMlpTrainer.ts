@@ -8,8 +8,12 @@
 // between layers — only the per-layer weight matrices are streamed.
 //
 // The harness is backend-agnostic WebGPU; it runs on lavapipe (CPU, correctness
-// only) via Deno today and on a real adapter unchanged. It is NOT wired into the
-// path tracer — the cache-query/train integration is a later phase.
+// only) via Deno today and on a real adapter unchanged. It IS wired into the
+// path tracer via {@link NrcSubsystem} (nrcSubsystem.ts), which owns one trainer
+// per engine and drives one train step per frame from the gi-ris self-training
+// records. The trainer owns the ~18 GPU buffers it allocates in {@link
+// FusedMlpTrainer.build}; {@link FusedMlpTrainer.dispose} releases them
+// (host-owns-lifecycle), and NrcSubsystem.dispose() forwards to it.
 
 import {
   fusedForwardWgsl, fusedBackwardWgsl, gradFinalizeWgsl, downcastF16Wgsl,
@@ -158,6 +162,8 @@ export class FusedMlpTrainer {
   numSamples = 0;
   adamT = 0;
 
+  #disposed = false;
+
   constructor(device: GPUDevice, spec: FusedNetSpec, cfg: FusedTrainerConfig) {
     this.device = device; this.spec = spec; this.cfg = cfg;
     this.plan = planLayers(spec);
@@ -229,6 +235,40 @@ export class FusedMlpTrainer {
     this.pGradFin = await pipe(gradFinalizeWgsl(), "gradFinalize");
     this.pAdam = await pipe(ADAM_WGSL, "adamMain");
     if (this.cfg.useF16) this.pDowncast = await pipe(downcastF16Wgsl(), "downcast");
+  }
+
+  /**
+   * Release every GPU buffer this trainer allocated in {@link build}
+   * (host-owns-lifecycle). Idempotent: a second call is a safe no-op, and it is
+   * also safe to call before {@link build} has run (the buffer fields are simply
+   * undefined and skipped). The owning {@link NrcSubsystem.dispose} forwards here
+   * so the trainer's ~18 buffers don't leak until device teardown.
+   */
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    // Every GPUBuffer allocated in build(). Guarded for the never-built case.
+    const buffers: (GPUBuffer | undefined)[] = [
+      this.weights, this.biases,
+      this.wMasterGpu, this.bMasterGpu,
+      this.inputs, this.targets,
+      this.actsGlob, this.zGlob,
+      this.gradWfx, this.gradBfx,
+      this.gradWf, this.gradBf,
+      this.gradInputFx, this.gradInputF,
+      this.mW, this.vW, this.mB, this.vB,
+    ];
+    for (const buf of buffers) buf?.destroy();
+    // Null the references so a stray post-dispose use fails loudly rather than
+    // touching a destroyed buffer, and so the GC can reclaim the wrappers.
+    this.weights = this.biases = undefined as unknown as GPUBuffer;
+    this.wMasterGpu = this.bMasterGpu = undefined as unknown as GPUBuffer;
+    this.inputs = this.targets = undefined as unknown as GPUBuffer;
+    this.actsGlob = this.zGlob = undefined as unknown as GPUBuffer;
+    this.gradWfx = this.gradBfx = undefined as unknown as GPUBuffer;
+    this.gradWf = this.gradBf = undefined as unknown as GPUBuffer;
+    this.gradInputFx = this.gradInputF = undefined as unknown as GPUBuffer;
+    this.mW = this.vW = this.mB = this.vB = undefined as unknown as GPUBuffer;
   }
 
   /** Upload master weights/biases (f32) and downcast to the GPU forward buffers. */

@@ -161,6 +161,10 @@ export class OIDNFinalDispatcher {
    *  import. Module-level cache on the bridge side keeps the
    *  InferenceSession warm across cycles. */
   #bridge: OIDNBridgeLike | null = null;
+  /** Cohort token: every {@link invalidate} call bumps this; inferences in
+   *  flight at bump time discard their result on resolve. Prevents a stale
+   *  inference from polluting the post-invalidation cohort. */
+  #cohortId = 0;
 
   constructor(opts: OIDNFinalDispatcherOptions, loader?: OIDNBridgeLoader) {
     if (opts.modelUrl === undefined || opts.modelUrl.length === 0) {
@@ -196,20 +200,13 @@ export class OIDNFinalDispatcher {
    * invalidates the accumulator also invalidates the denoised cache.
    *
    * An in-flight inference is allowed to complete, but the result is
-   * dropped on resolve (the bumped {@link _cohortId} catches the race).
+   * dropped on resolve (the bumped {@link #cohortId} catches the race).
    */
   invalidate(): void {
     this.#cohortId += 1;
     this.#haveCompleted = false;
     this.#latest = null;
   }
-
-  /**
-   * Cohort token: every {@link invalidate} call bumps this; inferences in
-   * flight at bump time discard their result on resolve. Prevents a stale
-   * inference from polluting the post-invalidation cohort.
-   */
-  #cohortId = 0;
 
   /**
    * Synchronous "kick the OIDN pipeline if needed" entrypoint. Called once

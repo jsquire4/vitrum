@@ -422,13 +422,13 @@ export function buildLightTreeInputForScene(scene: Scene): LightTreeBuildInput {
   const dirIrr = defaultDirectionalIrradiance(scene);
   // Mirror the kernel's directional NEE gate EXACTLY: the kernel iterates the
   // directional slot iff `params.lightDir.w > 1e-6`, where `lightDir.w` is the
-  // mean of `directionalIrradiance` = `defaultDirectionalIrradiance(scene)`. The
-  // tree leaf for the directional slot must therefore be present under the SAME
-  // condition — NOT additionally gated on an explicit `directional` emitter
-  // existing. (When no directional emitter exists, the default irradiance is
-  // [1,1,1] so the kernel STILL shades a directional slot; gating the tree on a
-  // real emitter omitted that leaf and shifted every subsequent leaf's
-  // emitterIndex one slot off the kernel walk → a biased light-tree pick. V22.)
+  // mean of `directionalIrradiance` = `defaultDirectionalIrradiance(scene)`. With
+  // no directional emitter that default is [0,0,0] (V22 fix), so the mean is 0,
+  // the kernel skips the directional slot, AND we omit its tree leaf — keeping
+  // the tree's leaf order in lockstep with the kernel walk. Deriving
+  // `hasDirectional` from the SAME `dirIrr` the kernel sees (rather than from a
+  // separate "directional emitter exists?" check) is what guarantees the two
+  // never disagree on whether the directional leaf is present. (V22.)
   const hasDirectional = (dirIrr[0] + dirIrr[1] + dirIrr[2]) / 3 > 1e-6;
 
   // Mirror the kernel's env NEE gate EXACTLY: `hasEnvironmentMap || sunStrength

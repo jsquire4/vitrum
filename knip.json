@@ -14,12 +14,17 @@
   "ignoreBinaries": [],
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.{js,mjs,ts}", "eslint.config.js"]
+      "entry": [
+        "scripts/*.{js,mjs,ts}",
+        "eslint.config.js",
+        "tools/gpu-env/*.{ts,mjs,js,mts}"
+      ]
     },
     "packages/*": {
       "entry": [
         "src/index.{ts,tsx}",
         "src/main.{ts,tsx}",
+        "src/**/*Harness.ts",
         "__tests__/**/*.test.{ts,tsx}",
         "__tests__/**/*.spec.{ts,tsx}",
         "src/**/__tests__/**/*.test.{ts,tsx}",

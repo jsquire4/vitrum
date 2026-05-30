@@ -89,7 +89,7 @@ export class OIDNFinalDispatcher {
     if (opts.modelUrl === undefined || opts.modelUrl.length === 0) {
       throw new Error(
         '[vitrum/pt-webgpu OIDNFinalDispatcher] modelUrl is required. ' +
-          "Pass extensions['vitrum.ptWebgpu.oidnModelUrl'] with denoiser: 'oidn-final'.",
+          "Pass oidn: { modelUrl } with denoiser: 'oidn-final'.",
       );
     }
     this.#modelUrl = opts.modelUrl;
