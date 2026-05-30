@@ -156,6 +156,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     ...(opts.prefer != null ? { prefer: opts.prefer } : {}),
     ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
     ...(opts.debug != null ? { debug: opts.debug } : {}),
+    ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
   });
 
   // Telemetry forwarders. We use the engine's own subscription API rather

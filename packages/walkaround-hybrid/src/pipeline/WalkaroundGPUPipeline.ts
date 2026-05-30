@@ -374,9 +374,11 @@ export interface PipelineFrameInputs {
    *  DDGI-atlas estimate and the UBO bytes are unchanged — **OFF is
    *  bit-identical**. Host opt-in via HybridEngineOptions.nrcEnabled; FORBIDDEN
    *  on tier:'lite'. NRC is a BIASED cache (not a converged-mean-preserving
-   *  reuse) — see HARDWARE-VALIDATION-NEEDS.md V20. STAGED: the gate + encoding
-   *  + spread predicate + oracles are landed; the query/record passes are the
-   *  next phase, so even with the gate at 1 today the suffix still uses DDGI. */
+   *  reuse) — see HARDWARE-VALIDATION-NEEDS.md V20. WIRED (2026-05-29): the gi-ris
+   *  NRC variant runs the MLP query + writes self-training records;
+   *  `NrcSubsystem.trainFromRecords` runs an MLP `trainStep` AND the hash-grid
+   *  encode-backward + table Adam each frame — so with the gate at 1 the suffix
+   *  uses the (biased) learned MLP prediction when the spread heuristic fires. */
   nrcEnabled?: number;
   /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
    *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser

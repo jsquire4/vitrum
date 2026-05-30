@@ -403,6 +403,10 @@ export function wrapWithIdempotentDispose(
   const emitterPatchAdvertised = patchSupport == null
     ? engine.capabilities.supportsIncrementalScene
     : patchSupport.emitter;
+  // Whole-primitive add/remove is gated on the dedicated capability (was
+  // write-only — set by every backend but never consulted, so the facade
+  // silently dropped addPrimitive/removePrimitive even when supported).
+  const addRemoveAdvertised = engine.capabilities.supportsAddRemovePrimitive === true;
   const proxy: Engine = {
     get state() { return engine.state; },
     get capabilities() { return engine.capabilities; },
@@ -418,6 +422,20 @@ export function wrapWithIdempotentDispose(
       ? {
           updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
             if (!disposed) engine.updateEmitter!(id, patch);
+          },
+        }
+      : {}),
+    ...(addRemoveAdvertised && engine.addPrimitive
+      ? {
+          addPrimitive: (primitive: Parameters<NonNullable<Engine['addPrimitive']>>[0]) => {
+            if (!disposed) engine.addPrimitive!(primitive);
+          },
+        }
+      : {}),
+    ...(addRemoveAdvertised && engine.removePrimitive
+      ? {
+          removePrimitive: (id: Parameters<NonNullable<Engine['removePrimitive']>>[0]) => {
+            if (!disposed) engine.removePrimitive!(id);
           },
         }
       : {}),
