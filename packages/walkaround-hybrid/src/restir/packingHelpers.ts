@@ -204,3 +204,47 @@ export function packBVHBeerColors(
   }
   return beerBuf;
 }
+
+/**
+ * Emissive radiance Le (HDR, `emissive.rgb · emissiveIntensity`) of a THREE
+ * material, or `null` when the material is not a self-emissive surface. This
+ * mirrors the EMISSIVE branch of `classifyTriangleEmitter` (emitterList.ts) EXACTLY
+ * — so the camera-visible glow Le equals the radiance ReSTIR-DI samples for that
+ * emitter — but deliberately EXCLUDES the transmissive "sun-attenuated secondary
+ * emitter" branch: glass self-emission to the camera is already handled by
+ * shade.wgsl `lo_emit` (Beer-Lambert), so packing it here would double-count.
+ */
+export function materialEmissiveLe(mat: THREE.Material): [number, number, number] | null {
+  const meshMat = mat as THREE.MeshStandardMaterial;
+  const em = meshMat.emissive;
+  if (!em) return null;
+  const ei = meshMat.emissiveIntensity;
+  if (!(ei && ei > 0)) return null;
+  if (em.r <= 0 && em.g <= 0 && em.b <= 0) return null;
+  return [em.r * ei, em.g * ei, em.b * ei];
+}
+
+/**
+ * Pack per-triangle emissive radiance Le into a parallel rgba32float buffer
+ * (stride 4: rgb + 0 pad). Read by shade.wgsl `lo_emitterGlow` on a primary hit
+ * so emissive-mesh surfaces are CAMERA-VISIBLE (the real-time analogue of the
+ * pt-webgpu camera-visible-emitters fix). Non-emissive triangles are zero. HDR
+ * (emissiveIntensity may exceed 1), hence float — not the LDR `bvh_beer` u32.
+ */
+export function packBVHEmissiveLe(
+  triMaterialId: Uint32Array,
+  materials: readonly THREE.Material[],
+  triCount: number,
+): Float32Array<ArrayBuffer> {
+  const out = new Float32Array(triCount * 4);
+  for (let t = 0; t < triCount; t++) {
+    const mat = materials[triMaterialId[t]!];
+    if (!mat) continue;
+    const le = materialEmissiveLe(mat);
+    if (le == null) continue;
+    out[t * 4 + 0] = le[0];
+    out[t * 4 + 1] = le[1];
+    out[t * 4 + 2] = le[2];
+  }
+  return out;
+}

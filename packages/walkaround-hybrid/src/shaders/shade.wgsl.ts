@@ -86,6 +86,11 @@ export const SHADE_WGSL = /* wgsl */ `
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 // WS1 — per-vertex world-space normals for the smooth shading-normal blend.
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
+// Camera-visible emitters (2026-05-30) — per-triangle HDR emissive radiance Le
+// (rgba32float texture). Read by lo_emitterGlow on a primary hit so emissive-mesh
+// surfaces glow to the camera (the ReSTIR-DI emitter list only lights RECEIVERS;
+// without this the emitter's own pixels render black). Shade-only binding.
+@group(1) @binding(12) var bvh_emissive: texture_2d<f32>;
 // (BVH_BEER_TEX_WIDTH is declared in surfaceTextures.wgsl, emitted earlier in
 // the shade compose chain, and reused here.)
 
@@ -169,6 +174,22 @@ fn lo_emit(
     f32((beerPacked >>  8u) & 0xFFu) / 255.0,
   );
   return beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;
+}
+
+// --- Camera-visible emitters: self-emission glow on a primary hit -----------
+//
+// Emissive-mesh surfaces are NEE-only in walkaround (the ReSTIR-DI emitter list
+// lights RECEIVERS); their own pixels render black to the camera. This returns
+// the hit triangle's HDR emissive radiance Le from the per-triangle bvh_emissive
+// texture so the emitter glows directly. The texel layout matches bvh_beer
+// (BVH_BEER_TEX_WIDTH width; both per-triangle textures share it).
+//
+// No double-count: this is the emitter's OWN pixel, a different surface point
+// than the receivers ReSTIR-DI shades; and lo_emit (glass Beer-Lambert) is the
+// transmissive case, while packBVHEmissiveLe packs the emissive branch ONLY.
+fn lo_emitterGlow(triIndex: u32) -> vec3f {
+  let coord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
+  return textureLoad(bvh_emissive, vec2i(coord), 0).rgb;
 }
 
 // --- Direct lighting (ReSTIR DI) ---
@@ -457,6 +478,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Lo_sunCaustic, Lo_skyAperture, Lo_indirect) so the structural-contract
   // tests in sprint18-indirectCombine.test.ts continue to match.
   let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, primaryHit.matColorPacked, primaryHit.indices.w);
+  // Camera-visible emitters — emissive-mesh self-emission on the primary hit.
+  let Lo_emitterGlow = lo_emitterGlow(primaryHit.indices.w);
   let Lo_direct     = lo_direct(pixelIdx, pos, normal, geoNormal, wo, albedo, rough, metal, isGlass, isMetal, &rng);
   // T5 — stained-glass-specific terms now live in stainedGlassShade.wgsl.ts
   // (lo_sg_caustic / lo_sg_aperture); each early-returns vec3f(0) unless its
@@ -511,7 +534,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // physically-parameterised sky channel and was not portable to scenes with
   // a different skyIrradiance.  The 0.08 has been dropped; Lo_skyAperture
   // is summed at full magnitude.
-  let directRadiance = Lo_emit + (Lo_direct + Lo_sunCaustic + Lo_skyAperture) * ao;
+  // Lo_emitterGlow (self-emission) joins Lo_emit OUTSIDE the AO term — emission
+  // is not occluded by ambient occlusion.
+  let directRadiance = Lo_emit + Lo_emitterGlow + (Lo_direct + Lo_sunCaustic + Lo_skyAperture) * ao;
   let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally

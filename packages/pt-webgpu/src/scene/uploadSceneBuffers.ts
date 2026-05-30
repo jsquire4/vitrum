@@ -2,6 +2,7 @@ import {
   asMat4,
   partitionSceneBySupport,
   type AnalyticShape,
+  type MaterialSpec,
   type Scene,
   type SceneEmitter,
   type ScenePrimitive,
@@ -205,13 +206,61 @@ function isMeshLikePrimitive(
     || primitive.kind === 'instanced-mesh';
 }
 
-export function buildPackedScene(inputScene: Scene): PackedSceneData {
+/** Options for {@link buildPackedScene}. */
+export interface BuildPackedSceneOptions {
+  /**
+   * Re-attach emissive radiance onto emissive-mesh primitives so they glow when
+   * seen directly by the camera / through refraction (not only via NEE). See
+   * `PTEngineWebGPUOptions.cameraVisibleEmitters`. Default `false` (caller passes
+   * the engine's resolved value); `false` keeps the pre-2026-05-30 NEE-only
+   * behaviour (emissive stays at whatever the scene primitive carries — zero for
+   * `sceneFromThreeJS`-converted emissive meshes).
+   */
+  readonly cameraVisibleEmitters?: boolean;
+}
+
+export function buildPackedScene(
+  inputScene: Scene,
+  options: BuildPackedSceneOptions = {},
+): PackedSceneData {
   // Capability filter (warn + skip). Consume pt-webgpu's OWN declared support
   // sets to drop unsupported primitive kinds / analytic shapes / emitter kinds,
   // replacing the hand-rolled boolean-chain skip+warn that previously lived
   // here. `partitionSceneBySupport` is pure; `scene` below is the supported
   // subset and `warnings` carries one message per dropped node.
   const { supported: scene, warnings } = partitionSceneBySupport(inputScene, PT_WEBGPU_SUPPORT);
+
+  // Camera-visible emitters: `sceneFromThreeJS` converts an emissive mesh into a
+  // `mesh-area` emitter and ZEROES the primitive's emissive (so the surface is
+  // sampled via NEE, not double-counted). To make the emitter glow on the camera
+  // ray + through refraction (the paths the analytic BSDF↔light connection cannot
+  // reach), re-attach the emitter's radiance (`color · intensity`, EXACTLY the
+  // value mesh-area NEE samples — emitterPacking.ts:173-176) onto the referenced
+  // primitive's material `emissive`. The kernel's emissive-on-hit term is gated
+  // to the non-MIS paths, so this does not double-count against NEE. Keyed by
+  // `emitter.meshId` → primitive `id` (`emissiveMeshAreaEmitter` sets
+  // `meshId = mesh.uuid` and `convertMesh` sets `id = mesh.uuid`).
+  const emissiveByMeshId = new Map<string, { emissive: [number, number, number]; intensity: number }>();
+  if (options.cameraVisibleEmitters === true) {
+    for (const emitter of scene.emitters) {
+      if (emitter.kind !== 'mesh-area') continue;
+      emissiveByMeshId.set(emitter.meshId, {
+        emissive: [emitter.color[0], emitter.color[1], emitter.color[2]],
+        intensity: emitter.intensity,
+      });
+    }
+  }
+  const packMaterial = (primitive: { id: string; material: MaterialSpec }): number[] => {
+    const reattach = emissiveByMeshId.get(primitive.id);
+    // Pre-multiply intensity into emissive and set emissiveIntensity=1 so the
+    // kernel decode (`emissive · emissiveIntensity`) reproduces `color · intensity`
+    // exactly, matching the NEE radiance regardless of the primitive's own
+    // (zeroed) emissiveIntensity.
+    const mat = reattach == null
+      ? primitive.material
+      : { ...primitive.material, emissive: reattach.emissive.map((c) => c * reattach.intensity) as [number, number, number], emissiveIntensity: 1 };
+    return materialToPackedVec4s(mat);
+  };
 
   const materials: number[] = [];
   const meshMaterialIds = new Map<string, number>();
@@ -228,7 +277,7 @@ export function buildPackedScene(inputScene: Scene): PackedSceneData {
       // analytic primitive that reaches here has a known shape id (> 0).
       const shapeId = analyticShapeId(primitive.shape);
       const matId = nextMaterialId++;
-      materials.push(...materialToPackedVec4s(primitive.material));
+      materials.push(...packMaterial(primitive));
       const transform = primitive.transform ?? IDENTITY_MAT4;
       const maybeInvTransform = invertMat4(transform);
       if (maybeInvTransform == null) {
@@ -260,7 +309,7 @@ export function buildPackedScene(inputScene: Scene): PackedSceneData {
     }
     const matId = nextMaterialId++;
     meshMaterialIds.set(primitive.id, matId);
-    materials.push(...materialToPackedVec4s(primitive.material));
+    materials.push(...packMaterial(primitive));
   }
 
   const geo = packSceneFromCore(scene, {

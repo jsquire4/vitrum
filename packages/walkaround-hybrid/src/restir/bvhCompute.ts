@@ -44,6 +44,7 @@ import {
   packUVIntoPositionW,
   packBVHIndexW,
   packBVHBeerColors,
+  packBVHEmissiveLe,
 } from './packingHelpers.js';
 import { buildEmitterList, buildLightTreeBuffer } from './emitterList.js';
 import {
@@ -104,6 +105,17 @@ export interface SceneBVHBuffers {
    * as primary color for ALL primary hits.
    */
   bvhBeerColors: StorageBufferHandle;
+  /**
+   * Camera-visible emitters (2026-05-30) — per-triangle HDR emissive radiance Le
+   * (`emissive.rgb · emissiveIntensity`), stride-4 f32 (rgb + 0 pad), indexed by
+   * the SAME `geo` triangle order as {@link bvhBeerColors} / {@link bvhIndex}.
+   * Uploaded to an `rgba32float` texture (`bvhEmissiveTexture.ts`) and read by
+   * shade.wgsl `lo_emitterGlow` on a primary hit so emissive-mesh surfaces glow
+   * to the camera (the real-time analogue of pt-webgpu camera-visible emitters).
+   * Non-emissive triangles are zero. Shares `materialEmissiveLe` with the
+   * ReSTIR-DI emitter classification so the glow Le == the NEE-sampled Le.
+   */
+  bvhEmissiveLe: StorageBufferHandle;
   /**
    * WS1 (2026-05-29) — per-vertex world-space normals (stride-4 vec4f, `.w`
    * unused). Same `shared.normals` already surfaced as {@link emitterNormals};
@@ -289,6 +301,13 @@ export function buildReSTIRSceneBVH(
     shared.materials,
     triCount,
   );
+  // ── 3c. Pack per-tri HDR emissive Le (camera-visible emitters). Same `shared`
+  //        triangle order as beerBuf/bvhIndex so shade addresses it by tri index.
+  const emissiveLeBuf = packBVHEmissiveLe(
+    shared.triMaterialId,
+    shared.materials,
+    triCount,
+  );
 
   // ── 4. Build emitter list (transmissive + emissive triangles) ──────────
   // Non-mesh scene lights (THREE.RectAreaLight from
@@ -339,6 +358,11 @@ export function buildReSTIRSceneBVH(
     bvhBeerColors: {
       cpuData: beerBuf.buffer,
       byteLength: beerBuf.byteLength,
+      count: triCount,
+    },
+    bvhEmissiveLe: {
+      cpuData: emissiveLeBuf.buffer,
+      byteLength: emissiveLeBuf.byteLength,
       count: triCount,
     },
     // WS1 — per-vertex world-space normals (stride-4 vec4f). `shared.normals`

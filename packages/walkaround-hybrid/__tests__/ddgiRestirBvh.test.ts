@@ -20,6 +20,7 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
     bvhPositions: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     triangleMaterialIds: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhBeerColors: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
+    bvhEmissiveLe: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     bvhNormals: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     emitters: { cpuData: new ArrayBuffer(64), byteLength: 64, count: 0 },
     emitterCdf: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 0 },

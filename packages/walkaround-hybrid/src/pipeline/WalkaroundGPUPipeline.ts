@@ -1004,9 +1004,12 @@ export class WalkaroundGPUPipeline {
   refreshBvhMaterialSlice(
     indexSlice: { byteOffset: number; data: ArrayBuffer },
     beerFull: { data: ArrayBuffer; triCount: number },
+    /** Camera-visible emitters — FULL per-tri emissive Le re-upload (same
+     *  wholesale rationale as beer). */
+    emissiveFull: { data: ArrayBuffer; triCount: number },
   ): void {
     if (!this._initialized) return;
-    this._bvhHost.refreshBvhMaterialSlice(this._device, indexSlice, beerFull);
+    this._bvhHost.refreshBvhMaterialSlice(this._device, indexSlice, beerFull, emissiveFull);
   }
 
   /**
@@ -1025,7 +1028,7 @@ export class WalkaroundGPUPipeline {
   refreshBvhFullRebuild(
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this._initialized) return;

@@ -310,6 +310,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var bdptPrevScatterPdf = 1.0;
   var bdptPrevPos = params.cameraPos.xyz;
 
+  // Camera-visible emitters: whether the PREVIOUS bounce's BSDF sample was a
+  // diffuse/glossy direction that the analytic BSDF↔light connection already
+  // MIS-accounts for. The emissive-on-hit term below is added ONLY when this is
+  // false — i.e. on the camera ray (init false, so a directly-viewed emitter
+  // glows) and after a refraction/specular-transmission bounce (which sets
+  // sampleAllowsAreaMis=false, so an emitter seen THROUGH glass glows) — the two
+  // paths bsdfAreaLightConnectionContribution cannot reach. This prevents
+  // double-counting the emissive hit against the analytic connection on
+  // diffuse/glossy bounces. (When cameraVisibleEmitters is off the primitive
+  // emissive is zero, so the gate is a no-op and the render is byte-identical.)
+  var prevSampleAllowsAreaMis = false;
+
   var heroLambda = params.heroLambdaNm;
   var heroPdf = params.heroPdf;
   if (params.spectralEnabled != 0u) {
@@ -362,7 +374,14 @@ ${mediumStateDecls}
     let spectralSampleCount = mat.spectralSampleCount;
     let isTranslucent = mat.isTranslucent;
 
-    radiance = radiance + throughput * emissive;
+    // Emissive-on-hit: add the surface's own emission, but ONLY on a path the
+    // analytic BSDF↔light connection did NOT already account for (camera ray +
+    // post-refraction; see prevSampleAllowsAreaMis). On diffuse/glossy bounces
+    // the connection at the PREVIOUS vertex already added this light's
+    // contribution with its MIS weight, so adding it again here would double-count.
+    if (!prevSampleAllowsAreaMis) {
+      radiance = radiance + throughput * emissive;
+    }
 
     let hitPos = ray.origin + ray.direction * hit.dist;
     let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
@@ -728,6 +747,11 @@ ${transmissiveBlock}
     throughput = throughput * bs.throughputMul;
     let sampledDir = bs.sampledDir;
     let sampleAllowsAreaMis = bs.sampleAllowsAreaMis;
+    // Carry to the NEXT iteration's emissive-on-hit gate: if THIS bounce allows
+    // area MIS (diffuse/glossy), the analytic connection below covers the light
+    // it may hit, so the next hit must NOT re-add that emission. A refraction
+    // bounce sets this false → an emitter seen through glass glows next iteration.
+    prevSampleAllowsAreaMis = sampleAllowsAreaMis;
 ${mediumStateUpdate}
 
     if (params.bdptEnabled != 0u) {

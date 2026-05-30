@@ -15,4 +15,12 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('params.lightDir.w');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn sampleSky');
   });
+
+  it('gates emissive-on-hit to camera + refraction paths (camera-visible emitters)', () => {
+    // Mirrors the full-tier gate so lite emitters are also camera-visible without
+    // double-counting against the analytic BSDF↔light connection.
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('var prevSampleAllowsAreaMis = false;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (!prevSampleAllowsAreaMis) {');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('prevSampleAllowsAreaMis = sampleAllowsAreaMis;');
+  });
 });

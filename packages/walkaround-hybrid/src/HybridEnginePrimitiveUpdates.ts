@@ -79,7 +79,7 @@ function computeWorldAabbFromBvhPositions(
   return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
 }
 
-import { repackBVHMaterialRange } from './restir/packingHelpers.js';
+import { repackBVHMaterialRange, packBVHEmissiveLe } from './restir/packingHelpers.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
@@ -937,6 +937,11 @@ export function materialPatch(
     range.triCount,
   );
 
+  // Camera-visible emitters — repack the FULL per-tri emissive Le from the
+  // now-updated materials (buildMaterials was patched above) so an emissive edit
+  // is reflected; the slice path re-uploads the whole emissive texture wholesale.
+  const fullEmissive = packBVHEmissiveLe(triMaterialIds, bvh.buildMaterials, bvh.bvhBeerColors.count);
+
   const indexByteOffset = range.triStart * 16;
   ctx.pipeline.refreshBvhMaterialSlice(
     {
@@ -946,6 +951,7 @@ export function materialPatch(
     // WS1 — beer is a texture: re-upload the full beer data (a contiguous tri
     // slice is not a rectangular texture region unless it spans full rows).
     { data: bvh.bvhBeerColors.cpuData, triCount: bvh.bvhBeerColors.count },
+    { data: fullEmissive.buffer, triCount: bvh.bvhBeerColors.count },
   );
 
   const crossedGlassThreshold =

@@ -145,6 +145,20 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    */
   readonly lightTreeImportanceSampling?: boolean;
   /**
+   * Camera-visible emitters: emissive meshes glow when seen DIRECTLY by the
+   * camera and THROUGH refractive surfaces (the stained-glass case), not only via
+   * NEE on receiving surfaces. ON by default. `sceneFromThreeJS` converts an
+   * emissive mesh into a mesh-area light emitter and zeroes the primitive's
+   * emissive (so it is sampled, not double-counted); this re-attaches that
+   * emitter radiance onto the primitive's material at pack time so the path
+   * tracer's emissive-on-hit term fires. The existing BSDF↔light MIS
+   * (`bsdfAreaLightConnectionContribution`) already covers diffuse/glossy bounces;
+   * the emissive-on-hit term is gated to the camera + refraction paths the
+   * analytic connection cannot reach, so there is NO double-count. Set `false` to
+   * keep emitters camera-invisible (NEE-only, the pre-2026-05-30 behaviour).
+   */
+  readonly cameraVisibleEmitters?: boolean;
+  /**
    * Intel Open Image Denoise final-pass config. REQUIRED when
    * `denoiser: 'oidn-final'`. (Graduated from the former
    * `extensions['vitrum.ptWebgpu.oidnModelUrl' | 'oidnExecutionProviders']`.)
@@ -231,6 +245,7 @@ class PTEngineWebGPU implements Engine {
   readonly #postDenoiser: OIDNFinalDispatcher | null;
   readonly #spectralEnabled: boolean;
   readonly #lightTreeImportanceSampling: boolean;
+  readonly #cameraVisibleEmitters: boolean;
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
   #bdptLightPath: BdptLightPathBufferWebGPU | null = null;
@@ -246,6 +261,7 @@ class PTEngineWebGPU implements Engine {
     this.#device = opts.device;
     this.#spectralEnabled = opts.spectral === true;
     this.#lightTreeImportanceSampling = opts.lightTreeImportanceSampling !== false;
+    this.#cameraVisibleEmitters = opts.cameraVisibleEmitters !== false;
     this.#traceTier = traceTier;
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
@@ -609,7 +625,9 @@ class PTEngineWebGPU implements Engine {
    * per-array index remap; see class header on the add/remove design choice).
    */
   #repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void {
-    const packed = buildPackedScene(scene);
+    const packed = buildPackedScene(scene, {
+      cameraVisibleEmitters: this.#cameraVisibleEmitters,
+    });
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);

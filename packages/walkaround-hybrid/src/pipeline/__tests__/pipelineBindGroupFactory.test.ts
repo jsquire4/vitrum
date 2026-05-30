@@ -25,6 +25,7 @@ describe('pipelineBindGroupFactory', () => {
       emitterCdfBuffer: {} as GPUBuffer,
       bvhBeerTextureView: {} as GPUTextureView,
       bvhNormalBuffer: {} as GPUBuffer,
+      bvhEmissiveTextureView: {} as GPUTextureView,
       tlasNodesBuffer: {} as GPUBuffer,
       tlasInstanceIndicesBuffer: {} as GPUBuffer,
       tlasBlasRootsBuffer: {} as GPUBuffer,

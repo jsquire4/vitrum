@@ -121,6 +121,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   var firstHitNormal = vec3f(0.0, 1.0, 0.0);
   var firstHitAlbedo = vec3f(0.0);
   var firstHitDepth = 0.0;
+  // Camera-visible emitters: gate the emissive-on-hit term to the camera ray +
+  // post-refraction paths (see kernel.wgsl.ts for the rationale). Init false so a
+  // directly-viewed emitter glows.
+  var prevSampleAllowsAreaMis = false;
 
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
     let hit = traceClosest(ray, 1e-4, INFINITY);
@@ -156,7 +160,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let spectralSampleCount = mat.spectralSampleCount;
     let isTranslucent = mat.isTranslucent;
 
-    radiance = radiance + throughput * emissive;
+    // Gated emissive-on-hit (camera + refraction paths only — see kernel.wgsl.ts).
+    if (!prevSampleAllowsAreaMis) {
+      radiance = radiance + throughput * emissive;
+    }
 
     let hitPos = ray.origin + ray.direction * hit.dist;
     let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
@@ -344,6 +351,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     throughput = throughput * bs.throughputMul;
     let sampledDir = bs.sampledDir;
     let sampleAllowsAreaMis = bs.sampleAllowsAreaMis;
+    prevSampleAllowsAreaMis = sampleAllowsAreaMis;
 
     if (sampleAllowsAreaMis) {
       radiance = radiance + bsdfAreaLightConnectionContribution(

@@ -10,6 +10,11 @@ import {
   refreshBeerTexture,
   type BeerTexture,
 } from './bvhBeerTexture.js';
+import {
+  uploadEmissiveTexture,
+  refreshEmissiveTexture,
+  type EmissiveTexture,
+} from './bvhEmissiveTexture.js';
 
 /** Mirrors `buildSceneBindGroup` resource bundle in bindGroupBuilders.ts. */
 export interface SceneBindGroupResources {
@@ -22,6 +27,9 @@ export interface SceneBindGroupResources {
    *  buffer). Shade reads it via `textureLoad`; the swap freed a storage slot
    *  for `bvhNormalBuffer`. */
   bvhBeerTextureView: GPUTextureView;
+  /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture
+   *  (binding 12). Shade reads it via `textureLoad` (lo_emitterGlow). */
+  bvhEmissiveTextureView: GPUTextureView;
   /** WS1 — per-vertex world-space normals (stride-4 vec4f). Barycentric-blended
    *  in the primary passes for a smooth shading normal. */
   bvhNormalBuffer: GPUBuffer;
@@ -41,6 +49,9 @@ export class BvhBufferHost {
   /** WS1 — beer is now a texture; track triCount so refit can re-upload it. */
   private _bvhBeerTexture: BeerTexture | null = null;
   private _bvhBeerTriCount = 0;
+  /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture. */
+  private _bvhEmissiveTexture: EmissiveTexture | null = null;
+  private _bvhEmissiveTriCount = 0;
   /** WS1 — per-vertex world-space normals for the smooth shading-normal blend. */
   private _bvhNormalBuffer: GPUBuffer | null = null;
   private _bvhPositionBuffer: GPUBuffer | null = null;
@@ -79,6 +90,12 @@ export class BvhBufferHost {
     this._bvhBeerTriCount = bvhBuffers.bvhBeerColors.count;
     this._bvhBeerTexture = uploadBeerTexture(
       device, bvhBuffers.bvhBeerColors.cpuData, this._bvhBeerTriCount);
+    // Camera-visible emitters — per-tri HDR emissive Le (rgba32float texture).
+    this._bvhEmissiveTriCount = bvhBuffers.bvhEmissiveLe.count;
+    this._bvhEmissiveTexture = uploadEmissiveTexture(
+      device,
+      new Float32Array(bvhBuffers.bvhEmissiveLe.cpuData),
+      this._bvhEmissiveTriCount);
     // WS1 — per-vertex world-space normals (stride-4 vec4f, .w unused). Same
     // data the DDGI / emitter paths already use (shared.normals).
     this._bvhNormalBuffer = uploadBuffer(device, bvhBuffers.bvhNormals.cpuData, STORAGE);
@@ -113,6 +130,7 @@ export class BvhBufferHost {
       emitterBuffer: this._emitterBuffer!,
       emitterCdfBuffer: this._emitterCdfBuffer!,
       bvhBeerTextureView: this._bvhBeerTexture!.texture.createView(),
+      bvhEmissiveTextureView: this._bvhEmissiveTexture!.texture.createView(),
       bvhNormalBuffer: this._bvhNormalBuffer!,
       tlasNodesBuffer: this._tlasNodesBuffer!,
       tlasInstanceIndicesBuffer: this._tlasInstanceIndicesBuffer!,
@@ -184,23 +202,30 @@ export class BvhBufferHost {
      *  texture is re-uploaded wholesale (a contiguous triangle slice is not a
      *  rectangular texture region unless it spans full rows). Cheap: 4 B/tri. */
     beerFull: { data: ArrayBuffer; triCount: number },
+    /** Camera-visible emitters — FULL per-tri emissive Le re-upload (same
+     *  wholesale rationale as beer; a triangle slice is not a rectangular
+     *  texture region). */
+    emissiveFull: { data: ArrayBuffer; triCount: number },
   ): void {
     if (!this.initialized) return;
     device.queue.writeBuffer(this._bvhIndexBuffer!, indexSlice.byteOffset, indexSlice.data);
     refreshBeerTexture(device, this._bvhBeerTexture!, beerFull.data, beerFull.triCount);
+    refreshEmissiveTexture(
+      device, this._bvhEmissiveTexture!, new Float32Array(emissiveFull.data), emissiveFull.triCount);
   }
 
   refreshBvhFullRebuild(
     device: GPUDevice,
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'bvhNormals' | 'bvhPositions' | 'bvhMode' | 'tlas'
     >,
   ): void {
     if (!this.initialized) return;
     this._bvhNodesBuffer!.destroy();
     this._bvhIndexBuffer!.destroy();
     this._bvhBeerTexture!.texture.destroy();
+    this._bvhEmissiveTexture!.texture.destroy();
     this._bvhNormalBuffer!.destroy();
     this._bvhPositionBuffer!.destroy();
     this._destroyTlasBuffers();
@@ -209,6 +234,9 @@ export class BvhBufferHost {
     this._bvhBeerTriCount = bvhBuffers.bvhBeerColors.count;
     this._bvhBeerTexture = uploadBeerTexture(
       device, bvhBuffers.bvhBeerColors.cpuData, this._bvhBeerTriCount);
+    this._bvhEmissiveTriCount = bvhBuffers.bvhEmissiveLe.count;
+    this._bvhEmissiveTexture = uploadEmissiveTexture(
+      device, new Float32Array(bvhBuffers.bvhEmissiveLe.cpuData), this._bvhEmissiveTriCount);
     this._bvhNormalBuffer = uploadBuffer(device, bvhBuffers.bvhNormals.cpuData, STORAGE);
     this._bvhPositionBuffer = uploadBuffer(device, bvhBuffers.bvhPositions.cpuData, STORAGE);
     this._uploadTlasBuffers(device, bvhBuffers as SceneBVHBuffers);
@@ -218,6 +246,7 @@ export class BvhBufferHost {
     this._bvhNodesBuffer?.destroy();
     this._bvhIndexBuffer?.destroy();
     this._bvhBeerTexture?.texture.destroy();
+    this._bvhEmissiveTexture?.texture.destroy();
     this._bvhNormalBuffer?.destroy();
     this._bvhPositionBuffer?.destroy();
     this._destroyTlasBuffers();
@@ -227,6 +256,7 @@ export class BvhBufferHost {
     this._bvhNodesBuffer = null;
     this._bvhIndexBuffer = null;
     this._bvhBeerTexture = null;
+    this._bvhEmissiveTexture = null;
     this._bvhNormalBuffer = null;
     this._bvhPositionBuffer = null;
     this._emitterBuffer = null;

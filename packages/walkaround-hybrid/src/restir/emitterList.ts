@@ -23,6 +23,7 @@ import {
   packLightTreeForGPU,
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
+import { materialEmissiveLe } from './packingHelpers.js';
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
@@ -58,18 +59,12 @@ function classifyTriangleEmitter(
   primaryIntensity: number,
 ): { color: [number, number, number]; intensity: number } | null {
   const meshMat = mat as THREE.MeshStandardMaterial;
-  const emissiveLum = meshMat.emissive
-    ? luminance(meshMat.emissive.r, meshMat.emissive.g, meshMat.emissive.b)
-    : 0;
-  if (emissiveLum > 0 && meshMat.emissiveIntensity && meshMat.emissiveIntensity > 0) {
-    return {
-      color: [
-        meshMat.emissive.r * meshMat.emissiveIntensity,
-        meshMat.emissive.g * meshMat.emissiveIntensity,
-        meshMat.emissive.b * meshMat.emissiveIntensity,
-      ],
-      intensity: meshMat.emissiveIntensity,
-    };
+  // Emissive surface → direct emitter. Shares `materialEmissiveLe` with the
+  // camera-visible-glow packer (packBVHEmissiveLe) so the NEE-sampled radiance
+  // and the camera glow Le are GUARANTEED identical (no drift).
+  const emissiveLe = materialEmissiveLe(mat);
+  if (emissiveLe != null) {
+    return { color: emissiveLe, intensity: meshMat.emissiveIntensity ?? 1 };
   }
   const physMat = mat as THREE.MeshPhysicalMaterial;
   if (!physMat.transmission || physMat.transmission <= 0.1) return null;

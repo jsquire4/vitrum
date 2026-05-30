@@ -34,6 +34,38 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(packed.meshAreaLightCount).toBe(1);
   });
 
+  it('cameraVisibleEmitters re-attaches mesh-area emitter radiance onto the primitive material (color·intensity)', () => {
+    // `sceneFromThreeJS` zeroes a converted emissive mesh's material emissive (it
+    // becomes a sampled mesh-area emitter). With cameraVisibleEmitters the packer
+    // re-attaches the emitter radiance so the primitive glows to the camera. The
+    // re-attached emissive (packed floats 4..6 of material slot 0, pre-multiplied
+    // by emissiveIntensity) must EXACTLY equal the mesh-area NEE radiance
+    // color·intensity = [0.5,0.25,1]·6 — so camera glow matches the lit appearance.
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'tri', color: [0.5, 0.25, 1], intensity: 6 }],
+    };
+    const off = buildPackedScene(scene);
+    // Default (off): the primitive material emissive stays at its scene value (0).
+    expect([off.materials[4], off.materials[5], off.materials[6]]).toEqual([0, 0, 0]);
+    const on = buildPackedScene(scene, { cameraVisibleEmitters: true });
+    expect(on.materials[4]).toBeCloseTo(0.5 * 6, 5);
+    expect(on.materials[5]).toBeCloseTo(0.25 * 6, 5);
+    expect(on.materials[6]).toBeCloseTo(1 * 6, 5);
+    // Everything else byte-identical (only emissive changed).
+    expect(on.materials[0]).toBe(off.materials[0]); // baseColor.r
+    expect(on.materials.length).toBe(off.materials.length);
+  });
+
+  it('cameraVisibleEmitters does NOT re-attach when the emitter has no matching primitive (meshId mismatch)', () => {
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'no-such-mesh', color: [1, 1, 1], intensity: 9 }],
+    };
+    const on = buildPackedScene(scene, { cameraVisibleEmitters: true });
+    expect([on.materials[4], on.materials[5], on.materials[6]]).toEqual([0, 0, 0]);
+  });
+
   it('packs HDRI map payload and CDF', () => {
     const scene: Scene = {
       ...baseScene(),

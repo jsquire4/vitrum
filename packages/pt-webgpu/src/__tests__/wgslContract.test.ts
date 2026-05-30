@@ -40,6 +40,26 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = 1.0 / lt.pdf;');
   });
 
+  it('gates emissive-on-hit to camera + refraction paths (camera-visible emitters)', () => {
+    // The emissive-on-hit term must be gated on !prevSampleAllowsAreaMis so it
+    // fires ONLY on the camera ray (prevSampleAllowsAreaMis inits false) and after
+    // a refraction/specular-transmission bounce (which sets sampleAllowsAreaMis
+    // false) — the paths the analytic bsdfAreaLightConnectionContribution cannot
+    // reach. On diffuse/glossy bounces the connection already MIS-accounts for the
+    // light, so the gate prevents a double-count.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('var prevSampleAllowsAreaMis = false;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (!prevSampleAllowsAreaMis) {');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('prevSampleAllowsAreaMis = sampleAllowsAreaMis;');
+    // The emissive add must appear EXACTLY ONCE and be the gated form (wrapped in
+    // the `if (!prevSampleAllowsAreaMis)` block). A second/unconditional add would
+    // double-count emissive against the analytic connection once re-attached.
+    const emissiveAdds = (PT_WEBGPU_TRACE_WGSL.match(/radiance = radiance \+ throughput \* emissive;/g) ?? []).length;
+    expect(emissiveAdds).toBe(1);
+    // The gated form: the `if (!prevSampleAllowsAreaMis) {` immediately precedes
+    // the (only) emissive add — confirming it is inside the gate.
+    expect(PT_WEBGPU_TRACE_WGSL).toMatch(/if \(!prevSampleAllowsAreaMis\) \{\s*\n\s*radiance = radiance \+ throughput \* emissive;/);
+  });
+
   it('contains active strategy-specific caustic paths', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn causticMode() -> u32');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn manifoldNeeContribution');

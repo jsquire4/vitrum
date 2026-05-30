@@ -18,6 +18,17 @@ vi.mock('../bvhBeerTexture.js', () => ({
   refreshBeerTexture: vi.fn(),
 }));
 
+// Camera-visible emitters — emissive Le is also a texture; mock its host helper
+// for the same device-free reason as beer.
+vi.mock('../bvhEmissiveTexture.js', () => ({
+  uploadEmissiveTexture: vi.fn(() => ({
+    texture: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+    width: 4096,
+    height: 1,
+  })),
+  refreshEmissiveTexture: vi.fn(),
+}));
+
 import { BvhBufferHost } from '../BvhBufferHost.js';
 
 function mockDevice(): GPUDevice {
@@ -36,6 +47,7 @@ describe('BvhBufferHost', () => {
       bvhNodes: buf,
       bvhIndex: buf,
       bvhBeerColors: buf,
+      bvhEmissiveLe: buf,
       bvhNormals: buf,
       bvhPositions: buf,
       emitters: buf,

@@ -14,6 +14,7 @@ import {
   packUVIntoPositionW,
   packBVHIndexW,
   packBVHBeerColors,
+  packBVHEmissiveLe,
 } from './packingHelpers.js';
 import { buildEmitterList, buildLightTreeBuffer } from './emitterList.js';
 import type { SceneBVHBuffers } from './bvhCompute.js';
@@ -101,6 +102,10 @@ function buffersFromScenePack(
   const positionsWithUV = packUVIntoPositionW(geo.positions, undefined, vertCount);
   const indexBuf = packBVHIndexW(geo.indices, geo.triMaterialIds, materials, triCount);
   const beerBuf = packBVHBeerColors(geo.triMaterialIds, materials, triCount);
+  // Camera-visible emitters: per-triangle HDR emissive Le, indexed by the SAME
+  // `geo` triangle order as beerBuf/bvhIndex (NOT the sharedWorld emitter-list
+  // build) so a primary-hit triangle index addresses the right texel in shade.
+  const emissiveLeBuf = packBVHEmissiveLe(geo.triMaterialIds, materials, triCount);
 
   // This SECOND build is load-bearing, NOT a redundant duplicate of `geo`.
   // `buildEmitterList` needs WORLD-space geometry: it derives triangle area,
@@ -160,6 +165,7 @@ function buffersFromScenePack(
     bvhPositions: makeStorageHandle(positionsWithUV, 16),
     triangleMaterialIds: makeStorageHandle(geo.triMaterialIds, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
+    bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
     // WS1 — per-vertex normals (stride-4). In TLAS mode these are the LOCAL-
     // space BLAS normals (geo.normals), indexed by the BLAS-local hit.indices.
     // The smooth-normal blend is DEFERRED for TLAS (the shaders gate on

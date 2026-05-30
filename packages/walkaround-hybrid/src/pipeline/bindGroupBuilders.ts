@@ -108,6 +108,9 @@ interface SceneBindGroupResources {
   bvhBeerTextureView: GPUTextureView;
   /** WS1 — per-vertex world-space normals storage buffer (binding 11). */
   bvhNormalBuffer: GPUBuffer;
+  /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture
+   *  (binding 12). Shade reads it via `textureLoad` (lo_emitterGlow). */
+  bvhEmissiveTextureView: GPUTextureView;
   tlasNodesBuffer: GPUBuffer;
   tlasInstanceIndicesBuffer: GPUBuffer;
   tlasBlasRootsBuffer: GPUBuffer;
@@ -133,6 +136,7 @@ export function buildSceneBindGroup(
     { buffer: r.tlasInstanceWorldToLocalBuffer },   // 9
     { buffer: r.tlasInstanceLocalToWorldBuffer },   // 10
     { buffer: r.bvhNormalBuffer },                  // 11 WS1 per-vertex world-space smooth normals
+    r.bvhEmissiveTextureView,                       // 12 camera-visible emitters: per-tri HDR emissive Le
   ]);
 }
 
