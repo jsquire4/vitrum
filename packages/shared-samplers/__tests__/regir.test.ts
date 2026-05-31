@@ -12,11 +12,14 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildLightTree,
+  type LightTreeBuildInput,
+} from '../src/lightTree.js';
+import {
   regirBuildSurvivorCPU,
   regirCellTargetFromTree,
   regirCellPmfExact,
-  type LightTreeBuildInput,
-} from '../src/lightTree.js';
+} from '../src/regir.js';
+import * as pkgIndex from '../src/index.js';
 
 const FLOOR = 0.01;
 
@@ -43,6 +46,35 @@ function lcg(seed: number): () => number {
     return s / 0x100000000;
   };
 }
+
+describe('ReGIR public surface — re-export equivalence (regir.ts move)', () => {
+  it('the 4 ReGIR exports remain importable from the package index, identical to ./regir.js', () => {
+    // After the lightTree.ts → regir.ts split the public surface must be UNCHANGED:
+    // consumers import these from '@vitrum/shared-samplers' (the index), not deep.
+    expect(pkgIndex.REGIR_FLOATS_PER_SURVIVOR).toBe(2);
+    expect(pkgIndex.regirBuildSurvivorCPU).toBe(regirBuildSurvivorCPU);
+    expect(pkgIndex.regirCellTargetFromTree).toBe(regirCellTargetFromTree);
+    expect(pkgIndex.regirCellPmfExact).toBe(regirCellPmfExact);
+  });
+
+  it('the index-imported helpers produce identical output to the direct ./regir.js imports on a fixture', () => {
+    const powers = [1, 2, 4, 8, 3];
+    const { nodes } = buildLightTree(makeInput(powers));
+    const xc: readonly [number, number, number] = [6, 0, 0];
+    // regirCellPmfExact — identical map contents.
+    const pmfDirect = regirCellPmfExact(nodes, xc, FLOOR);
+    const pmfIndex = pkgIndex.regirCellPmfExact(nodes, xc, FLOOR);
+    expect([...pmfIndex.entries()]).toEqual([...pmfDirect.entries()]);
+    // regirCellTargetFromTree — identical per-emitter target.
+    const tgtDirect = regirCellTargetFromTree(nodes, xc, FLOOR);
+    const tgtIndex = pkgIndex.regirCellTargetFromTree(nodes, xc, FLOOR);
+    for (const e of powers.keys()) expect(tgtIndex(e)).toBe(tgtDirect(e));
+    // regirBuildSurvivorCPU — identical survivor for the same RNG seed.
+    const sDirect = regirBuildSurvivorCPU(nodes, xc, FLOOR, 32, tgtDirect, lcg(0xBEEF));
+    const sIndex = pkgIndex.regirBuildSurvivorCPU(nodes, xc, FLOOR, 32, tgtIndex, lcg(0xBEEF));
+    expect(sIndex).toEqual(sDirect);
+  });
+});
 
 describe('ReGIR cell pmf — validity (correctness-critical for unbiasedness)', () => {
   it('the exact normalized cell pmf integrates to 1 over the emitter set, for EVERY cell centroid', () => {

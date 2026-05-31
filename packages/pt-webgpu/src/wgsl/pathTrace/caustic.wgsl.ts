@@ -67,6 +67,12 @@ fn traceSpecularTransmissiveChain(
       att = att * exp(-chainSigmaT * hit.dist);
     }
     let matId = hitMaterialId(hit);
+    // TODO(theme-D / V-caustic): this hand-decode is NOT bit-identical to the
+    // canonical decodeMaterial() — the m0 out-of-bounds fallback differs
+    // (1.0/0.5 here vs 0.8/0.6 there) and m0.rgb is clamped before the mix
+    // below, which decodeMaterial does not do. Collapsing to decodeMaterial()
+    // would change the composed shader's decode math, so it is left inline
+    // pending a real-GPU A/B before any unification. (material.wgsl.ts:445)
     let m0Index = matId * MATERIAL_VEC4_STRIDE;
     let m2Index = m0Index + 2u;
     let m3Index = m0Index + 3u;
@@ -249,6 +255,9 @@ fn photonMapContribution(
       let hit = traceClosest(ray, 1e-4, INFINITY);
       if (!hit.didHit) { break; }
       let matId = hitMaterialId(hit);
+      // TODO(theme-D / V-caustic): hand-decode kept inline (not routed through
+      // canonical decodeMaterial()) — m0 fallback + clamping differ from
+      // material.wgsl.ts:445; collapse only after a real-GPU A/B confirms parity.
       let m0Index = matId * MATERIAL_VEC4_STRIDE;
       let m2Index = m0Index + 2u;
       let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));

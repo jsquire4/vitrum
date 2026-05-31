@@ -351,14 +351,61 @@ function packOneMeshLikePrimitive(
   };
 }
 
-function collectTlasInstancesFromBindings(
-  scene: Scene,
-  bindings: readonly PrimitiveTlasBinding[],
-): { readonly ok: true; readonly instances: readonly PendingTlasInstance[] } | { readonly ok: false; readonly reason: string } {
+/** Index a scene's primitives by id for O(1) binding resolution. */
+function mapPrimitivesById(scene: Scene): Map<string, ScenePrimitive> {
   const primitiveById = new Map<string, ScenePrimitive>();
   for (const primitive of scene.primitives) {
     primitiveById.set(primitive.id, primitive);
   }
+  return primitiveById;
+}
+
+/** A single resolved instance plus whether its transform was non-invertible
+ *  (so the caller can decide whether/how to warn). */
+interface ResolvedInstance {
+  readonly instance: PendingTlasInstance;
+  readonly nonInvertible: boolean;
+}
+
+/**
+ * Resolve a primitive's instance transforms into {@link PendingTlasInstance}s
+ * relative to a binding (invert each local→world, transform the local AABB into
+ * world space, fall back to identity when non-invertible). Shared by all three
+ * TLAS-instance collectors — they differ only in their instance-count policy and
+ * whether they emit the non-invertible warning.
+ */
+function resolveInstanceTransforms(
+  binding: PrimitiveTlasBinding,
+  primitive: Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }>,
+): { readonly transformCount: number; readonly resolved: readonly ResolvedInstance[] } {
+  const transforms =
+    primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
+  const resolved: ResolvedInstance[] = [];
+  for (const transform of transforms) {
+    const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
+    const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
+    const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
+    const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
+    const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
+    resolved.push({
+      nonInvertible: maybeWorldToLocal == null,
+      instance: {
+        blasRoot: binding.blasRoot,
+        worldToLocal,
+        localToWorld,
+        aabbMin: worldAabb.min,
+        aabbMax: worldAabb.max,
+      },
+    });
+  }
+  return { transformCount: transforms.length, resolved };
+}
+
+function collectTlasInstancesFromBindings(
+  scene: Scene,
+  bindings: readonly PrimitiveTlasBinding[],
+): { readonly ok: true; readonly instances: readonly PendingTlasInstance[] } | { readonly ok: false; readonly reason: string } {
+  const primitiveById = mapPrimitivesById(scene);
   const instances: PendingTlasInstance[] = [];
   for (const binding of bindings) {
     const primitive = primitiveById.get(binding.primitiveId);
@@ -371,30 +418,71 @@ function collectTlasInstancesFromBindings(
         reason: `primitive "${binding.primitiveId}" kind mismatch or not mesh-like`,
       };
     }
-    const transforms =
-      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-    if (transforms.length !== binding.instanceCount) {
+    const { transformCount, resolved } = resolveInstanceTransforms(binding, primitive);
+    if (transformCount !== binding.instanceCount) {
       return {
         ok: false,
-        reason: `primitive "${binding.primitiveId}" instance count changed from ${binding.instanceCount} to ${transforms.length}`,
+        reason: `primitive "${binding.primitiveId}" instance count changed from ${binding.instanceCount} to ${transformCount}`,
       };
     }
-    for (const transform of transforms) {
-      const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-      const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
-      const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
-      const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-      const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
-      instances.push({
-        blasRoot: binding.blasRoot,
-        worldToLocal,
-        localToWorld,
-        aabbMin: worldAabb.min,
-        aabbMax: worldAabb.max,
-      });
+    for (const { instance } of resolved) {
+      instances.push(instance);
     }
   }
   return { ok: true, instances };
+}
+
+/**
+ * Copy one 8-word BVH node from `src` (at `srcWordBase`) into `dst` (at
+ * `dstWordBase`), adding `leafTriDelta` to word[6] iff the node is a LEAF.
+ *
+ * Word[6] of a leaf is a GLOBAL triangle offset; of an interior node it is a
+ * RELATIVE child offset (which must NOT shift when the subtree moves rigidly).
+ * Shared by both BLAS-splice paths — an off-by-one here silently corrupts BVH
+ * traversal, so it lives in exactly one place.
+ */
+function rebaseLeafTriOffset(
+  dst: Uint32Array,
+  dstWordBase: number,
+  src: ArrayLike<number>,
+  srcWordBase: number,
+  leafTriDelta: number,
+): void {
+  const splitOrCount = src[srcWordBase + 7] ?? 0;
+  const isLeaf = isLeafSplit(splitOrCount);
+  dst[dstWordBase] = src[srcWordBase] ?? 0;
+  dst[dstWordBase + 1] = src[srcWordBase + 1] ?? 0;
+  dst[dstWordBase + 2] = src[srcWordBase + 2] ?? 0;
+  dst[dstWordBase + 3] = src[srcWordBase + 3] ?? 0;
+  dst[dstWordBase + 4] = src[srcWordBase + 4] ?? 0;
+  dst[dstWordBase + 5] = src[srcWordBase + 5] ?? 0;
+  dst[dstWordBase + 6] = isLeaf ? (src[srcWordBase + 6] ?? 0) + leafTriDelta : (src[srcWordBase + 6] ?? 0);
+  dst[dstWordBase + 7] = splitOrCount;
+}
+
+/**
+ * Copy `triCount` stride-4 (vec4u) index triangles from `src` (starting at
+ * triangle `srcTri`) into `dst` (starting at triangle `dstTri`), shifting each
+ * of the three GLOBAL vertex refs (.x.y.z) by `vertexDelta` and zeroing the .w
+ * padding lane. Also copies the parallel per-triangle material id.
+ *
+ * This is the downstream-rebase inner loop of the resize splice — the one place
+ * a wrong stride or delta corrupts which vertices a triangle references.
+ */
+function copyVec4Strided(
+  dstIndices: Uint32Array,
+  dstTriMaterialIds: Uint32Array,
+  srcIndices: Uint32Array,
+  srcTriMaterialIds: Uint32Array,
+  srcTri: number,
+  dstTri: number,
+  vertexDelta: number,
+): void {
+  for (let k = 0; k < 3; k += 1) {
+    dstIndices[dstTri * 4 + k] = (srcIndices[srcTri * 4 + k] ?? 0) + vertexDelta;
+  }
+  dstIndices[dstTri * 4 + 3] = 0;
+  dstTriMaterialIds[dstTri] = srcTriMaterialIds[srcTri] ?? 0;
 }
 
 /**
@@ -490,12 +578,7 @@ function spliceResizedPrimitiveBlasIntoPack(
   }
   // Downstream triangles: copy with vertex refs shifted by deltaVert.
   for (let t = oldTriEnd; t < prevTotalTris; t += 1) {
-    const dstTri = t + deltaTri;
-    for (let k = 0; k < 3; k += 1) {
-      indices[dstTri * 4 + k] = (prevIndices[t * 4 + k] ?? 0) + deltaVert;
-    }
-    indices[dstTri * 4 + 3] = 0;
-    triMaterialIds[dstTri] = prev.triMaterialIds[t] ?? 0;
+    copyVec4Strided(indices, triMaterialIds, prevIndices, prev.triMaterialIds, t, t + deltaTri, deltaVert);
   }
 
   // ── BVH nodes (8 words/node) ──────────────────────────────────────────────
@@ -507,38 +590,13 @@ function spliceResizedPrimitiveBlasIntoPack(
   // its (unchanged) triStart.
   const newBlasRoot = oldNodeStart; // unchanged for the spliced primitive
   for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
-    const splitOrCount = slice.bvhNodeWords[n + 7] ?? 0;
-    const isLeaf = isLeafSplit(splitOrCount);
-    const w = newBlasRoot * 8 + n;
-    newNodeView[w] = slice.bvhNodeWords[n] ?? 0;
-    newNodeView[w + 1] = slice.bvhNodeWords[n + 1] ?? 0;
-    newNodeView[w + 2] = slice.bvhNodeWords[n + 2] ?? 0;
-    newNodeView[w + 3] = slice.bvhNodeWords[n + 3] ?? 0;
-    newNodeView[w + 4] = slice.bvhNodeWords[n + 4] ?? 0;
-    newNodeView[w + 5] = slice.bvhNodeWords[n + 5] ?? 0;
-    newNodeView[w + 6] = isLeaf
-      ? (slice.bvhNodeWords[n + 6] ?? 0) + binding.triStart
-      : (slice.bvhNodeWords[n + 6] ?? 0);
-    newNodeView[w + 7] = splitOrCount;
+    rebaseLeafTriOffset(newNodeView, newBlasRoot * 8 + n, slice.bvhNodeWords, n, binding.triStart);
   }
   // Downstream nodes shifted by deltaNode. Leaf global tri offsets shift by
   // deltaTri; interior relative child offsets are unchanged (the subtree shape
   // moves rigidly).
   for (let n = oldNodeEnd; n < prevTotalNodes; n += 1) {
-    const src = n * 8;
-    const dst = (n + deltaNode) * 8;
-    const splitOrCount = prevNodeView[src + 7] ?? 0;
-    const isLeaf = isLeafSplit(splitOrCount);
-    newNodeView[dst] = prevNodeView[src] ?? 0;
-    newNodeView[dst + 1] = prevNodeView[src + 1] ?? 0;
-    newNodeView[dst + 2] = prevNodeView[src + 2] ?? 0;
-    newNodeView[dst + 3] = prevNodeView[src + 3] ?? 0;
-    newNodeView[dst + 4] = prevNodeView[src + 4] ?? 0;
-    newNodeView[dst + 5] = prevNodeView[src + 5] ?? 0;
-    newNodeView[dst + 6] = isLeaf
-      ? (prevNodeView[src + 6] ?? 0) + deltaTri
-      : (prevNodeView[src + 6] ?? 0);
-    newNodeView[dst + 7] = splitOrCount;
+    rebaseLeafTriOffset(newNodeView, (n + deltaNode) * 8, prevNodeView, n * 8, deltaTri);
   }
 
   const bvhNodes = new Float32Array(newNodeView.buffer);
@@ -648,19 +706,7 @@ function splicePrimitiveBlasIntoPack(
   const nodeWordStart = nodeStart * 8;
   const nodeView = new Uint32Array(bvhNodes.buffer);
   for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
-    const splitOrCount = slice.bvhNodeWords[n + 7] ?? 0;
-    const isLeaf = isLeafSplit(splitOrCount);
-    const w = nodeWordStart + n;
-    nodeView[w] = slice.bvhNodeWords[n] ?? 0;
-    nodeView[w + 1] = slice.bvhNodeWords[n + 1] ?? 0;
-    nodeView[w + 2] = slice.bvhNodeWords[n + 2] ?? 0;
-    nodeView[w + 3] = slice.bvhNodeWords[n + 3] ?? 0;
-    nodeView[w + 4] = slice.bvhNodeWords[n + 4] ?? 0;
-    nodeView[w + 5] = slice.bvhNodeWords[n + 5] ?? 0;
-    nodeView[w + 6] = isLeaf
-      ? (slice.bvhNodeWords[n + 6] ?? 0) + binding.triStart
-      : (slice.bvhNodeWords[n + 6] ?? 0);
-    nodeView[w + 7] = splitOrCount;
+    rebaseLeafTriOffset(nodeView, nodeWordStart + n, slice.bvhNodeWords, n, binding.triStart);
   }
 
   const primitiveTlasBindings = prev.primitiveTlasBindings.map((b, i) =>
@@ -725,89 +771,63 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     }
 
     const matId = opts.resolveMaterialId(primitive.id);
-    const basePositions = primitive.positions;
-    const vertexCount = Math.floor(basePositions.length / 3);
-    if (vertexCount < 3) {
-      warnings.push(`Primitive "${primitive.id}" has fewer than 3 vertices; skipping.`);
+    // Theme-F dedup: build this primitive's LOCAL slice via the shared
+    // `packOneMeshLikePrimitive` (same vec4 expansion + buildArrayBvh + node
+    // extraction); the loop here only concatenates + rebases + does TLAS
+    // bookkeeping. The slice already collected any skip warnings.
+    const slice = packOneMeshLikePrimitive(primitive, matId);
+    if (slice == null) {
+      // Re-emit the skip warning the slice would have collected. (slice.warnings
+      // is unavailable on a null return, so reproduce the exact messages.)
+      const vertexCount = Math.floor(primitive.positions.length / 3);
+      if (vertexCount < 3) {
+        warnings.push(`Primitive "${primitive.id}" has fewer than 3 vertices; skipping.`);
+      } else {
+        const baseIndices = primitive.indices ?? new Uint32Array(vertexCount);
+        if (Math.floor(baseIndices.length / 3) === 0) {
+          warnings.push(`Primitive "${primitive.id}" has no triangles; skipping.`);
+        }
+      }
       continue;
     }
-    const baseIndices =
-      primitive.indices ??
-      (() => {
-        const generated = new Uint32Array(vertexCount);
-        for (let i = 0; i < generated.length; i += 1) generated[i] = i;
-        return generated;
-      })();
-    const triCount = Math.floor(baseIndices.length / 3);
-    if (triCount === 0) {
-      warnings.push(`Primitive "${primitive.id}" has no triangles; skipping.`);
-      continue;
-    }
+    warnings.push(...slice.warnings);
 
-    const localPositions = new Float32Array(vertexCount * 4);
-    const localNormals = new Float32Array(vertexCount * 4);
-    for (let i = 0; i < vertexCount; i += 1) {
-      localPositions[i * 4] = basePositions[i * 3] ?? 0;
-      localPositions[i * 4 + 1] = basePositions[i * 3 + 1] ?? 0;
-      localPositions[i * 4 + 2] = basePositions[i * 3 + 2] ?? 0;
-      localPositions[i * 4 + 3] = 0;
-      localNormals[i * 4] = primitive.normals[i * 3] ?? 0;
-      localNormals[i * 4 + 1] = primitive.normals[i * 3 + 1] ?? 1;
-      localNormals[i * 4 + 2] = primitive.normals[i * 3 + 2] ?? 0;
-      localNormals[i * 4 + 3] = 0;
-    }
-
-    const localIndices = new Uint32Array(triCount * 4);
-    for (let t = 0; t < triCount; t += 1) {
-      localIndices[t * 4] = baseIndices[t * 3] ?? 0;
-      localIndices[t * 4 + 1] = baseIndices[t * 3 + 1] ?? 0;
-      localIndices[t * 4 + 2] = baseIndices[t * 3 + 2] ?? 0;
-      localIndices[t * 4 + 3] = 0;
-    }
-    const localTriMaterialIds = new Uint32Array(triCount);
-    localTriMaterialIds.fill(matId);
-    const localBvh = buildArrayBvh(localPositions, localIndices, localTriMaterialIds);
-
+    const vertexCount = slice.vertexCount;
+    const triCount = slice.triCount;
     const vertexBase = Math.floor(positions.length / 4);
     const triBase = triMaterialIds.length;
     const nodeBase = Math.floor(bvhNodeWords.length / 8);
-    const localNodeWords = new Uint32Array(
-      localBvh.bvhNodes.buffer,
-      localBvh.bvhNodes.byteOffset,
-      localBvh.bvhNodes.length,
-    );
 
-    for (let i = 0; i < localPositions.length; i += 1) positions.push(localPositions[i] ?? 0);
-    for (let i = 0; i < localNormals.length; i += 1) normals.push(localNormals[i] ?? 0);
-    for (let i = 0; i + 3 < localBvh.reorderedIndices.length; i += 4) {
+    for (let i = 0; i < slice.localPositions.length; i += 1) positions.push(slice.localPositions[i] ?? 0);
+    for (let i = 0; i < slice.localNormals.length; i += 1) normals.push(slice.localNormals[i] ?? 0);
+    for (let i = 0; i + 3 < slice.indexWords.length; i += 4) {
       indices.push(
-        (localBvh.reorderedIndices[i] ?? 0) + vertexBase,
-        (localBvh.reorderedIndices[i + 1] ?? 0) + vertexBase,
-        (localBvh.reorderedIndices[i + 2] ?? 0) + vertexBase,
-        localBvh.reorderedIndices[i + 3] ?? 0,
+        (slice.indexWords[i] ?? 0) + vertexBase,
+        (slice.indexWords[i + 1] ?? 0) + vertexBase,
+        (slice.indexWords[i + 2] ?? 0) + vertexBase,
+        slice.indexWords[i + 3] ?? 0,
       );
     }
-    for (let i = 0; i < localBvh.reorderedTriMaterialIds.length; i += 1) {
-      triMaterialIds.push(localBvh.reorderedTriMaterialIds[i] ?? matId);
+    for (let i = 0; i < slice.triMaterialIds.length; i += 1) {
+      triMaterialIds.push(slice.triMaterialIds[i] ?? matId);
     }
 
-    for (let n = 0; n + 7 < localNodeWords.length; n += 8) {
-      const splitOrCount = localNodeWords[n + 7] ?? 0;
+    for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += 8) {
+      const splitOrCount = slice.bvhNodeWords[n + 7] ?? 0;
       const isLeaf = isLeafSplit(splitOrCount);
       bvhNodeWords.push(
-        localNodeWords[n] ?? 0,
-        localNodeWords[n + 1] ?? 0,
-        localNodeWords[n + 2] ?? 0,
-        localNodeWords[n + 3] ?? 0,
-        localNodeWords[n + 4] ?? 0,
-        localNodeWords[n + 5] ?? 0,
-        isLeaf ? (localNodeWords[n + 6] ?? 0) + triBase : (localNodeWords[n + 6] ?? 0),
+        slice.bvhNodeWords[n] ?? 0,
+        slice.bvhNodeWords[n + 1] ?? 0,
+        slice.bvhNodeWords[n + 2] ?? 0,
+        slice.bvhNodeWords[n + 3] ?? 0,
+        slice.bvhNodeWords[n + 4] ?? 0,
+        slice.bvhNodeWords[n + 5] ?? 0,
+        isLeaf ? (slice.bvhNodeWords[n + 6] ?? 0) + triBase : (slice.bvhNodeWords[n + 6] ?? 0),
         splitOrCount,
       );
     }
 
-    const localAabb = computeLocalAabb(basePositions);
-    if (localAabb == null) continue;
+    const localAabb = { min: slice.localAabbMin, max: slice.localAabbMax };
 
     if (buildTlasTree) {
       const transforms =
@@ -890,10 +910,7 @@ export function refitTlasTransforms(
   primitiveTlasBindings: readonly PrimitiveTlasBinding[],
   prevTlas?: TlasGpuSnapshot,
 ): RefitTlasResult {
-  const primitiveById = new Map<string, ScenePrimitive>();
-  for (const primitive of scene.primitives) {
-    primitiveById.set(primitive.id, primitive);
-  }
+  const primitiveById = mapPrimitivesById(scene);
   const warnings: string[] = [];
   const pendingTlasInstances: PendingTlasInstance[] = [];
   const refitAabbs: Array<{ min: readonly [number, number, number]; max: readonly [number, number, number] }> = [];
@@ -919,34 +936,22 @@ export function refitTlasTransforms(
         reason: `refitTlasTransforms: primitive "${binding.primitiveId}" is not mesh-like.`,
       };
     }
-    const transforms =
-      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-    if (transforms.length !== binding.instanceCount) {
+    const { transformCount, resolved } = resolveInstanceTransforms(binding, primitive);
+    if (transformCount !== binding.instanceCount) {
       return {
         ok: false,
         reason: `refitTlasTransforms: primitive "${binding.primitiveId}" instance count changed ` +
-          `from ${binding.instanceCount} to ${transforms.length}.`,
+          `from ${binding.instanceCount} to ${transformCount}.`,
       };
     }
-    for (const transform of transforms) {
-      const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-      const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
-      if (maybeWorldToLocal == null) {
+    for (const { instance, nonInvertible } of resolved) {
+      if (nonInvertible) {
         warnings.push(
           `Primitive "${primitive.id}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
         );
       }
-      const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
-      const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-      const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
-      refitAabbs.push(worldAabb);
-      pendingTlasInstances.push({
-        blasRoot: binding.blasRoot,
-        worldToLocal,
-        localToWorld,
-        aabbMin: worldAabb.min,
-        aabbMax: worldAabb.max,
-      });
+      refitAabbs.push({ min: instance.aabbMin, max: instance.aabbMax });
+      pendingTlasInstances.push(instance);
     }
   }
 
@@ -1053,10 +1058,7 @@ function collectLiveTlasInstancesFromBindings(
 ):
   | { readonly ok: true; readonly instances: readonly PendingTlasInstance[]; readonly liveCounts: readonly number[]; readonly warnings: readonly string[] }
   | { readonly ok: false; readonly reason: string } {
-  const primitiveById = new Map<string, ScenePrimitive>();
-  for (const primitive of scene.primitives) {
-    primitiveById.set(primitive.id, primitive);
-  }
+  const primitiveById = mapPrimitivesById(scene);
   const instances: PendingTlasInstance[] = [];
   const liveCounts: number[] = [];
   const warnings: string[] = [];
@@ -1071,33 +1073,21 @@ function collectLiveTlasInstancesFromBindings(
         reason: `primitive "${binding.primitiveId}" kind mismatch or not mesh-like`,
       };
     }
-    const transforms =
-      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-    if (transforms.length === 0) {
+    const { transformCount, resolved } = resolveInstanceTransforms(binding, primitive);
+    if (transformCount === 0) {
       return {
         ok: false,
         reason: `primitive "${binding.primitiveId}" has zero instances (TLAS-only rebuild needs at least one)`,
       };
     }
-    liveCounts.push(transforms.length);
-    for (const transform of transforms) {
-      const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-      const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
-      if (maybeWorldToLocal == null) {
+    liveCounts.push(transformCount);
+    for (const { instance, nonInvertible } of resolved) {
+      if (nonInvertible) {
         warnings.push(
           `Primitive "${binding.primitiveId}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
         );
       }
-      const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
-      const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-      const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
-      instances.push({
-        blasRoot: binding.blasRoot,
-        worldToLocal,
-        localToWorld,
-        aabbMin: worldAabb.min,
-        aabbMax: worldAabb.max,
-      });
+      instances.push(instance);
     }
   }
   return { ok: true, instances, liveCounts, warnings };

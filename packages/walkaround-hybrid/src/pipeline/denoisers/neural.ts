@@ -23,11 +23,9 @@ import type { InferenceGraph } from '../../neural/InferenceGraph.js';
 export class NeuralDenoiser implements Denoiser {
   readonly id = 'neural' as const;
   readonly disabled: boolean;
-  /** Mirrors the atrous-variance layout — the slot allocator inspects this
-   *  even for `disabled` entries when buildPassLayout enumerates the union
-   *  of all registered denoisers. Note: when enabled, dispatch emits only 2
-   *  passes (input-pack + output-unpack); the 5-label list over-declares
-   *  relative to actual dispatch. */
+  /** The 2 passes this denoiser dispatches: `neural-pack` (input-pack) +
+   *  `neural-unpack` (output-unpack). The slot allocator inspects this even
+   *  for `disabled` entries when buildPassLayout sizes the querySet. */
   readonly passLabels = DENOISER_PASS_LABELS['neural'];
   private readonly _inferenceGraph: InferenceGraph | undefined;
   private _width = 0;
@@ -202,7 +200,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       ],
     });
     {
-      const pass = ctx.encoder.beginComputePass(ctx.computeDesc('welford-temporal'));
+      const pass = ctx.encoder.beginComputePass(ctx.computeDesc('neural-pack'));
       pass.setPipeline(this._packPipeline);
       pass.setBindGroup(0, packBG);
       pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);
@@ -227,7 +225,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       ],
     });
     {
-      const pass = ctx.encoder.beginComputePass(ctx.computeDesc('atrous-variance-variance'));
+      const pass = ctx.encoder.beginComputePass(ctx.computeDesc('neural-unpack'));
       pass.setPipeline(this._unpackPipeline);
       pass.setBindGroup(0, unpackBG);
       pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);

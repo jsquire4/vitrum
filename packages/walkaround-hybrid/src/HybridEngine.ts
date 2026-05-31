@@ -82,6 +82,7 @@ import {
   topologyRebuild,
   materialPatch,
   refitSkinnedMeshAfterGpuWrite,
+  TOPOLOGY_PATCH_FIELDS,
   type PrimitiveUpdateContext,
   type PrimitiveUpdateResult,
 } from './HybridEnginePrimitiveUpdates.js';
@@ -201,18 +202,44 @@ interface ParsedHybridEngineConfig {
   readonly resolutionFactor: number;
 }
 
-/** Parse + validate `HybridEngineOptions` into the immutable derived config.
- *  Pure (no `this`, no GPU); throws on unsupported/incomplete denoiser config.
- *  See {@link ParsedHybridEngineConfig}. */
-function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngineConfig {
+/**
+ * The extracted `extensions['walkaround-hybrid']` sub-object shape — read by
+ * both {@link validateHybridEngineOptions} (oidnModelUrl presence) and
+ * {@link deriveHybridEngineConfig} (oidnModelUrl / providers / bvhMode).
+ */
+type WalkaroundHybridExt = {
+  oidnModelUrl?: string;
+  oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+  bvhMode?: 'merged' | 'tlas';
+};
+
+function readWalkaroundHybridExt(opts: HybridEngineOptions): WalkaroundHybridExt | undefined {
+  return (opts.extensions as undefined | {
+    'walkaround-hybrid'?: WalkaroundHybridExt;
+  })?.['walkaround-hybrid'];
+}
+
+/**
+ * Pure construction-time validation of `HybridEngineOptions` — throws the
+ * three (well, six) `TypeError`s the constructor relies on, in the exact same
+ * order as the pre-Theme-H inline path. No defaulting, no derived config, no
+ * `this`, no GPU side effects: this is the independently-testable "does this
+ * option object describe a buildable engine?" gate.
+ *
+ * Throw order (load-bearing — tests pin it):
+ *   1. tier:'lite' forbids rcEnabled / ppgEnabled / denoiser:'neural' /
+ *      nrcEnabled (lite validated FIRST so it is the host's first signal);
+ *   2. unsupported denoiser enum;
+ *   3. denoiser:'neural' without neuralWeights;
+ *   4. denoiser:'oidn-final' without extensions['walkaround-hybrid'].oidnModelUrl.
+ */
+export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
   // Phase-0 productization — hybrid LITE tier (Deliverable 3). Lite runs the
   // same pipeline but on a reduced resource budget: it forbids the
   // resource-heavy optional subsystems and forces the merged-BVH path (drops
   // the 5 TLAS scene-group buffers). Validated FIRST so the throws are the
-  // host's first signal, and so the merged-mode + qualityTier defaults below
-  // see the lite verdict.
-  const isLite = opts.tier === 'lite';
-  if (isLite) {
+  // host's first signal.
+  if (opts.tier === 'lite') {
     if (opts.rcEnabled === true) {
       throw new TypeError(
         `[HybridEngine] tier:'lite' forbids rcEnabled — Radiance Cascades ` +
@@ -245,25 +272,6 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     }
   }
 
-  // Phase-0 productization — resolve the coarse quality preset FIRST, then let
-  // explicit per-knob options OVERRIDE it (preset is a baseline, not a lock).
-  // `ultra` (the default) is byte-identical to the pre-Phase-0 defaults: its
-  // preset values are either the existing defaults or `undefined` (= leave the
-  // engine default), so every `opts.X ?? preset.X` below collapses to the
-  // historical value when neither is set. Lite biases the default tier to
-  // `'medium'` (still overridable by an explicit `qualityTier`).
-  const effectiveQualityTier = opts.qualityTier ?? (isLite ? 'medium' : 'ultra');
-  const preset = resolveQualityPreset(effectiveQualityTier);
-  // Effective options overlay: the preset supplies fallbacks for the knobs it
-  // governs, so the existing table-driven `readTunables` / denoiser /
-  // targetFrameInterval logic picks them up unchanged. Explicit opts win.
-  const effectiveOpts: HybridEngineOptions = {
-    ...opts,
-    ...(opts.adaptiveSamplingThresholds === undefined && preset.adaptiveSamplingThresholds !== undefined
-      ? { adaptiveSamplingThresholds: preset.adaptiveSamplingThresholds }
-      : {}),
-  };
-
   // Audit B7: validate the denoiser option at construction so an unsupported
   // value (e.g. `'none'` from the @vitrum/core EngineOptions contract) does
   // not silently coerce to atrous-variance and produce wrong output. Supported
@@ -294,14 +302,7 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
     );
   }
   // W11 — 'oidn-final' requires extensions['walkaround-hybrid'].oidnModelUrl.
-  const whExt = (opts.extensions as undefined | {
-    'walkaround-hybrid'?: {
-      oidnModelUrl?: string;
-      oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-      bvhMode?: 'merged' | 'tlas';
-    };
-  })?.['walkaround-hybrid'];
-  const oidnModelUrl = whExt?.oidnModelUrl;
+  const oidnModelUrl = readWalkaroundHybridExt(opts)?.oidnModelUrl;
   if (opts.denoiser === 'oidn-final' &&
       (typeof oidnModelUrl !== 'string' || oidnModelUrl.length === 0)) {
     throw new TypeError(
@@ -313,6 +314,36 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
       `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
     );
   }
+}
+
+/**
+ * Pure defaulting of `HybridEngineOptions` into the immutable derived config,
+ * given an already-resolved quality `preset`. ASSUMES the options have already
+ * passed {@link validateHybridEngineOptions} (it does not re-throw the
+ * validation `TypeError`s). Behaviour-preserving: every field is defaulted
+ * exactly as the pre-Theme-H inline path produced it.
+ *
+ * @param preset resolved {@link resolveQualityPreset} output for the engine's
+ *   effective quality tier (the caller resolves the tier so the lite-biased
+ *   `'medium'` default + explicit `qualityTier` override live in one place).
+ */
+export function deriveHybridEngineConfig(
+  opts: HybridEngineOptions,
+  preset: ReturnType<typeof resolveQualityPreset>,
+): ParsedHybridEngineConfig {
+  const isLite = opts.tier === 'lite';
+  // Effective options overlay: the preset supplies fallbacks for the knobs it
+  // governs, so the existing table-driven `readTunables` / denoiser /
+  // targetFrameInterval logic picks them up unchanged. Explicit opts win.
+  const effectiveOpts: HybridEngineOptions = {
+    ...opts,
+    ...(opts.adaptiveSamplingThresholds === undefined && preset.adaptiveSamplingThresholds !== undefined
+      ? { adaptiveSamplingThresholds: preset.adaptiveSamplingThresholds }
+      : {}),
+  };
+
+  const whExt = readWalkaroundHybridExt(opts);
+  const oidnModelUrl = whExt?.oidnModelUrl;
 
   return {
     // Preset supplies the denoiser fallback (low ⇒ 'atrous'); explicit
@@ -400,6 +431,35 @@ function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngine
   };
 }
 
+/**
+ * Parse + validate `HybridEngineOptions` into the immutable derived config.
+ * Thin orchestrator over the two independently-testable halves:
+ *   1. {@link validateHybridEngineOptions} — the pure throws (lite-mode
+ *      violations, bad denoiser/neural/OIDN combos), in load-bearing order.
+ *   2. {@link deriveHybridEngineConfig} — the 45-field defaulting record, given
+ *      the already-resolved quality preset.
+ *
+ * The quality-tier resolution (`opts.qualityTier ?? (isLite ? 'medium' :
+ * 'ultra')`) lives HERE — between the throws and the derive — so the
+ * lite-biased default + explicit override exist in exactly one place. Pure
+ * (no `this`, no GPU). Behaviour-preserving over the pre-Theme-H inline path:
+ * same throws in the same order, same derived config. See
+ * {@link ParsedHybridEngineConfig}.
+ */
+function parseHybridEngineOptions(opts: HybridEngineOptions): ParsedHybridEngineConfig {
+  validateHybridEngineOptions(opts);
+
+  // Phase-0 productization — resolve the coarse quality preset, then let
+  // explicit per-knob options OVERRIDE it inside `deriveHybridEngineConfig`
+  // (preset is a baseline, not a lock). `ultra` (the default) is byte-identical
+  // to the pre-Phase-0 defaults. Lite biases the default tier to `'medium'`
+  // (still overridable by an explicit `qualityTier`).
+  const effectiveQualityTier = opts.qualityTier ?? (opts.tier === 'lite' ? 'medium' : 'ultra');
+  const preset = resolveQualityPreset(effectiveQualityTier);
+
+  return deriveHybridEngineConfig(opts, preset);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // HybridEngine
 // ────────────────────────────────────────────────────────────────────────────
@@ -458,9 +518,6 @@ export class HybridEngine implements Engine {
   private _skyTint:                       [number, number, number];
   private _skyIrradiance:                 number;
   private readonly _ctorLights:           readonly DDGILight[];
-  private readonly _debug:                boolean;
-  private readonly _verbose:             boolean;
-  private readonly _maxBounces:           number;
 
   /** Rolling window of per-frame timings (newest last, cap 240 entries).
    *  Only populated when `debug === true`. Hosts that want a UI gauge
@@ -510,73 +567,22 @@ export class HybridEngine implements Engine {
     return this._pipeline.readGpuTimingsOnce();
   }
 
-  private readonly _denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
+  /**
+   * The construction-time-immutable derived config (Task 4.2 / Theme A).
+   * `parseHybridEngineOptions(opts)` produces this once in the constructor;
+   * every tunable-cluster value the engine used to splat onto an individual
+   * `this._x` field is now read from `this._cfg.x`. Holding the parsed record
+   * directly collapses ~25 one-by-one ctor assignments + their field
+   * declarations, so a single tunable no longer hops a private-field layer.
+   *
+   * ONLY construction-immutable values live here. Genuinely per-instance
+   * MUTABLE runtime state (lighting, size/internal-size, accumulators, the
+   * rebuild-key fingerprint, BVH/pipeline/scene handles) stays in its own
+   * field below because it changes after construction.
+   */
+  private readonly _cfg: ParsedHybridEngineConfig;
   /** Dev A/B — mirrors `engine.debug.setDenoiserEnabled` (default on). */
   private _denoiserPassEnabled = true;
-  /** T2.H2 — neural denoiser weights (populated when _denoiser === 'neural'). */
-  private readonly _neuralWeights: ModelWeights | undefined;
-  /** W11 — OIDN config (populated when _denoiser === 'oidn-final'). */
-  private readonly _oidnModelUrl: string | undefined;
-  private readonly _oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
-  /** PR-2 — optional ReSTIR CPU pack mode override (`extensions['walkaround-hybrid'].bvhMode`). */
-  private readonly _restirBvhModeOverride: ReSTIRBvhMode | undefined;
-  /** Audit M4 — null disables the FPS cap; configured at construction. */
-  private readonly _targetFrameIntervalMs: number | null;
-  /** Per-frame audit tunable record (frozen; spread into pipeline.renderFrame).
-   *  See `HybridEngineTuning.ts`. */
-  private readonly _tunables: Tunables;
-  /** Init-time audit tunable record (frozen; passed into pipeline.initialize). */
-  private readonly _initTunables: InitTunables;
-  /** 2026-05-18 sweep — per-channel HDR clamp on indirect-radiance.  Tuple-typed,
-   *  so it lives here instead of the number-typed `Tunables` table. */
-  private readonly _indirectFireflyClamp: readonly [number, number, number];
-  /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
-   *  Cornell default `[128.0, 5.0, 0.05]`. Tuple-typed so it lives on the
-   *  engine directly rather than in the number-only `Tunables` table. */
-  private readonly _atrousDirectSigmas: readonly [number, number, number];
-  /** 2026-05-19 B3a — atrous INDIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
-   *  Cornell default `[32.0, 20.0, 0.5]`. Broader on every axis since
-   *  ReSTIR-GI already smooths the indirect signal. */
-  private readonly _atrousIndirectSigmas: readonly [number, number, number];
-  /** T5 — stained-glass opt-in flag bitfield (bit 0 = sun-caustic, bit 1 =
-   *  sky-aperture). Default 0 (both OFF) → generic scenes get zero
-   *  stained-glass physics. Hosts opt in via `opts.stainedGlass`. Packed
-   *  once at ctor; threaded into pipeline.renderFrame each frame. */
-  private readonly _stainedGlassFlags: number;
-  /** GRIS / ReSTIR-PT reconnection-shift reuse gate (0 = legacy reuse, 1 =
-   *  unbiased GRIS shift + reconnection visibility + pairwise MIS). Default 0;
-   *  hosts opt in via `opts.restirPtReuse`. The STRUCTURE is gated at
-   *  COMPILE time — the boolean (== 1) is forwarded into `pipeline.initialize`
-   *  so the GI spatial + temporal pipelines are built with the GRIS layout +
-   *  shader variant (an opt-in feature must not change the default pipeline
-   *  structure; binding an extra group on the default path regressed the render
-   *  to all-black, f8df9a4). The UBO number is still threaded each frame for
-   *  telemetry / consistency. */
-  private readonly _restirPtReuse: number;
-  /** NRC (Müller et al. 2021) cache gate (0 = off, 1 = neural radiance cache
-   *  eligible). Default 0; hosts opt in via `opts.nrcEnabled` (forbidden on
-   *  tier:'lite'). Per-frame UBO gate, threaded into pipeline.renderFrame each
-   *  frame. STAGED: the query/record passes are the next phase. */
-  private readonly _nrcEnabled: number;
-  /** Phase-0 productization — quality-preset-resolved GTAO dispatch mode.
-   *  `'on'` (half-res) / `'quarter'` / `'off'`. Threaded into the pipeline at
-   *  init so the GTAO + upsample passes gate + dispatch-scale accordingly. */
-  private readonly _gtaoMode: 'on' | 'quarter' | 'off';
-  /** Phase-0 — ReSTIR-DI spatial-reuse ping-pong pass count (1 or 2). */
-  private readonly _diSpatialPasses: 1 | 2;
-  /** Phase-0 — ReSTIR-GI spatial-reuse ping-pong pass count (1 or 2). */
-  private readonly _giSpatialPasses: 1 | 2;
-  /** Phase-0 — DDGI round-robin probe-update divisor (default 4). */
-  private readonly _ddgiUpdateDivisor: number;
-  /** Phase-0 — PPG train-pass dispatch cadence (default 1 = every frame).
-   *  Threaded into the pipeline at init; gates the ppg-guide + ppg-update
-   *  passes on `frameCount % ppgDispatchInterval`. */
-  private readonly _ppgDispatchInterval: number;
-  /** ReGIR (Boksansky 2021) grid-based DI light-selection config (pass-through
-   *  from opts; `undefined` ⇒ off). Threaded into `pipeline.initialize`. */
-  private readonly _regirConfig:
-    | Partial<import('./pipeline/ReGIRCoordinator.js').ReGIRConfig>
-    | undefined;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline:    WalkaroundGPUPipeline | null = null;
@@ -640,12 +646,14 @@ export class HybridEngine implements Engine {
   private get _pendingTeardown(): boolean { return this._initCoordinator.pendingTeardown; }
   private get _disposed(): boolean { return this._initCoordinator.disposed; }
 
+  // Task 4.2 / Theme A — the construction-immutable tunable-cluster values live
+  // on `_cfg` (one parsed record instead of ~25 splatted `_x` fields). Consumers
+  // read `this._cfg.x` directly; tests pin resolved knobs via the `_cfg` seam.
+
   /** Monotonic fingerprint of {@link HybridEngineOptions.pipelineRebuildKey} /
    *  {@link HybridEngineOptions.getPipelineRebuildKey} — changes trigger `reset()`. */
   private _rebuildKeyFingerprintSeen: string;
 
-  private readonly _staticPipelineRebuildKey: string | number | null;
-  private readonly _getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
   private readonly _skinning: GpuSkinningSubsystem | null;
 
   readonly debug: EngineDebugSurface;
@@ -656,7 +664,13 @@ export class HybridEngine implements Engine {
     // constructor body stays focused on `this`-dependent wiring (subsystems,
     // capabilities, init coordinator, debug surface). Behaviour-preserving:
     // same throws in the same order, same defaults. (WD decomposition sweep.)
+    // Task 4.2 / Theme A — hold the parsed config in one `_cfg` field rather
+    // than splatting its ~25 construction-immutable values onto individual
+    // `this._x` fields. Consumers read `this._cfg.x`; only genuinely-mutable
+    // runtime state (device handle, size, lighting, accumulators, the rebuild-
+    // key fingerprint) gets its own field.
     const cfg = parseHybridEngineOptions(opts);
+    this._cfg = cfg;
 
     this._device                = opts.device;
     this._width                 = opts.width;
@@ -676,29 +690,6 @@ export class HybridEngine implements Engine {
     this._primaryLightIntensity = opts.primaryLightIntensity;
     this._skyTint               = opts.skyTint;
     this._skyIrradiance         = opts.skyIrradiance;
-    this._debug                 = cfg.debug;
-    this._verbose               = cfg.verbose;
-    this._maxBounces            = cfg.maxBounces;
-    this._denoiser              = cfg.denoiser;
-    this._neuralWeights         = cfg.neuralWeights;
-    this._oidnModelUrl          = cfg.oidnModelUrl;
-    this._oidnExecutionProviders = cfg.oidnExecutionProviders;
-    this._restirBvhModeOverride = cfg.restirBvhModeOverride;
-    this._targetFrameIntervalMs = cfg.targetFrameIntervalMs;
-    this._tunables              = cfg.tunables;
-    this._initTunables          = cfg.initTunables;
-    this._indirectFireflyClamp  = cfg.indirectFireflyClamp;
-    this._atrousDirectSigmas    = cfg.atrousDirectSigmas;
-    this._atrousIndirectSigmas  = cfg.atrousIndirectSigmas;
-    this._stainedGlassFlags     = cfg.stainedGlassFlags;
-    this._restirPtReuse         = cfg.restirPtReuse;
-    this._nrcEnabled            = cfg.nrcEnabled;
-    this._gtaoMode              = cfg.gtaoMode;
-    this._diSpatialPasses       = cfg.diSpatialPasses;
-    this._giSpatialPasses       = cfg.giSpatialPasses;
-    this._ddgiUpdateDivisor     = cfg.ddgiUpdateDivisor;
-    this._ppgDispatchInterval   = cfg.ppgDispatchInterval;
-    this._regirConfig           = cfg.regirConfig;
     // Default predicate: ready when EITHER the vitrum Scene supplies any mesh
     // primitive OR the optional escape-hatch THREE.Scene contains triangles.
     // Hosts override via opts.isSceneReady when they need a scene-specific
@@ -709,13 +700,15 @@ export class HybridEngine implements Engine {
       return this._threeScene != null && defaultIsSceneReady(this._threeScene);
     });
 
-    this._staticPipelineRebuildKey  = cfg.staticPipelineRebuildKey;
-    this._getPipelineRebuildKey     = cfg.getPipelineRebuildKey;
+    // `_rebuildKeyFingerprintSeen` is the one rebuild-key value that MUTATES
+    // post-construction (`consumeRebuildKeyChange` rewrites it), so it stays a
+    // mutable field seeded from the parsed config. The static key + getter live
+    // on `_cfg` (immutable).
     this._rebuildKeyFingerprintSeen = cfg.rebuildKeyFingerprintSeen;
 
-    this._ddgi = new DDGI({ debug: this._debug });
+    this._ddgi = new DDGI({ debug: this._cfg.debug });
     // Phase-0 — apply the quality-preset DDGI probe-update divisor (default 4).
-    this._ddgi.setProbeUpdateDivisor(this._ddgiUpdateDivisor);
+    this._ddgi.setProbeUpdateDivisor(this._cfg.ddgiUpdateDivisor);
     this._ctorLights = opts.lights ?? [];
     if (this._ctorLights.length > 0) {
       this._ddgi.setLights(this._ctorLights as DDGILight[]);
@@ -769,7 +762,7 @@ export class HybridEngine implements Engine {
       supportsAuxBuffers:        false,
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
-      maxBounces:                this._maxBounces,
+      maxBounces:                this._cfg.maxBounces,
       supportedAnalyticShapes:   new Set(),
       // BVH + DDGI ingest via vitrumSceneToThree, which handles
       // mesh / skinned-mesh / instanced-mesh and throws on anything else
@@ -952,52 +945,53 @@ export class HybridEngine implements Engine {
     // "Positions only" means new vertex data on the SAME index buffer +
     // SAME vertex count. The positionsRefit path falls through to
     // topologyRebuild internally if the count doesn't match.
-    const topologyFields = [
-      'normals', 'uvs', 'tangents', 'indices',
-      'instances', 'params', 'shape', 'fallbackMesh', 'kind',
-    ] as const;
-    const hasTopologyChange = topologyFields.some(
-      (f) => (patch as Record<string, unknown>)[f] !== undefined,
-    );
-    const hasPositionsChange = (patch as Record<string, unknown>)['positions'] !== undefined;
-    const hasTransformChange = (patch as Record<string, unknown>)['transform'] !== undefined;
-    const hasMaterialChange  = (patch as Record<string, unknown>)['material']  !== undefined;
+    const result = this._routePrimitiveUpdate(id, patch);
+    if (result == null) {
+      // No recognised patch field — treat as a no-op rather than throw so
+      // hosts can pass through optional patches without checking each
+      // field's presence.
+      return;
+    }
+    this._applyUpdateResult(result);
+  }
 
-    if (hasTopologyChange) {
-      // True topology change — even if `positions` is also in the patch
-      // it has to round-trip through the full SAH rebuild because the
-      // index buffer / vertex layout changed.
-      const result = topologyRebuild(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateSubsystems(result);
-      return;
-    }
-    if (hasPositionsChange) {
-      // A3 fast path — same topology, new vertex positions.
-      const result = positionsRefit(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateSubsystems(result);
-      return;
-    }
-    if (hasTransformChange) {
-      const result = transformRefit(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      this._applyPrimitiveUpdateSubsystems(result);
-      return;
-    }
-    if (hasMaterialChange) {
-      const result = materialPatch(id, patch, this._buildPrimitiveUpdateContext());
-      this._bvhBuffers = result.bvhBuffers;
-      this._lastScene = result.updatedScene;
-      return;
-    }
+  /**
+   * Select the fast/full path for an `updatePrimitive` patch and run it.
+   * Returns `null` for an unrecognised patch (no-op). Branch order is
+   * load-bearing — topology beats positions beats transform beats material:
+   *  - any topology field present → full SAH `topologyRebuild` (Option (a)),
+   *    even if `positions` is also in the patch (the index buffer / vertex
+   *    layout changed, so the count-preserving refit can't apply).
+   *  - `positions` only → A3 `positionsRefit` (same topology, new verts).
+   *  - `transform` only → `transformRefit` (refit AABB bounds in place).
+   *  - `material` only → `materialPatch` (re-pack slices, NO GI propagation;
+   *    the result carries `applySubsystems: false`).
+   */
+  private _routePrimitiveUpdate(
+    id: string,
+    patch: Partial<ScenePrimitive>,
+  ): PrimitiveUpdateResult | null {
+    const has = (f: string): boolean => (patch as Record<string, unknown>)[f] !== undefined;
+    const ctx = this._buildPrimitiveUpdateContext();
+    if (TOPOLOGY_PATCH_FIELDS.some((f) => has(f))) return topologyRebuild(id, patch, ctx);
+    if (has('positions')) return positionsRefit(id, patch, ctx);
+    if (has('transform')) return transformRefit(id, patch, ctx);
+    if (has('material')) return materialPatch(id, patch, ctx);
+    return null;
+  }
 
-    // No recognised patch field — treat as a no-op rather than throw so
-    // hosts can pass through optional patches without checking each
-    // field's presence.
+  /**
+   * Uniform epilogue for every primitive-update path: swap the freshly-built
+   * BVH buffers + patched scene into engine state, then — unless the path
+   * opted out (`applySubsystems === false`, the material-only fast path) —
+   * re-sync the GI subsystems against the new BVH.
+   */
+  private _applyUpdateResult(result: PrimitiveUpdateResult): void {
+    this._bvhBuffers = result.bvhBuffers;
+    this._lastScene = result.updatedScene;
+    if (result.applySubsystems !== false) {
+      this._applyPrimitiveUpdateSubsystems(result);
+    }
   }
 
   /**
@@ -1028,9 +1022,7 @@ export class HybridEngine implements Engine {
       normals,
       this._buildPrimitiveUpdateContext(),
     );
-    this._bvhBuffers = result.bvhBuffers;
-    this._lastScene = result.updatedScene;
-    this._applyPrimitiveUpdateSubsystems(result);
+    this._applyUpdateResult(result);
   }
 
   /** Merged BVH position SSBO for GPU skinning (null before pipeline init). */
@@ -1092,8 +1084,8 @@ export class HybridEngine implements Engine {
       primaryLightIntensity: this._primaryLightIntensity,
       lastScene:             this._lastScene,
     };
-    if (this._restirBvhModeOverride !== undefined) {
-      return { ...ctx, restirBvhModeOverride: this._restirBvhModeOverride };
+    if (this._cfg.restirBvhModeOverride !== undefined) {
+      return { ...ctx, restirBvhModeOverride: this._cfg.restirBvhModeOverride };
     }
     return ctx;
   }
@@ -1541,12 +1533,12 @@ export class HybridEngine implements Engine {
    *  compact and makes a new tuple knob a single edit. */
   private _denoiserFilterDeps(): HybridDenoiserFilterDeps {
     return {
-      indirectFireflyClamp: this._indirectFireflyClamp,
-      atrousDirectSigmas: this._atrousDirectSigmas,
-      atrousIndirectSigmas: this._atrousIndirectSigmas,
-      stainedGlassFlags: this._stainedGlassFlags,
-      restirPtReuse: this._restirPtReuse,
-      nrcEnabled: this._nrcEnabled,
+      indirectFireflyClamp: this._cfg.indirectFireflyClamp,
+      atrousDirectSigmas: this._cfg.atrousDirectSigmas,
+      atrousIndirectSigmas: this._cfg.atrousIndirectSigmas,
+      stainedGlassFlags: this._cfg.stainedGlassFlags,
+      restirPtReuse: this._cfg.restirPtReuse,
+      nrcEnabled: this._cfg.nrcEnabled,
     };
   }
 
@@ -1556,13 +1548,13 @@ export class HybridEngine implements Engine {
       get state() {
         return self._state;
       },
-      debug: self._debug,
-      dbg: self._debug ? self._dbg : null,
+      debug: self._cfg.debug,
+      dbg: self._cfg.debug ? self._dbg : null,
       pipeline: self._pipeline,
       bvhBuffers: self._bvhBuffers,
       consumeRebuildKeyChange: () => {
         const fp = fingerprintHybridPipelineRebuildKey(
-          self._getPipelineRebuildKey?.() ?? self._staticPipelineRebuildKey,
+          self._cfg.getPipelineRebuildKey?.() ?? self._cfg.staticPipelineRebuildKey,
         );
         if (fp !== self._rebuildKeyFingerprintSeen) {
           self._rebuildKeyFingerprintSeen = fp;
@@ -1571,7 +1563,7 @@ export class HybridEngine implements Engine {
         }
         return false;
       },
-      targetFrameIntervalMs: self._targetFrameIntervalMs,
+      targetFrameIntervalMs: self._cfg.targetFrameIntervalMs,
       getLastFrameTs: () => self._lastFrameTs,
       setLastFrameTs: (ts) => {
         self._lastFrameTs = ts;
@@ -1594,14 +1586,14 @@ export class HybridEngine implements Engine {
       ddgiTraversalScene: self._ddgiTraversalScene,
       ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),
       device: self._device,
-      tunables: self._tunables,
+      tunables: self._cfg.tunables,
       rc: self._rc,
       ...self._lightingSnapshot(),
       rcWeight: self._rcWeight,
       ...self._denoiserFilterDeps(),
       frameSubs: self._frameSubs,
       progressSubs: self._progressSubs,
-      verbose: self._verbose,
+      verbose: self._cfg.verbose,
       debugTimings: self._debugTimings,
       debugSurface: self.debug,
       presentLastFrame: (view) => {
@@ -1773,7 +1765,7 @@ export class HybridEngine implements Engine {
       // pending teardown.
     }
 
-    if (this._debug && typeof window !== 'undefined') {
+    if (this._cfg.debug && typeof window !== 'undefined') {
       const dbg = this._dbg;
       dbg.disposeCount++;
       const liveMs = dbg.initStart > 0 ? performance.now() - dbg.initStart : 0;
@@ -1838,32 +1830,32 @@ export class HybridEngine implements Engine {
     return {
       device: this._device,
       threeScene: this._threeScene,
-      restirBvhModeOverride: this._restirBvhModeOverride,
-      denoiser: this._denoiser,
-      neuralWeights: this._neuralWeights,
-      oidnModelUrl: this._oidnModelUrl,
-      oidnExecutionProviders: this._oidnExecutionProviders,
-      verbose: this._verbose,
-      debug: this._debug,
-      cameraMoveResetThresholdSq: this._initTunables.cameraMoveResetThresholdSq,
-      temporalAccumAlpha: this._initTunables.temporalAccumAlpha,
+      restirBvhModeOverride: this._cfg.restirBvhModeOverride,
+      denoiser: this._cfg.denoiser,
+      neuralWeights: this._cfg.neuralWeights,
+      oidnModelUrl: this._cfg.oidnModelUrl,
+      oidnExecutionProviders: this._cfg.oidnExecutionProviders,
+      verbose: this._cfg.verbose,
+      debug: this._cfg.debug,
+      cameraMoveResetThresholdSq: this._cfg.initTunables.cameraMoveResetThresholdSq,
+      temporalAccumAlpha: this._cfg.initTunables.temporalAccumAlpha,
       ctorLights: this._ctorLights,
       ddgi: this._ddgi,
-      gtaoMode: this._gtaoMode,
-      diSpatialPasses: this._diSpatialPasses,
-      giSpatialPasses: this._giSpatialPasses,
+      gtaoMode: this._cfg.gtaoMode,
+      diSpatialPasses: this._cfg.diSpatialPasses,
+      giSpatialPasses: this._cfg.giSpatialPasses,
       // GRIS / ReSTIR-PT reuse is a COMPILE-TIME structural gate at the pipeline
-      // level (selects the GI pipeline layout + shader variant). The `_restirPtReuse`
+      // level (selects the GI pipeline layout + shader variant). The `restirPtReuse`
       // number (0/1) also drives the UBO flag; here we forward the boolean so the
       // pipeline builds the matching layout.
-      restirPtReuse: this._restirPtReuse === 1,
+      restirPtReuse: this._cfg.restirPtReuse === 1,
       // NRC live cache — same COMPILE-TIME structural gate discipline as
-      // restirPtReuse. `_nrcEnabled` (0/1) also drives the UBO flag; here we
+      // restirPtReuse. `nrcEnabled` (0/1) also drives the UBO flag; here we
       // forward the boolean so the pipeline builds the matching gi-ris layout
       // (4-group DDGI default vs 5-group inline-MLP variant).
-      nrcEnabled: this._nrcEnabled === 1,
-      ppgDispatchInterval: this._ppgDispatchInterval,
-      regirConfig: this._regirConfig,
+      nrcEnabled: this._cfg.nrcEnabled === 1,
+      ppgDispatchInterval: this._cfg.ppgDispatchInterval,
+      regirConfig: this._cfg.regirConfig,
     };
   }
 

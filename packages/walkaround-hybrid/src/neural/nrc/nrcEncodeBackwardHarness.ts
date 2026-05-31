@@ -16,6 +16,7 @@
 // Self-contained; NOT wired into the path tracer.
 
 import { FusedMlpTrainer, type FusedNetSpec, ADAM_WGSL } from "./fusedMlpTrainer.ts";
+import { FusedMlpTrainerProbe } from "./fusedMlpTrainerProbe.ts";
 import { gradFinalizeWgsl } from "./wgsl/fusedMlp.wgsl.ts";
 import { nrcEncodeBackwardWgsl } from "./wgsl/nrcEncodeBackward.wgsl.ts";
 import {
@@ -76,6 +77,7 @@ async function main() {
   const spec: FusedNetSpec = { inW, W: 16, outW: 3, hidden: 3 };
   const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB: 8 });
   await trainer.build(B);
+  const trainerProbe = new FusedMlpTrainerProbe(trainer);
 
   // He-init
   const plan = trainer.layerPlan;
@@ -97,8 +99,8 @@ async function main() {
     for (let o = 0; o < 3; o++) y[s * 3 + o] = rng();
   }
   trainer.setBatch(x, y);
-  trainer.computeGradsStep(); // produces gradInputF (dL/dX)
-  const gpuDX = await trainer.readInputGrads(); // [B × inW]
+  trainerProbe.computeGradsStep(); // produces gradInputF (dL/dX)
+  const gpuDX = await trainerProbe.readInputGrads(); // [B × inW]
 
   // ── GPU encode-backward: build the table-grad scatter + finalize ──
   const tableScalars = grid.levels.reduce((a, l) => a + l.tableSize * F, 0);
@@ -173,7 +175,7 @@ async function main() {
   const before = await readF32(device, tablesBuf, tableScalars);
   for (let step = 1; step <= 8; step++) {
     // recompute grads each step (positions/targets fixed → grad steady)
-    trainer.setBatch(x, y); trainer.computeGradsStep();
+    trainer.setBatch(x, y); trainerProbe.computeGradsStep();
     { const e = device.createCommandEncoder(); e.clearBuffer(gradTablesFx); device.queue.submit([e.finish()]); }
     const e = device.createCommandEncoder();
     const bg = device.createBindGroup({ layout: pEnc.getBindGroupLayout(0), entries: [

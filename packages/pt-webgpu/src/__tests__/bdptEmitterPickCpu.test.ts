@@ -147,4 +147,70 @@ describe('bdptEmitterPickCpu', () => {
     expect(sample!.pdfJoint).toBeCloseTo(0.25265063960867545, 9);
     expect(sample!.pdfHemi).not.toBeCloseTo(0.2923763342268401, 9);
   });
+
+  // Characterization golden for the single-sourced flat-emitter stride-walk
+  // (`walkPositionalEmitters`). A scene mixing directional + point + spot + rect
+  // + mesh + env exercises every kind in the canonical NEE walk order
+  //   directional · point[8] · spot[12] · rect[16] · mesh[16] · env.
+  // The flat index feeds the RNG-correlated power-weighted pick, so BOTH the walk
+  // ORDER and the per-emitter values MUST stay byte-identical. These goldens were
+  // captured from the pre-dedup unrolled walks (Theme J refactor, 2026-05-30).
+  it('golden: mixed-scene flat enumeration is byte-stable across the walk dedup', () => {
+    const point = new Float32Array([1, 2, 3, 0, 4, 5, 6, 0]);
+    const spot = new Float32Array(12);
+    spot.set([7, 8, 9, 0, 0, -1, 0, 0.5, 10, 11, 12], 0);
+    const rect = new Float32Array(16);
+    rect.set([0, 5, 0, 0, 2, 0, 0, 0, 0, 0, 3, 0, 13, 14, 15], 0);
+    const mesh = new Float32Array(16);
+    mesh.set([0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 0, 16, 17, 18], 0);
+    const sb = stubScene({
+      directionalIrradiance: [0.9, 0.8, 0.7],
+      pointLightCount: 1,
+      spotLightCount: 1,
+      rectAreaLightCount: 1,
+      meshAreaLightCount: 1,
+      pointLightsData: point,
+      spotLightsData: spot,
+      rectAreaLightsData: rect,
+      meshAreaLightsData: mesh,
+      environmentSunStrength: 2,
+    });
+
+    // 6 selectable lights: directional, point, spot, rect, mesh, env.
+    expect(bdptEmitterCount(sb)).toBe(6);
+
+    const goldenPowers = [
+      0.8140400000000001,
+      4.8595999999999995,
+      10.8596,
+      332.63039999999995,
+      33.7192,
+      25.132741228718345,
+    ];
+    for (let i = 0; i < goldenPowers.length; i += 1) {
+      expect(bdptEmitterPower(sb, i)).toBeCloseTo(goldenPowers[i]!, 9);
+    }
+
+    // Sampled bounce-0 vertices, one per flat index (discretePdf=0.5, uHemi=0.37).
+    const goldenSamples = [
+      { emitPos: [-32.30811713779822, -28.718326344709528, -25.128535551620836], emitNormal: [0.6461623427559644, 0.5743665268941905, 0.5025707110324167], pdfHemi: 0.2526506396086754 },
+      { emitPos: [1, 2, 3], emitNormal: [0, 1, 0], pdfHemi: 0.25265063960867545 },
+      { emitPos: [7, 8, 9], emitNormal: [0, -1, 0], pdfHemi: 0.25265063960867545 },
+      { emitPos: [-0.52, 5, 0.78], emitNormal: [0, -1, 0], pdfHemi: 0.25265063960867545 },
+      { emitPos: [0.9914902924386096, 0.22506221362103418, 0], emitNormal: [0, 0, 1], pdfHemi: 0.25265063960867545 },
+      { emitPos: [0, -50, 0], emitNormal: [0, 1, 0], pdfHemi: 0.25265063960867545 },
+    ] as const;
+    for (let i = 0; i < goldenSamples.length; i += 1) {
+      const s = sampleBdptBounce0Cpu(sb, i, 0.5, 0.37);
+      expect(s).not.toBeNull();
+      const g = goldenSamples[i]!;
+      expect(s!.emitPos[0]).toBeCloseTo(g.emitPos[0], 9);
+      expect(s!.emitPos[1]).toBeCloseTo(g.emitPos[1], 9);
+      expect(s!.emitPos[2]).toBeCloseTo(g.emitPos[2], 9);
+      expect(s!.emitNormal[0]).toBeCloseTo(g.emitNormal[0], 9);
+      expect(s!.emitNormal[1]).toBeCloseTo(g.emitNormal[1], 9);
+      expect(s!.emitNormal[2]).toBeCloseTo(g.emitNormal[2], 9);
+      expect(s!.pdfHemi).toBeCloseTo(g.pdfHemi, 9);
+    }
+  });
 });

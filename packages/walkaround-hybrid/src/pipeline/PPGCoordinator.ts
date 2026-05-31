@@ -15,6 +15,7 @@
  * compile) every method is a cheap no-op — `enabled` stays `false`.
  */
 
+import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 import { buildSTree, resetAccumulators, splitOverflowLeaves } from '../ppg/sTree.js';
 import { refineDTree } from '../ppg/dTree.js';
@@ -26,10 +27,10 @@ import { allocatePPGResources, type FrameResources } from './resourceManager.js'
 /**
  * W9 — derive a world-space AABB for the PPG sTree from the uploaded BVH data.
  *
- * The walkaround pipeline doesn't surface its scene bounds as a first-class
- * field; we recover them by scanning the BVH position buffer (which the host
- * always uploads, per `restir/bvhCompute.ts`). If the buffer is empty we
- * fall back to a generous default that contains any plausible scene.
+ * Delegates to the canonical {@link deriveSceneAABBFromBvhPositions} (shared with
+ * the NRC hash-grid in `WalkaroundGPUPipeline` and the ReGIR grid in
+ * `ReGIRCoordinator`): scan the BVH position buffer (which the host always
+ * uploads, per `restir/bvhCompute.ts`), pad 1%, fall back to ±10 when empty.
  *
  * Phase 1: this AABB is used for two things — the sTree root cell extents
  * (so adaptive splits subdivide the actual scene volume), and the placeholder
@@ -37,33 +38,7 @@ import { allocatePPGResources, type FrameResources } from './resourceManager.js'
  * wires a per-pixel surface-position buffer).
  */
 function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: number } }): AABB {
-  const view = new Float32Array(bvh.bvhPositions.cpuData);
-  if (view.length < 4) {
-    return { min: [-10, -10, -10], max: [10, 10, 10] };
-  }
-  // BVH position layout: vec4f per vertex (xyz + packed UV in w). Stride 4.
-  let minX = Infinity, minY = Infinity, minZ = Infinity;
-  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-  for (let i = 0; i + 3 <= view.length; i += 4) {
-    const x = view[i]!, y = view[i + 1]!, z = view[i + 2]!;
-    if (x < minX) minX = x;
-    if (y < minY) minY = y;
-    if (z < minZ) minZ = z;
-    if (x > maxX) maxX = x;
-    if (y > maxY) maxY = y;
-    if (z > maxZ) maxZ = z;
-  }
-  if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
-    return { min: [-10, -10, -10], max: [10, 10, 10] };
-  }
-  // Pad by 1% to avoid edge-case boundary queries.
-  const padX = (maxX - minX) * 0.01 + 1e-3;
-  const padY = (maxY - minY) * 0.01 + 1e-3;
-  const padZ = (maxZ - minZ) * 0.01 + 1e-3;
-  return {
-    min: [minX - padX, minY - padY, minZ - padZ],
-    max: [maxX + padX, maxY + padY, maxZ + padZ],
-  };
+  return deriveSceneAABBFromBvhPositions(bvh);
 }
 
 /**

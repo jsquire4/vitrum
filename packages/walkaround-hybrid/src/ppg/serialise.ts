@@ -39,42 +39,13 @@
  *     [7] isLeafFlag     — 1.0 for leaf, 0.0 for interior. WGSL reads via f32
  *                          comparison (kernel test: `> 0.5`).
  *
- * ── sTree layout (STREE_STRIDE = 8 f32 per node + 4 f32 header) ────────────
+ * ── sTree layout (STREE_NODE_F32 = 16 f32 per node + 4 f32 header) ──────────
  *
  *   Header (offset 0, 4 f32):
  *     [0] nodeCount      — total sTree nodes
  *     [1] dTreeCount     — number of distinct per-cell dTrees (= leaf count)
  *     [2] _pad
  *     [3] _pad
- *
- *   Per sNode (offset 4 + i × 8, 8 f32):
- *     [0] aabbMinX
- *     [1] aabbMinY
- *     [2] aabbMinZ
- *     [3] splitValue
- *     [4] aabbMaxX
- *     [5] aabbMaxY
- *     [6] aabbMaxZ
- *     [7] packed = splitAxis*1 + leftChild*8 + rightChild*65536 + dTreeIndex*…
- *                  Actually we keep it simple — pack only the discriminator
- *                  into the 8th f32 and encode the rest via a sidecar buffer.
- *
- *   Sidecar: STreeMeta (i32-equivalent f32) — kept separate because WGSL's
- *   f32→i32 cast preserves integer values exactly only up to 2^24. With <16k
- *   sTree cells per the PPG_MAX_SPATIAL_CELLS cap, we are safely below that
- *   threshold but emit each integer field in its own f32 slot anyway:
- *
- *     [7+0] splitAxis    — -1 (leaf), 0, 1, or 2 (interior split axis)
- *     [7+1] leftChild    — flat-index of left child (interior); -1 (leaf)
- *     [7+2] rightChild   — flat-index of right child (interior); -1 (leaf)
- *     [7+3] dTreeIndex   — index into the dTree-offset table (leaf); -1 (interior)
- *
- * To keep the binding count low we instead bake those four fields into the
- * unused 8th slot above by ALWAYS storing splitAxis there and using a
- * separate `STreeMetaBuffer` for the remaining three. Per Phase-1 scope this
- * is over-engineered; we instead use a single 16-f32-per-node packing.
- *
- * The implementation below picks a simple 16-f32-per-node sTree layout:
  *
  *   Per sNode (offset 4 + i × 16, 16 f32):
  *     [0..2]   aabb.min.xyz
@@ -85,6 +56,10 @@
  *     [9]      rightChild    (-1 leaf | index)
  *     [10]     dTreeIndex    (-1 interior | index)
  *     [11..15] _pad
+ *
+ * All integer fields (splitAxis/leftChild/rightChild/dTreeIndex) round-trip
+ * losslessly through f32 — with the PPG_MAX_SPATIAL_CELLS ≈ 16k cap we are far
+ * below the 2^24 exact-integer limit — so a single f32-only binding suffices.
  *
  * The per-cell dTree blocks are concatenated into a SINGLE flat dTree buffer
  * with a parallel `dTreeOffsets[]` array — `dTreeOffsets[cell]` is the f32

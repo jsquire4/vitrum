@@ -95,33 +95,12 @@ function buildSubtree(
 
   if (isLeaf) return idx;
 
-  // Two-phase build: (1) push 4 consecutive children, (2) recurse into each.
-  const uMid = (u0 + u1) * 0.5;
-  const vMid = (v0 + v1) * 0.5;
-  const childExtents: Array<[number, number, number, number]> = [
-    [u0,   uMid, v0,   vMid], // NW (offset 0)
-    [uMid, u1,   v0,   vMid], // NE (offset 1)
-    [u0,   uMid, vMid, v1  ], // SW (offset 2)
-    [uMid, u1,   vMid, v1  ], // SE (offset 3)
-  ];
-  const childIsLeaf = (depth + 1) >= maxDepth;
-
-  // Phase 1 — reserve all four child slots consecutively.
-  const firstChild = nodes.length;
+  // Two-phase build: (1) push 4 consecutive children (shared helper),
+  // (2) recurse into each non-leaf child to build its sub-tree.
+  const { firstChild, childExtents, childIsLeaf } =
+    pushFourChildren(nodes, u0, u1, v0, v1, depth, maxDepth);
   nodes[idx]!.firstChild = firstChild;
-  for (let ci = 0; ci < 4; ci++) {
-    const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
-    nodes.push({
-      isLeaf: childIsLeaf,
-      u0: cu0, u1: cu1, v0: cv0, v1: cv1,
-      solidAngle: childIsLeaf ? FOUR_PI * (cu1 - cu0) * (cv1 - cv0) : -1,
-      flux: 0,
-      firstChild: -1,
-      depth: depth + 1,
-    });
-  }
 
-  // Phase 2 — recurse into each non-leaf child to build its sub-tree.
   if (!childIsLeaf) {
     for (let ci = 0; ci < 4; ci++) {
       const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
@@ -129,8 +108,7 @@ function buildSubtree(
       // The recursive call must build the grandchildren at the current
       // tail (i.e. `nodes.length`). Patch this child's firstChild to point
       // there, then push its 4 grandchildren consecutively.
-      const grandFirst = nodes.length;
-      nodes[childIdx]!.firstChild = grandFirst;
+      nodes[childIdx]!.firstChild = nodes.length;
       buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
     }
   }
@@ -153,15 +131,45 @@ function buildSubtreeChildrenOnly(
   depth: number,
   maxDepth: number,
 ): void {
+  const { firstChild, childExtents, childIsLeaf } =
+    pushFourChildren(nodes, u0, u1, v0, v1, depth, maxDepth);
+  if (!childIsLeaf) {
+    for (let ci = 0; ci < 4; ci++) {
+      const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
+      const childIdx = firstChild + ci;
+      nodes[childIdx]!.firstChild = nodes.length;
+      buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
+    }
+  }
+}
+
+/**
+ * Push the four quadrant children of a node consecutively (NW, NE, SW, SE) and
+ * return their first index + extents + leaf-ness for the caller's Phase-2
+ * recursion. Shared by {@link buildSubtree} (Phase 1) and
+ * {@link buildSubtreeChildrenOnly} — both computed identical child extents +
+ * pushed four nodes of identical shape; this collapses that duplication.
+ *
+ * Does NOT recurse and does NOT patch the parent's `firstChild` (the caller
+ * does, since the two callers wire it differently). Output-identical to the two
+ * inlined push loops it replaces (pinned by `dTreePushFourChildren.test.ts`).
+ */
+function pushFourChildren(
+  nodes: DTreeNode[],
+  u0: number, u1: number,
+  v0: number, v1: number,
+  depth: number,
+  maxDepth: number,
+): { firstChild: number; childExtents: Array<[number, number, number, number]>; childIsLeaf: boolean } {
   const uMid = (u0 + u1) * 0.5;
   const vMid = (v0 + v1) * 0.5;
-  const childIsLeaf = (depth + 1) >= maxDepth;
   const childExtents: Array<[number, number, number, number]> = [
-    [u0,   uMid, v0,   vMid],
-    [uMid, u1,   v0,   vMid],
-    [u0,   uMid, vMid, v1  ],
-    [uMid, u1,   vMid, v1  ],
+    [u0,   uMid, v0,   vMid], // NW (offset 0)
+    [uMid, u1,   v0,   vMid], // NE (offset 1)
+    [u0,   uMid, vMid, v1  ], // SW (offset 2)
+    [uMid, u1,   vMid, v1  ], // SE (offset 3)
   ];
+  const childIsLeaf = (depth + 1) >= maxDepth;
   const firstChild = nodes.length;
   for (let ci = 0; ci < 4; ci++) {
     const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
@@ -174,14 +182,7 @@ function buildSubtreeChildrenOnly(
       depth: depth + 1,
     });
   }
-  if (!childIsLeaf) {
-    for (let ci = 0; ci < 4; ci++) {
-      const [cu0, cu1, cv0, cv1] = childExtents[ci]!;
-      const childIdx = firstChild + ci;
-      nodes[childIdx]!.firstChild = nodes.length;
-      buildSubtreeChildrenOnly(nodes, cu0, cu1, cv0, cv1, depth + 1, maxDepth);
-    }
-  }
+  return { firstChild, childExtents, childIsLeaf };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -249,10 +250,38 @@ export function dTreeSample(
   while (true) {
     const node = dTree.nodes[idx]!;
     if (node.isLeaf) {
-      // Sample uniformly within the leaf's octahedral patch.
+      // Leaf jitter must be UNIFORM within the leaf rectangle AND INDEPENDENT
+      // of the flux-proportional descent path. The GPU production sampler
+      // (ppgGuide.wgsl.ts `dTreeSampleLeafBase` → `ppgGuideMain`) draws TWO
+      // FRESH `lcg` randoms (`r0`, `r1`) for the leaf u,v jitter *after* the
+      // descent, so its jitter is fully decorrelated from which leaf was
+      // picked. The old CPU oracle instead reused the SAME `u0` that had
+      // already been consumed by the descent (`remaining = u0 * totalFlux`,
+      // decremented through the tree) for `vSample`, correlating the leaf
+      // v-position with the descent path — a divergence from the GPU.
+      //
+      // FIX (rescaled descent residual — standard hierarchical-sampling
+      // decorrelation, Müller §3.2 / pbrt §13.3 inverse-CDF residual reuse):
+      // after descent, `remaining` holds the leftover mass WITHIN the chosen
+      // leaf's flux interval, i.e. `remaining ∈ [0, leafFlux)`. Rescaling it
+      // to [0,1) yields a value that is uniform within the leaf and
+      // statistically independent of the coarse path selection (which
+      // consumed the high-order bits of `u0`). We use it for `vSample`, so a
+      // single (u0,u1) pair still maps to ONE deterministic sample (oracle
+      // determinism the tests rely on) while removing the correlation. This
+      // matches the GPU's fresh-random leaf jitter in distribution.
+      const leafFlux = node.flux;
+      const uLeaf = leafFlux > 0
+        ? Math.min(remaining / leafFlux, 1 - 1e-7)
+        : u0; // cold leaf (zero flux) reached via uniform fallback: keep u0.
+      // Sample uniformly within the leaf's octahedral patch. uSample uses the
+      // independent `u1` (already correct); vSample uses the decorrelated
+      // residual `uLeaf` instead of the descent-consumed `u0`.
       const uSample = node.u0 + u1 * (node.u1 - node.u0);
-      const vSample = node.v0 + u0 * (node.v1 - node.v0);
-      // PDF = (leafFlux / totalFlux) / solidAngle_leaf  (deviation 5 fix)
+      const vSample = node.v0 + uLeaf * (node.v1 - node.v0);
+      // PDF = (leafFlux / totalFlux) / solidAngle_leaf  (deviation 5 fix) —
+      // unchanged by this fix; the jitter decorrelation does not alter the
+      // per-leaf solid-angle PDF.
       const pdf = (node.flux > 0 && totalFlux > 0)
         ? (node.flux / totalFlux) / node.solidAngle
         : 1 / FOUR_PI;
@@ -270,7 +299,10 @@ export function dTreeSample(
         break;
       }
     }
-    // Adjust remaining for the next level.
+    // Adjust remaining for the next level: subtract the preceding siblings'
+    // cumulative flux so `remaining` becomes the residual within the chosen
+    // child's flux interval. At the leaf this residual ∈ [0, leafFlux) is the
+    // decorrelated jitter rescaled above.
     const chosenFlux = dTree.nodes[c0 + chosen]!.flux;
     remaining -= (cumFlux - chosenFlux);
     idx = c0 + chosen;

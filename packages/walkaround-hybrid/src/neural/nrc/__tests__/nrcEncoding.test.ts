@@ -22,7 +22,7 @@ import {
   type HashGridConfig, type HashGridLevel, type NrcEncodingConfig,
 } from '../nrcEncoding.ts';
 import {
-  nrcEncodeHelpersWgsl, nrcHashGridForwardWgsl, nrcHashGridBackwardWgsl,
+  nrcEncodeHelpersWgsl, nrcHashGridForwardWgsl,
 } from '../wgsl/nrcEncoding.wgsl.ts';
 
 // ── build a small but representative multiresolution hash grid ──
@@ -232,13 +232,49 @@ describe('NRC WGSL codegen — shape pins (line-for-line oracle equivalence)', (
     expect(helpers).toContain('/ sum'); // L1 normalisation
   });
 
-  it('backward uses i32 fixed-point grad atomics with the same NRC_GRAD_FP scale', () => {
-    const bwd = nrcHashGridBackwardWgsl(opts);
-    expect(bwd).toContain('atomic<i32>');
-    expect(bwd).toContain('atomicAdd');
-    expect(bwd).toContain('NRC_GRAD_FP');
-    expect(bwd).toContain('1048576.0'); // 2^20 — matches fusedMlp grad atomics
-    // backward scatters weight × dOut into the same hashed row as forward.
-    expect(bwd).toContain('let g = weight * (*dOut)[outBase + f];');
+  // The undispatchable ptr-arg WGSL oracle `nrcHashGridBackwardWgsl` was DELETED
+  // (Task 4.5 #5) — it duplicated the DISPATCHED scatter in nrcEncodeBackward.wgsl.ts
+  // (pinned by nrcEncodeBackward.test.ts) and could drift. The CPU reference
+  // `hashGridBackward` (nrcEncoding.ts) IS the oracle the dispatched kernel mirrors,
+  // so we pin its scatter behaviour here directly.
+  it('CPU hashGridBackward scatters weight × dOut into the same hashed rows the forward reads', () => {
+    const grid = makeGrid(7);
+    const pos: [number, number, number] = [0.2, -0.4, 0.6];
+    const F = grid.featuresPerEntry;
+    const LF = grid.levels.length * F;
+    // dOut: distinct per (level, feature) so we can read the scatter back.
+    const dOut = new Float32Array(LF);
+    for (let i = 0; i < LF; i++) dOut[i] = 0.1 * (i + 1);
+
+    const grads = hashGridBackward(grid, pos, dOut);
+    expect(grads.length).toBe(grid.levels.length);
+
+    // For each level, re-derive the 8 trilinear corners + the same hashed rows the
+    // forward uses; the per-row grad MUST equal Σ_corners(weight) × dOut[level·F+f]
+    // (collisions onto the same row accumulate — Instant-NGP §4).
+    const [nx, ny, nz] = normalizeToAabb(pos, grid.aabbMin, grid.aabbMax);
+    for (let l = 0; l < grid.levels.length; l++) {
+      const level = grid.levels[l]!;
+      const corners = trilinearCorners(level, nx, ny, nz);
+      // Expected per-row accumulated weight.
+      const rowWeight = new Map<number, number>();
+      for (const { row, weight } of corners) {
+        rowWeight.set(row, (rowWeight.get(row) ?? 0) + weight);
+      }
+      const g = grads[l]!;
+      for (const [row, w] of rowWeight) {
+        for (let f = 0; f < F; f++) {
+          // f32 accumulation (the grad tables are Float32Array) → 1e-6 tol.
+          expect(g[row * F + f]!).toBeCloseTo(w * dOut[l * F + f]!, 6);
+        }
+      }
+      // Σ of all the 8 corner weights == 1 (partition of unity) → Σ grads over the
+      // touched rows for feature f == dOut[level·F+f].
+      for (let f = 0; f < F; f++) {
+        let sum = 0;
+        for (const row of rowWeight.keys()) sum += g[row * F + f]!;
+        expect(sum).toBeCloseTo(dOut[l * F + f]!, 6);
+      }
+    }
   });
 });

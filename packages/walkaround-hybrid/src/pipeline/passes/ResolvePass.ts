@@ -10,7 +10,6 @@
  * dispatch with `wgX/wgY` (`ceil(W/8)`), NOT the 16×16-sized counts.
  */
 
-import { defineUbo } from '@vitrum/shared-samplers';
 import { buildResolveBindGroup, type UboRef } from '../bindGroupBuilders.js';
 import type {
   Pass,
@@ -18,16 +17,8 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
-
-// W2-C13 follow-up — ResolveUniforms (4×u32 = 16 B): screenW, screenH,
-// frameParity, checkerboardOn. The frameParity high-bit-flips the chroma
-// kernel offset; checkerboardOn=0 means full-density passthrough.
-const RESOLVE_UBO = defineUbo([
-  { name: 'screenW',        type: 'u32' },
-  { name: 'screenH',        type: 'u32' },
-  { name: 'frameParity',    type: 'u32' },
-  { name: 'checkerboardOn', type: 'u32' },
-] as const);
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { RESOLVE_UBO } from './uboLayouts.js';
 
 export class ResolvePass implements Pass {
   readonly id = 'resolve' as const;
@@ -52,7 +43,7 @@ export class ResolvePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX, wgY, frameState, frameCount, width, height } = ctx;
+    const { device, bglCache, resources, frameState, frameCount, width, height } = ctx;
 
     // ResolveUniforms: u32 W, u32 H, u32 frameParity, u32 checkerboardOn (16 bytes).
     // W2-C13 follow-up: byte-identical to the prior Uint32Array write —
@@ -73,11 +64,7 @@ export class ResolvePass implements Pass {
       resources.common.motionVectorTexture.createView(),
       resources.common.resolvedTexture.createView(),
     );
-    const pass = encoder.beginComputePass(computeDesc('resolve'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'resolve');
   }
 
   dispose(): void {}

@@ -40,6 +40,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class SpatialGIReservoirPass implements Pass {
   readonly id = 'gi-spatial-2' as const; // shade depends on this terminal label.
@@ -66,37 +67,36 @@ export class SpatialGIReservoirPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, sceneBindGroup, halfWgX, halfWgY } = ctx;
+    const { device, bglCache, resources, sceneBindGroup } = ctx;
     const current = resources.restirGI.reservoirGiCurrentBuffer;
     const spatial = resources.restirGI.reservoirGiSpatialBuffer;
 
+    // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
+    // ONLY when the GRIS pipeline variant is active. Binding a group the
+    // default-path layout doesn't declare regressed to all-black (f8df9a4).
+    const giExtra = this._grisEnabled
+      ? { extraGroups: [{ slot: 1, group: sceneBindGroup }] as const }
+      : {};
+
+    // The 7-line dispatch block repeated ×3 across the 2-pass + 1-pass
+    // branches, extracted to a local closure. Half-res dispatch.
+    const dispatchGiSpatial = (
+      inBuf: GPUBuffer,
+      outBuf: GPUBuffer,
+      label: PassLabel,
+      bgLabel: string,
+    ): void => {
+      const bg = buildSpatialGiBindGroup(
+        device, bglCache, inBuf, outBuf, resources.common.uboBuffer, bgLabel,
+      );
+      dispatchSingleBindGroup(ctx, this._pipeline, bg, label, { half: true, ...giExtra });
+    };
+
     if (this._passCount === 2) {
       // Pass 1: current → spatial (label gi-spatial-1).
-      {
-        const bg = buildSpatialGiBindGroup(
-          device, bglCache, current, spatial, resources.common.uboBuffer, 'spatial-gi-bg-1',
-        );
-        const pass = encoder.beginComputePass(computeDesc('gi-spatial-1'));
-        pass.setPipeline(this._pipeline);
-        pass.setBindGroup(0, bg);
-        // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
-        // ONLY when the GRIS pipeline variant is active.
-        if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
-        pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
-        pass.end();
-      }
+      dispatchGiSpatial(current, spatial, 'gi-spatial-1', 'spatial-gi-bg-1');
       // Pass 2: spatial → current (label gi-spatial-2).
-      {
-        const bg = buildSpatialGiBindGroup(
-          device, bglCache, spatial, current, resources.common.uboBuffer, 'spatial-gi-bg-2',
-        );
-        const pass = encoder.beginComputePass(computeDesc('gi-spatial-2'));
-        pass.setPipeline(this._pipeline);
-        pass.setBindGroup(0, bg);
-        if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
-        pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
-        pass.end();
-      }
+      dispatchGiSpatial(spatial, current, 'gi-spatial-2', 'spatial-gi-bg-2');
       return;
     }
 
@@ -105,16 +105,8 @@ export class SpatialGIReservoirPass implements Pass {
     // it. The copy avoids the in-place read/write hazard a single
     // current → current dispatch would introduce. Labelled `gi-spatial-2`
     // (the terminal label the layout + shade dependency expect).
-    const bg = buildSpatialGiBindGroup(
-      device, bglCache, current, spatial, resources.common.uboBuffer, 'spatial-gi-bg-1of1',
-    );
-    const pass = encoder.beginComputePass(computeDesc('gi-spatial-2'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
-    pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
-    pass.end();
-    encoder.copyBufferToBuffer(spatial, 0, current, 0, current.size);
+    dispatchGiSpatial(current, spatial, 'gi-spatial-2', 'spatial-gi-bg-1of1');
+    ctx.encoder.copyBufferToBuffer(spatial, 0, current, 0, current.size);
   }
 
   dispose(): void {}

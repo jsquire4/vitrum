@@ -44,6 +44,53 @@ export interface BackendPromiseRecord {
 }
 
 /**
+ * Every incremental-patch facet supported. Shared frozen value referenced by
+ * all three backend records below — they are byte-identical on this field, so
+ * a single shared const prevents drift between them.
+ *
+ * Per-backend `incrementalPatchSupport.topology === true` rationale (what
+ * "count-change patches on an EXISTING primitive are absorbed without a full
+ * setScene" means for each backend):
+ *
+ *   • walkaround-hybrid — a geometry change invalidates every cached GI signal
+ *     on this realtime stack, so the engine routes patches through its setScene
+ *     spine (BVH/DDGI/ReSTIR/RC rebuild + temporal reset). Absorbs the patch by
+ *     reusing the packing path, not via a targeted in-place edit.
+ *   • pt-webgl — mesh/skinned vertex/index-COUNT change rebuilds that one mesh's
+ *     THREE BufferGeometry in place (applyGeometryPatchToMesh) + the fork's
+ *     targeted geometry+BVH regen (StaticGeometryGenerator force-rebuild on
+ *     changed attribute lengths). instanced-mesh instance-COUNT change re-expands
+ *     ONLY that primitive's baked THREE.Mesh children. Co-present `material`
+ *     routes to a full setScene (MaterialsTexture re-pack).
+ *   • pt-webgpu — instanced-mesh instance-COUNT change → TLAS-only rebuild, BLAS
+ *     reused (rebuildTlasReuseBlas + uploadScenePackTlasRealloc); mesh/skinned
+ *     vertex/index-COUNT change → rebuild only the changed primitive's BLAS,
+ *     splice into concat buffers, rebase offsets + TLAS roots
+ *     (rebuildPrimitiveBlas + uploadScenePackGeometryRealloc).
+ *
+ * In all three, `id`/`kind` morphs throw in patchPrimitiveInScene, and
+ * whole-primitive ADD/REMOVE is setScene (see supportsAddRemovePrimitive), not a
+ * patch — so `topology` means exactly "count-change patches on an existing
+ * primitive are absorbed".
+ *
+ * Per-backend `supportsAddRemovePrimitive === true` rationale: addPrimitive
+ * appends a new primitive and removePrimitive evicts one, each by routing a
+ * fresh mutated `Scene` copy through the engine's existing setScene packing path
+ * (convert→expand→repack). A new primitive almost always brings a NEW material,
+ * and the targeted geometry-only regen SKIPS material re-pack; reusing the
+ * shared setScene path re-packs the MaterialsTexture + light arrays correctly by
+ * construction — no fragile per-array index remap. Distinct from
+ * incrementalPatchSupport.topology (count-change patches on an EXISTING primitive).
+ */
+const ALL_PATCHES_SUPPORTED: IncrementalPatchSupport = Object.freeze({
+  transform: true,
+  positions: true,
+  material: true,
+  emitter: true,
+  topology: true,
+});
+
+/**
  * Machine-checkable backend contract truth table.
  *
  * Tests in backend packages assert runtime behavior against this ledger so
@@ -52,25 +99,7 @@ export interface BackendPromiseRecord {
 export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRecord>> = {
   'walkaround-hybrid': {
     supportsIncrementalScene: true,
-    incrementalPatchSupport: {
-      transform: true,
-      positions: true,
-      material: true,
-      emitter: true,
-      topology: true,
-    },
-    // Explicit whole-primitive add/remove IS implemented: addPrimitive appends a
-    // new primitive and removePrimitive evicts one, each by routing a fresh
-    // mutated `Scene` copy through the engine's existing `setScene` spine
-    // (partitionSceneBySupport → pipeline teardown → full BVH/DDGI/ReSTIR/RC
-    // rebuild + temporal-accumulator reset). The DDGI / ReSTIR / RC subsystems
-    // all index off the packed scene, so reusing the setScene packing path
-    // re-syncs them correct-by-construction — no fragile per-array index remap.
-    // On this realtime stack a geometry change invalidates every cached GI
-    // signal regardless, so the work is a rebuild either way; the value is API
-    // consistency with pt-webgl / pt-webgpu, not a perf win. Distinct from
-    // incrementalPatchSupport.topology (count-change patches on an EXISTING
-    // primitive).
+    incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
     supportsAuxBuffers: false,
     accumulates: false,
@@ -114,41 +143,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
   },
   'pt-webgl': {
     supportsIncrementalScene: true,
-    // `topology: true` — pt-webgl absorbs BOTH topology-changing patch kinds
-    // `updatePrimitive` can legally receive on an existing primitive, without a
-    // full `setScene`:
-    //   • mesh/skinned-mesh vertex/index-COUNT change → rebuild that one mesh's
-    //     THREE BufferGeometry in place (`applyGeometryPatchToMesh`) + the fork's
-    //     targeted geometry+BVH regen; the fork's StaticGeometryGenerator detects
-    //     the changed attribute lengths and force-rebuilds (GEOMETRY_REBUILT);
-    //   • instanced-mesh instance-COUNT change → re-expand ONLY that primitive's
-    //     baked THREE.Mesh children in the live scene root (swap N → N', reusing
-    //     the shared geometry + material) + the same targeted regen; the changed
-    //     child set (count delta forces GEOMETRY_REBUILT) is picked up on the
-    //     next generate().
-    // Both stay same-material (a co-present `material` is blocked by the
-    // geometry-only / instances-only classifiers and routes to a full `setScene`
-    // so the MaterialsTexture is re-packed). `id`/`kind` morphs throw in
-    // patchPrimitiveInScene, and whole-primitive ADD/REMOVE is `setScene`, not a
-    // patch — so `topology` here means exactly "count-change patches on an
-    // existing primitive are absorbed".
-    incrementalPatchSupport: {
-      transform: true,
-      positions: true,
-      material: true,
-      emitter: true,
-      topology: true,
-    },
-    // Explicit whole-primitive add/remove IS implemented: addPrimitive appends a
-    // new primitive and removePrimitive evicts one, each via a full
-    // `setScene`-equivalent rebuild of the mutated scene. A new primitive almost
-    // always brings a NEW material, and the fork's targeted geometry-only regen
-    // SKIPS updateMaterials(); routing add/remove through the shared setScene
-    // packing path (convert→expand→tracer.setScene) re-packs the
-    // MaterialsTexture + light arrays correctly by construction — no fragile
-    // per-array index remap. Mirrors pt-webgpu's full-repack choice. Distinct
-    // from incrementalPatchSupport.topology (count-change patches on an EXISTING
-    // primitive).
+    incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
     supportsAuxBuffers: false,
     accumulates: true,
@@ -187,29 +182,7 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
   },
   'pt-webgpu': {
     supportsIncrementalScene: true,
-    // `topology: true` — pt-webgpu absorbs EVERY topology-changing patch that
-    // `updatePrimitive` can legally receive, without a full `setScene`:
-    //   • instanced-mesh instance-COUNT change → TLAS-only rebuild, BLAS reused
-    //     verbatim (slice-1: rebuildTlasReuseBlas + uploadScenePackTlasRealloc);
-    //   • mesh/skinned-mesh vertex/index-COUNT change → rebuild ONLY the changed
-    //     primitive's BLAS, splice it into the concat buffers, rebase downstream
-    //     offsets + TLAS roots (slice-2: rebuildPrimitiveBlas resize splice +
-    //     uploadScenePackGeometryRealloc).
-    // `id`/`kind` morphs throw in patchPrimitiveInScene (contract violation), and
-    // whole-primitive ADD/REMOVE is `setScene`, not a patch — so `topology` here
-    // means exactly "count-change patches on an existing primitive are absorbed".
-    incrementalPatchSupport: {
-      transform: true,
-      positions: true,
-      material: true,
-      emitter: true,
-      topology: true,
-    },
-    // Explicit whole-primitive add/remove IS implemented: addPrimitive appends a
-    // new primitive and removePrimitive evicts one, each via a full
-    // buildPackedScene repack of the mutated scene (the dense material /
-    // analytic / triMaterialId packing is reproduced correctly by reusing the
-    // exact setScene packing path — no fragile per-array index remap).
+    incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
     supportsAuxBuffers: true,
     accumulates: true,

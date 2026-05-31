@@ -1,7 +1,7 @@
 /**
  * conv2d.wgsl.ts — 2D convolution kernel for the vitrum neural denoiser.
  *
- * Canonical binding layout (Bug 3 fix — matches host dispatch order exactly):
+ * Canonical binding layout (matches host dispatch order exactly):
  *   @group(0) @binding(0)  input   : array<f32>   — input tensor [H × W × inC]
  *   @group(0) @binding(1)  weights : array<f32>   — OIKW layout [outC × inC × kH × kW]
  *   @group(0) @binding(2)  biases  : array<f32>   — [outC]
@@ -16,7 +16,7 @@
  */
 
 export const CONV2D_WGSL = /* wgsl */`
-// ── Conv2DParams uniform (Bug 4 fix: written by host before dispatch) ─────────
+// ── Conv2DParams uniform (written by host before dispatch) ────────────────────
 struct Conv2DParams {
   inputH  : u32,
   inputW  : u32,
@@ -28,7 +28,7 @@ struct Conv2DParams {
   padding : u32,
 }
 
-// Canonical binding layout (Bug 3):
+// Canonical binding layout:
 //   0 = input, 1 = weights, 2 = biases, 3 = output, 4 = params
 @group(0) @binding(0) var<storage, read>       input   : array<f32>;
 @group(0) @binding(1) var<storage, read>       weights : array<f32>;

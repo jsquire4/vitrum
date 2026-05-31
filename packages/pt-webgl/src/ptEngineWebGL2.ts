@@ -1,5 +1,4 @@
 import {
-  Matrix4,
   PerspectiveCamera,
 } from 'three';
 import type {
@@ -29,20 +28,14 @@ import type {
   ScenePrimitive,
   SceneEmitter,
   SceneEnvironment,
-  MeshPrimitive,
-  InstancedMeshPrimitive,
 } from '@vitrum/core';
 import { applyFrameToPerspectiveCamera } from './frameCamera.js';
 import {
   vitrumSceneToThree,
   applyEnvironment,
-  applyVitrumMaterialToMesh,
-  findMeshByPrimitiveId,
 } from '@vitrum/three-bindings';
 import {
   expandInstancedMeshesInScene,
-  findAllMeshesByPrimitiveId,
-  reexpandInstancedMeshInScene,
 } from './expandInstancedMeshes.js';
 import type { BdptLightSubpathTracer } from './bdpt/runBdptLightSubpathPass.js';
 import { BdptLightPathBuffer } from './bdptLightPathBuffer.js';
@@ -51,15 +44,15 @@ import { driveForkMaterialUniforms } from './forkUniformBridge.js';
 import { ForkAccess, type WebGLPathTracerCompat } from './forkAccess.js';
 import {
   isEmitterOnlyPatch,
-  isMaterialOnlyPrimitivePatch,
-  isTransformOnlyPrimitivePatch,
-  isPositionsOnlyPrimitivePatch,
-  isGeometryOnlyPrimitivePatch,
-  isInstanceCountOnlyPrimitivePatch,
-  applyPositionsPatchToMesh,
-  applyGeometryPatchToMesh,
-  refreshPathTracerSceneGeometry,
+  routePrimitivePatch,
 } from './scenePatch.js';
+import {
+  AdaptiveScheduler,
+  DEFAULT_TILE_SIZE,
+  type SchedulerOptions,
+  type RenderSizePlan,
+} from './adaptiveScheduler.js';
+import type { PTEngineWebGL2QualityMode } from './ptEngineWebGL2QualityMode.js';
 import {
   MAX_TILE_GRID,
   TileVariancePass,
@@ -136,9 +129,17 @@ export interface PTEngineWebGL2Options extends EngineOptions {
 
 const DEFAULT_MAX_BOUNCES = 12;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
-const DEFAULT_TILE_SIZE = 3;
 
-export type PTEngineWebGL2QualityMode = 'interactive' | 'final' | 'capture' | 'safe';
+// `DEFAULT_TILE_SIZE` + the `SchedulerOptions` / `RenderSizePlan` types + the
+// `AdaptiveScheduler` state machine (was the inline `#updateScheduler` /
+// `#planRenderSize` / context-lost-handler cluster) live in
+// `./adaptiveScheduler.ts` (Task 4.4 Theme A); imported above. The engine holds
+// one `AdaptiveScheduler` instance and delegates per-frame scheduling to it.
+
+// `PTEngineWebGL2QualityMode` moved to `./ptEngineWebGL2QualityMode.ts` so the
+// extracted scheduler can reference it without a cycle; re-exported here so the
+// public surface is unchanged.
+export type { PTEngineWebGL2QualityMode } from './ptEngineWebGL2QualityMode.js';
 
 export interface PTEngineWebGL2Telemetry {
   readonly qualityMode: PTEngineWebGL2QualityMode;
@@ -174,42 +175,14 @@ interface DeviceLimits {
 // in `forkAccess.ts` alongside the fork-private `ForkAccess` seam (theme T14).
 // Imported above.
 
-interface RenderSizePlan {
-  readonly width: number;
-  readonly height: number;
-  readonly estimatedBytes: number;
-  readonly guardrail: string | null;
-}
-
 // Canonical `patchPrimitiveInScene` / `patchEmitterInScene` live in
 // `@vitrum/core` (theme T2 dedup); imported above. The backend-specific
-// fast-path classifiers (`isEmitterOnlyPatch` / `isMaterialOnlyPrimitivePatch`
-// / `isTransformOnlyPrimitivePatch` / `isPositionsOnlyPrimitivePatch`), the
-// THREE-side `applyPositionsPatchToMesh` mutator, and the fork geometry-refresh
-// `refreshPathTracerSceneGeometry` live in `./scenePatch.ts` (theme T14); also
-// imported above. They are a separate concern from the shared snapshot-patch +
-// invariant layer.
-
-interface SchedulerOptions {
-  readonly qualityMode: PTEngineWebGL2QualityMode;
-  readonly adaptive: boolean;
-  readonly targetBatchMs: number;
-  readonly minSamplesPerFrame: number;
-  readonly maxSamplesPerFrame: number;
-  readonly initialSamplesPerFrame: number;
-  readonly initialTileSize: number;
-  readonly maxTileSize: number;
-  readonly renderTargetBudgetBytes: number;
-}
-
-/** RGBA16F texel size: 4 channels × 2 bytes per channel. */
-const BYTES_PER_RGBA16F_PIXEL = 8;
-/** Number of full-resolution render targets the WebGL path tracer allocates:
- *  primary accumulation, depth, normal, motion vector. */
-const ESTIMATED_RENDER_TARGET_COUNT = 4;
-/** Per-renderer overhead in driver metadata + mip alignment + GL state, used
- *  to budget memory when computing the host's adaptive render-size plan. */
-const DEFAULT_RENDER_TARGET_OVERHEAD_BYTES = 64 * 1024 * 1024;
+// fast-path classifiers + THREE-side mutators + the `updatePrimitive` dispatch
+// cascade (`routePrimitivePatch`) live in `./scenePatch.ts` (theme T14 + Task
+// 4.4 Theme A); imported above. They are a separate concern from the shared
+// snapshot-patch + invariant layer. The `SchedulerOptions` / `RenderSizePlan`
+// types + render-target byte constants are re-homed in `./adaptiveScheduler.ts`
+// alongside the `AdaptiveScheduler` state machine; imported above.
 
 /** Below 360p (≈230k pixels) the adaptive-tiling dispatch's per-tile overhead
  *  dominates the per-pixel cost, so we disable tiling entirely. The threshold
@@ -244,7 +217,8 @@ function nowMs(): number {
     : Date.now();
 }
 
-function defaultSchedulerOptions(
+/** @internal Exported only for characterization tests (Theme H). */
+export function defaultSchedulerOptions(
   extensions: Readonly<Record<string, unknown>> | undefined,
   qualityMode: PTEngineWebGL2QualityMode,
 ): SchedulerOptions {
@@ -335,7 +309,8 @@ interface CausticConfig {
   readonly spectralAlbedo: readonly [number, number, number] | undefined;
 }
 
-function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
+/** @internal Exported only for characterization tests (Theme H). */
+export function parseCausticConfig(opts: PTEngineWebGL2Options): CausticConfig {
   // RFE-05: strategy is forwarded to fork uniforms and mirrored in `capabilities.causticStrategy`.
   const causticOpts = opts.causticOptions ?? {};
   const mneeIter = typeof causticOpts.mneeMaxIterations === 'number' ? causticOpts.mneeMaxIterations : 8;
@@ -376,6 +351,69 @@ function parseBdptConfig(opts: PTEngineWebGL2Options): BdptConfig {
         ? Math.min(3, Math.floor(requestedBdptBounces))
         : 3,
     cpuFill: opts.bdptOptions?.cpuFill === true,
+  });
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * extensions-bag ↔ typed-options boundary (Theme H, 2026-05-30)
+ *
+ * First-class, supported features (spectral / bdpt / oidn / qualityMode) were
+ * GRADUATED to flat typed options on {@link PTEngineWebGL2Options}. The knobs
+ * below are deliberately KEPT in the stringly-typed `opts.extensions` bag — they
+ * are the experimental-tuning seam (the bag stays the SOURCE of truth for them).
+ *
+ * The rule enforced here: every `opts.extensions?.['vitrum.ptWebgl.*']` read
+ * lives inside ONE of the frozen-config parser functions below
+ * ({@link defaultSchedulerOptions}, {@link parseCausticConfig},
+ * {@link parseAccumulationConfig}, {@link parseIblBakerConfig}). The constructor
+ * never reaches into the bag directly — it only wires already-parsed structs.
+ * Coercion goes through {@link extensionNumber} / {@link extensionBoolean} so
+ * the type-guarding stays single-sourced.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Pixel-adaptive-sampling + additive-accumulation scalar config, parsed once
+ *  at construction from the experimental-tuning extensions bag. Mirrors the
+ *  {@link defaultSchedulerOptions} frozen-struct pattern so the constructor
+ *  stays a wiring step, not a parse step. */
+interface AccumulationConfig {
+  /** `vitrum.ptWebgl.pixelAdaptiveSampling === true`. */
+  readonly pixelAdaptiveSampling: boolean;
+  /** `vitrum.ptWebgl.additiveAccumulation === true` OR pixel-adaptive (adaptive
+   *  sampling implies additive accumulation). */
+  readonly additiveAccumulation: boolean;
+  /** `vitrum.ptWebgl.pixelAdaptiveCadence` (default 4), floored to ≥1. */
+  readonly pixelAdaptiveCadence: number;
+}
+
+/** @internal Exported only for characterization tests (Theme H). */
+export function parseAccumulationConfig(opts: PTEngineWebGL2Options): AccumulationConfig {
+  const pixelAdaptiveSampling = opts.extensions?.['vitrum.ptWebgl.pixelAdaptiveSampling'] === true;
+  return Object.freeze({
+    pixelAdaptiveSampling,
+    additiveAccumulation:
+      opts.extensions?.['vitrum.ptWebgl.additiveAccumulation'] === true || pixelAdaptiveSampling,
+    pixelAdaptiveCadence: Math.max(
+      1,
+      extensionNumber(opts.extensions, 'vitrum.ptWebgl.pixelAdaptiveCadence', 4),
+    ),
+  });
+}
+
+/** IBL-bake LRU-cache capacity, parsed once at construction from the
+ *  experimental-tuning extensions bag. `undefined` ⇒ the {@link IblBakerCache}
+ *  default LRU sizing (matches the previous module-singleton behaviour). */
+interface IblBakerConfig {
+  readonly cacheOpts: { maxEntries: number } | undefined;
+}
+
+/** @internal Exported only for characterization tests (Theme H). */
+export function parseIblBakerConfig(opts: PTEngineWebGL2Options): IblBakerConfig {
+  const requestedCacheCapacity = opts.extensions?.['vitrum.ptWebgl.iblBakerMaxEntries'];
+  return Object.freeze({
+    cacheOpts:
+      typeof requestedCacheCapacity === 'number' && Number.isFinite(requestedCacheCapacity)
+        ? { maxEntries: Math.max(1, Math.floor(requestedCacheCapacity)) }
+        : undefined,
   });
 }
 
@@ -461,22 +499,18 @@ export class PTEngineWebGL2 implements Engine {
   readonly #bdptCpuFill: boolean;
   /** ANGLE stacks: RGBA32F light-path bind breaks unidirectional PT until fork decode path lands. */
   readonly #bdptCompileShader: boolean;
-  /** Sprint 10c — most-recently-supplied BDPT light-path texture. Set via
-   *  {@link bdptAdvanceFrame}; null until the host calls that method.
-   *  When non-null + `#bdpt === true`, every renderFrame's connect pass
-   *  reads this texture for cached light vertices. */
   readonly #limits: DeviceLimits;
-  readonly #schedulerOptions: SchedulerOptions;
+  /** Adaptive sample/tile scheduler + render-size planner (Task 4.4 Theme A).
+   *  Owns `samplesPerFrame` / `tileSize` / `contextLost` + the immutable
+   *  `SchedulerOptions`. Replaces the engine's inline scheduler cluster. */
+  readonly #scheduler: AdaptiveScheduler;
 
   #vitrumScene: Scene | null = null;
   #lastTlasAudit: PtWebglTlasAudit | null = null;
   #threeSceneRoot: ThreeScene | null = null;
   #cameraSignature = '';
-  #samplesPerFrame: number;
-  #tileSize: number;
   #lastRenderWidth = 0;
   #lastRenderHeight = 0;
-  #contextLost = false;
   #contextLostHandler: ((ev: Event) => void) | null = null;
   #lastTargetSpp = 16;
   #lastTelemetry: PTEngineWebGL2Telemetry | undefined;
@@ -533,19 +567,16 @@ export class PTEngineWebGL2 implements Engine {
           'Use WSL capture (benchmark:bdpt-layered-refs-gpu-wsl-full) for mechanical promotion.',
       );
     }
-    this.#schedulerOptions = defaultSchedulerOptions(opts.extensions, opts.qualityMode ?? 'capture');
-    this.#samplesPerFrame = this.#schedulerOptions.initialSamplesPerFrame;
-    this.#tileSize = this.#schedulerOptions.initialTileSize;
+    this.#scheduler = new AdaptiveScheduler(
+      defaultSchedulerOptions(opts.extensions, opts.qualityMode ?? 'capture'),
+      this.#limits,
+    );
     this.#pathTracer = gpu.pathTracer;
     this.#camera = gpu.camera;
-    const adaptiveRequested = opts.extensions?.['vitrum.ptWebgl.pixelAdaptiveSampling'] === true;
-    this.#additiveAccumulation =
-      opts.extensions?.['vitrum.ptWebgl.additiveAccumulation'] === true || adaptiveRequested;
-    this.#pixelAdaptiveSampling = adaptiveRequested;
-    this.#pixelAdaptiveCadence = Math.max(
-      1,
-      extensionNumber(opts.extensions, 'vitrum.ptWebgl.pixelAdaptiveCadence', 4),
-    );
+    const accumulation = parseAccumulationConfig(opts);
+    this.#additiveAccumulation = accumulation.additiveAccumulation;
+    this.#pixelAdaptiveSampling = accumulation.pixelAdaptiveSampling;
+    this.#pixelAdaptiveCadence = accumulation.pixelAdaptiveCadence;
     this.#tileFactorsScratch.fill(1);
     if (this.#pixelAdaptiveSampling) {
       this.#tileVariancePass = new TileVariancePass(MAX_TILE_GRID);
@@ -556,9 +587,7 @@ export class PTEngineWebGL2 implements Engine {
       this.#additiveAccumulation,
     );
     this.#contextLostHandler = () => {
-      this.#contextLost = true;
-      this.#samplesPerFrame = 1;
-      this.#tileSize = Math.max(this.#tileSize, DEFAULT_TILE_SIZE);
+      this.#scheduler.noteContextLost();
     };
     this.#renderer.domElement?.addEventListener?.('webglcontextlost', this.#contextLostHandler);
     this.#pathTracer.renderDelay = 0;
@@ -608,12 +637,7 @@ export class PTEngineWebGL2 implements Engine {
     // the previous module-singleton sizing). Capacity is overridable from
     // extensions for hosts that scrub atmospheric params more aggressively
     // than the default day-cycle bucket count.
-    const requestedCacheCapacity = opts.extensions?.['vitrum.ptWebgl.iblBakerMaxEntries'];
-    const cacheOpts =
-      typeof requestedCacheCapacity === 'number' && Number.isFinite(requestedCacheCapacity)
-        ? { maxEntries: Math.max(1, Math.floor(requestedCacheCapacity)) }
-        : undefined;
-    this.#iblBakerCache = new IblBakerCache(cacheOpts);
+    this.#iblBakerCache = new IblBakerCache(parseIblBakerConfig(opts).cacheOpts);
   }
 
   /**
@@ -799,50 +823,6 @@ export class PTEngineWebGL2 implements Engine {
     };
   }
 
-  #estimateRenderTargetBytes(width: number, height: number): number {
-    return (
-      width *
-      height *
-      BYTES_PER_RGBA16F_PIXEL *
-      ESTIMATED_RENDER_TARGET_COUNT +
-      DEFAULT_RENDER_TARGET_OVERHEAD_BYTES
-    );
-  }
-
-  #planRenderSize(width: number, height: number): RenderSizePlan {
-    const requestedWidth = Math.max(1, Math.floor(width));
-    const requestedHeight = Math.max(1, Math.floor(height));
-    const maxDimension = Math.max(1, Math.min(this.#limits.maxTextureSize, this.#limits.maxRenderbufferSize));
-    let scale = Math.min(1, maxDimension / requestedWidth, maxDimension / requestedHeight);
-    let guardrail: string | null = scale < 1
-      ? `capped to WebGL max render dimension ${maxDimension}`
-      : null;
-    let plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
-    let plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
-    let estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
-    if (estimatedBytes > this.#schedulerOptions.renderTargetBudgetBytes) {
-      const targetBytes = Math.max(
-        1,
-        this.#schedulerOptions.renderTargetBudgetBytes - DEFAULT_RENDER_TARGET_OVERHEAD_BYTES,
-      );
-      const pixelBytes = Math.max(1, plannedWidth * plannedHeight * BYTES_PER_RGBA16F_PIXEL * ESTIMATED_RENDER_TARGET_COUNT);
-      const memoryScale = Math.min(1, Math.sqrt(targetBytes / pixelBytes));
-      scale *= memoryScale;
-      plannedWidth = Math.max(1, Math.floor(requestedWidth * scale));
-      plannedHeight = Math.max(1, Math.floor(requestedHeight * scale));
-      estimatedBytes = this.#estimateRenderTargetBytes(plannedWidth, plannedHeight);
-      guardrail = guardrail == null
-        ? `downscaled to fit ${Math.round(this.#schedulerOptions.renderTargetBudgetBytes / 1024 / 1024)} MiB render-target budget`
-        : `${guardrail}; downscaled to fit render-target budget`;
-    }
-    return {
-      width: plannedWidth,
-      height: plannedHeight,
-      estimatedBytes,
-      guardrail,
-    };
-  }
-
   /**
    * Run a variance-aware adaptive tile-repeat pass at most once every
    * `#pixelAdaptiveCadence` samples. Writes the resulting per-tile repeat
@@ -874,35 +854,6 @@ export class PTEngineWebGL2 implements Engine {
       }
     } else if (!this.#pixelAdaptiveSampling) {
       tracerCompat.tileRepeatFactors = null;
-    }
-  }
-
-  #updateScheduler(batchMs: number): void {
-    if (!this.#schedulerOptions.adaptive || this.#schedulerOptions.targetBatchMs <= 0) return;
-    if (this.#contextLost) {
-      this.#samplesPerFrame = 1;
-      this.#tileSize = Math.min(this.#schedulerOptions.maxTileSize, Math.max(this.#tileSize, DEFAULT_TILE_SIZE));
-      return;
-    }
-    const target = this.#schedulerOptions.targetBatchMs;
-    if (batchMs > target * 1.35) {
-      this.#samplesPerFrame = Math.max(
-        this.#schedulerOptions.minSamplesPerFrame,
-        Math.floor(this.#samplesPerFrame * 0.5),
-      );
-      if (batchMs > target * 2 && this.#tileSize < this.#schedulerOptions.maxTileSize) {
-        this.#tileSize += 1;
-      }
-      return;
-    }
-    if (batchMs < target * 0.55 && this.#samplesPerFrame < this.#schedulerOptions.maxSamplesPerFrame) {
-      this.#samplesPerFrame = Math.min(
-        this.#schedulerOptions.maxSamplesPerFrame,
-        Math.max(this.#samplesPerFrame + 1, Math.ceil(this.#samplesPerFrame * 1.2)),
-      );
-      if (batchMs < target * 0.25 && this.#tileSize > this.#schedulerOptions.initialTileSize) {
-        this.#tileSize -= 1;
-      }
     }
   }
 
@@ -1113,142 +1064,32 @@ export class PTEngineWebGL2 implements Engine {
     if (this.#vitrumScene == null || this.#threeSceneRoot == null) {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
-    if (isMaterialOnlyPrimitivePatch(_patch)) {
-      // An expanded instanced-mesh has N THREE.Mesh children sharing the
-      // primitive id (and, at setScene time, one shared material). Re-point
-      // the material on ALL of them — `applyVitrumMaterialToMesh` REPLACES
-      // `mesh.material`, so applying to only the first child (what
-      // findMeshByPrimitiveId returns) would leave the other N-1 instances
-      // on the stale material. For a plain mesh this is the single match.
-      const meshes = findAllMeshesByPrimitiveId(this.#threeSceneRoot, _id);
-      if (meshes.length === 0) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
-      }
-      for (const mesh of meshes) {
-        applyVitrumMaterialToMesh(mesh, _patch.material!);
-      }
-      const tracerCompat = this.#pathTracer as unknown as WebGLPathTracerCompat;
-      if (typeof tracerCompat.updateMaterials === 'function') {
-        tracerCompat.updateMaterials();
-      } else {
-        tracerCompat.reset();
-      }
+
+    // Drive the incremental fast paths through the ordered, first-match-wins
+    // dispatch cascade in `scenePatch.ts` (Task 4.4 Theme A). The engine owns
+    // its state — it passes the live `pathTracer` + THREE scene root + vitrum
+    // scene as a `PrimitivePatchContext`; `routePrimitivePatch` performs the
+    // THREE-side mutations (and, for geometry handlers, the fork's targeted
+    // geometry+BVH regen) and returns which epilogue to run. A missing-id mesh
+    // lookup THROWS inside the route BEFORE returning, exactly as the old
+    // per-branch `throw` did — before any scene commit.
+    const outcome = routePrimitivePatch(
+      {
+        pathTracer: this.#pathTracer,
+        threeSceneRoot: this.#threeSceneRoot,
+        vitrumScene: this.#vitrumScene,
+      },
+      _id,
+      _patch,
+    );
+    if (outcome === 'commit') {
+      // Fast path landed — shared commit epilogue (oidn invalidate +
+      // patchPrimitiveInScene), run ONCE.
       this.#oidnDispatcher?.invalidate();
       this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
       return;
     }
-    if (isTransformOnlyPrimitivePatch(_patch)) {
-      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
-      if (mesh == null) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
-      }
-      const transform = (_patch as Partial<MeshPrimitive>).transform;
-      if (transform != null && transform.length >= 16) {
-        const m = new Matrix4().fromArray(Array.from(transform));
-        mesh.matrix.copy(m);
-        mesh.matrixWorld.copy(m);
-        mesh.matrixAutoUpdate = false;
-      }
-      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      this.#oidnDispatcher?.invalidate();
-      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-      return;
-    }
-    if (isPositionsOnlyPrimitivePatch(_patch)) {
-      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
-      if (mesh == null) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
-      }
-      const meshPatch = _patch as Partial<MeshPrimitive>;
-      if (!applyPositionsPatchToMesh(mesh, meshPatch)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      this.#oidnDispatcher?.invalidate();
-      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-      return;
-    }
-    if (isGeometryOnlyPrimitivePatch(_patch)) {
-      // Arbitrary same-material geometry surgery — including a vertex- or
-      // index-COUNT change — on ONE existing mesh. Rebuild that mesh's THREE
-      // BufferGeometry (positions/normals/uvs/tangents/indices) in place, then
-      // run the fork's targeted geometry+BVH regen. Because the patch carries no
-      // `material`, the regen's skipped `updateMaterials()` is harmless (the
-      // material slot is unchanged) — a material change would route through the
-      // material-only path or the full-rebuild fallthrough instead. The fork's
-      // StaticGeometryGenerator detects the changed attribute lengths and
-      // force-rebuilds the merged geometry + BVH (GEOMETRY_REBUILT), so no full
-      // `setScene` teardown / material+light re-pack is needed.
-      const mesh = findMeshByPrimitiveId(this.#threeSceneRoot, _id);
-      if (mesh == null) {
-        throw new Error(`updatePrimitive: primitive "${_id}" not found in internal THREE scene`);
-      }
-      const meshPatch = _patch as Partial<MeshPrimitive>;
-      if (!applyGeometryPatchToMesh(mesh, meshPatch)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-        const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-        this.setScene(next);
-        return;
-      }
-      this.#oidnDispatcher?.invalidate();
-      this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-      return;
-    }
-    if (isInstanceCountOnlyPrimitivePatch(_patch)) {
-      // `instances`-only patch on an `instanced-mesh`: a per-instance transform
-      // list change, INCLUDING an instance-COUNT grow/shrink. At setScene the
-      // single THREE.InstancedMesh was expanded into N baked THREE.Mesh children
-      // (the fork bakes only `mesh.matrixWorld`, ignoring `instanceMatrix`), so
-      // an instances change is a topology change on the baked children, not a
-      // field the fork reads off a live InstancedMesh. Re-expand ONLY this
-      // primitive's children (swap the live root's N children for N' fresh ones,
-      // reusing the shared geometry + material), then take the fork's targeted
-      // geometry+BVH regen — the StaticGeometryGenerator detects the changed
-      // child set (added uuids built fresh, removed uuids evicted; a count delta
-      // forces GEOMETRY_REBUILT), exactly like the vertex-count path. Because
-      // `instances` carries no material, the regen's skipped `updateMaterials()`
-      // is harmless; a co-present material would have been blocked by the
-      // classifier and routed to the full-rebuild fallthrough.
-      //
-      // Guard on the CURRENT primitive's kind: a stray `instances` field on a
-      // non-instanced primitive is not a valid instanced re-expansion, so it
-      // falls through to the full-rebuild path below.
-      const current = this.#vitrumScene.primitives.find((p) => String(p.id) === _id);
-      if (current != null && current.kind === 'instanced-mesh') {
-        const instances = (_patch as Partial<InstancedMeshPrimitive>).instances;
-        if (instances != null) {
-          if (!reexpandInstancedMeshInScene(this.#threeSceneRoot, _id, instances)) {
-            // No existing expanded children to swap (generator state we can't
-            // incrementally patch) — full rebuild.
-            const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-            this.setScene(next);
-            return;
-          }
-          if (!refreshPathTracerSceneGeometry(this.#pathTracer, this.#threeSceneRoot)) {
-            const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-            this.setScene(next);
-            return;
-          }
-          this.#oidnDispatcher?.invalidate();
-          this.#vitrumScene = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
-          return;
-        }
-      }
-    }
+    // 'fallback' — full rebuild from the patched scene.
     const next = patchPrimitiveInScene(this.#vitrumScene, _id, _patch);
     this.setScene(next);
   }
@@ -1302,21 +1143,21 @@ export class PTEngineWebGL2 implements Engine {
     const { requestedWidth, requestedHeight, w, h, samplesThisFrame, batchMs, sppDelta, sizePlan } = args;
     const msPerSample = sppDelta > 0 ? batchMs / sppDelta : null;
     return {
-      qualityMode: this.#schedulerOptions.qualityMode,
+      qualityMode: this.#scheduler.options.qualityMode,
       renderer: this.#limits.renderer,
       requestedWidth,
       requestedHeight,
       renderWidth: w,
       renderHeight: h,
       samplesPerFrame: samplesThisFrame,
-      tileSize: this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING ? 1 : this.#tileSize,
+      tileSize: this.#scheduler.tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING ? 1 : this.#scheduler.tileSize,
       batchMs,
       msPerSample,
       sppDelta,
       sppPerSecond: sppDelta > 0 && batchMs > 0 ? (sppDelta * 1000) / batchMs : null,
       estimatedRenderTargetBytes: sizePlan.estimatedBytes,
-      renderTargetBudgetBytes: this.#schedulerOptions.renderTargetBudgetBytes,
-      guardrail: this.#contextLost
+      renderTargetBudgetBytes: this.#scheduler.options.renderTargetBudgetBytes,
+      guardrail: this.#scheduler.contextLost
         ? 'webgl context loss observed; scheduler reduced workload'
         : sizePlan.guardrail,
       additiveAccumulation: this.#additiveAccumulation,
@@ -1410,13 +1251,13 @@ export class PTEngineWebGL2 implements Engine {
     const factor = q.resolutionFactor ?? 1;
     const requestedWidth = Math.max(1, Math.floor(input.viewport.width * factor));
     const requestedHeight = Math.max(1, Math.floor(input.viewport.height * factor));
-    const sizePlan = this.#planRenderSize(requestedWidth, requestedHeight);
+    const sizePlan = this.#scheduler.planRenderSize(requestedWidth, requestedHeight);
     const w = sizePlan.width;
     const h = sizePlan.height;
-    if (this.#tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING) {
+    if (this.#scheduler.tileSize <= 1 || w * h <= MIN_RESOLUTION_FOR_TILING) {
       this.#pathTracer.tiles.set(1, 1);
     } else {
-      this.#pathTracer.tiles.set(this.#tileSize, this.#tileSize);
+      this.#pathTracer.tiles.set(this.#scheduler.tileSize, this.#scheduler.tileSize);
     }
     if (w !== this.#lastRenderWidth || h !== this.#lastRenderHeight) {
       this.#renderer.setSize(w, h, false);
@@ -1427,7 +1268,7 @@ export class PTEngineWebGL2 implements Engine {
     let spp = this.#pathTracer.samples;
     const sppBefore = spp;
     const batchStart = nowMs();
-    const samplesThisFrame = Math.min(this.#samplesPerFrame, Math.max(0, Math.ceil(targetSpp - spp)));
+    const samplesThisFrame = Math.min(this.#scheduler.samplesPerFrame, Math.max(0, Math.ceil(targetSpp - spp)));
 
     const tilesX = Math.max(1, Math.floor(this.#pathTracer.tiles.x));
     const tilesY = Math.max(1, Math.floor(this.#pathTracer.tiles.y));
@@ -1441,7 +1282,7 @@ export class PTEngineWebGL2 implements Engine {
     }
     const batchMs = Math.max(0, nowMs() - batchStart);
     const sppDelta = Math.max(0, spp - sppBefore);
-    this.#updateScheduler(batchMs);
+    this.#scheduler.update(batchMs);
     this.#lastTelemetry = this.#buildTelemetry({
       requestedWidth,
       requestedHeight,

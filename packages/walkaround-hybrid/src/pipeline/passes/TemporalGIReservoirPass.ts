@@ -20,6 +20,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class TemporalGIReservoirPass implements Pass {
   readonly id = 'gi-temporal' as const;
@@ -43,21 +44,19 @@ export class TemporalGIReservoirPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, sceneBindGroup, halfWgX, halfWgY } = ctx;
+    const { device, bglCache, resources, sceneBindGroup } = ctx;
     const bg = buildTemporalGiBindGroup(
       device, bglCache,
       resources.restirGI.reservoirGiCurrentBuffer,
       resources.restirGI.reservoirGiPreviousBuffer,
       resources.common.uboBuffer,
     );
-    const pass = encoder.beginComputePass(computeDesc('gi-temporal'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
     // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
-    // ONLY when the GRIS pipeline variant is active.
-    if (this._grisEnabled) pass.setBindGroup(1, sceneBindGroup);
-    pass.dispatchWorkgroups(halfWgX, halfWgY, 1);
-    pass.end();
+    // ONLY when the GRIS pipeline variant is active. Half-res dispatch.
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gi-temporal', {
+      half: true,
+      ...(this._grisEnabled ? { extraGroups: [{ slot: 1, group: sceneBindGroup }] } : {}),
+    });
   }
 
   dispose(): void {}

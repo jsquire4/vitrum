@@ -10,7 +10,6 @@
  * Audit refs: M2 (thresholds host-overridable), Sprint 9 wire-in notes.
  */
 
-import { defineUbo } from '@vitrum/shared-samplers';
 import {
   buildSampleBudgetBindGroup,
   type UboRef,
@@ -21,20 +20,8 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
-
-// W2-C13 follow-up — SampleBudgetUniforms (2×f32 + 2×u32 = 16 B):
-// adaptive-sampling thresholds + screen extent for tier classification.
-const SAMPLE_BUDGET_UBO = defineUbo([
-  { name: 'thresholdLow',  type: 'f32' },
-  { name: 'thresholdHigh', type: 'f32' },
-  { name: 'screenW',       type: 'u32' },
-  { name: 'screenH',       type: 'u32' },
-] as const);
-// SampleCountUniforms (1×u32 + 3 trailing pad = 16 B floor): per-frame
-// 1-based sample count. defineUbo zero-fills bytes 4..15.
-const SAMPLE_COUNT_UBO = defineUbo([
-  { name: 'sampleCount', type: 'u32' },
-] as const);
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { SAMPLE_BUDGET_UBO, SAMPLE_COUNT_UBO } from './uboLayouts.js';
 
 export class SampleBudgetPass implements Pass {
   readonly id = 'sample-budget' as const;
@@ -64,7 +51,7 @@ export class SampleBudgetPass implements Pass {
   }
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, inputs, wgX, wgY, computeDesc, resources } = ctx;
+    const { device, inputs, resources } = ctx;
 
     // Budget uniforms: f32 threshold_low, f32 threshold_high, u32 screenW, u32 screenH (16 bytes).
     // W2-C13 follow-up: identical std140 layout to the prior Float32Array/
@@ -91,11 +78,7 @@ export class SampleBudgetPass implements Pass {
       this._budgetUboRef.buf!,
       this._sampleCountUboRef.buf!,
     );
-    const pass = encoder.beginComputePass(computeDesc('sample-budget'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'sample-budget');
   }
 
   dispose(): void {

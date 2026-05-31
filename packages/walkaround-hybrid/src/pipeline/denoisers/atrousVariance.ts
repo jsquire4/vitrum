@@ -39,6 +39,7 @@ import { WELFORD_TEMPORAL_MODULE } from '../../shaders/welfordTemporal.wgsl.js';
 import { composeWgsl } from '../wgslComposer.js';
 import { ATROUS_VARIANCE_MODULE, WGSL_MODULES } from '../wgslModules.js';
 import type { UboRef } from '../bindGroupBuilders.js';
+import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
@@ -285,39 +286,41 @@ export class AtrousVarianceDenoiser implements Denoiser {
     }
 
     const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    let inputTex: GPUTexture = common.hdrColorTexture;
     const varView = common.atrousVarianceEstimateTexture.createView();
-    for (let iter = 0; iter < ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS; iter++) {
-      packAtrousVarianceAtrousUniforms(
-        { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
-        atrousUboBytes,
-        0,
-      );
-      device.queue.writeBuffer(this._atrousUboRef.buf!, 0, atrousUboBytes);
-      const outTex = iter % 2 === 0
-        ? common.denoisedPingTexture
-        : common.denoisedPongTexture;
-      const pass = encoder.beginComputePass(
-        computeDesc(`atrous-variance-atrous-${iter}` as PassLabel),
-      );
-      pass.setPipeline(sa);
-      pass.setBindGroup(0, buildAtrousVarianceAtrousBindGroup(
-        device, sa,
-        inputTex.createView(), outTex.createView(),
-        gNormalDepthView, varView,
-        this._atrousUboRef.buf!,
-      ));
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outTex;
-    }
+    const denoised = runAtrousChain(encoder, sa, {
+      iterations: ATROUS_VARIANCE_DEFAULT_ATROUS_ITERATIONS,
+      startTex: common.hdrColorTexture,
+      pingTex: common.denoisedPingTexture,
+      pongTex: common.denoisedPongTexture,
+      wgX: wgX16,
+      wgY: wgY16,
+      computeDesc,
+      // The shared eager UBO is re-packed + re-written each iteration BEFORE
+      // its dispatch is encoded — identical JS ordering to the prior loop, so
+      // each dispatch reads its own iteration's uniform value.
+      bindGroupFor: (iter, inputView, outputView) => {
+        packAtrousVarianceAtrousUniforms(
+          { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
+          atrousUboBytes,
+          0,
+        );
+        device.queue.writeBuffer(this._atrousUboRef.buf!, 0, atrousUboBytes);
+        return buildAtrousVarianceAtrousBindGroup(
+          device, sa,
+          inputView, outputView,
+          gNormalDepthView, varView,
+          this._atrousUboRef.buf!,
+        );
+      },
+      labelFor: (iter) => `atrous-variance-atrous-${iter}` as PassLabel,
+    });
 
     // Flip the Welford ping-pong for next frame. The legacy pipeline
     // bumped this AFTER the dispatch returned; mirror that exactly so
     // frame N's `welfordRead` reads the buffer written by frame N-1.
     this._welfordPing = 1 - this._welfordPing;
 
-    return inputTex;
+    return denoised;
   }
 
   resize(_w: number, _h: number): void {

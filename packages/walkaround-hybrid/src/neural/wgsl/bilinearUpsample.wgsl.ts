@@ -3,9 +3,16 @@
  *
  * Upsamples an input tensor from H×W×C to 2H×2W×C using bilinear interpolation.
  * This is an alternative to transposed conv when no learned upsampling is needed.
- * In the vitrum U-Net it is used as a building block within the decoder.
  *
- * Canonical binding layout (Bug 3 fix):
+ * EXTENSION POINT (Task 4.5 D2): this kernel is fully plumbed (entry point, dim
+ * solver, dispatch layout in `layerResourceAllocator.ts` / `tensorDimSolver.ts`),
+ * but the canonical `buildUNetSpec()` decoder currently upsamples via
+ * `transposedConv2d`, so NO shipped spec emits a `bilinearUpsample` layer today.
+ * It is retained as the alternative decoder upsampler — a custom UNetSpec can
+ * emit this layer to swap learned transposed-conv upsampling for parameter-free
+ * bilinear. Deliberately kept; not dead code.
+ *
+ * Canonical binding layout:
  *   @group(0) @binding(0)  input  : array<f32>       — input [H × W × C]
  *   @group(0) @binding(3)  output : array<f32>       — output [2H × 2W × C]
  *   @group(0) @binding(4)  params : UpsampleParams   — shape

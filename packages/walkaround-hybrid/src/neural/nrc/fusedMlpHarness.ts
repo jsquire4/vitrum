@@ -14,6 +14,7 @@
 // NOT wired into the path tracer. Self-contained validation only.
 
 import { FusedMlpTrainer, type FusedNetSpec } from "./fusedMlpTrainer.ts";
+import { FusedMlpTrainerProbe } from "./fusedMlpTrainerProbe.ts";
 
 declare const Deno: { args: string[]; exit: (c?: number) => never };
 
@@ -217,6 +218,7 @@ async function main() {
   const B_fd = 5;
   const tiny = new FusedMlpTrainer(device, tinySpec, { useF16, tileB: tinyTileB });
   await tiny.build(B_fd);
+  const tinyProbe = new FusedMlpTrainerProbe(tiny);
 
   const init = heInit(tiny);
   tiny.setWeights(init.w, init.b);
@@ -224,8 +226,8 @@ async function main() {
   const batch = makeBatch(B_fd, tinySpec.inW, seed, tinySpec.outW);
   tiny.setBatch(batch.x, batch.y);
 
-  tiny.computeGradsStep();
-  const { gw, gb } = await tiny.readGrads();
+  tinyProbe.computeGradsStep();
+  const { gw, gb } = await tinyProbe.readGrads();
 
   const plan = tiny.layerPlan;
 
@@ -245,7 +247,7 @@ async function main() {
   // ── PART 1b: dL/dX (INPUT gradient) GPU == CPU analytic (the NRC encode-
   // backward upstream signal). The input layer is linear (no ReLU kink), so this
   // is a CLEAN check — GPU must match the CPU input-grad oracle tightly. ──
-  const gdx = await tiny.readInputGrads(); // [B_fd × inW]
+  const gdx = await tinyProbe.readInputGrads(); // [B_fd × inW]
   const cpuDX = cpuInputGrads(init.w, init.b, batch.x, batch.y, tinySpec, plan, B_fd);
   const edx = relErr(gdx, cpuDX);
   console.log("GPU-vs-CPU dL/dX: maxAbsErr=", edx.maxAbs.toExponential(3),
@@ -260,20 +262,20 @@ async function main() {
   for (let k = 0; k < plan.totalW; k++) {
     const wp = init.w.slice(); wp[k] += h; tiny.setWeights(wp, init.b);
     tiny.setBatch(batch.x, batch.y);
-    const lp = await tiny.computeLoss();
+    const lp = await tinyProbe.computeLoss();
     const wm = init.w.slice(); wm[k] -= h; tiny.setWeights(wm, init.b);
     tiny.setBatch(batch.x, batch.y);
-    const lm = await tiny.computeLoss();
+    const lm = await tinyProbe.computeLoss();
     fdGW[k] = (lp - lm) / (2 * h);
   }
   const fdGB = new Float32Array(plan.totalB);
   for (let k = 0; k < plan.totalB; k++) {
     const bp = init.b.slice(); bp[k] += h; tiny.setWeights(init.w, bp);
     tiny.setBatch(batch.x, batch.y);
-    const lp = await tiny.computeLoss();
+    const lp = await tinyProbe.computeLoss();
     const bm = init.b.slice(); bm[k] -= h; tiny.setWeights(init.w, bm);
     tiny.setBatch(batch.x, batch.y);
-    const lm = await tiny.computeLoss();
+    const lm = await tinyProbe.computeLoss();
     fdGB[k] = (lp - lm) / (2 * h);
   }
   tiny.setWeights(init.w, init.b);
@@ -308,6 +310,7 @@ async function main() {
   const B_tr = 512;
   const trainer = new FusedMlpTrainer(device, trSpec, { useF16, tileB: trTileB });
   await trainer.build(B_tr);
+  const trainerProbe = new FusedMlpTrainerProbe(trainer);
   const ti = heInit(trainer);
   trainer.setWeights(ti.w, ti.b);
 
@@ -320,7 +323,7 @@ async function main() {
     trainer.setBatch(b.x, b.y);
     trainer.trainStep(0.01);
     if (step === 0 || step === 50 || step === 100 || step === 200 || step === steps - 1) {
-      const l = await trainer.computeLoss();
+      const l = await trainerProbe.computeLoss();
       lossesAt[step] = l;
     }
   }

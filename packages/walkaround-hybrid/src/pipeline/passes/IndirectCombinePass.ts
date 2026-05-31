@@ -18,6 +18,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class IndirectCombinePass implements Pass {
   readonly id = 'indirect-combine' as const;
@@ -37,7 +38,7 @@ export class IndirectCombinePass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, frameState } = ctx;
+    const { device, bglCache, resources, frameState } = ctx;
     const combinedTex = resources.common.combinedDenoisedTexture;
     // W5-I2 (2026-05-18): gNormalDepthView removed from this call — the
     // indirect-combine shader never read it (declared "for BGL compat,
@@ -51,11 +52,7 @@ export class IndirectCombinePass implements Pass {
       // Item 24 — re-modulate denoised indirect by albedo (Schied 2017 §4.1).
       resources.common.albedoTexture.createView(),
     );
-    const pass = encoder.beginComputePass(computeDesc('indirect-combine'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgX16, wgY16, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'indirect-combine', { wg16: true });
     frameState.combinedDenoised = combinedTex;
   }
 

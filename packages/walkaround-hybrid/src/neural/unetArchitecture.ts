@@ -12,13 +12,12 @@
  * Parameter count: ~426,075 total (~1.63 MB at f32, ~0.82 MB at f16).
  * Intermediate GPU memory at 1080p (f32): ~461 MB; fp16 halves this to ~230 MB.
  *
- * Bug fixes vs. Sprint 13 deleted scaffold (see plan/sprint-neural-denoiser-future.md):
- *   Bug 1 fixed: skip-connection spatial shapes are explicitly documented per layer
- *   so dec3_up (H/4) pairs with enc3 (H/4-pre-stride output) — NOT enc3 (H/8).
- *   The encoder Level N output *before* the stride-2 convolution is the skip source.
- *   See SKIP_SHAPES table below.
+ * Skip-connection invariant: skip-connection spatial shapes are explicitly
+ * documented per layer so dec3_up (H/4) pairs with enc3 (H/4-pre-stride output)
+ * — NOT enc3 (H/8). The encoder Level N output *before* the stride-2 convolution
+ * is the skip source. See SKIP_SHAPES table below.
  *
- * Binding convention (all WGSL kernels, Bug 3 fix):
+ * Binding convention (all WGSL kernels):
  *   @group(0) @binding(0) input  — read-only storage buffer (input tensor, f32)
  *   @group(0) @binding(1) weights — read-only storage buffer (f32, OIKW layout)
  *   @group(0) @binding(2) biases  — read-only storage buffer (f32)
@@ -33,6 +32,12 @@ export type LayerKind =
   | 'transposedConv2d'
   | 'relu'
   | 'skipAdd'
+  // EXTENSION POINT (Task 4.5 D2): `bilinearUpsample` is fully plumbed end-to-end
+  // (WGSL kernel `bilinearUpsample.wgsl.ts`, entry point, dim solver, dispatch
+  // layout) but no canonical UNetSpec currently emits it — the decoder upsamples
+  // via `transposedConv2d`. It is the ALTERNATIVE decoder upsampler: a custom
+  // spec can emit a `bilinearUpsample` layer (2× nearest/bilinear, no learned
+  // weights) in place of a transposed conv. Kept deliberately; not dead code.
   | 'bilinearUpsample'
   | 'inputPack';
 
@@ -77,7 +82,7 @@ export interface UNetSpec {
 }
 
 /**
- * Architecture summary (Bug 1 fix — verified skip-add shape match).
+ * Architecture summary (verified skip-add shape match).
  *
  * Each encoder level is a stride-1 feature conv (whose output is the skip
  * source, named `enc{N}_feat`) followed by a separate stride-2 down-conv
@@ -101,13 +106,13 @@ export interface UNetSpec {
  *   proj       → denoised   (H × W × 3)
  */
 
-// ── Canonical U-Net spec (bug-1-fixed architecture) ───────────────────────────
+// ── Canonical U-Net spec ──────────────────────────────────────────────────────
 
-/** Build the U-Net layer graph with all 8 prior-scaffold bugs avoided. */
+/** Build the U-Net layer graph. */
 export function buildUNetSpec(): UNetSpec {
   const layers: LayerSpec[] = [
     // ── Input packing ─────────────────────────────────────────────────────────
-    // Bug 2 fix: explicit input packing layer that assembles noisyColor (3) +
+    // Explicit input packing layer that assembles noisyColor (3) +
     // albedo (3) + normals (3) into a single HxWx9 buffer named 'enc_input'.
     {
       name: 'pack',

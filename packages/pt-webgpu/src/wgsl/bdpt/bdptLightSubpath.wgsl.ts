@@ -5,7 +5,10 @@
  */
 export const PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL = /* wgsl */ `
 fn bdptLightLuminance(c: vec3f) -> f32 {
-  return max(dot(c, vec3f(0.2126, 0.7152, 0.0722)), 1e-20);
+  // Canonical Rec.709 luminance() from LUMINANCE_WGSL (@vitrum/shared-samplers),
+  // composed into the trace shader before this module (pathTraceBruteforce
+  // .wgsl.ts:82). Keep the 1e-20 floor for the power-weighted emitter pick.
+  return max(luminance(c), 1e-20);
 }
 
 fn bdptHasEnvironmentEmitter() -> bool {

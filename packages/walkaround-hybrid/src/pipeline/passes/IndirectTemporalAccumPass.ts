@@ -21,6 +21,7 @@ import type {
   PassInitContext,
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
+import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 import type { PingPongRef } from './passRefs.js';
 
 export class IndirectTemporalAccumPass implements Pass {
@@ -58,7 +59,7 @@ export class IndirectTemporalAccumPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, computeDesc, bglCache, resources, wgX16, wgY16, frameState } = ctx;
+    const { device, bglCache, resources, frameState } = ctx;
     const common = resources.common;
     const indirectAccumOut = this._pingPongRef.value === 0
       ? common.indirectAccumPingTexture
@@ -73,11 +74,7 @@ export class IndirectTemporalAccumPass implements Pass {
       indirectAccumPrev.createView(),
       indirectAccumOut.createView(),
     );
-    const pass = encoder.beginComputePass(computeDesc('indirect-temporal-accum'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(wgX16, wgY16, 1);
-    pass.end();
+    dispatchSingleBindGroup(ctx, this._pipeline, bg, 'indirect-temporal-accum', { wg16: true });
 
     // Publish the output handle for the downstream atrous chain.
     frameState.indirectAccumOut = indirectAccumOut;

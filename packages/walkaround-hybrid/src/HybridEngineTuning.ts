@@ -18,17 +18,19 @@
  *   `audit` (the audit citation that originally introduced the knob, for
  *   provenance). {@link readTunables} consumes the table + the constructor
  *   options object and produces a frozen {@link Tunables} record. The
- *   engine stores that one record and passes `...this._tunables` into
- *   `pipeline.renderFrame`.
+ *   engine stores that record on `_cfg.tunables` and passes
+ *   `...this._cfg.tunables` into `pipeline.renderFrame`.
  *
- *   Adding a new tunable becomes:
+ *   Adding a new tunable becomes (Theme-H, 2026-05-30):
  *     1. Append one row to {@link TUNABLE_DEFINITIONS}.
- *     2. Add the matching field to {@link HybridEngineOptions} (in
- *        `HybridEngine.ts`).
+ *     2. Add the matching field to {@link Tunables} (its JSDoc + default ARE
+ *        the single source of truth; `HybridEngineOptions.tuning` is typed
+ *        `Partial<Tunables>` so the host override key appears automatically —
+ *        no separate flat field to declare).
  *     3. Add the matching field to `PipelineFrameInputs` (in
  *        `WalkaroundGPUPipeline.ts`).
  *
- *   No constructor edits, no `renderFrame` edits.
+ *   No `HybridEngineOptions` edit, no constructor edit, no `renderFrame` edit.
  */
 
 import type { HybridEngineOptions } from './HybridEngine.js';
@@ -148,15 +150,34 @@ export const TUNABLE_DEFINITIONS: readonly TunableDefinition[] = Object.freeze([
 ] as const);
 
 /**
- * Build the frozen per-frame Tunables record from constructor options. The
- * three knobs that live inside grouped option sub-objects (`caustic`, `gtao`,
- * `adaptiveSamplingThresholds`) are pulled out explicitly here — the
- * table-driven default-or-override loop handles the rest.
+ * Build the frozen per-frame Tunables record from constructor options.
+ *
+ * Theme-H (2026-05-30): the ~25 redundant FLAT audit-knob fields on
+ * `HybridEngineOptions` were deleted; every knob is now declared exactly once
+ * (the {@link Tunables} interface) and overridden through the nested
+ * `opts.tuning?.<key>` namespace. Eight of the knobs ALSO have a dedicated
+ * subsystem sub-object (`caustic`, `gtao`, `adaptiveSamplingThresholds`) that
+ * existed before the namespace; those sub-objects remain the canonical,
+ * highest-precedence override path so the resolved value of every knob is
+ * IDENTICAL to the pre-Theme-H behaviour for equivalent input.
+ *
+ * Precedence (highest first):
+ *   1. subsystem sub-object (`caustic` / `gtao` / `adaptiveSamplingThresholds`)
+ *      — only for the eight knobs that have one;
+ *   2. `opts.tuning?.<key>` — the nested namespace (replaces the old flat field);
+ *   3. {@link TunableDefinition.default} — the Cornell baseline.
+ *
+ * This mirrors the old `grouped > flat > default` order exactly: the subsystem
+ * sub-object is the former `grouped` source, and `opts.tuning` is the former
+ * `flat` source — both resolve to the same number for the same input.
  */
 export function readTunables(opts: HybridEngineOptions): Tunables {
-  // Source map per tunable. Most knobs sit at the top level of opts;
-  // a handful sit inside grouped sub-objects. The cast at the source
-  // expression is narrow — only enough to retrieve a number-or-undefined.
+  // Subsystem-grouped source map — the eight knobs that carry a dedicated
+  // sub-object on HybridEngineOptions. These win over `opts.tuning` so the
+  // resolved value matches the pre-Theme-H `grouped > flat` precedence. The
+  // `adaptiveSamplingThresholds` tuple is ALSO how the quality preset's
+  // fallback is threaded in (`parseHybridEngineOptions` merges it onto
+  // `effectiveOpts.adaptiveSamplingThresholds`), so this read must remain.
   const grouped: Partial<Record<keyof Tunables, number | undefined>> = {
     causticBoost:                   opts.caustic?.boost,
     causticVisClamp:                opts.caustic?.visClamp,
@@ -168,15 +189,15 @@ export function readTunables(opts: HybridEngineOptions): Tunables {
     adaptiveSamplingThresholdHigh:  opts.adaptiveSamplingThresholds?.[1],
   };
 
-  const flat = opts as unknown as Partial<Record<keyof Tunables, number | undefined>>;
+  const tuning = opts.tuning;
 
   const out: Partial<Tunables> = {};
   for (const def of TUNABLE_DEFINITIONS) {
     const k = def.key;
     const grouped_v = grouped[k];
-    const flat_v = flat[k];
+    const tuning_v = tuning?.[k];
     const v = grouped_v !== undefined ? grouped_v
-            : flat_v    !== undefined ? flat_v
+            : tuning_v  !== undefined ? tuning_v
             : def.default;
     (out as Record<string, number>)[k] = v;
   }

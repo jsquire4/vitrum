@@ -45,11 +45,12 @@ export type DenoiserId =
  * `passLabels` field, and `buildPassLayout` reads from the same map so
  * the GPU timing slots stay in lockstep with the actual dispatch order.
  *
- * 'neural' falls back to the atrous-variance layout: when disabled (no
- * InferenceGraph supplied) the registry rejects it at `lookup` and the
- * label list is consulted only by `buildPassLayout`. When enabled, dispatch
- * emits 2 passes (pack + unpack); the label list over-declares relative to
- * actual dispatch (see neural.ts).
+ * 'neural' declares exactly the 2 passes it dispatches: `neural-pack`
+ * (input texture → tensor buffers) + `neural-unpack` (denoised tensor →
+ * output texture). The InferenceGraph itself is self-managing and does not
+ * participate in the timestamp-query pass layout. When disabled (no
+ * InferenceGraph supplied) the registry rejects it at `lookup`, so the label
+ * list is consulted only by `buildPassLayout` for querySet sizing.
  *
  * 'oidn-final' is `[]` because OIDN dispatch does not use timestamp-query
  * pass labels.
@@ -75,13 +76,7 @@ export const DENOISER_PASS_LABELS: Readonly<Record<DenoiserId, readonly PassLabe
     'svgf-real-atrous-4',
   ]),
   'bmfr': Object.freeze(['bmfr']),
-  'neural': Object.freeze([
-    'welford-temporal',
-    'atrous-variance-variance',
-    'atrous-variance-atrous-0',
-    'atrous-variance-atrous-1',
-    'atrous-variance-atrous-2',
-  ]),
+  'neural': Object.freeze(['neural-pack', 'neural-unpack']),
   'oidn-final': Object.freeze([]),
 } as Record<DenoiserId, readonly PassLabel[]>);
 

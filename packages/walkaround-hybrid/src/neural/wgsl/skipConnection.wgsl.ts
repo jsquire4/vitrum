@@ -2,11 +2,11 @@
  * skipConnection.wgsl.ts — element-wise skip-add kernel for the U-Net decoder.
  *
  * Adds two tensors element-wise (skip connection). Both tensors must have the
- * same total element count (same H, W, C). This enforces the Bug 1 fix:
- * if the spatial or channel dimensions don't match, the dispatch will produce
- * wrong results — the test suite validates shape matching before dispatch.
+ * same total element count (same H, W, C): if the spatial or channel
+ * dimensions don't match, the dispatch produces wrong results, so
+ * `InferenceGraph._validateSkipShapes()` checks shape matching before dispatch.
  *
- * Canonical binding layout (Bug 3 fix):
+ * Canonical binding layout:
  *   @group(0) @binding(0)  inputA : array<f32>  — first input  (decoder upsample output)
  *   @group(0) @binding(1)  inputB : array<f32>  — second input (encoder skip source)
  *   @group(0) @binding(3)  output : array<f32>  — sum: inputA + inputB

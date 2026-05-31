@@ -26,6 +26,23 @@ export type {
   PTEngineWebGL2FrameOutput,
 } from './ptEngineWebGL2.js';
 
+// Task 4.4 Theme A — scheduler state machine + the `updatePrimitive` patch
+// router extracted out of the engine god-class.
+export {
+  AdaptiveScheduler,
+  DEFAULT_TILE_SIZE,
+} from './adaptiveScheduler.js';
+export type {
+  SchedulerOptions,
+  SchedulerDeviceLimits,
+  RenderSizePlan,
+} from './adaptiveScheduler.js';
+export { routePrimitivePatch } from './scenePatch.js';
+export type {
+  PrimitivePatchContext,
+  RoutePrimitivePatchOutcome,
+} from './scenePatch.js';
+
 // W11 follow-up — OIDN final-pass dispatcher (internal kick-and-return state
 // machine; hosts query the engine via `getDenoisedFrame()` rather than touching
 // the dispatcher directly, but the types are exported for test harnesses).

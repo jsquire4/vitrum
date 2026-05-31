@@ -17,7 +17,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { asBackendTexture, asMat4 } from '@vitrum/core';
+import { asBackendTexture } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
@@ -25,45 +25,17 @@ import {
 import { readOidnInputsFromTextures } from './denoise/rgba16fReadback.js';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import {
-  applyEmitterCountMutation,
-  applyEnvironmentMutation,
-  rebuildLightTreeForScene,
   buildPackedScene,
-  rebuildTlasForSceneTransforms,
   scenePackResultFromPacked,
   uploadPackedScene,
-  uploadScenePackGeometry,
-  uploadScenePackGeometryRealloc,
-  uploadScenePackBlasOnly,
-  uploadScenePackTlasOnly,
-  uploadScenePackTlasRealloc,
   PT_WEBGPU_ANALYTIC_SHAPES,
   PT_WEBGPU_SUPPORT,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
-import {
-  analyticIndexForPrimitive,
-  canFastPathGeometryPatch,
-  canFastPathInstancedTopologyPatch,
-  canFastPathMaterialPatch,
-  canFastPathTopologyResizePatch,
-  canFastPathTransformPatch,
-  canReuseTlasBufferLengths,
-  materialIndexForPrimitive,
-} from './scene/incrementalPatch.js';
-import {
-  fingerprintTlasBuffers,
-  rebuildPrimitiveBlas,
-  rebuildTlasReuseBlas,
-  type ScenePackResult,
-} from '@vitrum/shared-bvh';
-import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
-import { X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL } from '@vitrum/shared-samplers';
+import { type ScenePackResult } from '@vitrum/shared-bvh';
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
-import { invertMat4, multiplyMat4 } from './math/mat4.js';
-import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './scene/materialPacking.js';
-import { defaultDirectionalIrradiance, defaultDirectionalLight, packEmitterArrays } from './scene/emitterPacking.js';
-import { environmentParams } from './scene/environmentPacking.js';
+import { packFrameParams } from './frameParamsPacker.js';
+import { SceneMutationRouter } from './sceneMutationRouter.js';
 import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
 import { GpuResources } from './gpuResources.js';
 import {
@@ -188,12 +160,6 @@ export type {
 const EXPERIMENTAL_MAX_BOUNCES = 8;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
-const IDENTITY_MAT4 = asMat4(new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-]));
 
 interface StateSlot {
   readonly get: () => EngineState;
@@ -252,6 +218,14 @@ class PTEngineWebGPU implements Engine {
   #bdptExternalBuffer: GPUBuffer | null = null;
   #bdptPlaceholderBuffer: GPUBuffer | null = null;
 
+  /**
+   * Scene-mutation fast-path dispatch (Task 4.3, Theme A). The engine stays the
+   * thin owner of state; the router operates on that state through the
+   * {@link MutationHost} seam wired in the constructor. Initialized there once
+   * the device + gpu resources exist.
+   */
+  readonly #mutationRouter: SceneMutationRouter;
+
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
   );
@@ -302,6 +276,27 @@ class PTEngineWebGPU implements Engine {
     } else {
       this.#postDenoiser = null;
     }
+    // Wire the scene-mutation router against the engine's own state seam. The
+    // host closures read/write the engine's private fields; the router holds no
+    // state of its own (Task 4.3, Theme A — god-class decomposition).
+    this.#mutationRouter = new SceneMutationRouter({
+      device: this.#device,
+      assertLive: (method) => this.#assertLive(method),
+      getScene: () => this.#scene,
+      setSceneState: (scene) => {
+        this.#scene = scene;
+      },
+      getSceneBuffers: () => this.#sceneBuffers,
+      getGeoPack: () => this.#geoPack,
+      setGeoPack: (pack) => {
+        this.#geoPack = pack;
+      },
+      invalidateBindGroups: () => this.#gpu.invalidateBindGroups(),
+      supportedAnalyticShapes: () => this.#supportedAnalyticShapes(),
+      repackScene: (scene, opts) => this.#repackScene(scene, opts),
+      setScene: (scene) => this.setScene(scene),
+      reset: () => this.reset(),
+    });
   }
 
   get state(): EngineState {
@@ -511,100 +506,30 @@ class PTEngineWebGPU implements Engine {
   }
 
   /**
-   * Pack the per-frame uniform buffer (512 bytes, vec4-aligned). Layout is
-   * pinned and pathTraceBruteforce.wgsl's `params` struct reads from these
-   * exact offsets. Callers must have already validated that #sceneBuffers
-   * is non-null (renderFrame's preconditions handle this).
-   *
-   * Layout (384 bytes used out of a 512-byte buffer; trailing bytes are zero):
-   *
-   * Authoritative field layout is auto-generated in scene/frameParamsLayout.generated.ts (FrameParamsSlot).
-   *
-   * Per-light data lives in dedicated storage buffers at bind slots 20..23;
-   * see `packEmitterArrays` for the layout (8 f32 / point light, 12 / spot,
-   * 16 / rect-area, 16 / mesh-area).
+   * Pack the per-frame uniform buffer. Thin delegate to the extracted pure
+   * {@link packFrameParams} (Task 4.3, Theme A) — the engine owns its state
+   * (#sceneBuffers + config); the packer operates on a snapshot of it. Callers
+   * must have already validated that #sceneBuffers is non-null (renderFrame's
+   * preconditions handle this). Byte layout is pinned to pathTraceBruteforce.wgsl.
    */
   #buildParamsBuffer(input: FrameInput, width: number, height: number): ArrayBuffer {
-    const sb = this.#sceneBuffers!;
-    const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
-    const invVp = invertMat4(asMat4(vp));
-    if (invVp == null) {
-      throw new Error('renderFrame: non-invertible view-projection matrix');
-    }
-
-    const paramsArrayBuffer = new ArrayBuffer(512);
-    const paramsU32 = new Uint32Array(paramsArrayBuffer);
-    const paramsF32 = new Float32Array(paramsArrayBuffer);
-    paramsU32[FrameParamsSlot.width] = width;
-    paramsU32[FrameParamsSlot.height] = height;
-    paramsU32[FrameParamsSlot.frameIndex] = input.frameIndex >>> 0;
-    paramsU32[FrameParamsSlot.frameSeed] = input.frameSeed >>> 0;
-    paramsU32[FrameParamsSlot.triangleCount] = sb.triangleCount >>> 0;
-    paramsU32[FrameParamsSlot.maxBounces] = this.#activeBounces >>> 0;
-    paramsU32[FrameParamsSlot.bvhNodeCount] = sb.bvhNodeCount >>> 0;
-    paramsU32[FrameParamsSlot.analyticCount] = sb.analyticCount >>> 0;
-    paramsU32[FrameParamsSlot.pointLightCount] = sb.pointLightCount >>> 0;
-    paramsU32[FrameParamsSlot.spotLightCount] = sb.spotLightCount >>> 0;
-    paramsU32[FrameParamsSlot.rectAreaLightCount] = sb.rectAreaLightCount >>> 0;
-    paramsU32[FrameParamsSlot.meshAreaLightCount] = sb.meshAreaLightCount >>> 0;
-    paramsU32[FrameParamsSlot.mneeMaxIterations] = this.#mneeMaxIterations >>> 0;
-    paramsU32[FrameParamsSlot.mneeMaxChainLength] = this.#mneeMaxChainLength >>> 0;
-    paramsU32[FrameParamsSlot.hasEnvironmentMap] = sb.hasEnvironmentMap ? 1 : 0;
-    paramsU32[FrameParamsSlot.causticStrategy] =
-      this.#causticStrategy === 'manifold-nee'
-        ? 1
-        : this.#causticStrategy === 'photon-map'
-          ? 2
-          : 0;
-    paramsU32[FrameParamsSlot.environmentMapWidth] = sb.environmentMapWidth >>> 0;
-    paramsU32[FrameParamsSlot.environmentMapHeight] = sb.environmentMapHeight >>> 0;
-    paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
-    paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
-    paramsU32[FrameParamsSlot.spectralEnabled] = this.#spectralEnabled ? 1 : 0;
-    paramsU32[FrameParamsSlot.heroStrategy] = 0;
-    paramsF32[FrameParamsSlot.heroLambdaNm] = 550.0;
-    paramsF32[FrameParamsSlot.heroPdf] = 1.0;
-    paramsF32[FrameParamsSlot.cmfIntegralX] = X_CMF_INTEGRAL;
-    paramsF32[FrameParamsSlot.cmfIntegralY] = Y_CMF_INTEGRAL;
-    paramsF32[FrameParamsSlot.cmfIntegralZ] = Z_CMF_INTEGRAL;
-    const bdptActive = this.#bdpt && this.#traceTier === 'full';
-    paramsU32[FrameParamsSlot.bdptEnabled] = bdptActive ? 1 : 0;
-    paramsU32[FrameParamsSlot.bdptMaxLightBounces] = this.#bdptMaxLightBounces >>> 0;
-    // Eye-subpath scratch depth = the active per-pixel bounce limit (<= 8).
-    paramsU32[FrameParamsSlot.bdptMaxEyeDepth] = this.#activeBounces >>> 0;
-    // WS2 — power-weighted light selection. FULL tier only: the lite kernel keeps
-    // the uniform pick and never composes the light-tree WGSL / group(3) binding.
-    const lightTreeOn = this.#traceTier === 'full' && sb.lightTreeEnabled && this.#lightTreeImportanceSampling;
-    paramsU32[FrameParamsSlot.lightTreeEnabled] = lightTreeOn ? 1 : 0;
-    paramsU32[FrameParamsSlot.lightTreeNodeCount] = lightTreeOn ? sb.lightTreeNodeCount >>> 0 : 0;
-    paramsF32[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
-    paramsF32[FrameParamsSlot.cameraPos + 1] = input.cameraPosition[1];
-    paramsF32[FrameParamsSlot.cameraPos + 2] = input.cameraPosition[2];
-    paramsF32[FrameParamsSlot.cameraPos + 3] = 1;
-    paramsF32[FrameParamsSlot.lightDir] = sb.directionalLight[0];
-    paramsF32[FrameParamsSlot.lightDir + 1] = sb.directionalLight[1];
-    paramsF32[FrameParamsSlot.lightDir + 2] = sb.directionalLight[2];
-    paramsF32[FrameParamsSlot.lightDir + 3] =
-      (sb.directionalIrradiance[0] +
-        sb.directionalIrradiance[1] +
-        sb.directionalIrradiance[2]) /
-      3;
-    paramsF32[FrameParamsSlot.environmentTint] = sb.environmentTint[0];
-    paramsF32[FrameParamsSlot.environmentTint + 1] = sb.environmentTint[1];
-    paramsF32[FrameParamsSlot.environmentTint + 2] = sb.environmentTint[2];
-    paramsF32[FrameParamsSlot.environmentTint + 3] = 0;
-    paramsF32[FrameParamsSlot.environmentSun] = sb.environmentSunDirection[0];
-    paramsF32[FrameParamsSlot.environmentSun + 1] = sb.environmentSunDirection[1];
-    paramsF32[FrameParamsSlot.environmentSun + 2] = sb.environmentSunDirection[2];
-    paramsF32[FrameParamsSlot.environmentSun + 3] = sb.environmentSunStrength;
-    paramsF32.set(invVp, FrameParamsSlot.invViewProj);
-    paramsF32.set(vp, FrameParamsSlot.viewProj);
-    const prevVp = multiplyMat4(
-      input.prevProjMatrix ?? input.projMatrix,
-      input.prevViewMatrix ?? input.viewMatrix,
+    return packFrameParams(
+      {
+        activeBounces: this.#activeBounces,
+        mneeMaxIterations: this.#mneeMaxIterations,
+        mneeMaxChainLength: this.#mneeMaxChainLength,
+        causticStrategy: this.#causticStrategy,
+        spectralEnabled: this.#spectralEnabled,
+        traceTier: this.#traceTier,
+        bdpt: this.#bdpt,
+        bdptMaxLightBounces: this.#bdptMaxLightBounces,
+        lightTreeImportanceSampling: this.#lightTreeImportanceSampling,
+      },
+      this.#sceneBuffers!,
+      input,
+      width,
+      height,
     );
-    paramsF32.set(prevVp, FrameParamsSlot.prevViewProj);
-    return paramsArrayBuffer;
   }
 
   setScene(scene: Scene): void {
@@ -652,405 +577,29 @@ class PTEngineWebGPU implements Engine {
     this.reset();
   }
 
-  /**
-   * Add one whole primitive to the live scene (contract: {@link Engine.addPrimitive}).
-   *
-   * Implementation: this is a TAIL-INSERTION — the new primitive is appended to
-   * the scene's primitive list and the whole scene is re-packed via
-   * {@link #repackScene}. We deliberately do NOT take the slice-2 incremental
-   * BLAS-splice path here: a whole-primitive add also appends a NEW dense
-   * material slot (and, for analytic primitives, header / param entries), and a
-   * tail insertion needs no downstream offset remap — but the clean way to keep
-   * the materials / analytic / per-triangle `triMaterialId` arrays in their
-   * exact dense order is to reuse `buildPackedScene`, which is the same
-   * already-correct path `setScene` runs. A bespoke incremental append would
-   * have to duplicate that material/analytic packing for marginal buffer-reuse
-   * gains; the full repack is correct-by-construction and reuses the
-   * destroy-closure-off-the-struct realloc machinery in `uploadPackedScene`.
-   */
+  // ── Scene mutation (Task 4.3, Theme A) ───────────────────────────────────
+  // The fast-path dispatch for add/remove/updatePrimitive/updateEmitter/
+  // updateEnvironment lives in `SceneMutationRouter`. The engine stays the thin
+  // owner of state (#scene / #sceneBuffers / #geoPack / device / pipelines); the
+  // router operates on that state through the `MutationHost` seam below.
   addPrimitive(primitive: ScenePrimitive): void {
-    this.#assertLive('addPrimitive');
-    const currentScene = this.#scene!;
-    if (currentScene.primitives.some((p) => p.id === primitive.id)) {
-      throw new Error(
-        `addPrimitive: a primitive with id "${primitive.id}" already exists; ` +
-          'use updatePrimitive to mutate an existing primitive.',
-      );
-    }
-    const nextScene: Scene = {
-      ...currentScene,
-      primitives: [...currentScene.primitives, primitive],
-    };
-    this.#repackScene(nextScene, { warnOnEmpty: false });
+    this.#mutationRouter.addPrimitive(primitive);
   }
 
-  /**
-   * Remove one whole primitive from the live scene by id (contract:
-   * {@link Engine.removePrimitive}).
-   *
-   * Implementation: drop the primitive from the scene's primitive list and
-   * re-pack via {@link #repackScene}. A remove is the case that genuinely needs
-   * the dense index remap the slice-2 splice does NOT cover — every downstream
-   * primitive's material slot shifts by one, the per-triangle `triMaterialId`
-   * baked into each downstream BLAS leaf would have to be re-resolved, and any
-   * analytic header `materialId` / `paramsOffset` would have to be compacted. A
-   * full `buildPackedScene` reproduces all of that correctly by construction,
-   * so we repack rather than hand-roll a multi-array compaction.
-   */
   removePrimitive(id: ScenePrimitive['id']): void {
-    this.#assertLive('removePrimitive');
-    const currentScene = this.#scene!;
-    const nextPrimitives = currentScene.primitives.filter((p) => p.id !== id);
-    if (nextPrimitives.length === currentScene.primitives.length) {
-      throw new Error(
-        `removePrimitive: no primitive with id "${id}" in the live scene.`,
-      );
-    }
-    const nextScene: Scene = {
-      ...currentScene,
-      primitives: nextPrimitives,
-    };
-    this.#repackScene(nextScene, { warnOnEmpty: false });
+    this.#mutationRouter.removePrimitive(id);
   }
 
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
-    this.#assertLive('updatePrimitive');
-    // #assertLive already throws when #scene is null; the non-null assertion
-    // captures that invariant for the type checker.
-    const currentScene = this.#scene!;
-    const currentPrimitive = currentScene.primitives.find((p) => p.id === id) ?? null;
-    const nextScene = patchPrimitiveInScene(currentScene, id, patch);
-    if (
-      currentPrimitive != null &&
-      this.#geoPack != null &&
-      this.#sceneBuffers != null &&
-      canFastPathGeometryPatch(currentPrimitive, patch)
-    ) {
-      const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
-        tlas: true,
-        resolveMaterialId: (pid) =>
-          materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
-      });
-      if (rebuilt.ok) {
-        const sb = this.#sceneBuffers;
-        const prevTlasFp = fingerprintTlasBuffers({
-          tlasNodes: sb.tlasNodes,
-          tlasInstanceIndices: sb.tlasInstanceIndices,
-          tlasBlasRoots: sb.tlasBlasRoots,
-          tlasInstanceWorldToLocal: sb.tlasInstanceWorldToLocal,
-          tlasInstanceLocalToWorld: sb.tlasInstanceLocalToWorld,
-        });
-        const nextTlasFp = fingerprintTlasBuffers({
-          tlasNodes: rebuilt.pack.tlasNodes,
-          tlasInstanceIndices: rebuilt.pack.tlasInstanceIndices,
-          tlasBlasRoots: rebuilt.pack.tlasBlasRoots,
-          tlasInstanceWorldToLocal: rebuilt.pack.tlasInstanceWorldToLocal,
-          tlasInstanceLocalToWorld: rebuilt.pack.tlasInstanceLocalToWorld,
-        });
-        if (prevTlasFp === nextTlasFp) {
-          uploadScenePackBlasOnly(this.#device, sb, rebuilt.pack);
-        } else {
-          uploadScenePackGeometry(this.#device, sb, rebuilt.pack);
-        }
-        this.#geoPack = rebuilt.pack;
-        this.#gpu.invalidateBindGroups();
-        this.#scene = nextScene;
-        for (const warning of rebuilt.pack.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
-        }
-        this.reset();
-        return;
-      }
-    }
-    if (
-      currentPrimitive != null &&
-      this.#geoPack != null &&
-      this.#sceneBuffers != null &&
-      canFastPathTopologyResizePatch(currentPrimitive, patch)
-    ) {
-      // Slice-2: a (skinned-)mesh's vertex/index COUNT changed. Rebuild ONLY this
-      // primitive's BLAS and splice it into the packed scene — growing/shrinking
-      // the concat buffers and rebasing every downstream primitive's offsets +
-      // the TLAS BLAS roots. The concat buffers change SIZE, so the (5) BLAS +
-      // (5) TLAS GPU buffers must be reallocated (no in-place writeBuffer).
-      const rebuilt = rebuildPrimitiveBlas(nextScene, id, this.#geoPack, {
-        tlas: true,
-        resolveMaterialId: (pid) =>
-          materialIndexForPrimitive(nextScene, pid, this.#supportedAnalyticShapes()) ?? 0,
-      });
-      if (rebuilt.ok) {
-        uploadScenePackGeometryRealloc(this.#device, this.#sceneBuffers, rebuilt.pack);
-        this.#geoPack = rebuilt.pack;
-        this.#gpu.invalidateBindGroups();
-        this.#scene = nextScene;
-        for (const warning of rebuilt.pack.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
-        }
-        this.reset();
-        return;
-      }
-      // rebuildPrimitiveBlas rejected (primitive missing / not mesh-like) — fall
-      // through to the full setScene rebuild below.
-    }
-    if (
-      currentPrimitive != null &&
-      currentPrimitive.kind === 'analytic' &&
-      this.#sceneBuffers != null &&
-      canFastPathTransformPatch(currentPrimitive, patch)
-    ) {
-      const analyticIndex = analyticIndexForPrimitive(
-        nextScene,
-        id,
-        this.#supportedAnalyticShapes(),
-      );
-      if (analyticIndex != null) {
-        const nextPrimitive = nextScene.primitives.find((p) => p.id === id);
-        if (nextPrimitive != null && nextPrimitive.kind === 'analytic') {
-          const localToWorld = asMat4(nextPrimitive.transform ?? IDENTITY_MAT4);
-          const maybeWorldToLocal = invertMat4(localToWorld);
-          const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-          if (maybeWorldToLocal == null) {
-            console.warn(
-              `[vitrum/pt-webgpu] Primitive "${nextPrimitive.id}" has non-invertible analytic transform; using identity fallback.`,
-            );
-          }
-          const byteOffset = analyticIndex * 16 * Float32Array.BYTES_PER_ELEMENT;
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.analyticLocalToWorldBuffer,
-            byteOffset,
-            localToWorld.buffer,
-            localToWorld.byteOffset,
-            localToWorld.byteLength,
-          );
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.analyticWorldToLocalBuffer,
-            byteOffset,
-            worldToLocal.buffer,
-            worldToLocal.byteOffset,
-            worldToLocal.byteLength,
-          );
-          this.#sceneBuffers.analyticLocalToWorld.set(localToWorld, analyticIndex * 16);
-          this.#sceneBuffers.analyticWorldToLocal.set(worldToLocal, analyticIndex * 16);
-          this.#scene = nextScene;
-          this.reset();
-          return;
-        }
-      }
-    }
-    if (
-      currentPrimitive != null &&
-      this.#geoPack != null &&
-      this.#sceneBuffers != null &&
-      canFastPathInstancedTopologyPatch(currentPrimitive, patch)
-    ) {
-      // Slice-1: instanced-mesh instance COUNT changed. BLAS geometry is shared
-      // across instances and byte-identical, so we rebuild only the TLAS
-      // (reusing the previous pack's BLAS arrays verbatim — no per-triangle
-      // buildArrayBvh) and reallocate only the 5 TLAS GPU buffers.
-      const rebuilt = rebuildTlasReuseBlas(nextScene, this.#geoPack);
-      if (rebuilt.ok) {
-        uploadScenePackTlasRealloc(this.#device, this.#sceneBuffers, {
-          tlasNodes: rebuilt.pack.tlasNodes,
-          tlasInstanceIndices: rebuilt.pack.tlasInstanceIndices,
-          tlasBlasRoots: rebuilt.pack.tlasBlasRoots,
-          tlasInstanceWorldToLocal: rebuilt.pack.tlasInstanceWorldToLocal,
-          tlasInstanceLocalToWorld: rebuilt.pack.tlasInstanceLocalToWorld,
-          tlasNodeCount: rebuilt.pack.tlasNodeCount,
-          primitiveTlasBindings: rebuilt.pack.primitiveTlasBindings,
-        });
-        this.#geoPack = rebuilt.pack;
-        this.#gpu.invalidateBindGroups();
-        this.#scene = nextScene;
-        for (const warning of rebuilt.pack.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
-        }
-        this.reset();
-        return;
-      }
-      // rebuildTlasReuseBlas rejected (e.g. concurrent geometry change) — fall
-      // through to the full setScene rebuild below.
-    }
-    if (
-      currentPrimitive != null &&
-      this.#sceneBuffers != null &&
-      canFastPathTransformPatch(currentPrimitive, patch)
-    ) {
-      const tlas = rebuildTlasForSceneTransforms(
-        nextScene,
-        this.#sceneBuffers.primitiveTlasBindings,
-        {
-          tlasNodes: this.#sceneBuffers.tlasNodes,
-          tlasInstanceIndices: this.#sceneBuffers.tlasInstanceIndices,
-          tlasBlasRoots: this.#sceneBuffers.tlasBlasRoots,
-          tlasInstanceWorldToLocal: this.#sceneBuffers.tlasInstanceWorldToLocal,
-        },
-      );
-      if (tlas.ok && canReuseTlasBufferLengths(this.#sceneBuffers, tlas)) {
-        uploadScenePackTlasOnly(this.#device, this.#sceneBuffers, {
-          tlasNodes: tlas.tlasNodes,
-          tlasInstanceIndices: tlas.tlasInstanceIndices,
-          tlasBlasRoots: tlas.tlasBlasRoots,
-          tlasInstanceWorldToLocal: tlas.tlasInstanceWorldToLocal,
-          tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
-          tlasNodeCount: Math.floor(tlas.tlasNodes.length / 8),
-          primitiveTlasBindings: this.#sceneBuffers.primitiveTlasBindings,
-        });
-        this.#scene = nextScene;
-        for (const warning of tlas.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
-        }
-        this.reset();
-        return;
-      }
-    }
-    if (canFastPathMaterialPatch(patch) && this.#sceneBuffers != null) {
-      const materialIndex = materialIndexForPrimitive(
-        nextScene,
-        id,
-        this.#supportedAnalyticShapes(),
-      );
-      const primitive = nextScene.primitives.find((p) => p.id === id);
-      if (materialIndex != null && primitive != null) {
-        const packed = materialToPackedVec4s(primitive.material);
-        if (packed.length === MATERIAL_FLOAT_STRIDE) {
-          const materialData = new Float32Array(packed);
-          const floatOffset = materialIndex * MATERIAL_FLOAT_STRIDE;
-          const byteOffset = floatOffset * Float32Array.BYTES_PER_ELEMENT;
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.materialsBuffer,
-            byteOffset,
-            materialData.buffer,
-            materialData.byteOffset,
-            materialData.byteLength,
-          );
-          this.#sceneBuffers.materials.set(materialData, floatOffset);
-          this.#scene = nextScene;
-          this.reset();
-          return;
-        }
-      }
-    }
-    this.setScene(nextScene);
+    this.#mutationRouter.updatePrimitive(id, patch);
   }
 
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void {
-    this.#assertLive('updateEmitter');
-    const currentScene = this.#scene!;
-    const nextScene = patchEmitterInScene(currentScene, id, patch);
-    if (this.#sceneBuffers != null) {
-      const packed = packEmitterArrays(nextScene);
-      this.#device.queue.writeBuffer(
-        this.#sceneBuffers.pointLightsBuffer,
-        0,
-        packed.pointLightsData.buffer,
-        packed.pointLightsData.byteOffset,
-        packed.pointLightsData.byteLength,
-      );
-      this.#device.queue.writeBuffer(
-        this.#sceneBuffers.spotLightsBuffer,
-        0,
-        packed.spotLightsData.buffer,
-        packed.spotLightsData.byteOffset,
-        packed.spotLightsData.byteLength,
-      );
-      this.#device.queue.writeBuffer(
-        this.#sceneBuffers.rectAreaLightsBuffer,
-        0,
-        packed.rectAreaLightsData.buffer,
-        packed.rectAreaLightsData.byteOffset,
-        packed.rectAreaLightsData.byteLength,
-      );
-      this.#device.queue.writeBuffer(
-        this.#sceneBuffers.meshAreaLightsBuffer,
-        0,
-        packed.meshAreaLightsData.buffer,
-        packed.meshAreaLightsData.byteOffset,
-        packed.meshAreaLightsData.byteLength,
-      );
-      this.#sceneBuffers.pointLightsData.set(packed.pointLightsData);
-      this.#sceneBuffers.spotLightsData.set(packed.spotLightsData);
-      this.#sceneBuffers.rectAreaLightsData.set(packed.rectAreaLightsData);
-      this.#sceneBuffers.meshAreaLightsData.set(packed.meshAreaLightsData);
-      applyEmitterCountMutation(this.#sceneBuffers, {
-        pointLightCount: packed.pointLightCount,
-        spotLightCount: packed.spotLightCount,
-        rectAreaLightCount: packed.rectAreaLightCount,
-        meshAreaLightCount: packed.meshAreaLightCount,
-        directionalLight: defaultDirectionalLight(nextScene),
-        directionalIrradiance: defaultDirectionalIrradiance(nextScene),
-      });
-      // WS2 — the light tree's powers/positions depend on the emitters, so
-      // rebuild + re-upload it (reallocating + invalidating bind groups if the
-      // node count changed). Without this the GPU selection would importance-
-      // sample the OLD light set after an incremental emitter patch.
-      if (rebuildLightTreeForScene(this.#device, this.#sceneBuffers, nextScene)) {
-        this.#gpu.invalidateBindGroups();
-      }
-      this.#scene = nextScene;
-      for (const warning of packed.warnings) {
-        console.warn(`[vitrum/pt-webgpu] ${warning}`);
-      }
-      this.reset();
-      return;
-    }
-    this.setScene(nextScene);
+    this.#mutationRouter.updateEmitter(id, patch);
   }
 
   updateEnvironment(env: Scene['environment'] | null): void {
-    this.#assertLive('updateEnvironment');
-    const currentScene = this.#scene!;
-    const nextScene: Scene = {
-      ...currentScene,
-      environment: env ?? { kind: 'none' },
-    };
-    if (this.#sceneBuffers != null) {
-      const packed = environmentParams(nextScene);
-      const texelLenMatches = packed.hdriTexels.length === this.#sceneBuffers.environmentMapTexels.length;
-      const cdfLenMatches = packed.hdriCdf.length === this.#sceneBuffers.environmentMapCdf.length;
-      if (texelLenMatches && cdfLenMatches) {
-        if (packed.hdriTexels.byteLength > 0) {
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.environmentMapTexelsBuffer,
-            0,
-            packed.hdriTexels.buffer,
-            packed.hdriTexels.byteOffset,
-            packed.hdriTexels.byteLength,
-          );
-        }
-        if (packed.hdriCdf.byteLength > 0) {
-          this.#device.queue.writeBuffer(
-            this.#sceneBuffers.environmentMapCdfBuffer,
-            0,
-            packed.hdriCdf.buffer,
-            packed.hdriCdf.byteOffset,
-            packed.hdriCdf.byteLength,
-          );
-        }
-        applyEnvironmentMutation(this.#sceneBuffers, {
-          environmentTint: packed.tint,
-          environmentSunDirection: packed.sunDirection,
-          environmentSunStrength: packed.sunStrength,
-          environmentMapWidth: packed.hdriWidth,
-          environmentMapHeight: packed.hdriHeight,
-          hasEnvironmentMap: packed.hasHdri,
-        });
-        this.#sceneBuffers.environmentMapTexels.set(packed.hdriTexels);
-        this.#sceneBuffers.environmentMapCdf.set(packed.hdriCdf);
-        // WS2 — the env counts as a selectable light in the NEE walk, so an env
-        // change can flip the light-tree gate / leaf count. Rebuild + re-upload
-        // (reallocating + invalidating bind groups if the node count changed).
-        if (rebuildLightTreeForScene(this.#device, this.#sceneBuffers, nextScene)) {
-          this.#gpu.invalidateBindGroups();
-        }
-        this.#scene = nextScene;
-        for (const warning of packed.warnings) {
-          console.warn(`[vitrum/pt-webgpu] ${warning}`);
-        }
-        this.reset();
-        return;
-      }
-    }
-    this.setScene(nextScene);
+    this.#mutationRouter.updateEnvironment(env);
   }
 
   renderFrame(input: FrameInput): FrameOutput {

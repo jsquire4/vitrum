@@ -21,6 +21,8 @@
  */
 
 import { buildAtrousBindGroup, type UboRef } from '../bindGroupBuilders.js';
+import { runAtrousChain } from '../passes/dispatchHelpers.js';
+import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
   type Denoiser,
@@ -66,26 +68,23 @@ export class AtrousDenoiser implements Denoiser {
       sigmaC: atrousDirectSigmas[2],
     };
 
-    let inputTex: GPUTexture = common.hdrColorTexture;
-    for (let iter = 0; iter < ATROUS_ITERATIONS; iter++) {
-      const stepWidth = 1 << iter;
-      const outputTex =
-        iter % 2 === 0 ? common.denoisedPingTexture : common.denoisedPongTexture;
-      const bgAtrous = buildAtrousBindGroup(
-        device, bglCache, this._uboRef,
-        inputTex.createView(), outputTex.createView(),
-        gNormalDepthView, gNormalDepthView, stepWidth,
-        sigmas,
-      );
-      const label = `atrous-${iter}` as `atrous-${0 | 1 | 2}`;
-      const pass = encoder.beginComputePass(computeDesc(label));
-      pass.setPipeline(sharedAtrousPipeline);
-      pass.setBindGroup(0, bgAtrous);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outputTex;
-    }
-    return inputTex;
+    return runAtrousChain(encoder, sharedAtrousPipeline, {
+      iterations: ATROUS_ITERATIONS,
+      startTex: common.hdrColorTexture,
+      pingTex: common.denoisedPingTexture,
+      pongTex: common.denoisedPongTexture,
+      wgX: wgX16,
+      wgY: wgY16,
+      computeDesc,
+      bindGroupFor: (iter, inputView, outputView) =>
+        buildAtrousBindGroup(
+          device, bglCache, this._uboRef,
+          inputView, outputView,
+          gNormalDepthView, gNormalDepthView, 1 << iter,
+          sigmas,
+        ),
+      labelFor: (iter) => `atrous-${iter}` as PassLabel,
+    });
   }
 
   resize(_w: number, _h: number): void {

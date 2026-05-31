@@ -30,10 +30,8 @@ import {
   FusedMlpTrainer,
   type FusedNetSpec,
   type FusedTrainerConfig,
-  ADAM_WGSL,
 } from './fusedMlpTrainer.js';
-import { gradFinalizeWgsl } from './wgsl/fusedMlp.wgsl.js';
-import { nrcEncodeBackwardWgsl } from './wgsl/nrcEncodeBackward.wgsl.js';
+import { HashGridTableTrainer } from './hashGridTableTrainer.js';
 import {
   levelResolution,
   nrcInputWidth,
@@ -133,8 +131,6 @@ export class NrcSubsystem {
   private _inW = 0;
   /** Record stride in f32s (= inW + OUT_W + 3 query-world-pos). */
   private _recordStride = 0;
-  /** Total hash-grid table feature scalars (Σ_l tableSize·F). */
-  private _tableScalars = 0;
 
   // GPU resources the gi-ris NRC query @group(4) binds.
   private _tablesBuf!: GPUBuffer;   // hash-grid feature tables (f32, concatenated)
@@ -144,21 +140,12 @@ export class NrcSubsystem {
   private _recordReadback!: GPUBuffer; // MAP_READ staging for the record gather
   private _bindGroup!: GPUBindGroup;
 
-  // ── Hash-grid TABLE training resources (the trainable encoding). ──
-  // gradTablesFx (i32 fixed-point atomic scatter target) → gradTablesF (f32) →
-  // Adam over _tablesBuf with its own moment state. This is what makes the
-  // multiresolution encoding LEARN (Müller 2022 Instant-NGP §4); without it the
-  // tables stay frozen at random init.
-  private _gradTablesFx!: GPUBuffer;
-  private _gradTablesF!: GPUBuffer;
-  private _mTables!: GPUBuffer;
-  private _vTables!: GPUBuffer;
-  private _posBuf!: GPUBuffer;       // [recordCap × 3] query world positions (dense)
-  private _encBwdParamsUbo!: GPUBuffer;
-  private _pEncodeBackward!: GPUComputePipeline;
-  private _pTableGradFin!: GPUComputePipeline;
-  private _pTableAdam!: GPUComputePipeline;
-  private _tableAdamT = 0;
+  // ── Hash-grid TABLE training (the trainable encoding). ──
+  // Encode-backward scatter → grad finalize → Adam over _tablesBuf with its own
+  // moment state. This is what makes the multiresolution encoding LEARN (Müller
+  // 2022 Instant-NGP §4); without it the tables stay frozen at random init. The
+  // pipeline + its GPU buffers live in the peer {@link HashGridTableTrainer}.
+  private _tableTrainer!: HashGridTableTrainer;
 
   // Host-side staging for the train batch (re-used each frame).
   private _batchX!: Float32Array;
@@ -225,7 +212,6 @@ export class NrcSubsystem {
       totalRows += cfg.tableSize;
     }
     const tableScalars = totalRows * F;
-    this._tableScalars = tableScalars;
     // Small random table init (Instant-NGP §3: U(-1e-4, 1e-4)).
     const tableData = new Float32Array(tableScalars);
     let s = 0x9e3779b1 >>> 0;
@@ -245,33 +231,23 @@ export class NrcSubsystem {
     this._levelsBuf = d.createBuffer({ label: 'nrc-levels', size: Math.max(16, cfg.levels * 16), usage: ST });
     d.queue.writeBuffer(this._levelsBuf, 0, levelDescs);
 
-    // ── Hash-grid TABLE training resources + pipelines ──
-    // gradTablesFx: one atomic<i32> per table scalar (scatter target). gradTablesF:
-    // finalized f32. mTables/vTables: Adam moment state (zero-init). posBuf: dense
-    // query positions for the encode-backward. All sized = tableScalars (moments)
-    // / recordCap·3 (pos). (Müller 2022 Instant-NGP §4.)
-    this._gradTablesFx = d.createBuffer({ label: 'nrc-gradTablesFx', size: Math.max(16, tableScalars * 4), usage: ST | GPUBufferUsage.COPY_SRC });
-    this._gradTablesF = d.createBuffer({ label: 'nrc-gradTablesF', size: Math.max(16, tableScalars * 4), usage: ST | GPUBufferUsage.COPY_SRC });
-    this._mTables = d.createBuffer({ label: 'nrc-mTables', size: Math.max(16, tableScalars * 4), usage: ST });
-    this._vTables = d.createBuffer({ label: 'nrc-vTables', size: Math.max(16, tableScalars * 4), usage: ST });
-    this._posBuf = d.createBuffer({ label: 'nrc-posBuf', size: Math.max(16, cfg.recordCap * 3 * 4), usage: ST });
-    this._encBwdParamsUbo = d.createBuffer({ label: 'nrc-encBwdParams', size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-
-    const buildPipe = async (code: string, entry: string) => {
-      const mod = d.createShaderModule({ label: entry, code });
-      const ci = await mod.getCompilationInfo?.();
-      const errs = ci?.messages?.filter((x) => x.type === 'error') ?? [];
-      if (errs.length) {
-        throw new Error(`shader '${entry}' compile error: ${errs.map((e) => `${e.lineNum}:${e.message}`).join('; ')}`);
-      }
-      return d.createComputePipelineAsync({ label: entry, layout: 'auto', compute: { module: mod, entryPoint: entry } });
-    };
-    this._pEncodeBackward = await buildPipe(
-      nrcEncodeBackwardWgsl({ levels: cfg.levels, featuresPerEntry: cfg.featuresPerEntry, inWidth: this._inW }),
-      'nrcEncodeBackward',
+    // ── Hash-grid TABLE trainer (the trainable encoding). ──
+    // Owns the encode-backward scatter + grad-finalize + table-Adam pipeline and
+    // its GPU buffers (gradTablesFx/F, m/vTables, posBuf, encBwdParams + the two
+    // persistent UBOs). It Adam-updates _tablesBuf in place using _trainer's
+    // finalized dL/dX. (Müller 2022 Instant-NGP §4.)
+    this._tableTrainer = new HashGridTableTrainer(d, {
+      levels: cfg.levels,
+      featuresPerEntry: cfg.featuresPerEntry,
+      inW: this._inW,
+      tableScalars,
+      recordCap: cfg.recordCap,
+      tableLearningRate: cfg.tableLearningRate,
+    });
+    await this._tableTrainer.build(
+      { gradInputF: this._trainer.gradInputF, tablesBuf: this._tablesBuf, levelsBuf: this._levelsBuf },
+      aabbMin, aabbMax,
     );
-    this._pTableGradFin = await buildPipe(gradFinalizeWgsl(), 'gradFinalize');
-    this._pTableAdam = await buildPipe(ADAM_WGSL, 'adamMain');
 
     // ── Record-gather buffer (read_write from the shader; COPY_SRC for readback) ──
     const recordScalars = cfg.recordCap * this._recordStride;
@@ -312,15 +288,8 @@ export class NrcSubsystem {
       ],
     });
 
-    // EncBwdParams UBO: aabbMin (vec3) + numActive (u32) + aabbMax (vec3) + pad.
-    // numActive is rewritten per frame in trainFromRecords; the AABB is static.
-    {
-      const ab = new ArrayBuffer(32);
-      const f = new Float32Array(ab);
-      f[0] = aabbMin[0]; f[1] = aabbMin[1]; f[2] = aabbMin[2]; // [3] numActive (u32) set per frame
-      f[4] = aabbMax[0]; f[5] = aabbMax[1]; f[6] = aabbMax[2];
-      d.queue.writeBuffer(this._encBwdParamsUbo, 0, ab);
-    }
+    // (The EncBwdParams UBO + the grad-finalize count UBO are written once inside
+    // HashGridTableTrainer.build() above.)
 
     this._batchX = new Float32Array(cfg.recordCap * this._inW);
     this._batchY = new Float32Array(cfg.recordCap * OUT_W);
@@ -391,94 +360,13 @@ export class NrcSubsystem {
       // backward upstream signal). Then scatter dL/dfeature into the trainable
       // hash-grid tables + run the TABLE Adam step (Müller 2022 Instant-NGP §4).
       this._trainer.trainStep(this.cfg.learningRate);
-      this._tableTrainStep(filled);
+      // TABLE training step (encode-backward scatter → grad finalize → table
+      // Adam). Owned by the peer HashGridTableTrainer; it reads the trainer's
+      // finalized dL/dX + the dense query positions and Adam-updates _tablesBuf.
+      this._tableTrainer.step(this._batchPos, filled);
     } finally {
       this._readPending = false;
     }
-  }
-
-  /**
-   * Hash-grid TABLE training step (the half that makes the encoding LEARN):
-   *   1. upload the dense query positions + active count;
-   *   2. clear gradTablesFx, dispatch the encode-backward scatter (reads the
-   *      trainer's finalized dL/dX, the first L·F columns are dL/dfeature);
-   *   3. finalize gradTablesFx → gradTablesF;
-   *   4. Adam over _tablesBuf with its own moment state + (higher) table LR.
-   * EXACT mirror of nrcEncoding.ts hashGridBackward + a standard Adam.
-   */
-  private _tableTrainStep(numActive: number): void {
-    const d = this._device;
-    // (1) upload dense positions + active count.
-    d.queue.writeBuffer(this._posBuf, 0, this._batchPos.subarray(0, numActive * 3) as unknown as BufferSource);
-    d.queue.writeBuffer(this._encBwdParamsUbo, 12, new Uint32Array([numActive >>> 0]) as unknown as BufferSource); // numActive at byte 12
-
-    // (2) clear scatter target, dispatch encode-backward.
-    const encClear = d.createCommandEncoder();
-    encClear.clearBuffer(this._gradTablesFx);
-    d.queue.submit([encClear.finish()]);
-
-    const enc = d.createCommandEncoder();
-    {
-      const bg = d.createBindGroup({
-        layout: this._pEncodeBackward.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._posBuf } },
-          { binding: 1, resource: { buffer: this._trainer.gradInputF } },
-          { binding: 2, resource: { buffer: this._levelsBuf } },
-          { binding: 3, resource: { buffer: this._gradTablesFx } },
-          { binding: 4, resource: { buffer: this._encBwdParamsUbo } },
-        ],
-      });
-      const pass = enc.beginComputePass();
-      pass.setPipeline(this._pEncodeBackward); pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(numActive / 64));
-      pass.end();
-    }
-    // (3) finalize gradTablesFx → gradTablesF (i32 fixed-point → f32, clears fx).
-    {
-      const u = new Uint32Array(4); u[0] = this._tableScalars;
-      const ub = d.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      d.queue.writeBuffer(ub, 0, u);
-      const bg = d.createBindGroup({
-        layout: this._pTableGradFin.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._gradTablesFx } },
-          { binding: 1, resource: { buffer: this._gradTablesF } },
-          { binding: 2, resource: { buffer: ub } },
-        ],
-      });
-      const pass = enc.beginComputePass();
-      pass.setPipeline(this._pTableGradFin); pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(this._tableScalars / 64));
-      pass.end();
-    }
-    // (4) table Adam over _tablesBuf with its own moments + table LR.
-    this._tableAdamT++;
-    const bc1 = 1 - Math.pow(0.9, this._tableAdamT);
-    const bc2 = 1 - Math.pow(0.999, this._tableAdamT);
-    {
-      const ab = new ArrayBuffer(48);
-      new Uint32Array(ab, 0, 1)[0] = this._tableScalars;
-      const f = new Float32Array(ab);
-      f[4] = this.cfg.tableLearningRate; f[5] = 0.9; f[6] = 0.999; f[7] = 1e-8; f[8] = bc1; f[9] = bc2;
-      const ub = d.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-      d.queue.writeBuffer(ub, 0, ab);
-      const bg = d.createBindGroup({
-        layout: this._pTableAdam.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: { buffer: this._tablesBuf } },
-          { binding: 1, resource: { buffer: this._gradTablesF } },
-          { binding: 2, resource: { buffer: this._mTables } },
-          { binding: 3, resource: { buffer: this._vTables } },
-          { binding: 4, resource: { buffer: ub } },
-        ],
-      });
-      const pass = enc.beginComputePass();
-      pass.setPipeline(this._pTableAdam); pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(Math.ceil(this._tableScalars / 64));
-      pass.end();
-    }
-    d.queue.submit([enc.finish()]);
   }
 
   dispose(): void {
@@ -487,15 +375,13 @@ export class NrcSubsystem {
     this._recordsBuf?.destroy();
     this._recordReadback?.destroy();
     this._cfgUbo?.destroy();
-    // table-training resources.
-    this._gradTablesFx?.destroy();
-    this._gradTablesF?.destroy();
-    this._mTables?.destroy();
-    this._vTables?.destroy();
-    this._posBuf?.destroy();
-    this._encBwdParamsUbo?.destroy();
-    // The trainer owns its own GPU buffers; it has no dispose() yet (it is a
-    // self-contained harness), so its buffers are released when the device is.
+    // The hash-grid TABLE trainer owns its ~8 GPU buffers (grad scatter/finalize,
+    // Adam moments, pos staging, persistent UBOs); release them now. dispose() is
+    // idempotent + safe if init never ran.
+    this._tableTrainer?.dispose();
+    // The MLP trainer owns its own ~18 GPU buffers; release them now (it was built
+    // in initialize()). dispose() is idempotent + safe if init never ran.
+    this._trainer?.dispose();
   }
 }
 

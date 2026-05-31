@@ -47,6 +47,21 @@ function dot3(a: Vec3, b: Vec3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+/**
+ * Right-handed orthonormal tangent/bitangent for a (normalized) surface normal,
+ * picking a stable up-reference to avoid the degeneracy when `n ≈ ±Y`. Single
+ * source for the two TBN constructions in this file (the cosine-hemisphere frame
+ * in {@link finishBounce0} and the disc-area in-plane frame). The reference pick
+ * (`abs(n.y) < 0.999 ? +Y : +X`) and cross order MUST stay byte-identical to the
+ * GPU/pt-webgpu mirror — the emitter sample feeds RNG-correlated path building.
+ */
+function buildTangentFrame(n: Vec3): { t: Vec3; b: Vec3 } {
+  const up: Vec3 = Math.abs(n[1]) < 0.999 ? [0, 1, 0] : [1, 0, 0];
+  const t = normalize3(cross3(up, n));
+  const b = cross3(n, t);
+  return { t, b };
+}
+
 function finishBounce0(
   emitPos: Vec3,
   emitNormal: Vec3,
@@ -62,9 +77,7 @@ function finishBounce0(
   const x = r * Math.cos(phi);
   const y = r * Math.sin(phi);
   const z = Math.sqrt(Math.max(0, 1 - u1));
-  const tx: Vec3 = Math.abs(n[1]) < 0.999 ? [0, 1, 0] : [1, 0, 0];
-  const t = normalize3(cross3(tx, n));
-  const b = cross3(n, t);
+  const { t, b } = buildTangentFrame(n);
   const wi = normalize3([
     t[0] * x + b[0] * y + n[0] * z,
     t[1] * x + b[1] * y + n[1] * z,
@@ -145,9 +158,7 @@ export function sampleBdptBounce0FromScene(
       const r = Math.sqrt(u * u + v * v) * emitter.radius;
       const angle = Math.atan2(v, u);
       const n = normalize3(emitter.normal);
-      const tx: Vec3 = Math.abs(n[1]) < 0.999 ? [0, 1, 0] : [1, 0, 0];
-      const t = normalize3(cross3(tx, n));
-      const b = cross3(n, t);
+      const { t, b } = buildTangentFrame(n);
       const emitPos: Vec3 = [
         emitter.position[0] + (t[0] * Math.cos(angle) + b[0] * Math.sin(angle)) * r,
         emitter.position[1] + (t[1] * Math.cos(angle) + b[1] * Math.sin(angle)) * r,

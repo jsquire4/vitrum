@@ -38,6 +38,8 @@ import {
 } from '@vitrum/pt-webgpu';
 
 import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
+import { wrapWithIdempotentDispose } from './idempotentDispose.js';
+import { configureWebGpuCanvas } from './configureWebGpuCanvas.js';
 import {
   DEFAULT_PRIMARY_LIGHT_DIR,
   DEFAULT_PRIMARY_LIGHT_INTENSITY,
@@ -52,6 +54,10 @@ import {
 
 export type { EnginePreference, ScaleDefaults };
 export { pickBackend, deriveScaleDefaults, mergeWalkaroundTlasExtension };
+
+// Re-exported for unit-test access (tests import it from this module's path).
+// @internal — not part of the public `@vitrum/engine` API surface.
+export { wrapWithIdempotentDispose } from './idempotentDispose.js';
 
 // Deliberately structurally-typed to avoid a hard `import * as THREE` here —
 // users may bring their own three.js version. The factory only reads the
@@ -215,6 +221,7 @@ async function constructWalkaround(
       ? profile.recommendedRealtimeTier
       : undefined;
 
+  const advancedHybrid = opts.advanced as Partial<HybridEngineOptions> | undefined;
   const merged: HybridEngineOptions = {
     device,
     width: Math.max(1, opts.canvas.width),
@@ -226,8 +233,6 @@ async function constructWalkaround(
     ...(threeSceneForCtor != null ? { threeScene: threeSceneForCtor } : {}),
     cameraMoveResetThresholdSq: scaleDefaults.cameraMoveResetThresholdSq,
     temporalAccumAlpha: scaleDefaults.temporalAccumAlpha,
-    emitterDist2Floor: scaleDefaults.emitterDist2Floor,
-    triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
     debug: opts.debug ?? false,
     // Phase-0 — resource tier + default quality preset. The lite-aware TLAS
     // merge below + the advanced spread both run AFTER these, so a host's
@@ -235,12 +240,22 @@ async function constructWalkaround(
     tier: useLite ? 'lite' : 'full',
     ...(recommendedTier !== undefined ? { qualityTier: recommendedTier } : {}),
     ...mergeWalkaroundTlasExtension(
-      opts.advanced as Partial<HybridEngineOptions> | undefined,
+      advancedHybrid,
       // Lite forces merged BVH inside HybridEngine regardless; don't auto-set
       // the TLAS extension when lite, so a needs-TLAS scene still runs merged
       // on a weak adapter (the engine warns about reduced instanced fidelity).
       needsTlas && !useLite,
     ),
+    // Theme-H — the audit tuning knobs moved to the nested `tuning` namespace
+    // (`Partial<Tunables>`). Placed LAST (after the `advanced` spread) and
+    // deep-merged so the host's `advanced.tuning` overrides PER-KEY on top of
+    // the scale-derived floors — matching the pre-Theme-H per-key flat override
+    // (a wholesale `tuning` replace would drop scale floors the host omitted).
+    tuning: {
+      emitterDist2Floor: scaleDefaults.emitterDist2Floor,
+      triIntersectEpsilon: scaleDefaults.triIntersectEpsilon,
+      ...(advancedHybrid?.tuning ?? {}),
+    },
   };
 
   const engine = await createWalkaroundEngine_Hybrid(merged);
@@ -253,28 +268,7 @@ async function constructWalkaround(
   // this configure step, a host using attachVitrum() against a WebGPU
   // backend gets a black canvas. We configure here (not in attachVitrum)
   // because createEngine owns the GPUDevice handle.
-  try {
-    const ctx = opts.canvas.getContext('webgpu');
-    if (ctx != null) {
-      const format = (typeof navigator !== 'undefined' && 'gpu' in navigator
-        ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
-            .getPreferredCanvasFormat?.() ?? ('bgra8unorm')
-        : ('bgra8unorm' as GPUTextureFormat));
-      ctx.configure({
-        device,
-        format,
-        // OPAQUE compositing — matches HybridEngine.renderFrame's resolve pass
-        // (which writes RGB with alpha = 1.0). PREMULTIPLIED would double-
-        // composite the canvas over the page background.
-        alphaMode: 'opaque',
-      });
-    }
-  } catch {
-    // Best-effort. Hosts that pre-configure their own context (or use a
-    // headless test canvas with no getContext('webgpu') support) are fine —
-    // attachVitrum will simply not plumb swapChainView and HybridEngine
-    // will skip frames cleanly.
-  }
+  configureWebGpuCanvas(opts.canvas, device);
 
   return wrapWithIdempotentDispose(engine, () => {
     try { device.destroy(); } catch {}
@@ -302,18 +296,7 @@ async function constructPathTracerWebGPU(
   const engine = await createPTEngine_WebGPU(merged);
   engine.setScene(vitrumScene);
 
-  try {
-    const ctx = opts.canvas.getContext('webgpu');
-    if (ctx != null) {
-      const format = (typeof navigator !== 'undefined' && 'gpu' in navigator
-        ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
-            .getPreferredCanvasFormat?.() ?? ('bgra8unorm')
-        : ('bgra8unorm' as GPUTextureFormat));
-      ctx.configure({ device, format, alphaMode: 'opaque' });
-    }
-  } catch {
-    // Best-effort canvas configure for attachVitrum swap-chain plumbing.
-  }
+  configureWebGpuCanvas(opts.canvas, device);
 
   return wrapWithIdempotentDispose(engine, () => {
     try { device.destroy(); } catch {}
@@ -376,147 +359,4 @@ function isThreeScene(s: Scene | ThreeSceneLike): s is ThreeSceneLike {
   return typeof s === 'object'
     && s != null
     && (s as { isScene?: unknown }).isScene === true;
-}
-
-/** Wrap an engine so that calling .dispose() multiple times is a no-op
- *  beyond the first call. The plan calls this out as an explicit
- *  acceptance criterion ("engine.dispose() followed by engine.dispose()
- *  is idempotent").
- *
- *  @internal Exported for unit-test access only. Not part of the public
- *  `@vitrum/engine` API surface; consumers should use {@link createEngine}
- *  / {@link attachVitrum}. */
-export function wrapWithIdempotentDispose(
-  engine: Engine,
-  postDispose: () => void,
-): Engine {
-  let disposed = false;
-  const patchSupport = engine.capabilities.incrementalPatchSupport;
-  const primitivePatchAdvertised = patchSupport == null
-    ? engine.capabilities.supportsIncrementalScene
-    : (
-        patchSupport.transform
-        || patchSupport.positions
-        || patchSupport.material
-        || patchSupport.topology
-      );
-  const emitterPatchAdvertised = patchSupport == null
-    ? engine.capabilities.supportsIncrementalScene
-    : patchSupport.emitter;
-  // Whole-primitive add/remove is gated on the dedicated capability (was
-  // write-only — set by every backend but never consulted, so the facade
-  // silently dropped addPrimitive/removePrimitive even when supported).
-  const addRemoveAdvertised = engine.capabilities.supportsAddRemovePrimitive === true;
-  const proxy: Engine = {
-    get state() { return engine.state; },
-    get capabilities() { return engine.capabilities; },
-    setScene(scene) { if (!disposed) engine.setScene(scene); },
-    ...(primitivePatchAdvertised && engine.updatePrimitive
-      ? {
-          updatePrimitive: (id: string, patch: Parameters<NonNullable<Engine['updatePrimitive']>>[1]) => {
-            if (!disposed) engine.updatePrimitive!(id, patch);
-          },
-        }
-      : {}),
-    ...(emitterPatchAdvertised && engine.updateEmitter
-      ? {
-          updateEmitter: (id: string, patch: Parameters<NonNullable<Engine['updateEmitter']>>[1]) => {
-            if (!disposed) engine.updateEmitter!(id, patch);
-          },
-        }
-      : {}),
-    ...(addRemoveAdvertised && engine.addPrimitive
-      ? {
-          addPrimitive: (primitive: Parameters<NonNullable<Engine['addPrimitive']>>[0]) => {
-            if (!disposed) engine.addPrimitive!(primitive);
-          },
-        }
-      : {}),
-    ...(addRemoveAdvertised && engine.removePrimitive
-      ? {
-          removePrimitive: (id: Parameters<NonNullable<Engine['removePrimitive']>>[0]) => {
-            if (!disposed) engine.removePrimitive!(id);
-          },
-        }
-      : {}),
-    ...(engine.updateEnvironment
-      ? {
-          updateEnvironment: (env: Parameters<NonNullable<Engine['updateEnvironment']>>[0]) => {
-            if (!disposed) engine.updateEnvironment!(env);
-          },
-        }
-      : {}),
-    ...(engine.setSize
-      ? {
-          setSize: (w: number, h: number) => {
-            if (!disposed) engine.setSize!(w, h);
-          },
-        }
-      : {}),
-    ...(engine.updateLighting
-      ? {
-          updateLighting: (opts: Parameters<NonNullable<Engine['updateLighting']>>[0]) => {
-            if (!disposed) engine.updateLighting!(opts);
-          },
-        }
-      : {}),
-    renderFrame(input) {
-      if (disposed) {
-        // Returning a no-op output keeps host RAF loops from crashing if
-        // they race the dispose. The host is expected to stop rendering
-        // when state === 'disposed'.
-        return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
-      }
-      return engine.renderFrame(input);
-    },
-    reset() { if (!disposed) engine.reset(); },
-    pause() { if (!disposed) engine.pause(); },
-    resume() { if (!disposed) engine.resume(); },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      try { engine.dispose(); } catch {}
-      try { postDispose(); } catch {}
-    },
-    ...(engine.onFrame
-      ? {
-          onFrame: (cb: Parameters<NonNullable<Engine['onFrame']>>[0]) => {
-            if (disposed) return () => {};
-            return engine.onFrame!(cb);
-          },
-        }
-      : {}),
-    ...(engine.onProgress
-      ? {
-          onProgress: (cb: Parameters<NonNullable<Engine['onProgress']>>[0]) => {
-            if (disposed) return () => {};
-            return engine.onProgress!(cb);
-          },
-        }
-      : {}),
-    // T3.G followup — pass the underlying engine.debug surface through
-    // unchanged. Methods are bound to the engine instance, so calling
-    // proxy.debug.atlasTexture() reads live state. After dispose, the
-    // surface still exists but most methods will return null / empty
-    // because the underlying _ddgi / _pipeline / _bvhBuffers are torn down.
-    ...(engine.debug ? { debug: engine.debug } : {}),
-    // WS5 — forward inverse-rendering (differentiable RT) sessions only when
-    // the backend implements them (mirrors the optional-method pattern above).
-    // After dispose the proxy refuses to open a new session (the engine is
-    // torn down); an already-open session the host holds keeps working until
-    // the host disposes it. Sessions outlive a single frame but not the engine.
-    ...(engine.createInverseSession
-      ? {
-          createInverseSession: (
-            inverseOpts: Parameters<NonNullable<Engine['createInverseSession']>>[0],
-          ) => {
-            if (disposed) {
-              throw new Error('createInverseSession: engine is disposed');
-            }
-            return engine.createInverseSession!(inverseOpts);
-          },
-        }
-      : {}),
-  };
-  return proxy;
 }

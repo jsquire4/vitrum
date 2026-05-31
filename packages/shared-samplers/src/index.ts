@@ -44,8 +44,8 @@ export {
   regirBuildSurvivorCPU,
   regirCellTargetFromTree,
   regirCellPmfExact,
-} from './lightTree.js';
-export type { ReGIRSurvivor } from './lightTree.js';
+} from './regir.js';
+export type { ReGIRSurvivor } from './regir.js';
 export { balanceHeuristic, powerHeuristic, mixturePdf } from './mixturePdf.js';
 export { evaluateHG, sampleHG, pdfHG } from './hgPhase.js';
 export { sampleEquiAngular } from './equiAngular.js';

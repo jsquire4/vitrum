@@ -6,6 +6,12 @@
 import { luminance as luminance709 } from '@vitrum/shared-samplers';
 
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
+import {
+  meshTriangleArea,
+  rectQuadArea,
+  walkPositionalEmitters,
+  type PositionalEmitter,
+} from './flatEmitterWalk.js';
 
 const PI = Math.PI;
 
@@ -56,6 +62,23 @@ export function bdptEmitterCount(sb: UploadedSceneBuffers): number {
   return n;
 }
 
+/** Per-emitter luminous power for one positional light (matches the GPU term). */
+function positionalEmitterPower(e: PositionalEmitter): number {
+  switch (e.kind) {
+    case 'point':
+    case 'spot':
+      return bdptLightLuminance(e.radiance);
+    case 'rect': {
+      const area = Math.max(rectQuadArea(e.uAxis, e.vAxis), 1e-6);
+      return area * bdptLightLuminance(e.radiance);
+    }
+    case 'mesh': {
+      const area = Math.max(meshTriangleArea(e.triA, e.triB, e.triC), 1e-6);
+      return area * bdptLightLuminance(e.radiance);
+    }
+  }
+}
+
 export function bdptEmitterPower(sb: UploadedSceneBuffers, flatIdx: number): number {
   let cur = 0;
   const irr = sb.directionalIrradiance;
@@ -65,88 +88,9 @@ export function bdptEmitterPower(sb: UploadedSceneBuffers, flatIdx: number): num
     }
     cur += 1;
   }
-  for (let pi = 0; pi < sb.pointLightCount; pi += 1) {
+  for (const e of walkPositionalEmitters(sb)) {
     if (cur === flatIdx) {
-      const o = pi * 8;
-      return bdptLightLuminance([
-        sb.pointLightsData[o + 4]!,
-        sb.pointLightsData[o + 5]!,
-        sb.pointLightsData[o + 6]!,
-      ]);
-    }
-    cur += 1;
-  }
-  for (let si = 0; si < sb.spotLightCount; si += 1) {
-    if (cur === flatIdx) {
-      const o = si * 12;
-      return bdptLightLuminance([
-        sb.spotLightsData[o + 8]!,
-        sb.spotLightsData[o + 9]!,
-        sb.spotLightsData[o + 10]!,
-      ]);
-    }
-    cur += 1;
-  }
-  for (let ri = 0; ri < sb.rectAreaLightCount; ri += 1) {
-    if (cur === flatIdx) {
-      const rb = ri * 16;
-      const ru = [
-        sb.rectAreaLightsData[rb + 4]!,
-        sb.rectAreaLightsData[rb + 5]!,
-        sb.rectAreaLightsData[rb + 6]!,
-      ];
-      const rv = [
-        sb.rectAreaLightsData[rb + 8]!,
-        sb.rectAreaLightsData[rb + 9]!,
-        sb.rectAreaLightsData[rb + 10]!,
-      ];
-      const rr = [
-        sb.rectAreaLightsData[rb + 12]!,
-        sb.rectAreaLightsData[rb + 13]!,
-        sb.rectAreaLightsData[rb + 14]!,
-      ];
-      const cross = [
-        ru[1]! * rv[2]! - ru[2]! * rv[1]!,
-        ru[2]! * rv[0]! - ru[0]! * rv[2]!,
-        ru[0]! * rv[1]! - ru[1]! * rv[0]!,
-      ];
-      const area = Math.max(4 * Math.hypot(cross[0]!, cross[1]!, cross[2]!), 1e-6);
-      return area * bdptLightLuminance([rr[0]!, rr[1]!, rr[2]!]);
-    }
-    cur += 1;
-  }
-  for (let mi = 0; mi < sb.meshAreaLightCount; mi += 1) {
-    if (cur === flatIdx) {
-      const mb = mi * 16;
-      const a = [
-        sb.meshAreaLightsData[mb]!,
-        sb.meshAreaLightsData[mb + 1]!,
-        sb.meshAreaLightsData[mb + 2]!,
-      ];
-      const b = [
-        sb.meshAreaLightsData[mb + 4]!,
-        sb.meshAreaLightsData[mb + 5]!,
-        sb.meshAreaLightsData[mb + 6]!,
-      ];
-      const c = [
-        sb.meshAreaLightsData[mb + 8]!,
-        sb.meshAreaLightsData[mb + 9]!,
-        sb.meshAreaLightsData[mb + 10]!,
-      ];
-      const mr = [
-        sb.meshAreaLightsData[mb + 12]!,
-        sb.meshAreaLightsData[mb + 13]!,
-        sb.meshAreaLightsData[mb + 14]!,
-      ];
-      const e1 = [b[0]! - a[0]!, b[1]! - a[1]!, b[2]! - a[2]!];
-      const e2 = [c[0]! - a[0]!, c[1]! - a[1]!, c[2]! - a[2]!];
-      const cross = [
-        e1[1]! * e2[2]! - e1[2]! * e2[1]!,
-        e1[2]! * e2[0]! - e1[0]! * e2[2]!,
-        e1[0]! * e2[1]! - e1[1]! * e2[0]!,
-      ];
-      const area = Math.max(0.5 * Math.hypot(cross[0]!, cross[1]!, cross[2]!), 1e-6);
-      return area * bdptLightLuminance([mr[0]!, mr[1]!, mr[2]!]);
+      return positionalEmitterPower(e);
     }
     cur += 1;
   }
@@ -239,132 +183,54 @@ export function sampleBdptBounce0Cpu(
     }
     cur += 1;
   }
-  for (let pi = 0; pi < sb.pointLightCount; pi += 1) {
+  for (const e of walkPositionalEmitters(sb)) {
     if (cur === flat) {
-      const o = pi * 8;
-      const pos: [number, number, number] = [
-        sb.pointLightsData[o]!,
-        sb.pointLightsData[o + 1]!,
-        sb.pointLightsData[o + 2]!,
-      ];
-      const rad: [number, number, number] = [
-        sb.pointLightsData[o + 4]!,
-        sb.pointLightsData[o + 5]!,
-        sb.pointLightsData[o + 6]!,
-      ];
-      return finish(pos, [0, 1, 0], rad, discretePdf);
-    }
-    cur += 1;
-  }
-  for (let si = 0; si < sb.spotLightCount; si += 1) {
-    if (cur === flat) {
-      const o = si * 12;
-      const pos: [number, number, number] = [
-        sb.spotLightsData[o]!,
-        sb.spotLightsData[o + 1]!,
-        sb.spotLightsData[o + 2]!,
-      ];
-      const axis = [
-        sb.spotLightsData[o + 4]!,
-        sb.spotLightsData[o + 5]!,
-        sb.spotLightsData[o + 6]!,
-      ];
-      const spotDir = normalize3([axis[0]!, axis[1]!, axis[2]!]);
-      const rad: [number, number, number] = [
-        sb.spotLightsData[o + 8]!,
-        sb.spotLightsData[o + 9]!,
-        sb.spotLightsData[o + 10]!,
-      ];
-      return finish(pos, spotDir, rad, discretePdf);
-    }
-    cur += 1;
-  }
-  for (let ri = 0; ri < sb.rectAreaLightCount; ri += 1) {
-    if (cur === flat) {
-      const rb = ri * 16;
-      const rpos: [number, number, number] = [
-        sb.rectAreaLightsData[rb]!,
-        sb.rectAreaLightsData[rb + 1]!,
-        sb.rectAreaLightsData[rb + 2]!,
-      ];
-      const ru = [
-        sb.rectAreaLightsData[rb + 4]!,
-        sb.rectAreaLightsData[rb + 5]!,
-        sb.rectAreaLightsData[rb + 6]!,
-      ];
-      const rv = [
-        sb.rectAreaLightsData[rb + 8]!,
-        sb.rectAreaLightsData[rb + 9]!,
-        sb.rectAreaLightsData[rb + 10]!,
-      ];
-      const rr: [number, number, number] = [
-        sb.rectAreaLightsData[rb + 12]!,
-        sb.rectAreaLightsData[rb + 13]!,
-        sb.rectAreaLightsData[rb + 14]!,
-      ];
-      const u = uHemi * 2 - 1;
-      const v = (1 - uHemi) * 2 - 1;
-      const emitPos: [number, number, number] = [
-        rpos[0] + ru[0]! * u + rv[0]! * v,
-        rpos[1] + ru[1]! * u + rv[1]! * v,
-        rpos[2] + ru[2]! * u + rv[2]! * v,
-      ];
-      const emitNormal = normalize3(
-        cross3(
-          [ru[0]!, ru[1]!, ru[2]!],
-          [rv[0]!, rv[1]!, rv[2]!],
-        ),
-      );
-      return finish(emitPos, emitNormal, rr, discretePdf);
-    }
-    cur += 1;
-  }
-  for (let mi = 0; mi < sb.meshAreaLightCount; mi += 1) {
-    if (cur === flat) {
-      const mb = mi * 16;
-      const a: [number, number, number] = [
-        sb.meshAreaLightsData[mb]!,
-        sb.meshAreaLightsData[mb + 1]!,
-        sb.meshAreaLightsData[mb + 2]!,
-      ];
-      const b: [number, number, number] = [
-        sb.meshAreaLightsData[mb + 4]!,
-        sb.meshAreaLightsData[mb + 5]!,
-        sb.meshAreaLightsData[mb + 6]!,
-      ];
-      const c: [number, number, number] = [
-        sb.meshAreaLightsData[mb + 8]!,
-        sb.meshAreaLightsData[mb + 9]!,
-        sb.meshAreaLightsData[mb + 10]!,
-      ];
-      const mr: [number, number, number] = [
-        sb.meshAreaLightsData[mb + 12]!,
-        sb.meshAreaLightsData[mb + 13]!,
-        sb.meshAreaLightsData[mb + 14]!,
-      ];
-      const r1 = uHemi;
-      const r2 = 1 - uHemi * 0.5;
-      const su = Math.sqrt(r1);
-      const uu = 1 - su;
-      const vv = r2 * su;
-      const ww = 1 - uu - vv;
-      const emitPos: [number, number, number] = [
-        a[0] * uu + b[0] * vv + c[0] * ww,
-        a[1] * uu + b[1] * vv + c[1] * ww,
-        a[2] * uu + b[2] * vv + c[2] * ww,
-      ];
-      const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-      const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-      const n = cross3(
-        [e1[0]!, e1[1]!, e1[2]!],
-        [e2[0]!, e2[1]!, e2[2]!],
-      );
-      const len = Math.hypot(n[0], n[1], n[2]);
-      if (len < 1e-8) {
-        return null;
+      switch (e.kind) {
+        case 'point':
+          return finish(e.position, [0, 1, 0], e.radiance, discretePdf);
+        case 'spot': {
+          const spotDir = normalize3(e.axis);
+          return finish(e.position, spotDir, e.radiance, discretePdf);
+        }
+        case 'rect': {
+          const ru = e.uAxis;
+          const rv = e.vAxis;
+          const u = uHemi * 2 - 1;
+          const v = (1 - uHemi) * 2 - 1;
+          const emitPos: [number, number, number] = [
+            e.position[0] + ru[0] * u + rv[0] * v,
+            e.position[1] + ru[1] * u + rv[1] * v,
+            e.position[2] + ru[2] * u + rv[2] * v,
+          ];
+          const emitNormal = normalize3(cross3(ru, rv));
+          return finish(emitPos, emitNormal, e.radiance, discretePdf);
+        }
+        case 'mesh': {
+          const a = e.triA;
+          const b = e.triB;
+          const c = e.triC;
+          const r1 = uHemi;
+          const r2 = 1 - uHemi * 0.5;
+          const su = Math.sqrt(r1);
+          const uu = 1 - su;
+          const vv = r2 * su;
+          const ww = 1 - uu - vv;
+          const emitPos: [number, number, number] = [
+            a[0] * uu + b[0] * vv + c[0] * ww,
+            a[1] * uu + b[1] * vv + c[1] * ww,
+            a[2] * uu + b[2] * vv + c[2] * ww,
+          ];
+          const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+          const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+          const n = cross3([e1[0]!, e1[1]!, e1[2]!], [e2[0]!, e2[1]!, e2[2]!]);
+          const len = Math.hypot(n[0], n[1], n[2]);
+          if (len < 1e-8) {
+            return null;
+          }
+          const emitNormal: [number, number, number] = [n[0] / len, n[1] / len, n[2] / len];
+          return finish(emitPos, emitNormal, e.radiance, discretePdf);
+        }
       }
-      const emitNormal: [number, number, number] = [n[0] / len, n[1] / len, n[2] / len];
-      return finish(emitPos, emitNormal, mr, discretePdf);
     }
     cur += 1;
   }

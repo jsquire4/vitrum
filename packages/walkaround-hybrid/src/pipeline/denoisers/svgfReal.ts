@@ -40,6 +40,7 @@ import {
   WGSL_MODULES,
 } from '../wgslModules.js';
 import type { UboRef } from '../bindGroupBuilders.js';
+import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
@@ -246,49 +247,51 @@ export class SVGFRealDenoiser implements Denoiser {
     const sa = this._atrousPipeline;
     const atrousUboBytes = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
     const varView = svgf.svgfVarianceTexture.createView();
-    let inputTex: GPUTexture = radWrite;
     // Collect transient per-iteration UBOs so they can be destroyed after submit().
     // GPUBuffer is a GPU resource — it must be explicitly destroyed; GC does not
     // release GPU memory. The pipeline calls this denoiser's `cleanupAfterSubmit()`
     // hook after `device.queue.submit()` has drained the encoder.
     this._pendingTransientUbos = [];
-    for (let iter = 0; iter < SVGF_REAL_DEFAULT_ATROUS_ITERATIONS; iter++) {
-      packAtrousVarianceAtrousUniforms(
-        { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
-        atrousUboBytes,
-        0,
-      );
-      // One 16-byte UBO per atrous iteration (5 × 16 = 80 bytes total per frame).
-      const iterUbo = device.createBuffer({
-        label: `svgf-real-atrous-ubo-${iter}`,
-        size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      device.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
-      this._pendingTransientUbos.push(iterUbo);
-
-      const outTex = iter % 2 === 0 ? common.denoisedPingTexture : common.denoisedPongTexture;
-      const bg = device.createBindGroup({
-        label: `svgf-real-atrous-bg-${iter}`,
-        layout: sa.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: inputTex.createView() },
-          { binding: 1, resource: outTex.createView() },
-          { binding: 2, resource: gNormalDepthView },
-          { binding: 3, resource: gNormalDepthView },
-          { binding: 4, resource: varView },
-          { binding: 5, resource: { buffer: iterUbo } },
-        ],
-      });
-      const pass = encoder.beginComputePass(
-        computeDesc(`svgf-real-atrous-${iter}` as PassLabel),
-      );
-      pass.setPipeline(sa);
-      pass.setBindGroup(0, bg);
-      pass.dispatchWorkgroups(wgX16, wgY16, 1);
-      pass.end();
-      inputTex = outTex;
-    }
+    const denoised = runAtrousChain(encoder, sa, {
+      iterations: SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
+      startTex: radWrite,
+      pingTex: common.denoisedPingTexture,
+      pongTex: common.denoisedPongTexture,
+      wgX: wgX16,
+      wgY: wgY16,
+      computeDesc,
+      // Each iteration allocates its own transient UBO (so the pipeline can
+      // release them after submit) and assembles the verbatim 6-binding
+      // layout. Identical JS ordering to the prior loop.
+      bindGroupFor: (iter, inputView, outputView) => {
+        packAtrousVarianceAtrousUniforms(
+          { iteration: iter, ...ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS },
+          atrousUboBytes,
+          0,
+        );
+        // One 16-byte UBO per atrous iteration (5 × 16 = 80 bytes total per frame).
+        const iterUbo = device.createBuffer({
+          label: `svgf-real-atrous-ubo-${iter}`,
+          size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
+        this._pendingTransientUbos.push(iterUbo);
+        return device.createBindGroup({
+          label: `svgf-real-atrous-bg-${iter}`,
+          layout: sa.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: inputView },
+            { binding: 1, resource: outputView },
+            { binding: 2, resource: gNormalDepthView },
+            { binding: 3, resource: gNormalDepthView },
+            { binding: 4, resource: varView },
+            { binding: 5, resource: { buffer: iterUbo } },
+          ],
+        });
+      },
+      labelFor: (iter) => `svgf-real-atrous-${iter}` as PassLabel,
+    });
     // Publish current-frame normal+depth for next-frame reprojection checks.
     encoder.copyTextureToTexture(
       { texture: common.gNormalDepthTexture },
@@ -299,7 +302,7 @@ export class SVGFRealDenoiser implements Denoiser {
         depthOrArrayLayers: 1,
       },
     );
-    return inputTex;
+    return denoised;
   }
 
   // ── Transient per-frame UBO bookkeeping ─────────────────────────────────

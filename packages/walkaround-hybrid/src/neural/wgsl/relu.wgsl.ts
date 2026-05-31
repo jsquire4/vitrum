@@ -1,7 +1,7 @@
 /**
  * relu.wgsl.ts — element-wise ReLU activation kernel.
  *
- * Canonical binding layout (Bug 3 fix — no weights/biases, but same group/binding
+ * Canonical binding layout (no weights/biases, but same group/binding
  * structure for buffers that exist):
  *   @group(0) @binding(0)  input  : array<f32>  — input tensor (any shape)
  *   @group(0) @binding(3)  output : array<f32>  — output tensor (same shape, read_write)
