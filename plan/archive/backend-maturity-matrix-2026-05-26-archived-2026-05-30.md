@@ -1,6 +1,8 @@
+> **ARCHIVED 2026-05-30 — completed signoff record.** Exit signal was met on 2026-05-26. Two "current focus" claims below were since inverted by the 2026-05-28/29 waves and are corrected inline; for current backend status see `CLAUDE.md` + `plan/renderer-fidelity-matrix.md`.
+
 # Backend Maturity Matrix
 
-Date: 2026-05-26 (sweep signoff: [backend-maturity-sweep-signoff-2026-05-26.md](./backend-maturity-sweep-signoff-2026-05-26.md))
+Date: 2026-05-26 (sweep signoff: [backend-maturity-sweep-signoff-2026-05-26-archived-2026-05-28.md](./backend-maturity-sweep-signoff-2026-05-26-archived-2026-05-28.md))
 
 This matrix tracks technical maturity only (code, pipeline wiring, runtime reliability).
 It intentionally excludes release governance and distribution posture.
@@ -38,7 +40,7 @@ It intentionally excludes release governance and distribution posture.
 - Deep pipeline integration: **strong** (full/lite tiers; TLAS; spectral hero-λ; layered MIS; OIDN-final; aux G-buffers)
 - Lifecycle reliability: **medium-strong** (Wave 4 soak; host owns pause/resize; not in `auto`)
 - Regression harness coverage: **strong** (WG-0 baseline; gap-closure harness; 120+ package tests)
-- Current focus: hardware gap-closure PASS for RFE scenarios; WG-9 svgf-real available on pt-webgpu full tier and walkaround-hybrid; BDPT v1 shipped on pt-webgpu (CPU light-path fill + evaluateBdptConnection in full-tier kernel via extensions['vitrum.ptWebgpu.bdpt']); GPU light-subpath pass is a follow-up.
+- Current focus: hardware gap-closure PASS for RFE scenarios; WG-9 svgf-real available on walkaround-hybrid only [CORRECTED 2026-05-30: `svgf-real` is `unsupported` on pt-webgpu — SVGF is a real-time 1-spp filter, a regime mismatch for the converged tracer, which uses `oidn-final`]; BDPT v1 shipped on pt-webgpu [CORRECTED 2026-05-30: now a GPU `bdptExtendLightSubpath` compute pass (CPU fill is test-oracle only) + evaluateBdptConnection kernel, enabled via the flat `bdpt: true` option — graduated from the `extensions['vitrum.ptWebgpu.bdpt']` bag in the 2026-05-29 wave].
 
 ## Shared Layers (`core`, `engine`, `shared-*`)
 
@@ -54,5 +56,5 @@ It intentionally excludes release governance and distribution posture.
 
 - Wave 4 hardening gate: `npm run hardening:wave4` (auto-starts dev server for lifecycle soak)
 - Wave 0 baseline: `npm run baseline:wave0`
-- No unresolved high/medium audit parity items for `@vitrum/pt-webgpu` in `plan/pt-webgpu-deep-audit.md`
+- No unresolved high/medium audit parity items for `@vitrum/pt-webgpu` (audit archived at `plan/archive/pt-webgpu-deep-audit-archived-2026-05-28.md`; all findings closed)
 - `/audit`: no blocking findings on sweep revision

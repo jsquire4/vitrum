@@ -1,6 +1,6 @@
 # Renderer fidelity matrix (living document)
 
-Date: 2026-05-26 (WG program signoff — see `plan/WG-signoff-2026-05-26.md`)
+Date: 2026-05-26 (WG program signoff — see `plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`)
 
 This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl`
 (WebGL2 / fork-backed) vs `@vitrum/pt-webgpu` (WGSL prototype advancing toward parity).

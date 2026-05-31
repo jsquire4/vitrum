@@ -12,10 +12,10 @@ Read in this order to onboard:
 
 1. `README.md` — package architecture overview
 2. `plan/library-architecture.md` — package responsibilities, dependencies
-3. `plan/phase-7-restir-gi.md` — current Phase-7 walkaround GI work (Sprints 15–18 shipped: GTAO, ReSTIR-GI RIS/temporal/spatial, per-channel SVGF)
+3. `plan/archive/phase-7-restir-gi-archived-2026-05-28.md` — historical Phase-7 walkaround GI record (Sprints 15–18 shipped: GTAO, ReSTIR-GI RIS/temporal/spatial, per-channel SVGF)
 4. `packages/core/src/scene/` + `src/frame.ts` + `src/engine/` (scene and engine are directories since the A-6/A-7 splits) — the locked-in API contract types
 5. `CREDITS.md` — attribution to ~30 prior works the engine builds on
-6. The other plan/ docs (`library-architecture.md`, `walkaround-without-three.md`, `renderer-fidelity-matrix.md`, `backend-maturity-matrix-2026-05-26.md`, `w8-rc-mis-composition.md`, `complexity-remediation-20260526.md`, `premium-grade-refactor-20260517.md`) are the active docs. Completed-sprint artifacts live in `plan/archive/` (the 2026-05-28 context sweep archived ~19 more completed docs there).
+6. The other plan/ docs (`library-architecture.md`, `walkaround-without-three.md`, `renderer-fidelity-matrix.md`, `roadmap.md`, `premium-grade-refactor-20260517.md`) are the active docs. Completed-sprint artifacts live in `plan/archive/` (the 2026-05-28 + 2026-05-30 context sweeps archived completed docs there, including `backend-maturity-matrix-2026-05-26`, `w8-rc-mis-composition`, and the superseded `complexity-remediation-20260526` draft).
 
 ## What's done
 
@@ -41,9 +41,9 @@ Read in this order to onboard:
 - R1 — Pass + Denoiser registry foundation (`11c4698`, `feat/refactor-w1r1-pass-registry-foundation`).
 - R2 — FrameResources god-struct split into 8 per-algorithm sub-structs (`834f441`, `feat/refactor-w1r2-frame-resources-split`).
 - R3+R4 — denoiser migration to self-contained registry entries (`987b3fb`, `feat/refactor-w1r3r4-denoiser-migration`).
-- R5 — declarative `PASS_ORDER` via `PassRegistry`; 18 self-contained Pass classes (20 today, after later passes); `renderFrame` becomes a registry-iteration loop (`60dd48b`, `feat/refactor-w1r5-declarative-pass-order`).
-- R6 — declarative WGSL include-graph; 27-entry `WGSL_MODULES` registry (34 today); `composeWgsl` topo-sort replaces 9 hand-rolled `COMMON_WGSL + X_WGSL` concat patterns (`29ccf96`, `feat/refactor-w1r6-wgsl-include-graph`).
-- Aggregate: `WalkaroundGPUPipeline.ts` 1574 → 964 LOC at W1 close (-39%; has since grown with later passes, ~1063 today); 354 → 424 tests; typecheck clean every round.
+- R5 — declarative `PASS_ORDER` via `PassRegistry`; 18 self-contained Pass classes (21 today, after later passes); `renderFrame` becomes a registry-iteration loop (`60dd48b`, `feat/refactor-w1r5-declarative-pass-order`).
+- R6 — declarative WGSL include-graph; 27-entry `WGSL_MODULES` registry (54 today); `composeWgsl` topo-sort replaces 9 hand-rolled `COMMON_WGSL + X_WGSL` concat patterns (`29ccf96`, `feat/refactor-w1r6-wgsl-include-graph`).
+- Aggregate: `WalkaroundGPUPipeline.ts` 1574 → 964 LOC at W1 close (-39%; has since grown with later passes, ~1534 today); 354 → 424 tests; typecheck clean every round.
 
 ### W2 — shared-package dedup / hoisting
 
@@ -117,10 +117,10 @@ Read in this order to onboard:
 
 ## Where things actually stand (read this before claiming "ready")
 
-The 2026-05-11 deep math/physics sweep + the 2026-05-17 complexity sweep + the 2026-05-17 judge-mode audit + the 2026-05-18 structural sweep have largely been worked through. The `items_to_fix.md` file at the repo root is the **authoritative** open-bug list — each entry was re-verified by opening the cited file before being kept. After W1–W7 / W11 / W12 / W13 / items-to-fix landings + the 2026-05-18 sweep landings (HybridEngine decomp, WalkaroundGPUPipeline split, pathTraceBruteforce split, core/scene + core/engine splits, Cornell-magic UBO migration, iblBaker per-instance hoist, scene-lighting package extract, renderFrame denoiser-pass collapse, webGpuTextureUpload migration, Möller-Trumbore canonical hoist), **Sections A and C of `items_to_fix.md` are empty of open items, and B1 closed on 2026-05-18**; only one Section B item remains:
+The 2026-05-11 deep math/physics sweep + the 2026-05-17 complexity sweep + the 2026-05-17 judge-mode audit + the 2026-05-18 structural sweep have largely been worked through. The `items_to_fix.md` file at the repo root is the **authoritative** open-bug list — each entry was re-verified by opening the cited file before being kept. After W1–W7 / W11 / W12 / W13 / items-to-fix landings + the 2026-05-18 sweep landings (HybridEngine decomp, WalkaroundGPUPipeline split, pathTraceBruteforce split, core/scene + core/engine splits, Cornell-magic UBO migration, iblBaker per-instance hoist, scene-lighting package extract, renderFrame denoiser-pass collapse, webGpuTextureUpload migration, Möller-Trumbore canonical hoist), **all of Sections A / B / C of `items_to_fix.md` are closed, and the Section E merge-race backlog (E1–E7) is closed as well** (per the 2026-05-24 reconciliation at the top of that file). Two notable closures for reference:
 
-- **B2 — RC into HybridEngine** — W8 sprint **shipped end-to-end (2026-05-18)**: Phase 1A (cascade data types THREE-free), Phase 1B (`RCDispatcher.dispatchFrameRaw` raw-GPU entry), Phase 2 (`HybridEngineOptions.rcEnabled` + per-engine `RCSubsystem`), Phase 3 (shade.wgsl `sampleCascadeC0` + Track-A balance-heuristic MIS via `rcWeight` option), and Phase 4 (gated `rcAcceptance.gpu.test.ts` + reference-render landings in `tools/reference-renders/W8-rc-{off,on}/`) all landed. The harness for the actual GPU capture lives in `tools/benchmark-runner/` once it grows an `rc-acceptance` mode; the host-side wiring + MIS math is pinned by `packRCParams` tests + the `wgslCompose` order pin. See [plan/w8-rc-mis-composition.md](./plan/w8-rc-mis-composition.md) for the full sprint trace.
-- **`pt-webgpu` glossy BSDF sampling/PDF mismatch** — **fixed** (`a7dd51a`; Heitz 2018 VNDF in `bsdf.wgsl.ts`). Deep-audit findings are closed (`plan/pt-webgpu-deep-audit.md`). Remaining pt-webgpu work is **fidelity promotion** (renderer matrix rows still `experimental`) and adapter-tier limits (lite vs full), not baseline path-tracer correctness.
+- **B2 — RC into HybridEngine** — W8 sprint **shipped end-to-end (2026-05-18)**: Phase 1A (cascade data types THREE-free), Phase 1B (`RCDispatcher.dispatchFrameRaw` raw-GPU entry), Phase 2 (`HybridEngineOptions.rcEnabled` + per-engine `RCSubsystem`), Phase 3 (shade.wgsl `sampleCascadeC0` + Track-A balance-heuristic MIS via `rcWeight` option), and Phase 4 (gated `rcAcceptance.gpu.test.ts` + reference-render landings in `tools/reference-renders/W8-rc-{off,on}/`) all landed. The harness for the actual GPU capture lives in `tools/benchmark-runner/` once it grows an `rc-acceptance` mode; the host-side wiring + MIS math is pinned by `packRCParams` tests + the `wgslCompose` order pin. See [plan/archive/w8-rc-mis-composition-archived-2026-05-30.md](./plan/archive/w8-rc-mis-composition-archived-2026-05-30.md) for the full sprint trace.
+- **`pt-webgpu` glossy BSDF sampling/PDF mismatch** — **fixed** (`a7dd51a`; Heitz 2018 VNDF in `bsdf.wgsl.ts`). Deep-audit findings are closed (`plan/archive/pt-webgpu-deep-audit-archived-2026-05-28.md`). Remaining pt-webgpu work is **fidelity promotion** (renderer matrix rows still `experimental`) and adapter-tier limits (lite vs full), not baseline path-tracer correctness.
 
 Treat the open items as real, prioritise honestly. Don't paper over with band-aids that suppress symptoms.
 
@@ -128,18 +128,18 @@ Treat the open items as real, prioritise honestly. Don't paper over with band-ai
 
 **Maturity label (do not call the library "pre-alpha"):** root `README.md` places vitrum on the **release-candidate track** for `@vitrum/engine`, `walkaround-hybrid`, and `pt-webgl`. `@vitrum/pt-webgpu` is a **peer PT backend** with closed deep-audit findings; treat "experimental" as per-feature fidelity tier (`plan/renderer-fidelity-matrix.md`), not as "the whole repo is a prototype."
 
-**Programs PR + WG (2026-05-26 signoffs):** primary-release and WebGPU-PT-parity implementation waves are landed in code; see `plan/PR-signoff-2026-05-26.md`, `plan/WG-signoff-2026-05-26.md`, and `plan/backend-maturity-matrix-2026-05-26.md`.
+**Programs PR + WG (2026-05-26 signoffs):** primary-release and WebGPU-PT-parity implementation waves are landed in code; see `plan/archive/PR-signoff-2026-05-26-archived-2026-05-28.md`, `plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`, and `plan/archive/backend-maturity-matrix-2026-05-26-archived-2026-05-30.md`.
 
 **Honest remaining deep-pipeline work** (ignore npm / release governance):
 
-1. **Fidelity promotion on pt-webgpu** — spectral, thin-film, SSS, caustics, multi-emitter rows are implemented with mechanical tests but still tagged `experimental` until gap-closure scenarios promote them to `supported` in `plan/renderer-fidelity-matrix.md`.
+1. **Fidelity promotion on pt-webgpu** — spectral, thin-film, SSS, caustics, multi-emitter rows are implemented with mechanical tests but still tagged `experimental` until gap-closure scenarios promote them to `supported` in `plan/renderer-fidelity-matrix.md`. (SVGF-real is now `unsupported` on both converged backends — regime mismatch, not a gap.)
 2. **Host animation workflows** — walkaround + pt-webgl + pt-webgpu all expose transform/positions incremental patches via `incrementalPatchSupport`; topology and vertex-count changes still require full scene rebuild on pt-webgl/pt-webgpu.
-3. **GI subsystem BVH alignment** — RC moving-instance refit without full scene teardown (PR-5.3); optional merged-BVH fallback cleanup.
-4. **GPU skinning compute** — `GpuSkinningSubsystem` + CPU `solveSkin` shipped; WGSL LBS compute + inverse-transpose normals for scaled bones remain optional polish (PR-7 follow-up).
-5. **PPG cost / quality** — wired and dispatching; tuning and large-scene perf per `plan/d2-e6-pt-webgpu-ppg-performance.md`.
-6. **Contract-only denoisers** — BMFR in the type union but not implemented in `shared-denoisers`.
+3. **GI subsystem BVH alignment** — RC moving-instance merged refit without teardown is now WIRED into GI propagation (+ filter parity with ReSTIR); optional merged-BVH fallback cleanup remains. GPU A/B = V13.
+4. **GPU skinning compute** — fully shipped: `GpuSkinningSubsystem` skins positions AND normals (inverse-transpose via `GPU_SKIN_BVH_WITH_NORMALS_WGSL`/`mat3InverseTranspose`), with a CPU-`solveSkin` fallback for non-identity-bind meshes. GPU A/B = V11.
+5. **PPG** — now actually GUIDES: gi-ris draws from the learned dTree with a defensive `α·p_guide+(1−α)·p_cos` MIS (was train-only). Remaining tuning + adaptive dispatch cadence tracked in `plan/archive/d2-e6-pt-webgpu-ppg-performance-archived-2026-05-28.md` (archived — its original items shipped). GPU A/B = V17.
+6. **Denoisers** — BMFR is implemented (real Householder-QR feature regression). BMFR is no longer a gap; the type union's only contract-without-impl entries now are whatever future modes get added.
 
-Older active docs: `plan/renderer-fidelity-matrix.md`, `plan/primary-release-and-webgpu-pt-parity-2026-05-26.md`, `plan/d2-e6-pt-webgpu-ppg-performance.md`.
+Older active docs: `plan/renderer-fidelity-matrix.md`. (Archived under `plan/archive/`: `primary-release-and-webgpu-pt-parity-2026-05-26` and `d2-e6-pt-webgpu-ppg-performance` — their items shipped.)
 
 ## Absorbed path-tracer package
 

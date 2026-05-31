@@ -129,7 +129,7 @@ Lower-level (direct backend construction — for reference and regression testin
 @vitrum/pt-webgl           WebGL2 PT (wraps three-gpu-pathtracer fork)
 @vitrum/pt-webgpu          WebGPU-native PT (experimental backend)
 @vitrum/shared-bvh         Software BVH compute (CPU + GPU)
-@vitrum/shared-samplers    Sobol, Hammersley, light tree, hero-wavelength MIS
+@vitrum/shared-samplers    Hammersley, light tree, hero-wavelength MIS, spectral (Sobol lives in the three-gpu-pathtracer fork)
 @vitrum/shared-denoisers   À-trous, SVGF, OIDN bridge
 @vitrum/scene-lighting     Host-side lighting state (time-of-day, sun, sky)
 @vitrum/stained-glass-extensions  Stained-glass host contract extensions

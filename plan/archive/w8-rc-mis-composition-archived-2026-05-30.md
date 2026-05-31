@@ -1,6 +1,8 @@
+> **ARCHIVED 2026-05-30 — completed-sprint record.** All four phases shipped (RC wired into `HybridEngine` via `HybridEngineRC.ts`, opt-in `rcEnabled`). Some forward-looking TODOs inside are themselves now done (Phase-3b trilinear `sampleCascadeC0` shipped 2026-05-28; the CLAUDE.md B2 edit happened). Current state lives in `CLAUDE.md` + the code; kept as the sprint trace.
+
 # W8 — RC + MIS composition in HybridEngine
 
-**Status:** Shipped (2026-05-18, all four phases). Trilinear interpolation in sampleCascadeC0 is a Phase-3b follow-up (nearest-probe only today).
+**Status:** Shipped (2026-05-18, all four phases). [Trilinear interpolation in sampleCascadeC0 — the "Phase-3b follow-up" noted here — also shipped 2026-05-28.]
 **Acceptance:** items_to_fix.md B2 — HybridEngine runs a Cornell scene with `denoiser: 'atrous-variance'`, `rcEnabled: true`, and visibly produces higher-quality first-bounce indirect than DDGI-only.
 
 ## Why this is bigger than the audit said

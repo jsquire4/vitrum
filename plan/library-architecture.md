@@ -42,7 +42,6 @@
 ### `@vitrum/shared-samplers`
 
 **Owns**:
-- Sobol QMC sequence generation
 - Hammersley sampling + golden-ratio rotation
 - Light tree CDF construction (Phase 6 Sprint 3)
 - Mixture PDF combination (Phase 6 Sprint 3)
@@ -58,8 +57,8 @@
 
 **Owns**:
 - À-trous wavelet (current walkaround denoiser, Phase 6 baseline)
-- SVGF — **SHIPPED** (`svgf-real`, Schied 2017; `svgfRealWebGPU.ts` in `shared-denoisers`; available on `walkaround-hybrid` and `pt-webgpu` full tier)
-- BMFR (Phase 6 Sprint 10a candidate; **not shipped** in `@vitrum/shared-denoisers` yet)
+- SVGF — **SHIPPED** (`svgf-real`, Schied 2017; `svgfRealWebGPU.ts` in `shared-denoisers`; available on `walkaround-hybrid` only — `unsupported` on BOTH converged backends, pt-webgl and pt-webgpu, which use `oidn-final`: SVGF is a real-time 1-spp filter, a regime mismatch for converged tracers)
+- BMFR — **SHIPPED** (real Koskela-2019 Householder-QR feature regression in `@vitrum/shared-denoisers`; `BmfrDenoiser` in walkaround-hybrid, `denoiser: 'bmfr'`)
 - OIDN final-pass via ONNX Runtime Web + WebNN execution provider (Phase 6 Sprint 10b)
 
 **Depends on**: `@vitrum/core`.
@@ -68,13 +67,13 @@
 
 **Owns**: implementation of the `Engine` contract via the forked three-gpu-pathtracer. Today: wraps the WebGL2 PT pipeline. Future: deprecated when `@vitrum/pt-webgpu` reaches feature parity.
 
-**Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), `three-mesh-bvh`. BVH/denoiser building blocks used indirectly via the fork and three.js stack, not as direct `@vitrum/shared-bvh` / `shared-denoisers` dependencies today.
+**Depends on** (see `packages/pt-webgl/package.json`): `@vitrum/core`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`, `@vitrum/three-bindings`, `three-gpu-pathtracer` (fork), `three-mesh-bvh`. BVH building blocks used indirectly via the fork and three.js stack (not a direct `@vitrum/shared-bvh` dependency); `@vitrum/shared-denoisers` IS a direct dependency (OIDN-final wire).
 
 ### `@vitrum/pt-webgpu` *(experimental backend, evolving toward Phase 7 goals)*
 
 **Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active experimental backend (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
 
-**Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`. Notably **not** `three-gpu-pathtracer`; optional denoiser integration may add `@vitrum/shared-denoisers` later.
+**Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`. Notably **not** `three-gpu-pathtracer`.
 
 ### `@vitrum/walkaround-hybrid`
 
@@ -90,9 +89,9 @@
 
 ### `@vitrum/scene-lighting`
 
-**Owns**: scene-lighting helpers extracted from `walkaround-hybrid` — emitter packing, light-tree CDF construction, and environment-map precompute that are shared across walkaround and PT backends.
+**Owns**: host-side lighting-state primitives — time-of-day sky params, sun geometry, intensity tables, and `computeLightingState`. (Emitter packing lives in `pt-webgpu`; light-tree CDF construction lives in `@vitrum/shared-samplers` — not here.)
 
-**Depends on**: `@vitrum/core`, `@vitrum/shared-samplers`.
+**Depends on**: `three` only (no `@vitrum/*` deps).
 
 ## How a host application consumes vitrum
 
@@ -141,7 +140,7 @@ Subsequent sprints land their deliverables in vitrum packages, not the host app'
 | 7 | Volume + SSS + equi-angular | `@vitrum/pt-webgl` (fork) + HG phase in `@vitrum/shared-samplers` |
 | 8 | RGB-as-3λ + Jakob+Hanika | `@vitrum/pt-webgl` + spectral utility in `@vitrum/shared-samplers` |
 | 9 | Adaptive sampling + checkerboard | `@vitrum/walkaround-hybrid` + Welford struct in `@vitrum/shared-samplers` |
-| 10a | SVGF / BMFR | `@vitrum/shared-denoisers` |
+| 10a | SVGF / BMFR — **SHIPPED** | `@vitrum/shared-denoisers` |
 | 10b | OIDN ONNX final pass | `@vitrum/shared-denoisers/oidn-bridge` |
 | 10c | Vanilla BDPT | `@vitrum/pt-webgl` |
 | 11 | PPG — **SHIPPED** (W9) | `@vitrum/walkaround-hybrid` (`src/ppg/`; opt-in via `HybridEngineOptions.ppgEnabled`) |

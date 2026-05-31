@@ -22,7 +22,7 @@ These supersede conflicting guidance elsewhere in this doc. Recorded so nothing 
 6. **Frontier stays in the plan (so it's not lost), but de-prioritized.** The walkaround↔PT handoff (§8.1 Path 1) is a "fun trick," **not** rated above NRC / ReSTIR-PT; do it now only if the freeze/resume temporal-MIS state machine proves trivial, else defer in favor of fidelity. NRC, ReSTIR-PT/GRIS, cached light field all remain tracked (§8).
 7. **Work on `main` directly** for remediation (no feature branches); no remote push without explicit instruction.
 
-**SHIPPED — 2026-05-28 fidelity-combination wave (on `main`, ~38 commits, NOT pushed):** Locked items 1 (BMFR) + 2 (pt-webgl spectral) are DONE — real Koskela-2019 BMFR in `shared-denoisers`; Jakob-Hanika coeffs now CONSUMED in pt-webgl shading (were uploaded-but-dead). Item 3 (Phase 0) shipped — adapter-profile export + quality presets + hybrid lite tier + resolutionFactor — with two post-audit fixes (resolutionFactor composite upscale; `ddgiUpdateDivisor` made load-bearing → 2→32 preset spread, **default cadence now stride 2**). Plus, from an algorithm-combination fitness review (find techniques combined where they shouldn't be): **SVGF-real dropped from pt-webgpu** (converged tracer → `oidn-final`; SVGF is real-time-only — `unsupported` on both converged backends), **RC⊕ReSTIR-GI fixed-scalar blend → per-pixel confidence balance heuristic**, **PPG finished** (gi-ris now guides via defensive MIS — was train-only), GPU normal-skinning confirmed + bindMatrix CPU-fallback gate, duplicate-DDGI-sun dedup. **Every radiometric change is unit-pinned but pending GPU A/B (`HARDWARE-VALIDATION-NEEDS.md` V1–V17).** Item 4 (WSL-GPU env) remains the validation blocker — the lavapipe PNG render-capture adapter is the `wsl-gpu` sibling project's Task 1.
+**SHIPPED — 2026-05-28 fidelity-combination wave (merged + pushed to `origin/main`):** Locked items 1 (BMFR) + 2 (pt-webgl spectral) are DONE — real Koskela-2019 BMFR in `shared-denoisers`; Jakob-Hanika coeffs now CONSUMED in pt-webgl shading (were uploaded-but-dead). Item 3 (Phase 0) shipped — adapter-profile export + quality presets + hybrid lite tier + resolutionFactor — with two post-audit fixes (resolutionFactor composite upscale; `ddgiUpdateDivisor` made load-bearing → 2→32 preset spread, **default cadence now stride 2**). Plus, from an algorithm-combination fitness review (find techniques combined where they shouldn't be): **SVGF-real dropped from pt-webgpu** (converged tracer → `oidn-final`; SVGF is real-time-only — `unsupported` on both converged backends), **RC⊕ReSTIR-GI fixed-scalar blend → per-pixel confidence balance heuristic**, **PPG finished** (gi-ris now guides via defensive MIS — was train-only), GPU normal-skinning confirmed + bindMatrix CPU-fallback gate, duplicate-DDGI-sun dedup. **Radiometric changes are unit-pinned; many are now GPU-VALIDATED on dzn/lavapipe, the rest pending real-GPU A/B (`HARDWARE-VALIDATION-NEEDS.md` V1–V26).** Item 4 (WSL-GPU env) remains the validation blocker — the lavapipe PNG render-capture adapter is the `wsl-gpu` sibling project's Task 1.
 
 **Stale-claim corrections (verified against current code 2026-05-28):**
 - **pt-webgpu GPU BDPT light-subpath is DONE** (`bdptExtendLightSubpath` @compute pass shipped + dispatched) — remove from §6.2 / §8.3 "remaining."
@@ -89,9 +89,9 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 
 | Gap | Impact |
 |-----|--------|
-| **No hybrid lite tier** | Unlike pt-webgpu full/lite, walkaround is essentially one pipeline; weak adapters fail `requestDevice` or run untuned. |
-| **`resolutionFactor` not wired in hybrid** | Contract supports per-frame quality; hybrid uses constructor/`setSize()` only. |
-| **No shipped quality presets** | Knobs exist (`targetFrameIntervalMs`, denoiser mode, RC/PPG flags) but no `mobile` / `balanced` / `ultra` profile. |
+| ~~**No hybrid lite tier**~~ **SHIPPED (2026-05-28, see §0.5)** | `HYBRID_LITE_LIMITS` + `tier:'lite'` gating + `hybridLiteCapable` adapter probe. |
+| ~~**`resolutionFactor` not wired in hybrid**~~ **SHIPPED** | `FrameInput.quality.resolutionFactor` wired per-frame in `HybridEngine`. |
+| ~~**No shipped quality presets**~~ **SHIPPED** | `QualityTier` `ultra/high/medium/low` presets; `createEngine` applies `recommendedRealtimeTier`. |
 | **Mobile / iGPU validation deferred** | Dev WSL2 SwiftShader: `hybridCanRun: false`; radiometric evidence blocked without hardware WebGPU. |
 | **WebGPU required for realtime** | `prefer: 'realtime'` with no WebGPU → **`pt-webgl` fallback** (progressive PT, not realtime GI). |
 | **THREE coupling** | BVH/DDGI still rooted in THREE scene graph; `hostScene/types.ts` is a seam, not a second binding. |
@@ -99,14 +99,14 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 ### 2.3 Hero stack — shipped core
 
 - **pt-webgl:** Production path via fork; BDPT GPU light-subpath; incremental transform/positions/material/emitter; caustic strategies; OIDN-final; MRT G-buffer (fork); material LOD / lobeMask (fork).
-- **pt-webgpu:** Progressive compute PT; **full vs lite** trace tier from adapter limits; TLAS; spectral hero-λ, layered MIS, bounded emitters; BDPT v1 (CPU light-path fill + kernel evaluate); OIDN-final; aux G-buffers; 120+ package tests; deep audit closed.
+- **pt-webgpu:** Progressive compute PT; **full vs lite** trace tier from adapter limits; TLAS; spectral hero-λ, layered MIS, bounded emitters; BDPT v1 (GPU `bdptExtendLightSubpath` compute pass + kernel evaluate; CPU fill is now test-oracle only); OIDN-final; aux G-buffers; 120+ package tests; deep audit closed.
 
 ### 2.4 Hero stack — gaps
 
 | Gap | Impact |
 |-----|--------|
 | **Fidelity matrix mostly `experimental`** | Hero spectral, thin-film, SSS, caustics, multi-emitter, BDPT — implemented mechanically; GPU acceptance captures pending for `supported` promotion. |
-| **pt-webgpu GPU BDPT light-subpath** | CPU fill works; GPU subpath pass is follow-up throughput win. |
+| ~~**pt-webgpu GPU BDPT light-subpath**~~ **SHIPPED (see §0.5)** | `bdptExtendLightSubpath` @compute pass dispatched; CPU fill is test-oracle only. |
 | **SVGF-real on pt-webgl** | Row: `unsupported` on WebGL2 path. |
 | **Topology-changing animation** | Incremental patches strong; vertex-count / index changes still force full `setScene()` on PT backends. |
 | **Not in `auto` for small scenes** | `auto` picks walkaround &lt;500k tris; large scenes → pt-webgpu. Hero PT is explicit `quality` / `quality-webgpu`. |
@@ -320,7 +320,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 
 **Deliverables:**
 
-- GPU BDPT light-subpath pass (match pt-webgl fork path).
+- ~~GPU BDPT light-subpath pass (match pt-webgl fork path).~~ **DONE** — `bdptExtendLightSubpath` @compute pass shipped + dispatched (see §0.5).
 - Wavefront / split-kernel integrator evaluation (§8) — only if profiling shows megakernel bound.
 - Cheaper `traceAny` after D2 unification (shadow rays).
 
@@ -341,7 +341,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 
 ### 6.5 P2 — Contract denoisers
 
-**Deliverables:** Implement or remove **BMFR** from public union (today type-only).
+**Deliverables:** ~~Implement or remove **BMFR** from public union (today type-only).~~ **DONE** — real Koskela-2019 BMFR shipped in `shared-denoisers` + `BmfrDenoiser` in walkaround.
 
 ### 6.6 Explicit non-goals (hero stack)
 
@@ -413,7 +413,7 @@ These are **algorithm evolution** stages—not graceful degradation. Sourced pri
 | **MNEE caustics** | RFE-05, tier 4 | `experimental`; API plumbed | Runtime verification + fallback to brute NEE |
 | **Wavefront PT** | tier 4 | Megakernel pt-webgpu | Split kernels; 30–50% potential; WebGPU dispatch overhead risk |
 | **Sky / sun split sampling** | tier 4 | HDRI IS exists | Split-importance sun + clouds; 1–2 weeks |
-| **BDPT GPU light subpath** | WG signoff | CPU fill on pt-webgpu | GPU pass — throughput, not new math |
+| **BDPT GPU light subpath** | WG signoff | **GPU `bdptExtendLightSubpath` compute pass shipped** (CPU fill now test-oracle only) | done — see §0.5 |
 | **Deferred GI + material swap** | tier 4 | DDGI ≈ irradiance cache | True deferred: re-shade without recomputing GI |
 | **Differentiable rendering** (inverse rendering: reference image → matching scene) | tier 4 | — | Adjoint integrator in WGSL; optimizer/grad half already built (NRC); first win = Tier-B stained-glass template fit, not arbitrary photo→scene. Phased plan: [`plan/differentiable-rt.md`](./differentiable-rt.md) |
 | **WebXR + foveated** | tier 4 | — | VR-only bet |
@@ -428,7 +428,7 @@ These are **algorithm evolution** stages—not graceful degradation. Sourced pri
 
 ### 8.5 Explicitly deferred / remove from union
 
-- **BMFR denoiser** — in type union, not in `shared-denoisers`; implement or delete.
+- ~~**BMFR denoiser** — in type union, not in `shared-denoisers`; implement or delete.~~ **DONE** — real Koskela-2019 BMFR shipped in `shared-denoisers` (2026-05-28).
 - **Hardware RT (WebGPU ray tracing)** — track Chromium experiments; do not baseline vitrum on it.
 
 ### 8.6 Suggested evolution order (algorithm stage gate)
@@ -484,7 +484,7 @@ Code can land without hardware; **claims** cannot.promote without it.
 - `npm run baseline:wave0` / `hardening:wave4` — gate bundles.
 - `VITRUM_PROBE_START_SERVER=1 npm run benchmark:pt-webgpu-adapter-probe` — adapter caps.
 - `tools/benchmark-runner` + `VITRUM_GPU_CAPTURE=1` — scenario captures.
-- See `HARDWARE-VALIDATION-NEEDS.md` for PR-specific A/B list (Molller-Trumbore, BDPT tangent, hybrid radiometry).
+- See `HARDWARE-VALIDATION-NEEDS.md` for PR-specific A/B list (Möller-Trumbore, BDPT tangent, hybrid radiometry).
 
 ### 10.3 Acceptance artifacts per milestone
 
@@ -516,15 +516,15 @@ Phase 0 — Foundation (parallel)
 └── Fidelity promotion playbook (hero rows)
 
 Phase 1 — Real-time productization (depends Phase 0 probe)
-├── Wire resolutionFactor in hybrid
-├── Hybrid lite tier + hybridLiteCapable probe
+├── Wire resolutionFactor in hybrid ✓ DONE (2026-05-28)
+├── Hybrid lite tier + hybridLiteCapable probe ✓ DONE (2026-05-28)
 ├── Benchmark budgets per tier (Class A + one Class C device)
 └── Game-like example + animation doc refresh
 
 Phase 2 — Hero hardening (parallel with Phase 1)
 ├── GPU gap-closure captures (matrix rows)
 ├── pt-webgpu BDPT GPU subpath
-└── BMFR implement-or-remove
+└── BMFR implement-or-remove ✓ DONE (implemented, 2026-05-28)
 
 Phase 3 — Optimization pass (profiling-driven)
 ├── Hybrid pass cost reduction
@@ -551,7 +551,7 @@ Phase 4 — Frontier (gated on host integration feedback)
 |----------|------|
 | `README.md` | Public maturity: release-candidate track |
 | `CLAUDE.md` / `AGENTS.md` | Agent brief; maturity labels |
-| `plan/backend-maturity-matrix-2026-05-26.md` | Technical maturity by package |
+| `plan/archive/backend-maturity-matrix-2026-05-26-archived-2026-05-30.md` | Technical maturity by package (archived) |
 | `plan/renderer-fidelity-matrix.md` | Hero feature truth table |
 | `plan/tier4-vision-not-yet.md` | Moonshots (gated) |
 | `plan/differentiable-rt.md` | Inverse rendering (reference image → matching scene); phased, gated frontier |

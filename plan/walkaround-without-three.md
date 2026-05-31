@@ -30,11 +30,11 @@ This is the Milestone **M4** answer to: *“What would break if THREE disappeare
 
 **Historical:** RC cascade compute was **removed from the hybrid stack** (shade pass no longer samples `Lo_rc`); RC modules remained for the **standalone RC engine path**.
 
-**Status (2026-05-18):** W8 sprint in flight. See [w8-rc-mis-composition.md](./w8-rc-mis-composition.md) for the full phased plan.
+**Status (2026-05-18):** **SHIPPED** — all four phases complete (see ✅ below). See [archive/w8-rc-mis-composition-archived-2026-05-30.md](./archive/w8-rc-mis-composition-archived-2026-05-30.md) for the full phased plan.
 
 - **Phase 1A** ✅ — `cascadePyramid.ts` + `cascadeBuffers.ts` THREE-free (plain `CascadeAABB` `{min,max}` + `[x,y,z]` tuples replace `THREE.Box3` / `THREE.Vector3`).
 - **Phase 1B** ✅ — `cascadeDispatch.ts` gains a parallel `dispatchFrameRaw(opts: RCDispatchOptsRaw)` entry that takes `GPUDevice` + raw `GPUBuffer`s + plain tuples (no THREE imports in the new path).
-- **Phase 2**  ✅ — `HybridEngineOptions.rcEnabled` toggle + per-engine `RCSubsystem` sidecar that builds its own BVH + cascade `GPUBuffer`s and dispatches each frame. **Cascade-0 output is NOT yet sampled in `shade.wgsl` (Phase 3).**
+- **Phase 2**  ✅ — `HybridEngineOptions.rcEnabled` toggle + per-engine `RCSubsystem` sidecar that builds its own BVH + cascade `GPUBuffer`s and dispatches each frame.
 - **Phase 3**  ✅ — `shade.wgsl` reads cascade-0, MIS composition with DDGI / ReSTIR-GI.
 - **Phase 4**  ✅ — Reference renders + acceptance test (Cornell with `rcEnabled: true` vs DDGI-only).
 

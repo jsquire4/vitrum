@@ -1,7 +1,9 @@
+> **ARCHIVED 2026-05-30 — SUPERSEDED, never executed.** This was the pre-approval draft. The remediation that actually ran is `plan/complexity-remediation-20260528.md` (all 13 themes landed) and the later `plan/complexity-sweep-refactor-2026-05-30.md`. Kept for historical context only; do not treat its wave plan as the work that happened.
+
 # Complexity remediation — full implementation plan
 
 **Date:** 2026-05-26  
-**Status:** Draft — awaiting approval before execution  
+**Status:** SUPERSEDED draft (archived 2026-05-30) — was "Draft — awaiting approval"; superseded before execution by `complexity-remediation-20260528.md`.  
 **Inputs:** `plan/in-flight-sweep.md` (2026-05-26 sweep, ~120+ findings), `plan/dead-code-sweep-20260518.md` (knip baseline), agent triage on HEAD  
 **Out of scope:** New rendering features, npm publish, upstream PRs to `gkjohnson/three-gpu-pathtracer`  
 **Relationship to shipped work:** W1–W13 premium-grade refactor and PR/WG primary-release programs are **complete on `main`**. This plan addresses **residual** structural debt from the 2026-05-26 code-only sweep, not re-opening closed workstreams unless a finding regressed.

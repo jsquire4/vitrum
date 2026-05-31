@@ -12,7 +12,7 @@ productionisation is complete:
 - **No public API stability**. Types, options, and binding shapes can
   change in any commit.
 - **No GPU-verified visual reference**. The CPU/struct-layout audit
-  (`plan/pt-webgpu-deep-audit.md`) is closed (all HIGH + MEDIUM + LOW
+  (`plan/archive/pt-webgpu-deep-audit-archived-2026-05-28.md`) is closed (all HIGH + MEDIUM + LOW
   findings fixed or NOT-A-BUG by 2026-05-19), but no end-to-end visual
   parity check against `@vitrum/pt-webgl` exists. Renders may be
   numerically correct yet visually different in ways the audit doesn't
@@ -102,7 +102,7 @@ Mechanical parity for the fork-backed WebGL2 path tracer is **implemented** for:
 
 **BDPT (WG-7):** `extensions['vitrum.ptWebgpu.bdpt'] = true`, `bdptMaxLightBounces` 1–3, optional `engine.bdptAdvanceFrame(view)`; CPU-filled light-path texture + `evaluateBdptConnection` in the full-tier kernel.
 
-Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/WG-signoff-2026-05-26.md`).
+Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`).
 
 ## Known limitations
 
