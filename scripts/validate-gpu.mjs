@@ -87,7 +87,11 @@ if (!existsSync(runner)) {
 
 const runnerArgs = SMOKE
   ? ['--working-tree']                       // T1 validates the uncommitted working tree
-  : [itemsArg ?? '--items=all'];
+  // T2: pass `--items=` through verbatim when given; otherwise pass NO flag so the
+  // wave runner's filter is null → every item runs. (A literal `--items=all` is NOT
+  // special-cased by the runner — its filter does token matching, so `all` would
+  // match no item and silently run nothing.)
+  : (itemsArg ? [itemsArg] : []);
 
 log(`invoking ${SMOKE ? 'T1 smoke' : 'T2 radiometric'} runner: ${runner} ${runnerArgs.join(' ')}`);
 const child = spawn('node', [runner, ...runnerArgs], {

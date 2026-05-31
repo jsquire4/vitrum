@@ -67,25 +67,16 @@ fn traceSpecularTransmissiveChain(
       att = att * exp(-chainSigmaT * hit.dist);
     }
     let matId = hitMaterialId(hit);
-    // TODO(theme-D / V-caustic): this hand-decode is NOT bit-identical to the
-    // canonical decodeMaterial() — the m0 out-of-bounds fallback differs
-    // (1.0/0.5 here vs 0.8/0.6 there) and m0.rgb is clamped before the mix
-    // below, which decodeMaterial does not do. Collapsing to decodeMaterial()
-    // would change the composed shader's decode math, so it is left inline
-    // pending a real-GPU A/B before any unification. (material.wgsl.ts:445)
-    let m0Index = matId * MATERIAL_VEC4_STRIDE;
-    let m2Index = m0Index + 2u;
-    let m3Index = m0Index + 3u;
-    let m22Index = m0Index + 22u;
-    let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));
-    let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
-    let m3 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m3Index], m3Index < arrayLength(&materials));
-    let m22 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m22Index], m22Index < arrayLength(&materials));
-    let transmission = clamp(m2.x, 0.0, 1.0);
+    // Decode is now canonical (decodeMaterial owns the m0/m2/m3/m22 offset
+    // arithmetic + per-field clamps). baseColor is re-clamped to [0,1] below to
+    // preserve caustic's historical clamp inside the mix (decodeMaterial leaves
+    // baseColor unclamped). (material.wgsl.ts decodeMaterial)
+    let mat = decodeMaterial(matId);
+    let transmission = mat.transmission;
     if (transmission <= 1e-4) {
       return false;
     }
-    let ior = clamp(m2.y, 1.0, 2.5);
+    let ior = mat.ior;
     let hitPos = ray.origin + ray.direction * hit.dist;
     let frontFace = dot(ray.direction, hit.normal) < 0.0;
     let surfaceNormal = select(-hit.normal, hit.normal, frontFace);
@@ -93,14 +84,14 @@ fn traceSpecularTransmissiveChain(
     let refr = refract(ray.direction, surfaceNormal, eta);
     let hasRefr = dot(refr, refr) > 1e-8;
     let nextDir = select(reflect(ray.direction, surfaceNormal), safe_normalize(refr), hasRefr);
-    att = att * mix(vec3f(1.0), clamp(m0.rgb, vec3f(0.0), vec3f(1.0)), 0.2) * max(transmission, 0.05);
+    att = att * mix(vec3f(1.0), clamp(mat.baseColor, vec3f(0.0), vec3f(1.0)), 0.2) * max(transmission, 0.05);
     if (max(att.r, max(att.g, att.b)) < 1e-4) {
       return false;
     }
     // Update medium state for the NEXT segment from this refraction event.
     if (hasRefr && frontFace) {
-      let segSigmaA = select(vec3f(0.0), vec3f(max(m22.x, 0.0), max(m22.y, 0.0), max(m22.z, 0.0)), m22.w > 0.5);
-      let segSigmaS = max(vec3f(max(m3.x, 0.0), max(m3.y, 0.0), max(m3.z, 0.0)), vec3f(max(m2.z, 0.0)));
+      let segSigmaA = select(vec3f(0.0), mat.sigmaA, mat.hasSigmaA);
+      let segSigmaS = max(mat.scatteringRgb, vec3f(mat.scatteringCoeff));
       chainSigmaT = max(segSigmaA + segSigmaS, vec3f(0.0));
       chainInMedium = max(chainSigmaT.x, max(chainSigmaT.y, chainSigmaT.z)) > 1e-6;
     } else if (hasRefr && !frontFace) {
@@ -255,15 +246,12 @@ fn photonMapContribution(
       let hit = traceClosest(ray, 1e-4, INFINITY);
       if (!hit.didHit) { break; }
       let matId = hitMaterialId(hit);
-      // TODO(theme-D / V-caustic): hand-decode kept inline (not routed through
-      // canonical decodeMaterial()) — m0 fallback + clamping differ from
-      // material.wgsl.ts:445; collapse only after a real-GPU A/B confirms parity.
-      let m0Index = matId * MATERIAL_VEC4_STRIDE;
-      let m2Index = m0Index + 2u;
-      let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));
-      let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
-      let mTransmission = clamp(m2.x, 0.0, 1.0);
-      let mIor = clamp(m2.y, 1.0, 2.5);
+      // Decode is now canonical (decodeMaterial owns the offset arithmetic +
+      // per-field clamps). baseColor is re-clamped to [0,1] in the flux mix
+      // below to preserve caustic's historical clamp. (material.wgsl.ts decodeMaterial)
+      let mat = decodeMaterial(matId);
+      let mTransmission = mat.transmission;
+      let mIor = mat.ior;
       let hp = ray.origin + ray.direction * hit.dist;
       let dist2ToReceiver = dot(hp - hitPos, hp - hitPos);
       if (dist2ToReceiver <= gatherRadius2) {
@@ -284,7 +272,7 @@ fn photonMapContribution(
       let refr = refract(ray.direction, n, eta);
       let hasRefr = dot(refr, refr) > 1e-8;
       let nextDir = select(reflect(ray.direction, n), safe_normalize(refr), hasRefr);
-      flux = flux * mix(vec3f(1.0), clamp(m0.rgb, vec3f(0.0), vec3f(1.0)), 0.2) * max(mTransmission, 0.05);
+      flux = flux * mix(vec3f(1.0), clamp(mat.baseColor, vec3f(0.0), vec3f(1.0)), 0.2) * max(mTransmission, 0.05);
       if (max(flux.r, max(flux.g, flux.b)) < 1e-5) {
         break;
       }

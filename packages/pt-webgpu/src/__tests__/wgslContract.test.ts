@@ -19,8 +19,8 @@ import { fileURLToPath } from 'node:url';
 describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed full-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
-    expect(digest).toBe('3fb63b3d012b8d80dcd0e1abdba3c19e34cf0724df10f976dd11df532d7055e8');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(149547);
+    expect(digest).toBe('5aa346a04f0336c2a49ee6b5f29421c3846e66f4b4a7882495127a723441012a');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(148516);
   });
 });
 
@@ -249,26 +249,38 @@ describe('pt-webgpu WGSL material contract', () => {
     });
   });
 
-  // ── Theme-D caustic decode: NOT collapsed (flagged for GPU A/B) ─────────────
-  // caustic.wgsl.ts hand-decodes the packed material inline. It is NOT bit-
-  // identical to decodeMaterial() (different m0 OOB fallback; extra m0.rgb
-  // clamp), so it was deliberately left inline pending a real-GPU A/B. This
-  // pin guards against an accidental silent collapse that would change the
-  // caustic decode math.
-  it('caustic material decode stays inline (decodeMaterial collapse deferred to GPU A/B)', () => {
-    // The inline raw-slot fallback the audit flagged as divergent.
-    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
-      'let m0 = select(vec4f(1.0, 1.0, 1.0, 0.5), materials[m0Index], m0Index < arrayLength(&materials));',
-    );
-    // It must NOT actually CALL the canonical decoder (would change the decode
-    // math). Strip comment lines first so the explanatory TODO references to
-    // decodeMaterial() don't trip the guard — we only forbid a real invocation.
+  // ── Theme-D caustic decode: COLLAPSED onto canonical decodeMaterial() ───────
+  // caustic.wgsl.ts previously hand-decoded the packed material inline at two
+  // sites (traceSpecularTransmissiveChain + photonMapContribution), duplicating
+  // the m0/m2/m3/m22 offset arithmetic decodeMaterial() already owns. The decode
+  // is now routed through decodeMaterial(matId); the only behavioural difference
+  // — caustic's clamp(baseColor, 0, 1) inside its mix — is re-applied at both
+  // sites to preserve bit-identical render output for in-[0,1] albedos (OOB
+  // albedos are unreachable for valid scenes). This pin guards the collapse.
+  it('caustic material decode is routed through canonical decodeMaterial() with baseColor re-clamped', () => {
+    // Both decode sites now CALL the canonical decoder. Strip comment lines so
+    // the explanatory references in comments don't count as invocations.
     const causticCode = PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL
       .split('\n')
       .filter((l) => !l.trim().startsWith('//'))
       .join('\n');
-    expect(causticCode).not.toContain('decodeMaterial(');
-    // The deferral is documented at both decode sites.
-    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('TODO(theme-D / V-caustic)');
+    // traceSpecularTransmissiveChain + photonMapContribution = 2 real calls.
+    const decodeCalls = causticCode.match(/let mat = decodeMaterial\(matId\);/g) ?? [];
+    expect(decodeCalls.length).toBe(2);
+
+    // The historical baseColor clamp inside the mix is preserved at both sites.
+    expect(causticCode).toContain(
+      'mix(vec3f(1.0), clamp(mat.baseColor, vec3f(0.0), vec3f(1.0)), 0.2)',
+    );
+
+    // NO raw-slot offset arithmetic / inline OOB fallback remains in caustic.
+    expect(causticCode).not.toContain('m0Index');
+    expect(causticCode).not.toContain('m2Index');
+    expect(causticCode).not.toContain('m3Index');
+    expect(causticCode).not.toContain('m22Index');
+    expect(causticCode).not.toContain('select(vec4f(1.0, 1.0, 1.0, 0.5)');
+
+    // The deferral TODO is gone (collapse is done, not deferred).
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).not.toContain('TODO(theme-D / V-caustic)');
   });
 });
