@@ -262,6 +262,72 @@ fn updateReservoirGI(
   }
 }
 
+// Refresh the GRIS Phase-0 reconnection-shift cache fields on a reservoir after
+// the final sample is chosen (risGi / risGiNrc producers).  Populates wi_recon,
+// distRecon, cosReconOut, pdfReconBsdf, and prefixVertexCount from the chosen
+// base path edge xv → xs.  Leaves the cache zeroed and prefixVertexCount = 0
+// when the reservoir is empty (M == 0) or degenerate (‖xv − xs‖ ≤ 1e-6).
+// Call after the final visibility test and W update.
+fn refreshPhase0Cache(r: ptr<function, ReservoirPT>) {
+  let toRecon = (*r).xs - (*r).xv;
+  let dRecon = length(toRecon);
+  if (dRecon > 1e-6 && (*r).M > 0u) {
+    let wiR = toRecon / dRecon;
+    (*r).wi_recon    = wiR;
+    (*r).distRecon   = dRecon;
+    (*r).cosReconOut = abs(dot((*r).ns, -wiR));
+    (*r).pdfReconBsdf = max(0.0, dot((*r).nv, wiR)) * INV_PI;
+  } else {
+    (*r).wi_recon    = vec3f(0.0);
+    (*r).distRecon   = 0.0;
+    (*r).cosReconOut = 0.0;
+    (*r).pdfReconBsdf = 0.0;
+  }
+  (*r).prefixVertexCount = select(0u, 1u, (*r).M > 0u);
+}
+
+// Finalise the RIS unbiased-contribution weight W for a standard ReSTIR-GI
+// reservoir (temporal OFF / spatial OFF).  The estimator divides by M × p̂
+// because the M candidates each contributed with weight w_i and the M-count
+// must normalise back out.  Call AFTER the final updateReservoirGI / M update.
+//
+// W = w_sum / (M × p̂(chosen sample))   — Talbot 2005 + ReSTIR DI/GI 2020.
+fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>) {
+  if ((*r).M > 0u) {
+    let toSf = (*r).xs - (*r).xv;
+    let distSf = length(toSf);
+    if (distSf > 1e-4) {
+      let wiF = toSf / distSf;
+      let cosThetaF = max(0.0, dot((*r).nv, wiF));
+      let pHatF = luminance((*r).Lo) * cosThetaF * INV_PI;
+      let W_raw = select(0.0, (*r).w_sum / (f32((*r).M) * pHatF), pHatF > 1e-9);
+      (*r).W = min(W_raw, ubo.restirGiWCap);
+    } else {
+      (*r).W = 0.0;
+    }
+  }
+}
+
+// Finalise W for a GRIS reservoir (temporal ON / spatial ON).  GRIS folds
+// each sample with a pairwise MIS weight m_i where Σ m_i = 1, so the M-count
+// does NOT normalise the sum — dividing by M again would under-energise the
+// estimate.  W = w_sum / p̂ only (Lin 2022 §generalized RIS).
+fn finaliseGIReservoirWGris(r: ptr<function, ReservoirPT>) {
+  if ((*r).M > 0u) {
+    let toSf = (*r).xs - (*r).xv;
+    let distSf = length(toSf);
+    if (distSf > 1e-4) {
+      let wiF = toSf / distSf;
+      let cosThetaF = max(0.0, dot((*r).nv, wiF));
+      let pHatF = luminance((*r).Lo) * cosThetaF * INV_PI;
+      let W_raw = select(0.0, (*r).w_sum / pHatF, pHatF > 1e-9);
+      (*r).W = min(W_raw, ubo.restirGiWCap);
+    } else {
+      (*r).W = 0.0;
+    }
+  }
+}
+
 `;
 
 /** T9-stepA — focused WGSL_MODULES entry split out of `common`. */

@@ -68,6 +68,7 @@ import { GRIS_REUSE_WGSL } from '../src/shaders/grisReuse.wgsl.js';
 import { WELFORD_TAIL_WGSL } from '../src/shaders/welfordTail.wgsl.js';
 import { MOTION_VECTORS_WGSL } from '../src/shaders/motionVectors.wgsl.js';
 import { COMPOSITE_FRAG_WGSL, COMPOSITE_VERT_WGSL } from '../src/shaders/composite.wgsl.js';
+import { GTAO_COMMON_WGSL } from '../src/shaders/gtaoCommon.wgsl.js';
 import { GTAO_WGSL } from '../src/shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
 import { INDIRECT_COMBINE_WGSL } from '../src/shaders/indirectCombine.wgsl.js';
@@ -86,11 +87,13 @@ import { SAMPLE_CASCADE_C0_WGSL } from '../src/shaders/sampleCascadeC0.wgsl.js';
 import { STAINED_GLASS_SHADE_WGSL } from '../src/shaders/stainedGlassShade.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
 import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../src/shaders/spatialGi.wgsl.js';
+import { SPATIAL_GI_COMMON_WGSL } from '../src/shaders/spatialGiCommon.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../src/shaders/surfaceTextures.wgsl.js';
 import { TEMPORAL_WGSL } from '../src/shaders/temporal.wgsl.js';
 import { TEMPORAL_GI_WGSL, TEMPORAL_GI_GRIS_WGSL } from '../src/shaders/temporalGi.wgsl.js';
 import { WELFORD_TEMPORAL_WGSL } from '../src/shaders/welfordTemporal.wgsl.js';
 import { DDGI_SAMPLE_WGSL } from '../src/ddgi/ddgiSampleWgsl.js';
+import { PPG_TREE_LAYOUT_WGSL } from '../src/ppg/ppgTreeLayout.wgsl.js';
 import { PPG_GUIDE_WGSL } from '../src/ppg/ppgGuide.wgsl.js';
 import { PPG_UPDATE_WGSL } from '../src/ppg/ppgUpdate.wgsl.js';
 
@@ -277,20 +280,20 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(composeWgsl(COMPOSITE_FRAG_MODULE, WGSL_MODULES)).toBe(COMPOSITE_FRAG_WGSL);
   });
 
-  it('sampleBudget: standalone (no prepend)', () => {
-    expect(composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES)).toBe(SAMPLE_BUDGET_WGSL);
+  it('sampleBudget: WELFORD_TAIL_WGSL + SAMPLE_BUDGET_WGSL', () => {
+    expect(composeWgsl(SAMPLE_BUDGET_MODULE, WGSL_MODULES)).toBe(WELFORD_TAIL_WGSL + SAMPLE_BUDGET_WGSL);
   });
 
   it('resolve: standalone (no prepend)', () => {
     expect(composeWgsl(RESOLVE_MODULE, WGSL_MODULES)).toBe(RESOLVE_WGSL);
   });
 
-  it('gtao: standalone (no prepend)', () => {
-    expect(composeWgsl(GTAO_MODULE, WGSL_MODULES)).toBe(GTAO_WGSL);
+  it('gtao: GTAO_COMMON_WGSL + GTAO_WGSL', () => {
+    expect(composeWgsl(GTAO_MODULE, WGSL_MODULES)).toBe(GTAO_COMMON_WGSL + GTAO_WGSL);
   });
 
-  it('gtaoUpsample: standalone (no prepend)', () => {
-    expect(composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES)).toBe(GTAO_UPSAMPLE_WGSL);
+  it('gtaoUpsample: GTAO_COMMON_WGSL + GTAO_UPSAMPLE_WGSL', () => {
+    expect(composeWgsl(GTAO_UPSAMPLE_MODULE, WGSL_MODULES)).toBe(GTAO_COMMON_WGSL + GTAO_UPSAMPLE_WGSL);
   });
 
   // T9-stepC — the GI passes were narrowed off the full `common` aggregate to
@@ -298,11 +301,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // now strictly smaller than `COMMON_WGSL + …`; the exact narrowed
   // composition is pinned below (focused-module sources concatenated in the
   // pass's declared `requires` order, deps-first, deduped).
-  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+octahedralCore) + RIS_GI', () => {
+  it('risGi (narrowed): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + materialDecode + cameraRays + ddgiSample + ppgPdf(+octahedralCore+ppgTreeLayout) + RIS_GI', () => {
     // W9 guided sampling — risGi now requires `ppgPdf` (the gi-ris dTree
-    // pdf-eval + guided sampler). ppgPdf requires `octahedralCore`, so the
-    // composer emits OCTAHEDRAL_CORE_WGSL then PPG_PDF_WGSL after DDGI_SAMPLE,
-    // before the RIS_GI root source.
+    // pdf-eval + guided sampler). ppgPdf requires `octahedralCore` then
+    // `ppgTreeLayout`, so the composer emits OCTAHEDRAL_CORE_WGSL then
+    // PPG_TREE_LAYOUT_WGSL then PPG_PDF_WGSL after DDGI_SAMPLE, before
+    // the RIS_GI root source.
     expect(composeWgsl(RIS_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
       SCENE_TRAVERSAL_WGSL +
@@ -312,6 +316,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       CAMERA_RAYS_WGSL +
       DDGI_SAMPLE_WGSL +
       OCTAHEDRAL_CORE_WGSL +
+      PPG_TREE_LAYOUT_WGSL +
       PPG_PDF_WGSL +
       RIS_GI_WGSL,
     );
@@ -352,9 +357,14 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('spatialGi OFF (default, narrowed): walkaroundUbo + reservoirGi + sharedPrimitives + jacobianShift + SPATIAL_GI', () => {
+  it('spatialGi OFF (default, narrowed): walkaroundUbo + spatialGiCommon + reservoirGi + sharedPrimitives + jacobianShift + SPATIAL_GI', () => {
+    // Task3 — K_SPATIAL_GI / M_CLAMP_SPATIAL / sampleDiscPx hoisted into the
+    // `spatialGiCommon` module (registered dep) so both OFF and GRIS ON roots
+    // share a single declaration. `spatialGiCommon` has requires:[] so it
+    // lands immediately after walkaroundUbo (the first declared dep).
     expect(composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
+      SPATIAL_GI_COMMON_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
       JACOBIAN_SHIFT_WGSL +
@@ -362,12 +372,15 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('spatialGi ON (GRIS): walkaroundUbo + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + SPATIAL_GI_GRIS', () => {
+  it('spatialGi ON (GRIS): walkaroundUbo + spatialGiCommon + sceneTraversal + reservoirGi + sharedPrimitives + grisReuse + SPATIAL_GI_GRIS', () => {
     // GRIS variant adds `sceneTraversal` (the reconnection-visibility ray's
     // traceSceneAny + BVHNode) and `grisReuse` (the shift + pairwise-MIS math),
     // and DROPS `jacobianShift` (grisShiftJacobian replaces the legacy reuse).
+    // Task3 — `spatialGiCommon` (requires:[]) is now the second declared dep,
+    // so it lands immediately after walkaroundUbo, before sceneTraversal.
     expect(composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES)).toBe(
       WALKAROUND_UBO_WGSL +
+      SPATIAL_GI_COMMON_WGSL +
       SCENE_TRAVERSAL_WGSL +
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
@@ -437,13 +450,13 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
   // PPG (Müller 2017) — ppgUpdate now requires canonical luminance (W8
   // follow-up cleanup); ppgGuide is still standalone.
 
-  it('ppgUpdate: prepends LUMINANCE_WGSL only', () => {
+  it('ppgUpdate: LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_UPDATE_WGSL', () => {
     const composed = composeWgsl(PPG_UPDATE_MODULE, WGSL_MODULES);
-    expect(composed).toBe(`${LUMINANCE_WGSL}${PPG_UPDATE_WGSL}`);
+    expect(composed).toBe(LUMINANCE_WGSL + PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_UPDATE_WGSL);
   });
 
-  it('ppgGuide: standalone (no prepend)', () => {
-    expect(composeWgsl(PPG_GUIDE_MODULE, WGSL_MODULES)).toBe(PPG_GUIDE_WGSL);
+  it('ppgGuide: PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_GUIDE_WGSL', () => {
+    expect(composeWgsl(PPG_GUIDE_MODULE, WGSL_MODULES)).toBe(PPG_TREE_LAYOUT_WGSL + OCTAHEDRAL_CORE_WGSL + PPG_GUIDE_WGSL);
   });
 });
 

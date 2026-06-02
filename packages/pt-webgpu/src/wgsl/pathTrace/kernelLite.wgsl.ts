@@ -2,6 +2,7 @@ import {
   composeShadePrologueWgsl,
   SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE,
 } from './shadePrologue.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
 
 /**
  * Kernel module — primary-ray generation, motion-vector projection, Russian
@@ -30,47 +31,7 @@ import {
  * vectors or variance-moments buffer (compatibility tier bind layout).
  */
 export const PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL = /* wgsl */ `
-fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
-  let uv = (vec2f(f32(px), f32(py)) + jitter) / vec2f(f32(params.width), f32(params.height));
-  let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-  let far4 = params.invViewProj * vec4f(ndc, 1.0, 1.0);
-  let near4 = params.invViewProj * vec4f(ndc, -1.0, 1.0);
-  let farW = far4.xyz / far4.w;
-  let nearW = near4.xyz / near4.w;
-  var ray: Ray;
-  ray.origin = params.cameraPos.xyz;
-  ray.direction = safe_normalize(farW - nearW);
-  return ray;
-}
-
-fn projectToNdc(pos: vec3f, vp: mat4x4f) -> vec2f {
-  let clip = vp * vec4f(pos, 1.0);
-  let invW = 1.0 / max(abs(clip.w), 1e-8);
-  return clip.xy * invW;
-}
-
-
-fn causticMode() -> u32 {
-  return params.causticStrategy;
-}
-
-struct RRResult {
-  survives: bool,
-  throughputMul: f32,
-}
-
-fn russianRoulette(rng: ptr<function, u32>, throughput: vec3f) -> RRResult {
-  let survival = clamp(max(throughput.r, max(throughput.g, throughput.b)), 0.1, 0.95);
-  var result: RRResult;
-  if (rand_f32(rng) > survival) {
-    result.survives = false;
-    result.throughputMul = 1.0;
-    return result;
-  }
-  result.survives = true;
-  result.throughputMul = 1.0 / survival;
-  return result;
-}
+${PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL}
 
 fn accumulateFrame(
   gid: vec3u,

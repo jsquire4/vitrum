@@ -505,8 +505,26 @@ function f16BitsToF32(bits: Uint16Array): Float32Array {
   return out;
 }
 
+/** He-init the master f32 weights/biases for a resolved layer plan.
+ *  Seed is fixed (12345) for reproducibility; small positive biases (0.1) keep
+ *  ReLU units active so the FD gradient check gets clean signal. */
+function heInit(trainer: FusedMlpTrainer): { w: Float32Array; b: Float32Array } {
+  const plan = trainer.layerPlan;
+  const w = new Float32Array(plan.totalW);
+  const b = new Float32Array(plan.totalB);
+  let s = 12345 >>> 0;
+  const rng = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000; };
+  for (let l = 0; l < plan.wlayers; l++) {
+    const inW = plan.inW[l]!, outW = plan.outW[l]!;
+    const scale = Math.sqrt(2 / inW);
+    for (let k = 0; k < inW * outW; k++) w[plan.wOff[l]! + k] = (rng() * 2 - 1) * scale;
+  }
+  for (let i = 0; i < b.length; i++) b[i] = 0.1;
+  return { w, b };
+}
+
 // The Adam optimizer WGSL is exported so the NRC subsystem can run a SEPARATE
 // Adam on the hash-grid feature tables with its own (higher) learning rate +
 // moment buffers (Instant-NGP §4: lr_embed ≈ 0.1 vs lr_mlp ≈ 0.01).
-export { planLayers, f32ToF16Bits, f16BitsToF32, ADAM_WGSL };
+export { planLayers, f32ToF16Bits, f16BitsToF32, heInit, ADAM_WGSL };
 export type { LayerPlan };

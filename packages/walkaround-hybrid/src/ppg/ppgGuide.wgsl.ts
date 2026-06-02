@@ -47,6 +47,7 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { RESERVOIR_GI_STRIDE } from './ppgConstants.js';
 
 export const PPG_GUIDE_WGSL = /* wgsl */`
 // ── PPG guide kernel ──────────────────────────────────────────────────────────
@@ -89,28 +90,6 @@ struct PPGGuideUBO {
 @group(0) @binding(3) var<storage, read_write> ppgSampleOut    : array<vec4<f32>>;
 @group(0) @binding(4) var<storage, read>       ppgReservoirGiBuf : array<u32>;
 @group(1) @binding(0) var<uniform>             ppgGuideUBO     : PPGGuideUBO;
-
-// Layout constants — MUST stay in sync with serialise.ts.
-const DTREE_HEADER_F32 : u32 = 4u;
-const DTREE_NODE_STRIDE: u32 = 8u;
-const STREE_HEADER_F32 : u32 = 4u;
-const STREE_NODE_STRIDE: u32 = 16u;
-
-// ── Octahedral decode (Cigolle et al. 2014) ───────────────────────────────────
-// Maps octahedral UV in [0,1]² to a unit direction in WORLD space.
-// DEVIATION 4 FIX: result is in WORLD frame; caller handles BSDF-local frame.
-fn octToDir(uv: vec2<f32>) -> vec3<f32> {
-  let p = uv * 2.0 - 1.0;
-  let z = 1.0 - abs(p.x) - abs(p.y);
-  var d: vec3<f32>;
-  if (z >= 0.0) {
-    d = vec3<f32>(p.x, p.y, z);
-  } else {
-    let s = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
-    d = vec3<f32>((1.0 - abs(p.yx)) * s, z);
-  }
-  return normalize(d);
-}
 
 // ── LCG random (deterministic per-pixel) ─────────────────────────────────────
 fn lcg(state: ptr<function, u32>) -> f32 {
@@ -204,8 +183,8 @@ fn dTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
 // GRIS Phase-0 widened the per-reservoir stride from 20 → 30 u32 (the appended
 // reconnection-shift cache, indices 20..29). xv (0..2) and M (15) are unchanged
 // WITHIN each reservoir; only the per-pixel base offset multiplier changes.
-// Must stay in lockstep with RESERVOIR_GI_STRIDE in reservoirGi.wgsl.ts.
-const RESERVOIR_GI_STRIDE_LOCAL : u32 = 30u;
+// Sourced from ppgConstants.RESERVOIR_GI_STRIDE (TS single source of truth).
+const RESERVOIR_GI_STRIDE_LOCAL : u32 = ${RESERVOIR_GI_STRIDE}u;
 
 fn fetchPrimaryHitPos(fullResX: u32, fullResY: u32) -> vec3<f32> {
   // Half-res reservoirs cover 2×2 full-res tiles; map full-res → half-res.
@@ -273,16 +252,20 @@ fn ppgGuideMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   let pdf = (leafFlux / totalFlux) / max(solidAng, 1e-12);
 
   // Convert octahedral UV to WORLD-space direction (deviation 4 fix).
-  let dir = octToDir(uv);
+  // Equivalent to the removed octToDir: octDecode maps [-1,1]² → unit sphere;
+  // uv is in [0,1]², so remap via uv*2-1 before decoding.
+  let dir = octDecode(uv * 2.0 - 1.0);
 
   // Output: xyz = world direction, w = guide PDF.
   ppgSampleOut[pix] = vec4<f32>(dir, max(pdf, 1e-12));
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. Self-contained. */
+/** W1-R6 — declarative include-graph entry. Requires ppgTreeLayout for the
+ *  shared DTREE_/STREE_ layout constants, and octahedralCore for octDecode
+ *  (replaces the removed inline octToDir — byte-equivalent: octDecode(uv*2-1)). */
 export const PPG_GUIDE_MODULE: WgslModule = {
   name: 'ppgGuide',
   source: PPG_GUIDE_WGSL,
-  requires: [],
+  requires: ['ppgTreeLayout', 'octahedralCore'],
 };

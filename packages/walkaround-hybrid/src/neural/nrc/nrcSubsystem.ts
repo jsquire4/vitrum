@@ -28,6 +28,7 @@
 
 import {
   FusedMlpTrainer,
+  heInit,
   type FusedNetSpec,
   type FusedTrainerConfig,
 } from './fusedMlpTrainer.js';
@@ -385,18 +386,3 @@ export class NrcSubsystem {
   }
 }
 
-/** He-init the trainer's master f32 weights/biases for the resolved layer plan. */
-function heInit(trainer: FusedMlpTrainer): { w: Float32Array; b: Float32Array } {
-  const plan = trainer.layerPlan;
-  const w = new Float32Array(plan.totalW);
-  const b = new Float32Array(plan.totalB);
-  let s = 12345 >>> 0;
-  const rng = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000; };
-  for (let l = 0; l < plan.wlayers; l++) {
-    const inW = plan.inW[l]!, outW = plan.outW[l]!;
-    const scale = Math.sqrt(2 / inW);
-    for (let k = 0; k < inW * outW; k++) w[plan.wOff[l]! + k] = (rng() * 2 - 1) * scale;
-  }
-  for (let i = 0; i < b.length; i++) b[i] = 0.1;
-  return { w, b };
-}

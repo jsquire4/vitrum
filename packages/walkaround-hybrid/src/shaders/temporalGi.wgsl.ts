@@ -163,19 +163,7 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   rCur.M = M_total;
 
   // Finalise W with the chosen sample's p̂ at this pixel.
-  if (rCur.M > 0u) {
-    let toSf = rCur.xs - rCur.xv;
-    let distSf = length(toSf);
-    if (distSf > 1e-4) {
-      let wiF = toSf / distSf;
-      let cosThetaF = max(0.0, dot(rCur.nv, wiF));
-      let pHatF = luminance(rCur.Lo) * cosThetaF * INV_PI;
-      let W_raw = select(0.0, rCur.w_sum / (f32(rCur.M) * pHatF), pHatF > 1e-9);
-      rCur.W = min(W_raw, ubo.restirGiWCap);
-    } else {
-      rCur.W = 0.0;
-    }
-  }
+  finaliseGIReservoirW(&rCur);
 
   storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
 }
@@ -384,18 +372,8 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
+  finaliseGIReservoirWGris(&rGris);
   if (rGris.M > 0u) {
-    let toSf = rGris.xs - rGris.xv;
-    let distSf = length(toSf);
-    if (distSf > 1e-4) {
-      let wiF = toSf / distSf;
-      let cosThetaF = max(0.0, dot(rGris.nv, wiF));
-      let pHatF = luminance(rGris.Lo) * cosThetaF * INV_PI;
-      let W_raw = select(0.0, rGris.w_sum / pHatF, pHatF > 1e-9);
-      rGris.W = min(W_raw, ubo.restirGiWCap);
-    } else {
-      rGris.W = 0.0;
-    }
     // Refresh the Phase-0 cache so downstream spatial reuse sees a base edge
     // rooted at THIS pixel's visible vertex.
     let toRecon = rGris.xs - rGris.xv;

@@ -72,15 +72,18 @@ import { SAMPLE_CASCADE_C0_MODULE } from '../shaders/sampleCascadeC0.wgsl.js';
 import { RIS_GI_MODULE } from '../shaders/risGi.wgsl.js';
 import { TEMPORAL_GI_MODULE, TEMPORAL_GI_GRIS_MODULE } from '../shaders/temporalGi.wgsl.js';
 import { SPATIAL_GI_MODULE, SPATIAL_GI_GRIS_MODULE } from '../shaders/spatialGi.wgsl.js';
+import { SPATIAL_GI_COMMON_MODULE } from '../shaders/spatialGiCommon.wgsl.js';
 import { WELFORD_TEMPORAL_MODULE } from '../shaders/welfordTemporal.wgsl.js';
 import { SAMPLE_BUDGET_MODULE } from '../shaders/sampleBudget.wgsl.js';
 import { RESOLVE_MODULE } from '../shaders/resolve.wgsl.js';
+import { GTAO_COMMON_MODULE } from '../shaders/gtaoCommon.wgsl.js';
 import { GTAO_MODULE } from '../shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_MODULE } from '../shaders/gtaoUpsample.wgsl.js';
 import { INDIRECT_COMBINE_MODULE } from '../shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_MODULE } from '../shaders/indirectTemporalAccum.wgsl.js';
 import { COMPOSITE_VERT_MODULE, COMPOSITE_FRAG_MODULE } from '../shaders/composite.wgsl.js';
 import { DDGI_SAMPLE_MODULE } from '../ddgi/ddgiSampleWgsl.js';
+import { PPG_TREE_LAYOUT_MODULE } from '../ppg/ppgTreeLayout.wgsl.js';
 import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
 import { PPG_GUIDE_MODULE } from '../ppg/ppgGuide.wgsl.js';
 import { PPG_PDF_MODULE } from '../ppg/ppgPdf.wgsl.js';
@@ -270,6 +273,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [RIS_GI_MODULE.name, RIS_GI_MODULE],
   [TEMPORAL_GI_MODULE.name, TEMPORAL_GI_MODULE],
   [TEMPORAL_GI_GRIS_MODULE.name, TEMPORAL_GI_GRIS_MODULE],
+  [SPATIAL_GI_COMMON_MODULE.name, SPATIAL_GI_COMMON_MODULE],
   [SPATIAL_GI_MODULE.name, SPATIAL_GI_MODULE],
   [SPATIAL_GI_GRIS_MODULE.name, SPATIAL_GI_GRIS_MODULE],
 
@@ -279,6 +283,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [RESOLVE_MODULE.name, RESOLVE_MODULE],
 
   // Sprint 15 — GTAO
+  [GTAO_COMMON_MODULE.name, GTAO_COMMON_MODULE],
   [GTAO_MODULE.name, GTAO_MODULE],
   [GTAO_UPSAMPLE_MODULE.name, GTAO_UPSAMPLE_MODULE],
 
@@ -291,6 +296,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [COMPOSITE_FRAG_MODULE.name, COMPOSITE_FRAG_MODULE],
 
   // PPG (Müller 2017 — opt-in, compiled only when ppgEnabled)
+  [PPG_TREE_LAYOUT_MODULE.name, PPG_TREE_LAYOUT_MODULE],
   [PPG_UPDATE_MODULE.name, PPG_UPDATE_MODULE],
   [PPG_GUIDE_MODULE.name, PPG_GUIDE_MODULE],
   // PPG guided-sampling pdf-eval + sampler for gi-ris (always available so

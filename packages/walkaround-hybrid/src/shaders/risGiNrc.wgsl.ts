@@ -299,24 +299,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // GRIS Phase-0 reconnection-shift cache (Lin et al. 2022 §5) — written, read
-  // by no pass in Phase 0. Identical to risGi.wgsl.
-  {
-    let toRecon = r.xs - r.xv;
-    let dRecon = length(toRecon);
-    if (dRecon > 1e-6 && r.M > 0u) {
-      let wiR = toRecon / dRecon;
-      r.wi_recon    = wiR;
-      r.distRecon   = dRecon;
-      r.cosReconOut = abs(dot(r.ns, -wiR));
-      r.pdfReconBsdf = max(0.0, dot(r.nv, wiR)) * INV_PI;
-    } else {
-      r.wi_recon    = vec3f(0.0);
-      r.distRecon   = 0.0;
-      r.cosReconOut = 0.0;
-      r.pdfReconBsdf = 0.0;
-    }
-    r.prefixVertexCount = select(0u, 1u, r.M > 0u);
-  }
+  // by no pass in Phase 0.  Shared with risGi.wgsl via refreshPhase0Cache.
+  refreshPhase0Cache(&r);
 
   storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, r);
 }

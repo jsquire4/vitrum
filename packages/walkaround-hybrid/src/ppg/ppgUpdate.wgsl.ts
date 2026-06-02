@@ -79,25 +79,10 @@ struct PPGUpdateUBO {
 @group(0) @binding(6) var<storage, read>           ppgDTreeOffsets : array<u32>;
 @group(1) @binding(0) var<uniform>                 ppgUBO          : PPGUpdateUBO;
 
-// Layout constants — MUST stay in sync with serialise.ts.
-const DTREE_HEADER_F32 : u32 = 4u;
-const DTREE_NODE_STRIDE: u32 = 8u;
+// Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
+// STREE_HEADER_F32, STREE_NODE_STRIDE). ppgUpdate-specific constant below.
 // Must match allocatePPGResources default (resourceManager.ts).
 const MAX_DTREE_NODES_PER_CELL : u32 = 341u;
-const STREE_HEADER_F32 : u32 = 4u;
-const STREE_NODE_STRIDE: u32 = 16u;
-
-// ── Octahedral encoding (Cigolle et al. 2014) ─────────────────────────────────
-// Maps a unit direction in WORLD space to [0,1]² octahedral UV.
-// DEVIATION 4 FIX: direction is in WORLD frame; no ONB rotation is applied.
-fn dirToOct(n: vec3<f32>) -> vec2<f32> {
-  let p = n.xy * (1.0 / (abs(n.x) + abs(n.y) + abs(n.z)));
-  if (n.z < 0.0) {
-    let s = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
-    return (1.0 - abs(p.yx)) * s * 0.5 + 0.5;
-  }
-  return p * 0.5 + 0.5;
-}
 
 // ── Fixed-point encode (1/65536 ULP resolution) ──────────────────────────────
 const FLUX_SCALE: f32 = 65536.0;
@@ -182,7 +167,9 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (lum <= 0.0) { return; }
 
   // Octahedral UV of the incoming direction in WORLD space (deviation 4 fix).
-  let uv = dirToOct(dir);
+  // Equivalent to the removed dirToOct: octEncode returns [-1,1]², remapped
+  // to [0,1]² by *0.5+0.5, matching the producer's dirToOct convention.
+  let uv = octEncode(dir) * 0.5 + 0.5;
 
   // Walk the sTree to the spatial cell for this sample.
   let sBase = sTreeFindLeafBase(pos);
@@ -203,9 +190,11 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
 `;
 
 /** W1-R6 — declarative include-graph entry. Requires the canonical
- *  Rec.709 luminance helper (formerly an inline dot in the dTree update). */
+ *  Rec.709 luminance helper, ppgTreeLayout for the shared layout constants,
+ *  and octahedralCore for octEncode (replaces removed inline dirToOct —
+ *  byte-equivalent: octEncode(n)*0.5+0.5). */
 export const PPG_UPDATE_MODULE: WgslModule = {
   name: 'ppgUpdate',
   source: PPG_UPDATE_WGSL,
-  requires: ['luminance'],
+  requires: ['luminance', 'ppgTreeLayout', 'octahedralCore'],
 };

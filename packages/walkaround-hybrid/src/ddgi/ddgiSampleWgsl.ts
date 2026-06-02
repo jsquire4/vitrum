@@ -90,7 +90,7 @@ fn ddgiSample(
     let nv         = dirV / (absV.x + absV.y + absV.z);
     var octV: vec2f;
     if (nv.z >= 0.0) { octV = nv.xy; }
-    else { octV = (1.0 - abs(nv.yx)) * vec2f(sign(nv.x), sign(nv.y)); }
+    else { octV = vec2f((1.0 - abs(nv.y)) * select(-1.0, 1.0, nv.x >= 0.0), (1.0 - abs(nv.x)) * select(-1.0, 1.0, nv.y >= 0.0)); }
     octV = octV * 0.5 + 0.5;
 
     // Visibility atlas UV (cell + 2px border, 1px each side). Strides
@@ -119,7 +119,7 @@ fn ddgiSample(
     let nN   = surfaceNormal / (absN.x + absN.y + absN.z);
     var octN: vec2f;
     if (nN.z >= 0.0) { octN = nN.xy; }
-    else { octN = (1.0 - abs(nN.yx)) * vec2f(sign(nN.x), sign(nN.y)); }
+    else { octN = vec2f((1.0 - abs(nN.y)) * select(-1.0, 1.0, nN.x >= 0.0), (1.0 - abs(nN.x)) * select(-1.0, 1.0, nN.y >= 0.0)); }
     octN = octN * 0.5 + 0.5;
 
     // Irradiance atlas UV (cell + 2px border, 1px each side). Strides

@@ -13,7 +13,7 @@
 //
 // NOT wired into the path tracer. Self-contained validation only.
 
-import { FusedMlpTrainer, type FusedNetSpec } from "./fusedMlpTrainer.ts";
+import { FusedMlpTrainer, heInit, type FusedNetSpec } from "./fusedMlpTrainer.ts";
 import { FusedMlpTrainerProbe } from "./fusedMlpTrainerProbe.ts";
 
 declare const Deno: { args: string[]; exit: (c?: number) => never };
@@ -37,23 +37,6 @@ function makeBatch(B: number, inW: number, seed: { s: number }, outW: number) {
     for (let o = 0; o < outW; o++) y[b * outW + o] = t * (1 + 0.1 * o); // distinct RGB-ish channels
   }
   return { x, y };
-}
-
-// He-init of the master f32 weights for the trainer's layer plan.
-function heInit(trainer: FusedMlpTrainer): { w: Float32Array; b: Float32Array } {
-  const plan = trainer.layerPlan;
-  const w = new Float32Array(plan.totalW);
-  const b = new Float32Array(plan.totalB);
-  let s = 12345;
-  const rng = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000; };
-  for (let l = 0; l < plan.wlayers; l++) {
-    const inW = plan.inW[l], outW = plan.outW[l];
-    const scale = Math.sqrt(2 / inW);
-    for (let k = 0; k < inW * outW; k++) w[plan.wOff[l] + k] = (rng() * 2 - 1) * scale;
-  }
-  // small positive biases so ReLU units start active (FD signal cleanliness)
-  for (let i = 0; i < b.length; i++) b[i] = 0.1;
-  return { w, b };
 }
 
 // CPU reference: exact analytic forward+backward for the SAME net the GPU runs.

@@ -1,3 +1,5 @@
+import { PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL } from './connectCore.wgsl.js';
+
 /**
  * Connect module — light-direction sampling, MIS connections, and the
  * environment-map / HDRI helpers consumed by both the main kernel and the
@@ -22,14 +24,7 @@
  * from `bsdf.wgsl.ts`, and traceAny from `intersection.wgsl.ts`.
  */
 export const PT_WEBGPU_PATH_TRACE_CONNECT_WGSL = /* wgsl */ `
-fn sampleSky(dir: vec3f) -> vec3f {
-  let t = 0.5 * (dir.y + 1.0);
-  var sky = mix(vec3f(0.06, 0.08, 0.12), vec3f(0.45, 0.62, 0.95), clamp(t, 0.0, 1.0));
-  let sunDir = safe_normalize(params.environmentSun.xyz);
-  let sunGlow = pow(max(0.0, dot(dir, sunDir)), 512.0) * params.environmentSun.w;
-  sky = sky + vec3f(1.0, 0.95, 0.85) * sunGlow;
-  return sky * params.environmentTint.rgb;
-}
+${PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL}
 
 // HDRI environment presence + dimensions are now dedicated u32 fields in
 // FrameParams (hasEnvironmentMap / environmentMapWidth / environmentMapHeight).

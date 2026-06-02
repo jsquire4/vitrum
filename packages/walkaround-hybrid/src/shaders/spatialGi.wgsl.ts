@@ -77,30 +77,6 @@ export const SPATIAL_GI_WGSL = /* wgsl */ `
 @group(0) @binding(1) var<storage, read_write> sgi_resOut: array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
-const K_SPATIAL_GI: u32 = 5u;
-const M_CLAMP_SPATIAL: u32 = 500u;
-// SPATIAL_RADIUS_GI / NORMAL_DOT_MIN_S / COPLANAR_TOL_S now live on the
-// WalkaroundUBO so library consumers can override the Cornell-tuned defaults:
-//   ubo.restirGiSpatialRadiusPx         (default 12.0 — half-res pixels)
-//   ubo.restirGiSpatialNormalDotMin     (default 0.906 ≈ cos(25°))
-//   ubo.restirGiSpatialCoplanarTol      (default 0.05 — 5 cm world units)
-//
-// Coplanar-distance tolerance rationale: neighbour must lie within this
-// perpendicular distance of the centre pixel's tangent plane.  Replaces the
-// older camera-distance ratio test (DEPTH_REL_TOL_S) which rejected
-// neighbours in corner geometry where the same wall recedes from the camera
-// at a steep angle — verified via reservoir probe that the camera-ratio
-// test was rejecting essentially all 5 neighbours on left-wall-near-back-
-// corner pixels, locking each pixel into its own initial-RIS sample.  The
-// plane test instead asks "are these points on the same surface" which is
-// what the spatial filter actually needs.
-
-fn sampleDiscPx(rng: ptr<function, u32>) -> vec2f {
-  let r = ubo.restirGiSpatialRadiusPx * sqrt(rand_f32(rng));
-  let phi = 6.2831853 * rand_f32(rng);
-  return vec2f(r * cos(phi), r * sin(phi));
-}
-
 @compute @workgroup_size(8, 8, 1)
 fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let fullDims = ubo.screenSize;
@@ -164,19 +140,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // Finalise W from the chosen sample's p̂ at this pixel.
-  if (rOut.M > 0u) {
-    let toSf = rOut.xs - rOut.xv;
-    let distSf = length(toSf);
-    if (distSf > 1e-4) {
-      let wiF = toSf / distSf;
-      let cosThetaF = max(0.0, dot(rOut.nv, wiF));
-      let pHatF = luminance(rOut.Lo) * cosThetaF * INV_PI;
-      let W_raw = select(0.0, rOut.w_sum / (f32(rOut.M) * pHatF), pHatF > 1e-9);
-      rOut.W = min(W_raw, ubo.restirGiWCap);
-    } else {
-      rOut.W = 0.0;
-    }
-  }
+  finaliseGIReservoirW(&rOut);
 
   storeReservoirGI_rw(&sgi_resOut, pixelIdx, rOut);
 }
@@ -196,7 +160,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SPATIAL_GI_MODULE: WgslModule = {
   name: 'spatialGi',
   source: SPATIAL_GI_WGSL,
-  requires: ['walkaroundUbo', 'reservoirGi', 'sharedPrimitives', 'jacobianShift'],
+  requires: ['walkaroundUbo', 'spatialGiCommon', 'reservoirGi', 'sharedPrimitives', 'jacobianShift'],
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -227,30 +191,6 @@ export const SPATIAL_GI_GRIS_WGSL = /* wgsl */ `
 // Normal bias for the GRIS reconnection-visibility ray origin (lift off the
 // surface so the ray does not self-intersect the visible point's triangle).
 const GRIS_NORMAL_BIAS: f32 = 1e-3;
-
-const K_SPATIAL_GI: u32 = 5u;
-const M_CLAMP_SPATIAL: u32 = 500u;
-// SPATIAL_RADIUS_GI / NORMAL_DOT_MIN_S / COPLANAR_TOL_S now live on the
-// WalkaroundUBO so library consumers can override the Cornell-tuned defaults:
-//   ubo.restirGiSpatialRadiusPx         (default 12.0 — half-res pixels)
-//   ubo.restirGiSpatialNormalDotMin     (default 0.906 ≈ cos(25°))
-//   ubo.restirGiSpatialCoplanarTol      (default 0.05 — 5 cm world units)
-//
-// Coplanar-distance tolerance rationale: neighbour must lie within this
-// perpendicular distance of the centre pixel's tangent plane.  Replaces the
-// older camera-distance ratio test (DEPTH_REL_TOL_S) which rejected
-// neighbours in corner geometry where the same wall recedes from the camera
-// at a steep angle — verified via reservoir probe that the camera-ratio
-// test was rejecting essentially all 5 neighbours on left-wall-near-back-
-// corner pixels, locking each pixel into its own initial-RIS sample.  The
-// plane test instead asks "are these points on the same surface" which is
-// what the spatial filter actually needs.
-
-fn sampleDiscPx(rng: ptr<function, u32>) -> vec2f {
-  let r = ubo.restirGiSpatialRadiusPx * sqrt(rand_f32(rng));
-  let phi = 6.2831853 * rand_f32(rng);
-  return vec2f(r * cos(phi), r * sin(phi));
-}
 
 // GRIS reconnection visibility — is the shifted edge xv → xs unoccluded? Trace
 // a shadow ray through the scene BVH/TLAS (group 1). Returns true if the
@@ -423,19 +363,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // to 1 (they replace the 1/M averaging), so dividing by M again would
   // under-energise the estimate. This is the GRIS generalized-RIS contribution
   // weight (Lin 2022 §generalized RIS: W = w_sum / p̂(z) with Σ m_i = 1).
-  if (rOut.M > 0u) {
-    let toSf = rOut.xs - rOut.xv;
-    let distSf = length(toSf);
-    if (distSf > 1e-4) {
-      let wiF = toSf / distSf;
-      let cosThetaF = max(0.0, dot(rOut.nv, wiF));
-      let pHatF = luminance(rOut.Lo) * cosThetaF * INV_PI;
-      let W_raw = select(0.0, rOut.w_sum / pHatF, pHatF > 1e-9);
-      rOut.W = min(W_raw, ubo.restirGiWCap);
-    } else {
-      rOut.W = 0.0;
-    }
-  }
+  finaliseGIReservoirWGris(&rOut);
 
   // GRIS — refresh the Phase-0 reconnection-shift cache on the chosen sample so
   // the NEXT reuse pass (the ping-pong second spatial dispatch, or the next
@@ -473,5 +401,5 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SPATIAL_GI_GRIS_MODULE: WgslModule = {
   name: 'spatialGiGris',
   source: SPATIAL_GI_GRIS_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse'],
+  requires: ['walkaroundUbo', 'spatialGiCommon', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse'],
 };

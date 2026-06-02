@@ -83,13 +83,14 @@ struct EncBwdParams {
 @group(0) @binding(3) var<storage, read_write> gradTablesFx : array<atomic<i32>>; // fixed-point
 @group(0) @binding(4) var<uniform>             p            : EncBwdParams;
 
-// Instant-NGP spatial hash (Müller 2022 §3 Eq.4). u32 wraparound matches the CPU
-// oracle (Math.imul / >>>0) and the forward (nrcQuery.wgsl nrcSpatialHash3D) EXACTLY.
+// WGSL-required duplicate of nrcEncoding.wgsl.ts nrcSpatialHash3D — keep in sync.
+// (Müller 2022 §3 Eq.4; u32 wraparound matches CPU oracle Math.imul/>>>0.)
 fn ebSpatialHash3D(ix: u32, iy: u32, iz: u32, tableSize: u32) -> u32 {
   let h: u32 = (ix * 1u) ^ (iy * 2654435761u) ^ (iz * 805459861u);
   return h % tableSize;
 }
 
+// WGSL-required duplicate of nrcEncoding.wgsl.ts nrcNormalizeToAabb — keep in sync.
 fn ebNormalizeToAabb(pos: vec3f, aabbMin: vec3f, aabbMax: vec3f) -> vec3f {
   let ext = aabbMax - aabbMin;
   let safeExt = max(ext, vec3f(1e-20));

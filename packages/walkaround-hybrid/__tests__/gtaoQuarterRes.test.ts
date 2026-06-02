@@ -24,6 +24,7 @@ import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 import { createGtaoFrameResources } from '../src/pipeline/frameResources/createGtaoFrameResources.js';
 import { createFrameResources } from '../src/pipeline/resourceManager.js';
 import { GTAOPass } from '../src/pipeline/passes/GTAOPass.js';
+import { GTAO_COMMON_WGSL } from '../src/shaders/gtaoCommon.wgsl.js';
 import { GTAO_WGSL } from '../src/shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_WGSL } from '../src/shaders/gtaoUpsample.wgsl.js';
 import type { PassDispatchContext } from '../src/pipeline/Pass.js';
@@ -264,8 +265,9 @@ describe('GTAOPass.dispatch — resolution + UBO downscale', () => {
 // ── Shaders read the downscale (no hardcoded ÷2) ─────────────────────────────
 
 describe('GTAO shaders — downscale-driven (no hardcoded /2u)', () => {
-  it('gtao.wgsl declares gtaoDownscale in the UBO and uses it to size the AO grid', () => {
-    expect(GTAO_WGSL).toContain('gtaoDownscale: f32');
+  it('gtao.wgsl declares gtaoDownscale in the shared UBO struct and uses it to size the AO grid', () => {
+    // GTAOUniforms struct lives in gtaoCommon (required by gtao); check the struct there.
+    expect(GTAO_COMMON_WGSL).toContain('gtaoDownscale: f32');
     expect(GTAO_WGSL).toContain('u32(gtao_ubo.gtaoDownscale)');
     expect(GTAO_WGSL).toContain('fullDims / ds');
     // The former hardcoded half-res mapping must be gone.
@@ -273,8 +275,9 @@ describe('GTAO shaders — downscale-driven (no hardcoded /2u)', () => {
     expect(GTAO_WGSL).not.toContain('gid.xy * 2u + 1u');
   });
 
-  it('gtaoUpsample.wgsl declares gtaoDownscale and maps taps with it', () => {
-    expect(GTAO_UPSAMPLE_WGSL).toContain('gtaoDownscale: f32');
+  it('gtaoUpsample.wgsl uses gtaoDownscale from the shared UBO struct and maps taps with it', () => {
+    // GTAOUniforms struct lives in gtaoCommon (required by gtaoUpsample); check the struct there.
+    expect(GTAO_COMMON_WGSL).toContain('gtaoDownscale: f32');
     expect(GTAO_UPSAMPLE_WGSL).toContain('u32(up_gtao.gtaoDownscale)');
     expect(GTAO_UPSAMPLE_WGSL).toContain('gid.xy / ds');
     expect(GTAO_UPSAMPLE_WGSL).toContain('sampleHalf * ds + ds / 2u');

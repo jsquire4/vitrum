@@ -25,24 +25,6 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const GTAO_UPSAMPLE_WGSL = /* wgsl */ `
 
-// Duplicate of gtao.wgsl's GTAOUniforms struct (both shaders bind the same
-// uboBuffer; the duplicate WGSL declaration is required because each shader
-// module is compiled independently — concatenating would conflict with
-// gtao's @binding(0/1/2) declarations on the same group).
-struct GTAOUniforms {
-  tanFovHalf: f32,
-  radiusPx:   f32,
-  intensity:  f32,
-  depthThresh: f32,
-  bilateralDepthSigma: f32,
-  // AO compute downscale factor (integer, stored as f32). 2 = half-res input,
-  // 4 = quarter-res input. Maps full-res pixel to low-res tap (gid/ds) and
-  // low-res tap to full-res sample centre (tap*ds + ds/2). Was the _pad0 slot.
-  gtaoDownscale: f32,
-  _pad1: f32,
-  _pad2: f32,
-};
-
 @group(0) @binding(0) var up_aoHalf:      texture_2d<f32>;
 @group(0) @binding(1) var up_normalDepth: texture_2d<f32>;
 // aoFullOut: rgba16float storage texture. .rgb carries the per-channel
@@ -156,9 +138,9 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. Self-contained. */
+/** W1-R6 — declarative include-graph entry. Requires gtaoCommon for GTAOUniforms. */
 export const GTAO_UPSAMPLE_MODULE: WgslModule = {
   name: 'gtaoUpsample',
   source: GTAO_UPSAMPLE_WGSL,
-  requires: [],
+  requires: ['gtaoCommon'],
 };

@@ -15,6 +15,7 @@
 // when they lived on the trainer — same encoders, same dispatch counts, same
 // readback discipline. Pinned by `__tests__/fusedMlpTrainerProbe.test.ts`.
 
+import { f16BitsToF32 } from "./fusedMlpTrainer.js";
 import type { FusedMlpTrainer } from "./fusedMlpTrainer.js";
 
 export class FusedMlpTrainerProbe {
@@ -101,30 +102,8 @@ export class FusedMlpTrainerProbe {
     d.queue.submit([enc.finish()]);
     await rb.mapAsync(GPUMapMode.READ);
     const bits = new Uint16Array(rb.getMappedRange().slice(0)).subarray(0, count);
-    const out = f16BitsToF32Local(bits);
+    const out = f16BitsToF32(bits);
     rb.unmap(); rb.destroy();
     return out;
   }
-}
-
-// f16 bits -> f32 decode (for readback). Local copy mirroring the trainer's
-// internal decode so the probe stays self-contained.
-function f16BitsToF32Local(bits: Uint16Array): Float32Array {
-  const out = new Float32Array(bits.length);
-  for (let k = 0; k < bits.length; k++) {
-    const h = bits[k]!;
-    const neg = (h & 0x8000) !== 0;
-    const exp = (h >>> 10) & 0x1f;
-    const mant = h & 0x3ff;
-    let f: number;
-    if (exp === 0) {
-      f = (mant / 1024) * Math.pow(2, -14);   // subnormal / zero
-    } else if (exp === 0x1f) {
-      f = mant ? NaN : Infinity;
-    } else {
-      f = (1 + mant / 1024) * Math.pow(2, exp - 15);
-    }
-    out[k] = neg ? -f : f;
-  }
-  return out;
 }

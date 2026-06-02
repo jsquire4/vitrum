@@ -53,12 +53,9 @@ export const PPG_PDF_WGSL = /* wgsl */ `
 @group(3) @binding(7) var<storage, read> ppgDTreeBuf_gi     : array<f32>;
 @group(3) @binding(8) var<storage, read> ppgDTreeOffsets_gi : array<u32>;
 
-// Layout constants — MUST stay in sync with serialise.ts / ppgGuide.wgsl.
-const PPG_DTREE_HEADER_F32 : u32 = 4u;
-const PPG_DTREE_NODE_STRIDE: u32 = 8u;
-const PPG_STREE_HEADER_F32 : u32 = 4u;
-const PPG_STREE_NODE_STRIDE: u32 = 16u;
-const PPG_FOUR_PI          : f32 = 12.566370614359172; // 4π — uniform-fallback pdf = 1/4π
+// Layout constants provided by ppgTreeLayout (DTREE_HEADER_F32, DTREE_NODE_STRIDE,
+// STREE_HEADER_F32, STREE_NODE_STRIDE — shared with ppgGuide and ppgUpdate).
+const PPG_FOUR_PI: f32 = 12.566370614359172; // 4π — uniform-fallback pdf = 1/4π
 
 // ── World direction → dTree [0,1]² octahedral UV ────────────────────────────
 // octEncode (octahedralCore) returns [-1,1]²; remap to [0,1]² to match the
@@ -74,7 +71,7 @@ fn ppgSTreeFindLeafBase(pos: vec3<f32>) -> u32 {
   var idx: u32 = 0u;
   // sTree depth ≤ log2(16384) = 14; 32 is a generous safety cap.
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
-    let base = PPG_STREE_HEADER_F32 + idx * PPG_STREE_NODE_STRIDE;
+    let base = STREE_HEADER_F32 + idx * STREE_NODE_STRIDE;
     let splitAxisF = ppgSTreeBuf_gi[base + 7u];
     if (splitAxisF < 0.0) { return base; } // leaf
     let splitVal = ppgSTreeBuf_gi[base + 3u];
@@ -89,7 +86,7 @@ fn ppgSTreeFindLeafBase(pos: vec3<f32>) -> u32 {
     else                      { idx = u32(rightChildF); }
     if (idx >= nodeCount) { return base; } // defensive fallback
   }
-  return PPG_STREE_HEADER_F32;
+  return STREE_HEADER_F32;
 }
 
 // ── dTree descent to the leaf containing an arbitrary UV ────────────────────
@@ -98,7 +95,7 @@ fn ppgSTreeFindLeafBase(pos: vec3<f32>) -> u32 {
 fn ppgDTreeFindLeafBase(dTreeOffset: u32, octUV: vec2<f32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
-    let base = dTreeOffset + PPG_DTREE_HEADER_F32 + idx * PPG_DTREE_NODE_STRIDE;
+    let base = dTreeOffset + DTREE_HEADER_F32 + idx * DTREE_NODE_STRIDE;
     let isLeafFlag = ppgDTreeBuf_gi[base + 7u];
     if (isLeafFlag > 0.5) { return base; }
     let firstChildF = ppgDTreeBuf_gi[base + 6u];
@@ -118,7 +115,7 @@ fn ppgDTreeFindLeafBase(dTreeOffset: u32, octUV: vec2<f32>) -> u32 {
     if (goRight) { off = off + 1u; }
     idx = firstChild + off;
   }
-  return dTreeOffset + PPG_DTREE_HEADER_F32; // unreachable on a well-formed tree
+  return dTreeOffset + DTREE_HEADER_F32; // unreachable on a well-formed tree
 }
 
 // ── Guide pdf for an arbitrary world direction (Müller §3.2/§3.4) ───────────
@@ -143,7 +140,7 @@ fn ppgEvalPdf(pos: vec3<f32>, wi: vec3<f32>) -> f32 {
 fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
   var idx: u32 = 0u;
   for (var step: u32 = 0u; step < 32u; step = step + 1u) {
-    let base = dTreeOffset + PPG_DTREE_HEADER_F32 + idx * PPG_DTREE_NODE_STRIDE;
+    let base = dTreeOffset + DTREE_HEADER_F32 + idx * DTREE_NODE_STRIDE;
     let isLeafFlag = ppgDTreeBuf_gi[base + 7u];
     if (isLeafFlag > 0.5) { return base; }
     let firstChildF = ppgDTreeBuf_gi[base + 6u];
@@ -153,7 +150,7 @@ fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
     var sum: f32 = 0.0;
     var cFlux: array<f32, 4>;
     for (var ci: u32 = 0u; ci < 4u; ci = ci + 1u) {
-      let cBase = dTreeOffset + PPG_DTREE_HEADER_F32 + (firstChild + ci) * PPG_DTREE_NODE_STRIDE;
+      let cBase = dTreeOffset + DTREE_HEADER_F32 + (firstChild + ci) * DTREE_NODE_STRIDE;
       cFlux[ci] = ppgDTreeBuf_gi[cBase + 4u];
       sum = sum + cFlux[ci];
     }
@@ -172,7 +169,7 @@ fn ppgDTreeSampleLeafBase(dTreeOffset: u32, rng: ptr<function, u32>) -> u32 {
     }
     idx = firstChild + pick;
   }
-  return dTreeOffset + PPG_DTREE_HEADER_F32;
+  return dTreeOffset + DTREE_HEADER_F32;
 }
 
 // ── Draw a guided world direction from the learned dTree ────────────────────
@@ -208,12 +205,13 @@ fn ppgSampleGuidedDir(pos: vec3<f32>, rng: ptr<function, u32>) -> vec3<f32> {
 `;
 
 /** W1-R6 — declarative include-graph entry.
- *  Requires `octahedralCore` for octEncode/octDecode. The `rand_f32` RNG +
+ *  Requires `octahedralCore` for octEncode/octDecode, and `ppgTreeLayout`
+ *  for the shared DTREE_/STREE_ layout constants. The `rand_f32` RNG +
  *  the group(3) PPG bindings are provided by the gi-ris compilation unit
  *  (sharedPrimitives supplies `rand_f32`; risGi declares it requires this
  *  module). The bindings live here because only gi-ris consumes them. */
 export const PPG_PDF_MODULE: WgslModule = {
   name: 'ppgPdf',
   source: PPG_PDF_WGSL,
-  requires: ['octahedralCore'],
+  requires: ['octahedralCore', 'ppgTreeLayout'],
 };

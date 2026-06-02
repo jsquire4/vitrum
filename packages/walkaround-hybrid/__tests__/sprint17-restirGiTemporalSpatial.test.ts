@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { TEMPORAL_GI_WGSL } from '../src/shaders/temporalGi.wgsl.js';
 import { SPATIAL_GI_WGSL } from '../src/shaders/spatialGi.wgsl.js';
+import { SPATIAL_GI_COMMON_WGSL } from '../src/shaders/spatialGiCommon.wgsl.js';
 import {
   MAX_PASS_COUNT,
   buildPassLayout,
@@ -63,12 +64,20 @@ describe('Sprint 17 — spatial-GI WGSL', () => {
   });
 
   it('pulls K_SPATIAL_GI = 5 random neighbours from a UBO-driven disc radius (the radius const was migrated to ubo.restirGiSpatialRadiusPx in the 2026-05-18 sweep; Cornell default 12.0 px lives on HybridEngineOptions)', () => {
-    expect(SPATIAL_GI_WGSL).toContain('K_SPATIAL_GI: u32 = 5u');
-    expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialRadiusPx');
+    // Task3 — K_SPATIAL_GI / sampleDiscPx hoisted into spatialGiCommon; both
+    // the WGSL body (SPATIAL_GI_WGSL) and the shared module carry the symbol.
+    expect(SPATIAL_GI_COMMON_WGSL).toContain('K_SPATIAL_GI: u32 = 5u');
+    expect(SPATIAL_GI_COMMON_WGSL).toContain('ubo.restirGiSpatialRadiusPx');
+    // The body still USES sampleDiscPx and K_SPATIAL_GI (calls + loop var).
+    expect(SPATIAL_GI_WGSL).toContain('sampleDiscPx');
+    expect(SPATIAL_GI_WGSL).toContain('K_SPATIAL_GI');
   });
 
   it('clamps M at 500 (spatial-reuse history bound)', () => {
-    expect(SPATIAL_GI_WGSL).toContain('M_CLAMP_SPATIAL: u32 = 500u');
+    // Task3 — M_CLAMP_SPATIAL declaration moved to spatialGiCommon.
+    expect(SPATIAL_GI_COMMON_WGSL).toContain('M_CLAMP_SPATIAL: u32 = 500u');
+    // The body still USES M_CLAMP_SPATIAL.
+    expect(SPATIAL_GI_WGSL).toContain('M_CLAMP_SPATIAL');
   });
 
   it('applies geometric-consistency reject + Jacobian shift (normal-alignment + coplanarity bounds migrated to UBO in the 2026-05-18 sweep)', () => {

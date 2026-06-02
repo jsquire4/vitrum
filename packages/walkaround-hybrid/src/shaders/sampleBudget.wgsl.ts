@@ -39,14 +39,14 @@
  * but the source variance texture was created with TEXTURE_BINDING usage
  * for exactly this read path.
  *
- * Dependencies: WELFORD_VARIANCE_WGSL (canonical struct + helpers) is
- * injected below. Do NOT prepend COMMON_WGSL — that would cause a
- * redeclaration error for WelfordVariance.
+ * Dependencies: WelfordVariance struct + helpers are provided via
+ * requires: ['welfordTail']. The composer deduplicates by module name so
+ * no redeclaration occurs even when welfordTail is also pulled by another
+ * pass in the same compilation unit.
  *
  * @version 2 (Sprint 9 wire-in, 2026-05-11)
  */
 
-import { WELFORD_VARIANCE_WGSL } from '@vitrum/shared-denoisers';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const SAMPLE_BUDGET_WGSL = /* wgsl */ `
@@ -79,9 +79,6 @@ struct SampleCountUniforms {
   _pad2:       u32,
 };
 @group(0) @binding(3) var<uniform>            u_sampleCount: SampleCountUniforms;
-
-// ── WelfordVariance (canonical, injected from @vitrum/shared-denoisers) ─────
-${WELFORD_VARIANCE_WGSL}
 
 // ── Tier classification ───────────────────────────────────────────────────────
 
@@ -117,11 +114,10 @@ fn sampleBudgetKernel(@builtin(global_invocation_id) globalId: vec3<u32>) {
 }
 `;
 
-/** W1-R6 — declarative include-graph entry. Self-contained: this module
- *  template-interpolates `WELFORD_VARIANCE_WGSL` directly into its own
- *  source string, so it has no run-time `requires`. */
+/** W1-R6 — declarative include-graph entry. Requires welfordTail for the
+ *  WelfordVariance struct + helpers (composer deduplicates by module name). */
 export const SAMPLE_BUDGET_MODULE: WgslModule = {
   name: 'sampleBudget',
   source: SAMPLE_BUDGET_WGSL,
-  requires: [],
+  requires: ['welfordTail'],
 };
