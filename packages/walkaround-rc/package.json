@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@vitrum/shared-bvh": "file:../shared-bvh",
-    "@vitrum/three-bindings": "file:../three-bindings"
+    "@vitrum/shared-samplers": "file:../shared-samplers"
   },
   "peerDependencies": {
     "three": ">=0.167.0 <0.190",

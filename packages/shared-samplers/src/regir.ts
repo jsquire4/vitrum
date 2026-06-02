@@ -44,7 +44,7 @@
  *     tree descent per pixel.
  */
 
-import { sampleLightTreeCPU, type LightTreeNode } from './lightTree.js';
+import { dist2ToAabb, nodeImportance, sampleLightTreeCPU, type LightTreeNode } from './lightTree.js';
 
 /** Floats per ReGIR cell-reservoir survivor slot in the packed grid buffer:
  *  [0] emitterIndex (as f32; -1 ⇒ empty slot), [1] pSel (effective selection
@@ -58,34 +58,6 @@ export interface ReGIRSurvivor {
   readonly emitterIndex: number;
   /** Effective selection pmf of `emitterIndex` from this cell's reservoir. */
   readonly pSel: number;
-}
-
-/**
- * Importance of a leaf node for a shading point `x`: `power / max(dist², floor)`.
- * Local copy of `lightTree.ts`'s `nodeImportance` (which is internal there) so
- * the ReGIR cell target and the light-tree descent agree exactly. The
- * `dist2Floor` clamp prevents a divide-by-zero / unbounded importance when the
- * shading point lies inside (or on) the node AABB.
- */
-function dist2ToAabb(
-  px: number, py: number, pz: number,
-  min: readonly [number, number, number],
-  max: readonly [number, number, number],
-): number {
-  const dx = Math.max(min[0] - px, 0, px - max[0]);
-  const dy = Math.max(min[1] - py, 0, py - max[1]);
-  const dz = Math.max(min[2] - pz, 0, pz - max[2]);
-  return dx * dx + dy * dy + dz * dz;
-}
-
-function nodeImportance(
-  node: LightTreeNode,
-  px: number, py: number, pz: number,
-  dist2Floor: number,
-): number {
-  if (node.totalPower <= 0) return 0;
-  const d2 = Math.max(dist2ToAabb(px, py, pz, node.aabbMin, node.aabbMax), dist2Floor);
-  return node.totalPower / d2;
 }
 
 /**

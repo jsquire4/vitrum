@@ -34,6 +34,11 @@
  * Note: `StorageBufferAttribute` from `three/webgpu` is retained here because
  * the BVH buffers are consumed by the Three.js WebGPU renderer backend in
  * `cascadeDispatch.ts`.  See TSL_TO_RAW_MAPPING.md for rationale.
+ *
+ * Moved from `@vitrum/walkaround-rc/src/bvhCompute.ts` back into
+ * `@vitrum/walkaround-hybrid` (R1.6 complexity-sweep 2026-06-02) because the
+ * file's THREE coupling belongs with the already-THREE-coupled hybrid engine,
+ * not in the algorithm package.
  */
 
 import { StorageBufferAttribute } from 'three/webgpu';
@@ -75,6 +80,9 @@ export interface BvhBuildOpts {
  *     produce ANY attenuation on opaque-cast non-physical materials whose
  *     attenuationColor field was nonetheless populated. Pre-W2-C5 the
  *     legacy RC packer also defaulted to 0.1.
+ *     NOTE: `ddgi/probeUpdateMaterials.ts` uses the same 0.1 fallback delta
+ *     for the DDGI material packer — the two adapters are intentionally
+ *     parallel; this cross-ref keeps them in sync.
  *   - `emissive` is pre-multiplied by `emissiveIntensity` so the GPU side
  *     sees a single radiance triple. Same as the legacy packer.
  */

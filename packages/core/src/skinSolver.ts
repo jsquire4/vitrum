@@ -38,7 +38,7 @@
  * hero character. The GPU compute variant (deferred) gives ~10× headroom.
  */
 
-import type { SkinnedMeshPrimitive } from '@vitrum/core';
+import type { SkinnedMeshPrimitive } from './scene/primitives.js';
 
 /**
  * Multiply two column-major 4x4 matrices: `out[outOff..+16] = a[aOff..+16] · b[bOff..+16]`.

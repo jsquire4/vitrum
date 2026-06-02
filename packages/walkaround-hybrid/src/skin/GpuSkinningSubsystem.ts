@@ -4,7 +4,7 @@
  */
 
 import type { Scene, ScenePrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
-import { combineSkinMatrices, solveSkin } from '@vitrum/three-bindings';
+import { combineSkinMatrices, solveSkin } from '@vitrum/core';
 import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from './gpuSkinBvh.wgsl.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from '../restir/bvhCompute.js';
 

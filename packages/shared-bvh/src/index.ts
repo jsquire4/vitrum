@@ -14,6 +14,7 @@ export {
   rebuildTlasReuseBlas,
   computeLocalAabb,
   computeWorldAabbForBindings,
+  invertMat4,
   type PrimitiveTlasBinding,
   type ScenePackOptions,
   type ScenePackResult,

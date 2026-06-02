@@ -30,7 +30,8 @@
 
 import type * as THREE from 'three';
 import type { StorageBufferAttribute } from 'three/webgpu';
-import { RCDispatcher, buildRCSceneBVH, packCascadeMaterials, CASCADE_DIMS, type SceneBVH, type CascadeDim } from '@vitrum/walkaround-rc';
+import { RCDispatcher, CASCADE_DIMS, type CascadeDim } from '@vitrum/walkaround-rc';
+import { buildRCSceneBVH, packCascadeMaterials, type SceneBVH } from './rc/bvhCompute.js';
 import { refitBvhBounds } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import {

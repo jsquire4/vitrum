@@ -84,7 +84,7 @@ interface PendingTlasInstance {
   readonly blasRoot: number;
 }
 
-function invertMat4(m: Mat4): Float32Array | null {
+export function invertMat4(m: Mat4): Float32Array | null {
   const at = (index: number): number => m[index] ?? 0;
   const out = new Float32Array(16);
   const a00 = at(0), a01 = at(1), a02 = at(2), a03 = at(3);

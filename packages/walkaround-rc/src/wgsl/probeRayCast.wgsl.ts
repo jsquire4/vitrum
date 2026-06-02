@@ -15,9 +15,10 @@
  *   4. CascadeUniforms struct (40 floats = 160 bytes; must match cascadeDispatch.ts layout)
  *   5. MaterialEntry struct (16 f32 fields = 64 bytes; must match bvhCompute.ts layout)
  *   6. Octahedral helpers (octEncode, octDecode) — body stripped of file header
- *   7. Probe-ray helpers (pcgHash, dirToEquirectUV)
- *   8. Sun visibility helper (traceSunVisibility)
- *   9. Entry-point function with @compute @workgroup_size(64)
+ *   7. PCG hash utilities (pcgHashToF32 from @vitrum/shared-samplers PCG_HASH_TO_F32_WGSL)
+ *   8. Probe-ray helpers (dirToEquirectUV)
+ *   9. Sun visibility helper (traceSunVisibility)
+ *  10. Entry-point function with @compute @workgroup_size(64)
  *
  * The original TSL `instanceIndex` built-in (global thread index) becomes
  * `@builtin(global_invocation_id) globalId: vec3u` with `let index = globalId.x;`.
@@ -30,7 +31,7 @@
  */
 
 import { BVH_INTERSECT_WGSL, MATERIAL_ENTRY_WGSL, TLAS_TRAVERSAL_WGSL } from '@vitrum/shared-bvh';
-import { OCTAHEDRAL_CORE_WGSL } from '@vitrum/shared-samplers';
+import { OCTAHEDRAL_CORE_WGSL, PCG_HASH_TO_F32_WGSL } from '@vitrum/shared-samplers';
 
 export const PROBE_RAY_CAST_WGSL = /* wgsl */`
 ${MATERIAL_ENTRY_WGSL}
@@ -127,14 +128,11 @@ struct CascadeUniforms {
 // Call sites use octDecode(uv * 2.0 - 1.0) to remap from [0,1] to [-1,1].
 ${OCTAHEDRAL_CORE_WGSL}
 
+// ─── PCG hash utilities (canonical from @vitrum/shared-samplers) ─────────────
+${PCG_HASH_TO_F32_WGSL}
+
 // ─── Probe-ray helpers ────────────────────────────────────────────────────────
 // Verbatim from probeRayHelpers wgslFn in probeRayCast.wgsl.ts.
-
-fn pcgHash(seed: u32) -> f32 {
-  var s = seed * 747796405u + 2891336453u;
-  let word = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
-  return f32((word >> 22u) ^ word) / 4294967295.0;
-}
 
 fn dirToEquirectUV(d: vec3f) -> vec2f {
   let phi   = atan2(d.z, d.x);
@@ -223,7 +221,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
   let gx = f32(rayIdx % u.rayGridSize);
   let gy = f32(rayIdx / u.rayGridSize);
   let jSeed = (probeIdx * 0x9E3779B9u + rayIdx) ^ u.frameSeed;
-  let jitter = vec2f(pcgHash(jSeed), pcgHash(jSeed * 7919u + 1u));
+  let jitter = vec2f(pcgHashToF32(jSeed), pcgHashToF32(jSeed * 7919u + 1u));
   let rayUV   = (vec2f(gx, gy) + jitter) / f32(u.rayGridSize);
   let rayDir  = octDecode(rayUV * 2.0 - 1.0);
 

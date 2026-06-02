@@ -3,6 +3,7 @@ import type { Mat4, Scene, Vec3 } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import {
   computeWorldAabbForBindings,
+  invertMat4,
   packSceneFromCore,
   rebuildPrimitiveBlas,
   rebuildTlasReuseBlas,
@@ -663,5 +664,50 @@ describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
       packed,
     );
     expect(rebuilt.ok).toBe(false);
+  });
+});
+
+// ─── invertMat4 unit tests ────────────────────────────────────────────────────
+describe('invertMat4', () => {
+  const IDENTITY = asMat4(new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+  ]));
+
+  it('invert(identity) == identity', () => {
+    const result = invertMat4(IDENTITY);
+    expect(result).not.toBeNull();
+    for (let i = 0; i < 16; i += 1) {
+      expect(result![i]).toBeCloseTo(IDENTITY[i] ?? 0, 10);
+    }
+  });
+
+  it('invert∘invert == id (round-trip on a non-trivial matrix)', () => {
+    // A matrix with translation, non-uniform scale, and a rotation component.
+    const m = asMat4(new Float32Array([
+       2,  1,  0,  0,
+       0,  3,  1,  0,
+       1,  0,  2,  0,
+       4, -1,  2,  1,
+    ]));
+    const inv = invertMat4(m);
+    expect(inv).not.toBeNull();
+    const inv2 = invertMat4(asMat4(inv!));
+    expect(inv2).not.toBeNull();
+    for (let i = 0; i < 16; i += 1) {
+      expect(inv2![i]).toBeCloseTo(m[i] ?? 0, 5);
+    }
+  });
+
+  it('returns null for a singular matrix', () => {
+    const singular = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 0, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    expect(invertMat4(singular)).toBeNull();
   });
 });

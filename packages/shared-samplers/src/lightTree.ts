@@ -359,7 +359,7 @@ export const LIGHT_TREE_FLOATS_PER_NODE = 12;
  * Squared distance from a point to an axis-aligned bounding box. Zero when the
  * point is inside the box. Matches the WGSL `lt_dist2ToAabb` exactly.
  */
-function dist2ToAabb(
+export function dist2ToAabb(
   px: number, py: number, pz: number,
   min: readonly [number, number, number],
   max: readonly [number, number, number],
@@ -377,7 +377,7 @@ function dist2ToAabb(
  * RIS geometry term uses (`ubo.emitterDist2Floor`) so near-light behaviour stays
  * consistent between selection and evaluation. Matches WGSL `lt_importance`.
  */
-function nodeImportance(
+export function nodeImportance(
   node: LightTreeNode,
   px: number, py: number, pz: number,
   dist2Floor: number,

@@ -72,9 +72,9 @@ import {
 import { applyEmitterPatchToScene } from './scenePatch.js';
 import {
   disposeVitrumThreeSceneRoot,
-  solveSkin,
   vitrumSceneToThree,
 } from '@vitrum/three-bindings';
+import { solveSkin } from '@vitrum/core';
 import type { ModelWeights } from './neural/weights.js';
 import {
   transformRefit,

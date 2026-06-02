@@ -10,6 +10,15 @@
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
+// INTENTIONAL per-backend divergence (complexity-sweep 2026-06-02, verified + kept
+// — NOT accidental duplication): distributionGGX/geometrySchlickGGX below are kept
+// local rather than shared with pt-webgpu's ggxD/smithG1 or @vitrum/shared-samplers,
+// because the backends floor roughness differently — walkaround floors `rough` at
+// 0.01 (via evalGGX) with no denominator floor; pt-webgpu floors alpha=rough² at
+// 1e-3 plus a 1e-6 denom floor. They produce different low-roughness specular
+// (rough=0.02 → a²≈1.6e-7 here vs 1e-6 in pt-webgpu); unifying would change
+// rendering. See @vitrum/shared-samplers/wgsl/bsdfPrimitives.wgsl.ts for the
+// reference (unfloored) form.
 export const GGX_BRDF_WGSL = /* wgsl */ `// ============================================================
 // GGX BRDF (simplified Lambertian + GGX specular)
 // ============================================================

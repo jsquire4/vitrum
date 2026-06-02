@@ -11,7 +11,7 @@ export * from './wgsl/hammersley.wgsl.js';
 export { OCTAHEDRAL_CORE_WGSL } from './wgsl/octahedralCore.wgsl.js';
 export { LUMINANCE_WGSL, LUMINANCE_MODULE_NAME } from './wgsl/luminance.wgsl.js';
 export { HERO_WAVELENGTH_WGSL, HERO_WAVELENGTH_MODULE_NAME } from './wgsl/heroWavelength.wgsl.js';
-export { PCG_WGSL, PCG_MODULE_NAME } from './wgsl/pcg.wgsl.js';
+export { PCG_WGSL, PCG_MODULE_NAME, PCG_HASH_TO_F32_WGSL } from './wgsl/pcg.wgsl.js';
 export {
   BSDF_PRIMITIVES_WGSL,
   BSDF_PRIMITIVES_MODULE_NAME,

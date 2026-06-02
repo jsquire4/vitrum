@@ -17,7 +17,7 @@ import type {
   NoneEnvironment,
   Vec3,
 } from '@vitrum/core';
-import { solveSkin } from './skinSolver.js';
+import { solveSkin } from '@vitrum/core';
 import {
   BufferGeometry,
   BufferAttribute,
