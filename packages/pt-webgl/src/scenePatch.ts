@@ -80,7 +80,7 @@ export function isMaterialOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): bo
   return true;
 }
 
-export function isTransformOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
+function isTransformOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
   const rec = patch as Record<string, unknown>;
   if (rec['transform'] === undefined) return false;
   for (const key of Object.keys(rec)) {
@@ -90,7 +90,7 @@ export function isTransformOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): b
   return true;
 }
 
-export function isPositionsOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
+function isPositionsOnlyPrimitivePatch(patch: Partial<ScenePrimitive>): boolean {
   const rec = patch as Record<string, unknown>;
   if (rec['positions'] === undefined) return false;
   for (const key of Object.keys(rec)) {
@@ -174,7 +174,7 @@ export function isInstanceCountOnlyPrimitivePatch(patch: Partial<ScenePrimitive>
  * Apply a positions(+normals) patch to a THREE mesh in place. Returns false
  * when the vertex count changed (topology change — caller must full-rebuild).
  */
-export function applyPositionsPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimitive>): boolean {
+function applyPositionsPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimitive>): boolean {
   const positions = patch.positions;
   if (positions == null) return false;
   const posAttr = mesh.geometry.getAttribute('position');
@@ -244,7 +244,7 @@ export function applyGeometryPatchToMesh(mesh: TMesh, patch: Partial<MeshPrimiti
  * Returns false when the fork generator is not yet initialized (caller falls
  * back to a full `setScene`).
  */
-export function refreshPathTracerSceneGeometry(
+function refreshPathTracerSceneGeometry(
   pathTracer: WebGLPathTracer,
   threeRoot: ThreeScene,
 ): boolean {

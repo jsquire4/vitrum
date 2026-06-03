@@ -53,6 +53,7 @@
  */
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
+import { WALKAROUND_UBO_SIZE_BYTES } from './constants.js';
 
 /**
  * T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,
@@ -80,10 +81,6 @@ export function packStainedGlassFlags(opts: {
   return flags >>> 0;
 }
 
-/** Size of the WalkaroundUBO in bytes. File-local — `resourceManager.ts`
- *  intentionally duplicates the literal `416` rather than import this name
- *  to avoid a circular import (see resourceManager.ts). */
-const WALKAROUND_UBO_SIZE_BYTES = 416;
 
 /**
  * Live PPG guided-sampling state injected by the pipeline (NOT part of the

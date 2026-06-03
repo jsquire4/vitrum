@@ -65,8 +65,10 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@typescript-eslint/eslint-plugin": "^8.59.3",
     "@typescript-eslint/parser": "^8.59.3",
+    "@webgpu/types": "^0.1.40",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react": "^7.37.5",

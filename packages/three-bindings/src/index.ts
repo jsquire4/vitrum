@@ -40,7 +40,7 @@ export {
   convertMaterial,
   convertBasicMaterial,
 } from './material.js';
-export type { PbrScalars, PbrDefaults, ThreeStdMat, ThreePhysMat } from './material.js';
+export type { PbrScalars, PbrDefaults } from './material.js';
 
 /**
  * Converts a THREE.Scene into a @vitrum/core Scene.

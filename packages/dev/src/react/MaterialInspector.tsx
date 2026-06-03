@@ -1,24 +1,7 @@
 // MaterialInspector — click a mesh to see its vitrum Material params; live-edit them.
 //
-// Implementation mode: PARTIAL REAL (approach (a) for interface, (b) for picking).
-//
-// What's real:
-//   - The UI panel that renders Material fields (baseColor, roughness, metallic,
-//     emissive, transmission, ior) with live-edit inputs.
-//   - engine.updatePrimitive() is called directly on the Engine contract —
-//     this is a real Engine API today.
-//   - The panel can be opened programmatically by passing `selectedPrimitiveId`.
-//
-// What's stubbed:
-//   - Click-to-pick: determining which primitive the user clicked requires
-//     engine.debug.pickPrimitive(x, y) (declared in types.ts:EngineDebugSurface).
-//     Without it, the user must select the primitive by ID via the `selectedPrimitiveId` prop.
-//
-// TODO T3.G followup: implement engine.debug.pickPrimitive() in HybridEngine.
-//   Options:
-//     (a) CPU-side ray-AABB test against the BVH (approximate; misses concave geometry).
-//     (b) GPU: read the primitive-ID G-buffer pixel at (x,y) after the shade pass.
-//   Option (b) is more accurate; requires a primitive-ID attachment in the shade pass.
+// Click-to-pick requires engine.debug.pickPrimitive(x, y) — tracked in items_to_fix.md T3.G.
+// Until then, use the `selectedPrimitiveId` prop to select a primitive by ID.
 
 import React, {
   type FC,

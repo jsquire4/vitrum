@@ -58,8 +58,8 @@ export interface WebGLPathTracerCompat {
 
 /** Result of the fork generator's `generate()` — the merged-geometry + BVH
  *  payload `ForkAccess.regenerateSceneGeometry` consumes. Shapes are the
- *  intersection of fields the engine reads; fork-private, never exported. */
-export interface PathTracerGenerateResult {
+ *  intersection of fields the engine reads; fork-private. */
+interface PathTracerGenerateResult {
   bvhChanged?: boolean;
   bvh?: unknown;
   needsMaterialIndexUpdate?: boolean;

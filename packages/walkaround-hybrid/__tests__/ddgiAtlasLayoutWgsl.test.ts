@@ -30,15 +30,11 @@ import {
 import {
   makeProbeUpdateBlendIrrWGSL,
   makeProbeUpdateBlendVisWGSL,
-  PROBE_UPDATE_BLEND_IRR_WGSL,
-  PROBE_UPDATE_BLEND_VIS_WGSL,
 } from '../src/ddgi/wgsl/probeUpdateBlend.wgsl.js';
 import {
   makeBorderFillWGSL,
   makeProbeUpdateBorderIrrWGSL,
   makeProbeUpdateBorderVisWGSL,
-  PROBE_UPDATE_BORDER_IRR_WGSL,
-  PROBE_UPDATE_BORDER_VIS_WGSL,
 } from '../src/ddgi/wgsl/probeUpdateBorder.wgsl.js';
 
 describe('T10-DDGI — blend WGSL reflects ddgiAtlasLayout', () => {
@@ -50,11 +46,6 @@ describe('T10-DDGI — blend WGSL reflects ddgiAtlasLayout', () => {
       expect(src).toContain(`const IRR_CELL:       u32 = ${IRR_CELL}u;`);
       expect(src).toContain(`const VIS_CELL:       u32 = ${VIS_CELL}u;`);
     }
-  });
-
-  it('legacy const exports equal the factory output (no drift)', () => {
-    expect(PROBE_UPDATE_BLEND_IRR_WGSL).toBe(makeProbeUpdateBlendIrrWGSL());
-    expect(PROBE_UPDATE_BLEND_VIS_WGSL).toBe(makeProbeUpdateBlendVisWGSL());
   });
 
   it('the entry-point + workgroup-size are unchanged (8×8 irr, 16×16 vis)', () => {
@@ -76,11 +67,6 @@ describe('T10-DDGI — border WGSL reflects ddgiAtlasLayout', () => {
   it('stride equals cell + BORDER (layout invariant)', () => {
     expect(IRR_STRIDE).toBe(IRR_CELL + BORDER);
     expect(VIS_STRIDE).toBe(VIS_CELL + BORDER);
-  });
-
-  it('legacy const exports equal the factory output (no drift)', () => {
-    expect(PROBE_UPDATE_BORDER_IRR_WGSL).toBe(makeProbeUpdateBorderIrrWGSL());
-    expect(PROBE_UPDATE_BORDER_VIS_WGSL).toBe(makeProbeUpdateBorderVisWGSL());
   });
 
   it('entry-point names + workgroup sizes are preserved per atlas', () => {

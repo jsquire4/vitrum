@@ -66,7 +66,7 @@ function stripComments(src: string): string {
  *     (`var i = 0u;`) OUT of the symbol universe, which is essential — a
  *     polluted universe would produce false positives against pass locals.
  */
-export function collectDeclaredIdents(src: string): Set<string> {
+function collectDeclaredIdents(src: string): Set<string> {
   const clean = stripComments(src);
   const decls = new Set<string>();
   const add = (reSrc: string): void => {
@@ -88,7 +88,7 @@ export function collectDeclaredIdents(src: string): Set<string> {
 }
 
 /** Collect every identifier token appearing in a source (de-duplicated). */
-export function collectTokens(src: string): Set<string> {
+function collectTokens(src: string): Set<string> {
   const clean = stripComments(src);
   const out = new Set<string>();
   const re = /[A-Za-z_][A-Za-z0-9_]*/g;

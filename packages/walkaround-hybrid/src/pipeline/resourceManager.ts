@@ -287,7 +287,7 @@ export interface SVGFFrameResources {
  *
  * See `ppg/serialise.ts` for the buffer layout.
  */
-export interface PPGFrameResources {
+interface PPGFrameResources {
   /** Set only when `ppgEnabled` was true at engine init. */
   sTreeBuf?: GPUBuffer;
   dTreeBuf?: GPUBuffer;

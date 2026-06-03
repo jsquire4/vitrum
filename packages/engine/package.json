@@ -47,12 +47,9 @@
   },
   "devDependencies": {
     "@types/react": "^18.0.0",
-    "@types/react-dom": "^18.0.0",
     "@types/three": ">=0.167.0 <0.190",
-    "@vitejs/plugin-react": "^4.3.0",
     "@webgpu/types": "^0.1.40",
     "react": "^18.0.0",
-    "react-dom": "^18.0.0",
     "three": ">=0.167.0 <0.190",
     "typescript": "^5.5.0",
     "vitest": "^1.6.1"

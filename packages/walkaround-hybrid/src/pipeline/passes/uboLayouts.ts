@@ -7,13 +7,11 @@
  * single TS definition is shared by the pass + readable next to the other
  * layouts, eliminating the per-pass copy-paste.
  *
- * NOTE ON CO-LOCATION: the ideal home for each `defineUbo` is its own shader
- * module (`src/shaders/*.wgsl.ts`), so the TS layout sits beside the WGSL
- * struct it mirrors. That directory is outside this task's edit surface, so
- * the layouts are consolidated here under `passes/` instead. Each layout's
- * doc comment names its source WGSL struct + the byte size both must agree
- * on; the byte sizes are unchanged from the prior inline definitions
- * (behavior-identical std140 packing).
+ * NOTE ON CO-LOCATION: the ideal home for each `defineUbo` would be its own
+ * shader module (`src/shaders/*.wgsl.ts`), so the TS layout sits beside the
+ * WGSL struct it mirrors. Until that move is made, the layouts are
+ * consolidated here under `passes/`. Each layout's doc comment names its
+ * source WGSL struct + the byte size both must agree on.
  */
 
 import { defineUbo } from '@vitrum/shared-samplers';

@@ -257,16 +257,3 @@ fn probeUpdateBlendVisibility(
 `;
 }
 
-/**
- * @deprecated Prefer {@link makeProbeUpdateBlendIrrWGSL}. Retained as a
- * module-load const so any external consumer importing the old name keeps
- * working; computed from the factory so it still reflects ddgiAtlasLayout.
- */
-export const PROBE_UPDATE_BLEND_IRR_WGSL = makeProbeUpdateBlendIrrWGSL();
-
-/**
- * @deprecated Prefer {@link makeProbeUpdateBlendVisWGSL}. Retained as a
- * module-load const so any external consumer importing the old name keeps
- * working; computed from the factory so it still reflects ddgiAtlasLayout.
- */
-export const PROBE_UPDATE_BLEND_VIS_WGSL = makeProbeUpdateBlendVisWGSL();

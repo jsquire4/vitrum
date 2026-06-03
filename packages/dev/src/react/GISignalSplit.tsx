@@ -8,6 +8,7 @@
 import React, { type FC, useEffect, useRef, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
 import { startGpuTextureBlit } from './gpuTextureBlit.js';
+import { useDebugDevice } from './hooks.js';
 
 export interface GISignalSplitProps {
   /** The engine to inspect. Must implement engine.debug.giSignalTextures (T3.G followup). */
@@ -100,7 +101,7 @@ export const GISignalSplit: FC<GISignalSplitProps> = ({
 
   const hasDebug = typeof engine.debug?.giSignalTextures === 'function';
   const hasDevice = typeof engine.debug?.device === 'function';
-  const debugDevice = hasDevice ? engine.debug?.device?.() ?? null : null;
+  const debugDevice = useDebugDevice(engine);
   const channelTextures = hasDebug ? engine.debug?.giSignalTextures?.() ?? null : null;
 
   // A3 (2026-05-19) — start one readback loop per channel when active.

@@ -521,6 +521,34 @@ function splitDTreeLeaf(dTree: DTree, nodeIdx: number): void {
  *
  * Used by Test 3 (solid-angle invariant).
  */
+/**
+ * Descend `dTree` to the leaf covering `octUV` and accumulate `flux` there.
+ *
+ * Mirrors the descent in {@link findDTreeLeaf}. Extracted from `sTree.ts` so
+ * the traversal lives once; if this changes, nothing else needs updating.
+ */
+export function dTreeAccumulateFlux(
+  dTree: DTree,
+  octUV: [number, number],
+  flux: number,
+): void {
+  let idx = 0;
+  while (true) {
+    const node = dTree.nodes[idx]!;
+    if (node.isLeaf) {
+      node.flux += flux;
+      dTree.totalFlux += flux;
+      return;
+    }
+    const uMid = (node.u0 + node.u1) * 0.5;
+    const vMid = (node.v0 + node.v1) * 0.5;
+    const goRight = octUV[0] >= uMid;
+    const goDown  = octUV[1] >= vMid;
+    // firstChild ordering: 0=NW(left,top), 1=NE(right,top), 2=SW(left,bot), 3=SE(right,bot)
+    idx = node.firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0);
+  }
+}
+
 export function sumLeafSolidAngles(dTree: DTree): number {
   let sum = 0;
   for (const node of dTree.nodes) {

@@ -4,8 +4,9 @@
 // HybridEngine wires this via DenoiserAdapterPass (walkaround-hybrid only).
 // Other backends render a stub badge and log once if the debug surface is absent.
 
-import React, { type FC, useEffect, useState } from 'react';
+import React, { type FC, useCallback, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
+import { useKeyToggle } from './hooks.js';
 
 export interface DenoiserABToggleProps {
   /** Engine with engine.debug.setDenoiserEnabled (HybridEngine). */
@@ -51,39 +52,26 @@ export const DenoiserABToggle: FC<DenoiserABToggleProps> = ({
   const hasDebug =
     typeof engine.debug?.setDenoiserEnabled === 'function';
 
-  const doToggle = (): void => {
+  const doToggle = useCallback((): void => {
     const next = !enabled;
 
     if (hasDebug) {
       engine.debug!.setDenoiserEnabled!(next);
       setEnabled(next);
     } else {
-       
+
       console.warn(
         '[DenoiserABToggle] engine.debug.setDenoiserEnabled() is not implemented on this backend' +
         ' — the toggle UI shows state locally but the engine denoiser won\'t change.'
       );
       // Keep UI state honest when backend wiring is unavailable.
     }
-  };
-
-  // Keyboard handler
-  useEffect(() => {
-    if (toggleKey === null) return;
-    const key = toggleKey.toLowerCase();
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key.toLowerCase() === key && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        doToggle();
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-    };
-    // doToggle depends on enabled — useEffect re-registers on each change.
-    // This is intentional so the closure captures the current `enabled`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toggleKey, enabled, hasDebug]);
+  }, [enabled, hasDebug]);
+
+  // Keyboard handler — useKeyToggle re-registers when doToggle identity changes,
+  // capturing the current `enabled` closure (same semantics as the original useEffect).
+  useKeyToggle(toggleKey ?? null, doToggle);
 
   const stateColor = !hasDebug ? STUB_COLOR : enabled ? ENABLED_COLOR : DISABLED_COLOR;
   const stateLabel = !hasDebug

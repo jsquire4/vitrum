@@ -82,7 +82,7 @@ export interface NrcConfig {
 }
 
 /** Müller-core-sized default NRC config, sized to be full-tier viable. */
-export const DEFAULT_NRC_CONFIG: NrcConfig = {
+const DEFAULT_NRC_CONFIG: NrcConfig = {
   levels: 8,
   featuresPerEntry: 2,
   tableSize: 4096,

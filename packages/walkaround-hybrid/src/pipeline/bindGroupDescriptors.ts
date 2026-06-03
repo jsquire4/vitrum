@@ -52,7 +52,7 @@
  * encodes both the WebGPU layout-entry shape and (for storage textures) the
  * format, so one tag round-trips to a `GPUBindGroupLayoutEntry`.
  */
-export type BindingKind =
+type BindingKind =
   | 'storage-ro'                  // buffer: { type: 'read-only-storage' }
   | 'storage-rw'                  // buffer: { type: 'storage' }
   | 'uniform'                     // buffer: { type: 'uniform' }
@@ -63,7 +63,7 @@ export type BindingKind =
   | 'storage-tex:rg32float'       // storageTexture: write-only rg32float
   | 'storage-tex:r32uint';        // storageTexture: write-only r32uint
 
-export interface BindingDescriptor {
+interface BindingDescriptor {
   readonly binding: number;
   readonly kind: BindingKind;
   /** Optional rationale — load-bearing for inert / placeholder bindings. */
@@ -301,7 +301,7 @@ const TABLE_BY_ID: ReadonlyMap<BindGroupTableId, BindGroupTableEntry> = new Map(
 );
 
 /** Look up a table entry by id; throws on unknown id (registration error). */
-export function getTableEntry(id: BindGroupTableId): BindGroupTableEntry {
+function getTableEntry(id: BindGroupTableId): BindGroupTableEntry {
   const e = TABLE_BY_ID.get(id);
   if (!e) throw new Error(`[bindGroupDescriptors] unknown table id: ${id}`);
   return e;

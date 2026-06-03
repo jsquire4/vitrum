@@ -52,7 +52,6 @@ import {
   enrichMeshVertexRangesWithMatrix,
 } from './bvhSceneHelpers.js';
 
-export { collectRectAreaLightEmitterTris, enrichMeshVertexRangesWithMatrix };
 
 /** A WebGPU storage buffer handle (GPU-side ArrayBuffer wrapper). */
 interface StorageBufferHandle {

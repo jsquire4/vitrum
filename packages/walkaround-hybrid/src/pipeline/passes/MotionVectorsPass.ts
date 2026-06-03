@@ -9,6 +9,16 @@ import type {
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
+/**
+ * MotionVectorsPass — computes per-pixel screen-space motion vectors for
+ * temporal reprojection (SVGF, BMFR, neural denoiser).
+ *
+ * Reads `gNormalDepth` (the G-buffer normal + linear depth packed into
+ * `rgba32float`) and the current/previous view–projection matrices from the
+ * WalkaroundUBO, then writes `motionVector` (`rg16float`, full-res) — the
+ * fractional-pixel displacement between the current and previous frame for
+ * each visible surface point.
+ */
 export class MotionVectorsPass implements Pass {
   readonly id = 'motion-vectors' as const;
   readonly dependencies: readonly string[] = ['shade'];

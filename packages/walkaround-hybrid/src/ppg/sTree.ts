@@ -23,7 +23,7 @@ import {
   PPG_DTREE_INITIAL_DEPTH,
 } from './ppgConstants.js';
 import type { AABB, STree, STreeNode, DTree } from './types.js';
-import { buildEmptyDTree } from './dTree.js';
+import { buildEmptyDTree, dTreeAccumulateFlux } from './dTree.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // AABB helpers
@@ -140,38 +140,8 @@ export function sTreeAccumulate(
   node.sampleCount += 1;
 
   const dTree = sTree.dTrees[node.dTreeIndex]!;
-  // Descend dTree to find the leaf covering octUV, accumulate flux there.
+  // Descend dTree to the leaf covering octUV and accumulate flux (dTree.ts).
   dTreeAccumulateFlux(dTree, octUV, flux);
-}
-
-/**
- * Inlined here (NOT a re-export from dTree.ts) to avoid the circular
- * import sTree↔dTree would otherwise create. Mirrors the same descent
- * as `findDTreeLeaf` in dTree.ts; if that traversal changes, this copy
- * must too.
- */
-function dTreeAccumulateFlux(
-  dTree: DTree,
-  octUV: [number, number],
-  flux: number,
-): void {
-  // Inline traversal to avoid circular import: descend the quadtree.
-  let idx = 0;
-  while (true) {
-    const node = dTree.nodes[idx]!;
-    if (node.isLeaf) {
-      node.flux += flux;
-      dTree.totalFlux += flux;
-      return;
-    }
-    // Children: NW, NE, SW, SE quadrants of the parent patch.
-    const uMid = (node.u0 + node.u1) * 0.5;
-    const vMid = (node.v0 + node.v1) * 0.5;
-    const goRight = octUV[0] >= uMid;
-    const goDown  = octUV[1] >= vMid;
-    // firstChild ordering: 0=NW(left,top), 1=NE(right,top), 2=SW(left,bot), 3=SE(right,bot)
-    idx = node.firstChild + (goDown ? 2 : 0) + (goRight ? 1 : 0);
-  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

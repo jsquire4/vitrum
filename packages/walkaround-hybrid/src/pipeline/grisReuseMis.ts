@@ -37,7 +37,7 @@ const INV_PI = 0.31830988618;
 
 /** Rec.709 luminance — mirrors the WGSL `luminance()` weights used by the
  *  GI target. Kept local so the mirror has no cross-package dependency. */
-export function luminance(c: Vec3): number {
+function luminance(c: Vec3): number {
   return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 }
 

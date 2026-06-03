@@ -178,5 +178,3 @@ export class BmfrDenoiser implements Denoiser {
   }
 }
 
-/** Re-export so callers can assert the workgroup tiling without importing WGSL. */
-export { BMFR_WORKGROUP_SIZE };

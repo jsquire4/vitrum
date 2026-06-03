@@ -8,6 +8,7 @@
 import React, { type FC, useEffect, useRef } from 'react';
 import type { DebuggableEngine } from '../types.js';
 import { startGpuTextureBlit } from './gpuTextureBlit.js';
+import { useDebugDevice } from './hooks.js';
 
 export interface DDGIAtlasViewerProps {
   /** The engine to inspect. Must implement engine.debug (T3.G followup). */
@@ -49,7 +50,7 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
   const hasAtlas = typeof engine.debug?.atlasTexture === 'function';
   const hasVisibilityAtlas = typeof engine.debug?.visibilityAtlasTexture === 'function';
   const hasDevice = typeof engine.debug?.device === 'function';
-  const debugDevice = hasDevice ? engine.debug?.device?.() ?? null : null;
+  const debugDevice = useDebugDevice(engine);
   const irradianceAtlas = hasAtlas ? engine.debug?.atlasTexture?.() ?? null : null;
   const visibilityAtlas = hasVisibilityAtlas ? engine.debug?.visibilityAtlasTexture?.() ?? null : null;
 

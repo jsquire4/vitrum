@@ -8,8 +8,9 @@
 // overlay can render their own pass with the same `bvhNodes()` output
 // + the host's camera matrices.
 
-import React, { type FC, useEffect, useRef, useState } from 'react';
+import React, { type FC, useCallback, useEffect, useRef, useState } from 'react';
 import type { DebuggableEngine } from '../types.js';
+import { useKeyToggle } from './hooks.js';
 
 export interface BVHVisualizerProps {
   /** The engine to inspect. Must implement engine.debug.bvhNodes (T3.G followup). */
@@ -135,19 +136,8 @@ export const BVHVisualizer: FC<BVHVisualizerProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Keyboard toggle
-  useEffect(() => {
-    if (toggleKey === null) return;
-    const key = toggleKey.toLowerCase();
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key.toLowerCase() === key && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        setVisible((v) => !v);
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => {
-      window.removeEventListener('keydown', handler);
-    };
-  }, [toggleKey]);
+  const toggleVisible = useCallback(() => setVisible((v) => !v), []);
+  useKeyToggle(toggleKey ?? null, toggleVisible);
 
   const hasDebug = typeof engine.debug?.bvhNodes === 'function';
 

@@ -7,10 +7,12 @@ import * as THREE from 'three';
 vi.mock('../src/ddgi/DDGI.js', () => ({
   DDGI: class MockDDGI {
     ready = true;
+    // Forwarding-façade methods (interface-hygiene refactor 2026-06-02 — on DDGI, not .pass)
+    setSunIntensityMultiplier = vi.fn();
+    setGlassMixScale = vi.fn();
+    getReadAtlasGPUTextures = vi.fn();
+    gridParams = {};
     pass = {
-      setSunIntensityMultiplier: vi.fn(),
-      setGlassMixScale: vi.fn(),
-      getReadAtlasGPUTextures: vi.fn(),
       setRestirBvhSnapshot: vi.fn(),
     };
     syncRestirBvhBuffers = vi.fn();

@@ -39,7 +39,7 @@ export type QualityTier = 'ultra' | 'high' | 'medium' | 'low';
 
 /** GTAO dispatch mode resolved from a preset. `on` = half-res (today's
  *  behaviour), `quarter` = quarter-res dispatch, `off` = skip GTAO entirely. */
-export type GtaoMode = 'on' | 'quarter' | 'off';
+type GtaoMode = 'on' | 'quarter' | 'off';
 
 /**
  * Resolved preset knob values. `undefined` means "leave the engine's existing

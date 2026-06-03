@@ -259,3 +259,17 @@ For each open item (A1–A4, B1–B4, C1–C4):
 3. Run the listed acceptance test and confirm it passes.
 
 A finding from a sweep doc is hearsay until I read the file myself. Same rule applies to the agent's "done" claim.
+
+---
+
+## Section F — Open follow-ups (post-2026-05-30 wave)
+
+### T3.G — `engine.debug.pickPrimitive(x, y)` not implemented in HybridEngine
+
+- **Where:** `packages/dev/src/types.ts` (via `@vitrum/core` `EngineDebugSurface`) declares `pickPrimitive?(x: number, y: number): string | null`. `MaterialInspector.tsx` checks `hasPickAPI` and falls back to the `selectedPrimitiveId` prop when absent.
+- **Symptom:** `MaterialInspector` cannot do click-to-pick; the user must wire `selectedPrimitiveId` externally. The `hasPickAPI` warning fires on every HybridEngine instance.
+- **Fix options:**
+  - (a) CPU-side: ray-AABB test against the BVH node table (approximate; misses concave geometry, cheap).
+  - (b) GPU: read the primitive-ID G-buffer pixel at (x, y) after the shade pass. More accurate; requires a primitive-ID color attachment in the shade pass.
+  Option (b) is preferred for correctness; (a) is an acceptable interim if GPU readback adds too much latency.
+- **Acceptance:** `engine.debug.pickPrimitive(x, y)` returns the correct primitive ID for a known mesh in a test scene; `MaterialInspector` opens the panel on canvas click without requiring external `selectedPrimitiveId` wiring.

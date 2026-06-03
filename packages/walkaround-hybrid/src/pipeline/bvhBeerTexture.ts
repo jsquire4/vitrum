@@ -21,7 +21,7 @@
 
 /** Fixed texture width for the beer texture. Power-of-two ≤ 8192 (the WebGPU
  *  `maxTextureDimension2D` guaranteed floor). The shader uses the SAME value. */
-export const BVH_BEER_TEX_WIDTH = 4096;
+const BVH_BEER_TEX_WIDTH = 4096;
 
 /** `GPUTextureUsage.TEXTURE_BINDING | COPY_DST` — literals avoid a top-level
  *  `GPUTextureUsage` reference (Node vitest has no WebGPU globals). */
@@ -35,7 +35,7 @@ export interface BeerTexture {
 }
 
 /** Compute the r32uint beer-texture dimensions for `triCount` triangles. */
-export function beerTextureSize(triCount: number): { width: number; height: number } {
+function beerTextureSize(triCount: number): { width: number; height: number } {
   const count = Math.max(1, triCount | 0);
   const width = Math.min(BVH_BEER_TEX_WIDTH, count);
   const height = Math.ceil(count / width);

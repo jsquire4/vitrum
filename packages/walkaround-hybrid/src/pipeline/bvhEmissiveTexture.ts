@@ -21,7 +21,7 @@
  */
 
 /** Fixed texture width (power-of-two ≤ 8192 WebGPU floor). Shader uses the SAME. */
-export const BVH_EMISSIVE_TEX_WIDTH = 4096;
+const BVH_EMISSIVE_TEX_WIDTH = 4096;
 
 /** `GPUTextureUsage.TEXTURE_BINDING | COPY_DST` literals (Node vitest lacks WebGPU globals). */
 const TEX_BINDING = 0x04;
@@ -34,7 +34,7 @@ export interface EmissiveTexture {
 }
 
 /** Compute the rgba32float emissive-texture dimensions for `triCount` triangles. */
-export function emissiveTextureSize(triCount: number): { width: number; height: number } {
+function emissiveTextureSize(triCount: number): { width: number; height: number } {
   const count = Math.max(1, triCount | 0);
   const width = Math.min(BVH_EMISSIVE_TEX_WIDTH, count);
   const height = Math.ceil(count / width);

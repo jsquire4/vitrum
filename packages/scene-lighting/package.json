@@ -19,11 +19,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx"
   },
-  "dependencies": {
-    "three": ">=0.167.0 <0.190"
-  },
   "devDependencies": {
-    "@types/three": ">=0.167.0 <0.190",
     "typescript": "^5.5.0"
   }
 }

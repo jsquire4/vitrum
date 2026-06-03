@@ -8,7 +8,6 @@
  * physics-model gap between modes is visible, not papered over.
  */
 
-import * as THREE from 'three';
 import type { SkyParams } from './skyParams.js';
 import { getSunIntensity, SUN_INTENSITY } from './lightingIntensityTable.js';
 
@@ -16,7 +15,7 @@ export interface LightingState {
   /** Unit vector pointing FROM origin TOWARD sun. Both PT (via three.js
    *  DirectionalLight.position-derived direction) and walkaround (via
    *  WGSL UBO.sunDirection) use this same orientation. */
-  sunDirection: THREE.Vector3;
+  sunDirection: [number, number, number];
   /** Sun radiance multiplier, dimensionless. PT's three.js DirectionalLight.intensity
    *  is set to this; walkaround's WGSL UBO reads it as `sunIntensity`. */
   sunIntensity: number;
@@ -41,9 +40,8 @@ export interface LightingStateInputs {
   intensityMultiplier?: number;
 }
 
-/** Pure compute. Both PT (three.js scene) and walkaround (WebGPU UBO) read
- *  this so visual divergence isn't caused by hardcoded magic numbers in either
- *  path. */
+/** Pure compute. Consumed by `@vitrum/pt-webgl` (re-exported from its index).
+ *  Returns backend-agnostic numeric types so this package carries no THREE dep. */
 export function computeLightingState(opts: LightingStateInputs): LightingState {
   const { timeOfDay, skyParams, isNight, intensityMultiplier = 1.0 } = opts;
 
@@ -51,7 +49,8 @@ export function computeLightingState(opts: LightingStateInputs): LightingState {
   // skyParams.sunPosition is non-unit (~1.12–1.41 across the arc).
   // Normalize so WGSL dot-products against surface normals are bounded in [-1, 1].
   const [sx, sy, sz] = skyParams.sunPosition;
-  const sunDirection = new THREE.Vector3(sx, sy, sz).normalize();
+  const sunLen = Math.sqrt(sx * sx + sy * sy + sz * sz) || 1;
+  const sunDirection: [number, number, number] = [sx / sunLen, sy / sunLen, sz / sunLen];
 
   // ── Sun intensity ──────────────────────────────────────────────────
   // getSunIntensity(t) × intensityMultiplier — same value PT/raster pass to

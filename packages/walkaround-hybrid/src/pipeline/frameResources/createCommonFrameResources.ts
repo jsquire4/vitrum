@@ -4,6 +4,7 @@
 
 import type { CommonFrameResources } from '../resourceManager.js';
 import { createVarianceBuffer } from '../resourceManager.js';
+import { WALKAROUND_UBO_SIZE_BYTES } from '../constants.js';
 
 export function createCommonFrameResources(
   device: GPUDevice,
@@ -98,11 +99,7 @@ export function createCommonFrameResources(
   device.queue.writeTexture({ texture: placeholderTexture }, placeholderData, { bytesPerRow: 16 }, [1, 1]);
 
   const uboBuffer = device.createBuffer({
-    // 416 = WalkaroundUBO size after the ReGIR grid fields landed (regirOrigin
-    // vec3f @368 + regirInvCellSize f32 @380 + regirDims vec3u @384 +
-    // regirEnabled/M/K/gridFloatOffset 4×u32 @396 + 1×u32 pad). The literal is
-    // intentionally duplicated from uboUpdater.ts to avoid a circular import.
-    size: 416,
+    size: WALKAROUND_UBO_SIZE_BYTES,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 

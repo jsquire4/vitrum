@@ -27,7 +27,7 @@ export const HYBRID_FRAME_SKIP_OUTPUT: FrameOutput = {
   isConverged: false,
 };
 
-export interface HybridEngineFrameDiag {
+interface HybridEngineFrameDiag {
   initStart: number;
   initCount: number;
   disposeCount: number;

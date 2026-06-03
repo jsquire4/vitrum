@@ -48,7 +48,7 @@ export type LayerKind =
  *  Conv2D:          OIKW  (outputC × inputC × kH × kW)
  *  ConvTranspose2D: IOKW  (inputC × outputC × kH × kW)  — matches PyTorch ConvTranspose2d
  */
-export type LayerWeightLayout = 'OIKW' | 'IOKW' | 'none';
+type LayerWeightLayout = 'OIKW' | 'IOKW' | 'none';
 
 // ── Layer spec ─────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ export interface LayerSpec {
   readonly weightLayout: LayerWeightLayout;
 }
 
-export interface LayerParams {
+interface LayerParams {
   readonly inC:     number;
   readonly outC:    number;
   readonly kH?:     number;   // kernel height (default 1)

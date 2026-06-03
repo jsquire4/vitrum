@@ -224,16 +224,3 @@ export function makeProbeUpdateBorderVisWGSL(): string {
   });
 }
 
-/**
- * @deprecated Prefer {@link makeProbeUpdateBorderIrrWGSL}. Retained as a
- * module-load const so any external consumer importing the old name keeps
- * working; computed from the factory so it still reflects ddgiAtlasLayout.
- */
-export const PROBE_UPDATE_BORDER_IRR_WGSL = makeProbeUpdateBorderIrrWGSL();
-
-/**
- * @deprecated Prefer {@link makeProbeUpdateBorderVisWGSL}. Retained as a
- * module-load const so any external consumer importing the old name keeps
- * working; computed from the factory so it still reflects ddgiAtlasLayout.
- */
-export const PROBE_UPDATE_BORDER_VIS_WGSL = makeProbeUpdateBorderVisWGSL();

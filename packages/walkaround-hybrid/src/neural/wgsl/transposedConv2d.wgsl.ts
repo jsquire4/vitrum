@@ -26,10 +26,10 @@ struct TConv2DParams {
   inputW  : u32,
   inC     : u32,
   outC    : u32,
-  kH      : u32,   // must be 2 for vitrum U-Net
-  kW      : u32,   // must be 2 for vitrum U-Net
-  stride  : u32,   // must be 2 for vitrum U-Net
-  padding : u32,   // must be 0 for vitrum U-Net
+  kH      : u32,   // kernel height (vitrum U-Net uses kH=2)
+  kW      : u32,   // kernel width  (vitrum U-Net uses kW=2)
+  stride  : u32,   // (vitrum U-Net uses stride=2)
+  padding : u32,   // (vitrum U-Net uses padding=0)
 }
 
 // Canonical binding layout:
