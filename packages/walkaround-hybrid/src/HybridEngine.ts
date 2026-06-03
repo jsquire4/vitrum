@@ -761,7 +761,13 @@ export class HybridEngine implements Engine {
       // primitive). Kept in sync with the walkaround-hybrid row in
       // @vitrum/core's BACKEND_PROMISE_LEDGER.
       supportsAddRemovePrimitive: true,
-      supportsAuxBuffers:        false,
+      // FrameRendered surfaces the always-allocated G-buffers (normalDepth +
+      // demodulated albedo, both rgba16float full-res, + motionVectors rg32float)
+      // via the pipeline's getAuxBufferTextures(), so a host can drive an external
+      // denoiser (OIDN) / post chain off them. Variance is intentionally NOT
+      // exposed: it's the RG32F Welford buffer (≠ the contract's RGBA32F) and only
+      // exists on the variance-denoiser paths.
+      supportsAuxBuffers:        true,
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
       maxBounces:                this._cfg.maxBounces,

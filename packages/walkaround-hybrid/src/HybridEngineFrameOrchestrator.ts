@@ -625,9 +625,21 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
 
   emitFrameTelemetry(deps, pipeline, performance.now() - t0, now);
 
+  // Aux G-buffers (EngineCapabilities.supportsAuxBuffers): expose the always-
+  // allocated normal-depth / demodulated-albedo / motion-vector views so hosts
+  // can feed an external denoiser (e.g. OIDN) or post chain. Fresh views owned
+  // by the pipeline — invalidated on the next setScene / resize / dispose.
+  const aux = pipeline?.getAuxBufferTextures?.() ?? null;
   return {
     kind: 'rendered',
     primaryRadiance: asBackendTexture<'webgpu', GPUTextureView>(swapView),
+    ...(aux != null
+      ? {
+          normalDepth: asBackendTexture<'webgpu', GPUTextureView>(aux.normalDepth),
+          albedo: asBackendTexture<'webgpu', GPUTextureView>(aux.albedo),
+          motionVectors: asBackendTexture<'webgpu', GPUTextureView>(aux.motionVectors),
+        }
+      : {}),
     samplesAccumulated: 1,
     isConverged: false,
   };

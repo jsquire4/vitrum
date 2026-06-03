@@ -789,6 +789,33 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     };
   }
 
+  /**
+   * Aux G-buffer views surfaced through `FrameRendered.{normalDepth, albedo,
+   * motionVectors}` (the `EngineCapabilities.supportsAuxBuffers` contract). All
+   * three are full-res + ALWAYS allocated (they are core GI / denoiser inputs),
+   * so this never partially returns:
+   *   normalDepth   — rgba16float, xyz = world-space normal, w = linear depth.
+   *   albedo        — rgba16float, demodulated visible-point diffuse albedo
+   *                   (Schied 2017 §4.1) — lighting × albedo = final colour.
+   *   motionVectors — rg32float, (dx, dy) screen-space pixels.
+   * Fresh views per call (cheap); owned by the pipeline — callers MUST NOT
+   * destroy them, and the handles are invalidated on the next setScene / resize
+   * / dispose. Null before initialize() resolves.
+   */
+  getAuxBufferTextures(): {
+    normalDepth: GPUTextureView;
+    albedo: GPUTextureView;
+    motionVectors: GPUTextureView;
+  } | null {
+    if (!this._initialized) return null;
+    const c = this._res.common;
+    return {
+      normalDepth: c.gNormalDepthTexture.createView(),
+      albedo: c.albedoTexture.createView(),
+      motionVectors: c.motionVectorTexture.createView(),
+    };
+  }
+
   /** Temporal-accumulator history depth: frames accumulated since the last
    *  α=1 reset (camera motion, `requestAccumReset`, or `resize`). Increments
    *  once per rendered frame; reset to 0 on each of those events. Read by

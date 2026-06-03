@@ -48,9 +48,16 @@ P1 texture contract; backends consume the P4 operators).
   Both the stride/packing alignment and the bind-group creation are exactly what
   fails only at GPU runtime. **Needs the GPU env.** (P1 already delivers the host
   contract it will consume + the UV-transform extraction.)
-- **P5 — contract honesty.** Capability-honesty is done (P0). The remaining items
-  are radiometric/pipeline: walkaround instance-count topology rebuild, spotlight
-  cone in GI, analytic-shape expansion, aux-buffer (variance/motion) emission.
+- **P5 — contract honesty.** Capability-honesty is done (P0). **Aux-buffer emission
+  SHIPPED 2026-06-03:** `HybridEngine` now surfaces `FrameRendered.{normalDepth,
+  albedo, motionVectors}` from the always-allocated G-buffer via
+  `WalkaroundGPUPipeline.getAuxBufferTextures()`; `supportsAuxBuffers` flipped to
+  true in both the engine capability and `BACKEND_PROMISE_LEDGER`. (Variance is
+  the RG32F Welford buffer ≠ the contract's RGBA32F, so not exposed.) Remaining:
+  walkaround instance-COUNT topology rebuild (instanced-mesh instance-array
+  size change — genuinely throws today, unlike pt-webgl/pt-webgpu; topology-FIELD
+  changes already work via `topologyRebuild`), spotlight cone in GI,
+  analytic-shape expansion.
 - **P7 — shallow-algo depth.** Real MNEE Newton solve, wiring the dead GPU
   differentiable adjoint, NRC debias — all radiometric, GPU-A/B-critical. Shipping
   a default neural U-Net checkpoint needs a PyTorch + training-dataset env.

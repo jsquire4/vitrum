@@ -141,7 +141,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsIncrementalScene: true,
     incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
-    supportsAuxBuffers: false,
+    // FrameRendered surfaces normalDepth + demodulated albedo (rgba16float) +
+    // motionVectors (rg32float) from the always-allocated G-buffer; hosts can
+    // drive an external denoiser / post chain off them. (Variance is the RG32F
+    // Welford buffer, not the contract's RGBA32F, so it's not exposed.)
+    supportsAuxBuffers: true,
     accumulates: false,
     // vitrumSceneToThree ingests mesh / skinned-mesh / instanced-mesh; analytic
     // has no THREE-conversion path (partitionSceneBySupport warn-skips it).
