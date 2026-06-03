@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   MNEE_NEWTON_WGSL,
   MNEE_NEWTON_HARNESS_WGSL,
+  MNEE_NEWTON_JAC_HARNESS_WGSL,
   MNEE_JACOBIAN_HARNESS_WGSL,
   MNEE_PDF_HARNESS_WGSL,
   packMneeHarnessInput,
@@ -25,15 +26,28 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
       .toEqual([0, 0, 1, 1.5, 0, 0, -1, 1]);
   });
 
-  it('the solve is an ETA-GENERALIZED half-vector Newton iteration (FD Jacobian)', () => {
+  it('the solve is an ETA-GENERALIZED half-vector Newton iteration (analytic Jacobian)', () => {
     // The eta-generalized half-vector (reflection when etaI==etaT, Snell otherwise).
     expect(MNEE_NEWTON_WGSL).toContain('fn mneeHalfVectorResidual2d(');
     expect(MNEE_NEWTON_WGSL).toContain('let h = mnee_safe_normalize(etaI * wi + etaT * wo)');
     expect(MNEE_NEWTON_WGSL).toContain('let hTan = h - dot(h, nm) * nm');
-    // The Newton step: FD Jacobian + J·δ = −r.
+    // The Newton step: ANALYTIC Jacobian (mneeResidualJacobian) + J·δ = −r.
     expect(MNEE_NEWTON_WGSL).toContain('fn mneeNewtonSolve(');
+    expect(MNEE_NEWTON_WGSL).toContain('let jac = mneeResidualJacobian(v, recv, light, nm, tu, tv, etaI, etaT)');
     expect(MNEE_NEWTON_WGSL).toContain('let det = j00 * j11 - j01 * j10');
     expect(MNEE_NEWTON_WGSL).toContain('if (rmag < 1e-5) { return out; }'); // convergence exit
+  });
+
+  it('analytic residual Jacobian ∂r/∂(a,b) — validated analytic == FD on GPU', () => {
+    // GPU-validated against finite difference at a generic test vertex
+    // (mnee-newton-jac-validate.ts, lavapipe: analytic == FD, reflect + refract).
+    // The exact derivative replaced the FD columns that drove the Newton step.
+    expect(MNEE_NEWTON_WGSL).toContain('fn mneeDNormalize(');                 // (I − x̂x̂ᵀ)/|x| projector
+    expect(MNEE_NEWTON_WGSL).toContain('return (dx - xh * dot(xh, dx)) / len');
+    expect(MNEE_NEWTON_WGSL).toContain('fn mneeResidualJacobian(');
+    expect(MNEE_NEWTON_WGSL).toContain('let dwi_a = mneeDNormalize(wiVec, -tu)');
+    expect(MNEE_NEWTON_JAC_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL);          // byte-identical core
+    expect(MNEE_NEWTON_JAC_HARNESS_WGSL).toContain('let jac = mneeResidualJacobian(v, c.recv, c.light, nm, tu, tv, c.etaI, c.etaT)');
   });
 
   it('harness kernel runs the solve over a flat surface (nm=+z) with per-config etas', () => {

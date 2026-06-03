@@ -1,17 +1,27 @@
 /**
- * mneeNewton.wgsl.ts — the CORE of a real Hanika-2015 manifold-NEE: the
- * half-vector Newton solve that finds the specular vertex on a surface so the
- * light↔receiver path obeys the specular law (reflection here; refraction is the
- * eta-generalized half-vector — a follow-up). This replaces the cone-search
- * APPROXIMATION in `caustic.wgsl.ts:manifoldNeeContribution` (which has no
- * half-vector constraint, Newton iteration, or change-of-variables Jacobian).
+ * mneeNewton.wgsl.ts — the COMPLETE math core of a real Hanika-2015 manifold-NEE.
+ * The half-vector Newton solve finds the specular vertex on a surface so the
+ * light↔receiver path obeys the specular law — both REFLECTION (etaI==etaT) and
+ * REFRACTION (eta-generalized half-vector; the important case — caustics are
+ * usually glass). This replaces the cone-search APPROXIMATION in
+ * `caustic.wgsl.ts:manifoldNeeContribution` (which has no half-vector constraint,
+ * Newton iteration, or change-of-variables Jacobian).
  *
- * The solve is SELF-VALIDATING: the tangential half-vector residual must converge
- * to ~0, and for a flat mirror the converged vertex must equal the analytic
- * mirror-image reflection point — so the GPU harness here (`mnee-newton-validate.ts`)
- * checks correctness without any radiometric A/B. The Jacobian is finite-difference
- * (the analytic geometric Jacobian needed for the connection PDF is the next
- * increment); FD is enough to DRIVE the Newton step + prove convergence.
+ * Contents (all GPU-validated via self-validating analytic==FD / residual→0
+ * harnesses — no radiometric A/B; see wsl-gpu/scripts/mnee-*-validate.ts):
+ *   • mneeHalfVectorResidual2d / mneeNewtonSolve — the solve (residual→0, and a
+ *     flat-mirror config converges to the analytic mirror-image point).
+ *   • mneeResidualJacobian — the ANALYTIC ∂r/∂(surface coords) that drives the
+ *     Newton step (replaced the finite-difference columns: exact, 2 fewer
+ *     residual evals/step, and the reusable per-vertex diagonal block a future
+ *     multi-vertex chain solve needs). Validated analytic == FD.
+ *   • mneeManifoldJacobian — d(vertex)/d(light) via the implicit function theorem
+ *     (−J_vertex⁻¹·J_light), the geometric quantity the connection PDF is built on.
+ *   • mneePdfJacobianDet — the area-light connection-PDF factor |dω_recv/dA_light|.
+ *
+ * REMAINING (radiometric, deliberately NOT here): wiring these into
+ * `manifoldNeeContribution` to replace the cone-search — its validation is a
+ * caustic render against a converged reference (design the scene offline first).
  *
  * Ref: Hanika, Droske, Fascione, "Manifold Next Event Estimation," EGSR 2015;
  *      Jakob & Marschner, "Manifold Exploration," SIGGRAPH 2012.
@@ -58,6 +68,44 @@ fn mneeHalfVectorResidual2d(v: vec3f, recv: vec3f, light: vec3f, nm: vec3f, tu: 
   return vec2f(dot(hTan, tu), dot(hTan, tv));
 }
 
+// Directional derivative of normalize(x) along a perturbation dx of x:
+//   D[normalize](x)·dx = (dx − x̂ (x̂·dx)) / |x|        (the (I − x̂x̂ᵀ)/|x| projector).
+fn mneeDNormalize(x: vec3f, dx: vec3f) -> vec3f {
+  let len = max(length(x), 1e-12);
+  let xh = x / len;
+  return (dx - xh * dot(xh, dx)) / len;
+}
+
+// ANALYTIC residual Jacobian ∂r/∂(a,b) at vertex v = p0 + a·tu + b·tv. Replaces
+// the finite-difference columns that drove the Newton step — exact, 2 fewer
+// residual evals/step, and the reusable per-vertex diagonal block a multi-vertex
+// chain solve needs. Chain rule on r = tangential(normalize(etaI·wi + etaT·wo)):
+// ∂v/∂a = tu so ∂(light−v)/∂a = −tu (likewise −tv for b); push −tu/−tv through
+// the (I − ûûᵀ)/|u| normalize derivatives of wi, wo, then h, then the tangent
+// projection. GPU-validated analytic == FD (wsl-gpu mnee-newton-jac-validate.ts).
+// Returns the two columns: cA = ∂r/∂a, cB = ∂r/∂b (each [∂rx, ∂ry]).
+struct MneeResidualJac { cA: vec2f, cB: vec2f }
+fn mneeResidualJacobian(v: vec3f, recv: vec3f, light: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, etaI: f32, etaT: f32) -> MneeResidualJac {
+  let wiVec = light - v;
+  let woVec = recv - v;
+  let dwi_a = mneeDNormalize(wiVec, -tu);
+  let dwo_a = mneeDNormalize(woVec, -tu);
+  let dwi_b = mneeDNormalize(wiVec, -tv);
+  let dwo_b = mneeDNormalize(woVec, -tv);
+  let g = etaI * mnee_safe_normalize(wiVec) + etaT * mnee_safe_normalize(woVec);
+  let dg_a = etaI * dwi_a + etaT * dwo_a;
+  let dg_b = etaI * dwi_b + etaT * dwo_b;
+  let dh_a = mneeDNormalize(g, dg_a);
+  let dh_b = mneeDNormalize(g, dg_b);
+  // hTan = h − (h·nm)·nm ⇒ ∂hTan = ∂h − (∂h·nm)·nm.
+  let dhTan_a = dh_a - dot(dh_a, nm) * nm;
+  let dhTan_b = dh_b - dot(dh_b, nm) * nm;
+  var out: MneeResidualJac;
+  out.cA = vec2f(dot(dhTan_a, tu), dot(dhTan_a, tv));
+  out.cB = vec2f(dot(dhTan_b, tu), dot(dhTan_b, tv));
+  return out;
+}
+
 struct MneeNewtonResult { vertex: vec3f, residual: f32, iters: u32 }
 
 // 2D Newton solve on the surface (a,b) coords for the specular vertex. FD
@@ -66,7 +114,6 @@ struct MneeNewtonResult { vertex: vec3f, residual: f32, iters: u32 }
 fn mneeNewtonSolve(p0: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, light: vec3f, etaI: f32, etaT: f32, maxIter: u32) -> MneeNewtonResult {
   var a = 0.0;
   var b = 0.0;
-  let eps = 1e-3;
   var out: MneeNewtonResult;
   for (var it = 0u; it < maxIter; it = it + 1u) {
     let v = p0 + a * tu + b * tv;
@@ -74,11 +121,10 @@ fn mneeNewtonSolve(p0: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, ligh
     let rmag = length(r0);
     out.vertex = v; out.residual = rmag; out.iters = it;
     if (rmag < 1e-5) { return out; }
-    // FD Jacobian columns: ∂r/∂a, ∂r/∂b.
-    let ra = mneeHalfVectorResidual2d(p0 + (a + eps) * tu + b * tv, recv, light, nm, tu, tv, etaI, etaT);
-    let rb = mneeHalfVectorResidual2d(p0 + a * tu + (b + eps) * tv, recv, light, nm, tu, tv, etaI, etaT);
-    let j00 = (ra.x - r0.x) / eps; let j10 = (ra.y - r0.y) / eps;
-    let j01 = (rb.x - r0.x) / eps; let j11 = (rb.y - r0.y) / eps;
+    // ANALYTIC Jacobian columns ∂r/∂a, ∂r/∂b (exact; replaced finite difference).
+    let jac = mneeResidualJacobian(v, recv, light, nm, tu, tv, etaI, etaT);
+    let j00 = jac.cA.x; let j10 = jac.cA.y;
+    let j01 = jac.cB.x; let j11 = jac.cB.y;
     let det = j00 * j11 - j01 * j10;
     if (abs(det) < 1e-12) { return out; }
     let invDet = 1.0 / det;
@@ -171,6 +217,42 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let tv = vec3f(0.0, 1.0, 0.0);
   let r = mneeNewtonSolve(c.planePoint, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT, ${MNEE_NEWTON_MAX_ITERS}u);
   hOut[i] = vec4f(r.vertex, r.residual);
+}
+`;
+
+/** Newton-Jacobian harness: writes the ANALYTIC residual Jacobian ∂r/∂(a,b) and
+ *  the finite-difference reference at a generic test vertex (2 vec4 per config:
+ *  [analytic j00,j10,j01,j11], [FD j00,j10,j01,j11]). The validation asserts
+ *  analytic == FD — proving the exact Jacobian that drives the Newton step. */
+export const MNEE_NEWTON_JAC_HARNESS_WGSL = /* wgsl */ `
+${MNEE_NEWTON_WGSL}
+
+struct MneeIn { recv: vec3f, etaI: f32, light: vec3f, etaT: f32, planePoint: vec3f, _p2: f32 }
+@group(0) @binding(0) var<storage, read>       hIn:  array<MneeIn>;
+@group(0) @binding(1) var<storage, read_write> hOut: array<vec4f>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&hIn)) { return; }
+  let c = hIn[i];
+  let nm = vec3f(0.0, 0.0, 1.0);
+  let tu = vec3f(1.0, 0.0, 0.0);
+  let tv = vec3f(0.0, 1.0, 0.0);
+  // A generic (non-degenerate) test vertex on the plane — the Jacobian formula
+  // is point-independent, so analytic == FD here proves it everywhere.
+  let v = c.planePoint + 0.1 * tu + 0.05 * tv;
+  let jac = mneeResidualJacobian(v, c.recv, c.light, nm, tu, tv, c.etaI, c.etaT);
+  // CENTRAL-difference reference (O(eps²)). Forward difference's O(eps) truncation
+  // is ~1e-2 on the highly-nonlinear refraction residual — enough to spuriously
+  // diverge from the EXACT analytic on small components.
+  let eps = 1e-3;
+  let ra_p = mneeHalfVectorResidual2d(v + eps * tu, c.recv, c.light, nm, tu, tv, c.etaI, c.etaT);
+  let ra_m = mneeHalfVectorResidual2d(v - eps * tu, c.recv, c.light, nm, tu, tv, c.etaI, c.etaT);
+  let rb_p = mneeHalfVectorResidual2d(v + eps * tv, c.recv, c.light, nm, tu, tv, c.etaI, c.etaT);
+  let rb_m = mneeHalfVectorResidual2d(v - eps * tv, c.recv, c.light, nm, tu, tv, c.etaI, c.etaT);
+  hOut[i * 2u + 0u] = vec4f(jac.cA.x, jac.cA.y, jac.cB.x, jac.cB.y);
+  hOut[i * 2u + 1u] = vec4f((ra_p.x - ra_m.x) / (2.0 * eps), (ra_p.y - ra_m.y) / (2.0 * eps), (rb_p.x - rb_m.x) / (2.0 * eps), (rb_p.y - rb_m.y) / (2.0 * eps));
 }
 `;
 
