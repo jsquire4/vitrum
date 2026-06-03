@@ -8,6 +8,9 @@ import {
   ADJOINT_HARNESS_WGSL,
   packAdjointHarnessInput,
   ADJOINT_HARNESS_INPUT_FLOATS,
+  ADJOINT_SHADING_FD_WGSL,
+  packShadingAdjointInput,
+  ADJOINT_SHADING_INPUT_FLOATS,
 } from '../inverse/adjointHarness.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from '../wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 
@@ -31,5 +34,24 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_HARNESS_WGSL).toContain('hOutR[i]  = vec4f(dBrdf_dRoughness(');
     // gradAccum is declared so the bundled adjointScatter compiles.
     expect(ADJOINT_HARNESS_WGSL).toContain('gradAccum: array<atomic<i32>>');
+  });
+
+  it('packs a shading-adjoint input into the 24-float ShIn record', () => {
+    const r = packShadingAdjointInput([0.8, 0.2, 0.1], 0.5, 0.0, [0, 0, 1], [0.2, 0.1, 1], [-0.3, 0.2, 1], [3, 3, 3], [0.1, 0.1, 0.1]);
+    expect(r).toHaveLength(ADJOINT_SHADING_INPUT_FLOATS);
+    expect(r.slice(0, 4)).toEqual([0.8, 0.2, 0.1, 0.5]);  // baseColor.xyz, roughness
+    expect(r.slice(16, 20)).toEqual([3, 3, 3, 0]);          // Li.xyz, pad
+    expect(r.slice(20, 24)).toEqual([0.1, 0.1, 0.1, 0]);    // tgt.xyz, pad
+  });
+
+  it('shading-adjoint kernel bundles the forward + real partials + adjoint-vs-FD', () => {
+    // The chain-rule/accumulation A/B runs on hardware (adjoint-fd-validate.ts,
+    // lavapipe: analytic == central-FD, max rel 7.9e-4). Here we pin the structure.
+    expect(ADJOINT_SHADING_FD_WGSL).toContain(PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL); // byte-identical partials
+    expect(ADJOINT_SHADING_FD_WGSL).toContain('fn evaluateBrdf(');               // forward
+    expect(ADJOINT_SHADING_FD_WGSL).toContain('gradAdj: array<atomic<i32>>');     // analytic accumulator
+    expect(ADJOINT_SHADING_FD_WGSL).toContain('gradFd:  array<atomic<i32>>');     // FD accumulator
+    expect(ADJOINT_SHADING_FD_WGSL).toContain('let dLoss_dR = 2.0 * (rendered - s.tgt)'); // ∂loss/∂rendered
+    expect(ADJOINT_SHADING_FD_WGSL).not.toContain('target:'); // 'target' is a reserved WGSL keyword
   });
 });
