@@ -61,3 +61,16 @@ export function applyTonemap(
   const op = OPS[mode];
   return [op(rgb[0] * exposure), op(rgb[1] * exposure), op(rgb[2] * exposure)];
 }
+
+/** Linear → sRGB OETF (IEC 61966-2-1), per channel. Used when
+ *  `FrameQualitySettings.outputColorSpace === 'srgb'` (the default); 'linear'
+ *  output skips this. */
+export function linearToSrgb(c: number): number {
+  const v = Math.max(0, c);
+  return v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055;
+}
+
+/** sRGB → linear EOTF, per channel (inverse of {@link linearToSrgb}). */
+export function srgbToLinear(c: number): number {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}

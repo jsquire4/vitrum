@@ -11,7 +11,7 @@ export * from './wgsl/hammersley.wgsl.js';
 export { OCTAHEDRAL_CORE_WGSL } from './wgsl/octahedralCore.wgsl.js';
 export { LUMINANCE_WGSL, LUMINANCE_MODULE_NAME } from './wgsl/luminance.wgsl.js';
 export { HERO_WAVELENGTH_WGSL, HERO_WAVELENGTH_MODULE_NAME } from './wgsl/heroWavelength.wgsl.js';
-export { acesFilmic, reinhard, agx, applyTonemap, TONEMAP_MODE_INDEX, type TonemapMode } from './tonemap.js';
+export { acesFilmic, reinhard, agx, applyTonemap, linearToSrgb, srgbToLinear, TONEMAP_MODE_INDEX, type TonemapMode } from './tonemap.js';
 export { tonemapWgsl } from './wgsl/tonemap.wgsl.js';
 export { PCG_WGSL, PCG_MODULE_NAME, PCG_HASH_TO_F32_WGSL } from './wgsl/pcg.wgsl.js';
 export {

@@ -17,6 +17,13 @@ fn vt_agx(c: vec3f) -> vec3f {
   let lx = clamp((log2(v) + vec3f(12.47393)) / (12.47393 + 4.026069), vec3f(0.0), vec3f(1.0));
   return clamp(vec3f(vt_agx_curve(lx.x), vt_agx_curve(lx.y), vt_agx_curve(lx.z)), vec3f(0.0), vec3f(1.0));
 }
+// Linear → sRGB OETF (default output encode; skipped for 'linear' colorspace).
+fn vt_linearToSrgb(c: vec3f) -> vec3f {
+  let v = max(c, vec3f(0.0));
+  let lo = v * 12.92;
+  let hi = 1.055 * pow(v, vec3f(1.0 / 2.4)) - vec3f(0.055);
+  return select(hi, lo, v <= vec3f(0.0031308));
+}
 // mode: 0=aces 1=agx 2=reinhard 3=linear(clamped) 4=none. Exposure applied first.
 fn vitrumTonemap(color: vec3f, mode: u32, exposure: f32) -> vec3f {
   let x = color * exposure;

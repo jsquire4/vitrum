@@ -2,7 +2,7 @@
  * tonemap.test.ts — P4 output tonemap operators + WGSL-twin shape pin.
  */
 import { describe, it, expect } from 'vitest';
-import { acesFilmic, reinhard, agx, applyTonemap, TONEMAP_MODE_INDEX } from '../tonemap.js';
+import { acesFilmic, reinhard, agx, applyTonemap, TONEMAP_MODE_INDEX, linearToSrgb, srgbToLinear } from '../tonemap.js';
 import { tonemapWgsl } from '../wgsl/tonemap.wgsl.js';
 
 describe('tonemap operators (P4)', () => {
@@ -41,5 +41,15 @@ describe('tonemap operators (P4)', () => {
     expect(w).toContain('vt_agx');
     expect(w).toMatch(/mode == 1u/);
     expect(w).toMatch(/mode == 4u/);
+    expect(w).toContain('vt_linearToSrgb');
+  });
+
+  it('sRGB OETF: 0→0, 1→1, ~0.735 at 0.5; round-trips with srgbToLinear', () => {
+    expect(linearToSrgb(0)).toBeCloseTo(0, 6);
+    expect(linearToSrgb(1)).toBeCloseTo(1, 6);
+    expect(linearToSrgb(0.5)).toBeCloseTo(0.7353569, 4);
+    for (const x of [0.001, 0.05, 0.2, 0.8]) {
+      expect(srgbToLinear(linearToSrgb(x))).toBeCloseTo(x, 5);
+    }
   });
 });
