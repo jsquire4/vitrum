@@ -307,7 +307,18 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 ${mediumStateDecls}
 
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
-    let hit = traceClosest(ray, 1e-4, INFINITY);
+    var hit = traceClosest(ray, 1e-4, INFINITY);
+    // P2 alpha-test pass-through: a baseColor-texture alpha mask/blend hit is
+    // "not there" — advance the ray past it and re-trace, WITHOUT consuming a
+    // scatter bounce (capped at 8 layers/bounce). Opaque materials return false
+    // on the first test, so this loop is a no-op for them (byte-identical).
+    for (var aSkip = 0u; aSkip < 8u; aSkip = aSkip + 1u) {
+      if (!hit.didHit || !alphaTestPassThrough(hitMaterialId(hit), hit.triIndex, hit.baryVW, &rng)) {
+        break;
+      }
+      ray.origin = ray.origin + ray.direction * (hit.dist + 1e-4);
+      hit = traceClosest(ray, 1e-4, INFINITY);
+    }
     if (!hit.didHit) {
       radiance = radiance + throughput * sampleEnvironmentColor(ray.direction);
       break;

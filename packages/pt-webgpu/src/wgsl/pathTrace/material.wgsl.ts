@@ -234,6 +234,29 @@ fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   );
   return textureSampleLevel(materialTextures, materialTexSampler, uv, baseColorIdx, 0.0);
 }
+
+// P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes
+// straight through, as if there were no surface here)? Drives glTF alphaMode:
+//   opaque (0) → never (returns false immediately → opaque is byte-identical).
+//   mask   (1) → pass through where baseColorTexAlpha·opacity < alphaCutoff
+//                (hard cutout — foliage, fences, decals).
+//   blend  (2) → STOCHASTIC pass-through with probability 1 − alpha·opacity
+//                (unbiased screen-door transparency in a path tracer; the
+//                converged mean equals true alpha compositing).
+// The base-color texture's .a supplies the per-texel alpha (1 when no map, so an
+// untextured material with material.opacity<1 still blends/cuts by opacity).
+// Ref: glTF 2.0 §3.9.4 (alphaMode); PBR screen-door / stochastic transparency.
+fn alphaTestPassThrough(matId: u32, triIndex: u32, baryVW: vec2f, rng: ptr<function, u32>) -> bool {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return false; }
+  let alphaMode = u32(materialTexDescriptors[base + 1u].x);
+  if (alphaMode == 0u) { return false; } // opaque — byte-identical
+  let alphaCutoff = materialTexDescriptors[base + 1u].y;
+  let opacity = materialTexDescriptors[base + 1u].z;
+  let alpha = sampleBaseColorTexture(matId, triIndex, baryVW).a * opacity;
+  if (alphaMode == 1u) { return alpha < alphaCutoff; }   // mask
+  return rand_f32(rng) >= alpha;                          // blend (stochastic)
+}
 `;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =

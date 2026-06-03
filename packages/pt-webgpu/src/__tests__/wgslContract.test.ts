@@ -20,9 +20,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed full-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
     // Updated for P2: SceneHit.baryVW + group-3 material-texture bindings +
-    // sampleBaseColorTexture + the shade-prologue baseColor texture multiply.
-    expect(digest).toBe('c3c8704c4a4ec254ba5fa892f834d36b143c92c6b59f3e3f581ae335a1cfb860');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(152752);
+    // sampleBaseColorTexture + the shade-prologue baseColor texture multiply +
+    // alphaTestPassThrough + the kernel alpha-mask/blend pass-through loop.
+    expect(digest).toBe('50b2ee4f1a2e915ae4d0863c59fe487225dfeecad56f9dced6b7d0645bd7af9f');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(154885);
   });
 });
 
