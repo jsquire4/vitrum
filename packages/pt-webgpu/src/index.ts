@@ -877,6 +877,7 @@ class PTEngineWebGPU implements Engine {
     uboU[23] = sb.pointLightCount >>> 0;
     uboU[24] = params.length >>> 0;
     uboU[25] = channels >>> 0;
+    uboU[26] = sb.rectAreaLightCount >>> 0;
 
     // adjointParamDescs: per param {matId, fieldCode, gradOffset, _}.
     const descs = new Uint32Array(Math.max(params.length, 1) * 4);
@@ -916,6 +917,7 @@ class PTEngineWebGPU implements Engine {
         { binding: 7, resource: { buffer: dLossBuf } },
         { binding: 8, resource: { buffer: gradBuf } },
         { binding: 9, resource: { buffer: descBuf } },
+        { binding: 10, resource: { buffer: sb.rectAreaLightsBuffer } },
       ],
     });
 

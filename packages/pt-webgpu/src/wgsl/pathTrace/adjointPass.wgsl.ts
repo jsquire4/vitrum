@@ -15,16 +15,17 @@
  * render vs target), so the pass only needs the DERIVATIVES of the shading.
  *
  * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
- * intersection (Phase-1 inverse scenes are small — Cornell-scale), POINT LIGHTS
- * ONLY (area/spot/mesh-area + multi-bounce indirect are a deliberate follow-up —
- * GPU-VALIDATED 2026-06-03: gradient sign-matches the full-render FD on every
- * channel + drives a converging fit; the missing terms only shrink the magnitude,
- * which Adam's scale-invariance absorbs), summed deterministically over all point
- * lights (no MC light selection: the adjoint is the deterministic expectation).
- * baseColor (rgb) + roughness. The shading normal is faced toward the viewer (the
- * same flip the forward shade prologue applies). The sampled directions are
- * FROZEN (path replay differentiates only the continuous shading, never the
- * light/BSDF sampling — sidesteps visibility discontinuities).
+ * intersection (Phase-1 inverse scenes are small — Cornell-scale), POINT + RECT-
+ * AREA lights (spot/mesh-area + multi-bounce indirect are a deliberate follow-up —
+ * GPU-VALIDATED 2026-06-03: both light types give a gradient that sign-matches the
+ * full-render FD + drives a converging fit; the missing terms only shrink the
+ * magnitude, which Adam's scale-invariance absorbs), summed deterministically over
+ * all lights (no MC light selection: the adjoint is the deterministic expectation;
+ * rect-area lights are center-sampled). baseColor (rgb) + roughness. The shading
+ * normal is faced toward the viewer (the same flip the forward shade prologue
+ * applies). The sampled directions are FROZEN (path replay differentiates only the
+ * continuous shading, never the light/BSDF sampling — sidesteps visibility
+ * discontinuities).
  *
  * A FOCUSED single-group pipeline (not a forward-kernel variant): the forward
  * spends all 4 bind groups, so the adjoint binds only the read subset it needs +
@@ -55,7 +56,7 @@ struct AdjointParams {
   pointLightCount: u32,
   paramCount:  u32,
   channels:    u32,
-  _pad0:       u32,
+  rectAreaLightCount: u32,
   _pad1:       u32,
 }
 
@@ -70,6 +71,8 @@ struct AdjointParams {
 @group(0) @binding(8) var<storage, read_write> gradAccum:     array<atomic<i32>>;
 // adjointParams: per optimized param {matId, fieldCode, gradOffset, _}.
 @group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
+// rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
+@group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
 
 // ── BRDF primitives (mirror material.wgsl.ts / the oracle) ──────────────────
 fn safe_normalize(v: vec3f) -> vec3f {
@@ -205,6 +208,33 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // ∂rendered_c/∂baseColor_c = dBrdf_dBaseColor_c · nDotL · Li_c (diagonal).
     gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
     // ∂loss/∂roughness = Σ_c dLoss_dR_c · dBrdf_dRoughness_c · nDotL · Li_c.
+    gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
+  }
+
+  // Rect-area lights: deterministic CENTER-sample of the same geometric term the
+  // forward area NEE integrates (brdf·nDotL·radiance·cosLight·area/dist²). One
+  // sample is a biased-but-correct-direction estimate of the area integral — good
+  // enough for the gradient direction (Adam handles the magnitude). GPU-validated
+  // on a camera-near rect-area light (directly lights the visible target).
+  for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
+    let rb = ri * 4u;
+    let rpos = rectAreaLights[rb].xyz;
+    let ru = rectAreaLights[rb + 1u].xyz;
+    let rv = rectAreaLights[rb + 2u].xyz;
+    let rad = rectAreaLights[rb + 3u].rgb;
+    let toLight = rpos - pos;
+    let dist2 = max(dot(toLight, toLight), 1e-6);
+    let dist = sqrt(dist2);
+    let wi = toLight / dist;
+    let nDotL = max(0.0, dot(n, wi));
+    if (nDotL <= 0.0) { continue; }
+    let lightNormal = safe_normalize(cross(ru, rv));
+    let cosLight = max(dot(lightNormal, -wi), 0.0);
+    if (cosLight <= 0.0) { continue; }
+    if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
+    let area = max(4.0 * length(cross(ru, rv)), 1e-6);
+    let Li = rad * (cosLight * area / dist2);
+    gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
     gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
   }
 
