@@ -19,8 +19,15 @@ function makeStubEngine(convergeAt = Infinity) {
   const reset = vi.fn(() => {
     samples = 0;
   });
-  const engine = { renderFrame, reset, get samplesAccumulated() { return samples; } } as unknown as Engine;
-  return { engine, renderFrame, reset };
+  const setScene = vi.fn();
+  const updatePrimitive = vi.fn();
+  const addPrimitive = vi.fn();
+  const removePrimitive = vi.fn();
+  const engine = {
+    renderFrame, reset, setScene, updatePrimitive, addPrimitive, removePrimitive,
+    get samplesAccumulated() { return samples; },
+  } as unknown as Engine;
+  return { engine, renderFrame, reset, setScene, updatePrimitive, addPrimitive, removePrimitive };
 }
 
 function input(x: number): FrameInput {
@@ -130,6 +137,35 @@ describe('ProgressiveHandoffCoordinator', () => {
     c.frame(input(0));                                  // realtime
     expect(c.frame(input(0)).phase).toBe('prerolling'); // sample 1, not converged
     expect(c.frame(input(0)).phase).toBe('converging');  // sample 2 → isConverged → switch
+  });
+
+  it('scene authority: forwards scene mutations to BOTH engines and restarts at real-time', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const c = new ProgressiveHandoffCoordinator({ realtime: rt.engine, converged: cv.engine, stillFramesBeforeHandoff: 1 });
+
+    // Settle into converging first.
+    c.frame(input(0));
+    expect(c.frame(input(0)).phase).toBe('converging');
+
+    const scene = { primitives: [], emitters: [], environment: { kind: 'none' } } as unknown as Parameters<typeof c.setScene>[0];
+    c.setScene(scene);
+    expect(rt.setScene).toHaveBeenCalledWith(scene);
+    expect(cv.setScene).toHaveBeenCalledWith(scene);
+    expect(c.phase).toBe('realtime'); // scene change → back to real-time
+
+    c.updatePrimitive('p', { transform: undefined } as never);
+    expect(rt.updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(cv.updatePrimitive).toHaveBeenCalledTimes(1);
+
+    const prim = { kind: 'mesh', id: 'q' } as unknown as Parameters<typeof c.addPrimitive>[0];
+    c.addPrimitive(prim);
+    expect(rt.addPrimitive).toHaveBeenCalledWith(prim);
+    expect(cv.addPrimitive).toHaveBeenCalledWith(prim);
+
+    c.removePrimitive('q');
+    expect(rt.removePrimitive).toHaveBeenCalledWith('q');
+    expect(cv.removePrimitive).toHaveBeenCalledWith('q');
   });
 
   it('reset() forces back to real-time and re-arms the converged reset', () => {

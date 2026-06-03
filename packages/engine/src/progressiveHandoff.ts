@@ -21,7 +21,7 @@
 // real-time→1-sample 'pop') is a documented follow-on; it would render both
 // engines during the transition window.
 
-import type { Engine, FrameInput, FrameOutput } from '@vitrum/core';
+import type { Engine, FrameInput, FrameOutput, Scene, ScenePrimitive } from '@vitrum/core';
 
 export interface ProgressiveHandoffOptions {
   /** Smooth real-time GI engine — driven while the camera moves. */
@@ -156,6 +156,42 @@ export class ProgressiveHandoffCoordinator {
     this.#stillFrames = 0;
     this.#phase = 'realtime';
     this.#convergedStale = true;
+  }
+
+  // ── Scene authority ───────────────────────────────────────────────────────
+  // The handoff requires BOTH engines to hold the SAME scene; forwarding the
+  // mutations here keeps them correct-by-construction (the host can't sync one
+  // engine and forget the other) and invalidates the converged accumulation +
+  // returns to real-time, since any scene change makes the converged image (and
+  // both engines' cached GI) stale. Optional Engine methods are forwarded only
+  // when the underlying engine implements them.
+
+  /** Set the scene on both engines and restart at real-time. */
+  setScene(scene: Scene): void {
+    this.#realtime.setScene(scene);
+    this.#converged.setScene(scene);
+    this.reset();
+  }
+
+  /** Patch a primitive on both engines (where supported) and restart at real-time. */
+  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+    this.#realtime.updatePrimitive?.(id, patch);
+    this.#converged.updatePrimitive?.(id, patch);
+    this.reset();
+  }
+
+  /** Add a primitive to both engines (where supported) and restart at real-time. */
+  addPrimitive(primitive: ScenePrimitive): void {
+    this.#realtime.addPrimitive?.(primitive);
+    this.#converged.addPrimitive?.(primitive);
+    this.reset();
+  }
+
+  /** Remove a primitive from both engines (where supported) and restart at real-time. */
+  removePrimitive(id: ScenePrimitive['id']): void {
+    this.#realtime.removePrimitive?.(id);
+    this.#converged.removePrimitive?.(id);
+    this.reset();
   }
 
   /**
