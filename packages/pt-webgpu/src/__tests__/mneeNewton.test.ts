@@ -9,6 +9,9 @@ import {
   MNEE_NEWTON_JAC_HARNESS_WGSL,
   MNEE_JACOBIAN_HARNESS_WGSL,
   MNEE_PDF_HARNESS_WGSL,
+  MNEE_CHAIN_WGSL,
+  MNEE_CHAIN_HARNESS_WGSL,
+  MNEE_CHAIN_MAX_ITERS,
   packMneeHarnessInput,
   MNEE_HARNESS_INPUT_FLOATS,
   MNEE_NEWTON_MAX_ITERS,
@@ -76,5 +79,21 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_NEWTON_WGSL).toContain('return length(cross(dw_ds, dw_dt))');
     expect(MNEE_PDF_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL); // byte-identical core
     expect(MNEE_PDF_HARNESS_WGSL).toContain('let det = mneePdfJacobianDet(r.vertex, c.recv, jac.dadL, jac.dbdL, tu, tv)');
+  });
+
+  it('2-vertex chain solve (glass enter+exit) — block-tridiagonal Newton', () => {
+    // GPU-validated on lavapipe (mnee-chain-validate.ts): both tangential
+    // half-vector residuals → 0 AND the converged vertices satisfy Snell's ratio
+    // at each interface (independent of the half-vector residual formula).
+    expect(MNEE_CHAIN_WGSL).toContain('fn mneeChainResidual4d(');         // 4D coupled residual
+    expect(MNEE_CHAIN_WGSL).toContain('fn mneeNewtonSolveChain2(');
+    expect(MNEE_CHAIN_WGSL).toContain('fn mnee_inv2x2(');                 // 2×2 block inverse
+    expect(MNEE_CHAIN_WGSL).toContain('let S = D - CAinv * B;');          // Schur complement
+    expect(MNEE_CHAIN_MAX_ITERS).toBe(32);
+    // Harness composes BOTH the single-vertex core (for mnee_safe_normalize) and
+    // the chain module, then runs a glass-slab config.
+    expect(MNEE_CHAIN_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL);
+    expect(MNEE_CHAIN_HARNESS_WGSL).toContain(MNEE_CHAIN_WGSL);
+    expect(MNEE_CHAIN_HARNESS_WGSL).toContain(`mneeNewtonSolveChain2(p1, n, tu, tv, p2, n, tu, tv, c.lightP, c.recv, 1.0, c.etaGlass, c.etaGlass, 1.0, ${MNEE_CHAIN_MAX_ITERS}u)`);
   });
 });

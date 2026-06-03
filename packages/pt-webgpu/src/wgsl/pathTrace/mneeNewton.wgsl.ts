@@ -197,6 +197,149 @@ fn mneePdfJacobianDet(v: vec3f, recv: vec3f, dadL: vec3f, dbdL: vec3f, tu: vec3f
 }
 `;
 
+/** Newton iterations for the 2-vertex chain solve (coupled 4-DOF → more than the
+ *  single-vertex solve). */
+export const MNEE_CHAIN_MAX_ITERS = 32;
+
+/**
+ * 2-VERTEX specular chain — the glass case (enter + exit refraction), the
+ * canonical caustic beyond a single water surface. Path L → v1(plane 1) →
+ * v2(plane 2) → R. The half-vector constraint must hold at BOTH vertices at once:
+ * a 4-DOF coupled system. Solved by a BLOCK-TRIDIAGONAL Newton — the 4×4 Jacobian
+ * is four 2×2 blocks [[A,B],[C,D]] (A,D diagonal; B,C the inter-vertex coupling,
+ * since wo1 = v2−v1 and wi2 = v1−v2), reduced via the Schur complement
+ * S = D − C·A⁻¹·B. Self-validating: a correct solve drives BOTH tangential
+ * half-vector residuals → 0 (and the converged vertices satisfy Snell's ratio at
+ * each interface — an independent cross-check in mnee-chain-validate.ts).
+ *
+ * Ref: Jakob & Marschner, "Manifold Exploration" SIGGRAPH 2012 §5 (the
+ *      block-tridiagonal specular-manifold Newton); Hanika 2015 §4.
+ */
+export const MNEE_CHAIN_WGSL = /* wgsl */ `
+// 2×2 inverse (column-major mat2x2f: m[0]=(m00,m10), m[1]=(m01,m11)).
+fn mnee_inv2x2(m: mat2x2f) -> mat2x2f {
+  let det = m[0][0] * m[1][1] - m[1][0] * m[0][1];
+  let inv = 1.0 / select(det, 1e-12, abs(det) < 1e-12);
+  return mat2x2f(vec2f(m[1][1], -m[0][1]) * inv, vec2f(-m[1][0], m[0][0]) * inv);
+}
+
+// 4D residual: tangential half-vectors at v1 (interface 1) and v2 (interface 2).
+fn mneeChainResidual4d(
+  v1: vec3f, v2: vec3f,
+  n1: vec3f, tu1: vec3f, tv1: vec3f,
+  n2: vec3f, tu2: vec3f, tv2: vec3f,
+  lightP: vec3f, recv: vec3f,
+  eta1i: f32, eta1t: f32, eta2i: f32, eta2t: f32,
+) -> vec4f {
+  let wi1 = mnee_safe_normalize(lightP - v1);
+  let wo1 = mnee_safe_normalize(v2 - v1);
+  let h1 = mnee_safe_normalize(eta1i * wi1 + eta1t * wo1);
+  let h1t = h1 - dot(h1, n1) * n1;
+  let wi2 = mnee_safe_normalize(v1 - v2);
+  let wo2 = mnee_safe_normalize(recv - v2);
+  let h2 = mnee_safe_normalize(eta2i * wi2 + eta2t * wo2);
+  let h2t = h2 - dot(h2, n2) * n2;
+  return vec4f(dot(h1t, tu1), dot(h1t, tv1), dot(h2t, tu2), dot(h2t, tv2));
+}
+
+struct MneeChainResult { v1: vec3f, v2: vec3f, residual: f32, iters: u32 }
+
+fn mneeNewtonSolveChain2(
+  p1: vec3f, n1: vec3f, tu1: vec3f, tv1: vec3f,
+  p2: vec3f, n2: vec3f, tu2: vec3f, tv2: vec3f,
+  lightP: vec3f, recv: vec3f,
+  eta1i: f32, eta1t: f32, eta2i: f32, eta2t: f32,
+  maxIter: u32,
+) -> MneeChainResult {
+  // Initialize each vertex at the UNREFRACTED straight-line L→R crossing of its
+  // plane (a, b in the plane's tangent frame) — far closer to the refracted
+  // solution than the plane origin, which is what lets the coupled Newton
+  // converge for oblique configs instead of overshooting.
+  let dLR = recv - lightP;
+  let dn1 = dot(dLR, n1);
+  let dn2 = dot(dLR, n2);
+  let t1 = dot(p1 - lightP, n1) / select(dn1, 1e-12, abs(dn1) < 1e-12);
+  let t2 = dot(p2 - lightP, n2) / select(dn2, 1e-12, abs(dn2) < 1e-12);
+  let cross1 = lightP + t1 * dLR;
+  let cross2 = lightP + t2 * dLR;
+  var a1 = dot(cross1 - p1, tu1); var b1 = dot(cross1 - p1, tv1);
+  var a2 = dot(cross2 - p2, tu2); var b2 = dot(cross2 - p2, tv2);
+  let eps = 1e-3;
+  var out: MneeChainResult;
+  for (var it = 0u; it < maxIter; it = it + 1u) {
+    let v1 = p1 + a1 * tu1 + b1 * tv1;
+    let v2 = p2 + a2 * tu2 + b2 * tv2;
+    let r = mneeChainResidual4d(v1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t);
+    let rmag = length(r);
+    out.v1 = v1; out.v2 = v2; out.residual = rmag; out.iters = it;
+    if (rmag < 1e-5) { return out; }
+    // FD 4×4 Jacobian as four 2×2 blocks (perturb each DOF, diff the 4D residual).
+    let d_a1 = (mneeChainResidual4d(v1 + eps * tu1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+    let d_b1 = (mneeChainResidual4d(v1 + eps * tv1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+    let d_a2 = (mneeChainResidual4d(v1, v2 + eps * tu2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+    let d_b2 = (mneeChainResidual4d(v1, v2 + eps * tv2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+    let A = mat2x2f(d_a1.xy, d_b1.xy); // ∂r1/∂(a1,b1)
+    let B = mat2x2f(d_a2.xy, d_b2.xy); // ∂r1/∂(a2,b2)
+    let C = mat2x2f(d_a1.zw, d_b1.zw); // ∂r2/∂(a1,b1)
+    let D = mat2x2f(d_a2.zw, d_b2.zw); // ∂r2/∂(a2,b2)
+    let r1 = r.xy; let r2 = r.zw;
+    let Ainv = mnee_inv2x2(A);
+    let CAinv = C * Ainv;
+    let S = D - CAinv * B;                       // Schur complement
+    let d2 = mnee_inv2x2(S) * (CAinv * r1 - r2); // δ2 = S⁻¹(C A⁻¹ r1 − r2)
+    let d1 = Ainv * (-r1 - B * d2);              // δ1 = A⁻¹(−r1 − B δ2)
+    // Backtracking line search: take the largest fraction of the Newton step that
+    // DECREASES the residual (globalizes the coupled solve — an undamped full step
+    // overshoots + diverges for oblique configs).
+    var scale = 1.0;
+    var accepted = false;
+    for (var bt = 0u; bt < 10u; bt = bt + 1u) {
+      let na1 = a1 + scale * d1.x; let nb1 = b1 + scale * d1.y;
+      let na2 = a2 + scale * d2.x; let nb2 = b2 + scale * d2.y;
+      let nv1 = p1 + na1 * tu1 + nb1 * tv1;
+      let nv2 = p2 + na2 * tu2 + nb2 * tv2;
+      let nr = length(mneeChainResidual4d(nv1, nv2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t));
+      if (nr < rmag) { a1 = na1; b1 = nb1; a2 = na2; b2 = nb2; accepted = true; break; }
+      scale = scale * 0.5;
+    }
+    if (!accepted) { return out; } // no descent along the Newton direction — return best so far
+  }
+  let v1 = p1 + a1 * tu1 + b1 * tv1;
+  let v2 = p2 + a2 * tu2 + b2 * tv2;
+  out.v1 = v1; out.v2 = v2;
+  out.residual = length(mneeChainResidual4d(v1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t));
+  out.iters = maxIter;
+  return out;
+}
+`;
+
+/** Chain harness: a glass slab — plane 1 at z=0, plane 2 at z=−slabD (both +z
+ *  normal, +x/+y tangents); air→glass→air (eta 1 / etaGlass / 1). Writes the two
+ *  converged vertices + the final 4D residual. */
+export const MNEE_CHAIN_HARNESS_WGSL = /* wgsl */ `
+${MNEE_NEWTON_WGSL}
+${MNEE_CHAIN_WGSL}
+
+struct ChainIn { lightP: vec3f, slabD: f32, recv: vec3f, etaGlass: f32 }
+@group(0) @binding(0) var<storage, read>       hIn:  array<ChainIn>;
+@group(0) @binding(1) var<storage, read_write> hOut: array<vec4f>; // [v1.xyz, residual], [v2.xyz, iters]
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&hIn)) { return; }
+  let c = hIn[i];
+  let n = vec3f(0.0, 0.0, 1.0);
+  let tu = vec3f(1.0, 0.0, 0.0);
+  let tv = vec3f(0.0, 1.0, 0.0);
+  let p1 = vec3f(0.0, 0.0, 0.0);
+  let p2 = vec3f(0.0, 0.0, -c.slabD);
+  let res = mneeNewtonSolveChain2(p1, n, tu, tv, p2, n, tu, tv, c.lightP, c.recv, 1.0, c.etaGlass, c.etaGlass, 1.0, ${MNEE_CHAIN_MAX_ITERS}u);
+  hOut[i * 2u + 0u] = vec4f(res.v1, res.residual);
+  hOut[i * 2u + 1u] = vec4f(res.v2, f32(res.iters));
+}
+`;
+
 /** Harness kernel: runs the Newton solve per config (mirror plane z = planePoint.z,
  *  normal +z, tangents +x/+y) and writes the converged vertex + final residual. */
 export const MNEE_NEWTON_HARNESS_WGSL = /* wgsl */ `
