@@ -85,13 +85,20 @@ import type {
   OIDNFinalDispatcherOptions,
   DenoisedFrame,
   OIDNBridgeLoader,
-  ReadbackResult,
 } from '@vitrum/shared-denoisers';
 
-/** Input type for the pt-webgl readback callback.
- *  The synchronous GL readback is performed in `kickIfReady` before the async
- *  cycle; the callback merely unpacks the already-read data. */
-type WebGLReadbackInput = ReadbackResult;
+/** Input type for the pt-webgl readback callback — carries the GL handles +
+ *  dims so the synchronous `gl.readPixels` runs LAZILY inside the core's gated
+ *  cycle (NOT eagerly in `kickIfReady`). A disposed / in-flight / already-
+ *  completed cohort therefore skips the expensive readback entirely, restoring
+ *  the pre-extraction "Re-kick policy" gating (see the class doc above). */
+interface WebGLReadbackInput {
+  renderer: WebGLRenderer;
+  target: WebGLRenderTarget;
+  width: number;
+  height: number;
+  divideByAlpha: boolean;
+}
 
 export class OIDNFinalDispatcher {
   readonly #core: OIDNDispatcherCore<WebGLReadbackInput>;
@@ -106,9 +113,20 @@ export class OIDNFinalDispatcher {
     this.#core = new OIDNDispatcherCore<WebGLReadbackInput>({
       dispatcherOptions: opts,
       loader: loader ?? oidnDefaultLoader,
-      // pt-webgl: readback is already done synchronously before kickIfReady
-      // hands off to the core; the callback is a pass-through.
-      readback: async (input) => input,
+      // pt-webgl: the synchronous gl.readPixels runs LAZILY here, INSIDE the
+      // core's gated #runCycle — so a disposed / in-flight / already-completed
+      // cohort skips the expensive readback (restores the pre-extraction gate;
+      // the engine calls kickIfReady on EVERY converged frame and relies on this
+      // short-circuit to avoid burning ~5–30 ms/frame on a stable image).
+      readback: async ({ renderer, target, width, height, divideByAlpha }) => {
+        try {
+          const color = readAccumulationRgbFloat(renderer, target, width, height, divideByAlpha);
+          return { color, width, height };
+        } catch (err) {
+          console.warn('[OIDNFinalDispatcher] readPixels failed — skipping denoise', err);
+          return null;
+        }
+      },
       // pt-webgl does NOT call preloadOIDNModel on bridge init (behavioral
       // difference from pt-webgpu — preserved intentionally).
       preloadOnBridgeInit: false,
@@ -170,23 +188,16 @@ export class OIDNFinalDispatcher {
     height: number,
     divideByAlpha: boolean,
   ): void {
-    // Guard before paying the readback cost.
     if (width <= 0 || height <= 0) return;
-
-    // Sync GL readback — one readPixels into a Float32Array. We pay this
-    // ~5–30 ms at 1080p exactly once per converged cohort, which is the
-    // honest cost of bridging the GL-host / ONNX-CPU divide.
-    let color: Float32Array;
-    try {
-      color = readAccumulationRgbFloat(renderer, target, width, height, divideByAlpha);
-    } catch (err) {
-      console.warn('[OIDNFinalDispatcher] readPixels failed — skipping denoise', err);
-      return;
-    }
-
-    // Hand off to the shared core. The readback is already complete;
-    // the callback is a pass-through that just returns the data.
-    this.#core.kickIfReady({ color, width, height }, width, height);
+    // Hand the GL handles to the core WITHOUT reading back yet. The core gates
+    // (disposed / in-flight / already-completed-for-cohort) BEFORE invoking the
+    // readback callback, so the expensive ~5–30 ms gl.readPixels only runs when
+    // an inference will actually be spawned — NOT on every converged frame.
+    this.#core.kickIfReady(
+      { renderer, target, width, height, divideByAlpha },
+      width,
+      height,
+    );
   }
 
   /**

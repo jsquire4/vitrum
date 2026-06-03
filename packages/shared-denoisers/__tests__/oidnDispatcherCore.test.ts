@@ -437,3 +437,41 @@ describe('OIDNDispatcherCore — albedo + normal aux passthrough', () => {
     expect(denoiseInput.normal).toBeUndefined();
   });
 });
+
+describe('OIDNDispatcherCore readback gating (protects expensive backend readbacks)', () => {
+  // Regression pin (2026-06-02): the backend `readback` callback must only run
+  // AFTER the disposed/in-flight/haveCompleted gate. pt-webgl's gl.readPixels
+  // lives inside this callback, and the engine calls kickIfReady on EVERY
+  // converged frame — so a gated callback is what prevents a per-frame readback
+  // stall on a stable image. (An earlier extraction did the readback eagerly in
+  // the pt-webgl wrapper, defeating the gate.)
+  it('invokes readback only when the gate passes — not when completed / in-flight / disposed', async () => {
+    const bridge = makeDefaultBridge();
+    const readback = vi.fn(async (input: DirectInput) => input);
+    const core = new OIDNDispatcherCore(makeCoreOpts(bridge, { readback }));
+
+    // First kick: gate passes → readback runs once, inference completes.
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    expect(readback).toHaveBeenCalledTimes(1);
+    expect(core.getLatestDenoised()).not.toBeNull(); // haveCompleted = true
+
+    // Re-kicks on the completed cohort must NOT re-run the readback.
+    core.kickIfReady(makeInput(), 2, 2);
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    expect(readback).toHaveBeenCalledTimes(1);
+
+    // invalidate() re-arms the gate → readback runs again.
+    core.invalidate();
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    expect(readback).toHaveBeenCalledTimes(2);
+
+    // After dispose, the gate blocks all further readbacks.
+    core.dispose();
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+    expect(readback).toHaveBeenCalledTimes(2);
+  });
+});
