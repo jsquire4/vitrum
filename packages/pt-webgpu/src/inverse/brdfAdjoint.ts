@@ -6,8 +6,9 @@
  * `nrcEncoding.ts` plays for the NRC encoding. The emitted WGSL adjoint
  * (`../wgsl/pathTrace/pathTraceAdjoint.wgsl.ts`) is hand-verified line-for-line
  * against the partials computed here; the codegen-shape tests pin that the WGSL
- * keeps emitting the SAME arithmetic so a future shader-compile A/B (V24) only
- * needs to confirm it runs.
+ * keeps emitting the SAME arithmetic. The V24 shader-compile A/B confirmed it
+ * runs on real hardware and matches this oracle to f32 precision (GPU-validated
+ * on lavapipe, 2026-06-03).
  *
  * What it differentiates: the Cook-Torrance unified BRDF `evaluateBrdf`
  * (mirror of `bsdf.wgsl.ts:evaluateBrdf`) w.r.t. the two Phase-1 optimizable

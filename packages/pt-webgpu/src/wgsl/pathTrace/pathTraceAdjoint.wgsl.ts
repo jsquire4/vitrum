@@ -1,14 +1,19 @@
 /**
  * pathTraceAdjoint.wgsl.ts — path-replay BSDF adjoint (WS5 Phase 1).
  *
- * STATUS (2026-06): NOT WIRED. This WGSL is an unwired GPU twin of the CPU
- * adjoint oracle (`../../inverse/brdfAdjoint.ts`). It is NOT composed into any
- * pipeline and NOT dispatched — it is only string-shape-pinned by
- * `__tests__/brdfAdjoint.test.ts` to stay arithmetically identical to the
- * oracle, against future wiring. The live inverse path is finite-difference
- * (`inverse/inverseSession.ts` hardcodes `method = 'finite-difference'`; the GPU
- * adjoint dispatch is gated pending real-GPU validation — V24). The present-
- * tense description below is the INTENDED Phase-1 design, not current runtime.
+ * STATUS (2026-06): WIRED + GPU-VALIDATED (V24, commits 3d022f9/5a79307). These
+ * partials are composed into the engine adjoint compute pass
+ * (`adjointPass.wgsl.ts` → PT_WEBGPU_ADJOINT_PASS_WGSL), which
+ * `index.ts:#computeAdjointGradient` builds into a focused pipeline and
+ * dispatches; the same string is also composed into the GPU validation harness
+ * (`../../inverse/adjointHarness.wgsl.ts`) and string-shape-pinned against the
+ * CPU oracle by `__tests__/brdfAdjoint.test.ts`. `inverse/inverseSession.ts`
+ * resolves the effective method to 'path-replay' (NOT finite-difference)
+ * whenever the engine supplies the `computeAdjointGradient` hook AND every
+ * optimized parameter is in the Phase-1 differentiable set (material baseColor /
+ * roughness). GPU-validated on lavapipe: the partials match the FD oracle to f32
+ * precision, and the chain rule + fixed-point accumulation match an on-device
+ * finite-difference.
  *
  * Emits the WGSL functions that compute the analytic partials of the
  * Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. the two Phase-1 optimizable
