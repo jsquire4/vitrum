@@ -87,6 +87,8 @@ import { PPG_TREE_LAYOUT_MODULE } from '../ppg/ppgTreeLayout.wgsl.js';
 import { PPG_UPDATE_MODULE } from '../ppg/ppgUpdate.wgsl.js';
 import { PPG_GUIDE_MODULE } from '../ppg/ppgGuide.wgsl.js';
 import { PPG_PDF_MODULE } from '../ppg/ppgPdf.wgsl.js';
+import { NEURAL_PACK_MODULE } from '../shaders/neuralPack.wgsl.js';
+import { NEURAL_UNPACK_MODULE } from '../shaders/neuralUnpack.wgsl.js';
 import type { WgslModule } from './wgslComposer.js';
 
 // Re-exports for consumers that pull individual modules by name (e.g.,
@@ -312,4 +314,9 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   [SVGF_VARIANCE_FROM_MOMENTS_MODULE.name, SVGF_VARIANCE_FROM_MOMENTS_MODULE],
   [SVGF_7X7_SPATIAL_FALLBACK_MODULE.name, SVGF_7X7_SPATIAL_FALLBACK_MODULE],
   [BMFR_MODULE.name, BMFR_MODULE],
+
+  // Neural denoiser pack/unpack compute shaders (Issue 2 — extracted from
+  // NeuralDenoiser.initialize inline literals; character-identical source).
+  [NEURAL_PACK_MODULE.name, NEURAL_PACK_MODULE],
+  [NEURAL_UNPACK_MODULE.name, NEURAL_UNPACK_MODULE],
 ]);

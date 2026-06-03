@@ -19,6 +19,8 @@ import {
   type DenoiserInitContext,
 } from './index.js';
 import type { InferenceGraph } from '../../neural/InferenceGraph.js';
+import { NEURAL_PACK_WGSL } from '../../shaders/neuralPack.wgsl.js';
+import { NEURAL_UNPACK_WGSL } from '../../shaders/neuralUnpack.wgsl.js';
 
 export class NeuralDenoiser implements Denoiser {
   readonly id = 'neural' as const;
@@ -32,6 +34,7 @@ export class NeuralDenoiser implements Denoiser {
   private _height = 0;
   private _loggedSizeMismatch = false;
 
+  private _device: GPUDevice | null = null;
   private _packPipeline: GPUComputePipeline | null = null;
   private _unpackPipeline: GPUComputePipeline | null = null;
   private _packParamsBuf: GPUBuffer | null = null;
@@ -54,75 +57,15 @@ export class NeuralDenoiser implements Denoiser {
     this._width = ctx.width;
     this._height = ctx.height;
     const device = ctx.device;
+    this._device = device;
 
     const packSM = device.createShaderModule({
       label: 'neural-denoiser-pack',
-      code: /* wgsl */`
-struct PackParams {
-  width: u32,
-  height: u32,
-  pixelCount: u32,
-  _pad0: u32,
-}
-@group(0) @binding(0) var noisyTex: texture_2d<f32>;
-@group(0) @binding(1) var albedoTex: texture_2d<f32>;
-@group(0) @binding(2) var normalDepthTex: texture_2d<f32>;
-@group(0) @binding(3) var<storage, read_write> noisyOut: array<f32>;
-@group(0) @binding(4) var<storage, read_write> albedoOut: array<f32>;
-@group(0) @binding(5) var<storage, read_write> normalsOut: array<f32>;
-@group(0) @binding(6) var<uniform> params: PackParams;
-
-@compute @workgroup_size(256, 1, 1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let p = gid.x;
-  if (p >= params.pixelCount) { return; }
-  let x = p % params.width;
-  let y = p / params.width;
-  let n = textureLoad(noisyTex, vec2i(i32(x), i32(y)), 0).rgb;
-  let a = textureLoad(albedoTex, vec2i(i32(x), i32(y)), 0).rgb;
-  let nd = textureLoad(normalDepthTex, vec2i(i32(x), i32(y)), 0).xyz;
-  let nrm = normalize(nd * 2.0 - 1.0);
-  let base = p * 3u;
-  noisyOut[base + 0u] = n.r;
-  noisyOut[base + 1u] = n.g;
-  noisyOut[base + 2u] = n.b;
-  albedoOut[base + 0u] = a.r;
-  albedoOut[base + 1u] = a.g;
-  albedoOut[base + 2u] = a.b;
-  normalsOut[base + 0u] = nrm.r;
-  normalsOut[base + 1u] = nrm.g;
-  normalsOut[base + 2u] = nrm.b;
-}
-`,
+      code: NEURAL_PACK_WGSL,
     });
     const unpackSM = device.createShaderModule({
       label: 'neural-denoiser-unpack',
-      code: /* wgsl */`
-struct UnpackParams {
-  width: u32,
-  height: u32,
-  pixelCount: u32,
-  _pad0: u32,
-}
-@group(0) @binding(0) var<storage, read> denoisedIn: array<f32>;
-@group(0) @binding(1) var denoisedOut: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(2) var<uniform> params: UnpackParams;
-
-@compute @workgroup_size(256, 1, 1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let p = gid.x;
-  if (p >= params.pixelCount) { return; }
-  let x = p % params.width;
-  let y = p / params.width;
-  let base = p * 3u;
-  let c = vec3f(
-    max(0.0, denoisedIn[base + 0u]),
-    max(0.0, denoisedIn[base + 1u]),
-    max(0.0, denoisedIn[base + 2u]),
-  );
-  textureStore(denoisedOut, vec2u(x, y), vec4f(c, 1.0));
-}
-`,
+      code: NEURAL_UNPACK_WGSL,
     });
     this._packPipeline = await device.createComputePipelineAsync({
       label: 'neural-denoiser-pack-pipeline',
@@ -235,23 +178,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   resize(w: number, h: number): void {
-    // Reallocate bridge buffers/output texture. InferenceGraph tensors are fixed
-    // to init dimensions; dispatch guards and falls back on mismatch.
-    this._outputTex?.destroy();
-    this._outputTex = null;
-    this._outputTexW = 0;
-    this._outputTexH = 0;
-    this._noisyBuf?.destroy();
-    this._albedoBuf?.destroy();
-    this._normalsBuf?.destroy();
-    this._outputBuf?.destroy();
-    this._noisyBuf = null;
-    this._albedoBuf = null;
-    this._normalsBuf = null;
-    this._outputBuf = null;
+    // Issue 1 fix: resize must leave the denoiser in a consistent allocated
+    // state, not a torn-down intermediate state. If a device is available
+    // (initialize has been called), _reallocForSize handles both teardown +
+    // realloc atomically and the denoiser is immediately ready to dispatch.
+    // If no device yet (resize called before initialize), just update the
+    // target dimensions so initialize uses the new size.
     this._width = w;
     this._height = h;
     this._loggedSizeMismatch = false;
+    if (this._device != null) {
+      this._reallocForSize(this._device, w, h);
+    }
+    // When _device is null (pre-initialize), buffers are already null and
+    // _reallocForSize will be called from dispatch/initialize — no torn-down
+    // window because there was nothing allocated to begin with.
   }
 
   dispose(): void {
@@ -271,6 +212,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     this._unpackParamsBuf = null;
     this._packPipeline = null;
     this._unpackPipeline = null;
+    this._device = null;
   }
 
   private _reallocForSize(device: GPUDevice, w: number, h: number): void {

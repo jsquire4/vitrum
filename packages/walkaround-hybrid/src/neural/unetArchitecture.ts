@@ -9,7 +9,10 @@
  * Sequences using a Recurrent Denoising Autoencoder." SIGGRAPH.
  * https://doi.org/10.1145/3072959.3073601
  *
- * Parameter count: ~426,075 total (~1.63 MB at f32, ~0.82 MB at f16).
+ * Parameter count: 535,107 total (~2.04 MB at f32, ~1.02 MB at f16), derived
+ * from the `layers` array by {@link deriveParamCount}. The previous hardcoded
+ * literal (426,075) erroneously excluded the three strided down-conv layers
+ * (enc1_down, enc2_down, enc3_down = 109,032 params).
  * Intermediate GPU memory at 1080p (f32): ~461 MB; fp16 halves this to ~230 MB.
  *
  * Skip-connection invariant: skip-connection spatial shapes are explicitly
@@ -107,6 +110,27 @@ export interface UNetSpec {
  */
 
 // ── Canonical U-Net spec ──────────────────────────────────────────────────────
+
+/**
+ * Derive the total trainable parameter count from a layer array.
+ *
+ * Counting rules:
+ *   conv2d (OIKW):          inC × outC × kH × kW  + outC
+ *   transposedConv2d (IOKW): inC × outC × kH × kW  + outC
+ *   All other kinds (relu, skipAdd, inputPack, bilinearUpsample): 0
+ *
+ * This replaces the previous hardcoded literal; a unit test in neural.test.ts
+ * pins the value so accidental layer additions are caught immediately.
+ */
+export function deriveParamCount(layers: readonly LayerSpec[]): number {
+  let total = 0;
+  for (const layer of layers) {
+    if (layer.kind !== 'conv2d' && layer.kind !== 'transposedConv2d') continue;
+    const { inC, outC, kH = 1, kW = 1 } = layer.params;
+    total += inC * outC * kH * kW + outC;
+  }
+  return total;
+}
 
 /** Build the U-Net layer graph. */
 export function buildUNetSpec(): UNetSpec {
@@ -343,14 +367,9 @@ export function buildUNetSpec(): UNetSpec {
     inputChannels:  9,
     outputChannels: 3,
     layers,
-    // Total trainable parameters (verified from spec doc):
-    // enc1_conv(9×24×9+24)+enc1_down(24×24×9+24)+enc2_conv(24×48×9+48)+enc2_down(48×48×9+48)
-    // +enc3_conv(48×96×9+96)+enc3_down(96×96×9+96)+bottleneck(96×192×9+192)
-    // +dec3_tconv(192×96×4+96)+dec3_conv(96×96×9+96)
-    // +dec2_tconv(96×48×4+48)+dec2_conv(48×48×9+48)
-    // +dec1_tconv(48×24×4+24)+dec1_conv(24×24×9+24)
-    // +proj(24×3×1+3) ≈ 426,075 (slightly more with the extra down-conv layers)
-    paramCount: 426075,
+    // Derived from the layers array by deriveParamCount — no magic literal.
+    // Pinned by the 'deriveParamCount matches canonical value' unit test.
+    paramCount: deriveParamCount(layers),
   };
 }
 

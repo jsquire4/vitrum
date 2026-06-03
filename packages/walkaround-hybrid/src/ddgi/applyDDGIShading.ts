@@ -74,6 +74,7 @@ export function disposeApplyDDGIShadingCache(): void {
   _trackedStorageTextures.clear();
   _slotStorageTextureCache = new WeakMap();
   _ddgiSampleFnCached = null;
+  _injectedMaterials = new WeakMap();
 }
 
 // WebGPU is configured with NoToneMapping + LinearSRGBColorSpace at the
@@ -103,7 +104,7 @@ interface InjectedEntry {
   original: THREE.Material;
   upgraded: MeshPhysicalNodeMaterial | MeshStandardNodeMaterial;
 }
-const _injectedMaterials = new WeakMap<THREE.Mesh, InjectedEntry>();
+let _injectedMaterials = new WeakMap<THREE.Mesh, InjectedEntry>();
 
 export function applyDDGIShading(
   scene: THREE.Scene,

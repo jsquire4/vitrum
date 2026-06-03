@@ -102,6 +102,10 @@ export class ProbeUpdatePass {
   private _maxProbes = 0;
   private _lights: DDGILight[] = [];
   private _debug: boolean;
+  // Guard: set to true on the first call to init() so a failed GPU init
+  // (which leaves _gpu null) does not re-issue navigator.gpu.requestAdapter
+  // on every subsequent runFrame call. Pattern matches DDGI._inited / _gpuOk.
+  private _initAttempted = false;
   // Multiplier applied to every light's intensity when packing the
   // probe-update light UBO. Defaults to 1 so unrelated callers keep the
   // original behaviour. The hybrid pipeline calls setSunIntensityMultiplier(5.0)
@@ -206,6 +210,7 @@ export class ProbeUpdatePass {
    * Tries the renderer's WebGPU backend first; falls back to navigator.gpu.
    */
   async init(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }): Promise<boolean> {
+    this._initAttempted = true;
     // Hardware-GPU gate. detectGpu() publishes window.__WG__ BEFORE we
     // touch the device, so e2e validation can read the flag even if we
     // refuse to proceed. SwiftShader (Chromium's software rasterizer)
@@ -346,6 +351,11 @@ export class ProbeUpdatePass {
    */
   async runFrame(renderer: { backend?: { device?: GPUDevice; isWebGPUBackend?: boolean } }, offset: number, stride: number): Promise<void> {
     if (!this._gpu) {
+      // If init was already attempted and failed (e.g. hard WebGPU-init failure
+      // where navigator.gpu.requestAdapter returned null), do not re-issue the
+      // adapter request on every subsequent frame.  Pattern mirrors DDGI._inited
+      // / _gpuOk so the two classes have consistent guards.
+      if (this._initAttempted) return;
       await this.init(renderer);
       if (!this._gpu) return;
     }
@@ -592,6 +602,16 @@ export class ProbeUpdatePass {
     g.idxBuf.destroy();
     g.normBuf.destroy();
     g.matIdBuf.destroy();
+    // TLAS buffers (allocated in init / rebuildProbeBvhFrom*) — previously
+    // omitted, causing a GPU memory leak on dispose. All five are real
+    // GPUBuffers from ProbeUpdateBvhGpuBuffers; traceParamsBuf is from
+    // ProbeUpdateGpuState.
+    g.tlasNodesBuf.destroy();
+    g.tlasInstIdxBuf.destroy();
+    g.tlasBlasRootsBuf.destroy();
+    g.tlasW2lBuf.destroy();
+    g.tlasL2wBuf.destroy();
+    g.traceParamsBuf.destroy();
     g.materialsBuf.destroy();
     g.lightsBuf.destroy();
     g.gridParamsBuf.destroy();

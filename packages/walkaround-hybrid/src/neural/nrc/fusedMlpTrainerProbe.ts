@@ -34,9 +34,9 @@ export class FusedMlpTrainerProbe {
     const enc = d.createCommandEncoder();
     t.recordForward(enc);
     t.recordBackward(enc);
-    t.recordGradFinalize(enc, t.gradWfx, t.gradWf, t.plan.totalW);
-    t.recordGradFinalize(enc, t.gradBfx, t.gradBf, t.plan.totalB);
-    t.recordGradFinalize(enc, t.gradInputFx, t.gradInputF, t.numSamples * t.spec.inW);
+    t.recordGradFinalize(enc, t.gradWfx, t.gradWf, t.plan.totalW, t._gradFinUboW);
+    t.recordGradFinalize(enc, t.gradBfx, t.gradBf, t.plan.totalB, t._gradFinUboB);
+    t.recordGradFinalize(enc, t.gradInputFx, t.gradInputF, t.numSamples * t.spec.inW, t._gradFinUboX);
     d.queue.submit([enc.finish()]);
   }
 

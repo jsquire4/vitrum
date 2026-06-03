@@ -152,3 +152,144 @@ describe('FusedMlpTrainerProbe — extracted debug surface issues identical comm
     expect(typeof trainer.dispose).toBe('function');
   });
 });
+
+// ── BUG-1 fix: persistent params UBO characterization ────────────────────────
+//
+// Before the fix, paramsUniform() / recordGradFinalize() / recordAdam() /
+// recordDowncast() all called d.createBuffer() on EVERY call — 9–11 throwaway
+// GPUBuffers PER trainStep(). The fix allocates a fixed set of persistent UBOs
+// in build() and rewrites them in-place (or uses them read-only for constant
+// values). This characterization test pins that no new GPU buffers are created
+// during trainStep() calls after build() completes.
+
+describe('FusedMlpTrainer — persistent params UBO: no new buffers per trainStep (BUG-1 fix)', () => {
+  const spec: FusedNetSpec = { inW: 4, W: 8, outW: 3, hidden: 2 };
+  const tileB = 8;
+  const B = 5;
+
+  function makeTrackingDevice(createBufferCalls: number[]): GPUDevice {
+    const mkBuf = (size: number): GPUBuffer => ({
+      _id: createBufferCalls.length,  // stable identity (same object reference per allocation)
+      size,
+      destroy() {},
+      getMappedRange() { return new ArrayBuffer(size); },
+      async mapAsync() {},
+      unmap() {},
+    }) as unknown as GPUBuffer;
+
+    return {
+      createBuffer(desc: { size: number }) {
+        createBufferCalls.push(desc.size);
+        return mkBuf(desc.size);
+      },
+      createShaderModule() { return { getCompilationInfo: async () => ({ messages: [] }) }; },
+      async createComputePipelineAsync() { return { getBindGroupLayout: () => ({}) }; },
+      createBindGroup() { return {}; },
+      createCommandEncoder() {
+        return {
+          clearBuffer() {},
+          beginComputePass() {
+            return { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} };
+          },
+          copyBufferToBuffer() {},
+          finish() { return {}; },
+        };
+      },
+      queue: { writeBuffer() {}, submit() {} },
+      limits: { maxComputeWorkgroupStorageSize: 32768 },
+    } as unknown as GPUDevice;
+  }
+
+  it('no new GPUBuffers are created by trainStep() after build() completes (f32 path)', async () => {
+    const buildCalls: number[] = [];
+    const device = makeTrackingDevice(buildCalls);
+    const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB });
+    await trainer.build(B);
+
+    const buildAllocCount = buildCalls.length;
+    expect(buildAllocCount).toBeGreaterThan(0); // sanity: build does allocate
+
+    // Record createBuffer calls during 3 consecutive trainStep() calls.
+    const postBuildCalls: number[] = [];
+    // Swap in a fresh tracking layer by replacing the createBuffer method.
+    const origCreate = (device as unknown as { createBuffer: (d: { size: number }) => GPUBuffer }).createBuffer;
+    (device as unknown as { createBuffer: (d: { size: number }) => GPUBuffer }).createBuffer = (desc) => {
+      postBuildCalls.push(desc.size);
+      return origCreate.call(device, desc);
+    };
+
+    trainer.trainStep(0.01);
+    trainer.trainStep(0.01);
+    trainer.trainStep(0.01);
+
+    // The fix: ZERO new buffers created during any trainStep.
+    expect(postBuildCalls).toHaveLength(0);
+  });
+
+  it('the persistent params UBO field identity is stable across trainStep() calls', async () => {
+    const calls: number[] = [];
+    const device = makeTrackingDevice(calls);
+    const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB });
+    await trainer.build(B);
+
+    const uboAfterBuild = trainer._paramsUbo;
+    expect(uboAfterBuild).toBeDefined();
+
+    trainer.trainStep(0.01);
+    trainer.trainStep(0.01);
+
+    // Same object reference: the buffer was not re-created during trainStep.
+    expect(trainer._paramsUbo).toBe(uboAfterBuild);
+  });
+
+  it('the persistent grad-finalize UBO fields survive multiple steps', async () => {
+    const calls: number[] = [];
+    const device = makeTrackingDevice(calls);
+    const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB });
+    await trainer.build(B);
+
+    const uboW = trainer._gradFinUboW;
+    const uboB = trainer._gradFinUboB;
+    const uboX = trainer._gradFinUboX;
+    expect(uboW).toBeDefined();
+    expect(uboB).toBeDefined();
+    expect(uboX).toBeDefined();
+
+    trainer.trainStep(0.01);
+    trainer.trainStep(0.01);
+
+    expect(trainer._gradFinUboW).toBe(uboW);
+    expect(trainer._gradFinUboB).toBe(uboB);
+    expect(trainer._gradFinUboX).toBe(uboX);
+  });
+
+  it('dispose() after build() destroys all persistent UBOs', async () => {
+    const calls: number[] = [];
+    const device = makeTrackingDevice(calls);
+    const trainer = new FusedMlpTrainer(device, spec, { useF16: false, tileB });
+    await trainer.build(B);
+
+    // Spy on the persistent UBO objects to confirm destroy() is called.
+    const ubos = [
+      trainer._paramsUbo,
+      trainer._gradFinUboW, trainer._gradFinUboB, trainer._gradFinUboX,
+      trainer._adamUboW, trainer._adamUboB,
+    ].filter(Boolean);
+    const destroyCounts = new Map(ubos.map(u => [u, 0]));
+    for (const ubo of ubos) {
+      const orig = ubo.destroy.bind(ubo);
+      ubo.destroy = () => { destroyCounts.set(ubo, (destroyCounts.get(ubo) ?? 0) + 1); orig(); };
+    }
+
+    trainer.dispose();
+
+    for (const [, count] of destroyCounts) {
+      expect(count).toBe(1);
+    }
+    // Idempotent: second dispose is a no-op.
+    trainer.dispose();
+    for (const [, count] of destroyCounts) {
+      expect(count).toBe(1);
+    }
+  });
+});

@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC } from '../src/neural/unetArchitecture.js';
+import { buildUNetSpec, WALKAROUND_DENOISER_UNET_SPEC, deriveParamCount } from '../src/neural/unetArchitecture.js';
 import type { LayerSpec } from '../src/neural/unetArchitecture.js';
 import {
   loadWeightsFromArrayBuffer,
@@ -651,5 +651,66 @@ describe('Test 5 — End-to-end smoke: CPU conv2d simulation with random weights
       denoiser:             'neural',
       // neuralWeights intentionally omitted
     })).toThrow(/neural.*weights|neuralWeights.*required/i);
+  });
+});
+
+// ── Test 6: deriveParamCount matches canonical value (BUG 2 fix) ───────────────
+
+describe('Test 6 — deriveParamCount derives param count from the layers array (BUG 2 fix)', () => {
+  /**
+   * The previous buildUNetSpec() had a hardcoded literal `paramCount: 426075`
+   * that was derived by hand and omitted the three strided down-conv layers
+   * (enc1_down, enc2_down, enc3_down = 5208 + 20784 + 83040 = 109,032 params).
+   * The correct value derived from the full layers array is 535,107.
+   *
+   * This test pins the derived value so any future layer addition/removal is
+   * caught immediately and the spec can no longer silently drift.
+   */
+
+  // Canonical value derived from the layers array: all conv2d + transposedConv2d
+  // layers, formula inC*outC*kH*kW + outC per layer.
+  const CANONICAL_PARAM_COUNT = 535107;
+
+  it('deriveParamCount returns the canonical 535107 for the built U-Net spec', () => {
+    const spec = buildUNetSpec();
+    expect(deriveParamCount(spec.layers)).toBe(CANONICAL_PARAM_COUNT);
+  });
+
+  it('WALKAROUND_DENOISER_UNET_SPEC.paramCount equals the derived canonical value', () => {
+    expect(WALKAROUND_DENOISER_UNET_SPEC.paramCount).toBe(CANONICAL_PARAM_COUNT);
+  });
+
+  it('deriveParamCount counts only conv2d and transposedConv2d layers', () => {
+    const spec = buildUNetSpec();
+    const weightedKinds = new Set(['conv2d', 'transposedConv2d']);
+    const weightedLayers = spec.layers.filter(l => weightedKinds.has(l.kind));
+    const zeroParamLayers = spec.layers.filter(l => !weightedKinds.has(l.kind));
+
+    // Each weighted layer contributes inC*outC*kH*kW + outC.
+    let expected = 0;
+    for (const l of weightedLayers) {
+      const { inC, outC, kH = 1, kW = 1 } = l.params;
+      expected += inC * outC * kH * kW + outC;
+    }
+    expect(deriveParamCount(spec.layers)).toBe(expected);
+
+    // A spec containing only zero-param layers contributes nothing.
+    expect(deriveParamCount(zeroParamLayers)).toBe(0);
+  });
+
+  it('deriveParamCount detects an accidental layer addition (silent-drift guard)', () => {
+    const spec = buildUNetSpec();
+    // Simulate adding an extra conv layer.
+    const extra = {
+      name: 'extra_conv',
+      kind: 'conv2d' as const,
+      inputs: ['denoised'],
+      output: 'extra_out',
+      params: { inC: 3, outC: 3, kH: 1, kW: 1 },
+      weightLayout: 'OIKW' as const,
+    };
+    const augmented = [...spec.layers, extra];
+    const extraParams = 3 * 3 * 1 * 1 + 3; // 12
+    expect(deriveParamCount(augmented)).toBe(CANONICAL_PARAM_COUNT + extraParams);
   });
 });

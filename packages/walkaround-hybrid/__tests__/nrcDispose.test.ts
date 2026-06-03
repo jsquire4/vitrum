@@ -64,13 +64,15 @@ const SPEC: FusedNetSpec = { inW: 16, W: 16, outW: 3, hidden: 2 };
 const CFG: FusedTrainerConfig = { useF16: false, tileB: 8 };
 const NUM_SAMPLES = 32;
 
-// The exact buffers build() allocates (see fusedMlpTrainer.ts build()). 18 in
-// the f32 path (no downcast buffer). paramsUniform()/grad-finalize UBOs are made
-// lazily inside record*() — NOT in build() — so they do not appear here.
-const EXPECTED_BUILD_BUFFER_COUNT = 18;
+// The exact buffers build() allocates (see fusedMlpTrainer.ts build()). f32 path:
+//   18 original compute storage buffers
+// + 6 persistent UBOs now allocated in build() (_paramsUbo, _gradFinUboW/B/X,
+//   _adamUboW/B) — previously created lazily in record*() per step.
+// = 24 total. No downcast buffers (_downcastUboW/B) in the useF16=false path.
+const EXPECTED_BUILD_BUFFER_COUNT = 24;
 
 describe('FusedMlpTrainer.dispose()', () => {
-  it('allocates 18 buffers in build() and destroys each exactly once', async () => {
+  it('allocates 24 buffers in build() and destroys each exactly once', async () => {
     const { device, buffers } = mockDevice();
     const trainer = new FusedMlpTrainer(device, SPEC, CFG);
     await trainer.build(NUM_SAMPLES);
