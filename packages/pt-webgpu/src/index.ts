@@ -17,11 +17,20 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { asBackendTexture } from '@vitrum/core';
+import { asBackendTexture, asMat4 } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
+  type AdjointGradientRequest,
 } from './inverse/inverseSession.js';
+import { materialIndexForPrimitive } from './scene/incrementalPatch.js';
+import { invertMat4, multiplyMat4 } from './math/mat4.js';
+import {
+  PT_WEBGPU_ADJOINT_PASS_WGSL,
+  ADJOINT_PARAMS_UBO_BYTES,
+  ADJOINT_FIELD_ROUGHNESS,
+} from './wgsl/pathTrace/adjointPass.wgsl.js';
+import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import { readOidnInputsFromTextures } from './denoise/rgba16fReadback.js';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
 import {
@@ -198,6 +207,9 @@ class PTEngineWebGPU implements Engine {
   /** WS5 — true while an inverse session is driving synthetic renders, so the
    *  cached host camera (`#lastFrameInput`) isn't clobbered by them. */
   #inInverseRender = false;
+  /** WS5 Phase-1 — lazily-built path-replay adjoint compute pipeline (the
+   *  computeAdjointGradient hook). Engine-owned; freed in dispose. */
+  #adjointPipeline: GPUComputePipeline | null = null;
 
   /**
    * The cohesive GPU-resource-lifecycle cluster (T14-followup extraction): accum
@@ -808,8 +820,123 @@ class PTEngineWebGPU implements Engine {
       patchEmitter: (emitterId: string, patch: Partial<SceneEmitter>) => {
         this.updateEmitter(emitterId, patch);
       },
+      computeAdjointGradient: (req) => this.#computeAdjointGradient(req),
     };
     return new PtWebgpuInverseSession(hooks, opts);
+  }
+
+  /**
+   * WS5 Phase-1 path-replay adjoint pass (the `computeAdjointGradient` hook). One
+   * dispatch of `PT_WEBGPU_ADJOINT_PASS_WGSL` over the live scene buffers: per
+   * pixel it re-traces the frozen-seed primary ray (brute-force closest-hit),
+   * re-derives the single-bounce point-light direct lighting, and accumulates
+   * `∂loss/∂θ` for the optimized material params through the GPU-validated BRDF
+   * partials + fixed-point `adjointScatter`. Returns the flat gradient. Replaces
+   * the session's N-render FD probe loop with one baseline render + this pass.
+   *
+   * The per-hit shading partials + the chain-rule accumulation are GPU-validated
+   * (adjoint-validate.ts / adjoint-fd-validate.ts); the assembled pass is A/B'd
+   * against the FD gradient the session also computes (V24).
+   */
+  async #computeAdjointGradient(req: AdjointGradientRequest): Promise<Float32Array> {
+    const device = this.#device;
+    const sb = this.#sceneBuffers;
+    const last = this.#lastFrameInput;
+    if (sb == null || last == null || this.#scene == null) {
+      throw new Error('computeAdjointGradient: no scene/camera (render at least one frame first).');
+    }
+    const { width, height, channels, params, gradientLength, dLoss_dRendered } = req;
+
+    if (this.#adjointPipeline == null) {
+      const module = device.createShaderModule({ code: PT_WEBGPU_ADJOINT_PASS_WGSL });
+      this.#adjointPipeline = device.createComputePipeline({
+        label: 'vitrum.pt-webgpu.adjointPass',
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' },
+      });
+    }
+    const pipeline = this.#adjointPipeline;
+
+    // AdjointParams UBO: invViewProj(mat4) + cameraPos(vec4) + 2×uvec4 of counts.
+    const vp = multiplyMat4(last.projMatrix, last.viewMatrix);
+    const invVp = invertMat4(asMat4(vp));
+    if (invVp == null) {
+      throw new Error('computeAdjointGradient: camera viewProj is not invertible.');
+    }
+    const ubo = new ArrayBuffer(ADJOINT_PARAMS_UBO_BYTES);
+    const uboF = new Float32Array(ubo);
+    const uboU = new Uint32Array(ubo);
+    uboF.set(invVp, 0); // mat4x4f at byte 0 (16 floats)
+    uboF[16] = last.cameraPosition[0];
+    uboF[17] = last.cameraPosition[1];
+    uboF[18] = last.cameraPosition[2];
+    uboF[19] = 1;
+    uboU[20] = width >>> 0;
+    uboU[21] = height >>> 0;
+    uboU[22] = sb.triangleCount >>> 0;
+    uboU[23] = sb.pointLightCount >>> 0;
+    uboU[24] = params.length >>> 0;
+    uboU[25] = channels >>> 0;
+
+    // adjointParamDescs: per param {matId, fieldCode, gradOffset, _}.
+    const descs = new Uint32Array(Math.max(params.length, 1) * 4);
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i]!;
+      const matId = materialIndexForPrimitive(this.#scene, p.id, this.#supportedAnalyticShapes());
+      if (matId == null) {
+        throw new Error(`computeAdjointGradient: no material index for primitive "${p.id}".`);
+      }
+      descs[i * 4 + 0] = matId >>> 0;
+      descs[i * 4 + 1] = p.field === 'roughness' ? ADJOINT_FIELD_ROUGHNESS : 0;
+      descs[i * 4 + 2] = p.offset >>> 0;
+    }
+
+    const U = (globalThis as { GPUBufferUsage: typeof GPUBufferUsage }).GPUBufferUsage;
+    const mk = (size: number, usage: number, data?: ArrayBufferView): GPUBuffer => {
+      const b = device.createBuffer({ size: Math.max(size, 16), usage });
+      if (data) device.queue.writeBuffer(b, 0, data.buffer, data.byteOffset, data.byteLength);
+      return b;
+    };
+    const paramsBuf = mk(ADJOINT_PARAMS_UBO_BYTES, U.UNIFORM | U.COPY_DST, uboF);
+    const dLossBuf = mk(dLoss_dRendered.byteLength, U.STORAGE | U.COPY_DST, dLoss_dRendered);
+    const gradBuf = mk(gradientLength * 4, U.STORAGE | U.COPY_SRC | U.COPY_DST, new Int32Array(gradientLength));
+    const descBuf = mk(descs.byteLength, U.STORAGE | U.COPY_DST, descs);
+    const stage = mk(gradientLength * 4, U.MAP_READ | U.COPY_DST);
+
+    const bind = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: paramsBuf } },
+        { binding: 1, resource: { buffer: sb.positionsBuffer } },
+        { binding: 2, resource: { buffer: sb.indicesBuffer } },
+        { binding: 3, resource: { buffer: sb.triMaterialIdsBuffer } },
+        { binding: 4, resource: { buffer: sb.materialsBuffer } },
+        { binding: 5, resource: { buffer: sb.normalsBuffer } },
+        { binding: 6, resource: { buffer: sb.pointLightsBuffer } },
+        { binding: 7, resource: { buffer: dLossBuf } },
+        { binding: 8, resource: { buffer: gradBuf } },
+        { binding: 9, resource: { buffer: descBuf } },
+      ],
+    });
+
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bind);
+    pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
+    pass.end();
+    enc.copyBufferToBuffer(gradBuf, 0, stage, 0, gradientLength * 4);
+    device.queue.submit([enc.finish()]);
+    await stage.mapAsync((globalThis as { GPUMapMode: typeof GPUMapMode }).GPUMapMode.READ);
+    const raw = new Int32Array(stage.getMappedRange().slice(0));
+    stage.unmap();
+
+    const grad = new Float32Array(gradientLength);
+    for (let i = 0; i < gradientLength; i++) grad[i] = raw[i]! / ADJOINT_GRAD_FP;
+
+    // Per-step transient buffers — free them (no leak; the pipeline is cached).
+    for (const b of [paramsBuf, dLossBuf, gradBuf, descBuf, stage]) b.destroy();
+    return grad;
   }
 
   /**
@@ -917,6 +1044,7 @@ class PTEngineWebGPU implements Engine {
     this.#gpu.dispose();
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = null;
+    this.#adjointPipeline = null; // GPUComputePipeline has no destroy(); drop the ref
     this.#scene = null;
     this.#geoPack = null;
     this.#onFrameSubs.clear();

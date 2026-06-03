@@ -1,0 +1,225 @@
+/**
+ * adjointPass.wgsl.ts — the engine-side WS5 Phase-1 path-replay adjoint COMPUTE
+ * PASS (the last V24 piece). For each pixel it re-traces the frozen-seed primary
+ * ray (brute-force closest-hit), re-derives the single-bounce direct lighting
+ * (point-light NEE with shadow rays — the SAME `rad/dist²` model + packing the
+ * forward `kernel.wgsl.ts` uses), and accumulates `∂loss/∂θ` for the optimized
+ * material parameters through the two GPU-VALIDATED adjoint stages:
+ *   - the BRDF partials `dBrdf_dBaseColor` / `dBrdf_dRoughness`
+ *     (`pathTraceAdjoint.wgsl.ts`, GPU == FD oracle to f32),
+ *   - the chain rule + fixed-point `adjointScatter` accumulation
+ *     (`adjointHarness.wgsl.ts`, analytic == on-device FD).
+ *
+ * It deliberately does NOT call the forward `evaluateBrdf` — the per-pixel
+ * `dLoss/dRendered` is handed in by `inverseSession` (computed from the baseline
+ * render vs target), so the pass only needs the DERIVATIVES of the shading.
+ *
+ * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
+ * intersection (Phase-1 inverse scenes are small — Cornell-scale), POINT LIGHTS
+ * ONLY (area/spot/mesh-area + multi-bounce indirect are a deliberate follow-up —
+ * GPU-VALIDATED 2026-06-03: gradient sign-matches the full-render FD on every
+ * channel + drives a converging fit; the missing terms only shrink the magnitude,
+ * which Adam's scale-invariance absorbs), summed deterministically over all point
+ * lights (no MC light selection: the adjoint is the deterministic expectation).
+ * baseColor (rgb) + roughness. The shading normal is faced toward the viewer (the
+ * same flip the forward shade prologue applies). The sampled directions are
+ * FROZEN (path replay differentiates only the continuous shading, never the
+ * light/BSDF sampling — sidesteps visibility discontinuities).
+ *
+ * A FOCUSED single-group pipeline (not a forward-kernel variant): the forward
+ * spends all 4 bind groups, so the adjoint binds only the read subset it needs +
+ * its own I/O, in group 0.
+ *
+ * Ref: Vicini 2021 (Path Replay Backprop); Möller-Trumbore 1997 (intersection).
+ */
+import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from './pathTraceAdjoint.wgsl.js';
+
+/** Field codes in the adjointParams descriptor (matches inverseSession fields). */
+export const ADJOINT_FIELD_BASECOLOR = 0;
+export const ADJOINT_FIELD_ROUGHNESS = 1;
+
+/** AdjointParams UBO size in bytes (mat4 + vec4 + 2×uvec4). */
+export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16;
+
+export const PT_WEBGPU_ADJOINT_PASS_WGSL = /* wgsl */ `
+const PI = 3.14159265358979;
+const INV_PI = 0.31830988618;
+const MATERIAL_VEC4_STRIDE = 23u;
+
+struct AdjointParams {
+  invViewProj: mat4x4f,
+  cameraPos:   vec4f,
+  width:       u32,
+  height:      u32,
+  triangleCount: u32,
+  pointLightCount: u32,
+  paramCount:  u32,
+  channels:    u32,
+  _pad0:       u32,
+  _pad1:       u32,
+}
+
+@group(0) @binding(0) var<uniform>             params:        AdjointParams;
+@group(0) @binding(1) var<storage, read>       positions:     array<vec4f>;
+@group(0) @binding(2) var<storage, read>       indices:       array<vec4u>;
+@group(0) @binding(3) var<storage, read>       triMaterialIds: array<u32>;
+@group(0) @binding(4) var<storage, read>       materials:     array<vec4f>;
+@group(0) @binding(5) var<storage, read>       normals:       array<vec4f>;
+@group(0) @binding(6) var<storage, read>       pointLights:   array<vec4f>;
+@group(0) @binding(7) var<storage, read>       dLossDRendered: array<f32>;
+@group(0) @binding(8) var<storage, read_write> gradAccum:     array<atomic<i32>>;
+// adjointParams: per optimized param {matId, fieldCode, gradOffset, _}.
+@group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
+
+// ── BRDF primitives (mirror material.wgsl.ts / the oracle) ──────────────────
+fn safe_normalize(v: vec3f) -> vec3f {
+  let l = length(v);
+  if (l < 1e-8) { return vec3f(0.0); }
+  return v / l;
+}
+fn ggxD(nDotH: f32, alpha: f32) -> f32 {
+  let a2 = alpha * alpha;
+  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
+  return a2 / max(PI * d * d, 1e-6);
+}
+fn smithG1(nDotV: f32, roughness: f32) -> f32 {
+  let r = roughness + 1.0;
+  let k = (r * r) * 0.125;
+  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
+}
+fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  let m5 = m2 * m2 * m;
+  return f0 + (vec3f(1.0) - f0) * m5;
+}
+
+// ── the GPU-validated BRDF partials + adjointScatter (gradAccum at binding 8) ──
+${PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL}
+
+// ── camera (mirror kernelCore.generatePrimaryRay) ───────────────────────────
+struct Ray { origin: vec3f, direction: vec3f }
+fn generatePrimaryRay(px: u32, py: u32) -> Ray {
+  let uv = (vec2f(f32(px), f32(py)) + vec2f(0.5)) / vec2f(f32(params.width), f32(params.height));
+  let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+  let far4 = params.invViewProj * vec4f(ndc, 1.0, 1.0);
+  let near4 = params.invViewProj * vec4f(ndc, -1.0, 1.0);
+  var ray: Ray;
+  ray.origin = params.cameraPos.xyz;
+  ray.direction = safe_normalize((far4.xyz / far4.w) - (near4.xyz / near4.w));
+  return ray;
+}
+
+// ── brute-force intersection (Möller-Trumbore) ──────────────────────────────
+struct Hit { valid: bool, t: f32, tri: u32, bary: vec3f }
+fn closestHit(ro: vec3f, rd: vec3f) -> Hit {
+  var best: Hit;
+  best.valid = false;
+  best.t = 1e30;
+  for (var i = 0u; i < params.triangleCount; i = i + 1u) {
+    let idx = indices[i];
+    let v0 = positions[idx.x].xyz;
+    let e1 = positions[idx.y].xyz - v0;
+    let e2 = positions[idx.z].xyz - v0;
+    let p = cross(rd, e2);
+    let det = dot(e1, p);
+    if (abs(det) < 1e-9) { continue; }
+    let invDet = 1.0 / det;
+    let tvec = ro - v0;
+    let u = dot(tvec, p) * invDet;
+    if (u < 0.0 || u > 1.0) { continue; }
+    let q = cross(tvec, e1);
+    let v = dot(rd, q) * invDet;
+    if (v < 0.0 || u + v > 1.0) { continue; }
+    let t = dot(e2, q) * invDet;
+    if (t > 1e-4 && t < best.t) {
+      best.valid = true; best.t = t; best.tri = i; best.bary = vec3f(1.0 - u - v, u, v);
+    }
+  }
+  return best;
+}
+fn anyHit(ro: vec3f, rd: vec3f, tMax: f32) -> bool {
+  for (var i = 0u; i < params.triangleCount; i = i + 1u) {
+    let idx = indices[i];
+    let v0 = positions[idx.x].xyz;
+    let e1 = positions[idx.y].xyz - v0;
+    let e2 = positions[idx.z].xyz - v0;
+    let p = cross(rd, e2);
+    let det = dot(e1, p);
+    if (abs(det) < 1e-9) { continue; }
+    let invDet = 1.0 / det;
+    let tvec = ro - v0;
+    let u = dot(tvec, p) * invDet;
+    if (u < 0.0 || u > 1.0) { continue; }
+    let q = cross(tvec, e1);
+    let v = dot(rd, q) * invDet;
+    if (v < 0.0 || u + v > 1.0) { continue; }
+    let t = dot(e2, q) * invDet;
+    if (t > 1e-4 && t < tMax) { return true; }
+  }
+  return false;
+}
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  if (gid.x >= params.width || gid.y >= params.height) { return; }
+  let ray = generatePrimaryRay(gid.x, gid.y);
+  let hit = closestHit(ray.origin, ray.direction);
+  if (!hit.valid) { return; }
+
+  let matId = triMaterialIds[hit.tri];
+  let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
+  let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
+  let baseColor = m0.rgb;
+  let roughness = clamp(m0.w, 0.02, 1.0);
+  let metallic = clamp(m1.w, 0.0, 1.0);
+
+  let idx = indices[hit.tri];
+  let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
+  // Face the shading normal toward the viewer — the SAME flip the forward shade
+  // prologue applies (shadePrologue.wgsl.ts). Without it, back-facing geometry
+  // gets nDotL<=0 against an interior light and contributes no gradient.
+  let n = select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0);
+  let pos = ray.origin + ray.direction * hit.t;
+  let wo = -ray.direction;
+
+  // Per-pixel ∂loss/∂rendered (the session computed it from baseline vs target).
+  let pixel = gid.y * params.width + gid.x;
+  let base = pixel * params.channels;
+  let dLoss_dR = vec3f(dLossDRendered[base], dLossDRendered[base + 1u], dLossDRendered[base + 2u]);
+
+  // Single-bounce direct lighting, summed deterministically over all point lights.
+  var gBaseColor = vec3f(0.0);
+  var gRough = 0.0;
+  for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
+    let lp = pointLights[pi * 2u].xyz;
+    let rad = pointLights[pi * 2u + 1u].rgb;
+    let toPoint = lp - pos;
+    let dist2 = max(dot(toPoint, toPoint), 1e-5);
+    let dist = sqrt(dist2);
+    let wi = toPoint / dist;
+    let nDotL = max(0.0, dot(n, wi));
+    if (nDotL <= 0.0) { continue; }
+    if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
+    let Li = rad / dist2;
+    // ∂rendered_c/∂baseColor_c = dBrdf_dBaseColor_c · nDotL · Li_c (diagonal).
+    gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColor(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li;
+    // ∂loss/∂roughness = Σ_c dLoss_dR_c · dBrdf_dRoughness_c · nDotL · Li_c.
+    gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
+  }
+
+  // Scatter into the gradient slot of every param that targets this material.
+  for (var k = 0u; k < params.paramCount; k = k + 1u) {
+    let d = adjointParamDescs[k];
+    if (d.x != matId) { continue; }
+    let gradOffset = d.z;
+    if (d.y == ${ADJOINT_FIELD_BASECOLOR}u) {
+      adjointScatter(gradOffset, gBaseColor.x);
+      adjointScatter(gradOffset + 1u, gBaseColor.y);
+      adjointScatter(gradOffset + 2u, gBaseColor.z);
+    } else {
+      adjointScatter(gradOffset, gRough);
+    }
+  }
+}
+`;

@@ -13,6 +13,12 @@ import {
   ADJOINT_SHADING_INPUT_FLOATS,
 } from '../inverse/adjointHarness.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from '../wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
+import {
+  PT_WEBGPU_ADJOINT_PASS_WGSL,
+  ADJOINT_PARAMS_UBO_BYTES,
+  ADJOINT_FIELD_BASECOLOR,
+  ADJOINT_FIELD_ROUGHNESS,
+} from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
   it('packs an input into the 16-float vec4-aligned AdjIn record', () => {
@@ -53,5 +59,20 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_SHADING_FD_WGSL).toContain('gradFd:  array<atomic<i32>>');     // FD accumulator
     expect(ADJOINT_SHADING_FD_WGSL).toContain('let dLoss_dR = 2.0 * (rendered - s.tgt)'); // ∂loss/∂rendered
     expect(ADJOINT_SHADING_FD_WGSL).not.toContain('target:'); // 'target' is a reserved WGSL keyword
+  });
+
+  it('engine adjoint PASS bundles the real partials + re-trace + faceforward + scatter', () => {
+    // GPU-validated end-to-end via wsl-gpu v24-inverse-fit --method=path-replay
+    // (sign-matches the FD gradient + drives a converging fit, lavapipe 2026-06-03).
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL); // byte-identical partials
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn generatePrimaryRay');           // re-trace
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn closestHit');                   // brute-force intersect
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn anyHit');                        // shadow rays
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0)'); // faceforward
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x)'); // per-param scatter
+    // The UBO is mat4 + vec4 + 2×uvec4 = 112 bytes; the field codes are stable.
+    expect(ADJOINT_PARAMS_UBO_BYTES).toBe(112);
+    expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
+    expect(ADJOINT_FIELD_ROUGHNESS).toBe(1);
   });
 });
