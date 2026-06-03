@@ -9,14 +9,20 @@
  *   5. Adam-step the tiny flat parameter vector,
  *   6. push the updated params into the scene via updatePrimitive/updateEmitter.
  *
- * Phase 1 (path-replay analytic adjoint) plugs into the SAME step skeleton: the
- * loss gradient `dLoss/dRendered` is fed through the analytic BSDF partials
- * (`../wgsl/pathTrace/pathTraceAdjoint.wgsl.ts`, oracle in `brdfAdjoint.ts`)
- * instead of re-rendering per parameter. The analytic partials are validated
- * (brdfAdjoint.test.ts, the ≤1e-4 FD gate). The GPU adjoint dispatch is gated
- * behind `method: 'path-replay'`; until a real GPU validates the replay, a
- * pt-webgpu session resolves the effective method to 'finite-difference' and
- * reports it via `session.method` (no silent wrong-gradient path).
+ * Phase 1 (path-replay analytic adjoint) plugs into the SAME step skeleton via
+ * the OPTIONAL `InverseEngineHooks.computeAdjointGradient`: instead of the
+ * N-render FD probe loop, the per-pixel loss gradient `dLoss/dRendered` is handed
+ * to the engine's adjoint pass, which re-traces the frozen-seed path + NEE and
+ * feeds the analytic BSDF partials (`../wgsl/pathTrace/pathTraceAdjoint.wgsl.ts`,
+ * oracle in `brdfAdjoint.ts`). The two adjoint stages are GPU-validated on
+ * lavapipe (V24): the partials match the FD oracle to f32 precision, and the
+ * chain rule + fixed-point accumulation match an on-device finite-difference.
+ * The session requests 'path-replay' only when the engine provides the hook AND
+ * every parameter is in the Phase-1 differentiable set (material baseColor /
+ * roughness); any shortfall (no hook, an emitter/emissive param, etc.) resolves
+ * the effective method to 'finite-difference', reported via `session.method` —
+ * no silent wrong-gradient path. An engine providing the hook vouches that its
+ * re-trace dispatch is hardware-validated.
  *
  * The host owns the cadence: each `step()` is one optimizer iteration. The
  * session never schedules itself.
@@ -69,7 +75,50 @@ export interface InverseEngineHooks {
   patchMaterial(primitiveId: string, patch: Partial<MaterialSpec>): void;
   /** Apply an emitter patch (mirrors Engine.updateEmitter). */
   patchEmitter(emitterId: string, patch: Partial<SceneEmitter>): void;
+  /**
+   * OPTIONAL Phase-1 path-replay adjoint. When present, the engine dispatches a
+   * single-bounce adjoint compute pass over its scene buffers — re-tracing the
+   * frozen-seed primary path + NEE, evaluating the analytic BSDF partials
+   * (`pathTraceAdjoint.wgsl`, GPU-validated vs the FD oracle to f32 precision),
+   * and accumulating `∂loss/∂θ` (the chain rule GPU-validated vs on-device FD) —
+   * and returns the flat gradient. Replaces the N-render FD probe loop with one
+   * baseline render + one adjoint pass. The session only requests this when the
+   * hook exists AND every parameter is adjoint-eligible (material baseColor /
+   * roughness — the Phase-1 differentiable set); otherwise it reports + uses
+   * 'finite-difference' (no silently-wrong gradient). An engine that provides
+   * this hook is vouching that its adjoint pass is hardware-validated.
+   */
+  computeAdjointGradient?(args: AdjointGradientRequest): Promise<Float32Array>;
 }
+
+/** One optimized parameter, located for the engine's adjoint scatter. */
+export interface AdjointParamSlotDesc {
+  readonly domain: 'materials' | 'emitters';
+  readonly id: string;
+  readonly field: string;
+  /** Offset of this slot in the returned flat gradient. */
+  readonly offset: number;
+  /** Component count (3 for rgb, 1 for scalar). */
+  readonly length: number;
+}
+
+/** Inputs to the engine's path-replay adjoint pass. */
+export interface AdjointGradientRequest {
+  /** Per-pixel ∂loss/∂rendered at the baseline params (interleaved, `channels`-wide). */
+  readonly dLoss_dRendered: Float32Array;
+  readonly channels: 3 | 4;
+  readonly width: number;
+  readonly height: number;
+  /** Frozen-seed sample count to replay (matches the baseline render). */
+  readonly samples: number;
+  /** The parameters to differentiate + where each lands in the flat gradient. */
+  readonly params: readonly AdjointParamSlotDesc[];
+  /** Total length of the flat gradient to return. */
+  readonly gradientLength: number;
+}
+
+/** Phase-1 differentiable material fields (the BSDF adjoint partials cover these). */
+const ADJOINT_ELIGIBLE_FIELDS = new Set(['baseColor', 'roughness']);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -117,13 +166,7 @@ export class PtWebgpuInverseSession implements InverseSession {
     this.#lossKind = loss === 'l1' ? 'l1' : 'l2';
     this.#lossFn = loss === 'l1' ? l1Loss : l2Loss;
 
-    // pt-webgpu Phase-1 GPU adjoint dispatch is gated until real-GPU validation
-    // (the analytic partials are unit-validated to ≤1e-4, but the GPU replay
-    // dispatch is not yet A/B'd on hardware — V24). A requested 'path-replay'
-    // resolves to the finite-difference loop and is reported via `method`, so
-    // the host never gets a silently-wrong gradient. This is an honest
-    // capability degrade, not a no-op.
-    this.#method = 'finite-difference';
+    const requestedMethod: InverseGradientMethod = opts.method ?? 'finite-difference';
 
     this.#samplesPerStep = Math.max(1, Math.floor(opts.samplesPerStep ?? 8));
     const optimizerCfg = opts.optimizer ?? {};
@@ -142,6 +185,22 @@ export class PtWebgpuInverseSession implements InverseSession {
       offset += length;
     }
     this.#flat = new Float32Array(offset);
+
+    // Resolve the EFFECTIVE gradient method from the request + backend capability
+    // (InverseSessionOptions.method contract). 'path-replay' requires the engine
+    // to provide the adjoint hook AND every parameter to be in the Phase-1
+    // differentiable set (material baseColor/roughness — the BSDF partials). Any
+    // shortfall degrades to finite-difference and is reported via `method`, so
+    // the host never receives a silently-wrong gradient. The two adjoint stages
+    // the hook relies on (partials; chain rule + accumulation) are GPU-validated
+    // on lavapipe (V24); an engine exposing the hook vouches for the re-trace.
+    const allEligible = this.#slots.every(
+      (s) => s.target.domain === 'materials' && ADJOINT_ELIGIBLE_FIELDS.has(s.target.field),
+    );
+    this.#method =
+      requestedMethod === 'path-replay' && hooks.computeAdjointGradient != null && allEligible
+        ? 'path-replay'
+        : 'finite-difference';
 
     // Seed the flat vector from the parameter `initial` override or the current
     // scene value.
@@ -191,25 +250,51 @@ export class PtWebgpuInverseSession implements InverseSession {
     const base = await this.#hooks.renderAndReadback(width, height, this.#samplesPerStep);
     const { loss, dLoss_dRendered } = this.#lossFn(base.rgb, base.channels, this.#target);
 
-    // 2. Gradient. Phase 0: forward-difference each scalar component by
-    //    re-rendering with the component perturbed by +ε.
-    //    dLoss/dθ_i ≈ (loss(θ + ε·e_i) − loss(θ)) / ε.
-    //    `dLoss_dRendered` (the per-pixel loss gradient) is what the Phase-1
-    //    path-replay adjoint consumes directly; the FD path needs only the
-    //    scalar loss delta, so the probe loop uses the allocation-free
-    //    `lossValue`. dLoss_dRendered is computed once at baseline so the
-    //    Phase-1 wiring can read it without changing this skeleton.
-    void dLoss_dRendered;
-    const grad = new Float32Array(this.#flat.length);
-    const eps = this.#fdEpsilon;
-    for (let i = 0; i < this.#flat.length; i++) {
-      const original = this.#flat[i]!;
-      this.#flat[i] = original + eps;
-      this.#applyFlatToScene();
-      const probe = await this.#hooks.renderAndReadback(width, height, this.#samplesPerStep);
-      const probeLoss = lossValue(probe.rgb, probe.channels, this.#target, this.#lossKind);
-      grad[i] = (probeLoss - loss) / eps;
-      this.#flat[i] = original; // restore before the next probe
+    // 2. Gradient.
+    let grad: Float32Array;
+    if (this.#method === 'path-replay') {
+      // Phase 1: ONE adjoint pass replaces the N-render FD probe loop. The engine
+      // re-traces the frozen-seed primary path + NEE and accumulates ∂loss/∂θ from
+      // the per-pixel `dLoss_dRendered` through the GPU-validated BSDF partials.
+      // (Method resolution already guaranteed the hook + adjoint-eligibility.)
+      grad = await this.#hooks.computeAdjointGradient!({
+        dLoss_dRendered,
+        channels: base.channels,
+        width,
+        height,
+        samples: this.#samplesPerStep,
+        params: this.#slots.map((s) => ({
+          domain: s.target.domain,
+          id: s.target.id,
+          field: s.target.field,
+          offset: s.offset,
+          length: s.length,
+        })),
+        gradientLength: this.#flat.length,
+      });
+      if (grad.length !== this.#flat.length) {
+        throw new Error(
+          `InverseSession.step: adjoint gradient length ${grad.length} ≠ ` +
+            `parameter length ${this.#flat.length}.`,
+        );
+      }
+    } else {
+      // Phase 0: forward-difference each scalar component by re-rendering with the
+      // component perturbed by +ε. dLoss/dθ_i ≈ (loss(θ + ε·e_i) − loss(θ)) / ε.
+      // The FD path needs only the scalar loss delta, so it uses the
+      // allocation-free `lossValue` (dLoss_dRendered is the Phase-1 input).
+      void dLoss_dRendered;
+      grad = new Float32Array(this.#flat.length);
+      const eps = this.#fdEpsilon;
+      for (let i = 0; i < this.#flat.length; i++) {
+        const original = this.#flat[i]!;
+        this.#flat[i] = original + eps;
+        this.#applyFlatToScene();
+        const probe = await this.#hooks.renderAndReadback(width, height, this.#samplesPerStep);
+        const probeLoss = lossValue(probe.rgb, probe.channels, this.#target, this.#lossKind);
+        grad[i] = (probeLoss - loss) / eps;
+        this.#flat[i] = original; // restore before the next probe
+      }
     }
 
     // 3. Adam step + clamp, then push the updated params back to the scene.

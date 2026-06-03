@@ -12,6 +12,7 @@ import type { Scene, InverseSessionOptions, MaterialSpec, SceneEmitter } from '@
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
+  type AdjointGradientRequest,
 } from '../inverse/inverseSession.js';
 import { l2Loss, l1Loss, lossValue, Adam, parseParamPath, paramLength } from '../inverse/optimizer.js';
 
@@ -113,7 +114,7 @@ describe('InverseSession — contract shape', () => {
     };
     const session = new PtWebgpuInverseSession(fake.hooks, opts);
     expect(session.parameterCount).toBe(1);
-    // pt-webgpu resolves to finite-difference until the GPU adjoint is GPU-A/B'd.
+    // No method requested + no adjoint hook ⇒ default finite-difference.
     expect(session.method).toBe('finite-difference');
     expect(session.currentValues()).toHaveLength(1);
     expect(session.currentValues()[0]).toHaveLength(3);
@@ -314,6 +315,73 @@ describe('InverseSession — dispose is idempotent + blocks further steps', () =
     session.dispose();
     expect(() => session.dispose()).not.toThrow();
     await expect(session.step()).rejects.toThrow(/disposed/);
+  });
+});
+
+describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
+  const eligibleOpts = (): InverseSessionOptions => ({
+    target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+    parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+    method: 'path-replay',
+    samplesPerStep: 1,
+  });
+
+  it('resolves to path-replay when the engine provides the hook + every param is eligible', () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, eligibleOpts());
+    expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
+  it('degrades to finite-difference when the engine provides NO adjoint hook', () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession(fake.hooks, eligibleOpts());
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
+  it('degrades to finite-difference for an ineligible (emitter) param even with the hook', () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference'); // emitter intensity isn't a Phase-1 BSDF param
+    session.dispose();
+  });
+
+  it('step() calls the hook with dLoss_dRendered + uses its gradient (one render, no FD probes)', async () => {
+    const fake = makeFakeEngine();
+    let captured: AdjointGradientRequest | null = null;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.5, -0.25, 0.125]);
+      },
+    };
+    const session = new PtWebgpuInverseSession(hooks, eligibleOpts());
+    const before = fake.renderCount;
+    const result = await session.step();
+    // Exactly ONE render (the baseline) — the N-render FD probe loop did NOT run.
+    expect(fake.renderCount - before).toBe(1);
+    expect(captured).not.toBeNull();
+    expect(captured!.dLoss_dRendered.length).toBe(2 * 2 * 3); // per-pixel loss gradient
+    expect(captured!.gradientLength).toBe(3);
+    expect(captured!.params[0]).toMatchObject({ domain: 'materials', id: 'panel', field: 'baseColor', offset: 0, length: 3 });
+    expect(result.gradient[0]).toEqual([0.5, -0.25, 0.125]); // used the hook's gradient verbatim (pre-Adam)
+    session.dispose();
+  });
+
+  it('throws if the adjoint hook returns a wrong-length gradient', async () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, eligibleOpts()); // expects length 3
+    await expect(session.step()).rejects.toThrow(/gradient length/);
+    session.dispose();
   });
 });
 
