@@ -49,6 +49,16 @@ export type {
   Viewport,
 } from '@vitrum/core';
 
+// Progressive-refinement handoff: drive a real-time engine while the camera
+// moves, hand off to a converged path tracer when it settles. Pure host-side
+// coordination over two engines sharing one scene (P8 cross-engine frontier).
+export {
+  ProgressiveHandoffCoordinator,
+  type ProgressiveHandoffOptions,
+  type HandoffPhase,
+  type HandoffFrameResult,
+} from './progressiveHandoff.js';
+
 // Backend-specific lighting vocabulary re-export. `Engine.updateLighting` is
 // contractually opaque in @vitrum/core (Readonly<Record<string, unknown>>),
 // so hosts that drive HybridEngine's per-frame time-of-day scrub can import
