@@ -18,9 +18,10 @@
 
 import * as THREE from 'three';
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { asMat4, type Mat4, type Vec3, type Scene } from '@vitrum/core';
+import { asMat4, type Mat4, type Vec3, type Scene, type AnimationClip } from '@vitrum/core';
 
 import { sceneFromThreeJS } from './index.js';
+import { convertAnimations } from './animationImport.js';
 
 export interface LoadedGltf {
   /** vitrum Scene converted from the glTF's scene graph. */
@@ -28,6 +29,10 @@ export interface LoadedGltf {
   /** First embedded camera, if any. View + projection matrices are computed
    *  from the world-space transform of the camera node. */
   readonly camera?: GltfCamera;
+  /** Keyframe animation clips from the glTF (absent if none). The host
+   *  evaluates a clip at time t and pushes the resulting transforms / morph
+   *  weights through `updatePrimitive`; no backend consumes clips directly. */
+  readonly animations?: ReadonlyArray<AnimationClip>;
 }
 
 export interface GltfCamera {
@@ -66,7 +71,12 @@ export async function loadGltfScene(
   const vitrumScene = sceneFromThreeJS(threeScene);
 
   const camera = extractFirstCamera(gltf);
-  return camera ? { scene: vitrumScene, camera } : { scene: vitrumScene };
+  const animations = convertAnimations(gltf.animations ?? [], threeScene);
+  return {
+    scene: vitrumScene,
+    ...(camera ? { camera } : {}),
+    ...(animations.length > 0 ? { animations } : {}),
+  };
 }
 
 // ────────────────────────────────────────────────────────────────────────────

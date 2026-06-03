@@ -32,6 +32,7 @@ export {
 } from './vitrumSceneToThree.js';
 export { combineSkinMatrices, solveSkin, mat3InverseTranspose } from '@vitrum/core';
 export { loadGltfScene, type LoadedGltf, type GltfCamera, type LoadGltfSceneOptions } from './gltfLoader.js';
+export { convertAnimations } from './animationImport.js';
 export { VITRUM_USER_DATA_KEYS } from './userDataKeys.js';
 export {
   extractThreePbrScalars,
