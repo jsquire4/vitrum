@@ -121,8 +121,31 @@ export interface Engine {
   /** Resize persistent backend render targets. Backends that honour
    *  `FrameInput.viewport` per frame may omit this. */
   setSize?(width: number, height: number): void;
-  /** Backend-specific runtime lighting update path for engines that do not map
-   *  lighting state 1:1 onto `SceneEnvironment`. */
+  /**
+   * Backend-specific runtime lighting update path for engines that do not map
+   * lighting state 1:1 onto `SceneEnvironment`.
+   *
+   * **Intentional design:** the parameter is kept as `Record<string, unknown>`
+   * rather than a typed struct so each backend can accept its own lighting
+   * vocabulary without the core contract having to enumerate it. This is the
+   * deliberate backend-specific seam — parallel to the `extensions` bag on
+   * `EngineOptions`. Backends that consume this method validate and warn on
+   * unrecognised keys at runtime rather than at the type layer.
+   *
+   * **HybridEngine (`@vitrum/walkaround-hybrid`) known keys** (all optional;
+   * omitted fields are left unchanged — passing `{}` is a safe no-op):
+   *  - `primaryLightDir` (`[number, number, number]`) — Primary directional
+   *    light direction in world space (normalised). Triggers a DDGI probe-cache
+   *    invalidation and temporal-accumulator reset.
+   *  - `primaryLightIntensity` (`number`) — Linear intensity scalar for the
+   *    primary directional light. Also drives the DDGI sun-intensity multiplier.
+   *  - `skyTint` (`[number, number, number]`) — Diffuse sky-dome RGB tint.
+   *  - `skyIrradiance` (`number`) — Sky-dome irradiance scalar paired with
+   *    `skyTint`.
+   *
+   * Backends that honour `updateEnvironment` for env scrubs (PT-style) may
+   * omit this method entirely. Hosts MUST `typeof`-check before calling.
+   */
   updateLighting?(opts: Readonly<Record<string, unknown>>): void;
 
   // ── Frame-level rendering ───────────────────────────────────────────────

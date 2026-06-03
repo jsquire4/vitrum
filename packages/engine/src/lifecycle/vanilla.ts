@@ -13,7 +13,7 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import * as THREE from 'three';
+import type * as THREE from 'three';
 import type { Engine, Scene, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineOptions } from '../createEngine.js';
@@ -110,13 +110,29 @@ export function toPhysicalViewport(
   };
 }
 
+/** Structural camera contract for the RAF loop.
+ *
+ * The loop only reads `updateMatrixWorld()`, `matrixWorldInverse.elements`,
+ * `projectionMatrix.elements`, and `position.{x,y,z}` — a real
+ * `THREE.PerspectiveCamera` / `THREE.OrthographicCamera` satisfies this
+ * structurally, so existing callers are unaffected. Defined locally so this
+ * non-React entrypoint does not carry a THREE value-import. */
+export interface CameraLike {
+  updateMatrixWorld(): void;
+  readonly matrixWorldInverse: { readonly elements: ArrayLike<number> };
+  readonly projectionMatrix: { readonly elements: ArrayLike<number> };
+  readonly position: { readonly x: number; readonly y: number; readonly z: number };
+}
+
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
   /** Scene description. Either a vitrum Scene or a THREE.Scene. */
   readonly scene: Scene | THREE.Scene;
-  /** THREE camera the engine reads viewMatrix / projMatrix / position from
-   *  every frame. The host mutates this camera (orbit controls, scripted
-   *  animation) and the helper pushes the latest matrices into renderFrame. */
-  readonly camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
+  /** Camera the engine reads viewMatrix / projMatrix / position from every
+   *  frame. The host mutates this camera (orbit controls, scripted animation)
+   *  and the helper pushes the latest matrices into renderFrame. A real
+   *  `THREE.PerspectiveCamera` or `THREE.OrthographicCamera` satisfies
+   *  {@link CameraLike} structurally. */
+  readonly camera: CameraLike;
   /** Per-frame quality dials. Honoured if non-null; otherwise the engine's
    *  defaults apply.
    *
@@ -180,7 +196,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   let viewportW = Math.max(1, Math.floor(opts.canvas.width));
   let viewportH = Math.max(1, Math.floor(opts.canvas.height));
   let viewportDpr = (typeof window !== 'undefined' ? window.devicePixelRatio : null) ?? 1;
-  const engineSetSize = engine.setSize;
+  // A4 — Only backends with `presentationMode === 'swapchain-required'`
+  // (walkaround-hybrid / WebGPU) need explicit `setSize()` on resize;
+  // offscreen-texture backends (pt-webgl, pt-webgpu) honour
+  // `FrameInput.viewport` per-frame and declare `setSize` absent.
+  const needsExplicitSetSize =
+    engine.capabilities.presentationMode === 'swapchain-required';
   let resizeObserver: ResizeObserver | undefined;
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver((entries) => {
@@ -191,8 +212,8 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         viewportW = viewport.width;
         viewportH = viewport.height;
       }
-      if (typeof engineSetSize === 'function') {
-        try { engineSetSize(viewportW, viewportH); } catch {}
+      if (needsExplicitSetSize) {
+        try { engine.setSize?.(viewportW, viewportH); } catch {}
       }
     });
     resizeObserver.observe(opts.canvas);

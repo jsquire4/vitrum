@@ -107,8 +107,12 @@ export interface EngineOptions {
    *  - `mneeMaxChainLength` (number, default 3) — Maximum specular vertices
    *    in an MNEE chain. Active when `causticStrategy === 'manifold-nee'`.
    *
-   * The signature is open-ended so new strategies (photon-map params, etc.)
-   * can add keys without churning the core contract.
+   * The `[key: string]: unknown` index signature is the **intentional extension
+   * point** for future caustic strategies (e.g. photon-map radius, PPG target
+   * depth). New strategies add their tuning keys here without touching the core
+   * contract — the same seam pattern as the top-level {@link extensions} bag.
+   * It is NOT a typo-absorbing oversight; backends validate and warn on unknown
+   * keys at runtime rather than rejecting them at the type layer.
    */
   readonly causticOptions?: Readonly<{
     mneeMaxIterations?: number;

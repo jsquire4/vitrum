@@ -40,7 +40,7 @@ interface ResolvedAdapterFacts {
 }
 
 /** Pull the numeric limit bag off a `GPUSupportedLimits`-like object exactly
- *  the way `probeWebGPU` does (`wgpuSupport.ts`) so the device/adapter inputs
+ *  the way `probeWebGPU` does (`gpuDetection.ts`) so the device/adapter inputs
  *  and the no-arg navigator probe produce byte-identical limit bags. */
 function extractLimits(limitsObj: unknown): Record<string, number> {
   const out: Record<string, number> = {};

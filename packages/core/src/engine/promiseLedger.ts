@@ -1,7 +1,7 @@
 import type { AnalyticShape, ScenePrimitive } from '../scene/primitives.js';
 import type { SceneEmitter } from '../scene/emitters.js';
 import type { SceneEnvironment } from '../scene/environment.js';
-import type { FramePresentationMode, IncrementalPatchSupport } from './capabilities.js';
+import type { EngineCapabilities, FramePresentationMode, IncrementalPatchSupport } from './capabilities.js';
 
 export type BackendId = 'walkaround-hybrid' | 'pt-webgl' | 'pt-webgpu';
 
@@ -42,6 +42,41 @@ export interface BackendPromiseRecord {
   readonly methodPromises: BackendMethodPromises;
   readonly frameInputPromises: FrameInputPromises;
 }
+
+// ── Compile-time drift guard ─────────────────────────────────────────────────
+//
+// `BackendPromiseRecord` mirrors a subset of `EngineCapabilities`. The
+// collection fields (supportedPrimitiveKinds / supportedEmitterKinds /
+// supportedEnvironmentKinds / supportedAnalyticShapes) intentionally diverge in
+// container type: the ledger uses readonly arrays (serialisable, easy to assert
+// in tests) while `EngineCapabilities` uses `ReadonlySet` (O(1) has-check).
+// That divergence is structural-by-design and cannot be bridged with a blanket
+// `satisfies Partial<EngineCapabilities>`.
+//
+// Instead we assert that the SCALAR / STRUCT fields that mirror cap keys are
+// structurally compatible. Uses the `AssertExtends<TExpected, TActual>` idiom:
+// the generic `U extends T` constraint fires a real TS error (not a silent
+// `never`) if `BackendPromiseRecord` drops or renames a guarded key.
+//
+// `_LedgerCapabilitySlice` picks exactly the cap keys whose types ARE compatible
+// across both shapes. When a new scalar/struct cap is added to `EngineCapabilities`
+// and it belongs in the ledger, add it here AND to `BackendPromiseRecord`.
+type _LedgerCapabilitySlice = Pick<
+  EngineCapabilities,
+  | 'supportsIncrementalScene'
+  | 'incrementalPatchSupport'
+  | 'supportsAddRemovePrimitive'
+  | 'supportsAuxBuffers'
+  | 'accumulates'
+  | 'presentationMode'
+>;
+// `U extends T` in the type parameter position emits TS2344 if U is not
+// assignable to T — unlike `declare const x: never` which is always valid.
+type _AssertExtends<T, U extends T> = U;
+// This line errors if BackendPromiseRecord drops or incompatibly changes any
+// of the capability keys listed in _LedgerCapabilitySlice.
+type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendPromiseRecord>;
+// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Every incremental-patch facet supported. Shared frozen value referenced by

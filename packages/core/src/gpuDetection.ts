@@ -1,17 +1,107 @@
 /**
- * gpuDetection — fail-fast hardware-GPU detection for the hybrid stage.
- * Adapts the shared `wgpuSupport.probeWebGPU()` Tier-2 result into
- * the `GpuDetection` shape that `probeUpdatePass` and the e2e chroma
- * spec gate consume on `window.__WG__`.
+ * gpuDetection — runtime GPU probe + detection for the hybrid stage.
+ * Owns `probeWebGPU()` (the Tier-2 adapter probe, including the retry
+ * loop for Chromium builds that defer `adapter.info` population) and
+ * `detectGpu()` (the memoized `__WG__`-publishing wrapper consumed by
+ * `probeUpdatePass` and the e2e chroma spec gate).
  *
- * The shared `probeWebGPU()` is canonical; this wrapper exists so the
- * `__WG__` global shape (`isWebGPU` + `adapterKind` + lower-cased
- * `adapterVendor` / `adapterArchitecture`) keeps working for the existing
- * chroma precondition gate. New callers should consume `probeWebGPU()`
- * directly via the lib.
+ * Pure classifier helpers (`WgpuAdapterKind`, `classifyAdapter`,
+ * `isSwiftShaderAdapter`) live in `wgpuSupport.ts` so this file stays
+ * cleanly separated: runtime/async logic here, types + pure functions there.
  */
 
-import { probeWebGPU, type WgpuAdapterKind } from './wgpuSupport.js';
+import {
+  classifyAdapter,
+  type WgpuAdapterKind,
+  type WgpuProbeResult,
+} from './wgpuSupport.js';
+
+/**
+ * Read `adapter.info` with up to N retries (8ms each), tolerating Chromium
+ * builds that defer info population. Falls back to the deprecated
+ * `requestAdapterInfo()` path on the last attempt for older Chromiums where
+ * `adapter.info` is missing entirely.
+ */
+async function readAdapterInfo(
+  adapter: GPUAdapter,
+  retries = 4,
+): Promise<{ vendor: string; architecture: string }> {
+  for (let i = 0; i <= retries; i++) {
+    const info = adapter.info;
+    const vendor = ((info?.vendor ?? '')).toString();
+    const architecture = ((info?.architecture ?? '')).toString();
+    if (vendor.length > 0 || architecture.length > 0) {
+      return { vendor, architecture };
+    }
+    if (i === retries) break;
+    await new Promise<void>((r) => setTimeout(r, 8));
+  }
+  // Last-resort fallback: `requestAdapterInfo()` (deprecated; may exist on
+  // older Chromiums where the synchronous `.info` getter was missing).
+  const legacyAdapter = adapter as GPUAdapter & {
+    requestAdapterInfo?: () => Promise<GPUAdapterInfo>;
+  };
+  if (typeof legacyAdapter.requestAdapterInfo === 'function') {
+    try {
+      const info = await legacyAdapter.requestAdapterInfo();
+      return {
+        vendor: (info?.vendor ?? '').toString(),
+        architecture: (info?.architecture ?? '').toString(),
+      };
+    } catch {
+      // fall through
+    }
+  }
+  return { vendor: '', architecture: '' };
+}
+
+/**
+ * Async probe — requests a high-performance adapter and returns limits +
+ * features for the spike validation (§14.1) and the 0.75× resolution
+ * fallback decision (§11.3).
+ *
+ * Returns `{ supported: false }` on any failure (no adapter, API absent, etc.)
+ * so callers don't need try/catch.
+ */
+export async function probeWebGPU(): Promise<WgpuProbeResult> {
+  if (typeof navigator === 'undefined' || !('gpu' in navigator) || !navigator.gpu) {
+    return { supported: false };
+  }
+
+  try {
+    const adapter = await navigator.gpu.requestAdapter({
+      powerPreference: 'high-performance',
+    });
+    if (!adapter) return { supported: false };
+
+    const limits: Record<string, number> = {};
+    const limitsRecord = adapter.limits as unknown as Record<string, unknown>;
+    for (const key of Object.keys(limitsRecord)) {
+      const val = limitsRecord[key];
+      if (typeof val === 'number') limits[key] = val;
+    }
+
+    // Read adapter info with retry — some Chromium builds populate
+    // `adapter.info` asynchronously on first read (empty strings until
+    // a follow-up frame). The retry handles that race; falsely classifying
+    // empty info as software was the bug fixed in an earlier revision.
+    const { vendor, architecture } = await readAdapterInfo(adapter);
+    const adapterKind = classifyAdapter({ vendor, architecture });
+
+    return {
+      supported: true,
+      adapterKind,
+      // exactOptionalPropertyTypes: spread absent-when-empty to avoid
+      // assigning `undefined` to optional string fields explicitly.
+      ...(vendor ? { vendor } : {}),
+      ...(architecture ? { architecture } : {}),
+      features: [...adapter.features].map(String),
+      limits,
+    };
+  } catch {
+    return { supported: false };
+  }
+}
 
 /**
  * GpuDetection — the canonical `__WG__` shape consumed by every walkaround

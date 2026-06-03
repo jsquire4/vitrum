@@ -46,14 +46,30 @@ import {
   DEFAULT_SKY_IRRADIANCE,
   DEFAULT_SKY_TINT,
   deriveScaleDefaults,
-  mergeWalkaroundTlasExtension,
   pickBackend,
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngineScale.js';
 
 export type { EnginePreference, ScaleDefaults };
-export { pickBackend, deriveScaleDefaults, mergeWalkaroundTlasExtension };
+export { pickBackend, deriveScaleDefaults };
+
+/** When scene layout needs TLAS, default walkaround `bvhMode` unless host set one. */
+export function mergeWalkaroundTlasExtension(
+  advanced: Partial<HybridEngineOptions> | undefined,
+  needsTlas: boolean,
+): Partial<HybridEngineOptions> | undefined {
+  if (!needsTlas) return advanced;
+  const wh = advanced?.extensions?.['walkaround-hybrid'];
+  if (wh?.bvhMode != null) return advanced;
+  return {
+    ...advanced,
+    extensions: {
+      ...(advanced?.extensions ?? {}),
+      'walkaround-hybrid': { ...wh, bvhMode: 'tlas' },
+    },
+  };
+}
 
 // Re-exported for unit-test access (tests import it from this module's path).
 // @internal — not part of the public `@vitrum/engine` API surface.
@@ -86,7 +102,7 @@ export interface CreateEngineOptions {
 
   /** Backend-specific overrides. Merged on top of the createEngine()-
    *  derived defaults; user-supplied keys win. Most users leave empty. */
-  readonly advanced?: Partial<HybridEngineOptions> | Partial<PTEngineWebGL2Options>;
+  readonly advanced?: Partial<HybridEngineOptions> | Partial<PTEngineWebGL2Options> | Partial<PTEngineWebGPUOptions>;
 
   /** Debug overlay opt-in. Forwarded to backend as `debug: true`. */
   readonly debug?: boolean;
@@ -288,9 +304,10 @@ async function constructPathTracerWebGPU(
     requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter),
   });
 
+  const advancedWebGPU = opts.advanced as Partial<PTEngineWebGPUOptions> | undefined;
   const merged: PTEngineWebGPUOptions = {
     device,
-    ...(opts.advanced as Partial<PTEngineWebGPUOptions> | undefined),
+    ...advancedWebGPU,
   };
 
   const engine = await createPTEngine_WebGPU(merged);
@@ -310,9 +327,10 @@ async function constructPathTracer(
 ): Promise<Engine> {
   const renderer = await createWebGL2RendererForCanvas(opts.canvas);
 
+  const advancedWebGL2 = opts.advanced as Partial<PTEngineWebGL2Options> | undefined;
   const merged: PTEngineWebGL2Options = {
     device: renderer,
-    ...(opts.advanced as Partial<PTEngineWebGL2Options> | undefined),
+    ...advancedWebGL2,
   };
 
   const engine = await createPTEngine_WebGL2(merged);
