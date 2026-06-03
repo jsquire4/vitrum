@@ -374,8 +374,6 @@ export interface PipelineFrameInputs {
    *  the same matrix as viewMatrix on the first frame to avoid a one-frame
    *  ghost from uninitialized previous-frame state. */
   prevViewMatrix: Float32Array;
-  /** Previous-frame projection matrix; same first-frame note as prevViewMatrix. */
-  prevProjMatrix: Float32Array;
   /** World-space camera position [x, y, z]. */
   cameraPos: [number, number, number];
   /** Render-target dimensions in pixels. Used by all compute kernels for

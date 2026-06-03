@@ -516,7 +516,6 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     viewMatrix: new Float32Array(input.viewMatrix),
     projMatrix: new Float32Array(input.projMatrix),
     prevViewMatrix: new Float32Array(input.prevViewMatrix ?? input.viewMatrix),
-    prevProjMatrix: new Float32Array(input.prevProjMatrix ?? input.projMatrix),
     cameraPos: input.cameraPosition as [number, number, number],
     screenWidth: internal.width,
     screenHeight: internal.height,
