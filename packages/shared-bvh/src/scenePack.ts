@@ -40,6 +40,10 @@ export interface ScenePackOptions {
 export interface ScenePackResult {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
+  /** Per-vertex UVs, vec4f-strided (.xy = uv0, .zw = uv1); same vertex order /
+   *  count as {@link positions}. Always present (the packer emits it even for
+   *  UV-less geometry, all-zero). Consumers that don't texture may ignore it. */
+  readonly uvs: Float32Array;
   readonly indices: Uint32Array;
   readonly triMaterialIds: Uint32Array;
   readonly bvhNodes: Float32Array;
@@ -241,6 +245,11 @@ function isMeshLike(primitive: ScenePrimitive): primitive is Extract<
 interface PackedPrimitiveSlice {
   readonly localPositions: Float32Array;
   readonly localNormals: Float32Array;
+  /** Per-vertex UVs, vec4f-strided: .xy = uv0, .zw = uv1 (0 when a channel is
+   *  absent). Same 1:1 vertex order as localPositions/localNormals (the vertex
+   *  expansion below does not weld or reorder; buildArrayBvh permutes only the
+   *  triangle index list), so uvs[i] follows vertex i exactly. */
+  readonly localUvs: Float32Array;
   readonly indexWords: readonly number[];
   readonly triMaterialIds: readonly number[];
   readonly bvhNodeWords: readonly number[];
@@ -284,6 +293,13 @@ function packOneMeshLikePrimitive(
 
   const localPositions = new Float32Array(vertexCount * 4);
   const localNormals = new Float32Array(vertexCount * 4);
+  // Per-vertex UVs, vec4f-strided: .xy = uv0 (base channel), .zw = uv1 (second
+  // channel; TextureRef.texCoord 1). Absent channels stay 0. Expanded 1:1 with
+  // the vertex loop below — the renderer interpolates these by barycentrics at
+  // the hit to drive baseColor/normal/etc. texture sampling.
+  const localUvs = new Float32Array(vertexCount * 4);
+  const baseUvs = primitive.uvs;
+  const baseUv1 = primitive.uv1;
   for (let i = 0; i < vertexCount; i += 1) {
     localPositions[i * 4] = basePositions[i * 3] ?? 0;
     localPositions[i * 4 + 1] = basePositions[i * 3 + 1] ?? 0;
@@ -293,6 +309,14 @@ function packOneMeshLikePrimitive(
     localNormals[i * 4 + 1] = primitive.normals[i * 3 + 1] ?? 1;
     localNormals[i * 4 + 2] = primitive.normals[i * 3 + 2] ?? 0;
     localNormals[i * 4 + 3] = 0;
+    if (baseUvs != null) {
+      localUvs[i * 4] = baseUvs[i * 2] ?? 0;
+      localUvs[i * 4 + 1] = baseUvs[i * 2 + 1] ?? 0;
+    }
+    if (baseUv1 != null) {
+      localUvs[i * 4 + 2] = baseUv1[i * 2] ?? 0;
+      localUvs[i * 4 + 3] = baseUv1[i * 2 + 1] ?? 0;
+    }
   }
 
   const localIndices = new Uint32Array(triCount * 4);
@@ -346,6 +370,7 @@ function packOneMeshLikePrimitive(
     slice: {
       localPositions,
       localNormals,
+      localUvs,
       indexWords,
       triMaterialIds,
       bvhNodeWords,
@@ -564,6 +589,7 @@ function spliceResizedPrimitiveBlasIntoPack(
 
   const positions = new Float32Array(newTotalVerts * 4);
   const normals = new Float32Array(newTotalVerts * 4);
+  const uvs = new Float32Array(newTotalVerts * 4);
   const indices = new Uint32Array(newTotalTris * 4);
   const triMaterialIds = new Uint32Array(newTotalTris);
   const newNodeView = new Uint32Array(newTotalNodes * 8);
@@ -577,13 +603,16 @@ function spliceResizedPrimitiveBlasIntoPack(
   // Prefix [0, oldVertStart) verbatim.
   positions.set(prev.positions.subarray(0, oldVertStart * 4), 0);
   normals.set(prev.normals.subarray(0, oldVertStart * 4), 0);
+  uvs.set(prev.uvs.subarray(0, oldVertStart * 4), 0);
   // Changed primitive's new local slice at the SAME vertexStart.
   positions.set(slice.localPositions, oldVertStart * 4);
   normals.set(slice.localNormals, oldVertStart * 4);
+  uvs.set(slice.localUvs, oldVertStart * 4);
   // Suffix (downstream primitives) shifted by deltaVert*4 floats.
   if (oldVertEnd < prevTotalVerts) {
     positions.set(prev.positions.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
     normals.set(prev.normals.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
+    uvs.set(prev.uvs.subarray(oldVertEnd * 4), (oldVertEnd + deltaVert) * 4);
   }
 
   // ── Indices (vec4u-strided; .x.y.z global vertex refs, .w = 0) ────────────
@@ -661,6 +690,7 @@ function spliceResizedPrimitiveBlasIntoPack(
     pack: {
       positions,
       normals,
+      uvs,
       indices,
       triMaterialIds,
       bvhNodes,
@@ -710,6 +740,7 @@ function splicePrimitiveBlasIntoPack(
 
   const positions = new Float32Array(prev.positions);
   const normals = new Float32Array(prev.normals);
+  const uvs = new Float32Array(prev.uvs);
   const indices = new Uint32Array(prev.indices);
   const triMaterialIds = new Uint32Array(prev.triMaterialIds);
   const bvhNodes = new Float32Array(prev.bvhNodes);
@@ -717,6 +748,7 @@ function splicePrimitiveBlasIntoPack(
   const vertOff = binding.vertexStart * 4;
   positions.set(slice.localPositions, vertOff);
   normals.set(slice.localNormals, vertOff);
+  uvs.set(slice.localUvs, vertOff);
 
   const indexOff = binding.triStart * 4;
   for (let i = 0; i < slice.indexWords.length; i += 1) {
@@ -756,6 +788,7 @@ function splicePrimitiveBlasIntoPack(
     pack: {
       positions,
       normals,
+      uvs,
       indices,
       triMaterialIds,
       bvhNodes,
@@ -780,6 +813,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   const buildTlasTree = opts.tlas !== false;
   const positions: number[] = [];
   const normals: number[] = [];
+  const uvs: number[] = [];
   const indices: number[] = [];
   const triMaterialIds: number[] = [];
   const bvhNodeWords: number[] = [];
@@ -814,6 +848,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
 
     for (let i = 0; i < slice.localPositions.length; i += 1) positions.push(slice.localPositions[i] ?? 0);
     for (let i = 0; i < slice.localNormals.length; i += 1) normals.push(slice.localNormals[i] ?? 0);
+    for (let i = 0; i < slice.localUvs.length; i += 1) uvs.push(slice.localUvs[i] ?? 0);
     for (let i = 0; i + 3 < slice.indexWords.length; i += 4) {
       indices.push(
         (slice.indexWords[i] ?? 0) + vertexBase,
@@ -881,6 +916,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
 
   const packedPositions = new Float32Array(positions);
   const packedNormals = new Float32Array(normals);
+  const packedUvs = new Float32Array(uvs);
   const packedIndices = new Uint32Array(indices);
   const packedTriMaterialIds = new Uint32Array(triMaterialIds);
   const packedBvhNodes = new Float32Array(new Uint32Array(bvhNodeWords).buffer);
@@ -898,6 +934,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   return {
     positions: packedPositions,
     normals: packedNormals,
+    uvs: packedUvs,
     indices: packedIndices,
     triMaterialIds: packedTriMaterialIds,
     bvhNodes: packedBvhNodes,
@@ -1169,6 +1206,7 @@ export function rebuildTlasReuseBlas(
       // BLAS buffers reused verbatim — no per-triangle rebuild.
       positions: prev.positions,
       normals: prev.normals,
+      uvs: prev.uvs,
       indices: prev.indices,
       triMaterialIds: prev.triMaterialIds,
       bvhNodes: prev.bvhNodes,

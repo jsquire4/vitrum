@@ -104,7 +104,9 @@ export interface SkinnedMeshPrimitive {
   readonly positions: Float32Array;   // rest-pose, mesh-local
   readonly normals: Float32Array;     // rest-pose, mesh-local
   readonly uvs?: Float32Array;
+  readonly uv1?: Float32Array;         // 2nd UV channel (TextureRef.texCoord 1)
   readonly tangents?: Float32Array;
+  readonly colors?: Float32Array;      // vertex colors; RGB(A) per vertex
   readonly indices?: Uint32Array | Uint16Array;
   /** 4 bone indices per vertex (length `vertexCount * 4`). */
   readonly skinIndices: Uint32Array;

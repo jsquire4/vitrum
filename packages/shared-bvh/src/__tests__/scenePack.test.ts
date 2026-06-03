@@ -780,3 +780,48 @@ describe('invertMat4', () => {
     expect(invertMat4(singular)).toBeNull();
   });
 });
+
+describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
+  it('packs uv0 into .xy and uv1 into .zw, vec4-strided, in vertex order', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'uv-tri',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+          uv1: new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const pack = packSceneFromCore(scene, { resolveMaterialId: () => 0, tlas: false });
+    // One vec4 per vertex, same vertex count as positions (single triangle = no reorder).
+    expect(pack.uvs.length).toBe(pack.positions.length);
+    expect(pack.uvs.length).toBe(12);
+    // v0: uv0 (0,0), uv1 (0.1,0.2)
+    expect(Array.from(pack.uvs.subarray(0, 4))).toEqual([0, 0, 0.1, 0.2].map((v) => expect.closeTo(v)));
+    // v1: uv0 (1,0), uv1 (0.3,0.4)
+    expect(pack.uvs[4]).toBeCloseTo(1);
+    expect(pack.uvs[5]).toBeCloseTo(0);
+    expect(pack.uvs[6]).toBeCloseTo(0.3);
+    expect(pack.uvs[7]).toBeCloseTo(0.4);
+    // v2: uv0 (0,1), uv1 (0.5,0.6)
+    expect(pack.uvs[8]).toBeCloseTo(0);
+    expect(pack.uvs[9]).toBeCloseTo(1);
+    expect(pack.uvs[10]).toBeCloseTo(0.5);
+    expect(pack.uvs[11]).toBeCloseTo(0.6);
+  });
+
+  it('emits an all-zero uvs buffer of the right length for UV-less geometry', () => {
+    const pack = packSceneFromCore(
+      { primitives: [unitTriMesh('no-uv')], emitters: [], environment: { kind: 'none' } },
+      { resolveMaterialId: () => 0, tlas: false },
+    );
+    expect(pack.uvs.length).toBe(pack.positions.length);
+    expect(pack.uvs.every((v) => v === 0)).toBe(true);
+  });
+});

@@ -33,6 +33,7 @@ import {
 interface PackedSceneData {
   readonly positions: Float32Array; // vec4f packed
   readonly normals: Float32Array; // vec4f packed
+  readonly uvs: Float32Array; // vec4f packed (.xy = uv0, .zw = uv1) — P2 texture sampling
   /**
    * Triangle indices — stride 4 (vec4u): 3 u32 vertex indices + `.w = 0`
    * (zero-fill contract). The pt-webgpu WGSL reads `.x,.y,.z` from
@@ -342,6 +343,7 @@ export function buildPackedScene(
   return {
     positions: geo.positions,
     normals: geo.normals,
+    uvs: geo.uvs,
     indices: geo.indices,
     triMaterialIds: geo.triMaterialIds,
     materials: new Float32Array(materials),
@@ -388,6 +390,7 @@ export function scenePackResultFromPacked(packed: PackedSceneData): ScenePackRes
   return {
     positions: packed.positions,
     normals: packed.normals,
+    uvs: packed.uvs,
     indices: packed.indices,
     triMaterialIds: packed.triMaterialIds,
     bvhNodes: packed.bvhNodes,
