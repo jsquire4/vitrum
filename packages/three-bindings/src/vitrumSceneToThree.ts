@@ -665,7 +665,9 @@ export function disposeVitrumThreeSceneRoot(root: Object3D): void {
   const maybeDisposeTexture = (tex: Texture | null | undefined): void => {
     if (tex == null || disposedTextures.has(tex)) return;
     disposedTextures.add(tex);
-    tex.dispose();
+    // scene.environment / background (or a headless-shim stand-in) may be a
+    // texture-like object lacking a real dispose() — skip rather than throw.
+    tex.dispose?.();
   };
 
   root.traverse((o) => {

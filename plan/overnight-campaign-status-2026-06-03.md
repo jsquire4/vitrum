@@ -5,19 +5,23 @@ Autonomous session against the P0–P8 "address every gap" campaign
 working through P8 overnight. This doc records exactly what shipped, what is
 blocked and why, and the precise resume path.
 
-## Hard constraint discovered this session
+## GPU validation — initially blocked, now RESOLVED (commit `d997610`)
 
-**The GPU validation env (wsl-gpu render worker) will not start in this shell.**
-The pre-push T1 GPU smoke and `npm run validate:gpu:smoke` both fail identically
-on **lavapipe and dzn** with `worker stdout closed before ready` — i.e. the
-render worker dies *before any shader compiles* (an environment failure, not a
-code regression; comments+types can't cause a pre-ready worker crash, and all
-typecheck+vitest pass). So **no radiometric / WGSL change could be GPU-validated
-this session.** Per the repo's discipline, radiometric/WGSL work must be A/B'd on
-a real GPU before it's trusted; the 2026-06-02 lesson is that byte-identity
-goldens do NOT catch naga regressions — only the GPU smoke does. Committing large
-unvalidated GPU code to delicate areas (e.g. P2's material-stride, "changing it
-silently misaligns every material read") was therefore judged unsafe.
+> **RESOLVED.** The "render worker won't start" was a harness bug, not a missing
+> env. The `--working-tree` smoke pointed the import map at the live tree but
+> never set `VITRUM_PINNED_DIR`, so the walkaroundUbo headless shim
+> (`Deno.readTextFileSync($VITRUM_PINNED_DIR/.../walkaroundUbo.wgsl.ts`)) fell
+> back to the empty `~/.cache/wsl-gpu/vitrum-pinned` and crashed "stdout closed
+> before ready". Fixed in `scripts/validate-gpu.mjs` (passes
+> `VITRUM_PINNED_DIR=<worktree>` for `--smoke`). **T1 smoke now PASSES on both
+> backends** — lavapipe 81.15 dB / dzn 89.03 dB vs golden, cross-check 34.87 dB —
+> which also GPU-confirms P0–P4 render non-regressing. **The GPU phases
+> (P2/P5/P7/P8) are UNBLOCKED for validated work.**
+
+**Original finding (kept for context):** the wsl-gpu render worker would not
+start (`worker stdout closed before ready` on lavapipe + dzn); under that
+constraint, committing unvalidated GPU code to delicate areas (e.g. P2's
+material-stride) was judged unsafe — hence the contract/CPU-first ordering below.
 
 ## SHIPPED — committed + pushed to `origin/main`
 
