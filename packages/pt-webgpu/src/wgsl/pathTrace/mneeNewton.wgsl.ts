@@ -311,6 +311,80 @@ fn mneeNewtonSolveChain2(
   out.iters = maxIter;
   return out;
 }
+
+// CHAIN connection-PDF geometric factor |dω_recv/dA_light| through the 2-vertex
+// glass chain. As the AREA light moves along its tangent axes (lightU,lightV = the
+// s,t area params) the whole chain re-solves, so v2 — the last vertex, the one the
+// receiver sees — shifts. d(a2,b2)/d(light) comes from the implicit function
+// theorem on the 4-DOF system (d(params)/d(light) = −J_full⁻¹·J_light); its (a2,b2)
+// rows are exactly the Schur form S⁻¹(C·A⁻¹·r_top − r_bot) REUSED from the solve.
+// Then ∂v2/∂s,t → solid-angle projection at recv → basis-free |∂ω/∂s × ∂ω/∂t|
+// (same shape as the single-vertex mneePdfJacobianDet, but through the chain).
+// POINT lights are deterministic (no area PDF) — this is the AREA-light factor.
+fn mneeChainPdfJacobianDet(
+  v1: vec3f, v2: vec3f,
+  n1: vec3f, tu1: vec3f, tv1: vec3f,
+  n2: vec3f, tu2: vec3f, tv2: vec3f,
+  lightP: vec3f, recv: vec3f,
+  eta1i: f32, eta1t: f32, eta2i: f32, eta2t: f32,
+  lightU: vec3f, lightV: vec3f,
+) -> f32 {
+  let eps = 1e-3;
+  let r = mneeChainResidual4d(v1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t);
+  let d_a1 = (mneeChainResidual4d(v1 + eps * tu1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+  let d_b1 = (mneeChainResidual4d(v1 + eps * tv1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+  let d_a2 = (mneeChainResidual4d(v1, v2 + eps * tu2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+  let d_b2 = (mneeChainResidual4d(v1, v2 + eps * tv2, n1, tu1, tv1, n2, tu2, tv2, lightP, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+  let A = mat2x2f(d_a1.xy, d_b1.xy);
+  let B = mat2x2f(d_a2.xy, d_b2.xy);
+  let C = mat2x2f(d_a1.zw, d_b1.zw);
+  let D = mat2x2f(d_a2.zw, d_b2.zw);
+  let Ainv = mnee_inv2x2(A);
+  let CAinv = C * Ainv;
+  let Sinv = mnee_inv2x2(D - CAinv * B);
+  // ∂r/∂(light) along the area axes s=lightU, t=lightV (FD).
+  let r_s = (mneeChainResidual4d(v1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP + eps * lightU, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+  let r_t = (mneeChainResidual4d(v1, v2, n1, tu1, tv1, n2, tu2, tv2, lightP + eps * lightV, recv, eta1i, eta1t, eta2i, eta2t) - r) / eps;
+  // d(a2,b2)/d(s,t) = −[J_full⁻¹ J_light]_{rows 3,4} = S⁻¹(C A⁻¹ r_top − r_bot).
+  let dab2_ds = Sinv * (CAinv * r_s.xy - r_s.zw);
+  let dab2_dt = Sinv * (CAinv * r_t.xy - r_t.zw);
+  let dv2_ds = tu2 * dab2_ds.x + tv2 * dab2_ds.y;
+  let dv2_dt = tu2 * dab2_dt.x + tv2 * dab2_dt.y;
+  let dvec = v2 - recv;
+  let dist = max(length(dvec), 1e-8);
+  let w = dvec / dist;
+  let dw_ds = (dv2_ds - w * dot(w, dv2_ds)) / dist;
+  let dw_dt = (dv2_dt - w * dot(w, dv2_dt)) / dist;
+  return length(cross(dw_ds, dw_dt));
+}
+`;
+
+/** Chain-PDF harness: solve the glass-slab chain, then write the chain connection-
+ *  PDF factor |dω_recv/dA_light| (light area axes +x/+y). Validated analytic == FD
+ *  re-solve over the light's area params. Per config: [v1.xyz, residual], [v2.xyz, det]. */
+export const MNEE_CHAIN_PDF_HARNESS_WGSL = /* wgsl */ `
+${MNEE_NEWTON_WGSL}
+${MNEE_CHAIN_WGSL}
+
+struct ChainIn { lightP: vec3f, slabD: f32, recv: vec3f, etaGlass: f32 }
+@group(0) @binding(0) var<storage, read>       hIn:  array<ChainIn>;
+@group(0) @binding(1) var<storage, read_write> hOut: array<vec4f>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&hIn)) { return; }
+  let c = hIn[i];
+  let n = vec3f(0.0, 0.0, 1.0);
+  let tu = vec3f(1.0, 0.0, 0.0);
+  let tv = vec3f(0.0, 1.0, 0.0);
+  let p1 = vec3f(0.0, 0.0, 0.0);
+  let p2 = vec3f(0.0, 0.0, -c.slabD);
+  let res = mneeNewtonSolveChain2(p1, n, tu, tv, p2, n, tu, tv, c.lightP, c.recv, 1.0, c.etaGlass, c.etaGlass, 1.0, ${MNEE_CHAIN_MAX_ITERS}u);
+  let det = mneeChainPdfJacobianDet(res.v1, res.v2, n, tu, tv, n, tu, tv, c.lightP, c.recv, 1.0, c.etaGlass, c.etaGlass, 1.0, vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0));
+  hOut[i * 2u + 0u] = vec4f(res.v1, res.residual);
+  hOut[i * 2u + 1u] = vec4f(res.v2, det);
+}
 `;
 
 /** Chain harness: a glass slab — plane 1 at z=0, plane 2 at z=−slabD (both +z

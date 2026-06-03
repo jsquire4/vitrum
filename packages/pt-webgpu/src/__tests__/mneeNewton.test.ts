@@ -11,6 +11,7 @@ import {
   MNEE_PDF_HARNESS_WGSL,
   MNEE_CHAIN_WGSL,
   MNEE_CHAIN_HARNESS_WGSL,
+  MNEE_CHAIN_PDF_HARNESS_WGSL,
   MNEE_CHAIN_MAX_ITERS,
   packMneeHarnessInput,
   MNEE_HARNESS_INPUT_FLOATS,
@@ -95,5 +96,16 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_CHAIN_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL);
     expect(MNEE_CHAIN_HARNESS_WGSL).toContain(MNEE_CHAIN_WGSL);
     expect(MNEE_CHAIN_HARNESS_WGSL).toContain(`mneeNewtonSolveChain2(p1, n, tu, tv, p2, n, tu, tv, c.lightP, c.recv, 1.0, c.etaGlass, c.etaGlass, 1.0, ${MNEE_CHAIN_MAX_ITERS}u)`);
+  });
+
+  it('chain connection-PDF |dω_recv/dA_light| via the 4-DOF IFT — validated analytic == FD', () => {
+    // GPU-validated against a brute-force FD re-solve over the area light's (x,y)
+    // params (mnee-chain-pdf-validate.ts, lavapipe). The (a2,b2) IFT rows reuse the
+    // solve's Schur block form S⁻¹(C·A⁻¹·r_top − r_bot).
+    expect(MNEE_CHAIN_WGSL).toContain('fn mneeChainPdfJacobianDet(');
+    expect(MNEE_CHAIN_WGSL).toContain('let dab2_ds = Sinv * (CAinv * r_s.xy - r_s.zw);'); // the IFT (a2,b2) rows
+    expect(MNEE_CHAIN_WGSL).toContain('return length(cross(dw_ds, dw_dt));');             // basis-free determinant
+    expect(MNEE_CHAIN_PDF_HARNESS_WGSL).toContain(MNEE_CHAIN_WGSL);                       // byte-identical core
+    expect(MNEE_CHAIN_PDF_HARNESS_WGSL).toContain('let det = mneeChainPdfJacobianDet(res.v1, res.v2');
   });
 });
