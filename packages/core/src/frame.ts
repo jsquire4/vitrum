@@ -45,6 +45,17 @@ export interface FrameQualitySettings {
   /** Internal render resolution factor in (0, 1]. Engines render at
    *  `viewport.width * resolutionFactor` and upscale. Default: 1.0. */
   readonly resolutionFactor?: number;
+
+  /** Linear-exposure multiplier applied before tonemapping. Default: 1.0. */
+  readonly exposure?: number;
+
+  /** Output tonemap operator. Default: 'aces' (the historical hardcoded curve).
+   *  'none' = raw linear HDR (no curve); 'linear' = exposure + clamp only.
+   *  Operators live in `@vitrum/shared-samplers` (`applyTonemap` / `vitrumTonemap`). */
+  readonly tonemap?: 'aces' | 'agx' | 'reinhard' | 'linear' | 'none';
+
+  /** Output color space for the presented frame. Default: 'srgb'. */
+  readonly outputColorSpace?: 'srgb' | 'linear';
 }
 
 // ────────────────────────────────────────────────────────────────────────────
