@@ -9,8 +9,12 @@ import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.
 describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed lite-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_LITE_WGSL).digest('hex');
-    expect(digest).toBe('bdbb41f80acaad7b2e49a039914d869ff7a1ce6db296a17a3641c7271c5872c4');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(71460);
+    // Updated for P2: the shared intersectionCore gained SceneHit.baryVW (computed
+    // for UV interpolation). Lite carries it but NEVER reads it (no group-3 texture
+    // bindings / sampler / sampleBaseColorTexture compose into lite — audited), so
+    // the lite RENDER is byte-identical; only the dead computation moved the SHA.
+    expect(digest).toBe('357421d2ffa7314ecd284c91c79256f614ef2a6eed5ff4ac4e2d471dde57d750');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(72242);
   });
 });
 

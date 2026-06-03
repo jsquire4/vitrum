@@ -3,12 +3,10 @@ import type { Scene, ScenePrimitive } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
+import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function installWebGpuConstStubs(): void {
-  const g = globalThis as unknown as { GPUBufferUsage?: Record<string, number> };
-  if (g.GPUBufferUsage == null) {
-    g.GPUBufferUsage = { STORAGE: 1 << 0, COPY_DST: 1 << 1 };
-  }
+  installGpuConstStubs();
 }
 
 function makeScene(): Scene {
@@ -92,10 +90,11 @@ function makeStubDevice() {
     destroy: vi.fn(),
   }));
   const device = {
-    queue: { writeBuffer },
+    queue: { writeBuffer, writeTexture: vi.fn() },
     createBuffer,
+    ...textureStubMethods(),
     createCommandEncoder: vi.fn(),
-    limits: { maxStorageBuffersPerShaderStage: 64 },
+    limits: { maxStorageBuffersPerShaderStage: 64, maxTextureDimension2D: 8192 },
   } as unknown as GPUDevice;
   return { device, writeBuffer, createBuffer };
 }
@@ -154,7 +153,7 @@ const TLAS_LABELS = [
   'tlasInstanceWorldToLocal',
   'tlasInstanceLocalToWorld',
 ];
-const BLAS_LABELS = ['scene.positions', 'scene.normals', 'scene.indices', 'scene.triMaterialIds', 'scene.bvhNodes'];
+const BLAS_LABELS = ['scene.positions', 'scene.normals', 'scene.uvs', 'scene.indices', 'scene.triMaterialIds', 'scene.bvhNodes'];
 
 describe('pt-webgpu incremental primitive updates', () => {
   it('advertises material-only incremental patch support', async () => {
@@ -205,7 +204,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
-  it('splices a vertex-count change, reallocating only the 10 geometry buffers', async () => {
+  it('splices a vertex-count change, reallocating only the 11 geometry buffers', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();
     const engine = await createPTEngine_WebGPU({ device });
@@ -218,15 +217,15 @@ describe('pt-webgpu incremental primitive updates', () => {
 
     // Grow mesh-b from 3 verts / 1 tri to 4 verts / 2 tris (a quad). Slice-2
     // rebuilds ONLY mesh-b's BLAS, splices it into the concat buffers, and
-    // reallocates exactly the 5 BLAS + 5 TLAS geometry buffers — NOT the
-    // material / analytic / light buffers (those would prove a full setScene).
+    // reallocates exactly the 6 BLAS (incl. uvs) + 5 TLAS geometry buffers — NOT
+    // the material / analytic / light buffers (those would prove a full setScene).
     engine.updatePrimitive?.('mesh-b', {
       positions: new Float32Array([0, 0, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2]),
       indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
     });
 
-    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 10);
-    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(10);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 11);
+    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(11);
     const created = labelsCreatedSince(createBuffer, buffersBefore);
     expect(
       created.every(
@@ -370,15 +369,15 @@ describe('pt-webgpu incremental primitive updates', () => {
     const destroysBefore = totalDestroyCalls(createBuffer);
 
     // Resize mesh-a (the FIRST primitive) — mesh-b is downstream, so its concat
-    // offsets must rebase. The engine still takes the splice path: exactly the 10
-    // geometry buffers reallocate (not the full ~21-buffer setScene set).
+    // offsets must rebase. The engine still takes the splice path: exactly the 11
+    // geometry buffers reallocate (not the full ~23-buffer setScene set).
     engine.updatePrimitive?.('mesh-a', {
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]),
       indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
     });
 
-    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 10);
-    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(10);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 11);
+    expect(totalDestroyCalls(createBuffer) - destroysBefore).toBe(11);
     const created = labelsCreatedSince(createBuffer, buffersBefore);
     expect(created.some((l) => l.includes('materials'))).toBe(false);
     expect(created.some((l) => l.includes('analytic'))).toBe(false);

@@ -65,6 +65,9 @@ fn traceTlasClosest(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>
           (*hit).dist = worldDist;
           (*hit).triIndex = localHit.triIndex;
           (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
+          // Barycentric weights are space-invariant — propagate verbatim (the
+          // BLAS triangle + its per-vertex UVs are the same in any instance). (P2)
+          (*hit).baryVW = localHit.baryVW;
         }
       }
     } else {

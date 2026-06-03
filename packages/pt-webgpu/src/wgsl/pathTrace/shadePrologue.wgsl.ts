@@ -13,16 +13,21 @@
  * @param emissiveComment  the comment lines (already prefixed with `    // …`,
  *   no trailing newline) printed immediately above the
  *   `if (!prevSampleAllowsAreaMis)` emissive gate.
+ * @param baseColorTexApply  WGSL injected immediately after `var baseColor`
+ *   that modulates it by the sampled baseColor texture (full tier only; empty
+ *   for lite, which composes no group-3 texture bindings → byte-identical). The
+ *   sample is a no-op multiply (vec4(1)) for materials with no baseColor map, so
+ *   even on the full tier a textureless scene stays byte-identical. (P2)
  *
  * The returned fragment begins with `    let matId = …` and ends with the
  * closing `}` of the thin-film block; callers interpolate it where the inline
  * prologue used to live (between the trace-miss `break;` block and
  * `let throughputAtVertex = throughput;`).
  */
-export function composeShadePrologueWgsl(emissiveComment: string): string {
+export function composeShadePrologueWgsl(emissiveComment: string, baseColorTexApply = ''): string {
   return /* wgsl */ `    let matId = hitMaterialId(hit);
     let mat = decodeMaterial(matId);
-    var baseColor = mat.baseColor;
+    var baseColor = mat.baseColor;${baseColorTexApply}
     var roughness = mat.roughness;
     let emissive = mat.emissive;
     let metallic = mat.metallic;
@@ -114,3 +119,9 @@ export const SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL =
 /** Lite-tier emissive-on-hit pointer (1 line). */
 export const SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE =
   `    // Gated emissive-on-hit (camera + refraction paths only — see kernel.wgsl.ts).`;
+
+/** Full-tier baseColor texture modulation (P2). Injected after `var baseColor`;
+ *  no-op multiply (vec4(1)) for materials without a baseColor map. Leads with a
+ *  newline + 4-space indent so it sits on its own line after the declaration. */
+export const SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL =
+  `\n    baseColor = baseColor * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;`;

@@ -298,12 +298,19 @@ export class GpuResources {
           buf(6, rw), // bdptEyeStack (read_write)
         ],
       });
-      // Group 3 — WS2 light-tree node buffer (one read-only storage buffer). A
-      // DEDICATED group so the lite tier (which never reaches this branch) carries
+      // Group 3 — WS2 light-tree node buffer + P2 material textures (per-vertex
+      // UVs, per-material descriptors, the baseColor texture_2d_array, a sampler).
+      // A DEDICATED group so the lite tier (which never reaches this branch) carries
       // no group-3 layout, and so adding it leaves groups 0/1/2 byte-identical.
       this.bindGroupLayout3 = this.#device.createBindGroupLayout({
         label: 'vitrum.pt-webgpu.layout.group3.full',
-        entries: [buf(0, ro)], // lightTree (read-only storage)
+        entries: [
+          buf(0, ro), // lightTree (read-only storage)
+          buf(1, ro), // meshUvs (P2)
+          buf(2, ro), // materialTexDescriptors (P2)
+          { binding: 3, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTextures (P2)
+          { binding: 4, visibility: VIS, sampler: { type: 'filtering' } }, // materialTexSampler (P2)
+        ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
     } else {
@@ -504,7 +511,13 @@ export class GpuResources {
       this.pathTraceBindGroup3 = this.#device.createBindGroup({
         label: 'vitrum.pt-webgpu.pathTrace.bindgroup3.full',
         layout: this.bindGroupLayout3!,
-        entries: [{ binding: 0, resource: { buffer: sb.lightTreeBuffer } }],
+        entries: [
+          { binding: 0, resource: { buffer: sb.lightTreeBuffer } },
+          { binding: 1, resource: { buffer: sb.uvsBuffer } },
+          { binding: 2, resource: { buffer: sb.materialTexDescriptorsBuffer } },
+          { binding: 3, resource: sb.materialTextureView },
+          { binding: 4, resource: sb.materialTextureSampler },
+        ],
       });
     }
     return bindGroup;

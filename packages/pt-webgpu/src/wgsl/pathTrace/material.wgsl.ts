@@ -174,6 +174,66 @@ ${lightTreeWgsl({ group: 3, binding: 0 })}
 // Selection-only proximity floor for the light-tree descent (caps distance
 // importance near a light; NOT the NEE geometry-term clamp). Metre-scale.
 const LT_DIST2_FLOOR: f32 = 1e-3;
+
+// ============================================================
+// P2 — material textures (full-tier @group(3)): per-vertex UVs + per-material
+// descriptors + the sampled baseColor texture_2d_array + a filtering sampler.
+// A DEDICATED set of bindings in the existing full-tier group so neither the
+// lite tier (no group 3) nor the existing group 0/1/2 layouts are perturbed.
+// ============================================================
+@group(3) @binding(1) var<storage, read> meshUvs: array<vec4f>;       // .xy = uv0, .zw = uv1
+@group(3) @binding(2) var<storage, read> materialTexDescriptors: array<vec4f>;
+@group(3) @binding(3) var materialTextures: texture_2d_array<f32>;
+@group(3) @binding(4) var materialTexSampler: sampler;
+
+// vec4s per material in the descriptor buffer — MUST match the TS
+// MATERIAL_TEX_VEC4_STRIDE in scene/materialTextures.ts.
+//   0: {baseColorIdx, normalIdx, ormIdx, emissiveIdx}   (-1 = no map)
+//   1: {alphaMode, alphaCutoff, opacity, texCoord}
+//   2: {offset.xy, scale.xy}   3: {rotation, _, _, _}
+const MATERIAL_TEX_VEC4_STRIDE = 4u;
+
+// Sample the baseColor texture for material \`matId\` at the hit. Interpolates the
+// per-vertex UV with the hit barycentrics, applies the KHR_texture_transform,
+// and samples the indexed array layer. Returns vec4(1) — a no-op multiply — when
+// the material has no baseColor map (baseColorIdx < 0) or the hit is not a mesh
+// triangle (analytic shapes carry no UVs in v1), so textureless rendering stays
+// byte-identical to the pre-P2 path. textureSampleLevel (explicit LOD) is used
+// so the call is valid in the kernel's non-uniform control flow.
+fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  let baseColorIdx = i32(materialTexDescriptors[base].x);
+  if (baseColorIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+    return vec4f(1.0);
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let texCoord = u32(materialTexDescriptors[base + 1u].w);
+  let rawUv = select(ch0, ch1, texCoord == 1u);
+  // KHR_texture_transform — matches THREE.Matrix3.setUvTransform (center 0), the
+  // convention the importer (three-bindings toTextureRef) extracts offset/repeat/
+  // rotation in:  u' = sx·c·u + sx·s·v + tx ;  v' = -sy·s·u + sy·c·v + ty.
+  let xform = materialTexDescriptors[base + 2u]; // offset.xy, scale.xy
+  let rot = materialTexDescriptors[base + 3u].x;
+  let c = cos(rot);
+  let s = sin(rot);
+  let sx = xform.z;
+  let sy = xform.w;
+  let uv = vec2f(
+    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
+    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
+  );
+  return textureSampleLevel(materialTextures, materialTexSampler, uv, baseColorIdx, 0.0);
+}
 `;
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_WGSL =

@@ -8,12 +8,10 @@ import {
 } from '../scene/uploadSceneBuffers.js';
 import { rebuildPrimitiveBlas } from '@vitrum/shared-bvh';
 import { asMat4 } from '@vitrum/core';
+import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function installWebGpuConstStubs(): void {
-  const g = globalThis as unknown as { GPUBufferUsage?: Record<string, number> };
-  if (g.GPUBufferUsage == null) {
-    g.GPUBufferUsage = { STORAGE: 1 << 0, COPY_DST: 1 << 1 };
-  }
+  installGpuConstStubs();
 }
 
 function twoMeshScene(): Scene {
@@ -47,11 +45,13 @@ describe('uploadScenePackBlasOnly', () => {
     installWebGpuConstStubs();
     const writeBuffer = vi.fn();
     const device = {
-      queue: { writeBuffer },
+      queue: { writeBuffer, writeTexture: vi.fn() },
       createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
         label: desc.label,
         destroy: vi.fn(),
       })),
+      ...textureStubMethods(),
+      limits: { maxTextureDimension2D: 8192 },
     } as unknown as GPUDevice;
 
     const scene = twoMeshScene();
@@ -78,10 +78,12 @@ describe('uploadScenePackBlasOnly', () => {
 
     uploadScenePackBlasOnly(device, sb, rebuilt.pack);
 
-    expect(writeBuffer).toHaveBeenCalledTimes(5);
+    // 6 BLAS writes: positions, normals, uvs (P2), indices, triMaterialIds, bvhNodes.
+    expect(writeBuffer).toHaveBeenCalledTimes(6);
     const labels = writeBuffer.mock.calls.map((c) => String((c[0] as GPUBuffer).label ?? ''));
     expect(labels.some((l) => l.includes('tlas'))).toBe(false);
     expect(labels.some((l) => l.includes('positions'))).toBe(true);
+    expect(labels.some((l) => l.includes('uvs'))).toBe(true);
     expect(labels.some((l) => l.includes('bvhNodes'))).toBe(true);
   });
 });

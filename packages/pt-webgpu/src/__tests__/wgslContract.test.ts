@@ -19,8 +19,10 @@ import { fileURLToPath } from 'node:url';
 describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed full-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
-    expect(digest).toBe('5aa346a04f0336c2a49ee6b5f29421c3846e66f4b4a7882495127a723441012a');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(148516);
+    // Updated for P2: SceneHit.baryVW + group-3 material-texture bindings +
+    // sampleBaseColorTexture + the shade-prologue baseColor texture multiply.
+    expect(digest).toBe('c3c8704c4a4ec254ba5fa892f834d36b143c92c6b59f3e3f581ae335a1cfb860');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(152752);
   });
 });
 

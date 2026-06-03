@@ -2,7 +2,12 @@
  * materialTextures.test.ts — P2 host-side texture collection + descriptor pack.
  */
 import { describe, it, expect } from 'vitest';
-import { collectMaterialTextures, MATERIAL_TEX_FLOAT_STRIDE } from '../scene/materialTextures.js';
+import {
+  collectMaterialTextures,
+  MATERIAL_TEX_FLOAT_STRIDE,
+  MATERIAL_TEX_VEC4_STRIDE,
+} from '../scene/materialTextures.js';
+import { PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
 import type { MaterialSpec } from '@vitrum/core';
 
 function mat(over: Partial<MaterialSpec>): MaterialSpec {
@@ -50,5 +55,25 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[6]).toBe(1);
     expect(descriptors[10]).toBe(1);
     expect(descriptors[11]).toBe(1);
+  });
+});
+
+describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
+  it('WGSL MATERIAL_TEX_VEC4_STRIDE matches the host descriptor stride', () => {
+    expect(MATERIAL_TEX_FLOAT_STRIDE).toBe(MATERIAL_TEX_VEC4_STRIDE * 4);
+    // The WGSL sampler indexes materialTexDescriptors with this exact stride;
+    // drift silently misaligns every per-material texture read.
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL).toContain(
+      `const MATERIAL_TEX_VEC4_STRIDE = ${MATERIAL_TEX_VEC4_STRIDE}u;`,
+    );
+  });
+
+  it('group-3 WGSL declares the P2 texture bindings + the sampler fn', () => {
+    const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
+    expect(wgsl).toContain('@group(3) @binding(1) var<storage, read> meshUvs');
+    expect(wgsl).toContain('@group(3) @binding(2) var<storage, read> materialTexDescriptors');
+    expect(wgsl).toContain('@group(3) @binding(3) var materialTextures: texture_2d_array<f32>');
+    expect(wgsl).toContain('@group(3) @binding(4) var materialTexSampler: sampler');
+    expect(wgsl).toContain('fn sampleBaseColorTexture(');
   });
 });

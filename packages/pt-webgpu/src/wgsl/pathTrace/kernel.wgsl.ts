@@ -2,6 +2,7 @@ import { PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL } from './bsdf.wgsl.js';
 import {
   composeShadePrologueWgsl,
   SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL,
+  SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL,
 } from './shadePrologue.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
 
@@ -312,7 +313,7 @@ ${mediumStateDecls}
       break;
     }
 
-${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL)}
+${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL)}
     let throughputAtVertex = throughput;
 ${transmissiveBlock}
     let cosThetaO = max(0.0, dot(normal, wo));

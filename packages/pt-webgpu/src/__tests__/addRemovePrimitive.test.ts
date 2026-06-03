@@ -5,12 +5,10 @@ import { buildTlas, tlasIntersect, type TlasInstance } from '@vitrum/shared-bvh'
 import { createPTEngine_WebGPU } from '../index.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
+import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function installWebGpuConstStubs(): void {
-  const g = globalThis as unknown as { GPUBufferUsage?: Record<string, number> };
-  if (g.GPUBufferUsage == null) {
-    g.GPUBufferUsage = { STORAGE: 1 << 0, COPY_DST: 1 << 1 };
-  }
+  installGpuConstStubs();
 }
 
 interface StubBuffer {
@@ -25,10 +23,11 @@ function makeStubDevice() {
     destroy: vi.fn(),
   }));
   const device = {
-    queue: { writeBuffer },
+    queue: { writeBuffer, writeTexture: vi.fn() },
     createBuffer,
+    ...textureStubMethods(),
     createCommandEncoder: vi.fn(),
-    limits: { maxStorageBuffersPerShaderStage: 64 },
+    limits: { maxStorageBuffersPerShaderStage: 64, maxTextureDimension2D: 8192 },
   } as unknown as GPUDevice;
   return { device, writeBuffer, createBuffer };
 }

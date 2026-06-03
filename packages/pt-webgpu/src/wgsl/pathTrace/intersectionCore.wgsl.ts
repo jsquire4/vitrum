@@ -33,6 +33,12 @@ struct SceneHit {
   dist: f32,
   triIndex: u32,
   normal: vec3f,
+  // Barycentric weights (v, w) of the hit on its triangle (u = 1 - v - w),
+  // computed in BLAS-local space alongside the shading normal. The kernel
+  // interpolates per-vertex UVs with these for texture sampling. Space-invariant
+  // (no transform needed when propagated through the TLAS instance frame). Zero
+  // for analytic-shape hits and non-shading (any-hit) traversals. (P2)
+  baryVW: vec2f,
 };
 
 const SHAPE_SPHERE = 1u;
@@ -262,6 +268,7 @@ fn traceMeshBvh(
     (*hit).dist = tMaxBound;
     (*hit).triIndex = 0u;
     (*hit).normal = vec3f(0.0, 1.0, 0.0);
+    (*hit).baryVW = vec2f(0.0);
   }
 
   var stack: array<u32, 64>;
@@ -306,6 +313,10 @@ fn traceMeshBvh(
             return true;
           }
           var shadeNormal = vec3f(0.0, 1.0, 0.0);
+          // baryVW (v,w) of the hit — captured with the shading normal so the
+          // kernel can interpolate per-vertex UVs. Defaults to 0 (→ vertex-0 UV)
+          // for any-hit traversals that skip shading details. (P2)
+          var shadeBaryVW = vec2f(0.0);
           if (captureShadingDetails) {
             let p = ray.origin + ray.direction * hitT;
             let ab = b - a;
@@ -320,6 +331,7 @@ fn traceMeshBvh(
             let v = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
             let w = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
             let u = max(0.0, 1.0 - v - w);
+            shadeBaryVW = vec2f(v, w);
             shadeNormal = safe_normalize(cross(ab, ac));
             if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
               let na = normals[tri.x].xyz;
@@ -332,6 +344,7 @@ fn traceMeshBvh(
           (*hit).dist = hitT;
           (*hit).triIndex = t;
           (*hit).normal = shadeNormal;
+          (*hit).baryVW = shadeBaryVW;
         }
       }
     } else {

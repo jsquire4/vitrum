@@ -17,6 +17,8 @@ import {
 import { buildLightTree, packLightTreeForGPU } from '@vitrum/shared-samplers';
 import { invertMat4 } from '../math/mat4.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
+import { collectMaterialTextures } from './materialTextures.js';
+import { createMaterialTextureArray } from './materialTextureArray.js';
 import { environmentParams } from './environmentPacking.js';
 import {
   buildLightTreeInputForScene,
@@ -34,6 +36,12 @@ interface PackedSceneData {
   readonly positions: Float32Array; // vec4f packed
   readonly normals: Float32Array; // vec4f packed
   readonly uvs: Float32Array; // vec4f packed (.xy = uv0, .zw = uv1) — P2 texture sampling
+  /** Per-material texture descriptor floats (MATERIAL_TEX_FLOAT_STRIDE each):
+   *  texture indices + alpha-mode + KHR UV transform. Indexed by matId. */
+  readonly materialTexDescriptors: Float32Array;
+  /** Dedup'd, upload-ordered host texture handles (layer i = sources[i]); the
+   *  GPU upload turns these into a texture_2d_array. Opaque to pt-webgpu. */
+  readonly materialTextureSources: readonly unknown[];
   /**
    * Triangle indices — stride 4 (vec4u): 3 u32 vertex indices + `.w = 0`
    * (zero-fill contract). The pt-webgpu WGSL reads `.x,.y,.z` from
@@ -123,6 +131,16 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly tlasInstanceLocalToWorldBuffer: GPUBuffer;
   /** WS2 — light-tree node storage buffer (group 3, full tier only). */
   readonly lightTreeBuffer: GPUBuffer;
+  /** P2 — per-vertex UV storage buffer (group 3, full tier only). */
+  readonly uvsBuffer: GPUBuffer;
+  /** P2 — per-material texture descriptor storage buffer (group 3). */
+  readonly materialTexDescriptorsBuffer: GPUBuffer;
+  /** P2 — sampled baseColor texture_2d_array handle (for dispose). */
+  readonly materialTexture: GPUTexture;
+  /** P2 — 2d-array view bound in group 3. */
+  readonly materialTextureView: GPUTextureView;
+  /** P2 — filtering sampler bound in group 3. */
+  readonly materialTextureSampler: GPUSampler;
   readonly destroy: () => void;
 }
 
@@ -264,6 +282,10 @@ export function buildPackedScene(
   };
 
   const materials: number[] = [];
+  // Ordered MaterialSpec list, matId-aligned with `materials` (P2): drives the
+  // texture-descriptor collection below. Reattachment only rewrites `emissive`,
+  // which textures don't read, so the primitive's own material is sufficient.
+  const materialSpecs: MaterialSpec[] = [];
   const meshMaterialIds = new Map<string, number>();
   const analyticHeaders: number[] = [];
   const analyticParams: number[] = [];
@@ -279,6 +301,7 @@ export function buildPackedScene(
       const shapeId = analyticShapeId(primitive.shape);
       const matId = nextMaterialId++;
       materials.push(...packMaterial(primitive));
+      materialSpecs.push(primitive.material);
       const transform = primitive.transform ?? IDENTITY_MAT4;
       const maybeInvTransform = invertMat4(transform);
       if (maybeInvTransform == null) {
@@ -311,7 +334,10 @@ export function buildPackedScene(
     const matId = nextMaterialId++;
     meshMaterialIds.set(primitive.id, matId);
     materials.push(...packMaterial(primitive));
+    materialSpecs.push(primitive.material);
   }
+
+  const texCollection = collectMaterialTextures(materialSpecs);
 
   const geo = packSceneFromCore(scene, {
     tlas: true,
@@ -347,6 +373,8 @@ export function buildPackedScene(
     indices: geo.indices,
     triMaterialIds: geo.triMaterialIds,
     materials: new Float32Array(materials),
+    materialTexDescriptors: texCollection.descriptors,
+    materialTextureSources: texCollection.sources,
     bvhNodes: geo.bvhNodes,
     tlasNodes: geo.tlasNodes,
     tlasInstanceIndices: geo.tlasInstanceIndices,
@@ -419,6 +447,7 @@ export function uploadScenePackGeometry(
   };
   write(sb.positionsBuffer, pack.positions);
   write(sb.normalsBuffer, pack.normals);
+  write(sb.uvsBuffer, pack.uvs);
   write(sb.indicesBuffer, pack.indices);
   write(sb.triMaterialIdsBuffer, pack.triMaterialIds);
   write(sb.bvhNodesBuffer, pack.bvhNodes);
@@ -429,6 +458,7 @@ export function uploadScenePackGeometry(
   write(sb.tlasInstanceLocalToWorldBuffer, pack.tlasInstanceLocalToWorld);
   sb.positions.set(pack.positions);
   sb.normals.set(pack.normals);
+  sb.uvs.set(pack.uvs);
   sb.indices.set(pack.indices);
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
@@ -452,6 +482,7 @@ export function uploadScenePackBlasOnly(
     ScenePackResult,
     | 'positions'
     | 'normals'
+    | 'uvs'
     | 'indices'
     | 'triMaterialIds'
     | 'bvhNodes'
@@ -466,11 +497,13 @@ export function uploadScenePackBlasOnly(
   };
   write(sb.positionsBuffer, pack.positions);
   write(sb.normalsBuffer, pack.normals);
+  write(sb.uvsBuffer, pack.uvs);
   write(sb.indicesBuffer, pack.indices);
   write(sb.triMaterialIdsBuffer, pack.triMaterialIds);
   write(sb.bvhNodesBuffer, pack.bvhNodes);
   sb.positions.set(pack.positions);
   sb.normals.set(pack.normals);
+  sb.uvs.set(pack.uvs);
   sb.indices.set(pack.indices);
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
@@ -581,6 +614,7 @@ export function uploadScenePackGeometryRealloc(
   // Destroy the stale BLAS + TLAS buffers (everything geometry-sized).
   sb.positionsBuffer.destroy();
   sb.normalsBuffer.destroy();
+  sb.uvsBuffer.destroy();
   sb.indicesBuffer.destroy();
   sb.triMaterialIdsBuffer.destroy();
   sb.bvhNodesBuffer.destroy();
@@ -593,6 +627,7 @@ export function uploadScenePackGeometryRealloc(
   const blas = asMutableSceneBufferBlasHandles(sb);
   blas.positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', pack.positions);
   blas.normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', pack.normals);
+  blas.uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', pack.uvs);
   blas.indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', pack.indices);
   blas.triMaterialIdsBuffer = createStorageBuffer(
     device,
@@ -602,6 +637,7 @@ export function uploadScenePackGeometryRealloc(
   blas.bvhNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.bvhNodes', pack.bvhNodes);
   blas.positions = new Float32Array(pack.positions);
   blas.normals = new Float32Array(pack.normals);
+  blas.uvs = new Float32Array(pack.uvs);
   blas.indices = new Uint32Array(pack.indices);
   blas.triMaterialIds = new Uint32Array(pack.triMaterialIds);
   blas.bvhNodes = new Float32Array(pack.bvhNodes);
@@ -753,11 +789,13 @@ function asMutableSceneBufferBuffers(sb: UploadedSceneBuffers): MutableTlasBuffe
 interface MutableBlasBufferHandles {
   positionsBuffer: GPUBuffer;
   normalsBuffer: GPUBuffer;
+  uvsBuffer: GPUBuffer;
   indicesBuffer: GPUBuffer;
   triMaterialIdsBuffer: GPUBuffer;
   bvhNodesBuffer: GPUBuffer;
   positions: Float32Array;
   normals: Float32Array;
+  uvs: Float32Array;
   indices: Uint32Array;
   triMaterialIds: Uint32Array;
   bvhNodes: Float32Array;
@@ -910,6 +948,17 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
   const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
   const lightTreeBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.lightTree', packed.lightTreeNodes);
+  // P2 — per-vertex UVs + per-material texture descriptors + the baseColor
+  // texture_2d_array (all group 3, full tier). A textureless scene gets a 1×1
+  // white dummy so the binding is always satisfied; descriptors all hold -1 so
+  // the kernel never samples it (textureless render stays byte-identical).
+  const uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', packed.uvs);
+  const materialTexDescriptorsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.materialTexDescriptors',
+    packed.materialTexDescriptors,
+  );
+  const materialTextureArray = createMaterialTextureArray(device, packed.materialTextureSources);
   const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
   const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
   const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);
@@ -951,6 +1000,11 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     tlasBlasRootsBuffer,
     tlasInstanceWorldToLocalBuffer,
     tlasInstanceLocalToWorldBuffer,
+    uvsBuffer,
+    materialTexDescriptorsBuffer,
+    materialTexture: materialTextureArray.texture,
+    materialTextureView: materialTextureArray.view,
+    materialTextureSampler: materialTextureArray.sampler,
     // BLAS + TLAS buffers are resolved off `uploaded` at destroy-time (not the
     // captured locals), because the realloc fast paths swap fresh handles onto
     // the struct: {@link uploadScenePackTlasRealloc} (instance-count change) and
@@ -982,6 +1036,12 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       uploaded.tlasBlasRootsBuffer.destroy();
       uploaded.tlasInstanceWorldToLocalBuffer.destroy();
       uploaded.tlasInstanceLocalToWorldBuffer.destroy();
+      // P2 — uvsBuffer is realloc-swapped on a vertex-count change, so resolve it
+      // late off `uploaded`. The descriptor buffer + texture array are
+      // material-indexed (never resized by a geometry realloc) → captured locals.
+      uploaded.uvsBuffer.destroy();
+      materialTexDescriptorsBuffer.destroy();
+      materialTextureArray.texture.destroy();
     },
   };
   return uploaded;
