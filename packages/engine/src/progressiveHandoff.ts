@@ -35,6 +35,18 @@ export interface ProgressiveHandoffOptions {
   /** Max-abs camera-delta (view/proj matrices + position) below which a frame
    *  counts as "still". Default 1e-5. */
   readonly cameraEpsilon?: number;
+  /** Hide the real-time → 1-sample "pop": once the threshold is reached, the
+   *  converged engine accumulates BEHIND the still-displayed real-time image; the
+   *  display only switches to the converged engine once it is clean enough (see
+   *  {@link convergedDisplaySamples}). Costs both engines rendering during the
+   *  pre-roll window. Default false (switch + refine immediately — the standard
+   *  interactive-PT UX, and what makes this backward-compatible). */
+  readonly settleBehindRealtime?: boolean;
+  /** With {@link settleBehindRealtime}: switch the display to the converged engine
+   *  once it reports `isConverged` OR has accumulated this many samples (whichever
+   *  is first). Default 64 — a reasonably clean preview without waiting for the
+   *  full sample target. Ignored when settleBehindRealtime is false. */
+  readonly convergedDisplaySamples?: number;
 }
 
 /** Which engine the coordinator is presenting. */
@@ -43,14 +55,23 @@ export type HandoffPhase =
   | 'realtime'
   /** Camera still but not yet past the handoff threshold — still real-time. */
   | 'settling'
-  /** Camera still past the threshold — converged engine, accumulating. */
+  /** Camera still past the threshold; the converged engine is accumulating
+   *  BEHIND the still-displayed real-time image (settleBehindRealtime only). */
+  | 'prerolling'
+  /** Camera still past the threshold — converged engine, displayed + accumulating. */
   | 'converging';
 
 export interface HandoffFrameResult {
   readonly phase: HandoffPhase;
   /** The engine that rendered this frame (its output is `output`). */
   readonly active: Engine;
+  /** The frame to present. */
   readonly output: FrameOutput;
+  /** During `prerolling` ONLY: the converged engine's accumulating output (the
+   *  image being built BEHIND the displayed real-time one). A host that wants a
+   *  true alpha cross-fade — rather than the default hard switch once clean — can
+   *  blend `output` (real-time) with this. Undefined in every other phase. */
+  readonly behindOutput?: FrameOutput;
   /** Consecutive still frames so far (0 the moment the camera moves). */
   readonly stillFrames: number;
 }
@@ -96,6 +117,8 @@ export class ProgressiveHandoffCoordinator {
   readonly #converged: Engine;
   readonly #threshold: number;
   readonly #eps: number;
+  readonly #settleBehind: boolean;
+  readonly #displaySamples: number;
 
   #prev: CameraSnapshot | null = null;
   #stillFrames = 0;
@@ -109,6 +132,8 @@ export class ProgressiveHandoffCoordinator {
     this.#converged = opts.converged;
     this.#threshold = Math.max(1, Math.floor(opts.stillFramesBeforeHandoff ?? 6));
     this.#eps = opts.cameraEpsilon ?? 1e-5;
+    this.#settleBehind = opts.settleBehindRealtime ?? false;
+    this.#displaySamples = Math.max(1, Math.floor(opts.convergedDisplaySamples ?? 64));
   }
 
   /** The phase presented by the most recent {@link frame} call. */
@@ -157,9 +182,26 @@ export class ProgressiveHandoffCoordinator {
         this.#converged.reset();
         this.#convergedStale = false;
       }
-      this.#phase = 'converging';
-      const output = this.#converged.renderFrame(input);
-      return { phase: 'converging', active: this.#converged, output, stillFrames: this.#stillFrames };
+      // Always advance the converged engine (it accumulates either way).
+      const convOutput = this.#converged.renderFrame(input);
+      const convReady =
+        convOutput.isConverged || convOutput.samplesAccumulated >= this.#displaySamples;
+      if (!this.#settleBehind || convReady) {
+        this.#phase = 'converging';
+        return { phase: 'converging', active: this.#converged, output: convOutput, stillFrames: this.#stillFrames };
+      }
+      // Pre-roll: the converged engine accumulated above (behind the scenes);
+      // keep DISPLAYING the smooth real-time image until it is clean enough,
+      // hiding the real-time → 1-sample pop.
+      this.#phase = 'prerolling';
+      const rtOutput = this.#realtime.renderFrame(input);
+      return {
+        phase: 'prerolling',
+        active: this.#realtime,
+        output: rtOutput,
+        behindOutput: convOutput,
+        stillFrames: this.#stillFrames,
+      };
     }
 
     // Real-time: moving, or still-but-settling (below the threshold).

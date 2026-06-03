@@ -4,11 +4,17 @@ import { ProgressiveHandoffCoordinator } from '../progressiveHandoff.js';
 
 /** Minimal stub engine that records renderFrame / reset and reports an
  *  incrementing sample count (reset → 0). */
-function makeStubEngine() {
+function makeStubEngine(convergeAt = Infinity) {
   let samples = 0;
   const renderFrame = vi.fn((_input: FrameInput): FrameOutput => {
     samples += 1;
-    return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+    // Report accumulating samples so settle-behind can gate on them.
+    return {
+      kind: 'rendered',
+      samplesAccumulated: samples,
+      isConverged: samples >= convergeAt,
+      primaryRadiance: {},
+    } as unknown as FrameOutput;
   });
   const reset = vi.fn(() => {
     samples = 0;
@@ -87,6 +93,43 @@ describe('ProgressiveHandoffCoordinator', () => {
     c.frame(input(0));
     c.frame(input(1e-6));            // jitter below epsilon → still
     expect(c.frame(input(2e-6)).phase).toBe('converging');
+  });
+
+  it('settleBehindRealtime: accumulates converged BEHIND real-time, then switches the display when clean', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine, converged: cv.engine,
+      stillFramesBeforeHandoff: 1, settleBehindRealtime: true, convergedDisplaySamples: 3,
+    });
+
+    c.frame(input(0));                                  // realtime (moved from null)
+    // Now still: converged renders behind, display stays real-time until 3 samples.
+    let r = c.frame(input(0));
+    expect(r.phase).toBe('prerolling');                 // converged sample 1 — display real-time
+    expect(r.active).toBe(rt.engine);
+    expect(r.behindOutput?.samplesAccumulated).toBe(1); // converged accumulating behind, exposed for crossfade
+    r = c.frame(input(0));
+    expect(r.phase).toBe('prerolling');                 // converged sample 2
+    r = c.frame(input(0));
+    expect(r.phase).toBe('converging');                 // converged sample 3 ≥ display threshold → switch
+    expect(r.active).toBe(cv.engine);
+    // The converged engine rendered every frame since handoff (3×); real-time only
+    // during the two pre-roll frames.
+    expect(cv.renderFrame).toHaveBeenCalledTimes(3);
+    expect(cv.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('settleBehindRealtime: switches early when the converged engine reports isConverged', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine(2); // converges (isConverged) at 2 samples
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine, converged: cv.engine,
+      stillFramesBeforeHandoff: 1, settleBehindRealtime: true, convergedDisplaySamples: 1000,
+    });
+    c.frame(input(0));                                  // realtime
+    expect(c.frame(input(0)).phase).toBe('prerolling'); // sample 1, not converged
+    expect(c.frame(input(0)).phase).toBe('converging');  // sample 2 → isConverged → switch
   });
 
   it('reset() forces back to real-time and re-arms the converged reset', () => {
