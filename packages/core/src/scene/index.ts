@@ -16,6 +16,7 @@ export * from './analyticParams.js';
 export * from './primitives.js';
 export * from './emitters.js';
 export * from './environment.js';
+export * from './animation.js';
 export * from './tlasAudit.js';
 
 import type { ScenePrimitive } from './primitives.js';

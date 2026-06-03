@@ -155,7 +155,10 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   const normals = requireAttribute(geo, 'normal', label, 'Mesh');
 
   const uvs = extractAttribute(geo, 'uv');
+  // THREE r152+ names the 2nd UV set 'uv1'; older geometry used 'uv2'.
+  const uv1 = extractAttribute(geo, 'uv1') ?? extractAttribute(geo, 'uv2');
   const tangents = extractAttribute(geo, 'tangent');
+  const colors = extractAttribute(geo, 'color');
   const indices = extractIndex(geo);
 
   const transform = new Float32Array(obj.matrixWorld.elements) as Mat4;
@@ -179,7 +182,9 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
     transform,
     material,
     ...(uvs != null ? { uvs } : {}),
+    ...(uv1 != null ? { uv1 } : {}),
     ...(tangents != null ? { tangents } : {}),
+    ...(colors != null ? { colors } : {}),
     ...(indices != null ? { indices } : {}),
   };
 }

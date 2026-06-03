@@ -15,7 +15,9 @@ export interface MeshPrimitive {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
   readonly uvs?: Float32Array;
+  readonly uv1?: Float32Array;            // 2nd UV channel (TextureRef.texCoord 1); uv pairs
   readonly tangents?: Float32Array;       // xyzw per vertex; w = bitangent sign
+  readonly colors?: Float32Array;         // vertex colors; RGB(A) (components = length / vertexCount)
   readonly indices?: Uint32Array | Uint16Array;
   readonly material: MaterialSpec;
   readonly transform?: Mat4;              // identity if absent
@@ -31,7 +33,9 @@ export interface InstancedMeshPrimitive {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
   readonly uvs?: Float32Array;
+  readonly uv1?: Float32Array;            // 2nd UV channel (TextureRef.texCoord 1)
   readonly tangents?: Float32Array;
+  readonly colors?: Float32Array;         // vertex colors; RGB(A) per vertex
   readonly indices?: Uint32Array | Uint16Array;
   readonly material: MaterialSpec;
   readonly instances: ReadonlyArray<Mat4>;
