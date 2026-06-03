@@ -414,7 +414,7 @@ export class MaterialsTexture extends DataTexture {
 			floatArray[ index ++ ] = Number( getField( m, 'castShadow', true ) ); // shadow
 			floatArray[ index ++ ] = Number( m.vertexColors ) | ( Number( m.flatShading ) << 1 ); // vertexColors & flatShading
 			let flags = Number( m.transparent );
-			// Sprint 7 follow-up: mark intrinsically scattering/translucent materials.
+			// Mark intrinsically scattering/translucent materials (vitrum extension).
 			if ( Number( getField( m.userData ?? {}, 'vitrumScatteringCoefficient', 0.0 ) ) > 0.0 ) {
 
 				flags |= TRANSLUCENT_BIT;

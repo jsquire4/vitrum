@@ -92,9 +92,9 @@ structural fix (see §4).
   needs a small/hidden-emitter *caustic* scene (large-area-light Cornell under-exercises it).
 - **GPU skinning normals** (task #24) — CORRECTED 2026-05-29: the skin compute DOES transform
   normals via inverse-transpose (`GPU_SKIN_BVH_WITH_NORMALS_WGSL`, dispatched by
-  `GpuSkinningSubsystem`). The real remaining seam is that the skinned per-vertex normals are
-  **computed but unconsumed** — `applyGpuSkinnedRefit` drops them and the merged BVH uses
-  geometric (faceted) normals. Remaining work: consume the skinned smooth shading normals.
+  `GpuSkinningSubsystem`). The skinned per-vertex normals are now CONSUMED (WS1): the kernel
+  writes them into the shared `bvh_normal` buffer (`GpuSkinningSubsystem` binding 7), and
+  shade/ris/risGi read the smooth shading normal in both merged and TLAS modes (V21). CLOSED.
 - ~~**NRC hash-grid encoding is frozen**~~ — **CLOSED (feature-completeness wave, WS#6).** The
   encode-backward IS now dispatched: `NrcSubsystem.trainFromRecords` calls
   `this._tableTrainer.step(this._batchPos, filled)` which runs the `nrcEncodeBackward` compute
@@ -155,7 +155,7 @@ feature set that mostly works" from "a pipeline you can trust to ship."
 ---
 
 ## 5. Pointers
-- Live state: `git log` on `main`, `CLAUDE.md`, `HARDWARE-VALIDATION-NEEDS.md` (V1–V20).
+- Live state: `git log` on `main`, `CLAUDE.md`, `HARDWARE-VALIDATION-NEEDS.md` (V1–V27).
 - Validation evidence: `../wsl-gpu/WAVE8…WAVE12-RESULTS.md` + `FINDINGS.md`.
 - Roadmap: `plan/roadmap.md` (§0.5 locked decisions), `plan/renderer-fidelity-matrix.md`,
   `plan/differentiable-rt.md`, `plan/tier4-vision-not-yet.md`.

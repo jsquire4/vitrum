@@ -433,9 +433,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let pos    = primaryRay.origin + primaryRay.direction * primaryHit.dist;
   // WS1 — geometric face normal (kept for ray offsets / backface bias) vs the
   // SMOOTH barycentric shading normal (used for lighting + the G-buffer the
-  // denoiser edge-stops on). TLAS mode keeps geometric (bvh_normal is local-
-  // space there; the per-instance transform isn't carried out of the TLAS
-  // traversal). shade is merged-world-BVH-dominant; the gate keeps it correct.
+  // denoiser edge-stops on). V21 — the smooth normal applies in BOTH merged and
+  // TLAS modes; in TLAS the LOCAL-space blend is transformed to world by the hit
+  // instance's inverse-transpose (see the n_isTlas branch below).
   let geoNormal = primaryHit.normal;
   // V21 — the smooth shading normal now applies in TLAS mode too: the blended
   // barycentric normal is LOCAL-space there, so transform it to world by the hit

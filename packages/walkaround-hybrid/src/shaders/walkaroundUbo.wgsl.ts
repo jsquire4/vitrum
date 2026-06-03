@@ -146,9 +146,9 @@ struct WalkaroundUBO {
   // unchanged). 0 ⇒ the gi-ris suffix runs the verbatim DDGI-atlas estimate
   // (NRC-OFF bit-identity); 1 ⇒ the suffix may TERMINATE into the learned
   // neural radiance cache (spread heuristic + fused-MLP query) and gathered
-  // radiance records self-train it. STAGED: the gate flips here today but the
-  // query/record passes are the documented next phase, so a gate of 1 is
-  // currently inert at the shader level (no pass reads it yet). Host opt-in via
+  // radiance records self-train it. NOTE: this UBO field is an informational
+  // mirror — no shader reads it; the load-bearing gate is compile-time (the
+  // risGiNrc variant is composed only when nrcEnabled). Host opt-in via
   // HybridEngineOptions.nrcEnabled; FORBIDDEN on tier:'lite'. NRC is a BIASED
   // cache — see HARDWARE-VALIDATION-NEEDS.md V20.
   nrcEnabled:                 u32,     //  offset 364 — NRC cache gate (was _ppgPad2)

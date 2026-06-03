@@ -87,10 +87,14 @@ type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendP
  * "count-change patches on an EXISTING primitive are absorbed without a full
  * setScene" means for each backend):
  *
- *   • walkaround-hybrid — a geometry change invalidates every cached GI signal
- *     on this realtime stack, so the engine routes patches through its setScene
- *     spine (BVH/DDGI/ReSTIR/RC rebuild + temporal reset). Absorbs the patch by
- *     reusing the packing path, not via a targeted in-place edit.
+ *   • walkaround-hybrid — vertex/index-COUNT changes (positions/normals/uvs/
+ *     tangents/indices) ARE absorbed: a geometry change invalidates every cached
+ *     GI signal on this realtime stack, so the engine re-runs its BVH rebuild +
+ *     temporal reset (reusing the packing path, not a targeted in-place edit).
+ *     BUT `instances`/`params`/`shape`/`fallbackMesh`/`kind` patches THROW
+ *     (HybridEnginePrimitiveUpdates `topologyRebuild`) — unlike pt-webgl/
+ *     pt-webgpu, which absorb the instance-COUNT case. (P5 will implement the
+ *     walkaround instance-count path; until then `topology` is partial here.)
  *   • pt-webgl — mesh/skinned vertex/index-COUNT change rebuilds that one mesh's
  *     THREE BufferGeometry in place (applyGeometryPatchToMesh) + the fork's
  *     targeted geometry+BVH regen (StaticGeometryGenerator force-rebuild on
@@ -105,8 +109,9 @@ type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendP
  *
  * In all three, `id`/`kind` morphs throw in patchPrimitiveInScene, and
  * whole-primitive ADD/REMOVE is setScene (see supportsAddRemovePrimitive), not a
- * patch — so `topology` means exactly "count-change patches on an existing
- * primitive are absorbed".
+ * patch. So `topology` means "vertex/index-count patches on an existing primitive
+ * are absorbed" — fully on pt-webgl/pt-webgpu (incl. instance-count); on
+ * walkaround the instance-count/params/shape facet currently throws.
  *
  * Per-backend `supportsAddRemovePrimitive === true` rationale: addPrimitive
  * appends a new primitive and removePrimitive evicts one, each by routing a

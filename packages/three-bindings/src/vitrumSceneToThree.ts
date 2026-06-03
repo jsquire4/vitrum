@@ -600,7 +600,7 @@ export function vitrumSceneToThree(vitrumScene: VitrumScene): Scene {
       threeScene.add(instancedMeshPrimitiveToThree(p, add));
     } else {
       throw new Error(
-        `Unsupported @vitrum/core primitive kind "${(p as ScenePrimitive).kind}" in vitrumSceneToThree. Supported types are added per Phase 6 sprint.`,
+        `Unsupported @vitrum/core primitive kind "${(p as ScenePrimitive).kind}" in vitrumSceneToThree. Supported types are listed in the backend's EngineCapabilities.`,
       );
     }
   }

@@ -4,8 +4,10 @@
  * This is the load-bearing reference implementation of the GRIS *reconnection
  * shift* mapping `T` and its Jacobian determinant `|∂T/∂·|`. It is THREE-free
  * and GPU-free — the same role `bdptMIS.ts` plays for BDPT MIS: a deterministic,
- * first-principles oracle that the Phase-1/2 WGSL shift + Jacobian will be
- * verified against (exactly as `bdptConnectionMisFull.ts` mirrors `bdptMIS.ts`).
+ * first-principles oracle that the WGSL shift + Jacobian — now live in
+ * `@vitrum/walkaround-hybrid`'s `grisReuse.wgsl.ts`, composed into the spatial +
+ * temporal GI reuse passes — are verified against (exactly as
+ * `bdptConnectionMisFull.ts` mirrors `bdptMIS.ts`).
  *
  * GRIS evolves ReSTIR from resampling samples to resampling *paths*: a candidate
  * path generated for a neighbour pixel can be reused at this pixel only after a

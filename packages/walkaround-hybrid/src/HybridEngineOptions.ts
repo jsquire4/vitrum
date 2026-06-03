@@ -727,12 +727,13 @@ export interface HybridEngineOptions extends EngineOptions {
    * throws if `nrcEnabled` is set with `tier:'lite'`, mirroring rcEnabled /
    * ppgEnabled / denoiser:'neural'.
    *
-   * NOTE — STAGED LANDING: the encoding (hash-grid joint-train forward+backward),
-   * the spread-termination predicate, the gate, and the CPU/WGSL oracles are
-   * landed + unit-pinned this session; the actual cache-query / record-gather
-   * compute passes are the documented next phase. Until they register, setting
-   * `nrcEnabled: true` only flips the UBO gate (still bit-identical output) — the
-   * suffix continues to use the DDGI estimate. See V20.
+   * When ON, the gi-ris pass compiles in its NRC variant (`risGiNrc`): once
+   * Müller's spread heuristic fires at the reconnection/suffix vertex, the MLP
+   * cache query REPLACES the DDGI estimate and a self-training record is written;
+   * `NrcSubsystem` runs one MLP + hash-grid-table training step per frame. Below
+   * the spread threshold the suffix keeps the DDGI estimate verbatim, so
+   * sub-threshold regions match the OFF pass. NRC is a BIASED cache — it trains
+   * toward the DDGI estimate, not ground truth (HARDWARE-VALIDATION-NEEDS.md V20).
    *
    * @default false
    */

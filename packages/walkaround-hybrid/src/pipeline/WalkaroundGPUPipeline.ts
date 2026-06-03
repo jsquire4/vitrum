@@ -987,10 +987,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       compiled.ppgGuidePipeline  !== undefined;
 
     // ── Denoiser registry: build, register builtins, look up + initialise
-    //    the active denoiser. Disabled placeholders (neural / oidn-final)
-    //    are registered but never reach `initialize()` — the registry
-    //    rejects them at `lookup()` time with a clear error pointing at
-    //    the workstream that will land the real implementation.
+    //    the active denoiser. `neural` / `oidn-final` are REAL denoisers; they
+    //    register as DISABLED only when their host config is absent (no
+    //    InferenceGraph / no OIDN modelUrl), in which case lookup() rejects them
+    //    with a clear error. When configured they pass lookup() and initialise.
     this._denoiserRegistry = new DenoiserRegistry();
     registerBuiltinDenoisers(this._denoiserRegistry, {
       ...(options?.inferenceGraph !== undefined

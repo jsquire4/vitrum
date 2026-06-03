@@ -98,9 +98,9 @@ Mechanical parity for the fork-backed WebGL2 path tracer is **implemented** for:
 - Volumetric subsurface scattering (WS4): homogeneous participating-media random walk — free-flight distance sampling (`t = -ln(1-ξ)/σ_t`), Henyey-Greenstein phase scatter, single-scatter albedo σ_s/σ_t, in-medium next-event estimation with phase↔light power-heuristic MIS, and specular-chain Beer-Lambert extinction in the caustic path. σ_t = σ_a (from `attenuationColor`/`attenuationDistance`, or the spectral curve when authored) + σ_s (`scatteringCoefficient(RGB)`); g = `scatteringAnisotropy`. The walk is **compiled out when BDPT is enabled** (the BDPT light subpath has no medium logic — energy-conservation gate), falling back to per-channel Beer-Lambert absorption. The compatibility (lite) tier keeps Beer-Lambert absorption only (no walk).
 - `denoiser: 'oidn-final'` with aux readback
 
-**Denoisers on pt-webgpu:** `'none'`, `'oidn-final'`, `'svgf-real'` (full tier).
+**Denoisers on pt-webgpu:** `'none'`, `'oidn-final'`. Any other mode (incl. `'svgf-real'`) warns and degrades to no-denoise — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
 
-**BDPT (WG-7):** `extensions['vitrum.ptWebgpu.bdpt'] = true`, `bdptMaxLightBounces` 1–3, optional `engine.bdptAdvanceFrame(view)`; CPU-filled light-path texture + `evaluateBdptConnection` in the full-tier kernel.
+**BDPT (WG-7):** `extensions['vitrum.ptWebgpu.bdpt'] = true`, `bdptMaxLightBounces` 1–3, optional `engine.bdptAdvanceFrame(view)`; a GPU `bdptExtendLightSubpath` @compute pass fills the light subpath into a storage buffer, consumed by `evaluateBdptConnection` in the full-tier kernel (CPU fill retained only as a test oracle).
 
 Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`plan/archive/WG-signoff-2026-05-26-archived-2026-05-28.md`).
 
@@ -110,7 +110,8 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
   motion vectors, and caustic strategies regardless of scene content.
 - **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
 - **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
-- Incremental `positions`/`normals` require unchanged vertex count; topology edits full-repack.
+- Incremental `positions`/`normals` (same vertex count) patch in place; vertex/index-count and instance-count changes are absorbed via a targeted BLAS/TLAS repack (`incrementalPatchSupport.topology: true`).
+- **No texture maps:** materials are uniform-per-material (base color / roughness / metallic / emissive / transmission / thin-film / spectral packed as scalars). No `baseColorMap`/`normalMap`/UV sampling — textured PBR is a `pt-webgl`-only path today.
 ## Polish commands
 
 ```bash

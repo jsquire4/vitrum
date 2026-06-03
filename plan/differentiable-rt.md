@@ -54,7 +54,9 @@ Optimizable `θ`: albedo / roughness / transmission textures (or low-res param g
 light direction / intensity / environment map; later vertex offsets, camera extrinsics,
 thin-film thickness.
 
-Illustrative future API (not in repo — shape only):
+Illustrative API shape — the `createInverseSession` contract + Phase-0 finite-difference
+loop are now IN repo (`core/src/inverse.ts`, pt-webgpu impl); the `optimize()` generator
+below is illustrative, the shipped API uses `step()` (the GPU adjoint stays V24-gated):
 
 ```ts
 const session = engine.createInverseSession({

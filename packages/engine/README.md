@@ -39,7 +39,6 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 - `quality-webgpu` → `@vitrum/pt-webgpu` when WebGPU is available, else `pt-webgl`
 - `auto` → `walkaround-hybrid` (&lt;500k tris, WebGPU) or **`pt-webgpu`** (≥500k tris, WebGPU), else `pt-webgl`
 - Multi-mesh / instanced scenes on WebGL-only hosts still get `pt-webgl` with a `console.warn` from `createEngine()`
-- Denoiser `'svgf-real'` → `realtime` (hybrid) or `quality-webgpu` (pt-webgpu full tier)
 
 Use **`quality-webgpu`** to force the WebGPU path tracer on smaller scenes.
 

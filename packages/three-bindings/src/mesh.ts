@@ -135,7 +135,7 @@ function convertFirstMaterial(
     const typeName = rawMat != null ? (rawMat as object).constructor.name : 'null';
     const subject = errorSubject !== '' ? `${errorSubject} ` : '';
     throw new Error(
-      `Unsupported THREE type at "${label}": ${subject}material ${typeName}. Supported types are added per Phase 6 sprint.`,
+      `Unsupported THREE type at "${label}": ${subject}material ${typeName}. Supported types are listed in the backend's EngineCapabilities.`,
     );
   }
   return isBasic
@@ -165,7 +165,7 @@ export function convertMesh(obj: THREE.Mesh): MeshPrimitive {
   if (Array.isArray(obj.material) && obj.material.length > 1) {
     console.warn(
       `@vitrum/three-bindings: unsupported multi-material mesh at "${label}" (${obj.material.length} materials). ` +
-      `Only the first material will be used. Supported types are added per Phase 6 sprint.`,
+      `Only the first material will be used. Supported types are listed in the backend's EngineCapabilities.`,
     );
   }
 

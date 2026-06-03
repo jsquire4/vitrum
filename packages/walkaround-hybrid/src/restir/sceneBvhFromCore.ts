@@ -168,11 +168,10 @@ function buffersFromScenePack(
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
     // WS1 — per-vertex normals (stride-4). In TLAS mode these are the LOCAL-
     // space BLAS normals (geo.normals), indexed by the BLAS-local hit.indices.
-    // The smooth-normal blend is DEFERRED for TLAS (the shaders gate on
-    // ubo.bvhMode and keep the geometric normal) because the per-instance
-    // world transform is not carried out of traceTlasFirstHit — a local-space
-    // smooth normal would be wrong for any transformed instance. The buffer is
-    // still bound (the layout requires it); it is simply not consumed in TLAS.
+    // V21 — the smooth-normal blend now applies in TLAS too: the shaders read
+    // these LOCAL-space normals and transform the blend to world via the hit
+    // instance's inverse-transpose. The buffer is bound (the layout requires it)
+    // and consumed in both merged and TLAS modes.
     bvhNormals: makeStorageHandle(geo.normals, 16),
     emitters: {
       cpuData: emitterFloats.buffer as ArrayBuffer,

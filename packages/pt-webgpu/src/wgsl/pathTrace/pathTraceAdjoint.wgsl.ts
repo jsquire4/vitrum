@@ -1,6 +1,15 @@
 /**
  * pathTraceAdjoint.wgsl.ts — path-replay BSDF adjoint (WS5 Phase 1).
  *
+ * STATUS (2026-06): NOT WIRED. This WGSL is an unwired GPU twin of the CPU
+ * adjoint oracle (`../../inverse/brdfAdjoint.ts`). It is NOT composed into any
+ * pipeline and NOT dispatched — it is only string-shape-pinned by
+ * `__tests__/brdfAdjoint.test.ts` to stay arithmetically identical to the
+ * oracle, against future wiring. The live inverse path is finite-difference
+ * (`inverse/inverseSession.ts` hardcodes `method = 'finite-difference'`; the GPU
+ * adjoint dispatch is gated pending real-GPU validation — V24). The present-
+ * tense description below is the INTENDED Phase-1 design, not current runtime.
+ *
  * Emits the WGSL functions that compute the analytic partials of the
  * Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. the two Phase-1 optimizable
  * parameters — `baseColor` (rgb) and `roughness` (scalar) — for a FROZEN

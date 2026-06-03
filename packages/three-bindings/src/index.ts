@@ -112,7 +112,7 @@ export function sceneFromThreeJS(threeScene: THREE.Scene): Scene {
           (rawMat as THREE.RawShaderMaterial).isRawShaderMaterial === true)
       ) {
         throw new Error(
-          `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are added per Phase 6 sprint.`,
+          `Unsupported THREE type at "${label}": ${(rawMat as object).constructor.name}. Supported types are listed in the backend's EngineCapabilities.`,
         );
       }
       // Skip meshes that aren't visually rendered — these are pointer-

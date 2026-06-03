@@ -1,5 +1,11 @@
 # GPU-gated follow-up — complexity-remediation sweep (2026-05-28)
 
+> **SUPERSEDED / HISTORICAL (2026-06).** The deferred items below (A3, T16, T5,
+> directional→DDGI, Möller, DDGI border-texel, pt-webgl instanced-mesh, …) have
+> since shipped and been GPU-validated — the authoritative live record is
+> `HARDWARE-VALIDATION-NEEDS.md` (V1–V27) + `git log` on `main`. Kept for history;
+> do not treat the "PENDING" framing below as current.
+
 The 2026-05-28 complexity sweep (`feat/w0-complexity-remediation-foundation`, 11 commits, all 5 bugs + 13 themes + Wave-4 capability reconciliation + GpuResources) is **code-complete and green** (typecheck + `npm test`, all per-wave + whole-branch audits clean). This doc tracks the work that was deliberately **deferred because it requires a hardware-WebGPU machine** (the dev WSL2 box has only SwiftShader-class limits — `hybridCanRun: false`, pt-webgpu lite-tier only — so radiometric/GPU-compile validation cannot run there) or is a follow-on feature.
 
 ## 1. Reference-render validation (PENDING — needs hardware GPU)

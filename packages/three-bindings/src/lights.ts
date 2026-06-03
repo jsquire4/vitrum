@@ -41,7 +41,7 @@ function warnOnce(warnedTypes: Set<string>, typeName: string, label: string): vo
   if (warnedTypes.has(typeName)) return;
   warnedTypes.add(typeName);
   console.warn(
-    `@vitrum/three-bindings: skipping unsupported light type "${typeName}" at "${label}". Supported types are added per Phase 6 sprint.`,
+    `@vitrum/three-bindings: skipping unsupported light type "${typeName}" at "${label}". Supported types are listed in the backend's EngineCapabilities.`,
   );
 }
 
@@ -153,6 +153,6 @@ export function convertLight(
   }
 
   throw new Error(
-    `Unsupported THREE type at "${label}": ${light.constructor.name}. Supported types are added per Phase 6 sprint.`,
+    `Unsupported THREE type at "${label}": ${light.constructor.name}. Supported types are listed in the backend's EngineCapabilities.`,
   );
 }

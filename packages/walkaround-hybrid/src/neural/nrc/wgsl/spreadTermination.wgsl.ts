@@ -4,14 +4,14 @@
 //
 // The predicate is pure arithmetic (sqrt + running sum + a comparison), no
 // kinks, so the WGSL ↔ CPU match is exact to f32 epsilon. This is the GPU code
-// the future cache-query pass will inline to decide, per path vertex, whether to
-// terminate the GI suffix into the NRC cache (query the MLP for outgoing
-// radiance) instead of continuing to trace.
+// the cache-query pass inlines to decide, per path vertex, whether to terminate
+// the GI suffix into the NRC cache (query the MLP for outgoing radiance) instead
+// of continuing to trace.
 //
-// Gated-OFF-inert: emitted + unit-pinned, NOT yet registered as a pipeline pass.
-// The integration site is risGi.wgsl's reconnection-vertex loop (where Lo is
-// computed today by DDGI-atlas sampling); the cache query replaces that suffix
-// estimate when nrcEnabled && the spread heuristic fires. See the V-item.
+// LIVE when nrcEnabled: composed into the `risGiNrc` gi-ris variant
+// (buildRisGiNrcModule). At the reconnection vertex (where Lo is otherwise the
+// DDGI-atlas estimate) the cache query replaces that suffix estimate when the
+// spread heuristic fires. See HARDWARE-VALIDATION-NEEDS.md V20.
 
 export function nrcSpreadTerminationWgsl(): string {
   return /* wgsl */`

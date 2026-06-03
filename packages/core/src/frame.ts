@@ -172,7 +172,7 @@ export interface FrameRendered extends FrameOutputBase {
    *  the renderer's framebuffer or a `WebGLTexture` handle. */
   readonly primaryRadiance: BackendTexture;
 
-  // ── Optional G-buffer (Phase 6 sprint 5 introduces these) ──────────────
+  // ── Optional G-buffer ──────────────────────────────────────────────────
   /** Encoded normal + linear depth. RGBA16F: xyz = world-space normal,
    *  w = linear-depth (camera-space, always positive). */
   readonly normalDepth?: BackendTexture;

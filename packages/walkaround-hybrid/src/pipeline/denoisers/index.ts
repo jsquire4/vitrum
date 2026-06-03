@@ -208,8 +208,9 @@ export class DenoiserRegistry {
     }
     if (d.disabled === true) {
       throw new Error(
-        `DenoiserRegistry: denoiser "${id}" is registered but disabled; ` +
-          `it will be enabled by a future refactor workstream`,
+        `DenoiserRegistry: denoiser "${id}" is registered but disabled ` +
+          `(its required host config was not supplied — an InferenceGraph for ` +
+          `'neural', or an OIDN modelUrl for 'oidn-final')`,
       );
     }
     return d;

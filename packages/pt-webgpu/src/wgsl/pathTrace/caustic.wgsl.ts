@@ -6,8 +6,11 @@
  *  - `perturbAroundDirection` — cone-jittered direction sampler used by MNEE
  *  - `traceSpecularTransmissiveChain` — multi-bounce specular-transmissive
  *    chain walker (shared between MNEE and the photon-map gather kernel)
- *  - `manifoldNeeContribution` — caustic strategy mode 1 (Hanika et al. 2015
- *    manifold next-event estimation)
+ *  - `manifoldNeeContribution` — caustic strategy mode 1: a stochastic
+ *    cone-search APPROXIMATION of MNEE (roughness-scaled cone perturbation of the
+ *    light direction through a specular chain + a dot>0.75 alignment accept).
+ *    NOT a true Hanika 2015 manifold solve — no half-vector constraint, Newton
+ *    iteration, or change-of-variables Jacobian.
  *  - `photonMapContribution` — caustic strategy mode 2 (Jensen 1996 photon
  *    mapping with a tiny in-shader photon pass + Gaussian gather kernel)
  *

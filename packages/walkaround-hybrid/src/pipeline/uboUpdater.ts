@@ -211,12 +211,12 @@ export function updateUBO(
   // When disabled both stay 0 → RIS uses the flat power-CDF path exactly.
   u32[89] = (inputs.lighting.lightTreeEnabled ?? 0) >>> 0; // offset 356 — lightTreeEnabled
   u32[90] = (inputs.lighting.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
-  // NRC cache gate (offset 364 — the former _ppgPad2 slot). 0 keeps the gi-ris
-  // suffix on the verbatim DDGI-atlas estimate (NRC-OFF bit-identity); 1 turns
-  // on the neural radiance cache. Absent ⇒ 0 (OFF), so callers and existing
-  // tests that never set it are byte-identical to before. STAGED: the gate
-  // flips here but the query/record compute passes are the next phase — a gate
-  // of 1 is currently inert (no pass reads u32[91] yet). See V20.
+  // NRC cache flag (offset 364 — the former _ppgPad2 slot). 0 keeps the gi-ris
+  // suffix on the verbatim DDGI-atlas estimate (NRC-OFF bit-identity); 1 marks
+  // the neural radiance cache on. Absent ⇒ 0 (OFF), so callers and existing
+  // tests that never set it are byte-identical to before. NOTE: this UBO field
+  // is an informational mirror — no shader reads u32[91]. The load-bearing gate
+  // is compile-time (the risGiNrc variant is composed only when nrcEnabled). See V20.
   u32[91] = (inputs.nrc.nrcEnabled ?? 0) >>> 0; // offset 364 — nrcEnabled (was _ppgPad2)
   // ReGIR grid state (offsets 368..412). When ReGIR is off every field is 0,
   // so the kernel's `regirEnabled == 0` gate keeps RIS on the light-tree path

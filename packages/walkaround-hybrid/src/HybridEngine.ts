@@ -170,10 +170,12 @@ interface ParsedHybridEngineConfig {
    *  COMPILE-TIME (the boolean selects the GI pipeline layout + shader variant
    *  at init); this number is also threaded into the per-frame UBO. */
   readonly restirPtReuse: number;
-  /** NRC (Müller et al. 2021) cache gate (0 = off / verbatim DDGI suffix,
-   *  1 = neural radiance cache eligible). Per-frame UBO gate, no pipeline
-   *  rebuild. STAGED: gate plumbed end-to-end + bit-identity-pinned OFF; the
-   *  query/record passes are the next phase. FORBIDDEN on tier:'lite'. */
+  /** NRC (Müller et al. 2021) cache flag mirrored into the per-frame UBO
+   *  (0 = off / verbatim DDGI suffix, 1 = on). The load-bearing gate is
+   *  COMPILE-TIME: `nrcEnabled` selects the `risGiNrc` GI shader variant at
+   *  engine creation (a UBO flag alone can't add the @group(4) NRC bindings).
+   *  When ON, the suffix cache-query + per-frame training passes are live.
+   *  FORBIDDEN on tier:'lite'. */
   readonly nrcEnabled: number;
   readonly staticPipelineRebuildKey: string | number | null;
   readonly getPipelineRebuildKey: (() => string | number | null | undefined) | undefined;
@@ -398,10 +400,10 @@ export function deriveHybridEngineConfig(
     // GI spatial/temporal reuse is bit-identical to the legacy clamped-Jacobian
     // path unless a host opts in via opts.restirPtReuse.
     restirPtReuse: opts.restirPtReuse === true ? 1 : 0,
-    // NRC cache gate. Default 0 (OFF) so the gi-ris suffix is bit-identical to
+    // NRC cache flag. Default 0 (OFF) so the gi-ris suffix is bit-identical to
     // the verbatim DDGI-atlas estimate unless a host opts in via opts.nrcEnabled
-    // (which tier:'lite' forbids — validated above). STAGED: this gate is
-    // plumbed to the UBO but the query/record passes are the next phase.
+    // (which tier:'lite' forbids — validated above). The real gate is compile-time
+    // (selects the risGiNrc variant); this value is mirrored into the UBO.
     nrcEnabled: opts.nrcEnabled === true ? 1 : 0,
     staticPipelineRebuildKey: opts.pipelineRebuildKey ?? null,
     getPipelineRebuildKey: opts.getPipelineRebuildKey,
@@ -911,11 +913,12 @@ export class HybridEngine implements Engine {
   //     refit the BVH bounds in-place (no SAH rebuild, no pipeline
   //     recompile, no DDGI atlas invalidation), rewrite the affected
   //     primitive's vertex slice in `bvhPositions`, reset the accumulator.
-  //  - any topology field present (`positions` / `normals` / `uvs` /
-  //     `tangents` / `indices` / `instances` / `params` / `shape` /
-  //     `fallbackMesh` / `kind`) → full-rebuild path (a): re-run
+  //  - vertex/index-count topology field present (`positions` / `normals` /
+  //     `uvs` / `tangents` / `indices`) → full-rebuild path (a): re-run
   //     `buildReSTIRSceneBVH`, destroy + reupload all four BVH GPU
   //     buffers, reset the accumulator.
+  //  - `instances` / `params` / `shape` / `fallbackMesh` / `kind` → THROW
+  //     (topologyRebuild): these require a setScene / primitive replacement.
   //  - material-only patches → patch scene primitive + rebuild via setScene()
   //     for correctness (material-byte upload optimization can still be
   //     layered later without changing host contract behavior).

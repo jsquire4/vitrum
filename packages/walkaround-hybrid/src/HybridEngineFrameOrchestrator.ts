@@ -71,11 +71,10 @@ export interface HybridDenoiserFilterDeps {
    *  field (telemetry/consistency). Lives in this cluster for the same
    *  derived-gate (not scalar tunable) reason as `stainedGlassFlags`. */
   restirPtReuse: number;
-  /** NRC (Müller et al. 2021) cache gate (0 = off / verbatim DDGI suffix, 1 =
-   *  neural radiance cache eligible). Splatted into pipeline.renderFrame as
-   *  `nrcEnabled`. Same derived-gate cluster rationale as `restirPtReuse`.
-   *  STAGED: gate plumbed + OFF bit-identity pinned; the query/record passes
-   *  are the next phase. */
+  /** NRC (Müller et al. 2021) cache flag (0 = off / verbatim DDGI suffix, 1 =
+   *  on). Splatted into pipeline.renderFrame as `nrcEnabled`. Same derived-gate
+   *  cluster rationale as `restirPtReuse`. The load-bearing gate is compile-time
+   *  (the risGiNrc variant); when ON the suffix cache-query + training are live. */
   nrcEnabled: number;
 }
 

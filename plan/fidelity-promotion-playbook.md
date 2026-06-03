@@ -240,9 +240,9 @@ queue" below.)
   impl stays in `shared-denoisers` for the realtime walkaround stack only.
 - **pt-webgl Jakob-Hanika placeholder → real** (roadmap §0.5 item 2) — concurrent
   work; gates the *pt-webgl* spectral fidelity numbers (not the pt-webgpu rows).
-- **BMFR denoiser** — in the `denoiser` union (`core/src/engine/factory.ts:70`)
-  but not in `shared-denoisers`; roadmap §0.5 item 1 says implement, do not
-  remove. Not a fidelity-matrix row; tracked separately.
+- **BMFR denoiser** — SHIPPED (roadmap §0.5 item 1): real Koskela-2019 blockwise
+  Householder-QR regression in `shared-denoisers` (`wgsl/bmfr.wgsl.ts`,
+  `bmfrRegression.ts`) + `BmfrDenoiser` in walkaround. Not a fidelity-matrix row.
 
 ### Dependency summary
 

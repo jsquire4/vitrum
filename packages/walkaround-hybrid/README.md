@@ -53,8 +53,8 @@ The binary format is `.vitrum-model` (magic `0xDEAF1984`, little-endian) —
 mirrored by the Python exporter at `tools/neural-denoiser-training/export_weights.py`
 and the TypeScript serialiser `serializeWeightsToArrayBuffer`.
 
-The canonical trained checkpoint ships as `vi-neural-weights.bin` (target ~1.7 MB
-at f32 for the default ~426k-parameter spec). The repo does NOT ship a trained
+The canonical trained checkpoint ships as `vi-neural-weights.bin` (target ~2.1 MB
+at f32 for the default ~535k-parameter spec). The repo does NOT ship a trained
 checkpoint — see `tools/neural-denoiser-training/README.md` for training.
 
 **Smoke-test path (no trained weights):** `buildRandomWeightsForSpec(spec, seed)`

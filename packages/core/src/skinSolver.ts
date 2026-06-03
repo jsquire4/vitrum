@@ -35,7 +35,8 @@
  * Cost (rough): ~30 µs/1000 verts on modern hardware for the LBS inner
  * loop, plus boneCount · ~0.5 µs for the prep. Skinning a 30k-vert mesh
  * with 50 bones is ~1 ms per frame — squarely in the budget for a single
- * hero character. The GPU compute variant (deferred) gives ~10× headroom.
+ * hero character. A GPU compute variant (`GpuSkinningSubsystem` in
+ * `@vitrum/walkaround-hybrid`) is shipped and gives ~10× headroom.
  */
 
 import type { SkinnedMeshPrimitive } from './scene/primitives.js';

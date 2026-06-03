@@ -97,9 +97,9 @@ export const MAX_PASS_COUNT = 35;
 interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is
    *  self-managing and doesn't participate in the timestamp-query pass layout).
-   *  W1-R3: widened to {@link DenoiserId} so 'none' / 'oidn-final' compile;
-   *  'oidn-final' is registered as `disabled` and never reaches this layout
-   *  builder at runtime — the registry rejects it at `lookup()` time. */
+   *  W1-R3: widened to {@link DenoiserId} so 'none' / 'oidn-final' compile.
+   *  'oidn-final' (like 'neural') is self-managing and doesn't participate in
+   *  this timestamp-query pass layout either. */
   readonly denoiserMode: import('./denoisers/index.js').DenoiserId;
   /** Phase-0 productization — ReSTIR-DI spatial ping-pong pass count (1 or 2).
    *  Default 2. MUST match the {@link SpatialReservoirPass} config so the slot

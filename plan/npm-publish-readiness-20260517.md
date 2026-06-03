@@ -1,6 +1,6 @@
 # npm publish-readiness audit — 2026-05-17
 
-> Read-only audit of every workspace `package.json` plus root, enumerating every blocker that exists today before vitrum can ship `@vitrum/*` to npm. No changes were made to any `package.json` or source file. The project remains pre-alpha and private per [`CLAUDE.md`](../CLAUDE.md) and [`RELEASING.md`](../RELEASING.md).
+> Read-only audit of every workspace `package.json` plus root, enumerating every blocker that exists today before vitrum can ship `@vitrum/*` to npm. No changes were made to any `package.json` or source file. The project is on the **release-candidate track** (not "pre-alpha" — see [`CLAUDE.md`](../CLAUDE.md) / `README.md`) and remains private + unpublished per [`RELEASING.md`](../RELEASING.md).
 
 ## Status update — 2026-05-18
 

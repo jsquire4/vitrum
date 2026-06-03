@@ -41,8 +41,9 @@ export interface InstancedMeshPrimitive {
  *  unsupported shapes log a warning and degrade to skip (or to mesh
  *  tessellation if a fallback geometry is provided).
  *
- *  Future shapes (gemstones via 'ellipsoid', pillars via 'capsule', etc.)
- *  extend this discriminated union without breaking existing scenes.
+ *  Future shapes (gemstones via 'ellipsoid', etc.) extend this discriminated
+ *  union without breaking existing scenes. ('capsule'/'cylinder' are already
+ *  in the union — see AnalyticShape below.)
  */
 export interface AnalyticPrimitive {
   readonly kind: 'analytic';
@@ -85,9 +86,9 @@ export type AnalyticShape =
  *   Captured at bind time; constant for the life of the primitive.
  * - `material` / `transform` mirror `MeshPrimitive`.
  *
- * The CPU-side solver lives in `@vitrum/three-bindings` (C1 follow-up);
- * the engine ingests the deformed positions through the existing
- * `HybridEngine.updatePrimitive` positions-refit fast path (A3).
+ * The CPU-side solver (`solveSkin`) lives in `@vitrum/core` (re-exported by
+ * `@vitrum/three-bindings`); the engine ingests the deformed positions through
+ * the existing `HybridEngine.updatePrimitive` positions-refit fast path (A3).
  *
  * Backends that don't implement skinning should report this in
  * `EngineCapabilities` and either skip the primitive (with a warning)

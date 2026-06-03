@@ -28,7 +28,7 @@ This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl
 | Material fields parity (cornell) | supported | experimental | `scenePack.test.ts`; `capturePtWebgpu.mjs` | `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png` | WG-0 baseline committed; strict hash on GPU host |
 | Caustic strategies | experimental | experimental | `factoryCapabilities.test.ts` | hardware capture pending | Full tier only; lite tier disables |
 | SVGF-real denoiser | unsupported | unsupported | `unsupportedDenoiserDegrade.test.ts` (warns + degrades to no-denoise) | n/a | Converged tracer → `oidn-final`; SVGF is real-time-only. Both converged backends warn on `'svgf-real'`; the real SVGF impl lives in `shared-denoisers` for the realtime walkaround stack. |
-| BDPT (eye↔light connections) | experimental | experimental | `forkUniformBridge.test.ts`, `bdptPlumbing.test.ts` | pt-webgl fork + pt-webgpu CPU light-path fill | GPU light-subpath pass follow-up |
+| BDPT (eye↔light connections) | experimental | experimental | `forkUniformBridge.test.ts`, `bdptPlumbing.test.ts` | pt-webgl fork (GPU subpath) + pt-webgpu GPU `bdptExtendLightSubpath` @compute pass (dispatched; CPU fill is test-oracle only); correctness GPU-validated (HARDWARE-VALIDATION-NEEDS V18/V25) | Stays `experimental` pending perf capture + strict baseline |
 
 ## Evidence gates
 
@@ -36,5 +36,10 @@ This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl
 - GPU: `tools/benchmark-runner` with `VITRUM_GPU_CAPTURE=1` and a capture adapter.
   Rows must not be promoted to `supported` until this produces non-null hashes,
   perf fields, and PASS status for the matching acceptance scenario.
+- **Correctness vs perf (2026-05/06 GPU waves):** several rows have their *correctness*
+  GPU-validated on dzn/lavapipe per `HARDWARE-VALIDATION-NEEDS.md` (Möller V7, BDPT
+  V18/V25, many-light V22, SSS V23, camera-emitter V26) but stay `experimental` here
+  because promotion additionally requires a perf field + a strict committed-baseline hash
+  on a real GPU. "Hardware capture pending" in a row means that step, not "nothing ran."
 
 See also `plan/gap-closure-acceptance-matrix.md`.

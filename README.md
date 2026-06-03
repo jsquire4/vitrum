@@ -49,7 +49,7 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 | **Light types**               | point / dir / area / sky    | point / dir / area / sky   |
 | **Materials**                 | PBR + transmission          | PBR + clearcoat + transmission + spectral hero-MIS |
 | **Caustics**                  | none (DDGI only)            | manifold-NEE (opt-in)      |
-| **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; no topology change) | camera ✓ / lights ✓ / mesh ✓ (no topology change) |
+| **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild; instance-count not yet) | camera ✓ / lights ✓ / mesh ✓ (topology + instance-count via rebuild) |
 | **Hardware**                  | WebGPU                      | WebGL2                     |
 | **Convergence**               | re-renders every frame      | accumulates SPP            |
 
