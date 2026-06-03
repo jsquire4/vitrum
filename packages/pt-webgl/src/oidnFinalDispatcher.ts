@@ -7,6 +7,22 @@
  * is the sibling implementation; this module brings the same `'oidn-final'`
  * denoiser mode to the pt-webgl converged-frame path.
  *
+ * ## Thin wrapper
+ *
+ * This file is now a thin wrapper over {@link OIDNDispatcherCore} from
+ * `@vitrum/shared-denoisers`. The shared core holds the cohort state
+ * machine (cohortId / inFlight / haveCompleted / latest / disposed /
+ * bridge + methods invalidate / getLatestDenoised / isInFlight / dispose).
+ *
+ * What this wrapper contributes:
+ *  - The WebGL-specific `kickIfReady` signature
+ *    (`renderer, target, width, height, divideByAlpha`).
+ *  - The synchronous GL readback via `readAccumulationRgbFloat` (one
+ *    `gl.readPixels` — the converged-frame cost paid exactly once per
+ *    cohort), which is performed BEFORE entering the async cycle.
+ *  - `preloadOnBridgeInit: false` (pt-webgl does NOT call preloadOIDNModel
+ *    on bridge init, unlike pt-webgpu).
+ *
  * ## Why a separate module
  *
  * The engine's render loop is synchronous (the host drives it from RAF and
@@ -52,130 +68,51 @@
 
 import type { WebGLRenderer, WebGLRenderTarget } from 'three';
 import { readAccumulationRgbFloat } from './readbackHdr.js';
+import {
+  OIDNDispatcherCore,
+  oidnDefaultLoader,
+} from '@vitrum/shared-denoisers';
 
-/**
- * Construction-time configuration for {@link OIDNFinalDispatcher}.
- *
- * `modelUrl` is required. `executionProviders`, if provided, overrides the
- * shared-denoisers default (`['webnn', 'webgpu', 'wasm']`) — useful for
- * pinning a specific provider in deterministic tests.
- */
-export interface OIDNFinalDispatcherOptions {
-  /**
-   * URL or path to the bundled OIDN ONNX model file (e.g.
-   * `'/models/oidn_rt_hdr.onnx'`). The host owns provisioning the file.
-   * Required; the dispatcher throws at construction if absent.
-   */
-  readonly modelUrl: string;
+// Re-export the shared types so existing importers of this module are unchanged.
+export type {
+  OIDNFinalDispatcherOptions,
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+} from '@vitrum/shared-denoisers';
 
-  /**
-   * Optional override of the ONNX Runtime Web execution providers, in
-   * priority order. Forwarded verbatim to `denoiseFinal()`.
-   */
-  readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-}
+import type {
+  OIDNFinalDispatcherOptions,
+  DenoisedFrame,
+  OIDNBridgeLoader,
+  ReadbackResult,
+} from '@vitrum/shared-denoisers';
 
-/**
- * Latest completed denoised image, returned by
- * {@link OIDNFinalDispatcher.getLatestDenoised}.
- *
- * Layout matches `OIDNDenoiseInputs.color`: row-major, interleaved RGB
- * (`index = (row * width + col) * 3 + channel`), 3 channels.
- */
-export interface DenoisedFrame {
-  readonly rgb: Float32Array;
-  readonly width: number;
-  readonly height: number;
-}
-
-/**
- * Minimal surface of the `@vitrum/shared-denoisers` OIDN bridge that this
- * dispatcher depends on. Extracted to an interface so tests can supply a
- * mock without coupling to the live ONNX Runtime Web import chain.
- */
-export interface OIDNBridgeLike {
-  readonly denoiseFinal: (
-    inputs: {
-      color: Float32Array;
-      normal?: Float32Array;
-      albedo?: Float32Array;
-      width: number;
-      height: number;
-    },
-    opts: {
-      modelUrl: string;
-      executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-    },
-  ) => Promise<Float32Array>;
-  readonly preloadOIDNModel?: (opts: {
-    modelUrl: string;
-    executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-  }) => Promise<void>;
-  readonly releaseOIDNCacheEntry?: (opts: {
-    modelUrl: string;
-    executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-  }) => void;
-  /** @deprecated Prefer {@link releaseOIDNCacheEntry} for per-engine dispose. */
-  readonly clearOIDNCache?: () => void;
-}
-
-/**
- * Wraps the bridge import in a typed lazy loader so the dispatcher remains
- * test-friendly. Production callers pass `undefined` (the dispatcher resolves
- * the import lazily via dynamic `import('@vitrum/shared-denoisers')`); tests
- * pass a synthetic bridge implementing {@link OIDNBridgeLike}.
- */
-export type OIDNBridgeLoader = () => Promise<OIDNBridgeLike>;
-
-const _defaultLoader: OIDNBridgeLoader = async () => {
-  // Dynamic import keeps the bridge module's onnxruntime-web peer dep
-  // out of the synchronous pt-webgl bundle path — hosts that never select
-  // 'oidn-final' don't pay the bridge's module-load cost.
-  const mod = await import('@vitrum/shared-denoisers');
-  return {
-    denoiseFinal: mod.denoiseFinal,
-    preloadOIDNModel: mod.preloadOIDNModel,
-    releaseOIDNCacheEntry: mod.releaseOIDNCacheEntry,
-    clearOIDNCache: mod.clearOIDNCache,
-  };
-};
+/** Input type for the pt-webgl readback callback.
+ *  The synchronous GL readback is performed in `kickIfReady` before the async
+ *  cycle; the callback merely unpacks the already-read data. */
+type WebGLReadbackInput = ReadbackResult;
 
 export class OIDNFinalDispatcher {
-  readonly #modelUrl: string;
-  readonly #executionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
-  readonly #loader: OIDNBridgeLoader;
-
-  /** True while an OIDN inference promise is unresolved. Re-kick attempts
-   *  during this window are no-ops. */
-  #inFlight = false;
-  /** True once at least one inference has completed for the current
-   *  invalidation-cohort. Reset to false on {@link invalidate}. */
-  #haveCompleted = false;
-  /** Latest completed denoised image. Null until the first inference of
-   *  the current cohort resolves, or after {@link invalidate}. */
-  #latest: DenoisedFrame | null = null;
-  /** Set on {@link dispose}. After dispose the dispatcher refuses to
-   *  kick, refuses to store new results, and clears the bridge cache. */
-  #disposed = false;
-  /** Cached bridge — resolved on first kick; subsequent kicks skip the
-   *  import. Module-level cache on the bridge side keeps the
-   *  InferenceSession warm across cycles. */
-  #bridge: OIDNBridgeLike | null = null;
-  /** Cohort token: every {@link invalidate} call bumps this; inferences in
-   *  flight at bump time discard their result on resolve. Prevents a stale
-   *  inference from polluting the post-invalidation cohort. */
-  #cohortId = 0;
+  readonly #core: OIDNDispatcherCore<WebGLReadbackInput>;
 
   constructor(opts: OIDNFinalDispatcherOptions, loader?: OIDNBridgeLoader) {
     if (opts.modelUrl === undefined || opts.modelUrl.length === 0) {
       throw new Error(
         '[OIDNFinalDispatcher] modelUrl is required. ' +
-          "Pass EngineOptions.extensions['vitrum.ptWebgl.oidnModelUrl'] when constructing the engine with denoiser: 'oidn-final'.",
+          "Pass oidn: { modelUrl } with denoiser: 'oidn-final'.",
       );
     }
-    this.#modelUrl = opts.modelUrl;
-    this.#executionProviders = opts.executionProviders;
-    this.#loader = loader ?? _defaultLoader;
+    this.#core = new OIDNDispatcherCore<WebGLReadbackInput>({
+      dispatcherOptions: opts,
+      loader: loader ?? oidnDefaultLoader,
+      // pt-webgl: readback is already done synchronously before kickIfReady
+      // hands off to the core; the callback is a pass-through.
+      readback: async (input) => input,
+      // pt-webgl does NOT call preloadOIDNModel on bridge init (behavioral
+      // difference from pt-webgpu — preserved intentionally).
+      preloadOnBridgeInit: false,
+    });
   }
 
   /**
@@ -184,12 +121,12 @@ export class OIDNFinalDispatcher {
    * since the last {@link invalidate} call.
    */
   getLatestDenoised(): DenoisedFrame | null {
-    return this.#latest;
+    return this.#core.getLatestDenoised();
   }
 
   /** True iff an inference is currently unresolved. Diagnostic only. */
   isInFlight(): boolean {
-    return this.#inFlight;
+    return this.#core.isInFlight();
   }
 
   /**
@@ -200,12 +137,10 @@ export class OIDNFinalDispatcher {
    * invalidates the accumulator also invalidates the denoised cache.
    *
    * An in-flight inference is allowed to complete, but the result is
-   * dropped on resolve (the bumped {@link #cohortId} catches the race).
+   * dropped on resolve (the bumped cohortId in the core catches the race).
    */
   invalidate(): void {
-    this.#cohortId += 1;
-    this.#haveCompleted = false;
-    this.#latest = null;
+    this.#core.invalidate();
   }
 
   /**
@@ -235,14 +170,8 @@ export class OIDNFinalDispatcher {
     height: number,
     divideByAlpha: boolean,
   ): void {
-    if (this.#disposed) return;
-    if (this.#inFlight) return;
-    if (this.#haveCompleted) return;
+    // Guard before paying the readback cost.
     if (width <= 0 || height <= 0) return;
-
-    // Snapshot the cohort BEFORE the readback so a concurrent invalidate
-    // call between readback and resolve drops the result cleanly.
-    const cohortAtKick = this.#cohortId;
 
     // Sync GL readback — one readPixels into a Float32Array. We pay this
     // ~5–30 ms at 1080p exactly once per converged cohort, which is the
@@ -255,40 +184,9 @@ export class OIDNFinalDispatcher {
       return;
     }
 
-    this.#inFlight = true;
-    void this.#runInference(color, width, height, cohortAtKick).finally(() => {
-      this.#inFlight = false;
-    });
-  }
-
-  async #runInference(
-    color: Float32Array,
-    width: number,
-    height: number,
-    cohortAtKick: number,
-  ): Promise<void> {
-    try {
-      if (this.#bridge == null) {
-        this.#bridge = await this.#loader();
-      }
-      if (this.#disposed || this.#cohortId !== cohortAtKick) return;
-      const opts = this.#executionProviders !== undefined
-        ? { modelUrl: this.#modelUrl, executionProviders: this.#executionProviders }
-        : { modelUrl: this.#modelUrl };
-      const denoised = await this.#bridge.denoiseFinal(
-        { color, width, height },
-        opts,
-      );
-      if (this.#disposed || this.#cohortId !== cohortAtKick) return;
-      this.#latest = { rgb: denoised, width, height };
-      this.#haveCompleted = true;
-    } catch (err) {
-      console.warn(
-        '[OIDNFinalDispatcher] denoiseFinal failed — install onnxruntime-web ' +
-          'and verify the OIDN ONNX model URL is reachable.',
-        err,
-      );
-    }
+    // Hand off to the shared core. The readback is already complete;
+    // the callback is a pass-through that just returns the data.
+    this.#core.kickIfReady({ color, width, height }, width, height);
   }
 
   /**
@@ -296,19 +194,6 @@ export class OIDNFinalDispatcher {
    * Falls back to global `clearOIDNCache` only when the bridge lacks ref-count API.
    */
   dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    const opts = this.#executionProviders !== undefined
-      ? { modelUrl: this.#modelUrl, executionProviders: this.#executionProviders }
-      : { modelUrl: this.#modelUrl };
-    try {
-      if (this.#bridge?.releaseOIDNCacheEntry != null) {
-        this.#bridge.releaseOIDNCacheEntry(opts);
-      } else if (this.#bridge?.clearOIDNCache != null) {
-        this.#bridge.clearOIDNCache();
-      }
-    } catch {
-      /* swallow — disposal must not throw */
-    }
+    this.#core.dispose();
   }
 }

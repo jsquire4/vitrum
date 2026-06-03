@@ -152,6 +152,21 @@ export type { BmfrUniforms } from './bmfrBindings.js';
 export { runBmfrWebGPU } from './bmfrWebGPU.js';
 export type { BmfrWebGPUOptions } from './bmfrWebGPU.js';
 
+// ── OIDNDispatcherCore — shared cohort state machine (pt-webgl + pt-webgpu) ──
+export {
+  OIDNDispatcherCore,
+  _defaultLoader as oidnDefaultLoader,
+} from './oidnDispatcherCore.js';
+export type {
+  OIDNFinalDispatcherOptions,
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+  ReadbackResult,
+  ReadbackFn,
+  OIDNDispatcherCoreOptions,
+} from './oidnDispatcherCore.js';
+
 // ── Cross-package primitives (consumed by walkaround-hybrid OIDN denoiser) ───
 // These helpers existed inside the package but were not re-exported from the
 // index. The walkaround-hybrid OIDNFinalDenoiser previously inlined its own

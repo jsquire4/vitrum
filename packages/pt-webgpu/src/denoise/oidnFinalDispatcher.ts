@@ -3,6 +3,17 @@
  *
  * Unlike pt-webgl (color-only MRT), pt-webgpu reads HDR + albedo + normal-depth
  * storage textures via `readOidnInputsFromTextures` (WG-1 / plan primary-release).
+ *
+ * ## Thin wrapper
+ *
+ * This file is now a thin wrapper over {@link OIDNDispatcherCore} from
+ * `@vitrum/shared-denoisers`. The shared core holds the cohort state machine;
+ * this wrapper contributes:
+ *  - The WebGPU-specific `kickIfReady` signature (`device, sources, width, height`).
+ *  - Wiring `readOidnInputsFromTextures` as the async readback callback.
+ *  - `preloadOnBridgeInit: true` (pt-webgpu calls `preloadOIDNModel` on bridge
+ *    init; pt-webgl does not — this is the one behavioral difference between
+ *    the two backends, preserved intentionally).
  */
 
 import {
@@ -14,66 +25,35 @@ import {
 
 export type { OidnReadbackFn, OidnReadbackResult, OidnTextureSources } from './rgba16fReadback.js';
 
-export interface OIDNFinalDispatcherOptions {
-  readonly modelUrl: string;
-  readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-}
+import {
+  OIDNDispatcherCore,
+  oidnDefaultLoader,
+} from '@vitrum/shared-denoisers';
 
-export interface DenoisedFrame {
-  readonly rgb: Float32Array;
+// Re-export the shared types so existing importers of this module are unchanged.
+export type {
+  OIDNFinalDispatcherOptions,
+  DenoisedFrame,
+  OIDNBridgeLike,
+  OIDNBridgeLoader,
+} from '@vitrum/shared-denoisers';
+
+import type {
+  OIDNFinalDispatcherOptions,
+  DenoisedFrame,
+  OIDNBridgeLoader,
+} from '@vitrum/shared-denoisers';
+
+/** Input type for the pt-webgpu readback callback. */
+interface WebGPUReadbackInput {
+  readonly device: GPUDevice;
+  readonly sources: OidnTextureSources;
   readonly width: number;
   readonly height: number;
 }
 
-export interface OIDNBridgeLike {
-  readonly denoiseFinal: (
-    inputs: {
-      color: Float32Array;
-      normal?: Float32Array;
-      albedo?: Float32Array;
-      width: number;
-      height: number;
-    },
-    opts: {
-      modelUrl: string;
-      executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-    },
-  ) => Promise<Float32Array>;
-  readonly preloadOIDNModel?: (opts: {
-    modelUrl: string;
-    executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-  }) => Promise<void>;
-  readonly releaseOIDNCacheEntry?: (opts: {
-    modelUrl: string;
-    executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
-  }) => void;
-  readonly clearOIDNCache?: () => void;
-}
-
-export type OIDNBridgeLoader = () => Promise<OIDNBridgeLike>;
-
-const _defaultLoader: OIDNBridgeLoader = async () => {
-  const mod = await import('@vitrum/shared-denoisers');
-  return {
-    denoiseFinal: mod.denoiseFinal,
-    preloadOIDNModel: mod.preloadOIDNModel,
-    releaseOIDNCacheEntry: mod.releaseOIDNCacheEntry,
-    clearOIDNCache: mod.clearOIDNCache,
-  };
-};
-
 export class OIDNFinalDispatcher {
-  readonly #modelUrl: string;
-  readonly #executionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
-  readonly #loader: OIDNBridgeLoader;
-  readonly #readback: OidnReadbackFn;
-
-  #inFlight = false;
-  #haveCompleted = false;
-  #latest: DenoisedFrame | null = null;
-  #disposed = false;
-  #bridge: OIDNBridgeLike | null = null;
-  #cohortId = 0;
+  readonly #core: OIDNDispatcherCore<WebGPUReadbackInput>;
 
   constructor(
     opts: OIDNFinalDispatcherOptions,
@@ -86,24 +66,28 @@ export class OIDNFinalDispatcher {
           "Pass oidn: { modelUrl } with denoiser: 'oidn-final'.",
       );
     }
-    this.#modelUrl = opts.modelUrl;
-    this.#executionProviders = opts.executionProviders;
-    this.#loader = loader ?? _defaultLoader;
-    this.#readback = readback ?? readOidnInputsFromTextures;
+    const resolvedReadback = readback ?? readOidnInputsFromTextures;
+    this.#core = new OIDNDispatcherCore<WebGPUReadbackInput>({
+      dispatcherOptions: opts,
+      loader: loader ?? oidnDefaultLoader,
+      readback: ({ device, sources, width, height }) =>
+        resolvedReadback(device, sources, width, height),
+      // pt-webgpu calls preloadOIDNModel on bridge init (behavioral
+      // difference from pt-webgl — preserved intentionally).
+      preloadOnBridgeInit: true,
+    });
   }
 
   getLatestDenoised(): DenoisedFrame | null {
-    return this.#latest;
+    return this.#core.getLatestDenoised();
   }
 
   isInFlight(): boolean {
-    return this.#inFlight;
+    return this.#core.isInFlight();
   }
 
   invalidate(): void {
-    this.#cohortId += 1;
-    this.#haveCompleted = false;
-    this.#latest = null;
+    this.#core.invalidate();
   }
 
   /**
@@ -115,84 +99,10 @@ export class OIDNFinalDispatcher {
     width: number,
     height: number,
   ): void {
-    if (this.#disposed) return;
-    if (this.#inFlight) return;
-    if (this.#haveCompleted) return;
-    if (width <= 0 || height <= 0) return;
-
-    const cohortAtKick = this.#cohortId;
-    this.#inFlight = true;
-    void this.#runCycle(device, sources, width, height, cohortAtKick).finally(() => {
-      this.#inFlight = false;
-    });
-  }
-
-  async #runCycle(
-    device: GPUDevice,
-    sources: OidnTextureSources,
-    width: number,
-    height: number,
-    cohortAtKick: number,
-  ): Promise<void> {
-    try {
-      const readback = await this.#readback(device, sources, width, height);
-      if (this.#disposed || this.#cohortId !== cohortAtKick) return;
-
-      if (this.#bridge == null) {
-        this.#bridge = await this.#loader();
-        if (this.#bridge.preloadOIDNModel != null) {
-          await this.#bridge.preloadOIDNModel({
-            modelUrl: this.#modelUrl,
-            ...(this.#executionProviders !== undefined
-              ? { executionProviders: this.#executionProviders }
-              : {}),
-          });
-        }
-      }
-      if (this.#disposed || this.#cohortId !== cohortAtKick) return;
-
-      const opts =
-        this.#executionProviders !== undefined
-          ? { modelUrl: this.#modelUrl, executionProviders: this.#executionProviders }
-          : { modelUrl: this.#modelUrl };
-
-      const denoised = await this.#bridge.denoiseFinal(
-        {
-          color: readback.color,
-          width: readback.width,
-          height: readback.height,
-          ...(readback.albedo !== undefined ? { albedo: readback.albedo } : {}),
-          ...(readback.normal !== undefined ? { normal: readback.normal } : {}),
-        },
-        opts,
-      );
-
-      if (this.#disposed || this.#cohortId !== cohortAtKick) return;
-      this.#latest = { rgb: denoised, width, height };
-      this.#haveCompleted = true;
-    } catch (err) {
-      console.warn(
-        '[vitrum/pt-webgpu OIDNFinalDispatcher] readback or denoiseFinal failed',
-        err,
-      );
-    }
+    this.#core.kickIfReady({ device, sources, width, height }, width, height);
   }
 
   dispose(): void {
-    if (this.#disposed) return;
-    this.#disposed = true;
-    const opts =
-      this.#executionProviders !== undefined
-        ? { modelUrl: this.#modelUrl, executionProviders: this.#executionProviders }
-        : { modelUrl: this.#modelUrl };
-    try {
-      if (this.#bridge?.releaseOIDNCacheEntry != null) {
-        this.#bridge.releaseOIDNCacheEntry(opts);
-      } else if (this.#bridge?.clearOIDNCache != null) {
-        this.#bridge.clearOIDNCache();
-      }
-    } catch {
-      /* swallow */
-    }
+    this.#core.dispose();
   }
 }
