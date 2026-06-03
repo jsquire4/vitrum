@@ -11,7 +11,7 @@
  */
 
 import type * as THREE from 'three';
-import type { MaterialSpec, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
+import type { MaterialSpec, Vec2, Vec3, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer, TextureRef, UvTransform } from '@vitrum/core';
 import { VITRUM_USER_DATA_KEYS as K } from './userDataKeys.js';
 
 /**
@@ -48,6 +48,24 @@ function isPhysical(m: ThreeStdMat): m is ThreePhysMat {
   return (m as ThreePhysMat).isMeshPhysicalMaterial === true;
 }
 
+/**
+ * Wrap a THREE.Texture as a structured `TextureRef`, projecting THREE's
+ * `offset`/`repeat`/`rotation` into a `KHR_texture_transform` `UvTransform` and
+ * `texture.channel` into `texCoord` (which mesh UV set). Identity transform and
+ * channel 0 are omitted (exactOptionalPropertyTypes-friendly).
+ */
+export function toTextureRef(tex: THREE.Texture): TextureRef {
+  const t: { offset?: Vec2; scale?: Vec2; rotation?: number } = {};
+  if (tex.offset.x !== 0 || tex.offset.y !== 0) t.offset = [tex.offset.x, tex.offset.y];
+  if (tex.repeat.x !== 1 || tex.repeat.y !== 1) t.scale = [tex.repeat.x, tex.repeat.y];
+  if (tex.rotation !== 0) t.rotation = tex.rotation;
+  const ref: { handle: unknown; texCoord?: number; transform?: UvTransform } = { handle: tex };
+  const ch = (tex as { channel?: number }).channel;
+  if (typeof ch === 'number' && ch !== 0) ref.texCoord = ch;
+  if (t.offset !== undefined || t.scale !== undefined || t.rotation !== undefined) ref.transform = t;
+  return ref;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Material converter
 // ────────────────────────────────────────────────────────────────────────────
@@ -67,15 +85,28 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
     base.emissiveIntensity = m.emissiveIntensity;
   }
 
-  if (m.map != null) base.baseColorMap = m.map;
+  if (m.map != null) base.baseColorMap = toTextureRef(m.map);
   if (m.normalMap != null) {
-    base.normalMap = m.normalMap;
+    base.normalMap = toTextureRef(m.normalMap);
     base.normalScale = m.normalScale.x;
   }
-  if (m.roughnessMap != null) base.roughnessMap = m.roughnessMap;
-  if (m.metalnessMap != null) base.metallicMap = m.metalnessMap;
-  if (m.emissiveMap != null) base.emissiveMap = m.emissiveMap;
-  if (m.alphaMap != null) base.alphaMap = m.alphaMap;
+  if (m.roughnessMap != null) base.roughnessMap = toTextureRef(m.roughnessMap);
+  if (m.metalnessMap != null) base.metallicMap = toTextureRef(m.metalnessMap);
+  if (m.emissiveMap != null) base.emissiveMap = toTextureRef(m.emissiveMap);
+  if (m.alphaMap != null) base.alphaMap = toTextureRef(m.alphaMap);
+  if (m.aoMap != null) {
+    base.aoMap = toTextureRef(m.aoMap);
+    if (m.aoMapIntensity !== 1) base.aoMapIntensity = m.aoMapIntensity;
+  }
+
+  // Alpha mode (glTF semantics): alphaTest > 0 → mask; else transparent → blend.
+  if (m.alphaTest > 0) {
+    base.alphaMode = 'mask';
+    base.alphaCutoff = m.alphaTest;
+  } else if (m.transparent) {
+    base.alphaMode = 'blend';
+  }
+  if (m.opacity !== 1) base.opacity = m.opacity;
 
   if (!isPhysical(m)) return base;
 
@@ -89,17 +120,25 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
   }
 
   if (p.thickness !== 0) base.thickness = p.thickness;
-  if (p.transmissionMap != null) base.transmissionMap = p.transmissionMap;
+  if (p.transmissionMap != null) base.transmissionMap = toTextureRef(p.transmissionMap);
 
   if (p.sheen !== 0) {
     base.sheen = p.sheen;
     base.sheenColor = colorToVec3(p.sheenColor);
     base.sheenRoughness = p.sheenRoughness;
+    if (p.sheenColorMap != null) base.sheenColorMap = toTextureRef(p.sheenColorMap);
+    if (p.sheenRoughnessMap != null) base.sheenRoughnessMap = toTextureRef(p.sheenRoughnessMap);
   }
 
   if (p.clearcoat !== 0) {
     base.clearcoat = p.clearcoat;
     base.clearcoatRoughness = p.clearcoatRoughness;
+    if (p.clearcoatMap != null) base.clearcoatMap = toTextureRef(p.clearcoatMap);
+    if (p.clearcoatRoughnessMap != null) base.clearcoatRoughnessMap = toTextureRef(p.clearcoatRoughnessMap);
+    if (p.clearcoatNormalMap != null) {
+      base.clearcoatNormalMap = toTextureRef(p.clearcoatNormalMap);
+      base.clearcoatNormalScale = p.clearcoatNormalScale.x;
+    }
   }
 
   if (p.iridescence !== 0) {
@@ -107,6 +146,8 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
     // THREE uses iridescenceIOR (caps); core uses iridescenceIor (camelCase).
     base.iridescenceIor = p.iridescenceIOR;
     base.iridescenceThicknessRange = p.iridescenceThicknessRange;
+    if (p.iridescenceMap != null) base.iridescenceMap = toTextureRef(p.iridescenceMap);
+    if (p.iridescenceThicknessMap != null) base.iridescenceThicknessMap = toTextureRef(p.iridescenceThicknessMap);
   }
 
   // Gap 5 (stainedGlass audit 2026-05-12) — anisotropy is set DIRECTLY on the
@@ -118,6 +159,7 @@ export function convertMaterial(m: ThreeStdMat): MaterialSpec {
     base.anisotropy = p.anisotropy;
     // Always capture rotation alongside anisotropy; 0 rotation is meaningful.
     base.anisotropyRotation = p.anisotropyRotation;
+    if (p.anisotropyMap != null) base.anisotropyMap = toTextureRef(p.anisotropyMap);
   }
 
   // ── userData.vitrum* stamps (RFE-06..08 / RFE-03) ──────────────────────────
@@ -227,8 +269,8 @@ export function convertBasicMaterial(m: THREE.MeshBasicMaterial): MaterialSpec {
     emissive: c,
     emissiveIntensity: 1.0,
   };
-  if (m.map != null) base.baseColorMap = m.map;
-  if (m.alphaMap != null) base.alphaMap = m.alphaMap;
+  if (m.map != null) base.baseColorMap = toTextureRef(m.map);
+  if (m.alphaMap != null) base.alphaMap = toTextureRef(m.alphaMap);
   return base;
 }
 

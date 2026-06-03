@@ -19,6 +19,7 @@ import * as THREE from 'three';
 import { convertMaterial } from '../material.js';
 import { vitrumSceneToThree } from '../vitrumSceneToThree.js';
 import type { MaterialSpec as VitrumMaterial, SpectralCurve, ThinFilmStack, SurfaceAbsorptionLayer } from '@vitrum/core';
+import { asTextureRef } from '@vitrum/core';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -406,7 +407,7 @@ describe('vitrumSceneToThree: emissive / alphaMap mapping', () => {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      alphaMap,
+      alphaMap: asTextureRef(alphaMap),
     });
     expect(threeMat.alphaMap).toBe(alphaMap);
   });

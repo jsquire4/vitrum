@@ -62,18 +62,49 @@ const PHYSICAL_MATERIAL_TEXTURE_FIELDS = [
   'transmissionMap',
 ] as const satisfies readonly (keyof MeshPhysicalMaterial)[];
 
+/**
+ * Resolve a structured `TextureRef` back to a THREE.Texture, re-applying the
+ * `UvTransform` (offset/scale/rotation) onto the texture's native
+ * offset/repeat/rotation and `texCoord` onto `channel`. Inverse of
+ * `toTextureRef` in material.ts. Returns null when `.handle` is not a Texture
+ * (e.g. an in-memory upload payload a raster backend would consume directly).
+ */
+function fromTextureRef(ref: unknown): Texture | null {
+  if (ref == null || typeof ref !== 'object') return null;
+  const r = ref as {
+    handle?: unknown;
+    texCoord?: number;
+    transform?: { offset?: readonly number[]; scale?: readonly number[]; rotation?: number };
+  };
+  if (!isTexture(r.handle)) return null;
+  const tex = r.handle;
+  const t = r.transform;
+  if (t?.offset) tex.offset.set(t.offset[0] ?? 0, t.offset[1] ?? 0);
+  if (t?.scale) tex.repeat.set(t.scale[0] ?? 1, t.scale[1] ?? 1);
+  if (typeof t?.rotation === 'number') tex.rotation = t.rotation;
+  if (typeof r.texCoord === 'number') (tex as { channel?: number }).channel = r.texCoord;
+  return tex;
+}
+
 /** Apply all texture-map fields from a vitrum Material onto a Three material. */
 function applyTextureMaps(mat: MeshPhysicalMaterial, m: VitrumMaterial): void {
-  if (m.baseColorMap != null && isTexture(m.baseColorMap)) mat.map = m.baseColorMap;
-  if (m.normalMap != null && isTexture(m.normalMap)) {
-    mat.normalMap = m.normalMap;
+  const baseColorMap = fromTextureRef(m.baseColorMap);
+  if (baseColorMap) mat.map = baseColorMap;
+  const normalMap = fromTextureRef(m.normalMap);
+  if (normalMap) {
+    mat.normalMap = normalMap;
     mat.normalScale.set(m.normalScale ?? 1, m.normalScale ?? 1);
   }
-  if (m.roughnessMap != null && isTexture(m.roughnessMap)) mat.roughnessMap = m.roughnessMap;
-  if (m.metallicMap != null && isTexture(m.metallicMap)) mat.metalnessMap = m.metallicMap;
-  if (m.emissiveMap != null && isTexture(m.emissiveMap)) mat.emissiveMap = m.emissiveMap;
-  if (m.alphaMap != null && isTexture(m.alphaMap)) mat.alphaMap = m.alphaMap;
-  if (m.transmissionMap != null && isTexture(m.transmissionMap)) mat.transmissionMap = m.transmissionMap;
+  const roughnessMap = fromTextureRef(m.roughnessMap);
+  if (roughnessMap) mat.roughnessMap = roughnessMap;
+  const metallicMap = fromTextureRef(m.metallicMap);
+  if (metallicMap) mat.metalnessMap = metallicMap;
+  const emissiveMap = fromTextureRef(m.emissiveMap);
+  if (emissiveMap) mat.emissiveMap = emissiveMap;
+  const alphaMap = fromTextureRef(m.alphaMap);
+  if (alphaMap) mat.alphaMap = alphaMap;
+  const transmissionMap = fromTextureRef(m.transmissionMap);
+  if (transmissionMap) mat.transmissionMap = transmissionMap;
 }
 
 /**

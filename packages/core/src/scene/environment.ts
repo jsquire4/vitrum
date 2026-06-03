@@ -3,7 +3,15 @@
 // Environment — hemispheric / global light source.
 
 import type { Vec3 } from './math.js';
-import type { TextureRef } from './material.js';
+
+/**
+ * Opaque environment-map handle. Unlike a material `TextureRef`, an env map is
+ * NOT UV-transformed / texCoord-indexed — its representation is backend-specific
+ * (a `THREE.Texture` for the pt-webgl path; a raw `{ width, height, data }`
+ * equirect payload for pt-webgpu). The binding layer / host supplies it; the
+ * backend interprets it. Core never inspects it.
+ */
+export type EnvironmentMapRef = unknown;
 
 export type SceneEnvironment =
   | HdriEnvironment
@@ -12,7 +20,7 @@ export type SceneEnvironment =
 
 export interface HdriEnvironment {
   readonly kind: 'hdri';
-  readonly hdri: TextureRef;
+  readonly hdri: EnvironmentMapRef;
   readonly intensity?: number;            // default 1
   readonly rotationY?: number;            // radians, default 0
 }

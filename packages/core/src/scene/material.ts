@@ -157,6 +157,17 @@ export interface MaterialSpec {
   readonly emissive?: Vec3;
   readonly emissiveIntensity?: number;
 
+  // ── Alpha / coverage (glTF alphaMode; distinct from physical transmission) ─
+  /** glTF alpha mode. 'opaque' (default) ignores alpha; 'mask' = alpha-test
+   *  against `alphaCutoff`; 'blend' = (order-independent) alpha blending.
+   *  Distinct from `transmission`, which is physical refractive glass. */
+  readonly alphaMode?: 'opaque' | 'mask' | 'blend';
+  /** Alpha-test threshold for `alphaMode: 'mask'`. Default 0.5. */
+  readonly alphaCutoff?: number;
+  /** Base coverage alpha ∈ [0,1] (multiplies `alphaMap` and baseColor alpha).
+   *  Default 1. Only meaningful when `alphaMode` is 'mask' or 'blend'. */
+  readonly opacity?: number;
+
   // ── Transmission / refraction ───────────────────────────────────────────
   readonly transmission?: number;        // 0 = opaque, 1 = fully transparent
   readonly ior?: number;                  // index of refraction
@@ -173,6 +184,17 @@ export interface MaterialSpec {
   readonly transmissionMap?: TextureRef;
   readonly emissiveMap?: TextureRef;
   readonly alphaMap?: TextureRef;
+  readonly aoMap?: TextureRef;             // ambient occlusion (glTF occlusionTexture)
+  readonly aoMapIntensity?: number;        // default 1
+  readonly clearcoatMap?: TextureRef;
+  readonly clearcoatRoughnessMap?: TextureRef;
+  readonly clearcoatNormalMap?: TextureRef;
+  readonly clearcoatNormalScale?: number;
+  readonly sheenColorMap?: TextureRef;
+  readonly sheenRoughnessMap?: TextureRef;
+  readonly iridescenceMap?: TextureRef;
+  readonly iridescenceThicknessMap?: TextureRef;
+  readonly anisotropyMap?: TextureRef;     // glTF KHR_materials_anisotropy (RG = dir, B = strength)
 
   // ── Disney BSDF extensions (optional) ───────────────────────────────────
   readonly sheen?: number;
@@ -335,6 +357,17 @@ export type MaterialMapFields = Pick<
   | 'transmissionMap'
   | 'emissiveMap'
   | 'alphaMap'
+  | 'aoMap'
+  | 'aoMapIntensity'
+  | 'clearcoatMap'
+  | 'clearcoatRoughnessMap'
+  | 'clearcoatNormalMap'
+  | 'clearcoatNormalScale'
+  | 'sheenColorMap'
+  | 'sheenRoughnessMap'
+  | 'iridescenceMap'
+  | 'iridescenceThicknessMap'
+  | 'anisotropyMap'
 >;
 export type DisneyBsdMaterialFields = Pick<
   MaterialSpec,
@@ -353,9 +386,35 @@ export type VolumeMaterialFields = Pick<
 >;
 export type LayeredBsdMaterialFields = Pick<MaterialSpec, 'frontLayer' | 'backLayer' | 'thinFilmStack'>;
 
-/** Opaque texture reference. The scene-binding layer creates these; backends
- *  consume them. The shape varies — for WebGL2 backends it might be a
- *  `WebGLTexture` plus metadata, for WebGPU it might be a `GPUTexture`, for
- *  in-memory uploads it might be a `Uint8Array` + descriptor. Core doesn't
- *  care. */
-export type TextureRef = unknown;
+/**
+ * Per-texture UV transform (glTF `KHR_texture_transform`). Applied to the
+ * sampled UV before lookup: `uv' = rotate(uv * scale, rotation) + offset`.
+ * All fields optional; omitted = identity.
+ */
+export interface UvTransform {
+  readonly offset?: Vec2;     // KHR_texture_transform.offset (default [0,0])
+  readonly scale?: Vec2;      // KHR_texture_transform.scale  (default [1,1]; THREE `repeat`)
+  readonly rotation?: number; // radians, CCW about (0,0) (default 0)
+}
+
+/**
+ * Texture reference. `handle` is the opaque backend/binding payload (a
+ * `WebGLTexture` + metadata, a `GPUTexture`, a `Uint8Array` + descriptor, …) —
+ * core never inspects it. `texCoord` selects the mesh UV channel
+ * (0 = `MeshPrimitive.uvs`, 1 = `MeshPrimitive.uv1`); default 0. `transform`
+ * carries `KHR_texture_transform`.
+ *
+ * The scene-binding layer (e.g. @vitrum/three-bindings) constructs these;
+ * backends read `.handle` to upload/sample and `.texCoord`/`.transform` to
+ * resolve UVs. Use `asTextureRef(handle)` for the common no-transform case.
+ */
+export interface TextureRef {
+  readonly handle: unknown;
+  readonly texCoord?: number;
+  readonly transform?: UvTransform;
+}
+
+/** Wrap an opaque handle as a `TextureRef` (channel 0, identity transform). */
+export function asTextureRef(handle: unknown): TextureRef {
+  return { handle };
+}
