@@ -823,6 +823,7 @@ export class HybridEngine implements Engine {
       device: () => this._device,
       readAtlas: () => this._ddgi?.pass?.getReadAtlasGPUTextures?.() ?? null,
       bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
+      debugTextures: () => this._pipeline?.getDebugTextures() ?? null,
       pipelineResources: () => this._pipeline?.frameResources ?? null,
       denoiserPassEnabled: () => this._denoiserPassEnabled,
       setDenoiserPassEnabled: (enabled) => {
@@ -1272,7 +1273,7 @@ export class HybridEngine implements Engine {
     // scene directional, keep the legacy config multiplier. Mirrors the init
     // coordinator's resolution so an incremental emitter edit can't drift the
     // sun magnitude away from the freshly-built init state.
-    this._ddgi.pass.setSunIntensityMultiplier(
+    this._ddgi.setSunIntensityMultiplier(
       directionalSunMultiplier(sceneForSun, this._primaryLightIntensity),
     );
     this._ddgi.setLights(mergeDDGILightsDedupSun(this._ctorLights, sceneLights));
@@ -1334,7 +1335,7 @@ export class HybridEngine implements Engine {
         this._coreSceneSuppliesMeshes() && this._lastScene != null
           ? this._lastScene
           : null;
-      this._ddgi.pass.setSunIntensityMultiplier(
+      this._ddgi.setSunIntensityMultiplier(
         directionalSunMultiplier(sceneForSun, opts.primaryLightIntensity),
       );
     }
@@ -1545,59 +1546,69 @@ export class HybridEngine implements Engine {
   private _buildFrameDeps(): HybridEngineFrameDeps {
     const self = this;
     return {
-      get state() {
-        return self._state;
+      subsystems: {
+        pipeline: self._pipeline,
+        bvhBuffers: self._bvhBuffers,
+        ddgi: self._ddgi,
+        ddgiTraversalScene: self._ddgiTraversalScene,
+        rc: self._rc,
+        skinning: self._skinning,
+        lastScene: self._lastScene,
       },
-      debug: self._cfg.debug,
-      dbg: self._cfg.debug ? self._dbg : null,
-      pipeline: self._pipeline,
-      bvhBuffers: self._bvhBuffers,
-      consumeRebuildKeyChange: () => {
-        const fp = fingerprintHybridPipelineRebuildKey(
-          self._cfg.getPipelineRebuildKey?.() ?? self._cfg.staticPipelineRebuildKey,
-        );
-        if (fp !== self._rebuildKeyFingerprintSeen) {
-          self._rebuildKeyFingerprintSeen = fp;
-          self.reset();
-          return true;
-        }
-        return false;
+      lighting: self._lightingSnapshot(),
+      filter: self._denoiserFilterDeps(),
+      telemetry: {
+        frameSubs: self._frameSubs,
+        progressSubs: self._progressSubs,
+        verbose: self._cfg.verbose,
+        debugTimings: self._debugTimings,
+        debugSurface: self.debug,
+        dbg: self._cfg.debug ? self._dbg : null,
       },
-      targetFrameIntervalMs: self._cfg.targetFrameIntervalMs,
-      getLastFrameTs: () => self._lastFrameTs,
-      setLastFrameTs: (ts) => {
-        self._lastFrameTs = ts;
+      dims: {
+        width: self._width,
+        height: self._height,
+        internalWidth: self._internalWidth,
+        internalHeight: self._internalHeight,
       },
-      width: self._width,
-      height: self._height,
-      internalWidth: self._internalWidth,
-      internalHeight: self._internalHeight,
-      applyResolutionFactor: (factor, nowMs) => self._applyResolutionFactor(factor, nowMs),
-      skinning: self._skinning,
-      lastScene: self._lastScene,
-      runSkinning: () => {
-        if (self._skinning != null && self._lastScene != null) {
-          self._skinning.run(self, self._lastScene);
-        }
+      control: {
+        consumeRebuildKeyChange: () => {
+          const fp = fingerprintHybridPipelineRebuildKey(
+            self._cfg.getPipelineRebuildKey?.() ?? self._cfg.staticPipelineRebuildKey,
+          );
+          if (fp !== self._rebuildKeyFingerprintSeen) {
+            self._rebuildKeyFingerprintSeen = fp;
+            self.reset();
+            return true;
+          }
+          return false;
+        },
+        targetFrameIntervalMs: self._cfg.targetFrameIntervalMs,
+        getLastFrameTs: () => self._lastFrameTs,
+        setLastFrameTs: (ts) => {
+          self._lastFrameTs = ts;
+        },
+        applyResolutionFactor: (factor, nowMs) => self._applyResolutionFactor(factor, nowMs),
+        runSkinning: () => {
+          if (self._skinning != null && self._lastScene != null) {
+            self._skinning.run(self, self._lastScene);
+          }
+        },
+        ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),
+        presentLastFrame: (view) => {
+          self._pipeline?.presentLastFrame(view);
+        },
       },
-      ddgiOn: self._ddgiOn,
-      isLayerEnabled: (layer) => self._layerEnabled.get(layer) ?? true,
-      ddgi: self._ddgi,
-      ddgiTraversalScene: self._ddgiTraversalScene,
-      ensureThreeSceneRoot: () => self._ensureThreeSceneRoot(),
-      device: self._device,
-      tunables: self._cfg.tunables,
-      rc: self._rc,
-      ...self._lightingSnapshot(),
-      rcWeight: self._rcWeight,
-      ...self._denoiserFilterDeps(),
-      frameSubs: self._frameSubs,
-      progressSubs: self._progressSubs,
-      verbose: self._cfg.verbose,
-      debugTimings: self._debugTimings,
-      debugSurface: self.debug,
-      presentLastFrame: (view) => {
-        self._pipeline?.presentLastFrame(view);
+      flags: {
+        get state() {
+          return self._state;
+        },
+        debug: self._cfg.debug,
+        ddgiOn: self._ddgiOn,
+        isLayerEnabled: (layer) => self._layerEnabled.get(layer) ?? true,
+        device: self._device,
+        tunables: self._cfg.tunables,
+        rcWeight: self._rcWeight,
       },
     };
   }
@@ -1759,7 +1770,7 @@ export class HybridEngine implements Engine {
       // reference to a half-built pipeline.
       this._state = 'disposed';
       // Note: _ddgi.dispose() is deferred too; the in-flight chain may
-      // still call _ddgi.pass.setSunIntensityMultiplier() after the
+      // still call _ddgi.setSunIntensityMultiplier() after the
       // post-pipeline checkpoint, and we don't want a torn-down DDGI
       // under it. The chain's finally calls disposeDdgi() when it sees
       // pending teardown.

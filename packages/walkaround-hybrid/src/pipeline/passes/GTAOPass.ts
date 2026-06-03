@@ -52,15 +52,15 @@ export class GTAOPass implements Pass {
     // HybridEngineOptions.gtao (audit M1 + B3); gtaoDownscale (2/4) is the
     // half/quarter-res selector. The 2 trailing explicit pad fields keep the
     // buffer at 32 B to match what gtaoUpsample reads.
-    const camY = inputs.projMatrix[5] ?? 1.0; // (1/tan(fov/2)) at the y-FOV
+    const camY = inputs.camera.projMatrix[5] ?? 1.0; // (1/tan(fov/2)) at the y-FOV
     const tanFovHalf = camY > 1e-6 ? 1.0 / camY : 0.5;
     const gtaoUboBytes = new ArrayBuffer(GTAO_UBO.sizeBytes);
     GTAO_UBO.pack(new DataView(gtaoUboBytes), 0, {
       tanFovHalf,
-      radiusPx:            inputs.gtaoRadiusPx,
-      intensity:           inputs.gtaoIntensity,
-      depthThresh:         inputs.gtaoDepthThreshold,
-      bilateralDepthSigma: inputs.gtaoBilateralDepthSigma,
+      radiusPx:            inputs.gtao.gtaoRadiusPx,
+      intensity:           inputs.gtao.gtaoIntensity,
+      depthThresh:         inputs.gtao.gtaoDepthThreshold,
+      bilateralDepthSigma: inputs.gtao.gtaoBilateralDepthSigma,
       gtaoDownscale:       ds,
       _pad1: 0, _pad2: 0,
     });

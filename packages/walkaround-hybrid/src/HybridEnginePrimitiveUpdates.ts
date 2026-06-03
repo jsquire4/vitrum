@@ -80,7 +80,7 @@ function computeWorldAabbFromBvhPositions(
 }
 
 import { repackBVHMaterialRange, packBVHEmissiveLe } from './restir/packingHelpers.js';
-import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
+import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
 // ── Shared refit helpers (behaviour-preserving extraction, WD sweep) ─────────
@@ -126,7 +126,7 @@ function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGp
 function applyTlasRefitResult(
   tlas: NonNullable<SceneBVHBuffers['tlas']>,
   refit: { tlasNodes: Uint32Array; tlasInstanceWorldToLocal: Float32Array; tlasInstanceLocalToWorld: Float32Array },
-  pipeline: WalkaroundGPUPipeline | null | undefined,
+  pipeline: BvhUpdateSink | null | undefined,
 ): void {
   tlas.nodes.cpuData = refit.tlasNodes.buffer.slice(0) as ArrayBuffer;
   tlas.worldToLocal.cpuData = refit.tlasInstanceWorldToLocal.buffer.slice(0) as ArrayBuffer;
@@ -142,7 +142,7 @@ function refitBvhNodesAndUploadSlice(
   positionsF32: Float32Array,
   baseVertex: number,
   sliceVerts: number,
-  pipeline: WalkaroundGPUPipeline | null | undefined,
+  pipeline: BvhUpdateSink | null | undefined,
 ): void {
   const bvhNodesF32 = new Float32Array(bvh.bvhNodes.cpuData);
   refitBvhBounds(bvhNodesF32, bvh.bvhIndicesStride3, positionsF32, 4);
@@ -169,8 +169,10 @@ export interface PrimitiveUpdateContext {
    *  treats as an error. */
   readonly threeRoot: THREE.Object3D | null;
   /** Live GPU pipeline; may be null during init. The fast paths fall
-   *  through to a rebuild when null. */
-  readonly pipeline: WalkaroundGPUPipeline | null;
+   *  through to a rebuild when null. Typed as `BvhUpdateSink` to decouple
+   *  the update helpers from the full pipeline class (complexity sweep
+   *  2026-06-02). `WalkaroundGPUPipeline implements BvhUpdateSink`. */
+  readonly pipeline: BvhUpdateSink | null;
   /** DDGI subsystem; receives probe-cache invalidation calls. */
   readonly ddgi: DDGI;
   /** Primary directional light dir, threaded into a rebuild's BVH-builder. */

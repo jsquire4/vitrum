@@ -25,6 +25,7 @@ import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
 import type { RegirUboState } from './uboUpdater.js';
+import type { PipelineSubsystem } from './PipelineSubsystem.js';
 
 /** Light-tree node stride in floats — must match `LIGHT_TREE_FLOATS_PER_NODE`
  *  in shared-samplers and `LIGHT_TREE_STRIDE` in lightTree.wgsl. The grid
@@ -54,7 +55,7 @@ export function resolveReGIRConfig(opts?: Partial<ReGIRConfig>): ReGIRConfig {
   };
 }
 
-export class ReGIRCoordinator {
+export class ReGIRCoordinator implements PipelineSubsystem {
   private readonly _config: ReGIRConfig;
   /** True only when the host opted in AND the light tree is live (ReGIR seeds
    *  cells via the tree) AND the grid-build pipeline compiled. */
@@ -171,5 +172,20 @@ export class ReGIRCoordinator {
       survivorsPerCell: this._config.survivorsPerCell,
       gridFloatOffset: this._gridFloatOffset,
     };
+  }
+
+  /**
+   * Reset all coordinator state. ReGIRCoordinator owns no GPU resources of its
+   * own — the grid data lives in {@link BvhBufferHost}'s combined light-tree +
+   * grid buffer, which is released separately by {@link WalkaroundGPUPipeline}.
+   * This call drops the CPU-side geometry mirrors and sets `_live` to false,
+   * consistent with the no-op state the constructor establishes. Idempotent.
+   */
+  dispose(): void {
+    this._live = false;
+    this._origin = [0, 0, 0];
+    this._cellSize = 1;
+    this._dims = [0, 0, 0];
+    this._gridFloatOffset = 0;
   }
 }

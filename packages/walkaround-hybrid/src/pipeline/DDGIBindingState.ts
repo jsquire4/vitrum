@@ -24,6 +24,7 @@ import {
   type FrameResources,
 } from './resourceManager.js';
 import type { BGLCache } from './bindGroupLayouts.js';
+import type { PipelineSubsystem } from './PipelineSubsystem.js';
 
 export interface DDGISetInputs {
   irradianceTex: GPUTexture;
@@ -40,7 +41,7 @@ export interface RCSetInputs {
   paramsBytes: ArrayBuffer;
 }
 
-export class DDGIBindingState {
+export class DDGIBindingState implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   /** DDGI inputs (layered hybrid). Null → placeholder textures. */
   private _irrTex: GPUTexture | null = null;

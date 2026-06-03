@@ -15,11 +15,13 @@ vi.mock('../src/ddgi/DDGI.js', () => ({
   DDGI: class MockDDGI {
     ready = true;
     pass = {
-      setSunIntensityMultiplier: vi.fn(),
-      setGlassMixScale: vi.fn(),
-      getReadAtlasGPUTextures: vi.fn(),
       setRestirBvhSnapshot: vi.fn(),
     };
+    // Forwarding-façade methods (interface-hygiene refactor 2026-06-02)
+    setSunIntensityMultiplier = vi.fn();
+    setGlassMixScale = vi.fn();
+    getReadAtlasGPUTextures = vi.fn();
+    gridParams = {};
     syncRestirBvhBuffers = vi.fn();
     invalidateProbeCache = vi.fn();
     markInstancesDirty = vi.fn();

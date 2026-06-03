@@ -158,53 +158,53 @@ export function updateUBO(
   const f32  = new Float32Array(data);
   const u32  = new Uint32Array(data);
 
-  f32.set(inputs.viewMatrix,     0);    //  0..15 (64 bytes)
-  f32.set(inputs.projMatrix,    16);    // 16..31 (64 bytes)
-  f32.set(inputs.prevViewMatrix, 32);   // 32..47 (64 bytes)
-  f32[48] = inputs.cameraPos[0];
-  f32[49] = inputs.cameraPos[1];
-  f32[50] = inputs.cameraPos[2];
-  u32[51] = inputs.frameSeed >>> 0;
-  u32[52] = inputs.screenWidth;
-  u32[53] = inputs.screenHeight;
-  u32[54] = inputs.emitterCount;
-  f32[55] = inputs.totalEmissivePower;
-  f32[56] = inputs.primaryLightDir[0];
-  f32[57] = inputs.primaryLightDir[1];
-  f32[58] = inputs.primaryLightDir[2];
-  f32[59] = inputs.primaryLightIntensity;
-  f32[60] = inputs.skyTint[0];
-  f32[61] = inputs.skyTint[1];
-  f32[62] = inputs.skyTint[2];
-  f32[63] = inputs.skyIrradiance;
+  f32.set(inputs.camera.viewMatrix,     0);    //  0..15 (64 bytes)
+  f32.set(inputs.camera.projMatrix,    16);    // 16..31 (64 bytes)
+  f32.set(inputs.camera.prevViewMatrix, 32);   // 32..47 (64 bytes)
+  f32[48] = inputs.camera.cameraPos[0];
+  f32[49] = inputs.camera.cameraPos[1];
+  f32[50] = inputs.camera.cameraPos[2];
+  u32[51] = inputs.screen.frameSeed >>> 0;
+  u32[52] = inputs.screen.screenWidth;
+  u32[53] = inputs.screen.screenHeight;
+  u32[54] = inputs.lighting.emitterCount;
+  f32[55] = inputs.lighting.totalEmissivePower;
+  f32[56] = inputs.lighting.primaryLightDir[0];
+  f32[57] = inputs.lighting.primaryLightDir[1];
+  f32[58] = inputs.lighting.primaryLightDir[2];
+  f32[59] = inputs.lighting.primaryLightIntensity;
+  f32[60] = inputs.lighting.skyTint[0];
+  f32[61] = inputs.lighting.skyTint[1];
+  f32[62] = inputs.lighting.skyTint[2];
+  f32[63] = inputs.lighting.skyIrradiance;
   // Library-generality tunables (audit follow-up).
-  f32[64] = inputs.emitterDist2Floor;
-  f32[65] = inputs.directFireflyClamp;
-  f32[66] = inputs.causticBoost;
-  f32[67] = inputs.causticVisClamp;
-  u32[68] = inputs.temporalMClampDI >>> 0;
-  f32[69] = inputs.spatialReuseRadiusPx;
-  f32[70] = inputs.spatialDepthTolFloor;
-  f32[71] = inputs.triIntersectEpsilon;
+  f32[64] = inputs.lighting.emitterDist2Floor;
+  f32[65] = inputs.lighting.directFireflyClamp;
+  f32[66] = inputs.lighting.causticBoost;
+  f32[67] = inputs.lighting.causticVisClamp;
+  u32[68] = inputs.restirDI.temporalMClampDI >>> 0;
+  f32[69] = inputs.restirDI.spatialReuseRadiusPx;
+  f32[70] = inputs.restirDI.spatialDepthTolFloor;
+  f32[71] = inputs.filter.triIntersectEpsilon;
   // 2026-05-18 sweep — eight more Cornell-tuned magic constants threaded
   // through the UBO for library-consumer override.
-  f32[72] = inputs.glassMixScale;
-  f32[73] = inputs.restirGiWCap;
-  f32[74] = inputs.restirGiIrrClamp;
-  u32[75] = inputs.restirGiMClamp >>> 0;
-  f32[76] = inputs.restirGiSpatialRadiusPx;
-  f32[77] = inputs.restirGiSpatialNormalDotMin;
-  f32[78] = inputs.restirGiSpatialCoplanarTol;
+  f32[72] = inputs.filter.glassMixScale;
+  f32[73] = inputs.restirGI.restirGiWCap;
+  f32[74] = inputs.restirGI.restirGiIrrClamp;
+  u32[75] = inputs.restirGI.restirGiMClamp >>> 0;
+  f32[76] = inputs.restirGI.restirGiSpatialRadiusPx;
+  f32[77] = inputs.restirGI.restirGiSpatialNormalDotMin;
+  f32[78] = inputs.restirGI.restirGiSpatialCoplanarTol;
   // f32[79] = _padPreVec3 (zero — keeps indirectFireflyClamp vec3-aligned).
-  f32[80] = inputs.indirectFireflyClamp[0];
-  f32[81] = inputs.indirectFireflyClamp[1];
-  f32[82] = inputs.indirectFireflyClamp[2];
+  f32[80] = inputs.filter.indirectFireflyClamp[0];
+  f32[81] = inputs.filter.indirectFireflyClamp[1];
+  f32[82] = inputs.filter.indirectFireflyClamp[2];
   // f32[83] = _padEnd (zero).
-  u32[84] = inputs.bvhMode >>> 0;
-  u32[85] = inputs.tlasNodeCount >>> 0;
+  u32[84] = inputs.bvh.bvhMode >>> 0;
+  u32[85] = inputs.bvh.tlasNodeCount >>> 0;
   // T5 — stained-glass opt-in flag bits (repurposed _tracePad0 at offset 344).
   // 0 → both terms OFF (generic-scene default).
-  u32[86] = inputs.stainedGlassFlags >>> 0;
+  u32[86] = inputs.filter.stainedGlassFlags >>> 0;
   // PPG guided sampling (W9 guided-sampling landing). offset 348 = ppgEnabled
   // (gate), offset 352 = ppgMixAlpha. When PPG is off, ppgEnabled stays 0 and
   // α stays 0 → gi-ris RIS source pdf = cosθ/π exactly (ppg-OFF bit-identity).
@@ -212,15 +212,15 @@ export function updateUBO(
   f32[88] = ppg.enabled ? ppg.mixAlpha : 0; // offset 352 — ppgMixAlpha
   // Light-tree DI light-SELECTION gate (offset 356) + node count (offset 360).
   // When disabled both stay 0 → RIS uses the flat power-CDF path exactly.
-  u32[89] = (inputs.lightTreeEnabled ?? 0) >>> 0; // offset 356 — lightTreeEnabled
-  u32[90] = (inputs.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
+  u32[89] = (inputs.lighting.lightTreeEnabled ?? 0) >>> 0; // offset 356 — lightTreeEnabled
+  u32[90] = (inputs.lighting.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
   // NRC cache gate (offset 364 — the former _ppgPad2 slot). 0 keeps the gi-ris
   // suffix on the verbatim DDGI-atlas estimate (NRC-OFF bit-identity); 1 turns
   // on the neural radiance cache. Absent ⇒ 0 (OFF), so callers and existing
   // tests that never set it are byte-identical to before. STAGED: the gate
   // flips here but the query/record compute passes are the next phase — a gate
   // of 1 is currently inert (no pass reads u32[91] yet). See V20.
-  u32[91] = (inputs.nrcEnabled ?? 0) >>> 0; // offset 364 — nrcEnabled (was _ppgPad2)
+  u32[91] = (inputs.nrc.nrcEnabled ?? 0) >>> 0; // offset 364 — nrcEnabled (was _ppgPad2)
   // ReGIR grid state (offsets 368..412). When ReGIR is off every field is 0,
   // so the kernel's `regirEnabled == 0` gate keeps RIS on the light-tree path
   // bit-for-bit (and the grid-build pass early-returns).
@@ -241,7 +241,7 @@ export function updateUBO(
   // clamped-Jacobian path bit-for-bit; 1 turns on the unbiased GRIS shift +
   // reconnection visibility + pairwise MIS. Absent ⇒ 0 (OFF), so callers and
   // existing tests that never set it are byte-identical to before.
-  u32[103] = (inputs.restirPtReuse ?? 0) >>> 0; // offset 412 — restirPtReuse
+  u32[103] = (inputs.restirGI.restirPtReuse ?? 0) >>> 0; // offset 412 — restirPtReuse
 
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

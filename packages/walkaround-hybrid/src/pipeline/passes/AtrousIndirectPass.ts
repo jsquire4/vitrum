@@ -74,9 +74,9 @@ export class AtrousIndirectPass implements Pass {
     // B3a — per-frame indirect sigmas from HybridEngineOptions (host
     // override) or Cornell defaults `[32, 20, 0.5]`.
     const sigmas: AtrousSigmas = {
-      sigmaN: inputs.atrousIndirectSigmas[0],
-      sigmaZ: inputs.atrousIndirectSigmas[1],
-      sigmaC: inputs.atrousIndirectSigmas[2],
+      sigmaN: inputs.filter.atrousIndirectSigmas[0],
+      sigmaZ: inputs.filter.atrousIndirectSigmas[1],
+      sigmaC: inputs.filter.atrousIndirectSigmas[2],
     };
     frameState.denoisedIndirect = runAtrousChain(encoder, this._sharedAtrousPipeline, {
       iterations: ATROUS_INDIRECT_ITERATIONS,

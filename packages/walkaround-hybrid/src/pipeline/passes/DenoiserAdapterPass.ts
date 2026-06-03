@@ -91,7 +91,7 @@ export class DenoiserAdapterPass implements Pass {
       sharedAtrousPipeline: this._sharedAtrousPipeline(),
       bglCache: ctx.bglCache,
       gNormalDepthView: ctx.gNormalDepthView,
-      atrousDirectSigmas: ctx.inputs.atrousDirectSigmas,
+      atrousDirectSigmas: ctx.inputs.filter.atrousDirectSigmas,
       readAccum: ctx.frameState.readAccum,
       isMoving: ctx.frameState.isMoving,
       wgX16: ctx.wgX16,

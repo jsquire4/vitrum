@@ -175,17 +175,24 @@ describe('HybridEngine._buildFrameDeps — per-frame config values unchanged', (
     const golden = deriveFor(opts);
     const deps = callPrivate(engine, '_buildFrameDeps');
 
-    expect(deps['tunables']).toEqual(golden.tunables);
-    expect(deps['targetFrameIntervalMs']).toBe(golden.targetFrameIntervalMs);
-    expect(deps['verbose']).toBe(golden.verbose);
-    expect(deps['debug']).toBe(golden.debug);
-    // Spread-in denoiser-filter cluster.
-    expect(deps['indirectFireflyClamp']).toEqual(golden.indirectFireflyClamp);
-    expect(deps['atrousDirectSigmas']).toEqual(golden.atrousDirectSigmas);
-    expect(deps['atrousIndirectSigmas']).toEqual(golden.atrousIndirectSigmas);
-    expect(deps['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
-    expect(deps['restirPtReuse']).toBe(golden.restirPtReuse);
-    expect(deps['nrcEnabled']).toBe(golden.nrcEnabled);
+    // After struct grouping: flags.tunables, control.targetFrameIntervalMs,
+    // telemetry.verbose/debug, filter.* for the denoiser-filter cluster.
+    // Cast each sub-object through AnyRec so string indexing works.
+    const flags = deps['flags'] as AnyRec;
+    const control = deps['control'] as AnyRec;
+    const telemetry = deps['telemetry'] as AnyRec;
+    const filter = deps['filter'] as AnyRec;
+    expect(flags['tunables']).toEqual(golden.tunables);
+    expect(control['targetFrameIntervalMs']).toBe(golden.targetFrameIntervalMs);
+    expect(telemetry['verbose']).toBe(golden.verbose);
+    expect(flags['debug']).toBe(golden.debug);
+    // Grouped denoiser-filter cluster (filter sub-object).
+    expect(filter['indirectFireflyClamp']).toEqual(golden.indirectFireflyClamp);
+    expect(filter['atrousDirectSigmas']).toEqual(golden.atrousDirectSigmas);
+    expect(filter['atrousIndirectSigmas']).toEqual(golden.atrousIndirectSigmas);
+    expect(filter['stainedGlassFlags']).toBe(golden.stainedGlassFlags);
+    expect(filter['restirPtReuse']).toBe(golden.restirPtReuse);
+    expect(filter['nrcEnabled']).toBe(golden.nrcEnabled);
   });
 
   it('consumeRebuildKeyChange uses the static rebuild key / getter from _cfg', () => {
@@ -195,7 +202,8 @@ describe('HybridEngine._buildFrameDeps — per-frame config values unchanged', (
     const opts = richOpts({ pipelineRebuildKey: 'stable-key' });
     const engine = new HybridEngine(opts);
     const deps = callPrivate(engine, '_buildFrameDeps');
-    const consume = deps['consumeRebuildKeyChange'] as () => boolean;
+    const control = deps['control'] as AnyRec;
+    const consume = control['consumeRebuildKeyChange'] as () => boolean;
     expect(consume()).toBe(false);
   });
 });

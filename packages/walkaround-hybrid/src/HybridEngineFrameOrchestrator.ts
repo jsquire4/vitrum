@@ -79,17 +79,19 @@ export interface HybridDenoiserFilterDeps {
   nrcEnabled: number;
 }
 
-export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoiserFilterDeps {
-  state: EngineState;
-  debug: boolean;
-  dbg: HybridEngineFrameDiag | null;
+/** Subsystem handles (pipeline, BVH, GI, skinning). */
+export interface HybridEngineFrameSubsystems {
   pipeline: WalkaroundGPUPipeline | null;
   bvhBuffers: SceneBVHBuffers | null;
-  /** When true, caller already called reset() and frame should skip. */
-  consumeRebuildKeyChange: () => boolean;
-  targetFrameIntervalMs: number | null;
-  getLastFrameTs: () => number;
-  setLastFrameTs: (ts: number) => void;
+  ddgi: DDGI;
+  ddgiTraversalScene: THREE.Scene | null;
+  rc: RCSubsystem | null;
+  skinning: GpuSkinningSubsystem | null;
+  lastScene: Scene | null;
+}
+
+/** Canvas + internal render dimensions for this frame. */
+export interface HybridEngineFrameDims {
   /** Canvas (swap-chain) width — what the composite pass blits TO. */
   width: number;
   /** Canvas (swap-chain) height. */
@@ -100,24 +102,28 @@ export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoise
   internalWidth: number;
   /** Internal render height (= canvas × resolutionFactor). */
   internalHeight: number;
+}
+
+/** Write-back closures and frame-rate control. */
+export interface HybridEngineFrameControl {
+  /** When true, caller already called reset() and frame should skip. */
+  consumeRebuildKeyChange: () => boolean;
+  targetFrameIntervalMs: number | null;
+  getLastFrameTs: () => number;
+  setLastFrameTs: (ts: number) => void;
   /** Honour `FrameInput.quality.resolutionFactor` by (debounced) resizing the
    *  internal render resolution. Returns the internal dims to dispatch at this
    *  frame (which may be unchanged if the resize was debounced or the factor
    *  was unchanged). Pure-ish: the only side effect is `pipeline.resize` +
    *  engine internal-dim bookkeeping, both owned by the engine. */
   applyResolutionFactor: (factor: number | undefined, nowMs: number) => { width: number; height: number };
-  skinning: GpuSkinningSubsystem | null;
-  lastScene: Scene | null;
   runSkinning: () => void;
-  ddgiOn: boolean;
-  isLayerEnabled: (layer: string) => boolean;
-  ddgi: DDGI;
-  ddgiTraversalScene: THREE.Scene | null;
   ensureThreeSceneRoot: () => THREE.Scene | null;
-  device: GPUDevice;
-  tunables: Tunables;
-  rc: RCSubsystem | null;
-  rcWeight: number;
+  presentLastFrame: (view: GPUTextureView) => void;
+}
+
+/** Telemetry subscribers, debug timings, and debug surface. */
+export interface HybridEngineFrameTelemetry {
   frameSubs: ReadonlyArray<(stats: FrameStats) => void>;
   /** T3.E — long-running progress subscribers (`'ddgi-warmup'` +
    *  `'denoiser-converge'`). Fired at the end of each dispatched frame,
@@ -126,7 +132,42 @@ export interface HybridEngineFrameDeps extends HybridLightingDeps, HybridDenoise
   verbose: boolean;
   debugTimings: Array<{ t: number; ms: number }>;
   debugSurface: EngineDebugSurface;
-  presentLastFrame: (view: GPUTextureView) => void;
+  dbg: HybridEngineFrameDiag | null;
+}
+
+/** Engine state flags, device handle, and per-frame tuning. */
+export interface HybridEngineFrameFlags {
+  state: EngineState;
+  debug: boolean;
+  ddgiOn: boolean;
+  isLayerEnabled: (layer: string) => boolean;
+  device: GPUDevice;
+  tunables: Tunables;
+  rcWeight: number;
+}
+
+/**
+ * Per-frame dependency bundle for {@link runHybridEngineFrame}.
+ *
+ * Fields are grouped into named sub-objects so each sprint's new dependency
+ * lands in the right semantic bucket. All values carry IDENTICALLY through the
+ * frame loop — this is TypeScript grouping only, no semantic changes.
+ */
+export interface HybridEngineFrameDeps {
+  /** Core subsystem handles (pipeline, BVH, GI, skinning). */
+  subsystems: HybridEngineFrameSubsystems;
+  /** Runtime-mutable lighting cluster (mutated by `updateLighting()`). */
+  lighting: HybridLightingDeps;
+  /** Denoiser filter parameters and stained-glass/NRC/GRIS gates. */
+  filter: HybridDenoiserFilterDeps;
+  /** Telemetry subscribers, debug timings, and debug surface. */
+  telemetry: HybridEngineFrameTelemetry;
+  /** Canvas + internal render dimensions. */
+  dims: HybridEngineFrameDims;
+  /** Write-back closures and frame-rate control. */
+  control: HybridEngineFrameControl;
+  /** Engine state, device handle, tuning knobs, and per-frame flags. */
+  flags: HybridEngineFrameFlags;
 }
 
 /** Minimum interval (ms) between internal-resolution reallocations driven by
@@ -271,9 +312,9 @@ export function getPreferredSwapChainFormat(): GPUTextureFormat {
 }
 
 function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
-  const ddgiLayerOn = deps.ddgiOn && deps.isLayerEnabled('ddgi');
+  const ddgiLayerOn = deps.flags.ddgiOn && deps.flags.isLayerEnabled('ddgi');
   const ddgiScene = ddgiLayerOn
-    ? (deps.ddgiTraversalScene ?? deps.ensureThreeSceneRoot())
+    ? (deps.subsystems.ddgiTraversalScene ?? deps.control.ensureThreeSceneRoot())
     : null;
 
   // Per-frame BVH ⇒ GI-subsystem cascade — same owner the post-update /
@@ -281,52 +322,52 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   // merged-mode RC is NOT rebuilt every frame), and the DDGI sync gated on the
   // resolved ddgi-layer scene exactly as before.
   propagateBvhToGiSubsystems({
-    ddgi: deps.ddgi,
-    rc: deps.rc,
-    bvhBuffers: deps.bvhBuffers,
-    lastScene: deps.lastScene,
+    ddgi: deps.subsystems.ddgi,
+    rc: deps.subsystems.rc,
+    bvhBuffers: deps.subsystems.bvhBuffers,
+    lastScene: deps.subsystems.lastScene,
     syncDdgi: ddgiLayerOn && ddgiScene != null,
     allowRcSceneRebuild: false,
-    ensureThreeSceneRoot: deps.ensureThreeSceneRoot,
+    ensureThreeSceneRoot: deps.control.ensureThreeSceneRoot,
   });
 
   if (ddgiLayerOn && ddgiScene != null) {
-    void deps.ddgi.updateFrame({
+    void deps.subsystems.ddgi.updateFrame({
       scene: ddgiScene,
-      device: deps.device,
+      device: deps.flags.device,
       enabled: true,
     });
-    if (deps.ddgi.ready) {
-      deps.ddgi.pass.setGlassMixScale(deps.tunables.glassMixScale);
+    if (deps.subsystems.ddgi.ready) {
+      deps.subsystems.ddgi.setGlassMixScale(deps.flags.tunables.glassMixScale);
     }
   }
 
-  const pipeline = deps.pipeline!;
-  if (deps.rc) {
-    deps.rc.dispatchFrame({
-      sunDirection: deps.primaryLightDir,
+  const pipeline = deps.subsystems.pipeline!;
+  if (deps.subsystems.rc) {
+    deps.subsystems.rc.dispatchFrame({
+      sunDirection: deps.lighting.primaryLightDir,
       sunColor: [
-        deps.primaryLightIntensity,
-        deps.primaryLightIntensity,
-        deps.primaryLightIntensity,
+        deps.lighting.primaryLightIntensity,
+        deps.lighting.primaryLightIntensity,
+        deps.lighting.primaryLightIntensity,
       ],
       frameSeed: input.frameSeed,
-      triIntersectEpsilon: deps.tunables.triIntersectEpsilon,
+      triIntersectEpsilon: deps.flags.tunables.triIntersectEpsilon,
     });
-    pipeline.setRCInputs(deps.rc.buildRCInputs(deps.rcWeight));
+    pipeline.setRCInputs(deps.subsystems.rc.buildRCInputs(deps.flags.rcWeight));
   } else {
     pipeline.setRCInputs(null);
   }
 
   if (!ddgiLayerOn) {
     pipeline.setDDGIInputs(null);
-  } else if (deps.ddgi.ready) {
-    const atlas = deps.ddgi.pass.getReadAtlasGPUTextures?.();
+  } else if (deps.subsystems.ddgi.ready) {
+    const atlas = deps.subsystems.ddgi.getReadAtlasGPUTextures();
     if (atlas) {
       pipeline.setDDGIInputs({
         irradianceTex: atlas.irradiance,
         visibilityTex: atlas.visibility,
-        gridParams: packDDGIGridParams(deps.ddgi.probeGrid.params),
+        gridParams: packDDGIGridParams(deps.subsystems.ddgi.gridParams),
       });
     }
   }
@@ -349,16 +390,16 @@ function emitProgressTelemetry(
   deps: HybridEngineFrameDeps,
   pipeline: WalkaroundGPUPipeline,
 ): void {
-  if (deps.progressSubs.length === 0) return;
+  if (deps.telemetry.progressSubs.length === 0) return;
 
   const events: ProgressStats[] = [];
 
   // DDGI warm-up — only meaningful while the ddgi layer is active.
-  if (deps.ddgiOn && deps.isLayerEnabled('ddgi')) {
+  if (deps.flags.ddgiOn && deps.flags.isLayerEnabled('ddgi')) {
     const warm = computeDdgiWarmupProgress({
-      frame: deps.ddgi.warmupFrame,
-      stride: deps.ddgi.warmupStride,
-      ready: deps.ddgi.ready,
+      frame: deps.subsystems.ddgi.warmupFrame,
+      stride: deps.subsystems.ddgi.warmupStride,
+      ready: deps.subsystems.ddgi.ready,
     });
     if (warm) events.push(warm);
   }
@@ -371,11 +412,11 @@ function emitProgressTelemetry(
   if (converge) events.push(converge);
 
   for (const event of events) {
-    for (const sub of deps.progressSubs) {
+    for (const sub of deps.telemetry.progressSubs) {
       try {
         sub(event);
       } catch (err) {
-        if (deps.verbose) console.warn('[HybridEngine] onProgress subscriber threw', err);
+        if (deps.telemetry.verbose) console.warn('[HybridEngine] onProgress subscriber threw', err);
       }
     }
   }
@@ -387,10 +428,10 @@ function emitFrameTelemetry(
   dt: number,
   now: number,
 ): void {
-  if (deps.frameSubs.length > 0) {
+  if (deps.telemetry.frameSubs.length > 0) {
     const gpu = pipeline.lastGpuTimings;
     const gpuTotal = gpu?.['total'];
-    const memBreakdown = deps.debugSurface.estimatedGpuMemoryBytes?.() ?? undefined;
+    const memBreakdown = deps.telemetry.debugSurface.estimatedGpuMemoryBytes?.() ?? undefined;
     const stats: FrameStats = {
       frameTimeMs: dt,
       ...(gpuTotal !== undefined ? { gpuTimeMs: gpuTotal } : {}),
@@ -400,20 +441,20 @@ function emitFrameTelemetry(
         ? { gpuMemoryBytes: memBreakdown, estimatedGpuMemoryBytes: memBreakdown.total }
         : {}),
     };
-    for (const sub of deps.frameSubs) {
+    for (const sub of deps.telemetry.frameSubs) {
       try {
         sub(stats);
       } catch (err) {
-        if (deps.verbose) console.warn('[HybridEngine] onFrame subscriber threw', err);
+        if (deps.telemetry.verbose) console.warn('[HybridEngine] onFrame subscriber threw', err);
       }
     }
   }
 
   emitProgressTelemetry(deps, pipeline);
 
-  if (deps.debug) {
-    deps.debugTimings.push({ t: now, ms: dt });
-    if (deps.debugTimings.length > 240) deps.debugTimings.shift();
+  if (deps.flags.debug) {
+    deps.telemetry.debugTimings.push({ t: now, ms: dt });
+    if (deps.telemetry.debugTimings.length > 240) deps.telemetry.debugTimings.shift();
 
     if (typeof window !== 'undefined') {
       const w = window as unknown as { __WGPU__?: { walkaround?: { frameTimings: unknown } } };
@@ -429,17 +470,17 @@ function emitFrameTelemetry(
 }
 
 export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameInput): FrameOutput {
-  if (deps.state === 'paused' || deps.state === 'disposed' || deps.state === 'error') {
+  if (deps.flags.state === 'paused' || deps.flags.state === 'disposed' || deps.flags.state === 'error') {
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
 
-  if (deps.consumeRebuildKeyChange()) {
+  if (deps.control.consumeRebuildKeyChange()) {
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
 
-  const dbg = deps.dbg;
-  const pipeline = deps.pipeline;
-  const bvh = deps.bvhBuffers;
+  const dbg = deps.telemetry.dbg;
+  const pipeline = deps.subsystems.pipeline;
+  const bvh = deps.subsystems.bvhBuffers;
   if (!pipeline) {
     if (dbg) dbg.skipNoPipeline++;
     return HYBRID_FRAME_SKIP_OUTPUT;
@@ -451,18 +492,18 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
 
   const now = performance.now();
   if (
-    deps.targetFrameIntervalMs !== null &&
-    deps.getLastFrameTs() !== 0 &&
-    now - deps.getLastFrameTs() < deps.targetFrameIntervalMs
+    deps.control.targetFrameIntervalMs !== null &&
+    deps.control.getLastFrameTs() !== 0 &&
+    now - deps.control.getLastFrameTs() < deps.control.targetFrameIntervalMs
   ) {
     if (dbg) dbg.skipFrameInterval++;
     const skipSwapView = input.swapChainView as GPUTextureView | undefined;
     if (skipSwapView) {
-      deps.presentLastFrame(skipSwapView);
+      deps.control.presentLastFrame(skipSwapView);
     }
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
-  deps.setLastFrameTs(now);
+  deps.control.setLastFrameTs(now);
 
   const t0 = now;
   const swapView = input.swapChainView as GPUTextureView | undefined;
@@ -502,7 +543,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
     }
   }
 
-  deps.runSkinning();
+  deps.control.runSkinning();
   runDdgiAndRc(deps, input);
 
   // §5.1 — honour per-frame `quality.resolutionFactor` by (debounced) scaling
@@ -510,39 +551,77 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
   // internal-sized resolvedTexture to the full swap-chain view, so the
   // compute kernels + UBO `screenSize` use the internal dims (not the canvas
   // dims). Canvas resizes still require `setSize()` (see renderFrame JSDoc).
-  const internal = deps.applyResolutionFactor(input.quality?.resolutionFactor, now);
+  const internal = deps.control.applyResolutionFactor(input.quality?.resolutionFactor, now);
 
   pipeline.renderFrame({
-    viewMatrix: new Float32Array(input.viewMatrix),
-    projMatrix: new Float32Array(input.projMatrix),
-    prevViewMatrix: new Float32Array(input.prevViewMatrix ?? input.viewMatrix),
-    cameraPos: input.cameraPosition as [number, number, number],
-    screenWidth: internal.width,
-    screenHeight: internal.height,
-    frameSeed: input.frameSeed,
-    totalEmissivePower: bvh.totalEmissivePower ?? 1.0,
-    emitterCount: bvh.emitters?.count ?? 0,
-    primaryLightDir: deps.primaryLightDir,
-    primaryLightIntensity: deps.primaryLightIntensity,
-    skyTint: deps.skyTint,
-    skyIrradiance: deps.skyIrradiance,
-    ...deps.tunables,
-    indirectFireflyClamp: deps.indirectFireflyClamp,
-    bvhMode: bvh.bvhMode === 'tlas' ? 1 : 0,
-    tlasNodeCount: bvh.tlas?.nodeCount ?? 0,
-    // Light-tree DI light SELECTION gate. Default ON whenever the scene has
-    // ≥ 2 emitters (set at BVH build); RIS falls back to the flat power-CDF
-    // path otherwise. Unbiased in both states (the WRS weight divides p̂ by
-    // the exact selection pdf).
-    lightTreeEnabled: bvh.lightTreeEnabled ? 1 : 0,
-    lightTreeNodeCount: bvh.lightTreeNodeCount ?? 0,
-    atrousDirectSigmas: deps.atrousDirectSigmas,
-    atrousIndirectSigmas: deps.atrousIndirectSigmas,
-    stainedGlassFlags: deps.stainedGlassFlags,
-    restirPtReuse: deps.restirPtReuse,
-    nrcEnabled: deps.nrcEnabled,
-    swapChainView: swapView,
-    swapChainFormat: swapFmt,
+    camera: {
+      viewMatrix:     new Float32Array(input.viewMatrix),
+      projMatrix:     new Float32Array(input.projMatrix),
+      prevViewMatrix: new Float32Array(input.prevViewMatrix ?? input.viewMatrix),
+      cameraPos:      input.cameraPosition as [number, number, number],
+    },
+    screen: {
+      screenWidth:    internal.width,
+      screenHeight:   internal.height,
+      frameSeed:      input.frameSeed,
+      swapChainView:  swapView,
+      swapChainFormat: swapFmt,
+    },
+    lighting: {
+      totalEmissivePower:  bvh.totalEmissivePower ?? 1.0,
+      emitterCount:        bvh.emitters?.count ?? 0,
+      primaryLightDir:     deps.lighting.primaryLightDir,
+      primaryLightIntensity: deps.lighting.primaryLightIntensity,
+      skyTint:             deps.lighting.skyTint,
+      skyIrradiance:       deps.lighting.skyIrradiance,
+      emitterDist2Floor:   deps.flags.tunables.emitterDist2Floor,
+      directFireflyClamp:  deps.flags.tunables.directFireflyClamp,
+      causticBoost:        deps.flags.tunables.causticBoost,
+      causticVisClamp:     deps.flags.tunables.causticVisClamp,
+      // Light-tree DI light SELECTION gate. Default ON whenever the scene has
+      // ≥ 2 emitters (set at BVH build); RIS falls back to the flat power-CDF
+      // path otherwise. Unbiased in both states (the WRS weight divides p̂ by
+      // the exact selection pdf).
+      lightTreeEnabled:    bvh.lightTreeEnabled ? 1 : 0,
+      lightTreeNodeCount:  bvh.lightTreeNodeCount ?? 0,
+    },
+    restirDI: {
+      temporalMClampDI:    deps.flags.tunables.temporalMClampDI,
+      spatialReuseRadiusPx: deps.flags.tunables.spatialReuseRadiusPx,
+      spatialDepthTolFloor: deps.flags.tunables.spatialDepthTolFloor,
+    },
+    restirGI: {
+      restirGiWCap:              deps.flags.tunables.restirGiWCap,
+      restirGiIrrClamp:          deps.flags.tunables.restirGiIrrClamp,
+      restirGiMClamp:            deps.flags.tunables.restirGiMClamp,
+      restirGiSpatialRadiusPx:   deps.flags.tunables.restirGiSpatialRadiusPx,
+      restirGiSpatialNormalDotMin: deps.flags.tunables.restirGiSpatialNormalDotMin,
+      restirGiSpatialCoplanarTol: deps.flags.tunables.restirGiSpatialCoplanarTol,
+      restirPtReuse:             deps.filter.restirPtReuse,
+    },
+    gtao: {
+      gtaoRadiusPx:                deps.flags.tunables.gtaoRadiusPx,
+      gtaoIntensity:               deps.flags.tunables.gtaoIntensity,
+      gtaoDepthThreshold:          deps.flags.tunables.gtaoDepthThreshold,
+      gtaoBilateralDepthSigma:     deps.flags.tunables.gtaoBilateralDepthSigma,
+      adaptiveSamplingThresholdLow:  deps.flags.tunables.adaptiveSamplingThresholdLow,
+      adaptiveSamplingThresholdHigh: deps.flags.tunables.adaptiveSamplingThresholdHigh,
+    },
+    filter: {
+      triIntersectEpsilon:  deps.flags.tunables.triIntersectEpsilon,
+      glassMixScale:        deps.flags.tunables.glassMixScale,
+      indirectFireflyClamp: deps.filter.indirectFireflyClamp,
+      atrousDirectSigmas:   deps.filter.atrousDirectSigmas,
+      atrousIndirectSigmas: deps.filter.atrousIndirectSigmas,
+      stainedGlassFlags:    deps.filter.stainedGlassFlags,
+    },
+    bvh: {
+      bvhMode:      bvh.bvhMode === 'tlas' ? 1 : 0,
+      tlasNodeCount: bvh.tlas?.nodeCount ?? 0,
+    },
+    nrc: {
+      nrcEnabled: deps.filter.nrcEnabled,
+    },
   });
 
   emitFrameTelemetry(deps, pipeline, performance.now() - t0, now);

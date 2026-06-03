@@ -23,6 +23,7 @@ import { serialiseSTree } from '../ppg/serialise.js';
 import { PPG_MIS_ALPHA } from '../ppg/ppgConstants.js';
 import type { AABB, STree } from '../ppg/types.js';
 import { allocatePPGResources, type FrameResources } from './resourceManager.js';
+import type { PipelineSubsystem } from './PipelineSubsystem.js';
 
 /**
  * W9 — derive a world-space AABB for the PPG sTree from the uploaded BVH data.
@@ -46,7 +47,7 @@ function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: 
  * three serialise/upload writers. All methods are safe no-ops when PPG was
  * not enabled (or never initialized).
  */
-export class PPGCoordinator {
+export class PPGCoordinator implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   private static readonly _FLUX_SCALE = 65536.0;
   private static readonly _DEFAULT_READBACK_INTERVAL_FRAMES = 64;

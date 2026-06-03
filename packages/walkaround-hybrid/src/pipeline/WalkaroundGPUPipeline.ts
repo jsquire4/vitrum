@@ -36,6 +36,8 @@
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhCompute.js';
+import type { BvhUpdateSink } from './BvhUpdateSink.js';
+import type { PipelineDebugTextures } from './PipelineDebugTextures.js';
 import type { InferenceGraph } from '../neural/InferenceGraph.js';
 import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
@@ -364,7 +366,8 @@ const DEFAULT_CAMERA_MOVE_RESET_THRESHOLD_SQ = 1.0;
  */
 const DEFAULT_TEMPORAL_ACCUM_ALPHA = 0.01;
 
-export interface PipelineFrameInputs {
+/** Camera matrices + position for one frame. */
+export interface PipelineFrameCamera {
   /** Camera view matrix (column-major mat4x4f, 16 floats). The pipeline
    *  composes VP = projMatrix * viewMatrix internally; do NOT pre-multiply. */
   viewMatrix: Float32Array;
@@ -376,6 +379,10 @@ export interface PipelineFrameInputs {
   prevViewMatrix: Float32Array;
   /** World-space camera position [x, y, z]. */
   cameraPos: [number, number, number];
+}
+
+/** Swap-chain + frame-seed for one frame. */
+export interface PipelineFrameScreen {
   /** Render-target dimensions in pixels. Used by all compute kernels for
    *  workgroup dispatch sizing — must match the swap chain's actual size. */
   screenWidth: number;
@@ -384,6 +391,17 @@ export interface PipelineFrameInputs {
    *  for ray jitter, RIS candidate sampling, and temporal reservoir update.
    *  Caller may use a frame index, performance.now()|0, or any monotone u32. */
   frameSeed: number;
+  /** The WebGPU swap-chain texture view to render into for this frame.
+   *  Caller must obtain via context.getCurrentTexture().createView()
+   *  inside the same animation-frame callback that calls renderFrame. */
+  swapChainView: GPUTextureView;
+  /** The format of swapChainView. The composite pass's render-pipeline
+   *  is recompiled if this changes (rare — usually fixed at canvas mount). */
+  swapChainFormat: GPUTextureFormat;
+}
+
+/** Lighting scalars, emitter budget, and light-tree configuration. */
+export interface PipelineFrameLighting {
   /** Sum of (Le * area) over all emitter triangles, computed at BVH build
    *  time. Used by RIS importance-sampling weight normalization. Must match
    *  the value baked into the emitter CDF in SceneBVHBuffers. */
@@ -418,6 +436,23 @@ export interface PipelineFrameInputs {
   /** Audit B1 — clamp applied to the tinted-visibility vector before the
    *  caustic-boost multiplication. Cornell uses 0.6; generic scenes pass 1.0. */
   causticVisClamp: number;
+  /** Light-tree gate for ReSTIR-DI initial-candidate light SELECTION (UBO
+   *  offset 356). `1` ⇒ the RIS candidate loop draws lights via the
+   *  spatially-aware light tree (`sampleLightTree`) and divides the WRS weight
+   *  by the tree selection pdf; `0` ⇒ RIS uses the flat power-CDF path
+   *  (`sampleEmitterIdx` + the `emitterPmf` weight) verbatim. Built `1` only
+   *  when the tree has ≥ 2 emitters AND the host left light-tree selection on;
+   *  see `SceneBVHBuffers.lightTreeEnabled`. The estimator is unbiased in BOTH
+   *  states because the WRS weight always divides p̂ by the EXACT pdf the
+   *  selection used. */
+  lightTreeEnabled: number;
+  /** Number of nodes in the packed light tree (UBO offset 360). Bounds the
+   *  `sampleLightTree` descent loop. `0` when the tree is disabled. */
+  lightTreeNodeCount: number;
+}
+
+/** ReSTIR-DI temporal + spatial reuse tuning knobs. */
+export interface PipelineFrameRestirDI {
   /** Audit M6 — ReSTIR-DI temporal M-clamp; Cornell default 20. */
   temporalMClampDI: number;
   /** Audit M7 — ReSTIR-DI spatial reuse radius in pixels; Cornell default 30. */
@@ -426,13 +461,10 @@ export interface PipelineFrameInputs {
    *  default 0.05 (5 cm). Hosts on different scales should pass
    *  `sceneDiagonal * 1e-3`. */
   spatialDepthTolFloor: number;
-  /** D12 — Möller-Trumbore coplanarity epsilon.  Controls the `abs(det) < ε`
-   *  near-zero determinant threshold in `intersectTriangle`.  Default `1e-5`
-   *  (metre-scale).  Reduce for millimetre-scale geometry. */
-  triIntersectEpsilon: number;
-  /** 2026-05-18 sweep — probe-side glass-transmission perceptual mix scale.
-   *  Cornell default 0.7. */
-  glassMixScale: number;
+}
+
+/** ReSTIR-GI / GRIS tuning + reuse gate. */
+export interface PipelineFrameRestirGI {
   /** 2026-05-18 sweep — ReSTIR-GI per-pixel unbiased weight cap (risGi,
    *  spatialGi). Cornell default 16.0. */
   restirGiWCap: number;
@@ -451,33 +483,6 @@ export interface PipelineFrameInputs {
   /** 2026-05-18 sweep — ReSTIR-GI spatial-reuse tangent-plane distance
    *  tolerance (spatialGi). Cornell default 0.05 (5 cm world units). */
   restirGiSpatialCoplanarTol: number;
-  /** 2026-05-18 sweep — per-channel HDR clamp on the indirect channel
-   *  (shade.wgsl). Cornell default [1.0, 1.0, 1.0]. */
-  indirectFireflyClamp: readonly [number, number, number];
-  /** PR-3 — 0 = merged world BVH, 1 = TLAS + local BLAS traversal. */
-  bvhMode: number;
-  /** PR-3 — TLAS node count from CPU pack (0 forces merged path in WGSL). */
-  tlasNodeCount: number;
-  /** Light-tree gate for ReSTIR-DI initial-candidate light SELECTION (UBO
-   *  offset 356). `1` ⇒ the RIS candidate loop draws lights via the
-   *  spatially-aware light tree (`sampleLightTree`) and divides the WRS weight
-   *  by the tree selection pdf; `0` ⇒ RIS uses the flat power-CDF path
-   *  (`sampleEmitterIdx` + the `emitterPmf` weight) verbatim. Built `1` only
-   *  when the tree has ≥ 2 emitters AND the host left light-tree selection on;
-   *  see `SceneBVHBuffers.lightTreeEnabled`. The estimator is unbiased in BOTH
-   *  states because the WRS weight always divides p̂ by the EXACT pdf the
-   *  selection used. */
-  lightTreeEnabled: number;
-  /** Number of nodes in the packed light tree (UBO offset 360). Bounds the
-   *  `sampleLightTree` descent loop. `0` when the tree is disabled. */
-  lightTreeNodeCount: number;
-  /** T5 — stained-glass opt-in flag bitfield (lands at UBO offset 344).
-   *  Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0
-   *  (both OFF) → lo_sg_caustic / lo_sg_aperture early-return vec3f(0), so a
-   *  generic scene gets zero stained-glass physics. Hosts opt in via
-   *  HybridEngineOptions.stainedGlass. See pipeline/uboUpdater.ts
-   *  `packStainedGlassFlags`. */
-  stainedGlassFlags: number;
   /** GRIS / ReSTIR-PT reconnection-shift reuse gate (UBO offset 412). `1` ⇒
    *  the GI spatial + temporal reuse passes apply the unbiased GRIS
    *  reconnection shift, its change-of-variables Jacobian, a reconnection-
@@ -487,26 +492,10 @@ export interface PipelineFrameInputs {
    *  Host opt-in via HybridEngineOptions.restirPtReuse — the same
    *  OFF-is-bit-identical pattern as RC/PPG/ReGIR. */
   restirPtReuse?: number;
-  /** NRC (Müller et al. 2021) cache gate (UBO offset 364 — the former
-   *  `_ppgPad2` slot). `1` ⇒ the GI suffix may TERMINATE into the learned
-   *  neural radiance cache (spread heuristic + MLP query) and radiance records
-   *  self-train it. `0`/omitted ⇒ the gi-ris suffix runs the verbatim
-   *  DDGI-atlas estimate and the UBO bytes are unchanged — **OFF is
-   *  bit-identical**. Host opt-in via HybridEngineOptions.nrcEnabled; FORBIDDEN
-   *  on tier:'lite'. NRC is a BIASED cache (not a converged-mean-preserving
-   *  reuse) — see HARDWARE-VALIDATION-NEEDS.md V20. WIRED (2026-05-29): the gi-ris
-   *  NRC variant runs the MLP query + writes self-training records;
-   *  `NrcSubsystem.trainFromRecords` runs an MLP `trainStep` AND the hash-grid
-   *  encode-backward + table Adam each frame — so with the gate at 1 the suffix
-   *  uses the (biased) learned MLP prediction when the spread heuristic fires. */
-  nrcEnabled?: number;
-  /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
-   *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
-   *  direct-path chain. */
-  atrousDirectSigmas: readonly [number, number, number];
-  /** 2026-05-19 B3a — atrous INDIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
-   *  Cornell default `[32.0, 20.0, 0.5]`. Consumed by AtrousIndirectPass. */
-  atrousIndirectSigmas: readonly [number, number, number];
+}
+
+/** GTAO + adaptive-sampling tuning knobs. */
+export interface PipelineFrameGtao {
   /** Audit M1 — GTAO sampling radius in pixels; Cornell default 32. */
   gtaoRadiusPx: number;
   /** Audit M1 — GTAO intensity exponent; Cornell default 2.0. */
@@ -522,16 +511,91 @@ export interface PipelineFrameInputs {
   /** Audit M2 — adaptive-sampling tier classifier high-variance threshold;
    *  Cornell default 0.10.  Variance above this → tier 4 (high noise). */
   adaptiveSamplingThresholdHigh: number;
-  /** The WebGPU swap-chain texture view to render into for this frame.
-   *  Caller must obtain via context.getCurrentTexture().createView()
-   *  inside the same animation-frame callback that calls renderFrame. */
-  swapChainView: GPUTextureView;
-  /** The format of swapChainView. The composite pass's render-pipeline
-   *  is recompiled if this changes (rare — usually fixed at canvas mount). */
-  swapChainFormat: GPUTextureFormat;
 }
 
-export class WalkaroundGPUPipeline {
+/** Denoiser filter parameters, firefly clamps, and stained-glass gate. */
+export interface PipelineFrameFilter {
+  /** D12 — Möller-Trumbore coplanarity epsilon.  Controls the `abs(det) < ε`
+   *  near-zero determinant threshold in `intersectTriangle`.  Default `1e-5`
+   *  (metre-scale).  Reduce for millimetre-scale geometry. */
+  triIntersectEpsilon: number;
+  /** 2026-05-18 sweep — probe-side glass-transmission perceptual mix scale.
+   *  Cornell default 0.7. */
+  glassMixScale: number;
+  /** 2026-05-18 sweep — per-channel HDR clamp on the indirect channel
+   *  (shade.wgsl). Cornell default [1.0, 1.0, 1.0]. */
+  indirectFireflyClamp: readonly [number, number, number];
+  /** 2026-05-19 B3a — atrous DIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
+   *  Cornell default `[128.0, 5.0, 0.05]`. Consumed by the AtrousDenoiser
+   *  direct-path chain. */
+  atrousDirectSigmas: readonly [number, number, number];
+  /** 2026-05-19 B3a — atrous INDIRECT-channel sigmas [sigmaN, sigmaZ, sigmaC].
+   *  Cornell default `[32.0, 20.0, 0.5]`. Consumed by AtrousIndirectPass. */
+  atrousIndirectSigmas: readonly [number, number, number];
+  /** T5 — stained-glass opt-in flag bitfield (lands at UBO offset 344).
+   *  Bit 0 = sun-caustic enabled, bit 1 = sky-aperture enabled. Default 0
+   *  (both OFF) → lo_sg_caustic / lo_sg_aperture early-return vec3f(0), so a
+   *  generic scene gets zero stained-glass physics. Hosts opt in via
+   *  HybridEngineOptions.stainedGlass. See pipeline/uboUpdater.ts
+   *  `packStainedGlassFlags`. */
+  stainedGlassFlags: number;
+}
+
+/** BVH traversal mode + TLAS configuration. */
+export interface PipelineFrameBvh {
+  /** PR-3 — 0 = merged world BVH, 1 = TLAS + local BLAS traversal. */
+  bvhMode: number;
+  /** PR-3 — TLAS node count from CPU pack (0 forces merged path in WGSL). */
+  tlasNodeCount: number;
+}
+
+/** Optional per-frame NRC gate. */
+export interface PipelineFrameNrc {
+  /** NRC (Müller et al. 2021) cache gate (UBO offset 364 — the former
+   *  `_ppgPad2` slot). `1` ⇒ the GI suffix may TERMINATE into the learned
+   *  neural radiance cache (spread heuristic + MLP query) and radiance records
+   *  self-train it. `0`/omitted ⇒ the gi-ris suffix runs the verbatim
+   *  DDGI-atlas estimate and the UBO bytes are unchanged — **OFF is
+   *  bit-identical**. Host opt-in via HybridEngineOptions.nrcEnabled; FORBIDDEN
+   *  on tier:'lite'. NRC is a BIASED cache (not a converged-mean-preserving
+   *  reuse) — see HARDWARE-VALIDATION-NEEDS.md V20. WIRED (2026-05-29): the gi-ris
+   *  NRC variant runs the MLP query + writes self-training records;
+   *  `NrcSubsystem.trainFromRecords` runs an MLP `trainStep` AND the hash-grid
+   *  encode-backward + table Adam each frame — so with the gate at 1 the suffix
+   *  uses the (biased) learned MLP prediction when the spread heuristic fires. */
+  nrcEnabled?: number;
+}
+
+/**
+ * Per-frame inputs to {@link WalkaroundGPUPipeline.renderFrame}.
+ *
+ * Fields are grouped into named sub-objects so each sprint's new field
+ * lands in the right semantic bucket rather than growing a flat list.
+ * UBO byte layout is unchanged — the sub-objects are TypeScript-only;
+ * `uboUpdater.ts` unpacks them field-by-field as before.
+ */
+export interface PipelineFrameInputs {
+  /** Camera matrices and world-space position. */
+  camera: PipelineFrameCamera;
+  /** Swap-chain targets and per-frame seed. */
+  screen: PipelineFrameScreen;
+  /** Lighting scalars, emitter budget, and light-tree gate. */
+  lighting: PipelineFrameLighting;
+  /** ReSTIR-DI temporal + spatial reuse tuning. */
+  restirDI: PipelineFrameRestirDI;
+  /** ReSTIR-GI / GRIS tuning and reconnection gate. */
+  restirGI: PipelineFrameRestirGI;
+  /** GTAO + adaptive-sampling tuning. */
+  gtao: PipelineFrameGtao;
+  /** Denoiser filter parameters, firefly clamps, and stained-glass gate. */
+  filter: PipelineFrameFilter;
+  /** BVH traversal mode and TLAS configuration. */
+  bvh: PipelineFrameBvh;
+  /** NRC cache gate (optional; absent ⇒ OFF, bit-identical). */
+  nrc: PipelineFrameNrc;
+}
+
+export class WalkaroundGPUPipeline implements BvhUpdateSink {
   // Private fields use the `_field` underscore prefix, matching HybridEngine.
   private _device: GPUDevice;
   private _width: number;
@@ -696,11 +760,33 @@ export class WalkaroundGPUPipeline {
   private _frameCount = 0;
   private _initialized = false;
 
-  /** Live per-frame GPU resources, or `null` before `initialize()` resolves.
-   *  The engine's debug surface consumes this to expose DDGI/ReSTIR textures
-   *  to dev overlays without reaching into the private `_res` field. */
+  /**
+   * Live per-frame GPU resources, or `null` before `initialize()` resolves.
+   *
+   * @internal Package-internal use only. External debug consumers MUST use
+   * {@link getDebugTextures} instead. Only `HybridEngine` may call this getter
+   * directly (for `estimatedGpuMemoryBytes`, which needs the full struct).
+   */
   get frameResources(): FrameResources | null {
     return this._initialized ? this._res : null;
+  }
+
+  /**
+   * Narrow debug-texture handle set consumed by dev overlays
+   * (`HybridEngineDebug.giSignalTextures`). Returns `null` before
+   * `initialize()` resolves.
+   *
+   * Textures are owned by the pipeline — callers MUST NOT destroy them.
+   * Handles are invalidated on the next `setScene()` / `dispose()` /
+   * `resize()`.
+   */
+  getDebugTextures(): PipelineDebugTextures | null {
+    if (!this._initialized) return null;
+    return {
+      hdrColorTexture:   this._res.common.hdrColorTexture ?? null,
+      hdrIndirectTexture: this._res.common.hdrIndirectTexture ?? null,
+      aoFullTexture:     this._res.gtao.aoFullTexture ?? null,
+    };
   }
 
   /** Temporal-accumulator history depth: frames accumulated since the last
@@ -1297,9 +1383,9 @@ export class WalkaroundGPUPipeline {
     };
 
     // ── Camera motion: reset temporal index before denoise / accum ────────
-    const dx = inputs.cameraPos[0] - this._lastCameraPos[0];
-    const dy = inputs.cameraPos[1] - this._lastCameraPos[1];
-    const dz = inputs.cameraPos[2] - this._lastCameraPos[2];
+    const dx = inputs.camera.cameraPos[0] - this._lastCameraPos[0];
+    const dy = inputs.camera.cameraPos[1] - this._lastCameraPos[1];
+    const dz = inputs.camera.cameraPos[2] - this._lastCameraPos[2];
     const camMoveSq = dx * dx + dy * dy + dz * dz;
     const isMoving = camMoveSq > this._cameraMoveResetThresholdSq;
     if (isMoving) {
@@ -1392,7 +1478,7 @@ export class WalkaroundGPUPipeline {
     // ── End-of-frame: swap-chain present sentinel + reservoir housekeeping ─
     this._accumPingPongIndex = 1 - this._accumPingPongIndex;
     this._accumFrameIndex++;
-    this._lastCameraPos = [...inputs.cameraPos];
+    this._lastCameraPos = [...inputs.camera.cameraPos];
 
     // Swap reservoir ping-pong for next frame (copy current → previous).
     // Sprint 17 + audit B6 fix: copies must be folded into the *same*
@@ -1482,12 +1568,15 @@ export class WalkaroundGPUPipeline {
     // T2.H2 — dispose the neural InferenceGraph if present (reserved for W10).
     this._inferenceGraph?.dispose();
     this._inferenceGraph = null;
-    // Per-feature state objects (PPG / DDGI binding). Neither owns
-    // destroy()-able GPU buffers of its own — PPG buffers live in
-    // FrameResources.ppg (released above); DDGI atlases are host-owned.
-    // These calls simply drop held references.
+    // Per-feature state objects (PPG / DDGI binding / ReGIR). None own
+    // destroy()-able GPU buffers of their own — PPG buffers live in
+    // FrameResources.ppg (released above); DDGI atlases are host-owned;
+    // ReGIR grid data lives in BvhBufferHost's combined light-tree buffer
+    // (released above via _bvhHost.dispose()). These calls simply drop
+    // held references and reset CPU-side geometry mirrors.
     this._ppg.dispose();
     this._ddgi.dispose();
+    this._regir.dispose();
     // NRC subsystem (only allocated when nrcEnabled). Releases the @group(4)
     // query buffers; the MLP trainer's buffers go with the device.
     this._nrc?.dispose();

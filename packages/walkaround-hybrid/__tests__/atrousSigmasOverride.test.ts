@@ -20,7 +20,7 @@ import {
   type AtrousSigmas,
 } from '../src/pipeline/bindGroupBuilders.js';
 import type { HybridEngineOptions } from '../src/HybridEngineOptions.js';
-import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
+import type { PipelineFrameInputs, PipelineFrameFilter } from '../src/pipeline/WalkaroundGPUPipeline.js';
 import type { DenoiserDispatchContext } from '../src/pipeline/denoisers/index.js';
 
 describe('atrous sigmas override (B3a)', () => {
@@ -55,15 +55,15 @@ describe('atrous sigmas override (B3a)', () => {
     expect(opts.atrousIndirectSigmas?.[1]).toBe(40.0);
   });
 
-  it('PipelineFrameInputs carries atrous{Direct,Indirect}Sigmas (required, not optional)', () => {
-    // Structural check via a constructed inputs literal. The required-ness
-    // means the per-frame splat from HybridEngine MUST include both.
-    const inputs: Pick<PipelineFrameInputs, 'atrousDirectSigmas' | 'atrousIndirectSigmas'> = {
+  it('PipelineFrameInputs.filter carries atrous{Direct,Indirect}Sigmas (required, not optional)', () => {
+    // Structural check via a constructed filter sub-object literal. The
+    // required-ness means the per-frame builder from HybridEngine MUST include both.
+    const filter: Pick<PipelineFrameFilter, 'atrousDirectSigmas' | 'atrousIndirectSigmas'> = {
       atrousDirectSigmas:   [128.0, 5.0, 0.05],
       atrousIndirectSigmas: [32.0, 20.0, 0.5],
     };
-    expect(inputs.atrousDirectSigmas.length).toBe(3);
-    expect(inputs.atrousIndirectSigmas.length).toBe(3);
+    expect(filter.atrousDirectSigmas.length).toBe(3);
+    expect(filter.atrousIndirectSigmas.length).toBe(3);
   });
 
   it('DenoiserDispatchContext threads atrousDirectSigmas to denoisers', () => {

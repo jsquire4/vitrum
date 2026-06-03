@@ -321,40 +321,33 @@ describe('W9 gi-ris — unbiasedness sanity (cosine vs mixture source pdf)', () 
 describe('W9 gi-ris — UBO byte layout (ppg-OFF bit-identity + ppg-ON gate)', () => {
   // Minimal inputs covering only the fields updateUBO reads. Cast through
   // unknown because updateUBO ignores swapChain* / sigma / gtao* / adaptive*.
-  const baseInputs = {
-    viewMatrix: new Float32Array(16).fill(0),
-    projMatrix: new Float32Array(16).fill(0),
-    prevViewMatrix: new Float32Array(16).fill(0),
-    cameraPos: [1, 2, 3] as [number, number, number],
-    frameSeed: 7,
-    screenWidth: 64,
-    screenHeight: 48,
-    emitterCount: 2,
-    totalEmissivePower: 5,
-    primaryLightDir: [0, 1, 0] as [number, number, number],
-    primaryLightIntensity: 3,
-    skyTint: [0.1, 0.2, 0.3] as [number, number, number],
-    skyIrradiance: 0.5,
-    emitterDist2Floor: 0.01,
-    directFireflyClamp: 4,
-    causticBoost: 1,
-    causticVisClamp: 1,
-    temporalMClampDI: 20,
-    spatialReuseRadiusPx: 30,
-    spatialDepthTolFloor: 0.05,
-    triIntersectEpsilon: 1e-5,
-    glassMixScale: 0.7,
-    restirGiWCap: 16,
-    restirGiIrrClamp: 5,
-    restirGiMClamp: 50,
-    restirGiSpatialRadiusPx: 12,
-    restirGiSpatialNormalDotMin: 0.906,
-    restirGiSpatialCoplanarTol: 0.05,
-    indirectFireflyClamp: [1, 1, 1] as [number, number, number],
-    bvhMode: 0,
-    tlasNodeCount: 0,
-    stainedGlassFlags: 0,
-  } as unknown as PipelineFrameInputs;
+  const m = new Float32Array(16).fill(0);
+  const baseInputs: PipelineFrameInputs = {
+    camera: { viewMatrix: m, projMatrix: m, prevViewMatrix: m, cameraPos: [1, 2, 3] },
+    screen: { screenWidth: 64, screenHeight: 48, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
+    lighting: {
+      emitterCount: 2, totalEmissivePower: 5,
+      primaryLightDir: [0, 1, 0], primaryLightIntensity: 3,
+      skyTint: [0.1, 0.2, 0.3], skyIrradiance: 0.5,
+      emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1,
+      lightTreeEnabled: 0, lightTreeNodeCount: 0,
+    },
+    restirDI: { temporalMClampDI: 20, spatialReuseRadiusPx: 30, spatialDepthTolFloor: 0.05 },
+    restirGI: {
+      restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50,
+      restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.906,
+      restirGiSpatialCoplanarTol: 0.05,
+    },
+    gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
+    filter: {
+      triIntersectEpsilon: 1e-5, glassMixScale: 0.7,
+      indirectFireflyClamp: [1, 1, 1],
+      atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5],
+      stainedGlassFlags: 0,
+    },
+    bvh: { bvhMode: 0, tlasNodeCount: 0 },
+    nrc: {},
+  };
 
   function captureUBO(ppg?: { enabled: boolean; mixAlpha: number }): ArrayBuffer {
     let captured: ArrayBuffer | null = null;

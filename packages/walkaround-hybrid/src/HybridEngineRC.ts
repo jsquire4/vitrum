@@ -39,6 +39,7 @@ import {
   makeRestirBvhSnapshot,
   type RestirBvhSnapshot,
 } from './restir/restirBvhSnapshot.js';
+import type { PipelineSubsystem } from './pipeline/PipelineSubsystem.js';
 
 interface RCBVHBuffers {
   readonly bvhNodesBuf:      GPUBuffer;
@@ -94,7 +95,7 @@ export function packRCParams(
   return buf;
 }
 
-export class RCSubsystem {
+export class RCSubsystem implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   private readonly _cascadeDims: readonly CascadeDim[];
   private _dispatcher: RCDispatcher | null = null;

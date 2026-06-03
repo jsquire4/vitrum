@@ -53,7 +53,7 @@ export class CompositePass implements Pass {
     const pass = encoder.beginRenderPass({
       label: 'composite',
       colorAttachments: [{
-        view: inputs.swapChainView,
+        view: inputs.screen.swapChainView,
         loadOp: 'clear',
         storeOp: 'store',
         clearValue: { r: 0, g: 0, b: 0, a: 1 },

@@ -30,6 +30,7 @@ import * as THREE from 'three';
 import { SceneBvh } from '@vitrum/shared-bvh';
 import type { Scene } from '@vitrum/core';
 import { ProbeGrid } from './probeGrid.js';
+import type { ProbeGridParams } from './probeGrid.js';
 import { ProbeUpdatePass } from './probeUpdatePass.js';
 import type { DDGILight } from './types.js';
 import { makeDdgiRestirBvhSnapshot, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
@@ -159,6 +160,43 @@ export class DDGI {
   /** Replace the current light list. Forwarded to ProbeUpdatePass. */
   setLights(lights: DDGILight[]): void {
     this._pass.setLights(lights);
+  }
+
+  // ── Forwarding façade — callers go through DDGI, not DDGI.pass/probeGrid ──
+
+  /**
+   * Set the sun-intensity multiplier on the underlying ProbeUpdatePass.
+   * Forwarded from `HybridEngine` / `HybridEngineLifecycle` so they don't
+   * reach through to `DDGI.pass` directly.
+   */
+  setSunIntensityMultiplier(m: number): void {
+    this._pass.setSunIntensityMultiplier(m);
+  }
+
+  /**
+   * Set the glass mix scale on the underlying ProbeUpdatePass.
+   * Forwarded from `HybridEngineFrameOrchestrator` so it doesn't reach
+   * through to `DDGI.pass` directly.
+   */
+  setGlassMixScale(s: number): void {
+    this._pass.setGlassMixScale(s);
+  }
+
+  /**
+   * Return the read-side atlas GPU textures from the underlying
+   * ProbeUpdatePass. Forwarded from `HybridEngineFrameOrchestrator`.
+   */
+  getReadAtlasGPUTextures(): { irradiance: GPUTexture; visibility: GPUTexture } | null {
+    return this._pass.getReadAtlasGPUTextures();
+  }
+
+  /**
+   * Probe-grid parameters (origin, spacing, dims, atlas sizes).
+   * Forwarded from `HybridEngineFrameOrchestrator` so it doesn't reach
+   * through to `DDGI.probeGrid` directly.
+   */
+  get gridParams(): ProbeGridParams {
+    return this._grid.params;
   }
 
   /** Phase-0 productization (H1) — set the round-robin probe-update divisor.

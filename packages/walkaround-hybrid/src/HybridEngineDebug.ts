@@ -5,11 +5,22 @@ import type { EngineDebugSurface, GpuMemoryBreakdown } from '@vitrum/core';
 import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
 import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
 import type { FrameResources } from './pipeline/resourceManager.js';
+import type { PipelineDebugTextures } from './pipeline/PipelineDebugTextures.js';
 
 export interface HybridEngineDebugDeps {
   device: () => GPUDevice | null;
   readAtlas: () => { irradiance: GPUTexture; visibility: GPUTexture } | null;
   bvhNodesCpu: () => ArrayBuffer | null | undefined;
+  /**
+   * Narrow debug-texture handles for the GI-signal overlay
+   * (`giSignalTextures`). Backed by `WalkaroundGPUPipeline.getDebugTextures()`.
+   */
+  debugTextures: () => PipelineDebugTextures | null;
+  /**
+   * Full frame-resources struct for the GPU memory estimator
+   * (`estimatedGpuMemoryBytes`). Backed by the `@internal`
+   * `WalkaroundGPUPipeline.frameResources` getter.
+   */
   pipelineResources: () => FrameResources | null;
   denoiserPassEnabled: () => boolean;
   setDenoiserPassEnabled: (enabled: boolean) => void;
@@ -27,13 +38,13 @@ export function createHybridEngineDebugSurface(deps: HybridEngineDebugDeps): Eng
       return packBvhNodesForDebug(buf);
     },
     giSignalTextures: () => {
-      const res = deps.pipelineResources();
-      if (res == null) return null;
+      const textures = deps.debugTextures();
+      if (textures == null) return null;
       return {
-        direct: res.common.hdrColorTexture ?? null,
-        indirect: res.common.hdrIndirectTexture ?? null,
-        ao: res.gtao.aoFullTexture ?? null,
-        total: null,
+        direct:   textures.hdrColorTexture,
+        indirect: textures.hdrIndirectTexture,
+        ao:       textures.aoFullTexture,
+        total:    null,
       };
     },
     isDenoiserEnabled: deps.denoiserPassEnabled,

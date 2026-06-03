@@ -40,6 +40,7 @@ import {
 } from './nrcEncoding.js';
 import type { RisGiNrcConfig } from '../../shaders/risGiNrc.wgsl.js';
 import { getNrcBindGroupLayout, type BGLCache } from '../../pipeline/bindGroupLayouts.js';
+import type { PipelineSubsystem } from '../../pipeline/PipelineSubsystem.js';
 
 /** Resolved NRC config (encoding + MLP + self-training cadence). The WGSL gi-ris
  *  NRC variant and the trainer net-spec are both derived from this so the query
@@ -122,7 +123,7 @@ function encodingConfig(cfg: NrcConfig, aabbMin: readonly [number, number, numbe
   };
 }
 
-export class NrcSubsystem {
+export class NrcSubsystem implements PipelineSubsystem {
   readonly cfg: NrcConfig;
   private readonly _device: GPUDevice;
   private readonly _bglCache: BGLCache;

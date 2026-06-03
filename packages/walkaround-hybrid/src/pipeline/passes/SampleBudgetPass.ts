@@ -58,8 +58,8 @@ export class SampleBudgetPass implements Pass {
     // Uint32Array-aliased write (f32 @0/4, u32 @8/12).
     const budgetBytes = new ArrayBuffer(SAMPLE_BUDGET_UBO.sizeBytes);
     SAMPLE_BUDGET_UBO.pack(new DataView(budgetBytes), 0, {
-      thresholdLow:  inputs.adaptiveSamplingThresholdLow,
-      thresholdHigh: inputs.adaptiveSamplingThresholdHigh,
+      thresholdLow:  inputs.gtao.adaptiveSamplingThresholdLow,
+      thresholdHigh: inputs.gtao.adaptiveSamplingThresholdHigh,
       screenW:       ctx.width,
       screenH:       ctx.height,
     });

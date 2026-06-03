@@ -179,13 +179,17 @@ function makeDispatchCtx(
     },
   } as unknown as PassDispatchContext['resources'];
 
-  // Minimal camera projMatrix (only [5] is read for tanFovHalf).
+  // Minimal camera projMatrix (only [5] is read for tanFovHalf) + gtao params.
   const inputs = {
-    projMatrix: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    gtaoRadiusPx: 32,
-    gtaoIntensity: 1,
-    gtaoDepthThreshold: 1,
-    gtaoBilateralDepthSigma: 1,
+    camera: {
+      projMatrix: [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    },
+    gtao: {
+      gtaoRadiusPx: 32,
+      gtaoIntensity: 1,
+      gtaoDepthThreshold: 1,
+      gtaoBilateralDepthSigma: 1,
+    },
   } as unknown as PassDispatchContext['inputs'];
 
   return {

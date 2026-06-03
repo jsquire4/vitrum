@@ -494,7 +494,7 @@ export class PipelineInitCoordinator {
         host.coreSceneSuppliesMeshes() && host.lastScene != null
           ? host.lastScene
           : null;
-      host.ddgi.pass.setSunIntensityMultiplier(
+      host.ddgi.setSunIntensityMultiplier(
         directionalSunMultiplier(sceneForSun, host.primaryLightIntensity),
       );
 

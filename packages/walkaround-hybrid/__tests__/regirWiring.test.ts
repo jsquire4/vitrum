@@ -36,21 +36,29 @@ import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.
 function fakeInputs(): PipelineFrameInputs {
   const m = new Float32Array(16);
   return {
-    viewMatrix: m, projMatrix: m, prevViewMatrix: m, prevProjMatrix: m,
-    cameraPos: [0, 0, 0], screenWidth: 64, screenHeight: 64, frameSeed: 7,
-    totalEmissivePower: 1, emitterCount: 4,
-    primaryLightDir: [0, 1, 0], primaryLightIntensity: 1,
-    skyTint: [0, 0, 0], skyIrradiance: 0,
-    emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1,
-    temporalMClampDI: 20, spatialReuseRadiusPx: 30, spatialDepthTolFloor: 0.05,
-    triIntersectEpsilon: 1e-5, glassMixScale: 0.7, restirGiWCap: 16, restirGiIrrClamp: 5,
-    restirGiMClamp: 50, restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.9,
-    restirGiSpatialCoplanarTol: 0.05, indirectFireflyClamp: [1, 1, 1],
-    bvhMode: 0, tlasNodeCount: 0, lightTreeEnabled: 1, lightTreeNodeCount: 7,
-    stainedGlassFlags: 0, atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5],
-    gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25,
-    adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1,
-    swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm',
+    camera: { viewMatrix: m, projMatrix: m, prevViewMatrix: m, cameraPos: [0, 0, 0] },
+    screen: { screenWidth: 64, screenHeight: 64, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
+    lighting: {
+      totalEmissivePower: 1, emitterCount: 4,
+      primaryLightDir: [0, 1, 0], primaryLightIntensity: 1,
+      skyTint: [0, 0, 0], skyIrradiance: 0,
+      emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1,
+      lightTreeEnabled: 1, lightTreeNodeCount: 7,
+    },
+    restirDI: { temporalMClampDI: 20, spatialReuseRadiusPx: 30, spatialDepthTolFloor: 0.05 },
+    restirGI: {
+      restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50,
+      restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.9,
+      restirGiSpatialCoplanarTol: 0.05,
+    },
+    gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
+    filter: {
+      triIntersectEpsilon: 1e-5, glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1],
+      atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5],
+      stainedGlassFlags: 0,
+    },
+    bvh: { bvhMode: 0, tlasNodeCount: 0 },
+    nrc: {},
   } as PipelineFrameInputs;
 }
 
