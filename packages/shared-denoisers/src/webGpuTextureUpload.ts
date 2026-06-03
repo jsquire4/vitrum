@@ -266,6 +266,43 @@ export function fillR16Uint(
 }
 
 /**
+ * Read an rgba32float texture back to tight RGB (length w*h*3, alpha discarded).
+ * Mirrors `readRgba16fToRgb` but for 32-bit float textures (4 floats per texel,
+ * 16 bytes/pixel). Submits its own copy command + awaits map.
+ */
+export async function readRgba32fToRgb(
+  device: GPUDevice,
+  texture: GPUTexture,
+  width: number,
+  height: number,
+): Promise<Float32Array> {
+  const bpr = alignedTextureCopyBytesPerRow(width, RGBA32F_BPP);
+  const buf = device.createBuffer({
+    size: bpr * height,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+  const encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer({ texture }, { buffer: buf, bytesPerRow: bpr }, [width, height]);
+  device.queue.submit([encoder.finish()]);
+  await buf.mapAsync(GPUMapMode.READ);
+  const mapped = new Float32Array(buf.getMappedRange());
+  const out = new Float32Array(width * height * 3);
+  for (let y = 0; y < height; y += 1) {
+    const rowOff = (y * bpr) / 4;
+    for (let x = 0; x < width; x += 1) {
+      const di = (y * width + x) * 3;
+      const si = rowOff + x * 4;
+      out[di]     = mapped[si]     ?? 0;
+      out[di + 1] = mapped[si + 1] ?? 0;
+      out[di + 2] = mapped[si + 2] ?? 0;
+    }
+  }
+  buf.unmap();
+  buf.destroy();
+  return out;
+}
+
+/**
  * Read an rgba16float texture back to tight RGB (length w*h*3, alpha discarded).
  * Submits its own copy command + awaits map; caller need not provide an encoder.
  */

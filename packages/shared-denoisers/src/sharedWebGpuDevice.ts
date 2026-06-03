@@ -83,6 +83,31 @@ export function disposeSharedWebGPUDevice(): void {
   }
 }
 
+/**
+ * Returns a lazy per-`GPUDevice` factory: the first call for a given device
+ * invokes `factory(device)` and caches the result; subsequent calls for the
+ * same device are O(1). The `WeakMap` key ensures the cached value is released
+ * when the device is garbage-collected (i.e. after `device.destroy()`).
+ *
+ * Usage:
+ *   const getPipelines = makePerDevicePipelineCache((d) => compilePipelines(d));
+ *   // later, in a hot path:
+ *   const { pipeline } = getPipelines(device);
+ */
+export function makePerDevicePipelineCache<T>(
+  factory: (device: GPUDevice) => T,
+): (device: GPUDevice) => T {
+  const cache = new WeakMap<GPUDevice, T>();
+  return function getOrCreate(device: GPUDevice): T {
+    let value = cache.get(device);
+    if (value == null) {
+      value = factory(device);
+      cache.set(device, value);
+    }
+    return value;
+  };
+}
+
 export interface AcquireDenoiseDeviceOptions {
   /** Explicit device, when supplied. Never destroyed by `dispose`. */
   readonly device?: GPUDevice | undefined;

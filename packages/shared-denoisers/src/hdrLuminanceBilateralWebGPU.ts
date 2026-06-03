@@ -8,9 +8,8 @@ import {
   HDR_LUMINANCE_BILATERAL_WGSL,
   HDR_LUMINANCE_BILATERAL_WORKGROUP_SIZE,
 } from './wgsl/hdrLuminanceBilateral.wgsl.js';
-import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
-import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
-import { uploadRgbAsRgba32f, RGBA32F_BPP } from './webGpuTextureUpload.js';
+import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
+import { uploadRgbAsRgba32f, readRgba32fToRgb } from './webGpuTextureUpload.js';
 
 /** Default luminance edge-stop σ for `runHdrLuminanceBilateralWebGPU` (matches Cornell `vitrumWgslSigma`). */
 export const HDR_LUMINANCE_BILATERAL_DEFAULT_SIGMA_LUMINANCE = 0.06 as const;
@@ -30,21 +29,16 @@ export interface HdrLuminanceBilateralWebGPUOptions {
   readonly reuseSharedWebGpuDevice?: boolean;
 }
 
-const bilateralPipelineByDevice = new WeakMap<GPUDevice, GPUComputePipeline>();
-
-function bilateralComputePipeline(device: GPUDevice): GPUComputePipeline {
-  let pipeline = bilateralPipelineByDevice.get(device);
-  if (pipeline == null) {
+const bilateralComputePipeline = makePerDevicePipelineCache<GPUComputePipeline>(
+  (device) => {
     const shaderModule = device.createShaderModule({ label: 'hdr-lum-bilateral', code: HDR_LUMINANCE_BILATERAL_WGSL });
-    pipeline = device.createComputePipeline({
+    return device.createComputePipeline({
       label: 'hdr-lum-bilateral-pipeline',
       layout: 'auto',
       compute: { module: shaderModule, entryPoint: HDR_LUMINANCE_BILATERAL_ENTRY },
     });
-    bilateralPipelineByDevice.set(device, pipeline);
-  }
-  return pipeline;
-}
+  },
+);
 
 /**
  * Runs one luminance bilateral pass on linear HDR RGB (flattened length w*h*3).
@@ -83,9 +77,7 @@ export async function runHdrLuminanceBilateralWebGPU(
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
   });
 
-  // Upload tight RGB as rgba32float (alpha=1) via the shared helper; the
-  // readback below uses the same row alignment.
-  const bytesPerRow = alignedTextureCopyBytesPerRow(w, RGBA32F_BPP);
+  // Upload tight RGB as rgba32float (alpha=1) via the shared helper.
   uploadRgbAsRgba32f(device, texIn, rgb, w, h);
 
   // BilateralParams UBO: 4 × f32 = 16 bytes.
@@ -116,39 +108,13 @@ export async function runHdrLuminanceBilateralWebGPU(
   pass.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
   pass.end();
 
-  // Readback uses the same stride as the upload — single source.
-  const readbackBuffer = device.createBuffer({
-    size: bytesPerRow * h,
-    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-  });
-
-  encoder.copyTextureToBuffer(
-    { texture: texOut },
-    { buffer: readbackBuffer, bytesPerRow },
-    [w, h],
-  );
   device.queue.submit([encoder.finish()]);
 
-  await readbackBuffer.mapAsync(GPUMapMode.READ);
-  const mapped = new Float32Array(readbackBuffer.getMappedRange());
-
-  const out = new Float32Array(w * h * 3);
-  for (let y = 0; y < h; y += 1) {
-    const rowOff = (y * bytesPerRow) / 4;
-    for (let x = 0; x < w; x += 1) {
-      const di = (y * w + x) * 3;
-      const si = rowOff + x * 4;
-      out[di] = mapped[si] ?? 0;
-      out[di + 1] = mapped[si + 1] ?? 0;
-      out[di + 2] = mapped[si + 2] ?? 0;
-    }
-  }
-  readbackBuffer.unmap();
+  const out = await readRgba32fToRgb(device, texOut, w, h);
 
   texIn.destroy();
   texOut.destroy();
   ubo.destroy();
-  readbackBuffer.destroy();
   destroyEphemeral();
 
   return out;

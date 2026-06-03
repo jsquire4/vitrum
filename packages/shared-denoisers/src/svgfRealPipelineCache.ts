@@ -13,6 +13,7 @@ import { SVGF_REPROJECTION_WGSL } from './wgsl/svgfReprojection.wgsl.js';
 import { SVGF_VARIANCE_FROM_MOMENTS_WGSL } from './wgsl/svgfVarianceFromMoments.wgsl.js';
 import { SVGF_7X7_SPATIAL_FALLBACK_WGSL } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
 import { ATROUS_VARIANCE_WGSL } from './wgsl/atrousVariance.wgsl.js';
+import { makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 
 export interface SVGFRealPipelineBundle {
   readonly reprojPipeline:    GPUComputePipeline;
@@ -21,21 +22,18 @@ export interface SVGFRealPipelineBundle {
   readonly atrousPipeline:    GPUComputePipeline;
 }
 
-const svgfRealPipelinesByDevice = new WeakMap<GPUDevice, SVGFRealPipelineBundle>();
-
 /**
  * Returns the cached SVGF compute pipelines for `device`, compiling them on
  * first access. Subsequent calls for the same device are O(1).
  */
-export function svgfRealPipelines(device: GPUDevice): SVGFRealPipelineBundle {
-  let bundle = svgfRealPipelinesByDevice.get(device);
-  if (bundle == null) {
+export const svgfRealPipelines = makePerDevicePipelineCache<SVGFRealPipelineBundle>(
+  (device) => {
     const reprojSM         = device.createShaderModule({ label: 'svgf-reproj',                 code: SVGF_REPROJECTION_WGSL });
     const momentsSM        = device.createShaderModule({ label: 'svgf-moments',                code: SVGF_VARIANCE_FROM_MOMENTS_WGSL });
     const fallbackSM       = device.createShaderModule({ label: 'svgf-7x7',                    code: SVGF_7X7_SPATIAL_FALLBACK_WGSL });
     const atrousVarianceSM = device.createShaderModule({ label: 'svgf-real-atrous-variance',   code: ATROUS_VARIANCE_WGSL });
 
-    bundle = {
+    return {
       reprojPipeline: device.createComputePipeline({
         label: 'svgf-real-reproj',
         layout: 'auto',
@@ -57,7 +55,5 @@ export function svgfRealPipelines(device: GPUDevice): SVGFRealPipelineBundle {
         compute: { module: atrousVarianceSM, entryPoint: 'svgfAtrousMain' },
       }),
     };
-    svgfRealPipelinesByDevice.set(device, bundle);
-  }
-  return bundle;
-}
+  },
+);

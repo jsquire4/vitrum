@@ -40,6 +40,8 @@ import {
   WGSL_MODULES,
 } from '../wgslModules.js';
 import type { UboRef } from '../bindGroupBuilders.js';
+import { buildAtrousVarianceAtrousBindGroup } from '../bindGroupBuilders.js';
+import { checkShaderCompile } from '../shaderUtils.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
@@ -94,17 +96,7 @@ export class SVGFRealDenoiser implements Denoiser {
       ['svgf-7x7', fallbackSM],
       ['svgf-real-atrous-variance', atrousSM],
     ] as [string, GPUShaderModule][]) {
-      const info = await sm.getCompilationInfo();
-      const errors = info.messages.filter((m) => m.type === 'error');
-      if (errors.length > 0) {
-        console.error(
-          `[ReSTIR] Shader compile errors in '${label}':`,
-          errors.map((e) => `line ${e.lineNum}: ${e.message}`),
-        );
-        throw new Error(
-          `[ReSTIR] Shader compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`,
-        );
-      }
+      await checkShaderCompile(sm, label);
     }
 
     // ── Compile pipelines ─────────────────────────────────────────────────
@@ -277,18 +269,13 @@ export class SVGFRealDenoiser implements Denoiser {
         });
         device.queue.writeBuffer(iterUbo, 0, atrousUboBytes);
         this._pendingTransientUbos.push(iterUbo);
-        return device.createBindGroup({
-          label: `svgf-real-atrous-bg-${iter}`,
-          layout: sa.getBindGroupLayout(0),
-          entries: [
-            { binding: 0, resource: inputView },
-            { binding: 1, resource: outputView },
-            { binding: 2, resource: gNormalDepthView },
-            { binding: 3, resource: gNormalDepthView },
-            { binding: 4, resource: varView },
-            { binding: 5, resource: { buffer: iterUbo } },
-          ],
-        });
+        return buildAtrousVarianceAtrousBindGroup(
+          device, sa,
+          inputView, outputView,
+          gNormalDepthView, varView,
+          iterUbo,
+          `svgf-real-atrous-bg-${iter}`,
+        );
       },
       labelFor: (iter) => `svgf-real-atrous-${iter}` as PassLabel,
     });

@@ -39,6 +39,8 @@ import { WELFORD_TEMPORAL_MODULE } from '../../shaders/welfordTemporal.wgsl.js';
 import { composeWgsl } from '../wgslComposer.js';
 import { ATROUS_VARIANCE_MODULE, WGSL_MODULES } from '../wgslModules.js';
 import type { UboRef } from '../bindGroupBuilders.js';
+import { buildAtrousVarianceAtrousBindGroup } from '../bindGroupBuilders.js';
+import { checkShaderCompile } from '../shaderUtils.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
@@ -101,28 +103,6 @@ function buildAtrousVarianceVarianceBindGroup(
   });
 }
 
-function buildAtrousVarianceAtrousBindGroup(
-  device: GPUDevice,
-  atrousPipeline: GPUComputePipeline,
-  inputTex: GPUTextureView,
-  outputTex: GPUTextureView,
-  gNormalDepth: GPUTextureView,
-  varianceEstimate: GPUTextureView,
-  ubo: GPUBuffer,
-): GPUBindGroup {
-  return device.createBindGroup({
-    label: 'atrous-variance-atrous-bg',
-    layout: atrousPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: inputTex },
-      { binding: 1, resource: outputTex },
-      { binding: 2, resource: gNormalDepth },
-      { binding: 3, resource: gNormalDepth },
-      { binding: 4, resource: varianceEstimate },
-      { binding: 5, resource: { buffer: ubo } },
-    ],
-  });
-}
 
 export class AtrousVarianceDenoiser implements Denoiser {
   readonly id = 'atrous-variance' as const;
@@ -165,17 +145,7 @@ export class AtrousVarianceDenoiser implements Denoiser {
       ['welford', welfordSM],
       ['atrous-variance', atrousVarianceSM],
     ] as [string, GPUShaderModule][]) {
-      const info = await sm.getCompilationInfo();
-      const errors = info.messages.filter((m) => m.type === 'error');
-      if (errors.length > 0) {
-        console.error(
-          `[ReSTIR] Shader compile errors in '${label}':`,
-          errors.map((e) => `line ${e.lineNum}: ${e.message}`),
-        );
-        throw new Error(
-          `[ReSTIR] Shader compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`,
-        );
-      }
+      await checkShaderCompile(sm, label);
     }
 
     // ── Compile pipelines ─────────────────────────────────────────────────

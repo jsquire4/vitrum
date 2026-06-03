@@ -41,6 +41,7 @@ import {
 } from '@vitrum/shared-denoisers';
 import { composeWgsl } from '../wgslComposer.js';
 import { BMFR_MODULE, WGSL_MODULES } from '../wgslModules.js';
+import { checkShaderCompile } from '../shaderUtils.js';
 import {
   DENOISER_PASS_LABELS,
   type Denoiser,
@@ -71,17 +72,7 @@ export class BmfrDenoiser implements Denoiser {
 
     const code = composeWgsl(BMFR_MODULE, WGSL_MODULES);
     const sm = device.createShaderModule({ label: 'bmfr', code });
-    const info = await sm.getCompilationInfo();
-    const errors = info.messages.filter((m) => m.type === 'error');
-    if (errors.length > 0) {
-      console.error(
-        `[BMFR] Shader compile errors:`,
-        errors.map((e) => `line ${e.lineNum}: ${e.message}`),
-      );
-      throw new Error(
-        `[BMFR] Shader compile error: ${errors[0]!.message} (line ${errors[0]!.lineNum})`,
-      );
-    }
+    await checkShaderCompile(sm, 'bmfr');
     this._pipeline = await device.createComputePipelineAsync({
       label: 'bmfr',
       layout: 'auto',

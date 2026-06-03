@@ -3,6 +3,7 @@ import {
   acquireDenoiseDevice,
   disposeSharedWebGPUDevice,
   getSharedWebGPUDevice,
+  makePerDevicePipelineCache,
 } from '../src/sharedWebGpuDevice.js';
 
 const hasWebGpu =
@@ -20,6 +21,36 @@ describe('sharedWebGpuDevice', () => {
   it('getSharedWebGPUDevice throws when WebGPU is unavailable', async () => {
     if (hasWebGpu) return;
     await expect(getSharedWebGPUDevice()).rejects.toThrow(/WebGPU not available/);
+  });
+});
+
+describe('makePerDevicePipelineCache', () => {
+  it('returns the same instance for repeated calls with the same device', () => {
+    const factory = vi.fn((d: GPUDevice) => ({ pipeline: `compiled-for-${(d as unknown as { id: string }).id}` }));
+    const getBundle = makePerDevicePipelineCache(factory);
+
+    const deviceA = { id: 'A' } as unknown as GPUDevice;
+    const r1 = getBundle(deviceA);
+    const r2 = getBundle(deviceA);
+
+    expect(r1).toBe(r2);
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls the factory once per distinct device', () => {
+    const factory = vi.fn((d: GPUDevice) => ({ label: (d as unknown as { id: string }).id }));
+    const getBundle = makePerDevicePipelineCache(factory);
+
+    const deviceA = { id: 'A' } as unknown as GPUDevice;
+    const deviceB = { id: 'B' } as unknown as GPUDevice;
+
+    const ra = getBundle(deviceA);
+    const rb = getBundle(deviceB);
+
+    expect(ra).not.toBe(rb);
+    expect(ra.label).toBe('A');
+    expect(rb.label).toBe('B');
+    expect(factory).toHaveBeenCalledTimes(2);
   });
 });
 

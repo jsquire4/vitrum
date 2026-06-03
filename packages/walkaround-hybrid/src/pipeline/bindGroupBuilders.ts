@@ -552,6 +552,56 @@ export function buildIndirectCombineBindGroup(
   ]);
 }
 
+// ── Shared à-trous variance atrous bind group ────────────────────────────────
+// Both SVGFRealDenoiser and AtrousVarianceDenoiser build the same 6-binding
+// layout for the atrous-variance kernel's `svgfAtrousMain` entry. This builder
+// is the single source so the binding order is enforced in one place.
+// Binding order mirrors AtrousVarianceAtrousBindGroupLayout in
+// @vitrum/shared-denoisers (bindings 0..5):
+//   0 = color input (rgba16float, texture_2d)
+//   1 = color output (rgba16float, storage write)
+//   2 = gNormalDepth (rgba32float or rgba16float, texture_2d) — normal
+//   3 = gNormalDepth (same view) — depth
+//   4 = variance estimate (rg32float, texture_2d)
+//   5 = AtrousVarianceAtrousUBO (uniform)
+
+/**
+ * Build the atrous-variance atrous-pass bind group.  Both the
+ * `SVGFRealDenoiser` and the `AtrousVarianceDenoiser` bind this identical
+ * 6-entry layout; sharing it here prevents the two sites from drifting.
+ *
+ * @param atrousPipeline  The compiled atrous pipeline (layout: 'auto').
+ * @param inputTex        View of the color input texture.
+ * @param outputTex       View of the color output texture (storage write).
+ * @param gNormalDepth    View of the normal+depth G-buffer (bound at slots 2 AND 3).
+ * @param varianceEstimate View of the variance estimate texture.
+ * @param ubo             The per-iteration AtrousVarianceAtrousUBO buffer.
+ * @param label           Optional GPUBindGroup debug label.
+ */
+export function buildAtrousVarianceAtrousBindGroup(
+  device: GPUDevice,
+  atrousPipeline: GPUComputePipeline,
+  inputTex: GPUTextureView,
+  outputTex: GPUTextureView,
+  gNormalDepth: GPUTextureView,
+  varianceEstimate: GPUTextureView,
+  ubo: GPUBuffer,
+  label = 'atrous-variance-atrous-bg',
+): GPUBindGroup {
+  return device.createBindGroup({
+    label,
+    layout: atrousPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: inputTex },
+      { binding: 1, resource: outputTex },
+      { binding: 2, resource: gNormalDepth },
+      { binding: 3, resource: gNormalDepth },
+      { binding: 4, resource: varianceEstimate },
+      { binding: 5, resource: { buffer: ubo } },
+    ],
+  });
+}
+
 // ── PPG bind groups (W9 — Müller 2017 path guiding) ──────────────────────────
 //
 // The PPG guide / update kernels use `layout: 'auto'` (the WGSL declares its

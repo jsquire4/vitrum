@@ -30,7 +30,7 @@ import {
   packBmfrUniforms,
   type BmfrUniforms,
 } from './bmfrBindings.js';
-import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
+import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
 import {
@@ -44,22 +44,21 @@ interface BmfrPipelineBundle {
   readonly pipeline: GPUComputePipeline;
 }
 
-const bmfrPipelinesByDevice = new WeakMap<GPUDevice, BmfrPipelineBundle>();
-
-function bmfrPipeline(device: GPUDevice): GPUComputePipeline {
-  let bundle = bmfrPipelinesByDevice.get(device);
-  if (bundle == null) {
+const getBmfrBundle = makePerDevicePipelineCache<BmfrPipelineBundle>(
+  (device) => {
     const module = device.createShaderModule({ label: 'bmfr', code: BMFR_WGSL });
-    bundle = {
+    return {
       pipeline: device.createComputePipeline({
         label: 'bmfr',
         layout: 'auto',
         compute: { module, entryPoint: BMFR_ENTRY },
       }),
     };
-    bmfrPipelinesByDevice.set(device, bundle);
-  }
-  return bundle.pipeline;
+  },
+);
+
+function bmfrPipeline(device: GPUDevice): GPUComputePipeline {
+  return getBmfrBundle(device).pipeline;
 }
 
 export interface BmfrWebGPUOptions {

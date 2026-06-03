@@ -25,7 +25,7 @@ import {
   ATROUS_VARIANCE_MAX_ATROUS_ITERATIONS,
   ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
 } from './atrousVarianceConstants.js';
-import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
+import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
 import {
   fillRg32f,
@@ -56,13 +56,10 @@ interface AtrousVariancePipelineBundle {
   readonly atrous: GPUComputePipeline;
 }
 
-const atrousVariancePipelinesByDevice = new WeakMap<GPUDevice, AtrousVariancePipelineBundle>();
-
-function atrousVariancePipelines(device: GPUDevice): AtrousVariancePipelineBundle {
-  let bundle = atrousVariancePipelinesByDevice.get(device);
-  if (bundle == null) {
+const atrousVariancePipelines = makePerDevicePipelineCache<AtrousVariancePipelineBundle>(
+  (device) => {
     const shaderModule = device.createShaderModule({ label: 'atrous-variance', code: ATROUS_VARIANCE_WGSL });
-    bundle = {
+    return {
       variance: device.createComputePipeline({
         label: 'atrous-variance-variance',
         layout: 'auto',
@@ -74,10 +71,8 @@ function atrousVariancePipelines(device: GPUDevice): AtrousVariancePipelineBundl
         compute: { module: shaderModule, entryPoint: ATROUS_ENTRY },
       }),
     };
-    atrousVariancePipelinesByDevice.set(device, bundle);
-  }
-  return bundle;
-}
+  },
+);
 
 // Albedo demodulate / remodulate helpers (Schied 2017 §4.1) live in
 // albedoModulation.ts — shared with the svgf-real host path.
