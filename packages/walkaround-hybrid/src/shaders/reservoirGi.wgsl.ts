@@ -292,7 +292,7 @@ fn refreshPhase0Cache(r: ptr<function, ReservoirPT>) {
 // must normalise back out.  Call AFTER the final updateReservoirGI / M update.
 //
 // W = w_sum / (M × p̂(chosen sample))   — Talbot 2005 + ReSTIR DI/GI 2020.
-fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>) {
+fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>, wCap: f32) {
   if ((*r).M > 0u) {
     let toSf = (*r).xs - (*r).xv;
     let distSf = length(toSf);
@@ -301,7 +301,7 @@ fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>) {
       let cosThetaF = max(0.0, dot((*r).nv, wiF));
       let pHatF = luminance((*r).Lo) * cosThetaF * INV_PI;
       let W_raw = select(0.0, (*r).w_sum / (f32((*r).M) * pHatF), pHatF > 1e-9);
-      (*r).W = min(W_raw, ubo.restirGiWCap);
+      (*r).W = min(W_raw, wCap);
     } else {
       (*r).W = 0.0;
     }
@@ -312,7 +312,7 @@ fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>) {
 // each sample with a pairwise MIS weight m_i where Σ m_i = 1, so the M-count
 // does NOT normalise the sum — dividing by M again would under-energise the
 // estimate.  W = w_sum / p̂ only (Lin 2022 §generalized RIS).
-fn finaliseGIReservoirWGris(r: ptr<function, ReservoirPT>) {
+fn finaliseGIReservoirWGris(r: ptr<function, ReservoirPT>, wCap: f32) {
   if ((*r).M > 0u) {
     let toSf = (*r).xs - (*r).xv;
     let distSf = length(toSf);
@@ -321,7 +321,7 @@ fn finaliseGIReservoirWGris(r: ptr<function, ReservoirPT>) {
       let cosThetaF = max(0.0, dot((*r).nv, wiF));
       let pHatF = luminance((*r).Lo) * cosThetaF * INV_PI;
       let W_raw = select(0.0, (*r).w_sum / pHatF, pHatF > 1e-9);
-      (*r).W = min(W_raw, ubo.restirGiWCap);
+      (*r).W = min(W_raw, wCap);
     } else {
       (*r).W = 0.0;
     }
