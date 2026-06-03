@@ -193,18 +193,15 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //   2: {offset.xy, scale.xy}   3: {rotation, _, _, _}
 const MATERIAL_TEX_VEC4_STRIDE = 4u;
 
-// Sample the baseColor texture for material \`matId\` at the hit. Interpolates the
-// per-vertex UV with the hit barycentrics, applies the KHR_texture_transform,
-// and samples the indexed array layer. Returns vec4(1) — a no-op multiply — when
-// the material has no baseColor map (baseColorIdx < 0) or the hit is not a mesh
-// triangle (analytic shapes carry no UVs in v1), so textureless rendering stays
-// byte-identical to the pre-P2 path. textureSampleLevel (explicit LOD) is used
-// so the call is valid in the kernel's non-uniform control flow.
-fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  let baseColorIdx = i32(materialTexDescriptors[base].x);
-  if (baseColorIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
+// Sample array layer \`layerIdx\` for material \`base\` (= matId·stride) at the hit:
+// interpolate the per-vertex UV by the hit barycentrics, apply the material's
+// KHR_texture_transform, sample the indexed layer. Returns vec4(1) — a no-op
+// multiply — when layerIdx < 0 or the hit is not a mesh triangle (analytic shapes
+// carry no UVs in v1), so a material lacking that map stays byte-identical.
+// textureSampleLevel (explicit LOD) keeps the call valid in non-uniform flow.
+// All maps of a material share its baseColor UV transform (v1 simplification).
+fn sampleMaterialLayer(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  if (layerIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
     return vec4f(1.0);
@@ -232,7 +229,21 @@ fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
     sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
     -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
-  return textureSampleLevel(materialTextures, materialTexSampler, uv, baseColorIdx, 0.0);
+  return textureSampleLevel(materialTextures, materialTexSampler, uv, layerIdx, 0.0);
+}
+
+// baseColor map (sRGB array) — descriptor vec4[0].x.
+fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  return sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW);
+}
+
+// emissive map (sRGB array, same layers as baseColor) — descriptor vec4[0].w.
+fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  return sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes

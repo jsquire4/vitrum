@@ -48,6 +48,20 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[12]).toBeCloseTo(0.5);
   });
 
+  it('collects emissiveMap into the same (sRGB) sources + packs emissiveIdx', () => {
+    const tex = { id: 'base' };
+    const emis = { id: 'emis' };
+    const { sources, descriptors } = collectMaterialTextures([
+      mat({ baseColorMap: { handle: tex }, emissiveMap: { handle: emis } }),
+      mat({ emissiveMap: { handle: tex } }), // emissive reuses the baseColor handle → dedup
+    ]);
+    expect(sources).toEqual([tex, emis]); // baseColor + emissive share the sRGB source list
+    expect(descriptors[0]).toBe(0); // mat0 baseColorIdx → tex (0)
+    expect(descriptors[3]).toBe(1); // mat0 emissiveIdx → emis (1)
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 0]).toBe(-1); // mat1 no baseColor
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 3]).toBe(0); // mat1 emissiveIdx → tex (dedup 0)
+  });
+
   it('defaults: opaque(0), cutoff 0.5, opacity 1, identity scale', () => {
     const { descriptors } = collectMaterialTextures([mat({ baseColorMap: { handle: {} } })]);
     expect(descriptors[4]).toBe(0);

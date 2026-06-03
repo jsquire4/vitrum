@@ -22,8 +22,8 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Updated for P2: SceneHit.baryVW + group-3 material-texture bindings +
     // sampleBaseColorTexture + the shade-prologue baseColor texture multiply +
     // alphaTestPassThrough + the kernel alpha-mask/blend pass-through loop.
-    expect(digest).toBe('50b2ee4f1a2e915ae4d0863c59fe487225dfeecad56f9dced6b7d0645bd7af9f');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(154885);
+    expect(digest).toBe('479bf2e8144143acc7246c500fb42de2c0497b33d5a948369d688eff89a86040');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(155528);
   });
 });
 

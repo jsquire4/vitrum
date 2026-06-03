@@ -24,12 +24,16 @@
  * prologue used to live (between the trace-miss `break;` block and
  * `let throughputAtVertex = throughput;`).
  */
-export function composeShadePrologueWgsl(emissiveComment: string, baseColorTexApply = ''): string {
+export function composeShadePrologueWgsl(
+  emissiveComment: string,
+  baseColorTexApply = '',
+  emissiveTexApply = '',
+): string {
   return /* wgsl */ `    let matId = hitMaterialId(hit);
     let mat = decodeMaterial(matId);
     var baseColor = mat.baseColor;${baseColorTexApply}
     var roughness = mat.roughness;
-    let emissive = mat.emissive;
+    var emissive = mat.emissive;${emissiveTexApply}
     let metallic = mat.metallic;
     let transmission = mat.transmission;
     var ior = mat.ior;
@@ -125,3 +129,8 @@ export const SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE =
  *  newline + 4-space indent so it sits on its own line after the declaration. */
 export const SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL =
   `\n    baseColor = baseColor * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW).rgb;`;
+
+/** Full-tier emissive texture modulation (P2). Injected after `var emissive`;
+ *  no-op (vec4(1)) for materials without an emissive map → byte-identical. */
+export const SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL =
+  `\n    emissive = emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW).rgb;`;

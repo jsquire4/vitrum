@@ -54,10 +54,10 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
   materials.forEach((m, mi) => {
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
     const bc = m.baseColorMap;
-    descriptors[b + 0] = indexOf(bc);            // baseColorIdx
-    descriptors[b + 1] = -1;                     // normalIdx   (v1: unused)
-    descriptors[b + 2] = -1;                     // ormIdx
-    descriptors[b + 3] = -1;                     // emissiveIdx
+    descriptors[b + 0] = indexOf(bc);            // baseColorIdx (sRGB array)
+    descriptors[b + 1] = -1;                     // normalIdx  (linear array — added with normal maps)
+    descriptors[b + 2] = -1;                     // ormIdx     (linear array — added with ORM maps)
+    descriptors[b + 3] = indexOf(m.emissiveMap); // emissiveIdx (sRGB array — same layers as baseColor)
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
     descriptors[b + 6] = m.opacity ?? 1;
