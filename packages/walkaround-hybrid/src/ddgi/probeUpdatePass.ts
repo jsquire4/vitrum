@@ -594,6 +594,80 @@ export class ProbeUpdatePass {
     return { irradiance: irrGpu, visibility: visGpu };
   }
 
+  /**
+   * Read the converged probe atlases back to CPU (the "cached light field" export).
+   * Returns the raw rgba16float texels + atlas dims, or null if the atlases aren't
+   * allocated yet. Async (mapAsync).
+   */
+  async exportAtlasData(device: GPUDevice): Promise<{
+    irrW: number; irrH: number; visW: number; visH: number;
+    irrData: Uint16Array; visData: Uint16Array;
+  } | null> {
+    const tex = this.getReadAtlasGPUTextures();
+    const irrSlot = this._grid.irradianceReadTex;
+    const visSlot = this._grid.visibilityReadTex;
+    if (!tex || !irrSlot || !visSlot) return null;
+    const irrData = await this.#readbackRgba16f(device, tex.irradiance, irrSlot.width, irrSlot.height);
+    const visData = await this.#readbackRgba16f(device, tex.visibility, visSlot.width, visSlot.height);
+    return { irrW: irrSlot.width, irrH: irrSlot.height, visW: visSlot.width, visH: visSlot.height, irrData, visData };
+  }
+
+  /**
+   * Upload previously-exported probe atlases into the read-side textures (the
+   * restore). Returns false (no-op) if the atlases aren't allocated or the
+   * snapshot's dims don't match the current grid (a different scene). The restored
+   * state seeds the temporal blend, so subsequent frames continue from it.
+   */
+  importAtlasData(
+    device: GPUDevice,
+    snap: { irrW: number; irrH: number; visW: number; visH: number; irrData: Uint16Array; visData: Uint16Array },
+  ): boolean {
+    const tex = this.getReadAtlasGPUTextures();
+    const irrSlot = this._grid.irradianceReadTex;
+    const visSlot = this._grid.visibilityReadTex;
+    if (!tex || !irrSlot || !visSlot) return false;
+    if (irrSlot.width !== snap.irrW || irrSlot.height !== snap.irrH ||
+        visSlot.width !== snap.visW || visSlot.height !== snap.visH) {
+      return false; // grid mismatch — cannot restore into a differently-sized atlas
+    }
+    this.#uploadRgba16f(device, tex.irradiance, snap.irrW, snap.irrH, snap.irrData);
+    this.#uploadRgba16f(device, tex.visibility, snap.visW, snap.visH, snap.visData);
+    return true;
+  }
+
+  /** copyTextureToBuffer (256-aligned rows) → unpadded Uint16Array of rgba16float. */
+  async #readbackRgba16f(device: GPUDevice, tex: GPUTexture, w: number, h: number): Promise<Uint16Array> {
+    const unpadded = w * 8; // rgba16float = 8 bytes/texel
+    const bytesPerRow = Math.ceil(unpadded / 256) * 256;
+    const staging = device.createBuffer({
+      size: bytesPerRow * h,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: tex }, { buffer: staging, bytesPerRow, rowsPerImage: h }, [w, h, 1]);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const padded = new Uint8Array(staging.getMappedRange().slice(0));
+    staging.unmap();
+    staging.destroy();
+    const out = new Uint16Array(w * h * 4);
+    const outBytes = new Uint8Array(out.buffer);
+    for (let y = 0; y < h; y++) {
+      outBytes.set(padded.subarray(y * bytesPerRow, y * bytesPerRow + unpadded), y * unpadded);
+    }
+    return out;
+  }
+
+  /** writeTexture (no row alignment needed) from a tightly-packed rgba16float array. */
+  #uploadRgba16f(device: GPUDevice, tex: GPUTexture, w: number, h: number, data: Uint16Array): void {
+    device.queue.writeTexture(
+      { texture: tex },
+      data as Uint16Array<ArrayBuffer>, // our snapshot arrays are always ArrayBuffer-backed
+      { offset: 0, bytesPerRow: w * 8, rowsPerImage: h },
+      [w, h, 1],
+    );
+  }
+
   dispose(): void {
     if (!this._gpu) return;
     const g = this._gpu;

@@ -102,6 +102,7 @@ import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import { coreEmittersToDDGILights, directionalSunMultiplier } from './coreEmittersToDDGILights.js';
 import { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
+import type { GIStateSnapshot } from './giStateSnapshot.js';
 
 // Re-export the option / lighting interfaces from their dedicated module so
 // the package's public surface (`./HybridEngine.js` import path) stays
@@ -1333,6 +1334,35 @@ export class HybridEngine implements Engine {
    *
    * Calling with an empty object (`{}`) is a safe no-op.
    *
+   * Export the converged DDGI global-illumination state (the "cached light
+   * field") so the host can persist it (e.g. to IndexedDB via
+   * {@link serializeGIState}) and restore it next session without re-converging.
+   * Returns null if the probe atlases aren't allocated yet (call after the GI has
+   * run at least one frame). Async (atlas readback uses mapAsync).
+   */
+  async exportGIState(): Promise<GIStateSnapshot | null> {
+    const atlas = await this._ddgi.pass.exportAtlasData(this._device);
+    if (!atlas) return null;
+    const grid = this._ddgi.probeGrid;
+    return {
+      dims: { x: grid.dims.x, y: grid.dims.y, z: grid.dims.z },
+      origin: [grid.worldOrigin.x, grid.worldOrigin.y, grid.worldOrigin.z],
+      spacing: grid.worldSpacing,
+      ...atlas,
+    };
+  }
+
+  /**
+   * Restore a previously {@link exportGIState}-ed snapshot into the live probe
+   * atlases (seeds the temporal blend, so rendering continues from it instead of
+   * re-converging). Returns false (no-op) if the atlases aren't allocated or the
+   * snapshot's atlas dims don't match the current grid (a different scene/bounds).
+   */
+  importGIState(snapshot: GIStateSnapshot): boolean {
+    return this._ddgi.pass.importAtlasData(this._device, snapshot);
+  }
+
+  /**
    * @param opts - Partial lighting overrides. Omitted fields are unchanged.
    */
   updateLighting(opts: Partial<LightingOptions>): void {

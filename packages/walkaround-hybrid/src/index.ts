@@ -10,6 +10,11 @@ export type {
 
 export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
 export type { HybridEngineOptions, LightingOptions } from './HybridEngine.js';
+export {
+  serializeGIState,
+  deserializeGIState,
+  type GIStateSnapshot,
+} from './giStateSnapshot.js';
 
 export {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
