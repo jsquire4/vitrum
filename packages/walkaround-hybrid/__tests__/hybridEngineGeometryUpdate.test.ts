@@ -586,8 +586,10 @@ describe('HybridEngine.updateEmitter', () => {
 //     downstream re-upload calls + getBvhMode staying live),
 //   - whether the GI subsystems were applied (transform / positions / topology /
 //     skinned DO; material-only deliberately does NOT),
-//   - that the topology-`shape` field throws explicitly (contract: geometry
-//     edits that need a primitive replacement are not a fast path).
+//   - that a wholesale topology field (`shape` / `instances` / `params`) routes
+//     through a full setScene rebuild (P5: honors incrementalPatchSupport.topology
+//     instead of throwing — geometry edits that need a primitive replacement do a
+//     rebuild, not a fast path).
 describe('HybridEngine.updatePrimitive — routing epilogue characterization (Theme B)', () => {
   async function bootEngine(): Promise<{ engine: HybridEngine; s: GeoUpdateState }> {
     const engine = makeEngine();
@@ -647,11 +649,19 @@ describe('HybridEngine.updatePrimitive — routing epilogue characterization (Th
     expect(getGiPropState().calls.length).toBe(1);
   });
 
-  it('patching `shape` throws explicitly (geometry replacement is not a fast path)', async () => {
-    const { engine } = await bootEngine();
+  it('patching a wholesale field (`shape`) routes through a full setScene rebuild — no throw (P5)', async () => {
+    const { engine, s } = await bootEngine();
+    // `shape` (like `instances` / `params`) can't be an in-place THREE.Mesh edit,
+    // so updatePrimitive routes it through setScene (full rebuild) instead of
+    // throwing "call setScene()" — honoring incrementalPatchSupport.topology.
     expect(() => engine.updatePrimitive!('mesh-a', {
       shape: { kind: 'sphere', radius: 1 },
-    } as unknown as Partial<Scene['primitives'][number]>)).toThrow(/primitive replacement/);
+    } as unknown as Partial<Scene['primitives'][number]>)).not.toThrow();
+    // setScene tore down + rebuilt the pipeline (a fresh construction + init).
+    await waitForPipelineCount(2);
+    s.pipelineInitDeferreds[1]!.resolve();
+    await drainMicrotasks();
+    expect(s.pipelineConstructed.length).toBe(2);
   });
 
   it('keeps `_bvhBuffers` live after a transform refit (getBvhMode still resolves)', async () => {

@@ -53,11 +53,13 @@ P1 texture contract; backends consume the P4 operators).
   albedo, motionVectors}` from the always-allocated G-buffer via
   `WalkaroundGPUPipeline.getAuxBufferTextures()`; `supportsAuxBuffers` flipped to
   true in both the engine capability and `BACKEND_PROMISE_LEDGER`. (Variance is
-  the RG32F Welford buffer ≠ the contract's RGBA32F, so not exposed.) Remaining:
-  walkaround instance-COUNT topology rebuild (instanced-mesh instance-array
-  size change — genuinely throws today, unlike pt-webgl/pt-webgpu; topology-FIELD
-  changes already work via `topologyRebuild`), spotlight cone in GI,
-  analytic-shape expansion.
+  the RG32F Welford buffer ≠ the contract's RGBA32F, so not exposed.)
+  **Instance-COUNT topology rebuild SHIPPED 2026-06-03:** `updatePrimitive`
+  intercepts the wholesale-replacement fields (`instances`/`params`/`shape`/
+  `fallbackMesh`/`kind`) and routes them through a full setScene rebuild (no
+  longer throws "call setScene"), matching pt-webgl/pt-webgpu's contract surface;
+  `BACKEND_PROMISE_LEDGER` doc updated. Remaining P5: spotlight cone in GI,
+  analytic-shape expansion (both lower-priority).
 - **P7 — shallow-algo depth.** Real MNEE Newton solve, wiring the dead GPU
   differentiable adjoint, NRC debias — all radiometric, GPU-A/B-critical. Shipping
   a default neural U-Net checkpoint needs a PyTorch + training-dataset env.

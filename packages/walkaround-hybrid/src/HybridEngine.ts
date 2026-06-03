@@ -83,6 +83,7 @@ import {
   materialPatch,
   refitSkinnedMeshAfterGpuWrite,
   TOPOLOGY_PATCH_FIELDS,
+  TOPOLOGY_PATCH_WHOLESALE_FIELDS,
   type PrimitiveUpdateContext,
   type PrimitiveUpdateResult,
 } from './HybridEnginePrimitiveUpdates.js';
@@ -945,6 +946,26 @@ export class HybridEngine implements Engine {
       throw new Error(
         `HybridEngine.updatePrimitive("${id}"): primitive id not found in current scene.`,
       );
+    }
+
+    // Wholesale-replacement patches — `instances` (instanced-mesh instance-COUNT
+    // change), `params` / `shape` (analytic), `fallbackMesh`, `kind` — can't be
+    // expressed as an in-place THREE.Mesh attribute edit, so route them through a
+    // full setScene rebuild (the same mutate-Scene → setScene spine addPrimitive /
+    // removePrimitive use). A geometry/instance change invalidates every cached GI
+    // signal anyway, so on this realtime stack the work is a rebuild either way;
+    // the value is honoring incrementalPatchSupport.topology + matching
+    // pt-webgl/pt-webgpu (which absorb the instance-COUNT case) instead of
+    // throwing "call setScene()". P5 contract-honesty.
+    if (TOPOLOGY_PATCH_WHOLESALE_FIELDS.some((f) => (patch as Record<string, unknown>)[f] !== undefined)) {
+      const nextScene: Scene = {
+        ...this._lastScene,
+        primitives: this._lastScene.primitives.map((p) =>
+          String(p.id) === id ? ({ ...p, ...patch } as ScenePrimitive) : p,
+        ),
+      };
+      this.setScene(nextScene);
+      return;
     }
 
     // Three.js BVH refit (fast path) preserves topology when only AABB

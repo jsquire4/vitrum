@@ -110,6 +110,14 @@ export const TOPOLOGY_PATCH_FIELDS = [
   'instances', 'params', 'shape', 'fallbackMesh', 'kind',
 ] as const;
 
+/** Topology fields that can't be expressed as an in-place THREE.Mesh attribute
+ *  edit (unlike positions/normals/uvs/tangents/indices) and so require a full
+ *  scene rebuild. `HybridEngine.updatePrimitive` intercepts these and routes them
+ *  through `setScene` (instead of `topologyRebuild` throwing). */
+export const TOPOLOGY_PATCH_WHOLESALE_FIELDS = [
+  'instances', 'params', 'shape', 'fallbackMesh', 'kind',
+] as const;
+
 /** Snapshot the live TLAS GPU buffers as the `prev` input to `refitTlasTransforms`. */
 function captureTlasSnapshot(tlas: NonNullable<SceneBVHBuffers['tlas']>): TlasGpuSnapshot {
   return {
@@ -761,8 +769,10 @@ export function topologyRebuild(
   //   - positions, normals, uvs, tangents, indices (typed arrays from
   //     core/src/scene.ts MeshPrimitive)
   // Other fields (`instances`, `params`, `shape`, `fallbackMesh`,
-  // `kind`) require a wholesale primitive replacement; throw with a
-  // clear pointer so the host knows to use setScene().
+  // `kind`) require a wholesale primitive replacement. `HybridEngine.
+  // updatePrimitive` intercepts these and routes them through setScene
+  // BEFORE reaching here, so the throw below is now a defensive backstop
+  // for any direct caller — not the host-facing path.
   const meshRef = findMeshByPrimitiveId(root, id);
   if (meshRef == null) {
     throw new Error(
@@ -783,12 +793,12 @@ export function topologyRebuild(
     fallbackMesh?: unknown;
     kind?: unknown;
   };
-  for (const f of ['instances', 'params', 'shape', 'fallbackMesh', 'kind'] as const) {
+  for (const f of TOPOLOGY_PATCH_WHOLESALE_FIELDS) {
     if (p[f] !== undefined) {
       throw new Error(
-        `HybridEngine.updatePrimitive("${id}"): patching '${f}' requires a primitive ` +
-        `replacement, not just an attribute update. Call setScene() with the ` +
-        `modified scene instead.`,
+        `topologyRebuild("${id}"): '${f}' is a wholesale-replacement field and must ` +
+        `be routed through setScene by HybridEngine.updatePrimitive before reaching ` +
+        `topologyRebuild (internal invariant).`,
       );
     }
   }

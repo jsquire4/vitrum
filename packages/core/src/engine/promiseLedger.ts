@@ -91,10 +91,13 @@ type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendP
  *     tangents/indices) ARE absorbed: a geometry change invalidates every cached
  *     GI signal on this realtime stack, so the engine re-runs its BVH rebuild +
  *     temporal reset (reusing the packing path, not a targeted in-place edit).
- *     BUT `instances`/`params`/`shape`/`fallbackMesh`/`kind` patches THROW
- *     (HybridEnginePrimitiveUpdates `topologyRebuild`) — unlike pt-webgl/
- *     pt-webgpu, which absorb the instance-COUNT case. (P5 will implement the
- *     walkaround instance-count path; until then `topology` is partial here.)
+ *     `instances`/`params`/`shape`/`fallbackMesh`/`kind` patches are ALSO absorbed
+ *     (P5, 2026-06-03): `HybridEngine.updatePrimitive` intercepts these
+ *     wholesale-replacement fields and routes them through a full setScene rebuild
+ *     (mutate-Scene → setScene spine, like addPrimitive) — no longer a throw. So
+ *     instance-COUNT changes work here too; the rebuild is the cost (GI is
+ *     invalidated either way on a realtime stack), matching pt-webgl/pt-webgpu's
+ *     contract surface.
  *   • pt-webgl — mesh/skinned vertex/index-COUNT change rebuilds that one mesh's
  *     THREE BufferGeometry in place (applyGeometryPatchToMesh) + the fork's
  *     targeted geometry+BVH regen (StaticGeometryGenerator force-rebuild on
@@ -110,8 +113,9 @@ type _LedgerCoversCapabilities = _AssertExtends<_LedgerCapabilitySlice, BackendP
  * In all three, `id`/`kind` morphs throw in patchPrimitiveInScene, and
  * whole-primitive ADD/REMOVE is setScene (see supportsAddRemovePrimitive), not a
  * patch. So `topology` means "vertex/index-count patches on an existing primitive
- * are absorbed" — fully on pt-webgl/pt-webgpu (incl. instance-count); on
- * walkaround the instance-count/params/shape facet currently throws.
+ * are absorbed" — fully on all three backends, incl. the instance-count case
+ * (walkaround does it via a full setScene rebuild, the PT backends via targeted
+ * TLAS/BLAS realloc).
  *
  * Per-backend `supportsAddRemovePrimitive === true` rationale: addPrimitive
  * appends a new primitive and removePrimitive evicts one, each by routing a
