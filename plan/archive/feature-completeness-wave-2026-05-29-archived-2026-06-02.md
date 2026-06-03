@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Feature-Completeness Wave — Implementation Plan (2026-05-29)
 
 > **Goal:** bring every major rendering algorithm / decision-of-consequence to a genuinely

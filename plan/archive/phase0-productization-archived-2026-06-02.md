@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # vitrum — Phase 0 productization (implementation plan)
 
 **Status:** implementation plan (file-level). **Date:** 2026-05-28.

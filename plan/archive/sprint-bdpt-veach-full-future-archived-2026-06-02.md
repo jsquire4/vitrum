@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Full Veach §10.3 BDPT MIS — Future Sprint Placeholder
 
 **Status:** Partially landed — BDPT is dispatching in pt-webgpu (opt-in via extensions['vitrum.ptWebgpu.bdpt']) and pt-webgl (Sprint 10c). What remains unbuilt is full Veach §10.3 multi-strategy MIS weight enumeration.

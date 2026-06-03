@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Dead-code sweep — 2026-05-18 (knip)
 
 > **Read-only sweep.** No code was removed. Findings only. Companion to the
@@ -342,6 +344,6 @@ In order of confidence:
 
 - See `plan/dead-exports-audit-20260517.md` for the prior hand-rolled
   package-index audit (named exports from each `src/index.ts`).
-- See `plan/premium-grade-refactor-20260517.md` and
+- See `plan/archive/premium-grade-refactor-20260517-archived-2026-06-02.md` and
   `memory/in-flight-plan.md` for the in-progress W1 Pass+Registry refactor
   that is the most likely root of the orphaned `svgfRealPipelineCache.ts`.

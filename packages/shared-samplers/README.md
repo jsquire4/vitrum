@@ -11,7 +11,7 @@ Sampling utilities for path tracers and walkaround engines: QMC sequences, light
 - `CIE_X_TABLE`, `CIE_Y_TABLE`, `CIE_Z_TABLE`, `X_CMF_INTEGRAL`, `Y_CMF_INTEGRAL`, `Z_CMF_INTEGRAL`, `X_CMF_CDF`, `Y_CMF_CDF`, `Z_CMF_CDF`, `sampleHeroWavelengthMIS` — spectral sampling consumed by pt-webgl.
 
 **Hoisted WGSL primitives (also exported from package index):**
-- `PCG_WGSL`, `BSDF_PRIMITIVES_WGSL`, `LUMINANCE_WGSL` — canonical declarations; consumers should import via `wgslModules.ts` `requires` rather than inlining duplicates.
+- `PCG_WGSL`, `PCG_HASH_TO_F32_WGSL`, `BSDF_PRIMITIVES_WGSL`, `LUMINANCE_WGSL` — canonical declarations; consumers should import via `wgslModules.ts` `requires` rather than inlining duplicates.
 
 **Still duplicated in some consumer packages (open follow-up):**
 - Per-pixel pixel-hash — some walkaround shaders still inline the legacy `fract(sin(dot(...)))` form; prefer `PCG_WGSL` from this package when touching those files.

@@ -1,4 +1,4 @@
-> **ARCHIVED 2026-05-30 — SUPERSEDED, never executed.** This was the pre-approval draft. The remediation that actually ran is `plan/complexity-remediation-20260528.md` (all 13 themes landed) and the later `plan/complexity-sweep-refactor-2026-05-30.md`. Kept for historical context only; do not treat its wave plan as the work that happened.
+> **ARCHIVED 2026-05-30 — SUPERSEDED, never executed.** This was the pre-approval draft. The remediation that actually ran is `plan/archive/complexity-remediation-20260528-archived-2026-06-02.md` (all 13 themes landed) and the later `plan/archive/complexity-sweep-refactor-2026-05-30-archived-2026-06-02.md`. Kept for historical context only; do not treat its wave plan as the work that happened.
 
 # Complexity remediation — full implementation plan
 

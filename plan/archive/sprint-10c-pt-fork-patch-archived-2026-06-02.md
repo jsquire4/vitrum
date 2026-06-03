@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Sprint 10c — BDPT Fork Patch Specification
 
 **Status**: APPLIED (2026-05-12).

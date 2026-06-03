@@ -95,13 +95,13 @@ structural fix (see §4).
   `GpuSkinningSubsystem`). The real remaining seam is that the skinned per-vertex normals are
   **computed but unconsumed** — `applyGpuSkinnedRefit` drops them and the merged BVH uses
   geometric (faceted) normals. Remaining work: consume the skinned smooth shading normals.
-- **NRC hash-grid encoding is frozen** (discovered 2026-05-29) — the live NRC forward query +
-  record gather + per-frame MLP `trainStep` ARE wired and dispatched when `nrcEnabled` (the
-  earlier "query/record pass is the next phase" comments were stale). But the trainable
-  multiresolution hash-grid BACKWARD (`nrcEncodeBackwardWgsl`, gradient scatter into table rows)
-  is emitted yet never dispatched, so `NrcSubsystem._tablesBuf` stays at random init. The MLP
-  learns over a fixed positional embedding; the encoding itself does not learn. Remaining work:
-  dispatch the encode-backward and fold its gradients into the train step.
+- ~~**NRC hash-grid encoding is frozen**~~ — **CLOSED (feature-completeness wave, WS#6).** The
+  encode-backward IS now dispatched: `NrcSubsystem.trainFromRecords` calls
+  `this._tableTrainer.step(this._batchPos, filled)` which runs the `nrcEncodeBackward` compute
+  kernel (scatter dL/dfeature into `_tablesBuf`) followed by a TABLE Adam step. Both the MLP AND
+  the multiresolution hash-grid encoding learn per frame (Müller 2022 Instant-NGP §4). The item
+  was live code at the time of writing; subsequent work wired it. Verified at
+  `packages/walkaround-hybrid/src/neural/nrc/nrcSubsystem.ts:364-368`.
 
 ### Performance (the biggest unvalidated dimension)
 - **Nothing has been perf-validated on target hardware.** lavapipe is a CPU rasterizer (correctness

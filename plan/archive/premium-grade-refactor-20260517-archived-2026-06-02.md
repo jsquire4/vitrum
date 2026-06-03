@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Premium-grade refactor plan — 2026-05-17
 
 > **Status (2026-05-18): all 13 workstreams shipped.** W1 / W2 / W3 / W4 /
@@ -984,7 +986,7 @@ folder cleaned.
    `phase-7-restir-gi.md`, `walkaround-without-three.md`,
    `renderer-fidelity-matrix.md`, `generalized-library-milestones.md`,
    `binding-babylon-sketch.md`, `d2-e6-pt-webgpu-ppg-performance.md`,
-   `pt-webgpu-deep-audit.md`, `hardware-gpu-validation-spec.md`. Mark
+   `pt-webgpu-deep-audit.md`, `plan/archive/hardware-gpu-validation-spec-archived-2026-06-02.md`. Mark
    Phase-6 docs "closed".
 4. **memory/** — archive the 6 stainedGlass-referencing `project_*` files
    as `project_*_archived.md`; retain `project_design_principles.md` +

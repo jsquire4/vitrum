@@ -1,6 +1,6 @@
 # @vitrum/three-bindings
 
-Adapter between `THREE.Scene` and `@vitrum/core`'s `Scene` type. Plus a glTF loader and a CPU skinning solver.
+Adapter between `THREE.Scene` and `@vitrum/core`'s `Scene` type. Plus a glTF loader and a re-export of the CPU skinning solver (implemented in `@vitrum/core`).
 
 ## Public surface
 
@@ -9,7 +9,7 @@ Adapter between `THREE.Scene` and `@vitrum/core`'s `Scene` type. Plus a glTF loa
 - `disposeVitrumThreeSceneRoot(root)` — releases the `THREE.Material` / `THREE.BufferGeometry` instances `vitrumSceneToThree` allocated.
 - `applyEnvironment(threeScene, environment)` — wires `THREE.Scene.environment` from `@vitrum/core` `SceneEnvironment` (HDRI / procedural-sky / none).
 - `loadGltfScene(source, opts?)` — convenience glTF → `@vitrum/core` Scene loader (URL / Blob / File / ArrayBuffer).
-- `solveSkin(prim, outPositions?, outNormals?)` — linear-blend skinning solver. Takes a `SkinnedMeshPrimitive` (with current pose + optional morph weights + optional `bindMatrix`) and produces deformed positions / normals ready for `engine.updatePrimitive`.
+- `solveSkin(prim, outPositions?, outNormals?)` / `combineSkinMatrices` / `mat3InverseTranspose` — CPU linear-blend skinning solver. Implemented in `@vitrum/core`; re-exported here for convenience. Takes a `SkinnedMeshPrimitive` (with current pose + optional morph weights + optional `bindMatrix`) and produces deformed positions / normals ready for `engine.updatePrimitive`.
 - `convertMaterial(threeStdMat)` / `convertBasicMaterial(threeBasicMat)` — material-only conversion (used by hot-reload paths and downstream tests).
 - `extractThreePbrScalars(material)` — read PBR scalar fields from a THREE material into a typed record. Used by `walkaround-hybrid` + `pt-webgpu` material packing.
 - `VITRUM_USER_DATA_KEYS` — string-key table for the `userData` round-trip protocol.

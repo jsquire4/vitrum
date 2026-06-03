@@ -19,7 +19,7 @@ This is the Milestone **M4** answer to: *“What would break if THREE disappeare
 | Module | THREE coupling |
 |--------|----------------|
 | `HybridEngine.ts` | Holds **`THREE.Scene`**; passes to DDGI + `restir/buildSceneBVH`; triangle-count readiness uses **`scene.traverse`**. |
-| `restir/bvhCompute.ts` | **`THREE.Vector3`, `THREE.Color`**, mesh materials, UV/attenuation helpers — all mesh-bvh + three material model. |
+| `rc/bvhCompute.ts (walkaround-hybrid/src/rc/)` | **`THREE.Vector3`, `THREE.Color`**, mesh materials, UV/attenuation helpers — all mesh-bvh + three material model. (File moved from `restir/` to `rc/` as part of the RC extraction into `@vitrum/walkaround-rc`; Fork A.) |
 | `shared-bvh` usage | **`buildSceneBVH`** from three scene graph (internally **three-mesh-bvh**). |
 | `ddgi/*` | Scene traversal, **`SceneBvh`**, probe pass expects three renderer adapter shape. |
 | `pipeline/WalkaroundGPUPipeline.ts` | Mostly GPU — coupling via **buffer layouts** built from BVH emitters (emitter format today derived from three scenes). |

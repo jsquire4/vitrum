@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Hardware-GPU Validation: Options Spec
 
 > Research-only. No code changes proposed in this doc.

@@ -10,6 +10,7 @@ Shared BVH builder + canonical layout used by DDGI, RC, and ReSTIR GI engines (p
 - `MaterialEntry` — canonical 16-float (64-byte) material struct + `packMaterials(mats)` packer. Shared by DDGI and RC; ReSTIR uses a different per-triangle u32 packing scheme.
 - `BVH_INTERSECT_WGSL` — canonical WGSL string (Möller–Trumbore + AABB slab + 60-deep stack traversal) consumed by every WGSL-side BVH reader.
 - `MATERIAL_ENTRY_WGSL` — canonical WGSL struct declaration for the material entry, kept in lockstep with the TS packer.
+- `invertMat4` — 4×4 matrix inversion utility shared by TLAS packing and pt-webgpu's scene setup.
 
 ## Node layout
 

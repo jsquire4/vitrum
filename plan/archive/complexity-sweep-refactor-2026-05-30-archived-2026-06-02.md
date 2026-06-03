@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Implementation Plan — Complexity-Sweep Refactor (2026-05-30)
 
 > Authoritative findings: `~/.claude/projects/-home-jsquire4-projects-vitrum/memory/in-flight-sweep-2026-05-30.md`

@@ -19,9 +19,9 @@
 
 ### `@vitrum/three-bindings`
 
-**Owns**: adapter from a `THREE.Scene` to `@vitrum/core`'s `Scene`. Material translation (Three.js `MeshPhysicalMaterial` → `@vitrum/core`'s `Material`). Texture handle wrapping. Light translation.
+**Owns**: adapter from a `THREE.Scene` to `@vitrum/core`'s `Scene`. Material translation (Three.js `MeshPhysicalMaterial` → `@vitrum/core`'s `Material`). Texture handle wrapping. Light translation. Also re-exports `solveSkin` (CPU LBS solver lives in `@vitrum/core/skinSolver.ts`; three-bindings re-exports it for convenience since it is most commonly called from the THREE adapter layer).
 
-**Depends on**: `@vitrum/core`, `three`.
+**Depends on**: `@vitrum/core`, `@vitrum/stained-glass-extensions`, `three` (peer).
 
 **Why separate**: `@vitrum/core` doesn't know about three.js. A future babylon binding, glTF binding, or raw-buffer binding implements the same `Scene`-construction contract.
 
@@ -83,15 +83,15 @@
 
 ### `@vitrum/walkaround-rc`
 
-**Owns**: Radiance Cascades subsystem — cascade pyramid, cascade buffer management, and `RCDispatcher` (raw-GPU and THREE-coupled entry points). Consumed by `@vitrum/walkaround-hybrid`.
+**Owns**: Radiance Cascades subsystem — cascade pyramid, cascade buffer management, and `RCDispatcher`. The only public entry point is the raw-GPU `dispatchFrameRaw(opts: RCDispatchOptsRaw)` path (accepts `GPUDevice` + raw `GPUBuffer`s + plain tuples); the former THREE-coupled `dispatchFrame` entry was dropped. TSL/Node material helpers (`GIReceiver`, `walkaroundDiffuseLighting`) are in `walkaround-hybrid` and remain three/webgpu-coupled. Consumed by `@vitrum/walkaround-hybrid`.
 
-**Depends on**: `@vitrum/core`.
+**Depends on**: `@vitrum/shared-bvh`, `@vitrum/shared-samplers`. `three` and `three-mesh-bvh` are peer dependencies (required only by the TSL files still in `walkaround-hybrid`).
 
 ### `@vitrum/scene-lighting`
 
 **Owns**: host-side lighting-state primitives — time-of-day sky params, sun geometry, intensity tables, and `computeLightingState`. (Emitter packing lives in `pt-webgpu`; light-tree CDF construction lives in `@vitrum/shared-samplers` — not here.)
 
-**Depends on**: `three` only (no `@vitrum/*` deps).
+**Depends on**: nothing (pure TypeScript, THREE-free). No `@vitrum/*` deps, no `three` runtime dep — the package.json has no `dependencies` block.
 
 ## How a host application consumes vitrum
 

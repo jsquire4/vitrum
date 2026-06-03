@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # Complexity-Remediation Plan — 2026-05-28 (full sweep)
 
 Source: `/complexity-sweep` (19 scanners) → `/plan-implementation`. Raw findings + verified dead-code classification: `~/.claude/projects/-home-jsquire4-projects-vitrum/memory/in-flight-sweep-2026-05-28.md`.

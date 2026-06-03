@@ -1,3 +1,5 @@
+> **Archived 2026-06-02 — completed/superseded. Current state: CLAUDE.md + git log on main.**
+
 # In-flight complexity sweep
 **Started:** 2026-05-26 | **Branch:** `main` @ `0a8cea6` (reconcile after C2 TLAS landings)
 

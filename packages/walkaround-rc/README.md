@@ -21,8 +21,6 @@ via `HybridEngineRC`; this package is the algorithm itself.
   pre-compiled pipelines so a host can wire them into a larger compute
   graph without bringing the TSL-side material wrapper.
 - `CascadeBufferManager` — per-engine cascade ping-pong buffer ownership.
-- `buildRCSceneBVH` / `SceneBVH` — `StorageBufferAttribute`-typed adapter
-  over `@vitrum/shared-bvh`.
 - `CASCADE_DIMS` / `CASCADE_COUNT` / `CascadeDim` — default cascade pyramid
   sizes (Cornell-tuned). Hosts override per-engine via
   `HybridEngineOptions.cascadeDims: readonly CascadeDim[]` (B3b, 2026-05-19);
