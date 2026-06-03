@@ -76,11 +76,11 @@ function makeSampler(device: GPUDevice): GPUSampler {
 
 /** 1×1 white single-layer array — the always-bound placeholder for scenes with
  *  no sampled textures (kernel never reads it; descriptors are all -1). */
-function createDummyArray(device: GPUDevice): MaterialTextureArray {
+function createDummyArray(device: GPUDevice, format: GPUTextureFormat): MaterialTextureArray {
   const texture = device.createTexture({
     label: DUMMY_LABEL,
     size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-    format: 'rgba8unorm-srgb',
+    format,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
   device.queue.writeTexture(
@@ -106,8 +106,9 @@ function createDummyArray(device: GPUDevice): MaterialTextureArray {
 export function createMaterialTextureArray(
   device: GPUDevice,
   sources: ReadonlyArray<unknown>,
+  format: GPUTextureFormat = 'rgba8unorm-srgb',
 ): MaterialTextureArray {
-  if (sources.length === 0) return createDummyArray(device);
+  if (sources.length === 0) return createDummyArray(device, format);
 
   const warnings: string[] = [];
   const payloads = sources.map(payloadOf);
@@ -123,7 +124,7 @@ export function createMaterialTextureArray(
   const texture = device.createTexture({
     label: ARRAY_LABEL,
     size: { width, height, depthOrArrayLayers: sources.length },
-    format: 'rgba8unorm-srgb',
+    format,
     // RENDER_ATTACHMENT is required by copyExternalImageToTexture.
     usage:
       GPUTextureUsage.TEXTURE_BINDING |

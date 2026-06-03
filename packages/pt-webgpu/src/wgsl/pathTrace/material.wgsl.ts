@@ -183,8 +183,9 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 // ============================================================
 @group(3) @binding(1) var<storage, read> meshUvs: array<vec4f>;       // .xy = uv0, .zw = uv1
 @group(3) @binding(2) var<storage, read> materialTexDescriptors: array<vec4f>;
-@group(3) @binding(3) var materialTextures: texture_2d_array<f32>;
-@group(3) @binding(4) var materialTexSampler: sampler;
+@group(3) @binding(3) var materialTextures: texture_2d_array<f32>;        // sRGB (baseColor + emissive)
+@group(3) @binding(4) var materialTexSampler: sampler;                    // shared by both arrays
+@group(3) @binding(5) var materialTexturesLinear: texture_2d_array<f32>;  // LINEAR (normal + ORM)
 
 // vec4s per material in the descriptor buffer — MUST match the TS
 // MATERIAL_TEX_VEC4_STRIDE in scene/materialTextures.ts.
@@ -244,6 +245,48 @@ fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 3u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   return sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW);
+}
+
+// As sampleMaterialLayer, but samples the LINEAR array (materialTexturesLinear)
+// — for normal + ORM maps, which must NOT be sRGB-decoded. Standalone (not a
+// refactor of sampleMaterialLayer) so the validated sRGB path is untouched;
+// WGSL can't pass a texture as an argument, hence the parallel function.
+fn sampleMaterialLayerLinear(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  if (layerIdx < 0 || triIndex >= arrayLength(&indices)) { return vec4f(1.0); }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+    return vec4f(1.0);
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let texCoord = u32(materialTexDescriptors[base + 1u].w);
+  let rawUv = select(ch0, ch1, texCoord == 1u);
+  let xform = materialTexDescriptors[base + 2u];
+  let rot = materialTexDescriptors[base + 3u].x;
+  let c = cos(rot);
+  let s = sin(rot);
+  let sx = xform.z;
+  let sy = xform.w;
+  let uv = vec2f(
+    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
+    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
+  );
+  return textureSampleLevel(materialTexturesLinear, materialTexSampler, uv, layerIdx, 0.0);
+}
+
+// ORM map (linear array) — descriptor vec4[0].z. glTF metallicRoughness packing:
+// G = roughness, B = metallic (R = occlusion, applied by the caller if present).
+// vec4(1) when absent → roughness·1, metallic·1 (no modulation → byte-identical).
+fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  return sampleMaterialLayerLinear(i32(materialTexDescriptors[base].z), base, triIndex, baryVW);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes

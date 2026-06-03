@@ -177,14 +177,16 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(g2m.get(6)!.buffer?.type).toBe('storage'); // bdptEyeStack
 
     // Group 3 — WS2 light-tree buffer (0) + P2 material textures: meshUvs (1),
-    // descriptors (2), the baseColor texture_2d_array (3), the sampler (4).
-    expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4]);
+    // descriptors (2), sRGB texture_2d_array (3), sampler (4), LINEAR
+    // texture_2d_array for normal/ORM (5).
+    expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5]);
     const g3m = new Map(g3!.entries.map((e) => [e.binding, e]));
     expect(g3m.get(0)!.buffer?.type).toBe('read-only-storage'); // lightTree
     expect(g3m.get(1)!.buffer?.type).toBe('read-only-storage'); // meshUvs (P2)
     expect(g3m.get(2)!.buffer?.type).toBe('read-only-storage'); // descriptors (P2)
-    expect(g3m.get(3)!.texture?.viewDimension).toBe('2d-array'); // materialTextures (P2)
+    expect(g3m.get(3)!.texture?.viewDimension).toBe('2d-array'); // materialTextures sRGB (P2)
     expect(g3m.get(4)!.sampler?.type).toBe('filtering'); // materialTexSampler (P2)
+    expect(g3m.get(5)!.texture?.viewDimension).toBe('2d-array'); // materialTexturesLinear (P2)
     expect(g3m.get(0)!.visibility).toBe(COMPUTE);
   });
 

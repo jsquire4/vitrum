@@ -39,9 +39,12 @@ interface PackedSceneData {
   /** Per-material texture descriptor floats (MATERIAL_TEX_FLOAT_STRIDE each):
    *  texture indices + alpha-mode + KHR UV transform. Indexed by matId. */
   readonly materialTexDescriptors: Float32Array;
-  /** Dedup'd, upload-ordered host texture handles (layer i = sources[i]); the
-   *  GPU upload turns these into a texture_2d_array. Opaque to pt-webgpu. */
+  /** Dedup'd, upload-ordered sRGB texture handles (baseColor + emissive; layer
+   *  i = sources[i]); the GPU upload turns these into a texture_2d_array. */
   readonly materialTextureSources: readonly unknown[];
+  /** Dedup'd, upload-ordered LINEAR texture handles (normal + ORM) → a second
+   *  texture_2d_array sampled without sRGB decode. */
+  readonly materialTextureLinearSources: readonly unknown[];
   /**
    * Triangle indices — stride 4 (vec4u): 3 u32 vertex indices + `.w = 0`
    * (zero-fill contract). The pt-webgpu WGSL reads `.x,.y,.z` from
@@ -135,12 +138,16 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly uvsBuffer: GPUBuffer;
   /** P2 — per-material texture descriptor storage buffer (group 3). */
   readonly materialTexDescriptorsBuffer: GPUBuffer;
-  /** P2 — sampled baseColor texture_2d_array handle (for dispose). */
+  /** P2 — sampled sRGB texture_2d_array handle (baseColor/emissive; for dispose). */
   readonly materialTexture: GPUTexture;
-  /** P2 — 2d-array view bound in group 3. */
+  /** P2 — sRGB 2d-array view bound in group 3 (binding 3). */
   readonly materialTextureView: GPUTextureView;
-  /** P2 — filtering sampler bound in group 3. */
+  /** P2 — filtering sampler bound in group 3 (shared by both arrays). */
   readonly materialTextureSampler: GPUSampler;
+  /** P2 — LINEAR texture_2d_array handle (normal/ORM; for dispose). */
+  readonly materialLinearTexture: GPUTexture;
+  /** P2 — linear 2d-array view bound in group 3 (binding 5). */
+  readonly materialLinearTextureView: GPUTextureView;
   readonly destroy: () => void;
 }
 
@@ -375,6 +382,7 @@ export function buildPackedScene(
     materials: new Float32Array(materials),
     materialTexDescriptors: texCollection.descriptors,
     materialTextureSources: texCollection.sources,
+    materialTextureLinearSources: texCollection.linearSources,
     bvhNodes: geo.bvhNodes,
     tlasNodes: geo.tlasNodes,
     tlasInstanceIndices: geo.tlasInstanceIndices,
@@ -959,6 +967,12 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     packed.materialTexDescriptors,
   );
   const materialTextureArray = createMaterialTextureArray(device, packed.materialTextureSources);
+  // Linear array (normal + ORM) — rgba8unorm so the sampler does NOT sRGB-decode.
+  const materialLinearArray = createMaterialTextureArray(
+    device,
+    packed.materialTextureLinearSources,
+    'rgba8unorm',
+  );
   const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
   const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
   const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);
@@ -1005,6 +1019,8 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     materialTexture: materialTextureArray.texture,
     materialTextureView: materialTextureArray.view,
     materialTextureSampler: materialTextureArray.sampler,
+    materialLinearTexture: materialLinearArray.texture,
+    materialLinearTextureView: materialLinearArray.view,
     // BLAS + TLAS buffers are resolved off `uploaded` at destroy-time (not the
     // captured locals), because the realloc fast paths swap fresh handles onto
     // the struct: {@link uploadScenePackTlasRealloc} (instance-count change) and
@@ -1042,6 +1058,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       uploaded.uvsBuffer.destroy();
       materialTexDescriptorsBuffer.destroy();
       materialTextureArray.texture.destroy();
+      materialLinearArray.texture.destroy();
     },
   };
   return uploaded;

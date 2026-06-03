@@ -308,8 +308,9 @@ export class GpuResources {
           buf(0, ro), // lightTree (read-only storage)
           buf(1, ro), // meshUvs (P2)
           buf(2, ro), // materialTexDescriptors (P2)
-          { binding: 3, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTextures (P2)
+          { binding: 3, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTextures sRGB (P2)
           { binding: 4, visibility: VIS, sampler: { type: 'filtering' } }, // materialTexSampler (P2)
+          { binding: 5, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTexturesLinear normal/ORM (P2)
         ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
@@ -517,6 +518,7 @@ export class GpuResources {
           { binding: 2, resource: { buffer: sb.materialTexDescriptorsBuffer } },
           { binding: 3, resource: sb.materialTextureView },
           { binding: 4, resource: sb.materialTextureSampler },
+          { binding: 5, resource: sb.materialLinearTextureView },
         ],
       });
     }

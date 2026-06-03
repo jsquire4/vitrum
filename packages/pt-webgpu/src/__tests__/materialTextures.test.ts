@@ -62,6 +62,29 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 3]).toBe(0); // mat1 emissiveIdx → tex (dedup 0)
   });
 
+  it('collects normal + ORM into a SEPARATE linear source list (own index space)', () => {
+    const baseTex = { id: 'base' };
+    const normTex = { id: 'norm' };
+    const mrTex = { id: 'mr' };
+    const { sources, linearSources, descriptors } = collectMaterialTextures([
+      mat({ baseColorMap: { handle: baseTex }, normalMap: { handle: normTex }, roughnessMap: { handle: mrTex } }),
+    ]);
+    expect(sources).toEqual([baseTex]);          // sRGB list: baseColor only
+    expect(linearSources).toEqual([normTex, mrTex]); // linear list: normal + ORM
+    expect(descriptors[0]).toBe(0);  // baseColorIdx → sRGB 0
+    expect(descriptors[1]).toBe(0);  // normalIdx → linear 0 (separate space)
+    expect(descriptors[2]).toBe(1);  // ormIdx → linear 1
+  });
+
+  it('falls back to metallicMap for ORM when roughnessMap is absent', () => {
+    const mrTex = { id: 'mr' };
+    const { linearSources, descriptors } = collectMaterialTextures([
+      mat({ metallicMap: { handle: mrTex } }),
+    ]);
+    expect(linearSources).toEqual([mrTex]);
+    expect(descriptors[2]).toBe(0); // ormIdx → metallicMap
+  });
+
   it('defaults: opaque(0), cutoff 0.5, opacity 1, identity scale', () => {
     const { descriptors } = collectMaterialTextures([mat({ baseColorMap: { handle: {} } })]);
     expect(descriptors[4]).toBe(0);

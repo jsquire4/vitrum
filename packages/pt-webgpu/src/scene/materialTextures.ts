@@ -28,35 +28,45 @@ const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = 
 };
 
 export interface CollectedTextures {
-  /** Unique texture-source handles, in upload (= index) order. */
+  /** Unique sRGB-decoded texture sources (baseColor + emissive), upload order. */
   readonly sources: unknown[];
+  /** Unique LINEAR texture sources (normal + ORM — must NOT be sRGB-decoded),
+   *  a separate index space → its own texture_2d_array. */
+  readonly linearSources: unknown[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
   readonly descriptors: Float32Array;
 }
 
-/** Collect + dedup material texture sources and pack the per-material descriptors. */
+/** Collect + dedup material texture sources and pack the per-material descriptors.
+ *  Two index spaces: sRGB (baseColor/emissive) and linear (normal/ORM) — they
+ *  upload to separate arrays so each is sampled in the correct colour space. */
 export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
   const sources: unknown[] = [];
-  const handleToIdx = new Map<unknown, number>();
-  const indexOf = (ref: TextureRef | undefined): number => {
-    const handle = ref?.handle;
-    if (handle == null) return -1;
-    let i = handleToIdx.get(handle);
-    if (i === undefined) {
-      i = sources.length;
-      sources.push(handle);
-      handleToIdx.set(handle, i);
-    }
-    return i;
+  const linearSources: unknown[] = [];
+  const makeIndexer = (list: unknown[]) => {
+    const handleToIdx = new Map<unknown, number>();
+    return (ref: TextureRef | undefined): number => {
+      const handle = ref?.handle;
+      if (handle == null) return -1;
+      let i = handleToIdx.get(handle);
+      if (i === undefined) {
+        i = list.length;
+        list.push(handle);
+        handleToIdx.set(handle, i);
+      }
+      return i;
+    };
   };
+  const indexOf = makeIndexer(sources);        // sRGB array
+  const indexOfLinear = makeIndexer(linearSources); // linear array
 
   const descriptors = new Float32Array(materials.length * MATERIAL_TEX_FLOAT_STRIDE);
   materials.forEach((m, mi) => {
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
     const bc = m.baseColorMap;
     descriptors[b + 0] = indexOf(bc);            // baseColorIdx (sRGB array)
-    descriptors[b + 1] = -1;                     // normalIdx  (linear array — added with normal maps)
-    descriptors[b + 2] = -1;                     // ormIdx     (linear array — added with ORM maps)
+    descriptors[b + 1] = indexOfLinear(m.normalMap);                 // normalIdx (linear array)
+    descriptors[b + 2] = indexOfLinear(m.roughnessMap ?? m.metallicMap); // ormIdx (linear; glTF MR texture: G=rough, B=metal)
     descriptors[b + 3] = indexOf(m.emissiveMap); // emissiveIdx (sRGB array — same layers as baseColor)
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
@@ -70,5 +80,5 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 12] = t?.rotation ?? 0;
   });
 
-  return { sources, descriptors };
+  return { sources, linearSources, descriptors };
 }

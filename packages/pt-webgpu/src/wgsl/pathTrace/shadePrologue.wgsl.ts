@@ -28,13 +28,14 @@ export function composeShadePrologueWgsl(
   emissiveComment: string,
   baseColorTexApply = '',
   emissiveTexApply = '',
+  ormTexApply = '',
 ): string {
   return /* wgsl */ `    let matId = hitMaterialId(hit);
     let mat = decodeMaterial(matId);
     var baseColor = mat.baseColor;${baseColorTexApply}
     var roughness = mat.roughness;
     var emissive = mat.emissive;${emissiveTexApply}
-    let metallic = mat.metallic;
+    var metallic = mat.metallic;${ormTexApply}
     let transmission = mat.transmission;
     var ior = mat.ior;
     if (params.spectralEnabled != 0u && mat.dispersionAbbe >= 1.0) {
@@ -134,3 +135,11 @@ export const SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL =
  *  no-op (vec4(1)) for materials without an emissive map → byte-identical. */
 export const SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL =
   `\n    emissive = emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW).rgb;`;
+
+/** Full-tier ORM (metallicRoughness) texture modulation (P2). Injected after
+ *  `var metallic`; glTF packing G=roughness, B=metallic. vec4(1) when absent →
+ *  roughness·1 / metallic·1 (both already clamped) → byte-identical. */
+export const SHADE_PROLOGUE_ORM_TEX_APPLY_FULL =
+  `\n    let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW);` +
+  `\n    roughness = clamp(roughness * ormSample.g, 0.02, 1.0);` +
+  `\n    metallic = clamp(metallic * ormSample.b, 0.0, 1.0);`;
