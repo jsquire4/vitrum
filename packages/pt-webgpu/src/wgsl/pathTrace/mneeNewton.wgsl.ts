@@ -29,10 +29,12 @@ export function packMneeHarnessInput(
   receiver: readonly [number, number, number],
   light: readonly [number, number, number],
   planePoint: readonly [number, number, number],
+  etaI = 1,
+  etaT = 1,
 ): number[] {
   return [
-    receiver[0], receiver[1], receiver[2], 0,
-    light[0], light[1], light[2], 0,
+    receiver[0], receiver[1], receiver[2], etaI,
+    light[0], light[1], light[2], etaT,
     planePoint[0], planePoint[1], planePoint[2], 0,
   ];
 }
@@ -44,34 +46,37 @@ fn mnee_safe_normalize(v: vec3f) -> vec3f {
   return v / l;
 }
 
-// Tangential half-vector residual at vertex v: project h = normalize(wi+wo) onto
-// the surface tangent plane (tu,tv). Zero ⇔ h ∥ nm ⇔ the reflection law holds.
-fn mneeHalfVectorResidual2d(v: vec3f, recv: vec3f, light: vec3f, nm: vec3f, tu: vec3f, tv: vec3f) -> vec2f {
+// Tangential half-vector residual at vertex v: project the (eta-generalized)
+// half-vector h = normalize(etaI·wi + etaT·wo) onto the surface tangent plane
+// (tu,tv). Zero ⇔ h ∥ nm ⇔ the specular law holds: reflection when etaI==etaT
+// (same medium), refraction (Snell) when etaI/etaT are the two media's IORs.
+fn mneeHalfVectorResidual2d(v: vec3f, recv: vec3f, light: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, etaI: f32, etaT: f32) -> vec2f {
   let wi = mnee_safe_normalize(light - v);
   let wo = mnee_safe_normalize(recv - v);
-  let h = mnee_safe_normalize(wi + wo);
+  let h = mnee_safe_normalize(etaI * wi + etaT * wo);
   let hTan = h - dot(h, nm) * nm;
   return vec2f(dot(hTan, tu), dot(hTan, tv));
 }
 
 struct MneeNewtonResult { vertex: vec3f, residual: f32, iters: u32 }
 
-// 2D Newton solve on the surface (a,b) coords for the reflection specular vertex.
-// FD Jacobian; solves J·δ = −r each step. Converges to the mirror-image point.
-fn mneeNewtonReflect(p0: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, light: vec3f, maxIter: u32) -> MneeNewtonResult {
+// 2D Newton solve on the surface (a,b) coords for the specular vertex. FD
+// Jacobian; solves J·δ = −r each step. Reflection (etaI==etaT) converges to the
+// mirror-image point; refraction (etaI≠etaT) converges to the Snell-law point.
+fn mneeNewtonSolve(p0: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, light: vec3f, etaI: f32, etaT: f32, maxIter: u32) -> MneeNewtonResult {
   var a = 0.0;
   var b = 0.0;
   let eps = 1e-3;
   var out: MneeNewtonResult;
   for (var it = 0u; it < maxIter; it = it + 1u) {
     let v = p0 + a * tu + b * tv;
-    let r0 = mneeHalfVectorResidual2d(v, recv, light, nm, tu, tv);
+    let r0 = mneeHalfVectorResidual2d(v, recv, light, nm, tu, tv, etaI, etaT);
     let rmag = length(r0);
     out.vertex = v; out.residual = rmag; out.iters = it;
     if (rmag < 1e-5) { return out; }
     // FD Jacobian columns: ∂r/∂a, ∂r/∂b.
-    let ra = mneeHalfVectorResidual2d(p0 + (a + eps) * tu + b * tv, recv, light, nm, tu, tv);
-    let rb = mneeHalfVectorResidual2d(p0 + a * tu + (b + eps) * tv, recv, light, nm, tu, tv);
+    let ra = mneeHalfVectorResidual2d(p0 + (a + eps) * tu + b * tv, recv, light, nm, tu, tv, etaI, etaT);
+    let rb = mneeHalfVectorResidual2d(p0 + a * tu + (b + eps) * tv, recv, light, nm, tu, tv, etaI, etaT);
     let j00 = (ra.x - r0.x) / eps; let j10 = (ra.y - r0.y) / eps;
     let j01 = (rb.x - r0.x) / eps; let j11 = (rb.y - r0.y) / eps;
     let det = j00 * j11 - j01 * j10;
@@ -85,7 +90,7 @@ fn mneeNewtonReflect(p0: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, li
   }
   let v = p0 + a * tu + b * tv;
   out.vertex = v;
-  out.residual = length(mneeHalfVectorResidual2d(v, recv, light, nm, tu, tv));
+  out.residual = length(mneeHalfVectorResidual2d(v, recv, light, nm, tu, tv, etaI, etaT));
   out.iters = maxIter;
   return out;
 }
@@ -96,7 +101,8 @@ fn mneeNewtonReflect(p0: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, li
 export const MNEE_NEWTON_HARNESS_WGSL = /* wgsl */ `
 ${MNEE_NEWTON_WGSL}
 
-struct MneeIn { recv: vec3f, _p0: f32, light: vec3f, _p1: f32, planePoint: vec3f, _p2: f32 }
+// recv.w = etaI (IOR on the light side), light.w = etaT (IOR on the receiver side).
+struct MneeIn { recv: vec3f, etaI: f32, light: vec3f, etaT: f32, planePoint: vec3f, _p2: f32 }
 @group(0) @binding(0) var<storage, read>       hIn:  array<MneeIn>;
 @group(0) @binding(1) var<storage, read_write> hOut: array<vec4f>; // xyz = vertex, w = residual
 
@@ -108,7 +114,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let nm = vec3f(0.0, 0.0, 1.0);
   let tu = vec3f(1.0, 0.0, 0.0);
   let tv = vec3f(0.0, 1.0, 0.0);
-  let r = mneeNewtonReflect(c.planePoint, nm, tu, tv, c.recv, c.light, ${MNEE_NEWTON_MAX_ITERS}u);
+  let r = mneeNewtonSolve(c.planePoint, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT, ${MNEE_NEWTON_MAX_ITERS}u);
   hOut[i] = vec4f(r.vertex, r.residual);
 }
 `;
