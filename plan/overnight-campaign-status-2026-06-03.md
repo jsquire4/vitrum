@@ -58,8 +58,16 @@ P1 texture contract; backends consume the P4 operators).
   intercepts the wholesale-replacement fields (`instances`/`params`/`shape`/
   `fallbackMesh`/`kind`) and routes them through a full setScene rebuild (no
   longer throws "call setScene"), matching pt-webgl/pt-webgpu's contract surface;
-  `BACKEND_PROMISE_LEDGER` doc updated. Remaining P5: spotlight cone in GI,
-  analytic-shape expansion (both lower-priority).
+  `BACKEND_PROMISE_LEDGER` doc updated. **Spotlight cone in GI SHIPPED
+  2026-06-03:** the DDGI probe pass now confines a spot emitter's GI to its cone
+  (was a point-like omnidirectional flood — `coreEmittersToDDGILights` dropped the
+  cone). `coreEmittersToDDGILights` packs spotAxis + cos(inner/outer) (from the
+  core SpotEmitter angle/penumbra); `packDDGIProbeLights` writes them into the
+  reserved DDGILight WGSL slots (direction/innerCone/outerCone); `evalPointLight`
+  applies `smoothstep(cosOuter, cosInner, dot(toLight, axis))`. Unit-pinned
+  (conversion + packing); no-spot scenes byte-identical (axis=0 → falloff 1).
+  GPU cone-confinement A/B pending a spotlight harness scene (V-item). Remaining
+  P5: analytic-shape expansion (lower-priority).
 - **P7 — shallow-algo depth.** Real MNEE Newton solve, wiring the dead GPU
   differentiable adjoint, NRC debias — all radiometric, GPU-A/B-critical. Shipping
   a default neural U-Net checkpoint needs a PyTorch + training-dataset env.

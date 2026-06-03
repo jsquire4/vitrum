@@ -146,8 +146,7 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
       };
     }
-    case 'point':
-    case 'spot': {
+    case 'point': {
       return {
         kind: 'fixture',
         id: String(e.id),
@@ -155,6 +154,28 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         intensity: e.intensity,
         position: { x: e.position[0], y: e.position[1], z: e.position[2] },
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
+      };
+    }
+    case 'spot': {
+      // Spot → fixture WITH its cone. The probe shader now confines the spot's
+      // GI contribution to the cone (was a point-like omnidirectional flood — the
+      // cone used to be dropped). `e.direction` is `normalize(position - target)`
+      // (toward-light axis); the shader uses it un-negated. Inner = full-intensity
+      // cone (angle·(1−penumbra)); outer = the full half-angle. glTF
+      // KHR_lights_punctual spot falloff.
+      const len = Math.hypot(e.direction[0], e.direction[1], e.direction[2]);
+      const inv = len > 1e-12 ? 1 / len : 0;
+      const penumbra = Math.min(Math.max(e.penumbra ?? 0, 0), 1);
+      return {
+        kind: 'fixture',
+        id: String(e.id),
+        on: true,
+        intensity: e.intensity,
+        position: { x: e.position[0], y: e.position[1], z: e.position[2] },
+        color: { r: e.color[0], g: e.color[1], b: e.color[2] },
+        spotAxis: { x: e.direction[0] * inv, y: e.direction[1] * inv, z: e.direction[2] * inv },
+        spotCosOuter: Math.cos(e.angle),
+        spotCosInner: Math.cos(e.angle * (1 - penumbra)),
       };
     }
     case 'mesh-area':

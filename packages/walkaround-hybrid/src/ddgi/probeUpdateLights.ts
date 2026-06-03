@@ -47,18 +47,22 @@ export function packDDGIProbeLights(
       udata[ubase] = 1;
       const pos = l.position;
       const col = l.color;
+      // [8,9,10] = spot cone axis (toward-light; 0 for a point → no cone in the
+      // shader), [11] = innerCone (cosInner), [15] = outerCone (cosOuter). These
+      // map to the DDGILight WGSL struct's direction / innerCone / outerCone.
+      const spot = l.spotAxis;
       data[base + 4] = pos?.x ?? 0;
       data[base + 5] = pos?.y ?? 0;
       data[base + 6] = pos?.z ?? 0;
       data[base + 7] = l.intensity;
-      data[base + 8] = 0;
-      data[base + 9] = 0;
-      data[base + 10] = 0;
-      data[base + 11] = 0;
+      data[base + 8] = spot?.x ?? 0;
+      data[base + 9] = spot?.y ?? 0;
+      data[base + 10] = spot?.z ?? 0;
+      data[base + 11] = l.spotCosInner ?? 0;
       data[base + 12] = col?.r ?? 1;
       data[base + 13] = col?.g ?? 1;
       data[base + 14] = col?.b ?? 1;
-      data[base + 15] = 0;
+      data[base + 15] = l.spotCosOuter ?? 0;
     }
   });
   return data.buffer;

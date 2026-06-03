@@ -198,7 +198,7 @@ describe('coreEmittersToDDGILights — rect-area true-area fidelity', () => {
 
 describe('coreEmittersToDDGILights — point emitter', () => {
   it('maps to a fixture at the emitter position with chroma + bare intensity', () => {
-    const [light] = coreEmittersToDDGILights(sceneOf(BLUE_POINT));
+    const light = coreEmittersToDDGILights(sceneOf(BLUE_POINT))[0]!;
     expect(light).toMatchObject({
       kind: 'fixture',
       id: 'point-blue',
@@ -485,5 +485,45 @@ describe('directionalSunMultiplier — single-count resolution', () => {
     expect(directionalSunMultiplier(sceneOf(RED_RECT_ORTHO, BLUE_POINT), 5)).toBe(5);
     // Null scene (no core scene supplied) → legacy config path too.
     expect(directionalSunMultiplier(null, 7)).toBe(7);
+  });
+});
+
+describe('coreEmittersToDDGILights — spot cone (P5: confine spotlight GI to the cone)', () => {
+  const SPOT = {
+    id: 'spot-a',
+    kind: 'spot' as const,
+    color: [1, 1, 1] as [number, number, number],
+    intensity: 4,
+    position: [0, 5, 0] as [number, number, number],
+    direction: [0, 1, 0] as [number, number, number], // toward-light axis (= normalize(pos - target))
+    angle: Math.PI / 6,        // 30° outer half-angle
+    penumbra: 0.5,             // inner = 15°
+  };
+
+  it('maps a spot to a fixture carrying spotAxis + cos(inner)/cos(outer)', () => {
+    const light = coreEmittersToDDGILights(sceneOf(SPOT as Scene["emitters"][number]))[0]!;
+    expect(light.kind).toBe('fixture');
+    expect(light.spotAxis).toEqual({ x: 0, y: 1, z: 0 });
+    expect(light.spotCosOuter).toBeCloseTo(Math.cos(Math.PI / 6), 6);   // cos 30°
+    expect(light.spotCosInner).toBeCloseTo(Math.cos(Math.PI / 12), 6);  // cos 15°
+    // Inner cone is "tighter" than outer ⇒ larger cosine.
+    expect(light.spotCosInner!).toBeGreaterThan(light.spotCosOuter!);
+  });
+
+  it('packs the spot cone into the fixture slots [8,9,10]=axis, [11]=cosInner, [15]=cosOuter', () => {
+    const light = coreEmittersToDDGILights(sceneOf(SPOT as Scene["emitters"][number]))[0]!;
+    const f = new Float32Array(packDDGIProbeLights([light], 1));
+    const base = 4; // header(4) + light 0
+    expect([f[base + 8], f[base + 9], f[base + 10]]).toEqual([0, 1, 0]); // axis
+    expect(f[base + 11]).toBeCloseTo(Math.cos(Math.PI / 12), 6);         // innerCone
+    expect(f[base + 15]).toBeCloseTo(Math.cos(Math.PI / 6), 6);          // outerCone
+  });
+
+  it('a plain point fixture packs a ZERO cone axis (→ omnidirectional, no cone)', () => {
+    const light = coreEmittersToDDGILights(sceneOf(BLUE_POINT))[0]!;
+    expect(light.spotAxis).toBeUndefined();
+    const f = new Float32Array(packDDGIProbeLights([light], 1));
+    const base = 4;
+    expect([f[base + 8], f[base + 9], f[base + 10]]).toEqual([0, 0, 0]);
   });
 });

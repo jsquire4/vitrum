@@ -307,9 +307,8 @@ fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
   return lightColor * intensity * nDotL * visibility;
 }
 
-fn evalPointLight(lightPos: vec3f, lightColor: vec3f, intensity: f32,
-                  hitPos: vec3f, hitNormal: vec3f) -> vec3f {
-  let toLight = lightPos - hitPos;
+fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
+  let toLight = light.position - hitPos;
   let dist    = length(toLight);
   // Guard against probe-light coincidence (point light embedded in or behind
   // geometry the probe ray hit). Without this, dist==0 yields toLight/dist
@@ -320,6 +319,19 @@ fn evalPointLight(lightPos: vec3f, lightColor: vec3f, intensity: f32,
   let nDotL = max(0.0, dot(hitNormal, lightDir));
   if (nDotL < 1e-3) { return vec3f(0.0); }
 
+  // Spot cone falloff: light.direction is the toward-light cone axis (unit for a
+  // spot, 0 for a point fixture -> no cone). cosToP = dot(toLightDir, axis) is 1
+  // on the axis, cos(angle) at the cone edge. smoothstep(outer, inner, cosToP) is
+  // 1 inside the inner cone, ramps to 0 at the outer edge (KHR_lights_punctual).
+  // Cheap early-out: fully outside the cone contributes nothing, so skip the ray.
+  let axisLen2 = dot(light.direction, light.direction);
+  var coneFalloff = 1.0;
+  if (axisLen2 > 0.25) {
+    let cosToP = dot(lightDir, light.direction * inverseSqrt(axisLen2));
+    coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
+    if (coneFalloff <= 0.0) { return vec3f(0.0); }
+  }
+
   // M13: normal bias proportional to probe spacing (scene-scale-agnostic).
   let normalBias_p = gridParams.spacing * 0.001;
   var shadowRay: Ray;
@@ -329,8 +341,8 @@ fn evalPointLight(lightPos: vec3f, lightColor: vec3f, intensity: f32,
   if (shadow.didHit && shadow.dist < dist - normalBias_p) {
     return vec3f(0.0);
   }
-  let atten = intensity / (dist * dist + 1.0);
-  return lightColor * atten * nDotL;
+  let atten = light.intensity / (dist * dist + 1.0);
+  return light.color * atten * nDotL * coneFalloff;
 }
 
 fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
@@ -341,7 +353,7 @@ fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
       let dir = normalize(-light.direction);
       result = result + evalSunLight(dir, light.color, light.intensity, hitPos, hitNormal);
     } else if (light.kind == LIGHT_POINT) {
-      result = result + evalPointLight(light.position, light.color, light.intensity, hitPos, hitNormal);
+      result = result + evalPointLight(light, hitPos, hitNormal);
     }
   }
   return result;
