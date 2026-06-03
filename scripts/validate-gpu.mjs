@@ -98,7 +98,16 @@ const child = spawn('node', [runner, ...runnerArgs], {
   cwd: wslGpuDir,
   stdio: 'inherit',
   // The wsl-gpu runner pins/validates THIS working tree rather than vitrum's main tip.
-  env: { ...process.env, VITRUM_VALIDATE_WORKTREE: VITRUM_DIR },
+  // The capture worker's walkaroundUbo headless shim reads the raw WGSL from
+  // $VITRUM_PINNED_DIR via Deno.readTextFileSync (NOT the import map); for the
+  // --working-tree smoke that must be the live tree, or the worker crashes
+  // "stdout closed before ready" reading the (empty) pinned cache. T2 wave runs
+  // set their own pin via the pin-vitrum workflow, so only override for --smoke.
+  env: {
+    ...process.env,
+    VITRUM_VALIDATE_WORKTREE: VITRUM_DIR,
+    ...(SMOKE ? { VITRUM_PINNED_DIR: VITRUM_DIR } : {}),
+  },
 });
 
 child.on('error', (err) => skip(`could not launch wsl-gpu runner (${err.message})`));
