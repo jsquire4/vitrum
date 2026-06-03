@@ -252,16 +252,22 @@ interface PackedPrimitiveSlice {
   readonly warnings: readonly string[];
 }
 
+/** Return type for {@link packOneMeshLikePrimitive}: warnings are always available. */
+interface PackOneMeshLikeResult {
+  readonly slice: PackedPrimitiveSlice | null;
+  readonly warnings: readonly string[];
+}
+
 function packOneMeshLikePrimitive(
   primitive: Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }>,
   matId: number,
-): PackedPrimitiveSlice | null {
+): PackOneMeshLikeResult {
   const warnings: string[] = [];
   const basePositions = primitive.positions;
   const vertexCount = Math.floor(basePositions.length / 3);
   if (vertexCount < 3) {
     warnings.push(`Primitive "${primitive.id}" has fewer than 3 vertices; skipping.`);
-    return null;
+    return { slice: null, warnings };
   }
   const baseIndices =
     primitive.indices ??
@@ -273,7 +279,7 @@ function packOneMeshLikePrimitive(
   const triCount = Math.floor(baseIndices.length / 3);
   if (triCount === 0) {
     warnings.push(`Primitive "${primitive.id}" has no triangles; skipping.`);
-    return null;
+    return { slice: null, warnings };
   }
 
   const localPositions = new Float32Array(vertexCount * 4);
@@ -334,19 +340,22 @@ function packOneMeshLikePrimitive(
   }
 
   const localAabb = computeLocalAabb(basePositions);
-  if (localAabb == null) return null;
+  if (localAabb == null) return { slice: null, warnings };
 
   return {
-    localPositions,
-    localNormals,
-    indexWords,
-    triMaterialIds,
-    bvhNodeWords,
-    vertexCount,
-    triCount,
-    bvhNodeCount: Math.floor(bvhNodeWords.length / 8),
-    localAabbMin: localAabb.min,
-    localAabbMax: localAabb.max,
+    slice: {
+      localPositions,
+      localNormals,
+      indexWords,
+      triMaterialIds,
+      bvhNodeWords,
+      vertexCount,
+      triCount,
+      bvhNodeCount: Math.floor(bvhNodeWords.length / 8),
+      localAabbMin: localAabb.min,
+      localAabbMax: localAabb.max,
+      warnings,
+    },
     warnings,
   };
 }
@@ -368,6 +377,36 @@ interface ResolvedInstance {
 }
 
 /**
+ * Resolve a single raw `transform` (Mat4 or undefined) into a
+ * {@link PendingTlasInstance}: invert the local→world matrix, fall back to
+ * identity when non-invertible, transform the local AABB into world space.
+ * This is the shared inner kernel used by both {@link resolveInstanceTransforms}
+ * (binding-aware batch) and the {@link packSceneFromCore} TLAS loop.
+ */
+function resolveOneTransform(
+  transform: Mat4 | undefined,
+  localAabbMin: readonly [number, number, number],
+  localAabbMax: readonly [number, number, number],
+  blasRoot: number,
+): ResolvedInstance {
+  const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
+  const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
+  const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
+  const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
+  const worldAabb = transformAabb(localAabbMin, localAabbMax, localToWorld);
+  return {
+    nonInvertible: maybeWorldToLocal == null,
+    instance: {
+      blasRoot,
+      worldToLocal,
+      localToWorld,
+      aabbMin: worldAabb.min,
+      aabbMax: worldAabb.max,
+    },
+  };
+}
+
+/**
  * Resolve a primitive's instance transforms into {@link PendingTlasInstance}s
  * relative to a binding (invert each local→world, transform the local AABB into
  * world space, fall back to identity when non-invertible). Shared by all three
@@ -382,21 +421,7 @@ function resolveInstanceTransforms(
     primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
   const resolved: ResolvedInstance[] = [];
   for (const transform of transforms) {
-    const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-    const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
-    const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
-    const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-    const worldAabb = transformAabb(binding.localAabbMin, binding.localAabbMax, localToWorld);
-    resolved.push({
-      nonInvertible: maybeWorldToLocal == null,
-      instance: {
-        blasRoot: binding.blasRoot,
-        worldToLocal,
-        localToWorld,
-        aabbMin: worldAabb.min,
-        aabbMax: worldAabb.max,
-      },
-    });
+    resolved.push(resolveOneTransform(transform, binding.localAabbMin, binding.localAabbMax, binding.blasRoot));
   }
   return { transformCount: transforms.length, resolved };
 }
@@ -774,23 +799,12 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     // Theme-F dedup: build this primitive's LOCAL slice via the shared
     // `packOneMeshLikePrimitive` (same vec4 expansion + buildArrayBvh + node
     // extraction); the loop here only concatenates + rebases + does TLAS
-    // bookkeeping. The slice already collected any skip warnings.
-    const slice = packOneMeshLikePrimitive(primitive, matId);
+    // bookkeeping.
+    const { slice, warnings: sliceWarnings } = packOneMeshLikePrimitive(primitive, matId);
+    warnings.push(...sliceWarnings);
     if (slice == null) {
-      // Re-emit the skip warning the slice would have collected. (slice.warnings
-      // is unavailable on a null return, so reproduce the exact messages.)
-      const vertexCount = Math.floor(primitive.positions.length / 3);
-      if (vertexCount < 3) {
-        warnings.push(`Primitive "${primitive.id}" has fewer than 3 vertices; skipping.`);
-      } else {
-        const baseIndices = primitive.indices ?? new Uint32Array(vertexCount);
-        if (Math.floor(baseIndices.length / 3) === 0) {
-          warnings.push(`Primitive "${primitive.id}" has no triangles; skipping.`);
-        }
-      }
       continue;
     }
-    warnings.push(...slice.warnings);
 
     const vertexCount = slice.vertexCount;
     const triCount = slice.triCount;
@@ -837,23 +851,18 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
         continue;
       }
       for (const transform of transforms) {
-        const candidateLocalToWorld = asMat4(transform ?? IDENTITY_MAT4);
-        const maybeWorldToLocal = invertMat4(candidateLocalToWorld);
-        if (maybeWorldToLocal == null) {
+        const { instance, nonInvertible } = resolveOneTransform(
+          transform,
+          localAabb.min,
+          localAabb.max,
+          nodeBase,
+        );
+        if (nonInvertible) {
           warnings.push(
             `Primitive "${primitive.id}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
           );
         }
-        const localToWorld = maybeWorldToLocal == null ? IDENTITY_MAT4 : candidateLocalToWorld;
-        const worldToLocal = asMat4(maybeWorldToLocal ?? IDENTITY_MAT4);
-        const worldAabb = transformAabb(localAabb.min, localAabb.max, localToWorld);
-        pendingTlasInstances.push({
-          blasRoot: nodeBase,
-          worldToLocal,
-          localToWorld,
-          aabbMin: worldAabb.min,
-          aabbMax: worldAabb.max,
-        });
+        pendingTlasInstances.push(instance);
       }
       primitiveTlasBindings.push({
         primitiveId: primitive.id,
@@ -1208,7 +1217,7 @@ export function rebuildPrimitiveBlas(
     return { ok: false, reason: `primitive "${primitiveId}" is missing or not mesh-like` };
   }
 
-  const slice = packOneMeshLikePrimitive(primitive, opts.resolveMaterialId(primitiveId));
+  const { slice } = packOneMeshLikePrimitive(primitive, opts.resolveMaterialId(primitiveId));
   if (slice == null) {
     return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
   }

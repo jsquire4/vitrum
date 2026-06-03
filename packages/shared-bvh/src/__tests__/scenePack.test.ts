@@ -667,6 +667,75 @@ describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
   });
 });
 
+// ─── warning-emission characterization ───────────────────────────────────────
+describe('packSceneFromCore — warning characterization', () => {
+  it('emits skip warning for <3-vertex primitive (exact message)', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'tiny',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0]),  // only 2 vertices
+        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    expect(packed.warnings).toContain('Primitive "tiny" has fewer than 3 vertices; skipping.');
+    expect(packed.triangleCount).toBe(0);
+  });
+
+  it('emits skip warning for zero-triangle primitive (exact message)', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'notri',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        // Explicitly empty index buffer → 0 triangles
+        indices: new Uint32Array(0),
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    expect(packed.warnings).toContain('Primitive "notri" has no triangles; skipping.');
+    expect(packed.triangleCount).toBe(0);
+  });
+
+  it('emits non-invertible warning and falls back to identity (exact message)', () => {
+    // A zero-column matrix is singular (det=0) — invertMat4 returns null.
+    const singular = asMat4(new Float32Array([
+      0, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'sing',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        transform: singular,
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+    expect(packed.warnings).toContain(
+      'Primitive "sing" has non-invertible instance transform; using identity fallback for TLAS transform.',
+    );
+    // Primitive is still packed (non-invertible only affects TLAS transform, not the BLAS).
+    expect(packed.triangleCount).toBe(1);
+    // TLAS uses identity fallback: the world AABB matches the local AABB.
+    expect(packed.primitiveTlasBindings[0]?.localAabbMin).toEqual([0, 0, 0]);
+  });
+});
+
 // ─── invertMat4 unit tests ────────────────────────────────────────────────────
 describe('invertMat4', () => {
   const IDENTITY = asMat4(new Float32Array([

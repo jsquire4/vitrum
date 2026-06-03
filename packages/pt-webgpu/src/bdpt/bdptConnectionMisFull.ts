@@ -2,14 +2,17 @@
  * bdptConnectionMisFull.ts — full Veach §10.3 BDPT connection MIS, CPU reference.
  *
  * This module is the SINGLE SOURCE OF TRUTH for the multi-strategy BDPT
- * connection MIS weight as the GPU port computes it. It is an independent
- * reimplementation of the PBRT-v4 `MISWeight` recurrence — NOT a wrapper around
- * `@vitrum/shared-samplers`'s `bdptConnectionMIS_full`. The shared-samplers
+ * connection MIS weight as the GPU port computes it. It mirrors the arithmetic of
+ * `@vitrum/shared-samplers`'s `bdptConnectionMIS_full` / `buildBDPTStrategyPDFs_full`;
+ * `assembleMergedConnectionPath` (engine-specific connection-vertex assembly)
+ * and `convertDensitySAtoArea` (unexported in shared-samplers; kept local for
+ * test-oracle access) live here. The strategy-pdf sweep and power-heuristic weight
+ * are re-exported from shared-samplers under their historical local names so the
+ * oracle test can import both from the same source. The shared-samplers
  * oracle (`bdptMIS.ts`) is the read-only reference the GPU port must reproduce
- * to machine epsilon; this file ports the *same arithmetic* and the
- * *connection-vertex assembly* the WGSL (`bdptConnection.wgsl.ts`) and the fork
- * GLSL (`bdpt_connection.glsl.js`) shaders run, so a single test can assert the
- * three formulations agree.
+ * to machine epsilon; this file ports the *connection-vertex assembly* the WGSL
+ * (`bdptConnection.wgsl.ts`) and the fork GLSL (`bdpt_connection.glsl.js`) shaders
+ * run, so a single test can assert the three formulations agree.
  *
  * ── The merged path ──────────────────────────────────────────────────────────
  * The renderer connects ONE eye vertex (the current bounce hit `E_e`, at eye
@@ -55,6 +58,11 @@
  * @module bdptConnectionMisFull
  */
 
+import {
+  buildBDPTStrategyPDFs_full,
+  bdptConnectionMIS_full,
+} from '@vitrum/shared-samplers';
+
 export type Vec3 = readonly [number, number, number];
 
 /** A merged-path vertex, mirroring `@vitrum/shared-samplers`'s `BDPTFullVertex`. */
@@ -99,7 +107,6 @@ export interface LightStackVertex {
   readonly isSpecular: boolean;
 }
 
-const PI = Math.PI;
 const INV_PI = 1 / Math.PI;
 
 function sub(a: Vec3, b: Vec3): Vec3 {
@@ -243,82 +250,24 @@ export function assembleMergedConnectionPath(args: {
 }
 
 /**
- * Enumerate all Veach §10.3 strategy path-pdfs for the merged path. Pure port of
- * `@vitrum/shared-samplers`'s `buildBDPTStrategyPDFs_full` — same area-measure
- * ratio sweep, same flipped transfer indices, same specular guard.
+ * Enumerate all Veach §10.3 strategy path-pdfs for the merged path.
+ * Delegates to `@vitrum/shared-samplers`'s `buildBDPTStrategyPDFs_full` —
+ * re-exported under the historical local name so the oracle test continues to
+ * import it from this module. `MergedVertex` is structurally identical to
+ * `BDPTFullVertex` (same fields, same types), so no adaptation is needed.
  */
-export function buildStrategyPdfs(
+export const buildStrategyPdfs = buildBDPTStrategyPDFs_full as (
   vertices: ReadonlyArray<MergedVertex>,
   selectedS: number,
   pRef: number,
-): Float64Array {
-  const n = vertices.length;
-  const pdfs = new Float64Array(n);
-  if (n === 0) return pdfs;
-  pdfs[selectedS] = pRef;
+) => Float64Array;
 
-  const fwdArea = (i: number): number => {
-    const v = vertices[i]!;
-    if (i === 0) return v.pdfFwd;
-    const prev = vertices[i - 1]!;
-    return convertDensitySAtoArea(v.pdfFwd, prev.position, v.position, v.normal);
-  };
-  const revArea = (i: number): number => {
-    const v = vertices[i]!;
-    if (i === n - 1) return v.pdfRev;
-    const next = vertices[i + 1]!;
-    return convertDensitySAtoArea(v.pdfRev, next.position, v.position, v.normal);
-  };
-
-  // Left sweep (decrement s): flip v[s-1].
-  {
-    let p = pRef;
-    for (let s = selectedS; s > 0; s -= 1) {
-      const flip = vertices[s - 1]!;
-      const connNeighbor = s - 2 >= 0 ? vertices[s - 2]! : undefined;
-      if (flip.isSpecular || (connNeighbor?.isSpecular ?? false)) break;
-      const pFwd = fwdArea(s - 1);
-      const pRev = revArea(s - 1);
-      if (pFwd <= 0 || pRev <= 0) break;
-      p = p * (pRev / pFwd);
-      pdfs[s - 1] = p;
-    }
-  }
-  // Right sweep (increment s): flip v[s].
-  {
-    let p = pRef;
-    for (let s = selectedS; s < n - 1; s += 1) {
-      const flip = vertices[s]!;
-      const connNeighbor = vertices[s + 1]!;
-      if (flip.isSpecular || connNeighbor.isSpecular) break;
-      const pFwd = fwdArea(s);
-      const pRev = revArea(s);
-      if (pFwd <= 0 || pRev <= 0) break;
-      p = p * (pFwd / pRev);
-      pdfs[s + 1] = p;
-    }
-  }
-  return pdfs;
-}
-
-/** Power-heuristic (β=2) MIS weight over the strategy pdf vector. */
-export function powerHeuristicWeight(
-  pdfsByStrategy: Float64Array | ReadonlyArray<number>,
-  selectedS: number,
-  beta = 2,
-): number {
-  const len_ = pdfsByStrategy.length;
-  if (selectedS < 0 || selectedS >= len_) return 0;
-  let denom = 0;
-  for (let i = 0; i < len_; i += 1) {
-    const p = pdfsByStrategy[i] ?? 0;
-    if (p > 0) denom += Math.pow(p, beta);
-  }
-  if (denom <= 0) return 0;
-  const ps = pdfsByStrategy[selectedS] ?? 0;
-  if (ps <= 0) return 0;
-  return Math.pow(ps, beta) / denom;
-}
+/**
+ * Power-heuristic (β=2) MIS weight over the strategy pdf vector.
+ * Delegates to `@vitrum/shared-samplers`'s `bdptConnectionMIS_full` —
+ * re-exported under the historical local name.
+ */
+export const powerHeuristicWeight = bdptConnectionMIS_full;
 
 /**
  * End-to-end full §10.3 MIS weight for the eye↔light connection: assemble the
