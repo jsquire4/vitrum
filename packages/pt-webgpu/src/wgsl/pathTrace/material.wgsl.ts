@@ -289,6 +289,47 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   return sampleMaterialLayerLinear(i32(materialTexDescriptors[base].z), base, triIndex, baryVW);
 }
 
+// Normal map (linear array) — descriptor vec4[0].y. Perturbs the geometric shading
+// normal by the tangent-space normal map. The tangent frame is DERIVED per-hit
+// from the triangle's positions + UVs (Lengyel) — no precomputed tangents needed
+// — then Gram-Schmidt-orthonormalized against geomNormal. Returns geomNormal
+// unchanged when there's no normal map (→ byte-identical). The derived tangent is
+// in BLAS-LOCAL space; for identity / translation-only instances that equals the
+// world tangent (exact), and rotated instances are approximate (v1 limitation).
+// Ref: Lengyel, "Computing Tangent Space Basis Vectors for an Arbitrary Mesh".
+fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f) -> vec3f {
+  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return geomNormal; }
+  let normalIdx = i32(materialTexDescriptors[base].y);
+  if (normalIdx < 0 || triIndex >= arrayLength(&indices)) { return geomNormal; }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
+      tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+    return geomNormal;
+  }
+  let p0 = positions[tri.x].xyz;
+  let e1 = positions[tri.y].xyz - p0;
+  let e2 = positions[tri.z].xyz - p0;
+  let uv0 = meshUvs[tri.x].xy;
+  let duv1 = meshUvs[tri.y].xy - uv0;
+  let duv2 = meshUvs[tri.z].xy - uv0;
+  let det = duv1.x * duv2.y - duv2.x * duv1.y;
+  if (abs(det) < 1e-10) { return geomNormal; }
+  let f = 1.0 / det;
+  var tangent = f * (duv2.y * e1 - duv1.y * e2);
+  // Gram-Schmidt orthonormalize against the (world) geometric normal.
+  tangent = tangent - geomNormal * dot(geomNormal, tangent);
+  let tlen = length(tangent);
+  if (tlen < 1e-8) { return geomNormal; }
+  tangent = tangent / tlen;
+  let bitangent = cross(geomNormal, tangent);
+  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW).xyz;
+  let tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
+  let perturbed = tangent * tn.x + bitangent * tn.y + geomNormal * tn.z;
+  let plen = length(perturbed);
+  return select(geomNormal, perturbed / plen, plen > 1e-6);
+}
+
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes
 // straight through, as if there were no surface here)? Drives glTF alphaMode:
 //   opaque (0) → never (returns false immediately → opaque is byte-identical).

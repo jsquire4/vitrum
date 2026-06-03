@@ -29,6 +29,7 @@ export function composeShadePrologueWgsl(
   baseColorTexApply = '',
   emissiveTexApply = '',
   ormTexApply = '',
+  normalMapApply = '',
 ): string {
   return /* wgsl */ `    let matId = hitMaterialId(hit);
     let mat = decodeMaterial(matId);
@@ -64,7 +65,7 @@ ${emissiveComment}
 
     let hitPos = ray.origin + ray.direction * hit.dist;
     let isFrontFace = dot(hit.normal, ray.direction) < 0.0;
-    let normal = select(-hit.normal, hit.normal, isFrontFace);
+    var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}
     let layerTx = clamp(select(backLayerTx, frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
     let layerRoughness = select(backLayerRoughness, frontLayerRoughness, isFrontFace);
     if (layerRoughness >= 0.0) {
@@ -143,3 +144,10 @@ export const SHADE_PROLOGUE_ORM_TEX_APPLY_FULL =
   `\n    let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW);` +
   `\n    roughness = clamp(roughness * ormSample.g, 0.02, 1.0);` +
   `\n    metallic = clamp(metallic * ormSample.b, 0.0, 1.0);`;
+
+/** Full-tier normal-map perturbation (P2). Injected after `var normal` (the
+ *  front-face shading normal); returns the geometric normal unchanged when there
+ *  is no normal map → byte-identical. Perturbs before firstHitNormal is captured
+ *  so the G-buffer normal is the mapped one. */
+export const SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL =
+  `\n    normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal);`;

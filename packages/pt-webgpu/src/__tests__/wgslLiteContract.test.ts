@@ -10,13 +10,13 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed lite-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_LITE_WGSL).digest('hex');
     // Updated for P2: the shared intersectionCore gained SceneHit.baryVW, and the
-    // shared shade-prologue's `let emissive`/`let metallic` became `var` (so the
-    // full tier can modulate them by emissive/ORM maps). Lite NEVER reads baryVW
-    // and never reassigns emissive/metallic (no group-3 texture bindings / sampler
+    // shared shade-prologue's `let emissive`/`metallic`/`normal` became `var` so
+    // the full tier can modulate them by emissive / ORM / normal maps. Lite NEVER
+    // reads baryVW and never reassigns those (no group-3 texture bindings / sampler
     // / sample fns compose into lite — audited), so the lite RENDER is
     // byte-identical; only the dead baryVW compute + the let→var keywords moved the
     // SHA (length unchanged).
-    expect(digest).toBe('d7b62216eb5764d888cdba0a1b20071db553b59e082f128eb8d2a92fc0c9dbb7');
+    expect(digest).toBe('903e3f3b9a977737cd859d8e03a5556a910f086603ae987f5c4981bf73e81cf7');
     expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(72242);
   });
 });
