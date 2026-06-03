@@ -94,6 +94,42 @@ fn mneeNewtonSolve(p0: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, ligh
   out.iters = maxIter;
   return out;
 }
+
+// MANIFOLD DERIVATIVE — d(surface coords a,b)/d(light position), the geometric
+// quantity the MNEE connection PDF change-of-variables is built on. At the
+// converged vertex the half-vector constraint r(a,b; light)=0 holds, so by the
+// implicit function theorem d(a,b)/d(light) = −J_vertex⁻¹ · J_light, where
+// J_vertex = ∂r/∂(a,b) (the Newton residual Jacobian) and J_light = ∂r/∂light.
+// All FD here; a future analytic form replaces it but must match this (and the FD
+// re-solve in the harness). Returns ∂a/∂light (dadL) + ∂b/∂light (dbdL).
+struct MneeJacobian { dadL: vec3f, dbdL: vec3f }
+fn mneeManifoldJacobian(v: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, light: vec3f, etaI: f32, etaT: f32) -> MneeJacobian {
+  let eps = 1e-3;
+  let r0 = mneeHalfVectorResidual2d(v, recv, light, nm, tu, tv, etaI, etaT);
+  // J_vertex = ∂r/∂(a,b) at the converged vertex (a,b move v along tu,tv).
+  let ra = mneeHalfVectorResidual2d(v + eps * tu, recv, light, nm, tu, tv, etaI, etaT);
+  let rb = mneeHalfVectorResidual2d(v + eps * tv, recv, light, nm, tu, tv, etaI, etaT);
+  let j00 = (ra.x - r0.x) / eps; let j10 = (ra.y - r0.y) / eps; // ∂r/∂a
+  let j01 = (rb.x - r0.x) / eps; let j11 = (rb.y - r0.y) / eps; // ∂r/∂b
+  let invDet = 1.0 / (j00 * j11 - j01 * j10);
+  // J_light columns = ∂r/∂light_{x,y,z}.
+  let dlx = (mneeHalfVectorResidual2d(v, recv, light + vec3f(eps, 0.0, 0.0), nm, tu, tv, etaI, etaT) - r0) / eps;
+  let dly = (mneeHalfVectorResidual2d(v, recv, light + vec3f(0.0, eps, 0.0), nm, tu, tv, etaI, etaT) - r0) / eps;
+  let dlz = (mneeHalfVectorResidual2d(v, recv, light + vec3f(0.0, 0.0, eps), nm, tu, tv, etaI, etaT) - r0) / eps;
+  // d(a,b)/d(lk) = −J_vertex⁻¹ · [drx/dlk, dry/dlk];  J_vertex⁻¹ = invDet·[[j11,−j01],[−j10,j00]].
+  var out: MneeJacobian;
+  out.dadL = vec3f(
+    -invDet * (j11 * dlx.x - j01 * dlx.y),
+    -invDet * (j11 * dly.x - j01 * dly.y),
+    -invDet * (j11 * dlz.x - j01 * dlz.y),
+  );
+  out.dbdL = vec3f(
+    -invDet * (-j10 * dlx.x + j00 * dlx.y),
+    -invDet * (-j10 * dly.x + j00 * dly.y),
+    -invDet * (-j10 * dlz.x + j00 * dlz.y),
+  );
+  return out;
+}
 `;
 
 /** Harness kernel: runs the Newton solve per config (mirror plane z = planePoint.z,
@@ -116,5 +152,31 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let tv = vec3f(0.0, 1.0, 0.0);
   let r = mneeNewtonSolve(c.planePoint, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT, ${MNEE_NEWTON_MAX_ITERS}u);
   hOut[i] = vec4f(r.vertex, r.residual);
+}
+`;
+
+/** Jacobian harness: solves, then writes the manifold derivative d(a,b)/d(light)
+ *  (3 vec4 per config: [vertex, residual], [dadL.xyz, dbdL.x], [dbdL.yz, _, _]).
+ *  The validation FD-re-solves to confirm the analytic Jacobian == finite diff. */
+export const MNEE_JACOBIAN_HARNESS_WGSL = /* wgsl */ `
+${MNEE_NEWTON_WGSL}
+
+struct MneeIn { recv: vec3f, etaI: f32, light: vec3f, etaT: f32, planePoint: vec3f, _p2: f32 }
+@group(0) @binding(0) var<storage, read>       hIn:  array<MneeIn>;
+@group(0) @binding(1) var<storage, read_write> hOut: array<vec4f>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&hIn)) { return; }
+  let c = hIn[i];
+  let nm = vec3f(0.0, 0.0, 1.0);
+  let tu = vec3f(1.0, 0.0, 0.0);
+  let tv = vec3f(0.0, 1.0, 0.0);
+  let r = mneeNewtonSolve(c.planePoint, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT, ${MNEE_NEWTON_MAX_ITERS}u);
+  let jac = mneeManifoldJacobian(r.vertex, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT);
+  hOut[i * 3u + 0u] = vec4f(r.vertex, r.residual);
+  hOut[i * 3u + 1u] = vec4f(jac.dadL, jac.dbdL.x);
+  hOut[i * 3u + 2u] = vec4f(jac.dbdL.y, jac.dbdL.z, 0.0, 0.0);
 }
 `;
