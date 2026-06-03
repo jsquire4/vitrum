@@ -7,6 +7,7 @@ import {
   MNEE_NEWTON_WGSL,
   MNEE_NEWTON_HARNESS_WGSL,
   MNEE_JACOBIAN_HARNESS_WGSL,
+  MNEE_PDF_HARNESS_WGSL,
   packMneeHarnessInput,
   MNEE_HARNESS_INPUT_FLOATS,
   MNEE_NEWTON_MAX_ITERS,
@@ -50,5 +51,16 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_JACOBIAN_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL); // byte-identical core
     expect(MNEE_JACOBIAN_HARNESS_WGSL).toContain('let jac = mneeManifoldJacobian(r.vertex, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT)');
     expect(MNEE_JACOBIAN_HARNESS_WGSL).toContain('hOut[i * 3u + 1u] = vec4f(jac.dadL, jac.dbdL.x)');
+  });
+
+  it('connection-PDF factor |dω_recv/dA_light| (basis-free determinant)', () => {
+    // GPU-validated against brute-force FD over the light area params
+    // (mnee-pdf-validate.ts, lavapipe: analytic == FD to ~1e-3, reflect + refract).
+    expect(MNEE_NEWTON_WGSL).toContain('fn mneePdfJacobianDet(');
+    // The solid-angle projection + the basis-free 2×2 determinant (cross product).
+    expect(MNEE_NEWTON_WGSL).toContain('let dw_ds = (dv_ds - w * dot(w, dv_ds)) / dist');
+    expect(MNEE_NEWTON_WGSL).toContain('return length(cross(dw_ds, dw_dt))');
+    expect(MNEE_PDF_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL); // byte-identical core
+    expect(MNEE_PDF_HARNESS_WGSL).toContain('let det = mneePdfJacobianDet(r.vertex, c.recv, jac.dadL, jac.dbdL, tu, tv)');
   });
 });

@@ -130,6 +130,25 @@ fn mneeManifoldJacobian(v: vec3f, nm: vec3f, tu: vec3f, tv: vec3f, recv: vec3f, 
   );
   return out;
 }
+
+// MNEE connection PDF geometric factor |dω_recv / dA_light| — the change of
+// variables from the (area-sampled) light to the receiver's solid angle, through
+// the specular vertex. The light is parameterized by its (x,y) area coords (s,t),
+// so ∂v/∂s = tu·dadL.x + tv·dbdL.x, ∂v/∂t = tu·dadL.y + tv·dbdL.y (the manifold
+// Jacobian columns). ω = normalize(v−recv); the solid-angle projection is
+// ∂ω/∂* = (∂v/∂* − ω(ω·∂v/∂*))/|v−recv|. The 2×2 determinant on the (2D) tangent
+// plane of ω is BASIS-FREE: |det| = |∂ω/∂s × ∂ω/∂t|. (POINT lights need no area
+// PDF — their connection is deterministic; this is the AREA-light factor.)
+fn mneePdfJacobianDet(v: vec3f, recv: vec3f, dadL: vec3f, dbdL: vec3f, tu: vec3f, tv: vec3f) -> f32 {
+  let dv_ds = tu * dadL.x + tv * dbdL.x;
+  let dv_dt = tu * dadL.y + tv * dbdL.y;
+  let d = v - recv;
+  let dist = max(length(d), 1e-8);
+  let w = d / dist;
+  let dw_ds = (dv_ds - w * dot(w, dv_ds)) / dist;
+  let dw_dt = (dv_dt - w * dot(w, dv_dt)) / dist;
+  return length(cross(dw_ds, dw_dt));
+}
 `;
 
 /** Harness kernel: runs the Newton solve per config (mirror plane z = planePoint.z,
@@ -178,5 +197,30 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   hOut[i * 3u + 0u] = vec4f(r.vertex, r.residual);
   hOut[i * 3u + 1u] = vec4f(jac.dadL, jac.dbdL.x);
   hOut[i * 3u + 2u] = vec4f(jac.dbdL.y, jac.dbdL.z, 0.0, 0.0);
+}
+`;
+
+/** PDF harness: solves, then writes the connection-PDF geometric factor
+ *  |dω_recv/dA_light| (per config: vec4[vertex.xyz, |det|]). The validation
+ *  FD-re-solves over the light's (x,y) area params to confirm analytic == FD. */
+export const MNEE_PDF_HARNESS_WGSL = /* wgsl */ `
+${MNEE_NEWTON_WGSL}
+
+struct MneeIn { recv: vec3f, etaI: f32, light: vec3f, etaT: f32, planePoint: vec3f, _p2: f32 }
+@group(0) @binding(0) var<storage, read>       hIn:  array<MneeIn>;
+@group(0) @binding(1) var<storage, read_write> hOut: array<vec4f>; // xyz = vertex, w = |dω/dA|
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&hIn)) { return; }
+  let c = hIn[i];
+  let nm = vec3f(0.0, 0.0, 1.0);
+  let tu = vec3f(1.0, 0.0, 0.0);
+  let tv = vec3f(0.0, 1.0, 0.0);
+  let r = mneeNewtonSolve(c.planePoint, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT, ${MNEE_NEWTON_MAX_ITERS}u);
+  let jac = mneeManifoldJacobian(r.vertex, nm, tu, tv, c.recv, c.light, c.etaI, c.etaT);
+  let det = mneePdfJacobianDet(r.vertex, c.recv, jac.dadL, jac.dbdL, tu, tv);
+  hOut[i] = vec4f(r.vertex, det);
 }
 `;
