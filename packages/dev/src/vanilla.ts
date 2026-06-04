@@ -18,8 +18,8 @@
 //     code to plain DOM is a separate workstream — most non-React hosts
 //     already embed a React shell for tools and use the React entry point.
 //   - MaterialInspector React component: panel + live material edit are real;
-//     click-to-pick (engine.debug.pickPrimitive()) is stubbed pending a picking
-//     pass. Vanilla path renders a placeholder badge.
+//     click-to-pick (engine.debug.pickPrimitive(), T3.G) is wired in the React
+//     panel when given a `canvas` prop. Vanilla path renders a placeholder badge.
 
 import type { Scene } from '@vitrum/core';
 import type { DebuggableEngine, FrameStats } from './types.js';

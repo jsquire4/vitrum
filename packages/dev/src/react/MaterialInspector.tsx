@@ -1,7 +1,8 @@
 // MaterialInspector — click a mesh to see its vitrum Material params; live-edit them.
 //
-// Click-to-pick requires engine.debug.pickPrimitive(x, y) — tracked in items_to_fix.md T3.G.
-// Until then, use the `selectedPrimitiveId` prop to select a primitive by ID.
+// Click-to-pick uses engine.debug.pickPrimitive(x, y) (T3.G) when a `canvas` prop is
+// supplied and the engine exposes it (e.g. HybridEngine). Otherwise drive selection
+// via the `selectedPrimitiveId` prop.
 
 import React, {
   type FC,
@@ -25,11 +26,18 @@ export interface MaterialInspectorProps {
    */
   scene: import('@vitrum/core').Scene;
   /**
-   * ID of the currently selected primitive. When null/undefined, the panel
-   * is closed. Use with canvas click handlers + engine.debug.pickPrimitive()
-   * when that API is available, or wire your own selection state.
+   * ID of the currently selected primitive. When set, takes precedence over the
+   * internal canvas click-pick. When null/undefined (and no canvas pick), the
+   * panel is closed.
    */
   selectedPrimitiveId?: string | null;
+  /**
+   * Optional render canvas. When supplied and the engine exposes
+   * `debug.pickPrimitive()`, clicking the canvas selects the primitive under the
+   * cursor automatically — no external `selectedPrimitiveId` wiring needed
+   * (items_to_fix.md T3.G). Pass the same canvas the engine renders into.
+   */
+  canvas?: HTMLCanvasElement | null;
   /** CSS class name applied to the panel div. */
   className?: string;
 }
@@ -105,28 +113,52 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
   engine,
   scene,
   selectedPrimitiveId,
+  canvas,
   className,
 }) => {
   const [draft, setDraft] = useState<MaterialSpec | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [pickedId, setPickedId] = useState<string | null>(null);
 
   const hasPickAPI = typeof engine.debug?.pickPrimitive === 'function';
 
-  // Sync draft when selection changes.
+  // Effective selection: an explicit `selectedPrimitiveId` prop wins; otherwise
+  // the internal canvas click-pick (T3.G).
+  const effectiveId = selectedPrimitiveId ?? pickedId;
+
+  // Self-wire click-to-pick when a canvas is supplied and the engine exposes the
+  // pick API. Maps the CSS-pixel click into canvas backing-store pixels (what
+  // pickPrimitive expects). The host may instead drive `selectedPrimitiveId`.
   useEffect(() => {
-    if (!selectedPrimitiveId) {
+    if (canvas == null || !hasPickAPI) return undefined;
+    const onClick = (e: MouseEvent): void => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const x = (e.clientX - rect.left) * (canvas.width / rect.width);
+      const y = (e.clientY - rect.top) * (canvas.height / rect.height);
+      setPickedId(engine.debug?.pickPrimitive?.(x, y) ?? null);
+    };
+    canvas.addEventListener('click', onClick);
+    return () => canvas.removeEventListener('click', onClick);
+  }, [canvas, hasPickAPI, engine]);
+
+  // Sync draft when the effective selection changes.
+  useEffect(() => {
+    if (!effectiveId) {
       setPanelOpen(false);
       return;
     }
-    const prim = scene.primitives.find((p) => p.id === selectedPrimitiveId);
+    const prim = scene.primitives.find((p) => p.id === effectiveId);
     if (prim) {
       // Deep-clone the material so edits don't mutate the scene object.
       setDraft({ ...prim.material });
       setPanelOpen(true);
+    } else {
+      setPanelOpen(false); // clicked empty space or an unknown id
     }
-  }, [selectedPrimitiveId, scene]);
+  }, [effectiveId, scene]);
 
-  if (!panelOpen || draft === null || !selectedPrimitiveId) return null;
+  if (!panelOpen || draft === null || !effectiveId) return null;
 
   // ── Field update helpers ──────────────────────────────────────────────────
 
@@ -135,7 +167,7 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
     setDraft(next);
     // updatePrimitive is optional on Engine; fall back to nothing if absent.
     if (typeof engine.updatePrimitive === 'function') {
-      engine.updatePrimitive(selectedPrimitiveId, { material: next });
+      engine.updatePrimitive(effectiveId, { material: next });
     }
   };
 
@@ -161,15 +193,15 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
           role="button"
           tabIndex={0}
           aria-label="Close inspector"
-          onClick={() => setPanelOpen(false)}
-          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setPanelOpen(false); }}
+          onClick={() => { setPanelOpen(false); setPickedId(null); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { setPanelOpen(false); setPickedId(null); } }}
         >
           ✕
         </span>
       </div>
 
       <div style={{ color: '#666', fontSize: 10, marginBottom: 6 }}>
-        id: {selectedPrimitiveId}
+        id: {effectiveId}
       </div>
 
       {/* baseColor */}
@@ -264,9 +296,9 @@ export const MaterialInspector: FC<MaterialInspectorProps> = ({
 
       {!hasPickAPI && (
         <div style={WARN_STYLE}>
-          Click-to-pick requires engine.debug.pickPrimitive() — T3.G followup.
+          This engine does not expose <code>debug.pickPrimitive()</code>.
           <br />
-          Use <code>selectedPrimitiveId</code> prop to select manually.
+          Drive selection via the <code>selectedPrimitiveId</code> prop.
         </div>
       )}
     </div>

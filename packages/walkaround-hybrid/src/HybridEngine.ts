@@ -54,6 +54,7 @@ import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/bindGroupBuilders.js';
 import { packStainedGlassFlags } from './pipeline/uboUpdater.js';
 import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
+import type { PickCamera } from './debug/pickPrimitive.js';
 import {
   fingerprintHybridPipelineRebuildKey,
   getPreferredSwapChainFormat,
@@ -677,6 +678,10 @@ export class HybridEngine implements Engine {
    *  ReSTIR BVH + DDGI probe walks use `vitrumSceneToThree(this._lastScene)`. */
   private _lastScene: Scene | null = null;
 
+  /** Last-frame camera (copied) for debug click-to-pick (`pickPrimitive`, T3.G).
+   *  Captured each `renderFrame`; null until the first frame. */
+  private _lastFrameCamera: PickCamera | null = null;
+
   /** Owned `THREE.Scene` from `vitrumSceneToThree` when BVH/DDGI follow the core
    *  contract; disposed on pipeline teardown. Null when falling back to ctor `threeScene`. */
   private _ddgiTraversalScene: THREE.Scene | null = null;
@@ -923,6 +928,11 @@ export class HybridEngine implements Engine {
       bvhNodesCpu: () => this._bvhBuffers?.bvhNodes?.cpuData,
       debugTextures: () => this._pipeline?.getDebugTextures() ?? null,
       pipelineResources: () => this._pipeline?.frameResources ?? null,
+      // T3.G click-to-pick: the retained core scene + last-frame camera + canvas
+      // size feed the CPU ray-cast in createHybridEngineDebugSurface.
+      pickScene: () => this._lastScene,
+      pickCamera: () => this._lastFrameCamera,
+      pickSize: () => ({ width: this._width, height: this._height }),
       denoiserPassEnabled: () => this._denoiserPassEnabled,
       setDenoiserPassEnabled: (enabled) => {
         this._denoiserPassEnabled = enabled;
@@ -1817,6 +1827,13 @@ export class HybridEngine implements Engine {
           'resolution scaling use FrameInput.quality.resolutionFactor instead.',
       );
     }
+    // Retain the camera (copied — decoupled from host mutation) for debug
+    // click-to-pick (EngineDebugSurface.pickPrimitive, T3.G).
+    this._lastFrameCamera = {
+      viewMatrix: new Float32Array(input.viewMatrix),
+      projMatrix: new Float32Array(input.projMatrix),
+      cameraPosition: [input.cameraPosition[0], input.cameraPosition[1], input.cameraPosition[2]],
+    };
     return runHybridEngineFrame(this._buildFrameDeps(), input);
   }
 

@@ -1,8 +1,9 @@
 /**
  * Debug-introspection surface for {@link HybridEngine} (W4e).
  */
-import type { EngineDebugSurface, GpuMemoryBreakdown } from '@vitrum/core';
+import type { EngineDebugSurface, GpuMemoryBreakdown, Scene } from '@vitrum/core';
 import { packBvhNodesForDebug } from './debug/packBvhNodesForDebug.js';
+import { pickPrimitiveCpu, type PickCamera } from './debug/pickPrimitive.js';
 import { estimateFrameResourcesMemory } from './pipeline/gpuMemoryEstimate.js';
 import type { FrameResources } from './pipeline/resourceManager.js';
 import type { PipelineDebugTextures } from './pipeline/PipelineDebugTextures.js';
@@ -25,6 +26,12 @@ export interface HybridEngineDebugDeps {
   denoiserPassEnabled: () => boolean;
   setDenoiserPassEnabled: (enabled: boolean) => void;
   setPipelineDenoiserPassEnabled: (enabled: boolean) => void;
+  /** Retained core scene for CPU click-to-pick (`pickPrimitive`, T3.G). */
+  pickScene: () => Scene | null;
+  /** Last-frame camera for click-to-pick ray unprojection. */
+  pickCamera: () => PickCamera | null;
+  /** Canvas pixel size for the screen→NDC mapping. */
+  pickSize: () => { width: number; height: number };
 }
 
 export function createHybridEngineDebugSurface(deps: HybridEngineDebugDeps): EngineDebugSurface {
@@ -56,6 +63,16 @@ export function createHybridEngineDebugSurface(deps: HybridEngineDebugDeps): Eng
       const res = deps.pipelineResources();
       if (res == null) return null;
       return estimateFrameResourcesMemory(res);
+    },
+    // T3.G click-to-pick: CPU ray-cast of pixel (x,y) against the retained core
+    // scene using the last-frame camera. Returns null before the first frame
+    // (no camera), before a scene is set, or on a miss.
+    pickPrimitive: (x: number, y: number): string | null => {
+      const scene = deps.pickScene();
+      const camera = deps.pickCamera();
+      if (scene == null || camera == null) return null;
+      const { width, height } = deps.pickSize();
+      return pickPrimitiveCpu(scene, camera, x, y, width, height);
     },
   };
 }

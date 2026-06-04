@@ -264,15 +264,10 @@ A finding from a sweep doc is hearsay until I read the file myself. Same rule ap
 
 ## Section F — Open follow-ups (post-2026-05-30 wave)
 
-### T3.G — `engine.debug.pickPrimitive(x, y)` not implemented in HybridEngine
+### T3.G — `engine.debug.pickPrimitive(x, y)` — DONE 2026-06-04
 
-- **Where:** `packages/dev/src/types.ts` (via `@vitrum/core` `EngineDebugSurface`) declares `pickPrimitive?(x: number, y: number): string | null`. `MaterialInspector.tsx` checks `hasPickAPI` and falls back to the `selectedPrimitiveId` prop when absent.
-- **Symptom:** `MaterialInspector` cannot do click-to-pick; the user must wire `selectedPrimitiveId` externally. The `hasPickAPI` warning fires on every HybridEngine instance.
-- **Fix options:**
-  - (a) CPU-side: ray-AABB test against the BVH node table (approximate; misses concave geometry, cheap).
-  - (b) GPU: read the primitive-ID G-buffer pixel at (x, y) after the shade pass. More accurate; requires a primitive-ID color attachment in the shade pass.
-  Option (b) is preferred for correctness; (a) is an acceptable interim if GPU readback adds too much latency.
-- **Acceptance:** `engine.debug.pickPrimitive(x, y)` returns the correct primitive ID for a known mesh in a test scene; `MaterialInspector` opens the panel on canvas click without requiring external `selectedPrimitiveId` wiring.
+- **STATUS: DONE + unit-tested.** Implemented option (a) — exact CPU ray-cast (better than the "ray-AABB approximate" first sketched; triangle-exact, not just bounds). `pickPrimitiveCpu` (`walkaround-hybrid/src/debug/pickPrimitive.ts`): unproject (x,y) through the retained last-frame camera (`HybridEngine._lastFrameCamera`, copied each `renderFrame`) → `invertMat4(proj·view)` far-plane ray (NDC z=+1, robust to both GL/WebGPU depth conventions) → closest-hit over `_lastScene.primitives` — Möller–Trumbore for mesh/instanced/skinned (rest-pose; deformation ignored, debug-only), world bounding-sphere for analytic (or `fallbackMesh` triangles when present). Wired into the debug surface (`HybridEngineDebug.ts` `pickPrimitive` + new `pickScene`/`pickCamera`/`pickSize` deps). `MaterialInspector` self-wires click-to-pick via an optional `canvas` prop (CSS-pixel click → canvas backing-store pixels → `pickPrimitive` → internal `pickedId`, no external `selectedPrimitiveId` needed); the stale "T3.G followup" warning + `vanilla.ts` "stubbed" comment were corrected. 7 unit tests (`pickPrimitive.test.ts`: centre-pixel hit [the acceptance case], miss→null, depth ordering, analytic sphere, transform-honoured, empty scene, zero-viewport). Full workspace typecheck + 1216 vitest green. Option (b) (GPU primitive-ID readback) deferred — CPU is exact for meshes and adds zero GPU-readback latency.
+- **Acceptance (met):** `engine.debug.pickPrimitive(x, y)` returns the correct primitive ID for a known mesh (unit-tested); `MaterialInspector` opens on canvas click without external `selectedPrimitiveId` wiring (the `canvas` prop path).
 
 ### F-RC1 — RC merged-mode GPU traversal unreliable on multi-node trees (FIXED 2026-06-04)
 
