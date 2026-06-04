@@ -109,6 +109,8 @@ import {
   type TimestampState,
   type PassLabel,
 } from './timestampQueries.js';
+import { RESERVOIR_GI_STRIDE } from '../ppg/ppgConstants.js';
+import type { RestirGISnapshot } from '../giStateSnapshot.js';
 
 /**
  * Dependencies the {@link registerPasses} free function needs to construct +
@@ -769,6 +771,82 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    */
   get frameResources(): FrameResources | null {
     return this._initialized ? this._res : null;
+  }
+
+  /**
+   * Read the ReSTIR-GI temporal reservoir buffers back to CPU (the reservoir
+   * half of the "cached light field" export). Returns the three half-res
+   * reservoir buffers (current / previous / spatial) as raw u32 + the grid
+   * metadata, or null before `initialize()` resolves. Async (mapAsync).
+   *
+   * Models `ProbeUpdatePass.exportAtlasData` (the DDGI-atlas half) but for
+   * storage buffers: copyBufferToBuffer → MAP_READ staging → slice out.
+   * The cross-frame temporal history lives in `previous` (and `current`, which
+   * equals it right after the end-of-frame copy); `spatial` is within-frame
+   * scratch, persisted for a complete byte-identity round-trip.
+   */
+  async exportRestirGIReservoirs(device: GPUDevice): Promise<RestirGISnapshot | null> {
+    if (!this._initialized) return null;
+    const r = this._res.restirGI;
+    const halfW = Math.max(1, Math.floor(this._width / 2));
+    const halfH = Math.max(1, Math.floor(this._height / 2));
+    const [current, previous, spatial] = await Promise.all([
+      this.#readbackReservoir(device, r.reservoirGiCurrentBuffer),
+      this.#readbackReservoir(device, r.reservoirGiPreviousBuffer),
+      this.#readbackReservoir(device, r.reservoirGiSpatialBuffer),
+    ]);
+    return { halfW, halfH, strideU32: RESERVOIR_GI_STRIDE, current, previous, spatial };
+  }
+
+  /**
+   * Upload previously-exported ReSTIR-GI reservoir buffers into the live
+   * reservoirs (the reservoir half of the restore). Returns false (no-op) when
+   * not yet initialized, when the snapshot's half-res grid / stride don't match
+   * the current pipeline, or when the buffer length doesn't match the live
+   * reservoir buffers (a different render size).
+   *
+   * Restoring `previous` seeds the next frame's temporal reuse; restoring
+   * `current` keeps the immediate shade read consistent until `gi-ris` overwrites
+   * it. Uses `writeBuffer` (no 256-row alignment needed for buffer uploads).
+   */
+  importRestirGIReservoirs(device: GPUDevice, snap: RestirGISnapshot): boolean {
+    if (!this._initialized) return false;
+    const r = this._res.restirGI;
+    const halfW = Math.max(1, Math.floor(this._width / 2));
+    const halfH = Math.max(1, Math.floor(this._height / 2));
+    if (snap.halfW !== halfW || snap.halfH !== halfH || snap.strideU32 !== RESERVOIR_GI_STRIDE) {
+      return false; // grid / stride mismatch — cannot restore into a different reservoir layout
+    }
+    const expectU32 = r.reservoirGiCurrentBuffer.size / 4;
+    if (snap.current.length !== expectU32 || snap.previous.length !== expectU32 || snap.spatial.length !== expectU32) {
+      return false; // buffer-size mismatch (different render size)
+    }
+    this.#uploadReservoir(device, r.reservoirGiCurrentBuffer, snap.current);
+    this.#uploadReservoir(device, r.reservoirGiPreviousBuffer, snap.previous);
+    this.#uploadReservoir(device, r.reservoirGiSpatialBuffer, snap.spatial);
+    return true;
+  }
+
+  /** copyBufferToBuffer (size is a multiple of 4) → MAP_READ → unpadded Uint32Array. */
+  async #readbackReservoir(device: GPUDevice, src: GPUBuffer): Promise<Uint32Array> {
+    const bytes = src.size; // already 4-aligned (stride is 30 u32; floor is 256)
+    const staging = device.createBuffer({
+      size: bytes,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(src, 0, staging, 0, bytes);
+    device.queue.submit([enc.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const out = new Uint32Array(staging.getMappedRange().slice(0));
+    staging.unmap();
+    staging.destroy();
+    return out;
+  }
+
+  /** writeBuffer from a tightly-packed u32 array (buffer-to-buffer needs no row alignment). */
+  #uploadReservoir(device: GPUDevice, dst: GPUBuffer, data: Uint32Array): void {
+    device.queue.writeBuffer(dst, 0, data as Uint32Array<ArrayBuffer>, 0, data.length);
   }
 
   /**

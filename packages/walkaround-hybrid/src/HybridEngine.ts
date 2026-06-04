@@ -1344,22 +1344,42 @@ export class HybridEngine implements Engine {
     const atlas = await this._ddgi.pass.exportAtlasData(this._device);
     if (!atlas) return null;
     const grid = this._ddgi.probeGrid;
+    // Also snapshot the ReSTIR-GI temporal reservoirs when the pipeline is live,
+    // so a restore continues the temporal+spatial GI reuse instead of dropping
+    // the high-frequency indirect history and re-converging it from scratch.
+    // (The RC subsystem carries no cross-frame state — it regenerates every
+    // cascade from the BVH each frame — so there is nothing to persist for RC.)
+    const restirGI = (await this._pipeline?.exportRestirGIReservoirs(this._device)) ?? undefined;
     return {
       dims: { x: grid.dims.x, y: grid.dims.y, z: grid.dims.z },
       origin: [grid.worldOrigin.x, grid.worldOrigin.y, grid.worldOrigin.z],
       spacing: grid.worldSpacing,
       ...atlas,
+      ...(restirGI ? { restirGI } : {}),
     };
   }
 
   /**
-   * Restore a previously {@link exportGIState}-ed snapshot into the live probe
-   * atlases (seeds the temporal blend, so rendering continues from it instead of
-   * re-converging). Returns false (no-op) if the atlases aren't allocated or the
-   * snapshot's atlas dims don't match the current grid (a different scene/bounds).
+   * Restore a previously {@link exportGIState}-ed snapshot into the live GI state
+   * (seeds the temporal blend, so rendering continues from it instead of
+   * re-converging). Restores both the DDGI probe atlases AND — when the snapshot
+   * carries them (v2+) and the pipeline is live — the ReSTIR-GI temporal
+   * reservoirs.
+   *
+   * Returns false (no-op) if the atlases aren't allocated or the snapshot's atlas
+   * dims don't match the current grid. When a reservoir section is present, the
+   * restore also fails (returns false) if the reservoir grid/size doesn't match
+   * the live pipeline — so a partial (atlas-only) restore is never silently
+   * reported as a full success. A v1 snapshot (no reservoir section) restores the
+   * atlases and returns the atlas result unchanged.
    */
   importGIState(snapshot: GIStateSnapshot): boolean {
-    return this._ddgi.pass.importAtlasData(this._device, snapshot);
+    const atlasOk = this._ddgi.pass.importAtlasData(this._device, snapshot);
+    if (!atlasOk) return false;
+    if (snapshot.restirGI == null) return true; // v1 / no reservoir section — atlas-only restore
+    // A reservoir section is present: require it to restore too, else report
+    // failure rather than a misleadingly-partial success.
+    return this._pipeline?.importRestirGIReservoirs(this._device, snapshot.restirGI) ?? false;
   }
 
   /**
