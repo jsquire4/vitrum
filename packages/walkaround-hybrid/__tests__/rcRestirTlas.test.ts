@@ -29,6 +29,7 @@ function tlasBuffers(): SceneBVHBuffers {
     meshVertexRanges: [],
     bvhIndicesStride3: new Uint32Array(3),
     buildMaterials: [new THREE.MeshStandardMaterial()],
+    coreMaterials: [],
     emitterNormals: new Float32Array(12),
     primitiveTlasBindings: [],
     tlas: {

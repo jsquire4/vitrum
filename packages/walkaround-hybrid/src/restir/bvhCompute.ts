@@ -24,7 +24,7 @@
  *   - Emitter list construction (80-byte EmitterTri struct + power-CDF).
  */
 
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene } from '@vitrum/core';
 import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
 import * as THREE from 'three';
 import { buildSceneBVH as buildSharedBVH } from '@vitrum/shared-bvh';
@@ -185,6 +185,19 @@ export interface SceneBVHBuffers {
   bvhIndicesStride3: Uint32Array;
   /** THREE materials aligned with `triangleMaterialIds` (CPU-only, for emitter rebuild). */
   buildMaterials: readonly THREE.Material[];
+  /**
+   * THREE-DECOUPLE of the production ReSTIR MATERIAL path. The deduped core
+   * `MaterialSpec[]`, slot-aligned with {@link buildMaterials} (THREE) and
+   * `triangleMaterialIds` — i.e. built in the SAME THREE-identity dedup ordering
+   * as the THREE `materials` list, so it shares `geo.triMaterialIds`'s
+   * addressing. Populated by the core-first TLAS build
+   * (`buildReSTIRSceneBVHFromVitrumScene` → `buffersFromScenePack`); EMPTY (`[]`)
+   * for the legacy THREE-only merged path ({@link buildReSTIRSceneBVH}), which has
+   * no core scene and whose DDGI consumer falls back to {@link buildMaterials}.
+   * Threaded onto {@link RestirBvhSnapshot.coreMaterials} so production DDGI packs
+   * its per-material struct from core `MaterialSpec`s (no THREE round-trip).
+   */
+  coreMaterials: readonly MaterialSpec[];
   /** Stride-4 world-space normals from the last BVH build (emitter list input). */
   emitterNormals: Float32Array;
   /** TLAS storage buffers — populated when `bvhMode === 'tlas'`. */
@@ -394,6 +407,10 @@ export function buildReSTIRSceneBVH(
     meshVertexRanges: enrichMeshVertexRangesWithMatrix(sceneRoots, shared.meshVertexRanges),
     bvhIndicesStride3: shared.indices,
     buildMaterials: shared.materials,
+    // Legacy THREE-only merged path: no core scene available, so the snapshot's
+    // core-material list is empty and DDGI falls back to `materials` (THREE) as
+    // it did before the THREE-decouple. The core-first TLAS build populates this.
+    coreMaterials: [],
     emitterNormals: shared.normals,
     primitiveTlasBindings: [],
   };

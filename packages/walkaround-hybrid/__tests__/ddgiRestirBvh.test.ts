@@ -33,6 +33,7 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
     meshVertexRanges: [],
     bvhIndicesStride3: new Uint32Array(3),
     buildMaterials: [],
+    coreMaterials: [],
     emitterNormals: new Float32Array(12),
     primitiveTlasBindings: [],
     ...overrides,

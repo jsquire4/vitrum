@@ -11,6 +11,12 @@
  */
 
 import * as THREE from 'three';
+import type { MaterialSpec } from '@vitrum/core';
+import {
+  materialSpecTriColor,
+  materialSpecEmissiveLe,
+  materialSpecSurfaceTextureId,
+} from '@vitrum/shared-bvh';
 
 /** Default warm-gray fallback color (sRGB byte values) when a triangle has
  *  no material or unrecognised material type. Matches the old in-file
@@ -241,6 +247,147 @@ export function packBVHEmissiveLe(
     const mat = materials[triMaterialId[t]!];
     if (!mat) continue;
     const le = materialEmissiveLe(mat);
+    if (le == null) continue;
+    out[t * 4 + 0] = le[0];
+    out[t * 4 + 1] = le[1];
+    out[t * 4 + 2] = le[2];
+  }
+  return out;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// THREE-FREE per-triangle packers (THREE-decouple of the production ReSTIR
+// MATERIAL path — increment of `plan/three-decouple-analysis-2026-06-03.md`).
+//
+// These are the core-`MaterialSpec` counterparts to the three `*Tri` packers
+// above. They delegate the per-material RGB resolution to the canonical
+// `materialEntry.ts` mirrors in `@vitrum/shared-bvh`
+// (`materialSpecTriColor` / `materialSpecEmissiveLe` /
+// `materialSpecSurfaceTextureId`) — the same functions the DDGI/emitter
+// decouples already use — and reproduce the EXACT RGBA8 / trans4 / isMetal
+// bit-packing + warm-gray missing-material default of the THREE `*Tri` packers
+// BYTE-FOR-BYTE. Because the caller drives them with a parallel `coreMaterials[]`
+// built in `buildMaterialResolver`'s THREE-identity dedup ordering — the SAME
+// index the THREE `materials[]` (hence `geo.triMaterialIds`) uses — the output
+// is per-triangle byte-identical to the THREE packers (pinned by
+// __tests__/materialPackingCoreEquivalence.test.ts), not merely set-equivalent.
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Apply the `vitrumSceneToThree` emissive convention to a core material before
+ * reading its emissive Le: treat `emissive` as the FINAL radiance-space colour
+ * and force `emissiveIntensity = 1`, so `materialSpecEmissiveLe` yields
+ * `Le = emissive · 1` — exactly what the THREE `packBVHEmissiveLe` produces
+ * (the camera-glow packer reads `vitrumSceneToThree`-converted THREE materials,
+ * which carry `emissiveIntensity = 1` unconditionally; see
+ * vitrumSceneToThree.ts:201-211). This is the SAME ei-collapse fix the ReSTIR-DI
+ * emitter decouple (`sceneBvhFromCore.ts:toProductionEmissiveRadiance`, commit
+ * `46a0078`) and the DDGI material decouple (`probeUpdateMaterials.ts`, commit
+ * `15070cd`) needed: a raw `materialSpecEmissiveLe` computes
+ * `emissive · emissiveIntensity`, so a core emitter with `ei = 4` would pack 4×
+ * the radiance the THREE path packs — the exact divergence those GPU A/Bs caught.
+ * A material with no `emissive` is returned unchanged (not an emitter either way).
+ */
+function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
+  if (m.emissive === undefined) return m;
+  if (m.emissiveIntensity === 1) return m; // already the production convention
+  return { ...m, emissiveIntensity: 1 };
+}
+
+/**
+ * THREE-free counterpart to {@link packBVHIndexW}: pack vertex indices + RGBA8
+ * baseColor + (trans4 | isMetal | texType) per triangle from a parallel
+ * `MaterialSpec[]`. Mirrors {@link packBVHIndexWTri} field-for-field:
+ *  - RGB ← `materialSpecTriColor(mat, /*applyBeer*\/ false)` × 255 & 0xFF
+ *    (the RAW attenuation color for a transmissive surface, else baseColor).
+ *  - trans4 ← `min(15, round(transmission · 15)) & 0xF`.
+ *  - isMetal ← `metallic > 1e-4 ? 1 : 0`.
+ *  - texType ← `materialSpecSurfaceTextureId(mat) & 0x7`.
+ *  - low byte ← `((trans4 << 4) | (isMetal << 3) | (texType & 0x7)) & 0xFF`.
+ * A missing material slot falls back to the warm-gray default + zero
+ * transmission/texType/metal — identical to the THREE packer's `if (mat)` guard.
+ */
+export function packBVHIndexWFromCore(
+  indices: Uint32Array,
+  triMaterialId: Uint32Array,
+  materials: readonly MaterialSpec[],
+  triCount: number,
+): Uint32Array<ArrayBuffer> {
+  const indexBuf = new Uint32Array(triCount * 4);
+  for (let t = 0; t < triCount; t++) {
+    const base4 = t * 4;
+    indexBuf[base4 + 0] = indices[t * 3 + 0]!;
+    indexBuf[base4 + 1] = indices[t * 3 + 1]!;
+    indexBuf[base4 + 2] = indices[t * 3 + 2]!;
+
+    const mat = materials[triMaterialId[t]!];
+    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
+    let transmission = 0;
+    let texTypeId = 0;
+    let isMetal = 0;
+    if (mat) {
+      transmission = mat.transmission ?? 0;
+      const color = materialSpecTriColor(mat, /* applyBeer */ false);
+      r = Math.round(color[0] * 255) & 0xFF;
+      g = Math.round(color[1] * 255) & 0xFF;
+      b = Math.round(color[2] * 255) & 0xFF;
+      texTypeId = materialSpecSurfaceTextureId(mat) & 0x7;
+      const metalness = mat.metallic ?? 0;
+      isMetal = metalness > 1e-4 ? 1 : 0;
+    }
+    const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
+    const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
+    indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
+  }
+  return indexBuf;
+}
+
+/**
+ * THREE-free counterpart to {@link packBVHBeerColors}: pack the Beer-Lambert
+ * visible color per triangle into a parallel u32 buffer from a `MaterialSpec[]`.
+ * Mirrors {@link packBVHBeerColorTri}: RGB ←
+ * `materialSpecTriColor(mat, /*applyBeer*\/ true)`, `min(1, c) · 255 & 0xFF`,
+ * packed `(r << 24) | (g << 16) | (b << 8)`. Warm-gray default for a missing slot.
+ */
+export function packBVHBeerColorsFromCore(
+  triMaterialId: Uint32Array,
+  materials: readonly MaterialSpec[],
+  triCount: number,
+): Uint32Array<ArrayBuffer> {
+  const beerBuf = new Uint32Array(triCount);
+  for (let t = 0; t < triCount; t++) {
+    const mat = materials[triMaterialId[t]!];
+    let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
+    if (mat) {
+      const color = materialSpecTriColor(mat, /* applyBeer */ true);
+      r = Math.round(Math.min(1, color[0]) * 255) & 0xFF;
+      g = Math.round(Math.min(1, color[1]) * 255) & 0xFF;
+      b = Math.round(Math.min(1, color[2]) * 255) & 0xFF;
+    }
+    beerBuf[t] = (r << 24) | (g << 16) | (b << 8);
+  }
+  return beerBuf;
+}
+
+/**
+ * THREE-free counterpart to {@link packBVHEmissiveLe}: pack per-triangle HDR
+ * emissive radiance Le (stride-4 f32, rgb + 0 pad) from a `MaterialSpec[]`.
+ * Mirrors the THREE packer: non-emissive / missing triangles stay zero;
+ * emissive triangles get `materialSpecEmissiveLe(toProductionEmissiveRadiance(mat))`
+ * — the `emissiveIntensity = 1` collapse so the Le is `emissive · 1`, identical
+ * to the THREE camera-glow packer reading `vitrumSceneToThree`-converted
+ * materials. See {@link toProductionEmissiveRadiance}.
+ */
+export function packBVHEmissiveLeFromCore(
+  triMaterialId: Uint32Array,
+  materials: readonly MaterialSpec[],
+  triCount: number,
+): Float32Array<ArrayBuffer> {
+  const out = new Float32Array(triCount * 4);
+  for (let t = 0; t < triCount; t++) {
+    const mat = materials[triMaterialId[t]!];
+    if (!mat) continue;
+    const le = materialSpecEmissiveLe(toProductionEmissiveRadiance(mat));
     if (le == null) continue;
     out[t * 4 + 0] = le[0];
     out[t * 4 + 1] = le[1];

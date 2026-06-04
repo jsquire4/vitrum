@@ -12,9 +12,9 @@ import {
 import * as THREE from 'three';
 import {
   packUVIntoPositionW,
-  packBVHIndexW,
-  packBVHBeerColors,
-  packBVHEmissiveLe,
+  packBVHIndexWFromCore,
+  packBVHBeerColorsFromCore,
+  packBVHEmissiveLeFromCore,
 } from './packingHelpers.js';
 import { buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
 import type { SceneBVHBuffers } from './bvhCompute.js';
@@ -38,11 +38,47 @@ export function resolveReSTIRBvhMode(
   return 'merged';
 }
 
-function buildMaterialResolver(sceneRoots: readonly THREE.Object3D[]): {
+/** Warm-gray fallback `MaterialSpec` for a THREE material slot whose source
+ *  primitive couldn't be located by name in the core scene (defensive — in
+ *  production every slot's mesh round-tripped through `vitrumSceneToThree`, so
+ *  `obj.name === primitive.id` always resolves). Mirrors the THREE packers' own
+ *  warm-gray missing-material default (`resolveTriColor`'s final `?? new
+ *  THREE.Color(0.6, 0.58, 0.55)`, and the `WARM_GRAY_DEFAULT_*` bytes) so that
+ *  even this fallback slot packs byte-identically to the THREE side. */
+const DEFAULT_CORE_MATERIAL: MaterialSpec = {
+  baseColor: [0.6, 0.58, 0.55],
+  roughness: 1,
+  metallic: 0,
+};
+
+function buildMaterialResolver(
+  scene: Scene,
+  sceneRoots: readonly THREE.Object3D[],
+): {
   materials: THREE.Material[];
+  coreMaterials: MaterialSpec[];
   resolveMaterialId: (primitiveId: string) => number;
 } {
   const materials: THREE.Material[] = [];
+  // Parallel core-material list — populated in LOCKSTEP with `materials` at the
+  // SAME slot index, so it shares `geo.triMaterialIds`'s addressing exactly.
+  // THIS is the load-bearing subtlety (THREE-decouple of the production ReSTIR
+  // MATERIAL path): the per-triangle packers index by `geo.triMaterialIds`, which
+  // is produced by THIS resolver's THREE-object-identity dedup ordering — NOT by
+  // `mergeWorldSpaceFromCore`'s structural dedup (used by the already-decoupled
+  // emitter list, which permutes differently). Building `coreMaterials` here, at
+  // the same index a THREE slot is created, yields BYTE-IDENTICAL per-triangle
+  // packing (not just set-equivalence). See packingHelpers `*FromCore`.
+  const coreMaterials: MaterialSpec[] = [];
+  // Resolve a primitive's core MaterialSpec by name (= primitive id, stamped by
+  // `vitrumSceneToThree`: vitrumSceneToThree.ts:312/329/341). Every primitive
+  // variant (mesh / instanced-mesh / skinned-mesh) carries `material`.
+  const coreByName = new Map<string, MaterialSpec>();
+  for (const p of scene.primitives) {
+    if (p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh') {
+      coreByName.set(String(p.id), p.material);
+    }
+  }
   const byKey = new Map<string, number>();
   const registerMaterial = (obj: THREE.Mesh | THREE.InstancedMesh): void => {
     const raw = obj.material;
@@ -52,6 +88,13 @@ function buildMaterialResolver(sceneRoots: readonly THREE.Object3D[]): {
     if (idx < 0) {
       idx = materials.length;
       materials.push(mat);
+      // First time this THREE material is seen → claim the parallel core slot.
+      // Resolve the core MaterialSpec from the mesh that introduced the slot
+      // (by name == primitive id); on a dedup-hit (idx >= 0) we KEEP the
+      // first-seen core material, exactly as `materials` keeps the first THREE
+      // material. Unmatched mesh → warm-gray default (defensive; never hit in
+      // the production `vitrumSceneToThree` round-trip).
+      coreMaterials.push(coreByName.get(obj.name) ?? DEFAULT_CORE_MATERIAL);
     }
     const keys = [obj.uuid, obj.name].filter((k) => k.length > 0);
     for (const key of keys) {
@@ -70,6 +113,7 @@ function buildMaterialResolver(sceneRoots: readonly THREE.Object3D[]): {
   }
   return {
     materials,
+    coreMaterials,
     resolveMaterialId: (id) => byKey.get(id) ?? 0,
   };
 }
@@ -126,6 +170,7 @@ function buffersFromScenePack(
   sceneRoots: readonly THREE.Object3D[],
   geo: ScenePackResult,
   materials: THREE.Material[],
+  coreMaterials: readonly MaterialSpec[],
   options: {
     primaryLightDir?: THREE.Vector3;
     primaryLightIntensity?: number;
@@ -136,12 +181,21 @@ function buffersFromScenePack(
   const vertCount = geo.positions.length / 4;
 
   const positionsWithUV = packUVIntoPositionW(geo.positions, undefined, vertCount);
-  const indexBuf = packBVHIndexW(geo.indices, geo.triMaterialIds, materials, triCount);
-  const beerBuf = packBVHBeerColors(geo.triMaterialIds, materials, triCount);
+  // THREE-DECOUPLE of the production ReSTIR MATERIAL path: the per-triangle
+  // colour/glow buffers are packed from the parallel core `MaterialSpec[]`
+  // (built in `buildMaterialResolver`'s THREE-identity dedup ordering, so it
+  // shares `geo.triMaterialIds`'s addressing) via the `*FromCore` packers — NO
+  // THREE material reads. The bytes are per-triangle byte-identical to the
+  // former `packBVHIndexW`/`packBVHBeerColors`/`packBVHEmissiveLe` (THREE) path
+  // (pinned by __tests__/materialPackingCoreEquivalence.test.ts). The THREE
+  // `materials` array is STILL retained on the returned buffers (`buildMaterials`
+  // → snapshot `materials`) because RC + the DDGI-fallback consume it.
+  const indexBuf = packBVHIndexWFromCore(geo.indices, geo.triMaterialIds, coreMaterials, triCount);
+  const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
   // Camera-visible emitters: per-triangle HDR emissive Le, indexed by the SAME
   // `geo` triangle order as beerBuf/bvhIndex (NOT the sharedWorld emitter-list
   // build) so a primary-hit triangle index addresses the right texel in shade.
-  const emissiveLeBuf = packBVHEmissiveLe(geo.triMaterialIds, materials, triCount);
+  const emissiveLeBuf = packBVHEmissiveLeFromCore(geo.triMaterialIds, coreMaterials, triCount);
 
   // CORE-FIRST emitter-list build (THREE-decouple, increment of
   // `plan/three-decouple-analysis-2026-06-03.md`). The emitter list needs a
@@ -272,6 +326,11 @@ function buffersFromScenePack(
     meshVertexRanges,
     bvhIndicesStride3,
     buildMaterials: materials,
+    // THREE-decouple: the deduped core `MaterialSpec[]`, slot-aligned with
+    // `buildMaterials` (THREE) + `geo.triMaterialIds`. Threaded onto the snapshot
+    // so production DDGI can pack materials from core (probeUpdatePass.ts) with no
+    // THREE round-trip. The legacy THREE-only merged path sets this to `[]`.
+    coreMaterials,
     emitterNormals: geo.normals,
     tlas: {
       nodes: makeStorageHandle(geo.tlasNodes, 32),
@@ -297,9 +356,9 @@ export function buildReSTIRSceneBVHFromVitrumScene(
     proxyMeshNames?: Set<string>;
   } = {},
 ): SceneBVHBuffers {
-  const { materials, resolveMaterialId } = buildMaterialResolver(sceneRoots);
+  const { materials, coreMaterials, resolveMaterialId } = buildMaterialResolver(scene, sceneRoots);
   const geo = packSceneFromCore(scene, { tlas: true, resolveMaterialId });
-  return buffersFromScenePack(scene, sceneRoots, geo, materials, options);
+  return buffersFromScenePack(scene, sceneRoots, geo, materials, coreMaterials, options);
 }
 
 /** PR-4.3 — topology rebuild via `rebuildPrimitiveBlas` (in-place splice or full repack). */
@@ -317,7 +376,7 @@ export function rebuildReSTIRSceneBVHPrimitive(
   if (prev.scenePack == null) {
     return { ok: false, reason: 'previous buffers have no scenePack snapshot' };
   }
-  const { materials, resolveMaterialId } = buildMaterialResolver(sceneRoots);
+  const { materials, coreMaterials, resolveMaterialId } = buildMaterialResolver(scene, sceneRoots);
   const rebuilt = rebuildPrimitiveBlas(scene, primitiveId, prev.scenePack, {
     tlas: true,
     resolveMaterialId,
@@ -325,5 +384,5 @@ export function rebuildReSTIRSceneBVHPrimitive(
   if (!rebuilt.ok) {
     return { ok: false, reason: rebuilt.reason };
   }
-  return buffersFromScenePack(scene, sceneRoots, rebuilt.pack, materials, options);
+  return buffersFromScenePack(scene, sceneRoots, rebuilt.pack, materials, coreMaterials, options);
 }

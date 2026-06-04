@@ -4,7 +4,7 @@
  */
 
 import * as THREE from 'three';
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene } from '@vitrum/core';
 import {
   computeWorldAabbForBindings,
   fingerprintBuffers,
@@ -22,6 +22,17 @@ export interface RestirBvhSnapshot {
   readonly normals: ArrayBuffer;
   readonly triMaterialIds: ArrayBuffer;
   readonly materials: readonly THREE.Material[];
+  /**
+   * THREE-DECOUPLE of the production ReSTIR MATERIAL path. The deduped core
+   * `MaterialSpec[]`, slot-aligned with {@link materials} (THREE) and
+   * `triMaterialIds`. Mirrors `SceneBVHBuffers.coreMaterials`. Production DDGI
+   * (`probeUpdatePass.ts`) prefers this — packing its per-material struct from
+   * core `MaterialSpec`s via `coreMaterialToMaterialEntry`, NO THREE round-trip —
+   * and falls back to {@link materials} (THREE) when it is empty (the legacy
+   * THREE-only merged build). RC's cascade-material packer is unaffected: it
+   * keeps reading {@link materials} (THREE).
+   */
+  readonly coreMaterials: readonly MaterialSpec[];
   readonly boundingBox: THREE.Box3;
   readonly tlas?: {
     readonly nodes: ArrayBuffer;
@@ -92,6 +103,7 @@ export function makeRestirBvhSnapshot(
     normals: buffers.emitterNormals.buffer as ArrayBuffer,
     triMaterialIds: buffers.triangleMaterialIds.cpuData,
     materials: buffers.buildMaterials,
+    coreMaterials: buffers.coreMaterials,
     boundingBox: bbox,
     ...(tlas != null
       ? {

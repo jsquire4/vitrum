@@ -427,19 +427,26 @@ export class ProbeUpdatePass {
     }
     device.queue.writeBuffer(this._gpu.activeProbesBuf, 0, activeArr);
 
-    // Update uniforms. Material source priority:
-    //   1. core-first standalone path — `SceneBvh.updateFromCore` filled
-    //      `coreMaterials` (deduped MaterialSpec[]); pack via the THREE-free
-    //      `coreMaterialToMaterialEntry` (no THREE.Material round-trip). This is
-    //      the DDGI merged-BVH ingestion THREE-decouple (mirrors the ReSTIR-DI
-    //      emitter decouple `46a0078`).
-    //   2. ReSTIR snapshot path (production) — `snap.materials` are THREE
-    //      materials produced by `vitrumSceneToThree` (still THREE today; a
-    //      separate decouple owns the snapshot's material list).
-    //   3. legacy THREE `SceneBvh.update` path — `legacyBuffers.materials`.
-    const coreMats = legacyBuffers?.coreMaterials;
-    if (coreMats != null) {
-      this._uploadCoreMaterials(device, coreMats);
+    // Update uniforms. Material source priority (core-first wherever available):
+    //   1. PRODUCTION ReSTIR snapshot, core path — `snap.coreMaterials` (deduped
+    //      MaterialSpec[], slot-aligned with `snap.materials`/`triMaterialIds`),
+    //      filled by the TLAS build `buildReSTIRSceneBVHFromVitrumScene`. Pack via
+    //      the THREE-free `coreMaterialToMaterialEntry` (no THREE.Material
+    //      round-trip). THIS is the production-path THREE-decouple of the ReSTIR
+    //      MATERIAL list (mirrors the ReSTIR-DI emitter `46a0078` + standalone
+    //      DDGI `15070cd` decouples). NON-EMPTY only in the core-first TLAS build;
+    //      the legacy THREE-only merged build leaves it `[]` → falls through.
+    //   2. core-first STANDALONE path — `SceneBvh.updateFromCore` filled
+    //      `legacyBuffers.coreMaterials` (no ReSTIR snapshot present).
+    //   3. ReSTIR snapshot path (legacy THREE merged) — `snap.materials` are THREE
+    //      materials produced by `vitrumSceneToThree`.
+    //   4. legacy THREE `SceneBvh.update` path — `legacyBuffers.materials`.
+    const snapCoreMats = snap?.coreMaterials;
+    const legacyCoreMats = legacyBuffers?.coreMaterials;
+    if (snapCoreMats != null && snapCoreMats.length > 0) {
+      this._uploadCoreMaterials(device, snapCoreMats);
+    } else if (legacyCoreMats != null) {
+      this._uploadCoreMaterials(device, legacyCoreMats);
     } else {
       const materials = snap?.materials ?? legacyBuffers!.materials;
       this._uploadMaterials(device, [...materials]);
