@@ -22,7 +22,7 @@
 // every sibling so `@vitrum/core`'s public surface is unchanged.
 
 import type { Scene, ScenePrimitive, SceneEmitter } from '../scene/index.js';
-import type { FrameInput, FrameOutput } from '../frame.js';
+import type { BackendTexture, FrameInput, FrameOutput } from '../frame.js';
 import type { InverseSession, InverseSessionOptions } from '../inverse.js';
 import type { EngineState } from './state.js';
 import type { EngineCapabilities } from './capabilities.js';
@@ -165,6 +165,34 @@ export interface Engine {
    *  sample accumulation buffers; real-time engines may rebuild temporal
    *  resources or reinitialize history pipelines as needed. */
   reset(): void;
+
+  /** Seed the accumulator with an initial image as a DECAYING PRIOR — the
+   *  load-bearing primitive for a progressive walkaround→PT handoff (a
+   *  real-time engine's last frame is injected so a freshly-still camera shows
+   *  a plausible image immediately instead of a 1-sample blizzard).
+   *
+   *  Correctness contract a backend that implements this MUST honor: the seed is
+   *  a prior of virtual weight `opts.weight` (NOT real samples), so after `M`
+   *  real samples accumulate the displayed mean is
+   *  `μ + W/(W+M)·(seed − μ)`. The seed's influence W/(W+M) decays to 0, so the
+   *  CONVERGED mean is exactly the no-seed result `μ` for ANY seed value — the
+   *  seed only smooths the early, still-noisy frames. The virtual weight MUST
+   *  NOT be counted as accumulated samples (it must not advance the SPP counter
+   *  / `FrameOutput.samplesAccumulated` or convergence/telemetry would
+   *  over-report). The accumulator is established CLEAN before the seed lands,
+   *  so the seed is the sole prior regardless of prior accumulation.
+   *
+   *  `opts.width`/`opts.height` are the accumulator (destination) dims; `seed`
+   *  may be a different size (the backend resamples it). The seed is treated as
+   *  LINEAR HDR radiance (the host must supply linear light, not sRGB).
+   *
+   *  Available only when `capabilities.supportsAccumulatorSeed === true`; hosts
+   *  MUST typeof-check before calling. Backends without an accumulator (e.g.
+   *  real-time resample-every-frame engines) omit this method entirely. */
+  seedAccumulator?(
+    seed: BackendTexture,
+    opts: { weight: number; width: number; height: number },
+  ): void;
 
   // ── Pause / resume / dispose ────────────────────────────────────────────
 

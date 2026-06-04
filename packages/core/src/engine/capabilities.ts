@@ -60,6 +60,15 @@ export interface EngineCapabilities {
    *  frame (walkaround-style real-time). */
   readonly accumulates: boolean;
 
+  /** Engine implements {@link Engine.seedAccumulator} — injecting an initial
+   *  image into the accumulator as a DECAYING PRIOR (the progressive
+   *  walkaround→PT handoff primitive). The seed leaves the converged mean
+   *  unchanged because its virtual weight W decays as W/(W+M) → 0 against M
+   *  real samples. When false or omitted, hosts must not call
+   *  `seedAccumulator` (a still camera starts from a 1-sample image). Hosts
+   *  MUST typeof-check `engine.seedAccumulator` before calling regardless. */
+  readonly supportsAccumulatorSeed?: boolean;
+
   /** Structural cap: the maximum samples-per-pixel this engine instance was
    *  allocated for. PT engines stop accumulating at this ceiling; walkaround
    *  engines report Infinity (they resample every frame rather than

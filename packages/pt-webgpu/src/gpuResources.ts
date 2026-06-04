@@ -26,6 +26,7 @@ import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { composePtWebgpuTraceWgsl } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
+import { PT_WEBGPU_SEED_BLIT_WGSL } from './wgsl/seedBlit.wgsl.js';
 
 export class GpuResources {
   readonly #device: GPUDevice;
@@ -85,6 +86,24 @@ export class GpuResources {
    */
   bdptEyeStackBuffer: GPUBuffer | null = null;
   bdptEyeStackByteSize = 0;
+
+  /**
+   * Progressive walkaround→PT handoff (P8) — the seed-blit compute pipeline +
+   * its uniform buffer + filtering sampler. Lazily created on the first
+   * `seedAccumBuffer` call and reused thereafter (engine-owned; freed in
+   * dispose). The bind group is per-call (it references the caller's seed
+   * texture + the current accum buffers), so it is not cached.
+   */
+  #seedBlitPipeline: GPUComputePipeline | null = null;
+  #seedBlitParamsBuffer: GPUBuffer | null = null;
+  #seedBlitSampler: GPUSampler | null = null;
+  /**
+   * Placeholder storage buffer bound at the seed-blit's varianceMoments slot on
+   * the lite tier (which has no real `varianceMomentsBuffer`). Keeps the single
+   * seed-blit bind-group layout satisfied for both tiers; the seed luminance
+   * moments written here are discarded.
+   */
+  #seedBlitVarPlaceholder: GPUBuffer | null = null;
 
   /** Bytes per eye vertex in the scratch stack: 2× vec4f = 32. */
   static readonly BDPT_EYE_VERTEX_BYTES = 32;
@@ -525,6 +544,100 @@ export class GpuResources {
     return bindGroup;
   }
 
+  /**
+   * Progressive walkaround→PT handoff (P8) — seed the accumulation buffers from
+   * `seedTex` as a DECAYING PRIOR of virtual weight `weight`. Writes
+   * `accumBuffer[i] = vec4f(seedRGB·W, W)` and
+   * `varianceMomentsBuffer[i] = vec3(lum·W, lum²·W, W)` (full tier; lite tier
+   * discards the variance write to a placeholder). The converged mean is
+   * UNCHANGED because the seed's influence is W/(W+M) → 0 as M real samples land
+   * (see seedBlit.wgsl.ts header for the derivation).
+   *
+   * MUST be called AFTER `ensureAccumResources` (so the accum buffers exist) and
+   * AFTER `clearAccumBuffer`/`reset` (so the seed isn't subsequently zeroed). A
+   * no-op if the accum buffer is absent. `width`/`height` are the accum
+   * (destination) dims; `seedTex` may be any size (bilinearly resampled).
+   *
+   * Does NOT touch the engine's `#samplesAccumulated`: `weight` is a
+   * virtual-sample prior, distinct from the real-SPP counter — the converged-mean
+   * math depends on that separation (the caller in `index.ts` enforces it).
+   */
+  seedAccumBuffer(seedTex: GPUTexture, weight: number, width: number, height: number): void {
+    if (this.accumBuffer == null) return;
+    const W = Math.max(0, weight);
+
+    // Lazily build the seed-blit pipeline + sampler + params UBO (engine-owned).
+    if (this.#seedBlitPipeline == null) {
+      const module = this.#device.createShaderModule({
+        label: 'vitrum.pt-webgpu.seedBlit',
+        code: PT_WEBGPU_SEED_BLIT_WGSL,
+      });
+      this.#seedBlitPipeline = this.#device.createComputePipeline({
+        label: 'vitrum.pt-webgpu.seedBlit.pipeline',
+        layout: 'auto',
+        compute: { module, entryPoint: 'main' },
+      });
+    }
+    if (this.#seedBlitSampler == null) {
+      // Filtering sampler so a differently-sized seed is bilinearly resampled
+      // onto the accum grid; clamp so edge UVs don't wrap.
+      this.#seedBlitSampler = this.#device.createSampler({
+        label: 'vitrum.pt-webgpu.seedBlit.sampler',
+        magFilter: 'linear',
+        minFilter: 'linear',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+      });
+    }
+    if (this.#seedBlitParamsBuffer == null) {
+      this.#seedBlitParamsBuffer = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.seedBlit.params',
+        size: 32, // vec4u seedDim (16) + vec4f seedWeight (16)
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+
+    // SeedParams UBO: seedDim (accum dims) as uvec4, seedWeight as vec4f.
+    const ubo = new ArrayBuffer(32);
+    new Uint32Array(ubo, 0, 4).set([width >>> 0, height >>> 0, 0, 0]);
+    new Float32Array(ubo, 16, 4).set([W, 0, 0, 0]);
+    this.#device.queue.writeBuffer(this.#seedBlitParamsBuffer, 0, ubo);
+
+    // varianceMoments slot: the real buffer on the full tier; a discardable
+    // placeholder on the lite tier (which has none) so the layout stays valid.
+    let varBuffer = this.varianceMomentsBuffer;
+    if (varBuffer == null) {
+      if (this.#seedBlitVarPlaceholder == null) {
+        this.#seedBlitVarPlaceholder = this.#device.createBuffer({
+          label: 'vitrum.pt-webgpu.seedBlit.varPlaceholder',
+          size: this.accumBufferByteSize > 0 ? this.accumBufferByteSize : 16,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+      }
+      varBuffer = this.#seedBlitVarPlaceholder;
+    }
+
+    const bindGroup = this.#device.createBindGroup({
+      label: 'vitrum.pt-webgpu.seedBlit.bindgroup',
+      layout: this.#seedBlitPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: this.#seedBlitParamsBuffer } },
+        { binding: 1, resource: seedTex.createView() },
+        { binding: 2, resource: this.#seedBlitSampler },
+        { binding: 3, resource: { buffer: this.accumBuffer } },
+        { binding: 4, resource: { buffer: varBuffer } },
+      ],
+    });
+
+    const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.seedBlit.encoder' });
+    const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.seedBlit.pass' });
+    pass.setPipeline(this.#seedBlitPipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8), 1);
+    pass.end();
+    this.#device.queue.submit([encoder.finish()]);
+  }
+
   /** Invalidate the cached bind groups (scene-buffer / accum-view recreation). */
   invalidateBindGroups(): void {
     this.pathTraceBindGroup = null;
@@ -547,6 +660,12 @@ export class GpuResources {
     this.bdptEyeStackBuffer?.destroy();
     this.bdptEyeStackBuffer = null;
     this.bdptEyeStackByteSize = 0;
+    this.#seedBlitParamsBuffer?.destroy();
+    this.#seedBlitParamsBuffer = null;
+    this.#seedBlitVarPlaceholder?.destroy();
+    this.#seedBlitVarPlaceholder = null;
+    this.#seedBlitSampler = null; // GPUSampler has no destroy(); drop the ref
+    this.#seedBlitPipeline = null; // GPUComputePipeline has no destroy(); drop the ref
     this.paramsBuffer?.destroy();
     this.paramsBuffer = null;
     this.computePipeline = null;

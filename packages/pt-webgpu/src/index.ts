@@ -1,4 +1,5 @@
 import type {
+  BackendTexture,
   Engine,
   EngineCapabilities,
   EngineDebugSurface,
@@ -17,7 +18,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { asBackendTexture, asMat4 } from '@vitrum/core';
+import { asBackendTexture, asMat4, narrowToBackendTexture } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
@@ -343,6 +344,9 @@ class PTEngineWebGPU implements Engine {
       supportsAddRemovePrimitive: true,
       supportsAuxBuffers: true,
       accumulates: true,
+      // Progressive walkaround→PT handoff (P8): this engine can seed its accum
+      // buffers with an initial image as a decaying prior (seedAccumulator).
+      supportsAccumulatorSeed: true,
       maxSamplesPerPixel: this.#maxSamplesLimit,
       maxBounces: this.#maxBouncesLimit,
       // Advertised support is derived from the SAME `PT_WEBGPU_SUPPORT` sets the
@@ -784,6 +788,61 @@ class PTEngineWebGPU implements Engine {
     this.#postDenoiser?.invalidate();
     this.#samplesAccumulated = 0;
     this.#gpu.clearAccumBuffer();
+  }
+
+  /**
+   * Progressive walkaround→PT handoff (P8): seed the accumulator with an initial
+   * image (typically the real-time engine's last frame) so a freshly-still camera
+   * shows a plausible picture immediately instead of a 1-sample blizzard — WITHOUT
+   * biasing the converged result.
+   *
+   * `seed` is injected as a DECAYING PRIOR of virtual weight `opts.weight`: the
+   * accum buffers become `accumBuffer = (seedRGB·W, W)` (+ matching variance
+   * moments). After `M` real samples land, the displayed mean is
+   * `μ + W/(W+M)·(seedRGB − μ)`, so the seed's influence W/(W+M) → 0 and the
+   * CONVERGED mean is exactly the no-seed result `μ` for ANY seed (see
+   * seedBlit.wgsl.ts for the derivation).
+   *
+   * Crucially this does NOT advance `#samplesAccumulated`: `weight` is a
+   * virtual-sample prior, NOT a real SPP — keeping them separate is precisely
+   * what makes the converged-mean math hold (and what stops convergence /
+   * telemetry from over-reporting).
+   *
+   * `opts.width`/`opts.height` are the accum (destination) dims — typically the
+   * converged engine's render size for this view. `seed` may be any size (it is
+   * bilinearly resampled). The accum buffers are (re)allocated to these dims and
+   * CLEARED before the seed is written, so the seed is the sole prior regardless
+   * of any prior accumulation. Call this BEFORE the first `renderFrame` of a
+   * still cohort (the host's handoff coordinator does: `reset()` →
+   * `seedAccumulator()` → accumulate).
+   *
+   * Available only when `capabilities.supportsAccumulatorSeed === true`; hosts
+   * MUST typeof-check before calling.
+   */
+  seedAccumulator(
+    seed: BackendTexture,
+    opts: { weight: number; width: number; height: number },
+  ): void {
+    this.#assertLive('seedAccumulator');
+    const width = Math.max(1, Math.floor(opts.width));
+    const height = Math.max(1, Math.floor(opts.height));
+    const seedTex = narrowToBackendTexture<'webgpu', GPUTexture>(seed);
+    if (seedTex == null) {
+      throw new Error('seedAccumulator: seed texture is null/undefined.');
+    }
+    // Ensure the accum buffers exist at the seed dims. A (re)allocation clears
+    // them; a cache-hit at the same dims does NOT, so clear explicitly in that
+    // case — the seed must land on a zeroed accumulator to be the sole prior.
+    // Either way `#samplesAccumulated` is reset to 0: the prior is the new
+    // starting point, with NO real samples yet (the prior weight W is virtual).
+    if (!this.#gpu.ensureAccumResources(width, height)) {
+      this.#gpu.clearAccumBuffer();
+    }
+    this.#samplesAccumulated = 0;
+    this.#postDenoiser?.invalidate();
+    // Write the decaying prior. `weight` (virtual samples) is deliberately NOT
+    // added to `#samplesAccumulated` — see the method doc.
+    this.#gpu.seedAccumBuffer(seedTex as unknown as GPUTexture, opts.weight, width, height);
   }
 
   /**
