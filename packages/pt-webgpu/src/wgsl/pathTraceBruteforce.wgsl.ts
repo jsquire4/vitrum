@@ -11,6 +11,7 @@ import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from './pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_WGSL } from './pathTrace/connect.wgsl.js';
 import {
   MNEE_NEWTON_WGSL,
+  MNEE_CHAIN_WGSL,
   MNEE_CONNECTION_WGSL,
 } from './pathTrace/mneeNewton.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from './pathTrace/caustic.wgsl.js';
@@ -48,6 +49,10 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  *   6b. `mneeNewton`  — the real MNEE half-vector Newton solve +
  *                       `mneeReflectionIrradiance` connection core. Placed BEFORE
  *                       `caustic` so the reflection-caustic strategy can call it.
+ *   6c. `mneeChain`   — the 2-vertex specular chain (glass-slab enter+exit)
+ *                       block-tridiagonal Newton + chain connection-PDF. Placed
+ *                       AFTER `mneeNewton` (it reuses `mnee_safe_normalize`) and
+ *                       BEFORE `caustic` so the glass-slab caustic can call it.
  *   7. `caustic`      — REAL MNEE reflection caustic + transmissive cone-search
  *                       MNEE + photon-map gather (causticStrategy modes 1 / 2).
  *   8. `kernel`       — primary-ray generation, projectToNdc, causticMode,
@@ -85,6 +90,7 @@ ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
+${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
@@ -109,6 +115,7 @@ ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
+${MNEE_CHAIN_WGSL}
 ${MNEE_CONNECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}

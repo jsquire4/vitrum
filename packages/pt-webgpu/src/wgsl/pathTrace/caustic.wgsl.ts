@@ -1,4 +1,4 @@
-import { MNEE_NEWTON_MAX_ITERS } from './mneeNewton.wgsl.js';
+import { MNEE_NEWTON_MAX_ITERS, MNEE_CHAIN_MAX_ITERS } from './mneeNewton.wgsl.js';
 
 /**
  * Caustic module — the two strategy paths the main kernel dispatches when
@@ -28,9 +28,20 @@ import { MNEE_NEWTON_MAX_ITERS } from './mneeNewton.wgsl.js';
  *    against a deterministic forward-traced grid reference (focusing factor exact —
  *    integral ratio + LS-slope 1.000 on every converged branch). See
  *    `causticTransmissiveLegBlocked` for the shared two-leg visibility.
+ *  - `pointLightGlassSlabCaustic` — caustic strategy mode 1, 2-VERTEX GLASS-SLAB
+ *    case (the canonical glass caustic beyond a single water surface): a point light
+ *    in air above a glass SLAB focuses a caustic onto a diffuse floor below it. Seed-
+ *    finds the slab's lower interface, probes up through the glass for the upper one,
+ *    block-tridiagonal Newton-solves the COUPLED 2-vertex chain (mneeNewtonSolveChain2),
+ *    and accumulates E = I·T1·T2·|dω_L/dA_recv| — the PER-INTERFACE Fresnel transmittance
+ *    PRODUCT times the CHAIN focusing Jacobian (FD through the chain solver; NOT a copy
+ *    of the single-interface form). Validated OFFLINE in pure-JS against a forward-traced
+ *    slab grid (ratio + LS-slope 1.000) then GPU-A/B'd against a dense forward-traced
+ *    floor-flux reference. Shares `causticTransmissiveLegBlocked` for the two external legs.
  *  - `manifoldNeeContribution` — caustic strategy mode 1 dispatcher: sums the
- *    REAL reflection caustic + the REAL refraction caustic PLUS the legacy
- *    transmissive (glass) cone-search APPROXIMATION (roughness-scaled cone
+ *    REAL reflection caustic + the REAL refraction caustic + the REAL glass-slab
+ *    chain caustic PLUS the legacy transmissive (glass) cone-search APPROXIMATION
+ *    (roughness-scaled cone
  *    perturbation of a DIRECTIONAL light through a specular-transmissive chain +
  *    a dot>0.75 alignment accept). The cone-search branch is NOT a true manifold
  *    solve (no half-vector constraint / Newton / change-of-variables Jacobian); it
@@ -485,6 +496,18 @@ fn pointLightRefractionCaustic(
         }
       }
       if (!solved) { continue; }
+      // SINGLE-INTERFACE GUARD: the "water surface" connection requires a DIRECT-air
+      // light→v leg (the receiver sits in the denser medium, the light sees the
+      // interface vertex with no glass between them). If the light→v leg CROSSES a
+      // transmissive facet, the real light path enters glass before v — that is a
+      // multi-interface CHAIN owned by pointLightGlassSlabCaustic, and solving it as a
+      // lone interface here DOUBLE-COUNTS (the slab render A/B caught exactly this:
+      // the floor's seed found the slab BOTTOM and this solve added a spurious second
+      // path worth ~the real slab caustic). Bound the scan short of v so the interface
+      // AT v doesn't count — only a facet STRICTLY between the light and v.
+      let lvDir = safe_normalize(v - lightPos);
+      let lvDist = length(v - lightPos);
+      if (causticSegmentCrossesTransmissive(lightPos + lvDir * 1e-3, lvDir, lvDist - 2e-3)) { continue; }
       // wi = receiver's incident direction (toward the interface vertex).
       let wi = safe_normalize(v - hitPos);
       let nDotL = max(dot(normal, wi), 0.0);
@@ -520,6 +543,207 @@ fn pointLightRefractionCaustic(
   return contribution;
 }
 
+// ── REAL MNEE: point-light GLASS-SLAB (2-vertex chain) caustic (Hanika 2015) ───
+// The canonical glass caustic BEYOND a single water surface: a point light in AIR
+// above a glass SLAB focuses a caustic onto a diffuse floor BELOW the slab (also in
+// air). The light path enters the slab at interface 1 (air→glass), travels through
+// the glass, exits at interface 2 (glass→air), then reaches the floor: a 2-VERTEX
+// specular chain  light → v1(iface1) → v2(iface2) → receiver. Like the single-
+// interface siblings this connection is zero-measure for ordinary NEE/BSDF sampling
+// (the whole reason MNEE exists). We seed-find the slab, block-tridiagonal Newton-
+// solve the COUPLED 4-DOF chain (mneeNewtonSolveChain2), and accumulate the chain
+// flux density.
+//
+// CONTRIBUTION DERIVATION (NOT a copy of the single-interface form — derived from
+// the CHAIN connection PDF the way the single-interface E derives from
+// mneePdfJacobianDet's sibling; VALIDATED OFFLINE in pure-JS against a forward-traced
+// SLAB grid — integral ratio + LS-slope 1.000, per-bin median ~2%; see wsl-gpu
+// mnee-glass-slab-focusing-derivation.ts, then GPU-A/B'd in mnee-glass-slab-caustic-ab.ts):
+//
+//   E = I · T1 · T2 · |dω_L / dA_recv|
+//
+//   (1) FRESNEL TRANSMITTANCE PRODUCT. Flux crosses TWO interfaces, so the
+//       transmittance is the PRODUCT T1·T2 (single interface used one T): T1 =
+//       1 − Fr at interface 1 (air→glass, η = 1/iorGlass), T2 = 1 − Fr at interface
+//       2 (glass→air, η = iorGlass). Fr is the unpolarised dielectric Fresnel at the
+//       respective vertex's incidence angle.
+//   (2) THE CHAIN FOCUSING JACOBIAN. The single-interface focusing factor re-solved
+//       ONE vertex; here the WHOLE chain re-solves. |dω_L/dA_recv| is computed by FD
+//       through the CHAIN Newton solver (slabChainFocusingDet): perturb recv by two
+//       receiver-tangent vectors, re-solve BOTH chain vertices warm-started on the
+//       found branch, measure dω_L = d(normalize(v1 − light)); |dω_L/dA_recv| =
+//       |∂ω_L/∂u × ∂ω_L/∂v|. As with the single interface there is NO separate
+//       cosθ_recv (the floor foreshortening is inside the Jacobian).
+//
+// v1 scope: the first slab found per light; the first converged chain branch per
+// (light, receiver). The seed search finds the slab's LOWER interface (the one the
+// floor sees → v2's plane) then probes UP through the glass for the UPPER interface
+// (v1's plane). A multi-branch fold (curved slab) is a follow-up.
+const SLAB_TRANSMIT_MIN = 0.2;        // a "glass slab" is sufficiently transmissive
+const SLAB_SEED_RAYS = 16u;           // hemisphere seeds toward the slab / light
+fn slabChainFocusingDet(
+  v1Solved: vec3f, v2Solved: vec3f,
+  n1: vec3f, tu1: vec3f, tv1: vec3f,
+  n2: vec3f, tu2: vec3f, tv2: vec3f,
+  recv: vec3f, recvTu: vec3f, recvTv: vec3f,
+  light: vec3f, eta1i: f32, eta1t: f32, eta2i: f32, eta2t: f32,
+) -> f32 {
+  // |dω_L/dA_recv| via FD through the 2-VERTEX CHAIN solve: perturb recv along its
+  // two tangents, re-solve the chain WARM-STARTED at (v1Solved,v2Solved) so we track
+  // the SAME branch, and measure how the LIGHT-side direction ω_L = normalize(v1 −
+  // light) moves (the light is a POINT; the receiver is what moves — the chain
+  // analogue of refractionFocusingDet). The chain solver's straight-line init is not
+  // a warm start, so we seed it by passing the converged vertices as its plane points
+  // (p1=v1Solved, p2=v2Solved) — its (a,b) origin is then the converged vertex and a
+  // small recv perturbation stays in-basin. Baseline w0 = ω_L at the unperturbed v1.
+  let eps = 1e-3;
+  let w0 = mnee_safe_normalize(v1Solved - light);
+  let ru = mneeNewtonSolveChain2(v1Solved, n1, tu1, tv1, v2Solved, n2, tu2, tv2, light, recv + recvTu * eps, eta1i, eta1t, eta2i, eta2t, ${MNEE_CHAIN_MAX_ITERS}u);
+  let rv = mneeNewtonSolveChain2(v1Solved, n1, tu1, tv1, v2Solved, n2, tu2, tv2, light, recv + recvTv * eps, eta1i, eta1t, eta2i, eta2t, ${MNEE_CHAIN_MAX_ITERS}u);
+  if (ru.residual > 1e-4 || rv.residual > 1e-4) { return 0.0; }
+  let dwu = (mnee_safe_normalize(ru.v1 - light) - w0) / eps;
+  let dwv = (mnee_safe_normalize(rv.v1 - light) - w0) / eps;
+  return length(cross(dwu, dwv));
+}
+fn pointLightGlassSlabCaustic(
+  rng: ptr<function, u32>,
+  hitPos: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  throughput: vec3f,
+) -> vec3f {
+  // Same receiver gate as the other caustics: only a sufficiently rough, non-metallic
+  // receiver hosts the diffuse glass-slab caustic.
+  if (metallic > 0.5 || roughness < 0.2) {
+    return vec3f(0.0);
+  }
+  let pointCount = min(params.pointLightCount, 16u);
+  if (pointCount == 0u) {
+    return vec3f(0.0);
+  }
+  var recvTu: vec3f;
+  var recvTv: vec3f;
+  buildOnb(normal, &recvTu, &recvTv);
+  var contribution = vec3f(0.0);
+  for (var li = 0u; li < 16u; li = li + 1u) {
+    if (li >= pointCount) { break; }
+    let lbase = li * 2u;
+    let lightPos = pointLights[lbase].xyz;
+    let lightI = pointLights[lbase + 1u].rgb;
+    if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
+    var found = false;
+    for (var s = 0u; s < 16u; s = s + 1u) {
+      if (s >= SLAB_SEED_RAYS || found) { break; }
+      // UNIFORM hemisphere seed around the receiver normal — find the slab's LOWER
+      // interface (the nearest transmissive surface above the floor = interface 2,
+      // the plane the receiver SEES → v2). Same uniform rationale as the siblings.
+      let u1 = rand_f32(rng);
+      let u2 = rand_f32(rng);
+      let cz = u1;
+      let rr = sqrt(max(0.0, 1.0 - u1 * u1));
+      let phi = 2.0 * PI * u2;
+      let seedDir = safe_normalize((rr * cos(phi)) * recvTu + (rr * sin(phi)) * recvTv + cz * normal);
+      let seedRay = Ray(hitPos + normal * 1e-3, seedDir);
+      let seedHit = traceClosest(seedRay, 1e-4, INFINITY);
+      if (!seedHit.didHit) { continue; }
+      let mat2lower = decodeMaterial(hitMaterialId(seedHit));
+      // Accept a TRANSMISSIVE interface (NOT metallic): this is interface 2.
+      if (mat2lower.transmission < SLAB_TRANSMIT_MIN || mat2lower.metallic > 0.5) {
+        continue;
+      }
+      let iorGlass = mat2lower.ior;
+      let ifaceP2 = seedRay.origin + seedRay.direction * seedHit.dist;
+      // Front-face normal of interface 2 oriented against the seed ray (which travels
+      // UP from the floor) ⇒ it points DOWN toward the floor; so −ifaceN2 points UP
+      // into the glass (toward interface 1 + the light).
+      let frontFace2 = dot(seedRay.direction, seedHit.normal) < 0.0;
+      let ifaceN2 = safe_normalize(select(-seedHit.normal, seedHit.normal, frontFace2));
+      // PROBE for interface 1 (the slab's UPPER face): march UP through the glass
+      // from just inside interface 2, along −ifaceN2 (≈ the slab's inward normal; for
+      // an axis-aligned slab interface 1 is parallel so this is exact). The first
+      // transmissive hit is interface 1's plane (ifaceP1, ifaceN1).
+      let upInGlass = -ifaceN2;
+      let probeRay = Ray(ifaceP2 - ifaceN2 * 1e-3, upInGlass);
+      let probeHit = traceClosest(probeRay, 1e-4, INFINITY);
+      if (!probeHit.didHit) { continue; }
+      let mat1upper = decodeMaterial(hitMaterialId(probeHit));
+      if (mat1upper.transmission < SLAB_TRANSMIT_MIN || mat1upper.metallic > 0.5) {
+        continue; // not a slab (no parallel exit interface above)
+      }
+      let ifaceP1 = probeRay.origin + probeRay.direction * probeHit.dist;
+      // Interface-1 normal oriented toward the light side (UP, against upInGlass).
+      let frontFace1 = dot(probeRay.direction, probeHit.normal) < 0.0;
+      let ifaceN1 = safe_normalize(select(-probeHit.normal, probeHit.normal, frontFace1));
+      var tu1: vec3f; var tv1: vec3f; buildOnb(ifaceN1, &tu1, &tv1);
+      var tu2: vec3f; var tv2: vec3f; buildOnb(ifaceN2, &tu2, &tv2);
+      // η chain: air→glass at iface 1 (eta1i=1, eta1t=iorGlass), glass→air at iface 2
+      // (eta2i=iorGlass, eta2t=1). The half-vector h_k = normalize(eta_ki·wi_k +
+      // eta_kt·wo_k) per mneeNewtonSolveChain2's convention.
+      let eta1i = 1.0; let eta1t = iorGlass;
+      let eta2i = iorGlass; let eta2t = 1.0;
+      // BLOCK-TRIDIAGONAL 4-DOF chain Newton (straight-line init + line search). It
+      // self-initializes from the L→R crossing of each plane — robust enough that no
+      // external seed grid is needed (verified in mnee-chain-validate.ts).
+      let chain = mneeNewtonSolveChain2(ifaceP1, ifaceN1, tu1, tv1, ifaceP2, ifaceN2, tu2, tv2, lightPos, hitPos, eta1i, eta1t, eta2i, eta2t, ${MNEE_CHAIN_MAX_ITERS}u);
+      if (chain.residual > 1e-4) { continue; }
+      let v1 = chain.v1;
+      let v2 = chain.v2;
+      // FORWARD-CONSISTENCY: trace light→v1 (refract air→glass) →v2 (refract glass→air)
+      // → must aim at recv. Orient each interface normal AGAINST the incident travel
+      // for refract() (the stored sign only fixed the tangent plane for the Newton).
+      let wiTravel1 = safe_normalize(v1 - lightPos);     // light → v1
+      let n1Refr = select(ifaceN1, -ifaceN1, dot(wiTravel1, ifaceN1) > 0.0);
+      let refr1 = refract(wiTravel1, n1Refr, eta1i / eta1t); // air → glass
+      if (dot(refr1, refr1) <= 1e-8) { continue; }
+      // The refracted ray inside the glass should point at v2.
+      let toV2 = v2 - v1;
+      if (dot(safe_normalize(refr1), safe_normalize(toV2)) < 0.99) { continue; }
+      let wiTravel2 = safe_normalize(v2 - v1);           // v1 → v2 (inside glass)
+      let n2Refr = select(ifaceN2, -ifaceN2, dot(wiTravel2, ifaceN2) > 0.0);
+      let refr2 = refract(wiTravel2, n2Refr, eta2i / eta2t); // glass → air
+      if (dot(refr2, refr2) <= 1e-8) { continue; }        // TIR glass→air at grazing
+      let toRecv = hitPos - v2;
+      if (dot(safe_normalize(refr2), safe_normalize(toRecv)) < 0.99) { continue; }
+      // wi = receiver's incident direction (toward interface-2 vertex v2).
+      let wi = safe_normalize(v2 - hitPos);
+      let nDotL = max(dot(normal, wi), 0.0);
+      if (nDotL <= 1e-5) { continue; }
+      // (1) Fresnel TRANSMITTANCE PRODUCT at the two vertices.
+      let cosI1 = abs(dot(wiTravel1, ifaceN1)); // light→v1 incidence wrt iface-1 normal
+      let cosI2 = abs(dot(wiTravel2, ifaceN2)); // v1→v2 incidence wrt iface-2 normal
+      let T1 = 1.0 - frDielectric(cosI1, eta1i / eta1t);
+      let T2 = 1.0 - frDielectric(cosI2, eta2i / eta2t);
+      let T = T1 * T2;
+      if (T <= 1e-5) { continue; }
+      // (2) CHAIN focusing Jacobian |dω_L/dA_recv| around this branch (re-solves the
+      // whole chain — NOT the single-interface form).
+      let focDet = slabChainFocusingDet(v1, v2, ifaceN1, tu1, tv1, ifaceN2, tu2, tv2, hitPos, recvTu, recvTv, lightPos, eta1i, eta1t, eta2i, eta2t);
+      if (focDet <= 1e-12) { continue; }
+      // E = I · T1 · T2 · |dω_L/dA_recv|  (no separate cosθ_recv — inside focDet).
+      let e = lightI * T * focDet;
+      // leg A: receiver → v2 unobstructed up to interface 2 (step through the slab's
+      // own facets via the shared transmissive-leg helper).
+      let distA = length(v2 - hitPos);
+      if (causticTransmissiveLegBlocked(hitPos + normal * 1e-3, wi, distA - 2e-3)) { continue; }
+      // leg B: v1 → light unobstructed (the v1→v2 leg is interior to the glass — the
+      // connection itself — so only the two EXTERNAL legs need visibility).
+      let toLight = lightPos - v1;
+      let distB = length(toLight);
+      let dirB = toLight / max(distB, 1e-8);
+      if (causticTransmissiveLegBlocked(v1 + dirB * 1e-3, dirB, distB - 2e-3)) { continue; }
+      // DELTA connection: throughput · f_r · E. No MIS / no pdf division (a point-light
+      // 2-vertex specular caustic is unreachable by any other technique).
+      let fr = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+      contribution = contribution + throughput * fr * e;
+      found = true;
+    }
+  }
+  return contribution;
+}
+
 // Shared visibility helper for the refraction caustic legs: is the segment from
 // 'origin' along 'dir' for length 'maxDist' blocked by a REAL (non-transmissive,
 // non-metallic) occluder? Steps through transmissive interface facets + smooth
@@ -538,6 +762,37 @@ fn causticTransmissiveLegBlocked(origin: vec3f, dir: vec3f, maxDist: f32) -> boo
     let passThrough = segMat.transmission >= REFRACT_TRANSMIT_MIN ||
       (segMat.roughness <= REFLECT_ROUGH_MAX && segMat.metallic >= REFLECT_METAL_MIN);
     if (!passThrough) { return true; } // a real occluder
+    let advance = segHit.dist + 1e-3;
+    segOrigin = segOrigin + dir * advance;
+    remaining = remaining - advance;
+    if (remaining <= 1e-3) { return false; }
+  }
+  return false;
+}
+
+// Does the segment origin→(origin+dir·maxDist) CROSS a transmissive interface facet?
+// Used to DISAMBIGUATE the single-interface refraction caustic from the 2-vertex
+// glass-slab chain: the single-interface "water surface" connection has a DIRECT-air
+// light→v leg (the light sees the interface vertex with no glass in between). If the
+// light→v leg instead crosses a transmissive facet, the real light path enters glass
+// BEFORE reaching v — i.e. it is a multi-interface CHAIN that pointLightGlassSlabCaustic
+// owns, and the single-interface solve here would be a SPURIOUS extra path (the
+// double-count the slab render A/B caught). Returns true iff a transmissive facet lies
+// strictly inside the segment.
+fn causticSegmentCrossesTransmissive(origin: vec3f, dir: vec3f, maxDist: f32) -> bool {
+  if (maxDist <= 1e-3) { return false; }
+  var segOrigin = origin;
+  var remaining = maxDist;
+  for (var stepN = 0u; stepN < 4u; stepN = stepN + 1u) {
+    let segRay = Ray(segOrigin, dir);
+    let segHit = traceClosest(segRay, 1e-4, max(remaining - 1e-3, 1e-4));
+    if (!segHit.didHit) { return false; } // reached the far end with no transmissive hit
+    let segMat = decodeMaterial(hitMaterialId(segHit));
+    if (segMat.transmission >= REFRACT_TRANSMIT_MIN && segMat.metallic <= 0.5) {
+      return true; // a transmissive interface lies on the leg ⇒ this is a chain path
+    }
+    // A non-transmissive hit shadows the leg entirely (handled by the visibility
+    // helper separately) — stop scanning; it is not a transmissive crossing.
     let advance = segHit.dist + 1e-3;
     segOrigin = segOrigin + dir * advance;
     remaining = remaining - advance;
@@ -569,6 +824,12 @@ fn manifoldNeeContribution(
   // finds the transmissive interface), independent of whether THIS receiver is
   // transmissive. Same DELTA-connection, MIS-complete-on-its-own status.
   total = total + pointLightRefractionCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);
+
+  // REAL GLASS-SLAB caustic (point lights + a 2-interface glass slab between the light
+  // and the receiver — the canonical glass caustic beyond a single water surface).
+  // 2-vertex specular chain light → v1 → v2 → receiver, block-tridiagonal Newton-
+  // solved. Also runs for ANY receiver; same DELTA-connection, MIS-complete status.
+  total = total + pointLightGlassSlabCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);
 
   // Legacy transmissive (glass) cone-search APPROXIMATION — DIRECTIONAL light only.
   // Promoting this onto the validated mneeNewtonSolveChain2 is Phase I.1 step 4

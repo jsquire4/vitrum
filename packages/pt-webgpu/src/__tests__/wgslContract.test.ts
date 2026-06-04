@@ -20,16 +20,26 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed full-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
     // Updated for Phase I.1: the trace kernel now composes MNEE_NEWTON_WGSL +
-    // MNEE_CONNECTION_WGSL and the real point-light REFLECTION + REFRACTION caustics
-    // (caustic.wgsl.ts:pointLightReflectionCaustic / pointLightRefractionCaustic).
+    // MNEE_CHAIN_WGSL + MNEE_CONNECTION_WGSL and the real point-light REFLECTION +
+    // REFRACTION + GLASS-SLAB (2-vertex chain) caustics (caustic.wgsl.ts:
+    // pointLightReflectionCaustic / pointLightRefractionCaustic / pointLightGlassSlabCaustic).
     // The reflection caustic is GPU-validated against the analytic mirror-image
     // reference (wsl-gpu mnee-reflection-caustic-ab.ts); the refraction caustic
-    // ("water surface") is GPU-validated against a deterministic forward-traced
-    // grid reference (wsl-gpu mnee-refraction-caustic-ab.ts — ratio 0.986, slope
-    // 0.984 on lavapipe). Recompute (sha256 of PT_WEBGPU_TRACE_WGSL) on any
-    // intentional WGSL change and update both the digest and the length here.
-    expect(digest).toBe('994527cc9bcd484783552d8bdb30ccdb947b17263e1a391c0988d08329c3dd7f');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(193030);
+    // ("water surface") against a deterministic forward-traced grid reference
+    // (wsl-gpu mnee-refraction-caustic-ab.ts — ratio 0.986, slope 0.984); the
+    // glass-slab chain caustic against a deterministic forward-traced SLAB grid
+    // (offline focusing derivation ratio/slope 1.000 in
+    // mnee-glass-slab-focusing-derivation.ts, then GPU-A/B'd in
+    // mnee-glass-slab-caustic-ab.ts — ratio 0.996, slope 0.990 on lavapipe). The
+    // refraction caustic gained a single-interface GUARD (causticSegmentCrossesTransmissive):
+    // it skips when the light→v leg crosses a transmissive facet, since that path is
+    // really a chain the slab kernel owns — without it the refraction + slab kernels
+    // double-counted (slab A/B ratio 2.17 → 0.996). The composed string also passes a
+    // naga compile gate (wsl-gpu mnee-slab-wgsl-compile.ts) — the byte-identity goldens
+    // alone do NOT catch a symbol-scope regression. Recompute (sha256 of
+    // PT_WEBGPU_TRACE_WGSL) on any intentional WGSL change and update both here.
+    expect(digest).toBe('04a831e0c2ca414973e7ae4e3329e80404b32dfbde4233645d7f42507d75d0f0');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(215540);
   });
 });
 
