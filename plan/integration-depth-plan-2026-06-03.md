@@ -71,16 +71,20 @@ clean, keeping any isolated math that did validate.
 
 **I.1 — MNEE into the beauty pass (A1).** *The headline.*
 
-> **STATUS (2026-06-03): SINGLE-INTERFACE DONE + GPU-validated.** Sub-steps 1–4
-> all shipped. Reflection caustic `8cd52cf` (analytic mirror-image oracle, ratio
+> **STATUS (2026-06-03): COMPLETE + GPU-validated.** Sub-steps 1–4 all shipped,
+> AND the glass-chain promotion (the old step-4 follow) landed. Reflection caustic `8cd52cf` (analytic mirror-image oracle, ratio
 > 0.885). Transmissive single-flat-interface refraction caustic `893ef00`
 > (`pointLightRefractionCaustic`, `E = I·T·|dω_L/dA_recv|` = Fresnel transmittance ×
 > the refraction focusing Jacobian; forward-traced floor-flux oracle, ratio 0.987 /
 > slope 0.984). Shared `causticTransmissiveLegBlocked` self-skip visibility.
-> **IN-FLIGHT:** the 2-vertex GLASS-SLAB (chain) caustic — wires the validated
-> `mneeNewtonSolveChain2` + `mneeChainPdfJacobianDet` (dispatched; validation = a
-> forward-traced glass-slab A/B, same discipline). The cone-search is fully
-> replaced for single-interface specular; chain promotion completes MNEE.
+> **DONE:** the 2-vertex GLASS-SLAB (chain) caustic `f38e881` — `pointLightGlassSlabCaustic`
+> wires `mneeNewtonSolveChain2` into the beauty pass; `E = I·T1·T2·|dω_L/dA_recv|`
+> (per-interface Fresnel transmittance product × chain focusing Jacobian). Forward-
+> traced glass-slab A/B (re-verified on lavapipe): ratio 0.9962 / slope 0.9898 /
+> 99.5% firing; refraction + reflection unregressed. A double-count bug (single-
+> interface kernel firing on the slab bottom) was caught by the A/B + guarded.
+> **MNEE caustic integration is COMPLETE** — single-interface + glass chain, all
+> GPU-validated. The cone-search remains only as the directional-light fallback.
 
 - **Sub-steps (each independently committable):**
   1. Offline analytic reference: point light + flat mirror + diffuse floor →
