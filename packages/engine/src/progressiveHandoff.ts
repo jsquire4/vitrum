@@ -53,7 +53,14 @@ export interface ProgressiveHandoffOptions {
    *  blizzard, WITHOUT biasing the converged mean. Requires the real-time engine to
    *  expose `getProgressiveSeedTexture()`, the converged engine `seedAccumulator()`,
    *  and BOTH to share one GPUDevice (use `createProgressiveEngine`); a no-op
-   *  otherwise. Default false (resets to black, the v1 behaviour). */
+   *  otherwise. Default false (resets to black, the v1 behaviour).
+   *
+   *  NOTE — default divergence (intentional): the `createProgressiveEngine` FACADE
+   *  defaults this to `true`, because it mints the shared device itself so seeding
+   *  is always safe and is its whole reason to exist. This low-level coordinator
+   *  defaults it `false` because it can be constructed over engines that do NOT
+   *  share a device (where seeding would be a cross-device no-op), so off is the
+   *  safe primitive-level default. */
   readonly seedFromRealtime?: boolean;
   /** Virtual-sample weight of the seed prior (passed to `seedAccumulator`). Higher =
    *  trust the real-time seed longer before PT samples dominate; it decays as

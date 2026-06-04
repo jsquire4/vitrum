@@ -1028,11 +1028,15 @@ export class HybridEngine implements Engine {
   //     `uvs` / `tangents` / `indices`) → full-rebuild path (a): re-run
   //     `buildReSTIRSceneBVH`, destroy + reupload all four BVH GPU
   //     buffers, reset the accumulator.
-  //  - `instances` / `params` / `shape` / `fallbackMesh` / `kind` → THROW
-  //     (topologyRebuild): these require a setScene / primitive replacement.
-  //  - material-only patches → patch scene primitive + rebuild via setScene()
-  //     for correctness (material-byte upload optimization can still be
-  //     layered later without changing host contract behavior).
+  //  - `instances` / `params` / `shape` / `fallbackMesh` / `kind` → route
+  //     through a full `setScene` rebuild (P5 contract-honesty; see the
+  //     `TOPOLOGY_PATCH_WHOLESALE_FIELDS` branch below). NOT a throw — a
+  //     geometry/instance change invalidates every cached GI signal on this
+  //     realtime stack anyway, so honoring `incrementalPatchSupport.topology`
+  //     beats throwing "call setScene()" and matches pt-webgl/pt-webgpu.
+  //  - material-only patches → `materialPatch` fast path (A3): re-pack the
+  //     affected `bvhIndex` / `bvhBeerColors` triangle slices + partial GPU
+  //     upload — NO `setScene`, no pipeline recompile.
   //
   // Implementations live in `HybridEnginePrimitiveUpdates.ts`; this method
   // is the routing dispatcher.
