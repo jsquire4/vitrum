@@ -2,11 +2,11 @@
  * ReSTIR BVH build via `@vitrum/shared-bvh` `packSceneFromCore` (per-primitive BLAS + TLAS).
  */
 
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import {
-  buildSceneBVH as buildSharedBVH,
   packSceneFromCore,
   rebuildPrimitiveBlas,
+  mergeWorldSpaceFromCore,
   type ScenePackResult,
 } from '@vitrum/shared-bvh';
 import * as THREE from 'three';
@@ -16,10 +16,10 @@ import {
   packBVHBeerColors,
   packBVHEmissiveLe,
 } from './packingHelpers.js';
-import { buildEmitterList, buildLightTreeBuffer } from './emitterList.js';
+import { buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
 import type { SceneBVHBuffers } from './bvhCompute.js';
 import {
-  collectRectAreaLightEmitterTris,
+  collectRectAreaEmitterTrisFromCore,
   enrichMeshVertexRangesWithMatrix,
 } from './bvhSceneHelpers.js';
 
@@ -85,6 +85,42 @@ function makeStorageHandle(
   };
 }
 
+/**
+ * Apply the `vitrumSceneToThree` emissive convention to a core material for the
+ * emitter-list build: treat `emissive` as the FINAL radiance-space colour and
+ * force `emissiveIntensity = 1`, so `materialSpecEmissiveLe`/
+ * `classifyTriangleEmitterCore` yield `Le = emissive · 1` — exactly what the
+ * THREE round-trip (and the camera-glow packer, which reads those `ei = 1` THREE
+ * materials) produce. See the call site for the full rationale.
+ *
+ * Crucially, `vitrumSceneToThree` forces `emissiveIntensity = 1` for EVERY core
+ * material it converts (vitrumSceneToThree.ts:211), regardless of the core
+ * material's own `emissiveIntensity`. So we must set `ei = 1` whenever `emissive`
+ * is PRESENT — including when the core `emissiveIntensity` is `undefined`: the
+ * THREE round-trip still emits `Le = emissive · 1` for such a material (THREE's
+ * `materialEmissiveLe` sees `ei = 1 > 0`), whereas a raw core read
+ * (`materialSpecEmissiveLe`) would reject `ei === undefined` as "not emissive".
+ * Forcing `ei = 1` reproduces the production decision in both cases. A material
+ * with NO `emissive` is returned unchanged (it's not an emitter either way).
+ */
+function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
+  if (m.emissive === undefined) return m;
+  if (m.emissiveIntensity === 1) return m; // already the production convention
+  return { ...m, emissiveIntensity: 1 };
+}
+
+/** Drop the padding `.w` lane: stride-4 (vec3f-aligned) positions → tightly
+ *  packed xyz triples for a THREE `position` BufferAttribute (itemSize 3). */
+function extractXYZFromStride4(stride4: Float32Array, vertexCount: number): Float32Array {
+  const out = new Float32Array(vertexCount * 3);
+  for (let i = 0; i < vertexCount; i += 1) {
+    out[i * 3 + 0] = stride4[i * 4 + 0]!;
+    out[i * 3 + 1] = stride4[i * 4 + 1]!;
+    out[i * 3 + 2] = stride4[i * 4 + 2]!;
+  }
+  return out;
+}
+
 function buffersFromScenePack(
   scene: Scene,
   sceneRoots: readonly THREE.Object3D[],
@@ -107,38 +143,78 @@ function buffersFromScenePack(
   // build) so a primary-hit triangle index addresses the right texel in shade.
   const emissiveLeBuf = packBVHEmissiveLe(geo.triMaterialIds, materials, triCount);
 
-  // This SECOND build is load-bearing, NOT a redundant duplicate of `geo`.
-  // `buildEmitterList` needs WORLD-space geometry: it derives triangle area,
-  // face normal (world-space sun-dot in classifyTriangleEmitter), centroids and
-  // AABBs, and appends world-space RectAreaLight tris. `geo` (packSceneFromCore)
+  // CORE-FIRST emitter-list build (THREE-decouple, increment of
+  // `plan/three-decouple-analysis-2026-06-03.md`). The emitter list needs a
+  // WORLD-space triangle stream: it derives triangle area, face normal
+  // (world-space sun-dot in classifyTriangleEmitterCore), centroids and AABBs,
+  // and appends world-space rect-area emitter tris. `geo` (packSceneFromCore)
   // stores per-primitive BLAS positions in LOCAL/object space — world transforms
   // live separately in the TLAS instance matrices — so feeding `geo` would place
-  // every emitter at the wrong world location (changing the CDF, light tree, RNG
-  // stratification, and image) for any transformed mesh. `buildSceneBVH` bakes
-  // each mesh's matrixWorld into the vertices via StaticGeometryGenerator's
-  // applyWorldTransforms. The two builds also produce different triangle
-  // orderings (per-primitive BLAS-concat SAH vs one unified merged SAH). See
-  // __tests__/emitterListWorldSpace.test.ts for the pinning test.
-  // InstancedMesh extends Mesh; exclude it — its geometry lives in
-  // packSceneFromCore's TLAS (one local BLAS + N instance matrices), which the
-  // emitter list does not consume per-instance.
-  const sharedWorld = buildSharedBVH(sceneRoots as THREE.Object3D[], {
+  // every emitter at the wrong world location for any transformed mesh.
+  //
+  // `mergeWorldSpaceFromCore` is the THREE-free analogue of the former
+  // `buildSceneBVH(sceneRoots)` world-bake: it bakes each primitive's core
+  // `transform` into the vertices (= the matrixWorld `vitrumSceneToThree` would
+  // synthesize) and emits the merged world-space stream + deduped `MaterialSpec[]`
+  // — no `StaticGeometryGenerator`, no THREE materials. The emitter SET it
+  // produces is identical to the THREE path (CPU-pinned by
+  // __tests__/emitterListCoreEquivalence.test.ts), though the triangle ORDER
+  // (hence CDF indexing + per-sample RIS selection) differs because the SAH
+  // builders differ — so the CONVERGED render matches while a low-spp A/B does
+  // not (validated via a high-spp GPU A/B, not pixel-identity).
+  //
+  // InstancedMesh: the THREE emitter path EXCLUDED instanced meshes (their
+  // geometry lives in packSceneFromCore's TLAS — one local BLAS + N instance
+  // matrices — which the emitter list does not consume per-instance). The default
+  // `mergeWorldSpaceFromCore` filter INCLUDES them, so we pass a filter that
+  // rejects `kind === 'instanced-mesh'` to preserve that exclusion exactly.
+  const merged = mergeWorldSpaceFromCore(scene, {
     positionStride: 4,
-    proxyMeshNames: options.proxyMeshNames ?? new Set<string>(),
-    filter: (obj: THREE.Object3D) =>
-      obj instanceof THREE.Mesh && (obj as THREE.InstancedMesh).isInstancedMesh !== true,
+    filter: (p: ScenePrimitive) => p.kind !== 'instanced-mesh',
   });
-  const extraEmitters = collectRectAreaLightEmitterTris(sceneRoots as THREE.Object3D[]);
-  const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterList(
-    sharedWorld.indices,
-    sharedWorld.positions,
-    sharedWorld.normals,
-    sharedWorld.triMaterialId,
-    sharedWorld.materials,
+  const extraEmitters = collectRectAreaEmitterTrisFromCore(scene);
+  const { emitterFloats, cdfArray, totalEmissivePower, treeInput } = buildEmitterListFromCore(
+    merged.indices,
+    merged.positions,
+    merged.normals,
+    merged.triMaterialId,
+    // RADIOMETRY PARITY (load-bearing): the THREE emitter path this replaces read
+    // materials produced by `vitrumSceneToThree`, which treats `MaterialSpec.emissive`
+    // as the FINAL radiance-space colour and forces `emissiveIntensity = 1`
+    // (vitrumSceneToThree.ts:201-211 — "avoid accidental double-scaling on round-
+    // trip"). So the production emitter Le for an emissive mesh was `emissive · 1`,
+    // NOT `emissive · emissiveIntensity`. The camera-visible glow packer
+    // (`packBVHEmissiveLe` above) STILL reads those `ei = 1` THREE materials, so the
+    // NEE radiance and the camera glow must BOTH be `emissive · 1` to stay
+    // consistent (no drift). `classifyTriangleEmitterCore` faithfully computes
+    // `emissive · emissiveIntensity` (it mirrors `materialEmissiveLe` on a raw core
+    // material), so we apply the SAME `vitrumSceneToThree` convention here by
+    // forcing `emissiveIntensity = 1` before the emitter build. This keeps the
+    // core-first path radiometrically identical to the THREE round-trip it replaces
+    // (GPU-validated by the converged emitter-core-ab A/B). The TRANSMISSIVE
+    // secondary-emitter branch is unaffected (it never reads emissiveIntensity).
+    merged.materials.map(toProductionEmissiveRadiance),
     { ...options, extraEmitters },
   );
   const emitterCount = cdfArray.length;
   const lightTreeBuf = buildLightTreeBuffer(treeInput);
+
+  // `mergedGeometry` (SceneBVHBuffers field, THREE.BufferGeometry) is consumed by
+  // the snapshot ONLY for its world-space `boundingBox` — and only as a FALLBACK
+  // when `computeWorldAabbForBindings(scene, tlasBindings)` returns empty (the
+  // normal TLAS path never reaches that fallback; see restirBvhSnapshot.ts:57).
+  // It is also disposed on teardown (bvhCompute.ts). We therefore build a minimal
+  // position-only geometry over the core merged world stream and stamp its
+  // bounding box from `merged.boundingBox` — NO THREE BVH, no `MeshBVH` build.
+  const mergedGeometry = new THREE.BufferGeometry();
+  mergedGeometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(extractXYZFromStride4(merged.positions, merged.vertexCount), 3),
+  );
+  mergedGeometry.boundingBox = new THREE.Box3(
+    new THREE.Vector3(merged.boundingBox.min[0], merged.boundingBox.min[1], merged.boundingBox.min[2]),
+    new THREE.Vector3(merged.boundingBox.max[0], merged.boundingBox.max[1], merged.boundingBox.max[2]),
+  );
 
   const meshVertexRanges = enrichMeshVertexRangesWithMatrix(
     sceneRoots as THREE.Object3D[],
@@ -192,7 +268,7 @@ function buffersFromScenePack(
     },
     lightTreeNodeCount: lightTreeBuf.nodeCount,
     lightTreeEnabled: lightTreeBuf.enabled,
-    mergedGeometry: sharedWorld.bvh.geometry,
+    mergedGeometry,
     meshVertexRanges,
     bvhIndicesStride3,
     buildMaterials: materials,

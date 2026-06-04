@@ -1,43 +1,57 @@
 /**
- * Pins WHY `buffersFromScenePack` must run a SECOND `buildSceneBVH`
- * (`sharedWorld`) to feed `buildEmitterList`, rather than reusing the
- * already-packed `geo: ScenePackResult`.
+ * Pins that the ReSTIR emitter list is built in WORLD space — and (post
+ * THREE-decouple, 2026-06-03) that the world transform now flows through the
+ * `@vitrum/core` `MeshPrimitive.transform`, NOT a baked THREE `matrixWorld`.
  *
- * Investigation (2026-05-29): a dedup was proposed — feed `buildEmitterList`
- * from `geo` instead of rebuilding a parallel BVH. It is NOT safe. The two
- * builds produce emitter inputs in DIFFERENT coordinate spaces and DIFFERENT
- * triangle orderings:
+ * History: `buffersFromScenePack` used to run a SECOND `buildSceneBVH`
+ * (`sharedWorld`, a `StaticGeometryGenerator` world-bake over the THREE roots)
+ * purely to feed `buildEmitterList`. That meant the emitter world transform came
+ * from the THREE mesh's `matrixWorld`. The THREE-decouple replaced that with
+ * `mergeWorldSpaceFromCore(scene)` + `buildEmitterListFromCore`, so the emitter
+ * world transform now comes from the core `primitive.transform` (a THREE-free
+ * world bake). In PRODUCTION these coincide exactly: the THREE roots are
+ * reconstructed from the core scene via `vitrumSceneToThree`, whose
+ * `applyTransform` copies `primitive.transform` straight into `matrixWorld`
+ * (vitrumSceneToThree.ts:299-305), so the round-trip is identity. The emitter
+ * SET / world geometry is therefore unchanged in production (CPU-pinned by
+ * restir/__tests__/emitterListCoreEquivalence.test.ts).
  *
- *   • `packSceneFromCore` stores per-primitive BLAS positions in LOCAL/object
- *     space (it copies `primitive.positions` verbatim, scenePack.ts:750-752),
- *     with the world transform held separately in the TLAS instance matrices.
- *   • `buildSceneBVH` uses `StaticGeometryGenerator` with
- *     `applyWorldTransforms = true` (bvhCommon.ts:484-491), baking each mesh's
- *     `matrixWorld` into every vertex → WORLD-space positions.
- *
- * `buildEmitterList` derives triangle area, geometric/averaged face normal,
- * centroids and AABBs from these positions, applies a WORLD-space sun-direction
- * dot in `classifyTriangleEmitter`, and APPENDS world-space RectAreaLight tris
- * from `collectRectAreaLightEmitterTris`. So it fundamentally requires
- * world-space geometry. Feeding it `geo`'s local-space positions would place
- * every emitter triangle at the wrong world location whenever a mesh has a
- * non-identity transform — changing the emitter list, CDF, light tree, RNG
- * stratification, and the rendered image.
- *
- * These tests assert the emitter geometry is WORLD-space and DIVERGES from
- * `geo`'s local-space pack, so any future "just use geo" reroute breaks here.
+ * Why the invariant still matters: `packSceneFromCore` (`geo`) stores per-
+ * primitive BLAS positions in LOCAL/object space (the world transform lives in
+ * the TLAS instance matrices), so the emitter list must NOT be sourced from
+ * `geo` — it needs world-space geometry (triangle area, world face normal, the
+ * world-space sun dot, world centroids/AABBs, world rect-area tris). These tests
+ * assert the emitter geometry is WORLD-space (driven by `primitive.transform`)
+ * and DIVERGES from `geo`'s local-space pack, so any future "just use geo"
+ * reroute breaks here.
  */
 
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
+import { asMat4 } from '@vitrum/core';
 import { packSceneFromCore } from '@vitrum/shared-bvh';
-import * as THREE from 'three';
+import { vitrumSceneToThree } from '@vitrum/three-bindings';
 import { buildReSTIRSceneBVHFromVitrumScene } from '../src/restir/sceneBvhFromCore.js';
 
 const EMITTER_FLOATS = 20; // 80-byte EmitterTri stride / 4
 
-/** Single emissive triangle, positioned at the origin in LOCAL space. */
-function emissiveTriScene(): Scene {
+/** Column-major 4×4 pure-translation matrix. */
+function translation(x: number, y: number, z: number): Float32Array {
+  return new Float32Array([
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    x, y, z, 1,
+  ]);
+}
+
+/**
+ * Single emissive triangle whose local vertices sit at the origin. The world
+ * placement is carried by the core `transform` (post-decouple: the authoritative
+ * world transform), so LOCAL and WORLD space diverge whenever `transform` is
+ * non-identity.
+ */
+function emissiveTriScene(transform?: Float32Array): Scene {
   return {
     primitives: [
       {
@@ -46,7 +60,14 @@ function emissiveTriScene(): Scene {
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
         indices: new Uint32Array([0, 1, 2]),
-        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          emissive: [1, 1, 1],
+          emissiveIntensity: 5,
+        },
+        ...(transform ? { transform: asMat4(transform) } : {}),
       },
     ],
     emitters: [],
@@ -54,41 +75,17 @@ function emissiveTriScene(): Scene {
   };
 }
 
-/**
- * THREE root mirroring the scene, with the named mesh given an emissive
- * MeshStandardMaterial and an optional world translation applied so LOCAL
- * and WORLD space diverge.
- */
-function threeRootsFor(scene: Scene, worldTranslate: THREE.Vector3): THREE.Scene {
-  const root = new THREE.Scene();
-  for (const prim of scene.primitives) {
-    if (prim.kind !== 'mesh') continue;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(prim.positions.slice(), 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(prim.normals.slice(), 3));
-    if (prim.indices) geo.setIndex(Array.from(prim.indices));
-    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
-    mat.emissive = new THREE.Color(1, 1, 1);
-    mat.emissiveIntensity = 5;
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.name = prim.id;
-    mesh.position.copy(worldTranslate);
-    root.add(mesh);
-  }
-  root.updateMatrixWorld(true);
-  return root;
-}
-
 function firstEmitterVertexA(buffers: { emitters: { cpuData: ArrayBuffer } }): [number, number, number] {
   const floats = new Float32Array(buffers.emitters.cpuData);
   return [floats[0]!, floats[1]!, floats[2]!];
 }
 
-describe('emitter list is built in world space (dedup is load-bearing)', () => {
-  it('emitter triangle vertex follows the mesh world transform, not local space', () => {
-    const scene = emissiveTriScene();
-    const translate = new THREE.Vector3(10, 20, 30);
-    const roots = threeRootsFor(scene, translate);
+describe('emitter list is built in world space (driven by core transform)', () => {
+  it('emitter triangle vertex follows the core primitive transform, not local space', () => {
+    // World translation carried by the core transform (the production source of
+    // truth — vitrumSceneToThree bakes it into matrixWorld for the round-trip).
+    const scene = emissiveTriScene(translation(10, 20, 30));
+    const roots = vitrumSceneToThree(scene); // faithful round-trip (matrixWorld == transform)
 
     const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
 
@@ -96,9 +93,9 @@ describe('emitter list is built in world space (dedup is load-bearing)', () => {
     // placeholder, no extra rect-area-light tris).
     expect(buffers.emitterCount).toBe(1);
 
-    // vertexA in the emitter list must be the LOCAL (0,0,0) shifted by the
-    // world translation → (10,20,30). If the emitter list were sourced from
-    // `geo` (local space) it would read (0,0,0) and this assertion fails.
+    // vertexA in the emitter list = LOCAL (0,0,0) shifted by the world transform
+    // → (10,20,30). If the emitter list were sourced from `geo` (local space) it
+    // would read (0,0,0) and this assertion fails.
     const [ax, ay, az] = firstEmitterVertexA(buffers);
     expect(ax).toBeCloseTo(10, 5);
     expect(ay).toBeCloseTo(20, 5);
@@ -106,19 +103,20 @@ describe('emitter list is built in world space (dedup is load-bearing)', () => {
   });
 
   it('geo (packSceneFromCore) carries LOCAL-space positions — proves the divergence', () => {
-    const scene = emissiveTriScene();
-    // geo positions are local/object space regardless of any world transform.
+    const scene = emissiveTriScene(translation(10, 20, 30));
+    // geo positions are local/object space regardless of the world transform
+    // (the transform lives in the TLAS instance matrices, not the BLAS verts).
     const geo = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
-    // First vertex is the local (0,0,0) — NOT the world (10,20,30) the
-    // emitter list above resolved to. Same primitive, two different spaces.
+    // First vertex is the local (0,0,0) — NOT the world (10,20,30) the emitter
+    // list above resolved to. Same primitive, two different spaces.
     expect(geo.positions[0]).toBeCloseTo(0, 6);
     expect(geo.positions[1]).toBeCloseTo(0, 6);
     expect(geo.positions[2]).toBeCloseTo(0, 6);
   });
 
   it('identity transform: emitter vertex matches local (sanity baseline)', () => {
-    const scene = emissiveTriScene();
-    const roots = threeRootsFor(scene, new THREE.Vector3(0, 0, 0));
+    const scene = emissiveTriScene(); // no transform → identity
+    const roots = vitrumSceneToThree(scene);
     const buffers = buildReSTIRSceneBVHFromVitrumScene(scene, [roots]);
     expect(buffers.emitterCount).toBe(1);
     const [ax, ay, az] = firstEmitterVertexA(buffers);

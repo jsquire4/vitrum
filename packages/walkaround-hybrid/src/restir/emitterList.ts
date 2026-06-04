@@ -17,12 +17,14 @@
  */
 
 import * as THREE from 'three';
+import type { MaterialSpec } from '@vitrum/core';
 import {
   luminance,
   buildLightTree,
   packLightTreeForGPU,
   LIGHT_TREE_FLOATS_PER_NODE,
 } from '@vitrum/shared-samplers';
+import { classifyTriangleEmitterCore } from '@vitrum/shared-bvh';
 import { materialEmissiveLe } from './packingHelpers.js';
 
 /**
@@ -179,6 +181,12 @@ export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuff
   };
 }
 
+/**
+ * Build the ReSTIR-DI emitter list from a merged world-space triangle stream +
+ * THREE materials. Thin wrapper over {@link buildEmitterListCore} that supplies
+ * the THREE-material classifier ({@link classifyTriangleEmitter}). Used when the
+ * geometry is ingested from a THREE scene graph (the historical path).
+ */
 export function buildEmitterList(
   indices: Uint32Array,
   positions: Float32Array,    // stride-4: read .xyz only
@@ -191,6 +199,107 @@ export function buildEmitterList(
   cdfArray: Float32Array;
   totalEmissivePower: number;
   /** Light-tree build inputs aligned 1:1 with the emitter list. */
+  treeInput: EmitterTreeInput;
+} {
+  const lightDir = options.primaryLightDir ?? new THREE.Vector3(0, 1, 0);
+  const primaryIntensity = options.primaryLightIntensity ?? 3.0;
+  return buildEmitterListCore(
+    indices,
+    positions,
+    normals,
+    (t, normal) => {
+      const mat = materials[triMatIdMap[t]!];
+      if (!mat) return null;
+      return classifyTriangleEmitter(mat, normal, lightDir, primaryIntensity);
+    },
+    options,
+  );
+}
+
+/**
+ * THREE-free counterpart to {@link buildEmitterList}: build the ReSTIR-DI emitter
+ * list from a merged world-space triangle stream + core `MaterialSpec[]`. Thin
+ * wrapper over {@link buildEmitterListCore} that supplies the core-material
+ * classifier ({@link classifyTriangleEmitterCore}, a verified line-by-line mirror
+ * of `classifyTriangleEmitter`). Used when the geometry is ingested from a
+ * `@vitrum/core` `Scene` via `mergeWorldSpaceFromCore` — no THREE BVH build and
+ * no THREE material reads (the THREE-decouple path; see
+ * `plan/three-decouple-analysis-2026-06-03.md`).
+ *
+ * The emitter SET this produces is identical to {@link buildEmitterList} for an
+ * equivalent scene (pinned by the CPU set-equivalence test
+ * `__tests__/emitterListCoreEquivalence.test.ts`), but the triangle ORDER differs
+ * because `mergeWorldSpaceFromCore`'s SAH builder permutes triangles differently
+ * than `buildSceneBVH` — so the CDF indexing / per-sample RIS selection differ,
+ * and a low-spp pixel A/B is expected to differ on noise while the CONVERGED
+ * result matches.
+ *
+ * `primaryLightDir` is read as a plain `{x,y,z}` (a `THREE.Vector3` satisfies
+ * this structurally, so existing callers can pass the same value).
+ */
+export function buildEmitterListFromCore(
+  indices: Uint32Array,
+  positions: Float32Array,    // stride-4: read .xyz only
+  normals: Float32Array,      // stride-4: read .xyz only
+  triMatIdMap: Uint32Array,
+  materials: readonly MaterialSpec[],
+  options: EmitterListOptions,
+): {
+  emitterFloats: Float32Array;
+  cdfArray: Float32Array;
+  totalEmissivePower: number;
+  /** Light-tree build inputs aligned 1:1 with the emitter list. */
+  treeInput: EmitterTreeInput;
+} {
+  const ld = options.primaryLightDir;
+  const lightDir = ld != null ? { x: ld.x, y: ld.y, z: ld.z } : { x: 0, y: 1, z: 0 };
+  const primaryIntensity = options.primaryLightIntensity ?? 3.0;
+  return buildEmitterListCore(
+    indices,
+    positions,
+    normals,
+    (t, normal) => {
+      const mat = materials[triMatIdMap[t]!];
+      if (!mat) return null;
+      return classifyTriangleEmitterCore(mat, normal, lightDir, primaryIntensity);
+    },
+    options,
+  );
+}
+
+/**
+ * A per-triangle emitter classifier: given a triangle index and its (already
+ * area-weighted, normalized) world face normal, return the emitter
+ * `{ color, intensity }` or `null` to skip. This is the ONLY material-typed step
+ * in the emitter-list build, so the THREE and core variants share everything
+ * else (geometry derivation, power gate, packing, CDF, light-tree input) by
+ * supplying their own classifier here.
+ */
+type TriangleEmitterClassifier = (
+  triIdx: number,
+  normal: { x: number; y: number; z: number },
+) => { color: [number, number, number]; intensity: number } | null;
+
+/**
+ * Shared emitter-list builder core. Iterates the merged world-space triangle
+ * stream, derives each triangle's area + face normal (cross-product, then
+ * the per-vertex-normal-average override identical to the original
+ * `buildEmitterList`), runs the supplied `classify` callback, gates on
+ * `power < 1e-8`, then packs the 80-byte EmitterTri buffer + power CDF +
+ * light-tree inputs. Both {@link buildEmitterList} (THREE materials) and
+ * {@link buildEmitterListFromCore} (`MaterialSpec[]`) call this with their own
+ * classifier — the geometry + packing math is byte-identical across both.
+ */
+function buildEmitterListCore(
+  indices: Uint32Array,
+  positions: Float32Array,    // stride-4: read .xyz only
+  normals: Float32Array,      // stride-4: read .xyz only
+  classify: TriangleEmitterClassifier,
+  options: EmitterListOptions,
+): {
+  emitterFloats: Float32Array;
+  cdfArray: Float32Array;
+  totalEmissivePower: number;
   treeInput: EmitterTreeInput;
 } {
   const triCount = indices.length / 3;
@@ -245,18 +354,7 @@ export function buildEmitterList(
       if (nlen > 1e-6) { nx /= nlen; ny /= nlen; nz /= nlen; }
     }
 
-    const matId = triMatIdMap[t]!;
-    const mat = materials[matId];
-    if (!mat) continue;
-
-    const lightDir = options.primaryLightDir ?? new THREE.Vector3(0, 1, 0);
-    const primaryIntensity = options.primaryLightIntensity ?? 3.0;
-    const classified = classifyTriangleEmitter(
-      mat,
-      { x: nx, y: ny, z: nz },
-      lightDir,
-      primaryIntensity,
-    );
+    const classified = classify(t, { x: nx, y: ny, z: nz });
     if (!classified) continue;
     const [cr, cg, cb] = classified.color;
     const intensity = classified.intensity;
