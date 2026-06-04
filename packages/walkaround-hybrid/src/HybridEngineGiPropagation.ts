@@ -29,7 +29,10 @@
  *               neither the in-place refit nor the rebuild can run.
  *        b. else if BVH is in `tlas` mode → sync the shared ReSTIR BVH buffers;
  *        c. else (merged mode) and `allowRcSceneRebuild` → rebuild the RC scene
- *           BVH from the THREE root.
+ *           BVH from the CORE `Scene` (`lastScene`) when present — the THREE-free
+ *           `setSceneFromCore` path (items_to_fix F-RC2, mirroring the DDGI
+ *           orchestrator's coreScene-when-present routing); else fall back to the
+ *           THREE root (the raw-`threeScene` escape hatch).
  *
  * The two flags capture the only axes the three sites differed on:
  *   - `rcRefitBounds`        — present only on the post-update path.
@@ -64,6 +67,36 @@ export interface GiPropagationDeps {
     readonly min: readonly [number, number, number];
     readonly max: readonly [number, number, number];
   } | null | undefined;
+}
+
+/**
+ * Rebuild the merged-mode RC scene BVH, CORE-FIRST. When a `@vitrum/core` `Scene`
+ * is available (`lastScene` — the dominant path; null only for the escape-hatch
+ * raw-`threeScene` host), build via the THREE-free `rc.setSceneFromCore(scene)`
+ * (`mergeWorldSpaceFromCore` + the core material packer — items_to_fix F-RC2).
+ * Otherwise fall back to `rc.setScene(threeRoot)` (the THREE build).
+ *
+ * Mirrors the DDGI orchestrator's coreScene-when-present routing
+ * (`HybridEngineFrameOrchestrator.runDdgiAndRc` passes `coreScene: lastScene`
+ * when present, else the THREE `scene`). Both `setSceneFromCore` and `setScene`
+ * share RC's `_setSceneFromBVH` tail, so the upload (incl. the F-RC1 stride-4
+ * index pad), CPU mirrors, cascade bounds, and dispatcher are identical — only
+ * the BVH source differs.
+ *
+ * @returns `true` if a rebuild ran (core OR THREE); `false` if neither a core
+ *   Scene nor a THREE root was available (caller keeps the cascade-bounds floor).
+ */
+function rebuildRcMergedSceneCoreFirst(deps: GiPropagationDeps, rc: RCSubsystem): boolean {
+  if (deps.lastScene != null) {
+    rc.setSceneFromCore(deps.lastScene);
+    return true;
+  }
+  const rcRoot = deps.ensureThreeSceneRoot();
+  if (rcRoot != null) {
+    rc.setScene(rcRoot);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -112,15 +145,11 @@ export function propagateBvhToGiSubsystems(deps: GiPropagationDeps): void {
     if (refit) return;
 
     // Fast path declined (no retained merged CPU mirrors / vertex-count change).
-    // Prefer a full RC scene rebuild from the THREE root when allowed; that path
+    // Prefer a full RC scene rebuild (core-first) when allowed; that path
     // refreshes the cascade bounds itself. Otherwise keep at least the cascade
     // probe grid in sync with the new AABB.
-    if (deps.allowRcSceneRebuild) {
-      const rcRoot = deps.ensureThreeSceneRoot();
-      if (rcRoot != null) {
-        rc.setScene(rcRoot);
-        return;
-      }
+    if (deps.allowRcSceneRebuild && rebuildRcMergedSceneCoreFirst(deps, rc)) {
+      return;
     }
     rc.refitCascadeBounds(deps.rcRefitBounds.min, deps.rcRefitBounds.max);
     return;
@@ -132,7 +161,6 @@ export function propagateBvhToGiSubsystems(deps: GiPropagationDeps): void {
   }
 
   if (deps.allowRcSceneRebuild) {
-    const rcRoot = deps.ensureThreeSceneRoot();
-    if (rcRoot != null) rc.setScene(rcRoot);
+    rebuildRcMergedSceneCoreFirst(deps, rc);
   }
 }
