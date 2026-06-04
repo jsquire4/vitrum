@@ -89,7 +89,18 @@ export function patchPrimitiveInScene(
     if (String(primitive.id) !== id) return primitive;
     matched = true;
     assertPrimitivePatch(primitive, patch);
-    return { ...primitive, ...patch, id: primitive.id } as ScenePrimitive;
+    const merged = { ...primitive, ...patch, id: primitive.id } as ScenePrimitive;
+    // Deep-merge the `material` sub-object so a PARTIAL material patch (e.g.
+    // `{ material: { emissive } }`) PRESERVES the primitive's other material
+    // fields instead of replacing the whole material. A shallow spread silently
+    // resets unspecified fields to packer defaults — and drops `baseColor`, which
+    // crashes the material packer. Non-material patch fields keep replace semantics.
+    const primMat = (primitive as unknown as { material?: Record<string, unknown> }).material;
+    const patchMat = (patch as unknown as { material?: Record<string, unknown> }).material;
+    if (patchMat != null && primMat != null) {
+      (merged as unknown as { material: Record<string, unknown> }).material = { ...primMat, ...patchMat };
+    }
+    return merged;
   });
   if (!matched) {
     throw new Error(`updatePrimitive: primitive "${id}" not found in current scene`);
