@@ -70,6 +70,18 @@ clean, keeping any isolated math that did validate.
 ### Phase I — Close the headline integration gaps (highest honesty value)
 
 **I.1 — MNEE into the beauty pass (A1).** *The headline.*
+
+> **STATUS (2026-06-03): SINGLE-INTERFACE DONE + GPU-validated.** Sub-steps 1–4
+> all shipped. Reflection caustic `8cd52cf` (analytic mirror-image oracle, ratio
+> 0.885). Transmissive single-flat-interface refraction caustic `893ef00`
+> (`pointLightRefractionCaustic`, `E = I·T·|dω_L/dA_recv|` = Fresnel transmittance ×
+> the refraction focusing Jacobian; forward-traced floor-flux oracle, ratio 0.987 /
+> slope 0.984). Shared `causticTransmissiveLegBlocked` self-skip visibility.
+> **IN-FLIGHT:** the 2-vertex GLASS-SLAB (chain) caustic — wires the validated
+> `mneeNewtonSolveChain2` + `mneeChainPdfJacobianDet` (dispatched; validation = a
+> forward-traced glass-slab A/B, same discipline). The cone-search is fully
+> replaced for single-interface specular; chain promotion completes MNEE.
+
 - **Sub-steps (each independently committable):**
   1. Offline analytic reference: point light + flat mirror + diffuse floor →
      mirror-image floor irradiance (deterministic oracle). *[clean]*
