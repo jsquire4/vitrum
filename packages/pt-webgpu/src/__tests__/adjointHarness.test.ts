@@ -18,6 +18,7 @@ import {
   ADJOINT_PARAMS_UBO_BYTES,
   ADJOINT_FIELD_BASECOLOR,
   ADJOINT_FIELD_ROUGHNESS,
+  ADJOINT_FIELD_EMISSIVE,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
@@ -63,7 +64,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
 
   it('engine adjoint PASS bundles the real partials + re-trace + faceforward + scatter', () => {
     // GPU-validated end-to-end via wsl-gpu v24-inverse-fit --method=path-replay
-    // (sign-matches the FD gradient + drives a converging fit, lavapipe 2026-06-03).
+    // (baseColor/roughness) + v24-emissive-fit.mjs (emissive) — each sign-matches the
+    // FD gradient + drives a converging fit, lavapipe 2026-06-03.
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL); // byte-identical partials
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn generatePrimaryRay');           // re-trace
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn closestHit');                   // brute-force intersect
@@ -72,9 +74,14 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights');                  // rect-area NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('cosLight * area / dist2');         // area geometric term
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x)'); // per-param scatter
+    // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
+    // emissiveIntensity rides in the descriptor `.w` (bitcast f32) and folds in.
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gEmissive.x)');
     // The UBO is mat4 + vec4 + 2×uvec4 = 112 bytes; the field codes are stable.
     expect(ADJOINT_PARAMS_UBO_BYTES).toBe(112);
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
     expect(ADJOINT_FIELD_ROUGHNESS).toBe(1);
+    expect(ADJOINT_FIELD_EMISSIVE).toBe(2);
   });
 });

@@ -11,9 +11,11 @@
  * resolves the effective method to 'path-replay' (NOT finite-difference)
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the Phase-1 differentiable set (material baseColor /
- * roughness). GPU-validated on lavapipe: the partials match the FD oracle to f32
- * precision, and the chain rule + fixed-point accumulation match an on-device
- * finite-difference.
+ * roughness / emissive). GPU-validated on lavapipe: the partials match the FD
+ * oracle to f32 precision, the chain rule + fixed-point accumulation match an
+ * on-device finite-difference, and each field's end-to-end inverse fit converges +
+ * sign-matches the full-render FD (baseColor/roughness `v24-inverse-fit.mjs`,
+ * emissive `v24-emissive-fit.mjs`).
  *
  * Emits the WGSL functions that compute the analytic partials of:
  *  - the Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. `baseColor` (rgb) and
