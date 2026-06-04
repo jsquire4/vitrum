@@ -134,9 +134,29 @@ existing fidelity gate + doc read. **Risk:** low.
   ms-injection test, not live perf]*
 
 ### Phase V — Frontier (campaign P8)
-- **V.1** ReSTIR-PT — start with the **math-harness-testable** reconnection/shift
-  Jacobian + GRIS contribution-weight algebra (the GI `jacobianReconnectionShift`
-  exists as a special case). *[math-harness first; integrator later]*
+- **V.1** ReSTIR-PT. **MATH-HARNESS LAYER DONE + GPU-validated:** the general
+  reconnection-shift Jacobian `restirPtShiftJacobian = G(x_r↔x_s)/G(x_q↔x_s)`
+  (Lin 2022 Eq.11/12, `restirPtShift.wgsl.ts`, `348b2d2`, analytic==FD) AND the
+  hybrid-shift BSDF-pdf replay ratio (`restirPtHybridShift.wgsl.ts`, `06cf4ca`).
+  **BUT validated-in-isolation — ZERO consumers** (verified 2026-06-03 by grep: no
+  reservoir struct, no capture, no reuse pass). The **integrator is greenfield + SEQUENTIAL**
+  (not a parallel fan-out — each increment needs the prior):
+    - **Inc-1** `PathReservoir` struct + capture (reconnection vertex x_s/n_s, cached
+      suffix radiance L_o, pre-reconnection vertex x_q, RIS fields W/M/wSum/p̂) in the
+      base tracer; single-candidate, no reuse.
+    - **Inc-2** TEMPORAL reuse: reproject → shift the temporal neighbour via
+      `restirPtShiftJacobian` → GRIS balance-heuristic MIS → combine. *(THE first
+      meaningful increment.)*
+    - **Inc-3** SPATIAL reuse (same shift + MIS over spatial neighbours).
+    - **Inc-4** HYBRID shift for glossy/near-specular prefixes (replay-factor MIS).
+  **VALIDATION TRAP (load-bearing):** an Inc-1-only "identity to brute-force PT"
+  converged A/B is WEAK — M=1 reduces to PT *regardless of whether the reservoir/shift
+  code is correct*, so it exercises neither the shift nor the resampling. The MEANINGFUL
+  gate is the **Inc-2 unbiasedness converged A/B** (ReSTIR-PT temporal ON vs brute-force
+  PT, high spp → same MEAN, lower variance) on a GI Cornell. Build Inc-1+Inc-2 together
+  (or back-to-back) so the first commit carries a meaningful gate; never ship Inc-1 on
+  the M=1 identity alone. Best executed on fresh context (the unbiasedness A/B needs
+  careful verification). *[math done; integrator = sequenced multi-increment build]*
 - **V.2** `@vitrum/progressive-engine` (E1) — the walkaround↔PT freeze/resume
   temporal-MIS handoff (roadmap §8.1; rated "fun trick", below V.1/V.3).
 - **V.3** NRC as a hero-stack terminator (E3).
