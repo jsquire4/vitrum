@@ -11,12 +11,18 @@ productionisation is complete:
 
 - **No public API stability**. Types, options, and binding shapes can
   change in any commit.
-- **No GPU-verified visual reference**. The CPU/struct-layout audit
-  (`plan/archive/pt-webgpu-deep-audit-archived-2026-05-28.md`) is closed (all HIGH + MEDIUM + LOW
-  findings fixed or NOT-A-BUG by 2026-05-19), but no end-to-end visual
-  parity check against `@vitrum/pt-webgl` exists. Renders may be
-  numerically correct yet visually different in ways the audit doesn't
-  catch.
+- **GPU-verified per-feature; not yet cross-backend pixel-diffed.** The
+  CPU/struct-layout audit (`plan/archive/pt-webgpu-deep-audit-archived-2026-05-28.md`)
+  is closed (all HIGH + MEDIUM + LOW findings fixed or NOT-A-BUG by 2026-05-19),
+  and as of 2026-06-04 **nine rendering rows are `supported`** in
+  `plan/renderer-fidelity-matrix.md` — each GPU-validated on dzn (RTX 4090) against a
+  deterministic reference (analytic / forward-traced) with a committed, sha-pinned
+  baseline PNG (hero-λ spectral, spectral Beer–Lambert, thin-film TMM, Cauchy dispersion,
+  layered front/back, SSS, multi-emitter, material-fields, MNEE caustic, BDPT). What does
+  **not** yet exist is an end-to-end *cross-backend parity* capture against `@vitrum/pt-webgl`
+  (its fork rows stay `experimental` pending a WebGL2 capture path — lavapipe is a WebGPU
+  device, so it cannot validate the GL fork). So renders are validated correct per-feature,
+  but the two backends are not yet pixel-diffed against each other.
 - **`createEngine({ prefer: 'auto' })`** selects pt-webgpu when WebGPU is
   available and the scene has **≥ 500k triangles**; use `prefer:
   'quality-webgpu'` to force pt-webgpu on smaller scenes. Below 500k tris,
