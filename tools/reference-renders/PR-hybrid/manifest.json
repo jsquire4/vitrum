@@ -1,6 +1,6 @@
 {
   "generatedAt": "2026-05-27T06:19:13.085Z",
-  "note": "Perf: npm run benchmark:pr-hybrid-gpu. PNGs: npm run benchmark:pr-hybrid-refs (or pr-hybrid-gpu-full).",
+  "note": "Perf: npm run benchmark:pr-hybrid-gpu. PNGs RE-CAPTURED 2026-06-04 via wsl-gpu on dzn (RTX 4090) after the F-TLAS1 fix (items_to_fix F-TLAS1) — the old Chrome benchmark:pr-hybrid-refs captures encoded the bug, and Chrome can't reach a >=16-storage-buffer adapter in WSL. Re-run: wsl-gpu scripts/capture-ftlas1-refs.ts. These hashes are wsl-gpu/dzn captures (provenance only; asserted by nothing).",
   "latestPerf": "perf/latest.json",
   "manifest": [
     {
@@ -149,19 +149,19 @@
       "kind": "png",
       "scenarioId": "PR-hybrid-tlas-10-inst",
       "pngPath": "tlas-on/PR-hybrid-tlas-10-inst.png",
-      "hash": "22533d5335d186495b325180617bf68c37c2760171563393bceb66e5f2ef4081"
+      "hash": "0b63e72a9ade5e3e6f7f8e77ff3d7ce75c2b07aacea9843b0d55f30e96083ae6"
     },
     {
       "kind": "png",
       "scenarioId": "PR-hybrid-material-churn",
       "pngPath": "material-edit/PR-hybrid-material-churn.png",
-      "hash": "b7bff84a0be5842bc38a79d66cf7431f3714fbc3dc62bd601ba773421ac795a5"
+      "hash": "4564c20ed2b3bdee1df761ab14dab56d19573ba26e55b564b15b66df1c5f00a9"
     },
     {
       "kind": "png",
       "scenarioId": "PR-hybrid-200k-static",
       "pngPath": "200k-static/PR-hybrid-200k-static.png",
-      "hash": "08939ad5bdc5e538fbcd4db211fe662802f36581632421741d67369476fb5096"
+      "hash": "bc667fbca9bbf2ab2bf3251d09b6dcdad4cce715f57eba26794759ea951a462b"
     }
   ]
 }
