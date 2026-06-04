@@ -194,6 +194,20 @@ export interface Engine {
     opts: { weight: number; width: number; height: number },
   ): void;
 
+  /** Progressive walkaround→PT seed SOURCE (the counterpart to `seedAccumulator`).
+   *  Returns this engine's latest output as a `BackendTexture` + its render dims,
+   *  for seeding a *different* engine's accumulator (both engines MUST share one
+   *  GPUDevice). Real-time engines (e.g. `@vitrum/walkaround-hybrid`) implement this
+   *  to expose their post-denoise HDR radiance (linear, pre-tonemap — matching a PT
+   *  accumulator). Null before the first rendered frame; the texture is recycled
+   *  per-frame, so a consumer must use it SYNCHRONOUSLY. Available only when
+   *  `capabilities.supportsProgressiveSeedSource === true`. */
+  getProgressiveSeedTexture?(): {
+    texture: BackendTexture;
+    width: number;
+    height: number;
+  } | null;
+
   // ── Pause / resume / dispose ────────────────────────────────────────────
 
   /** Skip per-frame compute work but keep all GPU resources allocated.

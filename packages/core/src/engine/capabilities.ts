@@ -69,6 +69,12 @@ export interface EngineCapabilities {
    *  MUST typeof-check `engine.seedAccumulator` before calling regardless. */
   readonly supportsAccumulatorSeed?: boolean;
 
+  /** True if this engine exposes `getProgressiveSeedTexture()` — its latest output
+   *  as a seed SOURCE for another engine's `seedAccumulator` (the source side of the
+   *  progressive walkaround→PT handoff). Real-time engines set this; converged PT
+   *  backends omit it. Hosts MUST typeof-check `getProgressiveSeedTexture` too. */
+  readonly supportsProgressiveSeedSource?: boolean;
+
   /** Structural cap: the maximum samples-per-pixel this engine instance was
    *  allocated for. PT engines stop accumulating at this ceiling; walkaround
    *  engines report Infinity (they resample every frame rather than

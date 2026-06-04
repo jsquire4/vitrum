@@ -179,3 +179,64 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(c.frame(input(0)).phase).toBe('realtime'); // first frame after reset is "moved"
   });
 });
+
+describe('ProgressiveHandoffCoordinator — seed-on-handoff (P8 increment 2)', () => {
+  function seedSource() {
+    const s = makeStubEngine();
+    const fakeTex = { __seedTex: true };
+    const getProgressiveSeedTexture = vi.fn(() => ({ texture: fakeTex, width: 320, height: 180 }));
+    (s.engine as unknown as { getProgressiveSeedTexture: unknown }).getProgressiveSeedTexture = getProgressiveSeedTexture;
+    return { ...s, getProgressiveSeedTexture, fakeTex };
+  }
+  function seedSink(convergeAt = Infinity) {
+    const s = makeStubEngine(convergeAt);
+    const seedAccumulator = vi.fn();
+    (s.engine as unknown as { seedAccumulator: unknown }).seedAccumulator = seedAccumulator;
+    return { ...s, seedAccumulator };
+  }
+
+  it('seeds the converged accumulator from the real-time source on handoff, AFTER reset', () => {
+    const rt = seedSource();
+    const cv = seedSink();
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine, converged: cv.engine, stillFramesBeforeHandoff: 2,
+      seedFromRealtime: true, seedWeight: 7,
+    });
+    c.frame(input(0)); c.frame(input(0)); c.frame(input(0)); // handoff on the 3rd
+    expect(cv.reset).toHaveBeenCalledTimes(1);
+    expect(rt.getProgressiveSeedTexture).toHaveBeenCalledTimes(1);
+    expect(cv.seedAccumulator).toHaveBeenCalledTimes(1);
+    expect(cv.seedAccumulator).toHaveBeenCalledWith(rt.fakeTex, { weight: 7, width: 320, height: 180 });
+    // reset must run BEFORE the seed (the seed is the sole prior on a cleared accum).
+    expect(cv.reset.mock.invocationCallOrder[0] ?? 0).toBeLessThan(cv.seedAccumulator.mock.invocationCallOrder[0] ?? 0);
+  });
+
+  it('does NOT seed when seedFromRealtime is false (default) — resets to black', () => {
+    const rt = seedSource();
+    const cv = seedSink();
+    const c = new ProgressiveHandoffCoordinator({ realtime: rt.engine, converged: cv.engine, stillFramesBeforeHandoff: 2 });
+    c.frame(input(0)); c.frame(input(0)); c.frame(input(0));
+    expect(cv.reset).toHaveBeenCalledTimes(1);
+    expect(cv.seedAccumulator).not.toHaveBeenCalled();
+    expect(rt.getProgressiveSeedTexture).not.toHaveBeenCalled();
+  });
+
+  it('is a graceful no-op when the engines lack the optional seed methods', () => {
+    const rt = makeStubEngine(); // no getProgressiveSeedTexture
+    const cv = makeStubEngine(); // no seedAccumulator
+    const c = new ProgressiveHandoffCoordinator({ realtime: rt.engine, converged: cv.engine, stillFramesBeforeHandoff: 2, seedFromRealtime: true });
+    expect(() => { c.frame(input(0)); c.frame(input(0)); c.frame(input(0)); }).not.toThrow();
+    expect(cv.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-seeds on each settle after camera motion invalidates the converged accumulator', () => {
+    const rt = seedSource();
+    const cv = seedSink();
+    const c = new ProgressiveHandoffCoordinator({ realtime: rt.engine, converged: cv.engine, stillFramesBeforeHandoff: 2, seedFromRealtime: true });
+    c.frame(input(0)); c.frame(input(0)); c.frame(input(0)); // handoff 1 → seed
+    expect(cv.seedAccumulator).toHaveBeenCalledTimes(1);
+    c.frame(input(9));                                        // moved → stale
+    c.frame(input(9)); c.frame(input(9));                     // settle → handoff 2 → re-seed
+    expect(cv.seedAccumulator).toHaveBeenCalledTimes(2);
+  });
+});

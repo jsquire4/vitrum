@@ -47,6 +47,18 @@ export interface ProgressiveHandoffOptions {
    *  is first). Default 64 — a reasonably clean preview without waiting for the
    *  full sample target. Ignored when settleBehindRealtime is false. */
   readonly convergedDisplaySamples?: number;
+  /** P8 increment 2: on each handoff, SEED the converged engine's accumulator from
+   *  the real-time engine's last frame (a DECAYING PRIOR — `seedAccumulator`) so the
+   *  converged image starts from the smooth real-time output instead of a 1-sample
+   *  blizzard, WITHOUT biasing the converged mean. Requires the real-time engine to
+   *  expose `getProgressiveSeedTexture()`, the converged engine `seedAccumulator()`,
+   *  and BOTH to share one GPUDevice (use `createProgressiveEngine`); a no-op
+   *  otherwise. Default false (resets to black, the v1 behaviour). */
+  readonly seedFromRealtime?: boolean;
+  /** Virtual-sample weight of the seed prior (passed to `seedAccumulator`). Higher =
+   *  trust the real-time seed longer before PT samples dominate; it decays as
+   *  W/(W+M) so it never biases the converged mean. Default 4. */
+  readonly seedWeight?: number;
 }
 
 /** Which engine the coordinator is presenting. */
@@ -119,6 +131,8 @@ export class ProgressiveHandoffCoordinator {
   readonly #eps: number;
   readonly #settleBehind: boolean;
   readonly #displaySamples: number;
+  readonly #seedFromRealtime: boolean;
+  readonly #seedWeight: number;
 
   #prev: CameraSnapshot | null = null;
   #stillFrames = 0;
@@ -134,6 +148,8 @@ export class ProgressiveHandoffCoordinator {
     this.#eps = opts.cameraEpsilon ?? 1e-5;
     this.#settleBehind = opts.settleBehindRealtime ?? false;
     this.#displaySamples = Math.max(1, Math.floor(opts.convergedDisplaySamples ?? 64));
+    this.#seedFromRealtime = opts.seedFromRealtime ?? false;
+    this.#seedWeight = Math.max(0, opts.seedWeight ?? 4);
   }
 
   /** The phase presented by the most recent {@link frame} call. */
@@ -216,6 +232,12 @@ export class ProgressiveHandoffCoordinator {
       // converged frame of this settle so it accumulates the current camera.
       if (this.#convergedStale) {
         this.#converged.reset();
+        // P8 increment 2: seed the converged accumulator from the real-time engine's
+        // last (still-camera) frame — a decaying prior that hides the 1-sample pop
+        // without biasing the converged mean. Runs AFTER reset (the seed is the sole
+        // prior). No-op unless seedFromRealtime + both engines' capabilities (+ a
+        // shared device at runtime).
+        if (this.#seedFromRealtime) this.#seedConvergedFromRealtime();
         this.#convergedStale = false;
       }
       // Always advance the converged engine (it accumulates either way).
@@ -244,6 +266,21 @@ export class ProgressiveHandoffCoordinator {
     this.#phase = this.#stillFrames > 0 ? 'settling' : 'realtime';
     const output = this.#realtime.renderFrame(input);
     return { phase: this.#phase, active: this.#realtime, output, stillFrames: this.#stillFrames };
+  }
+
+  /** Seed the converged accumulator from the real-time engine's last frame (the
+   *  smooth still-camera image). No-op unless BOTH engines expose the optional
+   *  source/sink methods (`getProgressiveSeedTexture` / `seedAccumulator`); at
+   *  runtime they must also share one GPUDevice (else the cross-device texture bind
+   *  throws — the host wires this via `createProgressiveEngine`). */
+  #seedConvergedFromRealtime(): void {
+    const src = this.#realtime.getProgressiveSeedTexture?.();
+    if (src == null) return;
+    this.#converged.seedAccumulator?.(src.texture, {
+      weight: this.#seedWeight,
+      width: src.width,
+      height: src.height,
+    });
   }
 }
 

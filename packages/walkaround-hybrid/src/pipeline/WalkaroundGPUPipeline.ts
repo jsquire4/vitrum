@@ -894,6 +894,18 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     };
   }
 
+  /** The most recent post-denoise/composite-input HDR radiance texture
+   *  (`resolvedTexture`: rgba16float, internal render resolution, linear pre-tonemap;
+   *  `TEXTURE_BINDING | COPY_SRC`). This is the seed source for the progressive
+   *  walkaround→PT handoff (P8 increment 2) — a host samples/copies it into a
+   *  converged PT engine's accumulator. Null before the pipeline is initialised; the
+   *  caller must consume it SYNCHRONOUSLY in the handoff frame (it is recycled each
+   *  frame and destroyed on resize/dispose). */
+  getProgressiveSeedTexture(): GPUTexture | null {
+    if (!this._initialized) return null;
+    return this._res.common.resolvedTexture;
+  }
+
   /** Temporal-accumulator history depth: frames accumulated since the last
    *  α=1 reset (camera motion, `requestAccumReset`, or `resize`). Increments
    *  once per rendered frame; reset to 0 on each of those events. Read by

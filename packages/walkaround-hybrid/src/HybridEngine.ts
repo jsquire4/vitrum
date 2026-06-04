@@ -48,6 +48,8 @@ import type {
 import type { Scene, ScenePrimitive, SceneEmitter, SceneEnvironment } from '@vitrum/core';
 import { partitionSceneBySupport } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
+import { asBackendTexture } from '@vitrum/core';
+import type { BackendTexture } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
@@ -861,6 +863,9 @@ export class HybridEngine implements Engine {
       // exposed: it's the RG32F Welford buffer (≠ the contract's RGBA32F) and only
       // exists on the variance-denoiser paths.
       supportsAuxBuffers:        true,
+      // The post-denoise resolvedTexture is exposed via getProgressiveSeedTexture()
+      // as the seed source for progressive walkaround→PT handoff (P8).
+      supportsProgressiveSeedSource: true,
       accumulates:               false,
       maxSamplesPerPixel:        Infinity,
       maxBounces:                this._cfg.maxBounces,
@@ -1674,6 +1679,32 @@ export class HybridEngine implements Engine {
         return typeof intensity === 'number' ? { skyIrradiance: intensity } : {};
       }
     }
+  }
+
+  // ── Progressive handoff seed source ──────────────────────────────────────
+  /**
+   * Progressive walkaround→PT seed source (P8 increment 2). The last frame's
+   * post-denoise HDR radiance (linear, pre-tonemap — same space as a PT
+   * accumulator) as a `BackendTexture` + its internal render dimensions, so a host
+   * coordinator can seed a converged PT engine's accumulator
+   * (`engine.seedAccumulator(texture, { weight, width, height })`). Null before the
+   * first rendered frame. The texture is recycled each frame — consume it
+   * SYNCHRONOUSLY within the handoff frame (do not cache the handle).
+   *
+   * Available only when `capabilities.supportsProgressiveSeedSource === true`.
+   */
+  getProgressiveSeedTexture(): {
+    texture: BackendTexture<'webgpu', GPUTexture>;
+    width: number;
+    height: number;
+  } | null {
+    const tex = this._pipeline?.getProgressiveSeedTexture();
+    if (tex == null) return null;
+    return {
+      texture: asBackendTexture<'webgpu', GPUTexture>(tex),
+      width: this._internalWidth,
+      height: this._internalHeight,
+    };
   }
 
   // ── Resize ─────────────────────────────────────────────────────────────
