@@ -39,6 +39,7 @@ import {
 
 import { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 import { wrapWithIdempotentDispose } from './idempotentDispose.js';
+import type { GIStatePersistable } from './idempotentDispose.js';
 import { configureWebGpuCanvas } from './configureWebGpuCanvas.js';
 import {
   DEFAULT_PRIMARY_LIGHT_DIR,
@@ -115,7 +116,7 @@ export interface CreateEngineOptions {
   readonly onAdapterProfile?: (profile: AdapterProfile) => void;
 }
 
-export async function createEngine(opts: CreateEngineOptions): Promise<Engine> {
+export async function createEngine(opts: CreateEngineOptions): Promise<Engine & Partial<GIStatePersistable>> {
   if (opts.canvas == null) {
     throw new TypeError('createEngine: opts.canvas is required');
   }
@@ -160,7 +161,7 @@ async function constructWalkaround(
   aabb: SceneAABB,
   sceneInputIsThree: boolean,
   needsTlas: boolean,
-): Promise<Engine> {
+): Promise<Engine & Partial<GIStatePersistable>> {
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');

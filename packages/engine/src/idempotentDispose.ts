@@ -14,6 +14,19 @@
 // throw) are encoded as DATA — do not unify them.
 
 import type { Engine } from '@vitrum/core';
+import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
+
+/**
+ * Optional GI-state persistence surface — implemented by the walkaround-hybrid
+ * backend only (DDGI probe-atlas export/import; see `HybridEngine.exportGIState`).
+ * Forwarded through the facade so `createEngine()` users can reach the shipped
+ * feature without dropping to the concrete HybridEngine. Backends with no GI
+ * state simply don't provide these (the facade return type marks them optional).
+ */
+export interface GIStatePersistable {
+  exportGIState(): Promise<GIStateSnapshot | null>;
+  importGIState(snapshot: GIStateSnapshot): boolean;
+}
 
 /**
  * Disposed-behaviour kinds for an optional Engine method, captured as data.
@@ -94,7 +107,7 @@ const OPTIONAL_METHOD_PROXIES: readonly OptionalMethodProxy[] = [
 export function wrapWithIdempotentDispose(
   engine: Engine,
   postDispose: () => void,
-): Engine {
+): Engine & Partial<GIStatePersistable> {
   let disposed = false;
   const patchSupport = engine.capabilities.incrementalPatchSupport;
   const primitivePatchAdvertised = patchSupport == null
@@ -154,6 +167,19 @@ export function wrapWithIdempotentDispose(
     if (spec.eligible && !spec.eligible(caps)) continue;
     (proxy as Record<OptionalMethodName, unknown>)[spec.method] =
       makeForward(engine, spec, () => disposed);
+  }
+
+  // GI-state persistence (walkaround-hybrid only) — forwarded when the backend
+  // implements it, with dispose-safe fallbacks that match the methods' own no-op
+  // semantics (export → null, import → false when atlases aren't available).
+  const giEngine = engine as Engine & Partial<GIStatePersistable>;
+  if (typeof giEngine.exportGIState === 'function') {
+    (proxy as Partial<GIStatePersistable>).exportGIState = () =>
+      disposed ? Promise.resolve(null) : giEngine.exportGIState!();
+  }
+  if (typeof giEngine.importGIState === 'function') {
+    (proxy as Partial<GIStatePersistable>).importGIState = (snapshot) =>
+      disposed ? false : giEngine.importGIState!(snapshot);
   }
 
   return proxy;

@@ -65,3 +65,16 @@ export {
 // this concrete type for compile-time key checking without @vitrum/core baking
 // a backend-specific shape into the universal contract.
 export type { LightingOptions } from '@vitrum/walkaround-hybrid';
+
+// GI-state persistence (cached light field) — the walkaround-hybrid backend's
+// DDGI probe-atlas export/import, forwarded by the createEngine() facade so
+// hosts can persist/restore converged GI without dropping to the concrete
+// HybridEngine. `createEngine()` returns `Engine & Partial<GIStatePersistable>`
+// (the methods are present only on the walkaround backend). `serializeGIState` /
+// `deserializeGIState` convert a snapshot to/from a transferable ArrayBuffer.
+export type { GIStatePersistable } from './idempotentDispose.js';
+export {
+  serializeGIState,
+  deserializeGIState,
+  type GIStateSnapshot,
+} from '@vitrum/walkaround-hybrid';
