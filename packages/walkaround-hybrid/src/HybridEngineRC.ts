@@ -32,6 +32,7 @@ import type * as THREE from 'three';
 import type { StorageBufferAttribute } from 'three/webgpu';
 import { RCDispatcher, CASCADE_DIMS, type CascadeDim } from '@vitrum/walkaround-rc';
 import { buildRCSceneBVH, packCascadeMaterials, type SceneBVH } from './rc/bvhCompute.js';
+import { padTriangleIndicesToVec4 } from './ddgi/probeUpdateMaterials.js';
 import { refitBvhBounds } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './restir/bvhCompute.js';
 import {
@@ -444,13 +445,46 @@ export class RCSubsystem implements PipelineSubsystem {
   }
 
   private _uploadBVH(bvh: SceneBVH): RCBVHBuffers {
+    // F-RC1 FIX: the merged index buffer from `buildRCSceneBVH` (→ `buildSceneBVH`)
+    // is STRIDE-3 (3 u32/tri, 12 bytes, no padding — `bvhCommon.ts` always emits
+    // stride-3 indices). But the RC probe shader declares
+    // `rc_geom_index: array<vec4u>` and `rcTraceFirstHit` calls the vec4-storage
+    // `bvhIntersectFirstHit`, which reads each entry at a 16-byte stride. Uploading
+    // the raw stride-3 bytes makes the GPU read `bvhIndex.xyz[t]` from byte 16·t
+    // while the data lives at 12·t — correct ONLY for tri 0 (16·0==12·0); for tri≥1
+    // it reads ACROSS triangle boundaries → wrong vertices → tree-shape-dependent
+    // garbage (the F-RC1 17.75 dB / 3× lit-slot divergence). Pad to stride-4 (vec4u,
+    // .w=0) before upload, EXACTLY as the sibling DDGI merged path does
+    // (`probeUpdateBvhBuffers.rebuildProbeBvhFromScene` → `padTriangleIndicesToVec4`,
+    // which is why DDGI over the same builder renders correctly at 82 dB). RC's TLAS
+    // path already feeds stride-4 (`snap.bvhIndex`), so only the merged upload needed
+    // this. The stride-3 `bvh.indices` is retained unchanged for the refit fast path
+    // (`refitBvhBounds` reads `indices[t*3+k]`), so the CPU mirror at `setScene` stays
+    // stride-3. The index buffer is never re-uploaded on a transform refit, so padding
+    // once here is sufficient.
+    const idxStride4 = padTriangleIndicesToVec4(bvh.indices.array as Uint32Array);
     return {
       bvhNodesBuf:      this._uploadAttribute(bvh.bvhNodes,      'rc-bvh-nodes'),
-      bvhIndicesBuf:    this._uploadAttribute(bvh.indices,        'rc-bvh-indices'),
+      bvhIndicesBuf:    this._uploadTypedArray(idxStride4,        'rc-bvh-indices'),
       bvhPositionsBuf:  this._uploadAttribute(bvh.positions,      'rc-bvh-positions'),
       materialsBuf:     this._uploadAttribute(bvh.materials,      'rc-bvh-materials'),
       triMaterialIdBuf: this._uploadAttribute(bvh.triMaterialId,  'rc-bvh-tri-mat-id'),
     };
+  }
+
+  /** Upload a raw typed array as a STORAGE buffer (used for the F-RC1 stride-4
+   *  index pad, which produces a fresh Uint32Array not backed by a
+   *  StorageBufferAttribute). */
+  private _uploadTypedArray(arr: Float32Array | Uint32Array, label: string): GPUBuffer {
+    const buf = this._device.createBuffer({
+      label,
+      size:  Math.max(arr.byteLength, 16),
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+    });
+    new Uint8Array(buf.getMappedRange()).set(new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength));
+    buf.unmap();
+    return buf;
   }
 
   private _uploadAttribute(attr: StorageBufferAttribute, label: string): GPUBuffer {
