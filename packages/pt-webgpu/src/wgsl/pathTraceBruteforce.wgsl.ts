@@ -9,6 +9,10 @@ import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from './pathTrace/material.wgsl.js
 import { PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL } from './pathTrace/intersection.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from './pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_WGSL } from './pathTrace/connect.wgsl.js';
+import {
+  MNEE_NEWTON_WGSL,
+  MNEE_CONNECTION_WGSL,
+} from './pathTrace/mneeNewton.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from './pathTrace/caustic.wgsl.js';
 import {
   PT_WEBGPU_PATH_TRACE_KERNEL_WGSL,
@@ -41,8 +45,11 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  *   6. `connect`      — environment-map helpers (sky / equirect / importance)
  *                       + area-light directional intersectors +
  *                       BSDF→light/env MIS connection contributions.
- *   7. `caustic`      — MNEE chain walker + manifold-NEE + photon-map
- *                       gather strategies (causticStrategy modes 1 / 2).
+ *   6b. `mneeNewton`  — the real MNEE half-vector Newton solve +
+ *                       `mneeReflectionIrradiance` connection core. Placed BEFORE
+ *                       `caustic` so the reflection-caustic strategy can call it.
+ *   7. `caustic`      — REAL MNEE reflection caustic + transmissive cone-search
+ *                       MNEE + photon-map gather (causticStrategy modes 1 / 2).
  *   8. `kernel`       — primary-ray generation, projectToNdc, causticMode,
  *                       RR helpers, accumulateFrame, and the @compute @main
  *                       entry point that walks each path.
@@ -77,6 +84,8 @@ ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
+${MNEE_NEWTON_WGSL}
+${MNEE_CONNECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
@@ -99,6 +108,8 @@ ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
 ${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
+${MNEE_NEWTON_WGSL}
+${MNEE_CONNECTION_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
 ${PT_WEBGPU_BDPT_CONNECTION_WGSL}
 ${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}

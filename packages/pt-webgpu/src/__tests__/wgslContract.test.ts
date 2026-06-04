@@ -19,11 +19,12 @@ import { fileURLToPath } from 'node:url';
 describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed full-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
-    // Updated for P2: SceneHit.baryVW + group-3 material-texture bindings +
-    // sampleBaseColorTexture + the shade-prologue baseColor texture multiply +
-    // alphaTestPassThrough + the kernel alpha-mask/blend pass-through loop.
-    expect(digest).toBe('2145c29c07252392f9584e50a368655cef6b638c8f1dc5fb1ff61a2d6d4d9cbe');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(160176);
+    // Updated for Phase I.1: the trace kernel now composes MNEE_NEWTON_WGSL +
+    // MNEE_CONNECTION_WGSL and the real point-light reflection caustic
+    // (caustic.wgsl.ts:pointLightReflectionCaustic), GPU-validated against the
+    // analytic mirror-image reference (wsl-gpu mnee-reflection-caustic-ab.ts).
+    expect(digest).toBe('eb510fe493389e08f638b7c65f6a8c3d0ef282bd4db3a4450d51fdf45e668218');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(178136);
   });
 });
 
