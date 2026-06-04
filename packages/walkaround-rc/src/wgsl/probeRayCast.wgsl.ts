@@ -38,6 +38,23 @@ ${MATERIAL_ENTRY_WGSL}
 ${BVH_INTERSECT_WGSL}
 ${TLAS_TRAVERSAL_WGSL}
 
+// safe_normalize — zero-length-guarded normalize. Required by TLAS_TRAVERSAL_WGSL
+// (transformDirToWorld / transformDirToLocal call it for the per-instance
+// world↔local ray-direction transforms). The other two TLAS consumers — the DDGI
+// probe shader (probeUpdateRays.wgsl) and the hybrid scene-traversal shaders
+// (sharedPrimitives.wgsl) — each define this same helper alongside their
+// TLAS_TRAVERSAL_WGSL include; RC was the lone consumer that included the TLAS
+// traversal but never defined safe_normalize, so the assembled rc-probe-ray-cast
+// module failed naga compilation (unknown identifier safe_normalize). Mirrors the
+// canonical definition in those siblings. (Latent because RC's probe shader had no
+// GPU-compile gate -- W8 pinned only the CPU packRCParams + wgslCompose order;
+// surfaced by the RC core-BVH converged A/B.)
+fn safe_normalize(v: vec3f) -> vec3f {
+  let len2 = dot(v, v);
+  if (len2 < 1e-20) { return vec3f(0.0, 1.0, 0.0); }
+  return v * inverseSqrt(len2);
+}
+
 // C2 — merged world BVH vs TLAS+local BLAS (same traversal as ReSTIR / DDGI).
 fn rcTraceFirstHit(ray: Ray, triEps: f32) -> IntersectionResult {
   let u = rc_u_arr[0];

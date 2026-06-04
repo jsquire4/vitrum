@@ -352,9 +352,21 @@ export class RCDispatcher {
   }
 
   private _dummyStorageBuffer(device: GPUDevice, label: string): GPUBuffer {
+    // Merged mode (bvhMode == 0) never traverses the TLAS, but the probe-ray
+    // shader STILL declares the five TLAS bindings (group 0, bindings 9–13). The
+    // first, `rc_tlas_nodes: array<BVHNode>`, has a 32-byte struct stride → a
+    // 32-byte MINIMUM binding size. A 16-byte placeholder is REJECTED by strict
+    // backends ("Binding size 16 … less than minimum 32" on lavapipe AND dzn),
+    // invalidating the bind group and silently zeroing the whole cascade. Use a
+    // 32-byte empty placeholder so the merged-mode bind group is valid on every
+    // backend; the u32 / vec4f TLAS bindings (10–13) accept 32 bytes too. The
+    // TLAS-mode path uploads real, larger buffers, so it was never affected. This
+    // is the exact analogue of the DDGI fix `ea88803` (same root cause); latent
+    // because RC's probe shader had no GPU-compile/bind gate (W8 CPU-only) until
+    // the RC core-BVH converged A/B exercised it.
     return device.createBuffer({
       label,
-      size: 16,
+      size: 32,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
   }
