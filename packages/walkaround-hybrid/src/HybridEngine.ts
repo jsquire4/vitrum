@@ -497,6 +497,9 @@ export class HybridEngine implements Engine {
   /** Fires the one-time `FrameInput.viewport`-ignored dev warning at most once
    *  per engine instance (see {@link renderFrame}). */
   private _viewportMismatchWarned = false;
+  /** Fires the one-time "non-native environment kind" warning at most once per
+   *  engine instance (see {@link _skyScalarsFromEnvironment}). */
+  private _proceduralSkyWarned = false;
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -1440,6 +1443,144 @@ export class HybridEngine implements Engine {
     // _pipeline may be null if the engine is still initialising; the flag is
     // applied as soon as the pipeline exists (set before any renderFrame call).
     this._pipeline?.requestAccumReset();
+  }
+
+  /**
+   * Apply an environment-only update at runtime (HDRI intensity swap, or a
+   * transition to `kind: 'none'`) WITHOUT rebuilding the BVH or re-uploading
+   * geometry / materials. Implements the optional `Engine.updateEnvironment`
+   * contract; the sibling of {@link updateLighting} for the env-map / sky-config
+   * dimension. `attachVitrum` / a host can call this for time-of-day env scrubs
+   * the way `pt-webgl` does, with no engine recreation.
+   *
+   * **What this backend's "environment" actually is.** The walkaround-hybrid
+   * realtime stack has NO IBL baker / equirect sampler (unlike `pt-webgl`'s
+   * `IblBakerCache`). Its environment lighting is the diffuse sky-dome pair
+   * {@link _skyTint} (RGB) + {@link _skyIrradiance} (scalar) consumed by the
+   * DDGI ProbeUpdate UBO + the shade pass's sky-aperture / sky-miss paths.
+   * So a runtime env swap MAPS the `SceneEnvironment` onto those scalars
+   * (see {@link _skyScalarsFromEnvironment}); there is no real HDRI texture to
+   * re-bake, so this is intentionally cheap.
+   *
+   * **What it does (the minimal correct update):**
+   *  - Maps the env → sky scalars and mutates `_skyTint` / `_skyIrradiance`
+   *    (same fields `updateLighting` touches — one source of truth for the
+   *    per-frame {@link _lightingSnapshot}).
+   *  - Caches the env on `_lastScene.environment` so the engine's scene-state
+   *    read reflects the swap (parallels pt-webgl/pt-webgpu caching the env on
+   *    their scene record). A `null` env collapses to `{ kind: 'none' }` (the
+   *    Scene.environment field is non-nullable).
+   *  - Invalidates the DDGI probe cache (re-converges the world-space irradiance
+   *    atlas over the next STRIDE frames) and resets the temporal accumulator —
+   *    exactly the sky-portion of `updateLighting`, because the sky-dome term
+   *    feeds both the probe rays and the shade pass.
+   *
+   * **What it deliberately does NOT re-do:** no BVH rebuild, no pipeline
+   * recompile, no FrameResources reallocation, no scene re-partition — geometry
+   * and materials are untouched. That is the whole point of an env-only fast
+   * path (cf. `setScene`, which tears the pipeline down).
+   *
+   * **Known limitation (HDRI directionality/colour).** Because there is no
+   * baker, an `hdri` env's opaque texture is NOT sampled: only its `intensity`
+   * is honoured (→ `skyIrradiance`); its dominant colour + rotation are not
+   * reflected and `skyTint` is left as the host last set it (via opts /
+   * `updateLighting`). A host that wants a tinted sky should pair an
+   * `updateLighting({ skyTint })`. A `procedural-sky` env (NOT in this backend's
+   * `supportedEnvironmentKinds`) is best-effort: its `intensity` is applied and a
+   * one-time warning is logged. The full directional IBL is a `pt-webgl` /
+   * `pt-webgpu` capability, not a walkaround-hybrid one.
+   *
+   * After {@link dispose} this is a safe no-op (matches the runtime-update
+   * siblings + the `@vitrum/engine` facade's `'noop'` disposed-behaviour for
+   * `updateEnvironment`) — the DDGI subsystem is torn down on dispose, so
+   * touching it would be unsafe.
+   *
+   * @param env the new scene environment, or `null` to clear it (≡ `{ kind:
+   *   'none' }`).
+   */
+  updateEnvironment(env: SceneEnvironment | null): void {
+    // Disposed → no-op. The runtime-update contract for `updateEnvironment` is
+    // `'noop'` after dispose (see @vitrum/engine idempotentDispose), and
+    // `dispose()` already called `this._ddgi.dispose()`, so the
+    // invalidateProbeCache() below would touch a torn-down subsystem. Guard
+    // here so the direct (non-facade) call is also safe.
+    if (this._state === 'disposed') return;
+
+    const nextEnv: SceneEnvironment = env ?? { kind: 'none' };
+    // Cache on the live scene so a later scene-state read / debug surface sees
+    // the current env (parallels pt-webgl/pt-webgpu). `_lastScene` may be null
+    // if no setScene() ran yet — still record the sky-scalar change; the next
+    // setScene() carries its own environment.
+    if (this._lastScene != null) {
+      this._lastScene = { ...this._lastScene, environment: nextEnv };
+    }
+
+    // Map the env onto this backend's sky-dome scalars (the only env channel it
+    // consumes — there is no IBL baker here). Omitted fields leave the
+    // corresponding scalar unchanged.
+    const sky = this._skyScalarsFromEnvironment(nextEnv);
+    if (sky.skyTint !== undefined) this._skyTint = sky.skyTint;
+    if (sky.skyIrradiance !== undefined) this._skyIrradiance = sky.skyIrradiance;
+
+    // Re-converge the world-space DDGI irradiance atlas (the sky-dome term feeds
+    // the probe rays) and discard temporal history so the new sky energy shows
+    // immediately rather than bleeding in over the accumulation window. Same
+    // invalidation `updateLighting` does for the sky portion; `_pipeline` may be
+    // null mid-init (the accum-reset flag is applied once the pipeline exists).
+    this._ddgi.invalidateProbeCache();
+    this._pipeline?.requestAccumReset();
+  }
+
+  /**
+   * Map a `SceneEnvironment` onto this backend's diffuse sky-dome scalars
+   * ({@link _skyTint} / {@link _skyIrradiance}). No GPU work and no engine-state
+   * mutation beyond flipping the one-time {@link _proceduralSkyWarned} flag, so
+   * the mapping is straightforward to unit-test. Returns only the fields that
+   * should change — an omitted field leaves the engine's current scalar in
+   * place (so e.g. an `hdri` swap that carries no tint preserves a host-supplied
+   * `skyTint`).
+   *
+   * Mapping (see {@link updateEnvironment} for the full rationale):
+   *  - `none` → `skyIrradiance: 0` (sky contributes no light; matches
+   *    `applyEnvironment`'s black-background `none`). Tint left unchanged.
+   *  - `hdri` → `skyIrradiance: intensity ?? 1` (the only HDRI channel a
+   *    baker-less stack can honour). Tint + rotation NOT derived (no opaque-ref
+   *    sampling); `skyTint` left unchanged.
+   *  - `procedural-sky` → best-effort `skyIrradiance: intensity ?? 1` + a
+   *    one-time `console.warn` (this kind is outside `supportedEnvironmentKinds`
+   *    here — full procedural sky is a converged-PT-backend feature).
+   */
+  private _skyScalarsFromEnvironment(
+    env: SceneEnvironment,
+  ): { skyTint?: [number, number, number]; skyIrradiance?: number } {
+    switch (env.kind) {
+      case 'none':
+        // Sky off: zero the irradiance scalar (the sky-dome term drops out of
+        // both the probe rays and the shade pass). Leave the tint colour alone.
+        return { skyIrradiance: 0 };
+      case 'hdri':
+        // No baker on this stack — honour only the HDRI intensity as the sky
+        // irradiance. Colour + rotationY are not reflected (would need a baked
+        // dominant/average colour the walkaround stack does not compute).
+        return { skyIrradiance: env.intensity ?? 1 };
+      default: {
+        // `procedural-sky` (or any future kind) is not natively wired here —
+        // apply its intensity (if present) and warn once so the partial support
+        // is visible rather than a silent drop.
+        const intensity = (env as { intensity?: number }).intensity;
+        if (!this._proceduralSkyWarned) {
+          this._proceduralSkyWarned = true;
+          console.warn(
+            `[HybridEngine] updateEnvironment: environment kind '${(env as { kind: string }).kind}' ` +
+              `is not natively supported on the walkaround-hybrid backend ` +
+              `(supportedEnvironmentKinds: 'none' | 'hdri'). Applying its intensity ` +
+              `to the diffuse sky-dome only — its directional sky is ignored. Use ` +
+              `the pt-webgl / pt-webgpu backend for a procedural / image-based sky.`,
+          );
+        }
+        return typeof intensity === 'number' ? { skyIrradiance: intensity } : {};
+      }
+    }
   }
 
   // ── Resize ─────────────────────────────────────────────────────────────

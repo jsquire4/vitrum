@@ -174,7 +174,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     methodPromises: {
       updatePrimitive: true,
       updateEmitter: true,
-      updateEnvironment: false,
+      // Env-only runtime update IS implemented (HybridEngine.updateEnvironment):
+      // maps the SceneEnvironment onto the diffuse sky-dome scalars
+      // (skyTint/skyIrradiance — this backend has no IBL baker), invalidates the
+      // DDGI probe cache + resets the temporal accumulator, with NO BVH rebuild.
+      // HDRI is intensity-only (no equirect sampling); see the method's JSDoc.
+      updateEnvironment: true,
       // Implemented — see supportsAddRemovePrimitive above (full setScene-rebuild).
       addPrimitive: true,
       removePrimitive: true,
