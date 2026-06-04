@@ -79,7 +79,16 @@ export function rebuildProbeBvhFromScene(
   g.idxBuf = upload(g.idxBuf, idx4.buffer);
   g.normBuf = upload(g.normBuf, buffers.normals.buffer);
   g.matIdBuf = upload(g.matIdBuf, buffers.triMaterialId.buffer);
-  const empty = new ArrayBuffer(16);
+  // Merged mode does not traverse the TLAS, but the probe-rays shader STILL
+  // declares the five TLAS bindings (group 0, bindings 5–9). The first of them,
+  // `tlasNodes: array<BVHNode>`, has a 32-byte struct stride → a minimum binding
+  // size of 32 bytes. A 16-byte placeholder is REJECTED by strict backends
+  // ("Binding size 16 … less than minimum 32" on lavapipe AND dzn), which makes
+  // the bind group invalid and silently zeroes the probe atlas. Use a 32-byte
+  // empty placeholder so the merged-mode bind group is valid on every backend.
+  // (The TLAS-mode path uploads real, larger buffers via `rebuildProbeBvhFromRestir`,
+  // so it was never affected.)
+  const empty = new ArrayBuffer(32);
   g.tlasNodesBuf = upload(g.tlasNodesBuf, empty);
   g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, empty);
   g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, empty);
