@@ -28,7 +28,9 @@ import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import {
   PT_WEBGPU_ADJOINT_PASS_WGSL,
   ADJOINT_PARAMS_UBO_BYTES,
+  ADJOINT_FIELD_BASECOLOR,
   ADJOINT_FIELD_ROUGHNESS,
+  ADJOINT_FIELD_EMISSIVE,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import { readOidnInputsFromTextures } from './denoise/rgba16fReadback.js';
@@ -828,15 +830,23 @@ class PTEngineWebGPU implements Engine {
   /**
    * WS5 Phase-1 path-replay adjoint pass (the `computeAdjointGradient` hook). One
    * dispatch of `PT_WEBGPU_ADJOINT_PASS_WGSL` over the live scene buffers: per
-   * pixel it re-traces the frozen-seed primary ray (brute-force closest-hit),
-   * re-derives the single-bounce point-light direct lighting, and accumulates
-   * `∂loss/∂θ` for the optimized material params through the GPU-validated BRDF
-   * partials + fixed-point `adjointScatter`. Returns the flat gradient. Replaces
-   * the session's N-render FD probe loop with one baseline render + this pass.
+   * pixel it re-traces the frozen-seed primary ray (brute-force closest-hit) and
+   * accumulates `∂loss/∂θ` for the optimized material params through the
+   * GPU-validated partials + fixed-point `adjointScatter`:
+   *  - baseColor / roughness — single-bounce point + rect-area direct-light NEE
+   *    (the BRDF partials `dBrdf_dBaseColor` / `dBrdf_dRoughness`);
+   *  - emissive — the camera-DIRECT emission at the primary hit (NOT a NEE term):
+   *    `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity` (dContribution_dEmissive
+   *    with throughput = 1). The packed material folds intensity into emissive.rgb,
+   *    so the fixed emissiveIntensity rides in the descriptor's `.w` (bitcast f32).
+   * Returns the flat gradient. Replaces the session's N-render FD probe loop with
+   * one baseline render + this pass.
    *
    * The per-hit shading partials + the chain-rule accumulation are GPU-validated
    * (adjoint-validate.ts / adjoint-fd-validate.ts); the assembled pass is A/B'd
-   * against the FD gradient the session also computes (V24).
+   * against the FD gradient the session also computes — baseColor/roughness via
+   * `v24-inverse-fit.mjs`, emissive via `v24-emissive-fit.mjs` (sign-match +
+   * convergence on lavapipe, V24).
    */
   async #computeAdjointGradient(req: AdjointGradientRequest): Promise<Float32Array> {
     const device = this.#device;
@@ -879,17 +889,34 @@ class PTEngineWebGPU implements Engine {
     uboU[25] = channels >>> 0;
     uboU[26] = sb.rectAreaLightCount >>> 0;
 
-    // adjointParamDescs: per param {matId, fieldCode, gradOffset, _}.
+    // adjointParamDescs: per param {matId, fieldCode, gradOffset, w}. For an
+    // emissive param `w` carries the FIXED emissiveIntensity (bitcast f32) the
+    // pass folds back in (the packed material folds intensity INTO emissive.rgb,
+    // so the partial ∂rendered/∂emissive_param = throughput · emissiveIntensity);
+    // baseColor/roughness leave it 0. A Float32 view aliases the same buffer so
+    // the .w slot can hold an f32 the shader reads via bitcast<f32>.
     const descs = new Uint32Array(Math.max(params.length, 1) * 4);
+    const descsF = new Float32Array(descs.buffer);
     for (let i = 0; i < params.length; i++) {
       const p = params[i]!;
       const matId = materialIndexForPrimitive(this.#scene, p.id, this.#supportedAnalyticShapes());
       if (matId == null) {
         throw new Error(`computeAdjointGradient: no material index for primitive "${p.id}".`);
       }
+      const fieldCode =
+        p.field === 'roughness'
+          ? ADJOINT_FIELD_ROUGHNESS
+          : p.field === 'emissive'
+            ? ADJOINT_FIELD_EMISSIVE
+            : ADJOINT_FIELD_BASECOLOR;
       descs[i * 4 + 0] = matId >>> 0;
-      descs[i * 4 + 1] = p.field === 'roughness' ? ADJOINT_FIELD_ROUGHNESS : 0;
+      descs[i * 4 + 1] = fieldCode;
       descs[i * 4 + 2] = p.offset >>> 0;
+      if (fieldCode === ADJOINT_FIELD_EMISSIVE) {
+        // Read the live emissiveIntensity (held fixed during the fit) for the fold.
+        const prim = this.#scene.primitives.find((pr) => pr.id === p.id);
+        descsF[i * 4 + 3] = prim?.material.emissiveIntensity ?? 1;
+      }
     }
 
     const U = (globalThis as { GPUBufferUsage: typeof GPUBufferUsage }).GPUBufferUsage;

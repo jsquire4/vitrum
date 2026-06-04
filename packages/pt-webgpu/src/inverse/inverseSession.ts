@@ -19,8 +19,8 @@
  * chain rule + fixed-point accumulation match an on-device finite-difference.
  * The session requests 'path-replay' only when the engine provides the hook AND
  * every parameter is in the adjoint-differentiable set
- * (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness); any
- * shortfall (no hook, an emitter param, an `emissive` / `ior` param, etc.) resolves the
+ * (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive); any
+ * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
  * silent wrong-gradient path. An engine providing the hook vouches that its
  * re-trace dispatch is hardware-validated.
@@ -85,7 +85,7 @@ export interface InverseEngineHooks {
    * and returns the flat gradient. Replaces the N-render FD probe loop with one
    * baseline render + one adjoint pass. The session only requests this when the
    * hook exists AND every parameter is adjoint-eligible (`ADJOINT_ELIGIBLE_FIELDS`:
-   * material baseColor / roughness); otherwise it reports + uses
+   * material baseColor / roughness / emissive); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
@@ -125,26 +125,32 @@ export interface AdjointGradientRequest {
  *
  *  - `baseColor`, `roughness` — the original Phase-1 BSDF partials
  *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`), GPU-validated end-to-end (V24).
+ *  - `emissive` — the camera-direct emission partial `dContribution_dEmissive`
+ *    (∂rendered_c/∂emissive_c = throughput · emissiveIntensity, scattered at the
+ *    PRIMARY hit where the camera sees the emissive surface directly — NOT a NEE
+ *    term, so it needs no light). GPU-validated end-to-end on lavapipe
+ *    (`wsl-gpu tests/v24-emissive-fit.mjs`): the path-replay engine adjoint
+ *    gradient SIGN-MATCHES the full-render FD on the decisive channels and the fit
+ *    converges (param error 3→~0.4). The earlier divergent trial scattered emissive
+ *    inside the NEE loop / without folding the live emissiveIntensity through the
+ *    descriptor; the fix scatters it at the primary hit gated by the matId match
+ *    and hands the fixed emissiveIntensity in the descriptor `.w` (bitcast f32).
  *
- * `emissive` and `ior` are deliberately NOT here — both optimize via finite
- * difference (correct, just slower), and both have a GPU-validated analytic
- * partial (`dContribution_dEmissive`, `dFrDielectric_dIor` — analytic == FD in
- * isolation, `ADJOINT_EMISSIVE_IOR_FD_WGSL`) ready for a future path-replay wire:
- *  - `emissive`: a trial engine-pass scatter produced a DIVERGENT / sign-wrong
- *    end-to-end gradient (the inverse fit moved AWAY from the target, err 3→8),
- *    so emissive stays on FD until the engine emissive scatter is debugged AND an
- *    inverse fit converges. The analytic partial is validated; the engine wire is not.
- *  - `ior`: `∂evaluateBrdf/∂ior ≡ 0` in the current forward (opaque-reflective F0
- *    is a fixed 0.04, not ior-derived); the single-bounce adjoint doesn't trace
- *    the transmissive Fresnel partition where ior IS differentiable.
+ * `ior` is deliberately NOT here — it optimizes via finite difference (correct,
+ * just slower) and has a GPU-validated analytic partial (`dFrDielectric_dIor` —
+ * analytic == FD in isolation, `ADJOINT_EMISSIVE_IOR_FD_WGSL`) ready for a future
+ * path-replay wire: `∂evaluateBrdf/∂ior ≡ 0` in the current forward
+ * (opaque-reflective F0 is a fixed 0.04, not ior-derived), and the single-bounce
+ * adjoint doesn't trace the transmissive Fresnel partition where ior IS
+ * differentiable.
  *
  * NOTE: adding a field here makes `inverseSession` REQUEST path-replay; the
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
  * gradient — GPU-VALIDATED BY A CONVERGING INVERSE FIT, not just an in-isolation
  * partial — or the result is a silently-wrong gradient. A field only graduates
- * here once its end-to-end fit converges (emissive's did not, yet).
+ * here once its end-to-end fit converges (baseColor / roughness / emissive have).
  */
-const ADJOINT_ELIGIBLE_FIELDS = new Set(['baseColor', 'roughness']);
+const ADJOINT_ELIGIBLE_FIELDS = new Set(['baseColor', 'roughness', 'emissive']);
 
 interface ParamSlot {
   readonly param: InverseParam;

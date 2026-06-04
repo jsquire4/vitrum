@@ -38,6 +38,14 @@ import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from './pathTraceAdjoint.wgsl.js';
 /** Field codes in the adjointParams descriptor (matches inverseSession fields). */
 export const ADJOINT_FIELD_BASECOLOR = 0;
 export const ADJOINT_FIELD_ROUGHNESS = 1;
+/** Emissive (rgb). UNLIKE baseColor/roughness this is NOT a lit-surface NEE term:
+ *  the forward adds `throughput · emissive` for the emission a CAMERA ray sees the
+ *  surface emit DIRECTLY at the PRIMARY hit (shadePrologue.wgsl.ts:63, with
+ *  throughput = 1 and prevSampleAllowsAreaMis false on a camera ray). Its partial
+ *  ∂rendered_c/∂emissive_c = throughput_c · emissiveIntensity is a self-source — it
+ *  needs no light. The descriptor carries the (fixed) emissiveIntensity in `.w`
+ *  (bitcast f32), because the packed material folds intensity INTO emissive.rgb. */
+export const ADJOINT_FIELD_EMISSIVE = 2;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 2×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16;
@@ -191,6 +199,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   let base = pixel * params.channels;
   let dLoss_dR = vec3f(dLossDRendered[base], dLossDRendered[base + 1u], dLossDRendered[base + 2u]);
 
+  // Emissive partial — NOT a NEE term. The forward adds throughput * emissive for
+  // the emission this surface is seen to emit DIRECTLY by the camera ray at THIS
+  // (primary) hit (shadePrologue.wgsl.ts:63). Path-replay's primary hit has
+  // throughput = 1, so d(rendered_c)/d(emissive_c) = emissiveIntensity (dContribution_
+  // dEmissive with throughput = 1), and d(loss)/d(emissive_c) = dLoss_dR_c * intensity.
+  // Independent of light visibility — computed here, scattered per-descriptor below
+  // with that descriptor's fixed emissiveIntensity (carried in .w). It is gated by
+  // the matId match in the scatter loop, so a pixel only contributes to the emissive
+  // gradient when ITS primary-hit material is the optimized emissive primitive.
+  let dRendered_dEmissivePerUnitIntensity = dContribution_dEmissive(vec3f(1.0), 1.0); // = (1,1,1)
+
   // Single-bounce direct lighting, summed deterministically over all point lights.
   var gBaseColor = vec3f(0.0);
   var gRough = 0.0;
@@ -238,7 +257,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     gRough = gRough + dot(dLoss_dR, dBrdf_dRoughness(baseColor, roughness, metallic, n, wo, wi) * nDotL * Li);
   }
 
-  // Scatter into the gradient slot of every param that targets this material.
+  // Scatter into the gradient slot of every param that targets THIS hit's material
+  // (the matId gate is what makes the emissive gradient respond to the optimized
+  // primitive's own pixels — a pixel whose primary hit is a different material
+  // contributes nothing to that primitive's emissive slot).
   for (var k = 0u; k < params.paramCount; k = k + 1u) {
     let d = adjointParamDescs[k];
     if (d.x != matId) { continue; }
@@ -247,6 +269,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       adjointScatter(gradOffset, gBaseColor.x);
       adjointScatter(gradOffset + 1u, gBaseColor.y);
       adjointScatter(gradOffset + 2u, gBaseColor.z);
+    } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
+      // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
+      // folds intensity into emissive.rgb, so the host hands the fixed
+      // emissiveIntensity in the descriptor's .w (bitcast f32); the partial per
+      // unit intensity is (1,1,1) at the primary hit (throughput = 1).
+      let emissiveIntensity = bitcast<f32>(d.w);
+      let gEmissive = dLoss_dR * dRendered_dEmissivePerUnitIntensity * emissiveIntensity;
+      adjointScatter(gradOffset, gEmissive.x);
+      adjointScatter(gradOffset + 1u, gEmissive.y);
+      adjointScatter(gradOffset + 2u, gEmissive.z);
     } else {
       adjointScatter(gradOffset, gRough);
     }

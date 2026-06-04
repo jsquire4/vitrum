@@ -251,16 +251,20 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     session.dispose();
   });
 
-  it('keeps emissive on finite-difference (analytic partial validated, but the engine scatter is not)', () => {
+  it('resolves emissive to path-replay (engine emissive scatter GPU-validated end-to-end)', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
       target,
       parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
       method: 'path-replay',
     });
-    // emissive is NOT in ADJOINT_ELIGIBLE_FIELDS: the analytic dContribution_dEmissive
-    // is GPU-validated, but a trial engine-pass scatter gave a divergent end-to-end
-    // gradient, so emissive optimizes via FD until that engine wire is fixed+validated.
-    expect(session.method).toBe('finite-difference');
+    // emissive is in ADJOINT_ELIGIBLE_FIELDS: the engine adjoint scatters the
+    // camera-DIRECT emission at the primary hit (∂loss/∂emissive_c = dLoss_dR_c ·
+    // emissiveIntensity, dContribution_dEmissive with throughput = 1), with the
+    // fixed emissiveIntensity carried in the descriptor `.w` (bitcast f32). The
+    // end-to-end fit converges + sign-matches FD on lavapipe (wsl-gpu
+    // tests/v24-emissive-fit.mjs). The earlier divergent trial scattered emissive
+    // inside the NEE loop and validated against a barely-visible target.
+    expect(session.method).toBe('path-replay');
     session.dispose();
   });
 
@@ -285,6 +289,9 @@ describe('inverseSession — emissive/ior field-set widening', () => {
       ],
       method: 'path-replay',
     });
+    // emissive IS eligible now, but ior is not — path-replay requires EVERY param
+    // eligible, so the whole step degrades to FD on the ior holdout (the all-or-
+    // nothing method-resolution contract: no mixed analytic/FD gradient).
     expect(session.method).toBe('finite-difference');
     session.dispose();
   });
