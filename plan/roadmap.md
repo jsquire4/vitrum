@@ -67,7 +67,7 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 **Maturity labels (accurate as of 2026-05-26 signoffs):**
 
 - **Release-candidate track:** `@vitrum/engine`, `@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl` — pipeline shipped, mechanical tests green, backend maturity matrix “strong” on deep integration.
-- **Peer hero backend, fidelity-experimental:** `@vitrum/pt-webgpu` — contract-strong, deep audit closed; many renderer rows still `experimental` until GPU gap-closure promotes them.
+- **Peer hero backend, fidelity-PROMOTED:** `@vitrum/pt-webgpu` — contract-strong, deep audit closed; **all 9 rendering rows promoted to `supported` 2026-06-04** (commit `3c58f39`, dzn RTX 4090 A/Bs). The `experimental` tier now applies to the pt-webgl **fork** rows (spectral V9 out-of-gamut negatives / WebGL2 capture path), not pt-webgpu.
 - **Not “alpha” / “pre-alpha prototype”** for the primary surface — those terms are stale in scattered docs; prefer **RC track**, **experimental feature tier**, or **pre-1.0 API**.
 
 ---
@@ -105,7 +105,7 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 
 | Gap | Impact |
 |-----|--------|
-| **Fidelity matrix mostly `experimental`** | Hero spectral, thin-film, SSS, caustics, multi-emitter, BDPT — implemented mechanically; GPU acceptance captures pending for `supported` promotion. |
+| ~~**Fidelity matrix mostly `experimental`**~~ **PROMOTED (2026-06-04, `3c58f39`)** | All 9 pt-webgpu rows (spectral, thin-film, SSS, caustic, multi-emitter, layered, material-fields, BDPT, …) now `supported` via dzn RTX 4090 A/Bs. The pt-webgl **fork** rows remain `experimental` (V9 negatives / WebGL2 capture path). |
 | ~~**pt-webgpu GPU BDPT light-subpath**~~ **SHIPPED (see §0.5)** | `bdptExtendLightSubpath` @compute pass dispatched; CPU fill is test-oracle only. |
 | **SVGF-real on pt-webgl** | Row: `unsupported` on WebGL2 path. |
 | **Topology-changing animation** | Incremental patches strong; vertex-count / index changes still force full `setScene()` on PT backends. |
@@ -303,7 +303,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 
 ### 6.1 P0 — Fidelity promotion program
 
-**Problem:** `plan/renderer-fidelity-matrix.md` rows are `experimental`; promotion requires GPU evidence.
+**Problem (RESOLVED 2026-06-04, commit `3c58f39`):** all 9 pt-webgpu rows promoted `experimental`→`supported` via dzn (RTX 4090) A/Bs — the process below was followed (harnesses live in wsl-gpu, not `tools/benchmark-runner`, since wsl-gpu reaches the full-tier adapter). The pt-webgl **fork** rows remain `experimental` (V9 out-of-gamut negatives / WebGL2 capture path); SVGF-real stays `unsupported` (regime mismatch). The per-row process (kept as the record):
 
 **Process per row:**
 
