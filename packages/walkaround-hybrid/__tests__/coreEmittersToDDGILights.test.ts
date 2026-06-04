@@ -222,7 +222,7 @@ describe('coreEmittersToDDGILights — point emitter', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5 — disc-area uses π·r² area; spot maps to a point-like fixture
+// 5 — disc-area uses π·r² area; spot maps to a fixture WITH real cone data
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('coreEmittersToDDGILights — disc-area + spot', () => {
@@ -244,7 +244,7 @@ describe('coreEmittersToDDGILights — disc-area + spot', () => {
     expect(light!.color).toEqual({ r: 1, g: 1, b: 1 });
   });
 
-  it('spot maps to a point-like fixture (cone dropped — low-freq indirect only)', () => {
+  it('spot maps to a fixture WITH real cone data (spotAxis + cosInner/cosOuter)', () => {
     const spot: SpotEmitter = {
       id: 'spot-1',
       kind: 'spot',
@@ -262,6 +262,11 @@ describe('coreEmittersToDDGILights — disc-area + spot', () => {
       position: { x: 3, y: 4, z: 5 },
       color: { r: 0.8, g: 0.8, b: 1 },
     });
+    // Cone fields must be present — evalPointLight uses these for smoothstep falloff.
+    expect(light!.spotAxis).toMatchObject({ x: 0, y: -1, z: 0 });
+    expect(light!.spotCosOuter).toBeCloseTo(Math.cos(0.5), 6);
+    // No penumbra → inner == outer angle (full cone is at full intensity).
+    expect(light!.spotCosInner).toBeCloseTo(Math.cos(0.5), 6);
   });
 });
 

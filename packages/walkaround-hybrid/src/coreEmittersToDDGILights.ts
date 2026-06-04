@@ -67,9 +67,13 @@
  *   - rect-area  → fixture at `position`, area `4·|uAxis × vAxis|`.
  *   - disc-area  → fixture at `position`, area `π·r²`.
  *   - point      → fixture at `position`, scalar intensity (no area).
- *   - spot       → fixture at `position` (point-like approximation; the
- *     probe shader has no cone handling, so the cone is dropped — this
- *     matches the low-frequency indirect-only role DDGI plays).
+ *   - spot       → fixture at `position` WITH cone. `spotAxis` (toward-light
+ *     unit vector), `spotCosInner`, and `spotCosOuter` are packed alongside the
+ *     position. `evalPointLight` in the probe shader applies the cone falloff
+ *     `smoothstep(outerCone, innerCone, dot(toLightDir, spotAxis))` when the
+ *     axis length is non-trivial (axisLen² > 0.25), which correctly confines the
+ *     spot GI contribution to the cone (KHR_lights_punctual convention).
+ *     Point fixtures have a zero axis, so they stay omnidirectional.
  *   - mesh-area  → EXCLUDED. Folded into the referenced mesh's emissive
  *     material by `vitrumSceneToThree`; it reaches DDGI as emissive
  *     geometry probe rays hit, not as an analytic light.

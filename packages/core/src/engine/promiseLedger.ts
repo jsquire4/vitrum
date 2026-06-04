@@ -157,8 +157,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     // TLAS per-instance traversal path.
     supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh'],
     // rect-area/disc-area → ReSTIR-DI emitter tris + DDGI fixtures; mesh-area →
-    // mesh emissive material; point/spot → DDGI fixture lights (spot
-    // point-approximated). See coreEmittersToDDGILights.
+    // mesh emissive material; point/spot → DDGI fixture lights. Spots carry
+    // real cone data (spotAxis + cosInner/cosOuter) and evalPointLight in the
+    // probe shader applies smoothstep cone falloff. See coreEmittersToDDGILights.
     // `directional` → DDGI `sun` light: coreEmittersToDDGILights maps a scene
     // directional to a `sun` DDGILight carrying its real direction (negated to
     // a travel direction), intensity, and colour, and the host single-counts it

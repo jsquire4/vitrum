@@ -787,8 +787,10 @@ export class HybridEngine implements Engine {
       //     vitrumSceneToThree, so it reaches both the ReSTIR-DI emissive-triangle
       //     path and DDGI as emissive geometry.
       //   - point / spot → projected to DDGI fixture lights by
-      //     coreEmittersToDDGILights (spot is a point-like approximation — the
-      //     probe shader has no cone handling).
+      //     coreEmittersToDDGILights. Spots include real cone data (spotAxis +
+      //     cosInner/cosOuter); evalPointLight in the probe shader applies the
+      //     smoothstep falloff when the axis is non-zero (axisLen² > 0.25).
+      //     Points carry a zero axis and remain omnidirectional.
       //   - directional → projected to a DDGI `sun` light by
       //     coreEmittersToDDGILights, carrying the emitter's REAL direction
       //     (negated to a travel direction), intensity, and colour into the
