@@ -96,6 +96,8 @@ import {
 } from './HybridEngineLifecycle.js';
 import { readTunables, readInitTunables, type Tunables, type InitTunables } from './HybridEngineTuning.js';
 import { resolveQualityPreset } from './HybridEngineQualityPreset.js';
+import { FrameBudgetController } from './FrameBudgetController.js';
+import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBudgetController.js';
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import { RCSubsystem } from './HybridEngineRC.js';
@@ -575,6 +577,81 @@ export class HybridEngine implements Engine {
   }
 
   /**
+   * Runtime DDGI probe-update divisor (round-robin stride) setter. The
+   * construction-time value comes from the quality preset / `ddgiUpdateDivisor`
+   * option; this lets a host (or the adaptive frame-budget controller) retune
+   * the GI-refresh cadence per frame without recreating the engine. Clamped to
+   * ≥ 1 by the DDGI subsystem. Cheap (a couple of JS field writes + a UBO field
+   * the next probe-update pass picks up); no atlas teardown.
+   */
+  setDdgiUpdateDivisor(divisor: number): void {
+    this._ddgi.setProbeUpdateDivisor(divisor);
+  }
+
+  /**
+   * Opt-in: turn ON the closed-loop adaptive frame-budget controller (Phase
+   * IV.1 / review gap D1). Idempotent — re-calling with a new config replaces
+   * the controller's config but the engine still owns no cadence: NOTHING
+   * happens until the host feeds measured ms via {@link tickFrameBudget}.
+   *
+   * Seeds the controller's initial knobs from the engine's current state (the
+   * preset/option `resolutionFactor` + `ddgiUpdateDivisor`) so the loop starts
+   * from where the static path left off, then backs off / climbs from there.
+   *
+   * The controller defaults target ~60 fps; pass `{ targetMs: 33.3 }` for 30
+   * fps, etc. See {@link FrameBudgetControllerConfig}.
+   */
+  enableFrameBudget(config: Partial<FrameBudgetControllerConfig> = {}): void {
+    this._frameBudget = new FrameBudgetController(config, {
+      resolutionFactor: this._resolutionFactor,
+      ddgiStride: this._cfg.ddgiUpdateDivisor,
+    });
+  }
+
+  /** Opt-out: turn OFF the adaptive frame-budget controller. The knobs are left
+   *  wherever the loop last set them (the host may restore them explicitly). */
+  disableFrameBudget(): void {
+    this._frameBudget = null;
+  }
+
+  /** True when the adaptive frame-budget loop is enabled. */
+  get frameBudgetEnabled(): boolean {
+    return this._frameBudget !== null;
+  }
+
+  /**
+   * Opt-in adaptive-quality tick. The host calls this ONCE PER FRAME with a
+   * measured frame time (ms) — from the wall-clock `FrameStats.frameTimeMs` of
+   * an `onFrame` subscriber, or from {@link readGpuTimingsOnce}'s confirmed GPU
+   * `total` — and the controller nudges the engine's quality knobs toward the
+   * configured budget.
+   *
+   * Consistent with "the host owns cadence", this does NOT schedule itself and
+   * does NOT read frame time on its own; the host drives it. It applies the
+   * SECONDARY knob (DDGI stride) directly via {@link setDdgiUpdateDivisor} and
+   * returns the decision so the host can feed the PRIMARY knob back as the next
+   * frame's `FrameInput.quality.resolutionFactor` (the resolution lever is a
+   * per-frame host input by contract — `renderFrame` consumes
+   * `quality.resolutionFactor`, debounced).
+   *
+   * No-op (returns `null`) when the controller is not enabled — so a host can
+   * call it unconditionally in its render loop and pay nothing until it opts in
+   * via {@link enableFrameBudget}.
+   *
+   * @returns the {@link FrameBudgetDecision} (whose `resolutionFactor` the host
+   *          should apply next frame), or `null` if the loop is disabled.
+   */
+  tickFrameBudget(measuredMs: number): FrameBudgetDecision | null {
+    if (!this._frameBudget) return null;
+    const decision = this._frameBudget.update(measuredMs);
+    // Apply the secondary lever immediately (it's an engine-owned runtime knob);
+    // the primary lever (resolutionFactor) is a host per-frame input by the
+    // FrameInput contract, so the host applies it via the returned decision.
+    this.setDdgiUpdateDivisor(decision.ddgiStride);
+    return decision;
+  }
+
+  /**
    * The construction-time-immutable derived config (Task 4.2 / Theme A).
    * `parseHybridEngineOptions(opts)` produces this once in the constructor;
    * every tunable-cluster value the engine used to splat onto an individual
@@ -607,6 +684,12 @@ export class HybridEngine implements Engine {
   // ── DDGI subsystem ─────────────────────────────────────────────────────
   private _ddgi:    DDGI;
   private _ddgiOn:  boolean = true;
+
+  // ── Adaptive frame-budget controller (opt-in; Phase IV.1 / review gap D1) ─
+  /** Lazily-created on the first {@link enableFrameBudget}/{@link tickFrameBudget}
+   *  call. Null ⇒ the closed loop is OFF and the static quality path is
+   *  untouched (the engine never reads frame time on its own). */
+  private _frameBudget: FrameBudgetController | null = null;
 
   // ── RC subsystem (W8 Phase 2 — opt-in via opts.rcEnabled) ───────────────
   private _rc: RCSubsystem | null = null;

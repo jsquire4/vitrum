@@ -11,6 +11,13 @@ export type {
 export { HybridEngine, createWalkaroundEngine_Hybrid } from './HybridEngine.js';
 export type { HybridEngineOptions, LightingOptions } from './HybridEngine.js';
 export {
+  FrameBudgetController,
+  DEFAULT_FRAME_BUDGET_CONFIG,
+  type FrameBudgetControllerConfig,
+  type FrameBudgetDecision,
+  type FrameBudgetAction,
+} from './FrameBudgetController.js';
+export {
   serializeGIState,
   deserializeGIState,
   type GIStateSnapshot,
