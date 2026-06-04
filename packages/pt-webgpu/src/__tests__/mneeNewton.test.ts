@@ -13,6 +13,8 @@ import {
   MNEE_CHAIN_HARNESS_WGSL,
   MNEE_CHAIN_PDF_HARNESS_WGSL,
   MNEE_CHAIN_MAX_ITERS,
+  MNEE_CONNECTION_WGSL,
+  MNEE_REFLECTION_HARNESS_WGSL,
   packMneeHarnessInput,
   MNEE_HARNESS_INPUT_FLOATS,
   MNEE_NEWTON_MAX_ITERS,
@@ -107,5 +109,17 @@ describe('MNEE half-vector Newton solve (real-MNEE core)', () => {
     expect(MNEE_CHAIN_WGSL).toContain('return length(cross(dw_ds, dw_dt));');             // basis-free determinant
     expect(MNEE_CHAIN_PDF_HARNESS_WGSL).toContain(MNEE_CHAIN_WGSL);                       // byte-identical core
     expect(MNEE_CHAIN_PDF_HARNESS_WGSL).toContain('let det = mneeChainPdfJacobianDet(res.v1, res.v2');
+  });
+
+  it('reflection contribution core (Phase I.1 integration) — irradiance vs analytic mirror image', () => {
+    // GPU-validated against the EXACT analytic mirror-image point-light irradiance
+    // (mnee-reflection-validate.ts, lavapipe — deterministic, non-noisy). This is
+    // the kernel-ready contribution piece (E = I·cosθ/d_unfolded²); the kernel
+    // multiplies it by the receiver BRDF + visibility.
+    expect(MNEE_CONNECTION_WGSL).toContain('fn mneeReflectionIrradiance(');
+    expect(MNEE_CONNECTION_WGSL).toContain('let dTotal = length(lightPos - v) + length(recv - v);'); // unfolded path = dist(image,recv)
+    expect(MNEE_CONNECTION_WGSL).toContain('return lightIntensity * nDotL / max(dTotal * dTotal, 1e-8);');
+    expect(MNEE_REFLECTION_HARNESS_WGSL).toContain(MNEE_NEWTON_WGSL);  // composes the validated solve
+    expect(MNEE_REFLECTION_HARNESS_WGSL).toContain(MNEE_CONNECTION_WGSL);
   });
 });

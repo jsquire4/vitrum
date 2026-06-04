@@ -414,6 +414,61 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 }
 `;
 
+/**
+ * Single-vertex MNEE REFLECTION irradiance — the kernel-ready contribution core
+ * for a point-light specular-reflection caustic (Phase I.1 of the render
+ * INTEGRATION, distinct from the validated-in-isolation solve/Jacobian/PDF). Given
+ * a receiver + a (seed-found) mirror plane + a point light, Newton-solve the exact
+ * mirror vertex, then return the incident IRRADIANCE E = I·cosθ_recv / d_total²,
+ * where d_total = |light→v| + |v→recv| is the UNFOLDED path length (= the distance
+ * from the light's mirror IMAGE to the receiver). The kernel multiplies E by the
+ * receiver BRDF + a visibility test (both scene-dependent, hence not here).
+ * GPU-validated against the analytic mirror-image irradiance — DETERMINISTIC
+ * ground truth, since a point-light specular caustic is zero-measure for ordinary
+ * NEE/BSDF sampling (that is WHY MNEE exists), so there is no noisy reference.
+ */
+export const MNEE_CONNECTION_WGSL = /* wgsl */ `
+fn mneeReflectionIrradiance(
+  recv: vec3f, recvNormal: vec3f,
+  mirrorP: vec3f, mirrorN: vec3f, mirrorTu: vec3f, mirrorTv: vec3f,
+  lightPos: vec3f, lightIntensity: vec3f,
+) -> vec3f {
+  let res = mneeNewtonSolve(mirrorP, mirrorN, mirrorTu, mirrorTv, recv, lightPos, 1.0, 1.0, ${MNEE_NEWTON_MAX_ITERS}u);
+  if (res.residual > 1e-4) { return vec3f(0.0); }      // no specular connection found
+  let v = res.vertex;
+  let wi = mnee_safe_normalize(v - recv);               // receiver's incident dir (toward the mirror vertex)
+  let nDotL = max(dot(recvNormal, wi), 0.0);
+  if (nDotL <= 1e-5) { return vec3f(0.0); }
+  let dTotal = length(lightPos - v) + length(recv - v); // unfolded path length = dist(image, recv)
+  return lightIntensity * nDotL / max(dTotal * dTotal, 1e-8);
+}
+`;
+
+/** Reflection harness: a mirror at z=0 (+z normal, +x/+y tangents); writes the MNEE
+ *  reflection irradiance.rgb per config. Validated against the analytic mirror-image
+ *  point-light irradiance (deterministic ground truth). */
+export const MNEE_REFLECTION_HARNESS_WGSL = /* wgsl */ `
+${MNEE_NEWTON_WGSL}
+${MNEE_CONNECTION_WGSL}
+
+struct ReflIn { recv: vec3f, _p0: f32, recvNormal: vec3f, _p1: f32, lightPos: vec3f, _p2: f32, intensity: vec3f, _p3: f32 }
+@group(0) @binding(0) var<storage, read>       hIn:  array<ReflIn>;
+@group(0) @binding(1) var<storage, read_write> hOut: array<vec4f>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&hIn)) { return; }
+  let c = hIn[i];
+  let mP = vec3f(0.0, 0.0, 0.0);
+  let mN = vec3f(0.0, 0.0, 1.0);
+  let mTu = vec3f(1.0, 0.0, 0.0);
+  let mTv = vec3f(0.0, 1.0, 0.0);
+  let e = mneeReflectionIrradiance(c.recv, c.recvNormal, mP, mN, mTu, mTv, c.lightPos, c.intensity);
+  hOut[i] = vec4f(e, 0.0);
+}
+`;
+
 /** Harness kernel: runs the Newton solve per config (mirror plane z = planePoint.z,
  *  normal +z, tangents +x/+y) and writes the converged vertex + final residual. */
 export const MNEE_NEWTON_HARNESS_WGSL = /* wgsl */ `
