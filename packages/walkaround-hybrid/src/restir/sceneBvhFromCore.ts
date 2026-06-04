@@ -190,7 +190,22 @@ function buffersFromScenePack(
   // (pinned by __tests__/materialPackingCoreEquivalence.test.ts). The THREE
   // `materials` array is STILL retained on the returned buffers (`buildMaterials`
   // → snapshot `materials`) because RC + the DDGI-fallback consume it.
-  const indexBuf = packBVHIndexWFromCore(geo.indices, geo.triMaterialIds, coreMaterials, triCount);
+  // F-TLAS1 FIX: `geo.indices` is STRIDE-4 (vec4u/triangle — scenePack.ts:551), but
+  // `packBVHIndexWFromCore` reads stride-3 (`indices[tri*3+k]`), which for tri≥1 reads
+  // ACROSS triangle boundaries → corrupt `bvhIndex.xyz` vertex lanes → the GPU
+  // (`bvhIntersect.wgsl.ts:328-334`) fetched WRONG vertices for the ray-triangle test.
+  // Feed the packer the stride-3 extraction (the SAME global vertex indices that
+  // `bvhIndicesStride3` derives), so `bvhIndex.xyz` matches the geometry the BVH was
+  // built over. The merged-mode path already feeds genuine stride-3 `shared.indices`, so
+  // this is TLAS-path-only. (items_to_fix F-TLAS1; verified: fix regresses the OLD buggy
+  // golden 81→11 dB, then validated against a CPU brute-force reference + re-captured.)
+  const triIndices3 = new Uint32Array(triCount * 3);
+  for (let t = 0; t < triCount; t += 1) {
+    triIndices3[t * 3 + 0] = geo.indices[t * 4 + 0]!;
+    triIndices3[t * 3 + 1] = geo.indices[t * 4 + 1]!;
+    triIndices3[t * 3 + 2] = geo.indices[t * 4 + 2]!;
+  }
+  const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
   // Camera-visible emitters: per-triangle HDR emissive Le, indexed by the SAME
   // `geo` triangle order as beerBuf/bvhIndex (NOT the sharedWorld emitter-list

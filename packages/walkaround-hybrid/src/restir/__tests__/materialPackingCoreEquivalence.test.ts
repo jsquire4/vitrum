@@ -98,6 +98,8 @@ function glassMat(base: [number, number, number], transmission: number, atten: [
 
 interface PackedPair {
   triCount: number;
+  /** The stride-4 `geo.indices` (ScenePackResult) — for the F-TLAS1 correctness pin. */
+  geoIndices4: Uint32Array;
   /** Core path (production) — exactly the bytes `buffersFromScenePack` uploads. */
   coreIndexW: Uint32Array;
   coreBeer: Uint32Array;
@@ -115,22 +117,25 @@ function packBoth(scene: Scene): PackedPair {
 
   const triCount = buffers.bvhIndex.count;
   const triMatIds = new Uint32Array(buffers.triangleMaterialIds.cpuData);
-  // The core path packs bvhIndex.w over `geo.indices` (the stride-4 `ScenePackResult`
-  // index buffer — `buffersFromScenePack` calls `packBVHIndexWFromCore(geo.indices,…)`),
-  // so the THREE reference MUST pack over the SAME `geo.indices` for the index lanes
-  // to be byte-comparable. `geo` is exposed as `buffers.scenePack` (= the
-  // ScenePackResult). (`packBVHIndexW*` read `indices[tri*3+k]`; both packers see the
-  // identical source, so any read-stride quirk is shared and cancels in the compare.)
-  const geoIndices = buffers.scenePack!.indices;
+  // F-TLAS1: `geo.indices` (`buffers.scenePack.indices`) is STRIDE-4 (vec4u/triangle —
+  // scenePack.ts:551). Post-fix, `buffersFromScenePack` packs `bvhIndex.xyz` from the
+  // STRIDE-3 extraction (`geo.indices[t*4+k]` == `buffers.bvhIndicesStride3`), so the
+  // GPU fetches the vertices the BVH was built over. The THREE reference must pack over
+  // that SAME stride-3 buffer for the index lanes to be byte-comparable AND correct.
+  // (The earlier version fed BOTH sides the stride-4 buffer so the stride-3 read quirk
+  // "cancelled" — that masked F-TLAS1; it's now fixed + asserted below.)
+  const geoIndices4 = buffers.scenePack!.indices;
+  const stride3 = buffers.bvhIndicesStride3;
   const threeMaterials = [...buffers.buildMaterials];
 
-  // THREE reference over the SAME geo the core path packed.
-  const threeIndexW = packBVHIndexW(geoIndices, triMatIds, threeMaterials, triCount);
+  // THREE reference over the SAME (correct, stride-3) indices the core path packed.
+  const threeIndexW = packBVHIndexW(stride3, triMatIds, threeMaterials, triCount);
   const threeBeer = packBVHBeerColors(triMatIds, threeMaterials, triCount);
   const threeEmissive = packBVHEmissiveLe(triMatIds, threeMaterials, triCount);
 
   return {
     triCount,
+    geoIndices4,
     coreIndexW: new Uint32Array(buffers.bvhIndex.cpuData),
     coreBeer: new Uint32Array(buffers.bvhBeerColors.cpuData),
     coreEmissive: new Float32Array(buffers.bvhEmissiveLe.cpuData),
@@ -149,6 +154,16 @@ function assertPerTriangleByteIdentity(p: PackedPair): void {
   expect(p.threeIndexW.length).toBe(p.triCount * 4);
   for (let i = 0; i < p.coreIndexW.length; i++) {
     expect(p.coreIndexW[i]).toBe(p.threeIndexW[i]);
+  }
+  // F-TLAS1 correctness pin: the core bvhIndex.xyz vertex lanes MUST be the correct
+  // global indices — the stride-3 extraction of the stride-4 geo.indices
+  // (geo.indices[t*4+k]) — so the GPU (bvhIntersect.wgsl.ts:328-334) fetches the
+  // vertices the BVH was actually built over. (Pre-fix these were geo.indices[t*3+k],
+  // cross-boundary garbage for t>=1; see items_to_fix F-TLAS1.)
+  for (let t = 0; t < p.triCount; t++) {
+    expect(p.coreIndexW[t * 4 + 0]).toBe(p.geoIndices4[t * 4 + 0]);
+    expect(p.coreIndexW[t * 4 + 1]).toBe(p.geoIndices4[t * 4 + 1]);
+    expect(p.coreIndexW[t * 4 + 2]).toBe(p.geoIndices4[t * 4 + 2]);
   }
   // bvhBeerColors u32 (one per triangle).
   expect(p.coreBeer.length).toBe(p.triCount);
