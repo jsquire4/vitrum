@@ -1,3 +1,5 @@
+import { MNEE_NEWTON_MAX_ITERS } from './mneeNewton.wgsl.js';
+
 /**
  * Caustic module — the two strategy paths the main kernel dispatches when
  * `params.causticStrategy != 0`.
@@ -16,22 +18,34 @@
  *    light→mirror→receiver connection, and weights by the receiver BRDF. This is
  *    the deterministic mirror-image caustic ordinary NEE/BSDF sampling cannot reach
  *    (it is zero-measure for them — the whole reason MNEE exists).
+ *  - `pointLightRefractionCaustic` — caustic strategy mode 1, REFRACTION case (the
+ *    "water surface" caustic): a point light above a flat REFRACTIVE interface
+ *    casting a focused caustic onto a diffuse receiver below it. Seed-finds a
+ *    TRANSMISSIVE interface, multi-seed Newton-solves the eta-generalized specular
+ *    vertex, and accumulates E = I·T·|dω_L/dA_recv| — the Fresnel TRANSMITTANCE
+ *    (1−Fr, via frDielectric) times the refraction FOCUSING Jacobian (NOT 1 like a
+ *    flat mirror; computed by FD through the Newton solver). Validated in pure-JS
+ *    against a deterministic forward-traced grid reference (focusing factor exact —
+ *    integral ratio + LS-slope 1.000 on every converged branch). See
+ *    `causticTransmissiveLegBlocked` for the shared two-leg visibility.
  *  - `manifoldNeeContribution` — caustic strategy mode 1 dispatcher: sums the
- *    REAL reflection caustic above PLUS the legacy transmissive (glass) cone-search
- *    APPROXIMATION (roughness-scaled cone perturbation of a DIRECTIONAL light
- *    through a specular-transmissive chain + a dot>0.75 alignment accept). The
- *    transmissive branch is NOT yet a true manifold solve (no half-vector
- *    constraint / Newton / change-of-variables Jacobian — Phase I.1 step 4 promotes
- *    it onto `mneeNewtonSolveChain2` once the reflection render-A/B is proven).
+ *    REAL reflection caustic + the REAL refraction caustic PLUS the legacy
+ *    transmissive (glass) cone-search APPROXIMATION (roughness-scaled cone
+ *    perturbation of a DIRECTIONAL light through a specular-transmissive chain +
+ *    a dot>0.75 alignment accept). The cone-search branch is NOT a true manifold
+ *    solve (no half-vector constraint / Newton / change-of-variables Jacobian); it
+ *    remains for the DIRECTIONAL-light multi-bounce-glass case the single-interface
+ *    point-light refraction solve does not yet cover.
  *  - `photonMapContribution` — caustic strategy mode 2 (Jensen 1996 photon
  *    mapping with a tiny in-shader photon pass + Gaussian gather kernel)
  *
  * Depends on FrameParams bindings (materials, lightDir, pointLights,
- * spotLights) from `material.wgsl.ts`, evaluateBrdf + brdfDirectionalPdf and
- * `buildOnb` from `bsdf.wgsl.ts`, traceClosest/traceAny/hitMaterialId
- * from `intersection.wgsl.ts`, and `mneeReflectionIrradiance` from
- * `mneeNewton.wgsl.ts` (composed AHEAD of this module in
- * `pathTraceBruteforce.wgsl.ts` so the symbol is in scope).
+ * spotLights) from `material.wgsl.ts`, evaluateBrdf + brdfDirectionalPdf,
+ * `buildOnb` + `frDielectric` from `bsdf.wgsl.ts` / `material.wgsl.ts`,
+ * traceClosest/traceAny/hitMaterialId from `intersection.wgsl.ts`, and the MNEE
+ * core (`mneeReflectionIrradiance`, `mneeNewtonSolve`, `mnee_safe_normalize`) from
+ * `mneeNewton.wgsl.ts` (all composed AHEAD of this module in
+ * `pathTraceBruteforce.wgsl.ts` so the symbols are in scope).
  */
 export const PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL = /* wgsl */ `
 fn perturbAroundDirection(baseDir: vec3f, xi: vec2f, coneAngle: f32) -> vec3f {
@@ -285,6 +299,253 @@ fn pointLightReflectionCaustic(
   return contribution;
 }
 
+// ── REAL MNEE: point-light specular-REFRACTION caustic (Hanika 2015) ──────────
+// The "water surface" caustic: a point light ABOVE a flat REFRACTIVE interface
+// (a transmissive surface — η_I on the light side, η_T on the receiver side) casts
+// a focused caustic onto a diffuse receiver BELOW the interface. As with the
+// reflection caustic this connection is zero-measure for ordinary NEE/BSDF sampling
+// (the whole reason MNEE exists), and we seed-find + Newton-solve the exact specular
+// vertex on the interface. The DERIVATION below differs from reflection in three
+// physically essential ways — copying the reflection formula gives the WRONG answer:
+//
+//   (1) FRESNEL TRANSMITTANCE. Only the transmitted fraction T = 1 − Fr passes the
+//       interface (reflection used Fr≈1 of a metal mirror). Fr is the unpolarised
+//       dielectric Fresnel frDielectric(cosθ_i, η_I/η_T) at the vertex.
+//
+//   (2) THE FOCUSING JACOBIAN. A FLAT MIRROR maps a point source to a point source
+//       (focusing factor 1 — that is why mneeReflectionIrradiance is the bare
+//       I·cosθ/d²). A FLAT REFRACTIVE interface does NOT — refraction bends and
+//       focuses/defocuses, so a point source maps to an astigmatic virtual caustic
+//       (the "apparent-depth" + fold structure of a water surface). The correct
+//       irradiance is the GENERAL specular-connection point-light flux density
+//           E = I · T · |dω_L / dA_recv|,
+//       where dω_L is the solid angle the light emits into and dA_recv the floor
+//       area it lands on. |dω_L/dA_recv| IS the focusing factor. (For a flat mirror
+//       this Jacobian provably equals cosθ_recv/d² — so the same formula reproduces
+//       the reflection result; here it is the refracted value instead.) NOTE there
+//       is NO separate cosθ_recv factor — the floor foreshortening is already inside
+//       the Jacobian. We compute |dω_L/dA_recv| by FINITE DIFFERENCE through the
+//       Newton solver: perturb recv by two receiver-tangent vectors, re-solve the
+//       interface vertex (warm-started on the found branch), measure
+//       dω_L = d(normalize(v − light)); |dω_L/dA_recv| = |∂ω_L/∂u × ∂ω_L/∂v|.
+//       (VALIDATED in pure-JS against a deterministic forward-traced grid reference:
+//       on every converged branch E_analytic matches E_forward — integral ratio and
+//       least-squares slope both 1.000, per-bin median rel-err ~2%. The focusing
+//       factor is exact; see wsl-gpu mnee-refraction-caustic-ab.ts.)
+//
+//   (3) SEEDING is EASIER but the Newton needs ROBUST SEEDS. The interface is in the
+//       receiver's UPPER hemisphere (seed rays toward it like reflection but accept a
+//       TRANSMISSIVE hit, transmission > REFRACT_TRANSMIT_MIN, not metallic). A
+//       single Newton seed at the plane origin does NOT converge for oblique floor
+//       points (it lands outside the refraction basin), so we run a small GRID of
+//       interface seed offsets and take the first that converges to a vertex whose
+//       light→v→floor refracted ray actually lands back at recv (the branch test).
+//
+// v1 scope: the first interface found per light; the first converged refraction
+// branch per (light, receiver). For this {point + flat interface + flat floor}
+// regime the caustic footprint is single-branch (verified — max 1 vertex/floor
+// point), so one branch is complete; a multi-branch fold (curved interface / slab)
+// is a Phase-I.1 follow-up alongside the 2-vertex chain solver.
+const REFRACT_SEED_RAYS = 16u;        // hemisphere seeds toward the interface / light
+const REFRACT_TRANSMIT_MIN = 0.2;     // a "water surface" is sufficiently transmissive
+const REFRACT_NEWTON_SEED_GRID = 5u;  // 5×5 plane-bracketed seed offsets for robust Newton
+fn refractionFocusingDet(
+  vSolved: vec3f, ifaceN: vec3f, ifaceTu: vec3f, ifaceTv: vec3f,
+  recv: vec3f, recvTu: vec3f, recvTv: vec3f,
+  light: vec3f, etaI: f32, etaT: f32,
+) -> f32 {
+  // |dω_L/dA_recv| via FD: perturb recv along its two tangents, re-solve the vertex
+  // WARM-STARTED at the converged vertex vSolved (so we track the SAME refraction
+  // branch), and measure how the light-side direction ω_L = normalize(v − light)
+  // moves. The basis-free 2-form magnitude |∂ω_L/∂u × ∂ω_L/∂v| is the focusing factor
+  // (same shape as mneePdfJacobianDet, but the light is a POINT and the receiver is
+  // what moves). Baseline w0 = ω_L at the UNPERTURBED vertex.
+  // (VALIDATED in pure-JS against a forward-traced grid: on every converged branch
+  // I·T·|det| matches the forward irradiance — ratio + LS-slope 1.000.)
+  let eps = 1e-3;
+  let w0 = mnee_safe_normalize(vSolved - light);
+  let ru = mneeNewtonSolve(vSolved, ifaceN, ifaceTu, ifaceTv, recv + recvTu * eps, light, etaI, etaT, ${MNEE_NEWTON_MAX_ITERS}u);
+  let rv = mneeNewtonSolve(vSolved, ifaceN, ifaceTu, ifaceTv, recv + recvTv * eps, light, etaI, etaT, ${MNEE_NEWTON_MAX_ITERS}u);
+  if (ru.residual > 1e-4 || rv.residual > 1e-4) { return 0.0; }
+  let dwu = (mnee_safe_normalize(ru.vertex - light) - w0) / eps;
+  let dwv = (mnee_safe_normalize(rv.vertex - light) - w0) / eps;
+  return length(cross(dwu, dwv));
+}
+fn pointLightRefractionCaustic(
+  rng: ptr<function, u32>,
+  hitPos: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  throughput: vec3f,
+) -> vec3f {
+  // Same receiver gate as the reflection caustic: only a sufficiently rough,
+  // non-metallic receiver hosts the diffuse refraction caustic.
+  if (metallic > 0.5 || roughness < 0.2) {
+    return vec3f(0.0);
+  }
+  let pointCount = min(params.pointLightCount, 16u);
+  if (pointCount == 0u) {
+    return vec3f(0.0);
+  }
+  var recvTu: vec3f;
+  var recvTv: vec3f;
+  buildOnb(normal, &recvTu, &recvTv);
+  var contribution = vec3f(0.0);
+  for (var li = 0u; li < 16u; li = li + 1u) {
+    if (li >= pointCount) { break; }
+    let lbase = li * 2u;
+    let lightPos = pointLights[lbase].xyz;
+    let lightI = pointLights[lbase + 1u].rgb;
+    if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
+    var found = false;
+    for (var s = 0u; s < 16u; s = s + 1u) {
+      if (s >= REFRACT_SEED_RAYS || found) { break; }
+      // UNIFORM hemisphere seed around the receiver normal — find the interface
+      // ABOVE the floor (same rationale as reflection: a uniform seed reaches the
+      // interface even when it is steep relative to the floor up-normal).
+      let u1 = rand_f32(rng);
+      let u2 = rand_f32(rng);
+      let cz = u1;
+      let r = sqrt(max(0.0, 1.0 - u1 * u1));
+      let phi = 2.0 * PI * u2;
+      let seedDir = safe_normalize((r * cos(phi)) * recvTu + (r * sin(phi)) * recvTv + cz * normal);
+      let seedRay = Ray(hitPos + normal * 1e-3, seedDir);
+      let seedHit = traceClosest(seedRay, 1e-4, INFINITY);
+      if (!seedHit.didHit) { continue; }
+      let iMat = decodeMaterial(hitMaterialId(seedHit));
+      // Accept a TRANSMISSIVE interface (NOT metallic). A metallic hit is a mirror
+      // (handled by the reflection caustic); skip it here.
+      if (iMat.transmission < REFRACT_TRANSMIT_MIN || iMat.metallic > 0.5) {
+        continue;
+      }
+      let ior = iMat.ior;
+      let ifaceP = seedRay.origin + seedRay.direction * seedHit.dist;
+      // Front-face normal (pointing back toward the receiver, i.e. against the seed
+      // ray). The light is on the OPPOSITE side of the interface from the receiver.
+      let frontFace = dot(seedRay.direction, seedHit.normal) < 0.0;
+      let ifaceN = safe_normalize(select(-seedHit.normal, seedHit.normal, frontFace));
+      // η on the receiver side (where the seed ray came FROM) vs the light side.
+      // The receiver sits in the denser medium ⇒ light side η_I=1 (air), receiver
+      // side η_T=ior. The Newton half-vector h = normalize(η_I·wi + η_T·wo) uses
+      // (etaI=light side, etaT=recv side) per mneeNewtonSolve's convention
+      // (wi = light−v, wo = recv−v).
+      let etaI = 1.0;
+      let etaT = ior;
+      var ifaceTu: vec3f;
+      var ifaceTv: vec3f;
+      buildOnb(ifaceN, &ifaceTu, &ifaceTv);
+      // ROBUST multi-seed Newton. The random seed ray only DISCOVERED the interface
+      // plane (ifaceP, ifaceN); it is a poor Newton START (a random lateral hit is
+      // usually outside the vertex's convergence basin — this was the bug that made
+      // the caustic fire on <1% of the floor). Seed instead from the plane GEOMETRY:
+      // the refraction vertex provably lies between the RECEIVER's projection onto
+      // the interface plane and the straight light→receiver crossing of that plane
+      // (air→denser bends toward the normal, so the vertex sits inside that bracket).
+      // Center the seed grid on their midpoint and span the bracket (+margin) — this
+      // converges for ~100% of floor points regardless of where the seed ray hit.
+      let planeD0 = dot(hitPos - ifaceP, ifaceN);
+      let recvProj = hitPos - planeD0 * ifaceN;            // receiver ⟂-projection onto the plane
+      let segDir = lightPos - hitPos;
+      let segDen = dot(segDir, ifaceN);
+      let crossT = select(0.0, dot(ifaceP - hitPos, ifaceN) / segDen, abs(segDen) > 1e-6);
+      let lineCross = hitPos + segDir * clamp(crossT, 0.0, 1.0); // straight light→recv plane crossing
+      let seedCenter = (recvProj + lineCross) * 0.5;
+      let bracket = length(recvProj - lineCross);
+      let seedExtent = max(0.6 * bracket, 0.2);
+      var solved = false;
+      var v = recvProj;
+      for (var gy = 0u; gy < 5u; gy = gy + 1u) {
+        if (gy >= REFRACT_NEWTON_SEED_GRID || solved) { break; }
+        for (var gx = 0u; gx < 5u; gx = gx + 1u) {
+          if (gx >= REFRACT_NEWTON_SEED_GRID || solved) { break; }
+          let su = (f32(gx) / f32(REFRACT_NEWTON_SEED_GRID - 1u) - 0.5) * 2.0 * seedExtent;
+          let sv = (f32(gy) / f32(REFRACT_NEWTON_SEED_GRID - 1u) - 0.5) * 2.0 * seedExtent;
+          let p0 = seedCenter + ifaceTu * su + ifaceTv * sv;
+          let res = mneeNewtonSolve(p0, ifaceN, ifaceTu, ifaceTv, hitPos, lightPos, etaI, etaT, ${MNEE_NEWTON_MAX_ITERS}u);
+          if (res.residual > 1e-4) { continue; }
+          // Forward-consistency: the light→v refracted ray must hit the floor at
+          // recv (within the interface ⇒ this is the real branch, not a spurious
+          // half-vector root on the far side). refract(I, N, eta) needs N oriented
+          // AGAINST the incident travel I = wiTravel (toward the light side); ifaceN's
+          // stored sign is arbitrary (only its tangent plane drives the Newton), so
+          // flip it to face the light here.
+          let wiTravel = safe_normalize(res.vertex - lightPos); // light → v travel dir
+          let nForRefr = select(ifaceN, -ifaceN, dot(wiTravel, ifaceN) > 0.0);
+          let etaRatio = etaI / etaT;                            // air → medium
+          let refrDir = refract(wiTravel, nForRefr, etaRatio);
+          if (dot(refrDir, refrDir) <= 1e-8) { continue; }       // TIR (shouldn't happen entering denser)
+          let toRecv = hitPos - res.vertex;
+          let along = dot(safe_normalize(refrDir), safe_normalize(toRecv));
+          if (along < 0.99) { continue; }                        // refracted ray doesn't aim at recv
+          v = res.vertex;
+          solved = true;
+        }
+      }
+      if (!solved) { continue; }
+      // wi = receiver's incident direction (toward the interface vertex).
+      let wi = safe_normalize(v - hitPos);
+      let nDotL = max(dot(normal, wi), 0.0);
+      if (nDotL <= 1e-5) { continue; }
+      // (1) Fresnel TRANSMITTANCE at the vertex (cosθ_i wrt the interface normal).
+      let cosI = abs(dot(safe_normalize(v - lightPos), ifaceN));
+      let T = 1.0 - frDielectric(cosI, etaI / etaT);
+      if (T <= 1e-5) { continue; }
+      // (2) Focusing Jacobian |dω_L/dA_recv| around this branch (the refraction
+      // focusing factor — NOT 1; this is what makes it different from reflection).
+      let focDet = refractionFocusingDet(v, ifaceN, ifaceTu, ifaceTv, hitPos, recvTu, recvTv, lightPos, etaI, etaT);
+      if (focDet <= 1e-12) { continue; }
+      // E = I · T · |dω_L/dA_recv|  (no separate cosθ_recv — it is inside focDet).
+      let e = lightI * T * focDet;
+      // leg A: receiver → v unobstructed up to the interface (bound short of v;
+      // step THROUGH the interface's own facets, like the reflection leg-B, since
+      // the transmissive interface is a thin SOLID with a back facet).
+      let distA = length(v - hitPos);
+      if (causticTransmissiveLegBlocked(hitPos + normal * 1e-3, wi, distA - 2e-3)) { continue; }
+      // leg B: v → light unobstructed, stepping through interface facets.
+      let toLight = lightPos - v;
+      let distB = length(toLight);
+      let dirB = toLight / max(distB, 1e-8);
+      if (causticTransmissiveLegBlocked(v + dirB * 1e-3, dirB, distB - 2e-3)) { continue; }
+      // DELTA connection: throughput · f_r · E. No MIS / no pdf division (a
+      // point-light specular refraction caustic is unreachable by any other
+      // technique, exactly like the reflection case).
+      let fr = evaluateBrdf(baseColor, roughness, metallic, normal, wo, wi);
+      contribution = contribution + throughput * fr * e;
+      found = true;
+    }
+  }
+  return contribution;
+}
+
+// Shared visibility helper for the refraction caustic legs: is the segment from
+// 'origin' along 'dir' for length 'maxDist' blocked by a REAL (non-transmissive,
+// non-metallic) occluder? Steps through transmissive interface facets + smooth
+// metallic mirror facets (their own back/second facets self-occlude an otherwise
+// clear connection — the same self-facet skip the reflection leg-B needs). Only an
+// opaque diffuse occluder shadows the connection.
+fn causticTransmissiveLegBlocked(origin: vec3f, dir: vec3f, maxDist: f32) -> bool {
+  if (maxDist <= 1e-3) { return false; }
+  var segOrigin = origin;
+  var remaining = maxDist;
+  for (var stepN = 0u; stepN < 4u; stepN = stepN + 1u) {
+    let segRay = Ray(segOrigin, dir);
+    let segHit = traceClosest(segRay, 1e-4, max(remaining - 1e-3, 1e-4));
+    if (!segHit.didHit) { return false; } // clear
+    let segMat = decodeMaterial(hitMaterialId(segHit));
+    let passThrough = segMat.transmission >= REFRACT_TRANSMIT_MIN ||
+      (segMat.roughness <= REFLECT_ROUGH_MAX && segMat.metallic >= REFLECT_METAL_MIN);
+    if (!passThrough) { return true; } // a real occluder
+    let advance = segHit.dist + 1e-3;
+    segOrigin = segOrigin + dir * advance;
+    remaining = remaining - advance;
+    if (remaining <= 1e-3) { return false; }
+  }
+  return false;
+}
+
 fn manifoldNeeContribution(
   rng: ptr<function, u32>,
   hitPos: vec3f,
@@ -302,6 +563,12 @@ fn manifoldNeeContribution(
   // floor catches a mirror caustic with no glass in the scene. Delta connection —
   // already MIS-complete on its own (no other technique reaches it).
   var total = pointLightReflectionCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);
+
+  // REAL refraction caustic (point lights + a flat REFRACTIVE interface above the
+  // receiver — the "water surface"). Also runs for ANY receiver (its own seed search
+  // finds the transmissive interface), independent of whether THIS receiver is
+  // transmissive. Same DELTA-connection, MIS-complete-on-its-own status.
+  total = total + pointLightRefractionCaustic(rng, hitPos, normal, wo, baseColor, roughness, metallic, throughput);
 
   // Legacy transmissive (glass) cone-search APPROXIMATION — DIRECTIONAL light only.
   // Promoting this onto the validated mneeNewtonSolveChain2 is Phase I.1 step 4

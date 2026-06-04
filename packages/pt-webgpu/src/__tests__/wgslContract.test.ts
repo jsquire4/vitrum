@@ -20,11 +20,16 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
   it('composed full-tier trace string matches the golden SHA256', () => {
     const digest = createHash('sha256').update(PT_WEBGPU_TRACE_WGSL).digest('hex');
     // Updated for Phase I.1: the trace kernel now composes MNEE_NEWTON_WGSL +
-    // MNEE_CONNECTION_WGSL and the real point-light reflection caustic
-    // (caustic.wgsl.ts:pointLightReflectionCaustic), GPU-validated against the
-    // analytic mirror-image reference (wsl-gpu mnee-reflection-caustic-ab.ts).
-    expect(digest).toBe('eb510fe493389e08f638b7c65f6a8c3d0ef282bd4db3a4450d51fdf45e668218');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(178136);
+    // MNEE_CONNECTION_WGSL and the real point-light REFLECTION + REFRACTION caustics
+    // (caustic.wgsl.ts:pointLightReflectionCaustic / pointLightRefractionCaustic).
+    // The reflection caustic is GPU-validated against the analytic mirror-image
+    // reference (wsl-gpu mnee-reflection-caustic-ab.ts); the refraction caustic
+    // ("water surface") is GPU-validated against a deterministic forward-traced
+    // grid reference (wsl-gpu mnee-refraction-caustic-ab.ts — ratio 0.986, slope
+    // 0.984 on lavapipe). Recompute (sha256 of PT_WEBGPU_TRACE_WGSL) on any
+    // intentional WGSL change and update both the digest and the length here.
+    expect(digest).toBe('994527cc9bcd484783552d8bdb30ccdb947b17263e1a391c0988d08329c3dd7f');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(193030);
   });
 });
 
