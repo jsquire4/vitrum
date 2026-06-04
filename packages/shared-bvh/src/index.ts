@@ -6,6 +6,14 @@ export type { SceneBVHCommonResult, SceneBVHCommonOpts } from './bvhCommon.js';
 export * from './buildArrayBvh.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
+export {
+  mergeWorldSpaceFromCore,
+  materialSig,
+  DEFAULT_MERGE_FILTER,
+  type WorldSpaceMergeResult,
+  type WorldSpaceMergeOptions,
+  type MergedMeshVertexRange,
+} from './worldSpaceMerge.js';
 export * from './tlas.js';
 export {
   packSceneFromCore,
