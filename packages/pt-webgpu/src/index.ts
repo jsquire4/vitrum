@@ -115,6 +115,28 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * tier only. Off by default. (Graduated from `extensions['vitrum.ptWebgpu.bdpt']`.)
    */
   readonly bdpt?: boolean;
+  /**
+   * Enable the EXPERIMENTAL ReSTIR-PT reservoir/reuse pre-passes (GRIS hero-stack
+   * temporal reconnection reuse — Lin 2022). Full tier only. **OFF by default.**
+   *
+   * When OFF the default megakernel render is byte-identical (no reuse buffers or
+   * pipelines are created). When ON, a producer→temporal→resolve sequence runs
+   * BEFORE the megakernel each frame and writes its reconnection-indirect estimate
+   * to a SEPARATE debug output (`getRestirPtResultBuffer()`); the beauty image is
+   * still the unmodified megakernel result this increment (the reuse path is
+   * validated in isolation before it composites into the beauty buffer — see
+   * `capabilities.experimentalFeatures` and HARDWARE-VALIDATION-NEEDS). The
+   * compile-time naga gate is `wsl-gpu/scripts/restir-pt-compile-gate.ts`; the
+   * unbiasedness A/B is `wsl-gpu/scripts/restir-pt-unbiased-ab.ts`.
+   */
+  readonly restirPtReuse?: boolean;
+  /** ReSTIR-PT reuse tuning — read only when {@link restirPtReuse} is `true`. */
+  readonly restirPtReuseOptions?: {
+    /** Temporal M-clamp (history confidence cap). Default 20. */
+    readonly mClamp?: number;
+    /** GRIS W-cap (temporal-feedback gain bound, the V19 grison guard). Default 10. */
+    readonly wCap?: number;
+  };
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
   readonly bdptOptions?: {
     /** Max light-subpath bounces, clamped 1–3. Default 3. */
@@ -232,6 +254,10 @@ class PTEngineWebGPU implements Engine {
   #bdptLightPath: BdptLightPathBufferWebGPU | null = null;
   #bdptExternalBuffer: GPUBuffer | null = null;
   #bdptPlaceholderBuffer: GPUBuffer | null = null;
+  /** EXPERIMENTAL ReSTIR-PT reuse — compile-time + full-tier; OFF by default. */
+  readonly #restirPtReuse: boolean;
+  readonly #restirPtMClamp: number;
+  readonly #restirPtWCap: number;
 
   /**
    * Scene-mutation fast-path dispatch (Task 4.3, Theme A). The engine stays the
@@ -266,7 +292,15 @@ class PTEngineWebGPU implements Engine {
       typeof requestedBdptBounces === 'number' && requestedBdptBounces >= 1
         ? Math.min(3, Math.floor(requestedBdptBounces))
         : 3;
-    this.#gpu = new GpuResources(opts.device, traceTier, this.#bdpt);
+    // EXPERIMENTAL ReSTIR-PT reuse: compile-time opt-in, full-tier only. GpuResources
+    // gates the full-tier requirement internally; mirror the resolved value here so
+    // the capability + renderFrame sequencing agree with what GpuResources will run.
+    this.#restirPtReuse = opts.restirPtReuse === true && traceTier === 'full';
+    const rptOpts = opts.restirPtReuseOptions ?? {};
+    this.#restirPtMClamp =
+      typeof rptOpts.mClamp === 'number' && rptOpts.mClamp >= 1 ? Math.floor(rptOpts.mClamp) : 20;
+    this.#restirPtWCap = typeof rptOpts.wCap === 'number' && rptOpts.wCap > 0 ? rptOpts.wCap : 10;
+    this.#gpu = new GpuResources(opts.device, traceTier, this.#bdpt, this.#restirPtReuse);
     if (opts.denoiser === 'oidn-final') {
       const modelUrl = opts.oidn?.modelUrl;
       const eps = opts.oidn?.executionProviders?.filter(
@@ -366,6 +400,7 @@ class PTEngineWebGPU implements Engine {
           ? (['pt-webgpu-oidn-final'] as const)
           : []),
         ...(this.#bdpt ? (['pt-webgpu-bdpt'] as const) : []),
+        ...(this.#restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
       ]),
       causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
       // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
@@ -705,7 +740,36 @@ class PTEngineWebGPU implements Engine {
 
     const bindGroup = gpu.buildBindGroups(this.#sceneBuffers, () => this.#bdptLightPathBuffer());
 
+    // EXPERIMENTAL ReSTIR-PT reuse (OFF by default). When ON: (re)allocate the
+    // reservoir ping-pong + result + params, build the reuse pipelines + bind
+    // groups, and write RestirPtParams. All gated inside GpuResources, so this is
+    // a no-op + allocates nothing when the flag is off (default render untouched).
+    let restirPtReady = false;
+    if (this.#restirPtReuse) {
+      gpu.ensureReservoirBuffers(width, height);
+      gpu.ensureReservoirPipelines();
+      gpu.writeReservoirParams(width, height, this.#restirPtMClamp, this.#restirPtWCap);
+      gpu.buildReservoirBindGroups(this.#sceneBuffers);
+      restirPtReady =
+        gpu.rptProducerPipeline != null &&
+        gpu.rptTemporalPipeline != null &&
+        gpu.rptResolvePipeline != null &&
+        gpu.rptProducerGroup0 != null &&
+        gpu.pathTraceBindGroup1 != null &&
+        gpu.pathTraceBindGroup2 != null &&
+        gpu.pathTraceBindGroup3 != null;
+    }
+
     const encoder = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.pathTrace.encoder' });
+
+    // ── ReSTIR-PT reuse sequence: producer → temporal → resolve (before the
+    //    megakernel; the result lands in the SEPARATE rpt_result debug buffer,
+    //    NOT the beauty image, this increment). The passes share the megakernel's
+    //    group-1/2/3 scene bind groups (same explicit layouts) + their own
+    //    group-0 (the reuse-extended one). ──
+    if (restirPtReady) {
+      this.#encodeRestirPtReusePasses(encoder, gpu, width, height);
+    }
     if (
       gpu.bdptSubpathPipeline != null &&
       this.#bdpt &&
@@ -752,6 +816,13 @@ class PTEngineWebGPU implements Engine {
     pass.end();
     this.#device.queue.submit([encoder.finish()]);
 
+    // ReSTIR-PT ping-pong: this frame's resolved reservoir (`Cur`) becomes next
+    // frame's history (`Prev`). No-op when reuse is off. Done after submit so the
+    // temporal pass this frame read the prior `Prev` before it is overwritten.
+    if (restirPtReady) {
+      gpu.swapReservoirs();
+    }
+
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
     const accumTexturePost = gpu.accumTexture;
     if (accumTexturePost == null) {
@@ -781,6 +852,69 @@ class PTEngineWebGPU implements Engine {
     const output = this.#frameOutput(accumTexturePost, this.#samplesAccumulated, isConverged);
     this.#emitFrameTelemetry(frameStartMs, 1, this.#samplesAccumulated, targetSpp);
     return output;
+  }
+
+  /**
+   * Encode the ReSTIR-PT reuse sequence (producer → temporal → resolve) onto the
+   * supplied command encoder. Each pass binds the reuse-extended group 0 plus the
+   * megakernel's group-1/2/3 scene bind groups (built against the SAME explicit
+   * layouts the reuse pipeline layout reuses — so they set cleanly on the reuse
+   * pipelines). Preconditions are checked by the caller (`restirPtReady`).
+   *
+   * Ordering: producer fills `Cur` from a fresh primary+1-bounce trace; temporal
+   * fuses the reprojected `Prev` history into `Cur` in place; resolve reconstructs
+   * the reconnection-indirect from `Cur` into `rpt_result`. Three sequential
+   * compute passes on one encoder — each `pass.end()` is an execution barrier, so
+   * the producer's writes to `Cur` are visible to the temporal pass and so on.
+   */
+  #encodeRestirPtReusePasses(
+    encoder: GPUCommandEncoder,
+    gpu: GpuResources,
+    width: number,
+    height: number,
+  ): void {
+    const g1 = gpu.pathTraceBindGroup1!;
+    const g2 = gpu.pathTraceBindGroup2!;
+    const g3 = gpu.pathTraceBindGroup3!;
+    const wgX = Math.ceil(width / WORKGROUP_SIZE);
+    const wgY = Math.ceil(height / WORKGROUP_SIZE);
+    const dispatch = (
+      label: string,
+      pipeline: GPUComputePipeline,
+      group0: GPUBindGroup,
+    ): void => {
+      const p = encoder.beginComputePass({ label });
+      p.setPipeline(pipeline);
+      p.setBindGroup(0, group0);
+      // Groups 1/2/3 carry the scene/TLAS/light/material bindings the producer's
+      // and temporal's trace statically use (resolve binds them too — its layout
+      // declares them; extra unused groups are legal). Bound on every reuse pass
+      // so the shared 4-group pipeline layout validates.
+      p.setBindGroup(1, g1);
+      p.setBindGroup(2, g2);
+      p.setBindGroup(3, g3);
+      p.dispatchWorkgroups(wgX, wgY, 1);
+      p.end();
+    };
+    dispatch('vitrum.pt-webgpu.restirPt.produce', gpu.rptProducerPipeline!, gpu.rptProducerGroup0!);
+    dispatch('vitrum.pt-webgpu.restirPt.temporal', gpu.rptTemporalPipeline!, gpu.rptTemporalGroup0!);
+    dispatch('vitrum.pt-webgpu.restirPt.resolve', gpu.rptResolvePipeline!, gpu.rptResolveGroup0!);
+  }
+
+  /**
+   * EXPERIMENTAL — the ReSTIR-PT reconnection-indirect result buffer (one vec4f /
+   * full-res pixel: .rgb = reconnection indirect HDR, .a = contributing flag), or
+   * `null` when the engine was not built with `restirPtReuse: true` or no frame
+   * has rendered yet. This is a SEPARATE debug output: the beauty image is the
+   * unmodified megakernel result this increment (the reuse path is validated in
+   * isolation before it composites). Hosts read it back via `copyBufferToBuffer`
+   * → a MAP_READ staging buffer (the buffer carries `COPY_SRC`).
+   *
+   * Available only when `capabilities.experimentalFeatures` has
+   * `'pt-webgpu-restir-pt-reuse'`.
+   */
+  getRestirPtResultBuffer(): GPUBuffer | null {
+    return this.#restirPtReuse ? this.#gpu.rptResultBuffer : null;
   }
 
   reset(): void {

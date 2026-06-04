@@ -27,11 +27,25 @@ import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { composePtWebgpuTraceWgsl } from './wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_SEED_BLIT_WGSL } from './wgsl/seedBlit.wgsl.js';
+import {
+  composeRestirPtProducerWgsl,
+  composeRestirPtTemporalWgsl,
+  composeRestirPtResolveWgsl,
+  RPT_GROUP0_BINDING_BASE,
+} from './wgsl/pathTrace/restirPtCompose.wgsl.js';
 
 export class GpuResources {
   readonly #device: GPUDevice;
   readonly #traceTier: PtWebgpuTraceTier;
   readonly #bdpt: boolean;
+  /**
+   * Compile-time opt-in for the ReSTIR-PT reservoir/reuse pre-passes (the hero-
+   * stack temporal reconnection-reuse path). OFF by default and full-tier only.
+   * When OFF, NONE of the reuse resources/pipelines below are ever created, and
+   * `renderFrame`'s default megakernel path is byte-identical — the wgslContract
+   * SHA pin + every existing test stay green. Mirrors the `#bdpt` flag.
+   */
+  readonly #restirPtReuse: boolean;
 
   accumTexture: GPUTexture | null = null;
   accumView: GPUTextureView | null = null;
@@ -87,6 +101,50 @@ export class GpuResources {
   bdptEyeStackBuffer: GPUBuffer | null = null;
   bdptEyeStackByteSize = 0;
 
+  // ── ReSTIR-PT reuse resources (gated by #restirPtReuse; full tier only) ──────
+  /**
+   * Full-res ReservoirPTHero ping-pong buffers (144 B/px = 36 u32). `Cur` is the
+   * producer output that the temporal pass fuses in place; `Prev` is last frame's
+   * temporal output (read-only this frame). `swapReservoirs()` exchanges them at
+   * frame end so this frame's resolved reservoir becomes next frame's history.
+   * STORAGE | COPY_SRC | COPY_DST (COPY_* so a future readback / clear works).
+   */
+  rptReservoirCur: GPUBuffer | null = null;
+  rptReservoirPrev: GPUBuffer | null = null;
+  /** `rpt_result`: one vec4f / px (16 B) — the resolve pass's reconnection
+   *  indirect (.rgb) + contributing flag (.a). STORAGE | COPY_SRC. */
+  rptResultBuffer: GPUBuffer | null = null;
+  /** RestirPtParams UBO (32 B: width/height/mClamp/_padA u32 + wCap/3×_pad f32). */
+  rptParamsBuffer: GPUBuffer | null = null;
+  rptReservoirByteSize = 0;
+  rptResultByteSize = 0;
+  /** The three reuse compute pipelines (lazy, gated). Each carries its OWN
+   *  minimal explicit pipeline layout (groups it statically uses + group-0 reuse
+   *  bindings) — see #buildReservoirPipelines. */
+  rptProducerPipeline: GPUComputePipeline | null = null;
+  rptTemporalPipeline: GPUComputePipeline | null = null;
+  rptResolvePipeline: GPUComputePipeline | null = null;
+  /** Explicit group-0 layout for the reuse passes: the megakernel's group-0
+   *  bindings PLUS the relocated reuse bindings (20..24). Built once. */
+  #rptGroup0Layout: GPUBindGroupLayout | null = null;
+  /** Cached per-pass reuse bind groups (rebuilt on scene-buffer / reservoir
+   *  recreation via invalidateBindGroups). */
+  rptProducerGroup0: GPUBindGroup | null = null;
+  rptTemporalGroup0: GPUBindGroup | null = null;
+  rptResolveGroup0: GPUBindGroup | null = null;
+
+  /** Bytes per ReservoirPTHero (36 u32). MUST equal RESERVOIR_PT_HERO_STRIDE·4
+   *  in reservoirPtHero.wgsl.ts (pinned by reservoirPtHeroLayout.test.ts). */
+  static readonly RESERVOIR_PT_HERO_BYTES = 144;
+  /** RestirPtParams UBO byte size (8 × 4-byte fields). */
+  static readonly RESTIR_PT_PARAMS_BYTES = 32;
+  /**
+   * Safety ceiling for EACH reservoir ping-pong buffer. 144 B/px is ~298 MB at
+   * 1920×1080; above this ceiling we refuse to grow (skip reuse this frame) rather
+   * than silently allocate. Mirrors the BDPT eye-stack ceiling discipline.
+   */
+  static readonly RESTIR_PT_RESERVOIR_MAX_BYTES = 384 * 1024 * 1024; // 384 MiB
+
   /**
    * Progressive walkaround→PT handoff (P8) — the seed-blit compute pipeline +
    * its uniform buffer + filtering sampler. Lazily created on the first
@@ -114,10 +172,23 @@ export class GpuResources {
    */
   static readonly BDPT_EYE_STACK_MAX_BYTES = 384 * 1024 * 1024; // 384 MiB
 
-  constructor(device: GPUDevice, traceTier: PtWebgpuTraceTier, bdpt: boolean) {
+  constructor(
+    device: GPUDevice,
+    traceTier: PtWebgpuTraceTier,
+    bdpt: boolean,
+    restirPtReuse = false,
+  ) {
     this.#device = device;
     this.#traceTier = traceTier;
     this.#bdpt = bdpt;
+    // Reuse is full-tier only: the per-pass layouts bind the full-tier scene
+    // groups (analytics/TLAS/lights). On the lite tier the flag is inert.
+    this.#restirPtReuse = restirPtReuse && traceTier === 'full';
+  }
+
+  /** Whether ReSTIR-PT reuse is active for this engine (compile-time + full-tier). */
+  get restirPtReuseEnabled(): boolean {
+    return this.#restirPtReuse;
   }
 
   destroyAccumTexture(): void {
@@ -224,10 +295,9 @@ export class GpuResources {
     this.accumBufferByteSize = targetByteSize;
     this.accumWidth = width;
     this.accumHeight = height;
-    this.pathTraceBindGroup = null;
-    this.pathTraceBindGroup1 = null;
-    this.pathTraceBindGroup2 = null;
-    this.pathTraceBindGroup3 = null;
+    // Drop ALL cached bind groups: the path-trace groups AND (when reuse is on)
+    // the reuse group-0, which references the just-recreated accum/aux views.
+    this.invalidateBindGroups();
     this.clearAccumBuffer();
     return true;
   }
@@ -452,6 +522,335 @@ export class GpuResources {
     return bdptActive;
   }
 
+  // ── ReSTIR-PT reuse resource lifecycle (gated; full tier only) ───────────────
+
+  /**
+   * (Re)allocate the ReSTIR-PT reservoir ping-pong buffers (`Cur` / `Prev`,
+   * 144 B/px), the `rpt_result` buffer (16 B/px), and the RestirPtParams UBO to
+   * the requested dims. No-op (returns `false`) when reuse is OFF. Returns `true`
+   * when the buffers were (re)created — the caller must then rebuild the reuse
+   * bind groups (invalidateBindGroups handles that). Refuses to grow past the
+   * per-buffer safety ceiling (returns `false`, leaving any prior buffers as-is);
+   * the caller skips the reuse passes that frame.
+   *
+   * Both reservoir buffers are zero-cleared on (re)allocation so the FIRST frame's
+   * temporal pass reads an empty (M=0) history rather than garbage.
+   */
+  ensureReservoirBuffers(width: number, height: number): boolean {
+    if (!this.#restirPtReuse) return false;
+    const px = Math.max(1, width) * Math.max(1, height);
+    const reservoirBytes = px * GpuResources.RESERVOIR_PT_HERO_BYTES;
+    const resultBytes = px * 16;
+    if (reservoirBytes > GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES) {
+      const mib = (reservoirBytes / (1024 * 1024)).toFixed(1);
+      console.warn(
+        `[vitrum/pt-webgpu] ReSTIR-PT reservoir buffer would be ${mib} MiB ` +
+          `(${width}×${height} × 144 B), exceeding the ` +
+          `${(GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+          'Skipping ReSTIR-PT reuse this frame — lower resolutionFactor or tile.',
+      );
+      return false;
+    }
+    const ready =
+      this.rptReservoirCur != null &&
+      this.rptReservoirByteSize === reservoirBytes &&
+      this.rptResultByteSize === resultBytes;
+    if (ready) return false;
+
+    this.rptReservoirCur?.destroy();
+    this.rptReservoirPrev?.destroy();
+    this.rptResultBuffer?.destroy();
+    const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
+    this.rptReservoirCur = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.restirPt.reservoir.cur',
+      size: reservoirBytes,
+      usage,
+    });
+    this.rptReservoirPrev = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.restirPt.reservoir.prev',
+      size: reservoirBytes,
+      usage,
+    });
+    this.rptResultBuffer = this.#device.createBuffer({
+      label: 'vitrum.pt-webgpu.restirPt.result',
+      size: resultBytes,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+    });
+    if (this.rptParamsBuffer == null) {
+      this.rptParamsBuffer = this.#device.createBuffer({
+        label: 'vitrum.pt-webgpu.restirPt.params',
+        size: GpuResources.RESTIR_PT_PARAMS_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+    this.rptReservoirByteSize = reservoirBytes;
+    this.rptResultByteSize = resultBytes;
+    // Zero the ping-pong so frame 0's temporal history is an empty reservoir.
+    const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.restirPt.clear' });
+    enc.clearBuffer(this.rptReservoirCur);
+    enc.clearBuffer(this.rptReservoirPrev);
+    this.#device.queue.submit([enc.finish()]);
+    // New buffers → the cached reuse bind groups are stale.
+    this.rptProducerGroup0 = null;
+    this.rptTemporalGroup0 = null;
+    this.rptResolveGroup0 = null;
+    return true;
+  }
+
+  /**
+   * Write the RestirPtParams UBO (width/height/mClamp + wCap). No-op when reuse is
+   * OFF or the buffer is absent. Called per-frame by the engine before dispatch.
+   */
+  writeReservoirParams(width: number, height: number, mClamp: number, wCap: number): void {
+    if (!this.#restirPtReuse || this.rptParamsBuffer == null) return;
+    const ubo = new ArrayBuffer(GpuResources.RESTIR_PT_PARAMS_BYTES);
+    const u = new Uint32Array(ubo);
+    const f = new Float32Array(ubo);
+    u[0] = width >>> 0;
+    u[1] = height >>> 0;
+    u[2] = Math.max(1, Math.floor(mClamp)) >>> 0;
+    u[3] = 0; // _padA
+    f[4] = wCap;
+    f[5] = 0; f[6] = 0; f[7] = 0; // _padB/_padC/_padD
+    this.#device.queue.writeBuffer(this.rptParamsBuffer, 0, ubo);
+  }
+
+  /**
+   * Build the extended group-0 bind-group layout for the reuse passes: the
+   * megakernel's full-tier group-0 bindings (0..13, IDENTICAL to #buildShared-
+   * PipelineLayout's group0) PLUS the relocated reuse bindings (20..24). This is
+   * the ONE group the reuse passes carry their own resources in; groups 1/2/3 are
+   * the megakernel's existing explicit layouts (reused verbatim), so a reuse
+   * pipeline's layout is [g0', g1, g2, g3] — exactly 4 groups, portable on a
+   * guaranteed maxBindGroups = 4 adapter. Full tier only (the reuse passes
+   * statically use the full-tier scene groups).
+   */
+  #buildReservoirGroup0Layout(): GPUBindGroupLayout {
+    const VIS = GPUShaderStage.COMPUTE;
+    const ro: GPUBufferBindingLayout = { type: 'read-only-storage' };
+    const rw: GPUBufferBindingLayout = { type: 'storage' };
+    const uniform: GPUBufferBindingLayout = { type: 'uniform' };
+    const storageTex: GPUStorageTextureBindingLayout = {
+      access: 'write-only',
+      format: 'rgba16float',
+      viewDimension: '2d',
+    };
+    const buf = (binding: number, layout: GPUBufferBindingLayout): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: VIS,
+      buffer: layout,
+    });
+    const tex = (binding: number): GPUBindGroupLayoutEntry => ({
+      binding,
+      visibility: VIS,
+      storageTexture: storageTex,
+    });
+    const B = RPT_GROUP0_BINDING_BASE; // 20
+    // Megakernel group-0 (0..13) — byte-for-byte the same as the trace layout's
+    // group0 (full tier) so the same group-0 scene/G-buffer resources bind.
+    const entries: GPUBindGroupLayoutEntry[] = [
+      tex(0),
+      buf(1, uniform),
+      buf(2, rw),
+      buf(3, ro),
+      buf(4, ro),
+      buf(5, ro),
+      buf(6, ro),
+      buf(7, ro),
+      buf(8, ro),
+      tex(9),
+      tex(10),
+      tex(11),
+      tex(12),
+      buf(13, rw),
+      // Relocated reuse bindings (20..24). The composed WGSL keeps rpt_resPrev /
+      // rpt_resResolved as `var<storage, read>` (the naga-gap fix is to MONOMORPHISE
+      // the reservoir helpers so the read-only global is indexed DIRECTLY rather
+      // than passed as a storage pointer — see restirPtCompose.wgsl.ts
+      // monomorphiseReservoirHelpers; the access modes are unchanged). So the layout
+      // matches the shader access modes exactly: rpt_resPrev (b22) is read-only.
+      buf(B + 0, rw), // rpt_reservoirOut  (producer write)
+      buf(B + 1, rw), // rpt_resCurrent    (temporal in/out; resolve reads same slot as `read`)
+      buf(B + 2, ro), // rpt_resPrev       (temporal history, read-only)
+      buf(B + 3, rw), // rpt_result        (resolve write)
+      buf(B + 4, uniform), // rptParams
+    ];
+    return this.#device.createBindGroupLayout({
+      label: 'vitrum.pt-webgpu.restirPt.layout.group0',
+      entries,
+    });
+  }
+
+  /**
+   * Lazily build the three reuse compute pipelines + their shared 4-group layout
+   * [g0', g1, g2, g3]. Requires `ensurePipeline()` to have run first (so the
+   * megakernel's group-1/2/3 explicit layouts exist — the reuse passes reuse them
+   * for the scene/TLAS/light bindings their trace + NEE statically use). No-op
+   * when reuse is OFF, on the lite tier, or already built. Each entry point gets
+   * its own module (the combined unit has duplicate @group/@binding slots — see
+   * restirPtCompose.wgsl.ts), composed standalone with the reuse bindings
+   * relocated into group 0.
+   */
+  ensureReservoirPipelines(): void {
+    if (!this.#restirPtReuse) return;
+    if (this.rptProducerPipeline != null) return;
+    if (
+      this.bindGroupLayout1 == null ||
+      this.bindGroupLayout2 == null ||
+      this.bindGroupLayout3 == null
+    ) {
+      // ensurePipeline() must build the full-tier group-1/2/3 layouts first.
+      throw new Error(
+        'ensureReservoirPipelines: full-tier group-1/2/3 layouts missing — call ensurePipeline() first.',
+      );
+    }
+    this.#rptGroup0Layout = this.#buildReservoirGroup0Layout();
+    const pipelineLayout = this.#device.createPipelineLayout({
+      label: 'vitrum.pt-webgpu.restirPt.pipelineLayout',
+      bindGroupLayouts: [
+        this.#rptGroup0Layout,
+        this.bindGroupLayout1,
+        this.bindGroupLayout2,
+        this.bindGroupLayout3,
+      ],
+    });
+    const mk = (label: string, code: string, entryPoint: string): GPUComputePipeline => {
+      const module = this.#device.createShaderModule({ label, code });
+      return this.#device.createComputePipeline({
+        label,
+        layout: pipelineLayout,
+        compute: { module, entryPoint },
+      });
+    };
+    this.rptProducerPipeline = mk(
+      'vitrum.pt-webgpu.restirPt.producer',
+      composeRestirPtProducerWgsl(),
+      'restirPtProduce',
+    );
+    this.rptTemporalPipeline = mk(
+      'vitrum.pt-webgpu.restirPt.temporal',
+      composeRestirPtTemporalWgsl(),
+      'restirPtTemporal',
+    );
+    this.rptResolvePipeline = mk(
+      'vitrum.pt-webgpu.restirPt.resolve',
+      composeRestirPtResolveWgsl(),
+      'restirPtResolve',
+    );
+  }
+
+  /**
+   * Build (and cache) the per-pass reuse group-0 bind groups. Each provides the
+   * megakernel group-0 scene/G-buffer resources (IDENTICAL to the trace group 0)
+   * PLUS the reuse bindings (20..24). The producer reads `Cur` as its OUTPUT slot
+   * (binding 21 is the "current" reservoir in every pass by binding number); the
+   * temporal pass reads `Cur`(21)+`Prev`(22); the resolve pass reads `Cur`(21) +
+   * writes `result`(23). All three also bind 20/23/24 even if a given pass does
+   * not declare them (extra layout entries are legal; the layout is uniform), so
+   * one group-0 bind-group construction serves all three with the SAME resources
+   * except the producer's binding-20 write target. Returns nothing; the engine
+   * reads the cached groups off this struct. Idempotent.
+   *
+   * NOTE on binding 20 vs 21: the producer writes `rpt_reservoirOut` at b20 and
+   * the temporal/resolve read `rpt_resCurrent`/`rpt_resResolved` at b21 — these
+   * are the SAME logical "current" reservoir. We bind `rptReservoirCur` to BOTH
+   * b20 and b21 so the producer's output IS the temporal's input (one buffer),
+   * and `rptReservoirPrev` to b22.
+   */
+  buildReservoirBindGroups(sb: UploadedSceneBuffers): void {
+    if (!this.#restirPtReuse || this.#rptGroup0Layout == null) return;
+    if (this.rptProducerGroup0 != null) return;
+    if (
+      this.rptReservoirCur == null ||
+      this.rptReservoirPrev == null ||
+      this.rptResultBuffer == null ||
+      this.rptParamsBuffer == null ||
+      this.accumView == null ||
+      this.normalDepthView == null ||
+      this.albedoView == null ||
+      this.varianceView == null ||
+      this.motionVectorsView == null ||
+      this.varianceMomentsBuffer == null ||
+      this.paramsBuffer == null
+    ) {
+      return;
+    }
+    const B = RPT_GROUP0_BINDING_BASE;
+    // Shared megakernel group-0 scene/G-buffer entries (0..13).
+    const sceneG0: GPUBindGroupEntry[] = [
+      { binding: 0, resource: this.accumView },
+      { binding: 1, resource: { buffer: this.paramsBuffer } },
+      { binding: 2, resource: { buffer: this.accumBuffer! } },
+      { binding: 3, resource: { buffer: sb.positionsBuffer } },
+      { binding: 4, resource: { buffer: sb.indicesBuffer } },
+      { binding: 5, resource: { buffer: sb.triMaterialIdsBuffer } },
+      { binding: 6, resource: { buffer: sb.materialsBuffer } },
+      { binding: 7, resource: { buffer: sb.bvhNodesBuffer } },
+      { binding: 8, resource: { buffer: sb.normalsBuffer } },
+      { binding: 9, resource: this.normalDepthView },
+      { binding: 10, resource: this.albedoView },
+      { binding: 11, resource: this.varianceView },
+      { binding: 12, resource: this.motionVectorsView },
+      { binding: 13, resource: { buffer: this.varianceMomentsBuffer } },
+      { binding: B + 4, resource: { buffer: this.rptParamsBuffer } },
+    ];
+    // The reuse-reservoir slots differ only in which buffer is the "current"
+    // ping-pong half. All three passes share ONE bind group: b20 = b21 = Cur (the
+    // producer writes b20, temporal/resolve read b21 — same buffer), b22 = Prev,
+    // b23 = result.
+    const group0 = this.#device.createBindGroup({
+      label: 'vitrum.pt-webgpu.restirPt.bindgroup0',
+      layout: this.#rptGroup0Layout,
+      entries: [
+        ...sceneG0,
+        { binding: B + 0, resource: { buffer: this.rptReservoirCur } }, // rpt_reservoirOut → Cur
+        { binding: B + 1, resource: { buffer: this.rptReservoirCur } }, // rpt_resCurrent  → Cur
+        { binding: B + 2, resource: { buffer: this.rptReservoirPrev } }, // rpt_resPrev    → Prev
+        { binding: B + 3, resource: { buffer: this.rptResultBuffer } }, // rpt_result      → result
+      ],
+    });
+    // Same resources for all three passes (the layout + bindings are uniform).
+    this.rptProducerGroup0 = group0;
+    this.rptTemporalGroup0 = group0;
+    this.rptResolveGroup0 = group0;
+  }
+
+  /**
+   * Ping-pong the reservoir buffers: this frame's resolved `Cur` becomes next
+   * frame's `Prev` history. Invalidates the cached reuse bind groups (they
+   * reference the now-swapped buffers by binding). No-op when reuse is OFF.
+   */
+  swapReservoirs(): void {
+    if (!this.#restirPtReuse) return;
+    const tmp = this.rptReservoirCur;
+    this.rptReservoirCur = this.rptReservoirPrev;
+    this.rptReservoirPrev = tmp;
+    this.rptProducerGroup0 = null;
+    this.rptTemporalGroup0 = null;
+    this.rptResolveGroup0 = null;
+  }
+
+  /** Tear down all ReSTIR-PT reuse resources. Called from dispose(). */
+  #disposeReservoirResources(): void {
+    this.rptReservoirCur?.destroy();
+    this.rptReservoirCur = null;
+    this.rptReservoirPrev?.destroy();
+    this.rptReservoirPrev = null;
+    this.rptResultBuffer?.destroy();
+    this.rptResultBuffer = null;
+    this.rptParamsBuffer?.destroy();
+    this.rptParamsBuffer = null;
+    this.rptReservoirByteSize = 0;
+    this.rptResultByteSize = 0;
+    this.rptProducerPipeline = null; // GPUComputePipeline has no destroy()
+    this.rptTemporalPipeline = null;
+    this.rptResolvePipeline = null;
+    this.#rptGroup0Layout = null;
+    this.rptProducerGroup0 = null;
+    this.rptTemporalGroup0 = null;
+    this.rptResolveGroup0 = null;
+  }
+
   /**
    * Build (and cache) the path-trace bind group(s) from the current accum views,
    * params buffer, pipeline layout, the supplied scene buffers, and the BDPT
@@ -644,6 +1043,11 @@ export class GpuResources {
     this.pathTraceBindGroup1 = null;
     this.pathTraceBindGroup2 = null;
     this.pathTraceBindGroup3 = null;
+    // The reuse bind groups reference the same scene buffers + accum views, so a
+    // scene-buffer / accum-view recreation invalidates them too.
+    this.rptProducerGroup0 = null;
+    this.rptTemporalGroup0 = null;
+    this.rptResolveGroup0 = null;
   }
 
   /**
@@ -674,5 +1078,6 @@ export class GpuResources {
     this.bindGroupLayout1 = null;
     this.bindGroupLayout2 = null;
     this.bindGroupLayout3 = null;
+    this.#disposeReservoirResources();
   }
 }
