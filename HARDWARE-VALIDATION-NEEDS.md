@@ -58,7 +58,7 @@ Acceptance (per `tools/benchmark-runner/README.md` §"Sweep verification capture
 - **Expected delta:** corrected cosine-weighted light-subpath sampling → slightly different (correct) indirect distribution; **no fireflies/bias** introduced. Converged images should be very close (the bug biased low-sample distributions).
 - **Acceptance:** converged BDPT render is artifact-free and matches the analytic expectation; A/B shows no systematic darkening/brightening beyond MC noise at high SPP.
 
-### V2 — T16: DDGI emitter radiometry (chroma + area)  [done-needs-render]
+### V2 — T16: DDGI emitter radiometry (chroma + area)  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** DDGI light collection now maps core emitters directly (`coreEmittersToDDGILights.ts`) instead of round-tripping through THREE — recovers per-emitter **chroma** (a red rect-area light was bleeding **white**) and uses the correct emissive area `4·|u×v|` (was `width·height`). Wired on both the init path and the incremental `updateEmitter` path.
 - **Why GPU:** DDGI runs in walkaround-hybrid (`hybridCanRun: false` in WSL).
 - **Test scene / plan:** a colour-bleed scene — a saturated (e.g. red) rect-area light near a white wall, hybrid backend, DDGI on. Capture `bbd32c8` vs `main`. Add a sheared-axis rect-area variant (non-orthogonal u/v) to exercise the area-metric fix.
@@ -72,14 +72,14 @@ Acceptance (per `tools/benchmark-runner/README.md` §"Sweep verification capture
 - **Expected delta:** (a) with flags ON, output must be **bit-for-bit / visually identical** to pre-sweep (the flag-ON WGSL is already proven byte-identical to the old inline shader — this is a confirmation, the least-risky item); (b) with flags OFF, the sun-caustic + sky-aperture terms must drop to **exactly zero** vs pre-sweep (the intended fix: generic scenes no longer get stained-glass physics).
 - **Acceptance:** (a) PSNR ≈ ∞ / pixel-identical; (b) the two terms are gone, no other change.
 
-### V4 — directional → DDGI sun  [implemented this session — needs-render]
+### V4 — directional → DDGI sun  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** a scene `directional` emitter now drives the DDGI sun with its **real direction** (was hardcoded `(0,-1,0)`) and is single-counted (resolved the setSunIntensityMultiplier-vs-fixture double-count); `directional` re-declared in walkaround's `supportedEmitterKinds` + ledger.
 - **Why GPU:** DDGI sun lighting, walkaround-hybrid.
 - **Test scene / plan:** a scene with a non-downward `directional` emitter (e.g. dir `(1,-1,0)` normalized), hybrid backend. Capture `main` vs `bbd32c8`.
 - **Expected delta:** DDGI probe/indirect sun lighting now comes from the **correct direction** (previously lit as if from straight down); intensity unchanged (single-counted, not doubled).
 - **Acceptance:** sun-lit surfaces face the emitter's actual direction; no doubling/over-brightening; a `(0,-1,0)` directional is unchanged vs pre-sweep.
 
-### V5 — DDGI IRR border-texel fill  [implemented this session — needs-render]
+### V5 — DDGI IRR border-texel fill  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** the irradiance border pass now fills all border texels of each 10×10 probe-atlas cell (previously left the 4 bottom-edge texels `lx∈{6,7,8,9}, ly=9` unfilled).
 - **Why GPU:** DDGI probe atlas, walkaround-hybrid.
 - **Test scene / plan:** any DDGI scene; inspect probe-atlas edges / look for probe-seam artifacts at cell boundaries. Capture `main` vs `bbd32c8`.
@@ -133,35 +133,35 @@ Acceptance (per `tools/benchmark-runner/README.md` §"Sweep verification capture
 - **Expected delta:** the mesh deforms correctly (matches CPU reference) — previously distorted under non-identity bind.
 - **Acceptance:** non-identity-bind skinned mesh matches the CPU reference; an identity-bind mesh is unchanged (still GPU path).
 
-### V12 — duplicate DDGI sun dedup  [implemented this session — needs-render]
+### V12 — duplicate DDGI sun dedup  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** when a scene `directional` (→ DDGI sun) AND a host `opts.lights` `sun` are both present, only ONE sun now reaches DDGI (scene directional wins, host sun dropped + one-time warn). Applied on BOTH the init path (`HybridEngineLifecycle`) and the incremental re-sync path (`HybridEngine._syncDdgiLightsFromThreeRoot`).
 - **Why GPU:** DDGI direct lighting, walkaround.
 - **Test scene / plan:** a scene with a `directional` emitter AND a host `opts.lights` sun, hybrid backend. A/B `main` vs `bbd32c8`.
 - **Expected delta:** sun lighting at the correct SINGLE intensity (was ~2× from double-injection).
 - **Acceptance:** brightness matches a single sun; no doubling; scene-directional precedence honored.
 
-### V13 — RC merged-instance refit + filter parity  [implemented this session — needs-render]
+### V13 — RC merged-instance refit + filter parity  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** RC merged-mode moving-instance refit is now wired into `propagateBvhToGiSubsystems` (`refitMergedInstance` — in-place positions + node-AABB refit, no teardown). Also `RCSubsystem.setScene` now builds with a permissive all-meshes filter (was PBR-only `DEFAULT_FILTER`) so RC's merged vertex layout matches ReSTIR's by construction (non-PBR meshes were diverging — caught the moment the refit was wired).
 - **Why GPU:** RC merged-mode GI, walkaround (`rcEnabled`).
 - **Test scene / plan:** RC merged mode (`rcEnabled`, merged BVH) with a moving instance + at least one non-PBR mesh (e.g. MeshBasic), hybrid backend. Move the instance; observe RC GI.
 - **Expected delta:** after the instance moves, RC GI tracks the new geometry without a full rebuild; non-PBR meshes are included in RC's BVH (matching ReSTIR).
 - **Acceptance:** GI stays correct after instance moves; no RC/ReSTIR geometry divergence; no teardown stutter.
 
-### V14 — resolutionFactor composite upscale (C1)  [implemented this session — needs-render]
+### V14 — resolutionFactor composite upscale (C1)  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** the composite blit is now resolution-independent — the vertex shader emits a `[0,1]²` screen UV and the frag indexes `denoisedTex` via `uv × textureDimensions` (nearest). Previously it indexed the internal-res texture with raw swap-chain `fragCoord`, so `resolutionFactor < 1` rendered into the top-left and left the rest of the canvas BLACK.
 - **Why GPU:** composite pass, walkaround.
 - **Test scene / plan:** any hybrid scene at `resolutionFactor` 0.5 and 0.75 on a real GPU.
 - **Expected delta:** the ENTIRE canvas is covered (no black border/region); nearest-neighbour upscale; `factor == 1` is bit-identical to before.
 - **Acceptance:** corner-pixel telemetry confirms full coverage; upscale quality acceptable vs a `factor = 1.0` reference. Worked pixel: 1920×1080@0.5 → bottom-right maps to internal (959,539).
 
-### V15 — DDGI cadence load-bearing + 2→32 preset spread (H1)  [implemented this session — needs-render]
+### V15 — DDGI cadence load-bearing + 2→32 preset spread (H1)  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** `ddgiUpdateDivisor` now drives the REAL probe-update round-robin stride (was a dead UBO field; real cadence was a hardcoded stride 8). Preset spread is now ultra=2 / high=4 / medium=8 / low=32. **IMPORTANT: omitting `qualityTier` applies the ultra preset, so the no-preset DEFAULT cadence is now stride 2 — 4× the old hardcoded stride-8.** Deliberate fidelity-forward change.
 - **Why GPU:** DDGI probe update, walkaround.
 - **Test scene / plan:** a step lighting change (`updateLighting` toggling the sun); capture DDGI convergence over N frames at `ddgiUpdateDivisor` = 2, 8, 32. Telemetry: `window.__DDGI__.activeCount` per frame + atlas-mean.
 - **Expected delta:** GI converges proportionally faster at lower divisors (divisor 2 ≈ 4× the per-frame active-probe count of divisor 8 ≈ 8× of divisor 32); the new default (stride 2) shows visibly faster GI response than the old stride-8.
 - **Acceptance:** GI response rate scales inversely with divisor; per-frame `activeCount` matches the stride; no probe artifacts/instability at stride 2; the default 8→2 change is faster without temporal-blend breakdown.
 
-### V16 — RC ⊕ ReSTIR-GI per-pixel confidence MIS  [implemented this session — needs-render]
+### V16 — RC ⊕ ReSTIR-GI per-pixel confidence MIS  [GPU-VALIDATED — WAVE8 2026-05-29 dzn+lavapipe PASS; wsl-gpu/WAVE8-RESULTS.md]
 - **What changed:** the indirect RC/ReSTIR-GI blend (`shade.wgsl`) is now a per-pixel confidence-ratio balance heuristic — `c_restir = clamp(Meff/restirGiMClamp)`, `c_rc = rcWeight·(1−m)`, `w_rc = c_rc/(c_rc+c_restir)` — replacing the old fixed host scalar. Unbiased (convex blend of two estimators of the same integral).
 - **Why GPU:** shade pass, walkaround (`rcEnabled`).
 - **Test scene / plan:** `rcEnabled: true`, moderate `rcWeight` (≈0.5), a disocclusion-heavy scene; capture the first ~10 frames after a fast camera pan. A/B vs the pre-change fixed-scalar build.
