@@ -1,0 +1,60 @@
+import { describe, expect, it } from 'vitest';
+import { extractGpuLimits } from '../gpuDetection.js';
+
+describe('extractGpuLimits — portable GPUSupportedLimits reader', () => {
+  it('reads canonical limits from a plain enumerable object (browser shape)', () => {
+    const limits = {
+      maxStorageBuffersPerShaderStage: 16,
+      maxStorageTexturesPerShaderStage: 8,
+      maxBindGroups: 4,
+    };
+    const out = extractGpuLimits(limits);
+    expect(out['maxStorageBuffersPerShaderStage']).toBe(16);
+    expect(out['maxStorageTexturesPerShaderStage']).toBe(8);
+    expect(out['maxBindGroups']).toBe(4);
+  });
+
+  it('reads NON-ENUMERABLE prototype getters (native-wgpu shape — Deno/wgpu-py)', () => {
+    // The exact failure mode the createProgressiveEngine dzn run hit:
+    // Object.keys(limits) === [] but direct property access works.
+    const proto = {};
+    Object.defineProperty(proto, 'maxStorageBuffersPerShaderStage', {
+      get: () => 1_000_000,
+      enumerable: false,
+    });
+    Object.defineProperty(proto, 'maxStorageTexturesPerShaderStage', {
+      get: () => 1_000_000,
+      enumerable: false,
+    });
+    const limits = Object.create(proto);
+    // Sanity: the enumeration-only extractor would have produced {} here.
+    expect(Object.keys(limits)).toHaveLength(0);
+
+    const out = extractGpuLimits(limits);
+    expect(out['maxStorageBuffersPerShaderStage']).toBe(1_000_000);
+    expect(out['maxStorageTexturesPerShaderStage']).toBe(1_000_000);
+  });
+
+  it('merges extra enumerable own-keys not in the canonical set (future/vendor limits)', () => {
+    const limits = {
+      maxStorageBuffersPerShaderStage: 32,
+      someVendorLimit: 12345,
+    };
+    const out = extractGpuLimits(limits);
+    expect(out['maxStorageBuffersPerShaderStage']).toBe(32);
+    expect(out['someVendorLimit']).toBe(12345);
+  });
+
+  it('drops non-numeric / non-finite values and handles null', () => {
+    expect(extractGpuLimits(null)).toEqual({});
+    expect(extractGpuLimits(undefined)).toEqual({});
+    const out = extractGpuLimits({
+      maxBindGroups: 4,
+      maxBufferSize: Number.POSITIVE_INFINITY, // not finite → dropped
+      bogus: 'not-a-number',
+    });
+    expect(out['maxBindGroups']).toBe(4);
+    expect('maxBufferSize' in out).toBe(false);
+    expect('bogus' in out).toBe(false);
+  });
+});

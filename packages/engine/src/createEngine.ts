@@ -27,10 +27,12 @@ import {
   type HybridEngineOptions,
 } from '@vitrum/walkaround-hybrid';
 import { probeAdapterProfile } from './adapterProfile.js';
-import {
-  createPTEngine_WebGL2,
-  type PTEngineWebGL2Options,
-} from '@vitrum/pt-webgl';
+// pt-webgl is the WebGL2 path-tracer backend; it (transitively) pulls the whole
+// three-gpu-pathtracer stack + `three`. Import the runtime factory LAZILY (only
+// `constructPathTracer` needs it) so a host taking exclusively the WebGPU path —
+// e.g. `createProgressiveEngine` (walkaround + pt-webgpu, no WebGL2) — never has
+// to resolve that module graph. The TYPE is import-only (erased at runtime).
+import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl';
 import {
   createPTEngine_WebGPU,
   ptWebgpuRequiredLimitsForAdapter,
@@ -155,14 +157,43 @@ export async function createEngine(opts: CreateEngineOptions): Promise<Engine & 
 // Backend constructors
 // ────────────────────────────────────────────────────────────────────────────
 
-async function constructWalkaround(
+/**
+ * A pre-acquired adapter + device the caller owns. When passed to a backend
+ * constructor, that constructor reuses them INSTEAD of minting (and disposing)
+ * its own. This is the seam `createProgressiveEngine` uses to stand BOTH the
+ * walkaround (realtime) and pt-webgpu (converged) engines up on ONE shared
+ * GPUDevice — a prerequisite for cross-engine texture compatibility (the
+ * progressive seed handoff binds the walkaround's output texture into the
+ * converged engine's `seedAccumulator`, which is only legal same-device).
+ *
+ * When `null`/absent (the default `createEngine()` path) the constructor mints
+ * its own adapter+device and destroys the device on dispose, exactly as before —
+ * this whole type is invisible to the createEngine code path.
+ *
+ * `ownsDeviceLifecycle: false` tells the constructor NOT to `device.destroy()`
+ * on the returned engine's dispose: the SHARED-device owner (the progressive
+ * facade) destroys it once, after disposing both sub-engines.
+ *
+ * @internal — consumed only by `createProgressiveEngine`; not public API.
+ */
+export interface SharedDeviceCtx {
+  readonly adapter: GPUAdapter;
+  readonly device: GPUDevice;
+  /** Always false here — the facade owns the device. Present for intent clarity. */
+  readonly ownsDeviceLifecycle: false;
+}
+
+/** @internal — reused by `createProgressiveEngine` to build the realtime engine
+ *  on a shared device. Not part of the public `@vitrum/engine` API. */
+export async function constructWalkaround(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
   aabb: SceneAABB,
   sceneInputIsThree: boolean,
   needsTlas: boolean,
+  shared?: SharedDeviceCtx,
 ): Promise<Engine & Partial<GIStatePersistable>> {
-  const adapter = await navigator.gpu.requestAdapter();
+  const adapter = shared?.adapter ?? await navigator.gpu.requestAdapter();
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
@@ -199,7 +230,11 @@ async function constructWalkaround(
   // Full when the adapter meets the full limits; otherwise lite (the profile
   // already guaranteed hybridLiteCapable above).
   const useLite = !profile.hybridCapable;
-  const device = await adapter.requestDevice({
+  // Reuse a shared device when given (progressive facade), else mint our own.
+  // A shared device is built with the limit UNION (which includes the FULL
+  // hybrid floor), so `profile.hybridCapable` is true and `useLite` is false —
+  // the shared path always runs full hybrid, as it must to satisfy the union.
+  const device = shared?.device ?? await adapter.requestDevice({
     requiredLimits: useLite ? HYBRID_LITE_LIMITS : HYBRID_WEBGPU_REQUIRED_LIMITS,
   });
 
@@ -288,36 +323,58 @@ async function constructWalkaround(
   configureWebGpuCanvas(opts.canvas, device);
 
   return wrapWithIdempotentDispose(engine, () => {
-    try { device.destroy(); } catch {}
+    // Don't destroy a device we don't own — the shared-device owner (the
+    // progressive facade) destroys it once after disposing both sub-engines.
+    if (shared == null) {
+      try { device.destroy(); } catch {}
+    }
   });
 }
 
-async function constructPathTracerWebGPU(
+/** @internal — reused by `createProgressiveEngine` to build the converged
+ *  engine on a shared device. Not part of the public `@vitrum/engine` API. */
+export async function constructPathTracerWebGPU(
   opts: CreateEngineOptions,
   vitrumScene: Scene,
   _sceneInputIsThree: boolean,
+  shared?: SharedDeviceCtx,
 ): Promise<Engine> {
-  const adapter = await navigator.gpu.requestAdapter();
+  const adapter = shared?.adapter ?? await navigator.gpu.requestAdapter();
   if (adapter == null) {
     throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');
   }
-  const device = await adapter.requestDevice({
+  const device = shared?.device ?? await adapter.requestDevice({
     requiredLimits: ptWebgpuRequiredLimitsForAdapter(adapter),
   });
 
   const advancedWebGPU = opts.advanced as Partial<PTEngineWebGPUOptions> | undefined;
   const merged: PTEngineWebGPUOptions = {
     device,
+    // A shared device is built with the limit UNION (≥ the full pt-webgpu
+    // floor of 10 buffers / 5 textures), so force the full trace tier here —
+    // the union exists precisely so both engines run at full fidelity, and the
+    // auto-resolver would also pick 'full' from these limits. Explicit is safer
+    // (it surfaces a clear throw if a caller ever passes an under-spec device).
+    ...(shared != null ? { traceTier: 'full' as const } : {}),
     ...advancedWebGPU,
   };
 
   const engine = await createPTEngine_WebGPU(merged);
   engine.setScene(vitrumScene);
 
-  configureWebGpuCanvas(opts.canvas, device);
+  // The converged engine renders offscreen (presentationMode:'offscreen-texture');
+  // it does not present to the canvas. When standing alone (createEngine) we keep
+  // the historical canvas-configure for attachVitrum swap-chain plumbing. Under a
+  // shared device the realtime engine owns the canvas, so skip it here to avoid
+  // re-configuring the same context twice.
+  if (shared == null) {
+    configureWebGpuCanvas(opts.canvas, device);
+  }
 
   return wrapWithIdempotentDispose(engine, () => {
-    try { device.destroy(); } catch {}
+    if (shared == null) {
+      try { device.destroy(); } catch {}
+    }
   });
 }
 
@@ -334,6 +391,9 @@ async function constructPathTracer(
     ...advancedWebGL2,
   };
 
+  // Lazy runtime import — keeps the WebGL2 path-tracer stack out of the module
+  // graph for hosts that only ever take the WebGPU path (see the import note).
+  const { createPTEngine_WebGL2 } = await import('@vitrum/pt-webgl');
   const engine = await createPTEngine_WebGL2(merged);
   engine.setScene(vitrumScene);
 

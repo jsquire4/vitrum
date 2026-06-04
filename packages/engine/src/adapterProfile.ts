@@ -17,6 +17,7 @@
 import {
   probeWebGPU,
   isSwiftShaderAdapter,
+  extractGpuLimits,
   type AdapterProfile,
   type RealtimeTier,
   type HeroBackendRec,
@@ -37,20 +38,6 @@ interface ResolvedAdapterFacts {
   readonly limits: Record<string, number>;
   readonly info: { vendor?: string | null; architecture?: string | null } | null;
   readonly adapterKind: WgpuAdapterKind;
-}
-
-/** Pull the numeric limit bag off a `GPUSupportedLimits`-like object exactly
- *  the way `probeWebGPU` does (`gpuDetection.ts`) so the device/adapter inputs
- *  and the no-arg navigator probe produce byte-identical limit bags. */
-function extractLimits(limitsObj: unknown): Record<string, number> {
-  const out: Record<string, number> = {};
-  if (limitsObj == null || typeof limitsObj !== 'object') return out;
-  const record = limitsObj as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    const val = record[key];
-    if (typeof val === 'number') out[key] = val;
-  }
-  return out;
 }
 
 function isGpuDevice(source: GPUDevice | GPUAdapter): source is GPUDevice {
@@ -93,7 +80,9 @@ async function resolveFacts(
   // GPUDevice or GPUAdapter — read `.limits` directly. Adapter info is
   // best-effort: GPUAdapter exposes `.info`; GPUDevice exposes `.adapterInfo`
   // on some implementations. Absent info → 'unknown' (never falsely software).
-  const limits = extractLimits((source as { limits?: unknown }).limits);
+  // Read by canonical name (portable across browsers' enumerable own-keys AND
+  // native-wgpu non-enumerable getters — Deno/wgpu-py). See `extractGpuLimits`.
+  const limits = extractGpuLimits((source as { limits?: unknown }).limits);
   let info: { vendor?: string | null; architecture?: string | null } | null = null;
   const rawInfo = isGpuDevice(source)
     ? (source as { adapterInfo?: { vendor?: string | null; architecture?: string | null } }).adapterInfo

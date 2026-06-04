@@ -59,6 +59,19 @@ export {
   type HandoffFrameResult,
 } from './progressiveHandoff.js';
 
+// Progressive engine FACADE (P8 Track A increment 3): mints ONE shared GPUDevice
+// and stands the realtime (walkaround-hybrid) + converged (pt-webgpu) engines up
+// on it, then wires a ProgressiveHandoffCoordinator with seed-on-handoff. The
+// shared device is what makes the realtime→PT seed handoff legal (cross-engine
+// texture compatibility). `computeProgressiveLimitUnion` is exported for adapter
+// preflight.
+export {
+  createProgressiveEngine,
+  computeProgressiveLimitUnion,
+  type CreateProgressiveEngineOptions,
+  type ProgressiveEngineHandle,
+} from './createProgressiveEngine.js';
+
 // Backend-specific lighting vocabulary re-export. `Engine.updateLighting` is
 // contractually opaque in @vitrum/core (Readonly<Record<string, unknown>>),
 // so hosts that drive HybridEngine's per-frame time-of-day scrub can import

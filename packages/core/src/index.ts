@@ -16,5 +16,5 @@ export type {
   HeroBackendRec,
   PtWebgpuTierRec,
 } from './adapterProfile.js';
-export { detectGpu, probeWebGPU } from './gpuDetection.js';
+export { detectGpu, probeWebGPU, extractGpuLimits } from './gpuDetection.js';
 export { isSwiftShaderAdapter } from './wgpuSupport.js';

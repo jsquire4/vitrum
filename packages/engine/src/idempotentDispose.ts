@@ -182,6 +182,36 @@ export function wrapWithIdempotentDispose(
       disposed ? false : giEngine.importGIState!(snapshot);
   }
 
+  // Progressive walkaround→PT seed source/sink (P8). These value-returning /
+  // bespoke-disposed-semantics methods are forwarded here (not via the
+  // OPTIONAL_METHOD_PROXIES table, which only models noop/empty-unsub/throw) so
+  // a host driving the handoff over `createEngine`-wrapped engines — most
+  // importantly `createProgressiveEngine`, which builds its coordinator over
+  // these wrapped engines — can actually reach them. WITHOUT this forwarding the
+  // ProgressiveHandoffCoordinator's `realtime.getProgressiveSeedTexture?.()` /
+  // `converged.seedAccumulator?.()` resolve to undefined and the seed silently
+  // no-ops (the two arms become byte-identical). Each is gated on its capability
+  // so a backend that doesn't advertise it stays unforwarded.
+  const seedEngine = engine as Engine;
+  if (
+    engine.capabilities.supportsProgressiveSeedSource === true &&
+    typeof seedEngine.getProgressiveSeedTexture === 'function'
+  ) {
+    proxy.getProgressiveSeedTexture = () =>
+      // Disposed → null (the engine is torn down; there is no seed to expose).
+      disposed ? null : seedEngine.getProgressiveSeedTexture!();
+  }
+  if (
+    engine.capabilities.supportsAccumulatorSeed === true &&
+    typeof seedEngine.seedAccumulator === 'function'
+  ) {
+    proxy.seedAccumulator = (seed, opts) => {
+      // Disposed → no-op (matches the other mutating-method disposed semantics).
+      if (disposed) return;
+      seedEngine.seedAccumulator!(seed, opts);
+    };
+  }
+
   return proxy;
 }
 

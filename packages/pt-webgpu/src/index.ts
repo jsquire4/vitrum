@@ -68,6 +68,11 @@ export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
 export {
   PT_WEBGPU_REQUIRED_LIMITS,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  // Full-tier device-limit floors — re-exported so `@vitrum/engine`'s
+  // progressive-engine facade can compute the cross-backend limit UNION
+  // (max of the hybrid + pt-webgpu full floors) for a shared device.
+  PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   mergeAdapterRequiredLimits,
