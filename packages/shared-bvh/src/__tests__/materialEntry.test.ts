@@ -10,17 +10,25 @@
 
 import { describe, expect, it } from 'vitest';
 
+import type { MaterialSpec } from '@vitrum/core';
+
 import {
   MATERIAL_ATTEN_DIST_INFINITE,
   MATERIAL_DEFAULT_ROUGHNESS,
   MATERIAL_ENTRY_FLOATS,
   MATERIAL_ENTRY_STRIDE_BYTES,
   MATERIAL_FLAG_IS_GLASS,
+  coreMaterialToMaterialEntry,
   packMaterials,
   type MaterialEntryInput,
 } from '../materialEntry.js';
 
 const ENTRY = MATERIAL_ENTRY_FLOATS;
+
+/** Minimal valid MaterialSpec (only the three required fields). */
+function spec(overrides: Partial<MaterialSpec> = {}): MaterialSpec {
+  return { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, ...overrides };
+}
 
 function u32(out: Float32Array): Uint32Array {
   return new Uint32Array(out.buffer);
@@ -148,5 +156,90 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
     expect(out[2 * ENTRY + 10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);     // 0
     expect(out[3 * ENTRY + 10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);     // NaN
     expect(out[4 * ENTRY + 10]).toBeCloseTo(2.5);                        // finite ok
+  });
+});
+
+describe('coreMaterialToMaterialEntry — THREE-free MaterialSpec adapter', () => {
+  it('passes through baseColor / roughness / metallic (→ metalness)', () => {
+    const e = coreMaterialToMaterialEntry(
+      spec({ baseColor: [0.2, 0.4, 0.6], roughness: 0.3, metallic: 0.8 }),
+    );
+    expect(e.baseColor).toEqual([0.2, 0.4, 0.6]);
+    expect(e.roughness).toBe(0.3);
+    expect(e.metalness).toBe(0.8); // core `metallic` → entry `metalness`
+  });
+
+  it('pre-multiplies emissive by emissiveIntensity (matching the RC adapter)', () => {
+    const e = coreMaterialToMaterialEntry(
+      spec({ emissive: [0.5, 0.25, 0.1], emissiveIntensity: 4 }),
+    );
+    expect(e.emissive).toEqual([2.0, 1.0, 0.4]);
+  });
+
+  it('defaults emissiveIntensity to ×1 when absent (matches PBR_DEFAULTS)', () => {
+    const e = coreMaterialToMaterialEntry(spec({ emissive: [0.3, 0.6, 0.9] }));
+    expect(e.emissive).toEqual([0.3, 0.6, 0.9]);
+  });
+
+  it('omits emissive entirely when the spec has none (→ packMaterials default (0,0,0))', () => {
+    const e = coreMaterialToMaterialEntry(spec());
+    expect(e.emissive).toBeUndefined();
+    const out = packMaterials([e]);
+    expect([out[4], out[5], out[6]]).toEqual([0, 0, 0]);
+  });
+
+  it('passes through the transmission / refraction fields 1:1', () => {
+    const e = coreMaterialToMaterialEntry(
+      spec({
+        transmission: 0.9,
+        ior: 1.7,
+        attenuationColor: [0.8, 0.2, 0.2],
+        attenuationDistance: 3.5,
+        thickness: 0.25,
+      }),
+    );
+    expect(e.transmission).toBe(0.9);
+    expect(e.ior).toBe(1.7);
+    expect(e.attenuationColor).toEqual([0.8, 0.2, 0.2]);
+    expect(e.attenuationDistance).toBe(3.5);
+    expect(e.thickness).toBe(0.25);
+  });
+
+  it('does NOT apply RC\'s thickness→0.1 floor (faithful pass-through; default stays 0)', () => {
+    // RC applies its own 0.1 floor on top of this adapter; the adapter itself
+    // must not bake in RC policy. Absent thickness ⇒ undefined ⇒ packs to 0.
+    const e = coreMaterialToMaterialEntry(spec({ transmission: 0.5 }));
+    expect(e.thickness).toBeUndefined();
+    const out = packMaterials([e]);
+    expect(out[11]).toBe(0); // thickness slot
+  });
+
+  it('round-trips through packMaterials to canonical bytes with library defaults', () => {
+    // A bare spec (no transmission/ior/etc.) → packMaterials applies the
+    // canonical defaults exactly as for a default-constructed THREE material.
+    const out = packMaterials([coreMaterialToMaterialEntry(spec())]);
+    expect([out[0], out[1], out[2]]).toEqual([1, 1, 1]);     // baseColor
+    // The spec carries roughness 0.5 explicitly, so it passes through (it is
+    // NOT replaced by MATERIAL_DEFAULT_ROUGHNESS — the default only fires when
+    // a field is undefined). Assert against a spec that omits roughness to see
+    // the default kick in.
+    expect(out[3]).toBe(0.5);                                  // spec roughness
+    // Omit roughness entirely to exercise packMaterials' default. Building the
+    // bag by destructuring-out `roughness` keeps it strictly absent (not
+    // `undefined`-valued), which exactOptionalPropertyTypes requires.
+    const { roughness: _omitR, ...noRoughness } = coreMaterialToMaterialEntry(spec());
+    void _omitR;
+    const outDefault = packMaterials([noRoughness]);
+    expect(outDefault[3]).toBe(MATERIAL_DEFAULT_ROUGHNESS);    // → 1.0 default
+    expect(out[7]).toBe(0);                                    // metalness
+    expect(out[8]).toBeCloseTo(1.5);                           // ior default
+    expect(out[9]).toBe(0);                                    // transmission default
+    expect(out[10]).toBe(MATERIAL_ATTEN_DIST_INFINITE);       // attenDist default
+    expect(u32(out)[15]).toBe(0);                             // flags: not glass
+  });
+
+  it('a transmissive spec derives the glass flag via packMaterials', () => {
+    const out = packMaterials([coreMaterialToMaterialEntry(spec({ transmission: 0.6 }))]);
+    expect(u32(out)[15]).toBe(MATERIAL_FLAG_IS_GLASS);
   });
 });

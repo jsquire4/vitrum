@@ -72,6 +72,8 @@
  * @since W2-C5 (premium-grade-refactor-20260517.md §W2 sub-task 5).
  */
 
+import type { MaterialSpec } from '@vitrum/core';
+
 /** Floats per entry. 16 × 4 = 64 bytes. */
 export const MATERIAL_ENTRY_FLOATS = 16;
 
@@ -125,6 +127,71 @@ export interface MaterialEntryInput {
    * future `isLight` bit at position 1).
    */
   flags?: number;
+}
+
+/**
+ * Map a `@vitrum/core` `MaterialSpec` directly into the canonical
+ * {@link MaterialEntryInput} bag — the THREE-free counterpart to the
+ * `extractThreePbrScalars`-based `threeToMaterialEntryInput` adapters in
+ * `walkaround-hybrid` (RC: `rc/bvhCompute.ts`; DDGI: `ddgi/probeUpdateMaterials.ts`).
+ *
+ * When an engine's geometry comes from a core `Scene` (the THREE-decoupling
+ * path — see `plan/three-decouple-analysis-2026-06-03.md`), the material is
+ * already a `MaterialSpec`, so it maps straight to {@link MaterialEntryInput}
+ * with no `THREE.Material` round-trip. This is the canonical
+ * "core material → GPU material struct" bridge; feed its output to
+ * {@link packMaterials} for the 64-byte SSBO layout.
+ *
+ * Field mapping (mirrors `extractThreePbrScalars` → the RC/DDGI adapters):
+ *  - `baseColor` / `roughness` / `ior` / `transmission` / `attenuationColor` /
+ *    `attenuationDistance` / `thickness` pass through 1:1.
+ *  - `metallic` → `metalness` (the `MaterialEntryInput` field is spelled the
+ *    THREE way; the core field is spelled the glTF way).
+ *  - `emissive` is **pre-multiplied** by `emissiveIntensity` so the GPU side
+ *    sees a single radiance triple — exactly as the RC adapter does
+ *    (`rc/bvhCompute.ts`). A missing `emissiveIntensity` defaults to ×1
+ *    (matching `extractThreePbrScalars`' `PBR_DEFAULTS.emissiveIntensity`).
+ *
+ * Any field absent on the spec is left `undefined`, so {@link packMaterials}
+ * applies the library-canonical defaults (`roughness = 1.0`, `ior = 1.5`,
+ * `attenuationDistance → 1e9`, etc.) — identical to packing a THREE material
+ * whose constructor left those at their defaults.
+ *
+ * **Deliberate non-policy:** this adapter does NOT apply RC's `thickness → 0.1`
+ * floor (RC's per-tri Beer-Lambert needs a non-zero numerator; DDGI does not).
+ * That floor is an RC-side policy, not a property of the material, so RC applies
+ * it on top of this adapter's faithful pass-through — exactly as it does today
+ * on the `extractThreePbrScalars` output. Keeping it out here preserves the
+ * intentional RC-vs-DDGI divergence and keeps this function a pure field map.
+ *
+ * @param material a core `MaterialSpec` (the `@vitrum/core` PBR record).
+ * @returns the engine-independent {@link MaterialEntryInput} (no defaults
+ *          applied — that is {@link packMaterials}' job).
+ */
+export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEntryInput {
+  const out: {
+    -readonly [K in keyof MaterialEntryInput]: MaterialEntryInput[K];
+  } = {
+    baseColor: material.baseColor,
+    roughness: material.roughness,
+    metalness: material.metallic,
+  };
+  if (material.emissive !== undefined) {
+    const ei = material.emissiveIntensity ?? 1;
+    out.emissive = [
+      material.emissive[0] * ei,
+      material.emissive[1] * ei,
+      material.emissive[2] * ei,
+    ];
+  }
+  if (material.ior !== undefined) out.ior = material.ior;
+  if (material.transmission !== undefined) out.transmission = material.transmission;
+  if (material.attenuationColor !== undefined) out.attenuationColor = material.attenuationColor;
+  if (material.attenuationDistance !== undefined) {
+    out.attenuationDistance = material.attenuationDistance;
+  }
+  if (material.thickness !== undefined) out.thickness = material.thickness;
+  return out;
 }
 
 /**
