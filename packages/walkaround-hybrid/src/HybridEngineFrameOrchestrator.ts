@@ -333,6 +333,14 @@ function runDdgiAndRc(deps: HybridEngineFrameDeps, input: FrameInput): void {
   if (ddgiLayerOn && ddgiScene != null) {
     void deps.subsystems.ddgi.updateFrame({
       scene: ddgiScene,
+      // Core-first standalone-fallback BVH: when this engine was fed a core
+      // Scene (the dominant path), hand it to DDGI so the no-ReSTIR-snapshot
+      // fallback builds the merged BVH via `mergeWorldSpaceFromCore` (THREE-free)
+      // instead of `buildSceneBVH(threeRoot)`. When a ReSTIR snapshot is active
+      // (the normal production path) DDGI ignores both scenes and uses the shared
+      // BVH buffers. `lastScene` is null only for the escape-hatch raw-`threeScene`
+      // host, which correctly falls back to the THREE `scene` path.
+      ...(deps.subsystems.lastScene != null ? { coreScene: deps.subsystems.lastScene } : {}),
       device: deps.flags.device,
       enabled: true,
     });

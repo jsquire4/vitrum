@@ -30,8 +30,10 @@ import {
 import {
   DDGI_MAX_MATERIALS,
   DDGI_MATERIAL_STRIDE_BYTES,
+  packDDGIMaterialsFromCoreN,
   packDDGIMaterialsN,
 } from './probeUpdateMaterials.js';
+import type { MaterialSpec } from '@vitrum/core';
 import type { ProbeGrid } from './probeGrid.js';
 import type { DDGILight } from './types.js';
 import { isDdgiRestirTlasOnlyRefit, type DdgiRestirBvhSnapshot } from './ddgiRestirBvh.js';
@@ -425,9 +427,23 @@ export class ProbeUpdatePass {
     }
     device.queue.writeBuffer(this._gpu.activeProbesBuf, 0, activeArr);
 
-    // Update uniforms.
-    const materials = snap?.materials ?? legacyBuffers!.materials;
-    this._uploadMaterials(device, [...materials]);
+    // Update uniforms. Material source priority:
+    //   1. core-first standalone path — `SceneBvh.updateFromCore` filled
+    //      `coreMaterials` (deduped MaterialSpec[]); pack via the THREE-free
+    //      `coreMaterialToMaterialEntry` (no THREE.Material round-trip). This is
+    //      the DDGI merged-BVH ingestion THREE-decouple (mirrors the ReSTIR-DI
+    //      emitter decouple `46a0078`).
+    //   2. ReSTIR snapshot path (production) — `snap.materials` are THREE
+    //      materials produced by `vitrumSceneToThree` (still THREE today; a
+    //      separate decouple owns the snapshot's material list).
+    //   3. legacy THREE `SceneBvh.update` path — `legacyBuffers.materials`.
+    const coreMats = legacyBuffers?.coreMaterials;
+    if (coreMats != null) {
+      this._uploadCoreMaterials(device, coreMats);
+    } else {
+      const materials = snap?.materials ?? legacyBuffers!.materials;
+      this._uploadMaterials(device, [...materials]);
+    }
     this._uploadLights(device);
     this._uploadGridParams(device);
     this._uploadFrameParams(device);
@@ -540,6 +556,21 @@ export class ProbeUpdatePass {
       );
     }
     const buf = packDDGIMaterialsN(mats, this._ddgiMaxMaterials);
+    device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
+  }
+
+  /** Core-first material upload (THREE-decouple): pack a deduped `MaterialSpec[]`
+   *  directly via `coreMaterialToMaterialEntry` + the `emissiveIntensity = 1`
+   *  production convention — no `THREE.Material` round-trip. See
+   *  `packDDGIMaterialsFromCoreN`. */
+  private _uploadCoreMaterials(device: GPUDevice, mats: readonly MaterialSpec[]): void {
+    if (mats.length > this._ddgiMaxMaterials) {
+      console.warn(
+        `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
+        `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
+      );
+    }
+    const buf = packDDGIMaterialsFromCoreN(mats, this._ddgiMaxMaterials);
     device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
   }
 

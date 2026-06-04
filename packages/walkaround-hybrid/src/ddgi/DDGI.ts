@@ -74,9 +74,22 @@ export interface DDGIOptions {
 /** Per-frame inputs supplied by the host for a DDGI update tick. */
 export interface DDGIFrameInputs {
   /**
-   * The THREE.Scene to traverse for BVH update.
+   * The THREE.Scene to traverse for the standalone (no-ReSTIR-snapshot) BVH
+   * update via {@link SceneBvh.update}. Required for THREE-only standalone DDGI
+   * consumers. When {@link coreScene} is also supplied, the core-first path
+   * ({@link SceneBvh.updateFromCore}) is preferred and this is unused for the
+   * BVH build (it may still be a host-managed throwaway root).
    */
   scene: THREE.Scene;
+  /**
+   * Optional `@vitrum/core` `Scene` — when present (and no ReSTIR snapshot is
+   * active), the standalone DDGI BVH is built core-first via
+   * {@link SceneBvh.updateFromCore} (`mergeWorldSpaceFromCore` + THREE-free
+   * materials) instead of the THREE `buildSceneBVH` path. The THREE-decouple of
+   * the DDGI merged-BVH ingestion (mirrors the ReSTIR-DI emitter decouple). When
+   * absent, the THREE {@link scene} path is used (existing behaviour).
+   */
+  coreScene?: Scene;
   /**
    * Raw WebGPU device. Supply this when the host owns the device directly
    * (e.g. HybridEngine). Either `device` or `renderer` must be present.
@@ -315,7 +328,15 @@ export class DDGI {
 
     if (this._restirSnapshot == null) {
       try {
-        this._bvh.update(inputs.scene);
+        // Core-first when a @vitrum/core Scene is supplied (the THREE-decoupled
+        // standalone path); else the legacy THREE buildSceneBVH path. Both
+        // populate `_bvh.buffers`; the core path additionally fills
+        // `coreMaterials` so the probe-material packer skips the THREE round-trip.
+        if (inputs.coreScene != null) {
+          this._bvh.updateFromCore(inputs.coreScene);
+        } else {
+          this._bvh.update(inputs.scene);
+        }
       } catch (e) {
         console.error('[DDGI] BVH update failed:', e);
       }
