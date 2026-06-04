@@ -18,10 +18,11 @@
  * lavapipe (V24): the partials match the FD oracle to f32 precision, and the
  * chain rule + fixed-point accumulation match an on-device finite-difference.
  * The session requests 'path-replay' only when the engine provides the hook AND
- * every parameter is in the Phase-1 differentiable set (material baseColor /
- * roughness); any shortfall (no hook, an emitter/emissive param, etc.) resolves
- * the effective method to 'finite-difference', reported via `session.method` —
- * no silent wrong-gradient path. An engine providing the hook vouches that its
+ * every parameter is in the adjoint-differentiable set
+ * (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness); any
+ * shortfall (no hook, an emitter param, an `emissive` / `ior` param, etc.) resolves the
+ * effective method to 'finite-difference', reported via `session.method` — no
+ * silent wrong-gradient path. An engine providing the hook vouches that its
  * re-trace dispatch is hardware-validated.
  *
  * The host owns the cadence: each `step()` is one optimizer iteration. The
@@ -83,10 +84,11 @@ export interface InverseEngineHooks {
    * and accumulating `∂loss/∂θ` (the chain rule GPU-validated vs on-device FD) —
    * and returns the flat gradient. Replaces the N-render FD probe loop with one
    * baseline render + one adjoint pass. The session only requests this when the
-   * hook exists AND every parameter is adjoint-eligible (material baseColor /
-   * roughness — the Phase-1 differentiable set); otherwise it reports + uses
+   * hook exists AND every parameter is adjoint-eligible (`ADJOINT_ELIGIBLE_FIELDS`:
+   * material baseColor / roughness); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
-   * this hook is vouching that its adjoint pass is hardware-validated.
+   * this hook is vouching that its adjoint pass is hardware-validated — a field
+   * only graduates to path-replay once its end-to-end inverse fit converges.
    */
   computeAdjointGradient?(args: AdjointGradientRequest): Promise<Float32Array>;
 }
@@ -117,7 +119,31 @@ export interface AdjointGradientRequest {
   readonly gradientLength: number;
 }
 
-/** Phase-1 differentiable material fields (the BSDF adjoint partials cover these). */
+/**
+ * Material fields the path-replay adjoint differentiates (resolves the method to
+ * 'path-replay' instead of FD).
+ *
+ *  - `baseColor`, `roughness` — the original Phase-1 BSDF partials
+ *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`), GPU-validated end-to-end (V24).
+ *
+ * `emissive` and `ior` are deliberately NOT here — both optimize via finite
+ * difference (correct, just slower), and both have a GPU-validated analytic
+ * partial (`dContribution_dEmissive`, `dFrDielectric_dIor` — analytic == FD in
+ * isolation, `ADJOINT_EMISSIVE_IOR_FD_WGSL`) ready for a future path-replay wire:
+ *  - `emissive`: a trial engine-pass scatter produced a DIVERGENT / sign-wrong
+ *    end-to-end gradient (the inverse fit moved AWAY from the target, err 3→8),
+ *    so emissive stays on FD until the engine emissive scatter is debugged AND an
+ *    inverse fit converges. The analytic partial is validated; the engine wire is not.
+ *  - `ior`: `∂evaluateBrdf/∂ior ≡ 0` in the current forward (opaque-reflective F0
+ *    is a fixed 0.04, not ior-derived); the single-bounce adjoint doesn't trace
+ *    the transmissive Fresnel partition where ior IS differentiable.
+ *
+ * NOTE: adding a field here makes `inverseSession` REQUEST path-replay; the
+ * engine's `computeAdjointGradient` hook must actually accumulate that field's
+ * gradient — GPU-VALIDATED BY A CONVERGING INVERSE FIT, not just an in-isolation
+ * partial — or the result is a silently-wrong gradient. A field only graduates
+ * here once its end-to-end fit converges (emissive's did not, yet).
+ */
 const ADJOINT_ELIGIBLE_FIELDS = new Set(['baseColor', 'roughness']);
 
 interface ParamSlot {
@@ -128,7 +154,7 @@ interface ParamSlot {
 }
 
 const MATERIAL_RGB_FIELDS = new Set(['baseColor', 'emissive']);
-const MATERIAL_SCALAR_FIELDS = new Set(['roughness', 'metallic', 'emissiveIntensity']);
+const MATERIAL_SCALAR_FIELDS = new Set(['roughness', 'metallic', 'emissiveIntensity', 'ior']);
 const EMITTER_RGB_FIELDS = new Set(['color']);
 const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
 
@@ -188,10 +214,11 @@ export class PtWebgpuInverseSession implements InverseSession {
 
     // Resolve the EFFECTIVE gradient method from the request + backend capability
     // (InverseSessionOptions.method contract). 'path-replay' requires the engine
-    // to provide the adjoint hook AND every parameter to be in the Phase-1
-    // differentiable set (material baseColor/roughness — the BSDF partials). Any
-    // shortfall degrades to finite-difference and is reported via `method`, so
-    // the host never receives a silently-wrong gradient. The two adjoint stages
+    // to provide the adjoint hook AND every parameter to be in the
+    // adjoint-differentiable set (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor /
+    // roughness / emissive — see its doc for the ior exclusion). Any shortfall
+    // degrades to finite-difference and is reported via `method`, so the host
+    // never receives a silently-wrong gradient. The two adjoint stages
     // the hook relies on (partials; chain rule + accumulation) are GPU-validated
     // on lavapipe (V24); an engine exposing the hook vouches for the re-trace.
     const allEligible = this.#slots.every(
@@ -394,13 +421,18 @@ function validateParam(scene: Scene, param: InverseParam, target: ResolvedParamT
  *  supply its own `min`/`max`. baseColor / roughness / metallic / emissive
  *  saturate at [0, 1] (physical reflectance / microfacet range); emissive
  *  intensity and emitter intensity / color are non-negative but unbounded above
- *  (an explicit `max` from the host narrows them). */
+ *  (an explicit `max` from the host narrows them); `ior` is bounded to the
+ *  dielectric range [1, 2.5] the material decoder clamps to (material.wgsl.ts:615
+ *  `clamp(m2.y, 1.0, 2.5)`) — optimizing outside it would hit a flat clamp and
+ *  stall. */
 function defaultClampRange(field: string): [number, number] {
   switch (field) {
     case 'baseColor':
     case 'roughness':
     case 'metallic':
       return [0, 1];
+    case 'ior':
+      return [1, 2.5];
     case 'emissive':
     case 'emissiveIntensity':
     case 'color':
@@ -434,6 +466,7 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'metallic': return [m.metallic];
       case 'emissive': return [...(m.emissive ?? [0, 0, 0])];
       case 'emissiveIntensity': return [m.emissiveIntensity ?? 1];
+      case 'ior': return [m.ior ?? 1.5];
       default: break;
     }
   } else {
@@ -455,6 +488,7 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'metallic': return { metallic: value[0]! };
     case 'emissive': return { emissive: value as unknown as Vec3 };
     case 'emissiveIntensity': return { emissiveIntensity: value[0]! };
+    case 'ior': return { ior: value[0]! };
     default: throw new Error(`inverse: unsupported material field "${field}".`);
   }
 }

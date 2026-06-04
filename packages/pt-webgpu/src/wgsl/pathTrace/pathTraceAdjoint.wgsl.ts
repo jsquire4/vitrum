@@ -15,12 +15,18 @@
  * precision, and the chain rule + fixed-point accumulation match an on-device
  * finite-difference.
  *
- * Emits the WGSL functions that compute the analytic partials of the
- * Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. the two Phase-1 optimizable
- * parameters — `baseColor` (rgb) and `roughness` (scalar) — for a FROZEN
- * sampled direction `wi`. This is the GPU twin of the CPU oracle in
- * `../../inverse/brdfAdjoint.ts`; the two are hand-verified line-for-line and
- * the codegen-shape tests pin that they keep emitting the same arithmetic.
+ * Emits the WGSL functions that compute the analytic partials of:
+ *  - the Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. `baseColor` (rgb) and
+ *    `roughness` (scalar), for a FROZEN sampled direction `wi`;
+ *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
+ *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
+ *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
+ *    (`dFrDielectric_dIor`) — the only differentiable `ior` dependence in the
+ *    forward kernel (the opaque-reflective F0 is a fixed 0.04, so
+ *    `∂evaluateBrdf/∂ior ≡ 0`; see the CPU oracle doc for the consumption caveat).
+ * These are the GPU twins of the CPU oracle in `../../inverse/brdfAdjoint.ts`;
+ * the two are hand-verified line-for-line and the codegen-shape tests pin that
+ * they keep emitting the same arithmetic.
  *
  * Path-replay (Vicini 2021): the adjoint re-traces the forward path with the
  * SAME RNG seed (`params.frameSeed ^ params.frameIndex`) so the hit point, the
@@ -132,6 +138,59 @@ fn dBrdf_dRoughness(
   let invDenom = 1.0 / max(4.0 * nDotV * nDotL, 1e-6);
   let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
   return f * dSpecScale;
+}
+
+// ── analytic ∂(contribution)_c / ∂emissive_c (diagonal identity) ────────────
+// Mirror of inverse/brdfAdjoint.ts:dContribution_dEmissive. Emission is an
+// additive Le, NOT a BSDF term: ∂(throughput·emissive_packed)/∂emissive_param =
+// throughput · emissiveIntensity (the packing folds intensity in). Diagonal;
+// for a primary hit throughput = 1 so this is the identity × emissiveIntensity.
+fn dContribution_dEmissive(throughput: vec3f, emissiveIntensity: f32) -> vec3f {
+  return throughput * emissiveIntensity;
+}
+
+// ── analytic ∂(frDielectric)/∂ior (scalar) ──────────────────────────────────
+// Mirror of inverse/brdfAdjoint.ts:dFrDielectric_dIor. The ONLY differentiable
+// ior dependence in the forward kernel (opaque-reflective F0 is a fixed 0.04, so
+// ∂evaluateBrdf/∂ior ≡ 0). eta = ior (front) or 1/ior (back); TIR / grazing
+// return 0 (frozen-discontinuity convention). NOT yet wired into an end-to-end
+// gradient — the Phase-1 pass does not trace the transmissive partition.
+fn dFrDielectric_dIor(cosThetaI_in: f32, ior: f32) -> f32 {
+  var cosThetaI = clamp(cosThetaI_in, -1.0, 1.0);
+  var eta: f32;
+  var dEta_dIor: f32;
+  if (cosThetaI < 0.0) {
+    eta = 1.0 / ior;
+    dEta_dIor = -1.0 / (ior * ior);
+    cosThetaI = -cosThetaI;
+  } else {
+    eta = ior;
+    dEta_dIor = 1.0;
+  }
+  let s = max(0.0, 1.0 - cosThetaI * cosThetaI);
+  let sin2ThetaT = s / (eta * eta);
+  if (sin2ThetaT >= 1.0) { return 0.0; }            // TIR — Fr pinned to 1.
+  let cosThetaT = sqrt(max(0.0, 1.0 - sin2ThetaT));
+  if (cosThetaT <= 1e-6) { return 0.0; }            // grazing guard.
+
+  let dCosT_dEta = s / (cosThetaT * eta * eta * eta);
+
+  let a = eta * cosThetaI - cosThetaT;
+  let b = eta * cosThetaI + cosThetaT;
+  let da = cosThetaI - dCosT_dEta;
+  let db = cosThetaI + dCosT_dEta;
+  let rPar = a / b;
+  let dRPar_dEta = (da * b - a * db) / (b * b);
+
+  let c = cosThetaI - eta * cosThetaT;
+  let dd = cosThetaT + eta * dCosT_dEta;            // d(eta·cosT)/deta
+  let cc = cosThetaI + eta * cosThetaT;
+  let dcNum = -dd;                                   // dc/deta
+  let rPerp = c / cc;
+  let dRPerp_dEta = (dcNum * cc - c * dd) / (cc * cc);
+
+  let dFr_dEta = rPar * dRPar_dEta + rPerp * dRPerp_dEta;
+  return dFr_dEta * dEta_dIor;
 }
 
 // Scatter a scalar gradient component into the i32 fixed-point accumulator.

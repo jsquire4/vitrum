@@ -10,13 +10,24 @@
  * runs on real hardware and matches this oracle to f32 precision (GPU-validated
  * on lavapipe, 2026-06-03).
  *
- * What it differentiates: the Cook-Torrance unified BRDF `evaluateBrdf`
- * (mirror of `bsdf.wgsl.ts:evaluateBrdf`) w.r.t. the two Phase-1 optimizable
- * parameters — `baseColor` (rgb) and `roughness` (scalar). The sampled
- * directions `wo`, `wi` are HELD CONSTANT: path-replay freezes the random
- * choices from the forward pass, so the adjoint differentiates only the
- * continuous shading and never differentiates through sampling. That sidesteps
- * the visibility / lobe-choice discontinuities path tracing is full of.
+ * What it differentiates:
+ *  - the Cook-Torrance unified BRDF `evaluateBrdf` (mirror of
+ *    `bsdf.wgsl.ts:evaluateBrdf`) w.r.t. `baseColor` (rgb) and `roughness`
+ *    (scalar) — the original Phase-1 set. The sampled directions `wo`, `wi`
+ *    are HELD CONSTANT: path-replay freezes the random choices from the
+ *    forward pass, so the adjoint differentiates only the continuous shading
+ *    and never differentiates through sampling. That sidesteps the
+ *    visibility / lobe-choice discontinuities path tracing is full of.
+ *  - the additive emission term `Le` w.r.t. `emissive` (rgb) — emission is NOT
+ *    a BRDF term, so its partial is a CONTRIBUTION-level identity, not a
+ *    `dBrdf_*`. See `dContribution_dEmissive` for the derivation.
+ *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
+ *    NOTE: `ior` does NOT enter `evaluateBrdf` — the opaque-reflective F0 is a
+ *    fixed `mix(0.04, baseColor, metallic)` (mirror of `bsdf.wgsl.ts:29` /
+ *    `kernel.wgsl.ts:334`), so `∂evaluateBrdf/∂ior ≡ 0`. The only differentiable
+ *    `ior` dependence in the forward kernel is `frDielectric` (the transmissive
+ *    reflect/refract Fresnel partition). `dFrDielectric_dIor` provides that
+ *    partial; see its doc for the (large) caveat on end-to-end consumption.
  *
  * Ref: Vicini, Speierer, Jakob, "Path Replay Backpropagation of Light
  *      Transport," ACM TOG 40(4), SIGGRAPH 2021.
@@ -68,6 +79,32 @@ function smithG1(nDotV: number, roughness: number): number {
   const r = roughness + 1.0;
   const k = r * r * 0.125;
   return nDotV / Math.max(nDotV * (1.0 - k) + k, 1e-6);
+}
+
+/**
+ * frDielectric (material.wgsl.ts:502 — PBR4e §9.3 FrDielectric). Unpolarised
+ * Fresnel reflectance of a smooth dielectric interface. Mirrored here as the
+ * forward the `ior` adjoint differentiates. Returns 1.0 on TIR (a hard
+ * discontinuity where the derivative is 0 / undefined — `dFrDielectric_dIor`
+ * returns 0 there, consistent with path-replay's frozen-event convention).
+ *
+ * `cosThetaI` is the cosine of the incident angle (caller passes the absolute
+ * value at the surface); `eta` is the relative IOR (transmitted / incident).
+ */
+export function frDielectric(cosThetaIIn: number, etaIn: number): number {
+  let cosThetaI = Math.min(Math.max(cosThetaIIn, -1.0), 1.0);
+  let eta = etaIn;
+  if (cosThetaI < 0.0) {
+    eta = 1.0 / eta;
+    cosThetaI = -cosThetaI;
+  }
+  const sin2ThetaI = Math.max(0.0, 1.0 - cosThetaI * cosThetaI);
+  const sin2ThetaT = sin2ThetaI / (eta * eta);
+  if (sin2ThetaT >= 1.0) return 1.0; // Total Internal Reflection.
+  const cosThetaT = Math.sqrt(Math.max(0.0, 1.0 - sin2ThetaT));
+  const rPar = (eta * cosThetaI - cosThetaT) / (eta * cosThetaI + cosThetaT);
+  const rPerp = (cosThetaI - eta * cosThetaT) / (cosThetaI + eta * cosThetaT);
+  return 0.5 * (rPar * rPar + rPerp * rPerp);
 }
 
 // ── forward BRDF (mirror of bsdf.wgsl.ts:evaluateBrdf) ───────────────────────
@@ -234,4 +271,110 @@ export function dBrdf_dRoughness(
   const invDenom = 1.0 / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
   return [dSpecScale * f[0]!, dSpecScale * f[1]!, dSpecScale * f[2]!];
+}
+
+/**
+ * Analytic ∂(contribution)_c / ∂(emissive_c) — the emissive-on-hit partial.
+ *
+ * Emission is NOT a BSDF term: in the rendering equation it is an ADDITIVE
+ * source `Le` along the outgoing direction, gated by the path throughput up to
+ * the hit. The forward kernel adds it on a camera-/refraction-visible hit as
+ *   `radiance += throughput · emissive`            (shadePrologue.wgsl.ts:63)
+ * where the SHADER's `emissive` is the PACKED value `emissive_param ·
+ * emissiveIntensity` (materialPacking.ts:122-124 folds the intensity in). So the
+ * per-channel contribution partial w.r.t. the optimizable `emissive` PARAMETER
+ * is diagonal and CONSTANT (independent of geometry / BRDF):
+ *   ∂(contribution)_c / ∂(emissive_param_c) = throughput_c · emissiveIntensity,
+ *   ∂(contribution)_c / ∂(emissive_param_j) = 0   for c ≠ j.
+ * For a PRIMARY (camera) hit `throughput = 1`, so the partial is the identity
+ * scaled by `emissiveIntensity` (= 1 when the host left intensity at its
+ * default). `throughput` is passed so an indirect-bounce extension can scale it;
+ * the single-bounce adjoint pass differentiates the primary hit (throughput 1).
+ *
+ * This is a CONTRIBUTION-level partial, not a `dBrdf_*` — it bypasses the BRDF
+ * entirely. The chain rule is `∂loss/∂emissive_c = dLoss/dRendered_c · (this)_c`.
+ */
+export function dContribution_dEmissive(
+  throughput: Vec3,
+  emissiveIntensity: number,
+): Vec3 {
+  return [
+    throughput[0] * emissiveIntensity,
+    throughput[1] * emissiveIntensity,
+    throughput[2] * emissiveIntensity,
+  ];
+}
+
+/**
+ * Analytic ∂(frDielectric)/∂ior — the scalar partial of the dielectric Fresnel
+ * reflectance w.r.t. the index of refraction, evaluated at a frozen incident
+ * cosine. This is the ONLY differentiable `ior` dependence in the current
+ * forward kernel (the opaque-reflective F0 is a fixed 0.04 — see the file
+ * header), so it is the honest `ior` partial.
+ *
+ * Forward (mirror of `frDielectric` above / material.wgsl.ts:502):
+ *   eta = ior (front face) or 1/ior (back face);  cosI = |cosThetaI|;
+ *   s = 1 - cosI² ;  sin2T = s/eta² ;  cosT = sqrt(1 - sin2T);
+ *   r∥ = (eta·cosI - cosT)/(eta·cosI + cosT);
+ *   r⊥ = (cosI - eta·cosT)/(cosI + eta·cosT);
+ *   Fr = ½(r∥² + r⊥²).
+ * Derivatives (all w.r.t. eta first, then chain to ior):
+ *   dcosT/deta = s / (cosT·eta³)            (since d(sin2T)/deta = -2s·eta⁻³)
+ *   r∥ = a/b,  a = eta·cosI - cosT,  b = eta·cosI + cosT:
+ *     da/deta = cosI - dcosT/deta ;  db/deta = cosI + dcosT/deta
+ *     dr∥/deta = (a'b - a·b') / b²
+ *   r⊥ = c/d,  c = cosI - eta·cosT,  d = cosI + eta·cosT:
+ *     dc/deta = -(cosT + eta·dcosT/deta) ;  dd/deta = -dc/deta
+ *     dr⊥/deta = (c'd - c·d') / d²
+ *   dFr/deta = r∥·dr∥/deta + r⊥·dr⊥/deta
+ *   dFr/dior = dFr/deta · (front ? 1 : -1/ior²)     (eta = ior vs 1/ior)
+ * TIR (sin2T ≥ 1) and grazing (cosT → 0) are hard events: Fr is pinned to 1 and
+ * the derivative is returned as 0 (path-replay's frozen-discontinuity convention).
+ *
+ * ⚠ CONSUMPTION CAVEAT: the Phase-1 engine adjoint pass (adjointPass.wgsl.ts)
+ * differentiates only single-bounce diffuse/glossy DIRECT lighting — it does NOT
+ * trace the transmissive reflect/refract partition where `frDielectric` lives.
+ * So this partial is GPU-validatable in isolation (analytic == FD on `frDielectric`)
+ * but is NOT yet wired into an end-to-end `∂loss/∂ior` gradient. Wiring it
+ * requires a transmissive-NEE adjoint (a deliberate follow-up).
+ */
+export function dFrDielectric_dIor(cosThetaIIn: number, ior: number): number {
+  let cosThetaI = Math.min(Math.max(cosThetaIIn, -1.0), 1.0);
+  // eta = ior (front) or 1/ior (back); track the chain factor deta/dior.
+  let eta: number;
+  let dEta_dIor: number;
+  if (cosThetaI < 0.0) {
+    eta = 1.0 / ior;
+    dEta_dIor = -1.0 / (ior * ior);
+    cosThetaI = -cosThetaI;
+  } else {
+    eta = ior;
+    dEta_dIor = 1.0;
+  }
+  const s = Math.max(0.0, 1.0 - cosThetaI * cosThetaI);
+  const sin2ThetaT = s / (eta * eta);
+  if (sin2ThetaT >= 1.0) return 0.0; // TIR — Fr pinned to 1, derivative 0.
+  const cosThetaT = Math.sqrt(Math.max(0.0, 1.0 - sin2ThetaT));
+  if (cosThetaT <= 1e-6) return 0.0; // grazing — guard the 1/cosT below.
+
+  const dCosT_dEta = s / (cosThetaT * eta * eta * eta);
+
+  // r∥ = a/b.
+  const a = eta * cosThetaI - cosThetaT;
+  const b = eta * cosThetaI + cosThetaT;
+  const da = cosThetaI - dCosT_dEta;
+  const db = cosThetaI + dCosT_dEta;
+  const rPar = a / b;
+  const dRPar_dEta = (da * b - a * db) / (b * b);
+
+  // r⊥ = c/d.
+  const c = cosThetaI - eta * cosThetaT;
+  const dd = cosThetaT + eta * dCosT_dEta; // = d(eta·cosT)/deta
+  const cc = cosThetaI + eta * cosThetaT;
+  const dcNum = -dd; // dc/deta = -(cosT + eta·dcosT/deta)
+  const rPerp = c / cc;
+  const dRPerp_dEta = (dcNum * cc - c * dd) / (cc * cc);
+
+  const dFr_dEta = rPar * dRPar_dEta + rPerp * dRPerp_dEta;
+  return dFr_dEta * dEta_dIor;
 }

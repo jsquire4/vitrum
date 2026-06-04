@@ -23,6 +23,9 @@ export const ADJOINT_HARNESS_INPUT_FLOATS = 16;
 /** Floats per shading-adjoint input record (vec4-aligned: 6 × vec4f = 24 floats). */
 export const ADJOINT_SHADING_INPUT_FLOATS = 24;
 
+/** Floats per emissive/ior-adjoint input record (vec4-aligned: 2 × vec4f = 8 floats). */
+export const ADJOINT_EMISSIVE_IOR_INPUT_FLOATS = 8;
+
 /** Fixed-point scale the adjoint atomics use (mirror of ADJOINT_GRAD_FP = 2^20). */
 export const ADJOINT_GRAD_FP_TS = 1048576;
 
@@ -47,6 +50,28 @@ export function packShadingAdjointInput(
     wi[0], wi[1], wi[2], 0,
     Li[0], Li[1], Li[2], 0,
     target[0], target[1], target[2], 0,
+  ];
+}
+
+/**
+ * Pack one emissive/ior-adjoint input (8 floats), matching the WGSL `EmIorIn`
+ * std430 layout:
+ *   vec4 0: throughput.xyz, emissiveIntensity
+ *   vec4 1: cosThetaI, ior, _pad, _pad
+ * The emissive partial is the diagonal identity `throughput · emissiveIntensity`
+ * (no per-channel emissive VALUE needed — the partial is value-independent), and
+ * the ior partial is `dFrDielectric/dior` at (cosThetaI, ior). The harness FD's
+ * the matching forwards (`throughput·intensity·emissive` and `frDielectric`).
+ */
+export function packEmissiveIorAdjointInput(
+  throughput: readonly [number, number, number],
+  emissiveIntensity: number,
+  cosThetaI: number,
+  ior: number,
+): number[] {
+  return [
+    throughput[0], throughput[1], throughput[2], emissiveIntensity,
+    cosThetaI, ior, 0, 0,
   ];
 }
 
@@ -261,5 +286,126 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // Keep the bundled adjointScatter/gradAccum live (never executed) so layout:auto
   // retains binding 3 and the partials bundle stays byte-identical to production.
   if (i >= 0xfffffff0u) { adjointScatter(0u, gR); }
+}
+`;
+
+/**
+ * ADJOINT_EMISSIVE_IOR_FD_WGSL — proves the TWO new (Phase II.1) partials against
+ * on-device finite-difference, the SAME analytic==FD discipline as
+ * ADJOINT_SHADING_FD_WGSL:
+ *   - emissive: `dContribution_dEmissive` (= throughput · emissiveIntensity,
+ *     diagonal) vs central FD of the additive forward
+ *     `rendered_c = throughput_c · emissiveIntensity · emissive_c`. Because the
+ *     partial is value-independent, the FD uses an arbitrary fixed emissive base.
+ *   - ior: `dFrDielectric_dIor(cosThetaI, ior)` vs central FD of the forward
+ *     `frDielectric(cosThetaI, ior)`. Cases span front + back face (cosThetaI
+ *     sign) and stay clear of the TIR / grazing discontinuities (where both the
+ *     analytic and the central FD of the clamped forward agree on 0 anyway).
+ *
+ * Composes the SAME `PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL` so the partials under
+ * test are byte-identical to production, plus a local `frDielectric` forward
+ * (the reference the ior FD differentiates) matching material.wgsl.ts exactly.
+ *
+ * Results: gradEmAdj/gradEmFd = the 3 emissive channels; gradIorAdj/gradIorFd =
+ * one ior scalar per case (slot 0 accumulates the sum, mirroring the shading FD
+ * harness's fixed-point reduction).
+ */
+export const ADJOINT_EMISSIVE_IOR_FD_WGSL = /* wgsl */ `
+const PI = 3.14159265358979;
+const INV_PI = 0.31830988618;
+const FD_EPS = 1e-3;
+// A fixed emissive base for the value-independent emissive FD (any value works).
+const EMISSIVE_BASE = vec3f(0.4, 0.7, 0.25);
+
+// BRDF primitives the bundled PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL references (its
+// dBrdf_* fns are composed in but unused here) — exact mirrors of material.wgsl.ts.
+fn safe_normalize(v: vec3f) -> vec3f {
+  let l = length(v);
+  if (l < 1e-8) { return vec3f(0.0); }
+  return v / l;
+}
+fn ggxD(nDotH: f32, alpha: f32) -> f32 {
+  let a2 = alpha * alpha;
+  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
+  return a2 / max(PI * d * d, 1e-6);
+}
+fn smithG1(nDotV: f32, roughness: f32) -> f32 {
+  let r = roughness + 1.0;
+  let k = (r * r) * 0.125;
+  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
+}
+fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  let m5 = m2 * m2 * m;
+  return f0 + (vec3f(1.0) - f0) * m5;
+}
+
+// frDielectric — exact mirror of material.wgsl.ts:502 / the CPU oracle. The
+// reference forward the ior partial differentiates.
+fn frDielectric(cosTheta_i_in: f32, eta_in: f32) -> f32 {
+  var cosTheta_i = clamp(cosTheta_i_in, -1.0, 1.0);
+  var eta = eta_in;
+  if (cosTheta_i < 0.0) {
+    eta = 1.0 / eta;
+    cosTheta_i = -cosTheta_i;
+  }
+  let sin2Theta_i = max(0.0, 1.0 - cosTheta_i * cosTheta_i);
+  let sin2Theta_t = sin2Theta_i / (eta * eta);
+  if (sin2Theta_t >= 1.0) { return 1.0; }
+  let cosTheta_t = sqrt(max(0.0, 1.0 - sin2Theta_t));
+  let r_par  = (eta * cosTheta_i - cosTheta_t) / (eta * cosTheta_i + cosTheta_t);
+  let r_perp = (cosTheta_i - eta * cosTheta_t) / (cosTheta_i + eta * cosTheta_t);
+  return 0.5 * (r_par * r_par + r_perp * r_perp);
+}
+
+struct EmIorIn {
+  throughput: vec3f, emissiveIntensity: f32,
+  cosThetaI:  f32,   ior: f32, _p0: f32, _p1: f32,
+}
+
+@group(0) @binding(0) var<storage, read>       eiIn:       array<EmIorIn>;
+@group(0) @binding(1) var<storage, read_write> gradEmAdj:  array<atomic<i32>>; // [0..2] analytic emissive
+@group(0) @binding(2) var<storage, read_write> gradEmFd:   array<atomic<i32>>; // [0..2] FD emissive
+@group(0) @binding(3) var<storage, read_write> gradIorAdj: array<atomic<i32>>; // [0] analytic ior (summed)
+@group(0) @binding(4) var<storage, read_write> gradIorFd:  array<atomic<i32>>; // [0] FD ior (summed)
+// gradAccum exists only so the bundled adjointScatter compiles (unused here).
+@group(0) @binding(5) var<storage, read_write> gradAccum:  array<atomic<i32>>;
+
+${PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL}
+
+fn fp(g: f32) -> i32 { return i32(round(g * ADJOINT_GRAD_FP)); }
+
+// emissive forward contribution for one channel: throughput·intensity·emissive.
+fn emContribution(e: EmIorIn, emissive: vec3f) -> vec3f {
+  return e.throughput * e.emissiveIntensity * emissive;
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3u) {
+  let i = gid.x;
+  if (i >= arrayLength(&eiIn)) { return; }
+  let e = eiIn[i];
+
+  // ── emissive: analytic diagonal identity vs central FD of the forward ──
+  let dEm = dContribution_dEmissive(e.throughput, e.emissiveIntensity);
+  atomicAdd(&gradEmAdj[0u], fp(dEm.x));
+  atomicAdd(&gradEmAdj[1u], fp(dEm.y));
+  atomicAdd(&gradEmAdj[2u], fp(dEm.z));
+  for (var j: u32 = 0u; j < 3u; j = j + 1u) {
+    var eP = EMISSIVE_BASE; eP[j] = eP[j] + FD_EPS;
+    var eM = EMISSIVE_BASE; eM[j] = eM[j] - FD_EPS;
+    let fd = (emContribution(e, eP)[j] - emContribution(e, eM)[j]) / (2.0 * FD_EPS);
+    atomicAdd(&gradEmFd[j], fp(fd));
+  }
+
+  // ── ior: analytic dFrDielectric/dior vs central FD of frDielectric ──
+  let dIor = dFrDielectric_dIor(e.cosThetaI, e.ior);
+  atomicAdd(&gradIorAdj[0u], fp(dIor));
+  let fdIor = (frDielectric(e.cosThetaI, e.ior + FD_EPS) - frDielectric(e.cosThetaI, e.ior - FD_EPS)) / (2.0 * FD_EPS);
+  atomicAdd(&gradIorFd[0u], fp(fdIor));
+
+  // Keep the bundled adjointScatter/gradAccum live (never executed).
+  if (i >= 0xfffffff0u) { adjointScatter(0u, dIor); }
 }
 `;
