@@ -564,27 +564,35 @@ export const bsdf_functions = /* glsl */`
 
 	// Sprint 7: SSS single scatter via HG phase function.
 	// Called when a ray exits the back face of a TRANSLUCENT material
-	// (gated by u_sssSigmaT > 0 — see PhysicalPathTracingMaterial.js uniforms).
+	// (gated by surf.sssSigmaT > 0 — see PhysicalPathTracingMaterial.js).
 	// The scatter position is sampled from an exponential distribution along
 	// the refracted direction; the scattered direction is sampled from HG.
 	// Mirrors @vitrum/shared-samplers/src/hgPhase.ts::sampleHG.
 	ScatterRecord sssSample( vec3 worldWo, SurfaceRecord surf, float heroWavelength ) {
 
-		float tScatter = sampleExponential( rand( 17 ), u_sssSigmaT, 1e6 );
-		float beerLambert = exp( - u_sssSigmaT * tScatter );
+		// Per-material SSS parameters come from the SurfaceRecord (packed from the
+		// MaterialsTexture: material.sssSigmaT/sssAnisotropyG/sssAlbedo via
+		// get_surface_record_function, surface_record_struct). The legacy global
+		// uniforms u_sssSigmaT/u_sssAlbedo/u_sssAnisotropyG were NEVER assigned
+		// per-material — only their constructor defaults (sigmaT=0, g=0, albedo=0.9)
+		// — so reading them collapsed SSS to a degenerate Beer-Lambert=1 term with a
+		// fixed albedo (the per-material magnitudes were packed + gated on but never
+		// consumed). surf.* IS the per-material data and is already in scope here.
+		float tScatter = sampleExponential( rand( 17 ), surf.sssSigmaT, 1e6 );
+		float beerLambert = exp( - surf.sssSigmaT * tScatter );
 
 		vec3 rd = normalize( - worldWo ); // refracted direction approximation
-		vec3 scatterDir = sampleHG_glsl( rand( 18 ), rand( 19 ), u_sssAnisotropyG, rd );
+		vec3 scatterDir = sampleHG_glsl( rand( 18 ), rand( 19 ), surf.sssAnisotropyG, rd );
 
 		ScatterRecord sssRec;
-		sssRec.pdf = hg_phase( dot( rd, scatterDir ), u_sssAnisotropyG );
+		sssRec.pdf = hg_phase( dot( rd, scatterDir ), surf.sssAnisotropyG );
 		sssRec.specularPdf = 0.0;
 		sssRec.direction = scatterDir;
 		// Medium single-scatter albedo at the hero wavelength. Under the Jakob & Hanika
 		// gate this is the paper-accurate sigmoid reflectance of the representative medium
 		// albedo; otherwise the legacy smoothstep tent projection. Beer-Lambert attenuation
 		// stays an explicit scalar factor so units (reflectance × transmittance) are preserved.
-		sssRec.throughput = mediumAlbedoHero( u_sssAlbedo, heroWavelength ) * beerLambert;
+		sssRec.throughput = mediumAlbedoHero( surf.sssAlbedo, heroWavelength ) * beerLambert;
 		return sssRec;
 
 	}

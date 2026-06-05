@@ -21,8 +21,8 @@ import * as SamplingGLSL from '../../shader/sampling/index.js';
 import * as CommonGLSL from '../../shader/common/index.js';
 import * as RandomGLSL from '../../shader/rand/index.js';
 import * as BSDFGLSL from '../../shader/bsdf/index.js';
-// Sprint 7: uniform declarations for volume scatter + SSS
-// (u_volumeDensity, u_scatterAlbedo, u_anisotropyG, u_sssSigmaT, u_sssAlbedo, u_sssAnisotropyG)
+// Sprint 7: uniform declarations for the global volume scatter
+// (u_volumeDensity, u_scatterAlbedo, u_anisotropyG). Per-material SSS reads surf.* (see sssSample).
 import * as PTBVHGLSL from '../../shader/bvh/index.js';
 
 // path tracer glsl
@@ -139,13 +139,11 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 				u_scatterAlbedo: { value: new Vector3( 0.8, 0.85, 0.9 ) },
 				u_anisotropyG: { value: 0.0 },
 
-				// Sprint 7: per-material SSS uniforms (u_sssSigmaT = 0 disables SSS).
-				// u_sssSigmaT     = σ_t (scatter distance reciprocal).
-				// u_sssAlbedo     = single-scatter albedo.
-				// u_sssAnisotropyG = HG anisotropy g for SSS.
-				u_sssSigmaT: { value: 0.0 },
-				u_sssAlbedo: { value: new Vector3( 0.9, 0.9, 0.9 ) },
-				u_sssAnisotropyG: { value: 0.0 },
+				// Per-material SSS (sssSigmaT / sssAnisotropyG / sssAlbedo) flows through
+				// the MaterialsTexture → material_struct → SurfaceRecord and is read from
+				// surf.* in sssSample(). The old global u_sss* uniforms here were never
+				// assigned per-material (only their constructor defaults), so they were
+				// removed when sssSample() was fixed to read surf.* instead.
 
 				// Sprint 8: chromatic dispersion uniforms (u_dispersionStrength = 0 disables).
 				// u_ior0               = base IOR at 589.3 nm (sodium D line).
@@ -359,13 +357,10 @@ export class PhysicalPathTracingMaterial extends MaterialBase {
 				${ SamplingGLSL.equirect_functions }
 				${ SamplingGLSL.light_sampling_functions }
 
-				// Sprint 7: volume scatter + SSS uniforms
+				// Sprint 7: global volume-scatter uniforms (per-material SSS reads surf.* in sssSample)
 				uniform float u_volumeDensity;
 				uniform vec3 u_scatterAlbedo;
 				uniform float u_anisotropyG;
-				uniform float u_sssSigmaT;
-				uniform vec3 u_sssAlbedo;
-				uniform float u_sssAnisotropyG;
 
 				// Sprint 8: chromatic dispersion uniforms
 				uniform float u_ior0;

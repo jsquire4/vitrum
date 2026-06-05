@@ -68,8 +68,18 @@ describe('three-gpu-pathtracer uniform contract (integration)', () => {
       'state.throughput *= mediumAlbedoHero( u_scatterAlbedo, state.wavelength ) * transmittance',
     );
     expect(fragment).toContain(
-      'sssRec.throughput = mediumAlbedoHero( u_sssAlbedo, heroWavelength ) * beerLambert',
+      'sssRec.throughput = mediumAlbedoHero( surf.sssAlbedo, heroWavelength ) * beerLambert',
     );
+
+    // (5b) SSS reads the PER-MATERIAL SurfaceRecord fields (packed from the
+    //      MaterialsTexture via material_struct → get_surface_record), NOT the
+    //      never-set global u_sss* uniforms. Pins the mis-driven-SSS fix:
+    //      u_sssSigmaT/u_sssAlbedo/u_sssAnisotropyG only ever held their
+    //      constructor defaults (sigmaT=0), so per-material SSS was degenerate.
+    //      (u_scatterAlbedo on the GLOBAL volume scatter above is correct — that
+    //      IS a global-medium uniform, not per-material.)
+    expect(fragment).toContain('sampleExponential( rand( 17 ), surf.sssSigmaT, 1e6 )');
+    expect(fragment).toContain('sampleHG_glsl( rand( 18 ), rand( 19 ), surf.sssAnisotropyG, rd )');
 
     // (6) GLSL compile order: evalSpectrumAtHero declared before mediumAlbedoHero.
     const evalIdx = fragment.indexOf('float evalSpectrumAtHero( float lambdaNm )');

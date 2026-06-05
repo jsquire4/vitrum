@@ -15,9 +15,8 @@
 //   u_volumeDensity  : float  — extinction coefficient σ_t (0 = no medium)
 //   u_scatterAlbedo  : vec3   — σ_s / σ_t per channel (0 = absorb only, 1 = scatter only)
 //   u_anisotropyG    : float  — HG anisotropy g ∈ (-1, 1)
-//   u_sssSigmaT      : float  — per-material scatter distance reciprocal
-//   u_sssAlbedo      : vec3   — single-scatter albedo per channel
-//   u_sssAnisotropyG : float  — HG anisotropy g for SSS
+// (Per-material SSS — sssSigmaT/sssAnisotropyG/sssAlbedo — is NOT a global uniform;
+//  it flows through the SurfaceRecord and is read from surf.* in sssSample.)
 
 export const volume_march = /* glsl */`
 
